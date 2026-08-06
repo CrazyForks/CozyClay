@@ -4,6 +4,8 @@ CozyClay is an independent, browser-based 3D staging studio built with Three.js 
 
 CozyClay can connect to [NVIDIA ARDY](https://github.com/nv-tlabs/ardy) for motion generation. ARDY is a separate third-party project owned and maintained by NVIDIA; it is not included in this repository, and CozyClay is not affiliated with or endorsed by NVIDIA.
 
+![CozyClay browser-based 3D staging studio](docs/images/cozyclay-studio.png)
+
 ## Requirements
 
 - Node.js 22 or newer
