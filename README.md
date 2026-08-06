@@ -23,21 +23,21 @@ npm install
 
 ## Run locally
 
-Start the standalone studio:
+Start the studio and its local ARDY bridge:
 
 ```bash
 npm run dev
 ```
 
-Open the URL printed by Vite, normally `http://localhost:5173`.
+Open `http://127.0.0.1:5180`.
 
-Start the studio together with the local ARDY bridge:
+To run only the browser UI without Block Generation:
 
 ```bash
-npm run dev:full
+npm run dev:ui
 ```
 
-The bridge listens on loopback only. Configure the remote ARDY machine through the environment variables documented in `tools/ardy/BRIDGE.md`.
+The ARDY bridge listens on loopback only. Configure the remote ARDY machine through the environment variables documented in `tools/ardy/BRIDGE.md`.
 
 ## Main features
 
