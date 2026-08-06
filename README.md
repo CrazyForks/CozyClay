@@ -1,6 +1,8 @@
 # CozyClay
 
-CozyClay is a browser-based 3D staging and ARDY motion studio. It combines scene blocking, character posing, prompt-block sequencing, waypoint planning, IK editing, and generated-motion preview in one local workspace.
+CozyClay is an independent, browser-based 3D staging studio built with Three.js and React Three Fiber. It combines scene blocking, character posing, prompt-block sequencing, waypoint planning, IK editing, and generated-motion preview in one local workspace.
+
+CozyClay can connect to [NVIDIA ARDY](https://github.com/nv-tlabs/ardy) for motion generation. ARDY is a separate third-party project owned and maintained by NVIDIA; it is not included in this repository, and CozyClay is not affiliated with or endorsed by NVIDIA.
 
 ## Requirements
 
@@ -71,3 +73,5 @@ Generated motion archives, QA output, build output, logs, and local runtime arti
 ## License
 
 CozyClay is licensed under the GNU General Public License v3.0 or later. See `LICENSE`.
+
+Third-party projects retain their own licenses and copyright. See `THIRD_PARTY_NOTICES.md`.
