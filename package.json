@@ -1,0 +1,36 @@
+{
+  "name": "cozyclay",
+  "version": "1.0.0",
+  "description": "A browser-based 3D staging and ARDY motion studio for planning character performances.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && cp -r public/fonts dist/",
+    "test:lifecycle": "node test/process/verify-lifecycle.mjs",
+    "test:hierarchy": "node test/verify-hierarchy.mjs",
+    "test:scene-objects": "node test/verify-scene-objects.mjs",
+    "test:theme": "node test/verify-theme.mjs",
+    "test:appearance": "node test/verify-appearance.mjs",
+    "test:layout": "node test/verify-layout.mjs",
+    "preview": "vite preview",
+    "ardy:rest": "node tools/ardy/extract-rest.mjs",
+    "ardy:pose": "node tools/ardy/pose-to-npz.mjs",
+    "test:ardy": "for t in fk rest pose-shape fill npz compare-npz playback-skinning sequence-bridge; do node test/ardy/verify-$t.mjs || exit 1; done && node test/ardy/verify-browser-motion.mjs && node test/ik/verify-ik.mjs",
+    "bridge": "node tools/ardy/bridge.mjs",
+    "dev:full": "node tools/dev-full.mjs",
+    "qa:browser": "node tools/qa-browser.mjs --"
+  },
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "dependencies": {
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.7.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.5",
+    "vite": "^8.2.0"
+  },
+  "private": true
+}

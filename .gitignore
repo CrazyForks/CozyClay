@@ -1,0 +1,14 @@
+node_modules/
+dist/
+artifacts/
+.gjc/
+
+# ARDY working files: generated motion archives are large binaries produced by
+# the remote box, not source. Keep the JSON fixtures, drop the .npz.
+*.npz
+tools/ardy/out/
+
+.DS_Store
+*.log
+__pycache__/
+*.pyc
