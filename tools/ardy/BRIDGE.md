@@ -22,13 +22,13 @@ node tools/ardy/bridge.mjs --port 5182     # or COZYCLAY_BRIDGE_PORT=5182
 On startup it logs the bound address. Ctrl-C kills any in-flight generation
 process group (the ssh session is closed, so nothing is orphaned on the box).
 
-The bridge reads the same env vars `run-on-box.sh` reads, with the same
-defaults, so the two cannot disagree:
+The bridge reads the same env vars `run-on-box.sh` reads. The remote SSH host
+has no public default and must be configured by the operator:
 
 | env | default | meaning |
 | --- | --- | --- |
 | `COZYCLAY_BRIDGE_PORT` | `5181` | listen port (loopback only) |
-| `CCLAY_ARDY_HOST` | `100.90.2.101` | ssh host of the ARDY box |
+| `CCLAY_ARDY_HOST` | required | ssh destination for the ARDY host |
 | `CCLAY_ARDY_REPO` | `$HOME/ardy` | ARDY checkout on the box |
 | `CCLAY_ARDY_VENV` | `~/ardy/.venv-cuda/bin/python` | generator venv python on the box |
 | `CCLAY_ARDY_ENCODER_URL` | `http://127.0.0.1:9550/` | text-encoder service |
@@ -47,7 +47,7 @@ HTTP status, and the device the generator venv would pick (the exact probe
 line `run-on-box.sh` uses, under the same env).
 
 ```json
-200 {"ok":true,"host":"100.90.2.101","encoder":200,"device":"cuda:0"}
+200 {"ok":true,"host":"user@ardy-host","encoder":200,"device":"cuda:0"}
 503 {"ok":false,"reason":"<human readable>"}
 ```
 
@@ -171,17 +171,12 @@ check is re-applied at serve time.
 
 ARDY is **Y-up**: the character stands on the X/Z ground plane, and root
 positions are horizontal X and Z in **meters** relative to the ARDY origin
-(Y is not constrained by a root waypoint). A constrained path is defined by
-**2..32 waypoints representing start + destination**: the first waypoint
-must be at frame **0** and frames must be strictly ascending. Waypoint
-frames are **0-based at 20 fps** — frame `f` is at time `f/20` s — and must
-lie in `0..floor(duration*20)-1`. `heading` is the root's yaw in radians
-around Y (within `[-2π,2π]`), or `null` to leave facing free. Each waypoint
-is forwarded to `run-on-box.sh` as a repeated `--root-2d FRAME X Z HEADING`
-group — the literal `none` stands in for a null heading — and the script
-`%q`-quotes every value into the remote generator invocation. The remote
-generator requires `heading` for every waypoint or none of them; a mixed
-request is rejected on the box with a visible error.
+(Y is not constrained by root guidance). A request may carry exactly one
+root start at frame **0**. CozyClay sends clip-local `(0, 0)` with
+`heading:null`, so every later root position and facing remains unconstrained
+and model-generated. The start is forwarded to `run-on-box.sh` as one
+`--root-2d 0 X Z none` group, and the script `%q`-quotes every value into the
+remote generator invocation.
 
 ## Failure semantics
 
@@ -222,7 +217,7 @@ interface, indistinguishable from a legitimate local call. The CozyClay UI
   built from the box's own listing (regex-whitelisted to
   `outputs/(omb/)?[A-Za-z0-9._-]+\.npz`) or from operator env vars.
 - **Everything is validated**: prompt length, duration/dstFrame ranges, base
-  whitelist, waypoint count/bounds/order, body size cap, `seed`/`cpu` types.
+  whitelist, frame-zero root start bounds, body size cap, `seed`/`cpu` types.
 - **ssh hardening**: `BatchMode` (never a password prompt), `ConnectTimeout`,
   `ServerAlive*` — the same options `run-on-box.sh` uses.
 - **No writes to `~/ardy`**: the dump script is copied to `/tmp` on the box

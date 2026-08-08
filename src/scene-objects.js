@@ -8,15 +8,6 @@ export const DEFAULT_SCENE_OBJECTS = [
 		rot: (Math.PI / 7) * (180 / Math.PI),
 		footprint: { width: 1.78, depth: 4.45 },
 	},
-	{
-		id: "object-chair-1",
-		name: "Chair",
-		renderer: "chair",
-		x: 0,
-		z: -0.36,
-		rot: 0,
-		footprint: { width: 0.54, depth: 0.522 },
-	},
 ];
 
 export function sceneObjectHierarchyId(id) {
@@ -43,4 +34,9 @@ export function updateSceneObject(objects, id, patch) {
 		return { ...object, ...update };
 	});
 	return changed ? next : objects;
+}
+
+export function removeSceneObject(objects, id) {
+	const next = objects.filter((object) => object.id !== id);
+	return next.length === objects.length ? objects : next;
 }

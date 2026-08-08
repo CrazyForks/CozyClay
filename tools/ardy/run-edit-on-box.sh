@@ -2,7 +2,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOST="${CCLAY_ARDY_HOST:-100.90.2.101}"
+HOST="${CCLAY_ARDY_HOST:-}"
 REMOTE="${CCLAY_ARDY_REPO:-\$HOME/ardy}"
 VENV_PY="${CCLAY_ARDY_VENV:-~/ardy/.venv-cuda/bin/python}"
 SCRIPT="$HERE/cclay_motion_edit.py"
@@ -36,6 +36,11 @@ while [[ $# -gt 0 ]]; do
     *) usage ;;
   esac
 done
+
+[[ -n "$HOST" ]] || {
+  echo "run-edit-on-box: CCLAY_ARDY_HOST is required (for example: user@ardy-host)" >&2
+  exit 2
+}
 
 [[ -f "$SOURCE" && -f "$MANIFEST" && -f "$SCRIPT" && -n "$PROMPT" && -n "$OUTPUT" ]] || usage
 [[ ${#POSES[@]} -gt 0 ]] || usage

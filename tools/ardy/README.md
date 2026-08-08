@@ -7,41 +7,26 @@ This is the "long tail" of the bridge: the pose is authored in CozyClay,
 converted to an ARDY motion npz locally, and this script is what actually
 gets the box to generate with it.
 
-## The box
+## Remote ARDY host
 
-- Identity: `100.90.2.101` over Tailscale (hostname `ubuntu-baremetal`,
-  user `yun`). 12 cores, 94 GB RAM, RTX 3070 with 8.2 GB VRAM.
-- Access: `ssh -o BatchMode=yes 100.90.2.101` — key-based only, no
-  password prompts. The host and repo are overridable with the same env
-  names `sync-to-box` (CozyClay `scripts/ardy/sync-to-box`) uses:
-  - `CCLAY_ARDY_HOST` — default `100.90.2.101`
-  - `CCLAY_ARDY_REPO` — default `$HOME/ardy` on the box (expanded remotely)
-  - `CCLAY_ARDY_VENV` — default `~/ardy/.venv/bin/python`
-- Python: `~/ardy/.venv/bin/python` (torch 2.13.0+cu130). The box's system
-  python3 has no torch, so the venv is used explicitly everywhere.
-- The constrained generator lives at `~/ardy/scripts/cclay_constrained_generate.py`,
-  deployed from CozyClay `scripts/ardy/cclay_constrained_generate.py`
-  (source of truth; the deployed copy must not be edited by hand).
+The bridge expects an SSH-accessible machine where ARDY is already installed.
+CozyClay deliberately does not prescribe a VPN, hostname scheme, cloud
+provider, or network topology.
 
-## Why CPU — and the NVML trap
+Configure the host explicitly before starting the bridge:
 
-The box runs this pipeline on CPU **on purpose**, and `run-on-box.sh` forces
-it with `CUDA_VISIBLE_DEVICES=""`. The reason is two-part:
+```sh
+export CCLAY_ARDY_HOST="<ssh-user>@<ssh-host>"
+```
 
-1. The RTX 3070 has only 8.2 GB VRAM; the box has 94 GB RAM. The model does
-   not fit on the GPU, and diffusion sampling on 12 CPU cores is the
-   intended configuration.
-2. `nvidia-smi` on the box fails with `Failed to initialize NVML: Driver/
-   library version mismatch` (a stale kernel module vs. userspace driver),
-   yet `torch.cuda.is_available()` still returns `True` — the generator's
-   `device = "cuda:0" if torch.cuda.is_available() else "cpu"` line would
-   otherwise pick a GPU that cannot hold the model and crash (or worse,
-   silently swap).
+Optional overrides:
 
-Because of the trap, "just check with nvidia-smi" is NOT a valid probe.
-The preflight in `run-on-box.sh` therefore mirrors the generator's exact
-device expression under the same env and prints what the run will actually
-use — with `CUDA_VISIBLE_DEVICES=""` it always reports `cpu`.
+- `CCLAY_ARDY_REPO` — ARDY checkout on the remote host (default `$HOME/ardy`)
+- `CCLAY_ARDY_VENV` — generator Python (default `~/ardy/.venv-cuda/bin/python`)
+- `CCLAY_ARDY_ENCODER_URL` — encoder URL as seen from the remote host
+
+SSH must work non-interactively with `BatchMode=yes`. Hardware and device
+selection are operator concerns; pass `--cpu` when CPU generation is desired.
 
 ## Where the motions live on the box
 
@@ -95,7 +80,7 @@ run-on-box.sh <pose.npz> --base <motion-id|npz-path> --prompt "<prompt>" \
 which becomes, on the box (modulo the temp dir):
 
 ```
-cd $HOME/ardy && CUDA_VISIBLE_DEVICES="" ~/ardy/.venv/bin/python \
+cd $HOME/ardy && ~/ardy/.venv-cuda/bin/python \
   scripts/cclay_constrained_generate.py \
   --prompt "<prompt>" --duration <seconds> \
   --base <resolved-base> --output <tmp>/out \
@@ -121,9 +106,7 @@ first:
    exist on the box (points at `sync-to-box --apply` when missing).
 3. The base motion resolves to a file that exists on the box.
 4. The device probe: the one-line torch check mirroring the generator's
-   device expression, under the same `CUDA_VISIBLE_DEVICES=""` env, printed
-   before launching. It reports `cpu`; if it ever reports `cuda:0`, the
-   forcing is not working and the run must not start.
+   device expression under the same environment, printed before launching.
 
 `--dry-run` runs all of the above (they are reads only), prints the exact
 push / remote-command / pull / cleanup steps, and exits without connecting

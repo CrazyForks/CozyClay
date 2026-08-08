@@ -9,7 +9,7 @@ import { loadMotionFromUrl } from "./ardy/npz.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
-import { alignArdyPath, defaultWaypointPosition, toSceneRootOffset } from "./ardy/waypoints.js";
+import { defaultWaypointPosition, toSceneRootOffset } from "./ardy/waypoints.js";
 import { FlyControls, aimAt } from "./controls.jsx";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
@@ -18,6 +18,7 @@ import { Room, StageLights } from "./room.jsx";
 import { SetProps } from "./props.jsx";
 import {
 	DEFAULT_SCENE_OBJECTS,
+	removeSceneObject,
 	sceneObjectIdFromHierarchy,
 	updateSceneObject,
 } from "./scene-objects.js";
@@ -567,6 +568,31 @@ export default function App() {
 		setSceneObjects((objects) => updateSceneObject(objects, id, patch));
 	}
 
+	function deleteSelectedSceneObject() {
+		if (!selectedSceneObjectId) return;
+		setSceneObjects((objects) => removeSceneObject(objects, selectedSceneObjectId));
+		setSelectedHierarchyId("props");
+		setRightPanelTab("detail");
+	}
+
+	useEffect(() => {
+		if (!selectedSceneObjectId) return;
+		const onKeyDown = (event) => {
+			if (event.key !== "Delete" && event.key !== "Backspace") return;
+			const target = event.target;
+			if (
+				target instanceof HTMLInputElement ||
+				target instanceof HTMLTextAreaElement ||
+				target instanceof HTMLSelectElement ||
+				target?.isContentEditable
+			) return;
+			event.preventDefault();
+			deleteSelectedSceneObject();
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, [selectedSceneObjectId]);
+
 	const [mode, setMode] = useState("image");
 	const [imageModel, setImageModel] = useState("gpt_image_2");
 	const [videoModel, setVideoModel] = useState("seedance_2");
@@ -624,6 +650,7 @@ export default function App() {
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
 	const [motion, setMotion] = useState(null);
 	useEffect(() => {
+		setSceneObjects((current) => current.filter((object) => object.id !== "object-chair-1"));
 		if (sessionStorage.getItem(GREETING_DEMO_MIGRATION_KEY) === "done") return;
 		setSceneObjects((current) => {
 			const existing = new Set(current.map((object) => object.id));
@@ -736,10 +763,8 @@ export default function App() {
 
 	/* --------------------------- motion playback ---------------------------- */
 
-	// Decoded motion + the world anchor: the clip's root moves relative to its
-	// anchor frame, placed on top of the blocking start (the first waypoint,
-	// seeded from Subject 1). This keeps the drawn path and the npz root
-	// aligned at the anchor frame without teleporting to ARDY's absolute origin.
+	// Decoded motion + the world anchor: frame 0 always starts at Subject 1.
+	// Authored path markers are planning references, not generated root pins.
 	async function loadMotion(url, prompt, rotationDeg = charA.rot) {
 		setMotionBusy(true);
 		setMotionError("");
@@ -757,7 +782,6 @@ export default function App() {
 			const rig = rigA;
 			if (!rig) throw new Error("Subject 1 rig is not loaded");
 			restoreRef.current = { rig, bones: snapshotPlaybackBones(rig) };
-			const anchor = waypoints[0] ?? null;
 			setMotion({
 			// Capture the exact prompt this motion was generated from; the
 			// timeline keeps showing it even if the input field is edited
@@ -765,9 +789,9 @@ export default function App() {
 			prompt: typeof prompt === "string" ? prompt : "",
 				...decoded,
 				url,
-				anchorX: anchor ? anchor.x : charA.x,
-				anchorZ: anchor ? anchor.z : charA.z,
-				anchorFrame: anchor ? anchor.frame : 0,
+				anchorX: charA.x,
+				anchorZ: charA.z,
+				anchorFrame: 0,
 				rotationDeg,
 			});
 			setTlFrameCount(decoded.frames);
@@ -1279,16 +1303,16 @@ export default function App() {
 	async function runArdy({
 		promptOverride = ardyPrompt,
 		durationOverride = ardyDuration,
-		promptClipsOverride = promptClips,
+		promptClipsOverride = [],
 	} = {}) {
 		const rig = posedRig();
 		if (!rig) {
 			setToast("Character not loaded yet");
 			return;
 		}
-		// Mirror the bridge's waypoint contract locally, before any build or
-		// network: 2..32 points, first at frame 0, strictly ascending, all
-		// inside the generation clip (duration × 20 − 1 @ 20 fps).
+		// Root guidance intentionally pins only the clip-local start at frame 0.
+		// Sending the authored path as repeated root constraints rails the whole
+		// block and prevents ARDY from generating its own trajectory.
 		// Prompt and duration are bridge-contract inputs too: reject bad
 		// values here, before any pose build or network, with a specific toast.
 		const prompt = promptOverride.trim();
@@ -1314,31 +1338,6 @@ export default function App() {
 		if (seed !== null && (!Number.isInteger(seed) || seed < 0 || seed > ARDY_SEED_MAX)) {
 			setToast(`Seed must be an integer in 0..${ARDY_SEED_MAX} — clear it to let the box pick one`);
 			return;
-		}
-		const authoredWaypoints = waypoints.filter((waypoint) => waypoint.frame > 0);
-		const rootPathWaypoints = authoredWaypoints.length > 0
-			? [{ frame: 0, x: charA.x, z: charA.z, heading: null }, ...authoredWaypoints]
-			: [];
-		if (waypointMode) {
-			const genLast = duration * 20 - 1;
-			if (authoredWaypoints.length < 1) {
-				setToast("Add at least one root destination after frame 0 before generating");
-				return;
-			}
-			if (rootPathWaypoints.length > MAX_WAYPOINTS) {
-				setToast(`The root path is capped at ${MAX_WAYPOINTS} waypoints — remove some before generating`);
-				return;
-			}
-			for (let i = 1; i < authoredWaypoints.length; i += 1) {
-				if (authoredWaypoints[i].frame <= authoredWaypoints[i - 1].frame) {
-					setToast("Waypoint frames must be strictly ascending and distinct");
-					return;
-				}
-			}
-			if (authoredWaypoints.some((w) => w.frame > genLast)) {
-				setToast(`Waypoint frames must stay inside the generation clip (0..${genLast}) — shorten the path or raise the duration`);
-				return;
-			}
 		}
 		// Prompt clips are real generation blocks. Gaps inherit the current
 		// prompt so the bridge always receives one contiguous 0..N sequence.
@@ -1411,17 +1410,10 @@ export default function App() {
 			ikEvaluate(ikChains, ikStateRef.current, currentFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
 		}
 
-		// A path starts in ARDY clip-local space at frame 0. Pinning the blocked
-		// full-body pose in the middle of that path adds a second root-position
-		// constraint and can fold the generated trajectory back onto the origin.
-		// The plan path is scene-world data, while ARDY generates in Subject
-		// 1's clip-local frame starting face-+Z. alignArdyPath removes the
-		// waypoint-1 offset and the actor's scene rotation AND rotates the
-		// whole path so its first tangent is +Z — matching the model's forced
-		// frame-0 facing, so the clip starts walking instead of turning in
-		// place. Playback applies the exact inverse via rotationDeg.
-		const aligned = waypointMode ? alignArdyPath(rootPathWaypoints, charA.rot) : null;
-		const rootRotationDeg = aligned ? aligned.rotationDeg : charA.rot;
+		// ARDY generates in Subject 1's clip-local frame. Frame 0 is therefore
+		// always the origin; scene placement and actor yaw are restored only at
+		// playback, without constraining any later generated root frame.
+		const rootRotationDeg = charA.rot;
 		const controller = new AbortController();
 		ardyAbortRef.current = controller;
 		setArdyRunning(true);
@@ -1432,7 +1424,7 @@ export default function App() {
 			const body = { prompt, duration, posePin: shouldPin };
 			if (shouldPin && !hasBlockEdits) body.poses = poses;
 			if (ardySeed !== "") body.seed = Number(ardySeed);
-			if (waypointMode) body.waypoints = aligned.waypoints;
+			if (waypointMode) body.waypoints = [{ frame: 0, x: 0, z: 0, heading: null }];
 			else if (hasBlockEdits) {
 				if (!motion?.url) {
 					throw new Error("The current motion has no bridge source; generate the prompt blocks once before regenerating IK edits");
@@ -2250,6 +2242,14 @@ export default function App() {
 								<Slider compact label="Left / right" min={-6.5} max={6.5} step={0.05} value={selectedSceneObject.x} onChange={(x) => changeSceneObject(selectedSceneObject.id, { x })} />
 								<Slider compact label="Depth" min={-6.5} max={6.5} step={0.05} value={selectedSceneObject.z} onChange={(z) => changeSceneObject(selectedSceneObject.id, { z })} />
 								<Slider compact label="Rotate" min={-180} max={180} step={1} value={selectedSceneObject.rot} unit="°" onChange={(rot) => changeSceneObject(selectedSceneObject.id, { rot })} />
+								<button
+									type="button"
+									className="btn ghost full"
+									title="You can also press Delete or Backspace"
+									onClick={deleteSelectedSceneObject}
+								>
+									Remove {selectedSceneObject.name}
+								</button>
 							</>
 						)}
 					</section>

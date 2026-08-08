@@ -35,6 +35,16 @@ expect(
 	constrainedRunner.includes('TWO_PASS=1')
 );
 expect(
+	"root guidance accepts exactly one frame-zero start",
+	bridge.includes("field 'waypoints' must contain exactly one frame 0 start entry") &&
+	constrainedRunner.includes("--root-2d accepts exactly one frame-0 start")
+);
+expect(
+	"the runner forwards each accepted root start only once",
+	constrainedRunner.includes('for ((i = 0; i < ${#ROOT_2D_ARGS[@]}; i += 4))') &&
+	constrainedRunner.includes('cmd+=" --root-2d')
+);
+expect(
 	"legacy npz stitching is no longer imported by the bridge",
 	!bridge.includes('stitchMotionSegments, writeNpz')
 );

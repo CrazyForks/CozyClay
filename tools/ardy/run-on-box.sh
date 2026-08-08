@@ -40,9 +40,9 @@
 # clip frame (ARDY is Y-up; the horizontal plane is X and Z in meters, Y is
 # not constrained). X and Z must be within -20..20, HEADING is a yaw in
 # radians within -2π..2π or the literal 'none' to leave facing free. The
-# groups trace a start + destination path: 2..32 waypoints, the first at
-# frame 0, frames strictly ascending. They are validated locally and every
-# value is %q-quoted into the remote command like all other args.
+# request carries exactly one frame-0 start. Later root positions and facing
+# are left unconstrained for the model to generate. The values are validated
+# locally and %q-quoted into the remote command like all other args.
 #
 # CPU is forced with CUDA_VISIBLE_DEVICES="" and that is deliberate: the
 # box's RTX 3070 has only 8.2 GB VRAM against 94 GB RAM, and nvidia-smi is
@@ -54,13 +54,13 @@
 # generator will actually use.
 #
 # env (names shared with CozyClay scripts/ardy/sync-to-box):
-#   CCLAY_ARDY_HOST  ssh host of the ARDY box       (default 100.90.2.101)
+#   CCLAY_ARDY_HOST  ssh destination for the ARDY host (required)
 #   CCLAY_ARDY_REPO  ARDY checkout on the box       (default $HOME/ardy)
 #   CCLAY_ARDY_VENV  venv python on the box         (default ~/ardy/.venv/bin/python)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOST="${CCLAY_ARDY_HOST:-100.90.2.101}"
+HOST="${CCLAY_ARDY_HOST:-}"
 # REMOTE's default is escaped so the REMOTE shell expands $HOME (the same
 # trick sync-to-box uses); VENV_PY's default keeps a literal ~ so the REMOTE
 # shell tilde-expands it. Both resolve to the same ~/ardy on the box.
@@ -121,12 +121,11 @@ posed_joints) whose frame <src-frame> holds the CozyClay
                 X and Z in meters within -20..20 (ARDY is Y-up; the ground
                 plane is X/Z, Y is not constrained), HEADING a yaw in
                 radians within -2π..2π or the literal 'none' to leave
-                facing free. 2..32 waypoints per clip, the first at frame
-                0, frames strictly ascending: the path is start +
-                destination.
+                facing free. Exactly one frame-0 start is accepted; all
+                later root motion remains unconstrained.
 
 env:
-  CCLAY_ARDY_HOST  ssh host of the ARDY box     (default 100.90.2.101)
+  CCLAY_ARDY_HOST  ssh destination for the ARDY host (required)
   CCLAY_ARDY_REPO  ARDY checkout on the box     (default $HOME/ardy)
   --cpu         also run the motion model on the CPU (slower; the text encoder
                 is on the CPU either way, as its own service)
@@ -198,6 +197,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+[[ -n "$HOST" ]] || {
+  echo "run-on-box: CCLAY_ARDY_HOST is required (for example: user@ardy-host)" >&2
+  exit 2
+}
+
 # Normalize the legacy positional pose into the repeatable pose list.
 if [[ -n "$POSE_NPZ" ]]; then
   [[ -n "$DST_FRAME" ]] || usage
@@ -252,18 +256,17 @@ if [[ "$MODE" == "pose" ]]; then
   done
 fi
 # --- --root-2d validation: each group, then the set as a whole -------------
-# Mirrors the bridge contract: 2..32 waypoints, the first at frame 0,
-# 0-based frames strictly ascending inside the clip, X/Z in meters within
-# -20..20, HEADING a finite number of radians within -2π..2π or the literal
-# 'none'. Runs after CLIP_FRAMES is known because every frame must index
-# the clip.
+# Mirrors the bridge contract: exactly one frame-0 start, X/Z in meters
+# within -20..20, HEADING a finite number of radians within -2π..2π or the
+# literal 'none'. Runs after CLIP_FRAMES is known because the start frame
+# must index the clip.
 FLOAT_RE='^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$'
 validate_root_2d() {
   local n="${#ROOT_2D_ARGS[@]}" i frame x z heading prev=-1 count
   [[ $((n % 4)) -eq 0 ]] || { echo "run-on-box: internal error: --root-2d group list is misaligned" >&2; exit 1; }
   count=$((n / 4))
-  if [[ "$count" -gt 0 && ( "$count" -lt 2 || "$count" -gt 32 ) ]]; then
-    echo "run-on-box: --root-2d needs 2..32 waypoints (start + destination), got $count" >&2
+  if [[ "$count" -ne 0 && "$count" -ne 1 ]]; then
+    echo "run-on-box: --root-2d accepts exactly one frame-0 start, got $count" >&2
     exit 1
   fi
   for ((i = 0; i < n; i += 4)); do
@@ -281,7 +284,7 @@ validate_root_2d() {
       exit 1
     }
     if [[ $i -eq 0 && "$frame" -ne 0 ]]; then
-      echo "run-on-box: --root-2d first waypoint must be at frame 0 (start + destination path), got frame $frame" >&2
+      echo "run-on-box: --root-2d start must be at frame 0, got frame $frame" >&2
       exit 1
     fi
     prev="$frame"
@@ -321,7 +324,7 @@ fi
 
 # --- preflight: fail fast, cheapest first ---------------------------------
 if ! ssh "${SSH_OPTS[@]}" "$HOST" ":" </dev/null; then
-  echo "run-on-box: cannot ssh to ${HOST} (BatchMode). Is Tailscale up and the SSH key agent running?" >&2
+  echo "run-on-box: cannot ssh to ${HOST} (BatchMode). Check network reachability and the SSH key agent." >&2
   exit 1
 fi
 echo "run-on-box: ssh to ${HOST} ok"
@@ -481,8 +484,8 @@ if [[ $DRY_RUN -eq 1 ]]; then
   REMOTE_TMP_PLACEHOLDER="<mktemp-dir-on-box>"
   MODE_LABEL="free generation (generate.py)"
   [[ "$MODE" == "pose" ]] && MODE_LABEL="full-body pose pin"
-  [[ "$MODE" == "waypoints" ]] && MODE_LABEL="path/prompt only (no pose)"
-  [[ "$MODE" == "waypoints" && "$TWO_PASS" -eq 1 ]] && MODE_LABEL="path/prompt only (no pose) - two-pass (free base first)"
+  [[ "$MODE" == "waypoints" ]] && MODE_LABEL="frame-0 root start + prompt (no pose)"
+  [[ "$MODE" == "waypoints" && "$TWO_PASS" -eq 1 ]] && MODE_LABEL="frame-0 root start + prompt (no pose) - two-pass (free base first)"
   echo "run-on-box: DRY RUN - preflight done, nothing pushed, nothing generated, nothing pulled."
   echo "run-on-box: mode        ${MODE} - ${MODE_LABEL}"
   [[ "$MODE" == "pose" ]] || echo "run-on-box: pose npz    <none>"

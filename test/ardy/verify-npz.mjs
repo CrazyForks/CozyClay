@@ -14,7 +14,7 @@
  *    unreachable the check FAILS loudly, it is never skipped.
  *
  * env:
- *   CCLAY_ARDY_HOST  ssh host of the ARDY box     (default 100.90.2.101)
+ *   CCLAY_ARDY_HOST  ssh destination for the ARDY host (required)
  *   CCLAY_ARDY_VENV  venv python on the box       (default ~/ardy/.venv/bin/python)
  */
 import { execFileSync } from "node:child_process";
@@ -23,9 +23,13 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { poseArraysToNpzMembers, writeNpz } from "../../tools/ardy/npz.mjs";
 
-const HOST = process.env.CCLAY_ARDY_HOST || "100.90.2.101";
+const HOST = process.env.CCLAY_ARDY_HOST?.trim();
 const VENV_PY = process.env.CCLAY_ARDY_VENV || "~/ardy/.venv/bin/python";
 const SSH = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
+if (!HOST) {
+	console.error("verify-npz: CCLAY_ARDY_HOST is required for the remote numpy integration check");
+	process.exit(2);
+}
 
 let failures = 0;
 const ok = (label, cond, detail) => {

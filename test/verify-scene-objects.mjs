@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { buildHierarchyNodes } from "../src/hierarchy-model.js";
 import {
 	DEFAULT_SCENE_OBJECTS,
+	removeSceneObject,
 	sceneObjectHierarchyId,
 	sceneObjectIdFromHierarchy,
 	updateSceneObject,
@@ -34,11 +35,10 @@ const objects = [
 const defaultIds = new Set(DEFAULT_SCENE_OBJECTS.map((object) => object.id));
 expect("default objects have unique IDs", defaultIds.size === DEFAULT_SCENE_OBJECTS.length);
 expect("default registry includes the current car", DEFAULT_SCENE_OBJECTS.some((object) => object.renderer === "car"));
-expect("default registry includes a chair for the seated greeting demo", DEFAULT_SCENE_OBJECTS.some((object) => object.renderer === "chair" && object.name === "Chair"));
-expect("chair footprint matches the reduced 90 percent scale", DEFAULT_SCENE_OBJECTS.some((object) => object.renderer === "chair" && object.footprint.width === 0.54 && object.footprint.depth === 0.522));
+expect("default registry excludes the chair", !DEFAULT_SCENE_OBJECTS.some((object) => object.renderer === "chair"));
 expect("only the chair renderer applies the 90 percent scale", propsSource.includes("export function Chair") && propsSource.includes('rotation={[0, rotY, 0]} scale={0.9}') && !carSource.includes("scale={0.9}"));
 expect("default player scene excludes the small plane", !DEFAULT_SCENE_OBJECTS.some((object) => object.renderer === "small-plane"));
-expect("default player scene contains the car and chair", DEFAULT_SCENE_OBJECTS.length === 2);
+expect("default player scene contains only the car", DEFAULT_SCENE_OBJECTS.length === 1);
 const hierarchy = buildHierarchyNodes(objects);
 const props = findNode(hierarchy, "props");
 expect("Props children come from live scene objects", props.children.length === 2, JSON.stringify(props.children));
@@ -54,6 +54,11 @@ expect("transform update changes only requested object", moved[0].x === 3.25 && 
 expect("transform update preserves renderer metadata", moved[0].renderer === "lamp" && moved[0].footprint === objects[0].footprint);
 expect("invalid numeric update is ignored", updateSceneObject(objects, "asset-17", { x: Number.NaN }) === objects);
 expect("unknown object update is ignored", updateSceneObject(objects, "missing", { x: 4 }) === objects);
+
+const removed = removeSceneObject(objects, "asset-17");
+expect("object removal returns a new collection", removed !== objects);
+expect("object removal removes only the requested object", removed.length === 1 && removed[0] === objects[1]);
+expect("unknown object removal is ignored", removeSceneObject(objects, "missing") === objects);
 
 if (failures) process.exit(1);
 console.log("all scene object checks PASS");

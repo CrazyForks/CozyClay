@@ -30,6 +30,7 @@ expect("timeline cadence and readout expose native preview speed", timeline.incl
 expect("live localhost migrates stale demo state", app.includes('GREETING_DEMO_MIGRATION_KEY = "cozyclay.demo.seated-greeting.v1"') && app.includes("setPromptClips(DEFAULT_PROMPT_CLIPS.map") && app.includes("missing.length > 0 ? [...current, ...missing]"));
 expect("batch generation spans through the final block frame", app.includes("Math.max(...clips.map((clip) => clip.endFrame))") && app.includes("Math.ceil(totalFrames / 20)"));
 expect("batch generation forwards all prompt clips", app.includes("promptClipsOverride: clips") && app.includes("hasPromptSchedule"));
+expect("normal motion generation excludes the prompt block schedule", app.includes("promptClipsOverride = []"));
 expect("unedited batch blocks use one unpinned autoregressive schedule", app.includes("!hasPromptSchedule && Boolean(motion || ikFrames.length > 0)") && app.includes("else if (hasPromptSchedule) body.segments = segments"));
 expect("IK-edited blocks use the motion edit session", app.includes("const editedSegments") && app.includes("body.motionEdit = {") && app.includes("sourceMotion: motion.url"));
 expect("IK regeneration inherits loaded clip duration", app.includes("motion && ikFrames.length > 0") && app.includes("motion.frames / motion.fps"));
@@ -44,7 +45,8 @@ expect("sidebar width is bounded", css.includes("min-width: 280px") && css.inclu
 expect("timeline height is bounded", css.includes("min-height: 110px") && css.includes("max-height: 58vh"));
 expect("timeline IK text controls size to their labels", css.includes(".tl-btn.ik {") && css.includes("min-width: 48px") && css.includes("white-space: nowrap"));
 expect("Subject 1 exclusively owns the frame zero root start", app.includes("Subject 1 already defines the frame 0 root start") && !app.includes("Frame 0 is the start of the root path — it can't be removed"));
-expect("root path serialization injects one implicit start", app.includes("{ frame: 0, x: charA.x, z: charA.z, heading: null }") && app.includes("...authoredWaypoints"));
+expect("root guidance sends only one clip-local frame zero start", app.includes("body.waypoints = [{ frame: 0, x: 0, z: 0, heading: null }]") && !app.includes("body.waypoints = aligned.waypoints"));
+expect("generated motion anchors frame zero at Subject 1", app.includes("anchorX: charA.x") && app.includes("anchorZ: charA.z") && app.includes("anchorFrame: 0"));
 expect("Bird's-eye root path draws from Subject 1 without a duplicate marker", planview.includes("const pathPoints = [{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));
 expect("resize handles opt out on compact layouts", css.includes(".workspace-splitter,") && css.includes("display: none"));
 

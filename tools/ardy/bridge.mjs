@@ -61,7 +61,6 @@ const DURATION_MIN = 0.15;
 const DURATION_MAX = 1200;
 const SEED_MAX = 2 ** 31 - 1; // optional request seed: an integer in 0..2**31-1 (bridge contract)
 const FPS = 20; // ARDY Core is 20 fps; clip length is int(duration * 20)
-const WAYPOINTS_MAX = 32; // --root-2d waypoints per request (fixed contract: 2..32, first at frame 0)
 const ROOT_2D_RANGE_M = 20; // |x| and |z| cap, meters (ARDY Y-up, X/Z horizontal)
 const HEADING_RANGE_RAD = 2 * Math.PI; // |heading| cap, radians
 const MOTION_ALLOWLIST_MAX = 64; // newest runs only; evicted ids become stale 404s
@@ -70,9 +69,9 @@ const MOTION_ALLOWLIST_MAX = 64; // newest runs only; evicted ids become stale 4
 // path-free (the id is a lookup key, never a path).
 const MOTION_ID = /^[0-9]+-[0-9a-f]{6}$/;
 
-// Same env var names and defaults as run-on-box.sh, so health, the bases
-// listing and generation all talk to one host/venv/encoder.
-const HOST = process.env.CCLAY_ARDY_HOST || "100.90.2.101";
+// Same env var names as run-on-box.sh, so health, the bases listing and
+// generation all talk to one operator-configured host/venv/encoder.
+const HOST = process.env.CCLAY_ARDY_HOST?.trim() || "";
 const REMOTE = process.env.CCLAY_ARDY_REPO || "$HOME/ardy"; // literal $HOME: the REMOTE shell expands it
 const VENV_PY = process.env.CCLAY_ARDY_VENV || "~/ardy/.venv-cuda/bin/python"; // generator venv (tilde expands on the box)
 const ENCODER_URL = process.env.CCLAY_ARDY_ENCODER_URL || "http://127.0.0.1:9550/";
@@ -608,17 +607,17 @@ function validateRegenerateSegments(segments, clipFrames) {
 }
 
 // Returns an error message naming the offending field, or null when valid.
-// The fixed contract: 2..32 objects {frame,x,z,heading}, the first at frame
-// 0 (start + destination), frames strictly ascending and inside the clip,
-// x/z finite meters in [-20,20], heading null or finite radians in [-2π,2π].
+// The fixed contract: exactly one {frame,x,z,heading} start constraint at
+// frame 0. Later root positions and headings stay entirely model-generated.
+// x/z are finite meters in [-20,20], heading null or finite radians in [-2π,2π].
 // Every rejection names 'waypoints' so the client can point at the offending
 // entry.
 function validateWaypoints(waypoints, clipFrames) {
 	if (!Array.isArray(waypoints)) {
 		return "field 'waypoints' must be an array";
 	}
-	if (waypoints.length < 2 || waypoints.length > WAYPOINTS_MAX) {
-		return `field 'waypoints' must have 2..${WAYPOINTS_MAX} entries, got ${waypoints.length}`;
+	if (waypoints.length !== 1) {
+		return `field 'waypoints' must contain exactly one frame 0 start entry, got ${waypoints.length}`;
 	}
 	let prevFrame = -1;
 	for (let i = 0; i < waypoints.length; i += 1) {
@@ -1227,7 +1226,7 @@ Dev-only HTTP sidecar for the ARDY loop. See tools/ardy/BRIDGE.md.
 
 env:
   COZYCLAY_BRIDGE_PORT    same as --port (default 5181)
-  CCLAY_ARDY_HOST         ssh host of the ARDY box       (default 100.90.2.101)
+  CCLAY_ARDY_HOST         ssh destination for the ARDY host (required)
   CCLAY_ARDY_REPO         ARDY checkout on the box       (default $HOME/ardy)
   CCLAY_ARDY_VENV         generator venv python on the box (default ~/ardy/.venv-cuda/bin/python)
   CCLAY_ARDY_ENCODER_URL  text encoder service           (default http://127.0.0.1:9550/)
@@ -1264,6 +1263,7 @@ if (process.env.COZYCLAY_BRIDGE_PORT !== undefined) {
 }
 
 const port = resolvePort(process.argv.slice(2));
+if (!HOST) die("CCLAY_ARDY_HOST is required (for example: user@ardy-host)");
 
 const server = createServer((req, res) => {
 	const started = Date.now();
