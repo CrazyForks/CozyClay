@@ -1,14 +1,4 @@
-export const DEFAULT_SCENE_OBJECTS = [
-	{
-		id: "object-car-1",
-		name: "Car",
-		renderer: "car",
-		x: -3.2,
-		z: -2.4,
-		rot: (Math.PI / 7) * (180 / Math.PI),
-		footprint: { width: 1.78, depth: 4.45 },
-	},
-];
+export const DEFAULT_SCENE_OBJECTS = [];
 
 export function sceneObjectHierarchyId(id) {
 	return `object:${id}`;

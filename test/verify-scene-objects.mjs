@@ -34,11 +34,11 @@ const objects = [
 ];
 const defaultIds = new Set(DEFAULT_SCENE_OBJECTS.map((object) => object.id));
 expect("default objects have unique IDs", defaultIds.size === DEFAULT_SCENE_OBJECTS.length);
-expect("default registry includes the current car", DEFAULT_SCENE_OBJECTS.some((object) => object.renderer === "car"));
+expect("default registry excludes the car", !DEFAULT_SCENE_OBJECTS.some((object) => object.renderer === "car"));
 expect("default registry excludes the chair", !DEFAULT_SCENE_OBJECTS.some((object) => object.renderer === "chair"));
 expect("only the chair renderer applies the 90 percent scale", propsSource.includes("export function Chair") && propsSource.includes('rotation={[0, rotY, 0]} scale={0.9}') && !carSource.includes("scale={0.9}"));
 expect("default player scene excludes the small plane", !DEFAULT_SCENE_OBJECTS.some((object) => object.renderer === "small-plane"));
-expect("default player scene contains only the car", DEFAULT_SCENE_OBJECTS.length === 1);
+expect("default player scene contains no props", DEFAULT_SCENE_OBJECTS.length === 0);
 const hierarchy = buildHierarchyNodes(objects);
 const props = findNode(hierarchy, "props");
 expect("Props children come from live scene objects", props.children.length === 2, JSON.stringify(props.children));

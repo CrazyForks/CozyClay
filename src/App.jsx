@@ -146,7 +146,7 @@ const CLAY = "#f2eee6";
 const CLAY_B = "#ddd6ca";
 const DEFAULT_POSE = BUILT_IN_POSES.find((p) => p.id === "relaxed") ?? BUILT_IN_POSES[0];
 const REST_BONES = Object.fromEntries(POSE_BONES.map((b) => [b.id, [0, 0, 0]]));
-const DEFAULT_DURATION_S = 15; // demo sequence duration; the pre-motion timeline shows duration × 20 frames
+const DEFAULT_DURATION_S = 15; // pre-motion timeline duration; shown as duration × 20 frames
 const DEFAULT_PLAYBACK_SPEED = 1;
 const ARDY_PROMPT_HORIZON_FRAMES = 40; // core model horizon: 2 seconds at 20 fps
 const MAX_WAYPOINTS = 32; // ARDY bridge contract: a root path holds 2..32 distinct waypoint frames
@@ -154,33 +154,7 @@ const ARDY_PROMPT_MAX = 500; // bridge contract: prompt must be non-empty, cappe
 const ARDY_DURATION_MIN = 1; // the UI works in whole seconds; the bridge floor is 0.15 s
 const ARDY_DURATION_MAX = 1200; // bridge contract: duration capped at 1200 s
 const ARDY_SEED_MAX = 2 ** 31 - 1; // bridge contract: optional seed, integer in 0..2**31-1
-const GREETING_DEMO_MIGRATION_KEY = "cozyclay.demo.seated-greeting.v1";
-const DEFAULT_PROMPT_CLIPS = [
-	{
-		id: "demo-rise",
-		startFrame: 0,
-		endFrame: 80,
-		text: "A person is seated upright on a chair, leans forward, places both feet firmly on the floor, and stands up naturally.",
-	},
-	{
-		id: "demo-step",
-		startFrame: 80,
-		endFrame: 140,
-		text: "The person takes two small steps forward away from the chair and turns to face the audience with a relaxed upright posture.",
-	},
-	{
-		id: "demo-wave",
-		startFrame: 140,
-		endFrame: 240,
-		text: "Facing the audience, the person raises the right hand and waves warmly several times in a friendly greeting.",
-	},
-	{
-		id: "demo-greet",
-		startFrame: 240,
-		endFrame: 300,
-		text: "The person continues waving with the right hand, gives a small welcoming nod, and finishes standing comfortably.",
-	},
-];
+const DEFAULT_PROMPT_CLIPS = [];
 
 /* ------------------------------------------------------------------ 3D --- */
 
@@ -611,7 +585,7 @@ export default function App() {
 	const [copied, setCopied] = useState(false);
 	const [toast, setToast] = useState("");
 	const [bridge, setBridge] = useState(null);
-	const [ardyPrompt, setArdyPrompt] = useState(DEFAULT_PROMPT_CLIPS[0].text);
+	const [ardyPrompt, setArdyPrompt] = useState("");
 	const [ardyDuration, setArdyDuration] = useState(DEFAULT_DURATION_S);
 	// Optional native-ARDY seed: empty string = omit from the request (the
 	// box picks its own); otherwise a plain integer in 0..2**31-1.
@@ -646,29 +620,9 @@ export default function App() {
 		setActiveWaypointFrame((current) => (current === 0 ? null : current));
 	}, []);
 	const [promptClips, setPromptClips] = useState(() => DEFAULT_PROMPT_CLIPS.map((clip) => ({ ...clip })));
-	const [selectedPromptId, setSelectedPromptId] = useState(DEFAULT_PROMPT_CLIPS[0].id);
+	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
 	const [motion, setMotion] = useState(null);
-	useEffect(() => {
-		setSceneObjects((current) => current.filter((object) => object.id !== "object-chair-1"));
-		if (sessionStorage.getItem(GREETING_DEMO_MIGRATION_KEY) === "done") return;
-		setSceneObjects((current) => {
-			const existing = new Set(current.map((object) => object.id));
-			const missing = DEFAULT_SCENE_OBJECTS
-				.filter((object) => !existing.has(object.id))
-				.map((object) => ({ ...object, footprint: { ...object.footprint } }));
-			return missing.length > 0 ? [...current, ...missing] : current;
-		});
-		setPromptClips(DEFAULT_PROMPT_CLIPS.map((clip) => ({ ...clip })));
-		setSelectedPromptId(DEFAULT_PROMPT_CLIPS[0].id);
-		setArdyPrompt(DEFAULT_PROMPT_CLIPS[0].text);
-		if (!motion) {
-			setArdyDuration(DEFAULT_DURATION_S);
-			setTlFrameCount(DEFAULT_DURATION_S * 20);
-			setTlFrame(0);
-		}
-		sessionStorage.setItem(GREETING_DEMO_MIGRATION_KEY, "done");
-	}, [motion]);
 	const [motionBusy, setMotionBusy] = useState(false);
 	const [motionError, setMotionError] = useState("");
 	// Pre-playback bone snapshot; restoring it (after Character's pose effect

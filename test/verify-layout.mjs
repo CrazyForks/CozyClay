@@ -22,12 +22,12 @@ expect("legacy hierarchy/inspector splitter is removed", !app.includes("hierarch
 expect("hierarchy selection focuses the contextual detail tab", app.includes('setRightPanelTab("detail")'));
 expect("Motion inspector still owns the ARDY generation form", app.includes('hidden={!["characterA.motion", "characterA.baseMotion"].includes(selectedHierarchyId)}'));
 expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("Generate all ${promptClips.length} blocks"));
-expect("15-second greeting demo loads four ordered prompt blocks", app.includes('id: "demo-rise"') && app.includes("endFrame: 80") && app.includes('id: "demo-step"') && app.includes("endFrame: 140") && app.includes('id: "demo-wave"') && app.includes("endFrame: 240") && app.includes('id: "demo-greet"') && app.includes("endFrame: 300"));
-expect("demo prompts describe stand, step, wave, and greeting phases", app.includes("stands up naturally") && app.includes("away from the chair") && app.includes("waves warmly several times") && app.includes("small welcoming nod"));
-expect("demo timeline initializes to 15 seconds", app.includes("const DEFAULT_DURATION_S = 15"));
+expect("new sessions start without prompt blocks", app.includes("const DEFAULT_PROMPT_CLIPS = [];") && app.includes("useState(null)"));
+expect("new sessions start with an empty motion prompt", app.includes('const [ardyPrompt, setArdyPrompt] = useState("");'));
+expect("pre-motion timeline initializes to 15 seconds", app.includes("const DEFAULT_DURATION_S = 15"));
 expect("motion preview stays at native 1x speed", app.includes("const DEFAULT_PLAYBACK_SPEED = 1") && app.includes("playbackSpeed={DEFAULT_PLAYBACK_SPEED}"));
 expect("timeline cadence and readout expose native preview speed", timeline.includes("fps * playbackSpeed") && timeline.includes("playbackSpeed.toFixed(2)"));
-expect("live localhost migrates stale demo state", app.includes('GREETING_DEMO_MIGRATION_KEY = "cozyclay.demo.seated-greeting.v1"') && app.includes("setPromptClips(DEFAULT_PROMPT_CLIPS.map") && app.includes("missing.length > 0 ? [...current, ...missing]"));
+expect("legacy greeting demo migration is removed", !app.includes("GREETING_DEMO_MIGRATION_KEY") && !app.includes('id: "demo-rise"'));
 expect("batch generation spans through the final block frame", app.includes("Math.max(...clips.map((clip) => clip.endFrame))") && app.includes("Math.ceil(totalFrames / 20)"));
 expect("batch generation forwards all prompt clips", app.includes("promptClipsOverride: clips") && app.includes("hasPromptSchedule"));
 expect("normal motion generation excludes the prompt block schedule", app.includes("promptClipsOverride = []"));
