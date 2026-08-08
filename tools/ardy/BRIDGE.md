@@ -171,12 +171,13 @@ check is re-applied at serve time.
 
 ARDY is **Y-up**: the character stands on the X/Z ground plane, and root
 positions are horizontal X and Z in **meters** relative to the ARDY origin
-(Y is not constrained by root guidance). A request may carry exactly one
-root start at frame **0**. CozyClay sends clip-local `(0, 0)` with
-`heading:null`, so every later root position and facing remains unconstrained
-and model-generated. The start is forwarded to `run-on-box.sh` as one
-`--root-2d 0 X Z none` group, and the script `%q`-quotes every value into the
-remote generator invocation.
+(Y is not constrained by root guidance). A path request carries **2..32
+sparse keys** beginning at frame **0**, with strictly ascending frame
+indices. CozyClay converts authored scene positions into clip-local X/Z and
+uses `heading:null`, leaving facing free. Each key is forwarded to
+`run-on-box.sh` as `--root-2d FRAME X Z none`; ARDY generates every
+intermediate frame. The script `%q`-quotes every value into the remote
+generator invocation.
 
 ## Failure semantics
 

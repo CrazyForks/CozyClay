@@ -275,7 +275,14 @@ export function primeBindPose(root) {
 	root.traverse((object) => {
 		if (object.isBone) {
 			const q = object.quaternion;
-			map.set(object, { x: q.x, y: q.y, z: q.z, w: q.w });
+			const p = object.position;
+			map.set(object, {
+				x: q.x,
+				y: q.y,
+				z: q.z,
+				w: q.w,
+				position: { x: p.x, y: p.y, z: p.z },
+			});
 		}
 	});
 	root.userData.poseBind = map;
@@ -292,7 +299,14 @@ function bindOf(root) {
 		root.traverse((object) => {
 			if (object.isBone) {
 				const q = object.quaternion;
-				map.set(object, { x: q.x, y: q.y, z: q.z, w: q.w });
+				const p = object.position;
+				map.set(object, {
+					x: q.x,
+					y: q.y,
+					z: q.z,
+					w: q.w,
+					position: { x: p.x, y: p.y, z: p.z },
+				});
 			}
 		});
 		bindByRoot.set(root, map);

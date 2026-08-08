@@ -40,8 +40,8 @@
 # clip frame (ARDY is Y-up; the horizontal plane is X and Z in meters, Y is
 # not constrained). X and Z must be within -20..20, HEADING is a yaw in
 # radians within -2π..2π or the literal 'none' to leave facing free. The
-# request carries exactly one frame-0 start. Later root positions and facing
-# are left unconstrained for the model to generate. The values are validated
+# request carries 2..32 sparse authored keys starting at frame 0. Intermediate
+# root positions are left for the model to generate. Values are validated
 # locally and %q-quoted into the remote command like all other args.
 #
 # CPU is forced with CUDA_VISIBLE_DEVICES="" and that is deliberate: the
@@ -121,8 +121,8 @@ posed_joints) whose frame <src-frame> holds the CozyClay
                 X and Z in meters within -20..20 (ARDY is Y-up; the ground
                 plane is X/Z, Y is not constrained), HEADING a yaw in
                 radians within -2π..2π or the literal 'none' to leave
-                facing free. Exactly one frame-0 start is accepted; all
-                later root motion remains unconstrained.
+                facing free. Supply 2..32 sparse keys beginning at frame 0;
+                ARDY generates all intermediate root motion.
 
 env:
   CCLAY_ARDY_HOST  ssh destination for the ARDY host (required)
@@ -256,17 +256,16 @@ if [[ "$MODE" == "pose" ]]; then
   done
 fi
 # --- --root-2d validation: each group, then the set as a whole -------------
-# Mirrors the bridge contract: exactly one frame-0 start, X/Z in meters
-# within -20..20, HEADING a finite number of radians within -2π..2π or the
-# literal 'none'. Runs after CLIP_FRAMES is known because the start frame
-# must index the clip.
+# Mirrors the bridge contract: 2..32 sparse keys beginning at frame 0,
+# strictly ascending, X/Z in meters within -20..20, HEADING a finite number
+# of radians within -2π..2π or the literal 'none'.
 FLOAT_RE='^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$'
 validate_root_2d() {
   local n="${#ROOT_2D_ARGS[@]}" i frame x z heading prev=-1 count
   [[ $((n % 4)) -eq 0 ]] || { echo "run-on-box: internal error: --root-2d group list is misaligned" >&2; exit 1; }
   count=$((n / 4))
-  if [[ "$count" -ne 0 && "$count" -ne 1 ]]; then
-    echo "run-on-box: --root-2d accepts exactly one frame-0 start, got $count" >&2
+  if [[ "$count" -ne 0 && ( "$count" -lt 2 || "$count" -gt 32 ) ]]; then
+    echo "run-on-box: --root-2d needs 2..32 sparse waypoints, got $count" >&2
     exit 1
   fi
   for ((i = 0; i < n; i += 4)); do

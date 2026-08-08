@@ -121,6 +121,12 @@ export function resolveIkRig(rig) {
 		out.set(track.id, {
 			track,
 			bones,
+			bindPositions: bones.map((bone) => {
+				const saved = rig.userData?.poseBind?.get(bone)?.position;
+				return saved
+					? new THREE.Vector3(saved.x, saved.y, saved.z)
+					: bone.position.clone();
+			}),
 			lengths,
 			poleLocal: track.kind === "arm" ? armPoleLocal : legPoleLocal,
 			rig,
@@ -139,7 +145,12 @@ export function resolveIkRig(rig) {
 			track,
 			bone,
 			child,
-			bindPos: track.id === "hips" ? bone.position.clone() : null,
+			bindPos: (() => {
+				const saved = rig.userData?.poseBind?.get(bone)?.position;
+				return saved
+					? new THREE.Vector3(saved.x, saved.y, saved.z)
+					: bone.position.clone();
+			})(),
 		});
 	}
 	return { chains: out, fkJoints };
@@ -164,6 +175,7 @@ export function resolveIkChains(rig) {
  * continue) falls back to the character-local pole hint.
  */
 export function solveIk(chain, targetWorld) {
+	restoreChainPositions(chain);
 	const { bones, lengths, poleLocal, rig } = chain;
 	const [b0, b1, b2] = bones;
 	const p0 = b0.getWorldPosition(new THREE.Vector3());
@@ -276,6 +288,7 @@ function aimChain(bones, points) {
  * "the elbow doesn't move". Segment lengths are preserved exactly.
  */
 export function solveMidJoint(chain, midTargetWorld) {
+	restoreChainPositions(chain);
 	const { bones, lengths } = chain;
 	const [b0, b1, b2] = bones;
 	const p0 = b0.getWorldPosition(new THREE.Vector3());
@@ -308,6 +321,7 @@ export function solveMidJoint(chain, midTargetWorld) {
 export function solveSwingAngle(joint, axisWorld, angleRad, startQuat, startParentQuat) {
 	const { bone } = joint;
 	if (!Number.isFinite(angleRad) || Math.abs(angleRad) < 1e-9) return;
+	if (joint.track.id !== "hips" && joint.bindPos) bone.position.copy(joint.bindPos);
 	const qDelta = new THREE.Quaternion().setFromAxisAngle(axisWorld.clone().normalize(), angleRad);
 	const qWorldStart = startParentQuat.clone().multiply(startQuat);
 	const qParentInv = startParentQuat.clone().invert();
@@ -493,6 +507,7 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 		const w = blendWindow > 0 ? correctionWeight(ikState.keys, id, frame, blendWindow) : 1;
 		if (w <= 0) continue;
 		if (chain) {
+			restoreChainPositions(chain, w);
 			if (w >= 1) {
 				chain.bones[0].quaternion.copy(sampled.q[0]);
 				chain.bones[1].quaternion.copy(sampled.q[1]);
@@ -503,6 +518,7 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 			}
 			chain.bones[0].updateMatrixWorld(true);
 		} else if (joint) {
+			if (!sampled.p && joint.bindPos) joint.bone.position.lerp(joint.bindPos, w);
 			if (w >= 1) joint.bone.quaternion.copy(sampled.q[0]);
 			else joint.bone.quaternion.slerp(sampled.q[0], w);
 			if (sampled.p && joint.bindPos) {
@@ -512,6 +528,24 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 			joint.bone.updateMatrixWorld(true);
 		}
 	}
+}
+
+/**
+ * ARDY playback positions mapped joints independently. Once IK authors a
+ * chain's rotations, those generated translations no longer describe the
+ * same FK pose and can visually separate the limb. Return the edited chain
+ * to its Mixamo bind translations before applying IK rotations so parent
+ * rotation and fixed segment lengths own all descendants.
+ */
+function restoreChainPositions(chain, weight = 1) {
+	if (!chain?.bindPositions) return;
+	for (let index = 0; index < chain.bones.length; index += 1) {
+		const bone = chain.bones[index];
+		const bind = chain.bindPositions[index];
+		if (weight >= 1) bone.position.copy(bind);
+		else bone.position.lerp(bind, weight);
+	}
+	chain.bones[0].updateMatrixWorld(true);
 }
 
 /**

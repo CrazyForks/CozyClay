@@ -63,6 +63,7 @@ const SEED_MAX = 2 ** 31 - 1; // optional request seed: an integer in 0..2**31-1
 const FPS = 20; // ARDY Core is 20 fps; clip length is int(duration * 20)
 const ROOT_2D_RANGE_M = 20; // |x| and |z| cap, meters (ARDY Y-up, X/Z horizontal)
 const HEADING_RANGE_RAD = 2 * Math.PI; // |heading| cap, radians
+const WAYPOINTS_MAX = 32; // sparse authored root keys including frame 0
 const MOTION_ALLOWLIST_MAX = 64; // newest runs only; evicted ids become stale 404s
 // The bridge's own gen stamp (<epoch-ms>-<3 random bytes hex>); keeping the
 // motions URL id to that shape keeps /ardy/motions/<run-id> predictable and
@@ -607,17 +608,18 @@ function validateRegenerateSegments(segments, clipFrames) {
 }
 
 // Returns an error message naming the offending field, or null when valid.
-// The fixed contract: exactly one {frame,x,z,heading} start constraint at
-// frame 0. Later root positions and headings stay entirely model-generated.
-// x/z are finite meters in [-20,20], heading null or finite radians in [-2π,2π].
+// The fixed contract: 2..32 sparse {frame,x,z,heading} keys, starting at
+// frame 0 with strictly ascending frames. ARDY generates every in-between
+// frame. x/z are finite meters in [-20,20], heading null or finite radians
+// in [-2π,2π].
 // Every rejection names 'waypoints' so the client can point at the offending
 // entry.
 function validateWaypoints(waypoints, clipFrames) {
 	if (!Array.isArray(waypoints)) {
 		return "field 'waypoints' must be an array";
 	}
-	if (waypoints.length !== 1) {
-		return `field 'waypoints' must contain exactly one frame 0 start entry, got ${waypoints.length}`;
+	if (waypoints.length < 2 || waypoints.length > WAYPOINTS_MAX) {
+		return `field 'waypoints' must have 2..${WAYPOINTS_MAX} sparse entries, got ${waypoints.length}`;
 	}
 	let prevFrame = -1;
 	for (let i = 0; i < waypoints.length; i += 1) {

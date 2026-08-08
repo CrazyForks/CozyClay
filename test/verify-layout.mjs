@@ -45,8 +45,9 @@ expect("sidebar width is bounded", css.includes("min-width: 280px") && css.inclu
 expect("timeline height is bounded", css.includes("min-height: 110px") && css.includes("max-height: 58vh"));
 expect("timeline IK text controls size to their labels", css.includes(".tl-btn.ik {") && css.includes("min-width: 48px") && css.includes("white-space: nowrap"));
 expect("Subject 1 exclusively owns the frame zero root start", app.includes("Subject 1 already defines the frame 0 root start") && !app.includes("Frame 0 is the start of the root path — it can't be removed"));
-expect("root guidance sends only one clip-local frame zero start", app.includes("body.waypoints = [{ frame: 0, x: 0, z: 0, heading: null }]") && !app.includes("body.waypoints = aligned.waypoints"));
+expect("root guidance sends implicit start plus authored sparse keys to ARDY", app.includes("toArdyWaypoints(rootPath, charA.rot)") && app.includes("body.waypoints = ardyWaypoints"));
 expect("generated motion anchors frame zero at Subject 1", app.includes("anchorX: charA.x") && app.includes("anchorZ: charA.z") && app.includes("anchorFrame: 0"));
+expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));
 expect("Bird's-eye root path draws from Subject 1 without a duplicate marker", planview.includes("const pathPoints = [{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));
 expect("resize handles opt out on compact layouts", css.includes(".workspace-splitter,") && css.includes("display: none"));
 

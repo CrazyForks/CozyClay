@@ -189,6 +189,7 @@ export function toSceneRootOffset(x, z, actorRotationDeg = 0) {
 		z: cleanZero(-sin * x + cos * z),
 	};
 }
+
 /**
  * A full-body pose also constrains the root. On a root path it must share the
  * frame-zero origin; otherwise the two constraints can pull the clip apart.

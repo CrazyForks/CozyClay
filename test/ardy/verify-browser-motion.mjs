@@ -47,6 +47,7 @@ import {
 import { CSKEL27_JOINTS } from "../../src/ardy/cskel27.js";
 import { CSKEL27_NEUTRAL } from "../../src/ardy/cskel27-neutral.js";
 import { alignArdyPath, defaultWaypointPosition, densifyArdyWaypoints, poseConstraintFrame, toArdyWaypoints, toSceneRootOffset } from "../../src/ardy/waypoints.js";
+import { primeBindPose } from "../../src/poses.js";
 
 let failures = 0;
 const ok = (label, cond, detail) => {
@@ -66,6 +67,19 @@ const throws = (fn) => {
 		return true;
 	}
 };
+
+const bindRig = new THREE.Object3D();
+const bindBone = new THREE.Bone();
+bindBone.position.set(3, 4, 5);
+bindRig.add(bindBone);
+primeBindPose(bindRig);
+bindBone.position.set(30, 40, 50);
+primeBindPose(bindRig);
+const savedBindPosition = bindRig.userData.poseBind.get(bindBone).position;
+ok(
+	"bind snapshot preserves the original local translation for IK FK reconstruction",
+	savedBindPosition.x === 3 && savedBindPosition.y === 4 && savedBindPosition.z === 5
+);
 
 async function rejectsWith(promise) {
 	try {

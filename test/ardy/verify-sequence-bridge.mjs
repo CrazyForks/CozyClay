@@ -35,9 +35,9 @@ expect(
 	constrainedRunner.includes('TWO_PASS=1')
 );
 expect(
-	"root guidance accepts exactly one frame-zero start",
-	bridge.includes("field 'waypoints' must contain exactly one frame 0 start entry") &&
-	constrainedRunner.includes("--root-2d accepts exactly one frame-0 start")
+	"root guidance accepts 2..32 authored sparse keys",
+	bridge.includes("field 'waypoints' must have 2..${WAYPOINTS_MAX} sparse entries") &&
+	constrainedRunner.includes("--root-2d needs 2..32 sparse waypoints")
 );
 expect(
 	"the runner forwards each accepted root start only once",

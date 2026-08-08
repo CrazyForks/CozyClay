@@ -88,6 +88,20 @@ ikSeedTargets(chains, ik);
 check("seedTargets places the handle on the effector", ik.targets.get("leftHand").distanceTo(wristStart) < 1e-9);
 check("seeding changes no bone", arm.bones[0].quaternion.angleTo(quatBefore) < 1e-12);
 
+/* --- generated positional playback → authored FK chain ------------------- */
+// ARDY playback can write each mapped bone's local translation independently.
+// Once IK owns the rotations, the edited chain must return to its captured
+// Mixamo bind translations or the arm segments no longer describe one FK pose.
+arm.bones[0].position.add(new THREE.Vector3(0.04, -0.02, 0.03));
+arm.bones[1].position.multiplyScalar(1.35);
+arm.bones[2].position.multiplyScalar(0.7);
+rig.updateMatrixWorld(true);
+solveIk(arm, wristStart.clone().add(new THREE.Vector3(-0.25, 0.3, 0.1)));
+check(
+	"IK solve restores positional-playback chain translations to bind",
+	arm.bones.every((bone, index) => bone.position.distanceTo(arm.bindPositions[index]) < 1e-9)
+);
+
 /* --- direct solve: pull the left wrist up/back, reachable ---------------- */
 const target = wristStart.clone().add(new THREE.Vector3(-0.25, 0.3, 0.1));
 check("test target is reachable", shoulder.distanceTo(target) < 0.58, `reach=${shoulder.distanceTo(target).toFixed(3)}`);
@@ -147,11 +161,18 @@ check("key stores b0/b1 local quats", ik.keys.get(10).get("leftHand").q.length =
 /* --- slerp evaluation: f20 = exact midpoint of the two keys -------------- */
 arm.bones[0].quaternion.identity();
 arm.bones[1].quaternion.identity();
+arm.bones[0].position.add(new THREE.Vector3(0.03, 0.01, -0.02));
+arm.bones[1].position.multiplyScalar(1.2);
+arm.bones[2].position.multiplyScalar(0.8);
 rig.updateMatrixWorld(true);
 ikEvaluate(chains, ik, 20, fkJoints);
 const expect = q10b0.clone().slerp(q30b0, 0.5);
 const deg = (a, b) => (a.angleTo(b) * 180) / Math.PI;
 check("f20 bone rotation is the slerp midpoint (<0.5°)", deg(arm.bones[0].quaternion, expect) < 0.5, `err=${deg(arm.bones[0].quaternion, expect).toFixed(4)}°`);
+check(
+	"IK evaluation restores positional-playback chain translations to bind",
+	arm.bones.every((bone, index) => bone.position.distanceTo(arm.bindPositions[index]) < 1e-9)
+);
 
 /* untracked chain untouched by evaluate */
 const rArm = chains.get("rightHand").bones[0];
