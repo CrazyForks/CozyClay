@@ -9,6 +9,9 @@
  * the 1.8 m figure keeps honest scale.
  */
 
+import { useEffect, useMemo } from "react";
+import * as THREE from "three";
+
 const CLAY_CAR = "#d98770";
 const CLAY_CAR_TOP = "#e49a84";
 const CLAY_TIRE = "#41484c";
@@ -171,30 +174,115 @@ export function Chair({ position = [0, 0, 0], rotY = 0 }) {
 	);
 }
 
-function SceneObjectContent({ renderer }) {
-	if (renderer === "car") return <Car />;
+/**
+ * The creatable primitives, Unity's 3D Object menu in clay. Each one is built
+ * with its base on the local floor (y = 0), so an object's `y` reads as height
+ * above the deck rather than "half of me is underground".
+ */
+function Primitive({ kind, color }) {
+	const material = <meshStandardMaterial color={color} roughness={0.82} side={kind === "plane" ? THREE.DoubleSide : THREE.FrontSide} />;
+	if (kind === "sphere") {
+		return (
+			<mesh position={[0, 0.5, 0]} castShadow receiveShadow>
+				<sphereGeometry args={[0.5, 28, 18]} />
+				{material}
+			</mesh>
+		);
+	}
+	if (kind === "capsule") {
+		return (
+			<mesh position={[0, 0.7, 0]} castShadow receiveShadow>
+				<capsuleGeometry args={[0.35, 0.7, 6, 18]} />
+				{material}
+			</mesh>
+		);
+	}
+	if (kind === "cylinder") {
+		return (
+			<mesh position={[0, 0.5, 0]} castShadow receiveShadow>
+				<cylinderGeometry args={[0.5, 0.5, 1, 26]} />
+				{material}
+			</mesh>
+		);
+	}
+	if (kind === "cone") {
+		return (
+			<mesh position={[0, 0.5, 0]} castShadow receiveShadow>
+				<coneGeometry args={[0.5, 1, 26]} />
+				{material}
+			</mesh>
+		);
+	}
+	if (kind === "plane") {
+		return (
+			<mesh position={[0, 0.004, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+				<planeGeometry args={[2, 2]} />
+				{material}
+			</mesh>
+		);
+	}
+	return (
+		<mesh position={[0, 0.5, 0]} castShadow receiveShadow>
+			<boxGeometry args={[1, 1, 1]} />
+			{material}
+		</mesh>
+	);
+}
+
+const PRIMITIVE_KINDS = new Set(["cube", "sphere", "capsule", "cylinder", "cone", "plane"]);
+
+function SceneObjectContent({ renderer, color }) {
+	if (renderer === "car") return <Car color={color} />;
 	if (renderer === "small-plane") return <SmallPlane />;
 	if (renderer === "chair") return <Chair />;
+	if (PRIMITIVE_KINDS.has(renderer)) return <Primitive kind={renderer} color={color} />;
 	return null;
 }
 
-function SceneObject({ object }) {
+/**
+ * Selection cage: the object's bounding box drawn as EDGES only. A wireframe
+ * box draws every triangle diagonal too, which reads as a scribble over the
+ * object instead of a selection.
+ */
+function SelectionBox({ object }) {
+	const height = Math.max(object.height ?? 1, 0.08);
+	const width = object.footprint?.width ?? 1;
+	const depth = object.footprint?.depth ?? 1;
+	const edges = useMemo(
+		() => new THREE.EdgesGeometry(new THREE.BoxGeometry(width * 1.04, height * 1.04, depth * 1.04)),
+		[width, height, depth],
+	);
+	useEffect(() => () => edges.dispose(), [edges]);
+	return (
+		<lineSegments geometry={edges} position={[0, height / 2, 0]} renderOrder={998}>
+			<lineBasicMaterial color="#e7b557" transparent opacity={0.95} depthTest={false} depthWrite={false} />
+		</lineSegments>
+	);
+}
+
+const DEG = Math.PI / 180;
+
+function SceneObject({ object, selected }) {
 	return (
 		<group
-			position={[object.x, 0, object.z]}
-			rotation={[0, (object.rot * Math.PI) / 180, 0]}
+			position={[object.x, object.y ?? 0, object.z]}
+			rotation={[(object.rotX ?? 0) * DEG, object.rot * DEG, (object.rotZ ?? 0) * DEG]}
+			scale={[object.scaleX ?? 1, object.scaleY ?? 1, object.scaleZ ?? 1]}
+			// the viewport picker walks up from a hit mesh to find this id
+			userData={{ sceneObjectId: object.id }}
 		>
-			<SceneObjectContent renderer={object.renderer} />
+			<SceneObjectContent renderer={object.renderer} color={object.color} />
+			{selected && <SelectionBox object={object} />}
 		</group>
 	);
 }
 
 /** User-added scene objects, all driven by the shared object registry. */
-export function SetProps({ objects = [] }) {
+export function SetProps({ objects = [], selectedId = null }) {
 	return (
 		<group>
 			{objects.map((object) => (
-				<SceneObject key={object.id} object={object} />
+				<SceneObject key={object.id} object={object} selected={object.id === selectedId} />
 			))}
 		</group>
 	);

@@ -527,6 +527,9 @@ select {
 	bottom: 16px;
 	transform: translate(-50%);
 	z-index: 6;
+	/* a slate line is a readout, not a control: presses belong to the scene
+	   underneath it (grabbing an object low in frame used to hit this instead) */
+	pointer-events: none;
 	color: #fff;
 	padding: 7px 16px;
 	border-radius: 9px;
@@ -3895,4 +3898,281 @@ input[type=range]::-moz-range-thumb {
 .hierarchy-tab-pane .hierarchy-heading,
 .inspector-pane .inspector-heading {
 	display: none;
+}
+
+/* ------------------------------------------------- scene objects --- */
+/* Create menu, gizmo tool switch and object swatches. The hierarchy's own
+   heading is hidden in the tabbed panel, so the create action gets its own
+   toolbar row above the tree. */
+
+.hierarchy-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 10px;
+	border-bottom: 1px solid var(--line);
+}
+
+.add-object {
+	position: relative;
+}
+
+.add-object-trigger {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 28px;
+	padding: 0 10px;
+	border: 1px solid rgba(78, 159, 179, .42);
+	border-radius: 7px;
+	background: #d8edf0;
+	color: #254b59;
+	font: inherit;
+	font-size: 10px;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.add-object-trigger:hover {
+	background: #c9e6ea;
+}
+
+.add-object-menu {
+	position: absolute;
+	z-index: 20;
+	top: calc(100% + 6px);
+	left: 0;
+	width: 236px;
+	max-height: 330px;
+	overflow: auto;
+	padding: 6px;
+	border: 1px solid var(--line);
+	border-radius: 9px;
+	background: var(--panel);
+	box-shadow: 0 12px 28px rgba(39, 56, 73, .18);
+}
+
+.add-object-group {
+	display: grid;
+	gap: 2px;
+	padding-bottom: 4px;
+}
+
+.add-object-heading {
+	display: block;
+	padding: 6px 8px 2px;
+	color: var(--muted);
+	font-size: 8px;
+	font-weight: 700;
+	letter-spacing: .16em;
+	text-transform: uppercase;
+}
+
+.add-object-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 6px 8px;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--fg);
+	font: inherit;
+	font-size: 10px;
+	text-align: left;
+	cursor: pointer;
+}
+
+.add-object-item:hover {
+	border-color: rgba(78, 159, 179, .42);
+	background: rgba(78, 159, 179, .1);
+}
+
+.add-object-item small {
+	margin-left: auto;
+	color: var(--muted);
+	font-size: 8px;
+}
+
+.add-object-swatch {
+	flex: none;
+	width: 12px;
+	height: 12px;
+	border: 1px solid rgba(39, 56, 73, .25);
+	border-radius: 3px;
+}
+
+/* inspector cards clip their overflow, so the menu opens inline there */
+.card .add-object {
+	display: block;
+	margin-bottom: 10px;
+}
+
+.card .add-object-menu {
+	position: static;
+	width: auto;
+	margin-top: 6px;
+	box-shadow: none;
+}
+
+.gizmo-modes kbd {
+	margin-left: 5px;
+	padding: 1px 4px;
+	border: 1px solid rgba(39, 56, 73, .2);
+	border-radius: 4px;
+	font-family: var(--mono);
+	font-size: 8px;
+}
+
+.object-colors {
+	display: flex;
+	gap: 6px;
+	margin: 4px 0 12px;
+}
+
+.object-color {
+	width: 22px;
+	height: 22px;
+	border: 1px solid rgba(39, 56, 73, .25);
+	border-radius: 6px;
+	cursor: pointer;
+}
+
+.object-color.active {
+	box-shadow: 0 0 0 2px var(--accent);
+}
+/* ---- Object Transform: Unity-style numeric fields ---- */
+/* Three labelled rows (Position / Rotation / Scale) of three scrubbable
+   number fields. The axis letters are drag handles: ew-resize cursor and
+   touch-action off so pointer capture owns the whole gesture. */
+
+.vec3-row {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	margin: 10px 0;
+}
+
+.vec3-label {
+	flex: none;
+	width: 54px;
+	font-size: 11px;
+	font-weight: 520;
+	color: var(--muted);
+}
+
+.number-field {
+	display: flex;
+	align-items: stretch;
+	flex: 1;
+	min-width: 0;
+}
+
+.number-field .axis {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	width: 18px;
+	border: 1px solid var(--line);
+	border-right: none;
+	border-radius: 6px 0 0 6px;
+	background: var(--card2);
+	color: var(--muted);
+	font-family: var(--mono);
+	font-size: 9px;
+	font-weight: 650;
+	cursor: ew-resize;
+	user-select: none;
+	touch-action: none;
+}
+
+.number-field input {
+	width: 0;
+	flex: 1;
+	min-width: 0;
+	padding: 3px 6px;
+	border: 1px solid transparent;
+	border-radius: 0 6px 6px 0;
+	background: transparent;
+	color: var(--fg);
+	font-family: var(--mono);
+	font-size: 10.5px;
+	font-weight: 480;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+}
+
+.number-field:hover input {
+	border-color: var(--line);
+	background: var(--card2);
+}
+
+.number-field:focus-within .axis {
+	border-color: var(--accent);
+	background: var(--accent-soft);
+}
+
+.number-field input:focus {
+	outline: none;
+	border-color: var(--accent);
+	background: var(--card2);
+	box-shadow: 0 0 0 2px var(--accent-ring);
+}
+/* ---- Hierarchy row context menu & in-place rename ---- */
+/* The row menu (Rename/Duplicate/Delete/Frame) and the create catalogue
+   share one fixed popover at the pointer — Unity's Hierarchy right-click
+   behaviour (docs/unity-reference.md §9.7). */
+.hierarchy-context-menu {
+	position: fixed;
+	z-index: 40;
+	width: 236px;
+	max-height: 340px;
+	overflow: auto;
+	padding: 6px;
+	border: 1px solid var(--line);
+	border-radius: 9px;
+	background: var(--panel);
+	box-shadow: 0 12px 28px rgba(39, 56, 73, .18);
+}
+
+.hierarchy-context-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 6px 8px;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--fg);
+	font: inherit;
+	font-size: 10px;
+	font-weight: 520;
+	text-align: left;
+	cursor: pointer;
+}
+
+.hierarchy-context-item:hover {
+	border-color: rgba(78, 159, 179, .42);
+	background: rgba(78, 159, 179, .1);
+}
+
+/* In-place rename field: replaces the row label while editing. Sits in the
+   same flex row as the label it replaces, so it inherits the row height. */
+.hierarchy-rename-input {
+	flex: 1;
+	min-width: 0;
+	padding: 2px 5px;
+	border: 1px solid var(--accent);
+	border-radius: 4px;
+	background: var(--card2);
+	color: var(--fg);
+	font: inherit;
+	font-size: 10.75px;
+	font-weight: 520;
+	outline: none;
+	box-shadow: 0 0 0 2px var(--accent-ring);
 }

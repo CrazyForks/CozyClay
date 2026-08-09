@@ -9,6 +9,7 @@
     "test:lifecycle": "node test/process/verify-lifecycle.mjs",
     "test:hierarchy": "node test/verify-hierarchy.mjs",
     "test:scene-objects": "node test/verify-scene-objects.mjs",
+    "test:objects": "node tools/qa-browser.mjs -- node test/verify-object-gizmo.mjs",
     "test:theme": "node test/verify-theme.mjs",
     "test:appearance": "node test/verify-appearance.mjs",
     "test:layout": "node test/verify-layout.mjs",

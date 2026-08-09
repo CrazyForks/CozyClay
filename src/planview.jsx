@@ -4,6 +4,7 @@ import { Text } from "@react-three/drei";
 import * as THREE from "three";
 import { aimAt } from "./controls.jsx";
 import { PLAN_LAYER } from "./dualview.jsx";
+import { objectSize } from "./scene-objects.js";
 
 const ROOM_LIMIT = 6.5; // stay inside the set walls
 const ACTOR_LIMIT = 4; // matches the Subject sliders' range
@@ -162,8 +163,7 @@ function PlanLabel({ text, color, offset = -0.72 }) {
 }
 
 function SceneObjectFootprint({ object, selected, dragging, turning }) {
-	const width = object.footprint?.width ?? 1;
-	const depth = object.footprint?.depth ?? 1;
+	const { width, depth } = objectSize(object);
 	const handleDist = depth / 2 + 0.65;
 	const rotation = (object.rot * Math.PI) / 180;
 	return (
@@ -304,7 +304,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 		out.push({ id: "a", x: a.x, z: a.z, yaw: (a.rot * Math.PI) / 180 });
 		if (two) out.push({ id: "b", x: b.x, z: b.z, yaw: (b.rot * Math.PI) / 180 });
 		for (const object of latest.current.sceneObjects) {
-			const footprint = object.footprint ?? { width: 1, depth: 1 };
+			const { width, depth } = objectSize(object);
 			out.push({
 				id: `object:${object.id}`,
 				objectId: object.id,
@@ -312,8 +312,8 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 				z: object.z,
 				yaw: (object.rot * Math.PI) / 180,
 				rot: object.rot,
-				footprint,
-				handleDist: footprint.depth / 2 + 0.65,
+				footprint: { width, depth },
+				handleDist: depth / 2 + 0.65,
 				selected: object.id === latest.current.selectedSceneObjectId,
 			});
 		}

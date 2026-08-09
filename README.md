@@ -42,6 +42,8 @@ The ARDY bridge listens on loopback only. Configure the remote ARDY machine thro
 ## Main features
 
 - Browser-based 3D scene staging
+- Scene objects: create primitives and set pieces, then move/rotate/scale them with a 3D gizmo
+- Unity-style viewport: right-drag flies, middle-drag pans, Alt+drag orbits, left click selects, W/E/R tools
 - Character pose editing and pose export
 - Prompt Block timeline for multi-phase motion
 - ARDY motion generation and playback
@@ -55,6 +57,7 @@ The ARDY bridge listens on loopback only. Configure the remote ARDY machine thro
 ```bash
 npm run test:hierarchy
 npm run test:scene-objects
+npm run test:objects   # needs `npm run dev:ui` in another shell
 npm run test:theme
 npm run test:appearance
 npm run test:layout
@@ -67,6 +70,10 @@ Run browser QA while the development server is available:
 ```bash
 npm run qa:browser -- <qa-script>
 ```
+
+## Interaction reference
+
+Viewport and hierarchy behaviour follows the Unity Editor. `docs/unity-reference.md` records the rules, their source in Unity's manual, and every place CozyClay deliberately diverges.
 
 ## Repository hygiene
 

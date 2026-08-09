@@ -3,10 +3,19 @@ import { readFileSync } from "node:fs";
 import { buildHierarchyNodes } from "../src/hierarchy-model.js";
 import {
 	DEFAULT_SCENE_OBJECTS,
+	OBJECT_LIBRARY,
+	createSceneObject,
+	placementInFront,
+	objectSize,
 	removeSceneObject,
+	rotatePatch,
+	scalePatch,
+	screenRotatePatch,
 	sceneObjectHierarchyId,
 	sceneObjectIdFromHierarchy,
+	translatePatch,
 	updateSceneObject,
+	wrapAngle,
 } from "../src/scene-objects.js";
 
 let failures = 0;
@@ -59,6 +68,78 @@ const removed = removeSceneObject(objects, "asset-17");
 expect("object removal returns a new collection", removed !== objects);
 expect("object removal removes only the requested object", removed.length === 1 && removed[0] === objects[1]);
 expect("unknown object removal is ignored", removeSceneObject(objects, "missing") === objects);
+
+/* ------------------------------------------------------ creation ---- */
+
+expect("catalogue offers the Unity primitive set", ["cube", "sphere", "capsule", "cylinder", "cone", "plane"].every((kind) => OBJECT_LIBRARY.some((entry) => entry.kind === kind)));
+expect("catalogue keeps the hand-built set pieces", ["car", "small-plane", "chair"].every((kind) => OBJECT_LIBRARY.some((entry) => entry.kind === kind)));
+expect("every catalogue entry carries a footprint and a height", OBJECT_LIBRARY.every((entry) => entry.footprint.width > 0 && entry.footprint.depth > 0 && entry.height >= 0));
+
+const cube = createSceneObject("cube", []);
+expect("created object starts neutral on the floor", cube.y === 0 && cube.rotX === 0 && cube.rotZ === 0 && cube.scaleX === 1 && cube.scaleY === 1 && cube.scaleZ === 1);
+expect("primitives are grey-box grey, set pieces keep their clay", cube.color === "#c2c6c8" && createSceneObject("car", []).color === "#d98770");
+expect("created object carries its own footprint copy", cube.footprint !== OBJECT_LIBRARY[0].footprint && cube.footprint.width === 1);
+expect("unknown kinds create nothing", createSceneObject("teapot", []) === null);
+
+const twoCubes = [cube, createSceneObject("cube", [cube])];
+expect("repeat creation gets a unique id", twoCubes[0].id !== twoCubes[1].id);
+expect("repeat creation gets a numbered name", twoCubes[1].name === "Cube 2", twoCubes[1].name);
+
+const placed = createSceneObject("chair", [], { x: 99, z: -99, rot: 540 });
+expect("creation clamps placement into the room", placed.x === 6.5 && placed.z === -6.5);
+expect("an explicit placement angle is still wrapped", placed.rot === -180, String(placed.rot));
+
+// camera at the origin looking down -Z (yaw 0): the drop point is 2.6 m ahead
+const drop = placementInFront({ x: 0, z: 0 }, 0);
+expect("new objects land down the lens, not on the lens", Math.abs(drop.z + 2.6) < 1e-9 && Math.abs(drop.x) < 1e-9, JSON.stringify(drop));
+// Unity creates primitives axis-aligned. Anything else breaks the invariant
+// the user reads off the inspector: equal rotation values face the same way.
+expect("placement never rotates the new object", drop.rot === undefined);
+const angled = placementInFront({ x: 0, z: 0 }, Math.PI / 3);
+expect("a turned camera still creates an unrotated object", angled.rot === undefined, JSON.stringify(angled));
+expect("an object created from any angle starts at zero rotation", (() => {
+	const made = createSceneObject("cube", [], angled);
+	return made.rot === 0 && made.rotX === 0 && made.rotZ === 0;
+})());
+
+/* --------------------------------------------------- gizmo maths ---- */
+
+const start = { x: 1, y: 0.5, z: -2, rot: 10, rotX: 0, rotZ: 0 };
+expect("axis drag is absolute from the drag start", translatePatch(start, "x", 0.5).x === 1.5);
+expect("axis drag snaps to the 5 cm grid", translatePatch(start, "z", 0.32).z === -1.7, JSON.stringify(translatePatch(start, "z", 0.32)));
+expect("height drags write the Y channel", translatePatch(start, "y", 0.25).y === 0.75);
+expect("a non-axis drag writes nothing", translatePatch(start, "w", 1) === null && translatePatch(start, "x", Number.NaN) === null);
+expect("the Y ring drives the yaw the plan board reads", rotatePatch(start, "y", 33).rot === 45, JSON.stringify(rotatePatch(start, "y", 33)));
+expect("the X ring drives tilt and the Z ring roll", rotatePatch(start, "x", 20).rotX === 20 && rotatePatch(start, "z", -20).rotZ === -20);
+expect("ring rotation wraps instead of running away", rotatePatch({ rot: 170 }, "y", 30).rot === -160, JSON.stringify(rotatePatch({ rot: 170 }, "y", 30)));
+expect("angles fold into [-180, 180)", wrapAngle(360) === 0 && wrapAngle(-190) === 170 && wrapAngle(180) === -180);
+
+expect("an axis scale knob scales only its own axis", JSON.stringify(scalePatch({ scaleX: 1, scaleY: 1, scaleZ: 1 }, "x", 2)) === JSON.stringify({ scaleX: 2 }));
+expect("the centre knob scales all three axes", JSON.stringify(scalePatch({ scaleX: 1, scaleY: 2, scaleZ: 1 }, null, 1.5)) === JSON.stringify({ scaleX: 1.5, scaleY: 3, scaleZ: 1.5 }));
+expect("scale snaps to 5 percent steps", scalePatch({ scaleX: 1 }, "x", 1.234).scaleX === 1.25, JSON.stringify(scalePatch({ scaleX: 1 }, "x", 1.234)));
+expect("scale never collapses to nothing", scalePatch({ scaleX: 1 }, "x", 0.001).scaleX === 0.1);
+expect("a degenerate scale drag writes nothing", scalePatch({ scaleX: 1 }, "x", 0) === null && scalePatch({ scaleX: 1 }, "w", 2) === null);
+expect("world size folds scale into the footprint", JSON.stringify(objectSize({ footprint: { width: 2, depth: 3 }, height: 4, scaleX: 0.5, scaleY: 2, scaleZ: 1 })) === JSON.stringify({ width: 1, height: 8, depth: 3 }));
+
+// The screen ring spins about an arbitrary world axis and has to write all
+// three Euler channels back coherently.
+const upright = { rotX: 0, rot: 0, rotZ: 0 };
+const spun = screenRotatePatch(upright, { x: 0, y: 1, z: 0 }, 90);
+expect("a view-axis spin about world Y lands on the Y channel", spun.rot === 90 && spun.rotX === 0 && spun.rotZ === 0, JSON.stringify(spun));
+const rolled = screenRotatePatch(upright, { x: 0, y: 0, z: 1 }, 30);
+expect("a view-axis spin about world Z lands on the Z channel", rolled.rotZ === 30 && rolled.rotX === 0 && rolled.rot === 0, JSON.stringify(rolled));
+expect("the screen ring snaps to the 5 degree grid", screenRotatePatch(upright, { x: 0, y: 1, z: 0 }, 33).rot === 35, JSON.stringify(screenRotatePatch(upright, { x: 0, y: 1, z: 0 }, 33)));
+expect("an unsnapped screen spin keeps the exact angle", screenRotatePatch(upright, { x: 0, y: 1, z: 0 }, 33, 0).rot === 33);
+expect("a degenerate screen spin writes nothing", screenRotatePatch(upright, null, 10) === null && screenRotatePatch(upright, { x: 0, y: 1, z: 0 }, Number.NaN) === null);
+
+/* ------------------------------------------------------- clamping --- */
+
+const bounded = updateSceneObject([cube], cube.id, { x: 99, y: -3, z: -99, scaleX: 40, scaleY: 0 })[0];
+expect("transforms stay inside the room and above the floor", bounded.x === 6.5 && bounded.z === -6.5 && bounded.y === 0);
+expect("scale stays within a usable range", bounded.scaleX === 5 && bounded.scaleY === 0.1);
+const renamed = updateSceneObject([cube], cube.id, { name: "Crate", color: "#123456" })[0];
+expect("name and colour are editable", renamed.name === "Crate" && renamed.color === "#123456");
+expect("empty names are rejected", updateSceneObject([cube], cube.id, { name: "" })[0] === cube);
 
 if (failures) process.exit(1);
 console.log("all scene object checks PASS");

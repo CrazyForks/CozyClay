@@ -19,6 +19,9 @@ export const SHOT_LAYER = 3;
 /** IK handles/gizmo: only the poser camera (the IK working view) sees them,
  * never the frozen shot camera in the inset or the plan. */
 export const POSER_LAYER = 4;
+/** the scene-object transform gizmo: live in both 3D working views, stripped
+ * from the plan and from exported frames (the capture rig drops this layer). */
+export const GIZMO_LAYER = 5;
 /** the shot camera is locked to the export aspect no matter which pane holds it */
 export const SHOT_ASPECT = 16 / 9;
 /** half-height of the plan frustum, in metres — covers the full camera throw */
@@ -90,7 +93,7 @@ const EDGE_FRAGMENT = `
 `;
 
 /** largest centred sub-rect of `rect` with the given aspect */
-function fitAspect(rect, aspect) {
+export function fitAspect(rect, aspect) {
 	let w = rect.w;
 	let h = w / aspect;
 	if (h > rect.h) {
@@ -155,6 +158,7 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 		if (shot) {
 			shot.layers.set(0);
 			shot.layers.enable(SHOT_LAYER);
+			shot.layers.enable(GIZMO_LAYER);
 		}
 		if (plan) {
 			plan.layers.set(0);
@@ -164,6 +168,7 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 			poser.layers.set(0);
 			poser.layers.enable(SHOT_LAYER);
 			poser.layers.enable(POSER_LAYER);
+			poser.layers.enable(GIZMO_LAYER);
 		}
 	});
 

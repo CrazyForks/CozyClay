@@ -10,18 +10,24 @@ import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlayba
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
 import { defaultWaypointPosition, toArdyWaypoints, toSceneRootOffset } from "./ardy/waypoints.js";
-import { FlyControls, aimAt } from "./controls.jsx";
+import { FlyControls, aimAt, forwardFrom } from "./controls.jsx";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
-import { DualRender } from "./dualview.jsx";
+import { DualRender, GIZMO_LAYER } from "./dualview.jsx";
 import { Room, StageLights } from "./room.jsx";
 import { SetProps } from "./props.jsx";
 import {
 	DEFAULT_SCENE_OBJECTS,
+	OBJECT_COLORS,
+	createSceneObject,
+	objectSize,
+	placementInFront,
 	removeSceneObject,
 	sceneObjectIdFromHierarchy,
 	updateSceneObject,
 } from "./scene-objects.js";
+import ObjectGizmo from "./object-gizmo.jsx";
+import AddObjectMenu from "./object-catalog.jsx";
 import {
 	BUILT_IN_POSES,
 	POSE_BONES,
@@ -50,7 +56,7 @@ import {
 	ikPlantFeet,
 	ikSolvePlantedFeet,
 } from "./ardy/ik.js";
-import { Dropdown, Field, Slider, Toast } from "./ui.jsx";
+import { Dropdown, Field, Slider, Toast, Vector3Row } from "./ui.jsx";
 import { RENDER_ACTIVITY_EVENT, useRenderActivity } from "./use-render-activity.js";
 import {
 	CAMERA_MOVES,
@@ -313,6 +319,8 @@ function CaptureRig({ apiRef, camRef }) {
 					samples: 4,
 				});
 				const cam = source.clone();
+				// the transform gizmo is UI: it never reaches an exported frame
+				cam.layers.disable(GIZMO_LAYER);
 				cam.aspect = CAPTURE_W / CAPTURE_H;
 				cam.updateProjectionMatrix();
 				const previous = gl.getRenderTarget();
@@ -330,6 +338,10 @@ function CaptureRig({ apiRef, camRef }) {
 }
 
 /* ----------------------------------------------------------------- app --- */
+
+// Unity's tool keys. They are free because camera movement now lives behind a
+// held right button. (docs/unity-reference.md §9.2)
+const GIZMO_HOTKEYS = { KeyW: "move", KeyE: "rotate", KeyR: "scale" };
 
 const WORKSPACE_LAYOUT_KEY = "cozyclay.workspace-layout.v1";
 const DEFAULT_WORKSPACE_LAYOUT = Object.freeze({
@@ -543,16 +555,102 @@ export default function App() {
 	}
 
 	function deleteSelectedSceneObject() {
-		if (!selectedSceneObjectId) return;
-		setSceneObjects((objects) => removeSceneObject(objects, selectedSceneObjectId));
-		setSelectedHierarchyId("props");
+		deleteSceneObject(selectedSceneObjectId);
+	}
+
+	/** Delete by id — the hierarchy context menu's Delete. Unlike the
+	 * selection-based path above, removing a row that is not the selection
+	 * must leave the selection alone. */
+	function deleteSceneObject(id) {
+		if (!id) return;
+		const wasSelected = id === selectedSceneObjectId;
+		setSceneObjects((objects) => removeSceneObject(objects, id));
+		if (wasSelected) {
+			setSelectedHierarchyId("props");
+			setRightPanelTab("detail");
+		}
+	}
+
+	const [gizmoMode, setGizmoMode] = useState("move");
+	// Snap is a preference, not a law: with it on the gizmo blocks on the plan
+	// board's grid, and Ctrl/Cmd during a drag gives a free one. Off, it is the
+	// other way round. (docs/unity-reference.md §9.5)
+	const [snapEnabled, setSnapEnabled] = useState(true);
+	// True while the right mouse button is flying the camera. Tool hotkeys stand
+	// down during a flythrough, because W/A/S/D belong to the camera then.
+	const flyingRef = useRef(false);
+
+	function addSceneObject(kind) {
+		const camera = shotCamRef.current;
+		const placement = camera
+			? placementInFront({ x: camera.position.x, z: camera.position.z }, look.current.yaw)
+			: {};
+		const object = createSceneObject(kind, sceneObjects, placement);
+		if (!object) return;
+		setSceneObjects((objects) => [...objects, object]);
+		setSelectedHierarchyId(`object:${object.id}`);
+		// Deliberate divergence from Unity's rename-on-create: creating an object
+		// here is followed by placing it, and dropping focus into a text field
+		// swallows the very next W/E/R. Renaming stays on F2/Return and the row's
+		// context menu. (docs/unity-reference.md §9.7)
 		setRightPanelTab("detail");
+		setGizmoMode("move");
+		setToast(`${object.name} added — W move, E rotate, R scale`);
+	}
+
+	function duplicateSelectedSceneObject(id = selectedSceneObjectId) {
+		// Defaults to the selection (Ctrl/Cmd+D); the hierarchy context menu
+		// passes a specific row's id. Same result either way: the copy is
+		// selected, offset one grid step, and toasted.
+		const object = sceneObjects.find((item) => item.id === id) ?? null;
+		if (!object) return;
+		const copy = createSceneObject(object.renderer, sceneObjects, {
+			x: object.x,
+			z: object.z,
+			rot: object.rot,
+		});
+		if (!copy) return;
+		// Unity drops the duplicate exactly on top of the original; for blocking,
+		// one grid step to the side means you can see that it worked.
+		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
+		setSceneObjects((objects) => [...objects, placed]);
+		setSelectedHierarchyId(`object:${placed.id}`);
+		setRightPanelTab("detail");
+		setToast(`${placed.name} duplicated`);
+	}
+
+	/** Frame the selection: fly the shot camera to a comfortable distance along
+	 * the current view direction, the way Unity's F key does. Defaults to the
+	 * selection; the hierarchy context menu passes a specific row's id. */
+	function frameSelection(id = selectedSceneObjectId) {
+		const camera = shotCamRef.current;
+		const object = sceneObjects.find((item) => item.id === id) ?? null;
+		if (!camera || !object) return;
+		const size = objectSize(object);
+		const target = {
+			x: object.x,
+			y: (object.y ?? 0) + size.height / 2,
+			z: object.z,
+		};
+		const reach = Math.max(size.width, size.height, size.depth, 0.5);
+		const distance = reach * 2.4 + 0.6;
+		const back = forwardFrom(look.current.yaw, look.current.pitch).multiplyScalar(-distance);
+		camera.position.set(target.x + back.x, Math.max(target.y + back.y, 0.3), target.z + back.z);
+		const angles = aimAt(camera.position, target);
+		look.current.yaw = angles.yaw;
+		look.current.pitch = angles.pitch;
+		setViewMode("shot");
+	}
+
+	/** In-place rename commit from the hierarchy (F2 / Return / rename on
+	 * create). The row label lives in the tree; the object name is shared
+	 * state, so this is just the inspector's rename through another door. */
+	function renameSceneObject(id, name) {
+		changeSceneObject(id, { name });
 	}
 
 	useEffect(() => {
-		if (!selectedSceneObjectId) return;
 		const onKeyDown = (event) => {
-			if (event.key !== "Delete" && event.key !== "Backspace") return;
 			const target = event.target;
 			if (
 				target instanceof HTMLInputElement ||
@@ -560,12 +658,36 @@ export default function App() {
 				target instanceof HTMLSelectElement ||
 				target?.isContentEditable
 			) return;
+			// While the right button is flying the camera, W/A/S/D/Q/E are the
+			// camera's; a tool switch mid-flight would be a surprise.
+			if (flyingRef.current) return;
+			if (GIZMO_HOTKEYS[event.code]) {
+				event.preventDefault();
+				setGizmoMode(GIZMO_HOTKEYS[event.code]);
+				return;
+			}
+			if (event.code === "KeyF" && selectedSceneObjectId) {
+				event.preventDefault();
+				frameSelection();
+				return;
+			}
+			if (event.code === "KeyD" && (event.ctrlKey || event.metaKey) && selectedSceneObjectId) {
+				event.preventDefault();
+				duplicateSelectedSceneObject();
+				return;
+			}
+			if (event.key === "Escape" && selectedSceneObjectId) {
+				setSelectedHierarchyId("props");
+				return;
+			}
+			if (!selectedSceneObjectId) return;
+			if (event.key !== "Delete" && event.key !== "Backspace") return;
 			event.preventDefault();
 			deleteSelectedSceneObject();
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [selectedSceneObjectId]);
+	});
 
 	const [mode, setMode] = useState("image");
 	const [imageModel, setImageModel] = useState("gpt_image_2");
@@ -1512,11 +1634,18 @@ export default function App() {
 						<p><strong>IK mode</strong>Drag a wrist or ankle. Keys land on Full-Body.</p>
 					) : (
 						<div className="controls-grid">
-							<kbd>WASD</kbd><span>Move camera</span>
-							<kbd>Drag</kbd><span>Look around</span>
+							<kbd>Right-drag</kbd><span>Look around (fly)</span>
+							<kbd>RMB + WASD</kbd><span>Walk while flying</span>
+							<kbd>RMB + Q/E</kbd><span>Crane down / up</span>
+							<kbd>Middle-drag</kbd><span>Pan</span>
+							<kbd>Alt + drag</kbd><span>Orbit the selection</span>
 							<kbd>Scroll</kbd><span>Dolly</span>
+							<kbd>Click</kbd><span>Select · empty clears</span>
+							<kbd>W / E / R</kbd><span>Move / rotate / scale</span>
+							<kbd>Ctrl</kbd><span>Invert snapping</span>
+							<kbd>F</kbd><span>Frame selection</span>
+							<kbd>Ctrl+D</kbd><span>Duplicate</span>
 							<kbd>Drag puck</kbd><span>Move in plan</span>
-							<kbd>Drag handle</kbd><span>Turn in plan</span>
 						</div>
 					)}
 					</div>
@@ -1540,7 +1669,7 @@ export default function App() {
 							<color attach="background" args={["#eef4f3"]} />
 							<StageLights />
 							<Room />
-							<SetProps objects={sceneObjects} />
+							<SetProps objects={sceneObjects} selectedId={selectedSceneObjectId} />
 
 							<PerspectiveCamera
 								ref={shotCamRef}
@@ -1613,7 +1742,19 @@ export default function App() {
 							    never the shot camera: the handle layer only consumes
 							    pointerdowns that hit a handle, so empty-space drags orbit
 							    and the wheel dollies without wrecking the framing. */}
-							<FlyControls enabled={!posing} camRef={ikMode ? poserCamRef : shotCamRef} look={ikMode ? poserLook : look} />
+							<FlyControls
+								enabled={!posing}
+								camRef={ikMode ? poserCamRef : shotCamRef}
+								look={ikMode ? poserLook : look}
+								getPivot={() => {
+									if (!selectedSceneObject) return null;
+									const size = objectSize(selectedSceneObject);
+									return { x: selectedSceneObject.x, y: (selectedSceneObject.y ?? 0) + size.height / 2, z: selectedSceneObject.z };
+								}}
+								onFlyStateChange={(flying) => {
+									flyingRef.current = flying;
+								}}
+							/>
 							<PoseHandles
 								root={posing === "B" ? rigB : rigA}
 								enabled={!!posing && !planIsMain}
@@ -1648,6 +1789,20 @@ export default function App() {
 								sceneObjects={sceneObjects}
 								selectedSceneObjectId={selectedSceneObjectId}
 								onMoveSceneObject={changeSceneObject}
+							/>
+							{/* Object gizmo: the shot pane's direct manipulation. Off while
+							    the plan owns the big pane (the pucks are the handles there)
+							    and while posing/IK owns the pointer. */}
+							<ObjectGizmo
+								object={selectedSceneObject}
+								objects={sceneObjects}
+								mode={gizmoMode}
+								snap={snapEnabled}
+								enabled={!planIsMain && !posing && !ikMode}
+								paneRef={mainPaneRef}
+								camRef={shotCamRef}
+								onChange={changeSceneObject}
+								onSelect={(id) => selectHierarchy(id ? `object:${id}` : "props")}
 							/>
 							<CaptureRig apiRef={captureRef} camRef={shotCamRef} />
 							<DualRender
@@ -1754,6 +1909,11 @@ export default function App() {
 						ikMode={ikMode}
 						waypointCount={waypoints.length}
 						sceneObjects={sceneObjects}
+						onAddObject={addSceneObject}
+						onRenameObject={renameSceneObject}
+						onDuplicateObject={duplicateSelectedSceneObject}
+						onDeleteObject={deleteSceneObject}
+						onFrameObject={frameSelection}
 					/>
 					</div>
 					<section className="inspector-pane" hidden={rightPanelTab !== "detail"}>
@@ -2191,7 +2351,8 @@ export default function App() {
 
 					<section className="card" hidden={selectedHierarchyId !== "props"}>
 						<h3>Props</h3>
-						<p className="inspector-hint">Objects added to the scene appear here and share the same transform controls.</p>
+						<p className="inspector-hint">Everything you add to the set lives here. Pick one to edit it, or click it in the shot view.</p>
+						<AddObjectMenu onAdd={addSceneObject} label="Add object to the set" />
 						<div className="inspector-list compact">
 							{sceneObjects.map((object) => (
 								<button
@@ -2208,12 +2369,72 @@ export default function App() {
 
 					<section className="card" hidden={!selectedSceneObject}>
 						<h3>Object Transform</h3>
-						<p className="inspector-hint">{selectedSceneObject?.name} is a user-added scene object. These controls are shared by every object type.</p>
 						{selectedSceneObject && (
 							<>
-								<Slider compact label="Left / right" min={-6.5} max={6.5} step={0.05} value={selectedSceneObject.x} onChange={(x) => changeSceneObject(selectedSceneObject.id, { x })} />
-								<Slider compact label="Depth" min={-6.5} max={6.5} step={0.05} value={selectedSceneObject.z} onChange={(z) => changeSceneObject(selectedSceneObject.id, { z })} />
-								<Slider compact label="Rotate" min={-180} max={180} step={1} value={selectedSceneObject.rot} unit="°" onChange={(rot) => changeSceneObject(selectedSceneObject.id, { rot })} />
+								<p className="inspector-hint">
+									Type an exact value and press Enter, or drag the X / Y / Z label
+									next to a field to scrub it. Values here and the gizmo write to
+									the same record, so the two views can never disagree.
+								</p>
+								<div className="presets gizmo-modes">
+									<button type="button" className={gizmoMode === "move" ? "active" : ""} onClick={() => setGizmoMode("move")}>
+										Move <kbd>W</kbd>
+									</button>
+									<button type="button" className={gizmoMode === "rotate" ? "active" : ""} onClick={() => setGizmoMode("rotate")}>
+										Rotate <kbd>E</kbd>
+									</button>
+									<button type="button" className={gizmoMode === "scale" ? "active" : ""} onClick={() => setGizmoMode("scale")}>
+										Scale <kbd>R</kbd>
+									</button>
+								</div>
+								<label className="check snap-toggle">
+									<input type="checkbox" checked={snapEnabled} onChange={(event) => setSnapEnabled(event.target.checked)} />
+									<span>Snap to grid — hold <kbd>Ctrl</kbd> to invert</span>
+								</label>
+								<Field label="Name">
+									<input
+										type="text"
+										value={selectedSceneObject.name}
+										onChange={(event) => changeSceneObject(selectedSceneObject.id, { name: event.target.value })}
+									/>
+								</Field>
+								<Vector3Row
+									label="Position"
+									fields={[
+										{ axis: "X", value: selectedSceneObject.x, step: 0.05, precision: 2, onChange: (x) => changeSceneObject(selectedSceneObject.id, { x }) },
+										{ axis: "Y", value: selectedSceneObject.y ?? 0, step: 0.05, precision: 2, onChange: (y) => changeSceneObject(selectedSceneObject.id, { y }) },
+										{ axis: "Z", value: selectedSceneObject.z, step: 0.05, precision: 2, onChange: (z) => changeSceneObject(selectedSceneObject.id, { z }) },
+									]}
+								/>
+								<Vector3Row
+									label="Rotation"
+									fields={[
+										{ axis: "X", value: selectedSceneObject.rotX ?? 0, step: 1, precision: 1, onChange: (rotX) => changeSceneObject(selectedSceneObject.id, { rotX }) },
+										{ axis: "Y", value: selectedSceneObject.rot, step: 1, precision: 1, onChange: (rot) => changeSceneObject(selectedSceneObject.id, { rot }) },
+										{ axis: "Z", value: selectedSceneObject.rotZ ?? 0, step: 1, precision: 1, onChange: (rotZ) => changeSceneObject(selectedSceneObject.id, { rotZ }) },
+									]}
+								/>
+								<Vector3Row
+									label="Scale"
+									fields={[
+										{ axis: "X", value: selectedSceneObject.scaleX ?? 1, step: 0.05, precision: 2, onChange: (scaleX) => changeSceneObject(selectedSceneObject.id, { scaleX }) },
+										{ axis: "Y", value: selectedSceneObject.scaleY ?? 1, step: 0.05, precision: 2, onChange: (scaleY) => changeSceneObject(selectedSceneObject.id, { scaleY }) },
+										{ axis: "Z", value: selectedSceneObject.scaleZ ?? 1, step: 0.05, precision: 2, onChange: (scaleZ) => changeSceneObject(selectedSceneObject.id, { scaleZ }) },
+									]}
+								/>
+								<div className="object-colors" role="group" aria-label="Object colour">
+									{OBJECT_COLORS.map((color) => (
+										<button
+											type="button"
+											key={color}
+											className={"object-color" + (selectedSceneObject.color === color ? " active" : "")}
+											style={{ background: color }}
+											aria-label={`Colour ${color}`}
+											aria-pressed={selectedSceneObject.color === color}
+											onClick={() => changeSceneObject(selectedSceneObject.id, { color })}
+										/>
+									))}
+								</div>
 								<button
 									type="button"
 									className="btn ghost full"
