@@ -7,7 +7,7 @@ export const SUBJECT_HEIGHT_M = 1.8;
 // Framing distance is measured to the subject's centre of mass, not to the
 // midpoint of their bounding box. A camera craned to the floor is still close
 // to the body it is pointing at, and only this pivot reports that honestly.
-const FRAMING_PIVOT_Y = 1.3;
+export const FRAMING_PIVOT_Y = 1.3;
 const SENSOR_HALF_HEIGHT_MM = 12; // Blender/full-frame default 24mm sensor height
 
 /** vertical FOV (radians) -> focal length in mm on a 24mm-tall sensor */

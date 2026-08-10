@@ -68,6 +68,7 @@ import {
 	deriveShot,
 	slateLine,
 } from "./shot.js";
+import { captureFraming, classifyMove, interpolateFraming, moveSlate } from "./camera-move.js";
 
 // Stated the way a crew states a setup: how far back, which side, how high the
 // lens rides, and what glass is on it. Order matters — Medium is the setup a
@@ -270,6 +271,39 @@ function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probeX, probeZ, c
 		}
 	});
 
+	return null;
+}
+
+/** Plays an authored A→B camera move by driving the shot camera exactly the
+    way a fly-drag does — position on the camera, orientation through the look
+    ref — so ShotRig's metrics, the slate, and the inset all stay honest for
+    free. A right-drag interrupts the dolly: the user always outranks it. */
+function MoveRig({ playing, a, b, anchor, durationS, camRef, look, isInterrupted, onDone }) {
+	const clock = useRef(0);
+	useEffect(() => {
+		if (playing) clock.current = 0;
+	}, [playing]);
+	useFrame((_, delta) => {
+		if (!playing || !a || !b) return;
+		const cam = camRef.current;
+		if (!cam) return;
+		if (isInterrupted?.()) {
+			onDone(cam.fov);
+			return;
+		}
+		const span = Math.max(durationS, 0.1);
+		clock.current = Math.min(clock.current + delta, span);
+		const t = clock.current / span;
+		const f = interpolateFraming(a, b, anchor, t);
+		cam.position.set(f.pos.x, f.pos.y, f.pos.z);
+		look.current.yaw = f.yaw;
+		look.current.pitch = f.pitch;
+		if (Math.abs(cam.fov - f.fovDeg) > 1e-3) {
+			cam.fov = f.fovDeg;
+			cam.updateProjectionMatrix();
+		}
+		if (t >= 1) onDone(f.fovDeg);
+	});
 	return null;
 }
 
@@ -694,6 +728,12 @@ export default function App() {
 	const [videoModel, setVideoModel] = useState("seedance_2");
 	const [cameraMove, setCameraMove] = useState(CAMERA_MOVES[1]);
 	const [customMove, setCustomMove] = useState("");
+	// The A→B move workspace: two captured framings and a duration. The move's
+	// name is never stored — it is re-derived from the framings every time.
+	const [moveA, setMoveA] = useState(null);
+	const [moveB, setMoveB] = useState(null);
+	const [moveDurationS, setMoveDurationS] = useState(3);
+	const [movePlaying, setMovePlaying] = useState(false);
 	const [hasCharSheet, setHasCharSheet] = useState(false);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
 	const [subject, setSubject] = useState("a young woman in a tan coat");
@@ -725,7 +765,7 @@ export default function App() {
 	// (character rig, plan path, ARDY card) reacts to every scrub/play tick.
 	const [tlFrame, setTlFrame] = useState(0);
 	const [tlPlaying, setTlPlaying] = useState(false);
-	const renderActive = useRenderActivity(tlPlaying);
+	const renderActive = useRenderActivity(tlPlaying || movePlaying);
 	const [tlFrameCount, setTlFrameCount] = useState(DEFAULT_DURATION_S * 20); // the generation clip length @ 20 fps
 	const [tlFps, setTlFps] = useState(20);
 	const frameCountRef = useRef(DEFAULT_DURATION_S * 20);
@@ -764,6 +804,25 @@ export default function App() {
 		() => deriveShot(cameraPos, charA, (fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M),
 		[cameraPos, charA, fovDeg],
 	);
+
+	// The derived move: what the two framings geometrically prove, not what a
+	// dropdown claims. Present only while both ends are set.
+	const abMove = useMemo(
+		() => (moveA && moveB ? classifyMove(moveA, moveB, charA, { durationS: moveDurationS }) : null),
+		[moveA, moveB, charA, moveDurationS],
+	);
+
+	function captureCurrentFraming() {
+		const cam = shotCamRef.current;
+		const pos = cam ? cam.position : cameraPos;
+		return captureFraming({ pos: { x: pos.x, y: pos.y, z: pos.z }, yaw: look.current.yaw, pitch: look.current.pitch, fovDeg });
+	}
+
+	function clearMove() {
+		setMovePlaying(false);
+		setMoveA(null);
+		setMoveB(null);
+	}
 
 	const allPoses = useMemo(() => [...BUILT_IN_POSES, ...customPoses], [customPoses]);
 	const posedRig = () => (posing === "B" ? rigB : rigA);
@@ -1207,26 +1266,58 @@ export default function App() {
 		return canvas.toDataURL("image/png");
 	}
 
+	/** Park the shot camera on a framing, read back a 1920x1080 PNG, and put
+	    everything back before the next paint — the viewport never sees it. */
+	function captureFramingPng(framing) {
+		const cam = shotCamRef.current;
+		if (!cam || !captureRef.current) return null;
+		const prev = { x: cam.position.x, y: cam.position.y, z: cam.position.z, yaw: look.current.yaw, pitch: look.current.pitch, fov: cam.fov };
+		cam.position.set(framing.pos.x, framing.pos.y, framing.pos.z);
+		cam.rotation.order = "YXZ";
+		cam.rotation.set(framing.pitch, framing.yaw, 0);
+		cam.fov = framing.fovDeg;
+		cam.updateProjectionMatrix();
+		const buffer = captureRef.current.render();
+		cam.position.set(prev.x, prev.y, prev.z);
+		cam.rotation.set(prev.pitch, prev.yaw, 0);
+		look.current.yaw = prev.yaw;
+		look.current.pitch = prev.pitch;
+		cam.fov = prev.fov;
+		cam.updateProjectionMatrix();
+		return buffer ? bufferToPng(buffer) : null;
+	}
+
 	function generate() {
 		const models = mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
 		const model = models.find((m) => m.id === (mode === "video" ? videoModel : imageModel));
+		// An authored A→B move outranks the dropdown: the phrase is derived from
+		// the framings, and the exported frames become first/last conditioning.
+		const movePlan = mode === "video" ? abMove : null;
 		const prompt = composePrompt({
 			mode,
 			model,
-			shot,
+			shot: movePlan ? movePlan.from : shot,
 			subject,
 			subject2: showB ? subject2 : null,
 			posePhrase: poseA?.prompt ?? "",
 			pose2Phrase: showB ? (poseB?.prompt ?? "") : "",
 			environment,
 			style,
-			cameraMove,
-			customMove,
+			cameraMove: movePlan ? CUSTOM_MOVE : cameraMove,
+			customMove: movePlan ? movePlan.phrase : customMove,
 			hasCharSheet,
 			hasEnvSheet,
 		});
-		const buffer = captureRef.current?.render();
-		setResult({ prompt, frame: buffer ? bufferToPng(buffer) : null });
+		let frame = null;
+		let frameB = null;
+		if (movePlan) {
+			frame = captureFramingPng(moveA);
+			frameB = captureFramingPng(moveB);
+		} else {
+			const buffer = captureRef.current?.render();
+			frame = buffer ? bufferToPng(buffer) : null;
+		}
+		setResult({ prompt, frame, frameB, move: movePlan });
 		setCopied(false);
 		navigator.clipboard
 			?.writeText(prompt)
@@ -1238,12 +1329,22 @@ export default function App() {
 	}
 
 	function download() {
-		const a = document.createElement("a");
-		a.href = result.frame;
-		a.download = "blocking-frame.png";
-		document.body.appendChild(a);
-		a.click();
-		a.remove();
+		const save = (href, name) => {
+			const a = document.createElement("a");
+			a.href = href;
+			a.download = name;
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+		};
+		if (result.frameB) {
+			// named for the seat they take in a first/last-frame video request
+			save(result.frame, "blocking-frame-A-start.png");
+			save(result.frameB, "blocking-frame-B-end.png");
+			setToast("Start & end frames downloaded");
+			return;
+		}
+		save(result.frame, "blocking-frame.png");
 		setToast("Frame downloaded");
 	}
 	function downloadArdyPose() {
@@ -1738,6 +1839,20 @@ export default function App() {
 									setSubjectVisible((prev) => (prev === visible ? prev : visible));
 								}}
 							/>
+							<MoveRig
+								playing={movePlaying}
+								a={moveA}
+								b={moveB}
+								anchor={charA}
+								durationS={moveDurationS}
+								camRef={shotCamRef}
+								look={look}
+								isInterrupted={() => flyingRef.current}
+								onDone={(finalFov) => {
+									setMovePlaying(false);
+									setFovDeg(Math.round(finalFov * 10) / 10);
+								}}
+							/>
 							{/* Camera stays live in IK mode but drives the POSER camera,
 							    never the shot camera: the handle layer only consumes
 							    pointerdowns that hit a handle, so empty-space drags orbit
@@ -2042,7 +2157,7 @@ export default function App() {
 								<input type="text" value={environment} onChange={(e) => setEnvironment(e.target.value)} />
 							</Field>
 						)}
-						{mode === "video" && (
+						{mode === "video" && !abMove && (
 							<Field label="Camera move">
 								<Dropdown
 									ariaLabel="Camera move"
@@ -2052,7 +2167,7 @@ export default function App() {
 								/>
 							</Field>
 						)}
-						{mode === "video" && cameraMove === CUSTOM_MOVE && (
+						{mode === "video" && !abMove && cameraMove === CUSTOM_MOVE && (
 							<Field label="Custom camera move">
 								<input
 									type="text"
@@ -2061,6 +2176,48 @@ export default function App() {
 									placeholder="describe the camera move"
 								/>
 							</Field>
+						)}
+						{mode === "video" && (
+							<Field label="Move A→B">
+								<div className="move-ab">
+									<button
+										type="button"
+										className="btn ghost"
+										title="Fly the camera to the move's first frame, then set A"
+										onClick={() => setMoveA(captureCurrentFraming())}
+									>
+										{moveA ? "A ✓" : "Set A"}
+									</button>
+									<button
+										type="button"
+										className="btn ghost"
+										title="Fly the camera to the move's last frame, then set B"
+										onClick={() => setMoveB(captureCurrentFraming())}
+									>
+										{moveB ? "B ✓" : "Set B"}
+									</button>
+									<button
+										type="button"
+										className="btn ghost"
+										disabled={!abMove}
+										title="Play the move in the shot camera; right-drag interrupts"
+										onClick={() => setMovePlaying((playing) => !playing)}
+									>
+										{movePlaying ? "Stop" : "Preview"}
+									</button>
+									<button type="button" className="btn ghost" disabled={!moveA && !moveB} onClick={clearMove}>
+										Clear
+									</button>
+								</div>
+							</Field>
+						)}
+						{mode === "video" && abMove && (
+							<>
+								<div className="move-slate" title="derived from the two framings, not chosen from a list">
+									{moveSlate(abMove)}
+								</div>
+								<Slider label="Move duration" min={1} max={10} step={0.5} value={moveDurationS} unit="s" onChange={setMoveDurationS} />
+							</>
 						)}
 						<Field label="Look / style">
 							<input type="text" value={style} onChange={(e) => setStyle(e.target.value)} />
@@ -2522,7 +2679,21 @@ export default function App() {
 								✕
 							</button>
 						</div>
-						{result.frame && <img className="preview" src={result.frame} alt="framed shot" />}
+						{result.frameB ? (
+							<div className="move-frames">
+								<figure>
+									<img className="preview" src={result.frame} alt="move start frame" />
+									<figcaption>A · start</figcaption>
+								</figure>
+								<figure>
+									<img className="preview" src={result.frameB} alt="move end frame" />
+									<figcaption>B · end</figcaption>
+								</figure>
+							</div>
+						) : (
+							result.frame && <img className="preview" src={result.frame} alt="framed shot" />
+						)}
+						{result.move && <div className="move-slate">{moveSlate(result.move)} · {moveDurationS}s</div>}
 						<label className="modal-label">Prompt {copied && <em>· copied</em>}</label>
 						<div className="promptbox">{result.prompt}</div>
 						<div className="modal-actions">
@@ -2539,7 +2710,7 @@ export default function App() {
 							</button>
 							{result.frame && (
 								<button className="btn" onClick={download}>
-									Download frame
+									{result.frameB ? "Download start & end frames" : "Download frame"}
 								</button>
 							)}
 						</div>

@@ -4176,3 +4176,48 @@ input[type=range]::-moz-range-thumb {
 	outline: none;
 	box-shadow: 0 0 0 2px var(--accent-ring);
 }
+
+/* ------------------------------------------------ camera move A→B ------ */
+/* The move workspace: four small buttons in the field row, a derived slate
+   line underneath, and a two-up start/end pair in the result modal. */
+.move-ab {
+	display: flex;
+	gap: 6px;
+}
+
+.move-ab .btn {
+	flex: 1;
+	padding: 6px 0;
+	font-size: 11px;
+}
+
+.move-ab .btn:disabled {
+	opacity: .45;
+	cursor: default;
+}
+
+.move-slate {
+	margin: 4px 0 10px;
+	font-size: 10.5px;
+	letter-spacing: .06em;
+	color: var(--muted);
+}
+
+.move-frames {
+	display: flex;
+	gap: 10px;
+}
+
+.move-frames figure {
+	flex: 1;
+	margin: 0;
+	min-width: 0;
+}
+
+.move-frames figcaption {
+	margin-top: 4px;
+	font-size: 10.5px;
+	letter-spacing: .06em;
+	color: var(--muted);
+	text-align: center;
+}
