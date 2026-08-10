@@ -16,10 +16,11 @@ expect("workspace layout persists across reloads", app.includes("WORKSPACE_LAYOU
 expect("sidebar width has a pointer resize path", app.includes('beginWorkspaceResize("sidebar"'));
 expect("frame monitor height has a pointer resize path", app.includes('beginWorkspaceResize("timeline"'));
 expect("inset view has a diagonal resize path", app.includes("beginInsetResize") && app.includes("vp-inset-resize"));
-expect("right panel has Hierarchy and contextual detail tabs", app.includes("right-panel-tabs") && app.includes("rightPanelDetailLabel"));
-expect("right panel shows only the focused tab", app.includes('hidden={rightPanelTab !== "hierarchy"}') && app.includes('hidden={rightPanelTab !== "detail"}'));
+expect("workspace has a dedicated left hierarchy window", app.includes('className="panel hierarchy-left"') && app.includes('beginWorkspaceResize("hierarchy"'));
+expect("inspector is always visible beside the scene", app.includes("inspector-sidebar") && !app.includes("rightPanelTab"));
 expect("legacy hierarchy/inspector splitter is removed", !app.includes("hierarchy-splitter"));
-expect("hierarchy selection focuses the contextual detail tab", app.includes('setRightPanelTab("detail")'));
+expect("bottom window separates Timeline from the ARDY console", app.includes("bottom-window-tabs") && app.includes("console-pane") && app.includes('hidden={bottomTab !== "timeline"}'));
+expect("ARDY status lines accumulate in the console window", app.includes("reportArdyStatus") && app.includes("consoleLines"));
 expect("Motion inspector still owns the ARDY generation form", app.includes('hidden={!["characterA.motion", "characterA.baseMotion"].includes(selectedHierarchyId)}'));
 expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("Generate all ${promptClips.length} blocks"));
 expect("new sessions start without prompt blocks", app.includes("const DEFAULT_PROMPT_CLIPS = [];") && app.includes("useState(null)"));

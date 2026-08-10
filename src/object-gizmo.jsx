@@ -190,7 +190,11 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 	/** the scene object under the pointer, if any (meshes carry the id on an
 	 * ancestor group, so the hit walks up to find it) */
 	const pickObject = () => {
-		const [hit] = tools.raycaster.intersectObjects(scene.children, true);
+		// Edge linework (EdgesGeometry LineSegments) raycasts with a generous
+		// distance threshold, so it would claim pixels far from the solid mesh.
+		// Picking walks past lines/points to the first real surface.
+		const hits = tools.raycaster.intersectObjects(scene.children, true);
+		const hit = hits.find((entry) => entry.object.isMesh);
 		if (!hit) return null;
 		for (let node = hit.object; node; node = node.parent) {
 			if (node.userData?.sceneObjectId) return { id: node.userData.sceneObjectId, point: hit.point.clone() };
@@ -207,6 +211,22 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			const camera = camRef?.current;
 			const ndc = camera ? toNdc(event) : null;
 			if (!ndc) return null;
+			// Picking happens outside the render loop: under demand rendering a
+			// programmatic camera move (framing, preset snap) may not have had a
+			// frame yet, and setFromCamera reads matrixWorld as-is. Refresh it
+			// here so the first pick after an idle gap aims from the true pose.
+			// The shot camera's aspect is locked to SHOT_ASPECT by the render
+			// loop (dualview); under demand rendering a layout change may not
+			// have had a frame yet, leaving a stale projection. Re-apply the
+			// render contract here so the pick matches what is on screen.
+			camera.aspect = SHOT_ASPECT;
+			camera.updateProjectionMatrix();
+			camera.updateMatrixWorld();
+			camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+			rootRef.current?.updateMatrixWorld(true);
+			// object meshes move with the drag record; between frames their
+			// matrixWorld can lag the same way, so refresh the scene too
+			scene.updateMatrixWorld();
 			tools.raycaster.setFromCamera(ndc, camera);
 			return { ndc, camera };
 		};
@@ -420,7 +440,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			const handles = [...handlesRef.current.values()].filter((entry) => entry.mesh?.parent);
 			if (!handles.length) return null;
 			tools.raycaster.layers.set(GIZMO_LAYER);
-			const hits = tools.raycaster.intersectObjects(handles.map((entry) => entry.mesh), false);
+			const hits = tools.raycaster.intersectObjects(handles.map((entry) => entry.mesh), false)
 			if (!hits.length) return null;
 			const grabbed = handles.find((entry) => entry.mesh === hits[0].object);
 			return grabbed ? { ...grabbed, aim } : null;
@@ -527,6 +547,16 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			const camera = camRef?.current;
 			const pane = paneRef?.current;
 			if (!camera || !pane) return [];
+			// reads happen between frames (QA, headless checks): sync the
+			// matrices the projection depends on instead of trusting the last
+			// render tick under demand rendering, and re-apply the render
+			// loop's locked aspect (dualview) so QA geometry matches the
+			// drawn frame exactly
+			camera.aspect = SHOT_ASPECT;
+			camera.updateProjectionMatrix();
+			camera.updateMatrixWorld();
+			camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+			rootRef.current?.updateMatrixWorld(true);
 			const bounds = pane.getBoundingClientRect();
 			const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, SHOT_ASPECT);
 			return [...handlesRef.current.values()]

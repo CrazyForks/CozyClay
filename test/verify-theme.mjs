@@ -18,10 +18,11 @@ expect("Inter is the only bundled active UI family", css.includes("@font-face{fo
 expect("display and UI roles both use Inter", css.includes('--display: "Inter"') && css.includes('--sans: "Inter"'));
 expect("numeric editing data has a monospace role", css.includes("--mono: ui-monospace") && css.includes("font-family: var(--mono)"));
 expect("wordmark uses a modern heavy display treatment", css.includes("font-weight: 750") && css.includes("letter-spacing: -.045em"));
-expect("main paper token is present", css.includes("--bg: #f3ebdd"));
-expect("ink navy token is present", css.includes("--fg: #273849"));
-expect("non-photo blue token is present", css.includes("--accent: #4e9fb3"));
-expect("timeline uses tracing-paper lanes", css.includes("background-color: #fbf7ef"));
+expect("chrome backdrop token matches Unity dark", css.includes("--bg: #1e1e1e"));
+expect("chrome foreground token is light on dark", css.includes("--fg: #d2d2d2"));
+expect("chrome panel token matches Unity dark chrome", css.includes("--panel: #2c2c2c"));
+expect("chrome accent token matches Unity selection blue family", css.includes("--accent: #3a7cbf"));
+expect("timeline lanes sit on a dark surface", css.includes("background-color: #282828"));
 expect("IK uses pencil red", css.includes(".tl-marker.ik") && css.includes("background: #d65f55"));
 expect("current frame uses lightbox amber", css.includes(".tl-frame-box") && css.includes("background: #e7b557"));
 expect("Canvas uses a bright neutral toon background", app.includes('<color attach="background" args={["#eef4f3"]} />'));

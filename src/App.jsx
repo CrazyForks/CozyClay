@@ -298,7 +298,7 @@ function RenderLoopController({ stageRef }) {
 	return null;
 }
 
-function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, sidebarWidth, timelineHeight }) {
+function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, hierarchyWidth, sidebarWidth, timelineHeight }) {
 	const invalidate = useThree((state) => state.invalidate);
 	useEffect(() => {
 		// The pane frame is regular DOM while its picture is a scissored WebGL
@@ -308,7 +308,7 @@ function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, si
 		invalidate();
 		const frame = requestAnimationFrame(invalidate);
 		return () => cancelAnimationFrame(frame);
-	}, [invalidate, insetX, insetY, insetWidth, insetHeight, sidebarWidth, timelineHeight]);
+	}, [invalidate, insetX, insetY, insetWidth, insetHeight, hierarchyWidth, sidebarWidth, timelineHeight]);
 	return null;
 }
 
@@ -351,6 +351,7 @@ const GIZMO_HOTKEYS = { KeyW: "move", KeyE: "rotate", KeyR: "scale" };
 
 const WORKSPACE_LAYOUT_KEY = "cozyclay.workspace-layout.v1";
 const DEFAULT_WORKSPACE_LAYOUT = Object.freeze({
+	hierarchyWidth: 300,
 	sidebarWidth: 380,
 	timelineHeight: 190,
 	insetWidth: 310,
@@ -435,6 +436,18 @@ export default function App() {
 	const [nonce, setNonce] = useState(0);
 	// viewMode now selects which pane is BIG; both render every frame.
 	const [viewMode, setViewMode] = useState("shot");
+	// Unity Scene/Game tabs: PlayView is the framed output only — no editing
+	// chrome (gizmo, inset, fly navigation) reaches it.
+	const [centerTab, setCenterTab] = useState("scene");
+globalThis.playMode = centerTab === "play";
+	// PlayView is the player for the finished motion: entering starts playback,
+	// leaving pauses it. Scene stays the manipulation surface.
+	const [tlPlaying, setTlPlaying] = useState(false);
+	useEffect(() => {
+		if (centerTab === "play" && motion) setTlPlaying(true);
+		if (centerTab === "scene") setTlPlaying(false);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [centerTab]);
 	const planIsMain = viewMode === "plan";
 	const stageRef = useRef();
 	const mainPaneRef = useRef();
@@ -450,6 +463,7 @@ export default function App() {
 	}, [workspaceLayout]);
 
 	const workspaceStyle = {
+		"--hierarchy-width": `${workspaceLayout.hierarchyWidth}px`,
 		"--sidebar-width": `${workspaceLayout.sidebarWidth}px`,
 		"--timeline-height": `${workspaceLayout.timelineHeight}px`,
 		"--inset-width": `${workspaceLayout.insetWidth}px`,
@@ -473,6 +487,12 @@ export default function App() {
 						sidebarWidth: Math.max(280, Math.min(window.innerWidth * 0.5, start.sidebarWidth - dx)),
 					};
 				}
+				if (kind === "hierarchy") {
+					return {
+						...current,
+						hierarchyWidth: Math.max(220, Math.min(window.innerWidth * 0.4, start.hierarchyWidth + dx)),
+					};
+				}
 				return {
 					...current,
 					timelineHeight: Math.max(110, Math.min(window.innerHeight * 0.58, start.timelineHeight - dy)),
@@ -490,6 +510,21 @@ export default function App() {
 		window.addEventListener("pointerup", onUp);
 		window.addEventListener("pointercancel", onUp);
 	}
+
+	// Double-clicking the inset pane swaps which view owns the big pane.
+	// The pane divs are pointer-events:none when they are not the plan board,
+	// so this hit-tests the rect instead of relying on DOM targeting.
+	useEffect(() => {
+globalThis.onDblClick = (event) => {
+globalThis.pane = insetPaneRef.current;
+			if (!pane) return;
+globalThis.rect = pane.getBoundingClientRect();
+			if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) return;
+			setViewMode((current) => (current === "plan" ? "shot" : "plan"));
+		};
+		window.addEventListener("dblclick", onDblClick);
+		return () => window.removeEventListener("dblclick", onDblClick);
+	}, []);
 
 	// Drag the inset pane by its tag chip. Window-level listeners so a fast
 	// drag off the chip keeps moving the pane; bounds clamp to the stage.
@@ -576,7 +611,6 @@ export default function App() {
 	const [ikFkJoints, setIkFkJoints] = useState(null);
 	const [ikFocus, setIkFocus] = useState(null);
 	const [selectedHierarchyId, setSelectedHierarchyId] = useState("characterA.motion");
-	const [rightPanelTab, setRightPanelTab] = useState("hierarchy");
 	// Scene persistence (plan §8): the startup load runs once in a lazy
 	// initializer so the store below can seed from the restored scene; the
 	// quarantine write and the save-block decision happen before the first
@@ -651,9 +685,6 @@ export default function App() {
 	}, []);
 	const selectedSceneObjectId = sceneObjectIdFromHierarchy(selectedHierarchyId);
 	const selectedSceneObject = sceneObjects.find((object) => object.id === selectedSceneObjectId) ?? null;
-	const rightPanelDetailLabel = selectedHierarchyId === "characterA.promptBlocks"
-		? "Prompt Block"
-		: selectedSceneObject?.name ?? HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId] ?? "Inspector";
 	// Foot snap (ground plant): while ON, body (hips) drags keep the feet at
 	// the positions captured when the drag started — the knees bend instead
 	// of the feet sinking through the floor. Toggleable in the timeline.
@@ -681,7 +712,6 @@ export default function App() {
 		// applied tick re-renders, every drag would die after exactly one tick.
 		store.settle();
 		setSelectedHierarchyId(id);
-		setRightPanelTab("detail");
 		const focus = RIG_HIERARCHY_FOCUS[id];
 		if (focus && ikMode) setIkFocus(focus);
 		if (id === "camera") setViewMode("shot");
@@ -727,7 +757,6 @@ export default function App() {
 		store.applyAtomic((objects) => removeSceneObject(objects, id));
 		if (wasSelected) {
 			setSelectedHierarchyId("props");
-			setRightPanelTab("detail");
 		}
 	}
 	/** Drop-to-surface (plan §9.2/§9.3): End, no modifier. Strict drop-down —
@@ -769,7 +798,6 @@ export default function App() {
 		// here is followed by placing it, and dropping focus into a text field
 		// swallows the very next W/E/R. Renaming stays on F2/Return and the row's
 		// context menu. (docs/unity-reference.md §9.7)
-		setRightPanelTab("detail");
 		setGizmoMode("move");
 		setToast(`${object.name} added — W move, E rotate, R scale`);
 	}
@@ -791,7 +819,6 @@ export default function App() {
 		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
 		store.applyAtomic((objects) => [...objects, placed]);
 		setSelectedHierarchyId(`object:${placed.id}`);
-		setRightPanelTab("detail");
 		setToast(`${placed.name} duplicated`);
 	}
 
@@ -932,6 +959,14 @@ export default function App() {
 	const [ardySeed, setArdySeed] = useState("2"); // RT demo parity: its GUI seed defaults to 2, so generation is reproducible out of the box; clear the field for the box's random seed
 	const [ardyRunning, setArdyRunning] = useState(false);
 	const [ardyStatus, setArdyStatus] = useState("");
+	const [consoleLines, setConsoleLines] = useState([]);
+	const [bottomTab, setBottomTab] = useState("timeline");
+	// ARDY status doubles as a Unity-style console line: the inspector keeps
+	// the current line, the bottom Console tab keeps the session history.
+	function reportArdyStatus(line) {
+		setArdyStatus(line);
+		setConsoleLines((current) => [...current.slice(-99), { time: new Date(), line }]);
+	}
 	const [ardyReport, setArdyReport] = useState(null);
 	const [ardyOutcome, setArdyOutcome] = useState(null);
 	const ardyAbortRef = useRef(null);
@@ -942,7 +977,7 @@ export default function App() {
 	// The timeline playhead and the root waypoints are App-owned so the scene
 	// (character rig, plan path, ARDY card) reacts to every scrub/play tick.
 	const [tlFrame, setTlFrame] = useState(0);
-	const [tlPlaying, setTlPlaying] = useState(false);
+
 	const renderActive = useRenderActivity(tlPlaying);
 	const [tlFrameCount, setTlFrameCount] = useState(DEFAULT_DURATION_S * 20); // the generation clip length @ 20 fps
 	const [tlFps, setTlFps] = useState(20);
@@ -1735,7 +1770,7 @@ export default function App() {
 		const controller = new AbortController();
 		ardyAbortRef.current = controller;
 		setArdyRunning(true);
-		setArdyStatus("connecting…");
+		reportArdyStatus("connecting…");
 		setArdyReport(null);
 		setArdyOutcome(null);
 		try {
@@ -1767,7 +1802,7 @@ export default function App() {
 			const done = await ardyGenerate(
 				body,
 				(event) => {
-					if (event.event === "status") setArdyStatus(event.message);
+					if (event.event === "status") reportArdyStatus(event.message);
 					else if (event.event === "report") {
 						setArdyReport(event.report);
 						if (hasBlockEdits) editCommitReport = event.report;
@@ -1828,57 +1863,102 @@ export default function App() {
 						Cozy <span>Clay</span>
 					</span>
 				</div>
-				<div className="viewmode" aria-label="Workspace view">
-					<button
-						type="button"
-						className={viewMode === "shot" ? "active" : ""}
-						aria-pressed={viewMode === "shot"}
-						onClick={() => setViewMode("shot")}
-					>
-						Shot view
-					</button>
-					<button
-						type="button"
-						className={viewMode === "plan" ? "active" : ""}
-						aria-pressed={viewMode === "plan"}
-						onClick={() => setViewMode("plan")}
-					>
-						Bird&apos;s-eye
-					</button>
-				</div>
-				<details className="controls-menu">
-					<summary>
-						Controls
-						<span aria-hidden="true">⌄</span>
-					</summary>
-					<div className="controls-popover">
-					{posing ? (
-						<p><strong>Pose mode</strong>Drag joint handles, then click Done.</p>
-					) : ikMode ? (
-						<p><strong>IK mode</strong>Drag a wrist or ankle. Keys land on Full-Body.</p>
-					) : (
-						<div className="controls-grid">
-							<kbd>Right-drag</kbd><span>Look around (fly)</span>
-							<kbd>RMB + WASD</kbd><span>Walk while flying</span>
-							<kbd>RMB + Q/E</kbd><span>Crane down / up</span>
-							<kbd>Middle-drag</kbd><span>Pan</span>
-							<kbd>Alt + drag</kbd><span>Orbit the selection</span>
-							<kbd>Scroll</kbd><span>Dolly</span>
-							<kbd>Click</kbd><span>Select · empty clears</span>
-							<kbd>W / E / R</kbd><span>Move / rotate / scale</span>
-							<kbd>Ctrl</kbd><span>Invert snapping</span>
-							<kbd>F</kbd><span>Frame selection</span>
-							<kbd>Ctrl+D</kbd><span>Duplicate</span>
-							<kbd>Drag puck</kbd><span>Move in plan</span>
-						</div>
-					)}
-					</div>
-				</details>
+
 			</header>
 
 			<div className="main" style={workspaceStyle}>
 			<div className="workspace">
+				<aside className="panel hierarchy-left" aria-label="Hierarchy">
+				<HierarchyPanel
+					selectedId={selectedHierarchyId}
+					onSelect={selectHierarchy}
+					showB={showB}
+					motionFrames={motion?.frames ?? 0}
+					promptCount={promptClips.length}
+					ikFrames={ikFrames.length}
+					ikMode={ikMode}
+					waypointCount={waypoints.length}
+					sceneObjects={sceneObjects}
+					onAddObject={addSceneObject}
+					onRenameObject={renameSceneObject}
+					onDuplicateObject={duplicateSelectedSceneObject}
+					onDeleteObject={deleteSceneObject}
+					onFrameObject={frameSelection}
+				/>
+				</aside>
+				<div
+					className="workspace-splitter workspace-splitter-vertical"
+					role="separator"
+					aria-label="Resize hierarchy panel"
+					onPointerDown={(event) => beginWorkspaceResize("hierarchy", event)}
+				/>
 				<div className="viewport">
+				<div className="pane-tabs" role="tablist" aria-label="Center view">
+					<button
+						type="button"
+						role="tab"
+						aria-selected={centerTab === "scene"}
+						className={centerTab === "scene" ? "active" : ""}
+						onClick={() => setCenterTab("scene")}
+					>
+						Scene
+					</button>
+					<button
+						type="button"
+						role="tab"
+						aria-selected={centerTab === "play"}
+						className={centerTab === "play" ? "active" : ""}
+						onClick={() => setCenterTab("play")}
+					>
+						PlayView
+					</button>
+				</div>
+				{centerTab === "scene" && (
+				<div className="editor-toolbar scene-tools" aria-label="Scene tools">
+						<div className="tool-switch" role="group" aria-label="Gizmo tool">
+							<button
+								type="button"
+								className={gizmoMode === "move" ? "active" : ""}
+								title="Move tool (W)"
+								aria-pressed={gizmoMode === "move"}
+								onClick={() => setGizmoMode("move")}
+							>
+								<svg viewBox="0 0 16 16" aria-hidden="true" className="tool-icon"><path d="M8 1v14M1 8h14" stroke="currentColor" strokeWidth="1.4"/><path d="M8 1 6 3h4L8 1zM8 15l-2-2h4l-2 2zM1 8l2-2v4L1 8zM15 8l-2-2v4l2-2z" fill="currentColor"/></svg>
+								Move
+							</button>
+							<button
+								type="button"
+								className={gizmoMode === "rotate" ? "active" : ""}
+								title="Rotate tool (E)"
+								aria-pressed={gizmoMode === "rotate"}
+								onClick={() => setGizmoMode("rotate")}
+							>
+								<svg viewBox="0 0 16 16" aria-hidden="true" className="tool-icon"><circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" strokeWidth="1.4"/><path d="M13.4 8l2-2v4l-2 2z" fill="currentColor" transform="rotate(45 13.4 8)"/></svg>
+								Rotate
+							</button>
+							<button
+								type="button"
+								className={gizmoMode === "scale" ? "active" : ""}
+								title="Scale tool (R)"
+								aria-pressed={gizmoMode === "scale"}
+								onClick={() => setGizmoMode("scale")}
+							>
+								<svg viewBox="0 0 16 16" aria-hidden="true" className="tool-icon"><rect x="3" y="3" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1.4"/><path d="M13 13h-4M13 13V9M13 13l-3.5-3.5" stroke="currentColor" strokeWidth="1.4" fill="none"/></svg>
+								Scale
+							</button>
+						</div>
+						<button
+							type="button"
+							className={"snap-switch" + (snapEnabled ? " active" : "")}
+							title="Grid snapping — hold Ctrl during a drag to invert"
+							aria-pressed={snapEnabled}
+							onClick={() => setSnapEnabled((v) => !v)}
+						>
+							Snap
+						</button>
+					</div>
+				)}
+
 					<div className="stage" id="stage" ref={stageRef} data-render-loop={renderActive ? "always" : "demand"}>
 						<Canvas frameloop={renderActive ? "always" : "demand"} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true }}>
 							<RenderLoopController stageRef={stageRef} />
@@ -1887,6 +1967,7 @@ export default function App() {
 								insetY={insetPos?.y ?? null}
 								insetWidth={workspaceLayout.insetWidth}
 								insetHeight={workspaceLayout.insetHeight}
+								hierarchyWidth={workspaceLayout.hierarchyWidth}
 								sidebarWidth={workspaceLayout.sidebarWidth}
 								timelineHeight={workspaceLayout.timelineHeight}
 							/>
@@ -1967,7 +2048,7 @@ export default function App() {
 							    pointerdowns that hit a handle, so empty-space drags orbit
 							    and the wheel dollies without wrecking the framing. */}
 							<FlyControls
-								enabled={!posing}
+								enabled={!posing && !playMode}
 								camRef={ikMode ? poserCamRef : shotCamRef}
 								look={ikMode ? poserLook : look}
 								getPivot={() => {
@@ -1981,14 +2062,14 @@ export default function App() {
 							/>
 							<PoseHandles
 								root={posing === "B" ? rigB : rigA}
-								enabled={!!posing && !planIsMain}
+								enabled={!!posing && !planIsMain && !playMode}
 								onChange={() => setPoseTick((n) => n + 1)}
 							/>
 							<IkHandles
 								chains={ikChains}
 								fkJoints={ikFkJoints}
 								ikState={ikStateRef.current}
-								enabled={ikMode && !posing}
+								enabled={ikMode && !posing && !playMode}
 								focus={ikFocus}
 								onFocus={focusIkHandle}
 								onSolve={ikSolve}
@@ -2031,7 +2112,7 @@ export default function App() {
 								objects={sceneObjects}
 								mode={gizmoMode}
 								snap={snapEnabled}
-								enabled={!planIsMain && !posing && !ikMode}
+								enabled={!planIsMain && !posing && !ikMode && !playMode}
 								paneRef={mainPaneRef}
 								camRef={shotCamRef}
 								onChange={changeSceneObject}
@@ -2049,12 +2130,14 @@ export default function App() {
 								poserCamRef={poserCamRef}
 								ikMode={ikMode}
 								planIsMain={planIsMain}
+								playMode={playMode}
 							/>
 						</Canvas>
 
 						<div ref={mainPaneRef} className={"vp-pane vp-main" + (planIsMain ? " plan" : "")} />
 						<div
 							ref={insetPaneRef}
+							hidden={playMode}
 							className={"vp-pane vp-inset" + (planIsMain || ikMode ? " shot" : " plan")}
 							style={insetPos ? { left: insetPos.x, top: insetPos.y, right: "auto" } : undefined}
 						>
@@ -2074,15 +2157,22 @@ export default function App() {
 							/>
 						</div>
 
-						<div className="film-frame">
+						<div className="film-frame" hidden={playMode}>
 							<span />
 							<span />
 							<span />
 							<span />
 						</div>
-						<div className={"caption" + (subjectVisible ? "" : " off")}>
+						<div className={"caption" + (subjectVisible ? "" : " off")} hidden={playMode}>
 							{subjectVisible ? slateLine(shot) : "SUBJECT OUT OF FRAME"}
 						</div>
+
+						{playMode && !motion && (
+							<div className="playview-empty" role="status">
+								<strong>No motion yet</strong>
+								<span>Generate motion in the Scene tab — PlayView plays the finished result.</span>
+							</div>
+						)}
 
 						{posing && (
 							<PoseStudioPanel
@@ -2113,25 +2203,7 @@ export default function App() {
 					aria-label="Resize hierarchy and inspector panel"
 					onPointerDown={(event) => beginWorkspaceResize("sidebar", event)}
 				/>
-				<aside className="panel hierarchy-sidebar" data-inspector={selectedHierarchyId}>
-					<nav className="right-panel-tabs" aria-label="Right panel view">
-						<button
-							type="button"
-							className={rightPanelTab === "hierarchy" ? "active" : ""}
-							aria-pressed={rightPanelTab === "hierarchy"}
-							onClick={() => setRightPanelTab("hierarchy")}
-						>
-							Hierarchy
-						</button>
-						<button
-							type="button"
-							className={rightPanelTab === "detail" ? "active" : ""}
-							aria-pressed={rightPanelTab === "detail"}
-							onClick={() => setRightPanelTab("detail")}
-						>
-							{rightPanelDetailLabel}
-						</button>
-					</nav>
+				<aside className="panel hierarchy-sidebar inspector-sidebar" data-inspector={selectedHierarchyId}>
 					{/* Save failures live above the tab content, not inside the Props
 					    card: that card is hidden whenever any hierarchy node is
 					    selected, and saves fire exactly while objects are being
@@ -2145,33 +2217,13 @@ export default function App() {
 							{sceneSaveError}
 						</p>
 					)}
-					<div className="right-panel-view">
-					<div className="hierarchy-tab-pane" hidden={rightPanelTab !== "hierarchy"}>
-					<HierarchyPanel
-						selectedId={selectedHierarchyId}
-						onSelect={selectHierarchy}
-						showB={showB}
-						motionFrames={motion?.frames ?? 0}
-						promptCount={promptClips.length}
-						ikFrames={ikFrames.length}
-						ikMode={ikMode}
-						waypointCount={waypoints.length}
-						sceneObjects={sceneObjects}
-						onAddObject={addSceneObject}
-						onRenameObject={renameSceneObject}
-						onDuplicateObject={duplicateSelectedSceneObject}
-						onDeleteObject={deleteSceneObject}
-						onFrameObject={frameSelection}
-					/>
-					</div>
-					<section className="inspector-pane" hidden={rightPanelTab !== "detail"}>
+					<section className="inspector-pane">
 					<div className="inspector-heading">
-						<span>Inspector</span>
-						<strong>{selectedSceneObject?.name ?? HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId] ?? "Selection"}</strong>
+						<strong>Inspector</strong>
+						<span className="inspector-heading-selection">{selectedSceneObject?.name ?? HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId] ?? "Selection"}</span>
 					</div>
 					<div className="inspector-scroll">
-					<section className="card" hidden={selectedHierarchyId !== "shot"}>
-						<h3>Shot type</h3>
+					<Foldout hidden={selectedHierarchyId !== "shot"} title="Shot type">
 						<div className="presets">
 							{Object.entries(PRESETS).map(([key, p]) => (
 								<button key={key} className={preset === key ? "active" : ""} onClick={() => applyPreset(key)}>
@@ -2179,10 +2231,9 @@ export default function App() {
 								</button>
 							))}
 						</div>
-					</section>
+					</Foldout>
 
-					<section className="card" hidden={selectedHierarchyId !== "camera"}>
-						<h3>Camera</h3>
+					<Foldout hidden={selectedHierarchyId !== "camera"} title="Camera">
 						<Slider label="Lens (FOV)" min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
 						<div className="readout">
 							<span title="camera to subject">{shot.distance.toFixed(2)} m</span>
@@ -2192,10 +2243,9 @@ export default function App() {
 						<button className="btn ghost" onClick={() => setNonce((n) => n + 1)}>
 							Recenter on subject
 						</button>
-					</section>
+					</Foldout>
 
-					<section className="card" hidden={!["characters", "characterA", "characterA.character", "characterB", "characterB.character"].includes(selectedHierarchyId)}>
-						<h3>{showB ? "Subjects" : "Subject"}</h3>
+					<Foldout hidden={!["characters", "characterA", "characterA.character", "characterB", "characterB.character"].includes(selectedHierarchyId)} title={showB ? "Subjects" : "Subject"}>
 						<div className={"subjects-row" + (showB ? "" : " single")}>
 							<SubjectBox
 								label="Subject 1"
@@ -2221,10 +2271,9 @@ export default function App() {
 								<span>Add second subject</span>
 							</button>
 						)}
-					</section>
+					</Foldout>
 
-					<section className="card" hidden={!["characters", "characterA", "characterA.character", "characterB", "characterB.character"].includes(selectedHierarchyId)}>
-						<h3>Pose</h3>
+					<Foldout hidden={!["characters", "characterA", "characterA.character", "characterB", "characterB.character"].includes(selectedHierarchyId)} title="Pose">
 						<Field label={showB ? "Subject 1 pose" : "Pose"}>
 							<Dropdown
 								ariaLabel="Subject 1 pose"
@@ -2243,10 +2292,9 @@ export default function App() {
 								/>
 							</Field>
 						)}
-					</section>
+					</Foldout>
 
-					<section className="card" hidden={selectedHierarchyId !== "shot"}>
-						<h3>Prompt</h3>
+					<Foldout hidden={selectedHierarchyId !== "shot"} title="Prompt">
 						<div className="segmented" data-active={mode}>
 							<button className={mode === "image" ? "active" : ""} onClick={() => setMode("image")}>
 								Image
@@ -2324,9 +2372,8 @@ export default function App() {
 						<button className="btn primary full generate" onClick={generate}>
 							Generate
 						</button>
-					</section>
-				<section className="card" hidden={!["characterA.motion", "characterA.baseMotion"].includes(selectedHierarchyId)}>
-					<h3>ARDY motion</h3>
+					</Foldout>
+				<Foldout hidden={!["characterA.motion", "characterA.baseMotion"].includes(selectedHierarchyId)} title="ARDY motion">
 					{bridge === null ? (
 						<p className="ardy-hint">Checking for the dev bridge…</p>
 					) : bridge.ok ? (
@@ -2441,9 +2488,8 @@ export default function App() {
 							{bridge.reason && <p className="ardy-hint">{bridge.reason}</p>}
 						</>
 					)}
-				</section>
-					<section className="card" hidden={selectedHierarchyId !== "characterA.promptBlocks"}>
-						<h3>Prompt Blocks</h3>
+				</Foldout>
+					<Foldout hidden={selectedHierarchyId !== "characterA.promptBlocks"} title="Prompt Blocks">
 						<p className="inspector-hint">Blocks define what ARDY generates over each frame range. Selecting one also moves editing context to that prompt.</p>
 						<div className="inspector-list">
 							{promptClips.map((clip) => (
@@ -2490,10 +2536,9 @@ export default function App() {
 						<button type="button" className="btn ghost full" onClick={() => addPromptClip(tlFrame)}>
 							Add block at frame {tlFrame}
 						</button>
-					</section>
+					</Foldout>
 
-					<section className="card" hidden={selectedHierarchyId !== "characterA.ik"}>
-						<h3>IK Corrections</h3>
+					<Foldout hidden={selectedHierarchyId !== "characterA.ik"} title="IK Corrections">
 						<div className="inspector-status-grid">
 							<span>IK mode</span><b>{ikMode ? "ON" : "OFF"}</b>
 							<span>Current frame</span><b>{tlFrame}</b>
@@ -2526,10 +2571,9 @@ export default function App() {
 								</button>
 							))}
 						</div>
-					</section>
+					</Foldout>
 
-					<section className="card" hidden={!(selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig."))}>
-						<h3>Rig Control</h3>
+					<Foldout hidden={!(selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig."))} title="Rig Control">
 						<p className="inspector-hint">
 							{selectedHierarchyId.startsWith("rig.")
 								? `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]} is the active control group.`
@@ -2543,10 +2587,9 @@ export default function App() {
 						<button type="button" className={"btn full" + (ikMode ? " primary" : "")} onClick={toggleIkMode} disabled={!ikChains}>
 							{ikMode ? "Finish rig editing" : "Edit rig with IK"}
 						</button>
-					</section>
+					</Foldout>
 
-					<section className="card" hidden={selectedHierarchyId !== "rootPath"}>
-						<h3>Root Path</h3>
+					<Foldout hidden={selectedHierarchyId !== "rootPath"} title="Root Path">
 						<div className="inspector-status-grid">
 							<span>Path mode</span><b>{waypointMode ? "ON" : "OFF"}</b>
 							<span>Waypoints</span><b>{waypoints.length}</b>
@@ -2579,10 +2622,9 @@ export default function App() {
 								</button>
 							))}
 						</div>
-					</section>
+					</Foldout>
 
-					<section className="card" hidden={selectedHierarchyId !== "environment"}>
-						<h3>Environment</h3>
+					<Foldout hidden={selectedHierarchyId !== "environment"} title="Environment">
 						<label className="check">
 							<input type="checkbox" checked={hasEnvSheet} onChange={(event) => setHasEnvSheet(event.target.checked)} />
 							<span>I have an environment sheet</span>
@@ -2595,10 +2637,9 @@ export default function App() {
 						<Field label="Look / style">
 							<input type="text" value={style} onChange={(event) => setStyle(event.target.value)} />
 						</Field>
-					</section>
+					</Foldout>
 
-					<section className="card" hidden={selectedHierarchyId !== "props"}>
-						<h3>Props</h3>
+					<Foldout hidden={selectedHierarchyId !== "props"} title="Props">
 						<p className="inspector-hint">Everything you add to the set lives here. Pick one to edit it, or click it in the shot view.</p>
 						<AddObjectMenu onAdd={addSceneObject} label="Add object to the set" />
 						<div className="inspector-list compact">
@@ -2613,16 +2654,13 @@ export default function App() {
 								</button>
 							))}
 						</div>
-					</section>
+					</Foldout>
 
-					<section className="card" hidden={!selectedSceneObject}>
-						<h3>Object Transform</h3>
+					<Foldout hidden={!selectedSceneObject} title="Object Transform">
 						{selectedSceneObject && (
 							<>
 								<p className="inspector-hint">
-									Type an exact value and press Enter, or drag the X / Y / Z label
-									next to a field to scrub it. Values here and the gizmo write to
-									the same record, so the two views can never disagree.
+									Type a value and press Enter, or drag an axis letter to scrub.
 								</p>
 								<div className="presets gizmo-modes">
 									<button type="button" className={gizmoMode === "move" ? "active" : ""} onClick={() => setGizmoMode("move")}>
@@ -2683,20 +2721,23 @@ export default function App() {
 										/>
 									))}
 								</div>
-								<button
-									type="button"
-									className="btn ghost full"
-									title="You can also press Delete or Backspace"
-									onClick={deleteSelectedSceneObject}
-								>
-									Remove {selectedSceneObject.name}
-								</button>
 							</>
 						)}
-					</section>
+					</Foldout>
 					</div>
+					{selectedSceneObject && (
+						<div className="inspector-footer">
+							<button
+								type="button"
+								className="btn ghost full"
+								title="You can also press Delete or Backspace"
+								onClick={deleteSelectedSceneObject}
+							>
+								Remove {selectedSceneObject.name}
+							</button>
+						</div>
+					)}
 					</section>
-					</div>
 				</aside>
 			</div>
 
@@ -2706,6 +2747,38 @@ export default function App() {
 				aria-label="Resize frame monitor"
 				onPointerDown={(event) => beginWorkspaceResize("timeline", event)}
 			/>
+			<div className="bottom-window">
+				<nav className="bottom-window-tabs" aria-label="Bottom window">
+					<button
+						type="button"
+						className={bottomTab === "timeline" ? "active" : ""}
+						aria-pressed={bottomTab === "timeline"}
+						onClick={() => setBottomTab("timeline")}
+					>
+						Animation
+					</button>
+					<button
+						type="button"
+						className={bottomTab === "console" ? "active" : ""}
+						aria-pressed={bottomTab === "console"}
+						onClick={() => setBottomTab("console")}
+					>
+						Console
+					</button>
+				</nav>
+				<div className="console-pane" hidden={bottomTab !== "console"}>
+					{consoleLines.length === 0 ? (
+						<p className="console-empty">No messages yet — ARDY status lines appear here.</p>
+					) : (
+						consoleLines.map((entry, index) => (
+							<p className="console-line" key={index}>
+								<time>{entry.time.toLocaleTimeString()}</time>
+								<span>{entry.line}</span>
+							</p>
+						))
+					)}
+				</div>
+				<div className="bottom-timeline" hidden={bottomTab !== "timeline"}>
 				<Timeline
 					frame={tlFrame}
 					frameCount={tlFrameCount}
@@ -2745,7 +2818,6 @@ export default function App() {
 					setSelectedPromptId(id);
 					setArdyPrompt(promptClips.find((clip) => clip.id === id)?.text ?? "");
 					setSelectedHierarchyId("characterA.promptBlocks");
-					setRightPanelTab("detail");
 				}}
 				onPromptChange={changePromptClip}
 				onPromptResize={resizePromptClip}
@@ -2753,6 +2825,8 @@ export default function App() {
 				onPromptRemove={removePromptClip}
 				onClearMotion={motion ? clearMotion : null}
 			/>
+				</div>
+			</div>
 		</div>
 
 			<footer className="brandbar">
@@ -2805,6 +2879,23 @@ function fmtMeters(value) {
 }
 
 /** Mid-clip frame of a base motion, the sensible default for the destination. */
+
+/** Unity Inspector-style foldout: a titled section the user can collapse.
+ * Cards default to open; the fold state is per-title session state. */
+function Foldout({ title, hidden, children }) {
+	const [open, setOpen] = useState(true);
+	return (
+		<section className={"card foldout" + (open ? " open" : "")} hidden={hidden}>
+			<h3>
+				<button type="button" className="foldout-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+					<span className="foldout-arrow" aria-hidden="true">{open ? "\u25BE" : "\u25B8"}</span>
+					<span className="foldout-title">{title}</span>
+				</button>
+			</h3>
+			{open && <div className="foldout-body">{children}</div>}
+		</section>
+	);
+}
 
 function SubjectBox({ label, value, onChange, onRemove, onPose, posing }) {
 	const set = (key) => (v) => onChange((prev) => ({ ...prev, [key]: v }));

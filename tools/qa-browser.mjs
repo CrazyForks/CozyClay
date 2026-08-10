@@ -46,7 +46,7 @@ try {
 		"--headless=new",
 		`--remote-debugging-port=${port}`,
 		`--user-data-dir=${profileDir}`,
-		"--window-size=1600,1000",
+		`--window-size=${process.env.QA_WINDOW || "1600,1000"}`,
 		pageUrl,
 	]);
 	children.push(chrome);

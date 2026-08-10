@@ -215,7 +215,7 @@ const ringGrab = await evaluate(
 		" const solid = (x, y) => [[0,0],[3,0],[-3,0],[0,3],[0,-3]].every(([dx,dy]) => window.__gizmoPick(x+dx, y+dy) === 'y');" +
 		" for (let r = 8; r < 260; r += 2) { for (let a = 0; a < 360; a += 15) {" +
 		" const x = Math.round(c.x + r * Math.cos(a * Math.PI / 180)); const y = Math.round(c.y + r * Math.sin(a * Math.PI / 180));" +
-		" if (solid(x, y)) return { x, y }; } } return null; })()",
+		" if (solid(x, y) && document.elementFromPoint(x, y)?.tagName === 'CANVAS') return { x, y }; } } return null; })()",
 );
 expect("the Y ring is grabbable on screen", !!ringGrab);
 const beforeRotate = await transform();
@@ -261,10 +261,29 @@ expect("a Y knob drag leaves the other axes alone", afterScale.Scale[0] === befo
 expect("scale lands on 5 percent steps", Math.abs(afterScale.Scale[1] * 20 - Math.round(afterScale.Scale[1] * 20)) < 1e-6, String(afterScale.Scale[1]));
 await pressKey("w", "KeyW");
 
+// restore the unit scale: the following sections assume a 1 m cube — at 4x
+// the gizmo rides so high it projects under the bird's-eye inset pane
+await evaluate(
+	"(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === 'Scale');" +
+	" const input = r.querySelectorAll('input')[1]; input.focus();" +
+	" Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, '1');" +
+	" input.dispatchEvent(new Event('input', { bubbles: true }));" +
+	" input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()",
+);
+await waitFor(
+	"(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === 'Scale'); return parseFloat(r.querySelectorAll('input')[1].value) === 1; })()",
+);
+
 /* ------------------------------------------------------ selection ---- */
 
-const objectCentre = await evaluate(
-	"(() => { const g = window.__gizmoHandles(); const c = g.reduce((a, h) => ({ x: a.x + h.x / g.length, y: a.y + h.y / g.length }), { x: 0, y: 0 }); return { x: Math.round(c.x), y: Math.round(c.y) }; })()",
+// Click a pixel that is unambiguously the object body: the gizmo sits on the
+// pivot, so averaging handle positions lands between the handles, not on the
+// mesh. Scan out from the gizmo centre for a spot the object owns.
+globalThis.objectCentre = await evaluate(
+	"(() => { const g = window.__gizmoHandles(); const c = g.reduce((a, h) => ({ x: a.x + h.x / g.length, y: a.y + h.y / g.length }), { x: 0, y: 0 });" +
+	" for (let r = 4; r < 400; r += 4) { for (let a = 0; a < 360; a += 20) {" +
+	" const x = Math.round(c.x + r * Math.cos(a * Math.PI / 180)); const y = Math.round(c.y + r * Math.sin(a * Math.PI / 180));" +
+	" if (window.__objectPick(x, y) && !window.__gizmoPick(x, y) && document.elementFromPoint(x, y)?.tagName === \"CANVAS\") return { x, y }; } } return { x: Math.round(c.x), y: Math.round(c.y) }; })()",
 );
 await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('SHOT 01'))");
 // the deselection commit unmounts the gizmo; poll for it
@@ -287,8 +306,9 @@ const beforeBody = await transform();
 // somewhere on the body that is NOT under a gizmo handle
 const bodyGrab = await evaluate(
 	"(() => { const g = window.__gizmoHandles(); const c = g.reduce((a, h) => ({ x: a.x + h.x / g.length, y: a.y + h.y / g.length }), { x: 0, y: 0 });" +
-		" for (let dy = 20; dy < 200; dy += 6) { const x = Math.round(c.x); const y = Math.round(c.y + dy);" +
-		" if (!window.__gizmoPick(x, y) && window.__objectPick(x, y)) return { x, y }; } return null; })()",
+		" for (let r = 12; r < 400; r += 4) { for (let a = 0; a < 360; a += 15) {" +
+		" const x = Math.round(c.x + r * Math.cos(a * Math.PI / 180)); const y = Math.round(c.y + r * Math.sin(a * Math.PI / 180));" +
+		" if (!window.__gizmoPick(x, y) && window.__objectPick(x, y) && document.elementFromPoint(x, y)?.tagName === \"CANVAS\") return { x, y }; } } return null; })()",
 );
 expect("the object body is pickable away from the handles", !!bodyGrab);
 const poseBeforeBodyDrag = await gizmoPose();
@@ -297,9 +317,33 @@ expect("dragging the object body does NOT transform it", JSON.stringify(await tr
 expect("dragging the object body does NOT fly the camera", (await gizmoPose()) === poseBeforeBodyDrag);
 
 // Empty space: a left press clears the selection instead of flying.
-await drag({ x: 60, y: 120 }, { x: 240, y: 210 });
+// The fly/pan/orbit section leaves the camera wherever the gestures took it —
+// possibly right on top of the cube, where every pixel picks the body. Reset
+// to the shot preset first so empty floor is actually on screen.
+await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Recenter'))?.click()");
+await sleep(600);
+// empty floor near the canvas lower-left, clear of the overlay toolbar and the subject
+const emptySpot = await evaluate(
+	"(() => { const r = document.querySelector('canvas').getBoundingClientRect();" +
+	" for (let yy = 0.85; yy > 0.1; yy -= 0.06) { for (let xx = 0.06; xx < 0.95; xx += 0.05) {" +
+	" const x = Math.round(r.left + r.width * xx); const y = Math.round(r.top + r.height * yy);" +
+	" if (!window.__objectPick(x, y) && !window.__gizmoPick(x, y) && document.elementFromPoint(x, y)?.tagName === 'CANVAS') return { x, y }; } } return null; })()",
+);
+if (!emptySpot) {
+globalThis.why = await evaluate(
+		"(() => { const r = document.querySelector('canvas').getBoundingClientRect(); const out = [];" +
+		" for (const [xx, yy] of [[0.1, 0.8], [0.3, 0.7], [0.5, 0.5], [0.8, 0.3], [0.2, 0.4]]) {" +
+		" const x = Math.round(r.left + r.width * xx); const y = Math.round(r.top + r.height * yy);" +
+		" out.push([x, y, window.__objectPick(x, y), window.__pickObjectDebug, window.__gizmoPick(x, y), document.elementFromPoint(x, y)?.tagName + '.' + (document.elementFromPoint(x, y)?.className ?? '')]); } return out; })()",
+	);
+	throw new Error("no empty canvas pixel found for the clear-selection drag: " + JSON.stringify(why));
+}
+await drag(emptySpot, { x: emptySpot.x + 140, y: emptySpot.y - 60 });
 expect("a left drag on empty space clears the selection and leaves the camera", await evaluate("window.__gizmoHandles().length === 0"));
 
+// Camera drags need a point safely inside the canvas: the studio layout
+// puts panels around the stage, so a hardcoded corner is not stable geometry.
+globalThis.canvasPoint = await evaluate("(() => { const r = document.querySelector('canvas').getBoundingClientRect(); return { x: Math.round(r.left + r.width * 0.35), y: Math.round(r.top + r.height * 0.45) }; })()");
 // Right-drag is the camera.
 await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 // selecting the object remounts the gizmo; poll for the commit
@@ -307,20 +351,26 @@ await waitFor("window.__gizmoHandles().length > 0");
 expect("the object is selectable again from the hierarchy", await evaluate("window.__gizmoHandles().length > 0"));
 const beforeFly = await transform();
 const restPose = await gizmoPose();
-await drag({ x: 300, y: 300 }, { x: 420, y: 340 }, { button: "right" });
+await drag(canvasPoint, { x: canvasPoint.x + 120, y: canvasPoint.y + 40 }, { button: "right" });
 expect("right-drag flies the camera", (await gizmoPose()) !== restPose, `${restPose} -> ${await gizmoPose()}`);
 expect("flying the camera does not move the object", JSON.stringify(await transform()) === JSON.stringify(beforeFly));
 
 // Middle-drag pans, Alt+left orbits — both move the view, neither the object.
 const beforePan = await gizmoPose();
-await drag({ x: 300, y: 300 }, { x: 360, y: 330 }, { button: "middle" });
+await drag(canvasPoint, { x: canvasPoint.x + 60, y: canvasPoint.y + 30 }, { button: "middle" });
 expect("middle-drag pans the camera", (await gizmoPose()) !== beforePan);
 const beforeOrbit = await gizmoPose();
-await drag({ x: 300, y: 300 }, { x: 380, y: 300 }, { modifiers: ALT });
+await drag(canvasPoint, { x: canvasPoint.x + 80, y: canvasPoint.y }, { modifiers: ALT });
 expect("Alt+left orbits the camera", (await gizmoPose()) !== beforeOrbit);
 expect("navigation never edits the object", JSON.stringify(await transform()) === JSON.stringify(beforeFly), JSON.stringify(await transform()));
 
 /* ------------------------------------------------- plane handle ------ */
+
+// The camera section leaves the pose wherever fly/pan/orbit took it; at a
+// grazing angle to the floor the XZ plane turns pixels into metres of travel
+// and the object leaves the frame. Reset to the shot preset first.
+await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Recenter'))?.click()");
+await sleep(600);
 
 await pressKey("w", "KeyW");
 await sleep(900);
@@ -368,14 +418,18 @@ expect(
 /* ----------------------------------------------------- plan parity --- */
 
 const beforePlan = await transform();
-await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Bird'))");
+const insetCtr = await evaluate("(() => { const p = document.querySelector('.vp-inset'); const r = p.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()");
+await send("Input.dispatchMouseEvent", { type: "mousePressed", x: insetCtr.x, y: insetCtr.y, button: "left", buttons: 1, clickCount: 2 });
+await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: insetCtr.x, y: insetCtr.y, button: "left", buttons: 0, clickCount: 2 });
 await sleep(1200);
 const planGrab = await evaluate(
 	`(() => { const b = document.querySelector('.vp-main').getBoundingClientRect(); const scale = (b.height / 2) / 7.2;
 		return { x: Math.round(b.left + b.width / 2 + ${beforePlan.Position[0]} * scale), y: Math.round(b.top + b.height / 2 + ${beforePlan.Position[2]} * scale) }; })()`,
 );
 await drag(planGrab, { x: planGrab.x, y: planGrab.y + 60 });
-await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Shot'))");
+const insetCtr2 = await evaluate("(() => { const p = document.querySelector('.vp-inset'); const r = p.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()");
+await send("Input.dispatchMouseEvent", { type: "mousePressed", x: insetCtr2.x, y: insetCtr2.y, button: "left", buttons: 1, clickCount: 2 });
+await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: insetCtr2.x, y: insetCtr2.y, button: "left", buttons: 0, clickCount: 2 });
 await sleep(700);
 const afterPlan = await transform();
 expect("the bird's-eye board drives the same object record", afterPlan.Position[2] !== beforePlan.Position[2], JSON.stringify(afterPlan));
@@ -399,8 +453,6 @@ await sleep(300);
 
 /* --------------------------------------------- hierarchy actions ----- */
 
-await click("[...document.querySelectorAll('.right-panel-tabs button')].find(b => b.textContent === 'Hierarchy')");
-await sleep(250);
 const cubeRow = await evaluate(
 	"(() => { const row = [...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'));" +
 		" if (!row) return null; const r = row.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()",
@@ -782,6 +834,18 @@ const cameraDistance = () => evaluate("document.querySelector('span[title=\"came
 // fresh, so the extra entry is invisible to them.
 await pressKey("End", "End");
 await waitFor(`${positionInput(1)} === 1`);
+// the camera-puck flight above leaves the pose wherever the plan drag took
+// it; the Chair's gizmo can project under the bird's-eye inset pane, where a
+// real press never reaches the canvas. Reset to the shot preset, then park
+// the inset in the stage's lower-left so it cannot occlude the handle.
+await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Recenter'))?.click()");
+await sleep(600);
+globalThis.insetTag = await evaluate("(() => { const t = document.querySelector('.vp-inset-tag'); if (!t) return null; const r = t.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()");
+if (insetTag) {
+globalThis.stageBox = await evaluate("(() => { const r = document.querySelector('.stage').getBoundingClientRect(); return { x: Math.round(r.left + 130), y: Math.round(r.bottom - 130) }; })()");
+	await drag(insetTag, stageBox);
+	await sleep(300);
+}
 expect("the lifecycle section starts with the Chair back on the Cube", (await transform()).Position[1] === 1, JSON.stringify(await transform()));
 
 // pointercancel mid-drag COMMITS: pointer loss is not intent to discard.
@@ -955,7 +1019,9 @@ const chairForPlan = await transform(); // the Chair, now away from the Cube
 const pastBeforePlan = await evaluate("window.__sceneHistory().past");
 await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 await waitFor("window.__gizmoHandles().length > 0");
-await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Bird'))");
+const insetCtrB = await evaluate("(() => { const p = document.querySelector('.vp-inset'); const r = p.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()");
+await send("Input.dispatchMouseEvent", { type: "mousePressed", x: insetCtrB.x, y: insetCtrB.y, button: "left", buttons: 1, clickCount: 2 });
+await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: insetCtrB.x, y: insetCtrB.y, button: "left", buttons: 0, clickCount: 2 });
 await waitFor("document.querySelector('.vp-main').classList.contains('plan')");
 await sleep(150); // the plan host's pointerdown listener binds after the commit
 const planRect = await evaluate("(() => { const b = document.querySelector('.vp-main').getBoundingClientRect(); return { left: b.left, top: b.top, width: b.width, height: b.height, scale: (b.height / 2) / 7.2 }; })()");
@@ -1014,14 +1080,22 @@ expect("the store stays settled after a camera drag", await evaluate("window.__s
 // travel commits as its own entry and the removal as a second — the two can
 // never fold into one. The producer dies with the drag: further pointer
 // movement resurrects nothing. (Last: it removes the Chair.)
-await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Shot'))");
+const insetCtr2B = await evaluate("(() => { const p = document.querySelector('.vp-inset'); const r = p.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()");
+await send("Input.dispatchMouseEvent", { type: "mousePressed", x: insetCtr2B.x, y: insetCtr2B.y, button: "left", buttons: 1, clickCount: 2 });
+await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: insetCtr2B.x, y: insetCtr2B.y, button: "left", buttons: 0, clickCount: 2 });
 await waitFor("!document.querySelector('.vp-main').classList.contains('plan')");
 await sleep(150);
 await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");
 await waitFor("window.__gizmoHandles().length > 0");
+// the camera-puck flight above leaves the pose wherever the plan drag took it
+await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Recenter'))?.click()");
+await sleep(600);
 const pastBeforeDelete = await evaluate("window.__sceneHistory().past");
 const deleteBefore = await transform();
-const deleteEnd = await dragHeld(await grabX(), { dx: 160 });
+const deleteGrab = await grabX();
+// the X arrow can project near the pane's right edge; drag toward the middle
+globalThis.deleteDx = deleteGrab.x > (await evaluate("document.querySelector('canvas').getBoundingClientRect().right")) * 0.75 ? -160 : 160;
+globalThis.deleteEnd = await dragHeld(deleteGrab, { dx: deleteDx });
 expect(
 	"the Delete case applies real travel before the key",
 	Math.abs((await transform()).Position[0] - deleteBefore.Position[0]) > 0.1,

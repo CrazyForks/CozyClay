@@ -103,7 +103,7 @@ export function fitAspect(rect, aspect) {
 	return { x: rect.x + (rect.w - w) / 2, y: rect.y + (rect.h - h) / 2, w, h };
 }
 
-export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef, poserCamRef, ikMode = false, planIsMain }) {
+export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef, poserCamRef, ikMode = false, planIsMain, playMode = false }) {
 	const { gl, scene, size } = useThree();
 	const edgePass = useMemo(() => {
 		const target = new THREE.WebGLRenderTarget(1, 1, {
@@ -187,7 +187,7 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 		};
 		const mainRect = rectOf(mainRef.current);
 		const insetRect = rectOf(insetRef.current);
-		if (mainRect.w < 2 || insetRect.w < 2) return;
+		if (mainRect.w < 2 || (!playMode && insetRect.w < 2)) return;
 
 		const planPane = planIsMain ? mainRect : insetRect;
 		const shotPane = planIsMain ? insetRect : mainRect;
@@ -247,7 +247,11 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 		}
 		planCam.updateProjectionMatrix();
 
-		if (ikMode && poserCam) {
+		if (playMode) {
+			// PlayView (Unity Game view): the shot camera owns the whole pane —
+			// no plan inset, no editing chrome, just the framed output.
+			draw(shotCam, mainRect, fitAspect(mainRect, SHOT_ASPECT));
+		} else if (ikMode && poserCam) {
 			// IK mode: the main pane is the poser working view (free navigation,
 			// handle layer visible); the inset is the FROZEN shot camera — the
 			// separate camera-placement screen the framing lives on.

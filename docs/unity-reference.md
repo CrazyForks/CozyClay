@@ -405,3 +405,34 @@ Community sources, used only where the manual is silent and marked `[community]`
 - Default increment snap values as shipped: <https://www.ketra-games.com/2020/08/unity-game-tutorial-increment-snap-and-grid-alignment.html>
 
 Items marked `[observed]` are behaviours consistent across Unity versions that the manual does not spell out: clicking empty space clears the selection, the Delete key deletes, clicking an already-selected object is a no-op, and Escape's role in the Scene view.
+
+
+---
+
+## 8. Editor window layout (2026-08-10)
+
+Sections 1–6 cover interaction; this section records where the windows sit.
+CozyClay follows Unity's default editor arrangement. The chrome (top bar,
+hierarchy, inspector, bottom window, brandbar) wears a Unity 6 dark-editor
+skin — palette tokens pinned by test/verify-theme.mjs — while the 3D stage
+keeps the bright lightbox set on purpose: the bird's-eye plan board reads as
+part of that set, so it stays light too. Surfaces with no Unity counterpart
+keep their own look.
+
+| Unity window | CozyClay counterpart | Notes |
+| --- | --- | --- |
+| Toolbar (tool switch, snap) | Top bar: Move / Rotate / Scale switch bound to the same state as the W / E / R hotkeys, plus the Snap toggle | The RectTransform (T) and Transform (Y) tools have no CozyClay meaning and are omitted |
+| Hierarchy (left) | Left window: shot structure tree with the create catalogue and the right-click row menu (§9.7) | Always visible; the former tab strip is gone |
+| Scene view (centre) | Shot viewport | The Shot view / Bird's-eye toggle is a scene-view overlay in Unity's overlay-toolbar position (top-left); the bird's-eye plan board stays a draggable inset pane |
+| Inspector (right) | Right window: the selection's properties as collapsible foldout sections (▸/▾) | Sections default to open; fold state is session-local |
+| Scene / Game tabs | Center pane tabs: **Scene** (the editing view) and **PlayView** (framed output only — no gizmo, inset, fly navigation, or overlays) | PlayView renders the shot camera full-frame; switching tabs never remounts the canvas |
+| Animation (bottom) | Bottom window, "Animation" tab: the Prompt-Block / IK / Root-Path sequencer | Named for Unity's Animation window; Console remains the second tab |
+| Console (bottom) | Bottom window, "Console" tab: the session history of ARDY status lines, newest at the bottom | The inspector still shows the current line; the tab accumulates |
+
+Deliberate divergences:
+
+1. **No menu bar.** Unity's File/Edit/Assets menus would be fake buttons here; the Controls popover keeps the shortcut reference instead.
+2. **No dockable windows.** Panels resize via splitters (persisted in localStorage) but cannot be torn off — browser layout cost outweighs the benefit.
+3. **Pose studio stays a modal overlay** (Unity's modal window equivalent) and the plan board stays an inset pane inside the scene view, because neither has a Unity docking counterpart.
+4. **The brandbar remains** as a slim status strip under the bottom window; Unity's equivalent status text lives inside its windows instead.
+5. **Widget material is Unity flat**: 1px borders, 2px corners, no gradients or glows on buttons, inputs, selects, sliders, dialogs, or foldout section bars. Unity's exact 19px row metrics and 1px bevels are approximated, not measured.

@@ -159,7 +159,7 @@ function TreeRow({
 					<span className={`hierarchy-icon ${node.kind}`} aria-hidden="true" />
 					<span className="hierarchy-label">{node.label}</span>
 					{status && <span className="hierarchy-status">{status}</span>}
-					{badge !== null && badge !== undefined && <span className="hierarchy-badge">{badge}</span>}
+					{badge !== null && badge !== undefined && badge !== 0 && <span className="hierarchy-badge">{badge}</span>}
 				</button>
 			)}
 		</div>
