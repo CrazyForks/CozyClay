@@ -9,7 +9,7 @@ import { loadMotionFromUrl } from "./ardy/npz.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
-import { defaultWaypointPosition, toArdyWaypoints, toSceneRootOffset } from "./ardy/waypoints.js";
+import { alignArdyPath, defaultWaypointPosition, toSceneRootOffset } from "./ardy/waypoints.js";
 import { FlyControls, aimAt, forwardFrom } from "./controls.jsx";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
@@ -1572,7 +1572,13 @@ export default function App() {
 				return;
 			}
 		}
-		const ardyWaypoints = waypointMode ? toArdyWaypoints(rootPath, charA.rot) : [];
+		// Align + densify, never the raw sparse path: the model forces frame-0
+		// facing to +Z, so the path is rotated until its first travel tangent
+		// is +Z (heading 0) and resampled with path-tangent headings — sparse
+		// heading-less pins that fight the forced facing corrupt the whole
+		// track (see the sign-convention notes in ardy/waypoints.js).
+		const alignedRoot = waypointMode ? alignArdyPath(rootPath, charA.rot, MAX_WAYPOINTS) : null;
+		const ardyWaypoints = alignedRoot ? alignedRoot.waypoints : [];
 		const segments = [];
 		let cursor = 0;
 		const sourcePromptClips = promptClipsOverride
@@ -1642,9 +1648,10 @@ export default function App() {
 		}
 
 		// ARDY generates in Subject 1's clip-local frame. Frame 0 is therefore
-		// always the origin; scene placement and actor yaw are restored only at
+		// always the origin; scene placement and the total scene->clip rotation
+		// (actor yaw plus the path-alignment fold) are restored only at
 		// playback, without constraining any later generated root frame.
-		const rootRotationDeg = charA.rot;
+		const rootRotationDeg = alignedRoot ? alignedRoot.rotationDeg : charA.rot;
 		const controller = new AbortController();
 		ardyAbortRef.current = controller;
 		setArdyRunning(true);
@@ -1699,7 +1706,7 @@ export default function App() {
 			) {
 				throw new Error("ARDY returned motion without verified authored IK keys");
 			}
-			setArdyOutcome({ ok: true, output: done.output, bytes: done.bytes, motionUrl: done.motionUrl });
+			setArdyOutcome({ ok: true, output: done.output, bytes: done.bytes, motionUrl: done.motionUrl, rotationDeg: rootRotationDeg });
 			// Fetch and decode the real npz right away; decode errors are shown
 			// in the card, playback is never faked.
 			if (done.motionUrl) await loadMotion(done.motionUrl, prompt, rootRotationDeg);
@@ -2393,7 +2400,11 @@ export default function App() {
 										<>
 											<p className="ardy-outcome error">Motion decode failed: {motionError}</p>
 											{ardyOutcome.motionUrl && (
-												<button type="button" className="btn ghost full" onClick={() => loadMotion(ardyOutcome.motionUrl)}>
+												<button
+													type="button"
+													className="btn ghost full"
+													onClick={() => loadMotion(ardyOutcome.motionUrl, undefined, ardyOutcome.rotationDeg ?? charA.rot)}
+												>
 													Retry load
 												</button>
 											)}
