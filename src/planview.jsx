@@ -338,7 +338,6 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 		const host = hostRef.current;
 		if (!host) return undefined;
 		const snap = (v, limit) => THREE.MathUtils.clamp(Math.round(v / 0.05) * 0.05, -limit, limit);
-	console.log("[plan-instr] effect setup");
 
 		/** pointer -> a point on the floor, seen through the plan camera */
 		const toFloor = (event) => {
@@ -395,8 +394,6 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			event.preventDefault();
 			event.stopPropagation();
 			dragRef.current = grip;
-			grip.__seq = Math.random().toString(36).slice(2, 8);
-			console.log("[plan-instr] onDown set grip", grip.__seq);
 			setDrag({ id: grip.id, mode: grip.mode });
 			if (grip.mode === "waypoint") latest.current.onSelectWaypoint?.(grip.origin.frame);
 			else latest.current.onSelectEntity?.(grip.id);
@@ -406,12 +403,10 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			// instantly (plan §6.4). Camera, character and waypoint grips
 			// write separate state and must never open a scene transaction.
 			if (grip.origin.objectId) {
-				console.log("[plan-instr] onDown grip", grip.id, "objectId", grip.origin.objectId, "p", p.x.toFixed(3), p.z.toFixed(3));
 				dragRef.current.token = latest.current.onObjectMoveStart?.({
 					owner: "plan",
 					cancel: () => teardownDrag(grip),
 				});
-				console.log("[plan-instr] token", dragRef.current.token);
 			}
 			host.style.cursor = grip.mode === "turn" ? "ew-resize" : "grabbing";
 		};
@@ -429,12 +424,10 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 		};
 
 		const onMove = (event) => {
-			console.log("[plan-instr] onMove ENTER", dragRef.current ? dragRef.current.id : "null-grip", dragRef.current ? dragRef.current.__seq : "-", Math.round(event.clientX), Math.round(event.clientY));
 			const grip = dragRef.current;
 			if (!grip) return;
 			const p = toFloor(event);
 			if (!p) return;
-			console.log("[plan-instr] onMove", grip.id, "token", grip?.token, "p", p.x.toFixed(3), p.z.toFixed(3));
 
 			if (grip.mode === "waypoint") {
 				latest.current.onMoveWaypoint?.(grip.origin.frame, snap(p.x, ROOM_LIMIT), snap(p.z, ROOM_LIMIT));
@@ -486,7 +479,6 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 		// forbidden from calling the end prop back, plan §6.2) as well as the
 		// producer's own close paths.
 		const teardownDrag = (grip) => {
-			console.log("[plan-instr] teardownDrag", grip?.__seq ?? "-", "current", dragRef.current?.__seq ?? "-");
 			if (!grip || dragRef.current !== grip) return;
 			dragRef.current = null;
 			setDrag(null);
@@ -500,14 +492,12 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 		const closeDrag = (commit) => {
 			const grip = dragRef.current;
 			if (!grip) return;
-			console.log("[plan-instr] closeDrag enter", grip.__seq);
 			const token = grip.token;
 			teardownDrag(grip);
 			if (token != null) latest.current.onObjectMoveEnd?.(token, { commit });
 		};
 
 		const onUp = () => {
-			console.log("[plan-instr] onUp", dragRef.current ? dragRef.current.id : "null-grip");
 			closeDrag(true);
 		};
 
@@ -540,7 +530,6 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			window.removeEventListener("blur", onBlur);
 			window.removeEventListener("keydown", onEscape, true);
 			closeDrag(true);
-			console.log("[plan-instr] effect cleanup");
 		};
 	}, [hostRef, planCamRef, shotCamRef, tools, setCharA, setCharB, look]);
 

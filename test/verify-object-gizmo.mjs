@@ -711,6 +711,337 @@ await pressKeyCombo("z", "KeyZ", 2); // Ctrl+Z
 await waitFor(`(() => { const r = ${posRow}; return parseFloat(r.querySelectorAll('input')[1].value) === 2.5; })()`);
 expect("undo after a drop restores the previous height", (await transform()).Position[1] === 2.5, JSON.stringify(await transform()));
 
+/* ------------------------------------------- lifecycle adversaries ---- */
+
+// Plan §6.3/§11.3: pointerup, pointercancel, window blur and unmount all
+// COMMIT a live drag as exactly one history entry — work the user watched
+// happen is real; Escape is the ONLY rollback; a mid-drag undo, atomic
+// action or selection change settles the open drag FIRST so the applied
+// travel commits alone and cannot fold into an unrelated entry, and the
+// producer is torn down rather than left live; PlanBoard selects before it
+// begins, and camera grips never open a scene transaction. State entering
+// this section: Cube + Chair exist, the Chair is selected in the shot view
+// with the move tool active. Delete runs last: it removes the Chair.
+
+/** Press on a gizmo handle and apply `ticks` real move ticks, leaving the
+ * pointer down so the caller can interrupt the stream mid-drag. Returns
+ * where the pointer ended up. */
+// The Bird's-eye inset overlays the shot view's right side (its pane spans
+// x >= ~890 here), and the inset host claims presses that land on it. The X
+// arrow drifts ~150 px per 160 px drag, so the cases alternate direction to
+// keep every press in the clear band; grabX additionally rejects any grab
+// point whose elementFromPoint is not the canvas, so a drift into the inset
+// fails the case loudly instead of silently missing the arrow.
+const dragHeld = async (handle, { ticks = 5, dx = 160, dy = 0 } = {}) => {
+	await mouse("mousePressed", handle.x, handle.y);
+	await sleep(60);
+	for (let i = 1; i <= ticks; i++) {
+		await mouse("mouseMoved", handle.x + (dx * i) / ticks, handle.y + (dy * i) / ticks);
+		await sleep(24);
+	}
+	return { x: handle.x + dx, y: handle.y + dy };
+};
+
+/** Poll until the X arrow renders and is pickable, then return an
+ * unambiguous grab point on it (the snapping section's neighbourhood
+ * search, so a press cannot land on the overlapping Y proxy). */
+const grabX = async () => {
+	await waitFor("(() => { const h = window.__gizmoHandles().find(e => e.axis === 'x'); return !!h && h.x > 0 && h.x < innerWidth && h.y > 0 && h.y < innerHeight && document.elementFromPoint(Math.round(h.x), Math.round(h.y)) === document.querySelector('canvas') && window.__gizmoPick(Math.round(h.x), Math.round(h.y)) === 'x'; })()");
+	return evaluate(
+		"(() => { const h = window.__gizmoHandles().find(e => e.axis === 'x'); if (!h) return null;" +
+			" const canvas = document.querySelector('canvas');" +
+			" const solid = (x, y) => document.elementFromPoint(x, y) === canvas && [[0,0],[2,0],[-2,0],[0,2],[0,-2]].every(([dx,dy]) => window.__gizmoPick(x+dx, y+dy) === 'x');" +
+			" for (let r = 0; r < 60; r += 2) { for (const s of [1, -1]) { const x = Math.round(h.x + r * s); const y = Math.round(h.y);" +
+			" if (solid(x, y)) return { x, y }; } } return { x: Math.round(h.x), y: Math.round(h.y) }; })()",
+	);
+};
+
+/** the Position row's i-th input (0=X, 1=Y, 2=Z) — pollable after commits */
+const positionInput = (index) => `(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === 'Position'); return r ? parseFloat(r.querySelectorAll('input')[${index}].value) : NaN; })()`;
+
+/** the Camera card's "camera to subject" readout, which live-tracks the
+ * shot camera — the only DOM handle on the camera's position */
+const cameraDistance = () => evaluate("document.querySelector('span[title=\"camera to subject\"]')?.textContent ?? ''");
+
+// The drop section left the Chair at Y = 2.5 — above the default camera's
+// frame, where its gizmo renders off-screen and a press cannot reach the
+// arrow. Rest it back on the Cube top (End) so the lifecycle cases below
+// actually grab a live handle. One atomic entry; the cases read `past`
+// fresh, so the extra entry is invisible to them.
+await pressKey("End", "End");
+await waitFor(`${positionInput(1)} === 1`);
+expect("the lifecycle section starts with the Chair back on the Cube", (await transform()).Position[1] === 1, JSON.stringify(await transform()));
+
+// pointercancel mid-drag COMMITS: pointer loss is not intent to discard.
+const pastBeforeCancel = await evaluate("window.__sceneHistory().past");
+const cancelBefore = await transform();
+const cancelEnd = await dragHeld(await grabX(), { dx: 160 });
+const cancelTravelled = await transform();
+expect(
+	"the pointercancel case applies real travel before the cancel",
+	Math.abs(cancelTravelled.Position[0] - cancelBefore.Position[0]) > 0.1,
+	`${JSON.stringify(cancelBefore)} -> ${JSON.stringify(cancelTravelled)}`,
+);
+await evaluate("window.dispatchEvent(new PointerEvent('pointercancel'))");
+await waitFor(`window.__sceneHistory().past === ${pastBeforeCancel + 1}`);
+expect(
+	"pointercancel mid-drag commits exactly one entry",
+	await evaluate("window.__sceneHistory().past") === pastBeforeCancel + 1,
+	JSON.stringify(await evaluate("window.__sceneHistory()")),
+);
+expect(
+	"a pointercancel keeps the travelled transform",
+	JSON.stringify((await transform()).Position) === JSON.stringify(cancelTravelled.Position),
+	JSON.stringify(await transform()),
+);
+expect("the store is settled after a pointercancel", await evaluate("window.__sceneHistory().settled === true"));
+await mouse("mouseReleased", cancelEnd.x, cancelEnd.y);
+
+// window blur mid-drag COMMITS: losing focus is not an abort gesture.
+const pastBeforeBlur = await evaluate("window.__sceneHistory().past");
+const blurBefore = await transform();
+const blurEnd = await dragHeld(await grabX(), { dx: -160 });
+const blurTravelled = await transform();
+expect(
+	"the blur case applies real travel before the blur",
+	Math.abs(blurTravelled.Position[0] - blurBefore.Position[0]) > 0.1,
+	`${JSON.stringify(blurBefore)} -> ${JSON.stringify(blurTravelled)}`,
+);
+await evaluate("window.dispatchEvent(new Event('blur'))");
+await waitFor(`window.__sceneHistory().past === ${pastBeforeBlur + 1}`);
+expect(
+	"window blur mid-drag commits exactly one entry",
+	await evaluate("window.__sceneHistory().past") === pastBeforeBlur + 1,
+	JSON.stringify(await evaluate("window.__sceneHistory()")),
+);
+expect(
+	"a blur keeps the travelled transform",
+	JSON.stringify((await transform()).Position) === JSON.stringify(blurTravelled.Position),
+	JSON.stringify(await transform()),
+);
+// the producer is torn down: keep moving with the button still down
+await mouse("mouseMoved", blurEnd.x + 60, blurEnd.y);
+await sleep(60);
+expect(
+	"no stale movement after a blur commit",
+	JSON.stringify((await transform()).Position) === JSON.stringify(blurTravelled.Position),
+	JSON.stringify(await transform()),
+);
+await mouse("mouseReleased", blurEnd.x + 60, blurEnd.y);
+expect("the store is settled after a blur", await evaluate("window.__sceneHistory().settled === true"));
+
+// Escape mid-drag is the ONLY rollback: byte-for-byte restore, no entry.
+const pastBeforeEscape = await evaluate("window.__sceneHistory().past");
+const escapeBefore = await transform();
+const escapeEnd = await dragHeld(await grabX(), { dx: -160 });
+expect(
+	"the Escape case applies real travel before the key",
+	Math.abs((await transform()).Position[0] - escapeBefore.Position[0]) > 0.1,
+	`${JSON.stringify(escapeBefore)} -> ${JSON.stringify(await transform())}`,
+);
+await pressKey("Escape", "Escape");
+await waitFor(`${positionInput(0)} === ${escapeBefore.Position[0]}`);
+expect(
+	"Escape mid-drag restores the pre-drag transform byte-for-byte",
+	JSON.stringify(await transform()) === JSON.stringify(escapeBefore),
+	`${JSON.stringify(escapeBefore)} -> ${JSON.stringify(await transform())}`,
+);
+expect(
+	"a cancelled drag creates no history entry",
+	await evaluate("window.__sceneHistory().past") === pastBeforeEscape,
+	JSON.stringify(await evaluate("window.__sceneHistory()")),
+);
+expect("a cancelled drag leaves the object selected", await evaluate("window.__gizmoHandles().length > 0"));
+expect("a rollback leaves the store settled", await evaluate("window.__sceneHistory().settled === true"));
+await mouse("mouseReleased", escapeEnd.x, escapeEnd.y);
+
+// Ctrl+Z mid-drag: the travel commits as its OWN entry, then the undo steps
+// back over exactly it — past N, settle to N+1, undo back to N with future
+// 1. The producer is torn down, so the still-down pointer changes nothing.
+const pastBeforeUndo = await evaluate("window.__sceneHistory().past");
+const undoBefore = await transform();
+const undoEnd = await dragHeld(await grabX(), { dx: -160 });
+expect(
+	"the undo case applies real travel before the key",
+	Math.abs((await transform()).Position[0] - undoBefore.Position[0]) > 0.1,
+	`${JSON.stringify(undoBefore)} -> ${JSON.stringify(await transform())}`,
+);
+await pressKeyCombo("z", "KeyZ", 2); // Ctrl+Z
+await waitFor(`(() => { const h = window.__sceneHistory(); return h.past === ${pastBeforeUndo} && h.future === 1; })()`);
+expect(
+	"undo mid-drag commits the travel then steps back over it",
+	(await evaluate("window.__sceneHistory().past")) === pastBeforeUndo && (await evaluate("window.__sceneHistory().future")) === 1,
+	`expected past ${pastBeforeUndo}, future 1; got ${JSON.stringify(await evaluate("window.__sceneHistory()"))}`,
+);
+await waitFor(`${positionInput(0)} === ${undoBefore.Position[0]}`);
+expect(
+	"a mid-drag undo restores the pre-drag transform",
+	JSON.stringify((await transform()).Position) === JSON.stringify(undoBefore.Position),
+	JSON.stringify(await transform()),
+);
+const afterUndo = await transform();
+await mouse("mouseMoved", undoEnd.x + 80, undoEnd.y);
+await sleep(60);
+expect(
+	"the pointer stream is inert after a mid-drag undo",
+	JSON.stringify(await transform()) === JSON.stringify(afterUndo),
+	JSON.stringify(await transform()),
+);
+await mouse("mouseReleased", undoEnd.x + 80, undoEnd.y);
+expect("the store is settled after a mid-drag undo", await evaluate("window.__sceneHistory().settled === true"));
+
+// A selection change mid-drag settles the open drag first: the applied
+// travel becomes its own entry, the stale pointer stream dies, and the new
+// selection never sees a stray tick.
+const chairBeforeSwitch = await transform(); // the Chair is selected from the undo case
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
+await waitFor("window.__gizmoHandles().length > 0");
+const cubeBeforeSwitch = await transform();
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");
+await waitFor("window.__gizmoHandles().length > 0");
+const pastBeforeSwitch = await evaluate("window.__sceneHistory().past");
+const switchEnd = await dragHeld(await grabX(), { dx: 160 });
+const switchTravelled = await transform();
+expect(
+	"the selection-change case applies real travel before the switch",
+	Math.abs(switchTravelled.Position[0] - chairBeforeSwitch.Position[0]) > 0.1,
+	`${JSON.stringify(chairBeforeSwitch)} -> ${JSON.stringify(switchTravelled)}`,
+);
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
+await waitFor(`window.__sceneHistory().past === ${pastBeforeSwitch + 1}`);
+expect(
+	"a selection change mid-drag commits the travel as exactly one entry",
+	await evaluate("window.__sceneHistory().past") === pastBeforeSwitch + 1,
+	JSON.stringify(await evaluate("window.__sceneHistory()")),
+);
+// keep moving with the button still down: the producer was torn down, so
+// the new selection must not move
+await mouse("mouseMoved", switchEnd.x + 80, switchEnd.y);
+await sleep(60);
+await mouse("mouseMoved", switchEnd.x + 120, switchEnd.y);
+await sleep(60);
+expect(
+	"the stale stream does not move the new selection",
+	JSON.stringify(await transform()) === JSON.stringify(cubeBeforeSwitch),
+	`${JSON.stringify(cubeBeforeSwitch)} -> ${JSON.stringify(await transform())}`,
+);
+await mouse("mouseReleased", switchEnd.x + 120, switchEnd.y);
+// re-select the first object: its travel was committed, not rolled back
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");
+await waitFor("window.__gizmoHandles().length > 0");
+expect(
+	"the first object's travel survives the switch byte-for-byte",
+	JSON.stringify(await transform()) === JSON.stringify(switchTravelled),
+	`${JSON.stringify(switchTravelled)} -> ${JSON.stringify(await transform())}`,
+);
+expect("the store is settled after a selection change", await evaluate("window.__sceneHistory().settled === true"));
+
+// PlanBoard selects BEFORE it begins: dragging an unselected object's puck
+// must select it AND still record exactly one entry — a begin-then-select
+// order would settle the fresh token and split or lose the entry (§6.4).
+const chairForPlan = await transform(); // the Chair, now away from the Cube
+const pastBeforePlan = await evaluate("window.__sceneHistory().past");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
+await waitFor("window.__gizmoHandles().length > 0");
+await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Bird'))");
+await waitFor("document.querySelector('.vp-main').classList.contains('plan')");
+await sleep(150); // the plan host's pointerdown listener binds after the commit
+const planRect = await evaluate("(() => { const b = document.querySelector('.vp-main').getBoundingClientRect(); return { left: b.left, top: b.top, width: b.width, height: b.height, scale: (b.height / 2) / 7.2 }; })()");
+const chairPuck = {
+	x: Math.round(planRect.left + planRect.width / 2 + chairForPlan.Position[0] * planRect.scale),
+	y: Math.round(planRect.top + planRect.height / 2 + chairForPlan.Position[2] * planRect.scale),
+};
+await drag(chairPuck, { x: chairPuck.x, y: chairPuck.y + 60 });
+await waitFor(`window.__sceneHistory().past === ${pastBeforePlan + 1}`);
+expect(
+	"dragging an unselected plan puck selects the object",
+	await evaluate("[...document.querySelectorAll('.hierarchy-row-wrap.selected .hierarchy-label')].some(n => n.textContent === 'Chair')"),
+);
+expect(
+	"a plan drag of an unselected object moves it",
+	(await transform()).Position[2] > chairForPlan.Position[2] + 0.2,
+	`${JSON.stringify(chairForPlan)} -> ${JSON.stringify(await transform())}`,
+);
+expect(
+	"a plan drag of an unselected object is exactly one entry",
+	(await evaluate("window.__sceneHistory().past")) === pastBeforePlan + 1 && (await evaluate("window.__sceneHistory().settled")) === true,
+	JSON.stringify(await evaluate("window.__sceneHistory()")),
+);
+await pressKeyCombo("z", "KeyZ", 2); // Ctrl+Z: one entry, one undo
+await waitFor(`${positionInput(2)} === ${chairForPlan.Position[2]}`);
+expect(
+	"one undo restores the unselected-object plan drag",
+	JSON.stringify((await transform()).Position) === JSON.stringify(chairForPlan.Position),
+	`${JSON.stringify(chairForPlan.Position)} -> ${JSON.stringify((await transform()).Position)}`,
+);
+
+// Camera grips never open a scene transaction: navigation must not enter
+// scene history. The camera sits at its mount position — the persistence
+// isolation reload reset it, and nothing since has flown it.
+const distanceBefore = await cameraDistance();
+const pastBeforeCam = await evaluate("window.__sceneHistory().past");
+const camPuck = {
+	x: Math.round(planRect.left + planRect.width / 2 + 0.97 * planRect.scale),
+	y: Math.round(planRect.top + planRect.height / 2 + 2.39 * planRect.scale),
+};
+await drag(camPuck, { x: camPuck.x + 80, y: camPuck.y + 50 });
+await waitFor(`document.querySelector('span[title="camera to subject"]')?.textContent !== ${JSON.stringify(distanceBefore)}`);
+expect(
+	"dragging the camera puck flies the shot camera",
+	(await cameraDistance()) !== distanceBefore,
+	`${distanceBefore} -> ${await cameraDistance()}`,
+);
+expect(
+	"a camera puck drag opens no scene transaction",
+	await evaluate("window.__sceneHistory().past") === pastBeforeCam,
+	JSON.stringify(await evaluate("window.__sceneHistory()")),
+);
+expect("the store stays settled after a camera drag", await evaluate("window.__sceneHistory().settled === true"));
+
+// Delete mid-drag: the atomic action settles the open drag first, so the
+// travel commits as its own entry and the removal as a second — the two can
+// never fold into one. The producer dies with the drag: further pointer
+// movement resurrects nothing. (Last: it removes the Chair.)
+await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Shot'))");
+await waitFor("!document.querySelector('.vp-main').classList.contains('plan')");
+await sleep(150);
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");
+await waitFor("window.__gizmoHandles().length > 0");
+const pastBeforeDelete = await evaluate("window.__sceneHistory().past");
+const deleteBefore = await transform();
+const deleteEnd = await dragHeld(await grabX(), { dx: 160 });
+expect(
+	"the Delete case applies real travel before the key",
+	Math.abs((await transform()).Position[0] - deleteBefore.Position[0]) > 0.1,
+	`${JSON.stringify(deleteBefore)} -> ${JSON.stringify(await transform())}`,
+);
+await pressKey("Delete", "Delete");
+await waitFor("[...document.querySelectorAll('.hierarchy-label')].every(n => n.textContent !== 'Chair') && window.__gizmoHandles().length === 0");
+expect(
+	"Delete mid-drag removes the dragged object",
+	await evaluate("[...document.querySelectorAll('.hierarchy-label')].every(n => n.textContent !== 'Chair')"),
+);
+expect("Delete mid-drag leaves no gizmo behind", await evaluate("window.__gizmoHandles().length === 0"));
+expect(
+	"Delete mid-drag commits the travel and the removal as two entries",
+	(await evaluate("window.__sceneHistory().past")) === pastBeforeDelete + 2 && (await evaluate("window.__sceneHistory().settled")) === true,
+	JSON.stringify(await evaluate("window.__sceneHistory()")),
+);
+expect("Delete mid-drag logs no page errors", pageErrors.length === 0, pageErrors.join(" | "));
+// the pointer is still down: the stale stream must not resurrect anything
+await mouse("mouseMoved", deleteEnd.x + 80, deleteEnd.y);
+await sleep(60);
+await mouse("mouseMoved", deleteEnd.x + 160, deleteEnd.y);
+await sleep(60);
+expect(
+	"the stale stream after Delete resurrects nothing",
+	await evaluate(`[...document.querySelectorAll('.hierarchy-label')].every(n => n.textContent !== 'Chair') && window.__gizmoHandles().length === 0 && window.__sceneHistory().past === ${pastBeforeDelete + 2}`),
+	JSON.stringify(await evaluate("window.__sceneHistory()")),
+);
+await mouse("mouseReleased", deleteEnd.x + 160, deleteEnd.y);
+expect("the store is settled after a Delete mid-drag", await evaluate("window.__sceneHistory().settled === true"));
+
+
 expect("the page logged no errors", pageErrors.length === 0, pageErrors.join(" | "));
 
 ws.close();

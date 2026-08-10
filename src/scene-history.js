@@ -35,7 +35,6 @@ export function createSceneHistoryStore(initialObjects, { onObjects }) {
 	// very next Ctrl+Z discards it deliberately.
 	function settle() {
 		if (settleTransaction(tx) === null) return;
-		console.log("[store-instr] settle committed; caller:", new Error().stack?.split("\n")[2]?.trim());
 		history = pushHistory(history, objects);
 		before = null;
 	}
