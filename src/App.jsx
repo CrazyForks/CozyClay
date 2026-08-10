@@ -943,8 +943,13 @@ export default function App() {
 			setToast(`The root path is capped at ${MAX_WAYPOINTS} waypoints`);
 			return;
 		}
-		const gap = Math.max(8, Math.round((Math.hypot(x - last.x, z - last.z) / WALK_SPEED_MPS) * tlFps));
-		const frame = last.frame + gap;
+		// A scrubbed playhead is an explicit statement of time: a click lands on
+		// that exact frame. An untouched playhead (it snaps to the last pin
+		// after every placement) falls back to walking-distance pacing.
+		const playhead = Math.round(tlFrame);
+		const pinned = playhead > last.frame;
+		const walkGap = Math.max(8, Math.round((Math.hypot(x - last.x, z - last.z) / WALK_SPEED_MPS) * tlFps));
+		const frame = pinned ? Math.min(playhead, tlFrameCount - 1) : last.frame + walkGap;
 		if (frame > tlFrameCount - 1) {
 			setToast("The path already fills the clip — extend the duration or clear a waypoint");
 			return;
@@ -952,7 +957,9 @@ export default function App() {
 		setWaypoints((prev) => [...prev, { frame, x, z, heading: null }].sort((a, b) => a.frame - b.frame));
 		setTlFrame(frame);
 		setActiveWaypointFrame(frame);
-		setToast(`Waypoint ${ordered.length + 1} — frame ${frame} (~${(frame / tlFps).toFixed(1)}s at a walk)`);
+		setToast(
+			`Waypoint ${ordered.length + 1} — frame ${frame} ${pinned ? "(at the playhead)" : `(~${(frame / tlFps).toFixed(1)}s at a walk)`}`,
+		);
 	}
 
 	function removeWaypoint(frame) {
@@ -2590,7 +2597,7 @@ export default function App() {
 							{waypointMode ? "Finish path editing" : "Edit root path"}
 						</button>
 						{waypointMode && (
-							<p className="inspector-hint">Click the set floor in the Shot view to drop the next waypoint — time between pins follows walking distance.</p>
+							<p className="inspector-hint">Click the set floor in the Shot view to drop the next waypoint. Scrub the playhead past the last pin first to choose its exact frame; left alone, time between pins follows walking distance.</p>
 						)}
 						<div className="inspector-list compact">
 							{waypoints.map((waypoint) => (
