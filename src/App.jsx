@@ -1160,6 +1160,11 @@ globalThis.rect = pane.getBoundingClientRect();
 		() => (moveA && moveB ? classifyMove(moveA, moveB, charA, { durationS: moveDurationS }) : null),
 		[moveA, moveB, charA, moveDurationS],
 	);
+	// With Follow armed, Preview means "watch the shot": it plays the timeline
+	// from frame 0 so character motion and the camera move share one clock.
+	// Follow off keeps the camera-only preview on its own clock.
+	const followPreviewArmed = moveFollow && !!abMove && !ikMode && !waypointMode && !posing;
+	const previewActive = movePlaying || (followPreviewArmed && tlPlaying);
 
 	function captureCurrentFraming() {
 		const cam = shotCamRef.current;
@@ -2357,7 +2362,9 @@ globalThis.rect = pane.getBoundingClientRect();
 								onSelect={(id) => selectHierarchy(id ? `object:${id}` : "props")}
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
 							/>
-							{waypointMode && (
+							{/* Authoring chrome: the pins belong to the Scene tab only —
+							    PlayView is the finished output and shows none of it. */}
+							{waypointMode && centerTab === "scene" && (
 								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />
 							)}
 							<CaptureRig apiRef={captureRef} camRef={shotCamRef} />
@@ -2506,10 +2513,21 @@ globalThis.rect = pane.getBoundingClientRect();
 								type="button"
 								className="btn ghost"
 								disabled={!abMove}
-								title="Play the move in the shot camera; right-drag interrupts"
-								onClick={() => setMovePlaying((playing) => !playing)}
+								title="Play the move. With Follow on it plays the timeline too, so character motion rides along; right-drag interrupts"
+								onClick={() => {
+									if (followPreviewArmed) {
+										if (tlPlaying) {
+											setTlPlaying(false);
+											return;
+										}
+										setTlFrame(0);
+										setTlPlaying(true);
+										return;
+									}
+									setMovePlaying((playing) => !playing);
+								}}
 							>
-								{movePlaying ? "Stop" : "Preview"}
+								{previewActive ? "Stop" : "Preview"}
 							</button>
 							<button
 								type="button"
