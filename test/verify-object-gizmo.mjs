@@ -656,6 +656,61 @@ expect(
 await clearSceneKeys();
 await reloadPage();
 
+/* -------------------------------------------------- drop-to-surface ---- */
+
+// Plan §11.3: End drops the selection straight down onto the highest support
+// top whose footprint it overlaps, or the floor. Two objects created from the
+// same camera position land on the same x/z, so the chair's 0.6 m footprint
+// sits fully inside the cube's 1 m one, and the cube's top is y = 1.
+await click("document.querySelector('.add-object-trigger')");
+// the popover mounts on a click-driven state flip; poll for its items
+await waitFor("document.querySelectorAll('.add-object-item').length > 0");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
+// the creation commit renders the gizmo and inspector together; poll for it
+await waitFor("window.__gizmoHandles().length > 0");
+
+await click("document.querySelector('.add-object-trigger')");
+// the popover mounts on a click-driven state flip; poll for its items
+await waitFor("document.querySelectorAll('.add-object-item').length > 0");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Chair'))");
+// the creation commit renders the gizmo and inspector together; poll for it
+await waitFor("window.__gizmoHandles().length > 0");
+
+// Raise the chair clear of the cube (2.5 > 1) by typing into the Position Y
+// field; blur commits the draft as one atomic entry.
+const posRow = "(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === 'Position'); return r; })()";
+const pastBeforeY = await evaluate("window.__sceneHistory().past");
+await evaluate(`(() => { const r = ${posRow}; r.querySelectorAll('input')[1].focus(); })()`);
+await send("Input.insertText", { text: "2.5" });
+await evaluate("document.activeElement.blur()");
+await waitFor(`window.__sceneHistory().past === ${pastBeforeY + 1}`);
+expect("typing a Y value raises the object above the support", (await transform()).Position[1] === 2.5, JSON.stringify(await transform()));
+
+const xzBefore = await evaluate(`(() => { const r = ${posRow}; return [r.querySelectorAll('input')[0].value, r.querySelectorAll('input')[2].value]; })()`);
+const pastBeforeDrop = await evaluate("window.__sceneHistory().past");
+
+await pressKey("End", "End");
+await waitFor(`(() => { const r = ${posRow}; return parseFloat(r.querySelectorAll('input')[1].value) === 1; })()`);
+expect("End rests the object exactly on the support's top", (await transform()).Position[1] === 1, JSON.stringify(await transform()));
+const xzAfterDrop = await evaluate(`(() => { const r = ${posRow}; return [r.querySelectorAll('input')[0].value, r.querySelectorAll('input')[2].value]; })()`);
+expect("a drop leaves snapped X and Z byte-for-byte unchanged", JSON.stringify(xzAfterDrop) === JSON.stringify(xzBefore), `${JSON.stringify(xzBefore)} -> ${JSON.stringify(xzAfterDrop)}`);
+expect("a drop is exactly one history entry", await evaluate("window.__sceneHistory().past") === pastBeforeDrop + 1);
+
+// A second End is a no-op: the base already rests on the support's top, so the
+// pure patch is null and nothing enters history. The "Nothing to drop" toast
+// is the signal that the keypress was processed at all.
+const afterDrop = await transform();
+await pressKey("End", "End");
+await waitFor("document.body.textContent.includes('Nothing to drop')");
+expect("a second End changes nothing", JSON.stringify(await transform()) === JSON.stringify(afterDrop), JSON.stringify(await transform()));
+expect("a second End adds no history entry", await evaluate("window.__sceneHistory().past") === pastBeforeDrop + 1, JSON.stringify(await evaluate("window.__sceneHistory()")));
+expect("the store is settled between drops", await evaluate("window.__sceneHistory().settled === true"));
+
+// One Ctrl+Z undoes the drop as a single entry: the height returns to 2.5.
+await pressKeyCombo("z", "KeyZ", 2); // Ctrl+Z
+await waitFor(`(() => { const r = ${posRow}; return parseFloat(r.querySelectorAll('input')[1].value) === 2.5; })()`);
+expect("undo after a drop restores the previous height", (await transform()).Position[1] === 2.5, JSON.stringify(await transform()));
+
 expect("the page logged no errors", pageErrors.length === 0, pageErrors.join(" | "));
 
 ws.close();

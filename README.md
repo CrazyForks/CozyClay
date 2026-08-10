@@ -51,6 +51,7 @@ The bridge listens on loopback only. The environment variables that point it at 
 | Ctrl (during drag) | Invert grid snapping |
 | Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z | Undo / redo |
 | Esc | Cancel the in-flight drag |
+| End | Drop the selection to the surface |
 | Ctrl/Cmd+D | Duplicate the selection |
 | F | Frame the selection |
 

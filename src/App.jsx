@@ -22,6 +22,7 @@ import {
 	SCENE_QUARANTINE_KEY,
 	SCENE_STORAGE_KEY,
 	createSceneObject,
+	dropToSurfacePatch,
 	loadScene,
 	objectSize,
 	placementInFront,
@@ -729,6 +730,22 @@ export default function App() {
 			setRightPanelTab("detail");
 		}
 	}
+	/** Drop-to-surface (plan §9.2/§9.3): End, no modifier. Strict drop-down —
+	 * the selection falls until its base touches the highest support top at or
+	 * below it, or the floor. dropToSurfacePatch is pure and returns null when
+	 * already resting, so a redundant press never creates a history entry, and
+	 * x/z are never written. One applyAtomic = one undo entry. */
+	function dropSelectedSceneObject() {
+		const object = sceneObjects.find((item) => item.id === selectedSceneObjectId) ?? null;
+		if (!object) return;
+		const patch = dropToSurfacePatch(object, sceneObjects.filter((item) => item.id !== object.id));
+		if (patch === null) {
+			setToast("Nothing to drop");
+			return;
+		}
+		changeSceneObject(object.id, patch);
+		setToast(`${object.name} dropped to surface`);
+	}
 
 	const [gizmoMode, setGizmoMode] = useState("move");
 	// Snap is a preference, not a law: with it on the gizmo blocks on the plan
@@ -874,6 +891,11 @@ export default function App() {
 			}
 			if (event.key === "Escape" && selectedSceneObjectId) {
 				setSelectedHierarchyId("props");
+				return;
+			}
+			if (event.code === "End" && selectedSceneObjectId) {
+				event.preventDefault();
+				dropSelectedSceneObject();
 				return;
 			}
 			if (!selectedSceneObjectId) return;
