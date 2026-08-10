@@ -1877,7 +1877,11 @@ export default function App() {
 							/>
 							<MoveRig
 								playing={movePlaying}
-								following={moveFollow && !!abMove && !ikMode}
+								// Authoring modes own the viewport: placing or dragging a root
+								// waypoint scrubs the playhead as a side effect, and follow
+								// must not turn that scrub into a camera lurch. Same for IK
+								// and pose studio, where the shot camera is deliberately frozen.
+								following={moveFollow && !!abMove && !ikMode && !waypointMode && !posing}
 								followFrame={tlFrame}
 								fps={tlFps}
 								a={moveA}
