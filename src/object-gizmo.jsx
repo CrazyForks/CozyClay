@@ -116,7 +116,7 @@ function handleKey(entry) {
  * their start+delta to (start values are always on the grid themselves).
  */
 
-export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, paneRef, camRef, onChange, onSelect }) {
+export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, paneRef, camRef, onChange, onSelect, onDragStart, onDragEnd }) {
 	const { gl, scene } = useThree();
 	const rootRef = useRef(null);
 	const handlesRef = useRef(new Map()); // axis -> { mesh (pick proxy), axis, dir }
@@ -127,7 +127,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 	const hoverRef = useRef(null); // last hovered key: pointer moves that keep it skip the re-render
 	const dragRef = useRef(null);
 	const stateRef = useRef(null);
-	stateRef.current = { object, objects, mode, snap, onChange, onSelect };
+	stateRef.current = { object, objects, mode, snap, onChange, onSelect, onDragStart, onDragEnd };
 	const tools = useMemo(
 		() => ({
 			raycaster: new THREE.Raycaster(),
@@ -237,11 +237,11 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 					// delta onto the drag-start orientation in quaternion space
 					// and write all three Euler channels back in one patch.
 					const patch = screenRotatePatch(drag.start, drag.dir, drag.turned, snapping ? undefined : 0);
-					if (patch) change?.(drag.id, patch);
+					if (patch) change?.(drag.id, patch, drag.token);
 					return;
 				}
 				const patch = rotatePatch(drag.start, drag.axis, drag.turned, snapping ? undefined : 0);
-				if (patch) change?.(drag.id, patch);
+				if (patch) change?.(drag.id, patch, drag.token);
 				return;
 			}
 			if (drag.mode === "scale") {
@@ -250,7 +250,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 				tools.delta.subVectors(tools.hit, drag.origin);
 				const travel = tools.delta.dot(drag.dir) - drag.startAlong;
 				const patch = scalePatch(drag.start, drag.axis, 1 + travel / drag.reference, snapping ? undefined : 0);
-				if (patch) change?.(drag.id, patch);
+				if (patch) change?.(drag.id, patch, drag.token);
 				return;
 			}
 			tools.delta.subVectors(tools.hit, drag.hitStart);
@@ -261,20 +261,61 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 				for (const axis of drag.planeAxes) {
 					Object.assign(patch, translatePatch(drag.start, axis, tools.delta.dot(AXIS_VECTORS[axis]), snapping ? undefined : 0));
 				}
-				change?.(drag.id, patch);
+				change?.(drag.id, patch, drag.token);
 				return;
 			}
 			const patch = translatePatch(drag.start, drag.axis, tools.delta.dot(drag.dir), snapping ? undefined : 0);
-			if (patch) change?.(drag.id, patch);
+			if (patch) change?.(drag.id, patch, drag.token);
 		};
 
-		const endDrag = () => {
+		/** pure teardown: listeners down, drag ref null, cursor reset. This is
+		 * also the `cancel` handed to the coordinator — teardown only, it never
+		 * calls the end-style prop, because the coordinator owns the close
+		 * (§5.2). */
+		const teardownDrag = () => {
 			if (!dragRef.current) return;
 			dragRef.current = null;
 			gl.domElement.style.cursor = "";
 			window.removeEventListener("pointermove", applyDrag);
-			window.removeEventListener("pointerup", endDrag);
-			window.removeEventListener("pointercancel", endDrag);
+			window.removeEventListener("pointerup", onPointerUp);
+			window.removeEventListener("pointercancel", onPointerCancel);
+			window.removeEventListener("blur", onBlur);
+			window.removeEventListener("keydown", onKeyDown, true);
+		};
+
+		/** close the live drag with the given disposition. The token the
+		 * coordinator issued is presented on the close; without one (the
+		 * no-props fallback) the close is teardown-only, exactly today's
+		 * behaviour. */
+		const endDrag = (commit) => {
+			const drag = dragRef.current;
+			if (!drag) return;
+			const end = stateRef.current.onDragEnd;
+			const token = drag.token;
+			teardownDrag();
+			if (token != null && end) end(token, { commit });
+		};
+
+		/** pointerup and pointercancel both commit: the travel already applied
+		 * is work the user watched happen, and pointer loss is not intent to
+		 * discard (§6.3). */
+		const onPointerUp = () => endDrag(true);
+		const onPointerCancel = () => endDrag(true);
+
+		/** window blur commits the drag as one entry — losing focus mid-drag is
+		 * not an abort gesture, and silently rolling back work the user saw
+		 * applied is the "undo eats work" failure (§6.3, §14.2). */
+		const onBlur = () => endDrag(true);
+
+		/** Escape cancels an in-flight drag: rollback, listeners down. Capture
+		 * phase so stopPropagation keeps the same press away from App's
+		 * Escape-clears-selection handler; with no drag open it returns without
+		 * touching the event, so App still gets its deselect (§7). */
+		const onKeyDown = (event) => {
+			if ((event.code !== "Escape" && event.key !== "Escape") || !dragRef.current) return;
+			endDrag(false);
+			event.preventDefault();
+			event.stopPropagation();
 		};
 
 		/** Starts a `kind` drag ("move" / "rotate" / "scale"). The raycaster is
@@ -342,14 +383,31 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 				if (!tools.raycaster.ray.intersectPlane(plane, hit)) return false;
 				drag = { mode: "move", dir: dir.clone(), hitStart: hit };
 			}
-			dragRef.current = { ...drag, id: live.id, axis, plane, start: { ...live } };
+			// The coordinator (App) issues the token; the gizmo keeps it on its
+			// own drag ref and presents it on every apply and on the close, so
+			// a resumed pointer stream after a settle is inert by construction
+			// (§6.1). The `cancel` handed over is teardown-only — the
+			// coordinator owns the close, and a close attempted from inside it
+			// is inert because the token is retired first (§5.2).
+			const token = stateRef.current.onDragStart?.({
+				owner: "gizmo",
+				cancel: teardownDrag,
+			});
+			dragRef.current = { ...drag, id: live.id, axis, plane, start: { ...live }, token };
 			// the grabbed handle turns yellow now and stays yellow after
 			// release, until the selection or the tool changes (§3.1)
 			setActiveHandle(handleKey({ axis, plane }));
 			gl.domElement.style.cursor = "grabbing";
 			window.addEventListener("pointermove", applyDrag);
-			window.addEventListener("pointerup", endDrag);
-			window.addEventListener("pointercancel", endDrag);
+			window.addEventListener("pointerup", onPointerUp);
+			window.addEventListener("pointercancel", onPointerCancel);
+			// Only a real transaction gets the extra lifecycle edges: blur and
+			// Escape would otherwise change mid-drag behaviour for callers that
+			// pass no transaction props (the byte-for-byte fallback path).
+			if (token != null) {
+				window.addEventListener("blur", onBlur);
+				window.addEventListener("keydown", onKeyDown, true);
+			}
 			return true;
 		};
 
@@ -428,7 +486,9 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		return () => {
 			window.removeEventListener("pointerdown", onDown, true);
 			gl.domElement.removeEventListener("pointermove", onHover);
-			endDrag();
+			// unmount / enabled->false: the drag's travel is real work, so it
+			// commits as one entry rather than silently rolling back (§6.3)
+			endDrag(true);
 		};
 	}, [enabled, gl, scene, camRef, paneRef, tools]);
 

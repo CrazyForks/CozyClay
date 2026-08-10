@@ -26,6 +26,7 @@ import {
 	sceneObjectIdFromHierarchy,
 	updateSceneObject,
 } from "./scene-objects.js";
+import { createSceneHistoryStore } from "./scene-history.js";
 import ObjectGizmo from "./object-gizmo.jsx";
 import AddObjectMenu from "./object-catalog.jsx";
 import {
@@ -512,6 +513,16 @@ export default function App() {
 	const [sceneObjects, setSceneObjects] = useState(() =>
 		DEFAULT_SCENE_OBJECTS.map((object) => ({ ...object, footprint: { ...object.footprint } })),
 	);
+	// The single mutation owner (plan §5.3): every scene-object edit — gizmo
+	// drags, plan-board drags, inspector scrubs, hierarchy atomics — routes
+	// through this store so one interaction is exactly one undo entry and an
+	// in-flight drag can be cancelled. setSceneObjects is stable, so the
+	// store is constructed once, seeded with the initial scene.
+	const storeRef = useRef(null);
+	if (!storeRef.current) {
+		storeRef.current = createSceneHistoryStore(sceneObjects, { onObjects: setSceneObjects });
+	}
+	const store = storeRef.current;
 	const selectedSceneObjectId = sceneObjectIdFromHierarchy(selectedHierarchyId);
 	const selectedSceneObject = sceneObjects.find((object) => object.id === selectedSceneObjectId) ?? null;
 	const rightPanelDetailLabel = selectedHierarchyId === "characterA.promptBlocks"
@@ -537,11 +548,27 @@ export default function App() {
 		[ikTick]);
 
 	function selectHierarchy(id) {
+		// A selection switch is the user starting something else: settle any open
+		// drag so its applied travel becomes one committed entry first (plan §6.3).
+		// This MUST stay inside the handler, never in the render body: a settle
+		// during render runs the producer's cancel teardown, and since the first
+		// applied tick re-renders, every drag would die after exactly one tick.
+		store.settle();
 		setSelectedHierarchyId(id);
 		setRightPanelTab("detail");
 		const focus = RIG_HIERARCHY_FOCUS[id];
 		if (focus && ikMode) setIkFocus(focus);
 		if (id === "camera") setViewMode("shot");
+	}
+	// Producer drag lifecycle (plan §6.1): begin issues a token the producer
+	// presents on every apply and on close; end commits the drag as one
+	// history entry, or rolls it back when commit is false (Escape).
+	function beginSceneTransaction({ owner, cancel }) {
+		return store.begin(owner, cancel);
+	}
+
+	function endSceneTransaction(token, { commit }) {
+		store.end(token, { commit });
 	}
 
 	function focusIkHandle(focus) {
@@ -550,8 +577,16 @@ export default function App() {
 		if (hierarchyId) setSelectedHierarchyId(hierarchyId);
 	}
 
-	function changeSceneObject(id, patch) {
-		setSceneObjects((objects) => updateSceneObject(objects, id, patch));
+	// App's single scene-object mutation entry (plan §6.1). A token means a
+	// producer drag stream: apply inside the open transaction so the change
+	// lands in the live array without its own history entry. No token is an
+	// atomic edit — one entry. updateSceneObject returns the same array when
+	// nothing changed, so a no-op can never create an entry.
+	function changeSceneObject(id, patch, token) {
+	console.log("[app-instr] changeSceneObject", id, JSON.stringify(patch), "token", token);
+		const apply = (objects) => updateSceneObject(objects, id, patch);
+		if (token != null) store.applyIn(token, apply);
+		else store.applyAtomic(apply);
 	}
 
 	function deleteSelectedSceneObject() {
@@ -564,7 +599,7 @@ export default function App() {
 	function deleteSceneObject(id) {
 		if (!id) return;
 		const wasSelected = id === selectedSceneObjectId;
-		setSceneObjects((objects) => removeSceneObject(objects, id));
+		store.applyAtomic((objects) => removeSceneObject(objects, id));
 		if (wasSelected) {
 			setSelectedHierarchyId("props");
 			setRightPanelTab("detail");
@@ -587,7 +622,7 @@ export default function App() {
 			: {};
 		const object = createSceneObject(kind, sceneObjects, placement);
 		if (!object) return;
-		setSceneObjects((objects) => [...objects, object]);
+		store.applyAtomic((objects) => [...objects, object]);
 		setSelectedHierarchyId(`object:${object.id}`);
 		// Deliberate divergence from Unity's rename-on-create: creating an object
 		// here is followed by placing it, and dropping focus into a text field
@@ -613,7 +648,7 @@ export default function App() {
 		// Unity drops the duplicate exactly on top of the original; for blocking,
 		// one grid step to the side means you can see that it worked.
 		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
-		setSceneObjects((objects) => [...objects, placed]);
+		store.applyAtomic((objects) => [...objects, placed]);
 		setSelectedHierarchyId(`object:${placed.id}`);
 		setRightPanelTab("detail");
 		setToast(`${placed.name} duplicated`);
@@ -648,6 +683,33 @@ export default function App() {
 	function renameSceneObject(id, name) {
 		changeSceneObject(id, { name });
 	}
+	// Undo/redo (plan §6.5). The store settles any open drag first, so a
+	// mid-drag press commits that drag as one entry and then steps past it.
+	// After a step the selection can point at a deleted object — drop it to
+	// props so the inspector cannot show a ghost.
+	function undoScene() {
+		const restored = store.undo();
+		if (restored === null) {
+			setToast("Nothing to undo");
+			return;
+		}
+		if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
+			setSelectedHierarchyId("props");
+		}
+		setToast("Undone");
+	}
+
+	function redoScene() {
+		const restored = store.redo();
+		if (restored === null) {
+			setToast("Nothing to redo");
+			return;
+		}
+		if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
+			setSelectedHierarchyId("props");
+		}
+		setToast("Redone");
+	}
 
 	useEffect(() => {
 		const onKeyDown = (event) => {
@@ -661,6 +723,16 @@ export default function App() {
 			// While the right button is flying the camera, W/A/S/D/Q/E are the
 			// camera's; a tool switch mid-flight would be a surprise.
 			if (flyingRef.current) return;
+			// Undo/redo (plan §6.5). The input guard above keeps Ctrl/Cmd+Z in
+			// the Name field or the ARDY prompt as the browser's text undo.
+			// Placed before the selection gate: undo works with nothing
+			// selected, and mid-drag the store's settle commits then steps.
+			if (event.code === "KeyZ" && (event.ctrlKey || event.metaKey)) {
+				event.preventDefault();
+				if (event.shiftKey) redoScene();
+				else undoScene();
+				return;
+			}
 			if (GIZMO_HOTKEYS[event.code]) {
 				event.preventDefault();
 				setGizmoMode(GIZMO_HOTKEYS[event.code]);
@@ -1085,6 +1157,12 @@ export default function App() {
 			insetPane: insetPaneRef.current,
 		};
 	}, [rigA, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints]);
+	// QA hook (plan §6.5): exposes history depth and the present === objects
+	// invariant so the browser suite can assert undo entry counts directly.
+	// Reads live store state at call time; re-registered after every render.
+	useEffect(() => {
+		window.__sceneHistory = () => ({ ...store.depths(), settled: store.present() === store.objects });
+	});
 
 	// On clear, restore the exact pre-playback bone rotations. This runs in
 	// the parent AFTER Character's pose effect (children flush first), so even
@@ -1785,10 +1863,19 @@ export default function App() {
 								activeWaypointFrame={activeWaypointFrame}
 								onSelectWaypoint={(frame) => { setActiveWaypointFrame(frame); setTlFrame(Math.min(frame, tlFrameCount - 1)); setWaypointMode(true); }}
 								onMoveWaypoint={moveWaypoint}
-								onSelectEntity={(id) => setSelectedHierarchyId(id.startsWith("object:") ? id : id === "cam" ? "camera" : id === "b" ? "characterB" : "characterA")}
+								// Selection switch first, then the producer begins its
+								// transaction (plan §6.4): the settle here commits any
+								// previously open drag as one entry so the fresh token
+								// issued by onObjectMoveStart cannot leak.
+								onSelectEntity={(id) => {
+									store.settle();
+									setSelectedHierarchyId(id.startsWith("object:") ? id : id === "cam" ? "camera" : id === "b" ? "characterB" : "characterA");
+								}}
 								sceneObjects={sceneObjects}
 								selectedSceneObjectId={selectedSceneObjectId}
 								onMoveSceneObject={changeSceneObject}
+								onObjectMoveStart={beginSceneTransaction}
+								onObjectMoveEnd={endSceneTransaction}
 							/>
 							{/* Object gizmo: the shot pane's direct manipulation. Off while
 							    the plan owns the big pane (the pucks are the handles there)
@@ -1802,6 +1889,8 @@ export default function App() {
 								paneRef={mainPaneRef}
 								camRef={shotCamRef}
 								onChange={changeSceneObject}
+								onDragStart={beginSceneTransaction}
+								onDragEnd={endSceneTransaction}
 								onSelect={(id) => selectHierarchy(id ? `object:${id}` : "props")}
 							/>
 							<CaptureRig apiRef={captureRef} camRef={shotCamRef} />
@@ -2401,25 +2490,25 @@ export default function App() {
 								<Vector3Row
 									label="Position"
 									fields={[
-										{ axis: "X", value: selectedSceneObject.x, step: 0.05, precision: 2, onChange: (x) => changeSceneObject(selectedSceneObject.id, { x }) },
-										{ axis: "Y", value: selectedSceneObject.y ?? 0, step: 0.05, precision: 2, onChange: (y) => changeSceneObject(selectedSceneObject.id, { y }) },
-										{ axis: "Z", value: selectedSceneObject.z, step: 0.05, precision: 2, onChange: (z) => changeSceneObject(selectedSceneObject.id, { z }) },
+										{ axis: "X", value: selectedSceneObject.x, step: 0.05, precision: 2, onChange: (x) => changeSceneObject(selectedSceneObject.id, { x }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Y", value: selectedSceneObject.y ?? 0, step: 0.05, precision: 2, onChange: (y) => changeSceneObject(selectedSceneObject.id, { y }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Z", value: selectedSceneObject.z, step: 0.05, precision: 2, onChange: (z) => changeSceneObject(selectedSceneObject.id, { z }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
 								<Vector3Row
 									label="Rotation"
 									fields={[
-										{ axis: "X", value: selectedSceneObject.rotX ?? 0, step: 1, precision: 1, onChange: (rotX) => changeSceneObject(selectedSceneObject.id, { rotX }) },
-										{ axis: "Y", value: selectedSceneObject.rot, step: 1, precision: 1, onChange: (rot) => changeSceneObject(selectedSceneObject.id, { rot }) },
-										{ axis: "Z", value: selectedSceneObject.rotZ ?? 0, step: 1, precision: 1, onChange: (rotZ) => changeSceneObject(selectedSceneObject.id, { rotZ }) },
+										{ axis: "X", value: selectedSceneObject.rotX ?? 0, step: 1, precision: 1, onChange: (rotX) => changeSceneObject(selectedSceneObject.id, { rotX }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Y", value: selectedSceneObject.rot, step: 1, precision: 1, onChange: (rot) => changeSceneObject(selectedSceneObject.id, { rot }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Z", value: selectedSceneObject.rotZ ?? 0, step: 1, precision: 1, onChange: (rotZ) => changeSceneObject(selectedSceneObject.id, { rotZ }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
 								<Vector3Row
 									label="Scale"
 									fields={[
-										{ axis: "X", value: selectedSceneObject.scaleX ?? 1, step: 0.05, precision: 2, onChange: (scaleX) => changeSceneObject(selectedSceneObject.id, { scaleX }) },
-										{ axis: "Y", value: selectedSceneObject.scaleY ?? 1, step: 0.05, precision: 2, onChange: (scaleY) => changeSceneObject(selectedSceneObject.id, { scaleY }) },
-										{ axis: "Z", value: selectedSceneObject.scaleZ ?? 1, step: 0.05, precision: 2, onChange: (scaleZ) => changeSceneObject(selectedSceneObject.id, { scaleZ }) },
+										{ axis: "X", value: selectedSceneObject.scaleX ?? 1, step: 0.05, precision: 2, onChange: (scaleX) => changeSceneObject(selectedSceneObject.id, { scaleX }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Y", value: selectedSceneObject.scaleY ?? 1, step: 0.05, precision: 2, onChange: (scaleY) => changeSceneObject(selectedSceneObject.id, { scaleY }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Z", value: selectedSceneObject.scaleZ ?? 1, step: 0.05, precision: 2, onChange: (scaleZ) => changeSceneObject(selectedSceneObject.id, { scaleZ }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
 								<div className="object-colors" role="group" aria-label="Object colour">

@@ -201,7 +201,7 @@ export function Field({ label, children }) {
 		</div>
 	);
 }
-export function NumberField({ label, value, step, precision = 2, onChange, title }) {
+export function NumberField({ label, value, step, precision = 2, onChange, onScrubStart, onScrubEnd, title }) {
 	const [focused, setFocused] = useState(false);
 	const [draft, setDraft] = useState(null);
 	// The draft must be readable synchronously: blur() fires the commit
@@ -212,7 +212,13 @@ export function NumberField({ label, value, step, precision = 2, onChange, title
 	// re-render from the previous commit is still pending.
 	const valueRef = useRef(value);
 	const inputRef = useRef(null);
-	// `{ x, value }` of the drag start, null while not scrubbing.
+	// The scrub lifecycle's window listeners are registered once (Escape,
+	// blur), so the freshest end callback is mirrored like `valueRef`.
+	const scrubEndRef = useRef(onScrubEnd);
+	scrubEndRef.current = onScrubEnd;
+	// `{ x, value, element, pointerId, token }` of the scrub start, null while
+	// not scrubbing. `element`/`pointerId` let the teardown release capture;
+	// `token` is the open store transaction, null when no scrub props exist.
 	const dragRef = useRef(null);
 
 	valueRef.current = value;
@@ -271,7 +277,18 @@ export function NumberField({ label, value, step, precision = 2, onChange, title
 	const onAxisPointerDown = (e) => {
 		e.preventDefault();
 		const base = commitDraft();
-		dragRef.current = { x: e.clientX, value: base ?? valueRef.current };
+		const drag = {
+			x: e.clientX,
+			value: base ?? valueRef.current,
+			element: e.currentTarget,
+			pointerId: e.pointerId,
+		};
+		// A scrub is one store transaction: begin before any apply so the
+		// whole drag lands as a single undo entry. The teardown is registered
+		// as the store's cancel so a settle leaves the scrub inert without
+		// this component closing the token itself.
+		dragRef.current = drag;
+		drag.token = onScrubStart?.({ owner: "field", cancel: () => teardownScrub(drag) });
 		e.currentTarget.setPointerCapture(e.pointerId);
 	};
 
@@ -279,15 +296,50 @@ export function NumberField({ label, value, step, precision = 2, onChange, title
 		const drag = dragRef.current;
 		if (!drag) return;
 		const multiplier = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
-		onChange(drag.value + (e.clientX - drag.x) * step * multiplier);
+		onChange(drag.value + (e.clientX - drag.x) * step * multiplier, drag.token);
 	};
 
-	const endAxisDrag = (e) => {
+	// Drop the scrub ref and release the capture held on the axis label.
+	// Shared by every close path AND the store's cancel; never closes the
+	// transaction itself — the caller decides the commit value.
+	const teardownScrub = (drag) => {
+		if (!drag || dragRef.current !== drag) return;
 		dragRef.current = null;
-		if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-			e.currentTarget.releasePointerCapture(e.pointerId);
+		if (drag.element.hasPointerCapture(drag.pointerId)) {
+			drag.element.releasePointerCapture(drag.pointerId);
 		}
 	};
+
+	const closeScrub = (commit) => {
+		const drag = dragRef.current;
+		if (!drag) return;
+		teardownScrub(drag);
+		scrubEndRef.current?.(drag.token, { commit });
+	};
+
+	const endAxisDrag = () => closeScrub(true);
+
+	useEffect(() => {
+		// While a scrub is live, Escape cancels the whole drag. It must run in
+		// the capture phase and stop propagation so the same press cannot also
+		// reach the input's revert-and-blur handler or App's Escape handler.
+		// Window blur commits like pointerup: travel already applied is real
+		// work, not intent to discard (plan §6.3).
+		const onEscape = (event) => {
+			if (event.key !== "Escape") return;
+			if (!dragRef.current) return;
+			event.stopPropagation();
+			closeScrub(false);
+		};
+		const onBlur = () => closeScrub(true);
+		window.addEventListener("keydown", onEscape, true);
+		window.addEventListener("blur", onBlur);
+		return () => {
+			window.removeEventListener("keydown", onEscape, true);
+			window.removeEventListener("blur", onBlur);
+			closeScrub(true);
+		};
+	}, []);
 
 	const display = focused && draft !== null ? draft : formatValue(value);
 
@@ -330,6 +382,8 @@ export function Vector3Row({ label, fields }) {
 					step={field.step}
 					precision={field.precision}
 					onChange={field.onChange}
+					onScrubStart={field.onScrubStart}
+					onScrubEnd={field.onScrubEnd}
 				/>
 			))}
 		</div>
