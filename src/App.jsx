@@ -2132,6 +2132,19 @@ export default function App() {
 							{rightPanelDetailLabel}
 						</button>
 					</nav>
+					{/* Save failures live above the tab content, not inside the Props
+					    card: that card is hidden whenever any hierarchy node is
+					    selected, and saves fire exactly while objects are being
+					    edited — the one case where a failure line inside it is
+					    invisible. As a sibling of the tab panes this line stays
+					    on screen for every selection and every tab until the
+					    next successful write clears it (plan §8.4); the one-shot
+					    toast still announces each failure episode. */}
+					{sceneSaveError && (
+						<p className="scene-save-error" role="status">
+							{sceneSaveError}
+						</p>
+					)}
 					<div className="right-panel-view">
 					<div className="hierarchy-tab-pane" hidden={rightPanelTab !== "hierarchy"}>
 					<HierarchyPanel
@@ -2586,7 +2599,6 @@ export default function App() {
 
 					<section className="card" hidden={selectedHierarchyId !== "props"}>
 						<h3>Props</h3>
-						{sceneSaveError && <p className="scene-save-error">{sceneSaveError}</p>}
 						<p className="inspector-hint">Everything you add to the set lives here. Pick one to edit it, or click it in the shot view.</p>
 						<AddObjectMenu onAdd={addSceneObject} label="Add object to the set" />
 						<div className="inspector-list compact">

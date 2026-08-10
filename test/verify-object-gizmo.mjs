@@ -136,6 +136,17 @@ const transform = () =>
 		"Object.fromEntries([...document.querySelectorAll('.inspector-pane .vec3-row')].map(r => [r.querySelector('.vec3-label').textContent, [...r.querySelectorAll('input')].map(i => parseFloat(i.value))]))",
 	);
 const click = (selectorExpression) => evaluate(`${selectorExpression}.click()`);
+/** real visibility, not presence: the element must exist, paint a non-zero
+ * rect, and sit inside the viewport. A hidden card still contributes its text
+ * to document.body.textContent — only the rect proves it is on screen. */
+const errorLineVisible = () =>
+	evaluate(`(() => {
+		const el = document.querySelector('.scene-save-error');
+		if (!el) return false;
+		const r = el.getBoundingClientRect();
+		if (r.width === 0 || r.height === 0) return false;
+		return r.top >= 0 && r.left >= 0 && r.bottom <= window.innerHeight && r.right <= window.innerWidth;
+	})()`);
 
 await send("Runtime.enable");
 
@@ -541,9 +552,10 @@ const failArrows = await evaluate("window.__gizmoHandles()");
 const failXArrow = failArrows.find((handle) => handle.axis === "x");
 await drag(failXArrow, { x: failXArrow.x + 120, y: failXArrow.y });
 await sleep(700); // past the debounce: the flush throws and must surface
+expect("a failing setItem surfaces a visible error", await errorLineVisible());
 expect(
-	"a failing setItem surfaces a visible error",
-	await evaluate("document.body.textContent.includes('QuotaExceededError')"),
+	"the error line stays visible while an object is selected",
+	(await evaluate("window.__gizmoHandles().length > 0")) && (await errorLineVisible()),
 );
 expect("a failing setItem is caught, not uncaught", pageErrors.length === 0, pageErrors.join(" | "));
 const afterFailDrag = await transform();
@@ -565,7 +577,7 @@ await drag(restoreXArrow, { x: restoreXArrow.x + 120, y: restoreXArrow.y });
 await sleep(700);
 expect(
 	"a successful write clears the error line",
-	await evaluate("!document.body.textContent.includes('QuotaExceededError')"),
+	await evaluate("!document.querySelector('.scene-save-error')"),
 );
 expect(
 	"a successful write persists the scene",

@@ -3830,12 +3830,13 @@ input[type=range]::-moz-range-thumb {
 }
 
 .panel.hierarchy-sidebar {
-	display: grid;
-	grid-template-rows: auto minmax(0, 1fr);
+	display: flex;
+	flex-direction: column;
 }
 
 .right-panel-tabs {
 	display: grid;
+	flex: none;
 	grid-template-columns: 1fr 1fr;
 	gap: 4px;
 	padding: 8px;
@@ -3877,6 +3878,7 @@ input[type=range]::-moz-range-thumb {
 
 .right-panel-view {
 	overflow: hidden;
+	flex: 1 1 0;
 }
 
 .right-panel-view > [hidden] {
@@ -4179,11 +4181,22 @@ input[type=range]::-moz-range-thumb {
 
 /* ------------------------------------------------ scene save error ----- */
 
-/* Persistent save-failure line in the Props inspector card (plan §8.4):
- * storage failures must be visible, not swallowed. */
+/* Persistent save-failure line (plan §8.4): storage failures must stay
+   visible, not swallowed. It sits between the right-panel tabs and the tab
+   content — outside every hidden card — so it stays on screen for any
+   selection, including an active object, which is exactly when saves fire.
+   The one-shot toast announces each episode; this line persists until the
+   next successful write clears it. Pencil-red family (#d65f55), the light
+   theme's existing IK warning tone: a soft fill and border, not a shouting
+   solid. */
 .scene-save-error {
-	color: #e5484d;
+	flex: none;
+	margin: 0;
+	padding: 7px 12px;
+	border-bottom: 1px solid rgba(214, 95, 85, .34);
+	background: rgba(214, 95, 85, .09);
+	color: #b54840;
 	font-size: 12px;
 	line-height: 1.45;
-	margin: 0 0 10px;
+	font-weight: 600;
 }
