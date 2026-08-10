@@ -2,11 +2,18 @@
 import { readFileSync } from "node:fs";
 import { buildHierarchyNodes } from "../src/hierarchy-model.js";
 import {
+	SCENE_QUARANTINE_KEY,
+	SCENE_STORAGE_KEY,
+	SCENE_VERSION,
+	loadScene,
+	serializeScene,
 	DEFAULT_SCENE_OBJECTS,
 	OBJECT_LIBRARY,
 	createSceneObject,
+	dropToSurfacePatch,
 	placementInFront,
 	objectSize,
+	objectFootprintBounds,
 	removeSceneObject,
 	rotatePatch,
 	scalePatch,
@@ -140,6 +147,221 @@ expect("scale stays within a usable range", bounded.scaleX === 5 && bounded.scal
 const renamed = updateSceneObject([cube], cube.id, { name: "Crate", color: "#123456" })[0];
 expect("name and colour are editable", renamed.name === "Crate" && renamed.color === "#123456");
 expect("empty names are rejected", updateSceneObject([cube], cube.id, { name: "" })[0] === cube);
+
+/* ------------------------------------------------ persistence ---- */
+
+const fullRecord = createSceneObject("cube", []);
+const roundTrip = loadScene(serializeScene([fullRecord]));
+expect(
+	"a serialized scene round-trips",
+	roundTrip.status === "valid" && JSON.stringify(roundTrip.objects) === JSON.stringify([fullRecord]),
+	JSON.stringify(roundTrip),
+);
+
+expect(
+	"an absent payload is tagged absent",
+	loadScene(null).status === "absent" && loadScene("").status === "absent" && loadScene(undefined).status === "absent",
+);
+
+expect(
+	"malformed JSON is tagged corrupt",
+	loadScene("{").status === "corrupt" && loadScene("[1,2]").status === "corrupt" && loadScene('{"version":1}').status === "corrupt",
+);
+
+expect(
+	"a non-integer or non-positive version is corrupt, not future",
+	['{"version":"1","objects":[]}', '{"version":1.5,"objects":[]}', '{"version":0,"objects":[]}', '{"version":-1,"objects":[]}'].every(
+		(raw) => loadScene(raw).status === "corrupt",
+	),
+);
+
+expect(
+	"only an integer newer than SCENE_VERSION is future",
+	loadScene('{"version":2,"objects":[]}').status === "future" &&
+		loadScene('{"version":99,"objects":[]}').status === "future" &&
+		loadScene('{"version":2,"objects":[]}').objects.length === 0,
+);
+
+expect(
+	"the supported version range is exactly 1..SCENE_VERSION",
+	Array.from({ length: SCENE_VERSION }, (_, index) => index + 1).every((version) =>
+		loadScene(JSON.stringify({ version, objects: [] })).status === "valid",
+	),
+);
+
+expect(
+	"an unknown renderer is dropped, not fatal",
+	(() => {
+		const result = loadScene(
+			JSON.stringify({ version: 1, objects: [createSceneObject("cube", []), { id: "ghost", renderer: "ghost" }] }),
+		);
+		return result.objects.length === 1 && result.dropped === 1;
+	})(),
+);
+
+expect(
+	"footprint and height are rebuilt from the library",
+	(() => {
+		const result = loadScene(
+			JSON.stringify({ version: 1, objects: [{ id: "cube", renderer: "cube", footprint: { width: 99, depth: 99 }, height: 42 }] }),
+		);
+		return result.objects[0].footprint.width === 1 && result.objects[0].footprint.depth === 1 && result.objects[0].height === 1;
+	})(),
+);
+
+expect(
+	"a single scale field fans out to three axes",
+	(() => {
+		const result = loadScene(JSON.stringify({ version: 1, objects: [{ id: "cube", renderer: "cube", scale: 2 }] }));
+		const object = result.objects[0];
+		return object.scaleX === 2 && object.scaleY === 2 && object.scaleZ === 2;
+	})(),
+);
+
+expect(
+	"out-of-room values are clamped on load",
+	(() => {
+		const result = loadScene(JSON.stringify({ version: 1, objects: [{ id: "cube", renderer: "cube", x: 99, y: -3, scaleX: 50 }] }));
+		const object = result.objects[0];
+		return object.x === 6.5 && object.y === 0 && object.scaleX === 5;
+	})(),
+);
+
+expect(
+	"duplicate ids are dropped and counted",
+	(() => {
+		const cube = createSceneObject("cube", []);
+		const result = loadScene(JSON.stringify({ version: 1, objects: [cube, { ...cube, name: "Cube 2" }] }));
+		return result.objects.length === 1 && result.dropped === 1;
+	})(),
+);
+
+expect(
+	"the storage keys are namespaced, versioned and distinct",
+	SCENE_STORAGE_KEY === "cozyclay.scene.v1" &&
+		SCENE_VERSION === 1 &&
+		SCENE_QUARANTINE_KEY.startsWith(SCENE_STORAGE_KEY) &&
+		SCENE_QUARANTINE_KEY !== SCENE_STORAGE_KEY,
+);
+/* ------------------------------------------------ drop-to-surface ---- */
+
+// Strict drop-down (plan §9.2): a surface supports the falling object only
+// when its top is at or below the object's current base, so an object that
+// is already inside a box is NOT supported by it and falls through. The
+// patch touches only Y; the caller's updateSceneObject clamp owns the limits.
+const cubeAt = (id, x, z, y, height = 1) => ({
+	id,
+	x,
+	y,
+	z,
+	rot: 0,
+	rotX: 0,
+	rotZ: 0,
+	scaleX: 1,
+	scaleY: 1,
+	scaleZ: 1,
+	footprint: { width: 0.5, depth: 0.5 },
+	height,
+});
+const box = {
+	id: "box",
+	x: 0,
+	y: 0,
+	z: 0,
+	rot: 0,
+	rotX: 0,
+	rotZ: 0,
+	scaleX: 1,
+	scaleY: 1,
+	scaleZ: 1,
+	footprint: { width: 1, depth: 1 },
+	height: 1,
+};
+
+const floater = cubeAt("floater", 0, 0, 2);
+const floaterBefore = JSON.stringify(floater);
+const floorPatch = dropToSurfacePatch(floater, []);
+expect("an object over empty floor drops to zero", floorPatch !== null && floorPatch.y === 0, JSON.stringify(floorPatch));
+expect("a drop never mutates its inputs", JSON.stringify(floater) === floaterBefore);
+
+const boxPatch = dropToSurfacePatch(cubeAt("faller", 0, 0, 1.5), [box]);
+expect("an object over a box rests on its top", boxPatch !== null && boxPatch.y === 1, JSON.stringify(boxPatch));
+
+const tallBox = { ...box, id: "tall", scaleY: 2 };
+expect("scaleY raises the support surface", dropToSurfacePatch(cubeAt("faller2", 0, 0, 3), [tallBox]).y === 2);
+
+expect("a non-overlapping neighbour is not a support", dropToSurfacePatch(cubeAt("far", 5, 5, 1), [box]).y === 0);
+// The 0.5 m cube's edge touches the 1 m box's edge at x = 0.5 exactly: the
+// EPS tolerance keeps the abutment from counting as overlap.
+expect("an edge-touching neighbour is not a support", dropToSurfacePatch(cubeAt("edge", 0.75, 0, 1), [box]).y === 0);
+
+const raisedBox = { ...box, id: "raised", y: 1 };
+expect("a support above the object is ignored", dropToSurfacePatch(cubeAt("low", 0, 0, 0.5), [raisedBox]).y === 0);
+
+// Base 0.4 is below the box top 1, so strict drop-down says the box is NOT
+// support and the object lands on the floor — not on the box top.
+expect("an object already inside a box falls through it", dropToSurfacePatch(cubeAt("buried", 0, 0, 0.4), [box]).y === 0);
+
+// Composition: the patch carries only Y, so snapped X/Z survive byte-for-byte
+// and the exact (un-snapped) contact height comes through updateSceneObject.
+const offGrid = { ...box, id: "offgrid", x: 1.25, z: -0.4, height: 1.13 };
+const snapStart = cubeAt("drop", 1.25, -0.4, 2);
+const composed = dropToSurfacePatch(snapStart, [offGrid]);
+expect("a drop preserves snapped X and Z byte-for-byte", composed !== null && composed.y === 1.13, JSON.stringify(composed));
+const rested = updateSceneObject([snapStart, offGrid], snapStart.id, composed);
+expect(
+	"the applied drop lands exactly on the off-grid top, not on the 5 cm grid",
+	rested[0].x === 1.25 && rested[0].z === -0.4 && rested[0].y === 1.13,
+	JSON.stringify(rested[0]),
+);
+const noOp = dropToSurfacePatch(rested[0], [offGrid]);
+expect("a drop is idempotent — the second drop changes nothing", noOp === null, JSON.stringify(noOp));
+expect(
+	"a redundant drop keeps the SAME array reference, so no history entry is possible",
+	updateSceneObject(rested, rested[0].id, noOp ?? {}) === rested,
+);
+
+// The clamp lives in updateSceneObject alone: the pure patch reports the raw
+// 6.00005 m contact (a support top a hair above the 6 m ceiling, admitted by
+// the EPS tolerance because the object's base sits exactly at the ceiling)
+// and the applied record is capped at 6.
+const tallStack = { ...box, id: "stack", height: 6.00005 };
+const overCeiling = dropToSurfacePatch(cubeAt("up", 0, 0, 6), [tallStack]);
+expect("the drop patch itself is not clamped", overCeiling !== null && overCeiling.y === 6.00005, JSON.stringify(overCeiling));
+const clamped = updateSceneObject([cubeAt("up", 0, 0, 6), tallStack], "up", overCeiling)[0];
+expect("a composed drop still hits the ceiling clamp", clamped.y === 6, JSON.stringify(clamped));
+
+// A 0.5 x 4 m plank at 45 degrees: the yawed AABB is a ~3.18 m square, so a
+// cube at x = 0.5 (which the unrotated 0.5 m-wide footprint would miss) is
+// supported, while one beyond the projected square is not.
+const plank = {
+	id: "plank",
+	x: 0,
+	y: 0,
+	z: 0,
+	rot: 45,
+	rotX: 0,
+	rotZ: 0,
+	scaleX: 1,
+	scaleY: 1,
+	scaleZ: 1,
+	footprint: { width: 0.5, depth: 4 },
+	height: 0.1,
+};
+const plankBounds = objectFootprintBounds(plank);
+expect(
+	"the yawed AABB widens the plank beyond its unrotated footprint",
+	plankBounds.maxX > 1.5 && plankBounds.maxZ > 1.5 && plankBounds.baseY === 0 && plankBounds.topY === 0.1,
+	JSON.stringify(plankBounds),
+);
+expect(
+	"a 45-degree long support widens the overlap window",
+	dropToSurfacePatch(cubeAt("grazing", 0.5, 0, 1), [plank]).y === 0.1,
+);
+expect(
+	"a 45-degree support does not create phantom overlap beyond its AABB",
+	dropToSurfacePatch(cubeAt("clear", 2.5, 0, 1), [plank]).y === 0,
+);
 
 if (failures) process.exit(1);
 console.log("all scene object checks PASS");

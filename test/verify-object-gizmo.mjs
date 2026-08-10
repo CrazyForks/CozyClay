@@ -93,6 +93,43 @@ const pressKey = async (key, code) => {
 	await send("Input.dispatchKeyEvent", { type: "keyUp", ...params });
 	await sleep(250);
 };
+/** pressKey cannot carry modifier bits; undo/redo need Ctrl/Cmd. */
+const pressKeyCombo = async (key, code, modifiers) => {
+	const params = { key, code, windowsVirtualKeyCode: key.toUpperCase().charCodeAt(0), modifiers };
+	await send("Input.dispatchKeyEvent", { type: "keyDown", ...params });
+	await send("Input.dispatchKeyEvent", { type: "keyUp", ...params });
+	await sleep(250);
+};
+/** evaluate that treats a mid-navigation context loss as "not ready", not a crash */
+const evaluateSafely = async (expression) => {
+	try {
+		return await evaluate(expression);
+	} catch {
+		return undefined;
+	}
+};
+/** poll the page until expression is truthy or the timeout expires; returns whether it succeeded */
+const waitFor = async (expression, { timeoutMs = 5000, intervalMs = 100 } = {}) => {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (await evaluate(expression)) return true;
+		await sleep(intervalMs);
+	}
+	return false;
+};
+/** reload the page and wait for the studio to come back up (plan §11.3) */
+const reloadPage = async () => {
+	await send("Page.reload");
+	for (let i = 0; i < 150; i++) {
+		await sleep(200);
+		if (await evaluateSafely("!!document.querySelector('canvas')")) break;
+	}
+	// First paint is not the same as a committed tree: the QA hooks and the
+	// hierarchy render in the same commit as the canvas, so wait for them
+	// before letting the suite click anything.
+	for (let i = 0; i < 50 && !(await evaluateSafely("!!window.__sceneHistory && document.querySelectorAll('.hierarchy-row').length > 0")); i++) await sleep(200);
+	await sleep(1500);
+};
 /** the inspector's Transform rows, as { Position: [x,y,z], Rotation: [...], Scale: [...] } */
 const transform = () =>
 	evaluate(
@@ -102,15 +139,25 @@ const click = (selectorExpression) => evaluate(`${selectorExpression}.click()`);
 
 await send("Runtime.enable");
 
-for (let i = 0; i < 100 && !(await evaluate("!!document.querySelector('canvas')")); i++) await sleep(200);
+// Scene persistence (plan §8) survives reloads, so a cozyclay.scene.v1 left by
+// an earlier section would boot on the next Page.reload. Clear both keys BEFORE
+// the first assertion, then reload so every run starts from empty storage
+// (pre-mortem §14.1: persistence must never poison the suite mid-run).
+await evaluate("localStorage.removeItem('cozyclay.scene.v1'); localStorage.removeItem('cozyclay.scene.v1.quarantine')");
+await send("Page.reload");
+for (let i = 0; i < 100 && !(await evaluateSafely("!!document.querySelector('canvas')")); i++) await sleep(200);
 expect("the studio renders a canvas", await evaluate("!!document.querySelector('canvas')"));
+// Wait for the committed tree (QA hook + hierarchy) before the fixed settle.
+for (let i = 0; i < 50 && !(await evaluateSafely("!!window.__sceneHistory && document.querySelectorAll('.hierarchy-row').length > 0")); i++) await sleep(200);
 await sleep(1500);
 
 /* ------------------------------------------------------- creation ---- */
 
 expect("the hierarchy offers an Add object control", await evaluate("!!document.querySelector('.add-object-trigger')"));
 await click("document.querySelector('.add-object-trigger')");
-await sleep(150);
+// the popover mounts on a click-driven state flip; poll for its items so the
+// catalogue read below never sees an empty list
+await waitFor("document.querySelectorAll('.add-object-item').length > 0");
 const catalogue = await evaluate("[...document.querySelectorAll('.add-object-item')].map(b => b.textContent)");
 expect(
 	"the catalogue lists primitives and set pieces",
@@ -121,7 +168,8 @@ expect(
 );
 
 await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
-await sleep(400);
+// the creation commit renders the gizmo and inspector together; poll for it
+await waitFor("window.__gizmoHandles().length > 0");
 expect("the new object opens in the inspector", Object.keys(await transform()).join() === "Position,Rotation,Scale", JSON.stringify(await transform()));
 expect("the new object appears in the hierarchy", await evaluate("[...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent === 'Cube')"));
 expect("the new object exists in the 3D scene", await evaluate("window.__gizmoHandles().length > 0"));
@@ -208,11 +256,13 @@ const objectCentre = await evaluate(
 	"(() => { const g = window.__gizmoHandles(); const c = g.reduce((a, h) => ({ x: a.x + h.x / g.length, y: a.y + h.y / g.length }), { x: 0, y: 0 }); return { x: Math.round(c.x), y: Math.round(c.y) }; })()",
 );
 await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('SHOT 01'))");
-await sleep(300);
+// the deselection commit unmounts the gizmo; poll for it
+await waitFor("window.__gizmoHandles().length === 0");
 expect("selecting something else drops the gizmo", await evaluate("window.__gizmoHandles().length === 0"));
 await mouse("mousePressed", objectCentre.x, objectCentre.y);
 await mouse("mouseReleased", objectCentre.x, objectCentre.y);
-await sleep(400);
+// re-selecting remounts the gizmo; poll for the commit
+await waitFor("window.__gizmoHandles().length > 0");
 expect("clicking the object in the shot view selects it", await evaluate("window.__gizmoHandles().length > 0"));
 
 /* ------------------------------ selection vs the camera (Unity) ------ */
@@ -241,7 +291,8 @@ expect("a left drag on empty space clears the selection and leaves the camera", 
 
 // Right-drag is the camera.
 await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
-await sleep(300);
+// selecting the object remounts the gizmo; poll for the commit
+await waitFor("window.__gizmoHandles().length > 0");
 expect("the object is selectable again from the hierarchy", await evaluate("window.__gizmoHandles().length > 0"));
 const beforeFly = await transform();
 const restPose = await gizmoPose();
@@ -324,9 +375,11 @@ expect("the bird's-eye board drives the same object record", afterPlan.Position[
 // entirely — creation must not inherit the camera's yaw.
 await drag({ x: 300, y: 300 }, { x: 460, y: 320 }, { button: "right" });
 await click("document.querySelector('.add-object-trigger')");
-await sleep(200);
+// the popover mounts on a click-driven state flip; poll for its items
+await waitFor("document.querySelectorAll('.add-object-item').length > 0");
 await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Chair'))");
-await sleep(600);
+// the creation commit renders the gizmo and inspector together; poll for it
+await waitFor("window.__gizmoHandles().length > 0");
 expect("an object created from a swung camera is still unrotated", JSON.stringify((await transform()).Rotation) === "[0,0,0]", JSON.stringify(await transform()));
 await click("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Remove'))");
 await sleep(300);
@@ -344,7 +397,8 @@ const cubeRow = await evaluate(
 expect("the hierarchy lists the object row", !!cubeRow);
 await send("Input.dispatchMouseEvent", { type: "mousePressed", x: cubeRow.x, y: cubeRow.y, button: "right", buttons: 2, clickCount: 1 });
 await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: cubeRow.x, y: cubeRow.y, button: "right", buttons: 0, clickCount: 1 });
-await sleep(250);
+// the context menu mounts after the right-click; poll for its items
+await waitFor("document.querySelectorAll('.hierarchy-context-menu button, .context-menu button, [role=menu] button').length > 0");
 const menuItems = await evaluate("[...document.querySelectorAll('.hierarchy-context-menu button, .context-menu button, [role=menu] button')].map(b => b.textContent.trim())");
 expect("right-clicking a row offers Rename / Duplicate / Delete / Frame", ["Rename", "Duplicate", "Delete", "Frame"].every((label) => menuItems.some((item) => item.startsWith(label))), JSON.stringify(menuItems));
 await pressKey("Escape", "Escape");
@@ -354,9 +408,253 @@ await pressKey("Escape", "Escape");
 await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 await sleep(250);
 await click("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Remove'))");
-await sleep(300);
+// the removal commit drops the row; poll for it
+await waitFor("![...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent === 'Cube')");
 expect("removing the object clears it from the hierarchy", await evaluate("![...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent === 'Cube')"));
 expect("the removed object leaves no gizmo behind", await evaluate("window.__gizmoHandles().length === 0"));
+/* ------------------------------------------------ persistence ---- */
+
+// Plan §11.3: every case reloads, and most end by clearing the keys so a later
+// section can never boot from a leftover scene. The normalization chain (cases
+// 7-9) deliberately skips the clear between its reloads — the second reload IS
+// the point — and clears only at the very end.
+
+const sceneKey = "cozyclay.scene.v1";
+const quarantineKey = "cozyclay.scene.v1.quarantine";
+const clearSceneKeys = () => evaluate(`localStorage.removeItem('${sceneKey}'); localStorage.removeItem('${quarantineKey}')`);
+const setSceneKey = (value) => evaluate(`localStorage.setItem('${sceneKey}', ${JSON.stringify(value)})`);
+const readSceneKey = () => evaluate(`localStorage.getItem('${sceneKey}')`);
+/** The Props node starts collapsed, so restored objects are invisible until
+ * it is expanded. Selecting the row does NOT expand it (a root node has no
+ * ancestors to auto-expand), so drive the toggle button directly. */
+const expandProps = async () => {
+	const label = await evaluate(
+		"(() => { const t = [...document.querySelectorAll('.hierarchy-toggle')].find(b => (b.getAttribute('aria-label') || '').endsWith(' Props')); return t ? t.getAttribute('aria-label') : null; })()",
+	);
+	if (label === "Expand Props") {
+		await click("[...document.querySelectorAll('.hierarchy-toggle')].find(b => b.getAttribute('aria-label') === 'Expand Props')");
+		// the expand commit flips the toggle's aria-label to "Collapse Props"
+		await waitFor("[...document.querySelectorAll('.hierarchy-toggle')].some(b => b.getAttribute('aria-label') === 'Collapse Props')");
+	}
+};
+
+// case 1: a saved scene survives a reload (the debounced save has fired)
+await clearSceneKeys();
+await reloadPage();
+await click("document.querySelector('.add-object-trigger')");
+// the popover mounts on a click-driven state flip; poll for its items
+await waitFor("document.querySelectorAll('.add-object-item').length > 0");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Chair'))");
+await sleep(700); // past the 400 ms debounce
+await reloadPage();
+await expandProps();
+expect(
+	"the scene survives a reload",
+	await evaluate("[...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent.startsWith('Chair'))"),
+);
+
+// case 2: the reloaded record is a real object, not a label
+await expandProps();
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");
+// the gizmo must be mounted AND its screen positions settled (one render
+// frame) before the drag below grabs the X arrow by coordinate
+await waitFor("(() => { const h = window.__gizmoHandles().find(e => e.axis === 'x'); return !!h && window.__gizmoPick(Math.round(h.x), Math.round(h.y)) === 'x'; })()");
+expect("a reloaded object is still selectable", await evaluate("window.__gizmoHandles().length > 0"));
+const beforeReloadDrag = await transform();
+const reloadArrows = await evaluate("window.__gizmoHandles()");
+const reloadXArrow = reloadArrows.find((handle) => handle.axis === "x");
+await drag(reloadXArrow, { x: reloadXArrow.x + 120, y: reloadXArrow.y });
+const afterReloadDrag = await transform();
+expect(
+	"a reloaded object is still draggable",
+	afterReloadDrag.Position[0] !== beforeReloadDrag.Position[0],
+	JSON.stringify(afterReloadDrag),
+);
+
+// case 3: pagehide flushes INSIDE the debounce window. This is the live-store
+// regression detector (plan §8.4): a flush that captured sceneObjects in a
+// []-deps closure would write startup state instead of this edit.
+const beforeHide = await transform();
+const hideArrows = await evaluate("window.__gizmoHandles()");
+const hideXArrow = hideArrows.find((handle) => handle.axis === "x");
+await drag(hideXArrow, { x: hideXArrow.x + 60, y: hideXArrow.y });
+const edited = await transform(); // what the flush MUST persist
+await evaluate("window.dispatchEvent(new Event('pagehide'))");
+await reloadPage(); // inside the 400 ms window
+await expandProps();
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");
+// the selection commit mounts the gizmo; poll for it
+await waitFor("window.__gizmoHandles().length > 0");
+const afterHideReload = await transform();
+expect(
+	"an edit is flushed on pagehide without waiting for the debounce",
+	JSON.stringify(afterHideReload.Position) === JSON.stringify(edited.Position),
+	`${JSON.stringify(edited)} -> ${JSON.stringify(afterHideReload)}`,
+);
+await clearSceneKeys();
+
+// case 4: a corrupt payload starts clean and quarantines the old data
+await setSceneKey("{oops");
+await reloadPage();
+expect("a corrupt payload starts clean", await evaluate("!!document.querySelector('canvas')"));
+expect("a corrupt payload causes no page errors", pageErrors.length === 0, pageErrors.join(" | "));
+expect(
+	"the corrupt payload is quarantined",
+	(await evaluate(`localStorage.getItem('${quarantineKey}')`)) === "{oops",
+	await evaluate(`localStorage.getItem('${quarantineKey}')`),
+);
+await clearSceneKeys();
+
+// case 5: a future-version payload is never overwritten — not by the mount
+// flush, not by the debounce after an edit, not by the pagehide flush.
+await setSceneKey('{"version":99,"objects":[]}');
+await reloadPage();
+await click("document.querySelector('.add-object-trigger')");
+// the popover mounts on a click-driven state flip; poll for its items
+await waitFor("document.querySelectorAll('.add-object-item').length > 0");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
+await sleep(700); // past the debounce: the blocked flush must NOT write
+await evaluate("window.dispatchEvent(new Event('pagehide'))");
+expect(
+	"a future payload is never overwritten",
+	(await readSceneKey()) === '{"version":99,"objects":[]}',
+	await readSceneKey(),
+);
+await clearSceneKeys();
+
+// case 6: a failing setItem is visible and the session keeps working
+await reloadPage();
+await click("document.querySelector('.add-object-trigger')");
+// the popover mounts on a click-driven state flip; poll for its items
+await waitFor("document.querySelectorAll('.add-object-item').length > 0");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
+await sleep(600); // let the pre-stub write land, then break storage
+await evaluate(`
+	window.__realSetItem = Storage.prototype.setItem;
+	Storage.prototype.setItem = function (k, v) {
+		if (k === 'cozyclay.scene.v1') { const e = new Error('quota'); e.name = 'QuotaExceededError'; throw e; }
+		return window.__realSetItem.call(this, k, v);
+	};
+`);
+const beforeFail = await transform();
+const failArrows = await evaluate("window.__gizmoHandles()");
+const failXArrow = failArrows.find((handle) => handle.axis === "x");
+await drag(failXArrow, { x: failXArrow.x + 120, y: failXArrow.y });
+await sleep(700); // past the debounce: the flush throws and must surface
+expect(
+	"a failing setItem surfaces a visible error",
+	await evaluate("document.body.textContent.includes('QuotaExceededError')"),
+);
+expect("a failing setItem is caught, not uncaught", pageErrors.length === 0, pageErrors.join(" | "));
+const afterFailDrag = await transform();
+expect(
+	"the session still works after a failed save",
+	afterFailDrag.Position[0] !== beforeFail.Position[0],
+	JSON.stringify(afterFailDrag),
+);
+await pressKeyCombo("z", "KeyZ", 2); // Ctrl+Z
+expect(
+	"undo still works after a failed save",
+	JSON.stringify((await transform()).Position) === JSON.stringify(beforeFail.Position),
+	JSON.stringify(await transform()),
+);
+await evaluate("Storage.prototype.setItem = window.__realSetItem");
+const restoreArrows = await evaluate("window.__gizmoHandles()");
+const restoreXArrow = restoreArrows.find((handle) => handle.axis === "x");
+await drag(restoreXArrow, { x: restoreXArrow.x + 120, y: restoreXArrow.y });
+await sleep(700);
+expect(
+	"a successful write clears the error line",
+	await evaluate("!document.body.textContent.includes('QuotaExceededError')"),
+);
+expect(
+	"a successful write persists the scene",
+	await evaluate(
+		`(() => { const p = JSON.parse(localStorage.getItem('${sceneKey}')); return Array.isArray(p?.objects) && p.objects.length === 1 && p.objects[0].renderer === 'cube'; })()`,
+	),
+);
+await clearSceneKeys();
+
+// case 7: a stale but valid payload is normalized at startup. One repairable
+// legacy record (single scale), one unknown renderer, one duplicate id.
+await setSceneKey(
+	JSON.stringify({
+		version: 1,
+		objects: [
+			{ id: "cube", name: "Cube", renderer: "cube", x: 1.25, y: 0, z: -0.4, rot: 0, rotX: 0, rotZ: 0, scale: 2, color: "#c2c6c8" },
+			{ id: "ghost", name: "Ghost", renderer: "ghost", x: 0, y: 0, z: 0 },
+			{ id: "cube", name: "Cube 2", renderer: "cube", x: 2, y: 0, z: 0 },
+		],
+	}),
+);
+await send("Page.reload");
+for (let i = 0; i < 150; i++) {
+	await sleep(200);
+	if (await evaluateSafely("!!document.querySelector('canvas')")) break;
+}
+// The startup toast auto-dismisses after 2.2 s — probe it while it is alive.
+await sleep(400);
+expect(
+	"a stale but valid payload reports dropped records",
+	await evaluate("document.body.textContent.includes('saved object(s) could not be restored')"),
+);
+await sleep(1200); // let the rest of the boot settle
+expect("a stale but valid payload renders", await evaluate("!!document.querySelector('canvas')"));
+expect("a stale but valid payload causes no page errors", pageErrors.length === 0, pageErrors.join(" | "));
+await expandProps();
+const staleLabels = await evaluate("[...document.querySelectorAll('.hierarchy-label')].map(n => n.textContent)");
+expect(
+	"a stale but valid payload restores only the normalized record",
+	staleLabels.filter((label) => label.startsWith("Cube")).length === 1 && !staleLabels.some((label) => label.startsWith("Ghost")),
+	JSON.stringify(staleLabels),
+);
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
+// the selection commit mounts the gizmo; poll for it
+await waitFor("window.__gizmoHandles().length > 0");
+const staleScale = (await transform()).Scale;
+expect(
+	"the normalized record fans a legacy scale into all three axes",
+	JSON.stringify(staleScale) === "[2,2,2]",
+	JSON.stringify(staleScale),
+);
+
+// case 8: the normalized payload is what gets written back (plan §11.3)
+await sleep(700); // past the mount debounce of case 7's session
+const written = await evaluate(
+	`(() => { const p = JSON.parse(localStorage.getItem('${sceneKey}')); const o = p?.objects?.[0]; return { version: p?.version, count: p?.objects?.length, hasScale: o && 'scale' in o, scales: o && [o.scaleX, o.scaleY, o.scaleZ] }; })()`,
+);
+expect(
+	"the normalized payload is what gets written back",
+	written.version === 1 && written.count === 1 && !written.hasScale && JSON.stringify(written.scales) === "[2,2,2]",
+	JSON.stringify(written),
+);
+
+// case 9: WITHOUT clearing anything, the normalized payload reloads cleanly a
+// second time — the check the Critic required. A load is not an undoable change.
+await reloadPage();
+await expandProps();
+expect("the normalized payload reloads cleanly a second time", await evaluate("!!document.querySelector('canvas')"));
+expect("the second reload causes no page errors", pageErrors.length === 0, pageErrors.join(" | "));
+const secondLabels = await evaluate("[...document.querySelectorAll('.hierarchy-label')].map(n => n.textContent)");
+expect(
+	"the second reload restores exactly one object",
+	secondLabels.filter((label) => label.startsWith("Cube")).length === 1,
+	JSON.stringify(secondLabels),
+);
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
+// the selection commit mounts the gizmo; poll for it
+await waitFor("window.__gizmoHandles().length > 0");
+const secondScale = (await transform()).Scale;
+expect("the second reload keeps the normalized scale", JSON.stringify(secondScale) === "[2,2,2]", JSON.stringify(secondScale));
+const historyAfterLoad = await evaluate("window.__sceneHistory()");
+expect(
+	"a load is not an undoable change",
+	historyAfterLoad.past === 0 && historyAfterLoad.settled === true,
+	JSON.stringify(historyAfterLoad),
+);
+// isolation: only now clear both keys and reload for anything that follows
+await clearSceneKeys();
+await reloadPage();
 
 expect("the page logged no errors", pageErrors.length === 0, pageErrors.join(" | "));
 

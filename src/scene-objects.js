@@ -9,8 +9,8 @@
  * disagree about what a legal transform is.
  *
  * Record shape:
- *   { id, name, renderer, x, y, z, rot, rotX, rotZ, scale, color,
- *     footprint: { width, depth }, height }
+ *   { id, name, renderer, x, y, z, rot, rotX, rotZ, scaleX, scaleY, scaleZ,
+ *     color, footprint: { width, depth }, height }
  * Position is metres on the floor plane (`y` is height above the deck, 0 =
  * standing on it). `rot` stays the Y (yaw) angle in degrees — the bird's-eye
  * board and its handles are built on it — with `rotX`/`rotZ` the pitch/roll
@@ -20,6 +20,12 @@
 import { Euler, Quaternion } from "three";
 
 export const DEFAULT_SCENE_OBJECTS = [];
+/** The persistence contract (plan §8.1): the version lives in the key AND in
+ * the body, so a future v2 can read a v1 body. The quarantine key holds a
+ * corrupt payload byte-for-byte until an older build can be upgraded. */
+export const SCENE_STORAGE_KEY = "cozyclay.scene.v1";
+export const SCENE_QUARANTINE_KEY = "cozyclay.scene.v1.quarantine";
+export const SCENE_VERSION = 1;
 
 /** Euler convention shared with the renderer in props.jsx. */
 const EULER_ORDER = "XYZ";
@@ -152,6 +158,101 @@ export function removeSceneObject(objects, id) {
 	const next = objects.filter((object) => object.id !== id);
 	return next.length === objects.length ? objects : next;
 }
+/* -------------------------------------------------- persistence ---- */
+
+/**
+ * Repair one stored record into a live record, or return null to drop it.
+ * Storage is never trusted: `footprint`/`height` are rebuilt from the
+ * library, every transform channel goes through the same clamps the editor
+ * uses, and missing channels take `createSceneObject` defaults. An unknown
+ * `renderer` (or a record without an id) has nothing to render or address,
+ * so it is dropped rather than half-restored (plan §8.2).
+ */
+export function normalizeSceneObject(record) {
+	if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+	const entry = objectLibraryEntry(record.renderer);
+	if (!entry) return null;
+	if (typeof record.id !== "string" || !record.id) return null;
+	// Defensive import fallback, not a migration: hand-authored or external
+	// payloads may carry one `scale` (the pre-split record shape). It fans
+	// out to all three axes only when no axis is present — an explicit
+	// scaleX wins over the fallback.
+	const hasSingleScale = record.scaleX === undefined && record.scaleY === undefined && record.scaleZ === undefined;
+	const singleScale = hasSingleScale ? Number(record.scale) : NaN;
+	const scaleFallback = Number.isFinite(singleScale) ? singleScale : 1;
+	const pick = (value, fallback) => {
+		const n = value === undefined ? fallback : Number(value);
+		return Number.isFinite(n) ? n : fallback;
+	};
+	return {
+		id: record.id,
+		name: typeof record.name === "string" && record.name ? record.name : entry.label,
+		renderer: entry.kind,
+		x: TRANSFORM_LIMITS.x(pick(record.x, 0)),
+		y: TRANSFORM_LIMITS.y(pick(record.y, 0)),
+		z: TRANSFORM_LIMITS.z(pick(record.z, 0)),
+		rot: TRANSFORM_LIMITS.rot(pick(record.rot, 0)),
+		rotX: TRANSFORM_LIMITS.rotX(pick(record.rotX, 0)),
+		rotZ: TRANSFORM_LIMITS.rotZ(pick(record.rotZ, 0)),
+		scaleX: TRANSFORM_LIMITS.scaleX(pick(record.scaleX, scaleFallback)),
+		scaleY: TRANSFORM_LIMITS.scaleY(pick(record.scaleY, scaleFallback)),
+		scaleZ: TRANSFORM_LIMITS.scaleZ(pick(record.scaleZ, scaleFallback)),
+		color: typeof record.color === "string" && record.color ? record.color : entry.color,
+		footprint: { ...entry.footprint },
+		height: entry.height,
+	};
+}
+
+/** The only writer. The body carries the version alongside the key so a
+ * future build can read today's payload after a key rename. */
+export function serializeScene(objects) {
+	return JSON.stringify({ version: SCENE_VERSION, objects });
+}
+
+/**
+ * Total, consistent tag predicate (plan §8.2): every input falls into exactly
+ * one row and this never throws. `absent` and `corrupt` fall back to the
+ * defaults; `future` is quarantined in App — never overwritten.
+ */
+export function loadScene(raw) {
+	if (raw === null || raw === undefined || raw === "") {
+		return { status: "absent", objects: [], dropped: 0 };
+	}
+	let payload;
+	try {
+		payload = JSON.parse(raw);
+	} catch {
+		return { status: "corrupt", objects: [], dropped: 0 };
+	}
+	// A scene body is a non-array plain object holding an array of records.
+	if (payload === null || typeof payload !== "object" || Array.isArray(payload) || !Array.isArray(payload.objects)) {
+		return { status: "corrupt", objects: [], dropped: 0 };
+	}
+	const { version } = payload;
+	// The supported range is exactly the integers 1..SCENE_VERSION; a
+	// malformed version ("1", 1.5, 0, -1, NaN) is corrupt, never future.
+	if (!Number.isInteger(version) || version < 1) {
+		return { status: "corrupt", objects: [], dropped: 0 };
+	}
+	if (version > SCENE_VERSION) {
+		return { status: "future", objects: [], dropped: 0 };
+	}
+	const seen = new Set();
+	const objects = [];
+	let dropped = 0;
+	for (const record of payload.objects) {
+		const normalized = normalizeSceneObject(record);
+		// Unknown renderers and duplicate ids are dropped and counted, so the
+		// caller can report what was lost instead of silently degrading.
+		if (!normalized || seen.has(normalized.id)) {
+			dropped += 1;
+			continue;
+		}
+		seen.add(normalized.id);
+		objects.push(normalized);
+	}
+	return { status: "valid", objects, dropped };
+}
 
 /* ------------------------------------------------------------- gizmo ---- */
 
@@ -232,6 +333,70 @@ export function objectSize(object) {
 		height: (object.height ?? 1) * (object.scaleY ?? 1),
 		depth: (object.footprint?.depth ?? 1) * (object.scaleZ ?? 1),
 	};
+}
+/* -------------------------------------------------- drop-to-surface ---- */
+
+/** The tolerance that keeps an edge-abutting footprint from counting as
+ * overlap: a strict `<` against `max - EPS` makes a 0.5 - 0.5 touch false. */
+const OVERLAP_EPS = 1e-4;
+
+/**
+ * The object's world-space axis-aligned bounds. The footprint rectangle is
+ * rotated by `rot` (the yaw the plan board reads) and projected to its AABB:
+ * at 45 degrees a long plank widens on both axes. Pitch/roll are a documented
+ * approximation — the vertical extent still uses the unrotated height, so a
+ * tilted object's support level is approximate while yaw is exact.
+ */
+export function objectFootprintBounds(object) {
+	const size = objectSize(object);
+	const rot = (object.rot ?? 0) * DEG;
+	const c = Math.abs(Math.cos(rot));
+	const s = Math.abs(Math.sin(rot));
+	const halfW = (size.width * c + size.depth * s) / 2;
+	const halfD = (size.width * s + size.depth * c) / 2;
+	const x = object.x ?? 0;
+	const z = object.z ?? 0;
+	const baseY = object.y ?? 0;
+	return {
+		minX: x - halfW,
+		maxX: x + halfW,
+		minZ: z - halfD,
+		maxZ: z + halfD,
+		baseY,
+		topY: baseY + size.height,
+	};
+}
+
+/**
+ * Where the object would land if it fell straight down, as a `{ y }` patch —
+ * PURE: it reads `object` and `others` and mutates nothing. Returns null when
+ * the object is already resting exactly on the surface, so a redundant drop
+ * can never create a history entry.
+ *
+ * Strict drop-down (plan §9.2): among the `others` whose projected footprints
+ * strictly overlap this object's (EPS keeps edge abutments out), only
+ * surfaces whose top is at or below the object's current base are support;
+ * the object lands with its base exactly on the highest such top, or on the
+ * floor when there is none. An object already penetrating a surface is
+ * therefore NOT supported by it and falls through — the recovery is to raise
+ * Y above the box and press End again. The deferred alternative (a bounded
+ * penetration threshold) is cut because the user cannot see the threshold
+ * and a second End press would differ from the first.
+ *
+ * The contact height is exact, never snapped to the 5 cm grid, and never
+ * clamped here: the y clamp stays in updateSceneObject, the single owner.
+ */
+export function dropToSurfacePatch(object, others) {
+	const self = objectFootprintBounds(object);
+	let highestTop = 0;
+	for (const other of others) {
+		const bounds = objectFootprintBounds(other);
+		if (self.minX >= bounds.maxX - OVERLAP_EPS || bounds.minX >= self.maxX - OVERLAP_EPS) continue;
+		if (self.minZ >= bounds.maxZ - OVERLAP_EPS || bounds.minZ >= self.maxZ - OVERLAP_EPS) continue;
+		if (bounds.topY > self.baseY + OVERLAP_EPS) continue;
+		if (bounds.topY > highestTop) highestTop = bounds.topY;
+	}
+	return highestTop === self.baseY ? null : { y: highestTop };
 }
 
 /**

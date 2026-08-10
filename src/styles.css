@@ -4176,3 +4176,14 @@ input[type=range]::-moz-range-thumb {
 	outline: none;
 	box-shadow: 0 0 0 2px var(--accent-ring);
 }
+
+/* ------------------------------------------------ scene save error ----- */
+
+/* Persistent save-failure line in the Props inspector card (plan §8.4):
+ * storage failures must be visible, not swallowed. */
+.scene-save-error {
+	color: #e5484d;
+	font-size: 12px;
+	line-height: 1.45;
+	margin: 0 0 10px;
+}

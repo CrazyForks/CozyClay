@@ -19,11 +19,15 @@ import { SetProps } from "./props.jsx";
 import {
 	DEFAULT_SCENE_OBJECTS,
 	OBJECT_COLORS,
+	SCENE_QUARANTINE_KEY,
+	SCENE_STORAGE_KEY,
 	createSceneObject,
+	loadScene,
 	objectSize,
 	placementInFront,
 	removeSceneObject,
 	sceneObjectIdFromHierarchy,
+	serializeScene,
 	updateSceneObject,
 } from "./scene-objects.js";
 import { createSceneHistoryStore } from "./scene-history.js";
@@ -361,6 +365,68 @@ function loadWorkspaceLayout() {
 	}
 }
 
+/**
+ * The startup scene load (plan §8.3): a tagged result from loadScene plus the
+ * session's durability posture. Runs once inside a lazy initializer, so the
+ * quarantine write happens before the first render and the toast/error ride
+ * along as initial UI state. A throwing getItem counts as absent — private
+ * browsing must never crash the studio.
+ */
+function loadSceneStartup() {
+	let raw = null;
+	try {
+		raw = localStorage.getItem(SCENE_STORAGE_KEY);
+	} catch {
+		raw = null;
+	}
+	// DEFAULT_SCENE_OBJECTS stays the fallback, never a seed over storage
+	// (plan §8.5); the clone keeps the record footprint copies independent.
+	const defaults = () => DEFAULT_SCENE_OBJECTS.map((object) => ({ ...object, footprint: { ...object.footprint } }));
+	const result = loadScene(raw);
+	if (result.status === "valid") {
+		return {
+			objects: result.objects,
+			saveBlocked: false,
+			error: null,
+			toast: result.dropped > 0 ? `${result.dropped} saved object(s) could not be restored` : null,
+		};
+	}
+	if (result.status === "future") {
+		// A newer build wrote this scene. Overwriting it with our older schema
+		// would destroy newer data, so this session never writes the primary key.
+		return {
+			objects: defaults(),
+			saveBlocked: true,
+			error: null,
+			toast: "Saved scene was written by a newer CozyClay — it has been left untouched and this session will not save",
+		};
+	}
+	if (result.status === "corrupt") {
+		try {
+			// Keep the unreadable bytes under the quarantine key before the
+			// first save overwrites the primary.
+			localStorage.setItem(SCENE_QUARANTINE_KEY, raw);
+			return {
+				objects: defaults(),
+				saveBlocked: false,
+				error: null,
+				toast: "Saved scene was unreadable — starting empty; the old data is kept under cozyclay.scene.v1.quarantine",
+			};
+		} catch {
+			// If the backup write fails, overwriting the corrupt primary would
+			// lose the only copy of the data — saving stays blocked instead.
+			return {
+				objects: defaults(),
+				saveBlocked: true,
+				error: "Saved scene was unreadable and could not be backed up — this session will not save",
+				toast: null,
+			};
+		}
+	}
+	// absent: nothing saved, or a read that threw — either way a fresh scene.
+	return { objects: defaults(), saveBlocked: false, error: null, toast: null };
+}
+
 export default function App() {
 	const [workspaceLayout, setWorkspaceLayout] = useState(loadWorkspaceLayout);
 	const [preset, setPreset] = useState("medium");
@@ -510,9 +576,18 @@ export default function App() {
 	const [ikFocus, setIkFocus] = useState(null);
 	const [selectedHierarchyId, setSelectedHierarchyId] = useState("characterA.motion");
 	const [rightPanelTab, setRightPanelTab] = useState("hierarchy");
-	const [sceneObjects, setSceneObjects] = useState(() =>
-		DEFAULT_SCENE_OBJECTS.map((object) => ({ ...object, footprint: { ...object.footprint } })),
-	);
+	// Scene persistence (plan §8): the startup load runs once in a lazy
+	// initializer so the store below can seed from the restored scene; the
+	// quarantine write and the save-block decision happen before the first
+	// render, and the toast/error they produce ride along as initial UI state.
+	const [startup] = useState(loadSceneStartup);
+	const [sceneObjects, setSceneObjects] = useState(startup.objects);
+	const [sceneSaveError, setSceneSaveError] = useState(startup.error);
+	const saveBlockedRef = useRef(startup.saveBlocked);
+	const dirtyRef = useRef(false);
+	// One-shot save-failure toast: the persistent line stays for the session,
+	// the toast fires once per failure episode (not on every failed tick).
+	const saveFailureToastRef = useRef(false);
 	// The single mutation owner (plan §5.3): every scene-object edit — gizmo
 	// drags, plan-board drags, inspector scrubs, hierarchy atomics — routes
 	// through this store so one interaction is exactly one undo entry and an
@@ -523,6 +598,56 @@ export default function App() {
 		storeRef.current = createSceneHistoryStore(sceneObjects, { onObjects: setSceneObjects });
 	}
 	const store = storeRef.current;
+
+	// ---- scene persistence (plan §8.4) ----
+	// Every write serialises the store at invocation time — the LIVE read,
+	// never a value captured by the caller. A stale closure would flush
+	// startup state over the latest edit, so flushScene closes over refs only.
+	function flushScene() {
+		if (saveBlockedRef.current || !dirtyRef.current) return;
+		try {
+			localStorage.setItem(SCENE_STORAGE_KEY, serializeScene(storeRef.current.objects));
+			dirtyRef.current = false;
+			setSceneSaveError(null);
+			// The next successful write clears the whole failure surface (plan
+			// §8.4) without clobbering an unrelated toast that replaced it.
+			if (saveFailureToastRef.current) {
+				saveFailureToastRef.current = false;
+				setToast("");
+			}
+		} catch (err) {
+			const message = `Scene not saved: ${err?.name || "StorageError"}`;
+			setSceneSaveError(message);
+			if (!saveFailureToastRef.current) {
+				saveFailureToastRef.current = true;
+				setToast(message);
+			}
+		}
+	}
+	// Debounced write: the cleanup clears the timer only — clearing IS the
+	// debounce; flushing there would write on every tick.
+	useEffect(() => {
+		dirtyRef.current = true;
+		const timer = setTimeout(flushScene, 400);
+		return () => clearTimeout(timer);
+	}, [sceneObjects]);
+	// Lifecycle flush: pagehide covers navigation/tab close, visibilitychange
+	// covers backgrounding, the effect cleanup covers unmount. `beforeunload`
+	// is deliberately not used — it defeats bfcache. The [] deps capture only
+	// refs and flushScene, so this closure can never hold a stale scene.
+	useEffect(() => {
+		const onPageHide = () => flushScene();
+		const onVisibility = () => {
+			if (document.visibilityState === "hidden") flushScene();
+		};
+		window.addEventListener("pagehide", onPageHide);
+		document.addEventListener("visibilitychange", onVisibility);
+		return () => {
+			window.removeEventListener("pagehide", onPageHide);
+			document.removeEventListener("visibilitychange", onVisibility);
+			flushScene(); // unmount: the last chance to persist a dirty scene
+		};
+	}, []);
 	const selectedSceneObjectId = sceneObjectIdFromHierarchy(selectedHierarchyId);
 	const selectedSceneObject = sceneObjects.find((object) => object.id === selectedSceneObjectId) ?? null;
 	const rightPanelDetailLabel = selectedHierarchyId === "characterA.promptBlocks"
@@ -583,7 +708,6 @@ export default function App() {
 	// atomic edit — one entry. updateSceneObject returns the same array when
 	// nothing changed, so a no-op can never create an entry.
 	function changeSceneObject(id, patch, token) {
-	console.log("[app-instr] changeSceneObject", id, JSON.stringify(patch), "token", token);
 		const apply = (objects) => updateSceneObject(objects, id, patch);
 		if (token != null) store.applyIn(token, apply);
 		else store.applyAtomic(apply);
@@ -777,7 +901,7 @@ export default function App() {
 	const [subjectVisible, setSubjectVisible] = useState(true);
 	const [result, setResult] = useState(null);
 	const [copied, setCopied] = useState(false);
-	const [toast, setToast] = useState("");
+	const [toast, setToast] = useState(startup.toast ?? "");
 	const [bridge, setBridge] = useState(null);
 	const [ardyPrompt, setArdyPrompt] = useState("");
 	const [ardyDuration, setArdyDuration] = useState(DEFAULT_DURATION_S);
@@ -2440,6 +2564,7 @@ export default function App() {
 
 					<section className="card" hidden={selectedHierarchyId !== "props"}>
 						<h3>Props</h3>
+						{sceneSaveError && <p className="scene-save-error">{sceneSaveError}</p>}
 						<p className="inspector-hint">Everything you add to the set lives here. Pick one to edit it, or click it in the shot view.</p>
 						<AddObjectMenu onAdd={addSceneObject} label="Add object to the set" />
 						<div className="inspector-list compact">
