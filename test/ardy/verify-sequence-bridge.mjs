@@ -120,5 +120,24 @@ expect(
 	replaced.posedJoints.slice(2 * 27 * 3, 5 * 27 * 3).every((value, index) => value === replacement.posedJoints[index])
 );
 
+// The path-limit ladder: every layer between the click and the GPU refuses
+// what the model cannot express, because the model itself never will.
+expect(
+	"bridge refuses a root path on a clip beyond ARDY's 10 s trained window",
+	bridge.includes("WAYPOINT_CLIP_MAX_S = 10") &&
+	bridge.includes("must be <= ${WAYPOINT_CLIP_MAX_S} seconds when 'waypoints' are present")
+);
+expect(
+	"bridge enforces the dense-sample gait floor and locomotion ceiling",
+	bridge.includes("WAYPOINT_SPEED_MIN_MPS") &&
+	bridge.includes("WAYPOINT_SPEED_MAX_MPS") &&
+	bridge.includes("gait floor") &&
+	bridge.includes("locomotion ceiling")
+);
+expect(
+	"constrained runner is the last line of defence on the 10 s window",
+	constrainedRunner.includes("--root-2d requires --duration <= 10 s")
+);
+
 if (failures) process.exit(1);
 console.log("all ARDY sequence bridge checks PASS");

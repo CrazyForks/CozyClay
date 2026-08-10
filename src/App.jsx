@@ -9,7 +9,7 @@ import { loadMotionFromUrl } from "./ardy/npz.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
-import { alignArdyPath, toSceneRootOffset } from "./ardy/waypoints.js";
+import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint, toSceneRootOffset, PATH_LIMITS } from "./ardy/waypoints.js";
 import { FlyControls, aimAt, forwardFrom } from "./controls.jsx";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
@@ -954,12 +954,19 @@ export default function App() {
 			setToast("The path already fills the clip — extend the duration or clear a waypoint");
 			return;
 		}
+		// The generator cannot refuse an impossible pin, so the click is the
+		// last moment a human can: block out-of-band legs with the fix named.
+		const before = ordered[ordered.length - 2] ?? (ordered.length === 1 ? { frame: 0, x: charA.x, z: charA.z } : null);
+		const verdict = judgeNextWaypoint(last, { frame, x, z }, tlFps, before);
+		if (!verdict.ok) {
+			setToast(`Not placed — ${verdict.error}`);
+			return;
+		}
 		setWaypoints((prev) => [...prev, { frame, x, z, heading: null }].sort((a, b) => a.frame - b.frame));
 		setTlFrame(frame);
 		setActiveWaypointFrame(frame);
-		setToast(
-			`Waypoint ${ordered.length + 1} — frame ${frame} ${pinned ? "(at the playhead)" : `(~${(frame / tlFps).toFixed(1)}s at a walk)`}`,
-		);
+		const placed = `Waypoint ${ordered.length + 1} — frame ${frame} ${pinned ? "(at the playhead)" : `(~${(frame / tlFps).toFixed(1)}s at a walk)`}`;
+		setToast(verdict.warnings.length ? `${placed} · ⚠ ${verdict.warnings[0]}` : placed);
 	}
 
 	function removeWaypoint(frame) {
@@ -1625,6 +1632,15 @@ export default function App() {
 				setToast(`Root waypoint frames must stay inside 1..${clipFrames - 1}`);
 				return;
 			}
+			// Placement-time checks can be invalidated afterwards (removing a
+			// middle pin merges two legs; the duration field can grow), so the
+			// whole path is re-judged at the door.
+			const pathVerdict = judgeAuthoredPath(rootPath, 20, clipFrames);
+			if (pathVerdict.errors.length > 0) {
+				setToast(`Not generated — ${pathVerdict.errors[0]}`);
+				return;
+			}
+			if (pathVerdict.warnings.length > 0) setToast(`⚠ ${pathVerdict.warnings[0]}`);
 		}
 		// Align + densify, never the raw sparse path: the model forces frame-0
 		// facing to +Z, so the path is rotated until its first travel tangent

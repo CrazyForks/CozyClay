@@ -46,7 +46,7 @@ import {
 } from "../../src/ardy/playback.js";
 import { CSKEL27_JOINTS } from "../../src/ardy/cskel27.js";
 import { CSKEL27_NEUTRAL } from "../../src/ardy/cskel27-neutral.js";
-import { alignArdyPath, defaultWaypointPosition, densifyArdyWaypoints, poseConstraintFrame, toArdyWaypoints, toSceneRootOffset } from "../../src/ardy/waypoints.js";
+import { alignArdyPath, defaultWaypointPosition, densifyArdyWaypoints, judgeAuthoredPath, judgeNextWaypoint, poseConstraintFrame, toArdyWaypoints, toSceneRootOffset, PATH_LIMITS } from "../../src/ardy/waypoints.js";
 import { primeBindPose } from "../../src/poses.js";
 
 let failures = 0;
@@ -764,6 +764,92 @@ ok(
 		Math.abs(restoredAligned90.z + 1.25) < 1e-9,
 	`rotation=${aligned90Path.rotationDeg} firstHeading=${aligned90Path.waypoints[0].heading} restored=(${restoredAligned90.x}, ${restoredAligned90.z})`,
 );
+/* -------------------------------------------------- path limit judges --- */
+// The 16 s / frame-219 incident, exactly as authored: leg 2 crawls at
+// 0.26 m/s and the clip overruns ARDY's 10 s trained window. Both must be
+// reported as errors, with the long unconstrained tail warned about.
+const incident = judgeAuthoredPath(
+	[
+		{ frame: 0, x: 0, z: 0 },
+		{ frame: 180, x: 0, z: 4.9 },
+		{ frame: 219, x: 0.2, z: 5.4 },
+	],
+	20,
+	320,
+);
+ok(
+	"limits: the frame-219 incident is rejected for crawl speed and window overrun",
+	incident.errors.length === 2 &&
+		incident.errors.some((error) => error.includes("below a sustainable walk")) &&
+		incident.errors.some((error) => error.includes(`${PATH_LIMITS.clipMaxS} s`)),
+	JSON.stringify(incident.errors),
+);
+const slowVerdict = judgeNextWaypoint({ frame: 0, x: 0, z: 0 }, { frame: 39, x: 0, z: 0.5 }, 20);
+ok(
+	"limits: a sub-gait pin is blocked and the fix names a workable frame",
+	!slowVerdict.ok && /below a sustainable walk/.test(slowVerdict.error) && /frame ~8/.test(slowVerdict.error),
+	slowVerdict.error,
+);
+const fastVerdict = judgeNextWaypoint({ frame: 0, x: 0, z: 0 }, { frame: 8, x: 0, z: 5 }, 20);
+ok(
+	"limits: a superhuman pin is blocked with the earliest legal frame",
+	!fastVerdict.ok && /faster than anyone moves/.test(fastVerdict.error) && /frame 34/.test(fastVerdict.error),
+	fastVerdict.error,
+);
+const gapVerdict = judgeNextWaypoint({ frame: 40, x: 0, z: 0 }, { frame: 44, x: 0, z: 0.3 }, 20);
+ok(
+	"limits: pins closer than the rail gap are blocked",
+	!gapVerdict.ok && /8 frames/.test(gapVerdict.error),
+	gapVerdict.error,
+);
+ok(
+	"limits: a hold (same spot, any duration) is legal",
+	judgeNextWaypoint({ frame: 0, x: 1, z: 1 }, { frame: 120, x: 1.01, z: 1 }, 20).ok,
+);
+ok(
+	"limits: a natural walking leg passes clean",
+	(() => {
+		const verdict = judgeNextWaypoint({ frame: 0, x: 0, z: 0 }, { frame: 20, x: 0, z: 1.4 }, 20);
+		return verdict.ok && verdict.warnings.length === 0;
+	})(),
+);
+const ratioVerdict = judgeNextWaypoint(
+	{ frame: 40, x: 0, z: 2 },
+	{ frame: 60, x: 0, z: 4.8 },
+	20,
+	{ frame: 0, x: 0, z: 0 },
+);
+ok(
+	"limits: a >2x pace change places with a gait-shift warning",
+	ratioVerdict.ok && ratioVerdict.warnings.some((warning) => warning.includes("speed change")),
+	JSON.stringify(ratioVerdict.warnings),
+);
+const turnVerdict = judgeNextWaypoint(
+	{ frame: 40, x: 0, z: 2.8 },
+	{ frame: 50, x: 0.7, z: 2.8 },
+	20,
+	{ frame: 0, x: 0, z: 0 },
+);
+ok(
+	"limits: a sharp turn places with a turn-rate warning",
+	turnVerdict.ok && turnVerdict.warnings.some((warning) => warning.includes("turn")),
+	JSON.stringify(turnVerdict.warnings),
+);
+const cleanPath = judgeAuthoredPath(
+	[
+		{ frame: 0, x: 0, z: 0 },
+		{ frame: 70, x: 0, z: 4.9 },
+		{ frame: 180, x: 3, z: 7 },
+	],
+	20,
+	200,
+);
+ok(
+	"limits: a natural 10 s path passes with no errors",
+	cleanPath.errors.length === 0,
+	JSON.stringify(cleanPath.errors),
+);
+
 const stationaryAlignInput = [
 	{ frame: 0, x: 2, z: 3 },
 	{ frame: 10, x: 2, z: 3 },

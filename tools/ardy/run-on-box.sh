@@ -218,6 +218,14 @@ elif [[ ${#ROOT_2D_ARGS[@]} -gt 0 ]]; then
 else
   MODE="free"
 fi
+# Waypoints run the constrained generator: ONE model sampling call for the
+# whole clip. ARDY's trained window is 10 s — frames beyond it sit outside
+# the model's temporal horizon and the motion visibly degrades, so the last
+# line of defence refuses what every upstream layer should already have.
+if [[ "$MODE" == "waypoints" ]] && ! awk -v d="$DURATION" 'BEGIN { exit !(d <= 10) }'; then
+  echo "run-on-box: --root-2d requires --duration <= 10 s (one-shot constrained generation; ARDY trained window), got ${DURATION}s" >&2
+  exit 1
+fi
 # Waypoints without --base is two-pass: the free generator first produces
 # the base clip on the box (pass 1), then the constrained pass uses it.
 TWO_PASS=0

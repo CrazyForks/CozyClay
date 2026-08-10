@@ -64,6 +64,10 @@ const FPS = 20; // ARDY Core is 20 fps; clip length is int(duration * 20)
 const ROOT_2D_RANGE_M = 20; // |x| and |z| cap, meters (ARDY Y-up, X/Z horizontal)
 const HEADING_RANGE_RAD = 2 * Math.PI; // |heading| cap, radians
 const WAYPOINTS_MAX = 32; // sparse authored root keys including frame 0
+const WAYPOINT_CLIP_MAX_S = 10; // ARDY trained window: one-shot constrained calls must fit it
+const WAYPOINT_SPEED_MIN_MPS = 0.3; // dense-sample gait floor (authored floor 0.5, arcs dip through corners)
+const WAYPOINT_SPEED_MAX_MPS = 3.6; // dense-sample ceiling (authored ceiling 3.0)
+const WAYPOINT_HOLD_EPS_M = 0.06; // pairs closer than this are a deliberate hold, any duration
 const MOTION_ALLOWLIST_MAX = 64; // newest runs only; evicted ids become stale 404s
 // The bridge's own gen stamp (<epoch-ms>-<3 random bytes hex>); keeping the
 // motions URL id to that shape keeps /ardy/motions/<run-id> predictable and
@@ -554,6 +558,12 @@ function validateGenerate(body) {
 		}
 	}
 	if (body.waypoints !== undefined) {
+		// A root path runs the constrained generator: one model sampling call
+		// for the whole clip. ARDY's trained window is 10 s — beyond it the
+		// later frames are outside the model's temporal horizon and degrade.
+		if (body.duration > WAYPOINT_CLIP_MAX_S) {
+			return `field 'duration' must be <= ${WAYPOINT_CLIP_MAX_S} seconds when 'waypoints' are present (one-shot constrained generation; ARDY's trained window)`;
+		}
 		const error = validateWaypoints(body.waypoints, clipFrames);
 		if (error) return error;
 	}
@@ -656,6 +666,32 @@ function validateWaypoints(waypoints, clipFrames) {
 			if (Math.abs(wp.heading) > HEADING_RANGE_RAD) {
 				return `field 'waypoints[${i}].heading' ${wp.heading} rad is outside -2π..2π`;
 			}
+		}
+	}
+	// Root pins are inpainting observations the model cannot refuse, so a pin
+	// pair demanding an inexpressible pace collapses the gait into
+	// foot-sliding instead of erroring. The bands are wider than the authored
+	// 0.5..3 m/s walk band because these are the dense C1 samples, which dip
+	// through corners and pause dead in authored holds.
+	// holdPair[i]: the pair ending at waypoint i is a deliberate hold.
+	// Index 0 has no pair — false, so the first real leg gets no exemption.
+	const holdPair = waypoints.map((wp, i) =>
+		i === 0 ? false : Math.hypot(wp.x - waypoints[i - 1].x, wp.z - waypoints[i - 1].z) <= WAYPOINT_HOLD_EPS_M,
+	);
+	for (let i = 1; i < waypoints.length; i += 1) {
+		if (holdPair[i]) continue; // a deliberate hold
+		const prev = waypoints[i - 1];
+		const wp = waypoints[i];
+		const speed = Math.hypot(wp.x - prev.x, wp.z - prev.z) / ((wp.frame - prev.frame) / FPS);
+		if (speed > WAYPOINT_SPEED_MAX_MPS) {
+			return `field 'waypoints[${i}]' implies ${speed.toFixed(1)} m/s from waypoint ${i - 1} — faster than the ${WAYPOINT_SPEED_MAX_MPS} m/s locomotion ceiling`;
+		}
+		// Pairs beside a hold are the C1 ramp down to (or up from) zero and
+		// legitimately pass under the floor; everywhere else, sub-gait creep
+		// means foot-sliding.
+		const besideHold = holdPair[i - 1] || (i + 1 < waypoints.length && holdPair[i + 1]);
+		if (speed < WAYPOINT_SPEED_MIN_MPS && !besideHold) {
+			return `field 'waypoints[${i}]' implies ${speed.toFixed(2)} m/s from waypoint ${i - 1} — below the ${WAYPOINT_SPEED_MIN_MPS} m/s gait floor (hold still or move at walking pace, nothing between)`;
 		}
 	}
 	return null;

@@ -239,6 +239,115 @@ export function poseConstraintFrame(requestedFrame, clipFrames, hasRootPath) {
 	return Math.max(0, Math.min(Math.round(requestedFrame) || 0, clipFrames - 1));
 }
 
+/* ---------------------------------------------------- path limits ------ */
+
+// What the generator can actually express, learned the hard way: waypoints
+// are inpainting observations ARDY cannot refuse, so a request outside the
+// training distribution collapses into foot-sliding instead of erroring.
+// These limits keep authored paths inside that distribution.
+export const PATH_LIMITS = Object.freeze({
+	speedMinMps: 0.5, // below this, "walking" cannot cycle a gait — feet slide
+	speedMaxMps: 3.0, // above this is out of the locomotion band entirely
+	holdEpsM: 0.05, // a displacement this small is a deliberate hold, any duration
+	minPinGapFrames: 8, // authored pins closer than this over-rail the root
+	speedRatioWarn: 2, // adjacent legs differing more than 2x force a gait change
+	turnRateWarnDegPerS: 120, // sharper turns need wider arcs than the path gives
+	tailMaxS: 2, // unconstrained tail after the last pin inherits its history
+	clipMaxS: 10, // ARDY's trained window; one-shot constrained calls cannot exceed it
+});
+
+const NATURAL_WALK_MPS = 1.4;
+
+/**
+ * Judge the segment a candidate pin would create after `last`. Returns
+ * { ok, error?, warnings: [] } — `error` blocks the placement and always
+ * names the fix (a workable frame or distance), `warnings` accompany a
+ * placement that is legal but will read oddly.
+ * @param {{frame:number,x:number,z:number}} last      the previous pin (or the frame-0 start)
+ * @param {{frame:number,x:number,z:number}} candidate the pin being authored
+ * @param {number} fps
+ * @param {{frame:number,x:number,z:number}|null} prev the pin before `last`, for ratio/turn warnings
+ */
+export function judgeNextWaypoint(last, candidate, fps, prev = null) {
+	const gap = candidate.frame - last.frame;
+	if (gap < PATH_LIMITS.minPinGapFrames) {
+		return {
+			ok: false,
+			error: `pins need at least ${PATH_LIMITS.minPinGapFrames} frames between them (${(PATH_LIMITS.minPinGapFrames / fps).toFixed(1)} s) — scrub past frame ${last.frame + PATH_LIMITS.minPinGapFrames}`,
+			warnings: [],
+		};
+	}
+	const dist = Math.hypot(candidate.x - last.x, candidate.z - last.z);
+	if (dist <= PATH_LIMITS.holdEpsM) return { ok: true, warnings: [] }; // a hold: legal at any length
+	const dt = gap / fps;
+	const speed = dist / dt;
+	if (speed > PATH_LIMITS.speedMaxMps) {
+		const neededFrames = Math.ceil((dist / PATH_LIMITS.speedMaxMps) * fps);
+		return {
+			ok: false,
+			error: `${speed.toFixed(1)} m/s is faster than anyone moves (max ${PATH_LIMITS.speedMaxMps}) — pin frame ${last.frame + neededFrames} or later, or click closer`,
+			warnings: [],
+		};
+	}
+	if (speed < PATH_LIMITS.speedMinMps) {
+		const walkFrame = last.frame + Math.max(PATH_LIMITS.minPinGapFrames, Math.round((dist / NATURAL_WALK_MPS) * fps));
+		const neededDist = (PATH_LIMITS.speedMinMps * dt).toFixed(1);
+		return {
+			ok: false,
+			error: `${speed.toFixed(2)} m/s is below a sustainable walk (min ${PATH_LIMITS.speedMinMps}) — pin frame ~${walkFrame} instead, or click at least ${neededDist} m away`,
+			warnings: [],
+		};
+	}
+	const warnings = [];
+	if (prev) {
+		const prevDist = Math.hypot(last.x - prev.x, last.z - prev.z);
+		if (prevDist > PATH_LIMITS.holdEpsM) {
+			const prevSpeed = prevDist / ((last.frame - prev.frame) / fps);
+			const ratio = Math.max(speed, prevSpeed) / Math.max(Math.min(speed, prevSpeed), 1e-6);
+			if (ratio > PATH_LIMITS.speedRatioWarn) {
+				warnings.push(`${ratio.toFixed(1)}x speed change from the previous leg — expect a visible gait shift`);
+			}
+			const before = Math.atan2(last.x - prev.x, last.z - prev.z);
+			const after = Math.atan2(candidate.x - last.x, candidate.z - last.z);
+			let turn = Math.abs(after - before);
+			if (turn > Math.PI) turn = 2 * Math.PI - turn;
+			const turnRate = (turn * 180) / Math.PI / dt;
+			if (turnRate > PATH_LIMITS.turnRateWarnDegPerS) {
+				warnings.push(`${Math.round((turn * 180) / Math.PI)}° turn in ${dt.toFixed(1)} s is sharper than a walking arc — give it more frames or distance`);
+			}
+		}
+	}
+	return { ok: true, warnings };
+}
+
+/**
+ * Re-judge a whole authored path (frame-0 start included) before generation:
+ * placement-time checks can be invalidated later by removing a middle pin.
+ * @returns {{errors: string[], warnings: string[]}}
+ */
+export function judgeAuthoredPath(rootPath, fps, clipFrames) {
+	const errors = [];
+	const warnings = [];
+	const ordered = [...rootPath].sort((a, b) => a.frame - b.frame);
+	for (let i = 1; i < ordered.length; i += 1) {
+		const verdict = judgeNextWaypoint(ordered[i - 1], ordered[i], fps, i >= 2 ? ordered[i - 2] : null);
+		if (!verdict.ok) errors.push(`leg ${i} (frame ${ordered[i - 1].frame}->${ordered[i].frame}): ${verdict.error}`);
+		else for (const warning of verdict.warnings) warnings.push(`leg ${i}: ${warning}`);
+	}
+	if (clipFrames / fps > PATH_LIMITS.clipMaxS) {
+		errors.push(
+			`a root path generates the whole clip in one model call, and ARDY's trained window is ${PATH_LIMITS.clipMaxS} s — shorten the clip to ${PATH_LIMITS.clipMaxS} s or drop the path`,
+		);
+	}
+	const tail = (clipFrames - 1 - (ordered[ordered.length - 1]?.frame ?? 0)) / fps;
+	if (ordered.length > 1 && tail > PATH_LIMITS.tailMaxS) {
+		warnings.push(
+			`${tail.toFixed(1)} s of clip remain after the last pin — the unconstrained tail continues whatever the path ends in`,
+		);
+	}
+	return { errors, warnings };
+}
+
 /** Place a newly-authored keyframe where it is immediately visible and draggable. */
 export function defaultWaypointPosition(waypoints, subject) {
 	if (!waypoints.length) return { x: subject.x, z: subject.z };
