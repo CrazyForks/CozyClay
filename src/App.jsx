@@ -277,32 +277,65 @@ function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probeX, probeZ, c
 /** Plays an authored A→B camera move by driving the shot camera exactly the
     way a fly-drag does — position on the camera, orientation through the look
     ref — so ShotRig's metrics, the slate, and the inset all stay honest for
-    free. A right-drag interrupts the dolly: the user always outranks it. */
-function MoveRig({ playing, a, b, anchor, durationS, camRef, look, isInterrupted, onDone }) {
+    free. A right-drag interrupts the dolly: the user always outranks it.
+
+    Two clocks can drive the move. Standalone preview runs on its own clock;
+    follow mode slaves the move to the timeline playhead, so the camera and
+    the character motion are two views of the same time axis — playing or
+    scrubbing frame 60 at 20 fps puts the camera exactly 3 s into its move. */
+function MoveRig({ playing, following, followFrame, fps, a, b, anchor, durationS, camRef, look, isInterrupted, onDone }) {
 	const clock = useRef(0);
+	const invalidate = useThree((state) => state.invalidate);
+	// The follow branch only re-applies when its time changes; in demand mode
+	// each apply needs one more frame so ShotRig's metrics see the new pose.
+	const appliedT = useRef(null);
+	useEffect(() => {
+		// Arming or reshaping the move must schedule a frame by hand: this
+		// component owns no three objects, so in demand mode nothing else will.
+		appliedT.current = null;
+		if (following) invalidate();
+	}, [a, b, anchor, durationS, fps, following, invalidate]);
+	useEffect(() => {
+		// A paused scrub changes the playhead without starting the render loop.
+		if (following && !playing) invalidate();
+	}, [followFrame, following, playing, invalidate]);
 	useEffect(() => {
 		if (playing) clock.current = 0;
 	}, [playing]);
 	useFrame((_, delta) => {
-		if (!playing || !a || !b) return;
+		if (!a || !b) return;
 		const cam = camRef.current;
 		if (!cam) return;
-		if (isInterrupted?.()) {
-			onDone(cam.fov);
+		const apply = (t) => {
+			const f = interpolateFraming(a, b, anchor, t);
+			cam.position.set(f.pos.x, f.pos.y, f.pos.z);
+			look.current.yaw = f.yaw;
+			look.current.pitch = f.pitch;
+			if (Math.abs(cam.fov - f.fovDeg) > 1e-3) {
+				cam.fov = f.fovDeg;
+				cam.updateProjectionMatrix();
+			}
+			return f;
+		};
+		if (playing) {
+			if (isInterrupted?.()) {
+				onDone(cam.fov);
+				return;
+			}
+			const span = Math.max(durationS, 0.1);
+			clock.current = Math.min(clock.current + delta, span);
+			const t = clock.current / span;
+			const f = apply(t);
+			if (t >= 1) onDone(f.fovDeg);
 			return;
 		}
-		const span = Math.max(durationS, 0.1);
-		clock.current = Math.min(clock.current + delta, span);
-		const t = clock.current / span;
-		const f = interpolateFraming(a, b, anchor, t);
-		cam.position.set(f.pos.x, f.pos.y, f.pos.z);
-		look.current.yaw = f.yaw;
-		look.current.pitch = f.pitch;
-		if (Math.abs(cam.fov - f.fovDeg) > 1e-3) {
-			cam.fov = f.fovDeg;
-			cam.updateProjectionMatrix();
-		}
-		if (t >= 1) onDone(f.fovDeg);
+		if (!following) return;
+		if (isInterrupted?.()) return; // the user is flying; yield until released
+		const t = Math.min(followFrame / Math.max(fps, 1) / Math.max(durationS, 0.1), 1);
+		if (appliedT.current === t) return;
+		appliedT.current = t;
+		apply(t);
+		invalidate();
 	});
 	return null;
 }
@@ -734,6 +767,9 @@ export default function App() {
 	const [moveB, setMoveB] = useState(null);
 	const [moveDurationS, setMoveDurationS] = useState(3);
 	const [movePlaying, setMovePlaying] = useState(false);
+	// Follow slaves the move to the timeline playhead so camera and character
+	// motion share one time axis; off frees the camera while both stay set.
+	const [moveFollow, setMoveFollow] = useState(true);
 	const [hasCharSheet, setHasCharSheet] = useState(false);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
 	const [subject, setSubject] = useState("a young woman in a tan coat");
@@ -1841,6 +1877,9 @@ export default function App() {
 							/>
 							<MoveRig
 								playing={movePlaying}
+								following={moveFollow && !!abMove && !ikMode}
+								followFrame={tlFrame}
+								fps={tlFps}
 								a={moveA}
 								b={moveB}
 								anchor={charA}
@@ -2204,6 +2243,15 @@ export default function App() {
 										onClick={() => setMovePlaying((playing) => !playing)}
 									>
 										{movePlaying ? "Stop" : "Preview"}
+									</button>
+									<button
+										type="button"
+										className="btn ghost"
+										disabled={!abMove}
+										title="Slave the move to the timeline: play or scrub and the camera rides along. Turn off to fly freely while A/B stay set"
+										onClick={() => setMoveFollow((follow) => !follow)}
+									>
+										{moveFollow ? "Follow ✓" : "Follow"}
 									</button>
 									<button type="button" className="btn ghost" disabled={!moveA && !moveB} onClick={clearMove}>
 										Clear
