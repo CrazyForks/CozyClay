@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrthographicCamera, PerspectiveCamera, useFBX } from "@react-three/drei";
+import { OrthographicCamera, PerspectiveCamera, Text, useFBX } from "@react-three/drei";
 import * as THREE from "three";
 import { SkeletonUtils } from "three/examples/jsm/Addons.js";
 import { buildArdyPose } from "./ardy/export.js";
@@ -9,7 +9,7 @@ import { loadMotionFromUrl } from "./ardy/npz.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
-import { alignArdyPath, defaultWaypointPosition, toSceneRootOffset } from "./ardy/waypoints.js";
+import { alignArdyPath, toSceneRootOffset } from "./ardy/waypoints.js";
 import { FlyControls, aimAt, forwardFrom } from "./controls.jsx";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
@@ -371,6 +371,66 @@ function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, si
 		return () => cancelAnimationFrame(frame);
 	}, [invalidate, insetX, insetY, insetWidth, insetHeight, sidebarWidth, timelineHeight]);
 	return null;
+}
+
+/** The authored root path on the set floor while path editing is on: numbered
+    pins connected in walk order. Lives on the gizmo layer, so the shot camera
+    shows it but exports never do (the bird's-eye board draws its own copy). */
+function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
+	const rootRef = useRef(null);
+	const line = useMemo(() => {
+		if (!waypoints.length) return null;
+		const points = [{ x: start.x, z: start.z }, ...waypoints];
+		const positions = new Float32Array(points.length * 3);
+		points.forEach((point, i) => {
+			positions[i * 3] = point.x;
+			positions[i * 3 + 1] = 0.03;
+			positions[i * 3 + 2] = point.z;
+		});
+		const geometry = new THREE.BufferGeometry();
+		geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+		return geometry;
+	}, [start.x, start.z, waypoints]);
+	useEffect(() => {
+		// Every render: drei's Text meshes appear asynchronously, and each new
+		// node must land on the gizmo layer before the next capture.
+		rootRef.current?.traverse((node) => node.layers.set(GIZMO_LAYER));
+	});
+	if (!waypoints.length) return null;
+	return (
+		<group ref={rootRef}>
+			{line && (
+				<line geometry={line}>
+					<lineBasicMaterial color="#4e9fb3" transparent opacity={0.8} depthWrite={false} />
+				</line>
+			)}
+			{waypoints.map((waypoint, i) => {
+				const active = waypoint.frame === activeWaypointFrame;
+				const color = active ? "#ffd76c" : "#4e9fb3";
+				return (
+					<group key={waypoint.frame} position={[waypoint.x, 0.03, waypoint.z]}>
+						<mesh rotation={[-Math.PI / 2, 0, 0]}>
+							<ringGeometry args={[0.13, 0.19, 28]} />
+							<meshBasicMaterial color={color} depthWrite={false} />
+						</mesh>
+						<Text
+							position={[0, 0.02, 0.34]}
+							rotation={[-Math.PI / 2, 0, 0]}
+							fontSize={0.24}
+							color={color}
+							anchorX="center"
+							anchorY="middle"
+							outlineWidth={0.03}
+							outlineColor="#1c1a17"
+							outlineOpacity={0.85}
+						>
+							{String(i + 1)}
+						</Text>
+					</group>
+				);
+			})}
+		</group>
+	);
 }
 
 /** Offscreen 1920x1080 read-back, always from the shot camera. */
@@ -866,46 +926,33 @@ export default function App() {
 
 	/* ------------------------- waypoint workspace --------------------------- */
 
-	function addRootKeyframe(frame) {
-		const nextFrame = Math.max(0, Math.min(Math.round(frame), tlFrameCount - 1));
-		if (nextFrame === 0) {
-			setToast("Subject 1 already defines the frame 0 root start — add a destination after frame 0");
+	// A walking pace turns clicked distance into clip time, so pins land at
+	// frames the character can actually reach without ice-skating.
+	const WALK_SPEED_MPS = 1.4;
+
+	/** ARDY-demo style authoring: each empty-floor press in the Shot view drops
+	    the next waypoint where it was clicked; the frame gap comes from walking
+	    distance. The bird's-eye board only displays the result. */
+	function addFloorWaypoint(point) {
+		const clampToRoom = (value) => Math.max(-6.5, Math.min(6.5, value));
+		const x = clampToRoom(point.x);
+		const z = clampToRoom(point.z);
+		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);
+		const last = ordered[ordered.length - 1] ?? { frame: 0, x: charA.x, z: charA.z };
+		if (waypoints.length + 1 > MAX_WAYPOINTS) {
+			setToast(`The root path is capped at ${MAX_WAYPOINTS} waypoints`);
 			return;
 		}
-		const exists = waypoints.some((waypoint) => waypoint.frame === nextFrame);
-		const addedCount = exists ? 0 : 1;
-		if (waypoints.length + addedCount > MAX_WAYPOINTS) {
-			setToast(`The root path is capped at ${MAX_WAYPOINTS} waypoint frames — update an existing waypoint instead`);
+		const gap = Math.max(8, Math.round((Math.hypot(x - last.x, z - last.z) / WALK_SPEED_MPS) * tlFps));
+		const frame = last.frame + gap;
+		if (frame > tlFrameCount - 1) {
+			setToast("The path already fills the clip — extend the duration or clear a waypoint");
 			return;
 		}
-
-		if (!exists) {
-			setWaypoints((prev) => {
-				const next = [...prev];
-				const position = defaultWaypointPosition(
-					next.sort((a, b) => a.frame - b.frame),
-					charA,
-				);
-				next.push({
-					frame: nextFrame,
-					x: Math.max(-6.5, Math.min(6.5, position.x)),
-					z: Math.max(-6.5, Math.min(6.5, position.z)),
-					heading: null,
-				});
-				return next.sort((a, b) => a.frame - b.frame);
-			});
-		}
-		setTlFrame(nextFrame);
-		setActiveWaypointFrame(nextFrame);
-		setWaypointMode(true);
-		setToast(`Root keyframe ${nextFrame} ready — drag its numbered marker directly in Bird's-eye`);
-	}
-
-	function moveWaypoint(frame, x, z) {
+		setWaypoints((prev) => [...prev, { frame, x, z, heading: null }].sort((a, b) => a.frame - b.frame));
+		setTlFrame(frame);
 		setActiveWaypointFrame(frame);
-		setTlFrame(Math.min(frame, tlFrameCount - 1));
-		setWaypointMode(true);
-		setWaypoints((prev) => prev.map((waypoint) => (waypoint.frame === frame ? { ...waypoint, x, z } : waypoint)));
+		setToast(`Waypoint ${ordered.length + 1} — frame ${frame} (~${(frame / tlFps).toFixed(1)}s at a walk)`);
 	}
 
 	function removeWaypoint(frame) {
@@ -921,7 +968,7 @@ export default function App() {
 			return;
 		}
 
-		setToast("2D Root path on — Subject 1 is the frame 0 start; add destination keys after frame 0");
+		setToast("2D Root path on — click the set floor in the Shot view to drop waypoints; Subject 1 is the frame 0 start");
 	}
 
 	function advanceFrame() {
@@ -1949,7 +1996,6 @@ export default function App() {
 								waypoints={waypoints}
 								activeWaypointFrame={activeWaypointFrame}
 								onSelectWaypoint={(frame) => { setActiveWaypointFrame(frame); setTlFrame(Math.min(frame, tlFrameCount - 1)); setWaypointMode(true); }}
-								onMoveWaypoint={moveWaypoint}
 								onSelectEntity={(id) => setSelectedHierarchyId(id.startsWith("object:") ? id : id === "cam" ? "camera" : id === "b" ? "characterB" : "characterA")}
 								sceneObjects={sceneObjects}
 								selectedSceneObjectId={selectedSceneObjectId}
@@ -1968,7 +2014,11 @@ export default function App() {
 								camRef={shotCamRef}
 								onChange={changeSceneObject}
 								onSelect={(id) => selectHierarchy(id ? `object:${id}` : "props")}
+								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
 							/>
+							{waypointMode && (
+								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />
+							)}
 							<CaptureRig apiRef={captureRef} camRef={shotCamRef} />
 							<DualRender
 								stageRef={stageRef}
@@ -2539,9 +2589,9 @@ export default function App() {
 						<button type="button" className={"btn full" + (waypointMode ? " primary" : "")} onClick={toggleWaypointMode}>
 							{waypointMode ? "Finish path editing" : "Edit root path"}
 						</button>
-						<button type="button" className="btn ghost full" onClick={() => addRootKeyframe(tlFrame)}>
-							Add waypoint at frame {tlFrame}
-						</button>
+						{waypointMode && (
+							<p className="inspector-hint">Click the set floor in the Shot view to drop the next waypoint — time between pins follows walking distance.</p>
+						)}
 						<div className="inspector-list compact">
 							{waypoints.map((waypoint) => (
 								<button
@@ -2723,7 +2773,10 @@ export default function App() {
 				onWaypointToggle={toggleWaypointMode}
 				onMarkerSelect={(f) => { setTlFrame(Math.min(f, tlFrameCount - 1)); setActiveWaypointFrame(f); setWaypointMode(true); setSelectedHierarchyId("rootPath"); }}
 				onMarkerRemove={removeWaypoint}
-				onRootKeyframeAdd={addRootKeyframe}
+				onRootKeyframeAdd={() => {
+					setWaypointMode(true);
+					setToast("Root path on — click the set floor in the Shot view to drop waypoints");
+				}}
 				onPromptAdd={addPromptClip}
 				onPromptSelect={(id) => {
 					setSelectedPromptId(id);

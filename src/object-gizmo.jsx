@@ -116,7 +116,11 @@ function handleKey(entry) {
  * their start+delta to (start values are always on the grid themselves).
  */
 
-export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, paneRef, camRef, onChange, onSelect }) {
+// Path authoring intersects presses with the set floor, exactly where a
+// dropped pin will live.
+const GROUND = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, paneRef, camRef, onChange, onSelect, onGroundClick }) {
 	const { gl, scene } = useThree();
 	const rootRef = useRef(null);
 	const handlesRef = useRef(new Map()); // axis -> { mesh (pick proxy), axis, dir }
@@ -127,7 +131,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 	const hoverRef = useRef(null); // last hovered key: pointer moves that keep it skip the re-render
 	const dragRef = useRef(null);
 	const stateRef = useRef(null);
-	stateRef.current = { object, objects, mode, snap, onChange, onSelect };
+	stateRef.current = { object, objects, mode, snap, onChange, onSelect, onGroundClick };
 	const tools = useMemo(
 		() => ({
 			raycaster: new THREE.Raycaster(),
@@ -388,6 +392,12 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			const picked = pickObject();
 			event.preventDefault();
 			event.stopPropagation();
+			// Path authoring outranks deselection: an empty-floor press drops a
+			// waypoint where the ray meets the deck. Presses on bodies still select.
+			if (!picked && stateRef.current.onGroundClick && tools.raycaster.ray.intersectPlane(GROUND, tools.hit)) {
+				stateRef.current.onGroundClick({ x: tools.hit.x, z: tools.hit.z });
+				return;
+			}
 			stateRef.current.onSelect?.(picked ? picked.id : null);
 		};
 

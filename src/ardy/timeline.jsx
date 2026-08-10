@@ -422,12 +422,12 @@ export default function Timeline({
 						{waypointMode && (
 							<span className={"tl-wp-hint" + (waypointFrames.length < 2 || pathSpeed?.warn ? " warn" : "")}>
 								{waypointFrames.length < 2
-									? "Left-click the 2D Root track to add keyframes, then drag 1 / 2 directly in Bird's-eye"
+									? "Click the set floor in the Shot view to drop waypoints"
 									: `${waypointFrames.length} root waypoints` +
 										(pathSpeed
 											? ` · ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)} m/s${pathSpeed.warn ? " — outside the natural 0.5–3 m/s locomotion band" : ""}`
 											: "") +
-										" · drag numbered markers directly in Bird's-eye"}
+										" · click the set floor to add more"}
 							</span>
 						)}
 						{badge && <span className={"tl-badge " + badge.kind}>{badge.label}</span>}
@@ -583,8 +583,8 @@ export default function Timeline({
 					{waypointMode && (
 						<span className={"tl-wp-hint" + (waypointFrames.length < 2 ? " warn" : "")}>
 							{waypointFrames.length < 2
-								? "Left-click the 2D Root track to add keyframes"
-								: `${waypointFrames.length} root waypoints · drag numbered markers in Bird's-eye`}
+								? "Click the set floor in the Shot view to add waypoints"
+								: `${waypointFrames.length} root waypoints · click the set floor to add more`}
 						</span>
 					)}
 					<button
