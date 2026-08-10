@@ -104,18 +104,53 @@ export function densifyArdyWaypoints(waypoints, actorRotationDeg = 0, maxPoints 
 		frames.push(authored[i].frame);
 	}
 
-	// Linearly interpolate each sample position on the authored polyline.
+	// C1 resampling: cubic Hermite through the authored pins, with each pin's
+	// velocity as the finite-difference average of its two segment velocities
+	// (one-sided at the ends). A C0 polyline pins an instantaneous direction
+	// flip at every interior waypoint — and, when authored frames imply
+	// different paces, an instantaneous speed jump — which the generator can
+	// only satisfy by braking and pivoting on the pin: the hitch you see as
+	// the root crosses waypoint 2. Hermite keeps authored pins exact, keeps a
+	// uniform straight path exactly linear, and turns corners into arcs where
+	// both travel direction and speed ramp continuously. (A near-180° reversal
+	// will swing wide of the pin — that wide swing is the C1 answer to an
+	// about-face, not an error.)
+	const segmentVelocity = (a, b) => ({
+		x: (b.x - a.x) / (b.frame - a.frame),
+		z: (b.z - a.z) / (b.frame - a.frame),
+	});
+	const stalledSegment = (a, b) => (b.x - a.x) * (b.x - a.x) + (b.z - a.z) * (b.z - a.z) < 1e-12;
+	const velocity = authored.map((point, i) => {
+		const prev = authored[i - 1];
+		const next = authored[i + 1];
+		// A knot beside a stall comes to a full stop: leaking a neighbour's
+		// velocity into a hold would make the "stationary" span drift, and a
+		// walker entering a hold decelerates to zero anyway.
+		if (!prev) return stalledSegment(point, next) ? { x: 0, z: 0 } : segmentVelocity(point, next);
+		if (!next) return stalledSegment(prev, point) ? { x: 0, z: 0 } : segmentVelocity(prev, point);
+		if (stalledSegment(prev, point) || stalledSegment(point, next)) return { x: 0, z: 0 };
+		const before = segmentVelocity(prev, point);
+		const after = segmentVelocity(point, next);
+		return { x: (before.x + after.x) / 2, z: (before.z + after.z) / 2 };
+	});
 	const samples = [];
 	let seg = 0;
 	for (const frame of frames) {
 		while (frame > authored[seg + 1].frame) seg += 1;
 		const start = authored[seg];
 		const end = authored[seg + 1];
-		const t = (frame - start.frame) / (end.frame - start.frame);
+		const span = end.frame - start.frame;
+		const t = (frame - start.frame) / span;
+		const h00 = (1 + 2 * t) * (1 - t) * (1 - t);
+		const h10 = t * (1 - t) * (1 - t);
+		const h01 = t * t * (3 - 2 * t);
+		const h11 = t * t * (t - 1);
+		const v0 = velocity[seg];
+		const v1 = velocity[seg + 1];
 		samples.push({
 			frame,
-			x: cleanZero(start.x + (end.x - start.x) * t),
-			z: cleanZero(start.z + (end.z - start.z) * t),
+			x: cleanZero(h00 * start.x + h10 * span * v0.x + h01 * end.x + h11 * span * v1.x),
+			z: cleanZero(h00 * start.z + h10 * span * v0.z + h01 * end.z + h11 * span * v1.z),
 			heading: 0,
 		});
 	}
@@ -162,11 +197,16 @@ export function densifyArdyWaypoints(waypoints, actorRotationDeg = 0, maxPoints 
  */
 export function alignArdyPath(waypoints, actorRotationDeg = 0, maxPoints = 32) {
 	if (waypoints.length < 2) return { waypoints: [], rotationDeg: actorRotationDeg };
-	const local = toArdyWaypoints(waypoints, actorRotationDeg);
+	// Fold the first *sampled* travel direction into the rotation, not the
+	// authored chord: the C1 resampler bends inside the first segment, so only
+	// the dense samples know the true first step. Rotation is rigid, so
+	// densifying again with the folded rotation rotates those samples exactly
+	// and heading[0] lands on 0 by construction.
+	const probe = densifyArdyWaypoints(waypoints, actorRotationDeg, maxPoints);
 	let phi = 0;
-	for (let i = 0; i < local.length - 1; i += 1) {
-		const dx = local[i + 1].x - local[i].x;
-		const dz = local[i + 1].z - local[i].z;
+	for (let i = 0; i < probe.length - 1; i += 1) {
+		const dx = probe[i + 1].x - probe[i].x;
+		const dz = probe[i + 1].z - probe[i].z;
 		if (dx * dx + dz * dz >= 1e-12) {
 			phi = Math.atan2(dx, dz);
 			break;

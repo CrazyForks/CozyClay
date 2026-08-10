@@ -645,17 +645,20 @@ const lPath = densifyArdyWaypoints(
 	64,
 );
 const lCorner = lPath.find((point) => point.frame === 20);
-const beforeCorner = lPath.filter((point) => point.frame < 20);
-const afterCorner = lPath.filter((point) => point.frame > 20);
+const lHeadings = lPath.map((point) => point.heading);
+// The C1 resampler turns a corner into one continuous arc: a symmetric L
+// still crosses its corner at exactly the bisector, the headings sweep
+// monotonically from one segment direction to the other, and the ends stay
+// near their segments (a small anticipatory bend is the arc starting early
+// — pinning every heading to its segment is what caused the corner hitch).
 ok(
-	"waypoints: L-corner headings follow each segment direction",
+	"waypoints: L-corner turns as one continuous monotonic arc",
 	lCorner !== undefined &&
-		beforeCorner.length > 0 &&
-		afterCorner.length > 0 &&
-		beforeCorner.every((point) => angleDiff(point.heading, 0) < 1e-9) &&
-		afterCorner.every((point) => angleDiff(point.heading, Math.PI / 2) < 1e-9) &&
-		angleDiff(lCorner.heading, Math.PI / 4) < 1e-9,
-	`corner=${lCorner?.heading} before=${beforeCorner.length} after=${afterCorner.length}`,
+		angleDiff(lCorner.heading, Math.PI / 4) < 1e-9 &&
+		lHeadings.every((heading, i) => i === 0 || heading >= lHeadings[i - 1] - 1e-9) &&
+		angleDiff(lHeadings[0], 0) < 0.35 &&
+		angleDiff(lHeadings[lHeadings.length - 1], Math.PI / 2) < 0.35,
+	`corner=${lCorner?.heading} headings=[${lHeadings.map((h) => h.toFixed(3)).join(",")}]`,
 );
 const rotatedDensePath = densifyArdyWaypoints(sceneWaypoints, 90, 96);
 const rotatedDense40 = rotatedDensePath.find((point) => point.frame === 40);
@@ -668,8 +671,11 @@ const rotatedSeg2 = Math.atan2(
 	rotatedArdyWaypoints[2].x - rotatedArdyWaypoints[1].x,
 	rotatedArdyWaypoints[2].z - rotatedArdyWaypoints[1].z,
 );
+// Actor rotation is rigid: the rotated resample must be the unrotated one
+// turned by exactly -90° — same frames, positions, and headings.
+const unrotatedDensePath = densifyArdyWaypoints(sceneWaypoints, 0, 96);
 ok(
-	"waypoints: actor rotation 90 is removed from densified coordinates and headings",
+	"waypoints: actor rotation 90 is removed rigidly from coordinates and headings",
 	rotatedDense40 !== undefined &&
 		rotatedDense79 !== undefined &&
 		rotatedDensePath[0].frame === 0 &&
@@ -679,27 +685,23 @@ ok(
 		Math.abs(rotatedDense40.z - rotatedArdyWaypoints[1].z) < 1e-9 &&
 		Math.abs(rotatedDense79.x - rotatedArdyWaypoints[2].x) < 1e-9 &&
 		Math.abs(rotatedDense79.z - rotatedArdyWaypoints[2].z) < 1e-9 &&
-		rotatedDensePath
-			.filter((point) => point.frame < 40)
-			.every((point) => angleDiff(point.heading, rotatedSeg1) < 1e-9) &&
-		rotatedDensePath
-			.filter((point) => point.frame > 40)
-			.every((point) => angleDiff(point.heading, rotatedSeg2) < 1e-9),
+		rotatedDensePath.length === unrotatedDensePath.length &&
+		rotatedDensePath.every((point, i) => {
+			const base = unrotatedDensePath[i];
+			return point.frame === base.frame && angleDiff(point.heading, base.heading - Math.PI / 2) < 1e-9;
+		}),
 	`seg1=${rotatedSeg1.toFixed(4)} seg2=${rotatedSeg2.toFixed(4)} count=${rotatedDensePath.length}`,
 );
+// With C1 corners the heading at an authored pin is no longer the raw
+// velocity average — it is sampled from the arc — but it must still lie
+// strictly inside the turn, between the two segment directions.
+const rotatedTurn = angleDiff(rotatedSeg1, rotatedSeg2);
 ok(
-	"waypoints: densified corner heading is the average of both segment directions",
+	"waypoints: densified corner heading lies inside the turn",
 	rotatedDense40 !== undefined &&
-		angleDiff(
-			rotatedDense40.heading,
-			Math.atan2(
-				(rotatedArdyWaypoints[1].x - rotatedArdyWaypoints[0].x) / 40 +
-					(rotatedArdyWaypoints[2].x - rotatedArdyWaypoints[1].x) / 39,
-				(rotatedArdyWaypoints[1].z - rotatedArdyWaypoints[0].z) / 40 +
-					(rotatedArdyWaypoints[2].z - rotatedArdyWaypoints[1].z) / 39,
-			),
-		) < 1e-9,
-	`corner=${rotatedDense40?.heading}`,
+		angleDiff(rotatedDense40.heading, rotatedSeg1) < rotatedTurn &&
+		angleDiff(rotatedDense40.heading, rotatedSeg2) < rotatedTurn,
+	`corner=${rotatedDense40?.heading} seg1=${rotatedSeg1.toFixed(4)} seg2=${rotatedSeg2.toFixed(4)}`,
 );
 const stallPath = densifyArdyWaypoints(
 	[
