@@ -2098,6 +2098,59 @@ export default function App() {
 						<button className="btn ghost" onClick={() => setNonce((n) => n + 1)}>
 							Recenter on subject
 						</button>
+
+						<h3 className="move-head">Move A→B</h3>
+						<div className="move-ab">
+							<button
+								type="button"
+								className="btn ghost"
+								title="Fly the camera to the move's first frame, then set A"
+								onClick={() => setMoveA(captureCurrentFraming())}
+							>
+								{moveA ? "A ✓" : "Set A"}
+							</button>
+							<button
+								type="button"
+								className="btn ghost"
+								title="Fly the camera to the move's last frame, then set B"
+								onClick={() => setMoveB(captureCurrentFraming())}
+							>
+								{moveB ? "B ✓" : "Set B"}
+							</button>
+							<button
+								type="button"
+								className="btn ghost"
+								disabled={!abMove}
+								title="Play the move in the shot camera; right-drag interrupts"
+								onClick={() => setMovePlaying((playing) => !playing)}
+							>
+								{movePlaying ? "Stop" : "Preview"}
+							</button>
+							<button
+								type="button"
+								className="btn ghost"
+								disabled={!abMove}
+								title="Slave the move to the timeline: play or scrub and the camera rides along. Turn off to fly freely while A/B stay set"
+								onClick={() => setMoveFollow((follow) => !follow)}
+							>
+								{moveFollow ? "Follow ✓" : "Follow"}
+							</button>
+							<button type="button" className="btn ghost" disabled={!moveA && !moveB} onClick={clearMove}>
+								Clear
+							</button>
+						</div>
+						{abMove ? (
+							<>
+								<div className="move-slate" title="derived from the two framings, not chosen from a list">
+									{moveSlate(abMove)}
+								</div>
+								<Slider label="Move duration" min={1} max={10} step={0.5} value={moveDurationS} unit="s" onChange={setMoveDurationS} />
+							</>
+						) : (
+							<div className="move-slate">
+								{moveA ? "fly to the end framing, then Set B" : "fly to the start framing, then Set A"}
+							</div>
+						)}
 					</section>
 
 					<section className="card" hidden={!["characters", "characterA", "characterA.character", "characterB", "characterB.character"].includes(selectedHierarchyId)}>
@@ -2216,56 +2269,15 @@ export default function App() {
 								/>
 							</Field>
 						)}
-						{mode === "video" && (
-							<Field label="Move A→B">
-								<div className="move-ab">
-									<button
-										type="button"
-										className="btn ghost"
-										title="Fly the camera to the move's first frame, then set A"
-										onClick={() => setMoveA(captureCurrentFraming())}
-									>
-										{moveA ? "A ✓" : "Set A"}
-									</button>
-									<button
-										type="button"
-										className="btn ghost"
-										title="Fly the camera to the move's last frame, then set B"
-										onClick={() => setMoveB(captureCurrentFraming())}
-									>
-										{moveB ? "B ✓" : "Set B"}
-									</button>
-									<button
-										type="button"
-										className="btn ghost"
-										disabled={!abMove}
-										title="Play the move in the shot camera; right-drag interrupts"
-										onClick={() => setMovePlaying((playing) => !playing)}
-									>
-										{movePlaying ? "Stop" : "Preview"}
-									</button>
-									<button
-										type="button"
-										className="btn ghost"
-										disabled={!abMove}
-										title="Slave the move to the timeline: play or scrub and the camera rides along. Turn off to fly freely while A/B stay set"
-										onClick={() => setMoveFollow((follow) => !follow)}
-									>
-										{moveFollow ? "Follow ✓" : "Follow"}
-									</button>
-									<button type="button" className="btn ghost" disabled={!moveA && !moveB} onClick={clearMove}>
-										Clear
-									</button>
+						{mode === "video" && abMove && (
+							<Field label="Camera move">
+								<div
+									className="move-slate inline"
+									title="authored from the A→B framings — select Camera in the hierarchy to edit"
+								>
+									{moveSlate(abMove)} · {moveDurationS}s
 								</div>
 							</Field>
-						)}
-						{mode === "video" && abMove && (
-							<>
-								<div className="move-slate" title="derived from the two framings, not chosen from a list">
-									{moveSlate(abMove)}
-								</div>
-								<Slider label="Move duration" min={1} max={10} step={0.5} value={moveDurationS} unit="s" onChange={setMoveDurationS} />
-							</>
 						)}
 						<Field label="Look / style">
 							<input type="text" value={style} onChange={(e) => setStyle(e.target.value)} />

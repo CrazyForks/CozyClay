@@ -4221,3 +4221,11 @@ input[type=range]::-moz-range-thumb {
 	color: var(--muted);
 	text-align: center;
 }
+
+.move-head {
+	margin-top: 18px;
+}
+
+.move-slate.inline {
+	margin: 0;
+}
