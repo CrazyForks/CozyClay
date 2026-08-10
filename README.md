@@ -32,6 +32,8 @@ The bridge listens on loopback only. The environment variables that point it at 
 
 **Edit like Unity.** Right-drag flies the camera (WASD walks, Q/E cranes), middle-drag pans, Alt+drag orbits the selection, left click selects, `F` frames. The full rule set, its source in Unity's manual, and every deliberate divergence are recorded in `docs/unity-reference.md`.
 
+**Undo anything.** Every scene mutation goes through a single history store: one interaction — a drag, a scrub, an inspector edit — is exactly one undo entry. `Esc` cancels an in-flight drag and restores the pre-drag transform.
+
 **Generate motion.** Pose characters and export poses, sequence multi-phase motion as Prompt Blocks on a resizable timeline, send them to ARDY, then play the result back with sparse IK correction where the generated motion needs fixing.
 
 ## Controls
@@ -47,6 +49,9 @@ The bridge listens on loopback only. The environment variables that point it at 
 | Click | Select; empty space clears |
 | W / E / R | Move / rotate / scale tool |
 | Ctrl (during drag) | Invert grid snapping |
+| Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z | Undo / redo |
+| Esc | Cancel the in-flight drag |
+| End | Drop the selection to the surface |
 | Ctrl/Cmd+D | Duplicate the selection |
 | F | Frame the selection |
 
@@ -54,6 +59,7 @@ The bridge listens on loopback only. The environment variables that point it at 
 
 | Command | Covers |
 | --- | --- |
+| `npm run test:history` | Undo/redo store and transaction coordinator |
 | `npm run test:scene-objects` | Scene-object model |
 | `npm run test:hierarchy` | Hierarchy panel model |
 | `npm run test:objects` | Gizmo interaction in a real browser — needs `npm run dev:ui` in another shell |

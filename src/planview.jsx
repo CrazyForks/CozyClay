@@ -265,7 +265,7 @@ function WaypointPath({ waypoints, start, activeWaypointFrame }) {
  * reports moves that still hit it, so a fast drag off the edge silently strands
  * the puck.
  */
-export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA, setCharA, charB, setCharB, showB, waypoints, activeWaypointFrame, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject }) {
+export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA, setCharA, charB, setCharB, showB, waypoints, activeWaypointFrame, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd }) {
 	const [drag, setDrag] = useState(null); // { id, mode }
 	const rootRef = useRef();
 	const camPos = useRef();
@@ -293,8 +293,8 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 	// clears dragRef, so a dep that changes while dragging (charA.x does, on the
 	// very first move) would kill the drag after one frame. Read live values
 	// through a ref and keep the effect's deps stable.
-	const latest = useRef({ charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject });
-	latest.current = { charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject };
+	const latest = useRef({ charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd });
+	latest.current = { charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd };
 
 	const targets = () => {
 		const { charA: a, charB: b, showB: two } = latest.current;
@@ -397,6 +397,17 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			setDrag({ id: grip.id, mode: grip.mode });
 			if (grip.mode === "waypoint") latest.current.onSelectWaypoint?.(grip.origin.frame);
 			else latest.current.onSelectEntity?.(grip.id);
+			// Scene-object grips only: select FIRST (the call above), then
+			// begin — App's select handler settles any open transaction, so
+			// beginning before the select would leak the freshly-issued token
+			// instantly (plan §6.4). Camera, character and waypoint grips
+			// write separate state and must never open a scene transaction.
+			if (grip.origin.objectId) {
+				dragRef.current.token = latest.current.onObjectMoveStart?.({
+					owner: "plan",
+					cancel: () => teardownDrag(grip),
+				});
+			}
 			host.style.cursor = grip.mode === "turn" ? "ew-resize" : "grabbing";
 		};
 
@@ -437,7 +448,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 				}
 				// 5° detents, because actors are blocked to clean angles
 				const deg = wrapDeg(Math.round((yaw * 180) / Math.PI / 5) * 5);
-				if (grip.origin.objectId) latest.current.onMoveSceneObject?.(grip.origin.objectId, { rot: deg });
+				if (grip.origin.objectId) latest.current.onMoveSceneObject?.(grip.origin.objectId, { rot: deg }, grip.token);
 				else if (grip.id === "a") setCharA((prev) => ({ ...prev, rot: deg }));
 				else setCharB((prev) => ({ ...prev, rot: deg }));
 				return;
@@ -458,23 +469,49 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			if (grip.origin.objectId) latest.current.onMoveSceneObject?.(grip.origin.objectId, {
 				x: snap(p.x, ROOM_LIMIT),
 				z: snap(p.z, ROOM_LIMIT),
-			});
+			}, grip.token);
 			else if (grip.id === "a") setCharA((prev) => ({ ...prev, ...next }));
 			else setCharB((prev) => ({ ...prev, ...next }));
 		};
 
-		const onUp = () => {
-			if (!dragRef.current) return;
+		// Teardown-only close: null the drag ref and reset the drag visuals.
+		// Never closes the transaction — used by the store's cancel (which is
+		// forbidden from calling the end prop back, plan §6.2) as well as the
+		// producer's own close paths.
+		const teardownDrag = (grip) => {
+			if (!grip || dragRef.current !== grip) return;
 			dragRef.current = null;
 			setDrag(null);
 			host.style.cursor = "default";
 		};
 
-		const onCancel = () => {
+		// pointerup, pointercancel, window blur and unmount all COMMIT: the
+		// travel already applied is real work the user can see, so it becomes
+		// one undo entry rather than being silently reverted (plan §6.3).
+		// Escape is the only gesture that rolls back.
+		const closeDrag = (commit) => {
+			const grip = dragRef.current;
+			if (!grip) return;
+			const token = grip.token;
+			teardownDrag(grip);
+			if (token != null) latest.current.onObjectMoveEnd?.(token, { commit });
+		};
+
+		const onUp = () => {
+			closeDrag(true);
+		};
+
+		const onCancel = () => closeDrag(true);
+
+		const onBlur = () => closeDrag(true);
+
+		const onEscape = (event) => {
+			if (event.key !== "Escape") return;
 			if (!dragRef.current) return;
-			dragRef.current = null;
-			setDrag(null);
-			host.style.cursor = "default";
+			// Capture-phase stopPropagation keeps the same press from also
+			// reaching App's Escape-clears-selection handler (plan §7).
+			event.stopPropagation();
+			closeDrag(false);
 		};
 
 		host.addEventListener("pointerdown", onDown);
@@ -482,13 +519,17 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 		window.addEventListener("pointermove", onMove);
 		window.addEventListener("pointerup", onUp);
 		window.addEventListener("pointercancel", onCancel);
+		window.addEventListener("blur", onBlur);
+		window.addEventListener("keydown", onEscape, true);
 		return () => {
 			host.removeEventListener("pointerdown", onDown);
 			host.removeEventListener("pointermove", onHover);
 			window.removeEventListener("pointermove", onMove);
 			window.removeEventListener("pointerup", onUp);
 			window.removeEventListener("pointercancel", onCancel);
-			dragRef.current = null;
+			window.removeEventListener("blur", onBlur);
+			window.removeEventListener("keydown", onEscape, true);
+			closeDrag(true);
 		};
 	}, [hostRef, planCamRef, shotCamRef, tools, setCharA, setCharB, look]);
 

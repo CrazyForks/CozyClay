@@ -279,6 +279,8 @@ The widget, exactly:
 | **Delete** deletes | <https://docs.unity3d.com/Manual/SceneViewContextMenu.html> `[observed]` for the key | **Transfers** | Keep Delete. Keep Backspace as an extra alias (harmless, and macOS laptops lack a real Delete). | Already implemented in `src/App.jsx:593`; no change beyond keeping it. |
 | **F2** (Win) / **Return** (macOS) renames in place | `[community]` <https://discussions.unity.com/t/keyboard-shortcut-to-rename-gameobject/109770/2>; rename-on-create from <https://docs.unity3d.com/Manual/Hierarchy.html> | **Adapt** | Bind F2 **and** Return to "rename the selected hierarchy row in place". Also open a newly created object in rename mode, as Unity does. | The name-only text input buried in the Object Transform card, which is the only way to rename today. |
 | **Escape** | not documented | **Adapt** — CozyClay's own rule | Escape should (1) cancel an in-progress gizmo drag and restore the pre-drag transform, (2) close any popover, and (3) with nothing else pending, clear the selection. Cancel-drag is the important one: CozyClay commits transforms as it drags. | Nothing — there is no way to abort a bad drag today. |
+| **Ctrl+Z** / **Ctrl+Shift+Z** (macOS **Cmd+Z** / **Cmd+Shift+Z**) | Undo/redo exist as Editor commands, rebindable in the Shortcuts window; the manual does not define how many Scene-view operations one undo step spans | <https://docs.unity3d.com/Manual/ShortcutsManager.html> | **Adapt** — CozyClay's own contract | One *interaction* is exactly one undo entry: a drag, a field scrub, an inspector commit, a create/duplicate/delete, or a drop. A no-op records nothing (a redundant drop), and a scene load is never undoable. CozyClay rebinds redo to Ctrl/Cmd+Shift+Z — the browser's own redo convention. | Nothing — every edit was permanent. |
+| **End** | Snap Actor to Floor — Unreal Editor's key, adopted as the trigger for CozyClay's drop | <https://dev.epicgames.com/documentation/en-us/unreal-engine/unreal-editor-hotkeys> | **Adapt** — CozyClay's own rule | End drops the selection straight down: its base lands exactly on the highest support top at or below it whose footprint overlaps, or on the floor. **Strict drop-down divergence from Unity's surface snapping:** Unity snaps *while dragging* onto a collider under the cursor (Shift+Ctrl / Shift+Cmd, §9.5) and that modifier form is deferred here; CozyClay's drop is one key press, the contact height is exact (never rounded to the 5 cm grid), x/z are never written, and a surface the object is already penetrating is NOT support — the object falls through, so recovery is raise Y above the box and press End again. The drop is idempotent (a second End changes nothing) and one undo entry. | Nothing — Y could only be typed or scrubbed, so objects floated or sank. |
 | Arrow keys walk the camera | <https://docs.unity3d.com/Manual/SceneViewNavigation.html> | **Adapt** | Lower priority than the rest. If bound at all, bind arrows to nudge the *selected object* by one snap increment — for a blocking tool that is worth more than a second walk control, and it is a documented divergence rather than a conflict. | Nothing. |
 | **`** opens the overlay menu; **\\** toggles snapping; Ctrl+[ / Ctrl+] resize the grid | <https://docs.unity3d.com/Manual/overlays.html>, <https://docs.unity3d.com/Manual/GridShortcuts.html> | **Adapt** | Take **\\** for "toggle always-on snapping" only if CozyClay keeps a persistent snap toggle (see §9.5). Skip the overlay and grid-resize keys; there is one viewport and one grid. | — |
 
@@ -313,7 +315,7 @@ The widget, exactly:
 | Snapping can also be latched on permanently, per tool, from the Grid and Snap overlay | <https://docs.unity3d.com/Manual/overlay-grid-snap-reference.html>, <https://docs.unity3d.com/Manual/SnapIncrements.html> | **Adapt** | Keep a single "Snap" toggle (one for all three tools, not three) so the current always-snapped workflow remains available for people who prefer it — and because the plan board blocks on the same grid. When the toggle is on, Ctrl/Cmd inverts it and gives a free drag. | Nothing; this preserves today's behaviour as an option instead of a law. |
 | Increment values are user-editable per tool | <https://docs.unity3d.com/Manual/overlay-grid-snap-reference.html> | **Adapt** | Expose the three increments (distance / angle / scale) in settings, defaulting to today's 0.05 m / 5° / 5%. Do not adopt Unity's 1-unit / 15° defaults: CozyClay's room is 13 m across with 5 cm props, and the plan board already blocks on the 5 cm grid. | Hard-coded constants. |
 | Absolute grid snapping (snap to grid positions, not increments), Global/Grid orientation only | <https://docs.unity3d.com/Manual/GridSnap.html>, <https://docs.unity3d.com/Manual/overlay-grid-snap-reference.html> | **Adapt** | Worth one command rather than a mode: a **Push to Grid** action (Unity's Ctrl+\\) that rounds the selection onto the nearest grid point. Same benefit, far less state. | Nothing. |
-| Surface snapping onto colliders (Shift+Ctrl / Shift+Cmd) | <https://docs.unity3d.com/Manual/PositioningGameObjects.html> | **Adapt** | There are no colliders, but there are boxes and a floor. Implement "drop to surface": with Shift+Ctrl / Shift+Cmd held during a move drag, raycast down/at the cursor against other objects' bounds and the floor and rest the object's underside on the hit. For set dressing this is the single most useful snap. | Nothing — today Y is set by a slider and objects float or intersect. |
+| Surface snapping onto colliders (Shift+Ctrl / Shift+Cmd) | <https://docs.unity3d.com/Manual/PositioningGameObjects.html> | **Adapt** | There are no colliders, but there are boxes and a floor. Shipped as **End → drop to surface** (§9.2): strict drop-down onto the highest overlapping surface top at or below the base, or the floor. Unity's Shift+Ctrl / Shift+Cmd drag-modifier form — raycast down/at the cursor *while dragging* — is deferred; it needs a per-tick downward raycast on the drag hot path. | Nothing — Y was set only by typing or scrubbing, so objects floated or sank. |
 | Vertex snapping with **V** | <https://docs.unity3d.com/Manual/PositioningGameObjects.html> | **Adapt (low priority)** | Full vertex snapping is overkill for greybox primitives. The transferable part is the *corner/edge* case: with V held, snap the dragged box's nearest bottom corner to another box's corner or edge midpoint. Defer until drop-to-surface ships. | Nothing. |
 | Look-at rotation (Shift+Ctrl on a rotate handle) | <https://docs.unity3d.com/Manual/PositioningGameObjects.html> | **Adapt (optional)** | For a shot-blocking tool, "aim this object at the camera / at the subject" is genuinely useful. Offer it as a context-menu command rather than a modifier drag. | Nothing. |
 
@@ -403,3 +405,34 @@ Community sources, used only where the manual is silent and marked `[community]`
 - Default increment snap values as shipped: <https://www.ketra-games.com/2020/08/unity-game-tutorial-increment-snap-and-grid-alignment.html>
 
 Items marked `[observed]` are behaviours consistent across Unity versions that the manual does not spell out: clicking empty space clears the selection, the Delete key deletes, clicking an already-selected object is a no-op, and Escape's role in the Scene view.
+
+
+---
+
+## 8. Editor window layout (2026-08-10)
+
+Sections 1–6 cover interaction; this section records where the windows sit.
+CozyClay follows Unity's default editor arrangement. The chrome (top bar,
+hierarchy, inspector, bottom window, brandbar) wears a Unity 6 dark-editor
+skin — palette tokens pinned by test/verify-theme.mjs — while the 3D stage
+keeps the bright lightbox set on purpose: the bird's-eye plan board reads as
+part of that set, so it stays light too. Surfaces with no Unity counterpart
+keep their own look.
+
+| Unity window | CozyClay counterpart | Notes |
+| --- | --- | --- |
+| Toolbar (tool switch, snap) | Top bar: Move / Rotate / Scale switch bound to the same state as the W / E / R hotkeys, plus the Snap toggle | The RectTransform (T) and Transform (Y) tools have no CozyClay meaning and are omitted |
+| Hierarchy (left) | Left window: shot structure tree with the create catalogue and the right-click row menu (§9.7) | Always visible; the former tab strip is gone |
+| Scene view (centre) | Shot viewport | The Shot view / Bird's-eye toggle is a scene-view overlay in Unity's overlay-toolbar position (top-left); the bird's-eye plan board stays a draggable inset pane |
+| Inspector (right) | Right window: the selection's properties as collapsible foldout sections (▸/▾) | Sections default to open; fold state is session-local |
+| Scene / Game tabs | Center pane tabs: **Scene** (the editing view) and **PlayView** (framed output only — no gizmo, inset, fly navigation, or overlays) | PlayView renders the shot camera full-frame; switching tabs never remounts the canvas |
+| Animation (bottom) | Bottom window, "Animation" tab: the Prompt-Block / IK / Root-Path sequencer | Named for Unity's Animation window; Console remains the second tab |
+| Console (bottom) | Bottom window, "Console" tab: the session history of ARDY status lines, newest at the bottom | The inspector still shows the current line; the tab accumulates |
+
+Deliberate divergences:
+
+1. **No menu bar.** Unity's File/Edit/Assets menus would be fake buttons here; the Controls popover keeps the shortcut reference instead.
+2. **No dockable windows.** Panels resize via splitters (persisted in localStorage) but cannot be torn off — browser layout cost outweighs the benefit.
+3. **Pose studio stays a modal overlay** (Unity's modal window equivalent) and the plan board stays an inset pane inside the scene view, because neither has a Unity docking counterpart.
+4. **The brandbar remains** as a slim status strip under the bottom window; Unity's equivalent status text lives inside its windows instead.
+5. **Widget material is Unity flat**: 1px borders, 2px corners, no gradients or glows on buttons, inputs, selects, sliders, dialogs, or foldout section bars. Unity's exact 19px row metrics and 1px bevels are approximated, not measured.

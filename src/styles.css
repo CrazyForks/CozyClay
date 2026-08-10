@@ -4,34 +4,34 @@
    Monospace is reserved for coordinates, frame values and machine status. */
 
 :root {
-	--bg: #f3ebdd;
-	--bg-grad: linear-gradient(145deg, #edf2ef 0%, #dce7e8 58%, #e7e1d5 100%);
-	--panel: #f8f3ea;
-	--card: #fffaf1;
-	--card2: rgba(39, 56, 73, .035);
-	--hover: rgba(78, 159, 179, .12);
-	--line: rgba(39, 56, 73, .14);
-	--line2: rgba(39, 56, 73, .28);
-	--track: #d5d0c7;
-	--fg: #273849;
-	--muted: #626866;
-	--muted2: #8b918f;
-	--accent: #4e9fb3;
-	--accent-2: #2f879e;
-	--cyan: #247da0;
-	--accent-soft: rgba(78, 159, 179, .15);
-	--accent-ring: rgba(78, 159, 179, .24);
+	--bg: #1e1e1e;
+	--bg-grad: linear-gradient(145deg, #1e1e1e 0%, #1e1e1e 100%);
+	--panel: #2c2c2c;
+	--card: #383838;
+	--card2: rgba(255, 255, 255, .04);
+	--hover: rgba(255, 255, 255, .06);
+	--line: #1a1a1a;
+	--line2: #3c3c3c;
+	--track: #3a3a3a;
+	--fg: #d2d2d2;
+	--muted: #9a9a9a;
+	--muted2: #6f6f6f;
+	--accent: #3a7cbf;
+	--accent-2: #2d5c8a;
+	--cyan: #5a9bd4;
+	--accent-soft: rgba(45, 92, 138, .35);
+	--accent-ring: rgba(58, 124, 191, .5);
 	--on-accent: #ffffff;
-	--grad: linear-gradient(103deg, #4e9fb3 0%, #3f91a7 100%);
-	--grad-soft: linear-gradient(103deg, #4e9fb3, #78b7c5);
+	--grad: linear-gradient(103deg, #2d5c8a 0%, #2d5c8a 100%);
+	--grad-soft: linear-gradient(103deg, #2d5c8a, #3a7cbf);
 	--display: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
 	--sans: "Inter", system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
 	--mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-	--radius: 6px;
-	--shadow: 0 1px 2px rgba(39, 56, 73, .08);
-	--shadow-md: 0 5px 16px rgba(39, 56, 73, .12);
-	--shadow-lg: 0 14px 34px rgba(39, 56, 73, .16);
-	--glow: 0 5px 14px rgba(78, 159, 179, .2);
+	--radius: 2px;
+	--shadow: 0 1px 2px rgba(0, 0, 0, .4);
+	--shadow-md: 0 5px 16px rgba(0, 0, 0, .5);
+	--shadow-lg: 0 14px 34px rgba(0, 0, 0, .6);
+	--glow: 0 0 0 1px rgba(58, 124, 191, .45);
 	--ease: cubic-bezier(.22, .68, .2, 1);
 	--spring: cubic-bezier(.34, 1.4, .5, 1);
 	--fast: .14s;
@@ -75,12 +75,12 @@ select {
 	height: 11px;
 }
 ::-webkit-scrollbar-thumb {
-	background: #bcc7c6;
+	background: #4a4a4a;
 	border-radius: 8px;
 	border: 3px solid var(--panel);
 }
 ::-webkit-scrollbar-thumb:hover {
-	background: #9eafaf;
+	background: #5c5c5c;
 }
 ::-webkit-scrollbar-track {
 	background: transparent;
@@ -105,7 +105,7 @@ select {
 	align-items: center;
 	gap: 20px;
 	padding: 0 16px;
-	background: rgba(248, 243, 234, .97);
+	background: rgba(35, 35, 35, .97);
 	border-bottom: 1px solid var(--line);
 }
 .topbar:after {
@@ -129,7 +129,7 @@ select {
 	font-weight: 750;
 	font-size: 18px;
 	line-height: 1;
-	color: #273849;
+	color: #d2d2d2;
 	letter-spacing: -.045em;
 }
 .wordmark span {
@@ -143,7 +143,7 @@ select {
 	display: flex;
 	align-items: center;
 	padding: 0 14px;
-	background: rgba(248, 243, 234, .97);
+	background: rgba(35, 35, 35, .97);
 	border-top: 1px solid var(--line);
 }
 
@@ -154,7 +154,7 @@ select {
 	left: 14px;
 	width: 46px;
 	height: 2px;
-	background: #4e9fb3;
+	background: #3a7cbf;
 }
 
 .brandbar .wordmark {
@@ -191,9 +191,9 @@ select {
 	align-items: center;
 	gap: 7px;
 	padding: 0 10px 0 12px;
-	border: 1px solid rgba(39, 56, 73, .24);
+	border: 1px solid rgba(255, 255, 255, .24);
 	border-radius: 6px;
-	background: #fffaf1;
+	background: #2c2c2c;
 	color: #52616b;
 	font-size: 10px;
 	font-weight: 700;
@@ -214,9 +214,9 @@ select {
 }
 
 .controls-menu[open] summary {
-	color: #273849;
-	border-color: #4e9fb3;
-	background: #edf4f2;
+	color: #d2d2d2;
+	border-color: #3a7cbf;
+	background: #383838;
 }
 
 .controls-menu[open] summary span {
@@ -229,10 +229,10 @@ select {
 	right: 0;
 	width: 250px;
 	padding: 12px;
-	border: 1px solid rgba(39, 56, 73, .24);
+	border: 1px solid rgba(255, 255, 255, .24);
 	border-radius: 8px;
-	background: #fffaf1;
-	box-shadow: 0 12px 30px rgba(39, 56, 73, .16);
+	background: #2c2c2c;
+	box-shadow: 0 12px 30px rgba(0, 0, 0, .16);
 }
 
 .controls-grid {
@@ -245,18 +245,18 @@ select {
 .controls-grid kbd {
 	min-width: 46px;
 	padding: 3px 6px;
-	border: 1px solid rgba(39, 56, 73, .22);
+	border: 1px solid rgba(255, 255, 255, .22);
 	border-bottom-width: 2px;
 	border-radius: 4px;
-	background: #f3ebdd;
-	color: #273849;
+	background: #232323;
+	color: #d2d2d2;
 	font: 650 9px var(--mono);
 	text-align: center;
 }
 
 .controls-grid span,
 .controls-popover p {
-	color: #626866;
+	color: #9a9a9a;
 	font-size: 10.5px;
 	line-height: 1.35;
 }
@@ -268,7 +268,7 @@ select {
 .controls-popover p strong {
 	display: block;
 	margin-bottom: 4px;
-	color: #273849;
+	color: #d2d2d2;
 	font-size: 10px;
 	text-transform: uppercase;
 	letter-spacing: .08em;
@@ -308,7 +308,7 @@ select {
 	right: 0;
 	width: 55%;
 	height: 70%;
-	background: radial-gradient(circle at 70% 30%, rgba(78, 159, 179, .11), transparent 62%);
+	background: radial-gradient(circle at 70% 30%, rgba(58, 124, 191, .11), transparent 62%);
 	pointer-events: none;
 	filter: blur(10px);
 }
@@ -320,7 +320,7 @@ select {
 	height: 100%;
 	max-width: 100%;
 	max-height: 100%;
-	border: 1px solid rgba(39, 56, 73, .38);
+	border: 1px solid rgba(255, 255, 255, .38);
 	border-radius: 0;
 	overflow: hidden;
 	box-shadow: var(--shadow-md);
@@ -2959,8 +2959,8 @@ input[type=range]::-moz-range-thumb {
 		position: absolute;
 		right: 5px;
 		bottom: 5px;
-		border-right: 2px solid rgba(39, 56, 73, .72);
-		border-bottom: 2px solid rgba(39, 56, 73, .72);
+		border-right: 2px solid rgba(255, 255, 255, .72);
+		border-bottom: 2px solid rgba(255, 255, 255, .72);
 	}
 
 	.vp-inset-resize:before {
@@ -3001,76 +3001,79 @@ input[type=range]::-moz-range-thumb {
    untouched so the production workflow remains familiar. */
 
 .panel.hierarchy-sidebar {
-	background: #f8f3ea;
-	border-color: rgba(39, 56, 73, .22);
+	background: #282828;
+	border-color: rgba(255, 255, 255, .22);
 }
 
 .hierarchy-pane {
-	background: #fffaf1;
-	border-color: rgba(39, 56, 73, .22);
+	background: #2c2c2c;
+	border-color: rgba(255, 255, 255, .22);
 }
 
 .hierarchy-heading,
 .inspector-heading {
-	border-color: rgba(39, 56, 73, .14);
-	background: #f3ebdd;
+	border-color: rgba(255, 255, 255, .14);
+	background: #232323;
 }
 
 .hierarchy-heading strong,
 .inspector-heading strong {
-	color: #273849;
+	color: #d2d2d2;
 }
 
 .hierarchy-kicker,
 .inspector-heading > span {
-	color: #626866;
+	color: #9a9a9a;
 }
 
 .hierarchy-frame-status {
-	border-color: rgba(78, 159, 179, .35);
-	background: rgba(78, 159, 179, .09);
-	color: #247da0;
+	border-color: rgba(58, 124, 191, .35);
+	background: rgba(58, 124, 191, .09);
+	color: #5a9bd4;
 }
 
 .hierarchy-row-wrap:before {
-	background: rgba(39, 56, 73, .13);
+	background: rgba(255, 255, 255, .13);
 }
 
 .hierarchy-row-wrap:hover {
-	background: rgba(78, 159, 179, .08);
+	background: rgba(58, 124, 191, .08);
 }
 
 .hierarchy-row-wrap.selected {
-	background: #c9e3e8;
-	box-shadow: inset 2px 0 #4e9fb3;
+	background: #2d5c8a;
+	box-shadow: inset 2px 0 #3a7cbf;
 }
 
 .hierarchy-toggle {
 	color: #7c8588;
 }
 
-.hierarchy-label,
+.hierarchy-label {
+	color: #d2d2d2;
+}
+
 .selected .hierarchy-label {
-	color: #273849;
+	color: #ffffff;
 }
 
 .hierarchy-status {
-	color: #247da0;
+	color: #5a9bd4;
 }
 
 .hierarchy-badge {
-	background: rgba(39, 56, 73, .08);
-	color: #626866;
+	background: rgba(255, 255, 255, .08);
+	color: #9a9a9a;
 }
 
 .hierarchy-icon {
 	border-color: #71818d;
-	background: rgba(39, 56, 73, .04);
+	background: rgba(255, 255, 255, .04);
 }
 
 .hierarchy-icon.shot {
-	border-color: #4e9fb3;
-	box-shadow: inset 0 0 0 2px #dcecef;
+	border-color: #3a7cbf;
+	box-shadow: inset 0 0 0 2px #3c3c3c;
 }
 
 .hierarchy-icon.camera { border-color: #d4972d; }
@@ -3078,8 +3081,8 @@ input[type=range]::-moz-range-thumb {
 .hierarchy-icon.motion,
 .hierarchy-icon.clip,
 .hierarchy-icon.prompt {
-	border-color: #4e9fb3;
-	background: rgba(78, 159, 179, .13);
+	border-color: #3a7cbf;
+	background: rgba(58, 124, 191, .13);
 }
 .hierarchy-icon.key { border-color: #d65f55; }
 .hierarchy-icon.rig,
@@ -3090,32 +3093,32 @@ input[type=range]::-moz-range-thumb {
 .hierarchy-icon.object { border-color: #c7836f; }
 
 .inspector-scroll {
-	background: #f8f3ea;
+	background: #282828;
 }
 
 .card {
-	background: #fffaf1;
-	border-color: rgba(39, 56, 73, .18);
+	background: #2c2c2c;
+	border-color: rgba(255, 255, 255, .18);
 	border-radius: 8px;
 	box-shadow: var(--shadow);
 }
 
 .card:hover {
-	border-color: rgba(78, 159, 179, .42);
+	border-color: rgba(58, 124, 191, .42);
 }
 
 .card:after {
 	height: 2px;
-	background: #4e9fb3;
+	background: #3a7cbf;
 	opacity: .9;
 }
 
 .card h3 {
-	color: #626866;
+	color: #9a9a9a;
 }
 
 .card h3:before {
-	background: #4e9fb3;
+	background: #3a7cbf;
 	box-shadow: none;
 }
 
@@ -3127,78 +3130,78 @@ input[type=range]::-moz-range-thumb {
 .field label,
 .row,
 .readout {
-	color: #626866;
+	color: #9a9a9a;
 }
 
 .hint b,
 .ardy-hint code,
 .ardy-outcome code {
-	color: #273849;
+	color: #d2d2d2;
 }
 
 .inspector-status-grid,
 .ardy-report {
-	border-color: rgba(39, 56, 73, .14);
-	background: rgba(39, 56, 73, .035);
+	border-color: rgba(255, 255, 255, .14);
+	background: rgba(255, 255, 255, .035);
 }
 
 .inspector-status-grid b {
-	color: #273849;
+	color: #d2d2d2;
 }
 
 .inspector-list button {
-	border-color: rgba(39, 56, 73, .16);
+	border-color: rgba(255, 255, 255, .16);
 	background: rgba(255, 255, 255, .38);
 	color: #3d4d58;
 }
 
 .inspector-list button:hover,
 .inspector-list button.active {
-	border-color: rgba(78, 159, 179, .56);
-	background: #dcecef;
-	color: #273849;
+	border-color: rgba(58, 124, 191, .56);
+	background: #3c3c3c;
+	color: #d2d2d2;
 }
 
 .presets button {
-	background: #f5efe5;
-	border-color: rgba(39, 56, 73, .16);
+	background: #383838;
+	border-color: rgba(255, 255, 255, .16);
 	color: #3d4d58;
 	border-radius: 6px;
 }
 
 .presets button:hover {
-	background: #e8f1f1;
-	border-color: rgba(78, 159, 179, .48);
-	color: #273849;
+	background: #3c3c3c;
+	border-color: rgba(58, 124, 191, .48);
+	color: #d2d2d2;
 	transform: none;
 }
 
 .presets button.active {
-	border-color: #4e9fb3;
-	background: #d6e9ed;
-	color: #273849;
-	box-shadow: 0 0 0 1px rgba(78, 159, 179, .16);
+	border-color: #3a7cbf;
+	background: #2d5c8a;
+	color: #d2d2d2;
+	box-shadow: 0 0 0 1px rgba(58, 124, 191, .16);
 }
 
 .row .val,
 .readout strong {
-	color: #273849;
+	color: #d2d2d2;
 }
 
 input[type=range] {
-	background: #c8ceca;
+	background: #3a3a3a;
 }
 
 input[type=range]::-webkit-slider-thumb {
-	background: #fffaf1;
-	border-color: #4e9fb3;
-	box-shadow: 0 1px 2px rgba(39, 56, 73, .18);
+	background: #2c2c2c;
+	border-color: #3a7cbf;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, .18);
 }
 
 input[type=range]::-moz-range-thumb {
-	background: #fffaf1;
-	border-color: #4e9fb3;
-	box-shadow: 0 1px 2px rgba(39, 56, 73, .18);
+	background: #2c2c2c;
+	border-color: #3a7cbf;
+	box-shadow: 0 1px 2px rgba(0, 0, 0, .18);
 }
 
 .field input[type=text],
@@ -3206,9 +3209,9 @@ input[type=range]::-moz-range-thumb {
 .field textarea,
 .field select,
 .dropdown .trigger {
-	background-color: #fffdf8;
-	border-color: rgba(39, 56, 73, .2);
-	color: #273849;
+	background-color: #323232;
+	border-color: rgba(255, 255, 255, .2);
+	color: #d2d2d2;
 	border-radius: 6px;
 	box-shadow: none;
 }
@@ -3219,13 +3222,13 @@ input[type=range]::-moz-range-thumb {
 }
 
 .field select option {
-	background: #fffaf1;
-	color: #273849;
+	background: #2c2c2c;
+	color: #d2d2d2;
 }
 
 .dropdown-menu {
-	background: #fffaf1;
-	border-color: rgba(39, 56, 73, .24);
+	background: #2c2c2c;
+	border-color: rgba(255, 255, 255, .24);
 	border-radius: 7px;
 	box-shadow: var(--shadow-md);
 }
@@ -3236,32 +3239,32 @@ input[type=range]::-moz-range-thumb {
 }
 
 .dropdown-item:hover {
-	background: #dcecef;
-	color: #273849;
+	background: #3c3c3c;
+	color: #d2d2d2;
 }
 
 .dropdown-item.active {
-	color: #247da0;
+	color: #5a9bd4;
 }
 
 .segmented {
-	background: #e7e1d5;
-	border-color: rgba(39, 56, 73, .18);
+	background: #1e1e1e;
+	border-color: rgba(255, 255, 255, .18);
 	border-radius: 7px;
 }
 
 .segmented:before {
-	background: #4e9fb3;
+	background: #3a7cbf;
 	border-radius: 5px;
 	box-shadow: none;
 }
 
 .segmented button {
-	color: #626866;
+	color: #9a9a9a;
 }
 
 .segmented button:hover {
-	color: #273849;
+	color: #d2d2d2;
 }
 
 .segmented button.active {
@@ -3269,32 +3272,32 @@ input[type=range]::-moz-range-thumb {
 }
 
 .btn {
-	border-color: rgba(39, 56, 73, .24);
-	background: #f7f1e7;
-	color: #273849;
+	border-color: rgba(255, 255, 255, .24);
+	background: #383838;
+	color: #d2d2d2;
 	border-radius: 6px;
 	box-shadow: none;
 }
 
 .btn:hover {
-	background: #e5eeee;
-	border-color: rgba(78, 159, 179, .55);
+	background: #424242;
+	border-color: rgba(58, 124, 191, .55);
 	box-shadow: none;
 	transform: none;
 }
 
 .btn.ghost {
-	border-color: rgba(39, 56, 73, .18);
-	color: #626866;
+	border-color: rgba(255, 255, 255, .18);
+	color: #9a9a9a;
 }
 
 .btn.ghost:hover {
-	background: #edf3f1;
-	color: #273849;
+	background: #3c3c3c;
+	color: #d2d2d2;
 }
 
 .btn.primary {
-	background: #4e9fb3;
+	background: #3a7cbf;
 	border: 1px solid #397f91;
 	box-shadow: none;
 }
@@ -3305,9 +3308,9 @@ input[type=range]::-moz-range-thumb {
 }
 
 .vp-inset {
-	border: 1px solid rgba(39, 56, 73, .45);
+	border: 1px solid rgba(255, 255, 255, .45);
 	border-radius: 7px;
-	box-shadow: 0 7px 20px rgba(39, 56, 73, .15);
+	box-shadow: 0 7px 20px rgba(0, 0, 0, .15);
 }
 
 .vp-inset-tag,
@@ -3316,15 +3319,15 @@ input[type=range]::-moz-range-thumb {
 .viewmode,
 .grid-toggle {
 	background: rgba(255, 250, 241, .9);
-	border-color: rgba(39, 56, 73, .42);
-	color: #273849;
+	border-color: rgba(255, 255, 255, .42);
+	color: #d2d2d2;
 	box-shadow: none;
 	-webkit-backdrop-filter: blur(6px);
 	backdrop-filter: blur(6px);
 }
 
 .vp-inset-tag {
-	color: #273849;
+	color: #d2d2d2;
 }
 
 .viewmode {
@@ -3337,119 +3340,119 @@ input[type=range]::-moz-range-thumb {
 }
 
 .viewmode button:hover {
-	color: #273849;
+	color: #d2d2d2;
 }
 
 .viewmode button.active {
-	background: #4e9fb3;
+	background: #3a7cbf;
 	color: #fff;
 	box-shadow: none;
 }
 
 .caption {
-	color: #273849;
+	color: #d2d2d2;
 }
 
 .grid-toggle.active {
-	color: #247da0;
-	border-color: #4e9fb3;
-	background: #dcecef;
+	color: #5a9bd4;
+	border-color: #3a7cbf;
+	background: #3c3c3c;
 }
 
 .film-frame i:before,
 .film-frame i:after {
-	border-color: rgba(39, 56, 73, .72);
+	border-color: rgba(255, 255, 255, .72);
 }
 
 .toast,
 .modal,
 .promptbox {
-	background: #fffaf1;
-	border-color: rgba(39, 56, 73, .24);
-	color: #273849;
+	background: #2c2c2c;
+	border-color: rgba(255, 255, 255, .24);
+	color: #d2d2d2;
 }
 
 .modal-overlay {
-	background: rgba(39, 56, 73, .3);
+	background: rgba(255, 255, 255, .3);
 }
 
 .modal:before {
-	background: #4e9fb3;
+	background: #3a7cbf;
 	animation: none;
 }
 
 .modal .x:hover {
-	color: #273849;
-	background: #e7e1d5;
+	color: #d2d2d2;
+	background: #1e1e1e;
 }
 
 .timeline {
-	background: #f3ebdd;
-	border-color: rgba(39, 56, 73, .22);
-	box-shadow: 0 -5px 14px rgba(39, 56, 73, .08);
+	background: #232323;
+	border-color: rgba(255, 255, 255, .22);
+	box-shadow: 0 -5px 14px rgba(0, 0, 0, .08);
 }
 
 .tl-head {
-	background: #f8f3ea;
-	border-color: rgba(39, 56, 73, .18);
+	background: #282828;
+	border-color: rgba(255, 255, 255, .18);
 }
 
 .tl-btn {
-	background: #fffaf1;
-	color: #273849;
-	border-color: rgba(39, 56, 73, .27);
+	background: #2c2c2c;
+	color: #d2d2d2;
+	border-color: rgba(255, 255, 255, .27);
 	border-bottom-width: 1px;
 	border-radius: 5px;
 }
 
 .tl-btn:hover {
-	background: #dcecef;
-	border-color: #4e9fb3;
+	background: #3c3c3c;
+	border-color: #3a7cbf;
 }
 
 .tl-btn.play,
 .tl-btn.play:hover {
-	background: #4e9fb3;
+	background: #3a7cbf;
 	border-color: #397f91;
 	color: #fff;
 }
 
 .tl-readout {
-	background: #fffaf1;
-	border-color: rgba(39, 56, 73, .18);
-	color: #626866;
+	background: #2c2c2c;
+	border-color: rgba(255, 255, 255, .18);
+	color: #9a9a9a;
 }
 
 .tl-readout b {
-	color: #247da0;
+	color: #5a9bd4;
 }
 
 .tl-badge {
-	color: #9b6a15;
+	color: #e7b557;
 	background: rgba(231, 181, 87, .14);
 	border-color: rgba(190, 134, 31, .46);
 }
 
 .tl-toggle:hover {
-	color: #273849;
-	background: #e7e1d5;
-	border-color: rgba(39, 56, 73, .2);
+	color: #d2d2d2;
+	background: #1e1e1e;
+	border-color: rgba(255, 255, 255, .2);
 }
 
 .tl-body,
 .tl-surface {
-	background: #f8f3ea;
+	background: #282828;
 }
 
 .tl-ruler {
-	background: #f3ebdd;
-	border-color: rgba(39, 56, 73, .18);
+	background: #232323;
+	border-color: rgba(255, 255, 255, .18);
 }
 
 .tl-ruler-label,
 .tl-track-label {
-	background: #f8f3ea;
-	border-color: rgba(39, 56, 73, .16);
+	background: #282828;
+	border-color: rgba(255, 255, 255, .16);
 	color: #52616b;
 }
 
@@ -3458,53 +3461,53 @@ input[type=range]::-moz-range-thumb {
 }
 
 .tl-tick i {
-	background: rgba(39, 56, 73, .28);
+	background: rgba(255, 255, 255, .28);
 }
 
 .tl-lane {
-	background-color: #fbf7ef;
+	background-color: #282828;
 	background-image: repeating-linear-gradient(
 		90deg,
 		transparent 0,
 		transparent calc(100% / 23 - 1px),
-		rgba(39, 56, 73, .075) calc(100% / 23 - 1px),
-		rgba(39, 56, 73, .075) calc(100% / 23)
+		rgba(255, 255, 255, .075) calc(100% / 23 - 1px),
+		rgba(255, 255, 255, .075) calc(100% / 23)
 	);
-	border-color: rgba(39, 56, 73, .1);
+	border-color: rgba(255, 255, 255, .1);
 }
 
 .tl-lane:hover {
-	background-color: #edf4f2;
+	background-color: #383838;
 }
 
 .tl-frame-box {
 	background: #e7b557;
-	color: #273849;
+	color: #d2d2d2;
 	border: 1px solid #c58d29;
 	border-radius: 5px;
 	box-shadow: none;
 }
 
 .tl-track-add {
-	border-color: rgba(39, 56, 73, .24);
-	background: #fffaf1;
-	color: #247da0;
+	border-color: rgba(255, 255, 255, .24);
+	background: #2c2c2c;
+	color: #5a9bd4;
 }
 
 .tl-chip {
-	background: #4e9fb3;
+	background: #3a7cbf;
 	color: #fff;
 	border-radius: 4px;
 	box-shadow: none;
 }
 
 .tl-chip.selected {
-	outline-color: #247da0;
-	box-shadow: 0 0 0 2px rgba(78, 159, 179, .18);
+	outline-color: #5a9bd4;
+	box-shadow: 0 0 0 2px rgba(58, 124, 191, .18);
 }
 
 .tl-chip.empty {
-	background: #d4dcda;
+	background: #424242;
 	color: #52616b;
 }
 
@@ -3518,7 +3521,7 @@ input[type=range]::-moz-range-thumb {
 
 .tl-marker {
 	background: #6f9f86;
-	border-color: #fffaf1;
+	border-color: #2c2c2c;
 	box-shadow: 0 0 0 1px #5d8a73;
 }
 
@@ -3533,7 +3536,7 @@ input[type=range]::-moz-range-thumb {
 
 .tl-marker.ik {
 	background: #d65f55;
-	border-color: #fffaf1;
+	border-color: #2c2c2c;
 	box-shadow: 0 0 0 1px #b54840;
 }
 
@@ -3543,38 +3546,38 @@ input[type=range]::-moz-range-thumb {
 
 .tl-track-add.ik,
 .tl-btn.ik.snap {
-	color: #b54840;
+	color: #e58a80;
 	border-color: rgba(214, 95, 85, .34);
 }
 
 .tl-btn.ik.snap.on {
-	color: #b54840;
+	color: #e58a80;
 	background: rgba(214, 95, 85, .09);
 	border-color: #d65f55;
 	box-shadow: none;
 }
 
 .tl-btn.wp.on {
-	color: #4f7f67;
+	color: #8fc7a5;
 	background: rgba(111, 159, 134, .12);
 	border-color: rgba(111, 159, 134, .55);
 }
 
 .tl-btn.zoom.on,
 .tl-badge.generating {
-	color: #247da0;
-	background: rgba(78, 159, 179, .1);
-	border-color: rgba(78, 159, 179, .46);
+	color: #5a9bd4;
+	background: rgba(58, 124, 191, .1);
+	border-color: rgba(58, 124, 191, .46);
 }
 
 .tl-badge.playback {
-	color: #4f7f67;
+	color: #8fc7a5;
 	background: rgba(111, 159, 134, .11);
 	border-color: rgba(111, 159, 134, .46);
 }
 
 .tl-wp-hint.warn {
-	color: #a7731b;
+	color: #e7b557;
 }
 
 .tl-playhead {
@@ -3776,7 +3779,7 @@ input[type=range]::-moz-range-thumb {
 
 .pose-studio {
 	background: rgba(255, 250, 241, .96);
-	border-color: rgba(39, 56, 73, .24);
+	border-color: rgba(255, 255, 255, .24);
 	border-radius: 8px;
 	box-shadow: var(--shadow-lg);
 	backdrop-filter: blur(12px);
@@ -3784,7 +3787,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .pose-studio:before {
-	background: #4e9fb3;
+	background: #3a7cbf;
 	border-radius: 8px 8px 0 0;
 	animation: none;
 }
@@ -3830,12 +3833,13 @@ input[type=range]::-moz-range-thumb {
 }
 
 .panel.hierarchy-sidebar {
-	display: grid;
-	grid-template-rows: auto minmax(0, 1fr);
+	display: flex;
+	flex-direction: column;
 }
 
 .right-panel-tabs {
 	display: grid;
+	flex: none;
 	grid-template-columns: 1fr 1fr;
 	gap: 4px;
 	padding: 8px;
@@ -3858,15 +3862,15 @@ input[type=range]::-moz-range-thumb {
 }
 
 .right-panel-tabs button:hover {
-	background: rgba(78, 159, 179, .08);
+	background: rgba(58, 124, 191, .08);
 	color: var(--fg);
 }
 
 .right-panel-tabs button.active {
-	border-color: rgba(78, 159, 179, .42);
-	background: #d8edf0;
-	box-shadow: inset 0 -2px #4e9fb3;
-	color: #254b59;
+	border-color: rgba(58, 124, 191, .42);
+	background: #2d5c8a;
+	box-shadow: inset 0 -2px #3a7cbf;
+	color: #cfe3f5;
 }
 
 .right-panel-view,
@@ -3877,6 +3881,7 @@ input[type=range]::-moz-range-thumb {
 
 .right-panel-view {
 	overflow: hidden;
+	flex: 1 1 0;
 }
 
 .right-panel-view > [hidden] {
@@ -3895,10 +3900,8 @@ input[type=range]::-moz-range-thumb {
 	border-bottom: 0;
 }
 
-.hierarchy-tab-pane .hierarchy-heading,
-.inspector-pane .inspector-heading {
-	display: none;
-}
+/* window title strips stay visible in the Unity layout (the tabbed
+   panel that hid them is gone) */
 
 /* ------------------------------------------------- scene objects --- */
 /* Create menu, gizmo tool switch and object swatches. The hierarchy's own
@@ -3924,10 +3927,10 @@ input[type=range]::-moz-range-thumb {
 	gap: 6px;
 	height: 28px;
 	padding: 0 10px;
-	border: 1px solid rgba(78, 159, 179, .42);
+	border: 1px solid rgba(58, 124, 191, .42);
 	border-radius: 7px;
-	background: #d8edf0;
-	color: #254b59;
+	background: #2d5c8a;
+	color: #cfe3f5;
 	font: inherit;
 	font-size: 10px;
 	font-weight: 700;
@@ -3935,7 +3938,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .add-object-trigger:hover {
-	background: #c9e6ea;
+	background: #356795;
 }
 
 .add-object-menu {
@@ -3950,7 +3953,7 @@ input[type=range]::-moz-range-thumb {
 	border: 1px solid var(--line);
 	border-radius: 9px;
 	background: var(--panel);
-	box-shadow: 0 12px 28px rgba(39, 56, 73, .18);
+	box-shadow: 0 12px 28px rgba(0, 0, 0, .18);
 }
 
 .add-object-group {
@@ -3986,8 +3989,8 @@ input[type=range]::-moz-range-thumb {
 }
 
 .add-object-item:hover {
-	border-color: rgba(78, 159, 179, .42);
-	background: rgba(78, 159, 179, .1);
+	border-color: rgba(58, 124, 191, .42);
+	background: rgba(58, 124, 191, .1);
 }
 
 .add-object-item small {
@@ -4000,7 +4003,7 @@ input[type=range]::-moz-range-thumb {
 	flex: none;
 	width: 12px;
 	height: 12px;
-	border: 1px solid rgba(39, 56, 73, .25);
+	border: 1px solid rgba(255, 255, 255, .25);
 	border-radius: 3px;
 }
 
@@ -4020,7 +4023,7 @@ input[type=range]::-moz-range-thumb {
 .gizmo-modes kbd {
 	margin-left: 5px;
 	padding: 1px 4px;
-	border: 1px solid rgba(39, 56, 73, .2);
+	border: 1px solid rgba(255, 255, 255, .2);
 	border-radius: 4px;
 	font-family: var(--mono);
 	font-size: 8px;
@@ -4035,7 +4038,7 @@ input[type=range]::-moz-range-thumb {
 .object-color {
 	width: 22px;
 	height: 22px;
-	border: 1px solid rgba(39, 56, 73, .25);
+	border: 1px solid rgba(255, 255, 255, .25);
 	border-radius: 6px;
 	cursor: pointer;
 }
@@ -4135,7 +4138,7 @@ input[type=range]::-moz-range-thumb {
 	border: 1px solid var(--line);
 	border-radius: 9px;
 	background: var(--panel);
-	box-shadow: 0 12px 28px rgba(39, 56, 73, .18);
+	box-shadow: 0 12px 28px rgba(0, 0, 0, .18);
 }
 
 .hierarchy-context-item {
@@ -4156,8 +4159,8 @@ input[type=range]::-moz-range-thumb {
 }
 
 .hierarchy-context-item:hover {
-	border-color: rgba(78, 159, 179, .42);
-	background: rgba(78, 159, 179, .1);
+	border-color: rgba(58, 124, 191, .42);
+	background: rgba(58, 124, 191, .1);
 }
 
 /* In-place rename field: replaces the row label while editing. Sits in the
@@ -4228,4 +4231,1307 @@ input[type=range]::-moz-range-thumb {
 
 .move-slate.inline {
 	margin: 0;
+}
+
+/* ------------------------------------------------ scene save error ----- */
+
+/* Persistent save-failure line (plan §8.4): storage failures must stay
+   visible, not swallowed. It sits between the right-panel tabs and the tab
+   content — outside every hidden card — so it stays on screen for any
+   selection, including an active object, which is exactly when saves fire.
+   The one-shot toast announces each episode; this line persists until the
+   next successful write clears it. Pencil-red family (#d65f55), the light
+   theme's existing IK warning tone: a soft fill and border, not a shouting
+   solid. */
+.scene-save-error {
+	flex: none;
+	margin: 0;
+	padding: 7px 12px;
+	border-bottom: 1px solid rgba(214, 95, 85, .34);
+	background: rgba(214, 95, 85, .09);
+	color: #e58a80;
+	font-size: 12px;
+	line-height: 1.45;
+	font-weight: 600;
+}
+
+/* ------------------------------------------- Unity editor window layout ---- */
+/* Three fixed windows around the scene: Hierarchy left, Inspector right,
+   a tabbed bottom window (Timeline / Console), and the view-mode toggle as
+   a scene-view overlay — Unity's default editor arrangement
+   (docs/unity-reference.md §8). Structure only: every colour rides the
+   existing theme tokens so the Cozy Clay lightbox palette stays untouched. */
+
+.panel.hierarchy-left {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	padding: 0;
+	overflow: hidden;
+	background: var(--panel);
+	border-right: 1px solid var(--line);
+}
+
+.hierarchy-left .hierarchy-pane {
+	flex: 1;
+	min-height: 0;
+	max-height: none;
+	border-bottom: 0;
+}
+
+.inspector-sidebar {
+	display: flex;
+	flex-direction: column;
+}
+
+.inspector-sidebar .inspector-pane {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+/* view-mode toggle as a scene-view overlay (Unity overlay toolbar spot) */
+.viewport .viewmode {
+	position: absolute;
+	top: 10px;
+	left: 10px;
+	z-index: 7;
+}
+
+/* bottom window: tab strip over a shared body */
+.bottom-window {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	background: var(--bg);
+	border-top: 1px solid var(--line);
+}
+
+.bottom-window-tabs {
+	flex: none;
+	display: flex;
+	gap: 2px;
+	padding: 3px 8px 0;
+	border-bottom: 1px solid var(--line);
+	background: var(--panel);
+}
+
+.bottom-window-tabs button {
+	height: 26px;
+	padding: 0 12px;
+	border: 1px solid transparent;
+	border-bottom: 0;
+	border-radius: 3px 3px 0 0;
+	background: transparent;
+	color: var(--muted);
+	font: inherit;
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: .03em;
+	cursor: pointer;
+}
+
+.bottom-window-tabs button:hover {
+	color: var(--fg);
+	background: var(--hover);
+}
+
+.bottom-window-tabs button.active {
+	background: var(--bg);
+	border-color: var(--line2);
+	color: var(--fg);
+	box-shadow: inset 0 2px var(--accent);
+}
+
+.bottom-window-tabs button.active:hover {
+	background: var(--bg);
+}
+
+.bottom-timeline {
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.console-pane {
+	height: var(--timeline-height);
+	min-height: 110px;
+	max-height: 58vh;
+	overflow-y: auto;
+	padding: 6px 10px;
+	background: var(--panel);
+	font-family: var(--mono);
+	font-size: 11px;
+}
+
+.console-empty {
+	margin: 8px 4px;
+	color: var(--muted2);
+	font-size: 11px;
+}
+
+.console-line {
+	display: flex;
+	gap: 10px;
+	margin: 0;
+	padding: 3px 4px;
+	border-bottom: 1px solid var(--line);
+	color: var(--fg);
+}
+
+.console-line time {
+	flex: none;
+	color: var(--muted2);
+	font-size: 10px;
+}
+
+@media (min-width: 1041px) {
+	.panel.hierarchy-left {
+		width: var(--hierarchy-width);
+		min-width: 220px;
+		max-width: 40vw;
+	}
+}
+
+@media (max-width: 1040px) {
+	.panel.hierarchy-left {
+		width: 100%;
+		border-right: 0;
+		border-bottom: 1px solid var(--line);
+		max-height: 38vh;
+	}
+	.viewport .viewmode {
+		top: 8px;
+		left: 8px;
+	}
+}
+
+/* top toolbar: Unity-style tool switch + snap toggle */
+.editor-toolbar {
+	justify-self: center;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.tool-switch {
+	display: flex;
+	gap: 2px;
+	padding: 2px;
+	border: 1px solid var(--line);
+	border-radius: 5px;
+	background: var(--card2);
+}
+
+.tool-switch button,
+.snap-switch {
+	height: 24px;
+	padding: 0 10px;
+	border: 1px solid transparent;
+	border-radius: 3px;
+	background: transparent;
+	color: var(--muted);
+	font: inherit;
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: .03em;
+	cursor: pointer;
+}
+
+.tool-switch button:hover,
+.snap-switch:hover {
+	color: var(--fg);
+	background: var(--hover);
+}
+
+.tool-switch button.active {
+	background: var(--accent);
+	color: var(--on-accent);
+}
+
+.snap-switch {
+	border-color: var(--line);
+}
+
+.snap-switch.active {
+	border-color: var(--accent);
+	background: var(--accent-soft);
+	color: var(--accent-2);
+}
+
+/* Unity Inspector foldout sections */
+.card.foldout {
+	padding-top: 0;
+}
+
+.foldout-head {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	width: calc(100% + 36px);
+	margin: 0 -18px;
+	padding: 10px 18px;
+	border: 0;
+	border-bottom: 1px solid var(--line);
+	background: var(--card2);
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	text-align: left;
+}
+
+.foldout-head:hover {
+	background: var(--hover);
+}
+
+.foldout-arrow {
+	flex: none;
+	width: 10px;
+	color: var(--muted);
+	font-size: 9px;
+}
+
+.card.foldout h3 {
+	margin: 0;
+	text-transform: none;
+	letter-spacing: 0;
+}
+
+.card.foldout h3:before {
+	display: none;
+}
+
+.foldout-body {
+	padding-top: 13px;
+}
+
+/* Unity pane tabs (Scene / PlayView) — the pane's title strip */
+.pane-tabs {
+	position: absolute;
+	top: 0;
+	left: 0;
+	z-index: 8;
+	display: flex;
+}
+
+.pane-tabs button {
+	height: 26px;
+	padding: 0 14px;
+	border: 0;
+	border-right: 1px solid var(--line);
+	border-bottom: 1px solid var(--line);
+	background: var(--panel);
+	color: var(--muted);
+	font: inherit;
+	font-size: 11px;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.pane-tabs button:hover {
+	color: var(--fg);
+}
+
+.pane-tabs button.active {
+	background: #232323;
+	color: var(--fg);
+	border-bottom-color: #232323;
+}
+
+/* the Shot/Bird's-eye toggle sits right of the pane tabs in Scene view */
+.viewport .viewmode.scene-only {
+	top: 0;
+	left: 168px;
+	border: 1px solid var(--line);
+	border-top: 0;
+}
+
+/* ------------------------------------------- Unity widget material -------- */
+/* Flat editor widgets: 1px borders, 2px radius, no gradients, no glow. This
+   section replaces the remaining clay-widget treatments; layout untouched. */
+
+.btn,
+.presets button,
+.field input[type=text],
+.field input[type=number],
+.field textarea,
+.field select,
+.dropdown .trigger,
+.dropdown-menu,
+.modal,
+.toast,
+.promptbox,
+.add-subject,
+.segmented,
+.tl-btn,
+.add-object-trigger,
+.hierarchy-context-menu,
+.add-object-menu,
+.card {
+	border-radius: 2px;
+	box-shadow: none;
+}
+
+.btn {
+	background: #383838;
+	border: 1px solid #1a1a1a;
+	color: var(--fg);
+	transform: none;
+}
+
+.btn:hover {
+	background: #3f3f3f;
+	border-color: #1a1a1a;
+	transform: none;
+	box-shadow: none;
+}
+
+.btn:active {
+	transform: none;
+}
+
+.btn.primary,
+.btn.primary:hover {
+	background: #2d5c8a;
+	border: 1px solid #1a1a1a;
+	box-shadow: none;
+	transform: none;
+}
+
+.btn.primary:after {
+	display: none;
+}
+
+.btn.ghost {
+	background: transparent;
+	border-color: var(--line2);
+}
+
+.btn.ghost:hover {
+	background: var(--hover);
+	box-shadow: none;
+}
+
+.presets button {
+	background: #383838;
+	border: 1px solid #1a1a1a;
+	color: var(--fg);
+}
+
+.presets button:hover {
+	background: #3f3f3f;
+	transform: none;
+	box-shadow: none;
+}
+
+.presets button.active {
+	background: #2d5c8a;
+	border-color: #1a1a1a;
+	color: #fff;
+	box-shadow: none;
+}
+
+/* flat input fields: Unity's dark boxes with a blue focus frame */
+.field input[type=text],
+.field input[type=number],
+.field textarea,
+.field select,
+.dropdown .trigger {
+	background-color: #2a2a2a;
+	border: 1px solid #1a1a1a;
+	color: var(--fg);
+}
+
+.field input[type=text]:focus,
+.field input[type=number]:focus,
+.field textarea:focus,
+.field select:focus,
+.dropdown.open .trigger {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent);
+}
+
+.dropdown-menu {
+	background: #2c2c2c;
+	border: 1px solid #1a1a1a;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, .5);
+}
+
+.dropdown-item:hover {
+	background: #2d5c8a;
+	color: #fff;
+}
+
+/* cards become Unity component sections: flat, header bar, no accent strip */
+.card {
+	background: var(--panel);
+	border: 1px solid var(--line);
+	padding: 0 0 12px;
+}
+
+.card:after {
+	display: none;
+}
+
+.card:hover {
+	border-color: var(--line);
+}
+
+.foldout-head {
+	background: #2f2f2f;
+	border-bottom: 1px solid var(--line);
+	font-weight: 600;
+}
+
+.foldout-head:hover {
+	background: #383838;
+}
+
+.foldout-body {
+	padding: 10px 18px 0;
+}
+
+/* range slider: thin flat track, small square knob */
+input[type=range] {
+	height: 4px;
+	background: #1e1e1e;
+	border-radius: 0;
+}
+
+input[type=range]::-webkit-slider-thumb {
+	width: 12px;
+	height: 12px;
+	border-radius: 2px;
+	background: #c4c4c4;
+	border: 1px solid #1a1a1a;
+	box-shadow: none;
+}
+
+input[type=range]::-webkit-slider-thumb:hover {
+	transform: none;
+	background: #ffffff;
+}
+
+input[type=range]:active::-webkit-slider-thumb {
+	transform: none;
+	box-shadow: 0 0 0 1px var(--accent);
+}
+
+input[type=range]::-moz-range-thumb {
+	width: 12px;
+	height: 12px;
+	border-radius: 2px;
+	background: #c4c4c4;
+	border: 1px solid #1a1a1a;
+	box-shadow: none;
+}
+
+/* segmented control: flat Unity toggle strip */
+.segmented {
+	background: #2a2a2a;
+	border: 1px solid #1a1a1a;
+	padding: 2px;
+}
+
+.segmented:before {
+	background: #2d5c8a;
+	border-radius: 2px;
+	box-shadow: none;
+}
+
+/* modal & toast: flat editor dialogs */
+.modal {
+	background: #2c2c2c;
+	border: 1px solid #1a1a1a;
+	box-shadow: 0 8px 30px rgba(0, 0, 0, .6);
+}
+
+.modal:before {
+	display: none;
+}
+
+.toast {
+	background: #2c2c2c;
+	border: 1px solid #1a1a1a;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, .5);
+}
+
+/* pose studio: flat docked window */
+.pose-studio {
+	background: rgba(44, 44, 44, .97);
+	border: 1px solid #1a1a1a;
+	border-radius: 2px;
+	box-shadow: 0 8px 30px rgba(0, 0, 0, .6);
+	backdrop-filter: none;
+	-webkit-backdrop-filter: none;
+}
+
+.pose-studio:before {
+	display: none;
+}
+
+/* hierarchy rows: Unity density (19px) */
+.hierarchy-row-wrap {
+	height: 22px;
+}
+
+/* hud/caption/viewmode chips: flat dark glass already; kill blur & radius */
+.hud,
+.caption,
+.viewmode {
+	border-radius: 2px;
+	backdrop-filter: none;
+	-webkit-backdrop-filter: none;
+}
+
+/* tool palette icons */
+.tool-switch button {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.tool-icon {
+	width: 13px;
+	height: 13px;
+	flex: none;
+}
+
+.playview-empty {
+	position: absolute;
+	inset: 0;
+	z-index: 7;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	pointer-events: none;
+	color: var(--muted);
+	font-size: 12px;
+}
+
+.playview-empty strong {
+	color: var(--fg);
+	font-size: 14px;
+	font-weight: 600;
+}
+
+/* ------------------------------------------- Unity inspector density ------ */
+/* Compact property rows: no card boxes, thin section dividers, label column
+   on the left, value on the right — Unity Inspector metrics. */
+
+.inspector-sidebar .inspector-pane {
+	background: #2c2c2c;
+}
+
+.inspector-heading {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 28px;
+	padding: 0 12px;
+	border-bottom: 1px solid #1a1a1a;
+	background: #282828;
+}
+
+.inspector-heading > span {
+	margin: 0;
+	font-size: 9px;
+}
+
+.inspector-heading strong {
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.inspector-scroll {
+	padding: 0;
+	background: #2c2c2c;
+}
+
+.inspector-scroll > .card {
+	margin: 0;
+}
+
+/* sections: borderless, divided by a 1px rule */
+.card.foldout,
+.card {
+	background: transparent;
+	border: 0;
+	border-bottom: 1px solid #232323;
+	border-radius: 0;
+	padding: 0 0 8px;
+}
+
+.foldout-head {
+	height: 24px;
+	padding: 0 8px 0 6px;
+	background: transparent;
+	border-bottom: 0;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0;
+	width: 100%;
+	margin: 0;
+}
+
+.foldout-head:hover {
+	background: rgba(255, 255, 255, .04);
+}
+
+.foldout-arrow {
+	font-size: 8px;
+	width: 12px;
+}
+
+.foldout-body {
+	padding: 4px 12px 0;
+}
+
+/* property rows: label left, value right, 22px tall */
+.row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 22px;
+	margin: 3px 0;
+	font-size: 11px;
+}
+
+.row > span:first-child {
+	width: 84px;
+	flex: none;
+	color: var(--muted);
+	font-size: 11px;
+}
+
+.row .val {
+	width: auto;
+	min-width: 34px;
+	font-size: 11px;
+}
+
+/* sliders hug their row */
+input[type=range] {
+	height: 3px;
+}
+
+/* readouts: single quiet line */
+.readout {
+	font-size: 10px;
+	color: var(--muted2);
+	margin-top: 2px;
+}
+
+/* fields: label shrinks, input is a 22px flat box */
+.field {
+	margin: 4px 0;
+}
+
+.field label {
+	font-size: 10px;
+	color: var(--muted);
+	margin-bottom: 3px;
+}
+
+.field input[type=text],
+.field input[type=number],
+.field textarea,
+.field select,
+.dropdown .trigger {
+	height: 22px;
+	padding: 2px 8px;
+	font-size: 11px;
+	border-radius: 2px;
+}
+
+.field textarea {
+	height: auto;
+	min-height: 72px;
+	padding: 6px 8px;
+}
+
+.field select {
+	padding-right: 26px;
+	background-position: right 7px center;
+}
+
+.dropdown-menu {
+	padding: 3px;
+}
+
+.dropdown-item {
+	padding: 4px 8px;
+	font-size: 11px;
+	border-radius: 2px;
+}
+
+/* vec3 rows: Unity compact triple */
+.vec3-row {
+	gap: 3px;
+	margin: 4px 0;
+	min-height: 22px;
+}
+
+.vec3-label {
+	width: 52px;
+	font-size: 11px;
+}
+
+.number-field .axis {
+	width: 15px;
+	font-size: 9px;
+	border-radius: 2px 0 0 2px;
+}
+
+.number-field input {
+	height: 20px;
+	padding: 1px 5px;
+	font-size: 11px;
+	border-radius: 0 2px 2px 0;
+}
+
+/* presets: compact 2-col grid of flat tiles */
+.presets {
+	gap: 4px;
+	margin: 4px 0;
+}
+
+.presets button {
+	height: 24px;
+	padding: 0 8px;
+	font-size: 11px;
+	font-weight: 500;
+}
+
+/* checkboxes: one tight line */
+.check {
+	gap: 6px;
+	margin-top: 4px;
+	font-size: 11px;
+	min-height: 20px;
+}
+
+.check input {
+	width: 13px;
+	height: 13px;
+}
+
+/* buttons: 24px standard editor button */
+.btn {
+	height: 24px;
+	padding: 0 12px;
+	font-size: 11px;
+	font-weight: 500;
+}
+
+.btn.ghost {
+	margin-top: 6px;
+}
+
+.btn.generate,
+.btn.cta {
+	height: 30px;
+	font-size: 12px;
+}
+
+/* segmented: 20px pills */
+.segmented {
+	margin-bottom: 4px;
+}
+
+.segmented button {
+	padding: 3px 9px;
+	font-size: 11px;
+}
+
+/* subjects row: compact boxes */
+.subjects-row {
+	gap: 6px;
+}
+
+.subject-box {
+	padding: 6px 8px 8px;
+	border-radius: 2px;
+	background: #282828;
+}
+
+.sb-name,
+.subject-box-head > span {
+	font-size: 11px;
+}
+
+.cslider-head {
+	font-size: 10px;
+	margin-bottom: 3px;
+}
+
+.add-subject {
+	margin-top: 6px;
+	padding: 6px;
+	font-size: 11px;
+	border-radius: 2px;
+	border-width: 1px;
+}
+
+/* hints/status: smaller, quieter */
+.inspector-hint,
+.ardy-hint,
+.ardy-status,
+.hint,
+.ardy-caveat,
+.ardy-meta,
+.ardy-clamp {
+	font-size: 10px;
+	line-height: 1.5;
+}
+
+.hint {
+	margin-top: 6px;
+}
+
+.ardy-report,
+.inspector-status-grid {
+	padding: 6px 8px;
+	border-radius: 2px;
+	font-size: 10px;
+}
+
+.inspector-list button {
+	padding: 4px 8px;
+	font-size: 11px;
+	border-radius: 2px;
+}
+
+/* object transform sections: gizmo-modes as compact 3-way strip */
+.presets.gizmo-modes {
+	grid-template-columns: 1fr 1fr 1fr;
+}
+
+.presets.gizmo-modes button {
+	padding: 0 4px;
+}
+
+.presets.gizmo-modes kbd {
+	font-size: 8px;
+	padding: 0 3px;
+	border-radius: 2px;
+}
+
+.object-colors {
+	gap: 4px;
+	margin: 4px 0 8px;
+}
+
+.object-color {
+	width: 18px;
+	height: 18px;
+	border-radius: 2px;
+}
+
+/* ------------------------------------------------ Unity scene tools overlay --- */
+/* Unity puts the transform tools in the scene view's top-left corner, under
+   the pane tab — not in a window toolbar. */
+.editor-toolbar.scene-tools {
+	position: absolute;
+	top: 27px;
+	left: 0;
+	z-index: 8;
+	display: flex;
+	gap: 0;
+	background: var(--panel);
+	border-right: 1px solid var(--line);
+	border-bottom: 1px solid var(--line);
+}
+
+.editor-toolbar.scene-tools .tool-switch {
+	border: 0;
+	border-radius: 0;
+	padding: 0;
+	background: transparent;
+}
+
+.editor-toolbar.scene-tools .tool-switch button,
+.editor-toolbar.scene-tools .snap-switch {
+	height: 26px;
+	border-radius: 0;
+	border: 0;
+	border-right: 1px solid var(--line);
+	background: transparent;
+}
+
+.editor-toolbar.scene-tools .tool-switch button.active {
+	background: #2d5c8a;
+	color: #fff;
+}
+
+.editor-toolbar.scene-tools .snap-switch.active {
+	background: rgba(45, 92, 138, .35);
+	color: var(--fg);
+}
+
+/* ----------------------------------------------------- Unity axis colors --- */
+/* X red / Y green / Z blue — Unity's axis colour-coding (class-Transform). */
+.vec3-row .number-field:nth-of-type(1) .axis { color: #e5484d; }
+.vec3-row .number-field:nth-of-type(2) .axis { color: #7ee787; }
+.vec3-row .number-field:nth-of-type(3) .axis { color: #79c0ff; }
+
+/* ----------------------------------------------------- Unity tree polish --- */
+.hierarchy-toggle {
+	font-size: 8px;
+	color: #8a8a8a;
+}
+
+.hierarchy-row-wrap {
+	margin-left: calc(var(--hierarchy-depth) * 12px);
+}
+
+.hierarchy-row-wrap:before {
+	left: -9px;
+	background: rgba(255, 255, 255, .07);
+}
+
+.hierarchy-icon {
+	width: 10px;
+	height: 10px;
+}
+
+.hierarchy-label {
+	font-size: 11px;
+}
+
+/* Unity pane headers for the side windows: window title strip */
+.hierarchy-heading,
+.inspector-heading {
+	height: 26px;
+	padding: 0 10px;
+	background: #2c2c2c;
+	border-bottom: 1px solid #1a1a1a;
+}
+
+.hierarchy-heading strong,
+.inspector-heading strong {
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.hierarchy-kicker,
+.inspector-heading > span {
+	display: none;
+}
+
+/* ------------------------------------------- visual QA: spacing pass ------ */
+/* vec3 rows: Unity packs label + three compact axis fields, values near the
+   chip, no wide gaps between groups. */
+.vec3-row {
+	display: grid;
+	grid-template-columns: 56px 1fr 1fr 1fr;
+	gap: 4px;
+	align-items: center;
+}
+
+.vec3-label {
+	width: auto;
+}
+
+.number-field {
+	min-width: 0;
+}
+
+.number-field input {
+	text-align: left;
+	padding-left: 4px;
+}
+
+/* scene overlay: one continuous bar. Pane tabs + tools form the left strip;
+   the view-mode toggle docks to the scene's top-right instead of floating. */
+.viewport .viewmode.scene-only {
+	top: 0;
+	left: auto;
+	right: 0;
+	border: 1px solid var(--line);
+	border-top: 0;
+	border-radius: 0;
+}
+
+/* swatches: tighten */
+.object-colors {
+	margin: 2px 0 6px;
+}
+
+/* inspector hint: tighter wrap */
+.inspector-hint {
+	margin: 2px 0 6px;
+	line-height: 1.45;
+}
+
+/* label-left alignment for single-line fields (Unity property rows) */
+.field:has(input[type=text]),
+.field:has(input[type=number]),
+.field:has(select),
+.field:has(.dropdown) {
+	display: grid;
+	grid-template-columns: 84px 1fr;
+	align-items: center;
+	gap: 8px;
+}
+
+.field:has(input[type=text]) label,
+.field:has(input[type=number]) label,
+.field:has(select) label,
+.field:has(.dropdown) label {
+	margin: 0;
+	font-size: 11px;
+	color: var(--muted);
+}
+
+.ardy-clamp {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	display: block;
+}
+
+/* ------------------------------------------- Unity component sections ----- */
+/* HDRP inspector: foldout triangle + component chip + bold title, a rule
+   under the header while open, and content indented beneath it. */
+
+.inspector-heading strong {
+	font-size: 12.5px;
+	font-weight: 700;
+	letter-spacing: 0;
+}
+
+.foldout-head {
+	height: 26px;
+	font-size: 11.5px;
+	font-weight: 700;
+	gap: 6px;
+}
+
+/* component chip, Unity's per-component icon slot */
+.foldout-head:after {
+	content: "";
+	order: 1;
+	flex: none;
+	width: 10px;
+	height: 10px;
+	border: 1px solid #6f6f6f;
+	border-radius: 1px;
+	background: transparent;
+}
+
+.foldout-arrow {
+	order: 0;
+	width: 12px;
+	font-size: 8px;
+	color: #c4c4c4;
+}
+
+.foldout-title {
+	order: 2;
+}
+
+/* open sections get the header rule and indented body */
+.card.foldout.open .foldout-head {
+	border-bottom: 1px solid #232323;
+}
+
+.card.foldout {
+	border-bottom: 0;
+	padding-bottom: 6px;
+}
+
+.card.foldout.open {
+	border-bottom: 1px solid #232323;
+}
+
+.foldout-body {
+	padding: 6px 12px 2px 22px;
+}
+
+/* Unity-subtle scrollbars: thin, dark, no bright thumb border — the bright
+   vertical strip at a panel's right edge read as a hard clip. */
+::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+	background: #4a4a4a;
+	border-radius: 4px;
+	border: none;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: #5c5c5c;
+}
+
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+::-webkit-scrollbar-corner {
+	background: transparent;
+}
+
+/* inspector never clips its content horizontally */
+.inspector-scroll {
+	overflow-x: hidden;
+}
+
+/* Inspector window title strip + selection subtitle */
+.inspector-heading strong {
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.inspector-heading-selection {
+	margin-left: auto;
+	font-size: 10px;
+	font-weight: 400;
+	color: var(--muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* the last section must never kiss the pane's bottom edge: the Remove
+   action sat flush and read as clipped */
+.inspector-scroll {
+	padding-bottom: 16px;
+}
+
+.card.foldout:last-child {
+	border-bottom: 0;
+}
+
+/* fill the pane: the last open section stretches to the bottom so the space
+   below the content reads as part of the component, not dead space */
+.inspector-scroll {
+	display: flex;
+	flex-direction: column;
+}
+
+.inspector-scroll > .card.foldout.open:last-child {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+}
+
+.inspector-scroll > .card.foldout.open:last-child .foldout-body {
+	flex: 1;
+}
+
+/* inspector footer: the destructive action pinned to the pane's bottom edge,
+   so the space above it reads as intentional */
+.inspector-footer {
+	flex: none;
+	margin-top: auto;
+	padding: 8px 12px;
+	border-top: 1px solid #1a1a1a;
+	background: #282828;
+}
+
+.inspector-footer .btn {
+	margin: 0;
+	width: 100%;
+}
+
+/* footer action: label centred, nothing clipped */
+.inspector-footer .btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	text-align: center;
+	padding: 0 8px;
+	height: 26px;
+	margin-top: 0;
+}
+
+/* ------------------------------------------- quiet Unity tree ------------- */
+/* The tree was too fiddly: per-kind coloured icons, pill badges and guide
+   lines everywhere. Unity's Hierarchy is triangle + one muted icon + name. */
+
+/* no guide lines */
+.hierarchy-row-wrap:before {
+	display: none;
+}
+
+/* one quiet icon for every row, whatever its kind */
+.hierarchy-icon,
+.hierarchy-icon.shot,
+.hierarchy-icon.camera,
+.hierarchy-icon.character,
+.hierarchy-icon.motion,
+.hierarchy-icon.clip,
+.hierarchy-icon.prompt,
+.hierarchy-icon.key,
+.hierarchy-icon.rig,
+.hierarchy-icon.bone,
+.hierarchy-icon.path,
+.hierarchy-icon.environment,
+.hierarchy-icon.props,
+.hierarchy-icon.object {
+	width: 10px;
+	height: 10px;
+	border: 1px solid #8a8a8a;
+	border-radius: 2px;
+	background: transparent;
+	box-shadow: none;
+	transform: none;
+}
+
+/* badges: plain muted counts, no pill; gone when zero */
+.hierarchy-badge {
+	background: none;
+	color: var(--muted2);
+	font-size: 9px;
+	min-width: 0;
+	padding: 0;
+}
+
+.hierarchy-badge:where([data-zero="true"]) {
+	display: none;
+}
+
+.hierarchy-status {
+	color: var(--muted2);
+	font-size: 9px;
+	letter-spacing: 0;
+	text-transform: none;
+}
+
+/* row overflow: the label yields, the badge never does */
+.hierarchy-row {
+	min-width: 0;
+}
+
+.hierarchy-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.hierarchy-badge,
+.hierarchy-status {
+	flex: none;
+}
+
+/* calmer rows: a touch more air, Unity's even hover */
+.hierarchy-row-wrap {
+	height: 22px;
+	border-radius: 2px;
+	padding-right: 6px;
+}
+
+.hierarchy-row-wrap.selected {
+	background: #2d5c8a;
+	box-shadow: none;
 }

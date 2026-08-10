@@ -16,10 +16,11 @@ expect("workspace layout persists across reloads", app.includes("WORKSPACE_LAYOU
 expect("sidebar width has a pointer resize path", app.includes('beginWorkspaceResize("sidebar"'));
 expect("frame monitor height has a pointer resize path", app.includes('beginWorkspaceResize("timeline"'));
 expect("inset view has a diagonal resize path", app.includes("beginInsetResize") && app.includes("vp-inset-resize"));
-expect("right panel has Hierarchy and contextual detail tabs", app.includes("right-panel-tabs") && app.includes("rightPanelDetailLabel"));
-expect("right panel shows only the focused tab", app.includes('hidden={rightPanelTab !== "hierarchy"}') && app.includes('hidden={rightPanelTab !== "detail"}'));
+expect("workspace has a dedicated left hierarchy window", app.includes('className="panel hierarchy-left"') && app.includes('beginWorkspaceResize("hierarchy"'));
+expect("inspector is always visible beside the scene", app.includes("inspector-sidebar") && !app.includes("rightPanelTab"));
 expect("legacy hierarchy/inspector splitter is removed", !app.includes("hierarchy-splitter"));
-expect("hierarchy selection focuses the contextual detail tab", app.includes('setRightPanelTab("detail")'));
+expect("bottom window separates Timeline from the ARDY console", app.includes("bottom-window-tabs") && app.includes("console-pane") && app.includes('hidden={bottomTab !== "timeline"}'));
+expect("ARDY status lines accumulate in the console window", app.includes("reportArdyStatus") && app.includes("consoleLines"));
 expect("Motion inspector still owns the ARDY generation form", app.includes('hidden={!["characterA.motion", "characterA.baseMotion"].includes(selectedHierarchyId)}'));
 expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("Generate all ${promptClips.length} blocks"));
 expect("new sessions start without prompt blocks", app.includes("const DEFAULT_PROMPT_CLIPS = [];") && app.includes("useState(null)"));
@@ -44,8 +45,11 @@ expect("desktop stage fills the remaining viewport", css.includes("aspect-ratio:
 expect("sidebar width is bounded", css.includes("min-width: 280px") && css.includes("max-width: 50vw"));
 expect("timeline height is bounded", css.includes("min-height: 110px") && css.includes("max-height: 58vh"));
 expect("timeline IK text controls size to their labels", css.includes(".tl-btn.ik {") && css.includes("min-width: 48px") && css.includes("white-space: nowrap"));
-expect("Subject 1 exclusively owns the frame zero root start", app.includes("Subject 1 already defines the frame 0 root start") && !app.includes("Frame 0 is the start of the root path — it can't be removed"));
-expect("root guidance sends implicit start plus authored sparse keys to ARDY", app.includes("toArdyWaypoints(rootPath, charA.rot)") && app.includes("body.waypoints = ardyWaypoints"));
+// Floor-click authoring: waypoints are placed by clicking the set floor, so
+// frame 0 is owned implicitly — the request prepends Subject 1's position and
+// authored pins can never claim frame 0 or earlier.
+expect("Subject 1 exclusively owns the frame zero root start", app.includes("{ frame: 0, x: charA.x, z: charA.z, heading: null }") && app.includes("waypoint.frame <= 0") && !app.includes("Frame 0 is the start of the root path — it can't be removed"));
+expect("root guidance sends the aligned, densified path to ARDY", app.includes("alignArdyPath(rootPath, charA.rot") && app.includes("body.waypoints = ardyWaypoints"));
 expect("generated motion anchors frame zero at Subject 1", app.includes("anchorX: charA.x") && app.includes("anchorZ: charA.z") && app.includes("anchorFrame: 0"));
 expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));
 expect("Bird's-eye root path draws from Subject 1 without a duplicate marker", planview.includes("const pathPoints = [{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));
