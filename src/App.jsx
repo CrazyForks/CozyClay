@@ -158,6 +158,11 @@ function hierarchyIdForIkFocus(focus) {
 
 const CAPTURE_W = 1920;
 const CAPTURE_H = 1080;
+// Pre-generated clip shipped with the build so a bridge-less session (a hosted
+// static demo, or `npm run dev:ui`) still shows real generated motion.
+// Relative on purpose: it has to resolve under a project sub-path too.
+const DEMO_MOTION_URL = "demo/walk-then-stop.npz";
+const DEMO_MOTION_PROMPT = "a person walking then a person stops";
 const CLAY = "#f2eee6";
 const CLAY_B = "#ddd6ca";
 const DEFAULT_POSE = BUILT_IN_POSES.find((p) => p.id === "relaxed") ?? BUILT_IN_POSES[0];
@@ -1667,6 +1672,26 @@ globalThis.playMode = centerTab === "play";
 			setMotionBusy(false);
 		}
 	}
+
+	// Hosted-demo seed. A build served as static files has no ARDY sidecar, so
+	// a first-time visitor would otherwise land on a character standing still
+	// with no way to see generated motion. The clip below ships with the build
+	// and is loaded once, only when the bridge is absent and nothing has been
+	// loaded or generated yet. A local session with the bridge running is
+	// untouched.
+	const demoSeeded = useRef(false);
+	useEffect(() => {
+		if (demoSeeded.current) return;
+		if (!bridge || bridge.ok) return;
+		if (!rigA || motion || motionBusy) return;
+		demoSeeded.current = true;
+		// Loaded, not played: the clip walks the subject out of the default
+		// framing, so autoplay would greet a first-time visitor with an empty
+		// room. Frame 0 is composed; PLAYBACK is one click away.
+		loadMotion(DEMO_MOTION_URL, DEMO_MOTION_PROMPT).catch(() => {
+			/* the seed is a nicety, never a failure the visitor must act on */
+		});
+	}, [bridge, rigA, motion, motionBusy]);
 
 	function clearMotion() {
 		setMotion(null);
@@ -3341,8 +3366,10 @@ globalThis.playMode = centerTab === "play";
 					) : (
 						<>
 							<p className="ardy-hint">
-								ARDY generation needs the dev bridge — start it with{" "}
-								<code>node tools/ardy/bridge.mjs</code> in the repo root, then reload.
+								Motion generation runs on your own machine, so it is off here. The clip
+								on the timeline was generated ahead of time; staging, paths, cameras and
+								playback all work without it. To generate your own, clone the repo and
+								start the bridge with <code>node tools/ardy/bridge.mjs</code>.
 							</p>
 							{bridge.reason && <p className="ardy-hint">{bridge.reason}</p>}
 						</>

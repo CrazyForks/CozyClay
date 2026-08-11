@@ -7,6 +7,9 @@ artifacts/
 # the remote box, not source. Keep the JSON fixtures, drop the .npz.
 *.npz
 tools/ardy/out/
+# Exception: the clip the hosted demo seeds itself with. It ships with the
+# build so a bridge-less visitor still sees generated motion.
+!public/demo/*.npz
 
 .DS_Store
 *.log
