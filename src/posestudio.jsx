@@ -243,6 +243,9 @@ const GIZMO_SHAFT_R = 0.012;
 const GIZMO_TIP_R = 0.03;
 const HANDLE_R = 0.055; // chain target spheres
 const JOINT_R = 0.042; // mid-joint + FK swing spheres
+const SWING_RING_R = 0.12; // effector rotation ring
+const SWING_RING_TUBE = 0.012; // visible tube
+const SWING_RING_PICK_TUBE = 0.045; // invisible grab tube
 /** Unfocused handles fade back so the focused one reads clearly. */
 const OPACITY_FOCUSED = 1;
 const OPACITY_UNFOCUSED = 0.3;
@@ -273,6 +276,7 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 	const { camera, gl, raycaster } = useThree();
 	const handleRefs = useRef({}); // id -> mesh (all sphere handles)
 	const gizmoRef = useRef(null);
+	const ringRef = useRef(null); // swing ring around the focused effector
 	const dragRef = useRef(null);
 	const handlersRef = useRef(null);
 	const solveRef = useRef(onSolve);
@@ -312,7 +316,7 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 			);
 			raycaster.setFromCamera(tmp.ndc, camera);
 			if (!raycaster.ray.intersectPlane(d.plane, tmp.hit)) return;
-			if (d.kind === "fk" || (d.kind === "body" && !d.axisDir)) {
+			if (d.kind === "fk" || d.kind === "swing" || (d.kind === "body" && !d.axisDir)) {
 				// Swing = trackball rotation (TransformControls rotate model):
 				// axis = offset × eye, angle = (offset · tangent) × speed/camDist,
 				// applied absolutely from the drag-start orientation (no compounding).
@@ -394,6 +398,21 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 			const m = handleRefs.current[id];
 			return m ? m.getWorldPosition(new THREE.Vector3()) : null;
 		};
+		// world → screen for a handle (or the focused ring's edge), so headless
+		// drags can land on the mesh pixel-exactly.
+		window.__ikProject = (world) => {
+			const v = world.clone ? world.clone() : new THREE.Vector3(world.x, world.y, world.z);
+			v.project(camera);
+			const rect = gl.domElement.getBoundingClientRect();
+			return { x: rect.left + ((v.x + 1) / 2) * rect.width, y: rect.top + ((1 - v.y) / 2) * rect.height };
+		};
+		// effector local quaternion per chain track — rotation-edit assertions.
+		window.__ikEffectorQuat = (id) => {
+			const bone = chains?.get(id)?.bones[2];
+			return bone ? { x: bone.quaternion.x, y: bone.quaternion.y, z: bone.quaternion.z, w: bone.quaternion.w } : null;
+		};
+		// is the swing ring mounted for this track (focused chain)?
+		window.__ikRingVisible = () => !!ringRef.current;
 	}
 
 	// Handles + gizmo follow the live state every frame. A chain handle RIDES
@@ -445,6 +464,16 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 				if (joint) gizmoRef.current.position.copy(joint.bone.getWorldPosition(tmp.pos));
 			}
 		}
+		// The swing ring rides the focused chain's effector and always faces
+		// the camera: a trackball ring, not a bone-aligned one — the drag math
+		// is trackball, so the affordance must match.
+		if (ringRef.current && focus) {
+			const chain = chains?.get(focus);
+			if (chain) {
+				ringRef.current.position.copy(chain.bones[2].getWorldPosition(tmp.pos));
+				ringRef.current.quaternion.copy(camera.getWorldQuaternion(new THREE.Quaternion()));
+			}
+		}
 	});
 
 	/* Hit-testing is OWNED, not delegated to R3F: R3F computes the pointer
@@ -472,7 +501,7 @@ const CLICK_PX = 4;
 			return;
 		}
 		let origin;
-		if (kind === "chain") {
+		if (kind === "chain" || kind === "swing") {
 			// Every drag starts from the CURRENT effector — the handle rides the
 			// wrist between drags, so that is where the user grabs it.
 			origin = chains.get(track.id).bones[2].getWorldPosition(new THREE.Vector3());
@@ -512,17 +541,23 @@ const CLICK_PX = 4;
 			// (unfocused) handle must keep the focus it just took.
 			wasFocused: focusIdRef.current === track.id,
 		};
-		if (kind === "fk" || kind === "body") {
+		if (kind === "fk" || kind === "swing" || kind === "body") {
 			// Swing/translate start state, frozen at drag start so moves stay
-			// absolute: the joint's orientation, its parent's world rotation,
-			// the joint→camera eye, the camera distance, and (for the body) the
-			// hips' local position.
-			const joint = fkJoints.get(track.id);
-			dragRef.current.startQuat = joint.bone.quaternion.clone();
-			dragRef.current.startParentQuat = joint.bone.parent.getWorldQuaternion(new THREE.Quaternion());
+			// absolute: the bone's orientation, its parent's world rotation,
+			// the bone→camera eye, the camera distance, and (for the body) the
+			// hips' local position. "swing" rotates a chain's end bone (the
+			// hand/foot); "fk"/"body" rotate an FK joint's bone.
+			const bone = kind === "swing" ? chains.get(track.id)?.bones[2] : fkJoints?.get(track.id)?.bone;
+			if (!bone) {
+				// A pick whose bone is gone (stale rig) must not half-start a drag.
+				dragRef.current = null;
+				return;
+			}
+			dragRef.current.startQuat = bone.quaternion.clone();
+			dragRef.current.startParentQuat = bone.parent.getWorldQuaternion(new THREE.Quaternion());
 			dragRef.current.eye = origin.clone().sub(camera.getWorldPosition(new THREE.Vector3())).negate().normalize();
 			dragRef.current.camDist = camera.getWorldPosition(new THREE.Vector3()).distanceTo(origin);
-			if (kind === "body") dragRef.current.startLocalPos = joint.bone.position.clone();
+			if (kind === "body") dragRef.current.startLocalPos = fkJoints.get(track.id).bone.position.clone();
 		}
 		focusRef.current?.(track.id);
 		gl.domElement.style.cursor = "grabbing";
@@ -626,6 +661,9 @@ const CLICK_PX = 4;
 		MID_TRACKS.find((t) => t.id === focus) ||
 		(focus === "hips" ? (fkJoints?.get("hips")?.track ?? null) : null);
 	const gizmoKind = IK_TRACKS.find((t) => t.id === focus) ? "chain" : MID_TRACKS.find((t) => t.id === focus) ? "mid" : focus === "hips" ? "body" : null;
+	// The focused chain (hand/foot) also gets a rotation ring: arrows move
+	// the wrist/ankle, the ring turns the hand/foot itself.
+	const swingTrack = IK_TRACKS.find((t) => t.id === focus) ?? null;
 
 	return (
 		<group>
@@ -671,6 +709,44 @@ const CLICK_PX = 4;
 							</group>
 						);
 					})}
+				</group>
+			)}
+
+			{/* Trackball rotation ring on the focused hand/foot: turns the
+			    effector itself while the position gizmo keeps moving it. A thin
+			    visible torus plus a fat invisible one — a 3 px tube raycasts
+			    terribly, so the pick target is generous. */}
+			{swingTrack && (
+				<group ref={(g) => { ringRef.current = g; }} renderOrder={999}>
+					<mesh
+						ref={(m) => {
+							if (m) m.layers.set(POSER_LAYER);
+						}}
+						onPointerOver={() => (gl.domElement.style.cursor = "grab")}
+						onPointerOut={() => {
+							if (!dragRef.current) gl.domElement.style.cursor = "";
+						}}
+					>
+						<torusGeometry args={[SWING_RING_R, SWING_RING_TUBE, 10, 48]} />
+						<meshStandardMaterial
+							color="#000000"
+							emissive={ikHandleColor(swingTrack)}
+							emissiveIntensity={2.2}
+							toneMapped={false}
+							depthTest={false}
+							transparent
+							opacity={0.9}
+						/>
+					</mesh>
+					<mesh
+						ref={(m) => {
+							if (m) m.layers.set(POSER_LAYER);
+							register(swingTrack, "swing", null, "ring")(m);
+						}}
+					>
+						<torusGeometry args={[SWING_RING_R, SWING_RING_PICK_TUBE, 8, 32]} />
+						<meshBasicMaterial transparent opacity={0} depthWrite={false} />
+					</mesh>
 				</group>
 			)}
 		</group>

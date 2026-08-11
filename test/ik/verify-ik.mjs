@@ -13,6 +13,7 @@ import {
 	solveIk,
 	solveMidJoint,
 	solveSwingAngle,
+	solveEffectorSwing,
 	solveHipsTranslate,
 	ikPlantFeet,
 	ikSolvePlantedFeet,
@@ -156,7 +157,7 @@ const q30b0 = arm.bones[0].quaternion.clone();
 check("key frames sorted", JSON.stringify(ikKeyframes(ik)) === JSON.stringify([10, 30]));
 check("key stores only the tracked chain", ik.keys.get(10).has("leftHand") && !ik.keys.get(10).has("rightHand"));
 const sameQ = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.z - b.z) + Math.abs(a.w - b.w) < 1e-12;
-check("key stores b0/b1 local quats", ik.keys.get(10).get("leftHand").q.length === 2 && sameQ(ik.keys.get(10).get("leftHand").q[0], q10b0));
+check("key stores b0/b1/b2 local quats", ik.keys.get(10).get("leftHand").q.length === 3 && sameQ(ik.keys.get(10).get("leftHand").q[0], q10b0));
 
 /* --- slerp evaluation: f20 = exact midpoint of the two keys -------------- */
 arm.bones[0].quaternion.identity();
@@ -351,6 +352,46 @@ const ankleBeforeNoop = lLeg.bones[2].getWorldPosition(v()).clone();
 solveHipsTranslate(hips, new THREE.Vector3(0, -0.1, 0), hips.bone.position.clone());
 ikSolvePlantedFeet(chains, ik5);
 check("no plants → planted solve does nothing", lLeg.bones[2].getWorldPosition(v()).distanceTo(ankleBeforeNoop) > 0.05);
+
+/* --- effector swing: hand/foot rotation editing -------------------------- */
+{
+	const chains2 = resolved.chains;
+	const lHand = chains2.get("leftHand");
+	const handBone = lHand.bones[2];
+	const b1Before = lHand.bones[1].quaternion.clone();
+	const startQuat = handBone.quaternion.clone();
+	const startParentQuat = handBone.parent.getWorldQuaternion(new THREE.Quaternion());
+	// 90° twist around world Z, absolute from the start orientation
+	solveEffectorSwing(lHand, new THREE.Vector3(0, 0, 1), Math.PI / 2, startQuat, startParentQuat);
+	const twisted = handBone.getWorldQuaternion(new THREE.Quaternion());
+	const expected = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2)
+		.multiply(startParentQuat.clone().multiply(startQuat));
+	check("effector swing twists the hand by the drag angle", twisted.angleTo(expected) < 1e-6, `err=${twisted.angleTo(expected).toExponential(2)}`);
+	check("effector swing leaves the forearm alone", lHand.bones[1].quaternion.angleTo(b1Before) < 1e-6);
+	check("zero-angle swing is a no-op", (() => {
+		const q = handBone.quaternion.clone();
+		solveEffectorSwing(lHand, new THREE.Vector3(1, 0, 0), 0, handBone.quaternion.clone(), startParentQuat);
+		return handBone.quaternion.angleTo(q) < 1e-6;
+	})());
+
+	// the bake now stores the effector quaternion with the chain's, and the
+	// evaluation puts it back: twist, bake at frame 7, untwist, evaluate.
+	const ik6 = createIkState();
+	ik6.chains = chains2;
+	ikTouch(ik6, "leftHand");
+	ikBakeKeyframe(chains2, ik6, 7, null);
+	check("baked chain key stores three quats (b0, b1, b2)", ik6.keys.get(7).get("leftHand").q.length === 3);
+	handBone.quaternion.identity();
+	handBone.updateMatrixWorld(true);
+	ikEvaluate(chains2, ik6, 7, null);
+	check("evaluate restores the authored effector rotation", handBone.quaternion.angleTo(ik6.keys.get(7).get("leftHand").q[2]) < 1e-6,
+		`err=${handBone.quaternion.angleTo(ik6.keys.get(7).get("leftHand").q[2]).toExponential(2)}`);
+	// pre-rotation keys (b0/b1 only) still evaluate without touching b2
+	ik6.keys.get(7).get("leftHand").q = ik6.keys.get(7).get("leftHand").q.slice(0, 2);
+	const q2 = handBone.quaternion.clone();
+	ikEvaluate(chains2, ik6, 7, null);
+	check("two-quat legacy keys leave the effector as-is", handBone.quaternion.angleTo(q2) < 1e-6);
+}
 
 if (failures) {
 	console.log(`${failures} FAIL`);

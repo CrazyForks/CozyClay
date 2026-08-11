@@ -58,6 +58,7 @@ import {
 	solveIk,
 	solveMidJoint,
 	solveSwingAngle,
+	solveEffectorSwing,
 	solveHipsTranslate,
 	ikPlantFeet,
 	ikSolvePlantedFeet,
@@ -1539,6 +1540,16 @@ globalThis.playMode = centerTab === "play";
 			if (!chain) return;
 			ikTouch(ikStateRef.current, chain.track.id);
 			solveMidJoint(chain, targetWorld);
+			return;
+		}
+		// Effector swing: the rotation ring on a focused hand/foot. Rotates
+		// only the end bone — the solved limb position is untouched — and the
+		// bake on drag end now stores b2's quaternion with the chain's.
+		if (kind === "swing") {
+			const chain = ikStateRef.current.chains?.get(trackId);
+			if (!chain || !targetWorld?.axis) return;
+			ikTouch(ikStateRef.current, trackId);
+			solveEffectorSwing(chain, targetWorld.axis, targetWorld.angle, targetWorld.startQuat, targetWorld.startParentQuat);
 			return;
 		}
 		// Body root (hips): arrow drags translate ({ worldDelta, startLocalPos

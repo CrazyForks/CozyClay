@@ -330,6 +330,23 @@ export function solveSwingAngle(joint, axisWorld, angleRad, startQuat, startPare
 }
 
 /**
+ * Effector swing: rotate a chain's end bone (the hand/foot) around its own
+ * centre — the IK solve positions the wrist/ankle, this orients it. Same
+ * absolute-from-drag-start trackball math as solveSwingAngle, but nothing
+ * else moves: b0/b1 keep their solved pose, so the limb stays put while the
+ * hand or foot tilts, twists and turns.
+ */
+export function solveEffectorSwing(chain, axisWorld, angleRad, startQuat, startParentQuat) {
+	if (!Number.isFinite(angleRad) || Math.abs(angleRad) < 1e-9) return;
+	const bone = chain.bones[2];
+	const qDelta = new THREE.Quaternion().setFromAxisAngle(axisWorld.clone().normalize(), angleRad);
+	const qWorldStart = startParentQuat.clone().multiply(startQuat);
+	const qParentInv = startParentQuat.clone().invert();
+	bone.quaternion.copy(qParentInv.multiply(qDelta).multiply(qWorldStart));
+	bone.updateMatrixWorld(true);
+}
+
+/**
  * Body-root translate: set the hips bone's parent-local position to
  * `startLocalPos` plus a world delta (height for crouching/kneeling,
  * lean-shift for lying). Absolute from the drag start, so repeated pointer
@@ -429,7 +446,7 @@ export function ikBakeKeyframe(rig, ikState, frame, fkJoints) {
 		const joint = fkJoints?.get(id);
 		let q = null;
 		let p = null;
-		if (chain) q = [chain.bones[0].quaternion.clone(), chain.bones[1].quaternion.clone()];
+		if (chain) q = [chain.bones[0].quaternion.clone(), chain.bones[1].quaternion.clone(), chain.bones[2].quaternion.clone()];
 		else if (joint) {
 			q = [joint.bone.quaternion.clone()];
 			if (joint.bindPos) p = joint.bone.position.clone();
@@ -511,10 +528,14 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 			if (w >= 1) {
 				chain.bones[0].quaternion.copy(sampled.q[0]);
 				chain.bones[1].quaternion.copy(sampled.q[1]);
+				// The effector's authored rotation rides along when the key has it
+				// (pre-rotation keys hold only b0/b1 — apply whatever is stored).
+				if (sampled.q[2]) chain.bones[2].quaternion.copy(sampled.q[2]);
 			} else {
 				// current quats are the base layer's (motion) — ease toward the key
 				chain.bones[0].quaternion.slerp(sampled.q[0], w);
 				chain.bones[1].quaternion.slerp(sampled.q[1], w);
+				if (sampled.q[2]) chain.bones[2].quaternion.slerp(sampled.q[2], w);
 			}
 			chain.bones[0].updateMatrixWorld(true);
 		} else if (joint) {
