@@ -195,6 +195,44 @@ function SceneObjectFootprint({ object, selected, dragging, turning }) {
 }
 
 const WAYPOINT_COLOR = "#6f9f86";
+const RAIL_COLOR = "#a78bfa"; // the camera's violet, same identity as its timeline lane
+
+/**
+ * The drawn camera rail (and the live stroke while drawing): a flat violet
+ * line on the deck. Display only — authoring happens through the pointer
+ * handlers, exactly like the pucks.
+ */
+function CameraRailLine({ points, live = false }) {
+	const geometry = useMemo(() => {
+		if (!points || points.length < 2) return null;
+		const positions = new Float32Array(points.length * 3);
+		points.forEach((p, i) => {
+			positions[i * 3] = p.x;
+			positions[i * 3 + 1] = 0.03;
+			positions[i * 3 + 2] = p.z;
+		});
+		const g = new THREE.BufferGeometry();
+		g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+		return g;
+	}, [points]);
+	useEffect(() => () => geometry?.dispose(), [geometry]);
+	if (!geometry) return null;
+	const first = points[0];
+	const last = points[points.length - 1];
+	return (
+		<group>
+			<line geometry={geometry} renderOrder={9}>
+				<lineBasicMaterial color={RAIL_COLOR} transparent opacity={live ? 0.5 : 0.85} depthWrite={false} depthTest={false} />
+			</line>
+			{!live && [first, last].map((p, i) => (
+				<mesh key={i} position={[p.x, 0.04, p.z]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={10}>
+					<circleGeometry args={[0.14, 16]} />
+					<meshBasicMaterial color={RAIL_COLOR} depthWrite={false} depthTest={false} />
+				</mesh>
+			))}
+		</group>
+	);
+}
 
 /**
  * The root path: numbered dots at each waypoint's floor position, connected
@@ -265,8 +303,10 @@ function WaypointPath({ waypoints, start, activeWaypointFrame }) {
  * reports moves that still hit it, so a fast drag off the edge silently strands
  * the puck.
  */
-export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA, setCharA, charB, setCharB, showB, waypoints, activeWaypointFrame, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd }) {
+export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA, setCharA, charB, setCharB, showB, waypoints, activeWaypointFrame, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke }) {
 	const [drag, setDrag] = useState(null); // { id, mode }
+	// live stroke while the rail is being drawn; world XZ, display only
+	const [railStroke, setRailStroke] = useState(null);
 	const rootRef = useRef();
 	const camPos = useRef();
 	const camRot = useRef();
@@ -293,8 +333,8 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 	// clears dragRef, so a dep that changes while dragging (charA.x does, on the
 	// very first move) would kill the drag after one frame. Read live values
 	// through a ref and keep the effect's deps stable.
-	const latest = useRef({ charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd });
-	latest.current = { charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd };
+	const latest = useRef({ charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke });
+	latest.current = { charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke };
 
 	const targets = () => {
 		const { charA: a, charB: b, showB: two } = latest.current;
@@ -388,6 +428,19 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 
 		const onDown = (event) => {
 			if (event.button !== 0) return;
+			// Rail drawing owns the pointer: a stroke starts anywhere on the
+			// deck, so puck picking would fight every stroke that crosses one.
+			if (latest.current.railDraw) {
+				const start = toFloor(event);
+				if (!start) return;
+				event.preventDefault();
+				event.stopPropagation();
+				dragRef.current = { mode: "rail", stroke: [{ x: start.x, z: start.z }] };
+				setDrag({ id: "rail", mode: "rail" });
+				setRailStroke([{ x: start.x, z: start.z }]);
+				host.style.cursor = "crosshair";
+				return;
+			}
 			const p = toFloor(event);
 			const grip = p && pick(p);
 			if (!grip) return;
@@ -414,6 +467,10 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 		// hover is the only cue that these are handles at all
 		const onHover = (event) => {
 			if (dragRef.current) return;
+			if (latest.current.railDraw) {
+				host.style.cursor = "crosshair";
+				return;
+			}
 			const p = toFloor(event);
 			const grip = p && pick(p);
 			host.style.cursor = !grip
@@ -428,6 +485,16 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			if (!grip) return;
 			const p = toFloor(event);
 			if (!p) return;
+
+			if (grip.mode === "rail") {
+				// sample sparsely; RDP simplifies the rest on commit
+				const tail = grip.stroke[grip.stroke.length - 1];
+				if (Math.hypot(p.x - tail.x, p.z - tail.z) > 0.06) {
+					grip.stroke.push({ x: p.x, z: p.z });
+					setRailStroke([...grip.stroke]);
+				}
+				return;
+			}
 
 			if (grip.mode === "waypoint") {
 				latest.current.onMoveWaypoint?.(grip.origin.frame, snap(p.x, ROOM_LIMIT), snap(p.z, ROOM_LIMIT));
@@ -492,6 +559,14 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 		const closeDrag = (commit) => {
 			const grip = dragRef.current;
 			if (!grip) return;
+			if (grip.mode === "rail") {
+				// commit hands the raw stroke to the app (which simplifies and
+				// splines it); Escape throws the stroke away
+				teardownDrag(grip);
+				setRailStroke(null);
+				if (commit && grip.stroke.length >= 2) latest.current.onRailStroke?.(grip.stroke);
+				return;
+			}
 			const token = grip.token;
 			teardownDrag(grip);
 			if (token != null) latest.current.onObjectMoveEnd?.(token, { commit });
@@ -571,6 +646,8 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			))}
 
 			{waypoints.length > 0 && <WaypointPath waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />}
+			{cameraRailPoints && cameraRailPoints.length > 1 && <CameraRailLine points={cameraRailPoints} />}
+			{railStroke && railStroke.length > 1 && <CameraRailLine points={railStroke} live />}
 		</group>
 	);
 }

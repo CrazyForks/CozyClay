@@ -16,6 +16,7 @@ import { PlanBoard } from "./planview.jsx";
 import { DualRender, GIZMO_LAYER, SHOT_ASPECT, fitAspect } from "./dualview.jsx";
 import { Room, StageLights } from "./room.jsx";
 import { SHOT_AUTHORING_KEY, loadShotAuthoring, serializeShotAuthoring } from "./shot-authoring.js";
+import { FOLLOW_DEFAULTS, buildFollowTrack, buildRail, buildRailFollowTrack, simplifyStroke } from "./camera-follow.js";
 import { SetProps } from "./props.jsx";
 import {
 	DEFAULT_SCENE_OBJECTS,
@@ -355,6 +356,39 @@ function MoveRig({ playing, following, followFrame, fps, keys, anchor, camRef, l
 	return null;
 }
 
+/**
+ * Applies the precomputed follow-camera track to the shot camera. The track
+ * is derived offline from the subject trajectory (camera-follow.js), so this
+ * rig only samples it at the playhead — scrub, play, PlayView and Record all
+ * replay the identical deterministic move. Null-rendering, so every apply
+ * must invalidate() by hand in demand mode, like MoveRig.
+ */
+function FollowCamRig({ enabled, frame, track, camRef, look, isInterrupted }) {
+	const invalidate = useThree((state) => state.invalidate);
+	const applied = useRef(null);
+	useEffect(() => {
+		applied.current = null;
+		if (enabled) invalidate();
+	}, [track, enabled, invalidate]);
+	useEffect(() => {
+		if (enabled) invalidate();
+	}, [frame, enabled, invalidate]);
+	useFrame(() => {
+		if (!enabled || !track || track.length === 0) return;
+		if (isInterrupted?.()) return; // the user is flying; yield until released
+		const cam = camRef.current;
+		if (!cam) return;
+		const sample = track[Math.max(0, Math.min(frame, track.length - 1))];
+		if (applied.current === sample) return;
+		applied.current = sample;
+		cam.position.set(sample.pos.x, sample.pos.y, sample.pos.z);
+		look.current.yaw = sample.yaw;
+		look.current.pitch = sample.pitch;
+		invalidate();
+	});
+	return null;
+}
+
 function RenderLoopController({ stageRef }) {
 	const frameloop = useThree((state) => state.frameloop);
 	const setFrameloop = useThree((state) => state.setFrameloop);
@@ -391,6 +425,38 @@ function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, hi
 /** The authored root path on the set floor while path editing is on: numbered
     pins connected in walk order. Lives on the gizmo layer, so the shot camera
     shows it but exports never do (the bird's-eye board draws its own copy). */
+/**
+ * The drawn camera rail in the 3D Scene view: editor furniture on the gizmo
+ * layer, so PlayView, the ink prepass and exports never see it.
+ */
+function CameraRailScenePreview({ points }) {
+	const rootRef = useRef(null);
+	const line = useMemo(() => {
+		if (!points || points.length < 2) return null;
+		const positions = new Float32Array(points.length * 3);
+		points.forEach((point, i) => {
+			positions[i * 3] = point.x;
+			positions[i * 3 + 1] = 0.03;
+			positions[i * 3 + 2] = point.z;
+		});
+		const geometry = new THREE.BufferGeometry();
+		geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+		return geometry;
+	}, [points]);
+	useEffect(() => () => line?.dispose(), [line]);
+	useEffect(() => {
+		rootRef.current?.traverse((node) => node.layers.set(GIZMO_LAYER));
+	});
+	if (!line) return null;
+	return (
+		<group ref={rootRef}>
+			<line geometry={line}>
+				<lineBasicMaterial color="#a78bfa" transparent opacity={0.8} depthWrite={false} />
+			</line>
+		</group>
+	);
+}
+
 function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
 	const rootRef = useRef(null);
 	const line = useMemo(() => {
@@ -1194,6 +1260,19 @@ globalThis.playMode = centerTab === "play";
 	// Follow slaves the move to the timeline playhead so camera and character
 	// motion share one time axis; off frees the camera while both stay set.
 	const [moveFollow, setMoveFollow] = useState(true);
+	// Follow cam: the camera is DERIVED from the subject's trajectory (a
+	// steadicam behind it, or a dolly on a drawn Top-View rail) instead of
+	// interpolated between keys. Parameters and the rail survive reloads.
+	const [followCam, setFollowCam] = useState(() => ({
+		enabled: false,
+		distance: FOLLOW_DEFAULTS.distance,
+		height: FOLLOW_DEFAULTS.height,
+		response: FOLLOW_DEFAULTS.response,
+		lead: FOLLOW_DEFAULTS.lead,
+		...(shotStartup?.followCam ?? {}),
+	}));
+	const [cameraRail, setCameraRail] = useState(shotStartup?.cameraRail ?? null); // simplified control points [{x,z}]
+	const [railDraw, setRailDraw] = useState(false);
 	const [hasCharSheet, setHasCharSheet] = useState(false);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
 	const [subject, setSubject] = useState("a young woman in a tan coat");
@@ -1253,11 +1332,11 @@ globalThis.playMode = centerTab === "play";
 	// hot updates) must never cost an authored shot again.
 	useEffect(() => {
 		try {
-			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ cameraKeys, waypoints, frameCount: tlFrameCount }));
+			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ cameraKeys, waypoints, frameCount: tlFrameCount, followCam, cameraRail }));
 		} catch {
 			// quota or blocked storage: authoring simply won't survive a reload
 		}
-	}, [cameraKeys, waypoints, tlFrameCount]);
+	}, [cameraKeys, waypoints, tlFrameCount, followCam, cameraRail]);
 	const [promptClips, setPromptClips] = useState(() => DEFAULT_PROMPT_CLIPS.map((clip) => ({ ...clip })));
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
@@ -1831,6 +1910,49 @@ globalThis.playMode = centerTab === "play";
 			z: motion.anchorZ + offset.z,
 		};
 	}, [motion, tlFrame]);
+
+	// The subject's full per-frame scene trajectory — what the follow camera
+	// is derived from. Without a loaded motion the subject stands still and
+	// the follow camera simply composes a static frame.
+	const subjectTrack = useMemo(() => {
+		if (!followCam.enabled) return null;
+		const frames = Math.max(tlFrameCount, 1);
+		if (!motion) return Array.from({ length: frames }, () => ({ x: charA.x, z: charA.z }));
+		const a = Math.min(motion.anchorFrame, motion.frames - 1);
+		return Array.from({ length: frames }, (_, f) => {
+			const ff = Math.min(f, motion.frames - 1);
+			const offset = toSceneRootOffset(
+				motion.rootPos[ff * 3] - motion.rootPos[a * 3],
+				motion.rootPos[ff * 3 + 2] - motion.rootPos[a * 3 + 2],
+				motion.rotationDeg,
+			);
+			return { x: motion.anchorX + offset.x, z: motion.anchorZ + offset.z };
+		});
+	}, [followCam.enabled, motion, tlFrameCount, charA.x, charA.z]);
+
+	// The dense rail (spline through the drawn control points) — shared by
+	// the follow controller and the Top-View display.
+	const railCurve = useMemo(() => (cameraRail ? buildRail(cameraRail) : null), [cameraRail]);
+
+	const followTrack = useMemo(() => {
+		if (!followCam.enabled || !subjectTrack) return null;
+		const yaw = (charA.rot * Math.PI) / 180;
+		const params = {
+			distance: followCam.distance,
+			height: followCam.height,
+			response: followCam.response,
+			lead: followCam.lead,
+			initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) },
+		};
+		return railCurve
+			? buildRailFollowTrack(subjectTrack, tlFps, railCurve, params)
+			: buildFollowTrack(subjectTrack, tlFps, params);
+	}, [followCam, subjectTrack, railCurve, tlFps, charA.rot]);
+
+	// The follow camera owns the shot camera in the same situations key
+	// following would: never while an authoring mode holds the viewport.
+	const followCamActive =
+		followCam.enabled && !!followTrack && (centerTab === "play" || (!ikMode && !waypointMode && !posing));
 
 	// Implied locomotion speed per authored segment (@ 20 fps). Shown in the
 	// timeline hint so a path that forces a crawl or a sprint is visible
@@ -2590,7 +2712,8 @@ globalThis.playMode = centerTab === "play";
 								// PlayView is the finished-output player: the move always rides
 								// the playhead there. The Follow toggle and authoring-mode gates
 								// only protect the Scene tab's manipulation surfaces.
-								following={cameraKeys.length >= 1 && (centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing))}
+								// A follow cam owns the shot camera outright; keys resume when it is off.
+								following={!followCamActive && cameraKeys.length >= 1 && (centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing))}
 								followFrame={tlFrame}
 								fps={tlFps}
 								keys={cameraKeys}
@@ -2602,6 +2725,14 @@ globalThis.playMode = centerTab === "play";
 									setMovePlaying(false);
 									setFovDeg(Math.round(finalFov * 10) / 10);
 								}}
+							/>
+							<FollowCamRig
+								enabled={followCamActive && !movePlaying}
+								frame={tlFrame}
+								track={followTrack}
+								camRef={shotCamRef}
+								look={look}
+								isInterrupted={() => flyingRef.current}
 							/>
 							{/* Camera stays live in IK mode but drives the POSER camera,
 							    never the shot camera: the handle layer only consumes
@@ -2664,6 +2795,16 @@ globalThis.playMode = centerTab === "play";
 								onMoveSceneObject={changeSceneObject}
 								onObjectMoveStart={beginSceneTransaction}
 								onObjectMoveEnd={endSceneTransaction}
+								cameraRailPoints={railCurve ? railCurve.points : null}
+								railDraw={railDraw}
+								onRailStroke={(stroke) => {
+									const simplified = simplifyStroke(stroke, 0.12);
+									if (simplified.length < 2) return;
+									setCameraRail(simplified);
+									setRailDraw(false);
+									const curve = buildRail(simplified);
+									setToast(`Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
+								}}
 							/>
 							{/* Object gizmo: the shot pane's direct manipulation. Off while
 							    the plan owns the big pane (the pucks are the handles there)
@@ -2689,6 +2830,7 @@ globalThis.playMode = centerTab === "play";
 							{/* Authoring chrome: the grid and pins belong to the Scene tab
 							    only — PlayView is the finished output and shows none of it. */}
 							{centerTab === "scene" && <SceneGrid />}
+							{centerTab === "scene" && railCurve && <CameraRailScenePreview points={railCurve.points} />}
 							{waypointMode && centerTab === "scene" && (
 								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />
 							)}
@@ -2903,6 +3045,48 @@ globalThis.playMode = centerTab === "play";
 									? `locked-off hold from frame ${cameraKeys[0].frame} — click the Camera lane at another frame to add a move`
 									: "click the Camera timeline lane to key the current framing at that frame"}
 							</div>
+						)}
+
+						<h3 className="move-head">Follow cam</h3>
+						<div className="move-ab">
+							<button
+								type="button"
+								className="btn ghost"
+								title="Derive the camera from the subject's trajectory: a steadicam trailing behind, or a dolly on a drawn rail. Keys pause while it owns the camera"
+								onClick={() => setFollowCam((c) => ({ ...c, enabled: !c.enabled }))}
+							>
+								{followCam.enabled ? "Follow ●" : "Follow cam"}
+							</button>
+							<button
+								type="button"
+								className={"btn ghost" + (railDraw ? " rec-live" : "")}
+								disabled={!followCam.enabled}
+								title="Draw the camera rail in the Top-View: drag one stroke across the deck. Esc mid-stroke cancels"
+								onClick={() => {
+									const next = !railDraw;
+									setRailDraw(next);
+									if (next) {
+										setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
+										setToast("Draw the rail in the Top-View — drag one stroke across the deck");
+									}
+								}}
+							>
+								{railDraw ? "Drawing…" : "✏ Rail"}
+							</button>
+							<button type="button" className="btn ghost" disabled={!cameraRail} onClick={() => setCameraRail(null)}>
+								Clear rail
+							</button>
+						</div>
+						{followCam.enabled && (
+							<>
+								<Slider label="Distance" min={1} max={8} step={0.1} value={followCam.distance} unit=" m" onChange={(distance) => setFollowCam((c) => ({ ...c, distance }))} />
+								<Slider label="Height" min={0.4} max={4} step={0.05} value={followCam.height} unit=" m" onChange={(height) => setFollowCam((c) => ({ ...c, height }))} />
+								<Slider label="Response" min={0.2} max={2} step={0.05} value={followCam.response} unit=" s" onChange={(response) => setFollowCam((c) => ({ ...c, response }))} />
+								<Slider label="Lead" min={0} max={0.6} step={0.05} value={followCam.lead} unit=" s" onChange={(lead) => setFollowCam((c) => ({ ...c, lead }))} />
+								<div className="move-slate" title="what the rig is doing, derived from the setup — a rail makes it a dolly, none makes it a steadicam">
+									{railCurve ? `DOLLY ON RAIL · ${railCurve.length.toFixed(1)} m` : "STEADICAM FOLLOW"} · HOLD {followCam.distance.toFixed(1)} m
+								</div>
+							</>
 						)}
 					</Foldout>
 
