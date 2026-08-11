@@ -439,6 +439,25 @@ function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
 	);
 }
 
+/** Unity-style scene grid: 1 m cells on the set floor, editor chrome only.
+    It rides the gizmo layer so exports and the plan never pick it up, sits a
+    hair above the deck to dodge z-fighting, and never swallows a raycast —
+    floor clicks pass straight through to the ground plane. Warm greys tuned
+    to the clay floor (#e7e1d7). */
+function SceneGrid() {
+	const grid = useMemo(() => {
+		const helper = new THREE.GridHelper(13, 13, 0xb4a998, 0xccc3b4);
+		helper.material.transparent = true;
+		helper.material.opacity = 0.4;
+		helper.material.depthWrite = false;
+		helper.position.y = 0.002;
+		helper.layers.set(GIZMO_LAYER);
+		helper.raycast = () => null;
+		return helper;
+	}, []);
+	return <primitive object={grid} />;
+}
+
 /** Offscreen 1920x1080 read-back, always from the shot camera. */
 function CaptureRig({ apiRef, camRef }) {
 	const { gl, scene } = useThree();
@@ -2362,8 +2381,9 @@ globalThis.rect = pane.getBoundingClientRect();
 								onSelect={(id) => selectHierarchy(id ? `object:${id}` : "props")}
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
 							/>
-							{/* Authoring chrome: the pins belong to the Scene tab only —
-							    PlayView is the finished output and shows none of it. */}
+							{/* Authoring chrome: the grid and pins belong to the Scene tab
+							    only — PlayView is the finished output and shows none of it. */}
+							{centerTab === "scene" && <SceneGrid />}
 							{waypointMode && centerTab === "scene" && (
 								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />
 							)}

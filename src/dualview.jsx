@@ -211,7 +211,14 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 				gl.setClearColor(0x000000, 0);
 				gl.clear(true, true, false);
 				scene.overrideMaterial = edgePass.normalMaterial;
+				// Editor chrome (grid, gizmo, pins) takes no ink: the override
+				// material ignores per-material depthWrite opt-outs, and a
+				// stylised outline on UI reads as set dressing. Mask restored
+				// exactly, so plan/poser cameras keep their own layer sets.
+				const inkMask = camera.layers.mask;
+				camera.layers.disable(GIZMO_LAYER);
 				gl.render(scene, camera);
+				camera.layers.mask = inkMask;
 				scene.overrideMaterial = null;
 			}
 			gl.setRenderTarget(null);

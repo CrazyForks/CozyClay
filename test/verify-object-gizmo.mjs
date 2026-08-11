@@ -154,6 +154,9 @@ await send("Runtime.enable");
 // an earlier section would boot on the next Page.reload. Clear both keys BEFORE
 // the first assertion, then reload so every run starts from empty storage
 // (pre-mortem §14.1: persistence must never poison the suite mid-run).
+// A freshly launched QA browser can still sit on about:blank, where touching
+// localStorage throws SecurityError — wait for the app document first.
+for (let i = 0; i < 100 && !(await evaluateSafely("location.href.startsWith('http')")); i++) await sleep(200);
 await evaluate("localStorage.removeItem('cozyclay.scene.v1'); localStorage.removeItem('cozyclay.scene.v1.quarantine')");
 await send("Page.reload");
 for (let i = 0; i < 100 && !(await evaluateSafely("!!document.querySelector('canvas')")); i++) await sleep(200);
