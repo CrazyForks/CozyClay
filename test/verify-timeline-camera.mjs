@@ -32,7 +32,7 @@ expect("dot drag re-times the key", timeline.includes("handlers.current.onCamera
 expect("keys stay frame-unique on re-time", app.includes("if (keys.some((k) => k.frame === target)) return keys;"));
 expect("re-keying a frame overwrites its framing", app.includes("keys.filter((k) => k.frame !== target).concat({ frame: target, framing })"));
 
-expect("the move model is N keys, not A/B", app.includes("const [cameraKeys, setCameraKeys] = useState([]);") && !app.includes("setMoveA") && !app.includes("setMoveB"));
+expect("the move model is N keys, not A/B", app.includes("const [cameraKeys, setCameraKeys] = useState(shotStartup?.cameraKeys ?? []);") && !app.includes("setMoveA") && !app.includes("setMoveB"));
 expect("interpolation samples keys segment by segment", camMove.includes("export function cameraMoveAt") && camMove.includes("interpolateFraming(a.framing, b.framing, anchor"));
 expect("MoveRig plays and follows the keys", app.includes("keys={cameraKeys}") && app.includes("cameraMoveAt(keys, anchor, frame)"));
 expect("sequence slate and phrase derive per segment", app.includes("moveSequenceSlate(segs)") && app.includes("moveSequencePhrase(segs)"));
