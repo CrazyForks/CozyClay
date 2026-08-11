@@ -426,7 +426,7 @@ await send("Input.dispatchMouseEvent", { type: "mousePressed", x: insetCtr.x, y:
 await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: insetCtr.x, y: insetCtr.y, button: "left", buttons: 0, clickCount: 2 });
 await sleep(1200);
 const planGrab = await evaluate(
-	`(() => { const b = document.querySelector('.vp-main').getBoundingClientRect(); const scale = (b.height / 2) / 7.2;
+	`(() => { const b = document.querySelector('.vp-main').getBoundingClientRect(); const scale = (b.height / 2) / 12.4;
 		return { x: Math.round(b.left + b.width / 2 + ${beforePlan.Position[0]} * scale), y: Math.round(b.top + b.height / 2 + ${beforePlan.Position[2]} * scale) }; })()`,
 );
 await drag(planGrab, { x: planGrab.x, y: planGrab.y + 60 });
@@ -1027,7 +1027,7 @@ await send("Input.dispatchMouseEvent", { type: "mousePressed", x: insetCtrB.x, y
 await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: insetCtrB.x, y: insetCtrB.y, button: "left", buttons: 0, clickCount: 2 });
 await waitFor("document.querySelector('.vp-main').classList.contains('plan')");
 await sleep(150); // the plan host's pointerdown listener binds after the commit
-const planRect = await evaluate("(() => { const b = document.querySelector('.vp-main').getBoundingClientRect(); return { left: b.left, top: b.top, width: b.width, height: b.height, scale: (b.height / 2) / 7.2 }; })()");
+const planRect = await evaluate("(() => { const b = document.querySelector('.vp-main').getBoundingClientRect(); return { left: b.left, top: b.top, width: b.width, height: b.height, scale: (b.height / 2) / 12.4 }; })()");
 const chairPuck = {
 	x: Math.round(planRect.left + planRect.width / 2 + chairForPlan.Position[0] * planRect.scale),
 	y: Math.round(planRect.top + planRect.height / 2 + chairForPlan.Position[2] * planRect.scale),
@@ -1065,7 +1065,10 @@ const camPuck = {
 	x: Math.round(planRect.left + planRect.width / 2 + 0.97 * planRect.scale),
 	y: Math.round(planRect.top + planRect.height / 2 + 2.39 * planRect.scale),
 };
-await drag(camPuck, { x: camPuck.x + 80, y: camPuck.y + 50 });
+// Fly ~2 m, stated in metres via the plan scale: a raw pixel delta would
+// change its meaning whenever PLAN_EXTENT does, and the choreography after
+// this flight is calibrated for a short hop, not a cross-stage launch.
+await drag(camPuck, { x: camPuck.x + Math.round(1.92 * planRect.scale), y: camPuck.y + Math.round(1.2 * planRect.scale) });
 await waitFor(`document.querySelector('span[title="camera to subject"]')?.textContent !== ${JSON.stringify(distanceBefore)}`);
 expect(
 	"dragging the camera puck flies the shot camera",

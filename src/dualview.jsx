@@ -25,7 +25,7 @@ export const GIZMO_LAYER = 5;
 /** the shot camera is locked to the export aspect no matter which pane holds it */
 export const SHOT_ASPECT = 16 / 9;
 /** half-height of the plan frustum, in metres — covers the full camera throw */
-export const PLAN_EXTENT = 7.2;
+export const PLAN_EXTENT = 12.4;
 
 const EDGE_VERTEX = `
 	varying vec2 vUv;

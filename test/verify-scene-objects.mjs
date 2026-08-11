@@ -93,7 +93,7 @@ expect("repeat creation gets a unique id", twoCubes[0].id !== twoCubes[1].id);
 expect("repeat creation gets a numbered name", twoCubes[1].name === "Cube 2", twoCubes[1].name);
 
 const placed = createSceneObject("chair", [], { x: 99, z: -99, rot: 540 });
-expect("creation clamps placement into the room", placed.x === 6.5 && placed.z === -6.5);
+expect("creation clamps placement into the room", placed.x === 11 && placed.z === -11);
 expect("an explicit placement angle is still wrapped", placed.rot === -180, String(placed.rot));
 
 // camera at the origin looking down -Z (yaw 0): the drop point is 2.6 m ahead
@@ -142,7 +142,7 @@ expect("a degenerate screen spin writes nothing", screenRotatePatch(upright, nul
 /* ------------------------------------------------------- clamping --- */
 
 const bounded = updateSceneObject([cube], cube.id, { x: 99, y: -3, z: -99, scaleX: 40, scaleY: 0 })[0];
-expect("transforms stay inside the room and above the floor", bounded.x === 6.5 && bounded.z === -6.5 && bounded.y === 0);
+expect("transforms stay inside the room and above the floor", bounded.x === 11 && bounded.z === -11 && bounded.y === 0);
 expect("scale stays within a usable range", bounded.scaleX === 5 && bounded.scaleY === 0.1);
 const renamed = updateSceneObject([cube], cube.id, { name: "Crate", color: "#123456" })[0];
 expect("name and colour are editable", renamed.name === "Crate" && renamed.color === "#123456");
@@ -223,7 +223,7 @@ expect(
 	(() => {
 		const result = loadScene(JSON.stringify({ version: 1, objects: [{ id: "cube", renderer: "cube", x: 99, y: -3, scaleX: 50 }] }));
 		const object = result.objects[0];
-		return object.x === 6.5 && object.y === 0 && object.scaleX === 5;
+		return object.x === 11 && object.y === 0 && object.scaleX === 5;
 	})(),
 );
 

@@ -6,7 +6,7 @@ import { aimAt } from "./controls.jsx";
 import { PLAN_LAYER } from "./dualview.jsx";
 import { objectSize } from "./scene-objects.js";
 
-const ROOM_LIMIT = 6.5; // stay inside the set walls
+const ROOM_LIMIT = 11; // stay inside the set walls
 const ACTOR_LIMIT = 4; // matches the Subject sliders' range
 const PUCK_R = 0.34;
 const GRAB_R = 1.0; // the pick radius, well beyond the drawn disc

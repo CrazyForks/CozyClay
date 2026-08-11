@@ -449,7 +449,7 @@ function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
     to the clay floor (#e7e1d7). */
 function SceneGrid() {
 	const grid = useMemo(() => {
-		const helper = new THREE.GridHelper(13, 13, 0x8f8474, 0xa99f8e);
+		const helper = new THREE.GridHelper(24, 24, 0x8f8474, 0xa99f8e);
 		helper.material.transparent = true;
 		helper.material.opacity = 0.62;
 		helper.material.depthWrite = false;
@@ -1214,7 +1214,7 @@ globalThis.rect = pane.getBoundingClientRect();
 	    the next waypoint where it was clicked; the frame gap comes from walking
 	    distance. The bird's-eye board only displays the result. */
 	function addFloorWaypoint(point) {
-		const clampToRoom = (value) => Math.max(-6.5, Math.min(6.5, value));
+		const clampToRoom = (value) => Math.max(-11, Math.min(11, value));
 		const x = clampToRoom(point.x);
 		const z = clampToRoom(point.z);
 		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);

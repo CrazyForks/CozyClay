@@ -6,8 +6,8 @@
  * the horizon line all read as ambiguous. Two perpendicular walls and a floor
  * preserve that context without enclosing the camera in a box.
  *
- * Dimensions are metres and deliberately room-sized (14 x 14 x 3.4) so a 1.8 m
- * figure sits at a believable scale against the walls.
+ * Dimensions are metres and stage-sized (24 x 24) so a 1.8 m figure has room
+ * to walk real paths while the corner still reads as an enclosure.
  */
 
 const FLOOR = "#e7e1d7";
@@ -15,9 +15,9 @@ const BACK_WALL = "#eef1ed";
 const SIDE_WALL = "#e4ecec";
 const SKIRTING = "#bdcccc";
 
-const SIZE = 14;
+const SIZE = 24;
 const HEIGHT = 6.2;
-const BACK_Z = -5;
+const BACK_Z = -10;
 function Skirting({ position, rotation }) {
 	return (
 		<mesh position={position} rotation={rotation}>

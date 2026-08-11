@@ -32,7 +32,7 @@ const EULER_ORDER = "XYZ";
 const DEG = Math.PI / 180;
 
 /** Room half-extent; matches the plan board's ROOM_LIMIT. */
-const ROOM_LIMIT = 6.5;
+const ROOM_LIMIT = 11;
 const CEILING = 6;
 const SCALE_MIN = 0.1;
 const SCALE_MAX = 5;
