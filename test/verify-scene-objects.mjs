@@ -141,9 +141,9 @@ expect("a degenerate screen spin writes nothing", screenRotatePatch(upright, nul
 
 /* ------------------------------------------------------- clamping --- */
 
-const bounded = updateSceneObject([cube], cube.id, { x: 99, y: -3, z: -99, scaleX: 40, scaleY: 0 })[0];
+const bounded = updateSceneObject([cube], cube.id, { x: 99, y: -3, z: -99, scaleX: 400, scaleY: 0 })[0];
 expect("transforms stay inside the room and above the floor", bounded.x === 11 && bounded.z === -11 && bounded.y === 0);
-expect("scale stays within a usable range", bounded.scaleX === 5 && bounded.scaleY === 0.1);
+expect("scale stays within a usable range", bounded.scaleX === 100 && bounded.scaleY === 0.1);
 const renamed = updateSceneObject([cube], cube.id, { name: "Crate", color: "#123456" })[0];
 expect("name and colour are editable", renamed.name === "Crate" && renamed.color === "#123456");
 expect("empty names are rejected", updateSceneObject([cube], cube.id, { name: "" })[0] === cube);
@@ -221,9 +221,9 @@ expect(
 expect(
 	"out-of-room values are clamped on load",
 	(() => {
-		const result = loadScene(JSON.stringify({ version: 1, objects: [{ id: "cube", renderer: "cube", x: 99, y: -3, scaleX: 50 }] }));
+		const result = loadScene(JSON.stringify({ version: 1, objects: [{ id: "cube", renderer: "cube", x: 99, y: -3, scaleX: 500 }] }));
 		const object = result.objects[0];
-		return object.x === 11 && object.y === 0 && object.scaleX === 5;
+		return object.x === 11 && object.y === 0 && object.scaleX === 100;
 	})(),
 );
 

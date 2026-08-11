@@ -35,7 +35,7 @@ const DEG = Math.PI / 180;
 const ROOM_LIMIT = 11;
 const CEILING = 6;
 const SCALE_MIN = 0.1;
-const SCALE_MAX = 5;
+const SCALE_MAX = 100;
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 /** degrees folded into [-180, 180), the range both rotation sliders span */
