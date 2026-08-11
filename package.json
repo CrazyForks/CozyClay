@@ -1,6 +1,6 @@
 {
 	"name": "cozyclay",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"description": "Browser-based 3D staging studio: block a scene, pose characters, author camera moves and cuts, and preview generated motion.",
 	"scripts": {
 		"dev": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",

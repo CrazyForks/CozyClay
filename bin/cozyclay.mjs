@@ -15,9 +15,11 @@
  * before it can serve a prebuilt app is a launcher that will break.
  */
 import { spawn } from "node:child_process";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
+import { homedir } from "node:os";
 import { extname, join, normalize, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 const PKG_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -43,7 +45,7 @@ const TYPES = {
 };
 
 function parseArgs(argv) {
-	const opts = { port: 5180, host: "127.0.0.1", ardy: true, open: true };
+	const opts = { port: 5180, host: "127.0.0.1", ardy: true, open: true, star: true };
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === "--port" || arg === "-p") opts.port = Number(argv[++i]);
@@ -52,6 +54,7 @@ function parseArgs(argv) {
 		else if (arg.startsWith("--host=")) opts.host = arg.slice(7);
 		else if (arg === "--no-ardy") opts.ardy = false;
 		else if (arg === "--no-open") opts.open = false;
+		else if (arg === "--no-star") opts.star = false;
 		else if (arg === "--help" || arg === "-h") opts.help = true;
 		else if (arg === "--version" || arg === "-v") opts.version = true;
 		else {
@@ -66,12 +69,20 @@ function parseArgs(argv) {
 	return opts;
 }
 
+const REPO_URL = "https://github.com/HaD0Yun/CozyClay";
+const STATE_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cozyclay");
+const STATE_FILE = join(STATE_DIR, "state.json");
+// Only worth asking someone who actually used the thing. A prompt three
+// seconds in is a popup; a prompt after a real session is a question.
+const STAR_AFTER_MS = Number(process.env.COZYCLAY_STAR_AFTER_MS ?? 60_000);
+
 const HELP = `cozyclay - browser-based 3D staging studio
 
   npx cozyclay              start the studio and open it
   npx cozyclay --port 5200  serve on another port
   npx cozyclay --no-ardy    skip the optional motion-generation sidecar
   npx cozyclay --no-open    do not open a browser
+  npx cozyclay --no-star    never ask about starring the repo
 
 Motion generation needs an SSH-reachable NVIDIA machine running ARDY; point
 the sidecar at it with CCLAY_ARDY_HOST. Everything else - staging, posing,
@@ -106,6 +117,66 @@ function proxyToBridge(req, res) {
 		res.end(JSON.stringify({ error: "ardy sidecar is not running" }));
 	});
 	req.pipe(upstream);
+}
+
+function readState() {
+	try {
+		return JSON.parse(readFileSync(STATE_FILE, "utf8"));
+	} catch {
+		return {};
+	}
+}
+
+function writeState(patch) {
+	try {
+		mkdirSync(STATE_DIR, { recursive: true });
+		writeFileSync(STATE_FILE, JSON.stringify({ ...readState(), ...patch }, null, "\t"));
+	} catch {
+		/* a read-only home is not a reason to fail a local dev server */
+	}
+}
+
+async function starCount() {
+	try {
+		const res = await fetch("https://api.github.com/repos/HaD0Yun/CozyClay", {
+			headers: { accept: "application/vnd.github+json" },
+			signal: AbortSignal.timeout(2500),
+		});
+		if (!res.ok) return null;
+		const body = await res.json();
+		return Number.isInteger(body?.stargazers_count) ? body.stargazers_count : null;
+	} catch {
+		return null;
+	}
+}
+
+// Asked once, on the way out, and never again on this machine. A CLI that
+// nags on every run is worse than one that never asks.
+async function maybeAskForStar(startedAt, opts) {
+	if (!opts.star) return;
+	if (process.env.CI || process.env.COZYCLAY_NO_STAR) return;
+	if (!process.stdin.isTTY || !process.stdout.isTTY) return;
+	if (Date.now() - startedAt < STAR_AFTER_MS) return;
+	if (readState().starPromptedAt) return;
+
+	writeState({ starPromptedAt: new Date().toISOString() });
+	const stars = await starCount();
+	const tally = stars === null ? "" : ` (${stars} so far)`;
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	const answer = await new Promise((done) => {
+		const timer = setTimeout(() => done(""), 12_000);
+		rl.question(`\nWas CozyClay any good? A star helps people find it${tally}. Open GitHub? [Y/n] `, (a) => {
+			clearTimeout(timer);
+			done(a);
+		});
+	});
+	rl.close();
+	if (/^(y|yes|)$/i.test(answer.trim())) {
+		openBrowser(REPO_URL);
+		console.log("Thanks. Opening the repo.");
+	} else {
+		console.log(`Fair enough. ${REPO_URL} if you change your mind.`);
+	}
 }
 
 function openBrowser(url) {
@@ -163,10 +234,19 @@ const server = createServer((req, res) => {
 	serveFile(res, target);
 });
 
-function shutdown() {
+const startedAt = Date.now();
+let shuttingDown = false;
+async function shutdown() {
+	if (shuttingDown) process.exit(0);
+	shuttingDown = true;
 	if (bridge) bridge.kill("SIGTERM");
-	server.close(() => process.exit(0));
-	setTimeout(() => process.exit(0), 2000).unref();
+	server.close();
+	try {
+		await maybeAskForStar(startedAt, opts);
+	} catch {
+		/* never let the goodbye prompt hold the process hostage */
+	}
+	process.exit(0);
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
