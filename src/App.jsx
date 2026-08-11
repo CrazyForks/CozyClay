@@ -15,6 +15,7 @@ import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
 import { DualRender, GIZMO_LAYER, SHOT_ASPECT, fitAspect } from "./dualview.jsx";
 import { Room, StageLights } from "./room.jsx";
+import { SHOT_AUTHORING_KEY, loadShotAuthoring, serializeShotAuthoring } from "./shot-authoring.js";
 import { SetProps } from "./props.jsx";
 import {
 	DEFAULT_SCENE_OBJECTS,
@@ -1176,10 +1177,19 @@ globalThis.playMode = centerTab === "play";
 	const [videoModel, setVideoModel] = useState("seedance_2");
 	const [cameraMove, setCameraMove] = useState(CAMERA_MOVES[1]);
 	const [customMove, setCustomMove] = useState("");
+	// Authored shot state (camera keys, waypoints, clip length) restored from
+	// the last session — camera moves must survive a reload like the scene does.
+	const [shotStartup] = useState(() => {
+		try {
+			return loadShotAuthoring(localStorage.getItem(SHOT_AUTHORING_KEY));
+		} catch {
+			return null;
+		}
+	});
 	// The camera move workspace: frame-unique keyframings authored on the
 	// timeline's Camera lane. The move's name is never stored — it is
 	// re-derived from the framings segment by segment.
-	const [cameraKeys, setCameraKeys] = useState([]); // [{ frame, framing }] sorted by frame
+	const [cameraKeys, setCameraKeys] = useState(shotStartup?.cameraKeys ?? []); // [{ frame, framing }] sorted by frame
 	const [movePlaying, setMovePlaying] = useState(false);
 	// Follow slaves the move to the timeline playhead so camera and character
 	// motion share one time axis; off frees the camera while both stay set.
@@ -1224,14 +1234,14 @@ globalThis.playMode = centerTab === "play";
 	const [tlFrame, setTlFrame] = useState(0);
 
 	const renderActive = useRenderActivity(tlPlaying || movePlaying);
-	const [tlFrameCount, setTlFrameCount] = useState(DEFAULT_DURATION_S * 20); // the generation clip length @ 20 fps
+	const [tlFrameCount, setTlFrameCount] = useState(shotStartup?.frameCount ?? DEFAULT_DURATION_S * 20); // the generation clip length @ 20 fps
 	const [tlFps, setTlFps] = useState(20);
 	const frameCountRef = useRef(DEFAULT_DURATION_S * 20);
 	frameCountRef.current = tlFrameCount;
 	// Root waypoints {frame, x, z, heading: null}, kept sorted by frame —
 	// the fixed bridge contract rejects out-of-order or duplicate frames.
 	const [waypointMode, setWaypointMode] = useState(false);
-	const [waypoints, setWaypoints] = useState([]);
+	const [waypoints, setWaypoints] = useState(shotStartup?.waypoints ?? []);
 	const [activeWaypointFrame, setActiveWaypointFrame] = useState(null);
 	useEffect(() => {
 		// Subject 1 is the sole frame-zero root start. Drop any legacy seeded
@@ -1239,6 +1249,15 @@ globalThis.playMode = centerTab === "play";
 		setWaypoints((current) => current.filter((waypoint) => waypoint.frame !== 0));
 		setActiveWaypointFrame((current) => (current === 0 ? null : current));
 	}, []);
+	// Every authoring change lands in storage immediately: reloads (and dev
+	// hot updates) must never cost an authored shot again.
+	useEffect(() => {
+		try {
+			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ cameraKeys, waypoints, frameCount: tlFrameCount }));
+		} catch {
+			// quota or blocked storage: authoring simply won't survive a reload
+		}
+	}, [cameraKeys, waypoints, tlFrameCount]);
 	const [promptClips, setPromptClips] = useState(() => DEFAULT_PROMPT_CLIPS.map((clip) => ({ ...clip })));
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
