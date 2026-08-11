@@ -88,5 +88,52 @@ expect("clip length is clamped to sane bounds", messy.frameCount === 24000, Stri
 
 expect("storage key is versioned", /\.v\d+$/.test(SHOT_AUTHORING_KEY), SHOT_AUTHORING_KEY);
 
+/* ------------------------------------------------- follow cam + rail ---- */
+
+const followRestored = loadShotAuthoring(
+	serializeShotAuthoring({
+		followCam: { enabled: true, distance: 3.5, height: 1.8, response: 0.6, lead: 0.2 },
+		cameraRail: [{ x: -2, z: -1 }, { x: -2, z: 3 }, { x: 1, z: 5 }],
+	}),
+);
+expect(
+	"follow-cam settings round-trip",
+	followRestored.followCam.enabled === true && followRestored.followCam.distance === 3.5 && followRestored.followCam.lead === 0.2,
+	JSON.stringify(followRestored.followCam),
+);
+expect(
+	"the drawn rail round-trips",
+	followRestored.cameraRail.length === 3 && followRestored.cameraRail[2].x === 1,
+	JSON.stringify(followRestored.cameraRail),
+);
+
+const followHostile = loadShotAuthoring(
+	JSON.stringify({
+		followCam: { enabled: "yes", distance: 9999, height: Number.NaN, lead: -5 },
+		cameraRail: [{ x: 0, z: 0 }, { x: Number.POSITIVE_INFINITY, z: 1 }, "junk", { x: 2, z: 2 }],
+	}),
+);
+expect(
+	"hostile follow-cam values are clamped, non-booleans read as off",
+	followHostile.followCam.enabled === false && followHostile.followCam.distance === 15 && !("height" in followHostile.followCam) && followHostile.followCam.lead === 0,
+	JSON.stringify(followHostile.followCam),
+);
+expect(
+	"bad rail points are dropped entry by entry",
+	followHostile.cameraRail.length === 2 && followHostile.cameraRail[1].x === 2,
+	JSON.stringify(followHostile.cameraRail),
+);
+expect(
+	"a one-point rail folds to null (free follow)",
+	loadShotAuthoring(JSON.stringify({ cameraRail: [{ x: 1, z: 1 }] })).cameraRail === null,
+);
+expect(
+	"payloads without follow fields stay compatible",
+	(() => {
+		const legacy = loadShotAuthoring(JSON.stringify({ version: 1, frameCount: 200, cameraKeys: [], waypoints: [] }));
+		return legacy.followCam === null && legacy.cameraRail === null;
+	})(),
+);
+
 console.log(failures === 0 ? "all shot-authoring checks PASS" : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

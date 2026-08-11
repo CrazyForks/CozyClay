@@ -16,6 +16,7 @@ import { PlanBoard } from "./planview.jsx";
 import { DualRender, GIZMO_LAYER, SHOT_ASPECT, fitAspect } from "./dualview.jsx";
 import { Room, StageLights } from "./room.jsx";
 import { SHOT_AUTHORING_KEY, loadShotAuthoring, serializeShotAuthoring } from "./shot-authoring.js";
+import { FOLLOW_DEFAULTS, buildFollowTrack, buildRail, buildRailFollowTrack, simplifyStroke } from "./camera-follow.js";
 import { SetProps } from "./props.jsx";
 import {
 	DEFAULT_SCENE_OBJECTS,
@@ -157,6 +158,11 @@ function hierarchyIdForIkFocus(focus) {
 
 const CAPTURE_W = 1920;
 const CAPTURE_H = 1080;
+// Pre-generated clip shipped with the build so a bridge-less session (a hosted
+// static demo, or `npm run dev:ui`) still shows real generated motion.
+// Relative on purpose: it has to resolve under a project sub-path too.
+const DEMO_MOTION_URL = "demo/walk-then-stop.npz";
+const DEMO_MOTION_PROMPT = "a person walking then a person stops";
 const CLAY = "#f2eee6";
 const CLAY_B = "#ddd6ca";
 const DEFAULT_POSE = BUILT_IN_POSES.find((p) => p.id === "relaxed") ?? BUILT_IN_POSES[0];
@@ -355,6 +361,39 @@ function MoveRig({ playing, following, followFrame, fps, keys, anchor, camRef, l
 	return null;
 }
 
+/**
+ * Applies the precomputed follow-camera track to the shot camera. The track
+ * is derived offline from the subject trajectory (camera-follow.js), so this
+ * rig only samples it at the playhead — scrub, play, PlayView and Record all
+ * replay the identical deterministic move. Null-rendering, so every apply
+ * must invalidate() by hand in demand mode, like MoveRig.
+ */
+function FollowCamRig({ enabled, frame, track, camRef, look, isInterrupted }) {
+	const invalidate = useThree((state) => state.invalidate);
+	const applied = useRef(null);
+	useEffect(() => {
+		applied.current = null;
+		if (enabled) invalidate();
+	}, [track, enabled, invalidate]);
+	useEffect(() => {
+		if (enabled) invalidate();
+	}, [frame, enabled, invalidate]);
+	useFrame(() => {
+		if (!enabled || !track || track.length === 0) return;
+		if (isInterrupted?.()) return; // the user is flying; yield until released
+		const cam = camRef.current;
+		if (!cam) return;
+		const sample = track[Math.max(0, Math.min(frame, track.length - 1))];
+		if (applied.current === sample) return;
+		applied.current = sample;
+		cam.position.set(sample.pos.x, sample.pos.y, sample.pos.z);
+		look.current.yaw = sample.yaw;
+		look.current.pitch = sample.pitch;
+		invalidate();
+	});
+	return null;
+}
+
 function RenderLoopController({ stageRef }) {
 	const frameloop = useThree((state) => state.frameloop);
 	const setFrameloop = useThree((state) => state.setFrameloop);
@@ -391,6 +430,38 @@ function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, hi
 /** The authored root path on the set floor while path editing is on: numbered
     pins connected in walk order. Lives on the gizmo layer, so the shot camera
     shows it but exports never do (the bird's-eye board draws its own copy). */
+/**
+ * The drawn camera rail in the 3D Scene view: editor furniture on the gizmo
+ * layer, so PlayView, the ink prepass and exports never see it.
+ */
+function CameraRailScenePreview({ points }) {
+	const rootRef = useRef(null);
+	const line = useMemo(() => {
+		if (!points || points.length < 2) return null;
+		const positions = new Float32Array(points.length * 3);
+		points.forEach((point, i) => {
+			positions[i * 3] = point.x;
+			positions[i * 3 + 1] = 0.03;
+			positions[i * 3 + 2] = point.z;
+		});
+		const geometry = new THREE.BufferGeometry();
+		geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+		return geometry;
+	}, [points]);
+	useEffect(() => () => line?.dispose(), [line]);
+	useEffect(() => {
+		rootRef.current?.traverse((node) => node.layers.set(GIZMO_LAYER));
+	});
+	if (!line) return null;
+	return (
+		<group ref={rootRef}>
+			<line geometry={line}>
+				<lineBasicMaterial color="#a78bfa" transparent opacity={0.8} depthWrite={false} />
+			</line>
+		</group>
+	);
+}
+
 function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
 	const rootRef = useRef(null);
 	const line = useMemo(() => {
@@ -1194,6 +1265,19 @@ globalThis.playMode = centerTab === "play";
 	// Follow slaves the move to the timeline playhead so camera and character
 	// motion share one time axis; off frees the camera while both stay set.
 	const [moveFollow, setMoveFollow] = useState(true);
+	// Follow cam: the camera is DERIVED from the subject's trajectory (a
+	// steadicam behind it, or a dolly on a drawn Top-View rail) instead of
+	// interpolated between keys. Parameters and the rail survive reloads.
+	const [followCam, setFollowCam] = useState(() => ({
+		enabled: false,
+		distance: FOLLOW_DEFAULTS.distance,
+		height: FOLLOW_DEFAULTS.height,
+		response: FOLLOW_DEFAULTS.response,
+		lead: FOLLOW_DEFAULTS.lead,
+		...(shotStartup?.followCam ?? {}),
+	}));
+	const [cameraRail, setCameraRail] = useState(shotStartup?.cameraRail ?? null); // simplified control points [{x,z}]
+	const [railDraw, setRailDraw] = useState(false);
 	const [hasCharSheet, setHasCharSheet] = useState(false);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
 	const [subject, setSubject] = useState("a young woman in a tan coat");
@@ -1253,11 +1337,11 @@ globalThis.playMode = centerTab === "play";
 	// hot updates) must never cost an authored shot again.
 	useEffect(() => {
 		try {
-			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ cameraKeys, waypoints, frameCount: tlFrameCount }));
+			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ cameraKeys, waypoints, frameCount: tlFrameCount, followCam, cameraRail }));
 		} catch {
 			// quota or blocked storage: authoring simply won't survive a reload
 		}
-	}, [cameraKeys, waypoints, tlFrameCount]);
+	}, [cameraKeys, waypoints, tlFrameCount, followCam, cameraRail]);
 	const [promptClips, setPromptClips] = useState(() => DEFAULT_PROMPT_CLIPS.map((clip) => ({ ...clip })));
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
@@ -1589,6 +1673,26 @@ globalThis.playMode = centerTab === "play";
 		}
 	}
 
+	// Hosted-demo seed. A build served as static files has no ARDY sidecar, so
+	// a first-time visitor would otherwise land on a character standing still
+	// with no way to see generated motion. The clip below ships with the build
+	// and is loaded once, only when the bridge is absent and nothing has been
+	// loaded or generated yet. A local session with the bridge running is
+	// untouched.
+	const demoSeeded = useRef(false);
+	useEffect(() => {
+		if (demoSeeded.current) return;
+		if (!bridge || bridge.ok) return;
+		if (!rigA || motion || motionBusy) return;
+		demoSeeded.current = true;
+		// Loaded, not played: the clip walks the subject out of the default
+		// framing, so autoplay would greet a first-time visitor with an empty
+		// room. Frame 0 is composed; PLAYBACK is one click away.
+		loadMotion(DEMO_MOTION_URL, DEMO_MOTION_PROMPT).catch(() => {
+			/* the seed is a nicety, never a failure the visitor must act on */
+		});
+	}, [bridge, rigA, motion, motionBusy]);
+
 	function clearMotion() {
 		setMotion(null);
 		setMotionError("");
@@ -1831,6 +1935,49 @@ globalThis.playMode = centerTab === "play";
 			z: motion.anchorZ + offset.z,
 		};
 	}, [motion, tlFrame]);
+
+	// The subject's full per-frame scene trajectory — what the follow camera
+	// is derived from. Without a loaded motion the subject stands still and
+	// the follow camera simply composes a static frame.
+	const subjectTrack = useMemo(() => {
+		if (!followCam.enabled) return null;
+		const frames = Math.max(tlFrameCount, 1);
+		if (!motion) return Array.from({ length: frames }, () => ({ x: charA.x, z: charA.z }));
+		const a = Math.min(motion.anchorFrame, motion.frames - 1);
+		return Array.from({ length: frames }, (_, f) => {
+			const ff = Math.min(f, motion.frames - 1);
+			const offset = toSceneRootOffset(
+				motion.rootPos[ff * 3] - motion.rootPos[a * 3],
+				motion.rootPos[ff * 3 + 2] - motion.rootPos[a * 3 + 2],
+				motion.rotationDeg,
+			);
+			return { x: motion.anchorX + offset.x, z: motion.anchorZ + offset.z };
+		});
+	}, [followCam.enabled, motion, tlFrameCount, charA.x, charA.z]);
+
+	// The dense rail (spline through the drawn control points) — shared by
+	// the follow controller and the Top-View display.
+	const railCurve = useMemo(() => (cameraRail ? buildRail(cameraRail) : null), [cameraRail]);
+
+	const followTrack = useMemo(() => {
+		if (!followCam.enabled || !subjectTrack) return null;
+		const yaw = (charA.rot * Math.PI) / 180;
+		const params = {
+			distance: followCam.distance,
+			height: followCam.height,
+			response: followCam.response,
+			lead: followCam.lead,
+			initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) },
+		};
+		return railCurve
+			? buildRailFollowTrack(subjectTrack, tlFps, railCurve, params)
+			: buildFollowTrack(subjectTrack, tlFps, params);
+	}, [followCam, subjectTrack, railCurve, tlFps, charA.rot]);
+
+	// The follow camera owns the shot camera in the same situations key
+	// following would: never while an authoring mode holds the viewport.
+	const followCamActive =
+		followCam.enabled && !!followTrack && (centerTab === "play" || (!ikMode && !waypointMode && !posing));
 
 	// Implied locomotion speed per authored segment (@ 20 fps). Shown in the
 	// timeline hint so a path that forces a crawl or a sprint is visible
@@ -2178,7 +2325,25 @@ globalThis.playMode = centerTab === "play";
 		}
 		// Prompt clips are real generation blocks. Gaps inherit the current
 		// prompt so the bridge always receives one contiguous 0..N sequence.
+		// Built BEFORE the root-path judge: whether the rollout is chained
+		// changes which window limit binds the path (per block, not per clip).
 		const clipFrames = duration * 20;
+		const segments = [];
+		let cursor = 0;
+		const sourcePromptClips = promptClipsOverride
+			.filter((clip) => clip.text.trim())
+			.sort((a, b) => a.startFrame - b.startFrame);
+		for (const clip of sourcePromptClips) {
+			const startFrame = Math.max(cursor, Math.min(clipFrames, clip.startFrame));
+			const endFrame = Math.max(startFrame, Math.min(clipFrames, clip.endFrame));
+			if (startFrame > cursor) segments.push({ startFrame: cursor, endFrame: startFrame, prompt });
+			if (endFrame - startFrame >= 3) segments.push({ startFrame, endFrame, prompt: clip.text.trim() || prompt });
+			cursor = Math.max(cursor, endFrame);
+			if (cursor >= clipFrames) break;
+		}
+		if (cursor < clipFrames) segments.push({ startFrame: cursor, endFrame: clipFrames, prompt });
+		if (segments.length === 0) segments.push({ startFrame: 0, endFrame: clipFrames, prompt });
+		const hasPromptSchedule = segments.length > 1;
 		const rootPath = waypointMode
 			? [{ frame: 0, x: charA.x, z: charA.z, heading: null }, ...waypoints]
 			: [];
@@ -2197,11 +2362,20 @@ globalThis.playMode = centerTab === "play";
 			}
 			// Placement-time checks can be invalidated afterwards (removing a
 			// middle pin merges two legs; the duration field can grow), so the
-			// whole path is re-judged at the door.
-			const pathVerdict = judgeAuthoredPath(rootPath, 20, clipFrames);
+			// whole path is re-judged at the door. A prompt schedule chains
+			// the rollout block by block, so the trained window binds each
+			// block instead of the whole clip.
+			const pathVerdict = judgeAuthoredPath(rootPath, 20, clipFrames, { chained: hasPromptSchedule });
 			if (pathVerdict.errors.length > 0) {
 				setToast(`Not generated — ${pathVerdict.errors[0]}`);
 				return;
+			}
+			if (hasPromptSchedule) {
+				const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PATH_LIMITS.clipMaxS * 20);
+				if (longBlock) {
+					setToast(`Not generated — with a root path every prompt block must stay within ${PATH_LIMITS.clipMaxS} s (ARDY's trained window per chained call); split the ${((longBlock.endFrame - longBlock.startFrame) / 20).toFixed(1)} s block`);
+					return;
+				}
 			}
 			if (pathVerdict.warnings.length > 0) setToast(`⚠ ${pathVerdict.warnings[0]}`);
 		}
@@ -2212,26 +2386,10 @@ globalThis.playMode = centerTab === "play";
 		// track (see the sign-convention notes in ardy/waypoints.js).
 		const alignedRoot = waypointMode ? alignArdyPath(rootPath, charA.rot, MAX_WAYPOINTS) : null;
 		const ardyWaypoints = alignedRoot ? alignedRoot.waypoints : [];
-		const segments = [];
-		let cursor = 0;
-		const sourcePromptClips = promptClipsOverride
-			.filter((clip) => clip.text.trim())
-			.sort((a, b) => a.startFrame - b.startFrame);
-		for (const clip of sourcePromptClips) {
-			const startFrame = Math.max(cursor, Math.min(clipFrames, clip.startFrame));
-			const endFrame = Math.max(startFrame, Math.min(clipFrames, clip.endFrame));
-			if (startFrame > cursor) segments.push({ startFrame: cursor, endFrame: startFrame, prompt });
-			if (endFrame - startFrame >= 3) segments.push({ startFrame, endFrame, prompt: clip.text.trim() || prompt });
-			cursor = Math.max(cursor, endFrame);
-			if (cursor >= clipFrames) break;
-		}
-		if (cursor < clipFrames) segments.push({ startFrame: cursor, endFrame: clipFrames, prompt });
-		if (segments.length === 0) segments.push({ startFrame: 0, endFrame: clipFrames, prompt });
 
 		// Capture every block boundary plus every authored IK key. Each sample
 		// is the composite base-motion + IK pose at that frame and carries the
 		// live ARDY root recovered from positional skinning.
-		const hasPromptSchedule = segments.length > 1;
 		const editedSegments = motion && hasPromptSchedule
 			? segments.filter((segment) =>
 				ikFrames.some((frame) => frame >= segment.startFrame && frame < segment.endFrame)
@@ -2295,8 +2453,14 @@ globalThis.playMode = centerTab === "play";
 			const body = { prompt, duration, posePin: shouldPin };
 			if (shouldPin && !hasBlockEdits) body.poses = poses;
 			if (ardySeed !== "") body.seed = Number(ardySeed);
-			if (waypointMode) body.waypoints = ardyWaypoints;
-			else if (hasBlockEdits) {
+			if (waypointMode) {
+				body.waypoints = ardyWaypoints;
+				// A root path and a prompt schedule now travel TOGETHER: the
+				// sequence generator threads the Root2D constraint set through
+				// its chained calls (the interactive demo's pattern), so
+				// neither authored surface is silently dropped any more.
+				if (hasPromptSchedule && !hasBlockEdits) body.segments = segments;
+			} else if (hasBlockEdits) {
 				if (!motion?.url) {
 					throw new Error("The current motion has no bridge source; generate the prompt blocks once before regenerating IK edits");
 				}
@@ -2573,7 +2737,8 @@ globalThis.playMode = centerTab === "play";
 								// PlayView is the finished-output player: the move always rides
 								// the playhead there. The Follow toggle and authoring-mode gates
 								// only protect the Scene tab's manipulation surfaces.
-								following={cameraKeys.length >= 1 && (centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing))}
+								// A follow cam owns the shot camera outright; keys resume when it is off.
+								following={!followCamActive && cameraKeys.length >= 1 && (centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing))}
 								followFrame={tlFrame}
 								fps={tlFps}
 								keys={cameraKeys}
@@ -2585,6 +2750,14 @@ globalThis.playMode = centerTab === "play";
 									setMovePlaying(false);
 									setFovDeg(Math.round(finalFov * 10) / 10);
 								}}
+							/>
+							<FollowCamRig
+								enabled={followCamActive && !movePlaying}
+								frame={tlFrame}
+								track={followTrack}
+								camRef={shotCamRef}
+								look={look}
+								isInterrupted={() => flyingRef.current}
 							/>
 							{/* Camera stays live in IK mode but drives the POSER camera,
 							    never the shot camera: the handle layer only consumes
@@ -2647,6 +2820,16 @@ globalThis.playMode = centerTab === "play";
 								onMoveSceneObject={changeSceneObject}
 								onObjectMoveStart={beginSceneTransaction}
 								onObjectMoveEnd={endSceneTransaction}
+								cameraRailPoints={railCurve ? railCurve.points : null}
+								railDraw={railDraw}
+								onRailStroke={(stroke) => {
+									const simplified = simplifyStroke(stroke, 0.12);
+									if (simplified.length < 2) return;
+									setCameraRail(simplified);
+									setRailDraw(false);
+									const curve = buildRail(simplified);
+									setToast(`Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
+								}}
 							/>
 							{/* Object gizmo: the shot pane's direct manipulation. Off while
 							    the plan owns the big pane (the pucks are the handles there)
@@ -2672,6 +2855,7 @@ globalThis.playMode = centerTab === "play";
 							{/* Authoring chrome: the grid and pins belong to the Scene tab
 							    only — PlayView is the finished output and shows none of it. */}
 							{centerTab === "scene" && <SceneGrid />}
+							{centerTab === "scene" && railCurve && <CameraRailScenePreview points={railCurve.points} />}
 							{waypointMode && centerTab === "scene" && (
 								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />
 							)}
@@ -2886,6 +3070,48 @@ globalThis.playMode = centerTab === "play";
 									? `locked-off hold from frame ${cameraKeys[0].frame} — click the Camera lane at another frame to add a move`
 									: "click the Camera timeline lane to key the current framing at that frame"}
 							</div>
+						)}
+
+						<h3 className="move-head">Follow cam</h3>
+						<div className="move-ab">
+							<button
+								type="button"
+								className="btn ghost"
+								title="Derive the camera from the subject's trajectory: a steadicam trailing behind, or a dolly on a drawn rail. Keys pause while it owns the camera"
+								onClick={() => setFollowCam((c) => ({ ...c, enabled: !c.enabled }))}
+							>
+								{followCam.enabled ? "Follow ●" : "Follow cam"}
+							</button>
+							<button
+								type="button"
+								className={"btn ghost" + (railDraw ? " rec-live" : "")}
+								disabled={!followCam.enabled}
+								title="Draw the camera rail in the Top-View: drag one stroke across the deck. Esc mid-stroke cancels"
+								onClick={() => {
+									const next = !railDraw;
+									setRailDraw(next);
+									if (next) {
+										setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
+										setToast("Draw the rail in the Top-View — drag one stroke across the deck");
+									}
+								}}
+							>
+								{railDraw ? "Drawing…" : "✏ Rail"}
+							</button>
+							<button type="button" className="btn ghost" disabled={!cameraRail} onClick={() => setCameraRail(null)}>
+								Clear rail
+							</button>
+						</div>
+						{followCam.enabled && (
+							<>
+								<Slider label="Distance" min={1} max={8} step={0.1} value={followCam.distance} unit=" m" onChange={(distance) => setFollowCam((c) => ({ ...c, distance }))} />
+								<Slider label="Height" min={0.4} max={4} step={0.05} value={followCam.height} unit=" m" onChange={(height) => setFollowCam((c) => ({ ...c, height }))} />
+								<Slider label="Response" min={0.2} max={2} step={0.05} value={followCam.response} unit=" s" onChange={(response) => setFollowCam((c) => ({ ...c, response }))} />
+								<Slider label="Lead" min={0} max={0.6} step={0.05} value={followCam.lead} unit=" s" onChange={(lead) => setFollowCam((c) => ({ ...c, lead }))} />
+								<div className="move-slate" title="what the rig is doing, derived from the setup — a rail makes it a dolly, none makes it a steadicam">
+									{railCurve ? `DOLLY ON RAIL · ${railCurve.length.toFixed(1)} m` : "STEADICAM FOLLOW"} · HOLD {followCam.distance.toFixed(1)} m
+								</div>
+							</>
 						)}
 					</Foldout>
 
@@ -3140,8 +3366,10 @@ globalThis.playMode = centerTab === "play";
 					) : (
 						<>
 							<p className="ardy-hint">
-								ARDY generation needs the dev bridge — start it with{" "}
-								<code>node tools/ardy/bridge.mjs</code> in the repo root, then reload.
+								Motion generation runs on your own machine, so it is off here. The clip
+								on the timeline was generated ahead of time; staging, paths, cameras and
+								playback all work without it. To generate your own, clone the repo and
+								start the bridge with <code>node tools/ardy/bridge.mjs</code>.
 							</p>
 							{bridge.reason && <p className="ardy-hint">{bridge.reason}</p>}
 						</>

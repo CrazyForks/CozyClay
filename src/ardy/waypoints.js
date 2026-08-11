@@ -325,7 +325,7 @@ export function judgeNextWaypoint(last, candidate, fps, prev = null) {
  * placement-time checks can be invalidated later by removing a middle pin.
  * @returns {{errors: string[], warnings: string[]}}
  */
-export function judgeAuthoredPath(rootPath, fps, clipFrames) {
+export function judgeAuthoredPath(rootPath, fps, clipFrames, { chained = false } = {}) {
 	const errors = [];
 	const warnings = [];
 	const ordered = [...rootPath].sort((a, b) => a.frame - b.frame);
@@ -334,9 +334,12 @@ export function judgeAuthoredPath(rootPath, fps, clipFrames) {
 		if (!verdict.ok) errors.push(`leg ${i} (frame ${ordered[i - 1].frame}->${ordered[i].frame}): ${verdict.error}`);
 		else for (const warning of verdict.warnings) warnings.push(`leg ${i}: ${warning}`);
 	}
-	if (clipFrames / fps > PATH_LIMITS.clipMaxS) {
+	// The trained window binds ONE model call. A chained rollout (a prompt
+	// schedule) makes a call per block, so the whole clip may exceed it —
+	// each block is capped separately by the bridge and the box generator.
+	if (!chained && clipFrames / fps > PATH_LIMITS.clipMaxS) {
 		errors.push(
-			`a root path generates the whole clip in one model call, and ARDY's trained window is ${PATH_LIMITS.clipMaxS} s — shorten the clip to ${PATH_LIMITS.clipMaxS} s or drop the path`,
+			`a root path generates the whole clip in one model call, and ARDY's trained window is ${PATH_LIMITS.clipMaxS} s — shorten the clip to ${PATH_LIMITS.clipMaxS} s, or split the prompt into blocks so the path rides a chained rollout`,
 		);
 	}
 	const tail = (clipFrames - 1 - (ordered[ordered.length - 1]?.frame ?? 0)) / fps;

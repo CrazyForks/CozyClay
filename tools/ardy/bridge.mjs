@@ -510,7 +510,18 @@ function validateGenerate(body) {
 		const error = validateSegments(body.segments, clipFrames);
 		if (error) return error;
 		if (posePinned) return "field 'segments' uses autoregressive history and requires posePin:false";
-		if (body.waypoints !== undefined) return "field 'segments' cannot be combined with waypoints";
+		// segments + waypoints run TOGETHER on the sequence generator: the
+		// Root2D constraint set is built over the whole rollout and each
+		// chained call sees its own slice (the interactive demo's pattern).
+		// The trained window then binds each segment call, not the total.
+		if (body.waypoints !== undefined) {
+			for (let i = 0; i < body.segments.length; i += 1) {
+				const segment = body.segments[i];
+				if (segment.endFrame - segment.startFrame > WAYPOINT_CLIP_MAX_S * FPS) {
+					return `field 'segments[${i}]' must be <= ${WAYPOINT_CLIP_MAX_S} seconds when 'waypoints' are present (each chained call must fit ARDY's trained window)`;
+				}
+			}
+		}
 	}
 	if (body.regenerateSegments !== undefined) {
 		const error = validateRegenerateSegments(body.regenerateSegments, clipFrames);
@@ -558,11 +569,13 @@ function validateGenerate(body) {
 		}
 	}
 	if (body.waypoints !== undefined) {
-		// A root path runs the constrained generator: one model sampling call
-		// for the whole clip. ARDY's trained window is 10 s — beyond it the
-		// later frames are outside the model's temporal horizon and degrade.
-		if (body.duration > WAYPOINT_CLIP_MAX_S) {
-			return `field 'duration' must be <= ${WAYPOINT_CLIP_MAX_S} seconds when 'waypoints' are present (one-shot constrained generation; ARDY's trained window)`;
+		// Without segments, a root path runs the ONE-SHOT constrained
+		// generator: a single model sampling call for the whole clip, so the
+		// clip itself must fit ARDY's 10 s trained window. With segments the
+		// sequence generator chains calls and the per-segment check above is
+		// the binding one instead.
+		if (body.segments === undefined && body.duration > WAYPOINT_CLIP_MAX_S) {
+			return `field 'duration' must be <= ${WAYPOINT_CLIP_MAX_S} seconds when 'waypoints' are present without 'segments' (one-shot constrained generation; ARDY's trained window)`;
 		}
 		const error = validateWaypoints(body.waypoints, clipFrames);
 		if (error) return error;
@@ -1062,10 +1075,19 @@ async function handleGenerate(req, res) {
 					String((segment.endFrame - segment.startFrame) / FPS)
 				);
 			}
+			// Root waypoints ride the same chained rollout (rollout-global
+			// frames): the sequence generator slices the constraint set per
+			// segment call, so a path and a prompt schedule coexist.
+			for (const wp of body.waypoints ?? []) {
+				args.push("--root-2d", String(wp.frame), String(wp.x), String(wp.z), wp.heading === null ? "none" : String(wp.heading));
+			}
 			if (Number.isInteger(body.seed)) args.push("--seed", String(body.seed));
 			if (body.cpu === true) args.push("--cpu");
 			args.push("--output", outNpzPath);
-			sendStatus(`[bridge] generating ${segments.length} blocks in one autoregressive ARDY session`);
+			sendStatus(
+				`[bridge] generating ${segments.length} blocks in one autoregressive ARDY session` +
+				(body.waypoints?.length ? ` with a ${body.waypoints.length}-pin root path` : "")
+			);
 
 			const box = spawnTracked("bash", args, { cwd: REPO, detached: true, env: boxEnv() });
 			const last = { stderr: "", stdout: "" };

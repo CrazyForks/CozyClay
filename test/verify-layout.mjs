@@ -67,6 +67,12 @@ expect("timeline IK text controls size to their labels", css.includes(".tl-btn.i
 // authored pins can never claim frame 0 or earlier.
 expect("Subject 1 exclusively owns the frame zero root start", app.includes("{ frame: 0, x: charA.x, z: charA.z, heading: null }") && app.includes("waypoint.frame <= 0") && !app.includes("Frame 0 is the start of the root path — it can't be removed"));
 expect("root guidance sends the aligned, densified path to ARDY", app.includes("alignArdyPath(rootPath, charA.rot") && app.includes("body.waypoints = ardyWaypoints"));
+expect(
+	"a root path and a prompt schedule are sent together, judged per block",
+	app.includes("if (hasPromptSchedule && !hasBlockEdits) body.segments = segments;") &&
+	app.includes("judgeAuthoredPath(rootPath, 20, clipFrames, { chained: hasPromptSchedule })") &&
+	app.includes("every prompt block must stay within"),
+);
 expect("generated motion anchors frame zero at Subject 1", app.includes("anchorX: charA.x") && app.includes("anchorZ: charA.z") && app.includes("anchorFrame: 0"));
 expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));
 expect("Top-View root path draws from Subject 1 without a duplicate marker", planview.includes("const pathPoints = [{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));

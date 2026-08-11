@@ -18,18 +18,31 @@ usage() {
   cat >&2 <<'EOF'
 usage: run-sequence-on-box.sh \
        --segment "<prompt>" <seconds> [--segment "<prompt>" <seconds> ...] \
+       [--root-2d <frame> <x> <z> <heading|none> ...] \
        [--seed <N>] [--cpu] [--output <local.npz>] [--dry-run]
 EOF
   exit 2
 }
 
 SEGMENTS=()
+ROOT2D=()
 SEED=""
 OUTPUT=""
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --root-2d)
+      [[ $# -ge 5 ]] || { echo "run-sequence-on-box: --root-2d needs FRAME X Z HEADING" >&2; usage; }
+      [[ "$2" =~ ^[0-9]+$ ]] || { echo "run-sequence-on-box: --root-2d frame must be a non-negative integer, got '$2'" >&2; exit 1; }
+      [[ "$3" =~ ^-?[0-9]+([.][0-9]+)?$ && "$4" =~ ^-?[0-9]+([.][0-9]+)?$ ]] || {
+        echo "run-sequence-on-box: --root-2d X Z must be numbers, got '$3' '$4'" >&2; exit 1;
+      }
+      [[ "$5" == "none" || "$5" =~ ^-?[0-9]+([.][0-9]+)?$ ]] || {
+        echo "run-sequence-on-box: --root-2d heading must be a number or 'none', got '$5'" >&2; exit 1;
+      }
+      ROOT2D+=("$2" "$3" "$4" "$5")
+      shift 5 ;;
     --segment)
       [[ $# -ge 3 ]] || { echo "run-sequence-on-box: --segment needs PROMPT SECONDS" >&2; usage; }
       [[ -n "${2//[[:space:]]/}" ]] || { echo "run-sequence-on-box: segment prompt must not be empty" >&2; exit 1; }
@@ -79,12 +92,19 @@ if ! ssh "${SSH_OPTS[@]}" "$HOST" ":" </dev/null; then
 fi
 echo "run-sequence-on-box: ssh to ${HOST} ok"
 
-if ! ssh "${SSH_OPTS[@]}" "$HOST" \
-  "test -x ${VENV_PY} && test -f ${REMOTE}/scripts/cclay_sequence_generate.py" </dev/null; then
-  echo "run-sequence-on-box: missing ${VENV_PY} or ${REMOTE}/scripts/cclay_sequence_generate.py on ${HOST}" >&2
+if ! ssh "${SSH_OPTS[@]}" "$HOST" "test -x ${VENV_PY}" </dev/null; then
+  echo "run-sequence-on-box: missing ${VENV_PY} on ${HOST}" >&2
   exit 1
 fi
-echo "run-sequence-on-box: sequence generator present on ${HOST}"
+
+# The generator is cclay-owned: the source of truth is the repo copy next to
+# this script, synced up on every run so the box can never drift behind it.
+if ! ssh "${SSH_OPTS[@]}" "$HOST" "cat > ${REMOTE}/scripts/cclay_sequence_generate.py" \
+  < "${HERE}/cclay_sequence_generate.py"; then
+  echo "run-sequence-on-box: could not sync cclay_sequence_generate.py to ${HOST}" >&2
+  exit 1
+fi
+echo "run-sequence-on-box: sequence generator synced to ${HOST}"
 
 if ! ENCODER_CODE="$(ssh "${SSH_OPTS[@]}" "$HOST" \
   "curl -s -o /dev/null -w '%{http_code}' -m 10 ${ENCODER_URL}" </dev/null)"; then
@@ -105,6 +125,10 @@ build_remote_cmd() {
   cmd="cd ${REMOTE} && ${CUDA_ENV}${VENV_PY} scripts/cclay_sequence_generate.py"
   for ((i = 0; i < ${#SEGMENTS[@]}; i += 2)); do
     cmd+=" --segment $(printf '%q' "${SEGMENTS[$i]}") $(printf '%q' "${SEGMENTS[$((i + 1))]}")"
+  done
+  for ((i = 0; i < ${#ROOT2D[@]}; i += 4)); do
+    cmd+=" --root-2d $(printf '%q' "${ROOT2D[$i]}") $(printf '%q' "${ROOT2D[$((i + 1))]}")"
+    cmd+=" $(printf '%q' "${ROOT2D[$((i + 2))]}") $(printf '%q' "${ROOT2D[$((i + 3))]}")"
   done
   cmd+=" --output $(printf '%q' "${tmp_dir}/out")"
   [[ -z "$SEED" ]] || cmd+=" --seed $(printf '%q' "$SEED")"

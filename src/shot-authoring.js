@@ -29,8 +29,17 @@ function validFraming(framing) {
 	);
 }
 
-export function serializeShotAuthoring({ cameraKeys = [], waypoints = [], frameCount = null }) {
-	return JSON.stringify({ version: 1, frameCount, cameraKeys, waypoints });
+/** follow-cam parameter bounds: anything outside is a corrupt write, clamp */
+const FOLLOW_BOUNDS = {
+	distance: [0.5, 15],
+	height: [0.2, 6],
+	response: [0.1, 3],
+	lead: [0, 1],
+};
+const RAIL_MAX_POINTS = 512;
+
+export function serializeShotAuthoring({ cameraKeys = [], waypoints = [], frameCount = null, followCam = null, cameraRail = null }) {
+	return JSON.stringify({ version: 1, frameCount, cameraKeys, waypoints, followCam, cameraRail });
 }
 
 /**
@@ -81,5 +90,24 @@ export function loadShotAuthoring(raw) {
 	}
 	const waypoints = [...waypointsByFrame.values()].sort((a, b) => a.frame - b.frame);
 
-	return { frameCount, cameraKeys, waypoints };
+	let followCam = null;
+	if (parsed.followCam && typeof parsed.followCam === "object" && !Array.isArray(parsed.followCam)) {
+		followCam = { enabled: parsed.followCam.enabled === true };
+		for (const [key, [min, max]] of Object.entries(FOLLOW_BOUNDS)) {
+			const value = parsed.followCam[key];
+			if (finite(value)) followCam[key] = Math.max(min, Math.min(max, value));
+		}
+	}
+
+	let cameraRail = null;
+	if (Array.isArray(parsed.cameraRail)) {
+		const points = parsed.cameraRail
+			.filter((point) => point && finite(point.x) && finite(point.z))
+			.slice(0, RAIL_MAX_POINTS)
+			.map((point) => ({ x: point.x, z: point.z }));
+		// one point is not a rail; keep null so the app falls back to free follow
+		if (points.length >= 2) cameraRail = points;
+	}
+
+	return { frameCount, cameraKeys, waypoints, followCam, cameraRail };
 }

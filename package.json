@@ -23,7 +23,8 @@
 		"bridge": "node tools/ardy/bridge.mjs",
 		"dev:full": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
 		"qa:browser": "node tools/qa-browser.mjs --",
-		"test:shot-authoring": "node test/verify-shot-authoring.mjs"
+		"test:shot-authoring": "node test/verify-shot-authoring.mjs",
+		"test:camera-follow": "node test/verify-camera-follow.mjs"
 	},
 	"license": "GPL-3.0-or-later",
 	"type": "module",
