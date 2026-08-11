@@ -13,7 +13,7 @@ import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint, toSceneRootOffset,
 import { FlyControls, aimAt, forwardFrom } from "./controls.jsx";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
-import { DualRender, GIZMO_LAYER } from "./dualview.jsx";
+import { DualRender, GIZMO_LAYER, SHOT_ASPECT, fitAspect } from "./dualview.jsx";
 import { Room, StageLights } from "./room.jsx";
 import { SetProps } from "./props.jsx";
 import {
@@ -1288,6 +1288,131 @@ globalThis.playMode = centerTab === "play";
 	// Follow off keeps the camera-only preview on its own clock.
 	const followPreviewArmed = moveFollow && cameraKeys.length >= 1 && !ikMode && !waypointMode && !posing;
 	const previewActive = movePlaying || (followPreviewArmed && tlPlaying);
+
+	/* --------------------------- shot video export --------------------------- */
+	// Record = play the finished piece in PlayView while mirroring the shot
+	// pane into an offscreen 16:9 canvas that MediaRecorder encodes. The mirror
+	// crops the letterbox bars, so the file is exactly the frame the shot
+	// camera renders — camera move, character motion and the ink pass, none of
+	// the editor chrome. Recording rides the same clock as playback and stops
+	// itself when the playhead wraps at the clip end.
+	const [recState, setRecState] = useState("idle"); // "idle" | "recording"
+	const recRef = useRef(null);
+	const tlFrameRef = useRef(0);
+	tlFrameRef.current = tlFrame;
+	const tlPlayingRef = useRef(false);
+	tlPlayingRef.current = tlPlaying;
+	const playModeRef = useRef(false);
+	playModeRef.current = centerTab === "play";
+
+	function stopShotRecording(reason) {
+		const rec = recRef.current;
+		if (!rec) return;
+		recRef.current = null;
+		cancelAnimationFrame(rec.raf);
+		if (reason === "abort") rec.aborted = true;
+		setTlPlaying(false);
+		setRecState("idle");
+		if (rec.recorder.state !== "inactive") rec.recorder.stop();
+		else if (!rec.armed) setToast("Recording cancelled before any frame was captured");
+	}
+
+	function toggleShotRecording() {
+		if (recRef.current) {
+			stopShotRecording("manual");
+			return;
+		}
+		const stage = stageRef.current;
+		const glCanvas = stage ? stage.querySelector("canvas") : null;
+		if (!glCanvas) return;
+		// mp4 first where the platform encoder offers it (Safari, newer Chrome),
+		// webm as the everywhere-else answer. No support at all = no feature.
+		const MIMES = ["video/mp4;codecs=avc1.640028", "video/mp4", "video/webm;codecs=vp9", "video/webm"];
+		const mime = typeof MediaRecorder !== "undefined" ? MIMES.find((m) => MediaRecorder.isTypeSupported(m)) : null;
+		if (!mime) {
+			setToast("This browser cannot encode video (MediaRecorder unavailable)");
+			return;
+		}
+		const mirror = document.createElement("canvas");
+		mirror.width = 1600;
+		mirror.height = 900;
+		const ctx = mirror.getContext("2d");
+		const recorder = new MediaRecorder(mirror.captureStream(30), { mimeType: mime, videoBitsPerSecond: 12_000_000 });
+		const chunks = [];
+		const slate = (moveSequence?.slate ?? "shot").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "shot";
+		const rec = { recorder, raf: 0, armed: false, started: false, lastFrame: -1, warmup: 2, aborted: false };
+		recorder.ondataavailable = (e) => {
+			if (e.data && e.data.size > 0) chunks.push(e.data);
+		};
+		recorder.onstop = () => {
+			if (rec.aborted || chunks.length === 0) return;
+			const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
+			const name = `cozyclay-${slate}.${ext}`;
+			const url = URL.createObjectURL(new Blob(chunks, { type: mime }));
+			const anchor = document.createElement("a");
+			anchor.href = url;
+			anchor.download = name;
+			anchor.click();
+			setTimeout(() => URL.revokeObjectURL(url), 10_000);
+			setToast(`Saved ${name}`);
+		};
+		recRef.current = rec;
+		setRecState("recording");
+		// PlayView is the finished-output player, so record there: no gizmo, no
+		// inset, and the move rides the playhead regardless of Follow. Playing
+		// is forced even without a loaded motion so a camera-only move records.
+		setCenterTab("play");
+		setTlFrame(0);
+		setTlPlaying(true);
+
+		const tick = () => {
+			if (recRef.current !== rec) return;
+			rec.raf = requestAnimationFrame(tick);
+			const main = mainPaneRef.current;
+			if (!playModeRef.current || !main || !stage) return;
+			const frame = tlFrameRef.current;
+			// clip end: the play clock wraps to 0 after the last frame
+			if (rec.started && frame < rec.lastFrame) {
+				stopShotRecording("end");
+				return;
+			}
+			// user paused from the transport: keep what was captured so far
+			if (rec.started && !tlPlayingRef.current) {
+				stopShotRecording("manual");
+				return;
+			}
+			rec.lastFrame = Math.max(rec.lastFrame, frame);
+			if (frame > 0) rec.started = true;
+			const stageRect = stage.getBoundingClientRect();
+			const mainRect = main.getBoundingClientRect();
+			const pane = { x: mainRect.left - stageRect.left, y: mainRect.top - stageRect.top, w: mainRect.width, h: mainRect.height };
+			if (pane.w < 2 || pane.h < 2) return;
+			// a couple of ticks for the PlayView layout + first playMode draw to
+			// land, so the file never opens on a stale Scene-tab composite
+			if (rec.warmup > 0) {
+				rec.warmup -= 1;
+				return;
+			}
+			const img = fitAspect(pane, SHOT_ASPECT);
+			const scale = glCanvas.width / stageRect.width;
+			ctx.drawImage(
+				glCanvas,
+				img.x * scale,
+				img.y * scale,
+				img.w * scale,
+				img.h * scale,
+				0,
+				0,
+				mirror.width,
+				mirror.height,
+			);
+			if (!rec.armed) {
+				rec.armed = true;
+				recorder.start();
+			}
+		};
+		rec.raf = requestAnimationFrame(tick);
+	}
 
 	function captureCurrentFraming() {
 		const cam = shotCamRef.current;
@@ -2721,6 +2846,15 @@ globalThis.playMode = centerTab === "play";
 							</button>
 							<button type="button" className="btn ghost" disabled={cameraKeys.length < 1} onClick={clearMove}>
 								Clear
+							</button>
+							<button
+								type="button"
+								className={"btn ghost" + (recState === "recording" ? " rec-live" : "")}
+								disabled={cameraKeys.length < 1 && !motion}
+								title="Play the piece in PlayView and save it as a video file — camera move and character motion, no editor chrome"
+								onClick={toggleShotRecording}
+							>
+								{recState === "recording" ? "■ Stop rec" : "● Record"}
 							</button>
 						</div>
 						{moveSequence ? (

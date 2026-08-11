@@ -4270,11 +4270,13 @@ input[type=range]::-moz-range-thumb {
    line underneath, and a two-up start/end pair in the result modal. */
 .move-ab {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 6px;
 }
 
 .move-ab .btn {
 	flex: 1;
+	min-width: 62px;
 	padding: 6px 0;
 	font-size: 11px;
 }
@@ -4282,6 +4284,11 @@ input[type=range]::-moz-range-thumb {
 .move-ab .btn:disabled {
 	opacity: .45;
 	cursor: default;
+}
+
+.move-ab .btn.rec-live {
+	color: #e2574d;
+	border-color: rgba(226, 87, 77, 0.6);
 }
 
 .move-slate {
