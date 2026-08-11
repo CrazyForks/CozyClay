@@ -1,7 +1,7 @@
 {
 	"name": "cozyclay",
 	"version": "1.0.0",
-	"description": "A browser-based 3D staging and ARDY motion studio for planning character performances.",
+	"description": "Browser-based 3D staging studio: block a scene, pose characters, author camera moves and cuts, and preview generated motion.",
 	"scripts": {
 		"dev": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
 		"dev:ui": "vite",
@@ -24,20 +24,57 @@
 		"dev:full": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
 		"qa:browser": "node tools/qa-browser.mjs --",
 		"test:shot-authoring": "node test/verify-shot-authoring.mjs",
-		"test:camera-follow": "node test/verify-camera-follow.mjs"
+		"test:camera-follow": "node test/verify-camera-follow.mjs",
+		"prepack": "npm run build"
 	},
 	"license": "GPL-3.0-or-later",
 	"type": "module",
-	"dependencies": {
+	"dependencies": {},
+	"devDependencies": {
 		"@react-three/drei": "^10.7.7",
 		"@react-three/fiber": "^9.7.0",
+		"@vitejs/plugin-react": "^6.0.5",
 		"react": "^19.2.8",
 		"react-dom": "^19.2.8",
-		"three": "^0.185.1"
-	},
-	"devDependencies": {
-		"@vitejs/plugin-react": "^6.0.5",
+		"three": "^0.185.1",
 		"vite": "^8.2.0"
 	},
-	"private": true
+	"bin": {
+		"cozyclay": "bin/cozyclay.mjs"
+	},
+	"files": [
+		"bin",
+		"dist",
+		"src",
+		"tools",
+		"README.md",
+		"LICENSE",
+		"THIRD_PARTY_NOTICES.md"
+	],
+	"engines": {
+		"node": ">=22"
+	},
+	"keywords": [
+		"3d",
+		"previz",
+		"animation",
+		"blocking",
+		"threejs",
+		"react-three-fiber",
+		"webgl",
+		"motion",
+		"ardy",
+		"storyboard"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/HaD0Yun/CozyClay.git"
+	},
+	"homepage": "https://had0yun.github.io/CozyClay/",
+	"bugs": {
+		"url": "https://github.com/HaD0Yun/CozyClay/issues"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
 }

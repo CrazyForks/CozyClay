@@ -1,0 +1,16 @@
+# npm falls back to .gitignore when this file is absent, and .gitignore drops
+# dist/ - the one thing this package exists to ship. So the publish filter is
+# spelled out here instead.
+.github/
+.gjc/
+artifacts/
+docs/
+fixtures/
+test/
+node_modules/
+tools/ardy/out/
+public/
+*.log
+.DS_Store
+__pycache__/
+*.pyc

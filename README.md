@@ -15,11 +15,31 @@ CozyClay can connect to [NVIDIA ARDY](https://github.com/nv-tlabs/ardy) for moti
 ## Requirements
 
 - Node.js 22 or newer
-- npm
+- npm, or bun
 - A Chromium-based browser
 - Optional: an SSH-accessible NVIDIA machine running ARDY, for motion generation
 
 ## Quick start
+
+```bash
+npx cozyclay
+# or
+bunx cozyclay
+```
+
+That downloads the built studio and opens it at `http://127.0.0.1:5180`. There is
+nothing to compile and no dependency tree to install. Useful flags:
+`--port 5200`, `--no-open`, `--no-ardy`.
+
+Motion generation is off until you point it at a machine that can run it:
+
+```bash
+CCLAY_ARDY_HOST=user@your-gpu-box npx cozyclay
+```
+
+Everything else, staging through camera work and playback, runs without it.
+
+### From a clone
 
 ```bash
 git clone https://github.com/HaD0Yun/CozyClay.git
