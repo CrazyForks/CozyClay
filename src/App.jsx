@@ -446,9 +446,9 @@ function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
     to the clay floor (#e7e1d7). */
 function SceneGrid() {
 	const grid = useMemo(() => {
-		const helper = new THREE.GridHelper(13, 13, 0xb4a998, 0xccc3b4);
+		const helper = new THREE.GridHelper(13, 13, 0x8f8474, 0xa99f8e);
 		helper.material.transparent = true;
-		helper.material.opacity = 0.4;
+		helper.material.opacity = 0.62;
 		helper.material.depthWrite = false;
 		helper.position.y = 0.002;
 		helper.layers.set(GIZMO_LAYER);
