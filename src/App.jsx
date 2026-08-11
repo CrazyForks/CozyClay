@@ -171,7 +171,7 @@ const DEFAULT_PROMPT_CLIPS = [];
 
 /* ------------------------------------------------------------------ 3D --- */
 
-function Character({ url, position, rot, tint, pose, onRig }) {
+function Character({ url, position, rot, tint, pose, onRig, pickId }) {
 	const fbx = useFBX(url);
 	const model = useMemo(() => {
 		const clone = SkeletonUtils.clone(fbx);
@@ -209,7 +209,10 @@ function Character({ url, position, rot, tint, pose, onRig }) {
 	}, [model, onRig]);
 
 	return (
-		<group position={position} rotation={[0, (rot * Math.PI) / 180, 0]}>
+		// characterPick makes the body a first-class click target: the Scene
+		// picker walks up from any hit mesh, finds the tag, and routes the
+		// selection to the hierarchy so the Inspector owns the controls.
+		<group position={position} rotation={[0, (rot * Math.PI) / 180, 0]} userData={pickId ? { characterPick: pickId } : undefined}>
 			<primitive object={model} />
 		</group>
 	);
@@ -2249,6 +2252,7 @@ globalThis.rect = pane.getBoundingClientRect();
 								tint={CLAY}
 								pose={motion ? null : poseA}
 								onRig={setRigA}
+								pickId="A"
 							/>
 							{showB && (
 								<Character
@@ -2258,6 +2262,7 @@ globalThis.rect = pane.getBoundingClientRect();
 									tint={CLAY_B}
 									pose={poseB}
 									onRig={setRigB}
+									pickId="B"
 								/>
 							)}
 
@@ -2378,7 +2383,11 @@ globalThis.rect = pane.getBoundingClientRect();
 								onChange={changeSceneObject}
 								onDragStart={beginSceneTransaction}
 								onDragEnd={endSceneTransaction}
-								onSelect={(id) => selectHierarchy(id ? `object:${id}` : "props")}
+								onSelect={(id) =>
+									selectHierarchy(
+										id === "char:A" ? "characterA" : id === "char:B" ? "characterB" : id ? `object:${id}` : "props",
+									)
+								}
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
 							/>
 							{/* Authoring chrome: the grid and pins belong to the Scene tab

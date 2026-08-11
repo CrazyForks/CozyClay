@@ -202,6 +202,9 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		if (!hit) return null;
 		for (let node = hit.object; node; node = node.parent) {
 			if (node.userData?.sceneObjectId) return { id: node.userData.sceneObjectId, point: hit.point.clone() };
+			// Characters are click targets too: a namespaced id routes the
+			// selection to the hierarchy, so the Inspector owns the controls.
+			if (node.userData?.characterPick) return { id: `char:${node.userData.characterPick}`, point: hit.point.clone() };
 		}
 		return null; // whatever is in front is set, not an object
 	};
