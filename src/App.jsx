@@ -476,6 +476,10 @@ function CaptureRig({ apiRef, camRef }) {
 				const cam = source.clone();
 				// the transform gizmo is UI: it never reaches an exported frame
 				cam.layers.disable(GIZMO_LAYER);
+				// QA hook: the layer mask the export camera actually renders
+				// with — the browser suite asserts GIZMO_LAYER (the gizmo AND
+				// the selection cage) is never in it.
+				window.__captureCameraMask = cam.layers.mask;
 				cam.aspect = CAPTURE_W / CAPTURE_H;
 				cam.updateProjectionMatrix();
 				const previous = gl.getRenderTarget();
@@ -487,6 +491,23 @@ function CaptureRig({ apiRef, camRef }) {
 				target.dispose();
 				return buffer;
 			},
+		};
+		// QA hook: run one real export render and report what the capture
+		// camera saw — the layer mask plus an amber scan of the 1920x1080
+		// frame (the selection cage's warm tone). Lets the suite prove the
+		// deliverable frame stays free of editor furniture without driving
+		// the whole generation form.
+		window.__captureFrame = () => {
+			const buffer = apiRef.current?.render() ?? null;
+			if (!buffer) return null;
+			let amber = 0;
+			for (let i = 0; i < buffer.length; i += 4) {
+				const r = buffer[i];
+				const g = buffer[i + 1];
+				const b = buffer[i + 2];
+				if (r >= 180 && g >= 165 && g - b >= 35) amber++;
+			}
+			return { layersMask: window.__captureCameraMask ?? 0, amber, pixels: buffer.length / 4 };
 		};
 	}, [gl, scene, camRef, apiRef]);
 	return null;

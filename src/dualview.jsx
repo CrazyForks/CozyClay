@@ -256,8 +256,13 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 
 		if (playMode) {
 			// PlayView (Unity Game view): the shot camera owns the whole pane —
-			// no plan inset, no editing chrome, just the framed output.
+			// no plan inset, no editing chrome, just the framed output. Editor
+			// furniture (selection cage, gizmo, grid, pins) lives on
+			// GIZMO_LAYER and is dropped for this draw, mask restored after.
+			const playMask = shotCam.layers.mask;
+			shotCam.layers.disable(GIZMO_LAYER);
 			draw(shotCam, mainRect, fitAspect(mainRect, SHOT_ASPECT));
+			shotCam.layers.mask = playMask;
 		} else if (ikMode && poserCam) {
 			// IK mode: the main pane is the poser working view (free navigation,
 			// handle layer visible); the inset is the FROZEN shot camera — the

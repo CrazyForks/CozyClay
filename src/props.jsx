@@ -11,6 +11,7 @@
 
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
+import { GIZMO_LAYER } from "./dualview.jsx";
 
 const CLAY_CAR = "#d98770";
 const CLAY_CAR_TOP = "#e49a84";
@@ -254,7 +255,19 @@ function SelectionBox({ object }) {
 	);
 	useEffect(() => () => edges.dispose(), [edges]);
 	return (
-		<lineSegments geometry={edges} position={[0, height / 2, 0]} renderOrder={998}>
+		<lineSegments
+			// The cage is editor furniture, exactly like the transform gizmo, so
+			// it lives on GIZMO_LAYER — the layer PlayView, the ink prepass and
+			// CaptureRig already strip. Set on the mesh itself (via the ref):
+			// three.js layer membership is per object, and the camera mask
+			// checks the object that actually renders.
+			ref={(mesh) => {
+				if (mesh) mesh.layers.set(GIZMO_LAYER);
+			}}
+			geometry={edges}
+			position={[0, height / 2, 0]}
+			renderOrder={998}
+		>
 			<lineBasicMaterial color="#e7b557" transparent opacity={0.95} depthTest={false} depthWrite={false} />
 		</lineSegments>
 	);
