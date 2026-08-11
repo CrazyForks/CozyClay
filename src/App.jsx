@@ -161,6 +161,9 @@ const CAPTURE_H = 1080;
 // Pre-generated clip shipped with the build so a bridge-less session (a hosted
 // static demo, or `npm run dev:ui`) still shows real generated motion.
 // Relative on purpose: it has to resolve under a project sub-path too.
+// Same reason as DEMO_MOTION_URL: a leading slash breaks the app the moment
+// the build is served from a project sub-path (a GitHub Pages project site).
+const CHARACTER_MODEL_URL = "models/y-bot-tpose.fbx";
 const DEMO_MOTION_URL = "demo/walk-then-stop.npz";
 const DEMO_MOTION_PROMPT = "a person walking then a person stops";
 const CLAY = "#f2eee6";
@@ -2688,7 +2691,7 @@ globalThis.playMode = centerTab === "play";
 							/>
 
 							<Character
-								url="/models/y-bot-tpose.fbx"
+								url={CHARACTER_MODEL_URL}
 								position={motion ? [motion.anchorX, 0, motion.anchorZ] : [charA.x, 0, charA.z]}
 								rot={motion ? motion.rotationDeg : charA.rot}
 								tint={CLAY}
@@ -2698,7 +2701,7 @@ globalThis.playMode = centerTab === "play";
 							/>
 							{showB && (
 								<Character
-									url="/models/y-bot-tpose.fbx"
+									url={CHARACTER_MODEL_URL}
 									position={[charB.x, 0, charB.z]}
 									rot={charB.rot}
 									tint={CLAY_B}
