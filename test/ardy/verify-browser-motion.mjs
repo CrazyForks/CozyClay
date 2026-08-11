@@ -784,6 +784,42 @@ ok(
 		incident.errors.some((error) => error.includes(`${PATH_LIMITS.clipMaxS} s`)),
 	JSON.stringify(incident.errors),
 );
+// A prompt schedule chains the rollout block by block, so the same 16 s clip
+// keeps the crawl-speed error but LOSES the whole-clip window error — the
+// trained window binds each chained call, not the total (the bridge and the
+// sequence generator cap the blocks).
+const incidentChained = judgeAuthoredPath(
+	[
+		{ frame: 0, x: 0, z: 0 },
+		{ frame: 180, x: 0, z: 4.9 },
+		{ frame: 219, x: 0.2, z: 5.4 },
+	],
+	20,
+	320,
+	{ chained: true },
+);
+ok(
+	"limits: a chained rollout drops the whole-clip window error but keeps speed errors",
+	incidentChained.errors.length === 1 &&
+		incidentChained.errors.some((error) => error.includes("below a sustainable walk")) &&
+		!incidentChained.errors.some((error) => error.includes(`${PATH_LIMITS.clipMaxS} s`)),
+	JSON.stringify(incidentChained.errors),
+);
+const longCleanChained = judgeAuthoredPath(
+	[
+		{ frame: 0, x: 0, z: 0 },
+		{ frame: 140, x: 0, z: 7 },
+		{ frame: 300, x: 5, z: 10 },
+	],
+	20,
+	320,
+	{ chained: true },
+);
+ok(
+	"limits: a natural 16 s path is legal when the rollout is chained",
+	longCleanChained.errors.length === 0,
+	JSON.stringify(longCleanChained.errors),
+);
 const slowVerdict = judgeNextWaypoint({ frame: 0, x: 0, z: 0 }, { frame: 39, x: 0, z: 0.5 }, 20);
 ok(
 	"limits: a sub-gait pin is blocked and the fix names a workable frame",

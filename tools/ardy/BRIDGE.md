@@ -101,8 +101,16 @@ has its own non-empty prompt. The bridge passes the complete schedule to
 `cclay_sequence_generate.py` in one remote process. ARDY stays loaded and
 each block receives the previous block's normalized motion tail through
 `init_history_sequence`; no per-block process restart, NPZ concatenation, or
-crossfade occurs. Segment mode requires `posePin:false` and cannot be combined
-with `waypoints`.
+crossfade occurs. Segment mode requires `posePin:false`.
+
+`segments` + `waypoints` together run the sequence generator with a root
+path: the Root2D constraint set is built once over the whole rollout
+(rollout-global frames, origin facing +Z) and each chained call receives its
+own slice with history frames zeroed — the interactive demo's streaming
+pattern. The 10 s trained window then binds each prompt block (the bridge
+rejects any block longer than that), not the total clip, so a root path can
+ride a rollout longer than 10 s. Without `segments`, `waypoints` still run
+the one-shot constrained generator and the whole clip must fit 10 s.
 
 A single-prompt rough generation sends `posePin:false` and no `segments`; it
 remains a plain text-to-motion run. Once that motion is loaded, CozyClay can

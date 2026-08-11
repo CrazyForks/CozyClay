@@ -48,6 +48,59 @@ expect(
 	"legacy npz stitching is no longer imported by the bridge",
 	!bridge.includes('stitchMotionSegments, writeNpz')
 );
+
+/* ------------------------- root path + prompt schedule together --------- */
+const sequenceGenerator = readFileSync(new URL("../../tools/ardy/cclay_sequence_generate.py", import.meta.url), "utf8");
+expect(
+	"segments + waypoints are accepted together (no mutual-exclusion rejection)",
+	!bridge.includes("field 'segments' cannot be combined with waypoints")
+);
+expect(
+	"with waypoints, the trained window binds each prompt block, not the total",
+	bridge.includes("must be <= ${WAYPOINT_CLIP_MAX_S} seconds when 'waypoints' are present (each chained call must fit ARDY's trained window)") &&
+	bridge.includes("body.segments === undefined && body.duration > WAYPOINT_CLIP_MAX_S")
+);
+expect(
+	"the segments branch forwards the root path to the sequence runner",
+	bridge.includes("for (const wp of body.waypoints ?? [])") &&
+	bridge.includes("with a ${body.waypoints.length}-pin root path")
+);
+expect(
+	"the sequence runner forwards --root-2d quadruples",
+	runner.includes('for ((i = 0; i < ${#ROOT2D[@]}; i += 4))') &&
+	runner.includes('cmd+=" --root-2d')
+);
+expect(
+	"the sequence runner syncs the repo-owned generator to the box",
+	runner.includes('cat > ${REMOTE}/scripts/cclay_sequence_generate.py')
+);
+expect(
+	"the sequence generator builds ONE rollout-global constraint set",
+	sequenceGenerator.includes("Root2DConstraintSet(") &&
+	sequenceGenerator.includes("create_conditions_from_constraints_batched") &&
+	sequenceGenerator.includes("torch.tensor([total_frames], device=device)")
+);
+expect(
+	"each chained call gets its slice with history frames zeroed (demo pattern)",
+	sequenceGenerator.includes("seg_mask[:, :history_len] = 0.0") &&
+	sequenceGenerator.includes("seg_observed[:, :history_len] = 0.0") &&
+	sequenceGenerator.includes("mask_full[:, call_start : call_start + num_frames]")
+);
+expect(
+	"waypoint conditioning and history conditioning share the model call",
+	sequenceGenerator.includes("motion_mask=seg_mask") &&
+	sequenceGenerator.includes("observed_motion=seg_observed") &&
+	sequenceGenerator.includes("init_history_sequence=history")
+);
+expect(
+	"sequence postprocess enforces the pinned root contacts",
+	sequenceGenerator.includes("constraint_lst=constraint_lst if constraint_lst else None")
+);
+expect(
+	"waypoint residuals are measured, never asserted",
+	sequenceGenerator.includes("measure_waypoints(") &&
+	sequenceGenerator.includes('"achieved_error_m"')
+);
 expect(
 	"IK-edited blocks replace only their source ranges",
 	bridge.includes("body.regenerateSegments") &&

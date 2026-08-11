@@ -2178,7 +2178,25 @@ globalThis.playMode = centerTab === "play";
 		}
 		// Prompt clips are real generation blocks. Gaps inherit the current
 		// prompt so the bridge always receives one contiguous 0..N sequence.
+		// Built BEFORE the root-path judge: whether the rollout is chained
+		// changes which window limit binds the path (per block, not per clip).
 		const clipFrames = duration * 20;
+		const segments = [];
+		let cursor = 0;
+		const sourcePromptClips = promptClipsOverride
+			.filter((clip) => clip.text.trim())
+			.sort((a, b) => a.startFrame - b.startFrame);
+		for (const clip of sourcePromptClips) {
+			const startFrame = Math.max(cursor, Math.min(clipFrames, clip.startFrame));
+			const endFrame = Math.max(startFrame, Math.min(clipFrames, clip.endFrame));
+			if (startFrame > cursor) segments.push({ startFrame: cursor, endFrame: startFrame, prompt });
+			if (endFrame - startFrame >= 3) segments.push({ startFrame, endFrame, prompt: clip.text.trim() || prompt });
+			cursor = Math.max(cursor, endFrame);
+			if (cursor >= clipFrames) break;
+		}
+		if (cursor < clipFrames) segments.push({ startFrame: cursor, endFrame: clipFrames, prompt });
+		if (segments.length === 0) segments.push({ startFrame: 0, endFrame: clipFrames, prompt });
+		const hasPromptSchedule = segments.length > 1;
 		const rootPath = waypointMode
 			? [{ frame: 0, x: charA.x, z: charA.z, heading: null }, ...waypoints]
 			: [];
@@ -2197,11 +2215,20 @@ globalThis.playMode = centerTab === "play";
 			}
 			// Placement-time checks can be invalidated afterwards (removing a
 			// middle pin merges two legs; the duration field can grow), so the
-			// whole path is re-judged at the door.
-			const pathVerdict = judgeAuthoredPath(rootPath, 20, clipFrames);
+			// whole path is re-judged at the door. A prompt schedule chains
+			// the rollout block by block, so the trained window binds each
+			// block instead of the whole clip.
+			const pathVerdict = judgeAuthoredPath(rootPath, 20, clipFrames, { chained: hasPromptSchedule });
 			if (pathVerdict.errors.length > 0) {
 				setToast(`Not generated — ${pathVerdict.errors[0]}`);
 				return;
+			}
+			if (hasPromptSchedule) {
+				const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PATH_LIMITS.clipMaxS * 20);
+				if (longBlock) {
+					setToast(`Not generated — with a root path every prompt block must stay within ${PATH_LIMITS.clipMaxS} s (ARDY's trained window per chained call); split the ${((longBlock.endFrame - longBlock.startFrame) / 20).toFixed(1)} s block`);
+					return;
+				}
 			}
 			if (pathVerdict.warnings.length > 0) setToast(`⚠ ${pathVerdict.warnings[0]}`);
 		}
@@ -2212,26 +2239,10 @@ globalThis.playMode = centerTab === "play";
 		// track (see the sign-convention notes in ardy/waypoints.js).
 		const alignedRoot = waypointMode ? alignArdyPath(rootPath, charA.rot, MAX_WAYPOINTS) : null;
 		const ardyWaypoints = alignedRoot ? alignedRoot.waypoints : [];
-		const segments = [];
-		let cursor = 0;
-		const sourcePromptClips = promptClipsOverride
-			.filter((clip) => clip.text.trim())
-			.sort((a, b) => a.startFrame - b.startFrame);
-		for (const clip of sourcePromptClips) {
-			const startFrame = Math.max(cursor, Math.min(clipFrames, clip.startFrame));
-			const endFrame = Math.max(startFrame, Math.min(clipFrames, clip.endFrame));
-			if (startFrame > cursor) segments.push({ startFrame: cursor, endFrame: startFrame, prompt });
-			if (endFrame - startFrame >= 3) segments.push({ startFrame, endFrame, prompt: clip.text.trim() || prompt });
-			cursor = Math.max(cursor, endFrame);
-			if (cursor >= clipFrames) break;
-		}
-		if (cursor < clipFrames) segments.push({ startFrame: cursor, endFrame: clipFrames, prompt });
-		if (segments.length === 0) segments.push({ startFrame: 0, endFrame: clipFrames, prompt });
 
 		// Capture every block boundary plus every authored IK key. Each sample
 		// is the composite base-motion + IK pose at that frame and carries the
 		// live ARDY root recovered from positional skinning.
-		const hasPromptSchedule = segments.length > 1;
 		const editedSegments = motion && hasPromptSchedule
 			? segments.filter((segment) =>
 				ikFrames.some((frame) => frame >= segment.startFrame && frame < segment.endFrame)
@@ -2295,8 +2306,14 @@ globalThis.playMode = centerTab === "play";
 			const body = { prompt, duration, posePin: shouldPin };
 			if (shouldPin && !hasBlockEdits) body.poses = poses;
 			if (ardySeed !== "") body.seed = Number(ardySeed);
-			if (waypointMode) body.waypoints = ardyWaypoints;
-			else if (hasBlockEdits) {
+			if (waypointMode) {
+				body.waypoints = ardyWaypoints;
+				// A root path and a prompt schedule now travel TOGETHER: the
+				// sequence generator threads the Root2D constraint set through
+				// its chained calls (the interactive demo's pattern), so
+				// neither authored surface is silently dropped any more.
+				if (hasPromptSchedule && !hasBlockEdits) body.segments = segments;
+			} else if (hasBlockEdits) {
 				if (!motion?.url) {
 					throw new Error("The current motion has no bridge source; generate the prompt blocks once before regenerating IK edits");
 				}
