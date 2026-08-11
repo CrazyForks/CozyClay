@@ -11,6 +11,7 @@
 
 import { useEffect, useMemo } from "react";
 import * as THREE from "three";
+import { GIZMO_LAYER } from "./dualview.jsx";
 
 const CLAY_CAR = "#d98770";
 const CLAY_CAR_TOP = "#e49a84";
@@ -243,6 +244,13 @@ function SceneObjectContent({ renderer, color }) {
  * Selection cage: the object's bounding box drawn as EDGES only. A wireframe
  * box draws every triangle diagonal too, which reads as a scribble over the
  * object instead of a selection.
+ *
+ * The cage is editor furniture, exactly like the transform gizmo, so it lives
+ * on GIZMO_LAYER — the layer Game view and CaptureRig already strip. That is
+ * what keeps it out of both the clean film-camera pane and exported frames.
+ * The layer must be set on the mesh itself (via the ref), not on a parent
+ * group: three.js layer membership is per object, and the camera mask checks
+ * the object that actually renders.
  */
 function SelectionBox({ object }) {
 	const height = Math.max(object.height ?? 1, 0.08);
@@ -254,7 +262,17 @@ function SelectionBox({ object }) {
 	);
 	useEffect(() => () => edges.dispose(), [edges]);
 	return (
-		<lineSegments geometry={edges} position={[0, height / 2, 0]} renderOrder={998}>
+		<lineSegments
+			// editor furniture: same layer the transform gizmo handles use, so
+			// Game view and the export camera (which both drop GIZMO_LAYER)
+			// never draw the cage; the ref is the gizmo file's pattern
+			ref={(mesh) => {
+				if (mesh) mesh.layers.set(GIZMO_LAYER);
+			}}
+			geometry={edges}
+			position={[0, height / 2, 0]}
+			renderOrder={998}
+		>
 			<lineBasicMaterial color="#e7b557" transparent opacity={0.95} depthTest={false} depthWrite={false} />
 		</lineSegments>
 	);

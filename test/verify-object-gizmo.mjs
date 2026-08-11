@@ -135,7 +135,14 @@ const transform = () =>
 	evaluate(
 		"Object.fromEntries([...document.querySelectorAll('.inspector-pane .vec3-row')].map(r => [r.querySelector('.vec3-label').textContent, [...r.querySelectorAll('input')].map(i => parseFloat(i.value))]))",
 	);
-const click = (selectorExpression) => evaluate(`${selectorExpression}.click()`);
+/** click after the target exists: React may not have committed the subtree
+ * yet (reload, popover mount, view switch), so poll for the element and fail
+ * naming the selector instead of calling .click() on undefined. */
+const click = async (selectorExpression) => {
+	const ready = await waitFor(`(() => { const el = ${selectorExpression}; return !!el; })()`);
+	if (!ready) throw new Error(`click target never appeared within the wait timeout: ${selectorExpression}`);
+	await evaluate(`${selectorExpression}.click()`);
+};
 /** real visibility, not presence: the element must exist, paint a non-zero
  * rect, and sit inside the viewport. A hidden card still contributes its text
  * to document.body.textContent — only the rect proves it is on screen. */
@@ -161,6 +168,21 @@ expect("the studio renders a canvas", await evaluate("!!document.querySelector('
 // Wait for the committed tree (QA hook + hierarchy) before the fixed settle.
 for (let i = 0; i < 50 && !(await evaluateSafely("!!window.__sceneHistory && document.querySelectorAll('.hierarchy-row').length > 0")); i++) await sleep(200);
 await sleep(1500);
+
+// Startup guard: this suite drives whichever app answers QA_URL, so prove it
+// IS this worktree before spending a run on a foreign build. A stale server
+// (another branch/worktree on the same port, e.g. the unity-dark theme work)
+// renders the old two-button header and would burn the whole run failing
+// selectors that only exist here. Fail immediately, naming what was served.
+const viewLabels = await evaluate("[...document.querySelectorAll('.viewmode button')].map(b => b.textContent.trim())");
+const expectedViewLabels = ["Scene view", "Top view", "Game view"];
+if (!expectedViewLabels.every((label) => viewLabels.some((entry) => entry.startsWith(label)))) {
+	throw new Error(
+		`QA_URL does not serve this worktree: .viewmode buttons are ${JSON.stringify(viewLabels)}` +
+			` (expected ${JSON.stringify(expectedViewLabels)}). Start this repo's dev server` +
+			" (npm run dev) and point QA_URL at it.",
+	);
+}
 
 /* ------------------------------------------------------- creation ---- */
 
@@ -368,17 +390,54 @@ expect(
 /* ----------------------------------------------------- plan parity --- */
 
 const beforePlan = await transform();
-await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Bird'))");
-await sleep(1200);
+await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Top'))");
+// the plan pane commits with the switch; wait for it before reading its rect
+await waitFor("document.querySelector('.vp-main').classList.contains('plan')");
+await sleep(150); // the plan host's pointerdown listener binds after the commit
 const planGrab = await evaluate(
 	`(() => { const b = document.querySelector('.vp-main').getBoundingClientRect(); const scale = (b.height / 2) / 7.2;
 		return { x: Math.round(b.left + b.width / 2 + ${beforePlan.Position[0]} * scale), y: Math.round(b.top + b.height / 2 + ${beforePlan.Position[2]} * scale) }; })()`,
 );
 await drag(planGrab, { x: planGrab.x, y: planGrab.y + 60 });
-await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Shot'))");
-await sleep(700);
+await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Scene'))");
+// the scene pane replaces the plan board on the switch; wait for the commit
+await waitFor("!document.querySelector('.vp-main').classList.contains('plan')");
 const afterPlan = await transform();
-expect("the bird's-eye board drives the same object record", afterPlan.Position[2] !== beforePlan.Position[2], JSON.stringify(afterPlan));
+expect("the top-view board drives the same object record", afterPlan.Position[2] !== beforePlan.Position[2], JSON.stringify(afterPlan));
+/* ------------------------------------------------------- game view ---- */
+
+// Game view is the clean film-camera output, not an editing surface: the
+// gizmo must vanish, the selection survive, and a press in the pane must
+// change nothing. The shot camera and the main pane rect are the same as
+// the scene view's, so the scene-view handle centroid still names the
+// object's screen position.
+const gameBefore = await transform();
+const gameCentre = await evaluate(
+	"(() => { const g = window.__gizmoHandles(); const c = g.reduce((a, h) => ({ x: a.x + h.x / g.length, y: a.y + h.y / g.length }), { x: 0, y: 0 }); return { x: Math.round(c.x), y: Math.round(c.y) }; })()",
+);
+await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Game'))");
+// the game pass commits with the gizmo already unmounted; poll for it
+await waitFor("window.__gizmoHandles().length === 0");
+expect("game view drops the gizmo", await evaluate("window.__gizmoHandles().length === 0"));
+expect(
+	"game view keeps the object selected in the inspector",
+	Object.keys(await transform()).join() === "Position,Rotation,Scale",
+	JSON.stringify(await transform()),
+);
+expect("switching to game view changes no transform", JSON.stringify(await transform()) === JSON.stringify(gameBefore), JSON.stringify(await transform()));
+await mouse("mousePressed", gameCentre.x, gameCentre.y);
+await mouse("mouseReleased", gameCentre.x, gameCentre.y);
+await sleep(300);
+expect("a click in the game pane changes no transform", JSON.stringify(await transform()) === JSON.stringify(gameBefore), JSON.stringify(await transform()));
+expect(
+	"a click in the game pane selects nothing new",
+	await evaluate("window.__gizmoHandles().length === 0 && [...document.querySelectorAll('.hierarchy-row-wrap.selected .hierarchy-label')].some(n => n.textContent === 'Cube')"),
+);
+await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Scene'))");
+// the scene view remounts the gizmo; poll for the commit
+await waitFor("window.__gizmoHandles().length > 0");
+expect("back in the scene view the gizmo returns", await evaluate("window.__gizmoHandles().length > 0"));
+expect("the object is still selected after the round trip", await evaluate("[...document.querySelectorAll('.hierarchy-row-wrap.selected .hierarchy-label')].some(n => n.textContent === 'Cube')"));
 
 /* ------------------------------------------- creation is world-aligned - */
 
@@ -738,7 +797,7 @@ expect("undo after a drop restores the previous height", (await transform()).Pos
 /** Press on a gizmo handle and apply `ticks` real move ticks, leaving the
  * pointer down so the caller can interrupt the stream mid-drag. Returns
  * where the pointer ended up. */
-// The Bird's-eye inset overlays the shot view's right side (its pane spans
+// The Top-view inset overlays the scene view's right side (its pane spans
 // x >= ~890 here), and the inset host claims presses that land on it. The X
 // arrow drifts ~150 px per 160 px drag, so the cases alternate direction to
 // keep every press in the clear band; grabX additionally rejects any grab
@@ -955,7 +1014,7 @@ const chairForPlan = await transform(); // the Chair, now away from the Cube
 const pastBeforePlan = await evaluate("window.__sceneHistory().past");
 await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 await waitFor("window.__gizmoHandles().length > 0");
-await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Bird'))");
+await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Top'))");
 await waitFor("document.querySelector('.vp-main').classList.contains('plan')");
 await sleep(150); // the plan host's pointerdown listener binds after the commit
 const planRect = await evaluate("(() => { const b = document.querySelector('.vp-main').getBoundingClientRect(); return { left: b.left, top: b.top, width: b.width, height: b.height, scale: (b.height / 2) / 7.2 }; })()");
@@ -1014,7 +1073,7 @@ expect("the store stays settled after a camera drag", await evaluate("window.__s
 // travel commits as its own entry and the removal as a second — the two can
 // never fold into one. The producer dies with the drag: further pointer
 // movement resurrects nothing. (Last: it removes the Chair.)
-await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Shot'))");
+await click("[...document.querySelectorAll('.viewmode button')].find(b => b.textContent.includes('Scene'))");
 await waitFor("!document.querySelector('.vp-main').classList.contains('plan')");
 await sleep(150);
 await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");

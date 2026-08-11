@@ -327,6 +327,10 @@ function CaptureRig({ apiRef, camRef }) {
 				const cam = source.clone();
 				// the transform gizmo is UI: it never reaches an exported frame
 				cam.layers.disable(GIZMO_LAYER);
+				// QA hook: the layer mask the export camera actually renders
+				// with — the browser suite asserts GIZMO_LAYER (the gizmo AND
+				// the selection cage) is never in it.
+				window.__captureCameraMask = cam.layers.mask;
 				cam.aspect = CAPTURE_W / CAPTURE_H;
 				cam.updateProjectionMatrix();
 				const previous = gl.getRenderTarget();
@@ -338,6 +342,23 @@ function CaptureRig({ apiRef, camRef }) {
 				target.dispose();
 				return buffer;
 			},
+		};
+		// QA hook: run one real export render and report what the capture
+		// camera saw — the layer mask plus an amber scan of the 1920x1080
+		// frame (same warm filter the browser suite uses on the panes). Lets
+		// the suite prove the deliverable frame stays free of editor
+		// furniture without driving the whole generation form.
+		window.__captureFrame = () => {
+			const buffer = apiRef.current?.render() ?? null;
+			if (!buffer) return null;
+			let amber = 0;
+			for (let i = 0; i < buffer.length; i += 4) {
+				const r = buffer[i];
+				const g = buffer[i + 1];
+				const b = buffer[i + 2];
+				if (r >= 180 && g >= 165 && g - b >= 35) amber++;
+			}
+			return { layersMask: window.__captureCameraMask ?? 0, amber, pixels: buffer.length / 4 };
 		};
 	}, [gl, scene, camRef, apiRef]);
 	return null;
@@ -433,9 +454,10 @@ export default function App() {
 	const [preset, setPreset] = useState("medium");
 	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
 	const [nonce, setNonce] = useState(0);
-	// viewMode now selects which pane is BIG; both render every frame.
-	const [viewMode, setViewMode] = useState("shot");
-	const planIsMain = viewMode === "plan";
+	// viewMode picks the big pane: scene = the shot camera with the editor's
+	// furniture, top = the floor plan, game = the same shot camera, clean.
+	// The other pane always shows the top view; both render every frame.
+	const [viewMode, setViewMode] = useState("scene");
 	const stageRef = useRef();
 	const mainPaneRef = useRef();
 	const insetPaneRef = useRef();
@@ -443,7 +465,7 @@ export default function App() {
 	// (top-right); double-clicking the tag snaps back to it.
 	const [insetPos, setInsetPos] = useState(null);
 	const planCamRef = useRef();
-	const planHostRef = planIsMain ? mainPaneRef : insetPaneRef;
+	const planHostRef = viewMode === "top" ? mainPaneRef : insetPaneRef;
 
 	useEffect(() => {
 		localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify(workspaceLayout));
@@ -684,7 +706,7 @@ export default function App() {
 		setRightPanelTab("detail");
 		const focus = RIG_HIERARCHY_FOCUS[id];
 		if (focus && ikMode) setIkFocus(focus);
-		if (id === "camera") setViewMode("shot");
+		if (id === "camera") setViewMode("scene");
 	}
 	// Producer drag lifecycle (plan §6.1): begin issues a token the producer
 	// presents on every apply and on close; end commits the drag as one
@@ -815,7 +837,7 @@ export default function App() {
 		const angles = aimAt(camera.position, target);
 		look.current.yaw = angles.yaw;
 		look.current.pitch = angles.pitch;
-		setViewMode("shot");
+		setViewMode("scene");
 	}
 
 	/** In-place rename commit from the hierarchy (F2 / Return / rename on
@@ -1021,7 +1043,7 @@ export default function App() {
 		setTlFrame(nextFrame);
 		setActiveWaypointFrame(nextFrame);
 		setWaypointMode(true);
-		setToast(`Root keyframe ${nextFrame} ready — drag its numbered marker directly in Bird's-eye`);
+		setToast(`Root keyframe ${nextFrame} ready — drag its numbered marker directly in Top view`);
 	}
 
 	function moveWaypoint(frame, x, z) {
@@ -1163,7 +1185,7 @@ export default function App() {
 				poserCam.rotation.order = "YXZ";
 				poserLook.current = { yaw: shotCam.rotation.y, pitch: shotCam.rotation.x };
 			}
-			setViewMode("shot"); // posing happens in the big poser view
+			setViewMode("scene"); // posing happens in the big poser view
 			setIkMode(true);
 			setToast(motion
 				? "IK mode — correct the motion; drag end keys the fix at this frame"
@@ -1412,7 +1434,7 @@ export default function App() {
 		setFovDeg(p.fov);
 		setShowB(p.two);
 		if (p.charB) setCharB(p.charB);
-		setViewMode("shot");
+		setViewMode("scene");
 		setNonce((n) => n + 1);
 	}
 
@@ -1831,19 +1853,27 @@ export default function App() {
 				<div className="viewmode" aria-label="Workspace view">
 					<button
 						type="button"
-						className={viewMode === "shot" ? "active" : ""}
-						aria-pressed={viewMode === "shot"}
-						onClick={() => setViewMode("shot")}
+						className={viewMode === "scene" ? "active" : ""}
+						aria-pressed={viewMode === "scene"}
+						onClick={() => setViewMode("scene")}
 					>
-						Shot view
+						Scene view
 					</button>
 					<button
 						type="button"
-						className={viewMode === "plan" ? "active" : ""}
-						aria-pressed={viewMode === "plan"}
-						onClick={() => setViewMode("plan")}
+						className={viewMode === "top" ? "active" : ""}
+						aria-pressed={viewMode === "top"}
+						onClick={() => setViewMode("top")}
 					>
-						Bird&apos;s-eye
+						Top view
+					</button>
+					<button
+						type="button"
+						className={viewMode === "game" ? "active" : ""}
+						aria-pressed={viewMode === "game"}
+						onClick={() => setViewMode("game")}
+					>
+						Game view
 					</button>
 				</div>
 				<details className="controls-menu">
@@ -1981,7 +2011,7 @@ export default function App() {
 							/>
 							<PoseHandles
 								root={posing === "B" ? rigB : rigA}
-								enabled={!!posing && !planIsMain}
+								enabled={!!posing && viewMode === "scene"}
 								onChange={() => setPoseTick((n) => n + 1)}
 							/>
 							<IkHandles
@@ -2024,14 +2054,15 @@ export default function App() {
 								onObjectMoveEnd={endSceneTransaction}
 							/>
 							{/* Object gizmo: the shot pane's direct manipulation. Off while
-							    the plan owns the big pane (the pucks are the handles there)
-							    and while posing/IK owns the pointer. */}
+							    the plan owns the big pane (the pucks are the handles there),
+							    in the clean game view (not an editing surface), and while
+							    posing/IK owns the pointer. */}
 							<ObjectGizmo
 								object={selectedSceneObject}
 								objects={sceneObjects}
 								mode={gizmoMode}
 								snap={snapEnabled}
-								enabled={!planIsMain && !posing && !ikMode}
+								enabled={viewMode === "scene" && !posing && !ikMode}
 								paneRef={mainPaneRef}
 								camRef={shotCamRef}
 								onChange={changeSceneObject}
@@ -2048,14 +2079,14 @@ export default function App() {
 								planCamRef={planCamRef}
 								poserCamRef={poserCamRef}
 								ikMode={ikMode}
-								planIsMain={planIsMain}
+								viewMode={viewMode}
 							/>
 						</Canvas>
 
-						<div ref={mainPaneRef} className={"vp-pane vp-main" + (planIsMain ? " plan" : "")} />
+						<div ref={mainPaneRef} className={"vp-pane vp-main" + (viewMode === "top" ? " plan" : "")} />
 						<div
 							ref={insetPaneRef}
-							className={"vp-pane vp-inset" + (planIsMain || ikMode ? " shot" : " plan")}
+							className={"vp-pane vp-inset" + (viewMode === "top" || ikMode ? " shot" : " plan")}
 							style={insetPos ? { left: insetPos.x, top: insetPos.y, right: "auto" } : undefined}
 						>
 							<span
@@ -2064,7 +2095,7 @@ export default function App() {
 								onPointerDown={beginInsetDrag}
 								onDoubleClick={() => setInsetPos(null)}
 							>
-								{planIsMain || ikMode ? "Shot view" : "Bird\u2019s-eye"}
+								{viewMode === "top" || ikMode ? "Scene view" : "Top view"}
 							</span>
 							<span
 								className="vp-inset-resize"

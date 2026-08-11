@@ -103,7 +103,7 @@ export function fitAspect(rect, aspect) {
 	return { x: rect.x + (rect.w - w) / 2, y: rect.y + (rect.h - h) / 2, w, h };
 }
 
-export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef, poserCamRef, ikMode = false, planIsMain }) {
+export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef, poserCamRef, ikMode = false, viewMode = "scene" }) {
 	const { gl, scene, size } = useThree();
 	const edgePass = useMemo(() => {
 		const target = new THREE.WebGLRenderTarget(1, 1, {
@@ -189,8 +189,11 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 		const insetRect = rectOf(insetRef.current);
 		if (mainRect.w < 2 || insetRect.w < 2) return;
 
-		const planPane = planIsMain ? mainRect : insetRect;
-		const shotPane = planIsMain ? insetRect : mainRect;
+		// viewMode picks which pane each camera owns: "scene" and "game" both
+		// keep the film camera in the main pane (game just draws it clean),
+		// "top" promotes the plan. IK mode overrides the layout regardless.
+		const planPane = viewMode === "top" ? mainRect : insetRect;
+		const shotPane = viewMode === "top" ? insetRect : mainRect;
 
 		// scissor bounds the clear, viewport bounds the image: letterbox bars in
 		// the shot pane get painted with the scene background instead of leaking
@@ -255,9 +258,24 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 			poserCam.updateProjectionMatrix();
 			draw(poserCam, mainRect);
 			draw(shotCam, insetRect, fitAspect(insetRect, SHOT_ASPECT));
-		} else if (planIsMain) {
+		} else if (viewMode === "top") {
 			draw(planCam, planPane, null, false);
 			draw(shotCam, shotPane, fitAspect(shotPane, SHOT_ASPECT));
+		} else if (viewMode === "game") {
+			// Game view is the clean output of the film camera: the same framing
+			// as Scene view with none of the editor's furniture. CaptureRig in
+			// src/App.jsx sets the precedent — it clones the shot camera and
+			// disables GIZMO_LAYER before every export — so drop the gizmo here
+			// the same way, on the live camera. The finally restores the layer
+			// even if the draw throws; a leaked disabled layer would silently
+			// kill the gizmo in every other view.
+			shotCam.layers.disable(GIZMO_LAYER);
+			try {
+				draw(shotCam, shotPane, fitAspect(shotPane, SHOT_ASPECT));
+			} finally {
+				shotCam.layers.enable(GIZMO_LAYER);
+			}
+			draw(planCam, planPane, null, false);
 		} else {
 			draw(shotCam, shotPane, fitAspect(shotPane, SHOT_ASPECT));
 			draw(planCam, planPane, null, false);

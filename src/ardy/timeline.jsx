@@ -422,12 +422,12 @@ export default function Timeline({
 						{waypointMode && (
 							<span className={"tl-wp-hint" + (waypointFrames.length < 2 || pathSpeed?.warn ? " warn" : "")}>
 								{waypointFrames.length < 2
-									? "Left-click the 2D Root track to add keyframes, then drag 1 / 2 directly in Bird's-eye"
+									? "Left-click the 2D Root track to add keyframes, then drag 1 / 2 directly in Top view"
 									: `${waypointFrames.length} root waypoints` +
 										(pathSpeed
 											? ` · ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)} m/s${pathSpeed.warn ? " — outside the natural 0.5–3 m/s locomotion band" : ""}`
 											: "") +
-										" · drag numbered markers directly in Bird's-eye"}
+										" · drag numbered markers directly in Top view"}
 							</span>
 						)}
 						{badge && <span className={"tl-badge " + badge.kind}>{badge.label}</span>}
@@ -554,7 +554,7 @@ export default function Timeline({
 												key={f}
 												className={"tl-marker wp" + (f === pendingWaypointFrame ? " pending" : "")}
 												style={{ "--tl-f": framePct(f, displayFrameCount) }}
-												title={`Root waypoint at frame ${f} — click to select, right-click to remove; drag marker ${waypointFrames.indexOf(f) + 1} in Bird's-eye to move`}
+												title={`Root waypoint at frame ${f} — click to select, right-click to remove; drag marker ${waypointFrames.indexOf(f) + 1} in Top view to move`}
 												onPointerDown={(e) => {
 													// Select only on the primary button — a right click
 													// must reach contextmenu so it removes without scrubbing.
@@ -584,7 +584,7 @@ export default function Timeline({
 						<span className={"tl-wp-hint" + (waypointFrames.length < 2 ? " warn" : "")}>
 							{waypointFrames.length < 2
 								? "Left-click the 2D Root track to add keyframes"
-								: `${waypointFrames.length} root waypoints · drag numbered markers in Bird's-eye`}
+								: `${waypointFrames.length} root waypoints · drag numbered markers in Top view`}
 						</span>
 					)}
 					<button
