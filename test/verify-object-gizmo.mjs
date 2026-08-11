@@ -793,7 +793,7 @@ expect("undo after a drop restores the previous height", (await transform()).Pos
 /** Press on a gizmo handle and apply `ticks` real move ticks, leaving the
  * pointer down so the caller can interrupt the stream mid-drag. Returns
  * where the pointer ended up. */
-// The Bird's-eye inset overlays the shot view's right side (its pane spans
+// The Top-View inset overlays the shot view's right side (its pane spans
 // x >= ~890 here), and the inset host claims presses that land on it. The X
 // arrow drifts ~150 px per 160 px drag, so the cases alternate direction to
 // keep every press in the clear band; grabX additionally rejects any grab

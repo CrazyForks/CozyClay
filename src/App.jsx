@@ -74,7 +74,7 @@ import {
 	deriveShot,
 	slateLine,
 } from "./shot.js";
-import { captureFraming, classifyMove, interpolateFraming, moveSlate } from "./camera-move.js";
+import { captureFraming, classifyMove, cameraMoveAt, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
 
 // Stated the way a crew states a setup: how far back, which side, how high the
 // lens rides, and what glass is on it. Order matters — Medium is the setup a
@@ -292,18 +292,18 @@ function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probeX, probeZ, c
     follow mode slaves the move to the timeline playhead, so the camera and
     the character motion are two views of the same time axis — playing or
     scrubbing frame 60 at 20 fps puts the camera exactly 3 s into its move. */
-function MoveRig({ playing, following, followFrame, fps, a, b, anchor, durationS, camRef, look, isInterrupted, onDone }) {
+function MoveRig({ playing, following, followFrame, fps, keys, anchor, camRef, look, isInterrupted, onDone }) {
 	const clock = useRef(0);
 	const invalidate = useThree((state) => state.invalidate);
 	// The follow branch only re-applies when its time changes; in demand mode
 	// each apply needs one more frame so ShotRig's metrics see the new pose.
-	const appliedT = useRef(null);
+	const appliedFrame = useRef(null);
 	useEffect(() => {
 		// Arming or reshaping the move must schedule a frame by hand: this
 		// component owns no three objects, so in demand mode nothing else will.
-		appliedT.current = null;
+		appliedFrame.current = null;
 		if (following) invalidate();
-	}, [a, b, anchor, durationS, fps, following, invalidate]);
+	}, [keys, anchor, fps, following, invalidate]);
 	useEffect(() => {
 		// A paused scrub changes the playhead without starting the render loop.
 		if (following && !playing) invalidate();
@@ -312,11 +312,14 @@ function MoveRig({ playing, following, followFrame, fps, a, b, anchor, durationS
 		if (playing) clock.current = 0;
 	}, [playing]);
 	useFrame((_, delta) => {
-		if (!a || !b) return;
+		if (keys.length < 1) return;
 		const cam = camRef.current;
 		if (!cam) return;
-		const apply = (t) => {
-			const f = interpolateFraming(a, b, anchor, t);
+		const firstFrame = keys[0].frame;
+		const spanFrames = Math.max(keys[keys.length - 1].frame - firstFrame, 1);
+		const apply = (frame) => {
+			const f = cameraMoveAt(keys, anchor, frame);
+			if (!f) return null;
 			cam.position.set(f.pos.x, f.pos.y, f.pos.z);
 			look.current.yaw = f.yaw;
 			look.current.pitch = f.pitch;
@@ -331,19 +334,20 @@ function MoveRig({ playing, following, followFrame, fps, a, b, anchor, durationS
 				onDone(cam.fov);
 				return;
 			}
-			const span = Math.max(durationS, 0.1);
+			// The camera-only preview runs on its own clock across the key span:
+			// N keys play through every segment back to back.
+			const span = Math.max(spanFrames / Math.max(fps, 1), 0.1);
 			clock.current = Math.min(clock.current + delta, span);
 			const t = clock.current / span;
-			const f = apply(t);
-			if (t >= 1) onDone(f.fovDeg);
+			const f = apply(firstFrame + t * spanFrames);
+			if (t >= 1) onDone(f ? f.fovDeg : cam.fov);
 			return;
 		}
 		if (!following) return;
 		if (isInterrupted?.()) return; // the user is flying; yield until released
-		const t = Math.min(followFrame / Math.max(fps, 1) / Math.max(durationS, 0.1), 1);
-		if (appliedT.current === t) return;
-		appliedT.current = t;
-		apply(t);
+		if (appliedFrame.current === followFrame) return;
+		appliedFrame.current = followFrame;
+		apply(followFrame);
 		invalidate();
 	});
 	return null;
@@ -368,7 +372,7 @@ function RenderLoopController({ stageRef }) {
 	return null;
 }
 
-function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, hierarchyWidth, sidebarWidth, timelineHeight }) {
+function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, hierarchyWidth, sidebarWidth, timelineHeight, planZoom }) {
 	const invalidate = useThree((state) => state.invalidate);
 	useEffect(() => {
 		// The pane frame is regular DOM while its picture is a scissored WebGL
@@ -378,7 +382,7 @@ function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, hi
 		invalidate();
 		const frame = requestAnimationFrame(invalidate);
 		return () => cancelAnimationFrame(frame);
-	}, [invalidate, insetX, insetY, insetWidth, insetHeight, hierarchyWidth, sidebarWidth, timelineHeight]);
+	}, [invalidate, insetX, insetY, insetWidth, insetHeight, hierarchyWidth, sidebarWidth, timelineHeight, planZoom]);
 	return null;
 }
 
@@ -523,9 +527,11 @@ const WORKSPACE_LAYOUT_KEY = "cozyclay.workspace-layout.v1";
 const DEFAULT_WORKSPACE_LAYOUT = Object.freeze({
 	hierarchyWidth: 300,
 	sidebarWidth: 380,
-	timelineHeight: 190,
+	timelineHeight: 224,
 	insetWidth: 310,
 	insetHeight: 310,
+	insetCollapsed: false,
+	planZoom: 1,
 });
 
 function loadWorkspaceLayout() {
@@ -604,8 +610,9 @@ export default function App() {
 	const [preset, setPreset] = useState("medium");
 	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
 	const [nonce, setNonce] = useState(0);
-	// viewMode now selects which pane is BIG; both render every frame.
-	const [viewMode, setViewMode] = useState("shot");
+	// The Top-View is always the inset: the old double-click swap that let the
+	// plan own the big pane is gone, so there is no view mode to toggle.
+	const planIsMain = false;
 	// Unity Scene/Game tabs: PlayView is the framed output only — no editing
 	// chrome (gizmo, inset, fly navigation) reaches it.
 	const [centerTab, setCenterTab] = useState("scene");
@@ -614,23 +621,48 @@ globalThis.playMode = centerTab === "play";
 	// leaving pauses it. Scene stays the manipulation surface.
 	const [tlPlaying, setTlPlaying] = useState(false);
 	useEffect(() => {
+		// The player always starts the finished piece from frame 0; auto-play
+		// only exists once there is a motion to play.
+		if (centerTab === "play") setTlFrame(0);
 		if (centerTab === "play" && motion) setTlPlaying(true);
 		if (centerTab === "scene") setTlPlaying(false);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [centerTab]);
-	const planIsMain = viewMode === "plan";
 	const stageRef = useRef();
 	const mainPaneRef = useRef();
 	const insetPaneRef = useRef();
 	// User-dragged inset position (px, stage-relative). null = the CSS default
 	// (top-right); double-clicking the tag snaps back to it.
 	const [insetPos, setInsetPos] = useState(null);
+	// Timestamp of the last fold toggle that came from the tag strip (click or
+	// caret). A double-click started on the tag lands its dblclick event on
+	// the pane body afterwards — the body listener skips those, or every tag
+	// double-click would toggle twice.
+	const insetToggledAtRef = useRef(0);
 	const planCamRef = useRef();
 	const planHostRef = planIsMain ? mainPaneRef : insetPaneRef;
 
 	useEffect(() => {
 		localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify(workspaceLayout));
 	}, [workspaceLayout]);
+
+	// Wheel over the inset zooms the Top-View plan: scroll up closes in on
+	// the pucks (camera lower), scroll down widens out (camera higher) — the
+	// ortho extent is divided by planZoom in DualRender. React's onWheel is
+	// passive and could never keep the page still, so a real listener.
+	useEffect(() => {
+		const pane = insetPaneRef.current;
+		if (!pane) return;
+		const onWheel = (e) => {
+			e.preventDefault();
+			setWorkspaceLayout((current) => {
+				const next = Math.max(0.25, Math.min(4, current.planZoom * Math.pow(1.0015, -e.deltaY)));
+				return next === current.planZoom ? current : { ...current, planZoom: Math.round(next * 100) / 100 };
+			});
+		};
+		pane.addEventListener("wheel", onWheel, { passive: false });
+		return () => pane.removeEventListener("wheel", onWheel);
+	}, []);
 
 	const workspaceStyle = {
 		"--hierarchy-width": `${workspaceLayout.hierarchyWidth}px`,
@@ -681,16 +713,20 @@ globalThis.playMode = centerTab === "play";
 		window.addEventListener("pointercancel", onUp);
 	}
 
-	// Double-clicking the inset pane swaps which view owns the big pane.
-	// The pane divs are pointer-events:none when they are not the plan board,
-	// so this hit-tests the rect instead of relying on DOM targeting.
+	// Double-clicking the inset body folds it (like a window titlebar). The
+	// tag keeps its own double-click (snap back to the corner); the old
+	// Scene↔Top-View big-pane swap on double-click is gone — the Top-View is
+	// always the inset, folded or not. Pane divs are pointer-events:none off
+	// the plan board, so this hit-tests the rect instead of DOM targeting.
 	useEffect(() => {
-globalThis.onDblClick = (event) => {
-globalThis.pane = insetPaneRef.current;
+		const onDblClick = (event) => {
+			const pane = insetPaneRef.current;
 			if (!pane) return;
-globalThis.rect = pane.getBoundingClientRect();
+			if (event.target.closest?.(".vp-inset-tag")) return; // the tag's own gesture
+			if (Date.now() - insetToggledAtRef.current < 450) return; // a tag gesture already folded this double-click
+			const rect = pane.getBoundingClientRect();
 			if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) return;
-			setViewMode((current) => (current === "plan" ? "shot" : "plan"));
+			setWorkspaceLayout((current) => ({ ...current, insetCollapsed: !current.insetCollapsed }));
 		};
 		window.addEventListener("dblclick", onDblClick);
 		return () => window.removeEventListener("dblclick", onDblClick);
@@ -709,20 +745,52 @@ globalThis.rect = pane.getBoundingClientRect();
 		const paneRect = pane.getBoundingClientRect();
 		const grabX = e.clientX - paneRect.left;
 		const grabY = e.clientY - paneRect.top;
+		// Dragging the collapsed pill clamps against the EXPANDED size, so a
+		// pill parked at an edge can never expand out from under the sidebar.
+		const effW = workspaceLayout.insetCollapsed ? workspaceLayout.insetWidth : paneRect.width;
+		const effH = workspaceLayout.insetCollapsed ? workspaceLayout.insetHeight : paneRect.height;
+		// Foldout semantics on the tag strip: a click without movement folds,
+		// a drag past the threshold moves the pane — same gesture family as the
+		// inspector's foldout headers.
+		let moved = false;
 		const onMove = (ev) => {
+			if (!moved && Math.abs(ev.clientX - e.clientX) < 4 && Math.abs(ev.clientY - e.clientY) < 4) return;
+			moved = true;
 			setInsetPos({
-				x: Math.max(8, Math.min(ev.clientX - stageRect.left - grabX, stageRect.width - paneRect.width - 8)),
-				y: Math.max(8, Math.min(ev.clientY - stageRect.top - grabY, stageRect.height - paneRect.height - 8)),
+				x: Math.max(8, Math.min(ev.clientX - stageRect.left - grabX, stageRect.width - effW - 8)),
+				y: Math.max(8, Math.min(ev.clientY - stageRect.top - grabY, stageRect.height - effH - 8)),
 			});
 		};
-		const onUp = () => {
+		const onUp = (ev) => {
 			window.removeEventListener("pointermove", onMove);
 			window.removeEventListener("pointerup", onUp);
 			window.removeEventListener("pointercancel", onUp);
+			// A double-click is one deliberate fold, not two: the second click's
+			// pointerup carries detail=2 and is ignored, so rapid clicking never
+			// flicker-toggles the inset.
+			if (!moved && ev.detail <= 1) {
+				insetToggledAtRef.current = Date.now();
+				if (workspaceLayout.insetCollapsed) expandInset();
+				else setWorkspaceLayout((current) => ({ ...current, insetCollapsed: true }));
+			}
 		};
 		window.addEventListener("pointermove", onMove);
 		window.addEventListener("pointerup", onUp);
 		window.addEventListener("pointercancel", onUp);
+	}
+
+	// Expanding reclamps the parked position against the restored size: a
+	// pill dragged to the stage edge must expand INTO the stage, not under
+	// the inspector sidebar.
+	function expandInset() {
+		const stage = stageRef.current;
+		if (stage) {
+			const stageRect = stage.getBoundingClientRect();
+			const maxX = Math.max(8, stageRect.width - workspaceLayout.insetWidth - 8);
+			const maxY = Math.max(8, stageRect.height - workspaceLayout.insetHeight - 8);
+			setInsetPos((pos) => (pos ? { x: Math.min(pos.x, maxX), y: Math.min(pos.y, maxY) } : pos));
+		}
+		setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
 	}
 
 	function beginInsetResize(e) {
@@ -884,7 +952,6 @@ globalThis.rect = pane.getBoundingClientRect();
 		setSelectedHierarchyId(id);
 		const focus = RIG_HIERARCHY_FOCUS[id];
 		if (focus && ikMode) setIkFocus(focus);
-		if (id === "camera") setViewMode("shot");
 	}
 	// Producer drag lifecycle (plan §6.1): begin issues a token the producer
 	// presents on every apply and on close; end commits the drag as one
@@ -1012,7 +1079,6 @@ globalThis.rect = pane.getBoundingClientRect();
 		const angles = aimAt(camera.position, target);
 		look.current.yaw = angles.yaw;
 		look.current.pitch = angles.pitch;
-		setViewMode("shot");
 	}
 
 	/** In-place rename commit from the hierarchy (F2 / Return / rename on
@@ -1109,11 +1175,10 @@ globalThis.rect = pane.getBoundingClientRect();
 	const [videoModel, setVideoModel] = useState("seedance_2");
 	const [cameraMove, setCameraMove] = useState(CAMERA_MOVES[1]);
 	const [customMove, setCustomMove] = useState("");
-	// The A→B move workspace: two captured framings and a duration. The move's
-	// name is never stored — it is re-derived from the framings every time.
-	const [moveA, setMoveA] = useState(null);
-	const [moveB, setMoveB] = useState(null);
-	const [moveDurationS, setMoveDurationS] = useState(3);
+	// The camera move workspace: frame-unique keyframings authored on the
+	// timeline's Camera lane. The move's name is never stored — it is
+	// re-derived from the framings segment by segment.
+	const [cameraKeys, setCameraKeys] = useState([]); // [{ frame, framing }] sorted by frame
 	const [movePlaying, setMovePlaying] = useState(false);
 	// Follow slaves the move to the timeline playhead so camera and character
 	// motion share one time axis; off frees the camera while both stay set.
@@ -1169,7 +1234,7 @@ globalThis.rect = pane.getBoundingClientRect();
 	const [activeWaypointFrame, setActiveWaypointFrame] = useState(null);
 	useEffect(() => {
 		// Subject 1 is the sole frame-zero root start. Drop any legacy seeded
-		// waypoint so Bird's-eye never renders two start markers.
+		// waypoint so Top-View never renders two start markers.
 		setWaypoints((current) => current.filter((waypoint) => waypoint.frame !== 0));
 		setActiveWaypointFrame((current) => (current === 0 ? null : current));
 	}, []);
@@ -1197,16 +1262,30 @@ globalThis.rect = pane.getBoundingClientRect();
 		[cameraPos, charA, fovDeg],
 	);
 
-	// The derived move: what the two framings geometrically prove, not what a
-	// dropdown claims. Present only while both ends are set.
-	const abMove = useMemo(
-		() => (moveA && moveB ? classifyMove(moveA, moveB, charA, { durationS: moveDurationS }) : null),
-		[moveA, moveB, charA, moveDurationS],
-	);
+	// The derived move sequence: what the keyframings geometrically prove
+	// segment by segment, not what a dropdown claims. Present from two keys.
+	const moveSequence = useMemo(() => {
+		if (cameraKeys.length < 2) return null;
+		const segs = [];
+		for (let i = 0; i < cameraKeys.length - 1; i++) {
+			segs.push(
+				classifyMove(cameraKeys[i].framing, cameraKeys[i + 1].framing, charA, {
+					durationS: (cameraKeys[i + 1].frame - cameraKeys[i].frame) / tlFps,
+				}),
+			);
+		}
+		return {
+			segs,
+			slate: moveSequenceSlate(segs),
+			phrase: moveSequencePhrase(segs),
+			fromShot: segs[0].from,
+			spanS: Math.round(((cameraKeys[cameraKeys.length - 1].frame - cameraKeys[0].frame) / tlFps) * 10) / 10,
+		};
+	}, [cameraKeys, charA, tlFps]);
 	// With Follow armed, Preview means "watch the shot": it plays the timeline
 	// from frame 0 so character motion and the camera move share one clock.
 	// Follow off keeps the camera-only preview on its own clock.
-	const followPreviewArmed = moveFollow && !!abMove && !ikMode && !waypointMode && !posing;
+	const followPreviewArmed = moveFollow && cameraKeys.length >= 1 && !ikMode && !waypointMode && !posing;
 	const previewActive = movePlaying || (followPreviewArmed && tlPlaying);
 
 	function captureCurrentFraming() {
@@ -1215,10 +1294,34 @@ globalThis.rect = pane.getBoundingClientRect();
 		return captureFraming({ pos: { x: pos.x, y: pos.y, z: pos.z }, yaw: look.current.yaw, pitch: look.current.pitch, fovDeg });
 	}
 
+	// Key authoring lives on the timeline's Camera lane: clicking an empty
+	// cell keys the CURRENT framing at that frame. Re-keying a keyed frame
+	// overwrites its framing with wherever the camera is now.
+	function addCameraKeyframe(frame) {
+		const framing = captureCurrentFraming();
+		const target = Math.max(0, Math.min(Math.round(frame), tlFrameCount - 1));
+		setCameraKeys((keys) => keys.filter((k) => k.frame !== target).concat({ frame: target, framing }).sort((a, b) => a.frame - b.frame));
+		setSelectedHierarchyId("camera");
+	}
+
+	// Re-time a key by dragging its dot along the lane. Landing on another
+	// key's frame is rejected — keys stay frame-unique.
+	function moveCameraKeyframe(from, to) {
+		const target = Math.max(0, Math.min(Math.round(to), tlFrameCount - 1));
+		if (target === from) return;
+		setCameraKeys((keys) => {
+			if (keys.some((k) => k.frame === target)) return keys;
+			return keys.map((k) => (k.frame === from ? { ...k, frame: target } : k)).sort((a, b) => a.frame - b.frame);
+		});
+	}
+
+	function removeCameraKeyframe(frame) {
+		setCameraKeys((keys) => keys.filter((k) => k.frame !== frame));
+	}
+
 	function clearMove() {
 		setMovePlaying(false);
-		setMoveA(null);
-		setMoveB(null);
+		setCameraKeys([]);
 	}
 
 	const allPoses = useMemo(() => [...BUILT_IN_POSES, ...customPoses], [customPoses]);
@@ -1402,7 +1505,6 @@ globalThis.rect = pane.getBoundingClientRect();
 				poserCam.rotation.order = "YXZ";
 				poserLook.current = { yaw: shotCam.rotation.y, pitch: shotCam.rotation.x };
 			}
-			setViewMode("shot"); // posing happens in the big poser view
 			setIkMode(true);
 			setToast(motion
 				? "IK mode — correct the motion; drag end keys the fix at this frame"
@@ -1651,7 +1753,6 @@ globalThis.rect = pane.getBoundingClientRect();
 		setFovDeg(p.fov);
 		setShowB(p.two);
 		if (p.charB) setCharB(p.charB);
-		setViewMode("shot");
 		setNonce((n) => n + 1);
 	}
 
@@ -1694,13 +1795,13 @@ globalThis.rect = pane.getBoundingClientRect();
 	function generate() {
 		const models = mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
 		const model = models.find((m) => m.id === (mode === "video" ? videoModel : imageModel));
-		// An authored A→B move outranks the dropdown: the phrase is derived from
-		// the framings, and the exported frames become first/last conditioning.
-		const movePlan = mode === "video" ? abMove : null;
+		// An authored keyframe move outranks the dropdown: the phrase is derived
+		// from the framings, and the exported frames become first/last conditioning.
+		const movePlan = mode === "video" ? moveSequence : null;
 		const prompt = composePrompt({
 			mode,
 			model,
-			shot: movePlan ? movePlan.from : shot,
+			shot: movePlan ? movePlan.fromShot : shot,
 			subject,
 			subject2: showB ? subject2 : null,
 			posePhrase: poseA?.prompt ?? "",
@@ -1715,8 +1816,8 @@ globalThis.rect = pane.getBoundingClientRect();
 		let frame = null;
 		let frameB = null;
 		if (movePlan) {
-			frame = captureFramingPng(moveA);
-			frameB = captureFramingPng(moveB);
+			frame = captureFramingPng(cameraKeys[0].framing);
+			frameB = captureFramingPng(cameraKeys[cameraKeys.length - 1].framing);
 		} else {
 			const buffer = captureRef.current?.render();
 			frame = buffer ? bufferToPng(buffer) : null;
@@ -2232,6 +2333,7 @@ globalThis.rect = pane.getBoundingClientRect();
 								hierarchyWidth={workspaceLayout.hierarchyWidth}
 								sidebarWidth={workspaceLayout.sidebarWidth}
 								timelineHeight={workspaceLayout.timelineHeight}
+								planZoom={workspaceLayout.planZoom}
 							/>
 							<color attach="background" args={["#eef4f3"]} />
 							<StageLights />
@@ -2313,13 +2415,14 @@ globalThis.rect = pane.getBoundingClientRect();
 								// waypoint scrubs the playhead as a side effect, and follow
 								// must not turn that scrub into a camera lurch. Same for IK
 								// and pose studio, where the shot camera is deliberately frozen.
-								following={moveFollow && !!abMove && !ikMode && !waypointMode && !posing}
+								// PlayView is the finished-output player: the move always rides
+								// the playhead there. The Follow toggle and authoring-mode gates
+								// only protect the Scene tab's manipulation surfaces.
+								following={cameraKeys.length >= 1 && (centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing))}
 								followFrame={tlFrame}
 								fps={tlFps}
-								a={moveA}
-								b={moveB}
+								keys={cameraKeys}
 								anchor={charA}
-								durationS={moveDurationS}
 								camRef={shotCamRef}
 								look={look}
 								isInterrupted={() => flyingRef.current}
@@ -2428,6 +2531,8 @@ globalThis.rect = pane.getBoundingClientRect();
 								ikMode={ikMode}
 								planIsMain={planIsMain}
 								playMode={playMode}
+								insetCollapsed={workspaceLayout.insetCollapsed}
+								planZoom={workspaceLayout.planZoom}
 							/>
 						</Canvas>
 
@@ -2435,23 +2540,46 @@ globalThis.rect = pane.getBoundingClientRect();
 						<div
 							ref={insetPaneRef}
 							hidden={playMode}
-							className={"vp-pane vp-inset" + (planIsMain || ikMode ? " shot" : " plan")}
+							className={"vp-pane vp-inset" + (planIsMain || ikMode ? " shot" : " plan") + (workspaceLayout.insetCollapsed ? " collapsed" : "")}
 							style={insetPos ? { left: insetPos.x, top: insetPos.y, right: "auto" } : undefined}
 						>
 							<span
 								className="vp-inset-tag"
-								title="Drag to move — double-click to snap back"
+								title={workspaceLayout.insetCollapsed ? "Click or ▸ to expand · drag to move" : "Click or ▾ to fold · drag to move"}
 								onPointerDown={beginInsetDrag}
-								onDoubleClick={() => setInsetPos(null)}
 							>
-								{planIsMain || ikMode ? "Shot view" : "Bird\u2019s-eye"}
+								<span
+									className="vp-inset-caret"
+									role="button"
+									tabIndex={-1}
+									aria-expanded={!workspaceLayout.insetCollapsed}
+									aria-label={workspaceLayout.insetCollapsed ? "Expand inset view" : "Collapse inset view"}
+									title={workspaceLayout.insetCollapsed ? "Expand inset view" : "Collapse inset view"}
+									onPointerDown={(e) => e.stopPropagation()}
+									// Same one-fold-per-gesture rule as the tag: ignore the
+									// second click of a double-click (detail=2).
+									onClick={(e) => {
+										if (e.detail > 1) return;
+										insetToggledAtRef.current = Date.now();
+										if (workspaceLayout.insetCollapsed) expandInset();
+										else setWorkspaceLayout((current) => ({ ...current, insetCollapsed: true }));
+									}}
+								>
+									{workspaceLayout.insetCollapsed ? "▸" : "▾"}
+								</span>
+								{planIsMain || ikMode ? "Shot view" : "Top-View"}
+								{!planIsMain && !ikMode && workspaceLayout.planZoom !== 1 && !workspaceLayout.insetCollapsed && (
+									<em className="vp-inset-zoom">{workspaceLayout.planZoom.toFixed(2).replace(/\.?0+$/, "")}×</em>
+								)}
 							</span>
-							<span
-								className="vp-inset-resize"
-								role="separator"
-								aria-label="Resize inset view"
-								onPointerDown={beginInsetResize}
-							/>
+							{!workspaceLayout.insetCollapsed && (
+								<span
+									className="vp-inset-resize"
+									role="separator"
+									aria-label="Resize inset view"
+									onPointerDown={beginInsetResize}
+								/>
+							)}
 						</div>
 
 						<div className="film-frame" hidden={playMode}>
@@ -2541,28 +2669,20 @@ globalThis.rect = pane.getBoundingClientRect();
 							Recenter on subject
 						</button>
 
-						<h3 className="move-head">Move A→B</h3>
+						<h3 className="move-head">Move keys</h3>
 						<div className="move-ab">
 							<button
 								type="button"
 								className="btn ghost"
-								title="Fly the camera to the move's first frame, then set A"
-								onClick={() => setMoveA(captureCurrentFraming())}
+								title="Key the current framing at the playhead frame"
+								onClick={() => addCameraKeyframe(tlFrame)}
 							>
-								{moveA ? "A ✓" : "Set A"}
+								+ Key here
 							</button>
 							<button
 								type="button"
 								className="btn ghost"
-								title="Fly the camera to the move's last frame, then set B"
-								onClick={() => setMoveB(captureCurrentFraming())}
-							>
-								{moveB ? "B ✓" : "Set B"}
-							</button>
-							<button
-								type="button"
-								className="btn ghost"
-								disabled={!abMove}
+								disabled={cameraKeys.length < 1}
 								title="Play the move. With Follow on it plays the timeline too, so character motion rides along; right-drag interrupts"
 								onClick={() => {
 									if (followPreviewArmed) {
@@ -2582,26 +2702,25 @@ globalThis.rect = pane.getBoundingClientRect();
 							<button
 								type="button"
 								className="btn ghost"
-								disabled={!abMove}
-								title="Slave the move to the timeline: play or scrub and the camera rides along. Turn off to fly freely while A/B stay set"
+								disabled={cameraKeys.length < 1}
+								title="Slave the move to the timeline: play or scrub and the camera rides along. Turn off to fly freely while keys stay set"
 								onClick={() => setMoveFollow((follow) => !follow)}
 							>
 								{moveFollow ? "Follow ✓" : "Follow"}
 							</button>
-							<button type="button" className="btn ghost" disabled={!moveA && !moveB} onClick={clearMove}>
+							<button type="button" className="btn ghost" disabled={cameraKeys.length < 1} onClick={clearMove}>
 								Clear
 							</button>
 						</div>
-						{abMove ? (
-							<>
-								<div className="move-slate" title="derived from the two framings, not chosen from a list">
-									{moveSlate(abMove)}
-								</div>
-								<Slider label="Move duration" min={1} max={10} step={0.5} value={moveDurationS} unit="s" onChange={setMoveDurationS} />
-							</>
+						{moveSequence ? (
+							<div className="move-slate" title="derived from the keyframings, not chosen from a list">
+								{moveSequence.slate} · {moveSequence.spanS}s
+							</div>
 						) : (
 							<div className="move-slate">
-								{moveA ? "fly to the end framing, then Set B" : "fly to the start framing, then Set A"}
+								{cameraKeys.length === 1
+									? `locked-off hold from frame ${cameraKeys[0].frame} — click the Camera lane at another frame to add a move`
+									: "click the Camera timeline lane to key the current framing at that frame"}
 							</div>
 						)}
 					</Foldout>
@@ -2699,7 +2818,7 @@ globalThis.rect = pane.getBoundingClientRect();
 								<input type="text" value={environment} onChange={(e) => setEnvironment(e.target.value)} />
 							</Field>
 						)}
-						{mode === "video" && !abMove && (
+						{mode === "video" && !moveSequence && (
 							<Field label="Camera move">
 								<Dropdown
 									ariaLabel="Camera move"
@@ -2709,7 +2828,7 @@ globalThis.rect = pane.getBoundingClientRect();
 								/>
 							</Field>
 						)}
-						{mode === "video" && !abMove && cameraMove === CUSTOM_MOVE && (
+						{mode === "video" && !moveSequence && cameraMove === CUSTOM_MOVE && (
 							<Field label="Custom camera move">
 								<input
 									type="text"
@@ -2719,13 +2838,13 @@ globalThis.rect = pane.getBoundingClientRect();
 								/>
 							</Field>
 						)}
-						{mode === "video" && abMove && (
+						{mode === "video" && moveSequence && (
 							<Field label="Camera move">
 								<div
 									className="move-slate inline"
-									title="authored from the A→B framings — select Camera in the hierarchy to edit"
+									title="authored from the timeline keyframings — select Camera in the hierarchy to edit"
 								>
-									{moveSlate(abMove)} · {moveDurationS}s
+									{moveSequence.slate} · {moveSequence.spanS}s
 								</div>
 							</Field>
 						)}
@@ -3171,6 +3290,7 @@ globalThis.rect = pane.getBoundingClientRect();
 				ikDisabled={!ikChains}
 				ikFrames={ikFrames}
 				footSnap={footSnap}
+				cameraKeyFrames={cameraKeys.map((k) => k.frame)}
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
@@ -3201,6 +3321,10 @@ globalThis.rect = pane.getBoundingClientRect();
 				onPromptResize={resizePromptClip}
 				onPromptMove={movePromptClip}
 				onPromptRemove={removePromptClip}
+				onCameraMoveSelect={() => setSelectedHierarchyId("camera")}
+				onCameraKeyframeAdd={addCameraKeyframe}
+				onCameraKeyframeMove={moveCameraKeyframe}
+				onCameraKeyframeRemove={removeCameraKeyframe}
 				onClearMotion={motion ? clearMotion : null}
 			/>
 				</div>
@@ -3236,7 +3360,7 @@ globalThis.rect = pane.getBoundingClientRect();
 						) : (
 							result.frame && <img className="preview" src={result.frame} alt="framed shot" />
 						)}
-						{result.move && <div className="move-slate">{moveSlate(result.move)} · {moveDurationS}s</div>}
+						{result.move && <div className="move-slate">{result.move.slate} · {result.move.spanS}s</div>}
 						<label className="modal-label">Prompt {copied && <em>· copied</em>}</label>
 						<div className="promptbox">{result.prompt}</div>
 						<div className="modal-actions">

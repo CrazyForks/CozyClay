@@ -103,7 +103,20 @@ export function fitAspect(rect, aspect) {
 	return { x: rect.x + (rect.w - w) / 2, y: rect.y + (rect.h - h) / 2, w, h };
 }
 
-export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef, poserCamRef, ikMode = false, planIsMain, playMode = false }) {
+export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef, poserCamRef, ikMode = false, planIsMain, playMode = false, insetCollapsed = false, planZoom = 1 }) {
+	const invalidate = useThree((state) => state.invalidate);
+	// Demand mode draws nothing by itself: the first frame can land before the
+	// layout settles (the inset reads 0x0), and async scene content commits
+	// later. Force frames on mount and after the DOM has caught up.
+	useEffect(() => {
+		invalidate();
+		const f1 = requestAnimationFrame(invalidate);
+		const f2 = requestAnimationFrame(() => requestAnimationFrame(invalidate));
+		return () => {
+			cancelAnimationFrame(f1);
+			cancelAnimationFrame(f2);
+		};
+	}, [invalidate]);
 	const { gl, scene, size } = useThree();
 	const edgePass = useMemo(() => {
 		const target = new THREE.WebGLRenderTarget(1, 1, {
@@ -186,8 +199,10 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 			return { x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height };
 		};
 		const mainRect = rectOf(mainRef.current);
-		const insetRect = rectOf(insetRef.current);
-		if (mainRect.w < 2 || (!playMode && insetRect.w < 2)) return;
+		// A collapsed inset is just its tag pill: skip the whole inset pass
+		// instead of drawing a squished viewport into it.
+		const insetRect = insetCollapsed ? { x: 0, y: 0, w: 0, h: 0 } : rectOf(insetRef.current);
+		if (mainRect.w < 2 || (!playMode && !insetCollapsed && insetRect.w < 2)) return;
 
 		const planPane = planIsMain ? mainRect : insetRect;
 		const shotPane = planIsMain ? insetRect : mainRect;
@@ -244,11 +259,14 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 		// undistorted; a perspective one skews the pucks near the edges and reads
 		// as a 3/4 view rather than a plan.
 		if (planCam.isOrthographicCamera) {
+			// planZoom is the Top-View's camera height: larger zoom = smaller
+			// extent = the pucks draw bigger.
+			const extent = PLAN_EXTENT / Math.max(0.25, planZoom);
 			const a = planPane.w / planPane.h;
-			planCam.top = PLAN_EXTENT;
-			planCam.bottom = -PLAN_EXTENT;
-			planCam.left = -PLAN_EXTENT * a;
-			planCam.right = PLAN_EXTENT * a;
+			planCam.top = extent;
+			planCam.bottom = -extent;
+			planCam.left = -extent * a;
+			planCam.right = extent * a;
 		} else {
 			planCam.aspect = planPane.w / planPane.h;
 		}
@@ -270,13 +288,13 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 			poserCam.aspect = mainRect.w / mainRect.h;
 			poserCam.updateProjectionMatrix();
 			draw(poserCam, mainRect);
-			draw(shotCam, insetRect, fitAspect(insetRect, SHOT_ASPECT));
+			if (!insetCollapsed) draw(shotCam, insetRect, fitAspect(insetRect, SHOT_ASPECT));
 		} else if (planIsMain) {
 			draw(planCam, planPane, null, false);
-			draw(shotCam, shotPane, fitAspect(shotPane, SHOT_ASPECT));
+			if (!insetCollapsed) draw(shotCam, shotPane, fitAspect(shotPane, SHOT_ASPECT));
 		} else {
 			draw(shotCam, shotPane, fitAspect(shotPane, SHOT_ASPECT));
-			draw(planCam, planPane, null, false);
+			if (!insetCollapsed) draw(planCam, planPane, null, false);
 		}
 
 		gl.setScissorTest(false);

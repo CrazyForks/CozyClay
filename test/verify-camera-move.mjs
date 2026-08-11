@@ -3,10 +3,13 @@
 // stays on the arc instead of cutting the chord, and the classifier only
 // claims a move the two framings geometrically prove.
 import {
+	cameraMoveAt,
 	captureFraming,
 	classifyMove,
 	easeInOut,
 	interpolateFraming,
+	moveSequencePhrase,
+	moveSequenceSlate,
 	moveSlate,
 	shortestArc,
 } from "../src/camera-move.js";
@@ -149,6 +152,47 @@ const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 	const move = classifyMove(framingAt(4, 20, 1.6), framingAt(1.6, 20, 1.6), SUBJECT);
 	const slate = moveSlate(move);
 	expect("move slate reads A → B · MOVE", /^[A-Z0-9 -]+ \d+MM → [A-Z0-9 -]+ \d+MM · PUSH-IN/.test(slate), slate);
+}
+/* --------------------------------------------- multi-key cameraMoveAt --- */
+{
+	const keys = [
+		{ frame: 0, framing: framingAt(4, 0, 1.6) },
+		{ frame: 40, framing: framingAt(4, 90, 1.6) },
+		{ frame: 80, framing: framingAt(1.5, 90, 1.6) },
+	];
+	expect("no keys samples null", cameraMoveAt([], SUBJECT, 10) === null);
+	const before = cameraMoveAt(keys, SUBJECT, -5);
+	expect("before the first key holds its framing", near(before.pos.x, keys[0].framing.pos.x) && near(before.fovDeg, keys[0].framing.fovDeg, 1e-9));
+	const after = cameraMoveAt(keys, SUBJECT, 200);
+	expect("after the last key holds its framing", near(after.pos.x, keys[2].framing.pos.x) && near(after.fovDeg, keys[2].framing.fovDeg, 1e-9));
+	const onKey = cameraMoveAt(keys, SUBJECT, 40);
+	expect("landing on a key reproduces it exactly", near(onKey.pos.x, keys[1].framing.pos.x) && near(onKey.yaw, keys[1].framing.yaw, 1e-9));
+	// frame 20 is half of segment 0→40 (azimuth 0→90 at r=4): the midpoint
+	// stays on the arc, and frame 60 is half of segment 40→80 (radius 4→1.5).
+	const mid0 = cameraMoveAt(keys, SUBJECT, 20);
+	expect("first segment midpoint keeps the 4m arc", near(Math.hypot(mid0.pos.x - SUBJECT.x, mid0.pos.z - SUBJECT.z), 4, 1e-6), `r=${Math.hypot(mid0.pos.x, mid0.pos.z)}`);
+	const mid1 = cameraMoveAt(keys, SUBJECT, 60);
+	const midAz = (Math.atan2(mid1.pos.x - SUBJECT.x, mid1.pos.z - SUBJECT.z) * 180) / Math.PI;
+	expect("second segment midpoint halves the radius, holds the azimuth",
+		near(Math.hypot(mid1.pos.x - SUBJECT.x, mid1.pos.z - SUBJECT.z), 2.75, 1e-6) && near(midAz, 90, 1e-6),
+		`r=${Math.hypot(mid1.pos.x, mid1.pos.z)} az=${midAz}`);
+	const one = cameraMoveAt([keys[1]], SUBJECT, 999);
+	expect("a single key holds everywhere", near(one.pos.x, keys[1].framing.pos.x));
+}
+
+/* ---------------------------------------------- sequence slate / phrase --- */
+{
+	const segs = [
+		classifyMove(framingAt(4, 20, 1.6), framingAt(1.6, 20, 1.6), SUBJECT),
+		classifyMove(framingAt(1.6, 20, 1.6), framingAt(3, 110, 1.6), SUBJECT),
+	];
+	expect("one segment renders exactly like moveSlate", moveSequenceSlate([segs[0]]) === moveSlate(segs[0]));
+	const slate = moveSequenceSlate(segs);
+	expect("sequence slate chains segments through the middle framing",
+		/· PUSH-IN \(DOLLY IN\) → .+ · .+ → .+ \d+MM$/.test(slate), slate);
+	const phrase = moveSequencePhrase(segs);
+	expect("sequence phrase chains in time order", phrase.includes(", then ") && phrase.startsWith(segs[0].phrase), phrase);
+	expect("one segment phrase is the segment phrase", moveSequencePhrase([segs[0]]) === segs[0].phrase);
 }
 
 if (failures > 0) {

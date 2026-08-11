@@ -238,3 +238,49 @@ export function moveSlate(move) {
 	].map((part) => part.toUpperCase());
 	return `${end[0]} → ${end[1]} · ${move.label.toUpperCase()}`;
 }
+
+/* ------------------------------------------------- multi-key sequences --- */
+
+/**
+ * Sample an N-key camera move at a frame. Keys are sorted frame-unique
+ * records `{ frame, framing }`. Before the first key and after the last the
+ * framing holds; inside a segment it interpolates exactly like A→B.
+ * @param {Array<{frame:number, framing:object}>} keys  sorted by frame
+ * @param {{x:number,z:number}} anchor  subject ground position
+ * @param {number} frame
+ * @returns a framing record, or null when there are no keys
+ */
+export function cameraMoveAt(keys, anchor, frame) {
+	if (!keys.length) return null;
+	const first = keys[0];
+	const last = keys[keys.length - 1];
+	if (frame <= first.frame) return first.framing;
+	if (frame >= last.frame) return last.framing;
+	for (let i = 0; i < keys.length - 1; i++) {
+		const a = keys[i];
+		const b = keys[i + 1];
+		if (frame <= b.frame) {
+			return interpolateFraming(a.framing, b.framing, anchor, (frame - a.frame) / (b.frame - a.frame));
+		}
+	}
+	return last.framing;
+}
+
+/** Chained slate for a classified segment list, e.g.
+ * "MEDIUM SHOT 35MM · PUSH-IN (DOLLY IN) → CLOSE-UP 85MM · ORBIT / ARC → WIDE 24MM".
+ * One segment renders identically to moveSlate. */
+export function moveSequenceSlate(segments) {
+	if (!segments.length) return "";
+	if (segments.length === 1) return moveSlate(segments[0]);
+	const parts = [`${segments[0].from.sizeLabel} ${segments[0].from.focalMm}mm`.toUpperCase()];
+	for (const seg of segments) {
+		parts.push(`${seg.label.toUpperCase()} → ${`${seg.to.sizeLabel} ${seg.to.focalMm}mm`.toUpperCase()}`);
+	}
+	return parts.join(" · ");
+}
+
+/** Generation phrase for a classified segment list: each segment's proven
+ * phrase, chained in time order. */
+export function moveSequencePhrase(segments) {
+	return segments.map((seg) => seg.phrase).join(", then ");
+}

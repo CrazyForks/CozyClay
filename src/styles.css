@@ -394,6 +394,46 @@ select {
 	cursor: grabbing;
 }
 
+/* The collapse caret lives inside the tag strip: one control row, and the
+   tag body stays the drag handle in both states. */
+.vp-inset-caret {
+	margin-right: 3px;
+	opacity: .75;
+	cursor: pointer;
+	font-size: 9px;
+}
+
+.vp-inset-caret:hover {
+	opacity: 1;
+	color: var(--accent);
+}
+
+.vp-inset-zoom {
+	margin-left: 4px;
+	font-style: normal;
+	opacity: .75;
+	font-size: 9px;
+}
+
+/* Collapsed: the pane shrinks to a pill around the tag — no viewport, no
+   resize handle; the caret expands, the tag body still drags it around. */
+.vp-inset.collapsed {
+	width: auto !important;
+	height: auto !important;
+	min-width: 0;
+	min-height: 0;
+	aspect-ratio: auto;
+	display: flex;
+	align-items: center;
+	padding: 4px;
+	overflow: visible;
+	box-shadow: 0 6px 18px rgba(0, 0, 0, .3);
+}
+
+.vp-inset.collapsed .vp-inset-tag {
+	position: static;
+}
+
 .scene-loading {
 	position: absolute;
 	inset: auto 0 0 0;
@@ -2163,7 +2203,7 @@ input[type=range]::-moz-range-thumb {
 	height: 100%;
 	width: calc(var(--tl-label-w) + (100% - var(--tl-label-w)) * var(--tl-zoom));
 	display: grid;
-	grid-template-rows: 28px repeat(3, minmax(0, 1fr));
+	grid-template-rows: 28px repeat(4, minmax(0, 1fr));
 }
 
 .tl-ruler {
@@ -2243,6 +2283,8 @@ input[type=range]::-moz-range-thumb {
 	grid-template-columns: var(--tl-label-w) 1fr;
 	height: auto;
 	min-height: 18px;
+	/* One continuous row separator across label + lane. */
+	border-bottom: 1px solid rgba(255, 255, 255, .06);
 }
 
 .tl-track-label {
@@ -2263,14 +2305,18 @@ input[type=range]::-moz-range-thumb {
 
 .tl-lane {
 	position: relative;
-	background-image: repeating-linear-gradient(
-		90deg,
-		transparent 0,
-		transparent calc(100% / 23 - 1px),
-		rgba(255, 255, 255, .025) calc(100% / 23 - 1px),
-		rgba(255, 255, 255, .025) calc(100% / 23)
-	);
-	border-bottom: 1px solid rgba(255, 255, 255, .04);
+}
+
+/* Frame-based lane gridlines: one every 10 frames, positioned from the same
+   framePct as the ruler ticks, so lines and labels align at every zoom. */
+.tl-grid {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: calc(var(--tl-f) * 100%);
+	width: 1px;
+	background: rgba(255, 255, 255, .03);
+	pointer-events: none;
 }
 
 .tl-lane:hover {
@@ -2279,10 +2325,6 @@ input[type=range]::-moz-range-thumb {
 
 .tl-lane.root {
 	cursor: crosshair;
-}
-
-.tl-track.prompts {
-	height: 30px;
 }
 
 .tl-track-label {
@@ -2305,8 +2347,9 @@ input[type=range]::-moz-range-thumb {
 .tl-chip {
 	box-sizing: border-box;
 	position: absolute;
-	top: 2px;
-	bottom: 2px;
+	top: 50%;
+	height: min(22px, calc(100% - 4px));
+	transform: translateY(-50%);
 	left: calc(var(--tl-f-start) * 100%);
 	width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);
 	display: flex;
@@ -2391,6 +2434,25 @@ input[type=range]::-moz-range-thumb {
 .tl-chip.empty .tl-chip-text {
 	color: var(--muted);
 	font-weight: 500;
+}
+
+/* Camera keyframes: violet dots, so they read as neither root waypoints
+   (cyan) nor IK keys (orange diamonds). Click jumps the playhead, drag
+   re-times, right-click removes; the lane itself keys on click. */
+.tl-marker.cam {
+	pointer-events: auto;
+	cursor: grab;
+	background: #a78bfa;
+	border-color: #1e1040;
+	box-shadow: 0 0 8px rgba(167, 139, 250, .8);
+}
+
+.tl-marker.cam:hover {
+	box-shadow: 0 0 10px rgba(167, 139, 250, 1), 0 0 0 2px rgba(167, 139, 250, .35);
+}
+
+.tl-lane.cam {
+	cursor: crosshair;
 }
 
 .tl-marker {
@@ -3313,6 +3375,19 @@ input[type=range]::-moz-range-thumb {
 	box-shadow: 0 7px 20px rgba(0, 0, 0, .15);
 }
 
+/* The white grip lines vanish on the clay viewport: give the corner a
+   dark plate and dark-on-light grip lines so the resize affordance shows
+   on both themes. */
+.vp-inset-resize {
+	background: linear-gradient(135deg, transparent 50%, rgba(38, 34, 30, .55) 50%);
+	border-bottom-right-radius: 7px;
+}
+
+.vp-inset-resize:before,
+.vp-inset-resize:after {
+	border-color: rgba(255, 252, 247, .85);
+}
+
 .vp-inset-tag,
 .hud,
 .caption,
@@ -3464,16 +3539,16 @@ input[type=range]::-moz-range-thumb {
 	background: rgba(255, 255, 255, .28);
 }
 
+.tl-track {
+	border-color: rgba(255, 255, 255, .1);
+}
+
 .tl-lane {
 	background-color: #282828;
-	background-image: repeating-linear-gradient(
-		90deg,
-		transparent 0,
-		transparent calc(100% / 23 - 1px),
-		rgba(255, 255, 255, .075) calc(100% / 23 - 1px),
-		rgba(255, 255, 255, .075) calc(100% / 23)
-	);
-	border-color: rgba(255, 255, 255, .1);
+}
+
+.tl-grid {
+	background: rgba(255, 255, 255, .075);
 }
 
 .tl-lane:hover {
@@ -3542,6 +3617,16 @@ input[type=range]::-moz-range-thumb {
 
 .tl-marker.ik:hover {
 	box-shadow: 0 0 0 3px rgba(214, 95, 85, .2);
+}
+
+.tl-marker.cam {
+	background: #9a7bd4;
+	border-color: #2c2c2c;
+	box-shadow: 0 0 0 1px #7b5cb0;
+}
+
+.tl-marker.cam:hover {
+	box-shadow: 0 0 0 3px rgba(154, 123, 212, .25);
 }
 
 .tl-track-add.ik,
@@ -4541,7 +4626,7 @@ input[type=range]::-moz-range-thumb {
 	border-bottom-color: #232323;
 }
 
-/* the Shot/Bird's-eye toggle sits right of the pane tabs in Scene view */
+/* the Shot/Top-View toggle sits right of the pane tabs in Scene view */
 .viewport .viewmode.scene-only {
 	top: 0;
 	left: 168px;
@@ -5463,37 +5548,38 @@ input[type=range] {
 }
 
 /* ------------------------------------------- quiet Unity tree ------------- */
-/* The tree was too fiddly: per-kind coloured icons, pill badges and guide
-   lines everywhere. Unity's Hierarchy is triangle + one muted icon + name. */
+/* The tree stays quiet — no guide lines, no pill badges — but every icon
+   being the same empty gray square read as a dead checkbox. Kinds keep one
+   small glyph: shape + one muted accent from the clay palette. */
 
 /* no guide lines */
 .hierarchy-row-wrap:before {
 	display: none;
 }
 
-/* one quiet icon for every row, whatever its kind */
-.hierarchy-icon,
-.hierarchy-icon.shot,
-.hierarchy-icon.camera,
-.hierarchy-icon.character,
-.hierarchy-icon.motion,
-.hierarchy-icon.clip,
-.hierarchy-icon.prompt,
-.hierarchy-icon.key,
-.hierarchy-icon.rig,
-.hierarchy-icon.bone,
-.hierarchy-icon.path,
-.hierarchy-icon.environment,
-.hierarchy-icon.props,
-.hierarchy-icon.object {
+.hierarchy-icon {
 	width: 10px;
 	height: 10px;
 	border: 1px solid #8a8a8a;
 	border-radius: 2px;
-	background: transparent;
+	background: rgba(255, 255, 255, .05);
 	box-shadow: none;
 	transform: none;
 }
+
+.hierarchy-icon.shot { border-radius: 50%; border-color: #3a7cbf; background: rgba(58, 124, 191, .18); }
+.hierarchy-icon.camera { border-color: #d4972d; background: rgba(212, 151, 45, .16); transform: skewX(-8deg); }
+.hierarchy-icon.character { border-radius: 50% 50% 3px 3px; border-color: #6f9f86; background: rgba(111, 159, 134, .16); }
+.hierarchy-icon.motion,
+.hierarchy-icon.clip,
+.hierarchy-icon.prompt { border-color: #3a7cbf; background: rgba(58, 124, 191, .18); }
+.hierarchy-icon.key { border-color: #d65f55; background: rgba(214, 95, 85, .16); transform: rotate(45deg) scale(.78); }
+.hierarchy-icon.rig,
+.hierarchy-icon.bone { border-radius: 50%; border-color: #8a759d; background: rgba(138, 117, 157, .16); }
+.hierarchy-icon.path { width: 12px; height: 5px; border-radius: 999px; border-color: #6f9f86; background: rgba(111, 159, 134, .16); }
+.hierarchy-icon.environment { border-radius: 50%; border-color: #6f9f86; background: rgba(111, 159, 134, .16); }
+.hierarchy-icon.props,
+.hierarchy-icon.object { border-color: #c7836f; background: rgba(199, 131, 111, .16); }
 
 /* badges: plain muted counts, no pill; gone when zero */
 .hierarchy-badge {

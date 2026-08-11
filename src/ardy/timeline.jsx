@@ -9,8 +9,12 @@ import { promptResizeFrame } from "./timeline-resize.js";
  * component is controlled and reports every interaction through callbacks,
  * so the scene (character rig, root path) can react to playhead moves.
  * The 2D Root lane authors temporal keyframes directly: left-clicking an empty
- * track cell creates/selects a numbered waypoint, then Bird's-eye owns its
+ * track cell creates/selects a numbered waypoint, then Top-View owns its
  * spatial position through direct marker dragging.
+ * The Camera lane authors shot-camera keyframings directly: left-clicking an
+ * empty track cell keys the CURRENT camera framing at that frame, dots jump
+ * the playhead on click, drag to re-time, right-click to remove. Playback
+ * and PlayView ride the keys segment by segment.
  */
 
 const DEFAULT_FRAME_COUNT = 300; // 15 s @ 20 fps, the ARDY Core cadence
@@ -32,11 +36,19 @@ const TRACKS = [
 	"Prompts",
 	"Full-Body",
 	"2D Root",
+	"Camera",
 ];
 
 /** IK keys live on the Full-Body lane: one marker per keyed frame, holding
  * a sparse set of the limbs the user has moved (never every joint). */
 const IK_LANE = "Full-Body";
+const CAMERA_LANE = "Camera";
+// Ruler labels and lane gridlines share one 10-frame cadence, so authored
+// elements (40-frame prompt blocks, camera key dots) always land on visible
+// lines. Label density adapts to zoom in 10-based steps.
+const GRID_STEP_FRAMES = 10;
+const LABEL_STEPS = [10, 20, 50, 100, 200, 500, 1000];
+const MAX_LABELS = 30;
 
 const framePct = (f, count) => (count > 1 ? f / (count - 1) : 0);
 
@@ -57,6 +69,7 @@ export default function Timeline({
 	ikDisabled = false, // a loaded motion owns the rig
 	ikFrames = [], // sorted full-body key frames
 	footSnap = true, // feet stay planted while the body moves
+	cameraKeyFrames = [], // sorted camera key frames — dots on the Camera lane
 	onScrub,
 	onAdvance,
 	onStep,
@@ -76,6 +89,10 @@ export default function Timeline({
 	onIkKeyframeAdd,
 	onIkKeyframeRemove,
 	onFootSnapToggle,
+	onCameraMoveSelect,
+	onCameraKeyframeAdd,
+	onCameraKeyframeMove,
+	onCameraKeyframeRemove,
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [zoom, setZoom] = useState(ZOOM_DEFAULT);
@@ -93,7 +110,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -216,16 +233,27 @@ export default function Timeline({
 	// virtual frame range instead of physically shrinking into the left edge.
 	const displayFrameCount = zoom < ZOOM_DEFAULT ? Math.ceil(frameCount / zoom) : frameCount;
 	const surfaceZoom = Math.max(ZOOM_DEFAULT, zoom);
+	const labelStep = LABEL_STEPS.find((s) => (displayFrameCount - 1) / s <= MAX_LABELS) ?? LABEL_STEPS[LABEL_STEPS.length - 1];
 	const labels = useMemo(() => {
-		const step = Math.max(1, Math.ceil((displayFrameCount - 1) / 24));
 		const out = [];
-		for (let f = 0; f < displayFrameCount; f += step) out.push(f);
+		for (let f = 0; f < displayFrameCount; f += labelStep) out.push(f);
+		return out;
+	}, [displayFrameCount, labelStep]);
+	// Lane gridlines ride the same 10-frame cadence and the same framePct as
+	// the ruler ticks, so lines and labels can never drift apart at any zoom.
+	const gridFrames = useMemo(() => {
+		const out = [];
+		for (let f = 0; f < displayFrameCount; f += GRID_STEP_FRAMES) out.push(f);
 		return out;
 	}, [displayFrameCount]);
-	const promptFramePct = (value) => Math.max(0, Math.min(1, value / Math.max(1, displayFrameCount)));
+	// Chips clamp into the surface; markers use framePct directly. One scale
+	// for everything — the old /count chip scale drifted off the gridlines.
+	const clipPct = (value) => Math.max(0, Math.min(1, framePct(value, displayFrameCount)));
 	const moveRef = useRef(null);
 	const suppressPromptClickRef = useRef(false);
 	const resizeRef = useRef(null);
+	const camDragRef = useRef(null);
+	const camSuppressClickRef = useRef(false);
 
 	function beginPromptMove(e, clip) {
 		if (e.button !== 0 || e.target.closest(".tl-chip-handle")) return;
@@ -314,6 +342,70 @@ export default function Timeline({
 		if (!resizeRef.current) return;
 		resizeRef.current = null;
 		e.currentTarget.releasePointerCapture?.(e.pointerId);
+	}
+
+	// Camera key dots re-time by dragging, like prompt clips move: the frame
+	// delta comes from the pointer-down geometry so a growing timeline cannot
+	// feed back into the next pointermove.
+	function beginCameraKeyDrag(e, keyFrame) {
+		if (e.button !== 0) return;
+		e.stopPropagation();
+		// A 10px dot loses the pointer almost immediately without capture —
+		// grab it on pointerdown so the drag survives past the marker's edge.
+		e.currentTarget.setPointerCapture?.(e.pointerId);
+		const lane = e.currentTarget.closest(".tl-lane");
+		const rect = lane?.getBoundingClientRect();
+		camDragRef.current = {
+			pointerId: e.pointerId,
+			startClientX: e.clientX,
+			fromFrame: keyFrame,
+			currentFrame: keyFrame,
+			laneWidth: rect?.width ?? 1,
+			displayFrameCount,
+			moved: false,
+		};
+	}
+
+	function moveCameraKeyDrag(e) {
+		const active = camDragRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		if (!active.moved) {
+			if (Math.abs(e.clientX - active.startClientX) < 4) return;
+			active.moved = true;
+		}
+		e.preventDefault();
+		e.stopPropagation();
+		const framesPerPixel = Math.max(0, active.displayFrameCount - 1) / Math.max(1, active.laneWidth);
+		const raw = active.fromFrame + (e.clientX - active.startClientX) * framesPerPixel;
+		const next = Math.max(0, Math.min(frameCount - 1, Math.round(raw)));
+		if (next === active.currentFrame) return;
+		const from = active.currentFrame;
+		active.currentFrame = next;
+		handlers.current.onCameraKeyframeMove?.(from, next);
+	}
+
+	function endCameraKeyDrag(e) {
+		const active = camDragRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		if (active.moved) {
+			e.preventDefault();
+			e.stopPropagation();
+			camSuppressClickRef.current = true;
+			if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+			queueMicrotask(() => { camSuppressClickRef.current = false; });
+		}
+		camDragRef.current = null;
+	}
+
+	function onCameraKeyClick(e, keyFrame) {
+		if (camSuppressClickRef.current) {
+			e.preventDefault();
+			e.stopPropagation();
+			return;
+		}
+		e.stopPropagation();
+		handlers.current.onScrub?.(keyFrame);
+		handlers.current.onCameraMoveSelect?.();
 	}
 
 	function frameFromEvent(e) {
@@ -509,20 +601,29 @@ export default function Timeline({
 									)}
 								</span>
 								<div
-									className={"tl-lane" + (name === "2D Root" ? " root" : "")}
+									className={"tl-lane" + (name === "2D Root" ? " root" : "") + (name === CAMERA_LANE ? " cam" : "")}
 									onPointerDown={
 										name === "2D Root"
 											? (e) => {
 												if (e.button !== 0 || e.target !== e.currentTarget) return;
 												handlers.current.onRootKeyframeAdd?.(rootFrameFromEvent(e));
 											}
-											: undefined
+											: name === CAMERA_LANE
+												? (e) => {
+													if (e.button !== 0 || e.target !== e.currentTarget) return;
+													handlers.current.onCameraKeyframeAdd?.(rootFrameFromEvent(e));
+												}
+												: undefined
 									}
+									title={name === CAMERA_LANE ? "Click to key the current camera framing at this frame" : undefined}
 								>
+									{gridFrames.map((f) => (
+										<i key={f} className="tl-grid" style={{ "--tl-f": framePct(f, displayFrameCount) }} aria-hidden="true" />
+									))}
 									{name === "Prompts" && promptClips.map((clip) => {
 										const duration = ((clip.endFrame - clip.startFrame) / Math.max(1, fps)).toFixed(1);
 										return (
-											<div key={clip.id} className={"tl-chip" + (selectedPromptId === clip.id ? " selected" : "") + (movingPromptId === clip.id ? " moving" : "")} style={{ "--tl-f-start": promptFramePct(clip.startFrame), "--tl-f-end": promptFramePct(clip.endFrame) }} title="Drag to move · edge handles resize · right-click removes" onPointerDown={(e) => beginPromptMove(e, clip)} onPointerMove={movePrompt} onPointerUp={endPromptMove} onPointerCancel={endPromptMove} onClick={blockPromptClick} onContextMenu={(e) => { e.preventDefault(); handlers.current.onPromptRemove?.(clip.id); }}>
+											<div key={clip.id} className={"tl-chip" + (selectedPromptId === clip.id ? " selected" : "") + (movingPromptId === clip.id ? " moving" : "")} style={{ "--tl-f-start": clipPct(clip.startFrame), "--tl-f-end": clipPct(clip.endFrame) }} title="Drag to move · edge handles resize · right-click removes" onPointerDown={(e) => beginPromptMove(e, clip)} onPointerMove={movePrompt} onPointerUp={endPromptMove} onPointerCancel={endPromptMove} onClick={blockPromptClick} onContextMenu={(e) => { e.preventDefault(); handlers.current.onPromptRemove?.(clip.id); }}>
 												<button className="tl-chip-handle start" type="button" aria-label="Resize prompt start" onPointerDown={(e) => beginPromptResize(e, clip, "start")} onPointerMove={movePromptResize} onPointerUp={endPromptResize} onPointerCancel={endPromptResize} />
 												<input className="tl-chip-input" value={clip.text} placeholder={`${duration}s · motion prompt`} maxLength={500} onChange={(e) => handlers.current.onPromptChange?.(clip.id, e.target.value)} />
 												<button className="tl-chip-handle end" type="button" aria-label="Resize prompt end" onPointerDown={(e) => beginPromptResize(e, clip, "end")} onPointerMove={movePromptResize} onPointerUp={endPromptResize} onPointerCancel={endPromptResize} />
@@ -554,7 +655,7 @@ export default function Timeline({
 												key={f}
 												className={"tl-marker wp" + (f === pendingWaypointFrame ? " pending" : "")}
 												style={{ "--tl-f": framePct(f, displayFrameCount) }}
-												title={`Root waypoint at frame ${f} — click to select, right-click to remove; drag marker ${waypointFrames.indexOf(f) + 1} in Bird's-eye to move`}
+												title={`Root waypoint at frame ${f} — click to select, right-click to remove; drag marker ${waypointFrames.indexOf(f) + 1} in Top-View to move`}
 												onPointerDown={(e) => {
 													// Select only on the primary button — a right click
 													// must reach contextmenu so it removes without scrubbing.
@@ -569,6 +670,24 @@ export default function Timeline({
 												}}
 											/>
 										))}
+									{name === CAMERA_LANE && cameraKeyFrames.map((f) => (
+										<span
+											key={f}
+											className="tl-marker cam"
+											style={{ "--tl-f": framePct(f, displayFrameCount) }}
+											title={`Camera key at frame ${f} — click to jump, drag to re-time, right-click to remove`}
+											onPointerDown={(e) => beginCameraKeyDrag(e, f)}
+											onPointerMove={moveCameraKeyDrag}
+											onPointerUp={endCameraKeyDrag}
+											onPointerCancel={endCameraKeyDrag}
+											onClick={(e) => onCameraKeyClick(e, f)}
+											onContextMenu={(e) => {
+												e.preventDefault();
+												e.stopPropagation();
+												handlers.current.onCameraKeyframeRemove?.(f);
+											}}
+										/>
+									))}
 								</div>
 							</div>
 						))}
