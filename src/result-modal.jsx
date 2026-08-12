@@ -71,8 +71,25 @@ export default function ResultModal({ result, copied, recordedVideoName, onClose
 
 				<section className="result-next" aria-labelledby="result-next-title">
 					<span className="result-next-kicker">다음 · {modelLabel}</span>
-					<h4 id="result-next-title">프롬프트와 프레임을 함께 사용하세요</h4>
-					{nextStep}
+					<h4 id="result-next-title">AI에 넣는 순서</h4>
+					<div className="result-next-intro">{nextStep}</div>
+					<ol className="result-handoff-steps">
+						<li>
+							<strong>프롬프트 복사</strong>
+							<span>{copied ? "복사됐어요. AI 서비스의 입력창에 붙여 넣으세요." : "위의 ‘프롬프트 복사’를 누른 뒤 AI 서비스 입력창에 붙여 넣으세요."}</span>
+						</li>
+						<li>
+							<strong>프레임 다운로드</strong>
+							<span>{result.frameB ? "‘시작·끝 프레임 다운로드’를 눌러 두 PNG를 저장하세요." : hasFrame ? "‘프레임 다운로드’를 눌러 PNG를 저장하세요." : "이 결과에는 내려받을 프레임이 없어요."}</span>
+						</li>
+						<li>
+							<strong>AI에 이미지 첨부</strong>
+							<span>{result.frameB ? "AI 서비스의 이미지 첨부 버튼에서 시작 프레임과 끝 프레임을 함께 올리세요." : "AI 서비스의 이미지 첨부 버튼에서 blocking-frame.png를 올리세요."}</span>
+						</li>
+					</ol>
+					<p className="result-handoff-note">
+						프롬프트는 장면의 내용과 분위기를 설명하고, 프레임은 카메라 구도를 보여줘요. 둘을 함께 넣어야 이 장면을 가장 가깝게 재현할 수 있어요.
+					</p>
 					{recordedVideoName && (
 						<p className="result-reference-video">
 							<strong>선택 사항 · 참고 영상</strong>

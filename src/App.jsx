@@ -2761,6 +2761,30 @@ globalThis.playMode = centerTab === "play";
 		(subject.trim().length > 0 && subject !== DEFAULT_SUBJECT) ||
 		(environment.trim().length > 0 && environment !== DEFAULT_ENVIRONMENT);
 
+	function runOnboardingAction(action) {
+		if (action === "camera") {
+			selectHierarchy("shot");
+			return;
+		}
+		if (action === "pose") {
+			selectHierarchy("characterA");
+			window.setTimeout(() => openStudio("A"), 0);
+			return;
+		}
+		if (action === "describe" || action === "generate") {
+			selectHierarchy("shot");
+			if (action === "generate") {
+				window.setTimeout(() => document.querySelector(".generate")?.scrollIntoView({ block: "nearest" }), 0);
+			}
+			return;
+		}
+		if (action === "keys") {
+			setMode("video");
+			selectHierarchy("camera");
+			setBottomTab("timeline");
+		}
+	}
+
 	return (
 		<div className={"app" + (renderActive ? "" : " render-idle")}>
 			<header className="topbar">
@@ -3172,7 +3196,10 @@ globalThis.playMode = centerTab === "play";
 								onSelect={setStudioPick}
 								onApply={() => {
 									const pose = allPoses.find((p) => p.id === studioPick);
-									if (pose) setPosed(pose);
+									if (pose) {
+										setPosed(pose);
+										closeStudio();
+									}
 								}}
 								onReset={() => {
 									setStudioPick(DEFAULT_POSE.id);
@@ -3194,6 +3221,7 @@ globalThis.playMode = centerTab === "play";
 							hasDelivered={result?.mode === mode && (copied || Boolean(result.downloaded))}
 							canReviewLatest={Boolean(result)}
 							onReview={() => setResultOpen(true)}
+							onAction={runOnboardingAction}
 						/>
 					</div>
 

@@ -15,13 +15,13 @@ function excludesAll(path, values) {
 	for (const value of values) assert.ok(!text.includes(value), `${path} still exposes legacy English UI copy: ${value}`);
 }
 
-includesAll("src/onboarding.jsx", ["카메라 설정", "이 순서대로 만들어 보세요", "AI로 가져가기"]);
+includesAll("src/onboarding.jsx", ["카메라 구도 잡기", "처음 장면을 함께 만들어 볼게요", "AI에 넣기", "오른쪽 속성의 ‘포즈’ 드롭다운", "막히면"]);
 excludesAll("src/onboarding.jsx", ["Set the camera", "Build it in this order", "Take it to your AI"]);
 
 includesAll("src/install-app.jsx", ["앱 설치", "Cozy Clay를 다른 앱처럼 사용하세요", "홈 화면에 추가"]);
 excludesAll("src/install-app.jsx", ["Install app", "Keep Cozy Clay with your other apps", "Add to Home Screen"]);
 
-includesAll("src/result-modal.jsx", ["장면이 준비됐어요", "프롬프트 복사", "프레임 다운로드"]);
+includesAll("src/result-modal.jsx", ["장면이 준비됐어요", "프롬프트 복사", "프레임 다운로드", "AI에 넣는 순서", "AI에 이미지 첨부"]);
 excludesAll("src/result-modal.jsx", ["Your shot is ready", "Copy prompt", "Download frame"]);
 
 includesAll("src/App.jsx", ["장면", "재생 보기", "속성", "모션 생성", "오브젝트 변환", "카메라 레일 완성", "연결 중…"]);
