@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 
 const port = Number(process.env.CDP_PORT || 9222);
 const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
@@ -53,6 +54,10 @@ const expect = (name, condition, detail = "") => {
 };
 
 let failures = 0;
+const onboardingSource = readFileSync("src/onboarding.jsx", "utf8");
+expect("video root path step exposes stable onboarding attrs", onboardingSource.includes('id: "root-path"') && onboardingSource.includes("data-onboarding-optional") && onboardingSource.includes("data-onboarding-coach-step") && onboardingSource.includes("data-onboarding-action"));
+expect("video root path step exposes status props", onboardingSource.includes("pathConfigured") && onboardingSource.includes("pathWarning"));
+expect("video root path step teaches floor order, timing, top view, and approximate motion", onboardingSource.includes("시작 위치에서 끝 위치 순서") && onboardingSource.includes("타임라인의 ‘2D 루트’ 레인") && onboardingSource.includes("탑뷰에서 번호 핀을 드래그") && onboardingSource.includes("대략 따라가며"));
 await send("Runtime.enable");
 await waitFor("location.href.startsWith('http')");
 await evaluate(`(() => {

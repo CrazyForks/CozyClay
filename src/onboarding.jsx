@@ -39,6 +39,8 @@ export default function OnboardingChecklist({
 	poseConfigured,
 	descriptionConfigured,
 	cameraKeyCount,
+	pathConfigured = false,
+	pathWarning = "",
 	hasGenerated,
 	hasDelivered,
 	canReviewLatest,
@@ -91,6 +93,22 @@ export default function OnboardingChecklist({
 			done: descriptionConfigured,
 		},
 		...(mode === "video" ? [{
+			id: "root-path",
+			label: "루트 경로 선택",
+			detail: "선택 단계예요. 인물이 걸어갈 길이 필요하면 바닥에 루트 경로를 찍으세요.",
+			instructions: [
+				"왼쪽 계층에서 ‘루트 경로’를 누르고 ‘루트 경로 편집’을 켜세요.",
+				"샷 뷰의 세트 바닥을 시작 위치에서 끝 위치 순서로 클릭하세요. 핀 번호가 이동 순서예요.",
+				"정확한 타이밍이 필요하면 타임라인의 ‘2D 루트’ 레인에서 먼저 프레임을 고른 뒤 바닥을 클릭하세요.",
+				"탑뷰에서 번호 핀을 드래그해 경로를 다듬으세요. 생성된 모션은 이 경로를 대략 따라가며 걷기나 방향 전환은 AI가 자연스럽게 채워요.",
+			],
+			recovery: pathWarning || "움직임이 필요 없거나 한 자리 연기라면 이 단계는 건너뛰어도 됩니다.",
+			action: "root-path",
+			actionLabel: "루트 경로 열기",
+			done: Boolean(pathConfigured),
+			optional: true,
+		}] : []),
+		...(mode === "video" ? [{
 			id: "keys",
 			label: "카메라 시작·끝 키 찍기",
 			detail: "영상 모드에서는 타임라인 카메라 레인에 시작과 끝 구도를 저장하세요.",
@@ -132,10 +150,11 @@ export default function OnboardingChecklist({
 			actionLabel: canReviewLatest ? "결과 다시 열기" : "결과 창 열기",
 			done: hasDelivered,
 		},
-	], [mode, cameraConfigured, poseConfigured, descriptionConfigured, cameraKeyCount, hasGenerated, hasDelivered, canReviewLatest]);
-	const doneCount = steps.filter((step) => step.done).length;
-	const allComplete = doneCount === steps.length;
-	const nextStep = steps.find((step) => !step.done);
+	], [mode, cameraConfigured, poseConfigured, descriptionConfigured, pathConfigured, pathWarning, cameraKeyCount, hasGenerated, hasDelivered, canReviewLatest]);
+	const requiredSteps = steps.filter((step) => !step.optional);
+	const doneCount = requiredSteps.filter((step) => step.done).length;
+	const allComplete = doneCount === requiredSteps.length;
+	const nextStep = steps.find((step) => !step.done && (step.id === "root-path" || !step.optional));
 
 	function updatePreferences(change) {
 		setPreferences((current) => {
@@ -169,7 +188,7 @@ export default function OnboardingChecklist({
 					<span className="onboarding-summary-mark" aria-hidden="true">{allComplete ? "✓" : "→"}</span>
 					<span>
 						<strong>{allComplete ? "첫 장면 완성" : `다음: ${nextStep.label}`}</strong>
-						<small>{doneCount}/{steps.length}단계 완료</small>
+						<small>{doneCount}/{requiredSteps.length}단계 완료</small>
 					</span>
 				</button>
 				<button
@@ -199,18 +218,18 @@ export default function OnboardingChecklist({
 			</header>
 
 			<div className="onboarding-progress" aria-live="polite">
-				<span>{doneCount}/{steps.length}단계 완료</span>
-				<strong>{Math.round((doneCount / steps.length) * 100)}%</strong>
+				<span>{doneCount}/{requiredSteps.length}단계 완료</span>
+				<strong>{Math.round((doneCount / requiredSteps.length) * 100)}%</strong>
 			</div>
 
 			<ol className="onboarding-steps" aria-label="첫 장면 만들기 단계">
 				{steps.map((step, index) => {
 					const current = step.id === currentStep.id;
 					return (
-						<li key={step.id} className={(step.done ? "done " : "") + (current ? "current" : "")} aria-current={current ? "step" : undefined} data-onboarding-step={step.id}>
+						<li key={step.id} className={(step.done ? "done " : "") + (current ? "current" : "")} aria-current={current ? "step" : undefined} data-onboarding-step={step.id} data-onboarding-optional={step.optional ? "true" : undefined}>
 							<span className="onboarding-step-mark" aria-hidden="true">{step.done ? "✓" : index + 1}</span>
 							<span>
-								<strong>{step.label}</strong>
+								<strong>{step.label}{step.optional ? " · 선택" : ""}</strong>
 								<small>{step.done ? "완료했어요" : step.detail}</small>
 							</span>
 						</li>
@@ -218,7 +237,7 @@ export default function OnboardingChecklist({
 				})}
 			</ol>
 
-			<section className="onboarding-coach-card" aria-live="polite">
+			<section className="onboarding-coach-card" aria-live="polite" data-onboarding-coach-step={currentStep.id}>
 				<div className="onboarding-coach-title">
 					<span className="onboarding-coach-label">{currentStep.done ? "다시 확인하기" : "지금 할 일"}</span>
 					<strong>{currentStep.label}</strong>
@@ -226,7 +245,7 @@ export default function OnboardingChecklist({
 				<p className="onboarding-coach-detail">{currentStep.detail}</p>
 				<StepInstructions items={currentStep.instructions} />
 				<p className="onboarding-recovery"><strong>막히면</strong> {currentStep.recovery}</p>
-			<button type="button" className="onboarding-action" data-guide-action={currentStep.action} onClick={() => {
+			<button type="button" className="onboarding-action" data-guide-action={currentStep.action} data-onboarding-action={currentStep.action} onClick={() => {
 					if (currentStep.action === "deliver" && canReviewLatest) onReview();
 					else onAction?.(currentStep.action);
 				}}>

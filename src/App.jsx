@@ -1466,11 +1466,13 @@ globalThis.playMode = centerTab === "play";
 	const [waypointMode, setWaypointMode] = useState(false);
 	const [waypoints, setWaypoints] = useState(shotStartup?.waypoints ?? []);
 	const [activeWaypointFrame, setActiveWaypointFrame] = useState(null);
+	const [pendingWaypointFrame, setPendingWaypointFrame] = useState(null);
 	useEffect(() => {
 		// Subject 1 is the sole frame-zero root start. Drop any legacy seeded
 		// waypoint so Top-View never renders two start markers.
 		setWaypoints((current) => current.filter((waypoint) => waypoint.frame !== 0));
 		setActiveWaypointFrame((current) => (current === 0 ? null : current));
+		setPendingWaypointFrame((current) => (current === 0 ? null : current));
 	}, []);
 	// Every authoring change lands in storage immediately: reloads (and dev
 	// hot updates) must never cost an authored shot again.
@@ -1762,55 +1764,121 @@ globalThis.playMode = centerTab === "play";
 	// A walking pace turns clicked distance into clip time, so pins land at
 	// frames the character can actually reach without ice-skating.
 	const WALK_SPEED_MPS = 1.4;
+	const ROOT_ROOM_LIMIT = 11;
+	const clampRootPosition = (value) => Math.max(-ROOT_ROOM_LIMIT, Math.min(ROOT_ROOM_LIMIT, value));
+	const rootStart = () => ({ frame: 0, x: charA.x, z: charA.z });
 
+	function validateWaypointAt(ordered, index, candidate) {
+		const previous = index > 0 ? ordered[index - 1] : rootStart();
+		const beforePrevious = index > 1 ? ordered[index - 2] : null;
+		const inbound = judgeNextWaypoint(previous, candidate, tlFps, beforePrevious);
+		if (!inbound.ok) return inbound;
+		const next = ordered[index + 1];
+		if (!next) return inbound;
+		const outbound = judgeNextWaypoint(candidate, next, tlFps, previous);
+		if (!outbound.ok) return outbound;
+		return { ok: true, warnings: [...inbound.warnings, ...outbound.warnings] };
+	}
+
+	function queueRootWaypointFrame(frame) {
+		const target = Math.max(1, Math.min(Math.round(frame), tlFrameCount - 1));
+		if (waypoints.some((waypoint) => waypoint.frame === target)) {
+			setActiveWaypointFrame(target);
+			setPendingWaypointFrame(null);
+			setTlFrame(target);
+			setWaypointMode(true);
+			setSelectedHierarchyId("rootPath");
+			setToast(`프레임 ${target}의 루트 웨이포인트를 선택했어요. 탑뷰에서 점을 드래그해 위치를 조정하세요.`);
+			return;
+		}
+		setPendingWaypointFrame(target);
+		setActiveWaypointFrame(null);
+		setTlFrame(target);
+		setWaypointMode(true);
+		setSelectedHierarchyId("rootPath");
+		setToast(`프레임 ${target}이 예약됐어요. 샷 뷰 바닥을 클릭하면 그 위치에 루트 웨이포인트가 생성됩니다.`);
+	}
 	/** ARDY-demo style authoring: each empty-floor press in the Shot view drops
 	    the next waypoint where it was clicked; the frame gap comes from walking
-	    distance. The bird's-eye board only displays the result. */
+	    distance. The bird's-eye board selects and drags existing waypoints. */
 	function addFloorWaypoint(point) {
-		const clampToRoom = (value) => Math.max(-11, Math.min(11, value));
-		const x = clampToRoom(point.x);
-		const z = clampToRoom(point.z);
+		const x = clampRootPosition(point.x);
+		const z = clampRootPosition(point.z);
 		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);
-		const last = ordered[ordered.length - 1] ?? { frame: 0, x: charA.x, z: charA.z };
+		const last = ordered[ordered.length - 1] ?? rootStart();
 		if (waypoints.length + 1 > MAX_WAYPOINTS) {
 			setToast(`루트 경로는 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요`);
+			return;
+		}
+		const pendingFrame = pendingWaypointFrame == null ? null : Math.max(1, Math.min(Math.round(pendingWaypointFrame), tlFrameCount - 1));
+		if (pendingFrame != null && ordered.some((waypoint) => waypoint.frame === pendingFrame)) {
+			setToast(`프레임 ${pendingFrame}에는 이미 루트 웨이포인트가 있어요. 타임라인에서 빈 프레임을 선택하세요.`);
+			setPendingWaypointFrame(null);
 			return;
 		}
 		// A scrubbed playhead is an explicit statement of time: a click lands on
 		// that exact frame. An untouched playhead (it snaps to the last pin
 		// after every placement) falls back to walking-distance pacing.
 		const playhead = Math.round(tlFrame);
-		const pinned = playhead > last.frame;
+		const pinned = pendingFrame != null || playhead > last.frame;
 		const walkGap = Math.max(8, Math.round((Math.hypot(x - last.x, z - last.z) / WALK_SPEED_MPS) * tlFps));
-		const frame = pinned ? Math.min(playhead, tlFrameCount - 1) : last.frame + walkGap;
+		const frame = pendingFrame ?? (pinned ? Math.min(playhead, tlFrameCount - 1) : last.frame + walkGap);
 		if (frame > tlFrameCount - 1) {
 			setToast("경로가 이미 클립 길이를 채웠어요. 시간을 늘리거나 웨이포인트를 지워 주세요");
 			return;
 		}
 		// The generator cannot refuse an impossible pin, so the click is the
 		// last moment a human can: block out-of-band legs with the fix named.
-		const before = ordered[ordered.length - 2] ?? (ordered.length === 1 ? { frame: 0, x: charA.x, z: charA.z } : null);
-		const verdict = judgeNextWaypoint(last, { frame, x, z }, tlFps, before);
+		const insertAt = ordered.findIndex((waypoint) => waypoint.frame > frame);
+		const index = insertAt === -1 ? ordered.length : insertAt;
+		const waypoint = { frame, x, z, heading: null };
+		const nextWaypoints = [...ordered.slice(0, index), waypoint, ...ordered.slice(index)];
+		const verdict = validateWaypointAt(nextWaypoints, index, waypoint);
 		if (!verdict.ok) {
 			setToast(`배치하지 못했어요 — ${verdict.error}`);
 			return;
 		}
-		setWaypoints((prev) => [...prev, { frame, x, z, heading: null }].sort((a, b) => a.frame - b.frame));
+		setWaypoints(nextWaypoints);
 		setTlFrame(frame);
 		setActiveWaypointFrame(frame);
-		const placed = `웨이포인트 ${ordered.length + 1} — 프레임 ${frame} ${pinned ? "(재생 헤드 위치)" : `(~${(frame / tlFps).toFixed(1)}초 걷기 기준)`}`;
+		setPendingWaypointFrame(null);
+		const placed = `루트 웨이포인트 ${index + 1} 추가: 프레임 ${frame}${pendingFrame != null ? " (타임라인 예약 프레임)" : pinned ? " (재생 헤드 위치)" : ` (~${(frame / tlFps).toFixed(1)}초 걷기 기준)`}`;
 		setToast(verdict.warnings.length ? `${placed} · ⚠ ${verdict.warnings[0]}` : placed);
+	}
+
+	function moveWaypoint(frame, x, z) {
+		const target = Math.round(frame);
+		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);
+		const index = ordered.findIndex((waypoint) => waypoint.frame === target);
+		if (index === -1) return;
+		const nextWaypoint = {
+			...ordered[index],
+			x: clampRootPosition(x),
+			z: clampRootPosition(z),
+		};
+		const nextOrdered = ordered.map((waypoint, i) => (i === index ? nextWaypoint : waypoint));
+		const verdict = validateWaypointAt(nextOrdered, index, nextWaypoint);
+		if (!verdict.ok) {
+			setToast(`이 위치는 루트 경로에 맞지 않아요: ${verdict.error}`);
+			return;
+		}
+		setWaypoints(nextOrdered);
+		setActiveWaypointFrame(target);
+		setPendingWaypointFrame((current) => (current === target ? null : current));
+		if (verdict.warnings.length) setToast(`루트 웨이포인트 이동됨: ${verdict.warnings[0]}`);
 	}
 
 	function removeWaypoint(frame) {
 		setWaypoints((prev) => prev.filter((w) => w.frame !== frame));
 		setActiveWaypointFrame((current) => (current === frame ? null : current));
+		setPendingWaypointFrame((current) => (current === frame ? null : current));
 	}
 
 	function toggleWaypointMode() {
 		const next = !waypointMode;
 		setWaypointMode(next);
 		if (!next) {
+			setPendingWaypointFrame(null);
 			setToast("2D 루트 경로 제약 꺼짐");
 			return;
 		}
@@ -2185,13 +2253,14 @@ globalThis.playMode = centerTab === "play";
 	// timeline hint so a path that forces a crawl or a sprint is visible
 	// before spending a generation on it.
 	const pathSpeed = useMemo(() => {
-		if (waypoints.length < 2) return null;
+		if (waypoints.length < 1) return null;
 		let min = Infinity;
 		let max = 0;
-		for (let i = 1; i < waypoints.length; i += 1) {
-			const a = waypoints[i - 1];
-			const b = waypoints[i];
-			const seconds = (b.frame - a.frame) / 20;
+		const path = [rootStart(), ...[...waypoints].sort((a, b) => a.frame - b.frame)];
+		for (let i = 1; i < path.length; i += 1) {
+			const a = path[i - 1];
+			const b = path[i];
+			const seconds = (b.frame - a.frame) / tlFps;
 			if (seconds <= 0) continue;
 			const speed = Math.hypot(b.x - a.x, b.z - a.z) / seconds;
 			min = Math.min(min, speed);
@@ -2199,7 +2268,7 @@ globalThis.playMode = centerTab === "play";
 		}
 		if (!Number.isFinite(min)) return null;
 		return { min, max, warn: min < 0.5 || max > 3 };
-	}, [waypoints]);
+	}, [charA.x, charA.z, tlFps, waypoints]);
 
 	const stateBadge = ardyRunning
 		? { label: "생성 중", kind: "generating" }
@@ -2760,6 +2829,12 @@ globalThis.playMode = centerTab === "play";
 		hasEnvSheet ||
 		(subject.trim().length > 0 && subject !== DEFAULT_SUBJECT) ||
 		(environment.trim().length > 0 && environment !== DEFAULT_ENVIRONMENT);
+	const pathConfigured = mode === "video" && waypointMode && waypoints.length >= 1;
+	const pathWarning = pendingWaypointFrame != null
+		? `프레임 ${pendingWaypointFrame}이 예약되어 있어요. 샷 뷰 바닥을 클릭하면 그 시간에 핀이 생깁니다.`
+		: pathSpeed?.warn
+			? `현재 이동 속도 ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)}m/s가 자연스러운 보행 범위(0.5–3m/s)를 벗어났어요. 타임라인 간격이나 핀 위치를 조정하세요.`
+			: "";
 
 	function runOnboardingAction(action) {
 		if (action === "camera") {
@@ -2782,6 +2857,14 @@ globalThis.playMode = centerTab === "play";
 			setMode("video");
 			selectHierarchy("camera");
 			setBottomTab("timeline");
+			return;
+		}
+		if (action === "root-path") {
+			setMode("video");
+			selectHierarchy("rootPath");
+			setBottomTab("timeline");
+			if (!waypointMode) setWaypointMode(true);
+			setToast("루트 경로 편집을 켰어요. 2D 루트 레인에서 시간을 고른 뒤 샷 뷰 바닥을 클릭하세요.");
 		}
 	}
 
@@ -3054,8 +3137,7 @@ globalThis.playMode = centerTab === "play";
 								waypoints={waypoints}
 								activeWaypointFrame={activeWaypointFrame}
 								onSelectWaypoint={(frame) => { setActiveWaypointFrame(frame); setTlFrame(Math.min(frame, tlFrameCount - 1)); setWaypointMode(true); }}
-								// The bird's-eye board displays and selects; placing and moving
-								// waypoints live on the Shot-view floor now, so no move handler.
+								onMoveWaypoint={moveWaypoint}
 								// Selection switch first, then the producer begins its
 								// transaction (plan §6.4): the settle here commits any
 								// previously open drag as one entry so the fresh token
@@ -3217,6 +3299,8 @@ globalThis.playMode = centerTab === "play";
 							poseConfigured={poseConfigured}
 							descriptionConfigured={descriptionConfigured}
 							cameraKeyCount={cameraKeys.length}
+							pathConfigured={pathConfigured}
+							pathWarning={pathWarning}
 							hasGenerated={result?.mode === mode}
 							hasDelivered={result?.mode === mode && (copied || Boolean(result.downloaded))}
 							canReviewLatest={Boolean(result)}
@@ -3748,7 +3832,7 @@ globalThis.playMode = centerTab === "play";
 						{waypointMode ? "경로 편집 끝내기" : "루트 경로 편집"}
 						</button>
 						{waypointMode && (
-						<p className="inspector-hint">샷 뷰의 세트 바닥을 클릭해 다음 웨이포인트를 놓으세요. 정확한 프레임을 정하려면 먼저 재생 헤드를 마지막 핀 뒤로 이동하세요. 그대로 두면 핀 사이 시간은 걷는 거리 기준으로 잡힙니다.</p>
+						<p className="inspector-hint">타임라인 2D 루트 레인에서 프레임을 먼저 고르면 다음 샷 뷰 바닥 클릭이 그 프레임에 놓입니다. 이미 놓은 점은 탑뷰에서 드래그해 위치를 조정하세요.</p>
 						)}
 						<div className="inspector-list compact">
 							{waypoints.map((waypoint) => (
@@ -3937,7 +4021,7 @@ globalThis.playMode = centerTab === "play";
 				waypointMode={waypointMode}
 				waypointFrames={waypoints.map((w) => w.frame)}
 				pathSpeed={pathSpeed}
-				pendingWaypointFrame={activeWaypointFrame}
+				pendingWaypointFrame={pendingWaypointFrame}
 				promptClips={promptClips}
 				selectedPromptId={selectedPromptId}
 				badge={stateBadge}
@@ -3960,12 +4044,21 @@ globalThis.playMode = centerTab === "play";
 				onStep={stepFrame}
 				onPlayToggle={() => setTlPlaying((v) => !v)}
 				onWaypointToggle={toggleWaypointMode}
-				onMarkerSelect={(f) => { setTlFrame(Math.min(f, tlFrameCount - 1)); setActiveWaypointFrame(f); setWaypointMode(true); setSelectedHierarchyId("rootPath"); }}
-				onMarkerRemove={removeWaypoint}
-				onRootKeyframeAdd={() => {
+				onMarkerSelect={(f) => {
+					const frame = Math.min(f, tlFrameCount - 1);
+					setTlFrame(frame);
 					setWaypointMode(true);
-					setToast("루트 경로 켜짐 — 샷 뷰의 세트 바닥을 클릭해 웨이포인트를 놓으세요");
+					setSelectedHierarchyId("rootPath");
+					if (waypoints.some((waypoint) => waypoint.frame === frame)) {
+						setActiveWaypointFrame(frame);
+						setPendingWaypointFrame(null);
+					} else {
+						setActiveWaypointFrame(null);
+						setPendingWaypointFrame(frame);
+					}
 				}}
+				onMarkerRemove={removeWaypoint}
+				onRootKeyframeAdd={queueRootWaypointFrame}
 				onPromptAdd={addPromptClip}
 				onPromptSelect={(id) => {
 					setSelectedPromptId(id);

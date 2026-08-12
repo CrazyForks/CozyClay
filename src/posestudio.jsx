@@ -771,8 +771,26 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 		"Hands on hips": "허리에 손",
 		"Looking back": "뒤돌아보기",
 		"Hands up": "손 올리기",
+		Wave: "손 흔들기",
+		Thinking: "생각하기",
+		Crouch: "웅크리기",
+		Kneel: "무릎 꿇기",
+		Run: "달리기",
+		Jump: "점프",
+	};
+	const categoryLabelsKo = {
+		all: "전체",
+		basic: "기본",
+		gesture: "제스처",
+		action: "동작",
+		floor: "바닥",
+		custom: "내 포즈",
 	};
 	const displayPoseLabel = (pose) => pose.custom ? pose.label : poseLabelsKo[pose.label] ?? pose.label;
+	const poseCategory = (pose) => pose.custom ? "custom" : pose.category ?? "basic";
+	const [category, setCategory] = useState("all");
+	const categories = ["all", ...Array.from(new Set(poses.map(poseCategory)))];
+	const visiblePoses = category === "all" ? poses : poses.filter((pose) => poseCategory(pose) === category);
 	return (
 		<div className={"pose-studio" + (closing ? " closing" : "")}>
 			<div className="studio-head">
@@ -789,12 +807,29 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 					포즈 초기화
 				</button>
 			</div>
+			{categories.length > 2 && (
+				<div className="studio-actions" aria-label="포즈 카테고리">
+					{categories.map((item) => (
+						<button
+							type="button"
+							key={item}
+							className={"btn ghost" + (item === category ? " active" : "")}
+							aria-pressed={item === category}
+							onClick={() => setCategory(item)}
+						>
+							{categoryLabelsKo[item] ?? item}
+						</button>
+					))}
+				</div>
+			)}
 			<div className="pose-grid">
-				{poses.map((pose, index) => (
+				{visiblePoses.map((pose, index) => (
 					<button
 						type="button"
 						key={pose.id}
 						className={"pose-tile" + (pose.id === selectedId ? " active" : "")}
+						data-pose-id={pose.id}
+						data-pose-category={poseCategory(pose)}
 						style={{ animationDelay: `${0.04 + index * 0.028}s` }}
 						onClick={() => onSelect(pose.id)}
 					>
@@ -814,7 +849,7 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 						)}
 					</button>
 				))}
-				<button type="button" className="pose-tile add" title="현재 캐릭터 포즈 저장" onClick={onSave}>
+				<button type="button" className="pose-tile add" data-pose-id="save-custom" title="현재 캐릭터 포즈 저장" onClick={onSave}>
 					<span className="add-plus">＋</span>
 					<span className="add-text">포즈 저장</span>
 				</button>
