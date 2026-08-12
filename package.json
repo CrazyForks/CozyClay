@@ -26,6 +26,7 @@
 		"test:shot-authoring": "node test/verify-shot-authoring.mjs",
 		"test:camera-follow": "node test/verify-camera-follow.mjs",
 		"test:pwa": "node test/verify-pwa.mjs",
+		"test:localization": "node test/verify-korean-ui.mjs",
 		"prepack": "npm run build"
 	},
 	"license": "GPL-3.0-or-later",

@@ -37,47 +37,48 @@ export default function OnboardingChecklist({
 	onReview,
 }) {
 	const [preferences, setPreferences] = useState(loadPreferences);
+	const modeLabel = mode === "video" ? "영상" : "이미지";
 	const steps = [
 		{
 			id: "camera",
-			label: "Set the camera",
-			detail: "Choose a shot preset or move the shot camera.",
+			label: "카메라 설정",
+			detail: "샷 프리셋을 고르거나 카메라를 직접 움직여 보세요.",
 			done: cameraConfigured,
 		},
 		{
 			id: "pose",
-			label: "Choose a pose",
-			detail: "Select the body pose your subject should hold.",
+			label: "포즈 선택",
+			detail: "인물이 취할 포즈를 골라 보세요.",
 			done: poseConfigured,
 		},
 		{
 			id: "describe",
-			label: "Describe the scene",
-			detail: "Edit the subject or environment description.",
+			label: "장면 설명",
+			detail: "인물이나 환경 설명을 원하는 내용으로 바꿔 보세요.",
 			done: descriptionConfigured,
 		},
 		...(mode === "video"
 			? [{
 				id: "keys",
-				label: "Key the camera move",
+				label: "카메라 움직임 키 찍기",
 				detail: cameraKeyCount === 1
-					? "Add one more key on the Camera timeline lane."
-					: "Add start and end keys on the Camera timeline lane.",
+					? "카메라 타임라인에 키를 하나 더 추가하세요."
+					: "카메라 타임라인에 시작 키와 끝 키를 추가하세요.",
 				done: cameraKeyCount >= 2,
 			}]
 			: []),
 		{
 			id: "generate",
-			label: "Generate the shot",
-			detail: "Generate builds the frame and copies the prompt for you.",
+			label: "장면 만들기",
+			detail: "만들기를 누르면 프레임을 만들고 프롬프트도 자동으로 복사해요.",
 			done: hasGenerated,
 		},
 		{
 			id: "deliver",
-			label: "Take it to your AI",
+			label: "AI로 가져가기",
 			detail: mode === "video"
-				? "Copy the prompt or download the conditioning frames."
-				: "Copy the prompt or download the blocking frame.",
+				? "프롬프트를 복사하거나 참고용 시작·끝 프레임을 내려받으세요."
+				: "프롬프트를 복사하거나 블로킹 프레임을 내려받으세요.",
 			done: hasDelivered,
 		},
 	];
@@ -107,24 +108,24 @@ export default function OnboardingChecklist({
 
 	if (preferences.collapsed) {
 		return (
-			<aside className="onboarding-guide onboarding-guide-collapsed" aria-label="First shot guide">
+			<aside className="onboarding-guide onboarding-guide-collapsed" aria-label="첫 장면 안내">
 				<button
 					type="button"
 					className="onboarding-summary"
 					onClick={() => updatePreferences({ collapsed: false })}
-					aria-label="Expand first shot guide"
+					aria-label="첫 장면 안내 펼치기"
 				>
 					<span className="onboarding-summary-mark" aria-hidden="true">{allComplete ? "✓" : "→"}</span>
 					<span>
-						<strong>{allComplete ? "First shot complete" : `Next: ${nextStep.label}`}</strong>
-						<small>{doneCount}/{steps.length} steps</small>
+						<strong>{allComplete ? "첫 장면 완성" : `다음: ${nextStep.label}`}</strong>
+						<small>{doneCount}/{steps.length}단계 완료</small>
 					</span>
 				</button>
 				<button
 					type="button"
 					className="onboarding-dismiss"
 					onClick={() => updatePreferences({ dismissed: true })}
-					aria-label="Dismiss first shot guide"
+					aria-label="첫 장면 안내 닫기"
 				>
 					✕
 				</button>
@@ -136,21 +137,21 @@ export default function OnboardingChecklist({
 		<aside className="onboarding-guide" aria-labelledby="onboarding-title">
 			<header className="onboarding-head">
 				<div>
-					<span className="onboarding-kicker">First shot · {mode}</span>
-					<h2 id="onboarding-title">Build it in this order</h2>
+					<span className="onboarding-kicker">첫 장면 · {modeLabel}</span>
+					<h2 id="onboarding-title">이 순서대로 만들어 보세요</h2>
 				</div>
 				<div className="onboarding-head-actions">
-					<button type="button" onClick={() => updatePreferences({ collapsed: true })} aria-label="Collapse first shot guide">
+					<button type="button" onClick={() => updatePreferences({ collapsed: true })} aria-label="첫 장면 안내 접기">
 						−
 					</button>
-					<button type="button" onClick={() => updatePreferences({ dismissed: true })} aria-label="Dismiss first shot guide">
+					<button type="button" onClick={() => updatePreferences({ dismissed: true })} aria-label="첫 장면 안내 닫기">
 						✕
 					</button>
 				</div>
 			</header>
 
 			<div className="onboarding-progress" aria-live="polite">
-				<span>{doneCount} of {steps.length} complete</span>
+				<span>{doneCount}/{steps.length}단계 완료</span>
 				<strong>{Math.round((doneCount / steps.length) * 100)}%</strong>
 			</div>
 
@@ -171,7 +172,7 @@ export default function OnboardingChecklist({
 
 			{canReviewLatest && (
 				<button type="button" className="onboarding-review" onClick={onReview}>
-					Review the latest export
+					최근 결과 다시 보기
 				</button>
 			)}
 		</aside>

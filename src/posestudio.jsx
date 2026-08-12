@@ -760,20 +760,33 @@ const CLICK_PX = 4;
  * stagger as the reference.
  */
 export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply, onReset, onSave, onDelete, onClose, closing }) {
+	const poseLabelsKo = {
+		"T-pose": "T 포즈",
+		Relaxed: "편안한 자세",
+		Contrapposto: "콘트라포스토",
+		Walking: "걷는 자세",
+		Seated: "앉은 자세",
+		"Arms crossed": "팔짱",
+		Pointing: "가리키기",
+		"Hands on hips": "허리에 손",
+		"Looking back": "뒤돌아보기",
+		"Hands up": "손 올리기",
+	};
+	const displayPoseLabel = (pose) => pose.custom ? pose.label : poseLabelsKo[pose.label] ?? pose.label;
 	return (
 		<div className={"pose-studio" + (closing ? " closing" : "")}>
 			<div className="studio-head">
-				<span>Pose Studio · Subject {subject}</span>
-				<button type="button" className="x" onClick={onClose}>
+				<span>포즈 스튜디오 · 인물 {subject}</span>
+				<button type="button" className="x" onClick={onClose} aria-label="포즈 스튜디오 닫기">
 					✕
 				</button>
 			</div>
 			<div className="studio-actions">
 				<button type="button" className="btn primary full" onClick={onApply}>
-					Apply pose
+					포즈 적용
 				</button>
 				<button type="button" className="btn ghost full" onClick={onReset}>
-					Reset pose
+					포즈 초기화
 				</button>
 			</div>
 			<div className="pose-grid">
@@ -785,12 +798,12 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 						style={{ animationDelay: `${0.04 + index * 0.028}s` }}
 						onClick={() => onSelect(pose.id)}
 					>
-						{pose.thumb ? <img src={pose.thumb} alt={pose.label} /> : <div className="tile-blank" />}
-						<span>{pose.label}</span>
+						{pose.thumb ? <img src={pose.thumb} alt={displayPoseLabel(pose)} /> : <div className="tile-blank" />}
+						<span>{displayPoseLabel(pose)}</span>
 						{pose.custom && (
 							<em
 								className="del"
-								title="Delete"
+								title="삭제"
 								onClick={(e) => {
 									e.stopPropagation();
 									onDelete(pose.id);
@@ -801,9 +814,9 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 						)}
 					</button>
 				))}
-				<button type="button" className="pose-tile add" title="Save the character's current pose" onClick={onSave}>
+				<button type="button" className="pose-tile add" title="현재 캐릭터 포즈 저장" onClick={onSave}>
 					<span className="add-plus">＋</span>
-					<span className="add-text">Save pose</span>
+					<span className="add-text">포즈 저장</span>
 				</button>
 			</div>
 		</div>

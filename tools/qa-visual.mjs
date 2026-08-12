@@ -26,25 +26,25 @@ await shot("default");
 // object selected -> Object Transform inspector
 await evaluate("document.querySelector('.add-object-trigger').click()");
 await sleep(400);
-await evaluate("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube')).click()");
+await evaluate("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('큐브')).click()");
 await sleep(1500);
 await shot("transform");
 
 // ARDY motion inspector
-await evaluate("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Motion') && !b.textContent.includes('Base')).click()");
+await evaluate("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('모션') && !b.textContent.includes('기본')).click()");
 await sleep(600);
 await shot("motion");
 
 // camera inspector (slider rows)
-await evaluate("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.trim() === 'Camera').click()");
+await evaluate("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.trim() === '카메라').click()");
 await sleep(600);
 await shot("camera");
 
 // PlayView
-await evaluate("[...document.querySelectorAll('.pane-tabs button')].find(b => b.textContent === 'PlayView').click()");
+await evaluate("[...document.querySelectorAll('.pane-tabs button')].find(b => b.textContent === '재생 보기').click()");
 await sleep(800);
 await shot("playview");
-await evaluate("[...document.querySelectorAll('.pane-tabs button')].find(b => b.textContent === 'Scene').click()");
+await evaluate("[...document.querySelectorAll('.pane-tabs button')].find(b => b.textContent === '장면').click()");
 await sleep(500);
 
 ws.close();

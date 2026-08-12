@@ -42,7 +42,7 @@ await sleep(7000);
 await shot(tab, "car-default-view");
 // wide preset for a broader read of the set
 await evaluate(tab, `(() => {
-	const wide = [...document.querySelectorAll("button")].find(b => /^wide$/i.test(b.textContent.trim()));
+	const wide = [...document.querySelectorAll("button")].find(b => b.textContent.trim() === "와이드");
 	wide?.click(); return true;
 })()`);
 await sleep(900);

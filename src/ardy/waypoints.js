@@ -273,7 +273,7 @@ export function judgeNextWaypoint(last, candidate, fps, prev = null) {
 	if (gap < PATH_LIMITS.minPinGapFrames) {
 		return {
 			ok: false,
-			error: `pins need at least ${PATH_LIMITS.minPinGapFrames} frames between them (${(PATH_LIMITS.minPinGapFrames / fps).toFixed(1)} s) — scrub past frame ${last.frame + PATH_LIMITS.minPinGapFrames}`,
+			error: `핀 사이에는 최소 ${PATH_LIMITS.minPinGapFrames}프레임(${(PATH_LIMITS.minPinGapFrames / fps).toFixed(1)}초)이 필요해요 — ${last.frame + PATH_LIMITS.minPinGapFrames}프레임 이후로 이동해 주세요`,
 			warnings: [],
 		};
 	}
@@ -285,7 +285,7 @@ export function judgeNextWaypoint(last, candidate, fps, prev = null) {
 		const neededFrames = Math.ceil((dist / PATH_LIMITS.speedMaxMps) * fps);
 		return {
 			ok: false,
-			error: `${speed.toFixed(1)} m/s is faster than anyone moves (max ${PATH_LIMITS.speedMaxMps}) — pin frame ${last.frame + neededFrames} or later, or click closer`,
+			error: `${speed.toFixed(1)} m/s는 사람이 움직이기엔 너무 빨라요(최대 ${PATH_LIMITS.speedMaxMps}) — ${last.frame + neededFrames}프레임 이후에 핀을 찍거나 더 가까운 곳을 눌러 주세요`,
 			warnings: [],
 		};
 	}
@@ -294,7 +294,7 @@ export function judgeNextWaypoint(last, candidate, fps, prev = null) {
 		const neededDist = (PATH_LIMITS.speedMinMps * dt).toFixed(1);
 		return {
 			ok: false,
-			error: `${speed.toFixed(2)} m/s is below a sustainable walk (min ${PATH_LIMITS.speedMinMps}) — pin frame ~${walkFrame} instead, or click at least ${neededDist} m away`,
+			error: `${speed.toFixed(2)} m/s는 자연스럽게 걷기엔 너무 느려요(최소 ${PATH_LIMITS.speedMinMps}) — 대신 약 ${walkFrame}프레임에 핀을 찍거나 최소 ${neededDist} m 이상 떨어진 곳을 눌러 주세요`,
 			warnings: [],
 		};
 	}
@@ -305,7 +305,7 @@ export function judgeNextWaypoint(last, candidate, fps, prev = null) {
 			const prevSpeed = prevDist / ((last.frame - prev.frame) / fps);
 			const ratio = Math.max(speed, prevSpeed) / Math.max(Math.min(speed, prevSpeed), 1e-6);
 			if (ratio > PATH_LIMITS.speedRatioWarn) {
-				warnings.push(`${ratio.toFixed(1)}x speed change from the previous leg — expect a visible gait shift`);
+				warnings.push(`이전 구간보다 속도가 ${ratio.toFixed(1)}배 달라요 — 걸음 변화가 눈에 보일 수 있어요`);
 			}
 			const before = Math.atan2(last.x - prev.x, last.z - prev.z);
 			const after = Math.atan2(candidate.x - last.x, candidate.z - last.z);
@@ -313,7 +313,7 @@ export function judgeNextWaypoint(last, candidate, fps, prev = null) {
 			if (turn > Math.PI) turn = 2 * Math.PI - turn;
 			const turnRate = (turn * 180) / Math.PI / dt;
 			if (turnRate > PATH_LIMITS.turnRateWarnDegPerS) {
-				warnings.push(`${Math.round((turn * 180) / Math.PI)}° turn in ${dt.toFixed(1)} s is sharper than a walking arc — give it more frames or distance`);
+				warnings.push(`${dt.toFixed(1)}초 동안 ${Math.round((turn * 180) / Math.PI)}° 회전은 걷는 동선치고 너무 급해요 — 프레임이나 거리를 더 주세요`);
 			}
 		}
 	}
@@ -331,21 +331,21 @@ export function judgeAuthoredPath(rootPath, fps, clipFrames, { chained = false }
 	const ordered = [...rootPath].sort((a, b) => a.frame - b.frame);
 	for (let i = 1; i < ordered.length; i += 1) {
 		const verdict = judgeNextWaypoint(ordered[i - 1], ordered[i], fps, i >= 2 ? ordered[i - 2] : null);
-		if (!verdict.ok) errors.push(`leg ${i} (frame ${ordered[i - 1].frame}->${ordered[i].frame}): ${verdict.error}`);
-		else for (const warning of verdict.warnings) warnings.push(`leg ${i}: ${warning}`);
+		if (!verdict.ok) errors.push(`구간 ${i} (${ordered[i - 1].frame}->${ordered[i].frame}프레임): ${verdict.error}`);
+		else for (const warning of verdict.warnings) warnings.push(`구간 ${i}: ${warning}`);
 	}
 	// The trained window binds ONE model call. A chained rollout (a prompt
 	// schedule) makes a call per block, so the whole clip may exceed it —
 	// each block is capped separately by the bridge and the box generator.
 	if (!chained && clipFrames / fps > PATH_LIMITS.clipMaxS) {
 		errors.push(
-			`a root path generates the whole clip in one model call, and ARDY's trained window is ${PATH_LIMITS.clipMaxS} s — shorten the clip to ${PATH_LIMITS.clipMaxS} s, or split the prompt into blocks so the path rides a chained rollout`,
+			`이동 경로는 전체 클립을 한 번의 모델 호출로 만들어요. ARDY가 학습한 길이는 ${PATH_LIMITS.clipMaxS}초까지예요 — 클립을 ${PATH_LIMITS.clipMaxS}초로 줄이거나 프롬프트를 블록으로 나눠 이어 만들기를 사용해 주세요`,
 		);
 	}
 	const tail = (clipFrames - 1 - (ordered[ordered.length - 1]?.frame ?? 0)) / fps;
 	if (ordered.length > 1 && tail > PATH_LIMITS.tailMaxS) {
 		warnings.push(
-			`${tail.toFixed(1)} s of clip remain after the last pin — the unconstrained tail continues whatever the path ends in`,
+			`마지막 핀 뒤에 클립이 ${tail.toFixed(1)}초 남아 있어요 — 제약이 없는 끝부분은 경로가 끝난 상태를 그대로 이어가요`,
 		);
 	}
 	return { errors, warnings };

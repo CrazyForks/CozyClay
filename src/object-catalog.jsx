@@ -1,6 +1,33 @@
 import { useEffect, useRef, useState } from "react";
 import { OBJECT_LIBRARY } from "./scene-objects.js";
 
+const GROUP_LABELS_KO = {
+	Primitives: "기본 도형",
+	"Set pieces": "세트 소품",
+};
+
+const OBJECT_LABELS_KO = {
+	Cube: "큐브",
+	Sphere: "구",
+	Capsule: "캡슐",
+	Cylinder: "원기둥",
+	Cone: "원뿔",
+	Plane: "평면",
+	Chair: "의자",
+	Car: "자동차",
+	"Plane (aircraft)": "비행기",
+};
+
+export function displayObjectGroupName(name) {
+	return GROUP_LABELS_KO[name] ?? name;
+}
+
+export function displayObjectLabel(label) {
+	const numbered = label.match(/^(.+?) (\d+)$/);
+	if (numbered && OBJECT_LABELS_KO[numbered[1]]) return `${OBJECT_LABELS_KO[numbered[1]]} ${numbered[2]}`;
+	return OBJECT_LABELS_KO[label] ?? label;
+}
+
 /**
  * "Add object" — the hierarchy's create menu, Unity's GameObject > 3D Object
  * in one popover. Grouped by catalogue section; picking an entry drops the
@@ -25,7 +52,7 @@ export function buildObjectMenuGroups() {
 export function CatalogueEntries({ onPick }) {
 	return buildObjectMenuGroups().map((group) => (
 		<div className="add-object-group" key={group.name}>
-			<span className="add-object-heading">{group.name}</span>
+			<span className="add-object-heading">{displayObjectGroupName(group.name)}</span>
 			{group.entries.map((entry) => (
 				<button
 					type="button"
@@ -35,7 +62,7 @@ export function CatalogueEntries({ onPick }) {
 					onClick={() => onPick(entry.kind)}
 				>
 					<span className={`add-object-swatch ${entry.kind}`} style={{ background: entry.color }} aria-hidden="true" />
-					<span>{entry.label}</span>
+					<span>{displayObjectLabel(entry.label)}</span>
 					<small>{entry.footprint.width} × {entry.footprint.depth} m</small>
 				</button>
 			))}
@@ -43,7 +70,7 @@ export function CatalogueEntries({ onPick }) {
 	));
 }
 
-export default function AddObjectMenu({ onAdd, label = "Add object" }) {
+export default function AddObjectMenu({ onAdd, label = "오브젝트 추가" }) {
 	const [open, setOpen] = useState(false);
 	const rootRef = useRef(null);
 

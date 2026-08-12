@@ -21,13 +21,13 @@ for (let i = 0; i < 50 && !(await evaluate("!!window.__sceneHistory && document.
 // add a cube so the gizmo exists in Scene view
 await evaluate("document.querySelector('.add-object-trigger').click()");
 await sleep(400);
-await evaluate("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube')).click()");
+await evaluate("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('큐브')).click()");
 await sleep(1200);
 expect("Scene view shows the gizmo", await evaluate("window.__gizmoHandles().length > 0"));
 expect("Scene view shows the inset pane", await evaluate("!document.querySelector('.vp-inset').hidden"));
 expect("pane tabs exist", await evaluate("document.querySelectorAll('.pane-tabs button').length === 2"));
 
-await evaluate("[...document.querySelectorAll('.pane-tabs button')].find(b => b.textContent === 'PlayView').click()");
+await evaluate("[...document.querySelectorAll('.pane-tabs button')].find(b => b.textContent === '재생 보기').click()");
 await sleep(900);
 expect("PlayView hides the gizmo", await evaluate("window.__gizmoHandles().length === 0"));
 expect("PlayView hides the inset pane", await evaluate("document.querySelector('.vp-inset').hidden === true"));
@@ -38,7 +38,7 @@ expect("PlayView pauses playback on enter without motion", await evaluate("docum
 const shotPlay = await send("Page.captureScreenshot", { format: "png" });
 writeFileSync(new URL("../artifacts/playview.png", import.meta.url), Buffer.from(shotPlay.data, "base64"));
 
-await evaluate("[...document.querySelectorAll('.pane-tabs button')].find(b => b.textContent === 'Scene').click()");
+await evaluate("[...document.querySelectorAll('.pane-tabs button')].find(b => b.textContent === '장면').click()");
 await sleep(900);
 expect("Scene view restores the gizmo", await evaluate("window.__gizmoHandles().length > 0"));
 expect("Scene view restores the inset pane", await evaluate("document.querySelector('.vp-inset').hidden === false"));

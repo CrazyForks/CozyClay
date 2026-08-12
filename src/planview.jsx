@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { aimAt } from "./controls.jsx";
 import { PLAN_LAYER } from "./dualview.jsx";
 import { objectSize } from "./scene-objects.js";
+import { displayObjectLabel } from "./object-catalog.jsx";
 
 const ROOM_LIMIT = 11; // stay inside the set walls
 const ACTOR_LIMIT = 4; // matches the Subject sliders' range
@@ -164,6 +165,7 @@ function PlanLabel({ text, color, offset = -0.72 }) {
 
 function SceneObjectFootprint({ object, selected, dragging, turning }) {
 	const { width, depth } = objectSize(object);
+	const objectLabel = displayObjectLabel(object.name).slice(0, 8);
 	const handleDist = depth / 2 + 0.65;
 	const rotation = (object.rot * Math.PI) / 180;
 	return (
@@ -184,7 +186,7 @@ function SceneObjectFootprint({ object, selected, dragging, turning }) {
 			</mesh>
 			<group position={[0, 0, depth / 2 + 0.45]} rotation={[0, -rotation, 0]}>
 				<PlanLabel
-					text={object.name.slice(0, 8).toUpperCase()}
+					text={objectLabel}
 					color={selected ? "#b37610" : "#7c574d"}
 					offset={0}
 				/>
@@ -613,7 +615,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 	return (
 		<group ref={rootRef}>
 			<group ref={camPos}>
-				<PlanLabel text="CAM" color="#247da0" />
+				<PlanLabel text="카메라" color="#247da0" />
 				<group ref={camRot}>
 					<FrustumWedge fovDeg={fovDeg} active={drag?.id === "cam"} />
 					<Puck color="#4e9fb3" {...state("cam")} />
@@ -621,7 +623,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			</group>
 
 			<group position={[charA.x, 0, charA.z]}>
-				<PlanLabel text="S1" color="#273849" />
+				<PlanLabel text="인물 1" color="#273849" />
 				<group rotation={[0, (charA.rot * Math.PI) / 180, 0]}>
 					<Puck color="#273849" {...state("a")} />
 				</group>
@@ -629,7 +631,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 
 			{showB && (
 				<group position={[charB.x, 0, charB.z]}>
-					<PlanLabel text="S2" color="#d65f55" />
+					<PlanLabel text="인물 2" color="#d65f55" />
 					<group rotation={[0, (charB.rot * Math.PI) / 180, 0]}>
 						<Puck color="#d65f55" {...state("b")} />
 					</group>

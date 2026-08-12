@@ -74,21 +74,21 @@ export default function InstallApp() {
 				onClick={updateRegistration ? update : install}
 			>
 				<span aria-hidden="true">{updateRegistration ? "↻" : "↓"}</span>
-				{updateRegistration ? "Update app" : "Install app"}
+				{updateRegistration ? "앱 업데이트" : "앱 설치"}
 			</button>
 
 			{showHelp && !updateRegistration && (
-				<div className="pwa-install-panel" role="dialog" aria-label="Install Cozy Clay">
-					<span className="pwa-install-kicker">One-click studio</span>
-					<strong>Keep Cozy Clay with your other apps.</strong>
+				<div className="pwa-install-panel" role="dialog" aria-label="Cozy Clay 설치">
+					<span className="pwa-install-kicker">한 번 설치하면 바로 실행</span>
+					<strong>Cozy Clay를 다른 앱처럼 사용하세요.</strong>
 					{isiOS ? (
-						<p>In Safari, tap Share, then choose <b>Add to Home Screen</b>.</p>
+						<p>Safari에서 공유를 누른 다음 <b>홈 화면에 추가</b>를 선택하세요.</p>
 					) : (
-						<p>In Chrome or Edge, choose <b>Install Cozy Clay</b> from the address bar or browser menu.</p>
+						<p>Chrome이나 Edge의 주소창 또는 브라우저 메뉴에서 <b>Cozy Clay 설치</b>를 선택하세요.</p>
 					)}
-					<small>Your shots stay on this device and the app keeps working after it has loaded once.</small>
+					<small>만든 장면은 이 기기에만 저장되며, 앱을 한 번 불러온 뒤에는 오프라인에서도 계속 사용할 수 있어요.</small>
 					<button type="button" className="pwa-install-close" onClick={() => setShowHelp(false)}>
-						Got it
+						확인
 					</button>
 				</div>
 			)}

@@ -11,6 +11,7 @@ assert.equal(manifest.name, "Cozy Clay");
 assert.equal(manifest.start_url, "./");
 assert.equal(manifest.scope, "./");
 assert.equal(manifest.display, "standalone");
+assert.equal(manifest.lang, "ko-KR");
 pass("manifest launches Cozy Clay in standalone mode from the repository base");
 
 const iconBySize = new Map(manifest.icons.map((icon) => [icon.sizes, icon]));
@@ -30,6 +31,7 @@ for (const icon of manifest.icons) {
 pass("manifest exposes installable 192px, 512px, and maskable PNG icons");
 
 const index = readFileSync("index.html", "utf8");
+assert.match(index, /<html lang="ko">/);
 assert.match(index, /rel="manifest" href="\.\/manifest\.webmanifest"/);
 assert.match(index, /name="theme-color" content="#232323"/);
 assert.match(index, /rel="apple-touch-icon"/);

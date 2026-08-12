@@ -780,8 +780,8 @@ const incident = judgeAuthoredPath(
 ok(
 	"limits: the frame-219 incident is rejected for crawl speed and window overrun",
 	incident.errors.length === 2 &&
-		incident.errors.some((error) => error.includes("below a sustainable walk")) &&
-		incident.errors.some((error) => error.includes(`${PATH_LIMITS.clipMaxS} s`)),
+		incident.errors.some((error) => error.includes("자연스럽게 걷기엔 너무 느려요")) &&
+		incident.errors.some((error) => error.includes(`${PATH_LIMITS.clipMaxS}초`)),
 	JSON.stringify(incident.errors),
 );
 // A prompt schedule chains the rollout block by block, so the same 16 s clip
@@ -801,8 +801,8 @@ const incidentChained = judgeAuthoredPath(
 ok(
 	"limits: a chained rollout drops the whole-clip window error but keeps speed errors",
 	incidentChained.errors.length === 1 &&
-		incidentChained.errors.some((error) => error.includes("below a sustainable walk")) &&
-		!incidentChained.errors.some((error) => error.includes(`${PATH_LIMITS.clipMaxS} s`)),
+		incidentChained.errors.some((error) => error.includes("자연스럽게 걷기엔 너무 느려요")) &&
+		!incidentChained.errors.some((error) => error.includes(`${PATH_LIMITS.clipMaxS}초`)),
 	JSON.stringify(incidentChained.errors),
 );
 const longCleanChained = judgeAuthoredPath(
@@ -823,19 +823,19 @@ ok(
 const slowVerdict = judgeNextWaypoint({ frame: 0, x: 0, z: 0 }, { frame: 39, x: 0, z: 0.5 }, 20);
 ok(
 	"limits: a sub-gait pin is blocked and the fix names a workable frame",
-	!slowVerdict.ok && /below a sustainable walk/.test(slowVerdict.error) && /frame ~8/.test(slowVerdict.error),
+	!slowVerdict.ok && /자연스럽게 걷기엔 너무 느려요/.test(slowVerdict.error) && /약 8프레임/.test(slowVerdict.error),
 	slowVerdict.error,
 );
 const fastVerdict = judgeNextWaypoint({ frame: 0, x: 0, z: 0 }, { frame: 8, x: 0, z: 5 }, 20);
 ok(
 	"limits: a superhuman pin is blocked with the earliest legal frame",
-	!fastVerdict.ok && /faster than anyone moves/.test(fastVerdict.error) && /frame 34/.test(fastVerdict.error),
+	!fastVerdict.ok && /사람이 움직이기엔 너무 빨라요/.test(fastVerdict.error) && /34프레임/.test(fastVerdict.error),
 	fastVerdict.error,
 );
 const gapVerdict = judgeNextWaypoint({ frame: 40, x: 0, z: 0 }, { frame: 44, x: 0, z: 0.3 }, 20);
 ok(
 	"limits: pins closer than the rail gap are blocked",
-	!gapVerdict.ok && /8 frames/.test(gapVerdict.error),
+	!gapVerdict.ok && /최소 8프레임/.test(gapVerdict.error),
 	gapVerdict.error,
 );
 ok(
@@ -857,7 +857,7 @@ const ratioVerdict = judgeNextWaypoint(
 );
 ok(
 	"limits: a >2x pace change places with a gait-shift warning",
-	ratioVerdict.ok && ratioVerdict.warnings.some((warning) => warning.includes("speed change")),
+	ratioVerdict.ok && ratioVerdict.warnings.some((warning) => warning.includes("걸음 변화")),
 	JSON.stringify(ratioVerdict.warnings),
 );
 const turnVerdict = judgeNextWaypoint(
@@ -868,7 +868,7 @@ const turnVerdict = judgeNextWaypoint(
 );
 ok(
 	"limits: a sharp turn places with a turn-rate warning",
-	turnVerdict.ok && turnVerdict.warnings.some((warning) => warning.includes("turn")),
+	turnVerdict.ok && turnVerdict.warnings.some((warning) => warning.includes("회전")),
 	JSON.stringify(turnVerdict.warnings),
 );
 const cleanPath = judgeAuthoredPath(
