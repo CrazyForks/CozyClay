@@ -1410,18 +1410,34 @@ globalThis.playMode = centerTab === "play";
 	tlPlayingRef.current = tlPlaying;
 	const playModeRef = useRef(false);
 	playModeRef.current = centerTab === "play";
+	const tlFrameCountRef2 = useRef(tlFrameCount);
+	tlFrameCountRef2.current = tlFrameCount;
+	const tlFpsRef2 = useRef(tlFps);
+	tlFpsRef2.current = tlFps;
+	// While recording, the recorder's wall-clock loop is the playhead's
+	// master clock (fixed 1/RECORD_FPS cadence, immune to interval jitter);
+	// the timeline's own interval stands down.
+	const recordingRef = useRef(false);
+	recordingRef.current = recState === "recording";
 
 	function stopShotRecording(reason) {
 		const rec = recRef.current;
 		if (!rec) return;
 		recRef.current = null;
-		cancelAnimationFrame(rec.raf);
+		clearTimeout(rec.timer);
 		if (reason === "abort") rec.aborted = true;
+		recordingRef.current = false;
 		setTlPlaying(false);
 		setRecState("idle");
 		if (rec.recorder.state !== "inactive") rec.recorder.stop();
 		else if (!rec.armed) setToast("Recording cancelled before any frame was captured");
 	}
+
+	// Seedance's reference-video floor is 24 fps while ARDY clips run at 20.
+	// Recording plays the clip at 20/24 real time and stamps each captured
+	// frame 41.67 ms apart, so the exported file is exactly 24 fps at true
+	// motion speed — valid as a camera/motion reference out of the box.
+	const RECORD_FPS = 24;
 
 	function toggleShotRecording() {
 		if (recRef.current) {
@@ -1443,10 +1459,25 @@ globalThis.playMode = centerTab === "play";
 		mirror.width = 1600;
 		mirror.height = 900;
 		const ctx = mirror.getContext("2d");
-		const recorder = new MediaRecorder(mirror.captureStream(30), { mimeType: mime, videoBitsPerSecond: 12_000_000 });
+		// Frames go in manually (and only when one was actually drawn): the
+		// track must be exactly RECORD_FPS, not whatever the display runs at.
+		const track = mirror.captureStream(0).getVideoTracks()[0];
+		const recorder = new MediaRecorder(new MediaStream([track]), { mimeType: mime, videoBitsPerSecond: 12_000_000 });
 		const chunks = [];
 		const slate = (moveSequence?.slate ?? "shot").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "shot";
-		const rec = { recorder, raf: 0, armed: false, started: false, lastFrame: -1, warmup: 2, aborted: false };
+		const rec = {
+			recorder,
+			track,
+			// all wall-clock anchors land on the first frame so a startup
+			// hiccup never stretches clip time
+			t0: 0,
+			playheadT0: 0,
+			outputFrames: 0,
+			armed: false,
+			warmup: 2,
+			aborted: false,
+			done: false,
+		};
 		recorder.ondataavailable = (e) => {
 			if (e.data && e.data.size > 0) chunks.push(e.data);
 		};
@@ -1464,6 +1495,7 @@ globalThis.playMode = centerTab === "play";
 		};
 		recRef.current = rec;
 		setRecState("recording");
+		recordingRef.current = true;
 		// PlayView is the finished-output player, so record there: no gizmo, no
 		// inset, and the move rides the playhead regardless of Follow. Playing
 		// is forced even without a loaded motion so a camera-only move records.
@@ -1471,32 +1503,51 @@ globalThis.playMode = centerTab === "play";
 		setTlFrame(0);
 		setTlPlaying(true);
 
-		const tick = () => {
+		// The tick runs in setTimeout (the recorder keeps the event loop alive
+		// even in a background tab, where rAF is throttled to zero): wall-clock
+		// pacing must not depend on display refresh.
+		const timeoutTick = () => {
 			if (recRef.current !== rec) return;
-			rec.raf = requestAnimationFrame(tick);
 			const main = mainPaneRef.current;
-			if (!playModeRef.current || !main || !stage) return;
-			const frame = tlFrameRef.current;
-			// clip end: the play clock wraps to 0 after the last frame
-			if (rec.started && frame < rec.lastFrame) {
-				stopShotRecording("end");
+			if (!playModeRef.current || !main || !stage) {
+				rec.timer = setTimeout(timeoutTick, 20);
 				return;
 			}
-			// user paused from the transport: keep what was captured so far
-			if (rec.started && !tlPlayingRef.current) {
-				stopShotRecording("manual");
-				return;
-			}
-			rec.lastFrame = Math.max(rec.lastFrame, frame);
-			if (frame > 0) rec.started = true;
-			const stageRect = stage.getBoundingClientRect();
-			const mainRect = main.getBoundingClientRect();
-			const pane = { x: mainRect.left - stageRect.left, y: mainRect.top - stageRect.top, w: mainRect.width, h: mainRect.height };
-			if (pane.w < 2 || pane.h < 2) return;
 			// a couple of ticks for the PlayView layout + first playMode draw to
 			// land, so the file never opens on a stale Scene-tab composite
 			if (rec.warmup > 0) {
 				rec.warmup -= 1;
+				rec.timer = setTimeout(timeoutTick, 20);
+				return;
+			}
+			const now = performance.now();
+			if (!rec.armed) {
+				rec.armed = true;
+				rec.t0 = now;
+				rec.playheadT0 = now;
+				recorder.start();
+			}
+			// drive the playhead at fps/RECORD_FPS real time ourselves — the
+			// timeline's own clock is suspended while recording (below), so the
+			// exported speed is exact regardless of interval jitter
+			const clipSeconds = tlFrameCountRef2.current / tlFpsRef2.current;
+			const elapsed = now - rec.playheadT0;
+			const frame = Math.floor(elapsed / (1000 / RECORD_FPS));
+			if (frame >= tlFrameCountRef2.current || elapsed / 1000 > clipSeconds) {
+				rec.done = true;
+				setTlPlaying(false);
+				setRecState("idle");
+				recordingRef.current = false;
+				recRef.current = null;
+				recorder.stop();
+				return;
+			}
+			setTlFrame(frame);
+			const stageRect = stage.getBoundingClientRect();
+			const mainRect = main.getBoundingClientRect();
+			const pane = { x: mainRect.left - stageRect.left, y: mainRect.top - stageRect.top, w: mainRect.width, h: mainRect.height };
+			if (pane.w < 2 || pane.h < 2) {
+				rec.timer = setTimeout(timeoutTick, 20);
 				return;
 			}
 			const img = fitAspect(pane, SHOT_ASPECT);
@@ -1512,12 +1563,20 @@ globalThis.playMode = centerTab === "play";
 				mirror.width,
 				mirror.height,
 			);
-			if (!rec.armed) {
-				rec.armed = true;
-				recorder.start();
+			// fixed output cadence: each captured frame spans exactly one
+			// 1/RECORD_FPS of the clip, so a stalled render repeats its frame
+			// (hold) instead of compressing the clip
+			const nextStamp = rec.t0 + (rec.outputFrames * 1000) / RECORD_FPS;
+			rec.outputFrames += 1;
+			if (typeof track.requestFrame === "function") {
+				track.requestFrame();
+				setTimeout(() => {
+					if (typeof track.requestFrame === "function") track.requestFrame();
+				}, 1000 / (2 * RECORD_FPS));
 			}
+			rec.timer = setTimeout(timeoutTick, Math.max(0, nextStamp - now + 1000 / RECORD_FPS));
 		};
-		rec.raf = requestAnimationFrame(tick);
+		rec.timer = setTimeout(timeoutTick, 20);
 	}
 
 	function captureCurrentFraming() {
@@ -1622,6 +1681,8 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	function advanceFrame() {
+		// recording paces the playhead on its own fixed-cadence clock
+		if (recordingRef.current) return;
 		setTlFrame((f) => (f >= frameCountRef.current - 1 ? 0 : f + 1));
 	}
 
