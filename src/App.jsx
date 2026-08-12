@@ -36,6 +36,9 @@ import {
 import { createSceneHistoryStore } from "./scene-history.js";
 import ObjectGizmo from "./object-gizmo.jsx";
 import AddObjectMenu from "./object-catalog.jsx";
+import OnboardingChecklist from "./onboarding.jsx";
+import ResultModal from "./result-modal.jsx";
+import InstallApp from "./install-app.jsx";
 import {
 	BUILT_IN_POSES,
 	POSE_BONES,
@@ -169,6 +172,9 @@ const DEMO_MOTION_PROMPT = "a person walking then a person stops";
 const CLAY = "#f2eee6";
 const CLAY_B = "#ddd6ca";
 const DEFAULT_POSE = BUILT_IN_POSES.find((p) => p.id === "relaxed") ?? BUILT_IN_POSES[0];
+const DEFAULT_SUBJECT = "a young woman in a tan coat";
+const DEFAULT_ENVIRONMENT = "a sunlit modern living room";
+const DEFAULT_CAMERA_POSITION = { x: 0.97, y: 1.62, z: 2.39 };
 const REST_BONES = Object.fromEntries(POSE_BONES.map((b) => [b.id, [0, 0, 0]]));
 const DEFAULT_DURATION_S = 15; // pre-motion timeline duration; shown as duration × 20 frames
 const DEFAULT_PLAYBACK_SPEED = 1;
@@ -910,7 +916,7 @@ globalThis.playMode = centerTab === "play";
 	const [studioPick, setStudioPick] = useState(null);
 	const [rigA, setRigA] = useState(null);
 	const [rigB, setRigB] = useState(null);
-	const [, setPoseTick] = useState(0);
+	const [poseRevision, setPoseTick] = useState(0);
 
 	/* ------------------------------ IK layer ------------------------------ */
 	// IK posing for Subject 1: dragging a wrist/ankle handle FOCUSES that
@@ -1283,15 +1289,17 @@ globalThis.playMode = centerTab === "play";
 	const [railDraw, setRailDraw] = useState(false);
 	const [hasCharSheet, setHasCharSheet] = useState(false);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
-	const [subject, setSubject] = useState("a young woman in a tan coat");
+	const [subject, setSubject] = useState(DEFAULT_SUBJECT);
 	const [subject2, setSubject2] = useState("a man in a dark coat");
-	const [environment, setEnvironment] = useState("a sunlit modern living room");
+	const [environment, setEnvironment] = useState(DEFAULT_ENVIRONMENT);
 	const [style, setStyle] = useState("moody cinematic lighting, 35mm film look");
 
-	const [cameraPos, setCameraPos] = useState({ x: 0.97, y: 1.62, z: 2.39 });
+	const [cameraPos, setCameraPos] = useState(DEFAULT_CAMERA_POSITION);
 	const [subjectVisible, setSubjectVisible] = useState(true);
 	const [result, setResult] = useState(null);
+	const [resultOpen, setResultOpen] = useState(false);
 	const [copied, setCopied] = useState(false);
+	const [recordedVideoName, setRecordedVideoName] = useState(null);
 	const [toast, setToast] = useState(startup.toast ?? "");
 	const [bridge, setBridge] = useState(null);
 	const [ardyPrompt, setArdyPrompt] = useState("");
@@ -1491,6 +1499,7 @@ globalThis.playMode = centerTab === "play";
 			anchor.download = name;
 			anchor.click();
 			setTimeout(() => URL.revokeObjectURL(url), 10_000);
+			setRecordedVideoName(name);
 			setToast(`Saved ${name}`);
 		};
 		recRef.current = rec;
@@ -2158,6 +2167,17 @@ globalThis.playMode = centerTab === "play";
 		return buffer ? bufferToPng(buffer) : null;
 	}
 
+	function copyPrompt(prompt) {
+		const write = navigator.clipboard?.writeText(prompt);
+		if (!write) return;
+		write
+			.then(() => {
+				setCopied(true);
+				setToast("Prompt copied to clipboard");
+			})
+			.catch(() => {});
+	}
+
 	function generate() {
 		const models = mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
 		const model = models.find((m) => m.id === (mode === "video" ? videoModel : imageModel));
@@ -2188,15 +2208,11 @@ globalThis.playMode = centerTab === "play";
 			const buffer = captureRef.current?.render();
 			frame = buffer ? bufferToPng(buffer) : null;
 		}
-		setResult({ prompt, frame, frameB, move: movePlan });
+		setResult({ prompt, frame, frameB, move: movePlan, mode, modelLabel: model?.label, downloaded: false });
+		setResultOpen(true);
 		setCopied(false);
-		navigator.clipboard
-			?.writeText(prompt)
-			.then(() => {
-				setCopied(true);
-				setToast("Prompt copied to clipboard");
-			})
-			.catch(() => {});
+		setRecordedVideoName(null);
+		copyPrompt(prompt);
 	}
 
 	function download() {
@@ -2213,10 +2229,12 @@ globalThis.playMode = centerTab === "play";
 			save(result.frame, "blocking-frame-A-start.png");
 			save(result.frameB, "blocking-frame-B-end.png");
 			setToast("Start & end frames downloaded");
+			setResult((current) => current ? { ...current, downloaded: true } : current);
 			return;
 		}
 		save(result.frame, "blocking-frame.png");
 		setToast("Frame downloaded");
+		setResult((current) => current ? { ...current, downloaded: true } : current);
 	}
 	function downloadArdyPose() {
 		const rig = posedRig();
@@ -2600,6 +2618,19 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	const models = mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
+	const cameraConfigured =
+		nonce > 0 ||
+		fovDeg !== PRESETS.medium.fov ||
+		cameraKeys.length > 0 ||
+		Math.abs(cameraPos.x - DEFAULT_CAMERA_POSITION.x) +
+			Math.abs(cameraPos.y - DEFAULT_CAMERA_POSITION.y) +
+			Math.abs(cameraPos.z - DEFAULT_CAMERA_POSITION.z) > 0.02;
+	const poseConfigured = poseRevision > 0 || poseA?.id !== DEFAULT_POSE.id || poseB?.id !== DEFAULT_POSE.id;
+	const descriptionConfigured =
+		hasCharSheet ||
+		hasEnvSheet ||
+		(subject.trim().length > 0 && subject !== DEFAULT_SUBJECT) ||
+		(environment.trim().length > 0 && environment !== DEFAULT_ENVIRONMENT);
 
 	return (
 		<div className={"app" + (renderActive ? "" : " render-idle")}>
@@ -2609,6 +2640,7 @@ globalThis.playMode = centerTab === "play";
 						Cozy <span>Clay</span>
 					</span>
 				</div>
+				<InstallApp />
 
 			</header>
 
@@ -3022,8 +3054,19 @@ globalThis.playMode = centerTab === "play";
 								onClose={closeStudio}
 							/>
 						)}
+						</div>
+						<OnboardingChecklist
+							mode={mode}
+							cameraConfigured={cameraConfigured}
+							poseConfigured={poseConfigured}
+							descriptionConfigured={descriptionConfigured}
+							cameraKeyCount={cameraKeys.length}
+							hasGenerated={result?.mode === mode}
+							hasDelivered={result?.mode === mode && (copied || Boolean(result.downloaded))}
+							canReviewLatest={Boolean(result)}
+							onReview={() => setResultOpen(true)}
+						/>
 					</div>
-				</div>
 
 				<div
 					className="workspace-splitter workspace-splitter-vertical"
@@ -3793,52 +3836,15 @@ globalThis.playMode = centerTab === "play";
 				</span>
 			</footer>
 
-			{result && (
-				<div className="modal-overlay" onClick={() => setResult(null)}>
-					<div className="modal" onClick={(e) => e.stopPropagation()}>
-						<div className="modal-head">
-							<h3>Your shot is ready</h3>
-							<button className="x" onClick={() => setResult(null)}>
-								✕
-							</button>
-						</div>
-						{result.frameB ? (
-							<div className="move-frames">
-								<figure>
-									<img className="preview" src={result.frame} alt="move start frame" />
-									<figcaption>A · start</figcaption>
-								</figure>
-								<figure>
-									<img className="preview" src={result.frameB} alt="move end frame" />
-									<figcaption>B · end</figcaption>
-								</figure>
-							</div>
-						) : (
-							result.frame && <img className="preview" src={result.frame} alt="framed shot" />
-						)}
-						{result.move && <div className="move-slate">{result.move.slate} · {result.move.spanS}s</div>}
-						<label className="modal-label">Prompt {copied && <em>· copied</em>}</label>
-						<div className="promptbox">{result.prompt}</div>
-						<div className="modal-actions">
-							<button
-								className="btn"
-								onClick={() =>
-									navigator.clipboard?.writeText(result.prompt).then(() => {
-										setCopied(true);
-										setToast("Prompt copied to clipboard");
-									})
-								}
-							>
-								{copied ? "Copied ✓" : "Copy prompt"}
-							</button>
-							{result.frame && (
-								<button className="btn" onClick={download}>
-									{result.frameB ? "Download start & end frames" : "Download frame"}
-								</button>
-							)}
-						</div>
-					</div>
-				</div>
+			{result && resultOpen && (
+				<ResultModal
+					result={result}
+					copied={copied}
+					recordedVideoName={result.mode === "video" ? recordedVideoName : null}
+					onClose={() => setResultOpen(false)}
+					onCopy={() => copyPrompt(result.prompt)}
+					onDownload={download}
+				/>
 			)}
 
 			<Toast message={toast} onDone={() => setToast("")} />

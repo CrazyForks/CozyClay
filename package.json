@@ -25,6 +25,7 @@
 		"qa:browser": "node tools/qa-browser.mjs --",
 		"test:shot-authoring": "node test/verify-shot-authoring.mjs",
 		"test:camera-follow": "node test/verify-camera-follow.mjs",
+		"test:pwa": "node test/verify-pwa.mjs",
 		"prepack": "npm run build"
 	},
 	"license": "GPL-3.0-or-later",
