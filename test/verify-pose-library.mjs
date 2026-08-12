@@ -44,12 +44,18 @@ for (const id of newIds) {
 }
 
 const studioSource = readFileSync(new URL("../src/posestudio.jsx", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 for (const label of ["손 흔들기", "생각하기", "웅크리기", "무릎 꿇기", "달리기", "점프"]) {
 	expect(`Pose Studio includes Korean label ${label}`, studioSource.includes(label));
 }
 expect("Pose Studio exposes stable pose id hook", studioSource.includes("data-pose-id={pose.id}"));
 expect("Pose Studio exposes save custom hook", studioSource.includes('data-pose-id="save-custom"'));
 expect("Pose Studio keeps custom pose labels", studioSource.includes("pose.custom ? pose.label"));
+expect("Pose Studio applies its synchronous draft selection", studioSource.includes("onApply(selectedIdRef.current)"));
+expect("Pose Studio explains motion ownership", studioSource.includes("data-pose-motion-warning") && studioSource.includes("motionActive ? \"모션 지우고 포즈 적용\""));
+expect("App clears loaded motion before applying a blocking pose", appSource.includes("motionActive={Boolean(motion)}") && appSource.includes("if (hadMotion) clearMotion()"));
+expect("Pose Studio keeps tiles inside a scrollable panel", stylesSource.includes(".studio-filters") && stylesSource.includes(".pose-grid") && stylesSource.includes("min-height: 0"));
 
 if (process.env.CDP_PORT) {
 	const port = Number(process.env.CDP_PORT);
@@ -120,14 +126,18 @@ if (process.env.CDP_PORT) {
 
 	expect("browser shows expanded pose hooks", await evaluate("document.querySelectorAll('.pose-tile[data-pose-id]').length >= 17"));
 	expect("browser shows new run pose", await evaluate("document.querySelector('[data-pose-id=\"run\"]')?.textContent.includes('달리기')"));
-	expect("browser shows category filter", await evaluate("[...document.querySelectorAll('.pose-studio .studio-actions button')].some((button) => button.textContent.trim() === '동작')"));
-	await evaluate("[...document.querySelectorAll('.pose-studio .studio-actions button')].find((button) => button.textContent.trim() === '동작')?.click()");
+	expect("browser shows category filter", await evaluate("[...document.querySelectorAll('.pose-studio .studio-filters button')].some((button) => button.textContent.trim() === '동작')"));
+	await evaluate("[...document.querySelectorAll('.pose-studio .studio-filters button')].find((button) => button.textContent.trim() === '동작')?.click()");
 	await waitFor("document.querySelector('[data-pose-id=\"run\"]') && !document.querySelector('[data-pose-id=\"wave\"]')");
 	expect("browser filters action poses", await evaluate("!!document.querySelector('[data-pose-id=\"run\"]') && !!document.querySelector('[data-pose-id=\"jump\"]') && !document.querySelector('[data-pose-id=\"wave\"]')"));
-	await evaluate("document.querySelector('[data-pose-id=\"run\"]')?.click()");
-	await evaluate("[...document.querySelectorAll('.pose-studio button')].find((button) => button.textContent.trim() === '포즈 적용')?.click()");
+	await evaluate(`(() => {
+		document.querySelector('[data-pose-id="run"]')?.click();
+		document.querySelector('.pose-studio .studio-actions .btn.primary')?.click();
+	})()`);
 	await waitFor("!document.querySelector('.pose-studio')");
-	expect("browser applies filtered pose", await evaluate("!document.querySelector('.pose-studio')"));
+	await evaluate("document.querySelector('.subject-box .cam-toggle')?.click()");
+	await waitFor("!!document.querySelector('.pose-studio')");
+	expect("browser applies same-tick filtered pose", await evaluate("document.querySelector('[data-pose-id=\"run\"]')?.classList.contains('active')"));
 
 	ws.close();
 }

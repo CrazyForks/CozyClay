@@ -860,8 +860,21 @@ select {
 	margin-top: 0;
 }
 
+.studio-filters {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+.studio-filters .btn {
+	flex: 1 1 calc(33.333% - 4px);
+	min-width: 0;
+	padding: 6px 7px;
+	font-size: 10px;
+}
+
 .pose-grid {
 	flex: 1;
+	min-height: 0;
 	overflow-y: auto;
 	display: grid;
 	grid-template-columns: 1fr 1fr;

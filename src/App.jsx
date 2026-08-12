@@ -3275,17 +3275,25 @@ globalThis.playMode = centerTab === "play";
 								poses={allPoses}
 								selectedId={studioPick}
 								closing={posingClosing}
+								motionActive={Boolean(motion)}
 								onSelect={setStudioPick}
-								onApply={() => {
-									const pose = allPoses.find((p) => p.id === studioPick);
+								onApply={(selectedPoseId) => {
+									const pose = allPoses.find((p) => p.id === selectedPoseId);
 									if (pose) {
+										const hadMotion = Boolean(motion);
+										if (hadMotion) clearMotion();
 										setPosed(pose);
 										closeStudio();
+										setToast(hadMotion ? "현재 모션을 지우고 포즈를 적용했어요" : "포즈를 적용했어요");
+									} else {
+										setToast("선택한 포즈를 찾지 못했어요. 다시 골라 주세요");
 									}
 								}}
 								onReset={() => {
+									if (motion) clearMotion();
 									setStudioPick(DEFAULT_POSE.id);
 									setPosed(DEFAULT_POSE);
+									setToast("기본 포즈로 돌아왔어요");
 								}}
 								onSave={savePose}
 								onDelete={removePose}

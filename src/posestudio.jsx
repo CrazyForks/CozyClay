@@ -759,7 +759,7 @@ const CLICK_PX = 4;
  * `{ thumb, custom: true }`. The tile entry animation cascades with the same
  * stagger as the reference.
  */
-export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply, onReset, onSave, onDelete, onClose, closing }) {
+export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply, onReset, onSave, onDelete, onClose, closing, motionActive = false }) {
 	const poseLabelsKo = {
 		"T-pose": "T 포즈",
 		Relaxed: "편안한 자세",
@@ -789,6 +789,14 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 	const displayPoseLabel = (pose) => pose.custom ? pose.label : poseLabelsKo[pose.label] ?? pose.label;
 	const poseCategory = (pose) => pose.custom ? "custom" : pose.category ?? "basic";
 	const [category, setCategory] = useState("all");
+	const selectedIdRef = useRef(selectedId);
+	useEffect(() => {
+		selectedIdRef.current = selectedId;
+	}, [selectedId]);
+	const selectPose = (id) => {
+		selectedIdRef.current = id;
+		onSelect(id);
+	};
 	const categories = ["all", ...Array.from(new Set(poses.map(poseCategory)))];
 	const visiblePoses = category === "all" ? poses : poses.filter((pose) => poseCategory(pose) === category);
 	return (
@@ -799,16 +807,21 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 					✕
 				</button>
 			</div>
+			{motionActive && (
+				<p className="studio-hint" data-pose-motion-warning role="status">
+					현재 샘플 모션이 캐릭터를 움직이고 있어요. 포즈를 눈앞에 적용하려면 샘플 모션을 지우고 블로킹 포즈로 전환합니다.
+				</p>
+			)}
 			<div className="studio-actions">
-				<button type="button" className="btn primary full" onClick={onApply}>
-					포즈 적용
+				<button type="button" className="btn primary full" data-pose-apply onClick={() => onApply(selectedIdRef.current)}>
+					{motionActive ? "모션 지우고 포즈 적용" : "포즈 적용"}
 				</button>
 				<button type="button" className="btn ghost full" onClick={onReset}>
 					포즈 초기화
 				</button>
 			</div>
 			{categories.length > 2 && (
-				<div className="studio-actions" aria-label="포즈 카테고리">
+				<div className="studio-filters" aria-label="포즈 카테고리">
 					{categories.map((item) => (
 						<button
 							type="button"
@@ -831,7 +844,7 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 						data-pose-id={pose.id}
 						data-pose-category={poseCategory(pose)}
 						style={{ animationDelay: `${0.04 + index * 0.028}s` }}
-						onClick={() => onSelect(pose.id)}
+						onClick={() => selectPose(pose.id)}
 					>
 						{pose.thumb ? <img src={pose.thumb} alt={displayPoseLabel(pose)} /> : <div className="tile-blank" />}
 						<span>{displayPoseLabel(pose)}</span>

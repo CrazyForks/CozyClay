@@ -86,7 +86,7 @@ await waitFor("!!document.querySelector('.pose-studio')");
 const poseGuide = await evaluate("document.querySelector('.onboarding-coach-card')?.innerText || ''");
 expect("pose guidance names the exact controls", poseGuide.includes("포즈 드롭다운") && poseGuide.includes("포즈 적용"));
 await clickText(".pose-tile", "걷는 자세");
-await clickText(".pose-studio button", "포즈 적용");
+await evaluate("document.querySelector('[data-pose-apply]')?.click()");
 await waitFor("document.querySelector('[data-onboarding-step=\\\"pose\\\"]')?.classList.contains('done')");
 expect("pose step completes after applying a pose", await evaluate("document.querySelector('[data-onboarding-step=\"pose\"]')?.classList.contains('done')"));
 
@@ -125,6 +125,11 @@ expect("result exposes the copy action", resultText.includes("복사됨 ✓") ||
 await clickText(".result-modal button", "✕");
 await waitFor("document.querySelector('.onboarding-guide-collapsed')?.innerText.includes('첫 장면 완성')");
 expect("the complete journey collapses to a finished state", await evaluate("document.querySelector('.onboarding-guide-collapsed')?.innerText.includes('첫 장면 완성')"));
+
+expect("completed onboarding exposes a reset control", await evaluate("document.querySelector('[data-onboarding-reset]')?.textContent.includes('처음부터 다시 보기')"));
+await evaluate("document.querySelector('[data-onboarding-reset]')?.click()");
+await waitFor("document.querySelector('.onboarding-guide-coach') && document.querySelector('.onboarding-progress')?.innerText.includes('0/')");
+expect("reset returns onboarding to the first step", await evaluate("document.querySelector('.onboarding-guide-coach') && document.querySelector('.onboarding-progress')?.innerText.includes('0/')"));
 
 ws.close();
 if (failures) process.exit(1);

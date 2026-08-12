@@ -164,6 +164,11 @@ export default function OnboardingChecklist({
 		});
 	}
 
+	function resetPreferences() {
+		savePreferences(DEFAULT_PREFERENCES);
+		window.location.reload();
+	}
+
 	useEffect(() => {
 		if (!allComplete || preferences.completed) return;
 		setPreferences((current) => {
@@ -189,6 +194,19 @@ export default function OnboardingChecklist({
 					<span>
 						<strong>{allComplete ? "첫 장면 완성" : `다음: ${nextStep.label}`}</strong>
 						<small>{doneCount}/{requiredSteps.length}단계 완료</small>
+					</span>
+				</button>
+				<button
+					type="button"
+					className="onboarding-summary"
+					data-onboarding-reset="true"
+					onClick={resetPreferences}
+					aria-label="처음부터 다시 보기"
+				>
+					<span className="onboarding-summary-mark" aria-hidden="true">↺</span>
+					<span>
+						<strong>처음부터 다시 보기</strong>
+						<small>안내 초기화</small>
 					</span>
 				</button>
 				<button
@@ -258,6 +276,9 @@ export default function OnboardingChecklist({
 					최근 결과 다시 보기
 				</button>
 			)}
+			<button type="button" className="onboarding-review" data-onboarding-reset="true" onClick={resetPreferences}>
+				처음부터 다시 보기
+			</button>
 		</aside>
 	);
 }
