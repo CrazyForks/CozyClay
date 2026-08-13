@@ -138,7 +138,7 @@ function CameraBlockEditor({ shot, onChange }) {
 			<label title={ko("Tilt above or below automatic aim; this does not move the camera or change lens height", "자동 조준각에서 위아래로 틸트합니다. 카메라 위치와 렌즈 높이는 바꾸지 않습니다")}>
 				<span>{ko("Pitch", "피치")}</span>
 				<input type="number" min="-30" max="30" step="1" value={follow.pitchOffsetDeg} disabled={mode === "keys"} onChange={(event) => patchFollow({ pitchOffsetDeg: numberValue(event) })} />
-				<small>\u00b0</small>
+				<small>°</small>
 			</label>
 			<label title={ko("Set camera-to-subject spacing; this does not change dolly speed or height", "카메라와 피사체 사이 간격을 정합니다. 돌리 속도와 높이는 바꾸지 않습니다")}>
 				<span>{ko("Distance", "거리")}</span>
@@ -980,7 +980,7 @@ export default function Timeline({
 														onPointerUp={endShotBoundaryDrag}
 														onPointerCancel={endShotBoundaryDrag}
 													>
-														\u22ee
+												⋮
 													</button>
 												)}
 												<button
@@ -992,7 +992,7 @@ export default function Timeline({
 													onPointerUp={endShotBoundaryDrag}
 													onPointerCancel={endShotBoundaryDrag}
 												>
-													\u22ee
+											⋮
 												</button>
 												<span className="tl-camera-block-state">{stateLabel}</span>
 												<b>{modeLabel}</b>
