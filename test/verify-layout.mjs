@@ -39,7 +39,7 @@ expect("legacy hierarchy/inspector splitter is removed", !app.includes("hierarch
 expect("bottom window separates Timeline from the ARDY console", app.includes("bottom-window-tabs") && app.includes("console-pane") && app.includes('hidden={bottomTab !== "timeline"}'));
 expect("ARDY status lines accumulate in the console window", app.includes("reportArdyStatus") && app.includes("consoleLines"));
 expect("Motion inspector still owns the ARDY generation form", app.includes('hidden={!["characterA.motion", "characterA.baseMotion"].includes(selectedHierarchyId)}'));
-expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("${promptClips.length}개 블록 모두 생성"));
+expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("Generate all ${promptClips.length} blocks"));
 expect("new sessions start without prompt blocks", app.includes("const DEFAULT_PROMPT_CLIPS = [];") && app.includes("useState(null)"));
 expect("new sessions start with an empty motion prompt", app.includes('const [ardyPrompt, setArdyPrompt] = useState("");'));
 expect("pre-motion timeline initializes to 15 seconds", app.includes("const DEFAULT_DURATION_S = 15"));
@@ -54,8 +54,8 @@ expect("IK-edited blocks use the motion edit session", app.includes("const edite
 expect("IK regeneration inherits loaded clip duration", app.includes("motion && ikFrames.length > 0") && app.includes("motion.frames / motion.fps"));
 expect("motion edits send only tracked pending joints", app.includes("ikStateRef.current.keys.get(frame)?.keys()") && app.includes("tracks:"));
 expect("successful motion edits commit and clear pending IK", app.includes("setCommittedIkEdits") && app.includes("ikStateRef.current.keys.clear()") && app.includes("ikStateRef.current.tracked.clear()"));
-expect("pending IK clears only after exact commit verification", app.includes("editCommitReport?.commit_verified !== true") && app.includes("ARDY가 검증된 수동 IK 키 없이 모션을 반환했어요"));
-expect("failed key verification leaves pending IK intact", app.indexOf("ARDY가 검증된 수동 IK 키 없이 모션을 반환했어요") < app.indexOf("ikStateRef.current.keys.clear()"));
+expect("pending IK clears only after exact commit verification", app.includes("editCommitReport?.commit_verified !== true") && app.includes("ARDY returned motion without verified authored IK keys"));
+expect("failed key verification leaves pending IK intact", app.indexOf("ARDY returned motion without verified authored IK keys") < app.indexOf("ikStateRef.current.keys.clear()"));
 expect("individual block generation action is removed", !app.includes("Generate selected block"));
 expect("Prompt Block edits stay synced with ARDY input", app.includes("changePromptClip(selectedPromptId") && app.includes("setArdyPrompt(event.target.value)"));
 expect("desktop stage fills the remaining viewport", css.includes("aspect-ratio: auto") && css.includes("height: 100%"));
@@ -71,7 +71,7 @@ expect(
 	"a root path and a prompt schedule are sent together, judged per block",
 	app.includes("if (hasPromptSchedule && !hasBlockEdits) body.segments = segments;") &&
 	app.includes("judgeAuthoredPath(rootPath, 20, clipFrames, { chained: hasPromptSchedule })") &&
-		app.includes("각 프롬프트 블록은"),
+	app.includes("every prompt block must stay within"),
 );
 expect("generated motion anchors frame zero at Subject 1", app.includes("anchorX: charA.x") && app.includes("anchorZ: charA.z") && app.includes("anchorFrame: 0"));
 expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));

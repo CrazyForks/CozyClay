@@ -16,7 +16,7 @@ await send("Runtime.enable");
 for (let i = 0; i < 50 && !(await evaluate("!!window.__sceneHistory && document.querySelectorAll('.hierarchy-row').length > 0").catch(() => false)); i++) await new Promise((r) => setTimeout(r, 200));
 await evaluate("document.querySelector('.add-object-trigger').click()");
 await new Promise((r) => setTimeout(r, 400));
-await evaluate("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('큐브')).click()");
+await evaluate("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube')).click()");
 await new Promise((r) => setTimeout(r, 1500));
 const shot = await send("Page.captureScreenshot", { format: "png" });
 writeFileSync(new URL("../docs/images/cozyclay-studio.png", import.meta.url), Buffer.from(shot.data, "base64"));

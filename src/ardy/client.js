@@ -7,6 +7,7 @@
  * sidecar as an expected state and reports it as data — never as a thrown
  * error — so the UI can degrade to a hint instead of crashing.
  */
+import { ko, isKo } from "../locale.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
@@ -39,7 +40,7 @@ export async function checkBridge() {
 	try {
 		const res = await fetch("/ardy/health", { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
 		if (!res.ok) {
-			return { ok: false, reason: await reasonOf(res, `브리지 상태가 좋지 않아요(HTTP ${res.status})`) };
+			return { ok: false, reason: await reasonOf(res, isKo ? `브리지 상태가 좋지 않아요(HTTP ${res.status})` : `bridge unhealthy (HTTP ${res.status})`) };
 		}
 		const payload = await res.json();
 		return {
@@ -49,7 +50,7 @@ export async function checkBridge() {
 			device: payload.device,
 		};
 	} catch (err) {
-		return { ok: false, reason: err?.message || "브리지에 연결할 수 없어요" };
+		return { ok: false, reason: err?.message || ko("bridge unreachable", "브리지에 연결할 수 없어요") };
 	}
 }
 
@@ -91,7 +92,7 @@ export async function generate(body, onEvent, { signal } = {}) {
 	if (!res.ok) {
 		throw new Error(await reasonOf(res, `generate failed (HTTP ${res.status})`));
 	}
-	if (!res.body) throw new Error("생성 응답에 본문 스트림이 없어요");
+	if (!res.body) throw new Error(ko("generate: response has no body stream", "생성 응답에 본문 스트림이 없어요"));
 
 	const reader = res.body.getReader();
 	const decoder = new TextDecoder();
@@ -118,7 +119,7 @@ export async function generate(body, onEvent, { signal } = {}) {
 		const terminal = applyLine(buffer.trim());
 		if (terminal) return terminal;
 	}
-	throw new Error("완료 또는 오류 이벤트 없이 생성 스트림이 끝났어요");
+	throw new Error(ko("generate: stream ended without a done or error event", "완료 또는 오류 이벤트 없이 생성 스트림이 끝났어요"));
 
 	/** Parse one ndjson line; returns the done event, throws on error/bad line. */
 	function applyLine(line) {

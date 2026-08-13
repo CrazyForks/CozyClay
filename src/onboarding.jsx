@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { ko, isKo } from "./locale.js";
 
 const ONBOARDING_STORAGE_KEY = "cozyclay.onboarding.v1";
 const DEFAULT_PREFERENCES = { collapsed: false, dismissed: false, completed: false };
@@ -48,106 +49,106 @@ export default function OnboardingChecklist({
 	onAction,
 }) {
 	const [preferences, setPreferences] = useState(loadPreferences);
-	const modeLabel = mode === "video" ? "영상" : "이미지";
+	const modeLabel = mode === "video" ? ko("Video", "영상") : ko("Image", "이미지");
 	const steps = useMemo(() => [
 		{
 			id: "camera",
-			label: "카메라 구도 잡기",
-			detail: "왼쪽 계층에서 샷 01을 열고, 오른쪽 샷 종류에서 구도를 고르세요.",
+			label: ko("Set the camera", "카메라 구도 잡기"),
+			detail: ko("Open SHOT 01 in the hierarchy on the left, then pick a framing in the shot type on the right.", "왼쪽 계층에서 샷 01을 열고, 오른쪽 샷 종류에서 구도를 고르세요."),
 			instructions: [
-				"왼쪽 계층에서 ‘샷 01’을 누르세요.",
-				"오른쪽 속성의 ‘샷 종류’에서 미디엄·와이드·클로즈업 중 하나를 누르세요.",
-				"구도를 더 다듬으려면 왼쪽 계층에서 ‘카메라’를 누른 뒤 ‘렌즈 (FOV)’를 움직이세요.",
+				ko("Click “SHOT 01” in the hierarchy on the left.", "왼쪽 계층에서 ‘샷 01’을 누르세요."),
+				ko("In “Shot type” on the right, pick Medium, Wide, or Close-Up.", "오른쪽 속성의 ‘샷 종류’에서 미디엄·와이드·클로즈업 중 하나를 누르세요."),
+				ko("To refine the framing, click “Camera” in the hierarchy and adjust “Lens (FOV)”.", "구도를 더 다듬으려면 왼쪽 계층에서 ‘카메라’를 누른 뒤 ‘렌즈 (FOV)’를 움직이세요."),
 			],
-			recovery: "카메라가 너무 멀어졌다면 오른쪽 카메라 속성의 ‘피사체 다시 맞추기’를 누르세요.",
+			recovery: ko("If the camera drifts too far, press “Recenter on subject” in the camera properties on the right.", "카메라가 너무 멀어졌다면 오른쪽 카메라 속성의 ‘피사체 다시 맞추기’를 누르세요."),
 			action: "camera",
-			actionLabel: "샷 설정 열기",
+			actionLabel: ko("Open shot settings", "샷 설정 열기"),
 			done: cameraConfigured,
 		},
 		{
 			id: "pose",
-			label: "포즈 고르기",
-			detail: "캐릭터를 열고 포즈 드롭다운이나 포즈 스튜디오에서 자세를 고르세요.",
+			label: ko("Choose a pose", "포즈 고르기"),
+			detail: ko("Open the character and pick a pose in the pose dropdown or Pose Studio.", "캐릭터를 열고 포즈 드롭다운이나 포즈 스튜디오에서 자세를 고르세요."),
 			instructions: [
-				"왼쪽 계층에서 ‘캐릭터 1’을 누르세요.",
-				"오른쪽 속성의 ‘포즈’ 드롭다운에서 원하는 자세를 고르세요.",
-				"더 자세히 고르려면 인물 카드의 포즈 버튼을 눌러 포즈 스튜디오를 열고, 타일을 고른 뒤 ‘포즈 적용’을 누르세요.",
+				ko("Click “Character 1” in the hierarchy on the left.", "왼쪽 계층에서 ‘캐릭터 1’을 누르세요."),
+				ko("Pick a pose in the “Pose” dropdown on the right.", "오른쪽 속성의 ‘포즈’ 드롭다운에서 원하는 자세를 고르세요."),
+				ko("For more choices, open Pose Studio from the character card, pick a tile, then press “Apply pose”.", "더 자세히 고르려면 인물 카드의 포즈 버튼을 눌러 포즈 스튜디오를 열고, 타일을 고른 뒤 ‘포즈 적용’을 누르세요."),
 			],
-			recovery: "원래대로 돌리려면 포즈 스튜디오에서 ‘포즈 초기화’를 누르세요.",
+			recovery: ko("To reset, press “Reset pose” in Pose Studio.", "원래대로 돌리려면 포즈 스튜디오에서 ‘포즈 초기화’를 누르세요."),
 			action: "pose",
-			actionLabel: "포즈 고르기",
+			actionLabel: ko("Choose a pose", "포즈 고르기"),
 			done: poseConfigured,
 		},
 		{
 			id: "describe",
-			label: "장면 설명 쓰기",
-			detail: "샷의 프롬프트에서 인물·환경·스타일을 내 장면에 맞게 바꾸세요.",
+			label: ko("Describe the scene", "장면 설명 쓰기"),
+			detail: ko("In the shot's prompt, adapt the subject, environment, and style to your scene.", "샷의 프롬프트에서 인물·환경·스타일을 내 장면에 맞게 바꾸세요."),
 			instructions: [
-				"왼쪽 계층에서 ‘샷 01’을 누르세요.",
-				"오른쪽 속성의 ‘프롬프트’에서 ‘인물’, ‘환경’, ‘룩 / 스타일’을 찾아 입력하세요.",
-				"기본 문장을 그대로 두면 완료되지 않아요. 캐릭터 시트나 환경 시트가 있으면 해당 체크박스를 켜도 됩니다.",
+				ko("Click “SHOT 01” in the hierarchy on the left.", "왼쪽 계층에서 ‘샷 01’을 누르세요."),
+				ko("In the “Prompt” section on the right, fill in “Subject”, “Environment”, and “Look / style”.", "오른쪽 속성의 ‘프롬프트’에서 ‘인물’, ‘환경’, ‘룩 / 스타일’을 찾아 입력하세요."),
+				ko("Leaving the default text as-is won't complete this step. If you have a character or environment sheet, you can enable those checkboxes.", "기본 문장을 그대로 두면 완료되지 않아요. 캐릭터 시트나 환경 시트가 있으면 해당 체크박스를 켜도 됩니다."),
 			],
-			recovery: "무엇을 써야 할지 모르겠다면 ‘인물은 누구인지 · 어디에 있는지 · 어떤 분위기인지’ 순서로 한 문장만 써 보세요.",
+			recovery: ko("Not sure what to write? Try one sentence: who is in the scene, where they are, and the mood.", "무엇을 써야 할지 모르겠다면 ‘인물은 누구인지 · 어디에 있는지 · 어떤 분위기인지’ 순서로 한 문장만 써 보세요."),
 			action: "describe",
-			actionLabel: "장면 설정 열기",
+			actionLabel: ko("Open scene settings", "장면 설정 열기"),
 			done: descriptionConfigured,
 		},
 		...(mode === "video" ? [{
 			id: "root-path",
-			label: "루트 경로 선택",
-			detail: "선택 단계예요. 인물이 걸어갈 길이 필요하면 바닥에 루트 경로를 찍으세요.",
+			label: ko("Choose a root path", "루트 경로 선택"),
+			detail: ko("Optional step. If your character should walk, lay a root path on the floor.", "선택 단계예요. 인물이 걸어갈 길이 필요하면 바닥에 루트 경로를 찍으세요."),
 			instructions: [
-				"왼쪽 계층에서 ‘루트 경로’를 누르고 ‘루트 경로 편집’을 켜세요.",
-				"샷 뷰의 세트 바닥을 시작 위치에서 끝 위치 순서로 클릭하세요. 핀 번호가 이동 순서예요.",
-				"정확한 타이밍이 필요하면 타임라인의 ‘2D 루트’ 레인에서 먼저 프레임을 고른 뒤 바닥을 클릭하세요.",
-				"탑뷰에서 번호 핀을 드래그해 경로를 다듬으세요. 생성된 모션은 이 경로를 대략 따라가며 걷기나 방향 전환은 AI가 자연스럽게 채워요.",
+				ko("Click “Root Path” in the hierarchy and turn on “Edit root path”.", "왼쪽 계층에서 ‘루트 경로’를 누르고 ‘루트 경로 편집’을 켜세요."),
+				ko("Click the set floor in order from start to finish. The pin numbers show the walking order.", "샷 뷰의 세트 바닥을 시작 위치에서 끝 위치 순서로 클릭하세요. 핀 번호가 이동 순서예요."),
+				ko("For precise timing, pick a frame in the “2D Root” lane of the timeline first, then click the floor.", "정확한 타이밍이 필요하면 타임라인의 ‘2D 루트’ 레인에서 먼저 프레임을 고른 뒤 바닥을 클릭하세요."),
+				ko("Drag the numbered pins in the top view to refine the path. The generated motion roughly follows this path; the AI fills in natural walking and turns.", "탑뷰에서 번호 핀을 드래그해 경로를 다듬으세요. 생성된 모션은 이 경로를 대략 따라가며 걷기나 방향 전환은 AI가 자연스럽게 채워요."),
 			],
-			recovery: pathWarning || "움직임이 필요 없거나 한 자리 연기라면 이 단계는 건너뛰어도 됩니다.",
+			recovery: pathWarning || ko("No movement needed? You can skip this step.", "움직임이 필요 없거나 한 자리 연기라면 이 단계는 건너뛰어도 됩니다."),
 			action: "root-path",
-			actionLabel: "루트 경로 열기",
+			actionLabel: ko("Open the root path", "루트 경로 열기"),
 			done: Boolean(pathConfigured),
 			optional: true,
 		}] : []),
 		...(mode === "video" ? [{
 			id: "keys",
-			label: "카메라 시작·끝 키 찍기",
-			detail: "영상 모드에서는 타임라인 카메라 레인에 시작과 끝 구도를 저장하세요.",
+			label: ko("Set camera start and end keys", "카메라 시작·끝 키 찍기"),
+			detail: ko("In video mode, save the start and end framings on the timeline's camera lane.", "영상 모드에서는 타임라인 카메라 레인에 시작과 끝 구도를 저장하세요."),
 			instructions: [
-				"오른쪽 프롬프트의 모드를 ‘영상’으로 바꾸세요.",
-				"타임라인의 ‘카메라’ 레인에서 시작 프레임을 클릭해 키를 찍으세요.",
-				"재생 헤드를 다른 프레임으로 옮긴 뒤 같은 레인을 한 번 더 클릭하세요. 점을 드래그하면 시간을 바꿀 수 있어요.",
+				ko("Switch the mode in the prompt on the right to “Video”.", "오른쪽 프롬프트의 모드를 ‘영상’으로 바꾸세요."),
+				ko("Click a start frame on the “Camera” lane of the timeline to set a key.", "타임라인의 ‘카메라’ 레인에서 시작 프레임을 클릭해 키를 찍으세요."),
+				ko("Move the playhead to another frame and click the lane again. Drag the dots to change timing.", "재생 헤드를 다른 프레임으로 옮긴 뒤 같은 레인을 한 번 더 클릭하세요. 점을 드래그하면 시간을 바꿀 수 있어요."),
 			],
-			recovery: "잘못 찍은 점은 카메라 레인의 점에서 오른쪽 클릭하면 삭제할 수 있어요.",
+			recovery: ko("Right-click a dot on the camera lane to delete a mis-placed key.", "잘못 찍은 점은 카메라 레인의 점에서 오른쪽 클릭하면 삭제할 수 있어요."),
 			action: "keys",
-			actionLabel: "영상 카메라 열기",
+			actionLabel: ko("Open the video camera", "영상 카메라 열기"),
 			done: cameraKeyCount >= 2,
 		}] : []),
 		{
 			id: "generate",
-			label: "장면 만들기",
-			detail: "프롬프트를 확인한 뒤 오른쪽 아래 ‘만들기’를 누르세요.",
+			label: ko("Create the scene", "장면 만들기"),
+			detail: ko("Review the prompt, then press “Generate” at the bottom right.", "프롬프트를 확인한 뒤 오른쪽 아래 ‘만들기’를 누르세요."),
 			instructions: [
-				"왼쪽 계층에서 ‘샷 01’을 누르고 프롬프트 내용을 한 번 확인하세요.",
-				"오른쪽 프롬프트 카드 맨 아래의 ‘만들기’를 누르세요.",
-				"장면 프레임과 프롬프트가 결과 창에 함께 나타나면 완료예요.",
+				ko("Click “SHOT 01” in the hierarchy and give the prompt a final read.", "왼쪽 계층에서 ‘샷 01’을 누르고 프롬프트 내용을 한 번 확인하세요."),
+				ko("Press “Generate” at the bottom of the prompt card on the right.", "오른쪽 프롬프트 카드 맨 아래의 ‘만들기’를 누르세요."),
+				ko("You're done when the frame and prompt appear together in the results.", "장면 프레임과 프롬프트가 결과 창에 함께 나타나면 완료예요."),
 			],
-			recovery: "프레임이 비어 있으면 잠시 기다린 뒤 ‘만들기’를 다시 누르세요.",
+			recovery: ko("If the frame comes back empty, wait a moment and press “Generate” again.", "프레임이 비어 있으면 잠시 기다린 뒤 ‘만들기’를 다시 누르세요."),
 			action: "generate",
-			actionLabel: "만들기 열기",
+			actionLabel: ko("Create the scene", "장면 만들기"),
 			done: hasGenerated,
 		},
 		{
 			id: "deliver",
-			label: "AI에 넣기",
-			detail: "결과 창에서 프롬프트와 프레임을 챙겨 AI 서비스에 넣으세요.",
+			label: ko("Take it to your AI", "AI에 넣기"),
+			detail: ko("In the results, copy the prompt and frame into your AI service.", "결과 창에서 프롬프트와 프레임을 챙겨 AI 서비스에 넣으세요."),
 			instructions: [
-				"결과 창의 ‘프롬프트 복사’를 누르고 AI 서비스 입력창에 붙여 넣으세요.",
-				"‘프레임 다운로드’를 눌러 저장한 PNG를 AI 서비스의 이미지 첨부 버튼으로 올리세요.",
-				"프롬프트와 이미지를 함께 넣으면 AI가 이 장면의 구도와 분위기를 더 잘 따라와요.",
+				ko("Press “Copy prompt” in the results and paste it into your AI service.", "결과 창의 ‘프롬프트 복사’를 누르고 AI 서비스 입력창에 붙여 넣으세요."),
+				ko("Press “Download frame” and attach the saved PNG with the AI service's image button.", "‘프레임 다운로드’를 눌러 저장한 PNG를 AI 서비스의 이미지 첨부 버튼으로 올리세요."),
+				ko("Together, the prompt and image help the AI match the scene's framing and mood.", "프롬프트와 이미지를 함께 넣으면 AI가 이 장면의 구도와 분위기를 더 잘 따라와요."),
 			],
-			recovery: "결과 창을 닫았다면 이 단계의 ‘최근 결과 다시 보기’로 다시 열 수 있어요.",
+			recovery: ko("Closed the results? Reopen the latest result from this step.", "결과 창을 닫았다면 이 단계의 ‘최근 결과 다시 보기’로 다시 열 수 있어요."),
 			action: "deliver",
-			actionLabel: canReviewLatest ? "결과 다시 열기" : "결과 창 열기",
+			actionLabel: canReviewLatest ? ko("Open the result again", "결과 다시 열기") : ko("Open the results", "결과 창 열기"),
 			done: hasDelivered,
 		},
 	], [mode, cameraConfigured, poseConfigured, descriptionConfigured, pathConfigured, pathWarning, cameraKeyCount, hasGenerated, hasDelivered, canReviewLatest]);
@@ -155,6 +156,7 @@ export default function OnboardingChecklist({
 	const doneCount = requiredSteps.filter((step) => step.done).length;
 	const allComplete = doneCount === requiredSteps.length;
 	const nextStep = steps.find((step) => !step.done && (step.id === "root-path" || !step.optional));
+	const progressSummary = isKo ? `${doneCount}/${requiredSteps.length}단계 완료` : `${doneCount}/${requiredSteps.length} steps done`;
 
 	function updatePreferences(change) {
 		setPreferences((current) => {
@@ -183,17 +185,17 @@ export default function OnboardingChecklist({
 
 	if (preferences.collapsed) {
 		return (
-			<aside className="onboarding-guide onboarding-guide-collapsed" aria-label="첫 장면 안내">
+			<aside className="onboarding-guide onboarding-guide-collapsed" aria-label={ko("First shot guide", "첫 장면 안내")}>
 				<button
 					type="button"
 					className="onboarding-summary"
 					onClick={() => updatePreferences({ collapsed: false })}
-					aria-label="첫 장면 안내 펼치기"
+					aria-label={ko("Expand the first shot guide", "첫 장면 안내 펼치기")}
 				>
 					<span className="onboarding-summary-mark" aria-hidden="true">{allComplete ? "✓" : "→"}</span>
 					<span>
-						<strong>{allComplete ? "첫 장면 완성" : `다음: ${nextStep.label}`}</strong>
-						<small>{doneCount}/{requiredSteps.length}단계 완료</small>
+						<strong>{allComplete ? ko("First shot complete", "첫 장면 완성") : (isKo ? `다음: ${nextStep.label}` : `Next: ${nextStep.label}`)}</strong>
+						<small>{progressSummary}</small>
 					</span>
 				</button>
 				<button
@@ -201,19 +203,19 @@ export default function OnboardingChecklist({
 					className="onboarding-summary"
 					data-onboarding-reset="true"
 					onClick={resetPreferences}
-					aria-label="처음부터 다시 보기"
+					aria-label={ko("Start the guide over", "처음부터 다시 보기")}
 				>
 					<span className="onboarding-summary-mark" aria-hidden="true">↺</span>
 					<span>
-						<strong>처음부터 다시 보기</strong>
-						<small>안내 초기화</small>
+						<strong>{ko("Start over", "처음부터 다시 보기")}</strong>
+						<small>{ko("Reset the guide", "안내 초기화")}</small>
 					</span>
 				</button>
 				<button
 					type="button"
 					className="onboarding-dismiss"
 					onClick={() => updatePreferences({ dismissed: true })}
-					aria-label="첫 장면 안내 닫기"
+					aria-label={ko("Close the first shot guide", "첫 장면 안내 닫기")}
 				>
 					✕
 				</button>
@@ -226,29 +228,29 @@ export default function OnboardingChecklist({
 		<aside className="onboarding-guide onboarding-guide-coach" aria-labelledby="onboarding-title">
 			<header className="onboarding-head">
 				<div>
-					<span className="onboarding-kicker">처음 장면 · {modeLabel} · 끝까지 따라 하기</span>
-					<h2 id="onboarding-title">{allComplete ? "첫 장면을 완성했어요" : "처음 장면을 함께 만들어 볼게요"}</h2>
+					<span className="onboarding-kicker">{isKo ? `처음 장면 · ${modeLabel} · 끝까지 따라 하기` : `First shot · ${modeLabel} · follow along`}</span>
+					<h2 id="onboarding-title">{allComplete ? ko("Your first shot is complete", "첫 장면을 완성했어요") : ko("Let's build your first shot together", "처음 장면을 함께 만들어 볼게요")}</h2>
 				</div>
 				<div className="onboarding-head-actions">
-					<button type="button" onClick={() => updatePreferences({ collapsed: true })} aria-label="첫 장면 안내 접기">−</button>
-					<button type="button" onClick={() => updatePreferences({ dismissed: true })} aria-label="첫 장면 안내 닫기">✕</button>
+					<button type="button" onClick={() => updatePreferences({ collapsed: true })} aria-label={ko("Collapse the first shot guide", "첫 장면 안내 접기")}>−</button>
+					<button type="button" onClick={() => updatePreferences({ dismissed: true })} aria-label={ko("Close the first shot guide", "첫 장면 안내 닫기")}>✕</button>
 				</div>
 			</header>
 
 			<div className="onboarding-progress" aria-live="polite">
-				<span>{doneCount}/{requiredSteps.length}단계 완료</span>
+				<span>{progressSummary}</span>
 				<strong>{Math.round((doneCount / requiredSteps.length) * 100)}%</strong>
 			</div>
 
-			<ol className="onboarding-steps" aria-label="첫 장면 만들기 단계">
+			<ol className="onboarding-steps" aria-label={ko("First shot steps", "첫 장면 만들기 단계")}>
 				{steps.map((step, index) => {
 					const current = step.id === currentStep.id;
 					return (
 						<li key={step.id} className={(step.done ? "done " : "") + (current ? "current" : "")} aria-current={current ? "step" : undefined} data-onboarding-step={step.id} data-onboarding-optional={step.optional ? "true" : undefined}>
 							<span className="onboarding-step-mark" aria-hidden="true">{step.done ? "✓" : index + 1}</span>
 							<span>
-								<strong>{step.label}{step.optional ? " · 선택" : ""}</strong>
-								<small>{step.done ? "완료했어요" : step.detail}</small>
+								<strong>{step.label}{step.optional ? ko(" · optional", " · 선택") : ""}</strong>
+								<small>{step.done ? ko("Done", "완료했어요") : step.detail}</small>
 							</span>
 						</li>
 					);
@@ -257,27 +259,27 @@ export default function OnboardingChecklist({
 
 			<section className="onboarding-coach-card" aria-live="polite" data-onboarding-coach-step={currentStep.id}>
 				<div className="onboarding-coach-title">
-					<span className="onboarding-coach-label">{currentStep.done ? "다시 확인하기" : "지금 할 일"}</span>
+					<span className="onboarding-coach-label">{currentStep.done ? ko("Review it again", "다시 확인하기") : ko("Your next step", "지금 할 일")}</span>
 					<strong>{currentStep.label}</strong>
 				</div>
 				<p className="onboarding-coach-detail">{currentStep.detail}</p>
 				<StepInstructions items={currentStep.instructions} />
-				<p className="onboarding-recovery"><strong>막히면</strong> {currentStep.recovery}</p>
+				<p className="onboarding-recovery"><strong>{ko("Stuck?", "막히면")}</strong> {currentStep.recovery}</p>
 			<button type="button" className="onboarding-action" data-guide-action={currentStep.action} data-onboarding-action={currentStep.action} onClick={() => {
 					if (currentStep.action === "deliver" && canReviewLatest) onReview();
 					else onAction?.(currentStep.action);
 				}}>
-					{currentStep.action === "generate" ? "만들기 버튼 위치 보기" : currentStep.actionLabel}
+					{currentStep.action === "generate" ? ko("Show the Generate button", "만들기 버튼 위치 보기") : currentStep.actionLabel}
 				</button>
 			</section>
 
 			{canReviewLatest && (
 				<button type="button" className="onboarding-review" onClick={onReview}>
-					최근 결과 다시 보기
+					{ko("Review the latest result", "최근 결과 다시 보기")}
 				</button>
 			)}
 			<button type="button" className="onboarding-review" data-onboarding-reset="true" onClick={resetPreferences}>
-				처음부터 다시 보기
+				{ko("Start over", "처음부터 다시 보기")}
 			</button>
 		</aside>
 	);

@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { POSE_BONES, normalizeBoneName, primeBindPose } from "./poses.js";
 import { IK_TRACKS, MID_TRACKS } from "./ardy/ik.js";
 import { POSER_LAYER } from "./dualview.jsx";
+import { ko, isKo } from "./locale.js";
 
 /** Same normalised-name match rule as poses.js: equal, or one is a suffix of
  * the other, so `mixamorig:LeftArm`, `mixamorigLeftArm` and `LeftArm` all hit. */
@@ -761,30 +762,30 @@ const CLICK_PX = 4;
  */
 export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply, onReset, onSave, onDelete, onClose, closing, motionActive = false }) {
 	const poseLabelsKo = {
-		"T-pose": "T 포즈",
-		Relaxed: "편안한 자세",
-		Contrapposto: "콘트라포스토",
-		Walking: "걷는 자세",
-		Seated: "앉은 자세",
-		"Arms crossed": "팔짱",
-		Pointing: "가리키기",
-		"Hands on hips": "허리에 손",
-		"Looking back": "뒤돌아보기",
-		"Hands up": "손 올리기",
-		Wave: "손 흔들기",
-		Thinking: "생각하기",
-		Crouch: "웅크리기",
-		Kneel: "무릎 꿇기",
-		Run: "달리기",
-		Jump: "점프",
+		"T-pose": ko("T-pose", "T 포즈"),
+		Relaxed: ko("Relaxed", "편안한 자세"),
+		Contrapposto: ko("Contrapposto", "콘트라포스토"),
+		Walking: ko("Walking", "걷는 자세"),
+		Seated: ko("Seated", "앉은 자세"),
+		"Arms crossed": ko("Arms crossed", "팔짱"),
+		Pointing: ko("Pointing", "가리키기"),
+		"Hands on hips": ko("Hands on hips", "허리에 손"),
+		"Looking back": ko("Looking back", "뒤돌아보기"),
+		"Hands up": ko("Hands up", "손 올리기"),
+		Wave: ko("Wave", "손 흔들기"),
+		Thinking: ko("Thinking", "생각하기"),
+		Crouch: ko("Crouch", "웅크리기"),
+		Kneel: ko("Kneel", "무릎 꿇기"),
+		Run: ko("Run", "달리기"),
+		Jump: ko("Jump", "점프"),
 	};
 	const categoryLabelsKo = {
-		all: "전체",
-		basic: "기본",
-		gesture: "제스처",
-		action: "동작",
-		floor: "바닥",
-		custom: "내 포즈",
+		all: ko("All", "전체"),
+		basic: ko("Basic", "기본"),
+		gesture: ko("Gesture", "제스처"),
+		action: ko("Action", "동작"),
+		floor: ko("Floor", "바닥"),
+		custom: ko("My poses", "내 포즈"),
 	};
 	const displayPoseLabel = (pose) => pose.custom ? pose.label : poseLabelsKo[pose.label] ?? pose.label;
 	const poseCategory = (pose) => pose.custom ? "custom" : pose.category ?? "basic";
@@ -802,26 +803,26 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 	return (
 		<div className={"pose-studio" + (closing ? " closing" : "")}>
 			<div className="studio-head">
-				<span>포즈 스튜디오 · 인물 {subject}</span>
-				<button type="button" className="x" onClick={onClose} aria-label="포즈 스튜디오 닫기">
+				<span>{isKo ? `포즈 스튜디오 · 인물 ${subject}` : `Pose Studio · Subject ${subject}`}</span>
+				<button type="button" className="x" onClick={onClose} aria-label={ko("Close pose studio", "포즈 스튜디오 닫기")}>
 					✕
 				</button>
 			</div>
 			{motionActive && (
 				<p className="studio-hint" data-pose-motion-warning role="status">
-					현재 샘플 모션이 캐릭터를 움직이고 있어요. 포즈를 눈앞에 적용하려면 샘플 모션을 지우고 블로킹 포즈로 전환합니다.
+					{ko("A sample motion is moving the character — applying a pose clears it and returns to the blocking pose.", "현재 샘플 모션이 캐릭터를 움직이고 있어요. 포즈를 눈앞에 적용하려면 샘플 모션을 지우고 블로킹 포즈로 전환합니다.")}
 				</p>
 			)}
 			<div className="studio-actions">
 				<button type="button" className="btn primary full" data-pose-apply onClick={() => onApply(selectedIdRef.current)}>
-					{motionActive ? "모션 지우고 포즈 적용" : "포즈 적용"}
+					{motionActive ? ko("Clear motion and apply pose", "모션 지우고 포즈 적용") : ko("Apply pose", "포즈 적용")}
 				</button>
 				<button type="button" className="btn ghost full" onClick={onReset}>
-					포즈 초기화
+					{ko("Reset pose", "포즈 초기화")}
 				</button>
 			</div>
 			{categories.length > 2 && (
-				<div className="studio-filters" aria-label="포즈 카테고리">
+				<div className="studio-filters" aria-label={ko("Pose categories", "포즈 카테고리")}>
 					{categories.map((item) => (
 						<button
 							type="button"
@@ -851,7 +852,7 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 						{pose.custom && (
 							<em
 								className="del"
-								title="삭제"
+								title={ko("Delete", "삭제")}
 								onClick={(e) => {
 									e.stopPropagation();
 									onDelete(pose.id);
@@ -862,9 +863,9 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 						)}
 					</button>
 				))}
-				<button type="button" className="pose-tile add" data-pose-id="save-custom" title="현재 캐릭터 포즈 저장" onClick={onSave}>
+				<button type="button" className="pose-tile add" data-pose-id="save-custom" title={ko("Save the character's current pose", "현재 캐릭터 포즈 저장")} onClick={onSave}>
 					<span className="add-plus">＋</span>
-					<span className="add-text">포즈 저장</span>
+					<span className="add-text">{ko("Save pose", "포즈 저장")}</span>
 				</button>
 			</div>
 		</div>

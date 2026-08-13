@@ -76,10 +76,10 @@ await tab.send("Page.navigate", { url: URL });
 await sleep(6000);
 
 const state0 = await evaluate(tab, `(() => {
-	const seed = document.querySelector('input[placeholder="비우면 랜덤"]');
-	const gen = [...document.querySelectorAll("button")].find(b => b.textContent.includes("모션 생성"));
+	const seed = document.querySelector('input[placeholder="empty = random"]');
+	const gen = [...document.querySelectorAll("button")].find(b => /generate motion/i.test(b.textContent));
 	const promptEl = [...document.querySelectorAll("textarea, input")].find(e =>
-		(e.closest("div,label")?.textContent || "").includes("모션 프롬프트"));
+		(e.closest("div,label")?.textContent || "").includes("Motion prompt"));
 	return { seedValue: seed?.value ?? null, hasGenerate: !!gen, hasPrompt: !!promptEl };
 })()`);
 console.log("initial:", JSON.stringify(state0));
@@ -96,7 +96,7 @@ if (state0.seedValue !== "2") {
 // domain so React's controlled input sees real key events.
 await evaluate(tab, `(() => {
 	const el = [...document.querySelectorAll("textarea, input")].find(e =>
-		(e.closest("div,label")?.textContent || "").includes("모션 프롬프트"));
+		(e.closest("div,label")?.textContent || "").includes("Motion prompt"));
 	el.focus();
 	el.select?.();
 	return true;
@@ -108,17 +108,17 @@ for (const key of ["a", " ", "p", "e", "r", "s", "o", "n", " ", "w", "a", "l", "
 await sleep(300);
 await shot(tab, "01-before-generate");
 await evaluate(tab, `(() => {
-	const gen = [...document.querySelectorAll("button")].find(b => b.textContent.includes("모션 생성"));
+	const gen = [...document.querySelectorAll("button")].find(b => /generate motion/i.test(b.textContent));
 	gen.click();
 	return true;
 })()`);
 console.log("generate clicked, waiting for the clip...");
 
-// Wait for the localized motion-loaded text or playback badge (generation ~12 s).
+// Wait for "Motion loaded" or the PLAYBACK badge (generation ~12 s).
 let loaded = false;
 for (let i = 0; i < 40; i += 1) {
 	await sleep(1000);
-	const st = await evaluate(tab, `document.body.textContent.includes("모션 로드됨") || document.body.textContent.includes("재생")`);
+	const st = await evaluate(tab, `document.body.textContent.includes("Motion loaded") || document.body.textContent.includes("PLAYBACK")`);
 	if (st) { loaded = true; break; }
 }
 console.log("motion loaded:", loaded);
@@ -140,7 +140,7 @@ for (const f of frames) {
 	if (okFrame === "no-tick") {
 		// fall back: type the frame into a frame input if one exists
 		await evaluate(tab, `(() => {
-				const inp = [...document.querySelectorAll("input")].find(e => (e.closest("div,label")?.textContent || "").includes("프레임") || e.type === "number");
+			const inp = [...document.querySelectorAll("input")].find(e => /frame/i.test(e.closest("div,label")?.textContent || "") || e.type === "number");
 			if (!inp) return false;
 			const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
 			setter.call(inp, "${f}");
@@ -171,7 +171,7 @@ await evaluate(tab, `(() => {
 
 // Camera close-up on the subject for a detailed pose check.
 await evaluate(tab, `(() => {
-		const chip = [...document.querySelectorAll("button")].find(b => b.textContent.includes("클로즈업"));
+	const chip = [...document.querySelectorAll("button")].find(b => /close-up/i.test(b.textContent));
 	chip?.click();
 	return true;
 })()`);

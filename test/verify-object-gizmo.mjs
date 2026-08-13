@@ -133,8 +133,8 @@ const reloadPage = async () => {
 /** the inspector's Transform rows, as { Position: [x,y,z], Rotation: [...], Scale: [...] } */
 const transform = () =>
 	evaluate(
-			"(() => { const labels = { '위치': 'Position', '회전': 'Rotation', '크기': 'Scale' }; return Object.fromEntries([...document.querySelectorAll('.inspector-pane .vec3-row')].map(r => { const label = r.querySelector('.vec3-label').textContent; return [labels[label] ?? label, [...r.querySelectorAll('input')].map(i => parseFloat(i.value))]; })); })()",
-		);
+		"Object.fromEntries([...document.querySelectorAll('.inspector-pane .vec3-row')].map(r => [r.querySelector('.vec3-label').textContent, [...r.querySelectorAll('input')].map(i => parseFloat(i.value))]))",
+	);
 const click = (selectorExpression) => evaluate(`${selectorExpression}.click()`);
 /** real visibility, not presence: the element must exist, paint a non-zero
  * rect, and sit inside the viewport. A hidden card still contributes its text
@@ -158,6 +158,11 @@ await send("Runtime.enable");
 // localStorage throws SecurityError — wait for the app document first.
 for (let i = 0; i < 100 && !(await evaluateSafely("location.href.startsWith('http')")); i++) await sleep(200);
 await evaluate("localStorage.removeItem('cozyclay.scene.v1'); localStorage.removeItem('cozyclay.scene.v1.quarantine')");
+// Pin the UI locale: the QA browser inherits the host machine locale.
+await evaluate("localStorage.setItem('cozyclay.locale', 'en')");
+// This suite exercises the gizmo and camera, not onboarding: dismiss the
+// first-run coach so its overlay never intercepts synthetic drags.
+await evaluate("localStorage.setItem('cozyclay.onboarding.v1', JSON.stringify({ dismissed: true }))");
 await send("Page.reload");
 for (let i = 0; i < 100 && !(await evaluateSafely("!!document.querySelector('canvas')")); i++) await sleep(200);
 expect("the studio renders a canvas", await evaluate("!!document.querySelector('canvas')"));
@@ -175,17 +180,17 @@ await waitFor("document.querySelectorAll('.add-object-item').length > 0");
 const catalogue = await evaluate("[...document.querySelectorAll('.add-object-item')].map(b => b.textContent)");
 expect(
 	"the catalogue lists primitives and set pieces",
-		["큐브", "구", "캡슐", "원기둥", "원뿔", "평면", "의자", "자동차"].every((label) =>
+	["Cube", "Sphere", "Capsule", "Cylinder", "Cone", "Plane", "Chair", "Car"].every((label) =>
 		catalogue.some((entry) => entry.startsWith(label)),
 	),
 	JSON.stringify(catalogue),
 );
 
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('큐브'))");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
 // the creation commit renders the gizmo and inspector together; poll for it
 await waitFor("window.__gizmoHandles().length > 0");
 expect("the new object opens in the inspector", Object.keys(await transform()).join() === "Position,Rotation,Scale", JSON.stringify(await transform()));
-expect("the new object appears in the hierarchy", await evaluate("[...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent === '큐브')"));
+expect("the new object appears in the hierarchy", await evaluate("[...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent === 'Cube')"));
 expect("the new object exists in the 3D scene", await evaluate("window.__gizmoHandles().length > 0"));
 // Unity creates primitives axis-aligned. Objects used to be turned to face the
 // camera, which left every box skewed against the room and the character (whose
@@ -207,7 +212,7 @@ expect("an X drag leaves the other axes alone", afterMove.Position[1] === before
 /* --------------------------------------------------- rotate gizmo ---- */
 
 await pressKey("e", "KeyE");
-expect("E selects the rotate tool", await evaluate("[...document.querySelectorAll('.gizmo-modes button')].find(b => b.classList.contains('active')).textContent.startsWith('회전')"));
+expect("E selects the rotate tool", await evaluate("[...document.querySelectorAll('.gizmo-modes button')].find(b => b.classList.contains('active')).textContent.startsWith('Rotate')"));
 await sleep(1200);
 const rings = await evaluate("window.__gizmoHandles()");
 expect("rotate mode shows one ring per axis plus the screen ring", ["x", "y", "z", "screen"].every((axis) => rings.some((handle) => handle.axis === axis)), JSON.stringify(rings));
@@ -245,12 +250,12 @@ if (screenGrab) {
 }
 
 await pressKey("w", "KeyW");
-expect("W returns to the move tool", await evaluate("[...document.querySelectorAll('.gizmo-modes button')].find(b => b.classList.contains('active')).textContent.startsWith('이동')"));
+expect("W returns to the move tool", await evaluate("[...document.querySelectorAll('.gizmo-modes button')].find(b => b.classList.contains('active')).textContent.startsWith('Move')"));
 
 /* ---------------------------------------------------- scale gizmo ---- */
 
 await pressKey("r", "KeyR");
-expect("R selects the scale tool", await evaluate("[...document.querySelectorAll('.gizmo-modes button')].find(b => b.classList.contains('active')).textContent.startsWith('크기')"));
+expect("R selects the scale tool", await evaluate("[...document.querySelectorAll('.gizmo-modes button')].find(b => b.classList.contains('active')).textContent.startsWith('Scale')"));
 await sleep(1200);
 const knobs = await evaluate("window.__gizmoHandles()");
 expect("scale mode exposes three axis knobs", new Set(knobs.map((handle) => handle.axis)).size >= 3, JSON.stringify(knobs));
@@ -267,14 +272,14 @@ await pressKey("w", "KeyW");
 // restore the unit scale: the following sections assume a 1 m cube — at 4x
 // the gizmo rides so high it projects under the bird's-eye inset pane
 await evaluate(
-		"(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === '크기');" +
+	"(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === 'Scale');" +
 	" const input = r.querySelectorAll('input')[1]; input.focus();" +
 	" Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, '1');" +
 	" input.dispatchEvent(new Event('input', { bubbles: true }));" +
 	" input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()",
 );
 await waitFor(
-		"(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === '크기'); return parseFloat(r.querySelectorAll('input')[1].value) === 1; })()",
+	"(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === 'Scale'); return parseFloat(r.querySelectorAll('input')[1].value) === 1; })()",
 );
 
 /* ------------------------------------------------------ selection ---- */
@@ -288,7 +293,7 @@ globalThis.objectCentre = await evaluate(
 	" const x = Math.round(c.x + r * Math.cos(a * Math.PI / 180)); const y = Math.round(c.y + r * Math.sin(a * Math.PI / 180));" +
 	" if (window.__objectPick(x, y) && !window.__gizmoPick(x, y) && document.elementFromPoint(x, y)?.tagName === \"CANVAS\") return { x, y }; } } return { x: Math.round(c.x), y: Math.round(c.y) }; })()",
 );
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('샷 01'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('SHOT 01'))");
 // the deselection commit unmounts the gizmo; poll for it
 await waitFor("window.__gizmoHandles().length === 0");
 expect("selecting something else drops the gizmo", await evaluate("window.__gizmoHandles().length === 0"));
@@ -323,7 +328,7 @@ expect("dragging the object body does NOT fly the camera", (await gizmoPose()) =
 // The fly/pan/orbit section leaves the camera wherever the gestures took it —
 // possibly right on top of the cube, where every pixel picks the body. Reset
 // to the shot preset first so empty floor is actually on screen.
-await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('피사체 다시 맞추기'))?.click()");
+await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Recenter'))?.click()");
 await sleep(600);
 // empty floor near the canvas lower-left, clear of the overlay toolbar and the subject
 const emptySpot = await evaluate(
@@ -348,7 +353,7 @@ expect("a left drag on empty space clears the selection and leaves the camera", 
 // puts panels around the stage, so a hardcoded corner is not stable geometry.
 globalThis.canvasPoint = await evaluate("(() => { const r = document.querySelector('canvas').getBoundingClientRect(); return { x: Math.round(r.left + r.width * 0.35), y: Math.round(r.top + r.height * 0.45) }; })()");
 // Right-drag is the camera.
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('큐브'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 // selecting the object remounts the gizmo; poll for the commit
 await waitFor("window.__gizmoHandles().length > 0");
 expect("the object is selectable again from the hierarchy", await evaluate("window.__gizmoHandles().length > 0"));
@@ -372,7 +377,7 @@ expect("navigation never edits the object", JSON.stringify(await transform()) ==
 // The camera section leaves the pose wherever fly/pan/orbit took it; at a
 // grazing angle to the floor the XZ plane turns pixels into metres of travel
 // and the object leaves the frame. Reset to the shot preset first.
-await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('피사체 다시 맞추기'))?.click()");
+await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Recenter'))?.click()");
 await sleep(600);
 
 await pressKey("w", "KeyW");
@@ -445,19 +450,19 @@ await drag({ x: 300, y: 300 }, { x: 460, y: 320 }, { button: "right" });
 await click("document.querySelector('.add-object-trigger')");
 // the popover mounts on a click-driven state flip; poll for its items
 await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('의자'))");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Chair'))");
 // the creation commit renders the gizmo and inspector together; poll for it
 await waitFor("window.__gizmoHandles().length > 0");
 expect("an object created from a swung camera is still unrotated", JSON.stringify((await transform()).Rotation) === "[0,0,0]", JSON.stringify(await transform()));
-await click("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.endsWith('삭제'))");
+await click("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Remove'))");
 await sleep(300);
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('큐브'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 await sleep(300);
 
 /* --------------------------------------------- hierarchy actions ----- */
 
 const cubeRow = await evaluate(
-		"(() => { const row = [...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('큐브'));" +
+	"(() => { const row = [...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'));" +
 		" if (!row) return null; const r = row.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()",
 );
 expect("the hierarchy lists the object row", !!cubeRow);
@@ -466,17 +471,17 @@ await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: cubeRow.x, y:
 // the context menu mounts after the right-click; poll for its items
 await waitFor("document.querySelectorAll('.hierarchy-context-menu button, .context-menu button, [role=menu] button').length > 0");
 const menuItems = await evaluate("[...document.querySelectorAll('.hierarchy-context-menu button, .context-menu button, [role=menu] button')].map(b => b.textContent.trim())");
-expect("right-clicking a row offers Rename / Duplicate / Delete / Frame", ["이름 바꾸기", "복제", "삭제", "프레임 맞추기"].every((label) => menuItems.some((item) => item.startsWith(label))), JSON.stringify(menuItems));
+expect("right-clicking a row offers Rename / Duplicate / Delete / Frame", ["Rename", "Duplicate", "Delete", "Frame"].every((label) => menuItems.some((item) => item.startsWith(label))), JSON.stringify(menuItems));
 await pressKey("Escape", "Escape");
 
 /* -------------------------------------------------------- removal ---- */
 
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('큐브'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 await sleep(250);
-await click("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.endsWith('삭제'))");
+await click("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Remove'))");
 // the removal commit drops the row; poll for it
-await waitFor("![...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent === '큐브')");
-expect("removing the object clears it from the hierarchy", await evaluate("![...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent === '큐브')"));
+await waitFor("![...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent === 'Cube')");
+expect("removing the object clears it from the hierarchy", await evaluate("![...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent === 'Cube')"));
 expect("the removed object leaves no gizmo behind", await evaluate("window.__gizmoHandles().length === 0"));
 /* ------------------------------------------------ persistence ---- */
 
@@ -495,12 +500,12 @@ const readSceneKey = () => evaluate(`localStorage.getItem('${sceneKey}')`);
  * ancestors to auto-expand), so drive the toggle button directly. */
 const expandProps = async () => {
 	const label = await evaluate(
-		"(() => { const t = [...document.querySelectorAll('.hierarchy-toggle')].find(b => (b.getAttribute('aria-label') || '').startsWith('소품 ')); return t ? t.getAttribute('aria-label') : null; })()",
+		"(() => { const t = [...document.querySelectorAll('.hierarchy-toggle')].find(b => (b.getAttribute('aria-label') || '').endsWith(' Props')); return t ? t.getAttribute('aria-label') : null; })()",
 	);
-	if (label === "소품 펼치기") {
-		await click("[...document.querySelectorAll('.hierarchy-toggle')].find(b => b.getAttribute('aria-label') === '소품 펼치기')");
-		// the expand commit flips the toggle's aria-label to "소품 접기"
-		await waitFor("[...document.querySelectorAll('.hierarchy-toggle')].some(b => b.getAttribute('aria-label') === '소품 접기')");
+	if (label === "Expand Props") {
+		await click("[...document.querySelectorAll('.hierarchy-toggle')].find(b => b.getAttribute('aria-label') === 'Expand Props')");
+		// the expand commit flips the toggle's aria-label to "Collapse Props"
+		await waitFor("[...document.querySelectorAll('.hierarchy-toggle')].some(b => b.getAttribute('aria-label') === 'Collapse Props')");
 	}
 };
 
@@ -510,18 +515,18 @@ await reloadPage();
 await click("document.querySelector('.add-object-trigger')");
 // the popover mounts on a click-driven state flip; poll for its items
 await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('의자'))");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Chair'))");
 await sleep(700); // past the 400 ms debounce
 await reloadPage();
 await expandProps();
 expect(
 	"the scene survives a reload",
-	await evaluate("[...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent.startsWith('의자'))"),
+	await evaluate("[...document.querySelectorAll('.hierarchy-label')].some(n => n.textContent.startsWith('Chair'))"),
 );
 
 // case 2: the reloaded record is a real object, not a label
 await expandProps();
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('의자'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");
 // the gizmo must be mounted AND its screen positions settled (one render
 // frame) before the drag below grabs the X arrow by coordinate
 await waitFor("(() => { const h = window.__gizmoHandles().find(e => e.axis === 'x'); return !!h && window.__gizmoPick(Math.round(h.x), Math.round(h.y)) === 'x'; })()");
@@ -548,7 +553,7 @@ const edited = await transform(); // what the flush MUST persist
 await evaluate("window.dispatchEvent(new Event('pagehide'))");
 await reloadPage(); // inside the 400 ms window
 await expandProps();
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('의자'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");
 // the selection commit mounts the gizmo; poll for it
 await waitFor("window.__gizmoHandles().length > 0");
 const afterHideReload = await transform();
@@ -578,7 +583,7 @@ await reloadPage();
 await click("document.querySelector('.add-object-trigger')");
 // the popover mounts on a click-driven state flip; poll for its items
 await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('큐브'))");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
 await sleep(700); // past the debounce: the blocked flush must NOT write
 await evaluate("window.dispatchEvent(new Event('pagehide'))");
 expect(
@@ -593,7 +598,7 @@ await reloadPage();
 await click("document.querySelector('.add-object-trigger')");
 // the popover mounts on a click-driven state flip; poll for its items
 await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('큐브'))");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
 await sleep(600); // let the pre-stub write land, then break storage
 await evaluate(`
 	window.__realSetItem = Storage.prototype.setItem;
@@ -663,7 +668,7 @@ for (let i = 0; i < 150; i++) {
 await sleep(400);
 expect(
 	"a stale but valid payload reports dropped records",
-	await evaluate("document.body.textContent.includes('저장된 오브젝트') && document.body.textContent.includes('복원하지 못했어요')"),
+	await evaluate("document.body.textContent.includes('saved object(s) could not be restored')"),
 );
 await sleep(1200); // let the rest of the boot settle
 expect("a stale but valid payload renders", await evaluate("!!document.querySelector('canvas')"));
@@ -672,10 +677,10 @@ await expandProps();
 const staleLabels = await evaluate("[...document.querySelectorAll('.hierarchy-label')].map(n => n.textContent)");
 expect(
 	"a stale but valid payload restores only the normalized record",
-	staleLabels.filter((label) => label.startsWith("큐브")).length === 1 && !staleLabels.some((label) => label.startsWith("Ghost")),
+	staleLabels.filter((label) => label.startsWith("Cube")).length === 1 && !staleLabels.some((label) => label.startsWith("Ghost")),
 	JSON.stringify(staleLabels),
 );
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('큐브'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 // the selection commit mounts the gizmo; poll for it
 await waitFor("window.__gizmoHandles().length > 0");
 const staleScale = (await transform()).Scale;
@@ -705,10 +710,10 @@ expect("the second reload causes no page errors", pageErrors.length === 0, pageE
 const secondLabels = await evaluate("[...document.querySelectorAll('.hierarchy-label')].map(n => n.textContent)");
 expect(
 	"the second reload restores exactly one object",
-	secondLabels.filter((label) => label.startsWith("큐브")).length === 1,
+	secondLabels.filter((label) => label.startsWith("Cube")).length === 1,
 	JSON.stringify(secondLabels),
 );
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('큐브'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 // the selection commit mounts the gizmo; poll for it
 await waitFor("window.__gizmoHandles().length > 0");
 const secondScale = (await transform()).Scale;
@@ -732,20 +737,20 @@ await reloadPage();
 await click("document.querySelector('.add-object-trigger')");
 // the popover mounts on a click-driven state flip; poll for its items
 await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('큐브'))");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube'))");
 // the creation commit renders the gizmo and inspector together; poll for it
 await waitFor("window.__gizmoHandles().length > 0");
 
 await click("document.querySelector('.add-object-trigger')");
 // the popover mounts on a click-driven state flip; poll for its items
 await waitFor("document.querySelectorAll('.add-object-item').length > 0");
-await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('의자'))");
+await click("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Chair'))");
 // the creation commit renders the gizmo and inspector together; poll for it
 await waitFor("window.__gizmoHandles().length > 0");
 
 // Raise the chair clear of the cube (2.5 > 1) by typing into the Position Y
 // field; blur commits the draft as one atomic entry.
-const posRow = "(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === '위치'); return r; })()";
+const posRow = "(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === 'Position'); return r; })()";
 const pastBeforeY = await evaluate("window.__sceneHistory().past");
 await evaluate(`(() => { const r = ${posRow}; r.querySelectorAll('input')[1].focus(); })()`);
 await send("Input.insertText", { text: "2.5" });
@@ -768,7 +773,7 @@ expect("a drop is exactly one history entry", await evaluate("window.__sceneHist
 // is the signal that the keypress was processed at all.
 const afterDrop = await transform();
 await pressKey("End", "End");
-await waitFor("document.body.textContent.includes('내려놓을 대상이 없어요')");
+await waitFor("document.body.textContent.includes('Nothing to drop')");
 expect("a second End changes nothing", JSON.stringify(await transform()) === JSON.stringify(afterDrop), JSON.stringify(await transform()));
 expect("a second End adds no history entry", await evaluate("window.__sceneHistory().past") === pastBeforeDrop + 1, JSON.stringify(await evaluate("window.__sceneHistory()")));
 expect("the store is settled between drops", await evaluate("window.__sceneHistory().settled === true"));
@@ -824,11 +829,11 @@ const grabX = async () => {
 };
 
 /** the Position row's i-th input (0=X, 1=Y, 2=Z) — pollable after commits */
-const positionInput = (index) => `(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === '위치'); return r ? parseFloat(r.querySelectorAll('input')[${index}].value) : NaN; })()`;
+const positionInput = (index) => `(() => { const r = [...document.querySelectorAll('.inspector-pane .vec3-row')].find(r => r.querySelector('.vec3-label').textContent === 'Position'); return r ? parseFloat(r.querySelectorAll('input')[${index}].value) : NaN; })()`;
 
 /** the Camera card's "camera to subject" readout, which live-tracks the
  * shot camera — the only DOM handle on the camera's position */
-const cameraDistance = () => evaluate("document.querySelector('span[title=\"카메라와 피사체 거리\"]')?.textContent ?? ''");
+const cameraDistance = () => evaluate("document.querySelector('span[title=\"camera to subject\"]')?.textContent ?? ''");
 
 // The drop section left the Chair at Y = 2.5 — above the default camera's
 // frame, where its gizmo renders off-screen and a press cannot reach the
@@ -841,7 +846,7 @@ await waitFor(`${positionInput(1)} === 1`);
 // it; the Chair's gizmo can project under the bird's-eye inset pane, where a
 // real press never reaches the canvas. Reset to the shot preset, then park
 // the inset in the stage's lower-left so it cannot occlude the handle.
-await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('피사체 다시 맞추기'))?.click()");
+await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Recenter'))?.click()");
 await sleep(600);
 globalThis.insetTag = await evaluate("(() => { const t = document.querySelector('.vp-inset-tag'); if (!t) return null; const r = t.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()");
 if (insetTag) {
@@ -973,10 +978,10 @@ expect("the store is settled after a mid-drag undo", await evaluate("window.__sc
 // travel becomes its own entry, the stale pointer stream dies, and the new
 // selection never sees a stray tick.
 const chairBeforeSwitch = await transform(); // the Chair is selected from the undo case
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('큐브'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 await waitFor("window.__gizmoHandles().length > 0");
 const cubeBeforeSwitch = await transform();
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('의자'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");
 await waitFor("window.__gizmoHandles().length > 0");
 const pastBeforeSwitch = await evaluate("window.__sceneHistory().past");
 const switchEnd = await dragHeld(await grabX(), { dx: 160 });
@@ -986,7 +991,7 @@ expect(
 	Math.abs(switchTravelled.Position[0] - chairBeforeSwitch.Position[0]) > 0.1,
 	`${JSON.stringify(chairBeforeSwitch)} -> ${JSON.stringify(switchTravelled)}`,
 );
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('큐브'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 await waitFor(`window.__sceneHistory().past === ${pastBeforeSwitch + 1}`);
 expect(
 	"a selection change mid-drag commits the travel as exactly one entry",
@@ -1006,7 +1011,7 @@ expect(
 );
 await mouse("mouseReleased", switchEnd.x + 120, switchEnd.y);
 // re-select the first object: its travel was committed, not rolled back
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('의자'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");
 await waitFor("window.__gizmoHandles().length > 0");
 expect(
 	"the first object's travel survives the switch byte-for-byte",
@@ -1020,7 +1025,7 @@ expect("the store is settled after a selection change", await evaluate("window._
 // order would settle the fresh token and split or lose the entry (§6.4).
 const chairForPlan = await transform(); // the Chair, now away from the Cube
 const pastBeforePlan = await evaluate("window.__sceneHistory().past");
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('큐브'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Cube'))");
 await waitFor("window.__gizmoHandles().length > 0");
 const insetCtrB = await evaluate("(() => { const p = document.querySelector('.vp-inset'); const r = p.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()");
 await send("Input.dispatchMouseEvent", { type: "mousePressed", x: insetCtrB.x, y: insetCtrB.y, button: "left", buttons: 1, clickCount: 2 });
@@ -1036,7 +1041,7 @@ await drag(chairPuck, { x: chairPuck.x, y: chairPuck.y + 60 });
 await waitFor(`window.__sceneHistory().past === ${pastBeforePlan + 1}`);
 expect(
 	"dragging an unselected plan puck selects the object",
-		await evaluate("[...document.querySelectorAll('.hierarchy-row-wrap.selected .hierarchy-label')].some(n => n.textContent === '의자')"),
+	await evaluate("[...document.querySelectorAll('.hierarchy-row-wrap.selected .hierarchy-label')].some(n => n.textContent === 'Chair')"),
 );
 expect(
 	"a plan drag of an unselected object moves it",
@@ -1069,7 +1074,7 @@ const camPuck = {
 // change its meaning whenever PLAN_EXTENT does, and the choreography after
 // this flight is calibrated for a short hop, not a cross-stage launch.
 await drag(camPuck, { x: camPuck.x + Math.round(1.92 * planRect.scale), y: camPuck.y + Math.round(1.2 * planRect.scale) });
-await waitFor(`document.querySelector('span[title="카메라와 피사체 거리"]')?.textContent !== ${JSON.stringify(distanceBefore)}`);
+await waitFor(`document.querySelector('span[title="camera to subject"]')?.textContent !== ${JSON.stringify(distanceBefore)}`);
 expect(
 	"dragging the camera puck flies the shot camera",
 	(await cameraDistance()) !== distanceBefore,
@@ -1091,10 +1096,10 @@ await send("Input.dispatchMouseEvent", { type: "mousePressed", x: insetCtr2B.x, 
 await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: insetCtr2B.x, y: insetCtr2B.y, button: "left", buttons: 0, clickCount: 2 });
 await waitFor("!document.querySelector('.vp-main').classList.contains('plan')");
 await sleep(150);
-await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('의자'))");
+await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textContent.includes('Chair'))");
 await waitFor("window.__gizmoHandles().length > 0");
 // the camera-puck flight above leaves the pose wherever the plan drag took it
-await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('피사체 다시 맞추기'))?.click()");
+await evaluate("[...document.querySelectorAll('.inspector-pane .btn')].find(b => b.textContent.startsWith('Recenter'))?.click()");
 await sleep(600);
 const pastBeforeDelete = await evaluate("window.__sceneHistory().past");
 const deleteBefore = await transform();
@@ -1108,10 +1113,10 @@ expect(
 	`${JSON.stringify(deleteBefore)} -> ${JSON.stringify(await transform())}`,
 );
 await pressKey("Delete", "Delete");
-await waitFor("[...document.querySelectorAll('.hierarchy-label')].every(n => n.textContent !== '의자') && window.__gizmoHandles().length === 0");
+await waitFor("[...document.querySelectorAll('.hierarchy-label')].every(n => n.textContent !== 'Chair') && window.__gizmoHandles().length === 0");
 expect(
 	"Delete mid-drag removes the dragged object",
-	await evaluate("[...document.querySelectorAll('.hierarchy-label')].every(n => n.textContent !== '의자')"),
+	await evaluate("[...document.querySelectorAll('.hierarchy-label')].every(n => n.textContent !== 'Chair')"),
 );
 expect("Delete mid-drag leaves no gizmo behind", await evaluate("window.__gizmoHandles().length === 0"));
 expect(
@@ -1127,7 +1132,7 @@ await mouse("mouseMoved", deleteEnd.x + 160, deleteEnd.y);
 await sleep(60);
 expect(
 	"the stale stream after Delete resurrects nothing",
-	await evaluate(`[...document.querySelectorAll('.hierarchy-label')].every(n => n.textContent !== '의자') && window.__gizmoHandles().length === 0 && window.__sceneHistory().past === ${pastBeforeDelete + 2}`),
+	await evaluate(`[...document.querySelectorAll('.hierarchy-label')].every(n => n.textContent !== 'Chair') && window.__gizmoHandles().length === 0 && window.__sceneHistory().past === ${pastBeforeDelete + 2}`),
 	JSON.stringify(await evaluate("window.__sceneHistory()")),
 );
 await mouse("mouseReleased", deleteEnd.x + 160, deleteEnd.y);

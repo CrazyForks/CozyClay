@@ -14,7 +14,7 @@ await new Promise((r) => setTimeout(r, 3500));
 for (let i = 0; i < 50 && !(await evaluate("!!window.__sceneHistory && document.querySelectorAll('.hierarchy-row').length > 0").catch(() => false)); i++) await new Promise((r) => setTimeout(r, 200));
 await evaluate("document.querySelector('.add-object-trigger').click()");
 await new Promise((r) => setTimeout(r, 400));
-await evaluate("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('큐브')).click()");
+await evaluate("[...document.querySelectorAll('.add-object-item')].find(b => b.textContent.startsWith('Cube')).click()");
 await new Promise((r) => setTimeout(r, 1500));
 globalThis.shot = await send("Page.captureScreenshot", { format: "png", clip: { x: 1220, y: 45, width: 380, height: 420, scale: 2 } });
 writeFileSync(new URL("../artifacts/insp-zoom.png", import.meta.url), Buffer.from(shot.data, "base64"));

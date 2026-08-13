@@ -39,6 +39,8 @@ import AddObjectMenu from "./object-catalog.jsx";
 import OnboardingChecklist from "./onboarding.jsx";
 import ResultModal from "./result-modal.jsx";
 import InstallApp from "./install-app.jsx";
+import LocaleToggle from "./locale-toggle.jsx";
+import { ko, isKo } from "./locale.js";
 import {
 	BUILT_IN_POSES,
 	POSE_BONES,
@@ -86,13 +88,13 @@ import { captureFraming, classifyMove, cameraMoveAt, moveSequenceSlate, moveSequ
 // lens rides, and what glass is on it. Order matters — Medium is the setup a
 // director reaches for first, so it leads.
 const PRESETS = {
-	medium: { label: "미디엄", distance: 2.6, azimuth: 22, elevation: 6, fov: 45, targetY: 1.35, two: false },
-	wide: { label: "와이드", distance: 7, azimuth: 25, elevation: 4, fov: 38, targetY: 1.2, two: false },
-	closeup: { label: "클로즈업", distance: 1.3, azimuth: 16, elevation: 2, fov: 45, targetY: 1.55, two: false },
-	low: { label: "로우 앵글", distance: 3.5, azimuth: 20, elevation: -14, fov: 50, targetY: 1.1, two: false },
-	high: { label: "하이 앵글", distance: 4.5, azimuth: 20, elevation: 16, fov: 45, targetY: 1.1, two: false },
+	medium: { label: ko("Medium", "미디엄"), distance: 2.6, azimuth: 22, elevation: 6, fov: 45, targetY: 1.35, two: false },
+	wide: { label: ko("Wide", "와이드"), distance: 7, azimuth: 25, elevation: 4, fov: 38, targetY: 1.2, two: false },
+	closeup: { label: ko("Close-Up", "클로즈업"), distance: 1.3, azimuth: 16, elevation: 2, fov: 45, targetY: 1.55, two: false },
+	low: { label: ko("Low Angle", "로우 앵글"), distance: 3.5, azimuth: 20, elevation: -14, fov: 50, targetY: 1.1, two: false },
+	high: { label: ko("High Angle", "하이 앵글"), distance: 4.5, azimuth: 20, elevation: 16, fov: 45, targetY: 1.1, two: false },
 	ots: {
-		label: "오버 숄더",
+		label: ko("Over Shoulder", "오버 숄더"),
 		distance: 2.8,
 		azimuth: 200,
 		elevation: 8,
@@ -103,7 +105,7 @@ const PRESETS = {
 		charB: { x: 0.62, z: 1.05, rot: 196 },
 	},
 	two: {
-		label: "투샷",
+		label: ko("Two Shot", "투샷"),
 		distance: 6,
 		azimuth: 18,
 		elevation: 5,
@@ -125,106 +127,106 @@ const RIG_HIERARCHY_FOCUS = {
 };
 
 const HIERARCHY_INSPECTOR_TITLES = {
-	shot: "샷 설정",
-	camera: "카메라",
-	characters: "인물",
-	characterA: "인물 1",
-	"characterA.character": "인물 1",
-	"characterA.motion": "모션",
-	"characterA.baseMotion": "기본 모션",
-	"characterA.promptBlocks": "프롬프트 블록",
-	"characterA.ik": "IK 보정",
-	"characterA.rig": "리그",
-	characterB: "인물 2",
-	"characterB.character": "인물 2",
-	rootPath: "루트 경로",
-	environment: "환경",
-	props: "소품",
-	"rig.hips": "루트 / 엉덩이",
-	"rig.spine": "척추",
-	"rig.leftArm": "왼팔",
-	"rig.rightArm": "오른팔",
-	"rig.leftLeg": "왼다리",
-	"rig.rightLeg": "오른다리",
+	shot: ko("Shot settings", "샷 설정"),
+	camera: ko("Camera", "카메라"),
+	characters: ko("Characters", "인물"),
+	characterA: ko("Character 1", "인물 1"),
+	"characterA.character": ko("Character 1", "인물 1"),
+	"characterA.motion": ko("Motion", "모션"),
+	"characterA.baseMotion": ko("Base Motion", "기본 모션"),
+	"characterA.promptBlocks": ko("Prompt Blocks", "프롬프트 블록"),
+	"characterA.ik": ko("IK Corrections", "IK 보정"),
+	"characterA.rig": ko("Rig", "리그"),
+	characterB: ko("Character 2", "인물 2"),
+	"characterB.character": ko("Character 2", "인물 2"),
+	rootPath: ko("Root Path", "루트 경로"),
+	environment: ko("Environment", "환경"),
+	props: ko("Props", "소품"),
+	"rig.hips": ko("Root / Hips", "루트 / 엉덩이"),
+	"rig.spine": ko("Spine", "척추"),
+	"rig.leftArm": ko("Left Arm", "왼팔"),
+	"rig.rightArm": ko("Right Arm", "오른팔"),
+	"rig.leftLeg": ko("Left Leg", "왼다리"),
+	"rig.rightLeg": ko("Right Leg", "오른다리"),
 };
 
 const CAMERA_MOVE_LABELS_KO = new Map([
-	["Static / locked-off", "고정 샷"],
-	["Zoom in", "줌 인"],
-	["Zoom out", "줌 아웃"],
-	["Push-in (dolly in)", "푸시인(돌리 인)"],
-	["Pull-out (dolly out)", "풀아웃(돌리 아웃)"],
-	["Pan left", "왼쪽 팬"],
-	["Pan right", "오른쪽 팬"],
-	["Tilt up", "틸트 업"],
-	["Tilt down", "틸트 다운"],
-	["Tracking / follow", "트래킹 / 팔로우"],
-	["Orbit / arc", "오빗 / 아크"],
-	["Crane up", "크레인 업"],
-	["Crane down", "크레인 다운"],
-	["Handheld", "핸드헬드"],
-	["Crash zoom in", "크래시 줌 인"],
-	["Dolly-zoom (vertigo)", "돌리 줌(버티고)"],
-	["Whip pan", "휩 팬"],
-	["Aerial / drone", "공중 / 드론"],
-	[CUSTOM_MOVE, "직접 입력…"],
+	["Static / locked-off", ko("Static / locked-off", "고정 샷")],
+	["Zoom in", ko("Zoom in", "줌 인")],
+	["Zoom out", ko("Zoom out", "줌 아웃")],
+	["Push-in (dolly in)", ko("Push-in (dolly in)", "푸시인(돌리 인)")],
+	["Pull-out (dolly out)", ko("Pull-out (dolly out)", "풀아웃(돌리 아웃)")],
+	["Pan left", ko("Pan left", "왼쪽 팬")],
+	["Pan right", ko("Pan right", "오른쪽 팬")],
+	["Tilt up", ko("Tilt up", "틸트 업")],
+	["Tilt down", ko("Tilt down", "틸트 다운")],
+	["Tracking / follow", ko("Tracking / follow", "트래킹 / 팔로우")],
+	["Orbit / arc", ko("Orbit / arc", "오빗 / 아크")],
+	["Crane up", ko("Crane up", "크레인 업")],
+	["Crane down", ko("Crane down", "크레인 다운")],
+	["Handheld", ko("Handheld", "핸드헬드")],
+	["Crash zoom in", ko("Crash zoom in", "크래시 줌 인")],
+	["Dolly-zoom (vertigo)", ko("Dolly-zoom (vertigo)", "돌리 줌(버티고)")],
+	["Whip pan", ko("Whip pan", "휩 팬")],
+	["Aerial / drone", ko("Aerial / drone", "공중 / 드론")],
+	[CUSTOM_MOVE, ko(CUSTOM_MOVE, "직접 입력…")],
 ]);
 
 const POSE_LABELS_KO = new Map([
-	["T-pose", "T 포즈"],
-	["Relaxed", "편안한 자세"],
-	["Contrapposto", "콘트라포스토"],
-	["Walking", "걷는 자세"],
-	["Seated", "앉은 자세"],
-	["Arms crossed", "팔짱"],
-	["Pointing", "가리키기"],
-	["Hands on hips", "허리에 손"],
-	["Looking back", "뒤돌아보기"],
-	["Hands up", "손 올리기"],
+	["T-pose", ko("T-pose", "T 포즈")],
+	["Relaxed", ko("Relaxed", "편안한 자세")],
+	["Contrapposto", ko("Contrapposto", "콘트라포스토")],
+	["Walking", ko("Walking", "걷는 자세")],
+	["Seated", ko("Seated", "앉은 자세")],
+	["Arms crossed", ko("Arms crossed", "팔짱")],
+	["Pointing", ko("Pointing", "가리키기")],
+	["Hands on hips", ko("Hands on hips", "허리에 손")],
+	["Looking back", ko("Looking back", "뒤돌아보기")],
+	["Hands up", ko("Hands up", "손 올리기")],
 ]);
 
 const SHOT_SIZE_LABELS_KO = new Map([
-	["extreme close-up", "익스트림 클로즈업"],
-	["close-up", "클로즈업"],
-	["medium close-up", "미디엄 클로즈업"],
-	["medium shot", "미디엄 샷"],
-	["medium-wide shot", "미디엄 와이드 샷"],
-	["wide shot", "와이드 샷"],
-	["extreme wide shot", "익스트림 와이드 샷"],
+	["extreme close-up", ko("extreme close-up", "익스트림 클로즈업")],
+	["close-up", ko("close-up", "클로즈업")],
+	["medium close-up", ko("medium close-up", "미디엄 클로즈업")],
+	["medium shot", ko("medium shot", "미디엄 샷")],
+	["medium-wide shot", ko("medium-wide shot", "미디엄 와이드 샷")],
+	["wide shot", ko("wide shot", "와이드 샷")],
+	["extreme wide shot", ko("extreme wide shot", "익스트림 와이드 샷")],
 ]);
 
 const SHOT_LEVEL_LABELS_KO = new Map([
-	["overhead", "오버헤드"],
-	["high angle", "하이 앵글"],
-	["eye level", "아이 레벨"],
-	["chest level", "가슴 높이"],
-	["hip level", "엉덩이 높이"],
-	["knee level", "무릎 높이"],
-	["ground level", "바닥 높이"],
+	["overhead", ko("overhead", "오버헤드")],
+	["high angle", ko("high angle", "하이 앵글")],
+	["eye level", ko("eye level", "아이 레벨")],
+	["chest level", ko("chest level", "가슴 높이")],
+	["hip level", ko("hip level", "엉덩이 높이")],
+	["knee level", ko("knee level", "무릎 높이")],
+	["ground level", ko("ground level", "바닥 높이")],
 ]);
 
 const SCENE_RENDERER_LABELS_KO = new Map([
-	["cube", "큐브"],
-	["sphere", "구"],
-	["capsule", "캡슐"],
-	["cylinder", "원기둥"],
-	["cone", "원뿔"],
-	["plane", "평면"],
-	["chair", "의자"],
-	["car", "자동차"],
-	["aircraft", "비행기"],
+	["cube", ko("cube", "큐브")],
+	["sphere", ko("sphere", "구")],
+	["capsule", ko("capsule", "캡슐")],
+	["cylinder", ko("cylinder", "원기둥")],
+	["cone", ko("cone", "원뿔")],
+	["plane", ko("plane", "평면")],
+	["chair", ko("chair", "의자")],
+	["car", ko("car", "자동차")],
+	["aircraft", ko("aircraft", "비행기")],
 ]);
 
 const SCENE_OBJECT_NAME_LABELS_KO = new Map([
-	["Cube", "큐브"],
-	["Sphere", "구"],
-	["Capsule", "캡슐"],
-	["Cylinder", "원기둥"],
-	["Cone", "원뿔"],
-	["Plane", "평면"],
-	["Chair", "의자"],
-	["Car", "자동차"],
-	["Plane (aircraft)", "비행기"],
+	["Cube", ko("Cube", "큐브")],
+	["Sphere", ko("Sphere", "구")],
+	["Capsule", ko("Capsule", "캡슐")],
+	["Cylinder", ko("Cylinder", "원기둥")],
+	["Cone", ko("Cone", "원뿔")],
+	["Plane", ko("Plane", "평면")],
+	["Chair", ko("Chair", "의자")],
+	["Car", ko("Car", "자동차")],
+	["Plane (aircraft)", ko("Plane (aircraft)", "비행기")],
 ]);
 
 function poseLabelKo(pose) {
@@ -248,11 +250,11 @@ function sceneObjectNameDisplayKo(name) {
 }
 
 function viewShortKo(viewShort) {
-	if (viewShort === "front") return "정면";
-	if (viewShort === "back") return "후면";
-	if (viewShort?.includes("profile")) return viewShort.startsWith("left") ? "왼쪽 측면" : "오른쪽 측면";
-	if (viewShort?.startsWith("front ¾")) return / L$/.test(viewShort) ? "정면 ¾ 왼쪽" : "정면 ¾ 오른쪽";
-	if (viewShort?.startsWith("rear ¾")) return / L$/.test(viewShort) ? "후면 ¾ 왼쪽" : "후면 ¾ 오른쪽";
+	if (viewShort === "front") return ko("front", "정면");
+	if (viewShort === "back") return ko("back", "후면");
+	if (viewShort?.includes("profile")) return viewShort.startsWith("left") ? ko("left profile", "왼쪽 측면") : ko("right profile", "오른쪽 측면");
+	if (viewShort?.startsWith("front ¾")) return / L$/.test(viewShort) ? ko("front ¾ L", "정면 ¾ 왼쪽") : ko("front ¾ R", "정면 ¾ 오른쪽");
+	if (viewShort?.startsWith("rear ¾")) return / L$/.test(viewShort) ? ko("rear ¾ L", "후면 ¾ 왼쪽") : ko("rear ¾ R", "후면 ¾ 오른쪽");
 	return viewShort;
 }
 
@@ -776,7 +778,7 @@ function loadSceneStartup() {
 			objects: result.objects,
 			saveBlocked: false,
 			error: null,
-			toast: result.dropped > 0 ? `저장된 오브젝트 ${result.dropped}개를 복원하지 못했어요` : null,
+			toast: result.dropped > 0 ? (isKo ? `저장된 오브젝트 ${result.dropped}개를 복원하지 못했어요` : `${result.dropped} saved object(s) could not be restored`) : null,
 		};
 	}
 	if (result.status === "future") {
@@ -786,7 +788,7 @@ function loadSceneStartup() {
 			objects: defaults(),
 			saveBlocked: true,
 			error: null,
-			toast: "저장된 장면은 더 최신 CozyClay에서 만들어졌어요. 이 세션에서는 건드리지 않고 저장도 하지 않습니다.",
+			toast: ko("Saved scene was written by a newer CozyClay — it has been left untouched and this session will not save", "저장된 장면은 더 최신 CozyClay에서 만들어졌어요. 이 세션에서는 건드리지 않고 저장도 하지 않습니다."),
 		};
 	}
 	if (result.status === "corrupt") {
@@ -798,7 +800,7 @@ function loadSceneStartup() {
 				objects: defaults(),
 				saveBlocked: false,
 				error: null,
-				toast: "저장된 장면을 읽을 수 없어 빈 장면으로 시작합니다. 기존 데이터는 cozyclay.scene.v1.quarantine에 보관했어요.",
+				toast: ko("Saved scene was unreadable — starting empty; the old data is kept under cozyclay.scene.v1.quarantine", "저장된 장면을 읽을 수 없어 빈 장면으로 시작합니다. 기존 데이터는 cozyclay.scene.v1.quarantine에 보관했어요."),
 			};
 		} catch {
 			// If the backup write fails, overwriting the corrupt primary would
@@ -806,7 +808,7 @@ function loadSceneStartup() {
 			return {
 				objects: defaults(),
 				saveBlocked: true,
-				error: "저장된 장면을 읽을 수 없고 백업도 실패했어요. 이 세션에서는 저장하지 않습니다.",
+				error: ko("Saved scene was unreadable and could not be backed up — this session will not save", "저장된 장면을 읽을 수 없고 백업도 실패했어요. 이 세션에서는 저장하지 않습니다."),
 				toast: null,
 			};
 		}
@@ -1216,11 +1218,11 @@ globalThis.playMode = centerTab === "play";
 		if (!object) return;
 		const patch = dropToSurfacePatch(object, sceneObjects.filter((item) => item.id !== object.id));
 		if (patch === null) {
-			setToast("내려놓을 대상이 없어요");
+			setToast(ko("Nothing to drop", "내려놓을 대상이 없어요"));
 			return;
 		}
 		changeSceneObject(object.id, patch);
-		setToast(`${sceneObjectNameDisplayKo(object.name)}을 표면 위에 내려놓았어요`);
+		setToast(isKo ? `${sceneObjectNameDisplayKo(object.name)}을 표면 위에 내려놓았어요` : `${object.name} dropped to surface`);
 	}
 
 	const [gizmoMode, setGizmoMode] = useState("move");
@@ -1246,7 +1248,7 @@ globalThis.playMode = centerTab === "play";
 		// swallows the very next W/E/R. Renaming stays on F2/Return and the row's
 		// context menu. (docs/unity-reference.md §9.7)
 		setGizmoMode("move");
-		setToast(`${sceneObjectNameDisplayKo(object.name)} 추가됨 — W 이동, E 회전, R 크기`);
+		setToast(isKo ? `${sceneObjectNameDisplayKo(object.name)} 추가됨 — W 이동, E 회전, R 크기` : `${object.name} added — W move, E rotate, R scale`);
 	}
 
 	function duplicateSelectedSceneObject(id = selectedSceneObjectId) {
@@ -1266,7 +1268,7 @@ globalThis.playMode = centerTab === "play";
 		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
 		store.applyAtomic((objects) => [...objects, placed]);
 		setSelectedHierarchyId(`object:${placed.id}`);
-		setToast(`${sceneObjectNameDisplayKo(placed.name)} 복제됨`);
+		setToast(isKo ? `${sceneObjectNameDisplayKo(placed.name)} 복제됨` : `${placed.name} duplicated`);
 	}
 
 	/** Frame the selection: fly the shot camera to a comfortable distance along
@@ -1304,25 +1306,25 @@ globalThis.playMode = centerTab === "play";
 	function undoScene() {
 		const restored = store.undo();
 		if (restored === null) {
-			setToast("실행 취소할 작업이 없어요");
+			setToast(ko("Nothing to undo", "실행 취소할 작업이 없어요"));
 			return;
 		}
 		if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
 			setSelectedHierarchyId("props");
 		}
-		setToast("실행 취소됨");
+		setToast(ko("Undone", "실행 취소됨"));
 	}
 
 	function redoScene() {
 		const restored = store.redo();
 		if (restored === null) {
-			setToast("다시 실행할 작업이 없어요");
+			setToast(ko("Nothing to redo", "다시 실행할 작업이 없어요"));
 			return;
 		}
 		if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
 			setSelectedHierarchyId("props");
 		}
-		setToast("다시 실행됨");
+		setToast(ko("Redone", "다시 실행됨"));
 	}
 
 	useEffect(() => {
@@ -1569,7 +1571,7 @@ globalThis.playMode = centerTab === "play";
 		setTlPlaying(false);
 		setRecState("idle");
 		if (rec.recorder.state !== "inactive") rec.recorder.stop();
-		else if (!rec.armed) setToast("프레임을 캡처하기 전에 녹화가 취소됐어요");
+		else if (!rec.armed) setToast(ko("Recording cancelled before any frame was captured", "프레임을 캡처하기 전에 녹화가 취소됐어요"));
 	}
 
 	// Seedance's reference-video floor is 24 fps while ARDY clips run at 20.
@@ -1591,7 +1593,7 @@ globalThis.playMode = centerTab === "play";
 		const MIMES = ["video/mp4;codecs=avc1.640028", "video/mp4", "video/webm;codecs=vp9", "video/webm"];
 		const mime = typeof MediaRecorder !== "undefined" ? MIMES.find((m) => MediaRecorder.isTypeSupported(m)) : null;
 		if (!mime) {
-			setToast("이 브라우저는 영상 인코딩을 지원하지 않아요(MediaRecorder 없음)");
+			setToast(ko("This browser cannot encode video (MediaRecorder unavailable)", "이 브라우저는 영상 인코딩을 지원하지 않아요(MediaRecorder 없음)"));
 			return;
 		}
 		const mirror = document.createElement("canvas");
@@ -1631,7 +1633,7 @@ globalThis.playMode = centerTab === "play";
 			anchor.click();
 			setTimeout(() => URL.revokeObjectURL(url), 10_000);
 			setRecordedVideoName(name);
-			setToast(`${name} 저장됨`);
+			setToast(isKo ? `${name} 저장됨` : `Saved ${name}`);
 		};
 		recRef.current = rec;
 		setRecState("recording");
@@ -1788,7 +1790,7 @@ globalThis.playMode = centerTab === "play";
 			setTlFrame(target);
 			setWaypointMode(true);
 			setSelectedHierarchyId("rootPath");
-			setToast(`프레임 ${target}의 루트 웨이포인트를 선택했어요. 탑뷰에서 점을 드래그해 위치를 조정하세요.`);
+			setToast(isKo ? `프레임 ${target}의 루트 웨이포인트를 선택했어요. 탑뷰에서 점을 드래그해 위치를 조정하세요.` : `Root waypoint at frame ${target} selected — drag the pin in the Top-View to reposition.`);
 			return;
 		}
 		setPendingWaypointFrame(target);
@@ -1796,7 +1798,7 @@ globalThis.playMode = centerTab === "play";
 		setTlFrame(target);
 		setWaypointMode(true);
 		setSelectedHierarchyId("rootPath");
-		setToast(`프레임 ${target}이 예약됐어요. 샷 뷰 바닥을 클릭하면 그 위치에 루트 웨이포인트가 생성됩니다.`);
+		setToast(isKo ? `프레임 ${target}이 예약됐어요. 샷 뷰 바닥을 클릭하면 그 위치에 루트 웨이포인트가 생성됩니다.` : `Frame ${target} is reserved — click the Shot-view floor to drop the root waypoint there.`);
 	}
 	/** ARDY-demo style authoring: each empty-floor press in the Shot view drops
 	    the next waypoint where it was clicked; the frame gap comes from walking
@@ -1807,12 +1809,12 @@ globalThis.playMode = centerTab === "play";
 		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);
 		const last = ordered[ordered.length - 1] ?? rootStart();
 		if (waypoints.length + 1 > MAX_WAYPOINTS) {
-			setToast(`루트 경로는 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요`);
+			setToast(isKo ? `루트 경로는 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요` : `The root path is capped at ${MAX_WAYPOINTS} waypoints`);
 			return;
 		}
 		const pendingFrame = pendingWaypointFrame == null ? null : Math.max(1, Math.min(Math.round(pendingWaypointFrame), tlFrameCount - 1));
 		if (pendingFrame != null && ordered.some((waypoint) => waypoint.frame === pendingFrame)) {
-			setToast(`프레임 ${pendingFrame}에는 이미 루트 웨이포인트가 있어요. 타임라인에서 빈 프레임을 선택하세요.`);
+			setToast(isKo ? `프레임 ${pendingFrame}에는 이미 루트 웨이포인트가 있어요. 타임라인에서 빈 프레임을 선택하세요.` : `Frame ${pendingFrame} already has a root waypoint — pick an empty frame on the timeline.`);
 			setPendingWaypointFrame(null);
 			return;
 		}
@@ -1824,7 +1826,7 @@ globalThis.playMode = centerTab === "play";
 		const walkGap = Math.max(8, Math.round((Math.hypot(x - last.x, z - last.z) / WALK_SPEED_MPS) * tlFps));
 		const frame = pendingFrame ?? (pinned ? Math.min(playhead, tlFrameCount - 1) : last.frame + walkGap);
 		if (frame > tlFrameCount - 1) {
-			setToast("경로가 이미 클립 길이를 채웠어요. 시간을 늘리거나 웨이포인트를 지워 주세요");
+			setToast(ko("The path already fills the clip — extend the duration or clear a waypoint", "경로가 이미 클립 길이를 채웠어요. 시간을 늘리거나 웨이포인트를 지워 주세요"));
 			return;
 		}
 		// The generator cannot refuse an impossible pin, so the click is the
@@ -1835,14 +1837,16 @@ globalThis.playMode = centerTab === "play";
 		const nextWaypoints = [...ordered.slice(0, index), waypoint, ...ordered.slice(index)];
 		const verdict = validateWaypointAt(nextWaypoints, index, waypoint);
 		if (!verdict.ok) {
-			setToast(`배치하지 못했어요 — ${verdict.error}`);
+			setToast(isKo ? `배치하지 못했어요 — ${verdict.error}` : `Not placed — ${verdict.error}`);
 			return;
 		}
 		setWaypoints(nextWaypoints);
 		setTlFrame(frame);
 		setActiveWaypointFrame(frame);
 		setPendingWaypointFrame(null);
-		const placed = `루트 웨이포인트 ${index + 1} 추가: 프레임 ${frame}${pendingFrame != null ? " (타임라인 예약 프레임)" : pinned ? " (재생 헤드 위치)" : ` (~${(frame / tlFps).toFixed(1)}초 걷기 기준)`}`;
+		const placed = isKo
+			? `루트 웨이포인트 ${index + 1} 추가: 프레임 ${frame}${pendingFrame != null ? " (타임라인 예약 프레임)" : pinned ? " (재생 헤드 위치)" : ` (~${(frame / tlFps).toFixed(1)}초 걷기 기준)`}`
+			: `Waypoint ${ordered.length + 1} — frame ${frame} ${pendingFrame != null ? "(at the reserved frame)" : pinned ? "(at the playhead)" : `(~${(frame / tlFps).toFixed(1)}s at a walk)`}`;
 		setToast(verdict.warnings.length ? `${placed} · ⚠ ${verdict.warnings[0]}` : placed);
 	}
 
@@ -1859,13 +1863,13 @@ globalThis.playMode = centerTab === "play";
 		const nextOrdered = ordered.map((waypoint, i) => (i === index ? nextWaypoint : waypoint));
 		const verdict = validateWaypointAt(nextOrdered, index, nextWaypoint);
 		if (!verdict.ok) {
-			setToast(`이 위치는 루트 경로에 맞지 않아요: ${verdict.error}`);
+			setToast(isKo ? `이 위치는 루트 경로에 맞지 않아요: ${verdict.error}` : `This position doesn't fit the root path: ${verdict.error}`);
 			return;
 		}
 		setWaypoints(nextOrdered);
 		setActiveWaypointFrame(target);
 		setPendingWaypointFrame((current) => (current === target ? null : current));
-		if (verdict.warnings.length) setToast(`루트 웨이포인트 이동됨: ${verdict.warnings[0]}`);
+		if (verdict.warnings.length) setToast(isKo ? `루트 웨이포인트 이동됨: ${verdict.warnings[0]}` : `Root waypoint moved: ${verdict.warnings[0]}`);
 	}
 
 	function removeWaypoint(frame) {
@@ -1879,11 +1883,11 @@ globalThis.playMode = centerTab === "play";
 		setWaypointMode(next);
 		if (!next) {
 			setPendingWaypointFrame(null);
-			setToast("2D 루트 경로 제약 꺼짐");
+			setToast(ko("2D Root path constraints off", "2D 루트 경로 제약 꺼짐"));
 			return;
 		}
 
-		setToast("2D 루트 경로 켜짐 — 샷 뷰의 세트 바닥을 클릭해 웨이포인트를 놓으세요. 인물 1이 0프레임 시작점입니다");
+		setToast(ko("2D Root path on — click the set floor in the Shot view to drop waypoints; Subject 1 is the frame 0 start", "2D 루트 경로 켜짐 — 샷 뷰의 세트 바닥을 클릭해 웨이포인트를 놓으세요. 인물 1이 0프레임 시작점입니다"));
 	}
 
 	function advanceFrame() {
@@ -1916,7 +1920,7 @@ globalThis.playMode = centerTab === "play";
 			if (previous) restorePlaybackBones(previous.rig, previous.bones);
 			const decoded = await loadMotionFromUrl(url);
 			const rig = rigA;
-			if (!rig) throw new Error("인물 1 리그가 로드되지 않았어요");
+			if (!rig) throw new Error(ko("Subject 1 rig is not loaded", "인물 1 리그가 로드되지 않았어요"));
 			restoreRef.current = { rig, bones: snapshotPlaybackBones(rig) };
 			setMotion({
 			// Capture the exact prompt this motion was generated from; the
@@ -1934,7 +1938,7 @@ globalThis.playMode = centerTab === "play";
 			setTlFps(decoded.fps);
 			setTlFrame(0);
 			setTlPlaying(false);
-			setToast(`모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps`);
+			setToast(isKo ? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps` : `Motion loaded: ${decoded.frames} frames @ ${decoded.fps} fps`);
 		} catch (err) {
 			setMotion(null);
 			setMotionError(err?.message || String(err));
@@ -2026,8 +2030,8 @@ globalThis.playMode = centerTab === "play";
 			}
 			setIkMode(true);
 			setToast(motion
-				? "IK 모드 — 모션을 보정합니다. 드래그를 끝내면 이 프레임에 보정 키가 찍혀요"
-				: "IK 모드 — 메인 뷰에서 핸들을 드래그하세요. 샷 카메라는 인셋에 고정됩니다");
+				? ko("IK mode — correct the motion; drag end keys the fix at this frame", "IK 모드 — 모션을 보정합니다. 드래그를 끝내면 이 프레임에 보정 키가 찍혀요")
+				: ko("IK mode — drag handles in the main view; the shot camera stays frozen in the inset", "IK 모드 — 메인 뷰에서 핸들을 드래그하세요. 샷 카메라는 인셋에 고정됩니다"));
 			return;
 		}
 		// Exit: the keyed pose stays — the evaluate effect re-applies the
@@ -2035,7 +2039,7 @@ globalThis.playMode = centerTab === "play";
 		// the user authored is lost by toggling. Untracked/unkeyed parts keep
 		// their current (FK) pose.
 		setIkMode(false);
-		setToast("IK 모드 꺼짐 — 키로 찍은 포즈는 계속 재생됩니다");
+		setToast(ko("IK mode off — keyed poses keep playing", "IK 모드 꺼짐 — 키로 찍은 포즈는 계속 재생됩니다"));
 	}
 
 	// Drag solve, routed by handle kind: chain targets solve the two-bone
@@ -2115,7 +2119,7 @@ globalThis.playMode = centerTab === "play";
 		if (!ikChains) return;
 		ikBakeKeyframe(ikChains, ikStateRef.current, tlFrame, ikFkJoints);
 		setIkTick((n) => n + 1);
-		setToast(`${tlFrame}프레임에 전신 IK 키를 추가했어요`);
+		setToast(isKo ? `${tlFrame}프레임에 전신 IK 키를 추가했어요` : `Full-body IK key at frame ${tlFrame}`);
 	}
 
 	function ikDeleteKeyframe(frame) {
@@ -2271,11 +2275,11 @@ globalThis.playMode = centerTab === "play";
 	}, [charA.x, charA.z, tlFps, waypoints]);
 
 	const stateBadge = ardyRunning
-		? { label: "생성 중", kind: "generating" }
+		? { label: ko("GENERATING", "생성 중"), kind: "generating" }
 		: motion
-			? { label: "재생", kind: "playback" }
+			? { label: ko("PLAYBACK", "재생"), kind: "playback" }
 			: waypointMode
-				? { label: "루트 경로", kind: "root" }
+				? { label: ko("ROOT PATH", "루트 경로"), kind: "root" }
 				: null;
 
 	function openStudio(which) {
@@ -2298,7 +2302,7 @@ globalThis.playMode = centerTab === "play";
 		if (!rig) return;
 		const pose = {
 			id: `custom_${Date.now()}`,
-		label: `내 포즈 ${customPoses.length + 1}`,
+		label: isKo ? `내 포즈 ${customPoses.length + 1}` : `My Pose ${customPoses.length + 1}`,
 			prompt: "in the exact body pose shown in the blocking frame",
 			bones: capturePose(rig),
 			custom: true,
@@ -2308,7 +2312,7 @@ globalThis.playMode = centerTab === "play";
 		saveCustomPoses(next);
 		setStudioPick(pose.id);
 		setPosed(pose);
-		setToast("포즈 저장됨");
+		setToast(ko("Pose saved", "포즈 저장됨"));
 	}
 
 	function removePose(id) {
@@ -2371,7 +2375,7 @@ globalThis.playMode = centerTab === "play";
 		write
 			.then(() => {
 				setCopied(true);
-				setToast("프롬프트를 클립보드에 복사했어요");
+				setToast(ko("Prompt copied to clipboard", "프롬프트를 클립보드에 복사했어요"));
 			})
 			.catch(() => {});
 	}
@@ -2426,18 +2430,18 @@ globalThis.playMode = centerTab === "play";
 			// named for the seat they take in a first/last-frame video request
 			save(result.frame, "blocking-frame-A-start.png");
 			save(result.frameB, "blocking-frame-B-end.png");
-			setToast("시작·끝 프레임 다운로드됨");
+			setToast(ko("Start & end frames downloaded", "시작·끝 프레임 다운로드됨"));
 			setResult((current) => current ? { ...current, downloaded: true } : current);
 			return;
 		}
 		save(result.frame, "blocking-frame.png");
-		setToast("프레임 다운로드됨");
+		setToast(ko("Frame downloaded", "프레임 다운로드됨"));
 		setResult((current) => current ? { ...current, downloaded: true } : current);
 	}
 	function downloadArdyPose() {
 		const rig = posedRig();
 		if (!rig) {
-			setToast("캐릭터가 아직 로드되지 않았어요");
+			setToast(ko("Character not loaded yet", "캐릭터가 아직 로드되지 않았어요"));
 			return;
 		}
 		const pose = buildArdyPose({
@@ -2458,7 +2462,7 @@ globalThis.playMode = centerTab === "play";
 		a.click();
 		a.remove();
 		URL.revokeObjectURL(url);
-		setToast("ARDY 포즈 내보내기 완료");
+		setToast(ko("ARDY pose exported", "ARDY 포즈 내보내기 완료"));
 	}
 	// Probe the dev sidecar exactly once. A missing bridge is an expected
 	// state — CozyClay is a static app and the sidecar is an optional dev
@@ -2551,7 +2555,7 @@ globalThis.playMode = centerTab === "play";
 			.filter((clip) => clip.text.trim())
 			.sort((a, b) => a.startFrame - b.startFrame);
 		if (!clips.length) {
-			setToast("생성하기 전에 프롬프트 블록을 하나 이상 추가하세요");
+			setToast(ko("Add at least one Prompt Block before generating", "생성하기 전에 프롬프트 블록을 하나 이상 추가하세요"));
 			return;
 		}
 		const totalFrames = Math.max(...clips.map((clip) => clip.endFrame));
@@ -2572,7 +2576,7 @@ globalThis.playMode = centerTab === "play";
 	} = {}) {
 		const rig = posedRig();
 		if (!rig) {
-			setToast("캐릭터가 아직 로드되지 않았어요");
+			setToast(ko("Character not loaded yet", "캐릭터가 아직 로드되지 않았어요"));
 			return;
 		}
 		// Root guidance sends only authored sparse keys. ARDY owns every
@@ -2581,11 +2585,11 @@ globalThis.playMode = centerTab === "play";
 		// values here, before any pose build or network, with a specific toast.
 		const prompt = promptOverride.trim();
 		if (!prompt) {
-			setToast("모션 프롬프트가 필요해요 — 생성 전에 피사체가 할 동작을 설명하세요");
+			setToast(ko("Motion prompt is required — describe what the subject should do before generating", "모션 프롬프트가 필요해요 — 생성 전에 피사체가 할 동작을 설명하세요"));
 			return;
 		}
 		if (prompt.length > ARDY_PROMPT_MAX) {
-			setToast(`모션 프롬프트는 ${ARDY_PROMPT_MAX}자까지예요(현재 ${prompt.length}자). 생성 전에 줄여 주세요`);
+			setToast(isKo ? `모션 프롬프트는 ${ARDY_PROMPT_MAX}자까지예요(현재 ${prompt.length}자). 생성 전에 줄여 주세요` : `Motion prompt is capped at ${ARDY_PROMPT_MAX} characters (currently ${prompt.length}) — shorten it before generating`);
 			return;
 		}
 		// Regeneration must keep the loaded clip's exact frame count. The form
@@ -2595,12 +2599,12 @@ globalThis.playMode = centerTab === "play";
 			? motion.frames / motion.fps
 			: Math.round(Number(durationOverride)) || ARDY_DURATION_MIN;
 		if (duration < ARDY_DURATION_MIN || duration > ARDY_DURATION_MAX) {
-			setToast(`길이는 ${ARDY_DURATION_MIN}초에서 ${ARDY_DURATION_MAX}초 사이여야 해요`);
+			setToast(isKo ? `길이는 ${ARDY_DURATION_MIN}초에서 ${ARDY_DURATION_MAX}초 사이여야 해요` : `Duration must be between ${ARDY_DURATION_MIN} and ${ARDY_DURATION_MAX} seconds`);
 			return;
 		}
 		const seed = ardySeed === "" ? null : Number(ardySeed);
 		if (seed !== null && (!Number.isInteger(seed) || seed < 0 || seed > ARDY_SEED_MAX)) {
-			setToast(`Seed는 0..${ARDY_SEED_MAX} 범위의 정수여야 해요. 비워 두면 자동으로 선택됩니다`);
+			setToast(isKo ? `Seed는 0..${ARDY_SEED_MAX} 범위의 정수여야 해요. 비워 두면 자동으로 선택됩니다` : `Seed must be an integer in 0..${ARDY_SEED_MAX} — clear it to let the box pick one`);
 			return;
 		}
 		// Prompt clips are real generation blocks. Gaps inherit the current
@@ -2629,15 +2633,15 @@ globalThis.playMode = centerTab === "play";
 			: [];
 		if (waypointMode) {
 			if (waypoints.length < 1) {
-				setToast("생성하기 전에 루트 목적지를 하나 이상 추가하세요");
+				setToast(ko("Add at least one root destination before generating", "생성하기 전에 루트 목적지를 하나 이상 추가하세요"));
 				return;
 			}
 			if (rootPath.length > MAX_WAYPOINTS) {
-				setToast(`루트 경로는 드문 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요`);
+				setToast(isKo ? `루트 경로는 드문 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요` : `The root path is capped at ${MAX_WAYPOINTS} sparse waypoints`);
 				return;
 			}
 			if (waypoints.some((waypoint) => waypoint.frame <= 0 || waypoint.frame >= clipFrames)) {
-				setToast(`루트 웨이포인트 프레임은 1..${clipFrames - 1} 안에 있어야 해요`);
+				setToast(isKo ? `루트 웨이포인트 프레임은 1..${clipFrames - 1} 안에 있어야 해요` : `Root waypoint frames must stay inside 1..${clipFrames - 1}`);
 				return;
 			}
 			// Placement-time checks can be invalidated afterwards (removing a
@@ -2647,13 +2651,15 @@ globalThis.playMode = centerTab === "play";
 			// block instead of the whole clip.
 			const pathVerdict = judgeAuthoredPath(rootPath, 20, clipFrames, { chained: hasPromptSchedule });
 			if (pathVerdict.errors.length > 0) {
-				setToast(`생성하지 못했어요 — ${pathVerdict.errors[0]}`);
+				setToast(isKo ? `생성하지 못했어요 — ${pathVerdict.errors[0]}` : `Not generated — ${pathVerdict.errors[0]}`);
 				return;
 			}
 			if (hasPromptSchedule) {
 				const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PATH_LIMITS.clipMaxS * 20);
 				if (longBlock) {
-					setToast(`생성하지 못했어요 — 루트 경로가 있을 때 각 프롬프트 블록은 ${PATH_LIMITS.clipMaxS}초 이내여야 해요(ARDY 연쇄 호출 학습 범위). ${((longBlock.endFrame - longBlock.startFrame) / 20).toFixed(1)}초 블록을 나눠 주세요`);
+					setToast(isKo
+						? `생성하지 못했어요 — 루트 경로가 있을 때 각 프롬프트 블록은 ${PATH_LIMITS.clipMaxS}초 이내여야 해요(ARDY 연쇄 호출 학습 범위). ${((longBlock.endFrame - longBlock.startFrame) / 20).toFixed(1)}초 블록을 나눠 주세요`
+						: `Not generated — with a root path every prompt block must stay within ${PATH_LIMITS.clipMaxS} s (ARDY's trained window per chained call); split the ${((longBlock.endFrame - longBlock.startFrame) / 20).toFixed(1)} s block`);
 					return;
 				}
 			}
@@ -2726,7 +2732,7 @@ globalThis.playMode = centerTab === "play";
 		const controller = new AbortController();
 		ardyAbortRef.current = controller;
 		setArdyRunning(true);
-		reportArdyStatus("연결 중…");
+		reportArdyStatus(ko("connecting…", "연결 중…"));
 		setArdyReport(null);
 		setArdyOutcome(null);
 		try {
@@ -2742,7 +2748,7 @@ globalThis.playMode = centerTab === "play";
 				if (hasPromptSchedule && !hasBlockEdits) body.segments = segments;
 			} else if (hasBlockEdits) {
 				if (!motion?.url) {
-					throw new Error("현재 모션에 브리지 원본이 없어요. 프롬프트 블록을 한 번 생성한 뒤 IK 보정을 다시 생성하세요");
+					throw new Error(ko("The current motion has no bridge source; generate the prompt blocks once before regenerating IK edits", "현재 모션에 브리지 원본이 없어요. 프롬프트 블록을 한 번 생성한 뒤 IK 보정을 다시 생성하세요"));
 				}
 				const startFrame = Math.min(...editedSegments.map((segment) => segment.startFrame));
 				const endFrame = Math.max(...editedSegments.map((segment) => segment.endFrame));
@@ -2781,7 +2787,7 @@ globalThis.playMode = centerTab === "play";
 					)
 				)
 			) {
-				throw new Error("ARDY가 검증된 수동 IK 키 없이 모션을 반환했어요");
+				throw new Error(ko("ARDY returned motion without verified authored IK keys", "ARDY가 검증된 수동 IK 키 없이 모션을 반환했어요"));
 			}
 			setArdyOutcome({ ok: true, output: done.output, bytes: done.bytes, motionUrl: done.motionUrl, rotationDeg: rootRotationDeg });
 			// Fetch and decode the real npz right away; decode errors are shown
@@ -2797,13 +2803,13 @@ globalThis.playMode = centerTab === "play";
 				ikStateRef.current.plants.clear();
 				setIkTick((value) => value + 1);
 			}
-			setToast("ARDY 모션 생성됨");
+			setToast(ko("ARDY motion generated", "ARDY 모션 생성됨"));
 		} catch (err) {
 			// Cancellation surfaces as an AbortError; everything else is the
 			// bridge or the generator explaining itself.
 			setArdyOutcome({
 				ok: false,
-				message: err?.name === "AbortError" ? "취소됨" : err?.message || String(err),
+				message: err?.name === "AbortError" ? ko("Cancelled", "취소됨") : err?.message || String(err),
 			});
 		} finally {
 			setArdyRunning(false);
@@ -2831,9 +2837,13 @@ globalThis.playMode = centerTab === "play";
 		(environment.trim().length > 0 && environment !== DEFAULT_ENVIRONMENT);
 	const pathConfigured = mode === "video" && waypointMode && waypoints.length >= 1;
 	const pathWarning = pendingWaypointFrame != null
-		? `프레임 ${pendingWaypointFrame}이 예약되어 있어요. 샷 뷰 바닥을 클릭하면 그 시간에 핀이 생깁니다.`
+		? (isKo
+			? `프레임 ${pendingWaypointFrame}이 예약되어 있어요. 샷 뷰 바닥을 클릭하면 그 시간에 핀이 생깁니다.`
+			: `Frame ${pendingWaypointFrame} is reserved — click the Shot-view floor to pin it at that time.`)
 		: pathSpeed?.warn
-			? `현재 이동 속도 ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)}m/s가 자연스러운 보행 범위(0.5–3m/s)를 벗어났어요. 타임라인 간격이나 핀 위치를 조정하세요.`
+			? (isKo
+				? `현재 이동 속도 ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)}m/s가 자연스러운 보행 범위(0.5–3m/s)를 벗어났어요. 타임라인 간격이나 핀 위치를 조정하세요.`
+				: `Current travel speed ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)}m/s is outside the natural walking range (0.5–3m/s) — adjust timeline gaps or pin positions.`)
 			: "";
 
 	function runOnboardingAction(action) {
@@ -2864,7 +2874,7 @@ globalThis.playMode = centerTab === "play";
 			selectHierarchy("rootPath");
 			setBottomTab("timeline");
 			if (!waypointMode) setWaypointMode(true);
-			setToast("루트 경로 편집을 켰어요. 2D 루트 레인에서 시간을 고른 뒤 샷 뷰 바닥을 클릭하세요.");
+			setToast(ko("Root path editing is on. Pick a time on the 2D root lane, then click the Shot-view floor.", "루트 경로 편집을 켰어요. 2D 루트 레인에서 시간을 고른 뒤 샷 뷰 바닥을 클릭하세요."));
 		}
 	}
 
@@ -2877,12 +2887,13 @@ globalThis.playMode = centerTab === "play";
 					</span>
 				</div>
 				<InstallApp />
+				<LocaleToggle />
 
 			</header>
 
 			<div className="main" style={workspaceStyle}>
 			<div className="workspace">
-				<aside className="panel hierarchy-left" aria-label="계층">
+				<aside className="panel hierarchy-left" aria-label={ko("Hierarchy", "계층")}>
 				<HierarchyPanel
 					selectedId={selectedHierarchyId}
 					onSelect={selectHierarchy}
@@ -2903,11 +2914,11 @@ globalThis.playMode = centerTab === "play";
 				<div
 					className="workspace-splitter workspace-splitter-vertical"
 					role="separator"
-					aria-label="계층 패널 크기 조절"
+					aria-label={ko("Resize hierarchy panel", "계층 패널 크기 조절")}
 					onPointerDown={(event) => beginWorkspaceResize("hierarchy", event)}
 				/>
 				<div className="viewport">
-				<div className="pane-tabs" role="tablist" aria-label="가운데 보기">
+				<div className="pane-tabs" role="tablist" aria-label={ko("Center view", "가운데 보기")}>
 					<button
 						type="button"
 						role="tab"
@@ -2915,7 +2926,7 @@ globalThis.playMode = centerTab === "play";
 						className={centerTab === "scene" ? "active" : ""}
 						onClick={() => setCenterTab("scene")}
 					>
-						장면
+						{ko("Scene", "장면")}
 					</button>
 					<button
 						type="button"
@@ -2924,51 +2935,51 @@ globalThis.playMode = centerTab === "play";
 						className={centerTab === "play" ? "active" : ""}
 						onClick={() => setCenterTab("play")}
 					>
-						재생 보기
+						{ko("PlayView", "재생 보기")}
 					</button>
 				</div>
 				{centerTab === "scene" && (
-				<div className="editor-toolbar scene-tools" aria-label="장면 도구">
-						<div className="tool-switch" role="group" aria-label="기즈모 도구">
+				<div className="editor-toolbar scene-tools" aria-label={ko("Scene tools", "장면 도구")}>
+						<div className="tool-switch" role="group" aria-label={ko("Gizmo tool", "기즈모 도구")}>
 							<button
 								type="button"
 								className={gizmoMode === "move" ? "active" : ""}
-								title="이동 도구 (W)"
+								title={ko("Move tool (W)", "이동 도구 (W)")}
 								aria-pressed={gizmoMode === "move"}
 								onClick={() => setGizmoMode("move")}
 							>
 								<svg viewBox="0 0 16 16" aria-hidden="true" className="tool-icon"><path d="M8 1v14M1 8h14" stroke="currentColor" strokeWidth="1.4"/><path d="M8 1 6 3h4L8 1zM8 15l-2-2h4l-2 2zM1 8l2-2v4L1 8zM15 8l-2-2v4l2-2z" fill="currentColor"/></svg>
-								이동
+								{ko("Move", "이동")}
 							</button>
 							<button
 								type="button"
 								className={gizmoMode === "rotate" ? "active" : ""}
-								title="회전 도구 (E)"
+								title={ko("Rotate tool (E)", "회전 도구 (E)")}
 								aria-pressed={gizmoMode === "rotate"}
 								onClick={() => setGizmoMode("rotate")}
 							>
 								<svg viewBox="0 0 16 16" aria-hidden="true" className="tool-icon"><circle cx="8" cy="8" r="5.4" fill="none" stroke="currentColor" strokeWidth="1.4"/><path d="M13.4 8l2-2v4l-2 2z" fill="currentColor" transform="rotate(45 13.4 8)"/></svg>
-								회전
+								{ko("Rotate", "회전")}
 							</button>
 							<button
 								type="button"
 								className={gizmoMode === "scale" ? "active" : ""}
-								title="크기 도구 (R)"
+								title={ko("Scale tool (R)", "크기 도구 (R)")}
 								aria-pressed={gizmoMode === "scale"}
 								onClick={() => setGizmoMode("scale")}
 							>
 								<svg viewBox="0 0 16 16" aria-hidden="true" className="tool-icon"><rect x="3" y="3" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1.4"/><path d="M13 13h-4M13 13V9M13 13l-3.5-3.5" stroke="currentColor" strokeWidth="1.4" fill="none"/></svg>
-								크기
+								{ko("Scale", "크기")}
 							</button>
 						</div>
 						<button
 							type="button"
 							className={"snap-switch" + (snapEnabled ? " active" : "")}
-							title="그리드 스냅 — 드래그 중 Ctrl을 누르면 반대로 작동"
+							title={ko("Grid snapping — hold Ctrl during a drag to invert", "그리드 스냅 — 드래그 중 Ctrl을 누르면 반대로 작동")}
 							aria-pressed={snapEnabled}
 							onClick={() => setSnapEnabled((v) => !v)}
 						>
-							스냅
+							{ko("Snap", "스냅")}
 						</button>
 					</div>
 				)}
@@ -3159,7 +3170,7 @@ globalThis.playMode = centerTab === "play";
 									setCameraRail(simplified);
 									setRailDraw(false);
 									const curve = buildRail(simplified);
-									setToast(`카메라 레일 완성 — ${curve ? curve.length.toFixed(1) : "?"} m, 제어점 ${simplified.length}개`);
+									setToast(isKo ? `카메라 레일 완성 — ${curve ? curve.length.toFixed(1) : "?"} m, 제어점 ${simplified.length}개` : `Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
 								}}
 							/>
 							{/* Object gizmo: the shot pane's direct manipulation. Off while
@@ -3215,7 +3226,7 @@ globalThis.playMode = centerTab === "play";
 						>
 							<span
 								className="vp-inset-tag"
-								title={workspaceLayout.insetCollapsed ? "클릭 또는 ▸로 펼치기 · 드래그로 이동" : "클릭 또는 ▾로 접기 · 드래그로 이동"}
+								title={workspaceLayout.insetCollapsed ? ko("Click or ▸ to expand · drag to move", "클릭 또는 ▸로 펼치기 · 드래그로 이동") : ko("Click or ▾ to fold · drag to move", "클릭 또는 ▾로 접기 · 드래그로 이동")}
 								onPointerDown={beginInsetDrag}
 							>
 								<span
@@ -3223,8 +3234,8 @@ globalThis.playMode = centerTab === "play";
 									role="button"
 									tabIndex={-1}
 									aria-expanded={!workspaceLayout.insetCollapsed}
-									aria-label={workspaceLayout.insetCollapsed ? "인셋 보기 펼치기" : "인셋 보기 접기"}
-									title={workspaceLayout.insetCollapsed ? "인셋 보기 펼치기" : "인셋 보기 접기"}
+									aria-label={workspaceLayout.insetCollapsed ? ko("Expand inset view", "인셋 보기 펼치기") : ko("Collapse inset view", "인셋 보기 접기")}
+									title={workspaceLayout.insetCollapsed ? ko("Expand inset view", "인셋 보기 펼치기") : ko("Collapse inset view", "인셋 보기 접기")}
 									onPointerDown={(e) => e.stopPropagation()}
 									// Same one-fold-per-gesture rule as the tag: ignore the
 									// second click of a double-click (detail=2).
@@ -3237,7 +3248,7 @@ globalThis.playMode = centerTab === "play";
 								>
 									{workspaceLayout.insetCollapsed ? "▸" : "▾"}
 								</span>
-								{planIsMain || ikMode ? "샷 뷰" : "탑뷰"}
+								{planIsMain || ikMode ? ko("Shot view", "샷 뷰") : ko("Top-View", "탑뷰")}
 								{!planIsMain && !ikMode && workspaceLayout.planZoom !== 1 && !workspaceLayout.insetCollapsed && (
 									<em className="vp-inset-zoom">{workspaceLayout.planZoom.toFixed(2).replace(/\.?0+$/, "")}×</em>
 								)}
@@ -3246,7 +3257,7 @@ globalThis.playMode = centerTab === "play";
 								<span
 									className="vp-inset-resize"
 									role="separator"
-								aria-label="인셋 보기 크기 조절"
+								aria-label={ko("Resize inset view", "인셋 보기 크기 조절")}
 									onPointerDown={beginInsetResize}
 								/>
 							)}
@@ -3259,13 +3270,13 @@ globalThis.playMode = centerTab === "play";
 							<span />
 						</div>
 						<div className={"caption" + (subjectVisible ? "" : " off")} hidden={playMode}>
-							{subjectVisible ? slateLineKo(shot) : "피사체가 프레임 밖에 있어요"}
+							{subjectVisible ? slateLineKo(shot) : ko("SUBJECT OUT OF FRAME", "피사체가 프레임 밖에 있어요")}
 						</div>
 
 						{playMode && !motion && (
 							<div className="playview-empty" role="status">
-								<strong>아직 모션이 없어요</strong>
-								<span>장면 탭에서 모션을 생성하세요. 재생 보기는 완성 결과를 보여줍니다.</span>
+								<strong>{ko("No motion yet", "아직 모션이 없어요")}</strong>
+								<span>{ko("Generate motion in the Scene tab — PlayView plays the finished result.", "장면 탭에서 모션을 생성하세요. 재생 보기는 완성 결과를 보여줍니다.")}</span>
 							</div>
 						)}
 
@@ -3284,16 +3295,16 @@ globalThis.playMode = centerTab === "play";
 										if (hadMotion) clearMotion();
 										setPosed(pose);
 										closeStudio();
-										setToast(hadMotion ? "현재 모션을 지우고 포즈를 적용했어요" : "포즈를 적용했어요");
+										setToast(hadMotion ? ko("Cleared the current motion and applied the pose", "현재 모션을 지우고 포즈를 적용했어요") : ko("Pose applied", "포즈를 적용했어요"));
 									} else {
-										setToast("선택한 포즈를 찾지 못했어요. 다시 골라 주세요");
+										setToast(ko("Couldn't find the selected pose — pick again", "선택한 포즈를 찾지 못했어요. 다시 골라 주세요"));
 									}
 								}}
 								onReset={() => {
 									if (motion) clearMotion();
 									setStudioPick(DEFAULT_POSE.id);
 									setPosed(DEFAULT_POSE);
-									setToast("기본 포즈로 돌아왔어요");
+									setToast(ko("Back to the default pose", "기본 포즈로 돌아왔어요"));
 								}}
 								onSave={savePose}
 								onDelete={removePose}
@@ -3320,7 +3331,7 @@ globalThis.playMode = centerTab === "play";
 				<div
 					className="workspace-splitter workspace-splitter-vertical"
 					role="separator"
-					aria-label="계층 및 속성 패널 크기 조절"
+					aria-label={ko("Resize hierarchy and inspector panel", "계층 및 속성 패널 크기 조절")}
 					onPointerDown={(event) => beginWorkspaceResize("sidebar", event)}
 				/>
 				<aside className="panel hierarchy-sidebar inspector-sidebar" data-inspector={selectedHierarchyId}>
@@ -3339,11 +3350,11 @@ globalThis.playMode = centerTab === "play";
 					)}
 					<section className="inspector-pane">
 					<div className="inspector-heading">
-						<strong>속성</strong>
-						<span className="inspector-heading-selection">{selectedSceneObject ? sceneObjectNameDisplayKo(selectedSceneObject.name) : HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId] ?? "선택 항목"}</span>
+						<strong>{ko("Inspector", "속성")}</strong>
+						<span className="inspector-heading-selection">{selectedSceneObject ? sceneObjectNameDisplayKo(selectedSceneObject.name) : HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId] ?? ko("Selection", "선택 항목")}</span>
 					</div>
 					<div className="inspector-scroll">
-				<Foldout hidden={selectedHierarchyId !== "shot"} title="샷 종류">
+				<Foldout hidden={selectedHierarchyId !== "shot"} title={ko("Shot type", "샷 종류")}>
 						<div className="presets">
 							{Object.entries(PRESETS).map(([key, p]) => (
 								<button key={key} className={preset === key ? "active" : ""} onClick={() => applyPreset(key)}>
@@ -3353,32 +3364,32 @@ globalThis.playMode = centerTab === "play";
 						</div>
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "camera"} title="카메라">
-					<Slider label="렌즈 (FOV)" min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
+				<Foldout hidden={selectedHierarchyId !== "camera"} title={ko("Camera", "카메라")}>
+					<Slider label={ko("Lens (FOV)", "렌즈 (FOV)")} min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
 						<div className="readout">
-						<span title="카메라와 피사체 거리">{shot.distance.toFixed(2)} m</span>
-						<span title="풀프레임 기준 가장 가까운 단렌즈">{shot.focalMm} mm</span>
-						<span title="피사체 눈높이 기준 각도">{shot.elevationDeg.toFixed(0)}°</span>
+						<span title={ko("camera to subject", "카메라와 피사체 거리")}>{shot.distance.toFixed(2)} m</span>
+						<span title={ko("nearest prime on a full-frame sensor", "풀프레임 기준 가장 가까운 단렌즈")}>{shot.focalMm} mm</span>
+						<span title={ko("angle relative to the subject's eyes", "피사체 눈높이 기준 각도")}>{shot.elevationDeg.toFixed(0)}°</span>
 						</div>
 						<button className="btn ghost" onClick={() => setNonce((n) => n + 1)}>
-							피사체 다시 맞추기
+							{ko("Recenter on subject", "피사체 다시 맞추기")}
 						</button>
 
-						<h3 className="move-head">움직임 키</h3>
+						<h3 className="move-head">{ko("Move keys", "움직임 키")}</h3>
 						<div className="move-ab">
 							<button
 								type="button"
 								className="btn ghost"
-								title="현재 프레이밍을 재생 헤드 프레임에 키로 저장"
+								title={ko("Key the current framing at the playhead frame", "현재 프레이밍을 재생 헤드 프레임에 키로 저장")}
 								onClick={() => addCameraKeyframe(tlFrame)}
 							>
-								+ 여기 키 찍기
+								{ko("+ Key here", "+ 여기 키 찍기")}
 							</button>
 							<button
 								type="button"
 								className="btn ghost"
 								disabled={cameraKeys.length < 1}
-								title="카메라 움직임을 재생합니다. 따라가기가 켜져 있으면 타임라인도 함께 재생되어 캐릭터 모션이 따라옵니다. 오른쪽 드래그로 중단됩니다"
+								title={ko("Play the move. With Follow on it plays the timeline too, so character motion rides along; right-drag interrupts", "카메라 움직임을 재생합니다. 따라가기가 켜져 있으면 타임라인도 함께 재생되어 캐릭터 모션이 따라옵니다. 오른쪽 드래그로 중단됩니다")}
 								onClick={() => {
 									if (followPreviewArmed) {
 										if (tlPlaying) {
@@ -3392,89 +3403,89 @@ globalThis.playMode = centerTab === "play";
 									setMovePlaying((playing) => !playing);
 								}}
 							>
-								{previewActive ? "정지" : "미리보기"}
+								{previewActive ? ko("Stop", "정지") : ko("Preview", "미리보기")}
 							</button>
 							<button
 								type="button"
 								className="btn ghost"
 								disabled={cameraKeys.length < 1}
-								title="움직임을 타임라인에 연결합니다. 재생하거나 스크럽하면 카메라가 함께 움직입니다. 끄면 키는 유지한 채 자유롭게 이동할 수 있습니다"
+								title={ko("Slave the move to the timeline: play or scrub and the camera rides along. Turn off to fly freely while keys stay set", "움직임을 타임라인에 연결합니다. 재생하거나 스크럽하면 카메라가 함께 움직입니다. 끄면 키는 유지한 채 자유롭게 이동할 수 있습니다")}
 								onClick={() => setMoveFollow((follow) => !follow)}
 							>
-								{moveFollow ? "따라가기 ✓" : "따라가기"}
+								{moveFollow ? ko("Follow ✓", "따라가기 ✓") : ko("Follow", "따라가기")}
 							</button>
 							<button type="button" className="btn ghost" disabled={cameraKeys.length < 1} onClick={clearMove}>
-								지우기
+								{ko("Clear", "지우기")}
 							</button>
 							<button
 								type="button"
 								className={"btn ghost" + (recState === "recording" ? " rec-live" : "")}
 								disabled={cameraKeys.length < 1 && !motion}
-								title="재생 보기에서 장면을 재생하고 영상 파일로 저장합니다. 카메라 움직임과 캐릭터 모션만 담고 편집 UI는 제외됩니다"
+								title={ko("Play the piece in PlayView and save it as a video file — camera move and character motion, no editor chrome", "재생 보기에서 장면을 재생하고 영상 파일로 저장합니다. 카메라 움직임과 캐릭터 모션만 담고 편집 UI는 제외됩니다")}
 								onClick={toggleShotRecording}
 							>
-								{recState === "recording" ? "■ 녹화 정지" : "● 녹화"}
+								{recState === "recording" ? ko("■ Stop rec", "■ 녹화 정지") : ko("● Record", "● 녹화")}
 							</button>
 						</div>
 						{moveSequence ? (
-							<div className="move-slate" title="목록에서 고른 값이 아니라 키프레임에서 계산된 움직임입니다">
-								{moveSequence.displaySlate} · {moveSequence.spanS}초
+							<div className="move-slate" title={ko("derived from the keyframings, not chosen from a list", "목록에서 고른 값이 아니라 키프레임에서 계산된 움직임입니다")}>
+								{moveSequence.displaySlate} · {moveSequence.spanS}{ko("s", "초")}
 							</div>
 						) : (
 							<div className="move-slate">
 								{cameraKeys.length === 1
-									? `프레임 ${cameraKeys[0].frame}부터 고정 샷 — 다른 프레임의 카메라 레인을 클릭해 움직임을 추가하세요`
-									: "카메라 타임라인 레인을 클릭하면 현재 프레이밍을 해당 프레임에 키로 저장합니다"}
+									? (isKo ? `프레임 ${cameraKeys[0].frame}부터 고정 샷 — 다른 프레임의 카메라 레인을 클릭해 움직임을 추가하세요` : `locked-off hold from frame ${cameraKeys[0].frame} — click the Camera lane at another frame to add a move`)
+									: ko("click the Camera timeline lane to key the current framing at that frame", "카메라 타임라인 레인을 클릭하면 현재 프레이밍을 해당 프레임에 키로 저장합니다")}
 							</div>
 						)}
 
-						<h3 className="move-head">팔로우 카메라</h3>
+						<h3 className="move-head">{ko("Follow cam", "팔로우 카메라")}</h3>
 						<div className="move-ab">
 							<button
 								type="button"
 								className="btn ghost"
-								title="피사체 이동 경로에서 카메라를 계산합니다. 뒤에서 따라가는 스테디캠 또는 그린 레일 위 돌리로 동작합니다. 이 모드가 카메라를 잡고 있을 때 키는 멈춥니다"
+								title={ko("Derive the camera from the subject's trajectory: a steadicam trailing behind, or a dolly on a drawn rail. Keys pause while it owns the camera", "피사체 이동 경로에서 카메라를 계산합니다. 뒤에서 따라가는 스테디캠 또는 그린 레일 위 돌리로 동작합니다. 이 모드가 카메라를 잡고 있을 때 키는 멈춥니다")}
 								onClick={() => setFollowCam((c) => ({ ...c, enabled: !c.enabled }))}
 							>
-								{followCam.enabled ? "따라가기 ●" : "팔로우 카메라"}
+								{followCam.enabled ? ko("Follow ●", "따라가기 ●") : ko("Follow cam", "팔로우 카메라")}
 							</button>
 							<button
 								type="button"
 								className={"btn ghost" + (railDraw ? " rec-live" : "")}
 								disabled={!followCam.enabled}
-								title="탑뷰에서 카메라 레일을 그립니다. 바닥 위로 한 번 드래그하세요. 그리는 중 Esc를 누르면 취소됩니다"
+								title={ko("Draw the camera rail in the Top-View: drag one stroke across the deck. Esc mid-stroke cancels", "탑뷰에서 카메라 레일을 그립니다. 바닥 위로 한 번 드래그하세요. 그리는 중 Esc를 누르면 취소됩니다")}
 								onClick={() => {
 									const next = !railDraw;
 									setRailDraw(next);
 									if (next) {
 										setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
-									setToast("탑뷰에서 레일을 그리세요 — 바닥 위로 한 번 드래그하면 됩니다");
+									setToast(ko("Draw the rail in the Top-View — drag one stroke across the deck", "탑뷰에서 레일을 그리세요 — 바닥 위로 한 번 드래그하면 됩니다"));
 									}
 								}}
 							>
-								{railDraw ? "그리는 중…" : "✏ 레일"}
+								{railDraw ? ko("Drawing…", "그리는 중…") : ko("✏ Rail", "✏ 레일")}
 							</button>
 							<button type="button" className="btn ghost" disabled={!cameraRail} onClick={() => setCameraRail(null)}>
-								레일 지우기
+								{ko("Clear rail", "레일 지우기")}
 							</button>
 						</div>
 						{followCam.enabled && (
 							<>
-								<Slider label="거리" min={1} max={8} step={0.1} value={followCam.distance} unit=" m" onChange={(distance) => setFollowCam((c) => ({ ...c, distance }))} />
-								<Slider label="높이" min={0.4} max={4} step={0.05} value={followCam.height} unit=" m" onChange={(height) => setFollowCam((c) => ({ ...c, height }))} />
-								<Slider label="반응" min={0.2} max={2} step={0.05} value={followCam.response} unit=" s" onChange={(response) => setFollowCam((c) => ({ ...c, response }))} />
-								<Slider label="선행" min={0} max={0.6} step={0.05} value={followCam.lead} unit=" s" onChange={(lead) => setFollowCam((c) => ({ ...c, lead }))} />
-								<div className="move-slate" title="설정에서 계산한 카메라 동작입니다. 레일이 있으면 돌리, 없으면 스테디캠입니다">
-									{railCurve ? `레일 돌리 · ${railCurve.length.toFixed(1)} m` : "스테디캠 팔로우"} · {followCam.distance.toFixed(1)} m 유지
+								<Slider label={ko("Distance", "거리")} min={1} max={8} step={0.1} value={followCam.distance} unit=" m" onChange={(distance) => setFollowCam((c) => ({ ...c, distance }))} />
+								<Slider label={ko("Height", "높이")} min={0.4} max={4} step={0.05} value={followCam.height} unit=" m" onChange={(height) => setFollowCam((c) => ({ ...c, height }))} />
+								<Slider label={ko("Response", "반응")} min={0.2} max={2} step={0.05} value={followCam.response} unit=" s" onChange={(response) => setFollowCam((c) => ({ ...c, response }))} />
+								<Slider label={ko("Lead", "선행")} min={0} max={0.6} step={0.05} value={followCam.lead} unit=" s" onChange={(lead) => setFollowCam((c) => ({ ...c, lead }))} />
+								<div className="move-slate" title={ko("what the rig is doing, derived from the setup — a rail makes it a dolly, none makes it a steadicam", "설정에서 계산한 카메라 동작입니다. 레일이 있으면 돌리, 없으면 스테디캠입니다")}>
+									{railCurve ? (isKo ? `레일 돌리 · ${railCurve.length.toFixed(1)} m` : `DOLLY ON RAIL · ${railCurve.length.toFixed(1)} m`) : ko("STEADICAM FOLLOW", "스테디캠 팔로우")} · {isKo ? `${followCam.distance.toFixed(1)} m 유지` : `HOLD ${followCam.distance.toFixed(1)} m`}
 								</div>
 							</>
 						)}
 					</Foldout>
 
-				<Foldout hidden={!["characters", "characterA", "characterA.character", "characterB", "characterB.character"].includes(selectedHierarchyId)} title={showB ? "인물들" : "인물"}>
+				<Foldout hidden={!["characters", "characterA", "characterA.character", "characterB", "characterB.character"].includes(selectedHierarchyId)} title={showB ? ko("Subjects", "인물들") : ko("Subject", "인물")}>
 						<div className={"subjects-row" + (showB ? "" : " single")}>
 							<SubjectBox
-							label="인물 1"
+							label={ko("Subject 1", "인물 1")}
 								value={charA}
 								onChange={setCharA}
 								onPose={() => openStudio("A")}
@@ -3482,7 +3493,7 @@ globalThis.playMode = centerTab === "play";
 							/>
 							{showB && (
 								<SubjectBox
-								label="인물 2"
+								label={ko("Subject 2", "인물 2")}
 									value={charB}
 									onChange={setCharB}
 									onRemove={() => setShowB(false)}
@@ -3494,24 +3505,24 @@ globalThis.playMode = centerTab === "play";
 						{!showB && (
 							<button type="button" className="add-subject" onClick={() => setShowB(true)}>
 								<span className="as-plus">＋</span>
-								<span>두 번째 인물 추가</span>
+								<span>{ko("Add second subject", "두 번째 인물 추가")}</span>
 							</button>
 						)}
 					</Foldout>
 
-				<Foldout hidden={!["characters", "characterA", "characterA.character", "characterB", "characterB.character"].includes(selectedHierarchyId)} title="포즈">
-					<Field label={showB ? "인물 1 포즈" : "포즈"}>
+				<Foldout hidden={!["characters", "characterA", "characterA.character", "characterB", "characterB.character"].includes(selectedHierarchyId)} title={ko("Pose", "포즈")}>
+					<Field label={showB ? ko("Subject 1 pose", "인물 1 포즈") : ko("Pose", "포즈")}>
 							<Dropdown
-							ariaLabel="인물 1 포즈"
+							ariaLabel={ko("Subject 1 pose", "인물 1 포즈")}
 								value={poseA?.id}
 							options={allPoses.map((p) => ({ value: p.id, label: poseLabelKo(p) }))}
 								onChange={(id) => setPoseA(allPoses.find((p) => p.id === id))}
 							/>
 						</Field>
 						{showB && (
-						<Field label="인물 2 포즈">
+						<Field label={ko("Subject 2 pose", "인물 2 포즈")}>
 								<Dropdown
-								ariaLabel="인물 2 포즈"
+								ariaLabel={ko("Subject 2 pose", "인물 2 포즈")}
 									value={poseB?.id}
 								options={allPoses.map((p) => ({ value: p.id, label: poseLabelKo(p) }))}
 									onChange={(id) => setPoseB(allPoses.find((p) => p.id === id))}
@@ -3520,18 +3531,18 @@ globalThis.playMode = centerTab === "play";
 						)}
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "shot"} title="프롬프트">
+				<Foldout hidden={selectedHierarchyId !== "shot"} title={ko("Prompt", "프롬프트")}>
 						<div className="segmented" data-active={mode}>
 							<button className={mode === "image" ? "active" : ""} onClick={() => setMode("image")}>
-							이미지
+							{ko("Image", "이미지")}
 							</button>
 							<button className={mode === "video" ? "active" : ""} onClick={() => setMode("video")}>
-							영상
+							{ko("Video", "영상")}
 							</button>
 						</div>
-					<Field label="모델">
+					<Field label={ko("Model", "모델")}>
 							<Dropdown
-							ariaLabel="모델"
+							ariaLabel={ko("Model", "모델")}
 								value={mode === "video" ? videoModel : imageModel}
 								options={models.map((m) => ({ value: m.id, label: m.label }))}
 								onChange={mode === "video" ? setVideoModel : setImageModel}
@@ -3541,33 +3552,33 @@ globalThis.playMode = centerTab === "play";
 						<div className="sheet-checks">
 							<label className="check">
 								<input type="checkbox" checked={hasCharSheet} onChange={(e) => setHasCharSheet(e.target.checked)} />
-								<span>캐릭터 시트가 있어요</span>
+								<span>{ko("I have a character sheet", "캐릭터 시트가 있어요")}</span>
 							</label>
 							<label className="check">
 								<input type="checkbox" checked={hasEnvSheet} onChange={(e) => setHasEnvSheet(e.target.checked)} />
-								<span>환경 시트가 있어요</span>
+								<span>{ko("I have an environment sheet", "환경 시트가 있어요")}</span>
 							</label>
 						</div>
 
 						{!hasCharSheet && (
-						<Field label={showB ? "인물 1" : "인물"}>
+						<Field label={showB ? ko("Subject 1", "인물 1") : ko("Subject", "인물")}>
 								<input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} />
 							</Field>
 						)}
 						{!hasCharSheet && showB && (
-						<Field label="인물 2">
+						<Field label={ko("Subject 2", "인물 2")}>
 								<input type="text" value={subject2} onChange={(e) => setSubject2(e.target.value)} />
 							</Field>
 						)}
 						{!hasEnvSheet && (
-						<Field label="환경">
+						<Field label={ko("Environment", "환경")}>
 								<input type="text" value={environment} onChange={(e) => setEnvironment(e.target.value)} />
 							</Field>
 						)}
 						{mode === "video" && !moveSequence && (
-						<Field label="카메라 움직임">
+						<Field label={ko("Camera move", "카메라 움직임")}>
 								<Dropdown
-								ariaLabel="카메라 움직임"
+								ariaLabel={ko("Camera move", "카메라 움직임")}
 									value={cameraMove}
 								options={CAMERA_MOVES.map((m) => ({ value: m, label: cameraMoveLabelKo(m) }))}
 									onChange={setCameraMove}
@@ -3575,61 +3586,61 @@ globalThis.playMode = centerTab === "play";
 							</Field>
 						)}
 						{mode === "video" && !moveSequence && cameraMove === CUSTOM_MOVE && (
-						<Field label="직접 쓴 카메라 움직임">
+						<Field label={ko("Custom camera move", "직접 쓴 카메라 움직임")}>
 								<input
 									type="text"
 									value={customMove}
 									onChange={(e) => setCustomMove(e.target.value)}
-								placeholder="카메라 움직임을 설명하세요"
+								placeholder={ko("describe the camera move", "카메라 움직임을 설명하세요")}
 								/>
 							</Field>
 						)}
 						{mode === "video" && moveSequence && (
-						<Field label="카메라 움직임">
+						<Field label={ko("Camera move", "카메라 움직임")}>
 								<div
 									className="move-slate inline"
-								title="타임라인 키프레임으로 만든 움직임입니다. 편집하려면 계층에서 카메라를 선택하세요"
+								title={ko("authored from the timeline keyframings — select Camera in the hierarchy to edit", "타임라인 키프레임으로 만든 움직임입니다. 편집하려면 계층에서 카메라를 선택하세요")}
 								>
-								{moveSequence.displaySlate} · {moveSequence.spanS}초
+								{moveSequence.displaySlate} · {moveSequence.spanS}{ko("s", "초")}
 								</div>
 							</Field>
 						)}
-					<Field label="룩 / 스타일">
+					<Field label={ko("Look / style", "룩 / 스타일")}>
 							<input type="text" value={style} onChange={(e) => setStyle(e.target.value)} />
 						</Field>
 
 						<button
 							className="btn ghost full"
-							title="포즈가 잡힌 캐릭터를 ARDY CozyClayPoseV1 JSON으로 내보내기"
+							title={ko("Export the posed character as an ARDY CozyClayPoseV1 JSON", "포즈가 잡힌 캐릭터를 ARDY CozyClayPoseV1 JSON으로 내보내기")}
 							onClick={downloadArdyPose}
 						>
-							ARDY 포즈 내보내기
+							{ko("Export ARDY pose", "ARDY 포즈 내보내기")}
 						</button>
 						<button className="btn primary full generate" onClick={generate}>
-							만들기
+							{ko("Generate", "만들기")}
 						</button>
 					</Foldout>
-				<Foldout hidden={!["characterA.motion", "characterA.baseMotion"].includes(selectedHierarchyId)} title="ARDY 모션">
+				<Foldout hidden={!["characterA.motion", "characterA.baseMotion"].includes(selectedHierarchyId)} title={ko("ARDY motion", "ARDY 모션")}>
 					{bridge === null ? (
-						<p className="ardy-hint">개발 브리지를 확인하는 중…</p>
+						<p className="ardy-hint">{ko("Checking for the dev bridge…", "개발 브리지를 확인하는 중…")}</p>
 					) : bridge.ok ? (
 						<>
 							<p className="ardy-meta">
-								{bridge.host ?? "로컬"} · 장치 {bridge.device ?? "알 수 없음"} · 인코더{" "}
-								{bridge.encoder ?? "알 수 없음"}
+								{bridge.host ?? ko("box", "로컬")} · {isKo ? `장치 ${bridge.device ?? "알 수 없음"}` : bridge.device ?? "device?"} · {ko("encoder", "인코더")}{" "}
+								{bridge.encoder ?? ko("?", "알 수 없음")}
 							</p>
-							<p className="ardy-hint">중립 스켈레톤 · 블록 경계와 IK 키는 자동으로 고정됩니다.</p>
-							<Field label="모션 프롬프트">
+							<p className="ardy-hint">{ko("Neutral skeleton · block boundaries and IK keys are pinned automatically.", "중립 스켈레톤 · 블록 경계와 IK 키는 자동으로 고정됩니다.")}</p>
+							<Field label={ko("Motion prompt", "모션 프롬프트")}>
 								<input
 									type="text"
 									value={ardyPrompt}
 									onChange={(e) => setArdyPrompt(e.target.value)}
-									placeholder="피사체가 할 동작을 설명하세요"
+									placeholder={ko("what the subject should do", "피사체가 할 동작을 설명하세요")}
 									maxLength={ARDY_PROMPT_MAX}
 								/>
-								<span className="ardy-clamp">최대 {ARDY_PROMPT_MAX}자 · 필수</span>
+								<span className="ardy-clamp">{isKo ? `최대 ${ARDY_PROMPT_MAX}자 · 필수` : `max ${ARDY_PROMPT_MAX} chars · required`}</span>
 							</Field>
-							<Field label="길이 (초)">
+							<Field label={ko("Duration (s)", "길이 (초)")}>
 								<input
 									type="number"
 									min={ARDY_DURATION_MIN}
@@ -3639,19 +3650,19 @@ globalThis.playMode = centerTab === "play";
 									onChange={(e) => changeDuration(e.target.value)}
 								/>
 							</Field>
-							<Field label="Seed (선택)">
+							<Field label={ko("Seed (optional)", "Seed (선택)")}>
 								<input
 									type="text"
 									inputMode="numeric"
 									value={ardySeed}
 									onChange={(e) => changeArdySeed(e.target.value)}
-									placeholder="비우면 랜덤"
+									placeholder={ko("empty = random", "비우면 랜덤")}
 								/>
-								<span className="ardy-clamp">RT 기본값 2 · 비우면 랜덤 · 0..{ARDY_SEED_MAX}</span>
+								<span className="ardy-clamp">{isKo ? `RT 기본값 2 · 비우면 랜덤 · 0..${ARDY_SEED_MAX}` : `RT default 2 · empty = random · 0..${ARDY_SEED_MAX}`}</span>
 							</Field>
 							{ardyRunning ? (
 								<button type="button" className="btn ghost full" onClick={cancelArdy}>
-									실행 취소
+									{ko("Cancel run", "실행 취소")}
 								</button>
 							) : (
 								<button
@@ -3659,56 +3670,56 @@ globalThis.playMode = centerTab === "play";
 									className="btn primary full generate"
 									onClick={() => runArdy()}
 								>
-									모션 생성
+									{ko("Generate motion", "모션 생성")}
 								</button>
 							)}
 							{ardyStatus && <p className="ardy-status">{ardyStatus}</p>}
 							{ardyReport && (
 								<div className="ardy-report">
 									<div className="ardy-report-grid">
-									<span>형태 평균 오차</span>
+									<span>{ko("shape mean error", "형태 평균 오차")}</span>
 										<b>{fmtMeters(ardyReport.shape_mean_error_m)}</b>
-									<span>형태 최대 오차</span>
+									<span>{ko("shape max error", "형태 최대 오차")}</span>
 										<b>{fmtMeters(ardyReport.shape_max_error_m)}</b>
-									<span>최대 점프</span>
+									<span>{ko("max jump", "최대 점프")}</span>
 										<b>{fmtMeters(ardyReport.continuity?.max_jump_m)}</b>
 									</div>
 									<p className="ardy-caveat">
-										형태 오차는 관절 중심 배치만 검증합니다 —{" "}
+										{ko("Shape error proves joint-center placement only —", "형태 오차는 관절 중심 배치만 검증합니다 —")}{" "}
 										{ardyReport.surface_contact_verified
-											? "접촉 검증됨"
-											: "발과 바닥의 접촉은 검증되지 않음"}{" "}
-										· 대상 좌표계 {ardyReport.target_space ?? "알 수 없음"}
+											? ko("contact verified", "접촉 검증됨")
+											: ko("foot-to-floor contact NOT verified", "발과 바닥의 접촉은 검증되지 않음")}{" "}
+										· {ko("target_space", "대상 좌표계")} {ardyReport.target_space ?? ko("unknown", "알 수 없음")}
 									</p>
 								</div>
 							)}
 							{ardyOutcome?.ok && (
 								<>
 									<p className="ardy-outcome done">
-									출력 <code>{ardyOutcome.output}</code> ({ardyOutcome.bytes}바이트)
+									{ko("Output", "출력")} <code>{ardyOutcome.output}</code> ({ardyOutcome.bytes}{ko(" bytes", "바이트")})
 										{ardyOutcome.motionUrl && (
 											<>
 												{" "}
-											· 모션 <code>{ardyOutcome.motionUrl}</code>
+											· {ko("motion", "모션")} <code>{ardyOutcome.motionUrl}</code>
 											</>
 										)}
 									</p>
 									{motionBusy ? (
-								<p className="ardy-hint">모션 디코딩 중…</p>
+								<p className="ardy-hint">{ko("Decoding motion…", "모션 디코딩 중…")}</p>
 									) : motion ? (
 										<p className="ardy-outcome done">
-									모션 로드됨 — {motion.frames}프레임 @ {motion.fps} fps, 인물 1에 재생 중
+									{isKo ? `모션 로드됨 — ${motion.frames}프레임 @ ${motion.fps} fps, 인물 1에 재생 중` : `Motion loaded — ${motion.frames} frames @ ${motion.fps} fps, playing on Subject 1`}
 										</p>
 									) : motionError ? (
 										<>
-								<p className="ardy-outcome error">모션 디코딩 실패: {motionError}</p>
+								<p className="ardy-outcome error">{ko("Motion decode failed:", "모션 디코딩 실패:")} {motionError}</p>
 											{ardyOutcome.motionUrl && (
 												<button
 													type="button"
 													className="btn ghost full"
 													onClick={() => loadMotion(ardyOutcome.motionUrl, undefined, ardyOutcome.rotationDeg ?? charA.rot)}
 												>
-										다시 로드
+										{ko("Retry load", "다시 로드")}
 												</button>
 											)}
 										</>
@@ -3722,16 +3733,27 @@ globalThis.playMode = centerTab === "play";
 					) : (
 						<>
 							<p className="ardy-hint">
-								모션 생성은 사용자의 컴퓨터에서 실행되므로 여기서는 꺼져 있어요. 타임라인의 클립은 미리 생성된 샘플입니다.
-								스테이징, 경로, 카메라, 재생은 브리지 없이도 작동합니다. 직접 생성하려면 저장소를 클론하고
-								<code>node tools/ardy/bridge.mjs</code>로 브리지를 시작하세요.
+								{isKo ? (
+									<>
+										모션 생성은 사용자의 컴퓨터에서 실행되므로 여기서는 꺼져 있어요. 타임라인의 클립은 미리 생성된 샘플입니다.
+										스테이징, 경로, 카메라, 재생은 브리지 없이도 작동합니다. 직접 생성하려면 저장소를 클론하고
+										<code>node tools/ardy/bridge.mjs</code>로 브리지를 시작하세요.
+									</>
+								) : (
+									<>
+										Motion generation runs on your own machine, so it is off here. The clip
+										on the timeline was generated ahead of time; staging, paths, cameras and
+										playback all work without it. To generate your own, clone the repo and
+										start the bridge with <code>node tools/ardy/bridge.mjs</code>.
+									</>
+								)}
 							</p>
 							{bridge.reason && <p className="ardy-hint">{bridge.reason}</p>}
 						</>
 					)}
 				</Foldout>
-				<Foldout hidden={selectedHierarchyId !== "characterA.promptBlocks"} title="프롬프트 블록">
-					<p className="inspector-hint">블록은 각 프레임 범위에서 ARDY가 생성할 내용을 정합니다. 블록을 선택하면 편집 기준도 해당 프롬프트로 이동합니다.</p>
+				<Foldout hidden={selectedHierarchyId !== "characterA.promptBlocks"} title={ko("Prompt Blocks", "프롬프트 블록")}>
+					<p className="inspector-hint">{ko("Blocks define what ARDY generates over each frame range. Selecting one also moves editing context to that prompt.", "블록은 각 프레임 범위에서 ARDY가 생성할 내용을 정합니다. 블록을 선택하면 편집 기준도 해당 프롬프트로 이동합니다.")}</p>
 						<div className="inspector-list">
 							{promptClips.map((clip) => (
 								<button
@@ -3744,13 +3766,13 @@ globalThis.playMode = centerTab === "play";
 										setTlFrame(Math.min(clip.startFrame, tlFrameCount - 1));
 									}}
 								>
-								<span>{clip.text || "이름 없는 모션"}</span>
+								<span>{clip.text || ko("Untitled motion", "이름 없는 모션")}</span>
 									<small>{clip.startFrame}–{clip.endFrame}f</small>
 								</button>
 							))}
 						</div>
 						{selectedPromptId && (
-						<Field label="선택한 블록 프롬프트">
+						<Field label={ko("Selected block prompt", "선택한 블록 프롬프트")}>
 								<input
 									type="text"
 									value={promptClips.find((clip) => clip.id === selectedPromptId)?.text ?? ""}
@@ -3758,7 +3780,7 @@ globalThis.playMode = centerTab === "play";
 										changePromptClip(selectedPromptId, event.target.value);
 										setArdyPrompt(event.target.value);
 									}}
-								placeholder="이 모션 블록을 설명하세요"
+								placeholder={ko("describe this motion block", "이 모션 블록을 설명하세요")}
 								/>
 							</Field>
 						)}
@@ -3769,31 +3791,31 @@ globalThis.playMode = centerTab === "play";
 							onClick={runAllPromptBlocks}
 						>
 							{ardyRunning
-								? `${promptClips.length}개 블록 생성 중…`
-								: `${promptClips.length}개 블록 모두 생성`}
+								? (isKo ? `${promptClips.length}개 블록 생성 중…` : `Generating ${promptClips.length} blocks…`)
+								: (isKo ? `${promptClips.length}개 블록 모두 생성` : `Generate all ${promptClips.length} blocks`)}
 						</button>
-					{!bridge?.ok && <p className="ardy-hint">생성을 사용하려면 ARDY 브리지를 시작하세요.</p>}
+					{!bridge?.ok && <p className="ardy-hint">{ko("Start the ARDY bridge to enable generation.", "생성을 사용하려면 ARDY 브리지를 시작하세요.")}</p>}
 						{ardyStatus && <p className="ardy-status">{ardyStatus}</p>}
 						<button type="button" className="btn ghost full" onClick={() => addPromptClip(tlFrame)}>
-						프레임 {tlFrame}에 블록 추가
+						{isKo ? `프레임 ${tlFrame}에 블록 추가` : `Add block at frame ${tlFrame}`}
 						</button>
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "characterA.ik"} title="IK 보정">
+				<Foldout hidden={selectedHierarchyId !== "characterA.ik"} title={ko("IK Corrections", "IK 보정")}>
 						<div className="inspector-status-grid">
-						<span>IK 모드</span><b>{ikMode ? "켜짐" : "꺼짐"}</b>
-						<span>현재 프레임</span><b>{tlFrame}</b>
-						<span>키</span><b>{ikFrames.length}</b>
+						<span>{ko("IK mode", "IK 모드")}</span><b>{ikMode ? ko("ON", "켜짐") : ko("OFF", "꺼짐")}</b>
+						<span>{ko("Current frame", "현재 프레임")}</span><b>{tlFrame}</b>
+						<span>{ko("Keys", "키")}</span><b>{ikFrames.length}</b>
 						</div>
 						<button type="button" className={"btn full" + (ikMode ? " primary" : "")} onClick={toggleIkMode} disabled={!ikChains}>
-						{ikMode ? "IK 모드 나가기" : "IK 모드 들어가기"}
+						{ikMode ? ko("Exit IK mode", "IK 모드 나가기") : ko("Enter IK mode", "IK 모드 들어가기")}
 						</button>
 						<label className="check">
 							<input type="checkbox" checked={footSnap} onChange={() => setFootSnap((value) => !value)} />
-						<span>몸을 편집하는 동안 발 고정</span>
+						<span>{ko("Keep feet planted during body edits", "몸을 편집하는 동안 발 고정")}</span>
 						</label>
 						<button type="button" className="btn ghost full" onClick={ikAddKeyframe} disabled={!ikChains}>
-						프레임 {tlFrame}에 키 추가
+						{isKo ? `프레임 ${tlFrame}에 키 추가` : `Add key at frame ${tlFrame}`}
 						</button>
 						<div className="inspector-list compact">
 							{ikFrames.map((frame) => (
@@ -3807,40 +3829,40 @@ globalThis.playMode = centerTab === "play";
 										ikDeleteKeyframe(frame);
 									}}
 								>
-								<span>프레임 {frame}</span>
-								<small>{tlFrame === frame ? "현재" : "오른쪽 클릭으로 삭제"}</small>
+								<span>{isKo ? `프레임 ${frame}` : `Frame ${frame}`}</span>
+								<small>{tlFrame === frame ? ko("Current", "현재") : ko("right-click removes", "오른쪽 클릭으로 삭제")}</small>
 								</button>
 							))}
 						</div>
 					</Foldout>
 
-				<Foldout hidden={!(selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig."))} title="리그 제어">
+				<Foldout hidden={!(selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig."))} title={ko("Rig Control", "리그 제어")}>
 						<p className="inspector-hint">
 							{selectedHierarchyId.startsWith("rig.")
-							? `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]}이 활성 제어 그룹입니다.`
-							: "계층에서 몸 그룹을 고른 뒤 메인 뷰의 핸들을 조작하세요."}
+							? (isKo ? `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]}이 활성 제어 그룹입니다.` : `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]} is the active control group.`)
+							: ko("Choose a body group in the hierarchy, then manipulate its handle in the main view.", "계층에서 몸 그룹을 고른 뒤 메인 뷰의 핸들을 조작하세요.")}
 						</p>
 						<div className="inspector-status-grid">
-						<span>리그</span><b>{ikChains ? "준비됨" : "사용 불가"}</b>
-						<span>초점</span><b>{ikFocus ?? "없음"}</b>
-						<span>발 고정</span><b>{footSnap ? "켜짐" : "꺼짐"}</b>
+						<span>{ko("Rig", "리그")}</span><b>{ikChains ? ko("Ready", "준비됨") : ko("Unavailable", "사용 불가")}</b>
+						<span>{ko("Focus", "초점")}</span><b>{ikFocus ?? ko("None", "없음")}</b>
+						<span>{ko("Foot lock", "발 고정")}</span><b>{footSnap ? ko("ON", "켜짐") : ko("OFF", "꺼짐")}</b>
 						</div>
 						<button type="button" className={"btn full" + (ikMode ? " primary" : "")} onClick={toggleIkMode} disabled={!ikChains}>
-						{ikMode ? "리그 편집 끝내기" : "IK로 리그 편집"}
+						{ikMode ? ko("Finish rig editing", "리그 편집 끝내기") : ko("Edit rig with IK", "IK로 리그 편집")}
 						</button>
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "rootPath"} title="루트 경로">
+				<Foldout hidden={selectedHierarchyId !== "rootPath"} title={ko("Root Path", "루트 경로")}>
 						<div className="inspector-status-grid">
-						<span>경로 모드</span><b>{waypointMode ? "켜짐" : "꺼짐"}</b>
-						<span>웨이포인트</span><b>{waypoints.length}</b>
-						<span>현재 프레임</span><b>{tlFrame}</b>
+						<span>{ko("Path mode", "경로 모드")}</span><b>{waypointMode ? ko("ON", "켜짐") : ko("OFF", "꺼짐")}</b>
+						<span>{ko("Waypoints", "웨이포인트")}</span><b>{waypoints.length}</b>
+						<span>{ko("Current frame", "현재 프레임")}</span><b>{tlFrame}</b>
 						</div>
 						<button type="button" className={"btn full" + (waypointMode ? " primary" : "")} onClick={toggleWaypointMode}>
-						{waypointMode ? "경로 편집 끝내기" : "루트 경로 편집"}
+						{waypointMode ? ko("Finish path editing", "경로 편집 끝내기") : ko("Edit root path", "루트 경로 편집")}
 						</button>
 						{waypointMode && (
-						<p className="inspector-hint">타임라인 2D 루트 레인에서 프레임을 먼저 고르면 다음 샷 뷰 바닥 클릭이 그 프레임에 놓입니다. 이미 놓은 점은 탑뷰에서 드래그해 위치를 조정하세요.</p>
+						<p className="inspector-hint">{ko("Pick a frame on the timeline's 2D root lane first, and the next Shot-view floor click lands there. Already-placed pins can be dragged in the Top-View.", "타임라인 2D 루트 레인에서 프레임을 먼저 고르면 다음 샷 뷰 바닥 클릭이 그 프레임에 놓입니다. 이미 놓은 점은 탑뷰에서 드래그해 위치를 조정하세요.")}</p>
 						)}
 						<div className="inspector-list compact">
 							{waypoints.map((waypoint) => (
@@ -3858,31 +3880,31 @@ globalThis.playMode = centerTab === "play";
 										removeWaypoint(waypoint.frame);
 									}}
 								>
-								<span>프레임 {waypoint.frame}</span>
+								<span>{isKo ? `프레임 ${waypoint.frame}` : `Frame ${waypoint.frame}`}</span>
 									<small>{waypoint.x.toFixed(2)}, {waypoint.z.toFixed(2)}</small>
 								</button>
 							))}
 						</div>
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "environment"} title="환경">
+				<Foldout hidden={selectedHierarchyId !== "environment"} title={ko("Environment", "환경")}>
 						<label className="check">
 							<input type="checkbox" checked={hasEnvSheet} onChange={(event) => setHasEnvSheet(event.target.checked)} />
-						<span>환경 시트가 있어요</span>
+						<span>{ko("I have an environment sheet", "환경 시트가 있어요")}</span>
 						</label>
 						{!hasEnvSheet && (
-						<Field label="환경 설명">
+						<Field label={ko("Environment description", "환경 설명")}>
 								<input type="text" value={environment} onChange={(event) => setEnvironment(event.target.value)} />
 							</Field>
 						)}
-					<Field label="룩 / 스타일">
+					<Field label={ko("Look / style", "룩 / 스타일")}>
 							<input type="text" value={style} onChange={(event) => setStyle(event.target.value)} />
 						</Field>
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "props"} title="소품">
-					<p className="inspector-hint">세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요.</p>
-					<AddObjectMenu onAdd={addSceneObject} label="세트에 오브젝트 추가" />
+				<Foldout hidden={selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
+					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요.")}</p>
+					<AddObjectMenu onAdd={addSceneObject} label={ko("Add object to the set", "세트에 오브젝트 추가")} />
 						<div className="inspector-list compact">
 							{sceneObjects.map((object) => (
 								<button
@@ -3897,28 +3919,38 @@ globalThis.playMode = centerTab === "play";
 						</div>
 					</Foldout>
 
-				<Foldout hidden={!selectedSceneObject} title="오브젝트 변환">
+				<Foldout hidden={!selectedSceneObject} title={ko("Object Transform", "오브젝트 변환")}>
 						{selectedSceneObject && (
 							<>
 								<p className="inspector-hint">
-								값을 입력하고 Enter를 누르거나 축 글자를 드래그해 조절하세요.
+								{ko("Type a value and press Enter, or drag an axis letter to scrub.", "값을 입력하고 Enter를 누르거나 축 글자를 드래그해 조절하세요.")}
 								</p>
 								<div className="presets gizmo-modes">
 									<button type="button" className={gizmoMode === "move" ? "active" : ""} onClick={() => setGizmoMode("move")}>
-									이동 <kbd>W</kbd>
+									{ko("Move", "이동")} <kbd>W</kbd>
 									</button>
 									<button type="button" className={gizmoMode === "rotate" ? "active" : ""} onClick={() => setGizmoMode("rotate")}>
-									회전 <kbd>E</kbd>
+									{ko("Rotate", "회전")} <kbd>E</kbd>
 									</button>
 									<button type="button" className={gizmoMode === "scale" ? "active" : ""} onClick={() => setGizmoMode("scale")}>
-									크기 <kbd>R</kbd>
+									{ko("Scale", "크기")} <kbd>R</kbd>
 									</button>
 								</div>
 								<label className="check snap-toggle">
 									<input type="checkbox" checked={snapEnabled} onChange={(event) => setSnapEnabled(event.target.checked)} />
-								<span>그리드 스냅 — <kbd>Ctrl</kbd>을 누르면 반대로 작동</span>
+								<span>
+									{isKo ? (
+										<>
+											그리드 스냅 — <kbd>Ctrl</kbd>을 누르면 반대로 작동
+										</>
+									) : (
+										<>
+											Snap to grid — hold <kbd>Ctrl</kbd> to invert
+										</>
+									)}
+								</span>
 								</label>
-						<Field label="이름">
+						<Field label={ko("Name", "이름")}>
 									<input
 										type="text"
 								value={sceneObjectNameDisplayKo(selectedSceneObject.name)}
@@ -3926,7 +3958,7 @@ globalThis.playMode = centerTab === "play";
 									/>
 								</Field>
 								<Vector3Row
-							label="위치"
+							label={ko("Position", "위치")}
 									fields={[
 										{ axis: "X", value: selectedSceneObject.x, step: 0.05, precision: 2, onChange: (x) => changeSceneObject(selectedSceneObject.id, { x }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 										{ axis: "Y", value: selectedSceneObject.y ?? 0, step: 0.05, precision: 2, onChange: (y) => changeSceneObject(selectedSceneObject.id, { y }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
@@ -3934,7 +3966,7 @@ globalThis.playMode = centerTab === "play";
 									]}
 								/>
 								<Vector3Row
-							label="회전"
+							label={ko("Rotation", "회전")}
 									fields={[
 										{ axis: "X", value: selectedSceneObject.rotX ?? 0, step: 1, precision: 1, onChange: (rotX) => changeSceneObject(selectedSceneObject.id, { rotX }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 										{ axis: "Y", value: selectedSceneObject.rot, step: 1, precision: 1, onChange: (rot) => changeSceneObject(selectedSceneObject.id, { rot }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
@@ -3942,21 +3974,21 @@ globalThis.playMode = centerTab === "play";
 									]}
 								/>
 								<Vector3Row
-							label="크기"
+							label={ko("Scale", "크기")}
 									fields={[
 										{ axis: "X", value: selectedSceneObject.scaleX ?? 1, step: 0.05, precision: 2, onChange: (scaleX) => changeSceneObject(selectedSceneObject.id, { scaleX }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 										{ axis: "Y", value: selectedSceneObject.scaleY ?? 1, step: 0.05, precision: 2, onChange: (scaleY) => changeSceneObject(selectedSceneObject.id, { scaleY }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 										{ axis: "Z", value: selectedSceneObject.scaleZ ?? 1, step: 0.05, precision: 2, onChange: (scaleZ) => changeSceneObject(selectedSceneObject.id, { scaleZ }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
-						<div className="object-colors" role="group" aria-label="오브젝트 색상">
+						<div className="object-colors" role="group" aria-label={ko("Object colour", "오브젝트 색상")}>
 									{OBJECT_COLORS.map((color) => (
 										<button
 											type="button"
 											key={color}
 											className={"object-color" + (selectedSceneObject.color === color ? " active" : "")}
 											style={{ background: color }}
-									aria-label={`색상 ${color}`}
+									aria-label={isKo ? `색상 ${color}` : `Colour ${color}`}
 											aria-pressed={selectedSceneObject.color === color}
 											onClick={() => changeSceneObject(selectedSceneObject.id, { color })}
 										/>
@@ -3971,10 +4003,10 @@ globalThis.playMode = centerTab === "play";
 							<button
 								type="button"
 								className="btn ghost full"
-							title="Delete 또는 Backspace를 눌러도 삭제할 수 있어요"
+							title={ko("You can also press Delete or Backspace", "Delete 또는 Backspace를 눌러도 삭제할 수 있어요")}
 								onClick={deleteSelectedSceneObject}
 							>
-							{sceneObjectNameDisplayKo(selectedSceneObject.name)} 삭제
+							{isKo ? `${sceneObjectNameDisplayKo(selectedSceneObject.name)} 삭제` : `Remove ${selectedSceneObject.name}`}
 							</button>
 						</div>
 					)}
@@ -3985,18 +4017,18 @@ globalThis.playMode = centerTab === "play";
 			<div
 				className="workspace-splitter timeline-splitter"
 				role="separator"
-				aria-label="프레임 모니터 크기 조절"
+				aria-label={ko("Resize frame monitor", "프레임 모니터 크기 조절")}
 				onPointerDown={(event) => beginWorkspaceResize("timeline", event)}
 			/>
 			<div className="bottom-window">
-				<nav className="bottom-window-tabs" aria-label="하단 창">
+				<nav className="bottom-window-tabs" aria-label={ko("Bottom window", "하단 창")}>
 					<button
 						type="button"
 						className={bottomTab === "timeline" ? "active" : ""}
 						aria-pressed={bottomTab === "timeline"}
 						onClick={() => setBottomTab("timeline")}
 					>
-						애니메이션
+						{ko("Animation", "애니메이션")}
 					</button>
 					<button
 						type="button"
@@ -4004,12 +4036,12 @@ globalThis.playMode = centerTab === "play";
 						aria-pressed={bottomTab === "console"}
 						onClick={() => setBottomTab("console")}
 					>
-						콘솔
+						{ko("Console", "콘솔")}
 					</button>
 				</nav>
 				<div className="console-pane" hidden={bottomTab !== "console"}>
 					{consoleLines.length === 0 ? (
-						<p className="console-empty">아직 메시지가 없어요 — ARDY 상태 줄이 여기에 표시됩니다.</p>
+						<p className="console-empty">{ko("No messages yet — ARDY status lines appear here.", "아직 메시지가 없어요 — ARDY 상태 줄이 여기에 표시됩니다.")}</p>
 					) : (
 						consoleLines.map((entry, index) => (
 							<p className="console-line" key={index}>
@@ -4043,7 +4075,7 @@ globalThis.playMode = centerTab === "play";
 				onIkKeyframeRemove={ikDeleteKeyframe}
 				onFootSnapToggle={() => {
 					setFootSnap((v) => {
-				setToast(v ? "발 스냅 꺼짐 — 발이 몸을 따라갑니다" : "발 스냅 켜짐 — 몸이 움직여도 발은 바닥에 고정됩니다");
+				setToast(v ? ko("Foot snap off — the feet follow the body", "발 스냅 꺼짐 — 발이 몸을 따라갑니다") : ko("Foot snap on — the feet stay planted while the body moves", "발 스냅 켜짐 — 몸이 움직여도 발은 바닥에 고정됩니다"));
 						return !v;
 					});
 				}}
@@ -4143,22 +4175,22 @@ function SubjectBox({ label, value, onChange, onRemove, onPose, posing }) {
 						<button
 							type="button"
 							className={"cam-toggle" + (posing ? " active" : "")}
-							title={`${label} 포즈`}
+							title={isKo ? `${label} 포즈` : `Pose ${label}`}
 							onClick={onPose}
 						>
 							⌘
 						</button>
 					)}
 					{onRemove && (
-						<button type="button" className="sb-remove" title="인물 제거" onClick={onRemove}>
+						<button type="button" className="sb-remove" title={ko("Remove subject", "인물 제거")} onClick={onRemove}>
 							✕
 						</button>
 					)}
 				</div>
 			</div>
-			<Slider compact label="좌 / 우" min={-4} max={4} step={0.1} value={value.x} onChange={set("x")} />
-			<Slider compact label="깊이" min={-4} max={4} step={0.1} value={value.z} onChange={set("z")} />
-			<Slider compact label="회전" min={-180} max={180} step={1} value={value.rot} unit="°" onChange={set("rot")} />
+			<Slider compact label={ko("Left / right", "좌 / 우")} min={-4} max={4} step={0.1} value={value.x} onChange={set("x")} />
+			<Slider compact label={ko("Depth", "깊이")} min={-4} max={4} step={0.1} value={value.z} onChange={set("z")} />
+			<Slider compact label={ko("Rotate", "회전")} min={-180} max={180} step={1} value={value.rot} unit="°" onChange={set("rot")} />
 		</div>
 	);
 }

@@ -127,6 +127,28 @@ select {
 	justify-self: end;
 }
 
+.locale-toggle {
+	display: inline-flex;
+	align-items: center;
+	height: 28px;
+	margin-right: 6px;
+	padding: 0 10px;
+	border: 1px solid var(--line2);
+	border-radius: 2px;
+	background: #2c2c2c;
+	color: var(--fg);
+	font-size: 10px;
+	font-weight: 620;
+	cursor: pointer;
+}
+
+.locale-toggle:hover,
+.locale-toggle:focus-visible {
+	border-color: var(--accent);
+	background: var(--accent-soft);
+	outline: none;
+}
+
 .pwa-install-button {
 	display: inline-flex;
 	align-items: center;

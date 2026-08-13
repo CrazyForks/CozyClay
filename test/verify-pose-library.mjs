@@ -46,14 +46,14 @@ for (const id of newIds) {
 const studioSource = readFileSync(new URL("../src/posestudio.jsx", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
-for (const label of ["손 흔들기", "생각하기", "웅크리기", "무릎 꿇기", "달리기", "점프"]) {
-	expect(`Pose Studio includes Korean label ${label}`, studioSource.includes(label));
+for (const [en, koText] of [["Wave", "손 흔들기"], ["Thinking", "생각하기"], ["Crouch", "웅크리기"], ["Kneel", "무릎 꿇기"], ["Run", "달리기"], ["Jump", "점프"]]) {
+	expect(`Pose Studio maps ${en} to Korean for the ko locale`, studioSource.includes(`ko("${en}", "${koText}")`));
 }
 expect("Pose Studio exposes stable pose id hook", studioSource.includes("data-pose-id={pose.id}"));
 expect("Pose Studio exposes save custom hook", studioSource.includes('data-pose-id="save-custom"'));
 expect("Pose Studio keeps custom pose labels", studioSource.includes("pose.custom ? pose.label"));
 expect("Pose Studio applies its synchronous draft selection", studioSource.includes("onApply(selectedIdRef.current)"));
-expect("Pose Studio explains motion ownership", studioSource.includes("data-pose-motion-warning") && studioSource.includes("motionActive ? \"모션 지우고 포즈 적용\""));
+expect("Pose Studio explains motion ownership", studioSource.includes("data-pose-motion-warning") && studioSource.includes('motionActive ? ko("Clear motion and apply pose"'));
 expect("App clears loaded motion before applying a blocking pose", appSource.includes("motionActive={Boolean(motion)}") && appSource.includes("if (hadMotion) clearMotion()"));
 expect("Pose Studio keeps tiles inside a scrollable panel", stylesSource.includes(".studio-filters") && stylesSource.includes(".pose-grid") && stylesSource.includes("min-height: 0"));
 
@@ -114,7 +114,7 @@ if (process.env.CDP_PORT) {
 	await sleep(900);
 	await evaluate(`(() => {
 		const onboardingPose = [...document.querySelectorAll('.onboarding-action')]
-			.find((button) => button.textContent.includes('포즈'));
+			.find((button) => button.textContent.includes('Choose a pose'));
 		if (onboardingPose) {
 			onboardingPose.click();
 			return true;
@@ -125,9 +125,9 @@ if (process.env.CDP_PORT) {
 	await waitFor("!!document.querySelector('.pose-studio')");
 
 	expect("browser shows expanded pose hooks", await evaluate("document.querySelectorAll('.pose-tile[data-pose-id]').length >= 17"));
-	expect("browser shows new run pose", await evaluate("document.querySelector('[data-pose-id=\"run\"]')?.textContent.includes('달리기')"));
-	expect("browser shows category filter", await evaluate("[...document.querySelectorAll('.pose-studio .studio-filters button')].some((button) => button.textContent.trim() === '동작')"));
-	await evaluate("[...document.querySelectorAll('.pose-studio .studio-filters button')].find((button) => button.textContent.trim() === '동작')?.click()");
+	expect("browser shows new run pose", await evaluate("document.querySelector('[data-pose-id=\"run\"]')?.textContent.includes('Run')"));
+	expect("browser shows category filter", await evaluate("[...document.querySelectorAll('.pose-studio .studio-filters button')].some((button) => button.textContent.trim() === 'Action')"));
+	await evaluate("[...document.querySelectorAll('.pose-studio .studio-filters button')].find((button) => button.textContent.trim() === 'Action')?.click()");
 	await waitFor("document.querySelector('[data-pose-id=\"run\"]') && !document.querySelector('[data-pose-id=\"wave\"]')");
 	expect("browser filters action poses", await evaluate("!!document.querySelector('[data-pose-id=\"run\"]') && !!document.querySelector('[data-pose-id=\"jump\"]') && !document.querySelector('[data-pose-id=\"wave\"]')"));
 	await evaluate(`(() => {

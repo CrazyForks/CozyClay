@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ko, isKo } from "./locale.js";
 import { OBJECT_LIBRARY } from "./scene-objects.js";
 
 const GROUP_LABELS_KO = {
@@ -19,10 +20,11 @@ const OBJECT_LABELS_KO = {
 };
 
 export function displayObjectGroupName(name) {
-	return GROUP_LABELS_KO[name] ?? name;
+	return isKo ? (GROUP_LABELS_KO[name] ?? name) : name;
 }
 
 export function displayObjectLabel(label) {
+	if (!isKo) return label;
 	const numbered = label.match(/^(.+?) (\d+)$/);
 	if (numbered && OBJECT_LABELS_KO[numbered[1]]) return `${OBJECT_LABELS_KO[numbered[1]]} ${numbered[2]}`;
 	return OBJECT_LABELS_KO[label] ?? label;
@@ -70,7 +72,7 @@ export function CatalogueEntries({ onPick }) {
 	));
 }
 
-export default function AddObjectMenu({ onAdd, label = "오브젝트 추가" }) {
+export default function AddObjectMenu({ onAdd, label = ko("Add object", "오브젝트 추가") }) {
 	const [open, setOpen] = useState(false);
 	const rootRef = useRef(null);
 
