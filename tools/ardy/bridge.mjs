@@ -41,15 +41,12 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decodeMotionNpz } from "../../src/ardy/npz.js";
 import { motionArraysToNpzMembers, replaceMotionSegment, writeNpz } from "./npz.mjs";
+import { globalChildren, killGroup, runStreaming, track } from "./runners/proc.mjs";
+import { createRunner } from "./runners/index.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const OUT_DIR = join(HERE, "out");
-const REFS_DIR = join(OUT_DIR, "refs");
-const DUMP_SCRIPT = join(HERE, "dump-npz.py");
 const POSE_TO_NPZ = join(HERE, "pose-to-npz.mjs");
-const RUN_ON_BOX = join(HERE, "run-on-box.sh");
-const RUN_SEQUENCE_ON_BOX = join(HERE, "run-sequence-on-box.sh");
-const RUN_EDIT_ON_BOX = join(HERE, "run-edit-on-box.sh");
 
 const BIND_HOST = "127.0.0.1"; // loopback only: this process shells out
 const DEFAULT_PORT = 5181;
@@ -74,29 +71,14 @@ const MOTION_ALLOWLIST_MAX = 64; // newest runs only; evicted ids become stale 4
 // path-free (the id is a lookup key, never a path).
 const MOTION_ID = /^[0-9]+-[0-9a-f]{6}$/;
 
-// Same env var names as run-on-box.sh, so health, the bases listing and
-// generation all talk to one operator-configured host/venv/encoder.
-const HOST = process.env.CCLAY_ARDY_HOST?.trim() || "";
-const REMOTE = process.env.CCLAY_ARDY_REPO || "$HOME/ardy"; // literal $HOME: the REMOTE shell expands it
-const VENV_PY = process.env.CCLAY_ARDY_VENV || "~/ardy/.venv-cuda/bin/python"; // generator venv (tilde expands on the box)
-const ENCODER_URL = process.env.CCLAY_ARDY_ENCODER_URL || "http://127.0.0.1:9550/";
-// Numpy-only read paths (bases listing, reference dumps) use the CPU venv on
-// purpose: the box's two venvs are NOT interchangeable, and this is the one
-// the dump tooling is verified under.
-const DUMP_PY = "~/ardy/.venv/bin/python";
+// The runner is the ONLY part of the bridge that knows where generation
+// actually happens. Selection (runners/index.mjs): CCLAY_ARDY_MODE=local or
+// remote when set; otherwise remote when CCLAY_ARDY_HOST is configured, local
+// otherwise. Everything below the runner boundary — validation, caching,
+// streaming, the motion allowlist — is backend-agnostic.
+let runner; // assigned after CLI parsing, before the server starts
 
-// BatchMode: never hang on a password prompt. ConnectTimeout fails fast on a
-// dead host; ServerAlive* drops a wedged connection (same set run-on-box.sh
-// uses).
-const SSH_OPTS = [
-	"-o", "BatchMode=yes",
-	"-o", "ConnectTimeout=10",
-	"-o", "ServerAliveInterval=30",
-	"-o", "ServerAliveCountMax=240",
-];
-const SCP_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"];
-
-// A box base path is produced by the box's own `ls outputs/*.npz` /
+// A base path is produced by the backend's own `ls outputs/*.npz` /
 // `ls outputs/omb/*.npz` and is still whitelisted before it is embedded in a
 // remote shell string: only a plain, metacharacter-free relative npz path is
 // ever allowed through.
@@ -104,220 +86,14 @@ const SAFE_BASE_PATH = /^outputs\/(?:omb\/)?[A-Za-z0-9._-]+\.npz$/;
 const SAFE_BASE_ID = /^[A-Za-z0-9._-]+$/;
 
 // ---------------------------------------------------------------------------
-// process helpers
+// backend probes (health, bases) with caching
 // ---------------------------------------------------------------------------
 
-// All children spawned for generation are detached so they lead their own
-// process group; killing the group takes down bash AND the ssh it is waiting
-// on, so no remote session is orphaned. Tracked globally so Ctrl-C can clean
-// up too.
-const globalChildren = new Set();
-
-function track(child) {
-	globalChildren.add(child);
-	child.once("close", () => globalChildren.delete(child));
-}
-
-function killGroup(child) {
-	try {
-		process.kill(-child.pid, "SIGTERM");
-	} catch {
-		/* process group already gone */
-	}
-	// SIGKILL backup for anything that ignores SIGTERM; unref'd so it never
-	// keeps the bridge alive on its own.
-	const backup = setTimeout(() => {
-		try {
-			process.kill(-child.pid, "SIGKILL");
-		} catch {
-			/* gone */
-		}
-	}, 3000);
-	backup.unref();
-}
-
-// Run a short, non-streaming child (ssh/scp probes) to completion.
-function run(argv, { timeoutMs = 0 } = {}) {
-	return new Promise((resolvePromise, reject) => {
-		const child = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
-		let stdout = "";
-		let stderr = "";
-		let settled = false;
-		let timer = null;
-		const finish = (err, code) => {
-			if (settled) return;
-			settled = true;
-			if (timer) clearTimeout(timer);
-			if (err) reject(err);
-			else resolvePromise({ code, stdout, stderr });
-		};
-		child.stdout.setEncoding("utf8");
-		child.stderr.setEncoding("utf8");
-		child.stdout.on("data", (chunk) => {
-			stdout += chunk;
-		});
-		child.stderr.on("data", (chunk) => {
-			stderr += chunk;
-		});
-		child.on("error", (err) => finish(err));
-		child.on("close", (code) => finish(null, code));
-		if (timeoutMs > 0) {
-			timer = setTimeout(() => {
-				try {
-					child.kill("SIGKILL");
-				} catch {
-					/* gone */
-				}
-				finish(new Error(`timed out after ${timeoutMs} ms`));
-			}, timeoutMs);
-		}
-	});
-}
-
-// Split a child's stdout/stderr into lines as they arrive; empty lines are
-// dropped. The trailing partial line is flushed on end so the generator's
-// last line is never lost.
-function streamLines(stream, onLine) {
-	let buffer = "";
-	stream.setEncoding("utf8");
-	stream.on("data", (chunk) => {
-		buffer += chunk;
-		let idx;
-		while ((idx = buffer.indexOf("\n")) !== -1) {
-			const line = buffer.slice(0, idx).replace(/\r$/, "");
-			buffer = buffer.slice(idx + 1);
-			if (line) onLine(line);
-		}
-	});
-	stream.on("end", () => {
-		const rest = buffer.replace(/\r$/, "");
-		if (rest) onLine(rest);
-	});
-}
-
-// Resolves with the exit code; rejects when the child could not be started.
-function runStreaming(child, onLine) {
-	return new Promise((resolvePromise, reject) => {
-		let settled = false;
-		const finish = (fn, value) => {
-			if (!settled) {
-				settled = true;
-				fn(value);
-			}
-		};
-		child.on("error", (err) => finish(reject, err));
-		child.on("close", (code) => finish(resolvePromise, code));
-		for (const [streamName, stream] of [
-			["stdout", child.stdout],
-			["stderr", child.stderr],
-		]) {
-			streamLines(stream, (line) => onLine(line, streamName));
-		}
-	});
-}
-
-function lastLine(text) {
-	const lines = text
-		.split("\n")
-		.map((line) => line.trim())
-		.filter((line) => line.length > 0);
-	return lines.length ? lines[lines.length - 1] : "";
-}
-
-// ---------------------------------------------------------------------------
-// box probes (health, bases) with caching
-// ---------------------------------------------------------------------------
-
-// One ssh round trip covers everything health needs: the host answering is
-// the ssh call itself, then the encoder HTTP code and the device the
-// generator venv would pick are read on the box with the same env the
-// generator runs under. The device line mirrors run-on-box.sh's probe
-// exactly, so what health reports is what the generation will use.
-function healthRemoteCmd() {
-	return [
-		`ENC="$(curl -s -o /dev/null -w '%{http_code}' -m 10 ${ENCODER_URL})"`,
-		'[ -n "$ENC" ] || ENC="000"',
-		`DEV="$(cd ${REMOTE} && ${VENV_PY} -c 'import torch; print("cuda:0" if torch.cuda.is_available() else "cpu")')"`,
-		`printf 'encoder=%s\\ndevice=%s\\n' "$ENC" "$DEV"`,
-	].join(" && ");
-}
-
-async function probeHealth() {
-	const { code, stdout, stderr } = await run(
-		["ssh", ...SSH_OPTS, HOST, healthRemoteCmd()],
-		{ timeoutMs: 60_000 }
-	);
-	if (code !== 0) {
-		throw new Error(`ssh probe on ${HOST} failed (exit ${code}): ${lastLine(stderr)}`);
-	}
-	const fields = {};
-	for (const line of stdout.split("\n")) {
-		const match = /^(encoder|device)=(.*)$/.exec(line.trim());
-		if (match) fields[match[1]] = match[2];
-	}
-	if (!("encoder" in fields)) {
-		throw new Error(`encoder probe on ${HOST} produced no answer`);
-	}
-	if (fields.encoder !== "200") {
-		throw new Error(`text encoder at ${ENCODER_URL} answered ${fields.encoder}, not 200`);
-	}
-	if (!("device" in fields) || fields.device === "") {
-		const tail = lastLine(stderr);
-		throw new Error(
-			`device probe on ${HOST} produced no answer${tail ? `: ${tail}` : ""}`
-		);
-	}
-	if (!/^(cpu|cuda:\d+)$/.test(fields.device)) {
-		throw new Error(
-			`device probe on ${HOST} returned unexpected ${JSON.stringify(fields.device)}`
-		);
-	}
-	return { ok: true, host: HOST, encoder: Number(fields.encoder), device: fields.device };
-}
-
-// Frame counts come from a real load of each npz, in ONE ssh call: the script
-// is fed to the box's python over a quoted heredoc (no local shell step), and
-// entries that fail to load are skipped with a note on the box stderr instead
-// of failing the whole listing.
-function basesRemoteCmd() {
-	const script = [
-		"import glob, json, sys",
-		"import numpy as np",
-		"entries = []",
-		'for pattern in ("outputs/*.npz", "outputs/omb/*.npz"):',
-		"    for path in sorted(glob.glob(pattern)):",
-		"        try:",
-		'            data = np.load(path, allow_pickle=False)',
-		'            frames = int(data["posed_joints"].shape[0])',
-		"            data.close()",
-		"        except Exception as exc:",
-		'            print("bases: skipping %s: %s" % (path, exc), file=sys.stderr)',
-		"            continue",
-		'        entries.append({"id": path.rsplit("/", 1)[-1][:-4], "path": path, "frames": frames})',
-		"print(json.dumps(entries))",
-	].join("\n");
-	return `cd ${REMOTE} && ${DUMP_PY} - <<'COZYCLAY_PY_EOF'\n${script}\nCOZYCLAY_PY_EOF`;
-}
-
-async function listBases() {
-	const { code, stdout, stderr } = await run(
-		["ssh", ...SSH_OPTS, HOST, basesRemoteCmd()],
-		{ timeoutMs: 120_000 }
-	);
-	if (code !== 0) {
-		throw new Error(`bases listing on ${HOST} failed (exit ${code}): ${lastLine(stderr)}`);
-	}
-	let entries;
-	try {
-		entries = JSON.parse(stdout);
-	} catch (err) {
-		throw new Error(
-			`bases listing on ${HOST} did not parse as JSON: ${lastLine(stderr) || err.message}`
-		);
-	}
-	if (!Array.isArray(entries)) {
-		throw new Error(`bases listing on ${HOST} was not an array`);
-	}
+// The raw listing comes from the runner (a box's `ls outputs/*.npz` over ssh,
+// or a local directory scan); the bridge sanitizes every entry the same way
+// regardless of backend before anything downstream can see it.
+async function fetchBases() {
+	const entries = await runner.listBases();
 	const bases = [];
 	for (const entry of entries) {
 		if (
@@ -328,18 +104,18 @@ async function listBases() {
 			!Number.isInteger(entry.frames) ||
 			entry.frames < 0
 		) {
-			console.error(`[bridge] skipping malformed bases entry from ${HOST}: ${JSON.stringify(entry)}`);
+			console.error(`[bridge] skipping malformed bases entry: ${JSON.stringify(entry)}`);
 			continue;
 		}
 		if (!SAFE_BASE_ID.test(entry.id) || !SAFE_BASE_PATH.test(entry.path)) {
-			console.error(`[bridge] skipping unsafe bases entry from ${HOST}: ${JSON.stringify(entry)}`);
+			console.error(`[bridge] skipping unsafe bases entry: ${JSON.stringify(entry)}`);
 			continue;
 		}
 		bases.push({ id: entry.id, path: entry.path, frames: entry.frames });
 	}
 	// Duplicate ids (same name under outputs/ and outputs/omb/) are kept as-is;
-	// generate matches the first, which is exactly the lookup order
-	// run-on-box.sh uses, so the two cannot pick different files.
+	// generate matches the first, which is exactly the lookup order the
+	// generation path uses, so the two cannot pick different files.
 	return { bases };
 }
 
@@ -355,7 +131,7 @@ async function getHealth() {
 		return healthCache.value;
 	}
 	if (!healthInflight) {
-		healthInflight = probeHealth()
+		healthInflight = runner.probeHealth()
 			.then((value) => {
 				healthCache = { at: Date.now(), value };
 				return value;
@@ -381,7 +157,7 @@ async function getBases() {
 		return basesCache.value;
 	}
 	if (!basesInflight) {
-		basesInflight = listBases()
+		basesInflight = fetchBases()
 			.then((value) => {
 				basesCache = { at: Date.now(), value };
 				return value;
@@ -395,75 +171,6 @@ async function getBases() {
 			});
 	}
 	return basesInflight;
-}
-
-// ---------------------------------------------------------------------------
-// reference frame dumps
-// ---------------------------------------------------------------------------
-
-// The synthetic pose borrows its skeleton proportions and root from the base
-// clip, so a frame dump of the chosen base is required by pose-to-npz.mjs.
-// Dumps are cached on disk under tools/ardy/out/refs/<base>.json and produced
-// by running tools/ardy/dump-npz.py on the box (copied to /tmp, never into
-// ~/ardy, removed afterwards). Concurrent requests for the same base share
-// one dump via refInflight.
-const refInflight = new Map();
-
-function ensureReference(baseId, basePath) {
-	mkdirSync(REFS_DIR, { recursive: true });
-	const cachePath = join(REFS_DIR, `${baseId}.json`);
-	if (existsSync(cachePath)) {
-		try {
-			const cached = JSON.parse(readFileSync(cachePath, "utf8"));
-			if (cached && cached.schema === "ardy.frame.v1") return Promise.resolve(cachePath);
-			console.error(`[bridge] cached reference ${cachePath} is not ardy.frame.v1; re-dumping`);
-		} catch {
-			console.error(`[bridge] cached reference ${cachePath} is unreadable; re-dumping`);
-		}
-	}
-	if (refInflight.has(baseId)) return refInflight.get(baseId);
-	const promise = dumpReference(baseId, basePath, cachePath).finally(() => {
-		refInflight.delete(baseId);
-	});
-	refInflight.set(baseId, promise);
-	return promise;
-}
-
-async function dumpReference(baseId, basePath, cachePath) {
-	// basePath is already whitelisted by SAFE_BASE_PATH, so it cannot carry
-	// shell metacharacters into the remote command below.
-	const suffix = `${process.pid}-${randomBytes(4).toString("hex")}`;
-	const remoteScript = `/tmp/cozyclay-dump-${suffix}.py`;
-	try {
-		await run(
-			["scp", "-q", ...SCP_OPTS, DUMP_SCRIPT, `${HOST}:${remoteScript}`],
-			{ timeoutMs: 30_000 }
-		);
-		const { stdout, stderr } = await run(
-			["ssh", ...SSH_OPTS, HOST, `cd ${REMOTE} && ${DUMP_PY} ${remoteScript} ${basePath} 0`],
-			{ timeoutMs: 120_000 }
-		);
-		let parsed;
-		try {
-			parsed = JSON.parse(stdout);
-		} catch (err) {
-			throw new Error(
-				`reference dump for ${baseId} produced no JSON: ${lastLine(stderr) || err.message}`
-			);
-		}
-		if (!parsed || parsed.schema !== "ardy.frame.v1") {
-			throw new Error(
-				`reference dump for ${baseId} has schema ${JSON.stringify(parsed && parsed.schema)}`
-			);
-		}
-		writeFileSync(cachePath, stdout);
-		return cachePath;
-	} finally {
-		// Cleanup failure must never mask the real result.
-		await run(["ssh", ...SSH_OPTS, HOST, `rm -f ${remoteScript}`], { timeoutMs: 30_000 }).catch(
-			(err) => console.error(`[bridge] could not remove ${remoteScript} on ${HOST}: ${err.message}`)
-		);
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -774,18 +481,6 @@ function tryParseReport(line) {
 	return parsed;
 }
 
-// Force the same box config onto run-on-box.sh even when the bridge was
-// started with different env values; they must not disagree.
-function boxEnv() {
-	return {
-		...process.env,
-		CCLAY_ARDY_HOST: HOST,
-		CCLAY_ARDY_REPO: REMOTE,
-		CCLAY_ARDY_VENV: VENV_PY,
-		CCLAY_ARDY_ENCODER_URL: ENCODER_URL,
-	};
-}
-
 // ---------------------------------------------------------------------------
 // generated-motion delivery
 // ---------------------------------------------------------------------------
@@ -906,7 +601,7 @@ async function handleGenerate(req, res) {
 		try {
 			bases = await getBases();
 		} catch (err) {
-			sendJson(res, 503, { ok: false, reason: `cannot list base motions on ${HOST}: ${err.message}` });
+			sendJson(res, 503, { ok: false, reason: `cannot list base motions: ${err.message}` });
 			finish(503);
 			return;
 		}
@@ -1017,22 +712,21 @@ async function handleGenerate(req, res) {
 				})),
 			};
 			writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
-			const args = [
-				RUN_EDIT_ON_BOX,
-				"--source", sourceMotionPath,
-				"--manifest", manifestPath,
-				"--prompt", body.prompt,
-				"--context-before", String(body.motionEdit.contextBefore),
-				"--context-after", String(body.motionEdit.contextAfter),
-				"--output", outNpzPath,
-			];
-			if (Number.isInteger(body.seed)) args.push("--seed", String(body.seed));
-			for (const posePath of poseNpzPaths) args.push("--pose", posePath);
+			const cmd = await runner.editCommand({
+				source: sourceMotionPath,
+				manifest: manifestPath,
+				prompt: body.prompt,
+				contextBefore: body.motionEdit.contextBefore,
+				contextAfter: body.motionEdit.contextAfter,
+				seed: body.seed,
+				poseNpzPaths,
+				output: outNpzPath,
+			});
 			sendStatus(
 				`[bridge] editing frames ${body.motionEdit.startFrame}..${body.motionEdit.endFrame - 1} ` +
 				"with ARDY history and sparse constraints"
 			);
-			const box = spawnTracked("bash", args, { cwd: REPO, detached: true, env: boxEnv() });
+			const box = spawnTracked(cmd.command, cmd.args, { cwd: REPO, detached: true, env: cmd.env });
 			const last = { stderr: "", stdout: "" };
 			let report = null;
 			let done = null;
@@ -1044,7 +738,7 @@ async function handleGenerate(req, res) {
 						report = parsed;
 						return;
 					}
-					const marker = /^run-edit-on-box: done - (.+) \((\d+) bytes\)$/.exec(line);
+					const marker = cmd.doneRe.exec(line);
 					if (marker) {
 						done = { path: marker[1], bytes: Number(marker[2]) };
 						return;
@@ -1053,10 +747,10 @@ async function handleGenerate(req, res) {
 				sendStatus(line);
 			});
 			children.delete(box);
-			if (code !== 0) throw new Error(`run-edit-on-box failed (exit ${code}): ${last.stderr || last.stdout || "no output"}`);
-			if (!done || done.path !== outNpzPath) throw new Error("run-edit-on-box did not return the requested output");
+			if (code !== 0) throw new Error(`${cmd.label} failed (exit ${code}): ${last.stderr || last.stdout || "no output"}`);
+			if (!done || done.path !== outNpzPath) throw new Error(`${cmd.label} did not return the requested output`);
 			const finalSize = statSync(outNpzPath).size;
-			if (finalSize !== done.bytes) throw new Error("run-edit-on-box output size mismatch");
+			if (finalSize !== done.bytes) throw new Error(`${cmd.label} output size mismatch`);
 			if (report) send({ event: "report", report });
 			registerMotion(stamp, outNpzPath);
 			send({ event: "done", output: outNpzPath, bytes: finalSize, motionUrl: `/ardy/motions/${stamp}` });
@@ -1067,29 +761,25 @@ async function handleGenerate(req, res) {
 			return;
 		}
 		if (body.segments) {
-			const args = [RUN_SEQUENCE_ON_BOX];
-			for (const segment of segments) {
-				args.push(
-					"--segment",
-					segment.prompt,
-					String((segment.endFrame - segment.startFrame) / FPS)
-				);
-			}
 			// Root waypoints ride the same chained rollout (rollout-global
 			// frames): the sequence generator slices the constraint set per
 			// segment call, so a path and a prompt schedule coexist.
-			for (const wp of body.waypoints ?? []) {
-				args.push("--root-2d", String(wp.frame), String(wp.x), String(wp.z), wp.heading === null ? "none" : String(wp.heading));
-			}
-			if (Number.isInteger(body.seed)) args.push("--seed", String(body.seed));
-			if (body.cpu === true) args.push("--cpu");
-			args.push("--output", outNpzPath);
+			const cmd = await runner.sequenceCommand({
+				segments: segments.map((segment) => ({
+					prompt: segment.prompt,
+					durationS: (segment.endFrame - segment.startFrame) / FPS,
+				})),
+				waypoints: body.waypoints,
+				seed: body.seed,
+				cpu: body.cpu,
+				output: outNpzPath,
+			});
 			sendStatus(
 				`[bridge] generating ${segments.length} blocks in one autoregressive ARDY session` +
 				(body.waypoints?.length ? ` with a ${body.waypoints.length}-pin root path` : "")
 			);
 
-			const box = spawnTracked("bash", args, { cwd: REPO, detached: true, env: boxEnv() });
+			const box = spawnTracked(cmd.command, cmd.args, { cwd: REPO, detached: true, env: cmd.env });
 			const last = { stderr: "", stdout: "" };
 			let finalReport = null;
 			let done = null;
@@ -1101,7 +791,7 @@ async function handleGenerate(req, res) {
 						finalReport = parsed;
 						return;
 					}
-					const marker = /^run-sequence-on-box: done - (.+) \((\d+) bytes\)$/.exec(line);
+					const marker = cmd.doneRe.exec(line);
 					if (marker) {
 						done = { path: marker[1], bytes: Number(marker[2]) };
 						return;
@@ -1111,13 +801,13 @@ async function handleGenerate(req, res) {
 			});
 			children.delete(box);
 			if (code !== 0) {
-				throw new Error(`run-sequence-on-box failed (exit ${code}): ${last.stderr || last.stdout || "no output"}`);
+				throw new Error(`${cmd.label} failed (exit ${code}): ${last.stderr || last.stdout || "no output"}`);
 			}
-			if (!done) throw new Error('run-sequence-on-box exited 0 without a "done" marker');
-			if (done.path !== outNpzPath) throw new Error(`run-sequence-on-box returned unexpected output ${done.path}`);
+			if (!done) throw new Error(`${cmd.label} exited 0 without a "done" marker`);
+			if (done.path !== outNpzPath) throw new Error(`${cmd.label} returned unexpected output ${done.path}`);
 			const finalSize = statSync(outNpzPath).size;
 			if (finalSize === 0 || finalSize !== done.bytes) {
-				throw new Error(`run-sequence-on-box output size mismatch for ${outNpzPath}`);
+				throw new Error(`${cmd.label} output size mismatch for ${outNpzPath}`);
 			}
 			if (finalReport) send({ event: "report", report: finalReport });
 			registerMotion(stamp, outNpzPath);
@@ -1136,26 +826,23 @@ async function handleGenerate(req, res) {
 				throw new Error("generation has no pose constraint");
 			}
 			const segmentFrames = segment.endFrame - segment.startFrame;
-			const args = [RUN_ON_BOX];
-			for (const entry of localPoses) {
-				args.push(
-					"--pose-from",
-					poseNpzPaths[entry.poseIndex],
-					"0",
-					String(entry.frame - segment.startFrame)
-				);
-			}
-			if (match) args.push("--base", match.path);
-			args.push("--prompt", segment.prompt, "--duration", String(segmentFrames / FPS));
-			if (Number.isInteger(body.seed)) args.push("--seed", String(body.seed));
-			if (body.cpu === true) args.push("--cpu");
-			for (const wp of body.waypoints || []) {
-				args.push("--root-2d", String(wp.frame), String(wp.x), String(wp.z), wp.heading === null ? "none" : String(wp.heading));
-			}
-			args.push("--output", outputPath);
+			const cmd = await runner.singleCommand({
+				poseFroms: localPoses.map((entry) => ({
+					npz: poseNpzPaths[entry.poseIndex],
+					srcFrame: 0,
+					dstFrame: entry.frame - segment.startFrame,
+				})),
+				basePath: match ? match.path : null,
+				prompt: segment.prompt,
+				durationS: segmentFrames / FPS,
+				seed: body.seed,
+				cpu: body.cpu,
+				waypoints: body.waypoints,
+				output: outputPath,
+			});
 			sendStatus(`[bridge] generating frames ${segment.startFrame}..${segment.endFrame - 1}`);
 
-			const box = spawnTracked("bash", args, { cwd: REPO, detached: true, env: boxEnv() });
+			const box = spawnTracked(cmd.command, cmd.args, { cwd: REPO, detached: true, env: cmd.env });
 			const last = { stderr: "", stdout: "" };
 			let report = null;
 			let done = null;
@@ -1167,7 +854,7 @@ async function handleGenerate(req, res) {
 						report = parsed;
 						return;
 					}
-					const marker = /^run-on-box: done - (.+) \((\d+) bytes\)$/.exec(line);
+					const marker = cmd.doneRe.exec(line);
 					if (marker) {
 						done = { path: marker[1], bytes: Number(marker[2]) };
 						return;
@@ -1176,11 +863,11 @@ async function handleGenerate(req, res) {
 				sendStatus(line);
 			});
 			children.delete(box);
-			if (code !== 0) throw new Error(`run-on-box failed (exit ${code}): ${last.stderr || last.stdout || "no output"}`);
-			if (!done) throw new Error('run-on-box exited 0 without a "run-on-box: done" marker');
-			if (done.path !== outputPath) throw new Error(`run-on-box returned unexpected output ${done.path}`);
+			if (code !== 0) throw new Error(`${cmd.label} failed (exit ${code}): ${last.stderr || last.stdout || "no output"}`);
+			if (!done) throw new Error(`${cmd.label} exited 0 without a "done" marker`);
+			if (done.path !== outputPath) throw new Error(`${cmd.label} returned unexpected output ${done.path}`);
 			const size = statSync(outputPath).size;
-			if (size === 0 || size !== done.bytes) throw new Error(`run-on-box output size mismatch for ${outputPath}`);
+			if (size === 0 || size !== done.bytes) throw new Error(`${cmd.label} output size mismatch for ${outputPath}`);
 			return report;
 		};
 
@@ -1286,9 +973,18 @@ Dev-only HTTP sidecar for the ARDY loop. See tools/ardy/BRIDGE.md.
 
 env:
   COZYCLAY_BRIDGE_PORT    same as --port (default 5181)
-  CCLAY_ARDY_HOST         ssh destination for the ARDY host (required)
+  CCLAY_ARDY_MODE         "local" or "remote"; default: remote when
+                          CCLAY_ARDY_HOST is set, local otherwise
+
+remote mode (generation on an ssh box):
+  CCLAY_ARDY_HOST         ssh destination for the ARDY host
   CCLAY_ARDY_REPO         ARDY checkout on the box       (default $HOME/ardy)
   CCLAY_ARDY_VENV         generator venv python on the box (default ~/ardy/.venv-cuda/bin/python)
+  CCLAY_ARDY_ENCODER_URL  text encoder service           (default http://127.0.0.1:9550/)
+
+local mode (generation on this machine; run tools/ardy/setup-local.sh once):
+  CCLAY_ARDY_LOCAL_DIR    local ARDY checkout            (default ~/.cozyclay/ardy)
+  CCLAY_ARDY_LOCAL_VENV   generator venv python          (default <local-dir>/.venv/bin/python)
   CCLAY_ARDY_ENCODER_URL  text encoder service           (default http://127.0.0.1:9550/)
 `);
 }
@@ -1323,7 +1019,11 @@ if (process.env.COZYCLAY_BRIDGE_PORT !== undefined) {
 }
 
 const port = resolvePort(process.argv.slice(2));
-if (!HOST) die("CCLAY_ARDY_HOST is required (for example: user@ardy-host)");
+try {
+	runner = createRunner();
+} catch (err) {
+	die(err.message);
+}
 
 const server = createServer((req, res) => {
 	const started = Date.now();
@@ -1408,7 +1108,7 @@ server.on("clientError", (err, socket) => {
 server.listen(port, BIND_HOST, () => {
 	console.log(`[bridge] ARDY dev bridge listening on http://${BIND_HOST}:${port}`);
 	console.log("[bridge] dev-only sidecar: the static dist/ build does not need it; stop with Ctrl-C");
-	console.log(`[bridge] box ${HOST} (repo ${REMOTE}, generator venv ${VENV_PY}, encoder ${ENCODER_URL})`);
+	console.log(`[bridge] ${runner.mode} backend: ${runner.describe()}`);
 });
 
 server.on("error", (err) => {
