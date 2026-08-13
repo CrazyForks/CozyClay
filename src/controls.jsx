@@ -149,6 +149,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 				look.current.pitch -= dy * LOOK_SENS;
 				look.current.pitch = THREE.MathUtils.clamp(look.current.pitch, -PITCH_LIMIT, PITCH_LIMIT);
 				active.changed = active.changed || dx !== 0 || dy !== 0;
+				if (dx !== 0 || dy !== 0) cameraChangeRef.current?.();
 				return;
 			}
 			if (active.kind === "pan") {
@@ -161,6 +162,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 				cam.position.addScaledVector(up, dy * PAN_SENS * distance);
 				cam.position.y = Math.max(cam.position.y, 0.12);
 				active.changed = active.changed || dx !== 0 || dy !== 0;
+				if (dx !== 0 || dy !== 0) cameraChangeRef.current?.();
 				return;
 			}
 			// orbit: swing the camera around the pivot, then re-aim at it so the
@@ -178,6 +180,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 			look.current.yaw = angles.yaw;
 			look.current.pitch = angles.pitch;
 			active.changed = active.changed || dx !== 0 || dy !== 0;
+			if (dx !== 0 || dy !== 0) cameraChangeRef.current?.();
 		};
 
 		const onWheel = (e) => {
@@ -246,7 +249,10 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 		if (keys.current.has("e")) cam.position.y += crane;
 		if (keys.current.has("q")) cam.position.y -= crane;
 		cam.position.y = Math.max(cam.position.y, 0.12);
-		if (gesture.current) gesture.current.changed = true;
+		if (gesture.current) {
+			gesture.current.changed = true;
+			cameraChangeRef.current?.();
+		}
 	});
 
 	return null;

@@ -613,6 +613,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 				if (grip.id === "cam") {
 					// a manual aim; the operator has decided to point off-subject
 					look.current.yaw = yaw;
+					latest.current.onCameraChange?.();
 					return;
 				}
 				// 5° detents, because actors are blocked to clean angles
@@ -632,6 +633,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 				const angles = aimAt(cam.position, aimTarget());
 				look.current.yaw = angles.yaw;
 				look.current.pitch = angles.pitch;
+				latest.current.onCameraChange?.();
 				return;
 			}
 			const next = { x: snap(p.x, ACTOR_LIMIT), z: snap(p.z, ACTOR_LIMIT) };

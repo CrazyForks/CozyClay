@@ -113,7 +113,13 @@ expect(
 	timeline.includes('className="tl-camera-metric"') &&
 	(timeline.match(/className="tl-camera-metric"/g) ?? []).length === 3 &&
 	app.includes("followFramingFromCamera(cam.position, look.current.pitch") &&
-	app.includes("onCameraChange={syncActiveCameraFraming}"),
+	app.includes("onCameraChange={commitManualCameraFraming}"),
+);
+expect(
+	"manual viewport framing stays put until preview or playback",
+	app.includes("manualCameraOverrideRef.current = true") &&
+	app.includes("flyingRef.current || manualCameraOverrideRef.current") &&
+	app.includes("manualCameraOverrideRef.current = false"),
 );
 expect(
 	"waypoint mode replaces camera controls with one clear message",

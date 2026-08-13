@@ -843,6 +843,10 @@ globalThis.playMode = centerTab === "play";
 	// leaving pauses it. Scene stays the manipulation surface.
 	const [tlPlaying, setTlPlaying] = useState(false);
 	const cameraPreviewEndRef = useRef(null);
+	// Once the operator touches the viewport, the physical camera stays in
+	// their hands. Follow/Rail only take it back through an explicit Preview or
+	// timeline Play, avoiding the snap-back that used to happen on pointer-up.
+	const manualCameraOverrideRef = useRef(false);
 	useEffect(() => {
 		// The player always starts the finished piece from frame 0; auto-play
 		// only exists once there is a motion to play.
@@ -1478,6 +1482,11 @@ globalThis.playMode = centerTab === "play";
 			return { ...shot, camera: updateCameraBlock(camera, { followCam: { ...previous, ...measured } }) };
 		}));
 	}
+	function commitManualCameraFraming() {
+		if (ikMode || playMode) return;
+		manualCameraOverrideRef.current = true;
+		syncActiveCameraFraming();
+	}
 	function changeCameraRail(points) {
 		changeActiveCamera({
 			cameraRail: points,
@@ -1513,6 +1522,7 @@ globalThis.playMode = centerTab === "play";
 			return;
 		}
 		setMovePlaying(false);
+		manualCameraOverrideRef.current = false;
 		cameraPreviewEndRef.current = selected.endFrame;
 		setTlFrame(selected.startFrame);
 		setTlPlaying(true);
@@ -1629,6 +1639,7 @@ globalThis.playMode = centerTab === "play";
 		setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * 20);
 		setTlFrame(0);
 		setMovePlaying(false);
+		manualCameraOverrideRef.current = false;
 		setRailDraw(false);
 		setActiveWaypointFrame(null);
 		setPendingWaypointFrame(null);
@@ -2015,6 +2026,7 @@ globalThis.playMode = centerTab === "play";
 	function selectTimelineShot(index) {
 		const selected = shots[index];
 		if (!selected) return;
+		manualCameraOverrideRef.current = false;
 		setTlFrame(selected.startFrame);
 		setSelectedHierarchyId("camera");
 		setSidebarTab("inspector");
@@ -3350,7 +3362,7 @@ globalThis.playMode = centerTab === "play";
 								track={followTrack}
 								camRef={shotCamRef}
 								look={look}
-								isInterrupted={() => flyingRef.current}
+								isInterrupted={() => flyingRef.current || manualCameraOverrideRef.current}
 							/>
 							{/* Camera stays live in IK mode but drives the POSER camera,
 							    never the shot camera: the handle layer only consumes
@@ -3368,7 +3380,7 @@ globalThis.playMode = centerTab === "play";
 								onFlyStateChange={(flying) => {
 									flyingRef.current = flying;
 								}}
-								onCameraChange={syncActiveCameraFraming}
+								onCameraChange={commitManualCameraFraming}
 							/>
 							<PoseHandles
 								root={posing === "B" ? rigB : rigA}
@@ -3424,7 +3436,7 @@ globalThis.playMode = centerTab === "play";
 									const curve = buildRail(simplified);
 									setToast(isKo ? `카메라 레일 완성 — ${curve ? curve.length.toFixed(1) : "?"} m, 제어점 ${simplified.length}개` : `Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
 								}}
-								onCameraChange={syncActiveCameraFraming}
+								onCameraChange={commitManualCameraFraming}
 							/>
 							{/* Object gizmo: the shot pane's direct manipulation. Off while
 							    the plan owns the big pane (the pucks are the handles there)
@@ -4314,6 +4326,7 @@ globalThis.playMode = centerTab === "play";
 				onStep={stepFrame}
 				onPlayToggle={() => {
 					cameraPreviewEndRef.current = null;
+					manualCameraOverrideRef.current = false;
 					setTlPlaying((v) => !v);
 				}}
 				onWaypointToggle={toggleWaypointMode}
