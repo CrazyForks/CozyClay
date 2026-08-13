@@ -20,8 +20,9 @@ import {
 	SHOT_AUTHORING_LEGACY_KEY,
 	SHOT_AUTHORING_LEGACY_KEYS,
 	SHOT_AUTHORING_QUARANTINE_KEY,
+	createShotAuthoringDocument,
+	readShotAuthoringDocument,
 	readShotAuthoring,
-	serializeShotAuthoring,
 } from "./shot-authoring.js";
 import { buildFollowTrack, buildRail, buildRailFollowTrack, simplifyStroke } from "./camera-follow.js";
 import { createCameraBlock, updateCameraBlock } from "./camera-block.js";
@@ -29,19 +30,27 @@ import { SetProps } from "./props.jsx";
 import {
 	DEFAULT_SCENE_OBJECTS,
 	OBJECT_COLORS,
-	SCENE_QUARANTINE_KEY,
-	SCENE_STORAGE_KEY,
 	createSceneObject,
 	dropToSurfacePatch,
-	loadScene,
 	objectSize,
 	placementInFront,
 	removeSceneObject,
 	sceneObjectIdFromHierarchy,
-	serializeScene,
 	updateSceneObject,
 } from "./scene-objects.js";
 import { createSceneHistoryStore } from "./scene-history.js";
+import {
+	SCENES_QUARANTINE_KEY,
+	SCENES_STORAGE_KEY,
+	activeSceneIndex,
+	addScene,
+	createSceneDocument,
+	duplicateScene,
+	loadSceneDocumentFromStorage,
+	removeScene,
+	renameScene,
+	serializeSceneDocument,
+} from "./scenes.js";
 import ObjectGizmo from "./object-gizmo.jsx";
 import AddObjectMenu from "./object-catalog.jsx";
 import ResultModal from "./result-modal.jsx";
@@ -768,66 +777,41 @@ function loadWorkspaceLayout() {
 	}
 }
 
-/**
- * The startup scene load (plan §8.3): a tagged result from loadScene plus the
- * session's durability posture. Runs once inside a lazy initializer, so the
- * quarantine write happens before the first render and the toast/error ride
- * along as initial UI state. A throwing getItem counts as absent — private
- * browsing must never crash the studio.
- */
+/** Load the Scene envelope once. Legacy single-scene objects are migrated by
+ * scenes.js; App only supplies the familiar starter set for a truly new room. */
 function loadSceneStartup() {
-	let raw = null;
-	try {
-		raw = localStorage.getItem(SCENE_STORAGE_KEY);
-	} catch {
-		raw = null;
-	}
-	// DEFAULT_SCENE_OBJECTS stays the fallback, never a seed over storage
-	// (plan §8.5); the clone keeps the record footprint copies independent.
 	const defaults = () => DEFAULT_SCENE_OBJECTS.map((object) => ({ ...object, footprint: { ...object.footprint } }));
-	const result = loadScene(raw);
-	if (result.status === "valid") {
-		return {
-			objects: result.objects,
-			saveBlocked: false,
-			error: null,
-			toast: result.dropped > 0 ? (isKo ? `저장된 오브젝트 ${result.dropped}개를 복원하지 못했어요` : `${result.dropped} saved object(s) could not be restored`) : null,
-		};
-	}
-	if (result.status === "future") {
-		// A newer build wrote this scene. Overwriting it with our older schema
-		// would destroy newer data, so this session never writes the primary key.
-		return {
-			objects: defaults(),
-			saveBlocked: true,
-			error: null,
-			toast: ko("Saved scene was written by a newer CozyClay — it has been left untouched and this session will not save", "저장된 장면은 더 최신 CozyClay에서 만들어졌어요. 이 세션에서는 건드리지 않고 저장도 하지 않습니다."),
-		};
-	}
-	if (result.status === "corrupt") {
-		try {
-			// Keep the unreadable bytes under the quarantine key before the
-			// first save overwrites the primary.
-			localStorage.setItem(SCENE_QUARANTINE_KEY, raw);
+	try {
+		const result = loadSceneDocumentFromStorage(localStorage);
+		if (result.status === "future") {
+			const document = createSceneDocument();
+			document.scenes[0].objects = defaults();
 			return {
-				objects: defaults(),
-				saveBlocked: false,
-				error: null,
-				toast: ko("Saved scene was unreadable — starting empty; the old data is kept under cozyclay.scene.v1.quarantine", "저장된 장면을 읽을 수 없어 빈 장면으로 시작합니다. 기존 데이터는 cozyclay.scene.v1.quarantine에 보관했어요."),
-			};
-		} catch {
-			// If the backup write fails, overwriting the corrupt primary would
-			// lose the only copy of the data — saving stays blocked instead.
-			return {
-				objects: defaults(),
+				document,
 				saveBlocked: true,
-				error: ko("Saved scene was unreadable and could not be backed up — this session will not save", "저장된 장면을 읽을 수 없고 백업도 실패했어요. 이 세션에서는 저장하지 않습니다."),
-				toast: null,
+				error: null,
+				toast: ko("Saved scenes were written by a newer CozyClay — they have been left untouched and this session will not save", "저장된 장면은 더 최신 CozyClay에서 만들어졌어요. 이 세션에서는 건드리지 않고 저장도 하지 않습니다."),
 			};
 		}
+		const document = result.document;
+		if ((result.status === "absent" || result.status === "corrupt") && document.scenes[0].objects.length === 0) {
+			document.scenes[0].objects = defaults();
+		}
+		return {
+			document,
+			saveBlocked: false,
+			error: null,
+			toast: result.status === "corrupt"
+				? ko(`Saved scenes were unreadable — starting fresh; the old data is kept under ${SCENES_QUARANTINE_KEY}`, `저장된 장면을 읽을 수 없어 새로 시작합니다. 기존 데이터는 ${SCENES_QUARANTINE_KEY}에 보관했어요.`)
+				: result.dropped > 0
+					? (isKo ? `저장된 장면 ${result.dropped}개를 복원하지 못했어요` : `${result.dropped} saved scene(s) could not be restored`)
+					: null,
+		};
+	} catch {
+		const document = createSceneDocument();
+		document.scenes[0].objects = defaults();
+		return { document, saveBlocked: false, error: null, toast: null };
 	}
-	// absent: nothing saved, or a read that threw — either way a fresh scene.
-	return { objects: defaults(), saveBlocked: false, error: null, toast: null };
 }
 
 export default function App() {
@@ -1084,7 +1068,10 @@ globalThis.playMode = centerTab === "play";
 	// quarantine write and the save-block decision happen before the first
 	// render, and the toast/error they produce ride along as initial UI state.
 	const [startup] = useState(loadSceneStartup);
-	const [sceneObjects, setSceneObjects] = useState(startup.objects);
+	const [scenes, setScenes] = useState(startup.document.scenes);
+	const [activeSceneId, setActiveSceneId] = useState(startup.document.activeSceneId);
+	const startupScene = startup.document.scenes[activeSceneIndex(startup.document.scenes, startup.document.activeSceneId)];
+	const [sceneObjects, setSceneObjects] = useState(startupScene.objects);
 	const [sceneSaveError, setSceneSaveError] = useState(startup.error);
 	const saveBlockedRef = useRef(startup.saveBlocked);
 	const dirtyRef = useRef(false);
@@ -1101,56 +1088,6 @@ globalThis.playMode = centerTab === "play";
 		storeRef.current = createSceneHistoryStore(sceneObjects, { onObjects: setSceneObjects });
 	}
 	const store = storeRef.current;
-
-	// ---- scene persistence (plan §8.4) ----
-	// Every write serialises the store at invocation time — the LIVE read,
-	// never a value captured by the caller. A stale closure would flush
-	// startup state over the latest edit, so flushScene closes over refs only.
-	function flushScene() {
-		if (saveBlockedRef.current || !dirtyRef.current) return;
-		try {
-			localStorage.setItem(SCENE_STORAGE_KEY, serializeScene(storeRef.current.objects));
-			dirtyRef.current = false;
-			setSceneSaveError(null);
-			// The next successful write clears the whole failure surface (plan
-			// §8.4) without clobbering an unrelated toast that replaced it.
-			if (saveFailureToastRef.current) {
-				saveFailureToastRef.current = false;
-				setToast("");
-			}
-		} catch (err) {
-			const message = `Scene not saved: ${err?.name || "StorageError"}`;
-			setSceneSaveError(message);
-			if (!saveFailureToastRef.current) {
-				saveFailureToastRef.current = true;
-				setToast(message);
-			}
-		}
-	}
-	// Debounced write: the cleanup clears the timer only — clearing IS the
-	// debounce; flushing there would write on every tick.
-	useEffect(() => {
-		dirtyRef.current = true;
-		const timer = setTimeout(flushScene, 400);
-		return () => clearTimeout(timer);
-	}, [sceneObjects]);
-	// Lifecycle flush: pagehide covers navigation/tab close, visibilitychange
-	// covers backgrounding, the effect cleanup covers unmount. `beforeunload`
-	// is deliberately not used — it defeats bfcache. The [] deps capture only
-	// refs and flushScene, so this closure can never hold a stale scene.
-	useEffect(() => {
-		const onPageHide = () => flushScene();
-		const onVisibility = () => {
-			if (document.visibilityState === "hidden") flushScene();
-		};
-		window.addEventListener("pagehide", onPageHide);
-		document.addEventListener("visibilitychange", onVisibility);
-		return () => {
-			window.removeEventListener("pagehide", onPageHide);
-			document.removeEventListener("visibilitychange", onVisibility);
-			flushScene(); // unmount: the last chance to persist a dirty scene
-		};
-	}, []);
 	const selectedSceneObjectId = sceneObjectIdFromHierarchy(selectedHierarchyId);
 	const selectedSceneObject = sceneObjects.find((object) => object.id === selectedSceneObjectId) ?? null;
 	// Foot snap (ground plant): while ON, body (hips) drags keep the feet at
@@ -1441,7 +1378,10 @@ globalThis.playMode = centerTab === "play";
 			return { state: null, saveBlocked: false };
 		}
 	});
-	const startupShotState = shotStartup.state;
+	const nestedShotStartup = readShotAuthoringDocument(startupScene.shotDocument ?? undefined);
+	// The nested Scene document wins. The root v3 key remains a migration
+	// fallback for users arriving from the single-scene build.
+	const startupShotState = nestedShotStartup.state ?? shotStartup.state;
 	// Each editorial strip owns its camera keys. The playhead chooses the
 	// active strip; there is no shared key list that could blend through a cut.
 	const [shots, setShots] = useState(() => startupShotState?.shots ?? initialShots(startupShotState?.frameCount ?? DEFAULT_DURATION_S * 20));
@@ -1530,16 +1470,155 @@ globalThis.playMode = centerTab === "play";
 		setActiveWaypointFrame((current) => (current === 0 ? null : current));
 		setPendingWaypointFrame((current) => (current === 0 ? null : current));
 	}, []);
-	// Every authoring change lands in storage immediately: reloads (and dev
-	// hot updates) must never cost an authored shot again.
-	useEffect(() => {
-		if (shotStartup.saveBlocked) return;
+
+	/* --------------------------- Scene documents --------------------------- */
+	// Refs make a Scene switch synchronous: the outgoing room is sealed with
+	// its latest objects and camera department envelope before React opens the
+	// destination room.
+	const scenesRef = useRef(scenes);
+	const activeSceneIdRef = useRef(activeSceneId);
+	const shotDocumentRef = useRef(null);
+	scenesRef.current = scenes;
+	activeSceneIdRef.current = activeSceneId;
+	shotDocumentRef.current = createShotAuthoringDocument({ shots, waypoints, frameCount: tlFrameCount });
+
+	function snapshotActiveScene(sourceScenes = scenesRef.current) {
+		return sourceScenes.map((scene) => scene.id === activeSceneIdRef.current
+			? { ...scene, objects: storeRef.current.objects, shotDocument: shotDocumentRef.current }
+			: scene);
+	}
+
+	function persistScenes(nextScenes, nextActiveSceneId) {
+		if (saveBlockedRef.current) return false;
 		try {
-			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ shots, waypoints, frameCount: tlFrameCount }));
-		} catch {
-			// quota or blocked storage: authoring simply won't survive a reload
+			localStorage.setItem(SCENES_STORAGE_KEY, serializeSceneDocument({
+				version: 1,
+				activeSceneId: nextActiveSceneId,
+				scenes: nextScenes,
+			}));
+			dirtyRef.current = false;
+			setSceneSaveError(null);
+			if (saveFailureToastRef.current) {
+				saveFailureToastRef.current = false;
+				setToast("");
+			}
+			return true;
+		} catch (err) {
+			const message = `Scenes not saved: ${err?.name || "StorageError"}`;
+			setSceneSaveError(message);
+			if (!saveFailureToastRef.current) {
+				saveFailureToastRef.current = true;
+				setToast(message);
+			}
+			return false;
 		}
-	}, [shots, waypoints, tlFrameCount, shotStartup.saveBlocked]);
+	}
+
+	function flushScenes() {
+		if (!dirtyRef.current) return;
+		persistScenes(snapshotActiveScene(), activeSceneIdRef.current);
+	}
+
+	function restoredShotState(scene) {
+		const restored = readShotAuthoringDocument(scene?.shotDocument ?? undefined);
+		if (restored.state) return restored.state;
+		const frameCount = DEFAULT_DURATION_S * 20;
+		return { shots: initialShots(frameCount), waypoints: [], frameCount };
+	}
+
+	function openScene(scene, nextScenes) {
+		const shotState = restoredShotState(scene);
+		const objects = Array.isArray(scene.objects) ? scene.objects : [];
+		storeRef.current = createSceneHistoryStore(objects, { onObjects: setSceneObjects });
+		setSceneObjects(objects);
+		setShots(shotState.shots);
+		setWaypoints(shotState.waypoints);
+		setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * 20);
+		setTlFrame(0);
+		setMovePlaying(false);
+		setRailDraw(false);
+		setActiveWaypointFrame(null);
+		setPendingWaypointFrame(null);
+		setSelectedHierarchyId("shot");
+		scenesRef.current = nextScenes;
+		activeSceneIdRef.current = scene.id;
+		setScenes(nextScenes);
+		setActiveSceneId(scene.id);
+	}
+
+	function selectSceneDocument(sceneId) {
+		if (sceneId === activeSceneIdRef.current) return;
+		const savedScenes = snapshotActiveScene();
+		const target = savedScenes.find((scene) => scene.id === sceneId);
+		if (!target) return;
+		persistScenes(savedScenes, sceneId);
+		openScene(target, savedScenes);
+	}
+
+	function createSceneDocumentFromUi() {
+		const savedScenes = snapshotActiveScene();
+		const nextScenes = addScene(savedScenes);
+		const target = nextScenes[nextScenes.length - 1];
+		persistScenes(nextScenes, target.id);
+		openScene(target, nextScenes);
+	}
+
+	function duplicateSceneDocumentFromUi(sceneId) {
+		const savedScenes = snapshotActiveScene();
+		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
+		if (index < 0) return;
+		const nextScenes = duplicateScene(savedScenes, index);
+		const target = nextScenes[index + 1];
+		persistScenes(nextScenes, target.id);
+		openScene(target, nextScenes);
+	}
+
+	function renameSceneDocumentFromUi(sceneId, name) {
+		const savedScenes = snapshotActiveScene();
+		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
+		if (index < 0) return;
+		const nextScenes = renameScene(savedScenes, index, name);
+		scenesRef.current = nextScenes;
+		setScenes(nextScenes);
+		persistScenes(nextScenes, activeSceneIdRef.current);
+	}
+
+	function deleteSceneDocumentFromUi(sceneId) {
+		const savedScenes = snapshotActiveScene();
+		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
+		if (index < 0 || savedScenes.length <= 1) return;
+		const nextScenes = removeScene(savedScenes, index);
+		if (sceneId !== activeSceneIdRef.current) {
+			scenesRef.current = nextScenes;
+			setScenes(nextScenes);
+			persistScenes(nextScenes, activeSceneIdRef.current);
+			return;
+		}
+		const target = nextScenes[Math.min(index, nextScenes.length - 1)];
+		persistScenes(nextScenes, target.id);
+		openScene(target, nextScenes);
+	}
+
+	// One debounced Scene-document save owns both departments. Switching calls
+	// persistScenes directly, so no outgoing edit can be overtaken by a render.
+	useEffect(() => {
+		dirtyRef.current = true;
+		const timer = setTimeout(flushScenes, 400);
+		return () => clearTimeout(timer);
+	}, [sceneObjects, shots, waypoints, tlFrameCount, scenes, activeSceneId]);
+	useEffect(() => {
+		const onPageHide = () => flushScenes();
+		const onVisibility = () => {
+			if (document.visibilityState === "hidden") flushScenes();
+		};
+		window.addEventListener("pagehide", onPageHide);
+		document.addEventListener("visibilitychange", onVisibility);
+		return () => {
+			window.removeEventListener("pagehide", onPageHide);
+			document.removeEventListener("visibilitychange", onVisibility);
+			flushScenes();
+		};
+	}, []);
 	const [promptClips, setPromptClips] = useState(() => DEFAULT_PROMPT_CLIPS.map((clip) => ({ ...clip })));
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
@@ -2975,6 +3054,13 @@ globalThis.playMode = centerTab === "play";
 					ikMode={ikMode}
 					waypointCount={waypoints.length}
 					sceneObjects={sceneObjects}
+					scenes={scenes}
+					activeSceneId={activeSceneId}
+					onSceneSelect={selectSceneDocument}
+					onSceneCreate={createSceneDocumentFromUi}
+					onSceneDuplicate={duplicateSceneDocumentFromUi}
+					onSceneRename={renameSceneDocumentFromUi}
+					onSceneDelete={deleteSceneDocumentFromUi}
 					onAddObject={addSceneObject}
 					onRenameObject={renameSceneObject}
 					onDuplicateObject={duplicateSelectedSceneObject}
