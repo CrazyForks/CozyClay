@@ -2544,7 +2544,7 @@ input[type=range]::-moz-range-thumb {
 	height: 100%;
 	width: calc(var(--tl-label-w) + (100% - var(--tl-label-w)) * var(--tl-zoom));
 	display: grid;
-	grid-template-rows: 28px repeat(5, minmax(0, 1fr));
+	grid-template-rows: 28px repeat(4, minmax(0, 1fr));
 }
 
 .tl-ruler {
@@ -2804,11 +2804,11 @@ input[type=range]::-moz-range-thumb {
 	display: flex;
 	align-items: center;
 	gap: 4px;
-	padding: 0 5px;
-	border: 1px solid #586270;
+	padding: 0 13px 10px;
+	border: 1px solid #735ba0;
 	border-radius: 3px;
-	background: #343c47;
-	color: #d9e2ec;
+	background: #44365d;
+	color: #f0eaff;
 	font-size: 9.5px;
 	overflow: hidden;
 	cursor: grab;
@@ -2817,7 +2817,11 @@ input[type=range]::-moz-range-thumb {
 
 .tl-shot-block.active {
 	border-color: #e7b557;
-	background: #4a4335;
+	background: #503f6d;
+}
+
+.tl-shot-block.selected {
+	box-shadow: inset 0 0 0 1px rgba(201, 181, 244, .45), 0 0 8px rgba(154, 123, 212, .32);
 }
 
 .tl-shot-block.moving {
@@ -2847,6 +2851,46 @@ input[type=range]::-moz-range-thumb {
 	color: #aab4c0;
 	font-size: 8.5px;
 	font-variant-numeric: tabular-nums;
+}
+
+.tl-shot-camera-summary {
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	white-space: nowrap;
+}
+
+.tl-shot-camera-summary > b {
+	font-size: 9px;
+	letter-spacing: .04em;
+}
+
+.tl-shot-camera-summary > small {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: #d0c3e5;
+	font-size: 8px;
+	font-variant-numeric: tabular-nums;
+}
+
+.tl-shot-key-surface {
+	position: absolute;
+	left: 12px;
+	right: 12px;
+	bottom: 0;
+	height: 10px;
+	padding: 0;
+	border: 0;
+	border-top: 1px solid rgba(201, 181, 244, .28);
+	background: rgba(20, 12, 36, .32);
+	cursor: crosshair;
+	z-index: 1;
+}
+
+.tl-shot-key-surface:hover {
+	background: rgba(167, 139, 250, .18);
 }
 
 .tl-shot-name-input {
@@ -2918,54 +2962,6 @@ input[type=range]::-moz-range-thumb {
 	cursor: default;
 }
 
-/* Camera blocks use the exact Shot block geometry and keep the existing
-   violet camera identity. Their edge handles invoke Shot boundary callbacks,
-   so a camera interval can never detach from its editorial owner. */
-.tl-camera-block {
-	box-sizing: border-box;
-	position: absolute;
-	top: 3px;
-	bottom: 3px;
-	left: calc(var(--tl-f-start) * 100%);
-	width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);
-	display: flex;
-	align-items: center;
-	gap: 5px;
-	padding: 0 13px;
-	overflow: hidden;
-	border: 1px solid #735ba0;
-	border-radius: 3px;
-	background: #44365d;
-	color: #f0eaff;
-	font-size: 8.5px;
-	white-space: nowrap;
-	cursor: pointer;
-	touch-action: none;
-}
-
-.tl-camera-block.active {
-	background: #503f6d;
-}
-
-.tl-camera-block.selected {
-	border-color: #c9b5f4;
-	box-shadow: inset 0 0 0 1px rgba(201, 181, 244, .45), 0 0 8px rgba(154, 123, 212, .32);
-}
-
-.tl-camera-block b {
-	font-size: 9px;
-	letter-spacing: .04em;
-}
-
-.tl-camera-block small {
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	color: #d0c3e5;
-	font-size: 8px;
-	font-variant-numeric: tabular-nums;
-}
-
 .tl-camera-block-state {
 	padding: 1px 3px;
 	border: 1px solid rgba(255, 255, 255, .22);
@@ -2977,38 +2973,13 @@ input[type=range]::-moz-range-thumb {
 	letter-spacing: .06em;
 }
 
-.tl-camera-edge {
-	position: absolute;
-	top: -2px;
-	bottom: -2px;
-	left: 0;
-	width: 12px;
-	padding: 0;
-	border: 0;
-	border-left: 2px solid #b69ae8;
-	background: transparent;
-	color: #ddd0f5;
-	font-size: 14px;
-	line-height: 1;
-	cursor: ew-resize;
-	z-index: 3;
-}
-
-.tl-camera-edge:hover {
-	background: rgba(167, 139, 250, .38);
-}
-
-.tl-camera-edge.end {
-	left: auto;
-	right: 0;
-	border-left: 0;
-	border-right: 2px solid #b69ae8;
-}
-
 /* Camera keyframes: violet dots, so they read as neither root waypoints
    (cyan) nor IK keys (orange diamonds). Click jumps the playhead, drag
    re-times, right-click removes; the lane itself keys on click. */
 .tl-marker.cam {
+	top: auto;
+	bottom: 2px;
+	transform: translateX(-50%);
 	pointer-events: auto;
 	cursor: grab;
 	background: #a78bfa;

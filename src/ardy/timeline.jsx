@@ -12,8 +12,8 @@ import { ko, isKo } from "../locale.js";
  * The 2D Root lane authors temporal keyframes directly: left-clicking an empty
  * track cell creates/selects a numbered waypoint, then Top-View owns its
  * spatial position through direct marker dragging.
- * The Camera lane authors shot-camera keyframings directly: left-clicking an
- * empty track cell keys the CURRENT camera framing at that frame, dots jump
+ * The unified Shot lane authors shot-camera keyframings directly: left-clicking
+ * a block's lower strip keys the CURRENT camera framing there, dots jump
  * the playhead on click, drag to re-time, right-click to remove. Playback
  * and PlayView ride the keys segment by segment.
  */
@@ -38,20 +38,17 @@ const TRACKS = [
 	"Full-Body",
 	"2D Root",
 	"Shots",
-	"Camera",
 ];
 const TRACK_LABELS_KO = {
 	Prompts: ko("Prompts", "프롬프트"),
 	"Full-Body": ko("Full-Body", "전신"),
 	"2D Root": ko("2D Root", "2D 루트"),
 	Shots: ko("Shots", "샷"),
-	Camera: ko("Camera", "카메라"),
 };
 
 /** IK keys live on the Full-Body lane: one marker per keyed frame, holding
  * a sparse set of the limbs the user has moved (never every joint). */
 const IK_LANE = "Full-Body";
-const CAMERA_LANE = "Camera";
 const SHOTS_LANE = "Shots";
 // Ruler labels and lane gridlines share one 10-frame cadence, so authored
 // elements (40-frame prompt blocks, camera key dots) always land on visible
@@ -184,7 +181,6 @@ export default function Timeline({
 	ikDisabled = false, // a loaded motion owns the rig
 	ikFrames = [], // sorted full-body key frames
 	footSnap = true, // feet stay planted while the body moves
-	cameraKeyFrames = [], // sorted camera key frames — dots on the Camera lane
 	shots = [],
 	activeShotIdx = 0,
 	selectedCameraBlockIdx,
@@ -482,9 +478,10 @@ export default function Timeline({
 	// Camera key dots re-time by dragging, like prompt clips move: the frame
 	// delta comes from the pointer-down geometry so a growing timeline cannot
 	// feed back into the next pointermove.
-	function beginCameraKeyDrag(e, keyFrame) {
+	function beginCameraKeyDrag(e, keyFrame, shotIndex) {
 		if (e.button !== 0) return;
 		e.stopPropagation();
+		selectUnifiedShotBlock(shotIndex);
 		// A 10px dot loses the pointer almost immediately without capture —
 		// grab it on pointerdown so the drag survives past the marker's edge.
 		e.currentTarget.setPointerCapture?.(e.pointerId);
@@ -494,6 +491,7 @@ export default function Timeline({
 			pointerId: e.pointerId,
 			startClientX: e.clientX,
 			fromFrame: keyFrame,
+			shotIndex,
 			currentFrame: keyFrame,
 			laneWidth: rect?.width ?? 1,
 			displayFrameCount,
@@ -516,7 +514,7 @@ export default function Timeline({
 		if (next === active.currentFrame) return;
 		const from = active.currentFrame;
 		active.currentFrame = next;
-		handlers.current.onCameraKeyframeMove?.(from, next);
+		handlers.current.onCameraKeyframeMove?.(from, next, active.shotIndex);
 	}
 
 	function endCameraKeyDrag(e) {
@@ -532,15 +530,15 @@ export default function Timeline({
 		camDragRef.current = null;
 	}
 
-	function onCameraKeyClick(e, keyFrame) {
+	function onCameraKeyClick(e, keyFrame, shotIndex) {
 		if (camSuppressClickRef.current) {
 			e.preventDefault();
 			e.stopPropagation();
 			return;
 		}
 		e.stopPropagation();
+		selectUnifiedShotBlock(shotIndex);
 		handlers.current.onScrub?.(keyFrame);
-		handlers.current.onCameraMoveSelect?.();
 	}
 
 	function beginShotBoundaryDrag(e, boundaryIndex, timelineEnd = false) {
@@ -605,22 +603,25 @@ export default function Timeline({
 		e.currentTarget.releasePointerCapture?.(e.pointerId);
 	}
 
-	function selectShotBlock(index) {
-		if (!shotSuppressClickRef.current) handlers.current.onShotSelect?.(index);
-	}
-
-	function selectCameraBlock(e, index) {
-		if (e.button !== 0) return;
-		e.preventDefault();
-		e.stopPropagation();
+	function selectUnifiedShotBlock(index) {
+		if (shotSuppressClickRef.current) return;
 		setLocalCameraBlockIdx(index);
 		handlers.current.onCameraBlockSelect?.(index);
-		// Camera blocks and shots share one editorial interval. Selecting the
-		// camera instruction therefore selects/scrubs its owning shot too; there
-		// is no second, drifting notion of "current camera time".
 		handlers.current.onShotSelect?.(index);
 		if (!handlers.current.onShotSelect) handlers.current.onScrub?.(shots[index]?.startFrame ?? 0);
 		handlers.current.onCameraMoveSelect?.();
+	}
+
+	function addCameraKeyFromBlock(e, index) {
+		if (e.button !== 0) return;
+		e.preventDefault();
+		e.stopPropagation();
+		const lane = e.currentTarget.closest(".tl-lane");
+		const rect = lane?.getBoundingClientRect();
+		if (!rect) return;
+		const target = frameFromClientX(e.clientX, rect.left, rect.width, displayFrameCount, frameCount);
+		selectUnifiedShotBlock(index);
+		handlers.current.onCameraKeyframeAdd?.(target, index);
 	}
 
 	function finishShotRename(shot, index, value) {
@@ -833,18 +834,7 @@ export default function Timeline({
 											title={shotCutDisabled ? ko("This shot is too short to divide", "이 샷은 더 나눌 수 없어요") : isKo ? `샷 추가 · 재생 헤드가 경계면 현재 샷의 가운데에 추가` : "Add shot · at a boundary, split the current shot in the middle"}
 											onClick={() => handlers.current.onShotCut?.()}
 										>
-											{ko("+ Add shot", "+ 샷 추가")}
-										</button>
-									)}
-									{name === CAMERA_LANE && (
-										<button
-											type="button"
-											className="tl-track-add cut camera"
-											disabled={shotCutDisabled}
-											title={shotCutDisabled ? ko("This camera block is too short to divide", "이 카메라 블록은 더 나눌 수 없어요") : ko("Split this shot and copy its camera setup into the new block", "현재 샷을 나누고 카메라 설정을 새 블록에 복사합니다")}
-											onClick={() => handlers.current.onShotCut?.()}
-										>
-											{ko("+ Block", "+ 블록")}
+											{ko("+ Split shot", "+ 샷 분할")}
 										</button>
 									)}
 									{name === IK_LANE && ikMode && (
@@ -859,21 +849,15 @@ export default function Timeline({
 									)}
 								</span>
 								<div
-									className={"tl-lane" + (name === "2D Root" ? " root" : "") + (name === CAMERA_LANE ? " cam" : "") + (name === SHOTS_LANE ? " shots" : "")}
+									className={"tl-lane" + (name === "2D Root" ? " root" : "") + (name === SHOTS_LANE ? " shots" : "")}
 									onPointerDown={
 										name === "2D Root"
 											? (e) => {
 												if (e.button !== 0 || e.target !== e.currentTarget) return;
 												handlers.current.onRootKeyframeAdd?.(rootFrameFromEvent(e));
 											}
-											: name === CAMERA_LANE
-												? (e) => {
-													if (e.button !== 0 || e.target !== e.currentTarget) return;
-													handlers.current.onCameraKeyframeAdd?.(rootFrameFromEvent(e));
-												}
-												: undefined
+											: undefined
 									}
-									title={name === CAMERA_LANE ? ko("Click to key the current camera framing at this frame", "클릭하면 현재 카메라 프레이밍을 이 프레임에 키로 저장합니다") : undefined}
 								>
 									{gridFrames.map((f) => (
 										<i key={f} className="tl-grid" style={{ "--tl-f": framePct(f, displayFrameCount) }} aria-hidden="true" />
@@ -881,19 +865,29 @@ export default function Timeline({
 									{name === SHOTS_LANE && shots.map((shot, index) => {
 										const geometry = shotBlockGeometry(shots, index, frameCount, displayFrameCount);
 										if (!geometry) return null;
+										const mode = cameraBlockMode(shot);
+										const follow = cameraBlockFollow(shot);
+										const keyCount = shot.cameraKeys?.length ?? 0;
 										const lastFrame = (shots[index + 1]?.startFrame ?? frameCount) - 1;
 										const durationS = (lastFrame - shot.startFrame + 1) / Math.max(1, fps);
+										const stateLabel = mode === "keys" && keyCount === 0 ? "FREE" : "LOCKED";
+										const modeLabel = mode === "rail" ? "RAIL" : mode === "follow" ? "FOLLOW" : `KEYS ${keyCount}`;
+										const detailLabel = mode === "rail"
+											? `${follow.railStartMode === "head" ? "HEAD" : "NEAREST"} · ${Number(follow.maxDollySpeed).toFixed(1)} m/s · PITCH ${signedDegrees(follow.pitchOffsetDeg)}`
+											: mode === "follow"
+												? `${Number(follow.distance).toFixed(1)} m · PITCH ${signedDegrees(follow.pitchOffsetDeg)}`
+												: null;
 										return (
 											<div
 												key={shot.id}
-												className={"tl-shot-block" + (index === activeShotIdx ? " active" : "") + (movingShotId === shot.id ? " moving" : "")}
+												className={"tl-shot-block" + (index === cameraBlockIdx ? " selected" : "") + (index === activeShotIdx ? " active" : "") + (movingShotId === shot.id ? " moving" : "")}
 												style={{ "--tl-f-start": geometry.startPct, "--tl-f-end": geometry.endPct }}
-												title={isKo ? `${shot.name} · ${shot.startFrame}–${lastFrame}프레임 · ${durationS.toFixed(1)}초 · 드래그해 순서 이동, 양쪽 끝으로 길이 조절` : `${shot.name} · frames ${shot.startFrame}–${lastFrame} · ${durationS.toFixed(1)}s · drag to reorder, resize from either edge`}
+												title={isKo ? `${shot.name} · ${shot.startFrame}–${lastFrame}프레임 · 드래그해 순서 이동, 양끝으로 컷 조절, 아래 빈 줄을 클릭해 카메라 키 추가` : `${shot.name} · frames ${shot.startFrame}–${lastFrame} · drag to reorder, trim cuts at either edge, click the empty lower strip to add a camera key`}
 												onPointerDown={(e) => beginShotMove(e, shot, index)}
 												onPointerMove={moveShot}
 												onPointerUp={endShotMove}
 												onPointerCancel={endShotMove}
-												onClick={() => selectShotBlock(index)}
+												onClick={() => selectUnifiedShotBlock(index)}
 												onDoubleClick={(e) => { e.stopPropagation(); setRenamingShotId(shot.id); }}
 											>
 												{index > 0 && (
@@ -942,61 +936,22 @@ export default function Timeline({
 													<button type="button" title={ko("Duplicate shot", "샷 복제")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotDuplicate?.(index); }}>{ko("Duplicate", "복제")}</button>
 													<button type="button" disabled={shots.length <= 1} title={ko("Delete shot and merge its time", "샷을 지우고 구간 합치기")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotRemove?.(index); }}>{ko("Delete", "삭제")}</button>
 												</span>
-											</div>
-										);
-									})}
-									{name === CAMERA_LANE && shots.map((shot, index) => {
-										const geometry = shotBlockGeometry(shots, index, frameCount, displayFrameCount);
-										if (!geometry) return null;
-										const mode = cameraBlockMode(shot);
-										const follow = cameraBlockFollow(shot);
-										const keyCount = shot.cameraKeys?.length ?? 0;
-										const lastFrame = (shots[index + 1]?.startFrame ?? frameCount) - 1;
-										const stateLabel = mode === "keys" && keyCount === 0 ? "FREE" : "LOCKED";
-										const modeLabel = mode === "rail" ? "RAIL" : mode === "follow" ? "FOLLOW" : `KEYS ${keyCount}`;
-										const detailLabel = mode === "rail"
-											? `${follow.railStartMode === "head" ? "HEAD" : "NEAREST"} \u00b7 ${Number(follow.maxDollySpeed).toFixed(1)} m/s \u00b7 PITCH ${signedDegrees(follow.pitchOffsetDeg)}`
-											: mode === "follow"
-												? `${Number(follow.distance).toFixed(1)} m \u00b7 PITCH ${signedDegrees(follow.pitchOffsetDeg)}`
-												: null;
-										return (
-											<div
-												key={shot.id}
-												className={"tl-camera-block" + (index === cameraBlockIdx ? " selected" : "") + (index === activeShotIdx ? " active" : "")}
-												style={{ "--tl-f-start": geometry.startPct, "--tl-f-end": geometry.endPct }}
-												title={isKo ? `${shot.name} 카메라 \u00b7 ${shot.startFrame}\u2013${lastFrame}프레임 \u00b7 클릭해 선택, 양쪽 끝으로 샷과 함께 길이 조절` : `${shot.name} camera \u00b7 frames ${shot.startFrame}\u2013${lastFrame} \u00b7 click to select, resize with its shot from either edge`}
-												onPointerDown={(event) => selectCameraBlock(event, index)}
-											>
-												{/* One camera block is owned by one shot. These are the exact
-												    shot-boundary callbacks, not independent camera trims, so the
-												    two intervals cannot overlap or leave a gap. */}
-												{index > 0 && (
-													<button
-														type="button"
-														className="tl-camera-edge start"
-														aria-label={ko(`Move camera cut before ${shot.name}`, `${shot.name} 앞 카메라 컷 이동`)}
-														onPointerDown={(event) => beginShotBoundaryDrag(event, index)}
-														onPointerMove={moveShotBoundary}
-														onPointerUp={endShotBoundaryDrag}
-														onPointerCancel={endShotBoundaryDrag}
-													>
-												⋮
-													</button>
-												)}
+												<span className="tl-shot-camera-summary">
+													<span className="tl-camera-block-state">{stateLabel}</span>
+													<b>{modeLabel}</b>
+													{detailLabel && <small>{detailLabel}</small>}
+												</span>
+												{/* The card body owns selection/reorder; this narrow empty strip
+												    owns keying. Keeping it a button excludes it from beginShotMove,
+												    so one gesture cannot both reorder a shot and author a key. */}
 												<button
 													type="button"
-													className="tl-camera-edge end"
-													aria-label={index === shots.length - 1 ? ko(`Resize end of ${shot.name} camera`, `${shot.name} 카메라 끝 길이 조절`) : ko(`Move camera cut after ${shot.name}`, `${shot.name} 뒤 카메라 컷 이동`)}
-													onPointerDown={(event) => beginShotBoundaryDrag(event, index + 1, index === shots.length - 1)}
-													onPointerMove={moveShotBoundary}
-													onPointerUp={endShotBoundaryDrag}
-													onPointerCancel={endShotBoundaryDrag}
-												>
-											⋮
-												</button>
-												<span className="tl-camera-block-state">{stateLabel}</span>
-												<b>{modeLabel}</b>
-												{detailLabel && <small>{detailLabel}</small>}
+													className="tl-shot-key-surface"
+													aria-label={ko(`Add camera key in ${shot.name}`, `${shot.name}에 카메라 키 추가`)}
+													title={ko("Click at a frame to store the current camera framing", "프레임 위치를 클릭해 현재 카메라 프레이밍을 저장합니다")}
+													onClick={(event) => addCameraKeyFromBlock(event, index)}
+													onDoubleClick={(event) => event.stopPropagation()}
+												/>
 											</div>
 										);
 									})}
@@ -1050,24 +1005,24 @@ export default function Timeline({
 												}}
 											/>
 										))}
-									{name === CAMERA_LANE && cameraKeyFrames.map((f) => (
+									{name === SHOTS_LANE && shots.flatMap((shot, index) => (shot.cameraKeys ?? []).map((key) => (
 										<span
-											key={f}
+											key={`${shot.id}:${key.frame}`}
 											className="tl-marker cam"
-											style={{ "--tl-f": framePct(f, displayFrameCount) }}
-											title={isKo ? `${f}프레임의 카메라 키 — 클릭해 이동, 드래그로 시간 변경, 오른쪽 클릭으로 삭제` : `Camera key at frame ${f} — click to jump, drag to re-time, right-click to remove`}
-											onPointerDown={(e) => beginCameraKeyDrag(e, f)}
+											style={{ "--tl-f": framePct(key.frame, displayFrameCount) }}
+											title={isKo ? `${key.frame}프레임의 카메라 키 — 클릭해 이동, 드래그로 시간 변경, 오른쪽 클릭으로 삭제` : `Camera key at frame ${key.frame} — click to jump, drag to re-time, right-click to remove`}
+											onPointerDown={(e) => beginCameraKeyDrag(e, key.frame, index)}
 											onPointerMove={moveCameraKeyDrag}
 											onPointerUp={endCameraKeyDrag}
 											onPointerCancel={endCameraKeyDrag}
-											onClick={(e) => onCameraKeyClick(e, f)}
+											onClick={(e) => onCameraKeyClick(e, key.frame, index)}
 											onContextMenu={(e) => {
 												e.preventDefault();
 												e.stopPropagation();
-												handlers.current.onCameraKeyframeRemove?.(f);
+												handlers.current.onCameraKeyframeRemove?.(key.frame, index);
 											}}
 										/>
-									))}
+									)))}
 								</div>
 							</div>
 						))}

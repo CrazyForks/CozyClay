@@ -1861,9 +1861,8 @@ globalThis.playMode = centerTab === "play";
 		return captureFraming({ pos: { x: pos.x, y: pos.y, z: pos.z }, yaw: look.current.yaw, pitch: look.current.pitch, fovDeg });
 	}
 
-	// Key authoring lives on the timeline's Camera lane: clicking an empty
-	// cell keys the CURRENT framing at that frame. Re-keying a keyed frame
-	// overwrites its framing with wherever the camera is now.
+	// Key authoring lives in each unified Shot block's lower key strip: clicking
+	// an empty point stores the CURRENT framing there. Re-keying overwrites it.
 	function addCameraKeyframe(frame) {
 		const framing = captureCurrentFraming();
 		const target = Math.max(0, Math.min(Math.round(frame), tlFrameCount - 1));
@@ -3601,8 +3600,8 @@ globalThis.playMode = centerTab === "play";
 						) : (
 							<div className="move-slate">
 								{cameraKeys.length === 1
-									? (isKo ? `프레임 ${cameraKeys[0].frame}부터 고정 샷 — 다른 프레임의 카메라 레인을 클릭해 움직임을 추가하세요` : `locked-off hold from frame ${cameraKeys[0].frame} — click the Camera lane at another frame to add a move`)
-									: ko("click the Camera timeline lane to key the current framing at that frame", "카메라 타임라인 레인을 클릭하면 현재 프레이밍을 해당 프레임에 키로 저장합니다")}
+									? (isKo ? `프레임 ${cameraKeys[0].frame}부터 고정 샷 — 샷 블록 아래 빈 줄을 클릭해 움직임을 추가하세요` : `locked-off hold from frame ${cameraKeys[0].frame} — click the empty lower strip in a Shot block to add a move`)
+									: ko("click a Shot block's lower strip to key the current framing at that frame", "샷 블록 아래 빈 줄을 클릭하면 해당 프레임에 현재 프레이밍을 저장합니다")}
 							</div>
 						)}
 
@@ -4272,7 +4271,6 @@ globalThis.playMode = centerTab === "play";
 				ikDisabled={!ikChains}
 				ikFrames={ikFrames}
 				footSnap={footSnap}
-				cameraKeyFrames={cameraKeys.map((k) => k.frame)}
 					shots={shots}
 					activeShotIdx={activeShotIdx}
 				shotCutDisabled={!!posing || ikMode || waypointMode || ((shots[activeShotIdx + 1]?.startFrame ?? tlFrameCount) - (shots[activeShotIdx]?.startFrame ?? 0) < 2)}
