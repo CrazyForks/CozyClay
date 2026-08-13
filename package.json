@@ -11,6 +11,7 @@
 		"test:history": "node test/verify-history.mjs",
 		"test:scene-objects": "node test/verify-scene-objects.mjs",
 		"test:camera-move": "node test/verify-camera-move.mjs",
+		"test:cuts": "node test/verify-cuts.mjs",
 		"test:objects": "node tools/qa-browser.mjs -- node test/verify-object-gizmo.mjs",
 		"test:theme": "node test/verify-theme.mjs",
 		"test:appearance": "node test/verify-appearance.mjs",
