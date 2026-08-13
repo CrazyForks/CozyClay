@@ -405,7 +405,7 @@ function WaypointPath({ waypoints, start, activeWaypointFrame }) {
  * reports moves that still hit it, so a fast drag off the edge silently strands
  * the puck.
  */
-export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA, setCharA, charB, setCharB, showB, waypoints, activeWaypointFrame, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null }) {
+export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA, setCharA, charB, setCharB, showB, waypoints, activeWaypointFrame, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null, onCameraChange }) {
 	const [drag, setDrag] = useState(null); // { id, mode }
 	// live stroke while the rail is being drawn; world XZ, display only
 	const [railStroke, setRailStroke] = useState(null);
@@ -435,8 +435,8 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 	// clears dragRef, so a dep that changes while dragging (charA.x does, on the
 	// very first move) would kill the drag after one frame. Read live values
 	// through a ref and keep the effect's deps stable.
-	const latest = useRef({ charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke });
-	latest.current = { charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke };
+	const latest = useRef({ charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange });
+	latest.current = { charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange };
 
 	const targets = () => {
 		const { charA: a, charB: b, showB: two } = latest.current;
@@ -671,6 +671,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			}
 			const token = grip.token;
 			teardownDrag(grip);
+			if (commit && grip.id === "cam") latest.current.onCameraChange?.();
 			if (token != null) latest.current.onObjectMoveEnd?.(token, { commit });
 		};
 

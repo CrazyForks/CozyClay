@@ -109,6 +109,13 @@ expect(
 	(timeline.slice(timeline.indexOf('ko("Height", "높이")'), timeline.indexOf('ko("Pitch", "피치")')).match(/<label/g) ?? []).length === 1,
 );
 expect(
+	"distance, height and pitch are measured from viewport manipulation instead of typed",
+	timeline.includes('className="tl-camera-metric"') &&
+	(timeline.match(/className="tl-camera-metric"/g) ?? []).length === 3 &&
+	app.includes("followFramingFromCamera(cam.position, look.current.pitch") &&
+	app.includes("onCameraChange={syncActiveCameraFraming}"),
+);
+expect(
 	"waypoint mode replaces camera controls with one clear message",
 	timeline.includes("blocked={waypointMode}") &&
 	timeline.includes('className="tl-camera-blocked"') &&

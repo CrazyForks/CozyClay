@@ -24,7 +24,7 @@ import {
 	readShotAuthoringDocument,
 	readShotAuthoring,
 } from "./shot-authoring.js";
-import { buildFollowTrack, buildRail, buildRailFollowTrack, simplifyStroke } from "./camera-follow.js";
+import { buildFollowTrack, buildRail, buildRailFollowTrack, followFramingFromCamera, simplifyStroke } from "./camera-follow.js";
 import { createCameraBlock, updateCameraBlock } from "./camera-block.js";
 import {
 	RAIL_SCHEDULE_LEGACY,
@@ -1461,6 +1461,23 @@ globalThis.playMode = centerTab === "play";
 			? { ...shot, camera: updateCameraBlock(shot.camera, patch) }
 			: shot));
 	}
+	function syncActiveCameraFraming() {
+		const cam = shotCamRef.current;
+		if (!cam || !activeShot || ikMode || playMode) return;
+		const subjectPosition = motionPos ?? charA;
+		const measured = followFramingFromCamera(cam.position, look.current.pitch, subjectPosition, followCam.aimHeight);
+		setShots((current) => current.map((shot, shotIndex) => {
+			if (shotIndex !== activeShotIdx) return shot;
+			const camera = createCameraBlock(shot.camera);
+			const previous = camera.followCam;
+			if (
+				previous.distance === measured.distance &&
+				previous.height === measured.height &&
+				previous.pitchOffsetDeg === measured.pitchOffsetDeg
+			) return shot;
+			return { ...shot, camera: updateCameraBlock(camera, { followCam: { ...previous, ...measured } }) };
+		}));
+	}
 	function changeCameraRail(points) {
 		changeActiveCamera({
 			cameraRail: points,
@@ -1470,6 +1487,10 @@ globalThis.playMode = centerTab === "play";
 	}
 	function toggleCameraRailDraw() {
 		if (!activeShot || waypointMode) return;
+		// The viewport is the framing control. Capture it before Rail takes over
+		// the camera so the dolly opens at the distance, height and tilt the
+		// operator is actually looking through.
+		syncActiveCameraFraming();
 		if (activeCamera.mode !== "rail") {
 			changeActiveCamera({
 				mode: "rail",
@@ -3347,6 +3368,7 @@ globalThis.playMode = centerTab === "play";
 								onFlyStateChange={(flying) => {
 									flyingRef.current = flying;
 								}}
+								onCameraChange={syncActiveCameraFraming}
 							/>
 							<PoseHandles
 								root={posing === "B" ? rigB : rigA}
@@ -3402,6 +3424,7 @@ globalThis.playMode = centerTab === "play";
 									const curve = buildRail(simplified);
 									setToast(isKo ? `카메라 레일 완성 — ${curve ? curve.length.toFixed(1) : "?"} m, 제어점 ${simplified.length}개` : `Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
 								}}
+								onCameraChange={syncActiveCameraFraming}
 							/>
 							{/* Object gizmo: the shot pane's direct manipulation. Off while
 							    the plan owns the big pane (the pucks are the handles there)

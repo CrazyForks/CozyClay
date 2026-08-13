@@ -7,6 +7,7 @@ import {
 	buildFollowTrack,
 	buildRailFollowTrack,
 	buildRail,
+	followFramingFromCamera,
 	railPoint,
 	simplifyStroke,
 	travelDirections,
@@ -28,6 +29,15 @@ const yawDelta = (a, b) => {
 	return Math.abs(d);
 };
 const EPS = 1e-9;
+
+{
+	const position = { x: 3, y: 2, z: 4 };
+	const automaticPitch = Math.atan2(1.35 - position.y, 5);
+	const measured = followFramingFromCamera(position, automaticPitch + (10 * Math.PI) / 180, { x: 0, z: 0 });
+	ok("viewport framing measures planar distance", measured.distance === 5, JSON.stringify(measured));
+	ok("viewport framing measures physical lens height", measured.height === 2, JSON.stringify(measured));
+	ok("viewport framing converts tilt to automatic-aim offset", measured.pitchOffsetDeg === 10, JSON.stringify(measured));
+}
 
 /** straight walk down +Z at 1.4 m/s for `seconds` */
 function straightWalk(seconds, speed = 1.4) {

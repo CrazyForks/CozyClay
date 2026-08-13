@@ -49,13 +49,15 @@ export function aimAt(position, target) {
  * `getPivot()` is optional and returns a world point to orbit; without one,
  * Alt-drag orbits a point straight ahead of the lens.
  */
-export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange }) {
+export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange, onCameraChange }) {
 	const { gl } = useThree();
 	const keys = useRef(new Set());
 	const gesture = useRef(null); // { kind: "fly" | "pan" | "orbit", pointerId, x, y, ... }
 	const speedScale = useRef(1);
 	const flyStateRef = useRef(onFlyStateChange);
 	flyStateRef.current = onFlyStateChange;
+	const cameraChangeRef = useRef(onCameraChange);
+	cameraChangeRef.current = onCameraChange;
 	const pivotRef = useRef(getPivot);
 	pivotRef.current = getPivot;
 
@@ -102,6 +104,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange 
 			// the fly speed set with the wheel persists between flights, as it does in Unity
 			element.style.cursor = "";
 			flyStateRef.current?.(false);
+			if (active.changed) cameraChangeRef.current?.();
 		};
 
 		const onPointerDown = (e) => {
@@ -116,7 +119,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange 
 			e.stopPropagation();
 			const cam = camRef.current;
 			const pivot = kind === "orbit" && cam ? resolvePivot(cam) : null;
-			gesture.current = { kind, pointerId: e.pointerId, x: e.clientX, y: e.clientY, pivot };
+			gesture.current = { kind, pointerId: e.pointerId, x: e.clientX, y: e.clientY, pivot, changed: false };
 			element.setPointerCapture(e.pointerId);
 			element.focus();
 			element.style.cursor = kind === "fly" ? "crosshair" : kind === "pan" ? "grabbing" : "move";
@@ -145,6 +148,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange 
 				look.current.yaw -= dx * LOOK_SENS;
 				look.current.pitch -= dy * LOOK_SENS;
 				look.current.pitch = THREE.MathUtils.clamp(look.current.pitch, -PITCH_LIMIT, PITCH_LIMIT);
+				active.changed = active.changed || dx !== 0 || dy !== 0;
 				return;
 			}
 			if (active.kind === "pan") {
@@ -156,6 +160,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange 
 				cam.position.addScaledVector(right, -dx * PAN_SENS * distance);
 				cam.position.addScaledVector(up, dy * PAN_SENS * distance);
 				cam.position.y = Math.max(cam.position.y, 0.12);
+				active.changed = active.changed || dx !== 0 || dy !== 0;
 				return;
 			}
 			// orbit: swing the camera around the pivot, then re-aim at it so the
@@ -172,6 +177,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange 
 			const angles = aimAt(cam.position, pivot);
 			look.current.yaw = angles.yaw;
 			look.current.pitch = angles.pitch;
+			active.changed = active.changed || dx !== 0 || dy !== 0;
 		};
 
 		const onWheel = (e) => {
@@ -184,6 +190,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange 
 				return;
 			}
 			cam.position.addScaledVector(forwardFrom(look.current.yaw, look.current.pitch), -e.deltaY * DOLLY_STEP);
+			cameraChangeRef.current?.();
 		};
 
 		// A right-drag is navigation, so the browser menu must not interrupt it.
@@ -239,6 +246,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange 
 		if (keys.current.has("e")) cam.position.y += crane;
 		if (keys.current.has("q")) cam.position.y -= crane;
 		cam.position.y = Math.max(cam.position.y, 0.12);
+		if (gesture.current) gesture.current.changed = true;
 	});
 
 	return null;

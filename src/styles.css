@@ -2397,6 +2397,22 @@ input[type=range]::-moz-range-thumb {
 	font-variant-numeric: tabular-nums;
 }
 
+.tl-camera-metric {
+	box-sizing: border-box;
+	width: 50px;
+	height: 27px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: flex-end;
+	padding: 0 5px;
+	border: 1px solid rgba(154, 123, 212, .2);
+	border-radius: 3px;
+	background: rgba(23, 21, 27, .54);
+	color: #cfc6dc;
+	font: inherit;
+	font-variant-numeric: tabular-nums;
+}
+
 .tl-camera-editor input:focus {
 	border-color: #a78bfa;
 	box-shadow: 0 0 0 1px rgba(167, 139, 250, .28);

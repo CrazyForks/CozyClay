@@ -86,12 +86,18 @@ function signedDegrees(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}\u00b0`;
 }
 
+function signedValue(value) {
+	const rounded = Math.round((Number(value) || 0) * 10) / 10;
+	return `${rounded >= 0 ? "+" : ""}${rounded}`;
+}
+
 function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, onChange, onPreview, onRailDrawToggle }) {
 	if (!shot) return null;
 	const mode = cameraBlockMode(shot);
 	const follow = cameraBlockFollow(shot);
 	const patchFollow = (patch) => onChange?.({ followCam: { ...follow, ...patch } });
 	const numberValue = (event) => Number(event.currentTarget.value);
+	const metric = (value, places = 1) => Number(value).toFixed(places);
 	return (
 		<section className="tl-camera-editor" aria-label={ko(`Camera controls for ${shot.name}`, `${shot.name} 카메라 컨트롤`)}>
 			<strong className="tl-camera-editor-title">{shot.name}</strong>
@@ -114,9 +120,9 @@ function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, on
 					>
 						{follow.railStartMode === "head" ? ko("Head start", "시작점 출발") : ko("Nearest", "가까운 지점")}
 					</button>
-					<label title={ko("Set camera-to-subject spacing", "카메라와 피사체 사이 간격을 정합니다")}>
+					<label title={ko("Read automatically from the camera position", "현재 카메라 위치에서 자동으로 읽습니다")}>
 						<span>{ko("Distance", "거리")}</span>
-						<input type="number" min="0.5" max="15" step="0.1" value={follow.distance} onChange={(event) => patchFollow({ distance: numberValue(event) })} />
+						<output className="tl-camera-metric">{metric(follow.distance, 2)}</output>
 						<small>m</small>
 					</label>
 					<label title={ko("Cap dolly travel speed", "돌리의 최고 이동 속도를 제한합니다")}>
@@ -124,14 +130,14 @@ function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, on
 						<input type="number" min="0.2" max="8" step="0.1" value={follow.maxDollySpeed} onChange={(event) => patchFollow({ maxDollySpeed: numberValue(event) })} />
 						<small>m/s</small>
 					</label>
-					<label title={ko("Set physical lens height", "렌즈의 물리적 높이를 정합니다")}>
+					<label title={ko("Read automatically from the camera position", "현재 카메라 위치에서 자동으로 읽습니다")}>
 						<span>{ko("Height", "높이")}</span>
-						<input type="number" min="0.2" max="6" step="0.05" value={follow.height} onChange={(event) => patchFollow({ height: numberValue(event) })} />
+						<output className="tl-camera-metric">{metric(follow.height, 2)}</output>
 						<small>m</small>
 					</label>
-					<label title={ko("Tilt above or below automatic aim", "자동 조준각에서 위아래로 틸트합니다")}>
+					<label title={ko("Read automatically from the camera tilt", "현재 카메라 틸트에서 자동으로 읽습니다")}>
 						<span>{ko("Pitch", "피치")}</span>
-						<input type="number" min="-30" max="30" step="1" value={follow.pitchOffsetDeg} onChange={(event) => patchFollow({ pitchOffsetDeg: numberValue(event) })} />
+						<output className="tl-camera-metric">{signedValue(follow.pitchOffsetDeg)}</output>
 						<small>°</small>
 					</label>
 					<details className="tl-camera-advanced">

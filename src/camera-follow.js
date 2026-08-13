@@ -54,6 +54,25 @@ function aimAngles(position, target) {
 	};
 }
 
+const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
+const rounded = (value, places) => Number(value.toFixed(places));
+
+/**
+ * Turn the operator's current viewport framing into the three physical Follow
+ * settings. These are observations, not knobs: moving the camera is the input.
+ * Pitch is stored as an offset from the rig's automatic chest aim so replaying
+ * the Follow track reproduces the angle the operator composed by hand.
+ */
+export function followFramingFromCamera(position, pitch, subject, aimHeight = FOLLOW_DEFAULTS.aimHeight) {
+	const planarDistance = Math.hypot(position.x - subject.x, position.z - subject.z);
+	const automaticPitch = aimAngles(position, { x: subject.x, y: aimHeight, z: subject.z }).pitch;
+	return {
+		distance: rounded(clamp(planarDistance, 0.5, 15), 2),
+		height: rounded(clamp(position.y, 0.2, 6), 2),
+		pitchOffsetDeg: rounded(clamp(((pitch - automaticPitch) * 180) / Math.PI, -30, 30), 1),
+	};
+}
+
 export const FOLLOW_DEFAULTS = {
 	/** metres the grip tries to hold between camera and subject */
 	distance: 3,
