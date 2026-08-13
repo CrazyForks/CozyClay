@@ -1,123 +1,71 @@
+#!/usr/bin/env node
 import assert from "node:assert/strict";
 import {
+	addShotAtFrame,
 	cameraAtFrame,
+	createShot,
 	cutAtFrame,
 	duplicateShot,
 	initialShots,
-	moveBoundary,
 	removeShot,
-	renameShot,
 	reorderShot,
+	resizeShot,
 	shotAtFrame,
 	shotIndexAtFrame,
 } from "../src/cuts.js";
-import {
-	CAMERA_FOLLOW_DEFAULTS,
-	CAMERA_MODES,
-	cloneCameraBlock,
-	createCameraBlock,
-	updateCameraBlock,
-} from "../src/camera-block.js";
 
-const framing = (x) => ({ pos: { x, y: 1.5, z: 4 }, yaw: 0, pitch: 0, fovDeg: 45 });
-const key = (frame, x) => ({ frame, framing: framing(x) });
+const framing = (x) => ({ pos: { x, y: 1.6, z: 3 }, yaw: 0, pitch: 0, fovDeg: 45 });
+const key = (frame, x = frame) => ({ frame, framing: framing(x) });
 
-let shots = initialShots(100, [key(-2, -2), key(0, 0), key(99, 9), key(200, 20)]);
-assert.equal(shots.length, 1);
-assert.deepEqual(CAMERA_MODES, ["keys", "follow", "rail"]);
-assert.deepEqual(shots[0].camera, createCameraBlock());
-assert.equal(shots[0].camera.mode, "keys", "new shots start as authored camera keys");
-assert.deepEqual(shots[0].camera.followCam, CAMERA_FOLLOW_DEFAULTS);
-assert.deepEqual(shots[0].cameraKeys.map((item) => item.frame), [0, 99]);
-assert.equal(shotIndexAtFrame(shots, 50), 0);
+assert.deepEqual(initialShots(300), [], "new timelines start with zero Shots");
+assert.equal(shotIndexAtFrame([], 0), -1);
 assert.equal(shotAtFrame([], 0), null);
+assert.equal(cameraAtFrame([], { x: 0, z: 0 }, 0), null, "uncovered time belongs to the free camera");
 
-const unchangedAtZero = cutAtFrame(shots, 0, framing(3));
-assert.equal(unchangedAtZero, shots, "cut at zero is a no-op");
-shots = cutAtFrame(shots, 40, framing(4));
-assert.deepEqual(shots.map((shot) => shot.startFrame), [0, 40]);
-assert.equal(shots[1].cameraKeys[0].frame, 40);
-assert.equal(shots[1].cameraKeys[0].framing.pos.x, 4);
-assert.equal(cutAtFrame(shots, 40, framing(8)), shots, "existing boundary is a no-op");
-assert.equal(shotIndexAtFrame(shots, 39), 0);
-assert.equal(shotIndexAtFrame(shots, 40), 1);
-assert.equal(cameraAtFrame(shots, { x: 0, z: 0 }, 40).pos.x, 4, "the cut frame belongs to the downstream shot");
+let shots = addShotAtFrame([], 20, 200, framing(20));
+assert.deepEqual(shots.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[20, 59]], "add creates a free 40-frame card");
+assert.equal(shotAtFrame(shots, 19), null);
+assert.equal(shotAtFrame(shots, 20), shots[0]);
+assert.equal(shotAtFrame(shots, 59), shots[0]);
+assert.equal(shotAtFrame(shots, 60), null);
+assert.equal(cameraAtFrame(shots, { x: 0, z: 0 }, 19), null);
+assert.equal(cameraAtFrame(shots, { x: 0, z: 0 }, 20).pos.x, 20);
 
-const railCamera = createCameraBlock({
-	mode: "rail",
-	followCam: { distance: 5, pitchOffsetDeg: 8 },
-	cameraRail: [{ x: -2, z: 0 }, { x: 3, z: 4 }],
-});
-const isolatedClone = cloneCameraBlock(railCamera);
-isolatedClone.followCam.distance = 9;
-isolatedClone.cameraRail[0].x = 99;
-assert.equal(railCamera.followCam.distance, 5);
-assert.equal(railCamera.cameraRail[0].x, -2);
-const changed = updateCameraBlock(railCamera, { mode: "follow", followCam: { height: 2.2 } });
-assert.equal(changed.mode, "follow");
-assert.equal(changed.followCam.distance, 5, "partial control updates keep sibling settings");
-assert.equal(changed.followCam.height, 2.2);
-assert.notEqual(changed.cameraRail, railCamera.cameraRail, "updates remain deeply immutable");
+shots = addShotAtFrame(shots, 100, 200, framing(100));
+assert.deepEqual(shots.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[20, 59], [100, 139]], "gaps remain valid");
 
-let cameraShots = initialShots(100);
-cameraShots[0] = { ...cameraShots[0], camera: railCamera };
-cameraShots = cutAtFrame(cameraShots, 50, framing(5));
-assert.deepEqual(cameraShots[1].camera, railCamera, "a cut carries the source camera downstream");
-assert.notEqual(cameraShots[0].camera, cameraShots[1].camera);
-assert.notEqual(cameraShots[0].camera.followCam, cameraShots[1].camera.followCam);
-assert.notEqual(cameraShots[0].camera.cameraRail, cameraShots[1].camera.cameraRail);
-cameraShots[1].camera.followCam.distance = 1;
-cameraShots[1].camera.cameraRail[0].x = 7;
-assert.equal(cameraShots[0].camera.followCam.distance, 5, "editing the new camera block cannot alter the old one");
-assert.equal(cameraShots[0].camera.cameraRail[0].x, -2);
+const overlapMove = reorderShot(shots, 1, 40, 200);
+assert.equal(overlapMove, shots, "body moves that overlap are rejected");
+const moved = reorderShot(shots, 1, 145, 200);
+assert.deepEqual(moved.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[20, 59], [145, 184]]);
+assert.equal(moved[1].cameraKeys[0].frame, 145, "keys travel with their card");
 
-shots = cutAtFrame(shots, 70, framing(7));
-assert.deepEqual(shots.map((shot) => shot.startFrame), [0, 40, 70]);
-let moved = moveBoundary(shots, 1, -100, 100);
-assert.deepEqual(moved.map((shot) => shot.startFrame), [0, 1, 70], "cannot drag past previous shot");
-moved = moveBoundary(shots, 1, 1000, 100);
-assert.deepEqual(moved.map((shot) => shot.startFrame), [0, 69, 70], "cannot drag past next shot");
-moved = moveBoundary(shots, 2, 1000, 100);
-assert.equal(moved[2].startFrame, 99, "last shot retains one frame");
-assert.ok(moved[1].cameraKeys.every((item) => item.frame >= moved[1].startFrame && item.frame < moved[2].startFrame));
-assert.ok(moved[2].cameraKeys.every((item) => item.frame >= moved[2].startFrame && item.frame < 100));
+const overlapResize = resizeShot(shots, 0, "end", 110, 200);
+assert.equal(overlapResize, shots, "edge resize that overlaps is rejected");
+const resized = resizeShot(shots, 0, "end", 80, 200);
+assert.deepEqual([resized[0].startFrame, resized[0].endFrame], [20, 80]);
+const startResized = resizeShot(resized, 1, "start", 90, 200);
+assert.deepEqual([startResized[1].startFrame, startResized[1].endFrame], [90, 139]);
 
-const removedLast = removeShot(shots, 2);
-assert.deepEqual(removedLast.map((shot) => shot.startFrame), [0, 40]);
-assert.equal(removedLast[1].cameraKeys.some((item) => item.frame === 70), false, "removed keys are dropped");
-const removedFirst = removeShot(shots, 0);
-assert.deepEqual(removedFirst.map((shot) => shot.startFrame), [0, 70]);
-assert.equal(removedFirst[0].id, shots[1].id);
-assert.equal(removeShot([shots[0]], 0).length, 1);
+const split = cutAtFrame(shots, 40, framing(40));
+assert.deepEqual(split.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[20, 39], [40, 59], [100, 139]]);
+assert.equal(cutAtFrame(shots, 80, framing(80)), shots, "cutting a gap is a no-op");
+assert.equal(split[1].cameraKeys.some((entry) => entry.frame === 40), true);
 
-const renamed = renameShot(shots, 1, "  Close-up  ");
-assert.equal(renamed[1].name, "Close-up");
-assert.notEqual(renamed, shots);
+const removedMiddle = removeShot(split, 1);
+assert.deepEqual(removedMiddle.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[20, 39], [100, 139]], "delete leaves an empty gap");
+const removedAll = removeShot(removeShot(removedMiddle, 1), 0);
+assert.deepEqual(removedAll, [], "the final Shot is deletable");
 
-const duplicated = duplicateShot(shots, 0, 100);
-assert.deepEqual(duplicated.map((shot) => shot.startFrame), [0, 20, 40, 70]);
-assert.equal(new Set(duplicated.map((shot) => shot.id)).size, duplicated.length);
-assert.equal(duplicated[1].name, `${shots[0].name} copy`);
-assert.equal(duplicateShot([{ ...shots[0], startFrame: 0 }], 0, 1).length, 1);
+const duplicated = duplicateShot(shots, 0, 200);
+assert.deepEqual(duplicated.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[20, 59], [60, 99], [100, 139]]);
+assert.notEqual(duplicated[0].camera, duplicated[1].camera);
+assert.equal(duplicateShot([createShot("Full", 0, 99)], 0, 100).length, 1, "duplicate rejects a timeline with no free range");
 
-const duplicatedCamera = duplicateShot(cameraShots, 0, 100);
-assert.deepEqual(duplicatedCamera[0].camera, duplicatedCamera[1].camera);
-assert.notEqual(duplicatedCamera[0].camera, duplicatedCamera[1].camera);
-assert.notEqual(duplicatedCamera[0].camera.followCam, duplicatedCamera[1].camera.followCam);
-assert.notEqual(duplicatedCamera[0].camera.cameraRail, duplicatedCamera[1].camera.cameraRail);
+const railCamera = { mode: "rail", cameraRail: [{ x: 0, z: 0 }, { x: 2, z: 2 }], railFollow: { mode: "range", startFrame: 5, endFrame: 20 } };
+const railShot = createShot("Rail", 10, 49, [key(10)], railCamera);
+const railMoved = reorderShot([railShot], 0, 80, 200)[0];
+assert.equal(railMoved.camera.mode, "rail");
+assert.deepEqual(railMoved.camera.railFollow, railCamera.railFollow, "local Rail schedule travels unchanged");
 
-const reordered = reorderShot(shots, 2, 0, 100);
-assert.deepEqual(reordered.map((shot) => shot.id), [shots[2].id, shots[0].id, shots[1].id]);
-assert.deepEqual(reordered.map((shot) => shot.startFrame), [0, 30, 70]);
-assert.deepEqual(reordered.map((shot, index) => (reordered[index + 1]?.startFrame ?? 100) - shot.startFrame), [30, 40, 30]);
-assert.equal(reordered[0].cameraKeys[0].frame, 0, "camera keys travel with a reordered shot");
-assert.equal(reorderShot(shots, 1, 1, 100), shots);
-
-const carried = reorderShot(cameraShots, 1, 0, 100);
-assert.equal(carried[0].camera.mode, "rail", "the camera block travels with its reordered shot");
-assert.equal(moveBoundary(cameraShots, 1, 60, 100)[1].camera.mode, "rail", "boundary edits retain camera ownership");
-
-const empty = [{ ...shots[0], cameraKeys: [] }];
-assert.equal(cameraAtFrame(empty, { x: 0, z: 0 }, 10), null);
-
-console.log("cuts model verified");
+console.log("optional Shot overlay model verified");

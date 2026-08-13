@@ -4,7 +4,7 @@
  * future bytes are left in place for the newer app that understands them.
  */
 
-import { createShot, initialShots } from "./cuts.js";
+import { createShot } from "./cuts.js";
 
 export const SHOT_AUTHORING_VERSION = 3;
 export const SHOT_AUTHORING_KEY = "cozyclay.shot-authoring.v3";
@@ -81,27 +81,26 @@ function repairShots(entries, frameCount, inheritedCamera = null) {
 		candidates.push({ entry, startFrame });
 	}
 	candidates.sort((a, b) => a.startFrame - b.startFrame);
-	if (!candidates.length) {
-		return initialShots(frameCount).map((shot) => ({ ...shot, camera: repairCamera(inheritedCamera) }));
-	}
+	if (!candidates.length) return [];
 
 	// One boundary per frame. The later stored entry wins, just like re-keying.
 	const byStart = new Map(candidates.map((candidate) => [candidate.startFrame, candidate.entry]));
-	if (!byStart.has(0)) {
-		byStart.delete(candidates[0].startFrame);
-		byStart.set(0, candidates[0].entry);
-	}
 	const ordered = [...byStart.entries()].sort((a, b) => a[0] - b[0]);
 	const seenIds = new Set();
 	return ordered.map(([startFrame, entry], index) => {
-		const endFrame = (ordered[index + 1]?.[0] ?? frameCount) - 1;
-		const fallback = createShot(`Shot ${index + 1}`, startFrame);
+		const nextStart = ordered[index + 1]?.[0] ?? frameCount;
+		// Pre-overlay v3 bodies had no endFrame and were gapless by definition.
+		// Infer their old boundary exactly; new bodies persist an explicit end.
+		const storedEnd = finite(entry.endFrame) ? Math.round(entry.endFrame) : nextStart - 1;
+		const endFrame = Math.max(startFrame, Math.min(frameCount - 1, nextStart - 1, storedEnd));
+		const fallback = createShot(`Shot ${index + 1}`, startFrame, endFrame);
 		const storedId = typeof entry.id === "string" && entry.id.trim() && !seenIds.has(entry.id) ? entry.id : fallback.id;
 		seenIds.add(storedId);
 		return {
 			id: storedId,
 			name: typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : `Shot ${index + 1}`,
 			startFrame,
+			endFrame,
 			cameraKeys: repairKeys(entry.cameraKeys, startFrame, endFrame),
 			camera: repairCamera(inheritedCamera ?? entry.camera),
 		};
@@ -200,7 +199,8 @@ export function readShotAuthoringDocument(parsed) {
 	if (version === 1) {
 		const keys = repairKeys(parsed.cameraKeys, 0, effectiveFrameCount - 1);
 		const camera = migratedCamera(parsed.followCam, parsed.cameraRail, parsed.railFollow);
-		const shots = initialShots(effectiveFrameCount, keys).map((shot) => ({ ...shot, camera: repairCamera(camera) }));
+		// v1 was one whole-timeline camera roll even when it had no keys.
+		const shots = [createShot("Shot 1", 0, effectiveFrameCount - 1, keys, repairCamera(camera))];
 		return {
 			status: "migrated",
 			state: { ...repairShared(parsed, frameCount), shots },

@@ -1,23 +1,17 @@
-// Pure shot-segment model. No three.js, no React.
-// A cut is a splice in film: each strip owns its camera keys, and the splice
-// itself never invents an in-between frame.
+// Pure optional Shot-overlay model. Shots are camera ownership cards placed
+// on a timeline: gaps are valid free-camera time, overlaps are rejected.
 
 import { cameraMoveAt } from "./camera-move.js";
 import { cloneCameraBlock, createCameraBlock } from "./camera-block.js";
 
+export const DEFAULT_SHOT_FRAMES = 40;
+
 let nextShotId = 1;
-
-function id() {
-	return `shot-${Date.now().toString(36)}-${nextShotId++}`;
-}
-
-function frameNumber(value, fallback = 0) {
-	return Number.isFinite(value) ? Math.round(value) : fallback;
-}
+const id = () => `shot-${Date.now().toString(36)}-${nextShotId++}`;
+const frameNumber = (value, fallback = 0) => Number.isFinite(value) ? Math.round(value) : fallback;
 
 function cloneFraming(framing) {
-	if (!framing) return framing;
-	return { ...framing, pos: framing.pos ? { ...framing.pos } : framing.pos };
+	return framing ? { ...framing, pos: framing.pos ? { ...framing.pos } : framing.pos } : framing;
 }
 
 function uniqueKeys(keys, min = -Infinity, max = Infinity) {
@@ -30,20 +24,22 @@ function uniqueKeys(keys, min = -Infinity, max = Infinity) {
 	return [...byFrame.values()].sort((a, b) => a.frame - b.frame);
 }
 
-export function createShot(name = "Shot", startFrame = 0, cameraKeys = [], camera = null) {
+export function createShot(name = "Shot", startFrame = 0, endFrame = startFrame + DEFAULT_SHOT_FRAMES - 1, cameraKeys = [], camera = null) {
+	const start = Math.max(0, frameNumber(startFrame));
+	const end = Math.max(start, frameNumber(endFrame, start));
 	return {
 		id: id(),
 		name: typeof name === "string" && name.trim() ? name.trim() : "Shot",
-		startFrame: Math.max(0, frameNumber(startFrame)),
-		cameraKeys: uniqueKeys(cameraKeys),
+		startFrame: start,
+		endFrame: end,
+		cameraKeys: uniqueKeys(cameraKeys, start, end),
 		camera: createCameraBlock(camera),
 	};
 }
 
-export function initialShots(frameCount, legacyCameraKeys = []) {
-	const count = Math.max(1, frameNumber(frameCount, 1));
-	const shot = createShot("Shot 1", 0, uniqueKeys(legacyCameraKeys, 0, count - 1));
-	return [shot];
+/** New documents begin without an implicit camera owner. */
+export function initialShots() {
+	return [];
 }
 
 export function shotIndexAtFrame(shots, frame) {
@@ -53,10 +49,12 @@ export function shotIndexAtFrame(shots, frame) {
 	let high = shots.length - 1;
 	while (low <= high) {
 		const middle = Math.floor((low + high) / 2);
-		if (shots[middle].startFrame <= target) low = middle + 1;
-		else high = middle - 1;
+		const shot = shots[middle];
+		if (target < shot.startFrame) high = middle - 1;
+		else if (target > shot.endFrame) low = middle + 1;
+		else return middle;
 	}
-	return Math.max(0, high);
+	return -1;
 }
 
 export function shotAtFrame(shots, frame) {
@@ -64,121 +62,114 @@ export function shotAtFrame(shots, frame) {
 	return index < 0 ? null : shots[index];
 }
 
+function overlaps(shots, startFrame, endFrame, ignoredIndex = -1) {
+	return shots.some((shot, index) => index !== ignoredIndex && startFrame <= shot.endFrame && endFrame >= shot.startFrame);
+}
+
+/** Split only the Shot that actually covers the cut frame. Gap frames remain gaps. */
 export function cutAtFrame(shots, frame, currentFraming) {
-	if (!Array.isArray(shots) || !shots.length || !currentFraming) return shots;
+	if (!Array.isArray(shots) || !currentFraming) return shots;
 	const cutFrame = frameNumber(frame);
-	if (cutFrame <= 0 || shots.some((shot) => shot.startFrame === cutFrame)) return shots;
 	const index = shotIndexAtFrame(shots, cutFrame);
 	if (index < 0) return shots;
-
 	const source = shots[index];
+	if (cutFrame <= source.startFrame || cutFrame > source.endFrame) return shots;
 	const upstream = {
 		...source,
-		cameraKeys: source.cameraKeys.filter((key) => key.frame < cutFrame),
+		endFrame: cutFrame - 1,
+		cameraKeys: uniqueKeys(source.cameraKeys, source.startFrame, cutFrame - 1),
 		camera: cloneCameraBlock(source.camera),
 	};
-	const downstreamKeys = source.cameraKeys.filter((key) => key.frame >= cutFrame);
-	// The captured framing wins when the old strip already had a key here.
-	const downstream = createShot(`Shot ${shots.length + 1}`, cutFrame, [
-		...downstreamKeys,
+	const downstream = createShot(`Shot ${shots.length + 1}`, cutFrame, source.endFrame, [
+		...source.cameraKeys.filter((key) => key.frame >= cutFrame),
 		{ frame: cutFrame, framing: currentFraming },
 	], source.camera);
 	return [...shots.slice(0, index), upstream, downstream, ...shots.slice(index + 1)];
 }
 
-function clampShotKeys(shot, start, end) {
-	return { ...shot, startFrame: start, cameraKeys: uniqueKeys(shot.cameraKeys, start, end) };
+/** Add a 2-second Shot in a gap; an occupied playhead splits its Shot. */
+export function addShotAtFrame(shots, frame, frameCount, currentFraming, duration = DEFAULT_SHOT_FRAMES) {
+	const list = Array.isArray(shots) ? shots : [];
+	const count = Math.max(1, frameNumber(frameCount, 1));
+	const target = Math.max(0, Math.min(count - 1, frameNumber(frame)));
+	const inside = shotIndexAtFrame(list, target);
+	if (inside >= 0) {
+		const source = list[inside];
+		const cutFrame = target > source.startFrame ? target : source.startFrame + Math.floor((source.endFrame - source.startFrame + 1) / 2);
+		return cutFrame > source.startFrame && cutFrame <= source.endFrame ? cutAtFrame(list, cutFrame, currentFraming) : list;
+	}
+	const nextStart = list.find((shot) => shot.startFrame > target)?.startFrame ?? count;
+	const endFrame = Math.min(count - 1, nextStart - 1, target + Math.max(1, frameNumber(duration, DEFAULT_SHOT_FRAMES)) - 1);
+	if (endFrame < target || overlaps(list, target, endFrame)) return list;
+	const keys = currentFraming ? [{ frame: target, framing: currentFraming }] : [];
+	return [...list, createShot(`Shot ${list.length + 1}`, target, endFrame, keys)].sort((a, b) => a.startFrame - b.startFrame);
 }
 
-/**
- * Move the boundary that begins shots[index]. Each side keeps at least one
- * frame. Keys pushed over an edge are clamped onto that edge; if several land
- * together, the later key wins, matching normal re-key behaviour.
- */
-export function moveBoundary(shots, index, newStartFrame, frameCount) {
-	if (!Array.isArray(shots) || index <= 0 || index >= shots.length) return shots;
-	const count = Math.max(shots.length, frameNumber(frameCount, shots.at(-1).startFrame + 1));
-	const min = shots[index - 1].startFrame + 1;
-	const max = (shots[index + 1]?.startFrame ?? count) - 1;
-	const boundary = Math.max(min, Math.min(max, frameNumber(newStartFrame, shots[index].startFrame)));
-	if (boundary === shots[index].startFrame) return shots;
+export function resizeShot(shots, index, edge, rawFrame, frameCount) {
+	if (!Array.isArray(shots) || index < 0 || index >= shots.length || (edge !== "start" && edge !== "end")) return shots;
+	const count = Math.max(1, frameNumber(frameCount, 1));
+	const shot = shots[index];
+	const frame = Math.max(0, Math.min(count - 1, frameNumber(rawFrame, edge === "start" ? shot.startFrame : shot.endFrame)));
+	const startFrame = edge === "start" ? Math.min(frame, shot.endFrame) : shot.startFrame;
+	const endFrame = edge === "end" ? Math.max(frame, shot.startFrame) : shot.endFrame;
+	if ((startFrame === shot.startFrame && endFrame === shot.endFrame) || overlaps(shots, startFrame, endFrame, index)) return shots;
 	const next = shots.slice();
-	next[index - 1] = clampShotKeys(shots[index - 1], shots[index - 1].startFrame, boundary - 1);
-	next[index] = clampShotKeys(shots[index], boundary, (shots[index + 1]?.startFrame ?? count) - 1);
-	return next;
+	next[index] = { ...shot, startFrame, endFrame, cameraKeys: uniqueKeys(shot.cameraKeys, startFrame, endFrame) };
+	return next.sort((a, b) => a.startFrame - b.startFrame);
+}
+
+/** Compatibility name for callers that move the left edge. */
+export function moveBoundary(shots, index, newStartFrame, frameCount) {
+	return resizeShot(shots, index, "start", newStartFrame, frameCount);
 }
 
 export function removeShot(shots, index) {
-	if (!Array.isArray(shots) || shots.length <= 1 || index < 0 || index >= shots.length) return shots;
-	if (index === 0) {
-		return [{ ...shots[1], startFrame: 0 }, ...shots.slice(2)];
-	}
-	return [...shots.slice(0, index), ...shots.slice(index + 1)];
+	if (!Array.isArray(shots) || index < 0 || index >= shots.length) return shots;
+	return shots.filter((_, shotIndex) => shotIndex !== index);
 }
 
 export function renameShot(shots, index, name) {
 	if (!Array.isArray(shots) || index < 0 || index >= shots.length || typeof name !== "string" || !name.trim()) return shots;
-	return shots.map((shot, shotIndex) => (shotIndex === index ? { ...shot, name: name.trim() } : shot));
+	return shots.map((shot, shotIndex) => shotIndex === index ? { ...shot, name: name.trim() } : shot);
 }
 
-/**
- * Move a whole strip to another slot while preserving every strip's duration.
- * Camera keys travel with their strip by the same frame delta, like lifting a
- * physical clip from the edit bench and dropping it between two neighbours.
- */
-export function reorderShot(shots, fromIndex, toIndex, frameCount) {
-	if (!Array.isArray(shots) || fromIndex < 0 || fromIndex >= shots.length || toIndex < 0 || toIndex >= shots.length || fromIndex === toIndex) return shots;
-	const count = Math.max(shots.length, frameNumber(frameCount, shots.at(-1).startFrame + 1));
-	const durations = new Map(shots.map((shot, index) => [shot.id, (shots[index + 1]?.startFrame ?? count) - shot.startFrame]));
-	const reordered = shots.slice();
-	const [moved] = reordered.splice(fromIndex, 1);
-	reordered.splice(toIndex, 0, moved);
-	let startFrame = 0;
-	return reordered.map((shot) => {
-		const duration = Math.max(1, durations.get(shot.id) ?? 1);
-		const delta = startFrame - shot.startFrame;
-		const shifted = {
-			...shot,
-			startFrame,
-			cameraKeys: uniqueKeys(shot.cameraKeys.map((key) => ({ ...key, frame: key.frame + delta })), startFrame, startFrame + duration - 1),
-		};
-		startFrame += duration;
-		return shifted;
-	});
+/** Move a card in absolute time. Duration and local camera instruction travel together. */
+export function reorderShot(shots, fromIndex, rawStartFrame, frameCount) {
+	if (!Array.isArray(shots) || fromIndex < 0 || fromIndex >= shots.length) return shots;
+	const shot = shots[fromIndex];
+	const count = Math.max(1, frameNumber(frameCount, 1));
+	const duration = shot.endFrame - shot.startFrame + 1;
+	const startFrame = Math.max(0, Math.min(count - duration, frameNumber(rawStartFrame, shot.startFrame)));
+	const endFrame = startFrame + duration - 1;
+	if (startFrame === shot.startFrame || overlaps(shots, startFrame, endFrame, fromIndex)) return shots;
+	const delta = startFrame - shot.startFrame;
+	const moved = {
+		...shot,
+		startFrame,
+		endFrame,
+		cameraKeys: uniqueKeys(shot.cameraKeys.map((key) => ({ ...key, frame: key.frame + delta })), startFrame, endFrame),
+	};
+	return shots.map((entry, index) => index === fromIndex ? moved : entry).sort((a, b) => a.startFrame - b.startFrame);
 }
 
-/**
- * Duplicate a shot inside the existing timeline: its range is divided in two,
- * and its keys are time-scaled into both halves. This keeps frameCount stable,
- * like copying a clip into the available piece of tape. A one-frame shot has
- * no room to divide and is left unchanged.
- */
+function freeStart(shots, duration, frameCount, preferred) {
+	const candidates = [preferred, 0, ...shots.map((shot) => shot.endFrame + 1)];
+	return candidates.find((start) => start >= 0 && start + duration <= frameCount && !overlaps(shots, start, start + duration - 1));
+}
+
 export function duplicateShot(shots, index, frameCount) {
 	if (!Array.isArray(shots) || index < 0 || index >= shots.length) return shots;
 	const source = shots[index];
-	const end = (shots[index + 1]?.startFrame ?? Math.max(1, frameNumber(frameCount))) - 1;
-	const duration = end - source.startFrame + 1;
-	if (duration < 2) return shots;
-	const firstDuration = Math.ceil(duration / 2);
-	const duplicateStart = source.startFrame + firstDuration;
-	const scaleKeys = (start, length) => uniqueKeys(source.cameraKeys.map((key) => ({
-		frame: start + Math.round(((key.frame - source.startFrame) / Math.max(1, duration - 1)) * Math.max(0, length - 1)),
-		framing: key.framing,
-	})), start, start + length - 1);
-	const original = {
-		...source,
-		cameraKeys: scaleKeys(source.startFrame, firstDuration),
-		camera: cloneCameraBlock(source.camera),
-	};
-	const duplicate = createShot(
-		`${source.name} copy`,
-		duplicateStart,
-		scaleKeys(duplicateStart, duration - firstDuration),
-		source.camera,
-	);
-	return [...shots.slice(0, index), original, duplicate, ...shots.slice(index + 1)];
+	const duration = source.endFrame - source.startFrame + 1;
+	const startFrame = freeStart(shots, duration, Math.max(1, frameNumber(frameCount, 1)), source.endFrame + 1);
+	if (startFrame === undefined) return shots;
+	const delta = startFrame - source.startFrame;
+	const duplicate = createShot(`${source.name} copy`, startFrame, startFrame + duration - 1,
+		source.cameraKeys.map((key) => ({ ...key, frame: key.frame + delta })), source.camera);
+	return [...shots, duplicate].sort((a, b) => a.startFrame - b.startFrame);
 }
 
+/** Gaps deliberately return null; the caller interprets null as free camera. */
 export function cameraAtFrame(shots, anchor, frame) {
 	const shot = shotAtFrame(shots, frame);
 	return shot ? cameraMoveAt(shot.cameraKeys, anchor, frame) : null;

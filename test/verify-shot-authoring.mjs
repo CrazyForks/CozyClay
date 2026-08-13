@@ -28,6 +28,7 @@ const shots = [
 		id: "wide",
 		name: "Wide",
 		startFrame: 0,
+		endFrame: 99,
 		cameraKeys: [{ frame: 0, framing: framing(40) }],
 		camera: { mode: "keys", followCam, cameraRail: null, railFollow: null },
 	},
@@ -35,6 +36,7 @@ const shots = [
 		id: "close",
 		name: "Close",
 		startFrame: 100,
+		endFrame: 299,
 		cameraKeys: [{ frame: 100, framing: framing(70) }],
 		camera: { mode: "rail", followCam, cameraRail, railFollow: { mode: "range", startFrame: 10, endFrame: 80 } },
 	},
@@ -75,6 +77,17 @@ assert.deepEqual(restored.state.waypoints, authored.waypoints);
 assert.equal("followCam" in restored.state, false);
 assert.equal("cameraRail" in restored.state, false);
 assert.deepEqual(restored.state.shots[1].camera.railFollow, { mode: "range", startFrame: 10, endFrame: 80 });
+
+const emptyV3 = readShotAuthoring(JSON.stringify({ version: 3, frameCount: 300, shots: [], waypoints: [] }));
+assert.equal(emptyV3.status, "valid");
+assert.deepEqual(emptyV3.state.shots, [], "zero Shots is a normal persisted state");
+const gapV3 = readShotAuthoring(JSON.stringify({
+	version: 3,
+	frameCount: 300,
+	shots: [{ startFrame: 20, endFrame: 59 }, { startFrame: 100, endFrame: 139 }],
+	waypoints: [],
+}));
+assert.deepEqual(gapV3.state.shots.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[20, 59], [100, 139]]);
 
 // v2 globals become independent camera settings on EVERY repaired shot.
 const v2 = readShotAuthoring(JSON.stringify({
@@ -163,10 +176,10 @@ const repaired = loadShotAuthoring(JSON.stringify({
 	],
 	waypoints: [{ frame: 3.6, x: 1, z: 2, heading: "north" }, { frame: 2, x: Infinity, z: 0 }],
 }));
-assert.deepEqual(repaired.shots.map((shot) => shot.startFrame), [0, 70]);
+assert.deepEqual(repaired.shots.map((shot) => shot.startFrame), [30, 70]);
 assert.equal(new Set(repaired.shots.map((shot) => shot.id)).size, 2);
 assert.equal(repaired.shots[0].name, "A");
-assert.equal(repaired.shots[0].cameraKeys[0].frame, 0);
+assert.equal(repaired.shots[0].cameraKeys[0].frame, 30);
 assert.equal(repaired.shots[1].cameraKeys[0].frame, 99);
 assert.deepEqual(repaired.waypoints, [{ frame: 4, x: 1, z: 2, heading: null }]);
 assert.deepEqual(repaired.shots[0].camera, {
