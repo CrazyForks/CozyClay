@@ -17,6 +17,17 @@ import { DualRender, GIZMO_LAYER, SHOT_ASPECT, fitAspect } from "./dualview.jsx"
 import { Room, StageLights } from "./room.jsx";
 import { SHOT_AUTHORING_KEY, loadShotAuthoring, serializeShotAuthoring } from "./shot-authoring.js";
 import { FOLLOW_DEFAULTS, buildFollowTrack, buildRail, buildRailFollowTrack, simplifyStroke } from "./camera-follow.js";
+import {
+	RAIL_SCHEDULE_LEGACY,
+	RAIL_SCHEDULE_RANGE,
+	activeAt,
+	clampRailRange,
+	defaultRailRange,
+	isRailUsable,
+	moveRailRange,
+	resizeRailRange,
+	resolveRailSchedule,
+} from "./camera-rail-schedule.js";
 import { SetProps } from "./props.jsx";
 import {
 	DEFAULT_SCENE_OBJECTS,
@@ -1401,6 +1412,13 @@ globalThis.playMode = centerTab === "play";
 			return null;
 		}
 	});
+	// The timeline length the persisted session carried; the clip length
+	// state starts from it.
+	const startupFrameCount = shotStartup?.frameCount ?? DEFAULT_DURATION_S * 20;
+	// A session restored from pre-schedule data (no railFollow field) keeps
+	// legacy whole-timeline semantics: it is never auto-upgraded to an
+	// explicit default clip when the next rail stroke is committed.
+	const railFollowLegacySession = shotStartup !== null && shotStartup.railFollow === undefined;
 	// The camera move workspace: frame-unique keyframings authored on the
 	// timeline's Camera lane. The move's name is never stored — it is
 	// re-derived from the framings segment by segment.
@@ -1421,6 +1439,11 @@ globalThis.playMode = centerTab === "play";
 		...(shotStartup?.followCam ?? {}),
 	}));
 	const [cameraRail, setCameraRail] = useState(shotStartup?.cameraRail ?? null); // simplified control points [{x,z}]
+	// The Rail Follow clip: the authored span the drawn rail owns, inclusive.
+	// Absent/null keeps legacy whole-timeline semantics; {mode:"off"} is an
+	// explicit removal (the rail geometry stays); a range is the trimmable clip.
+	const [railFollow, setRailFollow] = useState(shotStartup?.railFollow ?? null); // loader-sanitized; resolveRailSchedule folds anything else
+	const [railSelected, setRailSelected] = useState(false);
 	const [railDraw, setRailDraw] = useState(false);
 	const [hasCharSheet, setHasCharSheet] = useState(false);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
@@ -1464,7 +1487,7 @@ globalThis.playMode = centerTab === "play";
 	const [tlFrame, setTlFrame] = useState(0);
 
 	const renderActive = useRenderActivity(tlPlaying || movePlaying);
-	const [tlFrameCount, setTlFrameCount] = useState(shotStartup?.frameCount ?? DEFAULT_DURATION_S * 20); // the generation clip length @ 20 fps
+	const [tlFrameCount, setTlFrameCount] = useState(startupFrameCount); // the generation clip length @ 20 fps
 	const [tlFps, setTlFps] = useState(20);
 	const frameCountRef = useRef(DEFAULT_DURATION_S * 20);
 	frameCountRef.current = tlFrameCount;
@@ -1485,11 +1508,24 @@ globalThis.playMode = centerTab === "play";
 	// hot updates) must never cost an authored shot again.
 	useEffect(() => {
 		try {
-			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ cameraKeys, waypoints, frameCount: tlFrameCount, followCam, cameraRail }));
+			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ cameraKeys, waypoints, frameCount: tlFrameCount, followCam, cameraRail, railFollow }));
 		} catch {
 			// quota or blocked storage: authoring simply won't survive a reload
 		}
-	}, [cameraKeys, waypoints, tlFrameCount, followCam, cameraRail]);
+	}, [cameraKeys, waypoints, tlFrameCount, followCam, cameraRail, railFollow]);
+	// A timeline shrink durably clamps the rail clip's end once: the authored
+	// range never silently runs past the new length and never grows back if
+	// the timeline grows again. Off/null schedules are left untouched; the
+	// schedule module's clamp enforces the 10-frame minimum.
+	useEffect(() => {
+		setRailFollow((current) => {
+			if (!current || current.mode !== "range") return current;
+			const clamped = clampRailRange(current, tlFrameCount);
+			if (!clamped) return current; // too short to hold the minimum clip; runtime resolution gates it
+			if (clamped.startFrame === current.startFrame && clamped.endFrame === current.endFrame) return current;
+			return { mode: "range", ...clamped };
+		});
+	}, [tlFrameCount]);
 	const [promptClips, setPromptClips] = useState(() => DEFAULT_PROMPT_CLIPS.map((clip) => ({ ...clip })));
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
@@ -2238,6 +2274,29 @@ globalThis.playMode = centerTab === "play";
 	// The dense rail (spline through the drawn control points) — shared by
 	// the follow controller and the Top-View display.
 	const railCurve = useMemo(() => (cameraRail ? buildRail(cameraRail) : null), [cameraRail]);
+	// Where the Rail Follow clip stands: resolution folds absent schedules to
+	// legacy (whole timeline), folds corrupt data to off, and hides the clip
+	// when no usable rail exists or the timeline cannot hold 10 frames.
+	// railClipRange is the effective inclusive span when the clip exists.
+	const railUsable = isRailUsable(cameraRail);
+	const railSchedule = useMemo(
+		() => resolveRailSchedule({ railFollow, cameraRail, frameCount: tlFrameCount }),
+		[railFollow, cameraRail, tlFrameCount],
+	);
+	const railClipRange =
+		railSchedule.kind === RAIL_SCHEDULE_RANGE || railSchedule.kind === RAIL_SCHEDULE_LEGACY
+			? { startFrame: railSchedule.startFrame, endFrame: railSchedule.endFrame }
+			: null;
+	// Ribbon edits arrive as absolute frames; the schedule module works on a
+	// range, so the current clip span is the base — legacy-null and off
+	// schedules edit from the full-length default and promote to a range on
+	// the first edit. Reads the freshest committed value via the updater.
+	const railEditBase = (scheduleValue) => {
+		const resolved = resolveRailSchedule({ railFollow: scheduleValue, cameraRail, frameCount: tlFrameCount });
+		return resolved.kind === RAIL_SCHEDULE_RANGE || resolved.kind === RAIL_SCHEDULE_LEGACY
+			? { startFrame: resolved.startFrame, endFrame: resolved.endFrame }
+			: { startFrame: 0, endFrame: tlFrameCount - 1 };
+	};
 
 	const followTrack = useMemo(() => {
 		if (!followCam.enabled || !subjectTrack) return null;
@@ -2249,15 +2308,26 @@ globalThis.playMode = centerTab === "play";
 			lead: followCam.lead,
 			initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) },
 		};
-		return railCurve
-			? buildRailFollowTrack(subjectTrack, tlFps, railCurve, params)
-			: buildFollowTrack(subjectTrack, tlFps, params);
-	}, [followCam, subjectTrack, railCurve, tlFps, charA.rot]);
+		if (!railCurve) return buildFollowTrack(subjectTrack, tlFps, params);
+		// The dolly only ever sees the subject inside the clip: the follow
+		// math in camera-follow.js is untouched and is fed the sliced
+		// trajectory, so track index 0 is the clip's startFrame.
+		if (!railClipRange) return null; // off / too-short: the rail owns nothing
+		const start = Math.max(0, Math.min(railClipRange.startFrame, subjectTrack.length - 1));
+		const end = Math.max(start, Math.min(railClipRange.endFrame, subjectTrack.length - 1));
+		return buildRailFollowTrack(subjectTrack.slice(start, end + 1), tlFps, railCurve, params);
+	}, [followCam, subjectTrack, railCurve, tlFps, charA.rot, railClipRange]);
 
 	// The follow camera owns the shot camera in the same situations key
 	// following would: never while an authoring mode holds the viewport.
-	const followCamActive =
-		followCam.enabled && !!followTrack && (centerTab === "play" || (!ikMode && !waypointMode && !posing));
+	// With a rail, ownership is derived per frame so FollowCamRig and MoveRig
+	// never both own the camera: the clip's inclusive range owns the dolly,
+	// everything outside falls back to the existing key/hold behavior, and
+	// off/too-short schedules never rail. No rail + Follow on keeps the
+	// existing whole-timeline free follow.
+	const viewAllowsFollow = centerTab === "play" || (!ikMode && !waypointMode && !posing);
+	const followCamActiveAt = (frame) =>
+		followCam.enabled && !!followTrack && viewAllowsFollow && (railUsable ? activeAt(railSchedule, frame) : true);
 
 	// Implied locomotion speed per authored segment (@ 20 fps). Shown in the
 	// timeline hint so a path that forces a crawl or a sprint is visible
@@ -3031,8 +3101,9 @@ globalThis.playMode = centerTab === "play";
 								// PlayView is the finished-output player: the move always rides
 								// the playhead there. The Follow toggle and authoring-mode gates
 								// only protect the Scene tab's manipulation surfaces.
-								// A follow cam owns the shot camera outright; keys resume when it is off.
-								following={!followCamActive && cameraKeys.length >= 1 && (centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing))}
+								// A follow cam owns the shot camera; with a rail that ownership is
+								// per frame, and the keys resume whenever the follow cam does not.
+								following={!followCamActiveAt(tlFrame) && cameraKeys.length >= 1 && (centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing))}
 								followFrame={tlFrame}
 								fps={tlFps}
 								keys={cameraKeys}
@@ -3046,8 +3117,8 @@ globalThis.playMode = centerTab === "play";
 								}}
 							/>
 							<FollowCamRig
-								enabled={followCamActive && !movePlaying}
-								frame={tlFrame}
+								enabled={followCamActiveAt(tlFrame) && !movePlaying}
+								frame={railClipRange ? Math.max(0, tlFrame - railClipRange.startFrame) : tlFrame}
 								track={followTrack}
 								camRef={shotCamRef}
 								look={look}
@@ -3120,6 +3191,16 @@ globalThis.playMode = centerTab === "play";
 									if (simplified.length < 2) return;
 									setCameraRail(simplified);
 									setRailDraw(false);
+									// A freshly committed rail gets an explicit full-range clip so the
+									// ribbon span can be trimmed; sessions restored from pre-schedule
+									// data keep legacy whole-timeline semantics instead.
+									setRailFollow((current) => {
+										if (current !== null || railFollowLegacySession) return current;
+										const range = defaultRailRange(tlFrameCount);
+										if (!range) return current; // timeline too short for the minimum clip; resolution gates it
+										return { mode: "range", ...range };
+									});
+									setRailSelected(false);
 									const curve = buildRail(simplified);
 									setToast(isKo ? `카메라 레일 완성 — ${curve ? curve.length.toFixed(1) : "?"} m, 제어점 ${simplified.length}개` : `Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
 								}}
@@ -3422,7 +3503,7 @@ globalThis.playMode = centerTab === "play";
 							>
 								{railDraw ? ko("Drawing…", "그리는 중…") : ko("✏ Rail", "✏ 레일")}
 							</button>
-							<button type="button" className="btn ghost" disabled={!cameraRail} onClick={() => setCameraRail(null)}>
+							<button type="button" className="btn ghost" disabled={!cameraRail} onClick={() => { setCameraRail(null); setRailFollow(null); setRailSelected(false); }}>
 								{ko("Clear rail", "레일 지우기")}
 							</button>
 						</div>
@@ -4027,6 +4108,11 @@ globalThis.playMode = centerTab === "play";
 				ikFrames={ikFrames}
 				footSnap={footSnap}
 				cameraKeyFrames={cameraKeys.map((k) => k.frame)}
+				railAvailable={railUsable}
+				railSchedule={railFollow}
+				railFollowEnabled={followCam.enabled}
+				railSelected={railSelected}
+				railProgress={tlFrame}
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
@@ -4074,6 +4160,32 @@ globalThis.playMode = centerTab === "play";
 				onCameraKeyframeMove={moveCameraKeyframe}
 				onCameraKeyframeRemove={removeCameraKeyframe}
 				onClearMotion={motion ? clearMotion : null}
+				onRailSelect={() => {
+					setRailSelected(true);
+					setSidebarTab("shot");
+				}}
+				onRailMove={(startFrame) =>
+					setRailFollow((current) => {
+						const base = railEditBase(current);
+						const moved = moveRailRange(base, startFrame - base.startFrame, tlFrameCount);
+						if (!moved) return current;
+						if (moved.startFrame === base.startFrame && moved.endFrame === base.endFrame) return current; // no-op edit: keep the stored shape
+						return { mode: "range", ...moved };
+					})
+				}
+				onRailRangeChange={(edge, frame) =>
+					setRailFollow((current) => {
+						const base = railEditBase(current);
+						const resized = resizeRailRange(base, edge, frame, tlFrameCount);
+						if (!resized) return current;
+						if (resized.startFrame === base.startFrame && resized.endFrame === base.endFrame) return current; // no-op edit: keep the stored shape
+						return { mode: "range", ...resized };
+					})
+				}
+				onRailRemove={() => {
+					setRailFollow({ mode: "off" });
+					setRailSelected(false);
+				}}
 			/>
 				</div>
 			</div>

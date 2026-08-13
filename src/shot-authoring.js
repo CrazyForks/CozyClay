@@ -38,8 +38,12 @@ const FOLLOW_BOUNDS = {
 };
 const RAIL_MAX_POINTS = 512;
 
-export function serializeShotAuthoring({ cameraKeys = [], waypoints = [], frameCount = null, followCam = null, cameraRail = null }) {
-	return JSON.stringify({ version: 1, frameCount, cameraKeys, waypoints, followCam, cameraRail });
+export function serializeShotAuthoring({ cameraKeys = [], waypoints = [], frameCount = null, followCam = null, cameraRail = null, railFollow = null }) {
+	const payload = { version: 1, frameCount, cameraKeys, waypoints, followCam, cameraRail };
+	// legacy-derived (null) means "no authored schedule": omit the field so
+	// old payloads keep their exact shape and older readers stay compatible
+	if (railFollow != null) payload.railFollow = railFollow;
+	return JSON.stringify(payload);
 }
 
 /**
@@ -109,5 +113,21 @@ export function loadShotAuthoring(raw) {
 		if (points.length >= 2) cameraRail = points;
 	}
 
-	return { frameCount, cameraKeys, waypoints, followCam, cameraRail };
+	// railFollow: the Rail Follow time clip. null is legacy-derived (whole
+	// timeline until first edit); {mode:"range",startFrame,endFrame} is an
+	// authored range; {mode:"off"} is an explicit removal that must survive
+	// reloads. Structural garbage folds back to null — never resurrect a clip.
+	let railFollow = null;
+	if (parsed.railFollow && typeof parsed.railFollow === "object" && !Array.isArray(parsed.railFollow)) {
+		if (parsed.railFollow.mode === "off") {
+			railFollow = { mode: "off" };
+		} else if (parsed.railFollow.mode === "range" && finite(parsed.railFollow.startFrame) && finite(parsed.railFollow.endFrame)) {
+			const startFrame = Math.round(parsed.railFollow.startFrame);
+			const endFrame = Math.round(parsed.railFollow.endFrame);
+			// an inverted range is a corrupt write, not an authored clip
+			if (startFrame <= endFrame) railFollow = { mode: "range", startFrame, endFrame };
+		}
+	}
+
+	return { frameCount, cameraKeys, waypoints, followCam, cameraRail, railFollow };
 }

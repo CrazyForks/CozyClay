@@ -135,5 +135,67 @@ expect(
 	})(),
 );
 
+/* ------------------------------------------ rail follow schedule ---- */
+
+const legacySerialized = serializeShotAuthoring({ frameCount: 300, cameraKeys: [], waypoints: [] });
+expect(
+	"legacy-derived state omits the railFollow field",
+	!("railFollow" in JSON.parse(legacySerialized)),
+	legacySerialized,
+);
+expect(
+	"historical explicit null loads as null (legacy)",
+	loadShotAuthoring(JSON.stringify({ frameCount: 300, railFollow: null })).railFollow === null,
+);
+expect(
+	"a payload without railFollow stays compatible",
+	loadShotAuthoring(JSON.stringify({ frameCount: 300, cameraKeys: [] })).railFollow === null,
+);
+
+const rangeRoundTrip = loadShotAuthoring(
+	serializeShotAuthoring({ frameCount: 300, railFollow: { mode: "range", startFrame: 40, endFrame: 200 } }),
+);
+expect(
+	"an authored range round-trips",
+	rangeRoundTrip.railFollow.mode === "range" && rangeRoundTrip.railFollow.startFrame === 40 && rangeRoundTrip.railFollow.endFrame === 200,
+	JSON.stringify(rangeRoundTrip.railFollow),
+);
+
+const offRoundTrip = loadShotAuthoring(serializeShotAuthoring({ frameCount: 300, railFollow: { mode: "off" } }));
+expect("an explicit removal round-trips as off", offRoundTrip.railFollow.mode === "off", JSON.stringify(offRoundTrip.railFollow));
+expect(
+	"explicit off is stored, not omitted",
+	JSON.parse(serializeShotAuthoring({ railFollow: { mode: "off" } })).railFollow.mode === "off",
+);
+
+expect(
+	"an unknown mode folds to null (legacy-derived)",
+	loadShotAuthoring(JSON.stringify({ railFollow: { mode: "bogus" } })).railFollow === null,
+);
+expect(
+	"a non-object railFollow folds to null",
+	loadShotAuthoring(JSON.stringify({ railFollow: "off" })).railFollow === null && loadShotAuthoring(JSON.stringify({ railFollow: ["off"] })).railFollow === null,
+);
+expect(
+	"a range with non-finite frames folds to null",
+	loadShotAuthoring(JSON.stringify({ railFollow: { mode: "range", startFrame: "soon", endFrame: 100 } })).railFollow === null,
+);
+expect(
+	"an inverted range folds to null",
+	loadShotAuthoring(JSON.stringify({ railFollow: { mode: "range", startFrame: 50, endFrame: 10 } })).railFollow === null,
+);
+expect(
+	"fractional frames round to integers",
+	loadShotAuthoring(JSON.stringify({ railFollow: { mode: "range", startFrame: 40.4, endFrame: 199.6 } })).railFollow.startFrame === 40 &&
+		loadShotAuthoring(JSON.stringify({ railFollow: { mode: "range", startFrame: 40.4, endFrame: 199.6 } })).railFollow.endFrame === 200,
+);
+expect(
+	"the 10-inclusive-frame minimum round-trips untouched",
+	(() => {
+		const boundary = loadShotAuthoring(serializeShotAuthoring({ railFollow: { mode: "range", startFrame: 0, endFrame: 9 } }));
+		return boundary.railFollow.mode === "range" && boundary.railFollow.startFrame === 0 && boundary.railFollow.endFrame === 9;
+	})(),
+);
+
 console.log(failures === 0 ? "all shot-authoring checks PASS" : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

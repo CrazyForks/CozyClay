@@ -15,7 +15,9 @@ import { ko, isKo } from "../locale.js";
  * The Camera lane authors shot-camera keyframings directly: left-clicking an
  * empty track cell keys the CURRENT camera framing at that frame, dots jump
  * the playhead on click, drag to re-time, right-click to remove. Playback
- * and PlayView ride the keys segment by segment.
+ * and PlayView ride the keys segment by segment. The lane's top band hosts
+ * the Rail Follow ribbon: one fixed-length range that drags to move and
+ * edge-handles to resize, dimmed with an OFF label while follow is off.
  */
 
 const DEFAULT_FRAME_COUNT = 300; // 15 s @ 20 fps, the ARDY Core cadence
@@ -77,6 +79,16 @@ export default function Timeline({
 	ikFrames = [], // sorted full-body key frames
 	footSnap = true, // feet stay planted while the body moves
 	cameraKeyFrames = [], // sorted camera key frames — dots on the Camera lane
+	railAvailable = false, // a drawn rail exists (cameraRail !== null)
+	railFollowEnabled = true, // follow-cam master switch from App (followCam.enabled): a disabled follow dims the ribbon even with a persisted range
+	railSchedule = null, // resolved follow schedule: null | {mode:"range",startFrame,endFrame} | {mode:"off"}
+	railSelected = false, // ribbon selection state
+	railProgress = null, // current playhead frame — fills the ribbon while inside the range
+	onRailSelect,
+	onRailMove,
+	onRailRangeChange,
+	onRailRangeEnd,
+	onRailRemove,
 	onScrub,
 	onAdvance,
 	onStep,
@@ -117,7 +129,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onRailSelect, onRailMove, onRailRangeChange, onRailRangeEnd, onRailRemove };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -256,11 +268,34 @@ export default function Timeline({
 	// Chips clamp into the surface; markers use framePct directly. One scale
 	// for everything — the old /count chip scale drifted off the gridlines.
 	const clipPct = (value) => Math.max(0, Math.min(1, framePct(value, displayFrameCount)));
+	// The Rail Follow ribbon shows the RESOLVED schedule: a range renders at
+	// its exact frames; a null (legacy, never edited) or {mode:"off"} schedule
+	// renders the full-length default clip that promotes to a range on first
+	// edit. Hidden only when no rail exists or the clip cannot hold 10 frames.
+	const railRange = useMemo(() => {
+		if (!railAvailable || frameCount < 10) return null;
+		if (railSchedule?.mode === "range") {
+			const start = Math.max(0, Math.min(railSchedule.startFrame, frameCount - 1));
+			const end = Math.max(0, Math.min(railSchedule.endFrame, frameCount - 1));
+			return end < start ? { start: end, end: start } : { start, end };
+		}
+		return { start: 0, end: frameCount - 1 };
+	}, [railAvailable, railSchedule, frameCount]);
+	const railOff = railSchedule?.mode === "off" || !railFollowEnabled;
+	// Playhead fill inside the ribbon: only while the follow range owns the
+	// camera (mode "range"); off/default schedules show no fill.
+	const railProgressPct =
+		railSchedule?.mode === "range" && railRange && railProgress != null && railProgress >= railRange.start && railProgress <= railRange.end
+			? (railProgress - railRange.start) / Math.max(1, railRange.end - railRange.start)
+			: null;
 	const moveRef = useRef(null);
 	const suppressPromptClickRef = useRef(false);
 	const resizeRef = useRef(null);
 	const camDragRef = useRef(null);
 	const camSuppressClickRef = useRef(false);
+	const railDragRef = useRef(null);
+	const railResizeRef = useRef(null);
+	const railSuppressClickRef = useRef(false);
 
 	function beginPromptMove(e, clip) {
 		if (e.button !== 0 || e.target.closest(".tl-chip-handle")) return;
@@ -413,6 +448,142 @@ export default function Timeline({
 		e.stopPropagation();
 		handlers.current.onScrub?.(keyFrame);
 		handlers.current.onCameraMoveSelect?.();
+	}
+	// The Rail Follow ribbon owns the lane's top band: three sibling controls
+	// (start handle, body, end handle) inside a non-focusable role=group.
+	// Body drag moves the fixed-length range; handle drag resizes to an
+	// absolute inclusive edge frame, clamped to the clip only — the schedule
+	// module enforces the 10-frame minimum by pushing the opposite edge.
+	function beginRailMove(e) {
+		if (e.button !== 0 || !railRange) return;
+		e.stopPropagation();
+		handlers.current.onRailSelect?.();
+		const lane = e.currentTarget.closest(".tl-lane");
+		const rect = lane?.getBoundingClientRect();
+		railDragRef.current = {
+			pointerId: e.pointerId,
+			startClientX: e.clientX,
+			startFrame: railRange.start,
+			length: railRange.end - railRange.start + 1,
+			laneWidth: rect?.width ?? 1,
+			displayFrameCount,
+			currentFrame: railRange.start,
+			moved: false,
+		};
+	}
+
+	function moveRail(e) {
+		const active = railDragRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		if (!active.moved) {
+			if (Math.abs(e.clientX - active.startClientX) < 4) return;
+			active.moved = true;
+			e.currentTarget.setPointerCapture(e.pointerId);
+			document.activeElement?.blur();
+		}
+		e.preventDefault();
+		e.stopPropagation();
+		const framesPerPixel = Math.max(0, active.displayFrameCount - 1) / Math.max(1, active.laneWidth);
+		const maxStart = Math.max(0, frameCount - active.length);
+		const next = Math.max(0, Math.min(maxStart, Math.round(active.startFrame + (e.clientX - active.startClientX) * framesPerPixel)));
+		if (next === active.currentFrame) return;
+		active.currentFrame = next;
+		handlers.current.onRailMove?.(next);
+	}
+
+	function endRailMove(e) {
+		const active = railDragRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		if (active.moved) {
+			e.preventDefault();
+			e.stopPropagation();
+			railSuppressClickRef.current = true;
+			if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+			queueMicrotask(() => { railSuppressClickRef.current = false; });
+		}
+		railDragRef.current = null;
+	}
+
+	function onRailBodyClick(e) {
+		if (railSuppressClickRef.current) {
+			e.preventDefault();
+			e.stopPropagation();
+			return;
+		}
+		e.stopPropagation();
+		handlers.current.onRailSelect?.();
+	}
+
+	function beginRailResize(e, edge) {
+		if (e.button !== 0 || !railRange) return;
+		e.preventDefault();
+		e.stopPropagation();
+		e.currentTarget.setPointerCapture?.(e.pointerId);
+		handlers.current.onRailSelect?.();
+		const lane = e.currentTarget.closest(".tl-lane");
+		const rect = lane?.getBoundingClientRect();
+		railResizeRef.current = {
+			edge,
+			pointerId: e.pointerId,
+			startClientX: e.clientX,
+			startFrame: edge === "start" ? railRange.start : railRange.end,
+			laneWidth: rect?.width ?? 1,
+			displayFrameCount,
+			lastFrame: null,
+		};
+	}
+
+	function moveRailResize(e) {
+		const active = railResizeRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		e.preventDefault();
+		e.stopPropagation();
+		const framesPerPixel = Math.max(0, active.displayFrameCount - 1) / Math.max(1, active.laneWidth);
+		const next = Math.max(0, Math.min(frameCount - 1, Math.round(active.startFrame + (e.clientX - active.startClientX) * framesPerPixel)));
+		if (next === active.lastFrame) return;
+		active.lastFrame = next;
+		handlers.current.onRailRangeChange?.(active.edge, next);
+	}
+
+	function endRailResize(e) {
+		const active = railResizeRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		const last = active.lastFrame;
+		railResizeRef.current = null;
+		e.currentTarget.releasePointerCapture?.(e.pointerId);
+		if (last != null) handlers.current.onRailRangeEnd?.(active.edge, last);
+	}
+
+	// Keyboard: Arrow nudges by 1 frame, Shift+Arrow by 10; Delete/Backspace
+	// removes the schedule (follow turns off, the rail geometry stays). Only
+	// the ribbon's own controls carry data-rail-edge, so nothing else reaches
+	// this handler; the window Space/J/K gate already ignores focused buttons,
+	// so playback shortcuts cannot leak while a ribbon control owns the keys.
+	function onRailKeyDown(e) {
+		const edge = e.target?.dataset?.railEdge;
+		if (!edge || !railRange) return;
+		if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+			e.preventDefault();
+			e.stopPropagation();
+			const dir = e.key === "ArrowLeft" ? -1 : 1;
+			const step = e.shiftKey ? 10 : 1;
+			if (edge === "body") {
+				const maxStart = Math.max(0, frameCount - (railRange.end - railRange.start + 1));
+				const next = Math.max(0, Math.min(maxStart, railRange.start + dir * step));
+				if (next !== railRange.start) handlers.current.onRailMove?.(next);
+			} else {
+				const base = edge === "start" ? railRange.start : railRange.end;
+				const next = Math.max(0, Math.min(frameCount - 1, base + dir * step));
+				if (next !== base) {
+					handlers.current.onRailRangeChange?.(edge, next);
+					handlers.current.onRailRangeEnd?.(edge, next);
+				}
+			}
+		} else if (e.key === "Delete" || e.key === "Backspace") {
+			e.preventDefault();
+			e.stopPropagation();
+			handlers.current.onRailRemove?.();
+		}
 	}
 
 	function frameFromEvent(e) {
@@ -683,6 +854,63 @@ export default function Timeline({
 												}}
 											/>
 										))}
+									{name === CAMERA_LANE && railRange && (
+										<div
+											role="group"
+											aria-label={ko("Rail follow range", "레일 팔로우 구간")}
+											className={"tl-rail" + (railSelected ? " selected" : "") + (railOff ? " off" : "")}
+											style={{ "--tl-f-start": clipPct(railRange.start), "--tl-f-end": clipPct(railRange.end) }}
+											onKeyDown={onRailKeyDown}
+											onContextMenu={(e) => {
+												e.preventDefault();
+												e.stopPropagation();
+												handlers.current.onRailRemove?.();
+											}}
+										>
+											<button
+												type="button"
+												tabIndex={0}
+												data-rail-edge="start"
+												className="tl-rail-handle start"
+												aria-label={ko("Resize rail follow start", "레일 팔로우 시작점 조절")}
+												title={ko("Drag to resize · Arrow nudges 1 frame, Shift+Arrow 10", "드래그로 길이 조절 · 방향키 1프레임, Shift+방향키 10프레임")}
+												onPointerDown={(e) => beginRailResize(e, "start")}
+												onPointerMove={moveRailResize}
+												onPointerUp={endRailResize}
+												onPointerCancel={endRailResize}
+											/>
+											<button
+												type="button"
+												tabIndex={0}
+												data-rail-edge="body"
+												className="tl-rail-body"
+												aria-label={ko("Rail follow — click to select, drag to move, right-click to remove", "레일 팔로우 — 클릭해 선택, 드래그로 이동, 오른쪽 클릭으로 삭제")}
+												onPointerDown={beginRailMove}
+												onPointerMove={moveRail}
+												onPointerUp={endRailMove}
+												onPointerCancel={endRailMove}
+												onClick={onRailBodyClick}
+											>
+												<span className="tl-rail-label">{isKo ? "레일 팔로우" : "Rail Follow"}</span>
+												{railOff && <span className="tl-rail-off">{isKo ? "꺼짐" : "OFF"}</span>}
+											</button>
+											<button
+												type="button"
+												tabIndex={0}
+												data-rail-edge="end"
+												className="tl-rail-handle end"
+												aria-label={ko("Resize rail follow end", "레일 팔로우 끝점 조절")}
+												title={ko("Drag to resize · Arrow nudges 1 frame, Shift+Arrow 10", "드래그로 길이 조절 · 방향키 1프레임, Shift+방향키 10프레임")}
+												onPointerDown={(e) => beginRailResize(e, "end")}
+												onPointerMove={moveRailResize}
+												onPointerUp={endRailResize}
+												onPointerCancel={endRailResize}
+											/>
+											{railProgressPct != null && (
+												<i className="tl-rail-progress" style={{ "--tl-rail-p": railProgressPct }} aria-hidden="true" />
+											)}
+										</div>
+									)}
 									{name === CAMERA_LANE && cameraKeyFrames.map((f) => (
 										<span
 											key={f}
