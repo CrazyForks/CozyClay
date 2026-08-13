@@ -118,7 +118,7 @@ expect(
 expect(
 	"manual viewport framing stays put until preview or playback",
 	app.includes("manualCameraOverrideRef.current = true") &&
-	app.includes("flyingRef.current || manualCameraOverrideRef.current") &&
+	(app.match(/flyingRef\.current \|\| manualCameraOverrideRef\.current/g) ?? []).length === 2 &&
 	app.includes("manualCameraOverrideRef.current = false"),
 );
 expect(

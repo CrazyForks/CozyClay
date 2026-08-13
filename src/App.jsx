@@ -527,7 +527,7 @@ function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, ca
 			return;
 		}
 		if (!following) return;
-		if (isInterrupted?.()) return; // the user is flying; yield until released
+		if (isInterrupted?.()) return; // manual viewport framing owns the paused camera
 		if (appliedFrame.current === followFrame) return;
 		appliedFrame.current = followFrame;
 		apply(followFrame);
@@ -3360,7 +3360,7 @@ globalThis.playMode = centerTab === "play";
 								anchor={charA}
 								camRef={shotCamRef}
 								look={look}
-								isInterrupted={() => flyingRef.current}
+								isInterrupted={() => flyingRef.current || manualCameraOverrideRef.current}
 								onDone={(finalFov) => {
 									setMovePlaying(false);
 									setFovDeg(Math.round(finalFov * 10) / 10);
