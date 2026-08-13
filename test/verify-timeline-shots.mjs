@@ -15,13 +15,19 @@ assert.equal(shotBlockGeometry(shots, 5, 100), null);
 
 const timeline = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
 const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 assert.ok(timeline.includes('const SHOTS_LANE = "Shots"'));
 assert.ok(timeline.includes('className={"tl-shot-block"'));
 assert.ok(timeline.includes("onShotBoundaryMove"));
 assert.ok(timeline.includes("onShotRename"));
 assert.ok(timeline.includes("onShotRemove"));
 assert.ok(timeline.includes("onShotDuplicate"));
+assert.ok(timeline.includes("onShotCut"));
+assert.ok(timeline.includes('ko("Split here", "여기서 나누기")'));
+assert.ok(timeline.includes("durationS.toFixed(1)"));
 assert.ok(app.includes("shots={shots}"));
 assert.ok(app.includes("moveBoundary(current, index, frame, tlFrameCount)"));
+assert.ok(css.includes("width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);"));
+assert.ok(!css.includes("width: max(8px, calc((var(--tl-f-end) - var(--tl-f-start)) * 100%));"));
 
 console.log("timeline shots lane verified");

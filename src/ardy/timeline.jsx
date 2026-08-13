@@ -82,6 +82,7 @@ export default function Timeline({
 	cameraKeyFrames = [], // sorted camera key frames — dots on the Camera lane
 	shots = [],
 	activeShotIdx = 0,
+	shotCutDisabled = false,
 	onScrub,
 	onAdvance,
 	onStep,
@@ -110,6 +111,7 @@ export default function Timeline({
 	onShotRename,
 	onShotRemove,
 	onShotDuplicate,
+	onShotCut,
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [zoom, setZoom] = useState(ZOOM_DEFAULT);
@@ -128,7 +130,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -646,6 +648,17 @@ export default function Timeline({
 								<span className="tl-track-label">
 									{TRACK_LABELS_KO[name]}
 									{name === "Prompts" && <button className="tl-track-add" type="button" title={ko("Add 2 second prompt clip", "2초 프롬프트 클립 추가")} onClick={() => handlers.current.onPromptAdd?.(frame)}>+</button>}
+									{name === SHOTS_LANE && (
+										<button
+											type="button"
+											className="tl-track-add cut"
+											disabled={shotCutDisabled}
+											title={shotCutDisabled ? ko("Move the playhead inside a shot to split it", "재생 헤드를 샷 중간으로 옮기면 나눌 수 있어요") : isKo ? `${frame}프레임에서 샷 나누기` : `Split shot at frame ${frame}`}
+											onClick={() => handlers.current.onShotCut?.()}
+										>
+											{ko("Split here", "여기서 나누기")}
+										</button>
+									)}
 									{name === IK_LANE && ikMode && (
 										<button
 											className="tl-track-add ik"
@@ -680,12 +693,14 @@ export default function Timeline({
 									{name === SHOTS_LANE && shots.map((shot, index) => {
 										const geometry = shotBlockGeometry(shots, index, frameCount, displayFrameCount);
 										if (!geometry) return null;
+										const lastFrame = (shots[index + 1]?.startFrame ?? frameCount) - 1;
+										const durationS = (lastFrame - shot.startFrame + 1) / Math.max(1, fps);
 										return (
 											<div
 												key={shot.id}
 												className={"tl-shot-block" + (index === activeShotIdx ? " active" : "")}
 												style={{ "--tl-f-start": geometry.startPct, "--tl-f-end": geometry.endPct }}
-												title={ko("Click to select · double-click the name to rename", "클릭해 선택 · 이름을 더블클릭해 변경")}
+												title={isKo ? `${shot.name} · ${shot.startFrame}–${lastFrame}프레임 · ${durationS.toFixed(1)}초 · 클릭해 선택, 이름을 더블클릭해 변경` : `${shot.name} · frames ${shot.startFrame}–${lastFrame} · ${durationS.toFixed(1)}s · click to select, double-click the name to rename`}
 												onClick={() => handlers.current.onShotSelect?.(index)}
 												onDoubleClick={(e) => { e.stopPropagation(); setRenamingShotId(shot.id); }}
 											>
@@ -698,7 +713,9 @@ export default function Timeline({
 														onPointerMove={moveShotBoundary}
 														onPointerUp={endShotBoundaryDrag}
 														onPointerCancel={endShotBoundaryDrag}
-													/>
+													>
+														⋮
+													</button>
 												)}
 												{renamingShotId === shot.id ? (
 													<input
@@ -712,10 +729,15 @@ export default function Timeline({
 															if (e.key === "Escape") setRenamingShotId(null);
 														}}
 													/>
-												) : <span className="tl-shot-name">{shot.name}</span>}
+												) : (
+													<span className="tl-shot-label">
+														<b>{shot.name}</b>
+														<small>{shot.startFrame}–{lastFrame} · {durationS.toFixed(1)}{ko("s", "초")}</small>
+													</span>
+												)}
 												<span className="tl-shot-actions">
-													<button type="button" title={ko("Duplicate shot", "샷 복제")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotDuplicate?.(index); }}>＋</button>
-													<button type="button" disabled={shots.length <= 1} title={ko("Delete shot and merge its time", "샷을 지우고 구간 합치기")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotRemove?.(index); }}>×</button>
+													<button type="button" title={ko("Duplicate shot", "샷 복제")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotDuplicate?.(index); }}>{ko("Duplicate", "복제")}</button>
+													<button type="button" disabled={shots.length <= 1} title={ko("Delete shot and merge its time", "샷을 지우고 구간 합치기")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotRemove?.(index); }}>{ko("Delete", "삭제")}</button>
 												</span>
 											</div>
 										);

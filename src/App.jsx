@@ -3433,15 +3433,6 @@ globalThis.playMode = centerTab === "play";
 							<button
 								type="button"
 								className="btn ghost"
-								disabled={tlFrame <= 0 || shots.some((shot) => shot.startFrame === tlFrame) || !!posing || ikMode || waypointMode}
-								title={ko("Split the shot here and hold the current framing on the new shot", "여기서 샷을 나누고 새 샷에 현재 프레이밍을 고정합니다")}
-								onClick={addCutAtPlayhead}
-							>
-								{ko("Cut", "컷")}
-							</button>
-							<button
-								type="button"
-								className="btn ghost"
 								disabled={!hasCameraKeys}
 								title={ko("Play the move. With Follow on it plays the timeline too, so character motion rides along; right-drag interrupts", "카메라 움직임을 재생합니다. 따라가기가 켜져 있으면 타임라인도 함께 재생되어 캐릭터 모션이 따라옵니다. 오른쪽 드래그로 중단됩니다")}
 								onClick={() => {
@@ -4162,6 +4153,7 @@ globalThis.playMode = centerTab === "play";
 				cameraKeyFrames={cameraKeys.map((k) => k.frame)}
 				shots={shots}
 				activeShotIdx={activeShotIdx}
+				shotCutDisabled={tlFrame <= 0 || shots.some((shot) => shot.startFrame === tlFrame) || !!posing || ikMode || waypointMode}
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
@@ -4213,6 +4205,7 @@ globalThis.playMode = centerTab === "play";
 				onShotRename={(index, name) => setShots((current) => renameShot(current, index, name))}
 				onShotRemove={(index) => setShots((current) => removeShot(current, index))}
 				onShotDuplicate={duplicateTimelineShot}
+				onShotCut={addCutAtPlayhead}
 				onClearMotion={motion ? clearMotion : null}
 			/>
 				</div>

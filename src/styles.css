@@ -2492,6 +2492,14 @@ input[type=range]::-moz-range-thumb {
 	cursor: pointer;
 }
 
+.tl-track-add.cut {
+	width: auto;
+	min-width: 76px;
+	padding: 0 6px;
+	font-size: 9px;
+	white-space: nowrap;
+}
+
 
 .tl-chip {
 	box-sizing: border-box;
@@ -2593,7 +2601,8 @@ input[type=range]::-moz-range-thumb {
 	top: 3px;
 	bottom: 3px;
 	left: calc(var(--tl-f-start) * 100%);
-	width: max(8px, calc((var(--tl-f-end) - var(--tl-f-start)) * 100%));
+	/* Never fake a minimum duration: the width is the actual frame range. */
+	width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);
 	display: flex;
 	align-items: center;
 	gap: 4px;
@@ -2612,12 +2621,27 @@ input[type=range]::-moz-range-thumb {
 	background: #4a4335;
 }
 
-.tl-shot-name {
+.tl-shot-label {
 	min-width: 0;
 	flex: 1;
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.tl-shot-label b {
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	white-space: nowrap;
+}
+
+.tl-shot-label small {
+	flex: none;
+	color: #aab4c0;
+	font-size: 8.5px;
+	font-variant-numeric: tabular-nums;
 }
 
 .tl-shot-name-input {
@@ -2636,12 +2660,15 @@ input[type=range]::-moz-range-thumb {
 	position: absolute;
 	top: -2px;
 	bottom: -2px;
-	left: -4px;
-	width: 8px;
+	left: -7px;
+	width: 14px;
 	padding: 0;
 	border: 0;
 	border-left: 2px solid #e7b557;
 	background: transparent;
+	color: #e7b557;
+	font-size: 14px;
+	line-height: 1;
 	cursor: ew-resize;
 	z-index: 3;
 }
@@ -2657,14 +2684,15 @@ input[type=range]::-moz-range-thumb {
 }
 
 .tl-shot-actions button {
-	width: 15px;
+	width: auto;
+	min-width: 30px;
 	height: 15px;
-	padding: 0;
+	padding: 0 4px;
 	border: 0;
 	border-radius: 2px;
 	background: rgba(255, 255, 255, .12);
 	color: inherit;
-	font-size: 11px;
+	font-size: 8.5px;
 	line-height: 1;
 	cursor: pointer;
 }
