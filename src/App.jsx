@@ -110,13 +110,13 @@ import {
 import { captureFraming, classifyMove, cameraMoveAt, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
 import {
 	cameraAtFrame,
-	cutAtFrame,
+	addShotAtFrame,
 	duplicateShot,
 	initialShots,
-	moveBoundary,
 	removeShot,
 	renameShot,
 	reorderShot,
+	resizeShot,
 	shotIndexAtFrame,
 } from "./cuts.js";
 
@@ -495,7 +495,11 @@ function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, ca
 		const spanFrames = Math.max((keys[keys.length - 1]?.frame ?? firstFrame) - firstFrame, 1);
 		const apply = (frame) => {
 			// Timeline/PlayView sampling follows the editorial strips. Standalone
-			// preview stays scoped to the selected strip's keys.
+			// preview stays scoped to the selected strip's keys. Entering a Shot
+			// applies its authored camera immediately (a hard cut). Leaving into a
+			// gap returns null and deliberately applies nothing: the last physical
+			// camera pose stays put and FlyControls regain ownership, so we do not
+			// invent a second cut to an arbitrary "free camera" preset.
 			const f = following ? cameraAtFrame(shots, anchor, frame) : cameraMoveAt(keys, anchor, frame);
 			if (!f) return null;
 			cam.position.set(f.pos.x, f.pos.y, f.pos.z);
@@ -1449,7 +1453,7 @@ globalThis.playMode = centerTab === "play";
 	const activeCamera = createCameraBlock(activeShot?.camera);
 	const followCam = activeCamera.followCam;
 	const cameraRail = activeCamera.cameraRail;
-	const activeShotDuration = (shots[activeShotIdx + 1]?.startFrame ?? tlFrameCount) - (activeShot?.startFrame ?? 0);
+	const activeShotDuration = activeShot ? activeShot.endFrame - activeShot.startFrame + 1 : 0;
 	const hasCameraKeys = shots.some((shot) => shot.cameraKeys.length > 0);
 	function changeActiveCamera(patch, index = activeShotIdx) {
 		setShots((current) => current.map((shot, shotIndex) => shotIndex === index
@@ -1470,7 +1474,7 @@ globalThis.playMode = centerTab === "play";
 		setShots((current) => current.map((shot, shotIndex) => {
 			if (shotIndex !== index) return shot;
 			const camera = createCameraBlock(shot.camera);
-			const duration = (current[shotIndex + 1]?.startFrame ?? tlFrameCount) - shot.startFrame;
+			const duration = shot.endFrame - shot.startFrame + 1;
 			const resolved = resolveRailSchedule({ railFollow: camera.railFollow, cameraRail: camera.cameraRail, frameCount: duration });
 			const base = resolved.kind === RAIL_SCHEDULE_RANGE || resolved.kind === RAIL_SCHEDULE_LEGACY
 				? { startFrame: resolved.startFrame, endFrame: resolved.endFrame }
@@ -1503,7 +1507,7 @@ globalThis.playMode = centerTab === "play";
 			const next = current.map((shot, index) => {
 				const railFollow = shot.camera?.railFollow;
 				if (railFollow?.mode !== "range") return shot;
-				const duration = (current[index + 1]?.startFrame ?? tlFrameCount) - shot.startFrame;
+				const duration = shot.endFrame - shot.startFrame + 1;
 				const clamped = clampRailRange(railFollow, duration);
 				if (!clamped || (clamped.startFrame === railFollow.startFrame && clamped.endFrame === railFollow.endFrame)) return shot;
 				changed = true;
@@ -1905,11 +1909,12 @@ globalThis.playMode = centerTab === "play";
 
 	// Key authoring lives in each unified Shot block's lower key strip: clicking
 	// an empty point stores the CURRENT framing there. Re-keying overwrites it.
-	function addCameraKeyframe(frame) {
+	function addCameraKeyframe(frame, requestedIndex = null) {
 		const framing = captureCurrentFraming();
 		const target = Math.max(0, Math.min(Math.round(frame), tlFrameCount - 1));
 		setShots((current) => {
-			const index = shotIndexAtFrame(current, target);
+			const index = requestedIndex ?? shotIndexAtFrame(current, target);
+			if (index < 0 || target < current[index].startFrame || target > current[index].endFrame) return current;
 			return current.map((shot, shotIndex) => shotIndex === index ? {
 				...shot,
 				cameraKeys: shot.cameraKeys.filter((key) => key.frame !== target)
@@ -1922,14 +1927,15 @@ globalThis.playMode = centerTab === "play";
 
 	// Re-time a key by dragging its dot along the lane. Landing on another
 	// key's frame is rejected — keys stay frame-unique.
-	function moveCameraKeyframe(from, to) {
-		const sourceIndex = shotIndexAtFrame(shots, from);
+	function moveCameraKeyframe(from, to, requestedIndex = null) {
+		const sourceIndex = requestedIndex ?? shotIndexAtFrame(shots, from);
 		const min = shots[sourceIndex]?.startFrame ?? 0;
-		const max = (shots[sourceIndex + 1]?.startFrame ?? tlFrameCount) - 1;
+		const max = shots[sourceIndex]?.endFrame ?? tlFrameCount - 1;
 		const target = Math.max(min, Math.min(Math.round(to), max));
 		if (target === from) return;
 		setShots((current) => {
-			const index = shotIndexAtFrame(current, from);
+			const index = requestedIndex ?? shotIndexAtFrame(current, from);
+			if (index < 0) return current;
 			const keys = current[index]?.cameraKeys ?? [];
 			if (keys.some((key) => key.frame === target)) return current;
 			return current.map((shot, shotIndex) => shotIndex === index ? {
@@ -1939,9 +1945,10 @@ globalThis.playMode = centerTab === "play";
 		});
 	}
 
-	function removeCameraKeyframe(frame) {
+	function removeCameraKeyframe(frame, requestedIndex = null) {
 		setShots((current) => {
-			const index = shotIndexAtFrame(current, frame);
+			const index = requestedIndex ?? shotIndexAtFrame(current, frame);
+			if (index < 0) return current;
 			return current.map((shot, shotIndex) => shotIndex === index
 				? { ...shot, cameraKeys: shot.cameraKeys.filter((key) => key.frame !== frame) }
 				: shot);
@@ -1955,13 +1962,7 @@ globalThis.playMode = centerTab === "play";
 
 	function addTimelineShot() {
 		setMovePlaying(false);
-		const index = shotIndexAtFrame(shots, tlFrame);
-		const start = shots[index]?.startFrame ?? 0;
-		const end = shots[index + 1]?.startFrame ?? tlFrameCount;
-		const target = tlFrame > start && tlFrame < end ? tlFrame : start + Math.floor((end - start) / 2);
-		if (target <= start || target >= end) return;
-		setShots((current) => cutAtFrame(current, target, captureCurrentFraming()));
-		setTlFrame(target);
+		setShots((current) => addShotAtFrame(current, tlFrame, tlFrameCount, captureCurrentFraming()));
 	}
 
 	function selectTimelineShot(index) {
@@ -1975,26 +1976,15 @@ globalThis.playMode = centerTab === "play";
 	function duplicateTimelineShot(index) {
 		const next = duplicateShot(shots, index, tlFrameCount);
 		setShots(next);
-		if (next !== shots && next[index + 1]) setTlFrame(next[index + 1].startFrame);
+		if (next !== shots) {
+			const sourceId = shots[index]?.id;
+			const duplicate = next.find((shot) => shot.id !== sourceId && !shots.some((existing) => existing.id === shot.id));
+			if (duplicate) setTlFrame(duplicate.startFrame);
+		}
 	}
 
 	function moveTimelineShot(fromIndex, targetFrame) {
-		setShots((current) => {
-			const targetIndex = shotIndexAtFrame(current, targetFrame);
-			return reorderShot(current, fromIndex, targetIndex, tlFrameCount);
-		});
-	}
-
-	function resizeTimelineEnd(endFrame) {
-		const lastStart = shots.at(-1)?.startFrame ?? 0;
-		const nextCount = Math.max(lastStart + 1, Math.round(endFrame) + 1);
-		setTlFrameCount(nextCount);
-		setTlFrame((current) => Math.min(current, nextCount - 1));
-		setShots((current) => current.map((shot, index) => {
-			if (index !== current.length - 1) return shot;
-			const byFrame = new Map(shot.cameraKeys.map((key) => [Math.min(key.frame, nextCount - 1), { ...key, frame: Math.min(key.frame, nextCount - 1) }]));
-			return { ...shot, cameraKeys: [...byFrame.values()].sort((a, b) => a.frame - b.frame) };
-		}));
+		setShots((current) => reorderShot(current, fromIndex, targetFrame, tlFrameCount));
 	}
 
 	const allPoses = useMemo(() => [...BUILT_IN_POSES, ...customPoses], [customPoses]);
@@ -2482,7 +2472,7 @@ globalThis.playMode = centerTab === "play";
 			const camera = createCameraBlock(shot.camera);
 			if (camera.mode === "keys") continue;
 			const start = shot.startFrame;
-			const end = shots[index + 1]?.startFrame ?? subjectTrack.length;
+			const end = Math.min(subjectTrack.length, shot.endFrame + 1);
 			const subjectSlice = subjectTrack.slice(start, end);
 			const params = { ...camera.followCam, initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) } };
 			const rail = camera.mode === "rail" ? buildRail(camera.cameraRail) : null;
@@ -4321,7 +4311,7 @@ globalThis.playMode = centerTab === "play";
 				footSnap={footSnap}
 					shots={shots}
 					activeShotIdx={activeShotIdx}
-				shotCutDisabled={!!posing || ikMode || waypointMode || ((shots[activeShotIdx + 1]?.startFrame ?? tlFrameCount) - (shots[activeShotIdx]?.startFrame ?? 0) < 2)}
+				shotCutDisabled={!!posing || ikMode || waypointMode || (!!activeShot && activeShot.endFrame === activeShot.startFrame)}
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
@@ -4397,12 +4387,11 @@ globalThis.playMode = centerTab === "play";
 						? { ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "off" } }) }
 						: shot))}
 				onShotSelect={selectTimelineShot}
-				onShotBoundaryMove={(index, frame) => setShots((current) => moveBoundary(current, index, frame, tlFrameCount))}
+				onShotBoundaryMove={(index, edge, frame) => setShots((current) => resizeShot(current, index, edge, frame, tlFrameCount))}
 				onShotRename={(index, name) => setShots((current) => renameShot(current, index, name))}
 				onShotRemove={(index) => setShots((current) => removeShot(current, index))}
 				onShotDuplicate={duplicateTimelineShot}
 				onShotCut={addTimelineShot}
-				onShotEndResize={resizeTimelineEnd}
 				onShotMove={moveTimelineShot}
 				onClearMotion={motion ? clearMotion : null}
 			/>

@@ -2815,6 +2815,19 @@ input[type=range]::-moz-range-thumb {
 	touch-action: none;
 }
 
+.tl-shot-empty {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	padding: 0 14px;
+	margin: 0;
+	color: #8e93a3;
+	font-size: 9px;
+	font-style: italic;
+	pointer-events: none;
+}
+
 .tl-shot-block.active {
 	border-color: #e7b557;
 	background: #503f6d;

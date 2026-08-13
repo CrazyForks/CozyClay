@@ -73,9 +73,9 @@ expect(
 	timeline.includes("handlers.current.onCameraMoveSelect?.()"),
 );
 expect(
-	"one split button performs the shared shot-camera cut",
+	"one add button creates or splits the shared shot-camera card",
 	!timeline.includes('className="tl-track-add cut camera"') &&
-	timeline.includes('ko("+ Split shot", "+ 샷 분할")') &&
+	timeline.includes('ko("+ Add shot", "+ 샷 추가")') &&
 	timeline.includes("handlers.current.onShotCut?.()"),
 );
 expect(
@@ -83,8 +83,8 @@ expect(
 	!timeline.includes('className="tl-camera-edge') &&
 	timeline.includes('className="tl-shot-edge start"') &&
 	timeline.includes('className="tl-shot-edge end"') &&
-	timeline.includes("beginShotBoundaryDrag(e, index)") &&
-	timeline.includes("beginShotBoundaryDrag(e, index + 1, index === shots.length - 1)"),
+	timeline.includes('beginShotBoundaryDrag(e, index, "start")') &&
+	timeline.includes('beginShotBoundaryDrag(e, index, "end")'),
 );
 expect(
 	"selected camera mini editor sits above the lane body",
