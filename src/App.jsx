@@ -1454,6 +1454,9 @@ globalThis.playMode = centerTab === "play";
 		height: FOLLOW_DEFAULTS.height,
 		response: FOLLOW_DEFAULTS.response,
 		lead: FOLLOW_DEFAULTS.lead,
+		railStartMode: FOLLOW_DEFAULTS.railStartMode,
+		maxDollySpeed: FOLLOW_DEFAULTS.maxDollySpeed,
+		pitchOffsetDeg: FOLLOW_DEFAULTS.pitchOffsetDeg,
 		...(startupShotState?.followCam ?? {}),
 	}));
 	const [cameraRail, setCameraRail] = useState(startupShotState?.cameraRail ?? null); // simplified control points [{x,z}]
@@ -2327,6 +2330,9 @@ globalThis.playMode = centerTab === "play";
 			height: followCam.height,
 			response: followCam.response,
 			lead: followCam.lead,
+			railStartMode: followCam.railStartMode,
+			maxDollySpeed: followCam.maxDollySpeed,
+			pitchOffsetDeg: followCam.pitchOffsetDeg,
 			initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) },
 		};
 		return railCurve
@@ -3513,18 +3519,54 @@ globalThis.playMode = centerTab === "play";
 							>
 								{railDraw ? ko("Drawing…", "그리는 중…") : ko("✏ Rail", "✏ 레일")}
 							</button>
-							<button type="button" className="btn ghost" disabled={!cameraRail} onClick={() => setCameraRail(null)}>
+							<button
+								type="button"
+								className="btn ghost"
+								disabled={!cameraRail}
+								title={ko("Remove the drawn rail; follow-cam settings and subject motion stay unchanged", "그린 레일만 지웁니다. 팔로우 카메라 설정과 피사체 모션은 그대로 유지됩니다")}
+								onClick={() => setCameraRail(null)}
+							>
 								{ko("Clear rail", "레일 지우기")}
 							</button>
 						</div>
 						{followCam.enabled && (
 							<>
-								<Slider label={ko("Distance", "거리")} min={1} max={8} step={0.1} value={followCam.distance} unit=" m" onChange={(distance) => setFollowCam((c) => ({ ...c, distance }))} />
-								<Slider label={ko("Height", "높이")} min={0.4} max={4} step={0.05} value={followCam.height} unit=" m" onChange={(height) => setFollowCam((c) => ({ ...c, height }))} />
-								<Slider label={ko("Response", "반응")} min={0.2} max={2} step={0.05} value={followCam.response} unit=" s" onChange={(response) => setFollowCam((c) => ({ ...c, response }))} />
-								<Slider label={ko("Lead", "선행")} min={0} max={0.6} step={0.05} value={followCam.lead} unit=" s" onChange={(lead) => setFollowCam((c) => ({ ...c, lead }))} />
+								{railCurve && (
+									<button
+										type="button"
+										className={"btn ghost" + (followCam.railStartMode === "head" ? " active" : "")}
+										title={ko("Start at the rail's drawn head. Turn off to auto-place the dolly at the nearest useful point; rail direction and speed stay unchanged", "레일을 그리기 시작한 지점에서 출발합니다. 끄면 돌리를 가까운 유효 지점에 자동 배치하며, 레일 방향과 속도는 바뀌지 않습니다")}
+										onClick={() => setFollowCam((c) => ({ ...c, railStartMode: c.railStartMode === "head" ? "nearest" : "head" }))}
+									>
+										{followCam.railStartMode === "head" ? ko("Start at rail head ✓", "레일 시작점에서 출발 ✓") : ko("Auto-place nearest", "가까운 지점에 자동 배치")}
+									</button>
+								)}
+								<div title={ko("Set the camera-to-subject spacing; this does not change dolly speed or lens height", "카메라와 피사체 사이 간격을 정합니다. 돌리 속도와 렌즈 높이는 바꾸지 않습니다")}>
+									<Slider label={ko("Distance", "거리")} min={1} max={8} step={0.1} value={followCam.distance} unit=" m" onChange={(distance) => setFollowCam((c) => ({ ...c, distance }))} />
+								</div>
+								<div title={ko("Set the physical lens height; this does not tilt the camera", "렌즈의 물리적 높이를 정합니다. 카메라 틸트는 바꾸지 않습니다")}>
+									<Slider label={ko("Height", "높이")} min={0.4} max={4} step={0.05} value={followCam.height} unit=" m" onChange={(height) => setFollowCam((c) => ({ ...c, height }))} />
+								</div>
+								<div title={ko("Set how softly the dolly catches up; this changes acceleration feel, not its top speed", "돌리가 얼마나 부드럽게 따라붙는지 정합니다. 가속 느낌만 바꾸며 최고 속도는 바꾸지 않습니다")}>
+									<Slider label={ko("Damping", "댐핑")} min={0.2} max={2} step={0.05} value={followCam.response} unit=" s" onChange={(response) => setFollowCam((c) => ({ ...c, response }))} />
+								</div>
+								<div title={ko("Aim ahead along the subject's motion; this changes framing only, not dolly speed", "피사체가 움직일 앞쪽을 조준합니다. 프레이밍만 바꾸며 돌리 속도는 그대로입니다")}>
+									<Slider label={ko("Look-ahead", "조준 선행")} min={0} max={0.6} step={0.05} value={followCam.lead} unit=" s" onChange={(lead) => setFollowCam((c) => ({ ...c, lead }))} />
+								</div>
+								{railCurve && (
+									<div title={ko("Cap dolly travel speed along the rail; this does not change damping or the subject's motion", "레일 위 돌리의 최고 이동 속도를 제한합니다. 댐핑과 피사체 모션은 바꾸지 않습니다")}>
+										<Slider label={ko("Dolly speed", "돌리 속도")} min={0.2} max={8} step={0.1} value={followCam.maxDollySpeed} unit=" m/s" onChange={(maxDollySpeed) => setFollowCam((c) => ({ ...c, maxDollySpeed }))} />
+									</div>
+								)}
+								<div title={ko("Tilt above or below automatic subject aim; this does not move the camera or change lens height", "피사체 자동 조준각에서 위아래로 틸트합니다. 카메라 위치와 렌즈 높이는 바꾸지 않습니다")}>
+									<Slider label={ko("Pitch offset", "피치 오프셋")} min={-30} max={30} step={1} value={followCam.pitchOffsetDeg} unit="°" onChange={(pitchOffsetDeg) => setFollowCam((c) => ({ ...c, pitchOffsetDeg }))} />
+								</div>
 								<div className="move-slate" title={ko("what the rig is doing, derived from the setup — a rail makes it a dolly, none makes it a steadicam", "설정에서 계산한 카메라 동작입니다. 레일이 있으면 돌리, 없으면 스테디캠입니다")}>
-									{railCurve ? (isKo ? `레일 돌리 · ${railCurve.length.toFixed(1)} m` : `DOLLY ON RAIL · ${railCurve.length.toFixed(1)} m`) : ko("STEADICAM FOLLOW", "스테디캠 팔로우")} · {isKo ? `${followCam.distance.toFixed(1)} m 유지` : `HOLD ${followCam.distance.toFixed(1)} m`}
+									{railCurve
+										? (isKo
+											? `레일 돌리 · ${railCurve.length.toFixed(1)} m · ${followCam.railStartMode === "head" ? "시작점 출발" : "가까운 지점 자동 배치"} · 최고 ${followCam.maxDollySpeed.toFixed(1)} m/s`
+											: `DOLLY ON RAIL · ${railCurve.length.toFixed(1)} m · ${followCam.railStartMode === "head" ? "START HEAD" : "AUTO NEAREST"} · MAX ${followCam.maxDollySpeed.toFixed(1)} m/s`)
+										: ko("STEADICAM FOLLOW", "스테디캠 팔로우")} · {isKo ? `${followCam.distance.toFixed(1)} m 유지 · 피치 ${followCam.pitchOffsetDeg >= 0 ? "+" : ""}${followCam.pitchOffsetDeg.toFixed(0)}°` : `HOLD ${followCam.distance.toFixed(1)} m · PITCH ${followCam.pitchOffsetDeg >= 0 ? "+" : ""}${followCam.pitchOffsetDeg.toFixed(0)}°`}
 								</div>
 							</>
 						)}

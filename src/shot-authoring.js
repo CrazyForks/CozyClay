@@ -23,6 +23,13 @@ const FOLLOW_BOUNDS = {
 	height: [0.2, 6],
 	response: [0.1, 3],
 	lead: [0, 1],
+	maxDollySpeed: [0.2, 8],
+	pitchOffsetDeg: [-30, 30],
+};
+const FOLLOW_FIELD_DEFAULTS = {
+	railStartMode: "head",
+	maxDollySpeed: 4,
+	pitchOffsetDeg: 0,
 };
 
 function validFraming(framing) {
@@ -99,7 +106,12 @@ function repairWaypoints(entries) {
 
 function repairFollowCam(value) {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-	const followCam = { enabled: value.enabled === true };
+	const followCam = {
+		enabled: value.enabled === true,
+		railStartMode: value.railStartMode === "nearest" ? "nearest" : FOLLOW_FIELD_DEFAULTS.railStartMode,
+		maxDollySpeed: FOLLOW_FIELD_DEFAULTS.maxDollySpeed,
+		pitchOffsetDeg: FOLLOW_FIELD_DEFAULTS.pitchOffsetDeg,
+	};
 	for (const [key, [min, max]] of Object.entries(FOLLOW_BOUNDS)) {
 		if (finite(value[key])) followCam[key] = Math.max(min, Math.min(max, value[key]));
 	}

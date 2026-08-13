@@ -29,6 +29,21 @@ function springStep(pos, vel, target, omega, dt) {
 	return [pos + nextVel * dt, nextVel];
 }
 
+/** scalar spring whose speed limit is applied before position integration */
+function cappedSpringStep(pos, vel, target, omega, dt, maxSpeed) {
+	const acc = omega * omega * (target - pos) - 2 * omega * vel;
+	const cap = Math.max(0, Number.isFinite(maxSpeed) ? maxSpeed : 0);
+	const nextVel = Math.max(-cap, Math.min(vel + acc * dt, cap));
+	return [pos + nextVel * dt, nextVel];
+}
+
+const PITCH_LIMIT = (85 * Math.PI) / 180;
+
+function offsetPitch(pitch, offsetDeg) {
+	const safeOffset = Math.max(-30, Math.min(Number.isFinite(offsetDeg) ? offsetDeg : 0, 30));
+	return Math.max(-PITCH_LIMIT, Math.min(pitch + (safeOffset * Math.PI) / 180, PITCH_LIMIT));
+}
+
 function aimAngles(position, target) {
 	const dx = target.x - position.x;
 	const dy = target.y - position.y;
@@ -52,8 +67,14 @@ export const FOLLOW_DEFAULTS = {
 	lead: 0.25,
 	/** where on the body the operator holds frame (chest, metres) */
 	aimHeight: 1.35,
+	/** vertical tilt added after automatic aiming, in degrees */
+	pitchOffsetDeg: 0,
 	/** hard cap on camera translation (m/s) — a crew has legs, not thrusters */
 	maxSpeed: 2.8,
+	/** where a rail dolly opens: the authored head or legacy auto placement */
+	railStartMode: "head",
+	/** hard cap on rail-dolly travel in metres per second */
+	maxDollySpeed: 4,
 	/** EMA weight for the BEHIND direction; slow on purpose, so a corner
 	 * sweeps the trailing position gradually and the camera cuts the corner
 	 * the way a steadicam op does instead of whipping around the subject.
@@ -172,7 +193,7 @@ export function buildFollowTrack(subject, fps, params = {}) {
 		}
 		const pos = { x: px, y: py, z: pz };
 		const { yaw, pitch } = aimAngles(pos, { x: ax, y: p.aimHeight, z: az });
-		track.push({ pos, yaw, pitch });
+		track.push({ pos, yaw, pitch: offsetPitch(pitch, p.pitchOffsetDeg) });
 	}
 	return track;
 }
@@ -301,7 +322,7 @@ function nearestS(rail, point) {
  * dolly never teleports across the stage to a globally better spot.
  */
 export function buildRailFollowTrack(subject, fps, rail, params = {}) {
-	const p = { ...FOLLOW_DEFAULTS, maxDollySpeed: 4, searchWindow: 2.5, backtrackPenalty: 1.0, ...params };
+	const p = { ...FOLLOW_DEFAULTS, searchWindow: 2.5, backtrackPenalty: 1.0, ...params };
 	if (!subject || subject.length === 0 || !rail || rail.length < 1e-6) return [];
 	const dt = 1 / Math.max(fps, 1);
 	const vels = smoothedVelocities(subject, fps);
@@ -332,9 +353,11 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 		return best;
 	};
 
-	// open settled: the whole rail is searched once (no penalty — there is
-	// no established mark yet) for the best opening position
-	let s = bestSNear(nearestS(rail, subject[0]), subject[0], rail.length, 0);
+	// Head mode honours the authored start mark exactly. Nearest preserves the
+	// legacy auto-placement option by searching the whole rail once.
+	let s = p.railStartMode === "nearest"
+		? bestSNear(nearestS(rail, subject[0]), subject[0], rail.length, 0)
+		: 0;
 	let sVel = 0;
 	let py = p.height;
 	let vy = 0;
@@ -346,10 +369,7 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 	for (let f = 0; f < subject.length; f += 1) {
 		if (f > 0) {
 			const sTarget = bestSNear(s, subject[f], p.searchWindow, p.backtrackPenalty);
-			[s, sVel] = springStep(s, sVel, sTarget, omega, dt);
-			const cap = p.maxDollySpeed;
-			if (sVel > cap) sVel = cap;
-			if (sVel < -cap) sVel = -cap;
+			[s, sVel] = cappedSpringStep(s, sVel, sTarget, omega, dt, p.maxDollySpeed);
 			s = Math.max(0, Math.min(s, rail.length));
 			[py, vy] = springStep(py, vy, p.height, omega, dt);
 			const aimTx = subject[f].x + vels[f].x * p.lead;
@@ -360,7 +380,7 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 		const rp = railPoint(rail, s);
 		const pos = { x: rp.x, y: py, z: rp.z };
 		const { yaw, pitch } = aimAngles(pos, { x: ax, y: p.aimHeight, z: az });
-		track.push({ pos, yaw, pitch, s });
+		track.push({ pos, yaw, pitch: offsetPitch(pitch, p.pitchOffsetDeg), s });
 	}
 	return track;
 }
