@@ -50,8 +50,15 @@ re-runs only verify and fill gaps):
   — the two LLM2Vec adapters (MIT)
 
 into `~/cclay-text-encoders` on the box (`CCLAY_ARDY_ENCODERS_DIR`
-overrides), then rewrites each adapter's `base_model_name_or_path` to the
-local base directory so nothing resolves back to the gated repo at runtime.
+overrides), rewrites each adapter's `base_model_name_or_path` to the local
+base directory so nothing resolves back to the gated repo at runtime, and
+then bakes the base + MNTP-LoRA merge into the runtime path
+(`merge-text-encoder.py`, run in the ARDY encoder venv). The merge step is
+required, not cosmetic: transformers v5 removed the automatic
+adapter-directory resolution ARDY's vendored LLM2Vec loader relies on, so
+the local MNTP path must be a full model. The merged stack is numerically
+identical to the gated flow (cosine ≥ 0.99996 against a live token-based
+encoder service on the same prompts).
 All three revisions are pinned to full commit SHAs — the same stack
 nv-tlabs/ardy issue #9 reproduced against — so every install encodes
 prompts byte-identically.

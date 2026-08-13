@@ -51,6 +51,10 @@ HF = "https://huggingface.co"
 
 BASE_DIR = "NousResearch/Meta-Llama-3-8B-Instruct"
 MNTP_DIR = "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp"
+# The mntp *download* lands in a -src dir: merge-text-encoder.py bakes the
+# base+MNTP merge into the runtime MNTP_DIR path (transformers v5 dropped
+# automatic adapter-dir resolution, so the runtime path must be a full model).
+MNTP_SRC_DIR = MNTP_DIR + "-src"
 SUP_DIR = "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised"
 
 # (local dir, repo id, pinned full commit SHA, files)
@@ -83,7 +87,7 @@ MANIFEST = [
         ],
     ),
     (
-        MNTP_DIR,
+        MNTP_SRC_DIR,
         "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
         "31474e395ada192e8ed1586db6be79fb3b70c9c0",
         [
@@ -270,12 +274,13 @@ def main():
     else:
         log("all pinned files already present under %s" % dest)
 
-    for adapter_dir in (MNTP_DIR, SUP_DIR):
+    for adapter_dir in (MNTP_SRC_DIR, SUP_DIR):
         cfg = os.path.join(dest, adapter_dir, "adapter_config.json")
         if rewrite_adapter_config(cfg, base_path):
             log("repointed %s -> local base" % os.path.join(adapter_dir, "adapter_config.json"))
 
-    log("done. Text encoder stack is ready and fully local.")
+    log("downloads verified. Bake the MNTP merge next (one-time, ~5 min):")
+    log("  cd <ardy checkout> && <ardy venv python> merge-text-encoder.py --dest %s" % dest)
     print()
     print("Start ARDY's text-encoder service (and any local ARDY run) with:")
     print()
