@@ -36,7 +36,6 @@ import {
 import { createSceneHistoryStore } from "./scene-history.js";
 import ObjectGizmo from "./object-gizmo.jsx";
 import AddObjectMenu from "./object-catalog.jsx";
-import OnboardingChecklist from "./onboarding.jsx";
 import ResultModal from "./result-modal.jsx";
 import InstallApp from "./install-app.jsx";
 import LocaleToggle from "./locale-toggle.jsx";
@@ -2822,61 +2821,6 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	const models = mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
-	const cameraConfigured =
-		nonce > 0 ||
-		fovDeg !== PRESETS.medium.fov ||
-		cameraKeys.length > 0 ||
-		Math.abs(cameraPos.x - DEFAULT_CAMERA_POSITION.x) +
-			Math.abs(cameraPos.y - DEFAULT_CAMERA_POSITION.y) +
-			Math.abs(cameraPos.z - DEFAULT_CAMERA_POSITION.z) > 0.02;
-	const poseConfigured = poseRevision > 0 || poseA?.id !== DEFAULT_POSE.id || poseB?.id !== DEFAULT_POSE.id;
-	const descriptionConfigured =
-		hasCharSheet ||
-		hasEnvSheet ||
-		(subject.trim().length > 0 && subject !== DEFAULT_SUBJECT) ||
-		(environment.trim().length > 0 && environment !== DEFAULT_ENVIRONMENT);
-	const pathConfigured = mode === "video" && waypointMode && waypoints.length >= 1;
-	const pathWarning = pendingWaypointFrame != null
-		? (isKo
-			? `프레임 ${pendingWaypointFrame}이 예약되어 있어요. 샷 뷰 바닥을 클릭하면 그 시간에 핀이 생깁니다.`
-			: `Frame ${pendingWaypointFrame} is reserved — click the Shot-view floor to pin it at that time.`)
-		: pathSpeed?.warn
-			? (isKo
-				? `현재 이동 속도 ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)}m/s가 자연스러운 보행 범위(0.5–3m/s)를 벗어났어요. 타임라인 간격이나 핀 위치를 조정하세요.`
-				: `Current travel speed ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)}m/s is outside the natural walking range (0.5–3m/s) — adjust timeline gaps or pin positions.`)
-			: "";
-
-	function runOnboardingAction(action) {
-		if (action === "camera") {
-			selectHierarchy("shot");
-			return;
-		}
-		if (action === "pose") {
-			selectHierarchy("characterA");
-			window.setTimeout(() => openStudio("A"), 0);
-			return;
-		}
-		if (action === "describe" || action === "generate") {
-			selectHierarchy("shot");
-			if (action === "generate") {
-				window.setTimeout(() => document.querySelector(".generate")?.scrollIntoView({ block: "nearest" }), 0);
-			}
-			return;
-		}
-		if (action === "keys") {
-			setMode("video");
-			selectHierarchy("camera");
-			setBottomTab("timeline");
-			return;
-		}
-		if (action === "root-path") {
-			setMode("video");
-			selectHierarchy("rootPath");
-			setBottomTab("timeline");
-			if (!waypointMode) setWaypointMode(true);
-			setToast(ko("Root path editing is on. Pick a time on the 2D root lane, then click the Shot-view floor.", "루트 경로 편집을 켰어요. 2D 루트 레인에서 시간을 고른 뒤 샷 뷰 바닥을 클릭하세요."));
-		}
-	}
 
 	return (
 		<div className={"app" + (renderActive ? "" : " render-idle")}>
@@ -3312,20 +3256,6 @@ globalThis.playMode = centerTab === "play";
 							/>
 						)}
 						</div>
-						<OnboardingChecklist
-							mode={mode}
-							cameraConfigured={cameraConfigured}
-							poseConfigured={poseConfigured}
-							descriptionConfigured={descriptionConfigured}
-							cameraKeyCount={cameraKeys.length}
-							pathConfigured={pathConfigured}
-							pathWarning={pathWarning}
-							hasGenerated={result?.mode === mode}
-							hasDelivered={result?.mode === mode && (copied || Boolean(result.downloaded))}
-							canReviewLatest={Boolean(result)}
-							onReview={() => setResultOpen(true)}
-							onAction={runOnboardingAction}
-						/>
 					</div>
 
 				<div

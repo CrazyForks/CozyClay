@@ -160,9 +160,6 @@ for (let i = 0; i < 100 && !(await evaluateSafely("location.href.startsWith('htt
 await evaluate("localStorage.removeItem('cozyclay.scene.v1'); localStorage.removeItem('cozyclay.scene.v1.quarantine')");
 // Pin the UI locale: the QA browser inherits the host machine locale.
 await evaluate("localStorage.setItem('cozyclay.locale', 'en')");
-// This suite exercises the gizmo and camera, not onboarding: dismiss the
-// first-run coach so its overlay never intercepts synthetic drags.
-await evaluate("localStorage.setItem('cozyclay.onboarding.v1', JSON.stringify({ dismissed: true }))");
 await send("Page.reload");
 for (let i = 0; i < 100 && !(await evaluateSafely("!!document.querySelector('canvas')")); i++) await sleep(200);
 expect("the studio renders a canvas", await evaluate("!!document.querySelector('canvas')"));

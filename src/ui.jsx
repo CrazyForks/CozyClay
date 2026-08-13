@@ -1,28 +1,73 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 // Custom dropdown, structurally matched to the reference (`.dropdown`,
 // `dd-caret`, `dropdown-menu`, `dropdown-item`, `dd-check`) with the keyboard
 // support the reference lacks. `highlighted` marks the arrow-key cursor;
 // the selection itself is `active`.
+//
+// The menu is portaled to document.body and fixed-positioned from the
+// trigger rect: inspector foldouts are `.card { overflow: hidden }` inside a
+// scroll pane, so an in-place absolute menu gets clipped to the card's
+// height (the pose foldout is ~70 px tall against a ~290 px menu). Scrolling
+// or resizing while open closes the menu instead of chasing the trigger.
 export function Dropdown({ value, options, onChange, ariaLabel }) {
 	const [open, setOpen] = useState(false);
 	const [highlight, setHighlight] = useState(-1);
 	const rootRef = useRef(null);
 	const triggerRef = useRef(null);
+	const menuRef = useRef(null);
+	const [menuBox, setMenuBox] = useState(null);
 	const uid = useId();
 	const listId = `${uid}-list`;
 	const selectedIndex = options.findIndex((o) => o.value === value);
 	const selected = selectedIndex >= 0 ? options[selectedIndex] : null;
 
-	// Close on any mousedown outside the dropdown; effect cleanup also covers
+	// Close on any mousedown outside the dropdown; the portaled menu is not
+	// inside rootRef, so it is checked separately. Effect cleanup also covers
 	// unmounting while open.
 	useEffect(() => {
 		if (!open) return;
 		const onDocMouseDown = (e) => {
-			if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+			if (rootRef.current?.contains(e.target)) return;
+			if (menuRef.current?.contains(e.target)) return;
+			setOpen(false);
 		};
 		document.addEventListener("mousedown", onDocMouseDown);
 		return () => document.removeEventListener("mousedown", onDocMouseDown);
+	}, [open]);
+
+	// Position the portaled menu from the trigger: below when it fits, above
+	// otherwise, height capped to the free space. Scroll and resize close the
+	// menu — native selects behave the same and it beats a stale position.
+	useLayoutEffect(() => {
+		if (!open) {
+			setMenuBox(null);
+			return;
+		}
+		const rect = triggerRef.current?.getBoundingClientRect();
+		if (!rect) return;
+		const margin = 8;
+		const below = window.innerHeight - rect.bottom - margin;
+		const above = rect.top - margin;
+		const up = below < 160 && above > below;
+		setMenuBox({
+			left: rect.left,
+			width: rect.width,
+			maxHeight: Math.max(120, Math.min(288, up ? above : below)),
+			...(up ? { bottom: window.innerHeight - rect.top + 2 } : { top: rect.bottom + 2 }),
+		});
+		const onAway = (e) => {
+			// Scrolling inside the menu itself must not dismiss it.
+			if (e.type === "scroll" && menuRef.current?.contains(e.target)) return;
+			setOpen(false);
+		};
+		window.addEventListener("resize", onAway);
+		window.addEventListener("scroll", onAway, true);
+		return () => {
+			window.removeEventListener("resize", onAway);
+			window.removeEventListener("scroll", onAway, true);
+		};
 	}, [open]);
 
 	// Keyboard navigation starts from the current selection.
@@ -87,12 +132,15 @@ export function Dropdown({ value, options, onChange, ariaLabel }) {
 					<path d="M6 9l6 6 6-6" />
 				</svg>
 			</button>
-			{open && (
+			{open && menuBox && createPortal(
 				<div
 					className="dropdown-menu"
+					ref={menuRef}
 					id={listId}
 					role="listbox"
 					aria-activedescendant={highlight >= 0 && highlight < options.length ? `${uid}-opt-${highlight}` : undefined}
+					style={{ position: "fixed", zIndex: 80, ...menuBox, overflowY: "auto" }}
+					onKeyDown={onKeyDown}
 				>
 					{options.map((opt, i) => (
 						<button
@@ -127,7 +175,8 @@ export function Dropdown({ value, options, onChange, ariaLabel }) {
 							)}
 						</button>
 					))}
-				</div>
+				</div>,
+				document.body,
 			)}
 		</div>
 	);

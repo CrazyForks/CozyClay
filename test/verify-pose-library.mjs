@@ -106,22 +106,14 @@ if (process.env.CDP_PORT) {
 	await evaluate(`(() => {
 		localStorage.removeItem("cozyclay.scene.v1");
 		localStorage.removeItem("cozyclay.scene.v1.quarantine");
-		localStorage.removeItem("cozyclay.onboarding.v1");
+		// The QA browser inherits the host machine locale; assertions are English.
+		localStorage.setItem("cozyclay.locale", "en");
 	})()`);
 	await send("Page.reload");
 	await waitFor("!!document.querySelector('canvas')");
 	await waitFor("document.querySelectorAll('.hierarchy-row').length > 0");
 	await sleep(900);
-	await evaluate(`(() => {
-		const onboardingPose = [...document.querySelectorAll('.onboarding-action')]
-			.find((button) => button.textContent.includes('Choose a pose'));
-		if (onboardingPose) {
-			onboardingPose.click();
-			return true;
-		}
-		document.querySelector('.subject-box .cam-toggle')?.click();
-		return true;
-	})()`);
+	await evaluate(`document.querySelector('.subject-box .cam-toggle')?.click()`);
 	await waitFor("!!document.querySelector('.pose-studio')");
 
 	expect("browser shows expanded pose hooks", await evaluate("document.querySelectorAll('.pose-tile[data-pose-id]').length >= 17"));
