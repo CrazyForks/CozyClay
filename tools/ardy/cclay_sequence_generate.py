@@ -77,7 +77,7 @@ from ardy.tools import seed_everything, to_numpy
 _SEED_STRIDE = 9973
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Segment-chained autoregressive text-to-motion generation (cclay)"
     )
@@ -180,7 +180,23 @@ def parse_args():
         default=None,
         help="Local dir holding released model folders (falls back to CHECKPOINTS_DIR env).",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def cclay_progress(iterable):
+    """Print one line per sampling step so the bridge can stream progress.
+
+    The model calls this where it would call tqdm; every line lands in the
+    UI as a status event, which is the only liveness signal the operator has
+    during a minutes-long generation.
+    """
+    total = len(iterable) if hasattr(iterable, "__len__") else None
+    for index, item in enumerate(iterable):
+        if total:
+            print(f"sampling step {index + 1}/{total}", flush=True)
+        else:
+            print(f"sampling step {index + 1}", flush=True)
+        yield item
 
 
 def _default_history_frames(fps: float, gen_horizon_len: int, num_frames_per_token: int) -> int:
@@ -319,10 +335,51 @@ def _continuity_metrics(posed_joints: np.ndarray, boundaries: list) -> dict:
     }
 
 
-def main():
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+def cclay_pick_device():
+    """cuda > mps > cpu, overridable with CCLAY_ARDY_DEVICE (cpu|mps|cuda[:N]).
+
+    The env override is how the local runner forces CPU (--cpu) without
+    relying on CUDA_VISIBLE_DEVICES, which cannot hide an Apple GPU.
+    """
+    forced = os.environ.get("CCLAY_ARDY_DEVICE", "").strip().lower()
+    if forced:
+        return forced
+    if torch.cuda.is_available():
+        return "cuda:0"
+    mps_backend = getattr(torch.backends, "mps", None)
+    if mps_backend is not None and mps_backend.is_available():
+        return "mps"
+    return "cpu"
+
+
+def cclay_mps_compat(device):
+    """Downcast float64 buffers to float32 at registration when running on MPS.
+
+    The MPS backend has no float64. ARDY's skeleton loads neutral_joints from
+    a float64 pickle and registers it as a buffer, which makes Ardy.__init__'s
+    .to("mps") fail; float32 is plenty for joint positions in meters. No-op on
+    cuda/cpu so remote-box behavior is untouched.
+    """
+    if not str(device).startswith("mps"):
+        return
+    original = torch.nn.Module.register_buffer
+    if getattr(original, "_cclay_f32", False):
+        return
+
+    def register_buffer_f32(self, name, tensor, persistent=True):
+        if tensor is not None and getattr(tensor, "dtype", None) == torch.float64:
+            tensor = tensor.float()
+        return original(self, name, tensor, persistent)
+
+    register_buffer_f32._cclay_f32 = True
+    torch.nn.Module.register_buffer = register_buffer_f32
+
+
+def main(argv=None, preloaded_model=None):
+    device = cclay_pick_device()
+    cclay_mps_compat(device)
     print(f"Using device: {device}")
-    args = parse_args()
+    args = parse_args(argv)
 
     segments = []
     for prompt, seconds_str in args.segment:
@@ -349,7 +406,11 @@ def main():
     # Load model (same path as scripts/generate.py)
     checkpoints_dir = args.checkpoints_dir or get_env_var("CHECKPOINTS_DIR")
     resolved_model = resolve_model_name(args.model, checkpoints_dir=checkpoints_dir)
-    model = load_model(resolved_model, device=device, checkpoints_dir=checkpoints_dir)
+    model = (
+        preloaded_model
+        if preloaded_model is not None
+        else load_model(resolved_model, device=device, checkpoints_dir=checkpoints_dir)
+    )
     print(f"Loaded model: {resolved_model}")
 
     fps = model.motion_rep.fps
@@ -478,7 +539,7 @@ def main():
                 motion_mask=seg_mask,
                 observed_motion=seg_observed,
                 cfg_weight=cfg_weight,
-                progress_bar=lambda iterable: iterable,
+                progress_bar=cclay_progress,
                 init_history_sequence=history,
                 crop_history_length=history_budget if history is None else None,
             )

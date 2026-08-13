@@ -48,7 +48,7 @@ TRACK_COMMIT_CHAINS = {
 }
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Context-aware sparse ARDY motion edit")
     parser.add_argument("--source", required=True)
     parser.add_argument("--manifest", required=True)
@@ -57,13 +57,13 @@ def parse_args():
     parser.add_argument("--context-before", type=int, default=40)
     parser.add_argument("--context-after", type=int, default=20)
     parser.add_argument("--seed", type=int)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 class SparseJointConstraint:
     """Constraint only the named joints; deliberately does not touch root."""
 
-        name = "cozyclay-sparse-joint"
+    name = "cozyclay-sparse-joint"
 
     def __init__(self, skeleton, frame_indices, positions, rotations, joint_names):
         import torch
@@ -101,7 +101,7 @@ class SparseJointConstraint:
 class RootTrackConstraint:
     """Root X/Y/Z and heading are a separate channel from body constraints."""
 
-        name = "cozyclay-root-track"
+    name = "cozyclay-root-track"
 
     def __init__(self, skeleton, frame_indices, positions, headings):
         self.skeleton = skeleton
@@ -138,8 +138,68 @@ def heading_from_positions(positions, skeleton):
     return torch.stack([torch.cos(angle), torch.sin(angle)], dim=-1)
 
 
-def main():
-    args = parse_args()
+def cclay_pick_device():
+    """cuda > mps > cpu, overridable with CCLAY_ARDY_DEVICE (cpu|mps|cuda[:N]).
+
+    The env override is how the local runner forces CPU (--cpu) without
+    relying on CUDA_VISIBLE_DEVICES, which cannot hide an Apple GPU.
+    """
+    import torch
+
+    forced = os.environ.get("CCLAY_ARDY_DEVICE", "").strip().lower()
+    if forced:
+        return forced
+    if torch.cuda.is_available():
+        return "cuda:0"
+    mps_backend = getattr(torch.backends, "mps", None)
+    if mps_backend is not None and mps_backend.is_available():
+        return "mps"
+    return "cpu"
+
+
+def cclay_mps_compat(device):
+    """Downcast float64 buffers to float32 at registration when running on MPS.
+
+    The MPS backend has no float64. ARDY's skeleton loads neutral_joints from
+    a float64 pickle and registers it as a buffer, which makes Ardy.__init__'s
+    .to("mps") fail; float32 is plenty for joint positions in meters. No-op on
+    cuda/cpu so remote-box behavior is untouched.
+    """
+    if not str(device).startswith("mps"):
+        return
+    import torch
+
+    original = torch.nn.Module.register_buffer
+    if getattr(original, "_cclay_f32", False):
+        return
+
+    def register_buffer_f32(self, name, tensor, persistent=True):
+        if tensor is not None and getattr(tensor, "dtype", None) == torch.float64:
+            tensor = tensor.float()
+        return original(self, name, tensor, persistent)
+
+    register_buffer_f32._cclay_f32 = True
+    torch.nn.Module.register_buffer = register_buffer_f32
+
+
+def cclay_progress(iterable):
+    """Print one line per sampling step so the bridge can stream progress.
+
+    The model calls this where it would call tqdm; every line lands in the
+    UI as a status event, which is the only liveness signal the operator has
+    during a minutes-long generation.
+    """
+    total = len(iterable) if hasattr(iterable, "__len__") else None
+    for index, item in enumerate(iterable):
+        if total:
+            print(f"sampling step {index + 1}/{total}", flush=True)
+        else:
+            print(f"sampling step {index + 1}", flush=True)
+        yield item
+
+
+def main(argv=None, preloaded_model=None):
+    args = parse_args(argv)
     import numpy as np
     import torch
     from ardy.constraints import FullBodyConstraintSet
@@ -150,10 +210,15 @@ def main():
     from ardy.motion_rep.tools import length_to_mask
     from ardy.tools import seed_everything, to_numpy
 
-    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    device = cclay_pick_device()
+    cclay_mps_compat(device)
     checkpoints_dir = get_env_var("CHECKPOINTS_DIR", None)
     resolved_model = resolve_model_name(DEFAULT_MODEL, checkpoints_dir=checkpoints_dir)
-    model = load_model(resolved_model, device=device, checkpoints_dir=checkpoints_dir)
+    model = (
+        preloaded_model
+        if preloaded_model is not None
+        else load_model(resolved_model, device=device, checkpoints_dir=checkpoints_dir)
+    )
     model.eval()
     skeleton = model.skeleton
     fps = int(model.motion_rep.fps)
@@ -327,7 +392,7 @@ def main():
             motion_mask=motion_mask,
             observed_motion=observed_motion,
             cfg_weight=2.0,
-            progress_bar=lambda iterable: iterable,
+            progress_bar=cclay_progress,
             init_history_sequence=history,
         )
         generated_motion = motion[:, history_frames:history_frames + generation_frames]
