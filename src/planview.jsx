@@ -199,6 +199,81 @@ function SceneObjectFootprint({ object, selected, dragging, turning }) {
 
 const WAYPOINT_COLOR = "#6f9f86";
 const RAIL_COLOR = "#a78bfa"; // the camera's violet, same identity as its timeline lane
+const SUBJECT_PATH_COLOR = "#2f9b8f";
+
+function directionTriangle(from, to, distance = 0.26) {
+	const dx = to.x - from.x;
+	const dz = to.z - from.z;
+	const length = Math.hypot(dx, dz);
+	if (length < 0.03) return null;
+	const ux = dx / length;
+	const uz = dz / length;
+	const px = -uz;
+	const pz = ux;
+	const tip = to;
+	const base = { x: tip.x - ux * distance, z: tip.z - uz * distance };
+	const width = distance * 0.55;
+	const geometry = new THREE.BufferGeometry();
+	geometry.setAttribute("position", new THREE.Float32BufferAttribute([
+		tip.x, 0.052, tip.z,
+		base.x + px * width, 0.052, base.z + pz * width,
+		base.x - px * width, 0.052, base.z - pz * width,
+	], 3));
+	return geometry;
+}
+
+/** ARDY movement endpoints shown while composing a camera rail. The direct
+ * start-to-end vector gives the operator one unambiguous travel direction. */
+function SubjectMovementGuide({ track }) {
+	const guide = useMemo(() => {
+		if (!track?.length) return null;
+		const start = track[0];
+		const end = track[track.length - 1];
+		const moving = Math.hypot(end.x - start.x, end.z - start.z) > 0.05;
+		const line = new THREE.BufferGeometry();
+		line.setAttribute("position", new THREE.Float32BufferAttribute([
+			start.x, 0.041, start.z,
+			end.x, 0.041, end.z,
+		], 3));
+		return { start, end, moving, line, arrow: moving ? directionTriangle(start, end, 0.34) : null };
+	}, [track]);
+	useEffect(() => () => {
+		guide?.line.dispose();
+		guide?.arrow?.dispose();
+	}, [guide]);
+	if (!guide) return null;
+	return (
+		<group>
+			<line geometry={guide.line} renderOrder={9}>
+				<lineBasicMaterial color={SUBJECT_PATH_COLOR} transparent opacity={guide.moving ? 0.9 : 0.42} depthWrite={false} depthTest={false} />
+			</line>
+			{guide.arrow && (
+				<mesh geometry={guide.arrow} renderOrder={11}>
+					<meshBasicMaterial color={SUBJECT_PATH_COLOR} depthWrite={false} depthTest={false} side={THREE.DoubleSide} />
+				</mesh>
+			)}
+			{[
+				{ point: guide.start, label: ko("ARDY START", "ARDY 시작") },
+				{ point: guide.end, label: ko("ARDY END", "ARDY 끝") },
+			].map(({ point, label }) => (
+				<group key={label} position={[point.x, 0, point.z]}>
+					<mesh position={[0, 0.055, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={11}>
+						<ringGeometry args={[0.12, 0.18, 18]} />
+						<meshBasicMaterial color={SUBJECT_PATH_COLOR} depthWrite={false} depthTest={false} />
+					</mesh>
+					<Text position={[0, 0.06, 0.38]} rotation={[-Math.PI / 2, 0, 0]} fontSize={0.2} color={SUBJECT_PATH_COLOR} anchorX="center" anchorY="middle" outlineWidth={0.035} outlineColor="#0e0d10" outlineOpacity={0.82} renderOrder={12} depthOffset={-1}>
+						{`${label} (${point.x.toFixed(1)}, ${point.z.toFixed(1)})`}
+					</Text>
+				</group>
+			))}
+			{!guide.moving && (
+				<Text position={[guide.start.x, 0.06, guide.start.z - 0.42]} rotation={[-Math.PI / 2, 0, 0]} fontSize={0.24} color={SUBJECT_PATH_COLOR} anchorX="center" anchorY="middle" outlineWidth={0.035} outlineColor="#0e0d10" outlineOpacity={0.82} renderOrder={12} depthOffset={-1}>
+					{ko("PLAYER STILL", "플레이어 정지")}
+				</Text>
+			)}
+		</group>
+	);
+}
 
 /**
  * The drawn camera rail (and the live stroke while drawing): a flat violet
@@ -362,7 +437,7 @@ function WaypointPath({ waypoints, start, activeWaypointFrame }) {
  * reports moves that still hit it, so a fast drag off the edge silently strands
  * the puck.
  */
-export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA, setCharA, charB, setCharB, showB, waypoints, activeWaypointFrame, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke }) {
+export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA, setCharA, charB, setCharB, showB, waypoints, activeWaypointFrame, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null }) {
 	const [drag, setDrag] = useState(null); // { id, mode }
 	// live stroke while the rail is being drawn; world XZ, display only
 	const [railStroke, setRailStroke] = useState(null);
@@ -705,6 +780,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			))}
 
 			{waypoints.length > 0 && <WaypointPath waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />}
+			{(railDraw || cameraRailPoints) && <SubjectMovementGuide track={subjectTrack} />}
 			{cameraRailPoints && cameraRailPoints.length > 1 && <CameraRailLine points={cameraRailPoints} />}
 			{railStroke && railStroke.length > 1 && <CameraRailLine points={railStroke} live />}
 		</group>

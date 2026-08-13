@@ -3393,6 +3393,7 @@ globalThis.playMode = centerTab === "play";
 								onObjectMoveEnd={endSceneTransaction}
 								cameraRailPoints={railCurve ? railCurve.points : null}
 								railDraw={railDraw}
+								subjectTrack={motion ? subjectTrack : null}
 								onRailStroke={(stroke) => {
 									const simplified = simplifyStroke(stroke, 0.12);
 									if (simplified.length < 2) return;

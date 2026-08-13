@@ -77,6 +77,22 @@ expect(
 expect("generated motion anchors frame zero at Subject 1", app.includes("anchorX: charA.x") && app.includes("anchorZ: charA.z") && app.includes("anchorFrame: 0"));
 expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));
 expect("Top-View root path draws from Subject 1 without a duplicate marker", planview.includes("const pathPoints = [{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));
+expect(
+	"Top-View shows ARDY player endpoints and direction while composing a rail",
+	planview.includes("function SubjectMovementGuide") &&
+	planview.includes("directionTriangle") &&
+	planview.includes('ko("ARDY START", "ARDY 시작")') &&
+	planview.includes('ko("ARDY END", "ARDY 끝")') &&
+	planview.includes("point.x.toFixed(1)") &&
+	planview.includes('ko("PLAYER STILL", "플레이어 정지")') &&
+	planview.includes("(railDraw || cameraRailPoints) && <SubjectMovementGuide"),
+);
+expect(
+	"only generated ARDY motion drives the player guide",
+	app.includes("subjectTrack={motion ? subjectTrack : null}") &&
+	!app.includes("subjectTrackStart=") &&
+	!app.includes("subjectTrackEnd="),
+);
 expect("resize handles opt out on compact layouts", css.includes(".workspace-splitter,") && css.includes("display: none"));
 
 if (failures) process.exit(1);
