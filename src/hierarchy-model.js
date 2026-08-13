@@ -5,9 +5,11 @@
 // sidebar's Shot and Motion tabs, keyed by `sidebarTab` in App.jsx.
 export const HIERARCHY_NODES = [
 	{
+		// Keep the legacy selection id until App wiring moves to the document
+		// model; its visible role is a Scene, never an editorial Shot.
 		id: "shot",
-		label: "SHOT 01",
-		kind: "shot",
+		label: "SCENE 01",
+		kind: "scene",
 		children: [
 			{ id: "camera", label: "Camera", kind: "camera" },
 			{

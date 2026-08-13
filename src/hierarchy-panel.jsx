@@ -5,7 +5,7 @@ import { sceneObjectIdFromHierarchy } from "./scene-objects.js";
 import AddObjectMenu, { CatalogueEntries, displayObjectLabel } from "./object-catalog.jsx";
 
 const HIERARCHY_LABELS_KO = {
-	"SHOT 01": "샷 01",
+	"SCENE 01": "장면 01",
 	Camera: "카메라",
 	Characters: "캐릭터",
 	"Character 1": "캐릭터 1",
@@ -351,11 +351,11 @@ export default function HierarchyPanel({
 		});
 
 	return (
-		<section className="hierarchy-pane" aria-label={ko("Shot hierarchy", "샷 계층")}>
+		<section className="hierarchy-pane" aria-label={ko("Scene hierarchy", "장면 계층")}>
 			<div className="hierarchy-heading">
 				<div>
 					<span className="hierarchy-kicker">{ko("Hierarchy", "계층")}</span>
-					<strong>{ko("Shot structure", "샷 구조")}</strong>
+					<strong>{ko("Scene structure", "장면 구조")}</strong>
 				</div>
 				<span className="hierarchy-frame-status">{motionFrames ? (isKo ? `${motionFrames}프레임` : `${motionFrames} frames`) : ko("Blocking", "블로킹")}</span>
 			</div>
