@@ -2236,6 +2236,113 @@ input[type=range]::-moz-range-thumb {
 	border-bottom: 1px solid var(--line);
 }
 
+/* Selected Camera Block controls live above the lanes, where their numeric
+   fields keep a usable hit target even when the owned shot is only a few
+   frames wide. The block itself remains a compact status strip. */
+.tl-camera-editor {
+	flex: none;
+	min-height: 38px;
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	padding: 4px 10px;
+	overflow-x: auto;
+	background: #201c28;
+	border-bottom: 1px solid rgba(154, 123, 212, .38);
+	color: #d9d2e7;
+	font-size: 9px;
+}
+
+.tl-camera-editor-title {
+	max-width: 92px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: #cbb8ef;
+	font-size: 10px;
+}
+
+.tl-camera-modes {
+	display: flex;
+	gap: 2px;
+}
+
+.tl-camera-modes button,
+.tl-camera-head {
+	height: 24px;
+	padding: 0 7px;
+	border: 1px solid rgba(154, 123, 212, .35);
+	border-radius: 3px;
+	background: #2b2731;
+	color: #b9adc9;
+	font: inherit;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.tl-camera-modes button.active,
+.tl-camera-head.active {
+	background: #7258a0;
+	border-color: #a78bfa;
+	color: #fff;
+}
+
+.tl-camera-head:disabled,
+.tl-camera-editor input:disabled {
+	opacity: .4;
+	cursor: default;
+}
+
+.tl-camera-editor label {
+	display: grid;
+	grid-template-columns: auto 50px auto;
+	align-items: center;
+	gap: 3px;
+	white-space: nowrap;
+	color: #a99fb7;
+}
+
+.tl-camera-editor input {
+	box-sizing: border-box;
+	width: 50px;
+	height: 23px;
+	padding: 0 3px;
+	border: 1px solid rgba(154, 123, 212, .34);
+	border-radius: 3px;
+	outline: 0;
+	background: #17151b;
+	color: #eee8f7;
+	font: inherit;
+	font-variant-numeric: tabular-nums;
+}
+
+.tl-camera-editor input:focus {
+	border-color: #a78bfa;
+	box-shadow: 0 0 0 1px rgba(167, 139, 250, .28);
+}
+
+.tl-camera-editor label small {
+	color: #80758e;
+	font-size: 8px;
+}
+
+.tl-camera-advanced {
+	flex: none;
+	white-space: nowrap;
+	color: #a99fb7;
+}
+
+.tl-camera-advanced[open] {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+}
+
+.tl-camera-advanced summary {
+	cursor: pointer;
+	color: #cbb8ef;
+}
+
 .tl-transport {
 	display: flex;
 	align-items: center;
@@ -2500,6 +2607,12 @@ input[type=range]::-moz-range-thumb {
 	white-space: nowrap;
 }
 
+.tl-track-add.cut.camera {
+	min-width: 54px;
+	color: #cbb8ef;
+	border-color: rgba(154, 123, 212, .38);
+}
+
 
 .tl-chip {
 	box-sizing: border-box;
@@ -2720,6 +2833,93 @@ input[type=range]::-moz-range-thumb {
 	cursor: default;
 }
 
+/* Camera blocks use the exact Shot block geometry and keep the existing
+   violet camera identity. Their edge handles invoke Shot boundary callbacks,
+   so a camera interval can never detach from its editorial owner. */
+.tl-camera-block {
+	box-sizing: border-box;
+	position: absolute;
+	top: 3px;
+	bottom: 3px;
+	left: calc(var(--tl-f-start) * 100%);
+	width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 0 13px;
+	overflow: hidden;
+	border: 1px solid #735ba0;
+	border-radius: 3px;
+	background: #44365d;
+	color: #f0eaff;
+	font-size: 8.5px;
+	white-space: nowrap;
+	cursor: pointer;
+	touch-action: none;
+}
+
+.tl-camera-block.active {
+	background: #503f6d;
+}
+
+.tl-camera-block.selected {
+	border-color: #c9b5f4;
+	box-shadow: inset 0 0 0 1px rgba(201, 181, 244, .45), 0 0 8px rgba(154, 123, 212, .32);
+}
+
+.tl-camera-block b {
+	font-size: 9px;
+	letter-spacing: .04em;
+}
+
+.tl-camera-block small {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: #d0c3e5;
+	font-size: 8px;
+	font-variant-numeric: tabular-nums;
+}
+
+.tl-camera-block-state {
+	padding: 1px 3px;
+	border: 1px solid rgba(255, 255, 255, .22);
+	border-radius: 2px;
+	background: rgba(0, 0, 0, .16);
+	color: #d8ccef;
+	font-size: 7.5px;
+	font-weight: 700;
+	letter-spacing: .06em;
+}
+
+.tl-camera-edge {
+	position: absolute;
+	top: -2px;
+	bottom: -2px;
+	left: 0;
+	width: 12px;
+	padding: 0;
+	border: 0;
+	border-left: 2px solid #b69ae8;
+	background: transparent;
+	color: #ddd0f5;
+	font-size: 14px;
+	line-height: 1;
+	cursor: ew-resize;
+	z-index: 3;
+}
+
+.tl-camera-edge:hover {
+	background: rgba(167, 139, 250, .38);
+}
+
+.tl-camera-edge.end {
+	left: auto;
+	right: 0;
+	border-left: 0;
+	border-right: 2px solid #b69ae8;
+}
+
 /* Camera keyframes: violet dots, so they read as neither root waypoints
    (cyan) nor IK keys (orange diamonds). Click jumps the playhead, drag
    re-times, right-click removes; the lane itself keys on click. */
@@ -2729,6 +2929,7 @@ input[type=range]::-moz-range-thumb {
 	background: #a78bfa;
 	border-color: #1e1040;
 	box-shadow: 0 0 8px rgba(167, 139, 250, .8);
+	z-index: 5;
 }
 
 .tl-marker.cam:hover {
