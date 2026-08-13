@@ -757,7 +757,9 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			<group position={[charA.x, 0, charA.z]}>
 				<PlanLabel text={ko("S1", "인물 1")} color="#273849" />
 				<group rotation={[0, (charA.rot * Math.PI) / 180, 0]}>
-					<Puck color="#273849" {...state("a")} />
+					{/* The real character mesh already renders in Top-View. Keep only
+					    its facing stem/handle instead of covering it with a hex puck. */}
+					<Puck color="#273849" showBody={false} {...state("a")} />
 				</group>
 			</group>
 
@@ -765,7 +767,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 				<group position={[charB.x, 0, charB.z]}>
 					<PlanLabel text={ko("S2", "인물 2")} color="#d65f55" />
 					<group rotation={[0, (charB.rot * Math.PI) / 180, 0]}>
-						<Puck color="#d65f55" {...state("b")} />
+						<Puck color="#d65f55" showBody={false} {...state("b")} />
 					</group>
 				</group>
 			)}

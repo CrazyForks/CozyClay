@@ -78,6 +78,12 @@ expect("generated motion anchors frame zero at Subject 1", app.includes("anchorX
 expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));
 expect("Top-View root path draws from Subject 1 without a duplicate marker", planview.includes("const pathPoints = [{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));
 expect(
+	"Top-View characters use their real meshes without covering hex pucks",
+	planview.includes('<Puck color="#273849" showBody={false} {...state("a")} />') &&
+	planview.includes('<Puck color="#d65f55" showBody={false} {...state("b")} />') &&
+	planview.includes("stem: makes the handle read as attached"),
+);
+expect(
 	"Top-View shows ARDY player endpoints and direction while composing a rail",
 	planview.includes("function SubjectMovementGuide") &&
 	planview.includes("directionTriangle") &&
