@@ -129,6 +129,7 @@ function SceneSwitcher({
 
 function displayHierarchyLabel(node) {
 	if (node.kind === "object") return displayObjectLabel(node.label);
+	if (node.kind === "scene") return displaySceneName(node.label);
 	return isKo ? (HIERARCHY_LABELS_KO[node.label] ?? node.label) : node.label;
 }
 
@@ -325,7 +326,14 @@ export default function HierarchyPanel({
 	const lastTreeSelectRef = useRef(null);
 	const firstRenderRef = useRef(true);
 	const pendingScrollRef = useRef(false);
-	const hierarchyNodes = useMemo(() => buildHierarchyNodes(sceneObjects), [sceneObjects]);
+	const activeSceneName = useMemo(() => {
+		const availableScenes = scenes?.length ? scenes : FALLBACK_SCENES;
+		return (availableScenes.find((scene) => scene.id === activeSceneId) ?? availableScenes[0]).name;
+	}, [activeSceneId, scenes]);
+	const hierarchyNodes = useMemo(() => {
+		const nodes = buildHierarchyNodes(sceneObjects);
+		return nodes.map((node) => node.kind === "scene" ? { ...node, label: activeSceneName } : node);
+	}, [activeSceneName, sceneObjects]);
 	const parents = useMemo(() => indexParents(hierarchyNodes), [hierarchyNodes]);
 
 	useEffect(() => {

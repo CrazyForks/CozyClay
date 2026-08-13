@@ -2326,7 +2326,7 @@ input[type=range]::-moz-range-thumb {
    frames wide. The block itself remains a compact status strip. */
 .tl-camera-editor {
 	flex: none;
-	min-height: 38px;
+	min-height: 44px;
 	display: flex;
 	align-items: center;
 	gap: 7px;
@@ -2335,7 +2335,7 @@ input[type=range]::-moz-range-thumb {
 	background: #201c28;
 	border-bottom: 1px solid rgba(154, 123, 212, .38);
 	color: #d9d2e7;
-	font-size: 9px;
+	font-size: 10px;
 }
 
 .tl-camera-editor-title {
@@ -2344,7 +2344,7 @@ input[type=range]::-moz-range-thumb {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	color: #cbb8ef;
-	font-size: 10px;
+	font-size: 11px;
 }
 
 .tl-camera-modes {
@@ -2354,7 +2354,7 @@ input[type=range]::-moz-range-thumb {
 
 .tl-camera-modes button,
 .tl-camera-head {
-	height: 24px;
+	height: 28px;
 	padding: 0 7px;
 	border: 1px solid rgba(154, 123, 212, .35);
 	border-radius: 3px;
@@ -2390,7 +2390,7 @@ input[type=range]::-moz-range-thumb {
 .tl-camera-editor input {
 	box-sizing: border-box;
 	width: 50px;
-	height: 23px;
+	height: 27px;
 	padding: 0 3px;
 	border: 1px solid rgba(154, 123, 212, .34);
 	border-radius: 3px;
@@ -2544,7 +2544,10 @@ input[type=range]::-moz-range-thumb {
 	height: 100%;
 	width: calc(var(--tl-label-w) + (100% - var(--tl-label-w)) * var(--tl-zoom));
 	display: grid;
-	grid-template-rows: 28px repeat(4, minmax(0, 1fr));
+	/* The unified Shot row carries title, optional Rail ribbon and key strip.
+	   Give that one row real working height instead of squeezing all four
+	   tracks equally when the camera mini editor is open. */
+	grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(58px, 1.7fr);
 }
 
 .tl-ruler {
@@ -2802,9 +2805,9 @@ input[type=range]::-moz-range-thumb {
 	/* Never fake a minimum duration: the width is the actual frame range. */
 	width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);
 	display: flex;
-	align-items: center;
+	align-items: flex-start;
 	gap: 4px;
-	padding: 0 13px 24px;
+	padding: 5px 15px 28px;
 	border: 1px solid #735ba0;
 	border-radius: 3px;
 	background: #44365d;
@@ -2813,6 +2816,7 @@ input[type=range]::-moz-range-thumb {
 	overflow: hidden;
 	cursor: grab;
 	touch-action: none;
+	container-type: inline-size;
 }
 
 .tl-shot-empty {
@@ -2847,8 +2851,9 @@ input[type=range]::-moz-range-thumb {
 	min-width: 0;
 	flex: 1;
 	display: flex;
-	align-items: baseline;
-	gap: 6px;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 1px;
 	overflow: hidden;
 	white-space: nowrap;
 }
@@ -2872,6 +2877,7 @@ input[type=range]::-moz-range-thumb {
 	align-items: center;
 	gap: 4px;
 	white-space: nowrap;
+	padding-top: 1px;
 }
 
 .tl-shot-camera-summary > b {
@@ -2893,7 +2899,7 @@ input[type=range]::-moz-range-thumb {
 	left: 12px;
 	right: 12px;
 	bottom: 0;
-	height: 10px;
+	height: 12px;
 	padding: 0;
 	border: 0;
 	border-top: 1px solid rgba(201, 181, 244, .28);
@@ -2923,7 +2929,7 @@ input[type=range]::-moz-range-thumb {
 	top: -2px;
 	bottom: -2px;
 	left: 0;
-	width: 12px;
+	width: 14px;
 	padding: 0;
 	border: 0;
 	border-left: 2px solid #e7b557;
@@ -2949,23 +2955,30 @@ input[type=range]::-moz-range-thumb {
 .tl-shot-actions {
 	display: none;
 	gap: 2px;
+	position: absolute;
+	top: 3px;
+	right: 15px;
+	z-index: 6;
+	padding: 2px;
+	border-radius: 3px;
+	background: rgba(29, 21, 42, .92);
 }
 
 .tl-shot-block:hover .tl-shot-actions,
-.tl-shot-block.active .tl-shot-actions {
+.tl-shot-block:focus-within .tl-shot-actions {
 	display: flex;
 }
 
 .tl-shot-actions button {
 	width: auto;
 	min-width: 30px;
-	height: 15px;
+	height: 20px;
 	padding: 0 4px;
 	border: 0;
 	border-radius: 2px;
 	background: rgba(255, 255, 255, .12);
 	color: inherit;
-	font-size: 8.5px;
+	font-size: 9px;
 	line-height: 1;
 	cursor: pointer;
 }
@@ -3014,8 +3027,8 @@ input[type=range]::-moz-range-thumb {
 	box-sizing: border-box;
 	position: absolute;
 	top: auto;
-	bottom: 11px;
-	height: 12px;
+	bottom: 13px;
+	height: 14px;
 	left: calc(var(--tl-f-start) * 100%);
 	width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);
 	/* Above the full-height shot trim handles only within this 12px band, so
@@ -3053,6 +3066,19 @@ input[type=range]::-moz-range-thumb {
 	overflow: hidden;
 	cursor: grab;
 	box-shadow: 0 0 8px rgba(167, 139, 250, .45);
+}
+
+@container (max-width: 320px) {
+	.tl-shot-camera-summary > small,
+	.tl-camera-block-state {
+		display: none;
+	}
+}
+
+@container (max-width: 240px) {
+	.tl-shot-camera-summary {
+		display: none;
+	}
 }
 .tl-rail-body:hover { filter: brightness(1.1); }
 .tl-rail-body:active { cursor: grabbing; }
