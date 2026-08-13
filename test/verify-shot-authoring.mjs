@@ -1,139 +1,75 @@
 #!/usr/bin/env node
-// Contracts for shot-authoring persistence: what survives a reload, and how
-// hostile or half-corrupt storage payloads are tamed on the way back in.
-import { loadShotAuthoring, serializeShotAuthoring, SHOT_AUTHORING_KEY } from "../src/shot-authoring.js";
-
-let failures = 0;
-const expect = (name, cond, detail = "") => {
-	console.log(`${cond ? "PASS" : "FAIL"} ${name}${cond ? "" : ` — ${detail}`}`);
-	if (!cond) failures += 1;
-};
+import assert from "node:assert/strict";
+import {
+	loadShotAuthoring,
+	readShotAuthoring,
+	serializeShotAuthoring,
+	SHOT_AUTHORING_KEY,
+	SHOT_AUTHORING_LEGACY_KEY,
+	SHOT_AUTHORING_QUARANTINE_KEY,
+} from "../src/shot-authoring.js";
 
 const framing = (fovDeg) => ({ pos: { x: 1, y: 1.6, z: 2.4 }, yaw: 0.2, pitch: -0.1, fovDeg });
-
-/* ---------------------------------------------------- round trip ---- */
+const shots = [
+	{ id: "wide", name: "Wide", startFrame: 0, cameraKeys: [{ frame: 0, framing: framing(40) }] },
+	{ id: "close", name: "Close", startFrame: 100, cameraKeys: [{ frame: 100, framing: framing(70) }] },
+];
 
 const authored = {
-	cameraKeys: [
-		{ frame: 0, framing: framing(40) },
-		{ frame: 180, framing: framing(70) },
-	],
-	waypoints: [
-		{ frame: 60, x: 1.5, z: -2, heading: null },
-		{ frame: 140, x: 3, z: 1, heading: 0.5 },
-	],
+	shots,
+	waypoints: [{ frame: 60, x: 1.5, z: -2, heading: null }],
 	frameCount: 300,
+	followCam: { enabled: true, distance: 3.5, height: 1.8, response: 0.6, lead: 0.2 },
+	cameraRail: [{ x: -2, z: -1 }, { x: 1, z: 5 }],
 };
 const restored = loadShotAuthoring(serializeShotAuthoring(authored));
-expect("round trip keeps the clip length", restored.frameCount === 300);
-expect(
-	"round trip keeps every camera key",
-	restored.cameraKeys.length === 2 && restored.cameraKeys[1].frame === 180 && restored.cameraKeys[1].framing.fovDeg === 70,
-	JSON.stringify(restored.cameraKeys),
-);
-expect(
-	"round trip keeps every waypoint",
-	restored.waypoints.length === 2 && restored.waypoints[0].heading === null && restored.waypoints[1].heading === 0.5,
-	JSON.stringify(restored.waypoints),
-);
+assert.equal(restored.frameCount, 300);
+assert.deepEqual(restored.shots, shots);
+assert.deepEqual(restored.waypoints, authored.waypoints);
+assert.deepEqual(restored.followCam, authored.followCam);
+assert.deepEqual(restored.cameraRail, authored.cameraRail);
 
-/* ------------------------------------------------- hostile input ---- */
+const legacy = readShotAuthoring(JSON.stringify({
+	version: 1,
+	frameCount: 200,
+	cameraKeys: [{ frame: 10, framing: framing(35) }, { frame: 180, framing: framing(80) }],
+	waypoints: [],
+}));
+assert.equal(legacy.status, "migrated");
+assert.equal(legacy.state.shots.length, 1);
+assert.equal(legacy.state.shots[0].startFrame, 0);
+assert.deepEqual(legacy.state.shots[0].cameraKeys.map((key) => key.frame), [10, 180]);
 
-expect("nothing stored starts fresh", loadShotAuthoring(null) === null && loadShotAuthoring("") === null);
-expect("broken JSON starts fresh", loadShotAuthoring("{nope") === null);
-expect("a non-object payload starts fresh", loadShotAuthoring('"hello"') === null && loadShotAuthoring("42") === null);
+assert.equal(readShotAuthoring(null).status, "absent");
+assert.equal(readShotAuthoring("{nope").status, "corrupt");
+assert.equal(readShotAuthoring('"hello"').status, "corrupt");
+assert.equal(readShotAuthoring(JSON.stringify({ version: 2, frameCount: 100 })).status, "corrupt");
+assert.equal(readShotAuthoring(JSON.stringify({ version: 99, shots: [] })).status, "future");
+assert.equal(loadShotAuthoring("{nope"), null);
 
-const mixed = loadShotAuthoring(
-	JSON.stringify({
-		version: 1,
-		frameCount: "soon",
-		cameraKeys: [
-			{ frame: 20, framing: framing(50) },
-			{ frame: -5, framing: framing(50) }, // negative frame
-			{ frame: 40, framing: { pos: { x: 0, y: Number.NaN, z: 0 }, yaw: 0, pitch: 0, fovDeg: 40 } }, // NaN inside
-			{ frame: 60 }, // no framing
-			"garbage",
-		],
-		waypoints: [
-			{ frame: 30, x: 1, z: 1, heading: "north" }, // non-numeric heading -> null
-			{ frame: 50, x: Number.POSITIVE_INFINITY, z: 0 }, // non-finite position
-			null,
-		],
-	}),
-);
-expect("a bad key is dropped without taking the shot down", mixed.cameraKeys.length === 1 && mixed.cameraKeys[0].frame === 20, JSON.stringify(mixed.cameraKeys));
-expect("a bad waypoint is dropped, bad heading folds to null", mixed.waypoints.length === 1 && mixed.waypoints[0].heading === null, JSON.stringify(mixed.waypoints));
-expect("an unusable clip length falls back to the default", mixed.frameCount === null);
+const repaired = loadShotAuthoring(JSON.stringify({
+	version: 2,
+	frameCount: 100,
+	shots: [
+		{ id: "same", name: " A ", startFrame: 30, cameraKeys: [{ frame: -10, framing: framing(20) }] },
+		{ id: "same", name: "", startFrame: 70, cameraKeys: [{ frame: 999, framing: framing(90) }, { frame: 80, framing: null }] },
+		{ id: "bad", startFrame: "later", cameraKeys: [] },
+	],
+	waypoints: [{ frame: 3.6, x: 1, z: 2, heading: "north" }, { frame: 2, x: Infinity, z: 0 }],
+	followCam: { enabled: "yes", distance: 999, lead: -5 },
+	cameraRail: [{ x: 0, z: 0 }, { x: Infinity, z: 1 }, { x: 2, z: 2 }],
+}));
+assert.deepEqual(repaired.shots.map((shot) => shot.startFrame), [0, 70]);
+assert.equal(new Set(repaired.shots.map((shot) => shot.id)).size, repaired.shots.length);
+assert.equal(repaired.shots[0].name, "A");
+assert.equal(repaired.shots[0].cameraKeys[0].frame, 0);
+assert.equal(repaired.shots[1].cameraKeys[0].frame, 99);
+assert.deepEqual(repaired.waypoints, [{ frame: 4, x: 1, z: 2, heading: null }]);
+assert.deepEqual(repaired.followCam, { enabled: false, distance: 15, lead: 0 });
+assert.deepEqual(repaired.cameraRail, [{ x: 0, z: 0 }, { x: 2, z: 2 }]);
 
-/* ------------------------------------------------ normalisation ---- */
+assert.equal(SHOT_AUTHORING_KEY, "cozyclay.shot-authoring.v2");
+assert.equal(SHOT_AUTHORING_LEGACY_KEY, "cozyclay.shot-authoring.v1");
+assert.equal(SHOT_AUTHORING_QUARANTINE_KEY, "cozyclay.shot-authoring.v2.quarantine");
 
-const messy = loadShotAuthoring(
-	JSON.stringify({
-		frameCount: 1e9,
-		cameraKeys: [
-			{ frame: 100.4, framing: framing(30) },
-			{ frame: 10, framing: framing(20) },
-			{ frame: 100, framing: framing(90) }, // duplicate frame: later entry wins
-		],
-		waypoints: [
-			{ frame: 80, x: 2, z: 2 },
-			{ frame: 20, x: 1, z: 1 },
-		],
-	}),
-);
-expect("keys come back sorted by frame", messy.cameraKeys.map((k) => k.frame).join(",") === "10,100");
-expect("duplicate key frames keep the later entry (re-key semantics)", messy.cameraKeys[1].framing.fovDeg === 90);
-expect("waypoints come back sorted by frame", messy.waypoints.map((w) => w.frame).join(",") === "20,80");
-expect("clip length is clamped to sane bounds", messy.frameCount === 24000, String(messy.frameCount));
-
-expect("storage key is versioned", /\.v\d+$/.test(SHOT_AUTHORING_KEY), SHOT_AUTHORING_KEY);
-
-/* ------------------------------------------------- follow cam + rail ---- */
-
-const followRestored = loadShotAuthoring(
-	serializeShotAuthoring({
-		followCam: { enabled: true, distance: 3.5, height: 1.8, response: 0.6, lead: 0.2 },
-		cameraRail: [{ x: -2, z: -1 }, { x: -2, z: 3 }, { x: 1, z: 5 }],
-	}),
-);
-expect(
-	"follow-cam settings round-trip",
-	followRestored.followCam.enabled === true && followRestored.followCam.distance === 3.5 && followRestored.followCam.lead === 0.2,
-	JSON.stringify(followRestored.followCam),
-);
-expect(
-	"the drawn rail round-trips",
-	followRestored.cameraRail.length === 3 && followRestored.cameraRail[2].x === 1,
-	JSON.stringify(followRestored.cameraRail),
-);
-
-const followHostile = loadShotAuthoring(
-	JSON.stringify({
-		followCam: { enabled: "yes", distance: 9999, height: Number.NaN, lead: -5 },
-		cameraRail: [{ x: 0, z: 0 }, { x: Number.POSITIVE_INFINITY, z: 1 }, "junk", { x: 2, z: 2 }],
-	}),
-);
-expect(
-	"hostile follow-cam values are clamped, non-booleans read as off",
-	followHostile.followCam.enabled === false && followHostile.followCam.distance === 15 && !("height" in followHostile.followCam) && followHostile.followCam.lead === 0,
-	JSON.stringify(followHostile.followCam),
-);
-expect(
-	"bad rail points are dropped entry by entry",
-	followHostile.cameraRail.length === 2 && followHostile.cameraRail[1].x === 2,
-	JSON.stringify(followHostile.cameraRail),
-);
-expect(
-	"a one-point rail folds to null (free follow)",
-	loadShotAuthoring(JSON.stringify({ cameraRail: [{ x: 1, z: 1 }] })).cameraRail === null,
-);
-expect(
-	"payloads without follow fields stay compatible",
-	(() => {
-		const legacy = loadShotAuthoring(JSON.stringify({ version: 1, frameCount: 200, cameraKeys: [], waypoints: [] }));
-		return legacy.followCam === null && legacy.cameraRail === null;
-	})(),
-);
-
-console.log(failures === 0 ? "all shot-authoring checks PASS" : `${failures} FAILURES`);
-process.exit(failures === 0 ? 0 : 1);
+console.log("all shot-authoring checks PASS");

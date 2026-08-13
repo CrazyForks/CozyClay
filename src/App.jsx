@@ -15,7 +15,13 @@ import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
 import { DualRender, GIZMO_LAYER, SHOT_ASPECT, fitAspect } from "./dualview.jsx";
 import { Room, StageLights } from "./room.jsx";
-import { SHOT_AUTHORING_KEY, loadShotAuthoring, serializeShotAuthoring } from "./shot-authoring.js";
+import {
+	SHOT_AUTHORING_KEY,
+	SHOT_AUTHORING_LEGACY_KEY,
+	SHOT_AUTHORING_QUARANTINE_KEY,
+	readShotAuthoring,
+	serializeShotAuthoring,
+} from "./shot-authoring.js";
 import { FOLLOW_DEFAULTS, buildFollowTrack, buildRail, buildRailFollowTrack, simplifyStroke } from "./camera-follow.js";
 import { SetProps } from "./props.jsx";
 import {
@@ -82,6 +88,16 @@ import {
 	slateLine,
 } from "./shot.js";
 import { captureFraming, classifyMove, cameraMoveAt, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
+import {
+	cameraAtFrame,
+	cutAtFrame,
+	duplicateShot,
+	initialShots,
+	moveBoundary,
+	removeShot,
+	renameShot,
+	shotIndexAtFrame,
+} from "./cuts.js";
 
 // Stated the way a crew states a setup: how far back, which side, how high the
 // lens rides, and what glass is on it. Order matters — Medium is the setup a
@@ -431,7 +447,7 @@ function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probeX, probeZ, c
     follow mode slaves the move to the timeline playhead, so the camera and
     the character motion are two views of the same time axis — playing or
     scrubbing frame 60 at 20 fps puts the camera exactly 3 s into its move. */
-function MoveRig({ playing, following, followFrame, fps, keys, anchor, camRef, look, isInterrupted, onDone }) {
+function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, camRef, look, isInterrupted, onDone }) {
 	const clock = useRef(0);
 	const invalidate = useThree((state) => state.invalidate);
 	// The follow branch only re-applies when its time changes; in demand mode
@@ -442,7 +458,7 @@ function MoveRig({ playing, following, followFrame, fps, keys, anchor, camRef, l
 		// component owns no three objects, so in demand mode nothing else will.
 		appliedFrame.current = null;
 		if (following) invalidate();
-	}, [keys, anchor, fps, following, invalidate]);
+	}, [keys, shots, anchor, fps, following, invalidate]);
 	useEffect(() => {
 		// A paused scrub changes the playhead without starting the render loop.
 		if (following && !playing) invalidate();
@@ -451,13 +467,15 @@ function MoveRig({ playing, following, followFrame, fps, keys, anchor, camRef, l
 		if (playing) clock.current = 0;
 	}, [playing]);
 	useFrame((_, delta) => {
-		if (keys.length < 1) return;
+		if ((playing && keys.length < 1) || (!playing && following && !shots.some((shot) => shot.cameraKeys.length))) return;
 		const cam = camRef.current;
 		if (!cam) return;
-		const firstFrame = keys[0].frame;
-		const spanFrames = Math.max(keys[keys.length - 1].frame - firstFrame, 1);
+		const firstFrame = keys[0]?.frame ?? 0;
+		const spanFrames = Math.max((keys[keys.length - 1]?.frame ?? firstFrame) - firstFrame, 1);
 		const apply = (frame) => {
-			const f = cameraMoveAt(keys, anchor, frame);
+			// Timeline/PlayView sampling follows the editorial strips. Standalone
+			// preview stays scoped to the selected strip's keys.
+			const f = following ? cameraAtFrame(shots, anchor, frame) : cameraMoveAt(keys, anchor, frame);
 			if (!f) return null;
 			cam.position.set(f.pos.x, f.pos.y, f.pos.z);
 			look.current.yaw = f.yaw;
@@ -1396,15 +1414,33 @@ globalThis.playMode = centerTab === "play";
 	// the last session — camera moves must survive a reload like the scene does.
 	const [shotStartup] = useState(() => {
 		try {
-			return loadShotAuthoring(localStorage.getItem(SHOT_AUTHORING_KEY));
+			const currentRaw = localStorage.getItem(SHOT_AUTHORING_KEY);
+			let sourceKey = SHOT_AUTHORING_KEY;
+			let raw = currentRaw;
+			let loaded = readShotAuthoring(raw);
+			if (loaded.status === "absent") {
+				sourceKey = SHOT_AUTHORING_LEGACY_KEY;
+				raw = localStorage.getItem(sourceKey);
+				loaded = readShotAuthoring(raw);
+			}
+			if (loaded.status === "corrupt") {
+				// Preserve the unreadable roll byte-for-byte before a fresh v2 save.
+				localStorage.setItem(SHOT_AUTHORING_QUARANTINE_KEY, raw);
+				localStorage.removeItem(sourceKey);
+				return { state: null, saveBlocked: false };
+			}
+			// A future body belongs to a future build. Do not replace it merely
+			// because this build cannot project it onto today's controls.
+			if (loaded.status === "future") return { state: null, saveBlocked: true };
+			return { state: loaded.state, saveBlocked: false };
 		} catch {
-			return null;
+			return { state: null, saveBlocked: false };
 		}
 	});
-	// The camera move workspace: frame-unique keyframings authored on the
-	// timeline's Camera lane. The move's name is never stored — it is
-	// re-derived from the framings segment by segment.
-	const [cameraKeys, setCameraKeys] = useState(shotStartup?.cameraKeys ?? []); // [{ frame, framing }] sorted by frame
+	const startupShotState = shotStartup.state;
+	// Each editorial strip owns its camera keys. The playhead chooses the
+	// active strip; there is no shared key list that could blend through a cut.
+	const [shots, setShots] = useState(() => startupShotState?.shots ?? initialShots(startupShotState?.frameCount ?? DEFAULT_DURATION_S * 20));
 	const [movePlaying, setMovePlaying] = useState(false);
 	// Follow slaves the move to the timeline playhead so camera and character
 	// motion share one time axis; off frees the camera while both stay set.
@@ -1418,9 +1454,9 @@ globalThis.playMode = centerTab === "play";
 		height: FOLLOW_DEFAULTS.height,
 		response: FOLLOW_DEFAULTS.response,
 		lead: FOLLOW_DEFAULTS.lead,
-		...(shotStartup?.followCam ?? {}),
+		...(startupShotState?.followCam ?? {}),
 	}));
-	const [cameraRail, setCameraRail] = useState(shotStartup?.cameraRail ?? null); // simplified control points [{x,z}]
+	const [cameraRail, setCameraRail] = useState(startupShotState?.cameraRail ?? null); // simplified control points [{x,z}]
 	const [railDraw, setRailDraw] = useState(false);
 	const [hasCharSheet, setHasCharSheet] = useState(false);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
@@ -1464,14 +1500,18 @@ globalThis.playMode = centerTab === "play";
 	const [tlFrame, setTlFrame] = useState(0);
 
 	const renderActive = useRenderActivity(tlPlaying || movePlaying);
-	const [tlFrameCount, setTlFrameCount] = useState(shotStartup?.frameCount ?? DEFAULT_DURATION_S * 20); // the generation clip length @ 20 fps
+	const [tlFrameCount, setTlFrameCount] = useState(startupShotState?.frameCount ?? DEFAULT_DURATION_S * 20); // the generation clip length @ 20 fps
 	const [tlFps, setTlFps] = useState(20);
+	const activeShotIdx = shotIndexAtFrame(shots, tlFrame);
+	const activeShot = shots[activeShotIdx] ?? null;
+	const cameraKeys = activeShot?.cameraKeys ?? [];
+	const hasCameraKeys = shots.some((shot) => shot.cameraKeys.length > 0);
 	const frameCountRef = useRef(DEFAULT_DURATION_S * 20);
 	frameCountRef.current = tlFrameCount;
 	// Root waypoints {frame, x, z, heading: null}, kept sorted by frame —
 	// the fixed bridge contract rejects out-of-order or duplicate frames.
 	const [waypointMode, setWaypointMode] = useState(false);
-	const [waypoints, setWaypoints] = useState(shotStartup?.waypoints ?? []);
+	const [waypoints, setWaypoints] = useState(startupShotState?.waypoints ?? []);
 	const [activeWaypointFrame, setActiveWaypointFrame] = useState(null);
 	const [pendingWaypointFrame, setPendingWaypointFrame] = useState(null);
 	useEffect(() => {
@@ -1484,12 +1524,13 @@ globalThis.playMode = centerTab === "play";
 	// Every authoring change lands in storage immediately: reloads (and dev
 	// hot updates) must never cost an authored shot again.
 	useEffect(() => {
+		if (shotStartup.saveBlocked) return;
 		try {
-			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ cameraKeys, waypoints, frameCount: tlFrameCount, followCam, cameraRail }));
+			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ shots, waypoints, frameCount: tlFrameCount, followCam, cameraRail }));
 		} catch {
 			// quota or blocked storage: authoring simply won't survive a reload
 		}
-	}, [cameraKeys, waypoints, tlFrameCount, followCam, cameraRail]);
+	}, [shots, waypoints, tlFrameCount, followCam, cameraRail, shotStartup.saveBlocked]);
 	const [promptClips, setPromptClips] = useState(() => DEFAULT_PROMPT_CLIPS.map((clip) => ({ ...clip })));
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
@@ -1538,7 +1579,7 @@ globalThis.playMode = centerTab === "play";
 	// With Follow armed, Preview means "watch the shot": it plays the timeline
 	// from frame 0 so character motion and the camera move share one clock.
 	// Follow off keeps the camera-only preview on its own clock.
-	const followPreviewArmed = moveFollow && cameraKeys.length >= 1 && !ikMode && !waypointMode && !posing;
+	const followPreviewArmed = moveFollow && hasCameraKeys && !ikMode && !waypointMode && !posing;
 	const previewActive = movePlaying || (followPreviewArmed && tlPlaying);
 
 	/* --------------------------- shot video export --------------------------- */
@@ -1738,7 +1779,14 @@ globalThis.playMode = centerTab === "play";
 	function addCameraKeyframe(frame) {
 		const framing = captureCurrentFraming();
 		const target = Math.max(0, Math.min(Math.round(frame), tlFrameCount - 1));
-		setCameraKeys((keys) => keys.filter((k) => k.frame !== target).concat({ frame: target, framing }).sort((a, b) => a.frame - b.frame));
+		setShots((current) => {
+			const index = shotIndexAtFrame(current, target);
+			return current.map((shot, shotIndex) => shotIndex === index ? {
+				...shot,
+				cameraKeys: shot.cameraKeys.filter((key) => key.frame !== target)
+					.concat({ frame: target, framing }).sort((a, b) => a.frame - b.frame),
+			} : shot);
+		});
 		setSelectedHierarchyId("camera");
 		setSidebarTab("inspector");
 	}
@@ -1746,21 +1794,53 @@ globalThis.playMode = centerTab === "play";
 	// Re-time a key by dragging its dot along the lane. Landing on another
 	// key's frame is rejected — keys stay frame-unique.
 	function moveCameraKeyframe(from, to) {
-		const target = Math.max(0, Math.min(Math.round(to), tlFrameCount - 1));
+		const sourceIndex = shotIndexAtFrame(shots, from);
+		const min = shots[sourceIndex]?.startFrame ?? 0;
+		const max = (shots[sourceIndex + 1]?.startFrame ?? tlFrameCount) - 1;
+		const target = Math.max(min, Math.min(Math.round(to), max));
 		if (target === from) return;
-		setCameraKeys((keys) => {
-			if (keys.some((k) => k.frame === target)) return keys;
-			return keys.map((k) => (k.frame === from ? { ...k, frame: target } : k)).sort((a, b) => a.frame - b.frame);
+		setShots((current) => {
+			const index = shotIndexAtFrame(current, from);
+			const keys = current[index]?.cameraKeys ?? [];
+			if (keys.some((key) => key.frame === target)) return current;
+			return current.map((shot, shotIndex) => shotIndex === index ? {
+				...shot,
+				cameraKeys: keys.map((key) => key.frame === from ? { ...key, frame: target } : key).sort((a, b) => a.frame - b.frame),
+			} : shot);
 		});
 	}
 
 	function removeCameraKeyframe(frame) {
-		setCameraKeys((keys) => keys.filter((k) => k.frame !== frame));
+		setShots((current) => {
+			const index = shotIndexAtFrame(current, frame);
+			return current.map((shot, shotIndex) => shotIndex === index
+				? { ...shot, cameraKeys: shot.cameraKeys.filter((key) => key.frame !== frame) }
+				: shot);
+		});
 	}
 
 	function clearMove() {
 		setMovePlaying(false);
-		setCameraKeys([]);
+		setShots((current) => current.map((shot, index) => index === activeShotIdx ? { ...shot, cameraKeys: [] } : shot));
+	}
+
+	function addCutAtPlayhead() {
+		setMovePlaying(false);
+		setShots((current) => cutAtFrame(current, tlFrame, captureCurrentFraming()));
+	}
+
+	function selectTimelineShot(index) {
+		const selected = shots[index];
+		if (!selected) return;
+		setTlFrame(selected.startFrame);
+		setSelectedHierarchyId("camera");
+		setSidebarTab("inspector");
+	}
+
+	function duplicateTimelineShot(index) {
+		const next = duplicateShot(shots, index, tlFrameCount);
+		setShots(next);
+		if (next !== shots && next[index + 1]) setTlFrame(next[index + 1].startFrame);
 	}
 
 	const allPoses = useMemo(() => [...BUILT_IN_POSES, ...customPoses], [customPoses]);
@@ -3031,11 +3111,13 @@ globalThis.playMode = centerTab === "play";
 								// PlayView is the finished-output player: the move always rides
 								// the playhead there. The Follow toggle and authoring-mode gates
 								// only protect the Scene tab's manipulation surfaces.
-								// A follow cam owns the shot camera outright; keys resume when it is off.
-								following={!followCamActive && cameraKeys.length >= 1 && (centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing))}
+								// A follow cam owns the shot camera outright; editorial cuts do
+								// not apply until global follow cam is switched off again.
+								following={!followCamActive && hasCameraKeys && (centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing))}
 								followFrame={tlFrame}
 								fps={tlFps}
 								keys={cameraKeys}
+								shots={shots}
 								anchor={charA}
 								camRef={shotCamRef}
 								look={look}
@@ -3345,7 +3427,16 @@ globalThis.playMode = centerTab === "play";
 							<button
 								type="button"
 								className="btn ghost"
-								disabled={cameraKeys.length < 1}
+								disabled={tlFrame <= 0 || shots.some((shot) => shot.startFrame === tlFrame) || !!posing || ikMode || waypointMode}
+								title={ko("Split the shot here and hold the current framing on the new shot", "여기서 샷을 나누고 새 샷에 현재 프레이밍을 고정합니다")}
+								onClick={addCutAtPlayhead}
+							>
+								{ko("Cut", "컷")}
+							</button>
+							<button
+								type="button"
+								className="btn ghost"
+								disabled={!hasCameraKeys}
 								title={ko("Play the move. With Follow on it plays the timeline too, so character motion rides along; right-drag interrupts", "카메라 움직임을 재생합니다. 따라가기가 켜져 있으면 타임라인도 함께 재생되어 캐릭터 모션이 따라옵니다. 오른쪽 드래그로 중단됩니다")}
 								onClick={() => {
 									if (followPreviewArmed) {
@@ -3365,7 +3456,7 @@ globalThis.playMode = centerTab === "play";
 							<button
 								type="button"
 								className="btn ghost"
-								disabled={cameraKeys.length < 1}
+								disabled={!hasCameraKeys}
 								title={ko("Slave the move to the timeline: play or scrub and the camera rides along. Turn off to fly freely while keys stay set", "움직임을 타임라인에 연결합니다. 재생하거나 스크럽하면 카메라가 함께 움직입니다. 끄면 키는 유지한 채 자유롭게 이동할 수 있습니다")}
 								onClick={() => setMoveFollow((follow) => !follow)}
 							>
@@ -3377,7 +3468,7 @@ globalThis.playMode = centerTab === "play";
 							<button
 								type="button"
 								className={"btn ghost" + (recState === "recording" ? " rec-live" : "")}
-								disabled={cameraKeys.length < 1 && !motion}
+								disabled={!hasCameraKeys && !motion}
 								title={ko("Play the piece in PlayView and save it as a video file — camera move and character motion, no editor chrome", "재생 보기에서 장면을 재생하고 영상 파일로 저장합니다. 카메라 움직임과 캐릭터 모션만 담고 편집 UI는 제외됩니다")}
 								onClick={toggleShotRecording}
 							>
@@ -4027,6 +4118,8 @@ globalThis.playMode = centerTab === "play";
 				ikFrames={ikFrames}
 				footSnap={footSnap}
 				cameraKeyFrames={cameraKeys.map((k) => k.frame)}
+				shots={shots}
+				activeShotIdx={activeShotIdx}
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
@@ -4073,6 +4166,11 @@ globalThis.playMode = centerTab === "play";
 				onCameraKeyframeAdd={addCameraKeyframe}
 				onCameraKeyframeMove={moveCameraKeyframe}
 				onCameraKeyframeRemove={removeCameraKeyframe}
+				onShotSelect={selectTimelineShot}
+				onShotBoundaryMove={(index, frame) => setShots((current) => moveBoundary(current, index, frame, tlFrameCount))}
+				onShotRename={(index, name) => setShots((current) => renameShot(current, index, name))}
+				onShotRemove={(index) => setShots((current) => removeShot(current, index))}
+				onShotDuplicate={duplicateTimelineShot}
 				onClearMotion={motion ? clearMotion : null}
 			/>
 				</div>

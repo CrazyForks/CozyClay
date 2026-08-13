@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { frameFromClientX, promptMoveStartFrame } from "./timeline-coordinates.js";
+import { frameFromClientX, promptMoveStartFrame, shotBlockGeometry } from "./timeline-coordinates.js";
 import { promptResizeFrame } from "./timeline-resize.js";
 import { ko, isKo } from "../locale.js";
 
@@ -37,12 +37,14 @@ const TRACKS = [
 	"Prompts",
 	"Full-Body",
 	"2D Root",
+	"Shots",
 	"Camera",
 ];
 const TRACK_LABELS_KO = {
 	Prompts: ko("Prompts", "프롬프트"),
 	"Full-Body": ko("Full-Body", "전신"),
 	"2D Root": ko("2D Root", "2D 루트"),
+	Shots: ko("Shots", "샷"),
 	Camera: ko("Camera", "카메라"),
 };
 
@@ -50,6 +52,7 @@ const TRACK_LABELS_KO = {
  * a sparse set of the limbs the user has moved (never every joint). */
 const IK_LANE = "Full-Body";
 const CAMERA_LANE = "Camera";
+const SHOTS_LANE = "Shots";
 // Ruler labels and lane gridlines share one 10-frame cadence, so authored
 // elements (40-frame prompt blocks, camera key dots) always land on visible
 // lines. Label density adapts to zoom in 10-based steps.
@@ -77,6 +80,8 @@ export default function Timeline({
 	ikFrames = [], // sorted full-body key frames
 	footSnap = true, // feet stay planted while the body moves
 	cameraKeyFrames = [], // sorted camera key frames — dots on the Camera lane
+	shots = [],
+	activeShotIdx = 0,
 	onScrub,
 	onAdvance,
 	onStep,
@@ -100,10 +105,16 @@ export default function Timeline({
 	onCameraKeyframeAdd,
 	onCameraKeyframeMove,
 	onCameraKeyframeRemove,
+	onShotSelect,
+	onShotBoundaryMove,
+	onShotRename,
+	onShotRemove,
+	onShotDuplicate,
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [zoom, setZoom] = useState(ZOOM_DEFAULT);
 	const [movingPromptId, setMovingPromptId] = useState(null);
+	const [renamingShotId, setRenamingShotId] = useState(null);
 	const rulerRef = useRef(null);
 	const bodyRef = useRef(null);
 	const scrubbing = useRef(false);
@@ -117,7 +128,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -261,6 +272,7 @@ export default function Timeline({
 	const resizeRef = useRef(null);
 	const camDragRef = useRef(null);
 	const camSuppressClickRef = useRef(false);
+	const shotBoundaryRef = useRef(null);
 
 	function beginPromptMove(e, clip) {
 		if (e.button !== 0 || e.target.closest(".tl-chip-handle")) return;
@@ -413,6 +425,38 @@ export default function Timeline({
 		e.stopPropagation();
 		handlers.current.onScrub?.(keyFrame);
 		handlers.current.onCameraMoveSelect?.();
+	}
+
+	function beginShotBoundaryDrag(e, index) {
+		if (e.button !== 0 || index <= 0) return;
+		e.preventDefault();
+		e.stopPropagation();
+		e.currentTarget.setPointerCapture?.(e.pointerId);
+		const lane = e.currentTarget.closest(".tl-lane");
+		const rect = lane?.getBoundingClientRect();
+		shotBoundaryRef.current = { index, pointerId: e.pointerId, left: rect?.left ?? 0, width: rect?.width ?? 1 };
+	}
+
+	function moveShotBoundary(e) {
+		const active = shotBoundaryRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		e.preventDefault();
+		e.stopPropagation();
+		const next = frameFromClientX(e.clientX, active.left, active.width, displayFrameCount, frameCount);
+		handlers.current.onShotBoundaryMove?.(active.index, next);
+	}
+
+	function endShotBoundaryDrag(e) {
+		const active = shotBoundaryRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		shotBoundaryRef.current = null;
+		e.currentTarget.releasePointerCapture?.(e.pointerId);
+	}
+
+	function finishShotRename(shot, index, value) {
+		const name = value.trim();
+		if (name && name !== shot.name) handlers.current.onShotRename?.(index, name);
+		setRenamingShotId(null);
 	}
 
 	function frameFromEvent(e) {
@@ -598,7 +642,7 @@ export default function Timeline({
 						</div>
 
 						{TRACKS.map((name) => (
-							<div className={"tl-track" + (name === "Prompts" ? " prompts" : "") + (name === IK_LANE ? " ik" : "")} key={name}>
+							<div className={"tl-track" + (name === "Prompts" ? " prompts" : "") + (name === IK_LANE ? " ik" : "") + (name === SHOTS_LANE ? " shots" : "")} key={name}>
 								<span className="tl-track-label">
 									{TRACK_LABELS_KO[name]}
 									{name === "Prompts" && <button className="tl-track-add" type="button" title={ko("Add 2 second prompt clip", "2초 프롬프트 클립 추가")} onClick={() => handlers.current.onPromptAdd?.(frame)}>+</button>}
@@ -614,7 +658,7 @@ export default function Timeline({
 									)}
 								</span>
 								<div
-									className={"tl-lane" + (name === "2D Root" ? " root" : "") + (name === CAMERA_LANE ? " cam" : "")}
+									className={"tl-lane" + (name === "2D Root" ? " root" : "") + (name === CAMERA_LANE ? " cam" : "") + (name === SHOTS_LANE ? " shots" : "")}
 									onPointerDown={
 										name === "2D Root"
 											? (e) => {
@@ -633,6 +677,49 @@ export default function Timeline({
 									{gridFrames.map((f) => (
 										<i key={f} className="tl-grid" style={{ "--tl-f": framePct(f, displayFrameCount) }} aria-hidden="true" />
 									))}
+									{name === SHOTS_LANE && shots.map((shot, index) => {
+										const geometry = shotBlockGeometry(shots, index, frameCount, displayFrameCount);
+										if (!geometry) return null;
+										return (
+											<div
+												key={shot.id}
+												className={"tl-shot-block" + (index === activeShotIdx ? " active" : "")}
+												style={{ "--tl-f-start": geometry.startPct, "--tl-f-end": geometry.endPct }}
+												title={ko("Click to select · double-click the name to rename", "클릭해 선택 · 이름을 더블클릭해 변경")}
+												onClick={() => handlers.current.onShotSelect?.(index)}
+												onDoubleClick={(e) => { e.stopPropagation(); setRenamingShotId(shot.id); }}
+											>
+												{index > 0 && (
+													<button
+														type="button"
+														className="tl-shot-edge"
+														aria-label={ko(`Move cut before ${shot.name}`, `${shot.name} 앞 컷 이동`)}
+														onPointerDown={(e) => beginShotBoundaryDrag(e, index)}
+														onPointerMove={moveShotBoundary}
+														onPointerUp={endShotBoundaryDrag}
+														onPointerCancel={endShotBoundaryDrag}
+													/>
+												)}
+												{renamingShotId === shot.id ? (
+													<input
+														className="tl-shot-name-input"
+														defaultValue={shot.name}
+														autoFocus
+														onClick={(e) => e.stopPropagation()}
+														onBlur={(e) => finishShotRename(shot, index, e.target.value)}
+														onKeyDown={(e) => {
+															if (e.key === "Enter") e.currentTarget.blur();
+															if (e.key === "Escape") setRenamingShotId(null);
+														}}
+													/>
+												) : <span className="tl-shot-name">{shot.name}</span>}
+												<span className="tl-shot-actions">
+													<button type="button" title={ko("Duplicate shot", "샷 복제")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotDuplicate?.(index); }}>＋</button>
+													<button type="button" disabled={shots.length <= 1} title={ko("Delete shot and merge its time", "샷을 지우고 구간 합치기")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotRemove?.(index); }}>×</button>
+												</span>
+											</div>
+										);
+									})}
 									{name === "Prompts" && promptClips.map((clip) => {
 										const duration = ((clip.endFrame - clip.startFrame) / Math.max(1, fps)).toFixed(1);
 										return (
