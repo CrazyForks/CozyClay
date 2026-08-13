@@ -88,7 +88,16 @@ import {
 	slateLine,
 } from "./shot.js";
 import { captureFraming, classifyMove, cameraMoveAt, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
-import { cameraAtFrame, cutAtFrame, initialShots, shotIndexAtFrame } from "./cuts.js";
+import {
+	cameraAtFrame,
+	cutAtFrame,
+	duplicateShot,
+	initialShots,
+	moveBoundary,
+	removeShot,
+	renameShot,
+	shotIndexAtFrame,
+} from "./cuts.js";
 
 // Stated the way a crew states a setup: how far back, which side, how high the
 // lens rides, and what glass is on it. Order matters — Medium is the setup a
@@ -1818,6 +1827,20 @@ globalThis.playMode = centerTab === "play";
 	function addCutAtPlayhead() {
 		setMovePlaying(false);
 		setShots((current) => cutAtFrame(current, tlFrame, captureCurrentFraming()));
+	}
+
+	function selectTimelineShot(index) {
+		const selected = shots[index];
+		if (!selected) return;
+		setTlFrame(selected.startFrame);
+		setSelectedHierarchyId("camera");
+		setSidebarTab("inspector");
+	}
+
+	function duplicateTimelineShot(index) {
+		const next = duplicateShot(shots, index, tlFrameCount);
+		setShots(next);
+		if (next !== shots && next[index + 1]) setTlFrame(next[index + 1].startFrame);
 	}
 
 	const allPoses = useMemo(() => [...BUILT_IN_POSES, ...customPoses], [customPoses]);
@@ -4095,6 +4118,8 @@ globalThis.playMode = centerTab === "play";
 				ikFrames={ikFrames}
 				footSnap={footSnap}
 				cameraKeyFrames={cameraKeys.map((k) => k.frame)}
+				shots={shots}
+				activeShotIdx={activeShotIdx}
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
@@ -4141,6 +4166,11 @@ globalThis.playMode = centerTab === "play";
 				onCameraKeyframeAdd={addCameraKeyframe}
 				onCameraKeyframeMove={moveCameraKeyframe}
 				onCameraKeyframeRemove={removeCameraKeyframe}
+				onShotSelect={selectTimelineShot}
+				onShotBoundaryMove={(index, frame) => setShots((current) => moveBoundary(current, index, frame, tlFrameCount))}
+				onShotRename={(index, name) => setShots((current) => renameShot(current, index, name))}
+				onShotRemove={(index) => setShots((current) => removeShot(current, index))}
+				onShotDuplicate={duplicateTimelineShot}
 				onClearMotion={motion ? clearMotion : null}
 			/>
 				</div>

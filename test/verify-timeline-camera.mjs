@@ -27,12 +27,12 @@ expect("camera keys render as dots, not a chip", timeline.includes('className="t
 expect("lane click keys the current framing", timeline.includes("handlers.current.onCameraKeyframeAdd?.(rootFrameFromEvent(e))") && app.includes("onCameraKeyframeAdd={addCameraKeyframe}"));
 expect("lane click is a crosshair affordance", timeline.includes('name === CAMERA_LANE ? " cam" : ""') && css.includes(".tl-lane.cam"));
 expect("dot click jumps the playhead and selects the camera", timeline.includes("handlers.current.onScrub?.(keyFrame)") && timeline.includes("handlers.current.onCameraMoveSelect?.();"));
-expect("dot right-click removes the key", timeline.includes("handlers.current.onCameraKeyframeRemove?.(f)") && app.includes("keys.filter((k) => k.frame !== frame)"));
+expect("dot right-click removes the key", timeline.includes("handlers.current.onCameraKeyframeRemove?.(f)") && app.includes("shot.cameraKeys.filter((key) => key.frame !== frame)"));
 expect("dot drag re-times the key", timeline.includes("handlers.current.onCameraKeyframeMove?.(from, next)") && app.includes("onCameraKeyframeMove={moveCameraKeyframe}"));
-expect("keys stay frame-unique on re-time", app.includes("if (keys.some((k) => k.frame === target)) return keys;"));
-expect("re-keying a frame overwrites its framing", app.includes("keys.filter((k) => k.frame !== target).concat({ frame: target, framing })"));
+expect("keys stay frame-unique on re-time", app.includes("if (keys.some((key) => key.frame === target)) return current;"));
+expect("re-keying a frame overwrites its framing", app.includes("shot.cameraKeys.filter((key) => key.frame !== target)") && app.includes(".concat({ frame: target, framing })"));
 
-expect("the move model is N keys, not A/B", app.includes("const [cameraKeys, setCameraKeys] = useState(shotStartup?.cameraKeys ?? []);") && !app.includes("setMoveA") && !app.includes("setMoveB"));
+expect("the move model is per-shot N keys, not A/B", app.includes("const [shots, setShots] = useState") && app.includes("const cameraKeys = activeShot?.cameraKeys ?? []") && !app.includes("setMoveA") && !app.includes("setMoveB"));
 expect("interpolation samples keys segment by segment", camMove.includes("export function cameraMoveAt") && camMove.includes("interpolateFraming(a.framing, b.framing, anchor"));
 expect("MoveRig plays and follows the keys", app.includes("keys={cameraKeys}") && app.includes("cameraMoveAt(keys, anchor, frame)"));
 expect("sequence slate and phrase derive per segment", app.includes("moveSequenceSlate(segs)") && app.includes("moveSequencePhrase(segs)"));
@@ -43,7 +43,7 @@ expect("PlayView restarts the piece from frame 0", app.includes('if (centerTab =
 expect("PlayView always rides the camera move", app.includes('centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing)'));
 expect("Scene tab keeps the authoring gates on follow", app.includes("moveFollow && !ikMode && !waypointMode && !posing"));
 
-expect("surface lays out four tracks", css.includes("grid-template-rows: 28px repeat(4, minmax(0, 1fr));"));
+expect("surface lays out five tracks including Shots", css.includes("grid-template-rows: 28px repeat(5, minmax(0, 1fr));"));
 expect("lane gridlines are frame-based, not width-based", css.includes(".tl-grid {") && !css.includes("100% / 23"));
 expect("camera dots have a distinct violet identity", css.includes(".tl-marker.cam {") && css.includes("#a78bfa"));
 

@@ -17,6 +17,7 @@
 		"test:appearance": "node test/verify-appearance.mjs",
 		"test:layout": "node test/verify-layout.mjs",
 		"test:timeline-camera": "node test/verify-timeline-camera.mjs",
+		"test:timeline-shots": "node test/verify-timeline-shots.mjs",
 		"preview": "vite preview",
 		"ardy:rest": "node tools/ardy/extract-rest.mjs",
 		"ardy:pose": "node tools/ardy/pose-to-npz.mjs",

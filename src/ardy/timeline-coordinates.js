@@ -15,3 +15,15 @@ export function promptMoveStartFrame(startFrame, startClientX, clientX, laneWidt
 	const framesPerPixel = Math.max(0, displayFrameCount - 1) / Math.max(1, laneWidth);
 	return startFrame + (clientX - startClientX) * framesPerPixel;
 }
+
+/** Shot blocks meet on the exact frame used by the ruler and playhead. The
+ * last block ends at the clip's last visible frame; zoom-out leaves the rest
+ * of the virtual ruler empty rather than pretending the shot grew longer. */
+export function shotBlockGeometry(shots, index, frameCount, displayFrameCount = frameCount) {
+	const shot = shots[index];
+	if (!shot || frameCount < 1 || displayFrameCount < 1) return null;
+	const denominator = Math.max(1, displayFrameCount - 1);
+	const startFrame = Math.max(0, Math.min(frameCount - 1, shot.startFrame));
+	const endFrame = Math.max(startFrame, Math.min(frameCount - 1, shots[index + 1]?.startFrame ?? frameCount - 1));
+	return { startFrame, endFrame, startPct: startFrame / denominator, endPct: endFrame / denominator };
+}
