@@ -218,7 +218,33 @@ function CameraRailLine({ points, live = false }) {
 		g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
 		return g;
 	}, [points]);
+	const directionGeometry = useMemo(() => {
+		if (live || !points || points.length < 2) return null;
+		const head = points[0];
+		const next = points.find((p) => Math.hypot(p.x - head.x, p.z - head.z) > 0.01);
+		if (!next) return null;
+		const dx = next.x - head.x;
+		const dz = next.z - head.z;
+		const length = Math.hypot(dx, dz);
+		const ux = dx / length;
+		const uz = dz / length;
+		const px = -uz;
+		const pz = ux;
+		const tipDistance = Math.min(0.9, length * 0.72);
+		const arrowLength = Math.min(0.34, tipDistance * 0.6);
+		const arrowWidth = Math.min(0.18, arrowLength * 0.55);
+		const tip = { x: head.x + ux * tipDistance, z: head.z + uz * tipDistance };
+		const base = { x: tip.x - ux * arrowLength, z: tip.z - uz * arrowLength };
+		const arrow = new THREE.BufferGeometry();
+		arrow.setAttribute("position", new THREE.Float32BufferAttribute([
+			tip.x, 0.045, tip.z,
+			base.x + px * arrowWidth, 0.045, base.z + pz * arrowWidth,
+			base.x - px * arrowWidth, 0.045, base.z - pz * arrowWidth,
+		], 3));
+		return arrow;
+	}, [live, points]);
 	useEffect(() => () => geometry?.dispose(), [geometry]);
+	useEffect(() => () => directionGeometry?.dispose(), [directionGeometry]);
 	if (!geometry) return null;
 	const first = points[0];
 	const last = points[points.length - 1];
@@ -227,12 +253,42 @@ function CameraRailLine({ points, live = false }) {
 			<line geometry={geometry} renderOrder={9}>
 				<lineBasicMaterial color={RAIL_COLOR} transparent opacity={live ? 0.5 : 0.85} depthWrite={false} depthTest={false} />
 			</line>
-			{!live && [first, last].map((p, i) => (
-				<mesh key={i} position={[p.x, 0.04, p.z]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={10}>
-					<circleGeometry args={[0.14, 16]} />
-					<meshBasicMaterial color={RAIL_COLOR} depthWrite={false} depthTest={false} />
-				</mesh>
-			))}
+			{!live && (
+				<>
+					<mesh position={[first.x, 0.04, first.z]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={11}>
+						<circleGeometry args={[0.22, 20]} />
+						<meshBasicMaterial color={RAIL_COLOR} depthWrite={false} depthTest={false} />
+					</mesh>
+					<mesh position={[first.x, 0.039, first.z]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={10}>
+						<ringGeometry args={[0.27, 0.32, 20]} />
+						<meshBasicMaterial color={RAIL_COLOR} transparent opacity={0.72} depthWrite={false} depthTest={false} />
+					</mesh>
+					<Text
+						position={[first.x, 0.05, first.z + 0.48]}
+						rotation={[-Math.PI / 2, 0, 0]}
+						fontSize={0.24}
+						color={RAIL_COLOR}
+						anchorX="center"
+						anchorY="middle"
+						outlineWidth={0.035}
+						outlineColor="#0e0d10"
+						outlineOpacity={0.85}
+						renderOrder={12}
+						depthOffset={-1}
+					>
+						{ko("START", "시작")}
+					</Text>
+					{directionGeometry && (
+						<mesh geometry={directionGeometry} renderOrder={11}>
+							<meshBasicMaterial color={RAIL_COLOR} depthWrite={false} depthTest={false} side={THREE.DoubleSide} />
+						</mesh>
+					)}
+					<mesh position={[last.x, 0.04, last.z]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={10}>
+						<ringGeometry args={[0.1, 0.15, 16]} />
+						<meshBasicMaterial color={RAIL_COLOR} depthWrite={false} depthTest={false} />
+					</mesh>
+				</>
+			)}
 		</group>
 	);
 }
