@@ -22,7 +22,7 @@
 		"test:ardy": "for t in fk rest pose-shape fill npz compare-npz playback-skinning sequence-bridge; do node test/ardy/verify-$t.mjs || exit 1; done && node test/ardy/verify-browser-motion.mjs && node test/ik/verify-ik.mjs",
 		"bridge": "node tools/ardy/bridge.mjs",
 		"bridge:generation": "node tools/generation/bridge.mjs",
-		"test:generation": "node test/generation/verify-shot-spec.mjs && node test/generation/verify-runway-provider.mjs && node test/generation/verify-bridge.mjs",
+		"test:generation": "node test/generation/verify-shot-spec.mjs && node test/generation/verify-runway-provider.mjs && node test/generation/verify-session.mjs && node test/generation/verify-job-store.mjs && node test/generation/verify-bridge.mjs && node test/generation/verify-generation-e2e.mjs",
 		"dev:full": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
 		"qa:browser": "node tools/qa-browser.mjs --",
 		"test:shot-authoring": "node test/verify-shot-authoring.mjs",
