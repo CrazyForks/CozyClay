@@ -47,5 +47,70 @@ expect("surface lays out five tracks including Shots", css.includes("grid-templa
 expect("lane gridlines are frame-based, not width-based", css.includes(".tl-grid {") && !css.includes("100% / 23"));
 expect("camera dots have a distinct violet identity", css.includes(".tl-marker.cam {") && css.includes("#a78bfa"));
 
+expect(
+	"camera lane renders exactly one block from each shot geometry",
+	timeline.includes("name === CAMERA_LANE && shots.map((shot, index)") &&
+	timeline.includes("shotBlockGeometry(shots, index, frameCount, displayFrameCount)"),
+);
+expect("camera blocks preserve the violet camera identity", css.includes(".tl-camera-block {") && css.includes("border: 1px solid #735ba0"));
+expect(
+	"camera blocks summarize authored state",
+	timeline.includes('"FREE" : "LOCKED"') &&
+	timeline.includes("`KEYS ${keyCount}`") &&
+	timeline.includes('? "RAIL" : mode === "follow" ? "FOLLOW"') &&
+	timeline.includes('"HEAD" : "NEAREST"') &&
+	timeline.includes("m/s") && timeline.includes("PITCH"),
+);
+expect(
+	"camera block selection also selects its owning shot",
+	timeline.includes("handlers.current.onCameraBlockSelect?.(index)") &&
+	timeline.includes("handlers.current.onShotSelect?.(index)") &&
+	timeline.includes("handlers.current.onCameraMoveSelect?.()"),
+);
+expect(
+	"camera add button shares the shot cut operation",
+	timeline.includes('className="tl-track-add cut camera"') &&
+	timeline.includes('ko("+ Block", "+ 블록")') &&
+	timeline.includes("handlers.current.onShotCut?.()"),
+);
+expect(
+	"camera edges are coupled to shot boundary and timeline end callbacks",
+	timeline.includes('className="tl-camera-edge start"') &&
+	timeline.includes('className="tl-camera-edge end"') &&
+	timeline.includes("beginShotBoundaryDrag(event, index)") &&
+	timeline.includes("beginShotBoundaryDrag(event, index + 1, index === shots.length - 1)"),
+);
+expect(
+	"selected camera mini editor sits above the lane body",
+	timeline.indexOf("<CameraBlockEditor") > 0 &&
+	timeline.indexOf("<CameraBlockEditor") < timeline.indexOf('<div className="tl-body"'),
+);
+expect(
+	"mini editor exposes modes and director controls",
+	timeline.includes('["keys", ko("Keys", "키")]') &&
+	timeline.includes('["follow", ko("Follow", "팔로우")]') &&
+	timeline.includes('["rail", ko("Rail", "레일")]') &&
+	timeline.includes('ko("Speed", "속도")') &&
+	timeline.includes('ko("Pitch", "피치")') &&
+	timeline.includes('ko("Distance", "거리")') &&
+	timeline.includes('ko("Height", "높이")'),
+);
+expect(
+	"damping and look-ahead stay behind advanced disclosure",
+	timeline.includes('className="tl-camera-advanced"') &&
+	timeline.includes('ko("Damping", "댐핑")') &&
+	timeline.includes('ko("Look-ahead", "조준 선행")'),
+);
+expect(
+	"camera editor emits shot-camera patches without owning global state",
+	timeline.includes("handlers.current.onCameraBlockChange?.(patch)") &&
+	!timeline.includes("localStorage") && !timeline.includes("setFollowCam"),
+);
+expect(
+	"key dots remain overlaid above camera blocks and draggable",
+	css.includes(".tl-marker.cam {") && css.includes("z-index: 5") &&
+	timeline.includes("onPointerMove={moveCameraKeyDrag}"),
+);
+
 if (failures) process.exit(1);
 console.log("all timeline camera checks PASS");

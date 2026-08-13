@@ -3,6 +3,7 @@
 // itself never invents an in-between frame.
 
 import { cameraMoveAt } from "./camera-move.js";
+import { cloneCameraBlock, createCameraBlock } from "./camera-block.js";
 
 let nextShotId = 1;
 
@@ -29,12 +30,13 @@ function uniqueKeys(keys, min = -Infinity, max = Infinity) {
 	return [...byFrame.values()].sort((a, b) => a.frame - b.frame);
 }
 
-export function createShot(name = "Shot", startFrame = 0, cameraKeys = []) {
+export function createShot(name = "Shot", startFrame = 0, cameraKeys = [], camera = null) {
 	return {
 		id: id(),
 		name: typeof name === "string" && name.trim() ? name.trim() : "Shot",
 		startFrame: Math.max(0, frameNumber(startFrame)),
 		cameraKeys: uniqueKeys(cameraKeys),
+		camera: createCameraBlock(camera),
 	};
 }
 
@@ -70,13 +72,17 @@ export function cutAtFrame(shots, frame, currentFraming) {
 	if (index < 0) return shots;
 
 	const source = shots[index];
-	const upstream = { ...source, cameraKeys: source.cameraKeys.filter((key) => key.frame < cutFrame) };
+	const upstream = {
+		...source,
+		cameraKeys: source.cameraKeys.filter((key) => key.frame < cutFrame),
+		camera: cloneCameraBlock(source.camera),
+	};
 	const downstreamKeys = source.cameraKeys.filter((key) => key.frame >= cutFrame);
 	// The captured framing wins when the old strip already had a key here.
 	const downstream = createShot(`Shot ${shots.length + 1}`, cutFrame, [
 		...downstreamKeys,
 		{ frame: cutFrame, framing: currentFraming },
-	]);
+	], source.camera);
 	return [...shots.slice(0, index), upstream, downstream, ...shots.slice(index + 1)];
 }
 
@@ -159,8 +165,17 @@ export function duplicateShot(shots, index, frameCount) {
 		frame: start + Math.round(((key.frame - source.startFrame) / Math.max(1, duration - 1)) * Math.max(0, length - 1)),
 		framing: key.framing,
 	})), start, start + length - 1);
-	const original = { ...source, cameraKeys: scaleKeys(source.startFrame, firstDuration) };
-	const duplicate = createShot(`${source.name} copy`, duplicateStart, scaleKeys(duplicateStart, duration - firstDuration));
+	const original = {
+		...source,
+		cameraKeys: scaleKeys(source.startFrame, firstDuration),
+		camera: cloneCameraBlock(source.camera),
+	};
+	const duplicate = createShot(
+		`${source.name} copy`,
+		duplicateStart,
+		scaleKeys(duplicateStart, duration - firstDuration),
+		source.camera,
+	);
 	return [...shots.slice(0, index), original, duplicate, ...shots.slice(index + 1)];
 }
 
