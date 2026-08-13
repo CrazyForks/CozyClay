@@ -27,6 +27,7 @@ const yawDelta = (a, b) => {
 	while (d < -Math.PI) d += 2 * Math.PI;
 	return Math.abs(d);
 };
+const EPS = 1e-9;
 
 /** straight walk down +Z at 1.4 m/s for `seconds` */
 function straightWalk(seconds, speed = 1.4) {
@@ -144,10 +145,78 @@ ok("free follow emits one sample per subject frame", free.length === walk.length
 }
 
 {
+	// The actor starts beside the middle of the rail, so the two opening modes
+	// have visibly different marks.
+	const subject = Array.from({ length: 40 }, () => ({ x: 0, z: 5 }));
+	const rail = buildRail([{ x: -2, z: 0 }, { x: -2, z: 10 }]);
+	const head = buildRailFollowTrack(subject, FPS, rail);
+	const nearest = buildRailFollowTrack(subject, FPS, rail, { railStartMode: "nearest" });
+	const headPoint = railPoint(rail, 0);
+	ok("head mode opens at exactly s=0", head[0].s === 0);
+	ok("head mode frame 0 is exactly the rail head", head[0].pos.x === headPoint.x && head[0].pos.z === headPoint.z);
+	ok("nearest mode preserves automatic opening placement", nearest[0].s > 1, `s ${nearest[0].s.toFixed(3)}`);
+}
+
+{
+	// Jumping the subject between opposite rail ends produces the harshest
+	// pursuit target changes; no frame may outrun the configured cap.
+	const subject = Array.from({ length: 80 }, (_, f) => ({ x: 0, z: f % 2 ? 20 : 0 }));
+	const rail = buildRail([{ x: -2, z: 0 }, { x: -2, z: 20 }]);
+	for (const cap of [0.5, 2, 6]) {
+		const track = buildRailFollowTrack(subject, FPS, rail, { maxDollySpeed: cap });
+		const maxStep = Math.max(...track.slice(1).map((sample, i) => Math.abs(sample.s - track[i].s)));
+		ok(
+			`dolly cap ${cap} m/s binds before every integration`,
+			maxStep <= cap / FPS + EPS,
+			`${(maxStep * FPS).toFixed(6)} m/s`,
+		);
+	}
+	const steadySubject = Array.from({ length: 40 }, () => ({ x: 0, z: 20 }));
+	const slow = buildRailFollowTrack(steadySubject, FPS, rail, { maxDollySpeed: 0.5 });
+	const fast = buildRailFollowTrack(steadySubject, FPS, rail, { maxDollySpeed: 6 });
+	ok("a slower dolly advances less over the same frames", slow.at(-1).s < fast.at(-1).s, `${slow.at(-1).s.toFixed(2)} < ${fast.at(-1).s.toFixed(2)}`);
+	ok("dolly speed does not change sample count", slow.length === fast.length && slow.length === steadySubject.length);
+	ok(
+		"capped rail tracks remain deterministic",
+		JSON.stringify(slow) === JSON.stringify(buildRailFollowTrack(steadySubject, FPS, rail, { maxDollySpeed: 0.5 })),
+	);
+}
+
+{
+	const subject = straightWalk(3);
+	const rail = buildRail([{ x: -2, z: 0 }, { x: -2, z: 8 }]);
+	const zero = buildRailFollowTrack(subject, FPS, rail, { pitchOffsetDeg: 0 });
+	const baseline = buildRailFollowTrack(subject, FPS, rail);
+	const plus = buildRailFollowTrack(subject, FPS, rail, { pitchOffsetDeg: 10 });
+	const minus = buildRailFollowTrack(subject, FPS, rail, { pitchOffsetDeg: -10 });
+	const tenDeg = (10 * Math.PI) / 180;
+	ok("zero pitch offset preserves automatic pitch", zero.every((sample, i) => Math.abs(sample.pitch - baseline[i].pitch) < EPS));
+	ok("+10° pitch offset is exact", plus.every((sample, i) => Math.abs(sample.pitch - zero[i].pitch - tenDeg) < EPS));
+	ok("-10° pitch offset is exact", minus.every((sample, i) => Math.abs(sample.pitch - zero[i].pitch + tenDeg) < EPS));
+	ok(
+		"pitch offset leaves yaw, position and rail travel unchanged",
+		plus.every((sample, i) => sample.yaw === zero[i].yaw && sample.s === zero[i].s && JSON.stringify(sample.pos) === JSON.stringify(zero[i].pos)),
+	);
+
+	const highTarget = Array.from({ length: 2 }, () => ({ x: 0, z: 0 }));
+	const closeRail = buildRail([{ x: -0.001, z: 0 }, { x: -0.001, z: 1 }]);
+	const clamped = buildRailFollowTrack(highTarget, FPS, closeRail, { height: -10, pitchOffsetDeg: 30 });
+	const oversizedOffset = buildRailFollowTrack(subject, FPS, rail, { pitchOffsetDeg: 100 });
+	const maxOffset = buildRailFollowTrack(subject, FPS, rail, { pitchOffsetDeg: 30 });
+	ok("pitch safety clamp stays within ±85°", clamped.every((sample) => Math.abs(sample.pitch) <= (85 * Math.PI) / 180 + EPS));
+	ok("pitch input clamps to the authored ±30° range", oversizedOffset.every((sample, i) => sample.pitch === maxOffset[i].pitch));
+
+	const raised = buildRailFollowTrack(subject, FPS, rail, { height: 2.4 });
+	ok("height changes rig position independently of pitch offset", raised.every((sample, i) => sample.pos.y !== plus[i].pos.y && plus[i].pos.y === zero[i].pos.y));
+}
+
+{
 	// subject walks past the rail's end: s clamps, no teleport, aim keeps up
 	const walkLong = straightWalk(12);
 	const rail = buildRail([{ x: -2, z: 0 }, { x: -2, z: 4 }]);
-	const track = buildRailFollowTrack(walkLong, FPS, rail);
+	// nearest recreates the pre-head-mode opening mark; this contract isolates
+	// the pinned-dolly pan behaviour from the separately tested start modes.
+	const track = buildRailFollowTrack(walkLong, FPS, rail, { railStartMode: "nearest" });
 	// the spring converges asymptotically, so "pinned" means within a hand's
 	// width of the buffer, not bit-exact
 	ok("a too-short rail pins the dolly at its end", track.at(-1).s > rail.length - 0.1, String(track.at(-1).s));
