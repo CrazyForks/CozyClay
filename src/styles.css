@@ -121,17 +121,22 @@ select {
 	justify-self: start;
 }
 
-.pwa-actions {
-	position: relative;
+.topbar-actions {
 	grid-column: 3;
 	justify-self: end;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.pwa-actions {
+	position: relative;
 }
 
 .locale-toggle {
 	display: inline-flex;
 	align-items: center;
 	height: 28px;
-	margin-right: 6px;
 	padding: 0 10px;
 	border: 1px solid var(--line2);
 	border-radius: 2px;

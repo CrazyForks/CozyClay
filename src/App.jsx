@@ -2830,9 +2830,10 @@ globalThis.playMode = centerTab === "play";
 						Cozy <span>Clay</span>
 					</span>
 				</div>
-				<InstallApp />
-				<LocaleToggle />
-
+				<div className="topbar-actions">
+					<LocaleToggle />
+					<InstallApp />
+				</div>
 			</header>
 
 			<div className="main" style={workspaceStyle}>
