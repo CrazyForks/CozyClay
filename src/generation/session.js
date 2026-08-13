@@ -5,8 +5,8 @@ const TERMINAL = new Set(["succeeded", "failed"]);
 export async function runGeneration(spec, {
   signal,
   timeoutMs = 10 * 60 * 1000,
-  initialDelayMs = 1000,
-  maxDelayMs = 10000,
+  initialDelayMs = 5000,
+  maxDelayMs = 30000,
   validate = validateGeneration,
   submit = submitGeneration,
   poll = getGenerationJob,
@@ -19,11 +19,13 @@ export async function runGeneration(spec, {
   const timeout = AbortSignal.timeout(timeoutMs);
   const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
   const update = (state) => { onUpdate(state); return state; };
+  let job = null;
+  let validation = null;
   try {
     update({ status: "validating", job: null, error: null });
-    const validation = await validate(spec, { signal: combined });
+    validation = await validate(spec, { signal: combined });
     update({ status: "submitting", job: null, validation, error: null });
-    let job = await submit(spec, { signal: combined });
+    job = await submit(spec, { signal: combined });
     update({ status: job.status, job, validation, error: null });
     let delay = initialDelayMs;
     while (!TERMINAL.has(job.status)) {
@@ -37,7 +39,7 @@ export async function runGeneration(spec, {
   } catch (error) {
     const timedOut = timeout.aborted && !signal?.aborted;
     const canceled = signal?.aborted;
-    update({ status: timedOut ? "timed_out" : canceled ? "canceled" : "failed", job: null, error: error?.message || String(error) });
+    update({ status: timedOut ? "timed_out" : canceled ? "canceled" : "failed", job, validation, error: error?.message || String(error) });
     throw error;
   }
 }

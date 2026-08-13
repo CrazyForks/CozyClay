@@ -82,6 +82,7 @@ import {
 } from "./ardy/ik.js";
 import { Dropdown, Field, Slider, Toast, Vector3Row } from "./ui.jsx";
 import { RENDER_ACTIVITY_EVENT, useRenderActivity } from "./use-render-activity.js";
+import { useGeneration } from "./generation/use-generation.js";
 import {
 	CAMERA_MOVES,
 	CUSTOM_MOVE,
@@ -1401,6 +1402,7 @@ globalThis.playMode = centerTab === "play";
 	const [mode, setMode] = useState("image");
 	const [imageModel, setImageModel] = useState("gpt_image_2");
 	const [videoModel, setVideoModel] = useState("seedance_2");
+	const generation = useGeneration();
 	const [cameraMove, setCameraMove] = useState(CAMERA_MOVES[1]);
 	const [customMove, setCustomMove] = useState("");
 	// Authored shot state (camera keys, waypoints, clip length) restored from
@@ -2456,8 +2458,8 @@ globalThis.playMode = centerTab === "play";
 			.catch(() => {});
 	}
 
-	function generate() {
-		const models = mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
+	async function generate() {
+		const models = mode === "video" && generation.models.length ? generation.models : mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
 		const model = models.find((m) => m.id === (mode === "video" ? videoModel : imageModel));
 		// An authored keyframe move outranks the dropdown: the phrase is derived
 		// from the framings, and the exported frames become first/last conditioning.
@@ -2486,11 +2488,19 @@ globalThis.playMode = centerTab === "play";
 			const buffer = captureRef.current?.render();
 			frame = buffer ? bufferToPng(buffer) : null;
 		}
-		setResult({ prompt, frame, frameB, move: movePlan, mode, modelLabel: model?.label, downloaded: false });
+		const nextResult = { prompt, frame, frameB, move: movePlan, mode, modelLabel: model?.label, downloaded: false };
+		setResult(nextResult);
 		setResultOpen(true);
 		setCopied(false);
 		setRecordedVideoName(null);
 		copyPrompt(prompt);
+		if (mode === "video" && generation.models.some((candidate) => candidate.id === model?.id && candidate.provider === model?.provider)) {
+			try {
+				await generation.startResult(nextResult, model);
+			} catch (error) {
+				setToast(error?.message || String(error));
+			}
+		}
 	}
 
 	function download() {
@@ -2897,7 +2907,12 @@ globalThis.playMode = centerTab === "play";
 		ardyAbortRef.current?.abort();
 	}
 
-	const models = mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
+	const models = mode === "video" && generation.models.length ? generation.models : mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
+	useEffect(() => {
+		if (mode === "video" && generation.models.length && !generation.models.some((model) => model.id === videoModel)) {
+			setVideoModel(generation.models[0].id);
+		}
+	}, [mode, videoModel, generation.models]);
 
 	return (
 		<div className={"app" + (renderActive ? "" : " render-idle")}>
@@ -4200,11 +4215,13 @@ globalThis.playMode = centerTab === "play";
 			{result && resultOpen && (
 				<ResultModal
 					result={result}
+					generation={generation.state}
 					copied={copied}
 					recordedVideoName={result.mode === "video" ? recordedVideoName : null}
 					onClose={() => setResultOpen(false)}
 					onCopy={() => copyPrompt(result.prompt)}
 					onDownload={download}
+					onCancelGeneration={generation.cancel}
 				/>
 			)}
 

@@ -1,6 +1,6 @@
 import { ko, isKo } from "./locale.js";
 
-export default function ResultModal({ result, copied, recordedVideoName, onClose, onCopy, onDownload }) {
+export default function ResultModal({ result, generation, copied, recordedVideoName, onClose, onCopy, onDownload, onCancelGeneration }) {
 	const isVideo = result.mode === "video";
 	const modelLabel = result.modelLabel ?? (isVideo ? ko("your selected video model", "선택한 영상 모델") : ko("your selected image model", "선택한 이미지 모델"));
 	const hasFrame = Boolean(result.frame);
@@ -67,6 +67,18 @@ export default function ResultModal({ result, copied, recordedVideoName, onClose
 				)}
 				<label className="modal-label">{ko("Prompt", "프롬프트")} {copied && <em>· {ko("copied", "복사됨")}</em>}</label>
 				<div className="promptbox">{result.prompt}</div>
+				{isVideo && generation?.status !== "idle" && (
+					<div className="result-generation" aria-live="polite">
+						{generation.status === "succeeded" && generation.job?.outputUrl ? (
+							<video className="preview" src={generation.job.outputUrl} controls playsInline />
+						) : (
+							<p>{generation.error || ko(`Video generation: ${generation.status}`, `영상 생성: ${generation.status}`)}</p>
+						)}
+						{["validating", "submitting", "processing"].includes(generation.status) && (
+							<button type="button" className="btn" onClick={onCancelGeneration}>{ko("Cancel generation", "생성 취소")}</button>
+						)}
+					</div>
+				)}
 				<div className="modal-actions">
 					<button type="button" className="btn" onClick={onCopy}>
 						{copied ? ko("Copied ✓", "복사됨 ✓") : ko("Copy prompt", "프롬프트 복사")}
