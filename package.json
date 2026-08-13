@@ -10,6 +10,7 @@
 		"test:hierarchy": "node test/verify-hierarchy.mjs",
 		"test:history": "node test/verify-history.mjs",
 		"test:scene-objects": "node test/verify-scene-objects.mjs",
+		"test:scenes": "node test/verify-scenes.mjs",
 		"test:camera-move": "node test/verify-camera-move.mjs",
 		"test:cuts": "node test/verify-cuts.mjs",
 		"test:objects": "node tools/qa-browser.mjs -- node test/verify-object-gizmo.mjs",
@@ -29,6 +30,7 @@
 		"test:camera-follow": "node test/verify-camera-follow.mjs",
 		"test:pwa": "node test/verify-pwa.mjs",
 		"test:localization": "node test/verify-korean-ui.mjs",
+		"test:korean-ui": "node test/verify-korean-ui.mjs",
 		"prepack": "npm run build"
 	},
 	"license": "GPL-3.0-or-later",

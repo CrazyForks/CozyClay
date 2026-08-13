@@ -5,7 +5,7 @@ import { sceneObjectIdFromHierarchy } from "./scene-objects.js";
 import AddObjectMenu, { CatalogueEntries, displayObjectLabel } from "./object-catalog.jsx";
 
 const HIERARCHY_LABELS_KO = {
-	"SHOT 01": "샷 01",
+	"SCENE 01": "장면 01",
 	Camera: "카메라",
 	Characters: "캐릭터",
 	"Character 1": "캐릭터 1",
@@ -20,6 +20,104 @@ const HIERARCHY_LABELS_KO = {
 	Environment: "환경",
 	Props: "소품",
 };
+
+const FALLBACK_SCENES = [{ id: "current-scene", name: "SCENE 01" }];
+
+function displaySceneName(name) {
+	if (!isKo) return name;
+	const generatedName = /^SCENE\s+(\d+)$/i.exec(name);
+	return generatedName ? ko(`Scene ${generatedName[1]}`, `장면 ${generatedName[1]}`) : name;
+}
+
+/**
+ * Scene document boundary contract:
+ * - `scenes` contains lightweight `{ id, name }` records.
+ * - callbacks request document changes; this panel never owns or mutates scenes.
+ *
+ * A compact document selector sits above the entity tree instead of mixing
+ * every Scene into one tree. This keeps the current set readable and leaves
+ * Shot authoring in the timeline, where directors expect to find it.
+ */
+function SceneSwitcher({
+	scenes,
+	activeSceneId,
+	onSceneSelect,
+	onSceneCreate,
+	onSceneDuplicate,
+	onSceneRename,
+	onSceneDelete,
+}) {
+	const availableScenes = scenes?.length ? scenes : FALLBACK_SCENES;
+	const selectedId = availableScenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : availableScenes[0].id;
+	const selectedScene = availableScenes.find((scene) => scene.id === selectedId);
+	const [editingId, setEditingId] = useState(null);
+
+	const commitRename = (scene, value) => {
+		setEditingId(null);
+		const name = value.trim();
+		if (name && name !== scene.name) onSceneRename?.(scene.id, name);
+	};
+	const requestDelete = () => {
+		if (availableScenes.length <= 1 || !selectedScene) return;
+		const message = ko(`Delete scene “${selectedScene.name}”? This cannot be undone.`, `“${displaySceneName(selectedScene.name)}” 장면을 삭제할까요? 이 작업은 되돌릴 수 없습니다.`);
+		if (window.confirm(message)) onSceneDelete?.(selectedScene.id);
+	};
+
+	return (
+		<div className="scene-switcher" aria-label={ko("Scene documents", "장면 문서") }>
+			<div className="scene-switcher-heading">
+				<div>
+					<strong>{ko("Scenes", "장면")}</strong>
+					<span>{isKo ? `${availableScenes.length}개 장면` : `${availableScenes.length} scene${availableScenes.length === 1 ? "" : "s"}`}</span>
+				</div>
+				<button type="button" className="scene-create-button" onClick={() => onSceneCreate?.()}>
+					{ko("+ New Scene", "+ 새 장면")}
+				</button>
+			</div>
+			<div className="scene-list" role="listbox" aria-label={ko("Select scene", "장면 선택")}>
+				{availableScenes.map((scene) => {
+					const active = scene.id === selectedId;
+					return (
+						<div key={scene.id} className={`scene-list-item${active ? " active" : ""}`}>
+							{editingId === scene.id ? (
+								<input
+									className="scene-rename-input"
+									defaultValue={scene.name}
+									autoFocus
+									aria-label={ko("Rename scene", "장면 이름 바꾸기")}
+									onFocus={(event) => event.currentTarget.select()}
+									onBlur={(event) => commitRename(scene, event.currentTarget.value)}
+									onKeyDown={(event) => {
+										if (event.key === "Enter") event.currentTarget.blur();
+										else if (event.key === "Escape") setEditingId(null);
+									}}
+								/>
+							) : (
+								<button
+									type="button"
+									role="option"
+									aria-selected={active}
+									onClick={() => onSceneSelect?.(scene.id)}
+									onDoubleClick={() => setEditingId(scene.id)}
+								>
+									<span className="scene-document-icon" aria-hidden="true" />
+									<span>{displaySceneName(scene.name)}</span>
+								</button>
+							)}
+						</div>
+					);
+				})}
+			</div>
+			<div className="scene-actions">
+				<button type="button" onClick={() => selectedScene && onSceneDuplicate?.(selectedScene.id)}>{ko("Duplicate", "복제")}</button>
+				<button type="button" onClick={() => selectedScene && setEditingId(selectedScene.id)}>{ko("Rename", "이름 바꾸기")}</button>
+				<button type="button" disabled={availableScenes.length <= 1} onClick={requestDelete} title={availableScenes.length <= 1 ? ko("At least one scene is required", "장면은 최소 하나 필요합니다") : undefined}>
+					{ko("Delete", "삭제")}
+				</button>
+			</div>
+		</div>
+	);
+}
 
 function displayHierarchyLabel(node) {
 	if (node.kind === "object") return displayObjectLabel(node.label);
@@ -202,6 +300,13 @@ export default function HierarchyPanel({
 	onDuplicateObject,
 	onDeleteObject,
 	onFrameObject,
+	scenes,
+	activeSceneId,
+	onSceneSelect,
+	onSceneCreate,
+	onSceneDuplicate,
+	onSceneRename,
+	onSceneDelete,
 }) {
 	const [expanded, setExpanded] = useState(() => new Set(["shot", "characters", "characterA"]));
 	const [contextMenu, setContextMenu] = useState(null);
@@ -351,14 +456,23 @@ export default function HierarchyPanel({
 		});
 
 	return (
-		<section className="hierarchy-pane" aria-label={ko("Shot hierarchy", "샷 계층")}>
+		<section className="hierarchy-pane" aria-label={ko("Scene hierarchy", "장면 계층")}>
 			<div className="hierarchy-heading">
 				<div>
 					<span className="hierarchy-kicker">{ko("Hierarchy", "계층")}</span>
-					<strong>{ko("Shot structure", "샷 구조")}</strong>
+					<strong>{ko("Scene structure", "장면 구조")}</strong>
 				</div>
 				<span className="hierarchy-frame-status">{motionFrames ? (isKo ? `${motionFrames}프레임` : `${motionFrames} frames`) : ko("Blocking", "블로킹")}</span>
 			</div>
+			<SceneSwitcher
+				scenes={scenes}
+				activeSceneId={activeSceneId}
+				onSceneSelect={onSceneSelect}
+				onSceneCreate={onSceneCreate}
+				onSceneDuplicate={onSceneDuplicate}
+				onSceneRename={onSceneRename}
+				onSceneDelete={onSceneDelete}
+			/>
 			{onAddObject && (
 				<div className="hierarchy-toolbar">
 					<AddObjectMenu onAdd={onAddObject} />
