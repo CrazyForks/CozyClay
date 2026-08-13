@@ -51,6 +51,8 @@ function SceneSwitcher({
 	const selectedId = availableScenes.some((scene) => scene.id === activeSceneId) ? activeSceneId : availableScenes[0].id;
 	const selectedScene = availableScenes.find((scene) => scene.id === selectedId);
 	const [editingId, setEditingId] = useState(null);
+	const [deleteArmed, setDeleteArmed] = useState(false);
+	useEffect(() => setDeleteArmed(false), [selectedId, availableScenes.length]);
 
 	const commitRename = (scene, value) => {
 		setEditingId(null);
@@ -59,8 +61,12 @@ function SceneSwitcher({
 	};
 	const requestDelete = () => {
 		if (availableScenes.length <= 1 || !selectedScene) return;
-		const message = ko(`Delete scene “${selectedScene.name}”? This cannot be undone.`, `“${displaySceneName(selectedScene.name)}” 장면을 삭제할까요? 이 작업은 되돌릴 수 없습니다.`);
-		if (window.confirm(message)) onSceneDelete?.(selectedScene.id);
+		if (!deleteArmed) {
+			setDeleteArmed(true);
+			return;
+		}
+		setDeleteArmed(false);
+		onSceneDelete?.(selectedScene.id);
 	};
 
 	return (
@@ -111,8 +117,8 @@ function SceneSwitcher({
 			<div className="scene-actions">
 				<button type="button" onClick={() => selectedScene && onSceneDuplicate?.(selectedScene.id)}>{ko("Duplicate", "복제")}</button>
 				<button type="button" onClick={() => selectedScene && setEditingId(selectedScene.id)}>{ko("Rename", "이름 바꾸기")}</button>
-				<button type="button" disabled={availableScenes.length <= 1} onClick={requestDelete} title={availableScenes.length <= 1 ? ko("At least one scene is required", "장면은 최소 하나 필요합니다") : undefined}>
-					{ko("Delete", "삭제")}
+				<button type="button" className={deleteArmed ? "danger" : undefined} disabled={availableScenes.length <= 1} onClick={requestDelete} title={availableScenes.length <= 1 ? ko("At least one scene is required", "장면은 최소 하나 필요합니다") : deleteArmed ? ko("Click again to permanently delete this scene", "한 번 더 누르면 이 장면을 완전히 삭제합니다") : undefined}>
+					{deleteArmed ? ko("Confirm delete", "삭제 확인") : ko("Delete", "삭제")}
 				</button>
 			</div>
 		</div>

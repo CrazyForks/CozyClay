@@ -46,8 +46,16 @@ for (const callback of ["onSceneSelect", "onSceneCreate", "onSceneDuplicate", "o
 }
 expect("scene selector is separate from entity tree", panelSource.includes('className="scene-switcher"') && panelSource.includes('className="hierarchy-tree"'));
 expect("scene rename supports double-click", panelSource.includes("onDoubleClick={() => setEditingId(scene.id)}"));
-expect("scene deletion asks for confirmation", panelSource.includes("window.confirm(message)"));
+expect("scene deletion requires a second deliberate click", panelSource.includes("deleteArmed") && panelSource.includes('ko("Confirm delete", "삭제 확인")'));
 expect("last scene deletion is protected", panelSource.includes("disabled={availableScenes.length <= 1}"));
+
+const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+for (const prop of ["scenes={scenes}", "activeSceneId={activeSceneId}", "onSceneSelect={selectSceneDocument}", "onSceneCreate={createSceneDocumentFromUi}", "onSceneDuplicate={duplicateSceneDocumentFromUi}", "onSceneRename={renameSceneDocumentFromUi}", "onSceneDelete={deleteSceneDocumentFromUi}"]) {
+	expect(`App wires ${prop.split("=")[0]}`, appSource.includes(prop));
+}
+expect("App seals shots inside the active Scene", appSource.includes("shotDocument: shotDocumentRef.current"));
+expect("App persists the unified Scene document", appSource.includes("serializeSceneDocument({"));
+expect("Scene switch snapshots outgoing work first", appSource.indexOf("const savedScenes = snapshotActiveScene();", appSource.indexOf("function selectSceneDocument")) < appSource.indexOf("openScene(target, savedScenes);", appSource.indexOf("function selectSceneDocument")));
 
 if (failures) process.exit(1);
 console.log("all hierarchy checks PASS");
