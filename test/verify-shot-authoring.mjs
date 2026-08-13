@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import {
+	createShotAuthoringDocument,
 	loadShotAuthoring,
 	readShotAuthoring,
+	readShotAuthoringDocument,
 	serializeShotAuthoring,
 	SHOT_AUTHORING_KEY,
 	SHOT_AUTHORING_LEGACY_KEY,
@@ -46,9 +48,25 @@ const authored = {
 	followCam: { enabled: true },
 	cameraRail,
 };
+const document = createShotAuthoringDocument(authored);
+assert.deepEqual(Object.keys(document), ["version", "frameCount", "shots", "waypoints"]);
+assert.equal(document.version, 3);
+const objectRestored = readShotAuthoringDocument(document);
+assert.equal(objectRestored.status, "valid");
+assert.deepEqual(objectRestored.state, {
+	frameCount: 300,
+	waypoints: authored.waypoints,
+	shots,
+});
+
+// The object API is location-independent: nesting under Scene is only a caller concern.
+const futureSceneEnvelope = { version: 1, scenes: [{ id: "scene-1", shotDocument: document }] };
+assert.deepEqual(readShotAuthoringDocument(futureSceneEnvelope.scenes[0].shotDocument), objectRestored);
+assert.equal(readShotAuthoringDocument(undefined).status, "absent");
+assert.equal(readShotAuthoringDocument("not-an-object").status, "corrupt");
+
 const raw = serializeShotAuthoring(authored);
-assert.deepEqual(Object.keys(JSON.parse(raw)), ["version", "frameCount", "shots", "waypoints"]);
-assert.equal(JSON.parse(raw).version, 3);
+assert.deepEqual(JSON.parse(raw), document);
 const restored = readShotAuthoring(raw);
 assert.equal(restored.status, "valid");
 assert.equal(restored.state.frameCount, 300);

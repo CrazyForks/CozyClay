@@ -162,22 +162,24 @@ function repairShared(parsed, frameCount) {
 	};
 }
 
-export function serializeShotAuthoring({ shots = [], waypoints = [], frameCount = null }) {
-	const canonicalShots = Array.isArray(shots)
-		? shots.map((shot) => ({ ...shot, camera: repairCamera(shot?.camera) }))
-		: shots;
-	return JSON.stringify({ version: SHOT_AUTHORING_VERSION, frameCount, shots: canonicalShots, waypoints });
+/**
+ * Build a transport-neutral shot document. It can live at the root today or
+ * be nested under a future Scene document without changing its schema.
+ */
+export function createShotAuthoringDocument({ shots = [], waypoints = [], frameCount = null } = {}) {
+	const repairedFrameCount = repairFrameCount(frameCount);
+	const effectiveFrameCount = repairedFrameCount ?? DEFAULT_FRAME_COUNT;
+	return {
+		version: SHOT_AUTHORING_VERSION,
+		frameCount: repairedFrameCount,
+		shots: repairShots(shots, effectiveFrameCount),
+		waypoints: repairWaypoints(waypoints),
+	};
 }
 
-/** Tagged reader used by App so corrupt and future payloads take different paths. */
-export function readShotAuthoring(raw) {
-	if (raw === null || raw === undefined || raw === "") return { status: "absent", state: null };
-	let parsed;
-	try {
-		parsed = JSON.parse(raw);
-	} catch {
-		return { status: "corrupt", state: null };
-	}
+/** Pure object reader; storage adapters decide how bytes become this object. */
+export function readShotAuthoringDocument(parsed) {
+	if (parsed === undefined) return { status: "absent", state: null };
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { status: "corrupt", state: null };
 	const version = parsed.version === undefined ? 1 : parsed.version;
 	if (!Number.isInteger(version) || version < 1) return { status: "corrupt", state: null };
@@ -206,6 +208,20 @@ export function readShotAuthoring(raw) {
 		status: "valid",
 		state: { ...repairShared(parsed, frameCount), shots: repairShots(parsed.shots, effectiveFrameCount) },
 	};
+}
+
+/** JSON compatibility adapters used by App and older model callers. */
+export function serializeShotAuthoring(state) {
+	return JSON.stringify(createShotAuthoringDocument(state));
+}
+
+export function readShotAuthoring(raw) {
+	if (raw === null || raw === undefined || raw === "") return { status: "absent", state: null };
+	try {
+		return readShotAuthoringDocument(JSON.parse(raw));
+	} catch {
+		return { status: "corrupt", state: null };
+	}
 }
 
 /** Compatibility-shaped convenience for model callers and tests. */
