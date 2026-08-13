@@ -17,6 +17,17 @@ function cloneRail(points) {
 	return Array.isArray(points) ? points.map((point) => ({ x: point.x, z: point.z })) : null;
 }
 
+function cloneRailFollow(value) {
+	if (!value || typeof value !== "object") return null;
+	if (value.mode === "off") return { mode: "off" };
+	if (value.mode === "range") return {
+		mode: "range",
+		startFrame: value.startFrame,
+		endFrame: value.endFrame,
+	};
+	return null;
+}
+
 /** Build a complete block from a partial or stored camera value. */
 export function createCameraBlock(input = {}) {
 	const value = input && typeof input === "object" ? input : {};
@@ -24,6 +35,7 @@ export function createCameraBlock(input = {}) {
 		mode: CAMERA_MODES.includes(value.mode) ? value.mode : "keys",
 		followCam: { ...CAMERA_FOLLOW_DEFAULTS, ...(value.followCam ?? {}) },
 		cameraRail: cloneRail(value.cameraRail),
+		railFollow: cloneRailFollow(value.railFollow),
 	};
 }
 
@@ -43,5 +55,6 @@ export function updateCameraBlock(camera, patch = {}) {
 			? { ...current.followCam, ...change.followCam }
 			: current.followCam,
 		cameraRail: Object.hasOwn(change, "cameraRail") ? change.cameraRail : current.cameraRail,
+		railFollow: Object.hasOwn(change, "railFollow") ? change.railFollow : current.railFollow,
 	});
 }

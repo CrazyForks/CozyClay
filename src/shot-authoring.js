@@ -135,6 +135,15 @@ function repairRail(value) {
 	return points.length >= 2 ? points : null;
 }
 
+function repairRailFollow(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	if (value.mode === "off") return { mode: "off" };
+	if (value.mode !== "range" || !finite(value.startFrame) || !finite(value.endFrame)) return null;
+	const startFrame = Math.max(0, Math.round(value.startFrame));
+	const endFrame = Math.max(0, Math.round(value.endFrame));
+	return startFrame <= endFrame ? { mode: "range", startFrame, endFrame } : null;
+}
+
 function repairCamera(value) {
 	const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
 	const cameraRail = repairRail(source.cameraRail);
@@ -142,16 +151,17 @@ function repairCamera(value) {
 	// A rail block without a usable two-point rail behaves like ordinary
 	// follow, never like a mysteriously enabled but motionless dolly.
 	if (mode === "rail" && !cameraRail) mode = "follow";
-	return { mode, followCam: repairFollowCam(source.followCam), cameraRail };
+	return { mode, followCam: repairFollowCam(source.followCam), cameraRail, railFollow: repairRailFollow(source.railFollow) };
 }
 
-function migratedCamera(followCam, cameraRail) {
+function migratedCamera(followCam, cameraRail, railFollow = null) {
 	const rail = repairRail(cameraRail);
 	const enabled = followCam?.enabled === true;
 	return repairCamera({
 		mode: enabled ? (rail ? "rail" : "follow") : "keys",
 		followCam,
 		cameraRail: rail,
+		railFollow,
 	});
 }
 
@@ -189,7 +199,7 @@ export function readShotAuthoringDocument(parsed) {
 	const effectiveFrameCount = frameCount ?? DEFAULT_FRAME_COUNT;
 	if (version === 1) {
 		const keys = repairKeys(parsed.cameraKeys, 0, effectiveFrameCount - 1);
-		const camera = migratedCamera(parsed.followCam, parsed.cameraRail);
+		const camera = migratedCamera(parsed.followCam, parsed.cameraRail, parsed.railFollow);
 		const shots = initialShots(effectiveFrameCount, keys).map((shot) => ({ ...shot, camera: repairCamera(camera) }));
 		return {
 			status: "migrated",
@@ -198,7 +208,7 @@ export function readShotAuthoringDocument(parsed) {
 	}
 	if (!Array.isArray(parsed.shots)) return { status: "corrupt", state: null };
 	if (version === 2) {
-		const camera = migratedCamera(parsed.followCam, parsed.cameraRail);
+		const camera = migratedCamera(parsed.followCam, parsed.cameraRail, parsed.railFollow);
 		return {
 			status: "migrated",
 			state: { ...repairShared(parsed, frameCount), shots: repairShots(parsed.shots, effectiveFrameCount, camera) },

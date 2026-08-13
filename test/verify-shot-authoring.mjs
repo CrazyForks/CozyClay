@@ -29,14 +29,14 @@ const shots = [
 		name: "Wide",
 		startFrame: 0,
 		cameraKeys: [{ frame: 0, framing: framing(40) }],
-		camera: { mode: "keys", followCam, cameraRail: null },
+		camera: { mode: "keys", followCam, cameraRail: null, railFollow: null },
 	},
 	{
 		id: "close",
 		name: "Close",
 		startFrame: 100,
 		cameraKeys: [{ frame: 100, framing: framing(70) }],
-		camera: { mode: "rail", followCam, cameraRail },
+		camera: { mode: "rail", followCam, cameraRail, railFollow: { mode: "range", startFrame: 10, endFrame: 80 } },
 	},
 ];
 
@@ -74,6 +74,7 @@ assert.deepEqual(restored.state.shots, shots);
 assert.deepEqual(restored.state.waypoints, authored.waypoints);
 assert.equal("followCam" in restored.state, false);
 assert.equal("cameraRail" in restored.state, false);
+assert.deepEqual(restored.state.shots[1].camera.railFollow, { mode: "range", startFrame: 10, endFrame: 80 });
 
 // v2 globals become independent camera settings on EVERY repaired shot.
 const v2 = readShotAuthoring(JSON.stringify({
@@ -83,6 +84,7 @@ const v2 = readShotAuthoring(JSON.stringify({
 	waypoints: [],
 	followCam: { enabled: true, ...followCam },
 	cameraRail,
+	railFollow: { mode: "range", startFrame: 20, endFrame: 90 },
 }));
 assert.equal(v2.status, "migrated");
 assert.equal(v2.state.shots.length, 2);
@@ -90,6 +92,7 @@ for (const shot of v2.state.shots) {
 	assert.equal(shot.camera.mode, "rail");
 	assert.deepEqual(shot.camera.followCam, followCam);
 	assert.deepEqual(shot.camera.cameraRail, cameraRail);
+	assert.deepEqual(shot.camera.railFollow, { mode: "range", startFrame: 20, endFrame: 90 });
 }
 assert.notEqual(v2.state.shots[0].camera, v2.state.shots[1].camera);
 assert.notEqual(v2.state.shots[0].camera.followCam, v2.state.shots[1].camera.followCam);
@@ -178,8 +181,23 @@ assert.deepEqual(repaired.shots[0].camera, {
 		pitchOffsetDeg: -30,
 	},
 	cameraRail: null,
+	railFollow: null,
 });
 assert.equal(repaired.shots[1].camera.mode, "keys");
+
+// Rail Follow is part of each self-contained Camera Block, not a v3 global.
+assert.equal("railFollow" in document, false);
+const offRail = loadShotAuthoring(serializeShotAuthoring({
+	frameCount: 100,
+	shots: [{ startFrame: 0, camera: { mode: "rail", cameraRail, railFollow: { mode: "off" } } }],
+}));
+assert.deepEqual(offRail.shots[0].camera.railFollow, { mode: "off" });
+const badRail = loadShotAuthoring(JSON.stringify({
+	version: 3,
+	frameCount: 100,
+	shots: [{ startFrame: 0, camera: { mode: "rail", cameraRail, railFollow: { mode: "range", startFrame: 50, endFrame: 10 } } }],
+}));
+assert.equal(badRail.shots[0].camera.railFollow, null);
 
 // Corrupt/future bytes remain tagged so App can quarantine or preserve them.
 assert.equal(readShotAuthoring(null).status, "absent");

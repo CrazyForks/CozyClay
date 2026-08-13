@@ -2804,7 +2804,7 @@ input[type=range]::-moz-range-thumb {
 	display: flex;
 	align-items: center;
 	gap: 4px;
-	padding: 0 13px 10px;
+	padding: 0 13px 24px;
 	border: 1px solid #735ba0;
 	border-radius: 3px;
 	background: #44365d;
@@ -2994,6 +2994,93 @@ input[type=range]::-moz-range-thumb {
 
 .tl-lane.cam {
 	cursor: crosshair;
+}
+/* Rail Follow is a sub-clip inside its owning Shot block. It shares the same
+   lane and card as keys instead of rebuilding the removed Camera lane. */
+.tl-rail {
+	box-sizing: border-box;
+	position: absolute;
+	top: auto;
+	bottom: 11px;
+	height: 12px;
+	left: calc(var(--tl-f-start) * 100%);
+	width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);
+	/* Above the full-height shot trim handles only within this 12px band, so
+	   a full-range Rail clip can still grab its own start/end handles. */
+	z-index: 4;
+	/* The empty band falls through to the lane's key-on-click; only the three
+	   controls are hit targets. */
+	pointer-events: none;
+}
+.tl-rail-handle,
+.tl-rail-body {
+	pointer-events: auto;
+	touch-action: none;
+}
+.tl-rail-body {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: 8px;
+	right: 8px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	padding: 0 6px;
+	border: 0;
+	border-radius: 4px;
+	background: linear-gradient(103deg, #7c5cbf, #a78bfa);
+	color: #fff;
+	font-size: 9px;
+	font-weight: 700;
+	letter-spacing: .06em;
+	text-transform: uppercase;
+	white-space: nowrap;
+	overflow: hidden;
+	cursor: grab;
+	box-shadow: 0 0 8px rgba(167, 139, 250, .45);
+}
+.tl-rail-body:hover { filter: brightness(1.1); }
+.tl-rail-body:active { cursor: grabbing; }
+.tl-rail-handle {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 8px;
+	padding: 0;
+	border: 0;
+	border-radius: 3px;
+	background: rgba(255, 255, 255, .28);
+	cursor: ew-resize;
+	z-index: 2;
+}
+.tl-rail-handle.start { left: 0; }
+.tl-rail-handle.end { right: 0; }
+.tl-rail.selected .tl-rail-body {
+	outline: 1px solid #cbb7ff;
+	box-shadow: 0 0 12px rgba(167, 139, 250, .7);
+}
+.tl-rail.off { opacity: .62; }
+.tl-rail.off .tl-rail-body {
+	background: linear-gradient(103deg, #3b3f4d, #4a4f5e);
+	box-shadow: none;
+}
+.tl-rail-body:focus-visible,
+.tl-rail-handle:focus-visible {
+	outline: 2px solid #fff;
+	outline-offset: 1px;
+}
+.tl-rail-progress {
+	position: absolute;
+	top: -2px;
+	bottom: -2px;
+	left: calc(var(--tl-rail-p) * 100%);
+	width: 2px;
+	background: #ffe9a8;
+	box-shadow: 0 0 6px rgba(255, 233, 168, .9);
+	pointer-events: none;
+	z-index: 3;
 }
 
 .tl-marker {

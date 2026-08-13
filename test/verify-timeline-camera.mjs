@@ -46,6 +46,11 @@ expect("Scene tab keeps the authoring gates on follow", app.includes("moveFollow
 expect("surface lays out four tracks after removing duplicate Camera row", css.includes("grid-template-rows: 28px repeat(4, minmax(0, 1fr));"));
 expect("lane gridlines are frame-based, not width-based", css.includes(".tl-grid {") && !css.includes("100% / 23"));
 expect("camera dots have a distinct violet identity", css.includes(".tl-marker.cam {") && css.includes("#a78bfa"));
+expect("Rail Follow lives inside each unified Shot block", timeline.includes("shot.camera?.railFollow") && timeline.includes('className={"tl-rail"') && !timeline.includes("name === CAMERA_LANE"));
+expect("Rail Follow keeps move, resize, keyboard and remove editing", ["beginRailMove", "beginRailResize", "onRailKeyDown", "onRailRemove"].every((name) => timeline.includes(name)));
+expect("Rail Follow callbacks target the owning shot", timeline.includes("onRailMove?.(active.shotIndex, next)") && app.includes("editRailSchedule(index"));
+expect("Rail range playback is resolved per shot", app.includes("resolveRailSchedule({ railFollow: camera.railFollow") && app.includes("subjectSlice.slice(schedule.startFrame, schedule.endFrame + 1)"));
+expect("disabled Rail Follow stays visible as OFF", timeline.includes('ko("Rail Follow", "레일 팔로우")') && timeline.includes('ko("OFF", "꺼짐")') && timeline.includes('mode !== "rail"'));
 
 expect(
 	"unified lane renders exactly one block from each shot geometry",

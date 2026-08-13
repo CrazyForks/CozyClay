@@ -26,6 +26,15 @@ import {
 } from "./shot-authoring.js";
 import { buildFollowTrack, buildRail, buildRailFollowTrack, simplifyStroke } from "./camera-follow.js";
 import { createCameraBlock, updateCameraBlock } from "./camera-block.js";
+import {
+	RAIL_SCHEDULE_LEGACY,
+	RAIL_SCHEDULE_RANGE,
+	clampRailRange,
+	defaultRailRange,
+	moveRailRange,
+	resizeRailRange,
+	resolveRailSchedule,
+} from "./camera-rail-schedule.js";
 import { SetProps } from "./props.jsx";
 import {
 	DEFAULT_SCENE_OBJECTS,
@@ -1440,6 +1449,7 @@ globalThis.playMode = centerTab === "play";
 	const activeCamera = createCameraBlock(activeShot?.camera);
 	const followCam = activeCamera.followCam;
 	const cameraRail = activeCamera.cameraRail;
+	const activeShotDuration = (shots[activeShotIdx + 1]?.startFrame ?? tlFrameCount) - (activeShot?.startFrame ?? 0);
 	const hasCameraKeys = shots.some((shot) => shot.cameraKeys.length > 0);
 	function changeActiveCamera(patch, index = activeShotIdx) {
 		setShots((current) => current.map((shot, shotIndex) => shotIndex === index
@@ -1452,8 +1462,22 @@ globalThis.playMode = centerTab === "play";
 	function changeCameraRail(points) {
 		changeActiveCamera({
 			cameraRail: points,
+			railFollow: points ? (activeCamera.railFollow ?? defaultRailRange(activeShotDuration)) : null,
 			mode: points ? "rail" : activeCamera.mode === "rail" ? "follow" : activeCamera.mode,
 		});
+	}
+	function editRailSchedule(index, edit) {
+		setShots((current) => current.map((shot, shotIndex) => {
+			if (shotIndex !== index) return shot;
+			const camera = createCameraBlock(shot.camera);
+			const duration = (current[shotIndex + 1]?.startFrame ?? tlFrameCount) - shot.startFrame;
+			const resolved = resolveRailSchedule({ railFollow: camera.railFollow, cameraRail: camera.cameraRail, frameCount: duration });
+			const base = resolved.kind === RAIL_SCHEDULE_RANGE || resolved.kind === RAIL_SCHEDULE_LEGACY
+				? { startFrame: resolved.startFrame, endFrame: resolved.endFrame }
+				: defaultRailRange(duration);
+			const railFollow = base ? edit(base, duration) : null;
+			return railFollow ? { ...shot, camera: updateCameraBlock(camera, { railFollow: { mode: "range", ...railFollow } }) } : shot;
+		}));
 	}
 	const frameCountRef = useRef(DEFAULT_DURATION_S * 20);
 	frameCountRef.current = tlFrameCount;
@@ -1470,6 +1494,24 @@ globalThis.playMode = centerTab === "play";
 		setActiveWaypointFrame((current) => (current === 0 ? null : current));
 		setPendingWaypointFrame((current) => (current === 0 ? null : current));
 	}, []);
+
+	// Shot trims also trim their local Rail Follow card once. Growing a shot
+	// later never resurrects time that the editor already cut away.
+	useEffect(() => {
+		setShots((current) => {
+			let changed = false;
+			const next = current.map((shot, index) => {
+				const railFollow = shot.camera?.railFollow;
+				if (railFollow?.mode !== "range") return shot;
+				const duration = (current[index + 1]?.startFrame ?? tlFrameCount) - shot.startFrame;
+				const clamped = clampRailRange(railFollow, duration);
+				if (!clamped || (clamped.startFrame === railFollow.startFrame && clamped.endFrame === railFollow.endFrame)) return shot;
+				changed = true;
+				return { ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "range", ...clamped } }) };
+			});
+			return changed ? next : current;
+		});
+	}, [tlFrameCount, shots.map((shot) => shot.startFrame).join(":")]);
 
 	/* --------------------------- Scene documents --------------------------- */
 	// Refs make a Scene switch synchronous: the outgoing room is sealed with
@@ -2444,10 +2486,16 @@ globalThis.playMode = centerTab === "play";
 			const subjectSlice = subjectTrack.slice(start, end);
 			const params = { ...camera.followCam, initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) } };
 			const rail = camera.mode === "rail" ? buildRail(camera.cameraRail) : null;
-			const track = rail
-				? buildRailFollowTrack(subjectSlice, tlFps, rail, params)
-				: buildFollowTrack(subjectSlice, tlFps, params);
-			track.forEach((sample, offset) => { combined[start + offset] = sample; });
+			if (rail) {
+				const schedule = resolveRailSchedule({ railFollow: camera.railFollow, cameraRail: camera.cameraRail, frameCount: subjectSlice.length });
+				if (schedule.kind !== RAIL_SCHEDULE_RANGE && schedule.kind !== RAIL_SCHEDULE_LEGACY) continue;
+				const railSlice = subjectSlice.slice(schedule.startFrame, schedule.endFrame + 1);
+				const track = buildRailFollowTrack(railSlice, tlFps, rail, params);
+				track.forEach((sample, offset) => { combined[start + schedule.startFrame + offset] = sample; });
+			} else {
+				const track = buildFollowTrack(subjectSlice, tlFps, params);
+				track.forEach((sample, offset) => { combined[start + offset] = sample; });
+			}
 		}
 		return combined;
 	}, [shots, subjectTrack, tlFps, charA.rot]);
@@ -4328,13 +4376,26 @@ globalThis.playMode = centerTab === "play";
 						setSidebarTab("motion");
 					}}
 					onCameraBlockChange={(patch) => {
-						changeActiveCamera(patch);
+						const nextPatch = patch.mode === "rail" && activeCamera.railFollow?.mode === "off"
+							? { ...patch, railFollow: defaultRailRange(activeShotDuration) }
+							: patch;
+						changeActiveCamera(nextPatch);
 						if (patch.mode === "rail" && !cameraRail) {
 							setRailDraw(true);
 							setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
 							setToast(ko("Draw this Camera Block's rail in the Top-View", "탑뷰에서 이 카메라 블록의 레일을 그리세요"));
 						}
 					}}
+					onRailSelect={(index) => {
+						selectTimelineShot(index);
+						setSelectedHierarchyId("camera");
+						setSidebarTab("motion");
+					}}
+					onRailMove={(index, startFrame) => editRailSchedule(index, (base, duration) => moveRailRange(base, startFrame - base.startFrame, duration))}
+					onRailRangeChange={(index, edge, frame) => editRailSchedule(index, (base, duration) => resizeRailRange(base, edge, frame, duration))}
+					onRailRemove={(index) => setShots((current) => current.map((shot, shotIndex) => shotIndex === index
+						? { ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "off" } }) }
+						: shot))}
 				onShotSelect={selectTimelineShot}
 				onShotBoundaryMove={(index, frame) => setShots((current) => moveBoundary(current, index, frame, tlFrameCount))}
 				onShotRename={(index, name) => setShots((current) => renameShot(current, index, name))}

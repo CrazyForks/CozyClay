@@ -210,6 +210,10 @@ export default function Timeline({
 	onCameraKeyframeRemove,
 	onCameraBlockSelect,
 	onCameraBlockChange,
+	onRailSelect,
+	onRailMove,
+	onRailRangeChange,
+	onRailRemove,
 	onShotSelect,
 	onShotBoundaryMove,
 	onShotRename,
@@ -238,7 +242,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotEndResize, onShotMove };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotEndResize, onShotMove };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -385,6 +389,9 @@ export default function Timeline({
 	const shotBoundaryRef = useRef(null);
 	const shotMoveRef = useRef(null);
 	const shotSuppressClickRef = useRef(false);
+	const railDragRef = useRef(null);
+	const railResizeRef = useRef(null);
+	const railSuppressClickRef = useRef(false);
 
 	function beginPromptMove(e, clip) {
 		if (e.button !== 0 || e.target.closest(".tl-chip-handle")) return;
@@ -539,6 +546,84 @@ export default function Timeline({
 		e.stopPropagation();
 		selectUnifiedShotBlock(shotIndex);
 		handlers.current.onScrub?.(keyFrame);
+	}
+
+	function beginRailMove(e, shotIndex, range, duration) {
+		if (e.button !== 0) return;
+		e.stopPropagation();
+		handlers.current.onRailSelect?.(shotIndex);
+		const lane = e.currentTarget.closest(".tl-lane");
+		const rect = lane?.getBoundingClientRect();
+		railDragRef.current = { shotIndex, pointerId: e.pointerId, startClientX: e.clientX, startFrame: range.start, length: range.end - range.start + 1, duration, laneWidth: rect?.width ?? 1, moved: false };
+	}
+
+	function moveRail(e) {
+		const active = railDragRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		if (!active.moved && Math.abs(e.clientX - active.startClientX) < 4) return;
+		active.moved = true;
+		e.preventDefault();
+		e.stopPropagation();
+		e.currentTarget.setPointerCapture?.(e.pointerId);
+		const delta = Math.round((e.clientX - active.startClientX) * Math.max(0, displayFrameCount - 1) / Math.max(1, active.laneWidth));
+		const next = Math.max(0, Math.min(active.duration - active.length, active.startFrame + delta));
+		handlers.current.onRailMove?.(active.shotIndex, next);
+	}
+
+	function endRailMove(e) {
+		const active = railDragRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		if (active.moved) {
+			e.preventDefault();
+			e.stopPropagation();
+			railSuppressClickRef.current = true;
+			queueMicrotask(() => { railSuppressClickRef.current = false; });
+		}
+		railDragRef.current = null;
+		e.currentTarget.releasePointerCapture?.(e.pointerId);
+	}
+
+	function beginRailResize(e, shotIndex, edge, range, duration) {
+		if (e.button !== 0) return;
+		e.preventDefault();
+		e.stopPropagation();
+		e.currentTarget.setPointerCapture?.(e.pointerId);
+		handlers.current.onRailSelect?.(shotIndex);
+		const lane = e.currentTarget.closest(".tl-lane");
+		const rect = lane?.getBoundingClientRect();
+		railResizeRef.current = { shotIndex, edge, pointerId: e.pointerId, startClientX: e.clientX, startFrame: edge === "start" ? range.start : range.end, duration, laneWidth: rect?.width ?? 1 };
+	}
+
+	function moveRailResize(e) {
+		const active = railResizeRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		e.preventDefault();
+		e.stopPropagation();
+		const delta = Math.round((e.clientX - active.startClientX) * Math.max(0, displayFrameCount - 1) / Math.max(1, active.laneWidth));
+		const next = Math.max(0, Math.min(active.duration - 1, active.startFrame + delta));
+		handlers.current.onRailRangeChange?.(active.shotIndex, active.edge, next);
+	}
+
+	function endRailResize(e) {
+		if (!railResizeRef.current || e.pointerId !== railResizeRef.current.pointerId) return;
+		railResizeRef.current = null;
+		e.currentTarget.releasePointerCapture?.(e.pointerId);
+	}
+
+	function onRailKeyDown(e, shotIndex, range, duration) {
+		const edge = e.currentTarget.dataset.railEdge;
+		if (e.key === "Delete" || e.key === "Backspace") {
+			e.preventDefault();
+			e.stopPropagation();
+			handlers.current.onRailRemove?.(shotIndex);
+			return;
+		}
+		if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+		e.preventDefault();
+		e.stopPropagation();
+		const delta = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1);
+		if (edge === "body") handlers.current.onRailMove?.(shotIndex, Math.max(0, Math.min(duration - (range.end - range.start + 1), range.start + delta)));
+		else handlers.current.onRailRangeChange?.(shotIndex, edge, Math.max(0, Math.min(duration - 1, (edge === "start" ? range.start : range.end) + delta)));
 	}
 
 	function beginShotBoundaryDrag(e, boundaryIndex, timelineEnd = false) {
@@ -877,6 +962,19 @@ export default function Timeline({
 											: mode === "follow"
 												? `${Number(follow.distance).toFixed(1)} m · PITCH ${signedDegrees(follow.pitchOffsetDeg)}`
 												: null;
+										const durationFrames = lastFrame - shot.startFrame + 1;
+										const railAvailable = Array.isArray(shot.camera?.cameraRail) && shot.camera.cameraRail.length >= 2 && durationFrames >= 10;
+										const storedRail = shot.camera?.railFollow;
+										const railRange = railAvailable
+											? storedRail?.mode === "range"
+												? { start: Math.max(0, Math.min(durationFrames - 1, storedRail.startFrame)), end: Math.max(0, Math.min(durationFrames - 1, storedRail.endFrame)) }
+												: { start: 0, end: durationFrames - 1 }
+											: null;
+										const railOff = storedRail?.mode === "off" || mode !== "rail";
+										const localProgress = frame - shot.startFrame;
+										const railProgress = !railOff && railRange && localProgress >= railRange.start && localProgress <= railRange.end
+											? (localProgress - railRange.start) / Math.max(1, railRange.end - railRange.start)
+											: null;
 										return (
 											<div
 												key={shot.id}
@@ -941,6 +1039,23 @@ export default function Timeline({
 													<b>{modeLabel}</b>
 													{detailLabel && <small>{detailLabel}</small>}
 												</span>
+												{railRange && (
+													<div
+														role="group"
+														aria-label={ko(`Rail follow range for ${shot.name}`, `${shot.name} 레일 팔로우 구간`)}
+														className={"tl-rail" + (index === cameraBlockIdx ? " selected" : "") + (railOff ? " off" : "")}
+														style={{ "--tl-f-start": railRange.start / Math.max(1, durationFrames - 1), "--tl-f-end": railRange.end / Math.max(1, durationFrames - 1) }}
+														onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handlers.current.onRailRemove?.(index); }}
+													>
+														<button type="button" tabIndex={0} data-rail-edge="start" className="tl-rail-handle start" aria-label={ko("Resize rail follow start", "레일 팔로우 시작점 조절")} onKeyDown={(e) => onRailKeyDown(e, index, railRange, durationFrames)} onPointerDown={(e) => beginRailResize(e, index, "start", railRange, durationFrames)} onPointerMove={moveRailResize} onPointerUp={endRailResize} onPointerCancel={endRailResize} />
+														<button type="button" tabIndex={0} data-rail-edge="body" className="tl-rail-body" aria-label={ko("Rail follow — drag to move, right-click to remove", "레일 팔로우 — 드래그로 이동, 오른쪽 클릭으로 삭제")} onKeyDown={(e) => onRailKeyDown(e, index, railRange, durationFrames)} onPointerDown={(e) => beginRailMove(e, index, railRange, durationFrames)} onPointerMove={moveRail} onPointerUp={endRailMove} onPointerCancel={endRailMove} onClick={(e) => { e.stopPropagation(); if (!railSuppressClickRef.current) handlers.current.onRailSelect?.(index); }}>
+															<span className="tl-rail-label">{ko("Rail Follow", "레일 팔로우")}</span>
+															{railOff && <span className="tl-rail-off">{ko("OFF", "꺼짐")}</span>}
+														</button>
+														<button type="button" tabIndex={0} data-rail-edge="end" className="tl-rail-handle end" aria-label={ko("Resize rail follow end", "레일 팔로우 끝점 조절")} onKeyDown={(e) => onRailKeyDown(e, index, railRange, durationFrames)} onPointerDown={(e) => beginRailResize(e, index, "end", railRange, durationFrames)} onPointerMove={moveRailResize} onPointerUp={endRailResize} onPointerCancel={endRailResize} />
+														{railProgress != null && <i className="tl-rail-progress" style={{ "--tl-rail-p": railProgress }} aria-hidden="true" />}
+													</div>
+												)}
 												{/* The card body owns selection/reorder; this narrow empty strip
 												    owns keying. Keeping it a button excludes it from beginShotMove,
 												    so one gesture cannot both reorder a shot and author a key. */}
