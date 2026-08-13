@@ -6,114 +6,174 @@ import {
 	serializeShotAuthoring,
 	SHOT_AUTHORING_KEY,
 	SHOT_AUTHORING_LEGACY_KEY,
+	SHOT_AUTHORING_LEGACY_KEYS,
 	SHOT_AUTHORING_QUARANTINE_KEY,
 } from "../src/shot-authoring.js";
 
 const framing = (fovDeg) => ({ pos: { x: 1, y: 1.6, z: 2.4 }, yaw: 0.2, pitch: -0.1, fovDeg });
+const followCam = {
+	distance: 3.5,
+	height: 1.8,
+	response: 0.6,
+	lead: 0.2,
+	railStartMode: "nearest",
+	maxDollySpeed: 2.4,
+	pitchOffsetDeg: -10,
+};
+const cameraRail = [{ x: -2, z: -1 }, { x: 1, z: 5 }];
 const shots = [
-	{ id: "wide", name: "Wide", startFrame: 0, cameraKeys: [{ frame: 0, framing: framing(40) }] },
-	{ id: "close", name: "Close", startFrame: 100, cameraKeys: [{ frame: 100, framing: framing(70) }] },
+	{
+		id: "wide",
+		name: "Wide",
+		startFrame: 0,
+		cameraKeys: [{ frame: 0, framing: framing(40) }],
+		camera: { mode: "keys", followCam, cameraRail: null },
+	},
+	{
+		id: "close",
+		name: "Close",
+		startFrame: 100,
+		cameraKeys: [{ frame: 100, framing: framing(70) }],
+		camera: { mode: "rail", followCam, cameraRail },
+	},
 ];
 
+// v3 writes only the canonical body and round-trips per-shot camera blocks.
 const authored = {
 	shots,
 	waypoints: [{ frame: 60, x: 1.5, z: -2, heading: null }],
 	frameCount: 300,
-	followCam: {
-		enabled: true,
-		distance: 3.5,
-		height: 1.8,
-		response: 0.6,
-		lead: 0.2,
-		railStartMode: "nearest",
-		maxDollySpeed: 2.4,
-		pitchOffsetDeg: -10,
-	},
-	cameraRail: [{ x: -2, z: -1 }, { x: 1, z: 5 }],
+	followCam: { enabled: true },
+	cameraRail,
 };
-const restored = loadShotAuthoring(serializeShotAuthoring(authored));
-assert.equal(restored.frameCount, 300);
-assert.deepEqual(restored.shots, shots);
-assert.deepEqual(restored.waypoints, authored.waypoints);
-assert.deepEqual(restored.followCam, authored.followCam);
-assert.deepEqual(restored.cameraRail, authored.cameraRail);
+const raw = serializeShotAuthoring(authored);
+assert.deepEqual(Object.keys(JSON.parse(raw)), ["version", "frameCount", "shots", "waypoints"]);
+assert.equal(JSON.parse(raw).version, 3);
+const restored = readShotAuthoring(raw);
+assert.equal(restored.status, "valid");
+assert.equal(restored.state.frameCount, 300);
+assert.deepEqual(restored.state.shots, shots);
+assert.deepEqual(restored.state.waypoints, authored.waypoints);
+assert.equal("followCam" in restored.state, false);
+assert.equal("cameraRail" in restored.state, false);
 
-const legacy = readShotAuthoring(JSON.stringify({
+// v2 globals become independent camera settings on EVERY repaired shot.
+const v2 = readShotAuthoring(JSON.stringify({
+	version: 2,
+	frameCount: 200,
+	shots: shots.map(({ camera, ...shot }) => shot),
+	waypoints: [],
+	followCam: { enabled: true, ...followCam },
+	cameraRail,
+}));
+assert.equal(v2.status, "migrated");
+assert.equal(v2.state.shots.length, 2);
+for (const shot of v2.state.shots) {
+	assert.equal(shot.camera.mode, "rail");
+	assert.deepEqual(shot.camera.followCam, followCam);
+	assert.deepEqual(shot.camera.cameraRail, cameraRail);
+}
+assert.notEqual(v2.state.shots[0].camera, v2.state.shots[1].camera);
+assert.notEqual(v2.state.shots[0].camera.followCam, v2.state.shots[1].camera.followCam);
+assert.notEqual(v2.state.shots[0].camera.cameraRail, v2.state.shots[1].camera.cameraRail);
+v2.state.shots[0].camera.followCam.distance = 9;
+v2.state.shots[0].camera.cameraRail[0].x = 99;
+assert.equal(v2.state.shots[1].camera.followCam.distance, 3.5);
+assert.equal(v2.state.shots[1].camera.cameraRail[0].x, -2);
+
+// Migration mode is derived from the old enabled flag and usable rail.
+const migrateMode = (enabled, rail) => readShotAuthoring(JSON.stringify({
+	version: 2,
+	frameCount: 100,
+	shots: [{ startFrame: 0, cameraKeys: [] }],
+	followCam: { enabled },
+	cameraRail: rail,
+})).state.shots[0].camera.mode;
+assert.equal(migrateMode(false, cameraRail), "keys");
+assert.equal(migrateMode(true, null), "follow");
+assert.equal(migrateMode(true, [{ x: 0, z: 0 }]), "follow");
+assert.equal(migrateMode(true, cameraRail), "rail");
+
+// A v1 roll follows the same migration rules and arrives as one v3 shot.
+const v1 = readShotAuthoring(JSON.stringify({
 	version: 1,
 	frameCount: 200,
 	cameraKeys: [{ frame: 10, framing: framing(35) }, { frame: 180, framing: framing(80) }],
 	waypoints: [],
 	followCam: { enabled: true, distance: 4 },
 }));
-assert.equal(legacy.status, "migrated");
-assert.equal(legacy.state.shots.length, 1);
-assert.equal(legacy.state.shots[0].startFrame, 0);
-assert.deepEqual(legacy.state.shots[0].cameraKeys.map((key) => key.frame), [10, 180]);
-assert.deepEqual(legacy.state.followCam, {
-	enabled: true,
+assert.equal(v1.status, "migrated");
+assert.equal(v1.state.shots.length, 1);
+assert.deepEqual(v1.state.shots[0].cameraKeys.map((key) => key.frame), [10, 180]);
+assert.equal(v1.state.shots[0].camera.mode, "follow");
+assert.deepEqual(v1.state.shots[0].camera.followCam, {
+	distance: 4,
+	height: 1.6,
+	response: 0.7,
+	lead: 0.25,
 	railStartMode: "head",
 	maxDollySpeed: 4,
 	pitchOffsetDeg: 0,
-	distance: 4,
 });
 
-assert.equal(readShotAuthoring(null).status, "absent");
-assert.equal(readShotAuthoring("{nope").status, "corrupt");
-assert.equal(readShotAuthoring('"hello"').status, "corrupt");
-assert.equal(readShotAuthoring(JSON.stringify({ version: 2, frameCount: 100 })).status, "corrupt");
-assert.equal(readShotAuthoring(JSON.stringify({ version: 99, shots: [] })).status, "future");
-assert.equal(loadShotAuthoring("{nope"), null);
-
+// Invalid v3 block fields are repaired independently without leaking globals.
 const repaired = loadShotAuthoring(JSON.stringify({
-	version: 2,
+	version: 3,
 	frameCount: 100,
 	shots: [
-		{ id: "same", name: " A ", startFrame: 30, cameraKeys: [{ frame: -10, framing: framing(20) }] },
-		{ id: "same", name: "", startFrame: 70, cameraKeys: [{ frame: 999, framing: framing(90) }, { frame: 80, framing: null }] },
-		{ id: "bad", startFrame: "later", cameraKeys: [] },
+		{
+			id: "same",
+			name: " A ",
+			startFrame: 30,
+			cameraKeys: [{ frame: -10, framing: framing(20) }],
+			camera: {
+				mode: "rail",
+				followCam: {
+					distance: 999,
+					lead: -5,
+					railStartMode: "middle",
+					maxDollySpeed: 999,
+					pitchOffsetDeg: -999,
+				},
+				cameraRail: [{ x: 0, z: 0 }, { x: Infinity, z: 1 }],
+			},
+		},
+		{ id: "same", name: "", startFrame: 70, cameraKeys: [{ frame: 999, framing: framing(90) }], camera: { mode: "orbit" } },
 	],
 	waypoints: [{ frame: 3.6, x: 1, z: 2, heading: "north" }, { frame: 2, x: Infinity, z: 0 }],
-	followCam: {
-		enabled: "yes",
-		distance: 999,
-		lead: -5,
-		railStartMode: "middle",
-		maxDollySpeed: 999,
-		pitchOffsetDeg: -999,
-	},
-	cameraRail: [{ x: 0, z: 0 }, { x: Infinity, z: 1 }, { x: 2, z: 2 }],
 }));
 assert.deepEqual(repaired.shots.map((shot) => shot.startFrame), [0, 70]);
-assert.equal(new Set(repaired.shots.map((shot) => shot.id)).size, repaired.shots.length);
+assert.equal(new Set(repaired.shots.map((shot) => shot.id)).size, 2);
 assert.equal(repaired.shots[0].name, "A");
 assert.equal(repaired.shots[0].cameraKeys[0].frame, 0);
 assert.equal(repaired.shots[1].cameraKeys[0].frame, 99);
 assert.deepEqual(repaired.waypoints, [{ frame: 4, x: 1, z: 2, heading: null }]);
-assert.deepEqual(repaired.followCam, {
-	enabled: false,
-	railStartMode: "head",
-	maxDollySpeed: 8,
-	pitchOffsetDeg: -30,
-	distance: 15,
-	lead: 0,
+assert.deepEqual(repaired.shots[0].camera, {
+	mode: "follow",
+	followCam: {
+		distance: 15,
+		height: 1.6,
+		response: 0.7,
+		lead: 0,
+		railStartMode: "head",
+		maxDollySpeed: 8,
+		pitchOffsetDeg: -30,
+	},
+	cameraRail: null,
 });
-assert.deepEqual(repaired.cameraRail, [{ x: 0, z: 0 }, { x: 2, z: 2 }]);
+assert.equal(repaired.shots[1].camera.mode, "keys");
 
-const followDefaults = loadShotAuthoring(JSON.stringify({
-	version: 2,
-	frameCount: 100,
-	shots,
-	followCam: { enabled: false },
-}));
-assert.deepEqual(followDefaults.followCam, {
-	enabled: false,
-	railStartMode: "head",
-	maxDollySpeed: 4,
-	pitchOffsetDeg: 0,
-});
+// Corrupt/future bytes remain tagged so App can quarantine or preserve them.
+assert.equal(readShotAuthoring(null).status, "absent");
+assert.equal(readShotAuthoring("{nope").status, "corrupt");
+assert.equal(readShotAuthoring('"hello"').status, "corrupt");
+assert.equal(readShotAuthoring(JSON.stringify({ version: 3, frameCount: 100 })).status, "corrupt");
+assert.equal(readShotAuthoring(JSON.stringify({ version: 99, shots: [] })).status, "future");
+assert.equal(loadShotAuthoring("{nope"), null);
 
-assert.equal(SHOT_AUTHORING_KEY, "cozyclay.shot-authoring.v2");
-assert.equal(SHOT_AUTHORING_LEGACY_KEY, "cozyclay.shot-authoring.v1");
-assert.equal(SHOT_AUTHORING_QUARANTINE_KEY, "cozyclay.shot-authoring.v2.quarantine");
+assert.equal(SHOT_AUTHORING_KEY, "cozyclay.shot-authoring.v3");
+assert.equal(SHOT_AUTHORING_LEGACY_KEY, "cozyclay.shot-authoring.v2");
+assert.deepEqual(SHOT_AUTHORING_LEGACY_KEYS, ["cozyclay.shot-authoring.v2", "cozyclay.shot-authoring.v1"]);
+assert.equal(SHOT_AUTHORING_QUARANTINE_KEY, "cozyclay.shot-authoring.v3.quarantine");
 
 console.log("all shot-authoring checks PASS");

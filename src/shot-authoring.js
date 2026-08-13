@@ -6,10 +6,16 @@
 
 import { createShot, initialShots } from "./cuts.js";
 
-export const SHOT_AUTHORING_VERSION = 2;
-export const SHOT_AUTHORING_KEY = "cozyclay.shot-authoring.v2";
-export const SHOT_AUTHORING_LEGACY_KEY = "cozyclay.shot-authoring.v1";
-export const SHOT_AUTHORING_QUARANTINE_KEY = "cozyclay.shot-authoring.v2.quarantine";
+export const SHOT_AUTHORING_VERSION = 3;
+export const SHOT_AUTHORING_KEY = "cozyclay.shot-authoring.v3";
+// The single-key alias points at the newest legacy body for older callers.
+// New readers should walk the list so a user can still arrive directly from v1.
+export const SHOT_AUTHORING_LEGACY_KEY = "cozyclay.shot-authoring.v2";
+export const SHOT_AUTHORING_LEGACY_KEYS = Object.freeze([
+	SHOT_AUTHORING_LEGACY_KEY,
+	"cozyclay.shot-authoring.v1",
+]);
+export const SHOT_AUTHORING_QUARANTINE_KEY = "cozyclay.shot-authoring.v3.quarantine";
 
 /** clip length sanity bounds, frames @ 20 fps: 1 s .. 20 min */
 const FRAME_COUNT_MIN = 20;
@@ -26,11 +32,16 @@ const FOLLOW_BOUNDS = {
 	maxDollySpeed: [0.2, 8],
 	pitchOffsetDeg: [-30, 30],
 };
-const FOLLOW_FIELD_DEFAULTS = {
+const FOLLOW_DEFAULTS = {
+	distance: 3,
+	height: 1.6,
+	response: 0.7,
+	lead: 0.25,
 	railStartMode: "head",
 	maxDollySpeed: 4,
 	pitchOffsetDeg: 0,
 };
+const CAMERA_MODES = new Set(["keys", "follow", "rail"]);
 
 function validFraming(framing) {
 	return (
@@ -62,7 +73,7 @@ function repairKeys(entries, minFrame, maxFrame) {
 	return [...byFrame.values()].sort((a, b) => a.frame - b.frame);
 }
 
-function repairShots(entries, frameCount) {
+function repairShots(entries, frameCount, inheritedCamera = null) {
 	const candidates = [];
 	for (const entry of Array.isArray(entries) ? entries : []) {
 		if (!entry || typeof entry !== "object" || !finite(entry.startFrame)) continue;
@@ -70,7 +81,9 @@ function repairShots(entries, frameCount) {
 		candidates.push({ entry, startFrame });
 	}
 	candidates.sort((a, b) => a.startFrame - b.startFrame);
-	if (!candidates.length) return initialShots(frameCount);
+	if (!candidates.length) {
+		return initialShots(frameCount).map((shot) => ({ ...shot, camera: repairCamera(inheritedCamera) }));
+	}
 
 	// One boundary per frame. The later stored entry wins, just like re-keying.
 	const byStart = new Map(candidates.map((candidate) => [candidate.startFrame, candidate.entry]));
@@ -90,6 +103,7 @@ function repairShots(entries, frameCount) {
 			name: typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : `Shot ${index + 1}`,
 			startFrame,
 			cameraKeys: repairKeys(entry.cameraKeys, startFrame, endFrame),
+			camera: repairCamera(inheritedCamera ?? entry.camera),
 		};
 	});
 }
@@ -105,15 +119,11 @@ function repairWaypoints(entries) {
 }
 
 function repairFollowCam(value) {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-	const followCam = {
-		enabled: value.enabled === true,
-		railStartMode: value.railStartMode === "nearest" ? "nearest" : FOLLOW_FIELD_DEFAULTS.railStartMode,
-		maxDollySpeed: FOLLOW_FIELD_DEFAULTS.maxDollySpeed,
-		pitchOffsetDeg: FOLLOW_FIELD_DEFAULTS.pitchOffsetDeg,
-	};
+	const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+	const followCam = { ...FOLLOW_DEFAULTS };
+	followCam.railStartMode = source.railStartMode === "nearest" ? "nearest" : FOLLOW_DEFAULTS.railStartMode;
 	for (const [key, [min, max]] of Object.entries(FOLLOW_BOUNDS)) {
-		if (finite(value[key])) followCam[key] = Math.max(min, Math.min(max, value[key]));
+		if (finite(source[key])) followCam[key] = Math.max(min, Math.min(max, source[key]));
 	}
 	return followCam;
 }
@@ -125,17 +135,38 @@ function repairRail(value) {
 	return points.length >= 2 ? points : null;
 }
 
+function repairCamera(value) {
+	const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+	const cameraRail = repairRail(source.cameraRail);
+	let mode = CAMERA_MODES.has(source.mode) ? source.mode : "keys";
+	// A rail block without a usable two-point rail behaves like ordinary
+	// follow, never like a mysteriously enabled but motionless dolly.
+	if (mode === "rail" && !cameraRail) mode = "follow";
+	return { mode, followCam: repairFollowCam(source.followCam), cameraRail };
+}
+
+function migratedCamera(followCam, cameraRail) {
+	const rail = repairRail(cameraRail);
+	const enabled = followCam?.enabled === true;
+	return repairCamera({
+		mode: enabled ? (rail ? "rail" : "follow") : "keys",
+		followCam,
+		cameraRail: rail,
+	});
+}
+
 function repairShared(parsed, frameCount) {
 	return {
 		frameCount,
 		waypoints: repairWaypoints(parsed.waypoints),
-		followCam: repairFollowCam(parsed.followCam),
-		cameraRail: repairRail(parsed.cameraRail),
 	};
 }
 
-export function serializeShotAuthoring({ shots = [], waypoints = [], frameCount = null, followCam = null, cameraRail = null }) {
-	return JSON.stringify({ version: SHOT_AUTHORING_VERSION, frameCount, shots, waypoints, followCam, cameraRail });
+export function serializeShotAuthoring({ shots = [], waypoints = [], frameCount = null }) {
+	const canonicalShots = Array.isArray(shots)
+		? shots.map((shot) => ({ ...shot, camera: repairCamera(shot?.camera) }))
+		: shots;
+	return JSON.stringify({ version: SHOT_AUTHORING_VERSION, frameCount, shots: canonicalShots, waypoints });
 }
 
 /** Tagged reader used by App so corrupt and future payloads take different paths. */
@@ -156,12 +187,21 @@ export function readShotAuthoring(raw) {
 	const effectiveFrameCount = frameCount ?? DEFAULT_FRAME_COUNT;
 	if (version === 1) {
 		const keys = repairKeys(parsed.cameraKeys, 0, effectiveFrameCount - 1);
+		const camera = migratedCamera(parsed.followCam, parsed.cameraRail);
+		const shots = initialShots(effectiveFrameCount, keys).map((shot) => ({ ...shot, camera: repairCamera(camera) }));
 		return {
 			status: "migrated",
-			state: { ...repairShared(parsed, frameCount), shots: initialShots(effectiveFrameCount, keys) },
+			state: { ...repairShared(parsed, frameCount), shots },
 		};
 	}
 	if (!Array.isArray(parsed.shots)) return { status: "corrupt", state: null };
+	if (version === 2) {
+		const camera = migratedCamera(parsed.followCam, parsed.cameraRail);
+		return {
+			status: "migrated",
+			state: { ...repairShared(parsed, frameCount), shots: repairShots(parsed.shots, effectiveFrameCount, camera) },
+		};
+	}
 	return {
 		status: "valid",
 		state: { ...repairShared(parsed, frameCount), shots: repairShots(parsed.shots, effectiveFrameCount) },
