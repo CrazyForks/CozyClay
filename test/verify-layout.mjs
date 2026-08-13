@@ -39,6 +39,7 @@ expect("legacy hierarchy/inspector splitter is removed", !app.includes("hierarch
 expect("bottom window separates Timeline from the ARDY console", app.includes("bottom-window-tabs") && app.includes("console-pane") && app.includes('hidden={bottomTab !== "timeline"}'));
 expect("ARDY status lines accumulate in the console window", app.includes("reportArdyStatus") && app.includes("consoleLines"));
 expect("Motion tab owns the ARDY generation form", app.includes('<Foldout hidden={sidebarTab !== "motion"} title={ko("ARDY motion", "ARDY 모션")}>'));
+expect("Motion tab exposes the camera animation controls", app.includes('sidebarTab === "shot" || sidebarTab === "motion" || (sidebarTab === "inspector" && selectedHierarchyId === "camera")'));
 expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("Generate all ${promptClips.length} blocks"));
 expect("new sessions start without prompt blocks", app.includes("const DEFAULT_PROMPT_CLIPS = [];") && app.includes("useState(null)"));
 expect("new sessions start with an empty motion prompt", app.includes('const [ardyPrompt, setArdyPrompt] = useState("");'));
