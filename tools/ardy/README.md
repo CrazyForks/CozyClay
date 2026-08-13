@@ -28,6 +28,54 @@ Optional overrides:
 SSH must work non-interactively with `BatchMode=yes`. Hardware and device
 selection are operator concerns; pass `--cpu` when CPU generation is desired.
 
+## Token-free text encoder setup
+
+ARDY's default text-encoder stack (LLM2Vec) resolves its base weights to the
+gated `meta-llama/Meta-Llama-3-8B-Instruct` repository, which is why the
+upstream README asks for a Hugging Face account, gated-access approval, and
+a token on the box. None of that is needed: the same stack is available from
+public, ungated repositories, and ARDY already supports loading it from a
+local directory via `TEXT_ENCODERS_DIR`.
+
+```sh
+CCLAY_ARDY_HOST=user@gpu-box tools/ardy/setup-text-encoder-on-box.sh
+```
+
+copies `setup-text-encoder.py` to the box and downloads (~16.4 GB, resumable;
+re-runs only verify and fill gaps):
+
+- `NousResearch/Meta-Llama-3-8B-Instruct` — public mirror of the base
+  weights, every shard verified against a pinned SHA-256
+- `McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp` and `-mntp-supervised`
+  — the two LLM2Vec adapters (MIT)
+
+into `~/cclay-text-encoders` on the box (`CCLAY_ARDY_ENCODERS_DIR`
+overrides), then rewrites each adapter's `base_model_name_or_path` to the
+local base directory so nothing resolves back to the gated repo at runtime.
+All three revisions are pinned to full commit SHAs — the same stack
+nv-tlabs/ardy issue #9 reproduced against — so every install encodes
+prompts byte-identically.
+
+Start the encoder service with the directory exported:
+
+```sh
+ssh $CCLAY_ARDY_HOST
+cd ~/ardy
+TEXT_ENCODERS_DIR=$HOME/cclay-text-encoders \
+  .venv/bin/python scripts/run_text_encoder_server.py
+```
+
+`setup-text-encoder-on-box.sh --verify-only` re-hashes an existing tree
+without downloading. To provision a machine directly (no ssh hop), run
+`python3 tools/ardy/setup-text-encoder.py --dest <dir>` on it; the script is
+stdlib-only.
+
+Licensing: the base weights are Meta Llama 3 (Meta Llama 3 Community
+License; the LICENSE and USE_POLICY.md land next to the weights). CozyClay
+does not redistribute any model files — the script downloads them from
+their public sources to the operator's own machine. Built with Meta Llama 3.
+See `THIRD_PARTY_NOTICES.md`.
+
 ## Where the motions live on the box
 
 - Base (first-pass, unconstrained) motions: `~/ardy/outputs/*.npz` and

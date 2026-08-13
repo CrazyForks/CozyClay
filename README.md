@@ -39,6 +39,19 @@ CCLAY_ARDY_HOST=user@your-gpu-box npx cozyclay
 
 Everything else, staging through camera work and playback, runs without it.
 
+ARDY's text encoder normally requires a Hugging Face account, gated-model
+approval, and an access token on the ARDY machine. CozyClay ships a
+token-free alternative — one command provisions the same encoder stack from
+public repositories, pinned by commit and SHA-256:
+
+```bash
+CCLAY_ARDY_HOST=user@your-gpu-box tools/ardy/setup-text-encoder-on-box.sh
+```
+
+See `tools/ardy/README.md` for details. This workflow is built with Meta
+Llama 3; the encoder's base weights are licensed under the Meta Llama 3
+Community License.
+
 ### From a clone
 
 ```bash
