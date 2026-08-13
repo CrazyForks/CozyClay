@@ -108,6 +108,19 @@ expect(
 	timeline.includes('ko("Look-ahead", "조준 선행")'),
 );
 expect(
+	"timeline editor is the single follow-camera settings surface",
+	!app.includes('<Slider label={ko("Distance", "거리")}') &&
+	!app.includes('<Slider label={ko("Dolly speed", "돌리 속도")}') &&
+	app.includes('className="camera-editor-pointer"') &&
+	timeline.includes('ko("Draw rail", "레일 그리기")') &&
+	timeline.includes('ko("Clear rail", "레일 지우기")'),
+);
+expect(
+	"rail ribbon cannot cover the shot frame range",
+	css.includes(".tl-shot-label {") && css.includes("z-index: 5") &&
+	css.includes(".tl-shot-label small {") && css.includes("background: rgba(68, 54, 93, .86)"),
+);
+expect(
 	"camera editor emits shot-camera patches without owning global state",
 	timeline.includes("handlers.current.onCameraBlockChange?.(patch)") &&
 	!timeline.includes("localStorage") && !timeline.includes("setFollowCam"),

@@ -86,7 +86,7 @@ function signedDegrees(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}\u00b0`;
 }
 
-function CameraBlockEditor({ shot, onChange }) {
+function CameraBlockEditor({ shot, railDraw, railLength, onChange, onRailDrawToggle, onRailClear }) {
 	if (!shot) return null;
 	const mode = cameraBlockMode(shot);
 	const follow = cameraBlockFollow(shot);
@@ -117,6 +117,17 @@ function CameraBlockEditor({ shot, onChange }) {
 					</button>
 				))}
 			</div>
+			<button
+				type="button"
+				className={"tl-camera-tool" + (railDraw ? " active" : "")}
+				disabled={mode === "keys"}
+				onClick={() => onRailDrawToggle?.()}
+			>
+				{railDraw ? ko("Drawing…", "그리는 중…") : ko("Draw rail", "레일 그리기")}
+			</button>
+			<button type="button" className="tl-camera-tool" disabled={!shot.camera?.cameraRail} onClick={() => onRailClear?.()}>
+				{ko("Clear rail", "레일 지우기")}
+			</button>
 			<button
 				type="button"
 				className={"tl-camera-head" + (follow.railStartMode === "head" ? " active" : "")}
@@ -160,6 +171,11 @@ function CameraBlockEditor({ shot, onChange }) {
 					<small>s</small>
 				</label>
 			</details>
+			<span className="tl-camera-slate">
+				{mode === "rail"
+					? `${ko("Dolly on rail", "레일 돌리")}${railLength == null ? "" : ` · ${railLength.toFixed(1)} m`}`
+					: mode === "follow" ? ko("Steadicam follow", "스테디캠 팔로우") : ko("Authored keys", "카메라 키")}
+			</span>
 		</section>
 	);
 }
@@ -210,6 +226,10 @@ export default function Timeline({
 	onCameraKeyframeRemove,
 	onCameraBlockSelect,
 	onCameraBlockChange,
+	railDraw = false,
+	cameraRailLength = null,
+	onCameraRailDrawToggle,
+	onCameraRailClear,
 	onRailSelect,
 	onRailMove,
 	onRailRangeChange,
@@ -241,7 +261,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotMove };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraRailDrawToggle, onCameraRailClear, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotMove };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -861,7 +881,11 @@ export default function Timeline({
 					{selectedCameraShot && (
 						<CameraBlockEditor
 							shot={selectedCameraShot}
+							railDraw={railDraw}
+							railLength={cameraRailLength}
 							onChange={(patch) => handlers.current.onCameraBlockChange?.(patch)}
+							onRailDrawToggle={() => handlers.current.onCameraRailDrawToggle?.()}
+							onRailClear={() => handlers.current.onCameraRailClear?.()}
 						/>
 					)}
 
