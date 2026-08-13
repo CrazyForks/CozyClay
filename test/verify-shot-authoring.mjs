@@ -19,7 +19,16 @@ const authored = {
 	shots,
 	waypoints: [{ frame: 60, x: 1.5, z: -2, heading: null }],
 	frameCount: 300,
-	followCam: { enabled: true, distance: 3.5, height: 1.8, response: 0.6, lead: 0.2 },
+	followCam: {
+		enabled: true,
+		distance: 3.5,
+		height: 1.8,
+		response: 0.6,
+		lead: 0.2,
+		railStartMode: "nearest",
+		maxDollySpeed: 2.4,
+		pitchOffsetDeg: -10,
+	},
 	cameraRail: [{ x: -2, z: -1 }, { x: 1, z: 5 }],
 };
 const restored = loadShotAuthoring(serializeShotAuthoring(authored));
@@ -34,11 +43,19 @@ const legacy = readShotAuthoring(JSON.stringify({
 	frameCount: 200,
 	cameraKeys: [{ frame: 10, framing: framing(35) }, { frame: 180, framing: framing(80) }],
 	waypoints: [],
+	followCam: { enabled: true, distance: 4 },
 }));
 assert.equal(legacy.status, "migrated");
 assert.equal(legacy.state.shots.length, 1);
 assert.equal(legacy.state.shots[0].startFrame, 0);
 assert.deepEqual(legacy.state.shots[0].cameraKeys.map((key) => key.frame), [10, 180]);
+assert.deepEqual(legacy.state.followCam, {
+	enabled: true,
+	railStartMode: "head",
+	maxDollySpeed: 4,
+	pitchOffsetDeg: 0,
+	distance: 4,
+});
 
 assert.equal(readShotAuthoring(null).status, "absent");
 assert.equal(readShotAuthoring("{nope").status, "corrupt");
@@ -56,7 +73,14 @@ const repaired = loadShotAuthoring(JSON.stringify({
 		{ id: "bad", startFrame: "later", cameraKeys: [] },
 	],
 	waypoints: [{ frame: 3.6, x: 1, z: 2, heading: "north" }, { frame: 2, x: Infinity, z: 0 }],
-	followCam: { enabled: "yes", distance: 999, lead: -5 },
+	followCam: {
+		enabled: "yes",
+		distance: 999,
+		lead: -5,
+		railStartMode: "middle",
+		maxDollySpeed: 999,
+		pitchOffsetDeg: -999,
+	},
 	cameraRail: [{ x: 0, z: 0 }, { x: Infinity, z: 1 }, { x: 2, z: 2 }],
 }));
 assert.deepEqual(repaired.shots.map((shot) => shot.startFrame), [0, 70]);
@@ -65,8 +89,28 @@ assert.equal(repaired.shots[0].name, "A");
 assert.equal(repaired.shots[0].cameraKeys[0].frame, 0);
 assert.equal(repaired.shots[1].cameraKeys[0].frame, 99);
 assert.deepEqual(repaired.waypoints, [{ frame: 4, x: 1, z: 2, heading: null }]);
-assert.deepEqual(repaired.followCam, { enabled: false, distance: 15, lead: 0 });
+assert.deepEqual(repaired.followCam, {
+	enabled: false,
+	railStartMode: "head",
+	maxDollySpeed: 8,
+	pitchOffsetDeg: -30,
+	distance: 15,
+	lead: 0,
+});
 assert.deepEqual(repaired.cameraRail, [{ x: 0, z: 0 }, { x: 2, z: 2 }]);
+
+const followDefaults = loadShotAuthoring(JSON.stringify({
+	version: 2,
+	frameCount: 100,
+	shots,
+	followCam: { enabled: false },
+}));
+assert.deepEqual(followDefaults.followCam, {
+	enabled: false,
+	railStartMode: "head",
+	maxDollySpeed: 4,
+	pitchOffsetDeg: 0,
+});
 
 assert.equal(SHOT_AUTHORING_KEY, "cozyclay.shot-authoring.v2");
 assert.equal(SHOT_AUTHORING_LEGACY_KEY, "cozyclay.shot-authoring.v1");
