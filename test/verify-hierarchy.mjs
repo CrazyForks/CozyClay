@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFile } from "node:fs/promises";
 import { HIERARCHY_NODES } from "../src/hierarchy-model.js";
 
 let failures = 0;
@@ -38,6 +39,15 @@ expect(
 expect("Environment stays at the Scene level", byId.get("environment")?.parent === "shot");
 expect("Props stay at the Scene level", byId.get("props")?.parent === "shot");
 expect("tree depth stays scannable", Math.max(...nodes.map((node) => node.depth)) <= 4);
+
+const panelSource = await readFile(new URL("../src/hierarchy-panel.jsx", import.meta.url), "utf8");
+for (const callback of ["onSceneSelect", "onSceneCreate", "onSceneDuplicate", "onSceneRename", "onSceneDelete"]) {
+	expect(`panel exposes ${callback}`, panelSource.includes(callback));
+}
+expect("scene selector is separate from entity tree", panelSource.includes('className="scene-switcher"') && panelSource.includes('className="hierarchy-tree"'));
+expect("scene rename supports double-click", panelSource.includes("onDoubleClick={() => setEditingId(scene.id)}"));
+expect("scene deletion asks for confirmation", panelSource.includes("window.confirm(message)"));
+expect("last scene deletion is protected", panelSource.includes("disabled={availableScenes.length <= 1}"));
 
 if (failures) process.exit(1);
 console.log("all hierarchy checks PASS");

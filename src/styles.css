@@ -1091,6 +1091,91 @@ select {
 	font-size: 8px;
 }
 
+.scene-switcher {
+	flex: none;
+	padding: 8px 9px 7px;
+	border-bottom: 1px solid rgba(255, 255, 255, .065);
+	background: rgba(8, 10, 14, .32);
+}
+
+.scene-switcher-heading,
+.scene-switcher-heading > div,
+.scene-actions {
+	display: flex;
+	align-items: center;
+}
+
+.scene-switcher-heading {
+	justify-content: space-between;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+
+.scene-switcher-heading > div { gap: 6px; min-width: 0; }
+.scene-switcher-heading strong { color: var(--fg); font-size: 10px; }
+.scene-switcher-heading span { color: var(--muted); font-size: 8px; }
+
+.scene-create-button,
+.scene-actions button {
+	border: 1px solid rgba(126, 154, 255, .2);
+	border-radius: 5px;
+	background: rgba(87, 111, 221, .09);
+	color: #aebade;
+	font: inherit;
+	font-size: 9px;
+	cursor: pointer;
+}
+
+.scene-create-button { height: 24px; padding: 0 8px; }
+.scene-create-button:hover,
+.scene-actions button:hover:not(:disabled) { background: rgba(87, 111, 221, .18); color: var(--fg); }
+
+.scene-list {
+	max-height: 76px;
+	overflow: auto;
+	border: 1px solid rgba(255, 255, 255, .07);
+	border-radius: 6px;
+	background: rgba(0, 0, 0, .12);
+}
+
+.scene-list-item { height: 27px; padding: 2px; }
+.scene-list-item + .scene-list-item { border-top: 1px solid rgba(255, 255, 255, .045); }
+.scene-list-item > button {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	width: 100%;
+	height: 23px;
+	padding: 0 7px;
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--muted);
+	font: inherit;
+	font-size: 10px;
+	text-align: left;
+	cursor: pointer;
+}
+
+.scene-list-item.active > button { background: rgba(87, 111, 221, .16); color: var(--fg); }
+.scene-document-icon { width: 8px; height: 10px; border: 1px solid #7284bd; border-radius: 1px; }
+.scene-rename-input {
+	width: 100%;
+	height: 23px;
+	padding: 0 7px;
+	border: 1px solid #627cd0;
+	border-radius: 4px;
+	outline: none;
+	background: #161b29;
+	color: var(--fg);
+	font: inherit;
+	font-size: 10px;
+}
+
+.scene-actions { justify-content: flex-end; gap: 4px; margin-top: 5px; }
+.scene-actions button { height: 21px; padding: 0 7px; }
+.scene-actions button:disabled { opacity: .35; cursor: not-allowed; }
+
 .hierarchy-tree {
 	flex: 1;
 	min-height: 0;
