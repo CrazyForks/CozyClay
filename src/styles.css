@@ -2347,12 +2347,6 @@ input[type=range]::-moz-range-thumb {
 	font-size: 11px;
 }
 
-.tl-camera-modes {
-	display: flex;
-	gap: 2px;
-}
-
-.tl-camera-modes button,
 .tl-camera-head,
 .tl-camera-tool {
 	height: 28px;
@@ -2366,7 +2360,6 @@ input[type=range]::-moz-range-thumb {
 	cursor: pointer;
 }
 
-.tl-camera-modes button.active,
 .tl-camera-head.active,
 .tl-camera-tool.active {
 	background: #7258a0;
@@ -2440,6 +2433,19 @@ input[type=range]::-moz-range-thumb {
 	font-weight: 700;
 	letter-spacing: .04em;
 	text-transform: uppercase;
+}
+
+.tl-camera-blocked {
+	min-height: 28px;
+	display: inline-flex;
+	align-items: center;
+	padding: 0 10px;
+	border: 1px solid rgba(231, 181, 87, .38);
+	border-radius: 3px;
+	background: rgba(231, 181, 87, .08);
+	color: #d8bd83;
+	font-size: 10px;
+	white-space: nowrap;
 }
 
 .tl-transport {

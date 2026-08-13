@@ -92,14 +92,27 @@ expect(
 	timeline.indexOf("<CameraBlockEditor") < timeline.indexOf('<div className="tl-body"'),
 );
 expect(
-	"mini editor exposes modes and director controls",
-	timeline.includes('["keys", ko("Keys", "키")]') &&
-	timeline.includes('["follow", ko("Follow", "팔로우")]') &&
-	timeline.includes('["rail", ko("Rail", "레일")]') &&
+	"mini editor exposes preview, rail drawing and director controls",
+	!timeline.includes('["keys", ko("Keys", "키")]') &&
+	!timeline.includes('["follow", ko("Follow", "팔로우")]') &&
+	!timeline.includes('["rail", ko("Rail", "레일")]') &&
+	timeline.includes('ko("Preview", "미리보기")') &&
+	timeline.includes('ko("Draw rail", "레일 그리기")') &&
 	timeline.includes('ko("Speed", "속도")') &&
 	timeline.includes('ko("Pitch", "피치")') &&
 	timeline.includes('ko("Distance", "거리")') &&
 	timeline.includes('ko("Height", "높이")'),
+);
+expect(
+	"height and pitch are adjacent in the camera bar",
+	timeline.indexOf('ko("Height", "높이")') < timeline.indexOf('ko("Pitch", "피치")') &&
+	(timeline.slice(timeline.indexOf('ko("Height", "높이")'), timeline.indexOf('ko("Pitch", "피치")')).match(/<label/g) ?? []).length === 1,
+);
+expect(
+	"waypoint mode replaces camera controls with one clear message",
+	timeline.includes("blocked={waypointMode}") &&
+	timeline.includes('className="tl-camera-blocked"') &&
+	timeline.includes('ko("Turn Waypoint off to edit or preview this camera.'),
 );
 expect(
 	"damping and look-ahead stay behind advanced disclosure",
@@ -113,7 +126,15 @@ expect(
 	!app.includes('<Slider label={ko("Dolly speed", "돌리 속도")}') &&
 	app.includes('className="camera-editor-pointer"') &&
 	timeline.includes('ko("Draw rail", "레일 그리기")') &&
-	timeline.includes('ko("Clear rail", "레일 지우기")'),
+	!timeline.includes('ko("Clear rail", "레일 지우기")'),
+);
+expect(
+	"preview starts at the selected shot and stops at its end",
+	app.includes("function previewCameraShot(index)") &&
+	app.includes("cameraPreviewEndRef.current = selected.endFrame") &&
+	app.includes("setTlFrame(selected.startFrame)") &&
+	app.includes("tlFrameRef.current >= previewEnd - 1") &&
+	app.includes("setTlFrame(previewEnd)"),
 );
 expect(
 	"rail ribbon cannot cover the shot frame range",

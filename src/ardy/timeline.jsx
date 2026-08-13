@@ -86,7 +86,7 @@ function signedDegrees(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}\u00b0`;
 }
 
-function CameraBlockEditor({ shot, railDraw, railLength, onChange, onRailDrawToggle, onRailClear }) {
+function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, onChange, onPreview, onRailDrawToggle }) {
 	if (!shot) return null;
 	const mode = cameraBlockMode(shot);
 	const follow = cameraBlockFollow(shot);
@@ -95,87 +95,63 @@ function CameraBlockEditor({ shot, railDraw, railLength, onChange, onRailDrawTog
 	return (
 		<section className="tl-camera-editor" aria-label={ko(`Camera controls for ${shot.name}`, `${shot.name} 카메라 컨트롤`)}>
 			<strong className="tl-camera-editor-title">{shot.name}</strong>
-			<div className="tl-camera-modes" role="group" aria-label={ko("Camera block mode", "카메라 블록 모드")}>
-				{[
-					["keys", ko("Keys", "키")],
-					["follow", ko("Follow", "팔로우")],
-					["rail", ko("Rail", "레일")],
-				].map(([value, label]) => (
-					<button
-						key={value}
-						type="button"
-						className={mode === value ? "active" : ""}
-						aria-pressed={mode === value}
-						title={value === "keys"
-							? ko("Use authored camera keys in this shot; follow settings stay saved but do not drive the camera", "이 샷에서 직접 찍은 카메라 키를 사용합니다. 팔로우 설정은 보존되지만 카메라를 움직이지 않습니다")
-							: value === "follow"
-								? ko("Follow the subject without a rail; camera keys stay saved but do not drive the camera", "레일 없이 피사체를 따라갑니다. 카메라 키는 보존되지만 카메라를 움직이지 않습니다")
-								: ko("Follow the subject on the authored rail; camera keys stay saved but do not drive the camera", "그려 둔 레일 위에서 피사체를 따라갑니다. 카메라 키는 보존되지만 카메라를 움직이지 않습니다")}
-						onClick={() => onChange?.({ mode: value })}
-					>
-						{label}
+			{blocked ? (
+				<span className="tl-camera-blocked">{ko("Turn Waypoint off to edit or preview this camera.", "카메라를 편집하거나 미리 보려면 Waypoint를 꺼주세요.")}</span>
+			) : (
+				<>
+					<button type="button" className={"tl-camera-tool" + (previewing ? " active" : "")} onClick={() => onPreview?.()}>
+						{previewing ? ko("Stop", "정지") : ko("Preview", "미리보기")}
 					</button>
-				))}
-			</div>
-			<button
-				type="button"
-				className={"tl-camera-tool" + (railDraw ? " active" : "")}
-				disabled={mode === "keys"}
-				onClick={() => onRailDrawToggle?.()}
-			>
-				{railDraw ? ko("Drawing…", "그리는 중…") : ko("Draw rail", "레일 그리기")}
-			</button>
-			<button type="button" className="tl-camera-tool" disabled={!shot.camera?.cameraRail} onClick={() => onRailClear?.()}>
-				{ko("Clear rail", "레일 지우기")}
-			</button>
-			<button
-				type="button"
-				className={"tl-camera-head" + (follow.railStartMode === "head" ? " active" : "")}
-				aria-pressed={follow.railStartMode === "head"}
-				disabled={mode !== "rail"}
-				title={ko("Choose whether the dolly starts at the rail head or the nearest useful point; this does not reverse or reshape the rail", "돌리가 레일 시작점 또는 가까운 지점에서 출발하도록 정합니다. 레일 방향과 모양은 바꾸지 않습니다")}
-				onClick={() => patchFollow({ railStartMode: follow.railStartMode === "head" ? "nearest" : "head" })}
-			>
-				{follow.railStartMode === "head" ? ko("Head start", "시작점 출발") : ko("Nearest", "가까운 지점")}
-			</button>
-			<label title={ko("Cap dolly travel speed; this does not change damping or subject motion", "돌리의 최고 이동 속도를 제한합니다. 댐핑과 피사체 모션은 바꾸지 않습니다")}>
-				<span>{ko("Speed", "속도")}</span>
-				<input type="number" min="0.2" max="8" step="0.1" value={follow.maxDollySpeed} disabled={mode !== "rail"} onChange={(event) => patchFollow({ maxDollySpeed: numberValue(event) })} />
-				<small>m/s</small>
-			</label>
-			<label title={ko("Tilt above or below automatic aim; this does not move the camera or change lens height", "자동 조준각에서 위아래로 틸트합니다. 카메라 위치와 렌즈 높이는 바꾸지 않습니다")}>
-				<span>{ko("Pitch", "피치")}</span>
-				<input type="number" min="-30" max="30" step="1" value={follow.pitchOffsetDeg} disabled={mode === "keys"} onChange={(event) => patchFollow({ pitchOffsetDeg: numberValue(event) })} />
-				<small>°</small>
-			</label>
-			<label title={ko("Set camera-to-subject spacing; this does not change dolly speed or height", "카메라와 피사체 사이 간격을 정합니다. 돌리 속도와 높이는 바꾸지 않습니다")}>
-				<span>{ko("Distance", "거리")}</span>
-				<input type="number" min="0.5" max="15" step="0.1" value={follow.distance} disabled={mode === "keys"} onChange={(event) => patchFollow({ distance: numberValue(event) })} />
-				<small>m</small>
-			</label>
-			<label title={ko("Set physical lens height; this does not tilt the camera", "렌즈의 물리적 높이를 정합니다. 카메라 틸트는 바꾸지 않습니다")}>
-				<span>{ko("Height", "높이")}</span>
-				<input type="number" min="0.2" max="6" step="0.05" value={follow.height} disabled={mode === "keys"} onChange={(event) => patchFollow({ height: numberValue(event) })} />
-				<small>m</small>
-			</label>
-			<details className="tl-camera-advanced">
-				<summary>{ko("Advanced", "고급")}</summary>
-				<label title={ko("Set how softly the rig catches up; this does not set its maximum speed", "카메라가 얼마나 부드럽게 따라붙는지 정합니다. 최고 속도는 바꾸지 않습니다")}>
-					<span>{ko("Damping", "댐핑")}</span>
-					<input type="number" min="0.1" max="3" step="0.05" value={follow.response} disabled={mode === "keys"} onChange={(event) => patchFollow({ response: numberValue(event) })} />
-					<small>s</small>
-				</label>
-				<label title={ko("Aim ahead of subject travel; this does not move the dolly faster", "피사체 진행 방향을 미리 조준합니다. 돌리 이동 속도는 바꾸지 않습니다")}>
-					<span>{ko("Look-ahead", "조준 선행")}</span>
-					<input type="number" min="0" max="1" step="0.05" value={follow.lead} disabled={mode === "keys"} onChange={(event) => patchFollow({ lead: numberValue(event) })} />
-					<small>s</small>
-				</label>
-			</details>
-			<span className="tl-camera-slate">
-				{mode === "rail"
-					? `${ko("Dolly on rail", "레일 돌리")}${railLength == null ? "" : ` · ${railLength.toFixed(1)} m`}`
-					: mode === "follow" ? ko("Steadicam follow", "스테디캠 팔로우") : ko("Authored keys", "카메라 키")}
-			</span>
+					<button type="button" className={"tl-camera-tool" + (railDraw ? " active" : "")} onClick={() => onRailDrawToggle?.()}>
+						{railDraw ? ko("Drawing…", "그리는 중…") : ko("Draw rail", "레일 그리기")}
+					</button>
+					<button
+						type="button"
+						className={"tl-camera-head" + (follow.railStartMode === "head" ? " active" : "")}
+						aria-pressed={follow.railStartMode === "head"}
+						title={ko("Choose whether the dolly starts at the rail head or the nearest useful point", "돌리가 레일 시작점 또는 가까운 지점에서 출발하도록 정합니다")}
+						onClick={() => patchFollow({ railStartMode: follow.railStartMode === "head" ? "nearest" : "head" })}
+					>
+						{follow.railStartMode === "head" ? ko("Head start", "시작점 출발") : ko("Nearest", "가까운 지점")}
+					</button>
+					<label title={ko("Set camera-to-subject spacing", "카메라와 피사체 사이 간격을 정합니다")}>
+						<span>{ko("Distance", "거리")}</span>
+						<input type="number" min="0.5" max="15" step="0.1" value={follow.distance} onChange={(event) => patchFollow({ distance: numberValue(event) })} />
+						<small>m</small>
+					</label>
+					<label title={ko("Cap dolly travel speed", "돌리의 최고 이동 속도를 제한합니다")}>
+						<span>{ko("Speed", "속도")}</span>
+						<input type="number" min="0.2" max="8" step="0.1" value={follow.maxDollySpeed} onChange={(event) => patchFollow({ maxDollySpeed: numberValue(event) })} />
+						<small>m/s</small>
+					</label>
+					<label title={ko("Set physical lens height", "렌즈의 물리적 높이를 정합니다")}>
+						<span>{ko("Height", "높이")}</span>
+						<input type="number" min="0.2" max="6" step="0.05" value={follow.height} onChange={(event) => patchFollow({ height: numberValue(event) })} />
+						<small>m</small>
+					</label>
+					<label title={ko("Tilt above or below automatic aim", "자동 조준각에서 위아래로 틸트합니다")}>
+						<span>{ko("Pitch", "피치")}</span>
+						<input type="number" min="-30" max="30" step="1" value={follow.pitchOffsetDeg} onChange={(event) => patchFollow({ pitchOffsetDeg: numberValue(event) })} />
+						<small>°</small>
+					</label>
+					<details className="tl-camera-advanced">
+						<summary>{ko("Advanced", "고급")}</summary>
+						<label title={ko("Set how softly the rig catches up", "카메라가 얼마나 부드럽게 따라붙는지 정합니다")}>
+							<span>{ko("Damping", "댐핑")}</span>
+							<input type="number" min="0.1" max="3" step="0.05" value={follow.response} onChange={(event) => patchFollow({ response: numberValue(event) })} />
+							<small>s</small>
+						</label>
+						<label title={ko("Aim ahead of subject travel", "피사체 진행 방향을 미리 조준합니다")}>
+							<span>{ko("Look-ahead", "조준 선행")}</span>
+							<input type="number" min="0" max="1" step="0.05" value={follow.lead} onChange={(event) => patchFollow({ lead: numberValue(event) })} />
+							<small>s</small>
+						</label>
+					</details>
+					<span className="tl-camera-slate">
+						{mode === "rail" ? `${ko("Dolly on rail", "레일 돌리")}${railLength == null ? "" : ` · ${railLength.toFixed(1)} m`}` : ko("Camera preview", "카메라 미리보기")}
+					</span>
+				</>
+			)}
 		</section>
 	);
 }
@@ -226,10 +202,10 @@ export default function Timeline({
 	onCameraKeyframeRemove,
 	onCameraBlockSelect,
 	onCameraBlockChange,
+	onCameraPreview,
 	railDraw = false,
 	cameraRailLength = null,
 	onCameraRailDrawToggle,
-	onCameraRailClear,
 	onRailSelect,
 	onRailMove,
 	onRailRangeChange,
@@ -261,7 +237,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraRailDrawToggle, onCameraRailClear, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotMove };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotMove };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -881,11 +857,13 @@ export default function Timeline({
 					{selectedCameraShot && (
 						<CameraBlockEditor
 							shot={selectedCameraShot}
+							blocked={waypointMode}
+							previewing={playing}
 							railDraw={railDraw}
 							railLength={cameraRailLength}
 							onChange={(patch) => handlers.current.onCameraBlockChange?.(patch)}
+							onPreview={() => handlers.current.onCameraPreview?.(cameraBlockIdx)}
 							onRailDrawToggle={() => handlers.current.onCameraRailDrawToggle?.()}
-							onRailClear={() => handlers.current.onCameraRailClear?.()}
 						/>
 					)}
 

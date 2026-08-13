@@ -842,6 +842,7 @@ globalThis.playMode = centerTab === "play";
 	// PlayView is the player for the finished motion: entering starts playback,
 	// leaving pauses it. Scene stays the manipulation surface.
 	const [tlPlaying, setTlPlaying] = useState(false);
+	const cameraPreviewEndRef = useRef(null);
 	useEffect(() => {
 		// The player always starts the finished piece from frame 0; auto-play
 		// only exists once there is a motion to play.
@@ -1468,13 +1469,32 @@ globalThis.playMode = centerTab === "play";
 		});
 	}
 	function toggleCameraRailDraw() {
-		if (!activeShot || activeCamera.mode === "keys") return;
+		if (!activeShot || waypointMode) return;
+		if (activeCamera.mode !== "rail") {
+			changeActiveCamera({
+				mode: "rail",
+				railFollow: activeCamera.railFollow?.mode === "off" ? defaultRailRange(activeShotDuration) : activeCamera.railFollow,
+			});
+		}
 		const next = !railDraw;
 		setRailDraw(next);
 		if (next) {
 			setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
 			setToast(ko("Draw the selected Shot's rail in the Top-View", "탑뷰에서 선택한 샷의 레일을 그리세요"));
 		}
+	}
+	function previewCameraShot(index) {
+		const selected = shots[index];
+		if (!selected || waypointMode) return;
+		if (tlPlaying && cameraPreviewEndRef.current === selected.endFrame) {
+			cameraPreviewEndRef.current = null;
+			setTlPlaying(false);
+			return;
+		}
+		setMovePlaying(false);
+		cameraPreviewEndRef.current = selected.endFrame;
+		setTlFrame(selected.startFrame);
+		setTlPlaying(true);
 	}
 	function editRailSchedule(index, edit) {
 		setShots((current) => current.map((shot, shotIndex) => {
@@ -2129,6 +2149,13 @@ globalThis.playMode = centerTab === "play";
 	function advanceFrame() {
 		// recording paces the playhead on its own fixed-cadence clock
 		if (recordingRef.current) return;
+		const previewEnd = cameraPreviewEndRef.current;
+		if (previewEnd != null && tlFrameRef.current >= previewEnd - 1) {
+			cameraPreviewEndRef.current = null;
+			setTlFrame(previewEnd);
+			setTlPlaying(false);
+			return;
+		}
 		setTlFrame((f) => (f >= frameCountRef.current - 1 ? 0 : f + 1));
 	}
 
@@ -4261,7 +4288,10 @@ globalThis.playMode = centerTab === "play";
 				onScrub={setTlFrame}
 				onAdvance={advanceFrame}
 				onStep={stepFrame}
-				onPlayToggle={() => setTlPlaying((v) => !v)}
+				onPlayToggle={() => {
+					cameraPreviewEndRef.current = null;
+					setTlPlaying((v) => !v);
+				}}
 				onWaypointToggle={toggleWaypointMode}
 				onMarkerSelect={(f) => {
 					const frame = Math.min(f, tlFrameCount - 1);
@@ -4313,8 +4343,8 @@ globalThis.playMode = centerTab === "play";
 							setToast(ko("Draw this Camera Block's rail in the Top-View", "탑뷰에서 이 카메라 블록의 레일을 그리세요"));
 						}
 					}}
+					onCameraPreview={previewCameraShot}
 					onCameraRailDrawToggle={toggleCameraRailDraw}
-					onCameraRailClear={() => changeCameraRail(null)}
 					onRailSelect={(index) => {
 						selectTimelineShot(index);
 						setSelectedHierarchyId("camera");
