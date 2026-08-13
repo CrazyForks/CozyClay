@@ -222,6 +222,7 @@ export default function Timeline({
 	onShotRemove,
 	onShotDuplicate,
 	onShotCut,
+	onShotSplit,
 	onShotMove,
 }) {
 	const [expanded, setExpanded] = useState(true);
@@ -243,7 +244,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotMove };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -922,7 +923,7 @@ export default function Timeline({
 											type="button"
 											className="tl-track-add cut"
 											disabled={shotCutDisabled}
-											title={shotCutDisabled ? ko("This one-frame shot cannot be divided", "1프레임 샷은 더 나눌 수 없어요") : ko("Add a shot at the playhead; inside a shot, split it", "재생 헤드에 샷 추가 · 샷 안에서는 분할")}
+											title={ko("Add a 2 second shot without changing existing shots", "기존 샷을 바꾸지 않고 2초 샷 추가")}
 											onClick={() => handlers.current.onShotCut?.()}
 										>
 											{ko("+ Add shot", "+ 샷 추가")}
@@ -1037,8 +1038,9 @@ export default function Timeline({
 														<small>{shot.startFrame}–{lastFrame} · {durationS.toFixed(1)}{ko("s", "초")}</small>
 													</span>
 												)}
-												<span className="tl-shot-actions">
-													<button type="button" title={ko("Duplicate shot", "샷 복제")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotDuplicate?.(index); }}>{ko("Duplicate", "복제")}</button>
+											<span className="tl-shot-actions">
+												<button type="button" title={ko("Split at the playhead", "재생 헤드에서 분할")} disabled={frame <= shot.startFrame || frame > shot.endFrame} onClick={(e) => { e.stopPropagation(); handlers.current.onShotSplit?.(index); }}>{ko("Split", "분할")}</button>
+												<button type="button" title={ko("Duplicate shot", "샷 복제")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotDuplicate?.(index); }}>{ko("Duplicate", "복제")}</button>
 													<button type="button" title={ko("Delete shot and leave free-camera time", "샷을 지우고 자유 카메라 구간으로 비우기")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotRemove?.(index); }}>{ko("Delete", "삭제")}</button>
 												</span>
 												<span className="tl-shot-camera-summary">

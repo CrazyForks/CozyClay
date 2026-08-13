@@ -87,7 +87,12 @@ export function cutAtFrame(shots, frame, currentFraming) {
 	return [...shots.slice(0, index), upstream, downstream, ...shots.slice(index + 1)];
 }
 
-/** Add a 2-second Shot in a gap; an occupied playhead splits its Shot. */
+/**
+ * Add a 2-second Shot without editing an existing one. If the playhead is
+ * occupied, place the new card in the next full-size free range instead. Add
+ * and Split are separate editorial actions: hanging a new card on the board
+ * must never cut the card already there.
+ */
 export function addShotAtFrame(shots, frame, frameCount, currentFraming, duration = DEFAULT_SHOT_FRAMES) {
 	const list = Array.isArray(shots) ? shots : [];
 	const count = Math.max(1, frameNumber(frameCount, 1));
@@ -95,8 +100,11 @@ export function addShotAtFrame(shots, frame, frameCount, currentFraming, duratio
 	const inside = shotIndexAtFrame(list, target);
 	if (inside >= 0) {
 		const source = list[inside];
-		const cutFrame = target > source.startFrame ? target : source.startFrame + Math.floor((source.endFrame - source.startFrame + 1) / 2);
-		return cutFrame > source.startFrame && cutFrame <= source.endFrame ? cutAtFrame(list, cutFrame, currentFraming) : list;
+		const length = Math.max(1, frameNumber(duration, DEFAULT_SHOT_FRAMES));
+		const startFrame = freeStart(list, length, count, source.endFrame + 1);
+		if (startFrame === undefined) return list;
+		const keys = currentFraming ? [{ frame: startFrame, framing: currentFraming }] : [];
+		return [...list, createShot(`Shot ${list.length + 1}`, startFrame, startFrame + length - 1, keys)].sort((a, b) => a.startFrame - b.startFrame);
 	}
 	const nextStart = list.find((shot) => shot.startFrame > target)?.startFrame ?? count;
 	const endFrame = Math.min(count - 1, nextStart - 1, target + Math.max(1, frameNumber(duration, DEFAULT_SHOT_FRAMES)) - 1);

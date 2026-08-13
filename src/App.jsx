@@ -111,6 +111,7 @@ import { captureFraming, classifyMove, cameraMoveAt, moveSequenceSlate, moveSequ
 import {
 	cameraAtFrame,
 	addShotAtFrame,
+	cutAtFrame,
 	duplicateShot,
 	initialShots,
 	removeShot,
@@ -2021,6 +2022,15 @@ globalThis.playMode = centerTab === "play";
 	function addTimelineShot() {
 		setMovePlaying(false);
 		setShots((current) => addShotAtFrame(current, tlFrame, tlFrameCount, captureCurrentFraming()));
+	}
+
+	function splitTimelineShot(index) {
+		setMovePlaying(false);
+		setShots((current) => {
+			const shot = current[index];
+			if (!shot || tlFrame <= shot.startFrame || tlFrame > shot.endFrame) return current;
+			return cutAtFrame(current, tlFrame, captureCurrentFraming());
+		});
 	}
 
 	function selectTimelineShot(index) {
@@ -4311,7 +4321,7 @@ globalThis.playMode = centerTab === "play";
 					activeShotIdx={activeShotIdx}
 					railDraw={railDraw}
 					cameraRailLength={railCurve?.length ?? null}
-				shotCutDisabled={!!posing || ikMode || waypointMode || (!!activeShot && activeShot.endFrame === activeShot.startFrame)}
+				shotCutDisabled={!!posing || ikMode || waypointMode}
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
@@ -4398,6 +4408,7 @@ globalThis.playMode = centerTab === "play";
 				onShotRemove={(index) => setShots((current) => removeShot(current, index))}
 				onShotDuplicate={duplicateTimelineShot}
 				onShotCut={addTimelineShot}
+				onShotSplit={splitTimelineShot}
 				onShotMove={moveTimelineShot}
 				onClearMotion={motion ? clearMotion : null}
 			/>

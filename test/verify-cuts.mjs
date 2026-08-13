@@ -31,6 +31,11 @@ assert.equal(shotAtFrame(shots, 60), null);
 assert.equal(cameraAtFrame(shots, { x: 0, z: 0 }, 19), null);
 assert.equal(cameraAtFrame(shots, { x: 0, z: 0 }, 20).pos.x, 20);
 
+const fourSecond = [createShot("Long", 0, 79)];
+const addOverLong = addShotAtFrame(fourSecond, 20, 200, framing(20));
+assert.deepEqual(addOverLong.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[0, 79], [80, 119]], "add after an occupied 4-second Shot preserves it and creates a separate 2-second Shot");
+assert.equal(addOverLong[0], fourSecond[0], "add never rewrites the occupied Shot");
+
 shots = addShotAtFrame(shots, 100, 200, framing(100));
 assert.deepEqual(shots.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[20, 59], [100, 139]], "gaps remain valid");
 

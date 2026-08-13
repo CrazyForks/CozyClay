@@ -73,7 +73,7 @@ expect(
 	timeline.includes("handlers.current.onCameraMoveSelect?.()"),
 );
 expect(
-	"one add button creates or splits the shared shot-camera card",
+	"one add button creates a separate shared shot-camera card",
 	!timeline.includes('className="tl-track-add cut camera"') &&
 	timeline.includes('ko("+ Add shot", "+ 샷 추가")') &&
 	timeline.includes("handlers.current.onShotCut?.()"),
