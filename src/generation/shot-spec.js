@@ -20,7 +20,7 @@ export function compileShotSpec({ provider = "runway", model, prompt, durationSe
   if (!spec.model) errors.push("model is required");
   if (!spec.prompt) errors.push("prompt is required");
   if (!Number.isInteger(spec.durationSeconds) || spec.durationSeconds < 1 || spec.durationSeconds > 30) errors.push("duration must be an integer between 1 and 30 seconds");
-  if (spec.seed !== null && (!Number.isInteger(spec.seed) || spec.seed < 0 || spec.seed > 2147483647)) errors.push("seed must be an integer in 0..2147483647");
+  if (spec.seed !== null && (!Number.isInteger(spec.seed) || spec.seed < 0 || spec.seed > 4294967295)) errors.push("seed must be an integer in 0..4294967295");
   if (errors.length) throw new Error(errors[0]);
   return spec;
 }
