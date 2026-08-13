@@ -13,15 +13,27 @@ const plainObject = (value) => !!value && typeof value === "object" && !Array.is
 
 // Persistence values are JSON-shaped. Recursing here keeps duplicateScene
 // independent without borrowing the shot document's schema or runtime types.
-function cloneValue(value, seen = new WeakSet()) {
+function cloneValue(value, copies = new WeakMap()) {
 	if (value === null || typeof value === "string" || typeof value === "boolean") return value;
 	if (typeof value === "number") return Number.isFinite(value) ? value : null;
 	if (typeof value !== "object") return null;
-	if (seen.has(value)) return null;
-	seen.add(value);
-	if (Array.isArray(value)) return value.map((entry) => cloneValue(entry, seen));
+	if (copies.has(value)) return copies.get(value);
+	if (Array.isArray(value)) {
+		const copy = [];
+		copies.set(value, copy);
+		for (const entry of value) copy.push(cloneValue(entry, copies));
+		return copy;
+	}
 	const copy = {};
-	for (const [key, entry] of Object.entries(value)) copy[key] = cloneValue(entry, seen);
+	copies.set(value, copy);
+	for (const [key, entry] of Object.entries(value)) {
+		Object.defineProperty(copy, key, {
+			value: cloneValue(entry, copies),
+			enumerable: true,
+			writable: true,
+			configurable: true,
+		});
+	}
 	return copy;
 }
 
@@ -34,20 +46,22 @@ function uniqueId(existing) {
 }
 
 function uniqueName(requested, existing) {
-	const names = new Set(existing.map((scene) => scene?.name));
+	const nameKey = (name) => typeof name === "string" ? name.normalize("NFKC").toLowerCase() : "";
+	const names = new Set(existing.map((scene) => nameKey(scene?.name)));
+	const hasName = (name) => names.has(nameKey(name));
 	const base = typeof requested === "string" && requested.trim() ? requested.trim() : "SCENE 01";
-	if (!names.has(base)) return base;
+	if (!hasName(base)) return base;
 	const numbered = base.match(/^(.*?)(\d+)$/);
 	if (numbered) {
 		const [, prefix, digits] = numbered;
 		for (let number = Number(digits) + 1; ; number += 1) {
 			const candidate = `${prefix}${String(number).padStart(digits.length, "0")}`;
-			if (!names.has(candidate)) return candidate;
+			if (!hasName(candidate)) return candidate;
 		}
 	}
 	for (let number = 2; ; number += 1) {
 		const candidate = `${base} ${number}`;
-		if (!names.has(candidate)) return candidate;
+		if (!hasName(candidate)) return candidate;
 	}
 }
 

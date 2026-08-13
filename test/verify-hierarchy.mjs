@@ -47,6 +47,7 @@ for (const callback of ["onSceneSelect", "onSceneCreate", "onSceneDuplicate", "o
 expect("scene selector is separate from entity tree", panelSource.includes('className="scene-switcher"') && panelSource.includes('className="hierarchy-tree"'));
 expect("scene rename supports double-click", panelSource.includes("onDoubleClick={() => setEditingId(scene.id)}"));
 expect("scene deletion requires a second deliberate click", panelSource.includes("deleteArmed") && panelSource.includes('ko("Confirm delete", "삭제 확인")'));
+expect("active scene clicks do not repeat selection callbacks", panelSource.includes("if (!active) onSceneSelect?.(scene.id)"));
 expect("last scene deletion is protected", panelSource.includes("disabled={availableScenes.length <= 1}"));
 
 const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
