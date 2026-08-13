@@ -7,6 +7,7 @@ import {
 	moveBoundary,
 	removeShot,
 	renameShot,
+	reorderShot,
 	shotAtFrame,
 	shotIndexAtFrame,
 } from "../src/cuts.js";
@@ -59,6 +60,13 @@ assert.deepEqual(duplicated.map((shot) => shot.startFrame), [0, 20, 40, 70]);
 assert.equal(new Set(duplicated.map((shot) => shot.id)).size, duplicated.length);
 assert.equal(duplicated[1].name, `${shots[0].name} copy`);
 assert.equal(duplicateShot([{ ...shots[0], startFrame: 0 }], 0, 1).length, 1);
+
+const reordered = reorderShot(shots, 2, 0, 100);
+assert.deepEqual(reordered.map((shot) => shot.id), [shots[2].id, shots[0].id, shots[1].id]);
+assert.deepEqual(reordered.map((shot) => shot.startFrame), [0, 30, 70]);
+assert.deepEqual(reordered.map((shot, index) => (reordered[index + 1]?.startFrame ?? 100) - shot.startFrame), [30, 40, 30]);
+assert.equal(reordered[0].cameraKeys[0].frame, 0, "camera keys travel with a reordered shot");
+assert.equal(reorderShot(shots, 1, 1, 100), shots);
 
 const empty = [{ ...shots[0], cameraKeys: [] }];
 assert.equal(cameraAtFrame(empty, { x: 0, z: 0 }, 10), null);

@@ -96,6 +96,7 @@ import {
 	moveBoundary,
 	removeShot,
 	renameShot,
+	reorderShot,
 	shotIndexAtFrame,
 } from "./cuts.js";
 
@@ -1827,9 +1828,15 @@ globalThis.playMode = centerTab === "play";
 		setShots((current) => current.map((shot, index) => index === activeShotIdx ? { ...shot, cameraKeys: [] } : shot));
 	}
 
-	function addCutAtPlayhead() {
+	function addTimelineShot() {
 		setMovePlaying(false);
-		setShots((current) => cutAtFrame(current, tlFrame, captureCurrentFraming()));
+		const index = shotIndexAtFrame(shots, tlFrame);
+		const start = shots[index]?.startFrame ?? 0;
+		const end = shots[index + 1]?.startFrame ?? tlFrameCount;
+		const target = tlFrame > start && tlFrame < end ? tlFrame : start + Math.floor((end - start) / 2);
+		if (target <= start || target >= end) return;
+		setShots((current) => cutAtFrame(current, target, captureCurrentFraming()));
+		setTlFrame(target);
 	}
 
 	function selectTimelineShot(index) {
@@ -1844,6 +1851,25 @@ globalThis.playMode = centerTab === "play";
 		const next = duplicateShot(shots, index, tlFrameCount);
 		setShots(next);
 		if (next !== shots && next[index + 1]) setTlFrame(next[index + 1].startFrame);
+	}
+
+	function moveTimelineShot(fromIndex, targetFrame) {
+		setShots((current) => {
+			const targetIndex = shotIndexAtFrame(current, targetFrame);
+			return reorderShot(current, fromIndex, targetIndex, tlFrameCount);
+		});
+	}
+
+	function resizeTimelineEnd(endFrame) {
+		const lastStart = shots.at(-1)?.startFrame ?? 0;
+		const nextCount = Math.max(lastStart + 1, Math.round(endFrame) + 1);
+		setTlFrameCount(nextCount);
+		setTlFrame((current) => Math.min(current, nextCount - 1));
+		setShots((current) => current.map((shot, index) => {
+			if (index !== current.length - 1) return shot;
+			const byFrame = new Map(shot.cameraKeys.map((key) => [Math.min(key.frame, nextCount - 1), { ...key, frame: Math.min(key.frame, nextCount - 1) }]));
+			return { ...shot, cameraKeys: [...byFrame.values()].sort((a, b) => a.frame - b.frame) };
+		}));
 	}
 
 	const allPoses = useMemo(() => [...BUILT_IN_POSES, ...customPoses], [customPoses]);
@@ -4153,7 +4179,7 @@ globalThis.playMode = centerTab === "play";
 				cameraKeyFrames={cameraKeys.map((k) => k.frame)}
 				shots={shots}
 				activeShotIdx={activeShotIdx}
-				shotCutDisabled={tlFrame <= 0 || shots.some((shot) => shot.startFrame === tlFrame) || !!posing || ikMode || waypointMode}
+				shotCutDisabled={!!posing || ikMode || waypointMode || ((shots[activeShotIdx + 1]?.startFrame ?? tlFrameCount) - (shots[activeShotIdx]?.startFrame ?? 0) < 2)}
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
@@ -4205,7 +4231,9 @@ globalThis.playMode = centerTab === "play";
 				onShotRename={(index, name) => setShots((current) => renameShot(current, index, name))}
 				onShotRemove={(index) => setShots((current) => removeShot(current, index))}
 				onShotDuplicate={duplicateTimelineShot}
-				onShotCut={addCutAtPlayhead}
+				onShotCut={addTimelineShot}
+				onShotEndResize={resizeTimelineEnd}
+				onShotMove={moveTimelineShot}
 				onClearMotion={motion ? clearMotion : null}
 			/>
 				</div>

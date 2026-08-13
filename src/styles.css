@@ -83,7 +83,7 @@ select {
 	background: #5c5c5c;
 }
 ::-webkit-scrollbar-track {
-	background: transparent;
+	background: rgba(231, 181, 87, .16);
 }
 
 /* ------------------------------------------------------------ app shell --- */
@@ -2613,12 +2613,19 @@ input[type=range]::-moz-range-thumb {
 	color: #d9e2ec;
 	font-size: 9.5px;
 	overflow: hidden;
-	cursor: pointer;
+	cursor: grab;
+	touch-action: none;
 }
 
 .tl-shot-block.active {
 	border-color: #e7b557;
 	background: #4a4335;
+}
+
+.tl-shot-block.moving {
+	opacity: .72;
+	cursor: grabbing;
+	box-shadow: 0 0 0 2px rgba(231, 181, 87, .3);
 }
 
 .tl-shot-label {
@@ -2660,8 +2667,8 @@ input[type=range]::-moz-range-thumb {
 	position: absolute;
 	top: -2px;
 	bottom: -2px;
-	left: -7px;
-	width: 14px;
+	left: 0;
+	width: 12px;
 	padding: 0;
 	border: 0;
 	border-left: 2px solid #e7b557;
@@ -2671,6 +2678,17 @@ input[type=range]::-moz-range-thumb {
 	line-height: 1;
 	cursor: ew-resize;
 	z-index: 3;
+}
+
+.tl-shot-edge:hover {
+	background: rgba(231, 181, 87, .42);
+}
+
+.tl-shot-edge.end {
+	left: auto;
+	right: 0;
+	border-left: 0;
+	border-right: 2px solid #e7b557;
 }
 
 .tl-shot-actions {

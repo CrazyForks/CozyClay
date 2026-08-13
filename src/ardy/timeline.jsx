@@ -112,11 +112,14 @@ export default function Timeline({
 	onShotRemove,
 	onShotDuplicate,
 	onShotCut,
+	onShotEndResize,
+	onShotMove,
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [zoom, setZoom] = useState(ZOOM_DEFAULT);
 	const [movingPromptId, setMovingPromptId] = useState(null);
 	const [renamingShotId, setRenamingShotId] = useState(null);
+	const [movingShotId, setMovingShotId] = useState(null);
 	const rulerRef = useRef(null);
 	const bodyRef = useRef(null);
 	const scrubbing = useRef(false);
@@ -130,7 +133,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotEndResize, onShotMove };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -275,6 +278,8 @@ export default function Timeline({
 	const camDragRef = useRef(null);
 	const camSuppressClickRef = useRef(false);
 	const shotBoundaryRef = useRef(null);
+	const shotMoveRef = useRef(null);
+	const shotSuppressClickRef = useRef(false);
 
 	function beginPromptMove(e, clip) {
 		if (e.button !== 0 || e.target.closest(".tl-chip-handle")) return;
@@ -429,14 +434,14 @@ export default function Timeline({
 		handlers.current.onCameraMoveSelect?.();
 	}
 
-	function beginShotBoundaryDrag(e, index) {
-		if (e.button !== 0 || index <= 0) return;
+	function beginShotBoundaryDrag(e, boundaryIndex, timelineEnd = false) {
+		if (e.button !== 0 || (!timelineEnd && boundaryIndex <= 0)) return;
 		e.preventDefault();
 		e.stopPropagation();
 		e.currentTarget.setPointerCapture?.(e.pointerId);
 		const lane = e.currentTarget.closest(".tl-lane");
 		const rect = lane?.getBoundingClientRect();
-		shotBoundaryRef.current = { index, pointerId: e.pointerId, left: rect?.left ?? 0, width: rect?.width ?? 1 };
+		shotBoundaryRef.current = { boundaryIndex, timelineEnd, pointerId: e.pointerId, left: rect?.left ?? 0, width: rect?.width ?? 1, displayFrameCount };
 	}
 
 	function moveShotBoundary(e) {
@@ -444,8 +449,10 @@ export default function Timeline({
 		if (!active || e.pointerId !== active.pointerId) return;
 		e.preventDefault();
 		e.stopPropagation();
-		const next = frameFromClientX(e.clientX, active.left, active.width, displayFrameCount, frameCount);
-		handlers.current.onShotBoundaryMove?.(active.index, next);
+		const ratio = (e.clientX - active.left) / Math.max(1, active.width);
+		const rawFrame = Math.round(ratio * Math.max(0, active.displayFrameCount - 1));
+		if (active.timelineEnd) handlers.current.onShotEndResize?.(Math.max(0, rawFrame));
+		else handlers.current.onShotBoundaryMove?.(active.boundaryIndex, Math.max(0, Math.min(frameCount - 1, rawFrame)));
 	}
 
 	function endShotBoundaryDrag(e) {
@@ -453,6 +460,44 @@ export default function Timeline({
 		if (!active || e.pointerId !== active.pointerId) return;
 		shotBoundaryRef.current = null;
 		e.currentTarget.releasePointerCapture?.(e.pointerId);
+	}
+
+	function beginShotMove(e, shot, index) {
+		if (e.button !== 0 || e.target.closest("button, input")) return;
+		const lane = e.currentTarget.closest(".tl-lane");
+		const rect = lane?.getBoundingClientRect();
+		shotMoveRef.current = { id: shot.id, index, pointerId: e.pointerId, startClientX: e.clientX, left: rect?.left ?? 0, width: rect?.width ?? 1, targetFrame: shot.startFrame, moved: false };
+		e.currentTarget.setPointerCapture?.(e.pointerId);
+	}
+
+	function moveShot(e) {
+		const active = shotMoveRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		if (!active.moved && Math.abs(e.clientX - active.startClientX) < 4) return;
+		active.moved = true;
+		active.targetFrame = frameFromClientX(e.clientX, active.left, active.width, displayFrameCount, frameCount);
+		setMovingShotId(active.id);
+		e.preventDefault();
+		e.stopPropagation();
+	}
+
+	function endShotMove(e) {
+		const active = shotMoveRef.current;
+		if (!active || e.pointerId !== active.pointerId) return;
+		if (active.moved) {
+			e.preventDefault();
+			e.stopPropagation();
+			shotSuppressClickRef.current = true;
+			handlers.current.onShotMove?.(active.index, active.targetFrame);
+			queueMicrotask(() => { shotSuppressClickRef.current = false; });
+		}
+		shotMoveRef.current = null;
+		setMovingShotId(null);
+		e.currentTarget.releasePointerCapture?.(e.pointerId);
+	}
+
+	function selectShotBlock(index) {
+		if (!shotSuppressClickRef.current) handlers.current.onShotSelect?.(index);
 	}
 
 	function finishShotRename(shot, index, value) {
@@ -653,10 +698,10 @@ export default function Timeline({
 											type="button"
 											className="tl-track-add cut"
 											disabled={shotCutDisabled}
-											title={shotCutDisabled ? ko("Move the playhead inside a shot to split it", "재생 헤드를 샷 중간으로 옮기면 나눌 수 있어요") : isKo ? `${frame}프레임에서 샷 나누기` : `Split shot at frame ${frame}`}
+											title={shotCutDisabled ? ko("This shot is too short to divide", "이 샷은 더 나눌 수 없어요") : isKo ? `샷 추가 · 재생 헤드가 경계면 현재 샷의 가운데에 추가` : "Add shot · at a boundary, split the current shot in the middle"}
 											onClick={() => handlers.current.onShotCut?.()}
 										>
-											{ko("Split here", "여기서 나누기")}
+											{ko("+ Add shot", "+ 샷 추가")}
 										</button>
 									)}
 									{name === IK_LANE && ikMode && (
@@ -698,16 +743,20 @@ export default function Timeline({
 										return (
 											<div
 												key={shot.id}
-												className={"tl-shot-block" + (index === activeShotIdx ? " active" : "")}
+												className={"tl-shot-block" + (index === activeShotIdx ? " active" : "") + (movingShotId === shot.id ? " moving" : "")}
 												style={{ "--tl-f-start": geometry.startPct, "--tl-f-end": geometry.endPct }}
-												title={isKo ? `${shot.name} · ${shot.startFrame}–${lastFrame}프레임 · ${durationS.toFixed(1)}초 · 클릭해 선택, 이름을 더블클릭해 변경` : `${shot.name} · frames ${shot.startFrame}–${lastFrame} · ${durationS.toFixed(1)}s · click to select, double-click the name to rename`}
-												onClick={() => handlers.current.onShotSelect?.(index)}
+												title={isKo ? `${shot.name} · ${shot.startFrame}–${lastFrame}프레임 · ${durationS.toFixed(1)}초 · 드래그해 순서 이동, 양쪽 끝으로 길이 조절` : `${shot.name} · frames ${shot.startFrame}–${lastFrame} · ${durationS.toFixed(1)}s · drag to reorder, resize from either edge`}
+												onPointerDown={(e) => beginShotMove(e, shot, index)}
+												onPointerMove={moveShot}
+												onPointerUp={endShotMove}
+												onPointerCancel={endShotMove}
+												onClick={() => selectShotBlock(index)}
 												onDoubleClick={(e) => { e.stopPropagation(); setRenamingShotId(shot.id); }}
 											>
 												{index > 0 && (
 													<button
 														type="button"
-														className="tl-shot-edge"
+														className="tl-shot-edge start"
 														aria-label={ko(`Move cut before ${shot.name}`, `${shot.name} 앞 컷 이동`)}
 														onPointerDown={(e) => beginShotBoundaryDrag(e, index)}
 														onPointerMove={moveShotBoundary}
@@ -717,6 +766,17 @@ export default function Timeline({
 														⋮
 													</button>
 												)}
+												<button
+													type="button"
+													className="tl-shot-edge end"
+													aria-label={index === shots.length - 1 ? ko(`Resize end of ${shot.name}`, `${shot.name} 끝 길이 조절`) : ko(`Move cut after ${shot.name}`, `${shot.name} 뒤 컷 이동`)}
+													onPointerDown={(e) => beginShotBoundaryDrag(e, index + 1, index === shots.length - 1)}
+													onPointerMove={moveShotBoundary}
+													onPointerUp={endShotBoundaryDrag}
+													onPointerCancel={endShotBoundaryDrag}
+												>
+													⋮
+												</button>
 												{renamingShotId === shot.id ? (
 													<input
 														className="tl-shot-name-input"

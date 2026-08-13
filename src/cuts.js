@@ -116,6 +116,32 @@ export function renameShot(shots, index, name) {
 }
 
 /**
+ * Move a whole strip to another slot while preserving every strip's duration.
+ * Camera keys travel with their strip by the same frame delta, like lifting a
+ * physical clip from the edit bench and dropping it between two neighbours.
+ */
+export function reorderShot(shots, fromIndex, toIndex, frameCount) {
+	if (!Array.isArray(shots) || fromIndex < 0 || fromIndex >= shots.length || toIndex < 0 || toIndex >= shots.length || fromIndex === toIndex) return shots;
+	const count = Math.max(shots.length, frameNumber(frameCount, shots.at(-1).startFrame + 1));
+	const durations = new Map(shots.map((shot, index) => [shot.id, (shots[index + 1]?.startFrame ?? count) - shot.startFrame]));
+	const reordered = shots.slice();
+	const [moved] = reordered.splice(fromIndex, 1);
+	reordered.splice(toIndex, 0, moved);
+	let startFrame = 0;
+	return reordered.map((shot) => {
+		const duration = Math.max(1, durations.get(shot.id) ?? 1);
+		const delta = startFrame - shot.startFrame;
+		const shifted = {
+			...shot,
+			startFrame,
+			cameraKeys: uniqueKeys(shot.cameraKeys.map((key) => ({ ...key, frame: key.frame + delta })), startFrame, startFrame + duration - 1),
+		};
+		startFrame += duration;
+		return shifted;
+	});
+}
+
+/**
  * Duplicate a shot inside the existing timeline: its range is divided in two,
  * and its keys are time-scaled into both halves. This keeps frameCount stable,
  * like copying a clip into the available piece of tape. A one-frame shot has
