@@ -76,12 +76,19 @@ expect(
 );
 expect("generated motion anchors frame zero at Subject 1", app.includes("anchorX: charA.x") && app.includes("anchorZ: charA.z") && app.includes("anchorFrame: 0"));
 expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));
-expect("Top-View root path draws from Subject 1 without a duplicate marker", planview.includes("const pathPoints = [{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));
+expect("Top-View root path draws from Subject 1 without a duplicate marker", planview.includes("[{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));
 expect(
 	"Top-View characters use their real meshes without covering hex pucks",
-	planview.includes('<Puck color="#273849" showBody={false} {...state("a")} />') &&
-	planview.includes('<Puck color="#d65f55" showBody={false} {...state("b")} />') &&
+	planview.includes('<Puck color={SUBJECT_ONE_COLOR} showBody={false} {...state("a")} />') &&
+	planview.includes('<Puck color={SUBJECT_TWO_COLOR} showBody={false} {...state("b")} />') &&
 	planview.includes("stem: makes the handle read as attached"),
+);
+expect(
+	"Top-View uses saturated role colors and readable path widths",
+	planview.includes('const CAMERA_COLOR = "#007f9e"') &&
+	planview.includes('const SUBJECT_ONE_COLOR = "#2457d6"') &&
+	planview.includes('const RAIL_COLOR = "#7137c8"') &&
+	planview.includes("lineWidth={3}") && planview.includes("lineWidth={live ? 2.5 : 3.5}"),
 );
 expect(
 	"Top-View shows ARDY player endpoints and direction while composing a rail",

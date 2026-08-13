@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Text } from "@react-three/drei";
+import { Line, Text } from "@react-three/drei";
 import * as THREE from "three";
 import { aimAt } from "./controls.jsx";
 import { PLAN_LAYER } from "./dualview.jsx";
@@ -15,6 +15,11 @@ const GRAB_R = 1.0; // the pick radius, well beyond the drawn disc
 const HANDLE_DIST = 1.25; // how far the facing handle sits from the centre
 const HANDLE_R = 0.14;
 const HANDLE_GRAB = 0.5;
+const CAMERA_COLOR = "#007f9e";
+const SUBJECT_ONE_COLOR = "#2457d6";
+const SUBJECT_TWO_COLOR = "#d63b55";
+const OBJECT_COLOR = "#c14f2c";
+const SELECTED_COLOR = "#b77900";
 
 /** yaw that makes the character's local +Z face the given direction */
 const yawToward = (dx, dz) => Math.atan2(dx, dz);
@@ -58,9 +63,9 @@ function FrustumWedge({ fovDeg, active }) {
 	return (
 		<mesh geometry={geometry} position={[0, 0.02, 0]} renderOrder={8}>
 			<meshBasicMaterial
-				color="#4e9fb3"
+				color={CAMERA_COLOR}
 				transparent
-				opacity={active ? 0.32 : 0.18}
+				opacity={active ? 0.46 : 0.28}
 				side={THREE.DoubleSide}
 				depthWrite={false}
 				depthTest={false}
@@ -111,11 +116,11 @@ function Puck({ color, dragging, turning, showBody = true, handleDist = HANDLE_D
 
 			{/* stem: makes the handle read as attached to the puck, not as debris */}
 			<mesh position={[0, 0.035, handleDist / 2]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={9}>
-				<planeGeometry args={[0.045, handleDist]} />
+				<planeGeometry args={[0.07, handleDist]} />
 				<meshBasicMaterial
 					color={color}
 					transparent
-					opacity={turning ? 0.9 : 0.35}
+					opacity={turning ? 1 : 0.68}
 					depthWrite={false}
 					depthTest={false}
 				/>
@@ -129,7 +134,7 @@ function Puck({ color, dragging, turning, showBody = true, handleDist = HANDLE_D
 				<meshBasicMaterial
 					color={color}
 					transparent
-					opacity={turning ? 0.85 : 0.38}
+					opacity={turning ? 1 : 0.72}
 					depthWrite={false}
 					depthTest={false}
 				/>
@@ -149,13 +154,13 @@ function PlanLabel({ text, color, offset = -0.72 }) {
 		<Text
 			position={[0, 0.05, offset]}
 			rotation={[-Math.PI / 2, 0, 0]}
-			fontSize={0.3}
+			fontSize={0.32}
 			color={color}
 			anchorX="center"
 			anchorY="middle"
-			outlineWidth={0.025}
+			outlineWidth={0.045}
 			outlineColor="#0e0d10"
-			outlineOpacity={0.72}
+			outlineOpacity={0.92}
 			renderOrder={12}
 			depthOffset={-1}
 		>
@@ -174,32 +179,32 @@ function SceneObjectFootprint({ object, selected, dragging, turning }) {
 			<mesh position={[0, 0.032, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={10}>
 				<planeGeometry args={[width, depth]} />
 				<meshBasicMaterial
-					color={selected ? "#e7b557" : "#c7836f"}
+					color={selected ? SELECTED_COLOR : OBJECT_COLOR}
 					transparent
-					opacity={selected ? 0.46 : 0.24}
+					opacity={selected ? 0.58 : 0.34}
 					depthWrite={false}
 					depthTest={false}
 				/>
 			</mesh>
 			<mesh position={[0, 0.04, 0]} renderOrder={11}>
 				<boxGeometry args={[width, 0.02, depth]} />
-				<meshBasicMaterial color={selected ? "#d99725" : "#9b695a"} wireframe depthTest={false} />
+				<meshBasicMaterial color={selected ? SELECTED_COLOR : OBJECT_COLOR} wireframe depthTest={false} />
 			</mesh>
 			<group position={[0, 0, depth / 2 + 0.45]} rotation={[0, -rotation, 0]}>
 				<PlanLabel
 					text={objectLabel}
-					color={selected ? "#b37610" : "#7c574d"}
+					color={selected ? SELECTED_COLOR : OBJECT_COLOR}
 					offset={0}
 				/>
 			</group>
-			{selected && <Puck color="#e7b557" showBody={false} handleDist={handleDist} dragging={dragging} turning={turning} />}
+			{selected && <Puck color={SELECTED_COLOR} showBody={false} handleDist={handleDist} dragging={dragging} turning={turning} />}
 		</group>
 	);
 }
 
-const WAYPOINT_COLOR = "#6f9f86";
-const RAIL_COLOR = "#a78bfa"; // the camera's violet, same identity as its timeline lane
-const SUBJECT_PATH_COLOR = "#2f9b8f";
+const WAYPOINT_COLOR = "#078267";
+const RAIL_COLOR = "#7137c8"; // saturated violet, same identity as its timeline lane
+const SUBJECT_PATH_COLOR = "#008f83";
 
 function directionTriangle(from, to, distance = 0.26) {
 	const dx = to.x - from.x;
@@ -230,23 +235,15 @@ function SubjectMovementGuide({ track }) {
 		const start = track[0];
 		const end = track[track.length - 1];
 		const moving = Math.hypot(end.x - start.x, end.z - start.z) > 0.05;
-		const line = new THREE.BufferGeometry();
-		line.setAttribute("position", new THREE.Float32BufferAttribute([
-			start.x, 0.041, start.z,
-			end.x, 0.041, end.z,
-		], 3));
-		return { start, end, moving, line, arrow: moving ? directionTriangle(start, end, 0.34) : null };
+		return { start, end, moving, arrow: moving ? directionTriangle(start, end, 0.34) : null };
 	}, [track]);
 	useEffect(() => () => {
-		guide?.line.dispose();
 		guide?.arrow?.dispose();
 	}, [guide]);
 	if (!guide) return null;
 	return (
 		<group>
-			<line geometry={guide.line} renderOrder={9}>
-				<lineBasicMaterial color={SUBJECT_PATH_COLOR} transparent opacity={guide.moving ? 0.9 : 0.42} depthWrite={false} depthTest={false} />
-			</line>
+			<Line points={[[guide.start.x, 0.041, guide.start.z], [guide.end.x, 0.041, guide.end.z]]} color={SUBJECT_PATH_COLOR} lineWidth={3} transparent opacity={guide.moving ? 0.95 : 0.55} depthWrite={false} depthTest={false} renderOrder={9} />
 			{guide.arrow && (
 				<mesh geometry={guide.arrow} renderOrder={11}>
 					<meshBasicMaterial color={SUBJECT_PATH_COLOR} depthWrite={false} depthTest={false} side={THREE.DoubleSide} />
@@ -281,18 +278,6 @@ function SubjectMovementGuide({ track }) {
  * handlers, exactly like the pucks.
  */
 function CameraRailLine({ points, live = false }) {
-	const geometry = useMemo(() => {
-		if (!points || points.length < 2) return null;
-		const positions = new Float32Array(points.length * 3);
-		points.forEach((p, i) => {
-			positions[i * 3] = p.x;
-			positions[i * 3 + 1] = 0.03;
-			positions[i * 3 + 2] = p.z;
-		});
-		const g = new THREE.BufferGeometry();
-		g.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-		return g;
-	}, [points]);
 	const directionGeometry = useMemo(() => {
 		if (live || !points || points.length < 2) return null;
 		const head = points[0];
@@ -318,16 +303,13 @@ function CameraRailLine({ points, live = false }) {
 		], 3));
 		return arrow;
 	}, [live, points]);
-	useEffect(() => () => geometry?.dispose(), [geometry]);
 	useEffect(() => () => directionGeometry?.dispose(), [directionGeometry]);
-	if (!geometry) return null;
+	if (!points || points.length < 2) return null;
 	const first = points[0];
 	const last = points[points.length - 1];
 	return (
 		<group>
-			<line geometry={geometry} renderOrder={9}>
-				<lineBasicMaterial color={RAIL_COLOR} transparent opacity={live ? 0.5 : 0.85} depthWrite={false} depthTest={false} />
-			</line>
+			<Line points={points.map((point) => [point.x, 0.03, point.z])} color={RAIL_COLOR} lineWidth={live ? 2.5 : 3.5} transparent opacity={live ? 0.72 : 0.96} depthWrite={false} depthTest={false} renderOrder={9} />
 			{!live && (
 				<>
 					<mesh position={[first.x, 0.04, first.z]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={11}>
@@ -374,26 +356,12 @@ function CameraRailLine({ points, live = false }) {
  * reads from straight above and never enters shot-camera exports.
  */
 function WaypointPath({ waypoints, start, activeWaypointFrame }) {
-	const line = useMemo(() => {
-		if (waypoints.length < 1) return null;
-		const pathPoints = [{ x: start.x, z: start.z }, ...waypoints];
-		const positions = new Float32Array(pathPoints.length * 3);
-		pathPoints.forEach((w, i) => {
-			positions[i * 3] = w.x;
-			positions[i * 3 + 1] = 0.02;
-			positions[i * 3 + 2] = w.z;
-		});
-		const geometry = new THREE.BufferGeometry();
-		geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-		return geometry;
-	}, [start.x, start.z, waypoints]);
+	const pathPoints = useMemo(() => [{ x: start.x, z: start.z }, ...waypoints], [start.x, start.z, waypoints]);
 
 	return (
 		<group>
-			{line && (
-				<line geometry={line} renderOrder={9}>
-					<lineBasicMaterial color={WAYPOINT_COLOR} transparent opacity={0.55} depthWrite={false} depthTest={false} />
-				</line>
+			{pathPoints.length > 1 && (
+				<Line points={pathPoints.map((point) => [point.x, 0.02, point.z])} color={WAYPOINT_COLOR} lineWidth={2.5} transparent opacity={0.9} depthWrite={false} depthTest={false} renderOrder={9} />
 			)}
 			{waypoints.map((w, i) => {
 				const active = w.frame === activeWaypointFrame;
@@ -747,27 +715,27 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 	return (
 		<group ref={rootRef}>
 			<group ref={camPos}>
-				<PlanLabel text={ko("CAM", "카메라")} color="#247da0" />
+				<PlanLabel text={ko("CAM", "카메라")} color={CAMERA_COLOR} />
 				<group ref={camRot}>
 					<FrustumWedge fovDeg={fovDeg} active={drag?.id === "cam"} />
-					<Puck color="#4e9fb3" {...state("cam")} />
+					<Puck color={CAMERA_COLOR} {...state("cam")} />
 				</group>
 			</group>
 
 			<group position={[charA.x, 0, charA.z]}>
-				<PlanLabel text={ko("S1", "인물 1")} color="#273849" />
+				<PlanLabel text={ko("S1", "인물 1")} color={SUBJECT_ONE_COLOR} />
 				<group rotation={[0, (charA.rot * Math.PI) / 180, 0]}>
 					{/* The real character mesh already renders in Top-View. Keep only
 					    its facing stem/handle instead of covering it with a hex puck. */}
-					<Puck color="#273849" showBody={false} {...state("a")} />
+					<Puck color={SUBJECT_ONE_COLOR} showBody={false} {...state("a")} />
 				</group>
 			</group>
 
 			{showB && (
 				<group position={[charB.x, 0, charB.z]}>
-					<PlanLabel text={ko("S2", "인물 2")} color="#d65f55" />
+					<PlanLabel text={ko("S2", "인물 2")} color={SUBJECT_TWO_COLOR} />
 					<group rotation={[0, (charB.rot * Math.PI) / 180, 0]}>
-						<Puck color="#d65f55" showBody={false} {...state("b")} />
+						<Puck color={SUBJECT_TWO_COLOR} showBody={false} {...state("b")} />
 					</group>
 				</group>
 			)}
