@@ -39,6 +39,17 @@ CCLAY_ARDY_HOST=user@your-gpu-box npx cozyclay
 
 Everything else, staging through camera work and playback, runs without it.
 
+A draft local video-generation bridge is also available. Provider keys stay in
+the loopback process rather than the browser:
+
+```bash
+RUNWAYML_API_SECRET=your_key npx cozyclay
+```
+
+The initial adapter exposes Runway-backed models through `/generation`; see
+`tools/generation/README.md`. The hosted static demo never receives provider
+credentials and does not call paid video APIs.
+
 ARDY's text encoder normally requires a Hugging Face account, gated-model
 approval, and an access token on the ARDY machine. CozyClay ships a
 token-free alternative — one command provisions the same encoder stack from

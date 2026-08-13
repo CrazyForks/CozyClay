@@ -8,8 +8,8 @@
  * `dist/`, so this launcher only has to
  *
  *   - serve those files over loopback,
- *   - forward /ardy to the sidecar on 5181 (the job Vite's dev proxy does),
- *   - keep the sidecar's lifetime tied to this process.
+ *   - forward /ardy and /generation to their loopback sidecars,
+ *   - keep the sidecars' lifetimes tied to this process.
  *
  * It has no dependencies on purpose. A launcher that needs an install step
  * before it can serve a prebuilt app is a launcher that will break.
@@ -26,6 +26,8 @@ const PKG_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const DIST = join(PKG_ROOT, "dist");
 const BRIDGE = join(PKG_ROOT, "tools", "ardy", "bridge.mjs");
 const BRIDGE_PORT = Number(process.env.COZYCLAY_BRIDGE_PORT ?? 5181);
+const GENERATION_BRIDGE = join(PKG_ROOT, "tools", "generation", "bridge.mjs");
+const GENERATION_BRIDGE_PORT = Number(process.env.CCLAY_GENERATION_PORT ?? 5182);
 
 const TYPES = {
 	".html": "text/html; charset=utf-8",
@@ -102,9 +104,9 @@ function serveFile(res, path) {
 
 // Forward /ardy to the sidecar. Same contract as the Vite dev proxy, so the
 // browser code needs no build-time knowledge of how it was launched.
-function proxyToBridge(req, res) {
+function proxyToBridge(req, res, port = BRIDGE_PORT, label = "ardy") {
 	const upstream = httpRequest(
-		{ host: "127.0.0.1", port: BRIDGE_PORT, path: req.url, method: req.method, headers: req.headers },
+		{ host: "127.0.0.1", port, path: req.url, method: req.method, headers: req.headers },
 		(upstreamRes) => {
 			res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
 			upstreamRes.pipe(res);
@@ -114,7 +116,7 @@ function proxyToBridge(req, res) {
 		// An absent sidecar is an expected state, not a crash: the app treats a
 		// failed probe as "generation unavailable" and carries on.
 		res.writeHead(503, { "content-type": "application/json" });
-		res.end(JSON.stringify({ error: "ardy sidecar is not running" }));
+		res.end(JSON.stringify({ error: `${label} sidecar is not running` }));
 	});
 	req.pipe(upstream);
 }
@@ -216,11 +218,22 @@ if (opts.ardy && ardyHost && existsSync(BRIDGE)) {
 		bridge = null;
 	});
 }
+let generationBridge = null;
+if (process.env.RUNWAYML_API_SECRET && existsSync(GENERATION_BRIDGE)) {
+	generationBridge = spawn(process.execPath, [GENERATION_BRIDGE], { cwd: PKG_ROOT, stdio: "inherit" });
+	generationBridge.on("error", () => {
+		generationBridge = null;
+	});
+}
 
 const server = createServer((req, res) => {
 	const url = new URL(req.url ?? "/", "http://localhost");
 	if (url.pathname.startsWith("/ardy/")) {
 		proxyToBridge(req, res);
+		return;
+	}
+	if (url.pathname.startsWith("/generation/")) {
+		proxyToBridge(req, res, GENERATION_BRIDGE_PORT, "generation");
 		return;
 	}
 	const rel = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
@@ -240,6 +253,7 @@ async function shutdown() {
 	if (shuttingDown) process.exit(0);
 	shuttingDown = true;
 	if (bridge) bridge.kill("SIGTERM");
+	if (generationBridge) generationBridge.kill("SIGTERM");
 	server.close();
 	try {
 		await maybeAskForStar(startedAt, opts);
@@ -255,6 +269,7 @@ server.on("error", (err) => {
 	if (err && err.code === "EADDRINUSE") {
 		console.error(`cozyclay: port ${opts.port} is taken. Try --port ${opts.port + 1}.`);
 		if (bridge) bridge.kill("SIGTERM");
+		if (generationBridge) generationBridge.kill("SIGTERM");
 		process.exit(1);
 	}
 	throw err;

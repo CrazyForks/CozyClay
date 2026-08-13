@@ -12,6 +12,7 @@ const REPO = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const viteArgs = process.argv.slice(2);
 const children = [
 	spawnOwned(process.execPath, ["tools/ardy/bridge.mjs"], { cwd: REPO }),
+	spawnOwned(process.execPath, ["tools/generation/bridge.mjs"], { cwd: REPO }),
 	spawnOwned(process.execPath, ["node_modules/vite/bin/vite.js", ...viteArgs], { cwd: REPO }),
 ];
 
