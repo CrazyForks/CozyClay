@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { frameFromClientX, promptMoveStartFrame } from "./timeline-coordinates.js";
 import { promptResizeFrame } from "./timeline-resize.js";
+import { ko, isKo } from "../locale.js";
 
 /**
  * ARDY Viser-style animation timeline — the live motion workspace.
@@ -38,6 +39,12 @@ const TRACKS = [
 	"2D Root",
 	"Camera",
 ];
+const TRACK_LABELS_KO = {
+	Prompts: ko("Prompts", "프롬프트"),
+	"Full-Body": ko("Full-Body", "전신"),
+	"2D Root": ko("2D Root", "2D 루트"),
+	Camera: ko("Camera", "카메라"),
+};
 
 /** IK keys live on the Full-Body lane: one marker per keyed frame, holding
  * a sparse set of the limbs the user has moved (never every joint). */
@@ -439,16 +446,16 @@ export default function Timeline({
 	}
 
 	return (
-		<section className={"timeline" + (expanded ? "" : " collapsed")} aria-label="Animation timeline">
+		<section className={"timeline" + (expanded ? "" : " collapsed")} aria-label={ko("Animation timeline", "애니메이션 타임라인")}>
 			{expanded ? (
 				<>
 					<div className="tl-head">
-						<div className="tl-transport" aria-label="Playback transport">
+						<div className="tl-transport" aria-label={ko("Playback transport", "재생 컨트롤")}>
 							<button
 								type="button"
 								className="tl-btn"
-								aria-label="Previous frame"
-								title="Previous frame (k)"
+								aria-label={ko("Previous frame", "이전 프레임")}
+								title={ko("Previous frame (k)", "이전 프레임 (k)")}
 								onClick={() => handlers.current.onStep?.(-1)}
 							>
 								‹
@@ -456,8 +463,8 @@ export default function Timeline({
 							<button
 								type="button"
 								className={"tl-btn play" + (playing ? " on" : "")}
-								aria-label={playing ? "Pause playback" : "Play playback"}
-								title="Play / pause (Space)"
+								aria-label={playing ? ko("Pause playback", "재생 일시중지") : ko("Play playback", "재생 시작")}
+								title={ko("Play / pause (Space)", "재생/일시중지 (Space)")}
 								onClick={() => handlers.current.onPlayToggle?.()}
 							>
 								{playing ? "❚❚" : "▶"}
@@ -465,8 +472,8 @@ export default function Timeline({
 							<button
 								type="button"
 								className="tl-btn"
-								aria-label="Next frame"
-								title="Next frame (j)"
+								aria-label={ko("Next frame", "다음 프레임")}
+								title={ko("Next frame (j)", "다음 프레임 (j)")}
 								onClick={() => handlers.current.onStep?.(1)}
 							>
 								›
@@ -478,7 +485,7 @@ export default function Timeline({
 						<button
 							type="button"
 							className={"tl-btn zoom" + (zoom !== ZOOM_DEFAULT ? " on" : "")}
-							title="Two-finger up/down over FRAME ruler to zoom — click to reset to 1×"
+							title={ko("Two-finger up/down over FRAME ruler to zoom — click to reset to 1×", "프레임 눈금 위에서 두 손가락으로 위아래 스크롤해 확대/축소 · 클릭하면 1×로 초기화")}
 							onClick={resetZoom}
 						>
 							{zoom.toFixed(2)}×
@@ -487,39 +494,45 @@ export default function Timeline({
 							type="button"
 							className={"tl-btn wp" + (waypointMode ? " on" : "")}
 							aria-pressed={waypointMode}
-							title="Enable or disable 2D Root path constraints (P)"
+							title={ko("Enable or disable 2D Root path constraints (P)", "2D 루트 경로 제약 켜기/끄기 (P)")}
 							onClick={() => handlers.current.onWaypointToggle?.()}
 						>
-							Waypoint {waypointMode ? "on" : "off"}
+							{isKo ? `웨이포인트 ${waypointMode ? "켜짐" : "꺼짐"}` : `Waypoint ${waypointMode ? "on" : "off"}`}
 						</button>
 						<button
 							type="button"
 							className={"tl-btn ik" + (ikMode ? " on" : "")}
 							aria-pressed={ikMode}
 							disabled={ikDisabled && !ikMode}
-							title={ikDisabled && !ikMode ? "IK needs Subject 1's rig loaded" : "IK mode — drag a wrist / ankle handle; keys land on the Full-Body lane. With a motion loaded, keys correct it layer-style"}
+							title={ikDisabled && !ikMode ? ko("IK needs Subject 1's rig loaded", "IK를 사용하려면 인물 1의 리그를 먼저 불러와야 해요") : ko("IK mode — drag a wrist / ankle handle; keys land on the Full-Body lane. With a motion loaded, keys correct it layer-style", "IK 모드 — 손목이나 발목 핸들을 드래그하세요. 키는 전신 레인에 찍히며, 모션을 불러온 뒤에는 레이어 방식으로 보정합니다")}
 							onClick={() => handlers.current.onIkToggle?.()}
 						>
-							IK {ikMode ? "on" : "off"}
+							{isKo ? `IK ${ikMode ? "켜짐" : "꺼짐"}` : `IK ${ikMode ? "on" : "off"}`}
 						</button>
 						<button
 							type="button"
 							className={"tl-btn ik snap" + (footSnap ? " on" : "")}
 							aria-pressed={footSnap}
-							title="Foot snap — keep the feet planted while you move the body (hips); the knees bend instead of the feet sinking through the floor"
+							title={ko("Foot snap — keep the feet planted while you move the body (hips); the knees bend instead of the feet sinking through the floor", "발 스냅 — 몸(엉덩이)을 움직여도 발을 바닥에 고정합니다. 발이 바닥으로 가라앉는 대신 무릎이 구부러집니다")}
 							onClick={() => handlers.current.onFootSnapToggle?.()}
 						>
-							Snap {footSnap ? "on" : "off"}
+							{isKo ? `스냅 ${footSnap ? "켜짐" : "꺼짐"}` : `Snap ${footSnap ? "on" : "off"}`}
 						</button>
 						{waypointMode && (
 							<span className={"tl-wp-hint" + (waypointFrames.length < 2 || pathSpeed?.warn ? " warn" : "")}>
 								{waypointFrames.length < 2
-									? "Click the set floor in the Shot view to drop waypoints"
-									: `${waypointFrames.length} root waypoints` +
-										(pathSpeed
-											? ` · ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)} m/s${pathSpeed.warn ? " — outside the natural 0.5–3 m/s locomotion band" : ""}`
-											: "") +
-										" · click the set floor to add more"}
+									? ko("Click the set floor in the Shot view to drop waypoints", "샷 뷰의 세트 바닥을 클릭해 웨이포인트를 놓으세요")
+									: isKo
+										? `루트 웨이포인트 ${waypointFrames.length}개` +
+											(pathSpeed
+												? ` · ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)} m/s${pathSpeed.warn ? " — 자연스러운 이동 속도 0.5–3 m/s 범위를 벗어남" : ""}`
+												: "") +
+											" · 세트 바닥을 클릭해 더 추가"
+										: `${waypointFrames.length} root waypoints` +
+											(pathSpeed
+												? ` · ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)} m/s${pathSpeed.warn ? " — outside the natural 0.5–3 m/s locomotion band" : ""}`
+												: "") +
+											" · click the set floor to add more"}
 							</span>
 						)}
 						{badge && <span className={"tl-badge " + badge.kind}>{badge.label}</span>}
@@ -527,18 +540,18 @@ export default function Timeline({
 							<button
 								type="button"
 								className="tl-btn clear"
-								title="Clear motion and restore the blocking pose"
+								title={ko("Clear motion and restore the blocking pose", "모션을 지우고 블로킹 포즈로 되돌리기")}
 								onClick={onClearMotion}
 							>
-								✕ Motion
+								✕ {ko("Motion", "모션")}
 							</button>
 						)}
 						<button
 							type="button"
 							className="tl-toggle"
 							aria-expanded="true"
-							aria-label="Collapse timeline"
-							title="Collapse timeline"
+							aria-label={ko("Collapse timeline", "타임라인 접기")}
+							title={ko("Collapse timeline", "타임라인 접기")}
 							onClick={() => setExpanded(false)}
 						>
 							▾
@@ -548,12 +561,12 @@ export default function Timeline({
 					<div className="tl-body" ref={bodyRef}>
 						<div className="tl-surface" style={{ "--tl-zoom": surfaceZoom }}>
 						<div className="tl-ruler">
-							<span className="tl-ruler-label">Frame</span>
+							<span className="tl-ruler-label">{ko("Frame", "프레임")}</span>
 							<div
 								className="tl-ruler-lane"
 								ref={rulerRef}
 								role="slider"
-								aria-label="Scrub timeline"
+								aria-label={ko("Scrub timeline", "타임라인 탐색")}
 								aria-valuemin={0}
 								aria-valuemax={frameCount - 1}
 								aria-valuenow={frame}
@@ -587,13 +600,13 @@ export default function Timeline({
 						{TRACKS.map((name) => (
 							<div className={"tl-track" + (name === "Prompts" ? " prompts" : "") + (name === IK_LANE ? " ik" : "")} key={name}>
 								<span className="tl-track-label">
-									{name}
-									{name === "Prompts" && <button className="tl-track-add" type="button" title="Add 2 second prompt clip" onClick={() => handlers.current.onPromptAdd?.(frame)}>+</button>}
+									{TRACK_LABELS_KO[name]}
+									{name === "Prompts" && <button className="tl-track-add" type="button" title={ko("Add 2 second prompt clip", "2초 프롬프트 클립 추가")} onClick={() => handlers.current.onPromptAdd?.(frame)}>+</button>}
 									{name === IK_LANE && ikMode && (
 										<button
 											className="tl-track-add ik"
 											type="button"
-											title={`Key the current pose at frame ${frame}`}
+											title={isKo ? `현재 포즈를 ${frame}프레임에 키로 저장` : `Key the current pose at frame ${frame}`}
 											onClick={() => handlers.current.onIkKeyframeAdd?.()}
 										>
 											+
@@ -615,7 +628,7 @@ export default function Timeline({
 												}
 												: undefined
 									}
-									title={name === CAMERA_LANE ? "Click to key the current camera framing at this frame" : undefined}
+									title={name === CAMERA_LANE ? ko("Click to key the current camera framing at this frame", "클릭하면 현재 카메라 프레이밍을 이 프레임에 키로 저장합니다") : undefined}
 								>
 									{gridFrames.map((f) => (
 										<i key={f} className="tl-grid" style={{ "--tl-f": framePct(f, displayFrameCount) }} aria-hidden="true" />
@@ -623,10 +636,10 @@ export default function Timeline({
 									{name === "Prompts" && promptClips.map((clip) => {
 										const duration = ((clip.endFrame - clip.startFrame) / Math.max(1, fps)).toFixed(1);
 										return (
-											<div key={clip.id} className={"tl-chip" + (selectedPromptId === clip.id ? " selected" : "") + (movingPromptId === clip.id ? " moving" : "")} style={{ "--tl-f-start": clipPct(clip.startFrame), "--tl-f-end": clipPct(clip.endFrame) }} title="Drag to move · edge handles resize · right-click removes" onPointerDown={(e) => beginPromptMove(e, clip)} onPointerMove={movePrompt} onPointerUp={endPromptMove} onPointerCancel={endPromptMove} onClick={blockPromptClick} onContextMenu={(e) => { e.preventDefault(); handlers.current.onPromptRemove?.(clip.id); }}>
-												<button className="tl-chip-handle start" type="button" aria-label="Resize prompt start" onPointerDown={(e) => beginPromptResize(e, clip, "start")} onPointerMove={movePromptResize} onPointerUp={endPromptResize} onPointerCancel={endPromptResize} />
-												<input className="tl-chip-input" value={clip.text} placeholder={`${duration}s · motion prompt`} maxLength={500} onChange={(e) => handlers.current.onPromptChange?.(clip.id, e.target.value)} />
-												<button className="tl-chip-handle end" type="button" aria-label="Resize prompt end" onPointerDown={(e) => beginPromptResize(e, clip, "end")} onPointerMove={movePromptResize} onPointerUp={endPromptResize} onPointerCancel={endPromptResize} />
+											<div key={clip.id} className={"tl-chip" + (selectedPromptId === clip.id ? " selected" : "") + (movingPromptId === clip.id ? " moving" : "")} style={{ "--tl-f-start": clipPct(clip.startFrame), "--tl-f-end": clipPct(clip.endFrame) }} title={ko("Drag to move · edge handles resize · right-click removes", "드래그로 이동 · 가장자리 핸들로 길이 조절 · 오른쪽 클릭으로 삭제")} onPointerDown={(e) => beginPromptMove(e, clip)} onPointerMove={movePrompt} onPointerUp={endPromptMove} onPointerCancel={endPromptMove} onClick={blockPromptClick} onContextMenu={(e) => { e.preventDefault(); handlers.current.onPromptRemove?.(clip.id); }}>
+												<button className="tl-chip-handle start" type="button" aria-label={ko("Resize prompt start", "프롬프트 시작점 조절")} onPointerDown={(e) => beginPromptResize(e, clip, "start")} onPointerMove={movePromptResize} onPointerUp={endPromptResize} onPointerCancel={endPromptResize} />
+												<input className="tl-chip-input" value={clip.text} placeholder={isKo ? `${duration}초 · 모션 프롬프트` : `${duration}s · motion prompt`} maxLength={500} onChange={(e) => handlers.current.onPromptChange?.(clip.id, e.target.value)} />
+												<button className="tl-chip-handle end" type="button" aria-label={ko("Resize prompt end", "프롬프트 끝점 조절")} onPointerDown={(e) => beginPromptResize(e, clip, "end")} onPointerMove={movePromptResize} onPointerUp={endPromptResize} onPointerCancel={endPromptResize} />
 											</div>
 										);
 									})}
@@ -636,7 +649,7 @@ export default function Timeline({
 												key={f}
 												className="tl-marker ik"
 												style={{ "--tl-f": framePct(f, displayFrameCount) }}
-												title={`Full-body IK key at frame ${f} — click to jump, right-click to remove`}
+												title={isKo ? `${f}프레임의 전신 IK 키 — 클릭해 이동, 오른쪽 클릭으로 삭제` : `Full-body IK key at frame ${f} — click to jump, right-click to remove`}
 												onPointerDown={(e) => {
 													if (e.button !== 0) return;
 													e.stopPropagation();
@@ -655,7 +668,7 @@ export default function Timeline({
 												key={f}
 												className={"tl-marker wp" + (f === pendingWaypointFrame ? " pending" : "")}
 												style={{ "--tl-f": framePct(f, displayFrameCount) }}
-												title={`Root waypoint at frame ${f} — click to select, right-click to remove; drag marker ${waypointFrames.indexOf(f) + 1} in Top-View to move`}
+												title={isKo ? `${f}프레임의 루트 웨이포인트 — 클릭해 선택, 오른쪽 클릭으로 삭제. 탑뷰에서 ${waypointFrames.indexOf(f) + 1}번 마커를 드래그해 이동` : `Root waypoint at frame ${f} — click to select, right-click to remove; drag marker ${waypointFrames.indexOf(f) + 1} in Top-View to move`}
 												onPointerDown={(e) => {
 													// Select only on the primary button — a right click
 													// must reach contextmenu so it removes without scrubbing.
@@ -675,7 +688,7 @@ export default function Timeline({
 											key={f}
 											className="tl-marker cam"
 											style={{ "--tl-f": framePct(f, displayFrameCount) }}
-											title={`Camera key at frame ${f} — click to jump, drag to re-time, right-click to remove`}
+											title={isKo ? `${f}프레임의 카메라 키 — 클릭해 이동, 드래그로 시간 변경, 오른쪽 클릭으로 삭제` : `Camera key at frame ${f} — click to jump, drag to re-time, right-click to remove`}
 											onPointerDown={(e) => beginCameraKeyDrag(e, f)}
 											onPointerMove={moveCameraKeyDrag}
 											onPointerUp={endCameraKeyDrag}
@@ -702,16 +715,18 @@ export default function Timeline({
 					{waypointMode && (
 						<span className={"tl-wp-hint" + (waypointFrames.length < 2 ? " warn" : "")}>
 							{waypointFrames.length < 2
-								? "Click the set floor in the Shot view to add waypoints"
-								: `${waypointFrames.length} root waypoints · click the set floor to add more`}
+								? ko("Click the set floor in the Shot view to add waypoints", "샷 뷰의 세트 바닥을 클릭해 웨이포인트를 추가하세요")
+								: isKo
+									? `루트 웨이포인트 ${waypointFrames.length}개 · 세트 바닥을 클릭해 더 추가`
+									: `${waypointFrames.length} root waypoints · click the set floor to add more`}
 						</span>
 					)}
 					<button
 						type="button"
 						className="tl-toggle"
 						aria-expanded="false"
-						aria-label="Expand timeline"
-						title="Expand timeline"
+						aria-label={ko("Expand timeline", "타임라인 펼치기")}
+						title={ko("Expand timeline", "타임라인 펼치기")}
 						onClick={() => setExpanded(true)}
 					>
 						▸

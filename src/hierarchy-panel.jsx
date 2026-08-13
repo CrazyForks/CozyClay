@@ -1,7 +1,36 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ko, isKo } from "./locale.js";
 import { buildHierarchyNodes } from "./hierarchy-model.js";
 import { sceneObjectIdFromHierarchy } from "./scene-objects.js";
-import AddObjectMenu, { CatalogueEntries } from "./object-catalog.jsx";
+import AddObjectMenu, { CatalogueEntries, displayObjectLabel } from "./object-catalog.jsx";
+
+const HIERARCHY_LABELS_KO = {
+	"SHOT 01": "샷 01",
+	Camera: "카메라",
+	Characters: "캐릭터",
+	"Character 1": "캐릭터 1",
+	"Character 2": "캐릭터 2",
+	Character: "캐릭터",
+	Motion: "모션",
+	"Base Motion": "기본 모션",
+	"Prompt Blocks": "프롬프트 블록",
+	"IK Corrections": "IK 보정",
+	Rig: "리그",
+	"Root / Hips": "루트 / 골반",
+	Spine: "척추",
+	"Left Arm": "왼팔",
+	"Right Arm": "오른팔",
+	"Left Leg": "왼다리",
+	"Right Leg": "오른다리",
+	"Root Path": "루트 경로",
+	Environment: "환경",
+	Props: "소품",
+};
+
+function displayHierarchyLabel(node) {
+	if (node.kind === "object") return displayObjectLabel(node.label);
+	return isKo ? (HIERARCHY_LABELS_KO[node.label] ?? node.label) : node.label;
+}
 
 function indexParents(nodes, parent = null, parents = new Map()) {
 	for (const node of nodes) {
@@ -50,16 +79,16 @@ function RowContextMenu({ menu, onClose, onAction, onAddObject }) {
 			{menu.kind === "object" ? (
 				<>
 					<button type="button" role="menuitem" className="hierarchy-context-item" onClick={() => onAction("rename", menu.id)}>
-						Rename
+						{ko("Rename", "이름 바꾸기")}
 					</button>
 					<button type="button" role="menuitem" className="hierarchy-context-item" onClick={() => onAction("duplicate", menu.id)}>
-						Duplicate
+						{ko("Duplicate", "복제")}
 					</button>
 					<button type="button" role="menuitem" className="hierarchy-context-item" onClick={() => onAction("delete", menu.id)}>
-						Delete
+						{ko("Delete", "삭제")}
 					</button>
 					<button type="button" role="menuitem" className="hierarchy-context-item" onClick={() => onAction("frame", menu.id)}>
-						Frame
+						{ko("Frame", "프레임 맞추기")}
 					</button>
 				</>
 			) : (
@@ -84,6 +113,7 @@ function TreeRow({
 	onRowContextMenu,
 }) {
 	const branch = !!node.children?.length;
+	const label = displayHierarchyLabel(node);
 	const rowWrapRef = useRef(null);
 	const inputRef = useRef(null);
 	// A commit/cancel may race the blur that follows the input unmounting;
@@ -120,7 +150,7 @@ function TreeRow({
 				<button
 					type="button"
 					className="hierarchy-toggle"
-					aria-label={`${expanded ? "Collapse" : "Expand"} ${node.label}`}
+					aria-label={isKo ? `${label} ${expanded ? "접기" : "펼치기"}` : `${expanded ? "Collapse" : "Expand"} ${label}`}
 					onClick={() => onToggle(node.id)}
 				>
 					{expanded ? "▾" : "▸"}
@@ -138,7 +168,7 @@ function TreeRow({
 						ref={inputRef}
 						className="hierarchy-rename-input"
 						defaultValue={node.label}
-						aria-label={`Rename ${node.label}`}
+						aria-label={isKo ? `${label} 이름 바꾸기` : `Rename ${label}`}
 						autoFocus
 						onFocus={(event) => event.currentTarget.select()}
 						onKeyDown={(event) => {
@@ -157,7 +187,7 @@ function TreeRow({
 			) : (
 				<button type="button" className="hierarchy-row" onClick={() => onSelect(node.id)}>
 					<span className={`hierarchy-icon ${node.kind}`} aria-hidden="true" />
-					<span className="hierarchy-label">{node.label}</span>
+					<span className="hierarchy-label">{label}</span>
 					{status && <span className="hierarchy-status">{status}</span>}
 					{badge !== null && badge !== undefined && badge !== 0 && <span className="hierarchy-badge">{badge}</span>}
 				</button>
@@ -243,7 +273,7 @@ export default function HierarchyPanel({
 	};
 	const badgeFor = (id) => {
 		if (id === "characters") return showB ? 2 : 1;
-		if (id === "characterA.motion" || id === "characterA.baseMotion") return motionFrames ? `${motionFrames}f` : "empty";
+		if (id === "characterA.motion" || id === "characterA.baseMotion") return motionFrames ? `${motionFrames}f` : ko("empty", "비어 있음");
 		if (id === "characterA.promptBlocks") return promptCount;
 		if (id === "characterA.ik") return ikFrames;
 		if (id === "rootPath") return waypointCount;
@@ -251,7 +281,7 @@ export default function HierarchyPanel({
 		return null;
 	};
 	const statusFor = (id) => {
-		if (id === "characterA" && ikMode) return "IK ON";
+		if (id === "characterA" && ikMode) return ko("IK ON", "IK 켜짐");
 		return null;
 	};
 
@@ -334,18 +364,18 @@ export default function HierarchyPanel({
 		});
 
 	return (
-		<section className="hierarchy-pane" aria-label="Shot hierarchy">
+		<section className="hierarchy-pane" aria-label={ko("Shot hierarchy", "샷 계층")}>
 			<div className="hierarchy-heading">
 				<div>
-					<span className="hierarchy-kicker">Hierarchy</span>
-					<strong>Shot structure</strong>
+					<span className="hierarchy-kicker">{ko("Hierarchy", "계층")}</span>
+					<strong>{ko("Shot structure", "샷 구조")}</strong>
 				</div>
-				<span className="hierarchy-frame-status">{motionFrames ? `${motionFrames} frames` : "Blocking"}</span>
+				<span className="hierarchy-frame-status">{motionFrames ? (isKo ? `${motionFrames}프레임` : `${motionFrames} frames`) : ko("Blocking", "블로킹")}</span>
 			</div>
 			{onAddObject && (
 				<div className="hierarchy-toolbar">
 					<AddObjectMenu onAdd={onAddObject} />
-					<span className="hierarchy-frame-status">{motionFrames ? `${motionFrames} frames` : "Blocking"}</span>
+					<span className="hierarchy-frame-status">{motionFrames ? (isKo ? `${motionFrames}프레임` : `${motionFrames} frames`) : ko("Blocking", "블로킹")}</span>
 				</div>
 			)}
 			<div className="hierarchy-tree" role="tree" ref={treeRef} onKeyDown={onTreeKeyDown} onContextMenu={openCreateMenu}>
