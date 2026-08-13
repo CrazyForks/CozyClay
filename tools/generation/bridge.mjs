@@ -114,7 +114,7 @@ export function createGenerationServer({ store = createJobStore(), providers = {
           if (state.status === "succeeded" && state.outputUrl) {
             const target = join(store.resultDir, `${job.id}.mp4`);
             try { await download(state.outputUrl, target); job.outputPath = target; }
-            catch (error) { job.status = "processing"; job.failure = error.message; }
+            catch (error) { job.status = "failed"; job.failure = `provider finished, but its expiring output could not be saved locally: ${error.message}`; }
           }
           await store.set(job);
         }
@@ -127,7 +127,7 @@ export function createGenerationServer({ store = createJobStore(), providers = {
   });
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const server = createGenerationServer();
   server.listen(PORT, HOST, () => console.log(`[generation] listening on http://${HOST}:${PORT}`));
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => server.close(() => process.exit(0)));

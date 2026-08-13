@@ -4,6 +4,8 @@ const VERSION = "2024-11-06";
 export const RUNWAY_MODELS = Object.freeze([
   { id: "gen4_turbo", label: "Runway Gen-4 Turbo", endpoint: "image_to_video", durations: [2, 3, 4, 5, 6, 7, 8, 9, 10], costPerSecondUsd: 0.05, capabilities: { prompt: true, startFrame: true, endFrame: false, referenceVideo: false, audio: false } },
   { id: "gen4.5", label: "Runway Gen-4.5", endpoint: "image_to_video", durations: [2, 3, 4, 5, 6, 7, 8, 9, 10], costPerSecondUsd: 0.12, capabilities: { prompt: true, startFrame: true, endFrame: false, referenceVideo: false, audio: false } },
+  { id: "seedance2", label: "Seedance 2.0 via Runway", endpoint: "image_to_video", durations: [2, 3, 4, 5, 6, 7, 8, 9, 10], costPerSecondUsd: 0.36, capabilities: { prompt: true, startFrame: true, endFrame: false, referenceVideo: false, audio: true } },
+  { id: "veo3.1", label: "Google Veo 3.1 via Runway", endpoint: "image_to_video", durations: [4, 6, 8], costPerSecondUsd: 0.4, capabilities: { prompt: true, startFrame: true, endFrame: false, referenceVideo: false, audio: true } },
 ]);
 
 const RETRYABLE = new Set([429, 502, 503, 504]);
