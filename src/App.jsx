@@ -18,11 +18,13 @@ import { Room, StageLights } from "./room.jsx";
 import {
 	SHOT_AUTHORING_KEY,
 	SHOT_AUTHORING_LEGACY_KEY,
+	SHOT_AUTHORING_LEGACY_KEYS,
 	SHOT_AUTHORING_QUARANTINE_KEY,
 	readShotAuthoring,
 	serializeShotAuthoring,
 } from "./shot-authoring.js";
-import { FOLLOW_DEFAULTS, buildFollowTrack, buildRail, buildRailFollowTrack, simplifyStroke } from "./camera-follow.js";
+import { buildFollowTrack, buildRail, buildRailFollowTrack, simplifyStroke } from "./camera-follow.js";
+import { createCameraBlock, updateCameraBlock } from "./camera-block.js";
 import { SetProps } from "./props.jsx";
 import {
 	DEFAULT_SCENE_OBJECTS,
@@ -1419,13 +1421,14 @@ globalThis.playMode = centerTab === "play";
 			let sourceKey = SHOT_AUTHORING_KEY;
 			let raw = currentRaw;
 			let loaded = readShotAuthoring(raw);
-			if (loaded.status === "absent") {
-				sourceKey = SHOT_AUTHORING_LEGACY_KEY;
+			for (const legacyKey of SHOT_AUTHORING_LEGACY_KEYS ?? [SHOT_AUTHORING_LEGACY_KEY]) {
+				if (loaded.status !== "absent") break;
+				sourceKey = legacyKey;
 				raw = localStorage.getItem(sourceKey);
 				loaded = readShotAuthoring(raw);
 			}
 			if (loaded.status === "corrupt") {
-				// Preserve the unreadable roll byte-for-byte before a fresh v2 save.
+				// Preserve the unreadable roll byte-for-byte before a fresh v3 save.
 				localStorage.setItem(SHOT_AUTHORING_QUARANTINE_KEY, raw);
 				localStorage.removeItem(sourceKey);
 				return { state: null, saveBlocked: false };
@@ -1446,21 +1449,6 @@ globalThis.playMode = centerTab === "play";
 	// Follow slaves the move to the timeline playhead so camera and character
 	// motion share one time axis; off frees the camera while both stay set.
 	const [moveFollow, setMoveFollow] = useState(true);
-	// Follow cam: the camera is DERIVED from the subject's trajectory (a
-	// steadicam behind it, or a dolly on a drawn Top-View rail) instead of
-	// interpolated between keys. Parameters and the rail survive reloads.
-	const [followCam, setFollowCam] = useState(() => ({
-		enabled: false,
-		distance: FOLLOW_DEFAULTS.distance,
-		height: FOLLOW_DEFAULTS.height,
-		response: FOLLOW_DEFAULTS.response,
-		lead: FOLLOW_DEFAULTS.lead,
-		railStartMode: FOLLOW_DEFAULTS.railStartMode,
-		maxDollySpeed: FOLLOW_DEFAULTS.maxDollySpeed,
-		pitchOffsetDeg: FOLLOW_DEFAULTS.pitchOffsetDeg,
-		...(startupShotState?.followCam ?? {}),
-	}));
-	const [cameraRail, setCameraRail] = useState(startupShotState?.cameraRail ?? null); // simplified control points [{x,z}]
 	const [railDraw, setRailDraw] = useState(false);
 	const [hasCharSheet, setHasCharSheet] = useState(false);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
@@ -1509,7 +1497,24 @@ globalThis.playMode = centerTab === "play";
 	const activeShotIdx = shotIndexAtFrame(shots, tlFrame);
 	const activeShot = shots[activeShotIdx] ?? null;
 	const cameraKeys = activeShot?.cameraKeys ?? [];
+	const activeCamera = createCameraBlock(activeShot?.camera);
+	const followCam = activeCamera.followCam;
+	const cameraRail = activeCamera.cameraRail;
 	const hasCameraKeys = shots.some((shot) => shot.cameraKeys.length > 0);
+	function changeActiveCamera(patch, index = activeShotIdx) {
+		setShots((current) => current.map((shot, shotIndex) => shotIndex === index
+			? { ...shot, camera: updateCameraBlock(shot.camera, patch) }
+			: shot));
+	}
+	function changeFollowCam(patch) {
+		changeActiveCamera({ followCam: { ...followCam, ...patch } });
+	}
+	function changeCameraRail(points) {
+		changeActiveCamera({
+			cameraRail: points,
+			mode: points ? "rail" : activeCamera.mode === "rail" ? "follow" : activeCamera.mode,
+		});
+	}
 	const frameCountRef = useRef(DEFAULT_DURATION_S * 20);
 	frameCountRef.current = tlFrameCount;
 	// Root waypoints {frame, x, z, heading: null}, kept sorted by frame —
@@ -1530,11 +1535,11 @@ globalThis.playMode = centerTab === "play";
 	useEffect(() => {
 		if (shotStartup.saveBlocked) return;
 		try {
-			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ shots, waypoints, frameCount: tlFrameCount, followCam, cameraRail }));
+			localStorage.setItem(SHOT_AUTHORING_KEY, serializeShotAuthoring({ shots, waypoints, frameCount: tlFrameCount }));
 		} catch {
 			// quota or blocked storage: authoring simply won't survive a reload
 		}
-	}, [shots, waypoints, tlFrameCount, followCam, cameraRail, shotStartup.saveBlocked]);
+	}, [shots, waypoints, tlFrameCount, shotStartup.saveBlocked]);
 	const [promptClips, setPromptClips] = useState(() => DEFAULT_PROMPT_CLIPS.map((clip) => ({ ...clip })));
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
@@ -2329,7 +2334,7 @@ globalThis.playMode = centerTab === "play";
 	// is derived from. Without a loaded motion the subject stands still and
 	// the follow camera simply composes a static frame.
 	const subjectTrack = useMemo(() => {
-		if (!followCam.enabled) return null;
+		if (!shots.some((shot) => shot.camera?.mode === "follow" || shot.camera?.mode === "rail")) return null;
 		const frames = Math.max(tlFrameCount, 1);
 		if (!motion) return Array.from({ length: frames }, () => ({ x: charA.x, z: charA.z }));
 		const a = Math.min(motion.anchorFrame, motion.frames - 1);
@@ -2342,34 +2347,37 @@ globalThis.playMode = centerTab === "play";
 			);
 			return { x: motion.anchorX + offset.x, z: motion.anchorZ + offset.z };
 		});
-	}, [followCam.enabled, motion, tlFrameCount, charA.x, charA.z]);
+	}, [shots, motion, tlFrameCount, charA.x, charA.z]);
 
 	// The dense rail (spline through the drawn control points) — shared by
 	// the follow controller and the Top-View display.
 	const railCurve = useMemo(() => (cameraRail ? buildRail(cameraRail) : null), [cameraRail]);
 
 	const followTrack = useMemo(() => {
-		if (!followCam.enabled || !subjectTrack) return null;
+		if (!subjectTrack) return null;
 		const yaw = (charA.rot * Math.PI) / 180;
-		const params = {
-			distance: followCam.distance,
-			height: followCam.height,
-			response: followCam.response,
-			lead: followCam.lead,
-			railStartMode: followCam.railStartMode,
-			maxDollySpeed: followCam.maxDollySpeed,
-			pitchOffsetDeg: followCam.pitchOffsetDeg,
-			initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) },
-		};
-		return railCurve
-			? buildRailFollowTrack(subjectTrack, tlFps, railCurve, params)
-			: buildFollowTrack(subjectTrack, tlFps, params);
-	}, [followCam, subjectTrack, railCurve, tlFps, charA.rot]);
+		const combined = new Array(subjectTrack.length).fill(null);
+		for (let index = 0; index < shots.length; index += 1) {
+			const shot = shots[index];
+			const camera = createCameraBlock(shot.camera);
+			if (camera.mode === "keys") continue;
+			const start = shot.startFrame;
+			const end = shots[index + 1]?.startFrame ?? subjectTrack.length;
+			const subjectSlice = subjectTrack.slice(start, end);
+			const params = { ...camera.followCam, initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) } };
+			const rail = camera.mode === "rail" ? buildRail(camera.cameraRail) : null;
+			const track = rail
+				? buildRailFollowTrack(subjectSlice, tlFps, rail, params)
+				: buildFollowTrack(subjectSlice, tlFps, params);
+			track.forEach((sample, offset) => { combined[start + offset] = sample; });
+		}
+		return combined;
+	}, [shots, subjectTrack, tlFps, charA.rot]);
 
 	// The follow camera owns the shot camera in the same situations key
 	// following would: never while an authoring mode holds the viewport.
 	const followCamActive =
-		followCam.enabled && !!followTrack && (centerTab === "play" || (!ikMode && !waypointMode && !posing));
+		activeCamera.mode !== "keys" && !!followTrack?.[tlFrame] && (centerTab === "play" || (!ikMode && !waypointMode && !posing));
 
 	// Implied locomotion speed per authored segment (@ 20 fps). Shown in the
 	// timeline hint so a path that forces a crawl or a sprint is visible
@@ -3143,8 +3151,8 @@ globalThis.playMode = centerTab === "play";
 								// PlayView is the finished-output player: the move always rides
 								// the playhead there. The Follow toggle and authoring-mode gates
 								// only protect the Scene tab's manipulation surfaces.
-								// A follow cam owns the shot camera outright; editorial cuts do
-								// not apply until global follow cam is switched off again.
+								// This shot's Camera Block owns the camera while Follow or Rail is active;
+								// editorial camera keys resume when the block returns to Keys mode.
 								following={!followCamActive && hasCameraKeys && (centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing))}
 								followFrame={tlFrame}
 								fps={tlFps}
@@ -3232,7 +3240,7 @@ globalThis.playMode = centerTab === "play";
 								onRailStroke={(stroke) => {
 									const simplified = simplifyStroke(stroke, 0.12);
 									if (simplified.length < 2) return;
-									setCameraRail(simplified);
+									changeCameraRail(simplified);
 									setRailDraw(false);
 									const curve = buildRail(simplified);
 									setToast(isKo ? `카메라 레일 완성 — ${curve ? curve.length.toFixed(1) : "?"} m, 제어점 ${simplified.length}개` : `Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
@@ -3518,14 +3526,14 @@ globalThis.playMode = centerTab === "play";
 								type="button"
 								className="btn ghost"
 								title={ko("Derive the camera from the subject's trajectory: a steadicam trailing behind, or a dolly on a drawn rail. Keys pause while it owns the camera", "피사체 이동 경로에서 카메라를 계산합니다. 뒤에서 따라가는 스테디캠 또는 그린 레일 위 돌리로 동작합니다. 이 모드가 카메라를 잡고 있을 때 키는 멈춥니다")}
-								onClick={() => setFollowCam((c) => ({ ...c, enabled: !c.enabled }))}
+								onClick={() => changeActiveCamera({ mode: activeCamera.mode === "keys" ? (cameraRail ? "rail" : "follow") : "keys" })}
 							>
-								{followCam.enabled ? ko("Follow ●", "따라가기 ●") : ko("Follow cam", "팔로우 카메라")}
+								{activeCamera.mode !== "keys" ? ko("Follow ●", "따라가기 ●") : ko("Follow cam", "팔로우 카메라")}
 							</button>
 							<button
 								type="button"
 								className={"btn ghost" + (railDraw ? " rec-live" : "")}
-								disabled={!followCam.enabled}
+								disabled={activeCamera.mode === "keys"}
 								title={ko("Draw the camera rail in the Top-View: drag one stroke across the deck. Esc mid-stroke cancels", "탑뷰에서 카메라 레일을 그립니다. 바닥 위로 한 번 드래그하세요. 그리는 중 Esc를 누르면 취소됩니다")}
 								onClick={() => {
 									const next = !railDraw;
@@ -3543,42 +3551,42 @@ globalThis.playMode = centerTab === "play";
 								className="btn ghost"
 								disabled={!cameraRail}
 								title={ko("Remove the drawn rail; follow-cam settings and subject motion stay unchanged", "그린 레일만 지웁니다. 팔로우 카메라 설정과 피사체 모션은 그대로 유지됩니다")}
-								onClick={() => setCameraRail(null)}
+								onClick={() => changeCameraRail(null)}
 							>
 								{ko("Clear rail", "레일 지우기")}
 							</button>
 						</div>
-						{followCam.enabled && (
+						{activeCamera.mode !== "keys" && (
 							<>
 								{railCurve && (
 									<button
 										type="button"
 										className={"btn ghost" + (followCam.railStartMode === "head" ? " active" : "")}
 										title={ko("Start at the rail's drawn head. Turn off to auto-place the dolly at the nearest useful point; rail direction and speed stay unchanged", "레일을 그리기 시작한 지점에서 출발합니다. 끄면 돌리를 가까운 유효 지점에 자동 배치하며, 레일 방향과 속도는 바뀌지 않습니다")}
-										onClick={() => setFollowCam((c) => ({ ...c, railStartMode: c.railStartMode === "head" ? "nearest" : "head" }))}
+										onClick={() => changeFollowCam({ railStartMode: followCam.railStartMode === "head" ? "nearest" : "head" })}
 									>
 										{followCam.railStartMode === "head" ? ko("Start at rail head ✓", "레일 시작점에서 출발 ✓") : ko("Auto-place nearest", "가까운 지점에 자동 배치")}
 									</button>
 								)}
 								<div title={ko("Set the camera-to-subject spacing; this does not change dolly speed or lens height", "카메라와 피사체 사이 간격을 정합니다. 돌리 속도와 렌즈 높이는 바꾸지 않습니다")}>
-									<Slider label={ko("Distance", "거리")} min={1} max={8} step={0.1} value={followCam.distance} unit=" m" onChange={(distance) => setFollowCam((c) => ({ ...c, distance }))} />
+									<Slider label={ko("Distance", "거리")} min={1} max={8} step={0.1} value={followCam.distance} unit=" m" onChange={(distance) => changeFollowCam({ distance })} />
 								</div>
 								<div title={ko("Set the physical lens height; this does not tilt the camera", "렌즈의 물리적 높이를 정합니다. 카메라 틸트는 바꾸지 않습니다")}>
-									<Slider label={ko("Height", "높이")} min={0.4} max={4} step={0.05} value={followCam.height} unit=" m" onChange={(height) => setFollowCam((c) => ({ ...c, height }))} />
+									<Slider label={ko("Height", "높이")} min={0.4} max={4} step={0.05} value={followCam.height} unit=" m" onChange={(height) => changeFollowCam({ height })} />
 								</div>
 								<div title={ko("Set how softly the dolly catches up; this changes acceleration feel, not its top speed", "돌리가 얼마나 부드럽게 따라붙는지 정합니다. 가속 느낌만 바꾸며 최고 속도는 바꾸지 않습니다")}>
-									<Slider label={ko("Damping", "댐핑")} min={0.2} max={2} step={0.05} value={followCam.response} unit=" s" onChange={(response) => setFollowCam((c) => ({ ...c, response }))} />
+									<Slider label={ko("Damping", "댐핑")} min={0.2} max={2} step={0.05} value={followCam.response} unit=" s" onChange={(response) => changeFollowCam({ response })} />
 								</div>
 								<div title={ko("Aim ahead along the subject's motion; this changes framing only, not dolly speed", "피사체가 움직일 앞쪽을 조준합니다. 프레이밍만 바꾸며 돌리 속도는 그대로입니다")}>
-									<Slider label={ko("Look-ahead", "조준 선행")} min={0} max={0.6} step={0.05} value={followCam.lead} unit=" s" onChange={(lead) => setFollowCam((c) => ({ ...c, lead }))} />
+									<Slider label={ko("Look-ahead", "조준 선행")} min={0} max={0.6} step={0.05} value={followCam.lead} unit=" s" onChange={(lead) => changeFollowCam({ lead })} />
 								</div>
 								{railCurve && (
 									<div title={ko("Cap dolly travel speed along the rail; this does not change damping or the subject's motion", "레일 위 돌리의 최고 이동 속도를 제한합니다. 댐핑과 피사체 모션은 바꾸지 않습니다")}>
-										<Slider label={ko("Dolly speed", "돌리 속도")} min={0.2} max={8} step={0.1} value={followCam.maxDollySpeed} unit=" m/s" onChange={(maxDollySpeed) => setFollowCam((c) => ({ ...c, maxDollySpeed }))} />
+										<Slider label={ko("Dolly speed", "돌리 속도")} min={0.2} max={8} step={0.1} value={followCam.maxDollySpeed} unit=" m/s" onChange={(maxDollySpeed) => changeFollowCam({ maxDollySpeed })} />
 									</div>
 								)}
 								<div title={ko("Tilt above or below automatic subject aim; this does not move the camera or change lens height", "피사체 자동 조준각에서 위아래로 틸트합니다. 카메라 위치와 렌즈 높이는 바꾸지 않습니다")}>
-									<Slider label={ko("Pitch offset", "피치 오프셋")} min={-30} max={30} step={1} value={followCam.pitchOffsetDeg} unit="°" onChange={(pitchOffsetDeg) => setFollowCam((c) => ({ ...c, pitchOffsetDeg }))} />
+									<Slider label={ko("Pitch offset", "피치 오프셋")} min={-30} max={30} step={1} value={followCam.pitchOffsetDeg} unit="°" onChange={(pitchOffsetDeg) => changeFollowCam({ pitchOffsetDeg })} />
 								</div>
 								<div className="move-slate" title={ko("what the rig is doing, derived from the setup — a rail makes it a dolly, none makes it a steadicam", "설정에서 계산한 카메라 동작입니다. 레일이 있으면 돌리, 없으면 스테디캠입니다")}>
 									{railCurve
@@ -4179,8 +4187,8 @@ globalThis.playMode = centerTab === "play";
 				ikFrames={ikFrames}
 				footSnap={footSnap}
 				cameraKeyFrames={cameraKeys.map((k) => k.frame)}
-				shots={shots}
-				activeShotIdx={activeShotIdx}
+					shots={shots}
+					activeShotIdx={activeShotIdx}
 				shotCutDisabled={!!posing || ikMode || waypointMode || ((shots[activeShotIdx + 1]?.startFrame ?? tlFrameCount) - (shots[activeShotIdx]?.startFrame ?? 0) < 2)}
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
@@ -4227,7 +4235,22 @@ globalThis.playMode = centerTab === "play";
 				}}
 				onCameraKeyframeAdd={addCameraKeyframe}
 				onCameraKeyframeMove={moveCameraKeyframe}
-				onCameraKeyframeRemove={removeCameraKeyframe}
+					onCameraKeyframeRemove={removeCameraKeyframe}
+					onCameraBlockSelect={(index) => {
+						const selected = shots[index];
+						if (!selected) return;
+						setTlFrame(selected.startFrame);
+						setSelectedHierarchyId("camera");
+						setSidebarTab("motion");
+					}}
+					onCameraBlockChange={(patch) => {
+						changeActiveCamera(patch);
+						if (patch.mode === "rail" && !cameraRail) {
+							setRailDraw(true);
+							setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
+							setToast(ko("Draw this Camera Block's rail in the Top-View", "탑뷰에서 이 카메라 블록의 레일을 그리세요"));
+						}
+					}}
 				onShotSelect={selectTimelineShot}
 				onShotBoundaryMove={(index, frame) => setShots((current) => moveBoundary(current, index, frame, tlFrameCount))}
 				onShotRename={(index, name) => setShots((current) => renameShot(current, index, name))}
