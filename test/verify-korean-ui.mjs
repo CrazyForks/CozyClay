@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Korean option locale verification.
 //
-// English is the default UI; Korean is opt-in when the active locale is ko
-// (localStorage "cozyclay.locale" = "ko", or navigator.language ko-*). This
+// English is always the default UI; Korean is opt-in only when the saved
+// localStorage choice is "ko". Browser language must never select it. This
 // harness is a static file check, so it cannot set localStorage before the
 // page loads and locale.js exposes no URL/script injection hook. Instead:
 //   1. import locale.js in node with a polyfilled localStorage to exercise
@@ -52,28 +52,52 @@ function assertKoreanInsideLocaleConstructs(path) {
 	}
 }
 
-// locale.js reads localStorage at module scope, so a fresh dynamic import
-// with a polyfilled storage exercises each locale path deterministically,
-// independent of the host machine's navigator.language.
-async function loadLocaleModule(storedValue) {
+// locale.js reads localStorage at module scope, so a fresh dynamic import with
+// polyfilled browser globals exercises the default and saved-choice contracts.
+async function loadLocaleModule(storedValue, browserLanguage = "ko-KR", storageThrows = false) {
 	const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+	const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+	const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
 	Object.defineProperty(globalThis, "localStorage", {
 		configurable: true,
 		value: {
-			getItem: (key) => (key === "cozyclay.locale" ? storedValue : null),
+			getItem: (key) => {
+				if (storageThrows) throw new Error("storage unavailable");
+				return key === "cozyclay.locale" ? storedValue : null;
+			},
 			setItem() {},
 			removeItem() {},
 		},
 	});
+	Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
+	Object.defineProperty(globalThis, "navigator", { configurable: true, value: { language: browserLanguage } });
 	try {
 		const url = pathToFileURL(resolve("src/locale.js"));
-		url.search = `verify=${storedValue}-${Math.random().toString(36).slice(2)}`;
+		url.search = `verify=${storedValue}-${browserLanguage}-${storageThrows}-${Math.random().toString(36).slice(2)}`;
 		return await import(url.href);
 	} finally {
 		if (previous) Object.defineProperty(globalThis, "localStorage", previous);
 		else delete globalThis.localStorage;
+		if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+		else delete globalThis.window;
+		if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator);
+		else delete globalThis.navigator;
 	}
 }
+
+const defaultOnKoreanBrowser = await loadLocaleModule(null, "ko-KR");
+assert.equal(defaultOnKoreanBrowser.LOCALE, "en", "a Korean browser still starts in English without a saved choice");
+assert.equal(defaultOnKoreanBrowser.isKo, false);
+
+const invalidStoredLocale = await loadLocaleModule("ko-KR", "ko-KR");
+assert.equal(invalidStoredLocale.LOCALE, "en", "an invalid stored value falls back to English");
+
+const unavailableStorageLocale = await loadLocaleModule(null, "ko-KR", true);
+assert.equal(unavailableStorageLocale.LOCALE, "en", "unavailable storage falls back to English");
+
+const localeSource = source("src/locale.js");
+assert.doesNotMatch(localeSource, /navigator\.language/, "browser language must not choose the default locale");
+assert.match(localeSource, /stored\(\) \?\? "en"/, "English remains the no-choice fallback");
 
 const enLocale = await loadLocaleModule("en");
 assert.equal(enLocale.LOCALE, "en");
@@ -95,6 +119,7 @@ for (const path of ["src/result-modal.jsx", "src/install-app.jsx", "src/hierarch
 
 // The PR's Korean copy is preserved, now living inside the locale constructs.
 includesAll("src/install-app.jsx", ["앱 설치", "Cozy Clay를 다른 앱처럼 사용하세요", "홈 화면에 추가"]);
+includesAll("src/locale-toggle.jsx", ["한국어로 전환", "한국어", "Switch to English"]);
 includesAll("src/result-modal.jsx", ["장면이 준비됐어요", "프롬프트 복사", "프레임 다운로드", "AI에 넣는 순서", "AI에 이미지 첨부"]);
 includesAll("src/App.jsx", ["장면", "재생 보기", "속성", "모션 생성", "오브젝트 변환", "카메라 레일 완성", "연결 중…"]);
 includesAll("src/ardy/client.js", ["브리지 상태가 좋지 않아요", "브리지에 연결할 수 없어요", "생성 응답에 본문 스트림이 없어요"]);
