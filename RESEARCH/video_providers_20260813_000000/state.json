@@ -1,0 +1,16 @@
+{
+  "objective": "Verify official video provider contracts for CozyClay PR #6",
+  "accessDate": "2026-08-13",
+  "language": "ko",
+  "status": "complete",
+  "note": "No paid API calls were made.",
+  "verification": {
+    "passed": true,
+    "signature": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "verified_count": 0,
+    "unresolved_count": 0,
+    "refuted_count": 0,
+    "checked_at": "2026-08-13T13:47:57.685098+00:00",
+    "checker": "validate_ledger.py"
+  }
+}
