@@ -3321,7 +3321,7 @@ globalThis.playMode = centerTab === "play";
 						</div>
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "camera"} title={ko("Camera", "카메라")}>
+				<Foldout hidden={!(sidebarTab === "shot" || (sidebarTab === "inspector" && selectedHierarchyId === "camera"))} title={ko("Camera", "카메라")}>
 					<Slider label={ko("Lens (FOV)", "렌즈 (FOV)")} min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
 						<div className="readout">
 						<span title={ko("camera to subject", "카메라와 피사체 거리")}>{shot.distance.toFixed(2)} m</span>
