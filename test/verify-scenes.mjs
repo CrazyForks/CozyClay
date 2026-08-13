@@ -25,6 +25,15 @@ scenes = addScene(scenes, "Kitchen");
 assert.deepEqual(scenes.map((scene) => scene.name), ["SCENE 01", "SCENE 02", "Kitchen", "Kitchen 2"]);
 assert.equal(new Set(scenes.map((scene) => scene.id)).size, scenes.length);
 
+const namedScenes = [
+	createScene("Kitchen"),
+];
+namedScenes.push(createScene(" kitchen ", namedScenes));
+namedScenes.push(createScene("Ｋｉｔｃｈｅｎ", namedScenes));
+namedScenes.push(createScene("골목 & 카페 <밤> 🎬", namedScenes));
+namedScenes.push(createScene("골목 & 카페 <밤> 🎬", namedScenes));
+assert.deepEqual(namedScenes.map((scene) => scene.name), ["Kitchen", "kitchen 2", "Ｋｉｔｃｈｅｎ 3", "골목 & 카페 <밤> 🎬", "골목 & 카페 <밤> 🎬 2"]);
+
 scenes[0].objects = [{ id: "chair", transform: { x: 1 } }];
 scenes[0].shotDocument = { version: 99, cameraBlocks: [{ id: "sealed", keys: [1, 2] }] };
 const duplicated = duplicateScene(scenes, 0);
@@ -37,10 +46,27 @@ duplicated[1].shotDocument.cameraBlocks[0].keys.push(3);
 assert.equal(scenes[0].objects[0].transform.x, 1);
 assert.deepEqual(scenes[0].shotDocument.cameraBlocks[0].keys, [1, 2]);
 
+const sharedCameraSettings = { lens: 35, metadata: JSON.parse('{"__proto__":{"safe":true}}') };
+const sharedSource = createScene("Shared");
+sharedSource.objects = [{ id: "camera", settings: sharedCameraSettings }];
+sharedSource.shotDocument = { primary: sharedCameraSettings, backup: sharedCameraSettings };
+const sharedDuplicate = duplicateScene([sharedSource], 0)[1];
+assert.notEqual(sharedDuplicate.shotDocument.primary, sharedCameraSettings);
+assert.equal(sharedDuplicate.shotDocument.primary, sharedDuplicate.shotDocument.backup, "shared nested references stay shared inside the copy");
+assert.deepEqual(sharedDuplicate.shotDocument.primary.metadata, sharedCameraSettings.metadata, "opaque keys survive deep copy");
+assert.ok(Object.hasOwn(sharedDuplicate.shotDocument.primary.metadata, "__proto__"));
+sharedDuplicate.shotDocument.primary.lens = 85;
+assert.equal(sharedCameraSettings.lens, 35, "mutating duplicate shot data cannot contaminate the source");
+sharedSource.objects[0].settings.lens = 24;
+assert.equal(sharedDuplicate.objects[0].settings.lens, 35, "mutating source objects cannot contaminate the duplicate");
+sharedSource.shotDocument.primary.lens = 18;
+assert.equal(sharedDuplicate.shotDocument.primary.lens, 85, "mutating source shot data cannot contaminate the duplicate");
+
 const renamed = renameScene(scenes, 2, "SCENE 01");
 assert.equal(renamed[2].name, "SCENE 03");
 assert.equal(renameScene(scenes, 2, "  "), scenes);
-assert.equal(removeScene([scenes[0]], 0).length, 1, "the final scene is protected");
+const finalSceneList = [scenes[0]];
+assert.equal(removeScene(finalSceneList, 0), finalSceneList, "the final scene is protected without replacing state");
 assert.equal(removeScene(scenes, 1).length, scenes.length - 1);
 
 assert.equal(activeSceneIndex(scenes, scenes[2].id), 2);
@@ -97,11 +123,21 @@ const storageMigration = loadSceneDocumentFromStorage(migrationStorage);
 assert.equal(storageMigration.status, "migrated");
 assert.ok(migrationStorage.getItem(SCENES_STORAGE_KEY));
 assert.equal(migrationStorage.getItem(LEGACY_SCENE_STORAGE_KEY), legacyRaw, "legacy backup is not deleted");
+const persistedMigration = readSceneDocument(migrationStorage.getItem(SCENES_STORAGE_KEY));
+assert.deepEqual(persistedMigration.document.scenes[0].objects, legacyObjects, "legacy objects survive migrate, persist, and reload without loss");
+persistedMigration.document.scenes[0].objects[1].nested.untouched = false;
+assert.equal(legacyObjects[1].nested.untouched, true, "migrated objects do not retain references to the legacy input");
 
 const corruptRaw = "{broken scenes";
 const corruptStorage = new FakeStorage({ [SCENES_STORAGE_KEY]: corruptRaw });
 assert.equal(loadSceneDocumentFromStorage(corruptStorage).status, "corrupt");
 assert.equal(corruptStorage.getItem(SCENES_QUARANTINE_KEY), corruptRaw);
+assert.equal(corruptStorage.getItem(SCENES_STORAGE_KEY), corruptRaw, "quarantine never overwrites corrupt source bytes");
+
+const corruptLegacyStorage = new FakeStorage({ [LEGACY_SCENE_STORAGE_KEY]: "{broken legacy" });
+assert.equal(loadSceneDocumentFromStorage(corruptLegacyStorage).status, "corrupt");
+assert.equal(corruptLegacyStorage.getItem(SCENES_QUARANTINE_KEY), "{broken legacy");
+assert.equal(corruptLegacyStorage.getItem(LEGACY_SCENE_STORAGE_KEY), "{broken legacy", "corrupt legacy source remains available for recovery");
 
 const futureRaw = JSON.stringify({ version: 9, scenes: [{ id: "future" }] });
 const futureStorage = new FakeStorage({ [SCENES_STORAGE_KEY]: futureRaw });

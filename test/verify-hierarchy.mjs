@@ -46,6 +46,7 @@ for (const callback of ["onSceneSelect", "onSceneCreate", "onSceneDuplicate", "o
 }
 expect("scene selector is separate from entity tree", panelSource.includes('className="scene-switcher"') && panelSource.includes('className="hierarchy-tree"'));
 expect("scene rename supports double-click", panelSource.includes("onDoubleClick={() => setEditingId(scene.id)}"));
+expect("active scene clicks do not repeat selection callbacks", panelSource.includes("if (!active) onSceneSelect?.(scene.id)"));
 expect("scene deletion asks for confirmation", panelSource.includes("window.confirm(message)"));
 expect("last scene deletion is protected", panelSource.includes("disabled={availableScenes.length <= 1}"));
 

@@ -97,7 +97,9 @@ function SceneSwitcher({
 									type="button"
 									role="option"
 									aria-selected={active}
-									onClick={() => onSceneSelect?.(scene.id)}
+									onClick={() => {
+										if (!active) onSceneSelect?.(scene.id);
+									}}
 									onDoubleClick={() => setEditingId(scene.id)}
 								>
 									<span className="scene-document-icon" aria-hidden="true" />
