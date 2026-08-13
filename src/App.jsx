@@ -130,15 +130,8 @@ const HIERARCHY_INSPECTOR_TITLES = {
 	camera: ko("Camera", "카메라"),
 	characters: ko("Characters", "인물"),
 	characterA: ko("Character 1", "인물 1"),
-	"characterA.character": ko("Character 1", "인물 1"),
-	"characterA.motion": ko("Motion", "모션"),
-	"characterA.baseMotion": ko("Base Motion", "기본 모션"),
-	"characterA.promptBlocks": ko("Prompt Blocks", "프롬프트 블록"),
-	"characterA.ik": ko("IK Corrections", "IK 보정"),
 	"characterA.rig": ko("Rig", "리그"),
 	characterB: ko("Character 2", "인물 2"),
-	"characterB.character": ko("Character 2", "인물 2"),
-	rootPath: ko("Root Path", "루트 경로"),
 	environment: ko("Environment", "환경"),
 	props: ko("Props", "소품"),
 	"rig.hips": ko("Root / Hips", "루트 / 엉덩이"),
@@ -1059,7 +1052,12 @@ globalThis.playMode = centerTab === "play";
 	const [ikChains, setIkChains] = useState(null);
 	const [ikFkJoints, setIkFkJoints] = useState(null);
 	const [ikFocus, setIkFocus] = useState(null);
-	const [selectedHierarchyId, setSelectedHierarchyId] = useState("characterA.motion");
+	const [selectedHierarchyId, setSelectedHierarchyId] = useState("characterA");
+	// Right-sidebar tab. "inspector" shows the selection's properties; "shot"
+	// holds shot-global settings (type presets, prompt); "motion" holds the
+	// ARDY workflow in pipeline order. Selecting anything in the scene routes
+	// to the inspector tab; the root SHOT row routes to the shot tab.
+	const [sidebarTab, setSidebarTab] = useState("motion");
 	// Scene persistence (plan §8): the startup load runs once in a lazy
 	// initializer so the store below can seed from the restored scene; the
 	// quarantine write and the save-block decision happen before the first
@@ -1161,6 +1159,9 @@ globalThis.playMode = centerTab === "play";
 		// applied tick re-renders, every drag would die after exactly one tick.
 		store.settle();
 		setSelectedHierarchyId(id);
+		// The root SHOT row is the one non-object row kept as a bridge to the
+		// shot-global settings; everything else is a scene entity.
+		setSidebarTab(id === "shot" ? "shot" : "inspector");
 		const focus = RIG_HIERARCHY_FOCUS[id];
 		if (focus && ikMode) setIkFocus(focus);
 	}
@@ -1178,7 +1179,10 @@ globalThis.playMode = centerTab === "play";
 	function focusIkHandle(focus) {
 		setIkFocus(focus);
 		const hierarchyId = hierarchyIdForIkFocus(focus);
-		if (hierarchyId) setSelectedHierarchyId(hierarchyId);
+		if (hierarchyId) {
+			setSelectedHierarchyId(hierarchyId);
+			setSidebarTab("inspector");
+		}
 	}
 
 	// App's single scene-object mutation entry (plan §6.1). A token means a
@@ -1242,6 +1246,7 @@ globalThis.playMode = centerTab === "play";
 		if (!object) return;
 		store.applyAtomic((objects) => [...objects, object]);
 		setSelectedHierarchyId(`object:${object.id}`);
+		setSidebarTab("inspector");
 		// Deliberate divergence from Unity's rename-on-create: creating an object
 		// here is followed by placing it, and dropping focus into a text field
 		// swallows the very next W/E/R. Renaming stays on F2/Return and the row's
@@ -1267,6 +1272,7 @@ globalThis.playMode = centerTab === "play";
 		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
 		store.applyAtomic((objects) => [...objects, placed]);
 		setSelectedHierarchyId(`object:${placed.id}`);
+		setSidebarTab("inspector");
 		setToast(isKo ? `${sceneObjectNameDisplayKo(placed.name)} 복제됨` : `${placed.name} duplicated`);
 	}
 
@@ -1734,6 +1740,7 @@ globalThis.playMode = centerTab === "play";
 		const target = Math.max(0, Math.min(Math.round(frame), tlFrameCount - 1));
 		setCameraKeys((keys) => keys.filter((k) => k.frame !== target).concat({ frame: target, framing }).sort((a, b) => a.frame - b.frame));
 		setSelectedHierarchyId("camera");
+		setSidebarTab("inspector");
 	}
 
 	// Re-time a key by dragging its dot along the lane. Landing on another
@@ -1788,7 +1795,7 @@ globalThis.playMode = centerTab === "play";
 			setPendingWaypointFrame(null);
 			setTlFrame(target);
 			setWaypointMode(true);
-			setSelectedHierarchyId("rootPath");
+			setSidebarTab("motion");
 			setToast(isKo ? `프레임 ${target}의 루트 웨이포인트를 선택했어요. 탑뷰에서 점을 드래그해 위치를 조정하세요.` : `Root waypoint at frame ${target} selected — drag the pin in the Top-View to reposition.`);
 			return;
 		}
@@ -1796,7 +1803,7 @@ globalThis.playMode = centerTab === "play";
 		setActiveWaypointFrame(null);
 		setTlFrame(target);
 		setWaypointMode(true);
-		setSelectedHierarchyId("rootPath");
+		setSidebarTab("motion");
 		setToast(isKo ? `프레임 ${target}이 예약됐어요. 샷 뷰 바닥을 클릭하면 그 위치에 루트 웨이포인트가 생성됩니다.` : `Frame ${target} is reserved — click the Shot-view floor to drop the root waypoint there.`);
 	}
 	/** ARDY-demo style authoring: each empty-floor press in the Shot view drops
@@ -2844,7 +2851,6 @@ globalThis.playMode = centerTab === "play";
 					onSelect={selectHierarchy}
 					showB={showB}
 					motionFrames={motion?.frames ?? 0}
-					promptCount={promptClips.length}
 					ikFrames={ikFrames.length}
 					ikMode={ikMode}
 					waypointCount={waypoints.length}
@@ -3265,7 +3271,7 @@ globalThis.playMode = centerTab === "play";
 					aria-label={ko("Resize hierarchy and inspector panel", "계층 및 속성 패널 크기 조절")}
 					onPointerDown={(event) => beginWorkspaceResize("sidebar", event)}
 				/>
-				<aside className="panel hierarchy-sidebar inspector-sidebar" data-inspector={selectedHierarchyId}>
+				<aside className="panel hierarchy-sidebar inspector-sidebar" data-inspector={selectedHierarchyId} data-tab={sidebarTab}>
 					{/* Save failures live above the tab content, not inside the Props
 					    card: that card is hidden whenever any hierarchy node is
 					    selected, and saves fire exactly while objects are being
@@ -3280,12 +3286,32 @@ globalThis.playMode = centerTab === "play";
 						</p>
 					)}
 					<section className="inspector-pane">
-					<div className="inspector-heading">
+					<div className="inspector-tabs" role="tablist" aria-label={ko("Sidebar tabs", "사이드바 탭")}>
+						{[
+							["inspector", ko("Inspector", "속성")],
+							["shot", ko("Shot", "샷")],
+							["motion", ko("Motion", "모션")],
+						].map(([tab, label]) => (
+							<button
+								key={tab}
+								type="button"
+								role="tab"
+								aria-selected={sidebarTab === tab}
+								className={sidebarTab === tab ? "active" : ""}
+								onClick={() => setSidebarTab(tab)}
+							>
+								{label}
+							</button>
+						))}
+					</div>
+					{sidebarTab === "inspector" && (
+						<div className="inspector-heading">
 						<strong>{ko("Inspector", "속성")}</strong>
 						<span className="inspector-heading-selection">{selectedSceneObject ? sceneObjectNameDisplayKo(selectedSceneObject.name) : HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId] ?? ko("Selection", "선택 항목")}</span>
-					</div>
+						</div>
+					)}
 					<div className="inspector-scroll">
-				<Foldout hidden={selectedHierarchyId !== "shot"} title={ko("Shot type", "샷 종류")}>
+				<Foldout hidden={sidebarTab !== "shot"} title={ko("Shot type", "샷 종류")}>
 						<div className="presets">
 							{Object.entries(PRESETS).map(([key, p]) => (
 								<button key={key} className={preset === key ? "active" : ""} onClick={() => applyPreset(key)}>
@@ -3295,7 +3321,7 @@ globalThis.playMode = centerTab === "play";
 						</div>
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "camera"} title={ko("Camera", "카메라")}>
+				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "camera"} title={ko("Camera", "카메라")}>
 					<Slider label={ko("Lens (FOV)", "렌즈 (FOV)")} min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
 						<div className="readout">
 						<span title={ko("camera to subject", "카메라와 피사체 거리")}>{shot.distance.toFixed(2)} m</span>
@@ -3413,7 +3439,7 @@ globalThis.playMode = centerTab === "play";
 						)}
 					</Foldout>
 
-				<Foldout hidden={!["characters", "characterA", "characterA.character", "characterB", "characterB.character"].includes(selectedHierarchyId)} title={showB ? ko("Subjects", "인물들") : ko("Subject", "인물")}>
+				<Foldout hidden={sidebarTab !== "inspector" || !["characters", "characterA", "characterB"].includes(selectedHierarchyId)} title={showB ? ko("Subjects", "인물들") : ko("Subject", "인물")}>
 						<div className={"subjects-row" + (showB ? "" : " single")}>
 							<SubjectBox
 							label={ko("Subject 1", "인물 1")}
@@ -3441,7 +3467,7 @@ globalThis.playMode = centerTab === "play";
 						)}
 					</Foldout>
 
-				<Foldout hidden={!["characters", "characterA", "characterA.character", "characterB", "characterB.character"].includes(selectedHierarchyId)} title={ko("Pose", "포즈")}>
+				<Foldout hidden={sidebarTab !== "inspector" || !["characters", "characterA", "characterB"].includes(selectedHierarchyId)} title={ko("Pose", "포즈")}>
 					<Field label={showB ? ko("Subject 1 pose", "인물 1 포즈") : ko("Pose", "포즈")}>
 							<Dropdown
 							ariaLabel={ko("Subject 1 pose", "인물 1 포즈")}
@@ -3462,7 +3488,7 @@ globalThis.playMode = centerTab === "play";
 						)}
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "shot"} title={ko("Prompt", "프롬프트")}>
+				<Foldout hidden={sidebarTab !== "shot"} title={ko("Prompt", "프롬프트")}>
 						<div className="segmented" data-active={mode}>
 							<button className={mode === "image" ? "active" : ""} onClick={() => setMode("image")}>
 							{ko("Image", "이미지")}
@@ -3551,7 +3577,7 @@ globalThis.playMode = centerTab === "play";
 							{ko("Generate", "만들기")}
 						</button>
 					</Foldout>
-				<Foldout hidden={!["characterA.motion", "characterA.baseMotion"].includes(selectedHierarchyId)} title={ko("ARDY motion", "ARDY 모션")}>
+				<Foldout hidden={sidebarTab !== "motion"} title={ko("ARDY motion", "ARDY 모션")}>
 					{bridge === null ? (
 						<p className="ardy-hint">{ko("Checking for the dev bridge…", "개발 브리지를 확인하는 중…")}</p>
 					) : bridge.ok ? (
@@ -3683,7 +3709,7 @@ globalThis.playMode = centerTab === "play";
 						</>
 					)}
 				</Foldout>
-				<Foldout hidden={selectedHierarchyId !== "characterA.promptBlocks"} title={ko("Prompt Blocks", "프롬프트 블록")}>
+				<Foldout hidden={sidebarTab !== "motion"} title={ko("Prompt Blocks", "프롬프트 블록")}>
 					<p className="inspector-hint">{ko("Blocks define what ARDY generates over each frame range. Selecting one also moves editing context to that prompt.", "블록은 각 프레임 범위에서 ARDY가 생성할 내용을 정합니다. 블록을 선택하면 편집 기준도 해당 프롬프트로 이동합니다.")}</p>
 						<div className="inspector-list">
 							{promptClips.map((clip) => (
@@ -3732,42 +3758,7 @@ globalThis.playMode = centerTab === "play";
 						</button>
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "characterA.ik"} title={ko("IK Corrections", "IK 보정")}>
-						<div className="inspector-status-grid">
-						<span>{ko("IK mode", "IK 모드")}</span><b>{ikMode ? ko("ON", "켜짐") : ko("OFF", "꺼짐")}</b>
-						<span>{ko("Current frame", "현재 프레임")}</span><b>{tlFrame}</b>
-						<span>{ko("Keys", "키")}</span><b>{ikFrames.length}</b>
-						</div>
-						<button type="button" className={"btn full" + (ikMode ? " primary" : "")} onClick={toggleIkMode} disabled={!ikChains}>
-						{ikMode ? ko("Exit IK mode", "IK 모드 나가기") : ko("Enter IK mode", "IK 모드 들어가기")}
-						</button>
-						<label className="check">
-							<input type="checkbox" checked={footSnap} onChange={() => setFootSnap((value) => !value)} />
-						<span>{ko("Keep feet planted during body edits", "몸을 편집하는 동안 발 고정")}</span>
-						</label>
-						<button type="button" className="btn ghost full" onClick={ikAddKeyframe} disabled={!ikChains}>
-						{isKo ? `프레임 ${tlFrame}에 키 추가` : `Add key at frame ${tlFrame}`}
-						</button>
-						<div className="inspector-list compact">
-							{ikFrames.map((frame) => (
-								<button
-									type="button"
-									key={frame}
-									className={tlFrame === frame ? "active" : ""}
-									onClick={() => setTlFrame(frame)}
-									onContextMenu={(event) => {
-										event.preventDefault();
-										ikDeleteKeyframe(frame);
-									}}
-								>
-								<span>{isKo ? `프레임 ${frame}` : `Frame ${frame}`}</span>
-								<small>{tlFrame === frame ? ko("Current", "현재") : ko("right-click removes", "오른쪽 클릭으로 삭제")}</small>
-								</button>
-							))}
-						</div>
-					</Foldout>
-
-				<Foldout hidden={!(selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig."))} title={ko("Rig Control", "리그 제어")}>
+				<Foldout hidden={sidebarTab !== "inspector" || !(selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig."))} title={ko("Rig Control", "리그 제어")}>
 						<p className="inspector-hint">
 							{selectedHierarchyId.startsWith("rig.")
 							? (isKo ? `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]}이 활성 제어 그룹입니다.` : `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]} is the active control group.`)
@@ -3783,7 +3774,7 @@ globalThis.playMode = centerTab === "play";
 						</button>
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "rootPath"} title={ko("Root Path", "루트 경로")}>
+				<Foldout hidden={sidebarTab !== "motion"} title={ko("Root Path", "루트 경로")}>
 						<div className="inspector-status-grid">
 						<span>{ko("Path mode", "경로 모드")}</span><b>{waypointMode ? ko("ON", "켜짐") : ko("OFF", "꺼짐")}</b>
 						<span>{ko("Waypoints", "웨이포인트")}</span><b>{waypoints.length}</b>
@@ -3818,7 +3809,42 @@ globalThis.playMode = centerTab === "play";
 						</div>
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "environment"} title={ko("Environment", "환경")}>
+				<Foldout hidden={sidebarTab !== "motion"} title={ko("IK Corrections", "IK 보정")}>
+						<div className="inspector-status-grid">
+						<span>{ko("IK mode", "IK 모드")}</span><b>{ikMode ? ko("ON", "켜짐") : ko("OFF", "꺼짐")}</b>
+						<span>{ko("Current frame", "현재 프레임")}</span><b>{tlFrame}</b>
+						<span>{ko("Keys", "키")}</span><b>{ikFrames.length}</b>
+						</div>
+						<button type="button" className={"btn full" + (ikMode ? " primary" : "")} onClick={toggleIkMode} disabled={!ikChains}>
+						{ikMode ? ko("Exit IK mode", "IK 모드 나가기") : ko("Enter IK mode", "IK 모드 들어가기")}
+						</button>
+						<label className="check">
+							<input type="checkbox" checked={footSnap} onChange={() => setFootSnap((value) => !value)} />
+						<span>{ko("Keep feet planted during body edits", "몸을 편집하는 동안 발 고정")}</span>
+						</label>
+						<button type="button" className="btn ghost full" onClick={ikAddKeyframe} disabled={!ikChains}>
+						{isKo ? `프레임 ${tlFrame}에 키 추가` : `Add key at frame ${tlFrame}`}
+						</button>
+						<div className="inspector-list compact">
+							{ikFrames.map((frame) => (
+								<button
+									type="button"
+									key={frame}
+									className={tlFrame === frame ? "active" : ""}
+									onClick={() => setTlFrame(frame)}
+									onContextMenu={(event) => {
+										event.preventDefault();
+										ikDeleteKeyframe(frame);
+									}}
+								>
+								<span>{isKo ? `프레임 ${frame}` : `Frame ${frame}`}</span>
+								<small>{tlFrame === frame ? ko("Current", "현재") : ko("right-click removes", "오른쪽 클릭으로 삭제")}</small>
+								</button>
+							))}
+						</div>
+					</Foldout>
+
+				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "environment"} title={ko("Environment", "환경")}>
 						<label className="check">
 							<input type="checkbox" checked={hasEnvSheet} onChange={(event) => setHasEnvSheet(event.target.checked)} />
 						<span>{ko("I have an environment sheet", "환경 시트가 있어요")}</span>
@@ -3833,7 +3859,7 @@ globalThis.playMode = centerTab === "play";
 						</Field>
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
+				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
 					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요.")}</p>
 					<AddObjectMenu onAdd={addSceneObject} label={ko("Add object to the set", "세트에 오브젝트 추가")} />
 						<div className="inspector-list compact">
@@ -3850,7 +3876,7 @@ globalThis.playMode = centerTab === "play";
 						</div>
 					</Foldout>
 
-				<Foldout hidden={!selectedSceneObject} title={ko("Object Transform", "오브젝트 변환")}>
+				<Foldout hidden={sidebarTab !== "inspector" || !selectedSceneObject} title={ko("Object Transform", "오브젝트 변환")}>
 						{selectedSceneObject && (
 							<>
 								<p className="inspector-hint">
@@ -4019,7 +4045,7 @@ globalThis.playMode = centerTab === "play";
 					const frame = Math.min(f, tlFrameCount - 1);
 					setTlFrame(frame);
 					setWaypointMode(true);
-					setSelectedHierarchyId("rootPath");
+					setSidebarTab("motion");
 					if (waypoints.some((waypoint) => waypoint.frame === frame)) {
 						setActiveWaypointFrame(frame);
 						setPendingWaypointFrame(null);
@@ -4034,13 +4060,16 @@ globalThis.playMode = centerTab === "play";
 				onPromptSelect={(id) => {
 					setSelectedPromptId(id);
 					setArdyPrompt(promptClips.find((clip) => clip.id === id)?.text ?? "");
-					setSelectedHierarchyId("characterA.promptBlocks");
+					setSidebarTab("motion");
 				}}
 				onPromptChange={changePromptClip}
 				onPromptResize={resizePromptClip}
 				onPromptMove={movePromptClip}
 				onPromptRemove={removePromptClip}
-				onCameraMoveSelect={() => setSelectedHierarchyId("camera")}
+				onCameraMoveSelect={() => {
+					setSelectedHierarchyId("camera");
+					setSidebarTab("inspector");
+				}}
 				onCameraKeyframeAdd={addCameraKeyframe}
 				onCameraKeyframeMove={moveCameraKeyframe}
 				onCameraKeyframeRemove={removeCameraKeyframe}

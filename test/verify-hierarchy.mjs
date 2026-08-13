@@ -20,20 +20,21 @@ expect("hierarchy IDs are unique", byId.size === nodes.length, `${byId.size}/${n
 expect("Shot is the single hierarchy root", HIERARCHY_NODES.length === 1 && HIERARCHY_NODES[0].id === "shot");
 expect("Camera belongs directly to Shot", byId.get("camera")?.parent === "shot");
 expect("Characters group owns Character 1", byId.get("characterA")?.parent === "characters");
-expect("Motion belongs to Character 1", byId.get("characterA.motion")?.parent === "characterA");
+// The tree lists scene entities only — workflow nodes (motion, prompt
+// blocks, IK, root path) moved to the sidebar's Shot/Motion tabs.
 expect(
-	"Motion exposes Base, Prompt Blocks, and IK correction layers",
-	["characterA.baseMotion", "characterA.promptBlocks", "characterA.ik"].every(
-		(id) => byId.get(id)?.parent === "characterA.motion",
+	"workflow nodes stay out of the scene tree",
+	["characterA.motion", "characterA.baseMotion", "characterA.promptBlocks", "characterA.ik", "rootPath", "characterA.character", "characterB.character"].every(
+		(id) => !byId.has(id),
 	),
 );
+expect("Rig belongs to Character 1", byId.get("characterA.rig")?.parent === "characterA");
 expect(
 	"Rig exposes six human-readable body groups",
 	["rig.hips", "rig.spine", "rig.leftArm", "rig.rightArm", "rig.leftLeg", "rig.rightLeg"].every(
 		(id) => byId.get(id)?.parent === "characterA.rig",
 	),
 );
-expect("Root Path stays at the Shot level", byId.get("rootPath")?.parent === "shot");
 expect("Environment stays at the Shot level", byId.get("environment")?.parent === "shot");
 expect("Props stay at the Shot level", byId.get("props")?.parent === "shot");
 expect("tree depth stays scannable", Math.max(...nodes.map((node) => node.depth)) <= 4);

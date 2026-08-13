@@ -1,3 +1,8 @@
+// The Hierarchy lists what EXISTS in the 3D scene — camera, characters
+// (with their rig groups, which have viewport handles), environment, props.
+// Workflow surfaces (shot settings, prompt, ARDY motion, prompt blocks,
+// root path, IK keys) are NOT scene entities: they live in the right
+// sidebar's Shot and Motion tabs, keyed by `sidebarTab` in App.jsx.
 export const HIERARCHY_NODES = [
 	{
 		id: "shot",
@@ -15,17 +20,6 @@ export const HIERARCHY_NODES = [
 						label: "Character 1",
 						kind: "character",
 						children: [
-							{ id: "characterA.character", label: "Character", kind: "character" },
-							{
-								id: "characterA.motion",
-								label: "Motion",
-								kind: "motion",
-								children: [
-									{ id: "characterA.baseMotion", label: "Base Motion", kind: "clip" },
-									{ id: "characterA.promptBlocks", label: "Prompt Blocks", kind: "prompt" },
-									{ id: "characterA.ik", label: "IK Corrections", kind: "key" },
-								],
-							},
 							{
 								id: "characterA.rig",
 								label: "Rig",
@@ -46,13 +40,9 @@ export const HIERARCHY_NODES = [
 						label: "Character 2",
 						kind: "character",
 						optional: "showB",
-						children: [
-							{ id: "characterB.character", label: "Character", kind: "character" },
-						],
 					},
 				],
 			},
-			{ id: "rootPath", label: "Root Path", kind: "path" },
 			{ id: "environment", label: "Environment", kind: "environment" },
 			{ id: "props", label: "Props", kind: "props" },
 		],

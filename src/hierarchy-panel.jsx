@@ -10,11 +10,6 @@ const HIERARCHY_LABELS_KO = {
 	Characters: "캐릭터",
 	"Character 1": "캐릭터 1",
 	"Character 2": "캐릭터 2",
-	Character: "캐릭터",
-	Motion: "모션",
-	"Base Motion": "기본 모션",
-	"Prompt Blocks": "프롬프트 블록",
-	"IK Corrections": "IK 보정",
 	Rig: "리그",
 	"Root / Hips": "루트 / 골반",
 	Spine: "척추",
@@ -22,7 +17,6 @@ const HIERARCHY_LABELS_KO = {
 	"Right Arm": "오른팔",
 	"Left Leg": "왼다리",
 	"Right Leg": "오른다리",
-	"Root Path": "루트 경로",
 	Environment: "환경",
 	Props: "소품",
 };
@@ -201,10 +195,7 @@ export default function HierarchyPanel({
 	onSelect,
 	showB,
 	motionFrames,
-	promptCount,
-	ikFrames,
 	ikMode,
-	waypointCount,
 	sceneObjects = [],
 	onAddObject,
 	onRenameObject,
@@ -212,7 +203,7 @@ export default function HierarchyPanel({
 	onDeleteObject,
 	onFrameObject,
 }) {
-	const [expanded, setExpanded] = useState(() => new Set(["shot", "characters", "characterA", "characterA.motion"]));
+	const [expanded, setExpanded] = useState(() => new Set(["shot", "characters", "characterA"]));
 	const [contextMenu, setContextMenu] = useState(null);
 	// Row currently in in-place rename. The panel owns it: F2/Return and the
 	// row context menu are the only ways in, so app state stays out of it.
@@ -273,10 +264,6 @@ export default function HierarchyPanel({
 	};
 	const badgeFor = (id) => {
 		if (id === "characters") return showB ? 2 : 1;
-		if (id === "characterA.motion" || id === "characterA.baseMotion") return motionFrames ? `${motionFrames}f` : ko("empty", "비어 있음");
-		if (id === "characterA.promptBlocks") return promptCount;
-		if (id === "characterA.ik") return ikFrames;
-		if (id === "rootPath") return waypointCount;
 		if (id === "props") return sceneObjects.length;
 		return null;
 	};
