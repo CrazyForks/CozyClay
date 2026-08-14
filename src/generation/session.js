@@ -1,4 +1,4 @@
-import { getGenerationJob, submitGeneration, validateGeneration } from "./client.js";
+import { cancelGenerationJob, getGenerationJob, submitGeneration, validateGeneration } from "./client.js";
 
 const TERMINAL = new Set(["succeeded", "failed"]);
 
@@ -10,6 +10,7 @@ export async function runGeneration(spec, {
   validate = validateGeneration,
   submit = submitGeneration,
   poll = getGenerationJob,
+  cancel = cancelGenerationJob,
   sleep = (ms, waitSignal) => new Promise((resolve, reject) => {
     const timer = setTimeout(resolve, ms);
     waitSignal?.addEventListener("abort", () => { clearTimeout(timer); reject(waitSignal.reason); }, { once: true });
@@ -39,6 +40,7 @@ export async function runGeneration(spec, {
   } catch (error) {
     const timedOut = timeout.aborted && !signal?.aborted;
     const canceled = signal?.aborted;
+    if (canceled && job?.id) await cancel(job.id).catch(() => {});
     update({ status: timedOut ? "timed_out" : canceled ? "canceled" : "failed", job, validation, error: error?.message || String(error) });
     throw error;
   }

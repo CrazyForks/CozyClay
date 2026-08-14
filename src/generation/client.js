@@ -50,3 +50,7 @@ export function submitGeneration(spec, { signal } = {}) {
 export function getGenerationJob(id, { signal } = {}) {
   return requestJson(`/generation/jobs/${encodeURIComponent(id)}`, { signal }, 30000, 3);
 }
+
+export function cancelGenerationJob(id) {
+  return requestJson(`/generation/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }, 30000, 1);
+}

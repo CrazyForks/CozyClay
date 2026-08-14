@@ -8,7 +8,10 @@ import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import { createJobStore } from "./job-store.mjs";
+import { klingProvider } from "./providers/kling.mjs";
 import { runwayProvider } from "./providers/runway.mjs";
+import { seedanceProvider } from "./providers/seedance.mjs";
+import { veoProvider } from "./providers/veo.mjs";
 
 const HOST = "127.0.0.1";
 const PORT = Number(process.env.CCLAY_GENERATION_PORT || 5182);
@@ -55,7 +58,7 @@ export async function downloadResult(url, target, { fetchImpl = fetch, retries =
   throw new Error("result download failed");
 }
 
-export function createGenerationServer({ store = createJobStore(), providers = { runway: runwayProvider }, download = downloadResult, now = () => new Date().toISOString() } = {}) {
+export function createGenerationServer({ store = createJobStore(), providers = { runway: runwayProvider, seedance: seedanceProvider, kling: klingProvider, veo: veoProvider }, download = downloadResult, now = () => new Date().toISOString() } = {}) {
   const ready = store.load();
   return createServer(async (req, res) => {
     try {
@@ -103,13 +106,25 @@ export function createGenerationServer({ store = createJobStore(), providers = {
         return;
       }
       const match = url.pathname.match(/^\/generation\/jobs\/([^/]+)$/);
+      if (req.method === "DELETE" && match) {
+        const job = store.get(match[1]);
+        if (!job) return json(res, 404, { reason: "job not found" });
+        if (job.status !== "processing") return json(res, 200, publicJob(job));
+        const provider = providers[job.provider];
+        if (!provider?.cancel) return json(res, 409, { reason: `${job.provider} does not expose a verified remote cancellation operation` });
+        if (!provider.available()) return json(res, 503, { reason: `${job.provider} is not configured; restore its key to cancel this job` });
+        await provider.cancel(job.providerJobId, { model: job.model });
+        Object.assign(job, { status: "canceled", failure: "generation canceled", updatedAt: now() });
+        await store.set(job);
+        return json(res, 200, publicJob(job));
+      }
       if (req.method === "GET" && match) {
         const job = store.get(match[1]);
         if (!job) return json(res, 404, { reason: "job not found" });
         if (job.status === "processing") {
           const provider = providers[job.provider];
           if (!provider?.available()) return json(res, 503, { reason: `${job.provider} is not configured; restore its key to resume this job` });
-          const state = await provider.poll(job.providerJobId);
+          const state = await provider.poll(job.providerJobId, { model: job.model });
           Object.assign(job, state, { remoteOutputUrl: state.outputUrl ?? job.remoteOutputUrl, updatedAt: now() });
           if (state.status === "succeeded" && state.outputUrl) {
             const target = join(store.resultDir, `${job.id}.mp4`);

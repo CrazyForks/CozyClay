@@ -1,4 +1,4 @@
-# Video generation bridge (draft)
+# Video generation bridge
 
 The bridge keeps provider credentials out of the browser and translates CozyClay's provider-neutral ShotSpec into provider requests.
 
@@ -17,5 +17,13 @@ The bridge binds to `127.0.0.1:5182`; Vite proxies `/generation` to it. The stat
 - `POST /generation/validate`
 - `POST /generation/jobs`
 - `GET /generation/jobs/:id`
+- `DELETE /generation/jobs/:id` (when the provider exposes verified remote cancellation)
 
-This first draft contains a Runway adapter and in-memory job tracking. Durable job storage, result import, UI confirmation, Kling, and direct Veo adapters remain follow-up work before merge.
+## Provider credentials
+
+- Runway: `RUNWAYML_API_SECRET`
+- Seedance / BytePlus ModelArk: `ARK_API_KEY`
+- Kling: `KLING_API_TOKEN` (a server-side bearer token produced by Kling's authentication flow)
+- Veo / Vertex AI: `GOOGLE_CLOUD_ACCESS_TOKEN`, `GOOGLE_CLOUD_PROJECT`, and optionally `GOOGLE_CLOUD_LOCATION`
+
+The browser receives only model descriptors. Provider payloads and credentials stay inside `providers/`; completed MP4 files are downloaded immediately into the shared local job store.
