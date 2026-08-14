@@ -42,8 +42,23 @@ try {
 } catch {
 	notRun(`no CDP browser on port ${port} — run through tools/qa-browser.mjs`);
 }
-const page = targets.find((t) => t.type === "page" && t.webSocketDebuggerUrl);
-if (!page) notRun("no page target on the QA browser");
+// Pick the APP page, not merely the first page. Once the surface boundary is
+// composed there are several page targets (the app plus the cross-origin
+// ingest surface), and attaching to the surface finds no window.__cozyclay --
+// which surfaced as "TypeError: window.__takeHistory is not a function" and
+// read as a product defect when it was a harness one.
+const appOrigin = new URL(process.env.QA_URL ?? "http://127.0.0.1:5180/").origin;
+const pages = targets.filter((t) => t.type === "page" && t.webSocketDebuggerUrl);
+const page = pages.find((t) => {
+	try {
+		return new URL(t.url).origin === appOrigin;
+	} catch {
+		return false;
+	}
+});
+if (!page) {
+	notRun(`no page target on the app origin ${appOrigin}; found ${pages.map((t) => t.url).join(", ") || "none"}`);
+}
 
 const ws = new WebSocket(page.webSocketDebuggerUrl);
 await new Promise((resolve, reject) => {
@@ -229,12 +244,28 @@ const takePayload = (requestId, artifactPath = ARTIFACT_URL) => ({
 
 /* --------------------------------- boot ----------------------------------- */
 await send("Runtime.enable");
+// Page.enable is required before Page.reload for the load lifecycle to be
+// observable; without it the session can keep evaluating against the
+// pre-reload context, evaluateSafely swallows every error, the wait loop below
+// spins out, and the suite proceeds to report four misleading TypeErrors that
+// read as product defects.
+await send("Page.enable");
 for (let i = 0; i < 100 && !(await evaluateSafely("location.href.startsWith('http')")); i += 1) await sleep(200);
 await evaluate("localStorage.removeItem('cozyclay.clips.v1'); localStorage.removeItem('cozyclay.scene.v1'); localStorage.removeItem('cozyclay.scene.v1.quarantine'); localStorage.setItem('cozyclay.locale', 'en')");
 await send("Page.reload");
 for (let i = 0; i < 150 && !(await evaluateSafely("!!document.querySelector('canvas')")); i += 1) await sleep(200);
 for (let i = 0; i < 100 && !(await evaluateSafely("!!window.__cozyclay && !!window.__takeHistory && !!window.__sceneHistory && !!window.__cozyclay.rigA && document.querySelectorAll('.hierarchy-row').length > 0")); i += 1) await sleep(200);
 await sleep(1200);
+
+// A boot that never produced the hooks means the suite CANNOT observe anything;
+// continuing would emit confident-looking failures about code that was never
+// reached. Fail loudly instead, with what was actually seen.
+const bootState = await evaluateSafely(
+	"JSON.stringify({cozy: typeof window.__cozyclay, take: typeof window.__takeHistory, scene: typeof window.__sceneHistory, canvas: !!document.querySelector('canvas'), rows: document.querySelectorAll('.hierarchy-row').length})",
+);
+if (typeof bootState !== "string" || !bootState.includes('"take":"function"')) {
+	notRun(`the live app never exposed its QA hooks after boot; observed ${bootState ?? "no evaluable context"}. Run through tools/qa-browser.mjs with the dev stack up (npm run dev:ingest).`);
+}
 
 await rt.record({
 	id: "B-E2E-01",
