@@ -22,6 +22,8 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { solveContactHead } from "../../tools/ingest/feasibility/contact-head.mjs";
+import { solveLowestFoot } from "../../tools/ingest/feasibility/lowest-foot.mjs";
 
 const fail = [];
 const ok = (label, cond, detail) => {
@@ -256,13 +258,11 @@ export function validateRawTrack(track) {
 			continue;
 		}
 
-		// per-slot extras the §8.4 acceptances name explicitly
-		if (id === "F1-δ") {
-			const d = record.derivation;
-			if (typeof d !== "object" || d === null || typeof d.from !== "string" || typeof d.via !== "string") {
-				v("F1-DELTA-UNRESOLVED", "F1-δ: no full-image foot observation named and no derivation supplied", id);
-			}
-		}
+		// per-slot extras the §8.4 acceptances name explicitly. F1-δ's
+		// satisfaction was already decided above: a named tensor is sufficient
+		// (plan §8.4: "named, or the exact derivation ..."), so there is no
+		// derivation requirement here — only a slot that is NEITHER named nor
+		// derived is the plan's canonical F1-DELTA-UNRESOLVED.
 		if (id === "F1-ε" && (typeof record.convention !== "string" || typeof record.threshold !== "string")) {
 			v(`F1-${lat}-CONVENTION`, "F1-ε: resolved slot must state the logit/probability convention and threshold semantics", id);
 		}
@@ -306,9 +306,32 @@ const matVec = (m, v) => [
 	m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
 	m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
 ];
+// the acceptances read the tensors the SLOT RECORDS name, not hardcoded data
+// keys: the §8.4 acceptances must run against any fixture an operator returns,
+// whatever candidate tensor resolved the slot. A missing or malformed tensor
+// yields Infinity so the acceptance fails loudly instead of crashing.
+const slotTensor = (track, id) => {
+	const r = track.slots && track.slots[id];
+	if (!r || r.status !== "resolved" || typeof r.tensor !== "string") return null;
+	return track.data && track.data[r.tensor];
+};
+// rotationFrom(<F1-α>), the §8.3 step: (F,3,3) matrices directly, (F,3)
+// axis-angle through Rodrigues — both shapes the resolver can legitimately name.
+const axisAngleToMat = (aa) => {
+	const n = Math.hypot(aa[0], aa[1], aa[2]);
+	if (n < 1e-12) return [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+	const [x, y, z] = [aa[0] / n, aa[1] / n, aa[2] / n];
+	const c = Math.cos(n), s = Math.sin(n), t = 1 - c;
+	return [
+		[t * x * x + c, t * x * y - s * z, t * x * z + s * y],
+		[t * x * y + s * z, t * y * y + c, t * y * z - s * x],
+		[t * x * z - s * y, t * y * z + s * x, t * z * z + c],
+	];
+};
+const rotOf = (RbodyCam) => (Array.isArray(RbodyCam[0]) ? RbodyCam : axisAngleToMat(RbodyCam));
 const yawWorldDeg = (RbodyCam, facing) => {
 	// R_ring_body = R_ring_from_cam · rotationFrom(F1-α); forward_ring = R_ring_body · e_forward
-	const forward = matVec(R_RING_FROM_CAM, matVec(RbodyCam, facing));
+	const forward = matVec(R_RING_FROM_CAM, matVec(rotOf(RbodyCam), facing));
 	return (Math.atan2(forward[0], forward[2]) * 180) / Math.PI;
 };
 const angDistDeg = (a, b) => {
@@ -321,28 +344,54 @@ const reprojFull = (k, crop) => [k[0] / crop.scale + crop.offsetX, k[1] / crop.s
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 
 const worstYawErrDeg = (track) => {
+	const alpha = slotTensor(track, "F1-α");
+	const facing = slotTensor(track, "F1-β") || (track.data && track.data.facing_axis);
+	const v = track.verification;
+	if (!alpha || !facing || !v || !Array.isArray(v.handFacingFrameIndex) || !Array.isArray(v.handFacingYawDeg)) return Infinity;
 	let worst = 0;
-	track.verification.handFacingFrameIndex.forEach((f, i) => {
-		const yaw = yawWorldDeg(track.data.global_orient_cam[f], track.data.facing_axis);
-		worst = Math.max(worst, angDistDeg(yaw, track.verification.handFacingYawDeg[i]));
-	});
+	for (let i = 0; i < v.handFacingFrameIndex.length; i += 1) {
+		const f = v.handFacingFrameIndex[i];
+		if (!Array.isArray(alpha[f])) return Infinity;
+		const yaw = yawWorldDeg(alpha[f], facing);
+		worst = Math.max(worst, angDistDeg(yaw, v.handFacingYawDeg[i]));
+	}
 	return worst;
 };
-const restYawDeg = (track) =>
-	yawWorldDeg(track.data.global_orient_cam[track.verification.restFrameIndex], track.data.facing_axis);
+const restYawDeg = (track) => {
+	const alpha = slotTensor(track, "F1-α");
+	const facing = slotTensor(track, "F1-β") || (track.data && track.data.facing_axis);
+	const v = track.verification;
+	if (!alpha || !facing || !v || !Number.isInteger(v.restFrameIndex) || !Array.isArray(alpha[v.restFrameIndex])) return Infinity;
+	return yawWorldDeg(alpha[v.restFrameIndex], facing);
+};
 const gammaErrM = (track) => {
-	const { windowStartFrameIndex: ws, windowEndFrameIndex: we, annotatedDisplacementM: annotated } = track.verification;
+	const gamma = slotTensor(track, "F1-γ");
+	const v = track.verification;
+	if (!gamma || !v || !Number.isInteger(v.windowStartFrameIndex) || !Number.isInteger(v.windowEndFrameIndex)) return Infinity;
+	const { windowStartFrameIndex: ws, windowEndFrameIndex: we, annotatedDisplacementM: annotated } = v;
 	// §8.3: v_ring[f] = R_ring_from_cam · (F1-γ[f] − F1-γ[f−1]) · sourceFps. Over a
 	// window the per-frame velocities telescope to t[we] − t[ws] (sourceFps cancels).
-	const integrated = sub(track.data.translation_cam[we], track.data.translation_cam[ws]);
+	if (!Array.isArray(gamma[ws]) || !Array.isArray(gamma[we]) || !Array.isArray(annotated) || annotated.length !== 3) return Infinity;
+	const integrated = sub(gamma[we], gamma[ws]);
 	return norm(sub(integrated, annotated));
 };
 const worstAnkleErrPx = (track) => {
+	const delta = track.slots && track.slots["F1-δ"];
+	const tensor = slotTensor(track, "F1-δ");
+	const v = track.verification;
+	if (!delta || !tensor || !v || !Array.isArray(v.knownAnkleFullImagePx)) return Infinity;
+	const crop = track.data && track.data.crop;
 	let worst = 0;
-	track.data.foot_keypoints_crop.forEach((feet, f) => {
+	tensor.forEach((feet, f) => {
 		feet.forEach((k, foot) => {
-			// F1-δ derivation: full = crop / scale + offset
-			worst = Math.max(worst, dist(reprojFull(k, track.data.crop), track.verification.knownAnkleFullImagePx[f][foot]));
+			// F1-δ: named full-image [u, v] columns, or the derivation
+			// full = crop / scale + offset
+			if (!Array.isArray(k) || k.length < 2 || !Array.isArray(v.knownAnkleFullImagePx[f]) || !Array.isArray(v.knownAnkleFullImagePx[f][foot])) {
+				worst = Infinity;
+				return;
+			}
+			const full = delta.derivation && crop ? reprojFull(k, crop) : [k[0], k[1]];
+			worst = Math.max(worst, dist(full, v.knownAnkleFullImagePx[f][foot]));
 		});
 	});
 	return worst;
@@ -366,6 +415,35 @@ ok(
 	"F1-δ: no full-image foot observation named and no derivation supplied -> rejected",
 	deltaErr === null,
 	deltaErr === null ? "" : `got ${deltaErr.name} (${deltaErr.code}): ${deltaErr.message}`,
+);
+//
+// ---- F1-δ named-only: the §8.4 counterpart of the RED above ---------------
+// Plan §8.4 F1-δ row: "named, or the exact derivation from crop-space
+// keypoints + the crop transform" — a resolved slot that NAMES a full-image
+// foot observation needs no derivation, and must be accepted. dump-gvhmr.py
+// produces exactly this form when the output carries a full-image foot tensor
+// (rt-dump DMP-full-image-slot); rejecting it would break the operator path.
+const namedOnlyDelta = JSON.parse(JSON.stringify(good));
+delete namedOnlyDelta.slots["F1-δ"].derivation;
+namedOnlyDelta.sha256 = sha256Of(namedOnlyDelta);
+const namedOnlyViolations = validateRawTrack(namedOnlyDelta);
+ok(
+	"F1-δ: named-only (full-image foot observation named, no derivation) is accepted per §8.4",
+	namedOnlyViolations.length === 0,
+	namedOnlyViolations.length ? `${namedOnlyViolations[0].code}: ${namedOnlyViolations[0].message}` : "",
+);
+let namedOnlyAccepted = false;
+let namedOnlyRejectErr = null;
+try {
+	assertRawTrackValid(namedOnlyDelta);
+	namedOnlyAccepted = true;
+} catch (e) {
+	namedOnlyRejectErr = e;
+}
+ok(
+	"F1-δ: assertRawTrackValid passes the named-only fixture (no F1-DELTA-UNRESOLVED)",
+	namedOnlyAccepted,
+	namedOnlyRejectErr ? `got ${namedOnlyRejectErr.name} (${namedOnlyRejectErr.code}): ${namedOnlyRejectErr.message}` : "",
 );
 
 // ---- good fixture: gate + one PASS line per §8.4 slot ----------------------
@@ -509,6 +587,294 @@ ok(
 	missing.status !== 0 && /does not exist/.test(missing.stderr),
 	`exit ${missing.status}: ${missing.stderr.trim()}`,
 );
+// ---------------------------------------------------------------------------
+// the operator path (A2): this file accepts an operator fixture explicitly --
+// RAWTRACK_FIXTURE env var or a positional argv path -- and runs the FULL §8.4
+// slot contract plus the numeric acceptances against it. The default (no
+// argument) stays the synthetic set, so CI is unchanged.
+// ---------------------------------------------------------------------------
+const OPERATOR_PATH = process.env.RAWTRACK_FIXTURE || process.argv[2];
+if (OPERATOR_PATH) {
+	const op = JSON.parse(readFileSync(OPERATOR_PATH, "utf8"));
+	const label = "operator fixture";
+	ok(`${label}: sha256 gate`, sha256Of(op) === op.sha256, op.sha256 ? op.sha256.slice(0, 12) : "no sha256 field");
+	const opViolations = validateRawTrack(op);
+	ok(`${label}: zero contract violations (§8.4 slot contract)`, opViolations.length === 0, opViolations.length ? opViolations[0].code : "");
+	// every slot is either resolved with its §8.4 fields or escalated with a reason
+	for (const [id, fields] of Object.entries(REQUIRE)) {
+		const r = op.slots && op.slots[id];
+		ok(
+			`${label}: ${id} carries its §8.4 fields (or escalates with a reason)`,
+			r && (r.status === "resolved" ? fields.every((f) => r[f] !== undefined) : typeof r.reason === "string" && r.reason.length > 0),
+			r ? "" : "slot record absent",
+		);
+	}
+	// the numeric acceptances need the §6 hand-measured verification block
+	const v = op.verification;
+	const hasVerification =
+		v &&
+		Array.isArray(v.handFacingFrameIndex) && Array.isArray(v.handFacingYawDeg) &&
+		Number.isInteger(v.restFrameIndex) &&
+		Number.isInteger(v.windowStartFrameIndex) && Number.isInteger(v.windowEndFrameIndex) &&
+		Array.isArray(v.annotatedDisplacementM) && Array.isArray(v.knownAnkleFullImagePx);
+	ok(`${label}: carries the §6 hand-measured verification block`, hasVerification, hasVerification ? "" : "verification missing or incomplete");
+	const acceptance = (id, run) => {
+		const r = op.slots && op.slots[id];
+		if (r && r.status === "resolved") run();
+		else ok(`${label}: ${id} numeric acceptance not run (slot escalated per §7)`, true);
+	};
+	if (hasVerification) {
+		acceptance("F1-α", () => {
+			const e = worstYawErrDeg(op);
+			ok(`${label}: F1-α §8.3 yaw reproduces the hand-measured facing within 5°`, e <= 5, `worst deviation ${e.toFixed(4)}°`);
+		});
+		acceptance("F1-β", () => {
+			const e = restYawDeg(op);
+			ok(`${label}: F1-β neutral rest pose yields yawWorld = 0 within 2°`, Math.abs(e) <= 2, `yawWorld(rest) = ${e.toFixed(4)}°`);
+		});
+		acceptance("F1-γ", () => {
+			const e = gammaErrM(op);
+			ok(`${label}: F1-γ velocity integrates to the annotated displacement within 5 cm`, e <= 0.05, `|∫v − annotated| = ${e.toFixed(4)} m`);
+		});
+		acceptance("F1-δ", () => {
+			const e = worstAnkleErrPx(op);
+			ok(`${label}: F1-δ reprojected ankle lands within 3 px`, e <= 3, `worst ${e.toFixed(4)} px`);
+		});
+		acceptance("F1-η", () => {
+			const etaC = op.slots["F1-η"].crop;
+			ok(`${label}: F1-η named crop equals the data crop (round-trip)`, CROP_FIELDS.every((k) => etaC[k] === op.data.crop[k]), "");
+			ok(`${label}: F1-η fps round-trip — timeS = frameIndex / fps`, op.timeS.every((t, f) => Math.abs(t - op.frameIndex[f] / op.fps) < 1e-9), "");
+			ok(`${label}: F1-η handedness/up-axis/fps consistent with the data`, op.slots["F1-η"].handedness === op.data.handedness && op.slots["F1-η"].upAxis === op.data.upAxis && op.slots["F1-η"].fps === op.fps, "");
+		});
+	}
+}
+
+// ---------------------------------------------------------------------------
+// the round trip (A1): an artifact produced the way dump-gvhmr.py produces one
+// must be consumable by the F2 feasibility runners. rawtrack-dump-roundtrip.json
+// IS dump emission (the script's own _build_document path — see the fixture's
+// provenance), so solving it with the plan's camera must recover the scene's
+// planted foot: single fighter, LEFT foot planted at (0.5, 0, 0.2) ring metres,
+// right foot lifted 0.15 m; plan 9.1 camera centre (0, 2.6, -7.5), look-at
+// (0, 0, 0.6), up (0, 1, 0); K = [[1200,0,960],[0,1200,540],[0,0,1]]; floorY = 0.
+// ---------------------------------------------------------------------------
+const rtFixture = load("rawtrack-dump-roundtrip.json");
+const RT = {
+	cameraCentre: [0, 2.6, -7.5],
+	cameraLookAt: [0, 0, 0.6],
+	cameraUp: [0, 1, 0],
+	floorY: 0,
+	plantedLeft: [0.5, 0, 0.2],
+	liftedRight: [0.3, 0.15, 0.0],
+};
+const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const normalize3 = (v) => {
+	const n = Math.hypot(v[0], v[1], v[2]);
+	return [v[0] / n, v[1] / n, v[2] / n];
+};
+const cross3 = (a, b) => [
+	a[1] * b[2] - a[2] * b[1],
+	a[2] * b[0] - a[0] * b[2],
+	a[0] * b[1] - a[1] * b[0],
+];
+const lookAtExtrinsics = (centre, lookAt, up) => {
+	// the same convention as make-synthetic.mjs: camera z forward, x image-right,
+	// y image-down; R columns are the camera axes in ring coordinates
+	const z = normalize3(sub3(lookAt, centre));
+	const x = normalize3(cross3(up, z));
+	const y = cross3(x, z);
+	return { R: [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]], t: centre };
+};
+const rtCam = lookAtExtrinsics(RT.cameraCentre, RT.cameraLookAt, RT.cameraUp);
+const rtFloorFrame = { R_ring_from_cam: rtCam.R, t_ring_from_cam: rtCam.t, floorY: RT.floorY };
+const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+ok("round trip: the dump-shaped fixture is sha256-pinned", sha256Of(rtFixture) === rtFixture.sha256, rtFixture.sha256.slice(0, 12));
+ok(
+	"round trip: the dump-shaped fixture is decimated + trimmed (11 frames [6..26])",
+	rtFixture.frames === 11 && JSON.stringify(rtFixture.frameIndex) === JSON.stringify([6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26]),
+	JSON.stringify(rtFixture.frameIndex),
+);
+for (const [mode, runner] of [["contact-head", solveContactHead], ["lowest-foot", solveLowestFoot]]) {
+	const out = runner(rtFixture, rtFloorFrame);
+	const roots = out.subjects[0].rootWorld;
+	const worst = Math.max(...roots.map((p) => dist3(p, RT.plantedLeft)));
+	const offFloor = Math.max(...roots.map((p) => Math.abs(p[1] - RT.floorY)));
+	const onPlantedFoot = roots.every((p) => dist3(p, RT.plantedLeft) < dist3(p, RT.liftedRight));
+	ok(
+		`round trip: ${mode} consumes the dump artifact and solves the planted foot on all ${rtFixture.frames} emitted frames`,
+		roots.length === rtFixture.frames && worst < 1e-4 && offFloor < 1e-9 && onPlantedFoot,
+		`worst ${worst.toExponential(3)} m, off floor ${offFloor.toExponential(3)} m`,
+	);
+}
+
+// ---------------------------------------------------------------------------
+// the decimated round trip (A3): build a synthetic GVHMR output, run the dump's
+// emission path with stride > 1 AND a trim range, and prove the emitted
+// artifact passes the contract validator with declared shapes equal to the
+// emitted lengths. The dump is spawned with the same numpy-free stand-ins its
+// own --selftest uses, so no numpy is needed on this workstation.
+// ---------------------------------------------------------------------------
+const A3_SCRIPT = `
+import json, sys, importlib.util
+spec = importlib.util.spec_from_file_location("dump_gvhmr", ${JSON.stringify(PY)})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+class Fake:
+    def __init__(self, v):
+        self._v = v
+    def __getitem__(self, k):
+        return Fake(self._v[k]) if isinstance(k, slice) else self._v[k]
+    def tolist(self):
+        return self._v
+
+def tensor(shape, leaf):
+    def fill(s):
+        if not s:
+            return leaf()
+        return [fill(s[1:]) for _ in range(s[0])]
+    return {"dtype": "float32", "shape": list(shape), "itemsize": 4, "array": Fake(fill(shape))}
+
+crop = {"offsetX": 800, "offsetY": 400, "scale": 2, "cropW": 640, "cropH": 360, "fullW": 1920, "fullH": 1080}
+artifacts = {
+    "global_orient_cam": tensor([30, 3, 3], lambda: 0.0),
+    "translation_cam": tensor([30, 3], lambda: 0.0),
+    "foot_keypoints_crop": tensor([30, 2, 3], lambda: 1.0),
+    "foot_contact_logits": tensor([30, 2], lambda: 2.6),
+    "body_pose_smpl": tensor([30, 24, 3], lambda: 0.0),
+}
+meta = {"fps": 29.97, "crop": crop, "model": "smpl", "K": [[1200, 0, 960], [0, 1200, 540], [0, 0, 1]]}
+args = m.argparse.Namespace(clip_id="a3-regen", trim_start=0.2, trim_end=0.9, max_bytes=9000,
+    source_url="urn:a3", licence="CC0-1.0", source_sha256="0" * 64, gvhmr_commit="0" * 40,
+    weights_sha256="0" * 64, annotation_path="a3-annotation.json")
+doc, _ = m._build_document(args, artifacts, meta)
+print(json.dumps(m._normalize_numbers(doc), separators=(",", ":")))
+`;
+const a3 = spawnSync("python3", ["-"], { input: A3_SCRIPT, encoding: "utf8" });
+ok("A3: the dump's emission path runs on a synthetic trimmed + decimated output", a3.status === 0, a3.status === 0 ? "" : a3.stderr.slice(-300));
+if (a3.status === 0) {
+	const emitted = JSON.parse(a3.stdout);
+	ok(
+		"A3: stride 2 decimation + trim emit 11 frames [6..26]",
+		emitted.frames === 11 && JSON.stringify(emitted.frameIndex) === JSON.stringify([6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26]),
+		JSON.stringify(emitted.frameIndex),
+	);
+	const v3 = validateRawTrack(emitted);
+	ok("A3: the decimated + trimmed dump passes the contract validator", v3.length === 0, v3.length ? v3[0].code : "");
+	const slotByTensor = Object.fromEntries(
+		Object.entries(emitted.slots).map(([id, r]) => [r.tensor, id]).filter(([t]) => t),
+	);
+	const shapesMatch = Object.entries(slotByTensor).every(([t, id]) => {
+		const declared = emitted.slots[id].shape;
+		const actual = shapeOf(emitted.data[t]);
+		return declared.length === actual.length && declared.every((dim, i) => dim === actual[i]);
+	});
+	ok("A3: every declared shape equals the emitted tensor length", shapesMatch, "");
+	ok(
+		"A3: top-level K equals data.K and subjects align with the emitted frames",
+		JSON.stringify(emitted.K) === JSON.stringify(emitted.data.K) &&
+			emitted.subjects.length === 1 &&
+			emitted.subjects[0].footObservations2d.left.keypoints.length === 11 &&
+			emitted.subjects[0].footObservations2d.right.keypoints.length === 11 &&
+			emitted.subjects[0].leftContact.length === 11 &&
+			emitted.subjects[0].rightContact.length === 11,
+		"",
+	);
+}
+//
+// ---------------------------------------------------------------------------
+// the named-only F1-δ operator path (A4): an output whose full-image foot
+// tensor resolves F1-δ by NAME (no crop derivation — plan §8.4: "named, or
+// the exact derivation") must emit a fixture the contract validator accepts.
+// This is the exact B1 regression: dump-gvhmr.py emits this form for
+// foot_2d_full, and the validator used to reject it with F1-DELTA-UNRESOLVED.
+// ---------------------------------------------------------------------------
+const A4_SCRIPT = `
+import json, sys, importlib.util
+spec = importlib.util.spec_from_file_location("dump_gvhmr", ${JSON.stringify(PY)})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+class Fake:
+    def __init__(self, v):
+        self._v = v
+    def __getitem__(self, k):
+        return Fake(self._v[k]) if isinstance(k, slice) else self._v[k]
+    def tolist(self):
+        return self._v
+
+def tensor(shape, leaf):
+    def fill(s):
+        if not s:
+            return leaf()
+        return [fill(s[1:]) for _ in range(s[0])]
+    return {"dtype": "float32", "shape": list(shape), "itemsize": 4, "array": Fake(fill(shape))}
+
+crop = {"offsetX": 800, "offsetY": 400, "scale": 2, "cropW": 640, "cropH": 360, "fullW": 1920, "fullH": 1080}
+artifacts = {
+    "global_orient_cam": tensor([30, 3, 3], lambda: 0.0),
+    "translation_cam": tensor([30, 3], lambda: 0.0),
+    "foot_2d_full": tensor([30, 2, 2], lambda: 1.0),
+    "foot_contact_logits": tensor([30, 2], lambda: 2.6),
+    "body_pose_smpl": tensor([30, 24, 3], lambda: 0.0),
+}
+meta = {"fps": 29.97, "crop": crop, "model": "smpl", "K": [[1200, 0, 960], [0, 1200, 540], [0, 0, 1]]}
+args = m.argparse.Namespace(clip_id="a4-regen", trim_start=0.2, trim_end=0.9, max_bytes=9000,
+    source_url="urn:a4", licence="CC0-1.0", source_sha256="0" * 64, gvhmr_commit="0" * 40,
+    weights_sha256="0" * 64, annotation_path="a4-annotation.json")
+doc, _ = m._build_document(args, artifacts, meta)
+print(json.dumps(m._normalize_numbers(doc), separators=(",", ":")))
+`;
+const a4 = spawnSync("python3", ["-"], { input: A4_SCRIPT, encoding: "utf8" });
+ok("A4: the dump's emission path runs on a full-image named-only output", a4.status === 0, a4.status === 0 ? "" : a4.stderr.slice(-300));
+if (a4.status === 0) {
+	const namedEmitted = JSON.parse(a4.stdout);
+	const namedDelta4 = namedEmitted.slots["F1-δ"];
+	ok(
+		"A4: F1-δ resolves named-only (no derivation) for a full-image foot tensor",
+		namedDelta4.status === "resolved" &&
+			namedDelta4.tensor === "foot_2d_full" &&
+			namedDelta4.derivation === undefined,
+		JSON.stringify(namedDelta4),
+	);
+	const v4 = validateRawTrack(namedEmitted);
+	ok(
+		"A4: the named-only F1-δ fixture passes the contract validator (B1 closed)",
+		v4.length === 0,
+		v4.length ? `${v4[0].code}: ${v4[0].message}` : "",
+	);
+	ok(
+		"A4: all seven slots resolve and subjects carry per-frame observations",
+		Object.values(namedEmitted.slots).every((r) => r.status === "resolved") &&
+			namedEmitted.subjects.length === 1 &&
+			namedEmitted.subjects[0].footObservations2d.left.keypoints[0][0] === 1.0,
+		`subjects=${namedEmitted.subjects.length}`,
+	);
+}
+
+// ---------------------------------------------------------------------------
+// the operator path is a real invocation: re-run this file with the fixture as
+// an explicit argv path and assert the same §8.4 checks execute on it. Guarded
+// so the child run (which carries the fixture arg) does not recurse.
+// ---------------------------------------------------------------------------
+if (!OPERATOR_PATH) {
+	const rtPath = fileURLToPath(new URL("./fixtures/rawtrack/rawtrack-dump-roundtrip.json", import.meta.url));
+	const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), rtPath], { encoding: "utf8" });
+	const expectedLines = [
+		"operator fixture: sha256 gate",
+		"operator fixture: zero contract violations",
+		"operator fixture: F1-α §8.3 yaw reproduces the hand-measured facing within 5°",
+		"operator fixture: F1-β neutral rest pose yields yawWorld = 0 within 2°",
+		"operator fixture: F1-γ velocity integrates to the annotated displacement within 5 cm",
+		"operator fixture: F1-δ reprojected ankle lands within 3 px",
+		"operator fixture: F1-η named crop equals the data crop (round-trip)",
+	];
+	ok(
+		"operator path: verify-gvhmr-schema.mjs <fixture> runs the full §8.4 contract on the supplied fixture and exits 0",
+		child.status === 0 && expectedLines.every((line) => child.stdout.includes(line)),
+		child.status === 0 ? "" : `exit ${child.status}: ${(child.stdout + child.stderr).slice(-300)}`,
+	);
+}
 
 console.log(`\nfailures: ${fail.length}`);
 process.exit(fail.length ? 1 : 0);

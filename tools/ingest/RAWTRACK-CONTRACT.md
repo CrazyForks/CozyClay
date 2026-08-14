@@ -62,6 +62,12 @@ Any slot that cannot be satisfied is **escalated, not guessed**.
 
 ## 4. Fixture shape
 
+The document carries BOTH shapes the pipeline consumes. `data` holds the F1
+slot tensors the §8.4 contract validator checks; the top-level `K` and
+`subjects` are the runner-facing projection the Phase-0 F2a-c feasibility
+runners (`tools/ingest/feasibility/*.mjs`) consume. Both come out of the same
+`dump-gvhmr.py` run — there is no adapter in between.
+
 ```jsonc
 { "schemaVersion": 1, "kind": "RawTrack", "clipId": "...", "fps": 29.97,
   "frames": 186, "frameIndex": [ ... ], "timeS": [ ... ],
@@ -70,6 +76,16 @@ Any slot that cannot be satisfied is **escalated, not guessed**.
               "shape": [...], "units": "..." , ... },
     ... one record per slot; "UNRESOLVED" records carry "reason": "..." ...
   },
+  "K": [[...]],               // full-image intrinsics (== data.K); the F2 runners read this
+  "subjects": [               // runner-facing projection, aligned with frameIndex (§4.1)
+    { "trackId": "0",
+      "footObservations2d": {
+        "left":  { "foot": "left",  "observationSpace": "full-image",
+                   "keypoints": [[u, v], ...] },          // per emitted frame
+        "right": { "foot": "right", "observationSpace": "full-image",
+                   "keypoints": [[u, v], ...] } },
+      "leftContact":  [0.93, ...],  // contact PROBABILITY per emitted frame (threshold 0.5)
+      "rightContact": [0.07, ...] } ],
   "data": { "<named tensor>": [...], "K": [[...]], "crop": {...},
             "handedness": "...", "upAxis": "...", "bodyModel": "..." },
   "verification": { /* hand-measured references, §6 */ },
@@ -84,7 +100,35 @@ A resolved slot must name its tensor with dtype/shape/units (F1-δ may instead
 supply `derivation: {from, via}`); an unresolved slot must carry a reason.
 `verify-gvhmr-schema.mjs` rejects a fixture where F1-δ is neither named nor
 derived with the named error `F1-DELTA-UNRESOLVED` ("no full-image foot
-observation named and no derivation supplied").
+observation named and no derivation supplied"). Declared per-frame shapes are
+the EMITTED lengths: `dump-gvhmr.py` recomputes every slot shape after trim and
+decimation, so `slots[].shape[0] === data[<tensor>].length === frames` always.
+
+### 4.1 `subjects` — the runner-facing projection (derived, never guessed)
+
+One entry per person in the take (GVHMR demo output is single-person per take,
+so exactly one; `trackId` is the subject index within the take's output).
+Per-frame arrays are indexed `0..frames-1` over the EMITTED slice — position
+`p` corresponds to source frame `frameIndex[p]`, exactly like `data`'s tensors.
+The projection derives, never guesses:
+
+- `footObservations2d.{left,right}.keypoints` — full-image pixels per frame:
+  the F1-δ named tensor's `[u, v]` columns when it resolves by name, or the
+  exact derivation the slot record states when it resolves via crop-space
+  keypoints: `full = crop / scale + offset (data.crop)`.
+- `leftContact` / `rightContact` — contact PROBABILITIES per frame: the F1-ε
+  logits mapped through the slot record's own convention
+  (`sigmoid(logit)`; threshold `0.5` — the threshold M1/M2 and the F2 runners
+  use). The raw logit tensor stays in `data`; `subjects` never guesses a
+  convention the slot record did not name.
+- When either supplier is absent or ambiguous (F1-δ or F1-ε UNRESOLVED, or a
+  tensor shape that does not state left/right feet), the fixture carries
+  `"subjects": []`: F2a-c cannot run on it, and the slot records' escalation
+  reasons already say why. The runners handle an empty `subjects` list.
+
+The `verification` block's frame indices are POSITIONS into the emitted
+(decimated) arrays — position `p` means source frame `frameIndex[p]` — because
+the §8.4 acceptances index the emitted tensors directly.
 
 ## 5. The operator run (GPU box)
 
@@ -111,11 +155,15 @@ The script: (a) enumerates the seven §8.4 slots and resolves each against what
 is actually in the output — a slot is resolved only when its named tensor with
 dtype/shape is present, or the model table can name the convention; everything
 else is `UNRESOLVED` with a reason; (b) decimates per-frame tensors (stride
-doubling) so the emitted slice is ≤ 2 MiB, keeping source frame numbers; (c)
-writes provenance (command, gvhmr commit, weights sha256, source url/licence/
-sha256, trim range, annotation path) and the document sha256. A nonexistent
-input directory fails cleanly with `dump-gvhmr: input directory does not
-exist: ...` and exit 1.
+doubling) so the emitted slice is ≤ 2 MiB, keeping source frame numbers, and
+recomputes every declared slot shape to the emitted length (§4); (c) emits the
+top-level `K` and the `subjects` projection the F2 runners consume (§4.1),
+aligned with `frameIndex`; (d) writes provenance (command, gvhmr commit,
+weights sha256, source url/licence/sha256, trim range, annotation path) and the
+document sha256. A nonexistent input directory fails cleanly with
+`dump-gvhmr: input directory does not exist: ...` and exit 1; metadata without
+`fps` or `K` fails with a named message, because RawTrack cannot be built
+without them (§8.1).
 
 ## 6. What evidence to return from the box
 
@@ -132,11 +180,33 @@ exist: ...` and exit 1.
      `annotatedDisplacementM`.
    - **F1-δ**: hand-clicked full-image ankle positions per frame —
      `knownAnkleFullImagePx`.
-4. The re-run of `node test/ingest/verify-gvhmr-schema.mjs` against the
-   operator fixture (the same contract the synthetic fixtures already pass).
+4. The re-run of `test/ingest/verify-gvhmr-schema.mjs` against the operator
+   fixture — the same contract the synthetic fixtures already pass. The
+   verifier accepts an explicit fixture path either as the first positional
+   argument or via the `RAWTRACK_FIXTURE` env var; with no argument it runs the
+   checked-in synthetic set, so CI is unchanged:
+
+   ```bash
+   node test/ingest/verify-gvhmr-schema.mjs <path-to-operator-fixture.json>
+   # or
+   RAWTRACK_FIXTURE=<path-to-operator-fixture.json> \
+       node test/ingest/verify-gvhmr-schema.mjs
+   ```
+
+   The supplied fixture gets the FULL §8.4 treatment: sha256 gate, structure
+   and provenance checks, all seven slot records (resolved-with-fields or
+   escalated-with-reason), and the numeric acceptances (5°, 2°, 5 cm, 3 px)
+   run against its hand-measured `verification` block. Exit 0 = the operator
+   fixture passes the same gate the synthetic fixtures pass. The fixture must
+   carry the §6 `verification` block for the numeric acceptances to run;
+   without it the run fails loudly naming the missing block, never silently
+   skipping.
 
 The §8.4 numeric acceptances (5°, 2°, 5 cm, 3 px) are then checked on the
-pinned fixture exactly as `verify-gvhmr-schema.mjs` checks the synthetic ones.
+pinned fixture exactly as `verify-gvhmr-schema.mjs` checks the synthetic ones
+— the operator-path run above IS that check. A slot the operator escalated
+(UNRESOLVED with a reason) is not guessed into a numeric pass: its acceptance
+is reported as not run, per §7.
 
 ## 7. Escalation rules
 

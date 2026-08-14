@@ -177,7 +177,18 @@ const probes = {
 };
 
 let swept = 0;
+// The summaries below are bound to the sweep's OBSERVED state — n tuples
+// swept, reached tuples that landed on a branch, stops tuples that landed on
+// STOP — so a sweep that falls through or bails out early FAILS its summary
+// instead of passing a literal true (the A5 tautology).
 const sweep = (green) => {
+	let n = 0;
+	let reached = 0;
+	let stops = 0;
+	const abort = (label, detail) => {
+		ok(label, false, detail);
+		return { n, reached, stops };
+	};
 	for (const sweptMode of MODES) {
 		const others = Object.fromEntries(MODES.filter((m) => m !== sweptMode).map((m) => [m, failHard()]));
 		for (const m1 of probes.m1)
@@ -193,41 +204,39 @@ const sweep = (green) => {
 										[sweptMode]: green ? pass({ m3, m5, m6 }) : pass({ m3, m5, m6, runnerGreen: false, measurementGreen: false }),
 									},
 								});
+								n += 1;
 								swept += 1;
 								if (r === undefined || r === null || (r.verdict !== "GO" && r.verdict !== "STOP") ||
 									typeof r.reason !== "string" || typeof r.degraded !== "boolean") {
-									ok(`totality: ${JSON.stringify({ m1, m2, m4, [sweptMode]: { m3, m5, m6 } })} fell through`, false, JSON.stringify(r));
-									return;
+									return abort(`totality: ${JSON.stringify({ m1, m2, m4, [sweptMode]: { m3, m5, m6 } })} fell through`, JSON.stringify(r));
 								}
 								if (r.verdict === "GO" && (r.mode === null || !MODES.includes(r.mode))) {
-									ok("GO carries a real mode", false, JSON.stringify(r));
-									return;
+									return abort("GO carries a real mode", JSON.stringify(r));
 								}
 								if (r.verdict === "STOP" && r.mode !== null) {
-									ok("STOP carries no mode", false, JSON.stringify(r));
-									return;
+									return abort("STOP carries no mode", JSON.stringify(r));
 								}
 								// M4 > 0 is step 0: identity beats every branch in either sweep
 								if (m4 > 0 && (r.verdict !== "STOP" || r.reason !== "identity")) {
-									ok("M4 > 0 always yields STOP:identity", false, JSON.stringify({ m4, r }));
-									return;
+									return abort("M4 > 0 always yields STOP:identity", JSON.stringify({ m4, r }));
 								}
 								// green=false sweep: no GO may fire anywhere, ever
 								if (!green && r.verdict === "GO") {
-									ok("no GO with no green mode", false, JSON.stringify({ m1, m2, m4, m3, m5, m6, r }));
-									return;
+									return abort("no GO with no green mode", JSON.stringify({ m1, m2, m4, m3, m5, m6, r }));
 								}
 								if (!green && (r.reason === "identity") !== (m4 > 0)) {
-									ok("green=false STOP reason follows M4", false, JSON.stringify({ m4, r }));
-									return;
+									return abort("green=false STOP reason follows M4", JSON.stringify({ m4, r }));
 								}
+								reached += 1;
+								if (r.verdict === "STOP") stops += 1;
 							}
 	}
+	return { n, reached, stops };
 };
-sweep(true);
-ok("totality sweep (all green): every tuple lands on a branch", true, `${swept} tuples`);
-sweep(false);
-ok("totality sweep (no green): every tuple lands on STOP, none GO", true, `${swept} tuples`);
+const greenSweep = sweep(true);
+ok("totality sweep (all green): every tuple lands on a branch", greenSweep.reached === greenSweep.n, `${greenSweep.reached}/${greenSweep.n} tuples reached a branch`);
+const noGreenSweep = sweep(false);
+ok("totality sweep (no green): every tuple lands on STOP, none GO", noGreenSweep.stops === noGreenSweep.n, `${noGreenSweep.stops}/${noGreenSweep.n} tuples landed on STOP`);
 {
 	const r = decideFeasibility(tuple({ m4: 1, modes: { "contact-head": pass(), "lowest-foot": pass(), "manual-anchor": pass() } }));
 	ok("sweep count is exhaustive of the probe lattice", swept === 75600, `swept=${swept}`);
@@ -340,6 +349,67 @@ ok("totality sweep (no green): every tuple lands on STOP, none GO", true, `${swe
 	// the unblocked control actually goes
 	const control = decideFeasibility(wouldGo());
 	ok("green gate control: fully green tuple goes contact-head", isGo(control) && control.mode === "contact-head", JSON.stringify(control));
+}
+
+// ---------------------------------------------------------------------------
+// 7. The input contract: totality is a property of WELL-FORMED tuples, and
+//    malformed input must REJECT with the named DECISION-INPUT error before
+//    any branch is reached — never a silent branch (a malformed tuple must
+//    not be able to read as a verdict) and never a TypeError from a null
+//    dereference. The defects this guards (red-team): modes:null crashed the
+//    total gate; a missing m4 read as "no identity swaps" — the unsafe
+//    direction, since Step 0 is the gate that stops the whole pipeline;
+//    string-typed "0.8" coerced into passing thresholds. Rejecting, rather
+//    than forcing STOP:identity for a bad m4, keeps a broken producer visible
+//    instead of recording a legitimate Phase-0 outcome for it.
+// ---------------------------------------------------------------------------
+{
+	const rejects = (label, input, why) => {
+		let err = null;
+		try {
+			decideFeasibility(input);
+		} catch (e) {
+			err = e;
+		}
+		ok(label, err !== null && err instanceof Error && /DECISION-INPUT/.test(err.message),
+			err === null ? `accepted: ${why}` : `threw ${err.name}: ${err.message}`);
+	};
+	const goodModes = () => ({ "contact-head": pass(), "lowest-foot": failHard(), "manual-anchor": failHard() });
+	const chOnly = (ch) => ({ m1: 0.8, m2: 0.9, m4: 0, modes: { "contact-head": ch, "lowest-foot": failHard(), "manual-anchor": failHard() } });
+
+	// Q1: the modes container itself must be a plain object.
+	rejects("modes: null rejects with DECISION-INPUT", tuple({ modes: null }), "modes: null must not crash the total gate with a TypeError");
+	rejects("absent modes container rejects", { m1: 0.8, m2: 0.9, m4: 0 }, "a tuple without modes must not be decided");
+	rejects("modes as an array rejects", tuple({ modes: [] }), "modes must be a plain object, not an array");
+	rejects("metrics itself null rejects", null, "decideFeasibility(null) must reject, not throw a TypeError");
+
+	// Q2: the identity metric must be present and finite; unknown identity must
+	// never read as clean.
+	rejects("missing m4 rejects", { m1: 0.8, m2: 0.9, m4: undefined, modes: goodModes() }, "missing m4 must not default to 0 swaps");
+	rejects("NaN m4 rejects", tuple({ m4: NaN }), "NaN m4 must not read as clean identity");
+	rejects("Infinity m4 rejects", tuple({ m4: Infinity }), "a non-finite swap count is a contract violation");
+	rejects("negative m4 rejects", tuple({ m4: -1 }), "a negative swap count is impossible input");
+
+	// Q3: every metric that gates a GO branch must be a finite number, and
+	// string-typed numbers must not coerce.
+	rejects("string m1 rejects", tuple({ m1: "0.8" }), '"0.8" must not coerce into a passing coverage');
+	rejects("string m2 rejects", tuple({ m2: "0.9" }), '"0.9" must not coerce into a passing precision');
+	rejects("string m4 rejects", tuple({ m4: "0" }), '"0" must not read as zero swaps');
+	rejects("string mode metric rejects", chOnly(pass({ m3: "0.01" })), '"0.01" must not coerce into the 0.03 budget');
+	rejects("null mode metric rejects", chOnly(pass({ m5: null })), "null coerces to 0 and must not pass the 0.05 budget");
+	rejects("boolean mode metric rejects", chOnly(pass({ m6: true })), "a boolean must not be accepted where a number is required");
+	rejects("out-of-range m1 rejects", tuple({ m1: 1.5 }), "a coverage fraction above 1 is impossible input");
+	rejects("negative jitter rejects", chOnly(pass({ m3: -0.01 })), "a std cannot be negative");
+
+	// a PRESENT mode entry claims the mode was measured, so its m3/m5/m6 must
+	// be present and finite; an ABSENT entry claims the opposite (the mode did
+	// not run) and simply cannot be green — the fail-closed direction.
+	rejects("incomplete mode entry rejects", chOnly({ runnerGreen: true, measurementGreen: true }), "an incomplete mode entry must not fall through as if unmeasured");
+	rejects("null mode entry rejects", chOnly(null), "a null mode entry must not read as within budget");
+	const absentMode = decideFeasibility(tuple({ modes: { "lowest-foot": failHard(), "manual-anchor": failHard() } }));
+	ok("absent mode entry falls through, not rejected", absentMode.verdict === "STOP" && absentMode.reason === "accuracy", JSON.stringify(absentMode));
+	const noGreenFlags = decideFeasibility(chOnly({ m3: 0.01, m5: 0.01, m6: 0.01 }));
+	ok("missing green flags fail closed, not rejected", noGreenFlags.verdict === "STOP" && noGreenFlags.reason === "accuracy", JSON.stringify(noGreenFlags));
 }
 
 console.log(`\nfailures: ${fail.length}`);

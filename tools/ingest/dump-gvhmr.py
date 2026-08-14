@@ -27,11 +27,20 @@ Emitted document (schema "RawTrack.v1"; full contract in RAWTRACK-CONTRACT.md):
     { "schemaVersion": 1, "kind": "RawTrack", "clipId": ..., "fps": ...,
       "frames": ..., "frameIndex": [...], "timeS": [...],
       "slots": { "F1-α": {...}, ..., "F1-η": {...} },
+      "K": [...],  // full-image intrinsics -- what the F2 feasibility runners read
+      "subjects": [ { "trackId": ..., "footObservations2d": { "left": {...},
+                      "right": {...} }, "leftContact": [...], "rightContact": [...] } ],
       "data": { "<named tensor>": [...], "K": [...], "crop": {...}, ... },
       "provenance": { "command": ..., "gvhmrCommit": ..., "weightsSha256": ...,
                       "sourceUrl": ..., "licence": ..., "sourceSha256": ...,
                       "trimStartS": ..., "trimEndS": ..., "annotationPath": ... },
       "sha256": "..." }
+
+The document carries BOTH shapes the pipeline consumes: `data` holds the F1
+slot tensors the §8.4 contract validator checks, and the top-level `K` plus
+`subjects` are the runner-facing projection the Phase-0 F2a-c feasibility
+runners consume (contact probabilities and full-image foot pixels per emitted
+frame, aligned with `frameIndex` -- see RAWTRACK-CONTRACT.md §4.1).
 
 `--selftest` runs the GPU-free unit tests for the slot-resolution logic against
 synthetic manifests and the pinned fixture; it needs no numpy. The canonical
@@ -471,6 +480,112 @@ def _shape_of_list(value):
     if isinstance(value, list):
         return [len(value)]
     return None
+def _sigmoid(x):
+    """logit -> probability, the convention F1-ε's record states when it resolves
+    (sigmoid(logit) > 0.5 means contact). The runner-facing contacts carry
+    PROBABILITIES because the F2 runners and M1/M2 threshold at 0.5 on that scale."""
+    return 1.0 / (1.0 + math.exp(-x))
+
+
+def _full_image_keypoints(delta, data):
+    """Full-image [u, v] per foot per frame, from the F1-δ resolution.
+
+    Named full-image tensor: its [u, v(, conf)] columns. Derivation: the exact
+    recipe the slot record states -- full = crop / scale + offset (data.crop).
+    Returns None when the supplier is absent or ambiguous (a shape that does not
+    state left/right feet), so the caller can escalate rather than guess.
+    """
+    tensor = data.get(delta.get("tensor", ""))
+    if not isinstance(tensor, list) or not tensor or not isinstance(tensor[0], list):
+        return None
+    derivation = delta.get("derivation")
+    if derivation:
+        crop = data.get("crop")
+        if not isinstance(crop, dict):
+            return None
+        try:
+            scale = float(crop["scale"])
+            offset_x = float(crop["offsetX"])
+            offset_y = float(crop["offsetY"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        out = []
+        for feet in tensor:
+            if not isinstance(feet, list) or len(feet) != 2:
+                return None
+            row = []
+            for k in feet:
+                if not isinstance(k, (list, tuple)) or len(k) < 2:
+                    return None
+                row.append([k[0] / scale + offset_x, k[1] / scale + offset_y])
+            out.append(row)
+        return out
+    out = []
+    for feet in tensor:
+        if not isinstance(feet, list) or len(feet) != 2:
+            return None
+        row = []
+        for k in feet:
+            if not isinstance(k, (list, tuple)) or len(k) < 2:
+                return None
+            row.append([float(k[0]), float(k[1])])
+        out.append(row)
+    return out
+
+
+def _contact_probabilities(epsilon, data):
+    """[left, right] contact probabilities per frame from the F1-ε tensor.
+
+    Logit convention: sigmoid, per the slot record's own threshold semantics.
+    Probability convention: passed through. Anything else is None -- the
+    convention cannot be named, so the runner-facing projection must not guess.
+    """
+    tensor = data.get(epsilon.get("tensor", ""))
+    if not isinstance(tensor, list) or not tensor:
+        return None
+    convention = epsilon.get("convention")
+    if convention == "logit":
+        return [[_sigmoid(x) for x in row] for row in tensor]
+    if convention == "probability":
+        return [[float(x) for x in row] for row in tensor]
+    return None
+
+
+def _build_subjects(data, slots):
+    """Runner-facing projection of the emitted slice (RAWTRACK-CONTRACT.md §4.1).
+
+    One entry per person in the take (GVHMR demo output is single-person per
+    take, so exactly one), with full-image foot keypoints and contact
+    probabilities per EMITTED frame -- aligned with frameIndex, because the F2
+    runners index [0..frames) over the decimated slice. Derived, never guessed:
+    F1-δ's named tensor or documented crop derivation, and F1-ε's logits through
+    the documented sigmoid convention. When either supplier is absent or
+    ambiguous the fixture carries `subjects: []` -- F2a-c cannot run on it,
+    which the slot records' escalation reasons already say.
+    """
+    delta = slots.get("F1-δ") or {}
+    epsilon = slots.get("F1-ε") or {}
+    if delta.get("status") != "resolved" or epsilon.get("status") != "resolved":
+        return []
+    keypoints = _full_image_keypoints(delta, data)
+    contacts = _contact_probabilities(epsilon, data)
+    if keypoints is None or contacts is None:
+        return []
+    return [
+        {
+            "trackId": "0",  # subject index within the take's output
+            "footObservations2d": {
+                "left": {"foot": "left", "observationSpace": "full-image",
+                         "keypoints": [row[0] for row in keypoints]},
+                "right": {"foot": "right", "observationSpace": "full-image",
+                          "keypoints": [row[1] for row in keypoints]},
+            },
+            "leftContact": [row[0] for row in contacts],
+            "rightContact": [row[1] for row in contacts],
+        }
+    ]
+
+
 
 
 def _build_document(args, artifacts, meta):
@@ -479,6 +594,23 @@ def _build_document(args, artifacts, meta):
     fps = meta.get("fps")
     if not fps or fps <= 0:
         _fail("output metadata names no fps; add fps to the metadata json (frameIndex/timeS need it)")
+    if meta.get("K") is None:
+        _fail("output metadata names no K; RawTrack supplies the full-image intrinsics (§8.1)")
+
+    # F1-β names a model-table CONVENTION (the canonical facing axis), not an
+    # output tensor. Synthesize the named tensor from the model table so the
+    # emitted fixture carries it -- the contract validator requires every
+    # resolved slot's named tensor to exist in data (F1-BETA-TENSOR-MISMATCH),
+    # and the yaw acceptance reads it. Nothing is guessed: the value comes from
+    # the same table that resolved the slot.
+    model = (meta.get("model") or "").lower()
+    if model in MODEL_TABLE and "facing_axis" not in artifacts:
+        artifacts["facing_axis"] = {
+            "dtype": "float32",
+            "shape": [len(MODEL_TABLE[model]["facing_axis"])],
+            "itemsize": 4,
+            "array": list(MODEL_TABLE[model]["facing_axis"]),
+        }
 
     frame_count = 0
     resolved_tensors = {}
@@ -506,17 +638,33 @@ def _build_document(args, artifacts, meta):
         _fail(f"trim [{args.trim_start}, {args.trim_end}] selects no frames")
     time_seconds = [index / fps for index in frame_index]
 
+    # The slot records were resolved against the ORIGINAL tensor shapes, but the
+    # pinned artifact is the trimmed + decimated slice. Every declared per-frame
+    # shape must be recomputed to the emitted length: a record that declares a
+    # shape the emitted tensor does not have is rejected by the contract
+    # validator (F1-*-TENSOR-MISMATCH), so the dump's own default path would
+    # emit an invalid fixture for any stride > 1 or trimmed input.
+    emitted_shapes = {}
+    for name, info in resolved_tensors.items():
+        shape = list(info["shape"])
+        if shape and shape[0] == frame_count:
+            shape[0] = len(frame_index)
+        emitted_shapes[name] = shape
+    for record in slots.values():
+        if record.get("status") == "resolved" and record.get("tensor") in emitted_shapes:
+            record["shape"] = emitted_shapes[record["tensor"]]
+
     data = {}
-    for name in resolved_tensors:
-        member = artifacts[name]["array"]
-        if artifacts[name]["shape"][0] == frame_count:
+    for name, info in resolved_tensors.items():
+        member = info["array"]
+        if info["shape"][0] == frame_count:
             data[name] = member[start:end:stride].tolist()
         else:
-            data[name] = member.tolist()
+            # non-per-frame members are plain values when synthesized (facing_axis)
+            data[name] = member.tolist() if hasattr(member, "tolist") else member
     for key in ("K", "crop"):
         if meta.get(key) is not None:
             data[key] = meta[key]
-    model = (meta.get("model") or "").lower()
     if model in MODEL_TABLE:
         data["bodyModel"] = model
         data["handedness"] = MODEL_TABLE[model]["handedness"]
@@ -531,6 +679,12 @@ def _build_document(args, artifacts, meta):
         "frameIndex": frame_index,
         "timeS": time_seconds,
         "slots": slots,
+        # top-level K + subjects: the shape the F2 feasibility runners consume
+        # (RAWTRACK-CONTRACT.md §4.1); data.K is the F1 validator's copy of the
+        # same intrinsics. subjects is derived from the EMITTED slice, so it is
+        # aligned with frameIndex by construction.
+        "K": data["K"],
+        "subjects": _build_subjects(data, slots),
         "data": data,
         "provenance": {
             "command": " ".join(sys.argv),
@@ -582,6 +736,32 @@ def _run(args):
         f"frames {document['frameIndex'][0]}..{document['frameIndex'][-1]}, "
         f"sha256 {document['sha256'][:16]}..."
     )
+
+
+class _FakeArray:
+    """numpy-free stand-in for the arrays _build_document slices: supports the
+    [start:end:stride] slice the dump applies and tolist(), so the full emission
+    path is testable without numpy. Real GVHMR output arrives as numpy arrays;
+    this stand-in matches the two operations _build_document performs."""
+
+    def __init__(self, values):
+        self._values = values
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            return _FakeArray(self._values[key])
+        return self._values[key]
+
+    def tolist(self):
+        return self._values
+
+
+def _nested(shape, leaf):
+    """Nested list of `shape` whose leaves are leaf() calls (a plain value would
+    alias the same object across every leaf, so leaves are produced per call)."""
+    if not shape:
+        return leaf()
+    return [_nested(shape[1:], leaf) for _ in range(shape[0])]
 
 
 # --- selftest (GPU-free unit tests for resolve_slots and friends) ------------
@@ -693,37 +873,123 @@ def _selftest():
           f"stride={stride}, estimate={estimate}")
     stride_small, _ = _choose_stride(30, [{"shape": [30, 3, 3], "itemsize": 4}], 2 * 1024 * 1024)
     check("tiny outputs are not decimated", stride_small == 1, f"stride={stride_small}")
+    # The full emission path (A3): a synthetic 30-frame output, trimmed to
+    # frames 6..27 with a byte cap that forces stride 2 (the tensor-only
+    # estimate at stride 2 is 5520 bytes; the cap check covers the whole
+    # document, so 7000 keeps the decimated slice under budget), must emit a
+    # document whose declared slot shapes equal the emitted tensor lengths,
+    # whose top-level K equals data.K, whose subjects align with frameIndex,
+    # and which hashes to its own sha256. This is the code path an operator's
+    # dump run walks; the emitted shape is what verify-gvhmr-schema.mjs pins.
+    def tensor(shape, leaf):
+        return {"dtype": "float32", "shape": list(shape), "itemsize": 4,
+                "array": _FakeArray(_nested(shape, leaf))}
 
-    # The pinned fixture is the drift guard: the resolver must reproduce its
-    # slot records from the fixture's own data manifest, and the fixture must
-    # hash under the same canonical form the Node test verifies.
-    fixture_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", "..", "test", "ingest",
-        "fixtures", "rawtrack", "rawtrack-good.json",
+    crop_emit = {"offsetX": 800, "offsetY": 400, "scale": 2, "cropW": 640,
+                 "cropH": 360, "fullW": 1920, "fullH": 1080}
+    emit_artifacts = {
+        "global_orient_cam": tensor([30, 3, 3], lambda: 0.0),
+        "translation_cam": tensor([30, 3], lambda: 0.0),
+        "foot_keypoints_crop": tensor([30, 2, 3], lambda: 1.0),
+        "foot_contact_logits": tensor([30, 2], lambda: 2.6),
+        "body_pose_smpl": tensor([30, 24, 3], lambda: 0.0),
+    }
+    emit_meta = {"fps": 29.97, "crop": crop_emit, "model": "smpl",
+                 "K": [[1200, 0, 960], [0, 1200, 540], [0, 0, 1]]}
+    emit_args = argparse.Namespace(
+        clip_id="emission-selftest", trim_start=0.2, trim_end=0.9,
+        max_bytes=7000, source_url="urn:selftest", licence="CC0-1.0",
+        source_sha256="0" * 64, gvhmr_commit="0" * 40, weights_sha256="0" * 64,
+        annotation_path="selftest-annotation.json",
     )
-    if os.path.isfile(fixture_path):
-        with open(fixture_path, "r", encoding="utf-8") as handle:
-            fixture = json.load(handle)
-        check("pinned fixture hashes to its sha256 (canonical form)", document_sha256(fixture) == fixture["sha256"],
-              f"got {document_sha256(fixture)[:16]}...")
-        manifest_from_data = {}
-        for name, value in fixture["data"].items():
-            if isinstance(value, list):
-                manifest_from_data[name] = {"dtype": "float32", "shape": _shape_of_list(value)}
-        meta_from_fixture = {
-            "fps": fixture["fps"],
-            "crop": fixture["data"].get("crop"),
-            "model": fixture["data"].get("bodyModel"),
-        }
-        reproduced, exc = try_resolve(manifest_from_data, meta_from_fixture)
-        check(
-            "resolver reproduces the pinned fixture's slot records",
-            exc is None and reproduced == fixture["slots"],
-            "" if (exc is None and reproduced == fixture["slots"])
-            else ("resolve_slots raised" if exc else "slot records drifted from the fixture"),
+    try:
+        emitted, _ = _build_document(emit_args, emit_artifacts, emit_meta)
+        emit_ok = True
+    except SystemExit as exc:
+        emitted, emit_ok = None, False
+        check("emission: _build_document runs on a trimmed + decimated output", False, f"exit {exc.code}")
+    if emit_ok:
+        check("emission: trim + decimation emit 11 frames [6..26] (stride 2)",
+              emitted["frames"] == 11 and emitted["frameIndex"] == list(range(6, 27, 2)),
+              f"frames={emitted['frames']} frameIndex={emitted['frameIndex']}")
+        tensor_slot = {"global_orient_cam": "F1-α", "translation_cam": "F1-γ",
+                       "foot_keypoints_crop": "F1-δ", "foot_contact_logits": "F1-ε",
+                       "body_pose_smpl": "F1-ζ"}
+        shape_ok = True
+        for name, slot_id in tensor_slot.items():
+            declared = emitted["slots"][slot_id]["shape"]
+            actual = _shape_of_list(emitted["data"][name])
+            if declared != actual:
+                shape_ok = False
+                check(f"emission: {name} declared shape equals the emitted length",
+                      False, f"declared {declared} vs emitted {actual}")
+        check("emission: every declared per-frame shape equals the emitted tensor length",
+              shape_ok, "")
+        check("emission: facing_axis is emitted from the model table",
+              emitted["data"]["facing_axis"] == [0, 0, 1]
+              and emitted["slots"]["F1-β"]["shape"] == [3],
+              f"facing_axis={emitted['data'].get('facing_axis')}")
+        check("emission: top-level K equals data.K",
+              emitted["K"] == emitted["data"]["K"], "")
+        subjects = emitted["subjects"]
+        subj_ok = (
+            len(subjects) == 1 and subjects[0]["trackId"] == "0"
+            and len(subjects[0]["footObservations2d"]["left"]["keypoints"]) == 11
+            and len(subjects[0]["footObservations2d"]["right"]["keypoints"]) == 11
+            and len(subjects[0]["leftContact"]) == 11
+            and len(subjects[0]["rightContact"]) == 11
         )
-    else:
-        check("pinned fixture present for the drift guard", False, f"missing {fixture_path}")
+        check("emission: subjects carry per-frame keypoints and contacts aligned with frameIndex",
+              subj_ok, f"subjects={len(subjects)}")
+        sig = 1.0 / (1.0 + math.exp(-2.6))
+        check("emission: contacts carry the sigmoid(logit) probabilities (F1-ε convention)",
+              abs(subjects[0]["leftContact"][0] - sig) < 1e-12
+              and subjects[0]["leftContact"][0] > 0.5,
+              f"leftContact[0]={subjects[0]['leftContact'][0]:.6f}")
+        crop = emitted["data"]["crop"]
+        expect_full = [1.0 / crop["scale"] + crop["offsetX"], 1.0 / crop["scale"] + crop["offsetY"]]
+        check("emission: keypoints carry the full-image crop derivation",
+              subjects[0]["footObservations2d"]["left"]["keypoints"][0] == expect_full,
+              f"keypoints[0]={subjects[0]['footObservations2d']['left']['keypoints'][0]}")
+        check("emission: the emitted document hashes to its own sha256",
+              document_sha256(emitted) == emitted["sha256"],
+              f"got {document_sha256(emitted)[:16]}...")
+        check("emission: provenance carries the trim window",
+              emitted["provenance"]["trimStartS"] == 0.2
+              and emitted["provenance"]["trimEndS"] == 0.9, "")
+
+    # The pinned fixtures are the drift guard: the resolver must reproduce each
+    # fixture's slot records from the fixture's own data manifest, and each
+    # fixture must hash under the same canonical form the Node test verifies.
+    for fixture_name in ("rawtrack-good.json", "rawtrack-dump-roundtrip.json"):
+        fixture_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "..", "test", "ingest",
+            "fixtures", "rawtrack", fixture_name,
+        )
+        if os.path.isfile(fixture_path):
+            with open(fixture_path, "r", encoding="utf-8") as handle:
+                fixture = json.load(handle)
+            check(f"pinned fixture {fixture_name} hashes to its sha256 (canonical form)",
+                  document_sha256(fixture) == fixture["sha256"],
+                  f"got {document_sha256(fixture)[:16]}...")
+            manifest_from_data = {}
+            for name, value in fixture["data"].items():
+                if isinstance(value, list):
+                    manifest_from_data[name] = {"dtype": "float32", "shape": _shape_of_list(value)}
+            meta_from_fixture = {
+                "fps": fixture["fps"],
+                "crop": fixture["data"].get("crop"),
+                "model": fixture["data"].get("bodyModel"),
+            }
+            reproduced, exc = try_resolve(manifest_from_data, meta_from_fixture)
+            check(
+                f"resolver reproduces {fixture_name}'s slot records",
+                exc is None and reproduced == fixture["slots"],
+                "" if (exc is None and reproduced == fixture["slots"])
+                else ("resolve_slots raised" if exc else "slot records drifted from the fixture"),
+            )
+        else:
+            check(f"pinned fixture {fixture_name} present for the drift guard", False, f"missing {fixture_path}")
 
     print(f"selftest: {len(failures)} failed")
     return len(failures) == 0

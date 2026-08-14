@@ -280,6 +280,15 @@ function buildAnnotation(gt) {
 	return doc;
 }
 
+// --- provenance sentinels ------------------------------------------------------
+// FEASIBILITY.md §1: a synthetic fixture must never be mistaken for a real
+// one, so the pinned-solver fields carry zero-hex sentinels (never "") and the
+// provenance carries synthetic:true — the exact promise the gate asserts. A
+// real-footage run must replace both sentinels AND drop the flag before any
+// decision is recorded.
+const ZERO40 = "0".repeat(40);
+const ZERO64 = "0".repeat(64);
+
 function buildFixture(mode, gt, rawTrack, floorFrame, annotation, R, t) {
 	const frameIndex = Array.from({ length: SCENE.frames }, (_, f) => f);
 	const timeS = frameIndex.map((f) => f / SCENE.fps);
@@ -349,13 +358,17 @@ function buildFixture(mode, gt, rawTrack, floorFrame, annotation, R, t) {
 		},
 		provenance: {
 			command: "node tools/ingest/feasibility/make-synthetic.mjs",
-			sourceUrl: "",
+			sourceUrl: "", // no source footage: this fixture is synthetic
 			licence: "none (synthetic)",
 			sourceSha256: rawTrack.sha256,
 			trimStartS: SCENE.trimStartS,
 			trimEndS: SCENE.trimStartS + SCENE.frames / SCENE.fps,
-			gvhmrCommit: "", // no GVHMR run happened: this fixture is synthetic
-			weightsSha256: "",
+			// FEASIBILITY.md §1: zero-hex sentinels — no GVHMR run happened and no
+			// weights were pinned — plus synthetic:true, so a synthetic fixture can
+			// never be mistaken for a real-footage record.
+			gvhmrCommit: ZERO40,
+			weightsSha256: ZERO64,
+			synthetic: true,
 			annotationPath: "test/ingest/fixtures/solver-output/synthetic-boxing-01/annotation.json",
 		},
 	};

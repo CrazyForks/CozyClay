@@ -18,6 +18,16 @@
  *   M5 solved-root RMS    = RMS over subjects x scored frames of |rootWorld - annotated foot|
  *   M6 separation error   = RMS over scored frames of | |rootA-rootB| - annotatedSeparationM |
  *
+ * UNDEFINED-METRIC CONVENTION: a metric with no sample base is returned as undefined, with
+ * a reason in the returned `reasons` object — never as a fabricated number. M1 with no
+ * frames, M2 with no hand-labelled frames, M3 with no contact runs, M4 with no groundTruth
+ * entries, and M5/M6 with no scored frames are all 0/0 (or vacuous) quantities; reading
+ * them as 0 ("no jitter", "no swaps") or 1 ("perfect precision") would let a degenerate
+ * fixture pass the gate as if it had been measured. Consumers must test `m.M4 === undefined`
+ * and read `m.reasons.M4` explicitly; coercing undefined to a number is the bug this
+ * convention exists to prevent. NaN input (e.g. a NaN rootWorld coordinate) still
+ * propagates as NaN — garbage in stays loud at the gate, only the 0/0 cases are undefined.
+ *
  * @feasibility-only -- disposable Phase-0 feasibility code (plan 10.2). NOT production:
  * no envelope integration, no HTTP route, no UI, no contract obligations, no provenance emission,
  * no error taxonomy. Mechanically fenced (6.2): nothing outside
@@ -57,19 +67,31 @@ function runStd(axis, s, run) {
 }
 
 export function computeMetrics(fixture, annotation) {
+	const reasons = {};
 	const scored = fixture.separation.scoredFrameIndex;
 	const subjects = fixture.subjects;
 	const byId = (id) => subjects.find((s) => s.subjectId === id);
 	const A = byId("A");
 	const B = byId("B");
 
-	// M1: fraction of frames with >= 1 contact above 0.5, mean over the two subjects
+	// M1: fraction of frames with >= 1 contact above 0.5, mean over the two subjects.
+	// With no frames the fraction is 0/0 — undefined, never the 0 a degenerate
+	// fixture would read as "no contact anywhere".
 	const coverage = (s) =>
 		s.contactMask.reduce((n, c) => n + (Math.max(c[0], c[1]) > 0.5 ? 1 : 0), 0) / fixture.frames;
-	const M1 = (coverage(A) + coverage(B)) / 2;
+	let M1;
+	if (fixture.frames === 0) {
+		M1 = undefined;
+		reasons.M1 = "no frames: contact coverage is 0/0";
+	} else {
+		M1 = (coverage(A) + coverage(B)) / 2;
+	}
 
-	// M2: pooled per-foot precision over the 100 hand-labelled frames; the hand label is
-	// per (frame, subject), so each subject's contacts are judged against its own labels
+	// M2: pooled per-foot precision over the hand-labelled frames; the hand label is
+	// per (frame, subject), so each subject's contacts are judged against its own labels.
+	// The "1.0 when no predicted contacts" convention (FEASIBILITY.md §3) applies only
+	// when there ARE label frames to judge; with zero label frames precision is 0/0 —
+	// undefined, not the 1 that a degenerate fixture would read as a perfect M2.
 	let tp = 0;
 	let fp = 0;
 	for (let i = 0; i < annotation.handContact.frameIndex.length; i += 1) {
@@ -85,57 +107,97 @@ export function computeMetrics(fixture, annotation) {
 			}
 		}
 	}
-	const M2 = tp + fp === 0 ? 1 : tp / (tp + fp);
+	let M2;
+	if (annotation.handContact.frameIndex.length === 0) {
+		M2 = undefined;
+		reasons.M2 = "no hand-labelled frames: precision is 0/0";
+	} else {
+		M2 = tp + fp === 0 ? 1 : tp / (tp + fp);
+	}
 
 	// M3: mean over subjects of mean over contact runs of the mean per-axis std of the
 	// solved root XZ within the run -- the planted foot is the root, so this is the
-	// planted-foot jitter the plan names
+	// planted-foot jitter the plan names. A subject with NO contact runs has no jitter
+	// to measure; 0 would be a vacuous pass of the jitter budget, so the per-subject
+	// jitter is undefined and the aggregate is undefined with it.
 	const runJitter = (s) => {
 		const runs = contactRuns(s);
-		if (runs.length === 0) return 0;
+		if (runs.length === 0) return undefined;
 		return (
 			runs.reduce((sum, run) => sum + (runStd(0, s, run) + runStd(2, s, run)) / 2, 0) /
 			runs.length
 		);
 	};
-	const M3 = (runJitter(A) + runJitter(B)) / 2;
+	const jitterA = runJitter(A);
+	const jitterB = runJitter(B);
+	let M3;
+	if (jitterA === undefined || jitterB === undefined) {
+		M3 = undefined;
+		reasons.M3 = "no contact runs: plant jitter is unmeasured";
+	} else {
+		M3 = (jitterA + jitterB) / 2;
+	}
 
 	// M4: groundTruth entries whose matching observations record disagrees on identity;
 	// a missing observation counts as a disagreement (the operator checked a frame the
-	// tracker has no record for -- that is a failure, not a pass)
-	const obsBy = new Map();
-	for (const o of fixture.association.observations) obsBy.set(`${o.frameIndex}:${o.trackId}`, o);
-	let M4 = 0;
-	for (const g of fixture.association.groundTruth) {
-		const o = obsBy.get(`${g.frameIndex}:${g.trackId}`);
-		if (!o || o.assignedSubjectId !== g.subjectId) M4 += 1;
-	}
-
-	// M5: RMS over subjects x scored frames of |solved root - annotated foot world|;
-	// the annotation must cover every scored frame or the fixture set is broken
-	const annIndex = annotation.footWorld.frameIndex;
-	const annPos = (id, f) => {
-		const i = annIndex.indexOf(f);
-		if (i < 0) throw new Error(`M5: no annotated foot world position for frame ${f}`);
-		return annotation.footWorld[id][i];
-	};
-	let m5 = 0;
-	for (const f of scored) {
-		for (const s of subjects) {
-			const d = dist(s.rootWorld[f], annPos(s.subjectId, f));
-			m5 += d * d;
+	// tracker has no record for -- that is a failure, not a pass). With NO groundTruth
+	// entries the operator checked nothing, so identity is unmeasured: 0 would read as
+	// "no swaps" and let the decision function's Step 0 pass vacuously.
+	let M4;
+	if (fixture.association.groundTruth.length === 0) {
+		M4 = undefined;
+		reasons.M4 = "no groundTruth entries: identity was never checked";
+	} else {
+		const obsBy = new Map();
+		for (const o of fixture.association.observations) obsBy.set(`${o.frameIndex}:${o.trackId}`, o);
+		M4 = 0;
+		for (const g of fixture.association.groundTruth) {
+			const o = obsBy.get(`${g.frameIndex}:${g.trackId}`);
+			if (!o || o.assignedSubjectId !== g.subjectId) M4 += 1;
 		}
 	}
-	const M5 = Math.sqrt(m5 / (scored.length * subjects.length));
 
-	// M6: RMS over the scored frames of | |rootA - rootB| - annotatedSeparationM |
-	let m6 = 0;
-	for (let i = 0; i < scored.length; i += 1) {
-		const f = scored[i];
-		const err = dist(A.rootWorld[f], B.rootWorld[f]) - fixture.separation.annotatedSeparationM[i];
-		m6 += err * err;
+
+	// M5: RMS over subjects x scored frames of |solved root - annotated foot world|;
+	// the annotation must cover every scored frame or the fixture set is broken.
+	// With no scored frames the RMS is 0/0 — undefined, never the 0 that would
+	// pass the 0.05 m budget on an unmeasured take.
+	let M5;
+	if (scored.length === 0) {
+		M5 = undefined;
+		reasons.M5 = "no scored frames: solved-root RMS is 0/0";
+	} else {
+		const annIndex = annotation.footWorld.frameIndex;
+		const annPos = (id, f) => {
+			const i = annIndex.indexOf(f);
+			if (i < 0) throw new Error(`M5: no annotated foot world position for frame ${f}`);
+			return annotation.footWorld[id][i];
+		};
+		let m5 = 0;
+		for (const f of scored) {
+			for (const s of subjects) {
+				const d = dist(s.rootWorld[f], annPos(s.subjectId, f));
+				m5 += d * d;
+			}
+		}
+		M5 = Math.sqrt(m5 / (scored.length * subjects.length));
 	}
-	const M6 = Math.sqrt(m6 / scored.length);
 
-	return { M1, M2, M3, M4, M5, M6 };
+	// M6: RMS over the scored frames of | |rootA - rootB| - annotatedSeparationM |;
+	// same 0/0 guard as M5.
+	let M6;
+	if (scored.length === 0) {
+		M6 = undefined;
+		reasons.M6 = "no scored frames: separation RMS is 0/0";
+	} else {
+		let m6 = 0;
+		for (let i = 0; i < scored.length; i += 1) {
+			const f = scored[i];
+			const err = dist(A.rootWorld[f], B.rootWorld[f]) - fixture.separation.annotatedSeparationM[i];
+			m6 += err * err;
+		}
+		M6 = Math.sqrt(m6 / scored.length);
+	}
+
+	return { M1, M2, M3, M4, M5, M6, reasons };
 }

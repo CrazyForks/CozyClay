@@ -8845,9 +8845,10 @@
     "sourceSha256": "c18d5a75b0c4aabda8e0f06f8394388780e72882c6e9156a264fe980f43deff3",
     "trimStartS": 41.5,
     "trimEndS": 47.706206206206204,
-    "gvhmrCommit": "",
-    "weightsSha256": "",
+    "gvhmrCommit": "0000000000000000000000000000000000000000",
+    "weightsSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "synthetic": true,
     "annotationPath": "test/ingest/fixtures/solver-output/synthetic-boxing-01/annotation.json"
   },
-  "sha256": "b70b87b88c980f6b6e99726904f3a7322082e73082ac09fadc7b96d0328f880f"
+  "sha256": "3858f029e3971d39de1c43870f59bc7812ae96353577945125b3ccda739d955f"
 }

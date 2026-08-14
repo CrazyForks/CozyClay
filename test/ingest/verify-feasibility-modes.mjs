@@ -164,8 +164,12 @@ function validateSolverOutputFixture(fx) {
 		p.trimStartS === SCENE.trimStartS && p.trimEndS === SCENE.trimStartS + SCENE.frames / SCENE.fps,
 		"trim bounds values",
 	);
-	need(p.gvhmrCommit === "" || /^[0-9a-f]{40}$/.test(p.gvhmrCommit), "gvhmrCommit");
-	need(p.weightsSha256 === "" || /^[0-9a-f]{64}$/.test(p.weightsSha256), "weightsSha256");
+	// FEASIBILITY.md §1: a synthetic fixture must never be mistaken for a real
+	// one — provenance carries synthetic:true and the pinned-solver fields are
+	// zero-hex sentinels (never ""), exactly what the §1 promise names.
+	need(p.synthetic === true, "provenance.synthetic !== true");
+	need(p.gvhmrCommit === "0".repeat(40), "provenance.gvhmrCommit not the 40-hex zero sentinel");
+	need(p.weightsSha256 === "0".repeat(64), "provenance.weightsSha256 not the 64-hex zero sentinel");
 	need(typeof p.annotationPath === "string" && p.annotationPath.endsWith("annotation.json"), "annotationPath");
 	need(typeof fx.sha256 === "string" && /^[0-9a-f]{64}$/.test(fx.sha256), "sha256 format");
 	return issues;
@@ -438,6 +442,48 @@ ok(
 	dist(shiftedRoot, chFx.subjects[0].rootWorld[5]) > 0.02,
 	`moved=${dist(shiftedRoot, chFx.subjects[0].rootWorld[5]).toFixed(3)} m`,
 );
+
+// --- degenerate input: 0/0 must surface as undefined with a reason, never as
+// --- a fabricated pass. The red-team defect: empty frames with an empty
+// --- annotation read as M2=1 / M3=0 / M4=0 — a degenerate fixture that looks
+// --- like a passing measurement. Every denominator-less metric must be
+// --- undefined (with reasons naming the missing sample base), and consumers
+// --- must check that explicitly instead of coercing undefined to 0.
+{
+	const emptyFixture = {
+		frames: 0,
+		subjects: [
+			{ subjectId: "A", trackId: "p0", rootWorld: [], contactMask: [], confidence: [] },
+			{ subjectId: "B", trackId: "p1", rootWorld: [], contactMask: [], confidence: [] },
+		],
+		separation: { scoredFrameIndex: [], annotatedSeparationM: [] },
+		association: { observations: [], groundTruth: [] },
+	};
+	const emptyAnn = {
+		handContact: { frameIndex: [], label: { A: [], B: [] } },
+		footWorld: { frameIndex: [], A: [], B: [] },
+	};
+	const degen = computeMetrics(emptyFixture, emptyAnn);
+	const undefWithReason = (m, key) => m[key] === undefined && typeof m.reasons[key] === "string";
+	ok("degenerate input: M1 undefined with a reason, not a fabricated 0/0", undefWithReason(degen, "M1"), `M1=${degen.M1}`);
+	ok("degenerate input: M2 undefined with a reason, not the 0/0->1 convention", undefWithReason(degen, "M2"), `M2=${degen.M2}`);
+	ok("degenerate input: M3 undefined with a reason, not a vacuous 0", undefWithReason(degen, "M3"), `M3=${degen.M3}`);
+	ok("degenerate input: M4 undefined with a reason, not a vacuous 0", undefWithReason(degen, "M4"), `M4=${degen.M4}`);
+	ok("degenerate input: M5 undefined with a reason, not a fabricated 0/0", undefWithReason(degen, "M5"), `M5=${degen.M5}`);
+	ok("degenerate input: M6 undefined with a reason, not a fabricated 0/0", undefWithReason(degen, "M6"), `M6=${degen.M6}`);
+	ok("degenerate input: reasons name the missing sample base",
+		Object.keys(degen.reasons).sort().join() === "M1,M2,M3,M4,M5,M6" &&
+		typeof degen.reasons.M3 === "string" && /run/i.test(degen.reasons.M3) &&
+		typeof degen.reasons.M4 === "string" && /groundTruth/i.test(degen.reasons.M4) &&
+		typeof degen.reasons.M2 === "string" && /label/i.test(degen.reasons.M2),
+		JSON.stringify(degen.reasons));
+	// the well-formed control still measures: the pinned fixture must NOT go
+	// undefined just because the degenerate path exists
+	const control = computeMetrics(chFx, annotation);
+	ok("degenerate-input control: well-formed fixture still measures finite numbers",
+		[control.M1, control.M2, control.M3, control.M4, control.M5, control.M6].every((v) => typeof v === "number" && Number.isFinite(v)),
+		`M1=${control.M1} M2=${control.M2} M3=${control.M3} M4=${control.M4} M5=${control.M5} M6=${control.M6}`);
+}
 
 console.log(`\nfailures: ${fail.length}`);
 process.exit(fail.length ? 1 : 0);

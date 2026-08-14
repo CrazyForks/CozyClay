@@ -5,7 +5,11 @@
  * decides GO/STOP from six metrics per candidate mode before any
  * feasibility-dependent code is written. The procedure is ordered, mutually
  * exclusive and exhaustive: the first satisfied branch wins, Step 4 is an
- * unconditional else, so no reachable metric tuple falls through.
+ * unconditional else, so no reachable metric tuple falls through. Totality is
+ * a property of WELL-FORMED tuples: malformed input rejects up front with the
+ * named DECISION-INPUT error (see the input contract below), so a broken
+ * producer can never read as a verdict and never crashes the gate with a
+ * TypeError.
  *
  * Threshold provenance (plan §10.3): contact budget 0.05 m (research 12 §5);
  * calibration may consume up to 0.03 m (plan §9), so a GO solver's root error
@@ -24,6 +28,63 @@
  * this function only computes it, it does not record it.
  */
 
+// --- input contract ----------------------------------------------------------
+//
+// Every metric that gates a GO branch must be present and finite; absence is
+// a contract violation, not a default. The unsafe default this guards against:
+// an absent m4 would normalize to 0 — "no identity swaps" — when the truth is
+// "identity was never checked", and Step 0 is the gate that stops the whole
+// pipeline, so unknown identity must never read as clean. Forcing STOP:identity
+// instead of rejecting was considered and rejected: that would record a
+// legitimate Phase-0 outcome ("identity failure") for what is actually a
+// broken producer, hiding the bug behind a signable verdict. The same rule
+// covers string-typed "0.8" (which would coerce into a passing fraction),
+// non-finite values, and out-of-range values (a fraction above 1, a negative
+// std/RMS, a negative swap count).
+//
+// Mode entries: a PRESENT entry claims that mode was measured, so its m3/m5/m6
+// must be present and finite too (null/""/true would otherwise coerce to 0 and
+// pass the budget gate). An ABSENT entry claims the opposite — the mode did
+// not run — and simply cannot be green, which is the fail-closed direction the
+// green gate already provides. Unknown mode keys are ignored.
+const isFiniteNumber = (v) => typeof v === "number" && Number.isFinite(v);
+const MODE_KEYS = ["contact-head", "lowest-foot", "manual-anchor"];
+
+const inputError = (msg) => new Error(`decision: DECISION-INPUT ${msg}`);
+
+const requirePlainObject = (value, what) => {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) {
+		throw inputError(`${what} must be a plain object, got ${value === null ? "null" : typeof value}`);
+	}
+};
+
+const requireMetric = (holder, key, label, min, max) => {
+	if (!isFiniteNumber(holder[key])) {
+		const got = holder[key] === undefined ? "missing" : `${typeof holder[key]} ${String(holder[key])}`;
+		throw inputError(`${key} (${label}) must be a finite number, got ${got}`);
+	}
+	if (holder[key] < min || holder[key] > max) {
+		throw inputError(`${key} (${label}) = ${holder[key]} outside contract range [${min}, ${max}]`);
+	}
+};
+
+const validateInput = (metrics) => {
+	requirePlainObject(metrics, "metrics");
+	// mode-independent metrics gate every branch: required, finite, in range
+	requireMetric(metrics, "m1", "contact coverage fraction", 0, 1);
+	requireMetric(metrics, "m2", "contact precision", 0, 1);
+	requireMetric(metrics, "m4", "identity-swap count", 0, Number.POSITIVE_INFINITY);
+	requirePlainObject(metrics.modes, "modes");
+	for (const key of MODE_KEYS) {
+		const mode = metrics.modes[key];
+		if (mode === undefined) continue; // mode did not run -> cannot be green -> falls through
+		requirePlainObject(mode, `modes.${key}`);
+		requireMetric(mode, "m3", "plant jitter metres", 0, Number.POSITIVE_INFINITY);
+		requireMetric(mode, "m5", "solved-root RMS metres", 0, Number.POSITIVE_INFINITY);
+		requireMetric(mode, "m6", "separation error metres", 0, Number.POSITIVE_INFINITY);
+	}
+};
+
 /**
  * Decide the Phase-0 feasibility verdict.
  *
@@ -41,8 +102,15 @@
  *   GO carries the selected mode and its branch as reason; STOP carries
  *   reason "identity" (M4 > 0) or "accuracy" (no GO branch satisfied) and
  *   mode null — a STOP selects nothing.
+ * @throws {Error} with the named DECISION-INPUT code when the tuple is
+ *   malformed: metrics/modes not plain objects, m1/m2/m4 missing, non-finite
+ *   or out of contract range, or a present mode entry without finite in-range
+ *   m3/m5/m6. Well-formed tuples (the totality claim) never throw and always
+ *   reach a branch.
  */
 export function decideFeasibility(metrics) {
+	validateInput(metrics);
+
 	// Step 0: identity failure is mode-independent and dominates every branch.
 	if (metrics.m4 > 0) {
 		return { verdict: "STOP", mode: null, degraded: false, reason: "identity", display: { spacingMayReadSoft: false } };
