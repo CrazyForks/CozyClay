@@ -9,9 +9,12 @@
  *
  * The synthetic control anchors every stance start AND end with the stance's own value, so
  * the interpolant reproduces the step-function GT exactly (a lerp between equal values is
- * constant, and a zero-width interval jumps to the later value). Anchor semantics:
- * non-decreasing frameIndex, and where two anchors share a frameIndex the LATER one wins
- * for that frame -- that is what makes the jump exact rather than sloped.
+ * constant, and a zero-width interval jumps to the later value). Anchor semantics: the
+ * caller must supply each track's anchors in non-decreasing frameIndex order -- out-of-order
+ * input is rejected with the named ANCHOR-ORDER error, never silently re-sorted, because
+ * manual anchors are operator input and re-ordering them hides the operator's mistake.
+ * Where two anchors share a frameIndex the LATER one wins for that frame -- that is what
+ * makes the jump exact rather than sloped.
  *
  * Degraded mode: F3 must display "spacing may read soft" and keep separate telemetry
  * (plan 10.3) when it selects this mode.
@@ -24,13 +27,22 @@
 
 export function solveManualAnchor(rawTrack, floorFrame, anchors) {
 	const subjects = rawTrack.subjects.map((s) => {
-		const list = [...anchors[s.trackId]].sort((a, b) => a.frameIndex - b.frameIndex);
-		if (list.length === 0) throw new Error("manual-anchor: no anchors for " + s.trackId);
-		for (let i = 1; i < list.length; i += 1) {
-			if (list[i].frameIndex < list[i - 1].frameIndex) {
-				throw new Error("manual-anchor: anchor frameIndex must be sorted");
+		// validate the caller's ORIGINAL order before anything else: a sorted copy made
+		// this rejection dead code and silently re-ordered operator marks -- the very
+		// mistake the check exists to surface
+		const original = anchors[s.trackId];
+		if (original.length === 0) throw new Error("manual-anchor: no anchors for " + s.trackId);
+		for (let i = 1; i < original.length; i += 1) {
+			if (original[i].frameIndex < original[i - 1].frameIndex) {
+				throw new Error(
+					"manual-anchor: ANCHOR-ORDER " + s.trackId +
+						" anchors must be non-decreasing in frameIndex (out of order at index " + i + ")",
+				);
 			}
 		}
+		// the input is validated non-decreasing, so no sort is needed; the copy keeps the
+		// caller's array untouched and input order decides ties (the later anchor wins)
+		const list = [...original];
 		const rootWorld = [];
 		for (let f = 0; f < rawTrack.frames; f += 1) {
 			if (f <= list[0].frameIndex) {

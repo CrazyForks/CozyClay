@@ -280,6 +280,29 @@ ok(
 		lerpProbe[185].every((v) => Math.abs(v - 1) < 1e-12),
 	`mid=${lerpProbe[5].join(",")}`,
 );
+// the input contract: anchors are operator marks, so out-of-order input must be
+// REJECTED with a named error, never silently re-sorted -- re-ordering the
+// operator's marks hides the mistake the rejection exists to surface
+let anchorOrderErr = null;
+try {
+	solveManualAnchor(rawTrack, floorFrame, {
+		p0: [
+			{ frameIndex: 34, world: [0, 0, 0] },
+			{ frameIndex: 0, world: [1, 1, 1] },
+		],
+		p1: [
+			{ frameIndex: 0, world: [0.7, 0, 0.3] },
+			{ frameIndex: 40, world: [0.95, 0, 0.45] },
+		],
+	});
+} catch (e) {
+	anchorOrderErr = e;
+}
+ok(
+	"manual-anchor rejects out-of-order anchors (ANCHOR-ORDER) instead of silently re-sorting them",
+	anchorOrderErr !== null && anchorOrderErr instanceof Error && /ANCHOR-ORDER/.test(anchorOrderErr.message) && /p0/.test(anchorOrderErr.message),
+	anchorOrderErr === null ? "no error thrown: the anchors were silently re-ordered" : `${anchorOrderErr.name}: ${anchorOrderErr.message}`,
+);
 ok(
 	"manual-anchor runner output equals the pinned manual-anchor fixture",
 	maxRootError(maRunner, maFx) < 1e-12,
@@ -316,7 +339,7 @@ for (const [mode, fx] of Object.entries(fixtures)) {
 
 // --- negative controls: every measurement must fail on known-bad input ----------------
 
-const THRESHOLD = { M3: 0.03, M5: 0.05, M6: 0.08 }; // plan 10.3, contact-head GO branch
+const THRESHOLD = { M1: 0.6, M2: 0.85, M3: 0.03, M5: 0.05, M6: 0.08 }; // plan 10.3, contact-head GO branch
 
 // M5: displace A's solved root by 0.10 m on every scored frame; RMS must clear 0.05
 const perturbedRoots = structuredClone(chFx);
@@ -352,6 +375,52 @@ const jittered = structuredClone(chFx);
 for (const f of [10, 15, 20]) jittered.subjects[0].rootWorld[f][0] += f === 15 ? -0.01 : 0.01;
 const m3p = computeMetrics(jittered, annotation).M3;
 ok("negative control: in-stance root jitter pushes M3 above zero", m3p > 1e-4, `M3=${m3p.toExponential(3)}`);
+// M1: erase every contact on 75 frames that are NOT among the 100 hand-labelled
+// ones (both subjects), so M2 -- which judges only those 100 frames -- cannot
+// move. Coverage = (186-75)/186 = 0.597 per subject, below the 0.60 GO branch.
+const unlabelledFrames = Array.from({ length: SCENE.frames }, (_, f) => f).filter(
+	(f) => !SCENE.handContactFrames.includes(f),
+);
+const contactErased = structuredClone(chFx);
+for (const f of unlabelledFrames.slice(0, 75)) {
+	for (const s of contactErased.subjects) s.contactMask[f] = [0, 0];
+}
+const m1p = computeMetrics(contactErased, annotation);
+ok(
+	"negative control: erasing contacts on 75 unlabelled frames pushes M1 below the 0.60 GO threshold",
+	m1p.M1 < THRESHOLD.M1 && m1p.M1 < 1,
+	`M1=${m1p.M1.toFixed(4)}`,
+);
+ok(
+	"negative control: the M1 mutation leaves M2 and M3 untouched",
+	m1p.M2 === 1 && m1p.M3 < 1e-12,
+	`M2=${m1p.M2}, M3=${m1p.M3.toExponential(3)}`,
+);
+
+// M2: on 36 of the 100 hand-labelled frames, raise the swing foot's contact to
+// 0.51 on both subjects -- one false positive per foot. tp stays 200 (planted
+// predictions untouched) so precision = 200/272 = 0.735, below the 0.85 GO
+// branch. 0.51 stays below the planted 0.93, so the planted side (argmax) and
+// M1's "any contact above 0.5" are both unchanged.
+const falsePositives = structuredClone(chFx);
+for (const f of SCENE.handContactFrames.slice(0, 36)) {
+	for (const s of falsePositives.subjects) {
+		const c = s.contactMask[f];
+		if (c[0] < c[1]) c[0] = 0.51;
+		else c[1] = 0.51;
+	}
+}
+const m2p = computeMetrics(falsePositives, annotation);
+ok(
+	"negative control: swing-foot false positives on 36 labelled frames push M2 below the 0.85 GO threshold",
+	m2p.M2 < THRESHOLD.M2 && m2p.M2 < 1,
+	`M2=${m2p.M2.toFixed(4)}`,
+);
+ok(
+	"negative control: the M2 mutation leaves M1 and M3 untouched",
+	m2p.M1 === 1 && m2p.M3 < 1e-12,
+	`M1=${m2p.M1}, M3=${m2p.M3.toExponential(3)}`,
+);
 
 // the runner must consume the FloorFrame: a wrong floor height moves every solved root
 const wrongFloor = { ...floorFrame, floorY: 0.2 };

@@ -46,6 +46,70 @@ const canonical = (doc) => {
 	return JSON.stringify(rest);
 };
 const sha256Of = (doc) => createHash("sha256").update(canonical(doc)).digest("hex");
+// ---------------------------------------------------------------------------
+// the negative fixtures: hash-first, then locked to their intended corruption
+// ---------------------------------------------------------------------------
+// Every negative is replayed by the acceptances below, so its declared sha256 is
+// verified here FIRST, exactly as the good fixture's is -- a drifted negative that
+// still carries a stale hash must fail before any check replays it. The lock then
+// pins each negative to its slot's probe field: apart from the fixture-identity
+// metadata (clipId, provenance.command/sourceUrl -- the fixture names itself) and
+// the 30-degree baseline yaw at frame 0 that the checked-in negatives inherited
+// and no acceptance reads, a negative may differ from the good fixture ONLY in
+// the field its slot's acceptance probes. A negative that drifts -- its corruption
+// restored, or a different field corrupted -- fails here with the offending path
+// named, instead of quietly passing or failing for the wrong reason.
+
+// every differing leaf path between two documents ("sha256" excluded by the caller)
+function leafDiffs(a, b, path = "") {
+	const out = [];
+	if (a === null || b === null || typeof a !== typeof b) {
+		if (JSON.stringify(a) !== JSON.stringify(b)) out.push(path);
+		return out;
+	}
+	if (typeof a !== "object") {
+		if (a !== b) out.push(path);
+		return out;
+	}
+	if (Array.isArray(a) !== Array.isArray(b)) {
+		out.push(path);
+		return out;
+	}
+	const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
+	for (const k of keys) {
+		const p = path ? `${path}.${k}` : k;
+		if (!(k in a) || !(k in b)) out.push(p);
+		else out.push(...leafDiffs(a[k], b[k], p));
+	}
+	return out;
+}
+
+const NEGATIVE_LOCKS = [
+	// [fixture, label, probe field paths the slot's acceptance reads]
+	[negAlpha, "neg-alpha", ["data.global_orient_cam"]],
+	[negBeta, "neg-beta", ["data.global_orient_cam"]],
+	[negGamma, "neg-gamma", ["data.translation_cam"]],
+	[negDelta, "neg-delta", ["data.foot_keypoints_crop"]],
+	[negEta, "neg-eta", ["slots.F1-η.crop"]],
+	[negF1d, "neg-f1d", ["slots.F1-δ"]],
+];
+const NEG_IDENTITY = new Set(["clipId", "provenance.command", "provenance.sourceUrl"]);
+const NEG_BASELINE = "data.global_orient_cam.0"; // the frozen frame-0 yaw (see above)
+for (const [neg, label, probe] of NEGATIVE_LOCKS) {
+	ok(`sha256: ${label} hashes to its pinned sha256`, sha256Of(neg) === neg.sha256, neg.sha256.slice(0, 12));
+	const diffs = leafDiffs(good, neg).filter((p) => p !== "sha256" && !NEG_IDENTITY.has(p));
+	const inProbe = (p) => probe.some((pf) => p === pf || p.startsWith(pf + "."));
+	ok(
+		`${label}: differs from good in its probe field (${probe.join("/")})`,
+		diffs.some(inProbe),
+	);
+	const elsewhere = diffs.filter((p) => !inProbe(p) && p !== NEG_BASELINE && !p.startsWith(NEG_BASELINE + "."));
+	ok(
+		`${label}: locked to its intended corruption -- no field outside the probe differs`,
+		elsewhere.length === 0,
+		`offending paths: ${elsewhere.join("; ")}`,
+	);
+}
 
 const shapeOf = (v) =>
 	Array.isArray(v) ? [v.length, ...(Array.isArray(v[0]) ? shapeOf(v[0]) : [])] : null;
