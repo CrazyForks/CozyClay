@@ -59,9 +59,11 @@ expect("normal motion generation excludes the prompt block schedule", app.includ
 // scans below are therefore explicitly NON-GATING tripwires: a PASS is a
 // diagnostic that the wiring text still matches, a MISS warns that the
 // behavioural gate may be failing for a drifted line — never a capability
-// proof. This matches the story test/verify-app-seam.mjs:437-447 tells for
-// the same regeneration ground, which it declares "unproven until U4";
-// verify-ardy-request.mjs is the observation that upgrades it.
+// proof. All three files now tell the SAME story: verify-ardy-request.mjs
+// OBSERVES this regeneration ground at the real request boundary, and
+// verify-app-seam.mjs credits it as the behavioural gate rather than
+// deferring it. Only the IK evaluate effect using the SELECTED subject's rig
+// and clip is still deferred to U4, and no suite here claims it.
 let tripMissed = 0;
 function trip(name, condition, gate) {
 	console.log(`${condition ? "TRIPWIRE PASS" : "TRIPWIRE MISS"}  ${name}  [non-gating; ${gate}]`);

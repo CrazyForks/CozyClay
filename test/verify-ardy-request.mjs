@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 /**
- * The ARDY regeneration REQUEST, observed in a REAL browser (pass-4 finding:
- * test/verify-layout.mjs:52-59 used to GATE the regeneration wiring claims
- * on src/App.jsx string presence — motion-edit routing, duration
- * inheritance, tracked-key serialization, verified-commit clearing and
- * failure preservation — while test/verify-app-seam.mjs:437-447 declared
- * that same ground "unproven until U4". A rendered App that never performs
- * any of it still contains every string, so the scans passed either way.
+ * The ARDY regeneration REQUEST, observed in a REAL browser.
+ *
+ * HISTORY (pass-4 finding, now resolved): test/verify-layout.mjs USED TO gate
+ * the regeneration wiring claims on src/App.jsx string presence — motion-edit
+ * routing, duration inheritance, tracked-key serialization, verified-commit
+ * clearing and failure preservation — while test/verify-app-seam.mjs USED TO
+ * declare that same ground "unproven until U4". A rendered App that never
+ * performs any of it still contains every string, so the scans passed either
+ * way. Both files now credit this suite as the behavioural gate; none of them
+ * still defers this ground to U4.
  *
  * This suite observes the five claims at the REAL boundary: the rendered
  * app's runArdy builds the real /ardy/generate request, the real
