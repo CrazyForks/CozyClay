@@ -80,7 +80,7 @@
             "name": "How does motion generation work?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "You sequence multi-phase motion as Prompt Blocks on the timeline and send them to NVIDIA ARDY through a local bridge, then play the result back with sparse IK correction. ARDY is a separate third-party project maintained by NVIDIA; it is not bundled with CozyClay. The hosted studio ships a pre-generated clip so you can scrub, drive cameras and draw a dolly rail without a GPU machine."
+              "text": "You sequence multi-phase motion as Prompt Blocks on the timeline and send them to NVIDIA ARDY through a local bridge, then play the result back with sparse IK correction. ARDY is a separate third-party project maintained by NVIDIA; it is not bundled with CozyClay. Staging, root paths, cameras and playback all work without it, and the build ships a pre-generated clip so the timeline has real motion on it from the first run."
             }
           },
           {
@@ -96,7 +96,7 @@
             "name": "Can I run CozyClay offline?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Yes. CozyClay is installable as a PWA from the header, and after the first load the installed studio opens offline. You can also clone the repository and run it fully locally."
+              "text": "Yes. CozyClay runs entirely on your own machine with npx cozyclay or from a clone. Nothing is uploaded, and the studio keeps working without a network connection once it is running."
             }
           }
         ]
@@ -244,8 +244,8 @@
         </p>
 
         <div class="cta">
-          <a class="btn primary" href="/app/">Open the studio</a>
-          <a class="btn ghost" href="https://github.com/HaD0Yun/CozyClay">View on GitHub</a>
+          <a class="btn primary" href="https://github.com/HaD0Yun/CozyClay">View on GitHub</a>
+          <a class="btn ghost" href="#start">Run it locally</a>
         </div>
         <p class="note">
           Free and open source. Built with Three.js and React Three Fiber.
@@ -307,7 +307,8 @@
       <section id="start">
         <h2>Quick start</h2>
         <p class="sub">
-          The fastest path is the hosted studio. To run it yourself, one command is enough.
+          CozyClay runs on your machine. One command is enough — there is nothing to compile
+          and no dependency tree to install.
         </p>
         <pre><code>npx cozyclay</code></pre>
         <p class="sub">Or clone and run the source:</p>
@@ -373,8 +374,9 @@ npm run dev</code></pre>
             <a href="https://github.com/nv-tlabs/ardy">NVIDIA ARDY</a> through a local bridge,
             then play the result back with sparse IK correction. ARDY is a separate third-party
             project owned and maintained by NVIDIA; it is not bundled here, and CozyClay is not
-            affiliated with or endorsed by NVIDIA. The hosted studio ships a pre-generated clip
-            so you can scrub the timeline, drive the cameras and draw a dolly rail without a GPU machine.
+            affiliated with or endorsed by NVIDIA. Staging, root paths, cameras and playback all
+            work without it, and the build ships a pre-generated clip so the timeline has real
+            motion on it from the first run.
           </p>
         </details>
         <details>
@@ -388,8 +390,9 @@ npm run dev</code></pre>
         <details>
           <summary>Can I run it offline?</summary>
           <p>
-            Yes. CozyClay is installable as a PWA from the header, and after the first load the
-            installed studio opens offline. You can also clone the repository and run it fully locally.
+            Yes. CozyClay runs entirely on your own machine with <code>npx cozyclay</code> or from
+            a clone. Nothing is uploaded, and the studio keeps working without a network
+            connection once it is running.
           </p>
         </details>
       </section>
@@ -398,7 +401,6 @@ npm run dev</code></pre>
     <footer class="site">
       <div class="wrap">
         <p>
-          <a href="/app/">Open the studio</a> ·
           <a href="https://github.com/HaD0Yun/CozyClay">GitHub</a> ·
           <a href="https://www.npmjs.com/package/cozyclay">npm</a>
         </p>
