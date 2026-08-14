@@ -128,6 +128,43 @@ const commit = execSync("git rev-parse HEAD", { cwd: REPO, encoding: "utf8" }).t
 const nodeVer = execSync("node --version", { encoding: "utf8" }).trim();
 const pyVer = execSync("python3 --version", { encoding: "utf8" }).trim();
 
+// Scope and baseline are DERIVED and EXECUTED, never asserted. An evidence
+// artifact that hard-codes a revision or a result it did not observe is worse
+// than no artifact: it survives the change that invalidates it and reads as
+// proof. A previous revision of this file pinned "main..dd008dd (5 commits)"
+// and claimed exit-0 baselines it never ran, which is exactly the failure this
+// suite exists to catch elsewhere.
+const mergeBase = execSync("git merge-base main HEAD", { cwd: REPO, encoding: "utf8" }).trim();
+const commitCount = execSync("git rev-list --count main..HEAD", { cwd: REPO, encoding: "utf8" }).trim();
+const subjects = execSync("git log --format=%s main..HEAD", { cwd: REPO, encoding: "utf8" })
+	.trim().split("\n").filter(Boolean).reverse();
+
+const BASELINE_SUITES = [
+	"test/ingest/verify-gvhmr-schema.mjs",
+	"test/ingest/verify-feasibility-modes.mjs",
+	"test/ingest/verify-feasibility-reproducible.mjs",
+	"test/ingest/verify-decision-function.mjs",
+];
+// run each baseline for real and record what actually happened, including the
+// observed assertion count -- a hard-coded count silently rots
+const baselineRun = {};
+const baselineCommands = [];
+for (const suite of BASELINE_SUITES) {
+	const cmd = `node ${suite}`;
+	let status = 0;
+	let out = "";
+	try {
+		out = execSync(cmd, { cwd: REPO, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+	} catch (e) {
+		status = typeof e.status === "number" ? e.status : 1;
+		out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
+	}
+	const pass = (out.match(/^PASS/gm) ?? []).length;
+	const failed = (out.match(/^FAIL/gm) ?? []).length;
+	baselineRun[cmd] = { observedExitCode: status, passAssertions: pass, failAssertions: failed };
+	baselineCommands.push(cmd);
+}
+
 const report = {
 	schemaVersion: 1,
 	kind: "adversarial-test-report",
@@ -136,16 +173,12 @@ const report = {
 		repo: "CozyClay",
 		branch: "feat/footage-ingest",
 		commit,
-		changeSet: "main..dd008dd (5 commits: F1, F2a-c, F3, F2r, cleaner fixes)",
+		mergeBase,
+		changeSet: `main..HEAD (${commitCount} commit${commitCount === "1" ? "" : "s"}: ${subjects.join(" | ")})`,
 		date: new Date().toISOString(),
 		environment: { node: nodeVer, python: pyVer, numpy: "absent (dump emission paths driven via rt-dump-stub.py)" },
 	},
-	baseline: {
-		"node test/ingest/verify-gvhmr-schema.mjs": "exit 0 (177-assertion green path untouched)",
-		"node test/ingest/verify-feasibility-modes.mjs": "exit 0",
-		"node test/ingest/verify-feasibility-reproducible.mjs": "exit 0",
-		"node test/ingest/verify-decision-function.mjs": "exit 0",
-	},
+	baseline: baselineRun,
 	suiteFiles: [
 		"test/ingest/redteam/rt-common.mjs",
 		"test/ingest/redteam/rt-decision.mjs",
@@ -156,16 +189,15 @@ const report = {
 		"test/ingest/redteam/rt-dump-stub.py",
 		"test/ingest/redteam/run-all.mjs",
 	],
+	// only commands this orchestrator actually executed in this run
 	commandsRun: [
-		"git -C ~/ccMultimodel/CozyClay status --short && git rev-parse HEAD (read-only state check)",
-		"for t in gvhmr-schema feasibility-modes feasibility-reproducible decision-function; do node test/ingest/verify-$t.mjs; done  (baseline)",
-		"node test/ingest/redteam/rt-decision.mjs",
-		"node test/ingest/redteam/rt-measure.mjs",
-		"node test/ingest/redteam/rt-reproducible.mjs",
-		"node test/ingest/redteam/rt-schema.mjs",
-		"node test/ingest/redteam/rt-dump.mjs",
-		"node test/ingest/redteam/run-all.mjs",
-		"node -e <recorded CLI replay> (twice: capture + byte-for-byte reproduction check)",
+		"git rev-parse HEAD",
+		"git merge-base main HEAD",
+		"git rev-list --count main..HEAD",
+		"git log --format=%s main..HEAD",
+		...baselineCommands,
+		...Object.keys(modules).map((m) => `test/ingest/redteam/rt-${m}.mjs (imported and run in-process)`),
+		"node -e <recorded CLI replay> (capture + byte-for-byte reproduction check)",
 	],
 	summary: {
 		totalCases: allCases.length,
@@ -232,3 +264,19 @@ for (const [name, mod] of Object.entries(modules)) {
 console.log(`findings: ${allFindings.length}`);
 console.log(`CLI replay: ${reproduces ? "reproduces byte-for-byte" : "REPRODUCTION FAILED"}`);
 console.log(`artifacts: ${reportPath}\n           ${replayPath}`);
+
+// This artifact is consumed as completion-gate evidence, so the orchestrator
+// must fail whenever the evidence it just wrote is not clean. Exiting 0 while
+// recording a red baseline, an open blocker, or a broken replay would hand the
+// gate a green receipt for a red run.
+const redBaselines = Object.entries(baselineRun)
+	.filter(([, r]) => r.observedExitCode !== 0 || r.failAssertions > 0)
+	.map(([cmd]) => cmd);
+const problems = [];
+if (redBaselines.length) problems.push(`baseline not green: ${redBaselines.join(", ")}`);
+if (blockers.length) problems.push(`${blockers.length} open blocker(s)`);
+if (!reproduces) problems.push("CLI replay did not reproduce");
+if (problems.length) {
+	console.error(`\nRED-TEAM GATE FAILED: ${problems.join("; ")}`);
+	process.exit(1);
+}
