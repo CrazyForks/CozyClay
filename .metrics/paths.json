@@ -1,0 +1,64 @@
+{
+  "2026-08-14": [
+    {
+      "path": "/HaD0Yun/CozyClay",
+      "title": "Overview",
+      "count": 1125,
+      "uniques": 658
+    },
+    {
+      "path": "/HaD0Yun/CozyClay/blob/main/docs/images/cozyclay-studio.png",
+      "title": "/blob/main/docs/images/cozyclay-studio.png",
+      "count": 24,
+      "uniques": 21
+    },
+    {
+      "path": "/HaD0Yun/CozyClay/blob/main/docs/images/cozyclay-demo.gif",
+      "title": "/blob/main/docs/images/cozyclay-demo.gif",
+      "count": 18,
+      "uniques": 14
+    },
+    {
+      "path": "/HaD0Yun/CozyClay/issues",
+      "title": "/issues",
+      "count": 13,
+      "uniques": 8
+    },
+    {
+      "path": "/HaD0Yun/CozyClay/tree/main",
+      "title": "/tree/main",
+      "count": 12,
+      "uniques": 7
+    },
+    {
+      "path": "/HaD0Yun/CozyClay/pulls",
+      "title": "/pulls",
+      "count": 12,
+      "uniques": 5
+    },
+    {
+      "path": "/HaD0Yun/CozyClay/graphs/contributors",
+      "title": "/graphs/contributors",
+      "count": 12,
+      "uniques": 3
+    },
+    {
+      "path": "/HaD0Yun/CozyClay/stargazers",
+      "title": "/stargazers",
+      "count": 11,
+      "uniques": 1
+    },
+    {
+      "path": "/HaD0Yun/CozyClay/fork",
+      "title": "/fork",
+      "count": 8,
+      "uniques": 6
+    },
+    {
+      "path": "/HaD0Yun/CozyClay/actions",
+      "title": "/actions",
+      "count": 7,
+      "uniques": 2
+    }
+  ]
+}

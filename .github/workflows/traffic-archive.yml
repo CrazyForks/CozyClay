@@ -1,13 +1,17 @@
 name: Archive traffic stats
 
-# GitHub only keeps repository traffic for 14 days, so the numbers that tell us
-# which posts actually landed are gone before we can compare a month. This job
-# snapshots them daily and merges each snapshot into a JSON file in the repo,
-# which turns a rolling 14-day window into a permanent time series.
+# GitHub only keeps repository traffic for 14 days, so the numbers that say
+# which post actually landed are gone before a month can be compared. This
+# snapshots them into .metrics/ as a permanent time series.
+#
+# The traffic endpoints require repository admin rights, which the built-in
+# GITHUB_TOKEN does not have (it 403s). So this job only runs when a token with
+# those rights is present as the TRAFFIC_TOKEN secret. Without it the job skips
+# quietly instead of failing every morning, and the same archiving can be run
+# locally with `npm run metrics:traffic`.
 
 on:
   schedule:
-    # 03:10 UTC daily — after GitHub has rolled the previous day's counts.
     - cron: "10 3 * * *"
   workflow_dispatch:
 
@@ -24,80 +28,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch and merge traffic data
-        env:
-          GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN || secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
+      - id: guard
         run: |
-          set -euo pipefail
-          mkdir -p .metrics
+          if [ -n "${{ secrets.TRAFFIC_TOKEN }}" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "TRAFFIC_TOKEN is not set - skipping." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-          api() {
-            curl -sS --fail-with-body \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "https://api.github.com/repos/$REPO/traffic/$1"
-          }
+      - if: steps.guard.outputs.ok == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-          api views    > /tmp/views.json
-          api clones   > /tmp/clones.json
-          api popular/referrers > /tmp/referrers.json
-          api popular/paths     > /tmp/paths.json
+      - if: steps.guard.outputs.ok == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
+          TRAFFIC_REPO: ${{ github.repository }}
+        run: node tools/metrics/archive-traffic.mjs
 
-          python3 - <<'PY'
-          import json, os, pathlib, datetime
-
-          root = pathlib.Path(".metrics")
-
-          def load(p, default):
-              f = root / p
-              if not f.exists():
-                  return default
-              try:
-                  return json.loads(f.read_text())
-              except json.JSONDecodeError:
-                  return default
-
-          def read(tmp):
-              with open(f"/tmp/{tmp}") as f:
-                  return json.load(f)
-
-          today = datetime.date.today().isoformat()
-
-          # --- daily series: keyed by date so re-runs overwrite, never duplicate ---
-          daily = load("daily.json", {})
-          for kind, payload in (("views", read("views.json")), ("clones", read("clones.json"))):
-              for row in payload.get(kind, []):
-                  day = row["timestamp"][:10]
-                  entry = daily.setdefault(day, {})
-                  entry[kind] = row["count"]
-                  entry[f"{kind}_uniques"] = row["uniques"]
-          (root / "daily.json").write_text(json.dumps(dict(sorted(daily.items())), indent=2) + "\n")
-
-          # --- referrers and paths are 14-day rollups, so snapshot them per run ---
-          for name, tmp, key in (
-              ("referrers", "referrers.json", "referrer"),
-              ("paths", "paths.json", "path"),
-          ):
-              hist = load(f"{name}.json", {})
-              hist[today] = read(tmp)
-              (root / f"{name}.json").write_text(json.dumps(dict(sorted(hist.items())), indent=2) + "\n")
-
-          # --- flat CSV so the series is readable without tooling ---
-          lines = ["date,views,views_uniques,clones,clones_uniques"]
-          for day, v in sorted(daily.items()):
-              lines.append(
-                  f"{day},{v.get('views','')},{v.get('views_uniques','')},"
-                  f"{v.get('clones','')},{v.get('clones_uniques','')}"
-              )
-          (root / "daily.csv").write_text("\n".join(lines) + "\n")
-
-          total = sum(v.get("views", 0) for v in daily.values())
-          print(f"archived {len(daily)} days, {total} total views")
-          PY
-
-      - name: Commit if changed
+      - if: steps.guard.outputs.ok == 'true'
         run: |
           set -euo pipefail
           if [ -z "$(git status --porcelain .metrics)" ]; then

@@ -33,7 +33,8 @@
 		"test:pwa": "node test/verify-pwa.mjs",
 		"test:localization": "node test/verify-korean-ui.mjs",
 		"test:korean-ui": "node test/verify-korean-ui.mjs",
-		"prepack": "npm run build"
+		"prepack": "npm run build",
+		"metrics:traffic": "node tools/metrics/archive-traffic.mjs"
 	},
 	"license": "GPL-3.0-or-later",
 	"type": "module",
