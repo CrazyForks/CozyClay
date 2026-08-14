@@ -4,19 +4,9 @@
 
 CozyClay is a browser-based 3D staging studio built with Three.js and React Three Fiber. Block a scene, pose characters, sequence motion prompts on a timeline, and preview generated motion — in one local workspace that handles like the Unity Editor.
 
-## Project status
-
-The staging, camera, timeline and playback paths are stable enough for day-to-day
-previsualization work, and the hosted studio runs the same build as a local clone. What is
-not settled yet:
-
-- **Scene data is not versioned.** A scene saved today may not load after an update.
-- **The ARDY bridge contract can change** as motion generation gets built out.
-- **No stable release yet.** There are no tagged releases; `main` is the moving target.
-
-If something breaks or feels wrong, please [open an issue](https://github.com/HaD0Yun/CozyClay/issues).
-
 **[cozyclay.org](https://cozyclay.org/)** has the demo reel and a walkthrough of what the studio does. To use it, run it on your own machine — `npx cozyclay` is the whole install. It comes seeded with a pre-generated motion clip so you can scrub the timeline, drive the cameras and draw a dolly rail straight away; generating new motion needs a local ARDY machine, so that part is off.
+
+Found something broken? [Open an issue](https://github.com/HaD0Yun/CozyClay/issues).
 
 ![CozyClay browser-based 3D staging studio](docs/images/cozyclay-studio.png)
 
