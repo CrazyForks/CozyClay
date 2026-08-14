@@ -97,6 +97,7 @@ import {
 } from "./ardy/ik.js";
 import { Dropdown, Field, Slider, Toast, Vector3Row } from "./ui.jsx";
 import { RENDER_ACTIVITY_EVENT, useRenderActivity } from "./use-render-activity.js";
+import { useGeneration } from "./generation/use-generation.js";
 import {
 	CAMERA_MOVES,
 	CUSTOM_MOVE,
@@ -1369,6 +1370,7 @@ globalThis.playMode = centerTab === "play";
 	const [mode, setMode] = useState("image");
 	const [imageModel, setImageModel] = useState("gpt_image_2");
 	const [videoModel, setVideoModel] = useState("seedance_2");
+	const generation = useGeneration();
 	const [cameraMove, setCameraMove] = useState(CAMERA_MOVES[1]);
 	const [customMove, setCustomMove] = useState("");
 	// Authored shot state (camera keys, waypoints, clip length) restored from
@@ -2700,41 +2702,99 @@ globalThis.playMode = centerTab === "play";
 			.catch(() => {});
 	}
 
-	function generate() {
-		const models = mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
+	async function generate() {
+		generation.reset();
+		const models = mode === "video" && generation.models.length ? generation.models : mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
 		const model = models.find((m) => m.id === (mode === "video" ? videoModel : imageModel));
-		// An authored keyframe move outranks the dropdown: the phrase is derived
-		// from the framings, and the exported frames become first/last conditioning.
-		const movePlan = mode === "video" ? moveSequence : null;
+		// Generation follows the Camera Block owned by the Shot under the playhead.
+		// Keys use their authored endpoints; Follow/Rail use the deterministic
+		// track already used by playback, so prompt and conditioning describe the
+		// same camera department instruction the editor previews.
+		const movePlan = mode === "video" && activeCamera.mode === "keys" ? moveSequence : null;
+		const trackedFramings = activeShot && activeCamera.mode !== "keys"
+			? followTrack
+				?.slice(activeShot.startFrame, activeShot.endFrame + 1)
+				.filter(Boolean)
+				.map((sample) => ({ ...sample, fovDeg })) ?? []
+			: [];
+		const blockFramings = activeCamera.mode === "keys"
+			? cameraKeys.map((key) => key.framing)
+			: trackedFramings;
+		const framingA = blockFramings[0] ?? null;
+		const framingB = blockFramings.length > 1 ? blockFramings[blockFramings.length - 1] : null;
+		const promptSubject = activeShot && subjectTrack?.[activeShot.startFrame]
+			? { ...charA, ...subjectTrack[activeShot.startFrame] }
+			: charA;
+		const blockMove = mode === "video" && activeShot && activeCamera.mode !== "keys"
+			? activeCamera.mode === "rail"
+				? "a continuous rail tracking move following the subject"
+				: "a continuous follow-camera move maintaining the authored framing"
+			: null;
 		const prompt = composePrompt({
 			mode,
 			model,
-			shot: movePlan ? movePlan.fromShot : shot,
+			shot: movePlan?.fromShot ?? (framingA
+				? deriveShot(framingA.pos, promptSubject, (framingA.fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M)
+				: shot),
 			subject,
 			subject2: showB ? subject2 : null,
 			posePhrase: poseA?.prompt ?? "",
 			pose2Phrase: showB ? (poseB?.prompt ?? "") : "",
 			environment,
 			style,
-			cameraMove: movePlan ? CUSTOM_MOVE : cameraMove,
-			customMove: movePlan ? movePlan.phrase : customMove,
+			cameraMove: movePlan || blockMove ? CUSTOM_MOVE : cameraMove,
+			customMove: movePlan?.phrase ?? blockMove ?? customMove,
 			hasCharSheet,
 			hasEnvSheet,
 		});
 		let frame = null;
 		let frameB = null;
-		if (movePlan) {
+		if (activeCamera.mode === "keys" && cameraKeys.length) {
 			frame = captureFramingPng(cameraKeys[0].framing);
-			frameB = captureFramingPng(cameraKeys[cameraKeys.length - 1].framing);
+			frameB = cameraKeys.length > 1 ? captureFramingPng(cameraKeys[cameraKeys.length - 1].framing) : null;
+		} else if (framingA) {
+			frame = captureFramingPng(framingA);
+			frameB = framingB ? captureFramingPng(framingB) : null;
 		} else {
 			const buffer = captureRef.current?.render();
 			frame = buffer ? bufferToPng(buffer) : null;
 		}
-		setResult({ prompt, frame, frameB, move: movePlan, mode, modelLabel: model?.label, downloaded: false });
+		const nextResult = {
+			prompt,
+			frame,
+			frameB,
+			move: movePlan,
+			mode,
+			modelLabel: model?.label,
+			downloaded: false,
+			shot: activeShot ? {
+				id: activeShot.id,
+				name: activeShot.name,
+				startFrame: activeShot.startFrame,
+				endFrame: activeShot.endFrame,
+			} : null,
+			fps: tlFps,
+			camera: activeShot ? {
+				mode: activeCamera.mode,
+				followCam: activeCamera.followCam,
+				cameraRail: activeCamera.cameraRail,
+				railFollow: activeCamera.railFollow,
+				keys: cameraKeys,
+			} : null,
+			subjects: [subject, ...(showB ? [subject2] : [])],
+		};
+		setResult(nextResult);
 		setResultOpen(true);
 		setCopied(false);
 		setRecordedVideoName(null);
 		copyPrompt(prompt);
+		if (mode === "video" && generation.models.some((candidate) => candidate.id === model?.id && candidate.provider === model?.provider)) {
+			try {
+				await generation.startResult(nextResult, model);
+			} catch (error) {
+				setToast(error?.message || String(error));
+			}
+		}
 	}
 
 	function download() {
@@ -3141,7 +3201,12 @@ globalThis.playMode = centerTab === "play";
 		ardyAbortRef.current?.abort();
 	}
 
-	const models = mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
+	const models = mode === "video" && generation.models.length ? generation.models : mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
+	useEffect(() => {
+		if (mode === "video" && generation.models.length && !generation.models.some((model) => model.id === videoModel)) {
+			setVideoModel(generation.models[0].id);
+		}
+	}, [mode, videoModel, generation.models]);
 
 	return (
 		<div className={"app" + (renderActive ? "" : " render-idle")}>
@@ -4427,11 +4492,13 @@ globalThis.playMode = centerTab === "play";
 			{result && resultOpen && (
 				<ResultModal
 					result={result}
+					generation={generation.state}
 					copied={copied}
 					recordedVideoName={result.mode === "video" ? recordedVideoName : null}
 					onClose={() => setResultOpen(false)}
 					onCopy={() => copyPrompt(result.prompt)}
 					onDownload={download}
+					onCancelGeneration={generation.cancel}
 				/>
 			)}
 
