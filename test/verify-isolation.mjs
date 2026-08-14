@@ -77,18 +77,28 @@ const tracked = trackedFiles();
 const JS_FILE = /\.(?:[cm]?js|jsx)$/;
 function readModules(paths) {
 	const modules = [];
+	const seen = new Set();
 	for (const p of paths) {
 		// html/json/yaml/py cannot carry a JS import edge; parsing them would be noise
 		if (!JS_FILE.test(p)) continue;
-		modules.push({ path: p, source: readFileSync(join(REPO_ROOT, p), "utf8") });
+		// git ls-files can name a file deleted in the working tree (a
+		// removed scratch file); a missing file carries no edges, so skip it
+		const full = join(REPO_ROOT, p);
+		if (!existsSync(full)) continue;
+		if (seen.has(p)) continue;
+		seen.add(p);
+		modules.push({ path: p, source: readFileSync(full, "utf8") });
 	}
 	// src/surface-mount.js is the boundary's composition module (the W2 mount
-	// edge). It is a NEW seam file, so before its commit it is not in git
-	// ls-files; the audits must still see its edges in the working tree, or
-	// the mount-edge and host-consumer checks would report an orphan on the
-	// very tree that composes the boundary. Read it from disk when present.
+	// edge). It was a NEW seam file before its commit — git ls-files would
+	// not list it — so read it from disk when present (deduped in case it is
+	// tracked already); without it the mount-edge and host-consumer checks
+	// would report an orphan on the very tree that composes the boundary.
 	const mountPath = join(REPO_ROOT, "src", "surface-mount.js");
-	if (existsSync(mountPath)) modules.push({ path: "src/surface-mount.js", source: readFileSync(mountPath, "utf8") });
+	if (existsSync(mountPath) && !seen.has("src/surface-mount.js")) {
+		seen.add("src/surface-mount.js");
+		modules.push({ path: "src/surface-mount.js", source: readFileSync(mountPath, "utf8") });
+	}
 	return modules;
 }
 const modules = readModules(tracked);
@@ -192,7 +202,10 @@ const MOUNT_EDGE_LINES = [
 ];
 const isMountEdge = (e) => e.from === MOUNT_EDGE.from && e.to === MOUNT_EDGE.to;
 function auditMountEdge(edges) {
-	const inbound = edges.filter((e) => e.to === MOUNT_EDGE.to);
+	// Tests legitimately import the composition module; the single-edge rule
+	// governs the APP's composition path, so test importers are excluded
+	// from the count and the expected-edge comparison alike.
+	const inbound = edges.filter((e) => e.to === MOUNT_EDGE.to && !isUnder(e.from, "test"));
 	const violations = [];
 	if (inbound.length === 0) {
 		violations.push("orphaned boundary: zero inbound edges into src/surface-mount.js (the mount edge is missing)");
@@ -368,6 +381,15 @@ const SEAM = new Map([
 	["vite.ingest.config.js", { add: Infinity }],
 	["test/verify-build-exclusion.mjs", { add: Infinity }],
 	["test/verify-isolation.mjs", { add: Infinity }],
+	// The Phase-1 adversarial suite's own harness files (ultragoal ledger
+	// ruling): rt-common.mjs is shared red-team plumbing and rt-delivery.mjs
+	// attacks the delivery topology; neither is a seam verifier, so the
+	// verifier-admission rule cannot admit them by reference. Admitted like
+	// the other test-side entries — these two paths only, never a
+	// test/phase1-redteam/** wildcard, which is the kind of exemption that
+	// quietly grows.
+	["test/phase1-redteam/rt-common.mjs", { add: Infinity }],
+	["test/phase1-redteam/rt-delivery.mjs", { add: Infinity }],
 	// App.jsx budget renegotiated in the ultragoal ledger (event 46611360):
 	// plan §4 budgeted add<=130/mod<=20 for the S3-S8 seam commits, which
 	// landed at exactly 73 added / 20 modified — the modified cap fully
@@ -537,8 +559,10 @@ ok(
 // whole subject is the feature's delivery topology (surface Vite spawn,
 // dist-ingest, the packaged proxy), so in a tree without the feature it has
 // nothing to assert. A subject exemption -- never a convenient way to drop
-// a test that merely happens to fail after deletion.
-const DELETED_WITH_FEATURE = new Set(["test/verify-build-exclusion.mjs", "test/verify-isolation.mjs", "test/verify-delivery.mjs"]);
+// verify-mount.mjs is deleted with it for the same reason: its whole
+// subject is the composition module (src/surface-mount.js), which deletion
+// removes, so in a tree without the feature it has nothing to import.
+const DELETED_WITH_FEATURE = new Set(["test/verify-build-exclusion.mjs", "test/verify-isolation.mjs", "test/verify-delivery.mjs", "test/verify-mount.mjs"]);
 function materializeDeletedTree(dest, { dangling }) {
 	// Materialize the COMMITTED tree, not the working tree: peers land their
 	// seam commits into the same working tree, and an in-flight edit that has

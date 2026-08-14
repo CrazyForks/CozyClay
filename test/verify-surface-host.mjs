@@ -259,6 +259,11 @@ ok("a zombie child cannot be processed after unmount", zombie.code === "foreign-
 
 const noHandshake = makeHost();
 fire(noHandshake.host.iframe(), "load");
+// The no-handshake verdict is deferred a short window: the parent can
+// process the iframe's load event ahead of the child's queued ready
+// message (measured on the QA browser, S4), so the verdict only lands
+// when the handshake is still absent afterwards.
+noHandshake.dom.timers.advance(100);
 ok("a load without the handshake is detected and failed", noHandshake.spies.unavailable.length === 1 && noHandshake.spies.unavailable[0] === "no-handshake" && noHandshake.host.state() === "unavailable", `unavailable=${noHandshake.spies.unavailable.join(",")}`);
 
 const loadError = makeHost();
@@ -820,7 +825,7 @@ if (cdpPage === null) {
 
 	await evaluate(mountExpr(childOrigin, 4000));
 	const childReady = await waitFor(`window.__mountTest.state() === "ready"`, { timeoutMs: 8000 });
-	ok("the real cross-origin child loads and handshakes the composed host", childReady === true, "state never became ready — the child document never loaded");
+	ok("the real cross-origin child loads and handshakes the composed host", childReady === true, `ready=${childReady}`);
 	const iframeInfo = await evaluate(
 		`(() => { const f = window.__mountTest.host().iframe(); return { src: f.src, hidden: f.hidden, sandbox: f.getAttribute("sandbox"), allow: f.getAttribute("allow"), referrer: f.getAttribute("referrerpolicy"), appOrigin: location.origin }; })()`,
 	);
@@ -870,14 +875,14 @@ if (cdpPage === null) {
 		`(() => { const f = document.createElement("iframe"); f.id = "s4c-nosandbox"; f.style.cssText = "position:fixed;top:12px;left:12px;width:320px;height:180px;border:0;z-index:2147483647;background:#fff"; f.src = ${JSON.stringify(hostileOrigin + "/")}; document.body.appendChild(f); return true; })()`,
 	);
 	const unsandboxedDelivered = await waitFor(`window.__s4bSeen.filter((o) => o === ${JSON.stringify(hostileOrigin)}).length >= 3`, { timeoutMs: 8000 });
-	ok("the unsandboxed fixture loaded and posted", unsandboxedDelivered === true, "no second delivery seen");
+	ok("the unsandboxed fixture loaded and posted", unsandboxedDelivered === true, `delivered=${unsandboxedDelivered}`);
 	await sleep(300);
 	const unsandboxedRect = await evaluate(
 		`(() => { const r = document.querySelector("#s4c-nosandbox").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
 	);
 	await clickAt(unsandboxedRect.x, unsandboxedRect.y);
 	const navHref = await waitFor(`location.href.startsWith(${JSON.stringify(appOrigin + "/__s4c-nav-marker")})`, { timeoutMs: 4000 });
-	ok("the unsandboxed control frame DID navigate top (the sandbox is the blocker)", navHref === true, "top did not navigate");
+	ok("the unsandboxed control frame DID navigate top (the sandbox is the blocker)", navHref === true, `navigated=${navHref}`);
 	await bootApp();
 	const recomposed = await evaluateSafely(`!!window[Symbol.for("cozyclay.surfaceMount.v1")]`);
 	ok("a reload re-composes the boundary", recomposed === true, "mount controller missing after reload");

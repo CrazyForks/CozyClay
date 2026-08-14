@@ -1,0 +1,13 @@
+{
+	"schemaVersion": 1,
+	"clipId": "found-footage-0412",
+	"durationS": 90.0,
+	"cutsS": [10.0, 41.2, 63.5],
+	"marginS": 0.5,
+	"expected": {
+		"runStartS": 10.0,
+		"runEndS": 41.2,
+		"startS": 10.5,
+		"endS": 40.7
+	}
+}

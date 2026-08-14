@@ -1,0 +1,1226 @@
+{
+  "schemaVersion": 1,
+  "kind": "CalibrationFixture",
+  "fixture": "T-bad-geometry",
+  "purpose": "Majority corruption: fit marks c1, c2, e0, e1 re-projected through the deliberately wrong planar model H_wrong = H_true ∘ A, where A is the plane similarity s = 1.06, theta = 6 deg anchored at c0 (whose observation A fixes, unchanged) — the realistic operator error of tracing the apron edge instead of the ring boundary. The dominant consensus is WRONG (5 inliers), so robust-model failure detection must fire: verdict block on two INDEPENDENT signals (inlierRatio 0.625 < 0.75; held-out error 0.5019 m computed through the INVERSE map). Invariant B-BG1. RE-PARAMETERISATION (plan §9.3 escape hatch: 'If B-BG1 fails, the build fails and s, theta or the corrupted set are re-parameterised'). At the plan's original theta = 1.5 deg B-BG1 is MATHEMATICALLY UNSATISFIABLE, not merely unmet: A fixes its anchor c0, so the rotated near edge (the A-image of z = -3.05) passes through c0; the mixed model determined by {c1', e0'} (two wrong marks on the rotated near edge) and {c3, e3} (two clean marks on the left edge) therefore maps the corner c0 = near ∩ left to A(near) ∩ left = c0 EXACTLY — a second exact 5-consensus {c0, c1', c3, e0', e3} for ANY anchored similarity. Measured across the re-parameterisation scan: with e3 displaced 30 px, mixed 5-consensi persist at every theta from 1.5 deg to 4 deg, and again at 7.5-8 deg and 12 deg (the near-miss family re-forms) ({c1,c2,c3,e0}-type models keep e1 within 0.5-2.6 px; e3'-models keep a 5th within 1.6-1.8 px). Final re-parameterisation: theta raised to 6 deg (0.1047198 rad) and e3 displaced by an independent (+100.0, 0.0) px; measured at build over all 70 candidates: winner {c0,c2,e0,e1} strict at 5 inliers, every non-selected candidate <= 4 inliers, closest 5th-inlier margin 5.0 px (2.5x the 2 px threshold; maxComp stays 4 across e3 offsets 80-150 px, measured at the pinned theta) (maxCompetingMarginPx > 2, asserted). Held-out error re-pins from the plan.s 0.2677 m to 0.5019 m (ledger delta).",
+  "geometry": {
+    "ringInnerSquareM": 6.1,
+    "plane": {
+      "axis": "Y",
+      "origin": [
+        0,
+        0,
+        0
+      ],
+      "normal": [
+        0,
+        1,
+        0
+      ]
+    },
+    "camera": {
+      "centre": [
+        0,
+        2.6,
+        -7.5
+      ],
+      "lookAt": [
+        0,
+        0,
+        0.6
+      ],
+      "up": [
+        0,
+        1,
+        0
+      ],
+      "K": [
+        [
+          1200,
+          0,
+          960
+        ],
+        [
+          0,
+          1200,
+          540
+        ],
+        [
+          0,
+          0,
+          1
+        ]
+      ],
+      "imageSize": {
+        "width": 1920,
+        "height": 1080
+      },
+      "convention": "y-down (OpenCV): image x right, y down, z forward"
+    },
+    "marks": [
+      {
+        "id": "c0",
+        "world": [
+          -3.05,
+          0,
+          -3.05
+        ]
+      },
+      {
+        "id": "c1",
+        "world": [
+          3.05,
+          0,
+          -3.05
+        ]
+      },
+      {
+        "id": "c2",
+        "world": [
+          3.05,
+          0,
+          3.05
+        ]
+      },
+      {
+        "id": "c3",
+        "world": [
+          -3.05,
+          0,
+          3.05
+        ]
+      },
+      {
+        "id": "e0",
+        "world": [
+          0,
+          0,
+          -3.05
+        ]
+      },
+      {
+        "id": "e1",
+        "world": [
+          3.05,
+          0,
+          0
+        ]
+      },
+      {
+        "id": "e2",
+        "world": [
+          0,
+          0,
+          3.05
+        ]
+      },
+      {
+        "id": "e3",
+        "world": [
+          -3.05,
+          0,
+          0
+        ]
+      }
+    ],
+    "heldOut": {
+      "id": "h0",
+      "world": [
+        0,
+        0,
+        0
+      ]
+    }
+  },
+  "corruption": {
+    "mode": "majority-similarity",
+    "markIds": [
+      "c0",
+      "c1",
+      "c2",
+      "e0",
+      "e1"
+    ],
+    "similarity": {
+      "anchorId": "c0",
+      "scale": 1.06,
+      "thetaRad": 0.1047198
+    },
+    "extraDisplacements": [
+      {
+        "id": "e3",
+        "offsetPx": [
+          100,
+          0
+        ]
+      }
+    ],
+    "description": "c1, c2, e0, e1 re-projected through H_wrong = H_true ∘ A with A the plane similarity s = 1.06, theta = 6 deg about c0 (c0 fixed by A, unchanged); e3 displaced by an independent (+100.0, 0.0) px so no mixed model can form a second 5-consensus (B-BG1 repair, plan §9.3)"
+  },
+  "observations": {
+    "fit": [
+      {
+        "id": "c0",
+        "x": 232.612438,
+        "y": 806.043686
+      },
+      {
+        "id": "c1",
+        "x": 1674.80495,
+        "y": 732.198005
+      },
+      {
+        "id": "c2",
+        "x": 1235.097622,
+        "y": 432.553131
+      },
+      {
+        "id": "c3",
+        "x": 622.356183,
+        "y": 457.106761
+      },
+      {
+        "id": "e0",
+        "x": 997.050157,
+        "y": 766.9016
+      },
+      {
+        "id": "e1",
+        "x": 1377.911914,
+        "y": 529.875982
+      },
+      {
+        "id": "e2",
+        "x": 960,
+        "y": 457.106761
+      },
+      {
+        "id": "e3",
+        "x": 598.796851,
+        "y": 567.729225
+      }
+    ],
+    "heldOut": {
+      "id": "h0",
+      "x": 960,
+      "y": 567.729225
+    }
+  },
+  "cleanObservations": {
+    "fit": [
+      {
+        "id": "c0",
+        "x": 232.612438,
+        "y": 806.043686
+      },
+      {
+        "id": "c1",
+        "x": 1687.387562,
+        "y": 806.043686
+      },
+      {
+        "id": "c2",
+        "x": 1297.643817,
+        "y": 457.106761
+      },
+      {
+        "id": "c3",
+        "x": 622.356183,
+        "y": 457.106761
+      },
+      {
+        "id": "e0",
+        "x": 960,
+        "y": 806.043686
+      },
+      {
+        "id": "e1",
+        "x": 1421.203149,
+        "y": 567.729225
+      },
+      {
+        "id": "e2",
+        "x": 960,
+        "y": 457.106761
+      },
+      {
+        "id": "e3",
+        "x": 498.796851,
+        "y": 567.729225
+      }
+    ],
+    "heldOut": {
+      "id": "h0",
+      "x": 960,
+      "y": 567.729225
+    }
+  },
+  "expected": {
+    "selectedPreRefit": [
+      "c0",
+      "c2",
+      "e0",
+      "e1"
+    ],
+    "postRefitInliers": [
+      "c0",
+      "c1",
+      "c2",
+      "e0",
+      "e1"
+    ],
+    "inlierRatio": 0.625,
+    "heldOutErrorM": 0.5019088457816817,
+    "maxCompetingInliers": 4,
+    "maxCompetingMarginPx": 5.011492163289212,
+    "winnerInliers": 5,
+    "skippedRows": 10,
+    "verdict": {
+      "level": "block",
+      "reasons": [
+        {
+          "code": "calibration-heldout-error",
+          "severity": "block",
+          "value": 0.5019088457816817,
+          "threshold": 0.05
+        },
+        {
+          "code": "calibration-inliers-low",
+          "severity": "block",
+          "value": 0.625,
+          "threshold": 0.75
+        },
+        {
+          "code": "calibration-uncertainty-high",
+          "severity": "warn",
+          "value": 0.0703809602479943,
+          "threshold": 0.03
+        }
+      ]
+    },
+    "invariants": [
+      "B-BG1"
+    ]
+  },
+  "enumeration": {
+    "count": 70,
+    "candidates": [
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "c2",
+          "c3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 2.261821987449685e-25,
+        "margin": 12.698191562477279
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "c2",
+          "e0"
+        ],
+        "skipped": true,
+        "inliers": null,
+        "sse": null
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "c2",
+          "e1"
+        ],
+        "skipped": true,
+        "inliers": null,
+        "sse": null
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "c2",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 6.470426471239993e-25,
+        "margin": 28.25090599196835
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "c2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 2.455692443516801e-24,
+        "margin": 15.620758336738346
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "c3",
+          "e0"
+        ],
+        "skipped": true,
+        "inliers": null,
+        "sse": null
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "c3",
+          "e1"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.2868151521454815e-24,
+        "margin": 5.011492163289212
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "c3",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 4.782137916322191e-24,
+        "margin": 23.500961248111427
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "c3",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 1,
+        "sse": 5.169878828456423e-26,
+        "margin": 12.428475489399469
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "e0",
+          "e1"
+        ],
+        "skipped": true,
+        "inliers": null,
+        "sse": null
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "e0",
+          "e2"
+        ],
+        "skipped": true,
+        "inliers": null,
+        "sse": null
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "e0",
+          "e3"
+        ],
+        "skipped": true,
+        "inliers": null,
+        "sse": null
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "e1",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.4378725491644425e-24,
+        "margin": 22.654404150933267
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "e1",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.978286445451528e-24,
+        "margin": 37.16169032618797
+      },
+      {
+        "ids": [
+          "c0",
+          "c1",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 2.3143285693011956e-24,
+        "margin": 24.72990590202341
+      },
+      {
+        "ids": [
+          "c0",
+          "c2",
+          "c3",
+          "e0"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.5582337906394437e-24,
+        "margin": 9.987620913375835
+      },
+      {
+        "ids": [
+          "c0",
+          "c2",
+          "c3",
+          "e1"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.4249478520933016e-24,
+        "margin": 38.28629188765358
+      },
+      {
+        "ids": [
+          "c0",
+          "c2",
+          "c3",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 1,
+        "sse": 1.8175355256292112e-25,
+        "margin": 4.02211104136689
+      },
+      {
+        "ids": [
+          "c0",
+          "c2",
+          "c3",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 1,
+        "sse": 3.2311742677852644e-27,
+        "margin": 14.75204589678453
+      },
+      {
+        "ids": [
+          "c0",
+          "c2",
+          "e0",
+          "e1"
+        ],
+        "skipped": false,
+        "inliers": 5,
+        "sse": 2.0718910180750904e-12,
+        "margin": 55.95975122245047
+      },
+      {
+        "ids": [
+          "c0",
+          "c2",
+          "e0",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 9.669288996347404e-25,
+        "margin": 16.2409836393017
+      },
+      {
+        "ids": [
+          "c0",
+          "c2",
+          "e0",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 6.870284286878418e-24,
+        "margin": 6.622560434451614
+      },
+      {
+        "ids": [
+          "c0",
+          "c2",
+          "e1",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 5.287008895663639e-24,
+        "margin": 11.888414516010307
+      },
+      {
+        "ids": [
+          "c0",
+          "c2",
+          "e1",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 3.0154933854105976e-24,
+        "margin": 7.101417324641138
+      },
+      {
+        "ids": [
+          "c0",
+          "c2",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 3.0276102889147927e-24,
+        "margin": 27.39085214405428
+      },
+      {
+        "ids": [
+          "c0",
+          "c3",
+          "e0",
+          "e1"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 8.43336483891954e-25,
+        "margin": 6.009863783464465
+      },
+      {
+        "ids": [
+          "c0",
+          "c3",
+          "e0",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 2.0356397887047168e-25,
+        "margin": 19.463992376903537
+      },
+      {
+        "ids": [
+          "c0",
+          "c3",
+          "e0",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 1,
+        "sse": 6.46234853557053e-26,
+        "margin": 61.95693264067072
+      },
+      {
+        "ids": [
+          "c0",
+          "c3",
+          "e1",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 4.162560250474367e-24,
+        "margin": 25.140824895858064
+      },
+      {
+        "ids": [
+          "c0",
+          "c3",
+          "e1",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 1,
+        "sse": 5.169878828456423e-26,
+        "margin": 18.954891694288957
+      },
+      {
+        "ids": [
+          "c0",
+          "c3",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 1,
+        "sse": 1.6155871338926325e-26,
+        "margin": 21.43076312739153
+      },
+      {
+        "ids": [
+          "c0",
+          "e0",
+          "e1",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 3.263486010463117e-25,
+        "margin": 19.30777698528493
+      },
+      {
+        "ids": [
+          "c0",
+          "e0",
+          "e1",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 3.7352374535597656e-24,
+        "margin": 31.5013824831809
+      },
+      {
+        "ids": [
+          "c0",
+          "e0",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 7.956766634421214e-25,
+        "margin": 16.487091785966136
+      },
+      {
+        "ids": [
+          "c0",
+          "e1",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 3.7239283436225176e-25,
+        "margin": 9.470999904366119
+      },
+      {
+        "ids": [
+          "c1",
+          "c2",
+          "c3",
+          "e0"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 4.426708746865812e-25,
+        "margin": 8.625545750882447
+      },
+      {
+        "ids": [
+          "c1",
+          "c2",
+          "c3",
+          "e1"
+        ],
+        "skipped": true,
+        "inliers": null,
+        "sse": null
+      },
+      {
+        "ids": [
+          "c1",
+          "c2",
+          "c3",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 1,
+        "sse": 1.2924697071141057e-26,
+        "margin": 5.133792227591912
+      },
+      {
+        "ids": [
+          "c1",
+          "c2",
+          "c3",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 2.2650531617174703e-24,
+        "margin": 15.276232118052551
+      },
+      {
+        "ids": [
+          "c1",
+          "c2",
+          "e0",
+          "e1"
+        ],
+        "skipped": true,
+        "inliers": null,
+        "sse": null
+      },
+      {
+        "ids": [
+          "c1",
+          "c2",
+          "e0",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 4.555955717577222e-25,
+        "margin": 17.974496431971236
+      },
+      {
+        "ids": [
+          "c1",
+          "c2",
+          "e0",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 9.822769774067204e-25,
+        "margin": 5.7712258188225
+      },
+      {
+        "ids": [
+          "c1",
+          "c2",
+          "e1",
+          "e2"
+        ],
+        "skipped": true,
+        "inliers": null,
+        "sse": null
+      },
+      {
+        "ids": [
+          "c1",
+          "c2",
+          "e1",
+          "e3"
+        ],
+        "skipped": true,
+        "inliers": null,
+        "sse": null
+      },
+      {
+        "ids": [
+          "c1",
+          "c2",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 2.9985297205047253e-24,
+        "margin": 31.24552642978157
+      },
+      {
+        "ids": [
+          "c1",
+          "c3",
+          "e0",
+          "e1"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.2536956159006826e-24,
+        "margin": 12.038727143587126
+      },
+      {
+        "ids": [
+          "c1",
+          "c3",
+          "e0",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 4.329773518832254e-25,
+        "margin": 17.491073790001725
+      },
+      {
+        "ids": [
+          "c1",
+          "c3",
+          "e0",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.5991081451269273e-23,
+        "margin": 136.2955672175156
+      },
+      {
+        "ids": [
+          "c1",
+          "c3",
+          "e1",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.6249575392692094e-23,
+        "margin": 43.60150415952073
+      },
+      {
+        "ids": [
+          "c1",
+          "c3",
+          "e1",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 6.623907248959791e-25,
+        "margin": 18.092780397126806
+      },
+      {
+        "ids": [
+          "c1",
+          "c3",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.0081263715490025e-24,
+        "margin": 48.24842293742442
+      },
+      {
+        "ids": [
+          "c1",
+          "e0",
+          "e1",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 9.208846663188003e-25,
+        "margin": 18.81150390308355
+      },
+      {
+        "ids": [
+          "c1",
+          "e0",
+          "e1",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 8.142559154818867e-25,
+        "margin": 27.818818901528683
+      },
+      {
+        "ids": [
+          "c1",
+          "e0",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 5.557619740590655e-24,
+        "margin": 11.642569686284848
+      },
+      {
+        "ids": [
+          "c1",
+          "e1",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 8.821105751053772e-25,
+        "margin": 15.309457373071016
+      },
+      {
+        "ids": [
+          "c2",
+          "c3",
+          "e0",
+          "e1"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.0662875083691372e-25,
+        "margin": 30.321688260899098
+      },
+      {
+        "ids": [
+          "c2",
+          "c3",
+          "e0",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 1,
+        "sse": 6.46234853557053e-26,
+        "margin": 3.5951718775894626
+      },
+      {
+        "ids": [
+          "c2",
+          "c3",
+          "e0",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.0662875083691372e-25,
+        "margin": 40.185121969688446
+      },
+      {
+        "ids": [
+          "c2",
+          "c3",
+          "e1",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 1,
+        "sse": 1.2924697071141057e-26,
+        "margin": 4.111352344764922
+      },
+      {
+        "ids": [
+          "c2",
+          "c3",
+          "e1",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 2.8757450983288853e-25,
+        "margin": 26.915018139778756
+      },
+      {
+        "ids": [
+          "c2",
+          "c3",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 1,
+        "sse": 0,
+        "margin": 4.1198888757231265
+      },
+      {
+        "ids": [
+          "c2",
+          "e0",
+          "e1",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 3.0373038117181485e-25,
+        "margin": 70.95635478608274
+      },
+      {
+        "ids": [
+          "c2",
+          "e0",
+          "e1",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 3.7804738933087593e-25,
+        "margin": 22.08814303343943
+      },
+      {
+        "ids": [
+          "c2",
+          "e0",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 9.670904583481298e-24,
+        "margin": 23.742361842956843
+      },
+      {
+        "ids": [
+          "c2",
+          "e1",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 2.6624875966550575e-24,
+        "margin": 43.264507745791924
+      },
+      {
+        "ids": [
+          "c3",
+          "e0",
+          "e1",
+          "e2"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.9710163033490117e-25,
+        "margin": 27.43669880301978
+      },
+      {
+        "ids": [
+          "c3",
+          "e0",
+          "e1",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.1502980393315541e-24,
+        "margin": 43.42869533994064
+      },
+      {
+        "ids": [
+          "c3",
+          "e0",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 3.7804738933087598e-25,
+        "margin": 140.2327188623011
+      },
+      {
+        "ids": [
+          "c3",
+          "e1",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.5541948228047122e-24,
+        "margin": 35.36661329780959
+      },
+      {
+        "ids": [
+          "e0",
+          "e1",
+          "e2",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.6802106192483375e-25,
+        "margin": 13.211169516260512
+      }
+    ],
+    "topCandidates": [
+      {
+        "ids": [
+          "c0",
+          "c2",
+          "e0",
+          "e1"
+        ],
+        "skipped": false,
+        "inliers": 5,
+        "sse": 2.0718910180750904e-12,
+        "margin": 55.95975122245047
+      },
+      {
+        "ids": [
+          "c2",
+          "c3",
+          "e0",
+          "e1"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.0662875083691372e-25,
+        "margin": 30.321688260899098
+      },
+      {
+        "ids": [
+          "c2",
+          "c3",
+          "e0",
+          "e3"
+        ],
+        "skipped": false,
+        "inliers": 4,
+        "sse": 1.0662875083691372e-25,
+        "margin": 40.185121969688446
+      }
+    ],
+    "maxCompetingInliers": 4
+  },
+  "calibration": {
+    "K": [
+      [
+        1199.9999939570728,
+        0,
+        960
+      ],
+      [
+        0,
+        1199.9999939570728,
+        540
+      ],
+      [
+        0,
+        0,
+        1
+      ]
+    ],
+    "R": [
+      [
+        0.9945218908187288,
+        1.830327694962719e-10,
+        -0.10452850706366955
+      ],
+      [
+        -0.03194690612398805,
+        -0.9521507908809549,
+        -0.3039543824390731
+      ],
+      [
+        0.09952690024031556,
+        -0.3056286495483896,
+        0.9469348048345896
+      ]
+    ],
+    "t": [
+      0.9917964281421354,
+      2.4343353764298743,
+      -7.492598458997623
+    ],
+    "f": 1199.9999939570728,
+    "reprojRmsPx": 2.1945751605140913e-7,
+    "conditionNumber": null,
+    "uncertainty1SigmaM": 0.0703809602479943
+  },
+  "roundTrip": null,
+  "sha256": "ebe480f5dca85a6e1e2d1acc55e0fb5e547cb2a31ce79964ac06616d28e781ef"
+}

@@ -93,17 +93,24 @@ export function createSurfaceHost({
 	let state = "loading"; // loading | ready | unavailable
 	let session = new Map(); // requestId -> { hash, status, ack }, per surface session
 	let iframe = null;
+	// The injected timers keep the 8 s window deterministic in tests, but
+	// the browser's global setTimeout is receiver-sensitive: called as an
+	// object method it throws "Illegal invocation" (measured on the QA
+	// browser, S4 in verify-surface-host.mjs). Destructure and call bare —
+	// never as methods — so the default timers work in Chrome while the
+	// fake timers keep working in node.
 	let loadCount = 0;
 	let readySeen = false;
 	let timerId = null;
+	const { setTimeout: schedule, clearTimeout: cancel } = timers;
 
 	const clearTimer = () => {
-		if (timerId !== null) timers.clearTimeout(timerId);
+		if (timerId !== null) cancel(timerId);
 		timerId = null;
 	};
 	const startTimer = () => {
 		clearTimer();
-		timerId = timers.setTimeout(() => fail("timeout"), timeoutMs);
+		timerId = schedule(() => fail("timeout"), timeoutMs);
 	};
 	const post = (ack) => iframe.contentWindow.postMessage(ack, surfaceOrigin);
 	const makeAck = (request, payload) => ({ cclay: PROTOCOL_CClay, v: PROTOCOL_V, id: request.id, requestId: request.requestId, type: "ack", payload });
@@ -155,10 +162,19 @@ export function createSurfaceHost({
 			startTimer();
 			return;
 		}
-		// Initial load without the handshake: the child booted but never
-		// said ready, so it is broken - fail fast rather than wait out the
-		// timeout.
-		if (!readySeen) fail("no-handshake");
+		// Initial load without the handshake yet: the child posts ready
+		// from its script, which runs BEFORE the document finishes loading,
+		// but the parent can process the iframe's load event a task (or an
+		// IPC hop) ahead of the queued message — measured on the QA browser,
+		// S4 in verify-surface-host.mjs. Deferring the verdict a short
+		// window keeps the fail-fast for a genuinely silent child while a
+		// healthy one gets its handshake processed; the load timer remains
+		// the backstop either way.
+		if (!readySeen) {
+			schedule(() => {
+				if (!readySeen && state === "loading" && timerId !== null) fail("no-handshake");
+			}, 100);
+		}
 	}
 
 	// FNV-1a 32-bit over the JSON text. Retries resend the identical

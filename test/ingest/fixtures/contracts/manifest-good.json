@@ -1,0 +1,13 @@
+{
+	"schemaVersion": 1,
+	"providerId": "archive-org-corbett-fitzsimmons-1897",
+	"providerName": "archive.org: Corbett-Fitzsimmons Fight (1897)",
+	"license": {
+		"spdx": "CC0-1.0",
+		"commercialUse": true,
+		"redistributable": false,
+		"source": "https://archive.org/details/corbett-fitzsimmons-fight-1897",
+		"note": "Public-domain film scan digitized by archive.org; no weights are bundled with this provider."
+	},
+	"weightsBundled": false
+}

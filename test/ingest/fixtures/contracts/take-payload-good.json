@@ -1,0 +1,37 @@
+{
+	"requestId": "req-019ffbcec0b77000b98fd964023be7d8",
+	"a": {
+		"rotationDeg": 0,
+		"fps": 20,
+		"frames": 120,
+		"artifactPath": "/ingest/artifacts/019ffbcec0b77000b98fd964023be7d8/a",
+		"provenance": {
+			"command": "tools/ingest/dump-gvhmr.py --input out --output rt.json --clip-id synthetic-boxing-01 --trim-start 10.5 --trim-end 40.7",
+			"sourceUrl": "https://archive.org/details/corbett-fitzsimmons-fight-1897",
+			"licence": "CC0-1.0",
+			"sourceSha256": "48864e08b0aa047d4fcf8370db29e1eac47e7e5c050002060f1ee2b295dbcd3e",
+			"trimStartS": 10.5,
+			"trimEndS": 40.7,
+			"gvhmrCommit": "0000000000000000000000000000000000000000",
+			"weightsSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+			"annotationPath": "/ingest/artifacts/019ffbcec0b77000b98fd964023be7d8/annotations"
+		}
+	},
+	"b": {
+		"rotationDeg": 0,
+		"fps": 20,
+		"frames": 120,
+		"artifactPath": "/ingest/artifacts/019ffbcec0b77000b98fd964023be7d8/b",
+		"provenance": {
+			"command": "tools/ingest/dump-gvhmr.py --input out --output rt.json --clip-id synthetic-boxing-01 --trim-start 10.5 --trim-end 40.7",
+			"sourceUrl": "https://archive.org/details/corbett-fitzsimmons-fight-1897",
+			"licence": "CC0-1.0",
+			"sourceSha256": "48864e08b0aa047d4fcf8370db29e1eac47e7e5c050002060f1ee2b295dbcd3e",
+			"trimStartS": 10.5,
+			"trimEndS": 40.7,
+			"gvhmrCommit": "0000000000000000000000000000000000000000",
+			"weightsSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+			"annotationPath": "/ingest/artifacts/019ffbcec0b77000b98fd964023be7d8/annotations"
+		}
+	}
+}

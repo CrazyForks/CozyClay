@@ -1,0 +1,13 @@
+{
+	"schemaVersion": 1,
+	"providerId": "archive-org-corbett-fitzsimmons-1897",
+	"providerName": "archive.org: Corbett-Fitzsimmons Fight (1897)",
+	"license": {
+		"spdx": "CC0-1.0",
+		"commercialUse": true,
+		"redistributable": true,
+		"source": "https://archive.org/details/corbett-fitzsimmons-fight-1897",
+		"note": "Claimed redistributable: this is the C1 licensing hazard, never a convenience."
+	},
+	"weightsBundled": false
+}
