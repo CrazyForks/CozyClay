@@ -21,7 +21,7 @@ not settled yet:
 
 If something breaks or feels wrong, please [open an issue](https://github.com/HaD0Yun/CozyClay/issues).
 
-**[Open the live demo](https://cozyclay.org/)** — the studio itself, running in your browser. Use **Install app** in the header to keep CozyClay on your desktop or home screen; after the first load, the installed studio can open offline. It comes seeded with a pre-generated motion clip so you can scrub the timeline, drive the cameras and draw a dolly rail straight away; generating new motion needs a local ARDY machine, so that part is off.
+**[Open the live demo](https://cozyclay.org/app/)** — the studio itself, running in your browser. Use **Install app** in the header to keep CozyClay on your desktop or home screen; after the first load, the installed studio can open offline. It comes seeded with a pre-generated motion clip so you can scrub the timeline, drive the cameras and draw a dolly rail straight away; generating new motion needs a local ARDY machine, so that part is off.
 
 ![CozyClay browser-based 3D staging studio](docs/images/cozyclay-studio.png)
 

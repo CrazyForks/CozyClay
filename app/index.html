@@ -2,16 +2,49 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="canonical" href="https://cozyclay.org/" />
-    <meta http-equiv="refresh" content="0; url=../" />
-    <title>CozyClay Studio</title>
-    <script>
-      const root = new URL(`../${window.location.search}${window.location.hash}`, window.location.href);
-      window.location.replace(root);
-    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="CozyClay studio: block a 3D scene, pose characters, author camera moves, and preview generated motion in your browser." />
+    <meta name="theme-color" content="#232323" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="CozyClay" />
+    <link rel="canonical" href="https://cozyclay.org/app/" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CozyClay" />
+    <meta property="og:title" content="CozyClay Studio — 3D staging and previz in the browser" />
+    <meta property="og:description" content="Block a scene, pose characters, author camera moves, and preview generated motion. No install, no Blender, no Unity." />
+    <meta property="og:url" content="https://cozyclay.org/app/" />
+    <meta property="og:image" content="https://cozyclay.org/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="CozyClay Studio — 3D staging and previz in the browser" />
+    <meta name="twitter:description" content="Block a scene, pose characters, author camera moves, and preview generated motion. No install, no Blender, no Unity." />
+    <meta name="twitter:image" content="https://cozyclay.org/og-image.png" />
+
+    <title>CozyClay Studio — 3D staging and previz in your browser</title>
+
+    <script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "6a4384d1375d4ffc8a30a6346a8ad1a0"}'></script>
   </head>
   <body>
-    <p>The CozyClay Studio has moved to <a href="../">cozyclay.org</a>.</p>
+    <div id="root">
+      <noscript>
+        <h1>CozyClay Studio</h1>
+        <p>
+          CozyClay is a browser-based 3D staging studio. Block a scene, pose characters,
+          author camera moves and cuts, sequence motion prompts on a timeline, and preview
+          generated motion — in one local workspace that handles like the Unity Editor.
+        </p>
+        <p>
+          The studio needs JavaScript and WebGL. Enable JavaScript to load it, or read
+          <a href="/">what CozyClay does</a> first.
+        </p>
+      </noscript>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

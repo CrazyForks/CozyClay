@@ -3,13 +3,17 @@ import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-	// Keep emitted URLs portable when the static build is hosted below a path.
-	base: "./",
+	// Root-absolute on purpose: the site has its own apex domain, and the studio
+	// is served from "/app/" while its public assets stay at the root. A relative
+	// base would resolve those to "/app/models/..." and 404.
+	base: "/",
 	build: {
 		rollupOptions: {
 			input: {
-				studio: resolve(import.meta.dirname, "index.html"),
-				legacyAppRedirect: resolve(import.meta.dirname, "app/index.html"),
+				// The crawlable landing page: static HTML, no bundle.
+				landing: resolve(import.meta.dirname, "index.html"),
+				// The studio itself.
+				app: resolve(import.meta.dirname, "app/index.html"),
 			},
 		},
 	},
