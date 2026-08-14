@@ -503,7 +503,11 @@ const SEAM = new Map([
 	// old one. Recorded in the ultragoal ledger.
 	// Raised from 62: same discovery-liveness fix on the dev proxy side.
 	["vite.config.js", { add: 90 }],
-	["public/sw.js", { add: 2 }],
+	// Raised from 2: the bypass condition gained the /ingest/ clause plus the
+	// four-line comment explaining WHY caching a bridge response is a
+	// correctness bug (stale take after re-extract, footage outliving its
+	// TTL) rather than a performance preference.
+	["public/sw.js", { add: 6 }],
 	["test/verify-pwa.mjs", { add: 6 }],
 	// Budget renegotiated from plan 4's {add: 3} (the env-guarded surface
 	// spawn): the ARDY bridge is an optional companion (bridge.mjs header),

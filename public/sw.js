@@ -67,7 +67,12 @@ self.addEventListener("fetch", (event) => {
 	const { request } = event;
 	if (request.method !== "GET") return;
 	const url = new URL(request.url);
-	if (url.origin !== self.location.origin || url.pathname.includes("/ardy/")) return;
+	// /ardy/ and /ingest/ are live loopback bridges, never cacheable app assets.
+	// Caching an ingest artifact would serve a stale take after a re-extract,
+	// and caching a staged upload would keep the user's footage in the browser
+	// cache long after its TTL removed it from disk -- that TTL is a promise
+	// about how long the footage exists, and a cache entry quietly breaks it.
+	if (url.origin !== self.location.origin || url.pathname.includes("/ardy/") || url.pathname.includes("/ingest/")) return;
 	if (request.headers.has("range")) {
 		event.respondWith((async () => {
 			try {
