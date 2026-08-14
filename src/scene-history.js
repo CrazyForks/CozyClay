@@ -15,30 +15,41 @@ import {
 	endTransaction,
 	settleTransaction,
 } from "./history.js";
+import { createSeqMirror } from "./undo-coordinator.js";
 
 // Invariant, stated once: whenever no transaction is open,
 // `store.present()` is reference-equal to `store.objects`. `history` is
 // assigned in exactly four places — applyAtomic, end(commit:true), settle,
 // and undo/redo — and every one pushes or steps to the POST-change present.
-export function createSceneHistoryStore(initialObjects, { onObjects }) {
+export function createSceneHistoryStore(initialObjects, { onObjects, coordinator }) {
 	let objects = initialObjects;
 	let history = createHistory(initialObjects);
 	const tx = createTransactions();
 	let before = null;
+	// Seq mirrors; without a coordinator nothing is minted or moved.
+	const seq = createSeqMirror();
+	let registered = null;
 
 	function emit(next) {
 		objects = next;
 		onObjects?.(next);
+	}
+	// pushHistory coalesces by reference; only a real entry mints.
+	function pushStamped(next) {
+		const pushed = pushHistory(history, next);
+		if (pushed === history) return;
+		history = pushed;
+		registered?.stamp();
 	}
 	// A settle is triggered by the user starting something else; the
 	// travel already applied is real and becomes its own entry, so the
 	// very next Ctrl+Z discards it deliberately.
 	function settle() {
 		if (settleTransaction(tx) === null) return;
-		history = pushHistory(history, objects);
+		pushStamped(objects);
 		before = null;
 	}
-	return {
+	const store = {
 		get objects() {
 			return objects;
 		},
@@ -56,7 +67,7 @@ export function createSceneHistoryStore(initialObjects, { onObjects }) {
 			const next = fn(objects);
 			if (next === objects) return;
 			emit(next);
-			history = pushHistory(history, next);
+			pushStamped(next);
 		},
 
 		// Settle first so a nested begin commits the previous drag as ONE
@@ -80,7 +91,7 @@ export function createSceneHistoryStore(initialObjects, { onObjects }) {
 			if (!endTransaction(tx, token)) return false;
 			if (commit) {
 				// pushHistory coalesces: nothing applied pushes nothing.
-				history = pushHistory(history, objects);
+				pushStamped(objects);
 			} else {
 				// Rollback restores the whole pre-drag array by reference —
 				// strictly more correct than replaying one record.
@@ -97,6 +108,7 @@ export function createSceneHistoryStore(initialObjects, { onObjects }) {
 			const stepped = undoHistory(history);
 			if (stepped === null) return null;
 			history = stepped;
+			seq.undo();
 			emit(stepped.present);
 			return stepped.present;
 		},
@@ -106,6 +118,7 @@ export function createSceneHistoryStore(initialObjects, { onObjects }) {
 			const stepped = redoHistory(history);
 			if (stepped === null) return null;
 			history = stepped;
+			seq.redo();
 			emit(stepped.present);
 			return stepped.present;
 		},
@@ -121,5 +134,11 @@ export function createSceneHistoryStore(initialObjects, { onObjects }) {
 		depths() {
 			return { past: history.past.length, future: history.future.length };
 		},
+		stamp(id) { seq.push(id); },
+		invalidateRedo() { history = { past: history.past, present: history.present, future: [] }; seq.invalidate(); },
+		topSeq() { return seq.topSeq(); },
+		topRedoSeq() { return seq.topRedoSeq(); },
 	};
+	if (coordinator) registered = coordinator.register({ id: "scene", store });
+	return store;
 }
