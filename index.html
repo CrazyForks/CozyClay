@@ -157,14 +157,14 @@
       figure img { width: 100%; height: auto; display: block; border: 1px solid var(--line); border-radius: 10px; }
       figcaption { color: var(--muted); font-size: 13px; margin-top: 10px; }
 
-      /* The mark is blue on white, so it gets its own light card rather than
-         floating on the dark page where the blue would go muddy. */
-      .mark { margin: 52px auto; max-width: 260px; }
+      /* The mark is blue on white and the eyes are knocked out of the fill, so
+         it sits on a light plate rather than straight on the dark page. */
+      .mark { margin: 0 0 26px; max-width: 190px; }
       .mark img {
         border: 0;
-        border-radius: 16px;
+        border-radius: 14px;
         background: var(--clay);
-        padding: 18px 16px;
+        padding: 14px 12px;
       }
 
       .reel {
@@ -229,6 +229,10 @@
 
     <main class="wrap">
       <div class="hero">
+        <figure class="mark">
+          <img src="/media/cozyclay-logo.png" width="880" height="714" alt="CozyClay" />
+        </figure>
+
         <h1>Block the shot before you pay to render it</h1>
         <p class="lede">
           CozyClay is a browser-based 3D staging studio. Block a scene, pose characters,
@@ -258,10 +262,6 @@
           <a href="https://github.com/HaD0Yun/CozyClay/issues">Report anything broken</a>.
         </p>
       </div>
-
-      <figure class="mark">
-        <img src="/media/cozyclay-logo.png" width="880" height="714" loading="lazy" alt="CozyClay" />
-      </figure>
 
       <section id="what">
         <h2>What you can do</h2>
