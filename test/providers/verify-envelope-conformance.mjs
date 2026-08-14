@@ -1,0 +1,530 @@
+#!/usr/bin/env node
+/**
+ * Conformance suite for the shared provider envelope
+ * (tools/providers/envelope.mjs).
+ *
+ * WHY: the ARDY bridge used to carry its security posture as private inline
+ * code, and the ingest host and the generation bridge would each have carried
+ * their own copy - a CORS header or a missing cross-site check in any one of
+ * them would not be caught by any test. The envelope makes the posture
+ * executable and shared, and this suite asserts every clause (loopback-only
+ * bind, zero CORS headers, exact content-type 415, body cap 413, cross-site
+ * 403, argv arrays never shell strings, opaque allowlisted artifact ids,
+ * process-group kill on disconnect) - each with a negative control - against
+ * EVERY registered bridge, so a provider that joins by registration gets the
+ * full gate for free.
+ *
+ * What would be circular: asserting the envelope only through its own fixture
+ * would prove little more than that the fixture agrees with the envelope, so
+ * the real ARDY bridge registers here as a second route table (and the ingest
+ * host and the generation bridge will join the same REGISTRY in later phases
+ * with no change to the probe logic). The fixture exists to demonstrate the
+ * envelope as an executable, standalone server and to exercise the clauses a
+ * real bridge cannot show without a box (argv forwarding, disconnect-kill, a
+ * served artifact, realpath containment).
+ *
+ * Per-bridge probe order is DATA, not logic: each registration lists the
+ * probes that apply to its route table, in the order that matters for its own
+ * TDD story (E1's first failure is the fixture's exact content-type 415; E2's
+ * first failure is the unrefactored ARDY bridge accepting a cross-site POST).
+ */
+import { createServer, request as httpRequest } from "node:http";
+import { spawn } from "node:child_process";
+import { createReadStream, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { networkInterfaces } from "node:os";
+import { tmpdir } from "node:os";
+import { basename, join, resolve, dirname } from "node:path";
+import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
+import * as env from "../../tools/providers/envelope.mjs";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const FIXTURE_MAX_BYTES = 64 * 1024;
+
+// A detached child (own process group) that spawns a grandchild, so killing
+// the GROUP must take both down. The first stdout line names both pids so
+// the suite can watch them die.
+const SLOW_SCRIPT = [
+	'const { spawn } = require("node:child_process");',
+	'const sleeper = spawn("sleep", ["30"], { stdio: "ignore" });',
+	'process.stdout.write(process.pid + " " + sleeper.pid + "\\n");',
+	"setInterval(() => {}, 1000);",
+].join("\n");
+
+const fail = [];
+const ok = (label, cond, detail) => {
+	console.log(`${cond ? "PASS" : "FAIL"} ${label}${detail ? "  " + detail : ""}`);
+	if (!cond) fail.push(label);
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const processAlive = (pid) => {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+async function httpExchange(url, { method = "GET", headers = {}, body } = {}) {
+	return new Promise((resolve, reject) => {
+		const req = httpRequest(url, { method, headers }, (res) => {
+			let data = "";
+			res.setEncoding("utf8");
+			res.on("data", (chunk) => {
+				data += chunk;
+			});
+			res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
+		});
+		req.on("error", reject);
+		if (body !== undefined) req.write(body);
+		req.end();
+	});
+}
+
+async function freePort() {
+	const probe = createServer();
+	await new Promise((resolve, reject) => {
+		probe.once("error", reject);
+		probe.listen(0, "127.0.0.1", resolve);
+	});
+	const port = probe.address().port;
+	await new Promise((resolve) => probe.close(resolve));
+	return port;
+}
+
+function waitForLine(stream, regex, timeoutMs) {
+	return new Promise((resolve, reject) => {
+		const rl = createInterface({ input: stream });
+		const timer = setTimeout(() => {
+			rl.close();
+			reject(new Error(`no startup line within ${timeoutMs} ms`));
+		}, timeoutMs);
+		rl.on("line", (line) => {
+			const match = regex.exec(line);
+			if (match) {
+				clearTimeout(timer);
+				rl.close();
+				resolve(match);
+			}
+		});
+		rl.on("close", () => clearTimeout(timer));
+	});
+}
+
+// The first non-loopback IPv4 on this machine, or null when the machine has
+// none (then there is nothing for a misbound server to be reachable on).
+function lanAddress() {
+	for (const addrs of Object.values(networkInterfaces())) {
+		for (const addr of addrs ?? []) {
+			if (addr.family === "IPv4" && !addr.internal) return addr.address;
+		}
+	}
+	return null;
+}
+
+function collect(child) {
+	return new Promise((resolve, reject) => {
+		let out = "";
+		child.stdout.setEncoding("utf8");
+		child.stdout.on("data", (chunk) => {
+			out += chunk;
+		});
+		child.on("error", reject);
+		child.on("close", () => resolve(out));
+	});
+}
+
+// ---------------------------------------------------------------------------
+// the envelope fixture: a minimal provider server built entirely on the
+// envelope exports, so the suite can vouch for the envelope as executable,
+// standalone code before any real bridge joins.
+// ---------------------------------------------------------------------------
+
+function createFixtureHandler(artifacts, slowChildren) {
+	return (req, res) => {
+		try {
+			env.assertSameSiteRequest(req);
+		} catch (err) {
+			env.noCorsJson(res, err.status || 403, { ok: false, reason: err.message });
+			return;
+		}
+		const pathname = (req.url || "/").split("?")[0];
+		if (req.method === "OPTIONS") {
+			// 204 with NO CORS headers on purpose: a cross-origin browser
+			// preflight must fail (same contract as the ARDY bridge).
+			res.writeHead(204);
+			res.end();
+			return;
+		}
+		if (pathname === "/fixture/echo" && req.method === "POST") {
+			env.readJsonBody(req, { maxBytes: FIXTURE_MAX_BYTES })
+				.then((body) => env.noCorsJson(res, 200, { ok: true, got: body }))
+				.catch((err) => env.noCorsJson(res, err.status || 400, { ok: false, reason: err.message }));
+			return;
+		}
+		if (pathname === "/fixture/echo") {
+			env.noCorsJson(res, 405, { ok: false, reason: `method ${req.method} not allowed on ${pathname}` });
+			return;
+		}
+		if (pathname.startsWith("/fixture/artifacts/")) {
+			const id = pathname.slice("/fixture/artifacts/".length);
+			const file = artifacts.resolve(id);
+			if (!file) {
+				env.noCorsJson(res, 404, { ok: false, reason: `unknown artifact "${id}"` });
+				return;
+			}
+			res.writeHead(200, {
+				"Content-Type": "application/octet-stream",
+				"Content-Length": statSync(file).size,
+				"Content-Disposition": `attachment; filename="${basename(file)}"`,
+				"Cache-Control": "no-store",
+			});
+			createReadStream(file).pipe(res);
+			return;
+		}
+		if (pathname === "/fixture/slow") {
+			let child;
+			try {
+				child = env.spawnDetached(process.execPath, ["-e", SLOW_SCRIPT], {
+					stdio: ["ignore", "pipe", "ignore"],
+				});
+			} catch (err) {
+				env.noCorsJson(res, 500, { ok: false, reason: err.message });
+				return;
+			}
+			slowChildren.add(child);
+			child.once("close", () => slowChildren.delete(child));
+			res.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
+			let buffer = "";
+			let started = false;
+			child.stdout.setEncoding("utf8");
+			child.stdout.on("data", (chunk) => {
+				buffer += chunk;
+				const nl = buffer.indexOf("\n");
+				if (nl === -1 || started) return;
+				started = true;
+				res.write(`${JSON.stringify({ event: "pid", pids: buffer.slice(0, nl).trim() })}\n`);
+			});
+			// A client disconnect kills the detached process group (SIGTERM,
+			// then SIGKILL after 3 s) - the same contract as the ARDY bridge.
+			res.on("close", () => {
+				if (!res.writableEnded) env.killGroup(child);
+			});
+			return;
+		}
+		env.noCorsJson(res, 404, { ok: false, reason: `not found: ${req.method} ${pathname}` });
+	};
+}
+
+async function startFixture() {
+	const artifactDir = mkdtempSync(join(tmpdir(), "cclay-envelope-"));
+	const artifacts = env.createArtifactAllowlist({ base: artifactDir, max: 8 });
+	const slowChildren = new Set();
+	const server = createServer(createFixtureHandler(artifacts, slowChildren));
+	// Binds loopback directly rather than through env.bindLoopback on purpose:
+	// the fixture must boot even while the envelope under test is a stub, and
+	// the envelope's own bind is exercised by the ARDY bridge registration.
+	server.listen(0, "127.0.0.1");
+	await new Promise((resolve, reject) => {
+		server.once("listening", resolve);
+		server.once("error", reject);
+	});
+	const address = server.address();
+	return {
+		name: "envelope fixture",
+		url: `http://127.0.0.1:${address.port}`,
+		port: address.port,
+		loopbackEvidence: address.address,
+		artifacts,
+		artifactDir,
+		routes: {
+			jsonPost: "/fixture/echo",
+			wrongMethod: { path: "/fixture/echo", method: "GET" },
+			artifactPrefix: "/fixture/artifacts",
+			invalidBody: { nope: true },
+			validBody: { hello: "world" },
+			slow: "/fixture/slow",
+		},
+		maxBodyBytes: FIXTURE_MAX_BYTES,
+		stop: () => {
+			for (const child of slowChildren) env.killGroup(child);
+			server.close();
+			rmSync(artifactDir, { recursive: true, force: true });
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
+// the real ARDY bridge, spawned the way an operator starts it, on a free
+// port. CCLAY_ARDY_HOST must be set or the bridge exits at startup; the fake
+// host is unreachable, so whenever a probe slips past the envelope (the
+// pre-refactor RED state) generation fails fast instead of hanging.
+// ---------------------------------------------------------------------------
+
+async function startArdyBridge() {
+	const port = await freePort();
+	const proc = spawn(process.execPath, ["tools/ardy/bridge.mjs", "--port", String(port)], {
+		cwd: REPO_ROOT,
+		env: { ...process.env, CCLAY_ARDY_HOST: "no-such-user@127.0.0.1" },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const match = await waitForLine(proc.stdout, /listening on http:\/\/(\S+):(\d+)/, 10000);
+	return {
+		name: "ardy",
+		url: `http://127.0.0.1:${port}`,
+		port,
+		loopbackEvidence: match[1],
+		routes: {
+			jsonPost: "/ardy/generate",
+			wrongMethod: { path: "/ardy/generate", method: "GET" },
+			artifactPrefix: "/ardy/motions",
+			invalidBody: { prompt: "x" },
+			validBody: { prompt: "x", duration: 1, posePin: false },
+		},
+		maxBodyBytes: 1024 * 1024,
+		stop: () => {
+			try {
+				proc.kill("SIGTERM");
+			} catch {
+				/* already gone */
+			}
+			const killer = setTimeout(() => {
+				try {
+					proc.kill("SIGKILL");
+				} catch {
+					/* already gone */
+				}
+			}, 2000);
+			killer.unref();
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
+// probes: one assertion set, run per registered bridge. Each probe's first
+// assertion is the clause itself; the second is the negative control that
+// would catch a regression to the naive behaviour.
+// ---------------------------------------------------------------------------
+
+const PROBES = {
+	"content-type": async (bridge) => {
+		const res = await httpExchange(`${bridge.url}${bridge.routes.jsonPost}`, {
+			method: "POST",
+			headers: { "Content-Type": "text/plain" },
+			body: "not json at all",
+		});
+		ok(`[${bridge.name}] exact content-type`, res.status === 415, `expected 415 for text/plain, got ${res.status}`);
+		const good = await httpExchange(`${bridge.url}${bridge.routes.jsonPost}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(bridge.routes.invalidBody),
+		});
+		ok(`[${bridge.name}] content-type negative control: exact application/json is not 415`, good.status !== 415, `got ${good.status}`);
+	},
+
+	"body-cap": async (bridge) => {
+		const res = await httpExchange(`${bridge.url}${bridge.routes.jsonPost}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: "a".repeat(bridge.maxBodyBytes + 1),
+		});
+		ok(`[${bridge.name}] body cap`, res.status === 413, `expected 413 over ${bridge.maxBodyBytes} bytes, got ${res.status}`);
+		const small = await httpExchange(`${bridge.url}${bridge.routes.jsonPost}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(bridge.routes.invalidBody),
+		});
+		ok(`[${bridge.name}] body cap negative control: a small body is not 413`, small.status !== 413, `got ${small.status}`);
+	},
+
+	"cross-site": async (bridge) => {
+		const res = await httpExchange(`${bridge.url}${bridge.routes.jsonPost}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "Sec-Fetch-Site": "cross-site" },
+			body: JSON.stringify(bridge.routes.validBody),
+		});
+		ok(`[${bridge.name}] cross-site POST`, res.status === 403, `expected 403, got ${res.status}`);
+		const same = await httpExchange(`${bridge.url}${bridge.routes.jsonPost}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin" },
+			body: JSON.stringify(bridge.routes.invalidBody),
+		});
+		ok(`[${bridge.name}] cross-site negative control: same-origin POST is not 403`, same.status !== 403, `got ${same.status}`);
+	},
+
+	"options-cors": async (bridge) => {
+		const plain = await httpExchange(`${bridge.url}${bridge.routes.jsonPost}`, { method: "OPTIONS" });
+		const cors = Object.keys(plain.headers).filter((h) => h.toLowerCase().startsWith("access-control-"));
+		ok(`[${bridge.name}] OPTIONS answers 204 with zero CORS headers`, plain.status === 204 && cors.length === 0, `status=${plain.status}, cors=${cors.join(",") || "none"}`);
+		// Negative control: even a request DESIGNED to elicit CORS headers
+		// (a hostile preflight) must get none on the response.
+		const hostile = await httpExchange(`${bridge.url}${bridge.routes.jsonPost}`, {
+			method: "OPTIONS",
+			headers: { Origin: "http://evil.example", "Access-Control-Request-Method": "POST" },
+		});
+		const hostileCors = Object.keys(hostile.headers).filter((h) => h.toLowerCase().startsWith("access-control-"));
+		ok(`[${bridge.name}] CORS negative control: hostile preflight still gets zero CORS headers`, hostileCors.length === 0, `status=${hostile.status}, cors=${hostileCors.join(",") || "none"}`);
+		const json = await httpExchange(`${bridge.url}/definitely-not-a-route`, {});
+		const jsonCors = Object.keys(json.headers).filter((h) => h.toLowerCase().startsWith("access-control-"));
+		ok(`[${bridge.name}] CORS: JSON responses carry zero CORS headers`, jsonCors.length === 0, `cors=${jsonCors.join(",") || "none"}`);
+	},
+
+	"method-405": async (bridge) => {
+		const wrong = await httpExchange(`${bridge.url}${bridge.routes.wrongMethod.path}`, { method: bridge.routes.wrongMethod.method });
+		ok(`[${bridge.name}] wrong method on a known route is 405`, wrong.status === 405, `got ${wrong.status}`);
+		const right = await httpExchange(`${bridge.url}${bridge.routes.jsonPost}`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(bridge.routes.invalidBody),
+		});
+		ok(`[${bridge.name}] 405 negative control: the route's own method is not 405`, right.status !== 405, `got ${right.status}`);
+	},
+
+	"unknown-404": async (bridge) => {
+		const miss = await httpExchange(`${bridge.url}/definitely-not-a-route`, {});
+		ok(`[${bridge.name}] unknown route is 404`, miss.status === 404, `got ${miss.status}`);
+		const known = await httpExchange(`${bridge.url}${bridge.routes.jsonPost}`, { method: "OPTIONS" });
+		ok(`[${bridge.name}] 404 negative control: a known route is not 404`, known.status !== 404, `got ${known.status}`);
+	},
+
+	artifact: async (bridge) => {
+		const unknown = await httpExchange(`${bridge.url}${bridge.routes.artifactPrefix}/00000000000000000000-000000`, {});
+		ok(`[${bridge.name}] artifacts: an id that was never registered is 404`, unknown.status === 404, `got ${unknown.status}`);
+		const traversal = await httpExchange(`${bridge.url}${bridge.routes.artifactPrefix}/..%2F..%2Fetc`, {});
+		ok(`[${bridge.name}] artifacts: a traversal id is 404, never a path`, traversal.status === 404, `got ${traversal.status}`);
+		if (bridge.artifacts) {
+			const file = join(bridge.artifactDir, "sample.bin");
+			writeFileSync(file, "envelope-artifact-bytes");
+			bridge.artifacts.register("sample-id-1", file);
+			const hit = await httpExchange(`${bridge.url}${bridge.routes.artifactPrefix}/sample-id-1`, {});
+			ok(`[${bridge.name}] artifacts: a registered id serves exactly the produced file`, hit.status === 200 && hit.body === "envelope-artifact-bytes", `got ${hit.status}`);
+			// Negative control for realpath containment: a registered path
+			// outside the base must not resolve.
+			const outside = join(tmpdir(), `cclay-envelope-outside-${process.pid}.bin`);
+			writeFileSync(outside, "outside");
+			bridge.artifacts.register("outside-id", outside);
+			const refused = await httpExchange(`${bridge.url}${bridge.routes.artifactPrefix}/outside-id`, {});
+			ok(`[${bridge.name}] artifacts: realpath containment refuses a registered outside path`, refused.status === 404, `got ${refused.status}`);
+			rmSync(outside, { force: true });
+		}
+	},
+
+	loopback: async (bridge) => {
+		const loopback = /^(127\.0\.0\.1|localhost|\[::1\]|::1)$/;
+		ok(`[${bridge.name}] loopback-only bind`, loopback.test(bridge.loopbackEvidence), `evidence=${JSON.stringify(bridge.loopbackEvidence)}`);
+		const lan = lanAddress();
+		if (lan) {
+			let refused = false;
+			try {
+				await httpExchange(`http://${lan}:${bridge.port}/definitely-not-a-route`, {});
+			} catch (err) {
+				refused = /ECONNREFUSED|ETIMEDOUT/.test(err.message);
+			}
+			ok(`[${bridge.name}] loopback negative control: not reachable on the network interface ${lan}`, refused, `connection to http://${lan}:${bridge.port} ${refused ? "refused" : "succeeded"}`);
+		} else {
+			ok(`[${bridge.name}] loopback negative control: nothing to be reachable on`, true, "(no non-loopback IPv4 interface)");
+		}
+	},
+
+	argv: async () => {
+		const payload = "x; echo SHELL_RAN";
+		const argv = [process.execPath, "-e", "console.log(process.argv.join(\"|\"))", payload];
+		const out = await collect(env.spawnDetached(argv[0], argv.slice(1), { stdio: ["ignore", "pipe", "ignore"] }));
+		ok("[envelope fixture] argv arrays: the payload arrives verbatim as one argument, never shell-interpreted", out.includes(payload), `stdout=${JSON.stringify(out)}`);
+		// Negative control: the SAME payload interpolated unquoted into a
+		// shell string (the naive pattern this clause forbids) WOULD be
+		// interpreted - proving the probe can tell the difference.
+		const shellOut = await collect(spawn("sh", ["-c", `echo ${payload}`], { stdio: ["ignore", "pipe", "ignore"] }));
+		ok("[envelope fixture] argv negative control: shell interpolation is detectable", shellOut.includes("SHELL_RAN"), `stdout=${JSON.stringify(shellOut)}`);
+	},
+
+	"disconnect-kill": async (bridge) => {
+		const firstLine = await new Promise((resolve, reject) => {
+			const req = httpRequest(`${bridge.url}${bridge.routes.slow}`, (res) => {
+				let buffer = "";
+				res.setEncoding("utf8");
+				res.on("data", (chunk) => {
+					buffer += chunk;
+					const nl = buffer.indexOf("\n");
+					if (nl !== -1) resolve({ line: buffer.slice(0, nl), req });
+				});
+				res.on("end", () => reject(new Error("slow endpoint closed before the pid line")));
+			});
+			req.on("error", reject);
+			req.end();
+		});
+		const parsed = JSON.parse(firstLine.line);
+		if (!parsed || typeof parsed.pids !== "string") {
+			ok("[envelope fixture] disconnect-kill", false, `slow endpoint did not report pids: ${JSON.stringify(firstLine.line)}`);
+			firstLine.req.destroy();
+			return;
+		}
+		const pids = parsed.pids.split(" ").map(Number);
+		ok("[envelope fixture] disconnect-kill negative control: the children are alive while the request is connected", pids.every(processAlive), `pids=${pids.join(",")}`);
+		firstLine.req.destroy();
+		const deadline = Date.now() + 5000;
+		let dead = false;
+		while (Date.now() < deadline) {
+			if (pids.every((pid) => !processAlive(pid))) {
+				dead = true;
+				break;
+			}
+			await sleep(100);
+		}
+		ok("[envelope fixture] process-group kill on disconnect (SIGTERM, then SIGKILL)", dead, dead ? `pids ${pids.join(",")} died` : `pids ${pids.join(",")} still alive`);
+	},
+};
+
+// ---------------------------------------------------------------------------
+// registered bridges. Joining = adding an entry here (the ingest host in
+// Phase 3, the generation bridge on feat/video-provider-bridge); the probe
+// logic above never changes. Probe order is per-registration data: the ARDY
+// bridge leads with the cross-site clause because that is the first
+// conformance failure of the pre-refactor bridge (E2's RED).
+// ---------------------------------------------------------------------------
+
+const REGISTRY = [
+	{
+		name: "envelope fixture",
+		probes: ["content-type", "body-cap", "cross-site", "options-cors", "method-405", "unknown-404", "artifact", "loopback", "argv", "disconnect-kill"],
+		spawn: startFixture,
+	},
+	{
+		name: "ardy",
+		// Cross-site first: the pre-refactor bridge's first conformance
+		// failure is accepting a cross-site POST (E2's RED); the fixture's
+		// first failure is exact content-type (E1's RED), so the two tables
+		// lead with different clauses. Same probe set, data-driven order.
+		probes: ["cross-site", "options-cors", "method-405", "unknown-404", "content-type", "body-cap", "artifact", "loopback"],
+		spawn: startArdyBridge,
+	},
+];
+
+const started = [];
+try {
+	for (const registration of REGISTRY) {
+		let bridge;
+		try {
+			bridge = await registration.spawn();
+		} catch (err) {
+			ok(`[${registration.name}] start`, false, `bridge failed to start: ${err.message}`);
+			continue;
+		}
+		started.push(bridge);
+		for (const probeName of registration.probes) {
+			try {
+				await PROBES[probeName](bridge);
+			} catch (err) {
+				ok(`[${bridge.name}] ${probeName}`, false, `probe crashed: ${err.message}`);
+			}
+		}
+	}
+} finally {
+	for (const bridge of started) bridge.stop();
+}
+
+console.log(`\nfailures: ${fail.length}`);
+process.exit(fail.length ? 1 : 0);

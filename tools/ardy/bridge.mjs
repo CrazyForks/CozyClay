@@ -41,6 +41,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decodeMotionNpz } from "../../src/ardy/npz.js";
 import { motionArraysToNpzMembers, replaceMotionSegment, writeNpz } from "./npz.mjs";
+import { assertSameSiteRequest, bindLoopback, createArtifactAllowlist, killGroup, ndjson, noCorsJson, readJsonBody } from "../providers/envelope.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const OUT_DIR = join(HERE, "out");
@@ -116,24 +117,6 @@ const globalChildren = new Set();
 function track(child) {
 	globalChildren.add(child);
 	child.once("close", () => globalChildren.delete(child));
-}
-
-function killGroup(child) {
-	try {
-		process.kill(-child.pid, "SIGTERM");
-	} catch {
-		/* process group already gone */
-	}
-	// SIGKILL backup for anything that ignores SIGTERM; unref'd so it never
-	// keeps the bridge alive on its own.
-	const backup = setTimeout(() => {
-		try {
-			process.kill(-child.pid, "SIGKILL");
-		} catch {
-			/* gone */
-		}
-	}, 3000);
-	backup.unref();
 }
 
 // Run a short, non-streaming child (ssh/scp probes) to completion.
@@ -710,35 +693,14 @@ function validateWaypoints(waypoints, clipFrames) {
 	return null;
 }
 
-function readBody(req, limitBytes) {
-	return new Promise((resolvePromise, reject) => {
-		const chunks = [];
-		let total = 0;
-		req.on("data", (chunk) => {
-			total += chunk.length;
-			if (total > limitBytes) {
-				reject(new Error(`request body exceeds ${limitBytes} bytes`));
-				req.destroy();
-				return;
-			}
-			chunks.push(chunk);
-		});
-		req.on("end", () => resolvePromise(Buffer.concat(chunks).toString("utf8")));
-		req.on("error", (err) => reject(new Error(`request aborted: ${err.message}`)));
-	});
-}
-
 // ---------------------------------------------------------------------------
 // endpoints
 // ---------------------------------------------------------------------------
 
-function sendJson(res, status, obj) {
-	res.writeHead(status, {
-		"Content-Type": "application/json",
-		"Cache-Control": "no-store",
-	});
-	res.end(`${JSON.stringify(obj)}\n`);
-}
+// Every response goes through the envelope's no-CORS JSON writer: JSON,
+// NDJSON, binary and OPTIONS responses carry zero Access-Control-Allow-*
+// headers, so the browser's same-origin policy is the enforcement boundary.
+const sendJson = noCorsJson;
 
 // The generator's single-line JSON report is the LAST stdout line of
 // cclay_constrained_generate.py and is compact-printed (starts with "{").
@@ -795,13 +757,10 @@ function boxEnv() {
 // GET handler never accepts a path from the URL: an id that is not in this
 // map is 404 by definition. Capped so a long-lived dev sidecar cannot grow
 // without bound; evicted ids become stale and 404, which is documented.
-const motionAllowlist = new Map();
+const motionAllowlist = createArtifactAllowlist({ base: OUT_DIR, max: MOTION_ALLOWLIST_MAX });
 
 function registerMotion(runId, absPath) {
-	motionAllowlist.set(runId, absPath);
-	if (motionAllowlist.size > MOTION_ALLOWLIST_MAX) {
-		motionAllowlist.delete(motionAllowlist.keys().next().value);
-	}
+	motionAllowlist.register(runId, absPath);
 }
 
 // Serves /ardy/motions/<run-id>; returns the HTTP status to log.
@@ -852,20 +811,12 @@ async function handleGenerate(req, res) {
 		console.log(`[bridge] POST /ardy/generate -> ${status} (${Date.now() - started} ms)`);
 	};
 
-	let raw;
-	try {
-		raw = await readBody(req, MAX_BODY_BYTES);
-	} catch (err) {
-		sendJson(res, 400, { ok: false, reason: err.message });
-		finish(400);
-		return;
-	}
 	let body;
 	try {
-		body = JSON.parse(raw);
+		body = await readJsonBody(req, { maxBytes: MAX_BODY_BYTES });
 	} catch (err) {
-		sendJson(res, 400, { ok: false, reason: `malformed JSON body: ${err.message}` });
-		finish(400);
+		sendJson(res, err.status || 400, { ok: false, reason: err.message });
+		finish(err.status || 400);
 		return;
 	}
 	const invalid = validateGenerate(body);
@@ -920,18 +871,9 @@ async function handleGenerate(req, res) {
 			return;
 		}
 	}
-	res.writeHead(200, {
-		"Content-Type": "application/x-ndjson",
-		"Cache-Control": "no-store",
-	});
-	const send = (obj) => {
-		if (res.writableEnded) return;
-		try {
-			res.write(`${JSON.stringify(obj)}\n`);
-		} catch {
-			/* socket gone; the close handler below kills the children */
-		}
-	};
+	// NDJSON writer with the same no-CORS posture; send() no-ops once the
+	// response ended and never lets a dead socket crash the writer.
+	const send = ndjson(res);
 	const sendStatus = (message) => send({ event: "status", message });
 	const sendError = (message) => {
 		send({ event: "error", message });
@@ -1331,7 +1273,17 @@ const server = createServer((req, res) => {
 	const log = (status) => {
 		console.log(`[bridge] ${req.method} ${pathname} -> ${status} (${Date.now() - started} ms)`);
 	};
-
+	// Cross-site defence first: loopback + absent CORS does NOT stop a simple
+	// cross-site side-effecting POST (a form POST from another origin arrives
+	// on loopback indistinguishable from a local call), so Sec-Fetch-Site and
+	// Origin are checked on every request, preflight included.
+	try {
+		assertSameSiteRequest(req);
+	} catch (err) {
+		sendJson(res, err.status || 403, { ok: false, reason: err.message });
+		log(403);
+		return;
+	}
 	if (req.method === "OPTIONS") {
 		// 204 with NO CORS headers on purpose: a cross-origin browser
 		// preflight must fail, and the same-origin Vite proxy never
@@ -1405,7 +1357,8 @@ server.on("clientError", (err, socket) => {
 	console.error(`[bridge] client error: ${err.message}`);
 });
 
-server.listen(port, BIND_HOST, () => {
+bindLoopback(server, port);
+server.on("listening", () => {
 	console.log(`[bridge] ARDY dev bridge listening on http://${BIND_HOST}:${port}`);
 	console.log("[bridge] dev-only sidecar: the static dist/ build does not need it; stop with Ctrl-C");
 	console.log(`[bridge] box ${HOST} (repo ${REMOTE}, generator venv ${VENV_PY}, encoder ${ENCODER_URL})`);
