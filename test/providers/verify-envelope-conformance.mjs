@@ -636,9 +636,9 @@ const PROBES = {
 		// detached-child tracking and all-groups cleanup exist exactly once
 		// (envelope.mjs) instead of being reimplemented per provider.
 		const source = readFileSync(join(REPO_ROOT, "tools/ardy/bridge.mjs"), "utf8");
-		ok(`[${bridge.name}] lifecycle: generation children are spawned through the envelope's spawnDetached`, source.includes("spawnDetached"), "bridge.mjs has no spawnDetached call site");
-		ok(`[${bridge.name}] lifecycle: shutdown kills through the envelope's killAllGroups`, source.includes("killAllGroups"), "bridge.mjs has no killAllGroups call site");
-		ok(`[${bridge.name}] lifecycle: the bridge does not reimplement its own global child tracking`, !source.includes("globalChildren"), "bridge.mjs still carries a local globalChildren set");
+		ok(`[${bridge.name}] lifecycle: generation children are spawned through the envelope's spawnDetached`, source.includes("spawnDetached"), `spawnDetached call sites: ${(source.match(/spawnDetached/g) ?? []).length}`);
+		ok(`[${bridge.name}] lifecycle: shutdown kills through the envelope's killAllGroups`, source.includes("killAllGroups"), `killAllGroups call sites: ${(source.match(/killAllGroups/g) ?? []).length}`);
+		ok(`[${bridge.name}] lifecycle: the bridge does not reimplement its own global child tracking`, !source.includes("globalChildren"), `local globalChildren references: ${(source.match(/globalChildren/g) ?? []).length}`);
 	},
 
 	"lifecycle-disconnect-kill": async (bridge) => {
