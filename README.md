@@ -1,8 +1,27 @@
 # CozyClay
 
+[![Status: beta](https://img.shields.io/badge/status-beta-orange)](#project-status)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
+
 CozyClay is a browser-based 3D staging studio built with Three.js and React Three Fiber. Block a scene, pose characters, sequence motion prompts on a timeline, and preview generated motion — in one local workspace that handles like the Unity Editor.
 
-**[Open the live demo](https://had0yun.github.io/CozyClay/)** — the studio itself, running in your browser. Use **Install app** in the header to keep CozyClay on your desktop or home screen; after the first load, the installed studio can open offline. It comes seeded with a pre-generated motion clip so you can scrub the timeline, drive the cameras and draw a dolly rail straight away; generating new motion needs a local ARDY machine, so that part is off.
+> **Beta.** CozyClay is usable today, but it is still moving fast. Expect rough edges,
+> and expect scene data, the ARDY bridge contract, and parts of the UI to change between
+> versions. Don't build a production pipeline on it yet. Bug reports are very welcome.
+
+## Project status
+
+Beta. The staging, camera, timeline and playback paths are stable enough for day-to-day
+previsualization work, and the hosted studio runs the same build as a local clone. What is
+not settled yet:
+
+- **Scene data is not versioned.** A scene saved today may not load after an update.
+- **The ARDY bridge contract can change** as motion generation gets built out.
+- **No stable release yet.** There are no tagged releases; `main` is the moving target.
+
+If something breaks or feels wrong, please [open an issue](https://github.com/HaD0Yun/CozyClay/issues).
+
+**[Open the live demo](https://cozyclay.org/app/)** — the studio itself, running in your browser. Use **Install app** in the header to keep CozyClay on your desktop or home screen; after the first load, the installed studio can open offline. It comes seeded with a pre-generated motion clip so you can scrub the timeline, drive the cameras and draw a dolly rail straight away; generating new motion needs a local ARDY machine, so that part is off.
 
 ![CozyClay browser-based 3D staging studio](docs/images/cozyclay-studio.png)
 

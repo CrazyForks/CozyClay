@@ -323,11 +323,13 @@ const CAPTURE_W = 1920;
 const CAPTURE_H = 1080;
 // Pre-generated clip shipped with the build so a bridge-less session (a hosted
 // static demo, or `npm run dev:ui`) still shows real generated motion.
-// Relative on purpose: it has to resolve under a project sub-path too.
-// Same reason as DEMO_MOTION_URL: a leading slash breaks the app the moment
-// the build is served from a project sub-path (a GitHub Pages project site).
-const CHARACTER_MODEL_URL = "models/y-bot-tpose.fbx";
-const DEMO_MOTION_URL = "demo/walk-then-stop.npz";
+// Root-absolute on purpose: the studio is served from "/app/" while these
+// public files stay at the site root, so a page-relative path would resolve
+// to "/app/models/..." and 404. Vite's base is "/" (own apex domain), so a
+// leading slash is now the correct — and only — form that works from both
+// the dev server and the built site.
+const CHARACTER_MODEL_URL = "/models/y-bot-tpose.fbx";
+const DEMO_MOTION_URL = "/demo/walk-then-stop.npz";
 const DEMO_MOTION_PROMPT = "a person walking then a person stops";
 const CLAY = "#f2eee6";
 const CLAY_B = "#ddd6ca";
