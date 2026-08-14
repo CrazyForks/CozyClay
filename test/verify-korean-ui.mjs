@@ -111,14 +111,13 @@ assert.equal(koLocale.isKo, true);
 assert.equal(koLocale.ko("Frame", "프레임"), "프레임");
 assert.equal(koLocale.ko("Collapse timeline", "타임라인 접기"), "타임라인 접기");
 
-// The five files converted to the English-default + Korean-option pattern.
-for (const path of ["src/result-modal.jsx", "src/install-app.jsx", "src/hierarchy-panel.jsx", "src/object-catalog.jsx"]) {
+// Files converted to the English-default + Korean-option pattern.
+for (const path of ["src/result-modal.jsx", "src/hierarchy-panel.jsx", "src/object-catalog.jsx"]) {
 	assertKoreanInsideLocaleConstructs(path);
 	assertKoPairsHaveBothSides(path);
 }
 
 // The PR's Korean copy is preserved, now living inside the locale constructs.
-includesAll("src/install-app.jsx", ["앱 설치", "Cozy Clay를 다른 앱처럼 사용하세요", "홈 화면에 추가"]);
 includesAll("src/locale-toggle.jsx", ["한국어로 전환", "한국어", "Switch to English"]);
 includesAll("src/result-modal.jsx", ["장면이 준비됐어요", "프롬프트 복사", "프레임 다운로드", "AI에 넣는 순서", "AI에 이미지 첨부"]);
 includesAll("src/App.jsx", ["장면", "재생 보기", "속성", "모션 생성", "오브젝트 변환", "카메라 레일 완성", "연결 중…"]);

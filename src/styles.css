@@ -129,10 +129,6 @@ select {
 	gap: 6px;
 }
 
-.pwa-actions {
-	position: relative;
-}
-
 .locale-toggle {
 	display: inline-flex;
 	align-items: center;
@@ -151,109 +147,6 @@ select {
 .locale-toggle:focus-visible {
 	border-color: var(--accent);
 	background: var(--accent-soft);
-	outline: none;
-}
-
-.pwa-install-button {
-	display: inline-flex;
-	align-items: center;
-	gap: 7px;
-	height: 28px;
-	padding: 0 10px;
-	border: 1px solid var(--line2);
-	border-radius: 2px;
-	background: #2c2c2c;
-	color: var(--fg);
-	font-size: 10px;
-	font-weight: 620;
-	cursor: pointer;
-}
-
-.pwa-install-button span {
-	display: grid;
-	place-items: center;
-	width: 15px;
-	height: 15px;
-	background: var(--accent-2);
-	color: var(--on-accent);
-	font-family: var(--mono);
-	font-size: 10px;
-}
-
-.pwa-install-button:hover,
-.pwa-install-button:focus-visible {
-	border-color: var(--accent);
-	background: var(--accent-soft);
-	outline: none;
-}
-
-.pwa-install-button.update-ready span {
-	background: #3c91a8;
-}
-
-.pwa-install-panel {
-	position: absolute;
-	top: calc(100% + 9px);
-	right: 0;
-	z-index: 120;
-	width: min(290px, calc(100vw - 24px));
-	padding: 13px;
-	border: 1px solid #171717;
-	border-left: 3px solid var(--accent);
-	border-radius: 2px;
-	background: rgba(35, 35, 35, .98);
-	box-shadow: var(--shadow-lg);
-	color: var(--fg);
-}
-
-.pwa-install-kicker {
-	display: block;
-	margin-bottom: 3px;
-	color: var(--cyan);
-	font-family: var(--mono);
-	font-size: 9px;
-	font-weight: 700;
-	letter-spacing: .1em;
-	text-transform: uppercase;
-}
-
-.pwa-install-panel > strong {
-	display: block;
-	font-size: 12px;
-	font-weight: 650;
-}
-
-.pwa-install-panel p {
-	margin: 8px 0;
-	color: var(--fg);
-	font-size: 10.5px;
-	line-height: 1.45;
-}
-
-.pwa-install-panel small {
-	display: block;
-	color: var(--muted);
-	font-size: 9.5px;
-	line-height: 1.45;
-}
-
-.pwa-install-close {
-	width: 100%;
-	margin-top: 11px;
-	padding: 6px 8px;
-	border: 1px solid var(--line2);
-	border-radius: 2px;
-	background: #2c2c2c;
-	color: var(--fg);
-	font: inherit;
-	font-size: 10px;
-	font-weight: 620;
-	cursor: pointer;
-}
-
-.pwa-install-close:hover,
-.pwa-install-close:focus-visible {
-	border-color: var(--accent);
 	outline: none;
 }
 
