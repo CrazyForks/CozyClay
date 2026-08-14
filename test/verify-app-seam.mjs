@@ -14,9 +14,44 @@
  * and lands atomically (one entry), a clear is one entry, and Ctrl+Z
  * interleaves across the two stores with cross-store redo invalidation.
  * These are driven HERE through the same factory the app runs (the registry
- * is node-importable; App.jsx is not). The App.jsx source checks are the
- * wiring tripwire that proves every consumer reads the canonical values and
- * the app actually calls the factory — text alone never passes as behavior.
+ * is node-importable; App.jsx is not).
+ *
+ * HOW THE WIRING CLAIMS ARE PROVEN (pass-2 finding 2 — no source scan may
+ * gate a capability claim):
+ *
+ * 1. BEHAVIOUR, HERE: the take factory (createUndoStores) and every registry
+ *    function below are exercised through the real stores — the assertions
+ *    labelled PASS/FAIL fail when the store misbehaves.
+ *
+ * 2. BEHAVIOUR, IN A REAL BROWSER (test/verify-app-render.mjs, run with
+ *    `npm run test:app-render` against a live dev server): the App WIRING
+ *    and capability claims — factory creation with ONE shared coordinator,
+ *    keyboard undo/redo routing, the landing door's exposure and its
+ *    two-artifact decode, both clip slots, the one-entry clear, per-subject
+ *    keyed IK, and the single-key persistence round-trip — are observed in
+ *    the RENDERED app through its QA hooks with real input. Text scans
+ *    cannot prove any of these: a rendered App that never calls the factory
+ *    still contains every string, which is exactly how the orphaned-store
+ *    defect survived pass 1.
+ *
+ * 3. TRIPWIRES (NON-GATING), HERE: every remaining App.jsx/timeline.jsx/
+ *    motion-sources.js source scan below is an explicitly-labelled,
+ *    NON-GATING tripwire — a diagnostic that flags drift in the wiring text
+ *    so a behavioural regression can be traced to the drifted line. A
+ *    tripwire PASS is NOT capability proof; a tripwire MISS prints
+ *    "TRIPWIRE MISS" and never fails the suite. Each tripwire carries its
+ *    gate: the render test's behavioural gate, a behavioural gate in this
+ *    file, or "unproven until U4".
+ *
+ * DECLARED GAP — unproven until U4 (the Phase-4 browser suite): ShotRig and
+ * PlanBoard aiming at the canonical pair, follow-yaw and deriveShot reading
+ * it, the take-loaded drag guard, the IK evaluate effect using the SELECTED
+ * subject's rig and clip, ARDY regeneration pinning Subject 1's key set,
+ * the timeline's Subject-2 lane rendering the trimmed ranges, and the
+ * app-level trim wiring (playback sampling, edit clamping, load seeding).
+ * Static contracts that are only checkable in source (the resolveIkRig call
+ * count, effect dep arrays, "App.jsx never names the feature") are
+ * tripwire-only by nature; they are labelled as such, never as verified.
  */
 import { readFileSync } from "node:fs";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
@@ -48,6 +83,21 @@ const safe = (fn) => {
 	} catch {
 		return null;
 	}
+};
+
+// A tripwire is a source scan that deliberately does NOT gate (finding 2):
+// it reports whether the wiring text still matches so a behavioural
+// regression can be traced to the drifted line. The claim each tripwire
+// watches is gated behaviourally either in test/verify-app-render.mjs (the
+// real-browser suite), by a behavioural section in THIS file, or — where no
+// observation exists yet — is declared unproven until U4 (see the header).
+// A tripwire PASS is a diagnostic, never capability proof; a tripwire MISS
+// is a WARN in the summary, never a suite failure.
+const tripMissed = [];
+const trip = (label, cond, gate) => {
+	const status = cond ? "TRIPWIRE PASS" : "TRIPWIRE MISS";
+	console.log(`${status}  ${label}  [non-gating; ${gate}]`);
+	if (!cond) tripMissed.push(label);
 };
 
 const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
@@ -165,17 +215,41 @@ undo2.coordinator.undo();
 ok("one undo reverts the replacement to the first take", env2.fields().motion?.url.endsWith("track-a-t1") && env2.fields().motionB?.url.endsWith("track-b-t1"), `url=${env2.fields().motion?.url}`);
 undo2.coordinator.redo();
 ok("redo re-applies the replacement", env2.fields().motion?.url.endsWith("track-a-t2"), `url=${env2.fields().motion?.url}`);
-undo2.take.landTake(clearTakePayload("clear-1", { tlFrameCount: 300, tlFps: 20, tlFrame: 0 })); // seq 3
+undo2.take.clear(clearTakePayload("clear-1", { tlFrameCount: 300, tlFps: 20, tlFrame: 0 })); // seq 3
 ok("a clear lands exactly one entry through the coordinator", undo2.coordinator.sequence() === 3 && undo2.take.depths().past === 3, `sequence()=${undo2.coordinator.sequence()}`);
 ok("the clear empties both lanes and resets the timeline", env2.fields().motion === null && env2.fields().motionB === null && env2.fields().trimA === null && env2.fields().trimB === null && env2.fields().tlFrameCount === 300, `motion=${env2.fields().motion !== null} tlFrameCount=${env2.fields().tlFrameCount}`);
 undo2.coordinator.undo();
 ok("one Ctrl+Z restores the cleared take", env2.fields().motion !== null && env2.fields().motionB !== null && env2.fields().trimB?.end === 59, `motion=${env2.fields().motion !== null}`);
 undo2.coordinator.redo();
 ok("redo re-clears both lanes", env2.fields().motion === null && env2.fields().motionB === null, "both slots empty again");
-// a second clear with a fresh requestId mints a second entry (the store's
-// replay check must not collapse two clears into one)
-undo2.take.landTake(clearTakePayload("clear-2", {}));
+// a second clear mints a second entry — the distinct clear op pushes every
+// time, so two clears can never collapse into one
+undo2.take.clear(clearTakePayload("clear-2", {}));
 ok("a second clear is its own entry", undo2.coordinator.sequence() === 4 && undo2.take.depths().past === 4, `sequence()=${undo2.coordinator.sequence()}`);
+/* ------ a colliding external id must not swallow a clear (Finding 5) ------- */
+// The old clear path minted internal ids (clear-1, clear-2) inside the take
+// store's EXTERNAL request-id namespace: a landing that happened to carry
+// id "clear-1" made the first clear return the cached landing ack and mint
+// zero entries — the lanes stayed loaded and Ctrl+Z had nothing to restore.
+// The clear is now a DISTINCT store operation outside the replay table, so
+// a colliding external id can neither swallow it nor be shadowed by it.
+const envCollide = makeTakeEnv();
+const undoCollide = createUndoStores({ sceneObjects: ["base"], onObjects() {}, read: envCollide.read, write: envCollide.write });
+undoCollide.take.landTake(enrich(makePayload("clear-1"))); // the colliding external id
+const seqAfterLanding = undoCollide.coordinator.sequence();
+undoCollide.take.clear(clearTakePayload("clear-1", {})); // the clear, same id
+ok("a clear after a colliding landing still pushes exactly one entry", undoCollide.coordinator.sequence() === seqAfterLanding + 1 && undoCollide.take.depths().past === 2, `sequence()=${undoCollide.coordinator.sequence()} past=${undoCollide.take.depths().past}`);
+ok("the colliding clear empties both lanes", envCollide.fields().motion === null && envCollide.fields().motionB === null && envCollide.fields().trimA === null && envCollide.fields().trimB === null, `motion=${envCollide.fields().motion !== null}`);
+// the reverse direction: the clear never entered the replay table, so the
+// landing's cache is intact — a replay of "clear-1" still returns the cached
+// LANDING ack, applies nothing, and mints nothing
+const writesAfterClear = envCollide.writes.length;
+const seqAfterClear = undoCollide.coordinator.sequence();
+const landingReplay = undoCollide.take.landTake(enrich(makePayload("clear-1")));
+ok("the clear did not shadow the landing's replay cache", landingReplay.requestId === "clear-1" && landingReplay.value.requestId === "clear-1" && undoCollide.coordinator.sequence() === seqAfterClear && undoCollide.take.depths().past === 2 && envCollide.writes.length === writesAfterClear, `sequence()=${undoCollide.coordinator.sequence()} writes=${envCollide.writes.length}`);
+// and Ctrl+Z restores the landing the colliding clear emptied
+undoCollide.coordinator.undo();
+ok("one Ctrl+Z after the colliding clear restores the landing", envCollide.fields().motion !== null && envCollide.fields().motion.url.endsWith("track-a-clear-1") && envCollide.fields().motionB !== null && undoCollide.take.value()?.requestId === "clear-1", `url=${envCollide.fields().motion?.url}`);
 
 /* -------- Ctrl+Z interleaving across the two stores (plan 7.3) ------------ */
 
@@ -270,106 +344,113 @@ ok(
 	`B-only=${anyLoaded({ A: null, B: clip })}, empty=${anyLoaded({ A: null, B: null })}`,
 );
 
-// The wiring tripwire: every §7.1 consumer reads the ONE derived pair, and
-// the app calls the factories that own the coordinator/take/persistence.
-ok(
+// Every §7.1 consumer reads the ONE derived pair. These scans are NON-GATING
+// tripwires (finding 2): the rendered-rig/inspector claims are gated
+// behaviourally in test/verify-app-render.mjs, the rest are unproven until U4.
+trip(
 	"App derives the canonical transforms once",
 	(app.match(/effectiveChars\(/g) ?? []).length === 1,
-	`sites: ${(app.match(/effectiveChars\(/g) ?? []).length}`,
+	`behavioural gate: verify-app-render.mjs (rendered rig + inspector follow the canonical pair)  sites: ${(app.match(/effectiveChars\(/g) ?? []).length}`,
 );
-ok(
+trip(
 	"Character renders at the canonical transform",
 	app.includes("position={[effectiveCharA.x, 0, effectiveCharA.z]}") &&
 		app.includes("rot={effectiveCharA.rot}") &&
 		app.includes("position={[effectiveCharB.x, 0, effectiveCharB.z]}") &&
 		app.includes("rot={effectiveCharB.rot}"),
-	"both Character mounts read effectiveCharA/effectiveCharB",
+	"behavioural gate: verify-app-render.mjs (rig world rotation ignores raw char edits while a clip is loaded)",
 );
-ok(
+trip(
 	"ShotRig and PlanBoard both aim at the canonical transform",
 	(app.match(/charA=\{effectiveCharA\}/g) ?? []).length >= 2 &&
 		(app.match(/charB=\{effectiveCharB\}/g) ?? []).length >= 2,
-	`charA sites: ${(app.match(/charA=\{effectiveCharA\}/g) ?? []).length}, charB sites: ${(app.match(/charB=\{effectiveCharB\}/g) ?? []).length}`,
+	`unproven until U4  charA sites: ${(app.match(/charA=\{effectiveCharA\}/g) ?? []).length}, charB sites: ${(app.match(/charB=\{effectiveCharB\}/g) ?? []).length}`,
 );
-ok(
+trip(
 	"the inspector shows the canonical transform",
 	app.includes("value={effectiveCharA}") && app.includes("value={effectiveCharB}"),
-	"SubjectBox values read the derived pair",
+	"behavioural gate: verify-app-render.mjs (SubjectBox shows the canonical rot, not the raw edit)",
 );
-ok(
+trip(
 	"follow yaw reads the canonical transform",
 	app.includes("const yaw = (effectiveCharA.rot * Math.PI) / 180;"),
-	"followTrack initialDir derives from effectiveCharA.rot",
+	"unproven until U4",
 );
-ok(
+trip(
 	"deriveShot reads the canonical transform",
 	app.includes("deriveShot(cameraPos, effectiveCharA,"),
-	"the shot framing derives from effectiveCharA",
+	"unproven until U4",
 );
-ok(
+trip(
 	"subject dragging is disabled while a take is loaded",
 	app.includes("takeLoaded ? noop : setCharA") && app.includes("takeLoaded ? noop : setCharB"),
-	"PlanBoard setters are guarded while any slot holds a clip",
+	"unproven until U4",
 );
-ok("App.jsx never names the feature", !app.includes("ingest"), "the seam is the neutral registry");
+trip("App.jsx never names the feature", !app.includes("ingest"), "static seam contract — tripwire only by nature");
 
-/* -------- the wiring tripwire: coordinator, take store, door, IK ---------- */
-
-ok(
+/* ---- the wiring tripwires (NON-GATING): coordinator, take store, door, IK */
+// The claims below are gated behaviourally in test/verify-app-render.mjs —
+// a real browser drives the RENDERED app through its QA hooks. These scans
+// only trace a behavioural regression to the drifted line; a PASS here is
+// not capability proof, and a MISS never fails the suite.
+trip(
 	"the app creates the coordinator and BOTH stores through the factory",
 	app.includes("createUndoStores(") && app.includes("const coordinator = storeRef.current.coordinator;") && app.includes("const takeStore = storeRef.current.take;"),
-	"one factory call owns scene + take registration",
+	"behavioural gate: verify-app-render.mjs (one Ctrl+Z interleaves across both live stores)",
 );
-ok(
+trip(
 	"keyboard undo/redo routes through the coordinator",
 	app.includes("const restored = coordinator.undo();") && app.includes("const restored = coordinator.redo();"),
-	"undoScene/redoScene are coordinator adapters",
+	"behavioural gate: verify-app-render.mjs (real Ctrl+Z / Ctrl+Shift+Z keys)",
 );
-ok(
+trip(
 	"the landing door decodes BOTH artifacts before landing",
 	app.includes("const [a, b] = await Promise.all([decode(payload.a), decode(payload.b)]);") &&
 		app.includes("takeStore.landTake("),
-	"Subject 2's clip has a real load path through the door",
+	"behavioural gate: verify-app-render.mjs (a landing writes both clip slots)",
 );
-ok(
+trip(
 	"the landing door is exposed on the QA hook for the surface host",
 	app.includes("landTake,") && app.includes("motionB, tlFrame, ikMode"),
-	"window.__cozyclay carries the door",
+	"behavioural gate: verify-app-render.mjs (typeof window.__cozyclay.landTake and a real call)",
 );
-ok(
+trip(
 	"the take wiring writes both clip slots",
 	app.includes('if ("motionB" in patch) setMotionB(patch.motionB);') &&
 		app.includes('if ("trimB" in patch) setTrimB(patch.trimB);'),
-	"writeClipFields owns Subject 2's slot",
+	"behavioural gate: verify-app-render.mjs (motionB non-null after landing)",
 );
-ok(
-	"the clear is one take-store entry",
-	app.includes("clearTakePayload(") && app.includes("takeStore.landTake(clearTakePayload("),
-	"clearMotion/clearMotionB route through the take store",
+trip(
+	"the clear is one take-store entry through the DISTINCT clear op",
+	app.includes("clearTakePayload(") &&
+		app.includes("takeStore.clear(clearTakePayload(") &&
+		!app.includes("takeStore.landTake(clearTakePayload("),
+	"behavioural gate: verify-app-render.mjs (Clear clip button: one entry, one Ctrl+Z) and this file's clear-store sections",
 );
-ok(
+trip(
 	"clip state and IK state are keyed per subject",
 	app.includes("ikStatesRef") && app.includes("ikStateFor(") && app.includes('const ikState = ikStateFor(ikSubject, ikStatesRef.current);'),
-	"no shared ikStateRef remains",
+	"behavioural gate: verify-app-render.mjs (ik identity follows the selection) and this file's ikStateFor sections",
 );
-ok(
+trip(
 	"the IK evaluate effect uses the SELECTED subject's rig and clip",
 	app.includes("if (!ikChains || !ikRig || posing) return;") &&
 		app.includes("ikEvaluate(ikChains, ikState, tlFrame, ikFkJoints, ikClip ? IK_CORRECTION_BLEND_FRAMES : 0);"),
-	"A's keys cannot be applied to B's rig",
+	"unproven until U4",
 );
-ok(
+trip(
 	"ARDY regeneration pins Subject 1's own key set",
 	app.includes("const ikStateA = ikStateFor(\"A\", ikStatesRef.current);") && app.includes("ikEvaluate(ikChains, ikStateA, constraintFrame,"),
-	"B's corrections cannot leak into A's generation",
+	"unproven until U4",
 );
-ok(
+trip(
 	"both clips persist under one storage key",
 	app.includes('const CLIPS_STORAGE_KEY = "cozyclay.clips.v1";') &&
 		app.includes("serializeClipState({ A: motion, B: motionB }") &&
 		app.includes("deserializeClipState(localStorage.getItem(CLIPS_STORAGE_KEY))"),
-	"load and save both route through the registry",
+	"behavioural gate: verify-app-render.mjs (the observed localStorage key survives a reload)",
 );
+
 
 /* ---------------------------- S7: per-subject IK --------------------------- */
 // Correction keys must resolve chains from the SELECTED subject's rig: B
@@ -425,21 +506,21 @@ ok(
 	ikStates.B.keys.has(45) && !ikStates.A.keys.has(45) && ikStates.A.keys.size === 1,
 	`A=${[...ikStates.A.keys.keys()]} B=${[...ikStates.B.keys.keys()]}`,
 );
-ok(
+trip(
 	"the ikSubject switch selects the rig",
 	app.includes('const ikSubject = selectedHierarchyId === "characterB" ? "B" : "A";') &&
 		app.includes('const ikRig = ikSubject === "B" ? rigB : rigA;'),
-	"selectedHierarchyId drives the subject switch",
+	"behavioural gate: verify-app-render.mjs (the keyed IK state identity follows the selection) + this file's resolveSubjectIk sections",
 );
-ok(
+trip(
 	"the A-only resolveIkRig(rigA) call seam is gone",
 	(app.match(/resolveIkRig\(/g) ?? []).length === 1 && app.includes("resolveIkRig(ikRig)"),
-	`calls: ${(app.match(/resolveIkRig\(/g) ?? []).length}`,
+	`static contract — tripwire only by nature  calls: ${(app.match(/resolveIkRig\(/g) ?? []).length}`,
 );
-ok(
+trip(
 	"the IK resolve effect follows the selected rig",
 	app.includes("}, [ikRig]);"),
-	"rig load or subject change re-resolves the chains",
+	"unproven until U4",
 );
 
 /* ----------------------------- S8: lane trim ------------------------------- */
@@ -488,40 +569,40 @@ ok(
 	safe(() => playbackFrame(30, null)) === 30 && safe(() => playbackFrame(30, undefined)) === 30,
 	"no trim, no clamp",
 );
-ok(
+trip(
 	"Subject 2 owns a timeline lane",
 	timeline.includes('"Subject 2"') && timeline.includes('const SUBJECT_2_LANE = "Subject 2";'),
-	"the lane list gains Subject 2 (plan 7.4)",
+	"unproven until U4",
 );
-ok(
+trip(
 	"both clips render their trimmed range on the timeline",
 	timeline.includes("clipA") &&
 		timeline.includes("clipB") &&
 		timeline.includes("clipPct(clipA.start)") &&
 		timeline.includes("clipPct(clipB.start)"),
-	"Subject 1 on the Full-Body lane, Subject 2 on its own lane",
+	"unproven until U4",
 );
-ok(
+trip(
 	"both playback effects honor the trim",
 	app.includes("playbackFrame(tlFrame, trimA)") && app.includes("playbackFrame(tlFrame, trimB)"),
-	"A and B sample inside their trimmed ranges",
+	"unproven until U4",
 );
-ok(
+trip(
 	"trim edits clamp through the registry",
 	app.includes("clampTrim("),
-	"no raw trim values ever enter state",
+	"unproven until U4 (clampTrim itself: this file's S8 sections)",
 );
-ok(
+trip(
 	"loading a clip sets the full trim range",
 	app.includes("setTrimA({ start: 0, end: decoded.frames - 1 })"),
-	"the A load path seeds the full range",
+	"unproven until U4",
 );
-ok(
+trip(
 	"the take wiring seeds both trims on landing and empties them on clear",
 	registry.includes("trimA: { start: 0, end: motion.frames - 1 }") &&
 		registry.includes("trimB: { start: 0, end: motionB.frames - 1 }") &&
 		registry.includes("write({ motion: null, motionB: null, trimA: null, trimB: null"),
-	"landing writes both trims; clear writes nulls through the same path",
+	"behavioural gate: this file's take-store sections (landing writes both trims; clear writes nulls)",
 );
 
 /* -------------------- persistence: state survives a reload ----------------- */
@@ -573,6 +654,13 @@ ok(
 	"no key, no clips",
 );
 
+if (tripMissed.length) {
+	// A missed tripwire is a WARN, never a failure (finding 2): the claim is
+	// either still gated behaviourally (verify-app-render.mjs or the store
+	// sections above) or declared unproven until U4 — see the header.
+	console.log(`\nTRIPWIRE MISSES (non-gating, source drifted — trace the behavioural gate or report to U4): ${tripMissed.length}`);
+	for (const label of tripMissed) console.log(`  - ${label}`);
+}
 if (fail.length) {
 	console.log(`\nfailures: ${fail.length}`);
 	process.exit(1);

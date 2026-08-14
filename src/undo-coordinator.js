@@ -41,9 +41,9 @@ export function createUndoCoordinator() {
 	let nextSeq = 0;
 	const stores = [];
 	return {
-		// The store brings id plus the six-handler contract (canUndo,
-		// canRedo, undo, redo, invalidateRedo) and the seq accessors;
-		// the returned stamp() is the ONLY minting path.
+		// The store brings id plus the seven-handler contract (prepare,
+		// canUndo, canRedo, undo, redo, invalidateRedo) and the seq
+		// accessors; the returned stamp() is the ONLY minting path.
 		register({ id, store }) {
 			const entry = { id, store };
 			stores.push(entry);
@@ -62,7 +62,16 @@ export function createUndoCoordinator() {
 		},
 
 		// The most recent entry wins: greatest topSeq among undoable.
+		// The prepare phase runs BEFORE eligibility: a store with an open
+		// transaction settles it here and becomes eligible. The settle
+		// mints the open travel as a real entry, so the very FIRST
+		// mid-drag undo works — checking canUndo() first would see an
+		// empty history, return null, and leave the travel applied with
+		// nothing to undo. redo() deliberately does NOT prepare: settling
+		// mid-drag would commit the travel and kill the live drag token
+		// while the user only asked for a redo.
 		undo() {
+			for (const s of stores) s.store.prepare();
 			let pick = null;
 			for (const s of stores) {
 				if (!s.store.canUndo()) continue;

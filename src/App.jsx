@@ -1656,16 +1656,16 @@ globalThis.playMode = centerTab === "play";
 		}
 	}
 	// Clear the take (plan 7.4): both clips leave in ONE entry through the
-	// take store, so one Ctrl+Z restores them. The empty-take marker passes
-	// the store's structural validation; the wiring interprets it as "both
-	// lanes empty" and never decodes the placeholder clips.
+	// take store, so one Ctrl+Z restores them. The clear rides the store's
+	// DISTINCT clear op, never the landing door, so an external landing
+	// with the same requestId can neither swallow it nor be shadowed.
 	const clearSeqRef = useRef(0);
 	function clearTake() {
 		// Nothing loaded: clearing is a no-op, and a no-op must not mint an
 		// undo entry (the take store has no coalescing for the marker).
 		if (!takeLoaded) return;
 		clearSeqRef.current += 1;
-		takeStore.landTake(clearTakePayload(`clear-${clearSeqRef.current}`, {
+		takeStore.clear(clearTakePayload(`clear-${clearSeqRef.current}`, {
 			tlFrameCount: maxDst + 1,
 			tlFps: 20,
 			tlFrame: Math.min(tlFrame, maxDst),

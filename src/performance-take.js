@@ -3,8 +3,11 @@
 // contract, applies in one batch, and pushes exactly one history entry;
 // every accepted requestId is retained for the store's lifetime in a
 // bounded table that refuses at its ceiling rather than evicting —
-// eviction is exactly what lets a delayed retry land twice. No React,
-// node-importable (the test seam).
+// eviction is exactly what lets a delayed retry land twice. A clear is
+// a DISTINCT operation (clear): the same validator and the same one-entry
+// push, but it never consults or fills the replay table, so an internal
+// clear id can never collide with an external requestId — it never shares
+// the namespace. No React, node-importable (the test seam).
 import {
 	createHistory,
 	pushHistory,
@@ -53,10 +56,11 @@ export function createPerformanceTakeStore({ capture, apply, restore }, { coordi
 	let history = createHistory(null);
 	const seq = createSeqMirror();
 	let registered = null;
-	// requestId -> { requestId, value }: every accepted landing, never
+	// requestId -> { requestId, value }: every accepted LANDING, never
 	// evicted. A replay returns the cached ack verbatim so it can never
 	// mint a second entry; at the ceiling a NEW id is refused by name
-	// (request-table-exhausted) instead of evicting an old one.
+	// (request-table-exhausted) instead of evicting an old one. Clears
+	// never enter the table (see clear below).
 	const accepted = new Map();
 
 	function pushStamped(next) {
@@ -79,6 +83,24 @@ export function createPerformanceTakeStore({ capture, apply, restore }, { coordi
 			accepted.set(value.requestId, ack);
 			pushStamped(entry);
 			return ack;
+		},
+		// A clear is a distinct operation from a landing (Finding 5): the
+		// marker still passes the SAME validator as a landing (the clear IS
+		// a structurally complete §5 payload plus clear: true), so this is
+		// not a laxer path — the difference is replay semantics, not
+		// validation. It bypasses the replay table entirely: an external
+		// landing whose requestId happens to equal an internal clear id can
+		// neither swallow the clear (cached-ack shortcut) nor be shadowed
+		// by it, and a clear never consumes the idempotency budget. Clears
+		// are user-initiated — there is no retry protocol for them — so
+		// every call applies and pushes exactly one entry.
+		clear(payload) {
+			const value = validateTakePayload(payload);
+			if (value.clear !== true) throw new Error("clear-marker-required");
+			const entry = { value, before: capture() };
+			apply(value);
+			pushStamped(entry);
+			return { requestId: value.requestId, value };
 		},
 
 		value() {
@@ -111,6 +133,9 @@ export function createPerformanceTakeStore({ capture, apply, restore }, { coordi
 		invalidateRedo() { history = { past: history.past, present: history.present, future: [] }; seq.invalidate(); },
 		topSeq() { return seq.topSeq(); },
 		topRedoSeq() { return seq.topRedoSeq(); },
+		// The coordinator's prepare phase (Finding 4): a landing is atomic —
+		// no transaction is ever left open — so there is nothing to settle.
+		prepare() {},
 	};
 	if (coordinator) registered = coordinator.register({ id: "take", store });
 	return store;

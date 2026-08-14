@@ -150,6 +150,9 @@ ok("the no-op perturbs no ordering", scene2.topSeq() === 3 && take2.topSeq() ===
 const coordinator3 = createUndoCoordinator();
 const scene3 = createSceneHistoryStore(["base"], { coordinator: coordinator3, onObjects() {} });
 const ghost = {
+	// The seven-handler contract the coordinator requires (prepare is
+	// what lets a store settle an open transaction before eligibility).
+	prepare() {},
 	stamp() {},
 	invalidateRedo() {},
 	canUndo() {
@@ -194,6 +197,22 @@ const token5d = scene5.begin("drag3", () => {});
 scene5.applyIn(token5d, () => ["base", "mid", "travel", "more"]);
 coordinator5.undo();
 ok("undo mid-drag settles the drag then undoes it", coordinator5.sequence() === 3 && scene5.topSeq() === 2 && scene5.topRedoSeq() === 3 && scene5.objects[2] === "travel", `sequence()=${coordinator5.sequence()} topSeq()=${scene5.topSeq()}`);
+/* --------- first-ever mid-drag undo settles, then undoes (Finding 4) ------- */
+// An EMPTY starting history is the case the old eligibility check hid: the
+// very first drag is still open when Ctrl+Z lands, canUndo() is false, and
+// the coordinator returned null — the travel stayed applied with nothing to
+// undo. The coordinator must settle every store BEFORE judging eligibility,
+// so the settle mints the travel as the first entry and the undo pops it.
+const coordinator6 = createUndoCoordinator();
+const scene6 = createSceneHistoryStore(["base"], { coordinator: coordinator6, onObjects() {} });
+const token6 = scene6.begin("first-drag", () => {});
+scene6.applyIn(token6, () => ["base", "mid", "travel"]);
+const undoneFirst = coordinator6.undo();
+ok("a first-ever mid-drag undo settles the travel, then undoes it", undoneFirst !== null && undoneFirst.length === 1 && undoneFirst[0] === "base" && scene6.objects.length === 1 && scene6.objects[0] === "base", `undone=${JSON.stringify(undoneFirst)} objects=${JSON.stringify(scene6.objects)}`);
+ok("the settle minted exactly the one entry the undo popped", coordinator6.sequence() === 1 && scene6.depths().past === 0 && scene6.depths().future === 1, `sequence()=${coordinator6.sequence()} past=${scene6.depths().past} future=${scene6.depths().future}`);
+ok("the undone travel is the redo branch", scene6.topSeq() === undefined && scene6.topRedoSeq() === 1 && scene6.canUndo() === false, `topSeq()=${scene6.topSeq()} topRedoSeq()=${scene6.topRedoSeq()}`);
+const redoneFirst = coordinator6.redo();
+ok("redo replays the first-ever travel", redoneFirst !== null && scene6.objects[2] === "travel" && scene6.topSeq() === 1, `objects=${JSON.stringify(scene6.objects)}`);
 
 /* --------------- HISTORY_LIMIT keeps seqPast aligned ---------------- */
 

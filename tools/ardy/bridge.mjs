@@ -41,7 +41,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decodeMotionNpz } from "../../src/ardy/npz.js";
 import { motionArraysToNpzMembers, replaceMotionSegment, writeNpz } from "./npz.mjs";
-import { assertSameSiteRequest, bindLoopback, createArtifactAllowlist, killGroup, ndjson, noCorsJson, readJsonBody } from "../providers/envelope.mjs";
+import { assertSameSiteRequest, bindLoopback, createArtifactAllowlist, killAllGroups, killGroup, ndjson, noCorsJson, readJsonBody, spawnDetached } from "../providers/envelope.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const OUT_DIR = join(HERE, "out");
@@ -107,17 +107,6 @@ const SAFE_BASE_ID = /^[A-Za-z0-9._-]+$/;
 // ---------------------------------------------------------------------------
 // process helpers
 // ---------------------------------------------------------------------------
-
-// All children spawned for generation are detached so they lead their own
-// process group; killing the group takes down bash AND the ssh it is waiting
-// on, so no remote session is orphaned. Tracked globally so Ctrl-C can clean
-// up too.
-const globalChildren = new Set();
-
-function track(child) {
-	globalChildren.add(child);
-	child.once("close", () => globalChildren.delete(child));
-}
 
 // Run a short, non-streaming child (ssh/scp probes) to completion.
 function run(argv, { timeoutMs = 0 } = {}) {
@@ -844,7 +833,7 @@ async function handleGenerate(req, res) {
 	if (body.regenerateSegments || body.motionEdit) {
 		const sourceUrl = body.motionEdit?.sourceMotion || body.sourceMotion;
 		const sourceId = sourceUrl.slice("/ardy/motions/".length);
-		sourceMotionPath = motionAllowlist.get(sourceId) || null;
+		sourceMotionPath = motionAllowlist.resolve(sourceId);
 		if (!sourceMotionPath || !existsSync(sourceMotionPath)) {
 			sendJson(res, 400, { ok: false, reason: `field 'sourceMotion': unknown or expired motion "${sourceId}"` });
 			finish(400);
@@ -870,8 +859,7 @@ async function handleGenerate(req, res) {
 			return;
 		}
 	}
-	// NDJSON writer with the same no-CORS posture; send() no-ops once the
-	// response ended and never lets a dead socket crash the writer.
+	// NDJSON writer with the same no-CORS posture; send() no-ops once the response ended.
 	const send = ndjson(res);
 	const sendStatus = (message) => send({ event: "status", message });
 	const sendError = (message) => {
@@ -884,9 +872,8 @@ async function handleGenerate(req, res) {
 	// (bash + the ssh session it waits on).
 	const children = new Set();
 	const spawnTracked = (command, args, options) => {
-		const child = spawn(command, args, options);
+		const child = spawnDetached(command, args, options);
 		children.add(child);
-		track(child);
 		return child;
 	};
 	const killChildren = () => {
@@ -1383,8 +1370,7 @@ server.on("error", (err) => {
 // sshd closes the session, and the remote generation is not orphaned.
 for (const signal of ["SIGINT", "SIGTERM"]) {
 	process.on(signal, () => {
-		console.error(`[bridge] received ${signal}; killing ${globalChildren.size} in-flight child process group(s)`);
-		for (const child of globalChildren) killGroup(child);
+		console.error(`[bridge] received ${signal}; killing ${killAllGroups()} in-flight child process group(s)`);
 		process.exit(signal === "SIGINT" ? 130 : 143);
 	});
 }

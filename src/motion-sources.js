@@ -145,12 +145,15 @@ export function createUndoStores({ sceneObjects, onObjects, read, write }) {
 	return { coordinator, scene, take };
 }
 
-/** The empty-take marker a clear pushes (plan 7.4). The take store's only
- * push path is landTake, whose validator demands a structurally complete §5
- * payload, so the clear IS that payload plus `clear: true` and the current
- * timeline to reset to — the wiring interprets the marker and never decodes
- * the placeholder clips. A fresh requestId per clear keeps the store's
- * replay check from collapsing two clears into one entry. */
+/** The empty-take marker a clear pushes (plan 7.4). The take store's clear
+ * op (createPerformanceTakeStore.clear) reuses the landing validator, which
+ * demands a structurally complete §5 payload, so the clear IS that payload
+ * plus `clear: true` and the current timeline to reset to — the wiring
+ * interprets the marker and never decodes the placeholder clips. The
+ * requestId is inert plumbing: the clear op bypasses the landing replay
+ * table entirely, so no external id can collide with an internal one, and
+ * the fresh id per clear merely satisfies the validator's non-empty-string
+ * rule. */
 export function clearTakePayload(requestId, timeline = {}) {
 	const clip = {
 		rotationDeg: 0,

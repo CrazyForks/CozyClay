@@ -33,7 +33,7 @@
  */
 import { createServer, request as httpRequest } from "node:http";
 import { spawn } from "node:child_process";
-import { createReadStream, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { tmpdir } from "node:os";
 import { basename, join, resolve, dirname } from "node:path";
@@ -306,7 +306,67 @@ async function startArdyBridge({ env: extraEnv = {} } = {}) {
 			}, 2000);
 			killer.unref();
 		},
+		proc,
 	};
+}
+//
+// The lifecycle probes need the REAL bridge to spawn a long-lived child
+// without a live box: a fake `bash` earlier in PATH that ignores the box
+// script's args and runs a sleeper instead. The bridge resolves "bash" via
+// its own PATH, so the fake intercepts ONLY the generation spawns and the
+// probe observes the bridge's real spawnTracked -> spawnDetached ->
+// killGroup path (the fixture's /fixture/slow demonstrates the same
+// mechanism against the envelope directly).
+const FAKE_BASH = [
+	"#!/bin/sh",
+	"# first stdout line names the sleeper pids; the bridge forwards it as a status event",
+	"node -e 'const { spawn } = require(\"node:child_process\"); const s = spawn(\"sleep\", [\"60\"], { stdio: \"ignore\" }); process.stdout.write(process.pid + \" \" + s.pid + \"\\n\"); setInterval(() => {}, 1000);' &",
+	"wait",
+].join("\n");
+
+async function startSlowChildBridge() {
+	const fakeDir = mkdtempSync(join(tmpdir(), "cclay-fake-bash-"));
+	writeFileSync(join(fakeDir, "bash"), FAKE_BASH, { mode: 0o755 });
+	const bridge = await startArdyBridge({ env: { PATH: `${fakeDir}:${process.env.PATH}` } });
+	return { bridge, fakeDir };
+}
+
+// POST a generate that reaches the box spawn, and resolve once the fake
+// child's pid line arrives as a status event. The caller keeps `req` to
+// disconnect (kill-on-disconnect) or leaves it to die with the bridge
+// (kill-on-shutdown).
+function startSlowGenerate(url) {
+	return new Promise((resolve, reject) => {
+		const req = httpRequest(`${url}/ardy/generate`, { method: "POST", headers: { "Content-Type": "application/json" } }, (res) => {
+			let buffer = "";
+			res.setEncoding("utf8");
+			res.on("data", (chunk) => {
+				buffer += chunk;
+				let nl;
+				while ((nl = buffer.indexOf("\n")) !== -1) {
+					const line = buffer.slice(0, nl);
+					buffer = buffer.slice(nl + 1);
+					let parsed;
+					try {
+						parsed = JSON.parse(line);
+					} catch {
+						continue;
+					}
+					if (parsed && parsed.event === "status" && typeof parsed.message === "string") {
+						const match = /^(\d+) (\d+)$/.exec(parsed.message);
+						if (match) {
+							resolve({ pids: [Number(match[1]), Number(match[2])], req });
+							return;
+						}
+					}
+				}
+			});
+			res.on("end", () => reject(new Error("generate ended before the slow child pid line")));
+		});
+		req.on("error", reject);
+		req.write(JSON.stringify({ prompt: "x", duration: 1, posePin: false }));
+		req.end();
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +475,7 @@ const PROBES = {
 			const refused = await httpExchange(`${bridge.url}${bridge.routes.artifactPrefix}/outside-id`, {});
 			ok(`[${bridge.name}] artifacts: realpath containment refuses a registered outside path`, refused.status === 404, `got ${refused.status}`);
 			rmSync(outside, { force: true });
+			ok(`[${bridge.name}] artifacts: the allowlist exposes no get() (a raw stored path is unrepresentable)`, !("get" in bridge.artifacts), "get() must not exist: every consumption resolves through the allowlist");
 		}
 	},
 	"artifact-symlink-swap": async (bridge) => {
@@ -451,6 +512,110 @@ const PROBES = {
 			rmSync(outsideDir, { recursive: true, force: true });
 		}
 	},
+	"source-motion-symlink-swap": async (bridge) => {
+		// The serve path above re-checks containment at serve time. The
+		// EDIT/regeneration path consumes a registered motion as its source,
+		// so the id must resolve through the allowlist at USE time too: seed
+		// the allowlist through the same spawn-time env seam, swap the seeded
+		// file for a symlink to outside OUT_DIR, and POST a regenerate
+		// request naming it. It must be refused as unknown/expired BEFORE any
+		// generation work - never read through the symlink.
+		if (bridge.artifacts) return;
+		const runId = "1234567890123-abcdef"; // matches the bridge's MOTION_ID shape
+		const outsideDir = mkdtempSync(join(tmpdir(), "cclay-source-swap-outside-"));
+		const outsideFile = join(outsideDir, "secret.bin");
+		writeFileSync(outsideFile, "symlink-escape-bytes");
+		const motionFile = join(bridge.artifactDir, `${runId}.npz`);
+		writeFileSync(motionFile, "motion-bytes");
+		const seeded = await startArdyBridge({
+			env: { CCLAY_ARDY_TEST_REGISTRATIONS: `${runId}=${motionFile}` },
+		});
+		const generateBody = {
+			prompt: "x",
+			duration: 1,
+			poses: [{ frame: 0, pose: { schema: "cozyclay.pose.v1", root: [0, 1, 0] } }],
+			regenerateSegments: [{ startFrame: 0, endFrame: 5, prompt: "x" }],
+			sourceMotion: `/ardy/motions/${runId}`,
+		};
+		try {
+			const before = await httpExchange(`${seeded.url}${bridge.routes.artifactPrefix}/${runId}`, {});
+			ok(`[${bridge.name}] source-motion swap control: the seeded motion serves as a real file`, before.status === 200 && before.body === "motion-bytes", `got ${before.status}`);
+			rmSync(motionFile, { force: true });
+			symlinkSync(outsideFile, motionFile);
+			const after = await httpExchange(`${seeded.url}${bridge.routes.jsonPost}`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(generateBody),
+			});
+			ok(
+				`[${bridge.name}] source-motion swap: a regenerated source swapped for a symlink to outside OUT_DIR is refused before any read`,
+				after.status === 400 && after.body.includes("unknown or expired motion"),
+				`expected 400 unknown/expired, got ${after.status} ${after.body.slice(0, 120)}`
+			);
+		} finally {
+			seeded.stop();
+			rmSync(motionFile, { force: true });
+			rmSync(outsideDir, { recursive: true, force: true });
+		}
+	},
+
+	"lifecycle-call-sites": async (bridge) => {
+		// The envelope's capability audit for the real bridge: generation
+		// children and shutdown must route through the shared envelope, so
+		// detached-child tracking and all-groups cleanup exist exactly once
+		// (envelope.mjs) instead of being reimplemented per provider.
+		const source = readFileSync(join(REPO_ROOT, "tools/ardy/bridge.mjs"), "utf8");
+		ok(`[${bridge.name}] lifecycle: generation children are spawned through the envelope's spawnDetached`, source.includes("spawnDetached"), "bridge.mjs has no spawnDetached call site");
+		ok(`[${bridge.name}] lifecycle: shutdown kills through the envelope's killAllGroups`, source.includes("killAllGroups"), "bridge.mjs has no killAllGroups call site");
+		ok(`[${bridge.name}] lifecycle: the bridge does not reimplement its own global child tracking`, !source.includes("globalChildren"), "bridge.mjs still carries a local globalChildren set");
+	},
+
+	"lifecycle-disconnect-kill": async (bridge) => {
+		const { bridge: slow, fakeDir } = await startSlowChildBridge();
+		try {
+			const { pids, req } = await startSlowGenerate(slow.url);
+			ok(`[${bridge.name}] disconnect negative control: the spawned generation child is alive while the request is connected`, pids.every(processAlive), `pids=${pids.join(",")}`);
+			req.destroy();
+			const deadline = Date.now() + 5000;
+			let dead = false;
+			while (Date.now() < deadline) {
+				if (pids.every((pid) => !processAlive(pid))) {
+					dead = true;
+					break;
+				}
+				await sleep(100);
+			}
+			ok(`[${bridge.name}] disconnect kills the spawned generation child process group`, dead, dead ? `pids ${pids.join(",")} died` : `pids ${pids.join(",")} still alive`);
+			ok(`[${bridge.name}] disconnect negative control: the bridge survives a client disconnect`, slow.proc.exitCode === null, `exitCode=${slow.proc.exitCode}`);
+		} finally {
+			slow.stop();
+			rmSync(fakeDir, { recursive: true, force: true });
+		}
+	},
+
+	"lifecycle-shutdown-kill": async (bridge) => {
+		const { bridge: slow, fakeDir } = await startSlowChildBridge();
+		try {
+			const { pids, req } = await startSlowGenerate(slow.url);
+			ok(`[${bridge.name}] shutdown negative control: the spawned generation child is alive while the bridge runs`, pids.every(processAlive), `pids=${pids.join(",")}`);
+			slow.proc.kill("SIGTERM");
+			const deadline = Date.now() + 5000;
+			let dead = false;
+			while (Date.now() < deadline) {
+				if (pids.every((pid) => !processAlive(pid))) {
+					dead = true;
+					break;
+				}
+				await sleep(100);
+			}
+			ok(`[${bridge.name}] shutdown (SIGTERM) kills the spawned generation child process group`, dead, dead ? `pids ${pids.join(",")} died` : `pids ${pids.join(",")} still alive`);
+			req.destroy();
+		} finally {
+			slow.stop();
+			rmSync(fakeDir, { recursive: true, force: true });
+		}
+	},
+
 
 	loopback: async (bridge) => {
 		const loopback = /^(127\.0\.0\.1|localhost|\[::1\]|::1)$/;
@@ -537,8 +702,10 @@ const REGISTRY = [
 		// Cross-site first: the pre-refactor bridge's first conformance
 		// failure is accepting a cross-site POST (E2's RED); the fixture's
 		// first failure is exact content-type (E1's RED), so the two tables
-		// lead with different clauses. Same probe set, data-driven order.
-		probes: ["cross-site", "options-cors", "method-405", "unknown-404", "content-type", "body-cap", "artifact", "artifact-symlink-swap", "loopback"],
+		// lead with different clauses. Same probe set, data-driven order. The
+		// bridge-only probes (symlink swap on both serve and edit paths, the
+		// lifecycle trio) run last: each spawns its own seeded/slow bridge.
+		probes: ["cross-site", "options-cors", "method-405", "unknown-404", "content-type", "body-cap", "artifact", "artifact-symlink-swap", "source-motion-symlink-swap", "lifecycle-call-sites", "lifecycle-disconnect-kill", "lifecycle-shutdown-kill", "loopback"],
 		spawn: startArdyBridge,
 	},
 ];

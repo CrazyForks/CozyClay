@@ -123,6 +123,13 @@ export function createSceneHistoryStore(initialObjects, { onObjects, coordinator
 			return stepped.present;
 		},
 
+		// The coordinator's prepare phase (Finding 4): settle any open
+		// transaction so eligibility is judged AFTER the travel is a real
+		// entry. Idempotent — undo()/redo() settle again as a no-op.
+		prepare() {
+			settle();
+		},
+
 		canUndo() {
 			return historyCanUndo(history);
 		},

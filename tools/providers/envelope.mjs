@@ -168,10 +168,6 @@ export function createArtifactAllowlist({ base, max }) {
 			entries.set(id, absPath);
 			if (entries.size > max) entries.delete(entries.keys().next().value);
 		},
-		// The stored path, exactly as registered (for size checks etc.).
-		get(id) {
-			return entries.get(id) ?? null;
-		},
 		// The realpath of the stored file when it is still inside base, else
 		// null (unregistered, escaped, or gone from disk).
 		resolve(id) {
