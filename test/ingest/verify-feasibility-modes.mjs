@@ -450,9 +450,15 @@ for (const [mode, fx] of Object.entries(fixtures)) {
 
 const THRESHOLD = { M1: 0.6, M2: 0.85, M3: 0.03, M5: 0.05, M6: 0.08 }; // plan 10.3, contact-head GO branch
 
+// SCENE.scoredFrames / SCENE.handContactFrames hold SOURCE keys, while
+// rootWorld / contactMask are row arrays of the emitted slice: a mutation row
+// must come from chFx.frameIndex, never from the key itself (the two coincide
+// only on the pinned contiguous fixture — the hiding place the decimated
+// negative controls below exist to break).
+const rowOf = new Map(chFx.frameIndex.map((f, row) => [f, row]));
 // M5: displace A's solved root by 0.10 m on every scored frame; RMS must clear 0.05
 const perturbedRoots = structuredClone(chFx);
-for (const f of SCENE.scoredFrames) perturbedRoots.subjects[0].rootWorld[f][0] += 0.1;
+for (const f of SCENE.scoredFrames) perturbedRoots.subjects[0].rootWorld[rowOf.get(f)][0] += 0.1;
 const m5p = computeMetrics(perturbedRoots, annotation).M5;
 ok(
 	"negative control: +0.10 m root perturbation pushes M5 above the 0.05 GO threshold",
@@ -471,7 +477,7 @@ ok("negative control: a swapped identity label pushes M4 above 0", m4p > 0, `M4=
 
 // M6: widen B's solved roots by 0.20 m on every scored frame; RMS must clear 0.08
 const widened = structuredClone(chFx);
-for (const f of SCENE.scoredFrames) widened.subjects[1].rootWorld[f][0] += 0.2;
+for (const f of SCENE.scoredFrames) widened.subjects[1].rootWorld[rowOf.get(f)][0] += 0.2;
 const m6p = computeMetrics(widened, annotation).M6;
 ok(
 	"negative control: +0.20 m wider separation pushes M6 above the 0.08 threshold",
@@ -481,7 +487,7 @@ ok(
 
 // M3: in-stance root jitter must show up as plant jitter
 const jittered = structuredClone(chFx);
-for (const f of [10, 15, 20]) jittered.subjects[0].rootWorld[f][0] += f === 15 ? -0.01 : 0.01;
+for (const f of [10, 15, 20]) jittered.subjects[0].rootWorld[rowOf.get(f)][0] += f === 15 ? -0.01 : 0.01;
 const m3p = computeMetrics(jittered, annotation).M3;
 ok("negative control: in-stance root jitter pushes M3 above zero", m3p > 1e-4, `M3=${m3p.toExponential(3)}`);
 // M1: erase every contact on 75 frames that are NOT among the 100 hand-labelled
@@ -492,7 +498,7 @@ const unlabelledFrames = Array.from({ length: SCENE.frames }, (_, f) => f).filte
 );
 const contactErased = structuredClone(chFx);
 for (const f of unlabelledFrames.slice(0, 75)) {
-	for (const s of contactErased.subjects) s.contactMask[f] = [0, 0];
+	for (const s of contactErased.subjects) s.contactMask[rowOf.get(f)] = [0, 0];
 }
 const m1p = computeMetrics(contactErased, annotation);
 ok(
@@ -514,7 +520,7 @@ ok(
 const falsePositives = structuredClone(chFx);
 for (const f of SCENE.handContactFrames.slice(0, 36)) {
 	for (const s of falsePositives.subjects) {
-		const c = s.contactMask[f];
+		const c = s.contactMask[rowOf.get(f)];
 		if (c[0] < c[1]) c[0] = 0.51;
 		else c[1] = 0.51;
 	}
@@ -531,6 +537,142 @@ ok(
 	`M1=${m2p.M1}, M3=${m2p.M3.toExponential(3)}`,
 );
 
+// --- decimated negative controls: the mutations above index row arrays by
+// --- source keys; on the pinned contiguous fixture the two coincide, which
+// --- is the hiding place. A decimated fixture (25 rows over source keys
+// --- [0,3,...,72]) breaks the coincidence: key 9 is NOT row 9. These
+// --- controls lock the mapped-row semantics AND that each mutation still
+// --- flips exactly its own metric while the others stay put.
+{
+	const dFrameIndex = Array.from({ length: 25 }, (_, i) => i * 3); // keys 0..72, 25 rows
+	const dScored = [6, 15, 24]; // rows 2, 5, 8
+	const dHand = [9, 21]; // rows 3, 7
+	const dMk = (subjectId, trackId, x) => ({
+		subjectId, trackId,
+		rootWorld: Array.from({ length: dFrameIndex.length }, () => [x, 0, 0]),
+		// alternate planted side every row: every contact run is a singleton,
+		// so a root perturbation can never move M3
+		contactMask: Array.from({ length: dFrameIndex.length }, (_, r) => (r % 2 === 0 ? [1, 0] : [0, 1])),
+		confidence: Array.from({ length: dFrameIndex.length }, () => 1),
+	});
+	const dFx = {
+		schemaVersion: 2, clipId: "decimated-negative-controls", mode: "contact-head", fps: 29.97,
+		frames: dFrameIndex.length, frameIndex: dFrameIndex,
+		timeS: dFrameIndex.map((f) => f / 29.97),
+		subjects: [dMk("A", "p0", 0), dMk("B", "p1", 2)],
+		association: { observations: [], groundTruth: [] },
+		separation: { scoredFrameIndex: dScored, annotatedSeparationM: dScored.map(() => 2) },
+	};
+	const dAnn = {
+		handContact: {
+			frameIndex: dHand,
+			// odd rows plant right, so the labels mirror the predictions
+			label: { A: [[false, true], [false, true]], B: [[false, true], [false, true]] },
+		},
+		footWorld: {
+			frameIndex: dScored,
+			A: dScored.map(() => [0, 0, 0]),
+			B: dScored.map(() => [2, 0, 0]),
+		},
+	};
+	const dRowOf = new Map(dFrameIndex.map((f, row) => [f, row]));
+	const dScoredRows = dScored.map((f) => dRowOf.get(f));
+	const dHandRows = dHand.map((f) => dRowOf.get(f));
+	// every key must differ from its own row AND stay in-bounds as an index,
+	// so a key-indexed mutation lands on the wrong row instead of crashing
+	ok("decimated negative controls: every source key differs from its row",
+		dScored.every((f, i) => f !== dScoredRows[i]) && dHand.every((f, i) => f !== dHandRows[i]),
+		`scored ${dScored.join(",")} -> rows ${dScoredRows.join(",")}; hand ${dHand.join(",")} -> rows ${dHandRows.join(",")}`);
+	const dBase = computeMetrics(dFx, dAnn);
+	ok("decimated negative controls: base fixture measures ideal values",
+		dBase.M1 === 1 && dBase.M2 === 1 && dBase.M3 === 0 && Math.abs(dBase.M5) < 1e-12 && Math.abs(dBase.M6) < 1e-12,
+		`M1=${dBase.M1} M2=${dBase.M2} M3=${dBase.M3} M5=${dBase.M5} M6=${dBase.M6}`);
+
+	// M5: the same +0.10 m perturbation as the pinned control, on the decimated fixture
+	const dPerturbed = structuredClone(dFx);
+	for (const f of dScored) dPerturbed.subjects[0].rootWorld[dRowOf.get(f)][0] += 0.1;
+	const dM5p = computeMetrics(dPerturbed, dAnn);
+	ok(
+		"decimated negative control: +0.10 m root perturbation at the MAPPED scored rows pushes M5 above the 0.05 GO threshold",
+		dM5p.M5 > THRESHOLD.M5,
+		`M5=${dM5p.M5.toFixed(3)}`,
+	);
+	ok(
+		"decimated negative control: exactly the mapped scored rows carry the M5 perturbation",
+		dPerturbed.subjects[0].rootWorld.every((p, r) => Math.abs(p[0] - (dScoredRows.includes(r) ? 0.1 : 0)) < 1e-12),
+		dPerturbed.subjects[0].rootWorld.map((p, r) => `row${r}(key${dFrameIndex[r]})=${p[0].toFixed(2)}`).join(" "),
+	);
+	ok(
+		// M5 and M6 share the root positions: displacing A's roots moves the
+		// A-B separation by definition, so the invariant set is the metrics
+		// whose inputs the mutation never touches (contacts, and runs stay
+		// singleton so M3 cannot move either)
+		"decimated negative control: the M5 mutation leaves M1, M2 and M3 untouched",
+		dM5p.M1 === 1 && dM5p.M2 === 1 && dM5p.M3 === 0,
+		`M1=${dM5p.M1} M2=${dM5p.M2} M3=${dM5p.M3}`,
+	);
+	ok(
+		"decimated negative control: M6 moves only through the shared root positions",
+		Math.abs(dM5p.M6 - 0.1) < 1e-9,
+		`M6=${dM5p.M6}`,
+	);
+
+	// M6: the same +0.20 m widening as the pinned control
+	const dWidened = structuredClone(dFx);
+	for (const f of dScored) dWidened.subjects[1].rootWorld[dRowOf.get(f)][0] += 0.2;
+	const dM6p = computeMetrics(dWidened, dAnn);
+	ok(
+		"decimated negative control: +0.20 m wider separation at the MAPPED scored rows pushes M6 above the 0.08 threshold",
+		dM6p.M6 > THRESHOLD.M6,
+		`M6=${dM6p.M6.toFixed(3)}`,
+	);
+	ok(
+		"decimated negative control: exactly the mapped scored rows carry the M6 widening",
+		dWidened.subjects[1].rootWorld.every((p, r) => Math.abs(p[0] - (dScoredRows.includes(r) ? 2.2 : 2)) < 1e-12),
+		dWidened.subjects[1].rootWorld.map((p, r) => `row${r}(key${dFrameIndex[r]})=${p[0].toFixed(2)}`).join(" "),
+	);
+	ok(
+		// the same coupling as the M5 control: widening B's roots moves B's
+		// root-vs-annotation RMS (M5) by exactly the shared-input amount
+		"decimated negative control: the M6 mutation leaves M1, M2 and M3 untouched",
+		dM6p.M1 === 1 && dM6p.M2 === 1 && dM6p.M3 === 0,
+		`M1=${dM6p.M1} M2=${dM6p.M2} M3=${dM6p.M3}`,
+	);
+	ok(
+		"decimated negative control: M5 moves only through the shared root positions",
+		Math.abs(dM6p.M5 - Math.sqrt(0.02)) < 1e-9,
+		`M5=${dM6p.M5}`,
+	);
+
+	// M2: the same swing-foot false positives as the pinned control, at the
+	// decimated fixture's hand-labelled rows
+	const dFalsePositives = structuredClone(dFx);
+	for (const f of dHand) {
+		for (const s of dFalsePositives.subjects) {
+			const c = s.contactMask[dRowOf.get(f)];
+			if (c[0] < c[1]) c[0] = 0.51;
+			else c[1] = 0.51;
+		}
+	}
+	const dM2p = computeMetrics(dFalsePositives, dAnn);
+	ok(
+		"decimated negative control: swing-foot false positives at the MAPPED labelled rows push M2 below the 0.85 GO threshold",
+		dM2p.M2 < THRESHOLD.M2 && dM2p.M2 < 1,
+		`M2=${dM2p.M2.toFixed(4)}`,
+	);
+	ok(
+		"decimated negative control: exactly the mapped handContact rows carry the false positives",
+		dFalsePositives.subjects.every((s) => s.contactMask.every((c, r) =>
+			dHandRows.includes(r) ? (c[0] === 0.51 && c[1] === 1) : (r % 2 === 0 ? c[0] === 1 && c[1] === 0 : c[0] === 0 && c[1] === 1))),
+		dFalsePositives.subjects.map((s) => `${s.trackId}: ${s.contactMask.map((c, r) => `r${r}=${c.join("/")}`).join(" ")}`).join("  "),
+	);
+	ok(
+		"decimated negative control: the M2 mutation leaves M1, M3, M5 and M6 untouched",
+		dM2p.M1 === 1 && dM2p.M3 === 0 && Math.abs(dM2p.M5) < 1e-12 && Math.abs(dM2p.M6) < 1e-12,
+		`M1=${dM2p.M1} M3=${dM2p.M3} M5=${dM2p.M5} M6=${dM2p.M6}`,
+	);
+}
+
 // the runner must consume the FloorFrame: a wrong floor height moves every solved root
 const wrongFloor = { ...floorFrame, floorY: 0.2 };
 ok(
@@ -540,12 +682,12 @@ ok(
 
 // the runner must consume the observations: a 5 px shift of the planted foot moves the root
 const shiftedPixels = structuredClone(rawTrack);
-shiftedPixels.subjects[0].footObservations2d.left.keypoints[5][0] += 5;
-const shiftedRoot = solveContactHead(shiftedPixels, floorFrame).subjects[0].rootWorld[5];
+shiftedPixels.subjects[0].footObservations2d.left.keypoints[rowOf.get(5)][0] += 5;
+const shiftedRoot = solveContactHead(shiftedPixels, floorFrame).subjects[0].rootWorld[rowOf.get(5)];
 ok(
 	"negative control: a 5 px pixel shift moves the solved root",
-	dist(shiftedRoot, chFx.subjects[0].rootWorld[5]) > 0.02,
-	`moved=${dist(shiftedRoot, chFx.subjects[0].rootWorld[5]).toFixed(3)} m`,
+	dist(shiftedRoot, chFx.subjects[0].rootWorld[rowOf.get(5)]) > 0.02,
+	`moved=${dist(shiftedRoot, chFx.subjects[0].rootWorld[rowOf.get(5)]).toFixed(3)} m`,
 );
 
 // --- degenerate input: 0/0 must surface as undefined with a reason, never as

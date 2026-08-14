@@ -175,8 +175,13 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 {
 	// subject B truncated to maxScored+1 rows (so M5/M6 still find their
 	// frames): B's coverage is then divided by A's frame count.
+	// scoredFrameIndex holds SOURCE keys; contactMask/rootWorld are row
+	// arrays, so the boundary is max(mapped ROW)+1, never max(key)+1 — the
+	// two coincide only on contiguous zero-based fixtures, which is exactly
+	// the hiding place the decimated case below breaks.
+	const maxScoredRowPlus1 = (doc) => Math.max(...doc.separation.scoredFrameIndex.map((f) => doc.frameIndex.indexOf(f))) + 1;
+	const keep = maxScoredRowPlus1(chDoc);
 	const short = structuredClone(chDoc);
-	const keep = Math.max(...chDoc.separation.scoredFrameIndex) + 1;
 	short.subjects[1].contactMask = short.subjects[1].contactMask.slice(0, keep);
 	short.subjects[1].rootWorld = short.subjects[1].rootWorld.slice(0, keep);
 	short.subjects[1].confidence = short.subjects[1].confidence.slice(0, keep);
@@ -211,6 +216,72 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 		expected: "a coverage fraction above 1 is impossible; B's M1 contribution must not exceed 1",
 		observed: typeof mL === "string" ? mL : `M1=${mL.M1.toFixed(4)}`,
 		verdict: typeof mL === "string" ? "PASS" : (mL.M1 <= 1 ? "PASS" : "WEAKNESS"),
+	});
+	// decimated regression: the key-derived boundary above is only correct
+	// while a source key equals its row. Decimate the pinned fixture (93 rows
+	// over source keys [0,2,...,184]) and score keys [14,50,86,122,158]: max
+	// scored KEY is 158 while the max scored ROW is 79, so a key-derived keep
+	// (159) slices nothing off a 93-row subject and the mismatch vanishes,
+	// while the row-derived keep (80) must truncate B to exactly the scored
+	// rows M5/M6 need.
+	const dec = structuredClone(chDoc);
+	const decFrameIndex = chDoc.frameIndex.filter((f) => f % 2 === 0);
+	const decScored = [14, 50, 86, 122, 158];
+	// row of a source key within the PINNED chDoc: its frameIndex is contiguous
+	// zero-based, so row==key there — but the decimated rows must be selected
+	// by an explicit key->row map, never by the key-as-index coincidence
+	const chRowOf = new Map(chDoc.frameIndex.map((f, row) => [f, row]));
+	const decDoc = {
+		...dec,
+		frames: decFrameIndex.length,
+		frameIndex: decFrameIndex,
+		timeS: decFrameIndex.map((f) => f / dec.fps),
+		subjects: dec.subjects.map((s) => ({
+			...s,
+			rootWorld: decFrameIndex.map((f) => s.rootWorld[chRowOf.get(f)]),
+			contactMask: decFrameIndex.map((f) => s.contactMask[chRowOf.get(f)]),
+			confidence: decFrameIndex.map((f) => s.confidence[chRowOf.get(f)]),
+		})),
+		separation: {
+			scoredFrameIndex: decScored,
+			annotatedSeparationM: decScored.map((f) =>
+				chDoc.separation.annotatedSeparationM[chDoc.separation.scoredFrameIndex.indexOf(f)]),
+		},
+	};
+	// decimated annotation covering the decimated keys: hand labels at keys
+	// 8/14/20 (both fighters plant left throughout phase 0), foot world at the
+	// scored keys — same values the decimated rows carry, so a correct
+	// measurement reads M2=1/M5=0/M6=0 on the truncated B.
+	const decAnn = {
+		handContact: {
+			frameIndex: [8, 14, 20],
+			label: {
+				A: [[true, false], [true, false], [true, false]],
+				B: [[true, false], [true, false], [true, false]],
+			},
+		},
+		footWorld: {
+			frameIndex: decScored,
+			A: decScored.map((f) => chDoc.subjects[0].rootWorld[chRowOf.get(f)]),
+			B: decScored.map((f) => chDoc.subjects[1].rootWorld[chRowOf.get(f)]),
+		},
+	};
+	const keyBoundary = Math.max(...decScored) + 1;
+	const decKeep = maxScoredRowPlus1(decDoc);
+	const shortDec = structuredClone(decDoc);
+	shortDec.subjects[1].contactMask = shortDec.subjects[1].contactMask.slice(0, decKeep);
+	shortDec.subjects[1].rootWorld = shortDec.subjects[1].rootWorld.slice(0, decKeep);
+	shortDec.subjects[1].confidence = shortDec.subjects[1].confidence.slice(0, decKeep);
+	let mDec = null;
+	try { mDec = computeMetrics(shortDec, decAnn); } catch (e) { mDec = `threw ${e.name}: ${e.message}`; }
+	reg.record({
+		id: "MEA-subject-length-mismatch-decimated", category: "measure", attack: "decimated truncation boundary: a ROW count, never a source-key count",
+		input: `93 rows over keys [0,2,...,184]; scored keys [14,50,86,122,158] (max key 158 vs max scored row 79); B truncated to ${decKeep} rows`,
+		expected: "the truncation boundary is max(scored ROW)+1 = 80: a key-derived boundary (159) slices nothing off a 93-row subject and hides the mismatch; M5/M6 must still find their frames on the truncated B",
+		observed: `B has ${shortDec.subjects[1].rootWorld.length} rows${typeof mDec === "string" ? `; ${mDec}` : `; M1=${mDec.M1.toFixed(4)} M2=${mDec.M2} M5=${mDec.M5.toExponential(2)} M6=${mDec.M6.toExponential(2)}`}`,
+		verdict: typeof mDec === "string" ? "WEAKNESS" :
+			(keyBoundary !== decKeep && shortDec.subjects[1].rootWorld.length === decKeep &&
+				mDec.M1 < 1 && mDec.M2 === 1 && Math.abs(mDec.M5) < 1e-12 && Math.abs(mDec.M6) < 1e-12) ? "PASS" : "WEAKNESS",
 	});
 }
 
@@ -280,7 +351,7 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 	});
 	// NaN in contactMask: NaN > 0.5 is false -> silently counts as "no contact"
 	const nanContact = structuredClone(chDoc);
-	nanContact.subjects[0].contactMask[10] = [NaN, 0.07];
+	nanContact.subjects[0].contactMask[chDoc.frameIndex.indexOf(10)] = [NaN, 0.07];
 	const mC = computeMetrics(nanContact, annDoc);
 	reg.record({
 		id: "MEA-nan-contact", category: "measure", attack: "NaN in a contactMask row",
@@ -291,9 +362,13 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 	});
 	// NaN contact splitting runs into singletons zeroes M3
 	const jittered = structuredClone(chDoc);
-	for (const f of [10, 15, 20]) jittered.subjects[0].rootWorld[f][0] += f === 15 ? -0.01 : 0.01;
+	// frames 10/15/20 are SOURCE keys; rootWorld/contactMask are row arrays,
+	// so the rows come from frameIndex (the keys equal rows only on the
+	// pinned contiguous fixture)
+	const jitterRows = [10, 15, 20].map((f) => chDoc.frameIndex.indexOf(f));
+	for (const r of jitterRows) jittered.subjects[0].rootWorld[r][0] += r === jitterRows[1] ? -0.01 : 0.01;
 	const mJ = computeMetrics(jittered, annDoc);
-	jittered.subjects[0].contactMask = jittered.subjects[0].contactMask.map((c, f) => (f === 10 || f === 15 || f === 20 ? [NaN, NaN] : c));
+	jittered.subjects[0].contactMask = jittered.subjects[0].contactMask.map((c, r) => (jitterRows.includes(r) ? [NaN, NaN] : c));
 	const mJN = computeMetrics(jittered, annDoc);
 	reg.record({
 		id: "MEA-nan-contact-hides-jitter", category: "measure", attack: "NaN contacts split jittery runs into single-frame runs (std 0)",
