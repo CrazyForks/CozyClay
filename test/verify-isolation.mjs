@@ -403,7 +403,13 @@ function materializeDeletedTree(dest, { dangling }) {
 	symlinkSync(join(REPO_ROOT, "node_modules"), join(dest, "node_modules"), "dir");
 }
 function runStep(cwd, cmd, args) {
-	const r = spawnSync(cmd, args, { cwd, encoding: "utf8" });
+	// The deletability sim is the one place a browser genuinely cannot be
+	// present: it runs a scratch copy of the tree in a subprocess bar. That is
+	// exactly the conscious opt-out verify-app-render.mjs requires, so it is
+	// set HERE and nowhere else -- a suite that could not run must still fail
+	// loudly everywhere a browser is actually expected.
+	const env = { ...process.env, ALLOW_APP_RENDER_SKIP: "1" };
+	const r = spawnSync(cmd, args, { cwd, encoding: "utf8", env });
 	const lines = (r.stdout + r.stderr || "").split("\n").filter((l) => !/^\(node:|^\(Use `node --trace-warnings/.test(l));
 	return { status: r.status, out: lines.join("\n"), tail: lines.slice(-10).join("\n") };
 }
