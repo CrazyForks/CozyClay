@@ -21,3 +21,4 @@ __pycache__/
 # test/ingest/fixtures/ are small synthetic JSON and DO stay in the repo.
 tools/ingest/fixtures-external/
 dist-ingest/
+tools/ingest/out/
