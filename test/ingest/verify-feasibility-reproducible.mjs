@@ -318,6 +318,53 @@ ok("operator sign-off is blank", record.decision.signOff === "", `signOff=${JSON
 ok("decision record states no real-footage decision", record.decision.syntheticOnly === true, `syntheticOnly=${record.decision.syntheticOnly}`);
 
 // ---------------------------------------------------------------------------
+// The escalation sign-off (plan §14.1) is a SEPARATE decision from §5's
+// real-footage operator line. §14.1 wants the escalation itself recorded and
+// signed; §5's line must stay blank because signing the synthetic record would
+// be a real-footage claim wearing a synthetic label. The danger is that the two
+// get conflated later — either by someone filling §5 to "satisfy §14.1", or by
+// the escalation block quietly growing footage language. Both directions are
+// asserted here so neither can drift in unnoticed.
+{
+	const doc = readFileSync(new URL("../../tools/ingest/FEASIBILITY.md", import.meta.url), "utf8");
+	const block = doc.match(/## 5b\. Stage-A escalation sign-off[\s\S]*?(?=\n## )/);
+	ok("FEASIBILITY.md carries the §14.1 escalation sign-off block", block !== null,
+		block ? `${block[0].length} chars` : "section 5b absent");
+
+	const text = block ? block[0] : "";
+	ok("the escalation block is signed", /\*\*Signed:\*\*\s*\S/.test(text),
+		`signed line=${JSON.stringify((text.match(/\*\*Signed:\*\*.*/) || [""])[0])}`);
+	ok("the escalation block records F1 as escalated, not satisfied",
+		/escalated, not satisfied/.test(text) && /UNRESOLVED/.test(text),
+		"expected both 'escalated, not satisfied' and UNRESOLVED");
+
+	// The escalation signature must disclaim footage in the same breath. A
+	// signature that merely omits footage language is one edit away from being
+	// read as a footage approval.
+	ok("the escalation signature disclaims any footage claim",
+		/attests to the escalation and to\s+nothing about any footage/.test(text),
+		"expected the signature to state what it does NOT attest to");
+	ok("the escalation block states no real-footage decision exists",
+		/no real-footage GO\/STOP exists/.test(text), "expected an explicit no-decision statement");
+
+	// Non-conflation, the direction that actually bites: the escalation
+	// signature must not be reachable through the record's operator field.
+	// If someone ever copies it in, §5's blank assertion above fires — but that
+	// assertion alone would also fire on an unrelated value, so pin the pair.
+	ok("the escalation signature is not reachable via record.decision.signOff",
+		record.decision.signOff === "" && !String(record.decision.signOff).includes("GJC"),
+		`signOff=${JSON.stringify(record.decision.signOff)}`);
+	ok("the synthetic record still declares itself synthetic alongside the escalation",
+		record.decision.syntheticOnly === true, `syntheticOnly=${record.decision.syntheticOnly}`);
+
+	// Sensitivity: the block must actually be load-bearing. Strip the signature
+	// from a copy and the signed assertion must flip.
+	const stripped = text.replace(/\*\*Signed:\*\*[\s\S]*?\n(?=- )/, "");
+	ok("negative control: removing the signature makes the signed check fail",
+		!/\*\*Signed:\*\*\s*\S/.test(stripped), "stripped copy still matched the signature pattern");
+}
+
+// ---------------------------------------------------------------------------
 // Negative control: a mutated fixture must fail the gate on both layers.
 // ---------------------------------------------------------------------------
 {

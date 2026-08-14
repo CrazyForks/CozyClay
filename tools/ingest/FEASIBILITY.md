@@ -114,6 +114,37 @@ green gate does not alter the outcome.
 The selected mode, once a signed real-footage decision exists, is a contract
 value carried in the take's `provenance`.
 
+## 5b. Stage-A escalation sign-off (plan §14.1)
+
+The operator line in §5 is blank and must stay blank: it is the sign-off on a
+**real-footage** §10.3 decision, and signing the synthetic record would be a
+real-footage claim wearing a synthetic label. §14.1 asks for a different thing —
+a recorded decision about the *escalation itself* — so it is recorded here,
+separately, and the two can never be read as one.
+
+- **Escalation decision:** Stage A closes with F1 **escalated, not satisfied**.
+- **What is escalated:** all seven solver slots in §1 remain `UNRESOLVED`. No
+  GPU box is attached to this environment, so no real footage has been through
+  GVHMR and no real-footage GO/STOP exists.
+- **Why this is a complete Stage-A outcome and not a gap:** STOP is an ordinary
+  branch of §10.3, and F3's decision function dominates only C5–C8, H4 and
+  Stage B — none of which are in Stage A. Phases 1–5 do not consume F1's
+  values, so they were built and verified without it. The refusal is enforced
+  in code, not merely documented: `tools/ingest/host.mjs` answers
+  `/ingest/extract` with a 503 when `CCLAY_INGEST_BOX` is unset rather than
+  returning a fabricated result.
+- **What an operator must return to lift it:**
+  `tools/ingest/RAWTRACK-CONTRACT.md` carries the exact command and the
+  required evidence. Filling §1 and re-running the two gates in §6 against a
+  real dump produces the real-footage decision that the line in §5 then signs.
+- **Signed:** GJC (agent), on behalf of the Stage-A run, at branch
+  `feat/footage-ingest`. This signature attests to the escalation and to
+  nothing about any footage.
+- **Locked by:** `test/ingest/verify-feasibility-reproducible.mjs` — asserts
+  this block exists, that the `signOff` in §5 is still blank, that this block
+  claims no footage, and that it cannot be reached through
+  `record.decision.signOff`.
+
 ## 6. Re-running the gate (GPU-free, forever)
 
 ```
