@@ -43,6 +43,15 @@ expect("Motion tab exposes the camera animation controls", app.includes('sidebar
 expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("Generate all ${promptClips.length} blocks"));
 expect("new sessions start without prompt blocks", app.includes("const DEFAULT_PROMPT_CLIPS = [];") && app.includes("useState(null)"));
 expect("new sessions start with an empty motion prompt", app.includes('const [ardyPrompt, setArdyPrompt] = useState("");'));
+expect(
+	"MP4 recording is repaired before its download URL is created",
+	app.includes('import { repairRecordedMp4 } from "./ardy/mp4-duration.js";') &&
+	app.indexOf("await repairRecordedMp4(recordedBlob)") < app.indexOf("URL.createObjectURL(downloadBlob)"),
+);
+expect(
+	"MP4 repair failure falls back to the original recording",
+	app.includes("catch {") && app.includes("downloadBlob = recordedBlob;"),
+);
 expect("pre-motion timeline initializes to 15 seconds", app.includes("const DEFAULT_DURATION_S = 15"));
 expect("motion preview stays at native 1x speed", app.includes("const DEFAULT_PLAYBACK_SPEED = 1") && app.includes("playbackSpeed={DEFAULT_PLAYBACK_SPEED}"));
 expect("timeline cadence and readout expose native preview speed", timeline.includes("fps * playbackSpeed") && timeline.includes("playbackSpeed.toFixed(2)"));
