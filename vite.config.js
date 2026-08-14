@@ -27,6 +27,7 @@ export default defineConfig({
 		// promoted into a server-side requirement.
 		proxy: {
 			"/ardy": "http://127.0.0.1:5181",
+			"/generation": "http://127.0.0.1:5182",
 		},
 	},
 });
