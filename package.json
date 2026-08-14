@@ -23,12 +23,14 @@
 		"test:ingest": "for t in gvhmr-schema feasibility-modes feasibility-reproducible decision-function; do node test/ingest/verify-$t.mjs || exit 1; done",
 		"bridge": "node tools/ardy/bridge.mjs",
 		"dev:full": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
+		"dev:ingest": "CCLAY_INGEST_HOST=1 node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
+		"build:ingest": "vite build --config vite.ingest.config.js",
 		"qa:browser": "node tools/qa-browser.mjs --",
 		"test:shot-authoring": "node test/verify-shot-authoring.mjs",
 		"test:camera-follow": "node test/verify-camera-follow.mjs",
 		"test:pwa": "node test/verify-pwa.mjs",
 		"test:localization": "node test/verify-korean-ui.mjs",
-		"prepack": "npm run build"
+		"prepack": "npm run build && npm run build:ingest"
 	},
 	"license": "GPL-3.0-or-later",
 	"type": "module",
@@ -48,6 +50,7 @@
 	"files": [
 		"bin",
 		"dist",
+		"dist-ingest",
 		"src",
 		"tools",
 		"README.md",

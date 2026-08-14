@@ -14,6 +14,9 @@ const children = [
 	spawnOwned(process.execPath, ["tools/ardy/bridge.mjs"], { cwd: REPO }),
 	spawnOwned(process.execPath, ["node_modules/vite/bin/vite.js", ...viteArgs], { cwd: REPO }),
 ];
+if (process.env.CCLAY_INGEST_HOST === "1") {
+	children.push(spawnOwned(process.execPath, ["node_modules/vite/bin/vite.js", "--config", "vite.ingest.config.js", "--host", "127.0.0.1"], { cwd: REPO }));
+}
 
 const removeSignalCleanup = installSignalCleanup(() => children);
 const first = await Promise.race(

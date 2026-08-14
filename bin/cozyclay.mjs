@@ -27,6 +27,7 @@ const DIST = join(PKG_ROOT, "dist");
 const BRIDGE = join(PKG_ROOT, "tools", "ardy", "bridge.mjs");
 const BRIDGE_PORT = Number(process.env.COZYCLAY_BRIDGE_PORT ?? 5181);
 
+const PARENT_CSP = "frame-src http://127.0.0.1:* http://localhost:*; object-src 'none'; base-uri 'self'";
 const TYPES = {
 	".html": "text/html; charset=utf-8",
 	".js": "text/javascript; charset=utf-8",
@@ -45,7 +46,7 @@ const TYPES = {
 };
 
 function parseArgs(argv) {
-	const opts = { port: 5180, host: "127.0.0.1", ardy: true, open: true, star: true };
+	const opts = { port: 5180, host: "127.0.0.1", ardy: true, ingest: true, open: true, star: true };
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === "--port" || arg === "-p") opts.port = Number(argv[++i]);
@@ -53,6 +54,7 @@ function parseArgs(argv) {
 		else if (arg === "--host") opts.host = String(argv[++i]);
 		else if (arg.startsWith("--host=")) opts.host = arg.slice(7);
 		else if (arg === "--no-ardy") opts.ardy = false;
+		else if (arg === "--no-ingest") opts.ingest = false;
 		else if (arg === "--no-open") opts.open = false;
 		else if (arg === "--no-star") opts.star = false;
 		else if (arg === "--help" || arg === "-h") opts.help = true;
@@ -81,6 +83,7 @@ const HELP = `cozyclay - browser-based 3D staging studio
   npx cozyclay              start the studio and open it
   npx cozyclay --port 5200  serve on another port
   npx cozyclay --no-ardy    skip the optional motion-generation sidecar
+  npx cozyclay --no-ingest  skip the optional ingest surface
   npx cozyclay --no-open    do not open a browser
   npx cozyclay --no-star    never ask about starring the repo
 
@@ -96,6 +99,8 @@ function serveFile(res, path) {
 		// The studio is served from a local process a user just started; a
 		// stale cache across versions is more confusing than a re-read.
 		"cache-control": "no-cache",
+		// The parent frame-src is the ingest boundary on this server (plan 11.4).
+		...(type.startsWith("text/html") ? { "content-security-policy": PARENT_CSP } : {}),
 	});
 	createReadStream(path).pipe(res);
 }
@@ -115,6 +120,21 @@ function proxyToBridge(req, res) {
 		// failed probe as "generation unavailable" and carries on.
 		res.writeHead(503, { "content-type": "application/json" });
 		res.end(JSON.stringify({ error: "ardy sidecar is not running" }));
+	});
+	req.pipe(upstream);
+}
+// Same contract as the Vite dev proxy.
+function proxyToIngest(req, res) {
+	const upstream = httpRequest(
+		{ host: "127.0.0.1", port: new URL(ingestOrigin).port, path: req.url, method: req.method, headers: req.headers },
+		(upstreamRes) => {
+			res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+			upstreamRes.pipe(res);
+		},
+	);
+	upstream.on("error", () => {
+		res.writeHead(503, { "content-type": "application/json" });
+		res.end(JSON.stringify({ error: "ingest host is not running" }));
 	});
 	req.pipe(upstream);
 }
@@ -216,6 +236,20 @@ if (opts.ardy && ardyHost && existsSync(BRIDGE)) {
 		bridge = null;
 	});
 }
+const INGEST_STATE_FILE = join(STATE_DIR, "ingest.json");
+const INGEST_HOST = join(PKG_ROOT, "tools", "ingest", "host.mjs");
+let ingestHost = null;
+if (opts.ingest && process.env.CCLAY_INGEST_HOST?.trim() && existsSync(INGEST_HOST)) {
+	ingestHost = spawn(process.execPath, [INGEST_HOST, "--app-origin", `http://${opts.host}:${opts.port}`], { cwd: PKG_ROOT, stdio: "inherit" });
+	ingestHost.on("error", () => { ingestHost = null; });
+	for (let i = 0; i < 100 && !existsSync(INGEST_STATE_FILE); i += 1) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+}
+let ingestOrigin = null;
+try {
+	const d = JSON.parse(readFileSync(INGEST_STATE_FILE, "utf8"));
+	process.kill(d.pid, 0);
+	ingestOrigin = d.origin;
+} catch {}
 
 const server = createServer((req, res) => {
 	const url = new URL(req.url ?? "/", "http://localhost");
@@ -223,6 +257,7 @@ const server = createServer((req, res) => {
 		proxyToBridge(req, res);
 		return;
 	}
+	if (opts.ingest && ingestOrigin && url.pathname.startsWith("/ingest/")) { proxyToIngest(req, res); return; }
 	const rel = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
 	// normalize + prefix check: a request must not escape dist/.
 	const target = join(DIST, normalize(rel));
@@ -240,6 +275,7 @@ async function shutdown() {
 	if (shuttingDown) process.exit(0);
 	shuttingDown = true;
 	if (bridge) bridge.kill("SIGTERM");
+	if (ingestHost) ingestHost.kill("SIGTERM");
 	server.close();
 	try {
 		await maybeAskForStar(startedAt, opts);
@@ -255,6 +291,7 @@ server.on("error", (err) => {
 	if (err && err.code === "EADDRINUSE") {
 		console.error(`cozyclay: port ${opts.port} is taken. Try --port ${opts.port + 1}.`);
 		if (bridge) bridge.kill("SIGTERM");
+		if (ingestHost) ingestHost.kill("SIGTERM");
 		process.exit(1);
 	}
 	throw err;
