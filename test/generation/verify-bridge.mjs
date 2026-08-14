@@ -13,7 +13,8 @@ try {
 
   response = await request("/generation/models");
   assert.equal(response.status, 200);
-  assert.ok((await response.json()).models.length >= 1);
+  const listed = (await response.json()).models;
+  assert.deepEqual(new Set(listed.map(({ provider }) => provider)), new Set(["runway", "seedance", "kling", "veo"]));
 
   response = await request("/generation/validate", { method: "POST", headers: { "content-type": "application/json" }, body: "{" });
   assert.equal(response.status, 400);

@@ -14,6 +14,7 @@ const outputServer = createServer((req, res) => { res.writeHead(200, { "content-
 await listen(outputServer);
 const outputUrl = `http://127.0.0.1:${outputServer.address().port}/result.mp4`;
 let polls = 0;
+let canceledProviderJob = null;
 const fake = {
   available: () => true,
   models: [{ id: "fake-video", label: "Fake Video", durations: [5], capabilities: { startFrame: true } }],
@@ -21,6 +22,7 @@ const fake = {
   estimateCost: () => 0,
   submit: async () => ({ providerJobId: "provider-1", warnings: [] }),
   poll: async () => (++polls === 1 ? { status: "processing", progress: 0.5 } : { status: "succeeded", progress: 1, outputUrl }),
+  cancel: async (providerJobId) => { canceledProviderJob = providerJobId; },
 };
 const storeOptions = { file: join(dir, "jobs.json"), resultDir: join(dir, "results") };
 let bridge = createGenerationServer({ store: createJobStore(storeOptions), providers: { fake } });
@@ -39,13 +41,21 @@ try {
   assert.match(completed.outputUrl, /\/output$/);
   assert.deepEqual(Buffer.from(await (await fetch(base + completed.outputUrl)).arrayBuffer()), video);
 
+  response = await fetch(`${base}/generation/jobs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(spec) });
+  const cancelable = await response.json();
+  response = await fetch(`${base}/generation/jobs/${cancelable.id}`, { method: "DELETE" });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).status, "canceled");
+  assert.equal(canceledProviderJob, "provider-1");
+
   await close(bridge);
   bridge = createGenerationServer({ store: createJobStore(storeOptions), providers: { fake } });
   await listen(bridge);
   base = `http://127.0.0.1:${bridge.address().port}`;
   const history = await (await fetch(`${base}/generation/jobs`)).json();
-  assert.equal(history.jobs[0].status, "succeeded");
-  assert.deepEqual(Buffer.from(await (await fetch(base + history.jobs[0].outputUrl)).arrayBuffer()), video);
+  const restoredSuccess = history.jobs.find((job) => job.status === "succeeded");
+  assert.ok(restoredSuccess);
+  assert.deepEqual(Buffer.from(await (await fetch(base + restoredSuccess.outputUrl)).arrayBuffer()), video);
   console.log("mock submit, poll, download, and restart recovery E2E verified");
 } finally {
   await close(bridge).catch(() => {});
