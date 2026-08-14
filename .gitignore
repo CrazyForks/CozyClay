@@ -15,3 +15,9 @@ tools/ardy/out/
 *.log
 __pycache__/
 *.pyc
+
+# Ingest feasibility material: licensed source footage and GVHMR outputs are
+# operator-provisioned, never redistributed. The pinned fixtures under
+# test/ingest/fixtures/ are small synthetic JSON and DO stay in the repo.
+tools/ingest/fixtures-external/
+dist-ingest/
