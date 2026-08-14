@@ -87,10 +87,18 @@ export function solveManualAnchor(rawTrack, floorFrame, anchors) {
 			}
 		}
 		const rootWorld = [];
+		// "the later anchor wins for a shared key" has to hold at the take start
+		// too. Holding list[0] made the rule position-dependent: a zero-width pair
+		// mid-list or at the end resolved to the later anchor, but at the start the
+		// hold-the-ends branch fired first and the EARLIER one won, so the jump
+		// landed one frame late exactly where a stance boundary matters.
+		let firstIdx = 0;
+		while (firstIdx + 1 < list.length && list[firstIdx + 1].frameIndex === list[0].frameIndex) firstIdx += 1;
+		const first = list[firstIdx];
 		for (let row = 0; row < rawTrack.frames; row += 1) {
 			const f = frameIds[row]; // this row's SOURCE frame
-			if (f <= list[0].frameIndex) {
-				rootWorld.push([...list[0].world]);
+			if (f <= first.frameIndex) {
+				rootWorld.push([...first.world]);
 				continue;
 			}
 			const last = list[list.length - 1];

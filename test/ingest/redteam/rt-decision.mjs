@@ -692,6 +692,98 @@ const expectDecisionInput = (label, input, fragment) => {
 }
 
 // ---------------------------------------------------------------------------
+// Pass-3: the m4 integrality rule (2738e05 "reject fractional swap counts").
+// m4 is a COUNT (FEASIBILITY.md §3: count of disagreeing groundTruth entries;
+// measure.mjs emits an integer), so the contract domain is the non-negative
+// integers. These cases attack the Number.isInteger boundary: -0 (integer,
+// equals 0), absurd-but-integral magnitudes (1e21, MAX_SAFE_INTEGER+1), a
+// fractional literal that IEEE754 rounds into an integer double, a numeric
+// STRING that would coerce ("0" must not read as 'no swaps'), and a fraction
+// one ulp away from an integer. Every verdict below is observed, never
+// asserted.
+// ---------------------------------------------------------------------------
+{
+	// -0: Number.isInteger(-0) is true and -0 === 0, so -0 is a well-formed
+	// count of zero swaps and must proceed exactly like m4: 0 — never
+	// rejected, never treated as a negative count.
+	const negZero = tuple({ m4: -0 });
+	const rNegZero = tryCall(() => decideFeasibility(negZero));
+	const rNegZero2 = tryCall(() => decideFeasibility(negZero));
+	const negZeroOk = Object.is(negZero.m4, -0) && rNegZero.threw === null &&
+		rNegZero.value.verdict === "GO" && rNegZero.value.mode === "contact-head" &&
+		deepEq(rNegZero.value, decideFeasibility(tuple({ m4: 0 }))) && deepEq(rNegZero.value, rNegZero2.value);
+	reg.record({
+		id: "DEC-m4-negzero", category: "decision", attack: "m4 = -0 at the integrality boundary",
+		input: "m4 = -0 (Object.is true), everything else GO-worthy",
+		expected: "-0 is an integer and equals 0: well-formed -> GO contact-head, byte-identical to the m4: 0 result, deterministic",
+		observed: rNegZero.threw ? rNegZero.threw.message : describe(rNegZero.value),
+		verdict: negZeroOk ? "PASS" : "WEAKNESS",
+	});
+	// 1e21: integral (Number.isInteger(1e21) === true) and non-negative, so it
+	// is a contract-legal (absurd) count; Step 0 must fire -> STOP:identity.
+	const rHuge = tryCall(() => decideFeasibility(tuple({ m4: 1e21 })));
+	const rHuge2 = tryCall(() => decideFeasibility(tuple({ m4: 1e21 })));
+	const hugeOk = Number.isInteger(1e21) && rHuge.threw === null &&
+		rHuge.value.verdict === "STOP" && rHuge.value.reason === "identity" && deepEq(rHuge.value, rHuge2.value);
+	reg.record({
+		id: "DEC-m4-1e21", category: "decision", attack: "m4 = 1e21 (integral but absurd)",
+		input: "m4 = 1e21",
+		expected: "1e21 IS an integer-valued double and non-negative: contract-legal count -> STOP:identity (any positive count stops), deterministic; the integrality rule must not reject it for magnitude",
+		observed: rHuge.threw ? rHuge.threw.message : describe(rHuge.value),
+		verdict: hugeOk ? "PASS" : "WEAKNESS",
+	});
+	// MAX_SAFE_INTEGER + 1: exactly representable, integer, positive.
+	const rMax = tryCall(() => decideFeasibility(tuple({ m4: Number.MAX_SAFE_INTEGER + 1 })));
+	const maxOk = Number.isInteger(Number.MAX_SAFE_INTEGER + 1) && rMax.threw === null &&
+		rMax.value.verdict === "STOP" && rMax.value.reason === "identity";
+	reg.record({
+		id: "DEC-m4-maxsafe-plus1", category: "decision", attack: "m4 = Number.MAX_SAFE_INTEGER + 1",
+		input: "m4 = 9007199254740992",
+		expected: "an integer double beyond the safe-integer range: the integrality check (Number.isInteger) is value-based, so it must accept and Step 0 must fire -> STOP:identity; no crash, no coercion",
+		observed: rMax.threw ? rMax.threw.message : describe(rMax.value),
+		verdict: maxOk ? "PASS" : "WEAKNESS",
+	});
+	// MAX_SAFE_INTEGER + 0.5: NOT representable — the literal rounds to
+	// 9007199254740992 (an integer double) before the function ever sees it.
+	// IEEE754 fact, recorded, not a violation: the value the rule observes IS
+	// an integer.
+	const rRound = tryCall(() => decideFeasibility(tuple({ m4: Number.MAX_SAFE_INTEGER + 0.5 })));
+	const stored = Number.MAX_SAFE_INTEGER + 0.5;
+	reg.record({
+		id: "DEC-m4-ulp-rounds", category: "decision", attack: "m4 = MAX_SAFE_INTEGER + 0.5 (a fractional literal that rounds in IEEE754)",
+		input: "m4 = Number.MAX_SAFE_INTEGER + 0.5",
+		expected: "no contract obligation: the literal is not representable; the stored double is 9007199254740992 (integer), so Number.isInteger sees an integer and Step 0 fires -> STOP:identity, deterministically. Recorded so a future 'reject unsafe integers' rule has this fact pinned.",
+		observed: `stored double = ${stored}; Number.isInteger(${stored}) = ${Number.isInteger(stored)}; ` +
+			(rRound.threw ? `rejected: ${rRound.threw.message}` : describe(rRound.value)),
+		verdict: "INFO",
+	});
+	// "0": a numeric STRING that would coerce to the passing count. The
+	// dangerous direction — coercing "0" would read as 'no swaps' and clear
+	// the Step-0 identity gate on unknown identity.
+	const rStr0 = tryCall(() => decideFeasibility(tuple({ m4: "0" })));
+	const str0Ok = rStr0.threw instanceof Error && /DECISION-INPUT/.test(rStr0.threw.message) && rStr0.threw.message.includes("m4");
+	reg.record({
+		id: "DEC-m4-string-zero", category: "decision", attack: "m4 = \"0\" (numeric string)",
+		input: 'm4: "0"',
+		expected: 'a string is not a number -> named DECISION-INPUT rejection naming m4; "0" must never coerce into the passing count',
+		observed: rStr0.threw ? rStr0.threw.message : `no throw -> ${describe(rStr0.value)}`,
+		verdict: str0Ok ? "PASS" : "WEAKNESS",
+	});
+	// 1 + 1 ulp: a fraction one ulp above an integer. Number.isInteger must
+	// reject it even though it is 1e-16 away from a legal count.
+	const rEps = tryCall(() => decideFeasibility(tuple({ m4: 1.0000000000000002 })));
+	const epsOk = rEps.threw instanceof Error && /DECISION-INPUT/.test(rEps.threw.message) && rEps.threw.message.includes("m4") && /whole number/.test(rEps.threw.message);
+	reg.record({
+		id: "DEC-m4-epsilon-adjacent", category: "decision", attack: "m4 = 1 + 1 ulp (0.0000000000000002 above a legal count)",
+		input: "m4 = 1.0000000000000002",
+		expected: "a count cannot be 1+ε -> named DECISION-INPUT rejection naming m4 and 'whole number'; the epsilon must not read as 'just above zero swaps'",
+		observed: rEps.threw ? rEps.threw.message : `no throw -> ${describe(rEps.value)}`,
+		verdict: epsOk ? "PASS" : "WEAKNESS",
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Property sweeps: totality + determinism + oracle agreement on well-formed
 // Property sweeps: totality + determinism + oracle agreement on well-formed
 // tuples; fail-closed named rejection on malformed tuples. The two halves are
 // kept separate by a contract classifier (written from the §10.3 input
@@ -758,6 +850,12 @@ const expectDecisionInput = (label, input, fragment) => {
 		if (!inRange(m.m1, 0, 1)) return "m1";
 		if (!inRange(m.m2, 0, 1)) return "m2";
 		if (!inRange(m.m4, 0, Number.POSITIVE_INFINITY)) return "m4";
+		// pass-3: the m4 integrality rule is part of the contract now — a
+		// fractional m4 (0.6, 2.5) is an offense of m4 itself, not of a later
+		// mode metric; without this the classifier named "m3" for a tuple
+		// with fractional m4 + NaN m3 while the implementation rejected
+		// naming "m4", and the sweep read as WEAKNESS forever
+		if (!Number.isInteger(m.m4)) return "m4";
 		if (m.modes === null || typeof m.modes !== "object" || Array.isArray(m.modes)) return "modes";
 		for (const key of MODES) {
 			const mode = m.modes[key];

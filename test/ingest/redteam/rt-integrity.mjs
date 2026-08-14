@@ -20,7 +20,7 @@
 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { newRegistry, describe } from "./rt-common.mjs";
+import { newRegistry, describe, staleFindings } from "./rt-common.mjs";
 
 const reg = newRegistry();
 const REPO = fileURLToPath(new URL("../../..", import.meta.url));
@@ -165,6 +165,81 @@ replayCase("INT-replay-missing-marker", "recorded stdout matches but lacks the s
 // case record as a note (see above): a finding about a FIX that works would
 // reference a PASSing case and could never clear — the note keeps the story
 // in the artifact without violating the observed-finding rule.
+// ---------------------------------------------------------------------------
+// Pass-3: attack the STALE-FINDINGS guard itself (run-all.mjs Class-B
+// structural guard, staleFindings in rt-common.mjs). Question under test:
+// can any stale finding still reach a green report? The three paths:
+//   (a) all referenced cases PASS -> flagged stale -> run-all throws
+//   (b) at least one referenced case fails -> kept (correct: the failing
+//       case justifies it)
+//   (c) registered AFTER the aggregate snapshot -> invisible to BOTH the
+//       guard and the report artifact
+// The self-test block in run-all.mjs pins (a) and the plain unknown-id and
+// single-weak case; these cases pin the MIXED refs, the unknown-id-dominates
+// rule, and the post-aggregate window.
+// ---------------------------------------------------------------------------
+{
+	// (a) mixed refs: a finding referencing a PASSING and a FAILING case is
+	// NOT stale — the failing case is observed evidence for it. The guard
+	// must keep it (and the report shows it), and it must clear itself the
+	// moment the failing case is fixed.
+	const mixedReg = newRegistry();
+	mixedReg.record({ id: "GUARD-case-pass", category: "self", attack: "synthetic", input: "", expected: "", observed: "", verdict: "PASS" });
+	mixedReg.record({ id: "GUARD-case-weak", category: "self", attack: "synthetic", input: "", expected: "", observed: "", verdict: "WEAKNESS" });
+	mixedReg.finding("low", "synthetic mixed-ref finding", ["GUARD-case-pass", "GUARD-case-weak"], "one referenced case shows the weakness");
+	const mixedHits = staleFindings(mixedReg.findings, mixedReg.cases);
+	reg.record({
+		id: "INT-guard-mixed-refs", category: "integrity", attack: "finding referencing a mix of passing and failing cases",
+		input: "refs [PASS case, WEAKNESS case]",
+		expected: "not stale (one ref genuinely fails) -> staleFindings returns 0 hits; the finding stays in the report while the weakness is observed and clears itself when the case is fixed",
+		observed: `staleFindings hits = ${mixedHits.length} (${mixedHits.map((f) => f.title).join(", ") || "none"})`,
+		verdict: mixedHits.length === 0 ? "PASS" : "DEFECT",
+	});
+	// (b) mixed refs where one id is UNKNOWN: the unknown id can never be
+	// observed to show the defect, so the finding can never clear — the
+	// unknown-id rule dominates even when a real failing case is referenced.
+	const mixedUnknownReg = newRegistry();
+	mixedUnknownReg.record({ id: "GUARD-case-weak", category: "self", attack: "synthetic", input: "", expected: "", observed: "", verdict: "WEAKNESS" });
+	mixedUnknownReg.finding("low", "synthetic mixed-unknown finding", ["GUARD-case-weak", "GUARD-no-such-case"], "one real ref, one unknown");
+	const mixedUnknownHits = staleFindings(mixedUnknownReg.findings, mixedUnknownReg.cases);
+	reg.record({
+		id: "INT-guard-mixed-unknown", category: "integrity", attack: "finding referencing a failing case AND an unknown case id",
+		input: "refs [WEAKNESS case, no-such-case]",
+		expected: "stale: the unknown id can never be observed, so the finding can never clear -> staleFindings flags it (1 hit) and run-all would throw",
+		observed: `staleFindings hits = ${mixedUnknownHits.length} (${mixedUnknownHits.map((f) => f.title).join(", ") || "none"})`,
+		verdict: mixedUnknownHits.length === 1 ? "PASS" : "DEFECT",
+	});
+	// (c) the post-aggregate window: run-all snapshots cases/findings at
+	// import time (the `modules` literal) and derives the report AND the
+	// blocker list from that snapshot. Simulate the exact flow: snapshot,
+	// then register a stale finding + a DEFECT case after the snapshot, and
+	// show neither can reach the rendered report.
+	const snapReg = newRegistry();
+	snapReg.record({ id: "GUARD-snap-pass", category: "self", attack: "synthetic", input: "", expected: "", observed: "", verdict: "PASS" });
+	snapReg.record({ id: "GUARD-snap-weak", category: "self", attack: "synthetic", input: "", expected: "", observed: "", verdict: "WEAKNESS" });
+	snapReg.finding("low", "synthetic snapshot finding", ["GUARD-snap-pass", "GUARD-snap-weak"], "one referenced case shows the weakness");
+	const snapshot = { cases: [...snapReg.cases], findings: [...snapReg.findings] }; // the aggregate window closes here
+	// post-aggregate registrations (what a module doing work in run() or
+	// later would produce):
+	const lateStale = { severity: "low", title: "synthetic LATE stale finding", refs: ["GUARD-snap-pass"], detail: "registered after the aggregate" };
+	const lateDefect = { id: "GUARD-snap-late-defect", category: "self", attack: "synthetic late DEFECT", input: "", expected: "", observed: "", verdict: "DEFECT" };
+	snapReg.finding(lateStale.severity, lateStale.title, lateStale.refs, lateStale.detail);
+	snapReg.record(lateDefect);
+	const snapStale = staleFindings(snapshot.findings, snapshot.cases);
+	const rendered = JSON.stringify({
+		adversarialCases: snapshot.cases,
+		findings: snapshot.findings,
+		blockers: snapshot.cases.filter((c) => c.verdict === "DEFECT"),
+	});
+	const lateInvisible = !rendered.includes(lateStale.title) && !rendered.includes(lateDefect.id) && !rendered.includes("GUARD-snap-late-defect");
+	reg.record({
+		id: "INT-guard-post-aggregate", category: "integrity", attack: "finding registered after the aggregate snapshot",
+		input: "snapshot taken (the run-all `modules` window); then a stale finding AND a DEFECT case registered into the same registry",
+		expected: "the snapshot is what the guard AND the report consume: the late registrations cannot reach a green report (absent from the rendered artifact and from the snapshot-derived blocker list) — so no stale finding can reach a green report through the report path; the window's soundness rests on the suite convention that all registrations happen at import time",
+		observed: `snapshot staleFindings hits = ${snapStale.length} (late finding NOT flagged — the guard has no jurisdiction past the window); rendered report contains late finding: ${rendered.includes(lateStale.title)}, contains late DEFECT case: ${rendered.includes(lateDefect.id)}, snapshot-derived blockers: ${snapshot.cases.filter((c) => c.verdict === "DEFECT").length}`,
+		verdict: snapStale.length === 0 && lateInvisible ? "PASS" : "DEFECT",
+	});
+}
 
 export const run = async () => {
 	console.log("== rt-integrity: orchestrator evidence-integrity attacks ==");

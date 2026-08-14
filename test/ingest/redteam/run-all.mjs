@@ -28,6 +28,7 @@ const rtReproducible = await import("./rt-reproducible.mjs");
 const rtSchema = await import("./rt-schema.mjs");
 const rtDump = await import("./rt-dump.mjs");
 const rtIntegrity = await import("./rt-integrity.mjs");
+const rtAnchor = await import("./rt-anchor.mjs");
 import { captureBaseline, isRedBaseline, replayMatches } from "./rt-integrity.mjs";
 import { newRegistry, staleFindings, ok } from "./rt-common.mjs";
 
@@ -38,14 +39,17 @@ const modules = {
 	schema: await rtSchema.run(),
 	dump: await rtDump.run(),
 	integrity: await rtIntegrity.run(),
+	anchor: await rtAnchor.run(),
 };
 const allCases = modules.decision.cases.concat(
 	modules.measure.cases, modules.reproducible.cases,
 	modules.schema.cases, modules.dump.cases, modules.integrity.cases,
+	modules.anchor.cases,
 );
 const allFindings = modules.decision.findings.concat(
 	modules.measure.findings, modules.reproducible.findings,
 	modules.schema.findings, modules.dump.findings, modules.integrity.findings,
+	modules.anchor.findings,
 );
 //
 // ---------------------------------------------------------------------------
@@ -117,6 +121,13 @@ const blockers = allCases
 const F1_DELTA_REFS = ["SCH-spawn-f1d-named-only", "SCH-f1d-named-only", "SCH-f1d-neither-named-or-derived", "DMP-full-image-slot"];
 const DUMP_EMIT_REFS = ["DMP-model-crash"];
 const INT_REFS = ["INT-baseline-green", "INT-baseline-pass-exit1", "INT-baseline-fail-exit0", "INT-baseline-fail-stderr-exit0", "INT-replay-byte-identical", "INT-replay-exit-drift", "INT-replay-stderr-drift", "INT-replay-error-word", "INT-replay-missing-marker"];
+const MEA_KEY_REFS = ["MEA-keys-offset-1000", "MEA-keys-gaps-both-ends", "MEA-keys-non-monotonic", "MEA-single-row-offset", "MEA-handkey-absent-rejects", "MEA-scored-superset-rejects", "MEA-scored-present-ann-absent"];
+const MEA_KEY_COLLISION_REFS = ["MEA-key-string-dup-frameIndex", "MEA-key-string-obs-shadow"];
+const ANCH_REFS = ["ANCH-endpoints-hold", "ANCH-endpoints-on-rows", "ANCH-out-of-span-hi-1", "ANCH-dup-mid-later-wins", "ANCH-dup-end-later-wins", "ANCH-single-mid-hold", "ANCH-single-at-first-key", "ANCH-bracket-none-midpoint", "ANCH-bracket-none-asymmetric", "ANCH-key-on-emitted-rows", "ANCH-key-between-rows", "ANCH-key-mix", "ANCH-track-dup-keys"];
+const ANCH_TRACK_REFS = ["ANCH-track-unsorted"];
+const ANCH_DUP_REFS = ["ANCH-dup-start-defect"];
+const M4_INT_REFS = ["DEC-m4-negzero", "DEC-m4-1e21", "DEC-m4-maxsafe-plus1", "DEC-m4-string-zero", "DEC-m4-epsilon-adjacent", "DEC-sweep-malformed", "DEC-threshold-M4"];
+const GUARD_REFS = ["INT-guard-mixed-refs", "INT-guard-mixed-unknown", "INT-guard-post-aggregate"];
 
 // ---------------------------------------------------------------------------
 // 2. The CLI replay artifact (exact shape, deterministic node -e)
@@ -246,6 +257,7 @@ const report = {
 		"test/ingest/redteam/rt-schema.mjs",
 		"test/ingest/redteam/rt-dump.mjs",
 		"test/ingest/redteam/rt-integrity.mjs",
+		"test/ingest/redteam/rt-anchor.mjs",
 		"test/ingest/redteam/rt-dump-stub.py",
 		"test/ingest/redteam/run-all.mjs",
 	],
@@ -291,6 +303,13 @@ const report = {
 		{ obligation: "§14.1 phase-0 acceptance: STOP is legitimate; synthetic record must not carry a real-footage claim", status: "covered", refs: ["REP-baseline", "REP-record-drift", "SCH-spawn-baseline"] },
 		{ obligation: "determinism and totality of the decision function", status: "covered", refs: ["DEC-sweep-wellformed", "DEC-sweep-malformed", "DEC-NaN-*"] },
 		{ obligation: "evidence integrity: the gate exits 0 only when every recorded baseline is green, no blocker is open and the CLI replay reproduces — FAIL lines on stderr and exit-code drift included", status: allPass(INT_REFS) ? "covered" : "blocker", refs: INT_REFS },
+		{ obligation: "measure.mjs source-key/row contract (RAWTRACK §4.1): frameIndex entries are SOURCE frame numbers — M2/M5/M6 must read the MAPPED row; duplicate/absent keys reject by name; decimated, offset, gapped and non-monotonic keys must measure the mapped values", status: allPass(MEA_KEY_REFS) ? "covered" : "blocker", refs: MEA_KEY_REFS },
+		{ obligation: "type-corrupt source keys ('6' vs 6) must not bypass the duplicate-frameIndex check nor shadow M4 observations", status: allPass(MEA_KEY_COLLISION_REFS) ? "covered" : "covered-with-gap", refs: MEA_KEY_COLLISION_REFS },
+		{ obligation: "F2c manual-anchor source-key space: interpolation fractions and span bounds live in SOURCE-KEY space; anchors exactly on the endpoints, single anchors, anchors bracketing no emitted row, keys on rows vs between rows, duplicate track keys", status: allPass(ANCH_REFS) ? "covered" : "blocker", refs: ANCH_REFS },
+		{ obligation: "F2c manual-anchor rejects malformed tracks (unsorted frameIndex must not silently mis-derive span bounds)", status: allPass(ANCH_TRACK_REFS) ? "covered" : "covered-with-gap", refs: ANCH_TRACK_REFS },
+		{ obligation: "F2c manual-anchor documented contract: 'Where two anchors share a frameIndex the LATER one wins for that frame' (zero-width jump exact at the shared frame)", status: allPass(ANCH_DUP_REFS) ? "covered" : "blocker", refs: ANCH_DUP_REFS },
+		{ obligation: "m4 count contract: a whole number of swaps (Number.isInteger) — -0/1e21/MAX_SAFE+1 integral and in-range proceed; strings and epsilon-fractions reject by name", status: allPass(M4_INT_REFS) ? "covered" : "blocker", refs: M4_INT_REFS },
+		{ obligation: "stale-finding guard: a finding with any genuinely failing referenced case survives; unknown ids are always stale; post-aggregate registrations can reach neither the guard nor the report", status: allPass(GUARD_REFS) ? "covered" : "blocker", refs: GUARD_REFS },
 	],
 	surfaceEvidence: [
 		{ surface: "decision function — NaN/Infinity/-0/negative metrics", refs: ["DEC-NaN-m1", "DEC-NaN-m2", "DEC-NaN-m4", "DEC-NaN-m4-reason", "DEC-Inf-m4", "DEC-Inf-m12", "DEC-Inf-m3", "DEC--Inf-m12", "DEC-neg0", "DEC-neg-metrics"] },
@@ -305,6 +324,10 @@ const report = {
 		{ surface: "dump-gvhmr.py — nonexistent/empty/file-as-dir/partial-output CLI failures", refs: ["DMP-nonexistent", "DMP-empty-dir", "DMP-file-as-dir", "DMP-npz-no-numpy", "DMP-missing-args", "DMP-trim-inverted", "DMP-selftest"] },
 		{ surface: "dump-gvhmr.py — emission paths (full-image F1-δ, model-named metadata, length mismatch, unknown-only, trim, non-finite)", refs: ["DMP-full-image-slot", "DMP-model-crash", "DMP-partial-emission", "DMP-no-K", "DMP-length-mismatch", "DMP-unknown-only", "DMP-trim-empty", "DMP-trim-clamp", "DMP-nonfinite"] },
 		{ surface: "orchestrator evidence integrity — adversarial baselines (PASS-exit-1, FAIL-exit-0, FAIL-on-stderr-exit-0, silent) and replay drift (exit/stdout/stderr/marker/error-word)", refs: ["INT-baseline-green", "INT-baseline-pass-exit1", "INT-baseline-fail-exit0", "INT-baseline-fail-stderr-exit0", "INT-baseline-silent-exit0", "INT-replay-byte-identical", "INT-replay-exit-drift", "INT-replay-stdout-drift", "INT-replay-stderr-drift", "INT-replay-error-word", "INT-replay-missing-marker"] },
+		{ surface: "orchestrator evidence integrity — stale-finding guard paths (mixed refs, unknown-id dominance, post-aggregate window)", refs: ["INT-guard-mixed-refs", "INT-guard-mixed-unknown", "INT-guard-post-aggregate"] },
+		{ surface: "metrics — source-key space: offset-1000 keys, gaps at both ends, non-monotonic permutation keys, single row at key 37, named rejections (hand/scored/annotation absence), '6' vs 6 coercion collisions", refs: ["MEA-keys-offset-1000", "MEA-keys-gaps-both-ends", "MEA-keys-non-monotonic", "MEA-single-row-offset", "MEA-handkey-absent-rejects", "MEA-scored-superset-rejects", "MEA-scored-present-ann-absent", "MEA-key-string-dup-frameIndex", "MEA-key-string-obs-shadow"] },
+		{ surface: "manual-anchor — source-key interpolation: span-endpoint anchors, duplicate keys (start/mid/end), single anchors, anchors bracketing no emitted row, keys on rows vs between rows, malformed tracks", refs: ["ANCH-endpoints-hold", "ANCH-endpoints-on-rows", "ANCH-out-of-span-hi-1", "ANCH-dup-mid-later-wins", "ANCH-dup-end-later-wins", "ANCH-dup-start-defect", "ANCH-single-mid-hold", "ANCH-single-at-first-key", "ANCH-bracket-none-midpoint", "ANCH-bracket-none-asymmetric", "ANCH-key-on-emitted-rows", "ANCH-key-between-rows", "ANCH-key-mix", "ANCH-track-dup-keys", "ANCH-track-unsorted"] },
+		{ surface: "decision function — m4 integrality boundary: -0, 1e21, MAX_SAFE_INTEGER+1, ulp-rounded literal, \"0\" string, 1+1ulp", refs: ["DEC-m4-negzero", "DEC-m4-1e21", "DEC-m4-maxsafe-plus1", "DEC-m4-ulp-rounds", "DEC-m4-string-zero", "DEC-m4-epsilon-adjacent", "DEC-sweep-malformed"] },
 	],
 	adversarialCases: allCases,
 	findings: allFindings,

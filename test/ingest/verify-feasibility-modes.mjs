@@ -422,6 +422,46 @@ ok("manual-anchor M6 separation error on GT", maMetrics.M6 < 1e-9, `M6=${maMetri
 	}
 }
 
+// --- duplicate anchor keys resolve to the LATER anchor at every position ------
+//
+// The module documents "input order decides ties (the later anchor wins)". The
+// hold-the-ends branch used to fire before a zero-width pair was considered, so
+// mid-list and end-list duplicates resolved to the later anchor while a pair at
+// the take START resolved to the earlier one -- position-dependent semantics,
+// and the jump landed one frame late exactly where a stance boundary matters.
+// The rule is only meaningful if it holds at all three positions.
+{
+	const solve = (p0) => solveManualAnchor(rawTrack, floorFrame, {
+		p0,
+		p1: [{ frameIndex: 0, world: [9, 0, 0] }, { frameIndex: 185, world: [9, 0, 0] }],
+	}).subjects[0].rootWorld;
+
+	const start = solve([
+		{ frameIndex: 0, world: [0, 0, 0] },
+		{ frameIndex: 0, world: [5, 0, 0] },
+		{ frameIndex: 185, world: [15, 0, 0] },
+	]);
+	ok("duplicate anchors at the take START resolve to the later anchor",
+		Math.abs(start[0][0] - 5) < 1e-9, `row0 x=${start[0][0]}, expected 5`);
+
+	const end = solve([
+		{ frameIndex: 0, world: [0, 0, 0] },
+		{ frameIndex: 185, world: [10, 0, 0] },
+		{ frameIndex: 185, world: [15, 0, 0] },
+	]);
+	ok("duplicate anchors at the take END resolve to the later anchor",
+		Math.abs(end[185][0] - 15) < 1e-9, `row185 x=${end[185][0]}, expected 15`);
+
+	const mid = solve([
+		{ frameIndex: 0, world: [0, 0, 0] },
+		{ frameIndex: 90, world: [1, 0, 0] },
+		{ frameIndex: 90, world: [7, 0, 0] },
+		{ frameIndex: 185, world: [15, 0, 0] },
+	]);
+	ok("duplicate anchors MID-list resolve to the later anchor",
+		Math.abs(mid[90][0] - 7) < 1e-9, `row90 x=${mid[90][0]}, expected 7`);
+}
+
 // --- fixture internal consistency: the pinned rootWorld equals the annotation ----------
 
 for (const [mode, fx] of Object.entries(fixtures)) {

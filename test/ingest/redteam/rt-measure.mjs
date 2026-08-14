@@ -458,6 +458,290 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 	});
 }
 
+// ---------------------------------------------------------------------------
+// Pass-3: the source-key/row class fix, attacked with decimated, trimmed,
+// offset, non-monotonic and type-colliding keys. frameIndex entries are
+// SOURCE frame numbers (RAWTRACK-CONTRACT §4.1); the emitted arrays are ROWS
+// of the slice, so row p belongs to source frame frameIndex[p]. Every case
+// below breaks the "key == row" coincidence differently and asserts either a
+// mapped-row measurement (oracle computed in this file from the fixture's
+// own key map — never from the code under test) or a named rejection.
+// ---------------------------------------------------------------------------
+{
+	const chRowOf = new Map(chDoc.frameIndex.map((f, row) => [f, row]));
+	const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+	// decimate the PINNED fixture onto an arbitrary key list (mapped through
+	// the pinned key map, never through key-as-index); keyToPinned translates
+	// a fixture key to the pinned source frame it was trimmed/decimated from
+	// (identity for keys that are pinned frames themselves)
+	const decimate = (keys, keyToPinned = (f) => f) => {
+		const d = structuredClone(chDoc);
+		d.frames = keys.length;
+		d.frameIndex = keys;
+		d.timeS = keys.map((f) => f / d.fps);
+		d.subjects = d.subjects.map((s) => ({
+			...s,
+			rootWorld: keys.map((f) => s.rootWorld[chRowOf.get(keyToPinned(f))]),
+			contactMask: keys.map((f) => s.contactMask[chRowOf.get(keyToPinned(f))]),
+			confidence: keys.map((f) => s.confidence[chRowOf.get(keyToPinned(f))]),
+		}));
+		d.association = { observations: [], groundTruth: [] };
+		return d;
+	};
+	// annotation covering the decimated fixture: labels DERIVED from the
+	// fixture's own rows through the fixture's key map (the synthetic GT
+	// property: predictions match labels on GT), so a misread row makes M2
+	// drop below 1 instead of silently matching
+	const annFor = (fx, handKeys, scoredKeys) => {
+		const rm = new Map(fx.frameIndex.map((f, row) => [f, row]));
+		const labelOf = (s, f) => {
+			const c = s.contactMask[rm.get(f)];
+			return [c[0] >= c[1], c[0] < c[1]];
+		};
+		return {
+			handContact: {
+				frameIndex: handKeys,
+				label: { A: handKeys.map((f) => labelOf(fx.subjects[0], f)), B: handKeys.map((f) => labelOf(fx.subjects[1], f)) },
+			},
+			footWorld: {
+				frameIndex: scoredKeys,
+				A: scoredKeys.map((f) => fx.subjects[0].rootWorld[rm.get(f)]),
+				B: scoredKeys.map((f) => fx.subjects[1].rootWorld[rm.get(f)]),
+			},
+		};
+	};
+	const sepFor = (fx, scoredKeys) => ({
+		scoredFrameIndex: scoredKeys,
+		annotatedSeparationM: scoredKeys.map((f) => {
+			const rm = new Map(fx.frameIndex.map((g, row) => [g, row]));
+			return dist3(fx.subjects[0].rootWorld[rm.get(f)], fx.subjects[1].rootWorld[rm.get(f)]);
+		}),
+	});
+	const ideal = (m) => m.M1 === 1 && m.M2 === 1 && Math.abs(m.M5) < 1e-9 && Math.abs(m.M6) < 1e-9;
+
+	// (a) every key offset far from zero: 93 rows over source keys
+	//     [1000, 1002, ..., 1184]. A row-position read of key 1000+ is out of
+	//     bounds (undefined row), so the fixture cannot measure "correctly"
+	//     by luck — the mapped row is the only path to finite metrics.
+	const offsetKeys = Array.from({ length: 93 }, (_, i) => 1000 + 2 * i);
+	const offsetFx = decimate(offsetKeys, (f) => f - 1000);
+	offsetFx.separation = sepFor(offsetFx, [1014, 1050, 1086, 1122, 1158]);
+	const offsetAnn = annFor(offsetFx, [1008, 1014, 1020], [1014, 1050, 1086, 1122, 1158]);
+	let mOff = null;
+	try { mOff = computeMetrics(offsetFx, offsetAnn); } catch (e) { mOff = `threw ${e.name}: ${e.message}`; }
+	reg.record({
+		id: "MEA-keys-offset-1000", category: "measure", attack: "all source keys far from zero (1000..1184, 93 rows)",
+		input: "frameIndex [1000, 1002, ..., 1184]; scored keys [1014, 1050, 1086, 1122, 1158]; hand keys [1008, 1014, 1020]",
+		expected: "mapped-row measurement: M1=1, M2=1, M5=0, M6=0 (roots equal the annotation on their own rows); a key-as-row read of contactMask[1000] would be undefined and crash, never a plausible number",
+		observed: typeof mOff === "string" ? mOff : `M1=${mOff.M1} M2=${mOff.M2} M5=${mOff.M5} M6=${mOff.M6}`,
+		verdict: typeof mOff === "string" ? "WEAKNESS" : ideal(mOff) ? "PASS" : "WEAKNESS",
+	});
+
+	// (b) gaps at BOTH ends: 71 rows over keys [20, 22, ..., 160] — the take
+	//     starts at source frame 20 and ends at 160, so first/last keys are
+	//     far from rows 0/70 and the scored frames include both endpoints.
+	const gapKeys = Array.from({ length: 71 }, (_, i) => 20 + 2 * i);
+	const gapFx = decimate(gapKeys);
+	const gapScored = [20, 60, 120, 160];
+	gapFx.separation = sepFor(gapFx, gapScored);
+	const gapAnn = annFor(gapFx, [22, 60, 120, 160], gapScored);
+	let mGap = null;
+	try { mGap = computeMetrics(gapFx, gapAnn); } catch (e) { mGap = `threw ${e.name}: ${e.message}`; }
+	reg.record({
+		id: "MEA-keys-gaps-both-ends", category: "measure", attack: "frameIndex with gaps at the start AND the end",
+		input: "keys [20, 22, ..., 160] (0..18 and 162..185 trimmed); scored keys include the first (20) and last (160) emitted keys",
+		expected: "mapped-row measurement: M1=1, M2=1, M5=0, M6=0 on the 71-row slice; the endpoint scored keys must resolve to rows 0 and 70",
+		observed: typeof mGap === "string" ? mGap : `M1=${mGap.M1} M2=${mGap.M2} M5=${mGap.M5} M6=${mGap.M6}`,
+		verdict: typeof mGap === "string" ? "WEAKNESS" : ideal(mGap) ? "PASS" : "WEAKNESS",
+	});
+
+	// (c) non-monotonic frameIndex: keys [1, 0, 3, 2] — a permutation, so
+	//     EVERY key differs from its own row and a key-as-row read lands on a
+	//     DIFFERENT row that still exists (a plausible wrong number, not a
+	//     crash). Row values are distinct per row, so any misread moves M5.
+	const perm = [1, 0, 3, 2];
+	const permFx = {
+		...structuredClone(chDoc),
+		frames: 4,
+		frameIndex: perm,
+		timeS: [0, 0, 0, 0],
+		subjects: [
+			{ subjectId: "A", trackId: "p0", rootWorld: [[0, 0, 0], [0.5, 0, 0], [1, 0, 0], [1.5, 0, 0]], contactMask: Array.from({ length: 4 }, () => [0.93, 0.07]), confidence: Array.from({ length: 4 }, () => 1) },
+			{ subjectId: "B", trackId: "p1", rootWorld: [[2, 0, 0], [2.5, 0, 0], [3, 0, 0], [3.5, 0, 0]], contactMask: Array.from({ length: 4 }, () => [0.93, 0.07]), confidence: Array.from({ length: 4 }, () => 1) },
+		],
+		association: { observations: [], groundTruth: [] },
+		separation: { scoredFrameIndex: [1, 3], annotatedSeparationM: [2, 2] },
+	};
+	const permAnn = {
+		handContact: { frameIndex: [1, 2], label: { A: [[true, false], [true, false]], B: [[true, false], [true, false]] } },
+		footWorld: { frameIndex: [1, 3], A: [[0, 0, 0], [1, 0, 0]], B: [[2, 0, 0], [3, 0, 0]] },
+	};
+	let mPerm = null;
+	try { mPerm = computeMetrics(permFx, permAnn); } catch (e) { mPerm = `threw ${e.name}: ${e.message}`; }
+	reg.record({
+		id: "MEA-keys-non-monotonic", category: "measure", attack: "non-monotonic frameIndex (a permutation of 0..3)",
+		input: "frameIndex [1, 0, 3, 2]; every key differs from its row; scored [1, 3] map to rows 0 and 2; A rows carry distinct x = [0, 0.5, 1, 1.5]",
+		expected: "mapped-row measurement: M1=1, M2=1, M5=0 (root of key 1 = row 0 = [0,0,0] matches the annotation), M6=0; a key-as-row read of key 1 would take row 1 (x=0.5) and measure M5 = sqrt(0.25/2) > 0 — a silent plausible number",
+		observed: typeof mPerm === "string" ? mPerm : `M1=${mPerm.M1} M2=${mPerm.M2} M5=${mPerm.M5} M6=${mPerm.M6}`,
+		verdict: typeof mPerm === "string" ? "WEAKNESS" : ideal(mPerm) ? "PASS" : "WEAKNESS",
+	});
+
+	// (d) single-row take at key 37 — one row whose source key is not 0
+	const single = {
+		...structuredClone(chDoc),
+		frames: 1,
+		frameIndex: [37],
+		timeS: [37 / chDoc.fps],
+		subjects: [
+			{ subjectId: "A", trackId: "p0", rootWorld: [[0, 0, 0]], contactMask: [[0.93, 0.07]], confidence: [0.9] },
+			{ subjectId: "B", trackId: "p1", rootWorld: [[1.5, 0, 0]], contactMask: [[0.07, 0.93]], confidence: [0.9] },
+		],
+		association: {
+			observations: [{ frameIndex: 37, trackId: "p0", assignedSubjectId: "A", evidence: "bbox", value: [0] }],
+			groundTruth: [{ frameIndex: 37, trackId: "p0", subjectId: "A" }],
+		},
+		separation: { scoredFrameIndex: [37], annotatedSeparationM: [1.5] },
+	};
+	const singleAnn = {
+		handContact: { frameIndex: [37], label: { A: [[true, false]], B: [[false, true]] } },
+		footWorld: { frameIndex: [37], A: [[0, 0, 0]], B: [[1.5, 0, 0]] },
+	};
+	let mSingle = null;
+	try { mSingle = computeMetrics(single, singleAnn); } catch (e) { mSingle = `threw ${e.name}: ${e.message}`; }
+	const singleOk = typeof mSingle !== "string" &&
+		mSingle.M1 === 1 && mSingle.M2 === 1 && mSingle.M3 === 0 && mSingle.M4 === 0 &&
+		Math.abs(mSingle.M5) < 1e-12 && Math.abs(mSingle.M6) < 1e-12;
+	reg.record({
+		id: "MEA-single-row-offset", category: "measure", attack: "single-row take whose only row is source key 37",
+		input: "frames=1, frameIndex [37]; scored [37]; hand label at 37; separation 1.5 m",
+		expected: "M1=1, M2=1, M3=0, M4=0, M5=0, M6=0 — the row is addressed through frameIndex; a key-as-row read of contactMask[37] would be undefined and crash",
+		observed: typeof mSingle === "string" ? mSingle : `M1=${mSingle.M1} M2=${mSingle.M2} M3=${mSingle.M3} M4=${mSingle.M4} M5=${mSingle.M5} M6=${mSingle.M6}`,
+		verdict: singleOk ? "PASS" : "WEAKNESS",
+	});
+
+	// (e) named rejections: keys absent from frameIndex must reject by name —
+	//     the handContact side and the scored side, plus a scored key present
+	//     in frameIndex but absent from the annotation
+	{
+		const decFx = decimate(Array.from({ length: 93 }, (_, i) => 2 * i));
+		decFx.separation = sepFor(decFx, [14, 50, 86, 122, 158]);
+		const badHandAnn = annFor(decFx, [8, 14, 20], [14, 50, 86, 122, 158]);
+		badHandAnn.handContact.frameIndex = [8, 14, 1]; // 1 is odd: absent from even keys
+		let hErr = null;
+		try { computeMetrics(decFx, badHandAnn); } catch (e) { hErr = e; }
+		const namedHand = hErr instanceof Error && /handContact references source frame 1, absent from frameIndex/.test(hErr.message);
+		reg.record({
+			id: "MEA-handkey-absent-rejects", category: "measure", attack: "hand-labelled key absent from frameIndex",
+			input: "decimated fixture keys [0, 2, ..., 184]; annotation handContact key 1",
+			expected: "named rejection naming the consumer (handContact) and the key (1) — never a silent row misread",
+			observed: hErr ? `${hErr.name}: ${hErr.message}` : "no throw",
+			verdict: namedHand ? "PASS" : "WEAKNESS",
+		});
+		const superset = structuredClone(decFx);
+		superset.separation = { scoredFrameIndex: [14, 50, 86, 122, 158, 185], annotatedSeparationM: [14, 50, 86, 122, 158, 185].map((f) => f) };
+		let sErr = null;
+		try { computeMetrics(superset, annFor(decFx, [8, 14, 20], [14, 50, 86, 122, 158])); } catch (e) { sErr = e; }
+		const namedSuperset = sErr instanceof Error && /separation\.scoredFrameIndex references source frame 185, absent from frameIndex/.test(sErr.message);
+		reg.record({
+			id: "MEA-scored-superset-rejects", category: "measure", attack: "scoredFrameIndex a superset of frameIndex",
+			input: "scored keys [14, 50, 86, 122, 158, 185] on a fixture whose keys are the even frames 0..184",
+			expected: "named rejection naming separation.scoredFrameIndex and key 185 — a scored frame outside the take cannot read as row 0 or any other row",
+			observed: sErr ? `${sErr.name}: ${sErr.message}` : "no throw",
+			verdict: namedSuperset ? "PASS" : "WEAKNESS",
+		});
+		// scored key present in frameIndex but absent from the annotation:
+		// the M5 annPos guard must reject by name
+		const annMissing = structuredClone(annDoc);
+		const victim = chDoc.separation.scoredFrameIndex[3]; // 32
+		const vi = annMissing.footWorld.frameIndex.indexOf(victim);
+		annMissing.footWorld.frameIndex.splice(vi, 1);
+		annMissing.footWorld.A.splice(vi, 1);
+		annMissing.footWorld.B.splice(vi, 1);
+		let aErr = null;
+		try { computeMetrics(chDoc, annMissing); } catch (e) { aErr = e; }
+		const namedAnn = aErr instanceof Error && /M5: no annotated foot world position for frame 32/.test(aErr.message);
+		reg.record({
+			id: "MEA-scored-present-ann-absent", category: "measure", attack: "scored key in frameIndex but missing from the annotation footWorld",
+			input: "pinned fixture, annotation footWorld entry for scored frame 32 removed",
+			expected: "named rejection 'M5: no annotated foot world position for frame 32' — the annotation must cover every scored frame",
+			observed: aErr ? `${aErr.name}: ${aErr.message}` : "no throw",
+			verdict: namedAnn ? "PASS" : "WEAKNESS",
+		});
+	}
+
+	// (f) keys that collide after numeric coercion: "6" vs 6. A JS Map keeps
+	//     them distinct, so the duplicate-key guards never fire and the
+	//     take is measured as if two frames existed.
+	{
+		// fixture frameIndex ["6" and 6 as separate entries]: the named
+		// duplicate rejection is bypassable by type
+		const dupFx = {
+			...structuredClone(chDoc),
+			frames: 2,
+			frameIndex: [6, "6"],
+			timeS: [0, 0],
+			subjects: [
+				{ subjectId: "A", trackId: "p0", rootWorld: [[0, 0, 0], [0, 0, 0]], contactMask: [[0.93, 0.07], [0, 0]], confidence: [0.9, 0.9] },
+				{ subjectId: "B", trackId: "p1", rootWorld: [[2, 0, 0], [2, 0, 0]], contactMask: [[0.93, 0.07], [0.93, 0.07]], confidence: [0.9, 0.9] },
+			],
+			association: { observations: [], groundTruth: [] },
+			separation: { scoredFrameIndex: [6], annotatedSeparationM: [2] },
+		};
+		const dupAnn = { handContact: { frameIndex: [], label: { A: [], B: [] } }, footWorld: { frameIndex: [6], A: [[0, 0, 0]], B: [[2, 0, 0]] } };
+		let dErr = null;
+		let mDup = null;
+		try { mDup = computeMetrics(dupFx, dupAnn); } catch (e) { dErr = e; }
+		reg.record({
+			id: "MEA-key-string-dup-frameIndex", category: "measure", attack: "frameIndex entries '6' and 6 (numeric coercion collision)",
+			input: "frameIndex [6, \"6\"] for 2 frames; one row has contacts, the other none",
+			expected: "the two entries are the SAME source frame after coercion: the named duplicate-frameIndex rejection must fire (or the duplicate must be detected); never a silent plausible M1 from two rows that are really one frame",
+			observed: dErr ? `${dErr.name}: ${dErr.message}` : `no throw — the duplicate escaped the named check; M1=${mDup.M1} (one of two rows has contacts)`,
+			verdict: dErr ? "PASS" : "WEAKNESS",
+		});
+		if (!dErr) {
+			reg.finding("low", "measure.mjs duplicate-frameIndex check is bypassable by string-typed keys ('6' vs 6)", ["MEA-key-string-dup-frameIndex"],
+				"rowByFrame uses a JS Map (SameValueZero), so '6' and 6 are distinct keys and the named duplicate rejection never fires for a fixture that declares the same source frame twice with different types. The take then measures a plausible M1 over two rows that are really one frame. The schema validator rejects wrong dtypes earlier in the pipeline; measure.mjs alone does not.");
+		}
+		// M4's observation map: `${frameIndex}:${trackId}` coerces "6" and 6
+		// to the SAME string key, so one observation silently shadows the
+		// other and the shadowed one is never judged
+		const obsFx = {
+			...structuredClone(chDoc),
+			frames: 2,
+			frameIndex: [6, 12],
+			timeS: [0, 0],
+			subjects: [
+				{ subjectId: "A", trackId: "p0", rootWorld: [[0, 0, 0], [0, 0, 0]], contactMask: [[0.93, 0.07], [0.93, 0.07]], confidence: [0.9, 0.9] },
+				{ subjectId: "B", trackId: "p1", rootWorld: [[2, 0, 0], [2, 0, 0]], contactMask: [[0.93, 0.07], [0.93, 0.07]], confidence: [0.9, 0.9] },
+			],
+			association: {
+				observations: [
+					{ frameIndex: "6", trackId: "p0", assignedSubjectId: "B", evidence: "bbox", value: [0] },
+					{ frameIndex: 6, trackId: "p0", assignedSubjectId: "A", evidence: "bbox", value: [0] },
+				],
+				groundTruth: [{ frameIndex: 6, trackId: "p0", subjectId: "A" }],
+			},
+			separation: { scoredFrameIndex: [6], annotatedSeparationM: [2] },
+		};
+		const obsAnn = { handContact: { frameIndex: [], label: { A: [], B: [] } }, footWorld: { frameIndex: [6], A: [[0, 0, 0]], B: [[2, 0, 0]] } };
+		const mObs = computeMetrics(obsFx, obsAnn);
+		const reversed = structuredClone(obsFx);
+		reversed.association.observations.reverse();
+		const mObsRev = computeMetrics(reversed, obsAnn);
+		reg.record({
+			id: "MEA-key-string-obs-shadow", category: "measure", attack: "observations at frameIndex '6' and 6 (coercion collision in the M4 map)",
+			input: "groundTruth (6, p0, A); observations (\"6\", p0, B) then (6, p0, A) — the B claim is the DISAGREEING duplicate",
+			expected: "both observations are for the same source frame; the disagreeing one must not vanish — named rejection, or M4 must not silently read 0 while a disagreeing observation exists",
+			observed: `M4=${mObs.M4} in this order (the disagreeing \"6\" observation was shadowed by the later numeric one); reversed order M4=${mObsRev.M4} — the count is array-order-dependent`,
+			verdict: mObs.M4 === 0 ? "WEAKNESS" : "PASS",
+		});
+		if (mObs.M4 === 0) {
+			reg.finding("medium", "M4's observation map coerces '6' and 6 to one key: a disagreeing duplicate observation silently shadows the other", ["MEA-key-string-obs-shadow"],
+				"`obsBy` keys on `${frameIndex}:${trackId}` (template-literal coercion), so observations at numeric 6 and string '6' collide and last-write-wins. With the disagreeing claim first, M4 reads 0 — 'no swaps' — while the groundTruth entry's disagreement was never judged. The count flips to 1 when the array order is reversed: the result depends on input order, not on the data.");
+		}
+	}
+}
+
 export const run = async () => {
 	console.log("== rt-measure: M1-M6 measurement attacks ==");
 	return { cases: reg.cases, findings: reg.findings };
