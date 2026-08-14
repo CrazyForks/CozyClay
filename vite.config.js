@@ -3,18 +3,13 @@ import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-	// Root-absolute on purpose: the site is served from its own apex domain
-	// (cozyclay.org), so emitted assets and public files resolve from "/"
-	// regardless of which page loads them — the landing at "/" or the studio
-	// at "/app/".
-	base: "/",
+	// Keep emitted URLs portable when the static build is hosted below a path.
+	base: "./",
 	build: {
 		rollupOptions: {
 			input: {
-				// The crawlable landing page: static HTML, no bundle.
-				landing: resolve(__dirname, "index.html"),
-				// The studio itself.
-				app: resolve(__dirname, "app/index.html"),
+				studio: resolve(import.meta.dirname, "index.html"),
+				legacyAppRedirect: resolve(import.meta.dirname, "app/index.html"),
 			},
 		},
 	},
