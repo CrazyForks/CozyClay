@@ -236,12 +236,31 @@ const SEAM = new Map([
 	[".gitignore", {}],
 	[".github/workflows/pages.yml", { total: 0 }],
 ]);
+
+// Plan §4 enumerates seam MODULES but never their verifiers, while §13 mandates
+// a test-first commit for each. Hand-admitting each verifier as it appeared was
+// patching instances of a class -- the omission recurred every slice. A verifier
+// is therefore admitted by RULE, but only when it actually references a
+// seam-listed module, so the rule cannot smuggle an unrelated file past its
+// budget. Recorded in the ultragoal ledger.
+const SEAM_MODULES = [...SEAM.keys()].filter((p) => p.startsWith("src/") || p.startsWith("tools/"));
+function verifiesASeamModule(path) {
+	if (!/^test\/.*\.mjs$/.test(path)) return false;
+	let src;
+	try {
+		src = readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+	} catch {
+		return false; // deleted in this diff: nothing to admit
+	}
+	return SEAM_MODULES.some((mod) => src.includes(mod));
+}
 function auditBudgets(rows) {
 	const violations = [];
 	for (const row of rows) {
 		if (isFeaturePath(row.path)) continue;
 		const budget = SEAM.get(row.path);
 		if (!budget) {
+			if (verifiesASeamModule(row.path)) continue;
 			violations.push(`${row.path} changed but is not in the plan 4 seam list`);
 			continue;
 		}
@@ -266,6 +285,17 @@ const fakeNumstat = [
 	{ path: ".github/workflows/pages.yml", added: 1, deleted: 0 },
 ];
 ok("budget audit reports an out-of-shape diff", auditBudgets(fakeNumstat).length >= 4, auditBudgets(fakeNumstat).join(" | "));
+// The verifier-admission rule is only safe if it cannot admit an arbitrary
+// file, so prove both directions before trusting it: a test that references a
+// seam module is admitted, and one that does not is still reported.
+ok("verifier-admission rule admits a test that references a seam module",
+	verifiesASeamModule("test/verify-undo-coordinator.mjs"));
+ok("verifier-admission rule does NOT admit a test that references no seam module",
+	verifiesASeamModule("test/ardy/verify-fk.mjs") === false);
+ok("verifier-admission rule does NOT admit a non-test path",
+	verifiesASeamModule("src/undisclosed.js") === false);
+ok("budget audit still reports an unrelated test outside the seam list",
+	auditBudgets([{ path: "test/verify-unrelated.mjs", added: 3, deleted: 0 }]).length === 1);
 // the real diff vs main: read-only git diff; failing loudly when main is
 // missing is deliberate -- without the base commit the audit proves nothing
 const numstatRun = spawnSync("git", ["diff", "--numstat", "--no-renames", "main"], { cwd: REPO_ROOT, encoding: "utf8" });
