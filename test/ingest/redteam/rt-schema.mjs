@@ -27,7 +27,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { newRegistry, sha256Of } from "./rt-common.mjs";
+import { newRegistry, sha256Of, findingWhenObserved } from "./rt-common.mjs";
 
 const reg = newRegistry();
 const REPO = fileURLToPath(new URL("../../..", import.meta.url));
@@ -461,13 +461,17 @@ hCase("SCH-tensor-wrong-rank", "F1-ζ tensor exists but with the wrong rank (2D 
 // Findings: validator blind spots (each verified against the real code where
 // noted)
 // ---------------------------------------------------------------------------
-reg.finding("medium", "F1-η round-trip consistency is not enforced by validateRawTrack", ["SCH-spawn-upaxis", "SCH-contradict-upaxis", "SCH-contradict-handedness", "SCH-contradict-crop"],
+// Each finding is registered only while at least one of the cases it
+// references actually shows the weakness (findingWhenObserved): if a fix
+// turns every referenced case green, the finding disappears with it instead
+// of surviving as a stale claim.
+findingWhenObserved(reg, "medium", "F1-η round-trip consistency is not enforced by validateRawTrack", ["SCH-spawn-upaxis", "SCH-contradict-upaxis", "SCH-contradict-handedness", "SCH-contradict-crop"],
 	"RAWTRACK-CONTRACT §2 F1-η: handedness, up-axis, fps, crop transform 'named and asserted by fixture round-trip'. The round-trip assertion exists only as one-off ok() lines on the checked-in good fixture; validateRawTrack accepts a fixture whose slots.F1-η.upAxis/handedness/crop contradict data.* — confirmed with the real test (SCH-spawn-upaxis: 'PASS good fixture: zero contract violations').");
-reg.finding("low", "frameIndex sync-key integrity (sortedness, uniqueness) unchecked; data-tensor length vs frames unchecked", ["SCH-unsorted-frameIndex", "SCH-duplicate-frameIndex", "SCH-tensor-length-vs-frames"],
+findingWhenObserved(reg, "low", "frameIndex sync-key integrity (sortedness, uniqueness) unchecked; data-tensor length vs frames unchecked", ["SCH-unsorted-frameIndex", "SCH-duplicate-frameIndex", "SCH-tensor-length-vs-frames"],
 	"frameIndex is the synchronization key (RAWTRACK-CONTRACT §1); duplicates or reordering pass the validator, and a data tensor whose row count disagrees with frames passes too (cf. DMP-length-mismatch).");
-reg.finding("low", "dtype/units labels are opaque strings — a wrong label on self-consistent data is undetected", ["SCH-wrong-dtype", "SCH-wrong-units", "SCH-spawn-units"],
+findingWhenObserved(reg, "low", "dtype/units labels are opaque strings — a wrong label on self-consistent data is undetected", ["SCH-wrong-dtype", "SCH-wrong-units", "SCH-spawn-units"],
 	"The §8.4 numeric acceptance catches units that contradict the data scale, but a wrong label on self-consistent data (data and annotation both metres, label says centimetres) passes both the validator and the acceptance — confirmed with the real test (SCH-spawn-units). dtype is never tied to the data at all.");
-reg.finding("medium", "F1-δ 'the exact derivation' accepts hollow derivations ({from:'',via:''} or empty from)", ["SCH-f1d-empty-derivation", "SCH-f1d-derivation-empty-from"],
+findingWhenObserved(reg, "medium", "F1-δ 'the exact derivation' accepts hollow derivations ({from:'',via:''} or empty from)", ["SCH-f1d-empty-derivation", "SCH-f1d-derivation-empty-from"],
 	"RAWTRACK-CONTRACT §7: F1-δ's derivation 'must state the exact recipe (crop-space keypoints + crop transform)' and §2 allows it 'or the exact derivation'. validateRawTrackRT treats 'from and via are strings' as derived, so a slot with NO named tensor and {from:'',via:''} records as resolved — no supplier cited, no recipe stated. The fixture then claims F1-δ resolved (with subjects: [] downstream) while the operator gate believes the slot is satisfied.");
 
 rmSync(scratch, { recursive: true, force: true });

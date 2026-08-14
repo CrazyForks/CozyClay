@@ -65,23 +65,33 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 	});
 	let m = null;
 	try {
-		m = computeMetrics(mk({ frames: 0, frameIndex: [], timeS: [], subjects: [
-			{ subjectId: "A", trackId: "p0", rootWorld: [], contactMask: [], confidence: [] },
-			{ subjectId: "B", trackId: "p1", rootWorld: [], contactMask: [], confidence: [] },
-		] }), emptyAnn);
+		m = computeMetrics(mk({
+			frames: 0, frameIndex: [], timeS: [],
+			subjects: [
+				{ subjectId: "A", trackId: "p0", rootWorld: [], contactMask: [], confidence: [] },
+				{ subjectId: "B", trackId: "p1", rootWorld: [], contactMask: [], confidence: [] },
+			],
+			// the fixture must be degenerate end to end: dangling groundTruth
+			// or scored frames would make the rowOf mapping throw instead of
+			// exercising the 0/0 paths this case pins
+			association: { observations: [], groundTruth: [] },
+			separation: { scoredFrameIndex: [], annotatedSeparationM: [] },
+		}), emptyAnn);
 	} catch (e) { m = `threw ${e.name}: ${e.message}`; }
 	const out = typeof m === "string" ? m : `M1=${m.M1} M2=${m.M2} M3=${m.M3} M4=${m.M4} M5=${m.M5} M6=${m.M6}`;
 	reg.record({
 		id: "MEA-empty-frames-empty-ann", category: "measure", attack: "empty frames AND empty annotation",
 		input: "frames=0, no contacts, no scored frames, no labels",
-		expected: "M1 undefined (0/0), M5/M6 undefined (0/0) — NOT plausible zeros; M2=1.0 only per the documented 'no predicted contacts' convention; M3/M4 must not silently read 0 where 'no data' is the truth",
+		expected: "every denominator-less metric undefined with a reason (M1/M5/M6 0/0, M2 no hand-labelled frames, M3 no contact runs, M4 no groundTruth entries) — NOT plausible zeros, never the NaN of an older convention",
 		observed: out,
 		verdict: typeof m === "string" ? "WEAKNESS" :
-			(isNaNv(m.M1) && isNaNv(m.M5) && isNaNv(m.M6) && m.M2 === 1 && m.M3 === 0 && m.M4 === 0) ? "WEAKNESS" : "PASS",
+			(m.M1 === undefined && m.M2 === undefined && m.M3 === undefined && m.M4 === undefined && m.M5 === undefined && m.M6 === undefined) ? "PASS" : "WEAKNESS",
 	});
-	if (typeof m !== "string") {
+	// finding gated on the OBSERVED defect: only while M3/M4 actually read 0
+	// (which is also exactly when the case verdict is WEAKNESS)
+	if (typeof m !== "string" && (m.M3 === 0 || m.M4 === 0)) {
 		reg.finding("low", "M3/M4 read 0 on an empty fixture (vacuous zeros)", ["MEA-empty-frames-empty-ann"],
-			`M3=0 with zero contact runs and M4=0 with zero groundTruth entries are indistinguishable from measured zeros; M5/M6 correctly degrade to NaN.`);
+			`M3=0 with zero contact runs and M4=0 with zero groundTruth entries are indistinguishable from measured zeros; the undefined-with-reason convention exists so a degenerate fixture cannot read as a measured pass.`);
 	}
 }
 
@@ -111,11 +121,12 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 		expected: "M1=1, M2=1, M4=0, M5=0, M6=0; M3: a 1-frame run has std 0 -> 0 (convention: within-run std)",
 		observed: out,
 		verdict: typeof m === "string" ? "WEAKNESS" : (m.M1 === 1 && m.M2 === 1 && m.M4 === 0 && m.M5 === 0 && m.M6 === 0 && m.M3 === 0) ? "PASS" : "WEAKNESS",
+		// documented on the case, not as a finding: as an INFO finding it
+		// referenced a PASSing case and could never clear under the
+		// stale-finding guard — the convention note belongs to the case it
+		// describes
+		note: "By the within-run std convention a 1-frame run trivially has zero jitter; consistent between measure.mjs and the gate, so reproducible — noted, not a defect.",
 	});
-	if (typeof m !== "string") {
-		reg.finding("info", "M3 is 0 for single-frame contact runs (std of one sample)", ["MEA-single-frame"],
-			"By the within-run std convention a 1-frame run trivially has zero jitter; consistent between measure.mjs and the gate, so reproducible — noted, not a defect.");
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -150,8 +161,12 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 		observed: `M1=${mN.M1} M2=${mN.M2} M3=${mN.M3} M4=${mN.M4} M5=${mN.M5.toExponential(2)} M6=${mN.M6.toExponential(2)}`,
 		verdict: mN.M1 === 0 && mN.M3 === 0 ? "WEAKNESS" : "PASS",
 	});
-	reg.finding("low", "Zero-contact take: M3=0 from an empty run set is a vacuous pass of the jitter gate", ["MEA-no-contact"],
-		`M3=0 with no contact runs; combined with M5=0/M6=0 (roots matching the annotation) the §10.3 step-2/step-3 branches can GO with no observed contact at all. Plan §10.2 does not define M3 for an empty run set; both implementations agree (reproducible), so this is a convention gap, not a drift.`);
+	// finding gated on the OBSERVED defect: only while M3 actually reads 0
+	// (M1 is always 0 for this input, so this is exactly the WEAKNESS case)
+	if (mN.M3 === 0) {
+		reg.finding("low", "Zero-contact take: M3=0 from an empty run set is a vacuous pass of the jitter gate", ["MEA-no-contact"],
+			`M3=0 with no contact runs; combined with M5=0/M6=0 (roots matching the annotation) the §10.3 step-2/step-3 branches can GO with no observed contact at all. Plan §10.2 does not define M3 for an empty run set; both implementations agree (reproducible), so this is a convention gap, not a drift.`);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -168,22 +183,28 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 	let m = null;
 	try { m = computeMetrics(short, annDoc); } catch (e) { m = `threw ${e.name}: ${e.message}`; }
 	const out = typeof m === "string" ? m : `M1=${m.M1.toFixed(4)} (B has ${keep} rows, frames=186)`;
+	// the LONGER-subject case runs first so the mismatch case's note can cite
+	// it: the note replaces an INFO finding that referenced a PASSing case
+	// and could never clear under the stale-finding guard
+	const long = structuredClone(chDoc);
+	long.subjects[1].contactMask = [...long.subjects[1].contactMask, ...long.subjects[1].contactMask.slice(0, 14)];
+	long.subjects[1].rootWorld = [...long.subjects[1].rootWorld, ...long.subjects[1].rootWorld.slice(0, 14)];
+	let mL = null;
+	try { mL = computeMetrics(long, annDoc); } catch (e) { mL = `threw ${e.name}: ${e.message}`; }
 	reg.record({
 		id: "MEA-subject-length-mismatch", category: "measure", attack: "subject B has fewer rows than frames",
 		input: `B.contactMask/rootWorld truncated to ${keep} rows while frames=186 and A untouched`,
 		expected: "the length mismatch must be detected loudly — a plausible-looking M1 computed from mismatched shapes is the failure mode",
 		observed: out,
 		verdict: typeof m === "string" ? "PASS" : "WEAKNESS",
+		note: typeof m === "string"
+			? `${m} — the failure is loud but unnamed (the gate's validateShape names the shape error first); asymmetric with MEA-subject-length-over where a LONGER subject silently yields M1=${typeof mL === "string" ? "?" : mL.M1.toFixed(4)} > 1`
+			: undefined,
 	});
 	if (typeof m !== "string") {
 		reg.finding("low", "measure.mjs computes over mismatched subject lengths without complaint", ["MEA-subject-length-mismatch"],
 			`B's ${keep} contact rows are divided by fixture.frames=186 -> M1=${m.M1.toFixed(4)}, a plausible-looking fraction for corrupt input. The reproducibility gate's validateShape rejects this shape (rootWorld/contactMask rows !== frames); measure.mjs alone (feasibility-only code) does not.`);
 	}
-	const long = structuredClone(chDoc);
-	long.subjects[1].contactMask = [...long.subjects[1].contactMask, ...long.subjects[1].contactMask.slice(0, 14)];
-	long.subjects[1].rootWorld = [...long.subjects[1].rootWorld, ...long.subjects[1].rootWorld.slice(0, 14)];
-	let mL = null;
-	try { mL = computeMetrics(long, annDoc); } catch (e) { mL = `threw ${e.name}: ${e.message}`; }
 	reg.record({
 		id: "MEA-subject-length-over", category: "measure", attack: "subject B has 200 rows while frames=186",
 		input: "B arrays extended to 200 rows (all contacts)",
@@ -191,10 +212,6 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 		observed: typeof mL === "string" ? mL : `M1=${mL.M1.toFixed(4)}`,
 		verdict: typeof mL === "string" ? "PASS" : (mL.M1 <= 1 ? "PASS" : "WEAKNESS"),
 	});
-	if (typeof m === "string") {
-		reg.finding("info", "Shorter subject arrays fail loudly in measure.mjs (unnamed TypeError)", ["MEA-subject-length-mismatch"],
-			`A subject with fewer rows than the annotation's label frames crashes M2 with an unhelpful TypeError; the gate's validateShape would reject the shape with a named error first. Asymmetric with MEA-subject-length-over, where a LONGER subject silently yields M1=${typeof mL === "string" ? "?" : mL.M1.toFixed(4)} > 1.`);
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -245,8 +262,12 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 // ---------------------------------------------------------------------------
 {
 	const nanRoot = structuredClone(chDoc);
+	// scoredF is a SOURCE frame key; rootWorld is a row array, so the row must
+	// come from frameIndex (on the pinned contiguous fixture the two coincide,
+	// which is exactly the hiding place the decimated fixtures exist to break)
 	const scoredF = chDoc.separation.scoredFrameIndex[0];
-	nanRoot.subjects[0].rootWorld[scoredF] = [NaN, 0, 0];
+	const scoredRow = chDoc.frameIndex.indexOf(scoredF);
+	nanRoot.subjects[0].rootWorld[scoredRow] = [NaN, 0, 0];
 	let m = null;
 	try { m = computeMetrics(nanRoot, annDoc); } catch (e) { m = `threw ${e.name}: ${e.message}`; }
 	const out = typeof m === "string" ? m : `M5=${m.M5} M6=${m.M6} M3=${m.M3.toExponential(2)}`;
@@ -302,8 +323,12 @@ const isNaNv = (x) => typeof x === "number" && Number.isNaN(x);
 		observed: `M4=${m4e.M4}`,
 		verdict: m4e.M4 === 0 ? "WEAKNESS" : "PASS",
 	});
-	reg.finding("medium", "Empty groundTruth reads M4=0 (identity gate passes vacuously)", ["MEA-m4-empty-gt"],
-		"computeMetrics returns M4=0 when no frame was hand-checked, and the reproducibility gate's validateShape does not require a minimum groundTruth size, so a fixture with groundTruth=[] (hash recomputed) reproduces the recorded m4=0 and passes the whole gate chain (see REP-groundTruth-truncate). The per-entry 'missing observation counts as disagreeing' rule protects individual gaps, not wholesale truncation.");
+	// finding gated on the OBSERVED defect: only while M4 actually reads 0
+	// (exactly when the case verdict is WEAKNESS)
+	if (m4e.M4 === 0) {
+		reg.finding("medium", "Empty groundTruth reads M4=0 (identity gate passes vacuously)", ["MEA-m4-empty-gt"],
+			"computeMetrics returns M4=0 when no frame was hand-checked, and the reproducibility gate's validateShape does not require a minimum groundTruth size, so a fixture with groundTruth=[] (hash recomputed) reproduces the recorded m4=0 and passes the whole gate chain (see REP-groundTruth-truncate). The per-entry 'missing observation counts as disagreeing' rule protects individual gaps, not wholesale truncation.");
+	}
 
 	// M4 with observations missing -> counts as disagreeing (safe direction)
 	const droppedObs = structuredClone(chDoc);

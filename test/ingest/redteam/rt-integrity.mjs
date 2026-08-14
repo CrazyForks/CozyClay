@@ -117,10 +117,14 @@ baselineCase("INT-baseline-fail-exit0", "baseline exits 0 while printing FAIL li
 //     capture returned stdout only on exit 0, so this baseline recorded as
 //     { exit 0, fail 0 } and the gate exited 0 with a red baseline in the
 //     artifact — the exact contradiction this suite exists to catch.
-baselineCase("INT-baseline-fail-stderr-exit0", "baseline exits 0 while printing FAIL lines on stderr",
+const recFailStderr = baselineCase("INT-baseline-fail-stderr-exit0", "baseline exits 0 while printing FAIL lines on stderr",
 	"console.error('FAIL boom');",
 	"recorded { exit 0, pass 0, fail 1 } (stderr merged); isRedBaseline true — stderr FAIL must count exactly like stdout FAIL",
 	true);
+// the hardening story lives on the case as a note, not as a finding: an INFO
+// finding here referenced a PASSing case (the capture works, which is what
+// makes the case green) and could never clear under the stale-finding guard
+recFailStderr.note = "At 634fd45 the capture used execSync, which returns stdout only on exit 0: a baseline that printed FAIL to stderr and exited 0 was recorded as { exit 0, fail 0 } and the gate exited 0 with the artifact carrying a red baseline. captureBaseline (this module) merges stderr on all paths and is what run-all.mjs now runs; this case pins it.";
 
 // (5) exit 0 with zero assertions: the record is accurate (pass 0 / fail 0),
 //     the emptiness is visible in the artifact — not a contradiction.
@@ -157,11 +161,10 @@ replayCase("INT-replay-missing-marker", "recorded stdout matches but lacks the s
 	{ status: 0, stdout: "STOP:identity:identity\n", stderr: "" },
 	{ ...REPLAY_EXPECTED, recordedStdout: "STOP:identity:identity\n" }, false);
 
-// ---------------------------------------------------------------------------
-// Findings: what pass 2 changed in the orchestrator itself
-// ---------------------------------------------------------------------------
-reg.finding("info", "run-all.mjs baseline capture hardened: stderr is now merged on every exit path", ["INT-baseline-fail-stderr-exit0"],
-	"At 634fd45 the capture used execSync, which returns stdout only on exit 0: a baseline that printed FAIL to stderr and exited 0 was recorded as { exit 0, fail 0 } and the gate exited 0 with the artifact carrying a red baseline. captureBaseline (this module) merges stderr on all paths and is what run-all.mjs now runs; INT-baseline-fail-stderr-exit0 pins it.");
+// The pass-2 hardening story is recorded on the INT-baseline-fail-stderr-exit0
+// case record as a note (see above): a finding about a FIX that works would
+// reference a PASSing case and could never clear — the note keeps the story
+// in the artifact without violating the observed-finding rule.
 
 export const run = async () => {
 	console.log("== rt-integrity: orchestrator evidence-integrity attacks ==");

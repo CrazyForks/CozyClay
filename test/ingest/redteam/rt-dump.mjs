@@ -18,7 +18,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { newRegistry, sha256Of } from "./rt-common.mjs";
+import { newRegistry, sha256Of, findingWhenObserved } from "./rt-common.mjs";
 import { validateRawTrackRT } from "./rt-schema.mjs";
 
 const reg = newRegistry();
@@ -442,10 +442,11 @@ except Exception as e:
 		observed: doc ? `emitted F1-η handedness=${doc.slots["F1-η"].handedness} upAxis=${doc.slots["F1-η"].upAxis} data.handedness=${doc.data.handedness} — operator's left-handed/Z silently dropped` : `stub failed: ${JSON.stringify(r.parsed).slice(0, 120)}`,
 		verdict: doc && doc.slots["F1-η"].handedness === "right-handed" && doc.slots["F1-η"].upAxis === "Y" ? "WEAKNESS" : "PASS",
 	});
-	if (doc) {
-		reg.finding("low", "dump-gvhmr.py silently ignores operator metadata handedness/upAxis and asserts the model-table values", ["DMP-meta-handedness-ignored"],
-			`_load_artifacts copies only fps/crop/model/K from metadata jsons. A run record that says handedness 'left-handed'/upAxis 'Z' (here alongside model smpl) leaves no trace in the emitted fixture, which asserts the table's right-handed/Y — the F1-η round-trip claim is made without recording the operator's contradicting record.`);
-	}
+	// gated on the case's OBSERVED verdict, not on doc existing: a fix that
+	// surfaces the operator's contradicting record turns the case PASS and
+	// the finding disappears with it
+	findingWhenObserved(reg, "low", "dump-gvhmr.py silently ignores operator metadata handedness/upAxis and asserts the model-table values", ["DMP-meta-handedness-ignored"],
+		`_load_artifacts copies only fps/crop/model/K from metadata jsons. A run record that says handedness 'left-handed'/upAxis 'Z' (here alongside model smpl) leaves no trace in the emitted fixture, which asserts the table's right-handed/Y — the F1-η round-trip claim is made without recording the operator's contradicting record.`);
 }
 
 // (k) partial manifest, epsilon only: the honest UNRESOLVED cascade with a

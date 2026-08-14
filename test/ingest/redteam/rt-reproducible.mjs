@@ -120,7 +120,12 @@ const record = (id, attack, input, expected, r, verdictNote = "", expectAccept =
 		"rejected at the hash layer (sha256 mismatch), nothing replayed", a);
 
 	const doc = loadJson("contact-head.json");
-	doc.subjects[0].rootWorld[doc.separation.scoredFrameIndex[0]][0] += 0.1;
+	// scoredFrameIndex holds SOURCE frame keys; rootWorld is a row array, so
+	// the row must come from frameIndex (they coincide only on the pinned
+	// contiguous fixture — the hiding place the decimated regressions exist
+	// to break)
+	const tamperRow = doc.frameIndex.indexOf(doc.separation.scoredFrameIndex[0]);
+	doc.subjects[0].rootWorld[tamperRow][0] += 0.1;
 	writeJson("contact-head.json", doc);
 	const b = runGate();
 	restore("contact-head.json");
@@ -180,8 +185,10 @@ const record = (id, attack, input, expected, r, verdictNote = "", expectAccept =
 // ---------------------------------------------------------------------------
 {
 	const doc = loadJson("contact-head.json");
+	// source frame key -> row, via frameIndex (see REP-tamper-root)
 	const scored = doc.separation.scoredFrameIndex[0];
-	doc.subjects[0].rootWorld[scored][0] += 0.1;
+	const scoredRow = doc.frameIndex.indexOf(scored);
+	doc.subjects[0].rootWorld[scoredRow][0] += 0.1;
 	rehash(doc);
 	writeJson("contact-head.json", doc);
 	const a = runGate();

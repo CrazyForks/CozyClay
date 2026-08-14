@@ -50,6 +50,34 @@ export const newRegistry = () => {
 		},
 	};
 };
+// Class-B guard: a finding must be DERIVED from an observed failing
+// predicate. A registered finding whose referenced cases all PASS describes a
+// weakness nothing observed — it is stale by construction and can never
+// clear, which is the assert-don't-observe failure this suite exists to
+// catch. run-all.mjs fails the gate on anything this returns; the same rule
+// is enforced at registration time by findingWhenObserved. A ref that names
+// no registered case is stale too: it can never be observed to show the
+// defect.
+export const staleFindings = (findings, cases) => {
+	const verdictOf = new Map(cases.map((c) => [c.id, c.verdict]));
+	return findings.filter((f) => {
+		if (!Array.isArray(f.refs) || f.refs.length === 0) return true;
+		const verdicts = f.refs.map((id) => verdictOf.get(id));
+		if (verdicts.some((v) => v === undefined)) return true; // unknown case id
+		return verdicts.every((v) => v === "PASS");
+	});
+};
+
+// Registration-time gate: emit the finding only while at least one referenced
+// case actually shows the weakness (verdict WEAKNESS or DEFECT). Registering
+// it unconditionally means it survives its own fix — the same defect class
+// staleFindings guards against at the orchestrator level.
+export const findingWhenObserved = (reg, severity, title, refs, detail) => {
+	const verdictOf = new Map(reg.cases.map((c) => [c.id, c.verdict]));
+	const observed = refs.some((id) => verdictOf.get(id) === "WEAKNESS" || verdictOf.get(id) === "DEFECT");
+	if (observed) reg.finding(severity, title, refs, detail);
+	return observed;
+};
 
 export const describe = (v) => {
 	if (typeof v === "number") {

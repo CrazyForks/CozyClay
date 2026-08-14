@@ -303,7 +303,11 @@ function buildFixture(mode, gt, rawTrack, floorFrame, annotation, R, t) {
 			for (const s of SCENE.subjects) {
 				anchors[s.trackId] = SCENE.phases[s.trackId].flatMap((p) => [
 					{ frameIndex: p.from, world: [p.pos[0], SCENE.floorY, p.pos[1]] },
-					{ frameIndex: p.to, world: [p.pos[0], SCENE.floorY, p.pos[1]] },
+					// phases close at EXCLUSIVE ends; the take's last source frame is
+					// frames-1 and the runner rejects anchor keys outside the track's
+					// source keys (ANCHOR-OUT-OF-SPAN), so the end anchor clamps
+					// there — the constant interpolant makes this byte-identical
+					{ frameIndex: Math.min(p.to, SCENE.frames - 1), world: [p.pos[0], SCENE.floorY, p.pos[1]] },
 				]);
 			}
 			return solveManualAnchor(rawTrack, floorFrame, anchors).subjects.map((s) => s.rootWorld);

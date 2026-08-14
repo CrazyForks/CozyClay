@@ -29,6 +29,7 @@ const rtSchema = await import("./rt-schema.mjs");
 const rtDump = await import("./rt-dump.mjs");
 const rtIntegrity = await import("./rt-integrity.mjs");
 import { captureBaseline, isRedBaseline, replayMatches } from "./rt-integrity.mjs";
+import { newRegistry, staleFindings, ok } from "./rt-common.mjs";
 
 const modules = {
 	decision: await rtDecision.run(),
@@ -46,6 +47,50 @@ const allFindings = modules.decision.findings.concat(
 	modules.measure.findings, modules.reproducible.findings,
 	modules.schema.findings, modules.dump.findings, modules.integrity.findings,
 );
+//
+// ---------------------------------------------------------------------------
+// Class-B structural guard: no finding may be registered while every case it
+// references PASSes (or the refs name unknown cases) — a finding describing
+// a weakness no observed case shows is stale by construction and can never
+// clear (rt-measure's M3/M4=0 findings survived their own fixes until this
+// guard existed). The self-test below proves the guard fires, so the guard
+// itself is not another unobserved assertion.
+// ---------------------------------------------------------------------------
+{
+	const staleReg = newRegistry();
+	staleReg.record({ id: "GUARD-self-pass", category: "self", attack: "synthetic", input: "", expected: "", observed: "", verdict: "PASS" });
+	staleReg.finding("low", "synthetic stale finding", ["GUARD-self-pass"], "deliberately stale: its only referenced case passes");
+	const observedReg = newRegistry();
+	observedReg.record({ id: "GUARD-self-weak", category: "self", attack: "synthetic", input: "", expected: "", observed: "", verdict: "WEAKNESS" });
+	observedReg.finding("low", "synthetic observed finding", ["GUARD-self-weak"], "referenced case shows the weakness");
+	const missingReg = newRegistry();
+	missingReg.record({ id: "GUARD-self-pass", category: "self", attack: "synthetic", input: "", expected: "", observed: "", verdict: "PASS" });
+	missingReg.finding("low", "synthetic unknown-ref finding", ["GUARD-self-no-such-case"], "references a case that does not exist");
+	const staleHits = staleFindings(staleReg.findings, staleReg.cases);
+	const observedHits = staleFindings(observedReg.findings, observedReg.cases);
+	const missingHits = staleFindings(missingReg.findings, missingReg.cases);
+	ok("guard self-test: a finding whose referenced cases all PASS is flagged stale",
+		staleHits.length === 1 && staleHits[0] === staleReg.findings[0],
+		`hits=${staleHits.map((f) => f.title).join(", ") || "none"}`);
+	ok("guard self-test: a finding whose referenced case shows the defect is not stale",
+		observedHits.length === 0,
+		`hits=${observedHits.map((f) => f.title).join(", ") || "none"}`);
+	ok("guard self-test: a finding referencing an unknown case id is flagged stale",
+		missingHits.length === 1 && missingHits[0] === missingReg.findings[0],
+		`hits=${missingHits.map((f) => f.title).join(", ") || "none"}`);
+	if (staleHits.length !== 1 || observedHits.length !== 0 || missingHits.length !== 1) {
+		throw new Error("GUARD-SELFTEST-FAILED: the stale-finding guard did not behave as its own scratch registries require");
+	}
+}
+const staleFindingsHit = staleFindings(allFindings, allCases);
+if (staleFindingsHit.length) {
+	throw new Error(
+		"STALE-FINDINGS " +
+			staleFindingsHit.map((f) => `"${f.title}" (refs: ${(f.refs || []).join(", ") || "none"})`).join("; ") +
+			" — a registered finding references cases that all PASS (or unknown case ids), so it can never clear; " +
+			"gate each finding on its referenced cases' observed verdicts (findingWhenObserved) or convert it to a case note",
+	);
+}
 //
 // ---------------------------------------------------------------------------
 // Verdict-derived blockers: the report must not claim an obligation is clear

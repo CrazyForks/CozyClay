@@ -60,11 +60,19 @@ function maxRootError(runner, fixture) {
 
 // worst |runnerRoot - annotatedFootWorld| over the scored frames (the frames M5 uses)
 function maxRootErrorVsAnnotation(runner) {
+	// annotation.footWorld.frameIndex holds SOURCE frame keys, while the
+	// runner's rootWorld is a row array of the emitted slice: the row must
+	// come from rawTrack.frameIndex, never from the key itself (the two
+	// coincide only on contiguous zero-based fixtures — the hiding place the
+	// decimated regressions exist to break)
+	const rowOf = new Map(rawTrack.frameIndex.map((f, row) => [f, row]));
 	let worst = 0;
 	for (const rs of runner.subjects) {
 		const subjectId = SCENE.subjects.find((s) => s.trackId === rs.trackId).subjectId;
 		annotation.footWorld.frameIndex.forEach((f, i) => {
-			worst = Math.max(worst, dist(rs.rootWorld[f], annotation.footWorld[subjectId][i]));
+			const row = rowOf.get(f);
+			if (row === undefined) throw new Error(`maxRootErrorVsAnnotation: source frame ${f} absent from rawTrack.frameIndex`);
+			worst = Math.max(worst, dist(rs.rootWorld[row], annotation.footWorld[subjectId][i]));
 		});
 	}
 	return worst;
@@ -257,7 +265,10 @@ const anchors = {};
 for (const s of SCENE.subjects) {
 	anchors[s.trackId] = SCENE.phases[s.trackId].flatMap((p) => [
 		{ frameIndex: p.from, world: [p.pos[0], SCENE.floorY, p.pos[1]] },
-		{ frameIndex: p.to, world: [p.pos[0], SCENE.floorY, p.pos[1]] },
+		// phases close at EXCLUSIVE ends; the take's last source frame is
+		// frames-1 and the runner rejects out-of-span anchor keys, so the end
+		// anchor clamps there (mirrors make-synthetic.mjs's construction)
+		{ frameIndex: Math.min(p.to, SCENE.frames - 1), world: [p.pos[0], SCENE.floorY, p.pos[1]] },
 	]);
 }
 const maRunner = solveManualAnchor(rawTrack, floorFrame, anchors);
@@ -323,15 +334,109 @@ ok("manual-anchor M2 contact precision on GT", maMetrics.M2 === 1, `M2=${maMetri
 ok("manual-anchor M3 plant jitter on GT", maMetrics.M3 < 1e-12, `M3=${maMetrics.M3}`);
 ok("manual-anchor M4 identity swaps on GT", maMetrics.M4 === 0, `M4=${maMetrics.M4}`);
 ok("manual-anchor M6 separation error on GT", maMetrics.M6 < 1e-9, `M6=${maMetrics.M6.toExponential(3)}`);
+// --- F2c decimated manual-anchor: anchor keys are SOURCE frames, rows are
+// --- positions. A trimmed/decimated rawTrack (the operator path) breaks the
+// --- row == source-frame coincidence the pinned fixtures hide; the runner
+// --- must evaluate every emitted row at its own source frame and
+// --- interpolate between anchors in source-key space. Reverting to
+// --- row-position comparison holds the first anchor on every row below it
+// --- and this block fails — the regression lock for that defect.
+{
+	// five emitted rows covering source frames 10..26 (trim + stride 4): the
+	// max source key exceeds the row count, so row/ID conflation is visible
+	const decimatedTrack = {
+		schemaVersion: 1,
+		clipId: "manual-anchor-decimated-probe",
+		fps: 29.97,
+		frames: 5,
+		frameIndex: [10, 14, 18, 22, 26],
+		timeS: [10, 14, 18, 22, 26].map((f) => f / 29.97),
+		subjects: [
+			{
+				trackId: "p0",
+				footObservations2d: { left: { keypoints: [] }, right: { keypoints: [] } },
+				leftContact: [],
+				rightContact: [],
+			},
+		],
+	};
+	// anchors are operator marks on the FOOTAGE: source frame 10 -> x=0,
+	// source frame 26 -> x=2, a linear ramp in source-key space
+	const decAnchors = {
+		p0: [
+			{ frameIndex: 10, world: [0, 0, 0] },
+			{ frameIndex: 26, world: [2, 0, 0] },
+		],
+	};
+	const decRoots = solveManualAnchor(decimatedTrack, floorFrame, decAnchors).subjects[0].rootWorld;
+	const rampX = (f) => ((f - 10) / (26 - 10)) * 2;
+	ok(
+		"decimated manual-anchor: every emitted row interpolates at its own source frame",
+		decimatedTrack.frameIndex.every((f, row) => {
+			const p = decRoots[row];
+			return p !== undefined && Math.abs(p[0] - rampX(f)) < 1e-12 && p[1] === 0 && p[2] === 0;
+		}),
+		decRoots.map((p, row) => `row${row}(src${decimatedTrack.frameIndex[row]})=${p ? p[0].toFixed(3) : "?"}`).join(" "),
+	);
+	// an anchor key BRACKETED by the track's source keys but not an emitted
+	// row (source frame 16 sits between emitted keys 14 and 18) is accepted,
+	// and the interpolant runs between the bracketing anchor keys
+	const bracketed = solveManualAnchor(decimatedTrack, floorFrame, {
+		p0: [
+			{ frameIndex: 10, world: [0, 0, 0] },
+			{ frameIndex: 16, world: [1, 0, 0] },
+			{ frameIndex: 26, world: [3, 0, 0] },
+		],
+	}).subjects[0].rootWorld;
+	ok(
+		"decimated manual-anchor: an anchor key bracketed by the track's source keys is accepted",
+		bracketed.every((p) => Array.isArray(p) && p.every(Number.isFinite)),
+		bracketed.map((p) => (p ? p[0].toFixed(3) : "?")).join(" "),
+	);
+	ok(
+		"decimated manual-anchor: the interpolant runs in source-key space between bracketing anchors",
+		Math.abs(bracketed[1][0] - (0 + ((14 - 10) / (16 - 10)) * 1)) < 1e-12 &&
+			Math.abs(bracketed[2][0] - (1 + ((18 - 16) / (26 - 16)) * 2)) < 1e-12 &&
+			Math.abs(bracketed[3][0] - (1 + ((22 - 16) / (26 - 16)) * 2)) < 1e-12,
+		`src14=${bracketed[1][0].toFixed(4)} src18=${bracketed[2][0].toFixed(4)} src22=${bracketed[3][0].toFixed(4)}`,
+	);
+	// an anchor key OUTSIDE the track's source-key span is operator error:
+	// rejected with the named error, never clamped or silently held
+	for (const [badKey, where, pair] of [
+		// keep each pair non-decreasing so the SPAN check (not ANCHOR-ORDER)
+		// is the invariant under test
+		[5, "below", [{ frameIndex: 5, world: [0, 0, 0] }, { frameIndex: 26, world: [2, 0, 0] }]],
+		[30, "above", [{ frameIndex: 10, world: [0, 0, 0] }, { frameIndex: 30, world: [2, 0, 0] }]],
+	]) {
+	let spanErr = null;
+	try {
+		solveManualAnchor(decimatedTrack, floorFrame, { p0: pair });
+	} catch (e) {
+			spanErr = e;
+		}
+		ok(
+			`decimated manual-anchor: anchor key ${badKey} (${where} the track's source keys) rejected with ANCHOR-OUT-OF-SPAN`,
+			spanErr !== null && spanErr instanceof Error && /ANCHOR-OUT-OF-SPAN/.test(spanErr.message),
+			spanErr === null ? "no error thrown: the out-of-span anchor was accepted" : spanErr.message,
+		);
+	}
+}
 
 // --- fixture internal consistency: the pinned rootWorld equals the annotation ----------
 
 for (const [mode, fx] of Object.entries(fixtures)) {
+	// annotation.footWorld.frameIndex entries are SOURCE frame keys; the
+	// fixture's rootWorld is a row array, so the row comes from the fixture's
+	// own frameIndex, never from the key (they coincide only on the pinned
+	// contiguous fixtures — the class this audit exists to close)
+	const rowOf = new Map(fx.frameIndex.map((f, row) => [f, row]));
 	let worst = 0;
 	for (const s of SCENE.subjects) {
 		const fs = fx.subjects.find((x) => x.trackId === s.trackId);
 		annotation.footWorld.frameIndex.forEach((f, i) => {
-			worst = Math.max(worst, dist(fs.rootWorld[f], annotation.footWorld[s.subjectId][i]));
+			const row = rowOf.get(f);
+			if (row === undefined) throw new Error(`fixture ${mode}: source frame ${f} absent from frameIndex`);
+			worst = Math.max(worst, dist(fs.rootWorld[row], annotation.footWorld[s.subjectId][i]));
 		});
 	}
 	ok(
