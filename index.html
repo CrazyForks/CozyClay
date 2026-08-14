@@ -15,14 +15,14 @@
     <meta property="og:title" content="CozyClay — browser-based 3D staging and previz studio" />
     <meta property="og:description" content="Block a scene, pose characters, author camera moves and cuts, and preview generated motion. Open source, runs in your browser." />
     <meta property="og:url" content="https://cozyclay.org/" />
-    <meta property="og:image" content="https://cozyclay.org/og-image.png" />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="The CozyClay studio: a 3D viewport with a posed character, scene hierarchy, inspector, and motion timeline." />
+    <meta property="og:image" content="https://cozyclay.org/media/cozyclay-demo-poster.jpg" />
+    <meta property="og:image:width" content="1920" />
+    <meta property="og:image:height" content="1080" />
+    <meta property="og:image:alt" content="A CozyClay shot mid-wipe: the greybox previz on one half, the generated result on the other." />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="CozyClay — browser-based 3D staging and previz studio" />
     <meta name="twitter:description" content="Block a scene, pose characters, author camera moves and cuts, and preview generated motion. Open source, runs in your browser." />
-    <meta name="twitter:image" content="https://cozyclay.org/og-image.png" />
+    <meta name="twitter:image" content="https://cozyclay.org/media/cozyclay-demo-poster.jpg" />
 
     <title>CozyClay — browser-based 3D staging and previz studio</title>
 
@@ -46,8 +46,9 @@
         "applicationSubCategory": "3D previsualization",
         "operatingSystem": "Any (Chromium-based browser)",
         "description": "CozyClay is an open-source, browser-based 3D staging studio. Block a scene, pose characters, sequence motion prompts on a timeline, and preview generated motion in one local workspace that handles like the Unity Editor.",
-        "image": "https://cozyclay.org/og-image.png",
-        "screenshot": "https://cozyclay.org/og-image.png",
+        "image": "https://cozyclay.org/media/cozyclay-demo-poster.jpg",
+        "screenshot": "https://cozyclay.org/media/cozyclay-demo-poster.jpg",
+        "logo": "https://cozyclay.org/media/cozyclay-logo.png",
         "license": "https://github.com/HaD0Yun/CozyClay/blob/main/LICENSE",
         "codeRepository": "https://github.com/HaD0Yun/CozyClay",
         "programmingLanguage": ["JavaScript", "TypeScript"],
@@ -154,6 +155,16 @@
       figure img { width: 100%; height: auto; display: block; border: 1px solid var(--line); border-radius: 10px; }
       figcaption { color: var(--muted); font-size: 13px; margin-top: 10px; }
 
+      /* The mark is blue on white, so it gets its own light card rather than
+         floating on the dark page where the blue would go muddy. */
+      .mark { margin: 52px auto; max-width: 260px; }
+      .mark img {
+        border: 0;
+        border-radius: 16px;
+        background: var(--clay);
+        padding: 18px 16px;
+      }
+
       .reel {
         margin: 0 0 30px;
         border: 1px solid var(--line);
@@ -246,12 +257,8 @@
         </p>
       </div>
 
-      <figure>
-        <img src="/og-image.png" width="1200" height="630" loading="lazy"
-             alt="The CozyClay studio: a 3D viewport with a posed character, a scene hierarchy, an inspector panel, and a motion timeline." />
-        <figcaption>
-          The studio: viewport, scene hierarchy, inspector, and a resizable motion timeline.
-        </figcaption>
+      <figure class="mark">
+        <img src="/media/cozyclay-logo.png" width="880" height="714" loading="lazy" alt="CozyClay" />
       </figure>
 
       <section id="what">
