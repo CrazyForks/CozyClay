@@ -20,8 +20,11 @@
  * host and the generation bridge will join the same REGISTRY in later phases
  * with no change to the probe logic). The fixture exists to demonstrate the
  * envelope as an executable, standalone server and to exercise the clauses a
- * real bridge cannot show without a box (argv forwarding, disconnect-kill, a
- * served artifact, realpath containment).
+ * real bridge cannot show without a box (argv forwarding, disconnect-kill).
+ * The ARDY bridge's allowlist only fills after a completed generate, so its
+ * spawn-time registration seam (CCLAY_ARDY_TEST_REGISTRATIONS) gives the
+ * suite the same served-artifact and realpath-containment probes - including
+ * the symlink-swap escape - against the real bridge.
  *
  * Per-bridge probe order is DATA, not logic: each registration lists the
  * probes that apply to its route table, in the order that matters for its own
@@ -30,7 +33,7 @@
  */
 import { createServer, request as httpRequest } from "node:http";
 import { spawn } from "node:child_process";
-import { createReadStream, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { tmpdir } from "node:os";
 import { basename, join, resolve, dirname } from "node:path";
@@ -262,13 +265,15 @@ async function startFixture() {
 // port. CCLAY_ARDY_HOST must be set or the bridge exits at startup; the fake
 // host is unreachable, so whenever a probe slips past the envelope (the
 // pre-refactor RED state) generation fails fast instead of hanging.
+// extraEnv seeds the bridge for probes that need a pre-populated allowlist
+// (see artifact-symlink-swap).
 // ---------------------------------------------------------------------------
 
-async function startArdyBridge() {
+async function startArdyBridge({ env: extraEnv = {} } = {}) {
 	const port = await freePort();
 	const proc = spawn(process.execPath, ["tools/ardy/bridge.mjs", "--port", String(port)], {
 		cwd: REPO_ROOT,
-		env: { ...process.env, CCLAY_ARDY_HOST: "no-such-user@127.0.0.1" },
+		env: { ...process.env, CCLAY_ARDY_HOST: "no-such-user@127.0.0.1", ...extraEnv },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	const match = await waitForLine(proc.stdout, /listening on http:\/\/(\S+):(\d+)/, 10000);
@@ -277,6 +282,7 @@ async function startArdyBridge() {
 		url: `http://127.0.0.1:${port}`,
 		port,
 		loopbackEvidence: match[1],
+		artifactDir: join(REPO_ROOT, "tools/ardy/out"),
 		routes: {
 			jsonPost: "/ardy/generate",
 			wrongMethod: { path: "/ardy/generate", method: "GET" },
@@ -411,6 +417,40 @@ const PROBES = {
 			rmSync(outside, { force: true });
 		}
 	},
+	"artifact-symlink-swap": async (bridge) => {
+		// The fixture registers in-process, so its escape case is the
+		// outside-id probe above. The REAL bridge's allowlist only fills
+		// after a completed generate, so this probe seeds it through the
+		// same registerMotion path via the spawn-time env seam, then swaps
+		// the seeded file for a symlink pointing outside OUT_DIR: serve-time
+		// realpath containment must refuse it, not stream the target.
+		if (bridge.artifacts) return;
+		const runId = "1234567890123-abcdef"; // matches the bridge's MOTION_ID shape
+		const outsideDir = mkdtempSync(join(tmpdir(), "cclay-swap-outside-"));
+		const outsideFile = join(outsideDir, "secret.bin");
+		writeFileSync(outsideFile, "symlink-escape-bytes");
+		const motionFile = join(bridge.artifactDir, `${runId}.npz`);
+		writeFileSync(motionFile, "motion-bytes");
+		const seeded = await startArdyBridge({
+			env: { CCLAY_ARDY_TEST_REGISTRATIONS: `${runId}=${motionFile}` },
+		});
+		try {
+			const before = await httpExchange(`${seeded.url}${bridge.routes.artifactPrefix}/${runId}`, {});
+			ok(`[${bridge.name}] symlink-swap control: the seeded motion serves as a real file`, before.status === 200 && before.body === "motion-bytes", `got ${before.status}`);
+			rmSync(motionFile, { force: true });
+			symlinkSync(outsideFile, motionFile);
+			const after = await httpExchange(`${seeded.url}${bridge.routes.artifactPrefix}/${runId}`, {});
+			ok(
+				`[${bridge.name}] symlink-swap: a registered motion swapped for a symlink to outside OUT_DIR is refused, not streamed`,
+				after.status === 404 && !after.body.includes("symlink-escape-bytes"),
+				`got ${after.status}`
+			);
+		} finally {
+			seeded.stop();
+			rmSync(motionFile, { force: true });
+			rmSync(outsideDir, { recursive: true, force: true });
+		}
+	},
 
 	loopback: async (bridge) => {
 		const loopback = /^(127\.0\.0\.1|localhost|\[::1\]|::1)$/;
@@ -498,7 +538,7 @@ const REGISTRY = [
 		// failure is accepting a cross-site POST (E2's RED); the fixture's
 		// first failure is exact content-type (E1's RED), so the two tables
 		// lead with different clauses. Same probe set, data-driven order.
-		probes: ["cross-site", "options-cors", "method-405", "unknown-404", "content-type", "body-cap", "artifact", "loopback"],
+		probes: ["cross-site", "options-cors", "method-405", "unknown-404", "content-type", "body-cap", "artifact", "artifact-symlink-swap", "loopback"],
 		spawn: startArdyBridge,
 	},
 ];

@@ -37,7 +37,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decodeMotionNpz } from "../../src/ardy/npz.js";
 import { motionArraysToNpzMembers, replaceMotionSegment, writeNpz } from "./npz.mjs";
@@ -775,12 +775,11 @@ function serveMotion(req, res, pathname) {
 		sendJson(res, 404, { ok: false, reason: `unknown or expired motion "${runId}"` });
 		return 404;
 	}
-	const absPath = motionAllowlist.get(runId);
-	// The map only ever holds paths this process joined under OUT_DIR, but
-	// the check is re-applied at serve time: nothing outside tools/ardy/out
-	// is ever served, no matter how it got in.
-	if (!absPath.startsWith(`${OUT_DIR}${sep}`)) {
-		sendJson(res, 404, { ok: false, reason: `motion "${runId}" is outside ${OUT_DIR}` });
+	const absPath = motionAllowlist.resolve(runId);
+	// resolve() re-checks realpath containment at serve time: a registered
+	// file swapped for a symlink to outside OUT_DIR resolves to null here.
+	if (!absPath) {
+		sendJson(res, 404, { ok: false, reason: `motion "${runId}" is no longer on disk or escaped ${OUT_DIR}` });
 		return 404;
 	}
 	let size;
@@ -1266,6 +1265,17 @@ if (process.env.COZYCLAY_BRIDGE_PORT !== undefined) {
 
 const port = resolvePort(process.argv.slice(2));
 if (!HOST) die("CCLAY_ARDY_HOST is required (for example: user@ardy-host)");
+// Conformance-suite seam: pre-seed the allowlist through registerMotion,
+// the same path a completed generate uses, so serve-time realpath
+// containment can be probed without a live box. id=absPath pairs.
+const seeded = process.env.CCLAY_ARDY_TEST_REGISTRATIONS || "";
+if (seeded) {
+	for (const pair of seeded.split(",")) {
+		const eq = pair.indexOf("=");
+		if (eq === -1) die(`CCLAY_ARDY_TEST_REGISTRATIONS entry must be id=absPath: "${pair}"`);
+		registerMotion(pair.slice(0, eq), pair.slice(eq + 1));
+	}
+}
 
 const server = createServer((req, res) => {
 	const started = Date.now();

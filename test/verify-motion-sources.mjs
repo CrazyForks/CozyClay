@@ -13,7 +13,7 @@ import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { applyMotionFrame, motionBones } from "../src/ardy/playback.js";
 import { CSKEL27_JOINTS } from "../src/ardy/cskel27.js";
 import { CSKEL27_NEUTRAL } from "../src/ardy/cskel27-neutral.js";
-import { SUBJECTS, motionFor } from "../src/motion-sources.js";
+import { SUBJECTS, motionFor, ikStateFor, serializeClipState, deserializeClipState } from "../src/motion-sources.js";
 
 const fail = [];
 const ok = (label, cond, detail) => {
@@ -95,6 +95,68 @@ ok(
 	"a Map-shaped registry widens additively",
 	safe(() => motionFor("B", new Map([["A", null], ["B", motionB]]))) === motionB,
 	"the Phase-6 motions: Map shape routes through the same accessor",
+);
+// --- per-subject IK state keying (plan 7.4) ----------------------------------
+// The registry hands the SELECTED subject's working state to the IK layer,
+// the same shape as motionFor — plain object today, a Map in Phase 6.
+const stateA = { keys: new Map([[30, new Map()]]) };
+const stateB = { keys: new Map() };
+ok(
+	"ikStateFor keys per subject",
+	ikStateFor("A", { A: stateA, B: stateB }) === stateA && ikStateFor("B", { A: stateA, B: stateB }) === stateB,
+	"A and B resolve their own states",
+);
+ok(
+	"ikStateFor widens to a Map additively",
+	ikStateFor("B", new Map([["A", stateA], ["B", stateB]])) === stateB,
+	"the Phase-6 states: Map shape routes through the same accessor",
+);
+ok(
+	"an unknown subject resolves no IK state",
+	ikStateFor("C", { A: stateA, B: stateB }) === null,
+	"unknown subject resolves null",
+);
+
+// --- clip persistence (plan 7.4) --------------------------------------------
+// Both clips + trims serialize under the subject keys; the typed arrays must
+// round-trip bit-exact, because a drifted Float32 value would shift a pose.
+const persistClip = {
+	frames: 60,
+	fps: 20,
+	anchorX: 1.42,
+	anchorZ: -0.31,
+	anchorFrame: 0,
+	rotationDeg: 0,
+	url: "/some/artifact.npz",
+	rotMats,
+	rootPos: new Float32Array([0.0027, 0.918, 0.037, -0.5, 1.25, 3.75]),
+	posedJoints,
+};
+const roundTripped = safe(() => deserializeClipState(serializeClipState({ A: persistClip, B: motionB }, { A: { start: 2, end: 55 }, B: { start: 0, end: 59 } })));
+ok(
+	"both clips + trims survive a serialize/deserialize round-trip",
+	roundTripped !== null &&
+		roundTripped.A.clip.frames === 60 &&
+		roundTripped.A.clip.anchorX === 1.42 &&
+		roundTripped.A.trim.start === 2 &&
+		roundTripped.B.clip.frames === 60 &&
+		roundTripped.B.trim.end === 59,
+	`A=${roundTripped?.A.clip?.frames} B=${roundTripped?.B.clip?.frames}`,
+);
+ok(
+	"typed arrays round-trip bit-exact",
+	roundTripped !== null &&
+		roundTripped.A.clip.rotMats.length === rotMats.length &&
+		roundTripped.A.clip.rotMats[hipsBase + 0] === 0 &&
+		roundTripped.A.clip.rotMats[hipsBase + 2] === 1 &&
+		roundTripped.A.clip.rootPos[4] === 1.25 &&
+		roundTripped.B.clip.posedJoints.length === posedJoints.length,
+	"rotMats/rootPos/posedJoints values survive exactly",
+);
+ok(
+	"a corrupt persisted payload degrades to null",
+	deserializeClipState("{not json") === null,
+	"parse failure yields null, never a crash",
 );
 
 if (fail.length) {

@@ -63,7 +63,6 @@ function publishDiscovery(port) {
 	};
 	writeFileSync(DISCOVERY_FILE, JSON.stringify(record, null, "\t") + "\n", { mode: 0o600 });
 	console.log(`[ingest] surface published ${DISCOVERY_FILE} (${record.origin})`);
-	console.log("[ingest] if the app dev server was already running, restart it once to pick up the /ingest proxy");
 }
 
 function removeDiscovery() {

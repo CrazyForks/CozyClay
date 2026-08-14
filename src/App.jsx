@@ -93,7 +93,17 @@ import {
 	slateLine,
 } from "./shot.js";
 import { captureFraming, classifyMove, cameraMoveAt, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
-import { effectiveChars, anyLoaded, clampTrim, playbackFrame } from "./motion-sources.js";
+import {
+	effectiveChars,
+	anyLoaded,
+	clampTrim,
+	playbackFrame,
+	createUndoStores,
+	clearTakePayload,
+	ikStateFor,
+	serializeClipState,
+	deserializeClipState,
+} from "./motion-sources.js";
 
 // Stated the way a crew states a setup: how far back, which side, how high the
 // lens rides, and what glass is on it. Order matters — Medium is the setup a
@@ -740,6 +750,10 @@ function CaptureRig({ apiRef, camRef }) {
 const GIZMO_HOTKEYS = { KeyW: "move", KeyE: "rotate", KeyR: "scale" };
 
 const WORKSPACE_LAYOUT_KEY = "cozyclay.workspace-layout.v1";
+// Both clip slots plus their trims persist under one key (plan 7.4): a
+// reload restores exactly what was on the lanes, so neither fighter's
+// landed clip is lost to a refresh.
+const CLIPS_STORAGE_KEY = "cozyclay.clips.v1";
 const DEFAULT_WORKSPACE_LAYOUT = Object.freeze({
 	hierarchyWidth: 300,
 	sidebarWidth: 380,
@@ -1082,16 +1096,28 @@ globalThis.playMode = centerTab === "play";
 	// One-shot save-failure toast: the persistent line stays for the session,
 	// the toast fires once per failure episode (not on every failed tick).
 	const saveFailureToastRef = useRef(false);
-	// The single mutation owner (plan §5.3): every scene-object edit — gizmo
-	// drags, plan-board drags, inspector scrubs, hierarchy atomics — routes
-	// through this store so one interaction is exactly one undo entry and an
-	// in-flight drag can be cancelled. setSceneObjects is stable, so the
-	// store is constructed once, seeded with the initial scene.
+	// The single mutation owner (plan §5.3 + §7.3): every scene-object edit —
+	// gizmo drags, plan-board drags, inspector scrubs, hierarchy atomics —
+	// routes through the scene store so one interaction is exactly one undo
+	// entry and an in-flight drag can be cancelled. The take store (plan 7.2)
+	// is the second registered store: a landing applies both clips atomically
+	// and pushes exactly one entry, so Ctrl+Z across the two stores replays
+	// in landing order. ONE coordinator owns both; the wiring closures read
+	// the live clip fields through refs because the stores are built once.
 	const storeRef = useRef(null);
+	const writeClipFieldsRef = useRef(null);
+	const clipFieldsRef = useRef(null);
 	if (!storeRef.current) {
-		storeRef.current = createSceneHistoryStore(sceneObjects, { onObjects: setSceneObjects });
+		storeRef.current = createUndoStores({
+			sceneObjects,
+			onObjects: setSceneObjects,
+			read: () => clipFieldsRef.current,
+			write: (patch) => writeClipFieldsRef.current(patch),
+		});
 	}
-	const store = storeRef.current;
+	const coordinator = storeRef.current.coordinator;
+	const store = storeRef.current.scene;
+	const takeStore = storeRef.current.take;
 
 	// ---- scene persistence (plan §8.4) ----
 	// Every write serialises the store at invocation time — the LIVE read,
@@ -1154,12 +1180,27 @@ globalThis.playMode = centerTab === "play";
 	// hide the seam, short enough that a mid-clip fix stays visibly local.
 	const IK_CORRECTION_BLEND_FRAMES = 6;
 
-	const ikStateRef = useRef(createIkState());
+	// Per-subject IK working state (plan 7.4): each subject keeps its own key
+	// set, so switching subjects can never apply A's corrections to B.
+	const ikStatesRef = useRef({ A: createIkState(), B: createIkState() });
 	const [ikTick, setIkTick] = useState(0);
 	const [committedIkEdits, setCommittedIkEdits] = useState([]);
+	// The ikSubject switch (plan 7.4): chains resolve from the SELECTED
+	// subject's rig, replacing the A-only rig path. ikState is the
+	// selected subject's working state; ikFrames its timeline markers.
+	const ikSubject = selectedHierarchyId === "characterB" ? "B" : "A";
+	const ikRig = ikSubject === "B" ? rigB : rigA;
+	const ikState = ikStateFor(ikSubject, ikStatesRef.current);
 	// Sorted full-body key frames for the timeline markers. Derived from the
-	// ref state; ikTick re-derives after every key add/remove.
-	const ikFrames = useMemo(() => ikKeyframes(ikStateRef.current),
+	// selected subject's state; ikTick re-derives after every key add/remove.
+	const ikFrames = useMemo(() => ikKeyframes(ikState),
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[ikTick, ikState]);
+	// ARDY regeneration is Subject 1's workflow (plan 15): the constraints it
+	// pins come from Subject 1's OWN key set, even while Subject 2 is
+	// selected, so B's corrections can never leak into A's generation.
+	const ikStateA = ikStateFor("A", ikStatesRef.current);
+	const ikFramesA = useMemo(() => ikKeyframes(ikStateA),
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[ikTick]);
 
@@ -1316,29 +1357,32 @@ globalThis.playMode = centerTab === "play";
 	function renameSceneObject(id, name) {
 		changeSceneObject(id, { name });
 	}
-	// Undo/redo (plan §6.5). The store settles any open drag first, so a
+	// Undo/redo (plan §6.5 + §7.3). The coordinator owns both stores, so one
+	// Ctrl+Z reverts the most recent entry whichever store holds it — a scene
+	// edit or a landed take — and the stores settle any open drag first, so a
 	// mid-drag press commits that drag as one entry and then steps past it.
-	// After a step the selection can point at a deleted object — drop it to
-	// props so the inspector cannot show a ghost.
+	// A scene undo returns the object array; a take undo returns the entry,
+	// and only the array form can point at a deleted object — drop the
+	// selection to props then, so the inspector cannot show a ghost.
 	function undoScene() {
-		const restored = store.undo();
+		const restored = coordinator.undo();
 		if (restored === null) {
 			setToast(ko("Nothing to undo", "실행 취소할 작업이 없어요"));
 			return;
 		}
-		if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
+		if (Array.isArray(restored) && selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
 			setSelectedHierarchyId("props");
 		}
 		setToast(ko("Undone", "실행 취소됨"));
 	}
 
 	function redoScene() {
-		const restored = store.redo();
+		const restored = coordinator.redo();
 		if (restored === null) {
 			setToast(ko("Nothing to redo", "다시 실행할 작업이 없어요"));
 			return;
 		}
-		if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
+		if (Array.isArray(restored) && selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
 			setSelectedHierarchyId("props");
 		}
 		setToast(ko("Redone", "다시 실행됨"));
@@ -1530,15 +1574,103 @@ globalThis.playMode = centerTab === "play";
 	const [promptClips, setPromptClips] = useState(() => DEFAULT_PROMPT_CLIPS.map((clip) => ({ ...clip })));
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
-	const [motion, setMotion] = useState(null);
+	// Both clip slots + trims are restored from the last session (plan 7.4):
+	// one keyed payload parsed once; a corrupt or missing entry starts an
+	// empty session, never a crash.
+	const [clipState] = useState(() => {
+		try {
+			return deserializeClipState(localStorage.getItem(CLIPS_STORAGE_KEY));
+		} catch {
+			return null;
+		}
+	});
+	const [motion, setMotion] = useState(clipState?.A?.clip ?? null);
 	const [motionBusy, setMotionBusy] = useState(false);
 	const [motionError, setMotionError] = useState("");
 	// Subject 2's clip slot (plan 7.4) — behind the keyed registry with
 	// Subject 1's legacy single `motion` state, never named directly.
-	const [motionB, setMotionB] = useState(null);
+	const [motionB, setMotionB] = useState(clipState?.B?.clip ?? null);
 	// Per-subject in/out trim ranges (plan 7.4); null = the whole clip.
-	const [trimA, setTrimA] = useState(null);
-	const [trimB, setTrimB] = useState(null);
+	const [trimA, setTrimA] = useState(clipState?.A?.trim ?? null);
+	const [trimB, setTrimB] = useState(clipState?.B?.trim ?? null);
+	// Clip persistence (plan 7.4): the lanes write back on change, debounced
+	// like the scene; a quota or blocked-storage failure just means the clips
+	// won't survive a reload, never a crash (same policy as shot authoring).
+	useEffect(() => {
+		const timer = setTimeout(() => {
+			try {
+				localStorage.setItem(CLIPS_STORAGE_KEY, serializeClipState({ A: motion, B: motionB }, { A: trimA, B: trimB }));
+			} catch {
+				/* clips simply won't survive this reload */
+			}
+		}, 400);
+		return () => clearTimeout(timer);
+	}, [motion, motionB, trimA, trimB]);
+	// Live mirror for the take wiring (plan 7.2): the stores are built once,
+	// so their capture/apply/restore closures must read the CURRENT render's
+	// fields, never a stale first-render snapshot.
+	clipFieldsRef.current = { motion, motionB, trimA, trimB, charA, charB, showB, tlFrameCount, tlFps, tlFrame, tlPlaying };
+	function writeClipFields(patch) {
+		if ("motion" in patch) setMotion(patch.motion);
+		if ("motionB" in patch) setMotionB(patch.motionB);
+		if ("trimA" in patch) setTrimA(patch.trimA);
+		if ("trimB" in patch) setTrimB(patch.trimB);
+		if ("showB" in patch) setShowB(patch.showB);
+		if ("tlFrameCount" in patch) setTlFrameCount(patch.tlFrameCount);
+		if ("tlFps" in patch) setTlFps(patch.tlFps);
+		if ("tlFrame" in patch) setTlFrame(patch.tlFrame);
+		if ("tlPlaying" in patch) setTlPlaying(patch.tlPlaying);
+	}
+	writeClipFieldsRef.current = writeClipFields;
+	// The landing door (plan 7.2/12.2): decode both artifacts, then land
+	// atomically through the take store — one entry, one Ctrl+Z. In-flight
+	// retries of the same requestId share the pending landing; a replay
+	// after the landing returns the store's cached ack and mints nothing.
+	// Exposed on window.__cozyclay so the surface host (main.jsx) can wire
+	// its onLand callback without the app naming the feature.
+	const pendingLandsRef = useRef(new Map());
+	async function landTake(payload) {
+		const requestId = payload?.requestId;
+		if (typeof requestId !== "string" || requestId.length === 0) throw new Error("request-id-missing");
+		const pending = pendingLandsRef.current.get(requestId);
+		if (pending) return pending;
+		const task = (async () => {
+			const decode = async (clip) => ({
+				...(await loadMotionFromUrl(clip.artifactPath)),
+				url: clip.artifactPath,
+				rotationDeg: clip.rotationDeg,
+				anchorFrame: 0,
+			});
+			const [a, b] = await Promise.all([decode(payload.a), decode(payload.b)]);
+			return takeStore.landTake({
+				...payload,
+				a: { ...payload.a, decoded: a },
+				b: { ...payload.b, decoded: b },
+			});
+		})();
+		pendingLandsRef.current.set(requestId, task);
+		try {
+			return await task;
+		} finally {
+			pendingLandsRef.current.delete(requestId);
+		}
+	}
+	// Clear the take (plan 7.4): both clips leave in ONE entry through the
+	// take store, so one Ctrl+Z restores them. The empty-take marker passes
+	// the store's structural validation; the wiring interprets it as "both
+	// lanes empty" and never decodes the placeholder clips.
+	const clearSeqRef = useRef(0);
+	function clearTake() {
+		// Nothing loaded: clearing is a no-op, and a no-op must not mint an
+		// undo entry (the take store has no coalescing for the marker).
+		if (!takeLoaded) return;
+		clearSeqRef.current += 1;
+		takeStore.landTake(clearTakePayload(`clear-${clearSeqRef.current}`, {
+			tlFrameCount: maxDst + 1,
+			tlFps: 20,
+			tlFrame: Math.min(tlFrame, maxDst),
+		}));
+	}
 	// Pre-playback bone snapshot; restoring it (after Character's pose effect
 	// has re-applied poseA) puts the rig back exactly where it was.
 	const restoreRef = useRef(null);
@@ -2030,19 +2162,15 @@ const noop = () => {};
 	}, [bridge, rigA, motion, motionBusy]);
 
 	function clearMotion() {
-		setMotion(null);
-		setTrimA(null);
+		// Clearing the take clears BOTH clips atomically in ONE undo entry
+		// (plan 7.4): the ARDY workflow's Clear and Subject 2's Clear clip
+		// are the same operation, and one Ctrl+Z brings the whole take back.
+		clearTake();
 		setMotionError("");
-		// Back to the pre-generation timeline: the current duration at 20 fps.
-		setTlFrameCount(maxDst + 1);
-		setTlFps(20);
-		setTlFrame((f) => Math.min(f, maxDst));
-		setTlPlaying(false);
 	}
 
 	function clearMotionB() {
-		setMotionB(null);
-		setTrimB(null);
+		clearTake();
 	}
 
 	// Drive Subject 1's rig from the loaded clip whenever the playhead moves.
@@ -2060,19 +2188,19 @@ useEffect(() => {
 
 	/* ------------------------------ IK logic ------------------------------ */
 
-	// Resolve the IK rig (chains + FK swing joints) whenever Subject 1's rig
-	// (re)loads. A rig missing any bone resolves to null and IK mode stays
-	// unavailable.
-// IK correction keys resolve chains from the SELECTED subject's rig (plan
-// 7.4) — the ikSubject switch replacing the A-only rig path.
-const ikSubject = selectedHierarchyId === "characterB" ? "B" : "A";
-const ikRig = ikSubject === "B" ? rigB : rigA;
+	// Resolve the IK rig (chains + FK swing joints) whenever the SELECTED
+	// subject's rig (re)loads. A rig missing any bone resolves to null and IK
+	// mode stays unavailable.
+	// The base layer under the selected subject's IK keys: the subject's own
+	// clip when one is loaded (a correction eases back into it), else none —
+	// so A's keys always blend into A's clip and B's into B's.
+	const ikClip = ikSubject === "B" ? motionB : motion;
 	useEffect(() => {
 		const resolved = resolveIkRig(ikRig);
 		const chains = resolved ? resolved.chains : null;
 		setIkChains(chains);
 		setIkFkJoints(resolved ? resolved.fkJoints : null);
-		ikStateRef.current.chains = chains;
+		ikState.chains = chains;
 		if (!chains) setIkMode(false);
 	}, [ikRig]);
 
@@ -2085,15 +2213,20 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 			// composite is what gets pinned for re-generation. Pause playback
 			// so a running playhead cannot fight the drag.
 			setTlPlaying(false);
-			// Self-heal the ref after a hot-reload with an older state shape:
-			// a missing `tracked` set would throw on the first drag.
-			if (!ikStateRef.current.tracked) ikStateRef.current = createIkState();
-			ikStateRef.current.chains = ikChains;
+			// Self-heal the selected subject's state after a hot-reload with
+			// an older state shape: a missing `tracked` set would throw on
+			// the first drag. The heal replaces the state in the keyed map.
+			let state = ikState;
+			if (!state.tracked) {
+				state = createIkState();
+				ikStatesRef.current[ikSubject] = state;
+			}
+			state.chains = ikChains;
 			// Handles open exactly on the effectors of the CURRENT pose —
 			// non-destructive entry. (The evaluate effect applies the keyed
 			// pose at this frame right after ikMode flips, so re-seating on
 			// frame changes is handled there.)
-			if (ikChains) ikSeedTargets(ikChains, ikStateRef.current);
+			if (ikChains) ikSeedTargets(ikChains, state);
 			// The main view switches to the poser camera: start it exactly on
 			// the shot camera's pose so nothing jumps, then navigation moves
 			// the POSER only — the shot camera (inset) stays frozen.
@@ -2125,19 +2258,19 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 	// toward the pointer. Keys are baked on drag END — see ikDragEnd.
 	function ikSolve(kind, trackId, targetWorld) {
 		if (kind === "chain") {
-			const chain = ikStateRef.current.chains?.get(trackId);
+			const chain = ikState.chains?.get(trackId);
 			if (!chain) return;
-			ikTouch(ikStateRef.current, trackId);
-			ikStateRef.current.targets.set(trackId, targetWorld.clone());
+			ikTouch(ikState, trackId);
+			ikState.targets.set(trackId, targetWorld.clone());
 			solveIk(chain, targetWorld);
 			return;
 		}
 		if (kind === "mid") {
 			// Mid tracks reference their parent chain through MID_TRACKS.
 			const midDef = MID_TRACKS.find((t) => t.id === trackId);
-			const chain = midDef ? ikStateRef.current.chains?.get(midDef.chain) : null;
+			const chain = midDef ? ikState.chains?.get(midDef.chain) : null;
 			if (!chain) return;
-			ikTouch(ikStateRef.current, chain.track.id);
+			ikTouch(ikState, chain.track.id);
 			solveMidJoint(chain, targetWorld);
 			return;
 		}
@@ -2145,9 +2278,9 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 		// only the end bone — the solved limb position is untouched — and the
 		// bake on drag end now stores b2's quaternion with the chain's.
 		if (kind === "swing") {
-			const chain = ikStateRef.current.chains?.get(trackId);
+			const chain = ikState.chains?.get(trackId);
 			if (!chain || !targetWorld?.axis) return;
-			ikTouch(ikStateRef.current, trackId);
+			ikTouch(ikState, trackId);
 			solveEffectorSwing(chain, targetWorld.axis, targetWorld.angle, targetWorld.startQuat, targetWorld.startParentQuat);
 			return;
 		}
@@ -2159,19 +2292,19 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 		if (kind === "body") {
 			const joint = ikFkJoints?.get(trackId);
 			if (!joint) return;
-			ikTouch(ikStateRef.current, trackId);
+			ikTouch(ikState, trackId);
 			if (footSnap && !ikBodyDragRef.current && ikChains) {
 				// Capture the plant points once, BEFORE the first hips move.
-				ikPlantFeet(ikChains, ikStateRef.current);
+				ikPlantFeet(ikChains, ikState);
 				ikBodyDragRef.current = true;
 			}
 			if (targetWorld?.worldDelta && targetWorld?.startLocalPos) solveHipsTranslate(joint, targetWorld.worldDelta, targetWorld.startLocalPos);
 			else if (targetWorld?.axis) solveSwingAngle(joint, targetWorld.axis, targetWorld.angle, targetWorld.startQuat, targetWorld.startParentQuat);
 			if (footSnap && ikChains) {
-				ikSolvePlantedFeet(ikChains, ikStateRef.current);
+				ikSolvePlantedFeet(ikChains, ikState);
 				// the planted re-solve wrote the leg bones — key them too
-				ikTouch(ikStateRef.current, "leftFoot");
-				ikTouch(ikStateRef.current, "rightFoot");
+				ikTouch(ikState, "leftFoot");
+				ikTouch(ikState, "rightFoot");
 			}
 			return;
 		}
@@ -2179,7 +2312,7 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 		// startQuat, startParentQuat } from the drag layer.
 		const joint = ikFkJoints?.get(trackId);
 		if (!joint || !targetWorld?.axis) return;
-		ikTouch(ikStateRef.current, trackId);
+		ikTouch(ikState, trackId);
 		solveSwingAngle(joint, targetWorld.axis, targetWorld.angle, targetWorld.startQuat, targetWorld.startParentQuat);
 	}
 
@@ -2187,20 +2320,20 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 	// scrub away and back restores the dragged pose exactly (slerp).
 	function ikDragEnd() {
 		ikBodyDragRef.current = false;
-		if (ikChains) ikBakeKeyframe(ikChains, ikStateRef.current, tlFrame, ikFkJoints);
+		if (ikChains) ikBakeKeyframe(ikChains, ikState, tlFrame, ikFkJoints);
 		setIkTick((n) => n + 1);
 	}
 
 	// Manual key: bake the current tracked rotations at the playhead.
 	function ikAddKeyframe() {
 		if (!ikChains) return;
-		ikBakeKeyframe(ikChains, ikStateRef.current, tlFrame, ikFkJoints);
+		ikBakeKeyframe(ikChains, ikState, tlFrame, ikFkJoints);
 		setIkTick((n) => n + 1);
 		setToast(isKo ? `${tlFrame}프레임에 전신 IK 키를 추가했어요` : `Full-body IK key at frame ${tlFrame}`);
 	}
 
 	function ikDeleteKeyframe(frame) {
-		ikRemoveKeyframe(ikStateRef.current, frame);
+		ikRemoveKeyframe(ikState, frame);
 		setIkTick((n) => n + 1);
 	}
 
@@ -2218,10 +2351,10 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 	// nothing to apply — pure FK posing / pure motion playback stays
 	// untouched.
 	useEffect(() => {
-		if (!ikChains || !rigA || posing) return;
-		if (!ikMode && ikStateRef.current.keys.size === 0) return;
-		ikEvaluate(ikChains, ikStateRef.current, tlFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
-	}, [ikMode, ikChains, rigA, motion, posing, tlFrame, ikTick, ikFkJoints]);
+		if (!ikChains || !ikRig || posing) return;
+		if (!ikMode && ikState.keys.size === 0) return;
+		ikEvaluate(ikChains, ikState, tlFrame, ikFkJoints, ikClip ? IK_CORRECTION_BLEND_FRAMES : 0);
+	}, [ikMode, ikChains, ikRig, ikClip, posing, tlFrame, ikTick, ikFkJoints, ikState]);
 
 	// Re-seat the handles on the keyed pose when the FRAME changes with IK
 	// on — scrubbing to frame 39 shows that frame's interpolated pose AND
@@ -2233,17 +2366,20 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 	useEffect(() => {
 		const frameChanged = ikPrevFrameRef.current !== tlFrame;
 		ikPrevFrameRef.current = tlFrame;
-		if (!ikMode || !ikChains || !rigA || posing) return;
+		if (!ikMode || !ikChains || !ikRig || posing) return;
 		if (!frameChanged) return; // pure toggle-on: evaluate already ran
-		ikSeedTargets(ikChains, ikStateRef.current);
-	}, [ikMode, ikChains, rigA, motion, posing, tlFrame, ikTick, ikFkJoints]);
+		ikSeedTargets(ikChains, ikState);
+	}, [ikMode, ikChains, ikRig, ikClip, posing, tlFrame, ikTick, ikFkJoints, ikState]);
 
 	// QA hook: lets headless visual checks read the live rig/motion state
 	// (tools/ardy/visual-qa.mjs). Harmless in normal use.
 	useEffect(() => {
 	window.__cozyclay = {
-			rigA, motion, tlFrame, ikMode, ikChains, ikFocus, ik: ikStateRef.current,
+			rigA, motion, motionB, tlFrame, ikMode, ikChains, ikFocus, ik: ikState,
 			committedIkEdits, waypoints,
+			// the landing door (plan 7.2): the surface host's onLand callback
+			// and the browser suite drive the REAL adapter through this
+			landTake,
 			// the camera the main view renders through (poser in IK mode) — QA
 			// projections must use this one, not the frozen shot camera
 			activeCam: ikMode ? poserCamRef.current : shotCamRef.current,
@@ -2253,12 +2389,17 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 			charA,
 			insetPane: insetPaneRef.current,
 		};
-	}, [rigA, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints]);
+	}, [rigA, motion, motionB, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints]);
 	// QA hook (plan §6.5): exposes history depth and the present === objects
 	// invariant so the browser suite can assert undo entry counts directly.
 	// Reads live store state at call time; re-registered after every render.
 	useEffect(() => {
 		window.__sceneHistory = () => ({ ...store.depths(), settled: store.present() === store.objects });
+	});
+	// QA hook (plan §7.2/§7.3): take-store depth/value for the browser
+	// suite's landing round-trip (depths +1 after landing, −1 after Ctrl+Z).
+	useEffect(() => {
+		window.__takeHistory = () => ({ ...takeStore.depths(), canUndo: takeStore.canUndo(), canRedo: takeStore.canRedo(), value: takeStore.value() });
 	});
 
 	// On clear, restore the exact pre-playback bone rotations. This runs in
@@ -2706,7 +2847,7 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 		// Regeneration must keep the loaded clip's exact frame count. The form
 		// may still show an older duration after a motion is loaded; using it
 		// would ask ARDY for (for example) 120 frames against an 80-frame base.
-		const duration = motion && ikFrames.length > 0
+		const duration = motion && ikFramesA.length > 0
 			? motion.frames / motion.fps
 			: Math.round(Number(durationOverride)) || ARDY_DURATION_MIN;
 		if (duration < ARDY_DURATION_MIN || duration > ARDY_DURATION_MAX) {
@@ -2789,17 +2930,17 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 		// live ARDY root recovered from positional skinning.
 		const editedSegments = motion && hasPromptSchedule
 			? segments.filter((segment) =>
-				ikFrames.some((frame) => frame >= segment.startFrame && frame < segment.endFrame)
+				ikFramesA.some((frame) => frame >= segment.startFrame && frame < segment.endFrame)
 			)
 			: [];
 		const hasBlockEdits = editedSegments.length > 0;
-		const shouldPin = hasBlockEdits || (!hasPromptSchedule && Boolean(motion || ikFrames.length > 0));
+		const shouldPin = hasBlockEdits || (!hasPromptSchedule && Boolean(motion || ikFramesA.length > 0));
 		const constraintFrames = !shouldPin
 			? []
 			: waypointMode
 				? [0]
 				: hasBlockEdits
-					? ikFrames.filter((frame) =>
+					? ikFramesA.filter((frame) =>
 						editedSegments.some((segment) => frame >= segment.startFrame && frame < segment.endFrame)
 					)
 				: [...new Set([
@@ -2809,13 +2950,13 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 					Math.max(segment.startFrame, segment.endFrame - 2),
 					segment.endFrame - 1,
 				]),
-				...ikFrames.filter((frame) => frame >= 0 && frame < clipFrames),
+				...ikFramesA.filter((frame) => frame >= 0 && frame < clipFrames),
 			])].sort((a, b) => a - b);
 		const currentFrame = tlFrame;
 		const poses = constraintFrames.map((constraintFrame) => {
 			if (motion) applyMotionFrame(rig, motion, constraintFrame);
-			if (ikChains && ikStateRef.current.keys.size > 0) {
-				ikEvaluate(ikChains, ikStateRef.current, constraintFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
+			if (ikChains && ikStateA.keys.size > 0) {
+				ikEvaluate(ikChains, ikStateA, constraintFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
 			}
 			return {
 				frame: constraintFrame,
@@ -2831,8 +2972,8 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 			};
 		});
 		if (motion) applyMotionFrame(rig, motion, currentFrame);
-		if (ikChains && ikStateRef.current.keys.size > 0) {
-			ikEvaluate(ikChains, ikStateRef.current, currentFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
+		if (ikChains && ikStateA.keys.size > 0) {
+			ikEvaluate(ikChains, ikStateA, currentFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
 		}
 
 		// ARDY generates in Subject 1's clip-local frame. Frame 0 is therefore
@@ -2872,7 +3013,7 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 					contextAfter: 20,
 					edits: constraintFrames.map((frame) => ({
 						frame,
-						tracks: [...(ikStateRef.current.keys.get(frame)?.keys() || [])],
+						tracks: [...(ikStateA.keys.get(frame)?.keys() || [])],
 						pose: posesByFrame.get(frame),
 					})),
 				};
@@ -2909,9 +3050,9 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 					...current,
 					...body.motionEdit.edits.map(({ frame, tracks }) => ({ frame, tracks })),
 				]);
-				ikStateRef.current.keys.clear();
-				ikStateRef.current.tracked.clear();
-				ikStateRef.current.plants.clear();
+				ikStateA.keys.clear();
+				ikStateA.tracked.clear();
+				ikStateA.plants.clear();
 				setIkTick((value) => value + 1);
 			}
 			setToast(ko("ARDY motion generated", "ARDY 모션 생성됨"));
@@ -3184,7 +3325,7 @@ const ikRig = ikSubject === "B" ? rigB : rigA;
 							<IkHandles
 								chains={ikChains}
 								fkJoints={ikFkJoints}
-								ikState={ikStateRef.current}
+								ikState={ikState}
 								enabled={ikMode && !posing && !playMode}
 								focus={ikFocus}
 								onFocus={focusIkHandle}

@@ -1,7 +1,10 @@
 // The atomic take store: one landed take plus the `before` snapshot of
 // every App field it writes. landTake validates the §5 TakePayload
-// contract, applies in one batch, and pushes exactly one history entry.
-// No React, node-importable (the test seam).
+// contract, applies in one batch, and pushes exactly one history entry;
+// every accepted requestId is retained for the store's lifetime in a
+// bounded table that refuses at its ceiling rather than evicting —
+// eviction is exactly what lets a delayed retry land twice. No React,
+// node-importable (the test seam).
 import {
 	createHistory,
 	pushHistory,
@@ -14,6 +17,17 @@ import { createSeqMirror } from "./undo-coordinator.js";
 
 // The provenance block a complete take must carry (plan §5, §10.2).
 const PROVENANCE_KEYS = ["command", "sourceUrl", "licence", "sourceSha256", "trimStartS", "trimEndS", "gvhmrCommit", "weightsSha256", "annotationPath"];
+
+// Idempotency ceiling (§12.2's pattern, at the store's own layer): a
+// NEW requestId at the ceiling is refused by name, never evicted. The
+// adapter's session table (src/surface-host.js) is the session
+// authority; this table is the store-level guard, and being stricter —
+// it also refuses a replay of an already-landed id after a surface
+// reload — only ever swallows a protocol violation, never a legitimate
+// first landing. Each record holds the accepted payload, so the bound
+// matters: 10 000 × ~1-2 KB is a bounded worst case, and refusing
+// keeps it that way.
+const REQUEST_TABLE_BUDGET = 10000;
 
 // Named-code rejection: a failed check reads nothing further, so
 // landTake can never half-apply.
@@ -39,9 +53,11 @@ export function createPerformanceTakeStore({ capture, apply, restore }, { coordi
 	let history = createHistory(null);
 	const seq = createSeqMirror();
 	let registered = null;
-	// The last accepted landing; a replayed requestId returns it verbatim
-	// so a retry can never mint a second entry.
-	let lastAck = null;
+	// requestId -> { requestId, value }: every accepted landing, never
+	// evicted. A replay returns the cached ack verbatim so it can never
+	// mint a second entry; at the ceiling a NEW id is refused by name
+	// (request-table-exhausted) instead of evicting an old one.
+	const accepted = new Map();
 
 	function pushStamped(next) {
 		const pushed = pushHistory(history, next);
@@ -50,15 +66,19 @@ export function createPerformanceTakeStore({ capture, apply, restore }, { coordi
 		registered?.stamp();
 	}
 	const store = {
-		// validate → replay-check → snapshot → apply → exactly one push.
+		// validate → replay-check → budget-check → snapshot → apply →
+		// exactly one push.
 		landTake(payload) {
 			const value = validateTakePayload(payload);
-			if (lastAck !== null && lastAck.requestId === value.requestId) return lastAck;
+			const cached = accepted.get(value.requestId);
+			if (cached !== undefined) return cached;
+			if (accepted.size >= REQUEST_TABLE_BUDGET) throw new Error("request-table-exhausted");
 			const entry = { value, before: capture() };
 			apply(value);
-			lastAck = { requestId: value.requestId, value };
+			const ack = { requestId: value.requestId, value };
+			accepted.set(value.requestId, ack);
 			pushStamped(entry);
-			return lastAck;
+			return ack;
 		},
 
 		value() {

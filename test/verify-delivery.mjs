@@ -44,7 +44,11 @@ const ok = (label, cond, detail) => {
 	console.log(`${cond ? "PASS" : "FAIL"} ${label}${detail ? "  " + detail : ""}`);
 	if (!cond) fail.push(label);
 };
-
+// A row marked not-applicable is a deliberately unclaimed capability: it
+// prints N/A, never PASS, and adds nothing to the failure count.
+const na = (label, detail) => {
+	console.log(`N/A  ${label}${detail ? "  " + detail : ""}`);
+};
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const tmpHome = () => mkdtempSync(join(tmpdir(), "cozyclay-delivery-"));
 const discoveryPath = (home) => join(home, "cozyclay", "ingest.json");
@@ -230,10 +234,13 @@ async function waitForDiscovery(home, { timeoutMs = 20000 } = {}) {
 		await terminateOwned(child);
 	}
 }
-// A minimal host stand-in for the packaged CLI rows: it binds a port, writes
-// the discovery record the launcher reads, and answers the /ingest/* routes
-// the launcher proxies. H1 replaces it with tools/ingest/host.mjs.
-async function startStubHost(home, { appOrigin = null } = {}) {
+// A minimal published-origin stand-in for the packaged CLI *proxy* rows
+// (b) and (d): it binds a port, writes the discovery record the launcher
+// reads, and answers the /ingest/* routes the launcher proxies. It stands
+// in for any origin the launcher might proxy to -- it is NOT the H1 host
+// (tools/ingest/host.mjs, phase 3), and nothing here vouches for host
+// behaviour; the packaged-host row below is explicitly not-applicable.
+async function startStubHost(home) {
 	const port = await freePort();
 	const origin = `http://127.0.0.1:${port}`;
 	const server = createServer((req, res) => {
@@ -246,14 +253,6 @@ async function startStubHost(home, { appOrigin = null } = {}) {
 		if (/^\/ingest\/artifacts\/[0-9a-f]{32}\/[a-z0-9_-]{1,32}$/.test(pathname)) {
 			res.writeHead(200, { "content-type": "application/octet-stream" });
 			res.end("stub artifact");
-			return;
-		}
-		if (pathname === "/") {
-			const child = DIST_INGEST_HTML;
-			const headers = { "content-type": "text/html; charset=utf-8" };
-			if (appOrigin) headers["content-security-policy"] = `${PROD_CHILD_CSP}; frame-ancestors ${appOrigin}`;
-			res.writeHead(200, headers);
-			res.end(existsSync(child) ? readFileSync(child, "utf8") : "<!doctype html><title>surface</title>");
 			return;
 		}
 		res.writeHead(404, { "content-type": "text/plain" });
@@ -277,6 +276,7 @@ async function startStubHost(home, { appOrigin = null } = {}) {
 		close: () => new Promise((done) => server.close(done)),
 	};
 }
+
 
 // --- D2: the packaged CLI proxy and packaging --------------------------------
 // (a) no discovery record: /ingest/* falls through to dist/ and 404s, so the
@@ -381,29 +381,56 @@ async function startStubHost(home, { appOrigin = null } = {}) {
 	}
 }
 
-// (f) dev:ingest: surface first (publishes discovery), then the app dev
-// server, whose config-load proxy read picks the published origin up.
+// (f) dev:ingest: the DECLARED entry (package.json "dev:ingest":
+// CCLAY_INGEST_HOST=1 node tools/dev-full.mjs --host 127.0.0.1 --port 5180)
+// spawned cold from a clean isolated config home -- bridge, app Vite and
+// surface Vite all in the entry's own spawn order, no hand-ordering. The
+// proxy target resolves per request, so the surface-origin probe succeeds
+// once the surface has published, with no restart; if the cold-start race
+// ever came back this poll would time out and fail.
 {
 	const home = tmpHome();
 	const appPort = await freePort();
-	const surface = spawnVite(SURFACE_CONFIG, { home, env: { CCLAY_APP_ORIGIN: `http://127.0.0.1:${appPort}` } });
+	const entry = spawnOwned(process.execPath, ["tools/dev-full.mjs", "--host", "127.0.0.1", "--port", String(appPort)], {
+		cwd: REPO_ROOT,
+		env: { ...process.env, XDG_CONFIG_HOME: home, CCLAY_INGEST_HOST: "1", CCLAY_APP_ORIGIN: `http://127.0.0.1:${appPort}` },
+		stdio: "pipe",
+	});
+	const entryOut = collect(entry);
 	try {
+		// A startup failure (e.g. the ARDY sidecar's port occupied by a
+		// foreign process) must surface as a FAIL with the entry's own
+		// output, never as an unhandled-rejection crash.
+		const appError = await waitForHttp(appPort).then(() => null, (err) => err);
 		const record = await waitForDiscovery(home);
-		const app = spawnVite("vite.config.js", { home, args: ["--port", String(appPort)] });
-		try {
-			await waitForHttp(appPort);
-			const res = await httpGet(appPort, "/ingest/surface-origin");
-			const parsed = res.status === 200 ? safeParseJson(res.body) : null;
+		if (appError !== null) {
 			ok(
-				"dev:ingest: /ingest/surface-origin resolves through the app origin",
-				parsed?.origin === record?.origin && parsed?.url === `${record?.origin}/src/ingest/index.html`,
-				JSON.stringify(parsed ?? { status: res.status }),
+				"dev:ingest cold start: the app dev server came up",
+				false,
+				`${appError.message}  ${entryOut().trim().split("\n").filter(Boolean).at(-1) ?? ""}`,
 			);
-		} finally {
-			await terminateOwned(app);
+		} else {
+			// The surface publishes only after its port is bound, which can
+			// be later than the app's first answer -- poll through the app
+			// origin, exactly as a cold-started browser would.
+			const deadline = Date.now() + 20000;
+			let probe = null;
+			while (Date.now() < deadline) {
+				probe = await httpGet(appPort, "/ingest/surface-origin").catch(() => null);
+				const parsed = probe?.status === 200 ? safeParseJson(probe.body) : null;
+				if (parsed?.origin) break;
+				await sleep(100);
+			}
+			const parsed = probe?.status === 200 ? safeParseJson(probe.body) : null;
+			const detail = JSON.stringify(parsed ?? { status: probe?.status ?? "unreachable" });
+			ok(
+				"dev:ingest cold start: surface-origin resolves through the app origin without a restart",
+				!!record && parsed?.origin === record?.origin && parsed?.url === `${record?.origin}/src/ingest/index.html`,
+				`${detail}${parsed?.origin ? "" : "  " + (entryOut().trim().split("\n").filter(Boolean).at(-1) ?? "")}`,
+			);
 		}
 	} finally {
-		await terminateOwned(surface);
+		await terminateOwned(entry);
 	}
 }
 
@@ -513,31 +540,24 @@ async function startStubHost(home, { appOrigin = null } = {}) {
 	}
 }
 
-// Packaged child: the host (H1) serves the built surface on its own origin
-// with --app-origin, and frame-ancestors must come from that response header
-// -- the meta cannot carry it. The stub implements the contract the host must
-// keep: the production policy plus frame-ancestors <app-origin>.
+// Packaged child: H1 (tools/ingest/host.mjs, phase 3) serves the built
+// surface on its own origin with --app-origin, and frame-ancestors must
+// come from that response header -- the meta cannot carry it (plan 11.4).
+// The host does not exist yet, so this row is NOT APPLICABLE: a stub
+// asserting the header would claim a delivered capability. The tripwire
+// below goes red the moment host.mjs lands, so the real-host row cannot
+// be forgotten.
 {
-	const home = tmpHome();
-	const cliPort = await freePort();
-	const stub = await startStubHost(home, { appOrigin: `http://127.0.0.1:${cliPort}` });
-	const child = spawnCli(cliPort, { home });
-	try {
-		await waitForHttp(cliPort);
-		const res = await httpGet(stub.port, "/");
-		const csp = res.headers["content-security-policy"] ?? "";
-		ok(
-			"packaged child frame-ancestors contract (host-owned via --app-origin)",
-			csp.includes("frame-ancestors ") &&
-				csp.includes("default-src 'self'") &&
-				!csp.includes("ws://") &&
-				!csp.includes("script-src 'self' 'unsafe-inline'"),
-			csp || "(no CSP header)",
-		);
-	} finally {
-		await terminateOwned(child);
-		await stub.close();
-	}
+	const hostPath = join(REPO_ROOT, "tools", "ingest", "host.mjs");
+	na(
+		"packaged child frame-ancestors (host-owned)",
+		"H1 (tools/ingest/host.mjs) is phase 3; no stub vouches for packaged host startup or frame-ancestors delivery",
+	);
+	ok(
+		"packaged child frame-ancestors: N/A is honest only while host.mjs is absent",
+		!existsSync(hostPath),
+		existsSync(hostPath) ? "H1 landed: replace this N/A row with a real-host assertion" : "tools/ingest/host.mjs is phase 3",
+	);
 }
 
 // The Pages row's mechanism: the parent frame-src admits only loopback http,
