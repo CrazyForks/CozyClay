@@ -1,7 +1,10 @@
 const CACHE_PREFIX = "cozyclay-pwa-";
-// v3: the app shell moved from "/" to "/app/" when the root became the landing
-// page. Bumping the name evicts caches that still hold the studio at "/".
-const CACHE_NAME = `${CACHE_PREFIX}v3`;
+// Bump on any change to what CORE_ASSETS resolves to. The icons are cached
+// here, so a client on an older cache keeps serving the previous favicon from
+// disk no matter what the server sends.
+// v3: app shell moved from "/" to "/app/".
+// v4: icons redrawn from the CozyClay mark.
+const CACHE_NAME = `${CACHE_PREFIX}v4`;
 // The installable app is the studio, not the landing page.
 const APP_SHELL = "/app/";
 const CORE_ASSETS = [
@@ -13,6 +16,7 @@ const CORE_ASSETS = [
 	"./icons/icon-512.png",
 	"./icons/icon-maskable-512.png",
 	"./icons/apple-touch-icon.png",
+	"./favicon.ico",
 	"./fonts/inter-latin.woff2",
 	"./demo/walk-then-stop.npz",
 	"./models/x-bot-tpose.fbx",
