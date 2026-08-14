@@ -26,11 +26,16 @@
  *
  * Run: `npm run dev:ui` in one shell, then `npm run test:app-render`,
  * which launches the headless QA browser (tools/qa-browser.mjs) against
- * QA_URL (default http://127.0.0.1:5180/). Without a CDP browser this
- * suite SKIPs and exits 0: verify-isolation.mjs's deletability sim runs
- * every test/verify-* standalone with no server, and a hard failure there
- * would be a false positive — the gate only exists when qa-browser
- * guarantees a page.
+ * QA_URL (default http://127.0.0.1:5180/). Without a CDP browser this suite
+ * FAILS: a suite that exits 0 when it could not run hands the gate a green
+ * receipt for a check that never happened. The one legitimate exception is
+ * verify-isolation.mjs's deletability sim, which runs every test/verify-*
+ * standalone inside a scratch tree where no browser can exist; it sets
+ * ALLOW_APP_RENDER_SKIP=1 explicitly, so that skip is a recorded decision
+ * rather than a silent one. FORCE_NATIVE_SETTER=1 drives the slider's
+ * native-setter fallback, which otherwise runs only when headless pointer
+ * delivery is swallowed -- that is how a `const` reassignment inside it
+ * survived a 22-PASS green run undetected.
  *
  * Sensitivity: every assertion here was demonstrated to FAIL when the
  * wiring it guards was removed (mutation runs against src/App.jsx: the
@@ -481,15 +486,25 @@ for (let step = 1; step <= 4; step += 1) {
 }
 await mouse("mouseReleased", seekX + 4, seekY);
 await sleep(500);
+// FORCE_NATIVE_SETTER=1 drives the fallback branch deliberately. Without it the
+// branch only runs when headless pointer delivery is swallowed, which is why a
+// `const` reassignment inside it survived a 22-PASS green run undetected.
+const forceNativeSetter = process.env.FORCE_NATIVE_SETTER === "1";
+let usedNativeSetterFallback = false;
 // The slider's displayed value is the CANONICAL rot (still 0°), so the
 // raw-edit signal is charA itself — the QA hook exposes it live.
-const rawRot = await evaluate("window.__cozyclay.charA.rot");
-if (Math.abs(rawRot) <= 10) {
+// `let`, not `const`: the native-setter branch below reassigns it. Declaring
+// it const made that branch throw instead of running the assertions, and the
+// green run hid it because the primary pointer path happened to succeed --
+// a fallback that cannot execute is not a fallback.
+let rawRot = await evaluate("window.__cozyclay.charA.rot");
+if (forceNativeSetter || Math.abs(rawRot) <= 10) {
 	await evaluate(
 		`(() => { const input = ${sliderExpr}; const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, '25'); input.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`,
 	);
 	await sleep(500);
 	rawRot = await evaluate("window.__cozyclay.charA.rot");
+	usedNativeSetterFallback = true;
 }
 const matrixAfter = await evaluate(rigMatrixExpr);
 const matrixDelta = matrixBefore.reduce((max, v, i) => Math.max(max, Math.abs(v - matrixAfter[i])), 0);
@@ -497,6 +512,16 @@ expect(
 	"the raw Rotate edit actually changed charA",
 	Math.abs(rawRot) > 10,
 	`raw rot after click: ${rawRot}`,
+);
+// Under FORCE_NATIVE_SETTER the fallback is the ONLY path that can have moved
+// charA, so this asserts the branch executed and reached the assertions rather
+// than throwing on a reassignment.
+expect(
+	forceNativeSetter
+		? "FORCE_NATIVE_SETTER: the native-setter fallback ran and reached the assertions"
+		: "the raw Rotate edit path is recorded (pointer or native-setter fallback)",
+	forceNativeSetter ? usedNativeSetterFallback && Math.abs(rawRot) > 10 : true,
+	`fallback used: ${usedNativeSetterFallback}, rawRot: ${rawRot}`,
 );
 expect(
 	"the rendered rig ignores the raw char edit while a clip is loaded",

@@ -49,14 +49,32 @@ expect("legacy greeting demo migration is removed", !app.includes("GREETING_DEMO
 expect("batch generation spans through the final block frame", app.includes("Math.max(...clips.map((clip) => clip.endFrame))") && app.includes("Math.ceil(totalFrames / 20)"));
 expect("batch generation forwards all prompt clips", app.includes("promptClipsOverride: clips") && app.includes("hasPromptSchedule"));
 expect("normal motion generation excludes the prompt block schedule", app.includes("promptClipsOverride = []"));
-expect("unedited batch blocks use one unpinned autoregressive schedule", app.includes("!hasPromptSchedule && Boolean(motion || ikFramesA.length > 0)") && app.includes("else if (hasPromptSchedule) body.segments = segments"));
-expect("IK-edited blocks use the motion edit session", app.includes("const editedSegments") && app.includes("body.motionEdit = {") && app.includes("sourceMotion: motion.url"));
-expect("IK regeneration inherits loaded clip duration", app.includes("motion && ikFramesA.length > 0") && app.includes("motion.frames / motion.fps"));
-expect("motion edits send only tracked pending joints", app.includes("ikStateA.keys.get(frame)?.keys()") && app.includes("tracks:"));
-expect("successful motion edits commit and clear pending IK", app.includes("setCommittedIkEdits") && app.includes("ikStateA.keys.clear()") && app.includes("ikStateA.tracked.clear()"));
-expect("pending IK clears only after exact commit verification", app.includes("editCommitReport?.commit_verified !== true") && app.includes("ARDY returned motion without verified authored IK keys"));
-expect("failed key verification leaves pending IK intact", app.indexOf("ARDY returned motion without verified authored IK keys") < app.indexOf("ikStateA.keys.clear()"));
-expect("individual block generation action is removed", !app.includes("Generate selected block"));
+// ARDY regeneration-request wiring: TRIPWIRES ONLY (pass-4 finding). These
+// claims used to be GATED on src/App.jsx string presence, so a rendered App
+// that never performed them still passed — the same false-evidence class as
+// the orphaned undo store. Each is now OBSERVED in a real browser
+// (test/verify-ardy-request.mjs captures the real /ardy/generate request
+// body at the network edge and reads the live IK state of the rendered app;
+// every claim was demonstrated to FAIL when its wiring was removed). The
+// scans below are therefore explicitly NON-GATING tripwires: a PASS is a
+// diagnostic that the wiring text still matches, a MISS warns that the
+// behavioural gate may be failing for a drifted line — never a capability
+// proof. This matches the story test/verify-app-seam.mjs:437-447 tells for
+// the same regeneration ground, which it declares "unproven until U4";
+// verify-ardy-request.mjs is the observation that upgrades it.
+let tripMissed = 0;
+function trip(name, condition, gate) {
+	console.log(`${condition ? "TRIPWIRE PASS" : "TRIPWIRE MISS"}  ${name}  [non-gating; ${gate}]`);
+	if (!condition) tripMissed += 1;
+}
+trip("unedited batch blocks use one unpinned autoregressive schedule", app.includes("!hasPromptSchedule && Boolean(motion || ikFramesA.length > 0)") && app.includes("else if (hasPromptSchedule) body.segments = segments"), "behavioural gate: verify-ardy-request.mjs S1 (the real request body ships segments with posePin false) and S4 (posePin true + poses)");
+trip("IK-edited blocks use the motion edit session", app.includes("const editedSegments") && app.includes("body.motionEdit = {") && app.includes("sourceMotion: motion.url"), "behavioural gate: verify-ardy-request.mjs S5 (the real request body carries motionEdit.sourceMotion = the loaded clip url)");
+trip("IK regeneration inherits loaded clip duration", app.includes("motion && ikFramesA.length > 0") && app.includes("motion.frames / motion.fps"), "behavioural gate: verify-ardy-request.mjs S4 (request duration is the clip's 3 s while the form shows 4 s)");
+trip("motion edits send only tracked pending joints", app.includes("ikStateA.keys.get(frame)?.keys()") && app.includes("tracks:"), "behavioural gate: verify-ardy-request.mjs S5/S6 (every edit's tracks equal the live key state's joints, exactly)");
+trip("successful motion edits commit and clear pending IK", app.includes("setCommittedIkEdits") && app.includes("ikStateA.keys.clear()") && app.includes("ikStateA.tracked.clear()"), "behavioural gate: verify-ardy-request.mjs S5 (committedIkEdits records the edits and the pending IK clears after commit_verified)");
+trip("pending IK clears only after exact commit verification", app.includes("editCommitReport?.commit_verified !== true") && app.includes("ARDY returned motion without verified authored IK keys"), "behavioural gate: verify-ardy-request.mjs S6 (commit_verified false surfaces the refusal and commits nothing)");
+trip("failed key verification leaves pending IK intact", app.indexOf("ARDY returned motion without verified authored IK keys") < app.indexOf("ikStateA.keys.clear()"), "behavioural gate: verify-ardy-request.mjs S6 (the pending keys and tracked set survive an unverified run)");
+trip("individual block generation action is removed", !app.includes("Generate selected block"), "behavioural gate: verify-ardy-request.mjs S1 (the rendered Motion tab has no per-block Generate button)");
 expect("Prompt Block edits stay synced with ARDY input", app.includes("changePromptClip(selectedPromptId") && app.includes("setArdyPrompt(event.target.value)"));
 expect("desktop stage fills the remaining viewport", css.includes("aspect-ratio: auto") && css.includes("height: 100%"));
 expect("sidebar width is bounded", css.includes("min-width: 280px") && css.includes("max-width: 50vw"));
@@ -77,6 +95,11 @@ expect("generated motion anchors frame zero at Subject 1", app.includes("anchorX
 expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));
 expect("Top-View root path draws from Subject 1 without a duplicate marker", planview.includes("const pathPoints = [{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));
 expect("resize handles opt out on compact layouts", css.includes(".workspace-splitter,") && css.includes("display: none"));
+if (tripMissed) {
+	// A missed tripwire is a WARN, never a failure (pass-4 finding): the
+	// claim is gated behaviourally in verify-ardy-request.mjs — see above.
+	console.log(`\nTRIPWIRE MISSES (non-gating — the behavioural gates in verify-ardy-request.mjs tell the truth): ${tripMissed}`);
+}
 
 if (failures) process.exit(1);
-console.log("all resizable workspace checks PASS");
+console.log("all resizable workspace checks PASS (tripwires are non-gating diagnostics)");
