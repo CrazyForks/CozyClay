@@ -6,6 +6,7 @@ import { SkeletonUtils } from "three/examples/jsm/Addons.js";
 import { buildArdyPose } from "./ardy/export.js";
 import { checkBridge, generate as ardyGenerate } from "./ardy/client.js";
 import { loadMotionFromUrl } from "./ardy/npz.js";
+import { repairRecordedMp4 } from "./ardy/mp4-duration.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
@@ -1865,11 +1866,21 @@ globalThis.playMode = centerTab === "play";
 		recorder.ondataavailable = (e) => {
 			if (e.data && e.data.size > 0) chunks.push(e.data);
 		};
-		recorder.onstop = () => {
+		recorder.onstop = async () => {
 			if (rec.aborted || chunks.length === 0) return;
 			const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
 			const name = `cozyclay-${slate}.${ext}`;
-			const url = URL.createObjectURL(new Blob(chunks, { type: mime }));
+			const recordedBlob = new Blob(chunks, { type: mime });
+			let downloadBlob = recordedBlob;
+			if (ext === "mp4") {
+				try {
+					downloadBlob = await repairRecordedMp4(recordedBlob);
+				} catch {
+					// An unfamiliar muxer layout must never block the user's recording.
+					downloadBlob = recordedBlob;
+				}
+			}
+			const url = URL.createObjectURL(downloadBlob);
 			const anchor = document.createElement("a");
 			anchor.href = url;
 			anchor.download = name;
