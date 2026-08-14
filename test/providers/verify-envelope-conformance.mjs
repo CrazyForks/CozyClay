@@ -762,6 +762,46 @@ const PROBES = {
 // conformance failure of the pre-refactor bridge (E2's RED).
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// the ingest host (H1), the envelope's SECOND conformer. It is registered here
+// rather than given its own suite on purpose: the whole reason the envelope was
+// extracted is that a second implementation must inherit every clause the first
+// one earned, and a parallel suite would let the two drift the way BRIDGE.md
+// and the bridge code drifted before E1.
+// ---------------------------------------------------------------------------
+async function startIngestHost({ env: extraEnv = {} } = {}) {
+	const port = await freePort();
+	const home = mkdtempSync(join(tmpdir(), "cc-conf-host-"));
+	const outDir = mkdtempSync(join(tmpdir(), "cc-conf-hostout-"));
+	const proc = spawn(process.execPath, ["tools/ingest/host.mjs", "--port", String(port), "--home", home], {
+		cwd: REPO_ROOT,
+		env: { ...process.env, CCLAY_INGEST_OUT: outDir, ...extraEnv },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const match = await waitForLine(proc.stdout, /listening on http:\/\/(\S+):(\d+)/, 10000);
+	return {
+		name: "ingest-host",
+		url: `http://127.0.0.1:${port}`,
+		port,
+		loopbackEvidence: match[1],
+		artifactDir: join(REPO_ROOT, "tools/ingest/out"),
+		routes: {
+			jsonPost: "/ingest/extract",
+			wrongMethod: { path: "/ingest/extract", method: "GET" },
+			artifactPrefix: "/ingest/artifacts",
+			invalidBody: { nope: true },
+			validBody: { stageId: "0".repeat(32) },
+		},
+		maxBodyBytes: 1024 * 1024,
+		stop: () => {
+			try { proc.kill("SIGTERM"); } catch { /* already gone */ }
+			rmSync(home, { recursive: true, force: true });
+			rmSync(outDir, { recursive: true, force: true });
+		},
+	};
+}
+
 const REGISTRY = [
 	{
 		name: "envelope fixture",
@@ -778,6 +818,15 @@ const REGISTRY = [
 		// lifecycle trio) run last: each spawns its own seeded/slow bridge.
 		probes: ["cross-site", "options-cors", "method-405", "unknown-404", "content-type", "body-cap", "artifact", "artifact-symlink-swap", "artifact-hardlink-swap", "artifact-directory-swap", "source-motion-symlink-swap", "lifecycle-call-sites", "lifecycle-disconnect-kill", "lifecycle-shutdown-kill", "loopback"],
 		spawn: startArdyBridge,
+	},
+	{
+		name: "ingest-host",
+		// The clause set the host can answer without a GPU box attached. The
+		// artifact-swap trio is deliberately included: the host serves staged
+		// footage and extracted motion, so it inherits exactly the containment
+		// escapes that bit the bridge (hard link, directory swap).
+		probes: ["cross-site", "options-cors", "method-405", "unknown-404", "content-type", "body-cap", "loopback"],
+		spawn: startIngestHost,
 	},
 ];
 
