@@ -19,11 +19,77 @@ node tools/ardy/bridge.mjs                 # listens on 127.0.0.1:5181
 node tools/ardy/bridge.mjs --port 5182     # or COZYCLAY_BRIDGE_PORT=5182
 ```
 
-On startup it logs the bound address. Ctrl-C kills any in-flight generation
-process group (the ssh session is closed, so nothing is orphaned on the box).
+On startup it logs the bound address and the selected backend. Ctrl-C kills
+any in-flight generation process group (local children die with the bridge;
+an ssh session is closed, so nothing is orphaned on a box).
 
-The bridge reads the same env vars `run-on-box.sh` reads. The remote SSH host
-has no public default and must be configured by the operator:
+## Backends: local and remote
+
+The HTTP surface below is backend-agnostic; where generation actually runs
+is a runner behind it (`tools/ardy/runners/`). Exactly one is selected at
+startup:
+
+| env | default | meaning |
+| --- | --- | --- |
+| `CCLAY_ARDY_MODE` | (unset) | `local` or `remote`; unset = remote when `CCLAY_ARDY_HOST` is set, local otherwise |
+
+### Local backend (`runners/local.mjs` → `run-local.mjs`)
+
+Generation on this machine, no ssh anywhere. Provision once with
+`npm run ardy:setup` (`tools/ardy/setup-local.mjs`): it clones
+`github.com/nv-tlabs/ardy` (Apache-2.0), creates a venv with torch (CUDA
+wheels on Linux, MPS on Apple Silicon), pre-fetches the
+`nvidia/ARDY-Core-RP-20FPS-Horizon40` checkpoint from HuggingFace, and
+downloads the SHA-256-pinned ungated text-encoder stack (~16.4 GB, resumable)
+via the existing `setup-text-encoder.py` + `merge-text-encoder.py`. No model
+weights ever live in this repo.
+
+| env | default | meaning |
+| --- | --- | --- |
+| `CCLAY_ARDY_LOCAL_DIR` | `~/.cozyclay/ardy` | local ARDY checkout |
+| `CCLAY_ARDY_LOCAL_VENV` | `<local-dir>/.venv/bin/python` | generator venv python |
+| `CCLAY_ARDY_ENCODERS_DIR` | `~/.cozyclay/text-encoders` | encoder weights (`TEXT_ENCODERS_DIR`) |
+| `CCLAY_ARDY_ENCODER_URL` | `http://127.0.0.1:9550/` | text-encoder service |
+| `CCLAY_ARDY_ENCODER_DEVICE` | auto (cuda > mps > cpu) | force the encoder's torch device |
+| `CCLAY_ARDY_ENCODER_IDLE_S` | `900` | shut the encoder down after this idle time |
+| `CCLAY_ARDY_DEVICE` | auto (cuda > mps > cpu) | force the generator's torch device |
+
+Device selection is `cuda > mps > cpu` on both the generator and the encoder
+(`cclay_pick_device()` in the python scripts; `CCLAY_ARDY_DEVICE` overrides,
+and a request's `cpu:true` maps onto it). `PYTORCH_ENABLE_MPS_FALLBACK=1` is
+set so an MPS-unsupported op falls back to CPU instead of failing the run.
+
+Generation runs through a **persistent worker** (`cclay_worker.py`, loopback
+TCP on `CCLAY_ARDY_WORKER_PORT`, default 9552): the bridge prewarms it at
+startup (`CCLAY_ARDY_PREWARM=0` opts out), it loads the motion model once,
+compiles the GPU kernels with a no-text warmup call, and serves jobs from
+the warm process — on this class of hardware that turns a ~2-minute
+per-request cold spawn into seconds. The text encoder (Llama-3-8B, ~16 GB)
+rides **inside the worker** (ARDY's in-process fallback, moved to the GPU as
+fp16 with a NaN-guarded bf16 fallback), and a per-prompt embedding disk
+cache (`~/.cozyclay/embed-cache`) makes every repeated prompt free —
+re-seeding, re-pinning, or re-routing the same prompt skips Llama entirely.
+`run-local.mjs` falls back to a direct one-shot spawn whenever the worker is
+unavailable (and for forced-CPU runs), so the worker is an accelerator,
+never a dependency. The worker idles out after `CCLAY_ARDY_WORKER_IDLE_S`
+(default 3600 s); the standalone gradio encoder service is only started for
+those worker-less fallback runs, idling out after
+`CCLAY_ARDY_ENCODER_IDLE_S` (default 900 s). Health reports
+`encoder: "on-demand"` while the service is down — that is a normal state,
+not an error.
+
+Single-prompt runs use the repo-owned `cclay_constrained_generate.py`
+(pose pins via `FullBodyConstraintSet`, root paths via
+`Root2DConstraintSet`, free generation with no constraints — no base motion
+and no two-pass dance needed); segment schedules and motion edits run the
+same `cclay_sequence_generate.py` / `cclay_motion_edit.py` the box does,
+executed in place from this repo.
+
+### Remote backend (`runners/remote.mjs` → `run-*-on-box.sh`)
+
+The original ssh flow, byte-for-byte: the bridge reads the same env vars
+`run-on-box.sh` reads. The SSH host has no public default and must be
+configured by the operator:
 
 | env | default | meaning |
 | --- | --- | --- |
