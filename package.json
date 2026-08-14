@@ -29,6 +29,7 @@
 		"qa:browser": "node tools/qa-browser.mjs --",
 		"test:shot-authoring": "node test/verify-shot-authoring.mjs",
 		"test:camera-follow": "node test/verify-camera-follow.mjs",
+		"test:pose-extract": "node test/verify-pose-extract.mjs",
 		"test:pwa": "node test/verify-pwa.mjs",
 		"test:localization": "node test/verify-korean-ui.mjs",
 		"test:korean-ui": "node test/verify-korean-ui.mjs",
