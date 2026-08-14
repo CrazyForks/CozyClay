@@ -178,12 +178,173 @@ const closeAll = (xs, want, eps = 1e-12) => xs.length === want.length && xs.ever
 		attack: "duplicate anchor keys at the START of the list (0 -> 0 and 0 -> 5)",
 		input: "anchors 0->0, 0->5, 15->15; the take's first frame is a stance boundary",
 		expected: "documented contract (module header): the LATER anchor wins for the shared frame -> frame 0 reads 5; rows [5, 8.333, 11.667, 15]",
-		observed: `rows x = ${JSON.stringify(xs(start))} — frame 0 reads the EARLIER anchor (0); the hold-the-ends branch (f <= list[0].frameIndex) fires before the zero-width pair is considered, so the jump is one frame late at the take start. Mid-list and end-list duplicate pairs (ANCH-dup-mid-later-wins, ANCH-dup-end-later-wins) DO resolve to the later anchor — the semantics are position-dependent.`,
+		observed: `rows x = ${JSON.stringify(xs(start))} — frame 0 reads the LATER anchor (5): the start branch advances past every anchor sharing the first key, so the zero-width pair resolves later-wins at the take start exactly as mid-list and end-list pairs do (pass-3 defect closed; regression pin)`,
 		verdict: startLaterWins ? "PASS" : "DEFECT",
 	});
 	if (!startLaterWins) {
 		reg.finding("high", "manual-anchor: a zero-width anchor pair at the list start resolves to the EARLIER anchor at the shared frame (documented 'later wins' violated)", ["ANCH-dup-start-defect"],
 			"The module header promises 'Where two anchors share a frameIndex the LATER one wins for that frame — that is what makes the jump exact rather than sloped.' When the shared frame is list[0].frameIndex (a trimmed take starting exactly at a stance boundary), the `f <= list[0].frameIndex` hold-the-ends branch fires first and frame f* reads the pre-jump value; the same pair mid-list or at the list end reads the later value. The jump is exact except at the take's first frame, where it is one frame late.");
+	}
+	// later-wins ESCALATION (post-fix attack surface): the pass-3 fix advances
+	// the start branch past every anchor sharing the first key; these shapes
+	// attack that branch and its neighbors for positions where the rule could
+	// still silently pick the EARLIER anchor, or where an out-of-span key could
+	// dodge the named rejection.
+	// (a) THREE or more anchors sharing the first key: the advance must not
+	// stop at the second of three.
+	const triple = solve(track, {
+		p0: [
+			{ frameIndex: 0, world: [0, 0, 0] },
+			{ frameIndex: 0, world: [5, 0, 0] },
+			{ frameIndex: 0, world: [9, 0, 0] },
+			{ frameIndex: 15, world: [15, 0, 0] },
+		],
+	});
+	const tripleOk = closeAll(xs(triple), [9, 11, 13, 15]);
+	reg.record({
+		id: "ANCH-dup-start-triple", category: "manual-anchor",
+		attack: "THREE anchors sharing the first key (0 -> 0, 5, 9)",
+		input: "anchors 0->0, 0->5, 0->9, 15->15 on keys [0,5,10,15]",
+		expected: "the LAST of the three wins at frame 0 (later wins): rows [9, 11, 13, 15] — any earlier pair value leaking into the start ramp means the advance stopped short",
+		observed: `rows x = ${JSON.stringify(xs(triple))}`,
+		verdict: tripleOk ? "PASS" : "DEFECT",
+	});
+	if (!tripleOk) {
+		reg.finding("high", "manual-anchor: three anchors sharing the first key do not all resolve to the last one at the shared frame", ["ANCH-dup-start-triple"],
+			"The start-branch advance must skip EVERY anchor sharing list[0].frameIndex; stopping at the second of three makes the start read a mid-list earlier anchor, violating 'the LATER one wins for that frame'.");
+	}
+	// (b) EVERY anchor shares one key: the whole take holds the LAST anchor's
+	// value (single distinct anchor semantics), never an earlier one.
+	const allOne = solve(track, {
+		p0: [
+			{ frameIndex: 5, world: [0, 0, 0] },
+			{ frameIndex: 5, world: [3, 0, 0] },
+			{ frameIndex: 5, world: [7, 0, 0] },
+		],
+	});
+	const allOneOk = closeAll(xs(allOne), [7, 7, 7, 7]);
+	reg.record({
+		id: "ANCH-dup-all-one-key", category: "manual-anchor",
+		attack: "EVERY anchor shares one key (5 -> 0, 3, 7)",
+		input: "anchors 5->0, 5->3, 5->7 on keys [0,5,10,15]",
+		expected: "later wins at the shared frame and the single distinct value holds everywhere: rows [7, 7, 7, 7] — an earlier anchor (0 or 3) leaking into rows before/at frame 5 is a start-branch failure",
+		observed: `rows x = ${JSON.stringify(xs(allOne))}`,
+		verdict: allOneOk ? "PASS" : "DEFECT",
+	});
+	if (!allOneOk) {
+		reg.finding("high", "manual-anchor: an all-anchors-share-one-key list does not hold the LAST anchor's value", ["ANCH-dup-all-one-key"],
+			"With every anchor on one key the take has a single distinct value; rows before the shared key must read the last anchor of the list, never an earlier one.");
+	}
+	// (c) duplicate pair at the START whose shared key is OUT OF SPAN (the
+	// second anchor of the pair is out of span too): named rejection, never a
+	// silent pick.
+	let spanDupErr = null;
+	try {
+		solve(mkTrack([0, 5, 10]), {
+			p0: [
+				{ frameIndex: 15, world: [1, 0, 0] },
+				{ frameIndex: 15, world: [9, 0, 0] },
+			],
+		});
+	} catch (e) { spanDupErr = e; }
+	const namedSpanDup = spanDupErr instanceof Error && /ANCHOR-OUT-OF-SPAN/.test(spanDupErr.message) && /15/.test(spanDupErr.message);
+	reg.record({
+		id: "ANCH-dup-start-out-of-span", category: "manual-anchor",
+		attack: "duplicate pair at the start whose shared key is out of span (15 -> 1 and 15 -> 9 on keys [0,5,10])",
+		input: "anchors 15->1, 15->9; the pair's key is outside the take's source keys",
+		expected: "named ANCHOR-OUT-OF-SPAN rejection naming key 15 — the span check must run before any duplicate resolution can pick an anchor",
+		observed: spanDupErr ? `${spanDupErr.name}: ${spanDupErr.message}` : "no throw — the out-of-span duplicate pair was accepted and resolved",
+		verdict: namedSpanDup ? "PASS" : "DEFECT",
+	});
+	if (!namedSpanDup) {
+		reg.finding("high", "manual-anchor: a duplicate pair at the start with an out-of-span shared key is not rejected by name", ["ANCH-dup-start-out-of-span"],
+			"The documented contract rejects every anchor outside the take's source keys with the named ANCHOR-OUT-OF-SPAN error; an out-of-span pair at the list start must never be silently resolved by the duplicate-key branches.");
+	}
+	// (c2) valid duplicate pair at the start PLUS a later out-of-span anchor:
+	// the span check must still fire by name (the pair must not shadow it).
+	let pairSpanErr = null;
+	try {
+		solve(mkTrack([0, 5, 10]), {
+			p0: [
+				{ frameIndex: 0, world: [0, 0, 0] },
+				{ frameIndex: 0, world: [5, 0, 0] },
+				{ frameIndex: 12, world: [9, 0, 0] },
+			],
+		});
+	} catch (e) { pairSpanErr = e; }
+	const namedPairSpan = pairSpanErr instanceof Error && /ANCHOR-OUT-OF-SPAN/.test(pairSpanErr.message) && /12/.test(pairSpanErr.message);
+	reg.record({
+		id: "ANCH-dup-start-plus-out-of-span", category: "manual-anchor",
+		attack: "valid duplicate pair at the start followed by an out-of-span anchor (12 on keys [0,5,10])",
+		input: "anchors 0->0, 0->5, 12->9",
+		expected: "named ANCHOR-OUT-OF-SPAN rejection naming key 12 — the start-pair resolution must not preempt the span check",
+		observed: pairSpanErr ? `${pairSpanErr.name}: ${pairSpanErr.message}` : "no throw — the out-of-span anchor was accepted",
+		verdict: namedPairSpan ? "PASS" : "DEFECT",
+	});
+	if (!namedPairSpan) {
+		reg.finding("high", "manual-anchor: an out-of-span anchor after a start duplicate pair is not rejected by name", ["ANCH-dup-start-plus-out-of-span"],
+			"The span check covers every anchor in the list before interpolation; a trailing out-of-span key must reject by name even when the list starts with a valid duplicate pair.");
+	}
+	// (d) a SINGLE-anchor list whose key is not an emitted row: the whole take
+	// holds the anchor value (a degenerate end-hold on both sides).
+	const singleAtGap = solve(track, {
+		p0: [{ frameIndex: 8, world: [4, 0, 0] }],
+	});
+	reg.record({
+		id: "ANCH-single-anchor-hold", category: "manual-anchor",
+		attack: "a single anchor list whose key (8) is NOT an emitted row (keys [0,5,10,15])",
+		input: "one anchor at frameIndex 8 -> x=4",
+		expected: "every row holds x=4 — no interval exists to interpolate; the later-wins rule is vacuous but must not crash or invent an earlier value",
+		observed: `rows x = ${JSON.stringify(xs(singleAtGap))}`,
+		verdict: closeAll(xs(singleAtGap), [4, 4, 4, 4]) ? "PASS" : "WEAKNESS",
+	});
+	// (e) duplicate pair at the START and a duplicate pair at the END
+	// simultaneously: later-wins must hold at BOTH shared frames while the
+	// middle rows ramp to the EARLIER end anchor (the jump lands at frame 15).
+	const bothEnds = solve(track, {
+		p0: [
+			{ frameIndex: 0, world: [0, 0, 0] },
+			{ frameIndex: 0, world: [5, 0, 0] },
+			{ frameIndex: 15, world: [1, 0, 0] },
+			{ frameIndex: 15, world: [9, 0, 0] },
+		],
+	});
+	const bothEndsOk = closeAll(xs(bothEnds), [5, 11 / 3, 7 / 3, 9]);
+	reg.record({
+		id: "ANCH-dup-both-ends", category: "manual-anchor",
+		attack: "duplicate pair at the START and duplicate pair at the END simultaneously (0 -> 0/5 and 15 -> 1/9)",
+		input: "anchors 0->0, 0->5, 15->1, 15->9 on keys [0,5,10,15]",
+		expected: "later wins at BOTH shared frames: frame 0 reads 5, frame 15 reads 9; middle rows ramp 5 -> 1 (jump at 15): rows [5, 11/3, 7/3, 9] — frame 0 reading 0 or frame 15 reading 1 is the position-dependent defect returning",
+		observed: `rows x = ${JSON.stringify(xs(bothEnds))}`,
+		verdict: bothEndsOk ? "PASS" : "DEFECT",
+	});
+	if (!bothEndsOk) {
+		reg.finding("high", "manual-anchor: duplicate pairs at BOTH list ends do not both resolve to the later anchor", ["ANCH-dup-both-ends"],
+			"The later-wins rule must hold at the start AND the end of the same list; a start-pair fix that only handles the start (or an end-hold reading the earlier end anchor) shows up as one end reading the pre-jump value.");
+	}
+	// (f) duplicate pair whose shared key is NOT an emitted row (8 between keys
+	// 5 and 10): rows after the pair must ramp from the LATER anchor value —
+	// never silently drop it and interpolate from the earlier one.
+	const notEmitted = solve(track, {
+		p0: [
+			{ frameIndex: 0, world: [0, 0, 0] },
+			{ frameIndex: 8, world: [1, 0, 0] },
+			{ frameIndex: 8, world: [9, 0, 0] },
+			{ frameIndex: 15, world: [15, 0, 0] },
+		],
+	});
+	const notEmittedOk = closeAll(xs(notEmitted), [0, 5 / 8, 75 / 7, 15]);
+	reg.record({
+		id: "ANCH-dup-key-not-emitted", category: "manual-anchor",
+		attack: "duplicate pair whose shared key (8) is NOT an emitted row (keys [0,5,10,15])",
+		input: "anchors 0->0, 8->1, 8->9, 15->15",
+		expected: "rows before the pair ramp to the EARLIER anchor (5 -> 5/8, the jump lands at frame 8); rows after ramp from the LATER anchor: key 10 = 9 + (2/7)*6 = 75/7, key 15 = 15; rows [0, 5/8, 75/7, 15] — reading ~5 at key 10 means the later anchor was dropped",
+		observed: `rows x = ${JSON.stringify(xs(notEmitted))}`,
+		verdict: notEmittedOk ? "PASS" : "DEFECT",
+	});
+	if (!notEmittedOk) {
+		reg.finding("high", "manual-anchor: a duplicate pair on a non-emitted key is interpolated from the EARLIER anchor after the pair", ["ANCH-dup-key-not-emitted"],
+			"When the shared key falls between emitted rows no row reads the jump value itself; the post-pair ramp must leave from the LATER anchor. Ramping from the earlier one silently drops the operator's second mark.");
 	}
 }
 
