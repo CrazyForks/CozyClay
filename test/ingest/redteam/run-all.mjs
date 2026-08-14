@@ -165,18 +165,33 @@ for (const suite of BASELINE_SUITES) {
 	baselineCommands.push(cmd);
 }
 
+// Branch and numpy availability were the last two asserted-not-observed fields.
+// numpy matters because the dump's emission path is driven through
+// rt-dump-stub.py when numpy is absent; recording "absent" without probing can
+// contradict the cases actually collected.
+const branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd: REPO, encoding: "utf8" }).trim();
+let numpy;
+try {
+	const v = execSync("python3 -c \"import numpy; print(numpy.__version__)\"", {
+		encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+	}).trim();
+	numpy = `present (${v})`;
+} catch {
+	numpy = "absent (dump emission paths driven via rt-dump-stub.py)";
+}
+
 const report = {
 	schemaVersion: 1,
 	kind: "adversarial-test-report",
 	title: "Phase-0 ingest feasibility — adversarial QA / red-team report",
 	scope: {
 		repo: "CozyClay",
-		branch: "feat/footage-ingest",
+		branch,
 		commit,
 		mergeBase,
 		changeSet: `main..HEAD (${commitCount} commit${commitCount === "1" ? "" : "s"}: ${subjects.join(" | ")})`,
 		date: new Date().toISOString(),
-		environment: { node: nodeVer, python: pyVer, numpy: "absent (dump emission paths driven via rt-dump-stub.py)" },
+		environment: { node: nodeVer, python: pyVer, numpy },
 	},
 	baseline: baselineRun,
 	suiteFiles: [
