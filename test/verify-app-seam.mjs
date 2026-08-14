@@ -46,9 +46,14 @@
  * DECLARED GAP — unproven until U4 (the Phase-4 browser suite): ShotRig and
  * PlanBoard aiming at the canonical pair, follow-yaw and deriveShot reading
  * it, the take-loaded drag guard, the IK evaluate effect using the SELECTED
- * subject's rig and clip, ARDY regeneration pinning Subject 1's key set,
- * the timeline's Subject-2 lane rendering the trimmed ranges, and the
- * app-level trim wiring (playback sampling, edit clamping, load seeding).
+ * subject's rig and clip, the timeline's Subject-2 lane rendering the trimmed
+ * ranges, and the app-level trim wiring (playback sampling, edit clamping,
+ * load seeding).
+ *
+ * NO LONGER a gap: ARDY regeneration pinning Subject 1's key set is observed
+ * at the real boundary by test/verify-ardy-request.mjs (S4-S6). A declared gap
+ * that outlives the coverage which closed it under-claims the evidence, which
+ * misleads a reader exactly as badly as over-claiming it.
  * Static contracts that are only checkable in source (the resolveIkRig call
  * count, effect dep arrays, "App.jsx never names the feature") are
  * tripwire-only by nature; they are labelled as such, never as verified.
@@ -89,8 +94,9 @@ const safe = (fn) => {
 // it reports whether the wiring text still matches so a behavioural
 // regression can be traced to the drifted line. The claim each tripwire
 // watches is gated behaviourally either in test/verify-app-render.mjs (the
-// real-browser suite), by a behavioural section in THIS file, or — where no
-// observation exists yet — is declared unproven until U4 (see the header).
+// real-browser suite), in test/verify-ardy-request.mjs (the ARDY request
+// boundary), by a behavioural section in THIS file, or — where no observation
+// exists yet — is declared unproven until U4 (see the header).
 // A tripwire PASS is a diagnostic, never capability proof; a tripwire MISS
 // is a WARN in the summary, never a suite failure.
 const tripMissed = [];
@@ -441,7 +447,7 @@ trip(
 trip(
 	"ARDY regeneration pins Subject 1's own key set",
 	app.includes("const ikStateA = ikStateFor(\"A\", ikStatesRef.current);") && app.includes("ikEvaluate(ikChains, ikStateA, constraintFrame,"),
-	"unproven until U4",
+	"behavioural gate: verify-ardy-request.mjs S4-S6 (regeneration pins Subject 1's key set at the real request boundary)",
 );
 trip(
 	"both clips persist under one storage key",
