@@ -12,7 +12,7 @@ Found something broken? [Open an issue](https://github.com/HaD0Yun/CozyClay/issu
 
 ## Demo
 
-https://github.com/user-attachments/assets/e04fa377-4748-45cb-b514-026eb89dace1
+https://github.com/user-attachments/assets/1d0113e5-6922-443d-affc-1bdabc666247
 
 CozyClay can connect to [NVIDIA ARDY](https://github.com/nv-tlabs/ardy) for motion generation. ARDY is a separate third-party project owned and maintained by NVIDIA; it is not included in this repository, and CozyClay is not affiliated with or endorsed by NVIDIA.
 
