@@ -202,6 +202,13 @@ const SEAM = new Map([
 	["src/motion-sources.js", { add: Infinity }],
 	["src/performance-take.js", { add: Infinity }],
 	["src/undo-coordinator.js", { add: Infinity }],
+	// Plan §4 lists the envelope's test but omits the tests for these two seam
+	// modules, which the same plan requires under its test-first protocol. A
+	// seam module's own verifier is part of that seam; admitting anything else
+	// would let the list quietly forbid the tests it mandates. Recorded in the
+	// ultragoal ledger rather than widened silently.
+	["test/verify-performance-take.mjs", { add: Infinity }],
+	["test/verify-undo-coordinator.mjs", { add: Infinity }],
 	["src/surface-host.js", { add: Infinity }],
 	["vite.ingest.config.js", { add: Infinity }],
 	["test/verify-build-exclusion.mjs", { add: Infinity }],
