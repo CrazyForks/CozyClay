@@ -8,13 +8,18 @@
  * seam list. This audit walks EVERY tracked file (git ls-files -- not just
  * src/tools/test; the vite.config.js control lives at the repo root precisely
  * to prove that), AST-parses each one (a string scan would trip on comments and
- * strings), enforces the R4 fence, checks the plan 4 diff-shape budgets against
- * main, and proves deletability: remove the mount edge (the two main.jsx
- * lines), delete the composition module, the feature dirs and
- * vite.ingest.config.js, then build and run the app green bar.
+ * strings), walks tracked HTML entries' module-script references (a <script
+ * type="module" src> in index.html is an ENTRY ROUTE into the default build
+ * with zero JS import edges -- the I-ISO-02 route), enforces the R4 fence,
+ * checks the plan 4 diff-shape budgets against main, and proves deletability:
+ * remove the mount edge (the two main.jsx lines), delete the composition
+ * module, the feature dirs and vite.ingest.config.js, then build and run the
+ * app green bar.
  *
  * What would be circular or wrong: auditing only the feature's own files;
  * trusting an import edge found by regex (comments/strings would count);
+ * auditing only JS files while a tracked HTML entry's module-script reference
+ * is an entry route into the default build (I-ISO-02);
  * measuring budgets against a diff that includes the feature dirs; a
  * deletability simulation that keeps any feature file or its gates; or
  * degrading to a string scan when no AST parser is available -- the audit
@@ -79,7 +84,9 @@ function readModules(paths) {
 	const modules = [];
 	const seen = new Set();
 	for (const p of paths) {
-		// html/json/yaml/py cannot carry a JS import edge; parsing them would be noise
+		// json/yaml/py cannot carry a JS import edge; parsing them would be noise
+		// (tracked HTML entries are read separately in readHtmlModules: a
+		// module-script reference is not a JS edge, but it IS an entry route)
 		if (!JS_FILE.test(p)) continue;
 		// git ls-files can name a file deleted in the working tree (a
 		// removed scratch file); a missing file carries no edges, so skip it
@@ -102,9 +109,52 @@ function readModules(paths) {
 	return modules;
 }
 const modules = readModules(tracked);
+// --- tracked HTML entries: module-script references are entry routes --------
+// I-ISO-02: a <script type="module" src="/src/ingest/main.jsx"> in a tracked
+// HTML entry pulls src/ingest into the DEFAULT build (Vite inlines it into the
+// html entry chunk) with zero JS import edges. index.html is tracked, so the
+// "every tracked file" walk must read its module-script references or the I1
+// claim is blind to the exact route the build-time gate exists for.
+const HTML_FILE = /\.html$/;
+function readHtmlModules(paths) {
+	const modules = [];
+	for (const p of paths) {
+		if (!HTML_FILE.test(p)) continue;
+		const full = join(REPO_ROOT, p);
+		// same rule as readModules: a file deleted in the working tree carries
+		// no edges
+		if (!existsSync(full)) continue;
+		modules.push({ path: p, source: readFileSync(full, "utf8") });
+	}
+	return modules;
+}
+const htmlModules = readHtmlModules(tracked);
 
 // --- import edges from the AST, never from the source text -----------------
 function edgesOf(mod, parse) {
+	// a tracked HTML entry's JS-bearing construct is its module-script list.
+	// The AST parser is a JS parser, so these edges come from the tag
+	// structure -- comments stripped first (a commented-out script is inert,
+	// not an edge), and only <script type="module" src=...> counts: classic
+	// scripts never enter the module graph, and an inline module body is the
+	// I-ISO-03 WEAKNESS (recorded), not an edge. Root-relative and relative
+	// refs resolve into the repo; bare specifiers and absolute URLs cannot
+	// point into it.
+	if (mod.path.endsWith(".html")) {
+		const edges = [];
+		const source = mod.source.replace(/<!--[\s\S]*?-->/g, "");
+		for (const tag of source.matchAll(/<script\b[^>]*>/gi)) {
+			if (!/\btype\s*=\s*["']?module["']?/i.test(tag[0])) continue;
+			const src = tag[0].match(/\bsrc\s*=\s*["']([^"']+)["']/i)?.[1];
+			if (typeof src !== "string") continue;
+			let to;
+			if (src.startsWith("/")) to = posix.normalize(src.slice(1));
+			else if (/^\.\.?\//.test(src)) to = posix.normalize(posix.join(posix.dirname(mod.path), src));
+			else continue;
+			edges.push({ from: mod.path, to });
+		}
+		return edges;
+	}
 	const ast = parse(mod.source, { lang: mod.path.endsWith(".jsx") ? "jsx" : "js" });
 	const edges = [];
 	const add = (spec) => {
@@ -144,6 +194,14 @@ function allEdges(mods, parse) {
 	for (const m of mods) edges.push(...edgesOf(m, parse));
 	return edges;
 }
+// the audit's full edge set: JS import edges plus module-script references of
+// tracked HTML entries (the I-ISO-02 route -- an HTML <script type="module">
+// reference pulls src/ingest into the default build with zero JS edges). Every
+// real-tree check below audits both, or the I1 claim is blind to the one route
+// the build-time gate exists for.
+function appEdges() {
+	return [...allEdges(modules, parseAst), ...allEdges(htmlModules, parseAst)];
+}
 
 // --- path predicates -------------------------------------------------------
 const isUnder = (p, dir) => p === dir || p.startsWith(dir + "/");
@@ -157,10 +215,17 @@ const isFeaturePath = (p) => isUnder(p, "src/ingest") || isUnder(p, "tools/inges
 // built into dist-ingest/. Nothing outside it may import it — the parent
 // reaches the boundary through src/surface-mount.js, never through the
 // child's directory. Zero inbound edges is the ONLY correct state here.
+// The feature owns its whole diff (isFeaturePath: src/ingest, tools/ingest,
+// test/ingest), so its own tests and fixture tooling legitimately import the
+// modules they verify — the R4 fence exempts test/ingest by the same rule.
+// Without the exemption the feature's own verifiers are counted as leaks and
+// the "real tree is clean" claim can never hold on a tree that ships its
+// tests and fixtures. The I1 claim is about the PARENT: nothing outside the
+// feature diff may import the child realm.
 function auditInbound(edges) {
 	const violations = [];
 	for (const e of edges) {
-		if (isSurface(e.to) && !isSurface(e.from)) {
+		if (isSurface(e.to) && !isSurface(e.from) && !isFeaturePath(e.from)) {
 			violations.push(`inbound edge into src/ingest: ${e.from} -> ${e.to}`);
 		}
 	}
@@ -179,8 +244,21 @@ ok(
 	auditInbound(allEdges(withViteControl, parseAst)).length > 0,
 	auditInbound(allEdges(withViteControl, parseAst)).join(" | "),
 );
-// the real tree must be clean
-const realInbound = auditInbound(allEdges(modules, parseAst));
+// the I-ISO-02 route: a module-script reference from a tracked HTML entry into
+// the surface must be reported -- index.html is tracked, so "every tracked
+// file" includes its script references
+const htmlInboundControl = {
+	path: "index.html",
+	source: '<!doctype html><html><body>\n<script type="module" src="/src/ingest/state.js"></script>\n</body></html>\n',
+};
+const withHtmlInbound = [...modules, ...htmlModules, htmlInboundControl];
+ok(
+	"audit reports an HTML module-script reference into src/ingest",
+	auditInbound(allEdges(withHtmlInbound, parseAst)).length > 0,
+	auditInbound(allEdges(withHtmlInbound, parseAst)).join(" | "),
+);
+// the real tree must be clean -- JS edges AND tracked-HTML references
+const realInbound = auditInbound(appEdges());
 ok("no tracked file outside src/ingest imports src/ingest", realInbound.length === 0, realInbound.join(" | "));
 
 // --- I1: the boundary's single mount edge -----------------------------------
@@ -260,7 +338,7 @@ ok(
 	auditMountEdge(allEdges(withWrongEdge, parseAst)).join(" | "),
 );
 // the real tree must be exactly the expected edge
-const realMountEdges = auditMountEdge(allEdges(modules, parseAst));
+const realMountEdges = auditMountEdge(appEdges());
 ok(
 	"the app composes the boundary through exactly one expected mount edge",
 	realMountEdges.length === 0,
@@ -340,7 +418,7 @@ const withFenceControl = [
 	{ path: "src/foo.js", source: 'import { solveContactHead } from "../tools/ingest/feasibility/contact-head.mjs";\n' },
 ];
 ok("R4 fence: app-side import of a feasibility runner is reported", auditFence(allEdges(withFenceControl, parseAst)).length > 0);
-const realFence = auditFence(allEdges(modules, parseAst));
+const realFence = auditFence(appEdges());
 ok("R4 fence holds across all tracked files", realFence.length === 0, realFence.join(" | "));
 
 // --- plan 4 diff-shape budgets ----------------------------------------------
@@ -404,20 +482,27 @@ const SEAM = new Map([
 	["src/App.jsx", { add: 286, mod: 92 }],
 	["src/ardy/timeline.jsx", { add: 25, mod: 6 }],
 	["src/scene-history.js", { mod: 26 }],
-	["tools/ardy/bridge.mjs", { mod: 45 }],
+	// Raised from 45: the red-team lane found hard-link and directory swaps
+	// defeating realpath containment, so serving now verifies inode identity
+	// and file type before committing a status. Security fix, disclosed.
+	["tools/ardy/bridge.mjs", { mod: 55 }],
 	// Budget renegotiated from plan 4's {add: 40} (the D2 proxy): the
 	// packaged CLI is also the D2/D3 delivery owner of the child document --
 	// dist-ingest serving plus the header-carried production child CSP with
 	// the exact frame-ancestors origin (plan 11.4). Measured numstat of the
 	// closed blocker diff, not a headroom guess.
-	["bin/cozyclay.mjs", { add: 57 }],
+	// Raised from 57: discovery liveness had to stop trusting process.kill(pid,0)
+	// (pid 0 passes it) and actually probe the published origin, re-evaluated
+	// per request so a stale record cannot poison the session.
+	["bin/cozyclay.mjs", { add: 90 }],
 	["src/main.jsx", { add: 2 }],
 	// Budget renegotiated from plan 4's {add: 6} (the read-once discovery
 	// spread): the cold-start race is removed by resolving the /ingest
 	// proxy target per request (discoveryOrigin + the ingestProxy plugin
 	// middleware), which is a different mechanism, not an increment of the
 	// old one. Recorded in the ultragoal ledger.
-	["vite.config.js", { add: 62 }],
+	// Raised from 62: same discovery-liveness fix on the dev proxy side.
+	["vite.config.js", { add: 90 }],
 	["public/sw.js", { add: 2 }],
 	["test/verify-pwa.mjs", { add: 6 }],
 	// Budget renegotiated from plan 4's {add: 3} (the env-guarded surface
@@ -480,7 +565,7 @@ const fakeNumstat = [
 	// a control that fell inside the new budget would prove nothing.
 	{ path: "src/App.jsx", added: 300, deleted: 100 },
 	{ path: "src/undisclosed.js", added: 5, deleted: 0 },
-	{ path: "vite.config.js", added: 70, deleted: 0 },
+	{ path: "vite.config.js", added: 200, deleted: 0 },
 	{ path: ".github/workflows/pages.yml", added: 1, deleted: 0 },
 ];
 ok("budget audit reports an out-of-shape diff", auditBudgets(fakeNumstat).length >= 4, auditBudgets(fakeNumstat).join(" | "));
@@ -518,15 +603,18 @@ if (numstatRun.status !== 0) {
 // structural part is the inbound audit -- any inbound edge into src/ingest is a
 // dangling mount edge once the feature is deleted -- and the operational part
 // materializes the deleted tree and runs the bar for real.
-function checkDeletable(mods, parse) {
+function checkDeletable(mods, htmlMods, parse) {
 	// structural deletability: a mount edge from anywhere but the audited
 	// entry, a second createSurfaceHost consumer, or any inbound edge into
 	// the child realm is a dangling edge once the feature is deleted; the sim
-	// below then builds the deleted tree and runs the green bar for real
+	// below then builds the deleted tree and runs the green bar for real.
+	// Tracked-HTML references are edges too: a module-script reference into
+	// the feature is a dangling mount edge once the feature is gone.
+	const all = [...mods, ...htmlMods];
 	return [
-		...auditMountEdge(allEdges(mods, parse)),
+		...auditMountEdge(allEdges(all, parse)),
 		...auditHostConsumers(mods, parse),
-		...auditInbound(allEdges(mods, parse)),
+		...auditInbound(allEdges(all, parse)),
 	];
 }
 // sensitivity first: an app entry that still imports the surface after the
@@ -538,14 +626,14 @@ const danglingApp = {
 const withDanglingEdge = modules.map((m) => (m.path === "src/App.jsx" ? danglingApp : m));
 ok(
 	"negative control: dangling mount edge not reported",
-	checkDeletable(withDanglingEdge, parseAst).length > 0,
-	checkDeletable(withDanglingEdge, parseAst).join(" | "),
+	checkDeletable(withDanglingEdge, htmlModules, parseAst).length > 0,
+	checkDeletable(withDanglingEdge, htmlModules, parseAst).join(" | "),
 );
 // the real tree has no dangling edge: the feature is severable today
 ok(
 	"deletability structural: no dangling mount edges",
-	checkDeletable(modules, parseAst).length === 0,
-	checkDeletable(modules, parseAst).join(" | "),
+	checkDeletable(modules, htmlModules, parseAst).length === 0,
+	checkDeletable(modules, htmlModules, parseAst).join(" | "),
 );
 // --- deletability, operational: delete the feature, build, run the bar -------
 // The green bar is the app's own: npm run build (the CI gate), npm run

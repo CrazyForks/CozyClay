@@ -33,7 +33,7 @@
  */
 import { createServer, request as httpRequest } from "node:http";
 import { spawn } from "node:child_process";
-import { createReadStream, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createReadStream, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { tmpdir } from "node:os";
 import { basename, join, resolve, dirname } from "node:path";
@@ -512,6 +512,77 @@ const PROBES = {
 			rmSync(outsideDir, { recursive: true, force: true });
 		}
 	},
+	"artifact-hardlink-swap": async (bridge) => {
+		// Realpath containment resolves by NAME, and a hard link to an
+		// outside file still sits under base while sharing the outside
+		// inode - the swap is invisible to containment. The allowlist must
+		// refuse by the dev/ino IDENTITY recorded at registration: same
+		// location, not the same file. Runs on both registrations - the
+		// fixture's in-process allowlist and the real bridge's seeded one.
+		const runId = "1234567890123-abcdef"; // matches the bridge's MOTION_ID shape
+		const outsideDir = mkdtempSync(join(tmpdir(), "cclay-hardlink-outside-"));
+		const outsideFile = join(outsideDir, "secret.bin");
+		writeFileSync(outsideFile, "hardlink-escape-bytes");
+		const artifactFile = join(bridge.artifactDir, bridge.artifacts ? "hardlink-swap.bin" : `${runId}.npz`);
+		writeFileSync(artifactFile, "motion-bytes");
+		let seeded = null;
+		try {
+			if (bridge.artifacts) bridge.artifacts.register(runId, artifactFile);
+			else {
+				seeded = await startArdyBridge({
+					env: { CCLAY_ARDY_TEST_REGISTRATIONS: `${runId}=${artifactFile}` },
+				});
+			}
+			const base = seeded ?? bridge;
+			const before = await httpExchange(`${base.url}${bridge.routes.artifactPrefix}/${runId}`, {});
+			ok(`[${bridge.name}] hardlink-swap control: the registered artifact serves its own bytes`, before.status === 200 && before.body === "motion-bytes", `got ${before.status}`);
+			rmSync(artifactFile, { force: true });
+			linkSync(outsideFile, artifactFile); // same inode as the outside file
+			const after = await httpExchange(`${base.url}${bridge.routes.artifactPrefix}/${runId}`, {});
+			ok(
+				`[${bridge.name}] hardlink-swap: an artifact replaced by a hard link to an outside file is refused, not streamed`,
+				after.status === 404 && !after.body.includes("hardlink-escape-bytes"),
+				`got ${after.status}`
+			);
+		} finally {
+			if (seeded) seeded.stop();
+			rmSync(artifactFile, { force: true });
+			rmSync(outsideDir, { recursive: true, force: true });
+		}
+	},
+	"artifact-directory-swap": async (bridge) => {
+		// A directory has a realpath under base and a non-zero stat size, so
+		// containment passes and the naive serve path COMMITS a 200 before
+		// the read dies with EISDIR (hung socket with a committed status, or
+		// an unhandled crash on an error-handler-less path). The allowlist
+		// must refuse by TYPE before any status is committed. Runs on both
+		// registrations - the fixture's in-process allowlist and the real
+		// bridge's seeded one.
+		const runId = "1234567890123-abcdef"; // matches the bridge's MOTION_ID shape
+		const artifactFile = join(bridge.artifactDir, bridge.artifacts ? "directory-swap.bin" : `${runId}.npz`);
+		writeFileSync(artifactFile, "motion-bytes");
+		let seeded = null;
+		try {
+			if (bridge.artifacts) bridge.artifacts.register(runId, artifactFile);
+			else {
+				seeded = await startArdyBridge({
+					env: { CCLAY_ARDY_TEST_REGISTRATIONS: `${runId}=${artifactFile}` },
+				});
+			}
+			const base = seeded ?? bridge;
+			rmSync(artifactFile, { force: true });
+			mkdirSync(artifactFile);
+			const after = await httpExchange(`${base.url}${bridge.routes.artifactPrefix}/${runId}`, {});
+			ok(
+				`[${bridge.name}] directory-swap: an artifact replaced by a directory is a named refusal, never a committed-200-then-hang`,
+				after.status === 404 && after.body.length > 0,
+				`got ${after.status}`
+			);
+		} finally {
+			if (seeded) seeded.stop();
+			rmSync(artifactFile, { recursive: true, force: true });
+		}
+	},
 	"source-motion-symlink-swap": async (bridge) => {
 		// The serve path above re-checks containment at serve time. The
 		// EDIT/regeneration path consumes a registered motion as its source,
@@ -694,7 +765,7 @@ const PROBES = {
 const REGISTRY = [
 	{
 		name: "envelope fixture",
-		probes: ["content-type", "body-cap", "cross-site", "options-cors", "method-405", "unknown-404", "artifact", "loopback", "argv", "disconnect-kill"],
+		probes: ["content-type", "body-cap", "cross-site", "options-cors", "method-405", "unknown-404", "artifact", "artifact-hardlink-swap", "artifact-directory-swap", "loopback", "argv", "disconnect-kill"],
 		spawn: startFixture,
 	},
 	{
@@ -705,7 +776,7 @@ const REGISTRY = [
 		// lead with different clauses. Same probe set, data-driven order. The
 		// bridge-only probes (symlink swap on both serve and edit paths, the
 		// lifecycle trio) run last: each spawns its own seeded/slow bridge.
-		probes: ["cross-site", "options-cors", "method-405", "unknown-404", "content-type", "body-cap", "artifact", "artifact-symlink-swap", "source-motion-symlink-swap", "lifecycle-call-sites", "lifecycle-disconnect-kill", "lifecycle-shutdown-kill", "loopback"],
+		probes: ["cross-site", "options-cors", "method-405", "unknown-404", "content-type", "body-cap", "artifact", "artifact-symlink-swap", "artifact-hardlink-swap", "artifact-directory-swap", "source-motion-symlink-swap", "lifecycle-call-sites", "lifecycle-disconnect-kill", "lifecycle-shutdown-kill", "loopback"],
 		spawn: startArdyBridge,
 	},
 ];

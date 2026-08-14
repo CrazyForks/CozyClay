@@ -112,6 +112,17 @@ async function occupyPorts(from, to) {
 		close: () => Promise.allSettled(servers.map((server) => new Promise((done) => server.close(done)))),
 	};
 }
+// a port that is bound then closed: owned by nobody, recorded anyway
+async function closedPort() {
+	const port = await freePort();
+	const server = listenProbe();
+	await new Promise((done, fail) => {
+		server.once("error", fail);
+		server.listen(port, "127.0.0.1", done);
+	});
+	await new Promise((done) => server.close(done));
+	return port;
+}
 
 function collect(child) {
 	let out = "";
@@ -327,6 +338,126 @@ async function startStubHost(home) {
 		const res = await httpGet(cliPort, "/ingest/surface-origin");
 		ok("stale discovery record (dead pid) is ignored", res.status === 404, `got ${res.status}`);
 	} finally {
+		await terminateOwned(child);
+	}
+}
+// (c2) a pid-0 record is rejected by name: process.kill(0, 0) targets the
+// caller's own process group and never throws, so pid "liveness" alone
+// would accept the record; the packaged CLI must treat it as absent.
+{
+	const home = tmpHome();
+	mkdirSync(join(home, "cozyclay"), { recursive: true });
+	writeFileSync(
+		discoveryPath(home),
+		JSON.stringify({ port: 59998, origin: "http://127.0.0.1:59998", token: "x", pid: 0, startedAt: new Date().toISOString() }),
+	);
+	const cliPort = await freePort();
+	const child = spawnCli(cliPort, { home });
+	try {
+		await waitForHttp(cliPort);
+		const res = await httpGet(cliPort, "/ingest/surface-origin");
+		ok("pid 0 discovery record is rejected by name (packaged CLI)", res.status === 404, `got ${res.status}`);
+	} finally {
+		await terminateOwned(child);
+	}
+}
+
+// (c3) a negative-pid record is rejected the same way: non-positive pids
+// are never publishers (dev app server side).
+{
+	const home = tmpHome();
+	mkdirSync(join(home, "cozyclay"), { recursive: true });
+	writeFileSync(
+		discoveryPath(home),
+		JSON.stringify({ port: 59997, origin: "http://127.0.0.1:59997", token: "x", pid: -42, startedAt: new Date().toISOString() }),
+	);
+	const appPort = await freePort();
+	const child = spawnVite("vite.config.js", { home, args: ["--port", String(appPort)] });
+	try {
+		await waitForHttp(appPort);
+		const res = await httpGet(appPort, "/ingest/surface-origin");
+		const origin = res.status === 200 ? safeParseJson(res.body) : null;
+		ok("negative-pid discovery record is rejected by name (dev)", origin === null, `got ${res.status}${origin ? " " + JSON.stringify(origin) : ""}`);
+	} finally {
+		await terminateOwned(child);
+	}
+}
+
+// (c4) a LIVE pid naming a CLOSED port is treated as absent: pid liveness
+// cannot tell a live-but-unrelated pid from the real publisher, so the
+// record counts only when its published origin answers -- never proxy to
+// a port nobody owns (plan 11.2). The dev probe falls through to the app
+// shell, not into a 502.
+{
+	const port = await closedPort();
+	const home = tmpHome();
+	mkdirSync(join(home, "cozyclay"), { recursive: true });
+	writeFileSync(
+		discoveryPath(home),
+		JSON.stringify({ port, origin: `http://127.0.0.1:${port}`, token: "x", pid: process.pid, startedAt: new Date().toISOString() }),
+	);
+	const appPort = await freePort();
+	const child = spawnVite("vite.config.js", { home, args: ["--port", String(appPort)] });
+	try {
+		await waitForHttp(appPort);
+		const res = await httpGet(appPort, "/ingest/surface-origin");
+		const origin = res.status === 200 ? safeParseJson(res.body) : null;
+		ok(
+			"live-pid/closed-port record is treated as absent (dev, not a 502)",
+			origin === null && res.status !== 502,
+			`got ${res.status}${res.status === 200 ? " (app shell, not an origin)" : " " + res.body.slice(0, 60)}`,
+		);
+	} finally {
+		await terminateOwned(child);
+	}
+}
+
+// (c5) a stale live-pid/closed-port record must not poison the packaged
+// session: the CLI re-evaluates the record on every request, so once a
+// real surface publishes a fresh record in the same home, the VERY NEXT
+// request resolves through it -- no restart.
+{
+	const port = await closedPort();
+	const staleOrigin = `http://127.0.0.1:${port}`;
+	const home = tmpHome();
+	mkdirSync(join(home, "cozyclay"), { recursive: true });
+	writeFileSync(
+		discoveryPath(home),
+		JSON.stringify({ port, origin: staleOrigin, token: "x", pid: process.pid, startedAt: new Date().toISOString() }),
+	);
+	const cliPort = await freePort();
+	const child = spawnCli(cliPort, { home });
+	let surface = null;
+	try {
+		await waitForHttp(cliPort);
+		const before = await httpGet(cliPort, "/ingest/surface-origin");
+		surface = spawnVite(SURFACE_CONFIG, { home });
+		// The stale record already parses, so waitForDiscovery would return
+		// it instantly; wait for the file to actually be REPLACED by the
+		// surface's own record (a different origin).
+		const deadline = Date.now() + 20000;
+		let record = null;
+		while (Date.now() < deadline) {
+			try {
+				const parsed = JSON.parse(readFileSync(discoveryPath(home), "utf8"));
+				if (parsed.origin !== staleOrigin) {
+					record = parsed;
+					break;
+				}
+			} catch {
+				/* still being written */
+			}
+			await sleep(100);
+		}
+		const after = await httpGet(cliPort, "/ingest/surface-origin");
+		const parsed = after.status === 200 ? safeParseJson(after.body) : null;
+		ok(
+			"stale live-pid record is re-evaluated: the next request reaches the fresh surface",
+			before.status === 404 && !!record && parsed?.origin === record.origin && parsed?.url === `${record.origin}/src/ingest/index.html`,
+			`before=${before.status} after=${after.status} record=${record?.origin ?? null}`,
+		);
+	} finally {
+		await terminateOwned(surface);
 		await terminateOwned(child);
 	}
 }

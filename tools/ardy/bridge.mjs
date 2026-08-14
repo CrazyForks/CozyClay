@@ -765,8 +765,12 @@ function serveMotion(req, res, pathname) {
 		return 404;
 	}
 	const absPath = motionAllowlist.resolve(runId);
-	// resolve() re-checks realpath containment at serve time: a registered
-	// file swapped for a symlink to outside OUT_DIR resolves to null here.
+	// resolve() re-checks the allowlist at serve time: realpath containment,
+	// regular-file type AND the dev/ino identity recorded at registration.
+	// A registered file swapped for a symlink or hard link to outside
+	// OUT_DIR, or for a directory, resolves to null here - before any
+	// status is committed, so a swap is a named 404, never a streamed
+	// outside file or a committed-200-then-EISDIR hang.
 	if (!absPath) {
 		sendJson(res, 404, { ok: false, reason: `motion "${runId}" is no longer on disk or escaped ${OUT_DIR}` });
 		return 404;

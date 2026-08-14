@@ -17,12 +17,13 @@
 //    are checked on every request;
 //  - children are spawn()ed with argv ARRAYS, never shell strings;
 //  - artifacts are allowlisted and addressed by opaque id, never by a path
-//    from the request, with realpath containment re-checked at serve time;
+//    from the request, with realpath containment, regular-file type and the
+//    registered dev/ino identity re-checked at serve time;
 //  - detached child process groups are killed on disconnect and on
 //    SIGINT/SIGTERM so no remote session is orphaned.
 
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { sep } from "node:path";
 
 const LOOPBACK_HOST = "127.0.0.1";
@@ -154,10 +155,12 @@ export function ndjson(res) {
 }
 
 // In-memory artifact allowlist. An id resolves to a file only when THIS
-// process registered it (after producing and verifying it) and the file still
-// sits under base (realpath containment re-checked at serve time). A path
-// never comes from the request. Registration is FIFO-capped at max so a
-// long-lived sidecar cannot grow without bound; evicted ids become stale.
+// process registered it (after producing and verifying it) and the file is
+// still the SAME regular file under base: realpath containment, regular-file
+// type and the dev/ino identity recorded at registration are re-checked at
+// serve time. A path never comes from the request. Registration is FIFO-
+// capped at max so a long-lived sidecar cannot grow without bound; evicted
+// ids become stale.
 export function createArtifactAllowlist({ base, max }) {
 	const entries = new Map();
 	return {
@@ -165,11 +168,26 @@ export function createArtifactAllowlist({ base, max }) {
 			return entries.has(id);
 		},
 		register(id, absPath) {
-			entries.set(id, absPath);
+			// Record the artifact's IDENTITY (dev/ino) at registration, not
+			// just its path. Containment resolves by NAME, and a hard link
+			// to an outside file keeps a name under base while sharing the
+			// outside inode - so a path-only record cannot see that swap.
+			// Only a regular file this process can stat is a servable
+			// artifact; anything else keeps a null identity and resolve()
+			// refuses it.
+			let identity = null;
+			try {
+				const st = statSync(absPath);
+				if (st.isFile()) identity = { dev: st.dev, ino: st.ino };
+			} catch {
+				/* not stat-able now: resolve() refuses on null identity */
+			}
+			entries.set(id, { absPath, identity });
 			if (entries.size > max) entries.delete(entries.keys().next().value);
 		},
-		// The realpath of the stored file when it is still inside base, else
-		// null (unregistered, escaped, or gone from disk).
+		// The realpath of the stored file when it is still the artifact THIS
+		// process registered, else null (unregistered, escaped, replaced,
+		// not a regular file, or gone from disk).
 		resolve(id) {
 			const stored = entries.get(id);
 			if (stored === undefined) return null;
@@ -180,8 +198,24 @@ export function createArtifactAllowlist({ base, max }) {
 				return null;
 			}
 			try {
-				const fileReal = realpathSync(stored);
+				const fileReal = realpathSync(stored.absPath);
 				if (fileReal !== baseReal && !fileReal.startsWith(baseReal + sep)) return null;
+				const st = statSync(stored.absPath);
+				// A directory under base has a realpath and a size, so
+				// containment and Content-Length would pass while the read
+				// fails with EISDIR after a 200 was committed. Type is part
+				// of identity: only a regular file is the artifact.
+				if (!st.isFile()) return null;
+				// A hard link to an outside file (or any replacement) is a
+				// NEW inode at the registered path: same location, not the
+				// same file. Refuse by identity, never by name.
+				if (
+					stored.identity === null ||
+					st.dev !== stored.identity.dev ||
+					st.ino !== stored.identity.ino
+				) {
+					return null;
+				}
 				return fileReal;
 			} catch {
 				return null;

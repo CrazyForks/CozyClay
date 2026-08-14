@@ -7,14 +7,27 @@ import os from "node:os";
 // The ingest surface negotiates its own loopback port and publishes the
 // discovery record only after listening (plan 11.2); the /ingest target is
 // resolved per request, so a cold `dev:ingest` start needs no restart.
-function discoveryOrigin() {
+async function discoveryOrigin() {
 	try {
 		const record = JSON.parse(readFileSync((process.env.XDG_CONFIG_HOME || os.homedir() + "/.config") + "/cozyclay/ingest.json", "utf8"));
-		// A record whose publisher is dead is stale (plan 11.2; the same
-		// liveness check bin/cozyclay.mjs makes): never proxy to a port
-		// nobody owns.
-		process.kill(record.pid, 0);
-		return record.origin;
+		// A non-positive pid is never a publisher: process.kill(pid, 0)
+		// answers "may I signal this pid", and pid 0 means the caller's own
+		// process group, so it cannot prove the record's surface is alive
+		// (plan 11.2; the same liveness check bin/cozyclay.mjs makes).
+		if (!Number.isInteger(record.pid) || record.pid <= 0) return null;
+		const origin = typeof record.origin === "string" && /^https?:\/\//.test(record.origin) ? record.origin : null;
+		if (!origin) return null;
+		// The published origin must answer for itself before any proxy is
+		// added: a live pid can name a port nobody owns, and a dead pid can
+		// be reused by an unrelated process. The surface answers
+		// /ingest/surface-origin with its own origin, so a matching answer
+		// proves the port is served AND identifies the publisher -- never
+		// proxy to a port nobody owns.
+		const res = await fetch(origin + "/ingest/surface-origin", { signal: AbortSignal.timeout(400) });
+		if (res.status !== 200) return null;
+		const body = await res.json();
+		if (body?.origin !== origin) return null;
+		return origin;
 	} catch {
 		return null;
 	}
@@ -33,10 +46,19 @@ function ingestProxy() {
 		// surface's HMR websocket targets its own origin, so plain HTTP
 		// forwarding suffices.
 		configureServer(server) {
-			server.middlewares.use((req, res, next) => {
+			server.middlewares.use(async (req, res, next) => {
 				if (!req.url?.startsWith("/ingest")) return next();
-				const target = discoveryOrigin();
-				if (!target) return next();
+				const target = await discoveryOrigin();
+				if (!target) {
+					// Answer the absent state explicitly rather than calling next().
+					// Falling through hands /ingest/* to the SPA handler, which
+					// leaves the request unanswered and the client seeing a socket
+					// hang up. The parent's unavailable panel needs a definite
+					// answer; a hang is the one response it cannot act on.
+					res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
+					res.end(JSON.stringify({ error: "ingest surface is not running" }));
+					return;
+				}
 				const upstream = httpRequest(target + req.url, { method: req.method, headers: req.headers }, (upstreamRes) => {
 					const headers = { ...upstreamRes.headers };
 					for (const name of Object.keys(headers)) {

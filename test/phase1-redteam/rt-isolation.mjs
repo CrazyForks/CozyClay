@@ -4,20 +4,23 @@
  *
  * Attacks the isolation gates where the green suite stops:
  *   - can ANY input make the default build include a src/ingest module?
- *     The I1 inbound audit only parses tracked JS files: a tracked HTML
- *     file (index.html) can carry a module-script reference that pulls
- *     src/ingest into the default build with ZERO static-gate visibility
- *     — proven with a real scratch-root vite build (write:false) plus the
- *     audit walk over the same tree;
+ *     A tracked HTML entry (index.html) can carry a module-script reference
+ *     that pulls src/ingest into the default build. The I1 inbound audit now
+ *     parses tracked HTML entries' module-script references (the I-ISO-02
+ *     fix), so the case builds a scratch root with the reference present
+ *     (write:false) and audits the SAME tree: the mount edge must be
+ *     REPORTED, not invisible — the DEFECT predicate is the audit going
+ *     blind again;
  *   - does the R4 fence catch an import added from a non-obvious
  *     location? Static JS imports from src/App.jsx are caught; template-
  *     literal dynamic imports are invisible to the AST edge walk (only
  *     Literal sources are edges); an HTML inline module script is
- *     invisible because HTML is never parsed;
+ *     invisible because only script SRC references are edges;
  *   - does the deletability sim still catch a dangling mount edge when it
  *     is left behind? The operational scratch build fails on a dangling
- *     JS import AND on a dangling HTML reference (the static layer misses
- *     the HTML edge; the operational layer does not);
+ *     JS import AND on a dangling HTML reference (the static layer catches
+ *     the HTML edge through the module-script walk; the operational layer
+ *     catches it at build time too);
  *   - the real tree must stay clean (controls).
  *
  * All builds run in memory (write:false) or in scratch trees under
@@ -54,8 +57,26 @@ const isFeasibility = (p) => isUnder(p, "tools/ingest/feasibility");
 const isFeaturePath = (p) => isUnder(p, "src/ingest") || isUnder(p, "tools/ingest") || isUnder(p, "test/ingest");
 
 // Exactly the verify-isolation.mjs walk: static imports + dynamic imports
-// whose source is a string LITERAL; everything else is invisible.
+// whose source is a string LITERAL; everything else is invisible. Tracked
+// HTML entries contribute their <script type="module" src> references as
+// edges (the I-ISO-02 fix) — comments are inert, and classic scripts or
+// inline module bodies are not edges.
 function edgesOf(mod) {
+	if (mod.path.endsWith(".html")) {
+		const edges = [];
+		const source = mod.source.replace(/<!--[\s\S]*?-->/g, "");
+		for (const tag of source.matchAll(/<script\b[^>]*>/gi)) {
+			if (!/\btype\s*=\s*["']?module["']?/i.test(tag[0])) continue;
+			const src = tag[0].match(/\bsrc\s*=\s*["']([^"']+)["']/i)?.[1];
+			if (typeof src !== "string") continue;
+			let to;
+			if (src.startsWith("/")) to = posix.normalize(src.slice(1));
+			else if (/^\.\.?\//.test(src)) to = posix.normalize(posix.join(posix.dirname(mod.path), src));
+			else continue;
+			edges.push({ from: mod.path, to });
+		}
+		return edges;
+	}
 	const ast = parseAst(mod.source, { lang: mod.path.endsWith(".jsx") ? "jsx" : "js" });
 	const edges = [];
 	const add = (spec) => {
@@ -84,35 +105,42 @@ function edgesOf(mod) {
 	return edges;
 }
 
-function trackedModules(extra = []) {
-	// The audit reads every tracked file but SKIPS non-JS files before any
-	// parsing (readModules filters JS_FILE) — the HTML blind spot.
+// The audit reads every tracked file. JS files are AST-parsed; tracked HTML
+// entries (root index.html, the feature's own entry) contribute their
+// module-script references — the I-ISO-02 route the Phase-1 walk skipped.
+// `root` lets a case audit a scratch tree instead of the repo.
+function trackedModules(root = REPO_ROOT, extra = []) {
 	const modules = [];
 	for (const p of extra) modules.push(p);
 	const walk = (dir, prefix) => {
-		for (const name of readdirSync(join(REPO_ROOT, dir), { withFileTypes: true })) {
+		if (!existsSync(join(root, dir))) return; // scratch trees lack tools/bin
+		for (const name of readdirSync(join(root, dir), { withFileTypes: true })) {
 			const rel = prefix ? `${prefix}/${name.name}` : name.name;
 			if (name.isDirectory()) {
 				if (name.name === "node_modules" || name.name === ".git") continue;
 				walk(join(dir, name.name), rel);
-			} else if (JS_FILE.test(name.name)) {
-				modules.push({ path: rel, source: readFileSync(join(REPO_ROOT, dir, name.name), "utf8") });
+			} else if (JS_FILE.test(name.name) || name.name.endsWith(".html")) {
+				modules.push({ path: rel, source: readFileSync(join(root, dir, name.name), "utf8") });
 			}
 		}
 	};
 	for (const dir of ["src", "tools", "bin"]) walk(dir, dir);
-	for (const f of ["vite.config.js", "vite.ingest.config.js"]) {
-		if (existsSync(join(REPO_ROOT, f))) modules.push({ path: f, source: readFileSync(join(REPO_ROOT, f), "utf8") });
+	for (const f of ["index.html", "vite.config.js", "vite.ingest.config.js"]) {
+		if (existsSync(join(root, f))) modules.push({ path: f, source: readFileSync(join(root, f), "utf8") });
 	}
 	return modules;
 }
 
 const MOUNT_ALLOWLIST = [];
 function auditInbound(modules) {
+	// Same exemption as the fixed product audit: the feature owns its whole
+	// diff (src/ingest, tools/ingest, test/ingest), so its own tests and
+	// fixture tooling importing the child realm are internal wiring, not
+	// parent->child leaks.
 	const violations = [];
 	for (const m of modules) {
 		for (const e of edgesOf(m)) {
-			if (isSurface(e.to) && !isSurface(e.from) && !MOUNT_ALLOWLIST.includes(e.from)) {
+			if (isSurface(e.to) && !isSurface(e.from) && !MOUNT_ALLOWLIST.includes(e.from) && !isFeaturePath(e.from)) {
 				violations.push(`inbound edge into src/ingest: ${e.from} -> ${e.to}`);
 			}
 		}
@@ -231,18 +259,19 @@ async function buildScratch(root, { expect } = {}) {
 	rt.record({
 		id: "I-ISO-02",
 		kind: "adversarial",
-		title: "an HTML module-script reference pulls src/ingest into the DEFAULT build with zero static-gate visibility",
+		title: "an HTML module-script reference pulls src/ingest into the DEFAULT build; the inbound audit must REPORT the mount edge",
 		planRef: "plan §6.1 (I1: inbound edges; the audit walks 'every tracked file')",
 		input: "a scratch default build whose index.html adds <script type=module src=/src/ingest/main.jsx>; then the audit walk over the same tracked tree",
-		expected: "observed: the build bundles src/ingest/state.js + main.jsx (module ids prove it), while auditInbound reports NOTHING — HTML is filtered out before parsing, so the mount edge is invisible to the static gate (only the I2 build-time graph check would catch it)",
+		expected: "the build bundles src/ingest/state.js + main.jsx (module ids prove it), and the audit now REPORTS the inbound edge index.html -> src/ingest/main.jsx — tracked HTML module-script references are part of the walk (the I-ISO-02 fix), so the HTML entry route is visible to the static gate; auditViolations must be > 0 or the audit went blind again (DEFECT)",
 		run: async () => {
 			const root = materializeScratch("iso-html-entry", { deleteFeature: false, danglingJs: false, danglingHtml: true });
 			const built = await buildScratch(root);
 			const ingestIds = built.ok ? built.ids.filter((id) => id.includes("/src/ingest/")) : [];
 			const included = built.ok && ingestIds.length >= 2;
-			// the audit over the SAME tree: index.html is not a JS file, so it
-			// never enters readModules — its module-script ref is invisible
-			const modules = trackedModules();
+			// the audit over the SAME tree: index.html carries the module-script
+			// reference, and the fixed walk parses tracked HTML entries, so the
+			// mount edge must be reported -- auditBlind is the DEFECT predicate
+			const modules = trackedModules(root);
 			const violations = auditInbound(modules);
 			const auditBlind = violations.length === 0;
 			rmSync(root, { recursive: true, force: true });

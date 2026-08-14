@@ -126,7 +126,7 @@ function proxyToBridge(req, res) {
 	req.pipe(upstream);
 }
 // Same contract as the Vite dev proxy.
-function proxyToIngest(req, res) {
+function proxyToIngest(req, res, ingestOrigin) {
 	const upstream = httpRequest(
 		{ host: "127.0.0.1", port: new URL(ingestOrigin).port, path: req.url, method: req.method, headers: req.headers },
 		(upstreamRes) => {
@@ -251,20 +251,38 @@ if (opts.ingest && process.env.CCLAY_INGEST_HOST?.trim() && existsSync(INGEST_HO
 	ingestHost.on("error", () => { ingestHost = null; });
 	for (let i = 0; i < 100 && !existsSync(INGEST_STATE_FILE); i += 1) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
 }
-let ingestOrigin = null;
-try {
-	const d = JSON.parse(readFileSync(INGEST_STATE_FILE, "utf8"));
-	process.kill(d.pid, 0);
-	ingestOrigin = d.origin;
-} catch {}
+// The discovery record is re-read and re-validated on every /ingest/*
+// request, never cached for the session: a stale record must not poison
+// the session, and a real surface that publishes later must be picked up
+// without a restart (plan 11.2; the same liveness check the dev proxy
+// makes). process.kill(pid, 0) answers "may I signal this pid" -- pid 0
+// targets the caller's own process group and a live pid can name a port
+// nobody owns -- so a record counts only when its published origin answers
+// the surface-origin probe and names itself as the publisher.
+async function resolveIngestOrigin() {
+	try {
+		const record = JSON.parse(readFileSync(INGEST_STATE_FILE, "utf8"));
+		if (!Number.isInteger(record.pid) || record.pid <= 0) return null;
+		const origin = typeof record.origin === "string" && /^https?:\/\//.test(record.origin) ? record.origin : null;
+		if (!origin) return null;
+		const res = await fetch(origin + "/ingest/surface-origin", { signal: AbortSignal.timeout(400) });
+		if (res.status !== 200) return null;
+		const body = await res.json();
+		if (body?.origin !== origin) return null;
+		return origin;
+	} catch {
+		return null;
+	}
+}
 
-const server = createServer((req, res) => {
+const server = createServer(async (req, res) => {
 	const url = new URL(req.url ?? "/", "http://localhost");
 	if (url.pathname.startsWith("/ardy/")) {
 		proxyToBridge(req, res);
 		return;
 	}
-	if (opts.ingest && ingestOrigin && url.pathname.startsWith("/ingest/")) { proxyToIngest(req, res); return; }
+	const ingestOrigin = opts.ingest && url.pathname.startsWith("/ingest/") ? await resolveIngestOrigin() : null;
+	if (ingestOrigin) { proxyToIngest(req, res, ingestOrigin); return; }
 	const rel = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
 	// normalize + prefix check: a request must not escape its root.
 	const serveFrom = (root, csp) => {

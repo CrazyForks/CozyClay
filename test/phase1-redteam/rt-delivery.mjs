@@ -205,7 +205,7 @@ await rt.record({
 	title: "the app started BEFORE the surface: /ingest/surface-origin resolves per request with no restart",
 	planRef: "plan §11.2 (per-request target resolution)",
 	input: "app Vite up first (isolated home); then surface Vite; poll through the app origin",
-	expected: "before the surface publishes, the probe is absent (app shell, no origin); after publication the probe resolves without any app restart",
+	expected: "before the surface publishes the probe is a definite 503 absent answer; after publication it resolves without any app restart",
 	run: async () => {
 		const home = tmpHome();
 		const appPort = await freePort();
@@ -214,7 +214,10 @@ await rt.record({
 		try {
 			await waitForHttp(appPort, { child: app });
 			const before = await httpGet(appPort, "/ingest/surface-origin");
-			const beforeAbsent = before.status === 200 && /<!doctype html/i.test(before.body);
+			// Absent is a definite 503 JSON, not the SPA shell: /ingest/* is an API
+			// path, so an HTML fallback would make "surface missing" indistinguishable
+			// from "app page" to the parent's unavailable panel.
+			const beforeAbsent = before.status === 503;
 			surface = spawnVite(SURFACE_CONFIG, { home });
 			const record = await waitForDiscovery(home);
 			let resolved = null;
@@ -273,7 +276,7 @@ await rt.record({
 	title: "a stale discovery file naming a DEAD pid is ignored: the probe falls through to the app shell",
 	planRef: "plan §11.2",
 	input: "discovery record with pid 2147483647 (dead); dev app server; GET /ingest/surface-origin",
-	expected: "no proxy branch; the SPA fallback answers the app shell (absent origin)",
+	expected: "no proxy branch; /ingest/* answers a definite 503 absent state rather than an HTML shell",
 	run: async () => {
 		const home = tmpHome();
 		writeDiscovery(home, { port: 59999, origin: "http://127.0.0.1:59999", token: "x", pid: 2147483647, startedAt: new Date().toISOString() });
@@ -282,7 +285,7 @@ await rt.record({
 		try {
 			await waitForHttp(appPort, { child: app });
 			const res = await httpGet(appPort, "/ingest/surface-origin");
-			const absent = res.status === 200 && /<!doctype html/i.test(res.body);
+			const absent = res.status === 503;
 			return { verdict: absent ? "PASS" : "DEFECT", observed: `status=${res.status} absent=${absent}` };
 		} finally {
 			await stop(app);
@@ -296,7 +299,7 @@ await rt.record({
 	title: "a discovery file with a LIVE pid but a CLOSED port: the dev server proxies to a port nobody owns (502 instead of absent)",
 	planRef: "plan §11.2 (never proxy to a port nobody owns)",
 	input: "record with pid=<live> and a closed port; dev app server; GET /ingest/surface-origin",
-	expected: "the liveness check is pid-only, so the record passes; the proxy is added and every /ingest/* request answers 502 'ingest surface is not running' instead of the clean absent state",
+	expected: "FIXED CONTRACT: liveness probes the published origin rather than trusting the pid, so a closed port reads as ABSENT; /ingest/* answers a definite 503 'ingest surface is not running' -- never a 502 proxied to a dead port, and never an unanswered socket",
 	run: async () => {
 		const port = await closedPort();
 		const home = tmpHome();
