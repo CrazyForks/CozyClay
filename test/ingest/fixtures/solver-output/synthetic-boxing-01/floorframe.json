@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "clipId": "synthetic-boxing-01",
+  "K": [
+    [
+      1200,
+      0,
+      960
+    ],
+    [
+      0,
+      1200,
+      540
+    ],
+    [
+      0,
+      0,
+      1
+    ]
+  ],
+  "R_ring_from_cam": [
+    [
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      -0.9521507910624365,
+      -0.30562864898300435
+    ],
+    [
+      0,
+      -0.30562864898300435,
+      0.9521507910624365
+    ]
+  ],
+  "t_ring_from_cam": [
+    0,
+    2.6,
+    -7.5
+  ],
+  "floorY": 0,
+  "planeNormal_ring": [
+    0,
+    1,
+    0
+  ],
+  "metresPerUnit": 1,
+  "quality": {
+    "heldOutErrorM": 0,
+    "uncertainty1SigmaM": 0,
+    "inlierRatio": 1,
+    "reprojRmsPx": 0,
+    "conditionNumber": 1,
+    "ropeStraightnessPx": 0
+  },
+  "sha256": "48864e08b0aa047d4fcf8370db29e1eac47e7e5c050002060f1ee2b295dbcd3e"
+}
