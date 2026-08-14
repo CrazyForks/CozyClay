@@ -1,0 +1,290 @@
+/* surface.css — the ingest surface's stylesheet (plan U2).
+ *
+ * Scoping rule: the surface is a document embedded in an iframe the parent
+ * controls, so EVERY selector in this file is scoped to the surface root
+ * class `.cclay-surface` — the checker test/ingest/verify-surface-css.mjs
+ * parses this file and fails on any selector that is not. A bare class is
+ * a collision waiting to happen the moment anything else shares the realm,
+ * and the moment the sheet is hoisted into a shared bundle.
+ *
+ * The surface never renders its own unavailable state (§11.6): that panel
+ * is parent-owned, because an unreachable child cannot draw its own error.
+ * This file styles only the seven pipeline stages and their chrome.
+ */
+
+.cclay-surface {
+	--cclay-bg: #1d1f24;
+	--cclay-panel: #262a32;
+	--cclay-panel-2: #2e333d;
+	--cclay-text: #e8e6e1;
+	--cclay-muted: #9aa0ab;
+	--cclay-accent: #c9a86a;
+	--cclay-ok: #7fb069;
+	--cclay-warn: #d9a441;
+	--cclay-block: #c0504d;
+	--cclay-line: #3a3f4a;
+	color: var(--cclay-text);
+	background: var(--cclay-bg);
+	font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+	min-height: 100vh;
+	padding: 16px;
+	box-sizing: border-box;
+	overflow-y: auto;
+}
+
+.cclay-surface,
+.cclay-surface *,
+.cclay-surface *::before,
+.cclay-surface *::after {
+	box-sizing: border-box;
+}
+
+.cclay-surface .cclay-header {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	margin-bottom: 12px;
+}
+
+.cclay-surface .cclay-title {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+}
+
+.cclay-surface .cclay-stage-label {
+	margin-left: auto;
+	color: var(--cclay-muted);
+	font-size: 12px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+}
+
+.cclay-surface .cclay-stages {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin: 0 0 14px;
+	padding: 0;
+	list-style: none;
+}
+
+.cclay-surface .cclay-stage-chip {
+	padding: 3px 8px;
+	border: 1px solid var(--cclay-line);
+	border-radius: 999px;
+	color: var(--cclay-muted);
+	font-size: 11px;
+}
+
+.cclay-surface .cclay-stage-chip.is-active {
+	border-color: var(--cclay-accent);
+	color: var(--cclay-accent);
+	font-weight: 600;
+}
+
+.cclay-surface .cclay-stage-chip.is-done {
+	border-color: var(--cclay-ok);
+	color: var(--cclay-ok);
+}
+
+.cclay-surface .cclay-panel {
+	background: var(--cclay-panel);
+	border: 1px solid var(--cclay-line);
+	border-radius: 8px;
+	padding: 14px;
+}
+
+.cclay-surface .cclay-panel + .cclay-panel {
+	margin-top: 10px;
+}
+
+.cclay-surface .cclay-panel h2,
+.cclay-surface .cclay-panel h3 {
+	margin: 0 0 8px;
+	font-weight: 600;
+}
+
+.cclay-surface .cclay-panel h2 {
+	font-size: 14px;
+}
+
+.cclay-surface .cclay-panel h3 {
+	font-size: 13px;
+	color: var(--cclay-muted);
+}
+
+.cclay-surface .cclay-reasons {
+	margin: 6px 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.cclay-surface .cclay-reason {
+	padding: 4px 8px;
+	margin-top: 4px;
+	border-radius: 6px;
+	font-size: 13px;
+}
+
+.cclay-surface .cclay-reason.is-no-go {
+	background: rgba(192, 80, 77, 0.16);
+	color: #e29a97;
+}
+
+.cclay-surface .cclay-reason.is-warn {
+	background: rgba(217, 164, 65, 0.14);
+	color: #e6c071;
+}
+
+.cclay-surface .cclay-verdict {
+	display: inline-block;
+	padding: 2px 10px;
+	border-radius: 999px;
+	font-size: 12px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+
+.cclay-surface .cclay-verdict.is-go {
+	background: rgba(127, 176, 105, 0.18);
+	color: var(--cclay-ok);
+}
+
+.cclay-surface .cclay-verdict.is-warn {
+	background: rgba(217, 164, 65, 0.16);
+	color: var(--cclay-warn);
+}
+
+.cclay-surface .cclay-verdict.is-no-go,
+.cclay-surface .cclay-verdict.is-block {
+	background: rgba(192, 80, 77, 0.18);
+	color: var(--cclay-block);
+}
+
+.cclay-surface .cclay-actions {
+	display: flex;
+	gap: 8px;
+	margin-top: 12px;
+}
+
+.cclay-surface .cclay-button {
+	padding: 7px 14px;
+	border: 1px solid var(--cclay-line);
+	border-radius: 6px;
+	background: var(--cclay-panel-2);
+	color: var(--cclay-text);
+	font: inherit;
+	cursor: pointer;
+}
+
+.cclay-surface .cclay-button:hover:not(:disabled) {
+	border-color: var(--cclay-accent);
+}
+
+.cclay-surface .cclay-button:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.cclay-surface .cclay-button.is-primary {
+	background: var(--cclay-accent);
+	border-color: var(--cclay-accent);
+	color: #1d1f24;
+	font-weight: 600;
+}
+
+.cclay-surface .cclay-log {
+	margin: 8px 0 0;
+	padding: 10px;
+	background: #14161a;
+	border: 1px solid var(--cclay-line);
+	border-radius: 6px;
+	font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	max-height: 220px;
+	overflow-y: auto;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.cclay-surface .cclay-log-line.is-stderr {
+	color: #d99a97;
+}
+
+.cclay-surface .cclay-meta {
+	margin: 0;
+	color: var(--cclay-muted);
+	font-size: 13px;
+}
+
+.cclay-surface .cclay-meta + .cclay-meta {
+	margin-top: 2px;
+}
+
+.cclay-surface .cclay-error {
+	margin-top: 10px;
+	padding: 8px 10px;
+	border: 1px solid rgba(192, 80, 77, 0.5);
+	border-radius: 6px;
+	background: rgba(192, 80, 77, 0.12);
+	color: #e29a97;
+	font-size: 13px;
+}
+
+.cclay-surface .cclay-ack {
+	margin-top: 10px;
+	padding: 8px 10px;
+	border-radius: 6px;
+	font-size: 13px;
+}
+
+.cclay-surface .cclay-ack.is-ok {
+	border: 1px solid rgba(127, 176, 105, 0.5);
+	background: rgba(127, 176, 105, 0.12);
+	color: var(--cclay-ok);
+}
+
+.cclay-surface .cclay-ack.is-rejected {
+	border: 1px solid rgba(192, 80, 77, 0.5);
+	background: rgba(192, 80, 77, 0.12);
+	color: #e29a97;
+}
+
+.cclay-surface .cclay-warn-list {
+	margin: 6px 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.cclay-surface .cclay-warn-list label {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	padding: 4px 0;
+	font-size: 13px;
+}
+
+.cclay-surface .cclay-warn-list input {
+	accent-color: var(--cclay-warn);
+}
+
+.cclay-surface .cclay-summary {
+	margin: 6px 0 0;
+	padding: 10px;
+	background: var(--cclay-panel-2);
+	border-radius: 6px;
+}
+
+.cclay-surface .cclay-file-row {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+}
+
+.cclay-surface .cclay-file-row input[type="file"] {
+	color: var(--cclay-muted);
+	font-size: 13px;
+}
+
