@@ -35,17 +35,20 @@ const ZOOM_STEP = 0.25; // one wheel notch = one zoom step
 const WHEEL_STEP_PX = 50;
 const MAX_WHEEL_STEPS = 3;
 
+const SUBJECT_2_LANE = "Subject 2";
 const TRACKS = [
 	"Prompts",
 	"Full-Body",
 	"2D Root",
 	"Camera",
+	"Subject 2",
 ];
 const TRACK_LABELS_KO = {
 	Prompts: ko("Prompts", "프롬프트"),
 	"Full-Body": ko("Full-Body", "전신"),
 	"2D Root": ko("2D Root", "2D 루트"),
 	Camera: ko("Camera", "카메라"),
+	"Subject 2": ko("Subject 2", "인물 2"),
 };
 
 /** IK keys live on the Full-Body lane: one marker per keyed frame, holding
@@ -84,6 +87,8 @@ export default function Timeline({
 	railSchedule = null, // resolved follow schedule: null | {mode:"range",startFrame,endFrame} | {mode:"off"}
 	railSelected = false, // ribbon selection state
 	railProgress = null, // current playhead frame — fills the ribbon while inside the range
+	clipA = null, // Subject 1 clip trimmed range {start,end}; null = no clip
+	clipB = null, // Subject 2 clip trimmed range {start,end}; null = no clip
 	onRailSelect,
 	onRailMove,
 	onRailRangeChange,
@@ -929,6 +934,16 @@ export default function Timeline({
 											}}
 										/>
 									))}
+								{name === IK_LANE && clipA && (
+									<div className="tl-rail motion a" style={{ "--tl-f-start": clipPct(clipA.start), "--tl-f-end": clipPct(clipA.end) }} title={ko("Subject 1 clip — trimmed range; trim in the Inspector", "인물 1 클립 — 트림 구간; 속성에서 트림")}>
+										<span className="tl-rail-body">{ko("Subject 1", "인물 1")}</span>
+									</div>
+								)}
+								{name === SUBJECT_2_LANE && clipB && (
+									<div className="tl-rail motion b" style={{ "--tl-f-start": clipPct(clipB.start), "--tl-f-end": clipPct(clipB.end) }} title={ko("Subject 2 clip — trimmed range; trim in the Inspector", "인물 2 클립 — 트림 구간; 속성에서 트림")}>
+										<span className="tl-rail-body">{ko("Subject 2", "인물 2")}</span>
+									</div>
+								)}
 								</div>
 							</div>
 						))}

@@ -93,6 +93,7 @@ import {
 	slateLine,
 } from "./shot.js";
 import { captureFraming, classifyMove, cameraMoveAt, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
+import { effectiveChars, anyLoaded, clampTrim, playbackFrame } from "./motion-sources.js";
 
 // Stated the way a crew states a setup: how far back, which side, how high the
 // lens rides, and what glass is on it. Order matters — Medium is the setup a
@@ -1532,9 +1533,27 @@ globalThis.playMode = centerTab === "play";
 	const [motion, setMotion] = useState(null);
 	const [motionBusy, setMotionBusy] = useState(false);
 	const [motionError, setMotionError] = useState("");
+	// Subject 2's clip slot (plan 7.4) — behind the keyed registry with
+	// Subject 1's legacy single `motion` state, never named directly.
+	const [motionB, setMotionB] = useState(null);
+	// Per-subject in/out trim ranges (plan 7.4); null = the whole clip.
+	const [trimA, setTrimA] = useState(null);
+	const [trimB, setTrimB] = useState(null);
 	// Pre-playback bone snapshot; restoring it (after Character's pose effect
 	// has re-applied poseA) puts the rig back exactly where it was.
 	const restoreRef = useRef(null);
+// One canonical transform per subject (plan 7.1): every consumer reads the
+// derived values, never the raw states, so a clip cannot leave the camera,
+// plan pucks and inspector aiming at stale spots. While any slot holds a
+// clip, subject dragging stays disabled — raw edits would be invisible and
+// only surface once the take is cleared.
+const motions = useMemo(() => ({ A: motion, B: motionB }), [motion, motionB]);
+const { A: effectiveCharA, B: effectiveCharB } = useMemo(
+	() => effectiveChars({ A: charA, B: charB }, motions),
+	[charA, charB, motions],
+);
+const takeLoaded = anyLoaded(motions);
+const noop = () => {};
 
 	const shotCamRef = useRef(null);
 	const captureRef = useRef(null);
@@ -1546,8 +1565,8 @@ globalThis.playMode = centerTab === "play";
 	const poserLook = useRef({ yaw: 0, pitch: 0 });
 
 	const shot = useMemo(
-		() => deriveShot(cameraPos, charA, (fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M),
-		[cameraPos, charA, fovDeg],
+		() => deriveShot(cameraPos, effectiveCharA, (fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M),
+		[cameraPos, effectiveCharA, fovDeg],
 	);
 
 	// The derived move sequence: what the keyframings geometrically prove
@@ -1976,6 +1995,7 @@ globalThis.playMode = centerTab === "play";
 				anchorFrame: 0,
 				rotationDeg,
 			});
+			setTrimA({ start: 0, end: decoded.frames - 1 });
 			setTlFrameCount(decoded.frames);
 			setTlFps(decoded.fps);
 			setTlFrame(0);
@@ -2011,6 +2031,7 @@ globalThis.playMode = centerTab === "play";
 
 	function clearMotion() {
 		setMotion(null);
+		setTrimA(null);
 		setMotionError("");
 		// Back to the pre-generation timeline: the current duration at 20 fps.
 		setTlFrameCount(maxDst + 1);
@@ -2019,27 +2040,41 @@ globalThis.playMode = centerTab === "play";
 		setTlPlaying(false);
 	}
 
+	function clearMotionB() {
+		setMotionB(null);
+		setTrimB(null);
+	}
+
 	// Drive Subject 1's rig from the loaded clip whenever the playhead moves.
 	// During playback the pose prop is null so Character's effect never
 	// overwrites the animation on unrelated re-renders.
 	useEffect(() => {
 		if (!motion || !rigA) return;
-		applyMotionFrame(rigA, motion, tlFrame);
-	}, [motion, rigA, tlFrame]);
+		applyMotionFrame(rigA, motion, playbackFrame(tlFrame, trimA));
+	}, [motion, rigA, tlFrame, trimA]);
+// Subject 2's clip drives Subject 2's rig on the shared playhead.
+useEffect(() => {
+	if (!motionB || !rigB) return;
+	applyMotionFrame(rigB, motionB, playbackFrame(tlFrame, trimB));
+}, [motionB, rigB, tlFrame, trimB]);
 
 	/* ------------------------------ IK logic ------------------------------ */
 
 	// Resolve the IK rig (chains + FK swing joints) whenever Subject 1's rig
 	// (re)loads. A rig missing any bone resolves to null and IK mode stays
 	// unavailable.
+// IK correction keys resolve chains from the SELECTED subject's rig (plan
+// 7.4) — the ikSubject switch replacing the A-only rig path.
+const ikSubject = selectedHierarchyId === "characterB" ? "B" : "A";
+const ikRig = ikSubject === "B" ? rigB : rigA;
 	useEffect(() => {
-		const resolved = resolveIkRig(rigA);
+		const resolved = resolveIkRig(ikRig);
 		const chains = resolved ? resolved.chains : null;
 		setIkChains(chains);
 		setIkFkJoints(resolved ? resolved.fkJoints : null);
 		ikStateRef.current.chains = chains;
 		if (!chains) setIkMode(false);
-	}, [rigA]);
+	}, [ikRig]);
 
 	function toggleIkMode() {
 		const next = !ikMode;
@@ -2300,7 +2335,7 @@ globalThis.playMode = centerTab === "play";
 
 	const followTrack = useMemo(() => {
 		if (!followCam.enabled || !subjectTrack) return null;
-		const yaw = (charA.rot * Math.PI) / 180;
+		const yaw = (effectiveCharA.rot * Math.PI) / 180;
 		const params = {
 			distance: followCam.distance,
 			height: followCam.height,
@@ -3053,8 +3088,8 @@ globalThis.playMode = centerTab === "play";
 
 							<Character
 								url={CHARACTER_MODEL_URL}
-								position={motion ? [motion.anchorX, 0, motion.anchorZ] : [charA.x, 0, charA.z]}
-								rot={motion ? motion.rotationDeg : charA.rot}
+								position={[effectiveCharA.x, 0, effectiveCharA.z]}
+								rot={effectiveCharA.rot}
 								tint={CLAY}
 								pose={motion ? null : poseA}
 								onRig={setRigA}
@@ -3063,10 +3098,10 @@ globalThis.playMode = centerTab === "play";
 							{showB && (
 								<Character
 									url={CHARACTER_MODEL_URL}
-									position={[charB.x, 0, charB.z]}
-									rot={charB.rot}
+									position={[effectiveCharB.x, 0, effectiveCharB.z]}
+									rot={effectiveCharB.rot}
 									tint={CLAY_B}
-									pose={poseB}
+									pose={motionB ? null : poseB}
 									onRig={setRigB}
 									pickId="B"
 								/>
@@ -3076,8 +3111,8 @@ globalThis.playMode = centerTab === "play";
 								preset={preset}
 								nonce={nonce}
 								fovDeg={fovDeg}
-								charA={charA}
-								charB={charB}
+								charA={effectiveCharA}
+								charB={effectiveCharB}
 								showB={showB}
 								probeX={motionPos ? motionPos.x : charA.x}
 								probeZ={motionPos ? motionPos.z : charA.z}
@@ -3162,10 +3197,10 @@ globalThis.playMode = centerTab === "play";
 								shotCamRef={shotCamRef}
 								look={look}
 								fovDeg={fovDeg}
-								charA={charA}
-								setCharA={setCharA}
-								charB={charB}
-								setCharB={setCharB}
+								charA={effectiveCharA}
+								setCharA={takeLoaded ? noop : setCharA}
+								charB={effectiveCharB}
+								setCharB={takeLoaded ? noop : setCharB}
 								showB={showB}
 								waypoints={waypoints}
 								activeWaypointFrame={activeWaypointFrame}
@@ -3524,7 +3559,7 @@ globalThis.playMode = centerTab === "play";
 						<div className={"subjects-row" + (showB ? "" : " single")}>
 							<SubjectBox
 							label={ko("Subject 1", "인물 1")}
-								value={charA}
+								value={effectiveCharA}
 								onChange={setCharA}
 								onPose={() => openStudio("A")}
 								posing={posing === "A"}
@@ -3532,7 +3567,7 @@ globalThis.playMode = centerTab === "play";
 							{showB && (
 								<SubjectBox
 								label={ko("Subject 2", "인물 2")}
-									value={charB}
+									value={effectiveCharB}
 									onChange={setCharB}
 									onRemove={() => setShowB(false)}
 									onPose={() => openStudio("B")}
@@ -3540,6 +3575,22 @@ globalThis.playMode = centerTab === "play";
 								/>
 							)}
 						</div>
+						{/* Clip trim + clear (plan 7.4): in/out sliders clamp to the
+						    clip's frame bounds through the registry; nothing raw
+						    ever enters state. */}
+						{motion && (
+							<div className="clip-trims">
+								<Slider compact label={ko("Subject 1 in", "인물 1 시작")} min={0} max={motion.frames - 1} step={1} value={trimA?.start ?? 0} onChange={(start) => setTrimA(clampTrim({ start, end: trimA?.end ?? motion.frames - 1 }, motion))} />
+								<Slider compact label={ko("Subject 1 out", "인물 1 끝")} min={0} max={motion.frames - 1} step={1} value={trimA?.end ?? motion.frames - 1} onChange={(end) => setTrimA(clampTrim({ start: trimA?.start ?? 0, end }, motion))} />
+							</div>
+						)}
+						{motionB && (
+							<div className="clip-trims">
+								<Slider compact label={ko("Subject 2 in", "인물 2 시작")} min={0} max={motionB.frames - 1} step={1} value={trimB?.start ?? 0} onChange={(start) => setTrimB(clampTrim({ start, end: trimB?.end ?? motionB.frames - 1 }, motionB))} />
+								<Slider compact label={ko("Subject 2 out", "인물 2 끝")} min={0} max={motionB.frames - 1} step={1} value={trimB?.end ?? motionB.frames - 1} onChange={(end) => setTrimB(clampTrim({ start: trimB?.start ?? 0, end }, motionB))} />
+								<button type="button" className="btn ghost" onClick={clearMotionB}>{ko("Clear clip", "클립 지우기")}</button>
+							</div>
+						)}
 						{!showB && (
 							<button type="button" className="add-subject" onClick={() => setShowB(true)}>
 								<span className="as-plus">＋</span>
@@ -4113,6 +4164,8 @@ globalThis.playMode = centerTab === "play";
 				railFollowEnabled={followCam.enabled}
 				railSelected={railSelected}
 				railProgress={tlFrame}
+				clipA={trimA}
+				clipB={trimB}
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}

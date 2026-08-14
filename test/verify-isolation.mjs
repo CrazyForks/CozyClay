@@ -202,13 +202,20 @@ const SEAM = new Map([
 	["src/motion-sources.js", { add: Infinity }],
 	["src/performance-take.js", { add: Infinity }],
 	["src/undo-coordinator.js", { add: Infinity }],
-	// Plan §4 lists the envelope's test but omits the tests for these two seam
+	// Plan §4 lists the envelope's test but omits the tests for these seam
 	// modules, which the same plan requires under its test-first protocol. A
 	// seam module's own verifier is part of that seam; admitting anything else
 	// would let the list quietly forbid the tests it mandates. Recorded in the
 	// ultragoal ledger rather than widened silently.
 	["test/verify-performance-take.mjs", { add: Infinity }],
 	["test/verify-undo-coordinator.mjs", { add: Infinity }],
+	["test/verify-surface-host.mjs", { add: Infinity }],
+	// test/verify-delivery.mjs is the D1-D3 delivery-matrix gate named NEW by
+	// the assignment but omitted from the plan 4 seam list: it spawns the
+	// surface Vite, the app dev server and the packaged CLI, so it is the
+	// delivery seam's own verifier. Same admission class as the entries above;
+	// recorded in the ultragoal ledger rather than widened silently.
+	["test/verify-delivery.mjs", { add: Infinity }],
 	["src/surface-host.js", { add: Infinity }],
 	["vite.ingest.config.js", { add: Infinity }],
 	["test/verify-build-exclusion.mjs", { add: Infinity }],
@@ -314,7 +321,12 @@ ok(
 // The feature's own gates (verify-build-exclusion.mjs, verify-isolation.mjs)
 // are deleted with it: they assert the feature's absence, so keeping them in
 // the sim tree would fail by design -- exactly what deletion means.
-const DELETED_WITH_FEATURE = new Set(["test/verify-build-exclusion.mjs", "test/verify-isolation.mjs"]);
+// verify-delivery.mjs is deleted with it for the mirror-image reason: its
+// whole subject is the feature's delivery topology (surface Vite spawn,
+// dist-ingest, the packaged proxy), so in a tree without the feature it has
+// nothing to assert. A subject exemption -- never a convenient way to drop
+// a test that merely happens to fail after deletion.
+const DELETED_WITH_FEATURE = new Set(["test/verify-build-exclusion.mjs", "test/verify-isolation.mjs", "test/verify-delivery.mjs"]);
 function materializeDeletedTree(dest, { dangling }) {
 	// Materialize the COMMITTED tree, not the working tree: peers land their
 	// seam commits into the same working tree, and an in-flight edit that has
