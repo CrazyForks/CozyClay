@@ -52,8 +52,10 @@ import { createSceneHistoryStore } from "./scene-history.js";
 import {
 	SCENES_QUARANTINE_KEY,
 	SCENES_STORAGE_KEY,
+	SCENES_VERSION,
 	activeSceneIndex,
 	addScene,
+	createSceneStage,
 	createSceneDocument,
 	duplicateScene,
 	loadSceneDocumentFromStorage,
@@ -64,7 +66,6 @@ import {
 import ObjectGizmo from "./object-gizmo.jsx";
 import AddObjectMenu from "./object-catalog.jsx";
 import ResultModal from "./result-modal.jsx";
-import InstallApp from "./install-app.jsx";
 import LocaleToggle from "./locale-toggle.jsx";
 import { ko, isKo } from "./locale.js";
 import {
@@ -1055,11 +1056,14 @@ globalThis.playMode = centerTab === "play";
 		window.addEventListener("pointerup", onUp);
 		window.addEventListener("pointercancel", onUp);
 	}
-	const [showB, setShowB] = useState(false);
-	const [charA, setCharA] = useState({ x: 0, z: 0, rot: 0 });
-	const [charB, setCharB] = useState({ x: 1.15, z: 0.1, rot: -14 });
-	const [poseA, setPoseA] = useState(DEFAULT_POSE);
-	const [poseB, setPoseB] = useState(DEFAULT_POSE);
+	const [startup] = useState(loadSceneStartup);
+	const startupScene = startup.document.scenes[activeSceneIndex(startup.document.scenes, startup.document.activeSceneId)];
+	const startupStage = createSceneStage(startupScene.stage);
+	const [showB, setShowB] = useState(startupStage.showB);
+	const [charA, setCharA] = useState(startupStage.charA);
+	const [charB, setCharB] = useState(startupStage.charB);
+	const [poseA, setPoseA] = useState(startupStage.poseA ?? DEFAULT_POSE);
+	const [poseB, setPoseB] = useState(startupStage.poseB ?? DEFAULT_POSE);
 	const [customPoses, setCustomPoses] = useState(() => loadCustomPoses());
 	const [posing, setPosing] = useState(null);
 	const [posingClosing, setPosingClosing] = useState(false);
@@ -1090,10 +1094,8 @@ globalThis.playMode = centerTab === "play";
 	// initializer so the store below can seed from the restored scene; the
 	// quarantine write and the save-block decision happen before the first
 	// render, and the toast/error they produce ride along as initial UI state.
-	const [startup] = useState(loadSceneStartup);
 	const [scenes, setScenes] = useState(startup.document.scenes);
 	const [activeSceneId, setActiveSceneId] = useState(startup.document.activeSceneId);
-	const startupScene = startup.document.scenes[activeSceneIndex(startup.document.scenes, startup.document.activeSceneId)];
 	const [sceneObjects, setSceneObjects] = useState(startupScene.objects);
 	const [sceneSaveError, setSceneSaveError] = useState(startup.error);
 	const saveBlockedRef = useRef(startup.saveBlocked);
@@ -1414,10 +1416,10 @@ globalThis.playMode = centerTab === "play";
 	// motion share one time axis; off frees the camera while both stay set.
 	const [moveFollow, setMoveFollow] = useState(true);
 	const [railDraw, setRailDraw] = useState(false);
-	const [hasCharSheet, setHasCharSheet] = useState(false);
+	const [hasCharSheet, setHasCharSheet] = useState(startupStage.hasCharSheet);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
-	const [subject, setSubject] = useState(DEFAULT_SUBJECT);
-	const [subject2, setSubject2] = useState("a man in a dark coat");
+	const [subject, setSubject] = useState(startupStage.subject ?? DEFAULT_SUBJECT);
+	const [subject2, setSubject2] = useState(startupStage.subject2 ?? "a man in a dark coat");
 	const [environment, setEnvironment] = useState(DEFAULT_ENVIRONMENT);
 	const [style, setStyle] = useState("moody cinematic lighting, 35mm film look");
 
@@ -1587,13 +1589,15 @@ globalThis.playMode = centerTab === "play";
 	const scenesRef = useRef(scenes);
 	const activeSceneIdRef = useRef(activeSceneId);
 	const shotDocumentRef = useRef(null);
+	const actorStageRef = useRef(null);
 	scenesRef.current = scenes;
 	activeSceneIdRef.current = activeSceneId;
 	shotDocumentRef.current = createShotAuthoringDocument({ shots, waypoints, frameCount: tlFrameCount });
+	actorStageRef.current = { charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2 };
 
 	function snapshotActiveScene(sourceScenes = scenesRef.current) {
 		return sourceScenes.map((scene) => scene.id === activeSceneIdRef.current
-			? { ...scene, objects: storeRef.current.objects, shotDocument: shotDocumentRef.current }
+			? { ...scene, objects: storeRef.current.objects, shotDocument: shotDocumentRef.current, stage: actorStageRef.current }
 			: scene);
 	}
 
@@ -1601,7 +1605,7 @@ globalThis.playMode = centerTab === "play";
 		if (saveBlockedRef.current) return false;
 		try {
 			localStorage.setItem(SCENES_STORAGE_KEY, serializeSceneDocument({
-				version: 1,
+					version: SCENES_VERSION,
 				activeSceneId: nextActiveSceneId,
 				scenes: nextScenes,
 			}));
@@ -1637,12 +1641,21 @@ globalThis.playMode = centerTab === "play";
 
 	function openScene(scene, nextScenes) {
 		const shotState = restoredShotState(scene);
+		const stage = createSceneStage(scene.stage);
 		const objects = Array.isArray(scene.objects) ? scene.objects : [];
 		storeRef.current = createSceneHistoryStore(objects, { onObjects: setSceneObjects });
 		setSceneObjects(objects);
 		setShots(shotState.shots);
 		setWaypoints(shotState.waypoints);
 		setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * 20);
+		setCharA(stage.charA);
+		setCharB(stage.charB);
+		setShowB(stage.showB);
+		setPoseA(stage.poseA ?? DEFAULT_POSE);
+		setPoseB(stage.poseB ?? DEFAULT_POSE);
+		setHasCharSheet(stage.hasCharSheet);
+		setSubject(stage.subject ?? DEFAULT_SUBJECT);
+		setSubject2(stage.subject2 ?? "a man in a dark coat");
 		setTlFrame(0);
 		setMovePlaying(false);
 		manualCameraOverrideRef.current = false;
@@ -1715,7 +1728,7 @@ globalThis.playMode = centerTab === "play";
 		dirtyRef.current = true;
 		const timer = setTimeout(flushScenes, 400);
 		return () => clearTimeout(timer);
-	}, [sceneObjects, shots, waypoints, tlFrameCount, scenes, activeSceneId]);
+	}, [sceneObjects, shots, waypoints, tlFrameCount, charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2, scenes, activeSceneId]);
 	useEffect(() => {
 		const onPageHide = () => flushScenes();
 		const onVisibility = () => {
@@ -3229,7 +3242,6 @@ globalThis.playMode = centerTab === "play";
 				</div>
 				<div className="topbar-actions">
 					<LocaleToggle />
-					<InstallApp />
 				</div>
 			</header>
 
