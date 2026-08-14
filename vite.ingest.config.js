@@ -26,8 +26,9 @@ function devChildCsp(port) {
 }
 // The production policy is what ships in dist-ingest (plan 11.4).
 // frame-ancestors cannot ride a meta tag (response-header-only), so it is
-// omitted here and appended by whoever serves the built surface -- the host,
-// from --app-origin.
+// omitted here and appended by whoever serves the built surface -- today
+// the packaged CLI (bin/cozyclay.mjs), which names its own exact origin;
+// H1 (tools/ingest/host.mjs, phase 3) will do the same from --app-origin.
 const PROD_CHILD_CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'";
 
 async function negotiatePort() {

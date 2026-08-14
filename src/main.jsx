@@ -3,10 +3,12 @@ import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 import "./styles.css";
 import { registerPwa } from "./pwa.js";
+import { mountSurfaceHost } from "./surface-mount.js";
 import { LOCALE } from "./locale.js";
 
 registerPwa();
 document.documentElement.lang = LOCALE;
+mountSurfaceHost({ window, document });
 
 createRoot(document.getElementById("root")).render(
 	<StrictMode>

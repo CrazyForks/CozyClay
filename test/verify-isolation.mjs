@@ -9,21 +9,21 @@
  * src/tools/test; the vite.config.js control lives at the repo root precisely
  * to prove that), AST-parses each one (a string scan would trip on comments and
  * strings), enforces the R4 fence, checks the plan 4 diff-shape budgets against
- * main, and proves deletability: remove the mount edge (the allowlist below),
- * delete the feature dirs and vite.ingest.config.js, then build and run the
- * app green bar.
+ * main, and proves deletability: remove the mount edge (the two main.jsx
+ * lines), delete the composition module, the feature dirs and
+ * vite.ingest.config.js, then build and run the app green bar.
  *
  * What would be circular or wrong: auditing only the feature's own files;
  * trusting an import edge found by regex (comments/strings would count);
  * measuring budgets against a diff that includes the feature dirs; a
  * deletability simulation that keeps any feature file or its gates; or
  * degrading to a string scan when no AST parser is available -- the audit
- * fails loudly instead (plan 16).
- *
  * Canonical REDs (plan 13): I1 "guard is blind to R1-inbound (vite.config.js
- * control)"; I3 "negative control: dangling mount edge not reported".
+ * control)"; I1 "orphaned boundary: zero mount edges is reported"; I1
+ * "leaky boundary: a second mount edge is reported"; I3 "negative control:
+ * dangling mount edge not reported".
  */
-import { readFileSync, readdirSync, mkdtempSync, rmSync, symlinkSync, appendFileSync } from "node:fs";
+import { readFileSync, readdirSync, mkdtempSync, rmSync, symlinkSync, appendFileSync, writeFileSync, existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
@@ -82,6 +82,13 @@ function readModules(paths) {
 		if (!JS_FILE.test(p)) continue;
 		modules.push({ path: p, source: readFileSync(join(REPO_ROOT, p), "utf8") });
 	}
+	// src/surface-mount.js is the boundary's composition module (the W2 mount
+	// edge). It is a NEW seam file, so before its commit it is not in git
+	// ls-files; the audits must still see its edges in the working tree, or
+	// the mount-edge and host-consumer checks would report an orphan on the
+	// very tree that composes the boundary. Read it from disk when present.
+	const mountPath = join(REPO_ROOT, "src", "surface-mount.js");
+	if (existsSync(mountPath)) modules.push({ path: "src/surface-mount.js", source: readFileSync(mountPath, "utf8") });
 	return modules;
 }
 const modules = readModules(tracked);
@@ -135,16 +142,15 @@ const isFeasibility = (p) => isUnder(p, "tools/ingest/feasibility");
 // the feature owns its whole diff; the seam budget applies to everything else
 const isFeaturePath = (p) => isUnder(p, "src/ingest") || isUnder(p, "tools/ingest") || isUnder(p, "test/ingest");
 
-// --- I1: inbound edges into src/ingest -------------------------------------
-// The surface is a second Vite input (plan 6, I1); its inbound rule is
-// `edges <= allowlist`. Nothing may import src/ingest/** from outside until W2
-// lands the single mount edge here; zero edges is the correct state while the
-// surface is Phase-4 code.
-const MOUNT_ALLOWLIST = [];
+// --- I1: the child realm stays closed ---------------------------------------
+// src/ingest/** is the child's own world (plan 6, I1): a separate Vite input
+// built into dist-ingest/. Nothing outside it may import it — the parent
+// reaches the boundary through src/surface-mount.js, never through the
+// child's directory. Zero inbound edges is the ONLY correct state here.
 function auditInbound(edges) {
 	const violations = [];
 	for (const e of edges) {
-		if (isSurface(e.to) && !isSurface(e.from) && !MOUNT_ALLOWLIST.includes(e.from)) {
+		if (isSurface(e.to) && !isSurface(e.from)) {
 			violations.push(`inbound edge into src/ingest: ${e.from} -> ${e.to}`);
 		}
 	}
@@ -166,6 +172,142 @@ ok(
 // the real tree must be clean
 const realInbound = auditInbound(allEdges(modules, parseAst));
 ok("no tracked file outside src/ingest imports src/ingest", realInbound.length === 0, realInbound.join(" | "));
+
+// --- I1: the boundary's single mount edge -----------------------------------
+// The boundary is parent-side code (src/surface-host.js plus the composition
+// in src/surface-mount.js) that the app entry composes through EXACTLY one
+// edge. Zero edges is the orphan class that shipped twice in this project
+// (undo coordinator, take store): the boundary existed, passed its isolated
+// tests, and no runtime code ever instantiated it. Two or more edges is the
+// leak class: a second composition path can diverge from the audited one. The
+// audit therefore demands exactly the expected edge and nothing else, so both
+// directions fail. The composition lives outside src/ingest/ (ultragoal
+// ledger ruling): it runs in the app bundle, so the module-graph exclusion
+// (verify-build-exclusion.mjs) keeps asserting literal zero src/ingest ids.
+const MOUNT_EDGE = { from: "src/main.jsx", to: "src/surface-mount.js" };
+// the exact two lines main.jsx contributes; the deletability sim strips them
+const MOUNT_EDGE_LINES = [
+	'import { mountSurfaceHost } from "./surface-mount.js";',
+	"mountSurfaceHost({ window, document });",
+];
+const isMountEdge = (e) => e.from === MOUNT_EDGE.from && e.to === MOUNT_EDGE.to;
+function auditMountEdge(edges) {
+	const inbound = edges.filter((e) => e.to === MOUNT_EDGE.to);
+	const violations = [];
+	if (inbound.length === 0) {
+		violations.push("orphaned boundary: zero inbound edges into src/surface-mount.js (the mount edge is missing)");
+	} else if (inbound.length > 1) {
+		violations.push(`leaky boundary: ${inbound.length} inbound edges into src/surface-mount.js (exactly one expected)`);
+	}
+	for (const e of inbound) {
+		if (!isMountEdge(e)) {
+			violations.push(`unexpected mount edge: ${e.from} -> ${e.to} (expected ${MOUNT_EDGE.from} -> ${MOUNT_EDGE.to})`);
+		}
+	}
+	return violations;
+}
+
+// sensitivity first, both directions: with the mount edge removed the boundary
+// is orphaned and must be reported — the exact class the old zero-edge audit
+// let pass — and a second edge from anywhere is a leak and must be reported
+const orphanMain = {
+	path: "src/main.jsx",
+	source: readFileSync(join(REPO_ROOT, "src/main.jsx"), "utf8")
+		.split("\n")
+		.filter((line) => !MOUNT_EDGE_LINES.includes(line.trim()))
+		.join("\n"),
+};
+const withOrphan = modules.map((m) => (m.path === "src/main.jsx" ? orphanMain : m));
+ok(
+	"orphaned boundary: zero mount edges is reported",
+	auditMountEdge(allEdges(withOrphan, parseAst)).length > 0,
+	auditMountEdge(allEdges(withOrphan, parseAst)).join(" | "),
+);
+const withLeak = [
+	...modules,
+	{
+		path: "src/ardy/timeline.jsx",
+		source: readFileSync(join(REPO_ROOT, "src/ardy/timeline.jsx"), "utf8") + '\nimport { mountSurfaceHost } from "../surface-mount.js";\n',
+	},
+];
+ok(
+	"leaky boundary: a second mount edge is reported",
+	auditMountEdge(allEdges(withLeak, parseAst)).length > 0,
+	auditMountEdge(allEdges(withLeak, parseAst)).join(" | "),
+);
+// a single edge from the WRONG module is not the audited composition
+const withWrongEdge = modules.map((m) => {
+	if (m.path === "src/main.jsx") return orphanMain;
+	if (m.path === "src/App.jsx") return { ...m, source: m.source + '\nimport { mountSurfaceHost } from "./surface-mount.js";\n' };
+	return m;
+});
+ok(
+	"a mount edge from the wrong module is reported",
+	auditMountEdge(allEdges(withWrongEdge, parseAst)).length > 0,
+	auditMountEdge(allEdges(withWrongEdge, parseAst)).join(" | "),
+);
+// the real tree must be exactly the expected edge
+const realMountEdges = auditMountEdge(allEdges(modules, parseAst));
+ok(
+	"the app composes the boundary through exactly one expected mount edge",
+	realMountEdges.length === 0,
+	realMountEdges.join(" | "),
+);
+
+// --- I1: exactly one non-test module may consume createSurfaceHost ----------
+// surface-host.js is the boundary's engine; a second consumer outside tests
+// is a second composition path that can diverge, and zero consumers is the
+// orphan class again. The composition module is the only allowed consumer.
+function auditHostConsumers(mods, parse) {
+	const consumers = [];
+	for (const m of mods) {
+		if (isUnder(m.path, "test")) continue;
+		const ast = parse(m.source, { lang: m.path.endsWith(".jsx") ? "jsx" : "js" });
+		for (const node of ast.body) {
+			if (node.type !== "ImportDeclaration") continue;
+			const spec = node.source?.value;
+			if (typeof spec !== "string" || !/^\.\.?\//.test(spec)) continue;
+			const to = posix.normalize(posix.join(posix.dirname(m.path), spec));
+			if (to !== "src/surface-host.js") continue;
+			if (node.specifiers?.some((s) => s.type === "ImportSpecifier" && s.imported.name === "createSurfaceHost")) {
+				consumers.push(m.path);
+			}
+		}
+	}
+	const violations = [];
+	if (consumers.length === 0) {
+		violations.push("orphaned host: no non-test module imports createSurfaceHost");
+	} else if (consumers.length > 1) {
+		violations.push(`leaky host: ${consumers.length} non-test modules import createSurfaceHost (${consumers.join(", ")})`);
+	} else if (consumers[0] !== "src/surface-mount.js") {
+		violations.push(`unexpected createSurfaceHost consumer: ${consumers[0]} (expected src/surface-mount.js)`);
+	}
+	return violations;
+}
+// sensitivity first: zero consumers (the composition module removed) and a
+// second consumer must both be reported
+const withOrphanHost = modules.filter((m) => m.path !== "src/surface-mount.js");
+ok(
+	"orphaned host: zero createSurfaceHost consumers is reported",
+	auditHostConsumers(withOrphanHost, parseAst).length > 0,
+	auditHostConsumers(withOrphanHost, parseAst).join(" | "),
+);
+const withSecondConsumer = [
+	...modules,
+	{ path: "src/foo.js", source: 'import { createSurfaceHost } from "./surface-host.js";\n' },
+];
+ok(
+	"leaky host: a second createSurfaceHost consumer is reported",
+	auditHostConsumers(withSecondConsumer, parseAst).length > 0,
+	auditHostConsumers(withSecondConsumer, parseAst).join(" | "),
+);
+// the real tree: exactly the composition module
+const realHostConsumers = auditHostConsumers(modules, parseAst);
+ok(
+	"exactly one non-test module consumes createSurfaceHost (the composition)",
+	realHostConsumers.length === 0,
+	realHostConsumers.join(" | "),
+);
 // --- R4 fence: feasibility runners cannot become production code -------------
 // Only tools/ingest/feasibility/** itself and test/ingest/** may import the
 // runners (plan 6.2, 10.2); the fence is what makes their Stage-B removal a
@@ -217,6 +359,12 @@ const SEAM = new Map([
 	// recorded in the ultragoal ledger rather than widened silently.
 	["test/verify-delivery.mjs", { add: Infinity }],
 	["src/surface-host.js", { add: Infinity }],
+	// The W2 mount edge (ultragoal ledger ruling): the composition module is
+	// parent-side code that runs in the app bundle, deliberately NOT under
+	// src/ingest/, so verify-build-exclusion.mjs keeps asserting literal zero
+	// src/ingest ids in dist/. It is the boundary's single runtime entry,
+	// deleted with the feature like the dirs.
+	["src/surface-mount.js", { add: Infinity }],
 	["vite.ingest.config.js", { add: Infinity }],
 	["test/verify-build-exclusion.mjs", { add: Infinity }],
 	["test/verify-isolation.mjs", { add: Infinity }],
@@ -235,7 +383,12 @@ const SEAM = new Map([
 	["src/ardy/timeline.jsx", { add: 25, mod: 6 }],
 	["src/scene-history.js", { mod: 26 }],
 	["tools/ardy/bridge.mjs", { mod: 45 }],
-	["bin/cozyclay.mjs", { add: 40 }],
+	// Budget renegotiated from plan 4's {add: 40} (the D2 proxy): the
+	// packaged CLI is also the D2/D3 delivery owner of the child document --
+	// dist-ingest serving plus the header-carried production child CSP with
+	// the exact frame-ancestors origin (plan 11.4). Measured numstat of the
+	// closed blocker diff, not a headroom guess.
+	["bin/cozyclay.mjs", { add: 57 }],
 	["src/main.jsx", { add: 2 }],
 	// Budget renegotiated from plan 4's {add: 6} (the read-once discovery
 	// spread): the cold-start race is removed by resolving the /ingest
@@ -344,10 +497,15 @@ if (numstatRun.status !== 0) {
 // dangling mount edge once the feature is deleted -- and the operational part
 // materializes the deleted tree and runs the bar for real.
 function checkDeletable(mods, parse) {
-	// structural deletability: any inbound edge into src/ingest is a dangling
-	// mount edge once the feature dirs are gone; the sim below then builds the
-	// deleted tree and runs the green bar for real
-	return auditInbound(allEdges(mods, parse));
+	// structural deletability: a mount edge from anywhere but the audited
+	// entry, a second createSurfaceHost consumer, or any inbound edge into
+	// the child realm is a dangling edge once the feature is deleted; the sim
+	// below then builds the deleted tree and runs the green bar for real
+	return [
+		...auditMountEdge(allEdges(mods, parse)),
+		...auditHostConsumers(mods, parse),
+		...auditInbound(allEdges(mods, parse)),
+	];
 }
 // sensitivity first: an app entry that still imports the surface after the
 // feature is gone is a dangling mount edge and must be reported
@@ -392,13 +550,26 @@ function materializeDeletedTree(dest, { dangling }) {
 	const extract = spawnSync("tar", ["-x", "-C", dest], { input: tar.stdout, maxBuffer: 64 * 1024 * 1024 });
 	if (extract.status !== 0) throw new Error(`tar extraction failed: ${extract.stderr || extract.stdout}`);
 	// delete the feature dirs, the second build entry, and the feature's gates
-	for (const f of ["src/ingest", "tools/ingest", "test/ingest", "vite.ingest.config.js", ...DELETED_WITH_FEATURE]) {
+	// delete the feature dirs, the composition module, the second build entry,
+	// and the feature's gates
+	for (const f of ["src/ingest", "tools/ingest", "test/ingest", "src/surface-mount.js", "vite.ingest.config.js", ...DELETED_WITH_FEATURE]) {
 		rmSync(join(dest, f), { recursive: true, force: true });
 	}
+	// deletability removes the mount edge from the app entry with the feature:
+	// the two lines main.jsx contributes are the seam. The dangling tree below
+	// re-adds them to prove the sim detects an edge that survives deletion.
+	const mainPath = join(dest, "src/main.jsx");
+	writeFileSync(
+		mainPath,
+		readFileSync(mainPath, "utf8")
+			.split("\n")
+			.filter((line) => !MOUNT_EDGE_LINES.includes(line.trim()))
+			.join("\n"),
+	);
 	if (dangling) {
 		// the mount edge survives the deletion: this is the dangling edge the
 		// whole sim exists to detect, and it must break the build
-		appendFileSync(join(dest, "src/App.jsx"), '\nimport "./ingest/state.js";\n');
+		appendFileSync(mainPath, `\n${MOUNT_EDGE_LINES.join("\n")}\n`);
 	}
 	symlinkSync(join(REPO_ROOT, "node_modules"), join(dest, "node_modules"), "dir");
 }

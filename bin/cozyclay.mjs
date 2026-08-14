@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 const PKG_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const DIST = join(PKG_ROOT, "dist");
+const DIST_INGEST = join(PKG_ROOT, "dist-ingest");
 const BRIDGE = join(PKG_ROOT, "tools", "ardy", "bridge.mjs");
 const BRIDGE_PORT = Number(process.env.COZYCLAY_BRIDGE_PORT ?? 5181);
 
@@ -91,7 +92,7 @@ Motion generation needs an SSH-reachable NVIDIA machine running ARDY; point
 the sidecar at it with CCLAY_ARDY_HOST. Everything else - staging, posing,
 paths, cameras, timeline, playback - runs locally with no extra setup.`;
 
-function serveFile(res, path) {
+function serveFile(res, path, csp = PARENT_CSP) {
 	const type = TYPES[extname(path).toLowerCase()] ?? "application/octet-stream";
 	res.writeHead(200, {
 		"content-type": type,
@@ -99,8 +100,9 @@ function serveFile(res, path) {
 		// The studio is served from a local process a user just started; a
 		// stale cache across versions is more confusing than a re-read.
 		"cache-control": "no-cache",
-		// The parent frame-src is the ingest boundary on this server (plan 11.4).
-		...(type.startsWith("text/html") ? { "content-security-policy": PARENT_CSP } : {}),
+		// The caller picks the policy: parent frame-src for dist/ html, the
+		// production child CSP for the dist-ingest child document (plan 11.4).
+		...(type.startsWith("text/html") ? { "content-security-policy": csp } : {}),
 	});
 	createReadStream(path).pipe(res);
 }
@@ -210,6 +212,11 @@ function openBrowser(url) {
 }
 
 const opts = parseArgs(process.argv.slice(2));
+// frame-ancestors is header-only (ignored in meta), so the packaged CLI --
+// the D2/D3 delivery owner -- emits the production child policy itself,
+// naming the exact app origin.
+const APP_ORIGIN = `http://${opts.host}:${opts.port}`;
+const CHILD_CSP = `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors ${APP_ORIGIN}; base-uri 'none'; form-action 'none'; object-src 'none'`;
 if (opts.help) {
 	console.log(HELP);
 	process.exit(0);
@@ -240,7 +247,7 @@ const INGEST_STATE_FILE = join(STATE_DIR, "ingest.json");
 const INGEST_HOST = join(PKG_ROOT, "tools", "ingest", "host.mjs");
 let ingestHost = null;
 if (opts.ingest && process.env.CCLAY_INGEST_HOST?.trim() && existsSync(INGEST_HOST)) {
-	ingestHost = spawn(process.execPath, [INGEST_HOST, "--app-origin", `http://${opts.host}:${opts.port}`], { cwd: PKG_ROOT, stdio: "inherit" });
+	ingestHost = spawn(process.execPath, [INGEST_HOST, "--app-origin", APP_ORIGIN], { cwd: PKG_ROOT, stdio: "inherit" });
 	ingestHost.on("error", () => { ingestHost = null; });
 	for (let i = 0; i < 100 && !existsSync(INGEST_STATE_FILE); i += 1) await new Promise((resolveWait) => setTimeout(resolveWait, 50));
 }
@@ -259,14 +266,21 @@ const server = createServer((req, res) => {
 	}
 	if (opts.ingest && ingestOrigin && url.pathname.startsWith("/ingest/")) { proxyToIngest(req, res); return; }
 	const rel = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
-	// normalize + prefix check: a request must not escape dist/.
-	const target = join(DIST, normalize(rel));
-	if (!target.startsWith(DIST) || !existsSync(target) || statSync(target).isDirectory()) {
+	// normalize + prefix check: a request must not escape its root.
+	const serveFrom = (root, csp) => {
+		const target = join(root, normalize(rel));
+		if (!target.startsWith(root) || !existsSync(target) || statSync(target).isDirectory()) return false;
+		serveFile(res, target, csp);
+		return true;
+	};
+	// The app from dist/ under the parent frame-src policy; the packaged
+	// child document and its assets from dist-ingest under the production
+	// child policy (plan 11.4), whose frame-ancestors rides the header.
+	if (!serveFrom(DIST, PARENT_CSP) && !(opts.ingest && serveFrom(DIST_INGEST, CHILD_CSP))) {
 		res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
 		res.end("not found");
 		return;
 	}
-	serveFile(res, target);
 });
 
 const startedAt = Date.now();

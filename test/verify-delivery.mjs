@@ -44,11 +44,6 @@ const ok = (label, cond, detail) => {
 	console.log(`${cond ? "PASS" : "FAIL"} ${label}${detail ? "  " + detail : ""}`);
 	if (!cond) fail.push(label);
 };
-// A row marked not-applicable is a deliberately unclaimed capability: it
-// prints N/A, never PASS, and adds nothing to the failure count.
-const na = (label, detail) => {
-	console.log(`N/A  ${label}${detail ? "  " + detail : ""}`);
-};
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const tmpHome = () => mkdtempSync(join(tmpdir(), "cozyclay-delivery-"));
 const discoveryPath = (home) => join(home, "cozyclay", "ingest.json");
@@ -540,24 +535,34 @@ async function startStubHost(home) {
 	}
 }
 
-// Packaged child: H1 (tools/ingest/host.mjs, phase 3) serves the built
-// surface on its own origin with --app-origin, and frame-ancestors must
-// come from that response header -- the meta cannot carry it (plan 11.4).
-// The host does not exist yet, so this row is NOT APPLICABLE: a stub
-// asserting the header would claim a delivered capability. The tripwire
-// below goes red the moment host.mjs lands, so the real-host row cannot
-// be forgotten.
+// Packaged child: the CLI is the D2/D3 delivery owner, so it serves the
+// built surface from dist-ingest/ at the same URL shape dev uses
+// (/src/ingest/index.html) and emits the production child policy as a
+// response header -- frame-ancestors is ignored in a meta tag, so the
+// header is the only enforcement point (plan 11.4), and it must name the
+// exact app origin: the CLI's own. When H1 (tools/ingest/host.mjs, phase
+// 3) lands it serves the same artifact on its own origin; that is a host
+// row, not a delivery row.
 {
-	const hostPath = join(REPO_ROOT, "tools", "ingest", "host.mjs");
-	na(
-		"packaged child frame-ancestors (host-owned)",
-		"H1 (tools/ingest/host.mjs) is phase 3; no stub vouches for packaged host startup or frame-ancestors delivery",
-	);
-	ok(
-		"packaged child frame-ancestors: N/A is honest only while host.mjs is absent",
-		!existsSync(hostPath),
-		existsSync(hostPath) ? "H1 landed: replace this N/A row with a real-host assertion" : "tools/ingest/host.mjs is phase 3",
-	);
+	const home = tmpHome();
+	const cliPort = await freePort();
+	const child = spawnCli(cliPort, { home });
+	try {
+		await waitForHttp(cliPort);
+		const res = await httpGet(cliPort, "/src/ingest/index.html");
+		const header = res.headers["content-security-policy"] ?? "";
+		const expected = PROD_CHILD_CSP.replace(
+			"connect-src 'self';",
+			`connect-src 'self'; frame-ancestors http://127.0.0.1:${cliPort};`,
+		);
+		ok(
+			"packaged child CSP header: frame-ancestors names the exact app origin",
+			res.status === 200 && header === expected,
+			`status ${res.status}, header ${header || "(none)"}`,
+		);
+	} finally {
+		await terminateOwned(child);
+	}
 }
 
 // The Pages row's mechanism: the parent frame-src admits only loopback http,

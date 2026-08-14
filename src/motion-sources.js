@@ -154,7 +154,20 @@ export function createUndoStores({ sceneObjects, onObjects, read, write }) {
  * table entirely, so no external id can collide with an internal one, and
  * the fresh id per clear merely satisfies the validator's non-empty-string
  * rule. */
+/** The landing door seam (plan 7.2/12.2): the app publishes its real
+ * landTake adapter on the QA hook without naming the feature (App.jsx
+ * 1629-1630), and this registry is the ONLY seam the feature may use to
+ * reach it — the mount (src/surface-mount.js) reads the CURRENT door at
+ * landing time, never a captured one, so a land can never hit a stale
+ * closure across renders. */
+export function landingDoor() {
+	return typeof window !== "undefined" && typeof window.__cozyclay?.landTake === "function"
+		? window.__cozyclay.landTake
+		: null;
+}
+
 export function clearTakePayload(requestId, timeline = {}) {
+
 	const clip = {
 		rotationDeg: 0,
 		fps: 20,

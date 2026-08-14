@@ -6,7 +6,10 @@
 // it comes from the exact origin AND the exact contentWindow AND speaks
 // cclay v1, and a command lands at most once per surface session (§12.2) -
 // the session table refuses at its ceiling rather than evict, because
-// eviction is exactly what lets a delayed retry land twice. The child
+// eviction is exactly what lets a delayed retry land twice. Landing
+// success is acknowledged only after the app's async landing callback
+// fulfils - a rejection is reported and leaves the id retryable, and a
+// retry that arrives while a landing is still applying joins it. The child
 // cannot render its own failure, so the host also owns the load timeout,
 // the ready handshake and the parent-rendered unavailable panel with
 // retry (§11.6). No React, no imports: node-importable against a fake
@@ -126,7 +129,12 @@ export function createSurfaceHost({
 		el.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms");
 		el.setAttribute("allow", "");
 		el.setAttribute("referrerpolicy", "no-referrer");
-		el.loading = "lazy";
+		// NOT loading="lazy": Chrome never loads a display:none iframe with
+		// loading=lazy, so the hidden-until-ready handshake could never
+		// complete and every real composition would time out into the
+		// unavailable panel. Proven on the QA browser (S4 in
+		// verify-surface-host.mjs); the resource claim lives in the
+		// unmount-on-hide below instead.
 		el.hidden = true; // revealed only after the ready handshake (§11.6)
 		el.addEventListener("load", onLoad);
 		el.addEventListener("error", () => fail("load-error"));
@@ -176,10 +184,26 @@ export function createSurfaceHost({
 		const hash = hashOf(data.payload);
 		if (record !== undefined) {
 			if (record.hash === hash) {
+				if (record.status === "in-flight") {
+					// The first landing is still applying: the retry joins
+					// it - the single settle handler below posts one ack
+					// when the landing completes, so exactly-once holds
+					// across the async window, not merely after it (§12.2).
+					return undefined;
+				}
 				// A retry of the identical command: return the cached ack,
 				// apply nothing (§12.2).
 				post(record.ack);
 				return record.status === "ok" ? undefined : (record.ack.payload.code ?? record.status);
+			}
+			if (record.status === "in-flight") {
+				// Different bytes for an id whose landing is still
+				// applying: refuse the clash, apply nothing, and leave the
+				// in-flight record untouched so its settle still owns the
+				// slot (§12.2).
+				const ack = makeAck(data, { status: "conflicting-reuse" });
+				post(ack);
+				return "conflicting-reuse";
 			}
 			// The id was already consumed with different bytes: refuse,
 			// apply nothing (§12.2).
@@ -195,19 +219,59 @@ export function createSurfaceHost({
 			post(ack);
 			return "session-request-budget-exhausted";
 		}
-		let status = "ok";
-		let code = null;
+		// The §5 door is deterministic: the same bytes fail the same clause
+		// every time, so a door refusal is cached like a success and every
+		// retry is served the same ack (§12.2).
 		try {
 			validateTakePayload(data.payload, data.requestId);
-			onLand(data.payload);
 		} catch (err) {
-			status = "rejected";
-			code = err.message;
+			const ack = makeAck(data, { status: "rejected", code: err.message });
+			session.set(data.requestId, { hash, status: "rejected", ack });
+			post(ack);
+			return err.message;
 		}
-		const ack = makeAck(data, status === "ok" ? { status: "ok" } : { status: "rejected", code });
-		session.set(data.requestId, { hash, status, ack });
+		// The App's landing callback is async (it decodes both npz
+		// artifacts before the store accepts the take), so success is
+		// posted and cached only once the landing promise fulfils. A
+		// rejection - a decode failure, a store refusal - is transient,
+		// unlike a door clause, so it is reported to the child and the id
+		// is forgotten, leaving a retry free to land (§12.2).
+		const failureCode = (err) => (err instanceof Error ? err.message : String(err ?? "landing-rejected"));
+		let outcome;
+		try {
+			outcome = onLand(data.payload);
+		} catch (err) {
+			// A synchronous throw from the callback is the same transient
+			// class as a promise rejection.
+			post(makeAck(data, { status: "rejected", code: failureCode(err) }));
+			return failureCode(err);
+		}
+		if (outcome !== null && typeof outcome === "object" && typeof outcome.then === "function") {
+			const pending = { hash, status: "in-flight", ack: null };
+			session.set(data.requestId, pending);
+			outcome.then(
+				() => {
+					// The session may have ended (unmount, reload) while
+					// the landing was applying: nothing is acked and the
+					// record must not resurrect into the new session.
+					if (session.get(data.requestId) !== pending) return;
+					pending.status = "ok";
+					pending.ack = makeAck(data, { status: "ok" });
+					post(pending.ack);
+				},
+				(err) => {
+					if (session.get(data.requestId) !== pending) return;
+					session.delete(data.requestId); // leave the id retryable
+					post(makeAck(data, { status: "rejected", code: failureCode(err) }));
+				},
+			);
+			return undefined;
+		}
+		// A synchronous callback fulfilled: the same contract, settled now.
+		const ack = makeAck(data, { status: "ok" });
+		session.set(data.requestId, { hash, status: "ok", ack });
 		post(ack);
-		return status === "ok" ? undefined : code;
+		return undefined;
 	}
 
 	function handleMessage(event) {

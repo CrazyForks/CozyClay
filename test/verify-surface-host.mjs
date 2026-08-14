@@ -7,15 +7,25 @@
  * is refused, never merely ignored. Landings are exactly-once per surface
  * session: the request-id table is session-scoped and refuses at its
  * ceiling rather than evict, because eviction is exactly what lets a
- * delayed retry land twice. The child cannot render its own failure, so
+ * delayed retry land twice. Landing success is acknowledged only after
+ * the app's async landing callback fulfils; a rejection is reported and
+ * leaves the id retryable, and a retry that arrives while a landing is
+ * still applying joins it. The child cannot render its own failure, so
  * the host owns the load timeout, the ready handshake and the
  * parent-rendered unavailable panel. S2 is the publish door: every §5
  * TakePayload clause rejects by name.
  *
- * Node-only, against a fake window/document/postMessage harness; the
- * browser suite is U4 in Phase 4.
+ * Node-first, against a fake window/document/postMessage harness; S4 drives
+ * the SHIPPED composition (src/surface-mount.js, mounted by src/main.jsx)
+ * in a real Chrome over CDP, where the sandbox activated-navigation clause
+ * and the unavailable panel are observed for real — the fake DOM would
+ * happily report both `loading="lazy"` and `hidden` set while Chrome never
+ * loads such a frame at all (measured on the QA browser; see the S1 lazy
+ * assertion).
  */
 import { createSurfaceHost, validateTakePayload } from "../src/surface-host.js";
+import { createServer as createHttpServer } from "node:http";
+import { createServer as createNetServer } from "node:net";
 
 const ORIGIN = "http://127.0.0.1:5183";
 
@@ -216,7 +226,13 @@ const sandbox = env.host.iframe().getAttribute("sandbox");
 ok("the sandbox attribute is the restrictive token set", sandbox === "allow-scripts allow-same-origin allow-forms", `sandbox=${sandbox}`);
 ok('allow="" empties the Permissions Policy, not the sandbox', env.host.iframe().getAttribute("allow") === "" && env.host.iframe().getAttribute("referrerpolicy") === "no-referrer", `allow=${env.host.iframe().getAttribute("allow")}`);
 ok("top-navigation, popups, downloads, modals, pointer lock, presentation and orientation lock are absent", !/allow-(?:top-navigation|top-navigation-by-user-activation|popups|downloads|modals|pointer-lock|presentation|orientation-lock)/.test(sandbox), `sandbox=${sandbox}`);
-ok("the frame loads lazily from the surface URL and starts hidden", env.host.iframe().loading === "lazy" && env.host.iframe().src === ORIGIN + "/" && env.host.iframe().hidden === true, `src=${env.host.iframe().src} hidden=${env.host.iframe().hidden}`);
+// NOT loading="lazy": Chrome never loads a display:none iframe with
+// loading=lazy, so the hidden-until-ready handshake could never complete
+// and every real composition would time out into the unavailable panel.
+// Proven on the QA browser (S4 below: the composed host reaches "ready"
+// against a real cross-origin child); the fake DOM here would happily
+// report both tokens set, which is exactly why the browser section exists.
+ok("the frame is NOT loading lazily (lazy+hidden never loads in Chrome)", env.host.iframe().loading !== "lazy" && env.host.iframe().src === ORIGIN + "/" && env.host.iframe().hidden === true, `src=${env.host.iframe().src} hidden=${env.host.iframe().hidden} loading=${env.host.iframe().loading}`);
 
 const handshake = dispatch(env.host, message(env.host, { data: readyData() }));
 ok("the ready handshake reveals the iframe", handshake.threw === null && handshake.code === null && env.host.state() === "ready" && env.spies.ready === 1 && env.host.iframe().hidden === false, `state=${env.host.state()} ready=${env.spies.ready}`);
@@ -419,5 +435,458 @@ ok("a retry of the refused land is served the same refusal", doorRetry.code === 
 const doorGood = dispatch(door.host, message(door.host, { data: landData("door-2") }));
 ok("a valid land crosses the door exactly once", doorGood.code === null && door.spies.land.length === 1 && door.spies.land[0].requestId === "door-2", `code=${doorGood.code} land=${door.spies.land.length}`);
 
+/* ------------- S3: the landing is awaited, rejection is retryable ------ */
+
+// The App's onLand callback is async (it decodes two npz artifacts before
+// the store accepts the take), so these tests drive real promises, not a
+// synchronous stub - a stub is exactly what hid the false-success defect.
+// A deferred lets the test hold a landing open: the host must not ack
+// before fulfilment, must report a typed failure and forget the id on
+// rejection, and a duplicate arriving while the landing is still applying
+// must join it rather than start a second landing (§12.2, across the async
+// window).
+function deferred() {
+	let resolve;
+	let reject;
+	const promise = new Promise((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
+// The host's settle handlers run in the microtask queue, so this macrotask
+// flush is the earliest an ack can be observable after a settle.
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+const ackOf = (posted, requestId) => posted.filter((p) => p.message.type === "ack" && p.message.requestId === requestId);
+
+const slowGate = deferred();
+let slowLands = 0;
+const slow = makeHost({
+	onLand() {
+		slowLands += 1;
+		return slowGate.promise;
+	},
+});
+ready(slow);
+dispatch(slow.host, message(slow.host, { data: landData("as-slow-1") }));
+ok("a slow landing posts no ack while it is still applying", slow.dom.posted.length === 0, `posted=${slow.dom.posted.length}`);
+ok("a slow landing invoked the callback once", slowLands === 1, `land=${slowLands}`);
+slowGate.resolve();
+await flush();
+const slowAcks = ackOf(slow.dom.posted, "as-slow-1");
+ok("the ok ack appears only after the landing fulfils", slowAcks.length === 1 && slowAcks[0].message.payload.status === "ok", `acks=${slowAcks.length} status=${slowAcks[0]?.message.payload.status}`);
+dispatch(slow.host, message(slow.host, { data: landData("as-slow-1") }));
+ok("a duplicate after success is served the cached ack and lands nothing", slowLands === 1 && slow.dom.posted[slow.dom.posted.length - 1].message === slowAcks[0].message, `land=${slowLands}`);
+
+const rejectGate = deferred();
+const rej = makeHost({
+	onLand() {
+		return rejectGate.promise;
+	},
+});
+ready(rej);
+dispatch(rej.host, message(rej.host, { data: landData("as-rej-1") }));
+ok("a failing landing posts no ack while it is still applying", rej.dom.posted.length === 0, `posted=${rej.dom.posted.length}`);
+rejectGate.reject(new Error("artifact-decode-failed"));
+await flush();
+const rejAcks = ackOf(rej.dom.posted, "as-rej-1");
+ok("a rejected landing posts a typed failure ack", rejAcks.length === 1 && rejAcks[0].message.payload.status === "rejected" && rejAcks[0].message.payload.code === "artifact-decode-failed", `acks=${rejAcks.length} status=${rejAcks[0]?.message.payload.status}`);
+ok("no success was ever acknowledged for the failed landing", rejAcks.every((a) => a.message.payload.status === "rejected"), `statuses=${rejAcks.map((a) => a.message.payload.status).join(",")}`);
+
+const joinGate = deferred();
+let joinLands = 0;
+const join = makeHost({
+	onLand() {
+		joinLands += 1;
+		return joinGate.promise;
+	},
+});
+ready(join);
+dispatch(join.host, message(join.host, { data: landData("as-join-1") }));
+dispatch(join.host, message(join.host, { data: landData("as-join-1") }));
+ok("a duplicate mid-flight does not invoke the callback a second time", joinLands === 1, `land=${joinLands}`);
+ok("the joined duplicate posts nothing until the landing settles", join.dom.posted.length === 0, `posted=${join.dom.posted.length}`);
+joinGate.resolve();
+await flush();
+const joinAcks = ackOf(join.dom.posted, "as-join-1");
+ok("the joined landing settles into exactly one ok ack", joinAcks.length === 1 && joinAcks[0].message.payload.status === "ok", `acks=${joinAcks.length} status=${joinAcks[0]?.message.payload.status}`);
+ok("the joined pair landed exactly once", joinLands === 1, `land=${joinLands}`);
+
+let retryCalls = 0;
+const retryHost = makeHost({
+	onLand() {
+		retryCalls += 1;
+		if (retryCalls === 1) return Promise.reject(new Error("store-rejected"));
+		return Promise.resolve();
+	},
+});
+ready(retryHost);
+dispatch(retryHost.host, message(retryHost.host, { data: landData("as-retry-1") }));
+await flush();
+const retryFailAcks = ackOf(retryHost.dom.posted, "as-retry-1");
+ok("a store rejection is reported as a typed failure", retryFailAcks.length === 1 && retryFailAcks[0].message.payload.status === "rejected" && retryFailAcks[0].message.payload.code === "store-rejected", `acks=${retryFailAcks.length} status=${retryFailAcks[0]?.message.payload.status}`);
+dispatch(retryHost.host, message(retryHost.host, { data: landData("as-retry-1") }));
+await flush();
+ok("a retry after a rejection is allowed to land again", retryCalls === 2, `land=${retryCalls}`);
+const retryOkAcks = ackOf(retryHost.dom.posted, "as-retry-1");
+ok("the retried landing succeeds with an ok ack", retryOkAcks.length === 2 && retryOkAcks[1].message.payload.status === "ok", `acks=${retryOkAcks.length} statuses=${retryOkAcks.map((a) => a.message.payload.status).join(",")}`);
+
+const okGate = deferred();
+let okLands = 0;
+const okdup = makeHost({
+	onLand() {
+		okLands += 1;
+		return okGate.promise;
+	},
+});
+ready(okdup);
+dispatch(okdup.host, message(okdup.host, { data: landData("as-okdup-1") }));
+ok("no ack precedes the fulfilment of a landing that will succeed", okdup.dom.posted.length === 0, `posted=${okdup.dom.posted.length}`);
+okGate.resolve();
+await flush();
+const okdupAck = ackOf(okdup.dom.posted, "as-okdup-1")[0];
+dispatch(okdup.host, message(okdup.host, { data: landData("as-okdup-1") }));
+await flush();
+ok("a duplicate after success lands nothing more", okLands === 1, `land=${okLands}`);
+ok("the duplicate after success is served the cached ack", okdup.dom.posted[okdup.dom.posted.length - 1].message === okdupAck.message, "reference equality");
+
+let mixedCalls = 0;
+const mixed = makeHost({
+	onLand() {
+		mixedCalls += 1;
+		if (mixedCalls === 1) return Promise.reject(new Error("decode-failed"));
+		return Promise.resolve();
+	},
+});
+ready(mixed);
+dispatch(mixed.host, message(mixed.host, { data: landData("as-mixed-1") }));
+await flush();
+dispatch(mixed.host, message(mixed.host, { data: landData("as-mixed-1") }));
+await flush();
+dispatch(mixed.host, message(mixed.host, { data: landData("as-mixed-1") }));
+await flush();
+const mixedAcks = ackOf(mixed.dom.posted, "as-mixed-1");
+ok("rejection then retry then duplicate: exactly two landings", mixedCalls === 2, `land=${mixedCalls}`);
+ok("rejection then retry then duplicate: failure, then ok, then cached ok", mixedAcks.length === 3 && mixedAcks.map((a) => a.message.payload.status).join(",") === "rejected,ok,ok", `acks=${mixedAcks.map((a) => a.message.payload.status).join(",")}`);
+
+const clashGate = deferred();
+let clashLands = 0;
+const clashHost = makeHost({
+	onLand() {
+		clashLands += 1;
+		return clashGate.promise;
+	},
+});
+ready(clashHost);
+dispatch(clashHost.host, message(clashHost.host, { data: landData("as-clash-1") }));
+const clashPayload = makePayload("as-clash-1");
+clashPayload.a.fps = 24;
+const clashSend = dispatch(clashHost.host, message(clashHost.host, { data: landData("as-clash-1", clashPayload) }));
+ok("a same-id different-bytes send mid-flight is refused", clashSend.code === "conflicting-reuse" && clashLands === 1, `code=${clashSend.code} land=${clashLands}`);
+clashGate.resolve();
+await flush();
+const clashAcks = ackOf(clashHost.dom.posted, "as-clash-1");
+ok("the refusal does not disturb the in-flight landing", clashAcks.length === 2 && clashAcks.map((a) => a.message.payload.status).join(",") === "conflicting-reuse,ok", `acks=${clashAcks.map((a) => a.message.payload.status).join(",")}`);
+
+const dyingGate = deferred();
+const dying = makeHost({
+	onLand() {
+		return dyingGate.promise;
+	},
+});
+ready(dying);
+dispatch(dying.host, message(dying.host, { data: landData("as-dying-1") }));
+fire(dying.host.iframe(), "error"); // the host dies while the landing applies
+dyingGate.resolve();
+await flush();
+ok("a landing that settles after the session died acks nothing", dying.dom.posted.length === 0 && dying.host.state() === "unavailable", `posted=${dying.dom.posted.length} state=${dying.host.state()}`);
+
+/* ---------- S4 (browser): sandbox, hostile origin and panel in Chrome ---- */
+// §11.5/§11.6 and the phase-1 boundary clause: the sandbox attribute string
+// on a fake DOM object is not the clause. This section drives a REAL
+// cross-origin sandboxed iframe under user activation and asserts top
+// navigation is blocked, a hostile-origin message is rejected by the real
+// composed host, and the parent-owned unavailable panel appears with a
+// working retry when the child never loads. The composition under test is
+// the SHIPPED one (src/surface-mount.js, mounted by src/main.jsx), so a
+// reintroduced `loading="lazy"` fails here: the child document would never
+// load and the ready handshake would never fire. Follows the
+// verify-app-render.mjs discipline: not-run is a FAILURE unless
+// ALLOW_APP_RENDER_SKIP=1 makes the skip a recorded decision (the
+// deletability sim sets it).
+const cdpPort = Number(process.env.CDP_PORT || 9222);
+const qaUrl = process.env.QA_URL || "http://127.0.0.1:5180/";
+const appOrigin = new URL(qaUrl).origin;
+const skipAllowed = process.env.ALLOW_APP_RENDER_SKIP === "1";
+
+let cdpPage = null;
+try {
+	const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json`, { signal: AbortSignal.timeout(1500) })).json();
+	cdpPage = targets.find((t) => t.type === "page" && t.webSocketDebuggerUrl);
+} catch {
+	cdpPage = null;
+}
+
+if (cdpPage === null) {
+	if (skipAllowed) {
+		console.log("SKIP S4 browser section (ALLOW_APP_RENDER_SKIP=1): no CDP browser");
+	} else {
+		ok(
+			"S4 browser section ran (a CDP browser on the QA page is required)",
+			false,
+			`no CDP browser on port ${cdpPort} — run \`node tools/qa-browser.mjs -- node test/verify-surface-host.mjs\` (or set CDP_PORT/QA_URL/ALLOW_APP_RENDER_SKIP)`,
+		);
+	}
+} else {
+	const ws = new WebSocket(cdpPage.webSocketDebuggerUrl);
+	await new Promise((resolve, reject) => {
+		ws.onopen = resolve;
+		ws.onerror = reject;
+	});
+
+	let nextId = 1;
+	const pending = new Map();
+	const pageErrors = [];
+	ws.onmessage = (event) => {
+		const message = JSON.parse(event.data);
+		// Uncaught script errors from the APP context only: the fixtures on
+		// the test origins are allowed to be noisy.
+		if (message.method === "Runtime.exceptionThrown") {
+			const url = message.params.exceptionDetails?.url ?? "";
+			if (url === "" || url.startsWith(appOrigin)) {
+				pageErrors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
+			}
+			return;
+		}
+		if (!message.id || !pending.has(message.id)) return;
+		const { resolve, reject } = pending.get(message.id);
+		pending.delete(message.id);
+		if (message.error) reject(new Error(JSON.stringify(message.error)));
+		else resolve(message.result);
+	};
+	const send = (method, params = {}) =>
+		new Promise((resolve, reject) => {
+			const id = nextId++;
+			pending.set(id, { resolve, reject });
+			ws.send(JSON.stringify({ id, method, params }));
+		});
+	const evaluate = async (expression) => {
+		const result = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+		if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || "evaluate failed");
+		return result.result.value;
+	};
+	const evaluateSafely = async (expression) => {
+		try {
+			return await evaluate(expression);
+		} catch {
+			return undefined;
+		}
+	};
+	const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+	const waitFor = async (expression, { timeoutMs = 8000, intervalMs = 150 } = {}) => {
+		const deadline = Date.now() + timeoutMs;
+		while (Date.now() < deadline) {
+			if (await evaluateSafely(expression)) return true;
+			await sleep(intervalMs);
+		}
+		return false;
+	};
+	const mouse = (type, x, y) =>
+		send("Input.dispatchMouseEvent", {
+			type,
+			x: Math.round(x),
+			y: Math.round(y),
+			button: "left",
+			clickCount: 1,
+			buttons: type === "mouseReleased" ? 0 : 1,
+		});
+	const clickAt = async (x, y) => {
+		await mouse("mousePressed", x, y);
+		await sleep(30);
+		await mouse("mouseReleased", x, y);
+	};
+	const pageTargetIds = async () =>
+		(await (await fetch(`http://127.0.0.1:${cdpPort}/json`)).json())
+			.filter((t) => t.type === "page")
+			.map((t) => t.id);
+	const bootApp = async () => {
+		await send("Page.navigate", { url: qaUrl });
+		for (let i = 0; i < 150 && !(await evaluateSafely("!!document.querySelector('canvas')")); i += 1) await sleep(200);
+		for (let i = 0; i < 100 && !(await evaluateSafely("!!window.__cozyclay && typeof window.__takeHistory === 'function'")); i += 1) await sleep(200);
+		await sleep(800);
+	};
+	// The composition under test is mounted with an injected discovery
+	// record; the app's own mount (main.jsx) keeps running alongside.
+	const mountExpr = (origin, timeoutMs) =>
+		`(async () => {
+			const m = await import("/src/surface-mount.js");
+			window.__mountTest = m.mountSurfaceHost({
+				window,
+				document,
+				timeoutMs: ${timeoutMs},
+				fetchImpl: async () =>
+					new Response(JSON.stringify({ origin: ${JSON.stringify(origin)}, url: ${JSON.stringify(origin + "/")} }), {
+						status: 200,
+						headers: { "content-type": "application/json" },
+					}),
+			});
+			return true;
+		})()`;
+
+	await send("Runtime.enable");
+	await bootApp();
+
+	// The rendered app composes the boundary: the mount controller is live
+	// on the window key, so the mount edge in main.jsx ran. On this server
+	// /ingest/surface-origin has no record, so the app's own composition
+	// settles "absent" — no iframe, no affordance (§11.6) — but the exact
+	// state is environment-dependent (a live ingest host changes it), so
+	// only the settled composition is asserted.
+	const appComposed = await evaluateSafely(
+		`(async () => {
+			const c = window[Symbol.for("cozyclay.surfaceMount.v1")];
+			if (!c || typeof c.settled?.then !== "function" || typeof c.state !== "function") return false;
+			await c.settled;
+			return true;
+		})()`,
+	);
+	ok("the rendered app composes the surface boundary (mount edge live)", appComposed === true, String(appComposed));
+
+	// A black-hole origin: accepts TCP, never answers, so the child never
+	// loads and the 600 ms handshake window expires into the panel.
+	const blackHole = createNetServer(() => {});
+	await new Promise((done) => blackHole.listen(0, "127.0.0.1", done));
+	const deadOrigin = `http://127.0.0.1:${blackHole.address().port}`;
+
+	await evaluate(mountExpr(deadOrigin, 600));
+	const deadSettled = await evaluate("window.__mountTest.settled.then(() => true)");
+	ok("a discovery pointing at a dead child still composes a host", deadSettled === true, String(deadSettled));
+	const panelAppeared = await waitFor("window.__mountTest.panel() !== null", { timeoutMs: 5000 });
+	ok("a child that never loads produces the parent-owned panel", panelAppeared === true, "panel never appeared");
+	const panelInfo = await evaluate(
+		`(() => { const p = window.__mountTest.panel(); return { role: p.getAttribute("role"), cls: p.className, button: p.querySelector("button")?.textContent ?? null }; })()`,
+	);
+	ok(
+		"the panel is the alert with a Retry button",
+		panelInfo.role === "alert" && panelInfo.cls === "cozyclay-surface-unavailable" && panelInfo.button === "Retry",
+		JSON.stringify(panelInfo),
+	);
+	ok("the composition reports unavailable", (await evaluate("window.__mountTest.state()")) === "unavailable", "state");
+	// Retry with a REAL click (CDP mouse), not el.click().
+	const buttonRect = await evaluate(
+		`(() => { const b = window.__mountTest.panel().querySelector("button"); const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+	);
+	await clickAt(buttonRect.x, buttonRect.y);
+	const retried = await evaluateSafely(
+		`(() => { const c = window.__mountTest; return c.panel() === null && c.state() === "loading" && c.host() !== null && c.host().iframe() !== null && c.host().iframe().hidden === true; })()`,
+	);
+	ok("Retry remounts a hidden fresh frame and hides the panel", retried === true, String(retried));
+	const panelAgain = await waitFor("window.__mountTest.panel() !== null", { timeoutMs: 5000 });
+	ok("the retried dead child fails into the panel again", panelAgain === true, "panel never reappeared");
+	await evaluate("window.__mountTest.destroy(); true");
+	ok("destroy removes the test panel", (await evaluateSafely("window.__mountTest.panel() === null")) === true, "panel still present");
+
+	// Two fixture origins: the CHILD handshakes like the real surface; the
+	// HOSTILE one talks like a child AND attempts activated top navigation.
+	// Both are real cross-origin documents (different loopback ports), so
+	// event.origin is set by the browser, never by the fixture.
+	const childServer = createHttpServer((req, res) => {
+		res.writeHead(200, { "content-type": "text/html" });
+		res.end(`<!doctype html><meta charset="utf-8"><script>
+			parent.postMessage({ cclay: 1, v: 1, id: "s4b-child", type: "ready" }, "*");
+		</script>`);
+	});
+	const hostileServer = createHttpServer((req, res) => {
+		res.writeHead(200, { "content-type": "text/html" });
+		res.end(`<!doctype html><meta charset="utf-8"><script>
+			// A foreign origin that talks like a child: the land carries a
+			// VALID §5 payload, so only the origin check can stop it, and a
+			// click handler attempts activated top navigation.
+			const take = ${JSON.stringify(makePayload("s4b-hostile-land"))};
+			parent.postMessage({ cclay: 1, v: 1, id: "s4b-hostile-ready", type: "ready" }, "*");
+			parent.postMessage({ cclay: 1, v: 1, id: "s4b-hostile-land", type: "land", requestId: take.requestId, payload: take }, "*");
+			document.addEventListener("click", () => {
+				try { top.location.href = ${JSON.stringify(appOrigin + "/__s4c-nav-marker")}; } catch (e) {}
+				try { window.open(${JSON.stringify(appOrigin + "/__s4c-popup")}); } catch (e) {}
+			});
+		</script><button id="go" style="position:absolute;inset:0;width:100%;height:100%;border:0;background:transparent">GO</button>`);
+	});
+	await new Promise((done) => childServer.listen(0, "127.0.0.1", done));
+	await new Promise((done) => hostileServer.listen(0, "127.0.0.1", done));
+	const childOrigin = `http://127.0.0.1:${childServer.address().port}`;
+	const hostileOrigin = `http://127.0.0.1:${hostileServer.address().port}`;
+
+	await evaluate(mountExpr(childOrigin, 4000));
+	const childReady = await waitFor(`window.__mountTest.state() === "ready"`, { timeoutMs: 8000 });
+	ok("the real cross-origin child loads and handshakes the composed host", childReady === true, "state never became ready — the child document never loaded");
+	const iframeInfo = await evaluate(
+		`(() => { const f = window.__mountTest.host().iframe(); return { src: f.src, hidden: f.hidden, sandbox: f.getAttribute("sandbox"), allow: f.getAttribute("allow"), referrer: f.getAttribute("referrerpolicy"), appOrigin: location.origin }; })()`,
+	);
+	ok("the composed iframe carries the restrictive sandbox token set", iframeInfo.sandbox === "allow-scripts allow-same-origin allow-forms", `sandbox=${iframeInfo.sandbox}`);
+	ok('allow="" and no-referrer ride along', iframeInfo.allow === "" && iframeInfo.referrer === "no-referrer", `allow=${iframeInfo.allow} referrer=${iframeInfo.referrer}`);
+	ok("the frame targets the discovered child entry and is revealed", iframeInfo.src === childOrigin + "/" && iframeInfo.hidden === false, `src=${iframeInfo.src} hidden=${iframeInfo.hidden}`);
+	ok("the parent really is a different origin", iframeInfo.appOrigin !== childOrigin, `app=${iframeInfo.appOrigin} child=${childOrigin}`);
+
+	// The hostile fixture, framed with the PRODUCTION token set on a real
+	// cross-origin document. The page-level listener records delivered
+	// message origins; the composed host must reject all of them.
+	await evaluate(`window.__s4bSeen = []; window.addEventListener("message", (e) => window.__s4bSeen.push(e.origin)); true`);
+	await evaluate(
+		`(() => { const f = document.createElement("iframe"); f.id = "s4b-hostile"; f.setAttribute("sandbox", "allow-scripts allow-same-origin allow-forms"); f.setAttribute("allow", ""); f.setAttribute("referrerpolicy", "no-referrer"); f.style.cssText = "position:fixed;top:12px;left:12px;width:320px;height:180px;border:0;z-index:2147483647;background:#fff"; f.src = ${JSON.stringify(hostileOrigin + "/")}; document.body.appendChild(f); return true; })()`,
+	);
+	const hostileDelivered = await waitFor(`window.__s4bSeen.includes(${JSON.stringify(hostileOrigin)})`, { timeoutMs: 8000 });
+	ok("the hostile fixture really posted from its own origin", hostileDelivered === true, `seen=${JSON.stringify(await evaluateSafely("window.__s4bSeen"))}`);
+	const takePastBefore = await evaluate("window.__takeHistory().past");
+	await sleep(600); // any land that could land, would have landed by now
+	const takePastAfter = await evaluate("window.__takeHistory().past");
+	ok("a hostile-origin land from a real cross-origin frame lands nothing", takePastAfter === takePastBefore, `past=${takePastBefore}->${takePastAfter}`);
+	ok("the composed host ignores the hostile ready", (await evaluate("window.__mountTest.state()")) === "ready", "state");
+	const directCode = await evaluate(
+		`(() => { const c = window.__mountTest; const f = document.querySelector("#s4b-hostile"); return c.host().handleMessage({ origin: ${JSON.stringify(hostileOrigin)}, source: f.contentWindow, data: { cclay: 1, v: 1, id: "s4b-direct", type: "land", requestId: "s4b-direct", payload: ${JSON.stringify(makePayload("s4b-direct"))} } }); })()`,
+	);
+	ok("the real host names the foreign-origin rejection", directCode === "foreign-origin", `code=${directCode}`);
+	// §11.5: with user activation (a REAL CDP click), the sandboxed hostile
+	// frame must not be able to navigate top or open a popup. The fixture
+	// frames sit above the app UI, or the CDP click would hit the app and
+	// the "blocked" assertion would pass without any attempt being made.
+	const idsBefore = await pageTargetIds();
+	const hrefBefore = await evaluate("location.href");
+	const hostileRect = await evaluate(
+		`(() => { const r = document.querySelector("#s4b-hostile").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+	);
+	await clickAt(hostileRect.x, hostileRect.y);
+	await sleep(700);
+	const hrefAfter = await evaluate("location.href");
+	const newTargets = (await pageTargetIds()).filter((id) => !idsBefore.includes(id));
+	ok("activated top navigation from the sandboxed cross-origin frame is blocked", hrefAfter === hrefBefore, `href=${hrefAfter}`);
+	ok("no popup opened from the sandboxed frame", newTargets.length === 0, `newTargets=${newTargets.length}`);
+
+	// Negative control: the SAME fixture in an UNSANDBOXED cross-origin
+	// frame CAN navigate top under activation — proving the block above is
+	// the sandbox token set, not some unrelated browser rule.
+	await evaluate(
+		`(() => { const f = document.createElement("iframe"); f.id = "s4c-nosandbox"; f.style.cssText = "position:fixed;top:12px;left:12px;width:320px;height:180px;border:0;z-index:2147483647;background:#fff"; f.src = ${JSON.stringify(hostileOrigin + "/")}; document.body.appendChild(f); return true; })()`,
+	);
+	const unsandboxedDelivered = await waitFor(`window.__s4bSeen.filter((o) => o === ${JSON.stringify(hostileOrigin)}).length >= 3`, { timeoutMs: 8000 });
+	ok("the unsandboxed fixture loaded and posted", unsandboxedDelivered === true, "no second delivery seen");
+	await sleep(300);
+	const unsandboxedRect = await evaluate(
+		`(() => { const r = document.querySelector("#s4c-nosandbox").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`,
+	);
+	await clickAt(unsandboxedRect.x, unsandboxedRect.y);
+	const navHref = await waitFor(`location.href.startsWith(${JSON.stringify(appOrigin + "/__s4c-nav-marker")})`, { timeoutMs: 4000 });
+	ok("the unsandboxed control frame DID navigate top (the sandbox is the blocker)", navHref === true, "top did not navigate");
+	await bootApp();
+	const recomposed = await evaluateSafely(`!!window[Symbol.for("cozyclay.surfaceMount.v1")]`);
+	ok("a reload re-composes the boundary", recomposed === true, "mount controller missing after reload");
+	ok("no uncaught app errors during the browser section", pageErrors.length === 0, pageErrors.join(" | "));
+
+	blackHole.close();
+	childServer.close();
+	hostileServer.close();
+	ws.close();
+}
 console.log(`\nfailures: ${fail.length}`);
 process.exit(fail.length ? 1 : 0);
