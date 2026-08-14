@@ -485,5 +485,60 @@ ok(
 		`M1=${control.M1} M2=${control.M2} M3=${control.M3} M4=${control.M4} M5=${control.M5} M6=${control.M6}`);
 }
 
+// ---------------------------------------------------------------------------
+// Decimated fixture: source frame IDs are NOT row offsets.
+//
+// Every checked-in fixture uses a contiguous zero-based frameIndex, so a source
+// ID happens to equal its row position and a measurement that indexes arrays
+// directly by frame ID looks correct. A trimmed/decimated dump -- which the
+// operator path now legitimately produces -- breaks that coincidence. This is
+// the regression lock for that defect: without it, reverting the row mapping in
+// measure.mjs passes the entire suite.
+// ---------------------------------------------------------------------------
+{
+	// six emitted rows covering source frames 6,8,10,12,14,16 (trim + stride 2)
+	const frameIndex = [6, 8, 10, 12, 14, 16];
+	const rows = frameIndex.length;
+	// A stands still at x=0, B at x=2, so separation is exactly 2 m on every row:
+	// a correct measurement returns M5 = M6 = 0, and any row/ID mix-up either
+	// throws or reads a row that does not exist.
+	const mk = (subjectId, trackId, x) => ({
+		subjectId, trackId,
+		rootWorld: Array.from({ length: rows }, () => [x, 0, 0]),
+		contactMask: Array.from({ length: rows }, () => [1, 0]),
+		confidence: Array.from({ length: rows }, () => 1),
+	});
+	const decimated = {
+		schemaVersion: 2, clipId: "decimated-probe", mode: "contact-head", fps: 29.97, frames: rows,
+		frameIndex, timeS: frameIndex.map((f) => f / 29.97),
+		subjects: [mk("A", "p0", 0), mk("B", "p1", 2)],
+		association: { observations: [], groundTruth: [] },
+		separation: { scoredFrameIndex: [8, 12, 16], annotatedSeparationM: [2, 2, 2] },
+	};
+	const ann = {
+		handContact: { frameIndex: [8, 12], label: { A: [[true, false], [true, false]], B: [[true, false], [true, false]] } },
+		footWorld: { frameIndex: [8, 12, 16], A: [[0, 0, 0], [0, 0, 0], [0, 0, 0]], B: [[2, 0, 0], [2, 0, 0], [2, 0, 0]] },
+	};
+
+	// the bug is only observable when an ID can exceed the row count
+	ok("decimated fixture: max source frame ID exceeds the emitted row count",
+		Math.max(...frameIndex) > rows, `max=${Math.max(...frameIndex)} rows=${rows}`);
+
+	const m = computeMetrics(decimated, ann);
+	ok("decimated fixture: M2 is 1 (every predicted contact is labelled true on its own row)", m.M2 === 1, `M2=${m.M2}`);
+	ok("decimated fixture: M5 is 0 (roots sit exactly on the annotated foot positions)", Math.abs(m.M5) < 1e-12, `M5=${m.M5}`);
+	ok("decimated fixture: M6 is 0 (separation is exactly the annotated 2 m)", Math.abs(m.M6) < 1e-12, `M6=${m.M6}`);
+
+	// a scored frame absent from frameIndex is malformed, not silently row 0
+	const orphan = { ...decimated, separation: { scoredFrameIndex: [7], annotatedSeparationM: [2] } };
+	let threw = false;
+	try {
+		computeMetrics(orphan, ann);
+	} catch (e) {
+		threw = /absent from frameIndex/.test(e.message);
+	}
+	ok("decimated fixture: a scored frame absent from frameIndex is rejected, not read as row 0", threw);
+}
+
 console.log(`\nfailures: ${fail.length}`);
 process.exit(fail.length ? 1 : 0);

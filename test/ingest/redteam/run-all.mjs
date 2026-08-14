@@ -1,7 +1,7 @@
 /**
  * run-all.mjs — the Phase-0 adversarial red-team orchestrator.
  *
- * Imports the five attack modules (each registers cases + findings at import),
+ * Imports the six attack modules (each registers cases + findings at import),
  * runs the CLI replay, and writes:
  *   artifacts/ingest-phase0-adversarial-report.json  (kind: adversarial-test-report)
  *   artifacts/ingest-phase0-cli-replay.json         (kind: cli-replay, exact shape)
@@ -27,6 +27,8 @@ const rtMeasure = await import("./rt-measure.mjs");
 const rtReproducible = await import("./rt-reproducible.mjs");
 const rtSchema = await import("./rt-schema.mjs");
 const rtDump = await import("./rt-dump.mjs");
+const rtIntegrity = await import("./rt-integrity.mjs");
+import { captureBaseline, isRedBaseline, replayMatches } from "./rt-integrity.mjs";
 
 const modules = {
 	decision: await rtDecision.run(),
@@ -34,14 +36,15 @@ const modules = {
 	reproducible: await rtReproducible.run(),
 	schema: await rtSchema.run(),
 	dump: await rtDump.run(),
+	integrity: await rtIntegrity.run(),
 };
 const allCases = modules.decision.cases.concat(
 	modules.measure.cases, modules.reproducible.cases,
-	modules.schema.cases, modules.dump.cases,
+	modules.schema.cases, modules.dump.cases, modules.integrity.cases,
 );
 const allFindings = modules.decision.findings.concat(
 	modules.measure.findings, modules.reproducible.findings,
-	modules.schema.findings, modules.dump.findings,
+	modules.schema.findings, modules.dump.findings, modules.integrity.findings,
 );
 //
 // ---------------------------------------------------------------------------
@@ -68,6 +71,7 @@ const blockers = allCases
 	}));
 const F1_DELTA_REFS = ["SCH-spawn-f1d-named-only", "SCH-f1d-named-only", "SCH-f1d-neither-named-or-derived", "DMP-full-image-slot"];
 const DUMP_EMIT_REFS = ["DMP-model-crash"];
+const INT_REFS = ["INT-baseline-green", "INT-baseline-pass-exit1", "INT-baseline-fail-exit0", "INT-baseline-fail-stderr-exit0", "INT-replay-byte-identical", "INT-replay-exit-drift", "INT-replay-stderr-drift", "INT-replay-error-word", "INT-replay-missing-marker"];
 
 // ---------------------------------------------------------------------------
 // 2. The CLI replay artifact (exact shape, deterministic node -e)
@@ -81,7 +85,7 @@ const REPLAY = {
 	replaySafe: true,
 	command: ["node", "-e", REPLAY_CODE],
 	cwd: ".",
-	env: { LC_ALL: "C" },
+	env: { ...process.env, LC_ALL: "C" },
 	timeoutMs: 30000,
 	expectedExitCode: 0,
 	recordedStdout: "",
@@ -108,14 +112,15 @@ if (!replayVerified) {
 REPLAY.recordedStdout = first.stdout;
 REPLAY.recordedStderr = first.stderr;
 
-// re-run to prove the artifact reproduces byte-for-byte
+// re-run to prove the artifact reproduces byte-for-byte (the predicate is
+// rt-integrity.mjs's replayMatches — the same code the attack cases pin)
 const second = runReplay();
-const reproduces =
-	second.status === REPLAY.expectedExitCode &&
-	second.stdout === REPLAY.recordedStdout &&
-	(second.stderr || "") === REPLAY.recordedStderr &&
-	REPLAY.recordedStdout.includes("REDTEAM-CLI-REPLAY-OK") &&
-	!/error/i.test(REPLAY.recordedStdout + REPLAY.recordedStderr);
+const reproduces = replayMatches(second, {
+	expectedExitCode: REPLAY.expectedExitCode,
+	recordedStdout: REPLAY.recordedStdout,
+	recordedStderr: REPLAY.recordedStderr,
+	okMarker: "REDTEAM-CLI-REPLAY-OK",
+});
 REPLAY.replaySafe = reproduces;
 
 const replayPath = join(ARTIFACT_DIR, "ingest-phase0-cli-replay.json");
@@ -151,17 +156,11 @@ const baselineRun = {};
 const baselineCommands = [];
 for (const suite of BASELINE_SUITES) {
 	const cmd = `node ${suite}`;
-	let status = 0;
-	let out = "";
-	try {
-		out = execSync(cmd, { cwd: REPO, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-	} catch (e) {
-		status = typeof e.status === "number" ? e.status : 1;
-		out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
-	}
-	const pass = (out.match(/^PASS/gm) ?? []).length;
-	const failed = (out.match(/^FAIL/gm) ?? []).length;
-	baselineRun[cmd] = { observedExitCode: status, passAssertions: pass, failAssertions: failed };
+	// captureBaseline (rt-integrity.mjs) merges stdout AND stderr on every
+	// exit path — a FAIL line on stderr counts exactly like one on stdout,
+	// and a failed spawn records as exit 1, never as a silent green.
+	const rec = captureBaseline(cmd, REPO);
+	baselineRun[cmd] = { observedExitCode: rec.observedExitCode, passAssertions: rec.passAssertions, failAssertions: rec.failAssertions };
 	baselineCommands.push(cmd);
 }
 
@@ -201,6 +200,7 @@ const report = {
 		"test/ingest/redteam/rt-reproducible.mjs",
 		"test/ingest/redteam/rt-schema.mjs",
 		"test/ingest/redteam/rt-dump.mjs",
+		"test/ingest/redteam/rt-integrity.mjs",
 		"test/ingest/redteam/rt-dump-stub.py",
 		"test/ingest/redteam/run-all.mjs",
 	],
@@ -245,6 +245,7 @@ const report = {
 		{ obligation: "F1-η: handedness/up-axis/fps/crop 'named and asserted by fixture round-trip'", status: "covered-with-gap", refs: ["SCH-spawn-upaxis", "SCH-contradict-upaxis", "SCH-contradict-handedness", "SCH-contradict-crop"] },
 		{ obligation: "§14.1 phase-0 acceptance: STOP is legitimate; synthetic record must not carry a real-footage claim", status: "covered", refs: ["REP-baseline", "REP-record-drift", "SCH-spawn-baseline"] },
 		{ obligation: "determinism and totality of the decision function", status: "covered", refs: ["DEC-sweep-wellformed", "DEC-sweep-malformed", "DEC-NaN-*"] },
+		{ obligation: "evidence integrity: the gate exits 0 only when every recorded baseline is green, no blocker is open and the CLI replay reproduces — FAIL lines on stderr and exit-code drift included", status: allPass(INT_REFS) ? "covered" : "blocker", refs: INT_REFS },
 	],
 	surfaceEvidence: [
 		{ surface: "decision function — NaN/Infinity/-0/negative metrics", refs: ["DEC-NaN-m1", "DEC-NaN-m2", "DEC-NaN-m4", "DEC-NaN-m4-reason", "DEC-Inf-m4", "DEC-Inf-m12", "DEC-Inf-m3", "DEC--Inf-m12", "DEC-neg0", "DEC-neg-metrics"] },
@@ -258,6 +259,7 @@ const report = {
 		{ surface: "schema validator — sync-key and tensor-length integrity", refs: ["SCH-unsorted-frameIndex", "SCH-duplicate-frameIndex", "SCH-tensor-length-vs-frames", "SCH-fps-nan", "SCH-extra-field"] },
 		{ surface: "dump-gvhmr.py — nonexistent/empty/file-as-dir/partial-output CLI failures", refs: ["DMP-nonexistent", "DMP-empty-dir", "DMP-file-as-dir", "DMP-npz-no-numpy", "DMP-missing-args", "DMP-trim-inverted", "DMP-selftest"] },
 		{ surface: "dump-gvhmr.py — emission paths (full-image F1-δ, model-named metadata, length mismatch, unknown-only, trim, non-finite)", refs: ["DMP-full-image-slot", "DMP-model-crash", "DMP-partial-emission", "DMP-no-K", "DMP-length-mismatch", "DMP-unknown-only", "DMP-trim-empty", "DMP-trim-clamp", "DMP-nonfinite"] },
+		{ surface: "orchestrator evidence integrity — adversarial baselines (PASS-exit-1, FAIL-exit-0, FAIL-on-stderr-exit-0, silent) and replay drift (exit/stdout/stderr/marker/error-word)", refs: ["INT-baseline-green", "INT-baseline-pass-exit1", "INT-baseline-fail-exit0", "INT-baseline-fail-stderr-exit0", "INT-baseline-silent-exit0", "INT-replay-byte-identical", "INT-replay-exit-drift", "INT-replay-stdout-drift", "INT-replay-stderr-drift", "INT-replay-error-word", "INT-replay-missing-marker"] },
 	],
 	adversarialCases: allCases,
 	findings: allFindings,
@@ -285,7 +287,7 @@ console.log(`artifacts: ${reportPath}\n           ${replayPath}`);
 // recording a red baseline, an open blocker, or a broken replay would hand the
 // gate a green receipt for a red run.
 const redBaselines = Object.entries(baselineRun)
-	.filter(([, r]) => r.observedExitCode !== 0 || r.failAssertions > 0)
+	.filter(([, r]) => isRedBaseline(r))
 	.map(([cmd]) => cmd);
 const problems = [];
 if (redBaselines.length) problems.push(`baseline not green: ${redBaselines.join(", ")}`);

@@ -87,6 +87,33 @@ export function computeMetrics(fixture, annotation) {
 		M1 = (coverage(A) + coverage(B)) / 2;
 	}
 
+	// Source frame IDs are NOT row offsets. `frameIndex` is the synchronization
+	// key from the source footage; the emitted arrays are rows of a possibly
+	// trimmed and decimated slice, so a fixture covering source frames
+	// [6,8,...,26] has 11 rows and reading `contactMask[6]` returns row 6, not
+	// the row for source frame 6. Contiguous zero-based synthetic fixtures hide
+	// this because ID happens to equal row. F2r already maps correctly via
+	// rowOf(); this is the same contract and must agree with it.
+	const frameIds = Array.isArray(fixture.frameIndex) ? fixture.frameIndex : [];
+	// A degenerate zero-frame fixture legitimately carries no frameIndex and must
+	// still reach the undefined-with-reason path below rather than throwing. A
+	// fixture that HAS rows but no matching index is malformed, not degenerate.
+	if (fixture.frames > 0 && frameIds.length !== fixture.frames) {
+		throw new Error(
+			`measure: frameIndex has ${frameIds.length} entries for ${fixture.frames} frames in ${fixture.clipId}`,
+		);
+	}
+	const rowByFrame = new Map();
+	frameIds.forEach((f, row) => {
+		if (rowByFrame.has(f)) throw new Error(`measure: duplicate frameIndex ${f} in ${fixture.clipId}`);
+		rowByFrame.set(f, row);
+	});
+	const rowOf = (f, who) => {
+		const row = rowByFrame.get(f);
+		if (row === undefined) throw new Error(`measure: ${who} references source frame ${f}, absent from frameIndex`);
+		return row;
+	};
+
 	// M2: pooled per-foot precision over the hand-labelled frames; the hand label is
 	// per (frame, subject), so each subject's contacts are judged against its own labels.
 	// The "1.0 when no predicted contacts" convention (FEASIBILITY.md §3) applies only
@@ -97,7 +124,7 @@ export function computeMetrics(fixture, annotation) {
 	for (let i = 0; i < annotation.handContact.frameIndex.length; i += 1) {
 		const f = annotation.handContact.frameIndex[i];
 		for (const s of subjects) {
-			const c = s.contactMask[f];
+			const c = s.contactMask[rowOf(f, "handContact")];
 			const label = annotation.handContact.label[s.subjectId][i];
 			for (let side = 0; side < 2; side += 1) {
 				if (c[side] > 0.5) {
@@ -175,8 +202,9 @@ export function computeMetrics(fixture, annotation) {
 		};
 		let m5 = 0;
 		for (const f of scored) {
+			const row = rowOf(f, "separation.scoredFrameIndex");
 			for (const s of subjects) {
-				const d = dist(s.rootWorld[f], annPos(s.subjectId, f));
+				const d = dist(s.rootWorld[row], annPos(s.subjectId, f));
 				m5 += d * d;
 			}
 		}
@@ -192,8 +220,8 @@ export function computeMetrics(fixture, annotation) {
 	} else {
 		let m6 = 0;
 		for (let i = 0; i < scored.length; i += 1) {
-			const f = scored[i];
-			const err = dist(A.rootWorld[f], B.rootWorld[f]) - fixture.separation.annotatedSeparationM[i];
+			const row = rowOf(scored[i], "separation.scoredFrameIndex");
+			const err = dist(A.rootWorld[row], B.rootWorld[row]) - fixture.separation.annotatedSeparationM[i];
 			m6 += err * err;
 		}
 		M6 = Math.sqrt(m6 / scored.length);

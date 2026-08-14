@@ -91,7 +91,7 @@ def make_args():
         gvhmr_commit="0" * 40,
         weights_sha256="0" * 64,
         annotation_path="",
-        max_bytes=2 * 1024 * 1024,
+        max_bytes=int(os.environ.get("RT_MAX_BYTES", str(2 * 1024 * 1024))),
     )
 
 

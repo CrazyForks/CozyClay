@@ -249,11 +249,27 @@ ok("totality sweep (no green): every tuple lands on STOP, none GO", noGreenSweep
 //    are pinned failing so a flipped value cannot be rescued by a lower branch.
 // ---------------------------------------------------------------------------
 {
-	// M4 > 0: identity at the first epsilon above zero, never at zero
+	// M4 > 0: identity at the first count above zero, never at zero. The epsilon
+	// used for the continuous metrics is wrong here -- m4 is a count of label
+	// transitions, so its domain is the non-negative integers and the smallest
+	// value above the threshold is 1, not 1e-9.
 	const r0 = decideFeasibility(tuple({ m4: 0 }));
 	ok("M4 boundary: 0 is not identity", isGo(r0) && r0.mode === "contact-head", JSON.stringify(r0));
-	const r1 = decideFeasibility(tuple({ m4: E }));
+	const r1 = decideFeasibility(tuple({ m4: 1 }));
 	ok("M4 boundary: > 0 is identity", isStop(r1, "identity"), JSON.stringify(r1));
+
+	// A fractional count is not a near-miss, it is a metric the caller never
+	// computed; STOP:identity would record an impossible swap count as a real
+	// finding.
+	for (const bad of [E, 0.5, 2.5]) {
+		let rejected = false;
+		try {
+			decideFeasibility(tuple({ m4: bad }));
+		} catch (e) {
+			rejected = /DECISION-INPUT/.test(e.message) && /m4/.test(e.message);
+		}
+		ok(`M4 domain: fractional count ${bad} is rejected, not silently STOPped`, rejected);
+	}
 
 	const base = () => tuple({ modes: { "contact-head": pass(), "lowest-foot": failHard(), "manual-anchor": failHard() } });
 

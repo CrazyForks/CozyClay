@@ -74,6 +74,13 @@ const validateInput = (metrics) => {
 	requireMetric(metrics, "m1", "contact coverage fraction", 0, 1);
 	requireMetric(metrics, "m2", "contact precision", 0, 1);
 	requireMetric(metrics, "m4", "identity-swap count", 0, Number.POSITIVE_INFINITY);
+	// m4 counts label transitions, so a fraction is not a small error -- it means
+	// the caller computed something that is not a swap count at all. Accepting
+	// 0.5 would let a nonsense metric clear the Step-0 identity gate that stops
+	// the entire pipeline.
+	if (!Number.isInteger(metrics.m4)) {
+		throw inputError(`m4 (identity-swap count) must be a whole number of swaps, got ${metrics.m4}`);
+	}
 	requirePlainObject(metrics.modes, "modes");
 	for (const key of MODE_KEYS) {
 		const mode = metrics.modes[key];

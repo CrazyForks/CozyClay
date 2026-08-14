@@ -335,6 +335,289 @@ except Exception as e:
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Pass-2: the operator path end to end. Partial manifests, an unknown body
+// model, contradictory handedness/up-axis metadata, fps of 0/negative/
+// string/NaN, decimation budgets that would prefer a stride above the frame
+// count, zero-length and negative trim windows, a corrupt .npz (reader
+// failure), and a mixed valid+corrupt output directory on the real CLI.
+// numpy is absent here, so tensor-reading runs go through rt-dump-stub.py
+// (the REAL resolve_slots/_build_document); the npz reader itself is attacked
+// with an injected numpy whose np.load raises the BadZipFile real numpy
+// raises for a truncated archive.
+// ---------------------------------------------------------------------------
+
+// (h) fps: 0 / negative must fail cleanly via _fail; string / NaN metadata
+//     values are trusted by _build_document without a type check
+{
+	const f = (meta) => stub("emit", CROP_MANIFEST, { fps: meta, crop: CROP, K: K3, model: "smpl" });
+	const r0 = f(0);
+	const rNeg = f(-5);
+	const rStr = f("29.97");
+	const rNan = (() => {
+		// JSON.stringify would fold NaN into null, so the meta file is written
+		// by hand with the non-standard NaN token Python's json.load parses.
+		const nanMetaPath = join(scratch, `meta-nan-${fileSeq++}.json`);
+		writeFileSync(nanMetaPath, `{"fps": NaN, "crop": ${JSON.stringify(CROP)}, "K": ${JSON.stringify(K3)}, "model": "smpl"}`);
+		const rr = spawnSync(PY, [STUB, "emit", manifestFile("m", CROP_MANIFEST), nanMetaPath],
+			{ encoding: "utf8", timeout: 60000, env: { ...process.env } });
+		let parsed = null;
+		try { parsed = JSON.parse((rr.stdout || "").trim().split("\n").pop()); } catch { /* fall through */ }
+		return { status: rr.status, stderr: (rr.stderr || "").trim(), parsed };
+	})();
+	reg.record({
+		id: "DMP-fps-zero", category: "dump-stub", attack: "output metadata fps = 0",
+		input: "meta fps 0",
+		expected: "_fail('output metadata names no fps ...') — clean exit, no fixture (RAWTRACK-CONTRACT §5)",
+		observed: r0.parsed && !r0.parsed.ok ? `phase=${r0.parsed.phase} exit=${r0.parsed.exit}` : `EMITTED (${JSON.stringify(r0.parsed).slice(0, 110)})`,
+		verdict: r0.parsed && !r0.parsed.ok && r0.parsed.phase === "fail" ? "PASS" : "WEAKNESS",
+	});
+	reg.record({
+		id: "DMP-fps-negative", category: "dump-stub", attack: "output metadata fps = -5",
+		input: "meta fps -5",
+		expected: "_fail('output metadata names no fps ...') — clean exit, no fixture",
+		observed: rNeg.parsed && !rNeg.parsed.ok ? `phase=${rNeg.parsed.phase} exit=${rNeg.parsed.exit}` : `EMITTED (${JSON.stringify(rNeg.parsed).slice(0, 110)})`,
+		verdict: rNeg.parsed && !rNeg.parsed.ok && rNeg.parsed.phase === "fail" ? "PASS" : "WEAKNESS",
+	});
+	reg.record({
+		id: "DMP-fps-string", category: "dump-stub", attack: "output metadata fps = \"29.97\" (string)",
+		input: "meta fps \"29.97\" (a metadata json may carry it as a string)",
+		expected: "fail cleanly with _fail — fps is trusted with `not fps or fps <= 0`, which raises TypeError on a string",
+		observed: rStr.parsed && rStr.parsed.phase === "exception" ? `UNCAUGHT ${rStr.parsed.error}` : `phase=${rStr.parsed && rStr.parsed.phase} (${JSON.stringify(rStr.parsed).slice(0, 110)})`,
+		verdict: rStr.parsed && rStr.parsed.phase === "exception" ? "WEAKNESS" : "PASS",
+	});
+	reg.record({
+		id: "DMP-fps-nan", category: "dump-stub", attack: "output metadata fps = NaN (json NaN)",
+		input: "meta fps NaN — Python json.load parses the non-standard NaN token",
+		expected: "fail cleanly with _fail; NaN fps must not reach frame arithmetic",
+		observed: rNan.parsed && rNan.parsed.phase === "exception" ? `UNCAUGHT ${rNan.parsed.error}` : `phase=${rNan.parsed && rNan.parsed.phase} (${JSON.stringify(rNan.parsed).slice(0, 110)})`,
+		verdict: rNan.parsed && rNan.parsed.phase === "exception" ? "WEAKNESS" : "PASS",
+	});
+	if ((rStr.parsed && rStr.parsed.phase === "exception") || (rNan.parsed && rNan.parsed.phase === "exception")) {
+		reg.finding("low", "dump-gvhmr.py trusts fps from metadata without a type check: string/NaN fps crash with an uncaught traceback", ["DMP-fps-string", "DMP-fps-nan"],
+			`fps comes from the operator's metadata json; 'not fps or fps <= 0' raises TypeError for a string and NaN passes the check to die later in round()/int(). No fixture is emitted (safe), but the failure is a traceback, not the script's _fail convention: observed ${rStr.parsed.error} / ${rNan.parsed.error}.`);
+	}
+}
+
+// (i) unknown / whitespace body model: the facing_axis fix's boundary. A
+//     model outside MODEL_TABLE must NEVER synthesize facing_axis; β/ζ/η
+//     escalate with reasons naming the string, and the fixture stays honest.
+{
+	const r = stub("emit", CROP_MANIFEST, { fps: 29.97, crop: CROP, K: K3, model: "smplx" });
+	const doc = r.parsed && r.parsed.ok ? r.parsed.doc : null;
+	const resolved = doc ? Object.entries(doc.slots).filter(([, v]) => v.status === "resolved").map(([k]) => k) : [];
+	const betaReason = doc ? doc.slots["F1-β"].reason : "";
+	const hashOk = doc ? sha256Of(doc) === doc.sha256 : false;
+	const codes = doc ? validateRawTrackRT(doc).map((x) => x.code) : ["(no doc)"];
+	reg.record({
+		id: "DMP-unknown-model", category: "dump-stub", attack: "output metadata names an unknown body model",
+		input: "complete manifest + meta {model: smplx}",
+		expected: "β/ζ/η honestly UNRESOLVED with reasons naming 'smplx' (the facing_axis fix must not guess a model outside the table); α/γ/δ/ε resolved; fixture hashes and passes the validator",
+		observed: doc ? `resolved=${resolved.join(",")} hashOk=${hashOk} validatorViolations=${codes.join("/") || "none"} F1-β reason=${JSON.stringify(betaReason).slice(0, 80)}` : `stub failed: ${JSON.stringify(r.parsed).slice(0, 120)}`,
+		verdict: doc && hashOk && codes.length === 0 && resolved.join(",") === "F1-α,F1-γ,F1-δ,F1-ε" && /smplx/.test(betaReason) ? "PASS" : "DEFECT",
+	});
+	const r2 = stub("emit", CROP_MANIFEST, { fps: 29.97, crop: CROP, K: K3, model: " smpl " });
+	const doc2 = r2.parsed && r2.parsed.ok ? r2.parsed.doc : null;
+	const betaReason2 = doc2 ? doc2.slots["F1-β"].reason : "";
+	reg.record({
+		id: "DMP-model-whitespace", category: "dump-stub", attack: "output metadata model = ' smpl ' (whitespace-padded)",
+		input: "meta model ' smpl ' — an operator typo the fix must not silently absorb",
+		expected: "the padded string is not in MODEL_TABLE; β/ζ/η escalate with reasons naming ' smpl ' — honest, never a guessed synthesis",
+		observed: doc2 ? `resolved=${Object.entries(doc2.slots).filter(([, v]) => v.status === "resolved").map(([k]) => k).join(",")} F1-β reason=${JSON.stringify(betaReason2).slice(0, 80)}` : `stub failed: ${JSON.stringify(r2.parsed).slice(0, 120)}`,
+		verdict: doc2 && / smpl /.test(betaReason2) && doc2.slots["F1-β"].status === "UNRESOLVED" ? "PASS" : "WEAKNESS",
+	});
+}
+
+// (j) contradictory handedness/up-axis in the operator metadata: the dump
+//     reads only fps/crop/model/K from metadata jsons, so operator-supplied
+//     handedness/upAxis keys are silently dropped and the fixture asserts the
+//     MODEL TABLE's values — a contradiction the operator cannot see.
+{
+	const r = stub("emit", CROP_MANIFEST, { fps: 29.97, crop: CROP, K: K3, model: "smpl", handedness: "left-handed", upAxis: "Z" });
+	const doc = r.parsed && r.parsed.ok ? r.parsed.doc : null;
+	reg.record({
+		id: "DMP-meta-handedness-ignored", category: "dump-stub", attack: "operator metadata hands conflicting handedness/up-axis",
+		input: "meta {handedness: 'left-handed', upAxis: 'Z'} alongside model smpl (table says right-handed/Y)",
+		expected: "the round-trip contract (F1-η 'named and asserted by fixture round-trip') cannot be satisfied by contradicting operator records: either surface the conflict or name the table as the authority",
+		observed: doc ? `emitted F1-η handedness=${doc.slots["F1-η"].handedness} upAxis=${doc.slots["F1-η"].upAxis} data.handedness=${doc.data.handedness} — operator's left-handed/Z silently dropped` : `stub failed: ${JSON.stringify(r.parsed).slice(0, 120)}`,
+		verdict: doc && doc.slots["F1-η"].handedness === "right-handed" && doc.slots["F1-η"].upAxis === "Y" ? "WEAKNESS" : "PASS",
+	});
+	if (doc) {
+		reg.finding("low", "dump-gvhmr.py silently ignores operator metadata handedness/upAxis and asserts the model-table values", ["DMP-meta-handedness-ignored"],
+			`_load_artifacts copies only fps/crop/model/K from metadata jsons. A run record that says handedness 'left-handed'/upAxis 'Z' (here alongside model smpl) leaves no trace in the emitted fixture, which asserts the table's right-handed/Y — the F1-η round-trip claim is made without recording the operator's contradicting record.`);
+	}
+}
+
+// (k) partial manifest, epsilon only: the honest UNRESOLVED cascade with a
+//     single resolved per-frame tensor — and the same manifest without K.
+{
+	const r = stub("emit", { foot_contact_logits: [30, 2] }, { fps: 29.97, crop: CROP, K: K3, model: "smpl" });
+	const doc = r.parsed && r.parsed.ok ? r.parsed.doc : null;
+	const resolved = doc ? Object.entries(doc.slots).filter(([, v]) => v.status === "resolved").map(([k]) => k) : [];
+	const hashOk = doc ? sha256Of(doc) === doc.sha256 : false;
+	const codes = doc ? validateRawTrackRT(doc).map((x) => x.code) : ["(no doc)"];
+	reg.record({
+		id: "DMP-epsilon-only", category: "dump-stub", attack: "partial manifest with only the contact-logits tensor",
+		input: "manifest {foot_contact_logits (F,2)} + full meta (fps/crop/K/model)",
+		expected: "ε resolves (plus model-table β/η); α/γ/δ/ζ honestly UNRESOLVED with reasons; fixture hashes and passes the validator — no fabricated resolution",
+		observed: doc ? `resolved=${resolved.join(",")} frames=${doc.frames} hashOk=${hashOk} validatorViolations=${codes.join("/") || "none"}` : `stub failed: ${JSON.stringify(r.parsed).slice(0, 120)}`,
+		verdict: doc && hashOk && codes.length === 0 && resolved.join(",") === "F1-β,F1-ε,F1-η" ? "PASS" : "WEAKNESS",
+	});
+	const r2 = stub("emit", { foot_contact_logits: [30, 2] }, { fps: 29.97, crop: CROP, model: "smpl" });
+	reg.record({
+		id: "DMP-epsilon-only-noK", category: "dump-stub", attack: "partial manifest without K in the metadata",
+		input: "manifest {foot_contact_logits} + meta without K",
+		expected: "_fail('output metadata names no K ...') — clean exit, no fixture",
+		observed: r2.parsed && !r2.parsed.ok ? `phase=${r2.parsed.phase} exit=${r2.parsed.exit}` : `EMITTED (${JSON.stringify(r2.parsed).slice(0, 110)})`,
+		verdict: r2.parsed && !r2.parsed.ok && r2.parsed.phase === "fail" ? "PASS" : "WEAKNESS",
+	});
+}
+
+// (l) decimation budgets that would prefer a stride above the frame count:
+//     _choose_stride clamps stride to frame_count by construction (never
+//     above), and the document size gate then fails cleanly when the whole
+//     document still exceeds the cap.
+{
+	const r = spawnSync(PY, ["-c", `
+import importlib.util, json
+spec = importlib.util.spec_from_file_location("d", ${JSON.stringify(DUMP)})
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+descs = [{"shape":[30,3,3],"itemsize":4},{"shape":[30,3],"itemsize":4},{"shape":[30,2,3],"itemsize":4},{"shape":[30,2],"itemsize":4},{"shape":[30,24,3],"itemsize":4}]
+out = {}
+for budget in (1, 100, 1024, 5520):
+    s, est = m._choose_stride(30, descs, budget)
+    out[str(budget)] = [s, est]
+print(json.dumps(out))
+`], { encoding: "utf8", timeout: 60000 });
+	const strides = JSON.parse((r.stdout || "").trim().split("\n").pop());
+	const overCap = Object.entries(strides).filter(([, [s]]) => s > 30);
+	const rEmit = stub("emit", CROP_MANIFEST, { fps: 29.97, crop: CROP, K: K3, model: "smpl" }, { RT_MAX_BYTES: "1024" });
+	reg.record({
+		id: "DMP-decimation-stride-cap", category: "dump-stub", attack: "byte budgets that would prefer a stride larger than the frame count",
+		input: "max_bytes 1/100/1024/5520 against 30-frame tensors; emit with max_bytes=1024",
+		expected: "stride never exceeds frame_count (the loop clamps); the whole-document size gate fails cleanly (_fail) when the decimated slice still exceeds the cap",
+		observed: `_choose_stride: ${JSON.stringify(strides)} ${overCap.length ? "— STRIDE ABOVE FRAME COUNT!" : "(never above 30)"}; emit with 1024 -> ${rEmit.parsed && !rEmit.parsed.ok ? `phase=${rEmit.parsed.phase} exit=${rEmit.parsed.exit}` : "EMITTED"}`,
+		verdict: overCap.length === 0 && rEmit.parsed && !rEmit.parsed.ok && rEmit.parsed.phase === "fail" ? "PASS" : "WEAKNESS",
+	});
+}
+
+// (m) trim windows: zero-length (start == end) and negative start. The
+//     parser rejects inverted windows (DMP-trim-inverted); these reach the
+//     trim logic itself.
+{
+	const r = stub("emit", CROP_MANIFEST, { fps: 29.97, crop: CROP, K: K3, model: "smpl" }, { RT_TRIM_START: "1", RT_TRIM_END: "1" });
+	reg.record({
+		id: "DMP-trim-equal", category: "dump-stub", attack: "zero-length trim window (start == end)",
+		input: "trim [1 s, 1 s]",
+		expected: "_fail('trim [1.0, 1.0] selects no frames') — clean exit, no fixture",
+		observed: r.parsed && !r.parsed.ok ? `phase=${r.parsed.phase} exit=${r.parsed.exit}` : `EMITTED (${JSON.stringify(r.parsed).slice(0, 110)})`,
+		verdict: r.parsed && !r.parsed.ok && r.parsed.phase === "fail" ? "PASS" : "WEAKNESS",
+	});
+	const r2 = stub("emit", CROP_MANIFEST, { fps: 29.97, crop: CROP, K: K3, model: "smpl" }, { RT_TRIM_START: "-5" });
+	const doc2 = r2.parsed && r2.parsed.ok ? r2.parsed.doc : null;
+	reg.record({
+		id: "DMP-trim-negative", category: "dump-stub", attack: "negative trim start",
+		input: "trim start -5 s (before take start)",
+		expected: "start clamps to frame 0; the slice is honest (provenance keeps the requested -5.0 so the clamp is visible)",
+		observed: doc2 ? `frames=${doc2.frames} first=${doc2.frameIndex[0]} provenance.trimStartS=${doc2.provenance.trimStartS}` : `stub failed: ${JSON.stringify(r2.parsed).slice(0, 110)}`,
+		verdict: doc2 && doc2.frameIndex[0] === 0 && doc2.provenance.trimStartS === -5 ? "PASS" : "WEAKNESS",
+	});
+}
+
+// (n) corrupt .npz: real numpy raises BadZipFile for a truncated archive; the
+//     reader path must fail cleanly (the script's _fail convention), not with
+//     an uncaught traceback. numpy is injected here — the code under attack is
+//     _load_artifacts's error handling; only the third-party reader is faked.
+{
+	const corruptDir = join(scratch, "corrupt-npz");
+	mkdirSync(corruptDir);
+	writeFileSync(join(corruptDir, "corrupt.npz"), "not a zip archive at all\n");
+	writeFileSync(join(corruptDir, "meta.json"), JSON.stringify({ fps: 29.97 }));
+	const r = spawnSync(PY, ["-c", `
+import importlib.util, json, sys, zipfile
+spec = importlib.util.spec_from_file_location("d", ${JSON.stringify(DUMP)})
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+class FakeNumpy:
+    def load(self, path, allow_pickle=False):
+        raise zipfile.BadZipFile("File is not a zip file: " + str(path))
+sys.modules["numpy"] = FakeNumpy()
+try:
+    arts, meta = m._load_artifacts(${JSON.stringify(corruptDir)})
+    print(json.dumps({"ok": True, "artifacts": sorted(arts.keys())}))
+except SystemExit as e:
+    print(json.dumps({"ok": False, "phase": "fail", "exit": e.code}))
+except Exception as e:
+    print(json.dumps({"ok": False, "phase": "exception", "error": type(e).__name__ + ": " + str(e)}))
+`], { encoding: "utf8", timeout: 60000 });
+	const parsed = JSON.parse((r.stdout || "").trim().split("\n").pop());
+	reg.record({
+		id: "DMP-corrupt-npz", category: "dump-stub", attack: "a corrupt .npz member (reader raises BadZipFile)",
+		input: "output directory with corrupt.npz + meta.json; injected numpy.load raises BadZipFile (what real numpy raises for a truncated archive)",
+		expected: "clean _fail naming the unreadable file, exit 1, no fixture — the RAWTRACK-CONTRACT §5 failure style",
+		observed: parsed.phase === "exception" ? `UNCAUGHT ${parsed.error}` : JSON.stringify(parsed).slice(0, 120),
+		verdict: parsed.phase === "fail" ? "PASS" : "WEAKNESS",
+	});
+	if (parsed.phase === "exception") {
+		reg.finding("low", "_load_artifacts lets np.load failures (corrupt/truncated .npz) escape as an uncaught traceback", ["DMP-corrupt-npz"],
+			`np.load(path, allow_pickle=False) is not wrapped: a truncated or renamed .npz raises zipfile.BadZipFile (observed ${parsed.error}) and the operator sees a traceback instead of the script's _fail convention. No fixture is emitted (safe), but the failure mode is unclean.`);
+	}
+}
+
+// (o) the real CLI on a mixed output directory (valid-looking npz + corrupt
+//     npz + metadata): on this box numpy is absent, so the reader gate must
+//     fail first, cleanly, and no fixture may be written.
+{
+	const mixedDir = join(scratch, "mixed-npz");
+	mkdirSync(mixedDir);
+	writeFileSync(join(mixedDir, "out.npz"), "valid-looking placeholder\n");
+	writeFileSync(join(mixedDir, "corrupt.npz"), "not a zip archive at all\n");
+	writeFileSync(join(mixedDir, "meta.json"), JSON.stringify({ fps: 29.97, crop: CROP, model: "smpl" }));
+	const r = runDump(["--input", mixedDir, ...BASE_ARGS]);
+	reg.record({
+		id: "DMP-mixed-npz-dir", category: "dump-cli", attack: "output directory with a valid-looking npz plus a corrupt one (real CLI)",
+		input: "out.npz + corrupt.npz + meta.json, python3 dump-gvhmr.py (real CLI)",
+		expected: "exit 1, clean message, no fixture — here the numpy-absent reader gate fires first; the corrupt-read path itself is DMP-corrupt-npz",
+		observed: `exit ${r.status}; stderr: ${(r.stderr || "").trim().slice(0, 120)}`,
+		verdict: r.status === 1 && /numpy is required/.test(r.stderr || "") && !/Traceback/.test(r.stderr || "") ? "PASS" : "WEAKNESS",
+	});
+}
+
+// (p) the real CLI on a metadata-only directory: no tensors -> the
+//     no-npz/pkl gate fires before any metadata is read
+{
+	const metaOnlyDir = join(scratch, "meta-only");
+	mkdirSync(metaOnlyDir);
+	writeFileSync(join(metaOnlyDir, "meta.json"), JSON.stringify({ fps: 29.97, crop: CROP, model: "smpl" }));
+	const r = runDump(["--input", metaOnlyDir, ...BASE_ARGS]);
+	reg.record({
+		id: "DMP-meta-only-dir", category: "dump-cli", attack: "output directory holds only a metadata json (partial manifest)",
+		input: "meta.json only, python3 dump-gvhmr.py (real CLI)",
+		expected: "exit 1 with 'no *.npz or *.pkl GVHMR output found' — no fixture may be built from metadata alone",
+		observed: `exit ${r.status}; stderr: ${(r.stderr || "").trim().slice(0, 120)}`,
+		verdict: r.status === 1 && /no \*\.npz or \*\.pkl GVHMR output found/.test(r.stderr || "") ? "PASS" : "WEAKNESS",
+	});
+}
+
+// (q) a body-model tensor present with the wrong rank: resolve_slots must
+//     escalate F1-ζ, never resolve it with guessed semantics
+{
+	const r = stub("emit", {
+		global_orient_cam: [30, 3, 3],
+		translation_cam: [30, 3],
+		foot_keypoints_crop: [30, 2, 3],
+		foot_contact_logits: [30, 2],
+		body_pose_smpl: [30, 24], // wrong rank: (F,24) instead of (F,24,3)
+	}, { fps: 29.97, crop: CROP, K: K3, model: "smpl" });
+	const doc = r.parsed && r.parsed.ok ? r.parsed.doc : null;
+	reg.record({
+		id: "DMP-zeta-wrong-rank", category: "dump-stub", attack: "body-pose tensor exists with the wrong rank",
+		input: "body_pose_smpl shape (F,24) under model smpl (table requires (F,24,3))",
+		expected: "F1-ζ UNRESOLVED with a reason naming the shape mismatch; the fixture stays honest (α/γ/δ/ε resolved)",
+		observed: doc ? `F1-ζ status=${doc.slots["F1-ζ"].status} reason=${JSON.stringify(doc.slots["F1-ζ"].reason).slice(0, 90)}` : `stub failed: ${JSON.stringify(r.parsed).slice(0, 120)}`,
+		verdict: doc && doc.slots["F1-ζ"].status === "UNRESOLVED" && /shape/.test(doc.slots["F1-ζ"].reason) ? "PASS" : "WEAKNESS",
+	});
+}
+
 rmSync(scratch, { recursive: true, force: true });
 
 export const run = async () => {

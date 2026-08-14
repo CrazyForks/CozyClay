@@ -393,17 +393,23 @@ const expectDecisionInput = (label, input, fragment) => {
 			verdict: rOn.mode === "contact-head" && rOff.verdict === "STOP" && rOff.reason === "accuracy" ? "PASS" : "WEAKNESS",
 		});
 	}
-	// M4 0 vs E
+	// M4 0 vs the first real count above it. The epsilon used for the continuous
+	// thresholds is not a valid m4: the metric is a COUNT of label transitions,
+	// so its domain is the non-negative integers and 1e-9 is now rejected as
+	// producer garbage rather than treated as "just above zero".
 	const rM40 = decideFeasibility(tuple({ m4: 0 }));
-	const rM4E = decideFeasibility(tuple({ m4: E }));
-	ok("DEC-threshold-M4: m4=0 proceeds; m4=epsilon stops as identity", rM40.verdict === "GO" && rM4E.reason === "identity",
-		`m4=0: ${describe(rM40)}; m4=1e-9: ${describe(rM4E)}`);
+	const rM41 = decideFeasibility(tuple({ m4: 1 }));
+	const rM4E = tryCall(() => decideFeasibility(tuple({ m4: E })));
+	const epsRejected = rM4E.threw instanceof Error && /DECISION-INPUT/.test(rM4E.threw.message);
+	ok("DEC-threshold-M4: m4=0 proceeds; m4=1 stops as identity; fractional epsilon is rejected",
+		rM40.verdict === "GO" && rM41.reason === "identity" && epsRejected,
+		`m4=0: ${describe(rM40)}; m4=1: ${describe(rM41)}; m4=1e-9: ${epsRejected ? "rejected" : describe(rM4E.value)}`);
 	reg.record({
-		id: "DEC-threshold-M4", category: "decision", attack: "M4 = 0 vs M4 = epsilon",
-		input: "m4 = 0 vs m4 = 1e-9",
-		expected: "0 -> proceeds; >0 -> STOP:identity",
-		observed: `m4=0: ${describe(rM40)}; m4=1e-9: ${describe(rM4E)}`,
-		verdict: rM40.verdict === "GO" && rM4E.reason === "identity" ? "PASS" : "WEAKNESS",
+		id: "DEC-threshold-M4", category: "decision", attack: "M4 = 0 vs the first valid count vs a fractional epsilon",
+		input: "m4 = 0, m4 = 1, m4 = 1e-9",
+		expected: "0 -> proceeds; 1 -> STOP:identity; 1e-9 -> named DECISION-INPUT rejection (a count cannot be fractional)",
+		observed: `m4=0: ${describe(rM40)}; m4=1: ${describe(rM41)}; m4=1e-9: ${epsRejected ? rM4E.threw.message : describe(rM4E.value)}`,
+		verdict: rM40.verdict === "GO" && rM41.reason === "identity" && epsRejected ? "PASS" : "WEAKNESS",
 	});
 	// mode-level thresholds: contact-head 0.03/0.05/0.08
 	for (const [name, field, t] of [
@@ -570,6 +576,119 @@ const expectDecisionInput = (label, input, fragment) => {
 		observed: describe(rAllNotGreen),
 		verdict: rAllNotGreen.reason === "accuracy" ? "PASS" : "WEAKNESS",
 	});
+}
+
+// ---------------------------------------------------------------------------
+// Pass-2: attack the fixes themselves. Each closed pass-1 finding gets a NEW
+// variant that would slip past the specific fix if the fix only patched its
+// exact repro:
+//   - range fix (fractions above 1, negative counts): semantically impossible
+//     but FINITE numbers — m1/m2 > 1 and negative m4 must reject; a FRACTIONAL
+//     m4 (0.5 / 2.5 "swaps") is a count the code's own input contract cannot
+//     mean, and recording STOP:identity for it is the "broken producer hidden
+//     behind a signable verdict" class the fix's header forbids.
+//   - modes-container fix (null -> named DECISION-INPUT): container and entry
+//     type variants — arrays, strings, null entries — must name the container
+//     and reject, never crash and never read as green.
+//   - green-gate fix (truthy flags fail closed): a present mode entry with the
+//     green flags ABSENT must fail closed exactly like runnerGreen: false.
+//   - wrong-typed metrics (strings rejected): null / boolean / boxed-number
+//     metrics must reject with the named error too.
+// ---------------------------------------------------------------------------
+{
+	// --- the range fix's boundary: finite but semantically impossible values
+	for (const [id, over, frag] of [
+		["DEC-range-m1-over", { m1: 1.5 }, "m1"],
+		["DEC-range-m2-over", { m2: 1.0001 }, "m2"],
+		["DEC-range-m4-negative", { m4: -1 }, "m4"],
+	]) {
+		const r = tryCall(() => decideFeasibility(tuple(over)));
+		const named = r.threw instanceof Error && /DECISION-INPUT/.test(r.threw.message) && r.threw.message.includes(frag);
+		reg.record({
+			id, category: "decision", attack: `finite but semantically impossible metric (${over[frag]})`,
+			input: JSON.stringify(over),
+			expected: `m4 is a count, m1/m2 are fractions; a value outside [0,1] or a negative count is impossible input -> named DECISION-INPUT rejection naming ${frag}, never a branch`,
+			observed: r.threw ? r.threw.message : `no throw -> ${describe(r.value)}`,
+			verdict: named ? "PASS" : "WEAKNESS",
+		});
+	}
+	// --- m4 is a COUNT (FEASIBILITY.md §3: "count of association.groundTruth
+	// entries whose matching observation disagrees"; measure.mjs emits an
+	// integer). A fractional count is producer garbage; the range check admits
+	// it and Step 0 then records STOP:identity — a signable Phase-0 outcome
+	// for input the code's own contract says cannot exist. This is the DEFECT
+	// class the missing-m4 fix was written against ("never record a legitimate
+	// outcome for a broken producer").
+	// A finding must be OBSERVED, not asserted. Registering it unconditionally
+	// meant it could never clear once the defect was fixed, which is the same
+	// assert-don't-observe failure this suite exists to catch elsewhere.
+	const fractionalDefects = [];
+	for (const [id, m4v] of [["DEC-m4-fractional", 0.5], ["DEC-m4-fractional-2p5", 2.5]]) {
+		const r = tryCall(() => decideFeasibility(tuple({ m4: m4v })));
+		const rejected = r.threw instanceof Error && r.threw.message.includes("DECISION-INPUT");
+		if (!rejected) fractionalDefects.push(id);
+		reg.record({
+			id, category: "decision", attack: `fractional identity-swap count (m4 = ${m4v})`,
+			input: `m4 = ${m4v}, everything else GO-worthy`,
+			expected: `m4 is a count (FEASIBILITY.md §3); ${m4v} swaps cannot exist -> named DECISION-INPUT rejection naming m4`,
+			observed: r.threw ? r.threw.message : `no throw -> ${describe(r.value)} (STOP:identity recorded for an impossible count)`,
+			verdict: rejected ? "PASS" : "DEFECT",
+		});
+	}
+	if (fractionalDefects.length) {
+		reg.finding("high", "decision.mjs accepts fractional m4 and records STOP:identity for it (count contract not enforced)", fractionalDefects,
+			"FEASIBILITY.md §3 and measure.mjs define M4 as a COUNT of disagreeing association.groundTruth entries (an integer). A range check alone admits 0.5 or 2.5, which then reaches Step 0 and records STOP:identity — a legitimate, signable Phase-0 outcome for input a working producer cannot emit. decision.mjs's own input-contract paragraph says exactly this must not happen. The fix: require Number.isInteger on m4.");
+	}
+	// --- the modes-container fix's boundary: type variants of the container
+	//     and of present mode entries
+	for (const [id, over, frag] of [
+		["DEC-modes-array", { modes: [] }, "modes"],
+		["DEC-modes-string", { modes: "x" }, "modes"],
+		["DEC-mode-entry-array", { modes: { "contact-head": [] } }, "modes.contact-head"],
+		["DEC-mode-entry-null", { modes: { "contact-head": null } }, "modes.contact-head"],
+		["DEC-mode-entry-string", { modes: { "contact-head": "green" } }, "modes.contact-head"],
+	]) {
+		const r = tryCall(() => decideFeasibility(tuple(over)));
+		const named = r.threw instanceof Error && /DECISION-INPUT/.test(r.threw.message) && r.threw.message.includes(frag) && !(r.threw instanceof TypeError);
+		reg.record({
+			id, category: "decision", attack: `wrong-typed ${frag}`,
+			input: JSON.stringify(over).slice(0, 90),
+			expected: `fail-closed: named DECISION-INPUT rejection naming ${frag}; never a bare TypeError, never a branch`,
+			observed: r.threw ? `${r.threw.name}: ${r.threw.message.slice(0, 90)}` : `no throw -> ${describe(r.value)}`,
+			verdict: named ? "PASS" : "WEAKNESS",
+		});
+	}
+	// --- green flags ABSENT on a present mode entry: must fail closed exactly
+	//     like runnerGreen: false (the pass-1 fix pinned false; absence is the
+	//     variant that would slip past a fix that only checked the boolean)
+	{
+		const r = decideFeasibility(tuple({ modes: { "contact-head": { m3: 0.01, m5: 0.01, m6: 0.01 }, "lowest-foot": failHard(), "manual-anchor": failHard() } }));
+		reg.record({
+			id: "DEC-mode-green-absent", category: "decision", attack: "present mode entry with the green flags absent entirely",
+			input: "'contact-head' in budget but no runnerGreen/measurementGreen keys",
+			expected: "green === true is the contract; absent flags must fail closed -> STOP:accuracy (same outcome as runnerGreen: false)",
+			observed: describe(r),
+			verdict: r.reason === "accuracy" ? "PASS" : "WEAKNESS",
+		});
+	}
+	// --- wrong-typed metrics beyond strings: null / boolean / boxed Number
+	for (const [id, over, frag] of [
+		["DEC-m4-null", { m4: null }, "m4"],
+		["DEC-m4-boolean", { m4: true }, "m4"],
+		["DEC-m4-number-object", { m4: new Number(2) }, "m4"],
+		["DEC-m1-null", { m1: null }, "m1"],
+		["DEC-m1-boolean", { m1: true }, "m1"],
+	]) {
+		const r = tryCall(() => decideFeasibility(tuple(over)));
+		const named = r.threw instanceof Error && /DECISION-INPUT/.test(r.threw.message) && r.threw.message.includes(frag);
+		reg.record({
+			id, category: "decision", attack: `wrong-typed metric (${frag})`,
+			input: `${frag} = ${describe(over[frag])}`,
+			expected: `a non-number is not a metric -> named DECISION-INPUT rejection naming ${frag} (null/true/new Number(2) must not coerce)`,
+			observed: r.threw ? r.threw.message.slice(0, 110) : `no throw -> ${describe(r.value)}`,
+			verdict: named ? "PASS" : "WEAKNESS",
+		});
+	}
 }
 
 // ---------------------------------------------------------------------------
