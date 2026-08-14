@@ -1,11 +1,11 @@
 {
-	"id": "./",
+	"id": "/app/",
 	"name": "Cozy Clay",
 	"short_name": "Cozy Clay",
 	"description": "Browser-based 3D staging studio: block a scene, pose characters, and author camera moves.",
 	"lang": "en",
-	"start_url": "./",
-	"scope": "./",
+	"start_url": "/app/",
+	"scope": "/app/",
 	"display": "standalone",
 	"display_override": [
 		"standalone",

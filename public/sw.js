@@ -1,8 +1,12 @@
 const CACHE_PREFIX = "cozyclay-pwa-";
-const CACHE_NAME = `${CACHE_PREFIX}v2`;
+// v3: the app shell moved from "/" to "/app/" when the root became the landing
+// page. Bumping the name evicts caches that still hold the studio at "/".
+const CACHE_NAME = `${CACHE_PREFIX}v3`;
+// The installable app is the studio, not the landing page.
+const APP_SHELL = "/app/";
 const CORE_ASSETS = [
-	"./",
-	"./index.html",
+	APP_SHELL,
+	"/app/index.html",
 	"./manifest.webmanifest",
 	"./icons/icon-32.png",
 	"./icons/icon-192.png",
@@ -24,9 +28,9 @@ async function cacheResponse(cache, request, response) {
 }
 
 async function cacheBuiltAssets(cache) {
-	const response = await fetch("./", { cache: "reload" });
+	const response = await fetch(APP_SHELL, { cache: "reload" });
 	if (!response.ok) throw new Error("Required offline app shell failed");
-	await cache.put("./", response.clone());
+	await cache.put(APP_SHELL, response.clone());
 	const html = await response.text();
 	const assetUrls = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]
 		.map((match) => new URL(match[1], self.location.href))
@@ -102,7 +106,7 @@ self.addEventListener("fetch", (event) => {
 				const response = await fetch(request);
 				return cacheResponse(cache, request, response);
 			} catch {
-				return (await cache.match(request)) || (await cache.match("./")) || (await cache.match("./index.html"));
+				return (await cache.match(request)) || (await cache.match(APP_SHELL)) || (await cache.match("/app/index.html"));
 			}
 		})());
 		return;
