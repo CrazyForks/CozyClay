@@ -47,10 +47,13 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 	// put them — in practice, on top of the camera. Anchor on the take's FIRST
 	// frame instead (the same rule the cskel27 path uses) so the performance
 	// starts where the subject is placed and keeps its own travel from there.
-	// Height is left alone: it is floor-absolute and already correct.
-	const anchorOffset = useMemo(() => {
+	// Horizontal travel stays relative to frame 0. Vertical placement is
+	// different: monocular solves commonly put the whole body a few centimetres
+	// above the floor and vary that error over time, so each timeline frame gets
+	// its own measured sole correction.
+	const placement = useMemo(() => {
 		const clip = gltf.animations?.[0];
-		if (!clip) return [0, 0, 0];
+		if (!clip) return { anchor: [0, 0, 0], floorOffsets: [0] };
 		const probe = SkeletonUtils.clone(gltf.scene);
 		const probeMixer = new AnimationMixer(probe);
 		probeMixer.clipAction(clip).play();
@@ -60,17 +63,11 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 		probe.traverse((o) => {
 			if (!root && o.isBone) root = o;
 		});
-		if (!root) return [0, 0, 0];
+		if (!root) return { anchor: [0, 0, 0], floorOffsets: [0] };
 		const p = new Vector3();
 		root.getWorldPosition(p);
-		// Y is a SEPARATE correction, measured once over the WHOLE clip.
-		//
-		// It cannot be measured with Box3.setFromObject: on a SkinnedMesh that
-		// returns the STATIC geometry bounds transformed by the mesh node, and
-		// the mesh node does not move when the bones do. Reading it gave a
-		// height that was right for one pose and wrong for every other, so the
-		// figure sank through the floor as soon as it moved.
-		//
+		// The correction must come from the skinned surface. Static geometry
+		// bounds do not follow bones and therefore cannot locate an animated sole.
 		// The lowest point is measured on the SKINNED SURFACE, not inferred.
 		//
 		// Bone positions plus a rest-pose sole offset was an estimate of where
@@ -87,7 +84,7 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 		probe.traverse((o) => {
 			if (!skinned && o.isSkinnedMesh) skinned = o;
 		});
-		if (!skinned) return [-p.x, 0, -p.z];
+		if (!skinned) return { anchor: [-p.x, 0, -p.z], floorOffsets: [0] };
 
 		skinned.skeleton.pose();
 		probe.updateMatrixWorld(true);
@@ -108,22 +105,25 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 			return min;
 		};
 
-		// Sample the whole clip: lifting on frame 0 alone would let any later,
-		// lower frame push through the floor, which is the bug this replaces.
-		let clipMin = Infinity;
-		const samples = 240;
-		for (let s = 0; s <= samples; s += 1) {
-			probeMixer.setTime((clip.duration * s) / samples);
+		// Measure at the timeline's native frame rate. Applying the correction
+		// for the current frame removes solve-height drift instead of grounding
+		// only the single lowest frame and leaving the rest visibly airborne.
+		const count = glbFrameCount(clip.duration, fps);
+		const floorOffsets = [];
+		for (let i = 0; i < count; i += 1) {
+			probeMixer.setTime(Math.min(clip.duration, i / fps));
 			probe.updateMatrixWorld(true);
-			const y = lowestSoleY();
-			if (y < clipMin) clipMin = y;
+			floorOffsets.push(-lowestSoleY());
 		}
 
 		probeMixer.setTime(0);
 		probe.updateMatrixWorld(true);
 		root.getWorldPosition(p);
-		return [-p.x, -clipMin, -p.z];
-	}, [gltf.scene, gltf.animations]);
+		return { anchor: [-p.x, 0, -p.z], floorOffsets };
+	}, [gltf.scene, gltf.animations, fps]);
+	const anchorOffset = placement.anchor;
+	const floorOffset =
+		placement.floorOffsets[Math.min(Math.max(0, Math.round(frame)), placement.floorOffsets.length - 1)] ?? 0;
 
 	// The action is bound to the CLIP and to nothing else.
 	//
@@ -173,7 +173,7 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 	useEffect(() => () => mixer.stopAllAction(), [mixer]);
 
 	return (
-		<group position={[position[0] + anchorOffset[0], position[1] + anchorOffset[1], position[2] + anchorOffset[2]]} rotation={[0, (rot * Math.PI) / 180, 0]}>
+		<group position={[position[0] + anchorOffset[0], position[1] + floorOffset, position[2] + anchorOffset[2]]} rotation={[0, (rot * Math.PI) / 180, 0]}>
 			<primitive object={scene} />
 		</group>
 	);
