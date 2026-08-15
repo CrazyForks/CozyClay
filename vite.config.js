@@ -14,6 +14,8 @@ export default defineConfig({
 				landing: resolve(import.meta.dirname, "index.html"),
 				// The studio itself.
 				app: resolve(import.meta.dirname, "app/index.html"),
+				// Search-facing article on camera control for AI video.
+				aiCameraControl: resolve(import.meta.dirname, "ai-camera-control/index.html"),
 			},
 		},
 	},

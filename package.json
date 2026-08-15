@@ -68,7 +68,7 @@
 	},
 	"keywords": [
 		"3d",
-		"previz",
+		"previs",
 		"animation",
 		"blocking",
 		"threejs",
@@ -76,7 +76,8 @@
 		"webgl",
 		"motion",
 		"ardy",
-		"storyboard"
+		"storyboard",
+		"previz"
 	],
 	"repository": {
 		"type": "git",

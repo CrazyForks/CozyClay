@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="description" content="CozyClay is an open-source, browser-based 3D staging and previz studio. Block a scene, pose characters, author camera moves and cuts, and preview generated motion — no Blender, no Unity, no install." />
+    <meta name="description" content="Free, open source previs software that runs in the browser. Block a scene, pose characters, and author camera moves and cuts, then hand the same shots to an AI video model. No Blender, no Unity, no install." />
     <meta name="theme-color" content="#232323" />
     <meta name="apple-mobile-web-app-title" content="CozyClay" />
     <link rel="canonical" href="https://cozyclay.org/" />
@@ -14,19 +14,19 @@
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="CozyClay" />
-    <meta property="og:title" content="CozyClay — browser-based 3D staging and previz studio" />
+    <meta property="og:title" content="CozyClay — open source 3D previs software, in your browser" />
     <meta property="og:description" content="Block a scene, pose characters, author camera moves and cuts, and preview generated motion. Open source, runs in your browser." />
     <meta property="og:url" content="https://cozyclay.org/" />
     <meta property="og:image" content="https://cozyclay.org/media/cozyclay-demo-poster.jpg" />
     <meta property="og:image:width" content="1920" />
     <meta property="og:image:height" content="1080" />
-    <meta property="og:image:alt" content="A CozyClay shot mid-wipe: the greybox previz on one half, the generated result on the other." />
+    <meta property="og:image:alt" content="A CozyClay shot mid-wipe: the greybox previs on one half, the generated result on the other." />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="CozyClay — browser-based 3D staging and previz studio" />
+    <meta name="twitter:title" content="CozyClay — open source 3D previs software, in your browser" />
     <meta name="twitter:description" content="Block a scene, pose characters, author camera moves and cuts, and preview generated motion. Open source, runs in your browser." />
     <meta name="twitter:image" content="https://cozyclay.org/media/cozyclay-demo-poster.jpg" />
 
-    <title>CozyClay — browser-based 3D staging and previz studio</title>
+    <title>CozyClay — open source 3D previs software, in your browser</title>
 
     <meta property="og:video" content="https://cozyclay.org/media/cozyclay-demo.mp4" />
     <meta property="og:video:type" content="video/mp4" />
@@ -67,7 +67,23 @@
             "name": "What is CozyClay?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "CozyClay is an open-source 3D staging and previsualization studio that runs in a browser. You block a scene with primitives and set pieces, pose characters, draw root paths, author camera moves and cuts on a timeline, and preview generated motion."
+              "text": "CozyClay is open source previs software that runs in a browser. You block a scene with primitives and set pieces, pose characters, draw root paths, author camera moves and cuts on a timeline, and preview generated motion."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What is previs, and is it spelled previz?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Previs is short for previsualization: the rough 3D pass where a shot gets blocked — camera position, lens, character movement, cut points — before anyone commits to final assets or render budget. It is written both previs and previz; the industry mostly writes previs, and both mean the same thing."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Is there free previs software?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "CozyClay is free and open source under GPL-3.0, and it runs in the browser, so there is no licence and no install between you and a blocked shot. Run it locally with npx cozyclay and nothing leaves your machine."
             }
           },
           {
@@ -221,7 +237,7 @@
           <a href="#what">What it does</a>
           <a href="#start">Quick start</a>
           <a href="#controls">Controls</a>
-          <a href="#faq">FAQ</a>
+          <a href="/ai-camera-control/">AI camera control</a>
           <a href="https://github.com/HaD0Yun/CozyClay">GitHub</a>
         </nav>
       </div>
@@ -235,9 +251,9 @@
 
         <h1>Block the shot before you pay to render it</h1>
         <p class="lede">
-          CozyClay is a browser-based 3D staging studio. Block a scene, pose characters,
-          author camera moves and cuts, then hand the exact same shots to a video model.
-          No Blender, no Unity, no install.
+          CozyClay is free, open source previs software that runs in your browser. Block a
+          scene, pose characters, and author camera moves and cuts — then hand the same
+          shots to an AI video model. No Blender, no Unity, no install.
         </p>
 
         <div class="reel">
@@ -249,8 +265,9 @@
           ></video>
         </div>
         <p class="reel-note">
-          Thirty seconds: greybox previz on the left of the wipe, the generated result on the
-          right. Every cut came out of the same camera setup you see being built.
+          Thirty seconds: greybox previs on the left of the wipe, the generated result on the
+          right. Every cut came out of the same camera setup you see being built — more on
+          <a href="/ai-camera-control/">camera control for AI video</a>.
         </p>
 
         <div class="cta">
@@ -266,7 +283,7 @@
       <section id="what">
         <h2>What you can do</h2>
         <p class="sub">
-          Previz is the part of animation where you decide what happens before anyone commits
+          Previs is the part of animation where you decide what happens before anyone commits
           to final assets. CozyClay keeps that whole loop in one page.
         </p>
         <div class="grid">
@@ -355,9 +372,36 @@ npm run dev</code></pre>
         <details open>
           <summary>What is CozyClay?</summary>
           <p>
-            CozyClay is an open-source 3D staging and previsualization studio that runs in a
-            browser. You block a scene with primitives and set pieces, pose characters, draw
-            root paths, author camera moves and cuts on a timeline, and preview generated motion.
+            CozyClay is open source previs software that runs in a browser. You block a scene
+            with primitives and set pieces, pose characters, draw root paths, author camera
+            moves and cuts on a timeline, and preview generated motion.
+          </p>
+        </details>
+        <details>
+          <summary>What is previs, and is it spelled previz?</summary>
+          <p>
+            Previs is short for previsualization: the rough 3D pass where a shot gets blocked —
+            camera position, lens, character movement, cut points — before anyone commits to
+            final assets or render budget. It is written both <strong>previs</strong> and
+            <strong>previz</strong>; the industry mostly writes previs, and both mean the same
+            thing.
+          </p>
+        </details>
+        <details>
+          <summary>Is there free previs software?</summary>
+          <p>
+            CozyClay is free and open source under GPL-3.0, and it runs in the browser, so there
+            is no licence and no install between you and a blocked shot. Run it locally with
+            <code>npx cozyclay</code> and nothing leaves your machine.
+          </p>
+        </details>
+        <details>
+          <summary>Can I use it for camera control in AI video?</summary>
+          <p>
+            That is the reason it exists. Block the shot in 3D — angle, lens, dolly, the frame
+            the cut lands on — then take those camera moves to a video model instead of
+            describing them in a prompt and hoping. See
+            <a href="/ai-camera-control/">camera control for AI video</a>.
           </p>
         </details>
         <details>
