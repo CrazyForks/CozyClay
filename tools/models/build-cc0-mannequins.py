@@ -12,7 +12,6 @@ import math
 import sys
 from pathlib import Path
 
-import bmesh
 import bpy
 from mathutils import Vector
 
@@ -56,55 +55,6 @@ def load_body(source_path: Path, object_name: str) -> bpy.types.Object:
         body.modifiers.remove(modifier)
     body.data.materials.clear()
     return body
-
-
-def make_faceless(body: bpy.types.Object) -> None:
-    """Replace detailed head geometry with a smooth mannequin ellipsoid."""
-    z_min = min(vertex.co.z for vertex in body.data.vertices)
-    z_max = max(vertex.co.z for vertex in body.data.vertices)
-    height = z_max - z_min
-    center_z = z_min + height * 0.918
-    neck_cut = z_min + height * 0.835
-    center_y = -body.dimensions.y * 0.08
-
-    mesh = bmesh.new()
-    mesh.from_mesh(body.data)
-    bmesh.ops.delete(mesh, geom=[v for v in mesh.verts if v.co.z > neck_cut], context="VERTS")
-    mesh.to_mesh(body.data)
-    mesh.free()
-
-    bpy.ops.mesh.primitive_uv_sphere_add(
-        segments=48,
-        ring_count=32,
-        location=(0.0, center_y, center_z),
-    )
-    head = bpy.context.object
-    head.name = "CozyClayFacelessHead"
-    head.scale = (
-        body.dimensions.x * 0.13,
-        body.dimensions.y * 0.37,
-        height * 0.095,
-    )
-    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-
-    bpy.ops.mesh.primitive_cylinder_add(
-        vertices=32,
-        radius=1.0,
-        depth=height * 0.075,
-        location=(0.0, center_y, neck_cut + height * 0.018),
-    )
-    neck = bpy.context.object
-    neck.name = "CozyClayFacelessNeck"
-    neck.scale = (body.dimensions.x * 0.105, body.dimensions.y * 0.28, 1.0)
-    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-
-    bpy.ops.object.select_all(action="DESELECT")
-    body.select_set(True)
-    head.select_set(True)
-    neck.select_set(True)
-    bpy.context.view_layer.objects.active = body
-    bpy.ops.object.join()
-    body.data.name = "CozyClayMannequinMesh"
 
 
 def add_bone(armature, name, head, tail, parent=None):
@@ -286,7 +236,6 @@ def export_fbx(output_path: Path, body: bpy.types.Object, rig: bpy.types.Object)
 def build(source_path: Path, output_dir: Path, kind: str) -> None:
     reset_scene()
     body = load_body(source_path, SOURCE_OBJECTS[kind])
-    make_faceless(body)
     # Keep Blender Studio's authored neutral stance intact.  It is already a
     # clean animation base; reshaping vertices heuristically damages shoulders
     # and elbows.  The generated skeleton/rest metadata performs retargeting.
