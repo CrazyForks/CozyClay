@@ -57,6 +57,7 @@
 		"tools",
 		"README.md",
 		"LICENSE",
+		"licenses",
 		"THIRD_PARTY_NOTICES.md"
 	],
 	"engines": {
