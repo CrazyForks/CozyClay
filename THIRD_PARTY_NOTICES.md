@@ -78,25 +78,19 @@ files. The licence texts sit in `public/fonts/` so they follow the build into
 
 ## Character models
 
-`public/models/x-bot-tpose.fbx` and `y-bot-tpose.fbx` are Mixamo characters from
-Adobe. Adobe permits using them inside a project and specifically does not permit
-distributing the raw character files, which is what this repository, the npm
-package and `cozyclay.org/models/` each do today. They are also outside the scope
-of this repository's GPL-3.0 grant: nothing here relicenses them, and a fork does
-not acquire the right to redistribute them.
+`public/models/cozyclay-male-neutral.fbx` and
+`cozyclay-female-neutral.fbx` are generated from the realistic male and female
+meshes in Blender Foundation's Human Base Meshes v1.4.1 bundle. The source
+meshes are dedicated to the public domain under CC0 1.0. CozyClay supplies its
+own 27-joint armature, T-pose conversion and skin weights; the reproducible
+builder is `tools/models/build-cc0-mannequins.py`.
 
-They are being replaced with CC0 rigs. Until that lands, treat these two files as
-third-party content that the repository licence does not cover.
-
-- Adobe Mixamo, https://www.mixamo.com
-- Terms: https://www.adobe.com/legal/terms.html
-
-## Generated assets
-
-`public/demo/walk-then-stop.npz` is motion generated with ARDY. Under the NVIDIA
-Open Model License an output is not a Model Derivative and NVIDIA claims no
-ownership in outputs, so the clip ships with the build under CozyClay's own
-licence. The attribution the licence does ask for is recorded above.
+- Source: https://www.blender.org/download/demo-files/
+- Source archive: https://download.blender.org/demo/asset-bundles/human-base-meshes/human-base-meshes-bundle-v1.4.1.zip
+- Source archive SHA-256: `811f43accbb31a88266d932f8f5563b2d13586fca0ba2693aad1f5fe582b3515`
+- Licence: CC0 1.0 Universal
+- Licence deed: https://creativecommons.org/publicdomain/zero/1.0/
+- Build provenance: [`public/models/README.md`](public/models/README.md)
 
 ## NVIDIA ARDY
 
@@ -155,5 +149,5 @@ bundled.
 
 The CozyClay source code in this repository is licensed under GPL-3.0-or-later.
 That license does not replace or relicense Three.js, React, Draco, Basis
-Universal, the bundled fonts, the character rigs, ARDY, ARDY model checkpoints,
+Universal, the bundled fonts, the CC0 character source meshes, ARDY, ARDY model checkpoints,
 or any other third-party component listed here.

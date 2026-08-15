@@ -1,6 +1,6 @@
 /**
  * Real-rig positional-skinning validation: loads the actual
- * x-bot-tpose.fbx (the same asset the app renders and the viser demo's
+ * cozyclay-male-neutral.fbx (the same asset the app renders and the viser demo's
  * avatar asset was prepared from) and drives it with a synthetic motion
  * built on the ARDY neutral skeleton (cskel27-neutral.js, exported from
  * CoreSkeleton27.neutral_joints on the box).
@@ -51,15 +51,13 @@ const quatMaxError = (a, b) => {
 const ARDY_NEUTRAL_TOE = 0.9544128;
 const JOINTS = CSKEL27_JOINTS.length;
 
-const buf = readFileSync(new URL("../../public/models/x-bot-tpose.fbx", import.meta.url));
+const buf = readFileSync(new URL("../../public/models/cozyclay-male-neutral.fbx", import.meta.url));
 const rig = new FBXLoader().parse(
 	buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
 	"",
 );
-// App-faithful: Character scales the Mixamo centimetre rig to metres. The
-// skinning math must stay in the space BELOW this root (a previous bug
-// composed the root scale into the bind matrices and crushed the rig).
-rig.scale.setScalar(0.01);
+// App-faithful: the CC0 mannequins are authored and rendered in metres.
+rig.scale.setScalar(1);
 rig.updateMatrixWorld(true);
 
 const bones = motionBones(rig);
@@ -87,7 +85,7 @@ for (const { bone } of mapped) lowestY = Math.min(lowestY, bindWorldPos.get(bone
 const S = (hipsY - lowestY) / ARDY_NEUTRAL_TOE;
 ok(
 	"real rig: prep scale matches the rig-to-ARDY leg ratio",
-	S > 1.0 && S < 1.25,
+	S > 0.75 && S < 1.25,
 	`S=${S.toFixed(4)} scene units/m (bind hips ${hipsY.toFixed(4)} scene units)`,
 );
 

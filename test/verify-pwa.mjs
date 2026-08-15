@@ -86,7 +86,7 @@ function simulateWorkerInstall(missingPath = null) {
 }
 
 await assert.doesNotReject(simulateWorkerInstall());
-await assert.rejects(simulateWorkerInstall("models/x-bot-tpose.fbx"), /Required offline asset failed/);
+await assert.rejects(simulateWorkerInstall("models/cozyclay-male-neutral.fbx"), /Required offline asset failed/);
 pass("service worker installation fails fast when a required offline asset is missing");
 
 const vite = readFileSync("vite.config.js", "utf8");

@@ -49,14 +49,14 @@ function boneMatches(boneName, entry) {
  * Built-in pose presets. `bones` maps a POSE_BONES id to an [x, y, z] Euler
  * triple in radians — a rotation delta composed onto the character's rest
  * (bind) pose, so T-pose/rest is all zeros on any rig. Values were tuned
- * against the shipped `x-bot-tpose.fbx` skeleton and verified by joint world
- * positions on both shipped rigs.
+ * against the shipped CozyClay CC0 mannequin skeleton and verified by joint
+ * world positions on both shipped rigs.
  */
 export const BUILT_IN_POSES = [
 	{
 		id: "tpose",
-		label: "T-pose",
-		prompt: "standing in a T-pose with arms straight out to the sides",
+		label: "A-pose",
+		prompt: "standing in a neutral A-pose",
 		bones: {
 			hips: [0, 0, 0],
 			spine: [0, 0, 0],

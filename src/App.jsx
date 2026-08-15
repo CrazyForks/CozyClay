@@ -206,7 +206,7 @@ const CAMERA_MOVE_LABELS_KO = new Map([
 ]);
 
 const POSE_LABELS_KO = new Map([
-	["T-pose", ko("T-pose", "T 포즈")],
+	["A-pose", ko("A-pose", "A 포즈")],
 	["Relaxed", ko("Relaxed", "편안한 자세")],
 	["Contrapposto", ko("Contrapposto", "콘트라포스토")],
 	["Walking", ko("Walking", "걷는 자세")],
@@ -324,16 +324,15 @@ function hierarchyIdForIkFocus(focus) {
 
 const CAPTURE_W = 1920;
 const CAPTURE_H = 1080;
-// Pre-generated clip shipped with the build so a bridge-less session (a hosted
-// static demo, or `npm run dev:ui`) still shows real generated motion.
 // Root-absolute on purpose: the studio is served from "/app/" while these
 // public files stay at the site root, so a page-relative path would resolve
 // to "/app/models/..." and 404. Vite's base is "/" (own apex domain), so a
 // leading slash is now the correct — and only — form that works from both
 // the dev server and the built site.
-const CHARACTER_MODEL_URL = "/models/y-bot-tpose.fbx";
-const DEMO_MOTION_URL = "/demo/walk-then-stop.npz";
-const DEMO_MOTION_PROMPT = "a person walking then a person stops";
+const CHARACTER_MODELS = {
+	A: { url: "/models/cozyclay-male-neutral.fbx", rig: "cozyclay-male-neutral" },
+	B: { url: "/models/cozyclay-female-neutral.fbx", rig: "cozyclay-female-neutral" },
+};
 const CLAY = "#f2eee6";
 const CLAY_B = "#ddd6ca";
 const DEFAULT_POSE = BUILT_IN_POSES.find((p) => p.id === "relaxed") ?? BUILT_IN_POSES[0];
@@ -357,7 +356,9 @@ function Character({ url, position, rot, tint, pose, onRig, pickId }) {
 	const fbx = useFBX(url);
 	const model = useMemo(() => {
 		const clone = SkeletonUtils.clone(fbx);
-		clone.scale.setScalar(0.01); // Mixamo exports centimetres
+		// CozyClay's CC0 mannequins are authored in metres. Keeping their FBX
+		// scale at 1 also makes camera height and actor height use the same unit.
+		clone.scale.setScalar(1);
 		clone.traverse((child) => {
 			if (child.isMesh) {
 				// warm clay reads as a maquette; cold grey reads as a broken render
@@ -2281,26 +2282,6 @@ globalThis.playMode = centerTab === "play";
 		}
 	}
 
-	// Hosted-demo seed. A build served as static files has no ARDY sidecar, so
-	// a first-time visitor would otherwise land on a character standing still
-	// with no way to see generated motion. The clip below ships with the build
-	// and is loaded once, only when the bridge is absent and nothing has been
-	// loaded or generated yet. A local session with the bridge running is
-	// untouched.
-	const demoSeeded = useRef(false);
-	useEffect(() => {
-		if (demoSeeded.current) return;
-		if (!bridge || bridge.ok) return;
-		if (!rigA || motion || motionBusy) return;
-		demoSeeded.current = true;
-		// Loaded, not played: the clip walks the subject out of the default
-		// framing, so autoplay would greet a first-time visitor with an empty
-		// room. Frame 0 is composed; PLAYBACK is one click away.
-		loadMotion(DEMO_MOTION_URL, DEMO_MOTION_PROMPT).catch(() => {
-			/* the seed is a nicety, never a failure the visitor must act on */
-		});
-	}, [bridge, rigA, motion, motionBusy]);
-
 	function clearMotion() {
 		setMotion(null);
 		setMotionError("");
@@ -2854,7 +2835,7 @@ globalThis.playMode = centerTab === "play";
 			look,
 			fovDeg,
 			slate: slateLine(shot),
-			rigName: posing === "B" ? "y-bot-tpose" : "x-bot-tpose",
+			rigName: CHARACTER_MODELS[posing === "B" ? "B" : "A"].rig,
 			root: captureArdyRoot(rig),
 		});
 		const blob = new Blob([JSON.stringify(pose, null, 2)], { type: "application/json" });
@@ -3118,7 +3099,7 @@ globalThis.playMode = centerTab === "play";
 					look,
 					fovDeg,
 					slate: slateLine(shot),
-					rigName: posing === "B" ? "y-bot-tpose" : "x-bot-tpose",
+					rigName: CHARACTER_MODELS[posing === "B" ? "B" : "A"].rig,
 					root: captureArdyRoot(rig),
 				}),
 			};
@@ -3391,7 +3372,7 @@ globalThis.playMode = centerTab === "play";
 							/>
 
 							<Character
-								url={CHARACTER_MODEL_URL}
+								url={CHARACTER_MODELS.A.url}
 								position={motion ? [motion.anchorX, 0, motion.anchorZ] : [charA.x, 0, charA.z]}
 								rot={motion ? motion.rotationDeg : charA.rot}
 								tint={CLAY}
@@ -3401,7 +3382,7 @@ globalThis.playMode = centerTab === "play";
 							/>
 							{showB && (
 								<Character
-									url={CHARACTER_MODEL_URL}
+									url={CHARACTER_MODELS.B.url}
 									position={[charB.x, 0, charB.z]}
 									rot={charB.rot}
 									tint={CLAY_B}

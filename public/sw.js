@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "cozyclay-pwa-";
-const CACHE_NAME = `${CACHE_PREFIX}v2`;
+const CACHE_NAME = `${CACHE_PREFIX}v3`;
 const CORE_ASSETS = [
 	"./",
 	"./index.html",
@@ -10,9 +10,8 @@ const CORE_ASSETS = [
 	"./icons/icon-maskable-512.png",
 	"./icons/apple-touch-icon.png",
 	"./fonts/inter-latin.woff2",
-	"./demo/walk-then-stop.npz",
-	"./models/x-bot-tpose.fbx",
-	"./models/y-bot-tpose.fbx",
+	"./models/cozyclay-male-neutral.fbx",
+	"./models/cozyclay-female-neutral.fbx",
 ];
 
 async function cacheResponse(cache, request, response) {
