@@ -8,5 +8,6 @@ Foundation Human Base Meshes v1.4.1, released under CC0 1.0 Universal.
 - Archive SHA-256: `811f43accbb31a88266d932f8f5563b2d13586fca0ba2693aad1f5fe582b3515`
 - Builder: `tools/models/build-cc0-mannequins.py`
 
-The generated armature and skin weights are CozyClay project work. The source
-neutral stance is preserved, and both models share one 27-joint contract.
+The generated armature, skin weights and smooth faceless mannequin treatment
+are CozyClay project work. The source neutral stance is preserved, and both
+models share one 27-joint contract.

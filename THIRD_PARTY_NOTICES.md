@@ -92,6 +92,9 @@ builder is `tools/models/build-cc0-mannequins.py`.
 - Licence deed: https://creativecommons.org/publicdomain/zero/1.0/
 - Build provenance: [`public/models/README.md`](public/models/README.md)
 
+CozyClay's generated FBXs remove facial features to create neutral blocking
+mannequins; this mesh treatment and the generated armature are project work.
+
 ## NVIDIA ARDY
 
 CozyClay provides an optional bridge and data-conversion workflow for externally installed [ARDY](https://github.com/nv-tlabs/ardy), an interactive human-motion generation project from NVIDIA Research.
