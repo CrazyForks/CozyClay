@@ -199,8 +199,8 @@ if (opts.version) {
 	console.log(pkg.version);
 	process.exit(0);
 }
-if (!existsSync(join(DIST, "index.html"))) {
-	console.error("cozyclay: this package is missing its build (dist/index.html).");
+if (!existsSync(join(DIST, "app", "index.html"))) {
+	console.error("cozyclay: this package is missing its build (dist/app/index.html).");
 	console.error("cozyclay: from a clone, run `npm install && npm run build` first.");
 	process.exit(1);
 }
@@ -223,10 +223,21 @@ const server = createServer((req, res) => {
 		proxyToBridge(req, res);
 		return;
 	}
-	const rel = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
+	const rel = decodeURIComponent(url.pathname);
 	// normalize + prefix check: a request must not escape dist/.
-	const target = join(DIST, normalize(rel));
-	if (!target.startsWith(DIST) || !existsSync(target) || statSync(target).isDirectory()) {
+	let target = join(DIST, normalize(rel));
+	if (!target.startsWith(DIST)) {
+		res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+		res.end("not found");
+		return;
+	}
+	// The build is multi-page: "/" is the landing and "/app/" is the studio, so a
+	// directory has to resolve to its index the way a static host would. Without
+	// this the studio 404s and the CLI only ever serves the landing page.
+	if (existsSync(target) && statSync(target).isDirectory()) {
+		target = join(target, "index.html");
+	}
+	if (!existsSync(target) || statSync(target).isDirectory()) {
 		res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
 		res.end("not found");
 		return;
@@ -261,7 +272,10 @@ server.on("error", (err) => {
 });
 
 server.listen(opts.port, opts.host, () => {
-	const url = `http://${opts.host}:${opts.port}/`;
+	// The package exists to open the studio, which the site serves from /app/.
+	// Landing on "/" would greet someone who just typed `npx cozyclay` with a
+	// marketing page.
+	const url = `http://${opts.host}:${opts.port}/app/`;
 	console.log(`CozyClay is running at ${url}`);
 	if (!opts.ardy) console.log("Motion generation: off (--no-ardy).");
 	else if (bridge) console.log(`Motion generation: sidecar running against ${ardyHost}.`);
