@@ -55,6 +55,42 @@ bundled.
 - Source: https://github.com/McGill-NLP/llm2vec
 - License text: https://github.com/McGill-NLP/llm2vec/blob/main/LICENSE
 
+## Fonts
+
+CozyClay bundles subsets of two typefaces. Both are licensed under the SIL Open
+Font License 1.1, which allows them to be redistributed with software as long as
+the copyright notice and the licence travel with the files. The licence texts are
+in `public/fonts/` next to the fonts themselves.
+
+### Inter
+
+- Copyright (c) 2016 The Inter Project Authors
+- License: SIL Open Font License 1.1
+- Source: https://github.com/rsms/inter
+- License text: `public/fonts/Inter-OFL.txt`
+
+### Instrument Serif
+
+- Copyright 2022 The Instrument Serif Project Authors
+- License: SIL Open Font License 1.1
+- Source: https://github.com/Instrument/instrument-serif
+- License text: `public/fonts/InstrumentSerif-OFL.txt`
+
+## Character models
+
+The rigs in `public/models/` are Mixamo characters from Adobe. Adobe permits
+their use in projects but not the distribution of the raw character files, which
+is what shipping them in this repository, the npm package and the hosted site
+amounts to. They are also outside the scope of this repository's GPL-3.0 grant:
+nothing here relicenses them, and a fork does not acquire the right to
+redistribute them.
+
+They are being replaced with a CC0 rig. Until that lands, treat these two files
+as third-party content that this licence does not cover.
+
+- `x-bot-tpose.fbx`, `y-bot-tpose.fbx` — Adobe Mixamo
+- Terms: https://www.adobe.com/legal/terms.html
+
 ## CozyClay license scope
 
-The CozyClay source code in this repository is licensed under GPL-3.0-or-later. That license does not replace or relicense Three.js, ARDY, ARDY model checkpoints, or any other third-party component.
+The CozyClay source code in this repository is licensed under GPL-3.0-or-later. That license does not replace or relicense Three.js, ARDY, ARDY model checkpoints, the bundled fonts, the character rigs, or any other third-party component.
