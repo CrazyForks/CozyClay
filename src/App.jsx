@@ -6,6 +6,7 @@ import { SkeletonUtils } from "three/examples/jsm/Addons.js";
 import { buildArdyPose } from "./ardy/export.js";
 import { checkBridge, generate as ardyGenerate } from "./ardy/client.js";
 import { loadMotionFromUrl } from "./ardy/npz.js";
+import { GlbTake, glbFrameCount, isGlbTakeUrl } from "./glb-take.jsx";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
@@ -1529,6 +1530,9 @@ globalThis.playMode = centerTab === "play";
 	/* --------------------------- motion workspace --------------------------- */
 	// The timeline playhead and the root waypoints are App-owned so the scene
 	// (character rig, plan path, ARDY card) reacts to every scrub/play tick.
+	// A baked glb take renders on its own rig (src/glb-take.jsx) and is
+	// therefore mutually exclusive with `motion`, which drives the Mixamo rig.
+	const [glbTake, setGlbTake] = useState(null);
 	const [tlFrame, setTlFrame] = useState(0);
 
 	const renderActive = useRenderActivity(tlPlaying || movePlaying);
@@ -2111,6 +2115,16 @@ const noop = () => {};
 			const previous = restoreRef.current;
 			restoreRef.current = null;
 			if (previous) restorePlaybackBones(previous.rig, previous.bones);
+			// A glb take ships its own rig and its own skinning, so there is
+			// nothing to retarget and no cskel27 clip to decode. It takes the
+			// separate render path and returns before the npz branch runs.
+			if (isGlbTakeUrl(url)) {
+				setMotion(null);
+				setGlbTake({ url, rotationDeg, anchorX: charA.x, anchorZ: charA.z });
+				setTlFrame(0);
+				setTlPlaying(false);
+				return;
+			}
 			const decoded = await loadMotionFromUrl(url);
 			const rig = rigA;
 			if (!rig) throw new Error(ko("Subject 1 rig is not loaded", "인물 1 리그가 로드되지 않았어요"));
@@ -2166,6 +2180,10 @@ const noop = () => {};
 		// (plan 7.4): the ARDY workflow's Clear and Subject 2's Clear clip
 		// are the same operation, and one Ctrl+Z brings the whole take back.
 		clearTake();
+		// A glb take has no cskel27 clip to restore, so clearing it is just
+		// dropping it; leaving it mounted would keep a cleared performance on
+		// screen after Clear reported it gone.
+		setGlbTake(null);
 		setMotionError("");
 	}
 
@@ -3236,6 +3254,24 @@ useEffect(() => {
 								onRig={setRigA}
 								pickId="A"
 							/>
+
+							{glbTake && (
+								<GlbTake
+									url={glbTake.url}
+									frame={tlFrame}
+									fps={tlFps}
+									position={[glbTake.anchorX ?? 0, 0, glbTake.anchorZ ?? 0]}
+									rot={glbTake.rotationDeg ?? 0}
+									onClip={({ duration }) => {
+										// Size the timeline to the take. The clip carries its own
+										// length, so cropping it to whatever the timeline happened
+										// to hold would silently truncate the performance.
+										const frames = glbFrameCount(duration, tlFps);
+										setTlFrameCount(frames);
+										setTrimA({ start: 0, end: frames - 1 });
+									}}
+								/>
+							)}
 							{showB && (
 								<Character
 									url={CHARACTER_MODEL_URL}

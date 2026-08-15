@@ -479,7 +479,18 @@ const SEAM = new Map([
 	// needless-abstraction class this audit exists to stop. Values are the
 	// measured numstat of the closed findings-1/5/6 diff, not a headroom
 	// guess.
-	["src/App.jsx", { add: 286, mod: 92 }],
+	// Raised 286 -> 322 (measured numstat, again, not headroom). The previous
+	// value was set to the exact measured diff, so the file sat at its cap and
+	// any further line overflowed. What was added is the glb-take seam: an
+	// early return in loadMotion, one state hook, a clear, and the render
+	// block. A baked glb ships its own rig and skinning, so it has nothing to
+	// retarget; routing it through the cskel27 path was measured to distort it
+	// badly (that path composes bind quaternions, drives bone positions from
+	// posedJoints, and rebuilds parent chains for the 129-bone x-bot
+	// topology). The logic lives in src/glb-take.jsx; what is here is only the
+	// seam that chooses between the two paths, which cannot live anywhere but
+	// the component that owns both the timeline clock and the scene.
+	["src/App.jsx", { add: 322, mod: 92 }],
 	["src/ardy/timeline.jsx", { add: 25, mod: 6 }],
 	["src/scene-history.js", { mod: 26 }],
 	// Raised from 45: the red-team lane found hard-link and directory swaps
@@ -565,9 +576,10 @@ function auditBudgets(rows) {
 }
 // sensitivity first: a synthetic numstat violating the shape in every way
 const fakeNumstat = [
-	// The App.jsx row must exceed the RENEGOTIATED caps (286/92, above) —
-	// a control that fell inside the new budget would prove nothing.
-	{ path: "src/App.jsx", added: 300, deleted: 100 },
+	// The App.jsx row must exceed the RENEGOTIATED caps (322/92, above) —
+	// a control that fell inside the new budget would prove nothing. Raised
+	// with the cap, for the same reason it was pinned above it before.
+	{ path: "src/App.jsx", added: 340, deleted: 100 },
 	{ path: "src/undisclosed.js", added: 5, deleted: 0 },
 	{ path: "vite.config.js", added: 200, deleted: 0 },
 	{ path: ".github/workflows/pages.yml", added: 1, deleted: 0 },
