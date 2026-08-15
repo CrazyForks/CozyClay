@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Extract the cskel27 rest rotations (Rb) from a CozyClay T-pose FBX rig.
+ * Extract cskel27 rest rotations (Rb) from a CozyClay neutral-pose FBX rig.
  *
  * Rb is the rotation part of each bone's rest (bind) transform in the
  * armature root's space. The ARDY retarget feeds it into
@@ -13,8 +13,8 @@
  * container's own world transform divided out.
  *
  * Usage: node tools/ardy/extract-rest.mjs
- * Writes: public/ardy/cskel27-rest.json (x-bot rig), 27 entries in cskel27
- * index order. Also extracts y-bot-tpose.fbx and prints the maximum
+ * Writes: public/ardy/cskel27-rest.json (CozyClay male rig), 27 entries in
+ * cskel27 index order. Also extracts the female mannequin and prints the maximum
  * per-joint angular difference between the two rigs' rest rotations.
  *
  * Exits non-zero if any emitted matrix fails the orthonormality + det checks
@@ -223,7 +223,7 @@ function angleDegrees(q1, q2) {
 }
 
 function main() {
-	const xRig = loadRig("x-bot-tpose");
+	const primaryRig = loadRig("cozyclay-male-neutral");
 
 	const joints = [];
 	const missing = [];
@@ -231,7 +231,7 @@ function main() {
 		const name = CSKEL27_JOINTS[index];
 		let matchedBone = null;
 		let rest = null;
-		for (const entry of xRig.values()) {
+		for (const entry of primaryRig.values()) {
 			if (matchesJoint(entry.name, name)) {
 				matchedBone = entry.name;
 				rest = restRotationRows(entry.bind, name);
@@ -244,7 +244,7 @@ function main() {
 
 	const json = {
 		schema: "cskel27.rest.v1",
-		rig: "x-bot-tpose",
+		rig: "cozyclay-male-neutral",
 		joints,
 		missing,
 	};
@@ -260,22 +260,22 @@ function main() {
 	}
 	console.log(`missing: ${missing.length ? missing.join(", ") : "none"}`);
 
-	// Same extraction against the y-bot rig; the gap between the two rigs'
-	// rest rotations is why poses travel as deltas, not absolute rotations.
-	const yRig = loadRig("y-bot-tpose");
+	// Both CC0 mannequins are generated from the same armature contract. Keep
+	// this comparison as a build-time guard against accidental rig drift.
+	const secondaryRig = loadRig("cozyclay-female-neutral");
 	let maxAngle = -1;
 	let maxJoint = null;
 	let compared = 0;
 	for (const joint of joints) {
 		if (joint.rest === null) continue;
-		const yEntry = yRig.get(normalizeBoneName(joint.matched_bone));
-		if (!yEntry) continue;
+		const secondaryEntry = secondaryRig.get(normalizeBoneName(joint.matched_bone));
+		if (!secondaryEntry) continue;
 		compared += 1;
 		const angle = angleDegrees(
 			new THREE.Quaternion().setFromRotationMatrix(
 				new THREE.Matrix4().setFromMatrix3(matrixFromRows(joint.rest))
 			),
-			new THREE.Quaternion().setFromRotationMatrix(yEntry.bind)
+			new THREE.Quaternion().setFromRotationMatrix(secondaryEntry.bind)
 		);
 		if (angle > maxAngle) {
 			maxAngle = angle;
@@ -283,7 +283,7 @@ function main() {
 		}
 	}
 	console.log(
-		`max per-joint rest rotation difference x-bot vs y-bot: ${maxAngle.toFixed(3)} deg (${maxJoint}, ${compared} joints compared)`
+		`max per-joint rest rotation difference male vs female: ${maxAngle.toFixed(3)} deg (${maxJoint}, ${compared} joints compared)`
 	);
 }
 

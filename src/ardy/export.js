@@ -91,7 +91,7 @@ function qMultiply(a, b) {
  * `rig` is the live three.js Object3D tree (the rigA/rigB model handed to
  * App via onRig), `camRef` the shot camera ref, `look` the `{ yaw, pitch }`
  * ref, `fovDeg` the vertical FOV in degrees, `slate` the slate string, and
- * `rigName` the wire `source.rig` value ("x-bot-tpose").
+ * `rigName` the wire `source.rig` value (for example "cozyclay-male-neutral").
  */
 export function buildArdyPose({ rig, camRef, look, fovDeg, slate, rigName, root }) {
 	if (!rig) throw new Error("buildArdyPose: rig is required");

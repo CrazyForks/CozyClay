@@ -5,7 +5,8 @@
 	"scripts": {
 		"dev": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
 		"dev:ui": "vite",
-		"build": "vite build && cp -r public/fonts dist/",
+		"build": "vite build && node tools/copy-legal.mjs",
+		"models:build": "blender --background --factory-startup --python tools/models/build-cc0-mannequins.py --",
 		"test:lifecycle": "node test/process/verify-lifecycle.mjs",
 		"test:hierarchy": "node test/verify-hierarchy.mjs",
 		"test:history": "node test/verify-history.mjs",
@@ -31,6 +32,7 @@
 		"test:camera-follow": "node test/verify-camera-follow.mjs",
 		"test:pose-extract": "node test/verify-pose-extract.mjs",
 		"test:pwa": "node test/verify-pwa.mjs",
+		"test:licenses": "node test/verify-distribution-licenses.mjs",
 		"test:localization": "node test/verify-korean-ui.mjs",
 		"test:korean-ui": "node test/verify-korean-ui.mjs",
 		"prepack": "npm run build"
@@ -57,6 +59,7 @@
 		"tools",
 		"README.md",
 		"LICENSE",
+		"licenses",
 		"THIRD_PARTY_NOTICES.md"
 	],
 	"engines": {

@@ -16,7 +16,7 @@ const editGenerator = readFileSync(new URL("../../tools/ardy/cclay_motion_edit.p
 
 expect(
 	"multi-block requests use the sequence runner once",
-	bridge.includes("const box = spawnTracked(\"bash\", args") &&
+	bridge.includes("const box = spawnTracked(cmd.command, cmd.args") &&
 	bridge.includes("generating ${segments.length} blocks in one autoregressive ARDY session")
 );
 expect(
@@ -62,8 +62,9 @@ expect(
 );
 expect(
 	"the segments branch forwards the root path to the sequence runner",
-	bridge.includes("for (const wp of body.waypoints ?? [])") &&
-	bridge.includes("with a ${body.waypoints.length}-pin root path")
+	bridge.includes("waypoints: body.waypoints") &&
+	(bridge.includes("with a ${body.waypoints.length}-pin root path") ||
+		bridge.includes("with a ${body.waypoints?.length}-pin root path"))
 );
 expect(
 	"the sequence runner forwards --root-2d quadruples",
