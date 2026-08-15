@@ -3245,15 +3245,19 @@ useEffect(() => {
 								rotation={[-Math.PI / 2, 0, 0]}
 							/>
 
-							<Character
-								url={CHARACTER_MODEL_URL}
-								position={[effectiveCharA.x, 0, effectiveCharA.z]}
-								rot={effectiveCharA.rot}
-								tint={CLAY}
-								pose={motion ? null : poseA}
-								onRig={setRigA}
-								pickId="A"
-							/>
+							{/* A glb take brings its own body. Drawing the Mixamo rig
+							    beside it would put two performers on one subject. */}
+							{!glbTake && (
+								<Character
+									url={CHARACTER_MODEL_URL}
+									position={[effectiveCharA.x, 0, effectiveCharA.z]}
+									rot={effectiveCharA.rot}
+									tint={CLAY}
+									pose={motion ? null : poseA}
+									onRig={setRigA}
+									pickId="A"
+								/>
+							)}
 
 							{glbTake && (
 								<GlbTake
