@@ -15,7 +15,7 @@
  */
 import { useEffect, useMemo, useRef } from "react";
 import { useGLTF } from "@react-three/drei";
-import { AnimationMixer, Vector3 } from "three";
+import { AnimationMixer, MeshStandardMaterial, Vector3 } from "three";
 import { SkeletonUtils } from "three/examples/jsm/Addons.js";
 
 /** A take is glb-shaped when its URL says so; the loader cannot guess. */
@@ -38,8 +38,31 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 
 	// Clone per instance: two takes of the same url must not share one skeleton,
 	// and SkeletonUtils is the clone that carries bones/skinning correctly.
-	const scene = useMemo(() => SkeletonUtils.clone(gltf.scene), [gltf.scene]);
+	const scene = useMemo(() => {
+		const clone = SkeletonUtils.clone(gltf.scene);
+		clone.traverse((child) => {
+			if (!child.isMesh) return;
+			// Use a neutral mid-grey clay instead of the reconstruction export's
+			// near-black diagnostic material. It keeps form readable under the
+			// editor lights without turning into a white silhouette.
+			child.material = new MeshStandardMaterial({
+				color: "#a9aca9",
+				roughness: 0.86,
+				metalness: 0,
+			});
+			child.frustumCulled = false;
+		});
+		return clone;
+	}, [gltf.scene]);
 	const mixer = useMemo(() => new AnimationMixer(scene), [scene]);
+	useEffect(
+		() => () => {
+			scene.traverse((child) => {
+				if (child.isMesh) child.material.dispose();
+			});
+		},
+		[scene],
+	);
 	const reported = useRef(null);
 
 	// The clip carries the performer's own world position, so playing it at the
