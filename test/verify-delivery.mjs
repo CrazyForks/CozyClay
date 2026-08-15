@@ -554,6 +554,32 @@ async function startStubHost(home) {
 				!!record && parsed?.origin === record?.origin && parsed?.url === `${record?.origin}/src/ingest/index.html`,
 				`${detail}${parsed?.origin ? "" : "  " + (entryOut().trim().split("\n").filter(Boolean).at(-1) ?? "")}`,
 			);
+
+			// The gap this suite used to have: it proved surface-origin
+			// resolves through the app, and stopped. Every OTHER /ingest/
+			// route also resolves to the surface in dev -- the discovery
+			// record names it -- and the surface implements none of them, so
+			// they fell to Vite's SPA fallback and came back 200 text/html.
+			//
+			// That is the one answer the delivery design cannot tolerate:
+			// both the parent's unavailable panel and the command adapter
+			// decide "bridge absent" vs "app page" from the response, and an
+			// HTML 200 reads as the latter. It also made the deliberate
+			// GPU refusal unreachable in dev -- the operator never saw
+			// "no GPU box configured", they saw a page.
+			//
+			// Asserted through the app origin, because that is the hop a
+			// browser actually makes, and on a route the surface will never
+			// own so it cannot be satisfied by implementing one endpoint.
+			for (const route of ["/ingest/health", "/ingest/extract", "/ingest/artifacts/x"]) {
+				const res = await httpGet(appPort, route).catch(() => ({ status: 0, headers: {}, body: "" }));
+				const type = String(res.headers?.["content-type"] ?? "");
+				ok(
+					`dev:ingest bridge route ${route} answers definitely, never the SPA shell`,
+					res.status !== 200 && !/text\/html/.test(type),
+					`status ${res.status} type ${type || "none"}`,
+				);
+			}
 		}
 	} finally {
 		await terminateOwned(entry);

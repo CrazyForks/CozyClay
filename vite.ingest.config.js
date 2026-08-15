@@ -96,6 +96,30 @@ export default defineConfig(async ({ command }) => {
 					res.setHeader("content-type", "application/json");
 					res.end(JSON.stringify({ origin, url: `${origin}/src/ingest/index.html` }));
 				});
+				// The surface owns /ingest/surface-origin and NOTHING else on
+				// the /ingest/ prefix. The bridge routes (health, stage,
+				// artifacts, extract) belong to tools/ingest/host.mjs, which is
+				// a separate process and is not part of the dev stack.
+				//
+				// This branch exists because the app's proxy resolves its
+				// /ingest/* target from the discovery record, and in dev the
+				// publisher of that record is THIS server -- so every bridge
+				// route lands here. Without an explicit answer they fall to
+				// Vite's SPA fallback and come back 200 text/html, which is the
+				// one response the whole delivery design forbids: the parent's
+				// unavailable panel and the command adapter both have to tell
+				// "bridge absent" from "app page", and an HTML 200 is
+				// indistinguishable from the latter. host.mjs itself refuses an
+				// unknown /ingest/ route with a 405 rather than a shell, so
+				// answering definitely here keeps the dev and packaged paths
+				// telling the client the same kind of truth.
+				server.middlewares.use((req, res, next) => {
+					const path = (req.url || "").split("?")[0];
+					if (!path.startsWith("/ingest/")) return next();
+					res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
+					res.end(JSON.stringify({ error: "ingest bridge is not running" }));
+					return undefined;
+				});
 				server.httpServer?.once("listening", () => publishDiscovery(port));
 				server.httpServer?.once("close", removeDiscovery);
 			},
