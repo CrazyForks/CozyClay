@@ -3266,11 +3266,11 @@ useEffect(() => {
 									fps={tlFps}
 									position={[glbTake.anchorX ?? 0, 0, glbTake.anchorZ ?? 0]}
 									rot={glbTake.rotationDeg ?? 0}
-									onClip={({ duration }) => {
-										// Size the timeline to the take. The clip carries its own
-										// length, so cropping it to whatever the timeline happened
-										// to hold would silently truncate the performance.
-										const frames = glbFrameCount(duration, tlFps);
+									onClip={({ duration, fps }) => {
+										// A baked take keeps its authored sampling rate. Reusing
+										// ARDY's 20 fps timeline drops one third of a 30 fps take.
+										const frames = glbFrameCount(duration, fps);
+										setTlFps(fps);
 										setTlFrameCount(frames);
 										setTrimA({ start: 0, end: frames - 1 });
 									}}

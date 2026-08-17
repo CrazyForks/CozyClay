@@ -33,6 +33,22 @@ export function glbFrameCount(durationSeconds, fps) {
 	return Math.max(1, Math.floor(durationSeconds * fps + 1e-6) + 1);
 }
 
+/** Recover the clip's authored sampling rate from its animation key times. */
+export function glbSampleFps(clip, fallback = 24) {
+	const periods = [];
+	for (const track of clip?.tracks ?? []) {
+		for (let i = 1; i < track.times.length; i += 1) {
+			const period = track.times[i] - track.times[i - 1];
+			if (period > 1e-6) periods.push(period);
+		}
+	}
+	if (periods.length === 0) return fallback;
+	periods.sort((a, b) => a - b);
+	const fps = 1 / periods[Math.floor(periods.length / 2)];
+	const integer = Math.round(fps);
+	return Math.abs(fps - integer) < 0.01 ? integer : fps;
+}
+
 export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 0, onClip }) {
 	const gltf = useGLTF(url);
 
@@ -89,34 +105,57 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 		if (!root) return { anchor: [0, 0, 0], floorOffsets: [0] };
 		const p = new Vector3();
 		root.getWorldPosition(p);
-		// The correction must come from the skinned surface. Static geometry
-		// bounds do not follow bones and therefore cannot locate an animated sole.
-		// The lowest point is measured on the SKINNED SURFACE, not inferred.
-		//
-		// Bone positions plus a rest-pose sole offset was an estimate of where
-		// the foot is, and it read high: it assumes the sole keeps a fixed
-		// distance below the ankle, which stops being true the moment the ankle
-		// rotates. That left the figure hovering.
-		//
-		// SkinnedMesh.getVertexPosition applies the current skinning. Evaluate
-		// every skinned surface while precomputing frame offsets: bind-pose
-		// "lowest vertex" candidates are not portable across exported rigs, and
-		// multi-part characters may keep feet in a different mesh.
+		// Ground from vertices actually weighted to foot/toe bones. Using the
+		// lowest point of the entire body lets a low hand or a bad pose move the
+		// whole actor vertically.
 		const skinned = [];
 		probe.traverse((o) => {
 			if (o.isSkinnedMesh) skinned.push(o);
 		});
 		if (skinned.length === 0) return { anchor: [-p.x, 0, -p.z], floorOffsets: [0] };
 
-		probe.updateMatrixWorld(true);
+		const footVertices = [];
+		for (const mesh of skinned) {
+			const skinIndex = mesh.geometry.attributes.skinIndex;
+			const skinWeight = mesh.geometry.attributes.skinWeight;
+			const footBones = new Set(
+				mesh.skeleton.bones
+					.map((bone, index) => (/foot|toe/i.test(bone.name) ? index : -1))
+					.filter((index) => index >= 0),
+			);
+			if (!skinIndex || !skinWeight || footBones.size === 0) continue;
+			const indices = [];
+			for (let i = 0; i < skinIndex.count; i += 1) {
+				let weight = 0;
+				for (let lane = 0; lane < skinIndex.itemSize; lane += 1) {
+					if (footBones.has(skinIndex.getComponent(i, lane))) {
+						weight += skinWeight.getComponent(i, lane);
+					}
+				}
+				if (weight >= 0.2) indices.push(i);
+			}
+			if (indices.length > 0) footVertices.push({ mesh, indices });
+		}
+
+		// Numeric/anonymous rigs cannot expose foot semantics. Keep a safe
+		// fallback, but authored rigs use only their foot-weighted surface.
+		const surfaces =
+			footVertices.length > 0
+				? footVertices
+				: skinned.map((mesh) => ({
+						mesh,
+						indices: Array.from(
+							{ length: mesh.geometry.attributes.position.count },
+							(_, index) => index,
+						),
+					}));
 		const v = new Vector3();
-		const lowestSurfaceY = () => {
+		const lowestFootY = () => {
 			let min = Infinity;
-			for (const mesh of skinned) {
+			for (const { mesh, indices } of surfaces) {
 				mesh.skeleton.update();
-				const count = mesh.geometry.attributes.position.count;
-				for (let i = 0; i < count; i += 1) {
-					mesh.getVertexPosition(i, v);
+				for (const index of indices) {
+					mesh.getVertexPosition(index, v);
 					v.applyMatrix4(mesh.matrixWorld);
 					if (v.y < min) min = v.y;
 				}
@@ -124,16 +163,24 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 			return min;
 		};
 
-		// Measure at the timeline's native frame rate. Applying the correction
-		// for the current frame removes solve-height drift instead of grounding
-		// only the single lowest frame and leaving the rest visibly airborne.
 		const count = glbFrameCount(clip.duration, fps);
-		const floorOffsets = [];
+		const rawOffsets = [];
 		for (let i = 0; i < count; i += 1) {
 			probeMixer.setTime(Math.min(clip.duration, i / fps));
 			probe.updateMatrixWorld(true);
-			floorOffsets.push(-lowestSurfaceY());
+			rawOffsets.push(-lowestFootY());
 		}
+
+		// A centred median follows slow solve-height drift while rejecting
+		// frame-to-frame sole noise. It adds no lag because the entire clip is
+		// available before playback.
+		const radius = Math.max(1, Math.round(fps * 0.15));
+		const floorOffsets = rawOffsets.map((_, index) => {
+			const window = rawOffsets
+				.slice(Math.max(0, index - radius), Math.min(rawOffsets.length, index + radius + 1))
+				.sort((a, b) => a - b);
+			return window[Math.floor(window.length / 2)];
+		});
 
 		probeMixer.setTime(0);
 		probe.updateMatrixWorld(true);
@@ -151,15 +198,11 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 	// moving the camera renders App. Each of those renders tore the effect
 	// down, and the cleanup's action.stop() drops the skeleton back to its
 	// bind pose: the take snapped to a T-pose and stopped the moment anyone
-	// touched the camera. `fps` had the same hazard for any fps change.
-	//
-	// Both are read through refs instead, so a caller that re-renders (or
-	// passes a fresh callback every time, which is the normal React thing to
-	// do) can no longer interrupt playback. The effect now runs once per clip.
+	// `onClip` is read through a ref so a caller that re-renders (or passes a
+	// fresh callback every time) cannot interrupt playback. The authored fps is
+	// read from the clip itself rather than inheriting ARDY's 20 fps timeline.
 	const onClipRef = useRef(onClip);
 	onClipRef.current = onClip;
-	const fpsRef = useRef(fps);
-	fpsRef.current = fps;
 
 	useEffect(() => {
 		const clip = gltf.animations?.[0];
@@ -170,9 +213,11 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 		// itself to the take rather than the take being cropped to the timeline.
 		if (onClipRef.current && reported.current !== clip.uuid) {
 			reported.current = clip.uuid;
+			const sampleFps = glbSampleFps(clip, fps);
 			onClipRef.current({
 				duration: clip.duration,
-				frames: glbFrameCount(clip.duration, fpsRef.current),
+				fps: sampleFps,
+				frames: glbFrameCount(clip.duration, sampleFps),
 			});
 		}
 		return () => {
