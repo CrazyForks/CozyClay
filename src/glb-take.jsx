@@ -98,32 +98,28 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 		// distance below the ankle, which stops being true the moment the ankle
 		// rotates. That left the figure hovering.
 		//
-		// SkinnedMesh.getVertexPosition applies the CURRENT skinning, so it
-		// answers the question directly. Only the vertices that can plausibly
-		// touch the ground are tracked -- picked once as the lowest slice of the
-		// bind pose -- so this stays cheap while remaining exact for the part
-		// that matters.
-		let skinned = null;
+		// SkinnedMesh.getVertexPosition applies the current skinning. Evaluate
+		// every skinned surface while precomputing frame offsets: bind-pose
+		// "lowest vertex" candidates are not portable across exported rigs, and
+		// multi-part characters may keep feet in a different mesh.
+		const skinned = [];
 		probe.traverse((o) => {
-			if (!skinned && o.isSkinnedMesh) skinned = o;
+			if (o.isSkinnedMesh) skinned.push(o);
 		});
-		if (!skinned) return { anchor: [-p.x, 0, -p.z], floorOffsets: [0] };
+		if (skinned.length === 0) return { anchor: [-p.x, 0, -p.z], floorOffsets: [0] };
 
-		skinned.skeleton.pose();
 		probe.updateMatrixWorld(true);
-		const posAttr = skinned.geometry.attributes.position;
-		const bindY = [];
-		for (let i = 0; i < posAttr.count; i += 1) bindY.push([i, posAttr.getY(i)]);
-		bindY.sort((a, b) => a[1] - b[1]);
-		const soleIdx = bindY.slice(0, Math.min(220, bindY.length)).map((e) => e[0]);
-
 		const v = new Vector3();
-		const lowestSoleY = () => {
+		const lowestSurfaceY = () => {
 			let min = Infinity;
-			for (const i of soleIdx) {
-				skinned.getVertexPosition(i, v);
-				v.applyMatrix4(skinned.matrixWorld);
-				if (v.y < min) min = v.y;
+			for (const mesh of skinned) {
+				mesh.skeleton.update();
+				const count = mesh.geometry.attributes.position.count;
+				for (let i = 0; i < count; i += 1) {
+					mesh.getVertexPosition(i, v);
+					v.applyMatrix4(mesh.matrixWorld);
+					if (v.y < min) min = v.y;
+				}
 			}
 			return min;
 		};
@@ -136,7 +132,7 @@ export function GlbTake({ url, frame = 0, fps = 24, position = [0, 0, 0], rot = 
 		for (let i = 0; i < count; i += 1) {
 			probeMixer.setTime(Math.min(clip.duration, i / fps));
 			probe.updateMatrixWorld(true);
-			floorOffsets.push(-lowestSoleY());
+			floorOffsets.push(-lowestSurfaceY());
 		}
 
 		probeMixer.setTime(0);
