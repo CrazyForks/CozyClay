@@ -13,8 +13,9 @@
  * runs its own FK. poseArraysToNpzMembers turns one CozyClay frame into
  * that exact 1-frame member set, so a hand-blocked pose can be materialized
  * as a standalone npz without ever hardcoding a rest skeleton: proportions
- * come from the base clip (deriveBoneOffsets) and the 8 joints CozyClay
- * does not author stay IDENTITY, i.e. "at ARDY rest".
+ * come from the base clip (deriveBoneOffsets), the 8 joints CozyClay does not
+ * author stay IDENTITY, and an optional int32 rotation mask prevents those
+ * identity placeholders from becoming rotation constraints.
  */
 import { writeFileSync } from "node:fs";
 
@@ -199,8 +200,12 @@ export function writeNpz(path, arrays) {
  * is the frames axis, so the generator's `[frame]` / `[frame, root_idx]`
  * indexing works unchanged.
  */
-export function poseArraysToNpzMembers({ local_rot_mats, posed_joints }) {
-	return {
+export function poseArraysToNpzMembers({
+	local_rot_mats,
+	posed_joints,
+	rotation_constraint_indices,
+}) {
+	const members = {
 		local_rot_mats: {
 			data: flattenToF32(local_rot_mats, [27, 3, 3], "local_rot_mats"),
 			shape: [1, 27, 3, 3],
@@ -210,6 +215,23 @@ export function poseArraysToNpzMembers({ local_rot_mats, posed_joints }) {
 			shape: [1, 27, 3],
 		},
 	};
+	if (rotation_constraint_indices !== undefined) {
+		if (
+			!Array.isArray(rotation_constraint_indices) ||
+			rotation_constraint_indices.some(
+				(index) => !Number.isInteger(index) || index < 0 || index >= 27
+			)
+		) {
+			throw new Error(
+				"poseArraysToNpzMembers: rotation_constraint_indices must contain joint indices in 0..26"
+			);
+		}
+		members.rotation_constraint_indices = {
+			data: Int32Array.from(rotation_constraint_indices),
+			shape: [rotation_constraint_indices.length],
+		};
+	}
+	return members;
 }
 
 /**

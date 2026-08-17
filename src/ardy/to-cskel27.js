@@ -3,11 +3,12 @@
  * reads (local_rot_mats 27x3x3, posed_joints 27x3; the generator then runs its
  * own FK, consulting only posed_joints[0] as the root).
  *
- * The 19 joints CozyClay authors map through each bone's armature-space rest
- * rotation Rb (cskel27-rest.json): L = Rb @ basis @ Rb^T. The other 8 joints
- * get identity, i.e. "at ARDY rest" — CozyClay does not author them and must
- * not invent them; `filled_identity` says which joints that happened for and
- * why, so callers can report it rather than guess.
+ * The 19 joints CozyClay authors map through each Mixamo bone's armature-space
+ * rest rotation Rb (cskel27-rest.json): L = Rb @ basis @ Rb^T. ARDY has four
+ * torso segments where Mixamo has three, so Mixamo Spine/Spine1 target ARDY
+ * Spine1/Spine2, matching playback's map. The remaining joints get identity;
+ * `filled_identity` records them and `rotation_constraint_indices` identifies
+ * the rotations that are genuinely authored.
  *
  * Proportions are never hardcoded: bone offsets come from the reference frame
  * of the same base clip the pose will constrain (mirroring
@@ -16,7 +17,11 @@
  * correct by construction.
  */
 
-import { COZYCLAY_BONES, CSKEL27_JOINTS } from "./cskel27.js";
+import {
+	COZYCLAY_BONES,
+	COZYCLAY_TO_CSKEL27,
+	CSKEL27_JOINTS,
+} from "./cskel27.js";
 import { CSKEL27_NEUTRAL } from "./cskel27-neutral.js";
 import {
 	basisQuaternionToLocalRotation,
@@ -35,6 +40,13 @@ const IDENTITY = [
 	[0, 1, 0],
 	[0, 0, 1],
 ];
+
+const SOURCE_BY_TARGET = new Map(
+	COZYCLAY_BONES.map((source) => [
+		CSKEL27_JOINTS[COZYCLAY_TO_CSKEL27[source]],
+		source,
+	])
+);
 
 const CANONICAL_ROOT_Y = -Math.min(...CSKEL27_NEUTRAL.map((joint) => joint[1]));
 
@@ -160,23 +172,28 @@ export function poseToCskel27({ pose, rest, reference }) {
 		restByJoint.set(entry.name, entry.rest);
 	}
 
-	const authored = new Set(COZYCLAY_BONES);
 	const local_rot_mats = new Array(CSKEL27_JOINTS.length);
 	const filled_identity = [];
+	const rotation_constraint_indices = [];
 	for (let index = 0; index < CSKEL27_JOINTS.length; index += 1) {
 		const name = CSKEL27_JOINTS[index];
-		const rb = restByJoint.get(name);
-		if (authored.has(name) && rb !== null && rb !== undefined) {
+		const sourceName = SOURCE_BY_TARGET.get(name);
+		const rb = sourceName ? restByJoint.get(sourceName) : null;
+		if (sourceName && rb !== null && rb !== undefined) {
 			// L = Rb @ basis @ Rb^T; basisQuaternionToLocalRotation is the
 			// quatToMat + basisToLocal composition from convert.js.
-			local_rot_mats[index] = basisQuaternionToLocalRotation(pose.bones[name], rb);
+			local_rot_mats[index] = basisQuaternionToLocalRotation(
+				pose.bones[sourceName],
+				rb
+			);
+			rotation_constraint_indices.push(index);
 		} else {
 			// Fresh identity per joint so callers can never alias a shared
 			// constant by mutating one row.
 			local_rot_mats[index] = IDENTITY.map((row) => row.slice());
 			filled_identity.push({
 				joint: name,
-				reason: authored.has(name) ? "no rest rotation" : "not authored",
+				reason: sourceName ? "no rest rotation" : "not authored",
 			});
 		}
 	}
@@ -201,5 +218,10 @@ export function poseToCskel27({ pose, rest, reference }) {
 	const canonicalRoot = canonicalCskel27Reference().posed_joints[0];
 	const posed_joints = forwardKinematics(local_rot_mats, offsets, pose.root ?? canonicalRoot);
 
-	return { local_rot_mats, posed_joints, filled_identity };
+	return {
+		local_rot_mats,
+		posed_joints,
+		filled_identity,
+		rotation_constraint_indices,
+	};
 }

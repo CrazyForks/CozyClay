@@ -35,6 +35,8 @@
  * HandEnd leaves drive no bone — their motion folds into the mapped joints'
  * global transforms, and HeadTop_End/Toe_End/finger bones simply follow
  * their parents). Bones the map does not touch keep their bind transforms.
+ * Shoulder and arm chains keep their Mixamo bind translations and consume
+ * ARDY rotations only, avoiding clavicle shear between incongruent rigs.
  */
 
 import * as THREE from "three";
@@ -75,6 +77,18 @@ const SKINNING_MAP = CSKEL27_JOINTS.map((name) => {
 			return name;
 	}
 });
+
+// CoreSkeleton27 and the Mixamo bots are not congruent around the clavicles:
+// their neutral shoulder directions differ by about 30 degrees. Positional
+// skinning therefore moves the arm root away from the direction encoded by
+// the parent bone's rotation and visibly shears the shoulder. Keep the
+// Mixamo arm chains' authored local translations and retarget rotations only;
+// the rest of the body still uses ARDY positional skinning for root motion
+// and foot placement.
+const HIERARCHY_PRESERVED_JOINTS = new Set([
+	"RightShoulder", "RightArm", "RightForeArm",
+	"LeftShoulder", "LeftArm", "LeftForeArm",
+]);
 
 const ARDY_NEUTRAL_MIN_Y = -0.9544128; // toe depth under the hips-origin neutral pose
 
@@ -160,6 +174,7 @@ function prepOf(rig) {
 	const bindPos = new Array(CSKEL27_JOINTS.length).fill(null);
 	const bindQuat = new Array(CSKEL27_JOINTS.length).fill(null);
 	const bindScale = new Array(CSKEL27_JOINTS.length).fill(null);
+	const bindLocalPos = new Array(CSKEL27_JOINTS.length).fill(null);
 	const parentBindWorld = new Array(CSKEL27_JOINTS.length).fill(null);
 	for (let j = 0; j < CSKEL27_JOINTS.length; j += 1) {
 		const mixamoName = SKINNING_MAP[j];
@@ -171,6 +186,7 @@ function prepOf(rig) {
 		bindPos[j] = new THREE.Vector3().setFromMatrixPosition(world);
 		bindQuat[j] = new THREE.Quaternion().setFromRotationMatrix(world);
 		bindScale[j] = bone.scale.clone();
+		bindLocalPos[j] = bone.position.clone();
 		parentBindWorld[j] = worldByNode.get(bone.parent) ?? new THREE.Matrix4();
 	}
 
@@ -228,7 +244,17 @@ function prepOf(rig) {
 		}
 	}
 
-	prep = { bones, bindQuat, bindScale, parentBindWorld, chainParent, chainRel, scale, offsets };
+	prep = {
+		bones,
+		bindQuat,
+		bindScale,
+		bindLocalPos,
+		parentBindWorld,
+		chainParent,
+		chainRel,
+		scale,
+		offsets,
+	};
 	rigPreps.set(rig, prep);
 	return prep;
 }
@@ -371,6 +397,10 @@ export function applyMotionFrame(rig, motion, frame) {
 			mParentInv.copy(desiredWorld[chainParentJ]).multiply(prep.chainRel[j]);
 		} else {
 			mParentInv.copy(prep.parentBindWorld[j]);
+		}
+
+		if (HIERARCHY_PRESERVED_JOINTS.has(CSKEL27_JOINTS[j])) {
+			vWorld.copy(prep.bindLocalPos[j]).applyMatrix4(mParentInv);
 		}
 
 		mWorld.compose(vWorld, qWorld, prep.bindScale[j]);

@@ -126,8 +126,11 @@ ok(
 	`worst=${worstRaw.toExponential(3)} at ${worstRawBone}`
 );
 
-	// The 8 joints CozyClay does not author: exact identity, and named.
-	const authoredSet = new Set(COZYCLAY_BONES);
+// The 8 joints CozyClay does not author after the Mixamo -> Core torso map:
+// exact identity, named, and excluded from the rotation constraint mask.
+const authoredSet = new Set(
+	COZYCLAY_BONES.map((name) => CSKEL27_JOINTS[COZYCLAY_TO_CSKEL27[name]])
+);
 const nonAuthored = CSKEL27_JOINTS.filter((name) => !authoredSet.has(name));
 ok(
 	"exactly 8 joints are not authored",
@@ -151,6 +154,14 @@ ok(
 	reported.size === nonAuthored.length &&
 		nonAuthored.every((name) => reported.get(name) === "not authored"),
 	`filled_identity=${JSON.stringify(out.filled_identity)}`
+);
+ok(
+	"rotation constraint mask contains exactly the 19 authored target joints",
+	out.rotation_constraint_indices.length === authoredSet.size &&
+		out.rotation_constraint_indices.every(
+			(index) => authoredSet.has(CSKEL27_JOINTS[index])
+		),
+	`indices=${JSON.stringify(out.rotation_constraint_indices)}`
 );
 
 // FK: the root rides exactly on the canonical floor-aligned root; every position finite.

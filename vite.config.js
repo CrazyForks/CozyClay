@@ -2,6 +2,9 @@ import { defineConfig } from "vite";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 
+const ardyBridgeUrl =
+	process.env.CCLAY_ARDY_BRIDGE_URL || "http://127.0.0.1:5181";
+
 export default defineConfig({
 	// Root-absolute on purpose: the site has its own apex domain, and the studio
 	// is served from "/app/" while its public assets stay at the root. A relative
@@ -27,7 +30,7 @@ export default defineConfig({
 		// (`base: "./"`, no build-time coupling), so this proxy must never be
 		// promoted into a server-side requirement.
 		proxy: {
-			"/ardy": "http://127.0.0.1:5181",
+			"/ardy": ardyBridgeUrl,
 			"/generation": "http://127.0.0.1:5182",
 		},
 	},

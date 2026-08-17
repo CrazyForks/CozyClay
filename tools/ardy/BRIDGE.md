@@ -158,8 +158,9 @@ ascending and are converted independently with the floor-aligned canonical
 CoreSkeleton27 reference. No user-selected motion supplies root height.
 `run-on-box.sh` passes every entry as a repeated
 `--pose-from <npz> 0 <frame>` constraint. The remote
-`FullBodyConstraintSet` pins joint positions, root X/Y/Z, and heading at that
-frame.
+the CozyClay full-body constraint pins joint positions, authored joint
+rotations, root X/Y/Z, and heading at that frame. The pose npz carries the
+authored rotation indices so identity-filled Core joints are not overconstrained.
 
 `segments` is optional. When present it must contain 2..64 contiguous,
 non-overlapping ranges covering frame 0 through `duration * 20`; each range

@@ -62,7 +62,12 @@ export const COZYCLAY_BONES = [
 	"LeftFoot", "RightFoot",
 ];
 
-/** CozyClay bone name -> cskel27 joint index. */
+/** CozyClay/Mixamo bone name -> playback-equivalent cskel27 joint index.
+ * Core has one more torso segment, so its first animated spine joint is
+ * Spine1 and the Mixamo chest lands on Spine2. */
 export const COZYCLAY_TO_CSKEL27 = Object.fromEntries(
-	COZYCLAY_BONES.map((name) => [name, JOINT_INDEX[name]])
+	COZYCLAY_BONES.map((name) => [
+		name,
+		JOINT_INDEX[name === "Spine" ? "Spine1" : name === "Spine1" ? "Spine2" : name],
+	])
 );

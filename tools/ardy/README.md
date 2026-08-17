@@ -107,7 +107,10 @@ per-joint local rotations, built from the CozyClay basis quaternions via
 armature-space rest rotation — see CozyClay `motion_retarget.py` /
 `motion_constraints.py`). The src-frame is range-checked against the npz by
 the generator remotely, so an out-of-range `--src-frame` dies on the box
-with a clear message rather than silently.
+with a clear message rather than silently. CozyClay-authored pose files also
+carry `rotation_constraint_indices`: only those rotations are observed by the
+model, while the identity-filled Core joints remain free. An ordinary motion
+npz without that member constrains every joint rotation.
 
 ## The generation grammar
 
@@ -117,10 +120,11 @@ The raw generator flag for a full-body pose constraint is:
 --pose-from <src-npz> <src-frame> <dst-frame>
 ```
 
-It copies **every joint's** pose from `<src-npz>` at `<src-frame>` and pins
-it at `<dst-frame>` of the new clip. It is repeatable, requires `--base`,
-and works for poses no end-effector constraint can express (sitting, lying,
-reaching). The clip is `int(duration * 20)` frames at ARDY's 20 fps, and
+It pins every joint position plus the selected joint rotations from
+`<src-npz>` at `<src-frame>` onto `<dst-frame>` of the new clip. It is
+repeatable and works for poses no end-effector constraint can express
+(sitting, lying, reaching). The clip is `int(duration * 20)` frames at
+ARDY's 20 fps, and
 `dst-frame` must satisfy `0 <= dst-frame < duration * 20`; the generator
 also rejects clips under 3 frames.
 

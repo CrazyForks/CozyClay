@@ -11,10 +11,11 @@ One full ``model(...)`` sampling call over the whole clip, optionally
 conditioned on:
 
 * ``--pose-from <npz> <src-frame> <dst-frame>`` (repeatable): pins the FULL
-  BODY pose stored in an ARDY motion npz (``local_rot_mats`` +
-  ``posed_joints``) onto a clip frame via ``FullBodyConstraintSet`` — joint
-  positions, joint rotations, root X/Y/Z and heading, exactly the semantics
-  BRIDGE.md documents for pose pinning.
+*  BODY pose stored in an ARDY motion npz (``local_rot_mats`` +
+*  ``posed_joints``) onto a clip frame — joint positions, authored joint
+*  rotations, root X/Y/Z and heading. CozyClay pose npz files carry an
+*  explicit rotation-index mask; ordinary motion npz files constrain all
+*  rotations.
 * ``--root-2d FRAME X Z HEADING`` (repeatable): sparse root waypoints on the
   X/Z ground plane via ``Root2DConstraintSet`` (HEADING in radians or the
   literal ``none``), the same contract as cclay_sequence_generate.py.
@@ -42,6 +43,7 @@ import numpy as np
 import torch
 
 from ardy.model import DEFAULT_MODEL, load_model
+from ardy.constraints import FullBodyConstraintSet
 from ardy.model.loading import get_env_var
 from ardy.model.registry import resolve_model_name
 from ardy.motion_rep.tools import length_to_mask
@@ -234,7 +236,7 @@ def parse_root_waypoints(raw_waypoints, num_frames: int) -> list:
 
 
 def load_pose(path, skeleton, device):
-    """Pose npz -> (local_rot_mats [F,J,3,3], posed_joints [F,J,3]) tensors.
+    """Pose npz -> local rotations, positions, and rotation constraint indices.
 
     The npz stores per-joint LOCAL rotations; FullBodyConstraintSet wants
     GLOBAL rotations and posed positions, so the caller runs skeleton.fk on
@@ -243,7 +245,38 @@ def load_pose(path, skeleton, device):
     with np.load(path, allow_pickle=False) as data:
         local = torch.from_numpy(np.asarray(data["local_rot_mats"])).float().to(device)
         posed = torch.from_numpy(np.asarray(data["posed_joints"])).float().to(device)
-    return local, posed
+        if "rotation_constraint_indices" in data:
+            rotation_indices = torch.from_numpy(
+                np.asarray(data["rotation_constraint_indices"], dtype=np.int64)
+            )
+        else:
+            rotation_indices = torch.arange(local.shape[1], dtype=torch.long)
+    return local, posed, rotation_indices
+
+
+class CclayFullBodyConstraintSet(FullBodyConstraintSet):
+    """Upstream full-body positions plus explicit global-rotation observations.
+
+    ARDY's FullBodyConstraintSet accepts rotations but deliberately omits them
+    from update_constraints. CozyClay poses need shoulder, elbow and wrist
+    orientation as well as joint centers, so this subclass fills the motion
+    representation's supported global_joints_rots channel for authored joints.
+    """
+
+    name = "cclay-fullbody-position-rotation"
+
+    def __init__(self, *args, rotation_indices, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.rotation_indices = rotation_indices.long().cpu()
+
+    def update_constraints(self, data_dict, index_dict):
+        super().update_constraints(data_dict, index_dict)
+        indices = torch.cartesian_prod(self.frame_indices.cpu(), self.rotation_indices)
+        device_indices = self.rotation_indices.to(self.global_joints_rots.device)
+        data_dict["global_joints_rots"].append(
+            self.global_joints_rots[:, device_indices].reshape(-1, 3, 3)
+        )
+        index_dict["global_joints_rots"].append(indices)
 
 
 def measure_waypoints(waypoints: list, generated_joints, skeleton) -> list:
@@ -318,21 +351,20 @@ def main(argv=None, preloaded_model=None):
             raise ValueError(f"--pose-from frames must be integers, got {(raw_src, raw_dst)!r}.")
         if not 0 <= dst_frame < num_frames:
             raise ValueError(f"--pose-from dst-frame {dst_frame} is outside the clip (0..{num_frames - 1}).")
-        local, posed = load_pose(npz_path, skeleton, device)
+        local, posed, rotation_indices = load_pose(npz_path, skeleton, device)
         if not 0 <= src_frame < local.shape[0]:
             raise ValueError(
                 f"--pose-from src-frame {src_frame} is outside {npz_path} (0..{local.shape[0] - 1})."
             )
-        from ardy.constraints import FullBodyConstraintSet
-
         root = posed[src_frame : src_frame + 1, skeleton.root_idx]
         rotations, positions, _ = skeleton.fk(local[src_frame : src_frame + 1], root)
         constraint_lst.append(
-            FullBodyConstraintSet(
+            CclayFullBodyConstraintSet(
                 skeleton,
                 torch.tensor([dst_frame]),
                 positions,
                 rotations,
+                rotation_indices=rotation_indices,
             )
         )
         pose_targets.append((dst_frame, positions[0].cpu().numpy()))

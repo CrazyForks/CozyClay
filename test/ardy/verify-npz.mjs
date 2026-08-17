@@ -103,7 +103,7 @@ function parseZip(bytes) {
 	return members;
 }
 
-/** Parse one .npy v1.0 payload into { shape, data: Float32Array }. */
+/** Parse one writer-supported .npy v1.0 payload. */
 function parseNpy(buf) {
 	if (buf.length < 10 || buf[0] !== 0x93 || buf.toString("ascii", 1, 6) !== "NUMPY") {
 		throw new Error("bad npy magic");
@@ -115,7 +115,7 @@ function parseNpy(buf) {
 	}
 	const header = buf.toString("ascii", 10, 10 + headerLen);
 	const m =
-		/^\{'descr': '(<f4)', 'fortran_order': (True|False), 'shape': \((.*)\), \} *\n$/.exec(
+		/^\{'descr': '(<f4|<i4)', 'fortran_order': (True|False), 'shape': \((.*)\), \} *\n$/.exec(
 			header
 		);
 	if (!m) throw new Error(`unparseable npy header: ${header.trim()}`);
@@ -132,7 +132,14 @@ function parseNpy(buf) {
 	// ArrayBuffer.slice copies, so the view never aliases the file buffer and
 	// its byteOffset is 0 (typed-array views also require 4-byte alignment,
 	// which a subarray into the zip stream does not guarantee).
-	return { shape, data: new Float32Array(dataBytes.buffer.slice(dataBytes.byteOffset, dataBytes.byteOffset + dataBytes.byteLength)) };
+	const ArrayType = m[1] === "<i4" ? Int32Array : Float32Array;
+	return {
+		descr: m[1],
+		shape,
+		data: new ArrayType(
+			dataBytes.buffer.slice(dataBytes.byteOffset, dataBytes.byteOffset + dataBytes.byteLength)
+		),
+	};
 }
 
 const ZIP_EOCD_SIG = 0x06054b50;
@@ -224,12 +231,17 @@ try {
 	const fixture = JSON.parse(
 		readFileSync(new URL("./fixtures/ardy-frame0.json", import.meta.url), "utf8")
 	);
-	poseMembers = poseArraysToNpzMembers(fixture);
+	const rotationConstraintIndices = [0, 2, 7, 8, 9, 13, 14, 15];
+	poseMembers = poseArraysToNpzMembers({
+		...fixture,
+		rotation_constraint_indices: rotationConstraintIndices,
+	});
 	writeNpz(posePath, poseMembers);
 	parsedPose = parseZip(readFileSync(posePath));
 	ok("pose npz: fixture via poseArraysToNpzMembers + round-trip", true);
 	const rot = parsedPose.get("local_rot_mats.npy");
 	const pos = parsedPose.get("posed_joints.npy");
+	const rotationMask = parsedPose.get("rotation_constraint_indices.npy");
 	ok(
 		"pose npz: member shapes are [1,27,3,3] and [1,27,3]",
 		rot !== undefined &&
@@ -244,6 +256,15 @@ try {
 			pos !== undefined &&
 			exactMatch(rot.data, poseMembers.local_rot_mats.data) &&
 			exactMatch(pos.data, poseMembers.posed_joints.data)
+	);
+	ok(
+		"pose npz: authored rotation mask round-trips as int32",
+		rotationMask !== undefined &&
+			rotationMask.shape.join() === `${rotationConstraintIndices.length}` &&
+			exactMatch(rotationMask.data, Int32Array.from(rotationConstraintIndices)),
+		rotationMask
+			? `shape=${fmtShape(rotationMask.shape)} dtype=${rotationMask.descr}`
+			: "member missing"
 	);
 	// Pin the flatten direction against the raw fixture JSON: the first
 	// float32 of each member must be the float32 rounding of the JSON's

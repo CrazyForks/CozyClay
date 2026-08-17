@@ -25,6 +25,7 @@ import {
 	snapshotPlaybackBones,
 	restorePlaybackBones,
 } from "../../src/ardy/playback.js";
+import { decodeMotionNpz } from "../../src/ardy/npz.js";
 import { CSKEL27_JOINTS } from "../../src/ardy/cskel27.js";
 import { CSKEL27_NEUTRAL } from "../../src/ardy/cskel27-neutral.js";
 
@@ -156,7 +157,12 @@ const anchorX = Math.fround(CSKEL27_NEUTRAL[0][0]); // anchor hips xz (frame 0)
 const anchorZ = Math.fround(CSKEL27_NEUTRAL[0][2]);
 let posErr = 0;
 let quatErr = 0;
+let preservedLocalErr = 0;
 let posWorst = "";
+const hierarchyPreserved = new Set([
+	"RightShoulder", "RightArm", "RightForeArm",
+	"LeftShoulder", "LeftArm", "LeftForeArm",
+]);
 for (const { j, bone } of mapped) {
 	const n = CSKEL27_NEUTRAL[j];
 	const offset = bindWorldPos.get(bone).clone().sub(new THREE.Vector3(
@@ -169,15 +175,22 @@ for (const { j, bone } of mapped) {
 		S * Math.fround(n[1] + ARDY_NEUTRAL_TOE),
 		S * (Math.fround(n[2] - 0.25) - anchorZ),
 	).add(offset.applyQuaternion(qGlobal));
-	const err = bone.getWorldPosition(new THREE.Vector3()).distanceTo(expected);
-	if (err > posErr) { posErr = err; posWorst = bone.name; }
+	if (hierarchyPreserved.has(CSKEL27_JOINTS[j])) {
+		preservedLocalErr = Math.max(
+			preservedLocalErr,
+			bone.position.distanceTo(bindLocal.get(bone).pos)
+		);
+	} else {
+		const err = bone.getWorldPosition(new THREE.Vector3()).distanceTo(expected);
+		if (err > posErr) { posErr = err; posWorst = bone.name; }
+	}
 	const expectedQuat = qGlobal.clone().multiply(bindWorldQuat.get(bone));
 	quatErr = Math.max(quatErr, quatMaxError(bone.getWorldQuaternion(new THREE.Quaternion()), expectedQuat));
 }
 ok(
-	"real rig: translated/rotated frame hits s*posed + R@offset everywhere",
-	posErr < 0.005 && quatErr < 1e-3,
-	`max pos err ${posErr.toFixed(5)} scene units at ${posWorst}, max quat err ${quatErr.toExponential(1)}`,
+	"real rig: body hits positional targets while arm chains preserve Mixamo translations",
+	posErr < 0.005 && preservedLocalErr < 1e-6 && quatErr < 1e-3,
+	`body pos ${posErr.toFixed(5)} at ${posWorst}, arm local ${preservedLocalErr.toExponential(1)}, quat ${quatErr.toExponential(1)}`,
 );
 
 // 4. restore reproduces the bind transforms bitwise.
@@ -189,6 +202,54 @@ ok(
 		return bone.position.equals(b.pos) && bone.quaternion.equals(b.quat);
 	}),
 	`bones=${mapped.length} bitwise`,
+);
+
+// 5. Regression for the reported shoulder kink on the actual app rig and
+// shipped generated clip. A child's translated joint center must stay on the
+// direction encoded by its parent's rotated Mixamo bone; positional skinning
+// previously diverged by 31-44 degrees at Shoulder -> Arm.
+const yBuf = readFileSync(new URL("../../public/models/y-bot-tpose.fbx", import.meta.url));
+const yRig = new FBXLoader().parse(
+	yBuf.buffer.slice(yBuf.byteOffset, yBuf.byteOffset + yBuf.byteLength),
+	"",
+);
+yRig.scale.setScalar(0.01);
+yRig.updateMatrixWorld(true);
+const yBones = motionBones(yRig);
+const demoBytes = readFileSync(new URL("../../public/demo/walk-then-stop.npz", import.meta.url));
+const demoMotion = await decodeMotionNpz(demoBytes);
+const armPairs = [
+	["LeftShoulder", "LeftArm"],
+	["LeftArm", "LeftForeArm"],
+	["RightShoulder", "RightArm"],
+	["RightArm", "RightForeArm"],
+].map(([parentName, childName]) => ({
+	parent: yBones[CSKEL27_JOINTS.indexOf(parentName)],
+	child: yBones[CSKEL27_JOINTS.indexOf(childName)],
+	bindLocal: yBones[CSKEL27_JOINTS.indexOf(childName)].position.clone(),
+}));
+let armDirectionError = 0;
+for (let frame = 0; frame < demoMotion.frames; frame += 1) {
+	applyMotionFrame(yRig, demoMotion, frame);
+	for (const { parent, child, bindLocal } of armPairs) {
+		const actual = child.getWorldPosition(new THREE.Vector3())
+			.sub(parent.getWorldPosition(new THREE.Vector3()))
+			.normalize();
+		const expected = bindLocal.clone()
+			.applyQuaternion(parent.getWorldQuaternion(new THREE.Quaternion()))
+			.normalize();
+		armDirectionError = Math.max(
+			armDirectionError,
+			THREE.MathUtils.radToDeg(
+				Math.acos(THREE.MathUtils.clamp(actual.dot(expected), -1, 1))
+			)
+		);
+	}
+}
+ok(
+	"Y-Bot demo: shoulder and arm translations follow the rotated Mixamo hierarchy",
+	armDirectionError < 0.01,
+	`max direction error ${armDirectionError.toFixed(5)} deg across ${demoMotion.frames} frames`,
 );
 
 console.log(`\nfailures: ${fail.length}`);
