@@ -2165,7 +2165,7 @@ const noop = () => {};
 	useEffect(() => {
 		if (demoSeeded.current) return;
 		if (!bridge || bridge.ok) return;
-		if (!rigA || motion || motionBusy) return;
+		if (glbTake || motion || motionBusy || (!isGlbTakeUrl(DEMO_MOTION_URL) && !rigA)) return;
 		demoSeeded.current = true;
 		// Loaded, not played: the clip walks the subject out of the default
 		// framing, so autoplay would greet a first-time visitor with an empty
@@ -3245,9 +3245,8 @@ useEffect(() => {
 								rotation={[-Math.PI / 2, 0, 0]}
 							/>
 
-							{/* A glb take brings its own body. Drawing the Mixamo rig
-							    beside it would put two performers on one subject. */}
-							{!glbTake && (
+							{/* A hosted GLB never flashes the default Mixamo character first. */}
+							{!glbTake && !(isGlbTakeUrl(DEMO_MOTION_URL) && !motion && (!bridge || !bridge.ok)) && (
 								<Character
 									url={CHARACTER_MODEL_URL}
 									position={[effectiveCharA.x, 0, effectiveCharA.z]}
