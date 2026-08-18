@@ -11,17 +11,114 @@ const HIERARCHY_LABELS_KO = {
 	"Character 1": "캐릭터 1",
 	"Character 2": "캐릭터 2",
 	Rig: "리그",
+	Torso: "몸통",
 	"Root / Hips": "루트 / 골반",
 	Spine: "척추",
+	Chest: "가슴",
+	Neck: "목",
+	Head: "머리",
 	"Left Arm": "왼팔",
+	"Left Shoulder": "왼쪽 어깨",
+	"Left Elbow": "왼쪽 팔꿈치",
+	"Left Hand": "왼손",
 	"Right Arm": "오른팔",
+	"Right Shoulder": "오른쪽 어깨",
+	"Right Elbow": "오른쪽 팔꿈치",
+	"Right Hand": "오른손",
 	"Left Leg": "왼다리",
+	"Left Knee": "왼쪽 무릎",
+	"Left Foot": "왼발",
 	"Right Leg": "오른다리",
+	"Right Knee": "오른쪽 무릎",
+	"Right Foot": "오른발",
 	Environment: "환경",
 	Props: "소품",
 };
 
 const FALLBACK_SCENES = [{ id: "current-scene", name: "SCENE 01" }];
+
+function HierarchyIcon({ kind, className = "" }) {
+	const common = {
+		className: `hierarchy-icon ${kind}${className ? ` ${className}` : ""}`,
+		viewBox: "0 0 24 24",
+		fill: "none",
+		stroke: "currentColor",
+		strokeWidth: 1.7,
+		strokeLinecap: "round",
+		strokeLinejoin: "round",
+		"aria-hidden": true,
+	};
+
+	switch (kind) {
+		case "scene":
+			return (
+				<svg {...common}>
+					<path d="M12 3.25 21 8l-9 4.75L3 8l9-4.75Z" fill="currentColor" fillOpacity=".16" />
+					<path d="m4.25 12 7.75 4.1 7.75-4.1M4.25 16 12 20.1l7.75-4.1" />
+				</svg>
+			);
+		case "camera":
+			return (
+				<svg {...common}>
+					<rect x="3" y="6.5" width="13.5" height="11" rx="2" />
+					<path d="m16.5 10 4.5-2.25v8.5L16.5 14" />
+					<circle cx="9.5" cy="12" r="2.4" />
+				</svg>
+			);
+		case "group":
+			return (
+				<svg {...common}>
+					<circle cx="9" cy="8.25" r="2.75" />
+					<circle cx="16.5" cy="9.25" r="2.15" />
+					<path d="M3.75 18c.45-3.25 2.15-5 5.25-5s4.8 1.75 5.25 5M14 14.25c3.55-.55 5.65.75 6.25 3.75" />
+				</svg>
+			);
+		case "character":
+			return (
+				<svg {...common}>
+					<circle cx="12" cy="7.25" r="3" fill="currentColor" fillOpacity=".12" />
+					<path d="M5.25 20c.45-5 2.7-7.5 6.75-7.5S18.3 15 18.75 20M9.25 13.25 12 16l2.75-2.75" />
+				</svg>
+			);
+		case "rig":
+			return (
+				<svg {...common}>
+					<circle cx="12" cy="4.5" r="1.75" fill="currentColor" fillOpacity=".18" />
+					<circle cx="6" cy="11.5" r="1.75" />
+					<circle cx="18" cy="11.5" r="1.75" />
+					<circle cx="12" cy="19.5" r="1.75" />
+					<path d="m10.8 5.8-3.6 4.4m6-4.4 3.6 4.4M7.75 12.65l3 5.4m5.5-5.4-3 5.4" />
+				</svg>
+			);
+		case "bone":
+			return (
+				<svg {...common}>
+					<path d="M7.4 8.25a2.5 2.5 0 1 1-3.65-3.4A2.5 2.5 0 1 1 7.2 8.5l8.3 8.3a2.5 2.5 0 1 1 3.65 3.4 2.5 2.5 0 1 1-3.4-3.65L7.4 8.25Z" />
+				</svg>
+			);
+		case "environment":
+			return (
+				<svg {...common}>
+					<circle cx="12" cy="12" r="8.5" fill="currentColor" fillOpacity=".08" />
+					<path d="M3.8 13h16.4M12 3.5c2.25 2.35 3.4 5.2 3.4 8.5S14.25 18.15 12 20.5C9.75 18.15 8.6 15.3 8.6 12S9.75 5.85 12 3.5Z" />
+				</svg>
+			);
+		case "props":
+		case "object":
+			return (
+				<svg {...common}>
+					<path d="m12 3.5 8 4.25v8.5l-8 4.25-8-4.25v-8.5L12 3.5Z" fill="currentColor" fillOpacity=".1" />
+					<path d="m4.25 7.9 7.75 4.2 7.75-4.2M12 12.1v8.15" />
+				</svg>
+			);
+		default:
+			return (
+				<svg {...common}>
+					<circle cx="12" cy="12" r="7.5" />
+				</svg>
+			);
+	}
+}
 
 function displaySceneName(name) {
 	if (!isKo) return name;
@@ -108,7 +205,7 @@ function SceneSwitcher({
 									}}
 									onDoubleClick={() => setEditingId(scene.id)}
 								>
-									<span className="scene-document-icon" aria-hidden="true" />
+									<HierarchyIcon kind="scene" className="scene-document-icon" />
 									<span>{displaySceneName(scene.name)}</span>
 								</button>
 							)}
@@ -264,7 +361,7 @@ function TreeRow({
 				// blur commits (docs/unity-reference.md §9.7). A div, not the
 				// row button — an input inside a button is invalid HTML.
 				<div className="hierarchy-row">
-					<span className={`hierarchy-icon ${node.kind}`} aria-hidden="true" />
+					<HierarchyIcon kind={node.kind} />
 					<input
 						ref={inputRef}
 						className="hierarchy-rename-input"
@@ -287,7 +384,7 @@ function TreeRow({
 				</div>
 			) : (
 				<button type="button" className="hierarchy-row" onClick={() => onSelect(node.id)}>
-					<span className={`hierarchy-icon ${node.kind}`} aria-hidden="true" />
+					<HierarchyIcon kind={node.kind} />
 					<span className="hierarchy-label">{label}</span>
 					{status && <span className="hierarchy-status">{status}</span>}
 					{badge !== null && badge !== undefined && badge !== 0 && <span className="hierarchy-badge">{badge}</span>}

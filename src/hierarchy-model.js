@@ -27,12 +27,56 @@ export const HIERARCHY_NODES = [
 								label: "Rig",
 								kind: "rig",
 								children: [
-									{ id: "rig.hips", label: "Root / Hips", kind: "bone" },
-									{ id: "rig.spine", label: "Spine", kind: "bone" },
-									{ id: "rig.leftArm", label: "Left Arm", kind: "bone" },
-									{ id: "rig.rightArm", label: "Right Arm", kind: "bone" },
-									{ id: "rig.leftLeg", label: "Left Leg", kind: "bone" },
-									{ id: "rig.rightLeg", label: "Right Leg", kind: "bone" },
+									{
+										id: "rig.torso",
+										label: "Torso",
+										kind: "rig",
+										children: [
+											{ id: "rig.hips", label: "Root / Hips", kind: "bone" },
+											{ id: "rig.spine", label: "Spine", kind: "bone" },
+											{ id: "rig.chest", label: "Chest", kind: "bone" },
+											{ id: "rig.neck", label: "Neck", kind: "bone" },
+											{ id: "rig.head", label: "Head", kind: "bone" },
+										],
+									},
+									{
+										id: "rig.leftArm",
+										label: "Left Arm",
+										kind: "rig",
+										children: [
+											{ id: "rig.leftShoulder", label: "Left Shoulder", kind: "bone" },
+											{ id: "rig.leftElbow", label: "Left Elbow", kind: "bone" },
+											{ id: "rig.leftHand", label: "Left Hand", kind: "bone" },
+										],
+									},
+									{
+										id: "rig.rightArm",
+										label: "Right Arm",
+										kind: "rig",
+										children: [
+											{ id: "rig.rightShoulder", label: "Right Shoulder", kind: "bone" },
+											{ id: "rig.rightElbow", label: "Right Elbow", kind: "bone" },
+											{ id: "rig.rightHand", label: "Right Hand", kind: "bone" },
+										],
+									},
+									{
+										id: "rig.leftLeg",
+										label: "Left Leg",
+										kind: "rig",
+										children: [
+											{ id: "rig.leftKnee", label: "Left Knee", kind: "bone" },
+											{ id: "rig.leftFoot", label: "Left Foot", kind: "bone" },
+										],
+									},
+									{
+										id: "rig.rightLeg",
+										label: "Right Leg",
+										kind: "rig",
+										children: [
+											{ id: "rig.rightKnee", label: "Right Knee", kind: "bone" },
+											{ id: "rig.rightFoot", label: "Right Foot", kind: "bone" },
+										],
+									},
 								],
 							},
 						],

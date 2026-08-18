@@ -15,6 +15,7 @@ export const DEFAULT_SCENE_STAGE = Object.freeze({
 	poseA: null,
 	poseB: null,
 	hasCharSheet: false,
+	shotAspect: "16:9",
 	subject: "a young woman in a tan coat",
 	subject2: "a man in a dark coat",
 });
@@ -58,6 +59,9 @@ export function createSceneStage(stage = null) {
 		charB: { ...cloneValue(DEFAULT_SCENE_STAGE.charB), ...cloneValue(plainObject(source.charB) ? source.charB : {}) },
 		showB: source.showB === true,
 		hasCharSheet: source.hasCharSheet === true,
+		shotAspect: ["16:9", "9:16", "1:1", "4:3"].includes(source.shotAspect)
+			? source.shotAspect
+			: DEFAULT_SCENE_STAGE.shotAspect,
 		subject: typeof source.subject === "string" ? source.subject : DEFAULT_SCENE_STAGE.subject,
 		subject2: typeof source.subject2 === "string" ? source.subject2 : DEFAULT_SCENE_STAGE.subject2,
 	};

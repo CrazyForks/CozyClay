@@ -29,6 +29,11 @@ expect("plan zoom persists with the workspace layout", app.includes("planZoom: 1
 expect("zoom shrinks the ortho extent, not the pane", dualview.includes("planZoom = 1") && dualview.includes("PLAN_EXTENT / Math.max(0.25, planZoom)"));
 expect("demand loop wakes on mount and model commit", dualview.includes("requestAnimationFrame(() => requestAnimationFrame(invalidate))") && app.includes("const frame = requestAnimationFrame(invalidate);"));
 expect("double-click no longer swaps Scene and Top-View", !app.includes('setViewMode((current) => (current === "plan" ? "shot" : "plan"))'));
+expect("Scene toolbar exposes shot preset, aspect, FOV, recenter, and Top-View controls", app.includes("viewport-toolbar-field shot-field") && app.includes("SHOT_ASPECT_PRESETS") && app.includes("viewport-fov-control") && app.includes("Recenter on subject") && app.includes('ko("Top", "탑")'));
+expect("Scene and PlayView tools share one horizontal title bar", app.includes('className="viewport-titlebar"') && css.includes(".viewport-titlebar") && css.includes("position: static"));
+expect("PlayView toolbar exposes framing readouts, playback, and recording", app.includes("editor-toolbar play-tools") && app.includes("shotOutput.label") && app.includes("toggleShotRecording"));
+expect("selected aspect reaches the shot renderer", app.includes("shotAspect={shotOutput.aspect}") && dualview.includes("shotAspect = SHOT_ASPECT") && dualview.includes("fitAspect(mainRect, shotAspect)"));
+expect("recording and still capture use the selected output dimensions", app.includes("mirror.width = shotOutput.width") && app.includes("width={shotOutput.width}") && app.includes("canvas.width = shotOutput.width"));
 expect("double-clicking the inset body folds it", app.includes('event.target.closest?.(".vp-inset-tag")') && app.includes("insetCollapsed: !current.insetCollapsed"));
 expect("the tag strip works like a foldout header", app.includes("if (!moved && ev.detail <= 1) {") && app.includes("insetToggledAtRef"));
 expect("one fold per gesture, even on a double-click", app.includes("if (e.detail > 1) return;") && app.includes("ev.detail <= 1"));

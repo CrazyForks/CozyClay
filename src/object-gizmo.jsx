@@ -120,7 +120,7 @@ function handleKey(entry) {
 // dropped pin will live.
 const GROUND = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, paneRef, camRef, onChange, onSelect, onGroundClick, onDragStart, onDragEnd }) {
+export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, paneRef, camRef, shotAspect = SHOT_ASPECT, onChange, onSelect, onGroundClick, onDragStart, onDragEnd }) {
 	const { gl, scene } = useThree();
 	const rootRef = useRef(null);
 	const handlesRef = useRef(new Map()); // axis -> { mesh (pick proxy), axis, dir }
@@ -177,13 +177,13 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 	activeScopeRef.current = { id: object?.id, mode };
 
 	/** pointer -> NDC inside the rect the shot camera actually rendered into */
-	const toNdc = (event) => {
-		const pane = paneRef?.current;
-		const camera = camRef?.current;
+	const pointerRay = (event) => {
+		const pane = paneRef.current;
+		const camera = camRef.current;
 		if (!pane || !camera) return null;
 		const bounds = pane.getBoundingClientRect();
 		if (bounds.width < 2 || bounds.height < 2) return null;
-		const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, SHOT_ASPECT);
+		const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
 		tools.ndc.set(
 			((event.clientX - rect.x) / rect.w) * 2 - 1,
 			-((event.clientY - rect.y) / rect.h) * 2 + 1,
@@ -222,11 +222,11 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// programmatic camera move (framing, preset snap) may not have had a
 			// frame yet, and setFromCamera reads matrixWorld as-is. Refresh it
 			// here so the first pick after an idle gap aims from the true pose.
-			// The shot camera's aspect is locked to SHOT_ASPECT by the render
+			// The shot camera's aspect is locked by the render
 			// loop (dualview); under demand rendering a layout change may not
 			// have had a frame yet, leaving a stale projection. Re-apply the
 			// render contract here so the pick matches what is on screen.
-			camera.aspect = SHOT_ASPECT;
+			camera.aspect = shotAspect;
 			camera.updateProjectionMatrix();
 			camera.updateMatrixWorld();
 			camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
@@ -565,13 +565,13 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// render tick under demand rendering, and re-apply the render
 			// loop's locked aspect (dualview) so QA geometry matches the
 			// drawn frame exactly
-			camera.aspect = SHOT_ASPECT;
+			camera.aspect = shotAspect;
 			camera.updateProjectionMatrix();
 			camera.updateMatrixWorld();
 			camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
 			rootRef.current?.updateMatrixWorld(true);
 			const bounds = pane.getBoundingClientRect();
-			const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, SHOT_ASPECT);
+			const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
 			return [...handlesRef.current.values()]
 				.filter((entry) => entry.mesh?.parent)
 				.map(({ mesh, axis, plane }) => {

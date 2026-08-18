@@ -44,6 +44,7 @@ scenes[0].stage = createSceneStage({
 	charA: { x: 4, z: -2, rot: 35 },
 	charB: { x: 7, z: 1, rot: -90 },
 	showB: true,
+	shotAspect: "9:16",
 	poseA: { id: "hero", bones: { hips: [1, 2, 3] } },
 	poseB: { id: "support", bones: { hips: [4, 5, 6] } },
 });
@@ -55,6 +56,7 @@ assert.notEqual(duplicated[1].shotDocument.cameraBlocks, scenes[0].shotDocument.
 assert.notEqual(duplicated[1].stage, scenes[0].stage);
 assert.notEqual(duplicated[1].stage.charA, scenes[0].stage.charA);
 assert.notEqual(duplicated[1].stage.poseA.bones, scenes[0].stage.poseA.bones);
+assert.equal(duplicated[1].stage.shotAspect, "9:16");
 duplicated[1].objects[0].transform.x = 8;
 duplicated[1].shotDocument.cameraBlocks[0].keys.push(3);
 duplicated[1].stage.charA.x = 99;
@@ -63,6 +65,7 @@ assert.equal(scenes[0].objects[0].transform.x, 1);
 assert.deepEqual(scenes[0].shotDocument.cameraBlocks[0].keys, [1, 2]);
 assert.equal(scenes[0].stage.charA.x, 4, "moving the duplicate's actor cannot contaminate the source scene");
 assert.equal(scenes[0].stage.poseA.bones.hips[0], 1, "posing the duplicate's actor cannot contaminate the source scene");
+assert.equal(createSceneStage({ shotAspect: "invalid" }).shotAspect, "16:9", "invalid shot aspects repair to the default");
 
 const isolatedScenes = [createScene("A"), createScene("B")];
 isolatedScenes[0].stage.charA.x = 8;
@@ -204,7 +207,11 @@ assert.notEqual(SCENES_STORAGE_KEY, LEGACY_SCENE_STORAGE_KEY);
 assert.ok(createScene("SCENE 01", scenes).id);
 
 const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
-assert.match(appSource, /actorStageRef\.current = \{ charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2 \}/, "the outgoing scene snapshots all actor-owned state");
+assert.match(
+	appSource,
+	/actorStageRef\.current = \{[\s\S]{0,240}shotAspect: shotAspectKey,/,
+	"the outgoing scene snapshots actor state and the shot aspect"
+);
 assert.match(appSource, /setCharA\(stage\.charA\)/, "opening a scene restores its first actor");
 assert.match(appSource, /setPoseB\(stage\.poseB \?\? DEFAULT_POSE\)/, "opening a scene restores its second pose");
 assert.doesNotMatch(appSource, /InstallApp/, "the premature Install app control is no longer mounted or imported");

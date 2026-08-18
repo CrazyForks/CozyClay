@@ -53,9 +53,15 @@ const EDGE_FRAGMENT = `
 	}
 
 	void main() {
+		float centerZ = linearDepth(texture2D(tDepth, vUv).x);
+		// Keep the stroke kernel stable, but soften its opacity past the 3 m
+		// reference distance. A minimum 42% opacity keeps distant silhouettes
+		// readable without letting ink become the only visible part of the body.
+		float distanceFade = orthographic > 0.5
+			? 1.0
+			: mix(0.42, 1.0, clamp(3.0 / max(centerZ, 0.001), 0.0, 1.0));
 		vec2 x = vec2(texel.x * 0.8, 0.0);
 		vec2 y = vec2(0.0, texel.y * 0.8);
-		float centerZ = linearDepth(texture2D(tDepth, vUv).x);
 		float nearestZ = min(
 			min(linearDepth(texture2D(tDepth, vUv - x).x), linearDepth(texture2D(tDepth, vUv + x).x)),
 			min(linearDepth(texture2D(tDepth, vUv - y).x), linearDepth(texture2D(tDepth, vUv + y).x))
@@ -88,7 +94,7 @@ const EDGE_FRAGMENT = `
 		float depthLine = smoothstep(0.055, 0.16, depthEdge);
 		float normalLine = smoothstep(0.7, 1.7, normalEdge);
 		float edge = max(depthLine * foregroundOwner, normalLine * 0.68);
-		gl_FragColor = vec4(edgeColor, edge * 0.76);
+		gl_FragColor = vec4(edgeColor, edge * 0.76 * distanceFade);
 	}
 `;
 
@@ -103,7 +109,7 @@ export function fitAspect(rect, aspect) {
 	return { x: rect.x + (rect.w - w) / 2, y: rect.y + (rect.h - h) / 2, w, h };
 }
 
-export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef, poserCamRef, ikMode = false, planIsMain, playMode = false, insetCollapsed = false, planZoom = 1 }) {
+export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef, poserCamRef, ikMode = false, planIsMain, playMode = false, insetCollapsed = false, planZoom = 1, shotAspect = SHOT_ASPECT }) {
 	const invalidate = useThree((state) => state.invalidate);
 	// Demand mode draws nothing by itself: the first frame can land before the
 	// layout settles (the inset reads 0x0), and async scene content commits
@@ -253,7 +259,7 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 		};
 
 		gl.autoClear = true;
-		shotCam.aspect = SHOT_ASPECT;
+		shotCam.aspect = shotAspect;
 		shotCam.updateProjectionMatrix();
 		// An orthographic plan keeps every puck the same size and the floor
 		// undistorted; a perspective one skews the pucks near the edges and reads
@@ -279,7 +285,7 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 			// GIZMO_LAYER and is dropped for this draw, mask restored after.
 			const playMask = shotCam.layers.mask;
 			shotCam.layers.disable(GIZMO_LAYER);
-			draw(shotCam, mainRect, fitAspect(mainRect, SHOT_ASPECT));
+			draw(shotCam, mainRect, fitAspect(mainRect, shotAspect));
 			shotCam.layers.mask = playMask;
 		} else if (ikMode && poserCam) {
 			// IK mode: the main pane is the poser working view (free navigation,
@@ -288,12 +294,12 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 			poserCam.aspect = mainRect.w / mainRect.h;
 			poserCam.updateProjectionMatrix();
 			draw(poserCam, mainRect);
-			if (!insetCollapsed) draw(shotCam, insetRect, fitAspect(insetRect, SHOT_ASPECT));
+			if (!insetCollapsed) draw(shotCam, insetRect, fitAspect(insetRect, shotAspect));
 		} else if (planIsMain) {
 			draw(planCam, planPane, null, false);
-			if (!insetCollapsed) draw(shotCam, shotPane, fitAspect(shotPane, SHOT_ASPECT));
+			if (!insetCollapsed) draw(shotCam, shotPane, fitAspect(shotPane, shotAspect));
 		} else {
-			draw(shotCam, shotPane, fitAspect(shotPane, SHOT_ASPECT));
+			draw(shotCam, shotPane, fitAspect(shotPane, shotAspect));
 			if (!insetCollapsed) draw(planCam, planPane, null, false);
 		}
 

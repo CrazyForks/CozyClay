@@ -17,6 +17,10 @@ import {
 	solveHipsTranslate,
 	ikPlantFeet,
 	ikSolvePlantedFeet,
+	IK_TRACKS,
+	MID_TRACKS,
+	FK_TRACKS,
+	ikControlIsExposed,
 } from "../../src/ardy/ik.js";
 
 let failures = 0;
@@ -27,6 +31,21 @@ function check(name, cond, detail = "") {
 		console.log(`FAIL ${name}${detail ? " — " + detail : ""}`);
 	}
 }
+
+check(
+	"every IK control declares an occlusion allowance",
+	[...IK_TRACKS, ...MID_TRACKS, ...FK_TRACKS].every(
+		(track) => Number.isFinite(track.visibilityDepth) && track.visibilityDepth > 0
+	),
+);
+check(
+	"full-body controls include torso, head, neck, and both shoulders",
+	["hips", "spine", "chest", "neck", "head", "leftShoulder", "rightShoulder"]
+		.every((id) => FK_TRACKS.some((track) => track.id === id)),
+);
+check("a control before the first blocker stays exposed", ikControlIsExposed(2, 2.1, 0.1));
+check("a shallow under-skin control stays exposed", ikControlIsExposed(2, 1.85, 0.16));
+check("a far-side control is hidden", !ikControlIsExposed(2, 1.6, 0.16));
 
 /* Synthetic Mixamo-spelled rig in a T-pose: arms along ±X, legs along -Y,
  * toes forward (+Z) so the character faces +Z. Rig scaled 0.01 (cm → m). */
@@ -245,6 +264,16 @@ check("FK swing does not translate the joint", neck.bone.getWorldPosition(v()).d
 const headStartPos = new THREE.Vector3(0, 1.75, 0);
 const headMovedSwing = headBone.getWorldPosition(v()).distanceTo(headStartPos);
 check("FK swing visibly moves the head", headMovedSwing > 0.05 && headMovedSwing < 0.2, `d=${headMovedSwing.toFixed(3)}`);
+
+for (const id of ["spine", "chest", "neck", "head", "leftShoulder", "rightShoulder"]) {
+	const joint = fkJoints.get(id);
+	const start = joint.bone.quaternion.clone();
+	const parentWorld = joint.bone.parent.getWorldQuaternion(new THREE.Quaternion());
+	solveSwingAngle(joint, new THREE.Vector3(0, 0, 1), 0.2, start, parentWorld);
+	check(`${id} control changes its joint rotation`, joint.bone.quaternion.angleTo(start) > 0.05);
+	joint.bone.quaternion.copy(start);
+	rig.updateMatrixWorld(true);
+}
 
 /* --- FK keys: touch fk, bake, slerp evaluate ------------------------------ */
 const ik2 = createIkState();

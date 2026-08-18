@@ -14,7 +14,7 @@ import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint, toSceneRootOffset,
 import { FlyControls, aimAt, forwardFrom } from "./controls.jsx";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
-import { DualRender, GIZMO_LAYER, SHOT_ASPECT, fitAspect } from "./dualview.jsx";
+import { DualRender, GIZMO_LAYER, fitAspect } from "./dualview.jsx";
 import { Room, StageLights } from "./room.jsx";
 import {
 	SHOT_AUTHORING_KEY,
@@ -158,12 +158,26 @@ const PRESETS = {
 };
 
 const RIG_HIERARCHY_FOCUS = {
+	"rig.torso": "spine",
 	"rig.hips": "hips",
 	"rig.spine": "spine",
+	"rig.chest": "chest",
+	"rig.neck": "neck",
+	"rig.head": "head",
 	"rig.leftArm": "leftHand",
+	"rig.leftShoulder": "leftShoulder",
+	"rig.leftElbow": "leftElbow",
+	"rig.leftHand": "leftHand",
 	"rig.rightArm": "rightHand",
+	"rig.rightShoulder": "rightShoulder",
+	"rig.rightElbow": "rightElbow",
+	"rig.rightHand": "rightHand",
 	"rig.leftLeg": "leftFoot",
+	"rig.leftKnee": "leftKnee",
+	"rig.leftFoot": "leftFoot",
 	"rig.rightLeg": "rightFoot",
+	"rig.rightKnee": "rightKnee",
+	"rig.rightFoot": "rightFoot",
 };
 
 const HIERARCHY_INSPECTOR_TITLES = {
@@ -175,12 +189,26 @@ const HIERARCHY_INSPECTOR_TITLES = {
 	characterB: ko("Character 2", "인물 2"),
 	environment: ko("Environment", "환경"),
 	props: ko("Props", "소품"),
+	"rig.torso": ko("Torso", "몸통"),
 	"rig.hips": ko("Root / Hips", "루트 / 엉덩이"),
 	"rig.spine": ko("Spine", "척추"),
+	"rig.chest": ko("Chest", "가슴"),
+	"rig.neck": ko("Neck", "목"),
+	"rig.head": ko("Head", "머리"),
 	"rig.leftArm": ko("Left Arm", "왼팔"),
+	"rig.leftShoulder": ko("Left Shoulder", "왼쪽 어깨"),
+	"rig.leftElbow": ko("Left Elbow", "왼쪽 팔꿈치"),
+	"rig.leftHand": ko("Left Hand", "왼손"),
 	"rig.rightArm": ko("Right Arm", "오른팔"),
+	"rig.rightShoulder": ko("Right Shoulder", "오른쪽 어깨"),
+	"rig.rightElbow": ko("Right Elbow", "오른쪽 팔꿈치"),
+	"rig.rightHand": ko("Right Hand", "오른손"),
 	"rig.leftLeg": ko("Left Leg", "왼다리"),
+	"rig.leftKnee": ko("Left Knee", "왼쪽 무릎"),
+	"rig.leftFoot": ko("Left Foot", "왼발"),
 	"rig.rightLeg": ko("Right Leg", "오른다리"),
+	"rig.rightKnee": ko("Right Knee", "오른쪽 무릎"),
+	"rig.rightFoot": ko("Right Foot", "오른발"),
 };
 
 const CAMERA_MOVE_LABELS_KO = new Map([
@@ -313,17 +341,22 @@ function moveSequenceSlateKo(segments) {
 
 function hierarchyIdForIkFocus(focus) {
 	if (!focus) return null;
-	if (focus === "hips") return "rig.hips";
-	if (["spine", "chest", "neck", "head"].includes(focus)) return "rig.spine";
-	if (focus.startsWith("left") && ["Hand", "Elbow", "Shoulder"].some((part) => focus.endsWith(part))) return "rig.leftArm";
-	if (focus.startsWith("right") && ["Hand", "Elbow", "Shoulder"].some((part) => focus.endsWith(part))) return "rig.rightArm";
-	if (focus === "leftFoot" || focus === "leftKnee") return "rig.leftLeg";
-	if (focus === "rightFoot" || focus === "rightKnee") return "rig.rightLeg";
-	return "characterA.rig";
+	const exact = Object.entries(RIG_HIERARCHY_FOCUS)
+		.find(([id, mappedFocus]) =>
+			!["rig.torso", "rig.leftArm", "rig.rightArm", "rig.leftLeg", "rig.rightLeg"].includes(id) &&
+			mappedFocus === focus
+		);
+	return exact?.[0] ?? "characterA.rig";
 }
 
 const CAPTURE_W = 1920;
 const CAPTURE_H = 1080;
+const SHOT_ASPECT_PRESETS = Object.freeze({
+	"16:9": Object.freeze({ label: "16:9", aspect: 16 / 9, width: 1920, height: 1080 }),
+	"9:16": Object.freeze({ label: "9:16", aspect: 9 / 16, width: 1080, height: 1920 }),
+	"1:1": Object.freeze({ label: "1:1", aspect: 1, width: 1080, height: 1080 }),
+	"4:3": Object.freeze({ label: "4:3", aspect: 4 / 3, width: 1440, height: 1080 }),
+});
 // Pre-generated clip shipped with the build so a bridge-less session (a hosted
 // static demo, or `npm run dev:ui`) still shows real generated motion.
 // Root-absolute on purpose: the studio is served from "/app/" while these
@@ -718,15 +751,15 @@ function SceneGrid() {
 	return <primitive object={grid} />;
 }
 
-/** Offscreen 1920x1080 read-back, always from the shot camera. */
-function CaptureRig({ apiRef, camRef }) {
+/** Offscreen aspect-aware read-back, always from the shot camera. */
+function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 	const { gl, scene } = useThree();
 	useEffect(() => {
 		apiRef.current = {
 			render() {
 				const source = camRef.current;
 				if (!source) return null;
-				const target = new THREE.WebGLRenderTarget(CAPTURE_W, CAPTURE_H, {
+				const target = new THREE.WebGLRenderTarget(width, height, {
 					colorSpace: THREE.SRGBColorSpace,
 					samples: 4,
 				});
@@ -737,20 +770,20 @@ function CaptureRig({ apiRef, camRef }) {
 				// with — the browser suite asserts GIZMO_LAYER (the gizmo AND
 				// the selection cage) is never in it.
 				window.__captureCameraMask = cam.layers.mask;
-				cam.aspect = CAPTURE_W / CAPTURE_H;
+				cam.aspect = width / height;
 				cam.updateProjectionMatrix();
 				const previous = gl.getRenderTarget();
 				gl.setRenderTarget(target);
 				gl.render(scene, cam);
-				const buffer = new Uint8Array(CAPTURE_W * CAPTURE_H * 4);
-				gl.readRenderTargetPixels(target, 0, 0, CAPTURE_W, CAPTURE_H, buffer);
+				const buffer = new Uint8Array(width * height * 4);
+				gl.readRenderTargetPixels(target, 0, 0, width, height, buffer);
 				gl.setRenderTarget(previous);
 				target.dispose();
 				return buffer;
 			},
 		};
 		// QA hook: run one real export render and report what the capture
-		// camera saw — the layer mask plus an amber scan of the 1920x1080
+		// camera saw — the layer mask plus an amber scan of the output
 		// frame (the selection cage's warm tone). Lets the suite prove the
 		// deliverable frame stays free of editor furniture without driving
 		// the whole generation form.
@@ -766,7 +799,7 @@ function CaptureRig({ apiRef, camRef }) {
 			}
 			return { layersMask: window.__captureCameraMask ?? 0, amber, pixels: buffer.length / 4 };
 		};
-	}, [gl, scene, camRef, apiRef]);
+	}, [gl, scene, camRef, apiRef, width, height]);
 	return null;
 }
 
@@ -834,9 +867,14 @@ function loadSceneStartup() {
 }
 
 export default function App() {
+	const [startup] = useState(loadSceneStartup);
+	const startupScene = startup.document.scenes[activeSceneIndex(startup.document.scenes, startup.document.activeSceneId)];
+	const startupStage = createSceneStage(startupScene.stage);
 	const [workspaceLayout, setWorkspaceLayout] = useState(loadWorkspaceLayout);
 	const [preset, setPreset] = useState("medium");
 	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
+	const [shotAspectKey, setShotAspectKey] = useState(startupStage.shotAspect);
+	const shotOutput = SHOT_ASPECT_PRESETS[shotAspectKey] ?? SHOT_ASPECT_PRESETS["16:9"];
 	const [nonce, setNonce] = useState(0);
 	// The Top-View is always the inset: the old double-click swap that let the
 	// plan own the big pane is gone, so there is no view mode to toggle.
@@ -1056,9 +1094,6 @@ globalThis.playMode = centerTab === "play";
 		window.addEventListener("pointerup", onUp);
 		window.addEventListener("pointercancel", onUp);
 	}
-	const [startup] = useState(loadSceneStartup);
-	const startupScene = startup.document.scenes[activeSceneIndex(startup.document.scenes, startup.document.activeSceneId)];
-	const startupStage = createSceneStage(startupScene.stage);
 	const [showB, setShowB] = useState(startupStage.showB);
 	const [charA, setCharA] = useState(startupStage.charA);
 	const [charB, setCharB] = useState(startupStage.charB);
@@ -1593,7 +1628,17 @@ globalThis.playMode = centerTab === "play";
 	scenesRef.current = scenes;
 	activeSceneIdRef.current = activeSceneId;
 	shotDocumentRef.current = createShotAuthoringDocument({ shots, waypoints, frameCount: tlFrameCount });
-	actorStageRef.current = { charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2 };
+	actorStageRef.current = {
+		charA,
+		charB,
+		showB,
+		poseA,
+		poseB,
+		hasCharSheet,
+		subject,
+		subject2,
+		shotAspect: shotAspectKey,
+	};
 
 	function snapshotActiveScene(sourceScenes = scenesRef.current) {
 		return sourceScenes.map((scene) => scene.id === activeSceneIdRef.current
@@ -1656,6 +1701,7 @@ globalThis.playMode = centerTab === "play";
 		setHasCharSheet(stage.hasCharSheet);
 		setSubject(stage.subject ?? DEFAULT_SUBJECT);
 		setSubject2(stage.subject2 ?? "a man in a dark coat");
+		setShotAspectKey(stage.shotAspect);
 		setTlFrame(0);
 		setMovePlaying(false);
 		manualCameraOverrideRef.current = false;
@@ -1728,7 +1774,7 @@ globalThis.playMode = centerTab === "play";
 		dirtyRef.current = true;
 		const timer = setTimeout(flushScenes, 400);
 		return () => clearTimeout(timer);
-	}, [sceneObjects, shots, waypoints, tlFrameCount, charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2, scenes, activeSceneId]);
+	}, [sceneObjects, shots, waypoints, tlFrameCount, charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2, shotAspectKey, scenes, activeSceneId]);
 	useEffect(() => {
 		const onPageHide = () => flushScenes();
 		const onVisibility = () => {
@@ -1854,8 +1900,8 @@ globalThis.playMode = centerTab === "play";
 			return;
 		}
 		const mirror = document.createElement("canvas");
-		mirror.width = 1600;
-		mirror.height = 900;
+		mirror.width = shotOutput.width;
+		mirror.height = shotOutput.height;
 		const ctx = mirror.getContext("2d");
 		// Frames go in manually (and only when one was actually drawn): the
 		// track must be exactly RECORD_FPS, not whatever the display runs at.
@@ -1959,7 +2005,7 @@ globalThis.playMode = centerTab === "play";
 				rec.timer = setTimeout(timeoutTick, 20);
 				return;
 			}
-			const img = fitAspect(pane, SHOT_ASPECT);
+			const img = fitAspect(pane, shotOutput.aspect);
 			const scale = glCanvas.width / stageRect.width;
 			ctx.drawImage(
 				glCanvas,
@@ -2236,6 +2282,11 @@ globalThis.playMode = centerTab === "play";
 
 	/* --------------------------- motion playback ---------------------------- */
 
+	function leaveIkMode() {
+		setIkMode(false);
+		setIkFocus(null);
+	}
+
 	// Decoded motion + the world anchor: frame 0 always starts at Subject 1.
 	// Authored root destinations are generated by ARDY as sparse constraints,
 	// so playback consumes the returned trajectory without coordinate warping.
@@ -2244,7 +2295,7 @@ globalThis.playMode = centerTab === "play";
 		setMotionError("");
 		// Loading a motion drops out of IK EDIT mode (playback is the new
 		// context) — the IK KEYS stay and keep correcting the clip layer-style.
-		setIkMode(false);
+		leaveIkMode();
 		try {
 			// Re-loading while a motion is active: restore the previous
 			// pre-playback baseline first, so the new snapshot is not taken
@@ -2330,7 +2381,7 @@ globalThis.playMode = centerTab === "play";
 		setIkChains(chains);
 		setIkFkJoints(resolved ? resolved.fkJoints : null);
 		ikStateRef.current.chains = chains;
-		if (!chains) setIkMode(false);
+		if (!chains) leaveIkMode();
 	}, [rigA]);
 
 	function toggleIkMode() {
@@ -2372,7 +2423,7 @@ globalThis.playMode = centerTab === "play";
 		// current frame's keyed rotations the moment ikMode flips, so nothing
 		// the user authored is lost by toggling. Untracked/unkeyed parts keep
 		// their current (FK) pose.
-		setIkMode(false);
+		leaveIkMode();
 		setToast(ko("IK mode off — keyed poses keep playing", "IK 모드 꺼짐 — 키로 찍은 포즈는 계속 재생됩니다"));
 	}
 
@@ -2681,14 +2732,17 @@ globalThis.playMode = centerTab === "play";
 
 	function bufferToPng(buffer) {
 		const canvas = document.createElement("canvas");
-		canvas.width = CAPTURE_W;
-		canvas.height = CAPTURE_H;
+		canvas.width = shotOutput.width;
+		canvas.height = shotOutput.height;
 		const ctx = canvas.getContext("2d");
-		const image = ctx.createImageData(CAPTURE_W, CAPTURE_H);
+		const image = ctx.createImageData(shotOutput.width, shotOutput.height);
 		// WebGL reads bottom-up; flip into canvas order.
-		for (let row = 0; row < CAPTURE_H; row += 1) {
-			const from = (CAPTURE_H - 1 - row) * CAPTURE_W * 4;
-			image.data.set(buffer.subarray(from, from + CAPTURE_W * 4), row * CAPTURE_W * 4);
+		for (let row = 0; row < shotOutput.height; row += 1) {
+			const from = (shotOutput.height - 1 - row) * shotOutput.width * 4;
+			image.data.set(
+				buffer.subarray(from, from + shotOutput.width * 4),
+				row * shotOutput.width * 4
+			);
 		}
 		ctx.putImageData(image, 0, 0);
 		return canvas.toDataURL("image/png");
@@ -3278,6 +3332,7 @@ globalThis.playMode = centerTab === "play";
 					onPointerDown={(event) => beginWorkspaceResize("hierarchy", event)}
 				/>
 				<div className="viewport">
+				<div className="viewport-titlebar">
 				<div className="pane-tabs" role="tablist" aria-label={ko("Center view", "가운데 보기")}>
 					<button
 						type="button"
@@ -3298,7 +3353,7 @@ globalThis.playMode = centerTab === "play";
 						{ko("PlayView", "재생 보기")}
 					</button>
 				</div>
-				{centerTab === "scene" && (
+				{centerTab === "scene" ? (
 				<div className="editor-toolbar scene-tools" aria-label={ko("Scene tools", "장면 도구")}>
 						<div className="tool-switch" role="group" aria-label={ko("Gizmo tool", "기즈모 도구")}>
 							<button
@@ -3341,8 +3396,87 @@ globalThis.playMode = centerTab === "play";
 						>
 							{ko("Snap", "스냅")}
 						</button>
+						<span className="viewport-toolbar-separator settings-separator" aria-hidden="true" />
+						<label className="viewport-toolbar-field shot-field">
+							<span>{ko("Shot", "샷")}</span>
+							<select
+								aria-label={ko("Shot preset", "샷 프리셋")}
+								value={preset}
+								onChange={(event) => applyPreset(event.target.value)}
+							>
+								{Object.entries(PRESETS).map(([key, value]) => (
+									<option key={key} value={key}>{value.label}</option>
+								))}
+							</select>
+						</label>
+						<label className="viewport-toolbar-field ratio-field">
+							<span>{ko("Ratio", "비율")}</span>
+							<select
+								aria-label={ko("Output aspect ratio", "출력 화면 비율")}
+								value={shotAspectKey}
+								onChange={(event) => setShotAspectKey(event.target.value)}
+							>
+								{Object.values(SHOT_ASPECT_PRESETS).map((value) => (
+									<option key={value.label} value={value.label}>{value.label}</option>
+								))}
+							</select>
+						</label>
+						<label className="viewport-fov-control">
+							<span>FOV</span>
+							<input
+								type="range"
+								min="14"
+								max="90"
+								step="1"
+								value={fovDeg}
+								onChange={(event) => setFovDeg(Number(event.target.value))}
+							/>
+							<output>{Math.round(fovDeg)}°</output>
+							<small>{shot.focalMm}mm</small>
+						</label>
+						<span className="viewport-toolbar-spacer" />
+						<button
+							type="button"
+							title={ko("Recenter on subject", "피사체 다시 맞추기")}
+							aria-label={ko("Recenter on subject", "피사체 다시 맞추기")}
+							onClick={() => setNonce((n) => n + 1)}
+						>
+							◎
+						</button>
+						<button
+							type="button"
+							aria-pressed={!workspaceLayout.insetCollapsed}
+							onClick={() => {
+								if (workspaceLayout.insetCollapsed) expandInset();
+								else setWorkspaceLayout((current) => ({ ...current, insetCollapsed: true }));
+							}}
+						>
+							{ko("Top", "탑")} {workspaceLayout.insetCollapsed ? "▸" : "▾"}
+						</button>
+					</div>
+				) : (
+					<div className="editor-toolbar play-tools" aria-label={ko("PlayView tools", "재생 보기 도구")}>
+						<span className="viewport-readout">{shotOutput.label}</span>
+						<span className="viewport-readout">FOV {Math.round(fovDeg)}° · {shot.focalMm}mm</span>
+						<span className="viewport-toolbar-spacer" />
+						<button type="button" onClick={() => stepFrame(-1)} aria-label={ko("Previous frame", "이전 프레임")}>◀</button>
+						<button type="button" onClick={() => setTlPlaying((value) => !value)}>
+							{tlPlaying ? "Ⅱ" : "▶"}
+						</button>
+						<button type="button" onClick={() => stepFrame(1)} aria-label={ko("Next frame", "다음 프레임")}>▶│</button>
+						<span className="viewport-readout">1.00×</span>
+						<span className="viewport-toolbar-separator" aria-hidden="true" />
+						<button
+							type="button"
+							className={recState === "recording" ? "recording" : ""}
+							disabled={recState !== "recording" && !hasCameraKeys && !motion}
+							onClick={toggleShotRecording}
+						>
+							{recState === "recording" ? ko("■ Stop", "■ 정지") : ko("● Record", "● 녹화")}
+						</button>
 					</div>
 				)}
+				</div>
 
 					<div className="stage" id="stage" ref={stageRef} data-render-loop={renderActive ? "always" : "demand"}>
 						<Canvas frameloop={renderActive ? "always" : "demand"} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true }}>
@@ -3549,6 +3683,7 @@ globalThis.playMode = centerTab === "play";
 								enabled={!planIsMain && !posing && !ikMode && !playMode}
 								paneRef={mainPaneRef}
 								camRef={shotCamRef}
+								shotAspect={shotOutput.aspect}
 								onChange={changeSceneObject}
 								onDragStart={beginSceneTransaction}
 								onDragEnd={endSceneTransaction}
@@ -3566,7 +3701,12 @@ globalThis.playMode = centerTab === "play";
 							{waypointMode && centerTab === "scene" && (
 								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />
 							)}
-							<CaptureRig apiRef={captureRef} camRef={shotCamRef} />
+							<CaptureRig
+								apiRef={captureRef}
+								camRef={shotCamRef}
+								width={shotOutput.width}
+								height={shotOutput.height}
+							/>
 							<DualRender
 								stageRef={stageRef}
 								mainRef={mainPaneRef}
@@ -3579,6 +3719,7 @@ globalThis.playMode = centerTab === "play";
 								playMode={playMode}
 								insetCollapsed={workspaceLayout.insetCollapsed}
 								planZoom={workspaceLayout.planZoom}
+								shotAspect={shotOutput.aspect}
 							/>
 						</Canvas>
 
@@ -3587,7 +3728,10 @@ globalThis.playMode = centerTab === "play";
 							ref={insetPaneRef}
 							hidden={playMode}
 							className={"vp-pane vp-inset" + (planIsMain || ikMode ? " shot" : " plan") + (workspaceLayout.insetCollapsed ? " collapsed" : "")}
-							style={insetPos ? { left: insetPos.x, top: insetPos.y, right: "auto" } : undefined}
+							style={{
+								"--shot-aspect": shotOutput.aspect,
+								...(insetPos ? { left: insetPos.x, top: insetPos.y, right: "auto" } : {}),
+							}}
 						>
 							<span
 								className="vp-inset-tag"

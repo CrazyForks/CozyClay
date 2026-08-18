@@ -20,20 +20,20 @@ import { normalizeBoneName } from "../poses.js";
 /** The four IK chain handles, mapped to the timeline lanes of the same
  * names. */
 export const IK_TRACKS = [
-	{ id: "leftHand", label: "Left Hand", kind: "arm", side: "Left" },
-	{ id: "rightHand", label: "Right Hand", kind: "arm", side: "Right" },
-	{ id: "leftFoot", label: "Left Foot", kind: "leg", side: "Left" },
-	{ id: "rightFoot", label: "Right Foot", kind: "leg", side: "Right" },
+	{ id: "leftHand", label: "Left Hand", kind: "arm", side: "Left", visibilityDepth: 0.14 },
+	{ id: "rightHand", label: "Right Hand", kind: "arm", side: "Right", visibilityDepth: 0.14 },
+	{ id: "leftFoot", label: "Left Foot", kind: "leg", side: "Left", visibilityDepth: 0.14 },
+	{ id: "rightFoot", label: "Right Foot", kind: "leg", side: "Right", visibilityDepth: 0.14 },
 ];
 
 /** Mid-joint position handles: dragging repositions the elbow/knee with
  * BOTH ends pinned (shoulder+wrist / hip+ankle) — the classic mid-chain
  * handle. `chain` links to the IK chain whose bones it edits. */
 export const MID_TRACKS = [
-	{ id: "leftElbow", label: "Left Elbow", chain: "leftHand" },
-	{ id: "rightElbow", label: "Right Elbow", chain: "rightHand" },
-	{ id: "leftKnee", label: "Left Knee", chain: "leftFoot" },
-	{ id: "rightKnee", label: "Right Knee", chain: "rightFoot" },
+	{ id: "leftElbow", label: "Left Elbow", chain: "leftHand", visibilityDepth: 0.12 },
+	{ id: "rightElbow", label: "Right Elbow", chain: "rightHand", visibilityDepth: 0.12 },
+	{ id: "leftKnee", label: "Left Knee", chain: "leftFoot", visibilityDepth: 0.12 },
+	{ id: "rightKnee", label: "Right Knee", chain: "rightFoot", visibilityDepth: 0.12 },
 ];
 
 /** FK swing handles: dragging swings the part toward the pointer (rotation
@@ -42,14 +42,24 @@ export const MID_TRACKS = [
  * follow the FK PoseHandles coding: torso yellow, head purple, arms orange,
  * legs blue. */
 export const FK_TRACKS = [
-	{ id: "hips", label: "Hips", bone: "mixamorigHips", child: "mixamorigSpine", color: "#ffd23d" },
-	{ id: "spine", label: "Spine", bone: "mixamorigSpine", child: "mixamorigSpine1", color: "#ffd23d" },
-	{ id: "chest", label: "Chest", bone: "mixamorigSpine1", child: "mixamorigSpine2", color: "#ffd23d" },
-	{ id: "neck", label: "Neck", bone: "mixamorigNeck", child: "mixamorigHead", color: "#b98cff" },
-	{ id: "head", label: "Head", bone: "mixamorigHead", child: null, color: "#b98cff" },
-	{ id: "leftShoulder", label: "Left Shoulder", bone: "mixamorigLeftShoulder", child: "mixamorigLeftArm", color: "#ff8a3d" },
-	{ id: "rightShoulder", label: "Right Shoulder", bone: "mixamorigRightShoulder", child: "mixamorigRightArm", color: "#ff8a3d" },
+	{ id: "hips", label: "Hips", bone: "mixamorigHips", child: "mixamorigSpine", color: "#ffd23d", group: "torso", visibilityDepth: 0.34 },
+	{ id: "spine", label: "Spine", bone: "mixamorigSpine", child: "mixamorigSpine1", color: "#ffd23d", group: "torso", visibilityDepth: 0.32 },
+	{ id: "chest", label: "Chest", bone: "mixamorigSpine1", child: "mixamorigSpine2", color: "#ffd23d", group: "torso", visibilityDepth: 0.3 },
+	{ id: "neck", label: "Neck", bone: "mixamorigNeck", child: "mixamorigHead", color: "#b98cff", group: "head", visibilityDepth: 0.2 },
+	{ id: "head", label: "Head", bone: "mixamorigHead", child: null, color: "#b98cff", group: "head", visibilityDepth: 0.24 },
+	{ id: "leftShoulder", label: "Left Shoulder", bone: "mixamorigLeftShoulder", child: "mixamorigLeftArm", color: "#ff8a3d", group: "shoulder", visibilityDepth: 0.2 },
+	{ id: "rightShoulder", label: "Right Shoulder", bone: "mixamorigRightShoulder", child: "mixamorigRightArm", color: "#ff8a3d", group: "shoulder", visibilityDepth: 0.2 },
 ];
+
+/** Whether a control centre is close enough to the first visible surface.
+ * Centreline controls (torso/head) intentionally have larger allowances than
+ * side-specific limbs, so front-facing body controls remain available while
+ * the far shoulder/arm/leg is rejected. */
+export function ikControlIsExposed(targetDistance, blockerDistance, visibilityDepth) {
+	if (!Number.isFinite(targetDistance) || targetDistance <= 0) return false;
+	if (!Number.isFinite(blockerDistance)) return true;
+	return targetDistance - blockerDistance <= visibilityDepth;
+}
 
 /** Bone chains per handle, root → effector. Mixamo spelling; the matcher
  * accepts the `mixamorig:` prefix and prefix-less rigs. Shoulder stays out of

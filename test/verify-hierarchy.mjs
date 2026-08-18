@@ -31,14 +31,19 @@ expect(
 );
 expect("Rig belongs to Character 1", byId.get("characterA.rig")?.parent === "characterA");
 expect(
-	"Rig exposes six human-readable body groups",
-	["rig.hips", "rig.spine", "rig.leftArm", "rig.rightArm", "rig.leftLeg", "rig.rightLeg"].every(
+	"Rig exposes five human-readable body groups",
+	["rig.torso", "rig.leftArm", "rig.rightArm", "rig.leftLeg", "rig.rightLeg"].every(
 		(id) => byId.get(id)?.parent === "characterA.rig",
 	),
 );
+expect(
+	"torso, head, shoulders, elbows, hands, knees, and feet are directly selectable",
+	["rig.hips", "rig.spine", "rig.chest", "rig.neck", "rig.head", "rig.leftShoulder", "rig.rightShoulder", "rig.leftElbow", "rig.rightElbow", "rig.leftHand", "rig.rightHand", "rig.leftKnee", "rig.rightKnee", "rig.leftFoot", "rig.rightFoot"]
+		.every((id) => byId.has(id)),
+);
 expect("Environment stays at the Scene level", byId.get("environment")?.parent === "shot");
 expect("Props stay at the Scene level", byId.get("props")?.parent === "shot");
-expect("tree depth stays scannable", Math.max(...nodes.map((node) => node.depth)) <= 4);
+expect("tree depth stays scannable", Math.max(...nodes.map((node) => node.depth)) <= 5);
 
 const panelSource = await readFile(new URL("../src/hierarchy-panel.jsx", import.meta.url), "utf8");
 for (const callback of ["onSceneSelect", "onSceneCreate", "onSceneDuplicate", "onSceneRename", "onSceneDelete"]) {
@@ -52,6 +57,15 @@ expect("last scene deletion is protected", panelSource.includes("disabled={avail
 expect("entity tree root follows the active scene name", panelSource.includes('node.kind === "scene" ? { ...node, label: activeSceneName } : node'));
 
 const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+for (const [nodeId, focusId] of [["rig.head", "head"], ["rig.chest", "chest"], ["rig.leftShoulder", "leftShoulder"], ["rig.rightShoulder", "rightShoulder"]]) {
+	expect(`${nodeId} routes to its exact IK control`, appSource.includes(`"${nodeId}": "${focusId}"`));
+}
+expect(
+	"every IK shutdown clears mode and stale control focus",
+	appSource.includes("function leaveIkMode()") &&
+		appSource.includes("setIkMode(false);\n\t\tsetIkFocus(null);") &&
+		(appSource.match(/leaveIkMode\(\);/g) ?? []).length === 3,
+);
 for (const prop of ["scenes={scenes}", "activeSceneId={activeSceneId}", "onSceneSelect={selectSceneDocument}", "onSceneCreate={createSceneDocumentFromUi}", "onSceneDuplicate={duplicateSceneDocumentFromUi}", "onSceneRename={renameSceneDocumentFromUi}", "onSceneDelete={deleteSceneDocumentFromUi}"]) {
 	expect(`App wires ${prop.split("=")[0]}`, appSource.includes(prop));
 }

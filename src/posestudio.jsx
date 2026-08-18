@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { POSE_BONES, normalizeBoneName, primeBindPose } from "./poses.js";
-import { IK_TRACKS, MID_TRACKS } from "./ardy/ik.js";
+import { IK_TRACKS, MID_TRACKS, ikControlIsExposed } from "./ardy/ik.js";
 import { POSER_LAYER } from "./dualview.jsx";
 import { ko, isKo } from "./locale.js";
 
@@ -242,6 +242,8 @@ const AXIS_DEFS = [
 const GIZMO_LEN = 0.22;
 const GIZMO_SHAFT_R = 0.012;
 const GIZMO_TIP_R = 0.03;
+const GIZMO_PICK_SHAFT_R = 0.045;
+const GIZMO_PICK_TIP_R = 0.055;
 const HANDLE_R = 0.055; // chain target spheres
 const JOINT_R = 0.042; // mid-joint + FK swing spheres
 const SWING_RING_R = 0.12; // effector rotation ring
@@ -249,7 +251,11 @@ const SWING_RING_TUBE = 0.012; // visible tube
 const SWING_RING_PICK_TUBE = 0.045; // invisible grab tube
 /** Unfocused handles fade back so the focused one reads clearly. */
 const OPACITY_FOCUSED = 1;
-const OPACITY_UNFOCUSED = 0.3;
+const OPACITY_UNFOCUSED = 0.5;
+const OPACITY_NEAR = 0.86;
+const OPACITY_FAR = 0.5;
+const OPACITY_DISABLED_NEAR = 0.16;
+const OPACITY_DISABLED_FAR = 0.07;
 /** FK swing drag speed: TransformControls uses 20/camDist, tuned for its
  * gizmo rings; posing needs finer steps, so the same formula runs at 5 —
  * a ~60 px drag reads as ~15°, a full-screen sweep as ~165°. */
@@ -274,8 +280,18 @@ const FK_ROTATE_SPEED = 5;
  * calls `onDragEnd(trackId)` so the caller can key it.
  */
 export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, onSolve, onDragEnd }) {
-	const { camera, gl, raycaster } = useThree();
+	const { camera, gl, raycaster, scene } = useThree();
 	const handleRefs = useRef({}); // id -> mesh (all sphere handles)
+	const handleMetaRef = useRef(new Map()); // id -> { track, radius }
+	const visibilityRef = useRef(new Map()); // id -> exposed in the active camera
+	const visibilityDetailRef = useRef(new Map());
+	const exposureDepthRef = useRef(new Map()); // id -> active-camera depth
+	const exposureInputRef = useRef({ values: [], count: 0, valid: false });
+	const poseInputRef = useRef({ values: [], count: 0, valid: false });
+	const exposurePerfRef = useRef({ passes: 0, skippedFrames: 0, raycasts: 0, lastPassMs: 0 });
+	const blockerRefs = useRef([]);
+	const skinnedBlockerProxiesRef = useRef(new Map());
+	const occlusionRay = useRef(new THREE.Raycaster()).current;
 	const gizmoRef = useRef(null);
 	const ringRef = useRef(null); // swing ring around the focused effector
 	const dragRef = useRef(null);
@@ -298,7 +314,25 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 		delta: new THREE.Vector3(),
 		target: new THREE.Vector3(),
 		pos: new THREE.Vector3(),
+		cameraPos: new THREE.Vector3(),
+		rayDirection: new THREE.Vector3(),
+		viewPoint: new THREE.Vector3(),
+		skinnedVertex: new THREE.Vector3(),
 	}).current;
+
+	useEffect(() => {
+		exposureInputRef.current.valid = false;
+		poseInputRef.current.valid = false;
+		if (!enabled) {
+			exposureDepthRef.current.clear();
+			visibilityRef.current.clear();
+			visibilityDetailRef.current.clear();
+		}
+	}, [chains, enabled, fkJoints, scene]);
+
+	useEffect(() => () => {
+		skinnedBlockerProxiesRef.current.clear();
+	}, []);
 
 	useEffect(() => {
 		if (!enabled) return undefined;
@@ -414,6 +448,29 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 		};
 		// is the swing ring mounted for this track (focused chain)?
 		window.__ikRingVisible = () => !!ringRef.current;
+		window.__ikVisibleControls = () =>
+			[...visibilityRef.current.entries()]
+				.filter(([, exposed]) => exposed)
+				.map(([id]) => id)
+				.sort();
+		window.__ikVisibilityDetails = () =>
+			Object.fromEntries(visibilityDetailRef.current);
+		window.__ikVisibilityPerformance = () => ({ ...exposurePerfRef.current });
+		window.__ikControlScreenPositions = () => {
+			const rect = gl.domElement.getBoundingClientRect();
+			return Object.fromEntries(
+				Object.entries(handleRefs.current)
+					.filter(([, mesh]) => mesh?.parent)
+					.map(([id, mesh]) => {
+						const point = mesh.getWorldPosition(new THREE.Vector3()).project(camera);
+						return [id, {
+							x: rect.left + ((point.x + 1) / 2) * rect.width,
+							y: rect.top + ((1 - point.y) / 2) * rect.height,
+							exposed: mesh.visible && mesh.userData.ikExposed === true,
+						}];
+					})
+			);
+		};
 	}
 
 	// Handles + gizmo follow the live state every frame. A chain handle RIDES
@@ -445,6 +502,208 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 			const mesh = handleRefs.current[id];
 			if (mesh && joint) mesh.position.copy(joint.bone.getWorldPosition(tmp.pos));
 		}
+
+		// One exposure result owns both rendering and picking. Measure how far
+		// each control centre sits behind the first opaque scene surface; each
+		// track's visibilityDepth describes its legitimate under-skin depth.
+		// Centreline torso/head controls get enough allowance to stay usable,
+		// while a far-side shoulder or limb remains hidden behind the body.
+		camera.updateMatrixWorld();
+		camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+		camera.getWorldPosition(tmp.cameraPos);
+		const blockers = blockerRefs.current;
+		blockers.length = 0;
+		const input = exposureInputRef.current;
+		const poseInput = poseInputRef.current;
+		let inputIndex = 0;
+		let poseInputIndex = 0;
+		let exposureDirty = !input.valid;
+		let poseDirty = !poseInput.valid;
+		const captureInput = (value) => {
+			if (Math.abs((input.values[inputIndex] ?? Infinity) - value) > 1e-6) exposureDirty = true;
+			input.values[inputIndex] = value;
+			inputIndex += 1;
+		};
+		const capturePoseInput = (value) => {
+			captureInput(value);
+			if (Math.abs((poseInput.values[poseInputIndex] ?? Infinity) - value) > 1e-6) poseDirty = true;
+			poseInput.values[poseInputIndex] = value;
+			poseInputIndex += 1;
+		};
+		for (const value of camera.matrixWorld.elements) captureInput(value);
+		for (const mesh of Object.values(handleRefs.current)) {
+			if (!mesh?.parent) continue;
+			capturePoseInput(mesh.position.x);
+			capturePoseInput(mesh.position.y);
+			capturePoseInput(mesh.position.z);
+		}
+		scene.traverse((object) => {
+			if (!object.isMesh || !object.visible || object.layers.isEnabled(POSER_LAYER)) return;
+			const materials = Array.isArray(object.material) ? object.material : null;
+			let opaque = false;
+			if (materials) {
+				for (const material of materials) {
+					if (material && material.visible !== false && material.opacity > 0.01 && material.depthWrite !== false) {
+						opaque = true;
+						break;
+					}
+				}
+			} else {
+				const material = object.material;
+				opaque = !!material && material.visible !== false && material.opacity > 0.01 && material.depthWrite !== false;
+			}
+			if (!opaque) return;
+			blockers.push(object);
+			captureInput(object.id);
+			for (const value of object.matrixWorld.elements) {
+				if (object.isSkinnedMesh) capturePoseInput(value);
+				else captureInput(value);
+			}
+			for (const value of object.morphTargetInfluences ?? []) capturePoseInput(value);
+			if (object.isSkinnedMesh) {
+				// Handle centres do not reveal an in-place joint rotation
+				// (notably a head turn), so every skinning bone participates
+				// in the proxy-bake signature.
+				for (const bone of object.skeleton?.bones ?? []) {
+					for (const value of bone.matrixWorld.elements) capturePoseInput(value);
+				}
+			}
+		});
+		if (input.count !== inputIndex) exposureDirty = true;
+		input.count = inputIndex;
+		input.values.length = inputIndex;
+		if (poseInput.count !== poseInputIndex) poseDirty = true;
+		poseInput.count = poseInputIndex;
+		poseInput.values.length = poseInputIndex;
+
+		if (exposureDirty) {
+			const passStartedAt = performance.now();
+			input.valid = true;
+			poseInput.valid = true;
+			exposureDepthRef.current.clear();
+			occlusionRay.layers.set(0);
+			const staticBlockers = blockers.filter((object) => !object.isSkinnedMesh);
+			const currentSkinnedBlockers = new Set(blockers.filter((object) => object.isSkinnedMesh));
+			for (const object of skinnedBlockerProxiesRef.current.keys()) {
+				if (!currentSkinnedBlockers.has(object)) skinnedBlockerProxiesRef.current.delete(object);
+			}
+			const skinnedProxies = [];
+			for (const object of blockers) {
+				if (!object.isSkinnedMesh) continue;
+				let proxy = skinnedBlockerProxiesRef.current.get(object);
+				if (!proxy) {
+					proxy = { points: [], radius: 0.04 };
+					skinnedBlockerProxiesRef.current.set(object, proxy);
+					poseDirty = true;
+				}
+				if (poseDirty) {
+					const cells = new Set();
+					let pointCount = 0;
+					const positions = object.geometry.getAttribute("position");
+					// The production FBX is non-indexed and repeats vertices
+					// per triangle (about 166k across its two skin meshes).
+					// Six thousand evenly distributed samples per mesh are
+					// ample for a 4 cm surface cloud and keep a pose update
+					// inside a frame instead of re-skinning every duplicate.
+					const stride = Math.max(1, Math.floor(positions.count / 6000));
+					for (let index = 0; index < positions.count; index += stride) {
+						object.getVertexPosition(index, tmp.skinnedVertex);
+						tmp.skinnedVertex.applyMatrix4(object.matrixWorld);
+						const ix = Math.round(tmp.skinnedVertex.x / 0.04);
+						const iy = Math.round(tmp.skinnedVertex.y / 0.04);
+						const iz = Math.round(tmp.skinnedVertex.z / 0.04);
+						const key = (ix + 4096) * 16777216 + (iy + 4096) * 4096 + iz + 4096;
+						if (cells.has(key)) continue;
+						cells.add(key);
+						const point = proxy.points[pointCount] ?? new THREE.Vector3();
+						point.copy(tmp.skinnedVertex);
+						proxy.points[pointCount] = point;
+						pointCount += 1;
+					}
+					proxy.points.length = pointCount;
+				}
+				skinnedProxies.push(proxy);
+			}
+			for (const [id, mesh] of Object.entries(handleRefs.current)) {
+				if (!mesh?.parent) continue;
+				const meta = handleMetaRef.current.get(id);
+				mesh.getWorldPosition(tmp.viewPoint);
+				const targetDistance = tmp.cameraPos.distanceTo(tmp.viewPoint);
+				tmp.rayDirection.copy(tmp.viewPoint).sub(tmp.cameraPos).normalize();
+				occlusionRay.set(tmp.cameraPos, tmp.rayDirection);
+				occlusionRay.near = 0.001;
+				occlusionRay.far = Math.max(0.001, targetDistance - 0.001);
+				let blockerDistance = occlusionRay.intersectObjects(staticBlockers, false)[0]?.distance;
+				// A coarse cloud of baked skin-surface spheres preserves the
+				// actual animated silhouette without asking Three.js to skin
+				// every triangle once per control ray. Camera-only changes now
+				// test a few cached points; pose changes rebuild the cloud once.
+				for (const proxy of skinnedProxies) {
+					const radiusSq = proxy.radius * proxy.radius;
+					for (const point of proxy.points) {
+						const dx = point.x - tmp.cameraPos.x;
+						const dy = point.y - tmp.cameraPos.y;
+						const dz = point.z - tmp.cameraPos.z;
+						const along = dx * tmp.rayDirection.x + dy * tmp.rayDirection.y + dz * tmp.rayDirection.z;
+						if (along < 0 || along > targetDistance + proxy.radius) continue;
+						const perpendicularSq = dx * dx + dy * dy + dz * dz - along * along;
+						if (perpendicularSq > radiusSq) continue;
+						const distance = Math.max(0, along - Math.sqrt(radiusSq - perpendicularSq));
+						if (distance < (blockerDistance ?? Infinity)) blockerDistance = distance;
+					}
+				}
+				const visibilityDepth = meta?.track.visibilityDepth ?? (meta?.radius ?? JOINT_R) * 2;
+				const isExposed = ikControlIsExposed(targetDistance, blockerDistance, visibilityDepth);
+				visibilityDetailRef.current.set(id, {
+					exposed: isExposed,
+					targetDistance,
+					blockerDistance: blockerDistance ?? null,
+					visibilityDepth,
+				});
+				visibilityRef.current.set(id, isExposed);
+				mesh.userData.ikExposed = isExposed;
+				mesh.visible = isExposed;
+				if (!isExposed) continue;
+				tmp.viewPoint.applyMatrix4(camera.matrixWorldInverse);
+				exposureDepthRef.current.set(id, -tmp.viewPoint.z);
+			}
+			exposurePerfRef.current.passes += 1;
+			exposurePerfRef.current.raycasts += Object.keys(handleRefs.current).length;
+			exposurePerfRef.current.lastPassMs = performance.now() - passStartedAt;
+		} else {
+			exposurePerfRef.current.skippedFrames += 1;
+		}
+
+		let near = Infinity;
+		let far = -Infinity;
+		for (const depth of exposureDepthRef.current.values()) {
+			near = Math.min(near, depth);
+			far = Math.max(far, depth);
+		}
+		const span = Math.max(0.001, far - near);
+		const activeFocus = focusIdRef.current;
+		for (const [id, depth] of exposureDepthRef.current) {
+			const mesh = handleRefs.current[id];
+			if (!mesh) continue;
+			const focused = activeFocus === id;
+			const clickable = activeFocus === null || activeFocus === undefined || focused;
+			const closeness = 1 - THREE.MathUtils.clamp((depth - near) / span, 0, 1);
+			const emphasis = THREE.MathUtils.smoothstep(closeness, 0, 1);
+			mesh.material.opacity = focused
+				? OPACITY_FOCUSED
+				: clickable
+					? THREE.MathUtils.lerp(OPACITY_FAR, OPACITY_NEAR, emphasis)
+					: THREE.MathUtils.lerp(OPACITY_DISABLED_FAR, OPACITY_DISABLED_NEAR, emphasis);
+			mesh.material.emissiveIntensity = focused
+				? 2.6
+				: clickable
+					? THREE.MathUtils.lerp(1.5, 2.35, emphasis)
+					: THREE.MathUtils.lerp(0.45, 0.8, emphasis);
+		}
+		const focusExposed = !!focus && visibilityRef.current.get(focus) !== false;
+		if (gizmoRef.current) gizmoRef.current.visible = focusExposed;
+		if (ringRef.current) ringRef.current.visible = focusExposed;
+
 		if (gizmoRef.current && focus) {
 			const mid = MID_TRACKS.find((t) => t.id === focus);
 			const chainTrack = IK_TRACKS.find((t) => t.id === focus);
@@ -485,6 +744,31 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 	 * pointerdown + raycast against the registered handle/gizmo meshes uses
 	 * the CURRENT canvas rect, so every hit is pixel-exact. */
 	const pickRefs = useRef([]); // [{ mesh, track, axisDir, kind }]
+	if (typeof window !== "undefined") {
+		window.__ikPickScreenPositions = () => {
+			const rect = gl.domElement.getBoundingClientRect();
+			return pickRefs.current
+				.filter((pick) => pick.mesh?.parent)
+				.map((pick) => {
+					pick.mesh.updateWorldMatrix(true, false);
+					const point = pick.part === "ring"
+						? new THREE.Vector3(SWING_RING_R * Math.SQRT1_2, SWING_RING_R * Math.SQRT1_2, 0).applyMatrix4(pick.mesh.matrixWorld)
+						: pick.mesh.getWorldPosition(new THREE.Vector3());
+					point.project(camera);
+					const axis = pick.axisDir
+						? Math.abs(pick.axisDir.x) > 0.5 ? "x" : Math.abs(pick.axisDir.y) > 0.5 ? "y" : "z"
+						: null;
+					return {
+						trackId: pick.track.id,
+						kind: pick.kind,
+						part: pick.part,
+						axis,
+						x: rect.left + ((point.x + 1) / 2) * rect.width,
+						y: rect.top + ((1 - point.y) / 2) * rect.height,
+					};
+				});
+		};
+	}
 
 /** Click/drag threshold (screen px): a press that never moves past this is
  * a click (focus toggle), not a drag (no key baked). */
@@ -580,7 +864,11 @@ const CLICK_PX = 4;
 			if (ev.button !== 0) return;
 			const downXY = [ev.clientX, ev.clientY];
 			const focused = focusIdRef.current;
-			let picks = pickRefs.current.filter((p) => p.mesh);
+			let picks = pickRefs.current.filter((p) =>
+				p.mesh?.visible &&
+				handleRefs.current[p.track.id]?.visible &&
+				handleRefs.current[p.track.id]?.userData.ikExposed === true
+			);
 			if (focused) picks = picks.filter((p) => p.track.id === focused);
 			else picks = picks.filter((p) => !p.axisDir); // spheres only
 			if (!picks.length) {
@@ -600,6 +888,9 @@ const CLICK_PX = 4;
 			}
 			const pick = picks.find((p) => p.mesh === hits[0].object);
 			if (!pick) return;
+			if (typeof window !== "undefined") {
+				window.__ikLastPick = { trackId: pick.track.id, kind: pick.kind, part: pick.part };
+			}
 			ev.stopImmediatePropagation();
 			ev.stopPropagation();
 			ev.preventDefault();
@@ -630,7 +921,13 @@ const CLICK_PX = 4;
 				key={track.id}
 				ref={(m) => {
 					handleRefs.current[track.id] = m;
-					if (m) m.layers.set(POSER_LAYER);
+					if (m) {
+						m.layers.set(POSER_LAYER);
+						handleMetaRef.current.set(track.id, { track, radius });
+					} else {
+						handleMetaRef.current.delete(track.id);
+						visibilityRef.current.delete(track.id);
+					}
 					register(track, kind)(m);
 				}}
 				renderOrder={999}
@@ -647,6 +944,7 @@ const CLICK_PX = 4;
 					emissiveIntensity={focused ? 2.6 : 1.4}
 					toneMapped={false}
 					depthTest={false}
+					depthWrite={false}
 					transparent
 					opacity={focused ? OPACITY_FOCUSED : OPACITY_UNFOCUSED}
 				/>
@@ -654,7 +952,7 @@ const CLICK_PX = 4;
 		);
 	};
 
-		// The gizmo appears on chain + mid (position) handles — and on the hips
+	// The gizmo appears on chain + mid (position) handles — and on the hips
 	// BODY handle: its arrows translate the body (Y = height, for crouching
 	// and lying poses) while its centre sphere keeps swinging the body.
 	const gizmoTrack =
@@ -691,7 +989,7 @@ const CLICK_PX = 4;
 									}}
 								>
 									<cylinderGeometry args={[GIZMO_SHAFT_R, GIZMO_SHAFT_R, GIZMO_LEN, 8]} />
-									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.2} toneMapped={false} depthTest={false} transparent opacity={0.9} />
+									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.2} toneMapped={false} depthTest={false} depthWrite={false} transparent opacity={0.9} />
 								</mesh>
 								<mesh
 									position={[0, GIZMO_LEN + 0.04, 0]}
@@ -705,7 +1003,29 @@ const CLICK_PX = 4;
 									}}
 								>
 									<coneGeometry args={[GIZMO_TIP_R, 0.08, 12]} />
-									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.4} toneMapped={false} depthTest={false} transparent opacity={0.95} />
+									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.4} toneMapped={false} depthTest={false} depthWrite={false} transparent opacity={0.95} />
+								</mesh>
+								{/* Invisible forgiving hit volumes keep the target
+								    at least as easy to grab as the visible arrow. */}
+								<mesh
+									position={[0, GIZMO_LEN / 2 + 0.02, 0]}
+									ref={(m) => {
+										if (m) m.layers.set(POSER_LAYER);
+										register(gizmoTrack, gizmoKind, dir, "hit-shaft")(m);
+									}}
+								>
+									<cylinderGeometry args={[GIZMO_PICK_SHAFT_R, GIZMO_PICK_SHAFT_R, GIZMO_LEN + 0.04, 8]} />
+									<meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
+								</mesh>
+								<mesh
+									position={[0, GIZMO_LEN + 0.04, 0]}
+									ref={(m) => {
+										if (m) m.layers.set(POSER_LAYER);
+										register(gizmoTrack, gizmoKind, dir, "hit-tip")(m);
+									}}
+								>
+									<coneGeometry args={[GIZMO_PICK_TIP_R, 0.12, 12]} />
+									<meshBasicMaterial transparent opacity={0} depthTest={false} depthWrite={false} />
 								</mesh>
 							</group>
 						);
@@ -735,6 +1055,7 @@ const CLICK_PX = 4;
 							emissiveIntensity={2.2}
 							toneMapped={false}
 							depthTest={false}
+							depthWrite={false}
 							transparent
 							opacity={0.9}
 						/>

@@ -11,6 +11,7 @@ const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 const props = readFileSync(new URL("../src/props.jsx", import.meta.url), "utf8");
 const room = readFileSync(new URL("../src/room.jsx", import.meta.url), "utf8");
 const dualview = readFileSync(new URL("../src/dualview.jsx", import.meta.url), "utf8");
+const posestudio = readFileSync(new URL("../src/posestudio.jsx", import.meta.url), "utf8");
 
 expect(
 	"legacy per-mesh outline modules are removed",
@@ -47,6 +48,14 @@ expect(
 		dualview.includes("depthLine * foregroundOwner"),
 );
 expect(
+	"distant outlines soften without disappearing or changing kernel width",
+	dualview.includes("float distanceFade") &&
+		dualview.includes("mix(0.42, 1.0") &&
+		dualview.includes("3.0 / max(centerZ, 0.001)") &&
+		dualview.includes("texel.x * 0.8") &&
+		dualview.includes("edge * 0.76 * distanceFade"),
+);
+expect(
 	"each pane renders into its own local edge target",
 	dualview.includes("edgePass.target.setSize(targetWidth, targetHeight)") &&
 		!dualview.includes("gl.setViewport(0, 0, targetWidth, targetHeight)") &&
@@ -55,6 +64,61 @@ expect(
 expect(
 	"plan view remains free of shot post-processing",
 	dualview.includes("draw(planCam, planPane, null, false)"),
+);
+expect(
+	"IK controls emphasize the camera-nearest circles",
+	posestudio.includes("camera.matrixWorldInverse") &&
+		posestudio.includes("OPACITY_NEAR") &&
+		posestudio.includes("OPACITY_FAR") &&
+		posestudio.includes("MathUtils.smoothstep(closeness"),
+);
+expect(
+	"IK circles mirror their real clickability",
+	posestudio.includes("const clickable =") &&
+		posestudio.includes("OPACITY_DISABLED_NEAR") &&
+		posestudio.includes("OPACITY_DISABLED_FAR") &&
+		posestudio.includes("clickable"),
+);
+expect(
+	"occluded IK controls share one render and picking decision",
+	posestudio.includes("ikControlIsExposed") &&
+		posestudio.includes("visibilityRef.current.set(id, isExposed)") &&
+		posestudio.includes("mesh.userData.ikExposed = isExposed") &&
+		posestudio.includes("mesh.visible = isExposed") &&
+		posestudio.includes("handleRefs.current[p.track.id]?.visible") &&
+		posestudio.includes("handleRefs.current[p.track.id]?.userData.ikExposed === true"),
+);
+expect(
+	"IK occlusion caches sampled skin proxies instead of re-skinning every ray",
+	posestudio.includes("skinnedBlockerProxiesRef") &&
+		posestudio.includes("positions.count / 6000") &&
+		posestudio.includes("const staticBlockers = blockers.filter") &&
+		!posestudio.includes("intersectObjects(blockers, false)"),
+);
+expect(
+	"replaced rigs cannot retain stale skin proxy clouds",
+	posestudio.includes("currentSkinnedBlockers") &&
+		posestudio.includes("skinnedBlockerProxiesRef.current.delete(object)"),
+);
+expect(
+	"gizmo arrows have forgiving invisible hit volumes",
+	posestudio.includes("GIZMO_PICK_SHAFT_R") &&
+		posestudio.includes("GIZMO_PICK_TIP_R") &&
+		posestudio.includes('register(gizmoTrack, gizmoKind, dir, "hit-shaft")') &&
+		posestudio.includes('register(gizmoTrack, gizmoKind, dir, "hit-tip")') &&
+		posestudio.includes("opacity={0}"),
+);
+expect(
+	"gizmo arrows and swing rings remain visible over the player body",
+	posestudio.includes("depthTest={false} depthWrite={false} transparent opacity={0.9}") &&
+		posestudio.includes("depthTest={false} depthWrite={false} transparent opacity={0.95}") &&
+		posestudio.includes("toneMapped={false}\n\t\t\t\t\t\t\tdepthTest={false}"),
+);
+expect(
+	"unchanged IK frames reuse the previous exposure pass",
+	posestudio.includes("exposureInputRef") &&
+		posestudio.includes("if (exposureDirty)") &&
+		posestudio.includes("exposurePerfRef.current.skippedFrames += 1"),
 );
 
 if (failures) process.exit(1);
