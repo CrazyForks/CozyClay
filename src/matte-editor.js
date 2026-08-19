@@ -41,6 +41,10 @@ const OVERLAY_ALPHA = 0.62;
 /** Interaction runs on a preview this wide at most — the paint underneath it
  * stays at the picture's own resolution. */
 export const EDIT_PREVIEW_MAX = 512;
+/** Zoom range. 1 is the whole picture — there is no reason to look at less of
+ * it than that — and 16 puts a preview pixel under a fingertip. */
+export const MIN_ZOOM = 1;
+export const MAX_ZOOM = 16;
 /** How many edits back you can walk. Each step is a full-resolution copy of
  * the selection, so this is a memory budget as much as a usability one: seven
  * is comfortably more than the "that stroke went too far" case a region brush
@@ -67,6 +71,7 @@ export function createMatteEditor(canvas, {
 		brush: 18,
 		mode: "paint",
 		painting: false,
+		panning: null,
 		last: null,
 		/** where this stroke has touched, in full-resolution pixels — the seeds
 		 * the growth runs from when the pointer comes up */
@@ -75,6 +80,14 @@ export function createMatteEditor(canvas, {
 		 * through THIS rather than through the live layer, which the stroke's
 		 * own dabs are busy clearing. */
 		before: null,
+		/** What part of the picture the canvas is showing: a zoom factor and the
+		 * top-left of the visible rect, in preview pixels. Zoom never goes below
+		 * 1 and the rect is kept inside the picture, so there is no empty space
+		 * to get lost in — at a hair's width the only thing worth looking at is
+		 * the hair. */
+		view: { zoom: 1, x: 0, y: 0 },
+		/** offscreen copy of the whole preview, the source drawImage crops from */
+		buffer: null,
 		/** undo buffer: whole selections, newest last, current at `at` */
 		history: [],
 		at: -1,
@@ -105,12 +118,13 @@ export function createMatteEditor(canvas, {
 	const ratio = () => (state.full && state.preview ? state.full.width / state.preview.width : 1);
 
 	function report() {
-		if (!state.paint) return onChange({ painted: 0, coverage: 0, canUndo: false, canRedo: false });
+		if (!state.paint) return onChange({ painted: 0, coverage: 0, zoom: 1, canUndo: false, canRedo: false });
 		let painted = 0;
 		for (let pixel = 0; pixel < state.paint.length; pixel++) painted += state.paint[pixel];
 		onChange({
 			painted,
 			coverage: painted / state.paint.length,
+			zoom: state.view.zoom,
 			canUndo: state.at > 0,
 			canRedo: state.at >= 0 && state.at < state.history.length - 1,
 		});
@@ -120,6 +134,22 @@ export function createMatteEditor(canvas, {
 	 * says a pixel goes. The mask is sampled from full resolution rather than
 	 * kept in two places, so what is displayed can never drift from what will
 	 * be applied. */
+	/** The visible rectangle, in preview pixels. Clamped so the picture always
+	 * fills the canvas: pan cannot walk off the edge of the photograph. */
+	function visible() {
+		if (!state.preview) return { x: 0, y: 0, width: 1, height: 1 };
+		const { width, height } = state.preview;
+		const zoom = clamp(state.view.zoom, MIN_ZOOM, MAX_ZOOM);
+		const w = width / zoom;
+		const h = height / zoom;
+		return {
+			x: clamp(state.view.x, 0, Math.max(0, width - w)),
+			y: clamp(state.view.y, 0, Math.max(0, height - h)),
+			width: w,
+			height: h,
+		};
+	}
+
 	function repaint() {
 		if (!state.preview) return;
 		const { width, height, data } = state.preview;
@@ -150,7 +180,21 @@ export function createMatteEditor(canvas, {
 		}
 		canvas.width = width;
 		canvas.height = height;
-		view.putImageData(new ImageData(out, width, height), 0, 0);
+		// The whole picture is composited once, then the visible slice of it is
+		// blown up onto the canvas. Compositing only the visible slice would be
+		// cheaper and wrong: the mask is sampled per preview pixel, and cropping
+		// first would resample it twice.
+		if (!state.buffer || state.buffer.width !== width || state.buffer.height !== height) {
+			state.buffer = makeCanvas(width, height);
+			state.buffer.width = width;
+			state.buffer.height = height;
+		}
+		state.buffer.getContext("2d").putImageData(new ImageData(out, width, height), 0, 0);
+		const box = visible();
+		// Nearest-neighbour past 2x: a matte edge is a decision about which
+		// pixels go, and smoothing it into a gradient is a lie about where it is.
+		view.imageSmoothingEnabled = state.view.zoom < 2;
+		view.drawImage(state.buffer, box.x, box.y, box.width, box.height, 0, 0, width, height);
 		report();
 	}
 
@@ -182,10 +226,15 @@ export function createMatteEditor(canvas, {
 	}
 
 	/** Where a pointer is, in FULL-resolution pixels: through the letterbox,
-	 * then through the preview, then into the picture. */
+	 * then through the zoom, then through the preview, into the picture. */
 	function at(event) {
-		const box = fitted();
-		return { x: (event.clientX - box.left) * box.scale, y: (event.clientY - box.top) * box.scale };
+		const fit = fitted();
+		const box = visible();
+		// 0..1 across the drawn canvas, then across the visible slice of the
+		// preview, then up to full resolution.
+		const u = fit.width ? (event.clientX - fit.left) / fit.width : 0;
+		const v = fit.height ? (event.clientY - fit.top) / fit.height : 0;
+		return { x: (box.x + u * box.width) * ratio(), y: (box.y + v * box.height) * ratio() };
 	}
 
 	/** Is the pointer on the picture at all, rather than on a letterbox bar? */
@@ -199,9 +248,13 @@ export function createMatteEditor(canvas, {
 		);
 	}
 
-	/** The brush is set in screen pixels, so it travels the same road. */
+	/** The brush is set in SCREEN pixels, so it shrinks in picture pixels as
+	 * the picture is magnified — which is the point of zooming in to work on an
+	 * edge: the same wrist movement covers less of the photograph. */
 	function radius() {
-		return Math.max(1, (state.brush / 2) * fitted().scale);
+		const fit = fitted();
+		const perScreenPixel = fit.width ? (visible().width / fit.width) * ratio() : ratio();
+		return Math.max(1, (state.brush / 2) * perScreenPixel);
 	}
 
 	function stroke(from, to) {
@@ -253,6 +306,11 @@ export function createMatteEditor(canvas, {
 		if (!state.preview || !inside(event)) return;
 		event.preventDefault();
 		canvas.setPointerCapture?.(event.pointerId);
+		// Middle button, or space held: this drag moves the view, not the mask.
+		if (event.button === 1 || spaceHeld) {
+			state.panning = { x: event.clientX, y: event.clientY };
+			return;
+		}
 		state.painting = true;
 		// The snapshot the eraser grows through, taken before this stroke's own
 		// dabs start clearing the layer it would otherwise read.
@@ -261,22 +319,80 @@ export function createMatteEditor(canvas, {
 		stroke(state.last, state.last);
 	};
 	const onMove = (event) => {
+		if (state.panning) {
+			const fit = fitted();
+			const box = visible();
+			// Screen pixels to preview pixels, so the picture tracks the cursor
+			// exactly rather than sliding faster or slower than the hand.
+			const perScreenPixel = fit.width ? box.width / fit.width : 1;
+			state.view.x = box.x - (event.clientX - state.panning.x) * perScreenPixel;
+			state.view.y = box.y - (event.clientY - state.panning.y) * perScreenPixel;
+			state.panning = { x: event.clientX, y: event.clientY };
+			repaint();
+			return;
+		}
 		if (!state.painting) return;
 		const point = at(event);
 		stroke(state.last, point);
 		state.last = point;
 	};
 	const onUp = (event) => {
+		if (state.panning) {
+			state.panning = null;
+			if (canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+			return;
+		}
 		if (!state.painting) return;
 		state.painting = false;
 		growFromStroke();
 		if (canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+	};
+	/* ------------------------------------------------------------ view --- */
+
+	/** Zoom about a point on screen, so what is under the cursor stays under
+	 * the cursor — the only zoom that lets you keep working on the thing you
+	 * were looking at. */
+	function zoomAt(clientX, clientY, factor) {
+		if (!state.preview) return;
+		const fit = fitted();
+		const box = visible();
+		const u = fit.width ? clamp((clientX - fit.left) / fit.width, 0, 1) : 0.5;
+		const v = fit.height ? clamp((clientY - fit.top) / fit.height, 0, 1) : 0.5;
+		const anchorX = box.x + u * box.width;
+		const anchorY = box.y + v * box.height;
+		const zoom = clamp(state.view.zoom * factor, MIN_ZOOM, MAX_ZOOM);
+		state.view.zoom = zoom;
+		state.view.x = anchorX - u * (state.preview.width / zoom);
+		state.view.y = anchorY - v * (state.preview.height / zoom);
+		const clamped = visible();
+		state.view.x = clamped.x;
+		state.view.y = clamped.y;
+		repaint();
+	}
+
+	const onWheel = (event) => {
+		if (!state.preview) return;
+		event.preventDefault();
+		zoomAt(event.clientX, event.clientY, event.deltaY < 0 ? 1.15 : 1 / 1.15);
+	};
+
+	// Middle button pans, and so does the left button while space is held —
+	// the two conventions people arrive with from every other paint tool.
+	let spaceHeld = false;
+	const onKeyDown = (event) => {
+		if (event.key === " ") spaceHeld = true;
+	};
+	const onKeyUp = (event) => {
+		if (event.key === " ") spaceHeld = false;
 	};
 	canvas.addEventListener("pointerdown", onDown);
 	canvas.addEventListener("pointermove", onMove);
 	canvas.addEventListener("pointerup", onUp);
 	canvas.addEventListener("pointercancel", onUp);
 	canvas.addEventListener("pointerleave", onUp);
+	canvas.addEventListener("wheel", onWheel, { passive: false });
+	canvas.addEventListener("keydown", onKeyDown);
+	canvas.addEventListener("keyup", onKeyUp);
 
 	/* ------------------------------------------------------------- api --- */
 
@@ -301,6 +417,8 @@ export function createMatteEditor(canvas, {
 					? { data: Uint8ClampedArray.from(state.full.data), width: state.full.width, height: state.full.height }
 					: read(Math.max(1, Math.round(bitmap.width * scale)), Math.max(1, Math.round(bitmap.height * scale)));
 				state.paint = new Uint8Array(state.full.width * state.full.height);
+				state.view = { zoom: 1, x: 0, y: 0 };
+				state.buffer = null;
 				state.history = [];
 				state.at = -1;
 				commit();
@@ -342,6 +460,17 @@ export function createMatteEditor(canvas, {
 			return added;
 		},
 
+		/** Zoom about the middle of the canvas — what the +/− buttons do. */
+		zoomBy(factor) {
+			const fit = fitted();
+			zoomAt(fit.left + fit.width / 2, fit.top + fit.height / 2, factor);
+		},
+		/** The whole picture again. */
+		fit() {
+			state.view = { zoom: 1, x: 0, y: 0 };
+			repaint();
+		},
+		zoom: () => state.view.zoom,
 		setTolerance(value) {
 			state.tolerance = clamp(Number(value) || 0, 0.01, 0.9);
 		},
@@ -383,6 +512,9 @@ export function createMatteEditor(canvas, {
 			canvas.removeEventListener("pointerup", onUp);
 			canvas.removeEventListener("pointercancel", onUp);
 			canvas.removeEventListener("pointerleave", onUp);
+			canvas.removeEventListener("wheel", onWheel);
+			canvas.removeEventListener("keydown", onKeyDown);
+			canvas.removeEventListener("keyup", onKeyUp);
 		},
 	};
 }

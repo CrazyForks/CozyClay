@@ -7553,3 +7553,13 @@ input[type=range] {
 	background: var(--card2);
 	border-radius: 0 3px 3px 0;
 }
+
+.matte-zoom {
+	min-width: 3.2rem;
+	padding: 0 4px;
+	color: var(--muted);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	text-align: center;
+	align-self: center;
+}

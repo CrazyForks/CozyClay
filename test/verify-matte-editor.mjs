@@ -9,7 +9,7 @@
  * it off, and is the mask it finally hands over exactly what was on screen.
  */
 
-import { MATTE_HISTORY, MATTE_PURPLE, createMatteEditor } from "../src/matte-editor.js";
+import { MATTE_HISTORY, MATTE_PURPLE, MAX_ZOOM, createMatteEditor } from "../src/matte-editor.js";
 
 let failures = 0;
 const expect = (name, condition, detail = "") => {
@@ -62,14 +62,44 @@ const canvas = {
 	setPointerCapture() {},
 	releasePointerCapture() {},
 	hasPointerCapture: () => false,
-	getContext: () => ({ putImageData: (image) => { painted = image; } }),
-};
-const makeCanvas = (width, height) => ({
 	getContext: () => ({
-		drawImage: () => {},
-		getImageData: () => ({ data: Uint8ClampedArray.from(source), width, height }),
+		imageSmoothingEnabled: true,
+		// Nearest-neighbour resample of the source rect, which is what the
+		// browser does for us at these zooms — enough that a pixel assertion
+		// means the same thing zoomed in as it does at fit.
+		drawImage: (source, sx, sy, sw, sh, dx, dy, dw, dh) => {
+			const from = source.__image;
+			const out = new Uint8ClampedArray(dw * dh * 4);
+			for (let y = 0; y < dh; y++) {
+				const srcY = Math.min(from.height - 1, Math.floor(sy + (y / dh) * sh));
+				for (let x = 0; x < dw; x++) {
+					const srcX = Math.min(from.width - 1, Math.floor(sx + (x / dw) * sw));
+					const s = (srcY * from.width + srcX) * 4;
+					const d = (y * dw + x) * 4;
+					out[d] = from.data[s];
+					out[d + 1] = from.data[s + 1];
+					out[d + 2] = from.data[s + 2];
+					out[d + 3] = from.data[s + 3];
+				}
+			}
+			painted = { data: out, width: dw, height: dh };
+		},
 	}),
-});
+};
+const makeCanvas = (width, height) => {
+	const canvasLike = {
+		width,
+		height,
+		__image: null,
+		getContext: () => ({
+			drawImage: () => {},
+			getImageData: () => ({ data: Uint8ClampedArray.from(source), width, height }),
+			// The offscreen buffer the editor composites into, then crops from.
+			putImageData: (image) => { canvasLike.__image = image; },
+		}),
+	};
+	return canvasLike;
+};
 const asset = { id: "img-" + "c".repeat(32), type: "image/png", width: WIDTH, height: HEIGHT, bytes: new ArrayBuffer(4) };
 
 let last = null;
@@ -243,6 +273,50 @@ let walked = 0;
 while (editor.undo()) walked += 1;
 expect(`the buffer keeps ${MATTE_HISTORY} steps and no more`, walked === MATTE_HISTORY, String(walked));
 expect("the oldest state left is still a real one", last.painted >= 0 && editor.canUndo() === false);
+
+/* -- zoom and pan --------------------------------------------------------- */
+
+await editor.load(asset);
+expect("a picture opens at fit", editor.zoom() === 1 && last.zoom === 1);
+
+// The canvas is 40 x 60 on screen. At 2x, the visible slice is 20 x 30 of the
+// picture, centred, so the subject's top-left corner (12, 20) lands at the
+// canvas's own (4, 20) — magnified, and still the same pixel of the photo.
+editor.zoomBy(2);
+expect("zooming reports itself", editor.zoom() === 2 && last.zoom === 2);
+editor.setBrush(2);
+pointer("pointerdown", 4, 4);
+pointer("pointerup", 4, 4);
+expect(
+	"a click at 2x lands on the pixel it is over, not on the one it would be at fit",
+	// (4, 4) on a 2x view centred at (10, 15) is picture (12, 17) — wall, just
+	// above the subject — and the growth takes the wall.
+	isPurple(4, 4) && isPlain(20, 30),
+	JSON.stringify({ zoom: editor.zoom(), painted: last.painted }),
+);
+
+editor.clear();
+// Panning moves the picture under the canvas: after dragging right, what was
+// to the LEFT comes into view.
+const beforePan = pixelAt(2, 30);
+handlers.get("keydown")({ key: " " });
+pointer("pointerdown", 30, 30);
+handlers.get("pointermove")({ clientX: 10, clientY: 30, pointerId: 1, preventDefault() {} });
+pointer("pointerup", 10, 30);
+handlers.get("keyup")({ key: " " });
+expect("space-drag pans instead of painting", last.painted === 0, JSON.stringify(last));
+expect("the view actually moved", JSON.stringify(pixelAt(2, 30)) !== JSON.stringify(beforePan) || editor.zoom() === 1);
+
+editor.fit();
+expect("fit puts the whole picture back", editor.zoom() === 1 && isPlain(1, 1) && isPlain(20, 30));
+
+// The zoom is bounded at both ends: there is nothing to see below fit, and 16x
+// is a preview pixel under a fingertip.
+for (let i = 0; i < 20; i++) editor.zoomBy(2);
+expect("zoom stops at the far end", editor.zoom() === MAX_ZOOM, String(editor.zoom()));
+for (let i = 0; i < 40; i++) editor.zoomBy(0.5);
+expect("and never goes below the whole picture", editor.zoom() === 1, String(editor.zoom()));
+editor.fit();
 
 /* -- a saved selection can be put back ------------------------------------ */
 

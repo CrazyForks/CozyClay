@@ -1655,7 +1655,7 @@ globalThis.playMode = centerTab === "play";
 	const [matteTolerance, setMatteTolerance] = useState(0.18);
 	const [matteBrush, setMatteBrush] = useState(18);
 	const [matteMode, setMatteMode] = useState("paint");
-	const [matteStats, setMatteStats] = useState({ painted: 0, coverage: 0, canUndo: false, canRedo: false });
+	const [matteStats, setMatteStats] = useState({ painted: 0, coverage: 0, zoom: 1, canUndo: false, canRedo: false });
 	const [matteBusy, setMatteBusy] = useState(false);
 	const matteCanvasRef = useRef(null);
 	const matteEditorRef = useRef(null);
@@ -1685,7 +1685,7 @@ globalThis.playMode = centerTab === "play";
 			if (!stored || cancelled) return;
 			const { mask, width, height } = await decodeMask(stored);
 			if (!cancelled) editor.setMask(mask, width, height);
-		})().catch(() => setMatteStats({ painted: 0, coverage: 0, canUndo: false, canRedo: false }));
+		})().catch(() => setMatteStats({ painted: 0, coverage: 0, zoom: 1, canUndo: false, canRedo: false }));
 		return () => {
 			cancelled = true;
 			editor.dispose();
@@ -6540,6 +6540,29 @@ function resizePromptClip(id, edge, rawFrame) {
 												{ko("Clear", "모두 지우기")}
 											</button>
 										</div>
+										<div className="presets matte-modes">
+											<button
+												type="button"
+												disabled={(matteStats.zoom ?? 1) <= 1}
+												aria-label={ko("Zoom out", "축소")}
+												onClick={() => matteEditorRef.current?.zoomBy(1 / 1.5)}
+											>
+												−
+											</button>
+											<span className="matte-zoom" aria-live="polite">{(matteStats.zoom ?? 1).toFixed(1)}×</span>
+											<button type="button" aria-label={ko("Zoom in", "확대")} onClick={() => matteEditorRef.current?.zoomBy(1.5)}>
+												+
+											</button>
+											<button type="button" disabled={(matteStats.zoom ?? 1) <= 1} onClick={() => matteEditorRef.current?.fit()}>
+												{ko("Fit", "전체 보기")}
+											</button>
+										</div>
+										<p className="inspector-hint">
+											{ko(
+												"Scroll on the picture to zoom where the cursor is; hold Space (or the middle button) and drag to pan. The brush keeps its size on screen, so zooming in is how you work an edge.",
+												"그림 위에서 스크롤하면 커서 위치를 기준으로 확대·축소되고, Space(또는 가운데 버튼)를 누른 채 드래그하면 이동합니다. 브러시는 화면 기준 크기를 유지하므로, 가장자리를 다듬을 땐 확대해서 작업하면 됩니다.",
+											)}
+										</p>
 										<div className="presets matte-modes">
 											<button type="button" disabled={!matteStats.canUndo} onClick={() => matteEditorRef.current?.undo()}>
 												{ko("Undo", "실행 취소")} <kbd>⌘Z</kbd>
