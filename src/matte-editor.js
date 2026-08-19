@@ -1,41 +1,39 @@
 /**
- * The background editor: a picture with its removed parts painted purple, and
- * a brush to argue with the machine about where they are.
+ * The background editor: the photograph as it arrived, and a purple brush.
  *
- * An automatic cut is right most of the time and wrong in exactly the places
- * that matter — the gap under a chair, the shadow the wall throws, the corner
- * of a sign the growth could not reach. Showing the result as a finished
- * cutout hides the disagreement: you see what is left, not what was taken, so
- * a hole in the subject and a piece of wall that survived look the same
- * (nothing). Painting the removed region PURPLE inverts that. Purple is always
- * "this goes", it never occurs in the picture, and the eye reads a stray purple
- * blob on the subject instantly.
+ * The rule is that what you paint is what goes. Not a suggestion the machine
+ * then reinterprets — the purple IS the mask. Applying takes exactly the
+ * pixels that are violet on screen, whether you painted all of them, half of
+ * them, or let Auto-detect make the first pass and then corrected it.
  *
- * The brush writes to a separate paint layer, never to the automatic mask, so
- * the tolerance slider can re-grow the cut underneath work already done.
+ * That is why the page opens on the untouched picture. An automatic cut shown
+ * before anyone asked for it hides the thing that matters: a hole in the
+ * subject and a piece of wall that survived both look like nothing once the
+ * background is gone. Purple inverts that — nothing photographed for a set is
+ * this violet, so every purple pixel is a decision you can see and argue with.
  *
- * No framework: this is a canvas, a pointer and two typed arrays, mounted the
- * same way from the studio's React sidebar and from the plain-DOM bench.
+ * The paint layer is kept at the picture's FULL resolution while interaction
+ * runs on a preview at most 512 px wide. Painting a preview and scaling the
+ * result up would turn a machine-cut edge into a staircase; painting into full
+ * resolution and only DISPLAYING the preview costs nothing extra and keeps the
+ * edge exactly as sharp as the picture is.
+ *
+ * No framework: a canvas, a pointer and two typed arrays, mounted the same way
+ * from the studio's React sidebar and from the plain-DOM bench.
  */
 
-import { backgroundMask, combineMask, paintMask } from "./matte.js";
+import { backgroundMask, paintMask } from "./matte.js";
 
 /** The overlay colour. Chosen to be impossible: nothing photographed for a set
  * is this violet, so every purple pixel is a decision, not the picture. */
 export const MATTE_PURPLE = [139, 92, 246];
 const OVERLAY_ALPHA = 0.62;
-/** Interaction runs on a preview this wide at most. A brush stroke is coarse
- * by nature, and repainting four megapixels per pointer move is not. */
+/** Interaction runs on a preview this wide at most — the paint underneath it
+ * stays at the picture's own resolution. */
 export const EDIT_PREVIEW_MAX = 512;
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-/**
- * Mount an editor onto a canvas.
- *
- * `deps` carries the browser APIs so a host can hand in its own (and so this
- * file stays testable in principle): `createBitmap` and `makeCanvas`.
- */
 export function createMatteEditor(canvas, {
 	onChange = () => {},
 	createBitmap = globalThis.createImageBitmap,
@@ -43,93 +41,92 @@ export function createMatteEditor(canvas, {
 } = {}) {
 	const view = canvas.getContext("2d", { willReadFrequently: true });
 	const state = {
-		/** the picture, scaled down to preview size */
+		/** the picture at full size — what Auto-detect reads and what the paint
+		 * layer is sized to */
+		full: null,
+		/** the same picture small enough to repaint on every pointer move */
 		preview: null,
-		/** the automatic mask at preview size, re-grown when tolerance moves */
-		auto: null,
-		/** strokes: +1 remove, -1 restore, 0 untouched */
+		/** 1 = purple = this goes. Full resolution, and the only mask there is. */
 		paint: null,
 		tolerance: 0.18,
 		brush: 18,
-		mode: "remove",
+		mode: "paint",
 		painting: false,
 		last: null,
 	};
 
-	/** Repaint: the picture, then purple wherever the combined mask says the
-	 * background is. One ImageData, built fresh — at preview size that is a
-	 * fraction of a millisecond and it can never drift from the mask. */
+	/** full-resolution pixels per preview pixel */
+	const ratio = () => (state.full && state.preview ? state.full.width / state.preview.width : 1);
+
+	function report() {
+		if (!state.paint) return onChange({ painted: 0, coverage: 0 });
+		let painted = 0;
+		for (let pixel = 0; pixel < state.paint.length; pixel++) painted += state.paint[pixel];
+		onChange({ painted, coverage: painted / state.paint.length });
+	}
+
+	/** Repaint the preview: the picture, plus purple wherever the paint layer
+	 * says a pixel goes. The mask is sampled from full resolution rather than
+	 * kept in two places, so what is displayed can never drift from what will
+	 * be applied. */
 	function repaint() {
 		if (!state.preview) return;
 		const { width, height, data } = state.preview;
-		const mask = combineMask(state.auto, state.paint, { width, height });
+		const scale = ratio();
+		const fullWidth = state.full.width;
 		const out = new Uint8ClampedArray(data.length);
 		const [pr, pg, pb] = MATTE_PURPLE;
-		for (let pixel = 0; pixel < width * height; pixel++) {
-			const index = pixel << 2;
-			const alpha = data[index + 3] / 255;
-			// Transparent parts of the source read as the page behind them, so
-			// they get the studio's own dark ground rather than black.
-			let r = data[index] * alpha + 26 * (1 - alpha);
-			let g = data[index + 1] * alpha + 30 * (1 - alpha);
-			let b = data[index + 2] * alpha + 32 * (1 - alpha);
-			if (mask[pixel]) {
-				r = r * (1 - OVERLAY_ALPHA) + pr * OVERLAY_ALPHA;
-				g = g * (1 - OVERLAY_ALPHA) + pg * OVERLAY_ALPHA;
-				b = b * (1 - OVERLAY_ALPHA) + pb * OVERLAY_ALPHA;
+		for (let y = 0; y < height; y++) {
+			const fy = Math.min(state.full.height - 1, Math.floor(y * scale));
+			for (let x = 0; x < width; x++) {
+				const index = (y * width + x) << 2;
+				const alpha = data[index + 3] / 255;
+				// Transparent parts of the source read as the page behind them, so
+				// they get the studio's own dark ground rather than black.
+				let r = data[index] * alpha + 26 * (1 - alpha);
+				let g = data[index + 1] * alpha + 30 * (1 - alpha);
+				let b = data[index + 2] * alpha + 32 * (1 - alpha);
+				if (state.paint[fy * fullWidth + Math.min(fullWidth - 1, Math.floor(x * scale))]) {
+					r = r * (1 - OVERLAY_ALPHA) + pr * OVERLAY_ALPHA;
+					g = g * (1 - OVERLAY_ALPHA) + pg * OVERLAY_ALPHA;
+					b = b * (1 - OVERLAY_ALPHA) + pb * OVERLAY_ALPHA;
+				}
+				out[index] = r;
+				out[index + 1] = g;
+				out[index + 2] = b;
+				out[index + 3] = 255;
 			}
-			out[index] = r;
-			out[index + 1] = g;
-			out[index + 2] = b;
-			out[index + 3] = 255;
 		}
 		canvas.width = width;
 		canvas.height = height;
 		view.putImageData(new ImageData(out, width, height), 0, 0);
-		let removed = 0;
-		for (let pixel = 0; pixel < mask.length; pixel++) removed += mask[pixel];
-		onChange({ removed: removed / (width * height), painted: paintedCount() });
-	}
-
-	function paintedCount() {
-		if (!state.paint) return 0;
-		let count = 0;
-		for (let pixel = 0; pixel < state.paint.length; pixel++) if (state.paint[pixel]) count += 1;
-		return count;
-	}
-
-	function grow() {
-		if (!state.preview) return;
-		state.auto = backgroundMask(state.preview, { tolerance: state.tolerance });
-		repaint();
+		report();
 	}
 
 	/* --------------------------------------------------------- pointer --- */
 
-	/** Canvas pixels from a pointer event, in preview coordinates. */
+	/** Where a pointer is, in FULL-resolution pixels: the canvas is displayed
+	 * at whatever width the sidebar gives it, backed by a preview, backed by
+	 * the picture — three scales, collapsed here once. */
 	function at(event) {
 		const rect = canvas.getBoundingClientRect();
-		return {
-			x: ((event.clientX - rect.left) / rect.width) * canvas.width,
-			y: ((event.clientY - rect.top) / rect.height) * canvas.height,
-		};
+		const scale = (rect.width ? canvas.width / rect.width : 1) * ratio();
+		return { x: (event.clientX - rect.left) * scale, y: (event.clientY - rect.top) * scale };
 	}
 
-	/** Brush radius in preview pixels: the slider is in screen pixels, so it
-	 * has to travel through the same scale the canvas is displayed at. */
 	function radius() {
 		const rect = canvas.getBoundingClientRect();
-		const scale = rect.width ? canvas.width / rect.width : 1;
+		const scale = (rect.width ? canvas.width / rect.width : 1) * ratio();
 		return Math.max(1, (state.brush / 2) * scale);
 	}
 
 	function stroke(from, to) {
-		const value = state.mode === "restore" ? -1 : 1;
+		const value = state.mode === "erase" ? 0 : 1;
 		const r = radius();
 		const steps = Math.max(1, Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / Math.max(1, r * 0.4)));
 		let touched = 0;
 		for (let step = 1; step <= steps; step++) {
-			touched += paintMask(state.paint, state.preview, {
+			touched += paintMask(state.paint, state.full, {
 				x: from.x + ((to.x - from.x) * step) / steps,
 				y: from.y + ((to.y - from.y) * step) / steps,
 				radius: r,
@@ -166,53 +163,79 @@ export function createMatteEditor(canvas, {
 	/* ------------------------------------------------------------- api --- */
 
 	return {
-		/** Decode an asset and grow its first mask. */
+		/**
+		 * Decode an asset and show it AS IT IS. Nothing is marked until someone
+		 * asks — either with the brush or with Auto-detect.
+		 */
 		async load(asset) {
 			const bitmap = await createBitmap(new Blob([asset.bytes], { type: asset.type }));
 			try {
+				const read = (width, height) => {
+					const work = makeCanvas(width, height);
+					const context = work.getContext("2d", { willReadFrequently: true });
+					context.drawImage(bitmap, 0, 0, width, height);
+					const image = context.getImageData(0, 0, width, height);
+					return { data: image.data, width, height };
+				};
+				state.full = read(bitmap.width, bitmap.height);
 				const scale = Math.min(1, EDIT_PREVIEW_MAX / Math.max(bitmap.width, bitmap.height));
-				const width = Math.max(1, Math.round(bitmap.width * scale));
-				const height = Math.max(1, Math.round(bitmap.height * scale));
-				const work = makeCanvas(width, height);
-				const context = work.getContext("2d", { willReadFrequently: true });
-				context.drawImage(bitmap, 0, 0, width, height);
-				const image = context.getImageData(0, 0, width, height);
-				state.preview = { data: image.data, width, height };
-				state.paint = new Int8Array(width * height);
-				grow();
+				state.preview = scale === 1
+					? { data: Uint8ClampedArray.from(state.full.data), width: state.full.width, height: state.full.height }
+					: read(Math.max(1, Math.round(bitmap.width * scale)), Math.max(1, Math.round(bitmap.height * scale)));
+				state.paint = new Uint8Array(state.full.width * state.full.height);
+				repaint();
 			} finally {
 				bitmap?.close?.();
 			}
 		},
+
+		/**
+		 * The first pass, on request: grow the background from the frame's edges
+		 * and paint what it reaches. It ADDS to the purple rather than replacing
+		 * it, so running it again at a higher tolerance extends the selection
+		 * instead of discarding the corrections already made by hand.
+		 */
+		autoDetect(tolerance = state.tolerance) {
+			if (!state.full) return 0;
+			state.tolerance = clamp(Number(tolerance) || 0, 0.01, 0.9);
+			const found = backgroundMask(state.full, { tolerance: state.tolerance });
+			let added = 0;
+			for (let pixel = 0; pixel < found.length; pixel++) {
+				if (!found[pixel] || state.paint[pixel]) continue;
+				state.paint[pixel] = 1;
+				added += 1;
+			}
+			repaint();
+			return added;
+		},
+
 		setTolerance(value) {
 			state.tolerance = clamp(Number(value) || 0, 0.01, 0.9);
-			grow();
 		},
 		setBrush(value) {
 			state.brush = clamp(Number(value) || 1, 2, 200);
 		},
+		/** "paint" lays purple down; "erase" takes it off. */
 		setMode(mode) {
-			state.mode = mode === "restore" ? "restore" : "remove";
+			state.mode = mode === "erase" ? "erase" : "paint";
 		},
 		mode: () => state.mode,
 		tolerance: () => state.tolerance,
-		/** Throw the strokes away, keep the automatic cut. */
-		clearStrokes() {
+		/** Back to the untouched photograph. */
+		clear() {
 			if (!state.paint) return;
 			state.paint.fill(0);
 			repaint();
 		},
-		/** What `cutOutBackground` needs to reproduce exactly what is on screen:
-		 * the tolerance to re-grow at full resolution, plus the strokes and the
-		 * size they were painted at. */
+		hasPaint: () => !!state.paint?.some((value) => value === 1),
+		/**
+		 * What the cutter needs: the purple, at the picture's own resolution.
+		 * No tolerance travels with it — the growth already happened, on screen,
+		 * where it could be corrected.
+		 */
 		options() {
-			return state.preview
-				? {
-						tolerance: state.tolerance,
-						paint: state.paint,
-						paintWidth: state.preview.width,
-						paintHeight: state.preview.height,
-					}
+			return state.paint && this.hasPaint()
+				? { mask: state.paint, maskWidth: state.full.width, maskHeight: state.full.height }
 				: null;
 		},
 		dispose() {

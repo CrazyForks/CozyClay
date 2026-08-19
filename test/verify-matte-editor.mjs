@@ -4,9 +4,9 @@
  *
  * The widget is a canvas, a pointer and two typed arrays, so all three can be
  * faked: the canvas records what was drawn, the pointer handlers are called
- * directly, and the assertions are about pixels — is the removed region
- * actually purple on screen, does a stroke reach the mask, do the strokes
- * survive a change of tolerance.
+ * directly, and the assertions are about pixels — does it open on the
+ * untouched photograph, does the brush lay purple down, does the eraser take
+ * it off, and is the mask it finally hands over exactly what was on screen.
  */
 
 import { MATTE_PURPLE, createMatteEditor } from "../src/matte-editor.js";
@@ -92,50 +92,64 @@ const near = (a, b, slack = 3) => a.every((value, channel) => Math.abs(value - b
 const isPurple = (x, y) => near(pixelAt(x, y), sourceAt(x, y).map((value, channel) => value * 0.38 + MATTE_PURPLE[channel] * 0.62));
 const isPlain = (x, y) => near(pixelAt(x, y), sourceAt(x, y));
 
-/* -- what is on screen ---------------------------------------------------- */
+/* -- it opens on the picture, untouched ---------------------------------- */
 
 expect("the editor paints something the size of the picture", painted?.width === WIDTH && painted?.height === HEIGHT);
-expect("the removed background is purple", isPurple(1, 1) && isPurple(38, 58) && isPurple(20, 5));
-expect("the subject keeps its own colour", isPlain(20, 30) && !isPurple(20, 30));
-expect("the overlay is reported as a fraction of the frame", last.removed > 0.6 && last.removed < 0.95, JSON.stringify(last));
-expect("nothing has been painted by hand yet", last.painted === 0);
+expect(
+	"nothing is marked until someone asks — the photograph is the default",
+	isPlain(1, 1) && isPlain(20, 30) && isPlain(38, 58) && last.painted === 0,
+	JSON.stringify(last),
+);
+expect("with nothing painted there is nothing to apply", editor.options() === null && editor.hasPaint() === false);
 
-/* -- painting ------------------------------------------------------------- */
+/* -- the brush lays purple down ------------------------------------------- */
 
 const pointer = (type, x, y) => handlers.get(type)?.({ clientX: x, clientY: y, pointerId: 1, preventDefault() {} });
 editor.setBrush(6);
+pointer("pointerdown", 4, 4);
+pointer("pointermove", 4, 12);
+pointer("pointerup", 4, 12);
+
+expect("a stroke marks the wall purple", isPurple(4, 4) && isPurple(4, 10), JSON.stringify(pixelAt(4, 4)));
+expect("the stroke is bounded — the rest of the picture is untouched", isPlain(30, 30) && isPlain(20, 30));
+expect("what is painted is counted", last.painted > 20 && last.coverage > 0, JSON.stringify(last));
+
+/* -- and the eraser takes it off ------------------------------------------ */
+
+editor.setMode("erase");
+pointer("pointerdown", 4, 4);
+pointer("pointerup", 4, 4);
+expect("erasing takes the purple back off", isPlain(4, 4) && isPurple(4, 12));
+editor.setMode("paint");
+
+/* -- auto-detect is an offer, not the default ----------------------------- */
+
+const painterlyBefore = last.painted;
+const added = editor.autoDetect(0.18);
+expect("auto-detect adds the wall it finds", added > 0 && last.painted > painterlyBefore);
+expect("auto-detect marks the background and leaves the subject", isPurple(1, 1) && isPurple(38, 58) && isPlain(20, 30));
+
+// The hand-painted stroke was already purple; a second pass must not undo it.
 pointer("pointerdown", 20, 30);
-pointer("pointermove", 20, 36);
-pointer("pointerup", 20, 36);
-
-expect("a stroke paints the subject out, in purple", isPurple(20, 30) && isPurple(20, 34), JSON.stringify(pixelAt(20, 30)));
-expect("the stroke is bounded — the far side of the subject survives", isPlain(14, 44));
-expect("hand-painted pixels are counted separately", last.painted > 20, JSON.stringify(last));
-
-editor.setMode("restore");
-pointer("pointerdown", 2, 2);
-pointer("pointerup", 2, 2);
-expect("restore brings the wall back out of the overlay", isPlain(2, 2) && isPurple(38, 58));
-
-/* -- the tolerance re-grows underneath the strokes ------------------------ */
-
-const beforePainted = last.painted;
-editor.setTolerance(0.05);
-expect("moving the tolerance keeps the strokes", last.painted === beforePainted, JSON.stringify(last));
-expect("a lower tolerance still marks the wall it can reach", last.removed > 0.3, JSON.stringify(last));
-expect("the strokes are still on screen after a re-grow", isPurple(20, 30) && isPlain(2, 2));
-
-editor.clearStrokes();
-expect("clearing the strokes leaves the automatic cut alone", last.painted === 0 && isPlain(20, 30) && isPurple(1, 1));
+pointer("pointerup", 20, 30);
+expect("a correction after auto-detect sticks", isPurple(20, 30));
+editor.autoDetect(0.3);
+expect("running auto-detect again keeps the corrections", isPurple(20, 30));
 
 /* -- what gets handed to the cutter --------------------------------------- */
 
 const options = editor.options();
+let purple = 0;
+for (const value of options.mask) purple += value;
 expect(
-	"the options carry the tolerance and the paint layer at its own size",
-	options.tolerance === 0.05 && options.paintWidth === WIDTH && options.paintHeight === HEIGHT && options.paint.length === WIDTH * HEIGHT,
-	JSON.stringify({ ...options, paint: options.paint.length }),
+	"the mask is the picture's own size, and is exactly what is purple",
+	options.mask.length === WIDTH * HEIGHT && options.maskWidth === WIDTH && options.maskHeight === HEIGHT && purple === last.painted,
+	JSON.stringify({ length: options.mask.length, purple, painted: last.painted }),
 );
+expect("no tolerance travels with it — the growth already happened on screen", options.tolerance === undefined);
+
+editor.clear();
+expect("clear puts the photograph back", last.painted === 0 && isPlain(1, 1) && isPlain(20, 30) && editor.options() === null);
 
 editor.dispose();
 expect("disposing lets go of the pointer", handlers.size === 0);

@@ -223,6 +223,17 @@ expect(
 const painted = await cutOutBackground(asset, { shrink: 0, feather: 0, paint, paintWidth: 80, paintHeight: 120 }, stubs(flat));
 expect("the glue takes a paint layer with it", painted.asset.id !== result.asset.id);
 
+const handCut = await cutOutBackground(asset, { shrink: 0, feather: 0, mask: combined }, stubs(flat));
+expect(
+	"a mask made by hand is applied as-is, not re-grown",
+	handCut.asset.width === 40 && handCut.asset.height === 60 - 0 && handCut.removed > result.removed,
+	JSON.stringify({ w: handCut.asset.width, h: handCut.asset.height, removed: handCut.removed }),
+);
+await cutOutBackground(asset, { mask: new Uint8Array(4) }, stubs(flat)).then(
+	() => expect("a mask from another picture is refused", false, "resolved"),
+	(error) => expect("a mask from another picture is refused", /different picture/.test(error.message), error.message),
+);
+
 
 if (failures) process.exit(1);
 console.log("all matte checks PASS");

@@ -62,25 +62,27 @@
 					<div class="readout"><span>Stored</span><b id="assetMeta">—</b></div>
 					<h2>Background</h2>
 					<div class="matte">
-						<canvas id="matteCanvas" aria-label="Background editor: purple is what will be removed"></canvas>
-						<p class="hint" id="matteStats">Purple is what goes.</p>
-						<div class="field">
-							<label for="tolerance">Tolerance</label>
-							<span class="mono" id="toleranceValue" style="font-size: 12px">0.18</span>
+						<canvas id="matteCanvas" aria-label="Background editor: paint purple over what should be removed"></canvas>
+						<p class="hint" id="matteStats">Paint purple over what should go. Nothing is removed until you do.</p>
+						<div class="chips" role="group" aria-label="Brush">
+							<button type="button" class="chip is-on" id="modePaint">Paint purple</button>
+							<button type="button" class="chip" id="modeErase">Erase purple</button>
+							<button type="button" class="chip" id="clearStrokes">Clear</button>
 						</div>
-						<input type="range" id="tolerance" min="0.04" max="0.5" step="0.01" value="0.18" aria-label="Background tolerance" />
 						<div class="field">
 							<label for="brush">Brush</label>
 							<span class="mono" id="brushValue" style="font-size: 12px">18 px</span>
 						</div>
 						<input type="range" id="brush" min="4" max="90" step="2" value="18" aria-label="Brush size" />
-						<div class="chips" role="group" aria-label="Brush mode">
-							<button type="button" class="chip is-on" id="modeRemove">Paint out</button>
-							<button type="button" class="chip" id="modeRestore">Bring back</button>
-							<button type="button" class="chip" id="clearStrokes">Clear strokes</button>
+						<div class="field">
+							<label for="tolerance">Auto-detect tolerance</label>
+							<span class="mono" id="toleranceValue" style="font-size: 12px">0.18</span>
 						</div>
-						<button type="button" class="btn primary" id="matte">Apply to the card</button>
-						<p class="hint">Drag on the picture to paint more purple where the tolerance missed, or switch to <b>Bring back</b> to recover a piece of the subject it ate. Applying re-grows the cut at full resolution, lays your strokes over it and trims the margin — the card keeps the size it had.</p>
+						<input type="range" id="tolerance" min="0.04" max="0.5" step="0.01" value="0.18" aria-label="Auto-detect tolerance" />
+						<button type="button" class="btn" id="autoDetect">Auto-detect background</button>
+						<p class="hint">Auto-detect makes a first pass from the frame's edges and paints what it finds — it adds to your purple, never replaces it. Then fix it by hand.</p>
+						<button type="button" class="btn primary" id="matte" disabled>Apply to the card</button>
+						<p class="hint">Applying removes exactly what is purple, at the picture's own resolution, and trims the empty margin. The card keeps the size it had.</p>
 					</div>
 					<button type="button" class="btn quiet" id="remove">Remove this card</button>
 				</section>

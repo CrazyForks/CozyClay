@@ -246,16 +246,16 @@ $("rotRange").addEventListener("input", (event) => editSelected({ rot: Number(ev
 /* ------------------------------------------------- the background editor --- */
 
 /**
- * Purple is what goes. The editor shows the cut as an overlay rather than as a
- * finished cutout, because a hole in the subject and a surviving piece of wall
- * look identical once the background is gone — and completely different when
- * one of them is bright violet.
+ * The picture as it arrived, and a purple brush. What you paint is what goes:
+ * applying takes exactly the violet pixels, so a partial selection removes a
+ * part and nothing is decided behind your back.
  */
 const editor = createMatteEditor($("matteCanvas"), {
-	onChange: ({ removed, painted }) => {
+	onChange: ({ painted, coverage }) => {
 		$("matteStats").textContent = painted
-			? `${Math.round(removed * 100)}% marked for removal · ${painted} px painted by hand`
-			: `${Math.round(removed * 100)}% marked for removal. Drag on the picture to paint more.`;
+			? `${Math.round(coverage * 100)}% of the picture painted out — purple is what goes`
+			: "Paint purple over what should go. Nothing is removed until you do.";
+		$("matte").disabled = !painted;
 	},
 });
 
@@ -265,22 +265,26 @@ function loadEditor() {
 	if (asset) editor.load(asset).catch((error) => note(`Could not open the background editor — ${error.message}`, true));
 }
 
-$("tolerance").addEventListener("input", (event) => {
-	$("toleranceValue").textContent = Number(event.target.value).toFixed(2);
-	editor.setTolerance(event.target.value);
-});
 $("brush").addEventListener("input", (event) => {
 	$("brushValue").textContent = `${event.target.value} px`;
 	editor.setBrush(event.target.value);
 });
+$("tolerance").addEventListener("input", (event) => {
+	$("toleranceValue").textContent = Number(event.target.value).toFixed(2);
+	editor.setTolerance(event.target.value);
+});
 const setMode = (mode) => {
 	editor.setMode(mode);
-	$("modeRemove").classList.toggle("is-on", mode === "remove");
-	$("modeRestore").classList.toggle("is-on", mode === "restore");
+	$("modePaint").classList.toggle("is-on", mode === "paint");
+	$("modeErase").classList.toggle("is-on", mode === "erase");
 };
-$("modeRemove").addEventListener("click", () => setMode("remove"));
-$("modeRestore").addEventListener("click", () => setMode("restore"));
-$("clearStrokes").addEventListener("click", () => editor.clearStrokes());
+$("modePaint").addEventListener("click", () => setMode("paint"));
+$("modeErase").addEventListener("click", () => setMode("erase"));
+$("clearStrokes").addEventListener("click", () => editor.clear());
+$("autoDetect").addEventListener("click", () => {
+	const added = editor.autoDetect();
+	if (!added) note("Auto-detect found nothing new to paint — try a higher tolerance, or paint it by hand.");
+});
 
 $("matte").addEventListener("click", async () => {
 	const object = selected();
@@ -307,8 +311,10 @@ $("matte").addEventListener("click", async () => {
 	} catch (error) {
 		note(`Could not remove the background — ${error.message}`, true);
 	} finally {
-		button.disabled = false;
 		button.textContent = "Apply to the card";
+		// Re-enabled only if there is still purple to apply — after a successful
+		// cut there is not, because the editor has reloaded on the new picture.
+		button.disabled = !editor.options();
 	}
 });
 

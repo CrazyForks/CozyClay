@@ -1602,8 +1602,8 @@ globalThis.playMode = centerTab === "play";
 	// argues with the answer is.
 	const [matteTolerance, setMatteTolerance] = useState(0.18);
 	const [matteBrush, setMatteBrush] = useState(18);
-	const [matteMode, setMatteMode] = useState("remove");
-	const [matteStats, setMatteStats] = useState({ removed: 0, painted: 0 });
+	const [matteMode, setMatteMode] = useState("paint");
+	const [matteStats, setMatteStats] = useState({ painted: 0, coverage: 0 });
 	const [matteBusy, setMatteBusy] = useState(false);
 	const matteCanvasRef = useRef(null);
 	const matteEditorRef = useRef(null);
@@ -1627,7 +1627,7 @@ globalThis.playMode = centerTab === "play";
 				if (asset && !cancelled) return editor.load(asset);
 				return undefined;
 			})
-			.catch(() => setMatteStats({ removed: 0, painted: 0 }));
+			.catch(() => setMatteStats({ painted: 0, coverage: 0 }));
 		return () => {
 			cancelled = true;
 			editor.dispose();
@@ -1718,6 +1718,8 @@ globalThis.playMode = centerTab === "play";
 	async function applyMatte(id = selectedSceneObjectId) {
 		const object = sceneObjects.find((item) => item.id === id) ?? null;
 		const options = matteEditorRef.current?.options();
+		// Nothing purple means nothing was asked for. Removing "the background"
+		// on a picture nobody has marked would be a guess applied to their set.
 		if (!object || object.renderer !== CUTOUT_KIND || !options || matteBusy) return;
 		setMatteBusy(true);
 		try {
@@ -6402,32 +6404,44 @@ function resizePromptClip(id, edge, rawFrame) {
 											<canvas
 												ref={matteCanvasRef}
 												className="matte-canvas"
-												aria-label={ko("Background editor — purple is what will be removed", "배경 편집기 — 보라색이 지워질 부분입니다")}
+												aria-label={ko("Background editor — paint purple over what should be removed", "배경 편집기 — 지울 부분을 보라색으로 칠하세요")}
 											/>
 											<p className="inspector-hint">
 												{matteStats.painted
 													? isKo
-														? `${Math.round(matteStats.removed * 100)}% 지울 예정 · 직접 칠한 픽셀 ${matteStats.painted}개`
-														: `${Math.round(matteStats.removed * 100)}% marked for removal · ${matteStats.painted} px painted by hand`
-													: isKo
-														? `${Math.round(matteStats.removed * 100)}% 지울 예정 — 보라색이 지워지는 부분입니다. 그림 위를 드래그해 더 칠하세요.`
-														: `${Math.round(matteStats.removed * 100)}% marked for removal — purple is what goes. Drag on the picture to paint more.`}
+														? `사진의 ${Math.round(matteStats.coverage * 100)}%를 칠했습니다 — 보라색이 지워집니다.`
+														: `${Math.round(matteStats.coverage * 100)}% of the picture painted out — purple is what goes.`
+													: ko(
+															"Paint purple over what should go. Nothing is removed until you do.",
+															"지울 부분을 보라색으로 칠하세요. 칠하기 전에는 아무것도 지워지지 않습니다.",
+														)}
 											</p>
 										</div>
-										<Field label={ko("Background tolerance", "배경 허용치")}>
-											<input
-												type="range"
-												min="0.04"
-												max="0.5"
-												step="0.01"
-												value={matteTolerance}
-												onChange={(event) => {
-													const value = Number(event.target.value);
-													setMatteTolerance(value);
-													matteEditorRef.current?.setTolerance(value);
+										<div className="presets matte-modes">
+											<button
+												type="button"
+												className={matteMode === "paint" ? "active" : ""}
+												onClick={() => {
+													setMatteMode("paint");
+													matteEditorRef.current?.setMode("paint");
 												}}
-											/>
-										</Field>
+											>
+												{ko("Paint purple", "보라색 칠하기")}
+											</button>
+											<button
+												type="button"
+												className={matteMode === "erase" ? "active" : ""}
+												onClick={() => {
+													setMatteMode("erase");
+													matteEditorRef.current?.setMode("erase");
+												}}
+											>
+												{ko("Erase purple", "보라색 지우기")}
+											</button>
+											<button type="button" onClick={() => matteEditorRef.current?.clear()}>
+												{ko("Clear", "모두 지우기")}
+											</button>
+										</div>
 										<Field label={ko("Brush", "브러시")}>
 											<input
 												type="range"
@@ -6442,43 +6456,48 @@ function resizePromptClip(id, edge, rawFrame) {
 												}}
 											/>
 										</Field>
-										<div className="presets matte-modes">
-											<button
-												type="button"
-												className={matteMode === "remove" ? "active" : ""}
-												onClick={() => {
-													setMatteMode("remove");
-													matteEditorRef.current?.setMode("remove");
+										<Field label={ko("Auto-detect tolerance", "자동 인식 허용치")}>
+											<input
+												type="range"
+												min="0.04"
+												max="0.5"
+												step="0.01"
+												value={matteTolerance}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													setMatteTolerance(value);
+													matteEditorRef.current?.setTolerance(value);
 												}}
-											>
-												{ko("Paint out", "지우기")}
-											</button>
-											<button
-												type="button"
-												className={matteMode === "restore" ? "active" : ""}
-												onClick={() => {
-													setMatteMode("restore");
-													matteEditorRef.current?.setMode("restore");
-												}}
-											>
-												{ko("Bring back", "되살리기")}
-											</button>
-											<button type="button" onClick={() => matteEditorRef.current?.clearStrokes()}>
-												{ko("Clear strokes", "칠 지우기")}
-											</button>
-										</div>
+											/>
+										</Field>
 										<button
 											type="button"
 											className="btn ghost full"
-											disabled={matteBusy}
+											onClick={() => {
+												const added = matteEditorRef.current?.autoDetect(matteTolerance) ?? 0;
+												if (!added) {
+													setToast(
+														isKo
+															? "자동 인식이 더 칠할 곳을 찾지 못했어요 — 허용치를 높이거나 직접 칠하세요"
+															: "Auto-detect found nothing new to paint — raise the tolerance, or paint it by hand",
+													);
+												}
+											}}
+										>
+											{ko("Auto-detect background", "배경 자동 인식")}
+										</button>
+										<button
+											type="button"
+											className="btn ghost full"
+											disabled={matteBusy || !matteStats.painted}
 											onClick={() => applyMatte(selectedSceneObject.id)}
 										>
-											{matteBusy ? ko("Removing…", "지우는 중…") : ko("Remove background", "배경 제거")}
+											{matteBusy ? ko("Removing…", "지우는 중…") : ko("Remove what is purple", "보라색 부분 지우기")}
 										</button>
 										<p className="inspector-hint">
 											{ko(
-												"Purple is what goes. Drag on the picture to paint more of it where the tolerance missed, or switch to Bring back to recover a piece of the subject it ate. Applying re-grows the cut at full resolution, lays your strokes over it and trims the empty margin — Ctrl+Z restores the original picture.",
-												"보라색이 지워질 부분입니다. 덜 지워진 곳은 그림 위를 드래그해 더 칠하고, 피사체가 잘못 지워졌으면 되살리기로 복구하세요. 적용하면 원본 해상도로 다시 계산한 뒤 칠한 부분을 덮고 여백을 잘라냅니다 — Ctrl+Z로 원본 사진으로 되돌아갑니다.",
+												"Applying removes exactly what is purple, at the picture's own resolution, and trims the empty margin. Auto-detect makes a first pass from the frame's edges and adds to your purple rather than replacing it. Ctrl+Z restores the original picture.",
+												"적용하면 보라색으로 칠한 부분만 원본 해상도에서 지우고 남은 여백을 잘라냅니다. 자동 인식은 사진 가장자리에서부터 1차로 칠해 주며, 이미 칠한 부분을 덮어쓰지 않고 더합니다. Ctrl+Z로 원본 사진으로 돌아갑니다.",
 											)}
 										</p>
 									</>

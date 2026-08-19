@@ -375,22 +375,19 @@ export async function cutOutBackground(asset, options = {}, {
 		context.drawImage(bitmap, 0, 0);
 		const source = context.getImageData(0, 0, bitmap.width, bitmap.height);
 
-		// A mask from the editor wins over growing a fresh one: it already IS a
-		// grown mask with someone's strokes on it.
+		// A mask from the editor wins over growing a fresh one: it already IS
+		// the answer, corrected by hand at this picture's own resolution. It has
+		// to BE this picture's resolution, or it would land on the wrong pixels.
 		const pixels = { data: source.data, width: source.width, height: source.height };
-		const mask = options.mask
-			? combineMask(options.mask, options.paint ?? null, {
-					width: source.width,
-					height: source.height,
-					paintWidth: options.paintWidth ?? source.width,
-					paintHeight: options.paintHeight ?? source.height,
-				})
-			: combineMask(backgroundMask(pixels, options), options.paint ?? null, {
-					width: source.width,
-					height: source.height,
-					paintWidth: options.paintWidth ?? source.width,
-					paintHeight: options.paintHeight ?? source.height,
-				});
+		if (options.mask && options.mask.length !== source.width * source.height) {
+			throw new Error("that selection was made on a different picture");
+		}
+		const mask = combineMask(options.mask ?? backgroundMask(pixels, options), options.paint ?? null, {
+			width: source.width,
+			height: source.height,
+			paintWidth: options.paintWidth ?? source.width,
+			paintHeight: options.paintHeight ?? source.height,
+		});
 		const cut = applyMask(pixels, mask, options);
 		const box = opaqueBounds(cut);
 		if (!box) throw new Error("that removed the whole picture — try a lower tolerance");

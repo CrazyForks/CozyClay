@@ -238,6 +238,11 @@ button {
 	cursor: crosshair;
 }
 
+.btn[disabled], .chip[disabled] {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
 .chip.is-on {
 	border-color: var(--accent);
 	background: color-mix(in srgb, var(--accent) 14%, var(--panel-sunk));
