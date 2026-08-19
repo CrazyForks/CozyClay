@@ -22,7 +22,38 @@ export default defineConfig({
 			},
 		},
 	},
-	plugins: [react()],
+	plugins: [
+		react(),
+		// A service worker registered by an earlier PRODUCTION visit to this same
+		// origin outlives the tab and keeps serving its cached bundle to the dev
+		// server's port — edits appear to do nothing, and no amount of reloading
+		// helps because the worker answers before the network does. Dev therefore
+		// serves a self-destructing worker: it unregisters itself, drops every
+		// CozyClay cache, and reloads the clients it was holding.
+		{
+			name: "cozyclay-dev-kill-sw",
+			apply: "serve",
+			configureServer(server) {
+				server.middlewares.use((req, res, next) => {
+					if ((req.url || "").split("?")[0] !== "/sw.js") return next();
+					res.setHeader("content-type", "text/javascript; charset=utf-8");
+					res.setHeader("cache-control", "no-store");
+					res.end(
+						`self.addEventListener("install", () => self.skipWaiting());\n` +
+							`self.addEventListener("activate", (event) => {\n` +
+							`\tevent.waitUntil((async () => {\n` +
+							`\t\tconst keys = await caches.keys();\n` +
+							`\t\tawait Promise.all(keys.filter((k) => k.startsWith("cozyclay-pwa-")).map((k) => caches.delete(k)));\n` +
+							`\t\tawait self.registration.unregister();\n` +
+							`\t\tconst clients = await self.clients.matchAll({ type: "window" });\n` +
+							`\t\tfor (const client of clients) client.navigate(client.url);\n` +
+							`\t})());\n` +
+							`});\n`,
+					);
+				});
+			},
+		},
+	],
 	server: {
 		port: 5180,
 		// Dev-only: the ARDY sidecar (tools/ardy/bridge.mjs) is an optional
