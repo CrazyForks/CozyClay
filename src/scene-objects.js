@@ -207,6 +207,10 @@ export function createCutoutObject({ assetId, aspect = 1, height = CUTOUT_DEFAUL
 		// Key order matches what `normalizeSceneObject` writes, so a record
 		// survives a storage round trip byte-for-byte.
 		assetId,
+		// A picture nobody has cut is its own original, with no purple on it.
+		sourceAssetId: assetId,
+		matteAssetId: "",
+		matteScale: 1,
 		aspect: pictureAspect,
 		footprint: cutoutFootprint(cardHeight, pictureAspect),
 		height: cardHeight,
@@ -303,8 +307,20 @@ export function updateSceneObject(objects, id, patch) {
 			// NEW asset (different bytes, different id) and points the card at it,
 			// which is what makes the cut undoable — the original stays addressed
 			// by the history entry before it.
-			if (typeof patch.assetId === "string" && patch.assetId && patch.assetId !== object.assetId) {
-				update.assetId = patch.assetId;
+			// Three ids, because a cut card is not one picture: `assetId` is what
+			// the set renders, `sourceAssetId` is the photograph it came from and
+			// keeps being edited from, and `matteAssetId` is the purple itself.
+			// Keeping all three is what makes the cut re-editable instead of
+			// destructive — the original is never replaced, only masked.
+			for (const key of ["assetId", "sourceAssetId", "matteAssetId"]) {
+				if (typeof patch[key] === "string" && patch[key] && patch[key] !== object[key]) update[key] = patch[key];
+			}
+			// How much of the original frame the trimmed card is. Stored so a
+			// second edit can work out the height the card would have at full
+			// frame instead of compounding one trim onto the last.
+			if (Number.isFinite(Number(patch.matteScale))) {
+				const scale = clamp(Number(patch.matteScale), 0.01, 1);
+				if (scale !== object.matteScale) update.matteScale = scale;
 			}
 			const patchedHeight = patch.height === undefined ? NaN : cutoutHeight(Number(patch.height));
 			const patchedAspect = patch.aspect === undefined ? NaN : cutoutAspect(Number(patch.aspect));
@@ -406,6 +422,12 @@ export function normalizeSceneObject(record) {
 		...(isCutout
 			? {
 					assetId: record.assetId,
+					// An older record (or a hand-authored one) has no source: the
+					// picture it points at IS the original, because nothing has
+					// been cut from it yet.
+					sourceAssetId: typeof record.sourceAssetId === "string" && record.sourceAssetId ? record.sourceAssetId : record.assetId,
+					matteAssetId: typeof record.matteAssetId === "string" ? record.matteAssetId : "",
+					matteScale: clamp(pick(record.matteScale, 1), 0.01, 1),
 					aspect: cutoutAspect(pick(record.aspect, 1)),
 					footprint: cutoutFootprint(pick(record.height, CUTOUT_DEFAULT_HEIGHT), pick(record.aspect, 1)),
 					height: cutoutHeight(pick(record.height, CUTOUT_DEFAULT_HEIGHT)),

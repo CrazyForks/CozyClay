@@ -60,7 +60,7 @@ import {
 import { createSceneHistoryStore } from "./scene-history.js";
 import { ASSET_IMAGE_TYPES, assetAspect, importImageFile } from "./scene-assets.js";
 import { assetRecord, rememberAsset } from "./scene-asset-cache.js";
-import { cutOutBackground } from "./matte.js";
+import { cutOutBackground, decodeMask, maskAsset } from "./matte.js";
 import { createMatteEditor } from "./matte-editor.js";
 import {
 	SCENES_QUARANTINE_KEY,
@@ -1607,36 +1607,42 @@ globalThis.playMode = centerTab === "play";
 	const [matteBusy, setMatteBusy] = useState(false);
 	const matteCanvasRef = useRef(null);
 	const matteEditorRef = useRef(null);
-	const matteAssetId = selectedSceneObject?.renderer === CUTOUT_KIND ? selectedSceneObject.assetId : null;
+	// The editor always works on the photograph, never on the cut picture the
+	// set renders — that is what makes a cut re-editable rather than a one-way
+	// door. The saved purple comes back with it.
+	const matteSourceId = selectedSceneObject?.renderer === CUTOUT_KIND
+		? selectedSceneObject.sourceAssetId || selectedSceneObject.assetId
+		: null;
+	const matteSelectionId = selectedSceneObject?.renderer === CUTOUT_KIND ? selectedSceneObject.matteAssetId || "" : "";
 
-	// The editor lives as long as a cutout is selected, and reloads whenever the
-	// card is pointed at a different picture — which includes the moment a cut
-	// is applied, so what is on screen is always the CURRENT picture's
-	// background rather than the one it had before.
 	useEffect(() => {
 		const canvas = matteCanvasRef.current;
-		if (!canvas || !matteAssetId) return undefined;
+		if (!canvas || !matteSourceId) return undefined;
 		const editor = createMatteEditor(canvas, { onChange: setMatteStats });
 		matteEditorRef.current = editor;
 		editor.setTolerance(matteTolerance);
 		editor.setBrush(matteBrush);
 		editor.setMode(matteMode);
 		let cancelled = false;
-		assetRecord(matteAssetId)
-			.then((asset) => {
-				if (asset && !cancelled) return editor.load(asset);
-				return undefined;
-			})
-			.catch(() => setMatteStats({ painted: 0, coverage: 0 }));
+		(async () => {
+			const asset = await assetRecord(matteSourceId);
+			if (!asset || cancelled) return;
+			await editor.load(asset);
+			if (cancelled || !matteSelectionId) return;
+			const stored = await assetRecord(matteSelectionId);
+			if (!stored || cancelled) return;
+			const { mask, width, height } = await decodeMask(stored);
+			if (!cancelled) editor.setMask(mask, width, height);
+		})().catch(() => setMatteStats({ painted: 0, coverage: 0 }));
 		return () => {
 			cancelled = true;
 			editor.dispose();
 			if (matteEditorRef.current === editor) matteEditorRef.current = null;
 		};
 		// Tolerance/brush/mode are pushed by their own handlers below; re-running
-		// this effect for them would throw away the strokes.
+		// this effect for them would throw away the selection.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [matteAssetId]);
+	}, [matteSourceId, matteSelectionId]);
 	const [gizmoMode, setGizmoMode] = useState("move");
 	// Snap is a preference, not a law: with it on the gizmo blocks on the plan
 	// board's grid, and Ctrl/Cmd during a drag gives a free one. Off, it is the
@@ -1708,12 +1714,14 @@ globalThis.playMode = centerTab === "play";
 	/**
 	 * Apply what the background editor is showing.
 	 *
-	 * The cut picture is stored as its own asset and the card is pointed at it,
-	 * so the original stays addressable and one Ctrl+Z puts it back. Trimming
-	 * away the dead margin changes how much of the frame the subject fills, so
-	 * the card's height is scaled by the same factor — the subject stays exactly
-	 * the size it already was in the set, which is the whole point of having
-	 * typed a real height for it.
+	 * Nothing is destroyed. The card keeps three things: the photograph it was
+	 * imported from, the purple someone painted on it, and the cut picture the
+	 * set actually renders — so the next edit starts from the original with the
+	 * selection still on it, however many times it is re-cut.
+	 *
+	 * Trimming the dead margin changes how much of the frame the subject fills,
+	 * so the card's height is scaled with it. The scale is stored rather than
+	 * multiplied in, or a second cut would compound one trim onto the last.
 	 */
 	async function applyMatte(id = selectedSceneObjectId) {
 		const object = sceneObjects.find((item) => item.id === id) ?? null;
@@ -1723,19 +1731,27 @@ globalThis.playMode = centerTab === "play";
 		if (!object || object.renderer !== CUTOUT_KIND || !options || matteBusy) return;
 		setMatteBusy(true);
 		try {
-			const source = await assetRecord(object.assetId);
+			const sourceId = object.sourceAssetId || object.assetId;
+			const source = await assetRecord(sourceId);
 			if (!source) throw new Error(ko("its picture is missing from the store", "저장소에 사진이 없습니다"));
-			const { asset, heightScale, removed } = await cutOutBackground(source, options);
-			await rememberAsset(asset);
+			const [cut, matte] = await Promise.all([
+				cutOutBackground(source, { mask: options.mask }),
+				maskAsset(options.mask, { width: options.maskWidth, height: options.maskHeight, name: `${source.name || "cutout"} matte` }),
+			]);
+			await Promise.all([rememberAsset(cut.asset), rememberAsset(matte)]);
+			const fullFrameHeight = object.height / (object.matteScale || 1);
 			changeSceneObject(object.id, {
-				assetId: asset.id,
-				aspect: asset.width / asset.height,
-				height: object.height * heightScale,
+				assetId: cut.asset.id,
+				sourceAssetId: source.id,
+				matteAssetId: matte.id,
+				matteScale: cut.heightScale,
+				aspect: cut.asset.width / cut.asset.height,
+				height: fullFrameHeight * cut.heightScale,
 			});
 			setToast(
 				isKo
-					? `${object.name} 배경 제거 — ${Math.round(removed * 100)}% 지움. 되돌리려면 Ctrl+Z`
-					: `${object.name} — background removed, ${Math.round(removed * 100)}% of the frame. Ctrl+Z puts it back`,
+					? `${object.name} 배경 제거 — ${Math.round(cut.removed * 100)}% 지움. 원본과 칠한 영역은 그대로 남습니다`
+					: `${object.name} — ${Math.round(cut.removed * 100)}% removed. The original and your selection are kept`,
 			);
 		} catch (error) {
 			setToast(isKo ? `배경을 제거하지 못했어요 — ${error.message}` : `Could not remove the background — ${error.message}`);
@@ -6404,16 +6420,16 @@ function resizePromptClip(id, edge, rawFrame) {
 											<canvas
 												ref={matteCanvasRef}
 												className="matte-canvas"
-												aria-label={ko("Background editor — paint purple over what should be removed", "배경 편집기 — 지울 부분을 보라색으로 칠하세요")}
+												aria-label={ko("Background editor — drag over the background to cut it out", "배경 편집기 — 배경 위를 드래그하면 그 영역이 잘려 나갑니다")}
 											/>
 											<p className="inspector-hint">
 												{matteStats.painted
 													? isKo
-														? `사진의 ${Math.round(matteStats.coverage * 100)}%를 칠했습니다 — 보라색이 지워집니다.`
-														: `${Math.round(matteStats.coverage * 100)}% of the picture painted out — purple is what goes.`
+														? `사진의 ${Math.round(matteStats.coverage * 100)}%가 선택됨 — 보라색이 지워집니다.`
+														: `${Math.round(matteStats.coverage * 100)}% of the picture marked — purple is what goes.`
 													: ko(
-															"Paint purple over what should go. Nothing is removed until you do.",
-															"지울 부분을 보라색으로 칠하세요. 칠하기 전에는 아무것도 지워지지 않습니다.",
+															"Drag over the background — the cut grows out from wherever the brush touches.",
+															"배경 위를 드래그하세요 — 브러시가 닿은 곳에서 같은 배경으로 번져 나가며 잘립니다.",
 														)}
 											</p>
 										</div>
@@ -6426,7 +6442,7 @@ function resizePromptClip(id, edge, rawFrame) {
 													matteEditorRef.current?.setMode("paint");
 												}}
 											>
-												{ko("Paint purple", "보라색 칠하기")}
+												{ko("Cut out", "누끼 따기")}
 											</button>
 											<button
 												type="button"
@@ -6456,7 +6472,7 @@ function resizePromptClip(id, edge, rawFrame) {
 												}}
 											/>
 										</Field>
-										<Field label={ko("Auto-detect tolerance", "자동 인식 허용치")}>
+										<Field label={ko("Tolerance", "허용치")}>
 											<input
 												type="range"
 												min="0.04"
@@ -6496,8 +6512,8 @@ function resizePromptClip(id, edge, rawFrame) {
 										</button>
 										<p className="inspector-hint">
 											{ko(
-												"Applying removes exactly what is purple, at the picture's own resolution, and trims the empty margin. Auto-detect makes a first pass from the frame's edges and adds to your purple rather than replacing it. Ctrl+Z restores the original picture.",
-												"적용하면 보라색으로 칠한 부분만 원본 해상도에서 지우고 남은 여백을 잘라냅니다. 자동 인식은 사진 가장자리에서부터 1차로 칠해 주며, 이미 칠한 부분을 덮어쓰지 않고 더합니다. Ctrl+Z로 원본 사진으로 돌아갑니다.",
+												"Applying removes exactly what is purple and trims the empty margin — but the card keeps the original photograph and this selection, so you can come back and change your mind. Auto-detect makes the same pass from all four edges at once, adding to your purple rather than replacing it.",
+												"적용하면 보라색 부분만 지우고 남은 여백을 잘라냅니다. 원본 사진과 지금 선택한 영역은 카드에 그대로 남아 있어 언제든 다시 열어 고칠 수 있습니다. 자동 인식은 네 가장자리에서 한 번에 같은 작업을 하며, 이미 칠한 부분을 덮어쓰지 않고 더합니다.",
 											)}
 										</p>
 									</>

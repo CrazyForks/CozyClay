@@ -16,6 +16,8 @@ import {
 	combineMask,
 	cropPixels,
 	cutOutBackground,
+	decodeMask,
+	encodeMask,
 	opaqueBounds,
 	paintMask,
 	removeBackground,
@@ -234,6 +236,40 @@ await cutOutBackground(asset, { mask: new Uint8Array(4) }, stubs(flat)).then(
 	(error) => expect("a mask from another picture is refused", /different picture/.test(error.message), error.message),
 );
 
+
+/* -------------------------------------------------- the mask as a file -- */
+
+// The stub canvas hands its own pixels back, which is exactly what a real PNG
+// round trip does for a black-and-white image.
+const maskCanvas = (width, height) => {
+	const store = { data: new Uint8ClampedArray(width * height * 4) };
+	return {
+		getContext: () => ({
+			drawImage: () => {},
+			putImageData: (image) => store.data.set(image.data),
+			getImageData: () => ({ data: Uint8ClampedArray.from(store.data), width, height }),
+		}),
+		convertToBlob: async ({ type }) => ({ type, arrayBuffer: async () => store.data.buffer.slice(0) }),
+	};
+};
+const encoded = await encodeMask(mask, { width: 80, height: 120 }, { makeCanvas: maskCanvas });
+expect("a mask encodes to storable bytes", encoded.byteLength === 80 * 120 * 4);
+const restored = await decodeMask(
+	{ bytes: encoded, type: "image/png" },
+	{
+		createBitmap: async () => ({ width: 80, height: 120, close() {} }),
+		makeCanvas: (width, height) => ({
+			getContext: () => ({
+				drawImage: () => {},
+				getImageData: () => ({ data: new Uint8ClampedArray(encoded), width, height }),
+			}),
+		}),
+	},
+);
+expect(
+	"a stored mask comes back exactly as it went in",
+	restored.width === 80 && restored.height === 120 && restored.mask.every((value, pixel) => value === mask[pixel]),
+);
 
 if (failures) process.exit(1);
 console.log("all matte checks PASS");

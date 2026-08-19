@@ -25,7 +25,7 @@ import {
 	updateSceneObject,
 } from "../../src/scene-objects.js";
 import { ASSET_IMAGE_TYPES, ASSET_MAX_DIMENSION, assetAspect, importImageFile } from "../../src/scene-assets.js";
-import { cutOutBackground } from "../../src/matte.js";
+import { cutOutBackground, decodeMask, maskAsset } from "../../src/matte.js";
 import { createMatteEditor } from "../../src/matte-editor.js";
 import { createViewer } from "./scene.js";
 import { SAMPLES, sampleFile } from "./samples.js";
@@ -253,16 +253,28 @@ $("rotRange").addEventListener("input", (event) => editSelected({ rot: Number(ev
 const editor = createMatteEditor($("matteCanvas"), {
 	onChange: ({ painted, coverage }) => {
 		$("matteStats").textContent = painted
-			? `${Math.round(coverage * 100)}% of the picture painted out — purple is what goes`
-			: "Paint purple over what should go. Nothing is removed until you do.";
+			? `${Math.round(coverage * 100)}% of the picture marked — purple is what goes`
+			: "Drag over the background — the cut grows out from wherever the brush touches.";
 		$("matte").disabled = !painted;
 	},
 });
 
+/** The editor always opens on the photograph, with whatever purple was saved
+ * against it — never on the cut picture the set renders. */
 function loadEditor() {
 	const object = selected();
-	const asset = object && assets.get(object.assetId);
-	if (asset) editor.load(asset).catch((error) => note(`Could not open the background editor — ${error.message}`, true));
+	if (!object) return;
+	const source = assets.get(object.sourceAssetId || object.assetId);
+	if (!source) return;
+	editor
+		.load(source)
+		.then(async () => {
+			const stored = object.matteAssetId && assets.get(object.matteAssetId);
+			if (!stored) return;
+			const { mask, width, height } = await decodeMask(stored);
+			editor.setMask(mask, width, height);
+		})
+		.catch((error) => note(`Could not open the background editor — ${error.message}`, true));
 }
 
 $("brush").addEventListener("input", (event) => {
@@ -288,32 +300,41 @@ $("autoDetect").addEventListener("click", () => {
 
 $("matte").addEventListener("click", async () => {
 	const object = selected();
-	const source = object && assets.get(object.assetId);
+	const source = object && assets.get(object.sourceAssetId || object.assetId);
 	const options = editor.options();
 	if (!object || !source || !options) return;
 	const button = $("matte");
 	button.disabled = true;
 	button.textContent = "Applying…";
 	try {
-		const { asset, heightScale, removed } = await cutOutBackground(source, options, { subtle: digest });
-		assets.set(asset.id, asset);
-		await textureFor(asset);
+		// Nothing is destroyed: the photograph and the purple are both stored,
+		// and the cut picture is a third asset derived from them.
+		const [cut, matte] = await Promise.all([
+			cutOutBackground(source, { mask: options.mask }, { subtle: digest }),
+			maskAsset(options.mask, { width: options.maskWidth, height: options.maskHeight, name: `${source.name} matte` }, { subtle: digest }),
+		]);
+		assets.set(cut.asset.id, cut.asset);
+		assets.set(matte.id, matte);
+		await textureFor(cut.asset);
 		// The subject stays the size it was: trimming the margin only changed
-		// how much of the frame it fills, not how tall the thing really is.
+		// how much of the frame it fills. The scale is stored rather than
+		// multiplied in, so a second cut does not compound onto the first.
+		const fullFrameHeight = object.height / (object.matteScale || 1);
 		state.objects = updateSceneObject(state.objects, object.id, {
-			assetId: asset.id,
-			aspect: assetAspect(asset) ?? 1,
-			height: object.height * heightScale,
+			assetId: cut.asset.id,
+			sourceAssetId: source.id,
+			matteAssetId: matte.id,
+			matteScale: cut.heightScale,
+			aspect: assetAspect(cut.asset) ?? 1,
+			height: fullFrameHeight * cut.heightScale,
 		});
-		note(`${object.name} — ${Math.round(removed * 100)}% of the frame removed, trimmed to ${asset.width} × ${asset.height} px`);
+		note(`${object.name} — ${Math.round(cut.removed * 100)}% removed, trimmed to ${cut.asset.width} × ${cut.asset.height} px. The original is kept.`);
 		draw();
 		loadEditor();
 	} catch (error) {
 		note(`Could not remove the background — ${error.message}`, true);
 	} finally {
 		button.textContent = "Apply to the card";
-		// Re-enabled only if there is still purple to apply — after a successful
-		// cut there is not, because the editor has reloaded on the new picture.
 		button.disabled = !editor.options();
 	}
 });

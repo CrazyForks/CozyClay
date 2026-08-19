@@ -63,9 +63,9 @@
 					<h2>Background</h2>
 					<div class="matte">
 						<canvas id="matteCanvas" aria-label="Background editor: paint purple over what should be removed"></canvas>
-						<p class="hint" id="matteStats">Paint purple over what should go. Nothing is removed until you do.</p>
+						<p class="hint" id="matteStats">Drag over the background — the cut grows out from wherever the brush touches. Nothing is removed until you apply.</p>
 						<div class="chips" role="group" aria-label="Brush">
-							<button type="button" class="chip is-on" id="modePaint">Paint purple</button>
+							<button type="button" class="chip is-on" id="modePaint">Cut out</button>
 							<button type="button" class="chip" id="modeErase">Erase purple</button>
 							<button type="button" class="chip" id="clearStrokes">Clear</button>
 						</div>
@@ -75,14 +75,14 @@
 						</div>
 						<input type="range" id="brush" min="4" max="90" step="2" value="18" aria-label="Brush size" />
 						<div class="field">
-							<label for="tolerance">Auto-detect tolerance</label>
+							<label for="tolerance">Tolerance</label>
 							<span class="mono" id="toleranceValue" style="font-size: 12px">0.18</span>
 						</div>
-						<input type="range" id="tolerance" min="0.04" max="0.5" step="0.01" value="0.18" aria-label="Auto-detect tolerance" />
+						<input type="range" id="tolerance" min="0.04" max="0.5" step="0.01" value="0.18" aria-label="Tolerance" />
 						<button type="button" class="btn" id="autoDetect">Auto-detect background</button>
-						<p class="hint">Auto-detect makes a first pass from the frame's edges and paints what it finds — it adds to your purple, never replaces it. Then fix it by hand.</p>
+						<p class="hint">Auto-detect makes the same pass from all four edges at once. It adds to your purple, never replaces it.</p>
 						<button type="button" class="btn primary" id="matte" disabled>Apply to the card</button>
-						<p class="hint">Applying removes exactly what is purple, at the picture's own resolution, and trims the empty margin. The card keeps the size it had.</p>
+						<p class="hint">Applying removes exactly what is purple and trims the empty margin — but keeps the original photograph and this selection, so you can come back and change your mind. The card keeps the size it had.</p>
 					</div>
 					<button type="button" class="btn quiet" id="remove">Remove this card</button>
 				</section>

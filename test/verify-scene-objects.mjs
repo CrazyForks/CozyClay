@@ -424,6 +424,45 @@ expect(
 	updateSceneObject([cube], cube.id, { height: 3, aspect: 2 })[0] === cube,
 );
 
+expect(
+	"a fresh cutout is its own original, with no selection on it",
+	sofa.sourceAssetId === sofa.assetId && sofa.matteAssetId === "" && sofa.matteScale === 1,
+	JSON.stringify(sofa),
+);
+
+const cut = updateSceneObject([sofa], sofa.id, {
+	assetId: "asset-sofa-cut",
+	sourceAssetId: "asset-sofa",
+	matteAssetId: "asset-sofa-matte",
+	matteScale: 0.5,
+	aspect: 1.4,
+	height: 0.45,
+})[0];
+expect(
+	"a cut card keeps the picture it renders, the photograph it came from and the selection",
+	cut.assetId === "asset-sofa-cut" && cut.sourceAssetId === "asset-sofa" && cut.matteAssetId === "asset-sofa-matte" && cut.matteScale === 0.5,
+	JSON.stringify(cut),
+);
+expect(
+	"a stored cut card round-trips with all three",
+	(() => {
+		const back = loadScene(serializeScene([cut]));
+		return JSON.stringify(back.objects) === JSON.stringify([cut]);
+	})(),
+);
+expect(
+	"a record from before the cut editor still loads, as its own original",
+	(() => {
+		const { sourceAssetId, matteAssetId, matteScale, ...old } = sofa;
+		const back = normalizeSceneObject(old);
+		return back.sourceAssetId === back.assetId && back.matteAssetId === "" && back.matteScale === 1;
+	})(),
+);
+expect(
+	"a nonsense trim factor is clamped, not trusted",
+	normalizeSceneObject({ ...cut, matteScale: 9 }).matteScale === 1 && normalizeSceneObject({ ...cut, matteScale: "half" }).matteScale === 1,
+);
+
 const repointed = updateSceneObject([sofa], sofa.id, { assetId: "asset-sofa-cut", aspect: 1.4, height: 0.9 })[0];
 expect(
 	"a card can be pointed at a new picture, resizing with it",

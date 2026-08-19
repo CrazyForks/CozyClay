@@ -102,39 +102,50 @@ expect(
 );
 expect("with nothing painted there is nothing to apply", editor.options() === null && editor.hasPaint() === false);
 
-/* -- the brush lays purple down ------------------------------------------- */
+/* -- a stroke is a seed, and the algorithm does the cutting ---------------- */
 
 const pointer = (type, x, y) => handlers.get(type)?.({ clientX: x, clientY: y, pointerId: 1, preventDefault() {} });
-editor.setBrush(6);
+editor.setBrush(4);
 pointer("pointerdown", 4, 4);
-pointer("pointermove", 4, 12);
-pointer("pointerup", 4, 12);
+pointer("pointermove", 4, 8);
+expect("the brush marks where it touched while the pointer is down", isPurple(4, 4) && isPlain(30, 30));
+const duringStroke = last.painted;
+pointer("pointerup", 4, 8);
 
-expect("a stroke marks the wall purple", isPurple(4, 4) && isPurple(4, 10), JSON.stringify(pixelAt(4, 4)));
-expect("the stroke is bounded — the rest of the picture is untouched", isPlain(30, 30) && isPlain(20, 30));
-expect("what is painted is counted", last.painted > 20 && last.coverage > 0, JSON.stringify(last));
+expect(
+	"letting go grows the cut out from the seeds — one dab takes the whole wall",
+	last.painted > duringStroke * 5 && isPurple(36, 2) && isPurple(2, 56),
+	JSON.stringify({ duringStroke, after: last.painted }),
+);
+expect("the growth stops at the subject", isPlain(20, 30) && isPlain(14, 22));
+expect("what is marked is counted", last.coverage > 0.5 && last.coverage < 0.95, JSON.stringify(last));
 
-/* -- and the eraser takes it off ------------------------------------------ */
+/* -- the eraser is a plain brush, because a correction should be exact ----- */
 
 editor.setMode("erase");
+editor.setBrush(4);
+const beforeErase = last.painted;
 pointer("pointerdown", 4, 4);
 pointer("pointerup", 4, 4);
-expect("erasing takes the purple back off", isPlain(4, 4) && isPurple(4, 12));
+expect("erasing takes the purple back off where it touched", isPlain(4, 4) && isPurple(36, 2));
+expect("erasing does not re-grow anything", last.painted < beforeErase, JSON.stringify({ beforeErase, after: last.painted }));
 editor.setMode("paint");
 
 /* -- auto-detect is an offer, not the default ----------------------------- */
 
-const painterlyBefore = last.painted;
+editor.clear();
+expect("clear puts the photograph back", last.painted === 0 && isPlain(1, 1) && isPlain(20, 30));
 const added = editor.autoDetect(0.18);
-expect("auto-detect adds the wall it finds", added > 0 && last.painted > painterlyBefore);
-expect("auto-detect marks the background and leaves the subject", isPurple(1, 1) && isPurple(38, 58) && isPlain(20, 30));
+expect("auto-detect marks the background and leaves the subject", added > 0 && isPurple(1, 1) && isPurple(38, 58) && isPlain(20, 30));
 
-// The hand-painted stroke was already purple; a second pass must not undo it.
+// A stroke on the subject seeds a growth INSIDE it: the subject is one flat
+// colour, so this is "cut this out too", and it must survive a second pass.
 pointer("pointerdown", 20, 30);
 pointer("pointerup", 20, 30);
-expect("a correction after auto-detect sticks", isPurple(20, 30));
+expect("a stroke on the subject cuts the subject out too", isPurple(20, 30) && isPurple(14, 22));
+const afterCorrection = last.painted;
 editor.autoDetect(0.3);
-expect("running auto-detect again keeps the corrections", isPurple(20, 30));
+expect("running auto-detect again keeps what is already marked", isPurple(20, 30) && last.painted >= afterCorrection);
 
 /* -- what gets handed to the cutter --------------------------------------- */
 
@@ -148,8 +159,13 @@ expect(
 );
 expect("no tolerance travels with it — the growth already happened on screen", options.tolerance === undefined);
 
+/* -- a saved selection can be put back ------------------------------------ */
+
+const saved = Uint8Array.from(options.mask);
 editor.clear();
 expect("clear puts the photograph back", last.painted === 0 && isPlain(1, 1) && isPlain(20, 30) && editor.options() === null);
+expect("a saved selection is restored onto the picture", editor.setMask(saved, WIDTH, HEIGHT) && isPurple(1, 1) && last.painted === saved.reduce((sum, value) => sum + value, 0));
+expect("a selection from a different picture is refused", editor.setMask(new Uint8Array(9), 3, 3) === false);
 
 editor.dispose();
 expect("disposing lets go of the pointer", handlers.size === 0);

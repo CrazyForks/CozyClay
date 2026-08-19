@@ -350,6 +350,65 @@ function defaultCanvas(width, height) {
 }
 
 /**
+ * The purple, as a storable picture.
+ *
+ * A card keeps TWO things: the photograph it was imported from, untouched, and
+ * the region someone has decided is background. The second one has to survive
+ * a reload like the first, and the asset store already knows how to keep a
+ * picture — so the mask is written as one. White is "this goes", and PNG's own
+ * compression handles a mask of flat regions better than anything worth
+ * hand-rolling.
+ */
+export async function encodeMask(mask, { width, height }, { makeCanvas = defaultCanvas } = {}) {
+	const canvas = makeCanvas(width, height);
+	const context = canvas.getContext("2d");
+	if (!context) throw new Error("this browser cannot store a selection — no 2D context");
+	const data = new Uint8ClampedArray(width * height * 4);
+	for (let pixel = 0; pixel < width * height; pixel++) {
+		const value = mask[pixel] ? 255 : 0;
+		const index = pixel << 2;
+		data[index] = value;
+		data[index + 1] = value;
+		data[index + 2] = value;
+		data[index + 3] = 255;
+	}
+	context.putImageData(new ImageData(data, width, height), 0, 0);
+	const blob = await canvas.convertToBlob({ type: "image/png" });
+	return blob.arrayBuffer();
+}
+
+/** The purple as an asset record, ready for the store the pictures live in. */
+export async function maskAsset(mask, { width, height, name = "matte" }, deps = {}) {
+	const bytes = await encodeMask(mask, { width, height }, deps);
+	const asset = normalizeAsset({
+		id: await assetIdForBytes(bytes, deps.subtle ?? globalThis.crypto?.subtle),
+		type: "image/png",
+		width,
+		height,
+		bytes,
+		name,
+	});
+	if (!asset) throw new Error("that selection could not be stored");
+	return asset;
+}
+
+/** The purple back out of a stored picture. */
+export async function decodeMask(asset, { createBitmap = globalThis.createImageBitmap, makeCanvas = defaultCanvas } = {}) {
+	const bitmap = await createBitmap(new Blob([asset.bytes], { type: asset.type }));
+	try {
+		const canvas = makeCanvas(bitmap.width, bitmap.height);
+		const context = canvas.getContext("2d", { willReadFrequently: true });
+		context.drawImage(bitmap, 0, 0);
+		const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
+		const mask = new Uint8Array(bitmap.width * bitmap.height);
+		for (let pixel = 0; pixel < mask.length; pixel++) mask[pixel] = image.data[pixel << 2] > 127 ? 1 : 0;
+		return { mask, width: bitmap.width, height: bitmap.height };
+	} finally {
+		bitmap?.close?.();
+	}
+}
+
+/**
  * An asset with its background gone, as a NEW asset record.
  *
  * New, not edited: assets are addressed by their own bytes, so a cut picture

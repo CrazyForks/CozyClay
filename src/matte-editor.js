@@ -1,10 +1,16 @@
 /**
  * The background editor: the photograph as it arrived, and a purple brush.
  *
- * The rule is that what you paint is what goes. Not a suggestion the machine
- * then reinterprets — the purple IS the mask. Applying takes exactly the
- * pixels that are violet on screen, whether you painted all of them, half of
- * them, or let Auto-detect make the first pass and then corrected it.
+ * The rule is that what is purple is what goes. Not a suggestion the machine
+ * then reinterprets — the purple IS the mask, and applying takes exactly those
+ * pixels, whether a third of the picture is marked or all of it.
+ *
+ * Painting is not a pixel brush, though. A stroke is a set of SEEDS: on
+ * release, the same region growth the automatic pass uses runs from every
+ * place the brush touched, and the wall it reaches turns purple in one go.
+ * Dragging across a background is therefore "cut this out", not "colour this
+ * in" — the brush says WHERE, the algorithm decides HOW FAR. The eraser is a
+ * plain brush, because taking back a mistake should be exact.
  *
  * That is why the page opens on the untouched picture. An automatic cut shown
  * before anyone asked for it hides the thing that matters: a hole in the
@@ -53,6 +59,9 @@ export function createMatteEditor(canvas, {
 		mode: "paint",
 		painting: false,
 		last: null,
+		/** where this stroke has touched, in full-resolution pixels — the seeds
+		 * the growth runs from when the pointer comes up */
+		seeds: [],
 	};
 
 	/** full-resolution pixels per preview pixel */
@@ -126,14 +135,30 @@ export function createMatteEditor(canvas, {
 		const steps = Math.max(1, Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / Math.max(1, r * 0.4)));
 		let touched = 0;
 		for (let step = 1; step <= steps; step++) {
-			touched += paintMask(state.paint, state.full, {
-				x: from.x + ((to.x - from.x) * step) / steps,
-				y: from.y + ((to.y - from.y) * step) / steps,
-				radius: r,
-				value,
-			});
+			const x = from.x + ((to.x - from.x) * step) / steps;
+			const y = from.y + ((to.y - from.y) * step) / steps;
+			touched += paintMask(state.paint, state.full, { x, y, radius: r, value });
+			// Paint mode leaves a seed behind at every dab. The growth waits for
+			// the pointer to come up: one flood per stroke is fast, one per
+			// pointermove would be a full-resolution flood 60 times a second.
+			if (value === 1) state.seeds.push({ x, y });
 		}
 		if (touched) repaint();
+	}
+
+	/** The stroke is over: grow the background out from everywhere it touched. */
+	function growFromStroke() {
+		const seeds = state.seeds;
+		state.seeds = [];
+		if (!seeds.length || !state.full) return;
+		const reached = backgroundMask(state.full, { points: seeds, tolerance: state.tolerance });
+		let added = 0;
+		for (let pixel = 0; pixel < reached.length; pixel++) {
+			if (!reached[pixel] || state.paint[pixel]) continue;
+			state.paint[pixel] = 1;
+			added += 1;
+		}
+		if (added) repaint();
 	}
 
 	const onDown = (event) => {
@@ -151,7 +176,9 @@ export function createMatteEditor(canvas, {
 		state.last = point;
 	};
 	const onUp = (event) => {
+		if (!state.painting) return;
 		state.painting = false;
+		growFromStroke();
 		if (canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
 	};
 	canvas.addEventListener("pointerdown", onDown);
@@ -187,6 +214,16 @@ export function createMatteEditor(canvas, {
 			} finally {
 				bitmap?.close?.();
 			}
+		},
+
+		/** Put a saved selection back on the picture — the second half of a
+		 * card's state, alongside the photograph itself. */
+		setMask(mask, width, height) {
+			if (!state.paint || !mask) return false;
+			if (width !== state.full.width || height !== state.full.height) return false;
+			state.paint.set(mask);
+			repaint();
+			return true;
 		},
 
 		/**
