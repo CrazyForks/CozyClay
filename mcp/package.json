@@ -1,0 +1,21 @@
+{
+	"name": "@cozyclay/mcp",
+	"version": "0.1.0",
+	"private": true,
+	"description": "MCP server for CozyClay — block a scene, place the camera, and get film vocabulary and AI prompts back.",
+	"type": "module",
+	"bin": {
+		"cozyclay-mcp": "server.mjs"
+	},
+	"scripts": {
+		"start": "node server.mjs",
+		"verify": "node verify.mjs"
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.30.0",
+		"zod": "^3.25.0"
+	}
+}

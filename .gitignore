@@ -15,3 +15,6 @@ tools/ardy/out/
 *.log
 __pycache__/
 *.pyc
+
+# MCP server local install
+mcp/node_modules/
