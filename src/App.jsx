@@ -695,7 +695,8 @@ function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMo
 			const p = toFloor(e);
 			if (!p) return;
 			if (drag.axis === "x") onMove?.({ x: p.x - drag.grabX, z: drag.originZ });
-			else onMove?.({ x: drag.originX, z: p.z - drag.grabZ });
+			else if (drag.axis === "z") onMove?.({ x: drag.originX, z: p.z - drag.grabZ });
+			else onMove?.({ x: p.x - drag.grabX, z: p.z - drag.grabZ }); // xz pad: free slide on the deck
 		};
 		const up = () => {
 			dragRef.current = null;
@@ -721,6 +722,27 @@ function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMo
 			{/* the tripod sits at the feet — a floating pivot reads as unmoored
 			    from the character */}
 			<group ref={sleevesRef}>
+			{/* the XZ plane pad between the two ground arrows — grab it to slide
+			    freely on the deck, both axes at once (Unity's quad-between-axes).
+			    It lives just off the origin so the axis sleeves keep their own
+			    presses near the center. */}
+			<mesh
+				position={[0.34, 0.02, 0.34]}
+				rotation={[-Math.PI / 2, 0, 0]}
+				userData={{ axis: "xz" }}
+				onPointerOver={() => (gl.domElement.style.cursor = "grab")}
+				onPointerOut={() => (gl.domElement.style.cursor = "")}
+			>
+				<planeGeometry args={[0.3, 0.3]} />
+				<meshBasicMaterial
+					color={dragAxis === "xz" ? "#ffd23d" : "#ffffff"}
+					transparent
+					opacity={dragAxis === "xz" ? 0.6 : 0.3}
+					side={THREE.DoubleSide}
+					depthWrite={false}
+					toneMapped={false}
+				/>
+			</mesh>
 			{GIZMO_AXIS.map(({ axis, color, rot }) => {
 				const active = dragAxis === axis;
 				const shown = active ? "#ffd23d" : color; // the grabbed axis goes bright, Unity-style
