@@ -43,8 +43,11 @@ import {
 } from "./camera-rail-schedule.js";
 import { SetProps } from "./props.jsx";
 import {
+	CUTOUT_DEFAULT_HEIGHT,
+	CUTOUT_KIND,
 	DEFAULT_SCENE_OBJECTS,
 	OBJECT_COLORS,
+	createCutoutObject,
 	createSceneObject,
 	dropToSurfacePatch,
 	objectSize,
@@ -55,6 +58,8 @@ import {
 	updateSceneObject,
 } from "./scene-objects.js";
 import { createSceneHistoryStore } from "./scene-history.js";
+import { ASSET_IMAGE_TYPES, assetAspect, importImageFile } from "./scene-assets.js";
+import { rememberAsset } from "./scene-asset-cache.js";
 import {
 	SCENES_QUARANTINE_KEY,
 	SCENES_STORAGE_KEY,
@@ -289,6 +294,7 @@ const SCENE_RENDERER_LABELS_KO = new Map([
 	["chair", ko("chair", "의자")],
 	["car", ko("car", "자동차")],
 	["aircraft", ko("aircraft", "비행기")],
+	[CUTOUT_KIND, ko("cutout", "컷아웃")],
 ]);
 
 const SCENE_OBJECT_NAME_LABELS_KO = new Map([
@@ -1588,6 +1594,8 @@ globalThis.playMode = centerTab === "play";
 		setToast(isKo ? `${sceneObjectNameDisplayKo(object.name)}을 표면 위에 내려놓았어요` : `${object.name} dropped to surface`);
 	}
 
+	/** The hidden file input behind "Import image as cutout". */
+	const cutoutInputRef = useRef(null);
 	const [gizmoMode, setGizmoMode] = useState("move");
 	// Snap is a preference, not a law: with it on the gizmo blocks on the plan
 	// board's grid, and Ctrl/Cmd during a drag gives a free one. Off, it is the
@@ -1615,17 +1623,60 @@ globalThis.playMode = centerTab === "play";
 		setToast(isKo ? `${sceneObjectNameDisplayKo(object.name)} 추가됨 — W 이동, E 회전, R 크기` : `${object.name} added — W move, E rotate, R scale`);
 	}
 
+	/** "Sofa 2.png" reads as a set piece; "sofa-2.png" does not. The extension
+	 * goes, the rest is the user's own name for the thing. */
+	function cutoutNameFromFile(fileName) {
+		const base = String(fileName ?? "").replace(/\.[^.]+$/, "").trim();
+		return base || ko("Cutout", "컷아웃");
+	}
+
+	/**
+	 * Import one image and stand it up in the set. The card arrives at the
+	 * figure's own height, because a standee whose scale is a guess is worse
+	 * than useless in a tool where every camera level is a height in metres —
+	 * 1.8 m is at least an honest starting point to correct from.
+	 */
+	async function importCutout(file) {
+		if (!file) return;
+		try {
+			const asset = await rememberAsset(await importImageFile(file));
+			const camera = shotCamRef.current;
+			const placement = camera
+				? placementInFront({ x: camera.position.x, z: camera.position.z }, look.current.yaw)
+				: {};
+			const object = createCutoutObject(
+				{ assetId: asset.id, aspect: assetAspect(asset) ?? 1, height: CUTOUT_DEFAULT_HEIGHT, name: cutoutNameFromFile(asset.name) },
+				sceneObjects,
+				placement,
+			);
+			if (!object) return;
+			store.applyAtomic((objects) => [...objects, object]);
+			setSelectedHierarchyId(`object:${object.id}`);
+			setSidebarTab("inspector");
+			setGizmoMode("move");
+			setToast(
+				isKo
+					? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
+					: `${object.name} added — type its real height in metres to set the scale`,
+			);
+		} catch (error) {
+			setToast(isKo ? `이미지를 가져오지 못했어요 — ${error.message}` : `Could not import that image — ${error.message}`);
+		}
+	}
+
 	function duplicateSelectedSceneObject(id = selectedSceneObjectId) {
 		// Defaults to the selection (Ctrl/Cmd+D); the hierarchy context menu
 		// passes a specific row's id. Same result either way: the copy is
 		// selected, offset one grid step, and toasted.
 		const object = sceneObjects.find((item) => item.id === id) ?? null;
 		if (!object) return;
-		const copy = createSceneObject(object.renderer, sceneObjects, {
-			x: object.x,
-			z: object.z,
-			rot: object.rot,
-		});
+		const placement = { x: object.x, z: object.z, rot: object.rot };
+		// A cutout cannot be minted from the catalogue — it needs the picture the
+		// original is already wearing — so the copy is created through its own
+		// door and shares the asset rather than importing it twice.
+		const copy = object.renderer === CUTOUT_KIND
+			? createCutoutObject({ assetId: object.assetId, aspect: object.aspect, height: object.height, name: object.name }, sceneObjects, placement)
+			: createSceneObject(object.renderer, sceneObjects, placement);
 		if (!copy) return;
 		// Unity drops the duplicate exactly on top of the original; for blocking,
 		// one grid step to the side means you can see that it worked.
@@ -6154,6 +6205,28 @@ function resizePromptClip(id, edge, rawFrame) {
 				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
 					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요.")}</p>
 					<AddObjectMenu onAdd={addSceneObject} label={ko("Add object to the set", "세트에 오브젝트 추가")} />
+					<button
+						type="button"
+						className="btn ghost full"
+						onClick={() => cutoutInputRef.current?.click()}
+						title={ko("A photo of the real thing, standing in the set as a card", "실제 사진을 판때기로 세워 세트에 배치합니다")}
+					>
+						{ko("Import image as cutout", "이미지를 컷아웃으로 가져오기")}
+					</button>
+					<input
+						ref={cutoutInputRef}
+						type="file"
+						hidden
+						accept={ASSET_IMAGE_TYPES.join(",")}
+						onChange={(event) => {
+							const [file] = event.target.files ?? [];
+							// Cleared before the await: picking the same file twice in a
+							// row has to fire change twice, and it will not if the input
+							// still holds it.
+							event.target.value = "";
+							importCutout(file);
+						}}
+					/>
 						<div className="inspector-list compact">
 							{sceneObjects.map((object) => (
 								<button
@@ -6230,6 +6303,26 @@ function resizePromptClip(id, edge, rawFrame) {
 										{ axis: "Z", value: selectedSceneObject.scaleZ ?? 1, step: 0.05, precision: 2, onChange: (scaleZ) => changeSceneObject(selectedSceneObject.id, { scaleZ }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
+								{selectedSceneObject.renderer === CUTOUT_KIND && (
+									<>
+										<Field label={ko("Card height (m)", "판 높이 (m)")}>
+											<input
+												type="number"
+												min="0.05"
+												max="6"
+												step="0.05"
+												value={selectedSceneObject.height ?? CUTOUT_DEFAULT_HEIGHT}
+												onChange={(event) => changeSceneObject(selectedSceneObject.id, { height: Number(event.target.value) })}
+											/>
+										</Field>
+										<p className="inspector-hint">
+											{isKo
+												? `가로 ${(selectedSceneObject.footprint?.width ?? 0).toFixed(2)} m — 사진 비율에 맞춰 자동 계산됩니다. 사진 속에서 높이를 알 수 있는 것(문 2 m, 사람 1.8 m)에 맞추세요.`
+												: `${(selectedSceneObject.footprint?.width ?? 0).toFixed(2)} m wide, from the picture's own aspect. Measure against something you know: a door is 2 m, a person 1.8 m.`}
+										</p>
+									</>
+								)}
+								{selectedSceneObject.renderer !== CUTOUT_KIND && (
 						<div className="object-colors" role="group" aria-label={ko("Object colour", "오브젝트 색상")}>
 									{OBJECT_COLORS.map((color) => (
 										<button
@@ -6243,6 +6336,7 @@ function resizePromptClip(id, edge, rawFrame) {
 										/>
 									))}
 								</div>
+								)}
 							</>
 						)}
 					</Foldout>
