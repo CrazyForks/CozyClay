@@ -16,6 +16,7 @@ import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
 import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint, toSceneRootOffset, PATH_LIMITS } from "./ardy/waypoints.js";
 import { FlyControls, aimAt, forwardFrom } from "./controls.jsx";
+import { createLiveControl } from "./live-control.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
 import { DualRender, GIZMO_LAYER, fitAspect } from "./dualview.jsx";
@@ -69,6 +70,7 @@ import {
 	duplicateScene,
 	loadSceneDocumentFromStorage,
 	migrateStageFrames,
+	readSceneDocument,
 	removeScene,
 	renameScene,
 	serializeSceneDocument,
@@ -138,6 +140,8 @@ import {
 	VIDEO_MODELS,
 	composePrompt,
 	deriveShot,
+	focalMmToFov,
+	fovToFocalMm,
 	slateLine,
 } from "./shot.js";
 import { captureFraming, classifyMove, cameraMoveAt, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
@@ -1326,8 +1330,12 @@ globalThis.playMode = centerTab === "play";
 		}));
 	}
 	function removeCharacter(charId) {
+		const list = charactersRef.current;
+		if (list.length <= 1) return;
 		recordCharacterUndo();
-		setCharacters((list) => list.filter((entry) => entry.id === charA.id || entry.id !== charId));
+		const nextCharacters = list.filter((entry) => entry.id !== charId);
+		charactersRef.current = nextCharacters;
+		setCharacters(nextCharacters);
 		// The deleted layer's untrimmed take goes with it: a recycled id must
 		// never inherit a stranger's take, and its stature left with the entry.
 		motionFullRef.current.delete(charId);
@@ -1664,7 +1672,7 @@ globalThis.playMode = centerTab === "play";
 	 * full-cast snapshot with the editing buffer folded in, and undo/redo
 	 * picks the newer of the two stacks so one Ctrl+Z history covers both. */
 	const snapshotCast = () => ({
-		characters: characters.map((entry) => ({
+		characters: charactersRef.current.map((entry) => ({
 			...entry,
 			layer: entry.id === activeChar.id
 				? { waypoints: bufferRef.current.waypoints, promptClips: bufferRef.current.promptClips }
@@ -1842,6 +1850,9 @@ globalThis.playMode = centerTab === "play";
 
 	const [cameraPos, setCameraPos] = useState(DEFAULT_CAMERA_POSITION);
 	const [subjectVisible, setSubjectVisible] = useState(true);
+	const liveControlRef = useRef(null);
+	const liveStateRef = useRef(null);
+	const liveHandlersRef = useRef(null);
 	const [result, setResult] = useState(null);
 	const [resultOpen, setResultOpen] = useState(false);
 	const [copied, setCopied] = useState(false);
@@ -2325,6 +2336,219 @@ globalThis.playMode = centerTab === "play";
 		openScene(target, nextScenes);
 	}
 
+	// Commands are a sequential transport boundary, while React commits on a
+	// later turn. Keep its read model current synchronously so the next frame
+	// observes the mutation that the previous frame just acknowledged.
+	liveStateRef.current = {
+		scenes,
+		activeSceneId,
+		camera: cameraPos,
+		fovDeg,
+		characters,
+		objects: sceneObjects,
+		commitManualCameraFraming,
+		recordCharacterUndo,
+		removeCharacter,
+		persistScenes,
+		openScene,
+		loadMotion,
+	};
+	if (!liveHandlersRef.current) {
+		const finitePatch = (args, fields) => {
+			const patch = {};
+			for (const field of fields) {
+				if (args[field] === undefined) continue;
+				if (!Number.isFinite(args[field])) throw new Error(`Invalid ${field}`);
+				patch[field] = args[field];
+			}
+			return patch;
+		};
+		const characterForRef = (characters, ref) => {
+			if (typeof ref === "number" && Number.isInteger(ref)) return characters[ref - 1] ?? null;
+			if (typeof ref !== "string" || !ref) return null;
+			if (/^\d+$/.test(ref)) return characters[Number(ref) - 1] ?? null;
+			if (ref.toUpperCase() === "A") return characters[0] ?? null;
+			if (ref.toUpperCase() === "B") return characters[1] ?? null;
+			return characters.find((entry) => entry.id === ref) ?? null;
+		};
+		const describe = () => {
+			const live = liveStateRef.current;
+			return {
+				sceneName: live.scenes.find((scene) => scene.id === live.activeSceneId)?.name ?? "",
+				camera: { ...live.camera, focalMm: Math.round(fovToFocalMm((live.fovDeg * Math.PI) / 180) * 100) / 100 },
+				characters: live.characters.map((entry) => ({ id: entry.id, subject: entry.subject, x: entry.x, z: entry.z, rot: entry.rot, hidden: entry.hidden })),
+				objects: live.objects.map((object) => ({ id: object.id, name: object.name, x: object.x, y: object.y, z: object.z, rot: object.rot })),
+			};
+		};
+		const replaceCharacters = (next) => {
+			charactersRef.current = next;
+			liveStateRef.current.characters = next;
+			setCharacters(next);
+		};
+		const syncObjects = () => {
+			liveStateRef.current.objects = storeRef.current.objects;
+		};
+		liveHandlersRef.current = {
+			ping: () => ({ pong: true }),
+			describe,
+			// Camera moves are not undoable in the UI. This is the free-camera and
+			// Top-View path: drive the shot camera, lens state, then manual ownership.
+			set_camera: (args) => {
+				const live = liveStateRef.current;
+				const patch = finitePatch(args, ["x", "y", "z"]);
+				let nextFov = live.fovDeg;
+				if (args.focalMm !== undefined) {
+					if (!Number.isFinite(args.focalMm) || args.focalMm <= 0) throw new Error("Invalid focalMm");
+					nextFov = (focalMmToFov(args.focalMm) * 180) / Math.PI;
+					if (nextFov < 14 || nextFov > 90) throw new Error("focalMm is outside the editor lens range");
+				}
+				const next = { ...live.camera, ...patch };
+				const camera = shotCamRef.current;
+				if (camera) {
+					camera.position.set(next.x, next.y, next.z);
+					camera.fov = nextFov;
+					camera.updateProjectionMatrix();
+				}
+				live.camera = next;
+				live.fovDeg = nextFov;
+				setCameraPos(next);
+				setFovDeg(nextFov);
+				live.commitManualCameraFraming();
+				return { camera: { ...next, focalMm: Math.round(fovToFocalMm((nextFov * Math.PI) / 180) * 100) / 100 } };
+			},
+			add_character: (args) => {
+				if (typeof args.subject !== "string") throw new Error("Invalid subject");
+				const live = liveStateRef.current;
+				const patch = finitePatch(args, ["x", "z", "rot"]);
+				live.recordCharacterUndo();
+				const id = nextCharacterId(live.characters);
+				replaceCharacters([...live.characters, createCharacterEntry({ id, subject: args.subject, pose: DEFAULT_POSE, ...patch }, live.characters.length)]);
+				return { id };
+			},
+			update_character: (args) => {
+				const live = liveStateRef.current;
+				const character = characterForRef(live.characters, args.ref);
+				if (!character) throw new Error("Character not found");
+				const patch = finitePatch(args, ["x", "z", "rot"]);
+				if (args.subject !== undefined) {
+					if (typeof args.subject !== "string") throw new Error("Invalid subject");
+					patch.subject = args.subject;
+				}
+				if (args.hidden !== undefined) {
+					if (typeof args.hidden !== "boolean") throw new Error("Invalid hidden");
+					patch.hidden = args.hidden;
+				}
+				if (!Object.keys(patch).some((key) => patch[key] !== character[key])) return { id: character.id };
+				live.recordCharacterUndo();
+				replaceCharacters(live.characters.map((entry) => entry.id === character.id ? { ...entry, ...patch } : entry));
+				return { id: character.id };
+			},
+			remove_character: (args) => {
+				const live = liveStateRef.current;
+				const character = characterForRef(live.characters, args.ref);
+				if (!character) throw new Error("Character not found");
+				if (live.characters.length <= 1) throw new Error("Cannot remove the final character");
+				live.removeCharacter(character.id);
+				live.characters = charactersRef.current;
+				return { id: character.id };
+			},
+			place_object: (args) => {
+				if (typeof args.kind !== "string") throw new Error("Invalid kind");
+				const live = liveStateRef.current;
+				const placement = finitePatch(args, ["x", "z", "rot"]);
+				const object = createSceneObject(args.kind, live.objects, placement);
+				if (!object) throw new Error(`Unknown object kind: ${args.kind}`);
+				const patch = finitePatch(args, ["y"]);
+				const placed = updateSceneObject([object], object.id, patch)[0];
+				storeRef.current.applyAtomic((objects) => [...objects, placed]);
+				syncObjects();
+				return { id: placed.id };
+			},
+			update_object: (args) => {
+				const live = liveStateRef.current;
+				if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
+				const patch = finitePatch(args, ["x", "y", "z", "rot"]);
+				if (args.scale !== undefined) {
+					if (!Number.isFinite(args.scale)) throw new Error("Invalid scale");
+					patch.scaleX = args.scale;
+					patch.scaleY = args.scale;
+					patch.scaleZ = args.scale;
+				}
+				if (args.color !== undefined) {
+					if (typeof args.color !== "string") throw new Error("Invalid color");
+					patch.color = args.color;
+				}
+				storeRef.current.applyAtomic((objects) => updateSceneObject(objects, args.id, patch));
+				syncObjects();
+				return { id: args.id };
+			},
+			remove_object: (args) => {
+				const live = liveStateRef.current;
+				if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
+				storeRef.current.applyAtomic((objects) => removeSceneObject(objects, args.id));
+				syncObjects();
+				return { id: args.id };
+			},
+			// Replacing a document follows the existing project-open path and clears
+			// its per-scene histories, so load_scenes is deliberately not undoable.
+			load_scenes: (args) => {
+				if (!args.document || typeof args.document !== "object" || Array.isArray(args.document)) throw new Error("Invalid scene document");
+				const loaded = readSceneDocument(JSON.stringify(args.document));
+				if (loaded.status !== "valid" && loaded.status !== "migrated") throw new Error("Invalid scene document");
+				const document = loaded.document;
+				const target = document.scenes[activeSceneIndex(document.scenes, document.activeSceneId)];
+				const live = liveStateRef.current;
+				live.persistScenes(document.scenes, document.activeSceneId);
+				live.openScene(target, document.scenes);
+				live.scenes = document.scenes;
+				live.activeSceneId = document.activeSceneId;
+				live.objects = storeRef.current.objects;
+				live.characters = createSceneStage(target.stage).characters;
+				charactersRef.current = live.characters;
+				return { sceneName: target.name };
+			},
+			// Loads a bridge-generated take onto the active character — the same
+			// path the demo seed and the Motion panel use. Replacing a take is not
+			// undoable in the UI either, so this is deliberately not undoable.
+			load_motion: async (args) => {
+				if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
+				const prompt = typeof args.prompt === "string" ? args.prompt : "";
+				await liveStateRef.current.loadMotion(args.url, prompt);
+				// Optional per-phase blocks land on the Prompts lane the way hand-authored
+				// ones do. They arrive on ARDY's 20 fps clock; the lane runs on the 24 fps
+				// production clock, so each boundary is converted, not copied.
+				if (Array.isArray(args.blocks) && args.blocks.length) {
+					const toTimeline = (frame) => Math.round((frame * TIMELINE_FPS) / ARDY_FPS);
+					const stamp = Date.now();
+					const clips = args.blocks.map((block, i) => ({
+						id: `prompt-${stamp}-${i}`,
+						startFrame: toTimeline(block.startFrame),
+						endFrame: toTimeline(block.endFrame),
+						text: typeof block.prompt === "string" ? block.prompt : "",
+					}));
+					liveStateRef.current.setPromptClips(clips);
+					liveStateRef.current.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
+				}
+				return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
+			},
+		};
+	}
+
+	useEffect(() => {
+		const enabled = import.meta.env.DEV || window.__COZYCLAY_LIVE__ === true;
+		if (!enabled) return undefined;
+		// StrictMode replays effects in development. Delaying the open lets the
+		// replay cleanup cancel its first pass, so one tab owns one socket.
+		const timer = setTimeout(() => {
+			if (!liveControlRef.current) liveControlRef.current = createLiveControl({ handlers: liveHandlersRef.current });
+		}, 0);
+		return () => {
+			clearTimeout(timer);
+			liveControlRef.current?.close();
+			liveControlRef.current = null;
+		};
+	}, []);
+
 	// One debounced Scene-document save owns both departments. Switching calls
 	// persistScenes directly, so no outgoing edit can be overtaken by a render.
 	useEffect(() => {
@@ -2346,6 +2570,9 @@ globalThis.playMode = centerTab === "play";
 		};
 	}, []);
 	const [promptClips, setPromptClips] = useState(() => (startupStage.characters?.[0]?.layer?.promptClips ?? DEFAULT_PROMPT_CLIPS).map((clip) => ({ ...clip })));
+	// These hooks are declared after the liveStateRef assignment above runs, so
+	// they join the live read model here — same render, no TDZ.
+	Object.assign(liveStateRef.current, { setPromptClips, setTlFrameCount });
 
 	// Dirty tracking: any divergence from the last saved file lights the dot.
 	useEffect(() => {
