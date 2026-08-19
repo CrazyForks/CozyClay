@@ -9,7 +9,17 @@
  */
 
 import { webcrypto } from "node:crypto";
-import { borderSeeds, cropPixels, cutOutBackground, opaqueBounds, removeBackground } from "../src/matte.js";
+import {
+	applyMask,
+	backgroundMask,
+	borderSeeds,
+	combineMask,
+	cropPixels,
+	cutOutBackground,
+	opaqueBounds,
+	paintMask,
+	removeBackground,
+} from "../src/matte.js";
 
 let failures = 0;
 const expect = (name, condition, detail = "") => {
@@ -168,6 +178,51 @@ await cutOutBackground(null, {}, stubs(flat)).then(
 	() => expect("a missing asset is refused", false, "resolved"),
 	(error) => expect("a missing asset is refused", /asset record/.test(error.message), error.message),
 );
+
+/* ------------------------------------------------- mask, brush, combine -- */
+
+const mask = backgroundMask(flat, {});
+expect("the mask marks the wall and nothing else", mask[0] === 1 && mask[60 * 80 + 40] === 0 && mask.length === 80 * 120);
+
+const paint = new Int8Array(80 * 120);
+const touched = paintMask(paint, { width: 80, height: 120 }, { x: 40, y: 60, radius: 4, value: 1 });
+expect("a stroke is a disc, and reports what it touched", touched > 40 && touched < 60 && paint[60 * 80 + 40] === 1 && paint[60 * 80 + 50] === 0);
+expect("painting the same pixels again touches nothing", paintMask(paint, { width: 80, height: 120 }, { x: 40, y: 60, radius: 4, value: 1 }) === 0);
+expect(
+	"a stroke at the edge is clipped, not wrapped",
+	paintMask(paint, { width: 80, height: 120 }, { x: 0, y: 0, radius: 3, value: 1 }) > 0 && paint[79] === 0,
+);
+
+const combined = combineMask(mask, paint, { width: 80, height: 120 });
+expect("a remove stroke cuts into the subject", combined[60 * 80 + 40] === 1 && mask[60 * 80 + 40] === 0);
+const restore = new Int8Array(80 * 120);
+paintMask(restore, { width: 80, height: 120 }, { x: 5, y: 5, radius: 3, value: -1 });
+expect("a restore stroke puts the wall back", combineMask(mask, restore, { width: 80, height: 120 })[5 * 80 + 5] === 0);
+expect("no paint layer leaves the mask alone", combineMask(mask, null, { width: 80, height: 120 })[0] === 1);
+
+// The editor paints on a preview; the mask it lands on was grown at full size.
+const halfPaint = new Int8Array(40 * 60);
+paintMask(halfPaint, { width: 40, height: 60 }, { x: 20, y: 30, radius: 3, value: 1 });
+const upscaled = combineMask(mask, halfPaint, { width: 80, height: 120, paintWidth: 40, paintHeight: 60 });
+expect(
+	"a stroke painted on a half-size preview lands in the right place",
+	// (40, 60) is the middle of the subject and under the stroke; (25, 35) is
+	// also subject, but nowhere near it.
+	upscaled[60 * 80 + 40] === 1 && upscaled[35 * 80 + 25] === 0,
+);
+
+const applied = applyMask(flat, mask, { shrink: 0, feather: 0 });
+expect("applying a mask writes the alpha and counts what went", applied.removed === 80 * 120 - 40 * 60 && alphaAt(applied, 2, 2) === 0);
+const painterly = removeBackground(flat, { mask: combined, shrink: 0, feather: 0 });
+expect(
+	"a hand-edited mask can be applied directly, strokes and all",
+	painterly.removed === combined.reduce((sum, value) => sum + value, 0) && painterly.removed > applied.removed,
+	`${painterly.removed} vs ${applied.removed}`,
+);
+
+const painted = await cutOutBackground(asset, { shrink: 0, feather: 0, paint, paintWidth: 80, paintHeight: 120 }, stubs(flat));
+expect("the glue takes a paint layer with it", painted.asset.id !== result.asset.id);
+
 
 if (failures) process.exit(1);
 console.log("all matte checks PASS");

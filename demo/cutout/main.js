@@ -26,6 +26,7 @@ import {
 } from "../../src/scene-objects.js";
 import { ASSET_IMAGE_TYPES, ASSET_MAX_DIMENSION, assetAspect, importImageFile } from "../../src/scene-assets.js";
 import { cutOutBackground } from "../../src/matte.js";
+import { createMatteEditor } from "../../src/matte-editor.js";
 import { createViewer } from "./scene.js";
 import { SAMPLES, sampleFile } from "./samples.js";
 
@@ -140,6 +141,7 @@ async function addCutout(file) {
 				: `${object.name} — ${asset.width} × ${asset.height} px stored, ${(asset.bytes.byteLength / 1024).toFixed(0)} KB`,
 		);
 		draw();
+		loadEditor();
 	} catch (error) {
 		note(`Could not import that image — ${error.message}`, true);
 	}
@@ -171,6 +173,7 @@ function paintRail() {
 		button.addEventListener("click", () => {
 			state.selectedId = card.id;
 			draw();
+			loadEditor();
 		});
 		$("cards").append(button);
 	}
@@ -240,19 +243,55 @@ SAMPLES.forEach((sample, index) => {
 $("height").addEventListener("change", (event) => editSelected({ height: Number(event.target.value) }));
 $("heightRange").addEventListener("input", (event) => editSelected({ height: Number(event.target.value) }));
 $("rotRange").addEventListener("input", (event) => editSelected({ rot: Number(event.target.value) }));
+/* ------------------------------------------------- the background editor --- */
+
+/**
+ * Purple is what goes. The editor shows the cut as an overlay rather than as a
+ * finished cutout, because a hole in the subject and a surviving piece of wall
+ * look identical once the background is gone — and completely different when
+ * one of them is bright violet.
+ */
+const editor = createMatteEditor($("matteCanvas"), {
+	onChange: ({ removed, painted }) => {
+		$("matteStats").textContent = painted
+			? `${Math.round(removed * 100)}% marked for removal · ${painted} px painted by hand`
+			: `${Math.round(removed * 100)}% marked for removal. Drag on the picture to paint more.`;
+	},
+});
+
+function loadEditor() {
+	const object = selected();
+	const asset = object && assets.get(object.assetId);
+	if (asset) editor.load(asset).catch((error) => note(`Could not open the background editor — ${error.message}`, true));
+}
+
 $("tolerance").addEventListener("input", (event) => {
 	$("toleranceValue").textContent = Number(event.target.value).toFixed(2);
+	editor.setTolerance(event.target.value);
 });
+$("brush").addEventListener("input", (event) => {
+	$("brushValue").textContent = `${event.target.value} px`;
+	editor.setBrush(event.target.value);
+});
+const setMode = (mode) => {
+	editor.setMode(mode);
+	$("modeRemove").classList.toggle("is-on", mode === "remove");
+	$("modeRestore").classList.toggle("is-on", mode === "restore");
+};
+$("modeRemove").addEventListener("click", () => setMode("remove"));
+$("modeRestore").addEventListener("click", () => setMode("restore"));
+$("clearStrokes").addEventListener("click", () => editor.clearStrokes());
 
 $("matte").addEventListener("click", async () => {
 	const object = selected();
 	const source = object && assets.get(object.assetId);
-	if (!object || !source) return;
+	const options = editor.options();
+	if (!object || !source || !options) return;
 	const button = $("matte");
 	button.disabled = true;
-	button.textContent = "Removing…";
+	button.textContent = "Applying…";
 	try {
-		const { asset, heightScale, removed } = await cutOutBackground(source, { tolerance: Number($("tolerance").value) }, { subtle: digest });
+		const { asset, heightScale, removed } = await cutOutBackground(source, options, { subtle: digest });
 		assets.set(asset.id, asset);
 		await textureFor(asset);
 		// The subject stays the size it was: trimming the margin only changed
@@ -264,11 +303,12 @@ $("matte").addEventListener("click", async () => {
 		});
 		note(`${object.name} — ${Math.round(removed * 100)}% of the frame removed, trimmed to ${asset.width} × ${asset.height} px`);
 		draw();
+		loadEditor();
 	} catch (error) {
 		note(`Could not remove the background — ${error.message}`, true);
 	} finally {
 		button.disabled = false;
-		button.textContent = "Remove background";
+		button.textContent = "Apply to the card";
 	}
 });
 
@@ -295,8 +335,9 @@ addEventListener("keydown", (event) => {
 
 $("cap").textContent = `${ASSET_MAX_DIMENSION} px`;
 
-// Open on something to look at: the doorway, at the height a doorway is.
+// Open on the photo-like sample: it is the one with a real background, so the
+// editor below has something to argue with from the first second.
 (async () => {
-	await addCutout(await sampleFile(0));
+	await addCutout(await sampleFile(2));
 	viewer.frameCards();
 })();

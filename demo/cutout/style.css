@@ -223,6 +223,27 @@ button {
 
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 
+.matte { display: flex; flex-direction: column; gap: 10px; }
+
+#matteCanvas {
+	display: block;
+	width: 100%;
+	max-height: 320px;
+	object-fit: contain;
+	border: 1px solid var(--line);
+	border-radius: 2px;
+	background: var(--panel-sunk);
+	image-rendering: auto;
+	touch-action: none;
+	cursor: crosshair;
+}
+
+.chip.is-on {
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 14%, var(--panel-sunk));
+	color: var(--ink);
+}
+
 .chip {
 	display: inline-flex;
 	align-items: baseline;

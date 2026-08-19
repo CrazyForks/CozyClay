@@ -118,14 +118,14 @@ export function borderSeeds({ data, width, height }, points = null) {
  * `feather` softens what is left so the card's edge does not read as a
  * cut-out-with-scissors line against the set.
  */
-export function removeBackground(pixels, { points = null, tolerance = 0.18, shrink = 1, feather = 1 } = {}) {
-	const { width, height } = pixels;
-	const data = new Uint8ClampedArray(pixels.data);
+export function backgroundMask(pixels, { points = null, tolerance = 0.18 } = {}) {
+	const { data, width, height } = pixels;
 	const total = width * height;
-	if (!total) return { data, width, height, removed: 0 };
+	const background = new Uint8Array(total);
+	if (!total) return background;
 
-	const { seeds, starts } = borderSeeds({ data, width, height }, points);
-	if (!seeds.length) return { data, width, height, removed: 0 };
+	const { seeds, starts } = borderSeeds(pixels, points);
+	if (!seeds.length) return background;
 
 	// 0–1 maps onto a squared distance in 0–255³ space. The local step is a
 	// fraction of the global bound: small enough that a soft edge stops it,
@@ -133,20 +133,18 @@ export function removeBackground(pixels, { points = null, tolerance = 0.18, shri
 	const globalLimit = (tolerance * 441.67) ** 2;
 	const localLimit = (tolerance * 441.67 * 0.42) ** 2;
 
-	const background = new Uint8Array(total);
 	const stack = new Int32Array(total);
 	let top = 0;
 	for (const start of starts) {
 		const pixel = start >> 2;
 		if (background[pixel]) continue;
-		// A seed that is already far from every seed colour (a subject running
-		// off the frame edge) is not background and must not start a region.
+		// A start that is already far from every seed colour (a subject running
+		// off the frame edge) is not background and must not begin a region.
 		if (seedDist2(data, start, seeds) > globalLimit) continue;
 		background[pixel] = 1;
 		stack[top++] = pixel;
 	}
 
-	let removed = top;
 	while (top > 0) {
 		const pixel = stack[--top];
 		const index = pixel << 2;
@@ -166,35 +164,110 @@ export function removeBackground(pixels, { points = null, tolerance = 0.18, shri
 			if (!clear && seedDist2(data, neighbourIndex, seeds) > globalLimit) continue;
 			background[neighbour] = 1;
 			stack[top++] = neighbour;
-			removed += 1;
 		}
 	}
+	return background;
+}
+
+/* -------------------------------------------------------------- brush ---- */
+
+/**
+ * A round stroke into the paint layer: `value` 1 means "this is background
+ * after all", -1 means "put that back". The paint layer is kept SEPARATE from
+ * the automatic mask so moving the tolerance slider re-runs the growth without
+ * throwing away a stroke someone has already made.
+ *
+ * Coordinates and radius are in the paint layer's own pixels.
+ */
+export function paintMask(paint, { width, height }, { x, y, radius, value = 1 }) {
+	const cx = Math.round(x);
+	const cy = Math.round(y);
+	const r = Math.max(0.5, radius);
+	const r2 = r * r;
+	const minX = Math.max(0, Math.floor(cx - r));
+	const maxX = Math.min(width - 1, Math.ceil(cx + r));
+	const minY = Math.max(0, Math.floor(cy - r));
+	const maxY = Math.min(height - 1, Math.ceil(cy + r));
+	let touched = 0;
+	for (let py = minY; py <= maxY; py++) {
+		for (let px = minX; px <= maxX; px++) {
+			const dx = px - cx;
+			const dy = py - cy;
+			if (dx * dx + dy * dy > r2) continue;
+			const at = py * width + px;
+			if (paint[at] === value) continue;
+			paint[at] = value;
+			touched += 1;
+		}
+	}
+	return touched;
+}
+
+/**
+ * The automatic mask with the strokes laid over it.
+ *
+ * The two layers can be different sizes on purpose: the editor paints on a
+ * preview a few hundred pixels wide, while the mask that is finally applied is
+ * grown at the picture's full resolution. A brush stroke is coarse by nature,
+ * so sampling it up is honest; the machine-cut edge stays exact.
+ */
+export function combineMask(auto, paint, { width, height, paintWidth = width, paintHeight = height } = {}) {
+	const out = Uint8Array.from(auto);
+	if (!paint) return out;
+	const sx = paintWidth / width;
+	const sy = paintHeight / height;
+	for (let y = 0; y < height; y++) {
+		const py = Math.min(paintHeight - 1, Math.floor(y * sy));
+		for (let x = 0; x < width; x++) {
+			const stroke = paint[py * paintWidth + Math.min(paintWidth - 1, Math.floor(x * sx))];
+			if (!stroke) continue;
+			out[y * width + x] = stroke > 0 ? 1 : 0;
+		}
+	}
+	return out;
+}
+
+/* -------------------------------------------------------------- apply ---- */
+
+/**
+ * Turn a mask into transparency: erode the fringe, soften the boundary, write
+ * the alpha. Split from the growth above so the editor can show a mask, let
+ * someone paint on it, and only then pay for the pixels.
+ */
+export function applyMask(pixels, mask, { shrink = 1, feather = 1 } = {}) {
+	const { width, height } = pixels;
+	const data = new Uint8ClampedArray(pixels.data);
+	const total = width * height;
+	if (!total) return { data, width, height, removed: 0 };
 
 	/* -- fringe: erode the kept region, so no ring of wall survives on the edge */
-	let mask = background;
+	let grown = mask;
 	for (let pass = 0; pass < Math.max(0, Math.round(shrink)); pass++) {
-		const grown = Uint8Array.from(mask);
+		const next = Uint8Array.from(grown);
 		for (let y = 0; y < height; y++) {
 			for (let x = 0; x < width; x++) {
 				const pixel = y * width + x;
-				if (mask[pixel]) continue;
+				if (grown[pixel]) continue;
 				if (
-					(x > 0 && mask[pixel - 1]) ||
-					(x < width - 1 && mask[pixel + 1]) ||
-					(y > 0 && mask[pixel - width]) ||
-					(y < height - 1 && mask[pixel + width])
+					(x > 0 && grown[pixel - 1]) ||
+					(x < width - 1 && grown[pixel + 1]) ||
+					(y > 0 && grown[pixel - width]) ||
+					(y < height - 1 && grown[pixel + width])
 				) {
-					grown[pixel] = 1;
-					removed += 1;
+					next[pixel] = 1;
 				}
 			}
 		}
-		mask = grown;
+		grown = next;
 	}
 
 	/* -- alpha, then a soft edge that only touches the boundary ------------- */
 	const alpha = new Float32Array(total);
-	for (let pixel = 0; pixel < total; pixel++) alpha[pixel] = mask[pixel] ? 0 : data[(pixel << 2) + 3];
+	let removed = 0;
+	for (let pixel = 0; pixel < total; pixel++) {
+		if (grown[pixel]) removed += 1;
+		alpha[pixel] = grown[pixel] ? 0 : data[(pixel << 2) + 3];
+	}
 	for (let pass = 0; pass < Math.max(0, Math.round(feather)); pass++) {
 		const blurred = Float32Array.from(alpha);
 		for (let y = 0; y < height; y++) {
@@ -217,6 +290,21 @@ export function removeBackground(pixels, { points = null, tolerance = 0.18, shri
 	for (let pixel = 0; pixel < total; pixel++) data[(pixel << 2) + 3] = Math.round(alpha[pixel]);
 
 	return { data, width, height, removed };
+}
+
+/**
+ * Drop the background, in place on a copy — the one-shot path, and the same
+ * two steps the editor runs separately.
+ *
+ * `tolerance` (0–1) is the one control a person should ever need: it scales
+ * both the bound against the seed colours and the local step. `shrink` eats
+ * the fringe of background-coloured pixels that survives any threshold, and
+ * `feather` softens what is left so the card's edge does not read as a
+ * cut-out-with-scissors line against the set.
+ */
+export function removeBackground(pixels, { points = null, tolerance = 0.18, shrink = 1, feather = 1, mask = null } = {}) {
+	const grown = mask ?? backgroundMask(pixels, { points, tolerance });
+	return applyMask(pixels, grown, { shrink, feather });
 }
 
 /* --------------------------------------------------------------- trim ---- */
@@ -287,7 +375,23 @@ export async function cutOutBackground(asset, options = {}, {
 		context.drawImage(bitmap, 0, 0);
 		const source = context.getImageData(0, 0, bitmap.width, bitmap.height);
 
-		const cut = removeBackground({ data: source.data, width: source.width, height: source.height }, options);
+		// A mask from the editor wins over growing a fresh one: it already IS a
+		// grown mask with someone's strokes on it.
+		const pixels = { data: source.data, width: source.width, height: source.height };
+		const mask = options.mask
+			? combineMask(options.mask, options.paint ?? null, {
+					width: source.width,
+					height: source.height,
+					paintWidth: options.paintWidth ?? source.width,
+					paintHeight: options.paintHeight ?? source.height,
+				})
+			: combineMask(backgroundMask(pixels, options), options.paint ?? null, {
+					width: source.width,
+					height: source.height,
+					paintWidth: options.paintWidth ?? source.width,
+					paintHeight: options.paintHeight ?? source.height,
+				});
+		const cut = applyMask(pixels, mask, options);
 		const box = opaqueBounds(cut);
 		if (!box) throw new Error("that removed the whole picture — try a lower tolerance");
 		const trimmed = options.trim === false ? cut : cropPixels(cut, box);

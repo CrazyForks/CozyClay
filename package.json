@@ -10,6 +10,7 @@
     "test:hierarchy": "node test/verify-hierarchy.mjs",
     "test:history": "node test/verify-history.mjs",
     "test:scene-objects": "node test/verify-scene-objects.mjs",
+    "test:matte-editor": "node test/verify-matte-editor.mjs",
     "test:matte": "node test/verify-matte.mjs",
     "demo:cutout": "vite --config demo/cutout/vite.config.js",
     "demo:cutout:build": "vite build --config demo/cutout/vite.config.js && node demo/cutout/inline.mjs",

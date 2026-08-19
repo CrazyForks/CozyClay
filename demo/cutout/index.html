@@ -61,13 +61,27 @@
 					<div class="readout"><span>Asset</span><b id="assetId" class="mono">—</b></div>
 					<div class="readout"><span>Stored</span><b id="assetMeta">—</b></div>
 					<h2>Background</h2>
-					<div class="field">
-						<label for="tolerance">Tolerance</label>
-						<span class="mono" id="toleranceValue" style="font-size: 12px">0.18</span>
+					<div class="matte">
+						<canvas id="matteCanvas" aria-label="Background editor: purple is what will be removed"></canvas>
+						<p class="hint" id="matteStats">Purple is what goes.</p>
+						<div class="field">
+							<label for="tolerance">Tolerance</label>
+							<span class="mono" id="toleranceValue" style="font-size: 12px">0.18</span>
+						</div>
+						<input type="range" id="tolerance" min="0.04" max="0.5" step="0.01" value="0.18" aria-label="Background tolerance" />
+						<div class="field">
+							<label for="brush">Brush</label>
+							<span class="mono" id="brushValue" style="font-size: 12px">18 px</span>
+						</div>
+						<input type="range" id="brush" min="4" max="90" step="2" value="18" aria-label="Brush size" />
+						<div class="chips" role="group" aria-label="Brush mode">
+							<button type="button" class="chip is-on" id="modeRemove">Paint out</button>
+							<button type="button" class="chip" id="modeRestore">Bring back</button>
+							<button type="button" class="chip" id="clearStrokes">Clear strokes</button>
+						</div>
+						<button type="button" class="btn primary" id="matte">Apply to the card</button>
+						<p class="hint">Drag on the picture to paint more purple where the tolerance missed, or switch to <b>Bring back</b> to recover a piece of the subject it ate. Applying re-grows the cut at full resolution, lays your strokes over it and trims the margin — the card keeps the size it had.</p>
 					</div>
-					<input type="range" id="tolerance" min="0.04" max="0.5" step="0.01" value="0.18" aria-label="Background tolerance" />
-					<button type="button" class="btn" id="matte">Remove background</button>
-					<p class="hint">Grows from the edges of the picture, drops the wall behind the subject and trims the empty margin. The card keeps the size it had — the height is scaled by however much of the frame the subject turned out to fill.</p>
 					<button type="button" class="btn quiet" id="remove">Remove this card</button>
 				</section>
 

@@ -61,6 +61,7 @@ import { createSceneHistoryStore } from "./scene-history.js";
 import { ASSET_IMAGE_TYPES, assetAspect, importImageFile } from "./scene-assets.js";
 import { assetRecord, rememberAsset } from "./scene-asset-cache.js";
 import { cutOutBackground } from "./matte.js";
+import { createMatteEditor } from "./matte-editor.js";
 import {
 	SCENES_QUARANTINE_KEY,
 	SCENES_STORAGE_KEY,
@@ -1597,10 +1598,45 @@ globalThis.playMode = centerTab === "play";
 
 	/** The hidden file input behind "Import image as cutout". */
 	const cutoutInputRef = useRef(null);
-	// How much of the wall counts as the wall. One control, because one is all
-	// a person should need: everything else about the cut is derived from it.
+	// How much of the wall counts as the wall, and how wide the brush that
+	// argues with the answer is.
 	const [matteTolerance, setMatteTolerance] = useState(0.18);
+	const [matteBrush, setMatteBrush] = useState(18);
+	const [matteMode, setMatteMode] = useState("remove");
+	const [matteStats, setMatteStats] = useState({ removed: 0, painted: 0 });
 	const [matteBusy, setMatteBusy] = useState(false);
+	const matteCanvasRef = useRef(null);
+	const matteEditorRef = useRef(null);
+	const matteAssetId = selectedSceneObject?.renderer === CUTOUT_KIND ? selectedSceneObject.assetId : null;
+
+	// The editor lives as long as a cutout is selected, and reloads whenever the
+	// card is pointed at a different picture — which includes the moment a cut
+	// is applied, so what is on screen is always the CURRENT picture's
+	// background rather than the one it had before.
+	useEffect(() => {
+		const canvas = matteCanvasRef.current;
+		if (!canvas || !matteAssetId) return undefined;
+		const editor = createMatteEditor(canvas, { onChange: setMatteStats });
+		matteEditorRef.current = editor;
+		editor.setTolerance(matteTolerance);
+		editor.setBrush(matteBrush);
+		editor.setMode(matteMode);
+		let cancelled = false;
+		assetRecord(matteAssetId)
+			.then((asset) => {
+				if (asset && !cancelled) return editor.load(asset);
+				return undefined;
+			})
+			.catch(() => setMatteStats({ removed: 0, painted: 0 }));
+		return () => {
+			cancelled = true;
+			editor.dispose();
+			if (matteEditorRef.current === editor) matteEditorRef.current = null;
+		};
+		// Tolerance/brush/mode are pushed by their own handlers below; re-running
+		// this effect for them would throw away the strokes.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [matteAssetId]);
 	const [gizmoMode, setGizmoMode] = useState("move");
 	// Snap is a preference, not a law: with it on the gizmo blocks on the plan
 	// board's grid, and Ctrl/Cmd during a drag gives a free one. Off, it is the
@@ -1670,7 +1706,7 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	/**
-	 * Cut the background out of the selected card's picture.
+	 * Apply what the background editor is showing.
 	 *
 	 * The cut picture is stored as its own asset and the card is pointed at it,
 	 * so the original stays addressable and one Ctrl+Z puts it back. Trimming
@@ -1679,14 +1715,15 @@ globalThis.playMode = centerTab === "play";
 	 * the size it already was in the set, which is the whole point of having
 	 * typed a real height for it.
 	 */
-	async function removeCutoutBackground(id = selectedSceneObjectId, tolerance = matteTolerance) {
+	async function applyMatte(id = selectedSceneObjectId) {
 		const object = sceneObjects.find((item) => item.id === id) ?? null;
-		if (!object || object.renderer !== CUTOUT_KIND || matteBusy) return;
+		const options = matteEditorRef.current?.options();
+		if (!object || object.renderer !== CUTOUT_KIND || !options || matteBusy) return;
 		setMatteBusy(true);
 		try {
 			const source = await assetRecord(object.assetId);
 			if (!source) throw new Error(ko("its picture is missing from the store", "저장소에 사진이 없습니다"));
-			const { asset, heightScale, removed } = await cutOutBackground(source, { tolerance });
+			const { asset, heightScale, removed } = await cutOutBackground(source, options);
 			await rememberAsset(asset);
 			changeSceneObject(object.id, {
 				assetId: asset.id,
@@ -6361,6 +6398,22 @@ function resizePromptClip(id, edge, rawFrame) {
 												? `가로 ${(selectedSceneObject.footprint?.width ?? 0).toFixed(2)} m — 사진 비율에 맞춰 자동 계산됩니다. 사진 속에서 높이를 알 수 있는 것(문 2 m, 사람 1.8 m)에 맞추세요.`
 												: `${(selectedSceneObject.footprint?.width ?? 0).toFixed(2)} m wide, from the picture's own aspect. Measure against something you know: a door is 2 m, a person 1.8 m.`}
 										</p>
+										<div className="matte-editor">
+											<canvas
+												ref={matteCanvasRef}
+												className="matte-canvas"
+												aria-label={ko("Background editor — purple is what will be removed", "배경 편집기 — 보라색이 지워질 부분입니다")}
+											/>
+											<p className="inspector-hint">
+												{matteStats.painted
+													? isKo
+														? `${Math.round(matteStats.removed * 100)}% 지울 예정 · 직접 칠한 픽셀 ${matteStats.painted}개`
+														: `${Math.round(matteStats.removed * 100)}% marked for removal · ${matteStats.painted} px painted by hand`
+													: isKo
+														? `${Math.round(matteStats.removed * 100)}% 지울 예정 — 보라색이 지워지는 부분입니다. 그림 위를 드래그해 더 칠하세요.`
+														: `${Math.round(matteStats.removed * 100)}% marked for removal — purple is what goes. Drag on the picture to paint more.`}
+											</p>
+										</div>
 										<Field label={ko("Background tolerance", "배경 허용치")}>
 											<input
 												type="range"
@@ -6368,21 +6421,64 @@ function resizePromptClip(id, edge, rawFrame) {
 												max="0.5"
 												step="0.01"
 												value={matteTolerance}
-												onChange={(event) => setMatteTolerance(Number(event.target.value))}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													setMatteTolerance(value);
+													matteEditorRef.current?.setTolerance(value);
+												}}
 											/>
 										</Field>
+										<Field label={ko("Brush", "브러시")}>
+											<input
+												type="range"
+												min="4"
+												max="90"
+												step="2"
+												value={matteBrush}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													setMatteBrush(value);
+													matteEditorRef.current?.setBrush(value);
+												}}
+											/>
+										</Field>
+										<div className="presets matte-modes">
+											<button
+												type="button"
+												className={matteMode === "remove" ? "active" : ""}
+												onClick={() => {
+													setMatteMode("remove");
+													matteEditorRef.current?.setMode("remove");
+												}}
+											>
+												{ko("Paint out", "지우기")}
+											</button>
+											<button
+												type="button"
+												className={matteMode === "restore" ? "active" : ""}
+												onClick={() => {
+													setMatteMode("restore");
+													matteEditorRef.current?.setMode("restore");
+												}}
+											>
+												{ko("Bring back", "되살리기")}
+											</button>
+											<button type="button" onClick={() => matteEditorRef.current?.clearStrokes()}>
+												{ko("Clear strokes", "칠 지우기")}
+											</button>
+										</div>
 										<button
 											type="button"
 											className="btn ghost full"
 											disabled={matteBusy}
-											onClick={() => removeCutoutBackground(selectedSceneObject.id)}
+											onClick={() => applyMatte(selectedSceneObject.id)}
 										>
 											{matteBusy ? ko("Removing…", "지우는 중…") : ko("Remove background", "배경 제거")}
 										</button>
 										<p className="inspector-hint">
 											{ko(
-												"Grows from the edges of the picture and drops the wall behind the subject, then trims the empty margin. Too much gone: lower the tolerance and undo. Not enough: raise it.",
-												"사진 가장자리에서부터 번져 나가며 피사체 뒤 배경을 지우고, 남은 여백을 잘라냅니다. 너무 많이 지워지면 허용치를 낮추고 실행 취소하세요. 덜 지워지면 높이세요.",
+												"Purple is what goes. Drag on the picture to paint more of it where the tolerance missed, or switch to Bring back to recover a piece of the subject it ate. Applying re-grows the cut at full resolution, lays your strokes over it and trims the empty margin — Ctrl+Z restores the original picture.",
+												"보라색이 지워질 부분입니다. 덜 지워진 곳은 그림 위를 드래그해 더 칠하고, 피사체가 잘못 지워졌으면 되살리기로 복구하세요. 적용하면 원본 해상도로 다시 계산한 뒤 칠한 부분을 덮고 여백을 잘라냅니다 — Ctrl+Z로 원본 사진으로 되돌아갑니다.",
 											)}
 										</p>
 									</>
