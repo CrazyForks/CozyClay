@@ -287,5 +287,64 @@ expect(
 	backgroundMask(flat, { points: [{ x: 2, y: 100 }], tolerance: 0.18, within: fence }).every((value) => value === 0),
 );
 
+/* --------------------------------------------- thin things survive ------ */
+
+/**
+ * A comb: teeth 1 to 10 px wide standing on a bar, against a flat wall. This
+ * is the shape every fine subject reduces to — hair, branches, chair legs, an
+ * antenna — and a blanket one-pixel erosion deletes all of it.
+ */
+const COMB_TEETH = [[20, 1], [30, 2], [45, 3], [60, 4], [75, 6], [95, 10]];
+const comb = picture(140, 80, (x, y) => {
+	const onBar = y >= 60 && y < 70 && x >= 10 && x < 130;
+	const onTooth = COMB_TEETH.some(([at, wide]) => x >= at && x < at + wide && y >= 20 && y < 60);
+	return onBar || onTooth ? [60, 70, 120] : [200, 202, 198];
+});
+const combed = removeBackground(comb, { tolerance: 0.18, shrink: 1, feather: 0 });
+const toothWidth = ([at, wide]) => {
+	let solid = 0;
+	for (let x = at; x < at + wide; x++) if (combed.data[(40 * 140 + x) * 4 + 3] >= 128) solid += 1;
+	return solid;
+};
+expect(
+	"a one, two or three pixel structure survives the trim whole",
+	toothWidth(COMB_TEETH[0]) === 1 && toothWidth(COMB_TEETH[1]) === 2 && toothWidth(COMB_TEETH[2]) === 3,
+	JSON.stringify(COMB_TEETH.map((tooth) => `${tooth[1]}px→${toothWidth(tooth)}`)),
+);
+expect(
+	"a mass still gets its rim taken, one pixel from each side",
+	toothWidth(COMB_TEETH[3]) === 2 && toothWidth(COMB_TEETH[4]) === 4 && toothWidth(COMB_TEETH[5]) === 8,
+	JSON.stringify(COMB_TEETH.map((tooth) => `${tooth[1]}px→${toothWidth(tooth)}`)),
+);
+
+/**
+ * And the rim it exists for: a photographed edge is a pixel of subject mixed
+ * with a pixel of wall, too far from the wall's own colour for the growth to
+ * take. Left alone it rings the cutout in half-wall, which on a set reads as
+ * an outline drawn round the card.
+ */
+const WALL = [200, 202, 198];
+const SUBJECT = [60, 70, 120];
+const blend = (t) => WALL.map((value, channel) => Math.round(value * (1 - t) + SUBJECT[channel] * t));
+const rimmed = picture(60, 40, (x, y) => {
+	if (x >= 20 && x < 40 && y >= 12 && y < 28) return SUBJECT;
+	if (x >= 19 && x < 41 && y >= 11 && y < 29) return blend(0.5);
+	if (x >= 18 && x < 42 && y >= 10 && y < 30) return blend(0.15);
+	return WALL;
+});
+const rimMask = backgroundMask(rimmed, { tolerance: 0.18 });
+const rimAlpha = (result, x, y) => result.data[(y * 60 + x) * 4 + 3];
+expect(
+	"without the trim the blended rim survives as a ring of half-wall",
+	rimAlpha(applyMask(rimmed, rimMask, { shrink: 0, feather: 0 }), 19, 20) > 0,
+);
+expect(
+	"with it the rim goes and the subject stays",
+	(() => {
+		const trimmed = applyMask(rimmed, rimMask, { shrink: 1, feather: 0 });
+		return rimAlpha(trimmed, 19, 20) === 0 && rimAlpha(trimmed, 20, 20) === 255;
+	})(),
+);
+
 if (failures) process.exit(1);
 console.log("all matte checks PASS");

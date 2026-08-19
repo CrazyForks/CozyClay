@@ -477,6 +477,18 @@ expect(
 	updateSceneObject([sofa], sofa.id, { assetId: "" })[0] === sofa && updateSceneObject([sofa], sofa.id, { assetId: sofa.assetId })[0] === sofa,
 );
 
+// The renderer's half of the same argument: the card is alpha-CUT so it keeps
+// writing depth, but the cut is resolved by MSAA coverage rather than by a
+// per-pixel yes/no, or the silhouette staircases and the matte's soft edge is
+// thrown away at the threshold.
+const cutoutSource = propsSource.slice(propsSource.indexOf("function Cutout"), propsSource.indexOf("const PRIMITIVE_KINDS"));
+expect(
+	"a cutout resolves its edge with coverage, not with a hard threshold",
+	/alphaToCoverage=\{!!texture\}/.test(cutoutSource) && /alphaTest=\{texture \? 0\.15 : 0\}/.test(cutoutSource),
+	cutoutSource.slice(cutoutSource.indexOf("<meshStandardMaterial"), cutoutSource.indexOf("</mesh>")),
+);
+expect("and still writes depth — no transparent blending on a card", !/transparent/.test(cutoutSource));
+
 const cutoutTrip = loadScene(serializeScene([sofa]));
 expect(
 	"a cutout round-trips through storage",

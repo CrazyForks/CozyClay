@@ -262,6 +262,16 @@ const MISSING_CUTOUT = "#c2c6c8";
  * what lets the ink pass, the shadows and the grey boxes all agree about what
  * is in front of what. A blended card would sort by object and swim through
  * the set.
+ *
+ * But a bare alpha test is a decision per pixel, so the silhouette comes out
+ * as a staircase — and the matte's own soft edge is thrown away at the
+ * threshold. `alphaToCoverage` spends the MSAA samples the canvas already has
+ * on that edge instead: partial alpha becomes partial coverage, so the outline
+ * is resolved by the same antialiasing that smooths every other edge in the
+ * frame, and depth is still written. The test then only has to reject what is
+ * genuinely nothing (0.15), rather than choosing a side for every half-lit
+ * pixel — which is also what keeps a thin structure alive as the card recedes
+ * and its alpha is averaged down by the mip chain.
  */
 function Cutout({ object }) {
 	const texture = useAssetTexture(object.assetId);
@@ -275,7 +285,8 @@ function Cutout({ object }) {
 				color={texture ? object.color : MISSING_CUTOUT}
 				// A card seen edge-on is a card, not a hole: both faces draw.
 				side={THREE.DoubleSide}
-				alphaTest={texture ? 0.5 : 0}
+				alphaTest={texture ? 0.15 : 0}
+				alphaToCoverage={!!texture}
 				roughness={0.92}
 				metalness={0}
 			/>

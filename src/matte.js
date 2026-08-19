@@ -248,21 +248,38 @@ export function applyMask(pixels, mask, { shrink = 1, feather = 1 } = {}) {
 	const total = width * height;
 	if (!total) return { data, width, height, removed: 0 };
 
-	/* -- fringe: erode the kept region, so no ring of wall survives on the edge */
+	/* -- fringe: trim the blended rim, WITHOUT eating thin structures ------- */
+	//
+	// A photographed edge is a pixel of subject mixed with a pixel of wall, and
+	// that mixture is far enough from the wall's own colour that the growth
+	// cannot take it. Left alone it survives as a ring of half-wall around the
+	// cutout, which on a set reads as an outline drawn round the card — the
+	// thing that makes a cutout look cut out.
+	//
+	// Eroding the kept region by a pixel removes it. Eroding it BLINDLY also
+	// removes every structure thinner than the erosion: hair, branches, chair
+	// legs, an antenna. So a pixel is only trimmed where there is DEPTH behind
+	// it — three more kept pixels away from the background it touches. A mass
+	// gets its rim taken; anything up to three pixels thick is left whole,
+	// because that is not a rim, it is the subject.
 	let grown = mask;
 	for (let pass = 0; pass < Math.max(0, Math.round(shrink)); pass++) {
 		const next = Uint8Array.from(grown);
+		const kept = (x, y) => x >= 0 && y >= 0 && x < width && y < height && !grown[y * width + x];
 		for (let y = 0; y < height; y++) {
 			for (let x = 0; x < width; x++) {
 				const pixel = y * width + x;
 				if (grown[pixel]) continue;
-				if (
-					(x > 0 && grown[pixel - 1]) ||
-					(x < width - 1 && grown[pixel + 1]) ||
-					(y > 0 && grown[pixel - width]) ||
-					(y < height - 1 && grown[pixel + width])
-				) {
-					next[pixel] = 1;
+				for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+					const nx = x + dx;
+					const ny = y + dy;
+					// Background in this direction, and depth in the other one.
+					const background = nx < 0 || ny < 0 || nx >= width || ny >= height || grown[ny * width + nx];
+					if (!background) continue;
+					if (kept(x - dx, y - dy) && kept(x - dx * 2, y - dy * 2) && kept(x - dx * 3, y - dy * 3)) {
+						next[pixel] = 1;
+						break;
+					}
 				}
 			}
 		}
