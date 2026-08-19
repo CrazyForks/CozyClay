@@ -124,5 +124,85 @@ expect(
 );
 expect("resize handles opt out on compact layouts", css.includes(".workspace-splitter,") && css.includes("display: none"));
 
+/* ----------------------------- video capture ---------------------------- */
+// Footage → takes → cast. The pins below hold the invariants that make an
+// extracted take play at the right size, on the right layer, at the right
+// place — each of them was a bug in the two-character prototype.
+expect(
+	"the Motion tab owns a Video capture foldout above ARDY motion",
+	app.includes('<Foldout hidden={sidebarTab !== "motion"} title={ko("Video capture", "영상 모캡")}>') &&
+	app.indexOf('title={ko("Video capture", "영상 모캡")}') < app.indexOf('title={ko("ARDY motion", "ARDY 모션")}'),
+);
+expect(
+	"ingest and extraction reach the ported core modules",
+	app.includes('from "./multimodel-ingest.js"') &&
+	app.includes('from "./pose-extract/index.js"') &&
+	app.includes("probeFootage(objectUrl") &&
+	app.includes("knownFps: Number.isFinite(source.fps) ? source.fps : null"),
+);
+expect(
+	"extraction routes to the GPU box when the bridge is up and the browser otherwise",
+	app.includes("if (bridge?.ok) return extractMultiModelMotionGpu();") &&
+	app.includes("return extractMultiModelMotionBrowser();") &&
+	app.includes("requestBridgeExtract(") &&
+	app.includes("createPoseDetector()"),
+);
+expect("every named ingest failure is a message in both locales", app.includes("const MULTIMODEL_REASONS = {") && app.includes('MULTIMODEL_REASONS[code]?.[isKo ? 1 : 0] ?? code'));
+// THE INVARIANT: extraction divided root travel by the filmed person's
+// stature, so the clip and the scale must be applied together.
+expect(
+	"a character's stature comes from its own take and is applied on the world transform",
+	app.includes("const scale = characterScaleFor(decoded);") &&
+	app.includes("clone.scale.setScalar(0.01 * scale)") &&
+	app.includes("scale: entry.scale ?? 1") &&
+	app.includes("scale={view.scale}"),
+);
+expect(
+	"each extra take carries its own stature, never the active character's",
+	app.includes("scale: characterScaleFor(clip, take.personScale),") &&
+	app.includes("scale: take.scale,"),
+);
+expect(
+	"the response person scale is only a fallback for an npz that stores none",
+	app.includes("if (personScale === 1 && Number.isFinite(declared)) {") &&
+	app.includes("personScale = characterScaleFor(null, declared);"),
+);
+expect(
+	"stature survives the save: only the session clip is stripped from the stage",
+	app.includes("characters: characters.map(({ sessionMotion, ...entry }) => entry)") &&
+	app.includes("scale: characterScaleFor(decoded, item.scale ?? 1)"),
+);
+expect(
+	"extra takes land on their OWN layer, not through the editing buffer",
+	app.includes("async function deliverExtraTakes(") &&
+	app.includes("takeAnchor(active, take.offsetX, take.offsetZ)") &&
+	app.includes("sessionMotion: {") &&
+	app.includes("!entry.sessionMotion && !entry.motionRef"),
+);
+expect(
+	"trim composes from the per-character full-take map",
+	app.includes("const motionFullRef = useRef(new Map());") &&
+	app.includes("const full = motionFullRef.current.get(activeChar.id);") &&
+	app.includes("const offset = (motion.trimOffset ?? 0) + start;") &&
+	app.includes("sliceMotion(full, offset, last)"),
+);
+expect(
+	"a cut take drops its source url and clears the IK keys authored on the old frames",
+	app.includes("url: isFull ? full.url : null, trimOffset: offset") &&
+	app.includes("ikStateRef.current.keys.clear();"),
+);
+expect(
+	"a browser-baked take is trimmable too",
+	app.indexOf("motionFullRef.current.set(activeChar.id, loaded);") > 0 &&
+	(app.match(/motionFullRef\.current\.set\(/g) ?? []).length >= 4,
+);
+expect(
+	"the timeline receives the active take and both trim handlers",
+	app.includes("onMotionTrim={applyMotionTrim}") &&
+	app.includes("onMotionTrimReset={resetMotionTrim}") &&
+	app.includes("motion={motion ? { frames: motion.frames, label:"),
+);
+expect("a deleted character takes its full take with it", app.includes("motionFullRef.current.delete(charId);"));
+
 if (failures) process.exit(1);
 console.log("all resizable workspace checks PASS");

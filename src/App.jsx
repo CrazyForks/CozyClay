@@ -5,8 +5,11 @@ import * as THREE from "three";
 import { SkeletonUtils } from "three/examples/jsm/Addons.js";
 import { buildArdyPose } from "./ardy/export.js";
 import { checkBridge, generate as ardyGenerate } from "./ardy/client.js";
-import { loadMotionFromUrl } from "./ardy/npz.js";
+import { characterScaleFor, loadMotionFromUrl } from "./ardy/npz.js";
 import { retimeMotion } from "./ardy/retime.js";
+import { sliceMotion } from "./ardy/trim.js";
+import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl, probeFootage, requestBridgeExtract, requestBridgeFootage, sourceLabel } from "./multimodel-ingest.js";
+import { bakeExtractedTake, collectLandmarkTrack, createPoseDetector, sampleTimes, videoFrames } from "./pose-extract/index.js";
 import { repairRecordedMp4 } from "./ardy/mp4-duration.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
@@ -65,9 +68,11 @@ import {
 	DEFAULT_SUBJECT_TWO,
 	duplicateScene,
 	loadSceneDocumentFromStorage,
+	migrateStageFrames,
 	removeScene,
 	renameScene,
 	serializeSceneDocument,
+	takeAnchor,
 } from "./scenes.js";
 import {
 	clearStoredProjectHandle,
@@ -443,14 +448,74 @@ const ARDY_DURATION_MAX = 1200; // bridge contract: duration capped at 1200 s
 const ARDY_SEED_MAX = 2 ** 31 - 1; // bridge contract: optional seed, integer in 0..2**31-1
 const DEFAULT_PROMPT_CLIPS = [];
 
+// Named ingest failures, in both locales. A reason the user cannot act on is
+// not a message: each line says what was wrong with THIS source.
+const MULTIMODEL_REASONS = {
+	"url-empty": ["Enter a video URL first", "영상 URL을 먼저 입력하세요"],
+	"url-protocol-relative": ["Use a full https:// address", "https:// 로 시작하는 전체 주소를 쓰세요"],
+	"url-scheme-unsupported": ["Only http(s) or a local /path is accepted", "http(s) 또는 로컬 /경로만 사용할 수 있어요"],
+	"url-platform-page": [
+		"YouTube/Vimeo pages are players, not video files, and block browser downloads. Start the dev bridge to use the URL directly, or download the clip and use Choose video.",
+		"유튜브·비메오 주소는 영상 파일이 아니라 플레이어 페이지이고 브라우저 다운로드를 막습니다. 개발 브리지를 켜면 URL을 그대로 쓸 수 있고, 아니면 영상을 내려받아 '영상 선택'을 쓰세요.",
+	],
+	"url-malformed": ["That address could not be parsed", "주소를 해석할 수 없어요"],
+	"fetch-failed": ["The host refused a browser download (CORS or offline)", "호스트가 브라우저 다운로드를 거부했어요(CORS 또는 오프라인)"],
+	"not-a-video": ["That address did not return a video (check the path)", "그 주소는 영상을 반환하지 않았어요(경로를 확인하세요)"],
+	"decode-failed": ["This browser cannot decode that video", "이 브라우저가 디코딩할 수 없는 영상이에요"],
+	"duration-unreadable": ["The clip length could not be read", "클립 길이를 읽지 못했어요"],
+	"dimensions-unreadable": ["The frame size could not be read", "프레임 크기를 읽지 못했어요"],
+	"probe-timeout": ["The video never reported metadata", "영상이 메타데이터를 보내지 않았어요"],
+	"fetch-unavailable": ["This browser cannot download files", "이 브라우저는 파일을 내려받을 수 없어요"],
+	"footage-load-timeout": ["The clip never became seekable", "클립이 탐색 가능한 상태가 되지 않았어요"],
+	"seek-timeout": ["Seeking inside the clip stalled", "클립 내부 탐색이 멈췄어요"],
+	"pose-runtime-unavailable": ["The pose engine is missing from this build", "이 빌드에 포즈 엔진이 없어요"],
+	"pose-model-download-failed": ["The pose model could not be downloaded (offline?)", "포즈 모델을 내려받지 못했어요(오프라인인가요?)"],
+	"pose-engine-download-failed": ["The pose engine could not be downloaded (offline?)", "포즈 엔진을 내려받지 못했어요(오프라인인가요?)"],
+	"pose-engine-init-failed": ["The pose engine failed to start on this device", "이 기기에서 포즈 엔진을 시작하지 못했어요"],
+	"rest-unavailable": ["The rig rest data (/ardy/cskel27-rest.json) could not be loaded", "리그 레스트 데이터(/ardy/cskel27-rest.json)를 불러오지 못했어요"],
+	"no-person-found": ["No person was detected in the footage", "영상에서 사람을 감지하지 못했어요"],
+	"no-usable-pose": ["A person was seen, but no stable pose could be fitted", "사람은 보였지만 안정적인 포즈를 만들지 못했어요"],
+	"rig-not-loaded": ["Subject 1's rig is not loaded yet", "인물 1 리그가 아직 로드되지 않았어요"],
+	"bridge-unreachable": ["The dev bridge did not answer", "개발 브리지가 응답하지 않아요"],
+	"bridge-footage-incomplete": ["The bridge stream ended without footage", "브리지 전송이 영상 없이 끝났어요"],
+	"footage-url-invalid": ["That address could not be used for a bridge download", "이 주소는 브리지 다운로드에 쓸 수 없어요"],
+	"footage-probe-failed": ["The bridge could not read that page's video info", "브리지가 그 페이지의 영상 정보를 읽지 못했어요"],
+	"footage-live-unsupported": ["Live streams have no fixed length and cannot be ingested", "라이브 스트림은 길이가 없어 인제스트할 수 없어요"],
+	"footage-too-long": ["That video is over 15 minutes — trim or pick a shorter one", "15분이 넘는 영상이에요 — 잘라내거나 더 짧은 걸 골라 주세요"],
+	"footage-download-failed": ["The bridge could not download that video", "브리지가 영상을 내려받지 못했어요"],
+	"footage-normalize-failed": ["The bridge could not convert that video for extraction", "브리지가 영상을 추출용으로 변환하지 못했어요"],
+	"footage-timeout": ["The bridge download took too long and was stopped", "브리지 다운로드가 너무 오래 걸려 중단됐어요"],
+	"bridge-extract-incomplete": ["The bridge stream ended without a take", "브리지 전송이 테이크 없이 끝났어요"],
+	"extract-host-missing": ["The bridge has no GPU box configured (CCLAY_ARDY_HOST)", "브리지에 GPU 박스가 설정돼 있지 않아요(CCLAY_ARDY_HOST)"],
+	"extract-upload-failed": ["The footage could not be copied to the GPU box", "영상을 GPU 박스로 복사하지 못했어요"],
+	"extract-upload-too-large": ["That clip is too large to upload for extraction (300 MB cap)", "추출 업로드 한도(300MB)를 넘는 영상이에요"],
+	"extract-upload-empty": ["No video bytes arrived at the bridge", "브리지에 영상 데이터가 도착하지 않았어요"],
+	"extract-footage-unknown": ["The bridge no longer holds that download — re-ingest the URL", "브리지에 그 다운로드가 더 이상 없어요 — URL을 다시 넣어 주세요"],
+	"extract-run-failed": ["SAM-3D-Body failed on the GPU box (see the bridge log)", "GPU 박스에서 SAM-3D-Body 실행이 실패했어요(브리지 로그 확인)"],
+	"extract-no-person": ["The GPU box tracked no person in that footage", "GPU 박스가 영상에서 사람을 추적하지 못했어요"],
+	"extract-convert-failed": ["The extracted take could not be converted for the timeline", "추출된 테이크를 타임라인용으로 변환하지 못했어요"],
+	"extract-timeout": ["GPU extraction took too long and was stopped", "GPU 추출이 너무 오래 걸려 중단됐어요"],
+};
+
+// Extraction samples and bakes straight onto the production clock — an
+// extracted take never touches ARDY, so it never needs retiming either.
+const MULTIMODEL_SAMPLE_FPS = TIMELINE_FPS;
+
 /* ------------------------------------------------------------------ 3D --- */
 
 // Memoized: unchanged cast members skip re-rendering on every playhead tick.
-const Character = memo(function Character({ url, position, rot, tint, pose, onRig, pickId }) {
+const Character = memo(function Character({ url, position, rot, tint, pose, scale = 1, onRig, pickId }) {
 	const fbx = useFBX(url);
 	const model = useMemo(() => {
 		const clone = SkeletonUtils.clone(fbx);
-		clone.scale.setScalar(0.01); // Mixamo exports centimetres
+		// Mixamo exports centimetres; `scale` is the FILMED person's stature.
+		// THE INVARIANT: extraction divided this take's root travel by that
+		// stature, so the clip and the scale must travel together — apply one
+		// without the other and every stride overshoots by the same factor and
+		// the feet skate. It belongs HERE, on the world transform, and never
+		// inside rig space: playback.js derives prep.scale from the bind pose,
+		// so a scaled bone hierarchy would be measured as a different rig.
+		clone.scale.setScalar(0.01 * scale);
 		// The joint shells (Alpha_Joints / Beta_Joints — elbows, knees, the
 		// exoskeleton bands) render in a darkened shade of the body tint so
 		// the segments read as separate pieces.
@@ -471,6 +536,13 @@ const Character = memo(function Character({ url, position, rot, tint, pose, onRi
 		primeBindPose(clone);
 		return clone;
 	}, [fbx, tint]);
+
+	// A new stature (a fresh extraction on this character) must not rebuild the
+	// clone — that would drop the rig the playback effects hold. Only the world
+	// transform moves; the same invariant as above applies.
+	useEffect(() => {
+		model.scale.setScalar(0.01 * scale);
+	}, [model, scale]);
 
 	useEffect(() => {
 		// During playback the pose prop is null and the motion drives the rig;
@@ -1334,6 +1406,11 @@ globalThis.playMode = centerTab === "play";
 	// world is derived below so the rest of the studio keeps working while
 	// spawned extras ride the same rails.
 	const [characters, setCharacters] = useState(startupStage.characters);
+	// The cast as of this render, for async handlers: an extraction that
+	// started three renders ago must place its takes against the CURRENT cast,
+	// not the one its closure captured.
+	const charactersRef = useRef(characters);
+	charactersRef.current = characters;
 	// Character undo stack lives next to the cast: the store creation below
 	// and the undo handlers further down both read these refs.
 	const charHistoryRef = useRef({ past: [], future: [] });
@@ -1400,6 +1477,9 @@ globalThis.playMode = centerTab === "play";
 	function removeCharacter(charId) {
 		recordCharacterUndo();
 		setCharacters((list) => list.filter((entry) => entry.id === charA.id || entry.id !== charId));
+		// The deleted layer's untrimmed take goes with it: a recycled id must
+		// never inherit a stranger's take, and its stature left with the entry.
+		motionFullRef.current.delete(charId);
 		setRigs((current) => {
 			if (!(charId in current)) return current;
 			const next = { ...current };
@@ -2180,7 +2260,13 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	function applyProject(project, serialized) {
-		const doc = project.scenesDocument;
+		const source = project.scenesDocument;
+		// A project FILE carries its own scene document and never passes the
+		// storage reader, so the 20 fps → 24 fps clock migration is applied here
+		// too — otherwise an older .cozyclay would open a sixth too fast.
+		const doc = Number.isInteger(source.version) && source.version < SCENES_VERSION
+			? { ...source, version: SCENES_VERSION, scenes: source.scenes.map((scene) => ({ ...scene, stage: migrateStageFrames(scene.stage) })) }
+			: source;
 		setScenes(doc.scenes);
 		setActiveSceneId(doc.activeSceneId);
 		if (project.workspaceLayout) setWorkspaceLayout({ ...DEFAULT_WORKSPACE_LAYOUT, ...project.workspaceLayout });
@@ -2312,6 +2398,9 @@ globalThis.playMode = centerTab === "play";
 		setWaypoints(firstLayer?.waypoints ?? shotState.waypoints ?? []);
 		setPromptClips(firstLayer?.promptClips?.map((clip) => ({ ...clip })) ?? []);
 		setMotion(null);
+		// Takes belong to the room being left; restoreMotionRefs re-fetches the
+		// incoming scene's, and a stale full take must never survive the switch.
+		motionFullRef.current.clear();
 		setSelectedPromptId(null);
 		ikStatesRef.current.clear();
 		ikStateRef.current = createIkState();
@@ -2417,8 +2506,32 @@ globalThis.playMode = centerTab === "play";
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
 	const [motion, setMotion] = useState(null);
+	// The untrimmed take per CHARACTER. Trims are non-destructive views of the
+	// full take, so re-trimming and "restore full" always cut from the
+	// original — and because each cast member owns its own layer, one shared
+	// ref would hand Subject 2's take to Subject 1 on the next switch.
+	const motionFullRef = useRef(new Map()); // charId -> untrimmed take
 	const [motionBusy, setMotionBusy] = useState(false);
 	const [motionError, setMotionError] = useState("");
+	/* ------------------------- video capture (ingest) ---------------------- */
+	const [multiModelUrl, setMultiModelUrl] = useState("");
+	const [multiModelSource, setMultiModelSource] = useState(null);
+	const [multiModelStatus, setMultiModelStatus] = useState("idle");
+	// The ingest is a real download + decode, so it owns real progress and a
+	// real receipt: the footage numbers below come from the decoded media.
+	const [multiModelStage, setMultiModelStage] = useState("idle");
+	const [multiModelProgress, setMultiModelProgress] = useState(null);
+	const [multiModelFootage, setMultiModelFootage] = useState(null);
+	const [multiModelError, setMultiModelError] = useState("");
+	const multiModelFileRef = useRef(null);
+	const multiModelRunRef = useRef(0);
+	const multiModelObjectUrlRef = useRef(null);
+	const [multiModelTake, setMultiModelTake] = useState(null);
+	const [multiModelExtract, setMultiModelExtract] = useState("idle"); // idle | running | done | error
+	const [multiModelExtractProgress, setMultiModelExtractProgress] = useState(null);
+	const [multiModelExtractError, setMultiModelExtractError] = useState("");
+	const multiModelDetectorRef = useRef(null); // engine survives re-runs; the 15 MB download happens once
+	const multiModelRestRef = useRef(null);
 
 	// Cast render props, memoized with Character itself (React.memo): during
 	// playback the playhead ticks 24 times a second, and a character whose
@@ -2435,6 +2548,9 @@ globalThis.playMode = centerTab === "play";
 			rot: clip ? clip.rotationDeg : entry.rot,
 			tint: entry.tint ?? defaultCharacterTint(entry, index),
 			pose: clip ? null : (entry.pose ?? DEFAULT_POSE),
+			// The stature the entry's take was extracted at. It rides with the
+			// clip, never separately — see Character for why.
+			scale: entry.scale ?? 1,
 			onRig: reportRig(entry.id),
 			pickId: index === 0 ? "A" : index === 1 ? "B" : entry.id,
 		}];
@@ -2474,6 +2590,14 @@ globalThis.playMode = centerTab === "play";
 		const layer = activeChar.layer ?? createCharacterLayer();
 		setWaypoints(layer.waypoints.map((waypoint) => ({ ...waypoint })));
 		setPromptClips(layer.promptClips.map((clip) => ({ ...clip })));
+		// A clip that arrived while this character was inactive (an extra
+		// extraction take, a restored motionRef, a queued generation) becomes
+		// trimmable the moment it enters the buffer. Seed only when absent: an
+		// existing entry is the UNTRIMMED take, and the buffer may be holding a
+		// cut view of it.
+		if (activeChar.sessionMotion && !motionFullRef.current.has(activeChar.id)) {
+			motionFullRef.current.set(activeChar.id, activeChar.sessionMotion);
+		}
 		setMotion(activeChar.sessionMotion ?? null);
 		setSelectedPromptId(null);
 		setWaypointMode(false);
@@ -2986,30 +3110,447 @@ globalThis.playMode = centerTab === "play";
 		setIkFocus(null);
 	}
 
+	/** Hand `rig` over to playback. Every path that starts a clip — a loaded
+	 *  take, a browser-baked one — does the same two things: drop out of IK
+	 *  EDIT mode (playback is the new context; the IK KEYS stay and keep
+	 *  correcting the clip layer-style) and swap the pre-playback bone
+	 *  baseline, so a re-load never snapshots mid-animation and clearing
+	 *  always returns to the blocking pose. */
+	function beginPlaybackOn(rig) {
+		leaveIkMode();
+		const previous = restoreRef.current;
+		restoreRef.current = null;
+		if (previous) restorePlaybackBones(previous.rig, previous.bones);
+		restoreRef.current = { rig, bones: snapshotPlaybackBones(rig) };
+	}
+
+	/* ---------------------------- video capture ----------------------------
+	 * Footage in, takes out. The ingest downloads and decodes a source so the
+	 * timeline is sized by what was actually read; extraction then turns it
+	 * into one take per tracked performer. Take 0 belongs to the ACTIVE
+	 * character's layer, the rest are landed on their own cast members. */
+
+	// A picked file is already local bytes: no download stage, straight to the
+	// probe that produces the timeline numbers.
+	function chooseMultiModelFile(event) {
+		const file = event.target.files?.[0] ?? null;
+		if (!file) return;
+		setMultiModelUrl("");
+		ingestFootage({ kind: "file", name: file.name, blob: file, bytes: file.size });
+	}
+
+	async function pasteMultiModelUrl() {
+		try {
+			const text = await navigator.clipboard.readText();
+			if (!text.trim()) return;
+			setMultiModelUrl(text.trim());
+			setMultiModelStatus("idle");
+		} catch {
+			setToast(isKo ? "클립보드를 읽지 못했어요 — 직접 붙여넣어 주세요" : "Clipboard is unavailable — paste into the field directly");
+		}
+	}
+
+	function useMultiModelUrl() {
+		const raw = multiModelUrl.trim();
+		// A platform page (YouTube, Vimeo, …) is never browser-fetchable, but
+		// the dev bridge can fetch it server-side. With the bridge up the
+		// address goes there; without it the named refusal below stands.
+		if (isPlatformPageUrl(raw) && bridge?.ok) {
+			ingestPlatformFootage(raw);
+			return;
+		}
+		const normalized = normalizeSourceUrl(raw);
+		if (!normalized.ok) {
+			setMultiModelStatus("error");
+			setMultiModelStage("error");
+			setMultiModelError(MULTIMODEL_REASONS[normalized.reason]?.[isKo ? 1 : 0] ?? normalized.reason);
+			return;
+		}
+		ingestFootage({ kind: "url", name: sourceLabel(normalized.url), url: normalized.url });
+	}
+
+	/** Platform page → bridge download (yt-dlp + normalize) → the local
+	 *  /ardy/footage/… address rides the ordinary ingest unchanged. */
+	async function ingestPlatformFootage(pageUrl) {
+		const run = multiModelRunRef.current + 1;
+		multiModelRunRef.current = run;
+		const live = () => multiModelRunRef.current === run;
+		setMultiModelSource({ kind: "url", name: sourceLabel(pageUrl), url: pageUrl });
+		setMultiModelFootage(null);
+		setMultiModelError("");
+		setMultiModelStatus("busy");
+		setMultiModelStage("fetching");
+		setMultiModelProgress(null);
+		setMultiModelTake(null);
+		setMultiModelExtract("idle");
+		setMultiModelExtractProgress(null);
+		setMultiModelExtractError("");
+		try {
+			const footage = await requestBridgeFootage(pageUrl, {
+				onProgress: ({ ratio }) => {
+					if (live()) setMultiModelProgress(Number.isFinite(ratio) ? ratio : null);
+				},
+			});
+			if (!live()) return;
+			ingestFootage({ kind: "url", name: footage.title || sourceLabel(pageUrl), url: footage.url, fps: footage.fps, bridgeId: footage.footage ?? null });
+		} catch (error) {
+			if (!live()) return;
+			const code = error?.message ?? String(error);
+			setMultiModelStage("error");
+			setMultiModelStatus("error");
+			setMultiModelProgress(null);
+			setMultiModelError(MULTIMODEL_REASONS[code]?.[isKo ? 1 : 0] ?? code);
+		}
+	}
+
+	/** Download (when remote), decode, measure, then size the timeline from what
+	 *  was actually read. Each run carries a token so a slow first source can
+	 *  never land its numbers after a second one replaced it. */
+	async function ingestFootage(source) {
+		const run = multiModelRunRef.current + 1;
+		multiModelRunRef.current = run;
+		const live = () => multiModelRunRef.current === run;
+		setMultiModelSource(source);
+		setMultiModelFootage(null);
+		setMultiModelError("");
+		setMultiModelStatus("busy");
+		setMultiModelProgress(null);
+		// A take baked from the PREVIOUS clip must not read as this one's
+		// result, so the extraction state resets with the source.
+		setMultiModelTake(null);
+		setMultiModelExtract("idle");
+		setMultiModelExtractProgress(null);
+		setMultiModelExtractError("");
+		try {
+			let blob = source.blob ?? null;
+			let bytes = source.bytes ?? 0;
+			if (!blob) {
+				setMultiModelStage("fetching");
+				const downloaded = await fetchFootageBlob(source.url, {
+					onProgress: ({ ratio }) => {
+						if (live()) setMultiModelProgress(ratio);
+					},
+				});
+				if (!live()) return;
+				blob = downloaded.blob;
+				bytes = downloaded.bytes;
+			}
+			setMultiModelStage("probing");
+			if (multiModelObjectUrlRef.current) URL.revokeObjectURL(multiModelObjectUrlRef.current);
+			const objectUrl = URL.createObjectURL(blob);
+			multiModelObjectUrlRef.current = objectUrl;
+			const probed = await probeFootage(objectUrl, {
+				createVideo: () => document.createElement("video"),
+				// The bridge normalized the clip and DECLARED its rate; a probe
+				// that re-guesses it would overrule a measurement with a guess.
+				knownFps: Number.isFinite(source.fps) ? source.fps : null,
+			});
+			if (!live()) return;
+			const footage = { ...probed, bytes, objectUrl, blob, bridgeId: source.bridgeId ?? null };
+			setMultiModelFootage(footage);
+			setMultiModelStage("ready");
+			setMultiModelStatus("ready");
+			setMultiModelProgress(1);
+			// The timeline is the point: the playhead now spans the footage that
+			// was actually decoded, at the rate that was actually measured.
+			setTlFps(footage.fps);
+			setTlFrameCount(footage.frames);
+			setTlFrame(0);
+			setTlPlaying(false);
+			setToast(isKo
+				? `${source.name} 인제스트됨 — ${footage.frames}프레임 @ ${footage.fps} fps`
+				: `Ingested ${source.name} — ${footage.frames} frames @ ${footage.fps} fps`);
+		} catch (error) {
+			if (!live()) return;
+			const code = error?.message ?? String(error);
+			setMultiModelStage("error");
+			setMultiModelStatus("error");
+			setMultiModelProgress(null);
+			setMultiModelError(MULTIMODEL_REASONS[code]?.[isKo ? 1 : 0] ?? code);
+		}
+	}
+
+	/** Extract motion from the ingested footage. With the bridge up this goes
+	 *  to the GPU box (SAM-3D-Body: whole-clip temporal context, real 3D body
+	 *  prior — previs-grade). Without it, the browser MediaPipe path below
+	 *  still works offline as the rough-blocking fallback. */
+	async function extractMultiModelMotion() {
+		if (bridge?.ok) return extractMultiModelMotionGpu();
+		return extractMultiModelMotionBrowser();
+	}
+
+	async function extractMultiModelMotionGpu() {
+		const footage = multiModelFootage;
+		if (!footage || multiModelExtract === "running") return;
+		const run = multiModelRunRef.current;
+		const live = () => multiModelRunRef.current === run;
+		setMultiModelExtract("running");
+		setMultiModelExtractProgress(null);
+		setMultiModelExtractError("");
+		setMultiModelTake(null);
+		try {
+			const done = await requestBridgeExtract(
+				footage.bridgeId ? { footage: footage.bridgeId } : footage.blob,
+				{
+					onProgress: ({ ratio }) => {
+						if (live()) setMultiModelExtractProgress(Number.isFinite(ratio) ? ratio : null);
+					},
+				}
+			);
+			if (!live()) return;
+			// One take per tracked performer. An older bridge sends a single
+			// motionUrl and no list; that is the same thing with one entry.
+			const takes = Array.isArray(done.takes) && done.takes.length
+				? done.takes
+				: [{ motionUrl: done.motionUrl, personScale: done.personScale, offsetX: 0, offsetZ: 0 }];
+			const label = multiModelSource?.name ?? "extracted take";
+			// The cast can change while the GPU works, so the destination is read
+			// now, once, and every take is placed against THIS character.
+			const active = charactersRef.current.find((entry) => entry.id === activeChar.id) ?? activeChar;
+			// Take 0 arrives as an ordinary motion npz; loadMotion decodes,
+			// retimes to the 24 fps timeline, snapshots the rig baseline and
+			// applies the stature stored in the take itself — the body matches
+			// the FILMED person because the file carries the measurement, not
+			// because this handler remembered to re-apply it afterwards.
+			let personScale = await loadMotion(takes[0].motionUrl ?? done.motionUrl, label, active.rot);
+			if (!live()) return;
+			// loadMotion reports the stature it applied — 1 for a take that
+			// stores none, nothing at all if the load failed. A failed load is
+			// not a finished extraction: say so with the named reason instead
+			// of a receipt for a take nobody can play.
+			if (!Number.isFinite(personScale)) throw new Error("extract-convert-failed");
+			// Only a take that stores NO stature gets the fallback for an npz
+			// that predates person_scale (or an older bridge): the response
+			// still carries the estimate, clamped the same way, because a bad
+			// leg estimate must never produce a giant or a gnome.
+			const declared = Number.isFinite(takes[0].personScale) ? takes[0].personScale : done.personScale;
+			if (personScale === 1 && Number.isFinite(declared)) {
+				personScale = characterScaleFor(null, declared);
+			}
+			// The clip itself is session-only; this reference is what a save
+			// keeps and restoreMotionRefs re-fetches on the next session.
+			const leadRef = {
+				url: takes[0].motionUrl ?? done.motionUrl,
+				prompt: label,
+				rotationDeg: active.rot,
+				anchorX: active.x,
+				anchorZ: active.z,
+			};
+			setCharacters((list) => list.map((entry) => entry.id === active.id
+				? { ...entry, scale: personScale, motionRef: leadRef }
+				: entry));
+			const placed = await deliverExtraTakes(takes.slice(1), active, label);
+			if (!live()) return;
+			const persons = 1 + placed;
+			setMultiModelTake({ frames: done.frames, fps: done.fps, gpu: true, personScale, persons });
+			setMultiModelExtract("done");
+			setToast(isKo
+				? `GPU 모션 추출됨 — ${done.frames}프레임 @ ${done.fps} fps${persons > 1 ? ` · ${persons}명` : ""} · 인물 스케일 ×${personScale.toFixed(2)}`
+				: `GPU motion extracted — ${done.frames} frames @ ${done.fps} fps${persons > 1 ? ` · ${persons} performers` : ""} · person scale ×${personScale.toFixed(2)}`);
+		} catch (error) {
+			if (!live()) return;
+			const code = error?.message ?? String(error);
+			setMultiModelExtract("error");
+			setMultiModelExtractError(MULTIMODEL_REASONS[code]?.[isKo ? 1 : 0] ?? code);
+		}
+	}
+
+	/** Land takes 1..N-1 on the rest of the cast. Each extra take is its OWN
+	 *  layer: it goes to that entry's sessionMotion, NOT through the editing
+	 *  buffer, which holds the active character's clip alone. Returns how many
+	 *  performers actually landed. */
+	async function deliverExtraTakes(extras, active, label) {
+		const decoded = await Promise.all(extras.map(async (take, index) => {
+			if (typeof take?.motionUrl !== "string" || !take.motionUrl) return null;
+			try {
+				// Inbound boundary, exactly like every other clip: decode, then
+				// retime onto the production clock before anything counts frames.
+				const clip = retimeMotion(await loadMotionFromUrl(take.motionUrl), TIMELINE_FPS);
+				const anchor = takeAnchor(active, take.offsetX, take.offsetZ);
+				return {
+					url: take.motionUrl,
+					prompt: `${label} · ${index + 2}`,
+					rotationDeg: active.rot,
+					anchor,
+					// A second performer is a DIFFERENT body: their take carries
+					// their own stature, and the response estimate is only the
+					// fallback for an npz that stores none.
+					scale: characterScaleFor(clip, take.personScale),
+					clip,
+				};
+			} catch {
+				return null; // one unreadable take never voids the others
+			}
+		}));
+		const usable = decoded.filter(Boolean);
+		if (!usable.length) return 0;
+		recordCharacterUndo();
+		// Plan against the cast as it stands, so ids are decided once and the
+		// full-take map can be seeded with them.
+		const list = charactersRef.current;
+		const taken = new Set([active.id]);
+		let idPool = list;
+		const assignments = usable.map((take) => {
+			// Reuse a visible cast member with no clip of its own before adding
+			// another body to the set.
+			const reuse = list.find((entry) => !entry.hidden && !taken.has(entry.id) && !entry.sessionMotion && !entry.motionRef);
+			const id = reuse ? reuse.id : nextCharacterId(idPool);
+			if (!reuse) idPool = [...idPool, { id }];
+			taken.add(id);
+			return {
+				id,
+				spawn: !reuse,
+				patch: {
+					hidden: false,
+					x: take.anchor.x,
+					z: take.anchor.z,
+					rot: take.rotationDeg,
+					scale: take.scale,
+					motionRef: {
+						url: take.url,
+						prompt: take.prompt,
+						rotationDeg: take.rotationDeg,
+						anchorX: take.anchor.x,
+						anchorZ: take.anchor.z,
+					},
+					sessionMotion: {
+						...take.clip,
+						url: take.url,
+						prompt: take.prompt,
+						anchorX: take.anchor.x,
+						anchorZ: take.anchor.z,
+						anchorFrame: 0,
+						rotationDeg: take.rotationDeg,
+					},
+				},
+			};
+		});
+		setCharacters((current) => {
+			let next = current;
+			for (const { id, spawn, patch } of assignments) {
+				next = spawn && !next.some((entry) => entry.id === id)
+					? [...next, { ...createCharacterEntry({ id, model: active.model, pose: DEFAULT_POSE, subject: "a person" }, next.length), ...patch }]
+					: next.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry));
+			}
+			return next;
+		});
+		// Their takes are trimmable the moment they become the active layer.
+		for (const { id, patch } of assignments) motionFullRef.current.set(id, patch.sessionMotion);
+		return assignments.length;
+	}
+
+	async function extractMultiModelMotionBrowser() {
+		const footage = multiModelFootage;
+		if (!footage || multiModelExtract === "running") return;
+		const run = multiModelRunRef.current;
+		const live = () => multiModelRunRef.current === run;
+		setMultiModelExtract("running");
+		setMultiModelExtractProgress(null); // indeterminate while the engine spins up
+		setMultiModelExtractError("");
+		setMultiModelTake(null);
+		try {
+			if (!multiModelRestRef.current) {
+				const response = await fetch("/ardy/cskel27-rest.json").catch(() => null);
+				if (!response?.ok) throw new Error("rest-unavailable");
+				multiModelRestRef.current = await response.json().catch(() => {
+					throw new Error("rest-unavailable");
+				});
+			}
+			if (!multiModelDetectorRef.current) {
+				multiModelDetectorRef.current = await createPoseDetector();
+			}
+			const detector = multiModelDetectorRef.current;
+			const total = sampleTimes(footage.durationS, MULTIMODEL_SAMPLE_FPS).length;
+			const samples = await collectLandmarkTrack({
+				frames: videoFrames(footage.objectUrl, {
+					createVideo: () => document.createElement("video"),
+					sampleFps: MULTIMODEL_SAMPLE_FPS,
+				}),
+				detect: detector.detect,
+				onProgress: ({ processed }) => {
+					if (live()) setMultiModelExtractProgress(total > 0 ? processed / total : null);
+				},
+			});
+			if (!live()) return;
+			if (samples.length === 0) throw new Error("no-person-found");
+			const take = bakeExtractedTake({
+				samples,
+				rest: multiModelRestRef.current,
+				fps: MULTIMODEL_SAMPLE_FPS,
+				durationS: footage.durationS,
+				createdMs: Date.now(),
+			});
+			if (!live()) return;
+			const rig = activeRig;
+			if (!rig) throw new Error("rig-not-loaded");
+			beginPlaybackOn(rig);
+			const loaded = {
+				prompt: multiModelSource?.name ?? sourceLabel(footage.objectUrl),
+				frames: take.frames,
+				fps: take.fps,
+				rotMats: take.rotMats,
+				rootPos: take.rootPos,
+				posedJoints: take.posedJoints,
+				anchorX: activeChar.x,
+				anchorZ: activeChar.z,
+				anchorFrame: 0,
+				rotationDeg: activeChar.rot,
+			};
+			// A baked take is trimmable like any other: without this the strip's
+			// handles would drag against an empty map and cut nothing at all.
+			motionFullRef.current.set(activeChar.id, loaded);
+			// The browser fallback estimates no stature, and its root travel is
+			// in canonical units — so it must not inherit the scale a previous
+			// GPU take left on the character.
+			setCharacters((list) => list.map((entry) => entry.id === activeChar.id
+				? { ...entry, scale: characterScaleFor(take) }
+				: entry));
+			setMotion(loaded);
+			setTlFrameCount(take.frames);
+			setTlFps(take.fps);
+			setTlFrame(0);
+			setTlPlaying(false);
+			setMultiModelTake({ frames: take.frames, fitted: take.fitted, held: take.held, sampled: total, accepted: samples.length });
+			setMultiModelExtract("done");
+			setToast(isKo
+				? `모션 추출됨 — ${take.frames}프레임 테이크 @ ${take.fps} fps (실측 ${take.fitted}, 유지 ${take.held})`
+				: `Motion extracted — a ${take.frames}-frame take @ ${take.fps} fps (${take.fitted} measured, ${take.held} held)`);
+		} catch (error) {
+			if (!live()) return;
+			const code = error?.message ?? String(error);
+			setMultiModelExtract("error");
+			setMultiModelExtractError(MULTIMODEL_REASONS[code]?.[isKo ? 1 : 0] ?? code);
+		}
+	}
+
+	useEffect(() => () => {
+		if (multiModelObjectUrlRef.current) URL.revokeObjectURL(multiModelObjectUrlRef.current);
+	}, []);
+
 	// Decoded motion + the world anchor: frame 0 always starts at Subject 1.
 	// Authored root destinations are generated by ARDY as sparse constraints,
 	// so playback consumes the returned trajectory without coordinate warping.
 	async function loadMotion(url, prompt, rotationDeg = charA.rot) {
 		setMotionBusy(true);
 		setMotionError("");
-		// Loading a motion drops out of IK EDIT mode (playback is the new
-		// context) — the IK KEYS stay and keep correcting the clip layer-style.
-		leaveIkMode();
 		try {
-			// Re-loading while a motion is active: restore the previous
-			// pre-playback baseline first, so the new snapshot is not taken
-			// mid-animation and clearing always returns to the blocking pose.
-			const previous = restoreRef.current;
-			restoreRef.current = null;
-			if (previous) restorePlaybackBones(previous.rig, previous.bones);
 			// Inbound boundary: an ARDY take (20 fps) or a filmed one (30/60)
 			// becomes a production-clock clip here, once, before anything on
 			// the timeline counts its frames. Same-rate input rides through.
 			const decoded = retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS);
 			const rig = activeRig;
 			if (!rig) throw new Error(ko("The active character's rig is not loaded", "활성 인물의 리그가 로드되지 않았어요"));
-			restoreRef.current = { rig, bones: snapshotPlaybackBones(rig) };
-			setMotion({
+			beginPlaybackOn(rig);
+			// THE INVARIANT: the take's travel assumes the character is scaled.
+			// Extraction divided the root translation by the filmed person's
+			// stature, so the clip and that stature have to be applied together
+			// or every stride overshoots by the same factor and the feet skate.
+			// The scale rides INSIDE the npz, so this one line covers every path
+			// that loads a motion; an ARDY-generated take stores none and is
+			// canonical, 1.
+			const scale = characterScaleFor(decoded);
+			setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? { ...entry, scale } : entry));
+			const loaded = {
 			// Capture the exact prompt this motion was generated from; the
 			// timeline keeps showing it even if the input field is edited
 			// afterwards.
@@ -3020,12 +3561,18 @@ globalThis.playMode = centerTab === "play";
 				anchorZ: activeChar.z,
 				anchorFrame: 0,
 				rotationDeg,
-			});
+			};
+			// The take as loaded is what every future trim cuts from.
+			motionFullRef.current.set(activeChar.id, loaded);
+			setMotion(loaded);
 			setTlFrameCount(decoded.frames);
 			setTlFps(decoded.fps);
 			setTlFrame(0);
 			setTlPlaying(false);
 			setToast(isKo ? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps` : `Motion loaded: ${decoded.frames} frames @ ${decoded.fps} fps`);
+			// The applied stature, so a caller does not have to re-derive it
+			// (and cannot derive a different one).
+			return scale;
 		} catch (err) {
 			setMotion(null);
 			setMotionError(err?.message || String(err));
@@ -3068,11 +3615,57 @@ globalThis.playMode = centerTab === "play";
 	function clearMotion() {
 		setMotion(null);
 		setMotionError("");
+		motionFullRef.current.delete(activeChar.id);
+		// A cleared clip leaves the body canonical: the stature belonged to the
+		// take, not to the character.
+		setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? { ...entry, scale: 1 } : entry));
 		// Back to the pre-generation timeline: the current duration on the production clock.
 		setTlFrameCount(maxDst + 1);
 		setTlFps(TIMELINE_FPS);
 		setTlFrame((f) => Math.min(f, maxDst));
 		setTlPlaying(false);
+	}
+
+	/** Cut the ACTIVE character's take to [start, end] of the CURRENT view.
+	 *  Offsets compose, so a second cut still slices the original take; a cut
+	 *  take drops its bridge url — its frames no longer match the source npz,
+	 *  and IK-edit regeneration must not pretend they do. Per-character layers
+	 *  mean the cut lands on this layer only; nobody else's clip moves. */
+	function applyMotionTrim(start, end) {
+		const full = motionFullRef.current.get(activeChar.id);
+		if (!full || !motion) return;
+		const offset = (motion.trimOffset ?? 0) + start;
+		const last = (motion.trimOffset ?? 0) + end;
+		if (last >= full.frames || offset > last) return;
+		const sliced = sliceMotion(full, offset, last);
+		const isFull = offset === 0 && sliced.frames === full.frames;
+		setMotion({ ...sliced, url: isFull ? full.url : null, trimOffset: offset });
+		setTlFrameCount(sliced.frames);
+		setTlFrame((frame) => Math.min(frame, sliced.frames - 1));
+		setTlPlaying(false);
+		if (ikStateRef.current.keys.size > 0) {
+			// IK keys were authored on the pre-cut frame numbers.
+			ikStateRef.current.keys.clear();
+			ikStateRef.current.tracked.clear();
+			ikStateRef.current.plants.clear();
+			setIkTick((value) => value + 1);
+			setToast(isKo
+				? `테이크 잘라냄 — ${sliced.frames}프레임 (원본 ${offset}–${last}). 기존 프레임의 IK 키는 초기화됐어요`
+				: `Take cut to ${sliced.frames} frames (source ${offset}–${last}); IK keys keyed to the old frames were cleared`);
+		} else {
+			setToast(isKo
+				? `테이크 잘라냄 — ${sliced.frames}프레임 (원본 ${offset}–${last})`
+				: `Take cut to ${sliced.frames} frames (source ${offset}–${last})`);
+		}
+	}
+
+	function resetMotionTrim() {
+		const full = motionFullRef.current.get(activeChar.id);
+		if (!full || !motion || (motion.trimOffset ?? 0) === 0 && motion.frames === full.frames) return;
+		setMotion({ ...full });
+		setTlFrameCount(full.frames);
+		setTlFrame((frame) => Math.min(frame, full.frames - 1));
+		setToast(ko("Full take restored", "테이크 전체 길이 복원"));
 	}
 
 	// Drive every cast member from ITS OWN clip on the shared playhead. The
@@ -4137,16 +4730,20 @@ function changeDuration(value) {
 		}
 		// Inbound boundary for a clip delivered to a non-active layer.
 		const decoded = retimeMotion(await loadMotionFromUrl(motionUrl), TIMELINE_FPS);
+		const clip = {
+			...decoded,
+			url: motionUrl,
+			prompt: job.prompt,
+			anchorX: job.anchor.x,
+			anchorZ: job.anchor.z,
+			anchorFrame: 0,
+			rotationDeg: job.rootRotationDeg,
+		};
+		// Same stature rule as loadMotion, on the layer that asked for the clip.
+		const scale = characterScaleFor(decoded);
+		motionFullRef.current.set(job.charId, clip);
 		setCharacters((list) => list.map((entry) => entry.id === job.charId
-			? { ...entry, sessionMotion: {
-				...decoded,
-				url: motionUrl,
-				prompt: job.prompt,
-				anchorX: job.anchor.x,
-				anchorZ: job.anchor.z,
-				anchorFrame: 0,
-				rotationDeg: job.rootRotationDeg,
-			} }
+			? { ...entry, scale, sessionMotion: clip }
 			: entry));
 	}
 
@@ -4169,7 +4766,13 @@ function changeDuration(value) {
 					anchorFrame: 0,
 					rotationDeg: entry.motionRef.rotationDeg,
 				};
-				setCharacters((current) => current.map((item) => item.id === entry.id ? { ...item, sessionMotion: clip } : item));
+				motionFullRef.current.set(entry.id, clip);
+				setCharacters((current) => current.map((item) => item.id === entry.id
+					// The stature rides inside the npz, so a restored take
+					// re-applies it; the saved entry scale is only the fallback
+					// for a take whose npz never stored one.
+					? { ...item, scale: characterScaleFor(decoded, item.scale ?? 1), sessionMotion: clip }
+					: item));
 				// The buffer character's clip goes straight into the editing
 				// buffer too, so its motion survives the reload seamlessly.
 				if (entry.id === loadedLayerCharRef.current) {
@@ -4467,6 +5070,7 @@ function changeDuration(value) {
 									rot={view.rot}
 									tint={view.tint}
 									pose={view.pose}
+									scale={view.scale}
 									onRig={view.onRig}
 									pickId={view.pickId}
 								/>
@@ -4994,6 +5598,165 @@ function changeDuration(value) {
 							{mode === "video" ? ko("Generate video", "영상 만들기") : ko("Generate image", "이미지 만들기")}
 						</button>
 					</Foldout>
+				<Foldout hidden={sidebarTab !== "motion"} title={ko("Video capture", "영상 모캡")}>
+					<div className="multimodel-card">
+						<div className="multimodel-card-head">
+							<div>
+								<strong>{ko("Footage → motion", "영상 → 모션")}</strong>
+								<span>{ko("Prepare a source inside the Motion workspace.", "모션 작업공간에서 입력 영상을 준비하세요.")}</span>
+							</div>
+							<span className={"multimodel-status " + multiModelStatus}>
+								{multiModelStatus === "ready"
+									? ko("READY", "준비됨")
+									: multiModelStatus === "error"
+										? ko("CHECK", "확인 필요")
+										: multiModelStatus === "busy"
+											? (multiModelStage === "fetching" ? ko("FETCHING", "받는 중") : ko("PROBING", "분석 중"))
+											: ko("IDLE", "대기")}
+							</span>
+						</div>
+						<div className="multimodel-input-block">
+							<div className="multimodel-input-label">
+								<strong>{ko("Local video file", "로컬 비디오 파일")}</strong>
+								<span>{ko("Upload from this computer", "이 컴퓨터에서 업로드")}</span>
+							</div>
+							<div className="multimodel-source-row">
+								<button type="button" className="btn ghost" onClick={() => multiModelFileRef.current?.click()}>
+									{ko("Choose video", "영상 선택")}
+								</button>
+								<input ref={multiModelFileRef} className="multimodel-file-input" type="file" accept="video/*" onChange={chooseMultiModelFile} />
+								<span className="multimodel-file-name">{multiModelSource?.kind === "file" ? multiModelSource.name : ko("No file selected", "파일이 선택되지 않음")}</span>
+							</div>
+						</div>
+						<div className="multimodel-input-block">
+							<div className="multimodel-input-label">
+								<strong>{ko("Video URL", "비디오 URL")}</strong>
+								<span>{ko("Use a hosted or local route", "호스팅 또는 로컬 경로 사용")}</span>
+							</div>
+							<input
+								className="multimodel-url-input"
+								type="text"
+								value={multiModelUrl}
+								onChange={(event) => setMultiModelUrl(event.target.value)}
+								onKeyDown={(event) => { if (event.key === "Enter") useMultiModelUrl(); }}
+								placeholder={ko("https://…/boxing.mp4", "https://…/boxing.mp4")}
+								aria-label={ko("Multi-Model video URL", "멀티 모델 영상 URL")}
+								spellCheck={false}
+							/>
+							<div className="multimodel-url-actions">
+								<button type="button" className="btn ghost" onClick={pasteMultiModelUrl}>
+									{ko("Paste", "붙여넣기")}
+								</button>
+								<button type="button" className="btn ghost" onClick={() => setMultiModelUrl("")} disabled={!multiModelUrl}>
+									{ko("Clear", "지우기")}
+								</button>
+								<button type="button" className="btn primary" onClick={useMultiModelUrl} disabled={!multiModelUrl.trim()}>
+									{ko("Use URL", "URL 사용")}
+								</button>
+							</div>
+						</div>
+						{multiModelStatus === "busy" && (
+							<div className="multimodel-progress">
+								<div className="multimodel-progress-track">
+									<div
+										className={"multimodel-progress-bar" + (multiModelProgress === null ? " indeterminate" : "")}
+										style={multiModelProgress === null ? undefined : { width: `${Math.round(multiModelProgress * 100)}%` }}
+									/>
+								</div>
+								<span>
+									{multiModelStage === "fetching"
+										? (multiModelProgress === null
+											? ko("Downloading…", "다운로드 중…")
+											: `${Math.round(multiModelProgress * 100)}%`)
+										: ko("Decoding…", "디코딩 중…")}
+								</span>
+							</div>
+						)}
+						{multiModelError && <p className="multimodel-error">{multiModelError}</p>}
+						{multiModelFootage && (
+							<div className="multimodel-receipt">
+								<video className="multimodel-preview" src={multiModelFootage.objectUrl} muted playsInline preload="metadata" />
+								<div className="multimodel-receipt-body">
+									<strong>{multiModelSource?.name}</strong>
+									<span>{footageSummary(multiModelFootage)}</span>
+									<span className="multimodel-receipt-timeline">
+										{isKo
+											? `타임라인 0–${multiModelFootage.frames - 1} 프레임으로 맞춤`
+											: `Timeline sized to frames 0–${multiModelFootage.frames - 1}`}
+									</span>
+								</div>
+							</div>
+						)}
+						{multiModelFootage && (
+							<div className="multimodel-extract">
+								<button
+									type="button"
+									className="btn primary"
+									onClick={extractMultiModelMotion}
+									disabled={multiModelExtract === "running"}
+								>
+									{multiModelExtract === "running"
+										? ko("Extracting…", "추출 중…")
+										: multiModelTake
+											? ko("Extract again", "다시 추출")
+											: ko("Extract motion", "모션 추출")}
+								</button>
+								{multiModelExtract === "running" && (
+									<div className="multimodel-progress">
+										<div className="multimodel-progress-track">
+											<div
+												className={"multimodel-progress-bar" + (multiModelExtractProgress === null ? " indeterminate" : "")}
+												style={multiModelExtractProgress === null ? undefined : { width: `${Math.round(multiModelExtractProgress * 100)}%` }}
+											/>
+										</div>
+										<span>
+											{multiModelExtractProgress === null
+												? ko("Engine…", "엔진 준비…")
+												: `${Math.round(multiModelExtractProgress * 100)}%`}
+										</span>
+									</div>
+								)}
+								{multiModelExtract === "error" && <p className="multimodel-error">{multiModelExtractError}</p>}
+								{multiModelTake && (
+									<p className="multimodel-extract-receipt">
+										{multiModelTake.gpu
+											? (isKo
+												? `GPU 테이크 ${multiModelTake.frames}프레임 추출됨 — 타임라인에서 재생하세요`
+												: `GPU take extracted, ${multiModelTake.frames} frames — press play on the timeline`)
+											: (isKo
+												? `${multiModelTake.frames}프레임 테이크 구움 (실측 ${multiModelTake.fitted} · 유지 ${multiModelTake.held}) — 타임라인에서 재생하세요`
+												: `Baked a ${multiModelTake.frames}-frame take (${multiModelTake.fitted} measured · ${multiModelTake.held} held) — press play on the timeline`)}
+									</p>
+								)}
+								{multiModelTake?.persons > 1 && (
+									<p className="multimodel-extract-receipt">
+										{isKo
+											? `${multiModelTake.persons}명의 테이크를 각 인물 레이어에 배치했어요`
+											: `${multiModelTake.persons} performers landed on their own subject layers`}
+									</p>
+								)}
+								{multiModelExtract === "idle" && !multiModelTake && (
+									<p className="multimodel-note">
+										{bridge === null
+											? ko("Checking for the dev bridge…", "개발 브리지를 확인하는 중…")
+											: bridge.ok
+												? ko(
+													"Extraction runs on the GPU box (about a minute per 15 s of footage).",
+													"추출은 GPU 박스에서 돌아갑니다(영상 15초당 약 1분)."
+												)
+												: ko(
+													"No bridge: extraction runs in this browser (rougher). First run downloads the pose engine (~15 MB).",
+													"브리지 없음: 이 브라우저에서 추출합니다(품질 낮음). 첫 실행은 포즈 엔진(~15 MB)을 내려받습니다."
+												)}
+									</p>
+								)}
+							</div>
+						)}
+						<p className="multimodel-note">
+							{ko("Locked-off footage with both performers in frame is best.", "두 사람이 함께 보이는 고정 카메라 영상이 가장 적합합니다.")}
+						</p>
+					</div>
+				</Foldout>
 				<Foldout hidden={sidebarTab !== "motion"} title={ko("ARDY motion", "ARDY 모션")}>
 					{/* One compact status line: which layer is being edited and on
 					    which box — the long hint texts lived here before. */}
@@ -5519,6 +6282,9 @@ function changeDuration(value) {
 				badge={stateBadge}
 				ikMode={ikMode}
 				ikDisabled={!ikChains}
+				motion={motion ? { frames: motion.frames, label: motion.prompt || ko("Loaded take", "불러온 테이크") } : null}
+				onMotionTrim={applyMotionTrim}
+				onMotionTrimReset={resetMotionTrim}
 				ikFrames={ikFrames}
 				footSnap={footSnap}
 					shots={shots}

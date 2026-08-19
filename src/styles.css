@@ -3089,6 +3089,61 @@ input[type=range]::-moz-range-thumb {
 }
 
 
+.tl-motion-clip {
+	box-sizing: border-box;
+	position: absolute;
+	top: 50%;
+	height: min(20px, calc(100% - 6px));
+	transform: translateY(-50%);
+	left: calc(var(--tl-f-start) * 100%);
+	width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);
+	display: flex;
+	align-items: center;
+	padding: 0 8px;
+	background: linear-gradient(103deg, rgba(126, 208, 143, .28), rgba(126, 208, 143, .14));
+	border: 1px solid rgba(126, 208, 143, .45);
+	border-radius: 5px;
+	color: #9fe0a7;
+	font-size: 9px;
+	font-weight: 600;
+	letter-spacing: .02em;
+	white-space: nowrap;
+	overflow: hidden;
+	pointer-events: none; /* passive: IK markers on this lane stay clickable */
+}
+
+.tl-motion-clip.trimming {
+	background: linear-gradient(103deg, rgba(126, 208, 143, .45), rgba(126, 208, 143, .25));
+	border-color: rgba(126, 208, 143, .8);
+}
+
+.tl-motion-clip-label {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	text-align: center;
+}
+
+/* the strip body stays click-through (IK markers live on this lane); only
+   the trim handles take the pointer */
+.tl-motion-clip-handle {
+	pointer-events: auto;
+	flex: none;
+	width: 8px;
+	align-self: stretch;
+	margin: 0;
+	padding: 0;
+	border: none;
+	background: rgba(126, 208, 143, .55);
+	border-radius: 3px;
+	cursor: ew-resize;
+	touch-action: none;
+}
+
+.tl-motion-clip-handle:hover {
+	background: rgba(126, 208, 143, .95);
+}
+
 .tl-chip {
 	box-sizing: border-box;
 	position: absolute;
@@ -6183,6 +6238,264 @@ input[type=range]::-moz-range-thumb {
 /* sliders hug their row */
 input[type=range] {
 	height: 3px;
+}
+
+.multimodel-card {
+	padding: 8px;
+	border: 1px solid rgba(58, 124, 191, .38);
+	background: linear-gradient(180deg, rgba(58, 124, 191, .12), rgba(255, 255, 255, .025));
+	border-radius: 3px;
+}
+
+.multimodel-card-head {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.multimodel-card-head strong,
+.multimodel-card-head span {
+	display: block;
+}
+
+.multimodel-card-head strong {
+	font-size: 11px;
+	color: #dce7ff;
+}
+
+.multimodel-card-head div > span {
+	margin-top: 2px;
+	color: var(--muted);
+	font-size: 9px;
+}
+
+.multimodel-status {
+	padding: 2px 5px;
+	border: 1px solid var(--line);
+	color: var(--muted);
+	font-family: var(--mono);
+	font-size: 8px;
+	letter-spacing: .08em;
+}
+
+.multimodel-status.ready {
+	border-color: rgba(126, 208, 143, .55);
+	color: #9fe0a7;
+}
+
+.multimodel-status.error {
+	border-color: rgba(229, 72, 77, .65);
+	color: #ff9b9f;
+}
+
+.multimodel-source-row,
+.multimodel-url-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 8px;
+}
+
+.multimodel-input-block {
+	margin-top: 9px;
+	padding: 8px;
+	border: 1px solid rgba(255, 255, 255, .1);
+	background: rgba(0, 0, 0, .12);
+}
+
+.multimodel-input-block + .multimodel-input-block {
+	margin-top: 6px;
+}
+
+.multimodel-input-label {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.multimodel-input-label strong {
+	color: #c9d8f7;
+	font-size: 10px;
+	font-weight: 600;
+}
+
+.multimodel-input-label span {
+	color: var(--muted2);
+	font-size: 8px;
+	white-space: nowrap;
+}
+
+.multimodel-file-input {
+	display: none;
+}
+
+.multimodel-file-name {
+	min-width: 0;
+	overflow: hidden;
+	color: var(--muted2);
+	font-size: 9px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.multimodel-url-input {
+	display: block;
+	box-sizing: border-box;
+	width: 100%;
+	margin-top: 7px;
+	height: 26px;
+	padding: 2px 8px;
+	border: 1px solid var(--line);
+	background: var(--card2);
+	color: var(--fg);
+	font-family: var(--mono);
+	font-size: 10px;
+}
+
+.multimodel-url-input::placeholder {
+	color: var(--muted2);
+}
+
+.multimodel-url-input:focus {
+	outline: none;
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent);
+}
+
+.multimodel-url-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 6px;
+}
+
+.multimodel-url-actions .btn {
+	flex: 1;
+}
+
+.multimodel-status.busy {
+	border-color: rgba(126, 160, 224, .55);
+	color: #a8c4f2;
+}
+
+.multimodel-progress {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	margin-top: 9px;
+}
+
+.multimodel-progress-track {
+	flex: 1;
+	height: 4px;
+	background: rgba(0, 0, 0, .35);
+	overflow: hidden;
+}
+
+.multimodel-progress-bar {
+	height: 100%;
+	width: 0;
+	background: var(--accent);
+	transition: width .12s linear;
+}
+
+.multimodel-progress-bar.indeterminate {
+	width: 35%;
+	animation: multimodel-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes multimodel-slide {
+	0% { transform: translateX(-100%); }
+	100% { transform: translateX(300%); }
+}
+
+.multimodel-progress span {
+	flex: none;
+	min-width: 62px;
+	text-align: right;
+	color: var(--muted2);
+	font-family: var(--mono);
+	font-size: 9px;
+}
+
+.multimodel-error {
+	margin: 9px 0 0;
+	padding: 6px 8px;
+	border: 1px solid rgba(229, 72, 77, .45);
+	background: rgba(229, 72, 77, .1);
+	color: #ff9b9f;
+	font-size: 9.5px;
+	line-height: 1.45;
+}
+
+.multimodel-receipt {
+	display: flex;
+	gap: 8px;
+	margin-top: 9px;
+	padding: 7px;
+	border: 1px solid rgba(126, 208, 143, .3);
+	background: rgba(126, 208, 143, .07);
+}
+
+.multimodel-preview {
+	flex: none;
+	width: 76px;
+	height: 44px;
+	object-fit: cover;
+	background: #000;
+	border: 1px solid rgba(255, 255, 255, .12);
+}
+
+.multimodel-receipt-body {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.multimodel-receipt-body strong {
+	overflow: hidden;
+	color: #dbe8ff;
+	font-size: 10px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.multimodel-receipt-body span {
+	color: var(--muted2);
+	font-family: var(--mono);
+	font-size: 9px;
+}
+
+.multimodel-receipt-timeline {
+	color: #9fe0a7 !important;
+}
+
+.multimodel-extract {
+	margin-top: 9px;
+}
+
+.multimodel-extract .btn {
+	width: 100%;
+}
+
+.multimodel-extract-receipt {
+	margin: 8px 0 0;
+	padding: 6px 8px;
+	border: 1px solid rgba(126, 208, 143, .3);
+	background: rgba(126, 208, 143, .07);
+	color: #9fe0a7;
+	font-size: 9.5px;
+	line-height: 1.45;
+}
+
+.multimodel-note {
+	margin: 8px 0 0;
+	color: var(--muted2);
+	font-size: 9px;
+	line-height: 1.45;
 }
 
 /* readouts: single quiet line */

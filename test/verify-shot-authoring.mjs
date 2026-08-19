@@ -42,7 +42,7 @@ const shots = [
 	},
 ];
 
-// v3 writes only the canonical body and round-trips per-shot camera blocks.
+// v4 writes only the canonical body and round-trips per-shot camera blocks.
 const authored = {
 	shots,
 	waypoints: [{ frame: 60, x: 1.5, z: -2, heading: null }],
@@ -52,7 +52,7 @@ const authored = {
 };
 const document = createShotAuthoringDocument(authored);
 assert.deepEqual(Object.keys(document), ["version", "frameCount", "shots", "waypoints"]);
-assert.equal(document.version, 3);
+assert.equal(document.version, 4);
 const objectRestored = readShotAuthoringDocument(document);
 assert.equal(objectRestored.status, "valid");
 assert.deepEqual(objectRestored.state, {
@@ -78,16 +78,16 @@ assert.equal("followCam" in restored.state, false);
 assert.equal("cameraRail" in restored.state, false);
 assert.deepEqual(restored.state.shots[1].camera.railFollow, { mode: "range", startFrame: 10, endFrame: 80 });
 
-const emptyV3 = readShotAuthoring(JSON.stringify({ version: 3, frameCount: 300, shots: [], waypoints: [] }));
-assert.equal(emptyV3.status, "valid");
-assert.deepEqual(emptyV3.state.shots, [], "zero Shots is a normal persisted state");
-const gapV3 = readShotAuthoring(JSON.stringify({
-	version: 3,
+const emptyV4 = readShotAuthoring(JSON.stringify({ version: 4, frameCount: 300, shots: [], waypoints: [] }));
+assert.equal(emptyV4.status, "valid");
+assert.deepEqual(emptyV4.state.shots, [], "zero Shots is a normal persisted state");
+const gapV4 = readShotAuthoring(JSON.stringify({
+	version: 4,
 	frameCount: 300,
 	shots: [{ startFrame: 20, endFrame: 59 }, { startFrame: 100, endFrame: 139 }],
 	waypoints: [],
 }));
-assert.deepEqual(gapV3.state.shots.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[20, 59], [100, 139]]);
+assert.deepEqual(gapV4.state.shots.map(({ startFrame, endFrame }) => [startFrame, endFrame]), [[20, 59], [100, 139]]);
 
 // v2 globals become independent camera settings on EVERY repaired shot.
 const v2 = readShotAuthoring(JSON.stringify({
@@ -105,7 +105,7 @@ for (const shot of v2.state.shots) {
 	assert.equal(shot.camera.mode, "rail");
 	assert.deepEqual(shot.camera.followCam, followCam);
 	assert.deepEqual(shot.camera.cameraRail, cameraRail);
-	assert.deepEqual(shot.camera.railFollow, { mode: "range", startFrame: 20, endFrame: 90 });
+	assert.deepEqual(shot.camera.railFollow, { mode: "range", startFrame: 24, endFrame: 108 }, "a v2 rail range is retimed with everything else");
 }
 assert.notEqual(v2.state.shots[0].camera, v2.state.shots[1].camera);
 assert.notEqual(v2.state.shots[0].camera.followCam, v2.state.shots[1].camera.followCam);
@@ -128,7 +128,7 @@ assert.equal(migrateMode(true, null), "follow");
 assert.equal(migrateMode(true, [{ x: 0, z: 0 }]), "follow");
 assert.equal(migrateMode(true, cameraRail), "rail");
 
-// A v1 roll follows the same migration rules and arrives as one v3 shot.
+// A v1 roll follows the same migration rules and arrives as one v4 shot.
 const v1 = readShotAuthoring(JSON.stringify({
 	version: 1,
 	frameCount: 200,
@@ -138,7 +138,8 @@ const v1 = readShotAuthoring(JSON.stringify({
 }));
 assert.equal(v1.status, "migrated");
 assert.equal(v1.state.shots.length, 1);
-assert.deepEqual(v1.state.shots[0].cameraKeys.map((key) => key.frame), [10, 180]);
+assert.deepEqual(v1.state.shots[0].cameraKeys.map((key) => key.frame), [12, 216], "v1 camera keys move onto the 24 fps clock");
+assert.equal(v1.state.frameCount, 240, "a 200-frame v1 roll was 10 s and stays 10 s");
 assert.equal(v1.state.shots[0].camera.mode, "follow");
 assert.deepEqual(v1.state.shots[0].camera.followCam, {
 	distance: 4,
@@ -150,9 +151,9 @@ assert.deepEqual(v1.state.shots[0].camera.followCam, {
 	pitchOffsetDeg: 0,
 });
 
-// Invalid v3 block fields are repaired independently without leaking globals.
+// Invalid v4 block fields are repaired independently without leaking globals.
 const repaired = loadShotAuthoring(JSON.stringify({
-	version: 3,
+	version: 4,
 	frameCount: 100,
 	shots: [
 		{
@@ -198,7 +199,7 @@ assert.deepEqual(repaired.shots[0].camera, {
 });
 assert.equal(repaired.shots[1].camera.mode, "keys");
 
-// Rail Follow is part of each self-contained Camera Block, not a v3 global.
+// Rail Follow is part of each self-contained Camera Block, not a global.
 assert.equal("railFollow" in document, false);
 const offRail = loadShotAuthoring(serializeShotAuthoring({
 	frameCount: 100,
@@ -206,23 +207,66 @@ const offRail = loadShotAuthoring(serializeShotAuthoring({
 }));
 assert.deepEqual(offRail.shots[0].camera.railFollow, { mode: "off" });
 const badRail = loadShotAuthoring(JSON.stringify({
-	version: 3,
+	version: 4,
 	frameCount: 100,
 	shots: [{ startFrame: 0, camera: { mode: "rail", cameraRail, railFollow: { mode: "range", startFrame: 50, endFrame: 10 } } }],
 }));
 assert.equal(badRail.shots[0].camera.railFollow, null);
 
+/* ------------------- v3 → v4: the 20 fps → 24 fps clock ------------------- */
+// A v3 roll counted frames at 20 fps. Reading those numbers at 24 without
+// conversion would turn a 15 s clip into a 12.5 s one and pull every shot
+// boundary, camera key and waypoint forward with it. Multiply once, on read.
+const v3 = readShotAuthoring(JSON.stringify({
+	version: 3,
+	frameCount: 300,
+	shots: [
+		{ id: "wide", name: "Wide", startFrame: 0, endFrame: 99, cameraKeys: [{ frame: 0, framing: framing(40) }], camera: { mode: "keys", followCam } },
+		{
+			id: "close",
+			name: "Close",
+			startFrame: 100,
+			endFrame: 299,
+			cameraKeys: [{ frame: 100, framing: framing(70) }],
+			camera: { mode: "rail", followCam, cameraRail, railFollow: { mode: "range", startFrame: 10, endFrame: 80 } },
+		},
+	],
+	waypoints: [{ frame: 60, x: 1.5, z: -2, heading: null }],
+}));
+assert.equal(v3.status, "migrated", "a v3 body is rewritten onto the production clock");
+assert.equal(v3.state.frameCount, 360, "a 300-frame 15 s roll stays 15 s as 360 frames");
+assert.deepEqual(
+	v3.state.shots.map(({ startFrame, endFrame }) => [startFrame, endFrame]),
+	[[0, 119], [120, 359]],
+	"shot boundaries keep their moments and stay gapless"
+);
+assert.deepEqual(v3.state.shots.map((shot) => shot.cameraKeys.map((key) => key.frame)), [[0], [120]], "camera keys move with their shots");
+assert.deepEqual(v3.state.waypoints.map((waypoint) => waypoint.frame), [72], "root waypoints move onto the production clock");
+assert.deepEqual(v3.state.shots[1].camera.railFollow, { mode: "range", startFrame: 12, endFrame: 96 }, "rail follow ranges are frames too");
+assert.deepEqual(v3.state.shots[1].camera.cameraRail, cameraRail, "rail geometry carries no frames and is untouched");
+assert.deepEqual(v3.state.shots[0].camera.followCam, followCam, "follow gains carry no frames and are untouched");
+assert.equal(v3.state.waypoints[0].x, 1.5, "waypoint positions are untouched");
+// The rewritten body is v4, so a reload must not scale it again.
+const v3Rewritten = readShotAuthoring(serializeShotAuthoring(v3.state));
+assert.equal(v3Rewritten.status, "valid");
+assert.equal(v3Rewritten.state.frameCount, 360, "migration is not applied twice");
+assert.deepEqual(v3Rewritten.state.shots.map((shot) => shot.startFrame), [0, 120]);
+// The sanity bounds moved with the clock: 1 s .. 20 min still means that.
+assert.equal(readShotAuthoring(JSON.stringify({ version: 4, frameCount: 1, shots: [] })).state.frameCount, 24, "the floor is one second");
+assert.equal(readShotAuthoring(JSON.stringify({ version: 4, frameCount: 99999, shots: [] })).state.frameCount, 28800, "the ceiling is twenty minutes");
+assert.equal(readShotAuthoring(JSON.stringify({ version: 3, frameCount: 24000, shots: [] })).state.frameCount, 28800, "a v3 roll at the old ceiling keeps its twenty minutes");
+
 // Corrupt/future bytes remain tagged so App can quarantine or preserve them.
 assert.equal(readShotAuthoring(null).status, "absent");
 assert.equal(readShotAuthoring("{nope").status, "corrupt");
 assert.equal(readShotAuthoring('"hello"').status, "corrupt");
-assert.equal(readShotAuthoring(JSON.stringify({ version: 3, frameCount: 100 })).status, "corrupt");
+assert.equal(readShotAuthoring(JSON.stringify({ version: 4, frameCount: 100 })).status, "corrupt");
 assert.equal(readShotAuthoring(JSON.stringify({ version: 99, shots: [] })).status, "future");
 assert.equal(loadShotAuthoring("{nope"), null);
 
-assert.equal(SHOT_AUTHORING_KEY, "cozyclay.shot-authoring.v3");
-assert.equal(SHOT_AUTHORING_LEGACY_KEY, "cozyclay.shot-authoring.v2");
-assert.deepEqual(SHOT_AUTHORING_LEGACY_KEYS, ["cozyclay.shot-authoring.v2", "cozyclay.shot-authoring.v1"]);
-assert.equal(SHOT_AUTHORING_QUARANTINE_KEY, "cozyclay.shot-authoring.v3.quarantine");
+assert.equal(SHOT_AUTHORING_KEY, "cozyclay.shot-authoring.v4");
+assert.equal(SHOT_AUTHORING_LEGACY_KEY, "cozyclay.shot-authoring.v3");
+assert.deepEqual(SHOT_AUTHORING_LEGACY_KEYS, ["cozyclay.shot-authoring.v3", "cozyclay.shot-authoring.v2", "cozyclay.shot-authoring.v1"]);
+assert.equal(SHOT_AUTHORING_QUARANTINE_KEY, "cozyclay.shot-authoring.v4.quarantine");
 
 console.log("all shot-authoring checks PASS");

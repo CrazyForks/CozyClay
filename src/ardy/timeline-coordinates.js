@@ -16,6 +16,19 @@ export function promptMoveStartFrame(startFrame, startClientX, clientX, laneWidt
 	return startFrame + (clientX - startClientX) * framesPerPixel;
 }
 
+/** Half a second at 24 fps: a shorter take is a pose, not a motion. */
+export const TRIM_MIN_FRAMES = 12;
+
+/** Clamp one trim-handle drag of the loaded take into a legal in/out range.
+ * `preview` is the range the gesture currently shows, `frame` the frame under
+ * the pointer and `max` the take's last displayed frame. The opposite edge
+ * never moves, and the remaining take never drops below `minFrames`. */
+export function motionTrimRange(edge, frame, preview, max, minFrames = TRIM_MIN_FRAMES) {
+	return edge === "start"
+		? { ...preview, start: Math.max(0, Math.min(frame, preview.end - minFrames)) }
+		: { ...preview, end: Math.min(max, Math.max(frame, preview.start + minFrames)) };
+}
+
 /** Optional Shot blocks use their own explicit inclusive range. Gaps remain
  * visible free-camera time instead of being inferred from the next card. */
 export function shotBlockGeometry(shots, index, frameCount, displayFrameCount = frameCount) {

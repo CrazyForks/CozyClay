@@ -15,10 +15,13 @@ import {
 	createSceneStage,
 	duplicateScene,
 	loadSceneDocumentFromStorage,
+	createCharacterEntry,
+	migrateStageFrames,
 	readSceneDocument,
 	removeScene,
 	renameScene,
 	serializeSceneDocument,
+	takeAnchor,
 } from "../src/scenes.js";
 
 let scenes = [];
@@ -217,12 +220,99 @@ assert.equal(loadSceneDocumentFromStorage(futureStorage).status, "future");
 assert.deepEqual(futureStorage.writes, [], "future data is left untouched");
 assert.equal(futureStorage.getItem(SCENES_STORAGE_KEY), futureRaw);
 
-assert.equal(SCENES_VERSION, 3);
-assert.match(SCENES_STORAGE_KEY, /\.v3$/);
+assert.equal(SCENES_VERSION, 4);
+assert.match(SCENES_STORAGE_KEY, /\.v4$/);
 assert.notEqual(SCENES_STORAGE_KEY, SCENES_QUARANTINE_KEY);
 assert.notEqual(SCENES_STORAGE_KEY, PREVIOUS_SCENES_STORAGE_KEY);
 assert.notEqual(SCENES_STORAGE_KEY, LEGACY_SCENE_STORAGE_KEY);
 assert.ok(createScene("SCENE 01", scenes).id);
+
+/* --------------- v4: per-character stature and the 24 fps clock ------------ */
+
+// Every cast member carries the stature its take was extracted at. Canonical
+// is 1; a hand-edited body can never persist a giant or a gnome.
+assert.equal(createCharacterEntry({}).scale, 1, "a cast member is canonical stature by default");
+assert.equal(createCharacterEntry({ scale: 1.24 }).scale, 1.24, "a stored stature survives normalization");
+assert.equal(createCharacterEntry({ scale: 0 }).scale, 1, "a zero stature is not a stature");
+assert.equal(createCharacterEntry({ scale: -1.2 }).scale, 1, "a negative stature is not a stature");
+assert.equal(createCharacterEntry({ scale: "1.2" }).scale, 1, "a non-numeric stature is not a stature");
+assert.equal(createCharacterEntry({ scale: 99 }).scale, 1.5, "an absurd stature clamps to the band");
+assert.equal(createCharacterEntry({ scale: 0.05 }).scale, 0.6, "a tiny stature clamps to the band");
+const staturedStage = createSceneStage({ characters: [{ id: "char-a", scale: 1.18 }, { id: "char-b" }] });
+assert.equal(staturedStage.characters[0].scale, 1.18, "a stored stature survives the stage envelope");
+assert.equal(staturedStage.characters[1].scale, 1, "a cast member without a take stays canonical");
+const staturedRoundTrip = readSceneDocument(serializeSceneDocument({
+	version: SCENES_VERSION,
+	activeSceneId: "s-scale",
+	scenes: [{ id: "s-scale", name: "Scale", objects: [], shotDocument: null, stage: staturedStage }],
+}));
+assert.equal(createSceneStage(staturedRoundTrip.document.scenes[0].stage).characters[0].scale, 1.18, "stature survives save and reload");
+
+// A v3 document's frame numbers were authored while the timeline ran at
+// 20 fps. Read at 24 without conversion, every scene would silently lose a
+// sixth of its duration, so the reader multiplies by 24/20 exactly once.
+const v3Stage = {
+	characters: [{
+		id: "char-a",
+		model: "y-bot-tpose",
+		x: 0, z: 0, rot: 0,
+		layer: {
+			waypoints: [{ frame: 0, x: 0, z: 0, heading: null }, { frame: 40, x: 1, z: 2, heading: null }, { frame: 100, x: 2, z: 3, heading: null }],
+			promptClips: [
+				{ id: "clip-1", text: "walks in", startFrame: 40, endFrame: 80 },
+				{ id: "clip-2", text: "stops", startFrame: 80, endFrame: 120 },
+			],
+		},
+	}],
+	hasCharSheet: false,
+	shotAspect: "16:9",
+};
+const v3Read = readSceneDocument(JSON.stringify({
+	version: 3,
+	activeSceneId: "s1",
+	scenes: [{ id: "s1", name: "Set", objects: [], shotDocument: null, stage: v3Stage }],
+}));
+assert.equal(v3Read.status, "migrated");
+const v4Layer = v3Read.document.scenes[0].stage.characters[0].layer;
+assert.deepEqual(v4Layer.waypoints.map((waypoint) => waypoint.frame), [0, 48, 120], "waypoint frames move onto the 24 fps clock");
+assert.deepEqual(
+	v4Layer.promptClips.map((clip) => [clip.startFrame, clip.endFrame]),
+	[[48, 96], [96, 144]],
+	"prompt blocks land exactly on the new 48-frame grid"
+);
+assert.equal(v4Layer.waypoints[1].x, 1, "the clock migration touches frames only, never positions");
+assert.equal(v4Layer.promptClips[0].text, "walks in", "prompt text survives the clock migration");
+assert.equal(createSceneStage(v3Read.document.scenes[0].stage).characters[0].scale, 1, "a v3 cast member reads back at canonical stature");
+const v3Rewritten = readSceneDocument(serializeSceneDocument(v3Read.document));
+assert.equal(v3Rewritten.status, "valid");
+assert.deepEqual(
+	v3Rewritten.document.scenes[0].stage.characters[0].layer.waypoints.map((waypoint) => waypoint.frame),
+	[0, 48, 120],
+	"a migrated document is not scaled a second time on reload"
+);
+
+// The same conversion is exported for a project FILE, which carries its own
+// scene document and never passes through the storage reader.
+const migratedStage = migrateStageFrames(v3Stage);
+assert.deepEqual(migratedStage.characters[0].layer.waypoints.map((waypoint) => waypoint.frame), [0, 48, 120]);
+assert.deepEqual(v3Stage.characters[0].layer.waypoints.map((waypoint) => waypoint.frame), [0, 40, 100], "the source stage is not mutated");
+// Ascending order and the half-open no-overlap rule hold even for a body that
+// never had them.
+const disorderly = migrateStageFrames({ characters: [{ id: "char-a", layer: {
+	waypoints: [{ frame: 100, x: 0, z: 0 }, { frame: 40, x: 0, z: 0 }, { frame: 40, x: 9, z: 9 }],
+	promptClips: [{ id: "b", startFrame: 80, endFrame: 120 }, { id: "a", startFrame: 40, endFrame: 90 }],
+} }] });
+assert.deepEqual(disorderly.characters[0].layer.waypoints.map((waypoint) => waypoint.frame), [48, 120], "duplicate frames collapse and the list stays ascending");
+const disorderlyClips = disorderly.characters[0].layer.promptClips;
+assert.deepEqual(disorderlyClips.map((clip) => [clip.startFrame, clip.endFrame]), [[48, 108], [108, 144]], "overlapping blocks are pushed apart, never left overlapping");
+assert.ok(disorderlyClips.every((clip, index) => index === 0 || clip.startFrame >= disorderlyClips[index - 1].endFrame));
+
+// Extra extraction takes stand at their filmed offset, rotated into the
+// active character's facing.
+assert.deepEqual(takeAnchor({ x: 0, z: 0, rot: 0 }, 0.8, 0.2), { x: 0.8, z: 0.2 });
+const rotatedAnchor = takeAnchor({ x: 1, z: -1, rot: 90 }, 1, 0);
+assert.ok(Math.abs(rotatedAnchor.x - 1) < 1e-9 && Math.abs(rotatedAnchor.z + 2) < 1e-9, "a quarter turn sends a +X offset to -Z");
+assert.deepEqual(takeAnchor(null, undefined, NaN), { x: 0, z: 0 }, "junk placement resolves to the origin, never NaN");
 
 const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 assert.match(

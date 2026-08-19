@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { frameFromClientX, promptMoveStartFrame, shotBlockGeometry } from "./timeline-coordinates.js";
+import { frameFromClientX, motionTrimRange, promptMoveStartFrame, shotBlockGeometry } from "./timeline-coordinates.js";
 import { promptResizeFrame } from "./timeline-resize.js";
 import { ko, isKo } from "../locale.js";
 
@@ -183,6 +183,9 @@ export default function Timeline({
 	pendingWaypointFrame = null,
 	ikMode = false,
 	ikDisabled = false, // a loaded motion owns the rig
+	// The ACTIVE cast member's loaded take, drawn as a passive strip on the
+	// Full-Body lane. Frames are already on the timeline's 24 fps clock.
+	motion = null, // { frames, label } | null
 	ikFrames = [], // sorted full-body key frames
 	footSnap = true, // feet stay planted while the body moves
 	shots = [],
@@ -230,6 +233,8 @@ export default function Timeline({
 	onShotCut,
 	onShotSplit,
 	onShotMove,
+	onMotionTrim,
+	onMotionTrimReset,
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [zoom, setZoom] = useState(ZOOM_DEFAULT);
@@ -250,7 +255,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -488,6 +493,47 @@ export default function Timeline({
 		if (!resizeRef.current) return;
 		resizeRef.current = null;
 		e.currentTarget.releasePointerCapture?.(e.pointerId);
+	}
+
+	// Motion trim: frame-accurate drag of the loaded take's in/out point on
+	// the Full-Body strip. No block snapping — a cut lands on the exact frame
+	// the hand releases. The preview lives here; the CUT itself is App's.
+	const motionTrimRef = useRef(null);
+	const [trimPreview, setTrimPreview] = useState(null);
+
+	function beginMotionTrim(e, edge) {
+		if (e.button !== 0 || !motion) return;
+		e.preventDefault();
+		e.stopPropagation();
+		e.currentTarget.setPointerCapture?.(e.pointerId);
+		const rect = e.currentTarget.closest(".tl-lane")?.getBoundingClientRect();
+		if (!rect || rect.width < 2) return;
+		const max = Math.min(motion.frames, displayFrameCount) - 1;
+		// The preview always restarts from the FULL take: App composes the cut
+		// as trimOffset + start, so an end-only drag must still report start 0.
+		motionTrimRef.current = { edge, rect, max, displayFrameCount, preview: { start: 0, end: max } };
+		setTrimPreview({ start: 0, end: max });
+	}
+
+	function moveMotionTrim(e) {
+		const active = motionTrimRef.current;
+		if (!active) return;
+		// Same pixel→frame transform as every other lane, off the pointer-down
+		// geometry, so the handle stays under the cursor at any zoom.
+		const frame = Math.min(active.max, frameFromClientX(e.clientX, active.rect.left, active.rect.width, active.displayFrameCount, frameCount));
+		const next = motionTrimRange(active.edge, frame, active.preview, active.max);
+		active.preview = next;
+		setTrimPreview(next);
+	}
+
+	function endMotionTrim(e) {
+		const active = motionTrimRef.current;
+		motionTrimRef.current = null;
+		e.currentTarget.releasePointerCapture?.(e.pointerId);
+		setTrimPreview(null);
+		if (active && (active.preview.start > 0 || active.preview.end < active.max)) {
+			handlers.current.onMotionTrim?.(active.preview.start, active.preview.end);
+		}
 	}
 
 	// Camera key dots re-time by dragging, like prompt clips move: the frame
@@ -1116,6 +1162,44 @@ export default function Timeline({
 											</div>
 										);
 									})}
+									{name === IK_LANE && motion && (
+										<div
+											className={"tl-motion-clip" + (trimPreview ? " trimming" : "")}
+											style={{
+												"--tl-f-start": clipPct(trimPreview ? trimPreview.start : 0),
+												"--tl-f-end": clipPct(trimPreview ? trimPreview.end + 1 : Math.min(motion.frames, displayFrameCount)),
+											}}
+											title={isKo
+												? `불러온 테이크 — ${motion.frames}프레임. 양끝 핸들로 잘라내고, 핸들 우클릭으로 전체 길이 복원`
+												: `Loaded take — ${motion.frames} frames. Drag the end handles to cut; right-click a handle to restore the full take`}
+										>
+											<button
+												className="tl-motion-clip-handle start"
+												type="button"
+												aria-label={ko("Trim take start", "테이크 시작점 자르기")}
+												onPointerDown={(e) => beginMotionTrim(e, "start")}
+												onPointerMove={moveMotionTrim}
+												onPointerUp={endMotionTrim}
+												onPointerCancel={endMotionTrim}
+												onContextMenu={(e) => { e.preventDefault(); handlers.current.onMotionTrimReset?.(); }}
+											/>
+											<span className="tl-motion-clip-label">
+												{trimPreview
+													? `${trimPreview.start}–${trimPreview.end} (${trimPreview.end - trimPreview.start + 1}f)`
+													: motion.label}
+											</span>
+											<button
+												className="tl-motion-clip-handle end"
+												type="button"
+												aria-label={ko("Trim take end", "테이크 끝점 자르기")}
+												onPointerDown={(e) => beginMotionTrim(e, "end")}
+												onPointerMove={moveMotionTrim}
+												onPointerUp={endMotionTrim}
+												onPointerCancel={endMotionTrim}
+												onContextMenu={(e) => { e.preventDefault(); handlers.current.onMotionTrimReset?.(); }}
+											/>
+										</div>
+									)}
 									{name === IK_LANE &&
 										ikFrames.map((f) => (
 											<span

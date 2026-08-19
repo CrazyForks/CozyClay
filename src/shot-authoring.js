@@ -6,23 +6,61 @@
 
 import { createShot } from "./cuts.js";
 
-export const SHOT_AUTHORING_VERSION = 3;
-export const SHOT_AUTHORING_KEY = "cozyclay.shot-authoring.v3";
+export const SHOT_AUTHORING_VERSION = 4;
+export const SHOT_AUTHORING_KEY = "cozyclay.shot-authoring.v4";
 // The single-key alias points at the newest legacy body for older callers.
 // New readers should walk the list so a user can still arrive directly from v1.
-export const SHOT_AUTHORING_LEGACY_KEY = "cozyclay.shot-authoring.v2";
+export const SHOT_AUTHORING_LEGACY_KEY = "cozyclay.shot-authoring.v3";
 export const SHOT_AUTHORING_LEGACY_KEYS = Object.freeze([
 	SHOT_AUTHORING_LEGACY_KEY,
+	"cozyclay.shot-authoring.v2",
 	"cozyclay.shot-authoring.v1",
 ]);
-export const SHOT_AUTHORING_QUARANTINE_KEY = "cozyclay.shot-authoring.v3.quarantine";
+export const SHOT_AUTHORING_QUARANTINE_KEY = "cozyclay.shot-authoring.v4.quarantine";
 
-/** clip length sanity bounds, frames @ 20 fps: 1 s .. 20 min */
-const FRAME_COUNT_MIN = 20;
-const FRAME_COUNT_MAX = 24000;
-const DEFAULT_FRAME_COUNT = 120;
+/** clip length sanity bounds, frames @ 24 fps: 1 s .. 20 min */
+const FRAME_COUNT_MIN = 24;
+const FRAME_COUNT_MAX = 28800;
+const DEFAULT_FRAME_COUNT = 144;
 const RAIL_MAX_POINTS = 512;
 const finite = Number.isFinite;
+
+/** v3 and older bodies counted frames on ARDY's 20 fps clock; v4 counts them
+ * on the 24 fps production clock. Every frame-bearing number is multiplied so
+ * a saved roll keeps its DURATION: a 300-frame clip was 15 s and stays 15 s as
+ * 360 frames. Reinterpreting instead would silently shorten it to 12.5 s. */
+const LEGACY_FRAME_FPS = 20;
+const TIMELINE_FRAME_FPS = 24;
+const toTimelineFrame = (frame) => Math.round((frame * TIMELINE_FRAME_FPS) / LEGACY_FRAME_FPS);
+const rescaleFrame = (value) => (finite(value) ? toTimelineFrame(value) : value);
+const rescaleKeys = (entries) => (Array.isArray(entries)
+	? entries.map((key) => (key && typeof key === "object" ? { ...key, frame: rescaleFrame(key.frame) } : key))
+	: entries);
+const rescaleRailFollow = (value) => (value && typeof value === "object" && !Array.isArray(value)
+	? { ...value, startFrame: rescaleFrame(value.startFrame), endFrame: rescaleFrame(value.endFrame) }
+	: value);
+
+/** Retime a whole parsed body before the ordinary repair runs, so the version
+ * migrations below only ever see production-clock numbers. Rail geometry,
+ * follow gains and framings carry no frames and are passed through. */
+function rescaleShotAuthoringFrames(parsed) {
+	const next = { ...parsed, frameCount: rescaleFrame(parsed.frameCount) };
+	if (Array.isArray(parsed.cameraKeys)) next.cameraKeys = rescaleKeys(parsed.cameraKeys);
+	if (Array.isArray(parsed.waypoints)) next.waypoints = rescaleKeys(parsed.waypoints);
+	if (parsed.railFollow !== undefined) next.railFollow = rescaleRailFollow(parsed.railFollow);
+	if (Array.isArray(parsed.shots)) {
+		next.shots = parsed.shots.map((shot) => {
+			if (!shot || typeof shot !== "object") return shot;
+			const moved = { ...shot, startFrame: rescaleFrame(shot.startFrame), endFrame: rescaleFrame(shot.endFrame) };
+			if (Array.isArray(shot.cameraKeys)) moved.cameraKeys = rescaleKeys(shot.cameraKeys);
+			if (shot.camera && typeof shot.camera === "object" && !Array.isArray(shot.camera)) {
+				moved.camera = { ...shot.camera, railFollow: rescaleRailFollow(shot.camera.railFollow) };
+			}
+			return moved;
+		});
+	}
+	return next;
+}
 
 const FOLLOW_BOUNDS = {
 	distance: [0.5, 15],
@@ -187,13 +225,15 @@ export function createShotAuthoringDocument({ shots = [], waypoints = [], frameC
 }
 
 /** Pure object reader; storage adapters decide how bytes become this object. */
-export function readShotAuthoringDocument(parsed) {
-	if (parsed === undefined) return { status: "absent", state: null };
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { status: "corrupt", state: null };
-	const version = parsed.version === undefined ? 1 : parsed.version;
+export function readShotAuthoringDocument(raw) {
+	if (raw === undefined) return { status: "absent", state: null };
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { status: "corrupt", state: null };
+	const version = raw.version === undefined ? 1 : raw.version;
 	if (!Number.isInteger(version) || version < 1) return { status: "corrupt", state: null };
 	if (version > SHOT_AUTHORING_VERSION) return { status: "future", state: null };
 
+	// One conversion at the door: everything below reads one clock.
+	const parsed = version < 4 ? rescaleShotAuthoringFrames(raw) : raw;
 	const frameCount = repairFrameCount(parsed.frameCount);
 	const effectiveFrameCount = frameCount ?? DEFAULT_FRAME_COUNT;
 	if (version === 1) {
@@ -215,7 +255,9 @@ export function readShotAuthoringDocument(parsed) {
 		};
 	}
 	return {
-		status: "valid",
+		// A v3 body is structurally current but was authored on the old clock;
+		// it is rewritten, so it reports as migrated, not valid.
+		status: version < SHOT_AUTHORING_VERSION ? "migrated" : "valid",
 		state: { ...repairShared(parsed, frameCount), shots: repairShots(parsed.shots, effectiveFrameCount) },
 	};
 }
