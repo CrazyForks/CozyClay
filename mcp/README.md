@@ -1,17 +1,23 @@
 # CozyClay MCP server
 
-Lets an AI assistant (Claude Desktop, Cursor, any MCP client) block a scene, place the camera and
-read the shot back as film vocabulary — then turn it into an AI image/video prompt.
+Lets an AI assistant (Claude Desktop, Cursor, any MCP client) block a scene, place the camera,
+generate character motion and read the shot back as film vocabulary — then turn it into an AI
+image/video prompt.
 
-Headless: no browser, no GPU, no build step.
+Works two ways, with the same tools:
+
+- **Editor open** — tool calls drive the visible viewport live: camera, cast, set, motion,
+  prompt blocks on the timeline.
+- **No editor** — everything runs headless: no browser, no GPU, no build step.
 
 ## Run it locally
 
 ```sh
 cd mcp
 npm install
-npm start          # speaks MCP over stdio
-npm run verify     # drives the server as a client and checks the results
+npm start          # speaks MCP over stdio and hosts ws://127.0.0.1:5184/live
+npm run verify     # drives the no-editor fallback as a client and checks results
+npm run verify:live # drives a fake editor over the live WebSocket protocol
 ```
 
 Then point a client at it. For Claude Desktop, in `claude_desktop_config.json`:
@@ -27,7 +33,10 @@ Then point a client at it. For Claude Desktop, in `claude_desktop_config.json`:
 }
 ```
 
-Restart the client; 18 tools appear.
+Restart the client; 20 tools appear.
+
+Prefer a long-lived endpoint? `node server.mjs --http 5183` serves Streamable HTTP at
+`http://127.0.0.1:5183/mcp` (one isolated session per client), with a plain status page at `/`.
 
 ## What it does
 
@@ -52,6 +61,7 @@ generated frame matches the blocking instead of drifting off into a generic shot
 | tool | what it does |
 | --- | --- |
 | `describe_scene` | the whole state: camera, framing, cast, set |
+| `live_status` | whether an editor tab is connected for live control |
 | `describe_shot` | current camera geometry as film vocabulary |
 | `set_camera` | move the lens / change focal length directly |
 | `frame_shot` | frame by intent — size, view, level, side |
@@ -59,6 +69,7 @@ generated frame matches the blocking instead of drifting off into a generic shot
 | `focus_character` | choose who the camera frames |
 | `place_object` / `update_object` / `remove_object` | the set |
 | `render_prompt` | the shot as an AI image or video prompt |
+| `generate_motion` | multi-phase character motion through the ARDY bridge — phases land as prompt blocks |
 | `mark_camera_move` / `describe_camera_move` | name a move between two camera positions |
 | `add_scene` / `switch_scene` | multiple scenes per project |
 | `open_project` / `save_project` | read and write `.cclayproject` files |
@@ -66,6 +77,35 @@ generated frame matches the blocking instead of drifting off into a generic shot
 Coordinates are metres (`x` right, `z` toward the default camera, `y` height above the floor).
 Rotations are degrees of yaw. Characters are addressed by letter (`"A"`), slot (`"2"`) or id
 (`"char-a"`).
+
+## Live editor control
+
+The server hosts `ws://127.0.0.1:5184/live` by default (`COZYCLAY_LIVE_PORT` or
+`--live-port <port>` to change it). A CozyClay editor tab served by `npm run dev` connects on
+its own; `live_status` tells you whether one is attached. With an editor connected, mutations
+forward to it and reads report its real state — the screen you are looking at is the source of
+truth. Without one, every tool keeps its in-memory behaviour. In `--http` mode each session
+child attempts to bind the live port, so one session owns the editor and the others
+intentionally run memory-only.
+
+The wire protocol — one WebSocket, ten commands, editor-side rules — is specified in
+[`LIVE-PROTOCOL.md`](LIVE-PROTOCOL.md).
+
+## Motion generation
+
+`generate_motion` takes plain-language beats and a length:
+
+```
+phases: ["seated on a chair, slowly stands up",
+         "breaks into a sprint",
+         "trips and falls hard to the ground"]
+seconds: 10
+```
+
+It tiles them into contiguous ARDY segments, streams the generation through the local bridge
+(`127.0.0.1:5181`, started by `npm run dev`), and — when an editor is connected — loads the
+result onto the active character with one prompt block per phase on the timeline. Pass a
+previous `motion_url` to reload a clip without generating again.
 
 ## Round-trips with the studio
 

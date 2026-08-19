@@ -9,13 +9,15 @@
 	},
 	"scripts": {
 		"start": "node server.mjs",
-		"verify": "node verify.mjs"
+		"verify": "node verify.mjs",
+		"verify:live": "node verify-live.mjs"
 	},
 	"engines": {
 		"node": ">=22"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.30.0",
+		"ws": "^8.19.0",
 		"zod": "^3.25.0"
 	}
 }

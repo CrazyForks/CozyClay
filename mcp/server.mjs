@@ -28,9 +28,17 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
+
+import { startLiveHub } from "./live-hub.mjs";
 
 import {
 	CAMERA_MOVES,
@@ -74,6 +82,8 @@ const state = {
 	/** framing snapshot taken by `mark_camera_move`, consumed by `describe_camera_move` */
 	markedFraming: null,
 };
+
+let liveHub = null;
 
 const scene = () => activeScene(state.doc.scenes, state.doc.activeSceneId);
 const stage = () => scene().stage;
@@ -142,6 +152,52 @@ const currentShot = () => deriveShot(state.camera, subject(), fov());
 
 const modelById = (id) =>
 	[...VIDEO_MODELS, ...IMAGE_MODELS].find((m) => m.id === id) ?? null;
+
+/** Copy the protocol's deliberately small live description into the existing
+ * scene shape. Formatting and film vocabulary below then remain exactly the
+ * same code paths as memory-only mode. */
+const applyLiveDescription = (description) => {
+	if (!description || typeof description !== "object") throw new Error("Live editor returned an invalid scene description.");
+	const sc = scene();
+	if (typeof description.sceneName === "string" && description.sceneName) sc.name = description.sceneName;
+	if (description.camera && typeof description.camera === "object") {
+		for (const key of ["x", "y", "z", "focalMm"]) {
+			if (Number.isFinite(description.camera[key])) state.camera[key] = description.camera[key];
+		}
+	}
+	if (Array.isArray(description.characters) && description.characters.length) {
+		const prior = new Map(stage().characters.map((character) => [character.id, character]));
+		stage().characters = description.characters.map((character, index) =>
+			createCharacterEntry({ ...prior.get(character.id), ...character }, index),
+		);
+		if (state.focus && !stage().characters.some((character) => character.id === state.focus)) state.focus = null;
+	}
+	if (Array.isArray(description.objects)) {
+		const prior = new Map(sc.objects.map((object) => [object.id, object]));
+		sc.objects = description.objects.map((object) => {
+			const previous = prior.get(object.id);
+			const kind = OBJECT_LIBRARY.find(({ label }) => object.name === label || object.name?.startsWith(`${label} `))?.kind;
+			const defaults = previous ?? (kind ? createSceneObject(kind, sc.objects, object) : null);
+			return {
+				...defaults,
+				...object,
+				footprint: defaults?.footprint ?? { width: 1, depth: 1 },
+				height: defaults?.height ?? 1,
+				scaleX: defaults?.scaleX ?? 1,
+				scaleY: defaults?.scaleY ?? 1,
+				scaleZ: defaults?.scaleZ ?? 1,
+			};
+		});
+	}
+};
+
+const refreshLiveDescription = async () => {
+	if (!liveHub?.connected) return false;
+	applyLiveDescription(await liveHub.command("describe", {}));
+	return true;
+};
+
+const liveError = (error) => text(`Live editor error: ${error.message}`);
 
 /* ------------------------------ formatting ------------------------------- */
 
@@ -212,6 +268,10 @@ function shotReport() {
 
 /* ------------------------------- server ---------------------------------- */
 
+/** Tool registrations are counted as they happen so the HTTP status page can
+ * report the real number without reaching into SDK internals. */
+let registeredTools = 0;
+
 const server = new McpServer(
 	{ name: "cozyclay-mcp", version: "0.1.0" },
 	{
@@ -224,7 +284,12 @@ const server = new McpServer(
 	},
 );
 
-server.registerTool(
+const registerTool = (name, config, handler) => {
+	registeredTools += 1;
+	return server.registerTool(name, config, handler);
+};
+
+registerTool(
 	"describe_scene",
 	{
 		title: "Describe the scene",
@@ -233,10 +298,27 @@ server.registerTool(
 			"object in the set. Call this before changing anything, and after, to confirm the result.",
 		inputSchema: {},
 	},
-	async () => text(sceneReport()),
+	async () => {
+		try {
+			await refreshLiveDescription();
+			return text(sceneReport());
+		} catch (error) {
+			return liveError(error);
+		}
+	},
 );
 
-server.registerTool(
+registerTool(
+	"live_status",
+	{
+		title: "Live editor status",
+		description: "Report whether a CozyClay editor is connected to live mode.",
+		inputSchema: {},
+	},
+	async () => text(liveHub?.connected ? "Live editor connected." : "No live editor connected; using in-memory state."),
+);
+
+registerTool(
 	"describe_shot",
 	{
 		title: "Describe the current shot",
@@ -245,10 +327,17 @@ server.registerTool(
 			"camera level, and the nearest real prime lens. This is what the camera is actually seeing.",
 		inputSchema: {},
 	},
-	async () => text(shotReport()),
+	async () => {
+		try {
+			await refreshLiveDescription();
+			return text(shotReport());
+		} catch (error) {
+			return liveError(error);
+		}
+	},
 );
 
-server.registerTool(
+registerTool(
 	"set_camera",
 	{
 		title: "Set the camera",
@@ -269,6 +358,15 @@ server.registerTool(
 		},
 	},
 	async ({ x, y, z: zPos, focal_mm }) => {
+		if (liveHub?.connected) {
+			try {
+				await liveHub.command("set_camera", { x, y, z: zPos, focalMm: focal_mm });
+				await refreshLiveDescription();
+				return text(`Camera set.\n\n${shotReport()}`);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		if (x !== undefined) state.camera.x = x;
 		if (y !== undefined) state.camera.y = y;
 		if (zPos !== undefined) state.camera.z = zPos;
@@ -277,7 +375,7 @@ server.registerTool(
 	},
 );
 
-server.registerTool(
+registerTool(
 	"frame_shot",
 	{
 		title: "Frame a shot by intent",
@@ -310,6 +408,13 @@ server.registerTool(
 		},
 	},
 	async ({ size, view, level, side, focal_mm }) => {
+		if (liveHub?.connected) {
+			try {
+				await refreshLiveDescription();
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		// Midpoints of shot.js's SIZE_TABLE bands, so the label that comes back is
 		// the label that was asked for rather than whatever sits on a boundary.
 		const FRACTION = {
@@ -366,10 +471,22 @@ server.registerTool(
 		const sign = side === "right" ? -1 : 1;
 		const theta = ((s.rot + sign * ANGLE[view]) * Math.PI) / 180;
 
-		state.camera.x = s.x + Math.sin(theta) * horizontal;
-		state.camera.z = s.z + Math.cos(theta) * horizontal;
-		state.camera.y = camY;
-		state.camera.focalMm = lensMm;
+		const nextCamera = {
+			x: s.x + Math.sin(theta) * horizontal,
+			z: s.z + Math.cos(theta) * horizontal,
+			y: camY,
+			focalMm: lensMm,
+		};
+		if (liveHub?.connected) {
+			try {
+				await liveHub.command("set_camera", nextCamera);
+				await refreshLiveDescription();
+			} catch (error) {
+				return liveError(error);
+			}
+		} else {
+			Object.assign(state.camera, nextCamera);
+		}
 
 		const note =
 			lensMm !== focal_mm
@@ -380,7 +497,7 @@ server.registerTool(
 	},
 );
 
-server.registerTool(
+registerTool(
 	"add_character",
 	{
 		title: "Add a character to the cast",
@@ -399,6 +516,15 @@ server.registerTool(
 		},
 	},
 	async ({ subject: desc, x, z: zPos, facing, model }) => {
+		if (liveHub?.connected) {
+			try {
+				const result = await liveHub.command("add_character", { subject: desc, x, z: zPos, rot: facing });
+				await refreshLiveDescription();
+				return text(`Added ${result?.id ?? "character"}.\n\n${sceneReport()}`);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		const st = stage();
 		const index = st.characters.length;
 		// The default scene already owns "char-a", and createCharacterEntry only
@@ -413,7 +539,7 @@ server.registerTool(
 	},
 );
 
-server.registerTool(
+registerTool(
 	"place_character",
 	{
 		title: "Move or re-describe a character",
@@ -433,6 +559,15 @@ server.registerTool(
 		},
 	},
 	async ({ character, x, z: zPos, facing, subject: desc, hidden }) => {
+		if (liveHub?.connected) {
+			try {
+				await liveHub.command("update_character", { ref: character, x, z: zPos, rot: facing, subject: desc, hidden });
+				await refreshLiveDescription();
+				return text(`Character updated.\n\n${sceneReport()}`);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		const target = findCharacter(character);
 		if (!target) return text(`No character "${character}". ${castHint()}`);
 		if (x !== undefined) target.x = x;
@@ -444,7 +579,7 @@ server.registerTool(
 	},
 );
 
-server.registerTool(
+registerTool(
 	"remove_character",
 	{
 		title: "Remove a character",
@@ -454,6 +589,15 @@ server.registerTool(
 		},
 	},
 	async ({ character }) => {
+		if (liveHub?.connected) {
+			try {
+				await liveHub.command("remove_character", { ref: character });
+				await refreshLiveDescription();
+				return text(`Character removed.\n\n${sceneReport()}`);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		const st = stage();
 		const target = findCharacter(character);
 		if (!target) return text(`No character "${character}". ${castHint()}`);
@@ -465,7 +609,7 @@ server.registerTool(
 	},
 );
 
-server.registerTool(
+registerTool(
 	"focus_character",
 	{
 		title: "Choose who the camera frames",
@@ -477,6 +621,11 @@ server.registerTool(
 		},
 	},
 	async ({ character }) => {
+		try {
+			await refreshLiveDescription();
+		} catch (error) {
+			return liveError(error);
+		}
 		const target = findCharacter(character);
 		if (!target) return text(`No character "${character}". ${castHint()}`);
 		state.focus = target.id;
@@ -484,7 +633,7 @@ server.registerTool(
 	},
 );
 
-server.registerTool(
+registerTool(
 	"place_object",
 	{
 		title: "Place an object in the set",
@@ -502,6 +651,15 @@ server.registerTool(
 		},
 	},
 	async ({ kind, x, z: zPos, y, facing }) => {
+		if (liveHub?.connected) {
+			try {
+				const result = await liveHub.command("place_object", { kind, x, z: zPos, y, rot: facing });
+				await refreshLiveDescription();
+				return text(`Placed object as ${result?.id ?? "unknown"}.\n\n${sceneReport()}`);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		const sc = scene();
 		const placement = { x, z: zPos };
 		if (y !== undefined) placement.y = y;
@@ -512,7 +670,100 @@ server.registerTool(
 	},
 );
 
-server.registerTool(
+
+registerTool(
+	"generate_motion",
+	{
+		title: "Generate character motion (ARDY)",
+		description:
+			"Generate a multi-phase motion clip through the ARDY bridge and, when a live editor is " +
+			"connected, load it onto the active character so it appears on the timeline. Phases are " +
+			"plain-language beats in order, e.g. ['stands up from a chair', 'runs forward', 'trips and falls'].",
+		inputSchema: {
+			phases: z.array(z.string().min(3)).min(2).max(8).describe("motion beats, in order"),
+			seconds: z.number().min(2).max(60).default(9).describe("total clip length in seconds"),
+			seed: z.number().int().optional().describe("generation seed"),
+			motion_url: z
+				.string()
+				.regex(/^\/ardy\/motions\/[0-9]+-[0-9a-f]{6}$/)
+				.optional()
+				.describe("reuse an already-generated clip instead of generating again"),
+		},
+	},
+	async ({ phases, seconds, seed, motion_url }) => {
+		const bridge = process.env.COZYCLAY_BRIDGE ?? "http://127.0.0.1:5181";
+		try {
+			const health = await fetch(`${bridge}/ardy/health`, { signal: AbortSignal.timeout(4000) }).then((r) => r.json());
+			if (!health.ok) throw new Error("bridge unhealthy");
+		} catch {
+			return text("The ARDY bridge is not running on " + bridge + ". Start the studio with `npm run dev` (it launches the bridge) and try again.");
+		}
+
+		// ARDY Core is 20 fps; segments must tile 0..int(seconds*20) exactly.
+		const clipFrames = Math.floor(seconds * 20);
+		const per = Math.floor(clipFrames / phases.length);
+		const segments = phases.map((prompt, i) => ({
+			startFrame: i * per,
+			endFrame: i === phases.length - 1 ? clipFrames : (i + 1) * per,
+			prompt,
+		}));
+
+		const deliver = async (motionUrl, note) => {
+			const summary = `${note} ${seconds}s / ${clipFrames} frames — ${segments.length} phases:\n` +
+				segments.map((s) => `  ${s.startFrame}-${s.endFrame}  ${s.prompt}`).join("\n") +
+				`\nmotion: ${motionUrl}`;
+			if (!liveHub?.connected) return text(`${summary}\n\nNo live editor connected — open the studio and it can load this URL.`);
+			try {
+				await liveHub.command("load_motion", { url: motionUrl, prompt: phases.join(", then "), blocks: segments });
+				return text(`${summary}\n\nLoaded onto the active character with ${segments.length} prompt blocks on the timeline — press play.`);
+			} catch (error) {
+				return text(`${summary}\n\nGenerated, but the editor did not take it: ${error.message}`);
+			}
+		};
+
+		if (motion_url) return deliver(motion_url, "Reusing");
+		// segments run the autoregressive sequence generator, which is
+		// incompatible with pose pinning — the bridge requires posePin:false.
+		const body = { prompt: phases.join(", then "), duration: seconds, segments, posePin: false };
+		if (seed !== undefined) body.seed = seed;
+
+		const res = await fetch(`${bridge}/ardy/generate`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+		if (!res.ok) return text(`Generation refused (HTTP ${res.status}): ${await res.text()}`);
+
+		// The bridge streams ndjson progress lines and ends with a done/error event.
+		const reader = res.body.getReader();
+		const decoder = new TextDecoder();
+		let buffer = "";
+		let done = null;
+		let lastProgress = "";
+		for (;;) {
+			const chunk = await reader.read();
+			if (chunk.done) break;
+			buffer += decoder.decode(chunk.value, { stream: true });
+			let nl = buffer.indexOf("\n");
+			while (nl !== -1) {
+				const line = buffer.slice(0, nl).trim();
+				buffer = buffer.slice(nl + 1);
+				if (line) {
+					const event = JSON.parse(line);
+					if (event.event === "error") return text(`Generation failed: ${event.message ?? "generator error"}`);
+					if (event.event === "done") done = event;
+					else lastProgress = event.message ?? event.event ?? lastProgress;
+				}
+				nl = buffer.indexOf("\n");
+			}
+			if (done) break;
+		}
+		if (!done?.motionUrl) return text(`Generation ended without a motion (last progress: ${lastProgress || "none"}).`);
+		return deliver(done.motionUrl, "Generated");
+	},
+);
+
+registerTool(
 	"update_object",
 	{
 		title: "Move, rotate or scale an object",
@@ -534,6 +785,15 @@ server.registerTool(
 		},
 	},
 	async ({ id, x, y, z: zPos, facing, scale, color }) => {
+		if (liveHub?.connected) {
+			try {
+				await liveHub.command("update_object", { id, x, y, z: zPos, rot: facing, scale, color });
+				await refreshLiveDescription();
+				return text(`Updated ${id}.\n\n${sceneReport()}`);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		const sc = scene();
 		if (!sc.objects.some((o) => o.id === id)) {
 			return text(`No object "${id}" in this scene. Call describe_scene for the current ids.`);
@@ -554,7 +814,7 @@ server.registerTool(
 	},
 );
 
-server.registerTool(
+registerTool(
 	"remove_object",
 	{
 		title: "Remove an object",
@@ -562,6 +822,15 @@ server.registerTool(
 		inputSchema: { id: z.string().describe("object id") },
 	},
 	async ({ id }) => {
+		if (liveHub?.connected) {
+			try {
+				await liveHub.command("remove_object", { id });
+				await refreshLiveDescription();
+				return text(`Removed ${id}.\n\n${sceneReport()}`);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		const sc = scene();
 		if (!sc.objects.some((o) => o.id === id)) {
 			return text(`No object "${id}" in this scene.`);
@@ -571,7 +840,7 @@ server.registerTool(
 	},
 );
 
-server.registerTool(
+registerTool(
 	"render_prompt",
 	{
 		title: "Render the AI prompt for this shot",
@@ -604,6 +873,13 @@ server.registerTool(
 		},
 	},
 	async ({ mode, model, environment, style, camera_move, pose_phrase, pose2_phrase }) => {
+		if (liveHub?.connected) {
+			try {
+				await refreshLiveDescription();
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		const st = stage();
 		const known = CAMERA_MOVES.includes(camera_move);
 		// composePrompt frames two subjects: the one the camera is on, then the
@@ -629,7 +905,7 @@ server.registerTool(
 	},
 );
 
-server.registerTool(
+registerTool(
 	"mark_camera_move",
 	{
 		title: "Mark the start of a camera move",
@@ -639,12 +915,17 @@ server.registerTool(
 		inputSchema: {},
 	},
 	async () => {
+		try {
+			await refreshLiveDescription();
+		} catch (error) {
+			return liveError(error);
+		}
 		state.markedFraming = framing();
 		return text(`Marked A position: ${slateLine(currentShot())}\n\nNow move the camera, then call describe_camera_move.`);
 	},
 );
 
-server.registerTool(
+registerTool(
 	"describe_camera_move",
 	{
 		title: "Name the camera move",
@@ -656,6 +937,11 @@ server.registerTool(
 		},
 	},
 	async ({ duration_s }) => {
+		try {
+			await refreshLiveDescription();
+		} catch (error) {
+			return liveError(error);
+		}
 		if (!state.markedFraming) {
 			return text("No A position marked. Call mark_camera_move first, then move the camera.");
 		}
@@ -672,25 +958,30 @@ server.registerTool(
 	},
 );
 
-server.registerTool(
+registerTool(
 	"add_scene",
 	{
 		title: "Add a scene",
-		description: "Add another scene to the project and make it active.",
+		description:
+			"Add another scene to the project and make it active. This remains MCP memory-only while " +
+			"an editor is connected; use load_scenes via open_project to replace the live document.",
 		inputSchema: { name: z.string().default("SCENE 02").describe("scene name") },
 	},
 	async ({ name }) => {
 		state.doc.scenes = addScene(state.doc.scenes, name);
 		state.doc.activeSceneId = state.doc.scenes[state.doc.scenes.length - 1].id;
-		return text(`Added "${name}".\n\n${sceneReport()}`);
+		const note = liveHub?.connected ? " (memory-only; the connected editor was not changed)" : "";
+		return text(`Added "${name}"${note}.\n\n${sceneReport()}`);
 	},
 );
 
-server.registerTool(
+registerTool(
 	"switch_scene",
 	{
 		title: "Switch the active scene",
-		description: "Make a different scene active. Everything else operates on the active scene.",
+		description:
+			"Make a different scene active. This remains MCP memory-only while an editor is connected; " +
+			"everything else operates on the active scene.",
 		inputSchema: { name: z.string().describe("scene name to switch to") },
 	},
 	async ({ name }) => {
@@ -699,11 +990,12 @@ server.registerTool(
 			return text(`No scene "${name}". Have: ${state.doc.scenes.map((s) => s.name).join(", ")}`);
 		}
 		state.doc.activeSceneId = target.id;
-		return text(`Switched to "${target.name}".\n\n${sceneReport()}`);
+		const note = liveHub?.connected ? " (memory-only; the connected editor was not changed)" : "";
+		return text(`Switched to "${target.name}"${note}.\n\n${sceneReport()}`);
 	},
 );
 
-server.registerTool(
+registerTool(
 	"open_project",
 	{
 		title: "Open a .cclayproject file",
@@ -730,11 +1022,20 @@ server.registerTool(
 		state.name = result.project.name;
 		state.focus = null;
 		state.markedFraming = null;
+		if (liveHub?.connected) {
+			try {
+				const live = await liveHub.command("load_scenes", { document: state.doc });
+				if (typeof live?.sceneName === "string" && live.sceneName) scene().name = live.sceneName;
+				await refreshLiveDescription();
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		return text(`Opened ${full}.\n\n${sceneReport()}`);
 	},
 );
 
-server.registerTool(
+registerTool(
 	"save_project",
 	{
 		title: "Save a .cclayproject file",
@@ -748,6 +1049,13 @@ server.registerTool(
 	},
 	async ({ path, name }) => {
 		if (name) state.name = name;
+		if (liveHub?.connected) {
+			try {
+				await refreshLiveDescription();
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		const full = resolve(path);
 		const project = createProjectDocument({
 			scenesDocument: state.doc,
@@ -766,4 +1074,108 @@ server.registerTool(
 
 /* -------------------------------- start ---------------------------------- */
 
-await server.connect(new StdioServerTransport());
+/**
+ * stdio is the default because that is how an MCP client launches a local
+ * server. `--http` is for driving it by hand: a long-lived endpoint on
+ * loopback that survives across client restarts and can be curled.
+ */
+/** Counted as the tools are registered, so the status page cannot drift. */
+const TOOL_COUNT = registeredTools;
+
+const httpFlag = process.argv.indexOf("--http");
+const livePortFlag = process.argv.indexOf("--live-port");
+const livePort = Number(
+	livePortFlag === -1 ? process.env.COZYCLAY_LIVE_PORT ?? 5184 : process.argv[livePortFlag + 1],
+);
+if (!Number.isInteger(livePort) || livePort < 1 || livePort > 65535) throw new Error("--live-port must be a valid TCP port.");
+
+if (httpFlag === -1) {
+	liveHub = await startLiveHub(livePort);
+	await server.connect(new StdioServerTransport());
+} else {
+	// Tools execute in the stdio children, not this HTTP front. Each child tries
+	// to own the one editor port; the winner is live and later sessions see the
+	// port occupied and deliberately remain memory-only rather than sharing state.
+	const requestedHttpPort = process.argv[httpFlag + 1];
+	const port = Number(
+		requestedHttpPort && !requestedHttpPort.startsWith("--") ? requestedHttpPort : process.env.COZYCLAY_MCP_PORT ?? 5183,
+	);
+	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--http must use a valid TCP port.");
+
+	// One MCP session per client, each backed by its own stdio child of this
+	// same file. A single shared transport would let the first client's
+	// initialize claim the server and refuse every later one; sharing one
+	// server object would also mean two clients silently editing one scene.
+	// A child process per session keeps each client's scene its own, and reuses
+	// the stdio path that the tools already run on.
+	const sessions = new Map();
+
+	const openSession = async () => {
+		const transport = new StreamableHTTPServerTransport({
+			sessionIdGenerator: () => randomUUID(),
+			onsessioninitialized: (id) => sessions.set(id, { transport, child }),
+		});
+		const child = new StdioClientTransport({
+			command: process.execPath,
+			args: [fileURLToPath(import.meta.url), "--live-port", String(livePort)],
+		});
+
+		// Splice the two transports together: the browser-facing session and the
+		// child's stdio pipe just forward each other's messages verbatim.
+		transport.onmessage = (message) => child.send(message);
+		child.onmessage = (message) => transport.send(message);
+		transport.onclose = () => {
+			if (transport.sessionId) sessions.delete(transport.sessionId);
+			child.close().catch(() => {});
+		};
+		child.onclose = () => transport.close().catch(() => {});
+
+		await child.start();
+		await transport.start();
+		return transport;
+	};
+
+	const http = createServer((req, res) => {
+		const path = (req.url ?? "/").split("?")[0];
+
+		// A browser hitting the port should get something legible rather than a
+		// protocol error, so the root is a plain status page.
+		if (path === "/" && req.method === "GET") {
+			res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+			res.end(
+				[
+					"CozyClay MCP server",
+					"",
+					`endpoint  http://127.0.0.1:${port}/mcp`,
+					"transport Streamable HTTP",
+					`tools     ${TOOL_COUNT}`,
+					"",
+					"Point an MCP client at the endpoint above:",
+					'  { "mcpServers": { "cozyclay": { "url": ' +
+						`"http://127.0.0.1:${port}/mcp" } } }`,
+					"",
+				].join("\n"),
+			);
+			return;
+		}
+
+		if (path === "/mcp") {
+			const existing = sessions.get(req.headers["mcp-session-id"])?.transport;
+			const ready = existing ? Promise.resolve(existing) : openSession();
+			ready
+				.then((transport) => transport.handleRequest(req, res))
+				.catch((error) => {
+					if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+					res.end(JSON.stringify({ error: String(error?.message ?? error) }));
+				});
+			return;
+		}
+
+		res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+		res.end(`not found — the MCP endpoint is /mcp\n`);
+	});
+
+	http.listen(port, "127.0.0.1", () => {
+		console.log(`CozyClay MCP on http://127.0.0.1:${port}/mcp  (${TOOL_COUNT} tools)`);
+	});
+}
