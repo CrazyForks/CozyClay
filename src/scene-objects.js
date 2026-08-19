@@ -35,7 +35,10 @@ const DEG = Math.PI / 180;
  * open 500 m deck now, so the clamp is a guard against runaway coordinates,
  * not a wall — it stops just inside the floor's edge. */
 const ROOM_LIMIT = 240;
-const CEILING = 6;
+// Headroom, not a ceiling: the walls (and the 6.2 m room they implied) are
+// gone, so this only stops a runaway coordinate. A rocket, a crane or a
+// skyline piece all have to fit under it.
+const CEILING = 240;
 const SCALE_MIN = 0.1;
 const SCALE_MAX = 100;
 

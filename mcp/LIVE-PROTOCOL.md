@@ -32,13 +32,13 @@ scene document already uses.
 | name | args | value | notes |
 | --- | --- | --- | --- |
 | `ping` | `{}` | `{ "pong": true }` | liveness |
-| `describe` | `{}` | `{ sceneName, camera: { x, y, z, focalMm }, characters: [{ id, subject, x, z, rot, hidden }], objects: [{ id, name, x, y, z, rot }] }` | read the live scene |
+| `describe` | `{}` | `{ sceneName, camera: { x, y, z, focalMm }, characters: [{ id, subject, x, z, rot, hidden }], objects: [{ id, name, x, y, z, rot, scaleX, scaleY, scaleZ, footprint, height }] }` | read the live scene; object scale and footprint travel too, so sizes are reported from what was actually built |
 | `set_camera` | `{ x?, y?, z?, focalMm? }` | `{ camera }` | omitted fields keep their value; the **viewport must visibly move** |
 | `add_character` | `{ subject, x?, z?, rot? }` | `{ id }` | |
 | `update_character` | `{ ref, x?, z?, rot?, subject?, hidden? }` | `{ id }` | `ref` = id, letter (`"A"`) or 1-based slot |
 | `remove_character` | `{ ref }` | `{ id }` | must refuse to empty the cast |
 | `place_object` | `{ kind, x?, z?, y?, rot? }` | `{ id }` | `kind` from OBJECT_LIBRARY |
-| `update_object` | `{ id, x?, y?, z?, rot?, scale?, color? }` | `{ id }` | |
+| `update_object` | `{ id, x?, y?, z?, rot?, rotX?, rotZ?, scale?, scaleX?, scaleY?, scaleZ?, color? }` | `{ id }` | `scale` sets all three axes; per-axis values override it |
 | `remove_object` | `{ id }` | `{ id }` | |
 | `load_scenes` | `{ document }` | `{ sceneName }` | replace the whole scene document (same shape `serializeSceneDocument` emits); the big hammer that guarantees parity |
 

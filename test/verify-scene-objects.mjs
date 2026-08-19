@@ -322,14 +322,20 @@ expect(
 );
 
 // The clamp lives in updateSceneObject alone: the pure patch reports the raw
-// 6.00005 m contact (a support top a hair above the 6 m ceiling, admitted by
-// the EPS tolerance because the object's base sits exactly at the ceiling)
-// and the applied record is capped at 6.
-const tallStack = { ...box, id: "stack", height: 6.00005 };
-const overCeiling = dropToSurfacePatch(cubeAt("up", 0, 0, 6), [tallStack]);
-expect("the drop patch itself is not clamped", overCeiling !== null && overCeiling.y === 6.00005, JSON.stringify(overCeiling));
-const clamped = updateSceneObject([cubeAt("up", 0, 0, 6), tallStack], "up", overCeiling)[0];
-expect("a composed drop still hits the ceiling clamp", clamped.y === 6, JSON.stringify(clamped));
+// contact (a support top a hair above the headroom limit, admitted by the EPS
+// tolerance because the object's base sits exactly at that limit) and the
+// applied record is capped at the limit. Derived from the limit rather than
+// written as a literal, so raising the headroom cannot silently void this.
+const HEADROOM = updateSceneObject([cubeAt("probe", 0, 0, 0)], "probe", { y: 1e6 })[0].y;
+const tallStack = { ...box, id: "stack", height: HEADROOM + 0.00005 };
+const overCeiling = dropToSurfacePatch(cubeAt("up", 0, 0, HEADROOM), [tallStack]);
+expect(
+	"the drop patch itself is not clamped",
+	overCeiling !== null && overCeiling.y === HEADROOM + 0.00005,
+	JSON.stringify(overCeiling),
+);
+const clamped = updateSceneObject([cubeAt("up", 0, 0, HEADROOM), tallStack], "up", overCeiling)[0];
+expect("a composed drop still hits the ceiling clamp", clamped.y === HEADROOM, JSON.stringify(clamped));
 
 // A 0.5 x 4 m plank at 45 degrees: the yawed AABB is a ~3.18 m square, so a
 // cube at x = 0.5 (which the unrotated 0.5 m-wide footprint would miss) is

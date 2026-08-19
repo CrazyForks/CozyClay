@@ -2377,7 +2377,15 @@ globalThis.playMode = centerTab === "play";
 				sceneName: live.scenes.find((scene) => scene.id === live.activeSceneId)?.name ?? "",
 				camera: { ...live.camera, focalMm: Math.round(fovToFocalMm((live.fovDeg * Math.PI) / 180) * 100) / 100 },
 				characters: live.characters.map((entry) => ({ id: entry.id, subject: entry.subject, x: entry.x, z: entry.z, rot: entry.rot, hidden: entry.hidden })),
-				objects: live.objects.map((object) => ({ id: object.id, name: object.name, x: object.x, y: object.y, z: object.z, rot: object.rot })),
+				// Scale and the library footprint travel with each object: the server
+				// reports real sizes from them, and without them every prop reads as
+				// 1x1x1 no matter how it was actually built.
+				objects: live.objects.map((object) => ({
+					id: object.id, name: object.name,
+					x: object.x, y: object.y, z: object.z, rot: object.rot,
+					scaleX: object.scaleX, scaleY: object.scaleY, scaleZ: object.scaleZ,
+					footprint: object.footprint, height: object.height,
+				})),
 			};
 		};
 		const replaceCharacters = (next) => {
@@ -2467,13 +2475,17 @@ globalThis.playMode = centerTab === "play";
 			update_object: (args) => {
 				const live = liveStateRef.current;
 				if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
-				const patch = finitePatch(args, ["x", "y", "z", "rot"]);
+				const patch = finitePatch(args, ["x", "y", "z", "rot", "rotX", "rotZ"]);
+				// A uniform `scale` is the common case; per-axis values are what a
+				// squashed disc or a stretched column needs, exactly as the
+				// inspector's three sliders provide. Per-axis wins when both come.
 				if (args.scale !== undefined) {
 					if (!Number.isFinite(args.scale)) throw new Error("Invalid scale");
 					patch.scaleX = args.scale;
 					patch.scaleY = args.scale;
 					patch.scaleZ = args.scale;
 				}
+				Object.assign(patch, finitePatch(args, ["scaleX", "scaleY", "scaleZ"]));
 				if (args.color !== undefined) {
 					if (typeof args.color !== "string") throw new Error("Invalid color");
 					patch.color = args.color;

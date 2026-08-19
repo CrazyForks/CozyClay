@@ -39,6 +39,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { z } from "zod";
 
 import { startLiveHub } from "./live-hub.mjs";
+import { PROMPT_GUIDE, normalizePhases } from "./ardy-prompts.mjs";
 
 import {
 	CAMERA_MOVES,
@@ -178,14 +179,18 @@ const applyLiveDescription = (description) => {
 			const previous = prior.get(object.id);
 			const kind = OBJECT_LIBRARY.find(({ label }) => object.name === label || object.name?.startsWith(`${label} `))?.kind;
 			const defaults = previous ?? (kind ? createSceneObject(kind, sc.objects, object) : null);
+			// The editor is the source of truth for anything it reports; the
+			// library defaults only fill what the frame omits. Defaulting AFTER
+			// the spread would reset a reported scale back to 1 and make every
+			// prop measure 1x1x1 no matter how it was actually built.
 			return {
 				...defaults,
-				...object,
 				footprint: defaults?.footprint ?? { width: 1, depth: 1 },
 				height: defaults?.height ?? 1,
 				scaleX: defaults?.scaleX ?? 1,
 				scaleY: defaults?.scaleY ?? 1,
 				scaleZ: defaults?.scaleZ ?? 1,
+				...object,
 			};
 		});
 	}
@@ -677,10 +682,18 @@ registerTool(
 		title: "Generate character motion (ARDY)",
 		description:
 			"Generate a multi-phase motion clip through the ARDY bridge and, when a live editor is " +
-			"connected, load it onto the active character so it appears on the timeline. Phases are " +
-			"plain-language beats in order, e.g. ['stands up from a chair', 'runs forward', 'trips and falls'].",
+			"connected, load it onto the active character so it appears on the timeline.\n\n" +
+			PROMPT_GUIDE,
 		inputSchema: {
-			phases: z.array(z.string().min(3)).min(2).max(8).describe("motion beats, in order"),
+			phases: z
+				.array(z.string().min(3))
+				.min(2)
+				.max(8)
+				.describe(
+					"one beat per phase, in order. Write each as ARDY writes them: " +
+						'"A person walks in a circle." — subject, one action, present tense, ' +
+						"full stop. Phases are normalised to that shape before generation.",
+				),
 			seconds: z.number().min(2).max(60).default(9).describe("total clip length in seconds"),
 			seed: z.number().int().optional().describe("generation seed"),
 			motion_url: z
@@ -699,22 +712,36 @@ registerTool(
 			return text("The ARDY bridge is not running on " + bridge + ". Start the studio with `npm run dev` (it launches the bridge) and try again.");
 		}
 
+		// Every phase is rewritten into ARDY's own sentence shape before it is
+		// ever sent; a compound beat is split into the extra phase it was hiding.
+		const normalized = normalizePhases(phases);
+		const prompts = normalized.texts.filter(Boolean);
+		if (prompts.length < 2) return text("Give at least two distinct motion beats.");
+
 		// ARDY Core is 20 fps; segments must tile 0..int(seconds*20) exactly.
 		const clipFrames = Math.floor(seconds * 20);
-		const per = Math.floor(clipFrames / phases.length);
-		const segments = phases.map((prompt, i) => ({
+		const per = Math.floor(clipFrames / prompts.length);
+		const segments = prompts.map((prompt, i) => ({
 			startFrame: i * per,
-			endFrame: i === phases.length - 1 ? clipFrames : (i + 1) * per,
+			endFrame: i === prompts.length - 1 ? clipFrames : (i + 1) * per,
 			prompt,
 		}));
+		const rewrites = normalized.notes
+			.map((notes, i) => (notes.length ? `  ${i + 1}. ${prompts[i]}  ← ${notes.join("; ")}` : null))
+			.filter(Boolean);
+		const promptNote = rewrites.length
+			? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` +
+				(normalized.expanded ? "\n  (a compound beat became its own phase)" : "") +
+				(normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "")
+			: "";
 
 		const deliver = async (motionUrl, note) => {
 			const summary = `${note} ${seconds}s / ${clipFrames} frames — ${segments.length} phases:\n` +
 				segments.map((s) => `  ${s.startFrame}-${s.endFrame}  ${s.prompt}`).join("\n") +
-				`\nmotion: ${motionUrl}`;
+				`\nmotion: ${motionUrl}${promptNote}`;
 			if (!liveHub?.connected) return text(`${summary}\n\nNo live editor connected — open the studio and it can load this URL.`);
 			try {
-				await liveHub.command("load_motion", { url: motionUrl, prompt: phases.join(", then "), blocks: segments });
+				await liveHub.command("load_motion", { url: motionUrl, prompt: prompts.join(" "), blocks: segments });
 				return text(`${summary}\n\nLoaded onto the active character with ${segments.length} prompt blocks on the timeline — press play.`);
 			} catch (error) {
 				return text(`${summary}\n\nGenerated, but the editor did not take it: ${error.message}`);
@@ -724,7 +751,7 @@ registerTool(
 		if (motion_url) return deliver(motion_url, "Reusing");
 		// segments run the autoregressive sequence generator, which is
 		// incompatible with pose pinning — the bridge requires posePin:false.
-		const body = { prompt: phases.join(", then "), duration: seconds, segments, posePin: false };
+		const body = { prompt: prompts.join(" "), duration: seconds, segments, posePin: false };
 		if (seed !== undefined) body.seed = seed;
 
 		const res = await fetch(`${bridge}/ardy/generate`, {
@@ -776,7 +803,12 @@ registerTool(
 			y: z.number().optional(),
 			z: z.number().optional(),
 			facing: z.number().optional().describe("yaw in degrees"),
+			tilt: z.number().optional().describe("pitch in degrees (rotation about x)"),
+			roll: z.number().optional().describe("roll in degrees (rotation about z)"),
 			scale: z.number().positive().optional().describe("uniform scale factor"),
+			scale_x: z.number().positive().optional().describe("width scale; overrides `scale` on this axis"),
+			scale_y: z.number().positive().optional().describe("height scale; overrides `scale` on this axis"),
+			scale_z: z.number().positive().optional().describe("depth scale; overrides `scale` on this axis"),
 			color: z
 				.string()
 				.regex(/^#[0-9a-fA-F]{6}$/)
@@ -784,10 +816,13 @@ registerTool(
 				.describe("hex colour, e.g. #d9b18c"),
 		},
 	},
-	async ({ id, x, y, z: zPos, facing, scale, color }) => {
+	async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("update_object", { id, x, y, z: zPos, rot: facing, scale, color });
+				await liveHub.command("update_object", {
+					id, x, y, z: zPos, rot: facing, rotX: tilt, rotZ: roll,
+					scale, scaleX: scale_x, scaleY: scale_y, scaleZ: scale_z, color,
+				});
 				await refreshLiveDescription();
 				return text(`Updated ${id}.\n\n${sceneReport()}`);
 			} catch (error) {
@@ -803,11 +838,16 @@ registerTool(
 		if (y !== undefined) patch.y = y;
 		if (zPos !== undefined) patch.z = zPos;
 		if (facing !== undefined) patch.rot = facing;
+		if (tilt !== undefined) patch.rotX = tilt;
+		if (roll !== undefined) patch.rotZ = roll;
 		if (scale !== undefined) {
 			patch.scaleX = scale;
 			patch.scaleY = scale;
 			patch.scaleZ = scale;
 		}
+		if (scale_x !== undefined) patch.scaleX = scale_x;
+		if (scale_y !== undefined) patch.scaleY = scale_y;
+		if (scale_z !== undefined) patch.scaleZ = scale_z;
 		if (color !== undefined) patch.color = color;
 		sc.objects = updateSceneObject(sc.objects, id, patch);
 		return text(`Updated ${id}.\n\n${sceneReport()}`);
