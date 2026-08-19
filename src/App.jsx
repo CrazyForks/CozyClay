@@ -3736,7 +3736,23 @@ globalThis.playMode = centerTab === "play";
 			setTlFps(decoded.fps);
 			setTlFrame(0);
 			setTlPlaying(false);
-			setToast(isKo ? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps` : `Motion loaded: ${decoded.frames} frames @ ${decoded.fps} fps`);
+			// IK keys correct SPECIFIC frames of the take they were authored on, so
+			// a replacement take leaves them pointing at poses that no longer exist
+			// — the same reason a trim clears them. The Full-Body lane would
+			// otherwise keep showing corrections that belong to a discarded clip.
+			const hadIkKeys = ikStateRef.current.keys.size > 0;
+			if (hadIkKeys) {
+				ikStateRef.current.keys.clear();
+				ikStateRef.current.tracked.clear();
+				ikStateRef.current.plants.clear();
+				setIkTick((value) => value + 1);
+			}
+			setCommittedIkEdits([]);
+			setToast(
+				isKo
+					? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps${hadIkKeys ? " — 이전 테이크의 IK 키는 초기화됐어요" : ""}`
+					: `Motion loaded: ${decoded.frames} frames @ ${decoded.fps} fps${hadIkKeys ? " — IK keys from the previous take were cleared" : ""}`,
+			);
 			// The applied stature, so a caller does not have to re-derive it
 			// (and cannot derive a different one).
 			return scale;
@@ -3783,6 +3799,15 @@ globalThis.playMode = centerTab === "play";
 		setMotion(null);
 		setMotionError("");
 		motionFullRef.current.delete(activeChar.id);
+		// Corrections belong to the take. With the take gone they would sit on the
+		// Full-Body lane describing frames of nothing.
+		if (ikStateRef.current.keys.size > 0) {
+			ikStateRef.current.keys.clear();
+			ikStateRef.current.tracked.clear();
+			ikStateRef.current.plants.clear();
+			setIkTick((value) => value + 1);
+		}
+		setCommittedIkEdits([]);
 		// A cleared clip leaves the body canonical: the stature belonged to the
 		// take, not to the character.
 		setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? { ...entry, scale: 1 } : entry));
@@ -4636,7 +4661,12 @@ function resizePromptClip(id, edge, rawFrame) {
 		// Capture every block boundary plus every authored IK key. Each sample
 		// is the composite base-motion + IK pose at that frame and carries the
 		// live ARDY root recovered from positional skinning.
-		const editedSegments = motion && hasPromptSchedule
+		// A block "edit" is a LOCAL correction of the loaded take, addressed to
+		// that take's source npz. Without a bridge source there is nothing to edit
+		// against, so such keys must not divert a fresh generation into the edit
+		// path — that path sends no segments, and the whole schedule would collapse
+		// to the first block's prompt.
+		const editedSegments = motion?.url && hasPromptSchedule
 			? segments.filter((segment) =>
 				ikFrames.some((frame) => frame >= segment.startFrame && frame < segment.endFrame)
 			)

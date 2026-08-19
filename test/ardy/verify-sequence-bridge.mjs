@@ -193,5 +193,27 @@ expect(
 	constrainedRunner.includes("--root-2d requires --duration <= 10 s")
 );
 
+/* ------------------- the schedule survives stale IK keys ------------------ */
+// A multi-block generation collapsed to the FIRST block's prompt whenever IK
+// keys from a discarded take were still around: those keys made the run look
+// like a local block edit, and the edit path sends motionEdit instead of
+// segments. The guard is that an edit is only possible against a take that has
+// a bridge source, so keys alone can never divert a fresh generation.
+const app = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
+
+expect(
+	"a block edit requires the loaded take's bridge source",
+	/const editedSegments = motion\?\.url && hasPromptSchedule/.test(app),
+);
+expect(
+	"a prompt schedule still ships its segments when it is not an edit",
+	app.includes("} else if (hasPromptSchedule) body.segments = toArdySegments(segments);"),
+);
+expect(
+	"replacing a take clears the corrections authored against the old one",
+	/IK keys correct SPECIFIC frames of the take they were authored on/.test(app) &&
+		/const hadIkKeys = ikStateRef\.current\.keys\.size > 0;/.test(app),
+);
+
 if (failures) process.exit(1);
 console.log("all ARDY sequence bridge checks PASS");
