@@ -77,8 +77,50 @@ export const OBJECT_LIBRARY = [
  * inspector. */
 export const OBJECT_COLORS = ["#e2e5e6", GREY_BOX, "#9aa1a5", "#767d81", "#d9b18c", "#8fae9b"];
 
+/**
+ * A cutout is a standee: an imported image standing on a card. Its size is NOT
+ * library data — the height is measured by the user and the width follows the
+ * picture's own aspect — so the record carries `assetId`, `aspect` and
+ * `height`, and the footprint is DERIVED from them. Deriving rather than
+ * storing is what stops a card persisting a width its picture disagrees with.
+ */
+export const CUTOUT_KIND = "cutout";
+/** Card thickness in metres: thin enough to read as flat, thick enough that
+ * the plan board and dropToSurfacePatch still have a rectangle to work on. */
+export const CUTOUT_THICKNESS = 0.02;
+/** A fresh cutout stands as tall as the figure it blocks against
+ * (SUBJECT_HEIGHT_M), so the first thing you see is honest scale. */
+export const CUTOUT_DEFAULT_HEIGHT = 1.8;
+const CUTOUT_HEIGHT_MIN = 0.05;
+const CUTOUT_ASPECT_MIN = 0.02;
+const CUTOUT_ASPECT_MAX = 50;
+/** Cutouts carry their own colour: unlike a primitive, the card IS the thing
+ * it depicts, so it is tinted white and multiplies the image untouched. */
+const CUTOUT_TINT = "#ffffff";
+const CUTOUT_ENTRY = {
+	kind: CUTOUT_KIND,
+	label: "Cutout",
+	group: "Images",
+	footprint: { width: 1, depth: CUTOUT_THICKNESS },
+	height: CUTOUT_DEFAULT_HEIGHT,
+	color: CUTOUT_TINT,
+};
+
+/** Every kind that can exist in a scene: the catalogue you can create from,
+ * plus the kinds that arrive by import and so are deliberately absent from the
+ * "Add object" menu (a cutout without an image has nothing to draw). */
 function objectLibraryEntry(kind) {
+	if (kind === CUTOUT_KIND) return CUTOUT_ENTRY;
 	return OBJECT_LIBRARY.find((entry) => entry.kind === kind) ?? null;
+}
+
+const cutoutHeight = (value) => clamp(value, CUTOUT_HEIGHT_MIN, CEILING);
+const cutoutAspect = (value) => clamp(value, CUTOUT_ASPECT_MIN, CUTOUT_ASPECT_MAX);
+
+/** The plan-board rectangle a card of this height and picture aspect occupies.
+ * `aspect` is the image's width / height. */
+export function cutoutFootprint(height, aspect) {
+	return { width: cutoutHeight(height) * cutoutAspect(aspect), depth: CUTOUT_THICKNESS };
 }
 
 export function sceneObjectHierarchyId(id) {
@@ -95,6 +137,9 @@ export function sceneObjectIdFromHierarchy(hierarchyId) {
  * camera); everything else starts neutral so the first drag is predictable.
  */
 export function createSceneObject(kind, existing = [], placement = {}) {
+	// Cutouts come from an import, never from the catalogue: without an asset
+	// id the record has nothing to draw. `createCutoutObject` is their door.
+	if (kind === CUTOUT_KIND) return null;
 	const entry = objectLibraryEntry(kind);
 	if (!entry) return null;
 	const names = new Set(existing.map((object) => object.name));
@@ -120,6 +165,51 @@ export function createSceneObject(kind, existing = [], placement = {}) {
 		parent: null,
 		footprint: { ...entry.footprint },
 		height: entry.height,
+	};
+}
+
+/**
+ * A fresh cutout for an imported image. `assetId` addresses the picture in the
+ * asset store — the record never carries the bytes, which is what keeps a
+ * scene small enough to live in localStorage — and `aspect` is the image's
+ * width / height so the card can be sized by height alone.
+ *
+ * `name` seeds the display name (the file's own name is the obvious caller
+ * choice); everything else starts neutral, exactly like a catalogue object.
+ */
+export function createCutoutObject({ assetId, aspect = 1, height = CUTOUT_DEFAULT_HEIGHT, name = "" } = {}, existing = [], placement = {}) {
+	if (typeof assetId !== "string" || !assetId) return null;
+	const pictureAspect = cutoutAspect(Number(aspect));
+	const cardHeight = cutoutHeight(Number(height));
+	if (!Number.isFinite(pictureAspect) || !Number.isFinite(cardHeight)) return null;
+	const base = typeof name === "string" && name.trim() ? name.trim() : CUTOUT_ENTRY.label;
+	const names = new Set(existing.map((object) => object.name));
+	let displayName = base;
+	for (let n = 2; names.has(displayName); n += 1) displayName = `${base} ${n}`;
+	const ids = new Set(existing.map((object) => object.id));
+	let id = CUTOUT_KIND;
+	for (let n = 2; ids.has(id); n += 1) id = `${CUTOUT_KIND}-${n}`;
+	return {
+		id,
+		name: displayName,
+		renderer: CUTOUT_KIND,
+		x: clamp(Number(placement.x) || 0, -ROOM_LIMIT, ROOM_LIMIT),
+		y: 0,
+		z: clamp(Number(placement.z) || 0, -ROOM_LIMIT, ROOM_LIMIT),
+		rot: wrapAngle(Number(placement.rot) || 0),
+		rotX: 0,
+		rotZ: 0,
+		scaleX: 1,
+		scaleY: 1,
+		scaleZ: 1,
+		color: CUTOUT_TINT,
+		parent: null,
+		// Key order matches what `normalizeSceneObject` writes, so a record
+		// survives a storage round trip byte-for-byte.
+		assetId,
+		aspect: pictureAspect,
+		footprint: cutoutFootprint(cardHeight, pictureAspect),
+		height: cardHeight,
 	};
 }
 
@@ -203,6 +293,22 @@ export function updateSceneObject(objects, id, patch) {
 			if (typeof patch[key] !== "string" || !patch[key] || patch[key] === object[key]) continue;
 			update[key] = patch[key];
 		}
+		// A cutout is sized in metres — you measure something in the picture and
+		// type its height — so `height` and `aspect` are writable where every
+		// other kind takes them from the library. The footprint is DERIVED here
+		// and never patched: one owner for the card's width is what keeps it
+		// from disagreeing with its own image.
+		if (object.renderer === CUTOUT_KIND) {
+			const patchedHeight = patch.height === undefined ? NaN : cutoutHeight(Number(patch.height));
+			const patchedAspect = patch.aspect === undefined ? NaN : cutoutAspect(Number(patch.aspect));
+			const height = Number.isFinite(patchedHeight) ? patchedHeight : object.height;
+			const aspect = Number.isFinite(patchedAspect) ? patchedAspect : object.aspect;
+			if (height !== object.height || aspect !== object.aspect) {
+				update.height = height;
+				update.aspect = aspect;
+				update.footprint = cutoutFootprint(height, aspect);
+			}
+		}
 		if (!Object.keys(update).length) return object;
 		changed = true;
 		return { ...object, ...update };
@@ -253,6 +359,11 @@ export function normalizeSceneObject(record) {
 	const entry = objectLibraryEntry(record.renderer);
 	if (!entry) return null;
 	if (typeof record.id !== "string" || !record.id) return null;
+	// A cutout addresses its picture by id. A record without one has nothing to
+	// draw, so it is dropped rather than restored as a blank card — the same
+	// rule an unknown renderer already gets.
+	const isCutout = entry.kind === CUTOUT_KIND;
+	if (isCutout && (typeof record.assetId !== "string" || !record.assetId)) return null;
 	// Defensive import fallback, not a migration: hand-authored or external
 	// payloads may carry one `scale` (the pre-split record shape). It fans
 	// out to all three axes only when no axis is present — an explicit
@@ -281,8 +392,18 @@ export function normalizeSceneObject(record) {
 		// Group membership. null is a top-level object; the id of another object
 		// makes this one ride along when that object moves.
 		parent: typeof record.parent === "string" && record.parent ? record.parent : null,
-		footprint: { ...entry.footprint },
-		height: entry.height,
+		// Library kinds take their size from the library — a stored footprint is
+		// stale data, not a fact. A cutout is the exception: its size IS
+		// per-instance, so height and aspect are repaired from the record and
+		// the footprint is rebuilt from the pair.
+		...(isCutout
+			? {
+					assetId: record.assetId,
+					aspect: cutoutAspect(pick(record.aspect, 1)),
+					footprint: cutoutFootprint(pick(record.height, CUTOUT_DEFAULT_HEIGHT), pick(record.aspect, 1)),
+					height: cutoutHeight(pick(record.height, CUTOUT_DEFAULT_HEIGHT)),
+				}
+			: { footprint: { ...entry.footprint }, height: entry.height }),
 	};
 }
 

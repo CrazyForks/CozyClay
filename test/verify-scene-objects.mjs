@@ -6,10 +6,15 @@ import {
 	SCENE_STORAGE_KEY,
 	SCENE_VERSION,
 	loadScene,
+	normalizeSceneObject,
 	serializeScene,
 	DEFAULT_SCENE_OBJECTS,
 	OBJECT_LIBRARY,
 	createSceneObject,
+	createCutoutObject,
+	cutoutFootprint,
+	CUTOUT_KIND,
+	CUTOUT_THICKNESS,
 	dropToSurfacePatch,
 	placementInFront,
 	objectSize,
@@ -368,6 +373,89 @@ expect(
 expect(
 	"a 45-degree support does not create phantom overlap beyond its AABB",
 	dropToSurfacePatch(cubeAt("clear", 2.5, 0, 1), [plank]).y === 0,
+);
+
+/* ----------------------------------------------------------- cutouts --- */
+
+const sofa = createCutoutObject({ assetId: "asset-sofa", aspect: 2, height: 0.9, name: "Sofa" });
+expect(
+	"a cutout is sized by its measured height and its picture's aspect",
+	sofa.height === 0.9 && sofa.footprint.width === 1.8 && sofa.footprint.depth === CUTOUT_THICKNESS,
+	JSON.stringify(sofa),
+);
+expect("a cutout keeps the asset id its picture lives under", sofa.assetId === "asset-sofa" && sofa.renderer === CUTOUT_KIND);
+expect(
+	"a cutout without a picture is refused",
+	createCutoutObject({ assetId: "" }) === null && createCutoutObject({}) === null && createCutoutObject() === null,
+);
+expect("cutouts are not creatable from the catalogue", createSceneObject(CUTOUT_KIND, []) === null);
+expect(
+	"the catalogue menu does not offer cutouts",
+	!OBJECT_LIBRARY.some((entry) => entry.kind === CUTOUT_KIND),
+);
+expect(
+	"cutout names and ids stay unique against the scene",
+	createCutoutObject({ assetId: "asset-2", name: "Sofa" }, [sofa]).name === "Sofa 2" &&
+		createCutoutObject({ assetId: "asset-2", name: "Sofa" }, [sofa]).id === "cutout-2",
+);
+
+const resized = updateSceneObject([sofa], sofa.id, { height: 1.8 })[0];
+expect(
+	"editing a cutout's height rederives its footprint",
+	resized.height === 1.8 && resized.footprint.width === 3.6,
+	JSON.stringify(resized),
+);
+expect(
+	"a cutout's footprint cannot be patched directly",
+	updateSceneObject([sofa], sofa.id, { footprint: { width: 99, depth: 99 } })[0] === sofa,
+);
+expect(
+	"a cutout is clamped to the room's ceiling and above zero",
+	updateSceneObject([sofa], sofa.id, { height: 99 })[0].height === 6 &&
+		updateSceneObject([sofa], sofa.id, { height: 0 })[0].height === 0.05,
+);
+expect(
+	"a nonsense height or aspect leaves the card alone",
+	updateSceneObject([sofa], sofa.id, { height: "tall" })[0] === sofa &&
+		updateSceneObject([sofa], sofa.id, { aspect: Number.NaN })[0] === sofa,
+);
+expect(
+	"a library object ignores the cutout channels",
+	updateSceneObject([cube], cube.id, { height: 3, aspect: 2 })[0] === cube,
+);
+
+const cutoutTrip = loadScene(serializeScene([sofa]));
+expect(
+	"a cutout round-trips through storage",
+	cutoutTrip.status === "valid" && JSON.stringify(cutoutTrip.objects) === JSON.stringify([sofa]),
+	JSON.stringify(cutoutTrip),
+);
+expect(
+	"a stored cutout footprint is rebuilt from height and aspect, never trusted",
+	(() => {
+		const stale = { ...sofa, footprint: { width: 99, depth: 99 } };
+		const repaired = normalizeSceneObject(stale);
+		return repaired.footprint.width === 1.8 && repaired.footprint.depth === CUTOUT_THICKNESS;
+	})(),
+);
+expect(
+	"a cutout record with no asset id is dropped like an unknown renderer",
+	(() => {
+		const { assetId, ...orphan } = sofa;
+		const result = loadScene(JSON.stringify({ version: 1, objects: [orphan] }));
+		return result.objects.length === 0 && result.dropped === 1;
+	})(),
+);
+expect(
+	"a cutout stored out of range comes back inside it",
+	(() => {
+		const repaired = normalizeSceneObject({ ...sofa, height: 99, aspect: -4 });
+		return repaired.height === 6 && repaired.aspect === 0.02 && repaired.footprint.width === cutoutFootprint(6, 0.02).width;
+	})(),
+);
+expect(
+	"a card stands on a box like any other object",
+	dropToSurfacePatch({ ...sofa, y: 1.5 }, [box]).y === 1,
 );
 
 if (failures) process.exit(1);
