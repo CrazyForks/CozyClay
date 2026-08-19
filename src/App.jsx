@@ -726,13 +726,7 @@ function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMo
 			    freely on the deck, both axes at once (Unity's quad-between-axes).
 			    It lives just off the origin so the axis sleeves keep their own
 			    presses near the center. */}
-			<mesh
-				position={[0.34, 0.02, 0.34]}
-				rotation={[-Math.PI / 2, 0, 0]}
-				userData={{ axis: "xz" }}
-				onPointerOver={() => (gl.domElement.style.cursor = "grab")}
-				onPointerOut={() => (gl.domElement.style.cursor = "")}
-			>
+			<mesh position={[0.34, 0.02, 0.34]} rotation={[-Math.PI / 2, 0, 0]} raycast={() => null}>
 				<planeGeometry args={[0.3, 0.3]} />
 				<meshBasicMaterial
 					color={dragAxis === "xz" ? "#ffd23d" : "#ffffff"}
@@ -742,6 +736,19 @@ function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMo
 					depthWrite={false}
 					toneMapped={false}
 				/>
+			</mesh>
+			{/* the pad's pick target is an invisible BOX standing on the quad:
+			    the editor camera sits near eye height, so a flat quad is a
+			    few-pixel sliver on screen and a ray only ever grazes it —
+			    volume is what makes it pressable from a shallow angle. */}
+			<mesh
+				position={[0.34, 0.14, 0.34]}
+				userData={{ axis: "xz" }}
+				onPointerOver={() => (gl.domElement.style.cursor = "grab")}
+				onPointerOut={() => (gl.domElement.style.cursor = "")}
+			>
+				<boxGeometry args={[0.3, 0.28, 0.3]} />
+				<meshBasicMaterial transparent opacity={0} depthWrite={false} />
 			</mesh>
 			{GIZMO_AXIS.map(({ axis, color, rot }) => {
 				const active = dragAxis === axis;
