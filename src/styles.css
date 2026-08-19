@@ -7556,34 +7556,43 @@ input[type=range] {
 
 /* The matte tools read as two hands: what the brush does on the left, what to
    do about what it did on the right. Clear sits under Undo/Redo because it is
-   the same kind of act — taking work back — only all of it. */
+   the same kind of act — taking work back — only all of it.
+
+   The buttons are one fixed size and the SPACE between the two groups is what
+   flexes, so the panel can be dragged wider without five buttons growing into
+   five different shapes. */
 
 .matte-tools {
-	display: grid;
-	grid-template-columns: 1fr 1fr;
-	align-items: start;
-	gap: 8px;
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
 	margin: 8px 0;
 }
 
 .matte-history {
-	display: grid;
-	gap: 8px;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 6px;
 }
 
-/* .presets.matte-modes is a flex row elsewhere; inside the tools block the two
-   halves have to line up, so each pair is a two-column grid of equal buttons. */
 .matte-tools .presets.matte-modes {
-	display: grid;
-	grid-template-columns: 1fr 1fr;
+	display: flex;
+	flex-wrap: nowrap;
 	gap: 6px;
 	margin: 0;
 }
 
-/* One button in a two-column grid would stretch across both; keeping it in the
-   right-hand column is what puts Clear under Redo rather than under Undo. */
-.matte-tools .presets.matte-clear {
-	grid-template-columns: 1fr;
-	justify-self: end;
-	width: calc(50% - 3px);
+.matte-tools .presets.matte-modes button {
+	/* One size for all five: wide enough for the longest label in either
+	   language ("Bring back", "모두 지우기") and identical for the shortest. */
+	/* Four of these plus the gaps have to fit the sidebar's own width, so the
+	   size is the largest that does — the labels are set to match it, not the
+	   other way round. */
+	flex: 0 0 auto;
+	width: 4.5rem;
+	padding: 9px 2px;
+	font-size: 11.5px;
+	white-space: nowrap;
 }
