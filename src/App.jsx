@@ -6506,38 +6506,48 @@ function resizePromptClip(id, edge, rawFrame) {
 														)}
 											</p>
 										</div>
-										<div className="presets matte-modes">
-											<button
-												type="button"
-												className={matteMode === "paint" ? "active" : ""}
-												onClick={() => {
-													setMatteMode("paint");
-													matteEditorRef.current?.setMode("paint");
-												}}
-											>
-												{ko("Cut out", "누끼 따기")}
-											</button>
-											<button
-												type="button"
-												className={matteMode === "erase" ? "active" : ""}
-												onClick={() => {
-													setMatteMode("erase");
-													matteEditorRef.current?.setMode("erase");
-												}}
-											>
-												{ko("Bring back", "되살리기")}
-											</button>
-											<button type="button" onClick={() => matteEditorRef.current?.clear()}>
-												{ko("Clear", "모두 지우기")}
-											</button>
-										</div>
-										<div className="presets matte-modes">
-											<button type="button" disabled={!matteStats.canUndo} onClick={() => matteEditorRef.current?.undo()}>
-												{ko("Undo", "실행 취소")}
-											</button>
-											<button type="button" disabled={!matteStats.canRedo} onClick={() => matteEditorRef.current?.redo()}>
-												{ko("Redo", "다시 실행")}
-											</button>
+										{/* Two hands: what the brush does on the left, what to do
+										    about what it did on the right. Clear sits under Undo and
+										    Redo because it is the same kind of act — taking work
+										    back — only all of it. */}
+										<div className="matte-tools">
+											<div className="presets matte-modes">
+												<button
+													type="button"
+													className={matteMode === "paint" ? "active" : ""}
+													onClick={() => {
+														setMatteMode("paint");
+														matteEditorRef.current?.setMode("paint");
+													}}
+												>
+													{ko("Cut out", "누끼 따기")}
+												</button>
+												<button
+													type="button"
+													className={matteMode === "erase" ? "active" : ""}
+													onClick={() => {
+														setMatteMode("erase");
+														matteEditorRef.current?.setMode("erase");
+													}}
+												>
+													{ko("Bring back", "되살리기")}
+												</button>
+											</div>
+											<div className="matte-history">
+												<div className="presets matte-modes">
+													<button type="button" disabled={!matteStats.canUndo} onClick={() => matteEditorRef.current?.undo()}>
+														{ko("Undo", "실행 취소")}
+													</button>
+													<button type="button" disabled={!matteStats.canRedo} onClick={() => matteEditorRef.current?.redo()}>
+														{ko("Redo", "다시 실행")}
+													</button>
+												</div>
+												<div className="presets matte-modes matte-clear">
+													<button type="button" onClick={() => matteEditorRef.current?.clear()}>
+														{ko("Clear", "모두 지우기")}
+													</button>
+												</div>
+											</div>
 										</div>
 										<div className="matte-slider">
 											<label htmlFor="matte-tolerance">{ko("Tolerance", "허용치")}</label>
