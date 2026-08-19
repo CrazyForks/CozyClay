@@ -1,6 +1,11 @@
-/** Move one prompt clip on the fixed ARDY block grid without changing its
+/** Move one prompt clip on the fixed prompt-block grid without changing its
  * duration. Overlaps are rejected because segment generation needs one prompt
- * per frame range; gaps remain valid and inherit the main prompt. */
+ * per frame range; gaps remain valid and inherit the main prompt.
+ *
+ * Clock-agnostic: `blockFrames` is the caller's grid, and App.jsx always
+ * passes ARDY_PROMPT_HORIZON_FRAMES (2 s on the 24 fps timeline clock = 48).
+ * The 40 default is only the bare-call fallback and means nothing on the
+ * wire — nothing here ever reaches the bridge unconverted. */
 export function movePromptClipFrames(clips, id, rawStartFrame, blockFrames = 40) {
 	const target = clips.find((clip) => clip.id === id);
 	if (!target) return clips;

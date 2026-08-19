@@ -18,8 +18,8 @@ import { ko, isKo } from "../locale.js";
  * and PlayView ride the keys segment by segment.
  */
 
-const DEFAULT_FRAME_COUNT = 300; // 15 s @ 20 fps, the ARDY Core cadence
-const DEFAULT_FPS = 20;
+const DEFAULT_FRAME_COUNT = 360; // 15 s @ 24 fps, the production clock the app timeline runs on
+const DEFAULT_FPS = 24;
 // Trackpad/wheel zoom over the FRAME ruler: the gesture changes only the
 // horizontal visual scale of the time surface — never frameCount, fps,
 // duration, waypoints or the generation request.

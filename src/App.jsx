@@ -6,6 +6,7 @@ import { SkeletonUtils } from "three/examples/jsm/Addons.js";
 import { buildArdyPose } from "./ardy/export.js";
 import { checkBridge, generate as ardyGenerate } from "./ardy/client.js";
 import { loadMotionFromUrl } from "./ardy/npz.js";
+import { retimeMotion } from "./ardy/retime.js";
 import { repairRecordedMp4 } from "./ardy/mp4-duration.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
@@ -398,9 +399,43 @@ const DEFAULT_SUBJECT2 = DEFAULT_SUBJECT_TWO;
 const DEFAULT_ENVIRONMENT = "a sunlit modern living room";
 const DEFAULT_CAMERA_POSITION = { x: 0.97, y: 1.62, z: 2.39 };
 const REST_BONES = Object.fromEntries(POSE_BONES.map((b) => [b.id, [0, 0, 0]]));
-const DEFAULT_DURATION_S = 15; // pre-motion timeline duration; shown as duration × 20 frames
+// Two clocks, one boundary. The app timeline runs the production 24 fps —
+// the rate the reference footage and the recorded export are counted in.
+// ARDY Core generates on its trained 20 fps clock and that cannot move, so
+// takes are RETIMED inbound (bridge → app, retimeMotion) and frame numbers
+// are CONVERTED outbound (app → bridge, toArdyFrame). Nothing between the
+// boundaries may mix the clocks.
+const TIMELINE_FPS = 24;
+const ARDY_FPS = 20;
+const toArdyFrame = (frame) => Math.round((frame * ARDY_FPS) / TIMELINE_FPS);
+
+// Outbound converters: timeline-frame entries → strictly-ascending bridge
+// frames. Rounding can land two timeline frames on one bridge frame; the
+// first wins — the bridge refuses non-ascending lists outright.
+function toArdyFrameEntries(entries) {
+	const out = [];
+	for (const entry of entries) {
+		const frame = toArdyFrame(entry.frame);
+		if (out.length && frame <= out[out.length - 1].frame) continue;
+		out.push({ ...entry, frame });
+	}
+	return out;
+}
+
+function toArdySegments(segments) {
+	const out = [];
+	for (const segment of segments) {
+		const startFrame = toArdyFrame(segment.startFrame);
+		const endFrame = toArdyFrame(segment.endFrame);
+		if (endFrame <= startFrame) continue; // a zero-length rounding remnant covers nothing
+		out.push({ ...segment, startFrame, endFrame });
+	}
+	return out;
+}
+
+const DEFAULT_DURATION_S = 15; // pre-motion timeline duration; shown as duration × TIMELINE_FPS frames
 const DEFAULT_PLAYBACK_SPEED = 1;
-const ARDY_PROMPT_HORIZON_FRAMES = 40; // core model horizon: 2 seconds at 20 fps
+const ARDY_PROMPT_HORIZON_FRAMES = 2 * TIMELINE_FPS; // core model horizon: 2 seconds, counted on the timeline clock
 const MAX_WAYPOINTS = 32; // ARDY bridge contract: a root path holds 2..32 distinct waypoint frames
 const ARDY_PROMPT_MAX = 500; // bridge contract: prompt must be non-empty, capped at 500 chars
 const ARDY_DURATION_MIN = 1; // the UI works in whole seconds; the bridge floor is 0.15 s
@@ -706,7 +741,7 @@ function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probeX, probeZ, c
     Two clocks can drive the move. Standalone preview runs on its own clock;
     follow mode slaves the move to the timeline playhead, so the camera and
     the character motion are two views of the same time axis — playing or
-    scrubbing frame 60 at 20 fps puts the camera exactly 3 s into its move. */
+    scrubbing frame 72 at 24 fps puts the camera exactly 3 s into its move. */
 function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, camRef, look, isInterrupted, onDone }) {
 	const clock = useRef(0);
 	const invalidate = useThree((state) => state.invalidate);
@@ -1520,7 +1555,7 @@ globalThis.playMode = centerTab === "play";
 	const [footSnap, setFootSnap] = useState(true);
 	const ikBodyDragRef = useRef(false); // true while a body drag is active
 	// How far (in frames) a correction eases back to the underlying motion
-	// outside its keyed range. 6 frames @ 20 fps = 0.3 s — long enough to
+	// outside its keyed range. 6 frames @ 24 fps = 0.25 s — long enough to
 	// hide the seam, short enough that a mid-clip fix stays visibly local.
 	const IK_CORRECTION_BLEND_FRAMES = 6;
 
@@ -1863,7 +1898,7 @@ globalThis.playMode = centerTab === "play";
 	const startupShotState = nestedShotStartup.state ?? shotStartup.state;
 	// Each editorial strip owns its camera keys. The playhead chooses the
 	// active strip; there is no shared key list that could blend through a cut.
-	const [shots, setShots] = useState(() => startupShotState?.shots ?? initialShots(startupShotState?.frameCount ?? DEFAULT_DURATION_S * 20));
+	const [shots, setShots] = useState(() => startupShotState?.shots ?? initialShots(startupShotState?.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS));
 	const [movePlaying, setMovePlaying] = useState(false);
 	// Follow slaves the move to the timeline playhead so camera and character
 	// motion share one time axis; off frees the camera while both stay set.
@@ -1901,8 +1936,8 @@ globalThis.playMode = centerTab === "play";
 	const [ardyReport, setArdyReport] = useState(null);
 	const [ardyOutcome, setArdyOutcome] = useState(null);
 	const ardyAbortRef = useRef(null);
-	// ARDY Core runs at 20 fps: the destination frame lives in [0, duration*20-1].
-	const maxDst = Math.max(0, Math.round(ardyDuration) * 20 - 1);
+	// Timeline frames for the configured duration: [0, duration*TIMELINE_FPS-1].
+	const maxDst = Math.max(0, Math.round(ardyDuration) * TIMELINE_FPS - 1);
 
 	/* --------------------------- motion workspace --------------------------- */
 	// The timeline playhead and the root waypoints are App-owned so the scene
@@ -1910,8 +1945,8 @@ globalThis.playMode = centerTab === "play";
 	const [tlFrame, setTlFrame] = useState(0);
 
 	const renderActive = useRenderActivity(tlPlaying || movePlaying);
-	const [tlFrameCount, setTlFrameCount] = useState(startupShotState?.frameCount ?? DEFAULT_DURATION_S * 20); // the generation clip length @ 20 fps
-	const [tlFps, setTlFps] = useState(20);
+	const [tlFrameCount, setTlFrameCount] = useState(startupShotState?.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS); // the clip length on the production clock
+	const [tlFps, setTlFps] = useState(TIMELINE_FPS);
 	const activeShotIdx = shotIndexAtFrame(shots, tlFrame);
 	const activeShot = shots[activeShotIdx] ?? null;
 	const cameraKeys = activeShot?.cameraKeys ?? [];
@@ -2000,7 +2035,7 @@ globalThis.playMode = centerTab === "play";
 			return railFollow ? { ...shot, camera: updateCameraBlock(camera, { railFollow: { mode: "range", ...railFollow } }) } : shot;
 		}));
 	}
-	const frameCountRef = useRef(DEFAULT_DURATION_S * 20);
+	const frameCountRef = useRef(DEFAULT_DURATION_S * TIMELINE_FPS);
 	frameCountRef.current = tlFrameCount;
 	// Root waypoints {frame, x, z, heading: null}, kept sorted by frame —
 	// the fixed bridge contract rejects out-of-order or duplicate frames.
@@ -2251,7 +2286,7 @@ globalThis.playMode = centerTab === "play";
 	function restoredShotState(scene) {
 		const restored = readShotAuthoringDocument(scene?.shotDocument ?? undefined);
 		if (restored.state) return restored.state;
-		const frameCount = DEFAULT_DURATION_S * 20;
+		const frameCount = DEFAULT_DURATION_S * TIMELINE_FPS;
 		return { shots: initialShots(frameCount), waypoints: [], frameCount };
 	}
 
@@ -2267,7 +2302,7 @@ globalThis.playMode = centerTab === "play";
 		});
 		setSceneObjects(objects);
 		setShots(shotState.shots);
-		setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * 20);
+		setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS);
 		setCharacters(stage.characters);
 		setRigs({});
 		setHasCharSheet(stage.hasCharSheet);
@@ -2386,7 +2421,7 @@ globalThis.playMode = centerTab === "play";
 	const [motionError, setMotionError] = useState("");
 
 	// Cast render props, memoized with Character itself (React.memo): during
-	// playback the playhead ticks 20 times a second, and a character whose
+	// playback the playhead ticks 24 times a second, and a character whose
 	// props did not change must not re-render its subtree.
 	const characterViews = useMemo(() => characters.flatMap((entry, index) => {
 		if (entry.hidden) return [];
@@ -2530,11 +2565,14 @@ globalThis.playMode = centerTab === "play";
 		else if (!rec.armed) setToast(ko("Recording cancelled before any frame was captured", "프레임을 캡처하기 전에 녹화가 취소됐어요"));
 	}
 
-	// Seedance's reference-video floor is 24 fps while ARDY clips run at 20.
-	// Recording plays the clip at 20/24 real time and stamps each captured
-	// frame 41.67 ms apart, so the exported file is exactly 24 fps at true
-	// motion speed — valid as a camera/motion reference out of the box.
-	const RECORD_FPS = 24;
+	// Seedance's reference-video floor is 24 fps — and so is the production
+	// timeline now, so capture and timeline share one clock: the playhead
+	// advances one timeline frame per captured frame, each stamped 41.67 ms
+	// apart. The exported file is exactly 24 fps at true motion speed (the
+	// old 20-fps timeline needed a 20/24 real-time warp for the same result),
+	// valid as a camera/motion reference out of the box. This is the EXPORT
+	// clock, never the ARDY wire clock — it does not go through toArdyFrame.
+	const RECORD_FPS = TIMELINE_FPS;
 
 	function toggleShotRecording() {
 		if (recRef.current) {
@@ -2964,7 +3002,10 @@ globalThis.playMode = centerTab === "play";
 			const previous = restoreRef.current;
 			restoreRef.current = null;
 			if (previous) restorePlaybackBones(previous.rig, previous.bones);
-			const decoded = await loadMotionFromUrl(url);
+			// Inbound boundary: an ARDY take (20 fps) or a filmed one (30/60)
+			// becomes a production-clock clip here, once, before anything on
+			// the timeline counts its frames. Same-rate input rides through.
+			const decoded = retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS);
 			const rig = activeRig;
 			if (!rig) throw new Error(ko("The active character's rig is not loaded", "활성 인물의 리그가 로드되지 않았어요"));
 			restoreRef.current = { rig, bones: snapshotPlaybackBones(rig) };
@@ -3027,9 +3068,9 @@ globalThis.playMode = centerTab === "play";
 	function clearMotion() {
 		setMotion(null);
 		setMotionError("");
-		// Back to the pre-generation timeline: the current duration at 20 fps.
+		// Back to the pre-generation timeline: the current duration on the production clock.
 		setTlFrameCount(maxDst + 1);
-		setTlFps(20);
+		setTlFps(TIMELINE_FPS);
 		setTlFrame((f) => Math.min(f, maxDst));
 		setTlPlaying(false);
 	}
@@ -3336,7 +3377,8 @@ globalThis.playMode = centerTab === "play";
 	const followCamActive =
 		activeCamera.mode !== "keys" && !!followTrack?.[tlFrame] && (centerTab === "play" || (!ikMode && !waypointMode && !posing));
 
-	// Implied locomotion speed per authored segment (@ 20 fps). Shown in the
+	// Implied locomotion speed per authored segment, on the timeline clock
+	// (m/s is physical, so the judge always uses tlFps). Shown in the
 	// timeline hint so a path that forces a crawl or a sprint is visible
 	// before spending a generation on it.
 	const pathSpeed = useMemo(() => {
@@ -3632,7 +3674,7 @@ globalThis.playMode = centerTab === "play";
 		setPromptClips((prev) => [...prev, clip]);
 		setSelectedPromptId(clip.id);
 		setTlFrameCount((count) => Math.max(count, clip.endFrame));
-		setArdyDuration(Math.max(ARDY_DURATION_MIN, clip.endFrame / 20));
+		setArdyDuration(Math.max(ARDY_DURATION_MIN, clip.endFrame / TIMELINE_FPS));
 	}
 
 	function changePromptClip(id, text) {
@@ -3643,7 +3685,7 @@ globalThis.playMode = centerTab === "play";
 	// Quality policy: one prompt block never spans more than 4 s. ARDY's
 // trained window is 10 s, but long single blocks drift — chained 4 s
 // blocks keep each call inside the model's sweet spot.
-const PROMPT_BLOCK_MAX_FRAMES = 4 * 20;
+const PROMPT_BLOCK_MAX_FRAMES = 4 * TIMELINE_FPS;
 
 function resizePromptClip(id, edge, rawFrame) {
 		setPromptClips((prev) => {
@@ -3656,7 +3698,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			});
 			const end = next.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
 			setTlFrameCount((count) => Math.max(count, end));
-			setArdyDuration(end / 20);
+			setArdyDuration(end / TIMELINE_FPS);
 			return next;
 		});
 	}
@@ -3667,7 +3709,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			if (next === prev) return prev;
 			const end = next.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
 			setTlFrameCount((count) => Math.max(count, end));
-			setArdyDuration(end / 20);
+			setArdyDuration(end / TIMELINE_FPS);
 			return next;
 		});
 	}
@@ -3678,19 +3720,19 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 
 	// Generation duration follows the same 4 s quality cap as prompt blocks.
-const GENERATION_DURATION_MAX = PROMPT_BLOCK_MAX_FRAMES / 20;
+const GENERATION_DURATION_MAX = PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS;
 
 function changeDuration(value) {
 	const duration = Math.max(ARDY_DURATION_MIN, Math.min(Math.round(Number(value)) || ARDY_DURATION_MIN, GENERATION_DURATION_MAX));
 		setArdyDuration(duration);
 		// Keep a stale destination frame in range when duration shrinks.
-		// The generation clip is duration × 20 frames; root waypoints beyond
-		// its end would be invalid for a new shorter generation, so prune
+		// The generation clip is duration × TIMELINE_FPS frames; root waypoints
+		// beyond its end would be invalid for a new shorter generation, so prune
 		// them even while a motion is loaded (the frame-0 start survives).
-		const last = Math.max(0, duration * 20 - 1);
+		const last = Math.max(0, duration * TIMELINE_FPS - 1);
 		setWaypoints((prev) => prev.filter((w) => w.frame <= last));
 		// Without a loaded motion the timeline IS the generation clip: resize
-		// it to duration × 20 and clamp the playhead. While a motion is loaded
+		// it to duration × TIMELINE_FPS and clamp the playhead. While a motion is loaded
 		// the timeline keeps the clip's own frame count and playhead until clear.
 		if (!motion) {
 			setTlFrameCount(last + 1);
@@ -3715,7 +3757,7 @@ function changeDuration(value) {
 			return;
 		}
 		const totalFrames = Math.max(...clips.map((clip) => clip.endFrame));
-		const duration = Math.max(ARDY_DURATION_MIN, Math.ceil(totalFrames / 20));
+		const duration = Math.max(ARDY_DURATION_MIN, Math.ceil(totalFrames / TIMELINE_FPS));
 		setArdyPrompt(clips[0].text);
 		setArdyDuration(duration);
 		runArdy({
@@ -3770,7 +3812,11 @@ function changeDuration(value) {
 		// prompt so the bridge always receives one contiguous 0..N sequence.
 		// Built BEFORE the root-path judge: whether the rollout is chained
 		// changes which window limit binds the path (per block, not per clip).
-		const clipFrames = duration * 20;
+		// `duration` is SECONDS — the one frame-rate-free number in the
+		// request, and the only one the bridge reads directly. Everything the
+		// app counts in frames from here on is on the timeline clock; the
+		// bridge's own count is duration * ARDY_FPS, reached via toArdyFrame.
+		const clipFrames = duration * TIMELINE_FPS;
 		const segments = [];
 		let cursor = 0;
 		const sourcePromptClips = promptClipsOverride
@@ -3808,7 +3854,9 @@ function changeDuration(value) {
 			// whole path is re-judged at the door. A prompt schedule chains
 			// the rollout block by block, so the trained window binds each
 			// block instead of the whole clip.
-			const pathVerdict = judgeAuthoredPath(rootPath, 20, clipFrames, { chained: hasPromptSchedule });
+			// Physical plausibility (m/s, deg/s) — judged against the clock the
+			// pins were authored on, which is now the timeline's.
+			const pathVerdict = judgeAuthoredPath(rootPath, TIMELINE_FPS, clipFrames, { chained: hasPromptSchedule });
 			if (pathVerdict.errors.length > 0) {
 				setToast(isKo ? `생성하지 못했어요 — ${pathVerdict.errors[0]}` : `Not generated — ${pathVerdict.errors[0]}`);
 				return;
@@ -3817,8 +3865,8 @@ function changeDuration(value) {
 				const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PROMPT_BLOCK_MAX_FRAMES);
 				if (longBlock) {
 					setToast(isKo
-						? `생성하지 못했어요 — 프롬프트 블록은 ${PROMPT_BLOCK_MAX_FRAMES / 20}초 이내여야 해요. ${((longBlock.endFrame - longBlock.startFrame) / 20).toFixed(1)}초 블록을 나눠 주세요`
-						: `Not generated — prompt blocks are capped at ${PROMPT_BLOCK_MAX_FRAMES / 20} s; split the ${((longBlock.endFrame - longBlock.startFrame) / 20).toFixed(1)} s block`);
+						? `생성하지 못했어요 — 프롬프트 블록은 ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS}초 이내여야 해요. ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)}초 블록을 나눠 주세요`
+						: `Not generated — prompt blocks are capped at ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS} s; split the ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)} s block`);
 					return;
 				}
 			}
@@ -3835,13 +3883,16 @@ function changeDuration(value) {
 			const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PROMPT_BLOCK_MAX_FRAMES);
 			if (longBlock) {
 				setToast(isKo
-					? `생성하지 못했어요 — 프롬프트 블록은 ${PROMPT_BLOCK_MAX_FRAMES / 20}초 이내여야 해요. ${((longBlock.endFrame - longBlock.startFrame) / 20).toFixed(1)}초 블록을 나눠 주세요`
-					: `Not generated — prompt blocks are capped at ${PROMPT_BLOCK_MAX_FRAMES / 20} s; split the ${((longBlock.endFrame - longBlock.startFrame) / 20).toFixed(1)} s block`);
+					? `생성하지 못했어요 — 프롬프트 블록은 ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS}초 이내여야 해요. ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)}초 블록을 나눠 주세요`
+					: `Not generated — prompt blocks are capped at ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS} s; split the ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)} s block`);
 				return;
 			}
 		}
 		const alignedRoot = waypointMode ? alignArdyPath(rootPath, activeChar.rot, MAX_WAYPOINTS) : null;
-		const ardyWaypoints = alignedRoot ? alignedRoot.waypoints : [];
+		// Waypoints leave the app here, so their frames drop onto the bridge
+		// clock here. Rounding can merge two near-adjacent samples; the first
+		// wins — the bridge refuses non-ascending frame lists outright.
+		const ardyWaypoints = toArdyFrameEntries(alignedRoot ? alignedRoot.waypoints : []);
 
 		// Capture every block boundary plus every authored IK key. Each sample
 		// is the composite base-motion + IK pose at that frame and carries the
@@ -3905,7 +3956,11 @@ function changeDuration(value) {
 		// playback, without constraining any later generated root frame.
 		const rootRotationDeg = alignedRoot ? alignedRoot.rotationDeg : activeChar.rot;
 		const body = { prompt, duration, posePin: shouldPin };
-		if (shouldPin && !hasBlockEdits) body.poses = poses;
+		// The bridge sees only wire frames; the timeline frames of the same
+		// keys are kept beside the payload so the commit can mark the markers
+		// the user actually authored.
+		let committedEditKeys = [];
+		if (shouldPin && !hasBlockEdits) body.poses = toArdyFrameEntries(poses);
 		if (ardySeed !== "") body.seed = Number(ardySeed);
 		if (waypointMode) {
 			body.waypoints = ardyWaypoints;
@@ -3913,7 +3968,7 @@ function changeDuration(value) {
 			// sequence generator threads the Root2D constraint set through
 			// its chained calls (the interactive demo's pattern), so
 			// neither authored surface is silently dropped any more.
-			if (hasPromptSchedule && !hasBlockEdits) body.segments = segments;
+			if (hasPromptSchedule && !hasBlockEdits) body.segments = toArdySegments(segments);
 			// Looser pin grip than ARDY's 0.04 default: authored paths are
 			// sparse and human-laid, so the postprocess gets 8 cm of room to
 			// trade pin exactness for less foot skate.
@@ -3921,7 +3976,8 @@ function changeDuration(value) {
 			// A path asks the model to CHANGE course at authored frames, so a
 			// shorter 4 s history reacts faster to the pins than the default
 			// full-window lookback (which favors continuing whatever came before).
-			body.historyFrames = 4 * 20;
+			// A bridge-side frame count, so it is 4 s counted on the WIRE clock.
+			body.historyFrames = 4 * ARDY_FPS;
 		} else if (hasBlockEdits) {
 			if (!motion?.url) {
 				setToast(ko("The current motion has no bridge source; generate the prompt blocks once before regenerating IK edits", "현재 모션에 브리지 원본이 없어요. 프롬프트 블록을 한 번 생성한 뒤 IK 보정을 다시 생성하세요"));
@@ -3930,19 +3986,32 @@ function changeDuration(value) {
 			const startFrame = Math.min(...editedSegments.map((segment) => segment.startFrame));
 			const endFrame = Math.max(...editedSegments.map((segment) => segment.endFrame));
 			const posesByFrame = new Map(poses.map((entry) => [entry.frame, entry.pose]));
+			// Edits address the bridge-side source npz, so their frames drop
+			// onto the bridge clock here; the timeline frame rides along only
+			// for the app-side committed-keys bookkeeping (timeline markers).
+			// contextBefore/contextAfter count frames of that source npz, so
+			// they are already wire-clock numbers and do not convert.
+			const editEntries = [];
+			for (const timelineFrame of constraintFrames) {
+				const frame = toArdyFrame(timelineFrame);
+				if (editEntries.length && frame <= editEntries[editEntries.length - 1].frame) continue;
+				editEntries.push({
+					frame,
+					timelineFrame,
+					tracks: [...(ikStateRef.current.keys.get(timelineFrame)?.keys() || [])],
+					pose: posesByFrame.get(timelineFrame),
+				});
+			}
+			committedEditKeys = editEntries.map(({ timelineFrame, tracks }) => ({ frame: timelineFrame, tracks }));
 			body.motionEdit = {
 				sourceMotion: motion.url,
-				startFrame,
-				endFrame,
+				startFrame: toArdyFrame(startFrame),
+				endFrame: toArdyFrame(endFrame),
 				contextBefore: 40,
 				contextAfter: 20,
-				edits: constraintFrames.map((frame) => ({
-					frame,
-					tracks: [...(ikStateRef.current.keys.get(frame)?.keys() || [])],
-					pose: posesByFrame.get(frame),
-				})),
+				edits: editEntries.map(({ frame, tracks, pose }) => ({ frame, tracks, pose })),
 			};
-		} else if (hasPromptSchedule) body.segments = segments;
+		} else if (hasPromptSchedule) body.segments = toArdySegments(segments);
 		// The request is fully packaged HERE, against the active character's
 		// live layer — the queue only needs the frozen payload. Results are
 		// delivered to THIS character even if the selection moves on while
@@ -3953,6 +4022,7 @@ function changeDuration(value) {
 			prompt,
 			body,
 			hasBlockEdits,
+			committedEditKeys,
 			rootRotationDeg,
 			anchor: { x: activeChar.x, z: activeChar.z },
 			ikState: hasBlockEdits ? ikStateRef.current : null,
@@ -4027,10 +4097,9 @@ function changeDuration(value) {
 			// REQUESTING character, not whoever is selected now.
 			if (done.motionUrl) await deliverMotion(job, done.motionUrl);
 			if (job.hasBlockEdits && job.ikState) {
-				setCommittedIkEdits((current) => [
-					...current,
-					...job.body.motionEdit.edits.map(({ frame, tracks }) => ({ frame, tracks })),
-				]);
+				// Timeline frames, not the wire frames in body.motionEdit.edits:
+				// these light up the IK markers on the production clock.
+				setCommittedIkEdits((current) => [...current, ...job.committedEditKeys]);
 				job.ikState.keys.clear();
 				job.ikState.tracked.clear();
 				job.ikState.plants.clear();
@@ -4066,7 +4135,8 @@ function changeDuration(value) {
 			await loadMotion(motionUrl, job.prompt, job.rootRotationDeg);
 			return;
 		}
-		const decoded = await loadMotionFromUrl(motionUrl);
+		// Inbound boundary for a clip delivered to a non-active layer.
+		const decoded = retimeMotion(await loadMotionFromUrl(motionUrl), TIMELINE_FPS);
 		setCharacters((list) => list.map((entry) => entry.id === job.charId
 			? { ...entry, sessionMotion: {
 				...decoded,
@@ -4086,7 +4156,10 @@ function changeDuration(value) {
 	function restoreMotionRefs(list) {
 		for (const entry of list) {
 			if (!entry.motionRef?.url) continue;
-			loadMotionFromUrl(entry.motionRef.url).then((decoded) => {
+			// Inbound boundary: a re-fetched clip is retimed exactly like a
+			// freshly generated one, so a reload cannot resurrect 20 fps frames.
+			loadMotionFromUrl(entry.motionRef.url).then((raw) => {
+				const decoded = retimeMotion(raw, TIMELINE_FPS);
 				const clip = {
 					...decoded,
 					url: entry.motionRef.url,
