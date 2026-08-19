@@ -621,13 +621,27 @@ function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMo
 			tools.raycaster.setFromCamera(tools.pointer, camera);
 			const hits = tools.raycaster.intersectObjects(sleeves.children, true);
 			if (!hits.length) return; // not ours — the object gizmo handles it
-			// The ray may land on a visible shaft or cone rather than the pick
-			// sleeve — resolve the axis by walking up to the axis group, or an
-			// arrowhead click silently turns into a Y drag.
-			let axis = null;
-			for (let node = hits[0].object; node && axis == null; node = node.parent) {
-				axis = node.userData?.axis ?? null;
+			// Resolve by INTENT with a distance guard. An arrow near the press
+			// point outranks the pad (arrows are a precise ask, the pad is the
+			// fallback surface) — but only when its hit is genuinely adjacent:
+			// a ray through the pad also exits through a sleeve far BEHIND it,
+			// and letting that distant arrow win turned pad presses into axis
+			// drags. Any visible shaft or cone resolves through its axis group.
+			let padDist = Infinity;
+			let arrowAxis = null;
+			let arrowDist = Infinity;
+			for (const hit of hits) {
+				let found = null;
+				for (let node = hit.object; node && found == null; node = node.parent) {
+					found = node.userData?.axis ?? null;
+				}
+				if (!found) continue;
+				if (found === "xz") padDist = Math.min(padDist, hit.distance);
+				else if (hit.distance < arrowDist) { arrowDist = hit.distance; arrowAxis = found; }
 			}
+			const axis = arrowAxis && arrowDist <= padDist + 0.12
+				? arrowAxis
+				: padDist < Infinity ? "xz" : null;
 			if (axis == null) return;
 			// Every axis starts a ground drag, Y included: characters cannot fly,
 			// but the only visible arrow in a tight frame must still move them.
@@ -742,12 +756,12 @@ function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMo
 			    few-pixel sliver on screen and a ray only ever grazes it —
 			    volume is what makes it pressable from a shallow angle. */}
 			<mesh
-				position={[0.34, 0.14, 0.34]}
+				position={[0.34, 0.08, 0.34]}
 				userData={{ axis: "xz" }}
 				onPointerOver={() => (gl.domElement.style.cursor = "grab")}
 				onPointerOut={() => (gl.domElement.style.cursor = "")}
 			>
-				<boxGeometry args={[0.3, 0.28, 0.3]} />
+				<boxGeometry args={[0.3, 0.16, 0.3]} />
 				<meshBasicMaterial transparent opacity={0} depthWrite={false} />
 			</mesh>
 			{GIZMO_AXIS.map(({ axis, color, rot }) => {
@@ -767,14 +781,16 @@ function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMo
 					    cylinders raycast terribly at this scale. It must reach
 					    PAST the arrowhead tip (0.98) — the tip is exactly where
 					    people aim, and a sleeve that stops short turns the most
-					    natural click into a miss. */}
+					    natural click into a miss. Radius is a balance: 0.24
+					    swallowed body-select clicks on the shins, 0.14 made the
+					    arrows feel dead. */}
 					<mesh
 						position={[0, 0.5, 0]}
 						userData={{ axis }}
 						onPointerOver={() => (gl.domElement.style.cursor = axis === "y" ? "" : "grab")}
 						onPointerOut={() => (gl.domElement.style.cursor = "")}
 					>
-						<cylinderGeometry args={[0.24, 0.24, 1.3, 8]} />
+						<cylinderGeometry args={[0.17, 0.17, 1.25, 8]} />
 						<meshBasicMaterial transparent opacity={0} depthWrite={false} />
 					</mesh>
 				</group>
