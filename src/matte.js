@@ -118,7 +118,13 @@ export function borderSeeds({ data, width, height }, points = null) {
  * `feather` softens what is left so the card's edge does not read as a
  * cut-out-with-scissors line against the set.
  */
-export function backgroundMask(pixels, { points = null, tolerance = 0.18 } = {}) {
+/**
+ * `within`, when given, fences the growth: a pixel can only be entered if it is
+ * marked there. That is what lets the eraser be the same tool as the brush —
+ * growing back through a region that is already selected, and stopping where
+ * the selection stops, rather than nibbling at it a disc at a time.
+ */
+export function backgroundMask(pixels, { points = null, tolerance = 0.18, within = null } = {}) {
 	const { data, width, height } = pixels;
 	const total = width * height;
 	const background = new Uint8Array(total);
@@ -138,6 +144,7 @@ export function backgroundMask(pixels, { points = null, tolerance = 0.18 } = {})
 	for (const start of starts) {
 		const pixel = start >> 2;
 		if (background[pixel]) continue;
+		if (within && !within[pixel]) continue;
 		// A start that is already far from every seed colour (a subject running
 		// off the frame edge) is not background and must not begin a region.
 		if (seedDist2(data, start, seeds) > globalLimit) continue;
@@ -156,6 +163,7 @@ export function backgroundMask(pixels, { points = null, tolerance = 0.18 } = {})
 			if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
 			const neighbour = ny * width + nx;
 			if (background[neighbour]) continue;
+			if (within && !within[neighbour]) continue;
 			const neighbourIndex = neighbour << 2;
 			// Already transparent counts as background: an image that arrives
 			// half-cut stays cut.

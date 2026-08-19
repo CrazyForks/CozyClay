@@ -6452,7 +6452,7 @@ function resizePromptClip(id, edge, rawFrame) {
 													matteEditorRef.current?.setMode("erase");
 												}}
 											>
-												{ko("Erase purple", "보라색 지우기")}
+												{ko("Bring back", "되살리기")}
 											</button>
 											<button type="button" onClick={() => matteEditorRef.current?.clear()}>
 												{ko("Clear", "모두 지우기")}
@@ -6512,8 +6512,8 @@ function resizePromptClip(id, edge, rawFrame) {
 										</button>
 										<p className="inspector-hint">
 											{ko(
-												"Applying removes exactly what is purple and trims the empty margin — but the card keeps the original photograph and this selection, so you can come back and change your mind. Auto-detect makes the same pass from all four edges at once, adding to your purple rather than replacing it.",
-												"적용하면 보라색 부분만 지우고 남은 여백을 잘라냅니다. 원본 사진과 지금 선택한 영역은 카드에 그대로 남아 있어 언제든 다시 열어 고칠 수 있습니다. 자동 인식은 네 가장자리에서 한 번에 같은 작업을 하며, 이미 칠한 부분을 덮어쓰지 않고 더합니다.",
+												"Cut out grows the selection from wherever you drag; Bring back is the same growth fenced to what is already selected, so one drag returns a wrongly-cut region whole. Applying removes exactly what is purple and trims the empty margin — the card keeps the original photograph and this selection, so you can come back and change your mind.",
+												"누끼 따기는 드래그한 자리에서 선택 영역을 키우고, 되살리기는 그 성장을 이미 선택된 범위 안으로 가둔 것이라 잘못 잘린 부분이 드래그 한 번에 통째로 돌아옵니다. 적용하면 보라색 부분만 지우고 여백을 잘라냅니다 — 원본 사진과 지금 선택한 영역은 카드에 남아 있어 언제든 다시 열어 고칠 수 있습니다.",
 											)}
 										</p>
 									</>

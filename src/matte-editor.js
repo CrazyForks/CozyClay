@@ -5,12 +5,16 @@
  * then reinterprets — the purple IS the mask, and applying takes exactly those
  * pixels, whether a third of the picture is marked or all of it.
  *
- * Painting is not a pixel brush, though. A stroke is a set of SEEDS: on
- * release, the same region growth the automatic pass uses runs from every
- * place the brush touched, and the wall it reaches turns purple in one go.
- * Dragging across a background is therefore "cut this out", not "colour this
- * in" — the brush says WHERE, the algorithm decides HOW FAR. The eraser is a
- * plain brush, because taking back a mistake should be exact.
+ * Neither brush is a pixel brush. A stroke is a set of SEEDS: on release, the
+ * same region growth the automatic pass uses runs from every place the brush
+ * touched, and the region it reaches is taken in one go. Dragging across a
+ * background is "cut this out", not "colour this in" — the brush says WHERE,
+ * the algorithm decides HOW FAR.
+ *
+ * The eraser is that same growth, fenced to what is already selected: drag
+ * over a piece of the subject that was cut by mistake and the whole wrongly
+ * taken region comes back, stopping exactly where the selection stopped. One
+ * tool, pointed either way.
  *
  * That is why the page opens on the untouched picture. An automatic cut shown
  * before anyone asked for it hides the thing that matters: a hole in the
@@ -62,6 +66,10 @@ export function createMatteEditor(canvas, {
 		/** where this stroke has touched, in full-resolution pixels — the seeds
 		 * the growth runs from when the pointer comes up */
 		seeds: [],
+		/** the selection as it was when the stroke began. The eraser grows
+		 * through THIS rather than through the live layer, which the stroke's
+		 * own dabs are busy clearing. */
+		before: null,
 	};
 
 	/** full-resolution pixels per preview pixel */
@@ -138,27 +146,37 @@ export function createMatteEditor(canvas, {
 			const x = from.x + ((to.x - from.x) * step) / steps;
 			const y = from.y + ((to.y - from.y) * step) / steps;
 			touched += paintMask(state.paint, state.full, { x, y, radius: r, value });
-			// Paint mode leaves a seed behind at every dab. The growth waits for
-			// the pointer to come up: one flood per stroke is fast, one per
-			// pointermove would be a full-resolution flood 60 times a second.
-			if (value === 1) state.seeds.push({ x, y });
+			// Every dab leaves a seed behind. The growth waits for the pointer to
+			// come up: one flood per stroke is fast, one per pointermove would be
+			// a full-resolution flood 60 times a second.
+			state.seeds.push({ x, y });
 		}
 		if (touched) repaint();
 	}
 
-	/** The stroke is over: grow the background out from everywhere it touched. */
+	/** The stroke is over: run the growth from everywhere the brush touched. */
 	function growFromStroke() {
 		const seeds = state.seeds;
+		const before = state.before;
 		state.seeds = [];
+		state.before = null;
 		if (!seeds.length || !state.full) return;
-		const reached = backgroundMask(state.full, { points: seeds, tolerance: state.tolerance });
-		let added = 0;
+		const erasing = state.mode === "erase";
+		const reached = backgroundMask(state.full, {
+			points: seeds,
+			tolerance: state.tolerance,
+			// Erasing grows only through what was already purple, so it gives a
+			// wrongly-cut region back whole and cannot spill into the picture.
+			within: erasing ? before : null,
+		});
+		const value = erasing ? 0 : 1;
+		let changed = 0;
 		for (let pixel = 0; pixel < reached.length; pixel++) {
-			if (!reached[pixel] || state.paint[pixel]) continue;
-			state.paint[pixel] = 1;
-			added += 1;
+			if (!reached[pixel] || state.paint[pixel] === value) continue;
+			state.paint[pixel] = value;
+			changed += 1;
 		}
-		if (added) repaint();
+		if (changed) repaint();
 	}
 
 	const onDown = (event) => {
@@ -166,6 +184,9 @@ export function createMatteEditor(canvas, {
 		event.preventDefault();
 		canvas.setPointerCapture?.(event.pointerId);
 		state.painting = true;
+		// The snapshot the eraser grows through, taken before this stroke's own
+		// dabs start clearing the layer it would otherwise read.
+		state.before = Uint8Array.from(state.paint);
 		state.last = at(event);
 		stroke(state.last, state.last);
 	};

@@ -271,5 +271,21 @@ expect(
 	restored.width === 80 && restored.height === 120 && restored.mask.every((value, pixel) => value === mask[pixel]),
 );
 
+/* ------------------------------------------------------------- fenced -- */
+
+// The eraser grows through what is already selected and stops where the
+// selection does — the same tool as the brush, pointed the other way.
+const fence = new Uint8Array(80 * 120);
+for (let y = 0; y < 60; y++) for (let x = 0; x < 80; x++) fence[y * 80 + x] = 1;
+const fenced = backgroundMask(flat, { points: [{ x: 2, y: 2 }], tolerance: 0.18, within: fence });
+expect(
+	"a fenced growth stays inside the fence",
+	fenced[2 * 80 + 2] === 1 && fenced[30 * 80 + 2] === 1 && fenced[80 * 80 + 2] === 0,
+);
+expect(
+	"a seed outside the fence grows nothing",
+	backgroundMask(flat, { points: [{ x: 2, y: 100 }], tolerance: 0.18, within: fence }).every((value) => value === 0),
+);
+
 if (failures) process.exit(1);
 console.log("all matte checks PASS");

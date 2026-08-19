@@ -120,15 +120,35 @@ expect(
 expect("the growth stops at the subject", isPlain(20, 30) && isPlain(14, 22));
 expect("what is marked is counted", last.coverage > 0.5 && last.coverage < 0.95, JSON.stringify(last));
 
-/* -- the eraser is a plain brush, because a correction should be exact ----- */
+/* -- the eraser is the same tool, pointed the other way -------------------- */
 
+// One dab on the wall gives the WHOLE wall back: the growth runs fenced to
+// what is already selected, so it stops exactly where the selection did.
 editor.setMode("erase");
 editor.setBrush(4);
 const beforeErase = last.painted;
 pointer("pointerdown", 4, 4);
 pointer("pointerup", 4, 4);
-expect("erasing takes the purple back off where it touched", isPlain(4, 4) && isPurple(36, 2));
-expect("erasing does not re-grow anything", last.painted < beforeErase, JSON.stringify({ beforeErase, after: last.painted }));
+expect(
+	"erasing gives the whole cut region back, not a disc of it",
+	last.painted === 0 && isPlain(4, 4) && isPlain(36, 2) && isPlain(2, 56),
+	JSON.stringify({ beforeErase, after: last.painted }),
+);
+
+// And it cannot spill: with only part of the wall selected, erasing takes back
+// that part and leaves the picture alone.
+editor.setMode("paint");
+pointer("pointerdown", 4, 4);
+pointer("pointerup", 4, 4);
+const wall = last.painted;
+editor.setMode("erase");
+pointer("pointerdown", 20, 30);
+pointer("pointerup", 20, 30);
+expect(
+	"erasing where nothing is selected changes nothing",
+	last.painted === wall && isPlain(20, 30),
+	JSON.stringify({ wall, after: last.painted }),
+);
 editor.setMode("paint");
 
 /* -- auto-detect is an offer, not the default ----------------------------- */
