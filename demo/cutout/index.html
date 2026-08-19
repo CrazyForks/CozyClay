@@ -62,12 +62,14 @@
 					<div class="readout"><span>Stored</span><b id="assetMeta">—</b></div>
 					<h2>Background</h2>
 					<div class="matte">
-						<canvas id="matteCanvas" aria-label="Background editor: paint purple over what should be removed"></canvas>
+						<canvas id="matteCanvas" tabindex="0" aria-label="Background editor: drag over the background to cut it out"></canvas>
 						<p class="hint" id="matteStats">Drag over the background — the cut grows out from wherever the brush touches. Nothing is removed until you apply.</p>
 						<div class="chips" role="group" aria-label="Brush">
 							<button type="button" class="chip is-on" id="modePaint">Cut out</button>
 							<button type="button" class="chip" id="modeErase">Bring back</button>
 							<button type="button" class="chip" id="clearStrokes">Clear</button>
+							<button type="button" class="chip" id="undo" disabled>Undo</button>
+							<button type="button" class="chip" id="redo" disabled>Redo</button>
 						</div>
 						<div class="field">
 							<label for="brush">Brush</label>

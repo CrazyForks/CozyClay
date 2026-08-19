@@ -7447,7 +7447,10 @@ input[type=range] {
 
 .matte-canvas {
 	display: block;
+	/* height follows the bitmap's own aspect; max-height then letterboxes a
+	   very tall picture, which the editor's pointer mapping accounts for. */
 	width: 100%;
+	height: auto;
 	max-height: 260px;
 	object-fit: contain;
 	border: 1px solid var(--line);

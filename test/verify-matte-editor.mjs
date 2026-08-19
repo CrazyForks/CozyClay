@@ -9,7 +9,7 @@
  * it off, and is the mask it finally hands over exactly what was on screen.
  */
 
-import { MATTE_PURPLE, createMatteEditor } from "../src/matte-editor.js";
+import { MATTE_HISTORY, MATTE_PURPLE, createMatteEditor } from "../src/matte-editor.js";
 
 let failures = 0;
 const expect = (name, condition, detail = "") => {
@@ -51,12 +51,14 @@ for (let y = 0; y < HEIGHT; y++) {
 
 const handlers = new Map();
 let painted = null;
+/** The element box the canvas is displayed in — changed below to letterbox. */
+const box = { left: 0, top: 0, width: WIDTH, height: HEIGHT };
 const canvas = {
 	width: 0,
 	height: 0,
 	addEventListener: (type, handler) => handlers.set(type, handler),
 	removeEventListener: (type) => handlers.delete(type),
-	getBoundingClientRect: () => ({ left: 0, top: 0, width: WIDTH, height: HEIGHT }),
+	getBoundingClientRect: () => ({ ...box }),
 	setPointerCapture() {},
 	releasePointerCapture() {},
 	hasPointerCapture: () => false,
@@ -178,6 +180,69 @@ expect(
 	JSON.stringify({ length: options.mask.length, purple, painted: last.painted }),
 );
 expect("no tolerance travels with it — the growth already happened on screen", options.tolerance === undefined);
+
+/* -- a picture that does not fill its box --------------------------------- */
+
+// A tall photo in a wide panel is letterboxed: the element is 200 x 60 and the
+// picture is drawn 40 x 60 in the middle of it. Reading pointer positions off
+// the element itself would put every stroke 80 px to the left.
+editor.clear();
+Object.assign(box, { left: 12, top: 4, width: 200, height: 60 });
+editor.setBrush(4);
+// The picture's own left edge now sits at 12 + (200 - 40) / 2 = 92.
+pointer("pointerdown", 92 + 2, 4 + 2);
+pointer("pointerup", 92 + 2, 4 + 2);
+expect("a click lands where the picture is, not where the element is", isPurple(2, 2) && last.painted > 0, JSON.stringify(last));
+
+editor.clear();
+pointer("pointerdown", 20, 30);
+pointer("pointerup", 20, 30);
+expect("a click on the letterbox bar is ignored", last.painted === 0);
+
+// Displayed at 4x, a stroke halfway across the box is halfway across the
+// picture — and the brush keeps its size in screen pixels, not in picture ones.
+editor.clear();
+Object.assign(box, { left: 0, top: 0, width: WIDTH * 4, height: HEIGHT * 4 });
+pointer("pointerdown", 4 * 4, 4 * 4);
+pointer("pointerup", 4 * 4, 4 * 4);
+expect("a scaled-up display still maps to the right pixel", isPurple(4, 4) && isPlain(20, 30));
+Object.assign(box, { left: 0, top: 0, width: WIDTH, height: HEIGHT });
+
+/* -- undo and redo -------------------------------------------------------- */
+
+await editor.load(asset);
+expect("a freshly loaded picture has nothing to undo", editor.canUndo() === false && editor.canRedo() === false);
+
+pointer("pointerdown", 4, 4);
+pointer("pointerup", 4, 4);
+const cutWall = last.painted;
+expect("a cut is one undoable decision", cutWall > 0 && editor.canUndo() === true && last.canUndo === true);
+
+expect("undo takes the whole cut back, not one dab of it", editor.undo() === true && last.painted === 0 && isPlain(4, 4));
+expect("redo puts it back", editor.redo() === true && last.painted === cutWall && isPurple(4, 4));
+expect("redo runs out at the present", editor.redo() === false && last.canRedo === false);
+
+// A new edit replaces the future that was undone.
+editor.undo();
+editor.autoDetect(0.18);
+expect("editing after an undo drops the redo", editor.canRedo() === false && last.painted > 0);
+
+// The buffer is bounded: seven steps back, and the eighth is gone. Each pass
+// has to actually change something, so it alternates cutting with clearing —
+// a second cut on an already-purple wall changes nothing and is not a step.
+editor.clear();
+for (let step = 0; step < MATTE_HISTORY + 3; step++) {
+	if (step % 2 === 0) {
+		pointer("pointerdown", 4, 4);
+		pointer("pointerup", 4, 4);
+	} else {
+		editor.clear();
+	}
+}
+let walked = 0;
+while (editor.undo()) walked += 1;
+expect(`the buffer keeps ${MATTE_HISTORY} steps and no more`, walked === MATTE_HISTORY, String(walked));
+expect("the oldest state left is still a real one", last.painted >= 0 && editor.canUndo() === false);
 
 /* -- a saved selection can be put back ------------------------------------ */
 

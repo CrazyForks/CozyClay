@@ -1603,7 +1603,7 @@ globalThis.playMode = centerTab === "play";
 	const [matteTolerance, setMatteTolerance] = useState(0.18);
 	const [matteBrush, setMatteBrush] = useState(18);
 	const [matteMode, setMatteMode] = useState("paint");
-	const [matteStats, setMatteStats] = useState({ painted: 0, coverage: 0 });
+	const [matteStats, setMatteStats] = useState({ painted: 0, coverage: 0, canUndo: false, canRedo: false });
 	const [matteBusy, setMatteBusy] = useState(false);
 	const matteCanvasRef = useRef(null);
 	const matteEditorRef = useRef(null);
@@ -1633,7 +1633,7 @@ globalThis.playMode = centerTab === "play";
 			if (!stored || cancelled) return;
 			const { mask, width, height } = await decodeMask(stored);
 			if (!cancelled) editor.setMask(mask, width, height);
-		})().catch(() => setMatteStats({ painted: 0, coverage: 0 }));
+		})().catch(() => setMatteStats({ painted: 0, coverage: 0, canUndo: false, canRedo: false }));
 		return () => {
 			cancelled = true;
 			editor.dispose();
@@ -6420,6 +6420,18 @@ function resizePromptClip(id, edge, rawFrame) {
 											<canvas
 												ref={matteCanvasRef}
 												className="matte-canvas"
+												tabIndex={0}
+												// Ctrl+Z on the picture belongs to the selection, not to the
+												// scene: the studio's own undo is still one Escape away on
+												// any other surface, and a stroke you regret is the thing
+												// your hand is already over.
+												onKeyDown={(event) => {
+													if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
+													event.preventDefault();
+													event.stopPropagation();
+													if (event.shiftKey) matteEditorRef.current?.redo();
+													else matteEditorRef.current?.undo();
+												}}
 												aria-label={ko("Background editor — drag over the background to cut it out", "배경 편집기 — 배경 위를 드래그하면 그 영역이 잘려 나갑니다")}
 											/>
 											<p className="inspector-hint">
@@ -6456,6 +6468,14 @@ function resizePromptClip(id, edge, rawFrame) {
 											</button>
 											<button type="button" onClick={() => matteEditorRef.current?.clear()}>
 												{ko("Clear", "모두 지우기")}
+											</button>
+										</div>
+										<div className="presets matte-modes">
+											<button type="button" disabled={!matteStats.canUndo} onClick={() => matteEditorRef.current?.undo()}>
+												{ko("Undo", "실행 취소")} <kbd>⌘Z</kbd>
+											</button>
+											<button type="button" disabled={!matteStats.canRedo} onClick={() => matteEditorRef.current?.redo()}>
+												{ko("Redo", "다시 실행")} <kbd>⇧⌘Z</kbd>
 											</button>
 										</div>
 										<Field label={ko("Brush", "브러시")}>

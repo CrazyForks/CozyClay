@@ -251,11 +251,13 @@ $("rotRange").addEventListener("input", (event) => editSelected({ rot: Number(ev
  * part and nothing is decided behind your back.
  */
 const editor = createMatteEditor($("matteCanvas"), {
-	onChange: ({ painted, coverage }) => {
+	onChange: ({ painted, coverage, canUndo, canRedo }) => {
 		$("matteStats").textContent = painted
 			? `${Math.round(coverage * 100)}% of the picture marked — purple is what goes`
 			: "Drag over the background — the cut grows out from wherever the brush touches.";
 		$("matte").disabled = !painted;
+		$("undo").disabled = !canUndo;
+		$("redo").disabled = !canRedo;
 	},
 });
 
@@ -293,6 +295,16 @@ const setMode = (mode) => {
 $("modePaint").addEventListener("click", () => setMode("paint"));
 $("modeErase").addEventListener("click", () => setMode("erase"));
 $("clearStrokes").addEventListener("click", () => editor.clear());
+$("undo").addEventListener("click", () => editor.undo());
+$("redo").addEventListener("click", () => editor.redo());
+// Ctrl+Z on the picture itself, so the shortcut belongs to the editor rather
+// than to whatever else on the page thinks it owns undo.
+$("matteCanvas").addEventListener("keydown", (event) => {
+	if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
+	event.preventDefault();
+	if (event.shiftKey) editor.redo();
+	else editor.undo();
+});
 $("autoDetect").addEventListener("click", () => {
 	const added = editor.autoDetect();
 	if (!added) note("Auto-detect found nothing new to paint — try a higher tolerance, or paint it by hand.");

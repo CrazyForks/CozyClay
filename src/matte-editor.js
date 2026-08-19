@@ -41,6 +41,11 @@ const OVERLAY_ALPHA = 0.62;
 /** Interaction runs on a preview this wide at most — the paint underneath it
  * stays at the picture's own resolution. */
 export const EDIT_PREVIEW_MAX = 512;
+/** How many edits back you can walk. Each step is a full-resolution copy of
+ * the selection, so this is a memory budget as much as a usability one: seven
+ * is comfortably more than the "that stroke went too far" case a region brush
+ * actually produces, and eight masks of a 2048 px picture is a few megabytes. */
+export const MATTE_HISTORY = 7;
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -70,16 +75,45 @@ export function createMatteEditor(canvas, {
 		 * through THIS rather than through the live layer, which the stroke's
 		 * own dabs are busy clearing. */
 		before: null,
+		/** undo buffer: whole selections, newest last, current at `at` */
+		history: [],
+		at: -1,
 	};
+
+	/** Remember the selection as it stands. Called after a change has landed —
+	 * a stroke that has finished growing, an auto-detect, a clear — never
+	 * mid-drag, so one undo takes back one decision rather than one dab. */
+	function commit() {
+		if (!state.paint) return;
+		// Anything ahead of the cursor is a future that has just been replaced.
+		state.history.length = state.at + 1;
+		state.history.push(Uint8Array.from(state.paint));
+		while (state.history.length > MATTE_HISTORY + 1) state.history.shift();
+		state.at = state.history.length - 1;
+	}
+
+	function step(delta) {
+		const next = state.at + delta;
+		if (!state.paint || next < 0 || next >= state.history.length) return false;
+		state.at = next;
+		state.paint.set(state.history[next]);
+		repaint();
+		return true;
+	}
 
 	/** full-resolution pixels per preview pixel */
 	const ratio = () => (state.full && state.preview ? state.full.width / state.preview.width : 1);
 
 	function report() {
-		if (!state.paint) return onChange({ painted: 0, coverage: 0 });
+		if (!state.paint) return onChange({ painted: 0, coverage: 0, canUndo: false, canRedo: false });
 		let painted = 0;
 		for (let pixel = 0; pixel < state.paint.length; pixel++) painted += state.paint[pixel];
-		onChange({ painted, coverage: painted / state.paint.length });
+		onChange({
+			painted,
+			coverage: painted / state.paint.length,
+			canUndo: state.at > 0,
+			canRedo: state.at >= 0 && state.at < state.history.length - 1,
+		});
 	}
 
 	/** Repaint the preview: the picture, plus purple wherever the paint layer
@@ -122,19 +156,52 @@ export function createMatteEditor(canvas, {
 
 	/* --------------------------------------------------------- pointer --- */
 
-	/** Where a pointer is, in FULL-resolution pixels: the canvas is displayed
-	 * at whatever width the sidebar gives it, backed by a preview, backed by
-	 * the picture — three scales, collapsed here once. */
-	function at(event) {
+	/**
+	 * The displayed picture's box inside the canvas element.
+	 *
+	 * The canvas is laid out to fit its panel and CONTAINS its bitmap, so a
+	 * picture whose shape differs from the box — a tall phone photo in a wide
+	 * sidebar — is letterboxed: the element is one rectangle and the pixels are
+	 * a smaller one inside it. Reading pointer positions off the element's own
+	 * rect works only while those two happen to match, which is exactly the bug
+	 * a portrait image exposes. Every mapping below goes through this instead.
+	 */
+	function fitted() {
 		const rect = canvas.getBoundingClientRect();
-		const scale = (rect.width ? canvas.width / rect.width : 1) * ratio();
-		return { x: (event.clientX - rect.left) * scale, y: (event.clientY - rect.top) * scale };
+		const scale = Math.min(rect.width / (canvas.width || 1), rect.height / (canvas.height || 1)) || 1;
+		const width = canvas.width * scale;
+		const height = canvas.height * scale;
+		return {
+			left: rect.left + (rect.width - width) / 2,
+			top: rect.top + (rect.height - height) / 2,
+			width,
+			height,
+			/** screen pixels → full-resolution picture pixels */
+			scale: ratio() / scale,
+		};
 	}
 
+	/** Where a pointer is, in FULL-resolution pixels: through the letterbox,
+	 * then through the preview, then into the picture. */
+	function at(event) {
+		const box = fitted();
+		return { x: (event.clientX - box.left) * box.scale, y: (event.clientY - box.top) * box.scale };
+	}
+
+	/** Is the pointer on the picture at all, rather than on a letterbox bar? */
+	function inside(event) {
+		const box = fitted();
+		return (
+			event.clientX >= box.left &&
+			event.clientY >= box.top &&
+			event.clientX <= box.left + box.width &&
+			event.clientY <= box.top + box.height
+		);
+	}
+
+	/** The brush is set in screen pixels, so it travels the same road. */
 	function radius() {
-		const rect = canvas.getBoundingClientRect();
-		const scale = (rect.width ? canvas.width / rect.width : 1) * ratio();
-		return Math.max(1, (state.brush / 2) * scale);
+		return Math.max(1, (state.brush / 2) * fitted().scale);
 	}
 
 	function stroke(from, to) {
@@ -176,11 +243,14 @@ export function createMatteEditor(canvas, {
 			state.paint[pixel] = value;
 			changed += 1;
 		}
-		if (changed) repaint();
+		if (changed) {
+			commit();
+			repaint();
+		}
 	}
 
 	const onDown = (event) => {
-		if (!state.preview) return;
+		if (!state.preview || !inside(event)) return;
 		event.preventDefault();
 		canvas.setPointerCapture?.(event.pointerId);
 		state.painting = true;
@@ -231,6 +301,9 @@ export function createMatteEditor(canvas, {
 					? { data: Uint8ClampedArray.from(state.full.data), width: state.full.width, height: state.full.height }
 					: read(Math.max(1, Math.round(bitmap.width * scale)), Math.max(1, Math.round(bitmap.height * scale)));
 				state.paint = new Uint8Array(state.full.width * state.full.height);
+				state.history = [];
+				state.at = -1;
+				commit();
 				repaint();
 			} finally {
 				bitmap?.close?.();
@@ -243,6 +316,7 @@ export function createMatteEditor(canvas, {
 			if (!state.paint || !mask) return false;
 			if (width !== state.full.width || height !== state.full.height) return false;
 			state.paint.set(mask);
+			commit();
 			repaint();
 			return true;
 		},
@@ -263,6 +337,7 @@ export function createMatteEditor(canvas, {
 				state.paint[pixel] = 1;
 				added += 1;
 			}
+			if (added) commit();
 			repaint();
 			return added;
 		},
@@ -283,8 +358,14 @@ export function createMatteEditor(canvas, {
 		clear() {
 			if (!state.paint) return;
 			state.paint.fill(0);
+			commit();
 			repaint();
 		},
+		/** One decision back, and forward again. */
+		undo: () => step(-1),
+		redo: () => step(1),
+		canUndo: () => state.at > 0,
+		canRedo: () => state.at >= 0 && state.at < state.history.length - 1,
 		hasPaint: () => !!state.paint?.some((value) => value === 1),
 		/**
 		 * What the cutter needs: the purple, at the picture's own resolution.
