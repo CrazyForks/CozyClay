@@ -7,6 +7,7 @@ import {
 	assetIdForBytes,
 	assetIdFromDigest,
 	downscaleTarget,
+	importImageFile,
 	isAssetId,
 	isSupportedImageType,
 	normalizeAsset,
@@ -107,6 +108,76 @@ expect(
 	unreachableAssetIds([id], scenes).length === 0 && unreachableAssetIds([other], [scenes[1]]).length === 0,
 );
 expect("a junk stored key is not mistaken for an asset", JSON.stringify(unreachableAssetIds(["junk", orphan], scenes)) === JSON.stringify([orphan]));
+
+/* ------------------------------------------------------------ import ---- */
+
+// Stubs for the three browser APIs the import path needs. `drawn` records what
+// the resize actually asked for, so the test can prove the cap was applied.
+const drawn = [];
+function fakeFile(name, type, bytes, size = bytes.byteLength) {
+	return { name, type, size, arrayBuffer: async () => bytes.buffer.slice(0) };
+}
+function stubs(bitmapWidth, bitmapHeight) {
+	let closed = false;
+	return {
+		subtle: webcrypto.subtle,
+		createBitmap: async () => ({ width: bitmapWidth, height: bitmapHeight, close: () => { closed = true; } }),
+		makeCanvas: (width, height) => ({
+			getContext: () => ({ drawImage: (_bitmap, x, y, w, h) => drawn.push({ x, y, w, h }) }),
+			convertToBlob: async ({ type }) => ({ type, arrayBuffer: async () => new Uint8Array([width & 0xff, height & 0xff, 7]).buffer }),
+		}),
+		wasClosed: () => closed,
+	};
+}
+
+const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]);
+const smallImport = await importImageFile(fakeFile("sofa.png", "image/png", png), stubs(1200, 800));
+expect(
+	"a picture inside the cap is stored as it arrived",
+	smallImport.width === 1200 && smallImport.height === 800 && smallImport.type === "image/png" && smallImport.name === "sofa.png",
+	JSON.stringify({ ...smallImport, bytes: smallImport.bytes.byteLength }),
+);
+expect("an unscaled import is identified by its own bytes", smallImport.id === (await assetIdForBytes(png, webcrypto.subtle)));
+expect("nothing is re-encoded when nothing is resized", drawn.length === 0);
+expect("the imported aspect is the card's aspect", assetAspect(smallImport) === 1.5);
+
+const bigStubs = stubs(7296, 5472);
+const bigImport = await importImageFile(fakeFile("wall.png", "image/png", png, 12 * 1024 * 1024), bigStubs);
+expect(
+	"an oversized picture is capped before it is stored",
+	bigImport.width === ASSET_MAX_DIMENSION && bigImport.height === 1536 && drawn.at(-1).w === ASSET_MAX_DIMENSION,
+	JSON.stringify({ width: bigImport.width, height: bigImport.height, drawn: drawn.at(-1) }),
+);
+expect("a resized import is identified by its stored bytes, not its source", bigImport.id !== smallImport.id);
+expect("the decoded bitmap is released", bigStubs.wasClosed());
+expect(
+	"a resized picture keeps a format that can carry alpha",
+	bigImport.type === "image/png" && (await importImageFile(fakeFile("photo.jpg", "image/jpeg", png, 12 * 1024 * 1024), stubs(6000, 4000))).type === "image/jpeg",
+);
+
+const refuses = async (name, file, options, pattern) => {
+	try {
+		await importImageFile(file, options);
+		expect(name, false, "resolved instead of throwing");
+	} catch (error) {
+		expect(name, pattern.test(error.message), error.message);
+	}
+};
+await refuses("a non-image is refused with a readable reason", fakeFile("notes.pdf", "application/pdf", png), stubs(10, 10), /not an image/);
+await refuses("an svg is refused with the rest", fakeFile("logo.svg", "image/svg+xml", png), stubs(10, 10), /not an image/);
+await refuses(
+	"a file past the source ceiling is refused before it is decoded",
+	fakeFile("huge.png", "image/png", png, 64 * 1024 * 1024),
+	stubs(10, 10),
+	/larger than 32 MB/,
+);
+await refuses("a file-shaped nothing is refused", null, stubs(10, 10), /File or Blob/);
+await refuses(
+	"an undecodable picture is refused",
+	fakeFile("broken.png", "image/png", png),
+	{ ...stubs(0, 0), createBitmap: async () => ({ width: 0, height: 0 }) },
+	/no usable size/,
+);
 
 if (failures) process.exit(1);
 console.log("all scene asset checks PASS");

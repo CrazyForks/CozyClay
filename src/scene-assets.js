@@ -108,6 +108,76 @@ export function normalizeAsset(record) {
 	return { id: record.id, type: record.type.toLowerCase(), width, height, bytes, name: typeof record.name === "string" ? record.name : "" };
 }
 
+/* ------------------------------------------------------------- import ---- */
+
+/** Scaling a picture re-encodes it, and the encoder has to be one that can
+ * still carry alpha — a cutout IS its transparency. JPEG has none to lose, so
+ * a photo stays a photo instead of tripling in size as a PNG. */
+function storedTypeFor(sourceType) {
+	return sourceType === "image/jpeg" ? "image/jpeg" : "image/png";
+}
+
+function defaultCanvas(width, height) {
+	if (typeof OffscreenCanvas === "function") return new OffscreenCanvas(width, height);
+	throw new Error("this browser cannot resize images — OffscreenCanvas is unavailable");
+}
+
+/**
+ * One imported file as a storable asset record: decoded, capped to
+ * ASSET_MAX_DIMENSION, and identified by the bytes that will actually be
+ * stored (so two imports of the same photo dedupe even after a resize).
+ *
+ * Every browser API it needs is injectable, which is what lets the node tests
+ * drive the whole path with stubs. Failures throw with a sentence fit to show
+ * in a toast — the caller has no way to explain "NotReadableError" to anyone.
+ */
+export async function importImageFile(file, {
+	subtle = globalThis.crypto?.subtle,
+	createBitmap = globalThis.createImageBitmap,
+	makeCanvas = defaultCanvas,
+	maxDimension = ASSET_MAX_DIMENSION,
+	maxSourceBytes = ASSET_MAX_SOURCE_BYTES,
+} = {}) {
+	if (!file || typeof file.arrayBuffer !== "function") throw new TypeError("importImageFile needs a File or Blob");
+	const sourceType = typeof file.type === "string" ? file.type.toLowerCase() : "";
+	if (!isSupportedImageType(sourceType)) throw new Error("that file is not an image CozyClay can import (PNG, WebP, JPEG or GIF)");
+	if (Number(file.size) > maxSourceBytes) throw new Error(`that image is larger than ${Math.round(maxSourceBytes / (1024 * 1024))} MB`);
+	if (typeof createBitmap !== "function") throw new Error("this browser cannot decode images — createImageBitmap is unavailable");
+
+	const bitmap = await createBitmap(file);
+	try {
+		const target = downscaleTarget(bitmap.width, bitmap.height, maxDimension);
+		if (!target) throw new Error("that image has no usable size");
+		let type = sourceType;
+		let bytes;
+		if (target.scaled) {
+			const canvas = makeCanvas(target.width, target.height);
+			const context = canvas.getContext("2d");
+			if (!context) throw new Error("this browser cannot resize images — no 2D context");
+			context.drawImage(bitmap, 0, 0, target.width, target.height);
+			type = storedTypeFor(sourceType);
+			const blob = await canvas.convertToBlob({ type });
+			bytes = await blob.arrayBuffer();
+		} else {
+			// Unscaled, the original bytes are stored verbatim: no re-encode means
+			// no generation loss, and an untouched PNG keeps its exact alpha.
+			bytes = await file.arrayBuffer();
+		}
+		const asset = normalizeAsset({
+			id: await assetIdForBytes(bytes, subtle),
+			type,
+			width: target.width,
+			height: target.height,
+			bytes,
+			name: typeof file.name === "string" ? file.name : "",
+		});
+		if (!asset) throw new Error("that image could not be prepared for the set");
+		return asset;
+	} finally {
+		bitmap?.close?.();
+	}
+}
+
 /* ------------------------------------------------------- reachability ---- */
 
 /**
