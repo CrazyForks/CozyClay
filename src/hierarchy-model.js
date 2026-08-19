@@ -99,11 +99,29 @@ export function buildHierarchyNodes(sceneObjects = [], characters = null) {
 	const clone = (node) => {
 		const next = { ...node };
 		if (node.id === "props") {
-			next.children = sceneObjects.map((object) => ({
-				id: `object:${object.id}`,
-				label: object.name,
-				kind: "object",
-			}));
+			// Grouped props nest under their parent, so a rocket built from ten
+			// primitives reads as one thing in the tree instead of ten siblings.
+			const childrenOf = (parentId) =>
+				sceneObjects
+					.filter((object) => (object.parent ?? null) === parentId)
+					.map((object) => {
+						const row = { id: `object:${object.id}`, label: object.name, kind: "object" };
+						const nested = childrenOf(object.id);
+						if (nested.length) row.children = nested;
+						return row;
+					});
+			// An object whose parent is missing still has to appear somewhere, so
+			// anything unreachable from the top level is shown at the top level.
+			const ids = new Set(sceneObjects.map((object) => object.id));
+			const rooted = sceneObjects.filter(
+				(object) => (object.parent ?? null) === null || !ids.has(object.parent),
+			);
+			next.children = rooted.map((object) => {
+				const row = { id: `object:${object.id}`, label: object.name, kind: "object" };
+				const nested = childrenOf(object.id);
+				if (nested.length) row.children = nested;
+				return row;
+			});
 		} else if (node.children) {
 			next.children = node.children.map(clone);
 		}

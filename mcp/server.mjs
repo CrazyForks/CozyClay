@@ -66,6 +66,7 @@ import {
 	createSceneObject,
 	objectSize,
 	removeSceneObject,
+	setSceneObjectParent,
 	updateSceneObject,
 } from "../src/scene-objects.js";
 import { classifyMove, captureFraming, moveSlate } from "../src/camera-move.js";
@@ -675,6 +676,101 @@ registerTool(
 	},
 );
 
+
+registerTool(
+	"group_objects",
+	{
+		title: "Group props so they move as one",
+		description:
+			"Attach objects to a parent object. The parent then carries them whenever it moves — in " +
+			"the studio's gizmo as well as through update_object — so a set piece assembled from " +
+			"primitives can be positioned as a single thing. Rotation and scale stay per-object. " +
+			"Pass parent: null to detach.",
+		inputSchema: {
+			parent: z.string().nullable().describe("object id to attach to, or null to detach"),
+			children: z.array(z.string()).min(1).describe("object ids to attach or detach"),
+		},
+	},
+	async ({ parent, children }) => {
+		if (liveHub?.connected) {
+			try {
+				await liveHub.command(parent === null ? "ungroup_objects" : "group_objects", { parent, children });
+				await refreshLiveDescription();
+				return text(
+					(parent === null
+						? `Detached ${children.length} object(s).`
+						: `Grouped ${children.length} object(s) under ${parent} — move ${parent} and they follow.`) +
+						`\n\n${sceneReport()}`,
+				);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
+		const sc = scene();
+		if (parent !== null && !sc.objects.some((o) => o.id === parent)) return text(`No object "${parent}".`);
+		for (const child of children) {
+			if (!sc.objects.some((o) => o.id === child)) return text(`No object "${child}".`);
+		}
+		sc.objects = children.reduce((acc, child) => setSceneObjectParent(acc, child, parent), sc.objects);
+		return text(
+			(parent === null ? `Detached ${children.length} object(s).` : `Grouped ${children.length} object(s) under ${parent}.`) +
+				`\n\n${sceneReport()}`,
+		);
+	},
+);
+
+registerTool(
+	"set_prompt_blocks",
+	{
+		title: "Author the motion beats on the timeline",
+		description:
+			"Write Prompt Blocks onto the timeline WITHOUT generating — the beats and their frame " +
+			"ranges, so a schedule can be read and revised before any GPU time is spent. Hit " +
+			"'Generate all N blocks' in the studio, or call generate_motion, when it reads right.\n\n" +
+			PROMPT_GUIDE,
+		inputSchema: {
+			beats: z
+				.array(
+					z.object({
+						text: z.string().min(3).describe("the beat, in ARDY's sentence shape"),
+						seconds: z.number().min(0.5).max(20).describe("how long this beat holds"),
+					}),
+				)
+				.min(1)
+				.max(8)
+				.describe("beats in order; each one becomes a contiguous block"),
+		},
+	},
+	async ({ beats }) => {
+		if (!liveHub?.connected) {
+			return text("Prompt Blocks live on the studio timeline — open the editor and try again.");
+		}
+		const normalized = normalizePhases(beats.map((b) => b.text));
+		// The timeline runs on a 24 fps production clock.
+		const TIMELINE_FPS = 24;
+		let cursor = 0;
+		const blocks = normalized.texts.map((textValue, i) => {
+			const span = Math.max(1, Math.round((beats[Math.min(i, beats.length - 1)].seconds ?? 2) * TIMELINE_FPS));
+			const block = { startFrame: cursor, endFrame: cursor + span, text: textValue };
+			cursor += span;
+			return block;
+		});
+		try {
+			await liveHub.command("set_prompt_blocks", { blocks });
+		} catch (error) {
+			return liveError(error);
+		}
+		const rewrites = normalized.notes
+			.map((notes, i) => (notes.length ? `  ${i + 1}. ${blocks[i].text}  ← ${notes.join("; ")}` : null))
+			.filter(Boolean);
+		return text(
+			`${blocks.length} block(s) on the timeline (${(cursor / TIMELINE_FPS).toFixed(1)}s total):\n` +
+				blocks.map((b) => `  ${b.startFrame}-${b.endFrame}f  ${b.text}`).join("\n") +
+				(rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "") +
+				"\n\nGenerate them from the studio's Prompt Blocks panel, or with generate_motion.",
+		);
+	},
+);
 
 registerTool(
 	"generate_motion",

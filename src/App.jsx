@@ -50,6 +50,7 @@ import {
 	objectSize,
 	placementInFront,
 	removeSceneObject,
+	setSceneObjectParent,
 	sceneObjectIdFromHierarchy,
 	updateSceneObject,
 } from "./scene-objects.js";
@@ -2384,6 +2385,7 @@ globalThis.playMode = centerTab === "play";
 					id: object.id, name: object.name,
 					x: object.x, y: object.y, z: object.z, rot: object.rot,
 					scaleX: object.scaleX, scaleY: object.scaleY, scaleZ: object.scaleZ,
+					parent: object.parent ?? null,
 					footprint: object.footprint, height: object.height,
 				})),
 			};
@@ -2522,6 +2524,57 @@ globalThis.playMode = centerTab === "play";
 			// Loads a bridge-generated take onto the active character — the same
 			// path the demo seed and the Motion panel use. Replacing a take is not
 			// undoable in the UI either, so this is deliberately not undoable.
+			// Grouping is an editing convenience: the parent carries its children
+			// when it moves, so a set piece built from primitives is dragged once.
+			group_objects: (args) => {
+				const live = liveStateRef.current;
+				if (typeof args.parent !== "string" || !live.objects.some((o) => o.id === args.parent)) {
+					throw new Error("Parent object not found");
+				}
+				if (!Array.isArray(args.children) || !args.children.length) throw new Error("No children given");
+				for (const child of args.children) {
+					if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
+				}
+				storeRef.current.applyAtomic((objects) =>
+					args.children.reduce((acc, child) => setSceneObjectParent(acc, child, args.parent), objects),
+				);
+				syncObjects();
+				return { parent: args.parent, children: args.children.length };
+			},
+			ungroup_objects: (args) => {
+				const live = liveStateRef.current;
+				if (!Array.isArray(args.children) || !args.children.length) throw new Error("No children given");
+				for (const child of args.children) {
+					if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
+				}
+				storeRef.current.applyAtomic((objects) =>
+					args.children.reduce((acc, child) => setSceneObjectParent(acc, child, null), objects),
+				);
+				syncObjects();
+				return { children: args.children.length };
+			},
+			// Authoring blocks is not generating: a director writes the beats and
+			// their ranges first, then generates when the schedule reads right.
+			// Frames arrive on the timeline's own 24 fps clock.
+			set_prompt_blocks: (args) => {
+				if (!Array.isArray(args.blocks)) throw new Error("Invalid blocks");
+				const stamp = Date.now();
+				const clips = args.blocks.map((block, i) => {
+					const startFrame = Math.round(Number(block.startFrame));
+					const endFrame = Math.round(Number(block.endFrame));
+					if (!Number.isFinite(startFrame) || !Number.isFinite(endFrame) || endFrame <= startFrame) {
+						throw new Error(`Invalid frame range on block ${i + 1}`);
+					}
+					if (typeof block.text !== "string" || !block.text.trim()) throw new Error(`Block ${i + 1} needs text`);
+					return { id: `prompt-${stamp}-${i}`, startFrame, endFrame, text: block.text.trim() };
+				});
+				const live = liveStateRef.current;
+				live.setPromptClips(clips);
+				if (clips.length) {
+					live.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
+				}
+				return { blocks: clips.length };
+			},
 			load_motion: async (args) => {
 				if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
 				const prompt = typeof args.prompt === "string" ? args.prompt : "";

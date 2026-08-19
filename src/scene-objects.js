@@ -117,6 +117,7 @@ export function createSceneObject(kind, existing = [], placement = {}) {
 		scaleY: 1,
 		scaleZ: 1,
 		color: entry.color,
+		parent: null,
 		footprint: { ...entry.footprint },
 		height: entry.height,
 	};
@@ -135,10 +136,60 @@ const TRANSFORM_LIMITS = {
 	scaleZ: (value) => clamp(value, SCALE_MIN, SCALE_MAX),
 };
 
+/** Every object that hangs off `id`, at any depth. A cycle cannot form because
+ * setParent refuses one, but the seen-set keeps this total even if data is
+ * hand-edited into a loop. */
+export function descendantsOf(objects, id) {
+	const out = [];
+	const seen = new Set([id]);
+	let frontier = [id];
+	while (frontier.length) {
+		const next = [];
+		for (const object of objects) {
+			if (object.parent && frontier.includes(object.parent) && !seen.has(object.id)) {
+				seen.add(object.id);
+				out.push(object);
+				next.push(object.id);
+			}
+		}
+		frontier = next;
+	}
+	return out;
+}
+
 export function updateSceneObject(objects, id, patch) {
 	let changed = false;
+	const target = objects.find((object) => object.id === id);
+	// A parent carries its children: the group is dragged, nudged and dropped as
+	// one body. Only translation rides along — rotating or scaling a group would
+	// have to orbit and rescale every child about the parent's origin, which is a
+	// different feature and is deliberately not pretended at here.
+	const carried = target ? descendantsOf(objects, id) : [];
+	const delta = { x: 0, y: 0, z: 0 };
+	if (target) {
+		for (const axis of ["x", "y", "z"]) {
+			if (patch[axis] === undefined) continue;
+			const value = Number(patch[axis]);
+			if (!Number.isFinite(value)) continue;
+			delta[axis] = TRANSFORM_LIMITS[axis](value) - target[axis];
+		}
+	}
+	const moving = new Set(carried.map((object) => object.id));
+	const shifts = delta.x || delta.y || delta.z;
+
 	const next = objects.map((object) => {
-		if (object.id !== id) return object;
+		if (object.id !== id) {
+			if (!shifts || !moving.has(object.id)) return object;
+			const update = {};
+			for (const axis of ["x", "y", "z"]) {
+				if (!delta[axis]) continue;
+				const bounded = TRANSFORM_LIMITS[axis](object[axis] + delta[axis]);
+				if (bounded !== object[axis]) update[axis] = bounded;
+			}
+			if (!Object.keys(update).length) return object;
+			changed = true;
+			return { ...object, ...update };
+		}
 		const update = {};
 		for (const [key, limit] of Object.entries(TRANSFORM_LIMITS)) {
 			if (patch[key] === undefined) continue;
@@ -159,9 +210,33 @@ export function updateSceneObject(objects, id, patch) {
 	return changed ? next : objects;
 }
 
+/**
+ * Attach `id` to `parentId` (or detach with null). Refuses the two shapes that
+ * would corrupt the tree: an object parented to itself, and a cycle formed by
+ * parenting an object to one of its own descendants.
+ */
+export function setSceneObjectParent(objects, id, parentId) {
+	if (id === parentId) return objects;
+	if (parentId !== null && !objects.some((object) => object.id === parentId)) return objects;
+	if (parentId !== null && descendantsOf(objects, id).some((object) => object.id === parentId)) return objects;
+	let changed = false;
+	const next = objects.map((object) => {
+		if (object.id !== id) return object;
+		const parent = parentId ?? null;
+		if ((object.parent ?? null) === parent) return object;
+		changed = true;
+		return { ...object, parent };
+	});
+	return changed ? next : objects;
+}
+
 export function removeSceneObject(objects, id) {
 	const next = objects.filter((object) => object.id !== id);
-	return next.length === objects.length ? objects : next;
+	if (next.length === objects.length) return objects;
+	// Deleting a parent must not leave its children pointing at a ghost: they
+	// are promoted to top level rather than vanishing with it, because a group
+	// is an editing convenience and never an owner of the parts.
+	return next.map((object) => (object.parent === id ? { ...object, parent: null } : object));
 }
 /* -------------------------------------------------- persistence ---- */
 
@@ -203,6 +278,9 @@ export function normalizeSceneObject(record) {
 		scaleY: TRANSFORM_LIMITS.scaleY(pick(record.scaleY, scaleFallback)),
 		scaleZ: TRANSFORM_LIMITS.scaleZ(pick(record.scaleZ, scaleFallback)),
 		color: typeof record.color === "string" && record.color ? record.color : entry.color,
+		// Group membership. null is a top-level object; the id of another object
+		// makes this one ride along when that object moves.
+		parent: typeof record.parent === "string" && record.parent ? record.parent : null,
 		footprint: { ...entry.footprint },
 		height: entry.height,
 	};

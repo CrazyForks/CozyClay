@@ -36,7 +36,12 @@ export const PROMPT_GUIDE = [
 	"    (num_text_tokens=1), so two actions in one phase average together instead of playing in order.",
 	"  - Sequence = more phases, never a compound sentence.",
 	"  - Describe the BODY: no emotions, no camera, no scenery, no props the model cannot infer.",
-	'  - Good: ["A person walks forward.", "A person stops and looks up.", "A person steps backward."]',
+	"  - WRITE THE AMPLITUDE. A diffusion model regresses toward the mean, so a neutral verb",
+	"    generates a smaller motion than the words suggest. Pick the strong verb and state the",
+	"    magnitude: 'strides forward quickly' over 'walks forward', 'stops abruptly' over 'slows",
+	"    to a stop', 'leans far back and looks straight up' over 'looks up'. Simultaneous detail",
+	"    describing ONE pose is fine; sequential actions still need separate phases.",
+	'  - Good: ["A person strides forward quickly.", "A person stops abruptly.", "A person leans far back and looks straight up."]',
 	'  - Bad:  ["walks forward slowly, then stops abruptly", "staggers back in astonishment"]',
 ].join("\n");
 

@@ -20,6 +20,7 @@ import {
 	screenRotatePatch,
 	sceneObjectHierarchyId,
 	sceneObjectIdFromHierarchy,
+	setSceneObjectParent,
 	translatePatch,
 	updateSceneObject,
 	wrapAngle,
@@ -371,3 +372,69 @@ expect(
 
 if (failures) process.exit(1);
 console.log("all scene object checks PASS");
+
+/* ------------------------------------------------------- grouping --- */
+
+// A group is an editing convenience: the parent carries its children when it
+// moves, and nothing else about them changes.
+const gParent = createSceneObject("cube", [], { x: 0, z: 0 });
+const gChildA = createSceneObject("sphere", [gParent], { x: 2, z: 1 });
+const gChildB = createSceneObject("cone", [gParent, gChildA], { x: -1, z: 3 });
+let grouped = setSceneObjectParent([gParent, gChildA, gChildB], gChildA.id, gParent.id);
+grouped = setSceneObjectParent(grouped, gChildB.id, gChildA.id); // nested one level deeper
+
+expect("a new object starts unparented", gParent.parent === null);
+expect(
+	"parenting records the parent",
+	grouped.find((o) => o.id === gChildA.id).parent === gParent.id,
+);
+
+const movedGroup = updateSceneObject(grouped, gParent.id, { x: 5, z: -2 });
+const movedA = movedGroup.find((o) => o.id === gChildA.id);
+const movedB = movedGroup.find((o) => o.id === gChildB.id);
+expect("moving a parent carries its child", movedA.x === 7 && movedA.z === -1, JSON.stringify(movedA));
+expect("the carry reaches grandchildren", movedB.x === 4 && movedB.z === 1, JSON.stringify(movedB));
+expect(
+	"a child keeps its own rotation and scale",
+	movedA.rot === gChildA.rot && movedA.scaleX === gChildA.scaleX,
+);
+
+const movedChild = updateSceneObject(grouped, gChildA.id, { x: 4 });
+expect(
+	"moving a child leaves the parent alone",
+	movedChild.find((o) => o.id === gParent.id).x === 0,
+);
+
+// Rotating or scaling a group is NOT propagated — only translation is claimed.
+const groupSpun = updateSceneObject(grouped, gParent.id, { rot: 90, scaleX: 2 });
+expect(
+	"rotation and scale stay on the parent alone",
+	groupSpun.find((o) => o.id === gChildA.id).rot === gChildA.rot &&
+		groupSpun.find((o) => o.id === gChildA.id).scaleX === gChildA.scaleX,
+);
+
+expect("an object cannot parent itself", setSceneObjectParent(grouped, gParent.id, gParent.id) === grouped);
+expect(
+	"a cycle is refused",
+	setSceneObjectParent(grouped, gParent.id, gChildB.id) === grouped,
+);
+expect(
+	"an unknown parent is refused",
+	setSceneObjectParent(grouped, gChildA.id, "no-such-object") === grouped,
+);
+expect(
+	"detaching clears the parent",
+	setSceneObjectParent(grouped, gChildA.id, null).find((o) => o.id === gChildA.id).parent === null,
+);
+
+const orphaned = removeSceneObject(grouped, gParent.id);
+expect(
+	"deleting a parent promotes its children instead of orphaning them",
+	orphaned.length === 2 && orphaned.every((o) => o.parent === null || o.parent === gChildA.id),
+	JSON.stringify(orphaned.map((o) => [o.id, o.parent])),
+);
+
+expect(
+	"parent survives a serialize/load round trip",
+	loadScene(serializeScene(grouped)).objects.find((o) => o.id === gChildA.id).parent === gParent.id,
+);
