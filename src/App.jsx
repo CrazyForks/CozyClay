@@ -2556,13 +2556,18 @@ globalThis.playMode = centerTab === "play";
 		}];
 	}), [characters, activeChar.id, motion]);
 	// Where the selection gizmo stands: same driving rules as the render,
-	// for the active (selected) cast member only.
+	// for the active (selected) cast member only. Gated on the HIERARCHY
+	// selection, not the sticky active layer — the layer stays on the last
+	// character so the motion tab keeps working, but a move gizmo hanging in
+	// the viewport while the camera or a prop is selected reads as a stray
+	// widget.
 	const gizmoView = useMemo(() => {
+		if (!charIdFromHierarchyId(selectedHierarchyId)) return null;
 		const entry = characters.find((item) => item.id === activeChar.id);
 		if (!entry || entry.hidden) return null;
 		const clip = motion;
 		return { position: clip ? [clip.anchorX, entry.y ?? 0, clip.anchorZ] : [entry.x, entry.y ?? 0, entry.z] };
-	}, [characters, activeChar.id, motion]);
+	}, [characters, activeChar.id, motion, selectedHierarchyId]);
 
 	/* --------------------- per-character layer buffers ---------------------
 	 * waypoints / promptClips / motion above are the EDITING BUFFER of the
