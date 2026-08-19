@@ -1653,7 +1653,6 @@ globalThis.playMode = centerTab === "play";
 	// How much of the wall counts as the wall, and how wide the brush that
 	// argues with the answer is.
 	const [matteTolerance, setMatteTolerance] = useState(0.18);
-	const [matteBrush, setMatteBrush] = useState(18);
 	const [matteMode, setMatteMode] = useState("paint");
 	const [matteStats, setMatteStats] = useState({ painted: 0, coverage: 0, zoom: 1, canUndo: false, canRedo: false });
 	const [matteBusy, setMatteBusy] = useState(false);
@@ -1673,7 +1672,6 @@ globalThis.playMode = centerTab === "play";
 		const editor = createMatteEditor(canvas, { onChange: setMatteStats });
 		matteEditorRef.current = editor;
 		editor.setTolerance(matteTolerance);
-		editor.setBrush(matteBrush);
 		editor.setMode(matteMode);
 		let cancelled = false;
 		(async () => {
@@ -1691,7 +1689,7 @@ globalThis.playMode = centerTab === "play";
 			editor.dispose();
 			if (matteEditorRef.current === editor) matteEditorRef.current = null;
 		};
-		// Tolerance/brush/mode are pushed by their own handlers below; re-running
+		// Tolerance and mode are pushed by their own handlers below; re-running
 		// this effect for them would throw away the selection.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [matteSourceId, matteSelectionId]);
@@ -6541,66 +6539,12 @@ function resizePromptClip(id, edge, rawFrame) {
 											</button>
 										</div>
 										<div className="presets matte-modes">
-											<button
-												type="button"
-												disabled={(matteStats.zoom ?? 1) <= 1}
-												aria-label={ko("Zoom out", "축소")}
-												onClick={() => matteEditorRef.current?.zoomBy(1 / 1.5)}
-											>
-												−
-											</button>
-											<span className="matte-zoom" aria-live="polite">{(matteStats.zoom ?? 1).toFixed(1)}×</span>
-											<button type="button" aria-label={ko("Zoom in", "확대")} onClick={() => matteEditorRef.current?.zoomBy(1.5)}>
-												+
-											</button>
-											<button type="button" disabled={(matteStats.zoom ?? 1) <= 1} onClick={() => matteEditorRef.current?.fit()}>
-												{ko("Fit", "전체 보기")}
-											</button>
-										</div>
-										<p className="inspector-hint">
-											{ko(
-												"Scroll on the picture to zoom where the cursor is; hold Space (or the middle button) and drag to pan. The brush keeps its size on screen, so zooming in is how you work an edge.",
-												"그림 위에서 스크롤하면 커서 위치를 기준으로 확대·축소되고, Space(또는 가운데 버튼)를 누른 채 드래그하면 이동합니다. 브러시는 화면 기준 크기를 유지하므로, 가장자리를 다듬을 땐 확대해서 작업하면 됩니다.",
-											)}
-										</p>
-										<div className="presets matte-modes">
 											<button type="button" disabled={!matteStats.canUndo} onClick={() => matteEditorRef.current?.undo()}>
 												{ko("Undo", "실행 취소")} <kbd>⌘Z</kbd>
 											</button>
 											<button type="button" disabled={!matteStats.canRedo} onClick={() => matteEditorRef.current?.redo()}>
 												{ko("Redo", "다시 실행")} <kbd>⇧⌘Z</kbd>
 											</button>
-										</div>
-										<div className="matte-slider">
-											<label htmlFor="matte-brush">{ko("Brush", "브러시")}</label>
-											<input
-												id="matte-brush"
-												type="range"
-												min="4"
-												max="90"
-												step="2"
-												value={matteBrush}
-												onChange={(event) => {
-													const value = Number(event.target.value);
-													setMatteBrush(value);
-													matteEditorRef.current?.setBrush(value);
-												}}
-											/>
-											<input
-												type="number"
-												data-field="matte-brush"
-												min="4"
-												max="90"
-												step="2"
-												value={matteBrush}
-												aria-label={ko("Brush size in pixels", "브러시 크기 (픽셀)")}
-												onChange={(event) => {
-													const value = Number(event.target.value);
-													if (!Number.isFinite(value)) return;
-													setMatteBrush(value);
-													matteEditorRef.current?.setBrush(value);
-												}}
-											/>
 										</div>
 										<div className="matte-slider">
 											<label htmlFor="matte-tolerance">{ko("Tolerance", "허용치")}</label>
