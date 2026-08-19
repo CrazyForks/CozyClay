@@ -58,7 +58,7 @@ import {
 	updateSceneObject,
 } from "./scene-objects.js";
 import { createSceneHistoryStore } from "./scene-history.js";
-import { ASSET_IMAGE_TYPES, assetAspect, importImageFile } from "./scene-assets.js";
+import { ASSET_IMAGE_TYPES, assetAspect, imageFilesFrom, importImageFile } from "./scene-assets.js";
 import { assetRecord, rememberAsset } from "./scene-asset-cache.js";
 import { cutOutBackground, decodeMask, maskAsset } from "./matte.js";
 import { createMatteEditor } from "./matte-editor.js";
@@ -974,6 +974,51 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 	return null;
 }
 
+/**
+ * Anything that accepts a dropped picture. Returns the handlers to spread onto
+ * an element and whether a drag is currently over it, so the target can say so
+ * — a drop zone that gives no sign it is armed reads as a dead area, and the
+ * file gets dropped on the desktop instead.
+ *
+ * `dragover` must preventDefault, or the browser navigates away to the file.
+ */
+function useImageDrop(onFiles) {
+	const [over, setOver] = useState(false);
+	const depth = useRef(0);
+	const carriesFiles = (event) => !!event.dataTransfer?.types?.includes?.("Files");
+	return {
+		over,
+		handlers: {
+			onDragEnter: (event) => {
+				if (!carriesFiles(event)) return;
+				event.preventDefault();
+				depth.current += 1;
+				setOver(true);
+			},
+			onDragOver: (event) => {
+				if (!carriesFiles(event)) return;
+				event.preventDefault();
+				event.dataTransfer.dropEffect = "copy";
+			},
+			// dragleave fires for every child the pointer crosses, so the
+			// highlight is refcounted rather than toggled.
+			onDragLeave: () => {
+				depth.current = Math.max(0, depth.current - 1);
+				if (!depth.current) setOver(false);
+			},
+			onDrop: (event) => {
+				const files = imageFilesFrom(event.dataTransfer);
+				depth.current = 0;
+				setOver(false);
+				if (!files.length) return;
+				event.preventDefault();
+				event.stopPropagation();
+				onFiles(files);
+			},
+		},
+	};
+}
+
 /* ----------------------------------------------------------------- app --- */
 
 // Unity's tool keys. They are free because camera movement now lives behind a
@@ -1598,6 +1643,12 @@ globalThis.playMode = centerTab === "play";
 
 	/** The hidden file input behind "Import image as cutout". */
 	const cutoutInputRef = useRef(null);
+	// One drop zone shared by every surface that accepts a picture: the Props
+	// branch of the hierarchy, the Props inspector, and the shot view itself.
+	// One per surface, so only the thing under the cursor lights up.
+	const propsDrop = useImageDrop((files) => importCutouts(files));
+	const inspectorDrop = useImageDrop((files) => importCutouts(files));
+	const viewportDrop = useImageDrop((files) => importCutouts(files));
 	// How much of the wall counts as the wall, and how wide the brush that
 	// argues with the answer is.
 	const [matteTolerance, setMatteTolerance] = useState(0.18);
@@ -1709,6 +1760,12 @@ globalThis.playMode = centerTab === "play";
 		} catch (error) {
 			setToast(isKo ? `이미지를 가져오지 못했어요 — ${error.message}` : `Could not import that image — ${error.message}`);
 		}
+	}
+
+	/** A drop can carry several pictures. They go in one at a time so each
+	 * lands in its own place and the last one is the one left selected. */
+	async function importCutouts(files) {
+		for (const file of files) await importCutout(file);
 	}
 
 	/**
@@ -5154,6 +5211,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					onDuplicateObject={duplicateSelectedSceneObject}
 					onDeleteObject={deleteSceneObject}
 					onFrameObject={frameSelection}
+					propsDrop={propsDrop}
 				/>
 				</aside>
 				<div
@@ -5162,7 +5220,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					aria-label={ko("Resize hierarchy panel", "계층 패널 크기 조절")}
 					onPointerDown={(event) => beginWorkspaceResize("hierarchy", event)}
 				/>
-				<div className="viewport">
+				<div className="viewport" data-drop={viewportDrop.over ? "over" : undefined} {...viewportDrop.handlers}>
 				<div className="viewport-titlebar">
 				<div className="pane-tabs" role="tablist" aria-label={ko("Center view", "가운데 보기")}>
 					<button
@@ -6299,7 +6357,8 @@ function resizePromptClip(id, edge, rawFrame) {
 					</Foldout>
 
 				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
-					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요.")}</p>
+					<div className="props-drop" data-drop={inspectorDrop.over ? "over" : "target"} {...inspectorDrop.handlers}>
+					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view. Drop a picture anywhere here — or on the shot view — to stand it up as a cutout.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요. 사진을 이 영역이나 샷 뷰에 끌어다 놓으면 컷아웃으로 세워집니다.")}</p>
 					<AddObjectMenu onAdd={addSceneObject} label={ko("Add object to the set", "세트에 오브젝트 추가")} />
 					<button
 						type="button"
@@ -6335,6 +6394,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								</button>
 							))}
 						</div>
+					</div>
 					</Foldout>
 
 				<Foldout hidden={sidebarTab !== "inspector" || !selectedSceneObject} title={ko("Object Transform", "오브젝트 변환")}>

@@ -7465,3 +7465,38 @@ input[type=range] {
 	flex-wrap: wrap;
 	gap: 6px;
 }
+
+/* ------------------------------------------------------------ drop it --- */
+/* A picture dropped on the Props branch, the Props inspector or the shot view
+   becomes a cutout. A drop zone that gives no sign it is armed reads as dead
+   area, so each one lights its own edge while a file is over it. */
+
+.props-drop {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	border: 1px dashed transparent;
+	border-radius: 4px;
+	padding: 2px;
+	transition: border-color 120ms ease, background 120ms ease;
+}
+
+.props-drop[data-drop="over"],
+.hierarchy-row-wrap[data-drop="over"] {
+	border-color: var(--accent, #e7b557);
+	background: rgba(231, 181, 87, 0.1);
+}
+
+.hierarchy-row-wrap[data-drop="over"] {
+	border: 1px dashed var(--accent, #e7b557);
+	border-radius: 3px;
+}
+
+.viewport[data-drop="over"] {
+	outline: 2px dashed var(--accent, #e7b557);
+	outline-offset: -6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.props-drop { transition: none; }
+}

@@ -108,6 +108,27 @@ export function normalizeAsset(record) {
 	return { id: record.id, type: record.type.toLowerCase(), width, height, bytes, name: typeof record.name === "string" ? record.name : "" };
 }
 
+/**
+ * The image files in a drop (or a paste), in the order they were dropped.
+ *
+ * Two quirks make this worth a function rather than a filter inline. A file
+ * dragged from some applications arrives with an EMPTY type — the browser has
+ * a name and bytes but no sniffed MIME — so the extension is the fallback, not
+ * a shortcut. And a drag can carry directories and text as well as files, which
+ * `files` reports as entries with no type and no extension; those are dropped
+ * rather than handed to a decoder that will fail on them.
+ */
+export function imageFilesFrom(transfer) {
+	const files = Array.from(transfer?.files ?? []);
+	return files.filter((file) => {
+		if (!file) return false;
+		if (isSupportedImageType(file.type)) return true;
+		if (file.type) return false;
+		const extension = String(file.name ?? "").toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+		return ["png", "webp", "jpg", "jpeg", "gif"].includes(extension);
+	});
+}
+
 /* ------------------------------------------------------------- import ---- */
 
 /** Scaling a picture re-encodes it, and the encoder has to be one that can

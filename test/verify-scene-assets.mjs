@@ -7,6 +7,7 @@ import {
 	assetIdForBytes,
 	assetIdFromDigest,
 	downscaleTarget,
+	imageFilesFrom,
 	importImageFile,
 	isAssetId,
 	isSupportedImageType,
@@ -178,6 +179,24 @@ await refuses(
 	{ ...stubs(0, 0), createBitmap: async () => ({ width: 0, height: 0 }) },
 	/no usable size/,
 );
+
+/* -------------------------------------------------------------- a drop -- */
+
+const dropped = (files) => imageFilesFrom({ files });
+const named = (name, type) => ({ name, type });
+expect(
+	"the images in a drop come back in order",
+	JSON.stringify(dropped([named("a.png", "image/png"), named("b.webp", "image/webp")]).map((f) => f.name)) === '["a.png","b.webp"]',
+);
+expect(
+	"a file with no MIME falls back to its extension",
+	dropped([named("Sofa.PNG", ""), named("shot.jpeg", "")]).length === 2,
+);
+expect(
+	"documents, folders and text are left where they are",
+	dropped([named("notes.pdf", "application/pdf"), named("logo.svg", "image/svg+xml"), named("Untitled Folder", ""), named("", "")]).length === 0,
+);
+expect("a drop with nothing in it is not fatal", dropped([]).length === 0 && imageFilesFrom(null).length === 0 && imageFilesFrom({}).length === 0);
 
 if (failures) process.exit(1);
 console.log("all scene asset checks PASS");
