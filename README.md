@@ -17,6 +17,7 @@
   <a href="https://cozyclay.org/">Demo reel</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#what-you-can-do">Features</a> ·
+  <a href="#ai-control-mcp">AI control</a> ·
   <a href="#controls">Controls</a> ·
   <a href="https://github.com/HaD0Yun/CozyClay/issues">Issues</a>
 </p>
@@ -43,6 +44,7 @@ https://github.com/user-attachments/assets/1d0113e5-6922-443d-affc-1bdabc666247
 | **Fly the camera** | Right-drag flies (WASD walks, Q/E cranes), middle-drag pans, Alt+drag orbits the selection, click selects, `F` frames — the muscle memory you already have from a 3D editor. |
 | **Undo anything** | Every scene mutation goes through one history store: a drag, a scrub, an inspector edit is exactly one undo entry. `Esc` cancels an in-flight drag and restores the pre-drag transform. |
 | **Generate motion** | Pose characters and export poses, sequence multi-phase motion as Prompt Blocks on a resizable timeline, send them to ARDY, then play the result back with sparse IK correction where the generated motion needs fixing. |
+| **Direct it with an AI** | Connect Claude — or any MCP client — and ask for a shot in plain language. It places the cast, frames “a low wide profile”, generates multi-phase motion, and the viewport moves in front of you. See [AI control](#ai-control-mcp). |
 
 ## Requirements
 
@@ -68,6 +70,31 @@ CCLAY_ARDY_HOST=user@your-gpu-box npx cozyclay
 ```
 
 Everything else — staging through camera work and playback — runs without it.
+
+## AI control (MCP)
+
+The studio ships an [MCP](https://modelcontextprotocol.io) server, so an AI assistant can drive it — the same scene, the same viewport, live:
+
+> “Put a detective and a courier in an alley, give me a low wide profile shot,
+> then make her stand up from the chair, sprint, and trip.”
+
+```json
+{
+  "mcpServers": {
+    "cozyclay": {
+      "command": "node",
+      "args": ["/path/to/CozyClay/mcp/server.mjs"]
+    }
+  }
+}
+```
+
+Drop that into `claude_desktop_config.json` (or any MCP client config) and restart the client.
+
+- **Editor open?** Tool calls move the visible viewport — camera, cast, set, generated motion, prompt blocks on the timeline.
+- **No editor?** The same tools run headless: block scenes, derive film vocabulary (“wide shot · right profile · knee level · 24mm”), render AI video prompts, and write `.cclayproject` files the studio opens.
+
+Tools, transports and the live-control protocol are documented in [`mcp/README.md`](mcp/README.md).
 
 ### From a clone
 
@@ -123,6 +150,8 @@ See [`tools/ardy/README.md`](tools/ardy/README.md) for details. This workflow is
 | `npm run test:theme` / `test:appearance` / `test:layout` | UI theme, appearance, layout |
 | `npm run test:lifecycle` | Dev-server process lifecycle |
 | `npm run test:ardy` | ARDY conversion, playback, and IK pipeline |
+| `cd mcp && npm run verify` | MCP server over real stdio — all 420 framing combinations |
+| `cd mcp && npm run verify:live` | Live-control protocol against a fake editor |
 | `npm run build` | Production build |
 
 Ad-hoc browser QA, while a dev server is available:
