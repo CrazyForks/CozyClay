@@ -4426,27 +4426,6 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (selectedPromptId === id) setSelectedPromptId(null);
 	}
 
-	// Generation duration follows the same 4 s quality cap as prompt blocks.
-const GENERATION_DURATION_MAX = PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS;
-
-function changeDuration(value) {
-	const duration = Math.max(ARDY_DURATION_MIN, Math.min(Math.round(Number(value)) || ARDY_DURATION_MIN, GENERATION_DURATION_MAX));
-		setArdyDuration(duration);
-		// Keep a stale destination frame in range when duration shrinks.
-		// The generation clip is duration × TIMELINE_FPS frames; root waypoints
-		// beyond its end would be invalid for a new shorter generation, so prune
-		// them even while a motion is loaded (the frame-0 start survives).
-		const last = Math.max(0, duration * TIMELINE_FPS - 1);
-		setWaypoints((prev) => prev.filter((w) => w.frame <= last));
-		// Without a loaded motion the timeline IS the generation clip: resize
-		// it to duration × TIMELINE_FPS and clamp the playhead. While a motion is loaded
-		// the timeline keeps the clip's own frame count and playhead until clear.
-		if (!motion) {
-			setTlFrameCount(last + 1);
-			setTlFrame((f) => Math.min(f, last));
-		}
-	}
-
 	// Optional native-ARDY seed. Empty = request omits seed; the raw string
 	// is kept as typed (trimmed only). runArdy validates the bridge contract
 	// (integer in 0..2**31-1) right before the request and toasts on a
@@ -5932,46 +5911,11 @@ function changeDuration(value) {
 						<p className="ardy-hint">{ko("Checking for the dev bridge…", "개발 브리지를 확인하는 중…")}</p>
 					) : bridge.ok ? (
 						<>
-							<Field label={ko("Motion prompt", "모션 프롬프트")}>
-								<input
-									type="text"
-									value={ardyPrompt}
-									onChange={(e) => setArdyPrompt(e.target.value)}
-									placeholder={ko("what the subject should do", "피사체가 할 동작을 설명하세요")}
-									maxLength={ARDY_PROMPT_MAX}
-								/>
-							</Field>
-							<div className="ardy-row">
-								<Field label={ko("Duration (s)", "길이 (초)")}>
-									<input
-										type="number"
-										min={ARDY_DURATION_MIN}
-										max={GENERATION_DURATION_MAX}
-										step={1}
-										value={ardyDuration}
-										onChange={(e) => changeDuration(e.target.value)}
-								/>
-							</Field>
-								<Field label={ko("Seed", "시드")}>
-									<input
-										type="text"
-										inputMode="numeric"
-										value={ardySeed}
-										onChange={(e) => changeArdySeed(e.target.value)}
-										placeholder={ko("empty = random", "비우면 랜덤")}
-									/>
-								</Field>
-							</div>
-
-							<button
-								type="button"
-								className="btn primary full generate"
-								onClick={() => runArdy()}
-							>
-								{ardyRunning || genQueue.some((job) => job.status === "queued")
-									? ko("Queue motion generation", "모션 생성 대기열에 추가")
-									: ko("Generate motion", "모션 생성")}
-							</button>
+							{/* Generation is authored in Prompt Blocks below: a block owns
+							    both its wording and its frame range, so the range decides the
+							    duration and a separate prompt/duration pair here could only
+							    disagree with it. This box reports the run instead of starting
+							    one. */}
 							{ardyRunning && (
 								<button type="button" className="btn ghost full" onClick={cancelArdy}>
 									{ko("Cancel run", "실행 취소")}
@@ -6088,14 +6032,34 @@ function changeDuration(value) {
 								/>
 							</Field>
 						)}
+						{/* The seed belongs with the button that consumes it. Duration does
+						    not appear at all: the blocks' own frame ranges are the length. */}
+						<Field label={ko("Seed", "시드")}>
+							<input
+								type="text"
+								inputMode="numeric"
+								value={ardySeed}
+								onChange={(e) => changeArdySeed(e.target.value)}
+								placeholder={ko("empty = random", "비우면 랜덤")}
+							/>
+						</Field>
 						<button
 							type="button"
 							className="btn primary full generate prompt-block-generate"
 							disabled={!bridge?.ok || !promptClips.some((clip) => clip.text.trim())}
 							onClick={runAllPromptBlocks}
 						>
-							{isKo ? `${promptClips.length}개 블록 모두 생성` : `Generate all ${promptClips.length} blocks`}
+							{ardyRunning || genQueue.some((job) => job.status === "queued")
+								? ko("Queue block generation", "블록 생성 대기열에 추가")
+								: isKo
+									? `${promptClips.length}개 블록 모두 생성`
+									: `Generate all ${promptClips.length} blocks`}
 						</button>
+						{ardyRunning && (
+							<button type="button" className="btn ghost full" onClick={cancelArdy}>
+								{ko("Cancel run", "실행 취소")}
+							</button>
+						)}
 					{!bridge?.ok && <p className="ardy-hint">{ko("Start the ARDY bridge to enable generation.", "생성을 사용하려면 ARDY 브리지를 시작하세요.")}</p>}
 						{ardyStatus && <p className="ardy-status">{ardyStatus}</p>}
 						<button type="button" className="btn ghost full" onClick={() => addPromptClip(tlFrame)}>
@@ -6117,76 +6081,6 @@ function changeDuration(value) {
 						<button type="button" className={"btn full" + (ikMode ? " primary" : "")} onClick={toggleIkMode} disabled={!ikChains}>
 						{ikMode ? ko("Finish rig editing", "리그 편집 끝내기") : ko("Edit rig with IK", "IK로 리그 편집")}
 						</button>
-					</Foldout>
-
-				<Foldout hidden={sidebarTab !== "motion"} title={ko("Root Path", "루트 경로")}>
-						<div className="inspector-status-grid">
-						<span>{ko("Path mode", "경로 모드")}</span><b>{waypointMode ? ko("ON", "켜짐") : ko("OFF", "꺼짐")}</b>
-						<span>{ko("Waypoints", "웨이포인트")}</span><b>{waypoints.length}</b>
-						<span>{ko("Current frame", "현재 프레임")}</span><b>{tlFrame}</b>
-						</div>
-						<button type="button" className={"btn full" + (waypointMode ? " primary" : "")} onClick={toggleWaypointMode}>
-						{waypointMode ? ko("Finish path editing", "경로 편집 끝내기") : ko("Edit root path", "루트 경로 편집")}
-						</button>
-						{waypointMode && (
-						<p className="inspector-hint">{ko("Pick a frame on the timeline's 2D root lane first, and the next Shot-view floor click lands there. Already-placed pins can be dragged in the Top-View.", "타임라인 2D 루트 레인에서 프레임을 먼저 고르면 다음 샷 뷰 바닥 클릭이 그 프레임에 놓입니다. 이미 놓은 점은 탑뷰에서 드래그해 위치를 조정하세요.")}</p>
-						)}
-						<div className="inspector-list compact">
-							{waypoints.map((waypoint) => (
-								<button
-									type="button"
-									key={waypoint.frame}
-									className={activeWaypointFrame === waypoint.frame ? "active" : ""}
-									onClick={() => {
-										setActiveWaypointFrame(waypoint.frame);
-										setTlFrame(waypoint.frame);
-										setWaypointMode(true);
-									}}
-									onContextMenu={(event) => {
-										event.preventDefault();
-										removeWaypoint(waypoint.frame);
-									}}
-								>
-								<span>{isKo ? `프레임 ${waypoint.frame}` : `Frame ${waypoint.frame}`}</span>
-									<small>{waypoint.x.toFixed(2)}, {waypoint.z.toFixed(2)}</small>
-								</button>
-							))}
-						</div>
-					</Foldout>
-
-				<Foldout hidden={sidebarTab !== "motion"} title={ko("IK Corrections", "IK 보정")}>
-						<div className="inspector-status-grid">
-						<span>{ko("IK mode", "IK 모드")}</span><b>{ikMode ? ko("ON", "켜짐") : ko("OFF", "꺼짐")}</b>
-						<span>{ko("Current frame", "현재 프레임")}</span><b>{tlFrame}</b>
-						<span>{ko("Keys", "키")}</span><b>{ikFrames.length}</b>
-						</div>
-						<button type="button" className={"btn full" + (ikMode ? " primary" : "")} onClick={toggleIkMode} disabled={!ikChains}>
-						{ikMode ? ko("Exit IK mode", "IK 모드 나가기") : ko("Enter IK mode", "IK 모드 들어가기")}
-						</button>
-						<label className="check">
-							<input type="checkbox" checked={footSnap} onChange={() => setFootSnap((value) => !value)} />
-						<span>{ko("Keep feet planted during body edits", "몸을 편집하는 동안 발 고정")}</span>
-						</label>
-						<button type="button" className="btn ghost full" onClick={ikAddKeyframe} disabled={!ikChains}>
-						{isKo ? `프레임 ${tlFrame}에 키 추가` : `Add key at frame ${tlFrame}`}
-						</button>
-						<div className="inspector-list compact">
-							{ikFrames.map((frame) => (
-								<button
-									type="button"
-									key={frame}
-									className={tlFrame === frame ? "active" : ""}
-									onClick={() => setTlFrame(frame)}
-									onContextMenu={(event) => {
-										event.preventDefault();
-										ikDeleteKeyframe(frame);
-									}}
-								>
-								<span>{isKo ? `프레임 ${frame}` : `Frame ${frame}`}</span>
-								<small>{tlFrame === frame ? ko("Current", "현재") : ko("right-click removes", "오른쪽 클릭으로 삭제")}</small>
-								</button>
-							))}
-						</div>
 					</Foldout>
 
 				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "environment"} title={ko("Environment", "환경")}>

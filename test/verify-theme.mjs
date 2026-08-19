@@ -13,7 +13,7 @@ const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const room = readFileSync(new URL("../src/room.jsx", import.meta.url), "utf8");
 
 expect("header brand is Cozy Clay", app.includes("Cozy <span>Clay</span>"));
-expect("browser title is Cozy Clay", html.includes("<title>Cozy Clay</title>"));
+expect("browser title names the studio", /<title>[^<]*Cozy\s?Clay[^<]*<\/title>/.test(html));
 expect("Inter is the only bundled active UI family", css.includes("@font-face{font-family:Inter") && !css.includes("Instrument Serif"));
 expect("display and UI roles both use Inter", css.includes('--display: "Inter"') && css.includes('--sans: "Inter"'));
 expect("numeric editing data has a monospace role", css.includes("--mono: ui-monospace") && css.includes("font-family: var(--mono)"));
@@ -27,9 +27,12 @@ expect("IK uses pencil red", css.includes(".tl-marker.ik") && css.includes("back
 expect("current frame uses lightbox amber", css.includes(".tl-frame-box") && css.includes("background: #e7b557"));
 expect("Canvas uses a bright neutral toon background", app.includes('<color attach="background" args={["#eef4f3"]} />'));
 expect("Character uses bright ivory clay", app.includes('const CLAY = "#f2eee6"'));
-expect("Room uses a high-key floor and rear wall", room.includes('const FLOOR = "#e7e1d7"') && room.includes('const BACK_WALL = "#eef1ed"'));
-expect("Room forms one open L-shaped corner", room.includes('const SIDE_WALL = "#e4ecec"') && room.includes("[-SIZE / 2, HEIGHT / 2, 0]"));
-expect("Corner walls are taller than the character stage", room.includes("const HEIGHT = 6.2"));
+expect("Room uses a high-key floor", room.includes('const FLOOR = "#f4f0e8"'));
+// The walls are gone on purpose: the set is an open deck, so a shot can stage a
+// run or a chase without meeting a corner. These assert their ABSENCE, which is
+// what would regress if a wall were ever reintroduced by accident.
+expect("the stage has no walls", !room.includes("BACK_WALL") && !room.includes("SIDE_WALL") && !room.includes("Skirting"));
+expect("the deck is large enough to read as open", room.includes("export const STAGE_SIZE = 500"));
 expect("Room has no ceiling plane", !room.includes("function Ceiling") && !room.includes("SHOT_LAYER"));
 expect(
 	"Studio uses directional high-key toon lighting",
