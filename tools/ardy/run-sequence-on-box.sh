@@ -29,6 +29,9 @@ ROOT2D=()
 SEED=""
 OUTPUT=""
 DRY_RUN=0
+ROOT_MARGIN=""
+CONTACT_THRESHOLD=""
+HISTORY_FRAMES=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -54,6 +57,15 @@ while [[ $# -gt 0 ]]; do
       SEED="$2"; shift 2 ;;
     --cpu)
       FORCE_CPU=1; shift ;;
+    --root-margin)
+      [[ $# -ge 2 && "$2" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "run-sequence-on-box: --root-margin needs a non-negative number" >&2; usage; }
+      ROOT_MARGIN="$2"; shift 2 ;;
+    --history-frames)
+      [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "run-sequence-on-box: --history-frames needs a non-negative integer" >&2; usage; }
+      HISTORY_FRAMES="$2"; shift 2 ;;
+    --contact-threshold)
+      [[ $# -ge 2 && "$2" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "run-sequence-on-box: --contact-threshold needs a non-negative number" >&2; usage; }
+      CONTACT_THRESHOLD="$2"; shift 2 ;;
     --output)
       [[ $# -ge 2 ]] || { echo "run-sequence-on-box: --output needs a path" >&2; usage; }
       OUTPUT="$2"; shift 2 ;;
@@ -132,6 +144,9 @@ build_remote_cmd() {
   done
   cmd+=" --output $(printf '%q' "${tmp_dir}/out")"
   [[ -z "$SEED" ]] || cmd+=" --seed $(printf '%q' "$SEED")"
+  [[ -z "$ROOT_MARGIN" ]] || cmd+=" --root-margin $(printf '%q' "$ROOT_MARGIN")"
+  [[ -z "$CONTACT_THRESHOLD" ]] || cmd+=" --contact-threshold $(printf '%q' "$CONTACT_THRESHOLD")"
+  [[ -z "$HISTORY_FRAMES" ]] || cmd+=" --history_frames $(printf '%q' "$HISTORY_FRAMES")"
   printf '%s' "$cmd"
 }
 

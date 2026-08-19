@@ -95,7 +95,7 @@ export const HIERARCHY_NODES = [
 	},
 ];
 
-export function buildHierarchyNodes(sceneObjects = []) {
+export function buildHierarchyNodes(sceneObjects = [], characters = null) {
 	const clone = (node) => {
 		const next = { ...node };
 		if (node.id === "props") {
@@ -109,5 +109,25 @@ export function buildHierarchyNodes(sceneObjects = []) {
 		}
 		return next;
 	};
-	return HIERARCHY_NODES.map(clone);
+	const nodes = HIERARCHY_NODES.map(clone);
+	// The cast is list-driven: one row per visible character. The first two
+	// keep the legacy row ids (characterA/characterB) that selection, IK and
+	// the inspector already route to; extras carry their character id.
+	if (Array.isArray(characters)) {
+		const group = nodes[0]?.children?.find((node) => node.id === "characters");
+		if (group) {
+			const rigChildren = group.children.find((node) => node.id === "characterA")?.children;
+			// Row ids follow the entry's LIST index so they match the viewport
+			// pickId (A/B/charId) stamped by the Character renderer in App.jsx.
+			group.children = characters.flatMap((entry, listIndex) => entry.hidden ? [] : [{
+				id: listIndex === 0 ? "characterA" : listIndex === 1 ? "characterB" : `character:${entry.id}`,
+				label: `Character ${listIndex + 1}`,
+				kind: "character",
+				// Only the primary carries the rig subtree: IK and viewport pose
+				// handles are scoped to it this phase.
+				...(listIndex === 0 && rigChildren ? { children: rigChildren } : {}),
+			}]);
+		}
+	}
+	return nodes;
 }

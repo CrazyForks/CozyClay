@@ -48,28 +48,43 @@ scenes[0].stage = createSceneStage({
 	poseA: { id: "hero", bones: { hips: [1, 2, 3] } },
 	poseB: { id: "support", bones: { hips: [4, 5, 6] } },
 });
+// v2 cast envelopes fold into the characters list on normalization
+assert.equal(scenes[0].stage.characters.length, 2, "showB: true restores the second actor");
+assert.equal(scenes[0].stage.characters[0].x, 4);
+assert.equal(scenes[0].stage.characters[0].pose.id, "hero");
+assert.equal(scenes[0].stage.characters[1].rot, -90);
+assert.equal(scenes[0].stage.characters[1].pose.id, "support");
+assert.equal(scenes[0].stage.charA, undefined, "legacy cast keys do not survive normalization");
+// user tints persist through normalization; junk tints reset to model default
+const tinted = createSceneStage({ characters: [
+	{ id: "char-a", model: "y-bot-tpose", x: 0, z: 0, rot: 0, tint: "#a1b2c3", subject: "one" },
+	{ id: "char-b", model: "x-bot-tpose", x: 1, z: 0, rot: 0, tint: "red", subject: "two" },
+] });
+assert.equal(tinted.characters[0].tint, "#a1b2c3", "a valid user tint survives");
+assert.equal(tinted.characters[1].tint, null, "an invalid tint falls back to the model default");
 const duplicated = duplicateScene(scenes, 0);
 assert.equal(duplicated[1].name, "SCENE 03");
 assert.notEqual(duplicated[1].objects, scenes[0].objects);
 assert.notEqual(duplicated[1].objects[0].transform, scenes[0].objects[0].transform);
 assert.notEqual(duplicated[1].shotDocument.cameraBlocks, scenes[0].shotDocument.cameraBlocks);
 assert.notEqual(duplicated[1].stage, scenes[0].stage);
-assert.notEqual(duplicated[1].stage.charA, scenes[0].stage.charA);
-assert.notEqual(duplicated[1].stage.poseA.bones, scenes[0].stage.poseA.bones);
+assert.notEqual(duplicated[1].stage.characters, scenes[0].stage.characters);
+assert.notEqual(duplicated[1].stage.characters[0], scenes[0].stage.characters[0]);
+assert.notEqual(duplicated[1].stage.characters[0].pose.bones, scenes[0].stage.characters[0].pose.bones);
 assert.equal(duplicated[1].stage.shotAspect, "9:16");
 duplicated[1].objects[0].transform.x = 8;
 duplicated[1].shotDocument.cameraBlocks[0].keys.push(3);
-duplicated[1].stage.charA.x = 99;
-duplicated[1].stage.poseA.bones.hips[0] = 99;
+duplicated[1].stage.characters[0].x = 99;
+duplicated[1].stage.characters[0].pose.bones.hips[0] = 99;
 assert.equal(scenes[0].objects[0].transform.x, 1);
 assert.deepEqual(scenes[0].shotDocument.cameraBlocks[0].keys, [1, 2]);
-assert.equal(scenes[0].stage.charA.x, 4, "moving the duplicate's actor cannot contaminate the source scene");
-assert.equal(scenes[0].stage.poseA.bones.hips[0], 1, "posing the duplicate's actor cannot contaminate the source scene");
+assert.equal(scenes[0].stage.characters[0].x, 4, "moving the duplicate's actor cannot contaminate the source scene");
+assert.equal(scenes[0].stage.characters[0].pose.bones.hips[0], 1, "posing the duplicate's actor cannot contaminate the source scene");
 assert.equal(createSceneStage({ shotAspect: "invalid" }).shotAspect, "16:9", "invalid shot aspects repair to the default");
 
 const isolatedScenes = [createScene("A"), createScene("B")];
-isolatedScenes[0].stage.charA.x = 8;
-assert.equal(isolatedScenes[1].stage.charA.x, 0, "moving Scene A's actor leaves Scene B unchanged");
+isolatedScenes[0].stage.characters[0].x = 8;
+assert.equal(isolatedScenes[1].stage.characters[0].x, 0, "moving Scene A's actor leaves Scene B unchanged");
 
 const sharedCameraSettings = { lens: 35, metadata: JSON.parse('{"__proto__":{"safe":true}}') };
 const sharedSource = createScene("Shared");
@@ -109,6 +124,9 @@ assert.equal(restored.document.activeSceneId, scenes[2].id);
 assert.deepEqual(restored.document.scenes[0].shotDocument, scenes[0].shotDocument);
 
 const legacyStage = createSceneStage({ charA: { x: 6, z: 2, rot: 45 }, showB: true, poseA: { id: "legacy-pose" } });
+assert.equal(legacyStage.characters.length, 2, "the legacy cast migrates into the characters list");
+assert.equal(legacyStage.characters[0].x, 6);
+assert.equal(legacyStage.characters[0].pose.id, "legacy-pose");
 const repaired = readSceneDocument(JSON.stringify({
 	version: 1,
 	activeSceneId: "missing",
@@ -139,8 +157,8 @@ const multiSceneMigration = readSceneDocument(JSON.stringify({
 assert.equal(multiSceneMigration.status, "migrated");
 assert.deepEqual(multiSceneMigration.document.scenes.map((scene) => scene.stage), [legacyStage, legacyStage], "every old scene receives the actor setup users were seeing");
 assert.notEqual(multiSceneMigration.document.scenes[0].stage, multiSceneMigration.document.scenes[1].stage);
-multiSceneMigration.document.scenes[0].stage.charA.x = -3;
-assert.equal(multiSceneMigration.document.scenes[1].stage.charA.x, 6, "migrated scenes own independent actor envelopes");
+multiSceneMigration.document.scenes[0].stage.characters[0].x = -3;
+assert.equal(multiSceneMigration.document.scenes[1].stage.characters[0].x, 6, "migrated scenes own independent actor envelopes");
 
 const legacyObjects = [{ id: "hero-chair", renderer: "chair", x: 3 }, { id: "car", renderer: "car", nested: { untouched: true } }];
 const migrated = readSceneDocument(null, JSON.stringify({ version: 1, objects: legacyObjects }));
@@ -150,8 +168,8 @@ assert.deepEqual(migrated.document.scenes[0].objects, legacyObjects, "legacy use
 assert.equal(migrated.document.scenes[0].name, "SCENE 01");
 
 assert.equal(readSceneDocument("{broken").status, "corrupt");
-assert.equal(readSceneDocument(JSON.stringify({ version: 3, scenes: [] })).status, "future");
-assert.equal(readSceneDocument(JSON.stringify({ version: 3, newerShape: true })).status, "future");
+assert.equal(readSceneDocument(JSON.stringify({ version: SCENES_VERSION + 1, scenes: [] })).status, "future");
+assert.equal(readSceneDocument(JSON.stringify({ version: SCENES_VERSION + 1, newerShape: true })).status, "future");
 assert.equal(readSceneDocument(null, "{broken").status, "corrupt");
 
 class FakeStorage {
@@ -199,8 +217,8 @@ assert.equal(loadSceneDocumentFromStorage(futureStorage).status, "future");
 assert.deepEqual(futureStorage.writes, [], "future data is left untouched");
 assert.equal(futureStorage.getItem(SCENES_STORAGE_KEY), futureRaw);
 
-assert.equal(SCENES_VERSION, 2);
-assert.match(SCENES_STORAGE_KEY, /\.v2$/);
+assert.equal(SCENES_VERSION, 3);
+assert.match(SCENES_STORAGE_KEY, /\.v3$/);
 assert.notEqual(SCENES_STORAGE_KEY, SCENES_QUARANTINE_KEY);
 assert.notEqual(SCENES_STORAGE_KEY, PREVIOUS_SCENES_STORAGE_KEY);
 assert.notEqual(SCENES_STORAGE_KEY, LEGACY_SCENE_STORAGE_KEY);
@@ -212,8 +230,7 @@ assert.match(
 	/actorStageRef\.current = \{[\s\S]{0,240}shotAspect: shotAspectKey,/,
 	"the outgoing scene snapshots actor state and the shot aspect"
 );
-assert.match(appSource, /setCharA\(stage\.charA\)/, "opening a scene restores its first actor");
-assert.match(appSource, /setPoseB\(stage\.poseB \?\? DEFAULT_POSE\)/, "opening a scene restores its second pose");
+assert.match(appSource, /setCharacters\(stage\.characters\)/, "opening a scene restores its cast");
 assert.doesNotMatch(appSource, /InstallApp/, "the premature Install app control is no longer mounted or imported");
 
 console.log("all scene document checks PASS");

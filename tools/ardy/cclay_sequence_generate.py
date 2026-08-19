@@ -175,6 +175,18 @@ def parse_args(argv=None):
         help="Don't apply motion post-processing (foot-skate reduction).",
     )
     parser.add_argument(
+        "--root-margin",
+        type=float,
+        default=None,
+        help="Root position correction margin for post-processing (default: ARDY's 0.04 m). Larger = looser pin grip, less foot skate.",
+    )
+    parser.add_argument(
+        "--contact-threshold",
+        type=float,
+        default=None,
+        help="Foot contact detection threshold for post-processing (default: ARDY's 0.5).",
+    )
+    parser.add_argument(
         "--checkpoints_dir",
         type=str,
         default=None,
@@ -596,8 +608,13 @@ def main(argv=None, preloaded_model=None):
     with torch.no_grad():
         output = model.motion_rep.inverse(acc, is_normalized=True)
 
+    postprocess_kwargs = {}
     use_postprocess = "g1" not in resolved_model.lower() and not args.no_postprocess
     if use_postprocess:
+        if args.root_margin is not None:
+            postprocess_kwargs["root_margin"] = args.root_margin
+        if args.contact_threshold is not None:
+            postprocess_kwargs["contact_threshold"] = args.contact_threshold
         corrected = post_process_motion(
             output["local_rot_mats"],
             output["root_positions"],
@@ -606,6 +623,7 @@ def main(argv=None, preloaded_model=None):
             # With waypoints, ARDY's own postprocess enforces the pinned root
             # contacts instead of skating them away (as the one-shot path).
             constraint_lst=constraint_lst if constraint_lst else None,
+            **postprocess_kwargs,
         )
         output.update(corrected)
 
@@ -632,10 +650,41 @@ def main(argv=None, preloaded_model=None):
             f"generated frame count {frames} does not match the planned segment table "
             f"({total_frames}); segment boundaries would be mislabeled."
         )
+    # Same quality lens as the constrained report: which postprocess knobs
+    # were used, and whether stance frames keep the feet planted.
+    def _surface_contact_verified():
+        contacts = motion_dict.get("foot_contacts")
+        if contacts is None:
+            return None
+        contacts_arr = np.asarray(contacts)
+        if contacts_arr.ndim == 3:
+            contacts_arr = contacts_arr[0]
+        posed = np.asarray(motion_dict["posed_joints"])
+        foot_indices = [
+            idx
+            for idx, name in enumerate(model.skeleton.bone_order_names)
+            if "foot" in name.lower() or "toe" in name.lower()
+        ]
+        checked = 0
+        held = 0
+        for contact_idx, joint_idx in enumerate(foot_indices[: contacts_arr.shape[1]]):
+            ys = posed[:, joint_idx, 1]
+            for frame in range(1, len(posed)):
+                if contacts_arr[frame, contact_idx] > 0.5 and contacts_arr[frame - 1, contact_idx] > 0.5:
+                    checked += 1
+                    if abs(ys[frame] - ys[frame - 1]) < 0.02:
+                        held += 1
+        return checked == 0 or (held / checked) >= 0.8
+
     result = {
         "frames": frames,
         "fps": int(fps),
         "model": resolved_model,
+        "surface_contact_verified": _surface_contact_verified(),
+        "postprocess": {
+            "contact_threshold": postprocess_kwargs.get("contact_threshold", 0.5) if use_postprocess else None,
+            "root_margin": postprocess_kwargs.get("root_margin", 0.04) if use_postprocess else None,
+        },
         "segments": seg_bounds,
         "continuity": _continuity_metrics(np.asarray(motion_dict["posed_joints"]), boundaries),
         "boundary_gate": {

@@ -398,6 +398,7 @@ export default function HierarchyPanel({
 	selectedId,
 	onSelect,
 	showB,
+	characters = null,
 	motionFrames,
 	ikMode,
 	sceneObjects = [],
@@ -428,9 +429,9 @@ export default function HierarchyPanel({
 		return (availableScenes.find((scene) => scene.id === activeSceneId) ?? availableScenes[0]).name;
 	}, [activeSceneId, scenes]);
 	const hierarchyNodes = useMemo(() => {
-		const nodes = buildHierarchyNodes(sceneObjects);
+		const nodes = buildHierarchyNodes(sceneObjects, characters);
 		return nodes.map((node) => node.kind === "scene" ? { ...node, label: activeSceneName } : node);
-	}, [activeSceneName, sceneObjects]);
+	}, [activeSceneName, sceneObjects, characters]);
 	const parents = useMemo(() => indexParents(hierarchyNodes), [hierarchyNodes]);
 
 	useEffect(() => {
@@ -481,7 +482,9 @@ export default function HierarchyPanel({
 		});
 	};
 	const badgeFor = (id) => {
-		if (id === "characters") return showB ? 2 : 1;
+		if (id === "characters") {
+			return Array.isArray(characters) ? characters.filter((entry) => !entry.hidden).length : (showB ? 2 : 1);
+		}
 		if (id === "props") return sceneObjects.length;
 		return null;
 	};

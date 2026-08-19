@@ -112,6 +112,28 @@ def parse_args(argv=None):
         help="Don't apply motion post-processing (foot-skate reduction).",
     )
     parser.add_argument(
+        "--history_frames",
+        type=int,
+        default=None,
+        help=(
+            "History crop budget per autoregressive step (multiple of the model's "
+            "token size). Default: the longest history fitting the trained 10 s "
+            "window together with the generation horizon."
+        ),
+    )
+    parser.add_argument(
+        "--root-margin",
+        type=float,
+        default=None,
+        help="Root position correction margin for post-processing (default: ARDY's 0.04 m). Larger = looser pin grip, less foot skate.",
+    )
+    parser.add_argument(
+        "--contact-threshold",
+        type=float,
+        default=None,
+        help="Foot contact detection threshold for post-processing (default: ARDY's 0.5).",
+    )
+    parser.add_argument(
         "--checkpoints_dir",
         type=str,
         default=None,
@@ -339,7 +361,14 @@ def main(argv=None, preloaded_model=None):
         raise ValueError(
             f"--diffusion_steps must be between 1 and {num_base_steps}; got {diffusion_steps}."
         )
-    history_frames = _default_history_frames(fps, model.gen_horizon_len, patch)
+    if args.history_frames is not None:
+        if args.history_frames < patch or args.history_frames % patch != 0:
+            raise ValueError(
+                f"--history_frames must be a positive multiple of {patch} (this model's token size)."
+            )
+        history_frames = args.history_frames
+    else:
+        history_frames = _default_history_frames(fps, model.gen_horizon_len, patch)
 
     # --- constraints --------------------------------------------------------
     constraint_lst = []
@@ -421,14 +450,20 @@ def main(argv=None, preloaded_model=None):
         )
         output = model.motion_rep.inverse(motion, is_normalized=True)
 
+    postprocess_kwargs = {}
     use_postprocess = "g1" not in resolved_model.lower() and not args.no_postprocess
     if use_postprocess:
+        if args.root_margin is not None:
+            postprocess_kwargs["root_margin"] = args.root_margin
+        if args.contact_threshold is not None:
+            postprocess_kwargs["contact_threshold"] = args.contact_threshold
         corrected = post_process_motion(
             output["local_rot_mats"],
             output["root_positions"],
             output["foot_contacts"],
             skeleton,
             constraint_lst=constraint_lst if constraint_lst else None,
+            **postprocess_kwargs,
         )
         output.update(corrected)
 
@@ -449,6 +484,45 @@ def main(argv=None, preloaded_model=None):
     generated_joints = np.asarray(motion_dict["posed_joints"])
     root_index = skeleton.root_idx
     pose_reports = []
+
+    # Quality metrics alongside the pose/waypoint accuracy: the operator can
+    # judge a path by them, not just trust it. Continuity is the largest
+    # one-frame root jump (chained seams show up here); surface contact
+    # verifies that stance frames keep the foot planted instead of skating.
+    def motion_continuity(root_positions):
+        if len(root_positions) < 2:
+            return None
+        deltas = np.linalg.norm(np.diff(root_positions[:, [0, 2]], axis=0), axis=1)
+        worst = int(deltas.argmax()) + 1 if len(deltas) else 0
+        return {
+            "mean_jump_m": round(float(deltas.mean()), 6),
+            "max_jump_m": round(float(deltas.max()), 6),
+            "max_jump_frame": worst,
+        }
+
+    def surface_contact_verified(contacts, posed, foot_indices):
+        if contacts is None or not len(foot_indices):
+            return None
+        contacts_arr = np.asarray(contacts)
+        if contacts_arr.ndim == 3:
+            contacts_arr = contacts_arr[0]
+        checked = 0
+        held = 0
+        for contact_idx, joint_idx in enumerate(foot_indices[: contacts_arr.shape[1]]):
+            ys = posed[:, joint_idx, 1]
+            for frame in range(1, len(posed)):
+                if contacts_arr[frame, contact_idx] > 0.5 and contacts_arr[frame - 1, contact_idx] > 0.5:
+                    checked += 1
+                    if abs(ys[frame] - ys[frame - 1]) < 0.02:
+                        held += 1
+        return checked == 0 or (held / checked) >= 0.8
+
+    root_positions = np.asarray(motion_dict["root_positions"])
+    foot_indices = [idx for idx, name in enumerate(skeleton.bone_order_names) if "foot" in name.lower() or "toe" in name.lower()]
+    continuity = motion_continuity(root_positions)
+    contact_verified = surface_contact_verified(
+        motion_dict.get("foot_contacts"), generated_joints, foot_indices
+    )
     for dst_frame, requested in pose_targets:
         achieved = generated_joints[dst_frame]
         root_error = float(np.linalg.norm(achieved[root_index] - requested[root_index]))
@@ -471,6 +545,12 @@ def main(argv=None, preloaded_model=None):
         "frames": int(generated_joints.shape[0]),
         "fps": int(fps),
         "model": resolved_model,
+        "surface_contact_verified": contact_verified,
+        "continuity": continuity,
+        "postprocess": {
+            "contact_threshold": postprocess_kwargs.get("contact_threshold", 0.5) if use_postprocess else None,
+            "root_margin": postprocess_kwargs.get("root_margin", 0.04) if use_postprocess else None,
+        },
         "poses": pose_reports,
         "waypoints": measure_waypoints(waypoints, generated_joints, skeleton),
     }

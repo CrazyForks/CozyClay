@@ -405,7 +405,7 @@ function WaypointPath({ waypoints, start, activeWaypointFrame }) {
  * reports moves that still hit it, so a fast drag off the edge silently strands
  * the puck.
  */
-export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA, setCharA, charB, setCharB, showB, waypoints, activeWaypointFrame, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null, onCameraChange }) {
+export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, characters = [], onMoveCharacter, onCharacterGestureStart, pathStart = null, waypoints, activeWaypointFrame, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null, onCameraChange }) {
 	const [drag, setDrag] = useState(null); // { id, mode }
 	// live stroke while the rail is being drawn; world XZ, display only
 	const [railStroke, setRailStroke] = useState(null);
@@ -435,16 +435,24 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 	// clears dragRef, so a dep that changes while dragging (charA.x does, on the
 	// very first move) would kill the drag after one frame. Read live values
 	// through a ref and keep the effect's deps stable.
-	const latest = useRef({ charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange });
-	latest.current = { charA, charB, showB, waypoints, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange };
+	const latest = useRef({ characters, waypoints, onSelectWaypoint, onMoveWaypoint, onMoveCharacter, onCharacterGestureStart, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange });
+	latest.current = { characters, waypoints, onSelectWaypoint, onMoveWaypoint, onMoveCharacter, onCharacterGestureStart, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange };
 
 	const targets = () => {
-		const { charA: a, charB: b, showB: two } = latest.current;
+		const cast = latest.current.characters;
 		const cam = shotCamRef.current;
 		const out = [];
 		if (cam) out.push({ id: "cam", x: cam.position.x, z: cam.position.z, yaw: look.current.yaw });
-		out.push({ id: "a", x: a.x, z: a.z, yaw: (a.rot * Math.PI) / 180 });
-		if (two) out.push({ id: "b", x: b.x, z: b.z, yaw: (b.rot * Math.PI) / 180 });
+		cast.forEach((entry, listIndex) => {
+			if (entry.hidden) return;
+			out.push({
+				id: listIndex === 0 ? "a" : listIndex === 1 ? "b" : `char:${entry.id}`,
+				charId: entry.id,
+				x: entry.x,
+				z: entry.z,
+				yaw: (entry.rot * Math.PI) / 180,
+			});
+		});
 		for (const object of latest.current.sceneObjects) {
 			const { width, depth } = objectSize(object);
 			out.push({
@@ -463,10 +471,13 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 	};
 
 	const aimTarget = () => {
-		const { charA: a, charB: b, showB: two } = latest.current;
+		const cast = latest.current.characters.filter((entry) => !entry.hidden);
 		const y = 1.35;
-		if (!two) return { x: a.x, y, z: a.z };
-		return { x: (a.x + b.x) / 2, y, z: (a.z + b.z) / 2 };
+		if (!cast.length) return { x: 0, y, z: 0 };
+		// The camera aims at the middle of the whole visible cast, not just
+		// the legacy two-shot pair.
+		const mid = cast.reduce((acc, entry) => ({ x: acc.x + entry.x / cast.length, z: acc.z + entry.z / cast.length }), { x: 0, z: 0 });
+		return { x: mid.x, y, z: mid.z };
 	};
 
 	useFrame(() => {
@@ -562,6 +573,10 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 					owner: "plan",
 					cancel: () => teardownDrag(grip),
 				});
+			} else if (grip.origin.charId) {
+				// One undo entry per character gesture: App snapshots the cast
+				// here, the drag's per-tick moves then apply on top.
+				latest.current.onCharacterGestureStart?.();
 			}
 			host.style.cursor = grip.mode === "turn" ? "ew-resize" : "grabbing";
 		};
@@ -619,8 +634,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 				// 5° detents, because actors are blocked to clean angles
 				const deg = wrapDeg(Math.round((yaw * 180) / Math.PI / 5) * 5);
 				if (grip.origin.objectId) latest.current.onMoveSceneObject?.(grip.origin.objectId, { rot: deg }, grip.token);
-				else if (grip.id === "a") setCharA((prev) => ({ ...prev, rot: deg }));
-				else setCharB((prev) => ({ ...prev, rot: deg }));
+				else latest.current.onMoveCharacter?.(grip.origin.charId, (prev) => ({ ...prev, rot: deg }));
 				return;
 			}
 
@@ -641,8 +655,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 				x: snap(p.x, ROOM_LIMIT),
 				z: snap(p.z, ROOM_LIMIT),
 			}, grip.token);
-			else if (grip.id === "a") setCharA((prev) => ({ ...prev, ...next }));
-			else setCharB((prev) => ({ ...prev, ...next }));
+			else latest.current.onMoveCharacter?.(grip.origin.charId, (prev) => ({ ...prev, ...next }));
 		};
 
 		// Teardown-only close: null the drag ref and reset the drag visuals.
@@ -711,7 +724,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 			window.removeEventListener("keydown", onEscape, true);
 			closeDrag(true);
 		};
-	}, [hostRef, planCamRef, shotCamRef, tools, setCharA, setCharB, look]);
+	}, [hostRef, planCamRef, shotCamRef, tools, look]);
 
 	const state = (id) => ({ dragging: drag?.id === id && drag.mode === "move", turning: drag?.id === id && drag.mode === "turn" });
 
@@ -725,23 +738,21 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 				</group>
 			</group>
 
-			<group position={[charA.x, 0, charA.z]}>
-				<PlanLabel text={ko("S1", "인물 1")} color={SUBJECT_ONE_COLOR} />
-				<group rotation={[0, (charA.rot * Math.PI) / 180, 0]}>
-					{/* The real character mesh already renders in Top-View. Keep only
-					    its facing stem/handle instead of covering it with a hex puck. */}
-					<Puck color={SUBJECT_ONE_COLOR} showBody={false} {...state("a")} />
-				</group>
-			</group>
-
-			{showB && (
-				<group position={[charB.x, 0, charB.z]}>
-					<PlanLabel text={ko("S2", "인물 2")} color={SUBJECT_TWO_COLOR} />
-					<group rotation={[0, (charB.rot * Math.PI) / 180, 0]}>
-						<Puck color={SUBJECT_TWO_COLOR} showBody={false} {...state("b")} />
+			{characters.map((entry, listIndex) => {
+				if (entry.hidden) return null;
+				const puckId = listIndex === 0 ? "a" : listIndex === 1 ? "b" : `char:${entry.id}`;
+				const color = listIndex === 0 ? SUBJECT_ONE_COLOR : SUBJECT_TWO_COLOR;
+				return (
+					<group key={entry.id} position={[entry.x, 0, entry.z]}>
+						<PlanLabel text={ko(`S${listIndex + 1}`, `인물 ${listIndex + 1}`)} color={color} />
+						<group rotation={[0, (entry.rot * Math.PI) / 180, 0]}>
+							{/* The real character mesh already renders in Top-View. Keep only
+							    its facing stem/handle instead of covering it with a hex puck. */}
+							<Puck color={color} showBody={false} {...state(puckId)} />
+						</group>
 					</group>
-				</group>
-			)}
+				);
+			})}
 
 			{sceneObjects.map((object) => (
 				<SceneObjectFootprint
@@ -752,7 +763,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, charA
 				/>
 			))}
 
-			{waypoints.length > 0 && <WaypointPath waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />}
+			{waypoints.length > 0 && <WaypointPath waypoints={waypoints} start={pathStart ?? characters[0] ?? { x: 0, z: 0 }} activeWaypointFrame={activeWaypointFrame} />}
 			{(railDraw || cameraRailPoints) && <SubjectMovementGuide track={subjectTrack} />}
 			{cameraRailPoints && cameraRailPoints.length > 1 && <CameraRailLine points={cameraRailPoints} />}
 			{railStroke && railStroke.length > 1 && <CameraRailLine points={railStroke} live />}

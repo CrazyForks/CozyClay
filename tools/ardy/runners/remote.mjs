@@ -168,7 +168,7 @@ export function createRemoteRunner() {
 	// in a done marker: pose/waypoint/free single runs, autoregressive
 	// sequence runs, and context-aware motion edits.
 
-	function singleCommand({ poseFroms, basePath, prompt, durationS, seed, cpu, waypoints, output }) {
+	function singleCommand({ poseFroms, basePath, prompt, durationS, seed, cpu, waypoints, rootMargin, contactThreshold, historyFrames, output }) {
 		const args = [RUN_ON_BOX];
 		for (const entry of poseFroms) {
 			args.push("--pose-from", entry.npz, String(entry.srcFrame), String(entry.dstFrame));
@@ -180,6 +180,9 @@ export function createRemoteRunner() {
 		for (const wp of waypoints || []) {
 			args.push("--root-2d", String(wp.frame), String(wp.x), String(wp.z), wp.heading === null ? "none" : String(wp.heading));
 		}
+		if (Number.isFinite(rootMargin)) args.push("--root-margin", String(rootMargin));
+		if (Number.isFinite(contactThreshold)) args.push("--contact-threshold", String(contactThreshold));
+		if (Number.isInteger(historyFrames)) args.push("--history-frames", String(historyFrames));
 		args.push("--output", output);
 		return {
 			command: "bash",
@@ -190,7 +193,7 @@ export function createRemoteRunner() {
 		};
 	}
 
-	function sequenceCommand({ segments, waypoints, seed, cpu, output }) {
+	function sequenceCommand({ segments, waypoints, seed, cpu, rootMargin, contactThreshold, historyFrames, output }) {
 		const args = [RUN_SEQUENCE_ON_BOX];
 		for (const segment of segments) {
 			args.push("--segment", segment.prompt, String(segment.durationS));
@@ -203,6 +206,9 @@ export function createRemoteRunner() {
 		}
 		if (Number.isInteger(seed)) args.push("--seed", String(seed));
 		if (cpu === true) args.push("--cpu");
+		if (Number.isFinite(rootMargin)) args.push("--root-margin", String(rootMargin));
+		if (Number.isFinite(contactThreshold)) args.push("--contact-threshold", String(contactThreshold));
+		if (Number.isInteger(historyFrames)) args.push("--history-frames", String(historyFrames));
 		args.push("--output", output);
 		return {
 			command: "bash",

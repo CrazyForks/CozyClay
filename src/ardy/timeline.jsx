@@ -168,9 +168,15 @@ export default function Timeline({
 	fps = DEFAULT_FPS,
 	playbackSpeed = 1,
 	playing,
+	// Which cast member's animation layer these tracks edit ("S2", …).
+	trackOwner = null,
+	// Read-only previews of the OTHER cast members' layers: their prompt
+	// blocks and root pins render dimmed with an owner chip, so the whole
+	// cast's schedule is visible while only the active layer is editable.
+	ghostLayers = [], // [{ owner, promptClips: [], waypointFrames: [] }]
 	waypointMode,
 	waypointFrames = [],
-	pathSpeed = null,
+	pathSpeed = null, // { min, max, warn } in m/s, shown on the 2D Root label
 	badge,
 	promptClips = [],
 	selectedPromptId,
@@ -917,6 +923,17 @@ export default function Timeline({
 							<div className={"tl-track" + (name === "Prompts" ? " prompts" : "") + (name === IK_LANE ? " ik" : "") + (name === SHOTS_LANE ? " shots" : "")} key={name}>
 								<span className="tl-track-label">
 									{TRACK_LABELS_KO[name]}
+									{trackOwner && (name === "Prompts" || name === "2D Root") && <em className="tl-track-owner">{trackOwner}</em>}
+									{name === "2D Root" && pathSpeed && (
+										<em
+											className={"tl-path-speed" + (pathSpeed.warn ? " warn" : "")}
+											title={isKo ? `핀 구간 속도 ${pathSpeed.min.toFixed(1)}~${pathSpeed.max.toFixed(1)} m/s — 자연 보행은 0.8~1.2 m/s` : `Leg speeds ${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)} m/s — natural gait is 0.8–1.2 m/s`}
+										>
+											{pathSpeed.min === pathSpeed.max
+												? `${pathSpeed.min.toFixed(1)} m/s`
+												: `${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)} m/s`}
+										</em>
+									)}
 									{name === "Prompts" && <button className="tl-track-add" type="button" title={ko("Add 2 second prompt clip", "2초 프롬프트 클립 추가")} onClick={() => handlers.current.onPromptAdd?.(frame)}>+</button>}
 									{name === SHOTS_LANE && (
 										<button
@@ -1079,6 +1096,16 @@ export default function Timeline({
 											</div>
 										);
 									})}
+									{name === "Prompts" && ghostLayers.map((layer) => layer.promptClips.map((clip) => (
+										<div
+											key={`${layer.owner}:${clip.id}`}
+											className="tl-chip ghost"
+											style={{ "--tl-f-start": clipPct(clip.startFrame), "--tl-f-end": clipPct(clip.endFrame) }}
+											title={`${layer.owner} · ${clip.text}`}
+										>
+											<span className="tl-chip-ghost-label">{layer.owner} · {clip.text || "…"}</span>
+										</div>
+									)))}
 									{name === "Prompts" && promptClips.map((clip) => {
 										const duration = ((clip.endFrame - clip.startFrame) / Math.max(1, fps)).toFixed(1);
 										return (
@@ -1108,6 +1135,14 @@ export default function Timeline({
 												}}
 											/>
 										))}
+									{name === "2D Root" && ghostLayers.map((layer) => layer.waypointFrames.map((f) => (
+										<span
+											key={`${layer.owner}:${f}`}
+											className="tl-marker wp ghost"
+											style={{ "--tl-f": framePct(f, displayFrameCount) }}
+											title={`${layer.owner} · frame ${f}`}
+										/>
+									)))}
 									{name === "2D Root" &&
 										[...waypointFrames, ...(pendingWaypointFrame == null || waypointFrames.includes(pendingWaypointFrame) ? [] : [pendingWaypointFrame])].map((f) => (
 											<span

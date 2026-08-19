@@ -129,6 +129,262 @@ select {
 	gap: 6px;
 }
 
+/* Project menu (game-engine file workflow) */
+.project-menu-wrap {
+	position: relative;
+	margin-left: 14px;
+	align-self: center;
+}
+
+.project-menu-trigger {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 10px;
+	border-radius: 8px;
+	border: 1px solid var(--line2);
+	background: var(--card2);
+	color: var(--fg);
+	font-size: 12px;
+	font-weight: 600;
+	cursor: pointer;
+	max-width: 300px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.project-menu-trigger:hover {
+	border-color: var(--accent);
+}
+
+.project-menu-trigger .caret {
+	color: var(--muted2);
+	font-size: 10px;
+}
+
+.project-dirty-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: #f5b453;
+	flex: none;
+}
+
+.project-menu {
+	position: absolute;
+	top: calc(100% + 6px);
+	left: 0;
+	z-index: 60;
+	display: flex;
+	flex-direction: column;
+	min-width: 200px;
+	padding: 4px;
+	background: var(--panel);
+	border: 1px solid var(--line2);
+	border-radius: 10px;
+	box-shadow: 0 8px 30px rgba(0, 0, 0, .5);
+}
+
+.project-menu button {
+	text-align: left;
+	padding: 8px 10px;
+	border: none;
+	border-radius: 7px;
+	background: none;
+	color: var(--fg);
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.project-menu button:hover {
+	background: var(--hover);
+}
+
+/* Project header at the top of the hierarchy column (Project > Scene). */
+.hierarchy-project {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	padding: 9px 12px 8px;
+	border-bottom: 1px solid var(--line);
+}
+
+.hierarchy-project-label {
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: .08em;
+	text-transform: uppercase;
+	color: var(--muted2);
+}
+
+.hierarchy-project strong {
+	flex: 1;
+	font-size: 12.5px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.hierarchy-project button {
+	padding: 3px 9px;
+	font-size: 11px;
+	border-radius: 6px;
+	border: 1px solid var(--line2);
+	background: var(--card2);
+	color: var(--fg);
+	cursor: pointer;
+}
+
+.hierarchy-project button:hover {
+	border-color: var(--accent);
+}
+
+/* Project browser modal */
+.project-browser-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 200;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(0, 0, 0, .55);
+}
+
+.project-browser {
+	width: min(560px, 92vw);
+	max-height: 80vh;
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	padding: 16px;
+	background: var(--panel);
+	border: 1px solid var(--line2);
+	border-radius: 14px;
+	box-shadow: 0 16px 60px rgba(0, 0, 0, .6);
+	overflow-y: auto;
+}
+
+.project-browser-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	font-size: 15px;
+}
+
+.project-browser-head .x {
+	background: none;
+	border: none;
+	color: var(--muted);
+	font-size: 16px;
+	cursor: pointer;
+	padding: 2px 6px;
+}
+
+.project-browser section {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.project-browser-section-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: .06em;
+	text-transform: uppercase;
+	color: var(--muted);
+}
+
+.project-browser-section-head .row-actions {
+	display: flex;
+	gap: 6px;
+}
+
+.project-browser-section-head button {
+	font-size: 10px;
+	padding: 2px 8px;
+	border-radius: 6px;
+	border: 1px solid var(--line2);
+	background: none;
+	color: var(--fg);
+	cursor: pointer;
+}
+
+.project-browser-empty {
+	font-size: 11px;
+	color: var(--muted2);
+	padding: 8px 10px;
+	background: var(--card2);
+	border-radius: 8px;
+}
+
+.project-browser-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.project-browser-list li {
+	display: flex;
+	align-items: stretch;
+	gap: 4px;
+}
+
+.project-browser-list li > button:first-child {
+	flex: 1;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 8px 10px;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: var(--card2);
+	color: var(--fg);
+	font-size: 12px;
+	cursor: pointer;
+	text-align: left;
+}
+
+.project-browser-list li > button:first-child span {
+	font-size: 10px;
+	color: var(--muted2);
+	flex: none;
+}
+
+.project-browser-list li.active > button:first-child {
+	border-color: var(--accent);
+}
+
+.project-browser-list li > button:first-child:hover {
+	border-color: var(--accent);
+}
+
+.project-browser-list .del {
+	border: none;
+	background: none;
+	color: var(--muted2);
+	cursor: pointer;
+	padding: 0 6px;
+	font-size: 11px;
+}
+
+.project-browser-foot {
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.project-browser-foot .btn {
+	flex: 1;
+}
+
 .locale-toggle {
 	display: inline-flex;
 	align-items: center;
@@ -723,6 +979,194 @@ select {
 .pose-studio.closing {
 	animation: studioOut .2s var(--ease) both;
 }
+
+/* Compact pass: tighter chrome so more of the panel is pose tiles. Scoped
+   to the studio so global buttons elsewhere keep their rhythm. */
+.pose-studio {
+	gap: 8px;
+	padding: 10px;
+}
+
+.pose-studio .studio-head span {
+	font-size: 13px;
+	font-weight: 650;
+}
+
+.pose-studio .studio-actions {
+	flex-direction: row;
+	gap: 6px;
+}
+
+.pose-studio .studio-actions .btn {
+	flex: 1;
+	width: auto;
+	height: 28px;
+	padding: 0 8px;
+	font-size: 11px;
+	font-weight: 600;
+}
+
+.pose-studio .studio-hint {
+	font-size: 10px;
+	margin: 0;
+	line-height: 1.35;
+}
+
+.pose-studio .studio-filters {
+	flex-wrap: nowrap;
+	overflow-x: auto;
+	gap: 4px;
+	scrollbar-width: none;
+}
+
+.pose-studio .studio-filters::-webkit-scrollbar {
+	display: none;
+}
+
+.pose-studio .studio-filters .btn {
+	flex: 0 0 auto;
+	width: auto;
+	min-width: 0;
+	height: 24px;
+	padding: 0 10px;
+	font-size: 10px;
+}
+
+.pose-studio .pose-grid {
+	gap: 6px;
+}
+
+/* Ghost (other characters') clips and pins on the timeline lanes: visible
+   for schedule awareness, never interactive. */
+.tl-chip.ghost {
+	opacity: 0.42;
+	pointer-events: none;
+	border-style: dashed;
+}
+
+.tl-chip-ghost-label {
+	font-size: 9px;
+	padding: 0 4px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	display: block;
+}
+
+.tl-marker.wp.ghost {
+	opacity: 0.42;
+	pointer-events: none;
+}
+
+/* ARDY row: duration + seed side by side (Motion tab compacting). */
+.ardy-row {
+	display: flex;
+	gap: 8px;
+}
+
+.ardy-row > * {
+	flex: 1;
+	min-width: 0;
+}
+
+/* Per-character motion layer status in the Motion tab. */
+.gen-layers {
+	list-style: none;
+	margin: 0;
+	padding: 4px 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	background: var(--card2, rgba(255,255,255,.04));
+	border: 1px solid var(--line);
+	border-radius: 8px;
+}
+
+.gen-layers li {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 11px;
+	color: var(--muted);
+	padding: 2px 4px;
+	border-radius: 5px;
+}
+
+.gen-layers li.active {
+	color: var(--fg);
+	background: var(--hover, rgba(255,255,255,.06));
+}
+
+.gen-layers-name {
+	font-weight: 700;
+	color: var(--cyan, #5a9bd4);
+	width: 22px;
+	flex: none;
+}
+
+.gen-layers-state {
+	flex: 1;
+}
+
+.gen-layers-state.running { color: #f5b453; }
+.gen-layers-state.queued { color: var(--muted2); }
+.gen-layers-state.error { color: #e06c6c; }
+.gen-layers-state.loaded { color: #7bc98b; }
+
+.gen-layers li button {
+	background: none;
+	border: none;
+	color: var(--muted2);
+	cursor: pointer;
+	font-size: 10px;
+	padding: 0 2px;
+}
+
+/* Timeline track owner chip: which character's layer a Prompts/2D Root
+   track belongs to. */
+.tl-track-owner {
+	font-style: normal;
+	font-size: 9px;
+	font-weight: 700;
+	color: var(--cyan, #5a9bd4);
+	border: 1px solid var(--cyan, #5a9bd4);
+	border-radius: 4px;
+	padding: 0 3px;
+	margin-left: 4px;
+	vertical-align: 1px;
+}
+
+/* 2D Root leg speed readout: green-ish in the natural gait band, amber
+   outside it so a bad path is caught before generation. */
+.tl-path-speed {
+	font-style: normal;
+	font-size: 9px;
+	font-weight: 600;
+	color: #7bc98b;
+	margin-left: 6px;
+	vertical-align: 1px;
+}
+
+.tl-path-speed.warn {
+	color: #f5b453;
+}
+
+/* Docked variant: the panel lives in-flow at the bottom of the inspector
+   sidebar instead of floating over the shot pane. */
+.pose-studio.docked {
+	position: relative;
+	top: auto;
+	right: auto;
+	bottom: auto;
+	left: auto;
+	width: auto;
+	flex: none;
+	height: min(52vh, 560px);
+	z-index: 1;
+	margin: 8px 10px 10px;
+	border-radius: 10px;
+	box-shadow: none;
+}
 .pose-studio:before {
 	content: "";
 	position: absolute;
@@ -797,8 +1241,8 @@ select {
 	min-height: 0;
 	overflow-y: auto;
 	display: grid;
-	grid-template-columns: 1fr 1fr;
-	gap: 10px;
+	grid-template-columns: 1fr 1fr 1fr;
+	gap: 8px;
 	align-content: start;
 	grid-auto-rows: min-content;
 	padding-right: 3px;
@@ -841,7 +1285,7 @@ select {
 	right: 0;
 	bottom: 0;
 	background: linear-gradient(transparent, #06060aeb);
-	font-size: 11px;
+	font-size: 10px;
 	font-weight: 700;
 	color: #fff;
 	text-align: center;
@@ -1827,6 +2271,16 @@ input[type=range]::-moz-range-thumb {
 	align-items: center;
 	gap: 5px;
 	flex: none;
+}
+
+.sb-color {
+	width: 26px;
+	height: 25px;
+	padding: 1px;
+	border: 1px solid var(--line2);
+	border-radius: 8px;
+	background: #ffffff05;
+	cursor: pointer;
 }
 
 .cam-toggle {
@@ -5079,6 +5533,90 @@ input[type=range]::-moz-range-thumb {
 	background: var(--panel);
 	font-family: var(--mono);
 	font-size: 11px;
+}
+
+.assets-pane {
+	height: var(--timeline-height);
+	min-height: 110px;
+	max-height: 58vh;
+	overflow-y: auto;
+	padding: 10px 12px;
+	background: var(--panel);
+}
+
+.assets-grid {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.asset-card {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	width: 108px;
+	padding: 12px 8px 10px;
+	background: var(--panel2, #1d1d1f);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	color: var(--fg);
+	cursor: grab;
+	user-select: none;
+	touch-action: none;
+}
+
+.asset-card:hover {
+	border-color: var(--accent, #d8a24a);
+}
+
+.asset-card:active {
+	cursor: grabbing;
+}
+
+.asset-card-swatch {
+	width: 44px;
+	height: 44px;
+	border-radius: 10px;
+	background: #f2eee6;
+}
+
+.asset-card-swatch[data-model="x-bot-tpose"] {
+	background: #faf8f2;
+	border: 1px solid #d8d2c4;
+}
+
+.asset-card-label {
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.asset-card-kind {
+	font-size: 10px;
+	color: var(--muted2);
+}
+
+.asset-drag-ghost {
+	position: fixed;
+	z-index: 1000;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	border-radius: 8px;
+	background: var(--panel2, #1d1d1f);
+	border: 1px solid var(--accent, #d8a24a);
+	color: var(--fg);
+	font-size: 12px;
+	pointer-events: none;
+	transform: translate(-50%, -120%);
+	opacity: 0.92;
+}
+
+.asset-drag-ghost .asset-card-swatch {
+	width: 22px;
+	height: 22px;
+	border-radius: 6px;
 }
 
 .console-empty {

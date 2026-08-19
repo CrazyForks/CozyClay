@@ -139,6 +139,9 @@ EOF
 
 POSE_NPZ="" # legacy positional pose; normalized into POSE_ARGS after parsing
 POSE_ARGS=() # repeatable triples: LOCAL_NPZ SRC_FRAME DST_FRAME
+ROOT_MARGIN=""
+CONTACT_THRESHOLD=""
+HISTORY_FRAMES=""
 BASE=""
 PROMPT=""
 DURATION=""
@@ -182,6 +185,15 @@ while [[ $# -gt 0 ]]; do
       ROOT_2D_ARGS+=("$2" "$3" "$4" "$5"); shift 5 ;;
     --cpu)
       FORCE_CPU=1; shift ;;
+    --root-margin)
+      [[ $# -ge 2 && "$2" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "run-on-box: --root-margin needs a non-negative number" >&2; usage; }
+      ROOT_MARGIN="$2"; shift 2 ;;
+    --history-frames)
+      [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "run-on-box: --history-frames needs a non-negative integer" >&2; usage; }
+      HISTORY_FRAMES="$2"; shift 2 ;;
+    --contact-threshold)
+      [[ $# -ge 2 && "$2" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "run-on-box: --contact-threshold needs a non-negative number" >&2; usage; }
+      CONTACT_THRESHOLD="$2"; shift 2 ;;
     --output)
       [[ $# -ge 2 ]] || { echo "run-on-box: --output needs a path" >&2; usage; }
       OUTPUT="$2"; shift 2 ;;
@@ -353,6 +365,16 @@ if ! ssh "${SSH_OPTS[@]}" "$HOST" "$GEN_CHECK" </dev/null; then
   echo "run-on-box: ${HOST} is missing ${VENV_PY} or ${GEN_LABEL}; sync the ARDY sources to the box first (CozyClay scripts/ardy/sync-to-box --apply)" >&2
   exit 1
 fi
+
+# The constrained generator is cclay-owned: the repo copy next to this
+# script is the source of truth, synced up on every run so the box can
+# never drift behind it (same pattern as run-sequence-on-box.sh).
+if ! ssh "${SSH_OPTS[@]}" "$HOST" "cat > ${REMOTE}/scripts/cclay_constrained_generate.py" \
+  < "${HERE}/cclay_constrained_generate.py"; then
+  echo "run-on-box: could not sync cclay_constrained_generate.py to ${HOST}" >&2
+  exit 1
+fi
+echo "run-on-box: constrained generator synced to ${HOST}"
 echo "run-on-box: venv python and generator script present on ${HOST}"
 
 
@@ -478,6 +500,9 @@ build_remote_cmd() {
       cmd+=" $(printf '%q' "${ROOT_2D_ARGS[$((i + 2))]}")"
       cmd+=" $(printf '%q' "${ROOT_2D_ARGS[$((i + 3))]}")"
     done
+    [[ -z "$ROOT_MARGIN" ]] || cmd+=" --root-margin $(printf '%q' "$ROOT_MARGIN")"
+    [[ -z "$CONTACT_THRESHOLD" ]] || cmd+=" --contact-threshold $(printf '%q' "$CONTACT_THRESHOLD")"
+    [[ -z "$HISTORY_FRAMES" ]] || cmd+=" --history_frames $(printf '%q' "$HISTORY_FRAMES")"
     cmd+=" --output $(printf '%q' "${tmp_dir}/out")"
     if [[ -n "$SEED" ]]; then
       cmd+=" --seed $(printf '%q' "$SEED")"

@@ -187,6 +187,13 @@ function validateGenerate(body) {
 	if (body.prompt.length > PROMPT_MAX_CHARS) return `field 'prompt' is ${body.prompt.length} chars; the cap is ${PROMPT_MAX_CHARS}`;
 	if (typeof body.duration !== "number" || !Number.isFinite(body.duration)) return `field 'duration' must be a finite number`;
 	if (body.duration < DURATION_MIN || body.duration > DURATION_MAX) return `field 'duration' must be in ${DURATION_MIN}..${DURATION_MAX} seconds`;
+	// Optional post-processing knobs, forwarded to the box generators
+	// (ARDY defaults: root margin 0.04 m, contact threshold 0.5).
+	if (body.rootMargin !== undefined && (typeof body.rootMargin !== "number" || !Number.isFinite(body.rootMargin) || body.rootMargin < 0 || body.rootMargin > 1)) return `field 'rootMargin' must be a number in 0..1 (meters)`;
+	if (body.contactThreshold !== undefined && (typeof body.contactThreshold !== "number" || !Number.isFinite(body.contactThreshold) || body.contactThreshold < 0 || body.contactThreshold > 1)) return `field 'contactThreshold' must be a number in 0..1`;
+	// Optional history crop (per autoregressive step), forwarded to the box
+	// generators; the box enforces its own token-size multiple.
+	if (body.historyFrames !== undefined && (!Number.isInteger(body.historyFrames) || body.historyFrames <= 0 || body.historyFrames > 400)) return `field 'historyFrames' must be an integer in 1..400`;
 	const clipFrames = Math.floor(body.duration * FPS);
 	if (clipFrames < 3) return `field 'duration' yields fewer than 3 frames`;
 
@@ -772,6 +779,9 @@ async function handleGenerate(req, res) {
 				waypoints: body.waypoints,
 				seed: body.seed,
 				cpu: body.cpu,
+				rootMargin: body.rootMargin,
+				contactThreshold: body.contactThreshold,
+				historyFrames: body.historyFrames,
 				output: outNpzPath,
 			});
 			sendStatus(
@@ -838,6 +848,9 @@ async function handleGenerate(req, res) {
 				seed: body.seed,
 				cpu: body.cpu,
 				waypoints: body.waypoints,
+				rootMargin: body.rootMargin,
+				contactThreshold: body.contactThreshold,
+				historyFrames: body.historyFrames,
 				output: outputPath,
 			});
 			sendStatus(`[bridge] generating frames ${segment.startFrame}..${segment.endFrame - 1}`);

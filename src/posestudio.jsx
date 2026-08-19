@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { POSE_BONES, normalizeBoneName, primeBindPose } from "./poses.js";
+import { poseThumbnail, warmThumbnailModels } from "./pose-thumbs.js";
 import { IK_TRACKS, MID_TRACKS, ikControlIsExposed } from "./ardy/ik.js";
 import { POSER_LAYER } from "./dualview.jsx";
 import { ko, isKo } from "./locale.js";
@@ -1081,7 +1082,35 @@ const CLICK_PX = 4;
  * `{ thumb, custom: true }`. The tile entry animation cascades with the same
  * stagger as the reference.
  */
-export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply, onReset, onSave, onDelete, onClose, closing, motionActive = false }) {
+/** Pose tile preview: generated lazily per model+pose and cached for the
+ * session (see pose-thumbs.js); user-saved poses keep their stored thumb. */
+function PoseThumb({ model, pose, alt }) {
+	const [url, setUrl] = useState(pose.thumb ?? null);
+	useEffect(() => {
+		if (pose.thumb) {
+			setUrl(pose.thumb);
+			return undefined;
+		}
+		let live = true;
+		setUrl(null);
+		poseThumbnail(model, pose).then((generated) => {
+			if (live) setUrl(generated);
+		}).catch(() => {});
+		return () => { live = false; };
+	}, [model, pose]);
+	return url ? <img src={url} alt={alt} /> : <div className="tile-blank" />;
+}
+
+// Warm the thumbnail rigs while the studio sits idle: the first pose-studio
+// open then pays no FBX parse. Both shipped models, one idle render each.
+let thumbnailsWarmed = false;
+export function warmPoseThumbnails() {
+	if (thumbnailsWarmed) return;
+	thumbnailsWarmed = true;
+	warmThumbnailModels(["y-bot-tpose", "x-bot-tpose"]);
+}
+
+export function PoseStudioPanel({ subject, model, poses, selectedId, onSelect, onApply, onReset, onSave, onDelete, onClose, closing, motionActive = false, docked = false }) {
 	const poseLabelsKo = {
 		"T-pose": ko("T-pose", "T 포즈"),
 		Relaxed: ko("Relaxed", "편안한 자세"),
@@ -1122,7 +1151,7 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 	const categories = ["all", ...Array.from(new Set(poses.map(poseCategory)))];
 	const visiblePoses = category === "all" ? poses : poses.filter((pose) => poseCategory(pose) === category);
 	return (
-		<div className={"pose-studio" + (closing ? " closing" : "")}>
+		<div className={"pose-studio" + (docked ? " docked" : "") + (closing ? " closing" : "")}>
 			<div className="studio-head">
 				<span>{isKo ? `포즈 스튜디오 · 인물 ${subject}` : `Pose Studio · Subject ${subject}`}</span>
 				<button type="button" className="x" onClick={onClose} aria-label={ko("Close pose studio", "포즈 스튜디오 닫기")}>
@@ -1168,7 +1197,7 @@ export function PoseStudioPanel({ subject, poses, selectedId, onSelect, onApply,
 						style={{ animationDelay: `${0.04 + index * 0.028}s` }}
 						onClick={() => selectPose(pose.id)}
 					>
-						{pose.thumb ? <img src={pose.thumb} alt={displayPoseLabel(pose)} /> : <div className="tile-blank" />}
+						<PoseThumb model={model} pose={pose} alt={displayPoseLabel(pose)} />
 						<span>{displayPoseLabel(pose)}</span>
 						{pose.custom && (
 							<em

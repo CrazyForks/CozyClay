@@ -2,22 +2,26 @@
 // A Scene is the set; shotDocument and stage are sealed department envelopes.
 // This module stores and copies those envelopes but never opens or validates them.
 
-export const SCENES_VERSION = 2;
-export const SCENES_STORAGE_KEY = "cozyclay.scenes.v2";
-export const SCENES_QUARANTINE_KEY = "cozyclay.scenes.v2.quarantine";
-export const PREVIOUS_SCENES_STORAGE_KEY = "cozyclay.scenes.v1";
+export const SCENES_VERSION = 3;
+export const SCENES_STORAGE_KEY = "cozyclay.scenes.v3";
+export const SCENES_QUARANTINE_KEY = "cozyclay.scenes.v3.quarantine";
+export const PREVIOUS_SCENES_STORAGE_KEY = "cozyclay.scenes.v2";
+export const V1_SCENES_STORAGE_KEY = "cozyclay.scenes.v1";
 export const LEGACY_SCENE_STORAGE_KEY = "cozyclay.scene.v1";
 
+/** Rigged character models shipped in public/models. The id is both the FBX
+ * file stem and the wire `source.rig` value sent to ARDY. */
+export const CHARACTER_MODEL_IDS = Object.freeze(["y-bot-tpose", "x-bot-tpose"]);
+export const DEFAULT_CHARACTER_MODEL = "y-bot-tpose";
+export const DEFAULT_SUBJECT_ONE = "a young woman in a tan coat";
+export const DEFAULT_SUBJECT_TWO = "a man in a dark coat";
+
 export const DEFAULT_SCENE_STAGE = Object.freeze({
-	charA: Object.freeze({ x: 0, z: 0, rot: 0 }),
-	charB: Object.freeze({ x: 1.15, z: 0.1, rot: -14 }),
-	showB: false,
-	poseA: null,
-	poseB: null,
+	characters: Object.freeze([
+		Object.freeze({ id: "char-a", model: DEFAULT_CHARACTER_MODEL, x: 0, z: 0, rot: 0, hidden: false, pose: null, subject: DEFAULT_SUBJECT_ONE }),
+	]),
 	hasCharSheet: false,
 	shotAspect: "16:9",
-	subject: "a young woman in a tan coat",
-	subject2: "a man in a dark coat",
 });
 
 let sceneSequence = 1;
@@ -50,20 +54,92 @@ function cloneValue(value, copies = new WeakMap()) {
 	return copy;
 }
 
+const finiteOr = (value, fallback) => (Number.isFinite(value) ? value : fallback);
+
+/** One character entry in the stage envelope. `source` may be a v3 entry, a
+ * partial (spawn dialog), or null — every field falls back to a sane default
+ * and every object is freshly owned by the caller. */
+export function createCharacterEntry(source = null, index = 0) {
+	const s = plainObject(source) ? source : {};
+	return {
+		id: typeof s.id === "string" && s.id ? s.id : `char-${index + 1}`,
+		model: CHARACTER_MODEL_IDS.includes(s.model) ? s.model : DEFAULT_CHARACTER_MODEL,
+		x: finiteOr(s.x, 0),
+		y: finiteOr(s.y, 0),
+		z: finiteOr(s.z, 0),
+		rot: finiteOr(s.rot, 0),
+		hidden: s.hidden === true,
+		// User-picked body tint; null means "model default" (y-bot clay, x-bot
+		// whiter clay) so the entry survives future default tweaks.
+		tint: typeof s.tint === "string" && /^#[0-9a-fA-F]{6}$/.test(s.tint) ? s.tint : null,
+		pose: plainObject(s.pose) ? cloneValue(s.pose) : null,
+		subject: typeof s.subject === "string" ? s.subject : index === 0 ? DEFAULT_SUBJECT_ONE : DEFAULT_SUBJECT_TWO,
+		// The character's animation layer: its own root path and prompt-block
+		// schedule. The generated clip itself is heavy, so only a lightweight
+		// reference (bridge URL + generation params) is persisted — enough to
+		// re-fetch and decode it on the next session.
+		layer: normalizeLayer(s.layer),
+		motionRef: normalizeMotionRef(s.motionRef),
+	};
+}
+
+function normalizeMotionRef(ref) {
+	if (!plainObject(ref) || typeof ref.url !== "string" || !ref.url) return null;
+	return {
+		url: ref.url,
+		prompt: typeof ref.prompt === "string" ? ref.prompt : "",
+		rotationDeg: Number.isFinite(ref.rotationDeg) ? ref.rotationDeg : 0,
+		anchorX: Number.isFinite(ref.anchorX) ? ref.anchorX : 0,
+		anchorZ: Number.isFinite(ref.anchorZ) ? ref.anchorZ : 0,
+	};
+}
+
+function normalizeLayer(layer) {
+	const source = plainObject(layer) ? layer : {};
+	return {
+		waypoints: Array.isArray(source.waypoints) ? cloneValue(source.waypoints) : [],
+		promptClips: Array.isArray(source.promptClips) ? cloneValue(source.promptClips) : [],
+	};
+}
+
+export function createCharacterLayer() {
+	return { waypoints: [], promptClips: [] };
+}
+
+/** Stage envelopes before v3 stored a fixed cast (charA/charB/showB/poseA/
+ * poseB/subject/subject2). Fold that cast into the characters list so the
+ * rest of the app only ever sees one shape. */
+function migrateLegacyCast(source) {
+	const cast = [createCharacterEntry({ ...plainObject(source.charA) ? source.charA : {}, id: "char-a", pose: source.poseA ?? null, subject: source.subject ?? DEFAULT_SUBJECT_ONE }, 0)];
+	if (source.showB === true) {
+		cast.push(createCharacterEntry({ ...plainObject(source.charB) ? source.charB : {}, id: "char-b", pose: source.poseB ?? null, subject: source.subject2 ?? DEFAULT_SUBJECT_TWO }, 1));
+	}
+	return cast;
+}
+
+const STAGE_ENVELOPE_KEYS = new Set([
+	"characters", "hasCharSheet", "shotAspect",
+	"charA", "charB", "showB", "poseA", "poseB", "subject", "subject2",
+]);
+
 export function createSceneStage(stage = null) {
 	const source = plainObject(stage) ? stage : {};
+	const characters = Array.isArray(source.characters) && source.characters.length
+		? source.characters.map((entry, index) => createCharacterEntry(entry, index))
+		: migrateLegacyCast(source);
+	// Unknown extra keys (shotAspect was one, once) ride along so the envelope
+	// stays sealed-but-lossless; legacy cast keys are deliberately dropped.
+	const extras = {};
+	for (const [key, value] of Object.entries(source)) {
+		if (!STAGE_ENVELOPE_KEYS.has(key)) extras[key] = cloneValue(value);
+	}
 	return {
-		...cloneValue(DEFAULT_SCENE_STAGE),
-		...cloneValue(source),
-		charA: { ...cloneValue(DEFAULT_SCENE_STAGE.charA), ...cloneValue(plainObject(source.charA) ? source.charA : {}) },
-		charB: { ...cloneValue(DEFAULT_SCENE_STAGE.charB), ...cloneValue(plainObject(source.charB) ? source.charB : {}) },
-		showB: source.showB === true,
+		...extras,
+		characters,
 		hasCharSheet: source.hasCharSheet === true,
 		shotAspect: ["16:9", "9:16", "1:1", "4:3"].includes(source.shotAspect)
 			? source.shotAspect
 			: DEFAULT_SCENE_STAGE.shotAspect,
-		subject: typeof source.subject === "string" ? source.subject : DEFAULT_SCENE_STAGE.subject,
-		subject2: typeof source.subject2 === "string" ? source.subject2 : DEFAULT_SCENE_STAGE.subject2,
 	};
 }
 
@@ -214,7 +290,8 @@ export function serializeSceneDocument(document) {
 export function loadSceneDocumentFromStorage(storage) {
 	const currentRaw = storage.getItem(SCENES_STORAGE_KEY);
 	const previousRaw = currentRaw ? null : storage.getItem(PREVIOUS_SCENES_STORAGE_KEY);
-	const raw = currentRaw || previousRaw;
+	const v1Raw = currentRaw || previousRaw ? null : storage.getItem(V1_SCENES_STORAGE_KEY);
+	const raw = currentRaw || previousRaw || v1Raw;
 	const legacyRaw = raw ? null : storage.getItem(LEGACY_SCENE_STORAGE_KEY);
 	const result = readSceneDocument(raw, legacyRaw);
 	if (result.status === "corrupt" && result.quarantineRaw !== undefined) {

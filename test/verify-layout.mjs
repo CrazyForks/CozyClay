@@ -44,7 +44,9 @@ expect("legacy hierarchy/inspector splitter is removed", !app.includes("hierarch
 expect("bottom window separates Timeline from the ARDY console", app.includes("bottom-window-tabs") && app.includes("console-pane") && app.includes('hidden={bottomTab !== "timeline"}'));
 expect("ARDY status lines accumulate in the console window", app.includes("reportArdyStatus") && app.includes("consoleLines"));
 expect("Motion tab owns the ARDY generation form", app.includes('<Foldout hidden={sidebarTab !== "motion"} title={ko("ARDY motion", "ARDY 모션")}>'));
-expect("Motion tab exposes the camera animation controls", app.includes('sidebarTab === "shot" || sidebarTab === "motion" || (sidebarTab === "inspector" && selectedHierarchyId === "camera")'));
+// The camera foldout was duplicated into the Motion tab; after the sidebar
+// cleanup it lives only in Shot (and Inspector when the camera is picked).
+expect("camera controls live in Shot and camera-inspector only, not duplicated into Motion", app.includes('sidebarTab === "shot" || (sidebarTab === "inspector" && selectedHierarchyId === "camera")'));
 expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("Generate all ${promptClips.length} blocks"));
 expect("new sessions start without prompt blocks", app.includes("const DEFAULT_PROMPT_CLIPS = [];") && app.includes("useState(null)"));
 expect("new sessions start with an empty motion prompt", app.includes('const [ardyPrompt, setArdyPrompt] = useState("");'));
@@ -64,13 +66,13 @@ expect("legacy greeting demo migration is removed", !app.includes("GREETING_DEMO
 expect("batch generation spans through the final block frame", app.includes("Math.max(...clips.map((clip) => clip.endFrame))") && app.includes("Math.ceil(totalFrames / 20)"));
 expect("batch generation forwards all prompt clips", app.includes("promptClipsOverride: clips") && app.includes("hasPromptSchedule"));
 expect("normal motion generation excludes the prompt block schedule", app.includes("promptClipsOverride = []"));
-expect("unedited batch blocks use one unpinned autoregressive schedule", app.includes("!hasPromptSchedule && Boolean(motion || ikFrames.length > 0)") && app.includes("else if (hasPromptSchedule) body.segments = segments"));
+expect("unedited batch blocks use one unpinned autoregressive schedule", app.includes("!hasPromptSchedule && ikFrames.length > 0") && app.includes("else if (hasPromptSchedule) body.segments = segments"));
 expect("IK-edited blocks use the motion edit session", app.includes("const editedSegments") && app.includes("body.motionEdit = {") && app.includes("sourceMotion: motion.url"));
 expect("IK regeneration inherits loaded clip duration", app.includes("motion && ikFrames.length > 0") && app.includes("motion.frames / motion.fps"));
 expect("motion edits send only tracked pending joints", app.includes("ikStateRef.current.keys.get(frame)?.keys()") && app.includes("tracks:"));
-expect("successful motion edits commit and clear pending IK", app.includes("setCommittedIkEdits") && app.includes("ikStateRef.current.keys.clear()") && app.includes("ikStateRef.current.tracked.clear()"));
+expect("successful motion edits commit and clear pending IK", app.includes("setCommittedIkEdits") && app.includes("job.ikState.keys.clear()") && app.includes("job.ikState.tracked.clear()"));
 expect("pending IK clears only after exact commit verification", app.includes("editCommitReport?.commit_verified !== true") && app.includes("ARDY returned motion without verified authored IK keys"));
-expect("failed key verification leaves pending IK intact", app.indexOf("ARDY returned motion without verified authored IK keys") < app.indexOf("ikStateRef.current.keys.clear()"));
+expect("failed key verification leaves pending IK intact", app.indexOf("ARDY returned motion without verified authored IK keys") < app.indexOf("job.ikState.keys.clear()"));
 expect("individual block generation action is removed", !app.includes("Generate selected block"));
 expect("Prompt Block edits stay synced with ARDY input", app.includes("changePromptClip(selectedPromptId") && app.includes("setArdyPrompt(event.target.value)"));
 expect("desktop stage fills the remaining viewport", css.includes("aspect-ratio: auto") && css.includes("height: 100%"));
@@ -80,21 +82,21 @@ expect("timeline IK text controls size to their labels", css.includes(".tl-btn.i
 // Floor-click authoring: waypoints are placed by clicking the set floor, so
 // frame 0 is owned implicitly — the request prepends Subject 1's position and
 // authored pins can never claim frame 0 or earlier.
-expect("Subject 1 exclusively owns the frame zero root start", app.includes("{ frame: 0, x: charA.x, z: charA.z, heading: null }") && app.includes("waypoint.frame <= 0") && !app.includes("Frame 0 is the start of the root path — it can't be removed"));
-expect("root guidance sends the aligned, densified path to ARDY", app.includes("alignArdyPath(rootPath, charA.rot") && app.includes("body.waypoints = ardyWaypoints"));
+expect("the active character exclusively owns the frame zero root start", app.includes("{ frame: 0, x: activeChar.x, z: activeChar.z, heading: null }") && app.includes("waypoint.frame <= 0") && !app.includes("Frame 0 is the start of the root path — it can't be removed"));
+expect("root guidance sends the aligned, densified path to ARDY", app.includes("alignArdyPath(rootPath, activeChar.rot") && app.includes("body.waypoints = ardyWaypoints"));
 expect(
 	"a root path and a prompt schedule are sent together, judged per block",
 	app.includes("if (hasPromptSchedule && !hasBlockEdits) body.segments = segments;") &&
 	app.includes("judgeAuthoredPath(rootPath, 20, clipFrames, { chained: hasPromptSchedule })") &&
-	app.includes("every prompt block must stay within"),
+	app.includes("PROMPT_BLOCK_MAX_FRAMES"),
 );
-expect("generated motion anchors frame zero at Subject 1", app.includes("anchorX: charA.x") && app.includes("anchorZ: charA.z") && app.includes("anchorFrame: 0"));
+expect("generated motion anchors frame zero at the active character", app.includes("anchorX: activeChar.x") && app.includes("anchorZ: activeChar.z") && app.includes("anchorFrame: 0"));
 expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));
 expect("Top-View root path draws from Subject 1 without a duplicate marker", planview.includes("[{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));
 expect(
 	"Top-View characters use their real meshes without covering hex pucks",
-	planview.includes('<Puck color={SUBJECT_ONE_COLOR} showBody={false} {...state("a")} />') &&
-	planview.includes('<Puck color={SUBJECT_TWO_COLOR} showBody={false} {...state("b")} />') &&
+	planview.includes("<Puck color={color} showBody={false} {...state(puckId)} />") &&
+	planview.includes("listIndex === 0 ? SUBJECT_ONE_COLOR : SUBJECT_TWO_COLOR") &&
 	planview.includes("stem: makes the handle read as attached"),
 );
 expect(
