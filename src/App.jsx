@@ -6479,6 +6479,14 @@ function resizePromptClip(id, edge, rawFrame) {
 												: `${(selectedSceneObject.footprint?.width ?? 0).toFixed(2)} m wide, from the picture's own aspect. Measure against something you know: a door is 2 m, a person 1.8 m.`}
 										</p>
 										<div className="matte-editor">
+											{!!selectedSceneObject.matteAssetId && (
+												<p className="inspector-hint matte-state">
+													{ko(
+														"This card's background is removed. You are editing the original photograph — apply again to change what goes.",
+														"이 카드는 배경이 지워진 상태입니다. 지금 보이는 것은 원본 사진이며, 다시 적용하면 지워지는 범위가 바뀝니다.",
+													)}
+												</p>
+											)}
 											<canvas
 												ref={matteCanvasRef}
 												className="matte-canvas"
@@ -6540,8 +6548,10 @@ function resizePromptClip(id, edge, rawFrame) {
 												{ko("Redo", "다시 실행")} <kbd>⇧⌘Z</kbd>
 											</button>
 										</div>
-										<Field label={ko("Brush", "브러시")}>
+										<div className="matte-slider">
+											<label htmlFor="matte-brush">{ko("Brush", "브러시")}</label>
 											<input
+												id="matte-brush"
 												type="range"
 												min="4"
 												max="90"
@@ -6553,12 +6563,29 @@ function resizePromptClip(id, edge, rawFrame) {
 													matteEditorRef.current?.setBrush(value);
 												}}
 											/>
-										</Field>
-										<Field label={ko("Tolerance", "허용치")}>
 											<input
+												type="number"
+												data-field="matte-brush"
+												min="4"
+												max="90"
+												step="2"
+												value={matteBrush}
+												aria-label={ko("Brush size in pixels", "브러시 크기 (픽셀)")}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													if (!Number.isFinite(value)) return;
+													setMatteBrush(value);
+													matteEditorRef.current?.setBrush(value);
+												}}
+											/>
+										</div>
+										<div className="matte-slider">
+											<label htmlFor="matte-tolerance">{ko("Tolerance", "허용치")}</label>
+											<input
+												id="matte-tolerance"
 												type="range"
-												min="0.04"
-												max="0.5"
+												min="0.02"
+												max="0.6"
 												step="0.01"
 												value={matteTolerance}
 												onChange={(event) => {
@@ -6567,7 +6594,28 @@ function resizePromptClip(id, edge, rawFrame) {
 													matteEditorRef.current?.setTolerance(value);
 												}}
 											/>
-										</Field>
+											<input
+												type="number"
+												data-field="matte-tolerance"
+												min="0.02"
+												max="0.6"
+												step="0.01"
+												value={matteTolerance}
+												aria-label={ko("Tolerance", "허용치")}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													if (!Number.isFinite(value)) return;
+													setMatteTolerance(value);
+													matteEditorRef.current?.setTolerance(value);
+												}}
+											/>
+										</div>
+										<p className="inspector-hint">
+											{ko(
+												"Tolerance is how far a drag spreads: low keeps to one flat colour, high walks across a shaded wall. It applies to the next drag and to Auto-detect, not to what is already purple.",
+												"허용치는 드래그가 얼마나 번질지입니다. 낮으면 한 가지 색에 머무르고, 높으면 명암이 변하는 벽까지 따라갑니다. 이미 칠한 보라가 아니라 다음 드래그와 자동 인식에 적용됩니다.",
+											)}
+										</p>
 										<button
 											type="button"
 											className="btn ghost full"
@@ -6586,11 +6634,17 @@ function resizePromptClip(id, edge, rawFrame) {
 										</button>
 										<button
 											type="button"
-											className="btn ghost full"
+											className="btn primary full matte-apply"
 											disabled={matteBusy || !matteStats.painted}
 											onClick={() => applyMatte(selectedSceneObject.id)}
 										>
-											{matteBusy ? ko("Removing…", "지우는 중…") : ko("Remove what is purple", "보라색 부분 지우기")}
+											{matteBusy
+												? ko("Removing…", "지우는 중…")
+												: matteStats.painted
+													? isKo
+														? `보라색 부분 지우기 — 사진의 ${Math.round(matteStats.coverage * 100)}%`
+														: `Remove what is purple — ${Math.round(matteStats.coverage * 100)}% of the picture`
+													: ko("Nothing is marked yet", "아직 선택된 부분이 없습니다")}
 										</button>
 										<p className="inspector-hint">
 											{ko(

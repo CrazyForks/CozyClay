@@ -7500,3 +7500,56 @@ input[type=range] {
 @media (prefers-reduced-motion: reduce) {
 	.props-drop { transition: none; }
 }
+
+/* The matte editor's two dials. A bare range in a dark panel is nearly
+   invisible — no accent, intrinsic width, no label alignment — so both get a
+   real row: name, a full-width track, and a box you can type an exact number
+   into. Tolerance especially: 0.18 and 0.22 are different answers, and a drag
+   along an unlabelled track cannot tell you which one you have. */
+
+.matte-slider {
+	display: grid;
+	grid-template-columns: auto 1fr 4.6rem;
+	align-items: center;
+	gap: 10px;
+	margin: 8px 0;
+}
+
+.matte-slider label {
+	font-size: 11.5px;
+	color: var(--muted);
+}
+
+.matte-slider input[type="range"] {
+	width: 100%;
+	min-width: 0;
+	accent-color: var(--accent);
+}
+
+.matte-slider input[type="number"] {
+	width: 100%;
+	padding: 5px 6px;
+	background: var(--card2);
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	color: var(--fg);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+}
+
+.btn.matte-apply {
+	margin-top: 4px;
+}
+
+.btn.matte-apply[disabled] {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.inspector-hint.matte-state {
+	padding: 6px 8px;
+	border-left: 2px solid var(--accent);
+	background: var(--card2);
+	border-radius: 0 3px 3px 0;
+}
