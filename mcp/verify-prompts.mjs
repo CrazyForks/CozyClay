@@ -8,7 +8,7 @@
  * collapses to a single text token, a closing full stop, and nothing the body
  * cannot perform (emotion, camera, scenery).
  */
-import { PROMPT_GUIDE, normalizePhase, normalizePhases } from "./ardy-prompts.mjs";
+import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhase, normalizePhases, splitLongBeat } from "./ardy-prompts.mjs";
 
 let failures = 0;
 const check = (label, ok, detail = "") => {
@@ -82,3 +82,21 @@ if (failures > 0) {
 	process.exit(1);
 }
 console.log("all ARDY prompt checks passed");
+
+/* ------------------------------ the 4 s cap ------------------------------ */
+// Mirrors the studio's PROMPT_BLOCK_MAX_FRAMES: a longer block drifts, and the
+// UI refuses to generate one, so the tools must never author one either.
+
+check("the cap is four seconds", BLOCK_MAX_SECONDS === 4);
+check("a short beat is left whole", splitLongBeat(3).length === 1);
+check("a beat exactly at the cap is left whole", splitLongBeat(4).length === 1);
+
+const six = splitLongBeat(6);
+check("a 6 s beat becomes two blocks", six.length === 2, JSON.stringify(six));
+check("the split preserves the total duration", Math.abs(six.reduce((a, b) => a + b, 0) - 6) < 1e-9);
+check("no piece exceeds the cap", six.every((s) => s <= BLOCK_MAX_SECONDS + 1e-9), JSON.stringify(six));
+
+const eleven = splitLongBeat(11);
+check("an 11 s beat becomes three blocks", eleven.length === 3, JSON.stringify(eleven));
+check("every piece of a long beat is within the cap", eleven.every((s) => s <= BLOCK_MAX_SECONDS + 1e-9));
+check("the guide states the cap", PROMPT_GUIDE.includes(`${BLOCK_MAX_SECONDS} s`));

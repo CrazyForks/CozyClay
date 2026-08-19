@@ -39,7 +39,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { z } from "zod";
 
 import { startLiveHub } from "./live-hub.mjs";
-import { PROMPT_GUIDE, normalizePhases } from "./ardy-prompts.mjs";
+import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhases, splitLongBeat } from "./ardy-prompts.mjs";
 
 import {
 	CAMERA_MOVES,
@@ -733,7 +733,11 @@ registerTool(
 				.array(
 					z.object({
 						text: z.string().min(3).describe("the beat, in ARDY's sentence shape"),
-						seconds: z.number().min(0.5).max(20).describe("how long this beat holds"),
+						seconds: z
+							.number()
+							.min(0.5)
+							.max(20)
+							.describe(`how long this beat holds; over ${BLOCK_MAX_SECONDS}s it becomes chained blocks`),
 					}),
 				)
 				.min(1)
@@ -749,12 +753,18 @@ registerTool(
 		// The timeline runs on a 24 fps production clock.
 		const TIMELINE_FPS = 24;
 		let cursor = 0;
-		const blocks = normalized.texts.map((textValue, i) => {
-			const span = Math.max(1, Math.round((beats[Math.min(i, beats.length - 1)].seconds ?? 2) * TIMELINE_FPS));
-			const block = { startFrame: cursor, endFrame: cursor + span, text: textValue };
-			cursor += span;
-			return block;
-		});
+		let chained = 0;
+		const blocks = [];
+		for (const [i, textValue] of normalized.texts.entries()) {
+			const whole = beats[Math.min(normalized.sources[i], beats.length - 1)].seconds ?? 2;
+			const spans = splitLongBeat(whole);
+			if (spans.length > 1) chained += spans.length - 1;
+			for (const span of spans) {
+				const frames = Math.max(1, Math.round(span * TIMELINE_FPS));
+				blocks.push({ startFrame: cursor, endFrame: cursor + frames, text: textValue });
+				cursor += frames;
+			}
+		}
 		try {
 			await liveHub.command("set_prompt_blocks", { blocks });
 		} catch (error) {
@@ -766,6 +776,7 @@ registerTool(
 		return text(
 			`${blocks.length} block(s) on the timeline (${(cursor / TIMELINE_FPS).toFixed(1)}s total):\n` +
 				blocks.map((b) => `  ${b.startFrame}-${b.endFrame}f  ${b.text}`).join("\n") +
+				(chained > 0 ? `\n  (${chained} block(s) chained to keep every block within ${BLOCK_MAX_SECONDS}s)` : "") +
 				(rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "") +
 				"\n\nGenerate them from the studio's Prompt Blocks panel, or with generate_motion.",
 		);
@@ -782,15 +793,29 @@ registerTool(
 			PROMPT_GUIDE,
 		inputSchema: {
 			phases: z
-				.array(z.string().min(3))
+				.array(
+					z.union([
+						z.string().min(3),
+						z.object({
+							text: z.string().min(3),
+							seconds: z.number().min(0.5).max(30).describe("how long THIS beat holds"),
+						}),
+					]),
+				)
 				.min(2)
 				.max(8)
 				.describe(
 					"one beat per phase, in order. Write each as ARDY writes them: " +
 						'"A person walks in a circle." — subject, one action, present tense, ' +
-						"full stop. Phases are normalised to that shape before generation.",
+						"full stop. Give a plain string to share the clip evenly, or " +
+						"{ text, seconds } to hold a beat for a specific time.",
 				),
-			seconds: z.number().min(2).max(60).default(9).describe("total clip length in seconds"),
+			seconds: z
+				.number()
+				.min(2)
+				.max(60)
+				.default(9)
+				.describe("total clip length; ignored when every phase carries its own seconds"),
 			seed: z.number().int().optional().describe("generation seed"),
 			motion_url: z
 				.string()
@@ -799,7 +824,10 @@ registerTool(
 				.describe("reuse an already-generated clip instead of generating again"),
 		},
 	},
-	async ({ phases, seconds, seed, motion_url }) => {
+	async ({ phases: rawPhases, seconds, seed, motion_url }) => {
+		const phases = rawPhases.map((p) => (typeof p === "string" ? p : p.text));
+		const phaseSeconds = rawPhases.map((p) => (typeof p === "string" ? null : p.seconds));
+		const timed = phaseSeconds.some((s) => s !== null);
 		const bridge = process.env.COZYCLAY_BRIDGE ?? "http://127.0.0.1:5181";
 		try {
 			const health = await fetch(`${bridge}/ardy/health`, { signal: AbortSignal.timeout(4000) }).then((r) => r.json());
@@ -814,26 +842,75 @@ registerTool(
 		const prompts = normalized.texts.filter(Boolean);
 		if (prompts.length < 2) return text("Give at least two distinct motion beats.");
 
-		// ARDY Core is 20 fps; segments must tile 0..int(seconds*20) exactly.
-		const clipFrames = Math.floor(seconds * 20);
-		const per = Math.floor(clipFrames / prompts.length);
-		const segments = prompts.map((prompt, i) => ({
-			startFrame: i * per,
-			endFrame: i === prompts.length - 1 ? clipFrames : (i + 1) * per,
-			prompt,
-		}));
+		// ARDY Core is 20 fps; segments must tile 0..clipFrames exactly, and each
+		// one needs at least 3 frames.
+		const ARDY_FPS = 20;
+		let segments;
+		let clipFrames;
+		let chained = 0;
+		if (timed) {
+			// A beat that split into pieces shares its time between them, so an
+			// explicit "6 seconds of walking" stays 6 seconds however it was phrased.
+			const pieceCount = normalized.sources.reduce((acc, source) => {
+				acc[source] = (acc[source] ?? 0) + 1;
+				return acc;
+			}, {});
+			segments = [];
+			let cursor = 0;
+			for (const [i, prompt] of prompts.entries()) {
+				const whole = phaseSeconds[normalized.sources[i]] ?? seconds / phases.length;
+				const share = whole / pieceCount[normalized.sources[i]];
+				// The studio caps a block at BLOCK_MAX_SECONDS and refuses to generate
+				// a longer one, so a long beat becomes consecutive blocks here rather
+				// than something the UI would reject.
+				const spans = splitLongBeat(share);
+				if (spans.length > 1) chained += spans.length - 1;
+				for (const span of spans) {
+					const startFrame = cursor;
+					cursor += Math.max(3, Math.round(span * ARDY_FPS));
+					segments.push({ startFrame, endFrame: cursor, prompt });
+				}
+			}
+			clipFrames = cursor;
+		} else {
+			clipFrames = Math.floor(seconds * ARDY_FPS);
+			// Even division must also respect the cap: enough blocks that no single
+			// one exceeds it, distributed evenly across the clip.
+			const perPhase = seconds / prompts.length;
+			const piecesPer = Math.ceil(perPhase / BLOCK_MAX_SECONDS);
+			if (piecesPer > 1) chained = prompts.length * (piecesPer - 1);
+			const total = prompts.length * piecesPer;
+			const per = Math.floor(clipFrames / total);
+			segments = [];
+			for (const [i, prompt] of prompts.entries()) {
+				for (let k = 0; k < piecesPer; k += 1) {
+					const index = i * piecesPer + k;
+					segments.push({
+						startFrame: index * per,
+						endFrame: index === total - 1 ? clipFrames : (index + 1) * per,
+						prompt,
+					});
+				}
+			}
+		}
+		const clipSeconds = clipFrames / ARDY_FPS;
 		const rewrites = normalized.notes
 			.map((notes, i) => (notes.length ? `  ${i + 1}. ${prompts[i]}  ← ${notes.join("; ")}` : null))
 			.filter(Boolean);
-		const promptNote = rewrites.length
-			? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` +
-				(normalized.expanded ? "\n  (a compound beat became its own phase)" : "") +
-				(normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "")
-			: "";
+		const chainNote = chained > 0 ? `\n  (${chained} block(s) chained to keep every block within ${BLOCK_MAX_SECONDS}s)` : "";
+		const promptNote =
+			rewrites.length || chainNote
+				? (rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "\n") +
+					(normalized.expanded ? "\n  (a compound beat became its own phase)" : "") +
+					(normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "") +
+					chainNote
+				: "";
 
 		const deliver = async (motionUrl, note) => {
-			const summary = `${note} ${seconds}s / ${clipFrames} frames — ${segments.length} phases:\n` +
-				segments.map((s) => `  ${s.startFrame}-${s.endFrame}  ${s.prompt}`).join("\n") +
+			const summary = `${note} ${clipSeconds.toFixed(1)}s / ${clipFrames} frames — ${segments.length} phases:\n` +
+				segments
+					.map((s) => `  ${s.startFrame}-${s.endFrame}  (${((s.endFrame - s.startFrame) / ARDY_FPS).toFixed(1)}s)  ${s.prompt}`)
+					.join("\n") +
 				`\nmotion: ${motionUrl}${promptNote}`;
 			if (!liveHub?.connected) return text(`${summary}\n\nNo live editor connected — open the studio and it can load this URL.`);
 			try {
@@ -847,7 +924,7 @@ registerTool(
 		if (motion_url) return deliver(motion_url, "Reusing");
 		// segments run the autoregressive sequence generator, which is
 		// incompatible with pose pinning — the bridge requires posePin:false.
-		const body = { prompt: prompts.join(" "), duration: seconds, segments, posePin: false };
+		const body = { prompt: prompts.join(" "), duration: clipSeconds, segments, posePin: false };
 		if (seed !== undefined) body.seed = seed;
 
 		const res = await fetch(`${bridge}/ardy/generate`, {

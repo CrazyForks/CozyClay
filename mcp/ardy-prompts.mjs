@@ -28,6 +28,28 @@
  *                                                    describes the BODY only
  */
 
+/**
+ * Quality policy, mirrored from the studio (App.jsx PROMPT_BLOCK_MAX_FRAMES):
+ * one block never spans more than 4 s. ARDY's trained window is 10 s, but a
+ * long single block drifts — chained 4 s blocks keep each call inside the
+ * model's sweet spot. The studio refuses to generate a longer block, so a tool
+ * that produced one would be authoring something the UI would then reject.
+ */
+export const BLOCK_MAX_SECONDS = 4;
+
+/**
+ * Split a beat that runs longer than the cap into consecutive blocks that do
+ * not. The wording is kept for each piece: continuing the same action is
+ * exactly what the chained-block design is for. Returns whole seconds-ish
+ * spans that sum to the original duration.
+ */
+export function splitLongBeat(seconds, max = BLOCK_MAX_SECONDS) {
+	if (!(seconds > max)) return [seconds];
+	const count = Math.ceil(seconds / max);
+	const even = seconds / count;
+	return Array.from({ length: count }, () => even);
+}
+
 /** Shown in the tool description so a caller writes good phases first time. */
 export const PROMPT_GUIDE = [
 	"ARDY prompt rules (from nv-tlabs/ardy):",
@@ -35,6 +57,8 @@ export const PROMPT_GUIDE = [
 	"  - Subject + single present-tense action + full stop. The prompt becomes ONE embedding",
 	"    (num_text_tokens=1), so two actions in one phase average together instead of playing in order.",
 	"  - Sequence = more phases, never a compound sentence.",
+	`  - A block holds at most ${BLOCK_MAX_SECONDS} s. Longer beats are chained into consecutive blocks,`,
+	"    because a single long block drifts away from its prompt.",
 	"  - Describe the BODY: no emotions, no camera, no scenery, no props the model cannot infer.",
 	"  - WRITE THE AMPLITUDE. A diffusion model regresses toward the mean, so a neutral verb",
 	"    generates a smaller motion than the words suggest. Pick the strong verb and state the",
@@ -122,18 +146,24 @@ export function normalizePhase(raw) {
  */
 export function normalizePhases(phases, max = 8) {
 	const expanded = [];
-	for (const phase of phases) {
+	const sources = [];
+	for (const [index, phase] of phases.entries()) {
 		const pieces = String(phase ?? "")
 			.split(SPLIT_ON)
 			.map(tidy)
 			.filter(Boolean);
-		expanded.push(...(pieces.length ? pieces : [phase]));
+		const parts = pieces.length ? pieces : [phase];
+		expanded.push(...parts);
+		// Which input each output came from, so a caller that attached a duration
+		// to a beat can split that duration across the pieces it became.
+		sources.push(...parts.map(() => index));
 	}
 	const capped = expanded.slice(0, max);
 	const results = capped.map((piece) => normalizePhase(piece));
 	return {
 		texts: results.map((r) => r.text),
 		notes: results.map((r) => r.notes),
+		sources: sources.slice(0, max),
 		expanded: expanded.length > phases.length,
 		dropped: expanded.length - capped.length,
 	};
