@@ -621,11 +621,19 @@ function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMo
 			tools.raycaster.setFromCamera(tools.pointer, camera);
 			const hits = tools.raycaster.intersectObjects(sleeves.children, true);
 			if (!hits.length) return; // not ours — the object gizmo handles it
+			// The ray may land on a visible shaft or cone rather than the pick
+			// sleeve — resolve the axis by walking up to the axis group, or an
+			// arrowhead click silently turns into a Y drag.
+			let axis = null;
+			for (let node = hits[0].object; node && axis == null; node = node.parent) {
+				axis = node.userData?.axis ?? null;
+			}
+			if (axis == null) return;
 			// Every axis starts a ground drag, Y included: characters cannot fly,
 			// but the only visible arrow in a tight frame must still move them.
 			event.preventDefault();
 			event.stopPropagation();
-			beginAxisDrag(event, hits[0].object.userData.axis);
+			beginAxisDrag(event, axis);
 		};
 		window.addEventListener("pointerdown", onDown, true);
 		return () => window.removeEventListener("pointerdown", onDown, true);
@@ -714,7 +722,7 @@ function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMo
 				const active = dragAxis === axis;
 				const shown = active ? "#ffd23d" : color; // the grabbed axis goes bright, Unity-style
 				return (
-				<group key={axis} rotation={rot}>
+				<group key={axis} rotation={rot} userData={{ axis }}>
 					<mesh position={[0, 0.4, 0]}>
 						<cylinderGeometry args={[0.022, 0.022, 0.8, 8]} />
 						<meshBasicMaterial color={shown} toneMapped={false} />
@@ -724,14 +732,17 @@ function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMo
 						<meshBasicMaterial color={shown} toneMapped={false} />
 					</mesh>
 					{/* the pick target is a fat invisible sleeve: the thin visual
-					    cylinders raycast terribly at this scale */}
+					    cylinders raycast terribly at this scale. It must reach
+					    PAST the arrowhead tip (0.98) — the tip is exactly where
+					    people aim, and a sleeve that stops short turns the most
+					    natural click into a miss. */}
 					<mesh
-						position={[0, 0.45, 0]}
+						position={[0, 0.5, 0]}
 						userData={{ axis }}
 						onPointerOver={() => (gl.domElement.style.cursor = axis === "y" ? "" : "grab")}
 						onPointerOut={() => (gl.domElement.style.cursor = "")}
 					>
-						<cylinderGeometry args={[0.14, 0.14, 1.0, 8]} />
+						<cylinderGeometry args={[0.24, 0.24, 1.3, 8]} />
 						<meshBasicMaterial transparent opacity={0} depthWrite={false} />
 					</mesh>
 				</group>
