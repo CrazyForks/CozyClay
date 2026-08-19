@@ -484,6 +484,18 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// the fly camera cannot also react — navigation lives on the right and
 			// middle buttons now.
 			if (!rayFrom(event)) return;
+			// The character gizmo's press handler shares this window-capture
+			// press (stopPropagation cannot fence between listeners on the same
+			// node). When its arrows are under the pointer the press is theirs —
+			// claiming it here read as "empty space" and cleared the very
+			// selection the arrows belong to.
+			tools.raycaster.layers.enableAll();
+			const front = tools.raycaster.intersectObjects(scene.children, true).find((entry) => entry.object.isMesh);
+			if (front) {
+				for (let node = front.object; node; node = node.parent) {
+					if (node.userData?.characterGizmo) return;
+				}
+			}
 			tools.raycaster.layers.set(0);
 			const picked = pickObject();
 			event.preventDefault();

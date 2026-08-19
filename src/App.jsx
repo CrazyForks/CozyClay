@@ -709,7 +709,10 @@ function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMo
 		window.addEventListener("pointercancel", up);
 	};
 	return (
-		<group position={position} scale={0.55}>
+		// The marker is how the OBJECT gizmo's capture handler recognizes these
+		// arrows and yields: both press handlers live on window, where
+		// stopPropagation cannot fence one off from the other.
+		<group position={position} scale={0.55} userData={{ characterGizmo: true }}>
 			{/* ground ring at the feet */}
 			<mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 0]} raycast={() => null}>
 				<ringGeometry args={[0.5, 0.56, 48]} />
