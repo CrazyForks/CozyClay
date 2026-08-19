@@ -45,6 +45,7 @@ import { SetProps } from "./props.jsx";
 import {
 	CUTOUT_DEFAULT_HEIGHT,
 	CUTOUT_KIND,
+	CUTOUT_MAX_HEIGHT,
 	DEFAULT_SCENE_OBJECTS,
 	OBJECT_COLORS,
 	createCutoutObject,
@@ -6464,8 +6465,9 @@ function resizePromptClip(id, edge, rawFrame) {
 										<Field label={ko("Card height (m)", "판 높이 (m)")}>
 											<input
 												type="number"
+												data-field="cutout-height"
 												min="0.05"
-												max="6"
+												max={CUTOUT_MAX_HEIGHT}
 												step="0.05"
 												value={selectedSceneObject.height ?? CUTOUT_DEFAULT_HEIGHT}
 												onChange={(event) => changeSceneObject(selectedSceneObject.id, { height: Number(event.target.value) })}

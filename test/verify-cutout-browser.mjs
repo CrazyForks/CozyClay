@@ -159,7 +159,7 @@ try {
 	/* -------------------------------------------------------- the record --- */
 
 	const inspector = await evaluate(`(() => {
-		const height = document.querySelector('.inspector-scroll input[type=number][max="6"]');
+		const height = document.querySelector('.inspector-scroll input[data-field="cutout-height"]');
 		const hint = [...document.querySelectorAll('.inspector-hint')].find((node) => /wide, from the picture|가로 .* m —/.test(node.textContent));
 		return { height: height ? Number(height.value) : null, hint: hint?.textContent ?? null };
 	})()`);
@@ -211,7 +211,7 @@ try {
 	/* ---------------------------------------------------------- resizing --- */
 
 	await evaluate(`(() => {
-		const input = document.querySelector('.inspector-scroll input[type=number][max="6"]');
+		const input = document.querySelector('.inspector-scroll input[data-field="cutout-height"]');
 		const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
 		setter.call(input, '3.6');
 		input.dispatchEvent(new Event('change', { bubbles: true }));
