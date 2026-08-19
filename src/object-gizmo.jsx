@@ -120,7 +120,7 @@ function handleKey(entry) {
 // dropped pin will live.
 const GROUND = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, paneRef, camRef, shotAspect = SHOT_ASPECT, onChange, onSelect, onGroundClick, onDragStart, onDragEnd }) {
+export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, pickOnly = false, paneRef, camRef, shotAspect = SHOT_ASPECT, onChange, onSelect, onGroundClick, onDragStart, onDragEnd }) {
 	const { gl, scene } = useThree();
 	const rootRef = useRef(null);
 	const handlesRef = useRef(new Map()); // axis -> { mesh (pick proxy), axis, dir }
@@ -479,23 +479,15 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 				event.stopPropagation();
 				return;
 			}
+			// A pick-only instance (the character's ride on this gizmo) owns
+			// nothing beyond its handles: selection, ground clicks and the
+			// object-hover cursor belong to the primary instance.
+			if (pickOnly) return;
 			// Selection. A left press on a body selects it and does nothing else;
 			// a press on empty space clears the selection. Both claim the press so
 			// the fly camera cannot also react — navigation lives on the right and
 			// middle buttons now.
 			if (!rayFrom(event)) return;
-			// The character gizmo's press handler shares this window-capture
-			// press (stopPropagation cannot fence between listeners on the same
-			// node). When its arrows are under the pointer the press is theirs —
-			// claiming it here read as "empty space" and cleared the very
-			// selection the arrows belong to.
-			tools.raycaster.layers.enableAll();
-			const front = tools.raycaster.intersectObjects(scene.children, true).find((entry) => entry.object.isMesh);
-			if (front) {
-				for (let node = front.object; node; node = node.parent) {
-					if (node.userData?.characterGizmo) return;
-				}
-			}
 			tools.raycaster.layers.set(0);
 			const picked = pickObject();
 			event.preventDefault();
@@ -525,17 +517,19 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 				gl.domElement.style.cursor = "grab";
 				return;
 			}
+			if (pickOnly) return;
 			tools.raycaster.layers.set(0);
 			gl.domElement.style.cursor = pickObject() ? "pointer" : "";
 		};
 
-		// QA hooks: the real pickers, addressable from a headless check.
-		window.__gizmoPick = (x, y) => {
+		// QA hooks: the real pickers, addressable from a headless check. The
+		// pick-only instance must not clobber the primary's hooks.
+		if (!pickOnly) window.__gizmoPick = (x, y) => {
 			const grabbed = pickHandle({ clientX: x, clientY: y, button: 0 });
 			if (!grabbed) return null;
 			return grabbed.axis ?? (grabbed.plane ? `plane:${grabbed.plane.id}` : "centre");
 		};
-		window.__objectPick = (x, y) => {
+		if (!pickOnly) window.__objectPick = (x, y) => {
 			if (!rayFrom({ clientX: x, clientY: y })) return null;
 			tools.raycaster.layers.set(0);
 			return pickObject()?.id ?? null;
@@ -550,7 +544,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// commits as one entry rather than silently rolling back (§6.3)
 			endDrag(true);
 		};
-	}, [enabled, gl, scene, camRef, paneRef, tools]);
+	}, [enabled, pickOnly, gl, scene, camRef, paneRef, tools]);
 
 	// Constant on-screen size: the gizmo is UI, not set dressing.
 	useFrame(() => {
@@ -583,7 +577,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 	// picker builds its ray from. Headless checks drive real pointer events
 	// with it (harmless in normal use).
 	if (typeof window !== "undefined") {
-		window.__gizmoHandles = () => {
+		if (!pickOnly) window.__gizmoHandles = () => {
 			const camera = camRef?.current;
 			const pane = paneRef?.current;
 			if (!camera || !pane) return [];

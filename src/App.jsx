@@ -576,230 +576,6 @@ const Character = memo(function Character({ url, position, rot, tint, pose, scal
 /** Selection marker for the picked cast member: a Unity-style XYZ tripod
  * plus a ground ring at the feet. X/Z arrows also drag the character on the
  * floor (Y is display-only — characters stand on the deck). */
-const GIZMO_AXIS = [
-	{ axis: "x", dir: [1, 0, 0], color: "#ff5f57", rot: [0, 0, -Math.PI / 2] },
-	{ axis: "y", dir: [0, 1, 0], color: "#4dd274", rot: [0, 0, 0] },
-	{ axis: "z", dir: [0, 0, 1], color: "#4d8dff", rot: [Math.PI / 2, 0, 0] },
-];
-
-function CharacterGizmo({ position, charPosition, shotAspect = SHOT_ASPECT, onMoveStart, onMove }) {
-	const dragRef = useRef(null);
-	const [dragAxis, setDragAxis] = useState(null);
-	const { camera, gl } = useThree();
-	const tools = useMemo(() => ({
-		raycaster: new THREE.Raycaster(),
-		plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
-		pointer: new THREE.Vector2(),
-		hit: new THREE.Vector3(),
-	}), []);
-	const toFloor = (event) => {
-		const bounds = gl.domElement.getBoundingClientRect();
-		const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
-		tools.pointer.set(
-			((event.clientX - rect.x) / rect.w) * 2 - 1,
-			-((event.clientY - rect.y) / rect.h) * 2 + 1,
-		);
-		tools.raycaster.setFromCamera(tools.pointer, camera);
-		return tools.raycaster.ray.intersectPlane(tools.plane, tools.hit) ? tools.hit : null;
-	};
-	const sleevesRef = useRef(null);
-	// Window-capture, just like the object gizmo's own pointerdown: it eats
-	// clicks first, so the sleeve test must run at the same priority and only
-	// claim the press when an X/Z arrow is actually hit.
-	useEffect(() => {
-		const dom = gl.domElement;
-		const onDown = (event) => {
-			if (event.button !== 0 || event.target !== dom) return;
-			const sleeves = sleevesRef.current;
-			if (!sleeves) return;
-			const bounds = dom.getBoundingClientRect();
-			const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
-			tools.pointer.set(
-				((event.clientX - rect.x) / rect.w) * 2 - 1,
-				-((event.clientY - rect.y) / rect.h) * 2 + 1,
-			);
-			tools.raycaster.setFromCamera(tools.pointer, camera);
-			const hits = tools.raycaster.intersectObjects(sleeves.children, true);
-			if (!hits.length) return; // not ours — the object gizmo handles it
-			// Resolve by INTENT with a distance guard. An arrow near the press
-			// point outranks the pad (arrows are a precise ask, the pad is the
-			// fallback surface) — but only when its hit is genuinely adjacent:
-			// a ray through the pad also exits through a sleeve far BEHIND it,
-			// and letting that distant arrow win turned pad presses into axis
-			// drags. Any visible shaft or cone resolves through its axis group.
-			let padDist = Infinity;
-			let arrowAxis = null;
-			let arrowDist = Infinity;
-			for (const hit of hits) {
-				let found = null;
-				for (let node = hit.object; node && found == null; node = node.parent) {
-					found = node.userData?.axis ?? null;
-				}
-				if (!found) continue;
-				if (found === "xz") padDist = Math.min(padDist, hit.distance);
-				else if (hit.distance < arrowDist) { arrowDist = hit.distance; arrowAxis = found; }
-			}
-			const axis = arrowAxis && arrowDist <= padDist + 0.12
-				? arrowAxis
-				: padDist < Infinity ? "xz" : null;
-			if (axis == null) return;
-			// Every axis starts a ground drag, Y included: characters cannot fly,
-			// but the only visible arrow in a tight frame must still move them.
-			event.preventDefault();
-			event.stopPropagation();
-			beginAxisDrag(event, axis);
-		};
-		window.addEventListener("pointerdown", onDown, true);
-		return () => window.removeEventListener("pointerdown", onDown, true);
-	}, [gl, camera, shotAspect]);
-
-	// A vertical plane through the character, facing the camera: Y drags
-	// project onto this to read a world height.
-	const toHeightPlane = (event) => {
-		const bounds = gl.domElement.getBoundingClientRect();
-		const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
-		tools.pointer.set(
-			((event.clientX - rect.x) / rect.w) * 2 - 1,
-			-((event.clientY - rect.y) / rect.h) * 2 + 1,
-		);
-		tools.raycaster.setFromCamera(tools.pointer, camera);
-		const facing = new THREE.Vector3();
-		camera.getWorldDirection(facing);
-		facing.y = 0;
-		if (facing.lengthSq() < 1e-6) return null;
-		facing.normalize();
-		const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
-			facing,
-			new THREE.Vector3(charPosition[0], 0, charPosition[2]),
-		);
-		return tools.raycaster.ray.intersectPlane(plane, tools.hit) ? tools.hit : null;
-	};
-
-	const beginAxisDrag = (event, axis) => {
-		const start = axis === "y" ? null : toFloor(event);
-		if (axis !== "y" && !start) return;
-		setDragAxis(axis ?? null);
-		onMoveStart?.();
-		// Y maps screen-vertical drag to world height at the character's depth:
-		// a ray/vertical-plane intersection runs away at shallow angles, while
-		// depth-scaled pixels are linear and predictable.
-		const bounds = gl.domElement.getBoundingClientRect();
-		const dist = camera.position.distanceTo(new THREE.Vector3(charPosition[0], charPosition[1] ?? 0, charPosition[2]));
-		const fovRad = ((camera.fov ?? 45) * Math.PI) / 180;
-		const worldPerPixel = (2 * dist * Math.tan(fovRad / 2)) / bounds.height;
-		// The drag is RELATIVE and AXIS-CONSTRAINED: X moves only along X, Z
-		// only along Z, and Y raises/lowers the character off the deck.
-		dragRef.current = {
-			axis: axis ?? "y",
-			originX: charPosition[0],
-			originY: charPosition[1] ?? 0,
-			originZ: charPosition[2],
-			grabX: axis === "y" ? 0 : start.x - charPosition[0],
-			grabZ: axis === "y" ? 0 : start.z - charPosition[2],
-			clientY: event.clientY,
-			worldPerPixel,
-		};
-		const move = (e) => {
-			const drag = dragRef.current;
-			if (!drag) return;
-			if (drag.axis === "y") {
-				onMove?.({ y: Math.max(0, drag.originY - (e.clientY - drag.clientY) * drag.worldPerPixel) });
-				return;
-			}
-			const p = toFloor(e);
-			if (!p) return;
-			if (drag.axis === "x") onMove?.({ x: p.x - drag.grabX, z: drag.originZ });
-			else if (drag.axis === "z") onMove?.({ x: drag.originX, z: p.z - drag.grabZ });
-			else onMove?.({ x: p.x - drag.grabX, z: p.z - drag.grabZ }); // xz pad: free slide on the deck
-		};
-		const up = () => {
-			dragRef.current = null;
-			setDragAxis(null);
-			window.removeEventListener("pointermove", move);
-			window.removeEventListener("pointerup", up);
-			window.removeEventListener("pointercancel", up);
-		};
-		window.addEventListener("pointermove", move);
-		window.addEventListener("pointerup", up);
-		window.addEventListener("pointercancel", up);
-	};
-	return (
-		// The marker is how the OBJECT gizmo's capture handler recognizes these
-		// arrows and yields: both press handlers live on window, where
-		// stopPropagation cannot fence one off from the other.
-		<group position={position} scale={0.55} userData={{ characterGizmo: true }}>
-			{/* ground ring at the feet */}
-			<mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 0]} raycast={() => null}>
-				<ringGeometry args={[0.5, 0.56, 48]} />
-				<meshBasicMaterial color="#ffffff" transparent opacity={0.8} depthWrite={false} />
-			</mesh>
-			{/* the tripod sits at the feet — a floating pivot reads as unmoored
-			    from the character */}
-			<group ref={sleevesRef}>
-			{/* the XZ plane pad between the two ground arrows — grab it to slide
-			    freely on the deck, both axes at once (Unity's quad-between-axes).
-			    It lives just off the origin so the axis sleeves keep their own
-			    presses near the center. */}
-			<mesh position={[0.34, 0.02, 0.34]} rotation={[-Math.PI / 2, 0, 0]} raycast={() => null}>
-				<planeGeometry args={[0.3, 0.3]} />
-				<meshBasicMaterial
-					color={dragAxis === "xz" ? "#ffd23d" : "#ffffff"}
-					transparent
-					opacity={dragAxis === "xz" ? 0.6 : 0.3}
-					side={THREE.DoubleSide}
-					depthWrite={false}
-					toneMapped={false}
-				/>
-			</mesh>
-			{/* the pad's pick target is an invisible BOX standing on the quad:
-			    the editor camera sits near eye height, so a flat quad is a
-			    few-pixel sliver on screen and a ray only ever grazes it —
-			    volume is what makes it pressable from a shallow angle. */}
-			<mesh
-				position={[0.34, 0.08, 0.34]}
-				userData={{ axis: "xz" }}
-				onPointerOver={() => (gl.domElement.style.cursor = "grab")}
-				onPointerOut={() => (gl.domElement.style.cursor = "")}
-			>
-				<boxGeometry args={[0.3, 0.16, 0.3]} />
-				<meshBasicMaterial transparent opacity={0} depthWrite={false} />
-			</mesh>
-			{GIZMO_AXIS.map(({ axis, color, rot }) => {
-				const active = dragAxis === axis;
-				const shown = active ? "#ffd23d" : color; // the grabbed axis goes bright, Unity-style
-				return (
-				<group key={axis} rotation={rot} userData={{ axis }}>
-					<mesh position={[0, 0.4, 0]}>
-						<cylinderGeometry args={[0.022, 0.022, 0.8, 8]} />
-						<meshBasicMaterial color={shown} toneMapped={false} />
-					</mesh>
-					<mesh position={[0, 0.88, 0]}>
-						<coneGeometry args={[0.065, 0.2, 12]} />
-						<meshBasicMaterial color={shown} toneMapped={false} />
-					</mesh>
-					{/* the pick target is a fat invisible sleeve: the thin visual
-					    cylinders raycast terribly at this scale. It must reach
-					    PAST the arrowhead tip (0.98) — the tip is exactly where
-					    people aim, and a sleeve that stops short turns the most
-					    natural click into a miss. Radius is a balance: 0.24
-					    swallowed body-select clicks on the shins, 0.14 made the
-					    arrows feel dead. */}
-					<mesh
-						position={[0, 0.5, 0]}
-						userData={{ axis }}
-						onPointerOver={() => (gl.domElement.style.cursor = axis === "y" ? "" : "grab")}
-						onPointerOut={() => (gl.domElement.style.cursor = "")}
-					>
-						<cylinderGeometry args={[0.17, 0.17, 1.25, 8]} />
-						<meshBasicMaterial transparent opacity={0} depthWrite={false} />
-					</mesh>
-				</group>
-				);
-			})}
-			</group>
-		</group>
-	);
-}
 function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probeX, probeZ, camRef, look, onMetrics }) {
 	useEffect(() => {
 		const cam = camRef.current;
@@ -2627,6 +2403,17 @@ globalThis.playMode = centerTab === "play";
 		const clip = motion;
 		return { position: clip ? [clip.anchorX, entry.y ?? 0, clip.anchorZ] : [entry.x, entry.y ?? 0, entry.z] };
 	}, [characters, activeChar.id, motion, selectedHierarchyId]);
+	// The cast rides the SAME gizmo as scene objects — one movement grammar
+	// for everything on stage. The proxy hands ObjectGizmo the object shape
+	// it expects; `height` puts the pivot at the hips like a prop's centre.
+	const characterGizmoObject = useMemo(() => gizmoView && ({
+		id: "__character__",
+		x: gizmoView.position[0],
+		y: gizmoView.position[1],
+		z: gizmoView.position[2],
+		height: 1.15,
+		footprint: { width: 0.6, depth: 0.6 },
+	}), [gizmoView]);
 
 	/* --------------------- per-character layer buffers ---------------------
 	 * waypoints / promptClips / motion above are the EDITING BUFFER of the
@@ -5143,16 +4930,22 @@ function changeDuration(value) {
 							{/* Selection marker: XYZ tripod + ring on the picked cast
 							    member; the X/Z arrows drag it across the deck. */}
 							{gizmoView && !playMode && !posing && !ikMode && (
-								<CharacterGizmo
-									position={gizmoView.position}
-									charPosition={gizmoView.position}
+								<ObjectGizmo
+									pickOnly
+									object={characterGizmoObject}
+									objects={characterGizmoObject ? [characterGizmoObject] : []}
+									mode="move"
+									snap={snapEnabled}
+									enabled={!planIsMain && !posing && !ikMode && !playMode && !!characterGizmoObject}
+									paneRef={mainPaneRef}
+									camRef={shotCamRef}
 									shotAspect={shotOutput.aspect}
-									onMoveStart={recordCharacterUndo}
-									onMove={({ x, y, z }) => moveCharacter(activeChar.id, {
-										...(x === undefined ? {} : { x: THREE.MathUtils.clamp(x, -4, 4) }),
-										...(y === undefined ? {} : { y: THREE.MathUtils.clamp(y, 0, 4) }),
-										...(z === undefined ? {} : { z: THREE.MathUtils.clamp(z, -4, 4) }),
+									onChange={(id, patch) => moveCharacter(activeChar.id, {
+										...(patch.x === undefined ? {} : { x: THREE.MathUtils.clamp(patch.x, -4, 4) }),
+										...(patch.y === undefined ? {} : { y: THREE.MathUtils.clamp(patch.y, 0, 4) }),
+										...(patch.z === undefined ? {} : { z: THREE.MathUtils.clamp(patch.z, -4, 4) }),
 									})}
+									onDragStart={recordCharacterUndo}
 								/>
 							)}
 
