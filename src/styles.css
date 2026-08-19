@@ -7447,15 +7447,14 @@ input[type=range] {
 
 .matte-canvas {
 	display: block;
-	/* height follows the bitmap's own aspect; max-height then letterboxes a
-	   very tall picture, which the editor's pointer mapping accounts for. */
+	/* A stage, not a framed picture: the canvas fills this box and paints its
+	   own ground, so the picture sits ON it and nothing outside the canvas can
+	   crop the picture once it is zoomed past fit. */
 	width: 100%;
-	height: auto;
-	max-height: 260px;
-	object-fit: contain;
+	height: 240px;
+	background: #141819;
 	border: 1px solid var(--line);
 	border-radius: 3px;
-	background: #14181a;
 	touch-action: none;
 	cursor: crosshair;
 }

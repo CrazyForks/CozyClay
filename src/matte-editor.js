@@ -38,6 +38,9 @@ import { backgroundMask, paintMask } from "./matte.js";
  * is this violet, so every purple pixel is a decision, not the picture. */
 export const MATTE_PURPLE = [139, 92, 246];
 const OVERLAY_ALPHA = 0.62;
+/** The ground the picture sits on — the studio's own dark, so the stage reads
+ * as part of the panel rather than as a hole in it. */
+const STAGE_GROUND = "#141819";
 /** Interaction runs on a preview this wide at most — the paint underneath it
  * stays at the picture's own resolution. */
 export const EDIT_PREVIEW_MAX = 512;
@@ -134,19 +137,64 @@ export function createMatteEditor(canvas, {
 	 * says a pixel goes. The mask is sampled from full resolution rather than
 	 * kept in two places, so what is displayed can never drift from what will
 	 * be applied. */
-	/** The visible rectangle, in preview pixels. Clamped so the picture always
-	 * fills the canvas: pan cannot walk off the edge of the photograph. */
-	function visible() {
-		if (!state.preview) return { x: 0, y: 0, width: 1, height: 1 };
-		const { width, height } = state.preview;
-		const zoom = clamp(state.view.zoom, MIN_ZOOM, MAX_ZOOM);
-		const w = width / zoom;
-		const h = height / zoom;
+	/**
+	 * The canvas is a STAGE, and the picture sits on it.
+	 *
+	 * The obvious way to fit a picture into a panel is to let the element
+	 * letterbox it — but then the bars live outside the canvas and stay there
+	 * when you zoom, cropping the very edge you zoomed in to see. So the canvas
+	 * fills its box, the ground is painted inside it, and the picture is drawn
+	 * on top: at fit it sits in the middle with ground either side, and past fit
+	 * it simply covers the stage. Nothing occludes it at any zoom.
+	 */
+	function stageSize() {
+		const rect = canvas.getBoundingClientRect();
+		// The stage is measured in DEVICE pixels: on a retina panel a canvas
+		// backed at CSS size is visibly soft, and softness in a matte editor is
+		// a lie about where the edge is.
+		const dpr = Math.min(3, Math.max(1, globalThis.devicePixelRatio || 1));
+		const width = Math.max(1, Math.round((rect.width || canvas.width || 1) * dpr));
+		const height = Math.max(1, Math.round((rect.height || canvas.height || 1) * dpr));
+		return { width, height, left: rect.left, top: rect.top, dpr };
+	}
+
+	/** Stage pixels per preview pixel: the fit scale, times the zoom. */
+	function scaleOf(stage) {
+		if (!state.preview) return 1;
+		const fit = Math.min(stage.width / state.preview.width, stage.height / state.preview.height);
+		return fit * clamp(state.view.zoom, MIN_ZOOM, MAX_ZOOM);
+	}
+
+	/**
+	 * Where the picture lands on the stage, and what it is centred on.
+	 *
+	 * The centre is clamped per axis: while the picture covers the stage on that
+	 * axis it cannot be dragged far enough to open a gap, and while it does not
+	 * (the letterboxed axis at fit) it stays centred, because sliding a picture
+	 * around inside its own empty margin is not panning, it is drift.
+	 */
+	function placement() {
+		const stage = stageSize();
+		const scale = scaleOf(stage);
+		const width = state.preview ? state.preview.width * scale : 0;
+		const height = state.preview ? state.preview.height * scale : 0;
+		const halfW = stage.width / 2 / scale;
+		const halfH = stage.height / 2 / scale;
+		const center = { x: state.view.x, y: state.view.y };
+		center.x = width >= stage.width
+			? clamp(center.x, halfW, state.preview.width - halfW)
+			: state.preview.width / 2;
+		center.y = height >= stage.height
+			? clamp(center.y, halfH, state.preview.height - halfH)
+			: state.preview.height / 2;
 		return {
-			x: clamp(state.view.x, 0, Math.max(0, width - w)),
-			y: clamp(state.view.y, 0, Math.max(0, height - h)),
-			width: w,
-			height: h,
+			stage,
+			scale,
+			center,
+			width,
+			height,
+			left: stage.width / 2 - center.x * scale,
+			top: stage.height / 2 - center.y * scale,
 		};
 	}
 
@@ -178,83 +226,59 @@ export function createMatteEditor(canvas, {
 				out[index + 3] = 255;
 			}
 		}
-		canvas.width = width;
-		canvas.height = height;
-		// The whole picture is composited once, then the visible slice of it is
-		// blown up onto the canvas. Compositing only the visible slice would be
-		// cheaper and wrong: the mask is sampled per preview pixel, and cropping
-		// first would resample it twice.
 		if (!state.buffer || state.buffer.width !== width || state.buffer.height !== height) {
 			state.buffer = makeCanvas(width, height);
 			state.buffer.width = width;
 			state.buffer.height = height;
 		}
+		// The whole picture is composited once, then placed on the stage.
+		// Compositing only the visible part would be cheaper and wrong: the mask
+		// is sampled per preview pixel, and cropping first would resample twice.
 		state.buffer.getContext("2d").putImageData(new ImageData(out, width, height), 0, 0);
-		const box = visible();
+
+		const stage = stageSize();
+		canvas.width = stage.width;
+		canvas.height = stage.height;
+		const place = placement();
+		state.view.x = place.center.x;
+		state.view.y = place.center.y;
+		view.fillStyle = STAGE_GROUND;
+		view.fillRect(0, 0, stage.width, stage.height);
 		// Nearest-neighbour past 2x: a matte edge is a decision about which
 		// pixels go, and smoothing it into a gradient is a lie about where it is.
 		view.imageSmoothingEnabled = state.view.zoom < 2;
-		view.drawImage(state.buffer, box.x, box.y, box.width, box.height, 0, 0, width, height);
+		view.drawImage(state.buffer, 0, 0, width, height, place.left, place.top, place.width, place.height);
 		report();
 	}
 
 	/* --------------------------------------------------------- pointer --- */
 
-	/**
-	 * The displayed picture's box inside the canvas element.
-	 *
-	 * The canvas is laid out to fit its panel and CONTAINS its bitmap, so a
-	 * picture whose shape differs from the box — a tall phone photo in a wide
-	 * sidebar — is letterboxed: the element is one rectangle and the pixels are
-	 * a smaller one inside it. Reading pointer positions off the element's own
-	 * rect works only while those two happen to match, which is exactly the bug
-	 * a portrait image exposes. Every mapping below goes through this instead.
-	 */
-	function fitted() {
-		const rect = canvas.getBoundingClientRect();
-		const scale = Math.min(rect.width / (canvas.width || 1), rect.height / (canvas.height || 1)) || 1;
-		const width = canvas.width * scale;
-		const height = canvas.height * scale;
-		return {
-			left: rect.left + (rect.width - width) / 2,
-			top: rect.top + (rect.height - height) / 2,
-			width,
-			height,
-			/** screen pixels → full-resolution picture pixels */
-			scale: ratio() / scale,
-		};
-	}
-
-	/** Where a pointer is, in FULL-resolution pixels: through the letterbox,
-	 * then through the zoom, then through the preview, into the picture. */
+	/** Where a pointer is, in FULL-resolution picture pixels: stage → picture,
+	 * through the same placement the paint is drawn with. */
 	function at(event) {
-		const fit = fitted();
-		const box = visible();
-		// 0..1 across the drawn canvas, then across the visible slice of the
-		// preview, then up to full resolution.
-		const u = fit.width ? (event.clientX - fit.left) / fit.width : 0;
-		const v = fit.height ? (event.clientY - fit.top) / fit.height : 0;
-		return { x: (box.x + u * box.width) * ratio(), y: (box.y + v * box.height) * ratio() };
+		const place = placement();
+		const dpr = place.stage.dpr;
+		const x = ((event.clientX - place.stage.left) * dpr - place.left) / place.scale;
+		const y = ((event.clientY - place.stage.top) * dpr - place.top) / place.scale;
+		return { x: x * ratio(), y: y * ratio() };
 	}
 
-	/** Is the pointer on the picture at all, rather than on a letterbox bar? */
+	/** Is the pointer on the PICTURE, rather than on the ground beside it? A
+	 * stroke that starts on the ground is not a stroke about the photograph. */
 	function inside(event) {
-		const box = fitted();
-		return (
-			event.clientX >= box.left &&
-			event.clientY >= box.top &&
-			event.clientX <= box.left + box.width &&
-			event.clientY <= box.top + box.height
-		);
+		const place = placement();
+		const dpr = place.stage.dpr;
+		const x = (event.clientX - place.stage.left) * dpr - place.left;
+		const y = (event.clientY - place.stage.top) * dpr - place.top;
+		return x >= 0 && y >= 0 && x <= place.width && y <= place.height;
 	}
 
-	/** The brush is set in SCREEN pixels, so it shrinks in picture pixels as
-	 * the picture is magnified — which is the point of zooming in to work on an
-	 * edge: the same wrist movement covers less of the photograph. */
+	/** The brush is set in SCREEN pixels, so it shrinks in picture pixels as the
+	 * picture is magnified — which is what makes zooming in the way to work an
+	 * edge: the same wrist movement covers less photograph. */
 	function radius() {
-		const fit = fitted();
-		const perScreenPixel = fit.width ? (visible().width / fit.width) * ratio() : ratio();
-		return Math.max(1, (state.brush / 2) * perScreenPixel);
+		const place = placement();
+		return Math.max(1, (((state.brush * place.stage.dpr) / 2) / place.scale) * ratio());
 	}
 
 	function stroke(from, to) {
@@ -320,13 +344,12 @@ export function createMatteEditor(canvas, {
 	};
 	const onMove = (event) => {
 		if (state.panning) {
-			const fit = fitted();
-			const box = visible();
-			// Screen pixels to preview pixels, so the picture tracks the cursor
+			const place = placement();
+			// Stage pixels to preview pixels, so the picture tracks the cursor
 			// exactly rather than sliding faster or slower than the hand.
-			const perScreenPixel = fit.width ? box.width / fit.width : 1;
-			state.view.x = box.x - (event.clientX - state.panning.x) * perScreenPixel;
-			state.view.y = box.y - (event.clientY - state.panning.y) * perScreenPixel;
+			const dpr = place.stage.dpr;
+			state.view.x = place.center.x - ((event.clientX - state.panning.x) * dpr) / place.scale;
+			state.view.y = place.center.y - ((event.clientY - state.panning.y) * dpr) / place.scale;
 			state.panning = { x: event.clientX, y: event.clientY };
 			repaint();
 			return;
@@ -354,19 +377,18 @@ export function createMatteEditor(canvas, {
 	 * were looking at. */
 	function zoomAt(clientX, clientY, factor) {
 		if (!state.preview) return;
-		const fit = fitted();
-		const box = visible();
-		const u = fit.width ? clamp((clientX - fit.left) / fit.width, 0, 1) : 0.5;
-		const v = fit.height ? clamp((clientY - fit.top) / fit.height, 0, 1) : 0.5;
-		const anchorX = box.x + u * box.width;
-		const anchorY = box.y + v * box.height;
-		const zoom = clamp(state.view.zoom * factor, MIN_ZOOM, MAX_ZOOM);
-		state.view.zoom = zoom;
-		state.view.x = anchorX - u * (state.preview.width / zoom);
-		state.view.y = anchorY - v * (state.preview.height / zoom);
-		const clamped = visible();
-		state.view.x = clamped.x;
-		state.view.y = clamped.y;
+		const place = placement();
+		// The picture point under the cursor, before and after — it has to stay
+		// under the cursor, or zooming loses the thing you were looking at.
+		const dpr = place.stage.dpr;
+		const anchorX = ((clientX - place.stage.left) * dpr - place.left) / place.scale;
+		const anchorY = ((clientY - place.stage.top) * dpr - place.top) / place.scale;
+		state.view.zoom = clamp(state.view.zoom * factor, MIN_ZOOM, MAX_ZOOM);
+		const next = placement();
+		const offsetX = (clientX - next.stage.left) * next.stage.dpr - next.stage.width / 2;
+		const offsetY = (clientY - next.stage.top) * next.stage.dpr - next.stage.height / 2;
+		state.view.x = anchorX - offsetX / next.scale;
+		state.view.y = anchorY - offsetY / next.scale;
 		repaint();
 	}
 
@@ -417,7 +439,7 @@ export function createMatteEditor(canvas, {
 					? { data: Uint8ClampedArray.from(state.full.data), width: state.full.width, height: state.full.height }
 					: read(Math.max(1, Math.round(bitmap.width * scale)), Math.max(1, Math.round(bitmap.height * scale)));
 				state.paint = new Uint8Array(state.full.width * state.full.height);
-				state.view = { zoom: 1, x: 0, y: 0 };
+				state.view = { zoom: 1, x: state.preview.width / 2, y: state.preview.height / 2 };
 				state.buffer = null;
 				state.history = [];
 				state.at = -1;
@@ -462,12 +484,13 @@ export function createMatteEditor(canvas, {
 
 		/** Zoom about the middle of the canvas — what the +/− buttons do. */
 		zoomBy(factor) {
-			const fit = fitted();
-			zoomAt(fit.left + fit.width / 2, fit.top + fit.height / 2, factor);
+			const stage = stageSize();
+			// The centre of the stage, back in client coordinates.
+			zoomAt(stage.left + stage.width / 2 / stage.dpr, stage.top + stage.height / 2 / stage.dpr, factor);
 		},
 		/** The whole picture again. */
 		fit() {
-			state.view = { zoom: 1, x: 0, y: 0 };
+			state.view = { zoom: 1, x: (state.preview?.width ?? 0) / 2, y: (state.preview?.height ?? 0) / 2 };
 			repaint();
 		},
 		zoom: () => state.view.zoom,
