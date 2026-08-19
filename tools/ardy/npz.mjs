@@ -269,8 +269,23 @@ function flattenToF32(value, dims, name) {
 }
 
 
-/** Convert decoded ARDY motion arrays into writer members. */
-export function motionArraysToNpzMembers({ frames, fps, rotMats, rootPos, posedJoints }) {
+/**
+ * Convert decoded ARDY motion arrays into writer members.
+ *
+ * `personScale` (the filmed performer's leg length as a fraction of the
+ * canonical body, from bvhToCskel27Motion) is written as a `person_scale`
+ * scalar when the source estimated one. It has to live IN the archive: the
+ * conversion already divided the root translation by it, so the trajectory is
+ * only metrically right once the character is scaled by the same number. A
+ * take whose stature travelled separately from its frames replays a filmed
+ * stride at canonical size and skates the feet.
+ *
+ * The member is APPENDED and only when present: an ARDY-generated take has no
+ * filmed performer, so its archive stays byte-identical to before, and a
+ * reader that ignores the extra member (numpy, dump-npz.py, the generators)
+ * sees the original four unchanged and in the original order.
+ */
+export function motionArraysToNpzMembers({ frames, fps, rotMats, rootPos, posedJoints, personScale }) {
 	if (!Number.isInteger(frames) || frames < 1) throw new Error("motionArraysToNpzMembers: frames must be positive");
 	if (!Number.isInteger(fps) || fps < 1) throw new Error("motionArraysToNpzMembers: fps must be positive");
 	const requireLength = (array, length, label) => {
@@ -281,12 +296,27 @@ export function motionArraysToNpzMembers({ frames, fps, rotMats, rootPos, posedJ
 	requireLength(rotMats, frames * 27 * 9, "rotMats");
 	requireLength(rootPos, frames * 3, "rootPos");
 	requireLength(posedJoints, frames * 27 * 3, "posedJoints");
-	return {
+	const members = {
 		local_rot_mats: { data: rotMats, shape: [frames, 27, 3, 3] },
 		root_positions: { data: rootPos, shape: [frames, 3] },
 		posed_joints: { data: posedJoints, shape: [frames, 27, 3] },
 		fps: { data: Int32Array.of(fps), shape: [] },
 	};
+	if (personScale !== undefined && personScale !== null) {
+		if (!Number.isFinite(personScale) || personScale <= 0) {
+			throw new Error(
+				`motionArraysToNpzMembers: personScale must be a positive finite number, got ${personScale}`
+			);
+		}
+		// 1 is the canonical body — the reader's own default — so recording it
+		// would add a member that says nothing. Keeping it out means a
+		// generated take that passes through a decode/edit/rewrite round trip
+		// (bridge.mjs's motion edit reads person_scale back as 1) still writes
+		// the same four members it always did.
+		// float32 scalar, same 0-d shape convention as fps.
+		if (personScale !== 1) members.person_scale = { data: Float32Array.of(personScale), shape: [] };
+	}
+	return members;
 }
 
 /** Concatenate contiguous, already world-aligned generated blocks. */
@@ -297,6 +327,13 @@ export function stitchMotionSegments(segments) {
 	const fps = segments[0].fps;
 	if (!segments.every((segment) => segment.fps === fps)) {
 		throw new Error("stitchMotionSegments: every segment must use the same fps");
+	}
+	// One performer per stitch: the segments are consecutive blocks of the same
+	// body, so two different statures here means two different people were
+	// concatenated into one trajectory and the travel of at least one is wrong.
+	const scales = new Set(segments.map((segment) => segment.personScale).filter((value) => Number.isFinite(value)));
+	if (scales.size > 1) {
+		throw new Error("stitchMotionSegments: segments disagree on personScale");
 	}
 	const frames = segments.reduce((sum, segment) => sum + segment.frames, 0);
 	const concat = (key, stride) => {
@@ -312,13 +349,15 @@ export function stitchMotionSegments(segments) {
 		}
 		return out;
 	};
-	return {
+	const stitched = {
 		frames,
 		fps,
 		rotMats: concat("rotMats", 27 * 9),
 		rootPos: concat("rootPos", 3),
 		posedJoints: concat("posedJoints", 27 * 3),
 	};
+	if (scales.size === 1) stitched.personScale = [...scales][0];
+	return stitched;
 }
 
 /** Return a copy of a motion with one equal-fps replacement written at startFrame. */
@@ -347,11 +386,15 @@ export function replaceMotionSegment(base, replacement, startFrame) {
 		out.set(patch, startFrame * stride);
 		return out;
 	};
-	return {
+	const edited = {
 		frames: base.frames,
 		fps: base.fps,
 		rotMats: copyAndReplace("rotMats", 27 * 9),
 		rootPos: copyAndReplace("rootPos", 3),
 		posedJoints: copyAndReplace("posedJoints", 27 * 3),
 	};
+	// The base clip is still the same body after an edited span is written into
+	// it, and its root travel is still expressed against that stature.
+	if (Number.isFinite(base.personScale)) edited.personScale = base.personScale;
+	return edited;
 }

@@ -43,6 +43,8 @@ import { decodeMotionNpz } from "../../src/ardy/npz.js";
 import { motionArraysToNpzMembers, replaceMotionSegment, writeNpz } from "./npz.mjs";
 import { globalChildren, killGroup, runStreaming, track } from "./runners/proc.mjs";
 import { createRunner } from "./runners/index.mjs";
+import { footagePath, handleFootage, serveFootage } from "./footage.mjs";
+import { handleExtract } from "./extract.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const OUT_DIR = join(HERE, "out");
@@ -1097,11 +1099,52 @@ const server = createServer((req, res) => {
 		log(serveMotion(req, res, pathname));
 		return;
 	}
+	if (pathname === "/ardy/footage" && req.method === "POST") {
+		handleFootage(req, res, (request) => readBody(request, MAX_BODY_BYTES)).catch((err) => {
+			if (!res.headersSent) sendJson(res, 500, { ok: false, reason: `internal error: ${err.message}` });
+			else {
+				try {
+					res.end();
+				} catch {
+					/* socket gone */
+				}
+			}
+			console.error(`[bridge] ${req.method} ${pathname} threw: ${err.stack || err}`);
+			log(500);
+		});
+		return;
+	}
+	if (/^\/ardy\/footage\//.test(pathname) && req.method === "GET") {
+		log(serveFootage(req, res, pathname));
+		return;
+	}
+	if (pathname === "/ardy/extract" && req.method === "POST") {
+		handleExtract(req, res, {
+			readBody: (request) => readBody(request, MAX_BODY_BYTES),
+			footagePath,
+			registerMotion,
+		}).catch((err) => {
+			if (!res.headersSent) sendJson(res, 500, { ok: false, reason: `internal error: ${err.message}` });
+			else {
+				try {
+					res.end();
+				} catch {
+					/* socket gone */
+				}
+			}
+			console.error(`[bridge] ${req.method} ${pathname} threw: ${err.stack || err}`);
+			log(500);
+		});
+		return;
+	}
 	if (
 		pathname === "/ardy/health" ||
 		pathname === "/ardy/bases" ||
 		pathname === "/ardy/generate" ||
-		/^\/ardy\/motions\//.test(pathname)
+		pathname === "/ardy/footage" ||
+		pathname === "/ardy/extract" ||
+		/^\/ardy\/motions\//.test(pathname) ||
+		/^\/ardy\/footage\//.test(pathname)
 	) {
 		sendJson(res, 405, { ok: false, reason: `method ${req.method} not allowed on ${pathname}` });
 		log(405);

@@ -63,13 +63,13 @@ expect("pre-motion timeline initializes to 15 seconds", app.includes("const DEFA
 expect("motion preview stays at native 1x speed", app.includes("const DEFAULT_PLAYBACK_SPEED = 1") && app.includes("playbackSpeed={DEFAULT_PLAYBACK_SPEED}"));
 expect("timeline cadence and readout expose native preview speed", timeline.includes("fps * playbackSpeed") && timeline.includes("playbackSpeed.toFixed(2)"));
 expect("legacy greeting demo migration is removed", !app.includes("GREETING_DEMO_MIGRATION_KEY") && !app.includes('id: "demo-rise"'));
-expect("batch generation spans through the final block frame", app.includes("Math.max(...clips.map((clip) => clip.endFrame))") && app.includes("Math.ceil(totalFrames / 20)"));
+expect("batch generation spans through the final block frame", app.includes("Math.max(...clips.map((clip) => clip.endFrame))") && app.includes("Math.ceil(totalFrames / TIMELINE_FPS)"));
 expect("batch generation forwards all prompt clips", app.includes("promptClipsOverride: clips") && app.includes("hasPromptSchedule"));
 expect("normal motion generation excludes the prompt block schedule", app.includes("promptClipsOverride = []"));
-expect("unedited batch blocks use one unpinned autoregressive schedule", app.includes("!hasPromptSchedule && ikFrames.length > 0") && app.includes("else if (hasPromptSchedule) body.segments = segments"));
+expect("unedited batch blocks use one unpinned autoregressive schedule", app.includes("!hasPromptSchedule && ikFrames.length > 0") && app.includes("else if (hasPromptSchedule) body.segments = toArdySegments(segments)"));
 expect("IK-edited blocks use the motion edit session", app.includes("const editedSegments") && app.includes("body.motionEdit = {") && app.includes("sourceMotion: motion.url"));
 expect("IK regeneration inherits loaded clip duration", app.includes("motion && ikFrames.length > 0") && app.includes("motion.frames / motion.fps"));
-expect("motion edits send only tracked pending joints", app.includes("ikStateRef.current.keys.get(frame)?.keys()") && app.includes("tracks:"));
+expect("motion edits send only tracked pending joints", app.includes("ikStateRef.current.keys.get(timelineFrame)?.keys()") && app.includes("tracks:"));
 expect("successful motion edits commit and clear pending IK", app.includes("setCommittedIkEdits") && app.includes("job.ikState.keys.clear()") && app.includes("job.ikState.tracked.clear()"));
 expect("pending IK clears only after exact commit verification", app.includes("editCommitReport?.commit_verified !== true") && app.includes("ARDY returned motion without verified authored IK keys"));
 expect("failed key verification leaves pending IK intact", app.indexOf("ARDY returned motion without verified authored IK keys") < app.indexOf("job.ikState.keys.clear()"));
@@ -86,8 +86,8 @@ expect("the active character exclusively owns the frame zero root start", app.in
 expect("root guidance sends the aligned, densified path to ARDY", app.includes("alignArdyPath(rootPath, activeChar.rot") && app.includes("body.waypoints = ardyWaypoints"));
 expect(
 	"a root path and a prompt schedule are sent together, judged per block",
-	app.includes("if (hasPromptSchedule && !hasBlockEdits) body.segments = segments;") &&
-	app.includes("judgeAuthoredPath(rootPath, 20, clipFrames, { chained: hasPromptSchedule })") &&
+	app.includes("if (hasPromptSchedule && !hasBlockEdits) body.segments = toArdySegments(segments);") &&
+	app.includes("judgeAuthoredPath(rootPath, TIMELINE_FPS, clipFrames, { chained: hasPromptSchedule })") &&
 	app.includes("PROMPT_BLOCK_MAX_FRAMES"),
 );
 expect("generated motion anchors frame zero at the active character", app.includes("anchorX: activeChar.x") && app.includes("anchorZ: activeChar.z") && app.includes("anchorFrame: 0"));

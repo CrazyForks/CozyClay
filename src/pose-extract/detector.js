@@ -1,0 +1,75 @@
+// detector.js — the App-side loader for MediaPipe's PoseLandmarker. Model
+// creation stays out of browser.js on purpose (see that header): this module
+// is where the engine version, the download sources and the failure names
+// live, so "extraction is broken" always decomposes into which piece failed.
+//
+// Both the wasm engine and the .task weights are runtime downloads. The wasm
+// must match the npm bundle compiled into this build byte-for-byte, so its
+// URL is pinned to the same version; the weights are ~5 MB of Google binaries
+// that belong in neither this repo nor its npm package. Offline is therefore
+// a NAMED failure, never a hang or a silent fallback.
+
+export const TASKS_VISION_VERSION = "0.10.17"; // must equal the @mediapipe/tasks-vision entry in package.json — the JS bundle and the wasm ABI move together
+export const POSE_WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`;
+export const POSE_MODEL_URL =
+	"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+
+/**
+ * Create a `{ detect, close }` pair for collectLandmarkTrack. Every failure
+ * mode has its own name:
+ *   pose-runtime-unavailable   — the JS bundle did not load (broken build)
+ *   pose-model-download-failed — the .task weights were unreachable
+ *   pose-engine-download-failed— the wasm engine was unreachable
+ *   pose-engine-init-failed    — the engine loaded but refused to start
+ * The GPU delegate is tried first and CPU is the retry: WebGPU blocklists
+ * are common and a slower extraction beats a refused one.
+ */
+export async function createPoseDetector({
+	wasmBase = POSE_WASM_BASE,
+	modelUrl = POSE_MODEL_URL,
+	fetchImpl,
+	loadRuntime,
+	numPoses = 2, // the footage guidance allows two performers in frame; selectMostConfidentPerson picks one
+} = {}) {
+	const doFetch = fetchImpl ?? globalThis.fetch;
+	let runtime;
+	try {
+		runtime = await (loadRuntime ?? (() => import("@mediapipe/tasks-vision")))();
+	} catch {
+		throw new Error("pose-runtime-unavailable");
+	}
+	let modelAssetBuffer;
+	try {
+		const response = await doFetch(modelUrl);
+		if (!response.ok) throw new Error(`http-${response.status}`);
+		modelAssetBuffer = new Uint8Array(await response.arrayBuffer());
+	} catch {
+		throw new Error("pose-model-download-failed");
+	}
+	let fileset;
+	try {
+		fileset = await runtime.FilesetResolver.forVisionTasks(wasmBase);
+	} catch {
+		throw new Error("pose-engine-download-failed");
+	}
+	const optionsFor = (delegate) => ({
+		baseOptions: { modelAssetBuffer, delegate },
+		runningMode: "VIDEO",
+		numPoses,
+		outputSegmentationMasks: false,
+	});
+	let landmarker;
+	try {
+		landmarker = await runtime.PoseLandmarker.createFromOptions(fileset, optionsFor("GPU"));
+	} catch {
+		try {
+			landmarker = await runtime.PoseLandmarker.createFromOptions(fileset, optionsFor("CPU"));
+		} catch {
+			throw new Error("pose-engine-init-failed");
+		}
+	}
+	return {
+		detect: (image, timestampMs) => landmarker.detectForVideo(image, Math.round(timestampMs)),
+		close: () => landmarker.close?.(),
+	};
+}

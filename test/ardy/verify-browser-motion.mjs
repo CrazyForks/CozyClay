@@ -36,8 +36,12 @@
  *    asserted > 0.01. Snapshot -> playback perturb -> restore must
  *    reproduce the pre-playback quaternions exactly (bitwise).
  */
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as THREE from "three";
-import { decodeMotionNpz, NpzError } from "../../src/ardy/npz.js";
+import { characterScaleFor, decodeMotionNpz, NpzError } from "../../src/ardy/npz.js";
+import { motionArraysToNpzMembers, writeNpz } from "../../tools/ardy/npz.mjs";
 import {
 	applyMotionFrame,
 	motionBones,
@@ -374,6 +378,125 @@ ok(
 		rejection.err.message ===
 			"local_rot_mats must have shape (F, 27, 3, 3), got (2, 26, 3, 3)",
 	rejection.threw ? `msg="${rejection.err.message}"` : "no throw"
+);
+
+/* --- 1b. person scale: the filmed body travels WITH the take --------------- */
+
+// WHY: the extraction divided the take's root translation by the performer's
+// stature, so the frames are only metrically right when the character is
+// scaled by the same number. A take that carried its frames but not its scale
+// replayed a filmed stride ~10 % too long and skated the feet.
+
+ok(
+	"npz decode: an archive without person_scale reports the canonical 1",
+	decoded.personScale === 1,
+	`personScale=${decoded.personScale}`
+);
+
+const scaledArchive = zipStored([
+	{ name: "local_rot_mats.npy", bytes: npyBytes("<f4", [F, 27, 3, 3], f32Bytes(rotValues)) },
+	{ name: "root_positions.npy", bytes: npyBytes("<f4", [F, 3], f32Bytes([0, 0, 0, 1, 2, 3])) },
+	{ name: "fps.npy", bytes: npyBytes("<i4", [], int32Bytes(30)) },
+	{ name: "posed_joints.npy", bytes: npyBytes("<f4", [F, 27, 3], f32Bytes(posedValues)) },
+	{ name: "person_scale.npy", bytes: npyBytes("<f4", [], f32Bytes([0.9])) },
+]);
+const scaledDecoded = await decodeMotionNpz(scaledArchive);
+ok(
+	"npz decode: a stored person_scale comes back on the motion",
+	scaledDecoded.personScale === Math.fround(0.9) &&
+		scaledDecoded.frames === F &&
+		arraysEqual(scaledDecoded.rootPos, decoded.rootPos),
+	`personScale=${scaledDecoded.personScale}`
+);
+
+const zeroScaleArchive = zipStored([
+	{ name: "local_rot_mats.npy", bytes: npyBytes("<f4", [F, 27, 3, 3], f32Bytes(rotValues)) },
+	{ name: "root_positions.npy", bytes: npyBytes("<f4", [F, 3], f32Bytes([0, 0, 0, 1, 2, 3])) },
+	{ name: "fps.npy", bytes: npyBytes("<i4", [], int32Bytes(30)) },
+	{ name: "posed_joints.npy", bytes: npyBytes("<f4", [F, 27, 3], f32Bytes(posedValues)) },
+	{ name: "person_scale.npy", bytes: npyBytes("<f4", [], f32Bytes([0])) },
+]);
+const zeroScaleRejection = await rejectsWith(decodeMotionNpz(zeroScaleArchive));
+ok(
+	"npz rejection: a zero person_scale is corrupt data, not a scale to clamp",
+	zeroScaleRejection.threw &&
+		zeroScaleRejection.err instanceof NpzError &&
+		zeroScaleRejection.err.message === "motion person_scale 0 must be positive",
+	zeroScaleRejection.threw ? `msg="${zeroScaleRejection.err.message}"` : "no throw"
+);
+
+// Writer -> npz -> browser decoder, the real production pair: tools/ardy/npz.mjs
+// is what the extract bridge writes with, src/ardy/npz.js is what the app reads
+// with. The value has to survive that boundary, and an archive written without
+// one has to stay decodable.
+const scaleDir = mkdtempSync(join(tmpdir(), "cozyclay-person-scale-"));
+try {
+	const arrays = {
+		frames: F,
+		fps: 30,
+		rotMats: rotValues,
+		rootPos: Float32Array.from([0, 0, 0, 1, 2, 3]),
+		posedJoints: posedValues,
+	};
+	const withScalePath = join(scaleDir, "with-scale.npz");
+	writeNpz(withScalePath, motionArraysToNpzMembers({ ...arrays, personScale: 0.9037 }));
+	const roundTripped = await decodeMotionNpz(new Uint8Array(readFileSync(withScalePath)));
+	ok(
+		"npz round-trip: writer person_scale survives into the browser decoder",
+		roundTripped.personScale === Math.fround(0.9037) &&
+			roundTripped.frames === F &&
+			roundTripped.fps === 30 &&
+			arraysEqual(roundTripped.rotMats, rotValues),
+		`personScale=${roundTripped.personScale}`
+	);
+
+	const plainPath = join(scaleDir, "no-scale.npz");
+	const plainMembers = motionArraysToNpzMembers(arrays);
+	writeNpz(plainPath, plainMembers);
+	const plainDecoded = await decodeMotionNpz(new Uint8Array(readFileSync(plainPath)));
+	ok(
+		"npz round-trip: a take written without a stature omits the member and reads back as 1",
+		plainMembers.person_scale === undefined &&
+			Object.keys(plainMembers).join() === "local_rot_mats,root_positions,posed_joints,fps" &&
+			plainDecoded.personScale === 1,
+		`members=${Object.keys(plainMembers).join()} personScale=${plainDecoded.personScale}`
+	);
+	ok(
+		"npz writer: person_scale is appended last, so the four original members keep their order",
+		Object.keys(motionArraysToNpzMembers({ ...arrays, personScale: 0.9 })).join() ===
+			"local_rot_mats,root_positions,posed_joints,fps,person_scale"
+	);
+	ok(
+		"npz writer: a canonical 1 adds no member, so a decode/edit/rewrite round trip does not grow the archive",
+		motionArraysToNpzMembers({ ...arrays, personScale: 1 }).person_scale === undefined
+	);
+	ok(
+		"npz writer: a non-positive stature is refused, never written",
+		throws(() => motionArraysToNpzMembers({ ...arrays, personScale: 0 })) &&
+			throws(() => motionArraysToNpzMembers({ ...arrays, personScale: Number.NaN }))
+	);
+} finally {
+	rmSync(scaleDir, { recursive: true, force: true });
+}
+
+ok(
+	"character scale: a stored stature is used as-is inside the sane band",
+	characterScaleFor({ personScale: 0.9 }) === 0.9 &&
+		characterScaleFor({ personScale: 1.42 }) === 1.42
+);
+ok(
+	"character scale: a bad estimate is clamped, never a giant or a gnome",
+	characterScaleFor({ personScale: 4 }) === 1.5 && characterScaleFor({ personScale: 0.05 }) === 0.6
+);
+ok(
+	"character scale: no stature anywhere means canonical 1",
+	characterScaleFor({}) === 1 && characterScaleFor(null) === 1 && characterScaleFor(undefined, NaN) === 1
+);
+ok(
+	"character scale: the response fallback only applies when the take stores nothing",
+	characterScaleFor(null, 0.8) === 0.8 &&
+		characterScaleFor({ personScale: 0.9 }, 0.8) === 0.9 &&
+		characterScaleFor(null, 9) === 1.5
 );
 
 /* --- 2. playback: positional skinning (viser compute_bone_transforms twin) --- */

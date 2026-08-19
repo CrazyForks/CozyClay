@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { CSKEL27_JOINTS } from "../src/ardy/cskel27.js";
 import { canonicalCskel27Reference, poseToCskel27 } from "../src/ardy/to-cskel27.js";
 import {
+	bakeExtractedTake,
 	collectLandmarkTrack,
 	normalizeLandmarkSample,
 	selectMostConfidentPerson,
@@ -116,5 +117,51 @@ const collected = await collectLandmarkTrack({
 assert.equal(collected.length, 2);
 assert.equal(progress.at(-1).processed, 2);
 pass("browser detector boundary shares one async frame path for upload and webcam");
+
+const bake = bakeExtractedTake({ samples: raw, rest, fps: 20, durationS: 1 });
+assert.equal(bake.frames, 21); // frameCountFor's rule: 1 s at 20 fps
+assert.equal(bake.fps, 20);
+assert.equal(bake.fitted, 5); // samples at 0, .25, .5, .75, 1 land on frames 0, 5, 10, 15, 20
+assert.equal(bake.held, 16); // every other grid frame holds its predecessor
+assert.equal(bake.rotMats.length, 21 * 27 * 9);
+assert.equal(bake.posedJoints.length, 21 * 27 * 3);
+assert.equal(bake.rootPos.length, 21 * 3);
+for (const value of bake.rotMats) assert.ok(Number.isFinite(value));
+for (const value of bake.posedJoints) assert.ok(Number.isFinite(value));
+pass("baking fills the npz motion shape densely from sparse fitted samples");
+
+// A held frame is byte-identical to the fitted frame it holds.
+const jointsStride = 27 * 9;
+for (let i = 0; i < jointsStride; i += 1) {
+	assert.equal(bake.rotMats[3 * jointsStride + i], bake.rotMats[0 * jointsStride + i]);
+}
+pass("holes hold the previous fitted frame, never a T-pose");
+
+// A leading hole backfills from the first fitted frame.
+const lateStart = bakeExtractedTake({ samples: raw.slice(1).map((s) => s), rest, fps: 20, durationS: 1 });
+for (let i = 0; i < jointsStride; i += 1) {
+	assert.equal(lateStart.rotMats[0 * jointsStride + i], lateStart.rotMats[5 * jointsStride + i]);
+}
+pass("a leading detection hole backfills from the first fitted frame");
+
+// The root track rides the Hips joint of each baked frame.
+assert.equal(bake.rootPos[0], bake.posedJoints[0]);
+assert.equal(bake.rootPos[1], bake.posedJoints[1]);
+assert.equal(bake.rootPos[2], bake.posedJoints[2]);
+pass("rootPos is the baked Hips trajectory");
+
+const noPerson = (() => {
+	try {
+		bakeExtractedTake({
+			samples: [{ timeS: 0, landmarks: new Array(33).fill({ x: 0, y: 0, z: 0, visibility: 0.01 }) }],
+			rest,
+			fps: 20,
+			durationS: 1,
+		});
+		return null;
+	} catch (error) { return error.message; }
+})();
+assert.equal(noPerson, "no-usable-pose");
+pass("a track with no fittable sample is refused by name");
 
 console.log("all video-to-pose-key checks PASS");

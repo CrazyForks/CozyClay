@@ -219,7 +219,10 @@ if (opts.ardy && ardyHost && existsSync(BRIDGE)) {
 
 const server = createServer((req, res) => {
 	const url = new URL(req.url ?? "/", "http://localhost");
-	if (url.pathname.startsWith("/ardy/")) {
+	// Only the routes the bridge actually owns: /ardy/ is ALSO a public asset
+	// directory (cskel27-rest.json), and those files live in dist/, not behind
+	// the sidecar. Same rule as the Vite dev proxy bypass.
+	if (/^\/ardy\/(health|bases|generate|footage|extract|motions)(\/|$)/.test(url.pathname)) {
 		proxyToBridge(req, res);
 		return;
 	}

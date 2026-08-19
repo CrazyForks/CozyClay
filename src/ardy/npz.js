@@ -32,6 +32,12 @@ const FPS_MAX = 240; // matches CozyClay motion_retarget.FPS_BOUNDS
 // Same tolerance motion_retarget uses for squared row/column norms, pairwise
 // dots, and determinant; float32 serialization noise sits far below 1e-3.
 const ROTATION_MATRIX_TOLERANCE = 1e-3;
+// Bounds on the stature a take may ask the character to take on. The estimate
+// is a ratio of leg lengths measured off a video, so a bad detection must
+// never be able to produce a giant or a gnome; the clamp lives next to the
+// decode because that is where the number enters the app.
+export const CHARACTER_SCALE_MIN = 0.6;
+export const CHARACTER_SCALE_MAX = 1.5;
 
 const ZIP_EOCD_SIG = 0x06054b50;
 const ZIP_CENTRAL_SIG = 0x02014b50;
@@ -345,6 +351,25 @@ function scalarIntOf(parsed, label) {
 	return value;
 }
 
+/** scalar float value (person_scale); returns Number. An integer member is
+ *  accepted too, so a writer that stored a whole-number scale still reads. */
+function scalarFloatOf(parsed, label) {
+	if (parsed.kind === "i" || parsed.kind === "u") return scalarIntOf(parsed, label);
+	if (parsed.kind !== "f") {
+		throw new NpzError(`${label} must be a float scalar, got descr kind '${parsed.kind}'`);
+	}
+	if (parsed.shape.length > 1 || (parsed.shape.length === 1 && parsed.shape[0] !== 1)) {
+		throw new NpzError(`${label} must be a scalar (shape () or (1,)), got shape (${parsed.shape.join(", ")})`);
+	}
+	const view = new DataView(parsed.data.buffer, parsed.data.byteOffset, parsed.data.byteLength);
+	let value;
+	if (parsed.itemsize === 4) value = view.getFloat32(0, parsed.littleEndian);
+	else if (parsed.itemsize === 8) value = view.getFloat64(0, parsed.littleEndian);
+	else throw new NpzError(`${label} has unsupported float itemsize ${parsed.itemsize}`);
+	if (!Number.isFinite(value)) throw new NpzError(`${label} is not a finite number`);
+	return value;
+}
+
 /** Validate one 3x3 matrix: finite, orthonormal rows/columns, det +1. */
 function checkRotationMatrix(rows, frame, joint) {
 	const columns = [
@@ -383,12 +408,19 @@ function checkRotationMatrix(rows, frame, joint) {
 /**
  * Decode an ARDY motion npz from raw bytes.
  *
- * Returns { frames, fps, rotMats, rootPos, posedJoints } with `rotMats` a
+ * Returns { frames, fps, personScale, rotMats, rootPos, posedJoints } with `rotMats` a
  * Float32Array of frames*27*9 row-major 3x3 matrices (cskel27 joint order),
  * `rootPos` a Float32Array of frames*3 (x, y, z) ARDY-world root positions,
  * and `posedJoints` a Float32Array of frames*27*3 ARDY-world joint
  * positions (the positional-skinning reference — playback.js drives bone
  * positions straight from it). Throws NpzError on anything malformed.
+ *
+ * `personScale` is the filmed performer's stature relative to the canonical
+ * body, carried by the optional `person_scale` member. The extraction divided
+ * the root translation by it, so applying the frames without applying the
+ * scale exaggerates every stride — the two must move together. An archive
+ * without the member (an ARDY-generated take, or one written before the
+ * member existed) reports 1: canonical body, unscaled travel.
  */
 export async function decodeMotionNpz(bytes) {
 	if (bytes.byteLength > MAX_ARCHIVE_BYTES) {
@@ -401,9 +433,12 @@ export async function decodeMotionNpz(bytes) {
 	const names = ["local_rot_mats.npy", "root_positions.npy", "fps.npy", "posed_joints.npy"];
 	const missing = names.filter((n) => !entries.has(n));
 	if (missing.length) throw new NpzError(`motion npz is missing members: ${missing.join(", ")}`);
+	// person_scale is optional: only a filmed take has a performer to measure,
+	// and archives predating the member are still valid motions.
+	const read = [...names, ...(entries.has("person_scale.npy") ? ["person_scale.npy"] : [])];
 
 	const members = {};
-	for (const name of names) {
+	for (const name of read) {
 		const entry = entries.get(name);
 		if (entry.uncompSize > MAX_MEMBER_BYTES) {
 			throw new NpzError(`motion npz member ${name} decompresses to ${entry.uncompSize} bytes, over the ${MAX_MEMBER_BYTES} byte cap`);
@@ -449,6 +484,13 @@ export async function decodeMotionNpz(bytes) {
 	if (fps < FPS_MIN || fps > FPS_MAX) {
 		throw new NpzError(`motion fps ${fps} is outside ${FPS_MIN}..${FPS_MAX}`);
 	}
+	let personScale = 1;
+	if (members["person_scale.npy"]) {
+		personScale = scalarFloatOf(parseNpyMember(members["person_scale.npy"], "person_scale"), "person_scale");
+		// A stored zero or negative would mirror the trajectory or collapse the
+		// body; that is corrupt data, not a scale to clamp into range.
+		if (!(personScale > 0)) throw new NpzError(`motion person_scale ${personScale} must be positive`);
+	}
 
 	const rotMats = float32Of(rotParsed, "local_rot_mats");
 	const rootPos = float32Of(posParsed, "root_positions");
@@ -482,7 +524,26 @@ export async function decodeMotionNpz(bytes) {
 		if (!Number.isFinite(posedJoints[i])) throw new NpzError(`motion npz posed_joints contains a non-finite value at index ${i}`);
 	}
 
-	return { frames, fps, rotMats, rootPos, posedJoints };
+	return { frames, fps, personScale, rotMats, rootPos, posedJoints };
+}
+
+/**
+ * The character scale a decoded take implies, clamped to the sane stature
+ * band. THE INVARIANT: a take's root travel was authored against this scale,
+ * so every path that applies a motion must apply this too — leaving them apart
+ * is what makes a filmed stride overshoot and the feet slide.
+ *
+ * `fallback` is for a take whose npz predates the member but whose scale
+ * arrived some other way (the extraction response). No scale anywhere means
+ * canonical: 1.
+ */
+export function characterScaleFor(motion, fallback = 1) {
+	const raw = Number.isFinite(motion?.personScale) && motion.personScale > 0
+		? motion.personScale
+		: Number.isFinite(fallback) && fallback > 0
+			? fallback
+			: 1;
+	return Math.max(CHARACTER_SCALE_MIN, Math.min(CHARACTER_SCALE_MAX, raw));
 }
 
 /**

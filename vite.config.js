@@ -30,7 +30,17 @@ export default defineConfig({
 		// (`base: "./"`, no build-time coupling), so this proxy must never be
 		// promoted into a server-side requirement.
 		proxy: {
-			"/ardy": ardyBridgeUrl,
+			// Only the routes the bridge actually owns. /ardy/ is ALSO a public
+			// asset directory (cskel27-rest.json), and a blanket proxy would
+			// hand those static files to the bridge, which 404s them.
+			"/ardy": {
+				target: ardyBridgeUrl,
+				bypass(req) {
+					const path = (req.url || "").split("?")[0];
+					if (/^\/ardy\/(health|bases|generate|footage|extract|motions)(\/|$)/.test(path)) return undefined;
+					return req.url; // not a bridge route: serve the static asset
+				},
+			},
 			"/generation": "http://127.0.0.1:5182",
 		},
 	},

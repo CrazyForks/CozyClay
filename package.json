@@ -1,94 +1,101 @@
 {
-	"name": "cozyclay",
-	"version": "1.2.0",
-	"description": "Open source previs software in the browser: block a scene, pose characters, author camera moves and cuts, then take the same shots to an AI video model.",
-	"scripts": {
-		"dev": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
-		"dev:ui": "vite",
-		"build": "vite build && cp -r public/fonts dist/",
-		"test:lifecycle": "node test/process/verify-lifecycle.mjs",
-		"test:hierarchy": "node test/verify-hierarchy.mjs",
-		"test:history": "node test/verify-history.mjs",
-		"test:scene-objects": "node test/verify-scene-objects.mjs",
-		"test:scenes": "node test/verify-scenes.mjs",
-		"test:camera-move": "node test/verify-camera-move.mjs",
-		"test:cuts": "node test/verify-cuts.mjs",
-		"test:objects": "node tools/qa-browser.mjs -- node test/verify-object-gizmo.mjs",
-		"test:theme": "node test/verify-theme.mjs",
-		"test:appearance": "node test/verify-appearance.mjs",
-		"test:layout": "node test/verify-layout.mjs",
-		"test:timeline-camera": "node test/verify-timeline-camera.mjs",
-		"test:timeline-shots": "node test/verify-timeline-shots.mjs",
-		"preview": "vite preview",
-		"ardy:rest": "node tools/ardy/extract-rest.mjs",
-		"ardy:pose": "node tools/ardy/pose-to-npz.mjs",
-		"test:ardy": "for t in fk rest pose-shape fill npz compare-npz playback-skinning sequence-bridge; do node test/ardy/verify-$t.mjs || exit 1; done && node test/ardy/verify-browser-motion.mjs && node test/ik/verify-ik.mjs",
-		"test:ik-browser": "node tools/qa-browser.mjs -- node test/verify-ik-browser.mjs",
-		"bridge": "node tools/ardy/bridge.mjs",
-		"ardy:setup": "node tools/ardy/setup-local.mjs",
-		"dev:full": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
-		"qa:browser": "node tools/qa-browser.mjs --",
-		"test:shot-authoring": "node test/verify-shot-authoring.mjs",
-		"test:camera-follow": "node test/verify-camera-follow.mjs",
-		"test:pose-extract": "node test/verify-pose-extract.mjs",
-		"test:pwa": "node test/verify-pwa.mjs",
-		"test:localization": "node test/verify-korean-ui.mjs",
-		"test:korean-ui": "node test/verify-korean-ui.mjs",
-		"prepack": "npm run build",
-		"metrics:traffic": "node tools/metrics/archive-traffic.mjs"
-	},
-	"license": "GPL-3.0-or-later",
-	"type": "module",
-	"dependencies": {},
-	"devDependencies": {
-		"@react-three/drei": "^10.7.7",
-		"@react-three/fiber": "^9.7.0",
-		"@vitejs/plugin-react": "^6.0.5",
-		"react": "^19.2.8",
-		"react-dom": "^19.2.8",
-		"three": "^0.185.1",
-		"vite": "^8.2.0"
-	},
-	"bin": {
-		"cozyclay": "bin/cozyclay.mjs"
-	},
-	"files": [
-		"bin",
-		"dist",
-		"!dist/media/*.mp4",
-		"src",
-		"tools",
-		"!tools/ardy/out",
-		"!tools/qa-*.mjs",
-		"README.md",
-		"LICENSE",
-		"THIRD_PARTY_NOTICES.md"
-	],
-	"engines": {
-		"node": ">=22"
-	},
-	"keywords": [
-		"3d",
-		"previs",
-		"animation",
-		"blocking",
-		"threejs",
-		"react-three-fiber",
-		"webgl",
-		"motion",
-		"ardy",
-		"storyboard",
-		"previz"
-	],
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/HaD0Yun/CozyClay.git"
-	},
-	"homepage": "https://cozyclay.org/",
-	"bugs": {
-		"url": "https://github.com/HaD0Yun/CozyClay/issues"
-	},
-	"publishConfig": {
-		"access": "public"
-	}
+  "name": "cozyclay",
+  "version": "1.2.0",
+  "description": "Open source previs software in the browser: block a scene, pose characters, author camera moves and cuts, then take the same shots to an AI video model.",
+  "scripts": {
+    "dev": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
+    "dev:ui": "vite",
+    "build": "vite build && cp -r public/fonts dist/",
+    "test:lifecycle": "node test/process/verify-lifecycle.mjs",
+    "test:hierarchy": "node test/verify-hierarchy.mjs",
+    "test:history": "node test/verify-history.mjs",
+    "test:scene-objects": "node test/verify-scene-objects.mjs",
+    "test:scenes": "node test/verify-scenes.mjs",
+    "test:camera-move": "node test/verify-camera-move.mjs",
+    "test:cuts": "node test/verify-cuts.mjs",
+    "test:objects": "node tools/qa-browser.mjs -- node test/verify-object-gizmo.mjs",
+    "test:theme": "node test/verify-theme.mjs",
+    "test:appearance": "node test/verify-appearance.mjs",
+    "test:layout": "node test/verify-layout.mjs",
+    "test:timeline-camera": "node test/verify-timeline-camera.mjs",
+    "test:timeline-shots": "node test/verify-timeline-shots.mjs",
+    "preview": "vite preview",
+    "ardy:rest": "node tools/ardy/extract-rest.mjs",
+    "ardy:pose": "node tools/ardy/pose-to-npz.mjs",
+    "test:ardy": "for t in fk rest pose-shape fill npz compare-npz playback-skinning sequence-bridge; do node test/ardy/verify-$t.mjs || exit 1; done && node test/ardy/verify-browser-motion.mjs && node test/ik/verify-ik.mjs",
+    "test:ik-browser": "node tools/qa-browser.mjs -- node test/verify-ik-browser.mjs",
+    "bridge": "node tools/ardy/bridge.mjs",
+    "ardy:setup": "node tools/ardy/setup-local.mjs",
+    "dev:full": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
+    "qa:browser": "node tools/qa-browser.mjs --",
+    "test:shot-authoring": "node test/verify-shot-authoring.mjs",
+    "test:camera-follow": "node test/verify-camera-follow.mjs",
+    "test:pose-extract": "node test/verify-pose-extract.mjs",
+    "test:pwa": "node test/verify-pwa.mjs",
+    "test:localization": "node test/verify-korean-ui.mjs",
+    "test:korean-ui": "node test/verify-korean-ui.mjs",
+    "prepack": "npm run build",
+    "metrics:traffic": "node tools/metrics/archive-traffic.mjs",
+    "test:multimodel": "node test/verify-multimodel-ingest.mjs",
+    "test:video-frames": "node test/verify-video-frames.mjs",
+    "test:retime": "node test/verify-retime.mjs",
+    "test:trim": "node test/verify-trim.mjs",
+    "test:footage-bridge": "node test/verify-footage-bridge.mjs",
+    "test:bvh-cskel27": "node test/verify-bvh-cskel27.mjs"
+  },
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "dependencies": {},
+  "devDependencies": {
+    "@mediapipe/tasks-vision": "0.10.17",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.7.0",
+    "@vitejs/plugin-react": "^6.0.5",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "three": "^0.185.1",
+    "vite": "^8.2.0"
+  },
+  "bin": {
+    "cozyclay": "bin/cozyclay.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "!dist/media/*.mp4",
+    "src",
+    "tools",
+    "!tools/ardy/out",
+    "!tools/qa-*.mjs",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "3d",
+    "previs",
+    "animation",
+    "blocking",
+    "threejs",
+    "react-three-fiber",
+    "webgl",
+    "motion",
+    "ardy",
+    "storyboard",
+    "previz"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HaD0Yun/CozyClay.git"
+  },
+  "homepage": "https://cozyclay.org/",
+  "bugs": {
+    "url": "https://github.com/HaD0Yun/CozyClay/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

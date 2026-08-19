@@ -12,6 +12,9 @@ import { selectPoseKeyframes } from "./keyframes.js";
 import { filterLandmarkTrack, normalizeLandmarkTrack } from "./landmarks.js";
 
 export { collectLandmarkTrack, selectMostConfidentPerson } from "./browser.js";
+export { createPoseDetector, POSE_MODEL_URL, POSE_WASM_BASE, TASKS_VISION_VERSION } from "./detector.js";
+export { sampleTimes, videoFrames } from "./video-frames.js";
+export { bakeExtractedTake } from "./take.js";
 export { fitLandmarksToPose } from "./fit.js";
 export { poseChangeScores, selectPoseKeyframes } from "./keyframes.js";
 export { filterLandmarkTrack, normalizeLandmarkSample, normalizeLandmarkTrack, POSE_LANDMARK } from "./landmarks.js";
