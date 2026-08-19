@@ -483,11 +483,18 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// nothing beyond its handles: selection, ground clicks and the
 			// object-hover cursor belong to the primary instance.
 			if (pickOnly) return;
+			// And the mirror duty: a press on the TWIN's handles is not ours to
+			// claim either. Handles live on GIZMO_LAYER and our own already had
+			// their chance in pickHandle above, so any gizmo-layer surface still
+			// under the pointer belongs to the other instance — claiming it here
+			// deselected the character and killed the drag it had just started.
+			if (!rayFrom(event)) return;
+			tools.raycaster.layers.set(GIZMO_LAYER);
+			if (tools.raycaster.intersectObjects(scene.children, true).length) return;
 			// Selection. A left press on a body selects it and does nothing else;
 			// a press on empty space clears the selection. Both claim the press so
 			// the fly camera cannot also react — navigation lives on the right and
 			// middle buttons now.
-			if (!rayFrom(event)) return;
 			tools.raycaster.layers.set(0);
 			const picked = pickObject();
 			event.preventDefault();

@@ -73,11 +73,11 @@ function cloneValue(value, copies = new WeakMap()) {
 
 const finiteOr = (value, fallback) => (Number.isFinite(value) ? value : fallback);
 
-/** Stature band for a cast member, mirroring ardy/npz.js CHARACTER_SCALE_MIN/
- * MAX. Kept as literals so the document model stays free of runtime imports;
- * a hand-edited file can therefore never persist a giant or a gnome. */
-export const CHARACTER_SCALE_MIN = 0.6;
-export const CHARACTER_SCALE_MAX = 1.5;
+/** Stature band for a cast member. Wider than ardy/npz.js's mocap band
+ * (0.6-1.5, a sanity clamp on ESTIMATED statures): the gizmo's scale handles
+ * are a deliberate artistic ask, and a previs giant or child is legitimate. */
+export const CHARACTER_SCALE_MIN = 0.2;
+export const CHARACTER_SCALE_MAX = 3;
 const clampScale = (value) => (Number.isFinite(value) && value > 0
 	? Math.max(CHARACTER_SCALE_MIN, Math.min(CHARACTER_SCALE_MAX, value))
 	: 1);

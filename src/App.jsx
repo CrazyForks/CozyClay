@@ -2406,14 +2406,22 @@ globalThis.playMode = centerTab === "play";
 	// The cast rides the SAME gizmo as scene objects — one movement grammar
 	// for everything on stage. The proxy hands ObjectGizmo the object shape
 	// it expects; `height` puts the pivot at the hips like a prop's centre.
-	const characterGizmoObject = useMemo(() => gizmoView && ({
-		id: "__character__",
-		x: gizmoView.position[0],
-		y: gizmoView.position[1],
-		z: gizmoView.position[2],
-		height: 1.15,
-		footprint: { width: 0.6, depth: 0.6 },
-	}), [gizmoView]);
+	const characterGizmoObject = useMemo(() => {
+		if (!gizmoView) return null;
+		const entry = characters.find((item) => item.id === activeChar.id);
+		return {
+			id: "__character__",
+			x: gizmoView.position[0],
+			y: gizmoView.position[1],
+			z: gizmoView.position[2],
+			height: 1.15,
+			footprint: { width: 0.6, depth: 0.6 },
+			rotY: entry?.rot ?? 0,
+			scaleX: entry?.scale ?? 1,
+			scaleY: entry?.scale ?? 1,
+			scaleZ: entry?.scale ?? 1,
+		};
+	}, [gizmoView, characters, activeChar.id]);
 
 	/* --------------------- per-character layer buffers ---------------------
 	 * waypoints / promptClips / motion above are the EDITING BUFFER of the
@@ -4934,16 +4942,24 @@ function changeDuration(value) {
 									pickOnly
 									object={characterGizmoObject}
 									objects={characterGizmoObject ? [characterGizmoObject] : []}
-									mode="move"
+									mode={gizmoMode}
 									snap={snapEnabled}
 									enabled={!planIsMain && !posing && !ikMode && !playMode && !!characterGizmoObject}
 									paneRef={mainPaneRef}
 									camRef={shotCamRef}
 									shotAspect={shotOutput.aspect}
-									onChange={(id, patch) => moveCharacter(activeChar.id, {
-										...(patch.x === undefined ? {} : { x: THREE.MathUtils.clamp(patch.x, -4, 4) }),
-										...(patch.y === undefined ? {} : { y: THREE.MathUtils.clamp(patch.y, 0, 4) }),
-										...(patch.z === undefined ? {} : { z: THREE.MathUtils.clamp(patch.z, -4, 4) }),
+									onChange={(id, patch) => moveCharacter(activeChar.id, () => {
+										const next = {};
+										if (patch.x !== undefined) next.x = THREE.MathUtils.clamp(patch.x, -4, 4);
+										if (patch.y !== undefined) next.y = THREE.MathUtils.clamp(patch.y, 0, 4);
+										if (patch.z !== undefined) next.z = THREE.MathUtils.clamp(patch.z, -4, 4);
+										// a body only yaws — the X/Z rings and the screen ring's
+										// other channels have nowhere to go on a character
+										if (patch.rotY !== undefined) next.rot = patch.rotY;
+										// one stature knob: any scale axis reads as uniform
+										const s = patch.scaleX ?? patch.scaleY ?? patch.scaleZ;
+										if (s !== undefined) next.scale = THREE.MathUtils.clamp(s, 0.2, 3);
+										return next;
 									})}
 									onDragStart={recordCharacterUndo}
 								/>
