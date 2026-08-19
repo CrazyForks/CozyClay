@@ -62,6 +62,32 @@ const SAMPLES = [
 		},
 	},
 	{
+		name: "Sofa on a wall",
+		metres: 0.85,
+		width: 900,
+		height: 600,
+		note: "Opaque, like a real photo — the one to try Remove background on.",
+		draw(ctx, w, h) {
+			// A wall that shades top to bottom, which is what a real one does and
+			// what a single global threshold cannot follow.
+			const wall = ctx.createLinearGradient(0, 0, 0, h);
+			wall.addColorStop(0, "#cfd2cd");
+			wall.addColorStop(1, "#a7ada8");
+			ctx.fillStyle = wall;
+			ctx.fillRect(0, 0, w, h);
+			ctx.fillStyle = "#8d5f4a";
+			ctx.fillRect(w * 0.16, h * 0.42, w * 0.68, h * 0.34);
+			ctx.fillStyle = "#a5745a";
+			ctx.fillRect(w * 0.16, h * 0.3, w * 0.68, h * 0.16);
+			ctx.fillStyle = "#7a4f3d";
+			ctx.fillRect(w * 0.2, h * 0.76, w * 0.06, h * 0.12);
+			ctx.fillRect(w * 0.74, h * 0.76, w * 0.06, h * 0.12);
+			ctx.fillStyle = "#b8846a";
+			ctx.fillRect(w * 0.24, h * 0.36, w * 0.24, h * 0.08);
+			ctx.fillRect(w * 0.52, h * 0.36, w * 0.24, h * 0.08);
+		},
+	},
+	{
 		name: "Counter",
 		metres: 1.05,
 		width: 900,

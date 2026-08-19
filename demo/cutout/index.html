@@ -60,6 +60,14 @@
 					<input type="range" id="rotRange" min="-180" max="180" step="1" aria-label="Card rotation" />
 					<div class="readout"><span>Asset</span><b id="assetId" class="mono">—</b></div>
 					<div class="readout"><span>Stored</span><b id="assetMeta">—</b></div>
+					<h2>Background</h2>
+					<div class="field">
+						<label for="tolerance">Tolerance</label>
+						<span class="mono" id="toleranceValue" style="font-size: 12px">0.18</span>
+					</div>
+					<input type="range" id="tolerance" min="0.04" max="0.5" step="0.01" value="0.18" aria-label="Background tolerance" />
+					<button type="button" class="btn" id="matte">Remove background</button>
+					<p class="hint">Grows from the edges of the picture, drops the wall behind the subject and trims the empty margin. The card keeps the size it had — the height is scaled by however much of the frame the subject turned out to fill.</p>
 					<button type="button" class="btn quiet" id="remove">Remove this card</button>
 				</section>
 

@@ -59,7 +59,8 @@ import {
 } from "./scene-objects.js";
 import { createSceneHistoryStore } from "./scene-history.js";
 import { ASSET_IMAGE_TYPES, assetAspect, importImageFile } from "./scene-assets.js";
-import { rememberAsset } from "./scene-asset-cache.js";
+import { assetRecord, rememberAsset } from "./scene-asset-cache.js";
+import { cutOutBackground } from "./matte.js";
 import {
 	SCENES_QUARANTINE_KEY,
 	SCENES_STORAGE_KEY,
@@ -1596,6 +1597,10 @@ globalThis.playMode = centerTab === "play";
 
 	/** The hidden file input behind "Import image as cutout". */
 	const cutoutInputRef = useRef(null);
+	// How much of the wall counts as the wall. One control, because one is all
+	// a person should need: everything else about the cut is derived from it.
+	const [matteTolerance, setMatteTolerance] = useState(0.18);
+	const [matteBusy, setMatteBusy] = useState(false);
 	const [gizmoMode, setGizmoMode] = useState("move");
 	// Snap is a preference, not a law: with it on the gizmo blocks on the plan
 	// board's grid, and Ctrl/Cmd during a drag gives a free one. Off, it is the
@@ -1661,6 +1666,42 @@ globalThis.playMode = centerTab === "play";
 			);
 		} catch (error) {
 			setToast(isKo ? `이미지를 가져오지 못했어요 — ${error.message}` : `Could not import that image — ${error.message}`);
+		}
+	}
+
+	/**
+	 * Cut the background out of the selected card's picture.
+	 *
+	 * The cut picture is stored as its own asset and the card is pointed at it,
+	 * so the original stays addressable and one Ctrl+Z puts it back. Trimming
+	 * away the dead margin changes how much of the frame the subject fills, so
+	 * the card's height is scaled by the same factor — the subject stays exactly
+	 * the size it already was in the set, which is the whole point of having
+	 * typed a real height for it.
+	 */
+	async function removeCutoutBackground(id = selectedSceneObjectId, tolerance = matteTolerance) {
+		const object = sceneObjects.find((item) => item.id === id) ?? null;
+		if (!object || object.renderer !== CUTOUT_KIND || matteBusy) return;
+		setMatteBusy(true);
+		try {
+			const source = await assetRecord(object.assetId);
+			if (!source) throw new Error(ko("its picture is missing from the store", "저장소에 사진이 없습니다"));
+			const { asset, heightScale, removed } = await cutOutBackground(source, { tolerance });
+			await rememberAsset(asset);
+			changeSceneObject(object.id, {
+				assetId: asset.id,
+				aspect: asset.width / asset.height,
+				height: object.height * heightScale,
+			});
+			setToast(
+				isKo
+					? `${object.name} 배경 제거 — ${Math.round(removed * 100)}% 지움. 되돌리려면 Ctrl+Z`
+					: `${object.name} — background removed, ${Math.round(removed * 100)}% of the frame. Ctrl+Z puts it back`,
+			);
+		} catch (error) {
+			setToast(isKo ? `배경을 제거하지 못했어요 — ${error.message}` : `Could not remove the background — ${error.message}`);
+		} finally {
+			setMatteBusy(false);
 		}
 	}
 
@@ -6319,6 +6360,30 @@ function resizePromptClip(id, edge, rawFrame) {
 											{isKo
 												? `가로 ${(selectedSceneObject.footprint?.width ?? 0).toFixed(2)} m — 사진 비율에 맞춰 자동 계산됩니다. 사진 속에서 높이를 알 수 있는 것(문 2 m, 사람 1.8 m)에 맞추세요.`
 												: `${(selectedSceneObject.footprint?.width ?? 0).toFixed(2)} m wide, from the picture's own aspect. Measure against something you know: a door is 2 m, a person 1.8 m.`}
+										</p>
+										<Field label={ko("Background tolerance", "배경 허용치")}>
+											<input
+												type="range"
+												min="0.04"
+												max="0.5"
+												step="0.01"
+												value={matteTolerance}
+												onChange={(event) => setMatteTolerance(Number(event.target.value))}
+											/>
+										</Field>
+										<button
+											type="button"
+											className="btn ghost full"
+											disabled={matteBusy}
+											onClick={() => removeCutoutBackground(selectedSceneObject.id)}
+										>
+											{matteBusy ? ko("Removing…", "지우는 중…") : ko("Remove background", "배경 제거")}
+										</button>
+										<p className="inspector-hint">
+											{ko(
+												"Grows from the edges of the picture and drops the wall behind the subject, then trims the empty margin. Too much gone: lower the tolerance and undo. Not enough: raise it.",
+												"사진 가장자리에서부터 번져 나가며 피사체 뒤 배경을 지우고, 남은 여백을 잘라냅니다. 너무 많이 지워지면 허용치를 낮추고 실행 취소하세요. 덜 지워지면 높이세요.",
+											)}
 										</p>
 									</>
 								)}

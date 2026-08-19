@@ -424,6 +424,17 @@ expect(
 	updateSceneObject([cube], cube.id, { height: 3, aspect: 2 })[0] === cube,
 );
 
+const repointed = updateSceneObject([sofa], sofa.id, { assetId: "asset-sofa-cut", aspect: 1.4, height: 0.9 })[0];
+expect(
+	"a card can be pointed at a new picture, resizing with it",
+	repointed.assetId === "asset-sofa-cut" && repointed.aspect === 1.4 && Math.abs(repointed.footprint.width - 1.26) < 1e-9,
+	JSON.stringify(repointed),
+);
+expect(
+	"an empty or unchanged asset id writes nothing",
+	updateSceneObject([sofa], sofa.id, { assetId: "" })[0] === sofa && updateSceneObject([sofa], sofa.id, { assetId: sofa.assetId })[0] === sofa,
+);
+
 const cutoutTrip = loadScene(serializeScene([sofa]));
 expect(
 	"a cutout round-trips through storage",

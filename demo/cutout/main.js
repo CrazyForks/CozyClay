@@ -25,6 +25,7 @@ import {
 	updateSceneObject,
 } from "../../src/scene-objects.js";
 import { ASSET_IMAGE_TYPES, ASSET_MAX_DIMENSION, assetAspect, importImageFile } from "../../src/scene-assets.js";
+import { cutOutBackground } from "../../src/matte.js";
 import { createViewer } from "./scene.js";
 import { SAMPLES, sampleFile } from "./samples.js";
 
@@ -239,6 +240,38 @@ SAMPLES.forEach((sample, index) => {
 $("height").addEventListener("change", (event) => editSelected({ height: Number(event.target.value) }));
 $("heightRange").addEventListener("input", (event) => editSelected({ height: Number(event.target.value) }));
 $("rotRange").addEventListener("input", (event) => editSelected({ rot: Number(event.target.value) }));
+$("tolerance").addEventListener("input", (event) => {
+	$("toleranceValue").textContent = Number(event.target.value).toFixed(2);
+});
+
+$("matte").addEventListener("click", async () => {
+	const object = selected();
+	const source = object && assets.get(object.assetId);
+	if (!object || !source) return;
+	const button = $("matte");
+	button.disabled = true;
+	button.textContent = "Removing…";
+	try {
+		const { asset, heightScale, removed } = await cutOutBackground(source, { tolerance: Number($("tolerance").value) }, { subtle: digest });
+		assets.set(asset.id, asset);
+		await textureFor(asset);
+		// The subject stays the size it was: trimming the margin only changed
+		// how much of the frame it fills, not how tall the thing really is.
+		state.objects = updateSceneObject(state.objects, object.id, {
+			assetId: asset.id,
+			aspect: assetAspect(asset) ?? 1,
+			height: object.height * heightScale,
+		});
+		note(`${object.name} — ${Math.round(removed * 100)}% of the frame removed, trimmed to ${asset.width} × ${asset.height} px`);
+		draw();
+	} catch (error) {
+		note(`Could not remove the background — ${error.message}`, true);
+	} finally {
+		button.disabled = false;
+		button.textContent = "Remove background";
+	}
+});
+
 $("remove").addEventListener("click", () => {
 	const object = selected();
 	if (!object) return;

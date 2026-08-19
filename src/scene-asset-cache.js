@@ -26,7 +26,7 @@ function db() {
 function entryFor(id) {
 	let entry = entries.get(id);
 	if (!entry) {
-		entry = { texture: null, promise: null, listeners: new Set() };
+		entry = { texture: null, record: null, promise: null, listeners: new Set() };
 		entries.set(id, entry);
 	}
 	return entry;
@@ -65,8 +65,9 @@ export function loadAssetTexture(id) {
 	if (entry.texture) return Promise.resolve(entry.texture);
 	if (!entry.promise) {
 		entry.promise = (async () => {
-			const asset = await getAsset(await db(), id);
+			const asset = entry.record ?? (await getAsset(await db(), id));
 			if (!asset) return null;
+			entry.record = asset;
 			entry.texture = await textureFromAsset(asset);
 			announce(entry);
 			return entry.texture;
@@ -78,12 +79,23 @@ export function loadAssetTexture(id) {
 	return entry.promise;
 }
 
+/** The stored record behind an id — the bytes, not the texture. Editing a
+ * picture (cutting its background out) needs the source it started from. */
+export async function assetRecord(id) {
+	if (typeof id !== "string" || !id) return null;
+	const entry = entryFor(id);
+	if (entry.record) return entry.record;
+	entry.record = await getAsset(await db(), id);
+	return entry.record;
+}
+
 /** Warm the cache with an asset that is already in hand. An import has the
  * decoded bytes right there; going back to IndexedDB for them would decode the
  * same picture twice and delay the card by a frame or two. */
 export async function rememberAsset(asset) {
 	const stored = await putAsset(await db(), asset);
 	const entry = entryFor(stored.id);
+	entry.record = stored;
 	entry.texture?.dispose();
 	entry.texture = await textureFromAsset(stored);
 	entry.promise = Promise.resolve(entry.texture);

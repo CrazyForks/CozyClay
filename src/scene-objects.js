@@ -299,6 +299,13 @@ export function updateSceneObject(objects, id, patch) {
 		// and never patched: one owner for the card's width is what keeps it
 		// from disagreeing with its own image.
 		if (object.renderer === CUTOUT_KIND) {
+			// The picture itself is writable: cutting the background out stores a
+			// NEW asset (different bytes, different id) and points the card at it,
+			// which is what makes the cut undoable — the original stays addressed
+			// by the history entry before it.
+			if (typeof patch.assetId === "string" && patch.assetId && patch.assetId !== object.assetId) {
+				update.assetId = patch.assetId;
+			}
 			const patchedHeight = patch.height === undefined ? NaN : cutoutHeight(Number(patch.height));
 			const patchedAspect = patch.aspect === undefined ? NaN : cutoutAspect(Number(patch.aspect));
 			const height = Number.isFinite(patchedHeight) ? patchedHeight : object.height;
