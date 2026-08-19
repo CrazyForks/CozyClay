@@ -31,8 +31,10 @@ export const SCENE_VERSION = 1;
 const EULER_ORDER = "XYZ";
 const DEG = Math.PI / 180;
 
-/** Room half-extent; matches the plan board's ROOM_LIMIT. */
-const ROOM_LIMIT = 11;
+/** Stage half-extent; matches the plan board's ROOM_LIMIT. The set is an
+ * open 500 m deck now, so the clamp is a guard against runaway coordinates,
+ * not a wall — it stops just inside the floor's edge. */
+const ROOM_LIMIT = 240;
 const CEILING = 6;
 const SCALE_MIN = 0.1;
 const SCALE_MAX = 100;

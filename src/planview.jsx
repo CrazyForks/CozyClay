@@ -8,7 +8,7 @@ import { objectSize } from "./scene-objects.js";
 import { displayObjectLabel } from "./object-catalog.jsx";
 import { ko } from "./locale.js";
 
-const ROOM_LIMIT = 11; // stay inside the set walls
+const ROOM_LIMIT = 240; // stay on the open stage (matches scene-objects' clamp)
 const ACTOR_LIMIT = 4; // matches the Subject sliders' range
 const PUCK_R = 0.34;
 const GRAB_R = 1.0; // the pick radius, well beyond the drawn disc

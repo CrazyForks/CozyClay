@@ -874,23 +874,39 @@ function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
 	);
 }
 
-/** Unity-style scene grid: 1 m cells on the set floor, editor chrome only.
-    It rides the gizmo layer so exports and the plan never pick it up, sits a
-    hair above the deck to dodge z-fighting, and never swallows a raycast —
-    floor clicks pass straight through to the ground plane. Warm greys tuned
-    to the clay floor (#e7e1d7). */
+/** Unity-style scene grid over the whole open stage, editor chrome only.
+    Two tiers keep it legible at any zoom: 1 m minor cells for placement and a
+    darker 10 m major line that survives wide framings where minor lines blur
+    into a wash. Both ride the gizmo layer so exports and the plan never pick
+    them up, sit a hair above the deck to dodge z-fighting, and never swallow
+    a raycast — floor clicks pass straight through to the ground plane. Warm
+    greys tuned to the clay floor (#e7e1d7). */
 function SceneGrid() {
-	const grid = useMemo(() => {
-		const helper = new THREE.GridHelper(24, 24, 0x8f8474, 0xa99f8e);
-		helper.material.transparent = true;
-		helper.material.opacity = 0.62;
-		helper.material.depthWrite = false;
-		helper.position.y = 0.002;
-		helper.layers.set(GIZMO_LAYER);
-		helper.raycast = () => null;
-		return helper;
+	const grids = useMemo(() => {
+		const make = (divisions, color, opacity, y) => {
+			const helper = new THREE.GridHelper(500, divisions, color, color);
+			helper.material.transparent = true;
+			helper.material.opacity = opacity;
+			helper.material.depthWrite = false;
+			helper.position.y = y;
+			helper.layers.set(GIZMO_LAYER);
+			helper.raycast = () => null;
+			return helper;
+		};
+		return [
+			// Value hierarchy against the bright deck (#f4f0e8): quiet 1 m cells
+			// for placement, assertive 10 m lines for structure. The gap between
+			// floor and minor keeps the tiling from reading as a repeating texture.
+			make(500, 0xa89d8a, 0.4, 0.002), // minor: 1 m cells, subtle
+			make(50, 0x6a5f4e, 0.9, 0.003), // major: 10 m lines, clearly darker
+		];
 	}, []);
-	return <primitive object={grid} />;
+	return (
+		<>
+			<primitive object={grids[0]} />
+			<primitive object={grids[1]} />
+		</>
+	);
 }
 
 /** Offscreen aspect-aware read-back, always from the shot camera. */
@@ -4889,6 +4905,14 @@ function changeDuration(value) {
 								planZoom={workspaceLayout.planZoom}
 							/>
 							<color attach="background" args={["#eef4f3"]} />
+							{/* The open stage runs 500 m; without a falloff the whole deck
+							    reads at once and the horizon sits a kilometre away. Blender's
+							    viewport answer is a clip distance that lets the neutral void
+							    show through; the fog below is the seamless version of the
+							    same idea — it fades the floor INTO the background colour, so
+							    past ~120 m the deck simply ceases to exist with no horizon
+							    line, no clip edge and no tone break. */}
+							<fog attach="fog" args={["#eef4f3", 18, 54]} />
 							<StageLights />
 							<Room />
 							<SetProps objects={sceneObjects} selectedId={selectedSceneObjectId} />

@@ -92,8 +92,8 @@ const twoCubes = [cube, createSceneObject("cube", [cube])];
 expect("repeat creation gets a unique id", twoCubes[0].id !== twoCubes[1].id);
 expect("repeat creation gets a numbered name", twoCubes[1].name === "Cube 2", twoCubes[1].name);
 
-const placed = createSceneObject("chair", [], { x: 99, z: -99, rot: 540 });
-expect("creation clamps placement into the room", placed.x === 11 && placed.z === -11);
+const placed = createSceneObject("chair", [], { x: 999, z: -999, rot: 540 });
+expect("creation clamps placement onto the stage", placed.x === 240 && placed.z === -240);
 expect("an explicit placement angle is still wrapped", placed.rot === -180, String(placed.rot));
 
 // camera at the origin looking down -Z (yaw 0): the drop point is 2.6 m ahead
@@ -141,8 +141,8 @@ expect("a degenerate screen spin writes nothing", screenRotatePatch(upright, nul
 
 /* ------------------------------------------------------- clamping --- */
 
-const bounded = updateSceneObject([cube], cube.id, { x: 99, y: -3, z: -99, scaleX: 400, scaleY: 0 })[0];
-expect("transforms stay inside the room and above the floor", bounded.x === 11 && bounded.z === -11 && bounded.y === 0);
+const bounded = updateSceneObject([cube], cube.id, { x: 999, y: -3, z: -999, scaleX: 400, scaleY: 0 })[0];
+expect("transforms stay on the stage and above the floor", bounded.x === 240 && bounded.z === -240 && bounded.y === 0);
 expect("scale stays within a usable range", bounded.scaleX === 100 && bounded.scaleY === 0.1);
 const renamed = updateSceneObject([cube], cube.id, { name: "Crate", color: "#123456" })[0];
 expect("name and colour are editable", renamed.name === "Crate" && renamed.color === "#123456");
@@ -221,9 +221,9 @@ expect(
 expect(
 	"out-of-room values are clamped on load",
 	(() => {
-		const result = loadScene(JSON.stringify({ version: 1, objects: [{ id: "cube", renderer: "cube", x: 99, y: -3, scaleX: 500 }] }));
+		const result = loadScene(JSON.stringify({ version: 1, objects: [{ id: "cube", renderer: "cube", x: 999, y: -3, scaleX: 500 }] }));
 		const object = result.objects[0];
-		return object.x === 11 && object.y === 0 && object.scaleX === 100;
+		return object.x === 240 && object.y === 0 && object.scaleX === 100;
 	})(),
 );
 
