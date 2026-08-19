@@ -10,6 +10,7 @@
 	"scripts": {
 		"start": "node server.mjs",
 		"verify": "node verify.mjs",
+		"verify:prompts": "node verify-prompts.mjs",
 		"verify:live": "node verify-live.mjs"
 	},
 	"engines": {
