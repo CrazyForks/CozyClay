@@ -6488,18 +6488,11 @@ function resizePromptClip(id, edge, rawFrame) {
 											<canvas
 												ref={matteCanvasRef}
 												className="matte-canvas"
+												// Focusable for the space-drag pan, not for a shortcut: undo
+												// belongs to the buttons here. Ctrl+Z is the scene's, and one
+												// key meaning two different undos in two different panels is
+												// worse than a key that means one thing everywhere.
 												tabIndex={0}
-												// Ctrl+Z on the picture belongs to the selection, not to the
-												// scene: the studio's own undo is still one Escape away on
-												// any other surface, and a stroke you regret is the thing
-												// your hand is already over.
-												onKeyDown={(event) => {
-													if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
-													event.preventDefault();
-													event.stopPropagation();
-													if (event.shiftKey) matteEditorRef.current?.redo();
-													else matteEditorRef.current?.undo();
-												}}
 												aria-label={ko("Background editor — drag over the background to cut it out", "배경 편집기 — 배경 위를 드래그하면 그 영역이 잘려 나갑니다")}
 											/>
 											<p className="inspector-hint">
@@ -6540,10 +6533,10 @@ function resizePromptClip(id, edge, rawFrame) {
 										</div>
 										<div className="presets matte-modes">
 											<button type="button" disabled={!matteStats.canUndo} onClick={() => matteEditorRef.current?.undo()}>
-												{ko("Undo", "실행 취소")} <kbd>⌘Z</kbd>
+												{ko("Undo", "실행 취소")}
 											</button>
 											<button type="button" disabled={!matteStats.canRedo} onClick={() => matteEditorRef.current?.redo()}>
-												{ko("Redo", "다시 실행")} <kbd>⇧⌘Z</kbd>
+												{ko("Redo", "다시 실행")}
 											</button>
 										</div>
 										<div className="matte-slider">
