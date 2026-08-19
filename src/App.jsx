@@ -6533,18 +6533,40 @@ function resizePromptClip(id, edge, rawFrame) {
 													{ko("Bring back", "되살리기")}
 												</button>
 											</div>
+											{/* Icons, not words: undo, redo and clear are the same three
+											    acts in every tool anyone has used, and spelling them out
+											    took more width than the two that actually name what this
+											    brush does. The label lives in the tooltip and in the
+											    accessible name. */}
 											<div className="matte-history">
-												<div className="presets matte-modes">
-													<button type="button" disabled={!matteStats.canUndo} onClick={() => matteEditorRef.current?.undo()}>
-														{ko("Undo", "실행 취소")}
+												<div className="presets matte-modes matte-icons">
+													<button
+														type="button"
+														disabled={!matteStats.canUndo}
+														title={ko("Undo", "실행 취소")}
+														aria-label={ko("Undo", "실행 취소")}
+														onClick={() => matteEditorRef.current?.undo()}
+													>
+														<span aria-hidden="true">↩️</span>
 													</button>
-													<button type="button" disabled={!matteStats.canRedo} onClick={() => matteEditorRef.current?.redo()}>
-														{ko("Redo", "다시 실행")}
+													<button
+														type="button"
+														disabled={!matteStats.canRedo}
+														title={ko("Redo", "다시 실행")}
+														aria-label={ko("Redo", "다시 실행")}
+														onClick={() => matteEditorRef.current?.redo()}
+													>
+														<span aria-hidden="true">↪️</span>
 													</button>
 												</div>
-												<div className="presets matte-modes matte-clear">
-													<button type="button" onClick={() => matteEditorRef.current?.clear()}>
-														{ko("Clear", "모두 지우기")}
+												<div className="presets matte-modes matte-icons matte-clear">
+													<button
+														type="button"
+														title={ko("Clear the selection", "선택 모두 지우기")}
+														aria-label={ko("Clear the selection", "선택 모두 지우기")}
+														onClick={() => matteEditorRef.current?.clear()}
+													>
+														<span aria-hidden="true">🗑️</span>
 													</button>
 												</div>
 											</div>
