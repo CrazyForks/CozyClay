@@ -563,6 +563,38 @@ delete preStretchRecord.stretch;
 const upgraded = normalizeSceneObject(preStretchRecord);
 expect("a record written before stretching reads as unstretched", upgraded.stretch === 1 && upgraded.footprint.width === 3.6);
 
+/* ------------------------------------------------------- corner resize --- */
+// A corner drag sends both dimensions in one patch, so the picture keeps its
+// shape. `width` is divided by the NEW height, which is what makes a
+// proportional resize leave `stretch` untouched.
+
+const cornerCard = createCutoutObject({ assetId: "corner-a", aspect: 2, height: 1.8 }, []);
+const cornerDrag = (object, factor) =>
+  updateSceneObject([object], object.id, {
+    height: Math.max(0.05, object.height * factor),
+    width: Math.max(0.05, object.footprint.width * factor),
+  })[0];
+const shapeOf = (object) => +(object.footprint.width / object.height).toFixed(6);
+
+const grown = cornerDrag(cornerCard, 2);
+expect("a corner drag grows both dimensions", grown.footprint.width === 7.2 && grown.height === 3.6, `${grown.footprint.width} x ${grown.height}`);
+expect("a corner drag keeps the picture's shape", shapeOf(grown) === shapeOf(cornerCard));
+expect("a proportional resize leaves the stretch alone", grown.stretch === 1, String(grown.stretch));
+
+const shrunk = cornerDrag(cornerCard, 0.5);
+expect("a corner drag shrinks too", shrunk.footprint.width === 1.8 && shrunk.height === 0.9);
+expect("shrinking keeps the shape", shapeOf(shrunk) === shapeOf(cornerCard));
+
+// a card deliberately pulled off its proportions keeps that through a corner drag
+const widened = updateSceneObject([cornerCard], cornerCard.id, { width: 7.2 })[0];
+const widenedGrown = cornerDrag(widened, 1.5);
+expect("a stretched card keeps its stretch through a corner drag", Math.abs(widenedGrown.stretch - 2) < 1e-9, String(widenedGrown.stretch));
+expect(
+  "and both of its dimensions still scale together",
+  Math.abs(widenedGrown.footprint.width - 10.8) < 1e-9 && Math.abs(widenedGrown.height - 2.7) < 1e-9,
+  `${widenedGrown.footprint.width} x ${widenedGrown.height}`,
+);
+
 
 if (failures) process.exit(1);
 console.log("all scene object checks PASS");

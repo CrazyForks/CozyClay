@@ -110,8 +110,27 @@ function gizmoHeight(object) {
  * expression __gizmoPick reports, so highlights and QA hooks agree on handle
  * identity */
 function handleKey(entry) {
+	if (entry.corner) return `corner:${entry.corner.id}`;
 	return entry.axis ?? (entry.plane ? `plane:${entry.plane.id}` : "centre");
 }
+
+/**
+ * The four corners of a cutout card, in the card's own local space.
+ *
+ * A standee is a picture, and a picture is resized by its corners — grabbing
+ * one and pulling is the gesture everybody already has for "make this bigger",
+ * and unlike an axis knob it says which way is bigger without reading a label.
+ * `sx`/`sy` are which way each corner lies from the centre, so the drag can
+ * measure travel along the diagonal that corner actually points down.
+ */
+const CARD_CORNERS = [
+	{ id: "tr", sx: 1, sy: 1 },
+	{ id: "tl", sx: -1, sy: 1 },
+	{ id: "br", sx: 1, sy: -1 },
+	{ id: "bl", sx: -1, sy: -1 },
+];
+const CORNER_BOX = 0.085;
+const PICK_CORNER_R = 0.13;
 
 /**
  * Screen-space ring result: the object rotated `deltaDeg` about the world
@@ -294,6 +313,24 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 				if (patch) change?.(drag.id, patch, drag.token);
 				return;
 			}
+			if (drag.mode === "corner") {
+				// Both dimensions from one number, so the picture keeps its shape:
+				// a corner drag is "bigger/smaller", and the axis knobs are still
+				// there for the one-axis stretch.
+				const offset = tools.delta.subVectors(tools.hit, drag.origin);
+				const along = offset.dot(drag.right) * drag.corner.sx + offset.dot(drag.up) * drag.corner.sy;
+				const factor = Math.max(0.02, 1 + (along - drag.startAlong) / drag.reference);
+				const height = Math.max(0.05, drag.startHeight * factor);
+				const width = Math.max(0.05, drag.startWidth * factor);
+				change?.(
+					drag.id,
+					snapping
+						? { height: Math.round(height * 20) / 20, width: Math.round(width * 20) / 20 }
+						: { height, width },
+					drag.token,
+				);
+				return;
+			}
 			if (drag.mode === "scale") {
 				// A ratio against the grab point's leverage, so the knob keeps
 				// tracking the cursor and a drag toward the pivot shrinks.
@@ -428,6 +465,37 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 				// gizmo's own length so the first move is still sane.
 				const reference = Math.abs(startAlong) < 0.05 ? (rootRef.current?.scale.x ?? 1) * ARROW_LEN : startAlong;
 				drag = { mode: "scale", dir: dragDir, startAlong, reference, origin: tools.origin.clone() };
+			} else if (kind === "corner") {
+				// The card's own plane, so the grab tracks the picture rather than a
+				// world axis: a standee that has been turned is still resized by the
+				// corner the eye sees.
+				const yaw = ((live.rot ?? 0) * Math.PI) / 180;
+				const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+				const up = new THREE.Vector3(0, 1, 0);
+				const normal = new THREE.Vector3().crossVectors(right, up).normalize();
+				plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, tools.origin.clone());
+				const hit = new THREE.Vector3();
+				if (!tools.raycaster.ray.intersectPlane(plane, hit)) return false;
+				const startWidth = live.footprint?.width ?? 0;
+				const startHeight = live.height ?? 0;
+				if (!(startWidth > 0) || !(startHeight > 0)) return false;
+				// Leverage is the grab's distance from the centre measured along the
+				// corner's own diagonal, so pulling out grows and pushing in shrinks
+				// however the card is turned.
+				const offset = hit.clone().sub(tools.origin);
+				const along = offset.dot(right) * dir.sx + offset.dot(up) * dir.sy;
+				const halfDiagonal = (startWidth + startHeight) / 4;
+				drag = {
+					mode: "corner",
+					corner: dir,
+					right,
+					up,
+					startAlong: along,
+					reference: Math.abs(along) < 0.05 ? halfDiagonal : along,
+					startWidth,
+					startHeight,
+					origin: tools.origin.clone(),
+				};
 			} else if (kind === "plane") {
 				// The handle's own plane, pinned through the pivot: the two loose
 				// axes are read straight off the hit point.
@@ -455,10 +523,11 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 				owner: "gizmo",
 				cancel: teardownDrag,
 			});
-			dragRef.current = { ...drag, id: live.id, axis, plane, start: { ...live }, token };
+			const corner = kind === "corner" ? dir : null;
+			dragRef.current = { ...drag, id: live.id, axis, plane, corner, start: { ...live }, token };
 			// the grabbed handle turns yellow now and stays yellow after
 			// release, until the selection or the tool changes (§3.1)
-			setActiveHandle(handleKey({ axis, plane }));
+			setActiveHandle(handleKey({ axis, plane, corner }));
 			gl.domElement.style.cursor = "grabbing";
 			window.addEventListener("pointermove", applyDrag);
 			window.addEventListener("pointerup", onPointerUp);
@@ -484,7 +553,13 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			tools.raycaster.layers.set(GIZMO_LAYER);
 			const hits = tools.raycaster.intersectObjects(handles.map((entry) => entry.mesh), false)
 			if (!hits.length) return null;
-			const grabbed = handles.find((entry) => entry.mesh === hits[0].object);
+			const entryFor = (hit) => handles.find((entry) => entry.mesh === hit.object);
+			// A corner sits out at the card's edge while the uniform knob's pick
+			// sphere is fat and nearer the camera, so depth order alone would hand
+			// every corner grab to the centre. A corner that was hit at all was
+			// aimed at: nothing else lives that far out.
+			const corner = hits.map(entryFor).find((entry) => entry?.corner);
+			const grabbed = corner ?? entryFor(hits[0]);
 			return grabbed ? { ...grabbed, aim } : null;
 		};
 
@@ -493,7 +568,15 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// belong to the camera and must pass straight through.
 			if (event.button !== 0 || event.altKey || event.target !== gl.domElement) return;
 			const grabbed = pickHandle(event);
-			if (grabbed && beginDrag(grabbed.plane ? "plane" : stateRef.current.mode, grabbed.axis, grabbed.plane ?? grabbed.dir, grabbed.aim.camera)) {
+			if (
+				grabbed &&
+				beginDrag(
+					grabbed.corner ? "corner" : grabbed.plane ? "plane" : stateRef.current.mode,
+					grabbed.axis,
+					grabbed.corner ?? grabbed.plane ?? grabbed.dir,
+					grabbed.aim.camera,
+				)
+			) {
 				// keep this press away from the fly camera
 				event.preventDefault();
 				event.stopPropagation();
@@ -554,7 +637,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		if (!pickOnly) window.__gizmoPick = (x, y) => {
 			const grabbed = pickHandle({ clientX: x, clientY: y, button: 0 });
 			if (!grabbed) return null;
-			return grabbed.axis ?? (grabbed.plane ? `plane:${grabbed.plane.id}` : "centre");
+			return handleKey(grabbed);
 		};
 		if (!pickOnly) window.__objectPick = (x, y) => {
 			if (!rayFrom({ clientX: x, clientY: y })) return null;
@@ -622,10 +705,12 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
 			return [...handlesRef.current.values()]
 				.filter((entry) => entry.mesh?.parent)
-				.map(({ mesh, axis, plane }) => {
-					const point = mesh.getWorldPosition(new THREE.Vector3()).project(camera);
+				.map((entry) => {
+					const point = entry.mesh.getWorldPosition(new THREE.Vector3()).project(camera);
 					return {
-						axis: axis ?? (plane ? `plane:${plane.id}` : "centre"),
+						// One source of truth for the key, so a new handle kind cannot
+						// report itself as "centre" to QA while picking as itself.
+						axis: handleKey(entry),
 						x: rect.x + ((point.x + 1) / 2) * rect.w,
 						y: rect.y + ((1 - point.y) / 2) * rect.h,
 					};
@@ -653,6 +738,12 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		if (!mesh) return;
 		mesh.layers.set(GIZMO_LAYER);
 		handlesRef.current.set(`plane:${plane.id}`, { mesh, axis: null, plane });
+	};
+	/** a cutout card's corner: resizes the picture, so it owns no axis either */
+	const registerCorner = (corner) => (mesh) => {
+		if (!mesh) return;
+		mesh.layers.set(GIZMO_LAYER);
+		handlesRef.current.set(`corner:${corner.id}`, { mesh, axis: null, corner });
 	};
 	/** invisible-but-raycastable pick volume */
 	const pickMaterial = <meshBasicMaterial visible={false} />;
@@ -774,6 +865,46 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 							<mesh ref={registerPlane(plane)}>
 								<planeGeometry args={[PLANE_SIZE * 1.5, PLANE_SIZE * 1.5]} />
 								<meshBasicMaterial visible={false} side={THREE.DoubleSide} />
+							</mesh>
+						</group>
+					);
+				})}
+			{/* A cutout is a picture, so it also gets the gesture pictures have:
+			    grab a corner, pull, and it resizes without changing shape. Drawn in
+			    scale mode beside the axis knobs, which keep the one-axis stretch. */}
+			{mode === "scale" &&
+				object?.renderer === CUTOUT_KIND &&
+				CARD_CORNERS.map((corner) => {
+					const halfWidth = (object.footprint?.width ?? 0) / 2;
+					const halfHeight = (object.height ?? 0) / 2;
+					if (!(halfWidth > 0) || !(halfHeight > 0)) return null;
+					// The gizmo is drawn at a constant screen size, so the card's own
+					// metres have to be divided back out to land on its corners.
+					const unit = rootRef.current?.scale.x || 1;
+					const key = `corner:${corner.id}`;
+					const active = activeHandle === key;
+					const hovered = hoveredHandle === key;
+					// The gizmo group carries no rotation, so the corner is placed on
+					// the card's own turned plane by hand.
+					const yaw = ((object.rot ?? 0) * Math.PI) / 180;
+					const outX = (corner.sx * halfWidth) / unit;
+					const position = [outX * Math.cos(yaw), (corner.sy * halfHeight) / unit, -outX * Math.sin(yaw)];
+					return (
+						<group key={key} position={position}>
+							<mesh renderOrder={999}>
+								<boxGeometry args={[CORNER_BOX, CORNER_BOX, CORNER_BOX]} />
+								<meshStandardMaterial
+									color="#000000"
+									emissive={active ? ACTIVE_COLOR : "#f2f2f2"}
+									emissiveIntensity={active ? 2 : hovered ? 3.4 : 2}
+									toneMapped={false}
+									depthTest={false}
+									depthWrite={false}
+								/>
+							</mesh>
+							<mesh ref={registerCorner(corner)}>
+								<sphereGeometry args={[PICK_CORNER_R, 8, 6]} />
+								{pickMaterial}
 							</mesh>
 						</group>
 					);
