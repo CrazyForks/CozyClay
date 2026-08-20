@@ -67,10 +67,12 @@ import {
 	imageFilesFrom,
 	imageFilesFromClipboard,
 	importImageFile,
+	listAssetIds,
 	openAssetDb,
 	putAsset,
 	referencedAssetIds,
 } from "./scene-assets.js";
+import { sourceAssetIds } from "./asset-shelf.js";
 import { assetRecord, rememberAsset } from "./scene-asset-cache.js";
 import { cutOutBackground, decodeMask, maskAsset } from "./matte.js";
 import { createMatteEditor } from "./matte-editor.js";
@@ -1425,7 +1427,9 @@ globalThis.playMode = centerTab === "play";
 	/* --------------------------- asset dragging ---------------------------- */
 
 	// A grabbed asset card follows the pointer as a DOM ghost; dropping over
-	// the shot pane raycasts to the floor and spawns the character there.
+	// the shot pane raycasts to the floor and spawns the payload there. The
+	// payload is discriminated — {kind:'character'|'object'|'image'} — so one
+	// drag seam serves the whole shelf.
 	const [assetDrag, setAssetDrag] = useState(null);
 	const spawnCharacter = (model, x, z) => {
 		recordCharacterUndo();
@@ -1435,9 +1439,9 @@ globalThis.playMode = centerTab === "play";
 		setSidebarTab("inspector");
 		setToast(ko("Character added to the scene", "인물을 씬에 추가했어요"));
 	};
-	function beginAssetDrag(asset, event) {
+	function beginAssetDrag(payload, event) {
 		const start = { x: event.clientX, y: event.clientY };
-		setAssetDrag({ asset, x: start.x, y: start.y });
+		setAssetDrag({ payload, x: start.x, y: start.y });
 		const onMove = (move) => setAssetDrag((drag) => (drag ? { ...drag, x: move.clientX, y: move.clientY } : drag));
 		const onUp = (up) => {
 			window.removeEventListener("pointermove", onMove);
@@ -1457,7 +1461,17 @@ globalThis.playMode = centerTab === "play";
 			raycaster.setFromCamera(pointer, cam);
 			const hit = new THREE.Vector3();
 			if (!raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), hit)) return;
-			spawnCharacter(asset.id, THREE.MathUtils.clamp(hit.x, -4, 4), THREE.MathUtils.clamp(hit.z, -4, 4));
+			// Dispatch on the payload kind: same ray, three spawners. Characters
+			// keep their tighter stage clamp (the rig walks, a prop does not);
+			// objects and cutouts take the same ROOM_LIMIT clamp their creators
+			// already apply.
+			if (payload.kind === "character") {
+				spawnCharacter(payload.id, THREE.MathUtils.clamp(hit.x, -4, 4), THREE.MathUtils.clamp(hit.z, -4, 4));
+			} else if (payload.kind === "object") {
+				addSceneObject(payload.objectKind, { x: hit.x, z: hit.z });
+			} else if (payload.kind === "image") {
+				spawnCutoutAt(payload.assetId, { x: hit.x, z: hit.z });
+			}
 		};
 		window.addEventListener("pointermove", onMove);
 		window.addEventListener("pointerup", onUp);
@@ -1735,11 +1749,13 @@ globalThis.playMode = centerTab === "play";
 	// down during a flythrough, because W/A/S/D belong to the camera then.
 	const flyingRef = useRef(false);
 
-	function addSceneObject(kind) {
+	/** `at` overrides the floor point: the Assets-shelf drop already knows
+	 * where the pointer hit, everyone else gets in-front-of-camera. */
+	function addSceneObject(kind, at) {
 		const camera = shotCamRef.current;
-		const placement = camera
+		const placement = at ?? (camera
 			? placementInFront({ x: camera.position.x, z: camera.position.z }, look.current.yaw)
-			: {};
+			: {});
 		const object = createSceneObject(kind, sceneObjects, placement);
 		if (!object) return;
 		store.applyAtomic((objects) => [...objects, object]);
@@ -1798,6 +1814,35 @@ globalThis.playMode = centerTab === "play";
 	 * lands in its own place and the last one is the one left selected. */
 	async function importCutouts(files) {
 		for (const file of files) await importCutout(file);
+	}
+
+	/**
+	 * Stand an ALREADY-STORED picture up as a fresh cutout — the Assets-shelf
+	 * drop. The bytes are content-addressed and in the store, so this is
+	 * `importCutout` without the import: read the record for its true aspect
+	 * and name, mint the card, one atomic history entry.
+	 */
+	async function spawnCutoutAt(assetId, placement) {
+		const record = await assetRecord(assetId);
+		if (!record) {
+			setToast(ko("That image is no longer stored", "그 이미지는 더 이상 저장되어 있지 않아요"));
+			return;
+		}
+		const object = createCutoutObject(
+			{ assetId: record.id, aspect: assetAspect(record) ?? 1, height: CUTOUT_DEFAULT_HEIGHT, name: cutoutNameFromFile(record.name) },
+			sceneObjects,
+			placement,
+		);
+		if (!object) return;
+		store.applyAtomic((objects) => [...objects, object]);
+		setSelectedHierarchyId(`object:${object.id}`);
+		setSidebarTab("inspector");
+		setGizmoMode("move");
+		setToast(
+			isKo
+				? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
+				: `${object.name} added — type its real height in metres to set the scale`,
+		);
 	}
 
 	/**
@@ -2106,6 +2151,40 @@ globalThis.playMode = centerTab === "play";
 	const [ardyStatus, setArdyStatus] = useState("");
 	const [consoleLines, setConsoleLines] = useState([]);
 	const [bottomTab, setBottomTab] = useState("timeline");
+	// The imported-pictures region of the Assets shelf. null = the scan has
+	// never resolved (the pane shows skeletons, NEVER the empty message); an
+	// array = the SOURCE ids to show, mattes and cut renders already filtered
+	// out (asset-shelf.js). Scans run only while the shelf is visible, and
+	// re-run when a cutout's lineage changes — not on every transform tick, so
+	// a gizmo drag never hammers IndexedDB.
+	const [shelfImageIds, setShelfImageIds] = useState(null);
+	const cutoutLineage = useMemo(
+		() => JSON.stringify(sceneObjects.flatMap((object) => (object.renderer === CUTOUT_KIND ? [[object.assetId, object.sourceAssetId, object.matteAssetId]] : []))),
+		[sceneObjects],
+	);
+	useEffect(() => {
+		if (bottomTab !== "assets") return undefined;
+		let alive = true;
+		(async () => {
+			try {
+				const db = await openAssetDb();
+				const stored = await listAssetIds(db);
+				db.close?.();
+				// The active scene's live objects override its saved snapshot, so a
+				// just-applied matte hides its derived ids without waiting for a save.
+				const allScenes = scenes.map((scene) => (scene.id === activeSceneId ? { ...scene, objects: sceneObjects } : scene));
+				if (alive) setShelfImageIds(sourceAssetIds(stored, allScenes));
+			} catch {
+				// No IndexedDB means no imports can exist either; the honest shelf
+				// is an empty one.
+				if (alive) setShelfImageIds([]);
+			}
+		})();
+		return () => {
+			alive = false;
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [bottomTab, scenes, activeSceneId, cutoutLineage]);
 	// ARDY status doubles as a Unity-style console line: the inspector keeps
 	// the current line, the bottom Console tab keeps the session history.
 	function reportArdyStatus(line) {
@@ -6870,7 +6949,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					</button>
 				</nav>
 				<div className="assets-pane" hidden={bottomTab !== "assets"}>
-					<AssetPane onAssetGrab={beginAssetDrag} />
+					<AssetPane onAssetGrab={beginAssetDrag} imageAssetIds={shelfImageIds} />
 				</div>
 				<div className="console-pane" hidden={bottomTab !== "console"}>
 					{consoleLines.length === 0 ? (
@@ -7044,8 +7123,16 @@ function resizePromptClip(id, edge, rawFrame) {
 			<Toast message={toast} onDone={() => setToast("")} />
 			{assetDrag && (
 				<div className="asset-drag-ghost" style={{ left: assetDrag.x, top: assetDrag.y }} aria-hidden="true">
-					<span className="asset-card-swatch" data-model={assetDrag.asset.id} />
-					<span>{assetDrag.asset.label}</span>
+					{assetDrag.payload.kind === "image" && assetDrag.payload.thumb ? (
+						<img className="asset-drag-ghost-thumb" src={assetDrag.payload.thumb} alt="" />
+					) : (
+						<span
+							className="asset-card-swatch"
+							data-model={assetDrag.payload.kind === "character" ? assetDrag.payload.id : undefined}
+							style={assetDrag.payload.kind === "object" ? { background: assetDrag.payload.color } : undefined}
+						/>
+					)}
+					<span>{assetDrag.payload.label}</span>
 				</div>
 			)}
 		</div>

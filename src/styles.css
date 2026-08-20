@@ -5629,6 +5629,29 @@ input[type=range]::-moz-range-thumb {
 	background: var(--panel);
 }
 
+.assets-shelf {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.assets-section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+/* Section headings mirror the add-object popover's group headings: structure
+   over count — no badges, no search, just where each kind of card lives. */
+.assets-section-title {
+	margin: 0;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	color: var(--muted2);
+}
+
 .assets-grid {
 	display: flex;
 	flex-wrap: wrap;
@@ -5681,6 +5704,54 @@ input[type=range]::-moz-range-thumb {
 	color: var(--muted2);
 }
 
+/* Imported-image cards wear the picture itself, letterboxed into the same
+   square the character swatch occupies so every card keeps one rhythm. */
+.asset-card-thumb {
+	width: 44px;
+	height: 44px;
+	border-radius: 10px;
+	object-fit: contain;
+	background: var(--card2, #161618);
+}
+
+/* Placeholders while a scan or a decode is in flight — the grid never blocks
+   on a thumbnail, and the empty message never races the scan. */
+.asset-card-thumb-skeleton,
+.asset-card-skeleton {
+	animation: asset-skeleton 1.1s ease-in-out infinite alternate;
+}
+
+.asset-card-skeleton {
+	width: 108px;
+	height: 96px;
+	padding: 0;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: var(--panel2, #1d1d1f);
+}
+
+@keyframes asset-skeleton {
+	from {
+		opacity: 0.35;
+	}
+	to {
+		opacity: 0.7;
+	}
+}
+
+/* The imports region's empty state REPLACES its grid; it points at the real
+   import controls (Props inspector / drop / paste) — the shelf has none. */
+.assets-empty {
+	margin: 2px 0 0;
+	max-width: 460px;
+	padding: 10px 12px;
+	border: 1px dashed var(--line);
+	border-radius: 8px;
+	color: var(--muted2);
+	font-size: 11px;
+	line-height: 1.5;
+}
+
 .asset-drag-ghost {
 	position: fixed;
 	z-index: 1000;
@@ -5702,6 +5773,14 @@ input[type=range]::-moz-range-thumb {
 	width: 22px;
 	height: 22px;
 	border-radius: 6px;
+}
+
+.asset-drag-ghost-thumb {
+	width: 22px;
+	height: 22px;
+	border-radius: 6px;
+	object-fit: contain;
+	background: var(--card2, #161618);
 }
 
 .console-empty {
