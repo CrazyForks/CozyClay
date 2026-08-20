@@ -7,6 +7,7 @@ import {
 	assetGraphSignature,
 	assetIdForBytes,
 	assetUsageCounts,
+	deleteAssetWithGraphGuard,
 	assetIdFromDigest,
 	downscaleTarget,
 	imageFilesFrom,
@@ -129,6 +130,18 @@ const graphBase = [{ id: "scene-a", objects: [{ id: "cutout-a", renderer: "cutou
 const graphSameCountDifferentLineage = [{ id: "scene-a", objects: [{ id: "cutout-a", renderer: "cutout", assetId: rendered, sourceAssetId: secondSceneAsset, matteAssetId: matte }] }];
 expect("asset graph signature changes when lineage changes at the same usage count", assetGraphSignature(graphBase) !== assetGraphSignature(graphSameCountDifferentLineage));
 expect("asset graph signature is deterministic", assetGraphSignature(graphBase) === assetGraphSignature(structuredClone(graphBase)));
+let graphSignature = assetGraphSignature(graphBase);
+const guardedActions = [];
+const guardedDelete = deleteAssetWithGraphGuard({
+	expectedGraphSignature: graphSignature,
+	deleteRecord: async () => {
+		guardedActions.push("delete");
+		graphSignature = assetGraphSignature(graphSameCountDifferentLineage);
+	},
+	restoreRecord: async () => guardedActions.push("restore"),
+	readGraphSignature: () => graphSignature,
+});
+expect("a graph change during delete restores the record", await guardedDelete === false && JSON.stringify(guardedActions) === JSON.stringify(["delete", "restore"]), JSON.stringify(guardedActions));
 expect(
 	"a matted cutout keeps its rendered picture, source and matte reachable",
 	reachable.has(rendered) && reachable.has(source) && reachable.has(matte),

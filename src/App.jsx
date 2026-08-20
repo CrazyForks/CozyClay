@@ -67,6 +67,7 @@ import {
 	assetIdForBytes,
 	assetUsageCounts,
 	deleteAsset,
+	deleteAssetWithGraphGuard,
 	getAsset,
 	imageFilesFrom,
 	imageFilesFromClipboard,
@@ -2303,11 +2304,17 @@ globalThis.playMode = centerTab === "play";
 				return false;
 			}
 			const authorizedGraph = expectedGraphSignature ?? currentGraphSignature;
-			await deleteAsset(db, id);
-			const { scenes: afterScenes, activeSceneId: afterActiveSceneId, sceneObjects: afterObjects } = projectStateRef.current;
-			const afterAllScenes = afterScenes.map((scene) => (scene.id === afterActiveSceneId ? { ...scene, objects: afterObjects } : scene));
-			if (assetGraphSignature(afterAllScenes) !== authorizedGraph) {
-				await putAsset(db, record);
+			const committed = await deleteAssetWithGraphGuard({
+				expectedGraphSignature: authorizedGraph,
+				deleteRecord: () => deleteAsset(db, id),
+				restoreRecord: () => putAsset(db, record),
+				readGraphSignature: () => {
+					const { scenes: afterScenes, activeSceneId: afterActiveSceneId, sceneObjects: afterObjects } = projectStateRef.current;
+					const afterAllScenes = afterScenes.map((scene) => (scene.id === afterActiveSceneId ? { ...scene, objects: afterObjects } : scene));
+					return assetGraphSignature(afterAllScenes);
+				},
+			});
+			if (!committed) {
 				graphConflict = true;
 				setToast(ko("The scene changed while deleting, so the image was kept. Please review storage again.", "삭제하는 동안 씬이 변경되어 이미지를 보존했어요. 저장소를 다시 확인해 주세요."));
 				return false;

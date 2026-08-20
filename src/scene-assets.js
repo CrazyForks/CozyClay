@@ -289,6 +289,24 @@ export function assetGraphSignature(scenes) {
 	);
 }
 
+/**
+ * Complete a destructive write only while the asset graph stays at the
+ * authorized snapshot. IndexedDB commits asynchronously, so a scene edit can
+ * race the transaction after the caller's pre-check; restore the record before
+ * reporting a conflict.
+ */
+export async function deleteAssetWithGraphGuard({
+	expectedGraphSignature,
+	deleteRecord,
+	restoreRecord,
+	readGraphSignature,
+}) {
+	await deleteRecord();
+	if (readGraphSignature() === expectedGraphSignature) return true;
+	await restoreRecord();
+	return false;
+}
+
 /** Stored ids that nothing points at any more, ready to be swept. */
 export function unreachableAssetIds(storedIds, scenes) {
 	const reachable = referencedAssetIds(scenes);
