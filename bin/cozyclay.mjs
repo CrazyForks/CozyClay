@@ -15,9 +15,9 @@
  * before it can serve a prebuilt app is a launcher that will break.
  */
 import { spawn } from "node:child_process";
+import { startBridge, terminateOwned } from "../tools/process-supervisor.mjs";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
-import { createConnection, createServer as createNetServer } from "node:net";
 import { homedir } from "node:os";
 import { extname, join, normalize, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -119,63 +119,6 @@ function proxyToBridge(req, res) {
 		res.end(JSON.stringify({ error: "ardy sidecar is not running" }));
 	});
 	req.pipe(upstream);
-}
-
-function canListen(port) {
-	return new Promise((resolvePromise) => {
-		const candidate = createNetServer();
-		candidate.once("error", () => resolvePromise(false));
-		candidate.listen(port, "127.0.0.1", () => candidate.close(() => resolvePromise(true)));
-	});
-}
-
-async function selectBridgePort(mainPort) {
-	if (process.env.COZYCLAY_BRIDGE_PORT !== undefined) {
-		const port = Number(process.env.COZYCLAY_BRIDGE_PORT);
-		if (!Number.isInteger(port) || port < 1 || port > 65535) {
-			throw new Error(`COZYCLAY_BRIDGE_PORT=${JSON.stringify(process.env.COZYCLAY_BRIDGE_PORT)} is not a valid port`);
-		}
-		if (!(await canListen(port))) {
-			throw new Error(`COZYCLAY_BRIDGE_PORT=${port} is already in use; choose another COZYCLAY_BRIDGE_PORT`);
-		}
-		return port;
-	}
-	for (let port = mainPort + 1; port <= 65535; port += 1) {
-		if (await canListen(port)) return port;
-	}
-	throw new Error(`no free bridge port is available at or above ${mainPort + 1}`);
-}
-
-function waitForBridge(child, port) {
-	return new Promise((resolvePromise, reject) => {
-		let retry;
-		let settled = false;
-		const finish = (callback, value) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timeout);
-			clearTimeout(retry);
-			child.off("exit", onExit);
-			callback(value);
-		};
-		const fail = (detail) => finish(reject, new Error(`ARDY bridge on 127.0.0.1:${port} ${detail}`));
-		const onExit = (code, signal) => fail(`exited ${signal ? `from ${signal}` : `with code ${code ?? 0}`}`);
-		const timeout = setTimeout(() => fail("did not listen within 5000 ms"), 5000);
-		const probe = () => {
-			if (settled) return;
-			const socket = createConnection({ host: "127.0.0.1", port });
-			socket.once("connect", () => {
-				socket.destroy();
-				finish(resolvePromise);
-			});
-			socket.once("error", () => {
-				socket.destroy();
-				if (!settled) retry = setTimeout(probe, 25);
-			});
-		};
-		child.once("exit", onExit);
-		probe();
-	});
 }
 
 function readState() {
@@ -312,24 +255,57 @@ if (!existsSync(join(DIST, "app", "index.html"))) {
 // cannot act on. An unset CCLAY_ARDY_HOST is the normal case, not a fault.
 const ardyHost = process.env.CCLAY_ARDY_HOST?.trim();
 let bridge = null;
+let server = null;
+const startedAt = Date.now();
+let shuttingDown = false;
+async function shutdown(exitCode = 0) {
+	if (shuttingDown) return;
+	shuttingDown = true;
+	if (bridge) await terminateOwned(bridge);
+	if (server?.listening) await new Promise((resolvePromise) => server.close(() => resolvePromise()));
+	try {
+		await maybeAskForStar(startedAt, opts);
+	} catch {
+		/* never let the goodbye prompt hold the process hostage */
+	}
+	process.exit(exitCode);
+}
+process.on("SIGINT", () => shutdown(130));
+process.on("SIGTERM", () => shutdown(143));
+
 if (opts.ardy && ardyHost && existsSync(BRIDGE)) {
 	try {
-		bridgePort = await selectBridgePort(opts.port);
-		bridge = spawn(process.execPath, [BRIDGE], {
+		({ child: bridge, port: bridgePort } = await startBridge({
+			command: process.execPath,
+			args: [BRIDGE],
 			cwd: PKG_ROOT,
-			stdio: "inherit",
-			env: { ...process.env, COZYCLAY_BRIDGE_PORT: String(bridgePort) },
-		});
-		await waitForBridge(bridge, bridgePort);
+			env: process.env,
+			mainPort: opts.port,
+			onSpawn: (child) => {
+				bridge = child;
+			},
+			onReady: (child) => {
+				child.once("exit", (code, signal) => {
+					if (shuttingDown) return;
+					console.error(`cozyclay: motion generation sidecar exited ${signal ? `from ${signal}` : `with code ${code ?? 0}`}.`);
+					void shutdown(1);
+				});
+				child.once("error", (err) => {
+					if (shuttingDown) return;
+					console.error(`cozyclay: motion generation sidecar failed: ${err.message}`);
+					void shutdown(1);
+				});
+			},
+		}));
 	} catch (err) {
 		console.error(`cozyclay: motion generation sidecar failed: ${err.message}`);
 		console.error("cozyclay: studio did not start; set COZYCLAY_BRIDGE_PORT to an available port or use --no-ardy.");
-		if (bridge) bridge.kill("SIGTERM");
+		if (bridge) await terminateOwned(bridge);
 		process.exit(1);
 	}
 }
 
-const server = createServer((req, res) => {
+server = createServer((req, res) => {
 	const url = new URL(req.url ?? "/", "http://localhost");
 	// Only the routes the bridge actually owns: /ardy/ is ALSO a public asset
 	// directory (cskel27-rest.json), and those files live in dist/, not behind
@@ -360,33 +336,16 @@ const server = createServer((req, res) => {
 	serveFile(res, target);
 });
 
-const startedAt = Date.now();
-let shuttingDown = false;
-async function shutdown() {
-	if (shuttingDown) process.exit(0);
-	shuttingDown = true;
-	if (bridge) bridge.kill("SIGTERM");
-	server.close();
-	try {
-		await maybeAskForStar(startedAt, opts);
-	} catch {
-		/* never let the goodbye prompt hold the process hostage */
-	}
-	process.exit(0);
-}
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
-
 server.on("error", (err) => {
 	if (err && err.code === "EADDRINUSE") {
 		console.error(`cozyclay: port ${opts.port} is taken. Try --port 5200.`);
-		if (bridge) bridge.kill("SIGTERM");
-		process.exit(1);
+		void shutdown(1);
+		return;
 	}
 	throw err;
 });
 
-server.listen(opts.port, opts.host, () => {
+server.listen({ port: opts.port, host: opts.host, ipv6Only: false }, () => {
 	// The package exists to open the studio, which the site serves from /app/.
 	// Landing on "/" would greet someone who just typed `npx cozyclay` with a
 	// marketing page.

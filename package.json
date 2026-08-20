@@ -6,7 +6,7 @@
     "dev": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
     "dev:ui": "vite",
     "build": "vite build && cp -r public/fonts dist/",
-    "test:lifecycle": "node test/process/verify-lifecycle.mjs",
+    "test:lifecycle": "node test/process/verify-lifecycle.mjs && node test/process/verify-bridge-launch.mjs",
     "test:hierarchy": "node test/verify-hierarchy.mjs",
     "test:history": "node test/verify-history.mjs",
     "test:scene-objects": "node test/verify-scene-objects.mjs",
