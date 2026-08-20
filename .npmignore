@@ -14,3 +14,9 @@ public/
 .DS_Store
 __pycache__/
 *.pyc
+
+# The MCP server ships, but only its source: its dependency tree is installed
+# on demand (npx cozyclay mcp), and its verifiers are for this repo, not users.
+mcp/node_modules/
+mcp/verify*.mjs
+mcp/package-lock.json

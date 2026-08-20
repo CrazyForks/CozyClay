@@ -1,6 +1,6 @@
 {
   "name": "cozyclay",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Open source previs software in the browser: block a scene, pose characters, author camera moves and cuts, then take the same shots to an AI video model.",
   "scripts": {
     "dev": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
@@ -70,10 +70,30 @@
     "tools",
     "!tools/ardy/out",
     "!tools/qa-*.mjs",
+    "mcp/server.mjs",
+    "mcp/live-hub.mjs",
+    "mcp/ardy-prompts.mjs",
+    "mcp/package.json",
+    "mcp/README.md",
+    "mcp/LIVE-PROTOCOL.md",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
   ],
+  "exports": {
+    "./package.json": "./package.json",
+    "./src/*": "./src/*",
+    "./mcp/*": "./mcp/*"
+  },
+  "peerDependencies": {
+    "three": ">=0.180"
+  },
+  "peerDependenciesMeta": {
+    "three": {
+      "optional": true
+    }
+  },
   "engines": {
     "node": ">=22"
   },
