@@ -90,7 +90,7 @@ export const FOLLOW_DEFAULTS = {
 	aimHeight: 1.35,
 	/** vertical tilt added after automatic aiming, in degrees */
 	pitchOffsetDeg: 0,
-	/** hard cap on camera translation (m/s) — a crew has legs, not thrusters */
+	/** cap on unconstrained steering (m/s); exact follow distance wins */
 	maxSpeed: 2.8,
 	/** where a rail dolly opens: the authored head or legacy auto placement */
 	railStartMode: "head",
@@ -164,8 +164,9 @@ function smoothedVelocities(subject, fps) {
 
 /**
  * Free follow (no rail): steadicam behind the subject. The position target
- * sits `distance` metres behind the smoothed travel direction; the camera
- * spring-chases it, the aim spring-chases a lead point. Returns one
+ * sits `distance` metres behind the smoothed travel direction; a spring
+ * chooses the trailing direction, then the camera is projected onto the
+ * exact authored radius. The aim spring chases a lead point. Returns one
  * {pos, yaw, pitch} per subject frame.
  */
 export function buildFollowTrack(subject, fps, params = {}) {
@@ -193,6 +194,8 @@ export function buildFollowTrack(subject, fps, params = {}) {
 	const track = [];
 	for (let f = 0; f < subject.length; f += 1) {
 		if (f > 0) {
+			const previousX = px;
+			const previousZ = pz;
 			const tx = subject[f].x - dirs[f].x * p.distance + vels[f].x * lagComp;
 			const tz = subject[f].z - dirs[f].z * p.distance + vels[f].z * lagComp;
 			// planar spring integrated by hand so the SPEED cap binds the
@@ -206,6 +209,25 @@ export function buildFollowTrack(subject, fps, params = {}) {
 			}
 			px += vx * dt;
 			pz += vz * dt;
+			// Follow distance is a hard framing constraint. The spring chooses
+			// the smooth trailing direction, then this projection puts the
+			// camera back on the requested radius for this exact subject frame.
+			let offsetX = px - subject[f].x;
+			let offsetZ = pz - subject[f].z;
+			const radius = Math.hypot(offsetX, offsetZ);
+			if (radius < 1e-6) {
+				offsetX = -dirs[f].x;
+				offsetZ = -dirs[f].z;
+			} else {
+				offsetX /= radius;
+				offsetZ /= radius;
+			}
+			px = subject[f].x + offsetX * p.distance;
+			pz = subject[f].z + offsetZ * p.distance;
+			// Keep the integrator honest after projection so radial error does
+			// not accumulate invisibly and burst into a later frame.
+			vx = (px - previousX) / dt;
+			vz = (pz - previousZ) / dt;
 			[py, vy] = springStep(py, vy, p.height, omega, dt);
 			const aimTx = subject[f].x + vels[f].x * p.lead;
 			const aimTz = subject[f].z + vels[f].z * p.lead;

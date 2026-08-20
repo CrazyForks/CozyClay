@@ -32,13 +32,14 @@ import {
 	readShotAuthoring,
 } from "./shot-authoring.js";
 import { buildFollowTrack, buildRail, buildRailFollowTrack, followFramingFromCamera, simplifyStroke } from "./camera-follow.js";
-import { createCameraBlock, updateCameraBlock } from "./camera-block.js";
+import { createCameraBlock, removeCameraRail, updateCameraBlock } from "./camera-block.js";
 import {
 	RAIL_SCHEDULE_LEGACY,
 	RAIL_SCHEDULE_RANGE,
 	clampRailRange,
 	defaultRailRange,
 	moveRailRange,
+	railFollowForNewGeometry,
 	resizeRailRange,
 	resolveRailSchedule,
 } from "./camera-rail-schedule.js";
@@ -2183,7 +2184,7 @@ globalThis.playMode = centerTab === "play";
 	function changeCameraRail(points) {
 		changeActiveCamera({
 			cameraRail: points,
-			railFollow: points ? (activeCamera.railFollow ?? defaultRailRange(activeShotDuration)) : null,
+			railFollow: points ? railFollowForNewGeometry(activeCamera.railFollow, activeShotDuration) : null,
 			mode: points ? "rail" : activeCamera.mode === "rail" ? "follow" : activeCamera.mode,
 		});
 	}
@@ -2205,6 +2206,12 @@ globalThis.playMode = centerTab === "play";
 			setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
 			setToast(ko("Draw the selected Shot's rail in the Top-View", "탑뷰에서 선택한 샷의 레일을 그리세요"));
 		}
+	}
+	function deleteCameraRail() {
+		if (!cameraRail) return;
+		setRailDraw(false);
+		changeActiveCamera(removeCameraRail(activeCamera));
+		setToast(ko("Camera rail deleted — Follow keeps the current distance", "카메라 레일 삭제됨 — 팔로우가 현재 거리를 유지합니다"));
 	}
 	function previewCameraShot(index) {
 		const selected = shots[index];
@@ -6998,6 +7005,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					}}
 					onCameraPreview={previewCameraShot}
 					onCameraRailDrawToggle={toggleCameraRailDraw}
+					onCameraRailDelete={deleteCameraRail}
 					onRailSelect={(index) => {
 						selectTimelineShot(index);
 						setSelectedHierarchyId("camera");

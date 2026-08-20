@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { removeCameraRail } from "../src/camera-block.js";
 import {
 	createShotAuthoringDocument,
 	loadShotAuthoring,
@@ -206,6 +207,17 @@ const offRail = loadShotAuthoring(serializeShotAuthoring({
 	shots: [{ startFrame: 0, camera: { mode: "rail", cameraRail, railFollow: { mode: "off" } } }],
 }));
 assert.deepEqual(offRail.shots[0].camera.railFollow, { mode: "off" });
+assert.deepEqual(removeCameraRail({
+	mode: "rail",
+	followCam,
+	cameraRail,
+	railFollow: { mode: "range", startFrame: 10, endFrame: 80 },
+}), {
+	mode: "follow",
+	followCam,
+	cameraRail: null,
+	railFollow: null,
+});
 const badRail = loadShotAuthoring(JSON.stringify({
 	version: 4,
 	frameCount: 100,

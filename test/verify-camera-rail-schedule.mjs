@@ -17,6 +17,7 @@ import {
 	defaultRailRange,
 	isRailUsable,
 	moveRailRange,
+	railFollowForNewGeometry,
 	railCameraOwner,
 	resizeRailRange,
 	resolveRailSchedule,
@@ -40,6 +41,18 @@ expect("default range is the whole timeline", JSON.stringify(defaultRailRange(30
 expect("default range on a 10-frame timeline is exactly 0..9", JSON.stringify(defaultRailRange(10)) === '{"startFrame":0,"endFrame":9}');
 expect("no default range below 10 frames", defaultRailRange(9) === null);
 expect("no default range for a non-finite length", defaultRailRange(Number.NaN) === null);
+expect(
+	"a redrawn rail keeps an authored range",
+	JSON.stringify(railFollowForNewGeometry({ mode: "range", startFrame: 10, endFrame: 80 }, 300)) === '{"mode":"range","startFrame":10,"endFrame":80}',
+);
+expect(
+	"a redrawn rail drops stale OFF for the default range",
+	JSON.stringify(railFollowForNewGeometry({ mode: "off" }, 300)) === '{"startFrame":0,"endFrame":299}',
+);
+expect(
+	"a first rail draw gets the default range",
+	JSON.stringify(railFollowForNewGeometry(null, 300)) === '{"startFrame":0,"endFrame":299}',
+);
 
 /* ------------------------------------------------- rail usability ---- */
 

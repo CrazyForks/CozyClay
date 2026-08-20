@@ -142,6 +142,12 @@ expect(
 	!timeline.includes('ko("Clear rail", "레일 지우기")'),
 );
 expect(
+	"Draw Rail exposes an explicit delete action",
+	timeline.includes('ko("Delete rail", "레일 삭제")') &&
+	timeline.includes("onRailDelete") &&
+	app.includes("removeCameraRail(activeCamera)"),
+);
+expect(
 	"preview starts at the selected shot and stops at its end",
 	app.includes("function previewCameraShot(index)") &&
 	app.includes("cameraPreviewEndRef.current = selected.endFrame") &&

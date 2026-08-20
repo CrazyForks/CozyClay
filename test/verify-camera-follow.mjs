@@ -61,10 +61,8 @@ const walk = straightWalk(8);
 const free = buildFollowTrack(walk, FPS);
 ok("free follow emits one sample per subject frame", free.length === walk.length);
 {
-	// after the spring settles, the grip holds the requested distance
-	const late = free.slice(60);
-	const errs = late.map((s, i) => Math.abs(dist(s.pos, walk[60 + i]) - FOLLOW_DEFAULTS.distance));
-	ok("free follow settles to the requested distance (±0.3 m)", Math.max(...errs) < 0.3, `max err ${Math.max(...errs).toFixed(3)}`);
+	const errs = free.map((sample, frame) => Math.abs(dist(sample.pos, walk[frame]) - FOLLOW_DEFAULTS.distance));
+	ok("free follow holds the requested distance exactly", Math.max(...errs) < 1e-6, `max err ${Math.max(...errs)}`);
 	ok("free follow keeps the requested height", Math.abs(free[100].pos.y - FOLLOW_DEFAULTS.height) < 0.05, String(free[100].pos.y));
 	ok(
 		"free follow opens already composed (no slide-in at frame 0)",
@@ -85,8 +83,20 @@ ok("free follow emits one sample per subject frame", free.length === walk.length
 		maxYawStep < (3 * Math.PI) / 180,
 		`${((maxYawStep * 180) / Math.PI).toFixed(2)} deg/frame`,
 	);
-	const errs = track.slice(40).map((s, i) => Math.abs(dist(s.pos, corner[40 + i]) - FOLLOW_DEFAULTS.distance));
-	ok("corner: distance holds through the turn (±1 m)", Math.max(...errs) < 1, `max err ${Math.max(...errs).toFixed(3)}`);
+	const errs = track.map((sample, frame) => Math.abs(dist(sample.pos, corner[frame]) - FOLLOW_DEFAULTS.distance));
+	ok("corner: follow maintains exact planar distance", Math.max(...errs) < 1e-6, `max err ${Math.max(...errs)}`);
+}
+
+{
+	// Follow is a framing constraint, not merely a spring target. A rapidly
+	// accelerating subject must not leave the camera several metres behind.
+	const accelerating = Array.from({ length: 160 }, (_, frame) => ({
+		x: 0,
+		z: (0.02 * frame * frame) / FPS,
+	}));
+	const track = buildFollowTrack(accelerating, FPS);
+	const errors = track.map((sample, frame) => Math.abs(dist(sample.pos, accelerating[frame]) - FOLLOW_DEFAULTS.distance));
+	ok("accelerating follow maintains exact planar distance", Math.max(...errors) < 1e-6, `max err ${Math.max(...errors)}`);
 }
 
 {
