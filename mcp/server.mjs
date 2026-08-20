@@ -579,15 +579,20 @@ registerTool(
 				.describe('which character — a letter ("A"), a slot number ("2") or an id ("char-a")'),
 			x: z.number().optional().describe("floor position x in metres"),
 			z: z.number().optional().describe("floor position z in metres"),
+			y: z
+				.number()
+				.min(0)
+				.optional()
+				.describe("height above the floor in metres — stand a character on a roof; 0 is the street"),
 			facing: z.number().optional().describe("yaw in degrees; 0 faces the default camera"),
 			subject: z.string().optional().describe("prompt description"),
 			hidden: z.boolean().optional().describe("hide without removing from the cast"),
 		},
 	},
-	async ({ character, x, z: zPos, facing, subject: desc, hidden }) => {
+	async ({ character, x, z: zPos, y, facing, subject: desc, hidden }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("update_character", { ref: character, x, z: zPos, rot: facing, subject: desc, hidden });
+				await liveHub.command("update_character", { ref: character, x, y, z: zPos, rot: facing, subject: desc, hidden });
 				await refreshLiveDescription();
 				return text(`Character updated.\n\n${sceneReport()}`);
 			} catch (error) {
@@ -597,6 +602,7 @@ registerTool(
 		const target = findCharacter(character);
 		if (!target) return text(`No character "${character}". ${castHint()}`);
 		if (x !== undefined) target.x = x;
+		if (y !== undefined) target.y = y;
 		if (zPos !== undefined) target.z = zPos;
 		if (facing !== undefined) target.rot = facing;
 		if (desc !== undefined) target.subject = desc;
@@ -857,9 +863,21 @@ registerTool(
 				.regex(/^\/ardy\/motions\/[0-9]+-[0-9a-f]{6}$/)
 				.optional()
 				.describe("reuse an already-generated clip instead of generating again"),
+			drop: z
+				.object({
+					from_s: z.number().min(0).describe("clip time the plunge begins, seconds"),
+					to_s: z.number().positive().describe("clip time it lands, seconds; must be after from_s"),
+					meters: z.number().positive().max(30).describe("how far the body falls"),
+				})
+				.optional()
+				.describe(
+					"a vertical fall staged onto the clip — the whole body drops this many metres over " +
+						"[from_s, to_s] on a gravity curve. Stand the character on a roof with place_character's " +
+						"y, then drop them past its edge; ARDY itself only generates flat-ground motion.",
+				),
 		},
 	},
-	async ({ phases: rawPhases, seconds, seed, motion_url }) => {
+	async ({ phases: rawPhases, seconds, seed, motion_url, drop }) => {
 		const phases = rawPhases.map((p) => (typeof p === "string" ? p : p.text));
 		const phaseSeconds = rawPhases.map((p) => (typeof p === "string" ? null : p.seconds));
 		const timed = phaseSeconds.some((s) => s !== null);
@@ -949,8 +967,11 @@ registerTool(
 				`\nmotion: ${motionUrl}${promptNote}`;
 			if (!liveHub?.connected) return text(`${summary}\n\nNo live editor connected — open the studio and it can load this URL.`);
 			try {
-				await liveHub.command("load_motion", { url: motionUrl, prompt: prompts.join(" "), blocks: segments });
-				return text(`${summary}\n\nLoaded onto the active character with ${segments.length} prompt blocks on the timeline — press play.`);
+				await liveHub.command("load_motion", { url: motionUrl, prompt: prompts.join(" "), blocks: segments, drop });
+				return text(
+					`${summary}\n\nLoaded onto the active character with ${segments.length} prompt blocks on the timeline` +
+						`${drop ? ` — dropping ${drop.meters}m over ${drop.from_s}–${drop.to_s}s` : ""} — press play.`,
+				);
 			} catch (error) {
 				return text(`${summary}\n\nGenerated, but the editor did not take it: ${error.message}`);
 			}
