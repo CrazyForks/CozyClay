@@ -63,9 +63,13 @@ import { createSceneHistoryStore } from "./scene-history.js";
 import {
 	ASSET_IMAGE_TYPES,
 	assetAspect,
+	getAsset,
 	imageFilesFrom,
 	imageFilesFromClipboard,
 	importImageFile,
+	openAssetDb,
+	putAsset,
+	referencedAssetIds,
 } from "./scene-assets.js";
 import { assetRecord, rememberAsset } from "./scene-asset-cache.js";
 import { cutOutBackground, decodeMask, maskAsset } from "./matte.js";
@@ -2309,30 +2313,60 @@ globalThis.playMode = centerTab === "play";
 	const projectStateRef = useRef(null);
 	projectStateRef.current = { workspaceLayout, customPoses };
 
-	function collectProjectSerialized(name) {
-		const scenesDocument = {
-			version: SCENES_VERSION,
-			activeSceneId: activeSceneIdRef.current,
-			scenes: snapshotActiveScene(),
-		};
-		return JSON.stringify(createProjectDocument({
-			scenesDocument,
+	function projectDocumentInput(name) {
+		return {
+			scenesDocument: {
+				version: SCENES_VERSION,
+				activeSceneId: activeSceneIdRef.current,
+				scenes: snapshotActiveScene(),
+			},
 			workspaceLayout: projectStateRef.current.workspaceLayout,
 			customPoses: projectStateRef.current.customPoses,
 			name,
-		}), null, 2);
+		};
 	}
 
-	function markProjectClean(name, serialized) {
-		projectSnapshotRef.current = serialized;
+	function collectProjectSnapshot(name) {
+		return JSON.stringify(createProjectDocument(projectDocumentInput(name)));
+	}
+
+	async function collectProjectSerialized(name) {
+		const input = projectDocumentInput(name);
+		const db = await openAssetDb();
+		try {
+			const assets = await Promise.all([...referencedAssetIds(input.scenesDocument.scenes)].map((id) => getAsset(db, id)));
+			return JSON.stringify(createProjectDocument({ ...input, assets }), null, 2);
+		} finally {
+			db.close();
+		}
+	}
+
+	function markProjectClean(name) {
+		projectSnapshotRef.current = collectProjectSnapshot(name);
 		setProjectDirty(false);
 		setProjectName(name);
 	}
 
+	async function rehydrateProjectAssets(project, warnings = []) {
+		for (const warning of warnings) console.warn(`[cozyclay] ${warning}`);
+		if (!project.assets.length) return;
+		try {
+			const db = await openAssetDb();
+			try {
+				const results = await Promise.allSettled(project.assets.map((asset) => putAsset(db, asset)));
+				for (const result of results) if (result.status === "rejected") console.warn("[cozyclay] could not restore an embedded asset", result.reason);
+			} finally {
+				db.close();
+			}
+		} catch (error) {
+			console.warn("[cozyclay] could not open the asset store for project restore", error);
+		}
+	}
+
 	async function saveProject(saveAs = false) {
 		const name = projectName ?? "Untitled";
-		const serialized = collectProjectSerialized(name);
 		try {
+			const serialized = await collectProjectSerialized(name);
 			let handle = projectHandleRef.current;
 			if (saveAs || !handle || !hasFileSystemAccess()) {
 				if (hasFileSystemAccess()) {
@@ -2346,7 +2380,7 @@ globalThis.playMode = centerTab === "play";
 			} else {
 				await writeProjectFile(handle, serialized);
 			}
-			markProjectClean(name, serialized);
+			markProjectClean(name);
 			setToast(isKo ? `프로젝트 저장됨: ${name}${PROJECT_EXTENSION}` : `Project saved: ${name}${PROJECT_EXTENSION}`);
 		} catch (err) {
 			if (err?.name === "AbortError") return; // user closed the picker
@@ -2354,7 +2388,7 @@ globalThis.playMode = centerTab === "play";
 		}
 	}
 
-	function applyProject(project, serialized) {
+	function applyProject(project) {
 		const source = project.scenesDocument;
 		// A project FILE carries its own scene document and never passes the
 		// storage reader, so the 20 fps → 24 fps clock migration is applied here
@@ -2369,7 +2403,7 @@ globalThis.playMode = centerTab === "play";
 		saveCustomPoses(project.customPoses);
 		persistScenes(doc.scenes, doc.activeSceneId);
 		openScene(doc.scenes[activeSceneIndex(doc.scenes, doc.activeSceneId)], doc.scenes);
-		projectSnapshotRef.current = serialized;
+		projectSnapshotRef.current = collectProjectSnapshot(project.name);
 		setProjectDirty(false);
 		setProjectName(project.name);
 	}
@@ -2392,7 +2426,8 @@ globalThis.playMode = centerTab === "play";
 			}
 			projectHandleRef.current = handle;
 			if (handle) await rememberRecentProject(handle, result.project.name);
-			applyProject(result.project, file.text);
+			await rehydrateProjectAssets(result.project, result.warnings);
+			applyProject(result.project);
 			setToast(isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`);
 		} catch (err) {
 			if (err?.name === "AbortError") return;
@@ -2413,7 +2448,8 @@ globalThis.playMode = centerTab === "play";
 			}
 			projectHandleRef.current = handle;
 			await rememberRecentProject(handle, result.project.name);
-			applyProject(result.project, file.text);
+			await rehydrateProjectAssets(result.project, result.warnings);
+			applyProject(result.project);
 			setProjectBrowserOpen(false);
 			setToast(isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`);
 		} catch (err) {
@@ -2450,7 +2486,8 @@ globalThis.playMode = centerTab === "play";
 				const result = readProjectDocument(file.text);
 				if (!result.ok) return;
 				projectHandleRef.current = record.handle;
-				applyProject(result.project, file.text);
+				await rehydrateProjectAssets(result.project, result.warnings);
+				applyProject(result.project);
 				setToast(isKo ? `프로젝트 복원됨: ${result.project.name}` : `Project restored: ${result.project.name}`);
 			} catch {
 				/* missing or unreadable file: fall back to the session cache */
@@ -2874,7 +2911,7 @@ globalThis.playMode = centerTab === "play";
 	// Dirty tracking: any divergence from the last saved file lights the dot.
 	useEffect(() => {
 		if (projectName === null) return; // untitled sessions are never "dirty"
-		const serialized = collectProjectSerialized(projectName);
+		const serialized = collectProjectSnapshot(projectName);
 		setProjectDirty(serialized !== projectSnapshotRef.current);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [scenes, activeSceneId, workspaceLayout, customPoses, characters, shots, waypoints, promptClips, projectName]);

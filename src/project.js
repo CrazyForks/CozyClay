@@ -14,8 +14,9 @@
  */
 
 import { SCENES_VERSION } from "./scenes.js";
+import { ASSET_MAX_SOURCE_BYTES, normalizeAsset, referencedAssetIds } from "./scene-assets.js";
 
-export const PROJECT_VERSION = 1;
+export const PROJECT_VERSION = 2;
 export const PROJECT_EXTENSION = ".cclayproject";
 const IDB_NAME = "cozyclay.project-handle.v1";
 const IDB_STORE = "kv";
@@ -23,7 +24,75 @@ const IDB_KEY = "lastProjectHandle";
 
 /* ------------------------------- envelope ------------------------------- */
 
-export function createProjectDocument({ scenesDocument, workspaceLayout, customPoses, name }) {
+function asArrayBuffer(bytes) {
+	if (bytes instanceof ArrayBuffer) return bytes;
+	if (ArrayBuffer.isView(bytes)) return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+	return null;
+}
+
+function bytesToBase64(bytes) {
+	const view = new Uint8Array(bytes);
+	let binary = "";
+	for (let offset = 0; offset < view.length; offset += 0x8000) {
+		binary += String.fromCharCode(...view.subarray(offset, offset + 0x8000));
+	}
+	return btoa(binary);
+}
+
+function base64ToBytes(value) {
+	if (typeof value !== "string" || value.length < 4 || value.length % 4 || value.length > Math.ceil(ASSET_MAX_SOURCE_BYTES / 3) * 4) return null;
+	for (let index = 0; index < value.length; index += 1) {
+		const code = value.charCodeAt(index);
+		const base64Character = (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || (code >= 48 && code <= 57) || code === 43 || code === 47;
+		if (!base64Character && code !== 61) return null;
+		if (code === 61 && index < value.length - 2) return null;
+	}
+	try {
+		const binary = atob(value);
+		const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+		if (bytes.byteLength > ASSET_MAX_SOURCE_BYTES || bytesToBase64(bytes) !== value) return null;
+		return bytes.buffer;
+	} catch {
+		return null;
+	}
+}
+
+function embeddedAsset(record) {
+	const bytes = asArrayBuffer(record?.bytes);
+	const asset = normalizeAsset({ ...record, bytes });
+	if (!asset || asset.bytes.byteLength > ASSET_MAX_SOURCE_BYTES) return null;
+	// Base64 keeps JSON's asset payload unambiguous; a data URL would duplicate
+	// MIME metadata already carried by `type` and force every reader to strip it.
+	return { ...asset, bytes: bytesToBase64(asset.bytes) };
+}
+
+function readEmbeddedAssets(value) {
+	const assets = [];
+	const warnings = [];
+	if (!Array.isArray(value)) return { assets, warnings };
+	for (const entry of value) {
+		const bytes = base64ToBytes(entry?.bytes);
+		const asset = bytes && normalizeAsset({ ...entry, bytes });
+		if (!asset || asset.bytes.byteLength > ASSET_MAX_SOURCE_BYTES) {
+			warnings.push("Skipped an invalid embedded asset.");
+			continue;
+		}
+		assets.push(asset);
+	}
+	return { assets, warnings };
+}
+
+export function createProjectDocument({ scenesDocument, workspaceLayout, customPoses, name, assets }) {
+	const assetRecords = new Map();
+	for (const record of Array.isArray(assets) ? assets : []) {
+		const asset = embeddedAsset(record);
+		if (asset) assetRecords.set(asset.id, asset);
+	}
+	const embeddedAssets = [];
+	for (const id of referencedAssetIds(scenesDocument?.scenes)) {
+		const asset = assetRecords.get(id);
+		if (asset) embeddedAssets.push(asset);
+	}
 	return {
 		app: "cozyclay",
 		kind: "project",
@@ -32,6 +101,7 @@ export function createProjectDocument({ scenesDocument, workspaceLayout, customP
 		scenes: scenesDocument,
 		workspace: workspaceLayout ?? null,
 		poseLibrary: Array.isArray(customPoses) ? customPoses : [],
+		assets: embeddedAssets,
 	};
 }
 
@@ -51,8 +121,10 @@ export function readProjectDocument(raw) {
 	if (!scenes || typeof scenes !== "object" || scenes.version > SCENES_VERSION || !Array.isArray(scenes.scenes)) {
 		return { ok: false, reason: "scenes-invalid" };
 	}
+	const embedded = parsed.version >= 2 ? readEmbeddedAssets(parsed.assets) : { assets: [], warnings: [] };
 	return {
 		ok: true,
+		warnings: embedded.warnings,
 		project: {
 			name: typeof parsed.name === "string" && parsed.name.trim() ? parsed.name.trim() : "Untitled",
 			scenesDocument: { version: scenes.version, activeSceneId: scenes.activeSceneId ?? null, scenes: scenes.scenes },
@@ -60,6 +132,7 @@ export function readProjectDocument(raw) {
 			customPoses: Array.isArray(parsed.poseLibrary)
 				? parsed.poseLibrary.filter((p) => p && typeof p === "object" && typeof p.id === "string" && p.bones && typeof p.bones === "object")
 				: [],
+			assets: embedded.assets,
 		},
 	};
 }
