@@ -136,22 +136,46 @@ ok("free follow emits one sample per subject frame", free.length === walk.length
 }
 
 {
-	// rail alongside a straight walk: dolly pushes parallel, holds distance
+	// rail alongside a straight walk: dolly follows the authored arc
 	const walkLong = straightWalk(10);
 	const rail = buildRail([{ x: -2.5, z: -2 }, { x: -2.5, z: 16 }]);
 	const track = buildRailFollowTrack(walkLong, FPS, rail);
 	ok("rail follow emits one sample per subject frame", track.length === walkLong.length);
 	const onRail = track.every((s) => Math.abs(s.pos.x - -2.5) < 1e-6);
 	ok("the camera never leaves the rail", onRail);
-	const late = track.slice(80);
-	const errs = late.map((s, i) => Math.abs(dist(s.pos, walkLong[80 + i]) - FOLLOW_DEFAULTS.distance));
-	ok("rail follow holds distance where the rail allows it (±0.5 m)", Math.max(...errs) < 0.5, `max err ${Math.max(...errs).toFixed(3)}`);
+	ok("rail follow advances through the authored rail", track.at(-1).s > rail.length - 0.2, `s ${track.at(-1).s.toFixed(3)} / ${rail.length.toFixed(3)}`);
 	const sSteps = track.slice(1).map((s, i) => s.s - track[i].s);
 	ok(
 		"the dolly respects its speed cap",
 		Math.max(...sSteps.map(Math.abs)) <= 4 / FPS + 1e-6,
 		`${(Math.max(...sSteps.map(Math.abs)) * FPS).toFixed(2)} m/s`,
 	);
+}
+
+{
+	// A rail that pulls away from a stationary subject must keep traversing.
+	// Distance is a framing preference, not permission to stop the authored move.
+	const stationary = Array.from({ length: 180 }, () => ({ x: 0, z: 0 }));
+	const rail = buildRail([{ x: 1, z: 0 }, { x: 8, z: 0 }]);
+	for (const maxDollySpeed of [FOLLOW_DEFAULTS.maxDollySpeed, 1]) {
+		const track = buildRailFollowTrack(stationary, FPS, rail, { response: 0.1, maxDollySpeed });
+		const sSteps = track.slice(1).map((sample, i) => sample.s - track[i].s);
+		ok(
+			`response 0.1 pull-out reaches the authored far end at ${maxDollySpeed} m/s`,
+			track.at(-1).s > rail.length - 0.2,
+			`s ${track.at(-1).s.toFixed(3)} / ${rail.length.toFixed(3)}`,
+		);
+		ok(
+			`response 0.1 pull-out never travels backward at ${maxDollySpeed} m/s`,
+			Math.min(...sSteps) >= -EPS,
+			`min Δs ${Math.min(...sSteps).toFixed(6)}`,
+		);
+		ok(
+			`response 0.1 pull-out respects the ${maxDollySpeed} m/s cap`,
+			Math.max(...sSteps) <= maxDollySpeed / FPS + EPS,
+			`max Δs ${(Math.max(...sSteps) * FPS).toFixed(6)} m/s`,
+		);
+	}
 }
 
 {
