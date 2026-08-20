@@ -2614,6 +2614,10 @@ globalThis.playMode = centerTab === "play";
 				// 1x1x1 no matter how it was actually built.
 				objects: live.objects.map((object) => ({
 					id: object.id, name: object.name,
+					// The kind travels with the report: a renamed object ("Building A")
+					// can no longer be recognised by its name, and a record that loses
+					// its renderer round-trips into something the set cannot draw.
+					renderer: object.renderer,
 					x: object.x, y: object.y, z: object.z, rot: object.rot,
 					scaleX: object.scaleX, scaleY: object.scaleY, scaleZ: object.scaleZ,
 					parent: object.parent ?? null,

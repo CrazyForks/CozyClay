@@ -178,7 +178,15 @@ const applyLiveDescription = (description) => {
 		const prior = new Map(sc.objects.map((object) => [object.id, object]));
 		sc.objects = description.objects.map((object) => {
 			const previous = prior.get(object.id);
-			const kind = OBJECT_LIBRARY.find(({ label }) => object.name === label || object.name?.startsWith(`${label} `))?.kind;
+			// The reported renderer is the truth; the name match is only a rescue
+			// for older editors that did not send one. A renamed object ("Building
+			// A") defeats the name match, and a record without a renderer survives
+			// the save but cannot be drawn after the load.
+			const kind =
+				(typeof object.renderer === "string" && OBJECT_LIBRARY.some((entry) => entry.kind === object.renderer)
+					? object.renderer
+					: null) ??
+				OBJECT_LIBRARY.find(({ label }) => object.name === label || object.name?.startsWith(`${label} `))?.kind;
 			const defaults = previous ?? (kind ? createSceneObject(kind, sc.objects, object) : null);
 			// The editor is the source of truth for anything it reports; the
 			// library defaults only fill what the frame omits. Defaulting AFTER
