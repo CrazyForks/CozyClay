@@ -103,6 +103,17 @@ export async function rememberAsset(asset) {
 	return stored;
 }
 
+/** Forget a deleted asset so undo cannot render stale in-memory bytes. */
+export function evictAssetTexture(id) {
+	const entry = entries.get(id);
+	if (!entry) return;
+	entry.texture?.image?.close?.();
+	entry.texture?.dispose();
+	entry.texture = null;
+	announce(entry);
+	entries.delete(id);
+}
+
 /** Subscribe to one id; returns an unsubscribe. The listener fires
  * immediately when the texture is already cached, so a mount never waits a
  * frame for something that is in memory. */

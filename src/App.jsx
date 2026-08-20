@@ -63,6 +63,7 @@ import { createSceneHistoryStore } from "./scene-history.js";
 import {
 	ASSET_IMAGE_TYPES,
 	assetAspect,
+	assetIdForBytes,
 	deleteAsset,
 	getAsset,
 	imageFilesFrom,
@@ -75,7 +76,7 @@ import {
 	unreachableAssetIds,
 } from "./scene-assets.js";
 import { sourceAssetIds } from "./asset-shelf.js";
-import { assetRecord, rememberAsset } from "./scene-asset-cache.js";
+import { assetRecord, evictAssetTexture, rememberAsset } from "./scene-asset-cache.js";
 import { cutOutBackground, decodeMask, maskAsset } from "./matte.js";
 import { createMatteEditor } from "./matte-editor.js";
 import {
@@ -1874,7 +1875,10 @@ globalThis.playMode = centerTab === "play";
 				cutOutBackground(source, { mask: options.mask }),
 				maskAsset(options.mask, { width: options.maskWidth, height: options.maskHeight, name: `${source.name || "cutout"} matte` }),
 			]);
-			await Promise.all([rememberAsset(cut.asset), rememberAsset(matte)]);
+			await Promise.all([
+				rememberAsset({ ...cut.asset, role: "derived" }),
+				rememberAsset({ ...matte, role: "derived" }),
+			]);
 			const fullFrameHeight = object.height / (object.matteScale || 1);
 			changeSceneObject(object.id, {
 				assetId: cut.asset.id,
@@ -2165,6 +2169,7 @@ globalThis.playMode = centerTab === "play";
 	// manager exposes every unreachable stored record, including matte and cut
 	// derivatives orphaned with a deleted card.
 	const [unusedAssetIds, setUnusedAssetIds] = useState(null);
+	const assetShelfScanTokenRef = useRef(0);
 	// This is deliberately session-only. Each entry is a complete IndexedDB
 	// record, so Undo can put it back byte-for-byte until the page is reloaded.
 	const [assetTrash, setAssetTrash] = useState([]);
@@ -2174,20 +2179,25 @@ globalThis.playMode = centerTab === "play";
 		[sceneObjects],
 	);
 	async function refreshAssetShelf(isAlive = () => true) {
+		const scanToken = ++assetShelfScanTokenRef.current;
+		const current = () => isAlive() && scanToken === assetShelfScanTokenRef.current;
 		let db = null;
 		try {
 			db = await openAssetDb();
 			const stored = await listAssetIds(db);
+			const records = await Promise.all(stored.map((id) => getAsset(db, id)));
+			const derivedIds = new Set(records.filter((record) => record?.role === "derived").map((record) => record.id));
 			// The active scene's live objects override its saved snapshot. That
 			// includes an unsaved matte or cutout edit in the reachability closure.
-			const allScenes = scenes.map((scene) => (scene.id === activeSceneId ? { ...scene, objects: sceneObjects } : scene));
-			if (!isAlive()) return;
-			setShelfImageIds(sourceAssetIds(stored, allScenes));
+			const { scenes: latestScenes, activeSceneId: latestActiveSceneId, sceneObjects: latestObjects } = projectStateRef.current;
+			const allScenes = latestScenes.map((scene) => (scene.id === latestActiveSceneId ? { ...scene, objects: latestObjects } : scene));
+			if (!current()) return;
+			setShelfImageIds(sourceAssetIds(stored, allScenes, derivedIds));
 			setUnusedAssetIds(unreachableAssetIds(stored, allScenes));
 		} catch {
 			// No IndexedDB means no imports can exist either; both honest views are
 			// empty rather than presenting an unverifiable deletion target.
-			if (isAlive()) {
+			if (current()) {
 				setShelfImageIds([]);
 				setUnusedAssetIds([]);
 			}
@@ -2213,19 +2223,21 @@ globalThis.playMode = centerTab === "play";
 		try {
 			db = await openAssetDb();
 			const stored = await listAssetIds(db);
-			// Rebuild this at the destructive boundary rather than trusting the
-			// displayed list: a just-created cutout can make its image reachable.
-			const allScenes = scenes.map((scene) => (scene.id === activeSceneId ? { ...scene, objects: sceneObjects } : scene));
-			if (!unreachableAssetIds(stored, allScenes).includes(id)) {
-				setToast(ko("That image is now used by a scene and was not deleted", "이 이미지는 이제 씬에서 사용 중이어서 삭제하지 않았어요"));
-				return false;
-			}
 			const record = await getAsset(db, id);
 			if (!record) {
 				setToast(ko("That image is no longer in storage", "이 이미지는 이미 저장소에 없습니다"));
 				return false;
 			}
+			// Rebuild this at the destructive boundary rather than trusting the
+			// displayed list: a just-created cutout can make its image reachable.
+			const { scenes: latestScenes, activeSceneId: latestActiveSceneId, sceneObjects: latestObjects } = projectStateRef.current;
+			const allScenes = latestScenes.map((scene) => (scene.id === latestActiveSceneId ? { ...scene, objects: latestObjects } : scene));
+			if (!unreachableAssetIds(stored, allScenes).includes(id)) {
+				setToast(ko("That image is now used by a scene and was not deleted", "이 이미지는 이제 씬에서 사용 중이어서 삭제하지 않았어요"));
+				return false;
+			}
 			await deleteAsset(db, id);
+			evictAssetTexture(id);
 			setAssetTrash((current) => [...current.filter((asset) => asset.id !== record.id), record]);
 			deleted = true;
 			return true;
@@ -2464,7 +2476,7 @@ globalThis.playMode = centerTab === "play";
 	const projectHandleRef = useRef(null);
 	const projectSnapshotRef = useRef("");
 	const projectStateRef = useRef(null);
-	projectStateRef.current = { workspaceLayout, customPoses };
+	projectStateRef.current = { workspaceLayout, customPoses, scenes, activeSceneId, sceneObjects };
 
 	function projectDocumentInput(name) {
 		return {
@@ -2506,7 +2518,18 @@ globalThis.playMode = centerTab === "play";
 		try {
 			const db = await openAssetDb();
 			try {
-				const results = await Promise.allSettled(project.assets.map((asset) => putAsset(db, asset)));
+				const referenced = referencedAssetIds(project.scenesDocument.scenes);
+				const results = await Promise.allSettled(project.assets.map(async (asset) => {
+					if (!referenced.has(asset.id)) {
+						console.warn(`[cozyclay] skipped embedded asset outside the project closure: ${asset.id}`);
+						return;
+					}
+					if ((await assetIdForBytes(asset.bytes)) !== asset.id) {
+						console.warn(`[cozyclay] skipped embedded asset with mismatched content address: ${asset.id}`);
+						return;
+					}
+					await putAsset(db, asset);
+				}));
 				for (const result of results) if (result.status === "rejected") console.warn("[cozyclay] could not restore an embedded asset", result.reason);
 			} finally {
 				db.close();

@@ -2,9 +2,10 @@
 // boundaries that keep a project file from clobbering the session.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createProjectDocument, readProjectDocument, PROJECT_VERSION, PROJECT_EXTENSION } from "../src/project.js";
+import { webcrypto } from "node:crypto";
+import { createProjectDocument, readProjectDocument, verifyEmbeddedAsset, PROJECT_VERSION, PROJECT_EXTENSION } from "../src/project.js";
 import { createSceneDocument, createSceneStage, SCENES_VERSION } from "../src/scenes.js";
-import { ASSET_MAX_SOURCE_BYTES, referencedAssetIds } from "../src/scene-assets.js";
+import { ASSET_MAX_SOURCE_BYTES, assetIdForBytes, referencedAssetIds } from "../src/scene-assets.js";
 
 const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 
@@ -28,10 +29,16 @@ assert.equal(parsed.project.workspaceLayout.hierarchyWidth, 320);
 assert.equal(parsed.project.customPoses.length, 1);
 
 // --- embedded scene assets -------------------------------------------------
-const renderedAssetId = `img-${"a".repeat(32)}`;
-const sourceAssetId = `img-${"b".repeat(32)}`;
-const matteAssetId = `img-${"c".repeat(32)}`;
-const orphanAssetId = `img-${"d".repeat(32)}`;
+const renderedBytes = new Uint8Array([1, 2, 3]);
+const sourceBytes = new Uint8Array([4, 5, 6]);
+const matteBytes = new Uint8Array([7, 8, 9]);
+const orphanBytes = new Uint8Array([10]);
+const [renderedAssetId, sourceAssetId, matteAssetId, orphanAssetId] = await Promise.all([
+	assetIdForBytes(renderedBytes, webcrypto.subtle),
+	assetIdForBytes(sourceBytes, webcrypto.subtle),
+	assetIdForBytes(matteBytes, webcrypto.subtle),
+	assetIdForBytes(orphanBytes, webcrypto.subtle),
+]);
 const assetScenesDocument = createSceneDocument("CUTOUTS");
 assetScenesDocument.scenes[0].objects = [{
 	id: "matted-cutout",
@@ -41,10 +48,10 @@ assetScenesDocument.scenes[0].objects = [{
 	matteAssetId,
 }];
 const fakeAssets = [
-	{ id: renderedAssetId, type: "image/png", width: 80, height: 60, name: "rendered.png", bytes: new Uint8Array([1, 2, 3]) },
-	{ id: sourceAssetId, type: "image/jpeg", width: 80, height: 60, name: "source.jpg", bytes: new Uint8Array([4, 5, 6]) },
-	{ id: matteAssetId, type: "image/png", width: 80, height: 60, name: "matte.png", bytes: new Uint8Array([7, 8, 9]) },
-	{ id: orphanAssetId, type: "image/png", width: 80, height: 60, name: "orphan.png", bytes: new Uint8Array([10]) },
+	{ id: renderedAssetId, type: "image/png", width: 80, height: 60, name: "rendered.png", bytes: renderedBytes },
+	{ id: sourceAssetId, type: "image/jpeg", width: 80, height: 60, name: "source.jpg", bytes: sourceBytes },
+	{ id: matteAssetId, type: "image/png", width: 80, height: 60, name: "matte.png", bytes: matteBytes },
+	{ id: orphanAssetId, type: "image/png", width: 80, height: 60, name: "orphan.png", bytes: orphanBytes },
 ];
 const assetDocument = createProjectDocument({ scenesDocument: assetScenesDocument, assets: fakeAssets });
 const embeddedAssetIds = assetDocument.assets.map((asset) => asset.id).sort();
@@ -64,6 +71,15 @@ assert.deepEqual(
 		bytes: [...Buffer.from(bytes, "base64")],
 	})),
 	"embedded asset records round-trip byte-for-byte",
+);
+
+// --- embedded hash verification -------------------------------------------
+assert.equal(await verifyEmbeddedAsset(fakeAssets[0], webcrypto.subtle), true, "matching embedded bytes verify against their content address");
+assert.equal(await verifyEmbeddedAsset({ ...fakeAssets[0], id: sourceAssetId }, webcrypto.subtle), false, "mismatched embedded bytes fail content-address verification");
+assert.deepEqual(
+	fakeAssets.filter((asset) => referencedAssetIds(assetScenesDocument.scenes).has(asset.id)).map((asset) => asset.id).sort(),
+	[renderedAssetId, sourceAssetId, matteAssetId].sort(),
+	"the referenced closure excludes unrelated embedded ids",
 );
 
 // --- validation boundaries ------------------------------------------------

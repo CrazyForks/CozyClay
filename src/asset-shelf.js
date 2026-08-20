@@ -38,9 +38,9 @@ export function assetKind(asset) {
 }
 
 /** The stored ids the shelf shows, in stored order. */
-export function sourceAssetIds(storedIds, scenes) {
+export function sourceAssetIds(storedIds, scenes, derivedIds = new Set()) {
 	const sources = new Set();
-	const derived = new Set();
+	const derived = new Set(Array.isArray(derivedIds) || derivedIds instanceof Set ? derivedIds : []);
 	for (const scene of Array.isArray(scenes) ? scenes : []) {
 		for (const object of Array.isArray(scene?.objects) ? scene.objects : []) {
 			if (object?.renderer !== CUTOUT_KIND) continue;

@@ -14,7 +14,7 @@
  */
 
 import { SCENES_VERSION } from "./scenes.js";
-import { ASSET_MAX_SOURCE_BYTES, normalizeAsset, referencedAssetIds } from "./scene-assets.js";
+import { ASSET_MAX_SOURCE_BYTES, assetIdForBytes, normalizeAsset, referencedAssetIds } from "./scene-assets.js";
 
 export const PROJECT_VERSION = 2;
 export const PROJECT_EXTENSION = ".cclayproject";
@@ -64,6 +64,17 @@ function embeddedAsset(record) {
 	// Base64 keeps JSON's asset payload unambiguous; a data URL would duplicate
 	// MIME metadata already carried by `type` and force every reader to strip it.
 	return { ...asset, bytes: bytesToBase64(asset.bytes) };
+}
+
+/** Verify that an embedded record still belongs at its content-addressed id. */
+export async function verifyEmbeddedAsset(record, subtle) {
+	const bytes = asArrayBuffer(record?.bytes);
+	if (!bytes) return false;
+	try {
+		return (await assetIdForBytes(bytes, subtle)) === record.id;
+	} catch {
+		return false;
+	}
 }
 
 function readEmbeddedAssets(value) {

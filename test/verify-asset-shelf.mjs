@@ -58,6 +58,11 @@ const reused = sourceAssetIds([RENDERED, SOURCE], [
 ]);
 expect("an id that is anyone's source stays visible", reused.includes(RENDERED));
 
+// A deleted cutout leaves its pipeline outputs in storage. Persisted derived
+// metadata keeps those orphaned internals out of the placeable shelf.
+const orphanedDerived = sourceAssetIds([SOURCE, RENDERED, MATTE], [], new Set([RENDERED, MATTE]));
+expect("orphaned rendered and matte assets stay hidden", JSON.stringify(orphanedDerived) === JSON.stringify([SOURCE]), orphanedDerived.join(", "));
+
 // A legacy record without sourceAssetId is its own original.
 const legacy = sourceAssetIds([PLAIN], [{ objects: [{ renderer: "cutout", assetId: PLAIN }] }]);
 expect("a cutout without lineage fields counts as unmatted", legacy.includes(PLAIN));

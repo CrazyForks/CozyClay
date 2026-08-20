@@ -78,6 +78,7 @@ expect("the cap never enlarges", downscaleTarget(10, 10, 2048).scaled === false)
 const record = { id, type: "image/png", width: 1200, height: 800, bytes: bytes.buffer, name: "sofa.png" };
 const asset = normalizeAsset(record);
 expect("a well-formed record survives repair", asset.id === id && asset.width === 1200 && asset.name === "sofa.png");
+expect("a derived record preserves its storage role", normalizeAsset({ ...record, role: "derived" }).role === "derived");
 expect("the aspect comes from the stored size", assetAspect(asset) === 1.5 && assetAspect({ width: 0, height: 4 }) === null);
 expect(
 	"a record with no drawable bytes is dropped",

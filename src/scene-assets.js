@@ -105,7 +105,15 @@ export function normalizeAsset(record) {
 	if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return null;
 	const bytes = record.bytes instanceof ArrayBuffer ? record.bytes : null;
 	if (!bytes || !bytes.byteLength) return null;
-	return { id: record.id, type: record.type.toLowerCase(), width, height, bytes, name: typeof record.name === "string" ? record.name : "" };
+	return {
+		id: record.id,
+		type: record.type.toLowerCase(),
+		width,
+		height,
+		bytes,
+		name: typeof record.name === "string" ? record.name : "",
+		...(typeof record.role === "string" ? { role: record.role } : {}),
+	};
 }
 
 /**
