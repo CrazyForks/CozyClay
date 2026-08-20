@@ -186,4 +186,3 @@ graph LR
 | Excalidraw식 24h grace 타이머 GC | excalidraw [S87] | 협업/비동기 경합 없는 솔로 앱엔 불필요한 기계; 명시적 확인+undo로 대체 (R2) |
 | 카탈로그 UUID 트리 | Blender [S50] | 단일 사용자·평평한 세트엔 태그/카테고리면 충분 — 보류 (Blender 자체 counter) |
 | '작업 범위에 국한된 분산' 프레이밍 (현상 유지) | contrarian 초기 감사 | git 이력이 '설계되지 않은 누적'임을 입증 [C-CB9]; 기각 (R2b) |
-
