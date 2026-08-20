@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -15,32 +15,74 @@ const MCP_RUNTIME = process.env.COZYCLAY_MCP_RUNTIME_DIR || join(
 	PACKAGE_VERSION,
 );
 
-function probeMcpRuntime() {
-	const runtimeRequire = createRequire(join(MCP_RUNTIME, "package.json"));
+function probeMcpRuntime(runtime = MCP_RUNTIME) {
+	const server = join(runtime, "mcp", "server.mjs");
+	if (!existsSync(server)) throw new Error("MCP server is missing");
+	const runtimeRequire = createRequire(join(runtime, "package.json"));
 	for (const dependency of ["@modelcontextprotocol/sdk/server/mcp.js", "three", "ws", "zod"]) runtimeRequire.resolve(dependency);
-	return join(MCP_RUNTIME, "mcp", "server.mjs");
+	return server;
 }
 
 function installMcpRuntime() {
 	return new Promise((done) => {
-		mkdirSync(MCP_RUNTIME, { recursive: true });
-		rmSync(join(MCP_RUNTIME, "mcp"), { recursive: true, force: true });
-		rmSync(join(MCP_RUNTIME, "src"), { recursive: true, force: true });
-		copyFileSync(join(MCP_RUNTIME_SOURCE, "package.json"), join(MCP_RUNTIME, "package.json"));
-		copyFileSync(join(MCP_RUNTIME_SOURCE, "package-lock.json"), join(MCP_RUNTIME, "package-lock.json"));
-		cpSync(join(PKG_ROOT, "mcp"), join(MCP_RUNTIME, "mcp"), { recursive: true });
-		cpSync(join(PKG_ROOT, "src"), join(MCP_RUNTIME, "src"), { recursive: true });
+		const parent = dirname(MCP_RUNTIME);
+		mkdirSync(parent, { recursive: true });
+		try {
+			probeMcpRuntime();
+			done({ code: 0 });
+			return;
+		} catch {
+			// A killed older install can leave an incomplete final directory.
+			// Only complete stagings are ever renamed here, so an invalid final
+			// cache is safe to discard before this attempt begins.
+			rmSync(MCP_RUNTIME, { recursive: true, force: true });
+		}
+		const staging = mkdtempSync(join(parent, `${basename(MCP_RUNTIME)}.install-`));
+		copyFileSync(join(MCP_RUNTIME_SOURCE, "package.json"), join(staging, "package.json"));
+		copyFileSync(join(MCP_RUNTIME_SOURCE, "package-lock.json"), join(staging, "package-lock.json"));
+		cpSync(join(PKG_ROOT, "mcp"), join(staging, "mcp"), { recursive: true });
+		cpSync(join(PKG_ROOT, "src"), join(staging, "src"), { recursive: true });
 
 		const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 		const child = spawn(npm, ["ci", "--no-audit", "--no-fund"], {
-			cwd: MCP_RUNTIME,
+			cwd: staging,
 			stdio: ["ignore", "pipe", "pipe"],
 			shell: process.platform === "win32",
 		});
 		child.stdout.pipe(process.stderr);
 		child.stderr.pipe(process.stderr);
-		child.on("error", (error) => done({ code: 1, error }));
-		child.on("exit", (code) => done({ code: code ?? 1 }));
+		child.on("error", (error) => {
+			rmSync(staging, { recursive: true, force: true });
+			done({ code: 1, error });
+		});
+		child.on("exit", (code) => {
+			if (code !== 0) {
+				rmSync(staging, { recursive: true, force: true });
+				done({ code: code ?? 1 });
+				return;
+			}
+			try {
+				probeMcpRuntime(staging);
+				try {
+					probeMcpRuntime();
+					rmSync(staging, { recursive: true, force: true });
+				} catch {
+					try {
+						renameSync(staging, MCP_RUNTIME);
+					} catch (error) {
+						// Another first run can publish its complete staging
+						// directory first. Accept that winner only after the
+						// same full probe; never execute a partial cache.
+						probeMcpRuntime();
+						rmSync(staging, { recursive: true, force: true });
+					}
+				}
+				done({ code: 0 });
+			} catch (error) {
+				rmSync(staging, { recursive: true, force: true });
+				done({ code: 1, error });
+			}
+		});
 	});
 }
 

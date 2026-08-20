@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,6 +23,21 @@ function run(command, args, options = {}) {
 
 function sha256(file) {
 	return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+
+function runAsync(command, args, options = {}) {
+	return new Promise((resolvePromise, reject) => {
+		const child = spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"] });
+		let stdout = "";
+		let stderr = "";
+		child.stdout.setEncoding("utf8");
+		child.stderr.setEncoding("utf8");
+		child.stdout.on("data", (chunk) => { stdout += chunk; });
+		child.stderr.on("data", (chunk) => { stderr += chunk; });
+		child.once("error", reject);
+		child.once("close", (status, signal) => resolvePromise({ status, signal, stdout, stderr }));
+		child.stdin.end(`${initialize}\n`);
+	});
 }
 
 try {
@@ -65,6 +80,23 @@ try {
 	assert.equal(second.status, 0, second.stderr);
 	assert.equal(JSON.parse(second.stdout.trim()).id, 1, second.stdout);
 	assert.doesNotMatch(second.stderr, /installing MCP server dependencies/, second.stderr);
+
+	const concurrentHome = join(scratch, "concurrent-home");
+	const concurrentEnv = {
+		...environment,
+		HOME: concurrentHome,
+		npm_config_cache: join(scratch, "concurrent-cache"),
+	};
+	const concurrent = await Promise.all([
+		runAsync(process.execPath, ["bin/cozyclay.mjs", "mcp"], { cwd: packageRoot, env: concurrentEnv }),
+		runAsync(process.execPath, ["bin/cozyclay.mjs", "mcp"], { cwd: packageRoot, env: concurrentEnv }),
+	]);
+	for (const result of concurrent) {
+		assert.equal(result.status, 0, result.stderr);
+		assert.equal(JSON.parse(result.stdout.trim()).id, 1, result.stdout);
+	}
+	assert.deepEqual(readFileSync(rootManifest), manifestBefore, "concurrent MCP installs must not rewrite the root manifest");
+	assert.equal(existsSync(rootLock), false, "concurrent MCP installs must not create a root lockfile");
 
 	const failure = run(process.execPath, ["bin/cozyclay.mjs", "mcp"], {
 		cwd: packageRoot,

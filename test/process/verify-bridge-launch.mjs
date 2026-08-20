@@ -9,7 +9,10 @@ import { spawnOwned, terminateOwned } from "../../tools/process-supervisor.mjs";
 const execFileAsync = promisify(execFile);
 const REPO = new URL("../..", import.meta.url);
 const BRIDGE = "tools/ardy/bridge.mjs";
-const READY_TIMEOUT_MS = 5_000;
+// Child readiness is event-driven; this timeout is only a deadlock bound.
+// A loaded CI host can take more than five seconds to start a fresh Node/Vite
+// pair even though no product timer is involved.
+const READY_TIMEOUT_MS = 15_000;
 
 function withTimeout(promise, label) {
 	let timer;
@@ -94,7 +97,9 @@ function createOutputWatcher(child) {
 					check();
 				}),
 				label,
-			);
+			).catch((error) => {
+				throw new Error(`${error.message}\n${output}`);
+			});
 		},
 	};
 }
@@ -210,6 +215,15 @@ async function expectLifecycle(kind) {
 
 await expectBridgeIpcReadiness();
 await expectForeignListenerDoesNotReportBridgeReady();
+{
+	const invalidMainPort = spawnOwned(process.execPath, ["bin/cozyclay.mjs", "--port", "65535", "--no-open", "--no-star"], {
+		cwd: REPO,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const output = createOutputWatcher(invalidMainPort);
+	await waitForExit(invalidMainPort, "package invalid main port");
+	assert.match(output.all(), /--port must be an integer in 1\.\.65534/, "package validates a main port that leaves room for its bridge");
+}
 for (const kind of ["dev", "package"]) {
 	await expectLaunchFailure(kind, { COZYCLAY_BRIDGE_PORT: "invalid", CCLAY_ARDY_MODE: "remote" }, /COZYCLAY_BRIDGE_PORT=.*not a valid port/);
 	const occupied = createServer();

@@ -65,8 +65,8 @@ function parseArgs(argv) {
 			opts.help = true;
 		}
 	}
-	if (!Number.isInteger(opts.port) || opts.port < 1 || opts.port > 65535) {
-		console.error("cozyclay: --port must be a port number");
+	if (!Number.isInteger(opts.port) || opts.port < 1 || opts.port > 65534) {
+		console.error("cozyclay: --port must be an integer in 1..65534");
 		opts.help = true;
 	}
 	return opts;
