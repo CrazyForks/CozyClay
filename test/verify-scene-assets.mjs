@@ -92,22 +92,38 @@ expect("a non-record is dropped, not fatal", normalizeAsset(null) === null && no
 
 /* ------------------------------------------------------ reachability ---- */
 
-const other = `${ASSET_ID_PREFIX}${"a".repeat(32)}`;
+const rendered = `${ASSET_ID_PREFIX}${"a".repeat(32)}`;
 const orphan = `${ASSET_ID_PREFIX}${"b".repeat(32)}`;
+const source = `${ASSET_ID_PREFIX}${"c".repeat(32)}`;
+const matte = `${ASSET_ID_PREFIX}${"d".repeat(32)}`;
+const secondSceneAsset = `${ASSET_ID_PREFIX}${"e".repeat(32)}`;
 const scenes = [
-	{ objects: [{ id: "cube", renderer: "cube" }, { id: "cutout", renderer: "cutout", assetId: id }] },
-	{ objects: [{ id: "cutout", renderer: "cutout", assetId: other }, { id: "cutout-2", renderer: "cutout", assetId: id }] },
+	{
+		objects: [
+			{ id: "cube", renderer: "cube" },
+			{ id: "matted-cutout", renderer: "cutout", assetId: rendered, sourceAssetId: source, matteAssetId: matte },
+			{ id: "duplicated-matted-cutout", renderer: "cutout", assetId: rendered, sourceAssetId: source, matteAssetId: matte },
+			{ id: "source-only-cutout", renderer: "cutout", assetId: id, sourceAssetId: id, matteAssetId: "" },
+		],
+	},
+	{ objects: [{ id: "second-scene-cutout", renderer: "cutout", assetId: secondSceneAsset, sourceAssetId: secondSceneAsset, matteAssetId: "" }] },
 ];
 const reachable = referencedAssetIds(scenes);
-expect("every scene's cutouts are reachable, counted once", reachable.size === 2 && reachable.has(id) && reachable.has(other));
+expect(
+	"a matted cutout keeps its rendered picture, source and matte reachable",
+	reachable.has(rendered) && reachable.has(source) && reachable.has(matte),
+);
+expect("a source-only cutout has no phantom references", reachable.has(id) && !reachable.has(""));
+expect("duplicated matted cutouts count their shared id trio once", reachable.size === 5);
+expect("an asset in a second scene is reachable", reachable.has(secondSceneAsset));
 expect("a malformed document is empty, not fatal", referencedAssetIds(null).size === 0 && referencedAssetIds([{ objects: "no" }, null]).size === 0);
 expect(
-	"only unreferenced ids are swept",
-	JSON.stringify(unreachableAssetIds([id, other, orphan], scenes)) === JSON.stringify([orphan]),
+	"only truly unreferenced ids are swept",
+	JSON.stringify(unreachableAssetIds([id, rendered, source, matte, secondSceneAsset, orphan], scenes)) === JSON.stringify([orphan]),
 );
 expect(
 	"a picture shared by two scenes is never swept",
-	unreachableAssetIds([id], scenes).length === 0 && unreachableAssetIds([other], [scenes[1]]).length === 0,
+	unreachableAssetIds([secondSceneAsset], scenes).length === 0 && unreachableAssetIds([rendered], [scenes[0]]).length === 0,
 );
 expect("a junk stored key is not mistaken for an asset", JSON.stringify(unreachableAssetIds(["junk", orphan], scenes)) === JSON.stringify([orphan]));
 

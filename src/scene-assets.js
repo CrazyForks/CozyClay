@@ -242,7 +242,11 @@ export function referencedAssetIds(scenes) {
 	const ids = new Set();
 	for (const scene of Array.isArray(scenes) ? scenes : []) {
 		for (const object of Array.isArray(scene?.objects) ? scene.objects : []) {
-			if (isAssetId(object?.assetId)) ids.add(object.assetId);
+			// A matted cutout needs all three stored images to remain editable:
+			// its rendered result, original picture and matte.
+			for (const assetId of [object?.assetId, object?.sourceAssetId, object?.matteAssetId]) {
+				if (isAssetId(assetId)) ids.add(assetId);
+			}
 		}
 	}
 	return ids;
