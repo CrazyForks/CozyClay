@@ -201,11 +201,17 @@ export function createSceneObject(kind, existing = [], placement = {}) {
  * `name` seeds the display name (the file's own name is the obvious caller
  * choice); everything else starts neutral, exactly like a catalogue object.
  */
-export function createCutoutObject({ assetId, aspect = 1, height = CUTOUT_DEFAULT_HEIGHT, name = "" } = {}, existing = [], placement = {}) {
+export function createCutoutObject({ assetId, aspect = 1, height = CUTOUT_DEFAULT_HEIGHT, name = "", sourceAssetId, matteAssetId, matteScale, stretch } = {}, existing = [], placement = {}) {
 	if (typeof assetId !== "string" || !assetId) return null;
 	const pictureAspect = cutoutAspect(Number(aspect));
 	const cardHeight = cutoutHeight(Number(height));
 	if (!Number.isFinite(pictureAspect) || !Number.isFinite(cardHeight)) return null;
+	// A duplicate hands the lineage in so the copy stays re-editable: the
+	// picture it renders, the photograph it came from, the selection mask,
+	// the trim factor and the stretch. A fresh import passes none, so the
+	// defaults below leave it as its own unmasked original — exactly the
+	// record an untouched card has always carried.
+	const cardStretch = cutoutStretch(stretch);
 	const base = typeof name === "string" && name.trim() ? name.trim() : CUTOUT_ENTRY.label;
 	const names = new Set(existing.map((object) => object.name));
 	let displayName = base;
@@ -231,15 +237,39 @@ export function createCutoutObject({ assetId, aspect = 1, height = CUTOUT_DEFAUL
 		// Key order matches what `normalizeSceneObject` writes, so a record
 		// survives a storage round trip byte-for-byte.
 		assetId,
-		// A picture nobody has cut is its own original, with no purple on it.
-		sourceAssetId: assetId,
-		matteAssetId: "",
-		matteScale: 1,
+		// A picture nobody has cut is its own original, with no purple on it;
+		// a duplicate passes the lineage through so the copy stays re-editable.
+		sourceAssetId: typeof sourceAssetId === "string" && sourceAssetId ? sourceAssetId : assetId,
+		matteAssetId: typeof matteAssetId === "string" ? matteAssetId : "",
+		matteScale: Number.isFinite(Number(matteScale)) ? Number(matteScale) : 1,
 		aspect: pictureAspect,
-		// A new card wears the picture's own proportions.
-		stretch: 1,
-		footprint: cutoutFootprint(cardHeight, pictureAspect, 1),
+		// A new card wears the picture's own proportions; a widened one carries
+		// its factor through so the copy keeps the shape it was pulled to.
+		stretch: cardStretch,
+		footprint: cutoutFootprint(cardHeight, pictureAspect, cardStretch),
 		height: cardHeight,
+	};
+}
+
+/**
+ * The option bundle a cutout duplicate hands to `createCutoutObject`. A copy
+ * is minted through the same door an import is, so it must carry the picture
+ * it renders AND the photograph it came from, the selection mask, the trim
+ * factor and the stretch — otherwise the matte is silently reset and the
+ * duplicate is no longer re-editable. Kept as its own pure helper so the
+ * duplicate path and its test speak the very same option-building, not a
+ * hand-rolled copy.
+ */
+export function duplicateCutoutOptions(object) {
+	return {
+		assetId: object.assetId,
+		aspect: object.aspect,
+		height: object.height,
+		name: object.name,
+		sourceAssetId: object.sourceAssetId,
+		matteAssetId: object.matteAssetId,
+		matteScale: object.matteScale,
+		stretch: object.stretch,
 	};
 }
 

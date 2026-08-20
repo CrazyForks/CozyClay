@@ -50,6 +50,7 @@ import {
 	OBJECT_COLORS,
 	createCutoutObject,
 	createSceneObject,
+	duplicateCutoutOptions,
 	dropToSurfacePatch,
 	objectSize,
 	placementInFront,
@@ -1855,7 +1856,7 @@ globalThis.playMode = centerTab === "play";
 		// original is already wearing — so the copy is created through its own
 		// door and shares the asset rather than importing it twice.
 		const copy = object.renderer === CUTOUT_KIND
-			? createCutoutObject({ assetId: object.assetId, aspect: object.aspect, height: object.height, name: object.name }, sceneObjects, placement)
+			? createCutoutObject(duplicateCutoutOptions(object), sceneObjects, placement)
 			: createSceneObject(object.renderer, sceneObjects, placement);
 		if (!copy) return;
 		// Unity drops the duplicate exactly on top of the original; for blocking,

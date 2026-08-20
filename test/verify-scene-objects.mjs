@@ -12,6 +12,7 @@ import {
 	OBJECT_LIBRARY,
 	createSceneObject,
 	createCutoutObject,
+	duplicateCutoutOptions,
 	cutoutFootprint,
 	CUTOUT_KIND,
 	CUTOUT_MAX_HEIGHT,
@@ -593,6 +594,60 @@ expect(
   "and both of its dimensions still scale together",
   Math.abs(widenedGrown.footprint.width - 10.8) < 1e-9 && Math.abs(widenedGrown.height - 2.7) < 1e-9,
   `${widenedGrown.footprint.width} x ${widenedGrown.height}`,
+);
+
+/* -------------------------------------------------- duplicate ---- */
+
+// A matted cutout is a three-id record: the picture it renders, the photo it
+// came from, and the selection mask, plus the trim factor and any stretch.
+// Duplicating it must carry ALL of that through `createCutoutObject` — the
+// same door an import uses — so the copy stays re-editable instead of
+// silently resetting its matte. The option bundle comes from the pure
+// `duplicateCutoutOptions` helper, which is the very same call App.jsx makes,
+// so this guards the real production path, not a hand-rolled copy.
+
+const matted = updateSceneObject([sofa], sofa.id, {
+	assetId: "img-aaa-render",
+	sourceAssetId: "img-bbb-original",
+	matteAssetId: "img-ccc-matte",
+	matteScale: 0.5,
+	aspect: 1.4,
+	height: 0.9,
+	width: 2.52,
+})[0];
+const mattedDup = createCutoutObject(duplicateCutoutOptions(matted), [matted], { x: matted.x + 0.5, z: matted.z, rot: matted.rot });
+expect(
+	"a matted cutout duplicate keeps the picture, the original and the mask",
+	mattedDup !== null &&
+		mattedDup.assetId === "img-aaa-render" &&
+		mattedDup.sourceAssetId === "img-bbb-original" &&
+		mattedDup.matteAssetId === "img-ccc-matte",
+	JSON.stringify(mattedDup),
+);
+expect(
+	"a matted cutout duplicate keeps the trim factor",
+	mattedDup.matteScale === 0.5,
+	JSON.stringify(mattedDup),
+);
+expect(
+	"a matted cutout duplicate keeps the stretch and its derived footprint",
+	mattedDup.stretch === matted.stretch && Math.abs(mattedDup.footprint.width - matted.footprint.width) < 1e-9,
+	`${mattedDup.stretch}/${mattedDup.footprint.width} vs ${matted.stretch}/${matted.footprint.width}`,
+);
+expect(
+	"a matted duplicate is a NEW record (fresh id and offset name), not the original",
+	mattedDup.id !== matted.id && mattedDup.name !== matted.name,
+	JSON.stringify({ id: mattedDup.id, name: mattedDup.name }),
+);
+
+// A never-matted card has an empty mask and is its own original; duplicating
+// it must keep those defaults without crashing or inventing a matte.
+const plain = createCutoutObject({ assetId: "img-plain", aspect: 2, height: 1.8, name: "Plain" }, []);
+const plainDup = createCutoutObject(duplicateCutoutOptions(plain), [plain]);
+expect(
+	"a never-matted duplicate keeps empty mask and self-as-original",
+	plainDup.sourceAssetId === plain.assetId && plainDup.matteAssetId === "" && plainDup.matteScale === 1,
+	JSON.stringify(plainDup),
 );
 
 
