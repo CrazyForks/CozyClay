@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { execFile, fork } from "node:child_process";
 import { once } from "node:events";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { promisify } from "node:util";
 import { spawnOwned, terminateOwned } from "../../tools/process-supervisor.mjs";
 
@@ -54,6 +54,29 @@ async function listenerPids(port) {
 		if (error.code === 1) return [];
 		throw error;
 	}
+}
+
+function canConnect(port) {
+	return new Promise((resolvePromise) => {
+		const socket = createConnection({ host: "127.0.0.1", port });
+		socket.once("connect", () => {
+			socket.destroy();
+			resolvePromise(true);
+		});
+		socket.once("error", () => {
+			socket.destroy();
+			resolvePromise(false);
+		});
+	});
+}
+
+async function listenerPidsAfterConnect(port) {
+	for (let attempt = 0; attempt < 20; attempt += 1) {
+		const pids = await listenerPids(port);
+		if (pids.length) return pids;
+		await new Promise((resolvePromise) => setImmediate(resolvePromise));
+	}
+	return [];
 }
 
 async function reserveMainAndAdjacentPort() {
@@ -184,7 +207,8 @@ async function expectLifecycle(kind) {
 	try {
 		const ready = await output.waitFor(/ARDY dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} bridge readiness`);
 		assert.equal(Number(ready[1]), bridgePort, `${kind} skips occupied main + 1`);
-		const bridgePids = await listenerPids(bridgePort);
+		assert.equal(await canConnect(bridgePort), true, `${kind} accepts TCP after readiness`);
+		const bridgePids = await listenerPidsAfterConnect(bridgePort);
 		assert.equal(bridgePids.length, 1, `${kind} bridge owns the selected port`);
 
 		const [bridgePid] = bridgePids;
