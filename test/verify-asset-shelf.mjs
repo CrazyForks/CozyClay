@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The Assets shelf must show what the user IMPORTED and hide what the matte
 // pipeline DERIVED. This suite pins that split as pure data-in/data-out.
-import { assetKind, formatAssetBytes, sourceAssetIds } from "../src/asset-shelf.js";
+import { assetKind, derivedAssetIds, formatAssetBytes, sourceAssetIds } from "../src/asset-shelf.js";
 
 let failures = 0;
 function expect(name, condition, detail = "") {
@@ -62,6 +62,23 @@ expect("an id that is anyone's source stays visible", reused.includes(RENDERED))
 // metadata keeps those orphaned internals out of the placeable shelf.
 const orphanedDerived = sourceAssetIds([SOURCE, RENDERED, MATTE], [], new Set([RENDERED, MATTE]));
 expect("orphaned rendered and matte assets stay hidden", JSON.stringify(orphanedDerived) === JSON.stringify([SOURCE]), orphanedDerived.join(", "));
+
+// The scan backfills pre-role stores: while a matted cutout still lives, its
+// pipeline outputs are identifiable from lineage alone, so the store can be
+// stamped before the cutout (and the knowledge) goes away.
+const backfill = derivedAssetIds(scenes);
+expect(
+	"scene lineage names both pipeline outputs for backfill",
+	backfill.has(RENDERED) && backfill.has(MATTE) && backfill.size === 2,
+	[...backfill].join(", "),
+);
+expect("an id that is also a source is never backfilled as derived", !derivedAssetIds([
+	{ objects: [
+		{ renderer: "cutout", assetId: RENDERED, sourceAssetId: SOURCE, matteAssetId: "" },
+		{ renderer: "cutout", assetId: RENDERED, sourceAssetId: RENDERED, matteAssetId: "" },
+	] },
+]).has(RENDERED));
+expect("hostile scenes yield an empty backfill set", derivedAssetIds(null).size === 0);
 
 // A legacy record without sourceAssetId is its own original.
 const legacy = sourceAssetIds([PLAIN], [{ objects: [{ renderer: "cutout", assetId: PLAIN }] }]);

@@ -37,10 +37,11 @@ export function assetKind(asset) {
 	return /\bmatte$/i.test(String(asset?.name ?? "").trim()) ? "matte" : "image";
 }
 
-/** The stored ids the shelf shows, in stored order. */
-export function sourceAssetIds(storedIds, scenes, derivedIds = new Set()) {
+/** The lineage walk both views share: which ids the scenes call source, and
+ * which they call pipeline output. */
+function classifyLineage(scenes) {
 	const sources = new Set();
-	const derived = new Set(Array.isArray(derivedIds) || derivedIds instanceof Set ? derivedIds : []);
+	const derived = new Set();
 	for (const scene of Array.isArray(scenes) ? scenes : []) {
 		for (const object of Array.isArray(scene?.objects) ? scene.objects : []) {
 			if (object?.renderer !== CUTOUT_KIND) continue;
@@ -56,6 +57,25 @@ export function sourceAssetIds(storedIds, scenes, derivedIds = new Set()) {
 			if (isAssetId(matteAssetId)) derived.add(matteAssetId);
 		}
 	}
+	return { sources, derived };
+}
+
+/**
+ * The ids the scenes prove to be pipeline outputs right now. The scan stamps
+ * these onto their stored records (`role: "derived"`) so a store written
+ * before the role field existed is backfilled while the proving cutout still
+ * lives — once the card is deleted the lineage is gone and an unmarked
+ * derivative would be indistinguishable from an import.
+ */
+export function derivedAssetIds(scenes) {
+	const { sources, derived } = classifyLineage(scenes);
+	return new Set([...derived].filter((id) => !sources.has(id)));
+}
+
+/** The stored ids the shelf shows, in stored order. */
+export function sourceAssetIds(storedIds, scenes, derivedIds = new Set()) {
+	const { sources, derived } = classifyLineage(scenes);
+	for (const id of Array.isArray(derivedIds) || derivedIds instanceof Set ? derivedIds : []) derived.add(id);
 	return (Array.isArray(storedIds) ? storedIds : []).filter(
 		(id) => isAssetId(id) && (sources.has(id) || !derived.has(id)),
 	);

@@ -75,7 +75,7 @@ import {
 	referencedAssetIds,
 	unreachableAssetIds,
 } from "./scene-assets.js";
-import { sourceAssetIds } from "./asset-shelf.js";
+import { derivedAssetIds, sourceAssetIds } from "./asset-shelf.js";
 import { assetRecord, evictAssetTexture, rememberAsset } from "./scene-asset-cache.js";
 import { cutOutBackground, decodeMask, maskAsset } from "./matte.js";
 import { createMatteEditor } from "./matte-editor.js";
@@ -2170,6 +2170,7 @@ globalThis.playMode = centerTab === "play";
 	// derivatives orphaned with a deleted card.
 	const [unusedAssetIds, setUnusedAssetIds] = useState(null);
 	const assetShelfScanTokenRef = useRef(0);
+	const legacyDerivedIdsRef = useRef(new Set());
 	// This is deliberately session-only. Each entry is a complete IndexedDB
 	// record, so Undo can put it back byte-for-byte until the page is reloaded.
 	const [assetTrash, setAssetTrash] = useState([]);
@@ -2178,6 +2179,39 @@ globalThis.playMode = centerTab === "play";
 		() => JSON.stringify(sceneObjects.flatMap((object) => (object.renderer === CUTOUT_KIND ? [[object.assetId, object.sourceAssetId, object.matteAssetId]] : []))),
 		[sceneObjects],
 	);
+	const projectCutoutLineage = useMemo(() => {
+		const allScenes = scenes.map((scene) => (scene.id === activeSceneId ? { ...scene, objects: sceneObjects } : scene));
+		return JSON.stringify(
+			allScenes.flatMap((scene) =>
+				(Array.isArray(scene.objects) ? scene.objects : []).flatMap((object) =>
+					object.renderer === CUTOUT_KIND ? [[object.assetId, object.sourceAssetId, object.matteAssetId]] : [],
+				),
+			),
+		);
+	}, [scenes, activeSceneId, sceneObjects]);
+	useEffect(() => {
+		const { scenes: latestScenes, activeSceneId: latestActiveSceneId, sceneObjects: latestObjects } = projectStateRef.current;
+		const allScenes = latestScenes.map((scene) => (scene.id === latestActiveSceneId ? { ...scene, objects: latestObjects } : scene));
+		const ids = derivedAssetIds(allScenes);
+		for (const id of ids) legacyDerivedIdsRef.current.add(id);
+		if (ids.size === 0) return;
+		let db = null;
+		async function backfillLegacyAssetRoles() {
+			try {
+				db = await openAssetDb();
+				for (const id of ids) {
+					const record = await getAsset(db, id);
+					if (!record || record.role === "derived") continue;
+					await putAsset(db, { ...record, role: "derived" });
+				}
+			} catch (error) {
+				console.warn("Could not backfill legacy asset roles", error);
+			} finally {
+				db?.close?.();
+			}
+		}
+		void backfillLegacyAssetRoles();
+	}, [projectCutoutLineage]);
 	async function refreshAssetShelf(isAlive = () => true) {
 		const scanToken = ++assetShelfScanTokenRef.current;
 		const current = () => isAlive() && scanToken === assetShelfScanTokenRef.current;
@@ -2186,7 +2220,10 @@ globalThis.playMode = centerTab === "play";
 			db = await openAssetDb();
 			const stored = await listAssetIds(db);
 			const records = await Promise.all(stored.map((id) => getAsset(db, id)));
-			const derivedIds = new Set(records.filter((record) => record?.role === "derived").map((record) => record.id));
+			const derivedIds = new Set([
+				...legacyDerivedIdsRef.current,
+				...records.filter((record) => record?.role === "derived").map((record) => record.id),
+			]);
 			// The active scene's live objects override its saved snapshot. That
 			// includes an unsaved matte or cutout edit in the reachability closure.
 			const { scenes: latestScenes, activeSceneId: latestActiveSceneId, sceneObjects: latestObjects } = projectStateRef.current;
