@@ -7166,13 +7166,23 @@ input[type=range] {
 }
 
 .inspector-scroll > .card.foldout.open:last-child {
-	flex: 1;
+	/* Grow into leftover space, but never shrink below the content's own height.
+	   `flex: 1` set a 0 basis, so a tall section (the matte editor and its help
+	   text) was squeezed to whatever was left and then clipped by the card's
+	   own `overflow: hidden` — the pane above saw nothing to scroll, and the cut
+	   text was unreachable. Growing without shrinking keeps the filled-pane look
+	   and hands the overflow up to `.inspector-scroll`, which does scroll. */
+	flex: 1 0 auto;
 	display: flex;
 	flex-direction: column;
+	min-height: 0;
+	/* The card must not swallow the overflow it is meant to pass upward. */
+	overflow: visible;
 }
 
 .inspector-scroll > .card.foldout.open:last-child .foldout-body {
-	flex: 1;
+	flex: 1 0 auto;
+	min-height: 0;
 }
 
 /* inspector footer: the destructive action pinned to the pane's bottom edge,

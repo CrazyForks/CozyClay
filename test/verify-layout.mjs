@@ -204,5 +204,43 @@ expect(
 );
 expect("a deleted character takes its full take with it", app.includes("motionFullRef.current.delete(charId);"));
 
+const CSS = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+/** The body of the LAST rule with this exact selector, so later overrides win. */
+function readRule(selector) {
+  const needle = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(needle + "\\s*\\{([^}]*)\\}", "g");
+  let last = "", m;
+  while ((m = re.exec(CSS))) last = m[1];
+  return last;
+}
+
+/* ---------------------------------------------------- inspector overflow --- */
+// The last open section used to carry `flex: 1` — a zero basis that squeezed a
+// tall section (the matte editor and its help text) down to whatever space was
+// left, where the card's own `overflow: hidden` then cut it off. The scroll
+// container above saw nothing to scroll, so the cut text was unreachable.
+
+const lastCardRule = readRule(".inspector-scroll > .card.foldout.open:last-child");
+expect(
+  "the last inspector section may grow but never shrink below its content",
+  /flex:\s*1\s+0\s+auto/.test(lastCardRule),
+  lastCardRule,
+);
+expect(
+  "the last inspector section does not clip what it should hand upward",
+  /overflow:\s*visible/.test(lastCardRule),
+  lastCardRule,
+);
+// `overflow: auto` is set in the base rule and never revoked, so assert across
+// every `.inspector-scroll` block rather than only the last one.
+const scrollRules = [...CSS.matchAll(/\.inspector-scroll\s*\{([^}]*)\}/g)].map((m) => m[1]);
+expect(
+  "the inspector scroll container still owns the scrolling",
+  scrollRules.some((body) => /overflow:\s*auto/.test(body)) &&
+    !scrollRules.some((body) => /overflow(-y)?:\s*(hidden|clip)/.test(body)),
+  scrollRules.join(" | ").slice(0, 200),
+);
+
+
 if (failures) process.exit(1);
 console.log("all resizable workspace checks PASS");
