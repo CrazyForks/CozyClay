@@ -21,6 +21,8 @@ import { homedir } from "node:os";
 import { extname, join, normalize, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { runMcp } from "./mcp-runtime.mjs";
+import { openBrowser } from "./open-browser.mjs";
 
 const PKG_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const DIST = join(PKG_ROOT, "dist");
@@ -178,54 +180,6 @@ async function maybeAskForStar(startedAt, opts) {
 	} else {
 		console.log(`Fair enough. ${REPO_URL} if you change your mind.`);
 	}
-}
-
-function openBrowser(url) {
-	const cmd =
-		process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-	const child = spawn(cmd, [url], { stdio: "ignore", detached: true, shell: process.platform === "win32" });
-	child.on("error", () => {
-		/* headless box, no browser: the URL is printed anyway */
-	});
-	child.unref();
-}
-
-/**
- * `cozyclay mcp` hands over to the MCP server.
- *
- * Its dependencies are NOT the launcher's: the studio path stays dependency
- * free on purpose, and the MCP SDK is a 95-package tree nobody who only wants
- * a viewport should download. So the server ships with the package, its deps
- * are installed on demand, and a missing one produces an exact instruction
- * rather than a stack trace.
- */
-async function runMcp(rest) {
-	const server = join(PKG_ROOT, "mcp", "server.mjs");
-	if (!existsSync(server)) {
-		console.error("cozyclay: this build does not include the MCP server.");
-		process.exit(1);
-	}
-	// The deps must land in the PACKAGE root, not in mcp/: server.mjs imports
-	// ../src/*.js, and those files resolve `three` from cozyclay/ itself.
-	try {
-		await import("@modelcontextprotocol/sdk/server/mcp.js");
-		await import("three");
-	} catch {
-		console.error(
-			[
-				"cozyclay: the MCP server needs four packages the studio does not.",
-				"",
-				`  npm install --prefix ${JSON.stringify(PKG_ROOT)} \\`,
-				"    @modelcontextprotocol/sdk ws zod three",
-				"",
-				"Then run `npx cozyclay mcp` again. They are kept out of the default",
-				"install so opening the studio never waits on a 95-package tree.",
-			].join("\n"),
-		);
-		process.exit(1);
-	}
-	const child = spawn(process.execPath, [server, ...rest], { stdio: "inherit" });
-	child.on("exit", (code, signal) => process.exit(signal ? 1 : (code ?? 0)));
 }
 
 const argv = process.argv.slice(2);

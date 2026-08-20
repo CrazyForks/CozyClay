@@ -73,6 +73,7 @@
     "mcp/server.mjs",
     "mcp/live-hub.mjs",
     "mcp/ardy-prompts.mjs",
+    "mcp/runtime",
     "mcp/package.json",
     "mcp/README.md",
     "mcp/LIVE-PROTOCOL.md",

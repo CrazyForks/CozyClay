@@ -90,8 +90,8 @@ The studio ships an [MCP](https://modelcontextprotocol.io) server, so an AI assi
 ```
 
 Drop that into `claude_desktop_config.json` (or any MCP client config) and restart the client. The
-first run prints one `npm install` line: the MCP SDK is a 95-package tree, and opening the studio
-should never wait on it, so those dependencies are fetched only when you actually want the server.
+first run automatically installs the MCP SDK's 95-package tree; opening the studio never waits on
+it, so those dependencies are fetched only when you actually want the server.
 
 - **Editor open?** Tool calls move the visible viewport — camera, cast, set, generated motion, prompt blocks on the timeline.
 - **No editor?** The same tools run headless: block scenes, derive film vocabulary (“wide shot · right profile · knee level · 24mm”), render AI video prompts, and write `.cclayproject` files the studio opens.
