@@ -64,6 +64,7 @@ import {
 	ASSET_IMAGE_TYPES,
 	assetAspect,
 	assetIdForBytes,
+	assetUsageCounts,
 	deleteAsset,
 	getAsset,
 	imageFilesFrom,
@@ -2169,6 +2170,8 @@ globalThis.playMode = centerTab === "play";
 	// manager exposes every unreachable stored record, including matte and cut
 	// derivatives orphaned with a deleted card.
 	const [unusedAssetIds, setUnusedAssetIds] = useState(null);
+	const [usedAssetIds, setUsedAssetIds] = useState(null);
+	const [usageCounts, setUsageCounts] = useState(new Map());
 	const assetShelfScanTokenRef = useRef(0);
 	const legacyDerivedIdsRef = useRef(new Set());
 	// This is deliberately session-only. Each entry is a complete IndexedDB
@@ -2228,15 +2231,21 @@ globalThis.playMode = centerTab === "play";
 			// includes an unsaved matte or cutout edit in the reachability closure.
 			const { scenes: latestScenes, activeSceneId: latestActiveSceneId, sceneObjects: latestObjects } = projectStateRef.current;
 			const allScenes = latestScenes.map((scene) => (scene.id === latestActiveSceneId ? { ...scene, objects: latestObjects } : scene));
+			const latestUsageCounts = assetUsageCounts(allScenes);
+			const latestUsedAssetIds = stored.filter((id) => latestUsageCounts.has(id));
 			if (!current()) return;
 			setShelfImageIds(sourceAssetIds(stored, allScenes, derivedIds));
 			setUnusedAssetIds(unreachableAssetIds(stored, allScenes));
+			setUsedAssetIds(latestUsedAssetIds);
+			setUsageCounts(latestUsageCounts);
 		} catch {
 			// No IndexedDB means no imports can exist either; both honest views are
 			// empty rather than presenting an unverifiable deletion target.
 			if (current()) {
 				setShelfImageIds([]);
 				setUnusedAssetIds([]);
+				setUsedAssetIds([]);
+				setUsageCounts(new Map());
 			}
 		} finally {
 			db?.close?.();
@@ -2252,7 +2261,7 @@ globalThis.playMode = centerTab === "play";
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [bottomTab, scenes, activeSceneId, cutoutLineage]);
 
-	async function deleteUnusedAsset(id) {
+	async function deleteUnusedAsset(id, expectedUsageCount) {
 		if (deletingAssetId) return false;
 		setDeletingAssetId(id);
 		let db = null;
@@ -2269,7 +2278,16 @@ globalThis.playMode = centerTab === "play";
 			// displayed list: a just-created cutout can make its image reachable.
 			const { scenes: latestScenes, activeSceneId: latestActiveSceneId, sceneObjects: latestObjects } = projectStateRef.current;
 			const allScenes = latestScenes.map((scene) => (scene.id === latestActiveSceneId ? { ...scene, objects: latestObjects } : scene));
-			if (!unreachableAssetIds(stored, allScenes).includes(id)) {
+			const currentUsageCount = assetUsageCounts(allScenes).get(id) ?? 0;
+			if (expectedUsageCount !== undefined && (!Number.isInteger(expectedUsageCount) || expectedUsageCount !== currentUsageCount)) {
+				setToast(ko("This image's usage changed, so it was not deleted. Please review it again.", "이 이미지의 사용량이 바뀌어서 삭제하지 않았어요. 다시 확인해 주세요."));
+				return false;
+			}
+			if (currentUsageCount > 0 && expectedUsageCount === undefined) {
+				setToast(ko("That image is used by a scene and was not deleted", "이 이미지는 씬에서 사용 중이어서 삭제하지 않았어요"));
+				return false;
+			}
+			if (currentUsageCount === 0 && !unreachableAssetIds(stored, allScenes).includes(id)) {
 				setToast(ko("That image is now used by a scene and was not deleted", "이 이미지는 이제 씬에서 사용 중이어서 삭제하지 않았어요"));
 				return false;
 			}
@@ -7089,6 +7107,8 @@ function resizePromptClip(id, edge, rawFrame) {
 						manageStorage={manageAssetStorage}
 						onManageStorageToggle={() => setManageAssetStorage((current) => !current)}
 						unusedAssetIds={unusedAssetIds}
+						usedAssetIds={usedAssetIds}
+						usageCounts={usageCounts}
 						trashCount={assetTrash.length}
 						onDeleteUnusedAsset={deleteUnusedAsset}
 						onUndoDelete={undoDeletedAsset}
@@ -7267,7 +7287,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			<Toast message={toast} onDone={() => setToast("")} />
 			{assetTrash.length > 0 && (
 				<div className="asset-delete-toast" role="status">
-					<span>{ko("Unused image deleted. This session can undo it.", "사용되지 않는 이미지를 삭제했어요. 이 세션에서 실행 취소할 수 있어요.")}</span>
+					<span>{ko("Image deleted. This session can undo it.", "이미지를 삭제했어요. 이 세션에서 실행 취소할 수 있어요.")}</span>
 					<button type="button" onClick={undoDeletedAsset} disabled={Boolean(deletingAssetId)}>{ko("Undo", "실행 취소")}</button>
 				</div>
 			)}

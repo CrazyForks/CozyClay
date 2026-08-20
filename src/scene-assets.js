@@ -247,17 +247,28 @@ export async function importImageFile(file, {
  * going away. This is the reachable set; `unreachableAssetIds` is the sweep.
  */
 export function referencedAssetIds(scenes) {
-	const ids = new Set();
+	return new Set(assetUsageCounts(scenes).keys());
+}
+
+/**
+ * The number of scene objects that point at each asset. A cutout may name the
+ * same image in more than one lineage field, but it is still one object's use
+ * of that image; the per-object Set keeps that relationship unambiguous.
+ */
+export function assetUsageCounts(scenes) {
+	const counts = new Map();
 	for (const scene of Array.isArray(scenes) ? scenes : []) {
 		for (const object of Array.isArray(scene?.objects) ? scene.objects : []) {
+			const objectAssetIds = new Set();
 			// A matted cutout needs all three stored images to remain editable:
 			// its rendered result, original picture and matte.
 			for (const assetId of [object?.assetId, object?.sourceAssetId, object?.matteAssetId]) {
-				if (isAssetId(assetId)) ids.add(assetId);
+				if (isAssetId(assetId)) objectAssetIds.add(assetId);
 			}
+			for (const assetId of objectAssetIds) counts.set(assetId, (counts.get(assetId) ?? 0) + 1);
 		}
 	}
-	return ids;
+	return counts;
 }
 
 /** Stored ids that nothing points at any more, ready to be swept. */

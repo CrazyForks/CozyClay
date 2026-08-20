@@ -5671,6 +5671,21 @@ input[type=range]::-moz-range-thumb {
 	min-height: 0;
 }
 
+.asset-storage-section {
+	display: flex;
+	flex-direction: column;
+	gap: 7px;
+}
+
+.asset-storage-section h4 {
+	margin: 0;
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--muted2);
+}
+
 .asset-storage-head {
 	display: flex;
 	align-items: flex-start;
@@ -5753,6 +5768,11 @@ input[type=range]::-moz-range-thumb {
 .asset-storage-details span {
 	color: var(--muted2);
 	font-size: 10px;
+}
+
+.asset-storage-details .asset-storage-usage {
+	color: var(--accent);
+	font-weight: 600;
 }
 
 .asset-storage-delete {

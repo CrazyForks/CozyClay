@@ -5,6 +5,7 @@ import {
 	ASSET_MAX_DIMENSION,
 	assetAspect,
 	assetIdForBytes,
+	assetUsageCounts,
 	assetIdFromDigest,
 	downscaleTarget,
 	imageFilesFrom,
@@ -110,6 +111,19 @@ const scenes = [
 	{ objects: [{ id: "second-scene-cutout", renderer: "cutout", assetId: secondSceneAsset, sourceAssetId: secondSceneAsset, matteAssetId: "" }] },
 ];
 const reachable = referencedAssetIds(scenes);
+const usage = assetUsageCounts(scenes);
+expect(
+	"usage counts include every unique asset reference across all scene objects",
+	JSON.stringify([...usage.entries()]) === JSON.stringify([
+		[rendered, 2],
+		[source, 2],
+		[matte, 2],
+		[id, 1],
+		[secondSceneAsset, 1],
+	]),
+	JSON.stringify([...usage.entries()]),
+);
+expect("usage counts ignore invalid ids and hostile scene shapes", assetUsageCounts([{ objects: [{ assetId: "not-an-asset", sourceAssetId: source }, null] }, { objects: "no" }]).get(source) === 1 && assetUsageCounts(null).size === 0);
 expect(
 	"a matted cutout keeps its rendered picture, source and matte reachable",
 	reachable.has(rendered) && reachable.has(source) && reachable.has(matte),
