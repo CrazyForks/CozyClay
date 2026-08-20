@@ -8,13 +8,14 @@
  * `dist/`, so this launcher only has to
  *
  *   - serve those files over loopback,
- *   - forward /ardy to the sidecar on 5181 (the job Vite's dev proxy does),
+ *   - forward /ardy to its dynamically selected sidecar port (the job Vite's dev proxy does),
  *   - keep the sidecar's lifetime tied to this process.
  *
  * It has no dependencies on purpose. A launcher that needs an install step
  * before it can serve a prebuilt app is a launcher that will break.
  */
 import { spawn } from "node:child_process";
+import { startBridge, terminateOwned } from "../tools/process-supervisor.mjs";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { homedir } from "node:os";
@@ -27,7 +28,7 @@ import { openBrowser } from "./open-browser.mjs";
 const PKG_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const DIST = join(PKG_ROOT, "dist");
 const BRIDGE = join(PKG_ROOT, "tools", "ardy", "bridge.mjs");
-const BRIDGE_PORT = Number(process.env.COZYCLAY_BRIDGE_PORT ?? 5181);
+let bridgePort = 5181;
 
 const TYPES = {
 	".html": "text/html; charset=utf-8",
@@ -107,7 +108,7 @@ function serveFile(res, path) {
 // browser code needs no build-time knowledge of how it was launched.
 function proxyToBridge(req, res) {
 	const upstream = httpRequest(
-		{ host: "127.0.0.1", port: BRIDGE_PORT, path: req.url, method: req.method, headers: req.headers },
+		{ host: "127.0.0.1", port: bridgePort, path: req.url, method: req.method, headers: req.headers },
 		(upstreamRes) => {
 			res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
 			upstreamRes.pipe(res);
@@ -208,14 +209,57 @@ if (!existsSync(join(DIST, "app", "index.html"))) {
 // cannot act on. An unset CCLAY_ARDY_HOST is the normal case, not a fault.
 const ardyHost = process.env.CCLAY_ARDY_HOST?.trim();
 let bridge = null;
+let server = null;
+const startedAt = Date.now();
+let shuttingDown = false;
+async function shutdown(exitCode = 0) {
+	if (shuttingDown) return;
+	shuttingDown = true;
+	if (bridge) await terminateOwned(bridge);
+	if (server?.listening) await new Promise((resolvePromise) => server.close(() => resolvePromise()));
+	try {
+		await maybeAskForStar(startedAt, opts);
+	} catch {
+		/* never let the goodbye prompt hold the process hostage */
+	}
+	process.exit(exitCode);
+}
+process.on("SIGINT", () => shutdown(130));
+process.on("SIGTERM", () => shutdown(143));
+
 if (opts.ardy && ardyHost && existsSync(BRIDGE)) {
-	bridge = spawn(process.execPath, [BRIDGE], { cwd: PKG_ROOT, stdio: "inherit" });
-	bridge.on("error", () => {
-		bridge = null;
-	});
+	try {
+		({ child: bridge, port: bridgePort } = await startBridge({
+			command: process.execPath,
+			args: [BRIDGE],
+			cwd: PKG_ROOT,
+			env: process.env,
+			mainPort: opts.port,
+			onSpawn: (child) => {
+				bridge = child;
+			},
+			onReady: (child) => {
+				child.once("exit", (code, signal) => {
+					if (shuttingDown) return;
+					console.error(`cozyclay: motion generation sidecar exited ${signal ? `from ${signal}` : `with code ${code ?? 0}`}.`);
+					void shutdown(1);
+				});
+				child.once("error", (err) => {
+					if (shuttingDown) return;
+					console.error(`cozyclay: motion generation sidecar failed: ${err.message}`);
+					void shutdown(1);
+				});
+			},
+		}));
+	} catch (err) {
+		console.error(`cozyclay: motion generation sidecar failed: ${err.message}`);
+		console.error("cozyclay: studio did not start; set COZYCLAY_BRIDGE_PORT to an available port or use --no-ardy.");
+		if (bridge) await terminateOwned(bridge);
+		process.exit(1);
+	}
 }
 
-const server = createServer((req, res) => {
+server = createServer((req, res) => {
 	const url = new URL(req.url ?? "/", "http://localhost");
 	// Only the routes the bridge actually owns: /ardy/ is ALSO a public asset
 	// directory (cskel27-rest.json), and those files live in dist/, not behind
@@ -246,33 +290,16 @@ const server = createServer((req, res) => {
 	serveFile(res, target);
 });
 
-const startedAt = Date.now();
-let shuttingDown = false;
-async function shutdown() {
-	if (shuttingDown) process.exit(0);
-	shuttingDown = true;
-	if (bridge) bridge.kill("SIGTERM");
-	server.close();
-	try {
-		await maybeAskForStar(startedAt, opts);
-	} catch {
-		/* never let the goodbye prompt hold the process hostage */
-	}
-	process.exit(0);
-}
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
-
 server.on("error", (err) => {
 	if (err && err.code === "EADDRINUSE") {
-		console.error(`cozyclay: port ${opts.port} is taken. Try --port ${opts.port + 1}.`);
-		if (bridge) bridge.kill("SIGTERM");
-		process.exit(1);
+		console.error(`cozyclay: port ${opts.port} is taken. Try --port 5200.`);
+		void shutdown(1);
+		return;
 	}
 	throw err;
 });
 
-server.listen(opts.port, opts.host, () => {
+server.listen({ port: opts.port, host: opts.host, ipv6Only: false }, () => {
 	// The package exists to open the studio, which the site serves from /app/.
 	// Landing on "/" would greet someone who just typed `npx cozyclay` with a
 	// marketing page.
