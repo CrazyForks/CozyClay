@@ -5427,12 +5427,6 @@ input[type=range]::-moz-range-thumb {
 	cursor: default;
 }
 
-.move-ab .btn[aria-pressed="true"] {
-	background: var(--accent-soft);
-	border-color: var(--accent);
-	color: var(--fg);
-}
-
 .move-ab .btn.rec-live {
 	color: #e2574d;
 	border-color: rgba(226, 87, 77, 0.6);

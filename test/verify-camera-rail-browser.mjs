@@ -64,7 +64,7 @@ await evaluate(`(() => {
 		cameraKeys: [{ frame: 0, framing: { pos: { x: 0, y: 1.6, z: 3 }, yaw: 0, pitch: -0.1, fovDeg: 45 } }],
 		camera: {
 			mode: "rail",
-			followCam: { distance: 3, height: 1.6, response: 0.7, lead: 0.25, railStartMode: "head", maxDollySpeed: 4, pitchOffsetDeg: 0 },
+			followCam: { distance: 3, height: 1.6, response: 0.7, lead: 0.25, railStartMode: "head", maxDollySpeed: 4, pitchOffsetDeg: 0, orbitOffsetDeg: 180 },
 			cameraRail: [{ x: -2, z: -1 }, { x: -2, z: 8 }],
 			railFollow: { mode: "range", startFrame: 0, endFrame: 359 },
 		},
@@ -89,6 +89,7 @@ expect("studio renders", await waitFor("!!document.querySelector('canvas')"));
 expect("timeline shot block renders", await waitFor("!!document.querySelector('.tl-shot-block')"));
 await evaluate("document.querySelector('.tl-shot-block')?.click()");
 expect("rail editor exposes delete action", await waitFor("[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Delete rail')"));
+expect("Draw Rail row starts with Follow Off while rail owns the camera", await waitFor("[...document.querySelectorAll('.tl-camera-editor button')].some((button) => button.textContent.trim() === 'Follow Off' && button.getAttribute('aria-pressed') === 'false')"));
 expect("follow distance is visible before deletion", await evaluate("[...document.querySelectorAll('.tl-camera-editor label')].some((label) => label.textContent.includes('Distance') && label.textContent.includes('3.00'))"));
 if (process.env.QA_SCREENSHOT) {
 	const capture = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
@@ -96,11 +97,16 @@ if (process.env.QA_SCREENSHOT) {
 }
 await evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Delete rail')?.click()");
 expect("delete action leaves Follow mode", await waitFor("document.querySelector('.tl-camera-slate')?.textContent.includes('Camera preview')"));
+expect("rail deletion turns the Draw Rail row Follow On", await waitFor("[...document.querySelectorAll('.tl-camera-editor button')].some((button) => button.textContent.trim() === 'Follow On' && button.getAttribute('aria-pressed') === 'true')"));
 expect("rail delete toast is shown", await evaluate("document.body.textContent.includes('Camera rail deleted')"));
 expect("live Follow camera holds the displayed 3 m distance", await waitFor(`(() => {
 	const state = window.__cozyclay;
 	if (!state?.shotCam || !state?.charA) return false;
 	return Math.abs(Math.hypot(state.shotCam.position.x - state.charA.x, state.shotCam.position.z - state.charA.z) - 3) < 0.05;
+})()`));
+expect("front-authored Follow stays in front of the subject", await waitFor(`(() => {
+	const state = window.__cozyclay;
+	return !!state?.shotCam && !!state?.charA && state.shotCam.position.z > state.charA.z;
 })()`));
 expect("rail deletion reaches the debounced Scene save", await waitFor(`(() => {
 	const body = JSON.parse(localStorage.getItem("cozyclay.scenes.v4"));
@@ -118,18 +124,21 @@ expect("studio returns after reload", await waitFor("!!document.querySelector('c
 expect("shot block returns after reload", await waitFor("!!document.querySelector('.tl-shot-block')"));
 await evaluate("document.querySelector('.tl-shot-block')?.click()");
 expect("Follow mode survives reload", await waitFor("document.querySelector('.tl-camera-slate')?.textContent.includes('Camera preview')"));
-await evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Inspector')?.click()");
-await evaluate("[...document.querySelectorAll('.hierarchy-row')].find((row) => row.textContent.trim() === 'Camera')?.click()");
-const followButtons = () => evaluate("[...document.querySelectorAll('button')].map((button) => ({ text: button.textContent.trim(), pressed: button.getAttribute('aria-pressed'), visible: !!(button.offsetWidth || button.offsetHeight) })).filter((button) => button.text.includes('Follow') || button.pressed !== null)");
-expect(
-	"Inspector shows Follow On explicitly",
-	await waitFor(`[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === "Follow On" && button.getAttribute("aria-pressed") === "true")`),
-	JSON.stringify(await followButtons()),
-);
-await evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Follow On')?.click()");
-expect("Follow Off is explicit after toggle", await waitFor("[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Follow Off' && button.getAttribute('aria-pressed') === 'false')"));
-await evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Follow Off')?.click()");
-expect("Follow On restores after toggle", await waitFor("[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Follow On' && button.getAttribute('aria-pressed') === 'true')"));
+await evaluate("[...document.querySelectorAll('.tl-camera-editor button')].find((button) => button.textContent.trim() === 'Follow On')?.click()");
+expect("Draw Rail row Follow Off returns to Keys mode", await waitFor("[...document.querySelectorAll('.tl-camera-editor button')].some((button) => button.textContent.trim() === 'Follow Off' && button.getAttribute('aria-pressed') === 'false')"));
+expect("free shot camera is available for reframing", await waitFor("!!window.__cozyclay?.shotCam"));
+await evaluate("window.__cozyclay.shotCam.position.set(0, 1.6, 3)");
+await evaluate("[...document.querySelectorAll('.tl-camera-editor button')].find((button) => button.textContent.trim() === 'Follow Off')?.click()");
+expect("Draw Rail row Follow On restores distance mode", await waitFor("[...document.querySelectorAll('.tl-camera-editor button')].some((button) => button.textContent.trim() === 'Follow On' && button.getAttribute('aria-pressed') === 'true')"));
+expect("Follow On captures the user's front camera placement", await waitFor(`(() => {
+	const state = window.__cozyclay;
+	return state.shotCam.position.z > state.charA.z &&
+		Math.abs(Math.hypot(state.shotCam.position.x - state.charA.x, state.shotCam.position.z - state.charA.z) - 3) < 0.05;
+})()`));
+expect("front placement is persisted as a 180 degree orbit offset", await waitFor(`(() => {
+	const body = JSON.parse(localStorage.getItem("cozyclay.scenes.v4"));
+	return Math.abs(body.scenes[0].shotDocument.shots[0].camera.followCam.orbitOffsetDeg - 180) < 0.1;
+})()`));
 
 ws.close();
 if (failures) process.exit(1);

@@ -39,6 +39,17 @@ const EPS = 1e-9;
 	ok("viewport framing converts tilt to automatic-aim offset", measured.pitchOffsetDeg === 10, JSON.stringify(measured));
 }
 
+{
+	const measured = followFramingFromCamera(
+		{ x: 0, y: 1.6, z: 3 },
+		0,
+		{ x: 0, z: 0 },
+		FOLLOW_DEFAULTS.aimHeight,
+		{ x: 0, z: 1 },
+	);
+	ok("viewport framing records a camera placed in front of the subject", Math.abs(measured.orbitOffsetDeg - 180) < 1e-6, JSON.stringify(measured));
+}
+
 /** straight walk down +Z at 1.4 m/s for `seconds` */
 function straightWalk(seconds, speed = 1.4) {
 	const frames = Math.round(seconds * FPS);
@@ -71,6 +82,13 @@ ok("free follow emits one sample per subject frame", free.length === walk.length
 	);
 	// behind means behind: for a +Z walk the camera sits at smaller z
 	ok("free follow trails behind the travel direction", free[100].pos.z < walk[100].z, `cam z ${free[100].pos.z} subj z ${walk[100].z}`);
+}
+
+{
+	const front = buildFollowTrack(walk, FPS, { orbitOffsetDeg: 180 });
+	const errors = front.map((sample, frame) => Math.abs(dist(sample.pos, walk[frame]) - FOLLOW_DEFAULTS.distance));
+	ok("front-authored follow holds the requested distance", Math.max(...errors) < 1e-6, `max err ${Math.max(...errors)}`);
+	ok("front-authored follow stays in front of a +Z walk", front.every((sample, frame) => sample.pos.z > walk[frame].z), `last cam z ${front.at(-1).pos.z}`);
 }
 
 {

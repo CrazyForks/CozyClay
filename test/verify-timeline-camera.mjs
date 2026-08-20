@@ -43,15 +43,12 @@ expect("PlayView restarts the piece from frame 0", app.includes('if (centerTab =
 expect("PlayView always rides the camera move", app.includes('centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing)'));
 expect("Scene tab keeps the authoring gates on Follow mode", app.includes("moveFollow && !ikMode && !waypointMode && !posing"));
 expect(
-	"Inspector exposes Follow as an explicit On Off toggle",
-	app.includes('aria-pressed={moveFollow}') &&
-	app.includes('moveFollow ? ko("Follow On", "팔로우 켜짐") : ko("Follow Off", "팔로우 꺼짐")') &&
-	app.includes("setMoveFollow"),
-);
-expect(
-	"Follow toggle remains tied to authored move keys",
-	app.includes('disabled={!hasCameraKeys}') &&
-	app.includes('title={ko("Slave the move to the timeline'),
+	"Draw Rail row owns the distance Follow On Off toggle",
+	timeline.includes('aria-pressed={mode === "follow"}') &&
+	timeline.includes('mode === "follow" ? ko("Follow On", "팔로우 켜짐") : ko("Follow Off", "팔로우 꺼짐")') &&
+	timeline.includes('patchCamera({ mode: mode === "follow" ? "keys" : "follow" })') &&
+	!app.includes('ko("Follow On", "팔로우 켜짐")') &&
+	app.includes('if (patch.mode === "follow") syncActiveCameraFraming()'),
 );
 
 expect("surface lays out four tracks after removing duplicate Camera row", css.includes("grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr);"));
@@ -109,6 +106,7 @@ expect(
 	!timeline.includes('["rail", ko("Rail", "레일")]') &&
 	timeline.includes('ko("Preview", "미리보기")') &&
 	timeline.includes('ko("Draw rail", "레일 그리기")') &&
+	timeline.includes('ko("Follow On", "팔로우 켜짐")') &&
 	timeline.includes('ko("Speed", "속도")') &&
 	timeline.includes('ko("Pitch", "피치")') &&
 	timeline.includes('ko("Distance", "거리")') &&
@@ -123,7 +121,9 @@ expect(
 	"distance, height and pitch are measured from viewport manipulation instead of typed",
 	timeline.includes('className="tl-camera-metric"') &&
 	(timeline.match(/className="tl-camera-metric"/g) ?? []).length === 3 &&
-	app.includes("followFramingFromCamera(cam.position, look.current.pitch") &&
+	app.includes("followFramingFromCamera(") &&
+	app.includes("cam.position,") &&
+	app.includes("look.current.pitch,") &&
 	app.includes("onCameraChange={commitManualCameraFraming}"),
 );
 expect(

@@ -60,18 +60,28 @@ const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
 const rounded = (value, places) => Number(value.toFixed(places));
 
 /**
- * Turn the operator's current viewport framing into the three physical Follow
+ * Turn the operator's current viewport framing into the physical Follow
  * settings. These are observations, not knobs: moving the camera is the input.
  * Pitch is stored as an offset from the rig's automatic chest aim so replaying
- * the Follow track reproduces the angle the operator composed by hand.
+ * the Follow track reproduces the angle the operator composed by hand. The
+ * orbit offset records whether that composition was in front, beside or behind
+ * the subject relative to its travel direction.
  */
-export function followFramingFromCamera(position, pitch, subject, aimHeight = FOLLOW_DEFAULTS.aimHeight) {
+export function followFramingFromCamera(position, pitch, subject, aimHeight = FOLLOW_DEFAULTS.aimHeight, travelDir = null) {
 	const planarDistance = Math.hypot(position.x - subject.x, position.z - subject.z);
 	const automaticPitch = aimAngles(position, { x: subject.x, y: aimHeight, z: subject.z }).pitch;
+	const cameraOffset = normalize({ x: position.x - subject.x, z: position.z - subject.z });
+	const direction = travelDir && Math.hypot(travelDir.x, travelDir.z) > 1e-6 ? normalize(travelDir) : { x: 0, z: 1 };
+	const behind = { x: -direction.x, z: -direction.z };
+	const orbitOffsetDeg = (Math.atan2(
+		behind.x * cameraOffset.z - behind.z * cameraOffset.x,
+		behind.x * cameraOffset.x + behind.z * cameraOffset.z,
+	) * 180) / Math.PI;
 	return {
 		distance: rounded(clamp(planarDistance, 0.5, 15), 2),
 		height: rounded(clamp(position.y, 0.2, 6), 2),
 		pitchOffsetDeg: rounded(clamp(((pitch - automaticPitch) * 180) / Math.PI, -30, 30), 1),
+		orbitOffsetDeg: rounded(clamp(orbitOffsetDeg, -180, 180), 1),
 	};
 }
 
@@ -90,6 +100,8 @@ export const FOLLOW_DEFAULTS = {
 	aimHeight: 1.35,
 	/** vertical tilt added after automatic aiming, in degrees */
 	pitchOffsetDeg: 0,
+	/** authored position around the subject: 0 behind, ±90 side, 180 front */
+	orbitOffsetDeg: 0,
 	/** cap on unconstrained steering (m/s); exact follow distance wins */
 	maxSpeed: 2.8,
 	/** where a rail dolly opens: the authored head or legacy auto placement */
@@ -146,6 +158,16 @@ function normalize(v) {
 	return { x: v.x / len, z: v.z / len };
 }
 
+function rotateDirection(direction, degrees) {
+	const angle = ((Number.isFinite(degrees) ? degrees : 0) * Math.PI) / 180;
+	const cos = Math.cos(angle);
+	const sin = Math.sin(angle);
+	return {
+		x: direction.x * cos - direction.z * sin,
+		z: direction.x * sin + direction.z * cos,
+	};
+}
+
 /** smoothed subject velocities (m/s), the operator's lead signal */
 function smoothedVelocities(subject, fps) {
 	const out = [];
@@ -174,6 +196,7 @@ export function buildFollowTrack(subject, fps, params = {}) {
 	if (!subject || subject.length === 0) return [];
 	const dt = 1 / Math.max(fps, 1);
 	const dirs = travelDirections(subject, fps, p.initialDir ?? null, p.dirBlend);
+	const offsets = dirs.map((dir) => rotateDirection({ x: -dir.x, z: -dir.z }, p.orbitOffsetDeg));
 	const vels = smoothedVelocities(subject, fps);
 	const omega = omegaFor(p.response);
 	const aimOmega = omegaFor(p.aimResponse);
@@ -183,8 +206,8 @@ export function buildFollowTrack(subject, fps, params = {}) {
 	const lagComp = 2 / omega;
 
 	// start settled on the frame-0 target: a shot opens composed, not sliding
-	let px = subject[0].x - dirs[0].x * p.distance;
-	let pz = subject[0].z - dirs[0].z * p.distance;
+	let px = subject[0].x + offsets[0].x * p.distance;
+	let pz = subject[0].z + offsets[0].z * p.distance;
 	let py = p.height;
 	let vx = 0, vz = 0, vy = 0;
 	let ax = subject[0].x;
@@ -196,8 +219,8 @@ export function buildFollowTrack(subject, fps, params = {}) {
 		if (f > 0) {
 			const previousX = px;
 			const previousZ = pz;
-			const tx = subject[f].x - dirs[f].x * p.distance + vels[f].x * lagComp;
-			const tz = subject[f].z - dirs[f].z * p.distance + vels[f].z * lagComp;
+			const tx = subject[f].x + offsets[f].x * p.distance + vels[f].x * lagComp;
+			const tz = subject[f].z + offsets[f].z * p.distance + vels[f].z * lagComp;
 			// planar spring integrated by hand so the SPEED cap binds the
 			// velocity vector, not each axis separately
 			vx += (omega * omega * (tx - px) - 2 * omega * vx) * dt;
@@ -216,8 +239,8 @@ export function buildFollowTrack(subject, fps, params = {}) {
 			let offsetZ = pz - subject[f].z;
 			const radius = Math.hypot(offsetX, offsetZ);
 			if (radius < 1e-6) {
-				offsetX = -dirs[f].x;
-				offsetZ = -dirs[f].z;
+				offsetX = offsets[f].x;
+				offsetZ = offsets[f].z;
 			} else {
 				offsetX /= radius;
 				offsetZ /= radius;

@@ -11,6 +11,7 @@ export const CAMERA_FOLLOW_DEFAULTS = Object.freeze({
 	railStartMode: "head",
 	maxDollySpeed: 4,
 	pitchOffsetDeg: 0,
+	orbitOffsetDeg: 0,
 });
 
 function cloneRail(points) {

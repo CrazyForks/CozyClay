@@ -67,6 +67,7 @@ const CAMERA_BLOCK_DEFAULTS = {
 	railStartMode: "head",
 	maxDollySpeed: 4,
 	pitchOffsetDeg: 0,
+	orbitOffsetDeg: 0,
 };
 
 function cameraBlockMode(shot) {
@@ -95,6 +96,7 @@ function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, on
 	if (!shot) return null;
 	const mode = cameraBlockMode(shot);
 	const follow = cameraBlockFollow(shot);
+	const patchCamera = (patch) => onChange?.(patch);
 	const patchFollow = (patch) => onChange?.({ followCam: { ...follow, ...patch } });
 	const numberValue = (event) => Number(event.currentTarget.value);
 	const metric = (value, places = 1) => Number(value).toFixed(places);
@@ -110,6 +112,15 @@ function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, on
 					</button>
 					<button type="button" className={"tl-camera-tool" + (railDraw ? " active" : "")} onClick={() => onRailDrawToggle?.()}>
 						{railDraw ? ko("Drawing…", "그리는 중…") : ko("Draw rail", "레일 그리기")}
+					</button>
+					<button
+						type="button"
+						className={"tl-camera-tool" + (mode === "follow" ? " active" : "")}
+						aria-pressed={mode === "follow"}
+						title={ko("Keep the camera at the captured distance from the subject", "카메라와 피사체 사이의 현재 거리를 유지합니다")}
+						onClick={() => patchCamera({ mode: mode === "follow" ? "keys" : "follow" })}
+					>
+						{mode === "follow" ? ko("Follow On", "팔로우 켜짐") : ko("Follow Off", "팔로우 꺼짐")}
 					</button>
 					{railLength != null && (
 						<button

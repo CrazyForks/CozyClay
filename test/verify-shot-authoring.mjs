@@ -22,6 +22,7 @@ const followCam = {
 	railStartMode: "nearest",
 	maxDollySpeed: 2.4,
 	pitchOffsetDeg: -10,
+	orbitOffsetDeg: 180,
 };
 const cameraRail = [{ x: -2, z: -1 }, { x: 1, z: 5 }];
 const shots = [
@@ -148,8 +149,9 @@ assert.deepEqual(v1.state.shots[0].camera.followCam, {
 	response: 0.7,
 	lead: 0.25,
 	railStartMode: "head",
-	maxDollySpeed: 4,
-	pitchOffsetDeg: 0,
+		maxDollySpeed: 4,
+		pitchOffsetDeg: 0,
+		orbitOffsetDeg: 0,
 });
 
 // Invalid v4 block fields are repaired independently without leaking globals.
@@ -194,6 +196,7 @@ assert.deepEqual(repaired.shots[0].camera, {
 		railStartMode: "head",
 		maxDollySpeed: 8,
 		pitchOffsetDeg: -30,
+		orbitOffsetDeg: 0,
 	},
 	cameraRail: null,
 	railFollow: null,

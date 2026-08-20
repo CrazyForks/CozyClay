@@ -2163,7 +2163,14 @@ globalThis.playMode = centerTab === "play";
 		const cam = shotCamRef.current;
 		if (!cam || !activeShot || ikMode || playMode) return;
 		const subjectPosition = motionPos ?? charA;
-		const measured = followFramingFromCamera(cam.position, look.current.pitch, subjectPosition, followCam.aimHeight);
+		const subjectYaw = (charA.rot * Math.PI) / 180;
+		const measured = followFramingFromCamera(
+			cam.position,
+			look.current.pitch,
+			subjectPosition,
+			followCam.aimHeight,
+			{ x: Math.sin(subjectYaw), z: Math.cos(subjectYaw) },
+		);
 		setShots((current) => current.map((shot, shotIndex) => {
 			if (shotIndex !== activeShotIdx) return shot;
 			const camera = createCameraBlock(shot.camera);
@@ -2171,7 +2178,8 @@ globalThis.playMode = centerTab === "play";
 			if (
 				previous.distance === measured.distance &&
 				previous.height === measured.height &&
-				previous.pitchOffsetDeg === measured.pitchOffsetDeg
+				previous.pitchOffsetDeg === measured.pitchOffsetDeg &&
+				previous.orbitOffsetDeg === measured.orbitOffsetDeg
 			) return shot;
 			return { ...shot, camera: updateCameraBlock(camera, { followCam: { ...previous, ...measured } }) };
 		}));
@@ -5920,16 +5928,6 @@ function resizePromptClip(id, edge, rawFrame) {
 							>
 								{previewActive ? ko("Stop", "정지") : ko("Preview", "미리보기")}
 							</button>
-							<button
-								type="button"
-								className="btn ghost"
-								aria-pressed={moveFollow}
-								disabled={!hasCameraKeys}
-								title={ko("Slave the move to the timeline: play or scrub and the camera rides along. Turn off to fly freely while keys stay set", "움직임을 타임라인에 연결합니다. 재생하거나 스크럽하면 카메라가 함께 움직입니다. 끄면 키는 유지한 채 자유롭게 이동할 수 있습니다")}
-								onClick={() => setMoveFollow((follow) => !follow)}
-							>
-								{moveFollow ? ko("Follow On", "팔로우 켜짐") : ko("Follow Off", "팔로우 꺼짐")}
-							</button>
 							<button type="button" className="btn ghost" disabled={cameraKeys.length < 1} onClick={clearMove}>
 								{ko("Clear", "지우기")}
 							</button>
@@ -6994,6 +6992,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						setSidebarTab("motion");
 					}}
 					onCameraBlockChange={(patch) => {
+						if (patch.mode === "follow") syncActiveCameraFraming();
 						const nextPatch = patch.mode === "rail" && activeCamera.railFollow?.mode === "off"
 							? { ...patch, railFollow: defaultRailRange(activeShotDuration) }
 							: patch;
