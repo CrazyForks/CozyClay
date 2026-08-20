@@ -6529,11 +6529,35 @@ function resizePromptClip(id, edge, rawFrame) {
 												onChange={(event) => changeSceneObject(selectedSceneObject.id, { height: Number(event.target.value) })}
 											/>
 										</Field>
+										<Field label={ko("Card width (m)", "판 너비 (m)")}>
+											<input
+												type="number"
+												data-field="cutout-width"
+												min="0.05"
+												step="0.05"
+												value={Number((selectedSceneObject.footprint?.width ?? 0).toFixed(2))}
+												onChange={(event) => changeSceneObject(selectedSceneObject.id, { width: Number(event.target.value) })}
+											/>
+										</Field>
 										<p className="inspector-hint">
 											{isKo
-												? `가로 ${(selectedSceneObject.footprint?.width ?? 0).toFixed(2)} m — 사진 비율에 맞춰 자동 계산됩니다. 사진 속에서 높이를 알 수 있는 것(문 2 m, 사람 1.8 m)에 맞추세요.`
-												: `${(selectedSceneObject.footprint?.width ?? 0).toFixed(2)} m wide, from the picture's own aspect. Measure against something you know: a door is 2 m, a person 1.8 m.`}
+												? `높이를 바꾸면 너비는 사진 비율(${(selectedSceneObject.aspect ?? 1).toFixed(2)})을 따라갑니다. 너비만 따로 정하거나 기즈모의 가로축을 끌면 사진이 늘어납니다. 사진 속에서 크기를 알 수 있는 것(문 2 m, 사람 1.8 m)에 맞추세요.`
+												: `Width follows the picture's aspect (${(selectedSceneObject.aspect ?? 1).toFixed(2)}) as you change the height. Set it on its own — or drag the gizmo's X axis — to stretch the picture. Measure against something you know: a door is 2 m, a person 1.8 m.`}
 										</p>
+										{Math.abs((selectedSceneObject.stretch ?? 1) - 1) > 0.005 && (
+											<p className="inspector-hint">
+												<button
+													type="button"
+													className="ghost"
+													data-field="cutout-unstretch"
+													onClick={() => changeSceneObject(selectedSceneObject.id, { stretch: 1 })}
+												>
+													{isKo
+														? `사진 비율로 되돌리기 (지금 ${((selectedSceneObject.stretch ?? 1) * 100).toFixed(0)}%)`
+														: `Back to the picture's proportions (now ${((selectedSceneObject.stretch ?? 1) * 100).toFixed(0)}%)`}
+												</button>
+											</p>
+										)}
 										<div className="matte-editor">
 											{!!selectedSceneObject.matteAssetId && (
 												<p className="inspector-hint matte-state">

@@ -122,10 +122,29 @@ function objectLibraryEntry(kind) {
 const cutoutHeight = (value) => clamp(value, CUTOUT_HEIGHT_MIN, CUTOUT_MAX_HEIGHT);
 const cutoutAspect = (value) => clamp(value, CUTOUT_ASPECT_MIN, CUTOUT_ASPECT_MAX);
 
-/** The plan-board rectangle a card of this height and picture aspect occupies.
- * `aspect` is the image's width / height. */
-export function cutoutFootprint(height, aspect) {
-	return { width: cutoutHeight(height) * cutoutAspect(aspect), depth: CUTOUT_THICKNESS };
+/** How far a card may be pulled off the picture's own proportions. */
+export const CUTOUT_STRETCH_MIN = 0.1;
+export const CUTOUT_STRETCH_MAX = 10;
+export const cutoutStretch = (value) => {
+	const n = Number(value);
+	return Number.isFinite(n) ? clamp(n, CUTOUT_STRETCH_MIN, CUTOUT_STRETCH_MAX) : 1;
+};
+
+/**
+ * The plan-board rectangle a card of this height and picture aspect occupies.
+ * `aspect` is the image's width / height.
+ *
+ * `stretch` is how far the card has been pulled off those proportions: 1 is the
+ * picture undistorted. It is kept as its own factor rather than folded into
+ * `aspect` so the photograph's true proportions survive every edit — a re-cut
+ * recomputes `aspect` from the trimmed image, and a card that had been widened
+ * would otherwise silently lose or compound that widening.
+ */
+export function cutoutFootprint(height, aspect, stretch = 1) {
+	return {
+		width: cutoutHeight(height) * cutoutAspect(aspect) * cutoutStretch(stretch),
+		depth: CUTOUT_THICKNESS,
+	};
 }
 
 export function sceneObjectHierarchyId(id) {
@@ -217,7 +236,9 @@ export function createCutoutObject({ assetId, aspect = 1, height = CUTOUT_DEFAUL
 		matteAssetId: "",
 		matteScale: 1,
 		aspect: pictureAspect,
-		footprint: cutoutFootprint(cardHeight, pictureAspect),
+		// A new card wears the picture's own proportions.
+		stretch: 1,
+		footprint: cutoutFootprint(cardHeight, pictureAspect, 1),
 		height: cardHeight,
 	};
 }
@@ -331,10 +352,20 @@ export function updateSceneObject(objects, id, patch) {
 			const patchedAspect = patch.aspect === undefined ? NaN : cutoutAspect(Number(patch.aspect));
 			const height = Number.isFinite(patchedHeight) ? patchedHeight : object.height;
 			const aspect = Number.isFinite(patchedAspect) ? patchedAspect : object.aspect;
-			if (height !== object.height || aspect !== object.aspect) {
+			const previousStretch = cutoutStretch(object.stretch);
+			// A width in metres is what the inspector and the drag both speak, so it
+			// is accepted directly and kept as the factor the record stores.
+			const patchedStretch =
+				patch.width !== undefined && Number.isFinite(Number(patch.width))
+					? cutoutStretch(Number(patch.width) / (height * aspect))
+					: patch.stretch === undefined
+						? previousStretch
+						: cutoutStretch(patch.stretch);
+			if (height !== object.height || aspect !== object.aspect || patchedStretch !== previousStretch) {
 				update.height = height;
 				update.aspect = aspect;
-				update.footprint = cutoutFootprint(height, aspect);
+				update.stretch = patchedStretch;
+				update.footprint = cutoutFootprint(height, aspect, patchedStretch);
 			}
 		}
 		if (!Object.keys(update).length) return object;
@@ -434,7 +465,14 @@ export function normalizeSceneObject(record) {
 					matteAssetId: typeof record.matteAssetId === "string" ? record.matteAssetId : "",
 					matteScale: clamp(pick(record.matteScale, 1), 0.01, 1),
 					aspect: cutoutAspect(pick(record.aspect, 1)),
-					footprint: cutoutFootprint(pick(record.height, CUTOUT_DEFAULT_HEIGHT), pick(record.aspect, 1)),
+					// A record written before cards could be stretched has none, and
+					// 1 is exactly what it meant: the picture's own proportions.
+					stretch: cutoutStretch(pick(record.stretch, 1)),
+					footprint: cutoutFootprint(
+						pick(record.height, CUTOUT_DEFAULT_HEIGHT),
+						pick(record.aspect, 1),
+						pick(record.stretch, 1),
+					),
 					height: cutoutHeight(pick(record.height, CUTOUT_DEFAULT_HEIGHT)),
 				}
 			: { footprint: { ...entry.footprint }, height: entry.height }),

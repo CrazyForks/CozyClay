@@ -527,6 +527,43 @@ expect(
 	dropToSurfacePatch({ ...sofa, y: 1.5 }, [box]).y === 1,
 );
 
+/* ------------------------------------------------------ cutout stretch --- */
+// A card's width is a measurement, not a scale multiplier: the inspector field
+// and the gizmo's X handle both write it, and the picture's own aspect is kept
+// untouched so a re-cut cannot silently lose or compound a widening.
+
+const stretchCard = createCutoutObject({ assetId: "stretch-a", aspect: 2, height: 1.8 }, []);
+expect("a new card wears the picture's proportions", stretchCard.stretch === 1 && stretchCard.footprint.width === 3.6);
+
+let stretched = updateSceneObject([stretchCard], stretchCard.id, { width: 7.2 });
+expect("a width in metres is accepted as given", stretched[0].footprint.width === 7.2, String(stretched[0].footprint.width));
+expect("widening records the factor", Math.abs(stretched[0].stretch - 2) < 1e-9, String(stretched[0].stretch));
+expect("widening leaves the height alone", stretched[0].height === 1.8);
+expect("widening does not touch scaleX", stretched[0].scaleX === 1);
+expect("the picture's own aspect is preserved", stretched[0].aspect === 2);
+
+const taller = updateSceneObject(stretched, stretchCard.id, { height: 3 });
+expect(
+  "height and width stay independent",
+  taller[0].height === 3 && Math.abs(taller[0].footprint.width - 12) < 1e-9,
+  `${taller[0].height} / ${taller[0].footprint.width}`,
+);
+
+const reset = updateSceneObject(taller, stretchCard.id, { stretch: 1 });
+expect("resetting returns to the picture's proportions", Math.abs(reset[0].footprint.width - 6) < 1e-9, String(reset[0].footprint.width));
+
+expect("an absurd width is clamped", updateSceneObject(reset, stretchCard.id, { width: 99999 })[0].stretch === 10);
+expect("a negative width is clamped", updateSceneObject(reset, stretchCard.id, { width: -5 })[0].stretch === 0.1);
+
+const revivedStretch = normalizeSceneObject(JSON.parse(JSON.stringify(stretched[0])));
+expect("a stretch survives a storage round trip", revivedStretch.stretch === 2 && revivedStretch.footprint.width === 7.2);
+
+const preStretchRecord = JSON.parse(JSON.stringify(stretchCard));
+delete preStretchRecord.stretch;
+const upgraded = normalizeSceneObject(preStretchRecord);
+expect("a record written before stretching reads as unstretched", upgraded.stretch === 1 && upgraded.footprint.width === 3.6);
+
+
 if (failures) process.exit(1);
 console.log("all scene object checks PASS");
 

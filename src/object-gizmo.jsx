@@ -2,7 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { GIZMO_LAYER, SHOT_ASPECT, fitAspect } from "./dualview.jsx";
-import { objectSize, rotatePatch, scalePatch, screenRotatePatch, translatePatch, wrapAngle } from "./scene-objects.js";
+import {
+	CUTOUT_KIND,
+	objectSize,
+	rotatePatch,
+	scalePatch,
+	screenRotatePatch,
+	translatePatch,
+	wrapAngle,
+} from "./scene-objects.js";
 
 /**
  * The transform gizmo for the selected scene object — the thing every 3D tool
@@ -291,7 +299,19 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 				// tracking the cursor and a drag toward the pivot shrinks.
 				tools.delta.subVectors(tools.hit, drag.origin);
 				const travel = tools.delta.dot(drag.dir) - drag.startAlong;
-				const patch = scalePatch(drag.start, drag.axis, 1 + travel / drag.reference, snapping ? undefined : 0);
+				const factor = 1 + travel / drag.reference;
+				// A cutout's width is a measurement in metres, not a scale multiplier:
+				// the inspector shows it, the plan board draws it, and the picture is
+				// what gets wider. Sending the X handle through `scaleX` would widen
+				// the card on screen while its stated width stayed put, so the drag
+				// writes the same channel the field does.
+				const startWidth = drag.start?.renderer === CUTOUT_KIND ? (drag.start.footprint?.width ?? 0) : 0;
+				if (drag.axis === "x" && startWidth > 0) {
+					const width = Math.max(0.05, startWidth * Math.max(factor, 0.01));
+					change?.(drag.id, { width: snapping ? Math.round(width * 20) / 20 : width }, drag.token);
+					return;
+				}
+				const patch = scalePatch(drag.start, drag.axis, factor, snapping ? undefined : 0);
 				if (patch) change?.(drag.id, patch, drag.token);
 				return;
 			}
