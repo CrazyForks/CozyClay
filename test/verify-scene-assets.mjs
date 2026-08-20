@@ -4,6 +4,7 @@ import {
 	ASSET_ID_PREFIX,
 	ASSET_MAX_DIMENSION,
 	assetAspect,
+	assetGraphSignature,
 	assetIdForBytes,
 	assetUsageCounts,
 	assetIdFromDigest,
@@ -124,6 +125,10 @@ expect(
 	JSON.stringify([...usage.entries()]),
 );
 expect("usage counts ignore invalid ids and hostile scene shapes", assetUsageCounts([{ objects: [{ assetId: "not-an-asset", sourceAssetId: source }, null] }, { objects: "no" }]).get(source) === 1 && assetUsageCounts(null).size === 0);
+const graphBase = [{ id: "scene-a", objects: [{ id: "cutout-a", renderer: "cutout", assetId: rendered, sourceAssetId: source, matteAssetId: matte }] }];
+const graphSameCountDifferentLineage = [{ id: "scene-a", objects: [{ id: "cutout-a", renderer: "cutout", assetId: rendered, sourceAssetId: secondSceneAsset, matteAssetId: matte }] }];
+expect("asset graph signature changes when lineage changes at the same usage count", assetGraphSignature(graphBase) !== assetGraphSignature(graphSameCountDifferentLineage));
+expect("asset graph signature is deterministic", assetGraphSignature(graphBase) === assetGraphSignature(structuredClone(graphBase)));
 expect(
 	"a matted cutout keeps its rendered picture, source and matte reachable",
 	reachable.has(rendered) && reachable.has(source) && reachable.has(matte),

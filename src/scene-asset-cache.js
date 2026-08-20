@@ -14,123 +14,153 @@
 import * as THREE from "three";
 import { getAsset, openAssetDb, putAsset } from "./scene-assets.js";
 
-/** id → { texture, promise, listeners } */
-const entries = new Map();
-let dbPromise = null;
+/** Build a cache with injectable browser seams for deterministic race tests. */
+export function createAssetTextureCache({
+	getRecord = async (id) => getAsset(await db(), id),
+	putRecord = async (asset) => putAsset(await db(), asset),
+	createBitmap = (...args) => createImageBitmap(...args),
+	makeTexture = (bitmap) => new THREE.Texture(bitmap),
+} = {}) {
+	/** id → { texture, record, promise, listeners, generation } */
+	const entries = new Map();
 
+	function entryFor(id) {
+		let entry = entries.get(id);
+		if (!entry) {
+			entry = { texture: null, record: null, promise: null, listeners: new Set(), generation: 0, evicted: false };
+			entries.set(id, entry);
+		}
+		return entry;
+	}
+
+	function announce(entry) {
+		for (const listener of entry.listeners) listener(entry.texture);
+	}
+
+	function dispose(texture) {
+		texture?.image?.close?.();
+		texture?.dispose?.();
+	}
+
+	/** A texture from asset bytes. ImageBitmap ignores Texture.flipY, so the
+	 * flip is asked of the decoder instead. */
+	async function textureFromAsset(asset) {
+		const bitmap = await createBitmap(new Blob([asset.bytes], { type: asset.type }), { imageOrientation: "flipY" });
+		const texture = makeTexture(bitmap);
+		texture.flipY = false;
+		texture.colorSpace = THREE.SRGBColorSpace;
+		texture.generateMipmaps = true;
+		texture.minFilter = THREE.LinearMipmapLinearFilter;
+		texture.magFilter = THREE.LinearFilter;
+		texture.anisotropy = 4;
+		texture.needsUpdate = true;
+		texture.userData.assetId = asset.id;
+		return texture;
+	}
+
+	/** The texture for this id, decoded once and shared. */
+	function loadAssetTexture(id) {
+		if (typeof id !== "string" || !id) return Promise.resolve(null);
+		const entry = entryFor(id);
+		if (entry.evicted) return Promise.resolve(null);
+		if (entry.texture) return Promise.resolve(entry.texture);
+		if (!entry.promise) {
+			const generation = entry.generation;
+			entry.promise = (async () => {
+				const asset = entry.record ?? (await getRecord(id));
+				if (!asset || entry.evicted || entry.generation !== generation) return null;
+				entry.record = asset;
+				const texture = await textureFromAsset(asset);
+				if (entry.evicted || entry.generation !== generation) {
+					dispose(texture);
+					return null;
+				}
+				entry.texture = texture;
+				announce(entry);
+				return texture;
+			})().catch((error) => {
+				console.warn(`[cozyclay] could not load image asset ${id}`, error);
+				return null;
+			}).finally(() => {
+				// Never let an old, invalidated promise block a later rehydration.
+				if (entry.generation === generation) entry.promise = null;
+			});
+		}
+		return entry.promise;
+	}
+
+	/** The stored record behind an id — the bytes, not the texture. */
+	async function assetRecord(id) {
+		if (typeof id !== "string" || !id) return null;
+		const entry = entryFor(id);
+		if (entry.evicted) return null;
+		if (entry.record) return entry.record;
+		entry.record = await getRecord(id);
+		return entry.record;
+	}
+
+	/** Warm the cache with an asset that is already in hand. */
+	async function rememberAsset(asset) {
+		const stored = await putRecord(asset);
+		const entry = entryFor(stored.id);
+		const generation = ++entry.generation;
+		entry.evicted = false;
+		dispose(entry.texture);
+		entry.texture = null;
+		entry.record = stored;
+		entry.promise = null;
+		const texture = await textureFromAsset(stored);
+		if (entry.generation !== generation) {
+			dispose(texture);
+			return stored;
+		}
+		entry.texture = texture;
+		announce(entry);
+		return stored;
+	}
+
+	/** Forget deleted bytes without dropping mounted subscribers. */
+	function evictAssetTexture(id) {
+		const entry = entries.get(id);
+		if (!entry) return;
+		entry.generation += 1;
+		entry.evicted = true;
+		dispose(entry.texture);
+		entry.texture = null;
+		entry.record = null;
+		entry.promise = null;
+		announce(entry);
+	}
+
+	/** Subscribe to one id; returns an unsubscribe. */
+	function subscribeToAssetTexture(id, listener) {
+		if (typeof id !== "string" || !id) return () => {};
+		const entry = entryFor(id);
+		entry.listeners.add(listener);
+		if (entry.texture) listener(entry.texture);
+		else loadAssetTexture(id);
+		return () => entry.listeners.delete(listener);
+	}
+
+	/** Drop everything (a test harness, or a hard document reload). */
+	function clearAssetTextures() {
+		for (const entry of entries.values()) dispose(entry.texture);
+		entries.clear();
+	}
+
+	return { loadAssetTexture, assetRecord, rememberAsset, evictAssetTexture, subscribeToAssetTexture, clearAssetTextures };
+}
+
+let dbPromise = null;
 function db() {
 	if (!dbPromise) dbPromise = openAssetDb();
 	return dbPromise;
 }
 
-function entryFor(id) {
-	let entry = entries.get(id);
-	if (!entry) {
-		entry = { texture: null, record: null, promise: null, listeners: new Set() };
-		entries.set(id, entry);
-	}
-	return entry;
-}
-
-function announce(entry) {
-	for (const listener of entry.listeners) listener(entry.texture);
-}
-
-/**
- * A texture from asset bytes. ImageBitmap ignores `Texture.flipY`, so the flip
- * is asked of the decoder instead — without it every cutout hangs upside down.
- */
-async function textureFromAsset(asset) {
-	const bitmap = await createImageBitmap(new Blob([asset.bytes], { type: asset.type }), { imageOrientation: "flipY" });
-	const texture = new THREE.Texture(bitmap);
-	texture.flipY = false;
-	texture.colorSpace = THREE.SRGBColorSpace;
-	texture.generateMipmaps = true;
-	texture.minFilter = THREE.LinearMipmapLinearFilter;
-	texture.magFilter = THREE.LinearFilter;
-	// A card is nearly always seen at an angle; without anisotropy the picture
-	// smears the moment the camera is off its normal.
-	texture.anisotropy = 4;
-	texture.needsUpdate = true;
-	texture.userData.assetId = asset.id;
-	return texture;
-}
-
-/** The texture for this id, decoded once and shared. Null when the asset is
- * gone — a scene can outlive its pictures (another browser, cleared storage),
- * and a missing picture must not take the studio down with it. */
-export function loadAssetTexture(id) {
-	if (typeof id !== "string" || !id) return Promise.resolve(null);
-	const entry = entryFor(id);
-	if (entry.texture) return Promise.resolve(entry.texture);
-	if (!entry.promise) {
-		entry.promise = (async () => {
-			const asset = entry.record ?? (await getAsset(await db(), id));
-			if (!asset) return null;
-			entry.record = asset;
-			entry.texture = await textureFromAsset(asset);
-			announce(entry);
-			return entry.texture;
-		})().catch((error) => {
-			console.warn(`[cozyclay] could not load image asset ${id}`, error);
-			return null;
-		});
-	}
-	return entry.promise;
-}
-
-/** The stored record behind an id — the bytes, not the texture. Editing a
- * picture (cutting its background out) needs the source it started from. */
-export async function assetRecord(id) {
-	if (typeof id !== "string" || !id) return null;
-	const entry = entryFor(id);
-	if (entry.record) return entry.record;
-	entry.record = await getAsset(await db(), id);
-	return entry.record;
-}
-
-/** Warm the cache with an asset that is already in hand. An import has the
- * decoded bytes right there; going back to IndexedDB for them would decode the
- * same picture twice and delay the card by a frame or two. */
-export async function rememberAsset(asset) {
-	const stored = await putAsset(await db(), asset);
-	const entry = entryFor(stored.id);
-	entry.record = stored;
-	entry.texture?.dispose();
-	entry.texture = await textureFromAsset(stored);
-	entry.promise = Promise.resolve(entry.texture);
-	announce(entry);
-	return stored;
-}
-
-/** Forget a deleted asset so undo cannot render stale in-memory bytes. */
-export function evictAssetTexture(id) {
-	const entry = entries.get(id);
-	if (!entry) return;
-	entry.texture?.image?.close?.();
-	entry.texture?.dispose();
-	entry.texture = null;
-	announce(entry);
-	entries.delete(id);
-}
-
-/** Subscribe to one id; returns an unsubscribe. The listener fires
- * immediately when the texture is already cached, so a mount never waits a
- * frame for something that is in memory. */
-export function subscribeToAssetTexture(id, listener) {
-	if (typeof id !== "string" || !id) return () => {};
-	const entry = entryFor(id);
-	entry.listeners.add(listener);
-	if (entry.texture) listener(entry.texture);
-	else loadAssetTexture(id);
-	return () => entry.listeners.delete(listener);
-}
-
-/** Drop everything (a test harness, or a hard document reload). */
-export function clearAssetTextures() {
-	for (const entry of entries.values()) {
-		entry.texture?.image?.close?.();
-		entry.texture?.dispose();
-	}
-	entries.clear();
-}
+const cache = createAssetTextureCache();
+export const loadAssetTexture = cache.loadAssetTexture;
+export const assetRecord = cache.assetRecord;
+export const rememberAsset = cache.rememberAsset;
+export const evictAssetTexture = cache.evictAssetTexture;
+export const subscribeToAssetTexture = cache.subscribeToAssetTexture;
+export const clearAssetTextures = cache.clearAssetTextures;

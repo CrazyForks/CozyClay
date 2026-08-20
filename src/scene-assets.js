@@ -271,6 +271,24 @@ export function assetUsageCounts(scenes) {
 	return counts;
 }
 
+/**
+ * A deterministic snapshot of the asset-reference graph. This deliberately
+ * preserves scene and object identity as well as every lineage edge: a usage
+ * count can stay the same while a cutout is swapped or moved to another scene.
+ * Invalid ids collapse to null because they are not graph edges.
+ */
+export function assetGraphSignature(scenes) {
+	return JSON.stringify(
+		(Array.isArray(scenes) ? scenes : []).map((scene) => [
+			typeof scene?.id === "string" ? scene.id : null,
+			(Array.isArray(scene?.objects) ? scene.objects : []).map((object) => [
+				typeof object?.id === "string" ? object.id : null,
+				...[object?.assetId, object?.sourceAssetId, object?.matteAssetId].map((id) => (isAssetId(id) ? id : null)),
+			]),
+		]),
+	);
+}
+
 /** Stored ids that nothing points at any more, ready to be swept. */
 export function unreachableAssetIds(storedIds, scenes) {
 	const reachable = referencedAssetIds(scenes);

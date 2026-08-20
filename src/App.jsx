@@ -63,6 +63,7 @@ import { createSceneHistoryStore } from "./scene-history.js";
 import {
 	ASSET_IMAGE_TYPES,
 	assetAspect,
+	assetGraphSignature,
 	assetIdForBytes,
 	assetUsageCounts,
 	deleteAsset,
@@ -2192,6 +2193,10 @@ globalThis.playMode = centerTab === "play";
 			),
 		);
 	}, [scenes, activeSceneId, sceneObjects]);
+	const projectAssetGraphSignature = useMemo(() => {
+		const allScenes = scenes.map((scene) => (scene.id === activeSceneId ? { ...scene, objects: sceneObjects } : scene));
+		return assetGraphSignature(allScenes);
+	}, [scenes, activeSceneId, sceneObjects]);
 	useEffect(() => {
 		const { scenes: latestScenes, activeSceneId: latestActiveSceneId, sceneObjects: latestObjects } = projectStateRef.current;
 		const allScenes = latestScenes.map((scene) => (scene.id === latestActiveSceneId ? { ...scene, objects: latestObjects } : scene));
@@ -2261,11 +2266,12 @@ globalThis.playMode = centerTab === "play";
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [bottomTab, scenes, activeSceneId, cutoutLineage]);
 
-	async function deleteUnusedAsset(id, expectedUsageCount) {
+	async function deleteUnusedAsset(id, expectedUsageCount, expectedGraphSignature) {
 		if (deletingAssetId) return false;
 		setDeletingAssetId(id);
 		let db = null;
 		let deleted = false;
+		let graphConflict = false;
 		try {
 			db = await openAssetDb();
 			const stored = await listAssetIds(db);
@@ -2279,8 +2285,13 @@ globalThis.playMode = centerTab === "play";
 			const { scenes: latestScenes, activeSceneId: latestActiveSceneId, sceneObjects: latestObjects } = projectStateRef.current;
 			const allScenes = latestScenes.map((scene) => (scene.id === latestActiveSceneId ? { ...scene, objects: latestObjects } : scene));
 			const currentUsageCount = assetUsageCounts(allScenes).get(id) ?? 0;
+			const currentGraphSignature = assetGraphSignature(allScenes);
 			if (expectedUsageCount !== undefined && (!Number.isInteger(expectedUsageCount) || expectedUsageCount !== currentUsageCount)) {
 				setToast(ko("This image's usage changed, so it was not deleted. Please review it again.", "이 이미지의 사용량이 바뀌어서 삭제하지 않았어요. 다시 확인해 주세요."));
+				return false;
+			}
+			if (expectedGraphSignature !== undefined && expectedGraphSignature !== currentGraphSignature) {
+				setToast(ko("This image's scene references changed, so it was not deleted. Please review it again.", "이 이미지의 씬 참조가 변경되어 삭제하지 않았어요. 다시 확인해 주세요."));
 				return false;
 			}
 			if (currentUsageCount > 0 && expectedUsageCount === undefined) {
@@ -2291,7 +2302,16 @@ globalThis.playMode = centerTab === "play";
 				setToast(ko("That image is now used by a scene and was not deleted", "이 이미지는 이제 씬에서 사용 중이어서 삭제하지 않았어요"));
 				return false;
 			}
+			const authorizedGraph = expectedGraphSignature ?? currentGraphSignature;
 			await deleteAsset(db, id);
+			const { scenes: afterScenes, activeSceneId: afterActiveSceneId, sceneObjects: afterObjects } = projectStateRef.current;
+			const afterAllScenes = afterScenes.map((scene) => (scene.id === afterActiveSceneId ? { ...scene, objects: afterObjects } : scene));
+			if (assetGraphSignature(afterAllScenes) !== authorizedGraph) {
+				await putAsset(db, record);
+				graphConflict = true;
+				setToast(ko("The scene changed while deleting, so the image was kept. Please review storage again.", "삭제하는 동안 씬이 변경되어 이미지를 보존했어요. 저장소를 다시 확인해 주세요."));
+				return false;
+			}
 			evictAssetTexture(id);
 			setAssetTrash((current) => [...current.filter((asset) => asset.id !== record.id), record]);
 			deleted = true;
@@ -2301,7 +2321,7 @@ globalThis.playMode = centerTab === "play";
 			return false;
 		} finally {
 			db?.close?.();
-			if (deleted) await refreshAssetShelf();
+			if (deleted || graphConflict) await refreshAssetShelf();
 			setDeletingAssetId(null);
 		}
 	}
@@ -2310,18 +2330,15 @@ globalThis.playMode = centerTab === "play";
 		const record = assetTrash.at(-1);
 		if (!record || deletingAssetId) return;
 		setDeletingAssetId(record.id);
-		let db = null;
 		let restored = false;
 		try {
-			db = await openAssetDb();
-			await putAsset(db, record);
+			await rememberAsset(record);
 			setAssetTrash((current) => current.filter((asset) => asset.id !== record.id));
 			restored = true;
 			setToast(isKo ? `${record.name || "이미지"} 복원됨` : `${record.name || "Image"} restored`);
 		} catch (error) {
 			setToast(isKo ? `이미지를 복원하지 못했어요 — ${error.message}` : `Could not restore that image — ${error.message}`);
 		} finally {
-			db?.close?.();
 			if (restored) await refreshAssetShelf();
 			setDeletingAssetId(null);
 		}
@@ -7109,6 +7126,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						unusedAssetIds={unusedAssetIds}
 						usedAssetIds={usedAssetIds}
 						usageCounts={usageCounts}
+						graphSignature={projectAssetGraphSignature}
 						trashCount={assetTrash.length}
 						onDeleteUnusedAsset={deleteUnusedAsset}
 						onUndoDelete={undoDeletedAsset}

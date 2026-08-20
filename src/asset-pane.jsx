@@ -99,9 +99,11 @@ function ImageAssetCard({ id, onAssetGrab }) {
 	);
 }
 
-function StorageAssetRow({ id, onDelete, deleting, usageCount = 0 }) {
+function StorageAssetRow({ id, onDelete, deleting, usageCount = 0, graphSignature }) {
 	const [thumb, setThumb] = useState(null);
-	const [confirming, setConfirming] = useState(false);
+	// Capture the graph observed when the explicit confirmation opens. A render
+	// caused by a concurrent scene edit must not silently update its authority.
+	const [confirmation, setConfirmation] = useState(null);
 	const inUse = usageCount > 0;
 	useEffect(() => {
 		let alive = true;
@@ -115,6 +117,8 @@ function StorageAssetRow({ id, onDelete, deleting, usageCount = 0 }) {
 	if (thumb === undefined) return null;
 	const name = thumb?.name || ko("Untitled image", "이름 없는 이미지");
 	const usageLabel = ko(`Used by ${usageCount} scene object${usageCount === 1 ? "" : "s"}`, `${usageCount}개 씬 오브젝트에서 사용 중`);
+	const deleteLabel = ko(`Delete ${name} from storage`, `${name}을(를) 저장소에서 삭제`);
+	const confirmationId = `asset-storage-warning-${id}`;
 	return (
 		<li className="asset-storage-row">
 			{thumb ? <img className="asset-storage-thumb" src={thumb.url} alt="" /> : <span className="asset-storage-thumb asset-card-thumb-skeleton" aria-hidden="true" />}
@@ -123,18 +127,18 @@ function StorageAssetRow({ id, onDelete, deleting, usageCount = 0 }) {
 				<span>{thumb ? `${thumb.kind === "matte" ? ko("Matte", "매트") : ko("Image", "이미지")} · ${thumb.bytesLabel}` : ko("Loading details…", "세부 정보 불러오는 중…")}</span>
 				{inUse && <span className="asset-storage-usage">{usageLabel}</span>}
 			</div>
-			{confirming ? (
+			{confirmation ? (
 				<div className="asset-storage-confirm">
-					<span>{inUse
+					<span id={confirmationId} role="alert">{inUse
 						? ko(`Permanently delete this image from storage? It is used by ${usageCount} scene object${usageCount === 1 ? "" : "s"} and those objects will lose it.`, `저장소에서 이 이미지를 영구 삭제할까요? ${usageCount}개 씬 오브젝트가 사용 중이며 해당 오브젝트에서 사라집니다.`)
 						: ko("Unused by every scene. Delete it?", "모든 씬에서 사용되지 않아요. 삭제할까요?")}</span>
-					<button type="button" className="asset-storage-delete" disabled={deleting} onClick={async () => {
-						if (await onDelete(id, inUse ? usageCount : undefined)) setConfirming(false);
+					<button type="button" className="asset-storage-delete" aria-label={deleteLabel} aria-describedby={confirmationId} disabled={deleting} onClick={async () => {
+						if (await onDelete(id, inUse ? usageCount : undefined, confirmation.graphSignature)) setConfirmation(null);
 					}}>{ko("Delete", "삭제")}</button>
-					<button type="button" className="asset-storage-cancel" disabled={deleting} onClick={() => setConfirming(false)}>{ko("Cancel", "취소")}</button>
+					<button type="button" className="asset-storage-cancel" disabled={deleting} onClick={() => setConfirmation(null)}>{ko("Cancel", "취소")}</button>
 				</div>
 			) : (
-				<button type="button" className="asset-storage-delete" disabled={deleting || !thumb} onClick={() => setConfirming(true)}>
+				<button type="button" className="asset-storage-delete" aria-label={deleteLabel} disabled={deleting || !thumb} onClick={() => setConfirmation({ graphSignature })}>
 					{deleting ? ko("Deleting…", "삭제 중…") : ko("Delete", "삭제")}
 				</button>
 			)}
@@ -142,7 +146,7 @@ function StorageAssetRow({ id, onDelete, deleting, usageCount = 0 }) {
 	);
 }
 
-function StorageManager({ unusedAssetIds, usedAssetIds, usageCounts, trashCount, onDelete, onUndo, deletingAssetId }) {
+function StorageManager({ unusedAssetIds, usedAssetIds, usageCounts, graphSignature, trashCount, onDelete, onUndo, deletingAssetId }) {
 	const loading = unusedAssetIds === null || usedAssetIds === null;
 	const empty = !loading && unusedAssetIds.length === 0 && usedAssetIds.length === 0;
 	return (
@@ -167,7 +171,7 @@ function StorageManager({ unusedAssetIds, usedAssetIds, usageCounts, trashCount,
 						<p className="assets-empty">{ko("No unused image assets. Every stored image is still used by a scene.", "사용되지 않는 이미지 에셋이 없어요. 저장된 모든 이미지를 씬에서 사용 중입니다.")}</p>
 					) : (
 						<ul className="asset-storage-list">
-							{unusedAssetIds.map((id) => <StorageAssetRow key={id} id={id} onDelete={onDelete} deleting={deletingAssetId === id} />)}
+							{unusedAssetIds.map((id) => <StorageAssetRow key={id} id={id} onDelete={onDelete} deleting={deletingAssetId === id} graphSignature={graphSignature} />)}
 						</ul>
 					)}
 				</section>
@@ -177,7 +181,7 @@ function StorageManager({ unusedAssetIds, usedAssetIds, usageCounts, trashCount,
 						<p className="assets-empty">{ko("No stored image assets are used by a scene.", "씬에서 사용하는 저장 이미지 에셋이 없어요.")}</p>
 					) : (
 						<ul className="asset-storage-list">
-							{usedAssetIds.map((id) => <StorageAssetRow key={id} id={id} usageCount={usageCounts.get(id) ?? 0} onDelete={onDelete} deleting={deletingAssetId === id} />)}
+							{usedAssetIds.map((id) => <StorageAssetRow key={id} id={id} usageCount={usageCounts.get(id) ?? 0} onDelete={onDelete} deleting={deletingAssetId === id} graphSignature={graphSignature} />)}
 						</ul>
 					)}
 				</section>
@@ -196,7 +200,7 @@ function StorageManager({ unusedAssetIds, usedAssetIds, usageCounts, trashCount,
  * of SOURCE ids (see asset-shelf.js) — derived mattes and cut renders never
  * reach this component.
  */
-export default function AssetPane({ onAssetGrab, imageAssetIds, manageStorage, onManageStorageToggle, unusedAssetIds, usedAssetIds, usageCounts, trashCount, onDeleteUnusedAsset, onUndoDelete, deletingAssetId }) {
+export default function AssetPane({ onAssetGrab, imageAssetIds, manageStorage, onManageStorageToggle, unusedAssetIds, usedAssetIds, usageCounts, graphSignature, trashCount, onDeleteUnusedAsset, onUndoDelete, deletingAssetId }) {
 	return (
 		<div className="assets-shelf">
 			<div className="assets-shelf-toolbar">
@@ -205,7 +209,7 @@ export default function AssetPane({ onAssetGrab, imageAssetIds, manageStorage, o
 				</button>
 			</div>
 			{manageStorage ? (
-				<StorageManager unusedAssetIds={unusedAssetIds} usedAssetIds={usedAssetIds} usageCounts={usageCounts} trashCount={trashCount} onDelete={onDeleteUnusedAsset} onUndo={onUndoDelete} deletingAssetId={deletingAssetId} />
+				<StorageManager unusedAssetIds={unusedAssetIds} usedAssetIds={usedAssetIds} usageCounts={usageCounts} graphSignature={graphSignature} trashCount={trashCount} onDelete={onDeleteUnusedAsset} onUndo={onUndoDelete} deletingAssetId={deletingAssetId} />
 			) : <>
 				<section className="assets-section">
 					<h3 className="assets-section-title">{ko("Characters", "인물")}</h3>
