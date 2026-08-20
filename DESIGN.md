@@ -28,6 +28,8 @@ technical, and close to the timeline state they change.
 ## 4. Motion and Interaction
 
 - Camera toolbar actions respond immediately.
+- Binary camera actions state themselves in text (`Follow On` / `Follow Off`)
+  and expose `aria-pressed`; the On state uses the existing blue accent.
 - Active drawing state continues to use the existing filled violet state.
 - Destructive rail deletion uses a red hover/focus cue and an explicit text
   label; no icon-only or right-click-only deletion.

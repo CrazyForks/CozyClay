@@ -41,7 +41,18 @@ expect("the duration slider is gone — dots own timing", !app.includes("moveDur
 
 expect("PlayView restarts the piece from frame 0", app.includes('if (centerTab === "play") setTlFrame(0);'));
 expect("PlayView always rides the camera move", app.includes('centerTab === "play" || (moveFollow && !ikMode && !waypointMode && !posing)'));
-expect("Scene tab keeps the authoring gates on follow", app.includes("moveFollow && !ikMode && !waypointMode && !posing"));
+expect("Scene tab keeps the authoring gates on Follow mode", app.includes("moveFollow && !ikMode && !waypointMode && !posing"));
+expect(
+	"Inspector exposes Follow as an explicit On Off toggle",
+	app.includes('aria-pressed={moveFollow}') &&
+	app.includes('moveFollow ? ko("Follow On", "팔로우 켜짐") : ko("Follow Off", "팔로우 꺼짐")') &&
+	app.includes("setMoveFollow"),
+);
+expect(
+	"Follow toggle remains tied to authored move keys",
+	app.includes('disabled={!hasCameraKeys}') &&
+	app.includes('title={ko("Slave the move to the timeline'),
+);
 
 expect("surface lays out four tracks after removing duplicate Camera row", css.includes("grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr);"));
 expect("lane gridlines are frame-based, not width-based", css.includes(".tl-grid {") && !css.includes("100% / 23"));

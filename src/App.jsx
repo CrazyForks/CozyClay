@@ -5923,11 +5923,12 @@ function resizePromptClip(id, edge, rawFrame) {
 							<button
 								type="button"
 								className="btn ghost"
+								aria-pressed={moveFollow}
 								disabled={!hasCameraKeys}
 								title={ko("Slave the move to the timeline: play or scrub and the camera rides along. Turn off to fly freely while keys stay set", "움직임을 타임라인에 연결합니다. 재생하거나 스크럽하면 카메라가 함께 움직입니다. 끄면 키는 유지한 채 자유롭게 이동할 수 있습니다")}
 								onClick={() => setMoveFollow((follow) => !follow)}
 							>
-								{moveFollow ? ko("Follow ✓", "따라가기 ✓") : ko("Follow", "따라가기")}
+								{moveFollow ? ko("Follow On", "팔로우 켜짐") : ko("Follow Off", "팔로우 꺼짐")}
 							</button>
 							<button type="button" className="btn ghost" disabled={cameraKeys.length < 1} onClick={clearMove}>
 								{ko("Clear", "지우기")}

@@ -114,7 +114,22 @@ const persisted = await evaluate(`(() => {
 })()`);
 expect("deleted rail persists as Follow without geometry", persisted.mode === "follow" && persisted.cameraRail === null && persisted.railFollow === null, JSON.stringify(persisted));
 await send("Page.reload");
+expect("studio returns after reload", await waitFor("!!document.querySelector('canvas')"));
+expect("shot block returns after reload", await waitFor("!!document.querySelector('.tl-shot-block')"));
+await evaluate("document.querySelector('.tl-shot-block')?.click()");
 expect("Follow mode survives reload", await waitFor("document.querySelector('.tl-camera-slate')?.textContent.includes('Camera preview')"));
+await evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Inspector')?.click()");
+await evaluate("[...document.querySelectorAll('.hierarchy-row')].find((row) => row.textContent.trim() === 'Camera')?.click()");
+const followButtons = () => evaluate("[...document.querySelectorAll('button')].map((button) => ({ text: button.textContent.trim(), pressed: button.getAttribute('aria-pressed'), visible: !!(button.offsetWidth || button.offsetHeight) })).filter((button) => button.text.includes('Follow') || button.pressed !== null)");
+expect(
+	"Inspector shows Follow On explicitly",
+	await waitFor(`[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === "Follow On" && button.getAttribute("aria-pressed") === "true")`),
+	JSON.stringify(await followButtons()),
+);
+await evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Follow On')?.click()");
+expect("Follow Off is explicit after toggle", await waitFor("[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Follow Off' && button.getAttribute('aria-pressed') === 'false')"));
+await evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Follow Off')?.click()");
+expect("Follow On restores after toggle", await waitFor("[...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Follow On' && button.getAttribute('aria-pressed') === 'true')"));
 
 ws.close();
 if (failures) process.exit(1);
