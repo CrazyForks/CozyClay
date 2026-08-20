@@ -2696,12 +2696,28 @@ globalThis.playMode = centerTab === "play";
 			place_object: (args) => {
 				if (typeof args.kind !== "string") throw new Error("Invalid kind");
 				const live = liveStateRef.current;
+				// The parent is checked before anything is created: a bad id must
+				// not leave a half-made part lying around unattached.
+				if (args.parent !== undefined) {
+					if (typeof args.parent !== "string" || !live.objects.some((o) => o.id === args.parent)) {
+						throw new Error(`Parent object not found: ${args.parent}`);
+					}
+				}
+				if (args.name !== undefined && (typeof args.name !== "string" || !args.name.trim())) {
+					throw new Error("Invalid name");
+				}
 				const placement = finitePatch(args, ["x", "z", "rot"]);
 				const object = createSceneObject(args.kind, live.objects, placement);
 				if (!object) throw new Error(`Unknown object kind: ${args.kind}`);
 				const patch = finitePatch(args, ["y"]);
+				if (args.name !== undefined) patch.name = args.name;
 				const placed = updateSceneObject([object], object.id, patch)[0];
-				storeRef.current.applyAtomic((objects) => [...objects, placed]);
+				// One atomic entry: create, name and attach undo together, as the
+				// single "place part" gesture they are to the caller.
+				storeRef.current.applyAtomic((objects) => {
+					const next = [...objects, placed];
+					return args.parent !== undefined ? setSceneObjectParent(next, placed.id, args.parent) : next;
+				});
 				syncObjects();
 				return { id: placed.id };
 			},
@@ -2722,6 +2738,10 @@ globalThis.playMode = centerTab === "play";
 				if (args.color !== undefined) {
 					if (typeof args.color !== "string") throw new Error("Invalid color");
 					patch.color = args.color;
+				}
+				if (args.name !== undefined) {
+					if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
+					patch.name = args.name;
 				}
 				storeRef.current.applyAtomic((objects) => updateSceneObject(objects, args.id, patch));
 				syncObjects();

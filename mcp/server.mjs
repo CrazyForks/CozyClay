@@ -244,13 +244,25 @@ function sceneReport() {
 	if (sc.objects.length === 0) {
 		lines.push("  empty — add with place_object");
 	} else {
-		for (const o of sc.objects) {
+		// The set reads back as the tree it is: a child is indented under the
+		// object that carries it — the same structure the studio's Hierarchy
+		// shows and the one group_objects (or place_object's parent arg) built.
+		// The seen-set keeps this total even if stored data were hand-edited
+		// into a loop, matching descendantsOf's own discipline.
+		const ids = new Set(sc.objects.map((o) => o.id));
+		const seen = new Set();
+		const describeLine = (o, depth) => {
+			if (seen.has(o.id)) return;
+			seen.add(o.id);
 			const size = objectSize(o);
 			lines.push(
-				`  ${o.id}  ${o.name}  at x ${round(o.x)}, y ${round(o.y)}, z ${round(o.z)}` +
+				`${"  ".repeat(depth + 1)}${o.id}  ${o.name}  at x ${round(o.x)}, y ${round(o.y)}, z ${round(o.z)}` +
 					`  yaw ${round(o.rot, 1)}deg  size ${round(size.width)}x${round(size.height)}x${round(size.depth)}m`,
 			);
-		}
+			for (const child of sc.objects.filter((c) => c.parent === o.id)) describeLine(child, depth + 1);
+		};
+		for (const o of sc.objects.filter((o) => (o.parent ?? null) === null || !ids.has(o.parent))) describeLine(o, 0);
+		for (const o of sc.objects) describeLine(o, 0);
 	}
 	return lines.join("\n");
 }
@@ -654,12 +666,17 @@ registerTool(
 			z: z.number().default(0).describe("floor position z in metres"),
 			y: z.number().optional().describe("height above the floor; 0 stands on the deck"),
 			facing: z.number().optional().describe("yaw in degrees"),
+			name: z.string().min(1).optional().describe("display name, e.g. 'Building A / Roof'"),
+			parent: z
+				.string()
+				.optional()
+				.describe("object id to attach to — the parent then carries this object when it moves"),
 		},
 	},
-	async ({ kind, x, z: zPos, y, facing }) => {
+	async ({ kind, x, z: zPos, y, facing, name, parent }) => {
 		if (liveHub?.connected) {
 			try {
-				const result = await liveHub.command("place_object", { kind, x, z: zPos, y, rot: facing });
+				const result = await liveHub.command("place_object", { kind, x, z: zPos, y, rot: facing, name, parent });
 				await refreshLiveDescription();
 				return text(`Placed object as ${result?.id ?? "unknown"}.\n\n${sceneReport()}`);
 			} catch (error) {
@@ -667,12 +684,22 @@ registerTool(
 			}
 		}
 		const sc = scene();
+		// The parent is checked before anything is created: a bad id must not
+		// leave a half-made part lying around unattached.
+		if (parent !== undefined && !sc.objects.some((o) => o.id === parent)) {
+			return text(`No object "${parent}" to attach to. Call describe_scene for the current ids.`);
+		}
 		const placement = { x, z: zPos };
 		if (y !== undefined) placement.y = y;
 		if (facing !== undefined) placement.rot = facing;
 		const object = createSceneObject(kind, sc.objects, placement);
 		sc.objects = [...sc.objects, object];
-		return text(`Placed ${object.name} as ${object.id}.\n\n${sceneReport()}`);
+		if (name !== undefined) sc.objects = updateSceneObject(sc.objects, object.id, { name });
+		if (parent !== undefined) sc.objects = setSceneObjectParent(sc.objects, object.id, parent);
+		const placed = sc.objects.find((o) => o.id === object.id);
+		return text(
+			`Placed ${placed.name} as ${placed.id}${parent !== undefined ? ` under ${parent}` : ""}.\n\n${sceneReport()}`,
+		);
 	},
 );
 
@@ -987,14 +1014,15 @@ registerTool(
 				.regex(/^#[0-9a-fA-F]{6}$/)
 				.optional()
 				.describe("hex colour, e.g. #d9b18c"),
+			name: z.string().min(1).optional().describe("new display name, e.g. 'Building A'"),
 		},
 	},
-	async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color }) => {
+	async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color, name }) => {
 		if (liveHub?.connected) {
 			try {
 				await liveHub.command("update_object", {
 					id, x, y, z: zPos, rot: facing, rotX: tilt, rotZ: roll,
-					scale, scaleX: scale_x, scaleY: scale_y, scaleZ: scale_z, color,
+					scale, scaleX: scale_x, scaleY: scale_y, scaleZ: scale_z, color, name,
 				});
 				await refreshLiveDescription();
 				return text(`Updated ${id}.\n\n${sceneReport()}`);
@@ -1022,6 +1050,7 @@ registerTool(
 		if (scale_y !== undefined) patch.scaleY = scale_y;
 		if (scale_z !== undefined) patch.scaleZ = scale_z;
 		if (color !== undefined) patch.color = color;
+		if (name !== undefined) patch.name = name;
 		sc.objects = updateSceneObject(sc.objects, id, patch);
 		return text(`Updated ${id}.\n\n${sceneReport()}`);
 	},

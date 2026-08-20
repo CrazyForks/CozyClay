@@ -129,6 +129,76 @@ check("place_object returns an id", Boolean(objectId), placed.split("\n")[0]);
 check("update_object accepts the id", (await call("update_object", { id: objectId, scale: 1.4 })).startsWith("Updated"));
 check("unknown object is reported", (await call("update_object", { id: "nope" })).startsWith("No object"));
 
+/* -------------------- name & parent contract (regression) --------------- */
+// place_object accepts an optional `name`; the created object carries it,
+// and auto-numbering still works when the name is omitted.
+// The id is the token right after "as "; a parented placement continues with
+// " under <id>" before the period, so the id is whatever non-space run sits
+// between "as " and the next space or period.
+const idOf = (body) => body.split("\n")[0].match(/as (\S+?)(?=\s|\.)/)?.[1];
+
+const named = await call("place_object", { kind: "cube", name: "Building A" });
+const namedId = idOf(named);
+check("place_object returns an id for a named object", Boolean(namedId), named.split("\n")[0]);
+check("place_object honours a given name", named.split("\n")[0].includes("Building A"), named.split("\n")[0]);
+const namedScene = await call("describe_scene");
+check("describe_scene shows the given name", namedScene.includes("Building A"), namedScene);
+
+const autoA = await call("place_object", { kind: "cube" });
+const autoB = await call("place_object", { kind: "cube" });
+check("unnamed object keeps the library label", autoA.split("\n")[0].includes("Cube") && !autoA.split("\n")[0].includes("Building A"), autoA.split("\n")[0]);
+check("second unnamed object auto-numbers", autoB.split("\n")[0].includes("Cube 2"), autoB.split("\n")[0]);
+
+// update_object accepts an optional `name`; renaming shows in describe_scene.
+const renamed = await call("update_object", { id: namedId, name: "Building Renamed" });
+check("update_object reflects the new name", renamed.includes("Building Renamed"), renamed.split("\n")[0]);
+const renamedScene = await call("describe_scene");
+check("describe_scene shows the renamed object", renamedScene.includes("Building Renamed"), renamedScene);
+check("describe_scene drops the old name", !renamedScene.includes("Building A"), renamedScene);
+
+// place_object accepts an optional `parent`; the child is attached under the
+// parent and is carried when the parent moves via update_object.
+const parentPlaced = await call("place_object", { kind: "cube", name: "Parent Block" });
+const parentId = idOf(parentPlaced);
+check("place_object returns a parent id", Boolean(parentId), parentPlaced.split("\n")[0]);
+const childPlaced = await call("place_object", { kind: "cube", name: "Child Block", parent: parentId });
+const childId = idOf(childPlaced);
+check("place_object returns a child id", Boolean(childId), childPlaced.split("\n")[0]);
+check("place_object with parent reports the attachment", childPlaced.split("\n")[0].includes(`under ${parentId}`), childPlaced.split("\n")[0]);
+
+const beforeMove = await call("describe_scene");
+const childLineBefore = beforeMove.split("\n").find((line) => line.includes(childId)) ?? "";
+const parentLineBefore = beforeMove.split("\n").find((line) => line.includes(parentId)) ?? "";
+const childXBefore = Number(childLineBefore.match(/x (-?[\d.]+)/)?.[1] ?? NaN);
+const parentXBefore = Number(parentLineBefore.match(/x (-?[\d.]+)/)?.[1] ?? NaN);
+
+// describe_scene shows parent/child structure: the child line is visibly
+// associated with the parent (indented under it or marked 'under <id>').
+const indent = (line) => line.match(/^(\s*)/)?.[1].length ?? 0;
+check(
+	"describe_scene associates child with parent",
+	childLineBefore.includes(`under ${parentId}`) || indent(childLineBefore) > indent(parentLineBefore),
+	childLineBefore,
+);
+
+const shift = 3.0;
+await call("update_object", { id: parentId, x: parentXBefore + shift });
+const afterMove = await call("describe_scene");
+const childLineAfter = afterMove.split("\n").find((line) => line.includes(childId)) ?? "";
+const childXAfter = Number(childLineAfter.match(/x (-?[\d.]+)/)?.[1] ?? NaN);
+check(
+	"moving parent carries child in x",
+	Math.abs((childXAfter - childXBefore) - shift) < 0.05,
+	`before x ${childXBefore}  after x ${childXAfter}  (shift ${shift})`,
+);
+
+// place_object with a `parent` id that does not exist returns an error
+// mentioning the id; the object is not left dangling under a ghost parent.
+const badParent = await call("place_object", { kind: "cube", parent: "no-such-parent" });
+check("place_object with unknown parent reports the id", badParent.includes("no-such-parent"), badParent.split("\n")[0]);
+const afterBad = await call("describe_scene");
+check("place_object with unknown parent leaves no dangling child", !afterBad.includes("under no-such-parent"), afterBad);
+
 /* ------------------------------ camera moves ----------------------------- */
 
 check("move needs a mark", (await call("describe_camera_move")).startsWith("No A position"));

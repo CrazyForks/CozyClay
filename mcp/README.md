@@ -67,7 +67,9 @@ generated frame matches the blocking instead of drifting off into a generic shot
 | `frame_shot` | frame by intent — size, view, level, side |
 | `add_character` / `place_character` / `remove_character` | the cast |
 | `focus_character` | choose who the camera frames |
-| `place_object` / `update_object` / `remove_object` | the set |
+| `place_object` / `update_object` / `remove_object` | the set — `place_object` also accepts `name` and `parent`, so multi-part assets like "Building A" land as one named assembly |
+| `group_objects` | attach children to a parent so they move as one |
+| `ungroup_objects` | detach children from their parent (same as `group_objects` with `parent: null`) |
 | `render_prompt` | the shot as an AI image or video prompt |
 | `generate_motion` | multi-phase character motion through the ARDY bridge — phases land as prompt blocks |
 | `mark_camera_move` / `describe_camera_move` | name a move between two camera positions |
