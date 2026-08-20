@@ -5588,6 +5588,13 @@ input[type=range]::-moz-range-thumb {
 	flex-direction: column;
 }
 
+/* Tab panes carry their own display values, which beat the UA's [hidden]
+   rule — without this the timeline keeps rendering under the Assets pane
+   instead of yielding its slot to the active tab. */
+.bottom-window > [hidden] {
+	display: none !important;
+}
+
 /* The saved splitter height describes the lane workspace. Selecting a camera
    adds its toolbar above that workspace; opening Advanced adds one more row.
    Grow the bottom window instead of borrowing pixels from the Shot lane. */
