@@ -22,6 +22,21 @@
 import { isAssetId } from "./scene-assets.js";
 import { CUTOUT_KIND } from "./scene-objects.js";
 
+/** A compact, locale-neutral byte label for the storage manager. */
+export function formatAssetBytes(value) {
+	const bytes = Math.max(0, Number(value) || 0);
+	if (bytes < 1024) return `${Math.round(bytes)} B`;
+	const units = ["KB", "MB", "GB"];
+	const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length);
+	const amount = bytes / 1024 ** exponent;
+	return `${amount >= 10 ? Math.round(amount) : Number(amount.toFixed(1))} ${units[exponent - 1]}`;
+}
+
+/** Some stored derivatives name themselves; leave unmarked records as images. */
+export function assetKind(asset) {
+	return /\bmatte$/i.test(String(asset?.name ?? "").trim()) ? "matte" : "image";
+}
+
 /** The stored ids the shelf shows, in stored order. */
 export function sourceAssetIds(storedIds, scenes) {
 	const sources = new Set();

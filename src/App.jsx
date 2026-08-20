@@ -63,6 +63,7 @@ import { createSceneHistoryStore } from "./scene-history.js";
 import {
 	ASSET_IMAGE_TYPES,
 	assetAspect,
+	deleteAsset,
 	getAsset,
 	imageFilesFrom,
 	imageFilesFromClipboard,
@@ -71,6 +72,7 @@ import {
 	openAssetDb,
 	putAsset,
 	referencedAssetIds,
+	unreachableAssetIds,
 } from "./scene-assets.js";
 import { sourceAssetIds } from "./asset-shelf.js";
 import { assetRecord, rememberAsset } from "./scene-asset-cache.js";
@@ -2158,33 +2160,105 @@ globalThis.playMode = centerTab === "play";
 	// re-run when a cutout's lineage changes — not on every transform tick, so
 	// a gizmo drag never hammers IndexedDB.
 	const [shelfImageIds, setShelfImageIds] = useState(null);
+	const [manageAssetStorage, setManageAssetStorage] = useState(false);
+	// A separate scan preserves the source-only placement shelf while the
+	// manager exposes every unreachable stored record, including matte and cut
+	// derivatives orphaned with a deleted card.
+	const [unusedAssetIds, setUnusedAssetIds] = useState(null);
+	// This is deliberately session-only. Each entry is a complete IndexedDB
+	// record, so Undo can put it back byte-for-byte until the page is reloaded.
+	const [assetTrash, setAssetTrash] = useState([]);
+	const [deletingAssetId, setDeletingAssetId] = useState(null);
 	const cutoutLineage = useMemo(
 		() => JSON.stringify(sceneObjects.flatMap((object) => (object.renderer === CUTOUT_KIND ? [[object.assetId, object.sourceAssetId, object.matteAssetId]] : []))),
 		[sceneObjects],
 	);
+	async function refreshAssetShelf(isAlive = () => true) {
+		let db = null;
+		try {
+			db = await openAssetDb();
+			const stored = await listAssetIds(db);
+			// The active scene's live objects override its saved snapshot. That
+			// includes an unsaved matte or cutout edit in the reachability closure.
+			const allScenes = scenes.map((scene) => (scene.id === activeSceneId ? { ...scene, objects: sceneObjects } : scene));
+			if (!isAlive()) return;
+			setShelfImageIds(sourceAssetIds(stored, allScenes));
+			setUnusedAssetIds(unreachableAssetIds(stored, allScenes));
+		} catch {
+			// No IndexedDB means no imports can exist either; both honest views are
+			// empty rather than presenting an unverifiable deletion target.
+			if (isAlive()) {
+				setShelfImageIds([]);
+				setUnusedAssetIds([]);
+			}
+		} finally {
+			db?.close?.();
+		}
+	}
 	useEffect(() => {
 		if (bottomTab !== "assets") return undefined;
 		let alive = true;
-		(async () => {
-			try {
-				const db = await openAssetDb();
-				const stored = await listAssetIds(db);
-				db.close?.();
-				// The active scene's live objects override its saved snapshot, so a
-				// just-applied matte hides its derived ids without waiting for a save.
-				const allScenes = scenes.map((scene) => (scene.id === activeSceneId ? { ...scene, objects: sceneObjects } : scene));
-				if (alive) setShelfImageIds(sourceAssetIds(stored, allScenes));
-			} catch {
-				// No IndexedDB means no imports can exist either; the honest shelf
-				// is an empty one.
-				if (alive) setShelfImageIds([]);
-			}
-		})();
+		void refreshAssetShelf(() => alive);
 		return () => {
 			alive = false;
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [bottomTab, scenes, activeSceneId, cutoutLineage]);
+
+	async function deleteUnusedAsset(id) {
+		if (deletingAssetId) return false;
+		setDeletingAssetId(id);
+		let db = null;
+		let deleted = false;
+		try {
+			db = await openAssetDb();
+			const stored = await listAssetIds(db);
+			// Rebuild this at the destructive boundary rather than trusting the
+			// displayed list: a just-created cutout can make its image reachable.
+			const allScenes = scenes.map((scene) => (scene.id === activeSceneId ? { ...scene, objects: sceneObjects } : scene));
+			if (!unreachableAssetIds(stored, allScenes).includes(id)) {
+				setToast(ko("That image is now used by a scene and was not deleted", "이 이미지는 이제 씬에서 사용 중이어서 삭제하지 않았어요"));
+				return false;
+			}
+			const record = await getAsset(db, id);
+			if (!record) {
+				setToast(ko("That image is no longer in storage", "이 이미지는 이미 저장소에 없습니다"));
+				return false;
+			}
+			await deleteAsset(db, id);
+			setAssetTrash((current) => [...current.filter((asset) => asset.id !== record.id), record]);
+			deleted = true;
+			return true;
+		} catch (error) {
+			setToast(isKo ? `이미지를 삭제하지 못했어요 — ${error.message}` : `Could not delete that image — ${error.message}`);
+			return false;
+		} finally {
+			db?.close?.();
+			if (deleted) await refreshAssetShelf();
+			setDeletingAssetId(null);
+		}
+	}
+
+	async function undoDeletedAsset() {
+		const record = assetTrash.at(-1);
+		if (!record || deletingAssetId) return;
+		setDeletingAssetId(record.id);
+		let db = null;
+		let restored = false;
+		try {
+			db = await openAssetDb();
+			await putAsset(db, record);
+			setAssetTrash((current) => current.filter((asset) => asset.id !== record.id));
+			restored = true;
+			setToast(isKo ? `${record.name || "이미지"} 복원됨` : `${record.name || "Image"} restored`);
+		} catch (error) {
+			setToast(isKo ? `이미지를 복원하지 못했어요 — ${error.message}` : `Could not restore that image — ${error.message}`);
+		} finally {
+			db?.close?.();
+			if (restored) await refreshAssetShelf();
+			setDeletingAssetId(null);
+		}
+	}
 	// ARDY status doubles as a Unity-style console line: the inspector keeps
 	// the current line, the bottom Console tab keeps the session history.
 	function reportArdyStatus(line) {
@@ -6949,7 +7023,17 @@ function resizePromptClip(id, edge, rawFrame) {
 					</button>
 				</nav>
 				<div className="assets-pane" hidden={bottomTab !== "assets"}>
-					<AssetPane onAssetGrab={beginAssetDrag} imageAssetIds={shelfImageIds} />
+					<AssetPane
+						onAssetGrab={beginAssetDrag}
+						imageAssetIds={shelfImageIds}
+						manageStorage={manageAssetStorage}
+						onManageStorageToggle={() => setManageAssetStorage((current) => !current)}
+						unusedAssetIds={unusedAssetIds}
+						trashCount={assetTrash.length}
+						onDeleteUnusedAsset={deleteUnusedAsset}
+						onUndoDelete={undoDeletedAsset}
+						deletingAssetId={deletingAssetId}
+					/>
 				</div>
 				<div className="console-pane" hidden={bottomTab !== "console"}>
 					{consoleLines.length === 0 ? (
@@ -7121,6 +7205,12 @@ function resizePromptClip(id, edge, rawFrame) {
 				/>
 			)}
 			<Toast message={toast} onDone={() => setToast("")} />
+			{assetTrash.length > 0 && (
+				<div className="asset-delete-toast" role="status">
+					<span>{ko("Unused image deleted. This session can undo it.", "사용되지 않는 이미지를 삭제했어요. 이 세션에서 실행 취소할 수 있어요.")}</span>
+					<button type="button" onClick={undoDeletedAsset} disabled={Boolean(deletingAssetId)}>{ko("Undo", "실행 취소")}</button>
+				</div>
+			)}
 			{assetDrag && (
 				<div className="asset-drag-ghost" style={{ left: assetDrag.x, top: assetDrag.y }} aria-hidden="true">
 					{assetDrag.payload.kind === "image" && assetDrag.payload.thumb ? (

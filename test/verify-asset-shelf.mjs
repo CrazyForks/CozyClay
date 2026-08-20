@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The Assets shelf must show what the user IMPORTED and hide what the matte
 // pipeline DERIVED. This suite pins that split as pure data-in/data-out.
-import { sourceAssetIds } from "../src/asset-shelf.js";
+import { assetKind, formatAssetBytes, sourceAssetIds } from "../src/asset-shelf.js";
 
 let failures = 0;
 function expect(name, condition, detail = "") {
@@ -15,6 +15,12 @@ const RENDERED = `img-${hex("b")}`; // the cut picture that cutout renders
 const MATTE = `img-${hex("c")}`; // the purple selection mask
 const PLAIN = `img-${hex("d")}`; // an unmatted cutout's own picture
 const ORPHAN = `img-${hex("e")}`; // stored, referenced by no scene
+
+// Manage-mode metadata stays pure so its display contract is node-tested.
+expect("asset bytes use readable binary units", formatAssetBytes(1536) === "1.5 KB");
+expect("asset bytes keep small values exact", formatAssetBytes(512) === "512 B");
+expect("matte records expose their derivable kind", assetKind({ name: "sofa matte" }) === "matte");
+expect("ordinary records expose image kind", assetKind({ name: "sofa.png" }) === "image");
 
 const scenes = [
 	{

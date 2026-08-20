@@ -4,6 +4,7 @@ import { CHARACTER_MODEL_IDS } from "./scenes.js";
 import { OBJECT_LIBRARY } from "./scene-objects.js";
 import { displayObjectGroupName, displayObjectLabel } from "./object-catalog.jsx";
 import { assetAspect } from "./scene-assets.js";
+import { assetKind, formatAssetBytes } from "./asset-shelf.js";
 import { assetRecord } from "./scene-asset-cache.js";
 
 /** Casting assets offered in the bottom Assets tab. `id` doubles as the FBX
@@ -38,7 +39,13 @@ function loadThumb(id) {
 			canvas.height = bitmap.height;
 			canvas.getContext("2d").drawImage(bitmap, 0, 0);
 			bitmap.close?.();
-			return { url: canvas.toDataURL(), aspect: assetAspect(record) ?? 1, name: record.name };
+			return {
+				url: canvas.toDataURL(),
+				aspect: assetAspect(record) ?? 1,
+				name: record.name,
+				bytesLabel: formatAssetBytes(record.bytes.byteLength),
+				kind: assetKind(record),
+			};
 		})().catch(() => null));
 	}
 	return thumbCache.get(id);
@@ -92,6 +99,69 @@ function ImageAssetCard({ id, onAssetGrab }) {
 	);
 }
 
+function StorageAssetRow({ id, onDelete, deleting }) {
+	const [thumb, setThumb] = useState(null);
+	const [confirming, setConfirming] = useState(false);
+	useEffect(() => {
+		let alive = true;
+		loadThumb(id).then((result) => {
+			if (alive) setThumb(result ?? undefined);
+		});
+		return () => {
+			alive = false;
+		};
+	}, [id]);
+	if (thumb === undefined) return null;
+	const name = thumb?.name || ko("Untitled image", "이름 없는 이미지");
+	return (
+		<li className="asset-storage-row">
+			{thumb ? <img className="asset-storage-thumb" src={thumb.url} alt="" /> : <span className="asset-storage-thumb asset-card-thumb-skeleton" aria-hidden="true" />}
+			<div className="asset-storage-details">
+				<strong title={name}>{name}</strong>
+				<span>{thumb ? `${thumb.kind === "matte" ? ko("Matte", "매트") : ko("Image", "이미지")} · ${thumb.bytesLabel}` : ko("Loading details…", "세부 정보 불러오는 중…")}</span>
+			</div>
+			{confirming ? (
+				<div className="asset-storage-confirm">
+					<span>{ko("Unused by every scene. Delete it?", "모든 씬에서 사용되지 않아요. 삭제할까요?")}</span>
+					<button type="button" className="asset-storage-delete" disabled={deleting} onClick={async () => {
+						if (await onDelete(id)) setConfirming(false);
+					}}>{ko("Delete", "삭제")}</button>
+					<button type="button" className="asset-storage-cancel" disabled={deleting} onClick={() => setConfirming(false)}>{ko("Cancel", "취소")}</button>
+				</div>
+			) : (
+				<button type="button" className="asset-storage-delete" disabled={deleting || !thumb} onClick={() => setConfirming(true)}>
+					{deleting ? ko("Deleting…", "삭제 중…") : ko("Delete", "삭제")}
+				</button>
+			)}
+		</li>
+	);
+}
+
+function StorageManager({ unusedAssetIds, trashCount, onDelete, onUndo, deletingAssetId }) {
+	return (
+		<section className="asset-storage-manager" aria-label={ko("Manage storage", "저장 공간 관리")}>
+			<div className="asset-storage-head">
+				<div>
+					<h3>{ko("Manage storage", "저장 공간 관리")}</h3>
+					<p>{ko("Only images unused by every scene appear here. Deleted images can be restored until this page is reloaded.", "모든 씬에서 사용되지 않는 이미지만 표시됩니다. 삭제한 이미지는 이 페이지를 새로 고치기 전까지 복원할 수 있어요.")}</p>
+				</div>
+				{trashCount > 0 && <button type="button" className="asset-storage-undo" onClick={onUndo}>{ko(`Undo last delete (${trashCount})`, `마지막 삭제 실행 취소 (${trashCount})`)}</button>}
+			</div>
+			{unusedAssetIds === null ? (
+				<div className="asset-storage-list" aria-busy="true">
+					{[0, 1].map((n) => <span className="asset-storage-row asset-storage-row-skeleton" key={n} aria-hidden="true" />)}
+				</div>
+			) : unusedAssetIds.length === 0 ? (
+				<p className="assets-empty">{ko("No unused image assets. Every stored image is still used by a scene.", "사용되지 않는 이미지 에셋이 없어요. 저장된 모든 이미지를 씬에서 사용 중입니다.")}</p>
+			) : (
+				<ul className="asset-storage-list">
+					{unusedAssetIds.map((id) => <StorageAssetRow key={id} id={id} onDelete={onDelete} deleting={deletingAssetId === id} />)}
+				</ul>
+			)}
+		</section>
+	);
+}
+
 /**
  * Bottom-window asset shelf: everything placeable, one grid — the cast, the
  * object catalogue and the user's imported pictures, each under its own
@@ -102,75 +172,76 @@ function ImageAssetCard({ id, onAssetGrab }) {
  * of SOURCE ids (see asset-shelf.js) — derived mattes and cut renders never
  * reach this component.
  */
-export default function AssetPane({ onAssetGrab, imageAssetIds }) {
+export default function AssetPane({ onAssetGrab, imageAssetIds, manageStorage, onManageStorageToggle, unusedAssetIds, trashCount, onDeleteUnusedAsset, onUndoDelete, deletingAssetId }) {
 	return (
 		<div className="assets-shelf">
-			<section className="assets-section">
-				<h3 className="assets-section-title">{ko("Characters", "인물")}</h3>
-				<div className="assets-grid">
-					{CHARACTER_ASSETS.map((asset) => (
-						<button
-							type="button"
-							className="asset-card"
-							key={asset.id}
-							title={ko(`Drag ${asset.label} into the scene`, `${asset.label}을(를) 씬에 드래그하세요`)}
-							{...grabProps(onAssetGrab, { kind: "character", id: asset.id, label: asset.label })}
-						>
-							<span className="asset-card-swatch" data-model={asset.id} aria-hidden="true" />
-							<span className="asset-card-label">{asset.label}</span>
-							<span className="asset-card-kind">{ko("Character", "인물")}</span>
-						</button>
-					))}
-				</div>
-			</section>
-			<section className="assets-section">
-				<h3 className="assets-section-title">{ko("Objects", "오브젝트")}</h3>
-				<div className="assets-grid">
-					{OBJECT_LIBRARY.map((entry) => (
-						<button
-							type="button"
-							className="asset-card"
-							key={entry.kind}
-							title={ko(
-								`Drag ${entry.label} into the scene`,
-								`${displayObjectLabel(entry.label)}을(를) 씬에 드래그하세요`,
-							)}
-							{...grabProps(onAssetGrab, { kind: "object", objectKind: entry.kind, label: displayObjectLabel(entry.label), color: entry.color })}
-						>
-							<span className="asset-card-swatch" style={{ background: entry.color }} aria-hidden="true" />
-							<span className="asset-card-label">{displayObjectLabel(entry.label)}</span>
-							<span className="asset-card-kind">{displayObjectGroupName(entry.group)}</span>
-						</button>
-					))}
-				</div>
-			</section>
-			<section className="assets-section">
-				<h3 className="assets-section-title">{ko("My images", "내 이미지")}</h3>
-				{imageAssetIds === null ? (
-					// The scan is still in flight: skeleton cards, never the empty
-					// message — "no images" must be a fact, not a race.
-					<div className="assets-grid" aria-busy="true">
-						{[0, 1, 2].map((n) => (
-							<span className="asset-card asset-card-skeleton" key={n} aria-hidden="true" />
-						))}
-					</div>
-				) : imageAssetIds.length === 0 ? (
-					// The empty state REPLACES the grid and points at the real
-					// import controls; the shelf itself has no import button.
-					<p className="assets-empty">
-						{ko(
-							"No imported images yet. Use \u201cImport image as cutout\u201d in the Props inspector, or drop or paste a picture into the studio.",
-							"아직 가져온 이미지가 없어요. 소품 인스펙터의 \u201c이미지를 컷아웃으로 가져오기\u201d를 사용하거나, 이미지를 스튜디오에 드래그하거나 붙여넣으세요.",
-						)}
-					</p>
-				) : (
+			<div className="assets-shelf-toolbar">
+				<button type="button" className="assets-manage-toggle" aria-pressed={manageStorage} onClick={onManageStorageToggle}>
+					{manageStorage ? ko("Back to assets", "에셋으로 돌아가기") : ko("Manage storage", "저장 공간 관리")}
+				</button>
+			</div>
+			{manageStorage ? (
+				<StorageManager unusedAssetIds={unusedAssetIds} trashCount={trashCount} onDelete={onDeleteUnusedAsset} onUndo={onUndoDelete} deletingAssetId={deletingAssetId} />
+			) : <>
+				<section className="assets-section">
+					<h3 className="assets-section-title">{ko("Characters", "인물")}</h3>
 					<div className="assets-grid">
-						{imageAssetIds.map((id) => (
-							<ImageAssetCard key={id} id={id} onAssetGrab={onAssetGrab} />
+						{CHARACTER_ASSETS.map((asset) => (
+							<button
+								type="button"
+								className="asset-card"
+								key={asset.id}
+								title={ko(`Drag ${asset.label} into the scene`, `${asset.label}을(를) 씬에 드래그하세요`)}
+								{...grabProps(onAssetGrab, { kind: "character", id: asset.id, label: asset.label })}
+							>
+								<span className="asset-card-swatch" data-model={asset.id} aria-hidden="true" />
+								<span className="asset-card-label">{asset.label}</span>
+								<span className="asset-card-kind">{ko("Character", "인물")}</span>
+							</button>
 						))}
 					</div>
-				)}
-			</section>
+				</section>
+				<section className="assets-section">
+					<h3 className="assets-section-title">{ko("Objects", "오브젝트")}</h3>
+					<div className="assets-grid">
+						{OBJECT_LIBRARY.map((entry) => (
+							<button
+								type="button"
+								className="asset-card"
+								key={entry.kind}
+								title={ko(
+									`Drag ${entry.label} into the scene`,
+									`${displayObjectLabel(entry.label)}을(를) 씬에 드래그하세요`,
+								)}
+								{...grabProps(onAssetGrab, { kind: "object", objectKind: entry.kind, label: displayObjectLabel(entry.label), color: entry.color })}
+							>
+								<span className="asset-card-swatch" style={{ background: entry.color }} aria-hidden="true" />
+								<span className="asset-card-label">{displayObjectLabel(entry.label)}</span>
+								<span className="asset-card-kind">{displayObjectGroupName(entry.group)}</span>
+							</button>
+						))}
+					</div>
+				</section>
+				<section className="assets-section">
+					<h3 className="assets-section-title">{ko("My images", "내 이미지")}</h3>
+					{imageAssetIds === null ? (
+						<div className="assets-grid" aria-busy="true">
+							{[0, 1, 2].map((n) => <span className="asset-card asset-card-skeleton" key={n} aria-hidden="true" />)}
+						</div>
+					) : imageAssetIds.length === 0 ? (
+						<p className="assets-empty">
+							{ko(
+								"No imported images yet. Use \u201cImport image as cutout\u201d in the Props inspector, or drop or paste a picture into the studio.",
+								"아직 가져온 이미지가 없어요. 소품 인스펙터의 \u201c이미지를 컷아웃으로 가져오기\u201d를 사용하거나, 이미지를 스튜디오에 드래그하거나 붙여넣으세요.",
+							)}
+						</p>
+					) : (
+						<div className="assets-grid">
+							{imageAssetIds.map((id) => <ImageAssetCard key={id} id={id} onAssetGrab={onAssetGrab} />)}
+						</div>
+					)}
+				</section>
+			</>}
 		</div>
 	);
 }
