@@ -129,6 +129,37 @@ export function imageFilesFrom(transfer) {
 	});
 }
 
+/**
+ * The images on a clipboard.
+ *
+ * "Copy image" in a browser puts the picture's BYTES on the clipboard, which is
+ * why paste reaches pictures a drag cannot: dragging one out of a search result
+ * hands over a URL, and a cross-origin URL cannot be read back into a canvas —
+ * the matte needs pixels, so a URL would import something the editor could not
+ * then cut. Bytes have no origin, so this path works on any picture the browser
+ * will copy, and it is the same `File` the file dialog produces.
+ *
+ * A clipboard item carries no filename, so one is synthesised from its type.
+ */
+export function imageFilesFromClipboard(clipboardData) {
+	const out = [];
+	const items = Array.from(clipboardData?.items ?? []);
+	for (const item of items) {
+		if (item.kind !== "file") continue;
+		if (!isSupportedImageType(item.type)) continue;
+		const file = item.getAsFile?.();
+		if (!file) continue;
+		out.push(
+			file.name && file.name !== "image.png"
+				? file
+				: new File([file], `pasted-${Date.now()}.${item.type.split("/")[1] || "png"}`, { type: item.type }),
+		);
+	}
+	// Some browsers expose the same picture only through `files`.
+	if (!out.length) return imageFilesFrom(clipboardData);
+	return out;
+}
+
 /* ------------------------------------------------------------- import ---- */
 
 /** Scaling a picture re-encodes it, and the encoder has to be one that can

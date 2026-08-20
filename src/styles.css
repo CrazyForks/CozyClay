@@ -1361,7 +1361,12 @@ select {
 	flex: none;
 	background: var(--panel);
 	border-left: 1px solid var(--line);
-	overflow-y: auto;
+	/* The panel is a fixed 380px, but its contents are not: an asset id, a long
+	   object name or a wide status row can exceed it. Scrolling only vertically
+	   left that content clipped with no way to reach it, so the axis that can
+	   overflow is scrollable too. */
+	overflow: auto;
+	overscroll-behavior: contain;
 	padding: 18px 16px 34px;
 }
 
@@ -1663,7 +1668,9 @@ select {
 
 .inspector-status-grid {
 	display: grid;
-	grid-template-columns: 1fr auto;
+	/* `auto` let a long value push the row past the panel. Both tracks may now
+	   shrink, and the value wraps instead of demanding a width nothing has. */
+	grid-template-columns: minmax(0, 1fr) minmax(0, auto);
 	gap: 7px 12px;
 	margin: 0 0 12px;
 	padding: 9px 10px;
@@ -1673,8 +1680,16 @@ select {
 	font-size: 8px;
 }
 
-.inspector-status-grid span { color: var(--muted); }
-.inspector-status-grid b { color: #c7cde0; font-weight: 600; }
+.inspector-status-grid span { color: var(--muted); min-width: 0; }
+.inspector-status-grid b {
+	color: #c7cde0;
+	font-weight: 600;
+	min-width: 0;
+	/* An id or a path has no spaces to break at; break it anywhere rather than
+	   let it decide the panel's width. */
+	overflow-wrap: anywhere;
+	text-align: right;
+}
 
 .inspector-list {
 	display: grid;
@@ -4032,9 +4047,13 @@ input[type=range]::-moz-range-thumb {
 
 	.inspector-pane {
 		min-height: 0;
+		min-width: 0;
 		display: flex;
 		flex-direction: column;
-		overflow: hidden;
+		/* `hidden` on both axes made overflowing content unreachable. The pane
+		   scrolls in the axis that overflows instead. */
+		overflow: auto;
+		overscroll-behavior: contain;
 	}
 
 	.timeline {
@@ -5071,8 +5090,12 @@ input[type=range]::-moz-range-thumb {
 }
 
 .right-panel-view {
-	overflow: hidden;
+	/* Vertical scrolling belongs to the pane inside; the horizontal axis has to
+	   be reachable here, because a wide row (a long id, a deep hierarchy path)
+	   was otherwise clipped with no way to scroll to it. */
+	overflow: hidden auto;
 	flex: 1 1 0;
+	min-width: 0;
 }
 
 .right-panel-view > [hidden] {

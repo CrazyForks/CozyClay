@@ -59,7 +59,13 @@ import {
 	updateSceneObject,
 } from "./scene-objects.js";
 import { createSceneHistoryStore } from "./scene-history.js";
-import { ASSET_IMAGE_TYPES, assetAspect, imageFilesFrom, importImageFile } from "./scene-assets.js";
+import {
+	ASSET_IMAGE_TYPES,
+	assetAspect,
+	imageFilesFrom,
+	imageFilesFromClipboard,
+	importImageFile,
+} from "./scene-assets.js";
 import { assetRecord, rememberAsset } from "./scene-asset-cache.js";
 import { cutOutBackground, decodeMask, maskAsset } from "./matte.js";
 import { createMatteEditor } from "./matte-editor.js";
@@ -1647,6 +1653,28 @@ globalThis.playMode = centerTab === "play";
 	// One drop zone shared by every surface that accepts a picture: the Props
 	// branch of the hierarchy, the Props inspector, and the shot view itself.
 	// One per surface, so only the thing under the cursor lights up.
+	// Paste is the path to a picture on the web: "Copy image" hands over bytes,
+	// while dragging one hands over a cross-origin URL the matte could never read
+	// back. Bound to the document because there is no one field to focus first —
+	// the gesture is "paste into the studio", not "paste into this box".
+	useEffect(() => {
+		const onPaste = (event) => {
+			const target = event.target;
+			// Never steal a paste aimed at somewhere text goes.
+			if (target instanceof HTMLElement) {
+				if (target.isContentEditable) return;
+				if (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+			}
+			const files = imageFilesFromClipboard(event.clipboardData);
+			if (!files.length) return;
+			event.preventDefault();
+			importCutouts(files);
+		};
+		document.addEventListener("paste", onPaste);
+		return () => document.removeEventListener("paste", onPaste);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
 	const propsDrop = useImageDrop((files) => importCutouts(files));
 	const inspectorDrop = useImageDrop((files) => importCutouts(files));
 	const viewportDrop = useImageDrop((files) => importCutouts(files));

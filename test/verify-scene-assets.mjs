@@ -8,6 +8,7 @@ import {
 	assetIdFromDigest,
 	downscaleTarget,
 	imageFilesFrom,
+	imageFilesFromClipboard,
 	importImageFile,
 	isAssetId,
 	isSupportedImageType,
@@ -197,6 +198,34 @@ expect(
 	dropped([named("notes.pdf", "application/pdf"), named("logo.svg", "image/svg+xml"), named("Untitled Folder", ""), named("", "")]).length === 0,
 );
 expect("a drop with nothing in it is not fatal", dropped([]).length === 0 && imageFilesFrom(null).length === 0 && imageFilesFrom({}).length === 0);
+
+/* ------------------------------------------------------ clipboard --- */
+// "Copy image" in a browser puts BYTES on the clipboard, which is the only way
+// a picture from the web can reach the matte: dragging one hands over a
+// cross-origin URL whose pixels a canvas may never read back.
+
+const clipboardItem = (type, file) => ({ kind: "file", type, getAsFile: () => file });
+const clipPng = new File([new Uint8Array([1, 2, 3])], "image.png", { type: "image/png" });
+
+const pasted = imageFilesFromClipboard({ items: [clipboardItem("image/png", clipPng)] });
+expect("a pasted picture is imported", pasted.length === 1, JSON.stringify(pasted.map((f) => f.type)));
+expect("the generic clipboard name is replaced", pasted[0].name !== "image.png" && /^pasted-/.test(pasted[0].name), pasted[0].name);
+expect("the pasted bytes survive", pasted[0].type === "image/png" && pasted[0].size === 3);
+
+const clipNamed = new File([new Uint8Array([1])], "sofa.png", { type: "image/png" });
+expect(
+  "a real filename is kept",
+  imageFilesFromClipboard({ items: [clipboardItem("image/png", clipNamed)] })[0].name === "sofa.png",
+);
+
+expect("pasted text is ignored", imageFilesFromClipboard({ items: [{ kind: "string", type: "text/plain" }] }).length === 0);
+expect(
+  "an unsupported image type is refused",
+  imageFilesFromClipboard({ items: [clipboardItem("image/svg+xml", new File([""], "a.svg", { type: "image/svg+xml" }))] }).length === 0,
+);
+expect("an empty clipboard yields nothing", imageFilesFromClipboard({}).length === 0);
+expect("a clipboard exposing only files still works", imageFilesFromClipboard({ files: [clipPng] }).length === 1);
+
 
 if (failures) process.exit(1);
 console.log("all scene asset checks PASS");
