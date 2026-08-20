@@ -168,6 +168,8 @@ Found something broken, or want a feature? [Open an issue](https://github.com/Ha
 
 **Repository hygiene.** Generated motion archives, QA output, build output, logs and local runtime artifacts are not source files and must not be committed. Keep `tools/ardy/out/`, `artifacts/`, `dist/`, `.gjc/` and `.npz` files local.
 
+All runtime libraries intentionally live in `devDependencies` because the published npm package ships the prebuilt `dist/`, so `npx cozyclay` must not install the studio's dependency tree.
+
 ## License & credits
 
 GNU General Public License v3.0 or later — see [`LICENSE`](LICENSE). Third-party projects retain their own licenses and copyright; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
