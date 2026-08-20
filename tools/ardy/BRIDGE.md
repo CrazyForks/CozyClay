@@ -7,8 +7,10 @@ app.
 CozyClay stays a static SPA: `vite build` emits a `dist/` that serves from
 anywhere with no server. The box work — pose → npz conversion and the remote
 constrained generation — cannot run in a browser, so the bridge exposes it as
-four HTTP endpoints on **127.0.0.1:5181** and the Vite dev server proxies
-`/ardy` to it. The bridge is **optional and dev-only**: when it is not
+four HTTP endpoints on loopback and the Vite dev server proxies `/ardy` to it.
+`npm run dev` derives the bridge port from its main port (`main + 1`) and scans
+upward when needed; standalone use defaults to **127.0.0.1:5181**. The bridge
+is **optional and dev-only**: when it is not
 running, the app works exactly as before with the generate affordance visibly
 unavailable, and the production build never depends on it.
 
@@ -93,7 +95,7 @@ configured by the operator:
 
 | env | default | meaning |
 | --- | --- | --- |
-| `COZYCLAY_BRIDGE_PORT` | `5181` | listen port (loopback only) |
+| `COZYCLAY_BRIDGE_PORT` | `5181` standalone; `main + 1` for launchers | listen port (loopback only; explicit override) |
 | `CCLAY_ARDY_HOST` | required | ssh destination for the ARDY host |
 | `CCLAY_ARDY_REPO` | `$HOME/ardy` | ARDY checkout on the box |
 | `CCLAY_ARDY_VENV` | `~/ardy/.venv-cuda/bin/python` | generator venv python on the box |
@@ -318,5 +320,6 @@ interface, indistinguishable from a legitimate local call. The CozyClay UI
   `tools/ardy/dump-npz.py`, `src/ardy/*` and `test/ardy/*` are the verified,
   reusable pieces; the bridge calls them, never reimplements them.
 - The Vite dev server (`vite.config.js`) proxies `/ardy` to
-  `127.0.0.1:5181`; the production `dist/` build contains no proxy, no
-  server code, and no dependency on the bridge.
+  `COZYCLAY_BRIDGE_PORT` when set (otherwise its existing explicit bridge URL
+  or `127.0.0.1:5181` fallback); the production `dist/` build contains no
+  proxy, no server code, and no dependency on the bridge.

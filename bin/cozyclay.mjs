@@ -8,7 +8,7 @@
  * `dist/`, so this launcher only has to
  *
  *   - serve those files over loopback,
- *   - forward /ardy to the sidecar on 5181 (the job Vite's dev proxy does),
+ *   - forward /ardy to its dynamically selected sidecar port (the job Vite's dev proxy does),
  *   - keep the sidecar's lifetime tied to this process.
  *
  * It has no dependencies on purpose. A launcher that needs an install step
@@ -17,6 +17,7 @@
 import { spawn } from "node:child_process";
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
+import { createConnection, createServer as createNetServer } from "node:net";
 import { homedir } from "node:os";
 import { extname, join, normalize, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -25,7 +26,7 @@ import { fileURLToPath } from "node:url";
 const PKG_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const DIST = join(PKG_ROOT, "dist");
 const BRIDGE = join(PKG_ROOT, "tools", "ardy", "bridge.mjs");
-const BRIDGE_PORT = Number(process.env.COZYCLAY_BRIDGE_PORT ?? 5181);
+let bridgePort = 5181;
 
 const TYPES = {
 	".html": "text/html; charset=utf-8",
@@ -105,7 +106,7 @@ function serveFile(res, path) {
 // browser code needs no build-time knowledge of how it was launched.
 function proxyToBridge(req, res) {
 	const upstream = httpRequest(
-		{ host: "127.0.0.1", port: BRIDGE_PORT, path: req.url, method: req.method, headers: req.headers },
+		{ host: "127.0.0.1", port: bridgePort, path: req.url, method: req.method, headers: req.headers },
 		(upstreamRes) => {
 			res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
 			upstreamRes.pipe(res);
@@ -118,6 +119,63 @@ function proxyToBridge(req, res) {
 		res.end(JSON.stringify({ error: "ardy sidecar is not running" }));
 	});
 	req.pipe(upstream);
+}
+
+function canListen(port) {
+	return new Promise((resolvePromise) => {
+		const candidate = createNetServer();
+		candidate.once("error", () => resolvePromise(false));
+		candidate.listen(port, "127.0.0.1", () => candidate.close(() => resolvePromise(true)));
+	});
+}
+
+async function selectBridgePort(mainPort) {
+	if (process.env.COZYCLAY_BRIDGE_PORT !== undefined) {
+		const port = Number(process.env.COZYCLAY_BRIDGE_PORT);
+		if (!Number.isInteger(port) || port < 1 || port > 65535) {
+			throw new Error(`COZYCLAY_BRIDGE_PORT=${JSON.stringify(process.env.COZYCLAY_BRIDGE_PORT)} is not a valid port`);
+		}
+		if (!(await canListen(port))) {
+			throw new Error(`COZYCLAY_BRIDGE_PORT=${port} is already in use; choose another COZYCLAY_BRIDGE_PORT`);
+		}
+		return port;
+	}
+	for (let port = mainPort + 1; port <= 65535; port += 1) {
+		if (await canListen(port)) return port;
+	}
+	throw new Error(`no free bridge port is available at or above ${mainPort + 1}`);
+}
+
+function waitForBridge(child, port) {
+	return new Promise((resolvePromise, reject) => {
+		let retry;
+		let settled = false;
+		const finish = (callback, value) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			clearTimeout(retry);
+			child.off("exit", onExit);
+			callback(value);
+		};
+		const fail = (detail) => finish(reject, new Error(`ARDY bridge on 127.0.0.1:${port} ${detail}`));
+		const onExit = (code, signal) => fail(`exited ${signal ? `from ${signal}` : `with code ${code ?? 0}`}`);
+		const timeout = setTimeout(() => fail("did not listen within 5000 ms"), 5000);
+		const probe = () => {
+			if (settled) return;
+			const socket = createConnection({ host: "127.0.0.1", port });
+			socket.once("connect", () => {
+				socket.destroy();
+				finish(resolvePromise);
+			});
+			socket.once("error", () => {
+				socket.destroy();
+				if (!settled) retry = setTimeout(probe, 25);
+			});
+		};
+		child.once("exit", onExit);
+		probe();
+	});
 }
 
 function readState() {
@@ -255,10 +313,20 @@ if (!existsSync(join(DIST, "app", "index.html"))) {
 const ardyHost = process.env.CCLAY_ARDY_HOST?.trim();
 let bridge = null;
 if (opts.ardy && ardyHost && existsSync(BRIDGE)) {
-	bridge = spawn(process.execPath, [BRIDGE], { cwd: PKG_ROOT, stdio: "inherit" });
-	bridge.on("error", () => {
-		bridge = null;
-	});
+	try {
+		bridgePort = await selectBridgePort(opts.port);
+		bridge = spawn(process.execPath, [BRIDGE], {
+			cwd: PKG_ROOT,
+			stdio: "inherit",
+			env: { ...process.env, COZYCLAY_BRIDGE_PORT: String(bridgePort) },
+		});
+		await waitForBridge(bridge, bridgePort);
+	} catch (err) {
+		console.error(`cozyclay: motion generation sidecar failed: ${err.message}`);
+		console.error("cozyclay: studio did not start; set COZYCLAY_BRIDGE_PORT to an available port or use --no-ardy.");
+		if (bridge) bridge.kill("SIGTERM");
+		process.exit(1);
+	}
 }
 
 const server = createServer((req, res) => {
@@ -311,7 +379,7 @@ process.on("SIGTERM", shutdown);
 
 server.on("error", (err) => {
 	if (err && err.code === "EADDRINUSE") {
-		console.error(`cozyclay: port ${opts.port} is taken. Try --port ${opts.port + 1}.`);
+		console.error(`cozyclay: port ${opts.port} is taken. Try --port 5200.`);
 		if (bridge) bridge.kill("SIGTERM");
 		process.exit(1);
 	}

@@ -1168,7 +1168,11 @@ server.listen(port, BIND_HOST, () => {
 });
 
 server.on("error", (err) => {
-	console.error(`[bridge] cannot listen on ${BIND_HOST}:${port}: ${err.message}`);
+	const override = "set COZYCLAY_BRIDGE_PORT to a free port or pass --port <n>";
+	console.error(
+		`[bridge] cannot listen on ${BIND_HOST}:${port}: ${err.message}` +
+			(err?.code === "EADDRINUSE" ? `; ${override}` : ""),
+	);
 	process.exit(1);
 });
 
