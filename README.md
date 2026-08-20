@@ -152,8 +152,8 @@ See [`tools/ardy/README.md`](tools/ardy/README.md) for details. This workflow is
 | `npm run test:theme` / `test:appearance` / `test:layout` | UI theme, appearance, layout |
 | `npm run test:lifecycle` | Dev-server process lifecycle |
 | `npm run test:ardy` | ARDY conversion, playback, and IK pipeline |
-| `cd mcp && npm run verify` | MCP server over real stdio — all 420 framing combinations |
-| `cd mcp && npm run verify:live` | Live-control protocol against a fake editor |
+| `cd mcp && npm install && npm run verify` | MCP server over real stdio — all 420 framing combinations |
+| `cd mcp && npm run verify:live` | Live-control protocol against a fake editor (same `npm install` first) |
 | `npm run build` | Production build |
 
 Ad-hoc browser QA, while a dev server is available:
