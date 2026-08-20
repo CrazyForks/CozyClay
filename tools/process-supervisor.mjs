@@ -33,7 +33,7 @@ function bridgeError(port, detail, code) {
 	return error;
 }
 
-export function waitForBridgeReady(child, port, timeoutMs = 5000) {
+export function waitForBridgeReady(child, port, onReady, timeoutMs = 5000) {
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		const finish = (callback, value) => {
@@ -48,7 +48,10 @@ export function waitForBridgeReady(child, port, timeoutMs = 5000) {
 		const fail = (detail, code) => finish(reject, bridgeError(port, detail, code));
 		const onMessage = (message) => {
 			if (!message || message.port !== port) return;
-			if (message.type === "cozyclay-bridge-ready") finish(resolve);
+			if (message.type === "cozyclay-bridge-ready") {
+				onReady?.(child);
+				finish(resolve);
+			}
 			if (message.type === "cozyclay-bridge-listen-error") {
 				fail(`could not listen: ${message.code ?? "unknown error"}`, message.code);
 			}
@@ -88,8 +91,7 @@ export async function startBridge({ command, args, cwd, env, mainPort, onSpawn, 
 		});
 		onSpawn?.(child);
 		try {
-			await waitForBridgeReady(child, port);
-			onReady?.(child);
+			await waitForBridgeReady(child, port, onReady);
 			return { child, port };
 		} catch (error) {
 			await terminateOwned(child);
