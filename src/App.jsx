@@ -1339,6 +1339,7 @@ globalThis.playMode = centerTab === "play";
 	const [posingClosing, setPosingClosing] = useState(false);
 	const [studioPick, setStudioPick] = useState(null);
 	const [rigs, setRigs] = useState({});
+	const [rigMountEpoch, setRigMountEpoch] = useState(0);
 	const [poseRevision, setPoseTick] = useState(0);
 
 	/* --------------------- derived cast view + shims ---------------------- */
@@ -1411,9 +1412,17 @@ globalThis.playMode = centerTab === "play";
 	// Per-character rig report: stable callback identity per character so
 	// the Character effect does not re-fire on every App render.
 	const rigReportersRef = useRef(new Map());
+	const rigWaitersRef = useRef(new Map());
 	const reportRig = (charId) => {
 		if (!rigReportersRef.current.has(charId)) {
-			rigReportersRef.current.set(charId, (rig) => setRigs((current) => (current[charId] === rig ? current : { ...current, [charId]: rig })));
+			rigReportersRef.current.set(charId, (rig) => {
+				setRigs((current) => (current[charId] === rig ? current : { ...current, [charId]: rig }));
+				const waiter = rigWaitersRef.current.get(charId);
+				if (waiter) {
+					rigWaitersRef.current.delete(charId);
+					waiter(rig);
+				}
+			});
 		}
 		return rigReportersRef.current.get(charId);
 	};
@@ -1504,6 +1513,20 @@ globalThis.playMode = centerTab === "play";
 	const activeChar = characters.find((entry) => entry.id === activeCharacterId) ?? characters[0] ?? charA;
 	const activeCharIndex = Math.max(0, characters.findIndex((entry) => entry.id === activeChar.id));
 	const activeRig = rigs[activeChar.id] ?? null;
+	const waitForRig = (charId, timeoutMs = 10000) => {
+		const current = rigs[charId];
+		if (current) return Promise.resolve(current);
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				rigWaitersRef.current.delete(charId);
+				reject(new Error(ko("The active character's rig is not loaded", "활성 인물의 리그가 로드되지 않았어요")));
+			}, timeoutMs);
+			rigWaitersRef.current.set(charId, (rig) => {
+				clearTimeout(timer);
+				resolve(rig);
+			});
+		});
+	};
 	// Read-only previews of the other cast members' layers for the timeline,
 	// memoized: a fresh array every render would re-render every lane on
 	// every playhead tick.
@@ -2485,7 +2508,7 @@ globalThis.playMode = centerTab === "play";
 		setShots(shotState.shots);
 		setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS);
 		setCharacters(stage.characters);
-		setRigs({});
+		setRigMountEpoch((value) => value + 1);
 		setHasCharSheet(stage.hasCharSheet);
 		setShotAspectKey(stage.shotAspect);
 		// The motion-layer buffer reloads from the scene's first character.
@@ -3966,8 +3989,7 @@ globalThis.playMode = centerTab === "play";
 			// A drop is staging applied to the clip itself, so it happens at
 			// the same boundary — trims and IK then see the dropped take.
 			const decoded = applyRootDrop(retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS), drop);
-			const rig = activeRig;
-			if (!rig) throw new Error(ko("The active character's rig is not loaded", "활성 인물의 리그가 로드되지 않았어요"));
+			const rig = activeRig ?? await waitForRig(activeChar.id);
 			beginPlaybackOn(rig);
 			// THE INVARIANT: the take's travel assumes the character is scaled.
 			// Extraction divided the root translation by the filmed person's
@@ -4020,6 +4042,7 @@ globalThis.playMode = centerTab === "play";
 		} catch (err) {
 			setMotion(null);
 			setMotionError(err?.message || String(err));
+			throw err;
 		} finally {
 			setMotionBusy(false);
 		}
@@ -5510,7 +5533,7 @@ function resizePromptClip(id, edge, rawFrame) {
 
 							{characterViews.map((view) => (
 								<Character
-									key={view.id}
+									key={`${view.id}:${rigMountEpoch}`}
 									url={view.url}
 									position={view.position}
 									rot={view.rot}
