@@ -29,11 +29,13 @@ function springStep(pos, vel, target, omega, dt) {
 	return [pos + nextVel * dt, nextVel];
 }
 
-/** scalar spring whose speed limit is applied before position integration */
+/** scalar forward spring whose speed limit is applied before position integration */
 function cappedSpringStep(pos, vel, target, omega, dt, maxSpeed) {
 	const acc = omega * omega * (target - pos) - 2 * omega * vel;
 	const cap = Math.max(0, Number.isFinite(maxSpeed) ? maxSpeed : 0);
-	const nextVel = Math.max(-cap, Math.min(vel + acc * dt, cap));
+	// Rail targets never move backward; discard incompatible spring velocity
+	// before integration so the authored arc remains a forward-only invariant.
+	const nextVel = Math.max(0, Math.min(vel + acc * dt, cap));
 	return [pos + nextVel * dt, nextVel];
 }
 

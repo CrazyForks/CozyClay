@@ -155,12 +155,27 @@ ok("free follow emits one sample per subject frame", free.length === walk.length
 {
 	// A rail that pulls away from a stationary subject must keep traversing.
 	// Distance is a framing preference, not permission to stop the authored move.
-	const stationary = Array.from({ length: 120 }, () => ({ x: 0, z: 0 }));
+	const stationary = Array.from({ length: 180 }, () => ({ x: 0, z: 0 }));
 	const rail = buildRail([{ x: 1, z: 0 }, { x: 8, z: 0 }]);
-	const track = buildRailFollowTrack(stationary, FPS, rail);
-	ok("pull-out rail reaches the authored far end", track.at(-1).s > rail.length - 0.2, `s ${track.at(-1).s.toFixed(3)} / ${rail.length.toFixed(3)}`);
-	ok("pull-out rail keeps progressing after distance is reached", track[80].s > track[40].s + 1, `${track[40].s.toFixed(3)} -> ${track[80].s.toFixed(3)}`);
-	ok("pull-out rail never travels backward", track.every((sample, i) => i === 0 || sample.s >= track[i - 1].s - EPS));
+	for (const maxDollySpeed of [FOLLOW_DEFAULTS.maxDollySpeed, 1]) {
+		const track = buildRailFollowTrack(stationary, FPS, rail, { response: 0.1, maxDollySpeed });
+		const sSteps = track.slice(1).map((sample, i) => sample.s - track[i].s);
+		ok(
+			`response 0.1 pull-out reaches the authored far end at ${maxDollySpeed} m/s`,
+			track.at(-1).s > rail.length - 0.2,
+			`s ${track.at(-1).s.toFixed(3)} / ${rail.length.toFixed(3)}`,
+		);
+		ok(
+			`response 0.1 pull-out never travels backward at ${maxDollySpeed} m/s`,
+			Math.min(...sSteps) >= -EPS,
+			`min Δs ${Math.min(...sSteps).toFixed(6)}`,
+		);
+		ok(
+			`response 0.1 pull-out respects the ${maxDollySpeed} m/s cap`,
+			Math.max(...sSteps) <= maxDollySpeed / FPS + EPS,
+			`max Δs ${(Math.max(...sSteps) * FPS).toFixed(6)} m/s`,
+		);
+	}
 }
 
 {
