@@ -7431,3 +7431,177 @@ input[type=range] {
 .inspector-scroll > .card {
 	flex-shrink: 0;
 }
+
+/* ---------------------------------------------------------- background --- */
+/* The matte editor: the picture with everything that will be removed painted
+   violet. Purple never occurs in a photographed set, so a stray purple blob on
+   the subject — or a patch of wall that stayed its own colour — reads at a
+   glance, which a finished cutout cannot show you. */
+
+.matte-editor {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin: 6px 0 2px;
+}
+
+.matte-canvas {
+	display: block;
+	/* A stage, not a framed picture: the canvas fills this box and paints its
+	   own ground, so the picture sits ON it and nothing outside the canvas can
+	   crop the picture once it is zoomed past fit. */
+	width: 100%;
+	height: 240px;
+	background: #141819;
+	border: 1px solid var(--line);
+	border-radius: 3px;
+	touch-action: none;
+	cursor: crosshair;
+}
+
+.presets.matte-modes {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+/* ------------------------------------------------------------ drop it --- */
+/* A picture dropped on the Props branch, the Props inspector or the shot view
+   becomes a cutout. A drop zone that gives no sign it is armed reads as dead
+   area, so each one lights its own edge while a file is over it. */
+
+.props-drop {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	border: 1px dashed transparent;
+	border-radius: 4px;
+	padding: 2px;
+	transition: border-color 120ms ease, background 120ms ease;
+}
+
+.props-drop[data-drop="over"],
+.hierarchy-row-wrap[data-drop="over"] {
+	border-color: var(--accent, #e7b557);
+	background: rgba(231, 181, 87, 0.1);
+}
+
+.hierarchy-row-wrap[data-drop="over"] {
+	border: 1px dashed var(--accent, #e7b557);
+	border-radius: 3px;
+}
+
+.viewport[data-drop="over"] {
+	outline: 2px dashed var(--accent, #e7b557);
+	outline-offset: -6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.props-drop { transition: none; }
+}
+
+/* The matte editor's two dials. A bare range in a dark panel is nearly
+   invisible — no accent, intrinsic width, no label alignment — so both get a
+   real row: name, a full-width track, and a box you can type an exact number
+   into. Tolerance especially: 0.18 and 0.22 are different answers, and a drag
+   along an unlabelled track cannot tell you which one you have. */
+
+.matte-slider {
+	display: grid;
+	grid-template-columns: auto 1fr 4.6rem;
+	align-items: center;
+	gap: 10px;
+	margin: 8px 0;
+}
+
+.matte-slider label {
+	font-size: 11.5px;
+	color: var(--muted);
+}
+
+.matte-slider input[type="range"] {
+	width: 100%;
+	min-width: 0;
+	accent-color: var(--accent);
+}
+
+.matte-slider input[type="number"] {
+	width: 100%;
+	padding: 5px 6px;
+	background: var(--card2);
+	border: 1px solid var(--line);
+	border-radius: 4px;
+	color: var(--fg);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+}
+
+.btn.matte-apply {
+	margin-top: 4px;
+}
+
+.btn.matte-apply[disabled] {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.inspector-hint.matte-state {
+	padding: 6px 8px;
+	border-left: 2px solid var(--accent);
+	background: var(--card2);
+	border-radius: 0 3px 3px 0;
+}
+
+
+/* The matte tools read as two hands: what the brush does on the left, what to
+   do about what it did on the right. Clear sits under Undo/Redo because it is
+   the same kind of act — taking work back — only all of it.
+
+   The buttons are one fixed size and the SPACE between the two groups is what
+   flexes, so the panel can be dragged wider without five buttons growing into
+   five different shapes. */
+
+.matte-tools {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+	margin: 8px 0;
+}
+
+.matte-history {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 6px;
+}
+
+.matte-tools .presets.matte-modes {
+	display: flex;
+	flex-wrap: nowrap;
+	gap: 6px;
+	margin: 0;
+}
+
+.matte-tools .presets.matte-modes button {
+	/* Fixed width, centred label: the panel resizes by moving the two groups
+	   apart, never by restyling five buttons into five shapes. */
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	width: 4rem;
+	padding: 9px 2px;
+	font-size: 11.5px;
+	line-height: 1.2;
+	text-align: center;
+	white-space: nowrap;
+}
+
+/* Undo, redo and clear are icons — a symbol the width of a glyph, not a word
+   that has to be read. They keep their names in the tooltip. */
+.matte-tools .presets.matte-icons button {
+	width: 2.3rem;
+	font-size: 13px;
+}

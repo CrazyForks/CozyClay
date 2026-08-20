@@ -43,8 +43,12 @@ import {
 } from "./camera-rail-schedule.js";
 import { SetProps } from "./props.jsx";
 import {
+	CUTOUT_DEFAULT_HEIGHT,
+	CUTOUT_KIND,
+	CUTOUT_MAX_HEIGHT,
 	DEFAULT_SCENE_OBJECTS,
 	OBJECT_COLORS,
+	createCutoutObject,
 	createSceneObject,
 	dropToSurfacePatch,
 	objectSize,
@@ -55,6 +59,10 @@ import {
 	updateSceneObject,
 } from "./scene-objects.js";
 import { createSceneHistoryStore } from "./scene-history.js";
+import { ASSET_IMAGE_TYPES, assetAspect, imageFilesFrom, importImageFile } from "./scene-assets.js";
+import { assetRecord, rememberAsset } from "./scene-asset-cache.js";
+import { cutOutBackground, decodeMask, maskAsset } from "./matte.js";
+import { createMatteEditor } from "./matte-editor.js";
 import {
 	SCENES_QUARANTINE_KEY,
 	SCENES_STORAGE_KEY,
@@ -289,6 +297,7 @@ const SCENE_RENDERER_LABELS_KO = new Map([
 	["chair", ko("chair", "의자")],
 	["car", ko("car", "자동차")],
 	["aircraft", ko("aircraft", "비행기")],
+	[CUTOUT_KIND, ko("cutout", "컷아웃")],
 ]);
 
 const SCENE_OBJECT_NAME_LABELS_KO = new Map([
@@ -966,6 +975,51 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 	return null;
 }
 
+/**
+ * Anything that accepts a dropped picture. Returns the handlers to spread onto
+ * an element and whether a drag is currently over it, so the target can say so
+ * — a drop zone that gives no sign it is armed reads as a dead area, and the
+ * file gets dropped on the desktop instead.
+ *
+ * `dragover` must preventDefault, or the browser navigates away to the file.
+ */
+function useImageDrop(onFiles) {
+	const [over, setOver] = useState(false);
+	const depth = useRef(0);
+	const carriesFiles = (event) => !!event.dataTransfer?.types?.includes?.("Files");
+	return {
+		over,
+		handlers: {
+			onDragEnter: (event) => {
+				if (!carriesFiles(event)) return;
+				event.preventDefault();
+				depth.current += 1;
+				setOver(true);
+			},
+			onDragOver: (event) => {
+				if (!carriesFiles(event)) return;
+				event.preventDefault();
+				event.dataTransfer.dropEffect = "copy";
+			},
+			// dragleave fires for every child the pointer crosses, so the
+			// highlight is refcounted rather than toggled.
+			onDragLeave: () => {
+				depth.current = Math.max(0, depth.current - 1);
+				if (!depth.current) setOver(false);
+			},
+			onDrop: (event) => {
+				const files = imageFilesFrom(event.dataTransfer);
+				depth.current = 0;
+				setOver(false);
+				if (!files.length) return;
+				event.preventDefault();
+				event.stopPropagation();
+				onFiles(files);
+			},
+		},
+	};
+}
+
 /* ----------------------------------------------------------------- app --- */
 
 // Unity's tool keys. They are free because camera movement now lives behind a
@@ -1588,6 +1642,57 @@ globalThis.playMode = centerTab === "play";
 		setToast(isKo ? `${sceneObjectNameDisplayKo(object.name)}을 표면 위에 내려놓았어요` : `${object.name} dropped to surface`);
 	}
 
+	/** The hidden file input behind "Import image as cutout". */
+	const cutoutInputRef = useRef(null);
+	// One drop zone shared by every surface that accepts a picture: the Props
+	// branch of the hierarchy, the Props inspector, and the shot view itself.
+	// One per surface, so only the thing under the cursor lights up.
+	const propsDrop = useImageDrop((files) => importCutouts(files));
+	const inspectorDrop = useImageDrop((files) => importCutouts(files));
+	const viewportDrop = useImageDrop((files) => importCutouts(files));
+	// How much of the wall counts as the wall, and how wide the brush that
+	// argues with the answer is.
+	const [matteTolerance, setMatteTolerance] = useState(0.18);
+	const [matteMode, setMatteMode] = useState("paint");
+	const [matteStats, setMatteStats] = useState({ painted: 0, coverage: 0, zoom: 1, canUndo: false, canRedo: false });
+	const [matteBusy, setMatteBusy] = useState(false);
+	const matteCanvasRef = useRef(null);
+	const matteEditorRef = useRef(null);
+	// The editor always works on the photograph, never on the cut picture the
+	// set renders — that is what makes a cut re-editable rather than a one-way
+	// door. The saved purple comes back with it.
+	const matteSourceId = selectedSceneObject?.renderer === CUTOUT_KIND
+		? selectedSceneObject.sourceAssetId || selectedSceneObject.assetId
+		: null;
+	const matteSelectionId = selectedSceneObject?.renderer === CUTOUT_KIND ? selectedSceneObject.matteAssetId || "" : "";
+
+	useEffect(() => {
+		const canvas = matteCanvasRef.current;
+		if (!canvas || !matteSourceId) return undefined;
+		const editor = createMatteEditor(canvas, { onChange: setMatteStats });
+		matteEditorRef.current = editor;
+		editor.setTolerance(matteTolerance);
+		editor.setMode(matteMode);
+		let cancelled = false;
+		(async () => {
+			const asset = await assetRecord(matteSourceId);
+			if (!asset || cancelled) return;
+			await editor.load(asset);
+			if (cancelled || !matteSelectionId) return;
+			const stored = await assetRecord(matteSelectionId);
+			if (!stored || cancelled) return;
+			const { mask, width, height } = await decodeMask(stored);
+			if (!cancelled) editor.setMask(mask, width, height);
+		})().catch(() => setMatteStats({ painted: 0, coverage: 0, zoom: 1, canUndo: false, canRedo: false }));
+		return () => {
+			cancelled = true;
+			editor.dispose();
+			if (matteEditorRef.current === editor) matteEditorRef.current = null;
+		};
+		// Tolerance and mode are pushed by their own handlers below; re-running
+		// this effect for them would throw away the selection.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [matteSourceId, matteSelectionId]);
 	const [gizmoMode, setGizmoMode] = useState("move");
 	// Snap is a preference, not a law: with it on the gizmo blocks on the plan
 	// board's grid, and Ctrl/Cmd during a drag gives a free one. Off, it is the
@@ -1615,17 +1720,115 @@ globalThis.playMode = centerTab === "play";
 		setToast(isKo ? `${sceneObjectNameDisplayKo(object.name)} 추가됨 — W 이동, E 회전, R 크기` : `${object.name} added — W move, E rotate, R scale`);
 	}
 
+	/** "Sofa 2.png" reads as a set piece; "sofa-2.png" does not. The extension
+	 * goes, the rest is the user's own name for the thing. */
+	function cutoutNameFromFile(fileName) {
+		const base = String(fileName ?? "").replace(/\.[^.]+$/, "").trim();
+		return base || ko("Cutout", "컷아웃");
+	}
+
+	/**
+	 * Import one image and stand it up in the set. The card arrives at the
+	 * figure's own height, because a standee whose scale is a guess is worse
+	 * than useless in a tool where every camera level is a height in metres —
+	 * 1.8 m is at least an honest starting point to correct from.
+	 */
+	async function importCutout(file) {
+		if (!file) return;
+		try {
+			const asset = await rememberAsset(await importImageFile(file));
+			const camera = shotCamRef.current;
+			const placement = camera
+				? placementInFront({ x: camera.position.x, z: camera.position.z }, look.current.yaw)
+				: {};
+			const object = createCutoutObject(
+				{ assetId: asset.id, aspect: assetAspect(asset) ?? 1, height: CUTOUT_DEFAULT_HEIGHT, name: cutoutNameFromFile(asset.name) },
+				sceneObjects,
+				placement,
+			);
+			if (!object) return;
+			store.applyAtomic((objects) => [...objects, object]);
+			setSelectedHierarchyId(`object:${object.id}`);
+			setSidebarTab("inspector");
+			setGizmoMode("move");
+			setToast(
+				isKo
+					? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
+					: `${object.name} added — type its real height in metres to set the scale`,
+			);
+		} catch (error) {
+			setToast(isKo ? `이미지를 가져오지 못했어요 — ${error.message}` : `Could not import that image — ${error.message}`);
+		}
+	}
+
+	/** A drop can carry several pictures. They go in one at a time so each
+	 * lands in its own place and the last one is the one left selected. */
+	async function importCutouts(files) {
+		for (const file of files) await importCutout(file);
+	}
+
+	/**
+	 * Apply what the background editor is showing.
+	 *
+	 * Nothing is destroyed. The card keeps three things: the photograph it was
+	 * imported from, the purple someone painted on it, and the cut picture the
+	 * set actually renders — so the next edit starts from the original with the
+	 * selection still on it, however many times it is re-cut.
+	 *
+	 * Trimming the dead margin changes how much of the frame the subject fills,
+	 * so the card's height is scaled with it. The scale is stored rather than
+	 * multiplied in, or a second cut would compound one trim onto the last.
+	 */
+	async function applyMatte(id = selectedSceneObjectId) {
+		const object = sceneObjects.find((item) => item.id === id) ?? null;
+		const options = matteEditorRef.current?.options();
+		// Nothing purple means nothing was asked for. Removing "the background"
+		// on a picture nobody has marked would be a guess applied to their set.
+		if (!object || object.renderer !== CUTOUT_KIND || !options || matteBusy) return;
+		setMatteBusy(true);
+		try {
+			const sourceId = object.sourceAssetId || object.assetId;
+			const source = await assetRecord(sourceId);
+			if (!source) throw new Error(ko("its picture is missing from the store", "저장소에 사진이 없습니다"));
+			const [cut, matte] = await Promise.all([
+				cutOutBackground(source, { mask: options.mask }),
+				maskAsset(options.mask, { width: options.maskWidth, height: options.maskHeight, name: `${source.name || "cutout"} matte` }),
+			]);
+			await Promise.all([rememberAsset(cut.asset), rememberAsset(matte)]);
+			const fullFrameHeight = object.height / (object.matteScale || 1);
+			changeSceneObject(object.id, {
+				assetId: cut.asset.id,
+				sourceAssetId: source.id,
+				matteAssetId: matte.id,
+				matteScale: cut.heightScale,
+				aspect: cut.asset.width / cut.asset.height,
+				height: fullFrameHeight * cut.heightScale,
+			});
+			setToast(
+				isKo
+					? `${object.name} 배경 제거 — ${Math.round(cut.removed * 100)}% 지움. 원본과 칠한 영역은 그대로 남습니다`
+					: `${object.name} — ${Math.round(cut.removed * 100)}% removed. The original and your selection are kept`,
+			);
+		} catch (error) {
+			setToast(isKo ? `배경을 제거하지 못했어요 — ${error.message}` : `Could not remove the background — ${error.message}`);
+		} finally {
+			setMatteBusy(false);
+		}
+	}
+
 	function duplicateSelectedSceneObject(id = selectedSceneObjectId) {
 		// Defaults to the selection (Ctrl/Cmd+D); the hierarchy context menu
 		// passes a specific row's id. Same result either way: the copy is
 		// selected, offset one grid step, and toasted.
 		const object = sceneObjects.find((item) => item.id === id) ?? null;
 		if (!object) return;
-		const copy = createSceneObject(object.renderer, sceneObjects, {
-			x: object.x,
-			z: object.z,
-			rot: object.rot,
-		});
+		const placement = { x: object.x, z: object.z, rot: object.rot };
+		// A cutout cannot be minted from the catalogue — it needs the picture the
+		// original is already wearing — so the copy is created through its own
+		// door and shares the asset rather than importing it twice.
+		const copy = object.renderer === CUTOUT_KIND
+			? createCutoutObject({ assetId: object.assetId, aspect: object.aspect, height: object.height, name: object.name }, sceneObjects, placement)
+			: createSceneObject(object.renderer, sceneObjects, placement);
 		if (!copy) return;
 		// Unity drops the duplicate exactly on top of the original; for blocking,
 		// one grid step to the side means you can see that it worked.
@@ -5037,6 +5240,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					onDuplicateObject={duplicateSelectedSceneObject}
 					onDeleteObject={deleteSceneObject}
 					onFrameObject={frameSelection}
+					propsDrop={propsDrop}
 				/>
 				</aside>
 				<div
@@ -5045,7 +5249,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					aria-label={ko("Resize hierarchy panel", "계층 패널 크기 조절")}
 					onPointerDown={(event) => beginWorkspaceResize("hierarchy", event)}
 				/>
-				<div className="viewport">
+				<div className="viewport" data-drop={viewportDrop.over ? "over" : undefined} {...viewportDrop.handlers}>
 				<div className="viewport-titlebar">
 				<div className="pane-tabs" role="tablist" aria-label={ko("Center view", "가운데 보기")}>
 					<button
@@ -6182,8 +6386,31 @@ function resizePromptClip(id, edge, rawFrame) {
 					</Foldout>
 
 				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
-					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요.")}</p>
+					<div className="props-drop" data-drop={inspectorDrop.over ? "over" : "target"} {...inspectorDrop.handlers}>
+					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view. Drop a picture anywhere here — or on the shot view — to stand it up as a cutout.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요. 사진을 이 영역이나 샷 뷰에 끌어다 놓으면 컷아웃으로 세워집니다.")}</p>
 					<AddObjectMenu onAdd={addSceneObject} label={ko("Add object to the set", "세트에 오브젝트 추가")} />
+					<button
+						type="button"
+						className="btn ghost full"
+						onClick={() => cutoutInputRef.current?.click()}
+						title={ko("A photo of the real thing, standing in the set as a card", "실제 사진을 판때기로 세워 세트에 배치합니다")}
+					>
+						{ko("Import image as cutout", "이미지를 컷아웃으로 가져오기")}
+					</button>
+					<input
+						ref={cutoutInputRef}
+						type="file"
+						hidden
+						accept={ASSET_IMAGE_TYPES.join(",")}
+						onChange={(event) => {
+							const [file] = event.target.files ?? [];
+							// Cleared before the await: picking the same file twice in a
+							// row has to fire change twice, and it will not if the input
+							// still holds it.
+							event.target.value = "";
+							importCutout(file);
+						}}
+					/>
 						<div className="inspector-list compact">
 							{sceneObjects.map((object) => (
 								<button
@@ -6196,6 +6423,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								</button>
 							))}
 						</div>
+					</div>
 					</Foldout>
 
 				<Foldout hidden={sidebarTab !== "inspector" || !selectedSceneObject} title={ko("Object Transform", "오브젝트 변환")}>
@@ -6260,6 +6488,195 @@ function resizePromptClip(id, edge, rawFrame) {
 										{ axis: "Z", value: selectedSceneObject.scaleZ ?? 1, step: 0.05, precision: 2, onChange: (scaleZ) => changeSceneObject(selectedSceneObject.id, { scaleZ }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
+								{selectedSceneObject.renderer === CUTOUT_KIND && (
+									<>
+										<Field label={ko("Card height (m)", "판 높이 (m)")}>
+											<input
+												type="number"
+												data-field="cutout-height"
+												min="0.05"
+												max={CUTOUT_MAX_HEIGHT}
+												step="0.05"
+												value={selectedSceneObject.height ?? CUTOUT_DEFAULT_HEIGHT}
+												onChange={(event) => changeSceneObject(selectedSceneObject.id, { height: Number(event.target.value) })}
+											/>
+										</Field>
+										<p className="inspector-hint">
+											{isKo
+												? `가로 ${(selectedSceneObject.footprint?.width ?? 0).toFixed(2)} m — 사진 비율에 맞춰 자동 계산됩니다. 사진 속에서 높이를 알 수 있는 것(문 2 m, 사람 1.8 m)에 맞추세요.`
+												: `${(selectedSceneObject.footprint?.width ?? 0).toFixed(2)} m wide, from the picture's own aspect. Measure against something you know: a door is 2 m, a person 1.8 m.`}
+										</p>
+										<div className="matte-editor">
+											{!!selectedSceneObject.matteAssetId && (
+												<p className="inspector-hint matte-state">
+													{ko(
+														"This card's background is removed. You are editing the original photograph — apply again to change what goes.",
+														"이 카드는 배경이 지워진 상태입니다. 지금 보이는 것은 원본 사진이며, 다시 적용하면 지워지는 범위가 바뀝니다.",
+													)}
+												</p>
+											)}
+											<canvas
+												ref={matteCanvasRef}
+												className="matte-canvas"
+												// Focusable for the space-drag pan, not for a shortcut: undo
+												// belongs to the buttons here. Ctrl+Z is the scene's, and one
+												// key meaning two different undos in two different panels is
+												// worse than a key that means one thing everywhere.
+												tabIndex={0}
+												aria-label={ko("Background editor — drag over the background to cut it out", "배경 편집기 — 배경 위를 드래그하면 그 영역이 잘려 나갑니다")}
+											/>
+											<p className="inspector-hint">
+												{matteStats.painted
+													? isKo
+														? `사진의 ${Math.round(matteStats.coverage * 100)}%가 선택됨 — 보라색이 지워집니다.`
+														: `${Math.round(matteStats.coverage * 100)}% of the picture marked — purple is what goes.`
+													: ko(
+															"Drag over the background — the cut grows out from wherever the brush touches.",
+															"배경 위를 드래그하세요 — 브러시가 닿은 곳에서 같은 배경으로 번져 나가며 잘립니다.",
+														)}
+											</p>
+										</div>
+										{/* Two hands: what the brush does on the left, what to do
+										    about what it did on the right. Clear sits under Undo and
+										    Redo because it is the same kind of act — taking work
+										    back — only all of it. */}
+										<div className="matte-tools">
+											<div className="presets matte-modes">
+												<button
+													type="button"
+													className={matteMode === "paint" ? "active" : ""}
+													onClick={() => {
+														setMatteMode("paint");
+														matteEditorRef.current?.setMode("paint");
+													}}
+												>
+													{ko("Cut out", "누끼 따기")}
+												</button>
+												<button
+													type="button"
+													className={matteMode === "erase" ? "active" : ""}
+													onClick={() => {
+														setMatteMode("erase");
+														matteEditorRef.current?.setMode("erase");
+													}}
+												>
+													{ko("Bring back", "되살리기")}
+												</button>
+											</div>
+											{/* Icons, not words: undo, redo and clear are the same three
+											    acts in every tool anyone has used, and spelling them out
+											    took more width than the two that actually name what this
+											    brush does. The label lives in the tooltip and in the
+											    accessible name. */}
+											<div className="matte-history">
+												<div className="presets matte-modes matte-icons">
+													<button
+														type="button"
+														disabled={!matteStats.canUndo}
+														title={ko("Undo", "실행 취소")}
+														aria-label={ko("Undo", "실행 취소")}
+														onClick={() => matteEditorRef.current?.undo()}
+													>
+														<span aria-hidden="true">↩️</span>
+													</button>
+													<button
+														type="button"
+														disabled={!matteStats.canRedo}
+														title={ko("Redo", "다시 실행")}
+														aria-label={ko("Redo", "다시 실행")}
+														onClick={() => matteEditorRef.current?.redo()}
+													>
+														<span aria-hidden="true">↪️</span>
+													</button>
+												</div>
+												<div className="presets matte-modes matte-icons matte-clear">
+													<button
+														type="button"
+														title={ko("Clear the selection", "선택 모두 지우기")}
+														aria-label={ko("Clear the selection", "선택 모두 지우기")}
+														onClick={() => matteEditorRef.current?.clear()}
+													>
+														<span aria-hidden="true">🗑️</span>
+													</button>
+												</div>
+											</div>
+										</div>
+										<div className="matte-slider">
+											<label htmlFor="matte-tolerance">{ko("Tolerance", "허용치")}</label>
+											<input
+												id="matte-tolerance"
+												type="range"
+												min="0.02"
+												max="0.6"
+												step="0.01"
+												value={matteTolerance}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													setMatteTolerance(value);
+													matteEditorRef.current?.setTolerance(value);
+												}}
+											/>
+											<input
+												type="number"
+												data-field="matte-tolerance"
+												min="0.02"
+												max="0.6"
+												step="0.01"
+												value={matteTolerance}
+												aria-label={ko("Tolerance", "허용치")}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													if (!Number.isFinite(value)) return;
+													setMatteTolerance(value);
+													matteEditorRef.current?.setTolerance(value);
+												}}
+											/>
+										</div>
+										<p className="inspector-hint">
+											{ko(
+												"Tolerance is how far a drag spreads: low keeps to one flat colour, high walks across a shaded wall. It applies to the next drag and to Auto-detect, not to what is already purple.",
+												"허용치는 드래그가 얼마나 번질지입니다. 낮으면 한 가지 색에 머무르고, 높으면 명암이 변하는 벽까지 따라갑니다. 이미 칠한 보라가 아니라 다음 드래그와 자동 인식에 적용됩니다.",
+											)}
+										</p>
+										<button
+											type="button"
+											className="btn ghost full"
+											onClick={() => {
+												const added = matteEditorRef.current?.autoDetect(matteTolerance) ?? 0;
+												if (!added) {
+													setToast(
+														isKo
+															? "자동 인식이 더 칠할 곳을 찾지 못했어요 — 허용치를 높이거나 직접 칠하세요"
+															: "Auto-detect found nothing new to paint — raise the tolerance, or paint it by hand",
+													);
+												}
+											}}
+										>
+											{ko("Auto-detect background", "배경 자동 인식")}
+										</button>
+										<button
+											type="button"
+											className="btn primary full matte-apply"
+											disabled={matteBusy || !matteStats.painted}
+											onClick={() => applyMatte(selectedSceneObject.id)}
+										>
+											{matteBusy
+												? ko("Removing…", "지우는 중…")
+												: matteStats.painted
+													? isKo
+														? `보라색 부분 지우기 — 사진의 ${Math.round(matteStats.coverage * 100)}%`
+														: `Remove what is purple — ${Math.round(matteStats.coverage * 100)}% of the picture`
+													: ko("Nothing is marked yet", "아직 선택된 부분이 없습니다")}
+										</button>
+										<p className="inspector-hint">
+											{ko(
+												"Cut out grows the selection from wherever you drag; Bring back is the same growth fenced to what is already selected, so one drag returns a wrongly-cut region whole. Applying removes exactly what is purple and trims the empty margin — the card keeps the original photograph and this selection, so you can come back and change your mind.",
+												"누끼 따기는 드래그한 자리에서 선택 영역을 키우고, 되살리기는 그 성장을 이미 선택된 범위 안으로 가둔 것이라 잘못 잘린 부분이 드래그 한 번에 통째로 돌아옵니다. 적용하면 보라색 부분만 지우고 여백을 잘라냅니다 — 원본 사진과 지금 선택한 영역은 카드에 남아 있어 언제든 다시 열어 고칠 수 있습니다.",
+											)}
+										</p>
+									</>
+								)}
+								{selectedSceneObject.renderer !== CUTOUT_KIND && (
 						<div className="object-colors" role="group" aria-label={ko("Object colour", "오브젝트 색상")}>
 									{OBJECT_COLORS.map((color) => (
 										<button
@@ -6273,6 +6690,7 @@ function resizePromptClip(id, edge, rawFrame) {
 										/>
 									))}
 								</div>
+								)}
 							</>
 						)}
 					</Foldout>

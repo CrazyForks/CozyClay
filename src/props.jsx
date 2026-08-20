@@ -9,9 +9,11 @@
  * the 1.8 m figure keeps honest scale.
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import { GIZMO_LAYER } from "./dualview.jsx";
+import { CUTOUT_KIND } from "./scene-objects.js";
+import { subscribeToAssetTexture } from "./scene-asset-cache.js";
 
 const CLAY_CAR = "#d98770";
 const CLAY_CAR_TOP = "#e49a84";
@@ -230,9 +232,73 @@ function Primitive({ kind, color }) {
 	);
 }
 
+/** The texture behind an `assetId`, or null while it loads (or forever, if the
+ * picture is gone). Subscribing rather than loading here means the same
+ * picture on two cards is one decode. */
+function useAssetTexture(assetId) {
+	const [texture, setTexture] = useState(null);
+	useEffect(() => {
+		setTexture(null);
+		if (!assetId) return undefined;
+		return subscribeToAssetTexture(assetId, setTexture);
+	}, [assetId]);
+	return texture;
+}
+
+/** The placeholder tint for a card whose picture has not arrived (or has gone
+ * missing): blockout grey, because that is exactly what it is again. */
+const MISSING_CUTOUT = "#c2c6c8";
+
+/**
+ * A cutout: an imported picture standing on a card, the standee a blockout
+ * gets instead of a modelled prop.
+ *
+ * The card is built base-on-the-floor like every primitive, and sized in
+ * metres by the record — `footprint.width` is already derived from the
+ * measured height and the picture's aspect, so the geometry never has to do
+ * that arithmetic again.
+ *
+ * Alpha-CUT, not blended: `alphaTest` keeps the card writing depth, which is
+ * what lets the ink pass, the shadows and the grey boxes all agree about what
+ * is in front of what. A blended card would sort by object and swim through
+ * the set.
+ *
+ * But a bare alpha test is a decision per pixel, so the silhouette comes out
+ * as a staircase — and the matte's own soft edge is thrown away at the
+ * threshold. `alphaToCoverage` spends the MSAA samples the canvas already has
+ * on that edge instead: partial alpha becomes partial coverage, so the outline
+ * is resolved by the same antialiasing that smooths every other edge in the
+ * frame, and depth is still written. The test then only has to reject what is
+ * genuinely nothing (0.15), rather than choosing a side for every half-lit
+ * pixel — which is also what keeps a thin structure alive as the card recedes
+ * and its alpha is averaged down by the mip chain.
+ */
+function Cutout({ object }) {
+	const texture = useAssetTexture(object.assetId);
+	const width = object.footprint?.width ?? 1;
+	const height = object.height ?? 1;
+	return (
+		<mesh position={[0, height / 2, 0]} castShadow receiveShadow userData={{ cutoutTexture: texture ?? null }}>
+			<planeGeometry args={[width, height]} />
+			<meshStandardMaterial
+				map={texture ?? null}
+				color={texture ? object.color : MISSING_CUTOUT}
+				// A card seen edge-on is a card, not a hole: both faces draw.
+				side={THREE.DoubleSide}
+				alphaTest={texture ? 0.15 : 0}
+				alphaToCoverage={!!texture}
+				roughness={0.92}
+				metalness={0}
+			/>
+		</mesh>
+	);
+}
+
 const PRIMITIVE_KINDS = new Set(["cube", "sphere", "capsule", "cylinder", "cone", "plane"]);
 
-function SceneObjectContent({ renderer, color }) {
+function SceneObjectContent({ object }) {
+	const { renderer, color } = object;
+	if (renderer === CUTOUT_KIND) return <Cutout object={object} />;
 	if (renderer === "car") return <Car color={color} />;
 	if (renderer === "small-plane") return <SmallPlane />;
 	if (renderer === "chair") return <Chair />;
@@ -284,7 +350,7 @@ function SceneObject({ object, selected }) {
 			// the viewport picker walks up from a hit mesh to find this id
 			userData={{ sceneObjectId: object.id }}
 		>
-			<SceneObjectContent renderer={object.renderer} color={object.color} />
+			<SceneObjectContent object={object} />
 			{selected && <SelectionBox object={object} />}
 		</group>
 	);

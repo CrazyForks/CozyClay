@@ -309,8 +309,33 @@ function TreeRow({
 	onRenameCommit,
 	onRenameCancel,
 	onRowContextMenu,
+	dropHandlers,
 }) {
 	const branch = !!node.children?.length;
+	// The drop BEHAVIOUR is shared by every row that accepts a picture; the
+	// highlight is not. One row lit under the cursor says where the file will
+	// land; a whole branch lighting up says nothing.
+	const [dropOver, setDropOver] = useState(false);
+	const dropDepth = useRef(0);
+	const drop = dropHandlers && {
+		onDragEnter: (event) => {
+			dropHandlers.onDragEnter(event);
+			if (!event.dataTransfer?.types?.includes?.("Files")) return;
+			dropDepth.current += 1;
+			setDropOver(true);
+		},
+		onDragOver: dropHandlers.onDragOver,
+		onDragLeave: (event) => {
+			dropHandlers.onDragLeave(event);
+			dropDepth.current = Math.max(0, dropDepth.current - 1);
+			if (!dropDepth.current) setDropOver(false);
+		},
+		onDrop: (event) => {
+			dropDepth.current = 0;
+			setDropOver(false);
+			dropHandlers.onDrop(event);
+		},
+	};
 	const label = displayHierarchyLabel(node);
 	const rowWrapRef = useRef(null);
 	const inputRef = useRef(null);
@@ -338,6 +363,8 @@ function TreeRow({
 			className={"hierarchy-row-wrap" + (selectedId === node.id ? " selected" : "")}
 			style={{ "--hierarchy-depth": depth }}
 			data-node-id={node.id}
+			data-drop={drop ? (dropOver ? "over" : "target") : undefined}
+			{...(drop ?? {})}
 			role="treeitem"
 			tabIndex={-1}
 			aria-selected={selectedId === node.id}
@@ -407,6 +434,7 @@ export default function HierarchyPanel({
 	onDuplicateObject,
 	onDeleteObject,
 	onFrameObject,
+	propsDrop = null,
 	scenes,
 	activeSceneId,
 	onSceneSelect,
@@ -566,6 +594,11 @@ export default function HierarchyPanel({
 					onRenameCommit={(name) => commitRename(node.id, name)}
 					onRenameCancel={cancelRename}
 					onRowContextMenu={openRowMenu}
+					// A picture dropped on Props — or on any prop already in it —
+					// becomes a cutout in the set. Dropping ON an object is the
+					// same gesture as dropping on the group it lives in: people
+					// aim at the list, not at the heading.
+					dropHandlers={propsDrop && (node.kind === "props" || node.kind === "object") ? propsDrop.handlers : null}
 				/>,
 				...(node.children && open ? renderNodes(node.children, depth + 1) : []),
 			];
