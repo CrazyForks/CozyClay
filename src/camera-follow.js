@@ -334,20 +334,24 @@ function nearestS(rail, point) {
 }
 
 /**
- * Rail follow: the camera lives ON the drawn rail; each frame the grip finds
- * the nearby arc position whose distance to the subject is closest to
- * `distance` and spring-pushes toward it (speed-capped — a dolly has mass).
- * The operator aims exactly as in the free follow. Local search only: the
- * dolly never teleports across the stage to a globally better spot.
+ * Rail follow: the camera lives ON the drawn rail and traverses the authored
+ * arc over the clip. `distance` remains a soft framing preference: nearby
+ * arc positions can refine the timed target, but they can never make the
+ * dolly stop at the first point that happens to match the preference.
+ * The operator aims exactly as in the free follow. The timed target and its
+ * local distance correction are both speed-capped, so the dolly never
+ * teleports across the stage.
  */
 export function buildRailFollowTrack(subject, fps, rail, params = {}) {
-	const p = { ...FOLLOW_DEFAULTS, searchWindow: 2.5, backtrackPenalty: 1.0, ...params };
+	const p = { ...FOLLOW_DEFAULTS, searchWindow: 2.5, distanceInfluence: 0.35, ...params };
 	if (!subject || subject.length === 0 || !rail || rail.length < 1e-6) return [];
 	const dt = 1 / Math.max(fps, 1);
 	const vels = smoothedVelocities(subject, fps);
 	const omega = omegaFor(p.response);
 	const aimOmega = omegaFor(p.aimResponse);
 	const step = Math.max(rail.length / Math.max(rail.points.length - 1, 1), 1e-3);
+	const authoredSpeed = subject.length > 1 ? rail.length / ((subject.length - 1) * dt) : 0;
+	const progressLead = (2 * authoredSpeed) / omega;
 
 	const distanceErrorAt = (s, subj) => {
 		const rp = railPoint(rail, s);
@@ -373,7 +377,9 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 	};
 
 	// Head mode honours the authored start mark exactly. Nearest preserves the
-	// legacy auto-placement option by searching the whole rail once.
+	// legacy auto-placement option by searching the whole rail once. Once the
+	// clip starts, authored progress is the primary target; distance only
+	// nudges that target locally and can never reverse the dolly.
 	let s = p.railStartMode === "nearest"
 		? bestSNear(nearestS(rail, subject[0]), subject[0], rail.length, 0)
 		: 0;
@@ -387,7 +393,17 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 	const track = [];
 	for (let f = 0; f < subject.length; f += 1) {
 		if (f > 0) {
-			const sTarget = bestSNear(s, subject[f], p.searchWindow, p.backtrackPenalty);
+			const progress = f / Math.max(subject.length - 1, 1);
+			const authoredS = rail.length * progress;
+			const distanceS = bestSNear(authoredS, subject[f], p.searchWindow, 0);
+			// Distance influence fades to zero at both authored endpoints, so
+			// it refines the middle of the move without shifting its marks.
+			const correctionEnvelope = Math.sin(Math.PI * progress) ** 2;
+			const correction = (distanceS - authoredS) * clamp(p.distanceInfluence, 0, 1) * correctionEnvelope;
+			// A critically damped spring trails a constant-speed target by
+			// 2v/omega. Lead the authored target by that exact amount so the
+			// dolly reaches the end mark instead of stopping one spring-lag shy.
+			const sTarget = Math.max(s, Math.min(rail.length, authoredS + progressLead + correction));
 			[s, sVel] = cappedSpringStep(s, sVel, sTarget, omega, dt, p.maxDollySpeed);
 			s = Math.max(0, Math.min(s, rail.length));
 			[py, vy] = springStep(py, vy, p.height, omega, dt);
