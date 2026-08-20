@@ -196,9 +196,29 @@ function openBrowser(url) {
  * Its dependencies are NOT the launcher's: the studio path stays dependency
  * free on purpose, and the MCP SDK is a 95-package tree nobody who only wants
  * a viewport should download. So the server ships with the package, its deps
- * are installed on demand, and a missing one produces an exact instruction
- * rather than a stack trace.
+ * are installed on demand. This keeps the studio startup free of the MCP
+ * server's dependency tree.
  */
+async function probeMcpDependencies() {
+	await import("@modelcontextprotocol/sdk/server/mcp.js");
+	await import("three");
+}
+
+function installMcpDependencies() {
+	return new Promise((done) => {
+		const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+		const child = spawn(npm, ["install", "--no-audit", "--no-fund", "@modelcontextprotocol/sdk", "ws", "zod", "three"], {
+			cwd: PKG_ROOT,
+			stdio: ["ignore", "pipe", "pipe"],
+			shell: process.platform === "win32",
+		});
+		child.stdout.pipe(process.stderr);
+		child.stderr.pipe(process.stderr);
+		child.on("error", (error) => done({ code: 1, error }));
+		child.on("exit", (code) => done({ code: code ?? 1 }));
+	});
+}
+
 async function runMcp(rest) {
 	const server = join(PKG_ROOT, "mcp", "server.mjs");
 	if (!existsSync(server)) {
@@ -208,21 +228,24 @@ async function runMcp(rest) {
 	// The deps must land in the PACKAGE root, not in mcp/: server.mjs imports
 	// ../src/*.js, and those files resolve `three` from cozyclay/ itself.
 	try {
-		await import("@modelcontextprotocol/sdk/server/mcp.js");
-		await import("three");
-	} catch {
-		console.error(
-			[
-				"cozyclay: the MCP server needs four packages the studio does not.",
-				"",
-				`  npm install --prefix ${JSON.stringify(PKG_ROOT)} \\`,
-				"    @modelcontextprotocol/sdk ws zod three",
-				"",
-				"Then run `npx cozyclay mcp` again. They are kept out of the default",
-				"install so opening the studio never waits on a 95-package tree.",
-			].join("\n"),
-		);
-		process.exit(1);
+		await probeMcpDependencies();
+	} catch (importError) {
+		// npx prunes extraneous deps on each invocation, so this may re-run after
+		// `npx cozyclay`; that is expected and cheap with npm's cache.
+		console.error("cozyclay: installing MCP server dependencies (one-time per package cache)...");
+		const result = await installMcpDependencies();
+		if (result.code !== 0) {
+			console.error(`cozyclay: npm install failed${result.error ? `: ${result.error.message}` : ` (exit ${result.code})`}.`);
+			console.error(`cozyclay: MCP dependency import failed: ${importError.message}`);
+			console.error(`cozyclay: install them manually with: cd ${JSON.stringify(PKG_ROOT)} && npm install @modelcontextprotocol/sdk ws zod three`);
+			process.exit(1);
+		}
+		try {
+			await probeMcpDependencies();
+		} catch (retryError) {
+			console.error(`cozyclay: MCP dependency import failed after install: ${retryError.message}`);
+			process.exit(1);
+		}
 	}
 	const child = spawn(process.execPath, [server, ...rest], { stdio: "inherit" });
 	child.on("exit", (code, signal) => process.exit(signal ? 1 : (code ?? 0)));
