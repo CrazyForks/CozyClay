@@ -8,8 +8,12 @@ const ardyBridgeUrl = process.env.COZYCLAY_BRIDGE_PORT
 const generationBridgeUrl = process.env.CCLAY_GENERATION_PORT
 	? `http://127.0.0.1:${process.env.CCLAY_GENERATION_PORT}`
 	: "http://127.0.0.1:5182";
+const livePort = process.env.COZYCLAY_LIVE_PORT ?? "5184";
 
 export default defineConfig({
+	define: {
+		"import.meta.env.VITE_COZYCLAY_LIVE_PORT": JSON.stringify(livePort),
+	},
 	// Root-absolute on purpose: the site has its own apex domain, and the studio
 	// is served from "/app/" while its public assets stay at the root. A relative
 	// base would resolve those to "/app/models/..." and 404.

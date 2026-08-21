@@ -2,7 +2,9 @@
 // module deliberately has no browser imports so its frame dispatcher is
 // directly testable in Node with a fake WebSocket.
 
-export const LIVE_CONTROL_URL = "ws://127.0.0.1:5184/live";
+export const LIVE_CONTROL_PORT = import.meta.env?.VITE_COZYCLAY_LIVE_PORT ?? "5184";
+export const liveControlUrl = (port = LIVE_CONTROL_PORT) => `ws://127.0.0.1:${port}/live`;
+export const LIVE_CONTROL_URL = liveControlUrl();
 export const LIVE_CONTROL_RECONNECT_MS = 3000;
 
 function errorMessage(error) {

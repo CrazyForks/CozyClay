@@ -4,6 +4,8 @@ import { createLiveControl, dispatchLiveFrame } from "../src/live-control.js";
 
 const frames = [];
 const handlers = { ping: () => ({ pong: true }), echo: (args) => args };
+const liveControlSource = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../src/live-control.js", import.meta.url), "utf8"));
+assert.match(liveControlSource, /VITE_COZYCLAY_LIVE_PORT/);
 assert.deepEqual(await dispatchLiveFrame(JSON.stringify({ type: "cmd", id: "1", name: "ping", args: {} }), handlers), {
 	type: "result", id: "1", ok: true, value: { pong: true },
 });
@@ -40,6 +42,19 @@ class FakeWebSocket {
 const client = createLiveControl({ WebSocketImpl: FakeWebSocket, handlers, reconnectMs: 60_000 });
 const socket = FakeWebSocket.instances[0];
 assert.equal(socket.url, "ws://127.0.0.1:5184/live");
+
+// Given a local live port supplied by the dev server at build time
+// When the editor creates its live-control client
+// Then it connects to that loopback endpoint rather than a hardcoded port.
+const configuredClient = createLiveControl({
+	WebSocketImpl: FakeWebSocket,
+	handlers,
+	url: "ws://127.0.0.1:5199/live",
+	reconnectMs: 60_000,
+});
+const configuredSocket = FakeWebSocket.instances[1];
+assert.equal(configuredSocket.url, "ws://127.0.0.1:5199/live");
+configuredClient.close();
 socket.open();
 assert.deepEqual(frames.shift(), { type: "hello", role: "editor", version: 1 });
 socket.receive({ type: "cmd", id: "wire-1", name: "ping", args: {} });

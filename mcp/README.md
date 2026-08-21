@@ -83,8 +83,9 @@ Rotations are degrees of yaw. Characters are addressed by letter (`"A"`), slot (
 ## Live editor control
 
 The server hosts `ws://127.0.0.1:5184/live` by default (`COZYCLAY_LIVE_PORT` or
-`--live-port <port>` to change it). A CozyClay editor tab served by `npm run dev` connects on
-its own; `live_status` tells you whether one is attached. With an editor connected, mutations
+`--live-port <port>` to change it). Start the editor with that same `COZYCLAY_LIVE_PORT` so its
+Vite build connects to the selected loopback endpoint; `npm run dev` preserves the environment
+variable for the browser. A CozyClay editor tab then connects on its own; `live_status` tells you whether one is attached. With an editor connected, mutations
 forward to it and reads report its real state — the screen you are looking at is the source of
 truth. Without one, every tool keeps its in-memory behaviour. In `--http` mode each session
 child attempts to bind the live port, so one session owns the editor and the others

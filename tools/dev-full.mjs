@@ -24,6 +24,7 @@ function mainPortFrom(args) {
 	return port;
 }
 
+const livePort = process.env.COZYCLAY_LIVE_PORT ?? "5184";
 const children = [];
 const removeSignalCleanup = installSignalCleanup(() => children);
 const trackChild = (child) => children.push(child);
@@ -68,6 +69,7 @@ const vite = spawnOwned(process.execPath, ["node_modules/vite/bin/vite.js", ...v
 		...process.env,
 		COZYCLAY_BRIDGE_PORT: String(bridgePort),
 		CCLAY_GENERATION_PORT: String(generationPort),
+		COZYCLAY_LIVE_PORT: livePort,
 	},
 });
 children.push(vite);
