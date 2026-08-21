@@ -59,6 +59,9 @@ function aimAngles(position, target) {
 const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
 const rounded = (value, places) => Number(value.toFixed(places));
 
+/** One authored-frame step. Render delta never enters the integrator. */
+export const followFixedTimestep = (fps) => 1 / Math.max(Number.isFinite(fps) ? fps : 0, 1);
+
 /**
  * Turn the operator's current viewport framing into the physical Follow
  * settings. These are observations, not knobs: moving the camera is the input.
@@ -194,7 +197,7 @@ function smoothedVelocities(subject, fps) {
 export function buildFollowTrack(subject, fps, params = {}) {
 	const p = { ...FOLLOW_DEFAULTS, ...params };
 	if (!subject || subject.length === 0) return [];
-	const dt = 1 / Math.max(fps, 1);
+	const dt = followFixedTimestep(fps);
 	const dirs = travelDirections(subject, fps, p.initialDir ?? null, p.dirBlend);
 	const offsets = dirs.map((dir) => rotateDirection({ x: -dir.x, z: -dir.z }, p.orbitOffsetDeg));
 	const vels = smoothedVelocities(subject, fps);
@@ -392,7 +395,7 @@ function nearestS(rail, point) {
 export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 	const p = { ...FOLLOW_DEFAULTS, searchWindow: 2.5, distanceInfluence: 0.35, ...params };
 	if (!subject || subject.length === 0 || !rail || rail.length < 1e-6) return [];
-	const dt = 1 / Math.max(fps, 1);
+	const dt = followFixedTimestep(fps);
 	const vels = smoothedVelocities(subject, fps);
 	const omega = omegaFor(p.response);
 	const aimOmega = omegaFor(p.aimResponse);
