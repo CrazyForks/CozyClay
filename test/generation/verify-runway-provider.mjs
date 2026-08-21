@@ -11,6 +11,13 @@ const submit = await submitRunway(spec, { apiKey: "test", fetchImpl: async (url,
 assert.equal(submit.providerJobId, "task-1");
 assert.equal(submitted.body.promptImage, spec.conditioning.startFrame);
 assert.equal(submitted.body.ratio, "1280:720");
+
+const portrait = await submitRunway({ ...spec, aspectRatio: "9:16" }, { apiKey: "test", fetchImpl: async (_url, init) => {
+  submitted = { body: JSON.parse(init.body) };
+  return new Response(JSON.stringify({ id: "task-portrait" }), { status: 200 });
+} });
+assert.equal(portrait.providerJobId, "task-portrait");
+assert.equal(submitted.body.ratio, "720:1280");
 const polled = await pollRunway("task-1", { apiKey: "test", fetchImpl: async () => new Response(JSON.stringify({ status: "SUCCEEDED", output: ["https://example.test/out.mp4"] }), { status: 200 }) });
 assert.equal(polled.status, "succeeded");
 assert.equal(polled.outputUrl, "https://example.test/out.mp4");

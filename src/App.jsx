@@ -5244,6 +5244,7 @@ globalThis.playMode = centerTab === "play";
 				endFrame: activeShot.endFrame,
 			} : null,
 			fps: tlFps,
+			aspectRatio: shotOutput.label,
 			camera: activeShot ? {
 				mode: activeCamera.mode,
 				followCam: activeCamera.followCam,
