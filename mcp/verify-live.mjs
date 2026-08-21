@@ -23,7 +23,7 @@ const clone = (value) => JSON.parse(JSON.stringify(value));
 const names = { cube: "Cube", chair: "Chair", car: "Car", sphere: "Sphere", capsule: "Capsule", cylinder: "Cylinder", cone: "Cone", plane: "Plane", "small-plane": "Plane (aircraft)" };
 const editor = {
 	sceneName: "LIVE TEST",
-	camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35 },
+	camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35, sensorId: "super35", aspectRatio: 2.39 },
 	characters: [{ id: "char-a", subject: "a live-test performer", x: 0, z: 0, rot: 0, hidden: false }],
 	objects: [],
 };
