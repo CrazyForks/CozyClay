@@ -2251,6 +2251,10 @@ globalThis.playMode = centerTab === "play";
 	// it, "middle" passes through it, "playhead" places it on the frame the
 	// operator scrubbed to — the box takes any destination frame.
 	const [ardyPosePlacement, setArdyPosePlacement] = useState("start");
+	// Bumped when something outside the Inspector needs the Prompt Blocks panel
+	// on screen — selecting or adding a block on the timeline.
+	const [promptBlocksReveal, setPromptBlocksReveal] = useState(0);
+	const revealPromptBlocks = () => setPromptBlocksReveal((n) => n + 1);
 	const [ardyRunning, setArdyRunning] = useState(false);
 	const [ardyStatus, setArdyStatus] = useState("");
 	const [consoleLines, setConsoleLines] = useState([]);
@@ -6956,7 +6960,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</>
 					)}
 				</Foldout>
-				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Prompt Blocks", "프롬프트 블록")}>
+				<Foldout hidden={!isCharacterSelection} defaultOpen={false} openSignal={promptBlocksReveal} title={ko("Prompt Blocks", "프롬프트 블록")}>
 					<p className="inspector-hint">{ko("Blocks define what ARDY generates over each frame range. Selecting one also moves editing context to that prompt.", "블록은 각 프레임 범위에서 ARDY가 생성할 내용을 정합니다. 블록을 선택하면 편집 기준도 해당 프롬프트로 이동합니다.")}</p>
 						<div className="inspector-list">
 							{promptClips.map((clip) => (
@@ -7575,11 +7579,16 @@ function resizePromptClip(id, edge, rawFrame) {
 				}}
 				onMarkerRemove={removeWaypoint}
 				onRootKeyframeAdd={queueRootWaypointFrame}
-				onPromptAdd={addPromptClip}
+				onPromptAdd={(frame) => {
+					addPromptClip(frame);
+					selectActiveCharacterInHierarchy();
+					revealPromptBlocks();
+				}}
 				onPromptSelect={(id) => {
 					setSelectedPromptId(id);
 					setArdyPrompt(promptClips.find((clip) => clip.id === id)?.text ?? "");
 					selectActiveCharacterInHierarchy();
+					revealPromptBlocks();
 				}}
 				onPromptChange={changePromptClip}
 				onPromptResize={resizePromptClip}
@@ -7710,10 +7719,25 @@ function fmtMeters(value) {
 
 /** Unity Inspector-style foldout: a titled section the user can collapse.
  * Cards default to open; the fold state is per-title session state. */
-function Foldout({ title, hidden, defaultOpen = true, children }) {
+function Foldout({ title, hidden, defaultOpen = true, openSignal = 0, children }) {
 	const [open, setOpen] = useState(defaultOpen);
+	const cardRef = useRef(null);
+	// A collapsed panel must still be reachable from elsewhere: selecting a
+	// prompt block on the timeline has to reveal the panel that edits it, or
+	// the click looks like it did nothing. Opening alone is not enough — the
+	// panel can sit below the fold of a long Inspector — so it is scrolled into
+	// view as well. The signal only ever opens; it never closes a panel.
+	useEffect(() => {
+		if (openSignal <= 0) return undefined;
+		setOpen(true);
+		// One frame later: the body has to exist before it can be scrolled to.
+		const raf = requestAnimationFrame(() => {
+			cardRef.current?.scrollIntoView({ block: "nearest" });
+		});
+		return () => cancelAnimationFrame(raf);
+	}, [openSignal]);
 	return (
-		<section className={"card foldout" + (open ? " open" : "")} hidden={hidden}>
+		<section ref={cardRef} className={"card foldout" + (open ? " open" : "")} hidden={hidden}>
 			<h3>
 				<button type="button" className="foldout-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
 					<span className="foldout-arrow" aria-hidden="true">{open ? "\u25BE" : "\u25B8"}</span>

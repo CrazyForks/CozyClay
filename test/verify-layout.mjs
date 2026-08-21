@@ -51,7 +51,7 @@ expect("the camera owns the lens controls", app.includes('<Foldout hidden={!isCa
 expect("the scene owns the generation prompt", app.includes('<Foldout hidden={!isSceneSelection} title={ko("Prompt", "프롬프트")}>'));
 expect("selection routing is derived once, not repeated per foldout", app.includes("const isCharacterSelection = selectedHierarchyId ===") && app.includes("const inspectorHasContent ="));
 expect("an unowned selection explains itself instead of showing a blank column", app.includes("data-inspector-empty") && css.includes(".inspector-empty"));
-expect("the heavy motion pipeline starts collapsed", app.includes("function Foldout({ title, hidden, defaultOpen = true, children })") && app.includes("useState(defaultOpen)"));
+expect("the heavy motion pipeline starts collapsed", app.includes("function Foldout({ title, hidden, defaultOpen = true, openSignal = 0, children })") && app.includes("useState(defaultOpen)"));
 expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("Generate all ${promptClips.length} blocks"));
 expect("new sessions start without prompt blocks", app.includes("const DEFAULT_PROMPT_CLIPS = [];") && app.includes("useState(null)"));
 expect("new sessions start with an empty motion prompt", app.includes('const [ardyPrompt, setArdyPrompt] = useState("");'));
@@ -92,6 +92,19 @@ expect(
 expect(
 	"the placement names the exact frame it will pin",
 	app.includes("data-pose-placement-frame"),
+);
+// Prompt Blocks starts collapsed and can sit below the fold, so selecting a
+// block on the timeline has to open it AND bring it on screen — otherwise the
+// click reads as doing nothing at all.
+expect(
+	"a collapsed panel can be revealed from outside the Inspector",
+	app.includes("openSignal = 0") && app.includes("if (openSignal <= 0) return undefined;") && app.includes('scrollIntoView({ block: "nearest" })'),
+);
+expect(
+	"selecting or adding a prompt block reveals the panel that edits it",
+	app.includes("const revealPromptBlocks = () => setPromptBlocksReveal((n) => n + 1);") &&
+	app.includes("openSignal={promptBlocksReveal}") &&
+	(app.match(/revealPromptBlocks\(\);/g) ?? []).length >= 2,
 );
 expect(
 	"a schedule conflict is reported instead of silently dropping the pose",
