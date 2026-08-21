@@ -189,10 +189,11 @@ try {
 	// When the editor reports only its authoritative subject and x fields
 	const projectPath = join(projectDirectory, "description-merge.cclayproject");
 	const merged = await call("save_project", { path: projectPath });
+	assert.equal(merged.isError, undefined, JSON.stringify(merged));
+	assert.match(merged.content[0].text, /^Saved/, JSON.stringify(merged));
 	const saved = JSON.parse(await readFile(projectPath, "utf8"));
 	const mergedCharacter = saved.scenes.scenes[0].stage.characters[0];
 	// Then reported values update, while every omitted prior field survives normalization.
-	assert.equal(merged.isError, undefined, JSON.stringify(merged));
 	assert.equal(mergedCharacter.subject, "the described performer");
 	assert.equal(mergedCharacter.x, 7);
 	assert.equal(mergedCharacter.model, "x-bot-tpose");

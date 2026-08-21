@@ -3258,6 +3258,11 @@ globalThis.playMode = centerTab === "play";
 		const describe = () => {
 			const live = liveStateRef.current;
 			return {
+				document: {
+					version: SCENES_VERSION,
+					activeSceneId: activeSceneIdRef.current,
+					scenes: snapshotActiveScene(),
+				},
 				sceneName: live.scenes.find((scene) => scene.id === live.activeSceneId)?.name ?? "",
 				camera: {
 					...live.camera,
@@ -3609,8 +3614,16 @@ globalThis.playMode = centerTab === "play";
 						endFrame: toTimeline(block.endFrame),
 						text: typeof block.prompt === "string" ? block.prompt : "",
 					}));
-					liveStateRef.current.promptClips = clips;
-					liveStateRef.current.setPromptClips(clips);
+					if (args.characterId && args.characterId !== liveStateRef.current.activeCharacterId) {
+						const nextCharacters = liveStateRef.current.characters.map((entry) => entry.id === args.characterId
+							? { ...entry, layer: { ...(entry.layer ?? {}), promptClips: clips } }
+							: entry);
+						liveStateRef.current.characters = nextCharacters;
+						setCharacters(nextCharacters);
+					} else {
+						liveStateRef.current.promptClips = clips;
+						liveStateRef.current.setPromptClips(clips);
+					}
 					liveStateRef.current.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
 				}
 				return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
@@ -4700,7 +4713,8 @@ globalThis.playMode = centerTab === "play";
 			// A drop is staging applied to the clip itself, so it happens at
 			// the same boundary — trims and IK then see the dropped take.
 			const decoded = applyRootDrop(retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS), drop);
-			const targetCharacter = characters.find((entry) => entry.id === targetCharacterId) ?? activeChar;
+			const targetCharacter = characters.find((entry) => entry.id === targetCharacterId);
+			if (!targetCharacter) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
 			const rig = rigs[targetCharacter.id] ?? await waitForRig(targetCharacter.id);
 			const activeTarget = targetCharacter.id === activeChar.id;
 			beginPlaybackOn(rig);
@@ -4712,7 +4726,6 @@ globalThis.playMode = centerTab === "play";
 			// that loads a motion; an ARDY-generated take stores none and is
 			// canonical, 1.
 			const scale = characterScaleFor(decoded);
-			setCharacters((list) => list.map((entry) => entry.id === targetCharacter.id ? { ...entry, scale } : entry));
 			const loaded = {
 			// Capture the exact prompt this motion was generated from; the
 			// timeline keeps showing it even if the input field is edited
@@ -4725,6 +4738,7 @@ globalThis.playMode = centerTab === "play";
 				anchorFrame: 0,
 				rotationDeg,
 			};
+			setCharacters((list) => list.map((entry) => entry.id === targetCharacter.id ? { ...entry, scale, sessionMotion: loaded } : entry));
 			// The take as loaded is what every future trim cuts from.
 			motionFullRef.current.set(targetCharacter.id, loaded);
 			if (activeTarget) {
@@ -4738,14 +4752,14 @@ globalThis.playMode = centerTab === "play";
 			// a replacement take leaves them pointing at poses that no longer exist
 			// — the same reason a trim clears them. The Full-Body lane would
 			// otherwise keep showing corrections that belong to a discarded clip.
-			const hadIkKeys = ikStateRef.current.keys.size > 0;
+			const hadIkKeys = activeTarget && ikStateRef.current.keys.size > 0;
 			if (hadIkKeys) {
 				ikStateRef.current.keys.clear();
 				ikStateRef.current.tracked.clear();
 				ikStateRef.current.plants.clear();
 				setIkTick((value) => value + 1);
 			}
-			setCommittedIkEdits([]);
+			if (activeTarget) setCommittedIkEdits([]);
 			setToast(
 				isKo
 					? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps${hadIkKeys ? " — 이전 테이크의 IK 키는 초기화됐어요" : ""}`

@@ -72,6 +72,17 @@ const url = `ws://127.0.0.1:${livePort}/live`;
 
 const connectEditor = async (name, workspaceId = `${name}-workspace`) => {
 	const state = {
+		document: {
+			version: 3,
+			activeSceneId: `${name.toLowerCase()}-scene`,
+			scenes: [{
+				id: `${name.toLowerCase()}-scene`,
+				name,
+				objects: [],
+				shotDocument: null,
+				stage: { characters: [], hasCharSheet: false, shotAspect: "16:9", sensorId: "super35" },
+			}],
+		},
 		sceneName: name,
 		camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35, sensorId: "super35", aspectRatio: 1.78 },
 		stage: { shotAspect: "16:9", sensorId: "super35", hasCharSheet: false },
@@ -91,6 +102,17 @@ const connectEditor = async (name, workspaceId = `${name}-workspace`) => {
 						else if (frame.name === "set_camera") {
 							for (const key of ["x", "y", "z", "focalMm"]) if (frame.args[key] !== undefined) state.camera[key] = frame.args[key];
 							socket.send(JSON.stringify({ type: "result", id: frame.id, ok: true, value: { camera: clone(state.camera) } }));
+						} else if (frame.name === "load_scenes") {
+							state.document = clone(frame.args.document);
+							state.sceneName = state.document.scenes.find((scene) => scene.id === state.document.activeSceneId)?.name ?? "";
+							socket.send(JSON.stringify({
+								type: "result", id: frame.id, ok: true,
+								value: {
+									sceneName: state.sceneName,
+									activeSceneId: state.document.activeSceneId,
+									scenes: state.document.scenes.map(({ id, name: sceneName }) => ({ id, name: sceneName })),
+								},
+							}));
 						} else socket.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: `Unexpected command: ${frame.name}` }));
 					} catch (error) {
 						reject(error);
@@ -141,7 +163,10 @@ try {
 	assert.equal(selectedRead.isError, undefined, JSON.stringify(selectedRead));
 	assert.match(selectedRead.content[0].text, /Scene: FIRST/);
 	assert.doesNotMatch(selectedRead.content[0].text, /Scene: SECOND/);
-
+	await call("add_scene", { name: "A2", workspace_handle: first.workspace });
+	await call("add_scene", { name: "B2", workspace_handle: second.workspace });
+	assert.deepEqual(first.state.document.scenes.map(({ name }) => name), ["FIRST", "A2"]);
+	assert.deepEqual(second.state.document.scenes.map(({ name }) => name), ["SECOND", "B2"]);
 	const beforeAmbiguousFirst = clone(first.state);
 	const beforeAmbiguousSecond = clone(second.state);
 	// Given two live editors

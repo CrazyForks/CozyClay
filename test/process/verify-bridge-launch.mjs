@@ -216,7 +216,9 @@ async function expectForeignListenerDoesNotReportBridgeReady() {
 
 async function expectLifecycle(kind) {
 	const { mainPort, adjacent } = await reserveMainAndAdjacentPort();
-	const bridgePort = mainPort + 2;
+	const bridgeReservation = createServer();
+	const bridgePort = await listen(bridgeReservation, mainPort + 2);
+	await close(bridgeReservation);
 	const { child, output } = launch(kind, mainPort, { CCLAY_ARDY_MODE: "remote" });
 	try {
 		const ready = await output.waitFor(/ARDY dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} bridge readiness`);
@@ -238,7 +240,9 @@ async function expectLifecycle(kind) {
 	}
 
 	const clean = await reserveMainAndAdjacentPort();
-	const cleanupPort = clean.mainPort + 2;
+	const cleanupReservation = createServer();
+	const cleanupPort = await listen(cleanupReservation, clean.mainPort + 2);
+	await close(cleanupReservation);
 	const next = launch(kind, clean.mainPort, { CCLAY_ARDY_MODE: "remote" });
 	try {
 		const ready = await next.output.waitFor(/ARDY dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} cleanup bridge readiness`);

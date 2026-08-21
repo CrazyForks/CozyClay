@@ -18,7 +18,11 @@ import { fileURLToPath } from "node:url";
 const SERVER = fileURLToPath(new URL("./server.mjs", import.meta.url));
 
 const client = new Client({ name: "cozyclay-mcp-verify", version: "1.0.0" });
-await client.connect(new StdioClientTransport({ command: "node", args: [SERVER] }));
+await client.connect(new StdioClientTransport({
+	command: "node",
+	args: [SERVER],
+	env: { ...process.env, COZYCLAY_PROJECT_ROOT: new URL(".", import.meta.url).pathname },
+}));
 
 let failures = 0;
 const check = (label, ok, detail = "") => {
@@ -234,7 +238,7 @@ check("project round-trips the cast", reopened.includes("detective") && reopened
 check("project round-trips the set", reopened.includes("Chair"), reopened);
 await import("node:fs/promises").then((fs) => fs.unlink(file).catch(() => {}));
 
-check("outside project root is rejected", (await call("open_project", { path: "/tmp/nope.cclayproject" })).includes("outside configured project root"));
+check("outside project root is rejected", (await call("open_project", { path: "/tmp/nope.cclayproject" })).includes("direct children of configured project root"));
 check("wrong extension is rejected", (await call("open_project", { path: "/etc/hosts" })).includes("must end in .cclayproject"));
 await fs.writeFile(outside, "outside sentinel", { mode: 0o600 });
 await fs.symlink(outside, symlink);

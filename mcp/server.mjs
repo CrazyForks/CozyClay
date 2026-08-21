@@ -28,7 +28,7 @@
 import { open as openFile, readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createServer } from "node:http";
@@ -106,6 +106,10 @@ const CAPTURE_ARTIFACT_TTL_MS = 10 * 60_000;
 const MAX_CAPTURE_ARTIFACTS = 20;
 const captureArtifacts = [];
 const configuredProjectRoot = resolve(process.env.COZYCLAY_PROJECT_ROOT ?? process.cwd());
+const projectRootPromise = realpath(configuredProjectRoot).then((root) => {
+	process.chdir(root);
+	return root;
+});
 
 const isInside = (root, candidate) => {
 	const offset = relative(root, candidate);
@@ -114,22 +118,14 @@ const isInside = (root, candidate) => {
 
 const resolveProjectPath = async (path, { existing }) => {
 	if (!path.endsWith(".cclayproject")) throw new Error("Project path must end in .cclayproject.");
-	const root = await realpath(configuredProjectRoot);
+	const root = await projectRootPromise;
 	const requested = resolve(path);
-	const parent = await realpath(dirname(requested));
-	if (!isInside(root, parent)) throw new Error(`Project path is outside configured project root ${root}.`);
-	if (!existing) {
-		try {
-			const target = await realpath(requested);
-			if (target !== requested || !isInside(root, target)) throw new Error("Project path may not be a symbolic link.");
-		} catch (error) {
-			if (error?.code !== "ENOENT") throw error;
-		}
-		return requested;
-	}
-	const target = await realpath(requested);
-	if (!isInside(root, target)) throw new Error(`Project path is outside configured project root ${root}.`);
-	return target;
+	const requestedParent = await realpath(dirname(requested));
+	if (requestedParent !== root) throw new Error(`Project files must be direct children of configured project root ${root}.`);
+	const name = basename(requested);
+	if (!name || name.includes("/")) throw new Error("Project filename is invalid.");
+	if (existing) await openFile(name, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).then((file) => file.close());
+	return { displayPath: requested, descriptorPath: name };
 };
 
 const TOOL_ANNOTATIONS = Object.freeze({
@@ -265,6 +261,11 @@ const modelById = (id) =>
  * same code paths as memory-only mode. */
 const applyLiveDescription = (description) => {
 	if (!description || typeof description !== "object") throw new Error("Live editor returned an invalid scene description.");
+	if (description.document && typeof description.document === "object") {
+		const parsed = readSceneDocument(serializeSceneDocument(description.document));
+		if (!parsed.document) throw new Error("Live editor returned an invalid scene document.");
+		state.doc = parsed.document;
+	}
 	const sc = scene();
 	if (typeof description.sceneName === "string" && description.sceneName) sc.name = description.sceneName;
 	if (description.camera && typeof description.camera === "object") {
@@ -1656,8 +1657,9 @@ registerTool(
 		let full;
 		let raw;
 		try {
-			full = await resolveProjectPath(path, { existing: true });
-			const file = await openFile(full, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+			const resolved = await resolveProjectPath(path, { existing: true });
+			full = resolved.displayPath;
+			const file = await openFile(resolved.descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
 			try {
 				raw = await file.readFile("utf8");
 			} finally {
@@ -1714,7 +1716,9 @@ registerTool(
 		}
 		let full;
 		try {
-			full = await resolveProjectPath(path, { existing: false });
+			const resolved = await resolveProjectPath(path, { existing: false });
+			full = resolved.displayPath;
+			path = resolved.descriptorPath;
 		} catch (error) {
 			return text(`Could not write project: ${error.message}`);
 		}
@@ -1727,7 +1731,7 @@ registerTool(
 		try {
 			const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW |
 				(overwrite ? fsConstants.O_TRUNC : fsConstants.O_EXCL);
-			const file = await openFile(full, flags, 0o600);
+			const file = await openFile(path, flags, 0o600);
 			try {
 				await file.writeFile(JSON.stringify(project, null, "\t"), "utf8");
 			} finally {

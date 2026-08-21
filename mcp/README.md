@@ -80,8 +80,9 @@ generated frame matches the blocking instead of drifting off into a generic shot
 | `open_project` / `save_project` | read and write `.cclayproject` files |
 
 Project file tools are restricted to `COZYCLAY_PROJECT_ROOT` (the server
-working directory by default), reject symlink escapes and non-project
-extensions, open the final path with `O_NOFOLLOW`, and require
+working directory by default), accept direct child `.cclayproject` files only,
+anchor relative opens to the retained project-root working-directory inode, reject symlink escapes,
+open the final name with `O_NOFOLLOW`, and require
 `overwrite: true` before replacing an existing regular file.
 
 Coordinates are metres (`x` right, `z` toward the default camera, `y` height above the floor).
