@@ -178,7 +178,7 @@ export function duplicateShot(shots, index, frameCount) {
 }
 
 /** Gaps deliberately return null; the caller interprets null as free camera. */
-export function cameraAtFrame(shots, anchor, frame) {
+export function cameraAtFrame(shots, anchor, frame, filmback = {}) {
 	const shot = shotAtFrame(shots, frame);
-	return shot ? cameraMoveAt(shot.cameraKeys, anchor, frame) : null;
+	return shot ? cameraMoveAt(shot.cameraKeys, anchor, frame, filmback) : null;
 }

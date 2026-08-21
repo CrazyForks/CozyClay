@@ -13,7 +13,15 @@ import {
 	moveSlate,
 	shortestArc,
 } from "../src/camera-move.js";
-import { FRAMING_PIVOT_Y, focalMmToFov, fovToFocalMm } from "../src/shot.js";
+import {
+	DEFAULT_SENSOR_FORMAT,
+	FRAMING_PIVOT_Y,
+	SENSOR_FORMATS,
+	deriveShot,
+	focalMmToFov,
+	fovToFocalMm,
+	usedSensorHeightMm,
+} from "../src/shot.js";
 
 let failures = 0;
 function expect(name, condition, detail = "") {
@@ -40,6 +48,24 @@ function framingAt(r, azimuthDeg, height, fovDeg = 40) {
 }
 
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
+
+/* ----------------------------------------------------------- filmbacks --- */
+{
+	expect("fullFrame is the default sensor", DEFAULT_SENSOR_FORMAT === "fullFrame");
+	expect("the four public sensor ids are stable", ["super16", "super35", "fullFrame", "65mm"].every((id) => SENSOR_FORMATS[id]?.id === id));
+	expect("4:3 uses the full fullFrame height", near(usedSensorHeightMm("fullFrame", 4 / 3), 24));
+	expect("16:9 crops fullFrame to 20.25mm high", near(usedSensorHeightMm("fullFrame", 16 / 9), 20.25));
+	expect("2.39:1 crops fullFrame to width/aspect", near(usedSensorHeightMm("fullFrame", 2.39), 36 / 2.39));
+	for (const sensorId of Object.keys(SENSOR_FORMATS)) {
+		for (const aspectRatio of [1, 16 / 9, 2.39]) {
+			const fov = focalMmToFov(35, sensorId, aspectRatio);
+			expect(
+				`${sensorId} ${aspectRatio}:1 focal/FOV round-trip`,
+				near(fovToFocalMm(fov, sensorId, aspectRatio), 35, 1e-9),
+			);
+		}
+	}
+}
 
 /* ------------------------------------------------ endpoints are exact --- */
 {
@@ -138,6 +164,31 @@ const near = (a, b, eps = 1e-6) => Math.abs(a - b) <= eps;
 	const mid = interpolateFraming(a, b, SUBJECT, 0.5, linear);
 	const midMm = fovToFocalMm((mid.fovDeg * Math.PI) / 180);
 	expect("lens interpolates in millimetres (20->80 mid is 50)", near(midMm, 50, 1e-6), `${midMm}mm`);
+}
+
+/* ---------------------------------------- cropped-filmback interpolation --- */
+{
+	const filmback = { sensorId: "super35", aspectRatio: 2.39 };
+	const a = framingAt(3, 0, 1.6, (focalMmToFov(20, filmback.sensorId, filmback.aspectRatio) * 180) / Math.PI);
+	const b = framingAt(3, 0, 1.6, (focalMmToFov(80, filmback.sensorId, filmback.aspectRatio) * 180) / Math.PI);
+	const mid = interpolateFraming(a, b, SUBJECT, 0.5, linear, filmback);
+	const midMm = fovToFocalMm((mid.fovDeg * Math.PI) / 180, filmback.sensorId, filmback.aspectRatio);
+	expect("lens interpolation keeps one cropped filmback (20->80 mid is 50)", near(midMm, 50, 1e-6), `${midMm}mm`);
+	const sameFovA = framingAt(3, 0, 1.6, 50);
+	const sameFovB = framingAt(3, 0, 1.6, 25);
+	const fullFrameZoom = classifyMove(sameFovA, sameFovB, SUBJECT, { sensorId: "fullFrame", aspectRatio: 16 / 9 });
+	const super16Zoom = classifyMove(sameFovA, sameFovB, SUBJECT, { sensorId: "super16", aspectRatio: 2.39 });
+	expect("filmback does not rename the same FOV zoom", fullFrameZoom.id === "zoom-in" && super16Zoom.id === fullFrameZoom.id, `${fullFrameZoom.id}/${super16Zoom.id}`);
+
+	const storedFov = 45;
+	const oldScreenFraction = deriveShot(a.pos, SUBJECT, (storedFov * Math.PI) / 180).screenFraction;
+	const scopeShot = deriveShot(a.pos, SUBJECT, (storedFov * Math.PI) / 180, undefined, {
+		sensorId: "fullFrame",
+		aspectRatio: 2.39,
+	});
+	const old24mmGateFocal = 12 / Math.tan((storedFov * Math.PI) / 360);
+	expect("a stored 2.39:1 shot keeps its authored vertical framing", near(scopeShot.screenFraction, oldScreenFraction, 1e-12));
+	expect("2.39:1 reinterprets the lens against its cropped gate", !near(scopeShot.exactFocalMm, old24mmGateFocal, 1e-6));
 }
 
 /* ------------------------------------------------------------------ ease --- */
