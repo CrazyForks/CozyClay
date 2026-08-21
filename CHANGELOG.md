@@ -25,11 +25,12 @@ with — `shot.js` for film vocabulary, `scenes.js` for the stage, `camera-move.
 the server and the UI cannot disagree about what a 35 mm medium shot is.
 
 - **Live or headless.** With a studio tab open, tool calls drive the real viewport over a local
-  socket. With no tab, the same tools run headless: block scenes, derive framing, render prompts,
-  and write `.cclayproject` files the studio opens.
-- **Motion from plain beats.** `generate_motion` preserves composite physical wording, removes only
-  camera-only language, splits only beats that exceed ARDY's duration bound, and lands each phase
-  as a Prompt Block on the timeline.
+  socket. With no tab, scene/project tools still block scenes, derive framing, render prompts,
+  and write `.cclayproject` files; capture, prompt-block installation, motion generation and
+  atomic live batches remain editor-only.
+- **Motion from plain beats.** `generate_motion` preserves composite physical wording while
+  stripping camera, scenery and internal-state language ARDY cannot animate, splits only beats
+  that exceed ARDY's duration bound, and lands each phase as a Prompt Block on the timeline.
 - **24 tools**, all documented in [`mcp/README.md`](mcp/README.md).
 
 ### Cut a photograph out and stand it up

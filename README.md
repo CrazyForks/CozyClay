@@ -98,7 +98,10 @@ first run automatically installs the MCP SDK's 95-package tree; opening the stud
 it, so those dependencies are fetched only when you actually want the server.
 
 - **Editor open?** Tool calls move the visible viewport — camera, cast, set, generated motion, prompt blocks on the timeline.
-- **No editor?** The same tools run headless: block scenes, derive film vocabulary (“wide shot · right profile · knee level · 24mm”), render AI video prompts, and write `.cclayproject` files the studio opens.
+- **No editor?** Scene and project tools run headless: block scenes, derive film vocabulary
+  (“wide shot · right profile · knee level · 24mm”), render AI video prompts, and write
+  `.cclayproject` files. `capture_frame`, `set_prompt_blocks`, `generate_motion`, and
+  `apply_batch` require the live editor.
 
 Tools, transports and the live-control protocol are documented in [`mcp/README.md`](mcp/README.md).
 

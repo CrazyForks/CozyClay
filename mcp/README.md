@@ -4,11 +4,13 @@ Lets an AI assistant (Claude Desktop, Cursor, any MCP client) block a scene, pla
 generate character motion and read the shot back as film vocabulary — then turn it into an AI
 image/video prompt.
 
-Works two ways, with the same tools:
+Works two ways, with one tool catalog:
 
 - **Editor open** — tool calls drive the visible viewport live: camera, cast, set, motion,
   prompt blocks on the timeline.
-- **No editor** — everything runs headless: no browser, no GPU, no build step.
+- **No editor** — scene, camera, prompt and project-file tools run in memory with no browser,
+  GPU or build step. `capture_frame`, `set_prompt_blocks`, `generate_motion`, and
+  `apply_batch` explicitly require a live editor.
 
 ## Run it locally
 
@@ -93,7 +95,8 @@ The server hosts `ws://127.0.0.1:5184/live` by default (`COZYCLAY_LIVE_PORT` or
 Vite build connects to the selected loopback endpoint; `npm run dev` preserves the environment
 variable for the browser. A CozyClay editor tab then connects on its own; `live_status` tells you whether one is attached. With an editor connected, mutations
 forward to it and reads report its real state — the screen you are looking at is the source of
-truth. Without one, every tool keeps its in-memory behaviour. In `--http` mode each session
+truth. Without one, headless-capable tools keep their in-memory behaviour while the four
+live-only tools named above return an explicit connected-editor error. In `--http` mode each session
 child attempts to bind the live port, so one session owns the editor and the others
 intentionally run memory-only.
 
