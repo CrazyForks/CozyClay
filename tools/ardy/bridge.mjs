@@ -1132,6 +1132,7 @@ const server = createServer((req, res) => {
 			readBody: (request) => readBody(request, MAX_BODY_BYTES),
 			footagePath,
 			registerMotion,
+			artifactRoot: OUT_DIR,
 		}).catch((err) => {
 			if (!res.headersSent) sendJson(res, 500, { ok: false, reason: `internal error: ${err.message}` });
 			else {

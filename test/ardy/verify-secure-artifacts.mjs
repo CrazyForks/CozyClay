@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { createPrivateArtifactDir, evictPrivateArtifact, removePrivateArtifactDir } from "../../tools/ardy/artifacts.mjs";
 import { handleExtract } from "../../tools/ardy/extract.mjs";
 
@@ -15,11 +14,10 @@ class Response extends EventEmitter {
 }
 
 const root = mkdtempSync(join(tmpdir(), "ardy-secure-artifacts-"));
-const outDir = join(dirname(fileURLToPath(import.meta.url)), "../../tools/ardy/out");
+const outDir = join(root, "extract-out");
 const stamp = 1700000000000;
 const sentinel = join(root, "external-sentinel.txt");
 const plantedPath = join(outDir, `extract-upload-${stamp}.mp4`);
-const originalNow = Date.now;
 const originalExtractHost = process.env.CCLAY_EXTRACT_HOST;
 const originalArdyHost = process.env.CCLAY_ARDY_HOST;
 try {
@@ -27,7 +25,6 @@ try {
 	writeFileSync(sentinel, "SAFE");
 	mkdirSync(outDir, { recursive: true, mode: 0o700 });
 	symlinkSync(sentinel, plantedPath);
-	Date.now = () => stamp;
 	delete process.env.CCLAY_EXTRACT_HOST;
 	delete process.env.CCLAY_ARDY_HOST;
 
@@ -38,6 +35,7 @@ try {
 		readBody: async () => "",
 		footagePath: () => null,
 		registerMotion: () => {},
+		artifactRoot: outDir,
 	});
 	request.emit("data", Buffer.alloc(1024, 0x41));
 	request.emit("end");
@@ -53,7 +51,7 @@ try {
 	symlinkSync(root, symlinkedRoot);
 
 	// When: a request tries to use that root.
-	const symlinkRootError = assert.throws(() => createPrivateArtifactDir(symlinkedRoot, "generate"), /must not be a symlink/);
+	assert.throws(() => createPrivateArtifactDir(symlinkedRoot, "generate"), /must not be a symlink/);
 
 	// Then: the unsafe root is rejected.
 
@@ -86,7 +84,6 @@ try {
 	assert.throws(() => lstatSync(sharedDir));
 	console.log("secure ARDY artifact creation preserves planted symlink targets and enforces private modes");
 } finally {
-	Date.now = originalNow;
 	if (originalExtractHost === undefined) delete process.env.CCLAY_EXTRACT_HOST;
 	else process.env.CCLAY_EXTRACT_HOST = originalExtractHost;
 	if (originalArdyHost === undefined) delete process.env.CCLAY_ARDY_HOST;

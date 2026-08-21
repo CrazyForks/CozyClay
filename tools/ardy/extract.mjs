@@ -119,7 +119,7 @@ function run(command, args, { children, timeoutMs, onLine }) {
  *   {event:"done", motionUrl, frames, fps}
  *   {event:"error", message}                   a NAMED reason
  */
-export async function handleExtract(req, res, { readBody, footagePath, registerMotion }) {
+export async function handleExtract(req, res, { readBody, footagePath, registerMotion, artifactRoot = OUT_DIR }) {
 	const host = sshHost();
 	const contentType = req.headers["content-type"] ?? "";
 	let localVideo = null;
@@ -156,7 +156,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 			res.end(`${JSON.stringify({ ok: false, reason: "extract-upload-empty" })}\n`);
 			return;
 		}
-		artifactDir = createPrivateArtifactDir(OUT_DIR, "extract");
+		artifactDir = createPrivateArtifactDir(artifactRoot, "extract");
 		uploadedTemp = join(artifactDir, "upload.mp4");
 		writeFileSync(uploadedTemp, bytes);
 		localVideo = uploadedTemp;
@@ -215,7 +215,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	// cost a generation of quality for no frames removed), while raw bytes
 	// posted from the browser are whatever the user's camera shot. Frame rate
 	// only: the clip keeps its length and its speed.
-	artifactDir ??= createPrivateArtifactDir(OUT_DIR, "extract");
+	artifactDir ??= createPrivateArtifactDir(artifactRoot, "extract");
 	// Claimed before the pass runs, not after it succeeds: a half-written file
 	// from an ffmpeg that died mid-encode has to be swept too, and the rm is a
 	// no-op when the pass never wrote anything.
