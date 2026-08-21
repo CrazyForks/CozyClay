@@ -3615,21 +3615,17 @@ globalThis.playMode = centerTab === "play";
 						text: typeof block.prompt === "string" ? block.prompt : "",
 					}));
 				}
-				const targetPromptClips =
-					args.characterId && args.characterId !== liveStateRef.current.activeCharacterId ? clips : null;
+				const targetCharacterId = args.characterId ?? liveStateRef.current.activeCharacterId;
+				const targetPromptClips = clips;
 				await liveStateRef.current.loadMotion(
 					args.url,
 					prompt,
 					undefined,
 					args.drop ?? null,
-					args.characterId,
+					targetCharacterId,
 					targetPromptClips,
 				);
 				if (clips) {
-					if (!targetPromptClips) {
-						liveStateRef.current.promptClips = clips;
-						liveStateRef.current.setPromptClips(clips);
-					}
 					liveStateRef.current.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
 				}
 				return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
@@ -4726,10 +4722,12 @@ globalThis.playMode = centerTab === "play";
 			// A drop is staging applied to the clip itself, so it happens at
 			// the same boundary — trims and IK then see the dropped take.
 			const decoded = applyRootDrop(retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS), drop);
-			const targetCharacter = characters.find((entry) => entry.id === targetCharacterId);
+			const targetCharacter = charactersRef.current.find((entry) => entry.id === targetCharacterId);
 			if (!targetCharacter) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
 			const rig = rigs[targetCharacter.id] ?? await waitForRig(targetCharacter.id);
-			const activeTarget = targetCharacter.id === activeChar.id;
+			const targetStillExists = charactersRef.current.some((entry) => entry.id === targetCharacter.id);
+			if (!targetStillExists) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
+			const bufferOwnsTarget = targetCharacter.id === loadedLayerCharRef.current;
 			beginPlaybackOn(rig);
 			// THE INVARIANT: the take's travel assumes the character is scaled.
 			// Extraction divided the root translation by the filmed person's
@@ -4767,8 +4765,9 @@ globalThis.playMode = centerTab === "play";
 			});
 			// The take as loaded is what every future trim cuts from.
 			motionFullRef.current.set(targetCharacter.id, loaded);
-			if (activeTarget) {
+			if (bufferOwnsTarget) {
 				setMotion(loaded);
+				if (targetPromptClips) setPromptClips(targetPromptClips);
 				setTlFrameCount(decoded.frames);
 				setTlFps(decoded.fps);
 				setTlFrame(0);
@@ -4778,14 +4777,14 @@ globalThis.playMode = centerTab === "play";
 			// a replacement take leaves them pointing at poses that no longer exist
 			// — the same reason a trim clears them. The Full-Body lane would
 			// otherwise keep showing corrections that belong to a discarded clip.
-			const hadIkKeys = activeTarget && ikStateRef.current.keys.size > 0;
+			const hadIkKeys = bufferOwnsTarget && ikStateRef.current.keys.size > 0;
 			if (hadIkKeys) {
 				ikStateRef.current.keys.clear();
 				ikStateRef.current.tracked.clear();
 				ikStateRef.current.plants.clear();
 				setIkTick((value) => value + 1);
 			}
-			if (activeTarget) setCommittedIkEdits([]);
+			if (bufferOwnsTarget) setCommittedIkEdits([]);
 			setToast(
 				isKo
 					? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps${hadIkKeys ? " — 이전 테이크의 IK 키는 초기화됐어요" : ""}`
@@ -4795,7 +4794,7 @@ globalThis.playMode = centerTab === "play";
 			// (and cannot derive a different one).
 			return scale;
 		} catch (err) {
-			if (targetCharacterId === activeChar.id) setMotion(null);
+			if (targetCharacterId === loadedLayerCharRef.current) setMotion(null);
 			setMotionError(err?.message || String(err));
 			throw err;
 		} finally {

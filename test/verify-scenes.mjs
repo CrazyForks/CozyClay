@@ -335,7 +335,7 @@ assert.doesNotMatch(
 );
 assert.match(
 	appSource,
-	/const targetCharacter = characters\.find\(\(entry\) => entry\.id === targetCharacterId\)[\s\S]{0,260}await waitForRig\(targetCharacter\.id\)/,
+	/const targetCharacter = charactersRef\.current\.find\(\(entry\) => entry\.id === targetCharacterId\)[\s\S]{0,300}await waitForRig\(targetCharacter\.id\)/,
 	"motion loading waits for the active rig instead of losing the request to mount timing"
 );
 assert.match(
