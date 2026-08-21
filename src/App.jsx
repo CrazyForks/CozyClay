@@ -11,7 +11,6 @@ import { applyRootDrop, normalizeRootDrop } from "./ardy/root-drop.js";
 import { sliceMotion } from "./ardy/trim.js";
 import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl, probeFootage, requestBridgeExtract, requestBridgeFootage, sourceLabel } from "./multimodel-ingest.js";
 import { bakeExtractedTake, collectLandmarkTrack, createPoseDetector, sampleTimes, videoFrames } from "./pose-extract/index.js";
-import { repairRecordedMp4 } from "./ardy/mp4-duration.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
@@ -20,7 +19,7 @@ import { FlyControls, aimAt, forwardFrom } from "./controls.jsx";
 import { createLiveControl } from "./live-control.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
-import { DualRender, GIZMO_LAYER, fitAspect } from "./dualview.jsx";
+import { DualRender, GIZMO_LAYER } from "./dualview.jsx";
 import { Room, StageLights } from "./room.jsx";
 import {
 	SHOT_AUTHORING_KEY,
@@ -179,6 +178,7 @@ import {
 } from "./shot.js";
 import { captureFraming, classifyMove, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
 import { sampleAt } from "./sample-at.js";
+import { exportOffscreenVideo } from "./offscreen-export.js";
 import {
 	addShotAtFrame,
 	cutAtFrame,
@@ -975,14 +975,15 @@ function SceneGrid() {
 function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 	const { gl, scene } = useThree();
 	useEffect(() => {
-		apiRef.current = {
+		const target = new THREE.WebGLRenderTarget(width, height, {
+			colorSpace: THREE.SRGBColorSpace,
+			samples: 4,
+		});
+		const buffer = new Uint8Array(width * height * 4);
+		const api = {
 			render() {
 				const source = camRef.current;
 				if (!source) return null;
-				const target = new THREE.WebGLRenderTarget(width, height, {
-					colorSpace: THREE.SRGBColorSpace,
-					samples: 4,
-				});
 				const cam = source.clone();
 				// the transform gizmo is UI: it never reaches an exported frame
 				cam.layers.disable(GIZMO_LAYER);
@@ -993,15 +994,17 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 				cam.aspect = width / height;
 				cam.updateProjectionMatrix();
 				const previous = gl.getRenderTarget();
-				gl.setRenderTarget(target);
-				gl.render(scene, cam);
-				const buffer = new Uint8Array(width * height * 4);
-				gl.readRenderTargetPixels(target, 0, 0, width, height, buffer);
-				gl.setRenderTarget(previous);
-				target.dispose();
+				try {
+					gl.setRenderTarget(target);
+					gl.render(scene, cam);
+					gl.readRenderTargetPixels(target, 0, 0, width, height, buffer);
+				} finally {
+					gl.setRenderTarget(previous);
+				}
 				return buffer;
 			},
 		};
+		apiRef.current = api;
 		// QA hook: run one real export render and report what the capture
 		// camera saw — the layer mask plus an amber scan of the output
 		// frame (the selection cage's warm tone). Lets the suite prove the
@@ -1018,6 +1021,10 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 				if (r >= 180 && g >= 165 && g - b >= 35) amber++;
 			}
 			return { layersMask: window.__captureCameraMask ?? 0, amber, pixels: buffer.length / 4 };
+		};
+		return () => {
+			if (apiRef.current === api) apiRef.current = null;
+			target.dispose();
 		};
 	}, [gl, scene, camRef, apiRef, width, height]);
 	return null;
@@ -3505,201 +3512,106 @@ globalThis.playMode = centerTab === "play";
 	const previewActive = movePlaying || (followPreviewArmed && tlPlaying);
 
 	/* --------------------------- shot video export --------------------------- */
-	// Record = play the finished piece in PlayView while mirroring the shot
-	// pane into an offscreen 16:9 canvas that MediaRecorder encodes. The mirror
-	// crops the letterbox bars, so the file is exactly the frame the shot
-	// camera renders — camera move, character motion and the ink pass, none of
-	// the editor chrome. Recording rides the same clock as playback and stops
-	// itself when the playhead wraps at the clip end.
+	// Record is an offline frame-addressed export. It never starts playback and
+	// never samples a wall clock: sampleAt applies one absolute timeline frame,
+	// CaptureRig reads the shot camera's WebGLRenderTarget, and WebCodecs receives
+	// exactly one VideoFrame for every address in the inclusive export range.
 	const [recState, setRecState] = useState("idle"); // "idle" | "recording"
 	const recRef = useRef(null);
 	const tlFrameRef = useRef(0);
 	tlFrameRef.current = tlFrame;
-	const tlPlayingRef = useRef(false);
-	tlPlayingRef.current = tlPlaying;
-	const playModeRef = useRef(false);
-	playModeRef.current = centerTab === "play";
-	const tlFrameCountRef2 = useRef(tlFrameCount);
-	tlFrameCountRef2.current = tlFrameCount;
-	const tlFpsRef2 = useRef(tlFps);
-	tlFpsRef2.current = tlFps;
-	// While recording, the recorder's wall-clock loop is the playhead's
-	// master clock (fixed 1/RECORD_FPS cadence, immune to interval jitter);
-	// the timeline's own interval stands down.
-	const recordingRef = useRef(false);
-	recordingRef.current = recState === "recording";
 
-	function stopShotRecording(reason) {
-		const rec = recRef.current;
-		if (!rec) return;
-		recRef.current = null;
-		clearTimeout(rec.timer);
-		if (reason === "abort") rec.aborted = true;
-		recordingRef.current = false;
-		setTlPlaying(false);
-		setRecState("idle");
-		if (rec.recorder.state !== "inactive") rec.recorder.stop();
-		else if (!rec.armed) setToast(ko("Recording cancelled before any frame was captured", "프레임을 캡처하기 전에 녹화가 취소됐어요"));
+	function applyExportFrame(frame) {
+		for (const entry of characters) {
+			const clip = entry.id === activeChar.id ? motion : entry.sessionMotion;
+			const rig = rigs[entry.id];
+			if (!clip || !rig) continue;
+			const sampled = sampleAt({ frameCount: clip.frames, motion: clip }, null, frame);
+			applyMotionFrame(rig, clip, sampled.motionFrame);
+		}
+		if (activeRig && ikChains && ikStateRef.current.keys.size > 0) {
+			ikEvaluate(ikChains, ikStateRef.current, frame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
+		}
+		const sampled = sampleAt(playbackScene, shotAtFrame(shots, frame), frame);
+		const cam = shotCamRef.current;
+		if (cam && sampled.camera) {
+			cam.position.set(sampled.camera.pos.x, sampled.camera.pos.y, sampled.camera.pos.z);
+			cam.rotation.order = "YXZ";
+			cam.rotation.set(sampled.camera.pitch, sampled.camera.yaw, 0);
+			look.current.yaw = sampled.camera.yaw;
+			look.current.pitch = sampled.camera.pitch;
+			cam.fov = sampled.camera.fovDeg;
+			cam.updateProjectionMatrix();
+		}
+		return captureRef.current?.render() ?? null;
 	}
 
-	// Seedance's reference-video floor is 24 fps — and so is the production
-	// timeline now, so capture and timeline share one clock: the playhead
-	// advances one timeline frame per captured frame, each stamped 41.67 ms
-	// apart. The exported file is exactly 24 fps at true motion speed (the
-	// old 20-fps timeline needed a 20/24 real-time warp for the same result),
-	// valid as a camera/motion reference out of the box. This is the EXPORT
-	// clock, never the ARDY wire clock — it does not go through toArdyFrame.
-	const RECORD_FPS = TIMELINE_FPS;
+	async function runShotExport({ startFrame = 0, endFrame = tlFrameCount - 1, download = true } = {}) {
+		if (recRef.current) throw new Error(ko("An export is already running", "이미 내보내기 중입니다"));
+		if (!captureRef.current || !shotCamRef.current) throw new Error(ko("The shot renderer is not ready", "샷 렌더러가 아직 준비되지 않았어요"));
+		const controller = new AbortController();
+		const rec = { controller };
+		recRef.current = rec;
+		setRecState("recording");
+		const cam = shotCamRef.current;
+		const cameraSnapshot = {
+			position: cam.position.clone(),
+			quaternion: cam.quaternion.clone(),
+			rotationOrder: cam.rotation.order,
+			fov: cam.fov,
+			yaw: look.current.yaw,
+			pitch: look.current.pitch,
+		};
+		const rigSnapshots = Object.values(rigs).filter(Boolean).map((rig) => ({ rig, bones: snapshotPlaybackBones(rig) }));
+		try {
+			const result = await exportOffscreenVideo({
+				startFrame,
+				endFrame,
+				fps: TIMELINE_FPS,
+				width: shotOutput.width,
+				height: shotOutput.height,
+				capture: applyExportFrame,
+				signal: controller.signal,
+			});
+			if (download) {
+				const slate = (moveSequence?.slate ?? "shot").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "shot";
+				const name = `cozyclay-${slate}.webm`;
+				const url = URL.createObjectURL(result.blob);
+				const anchor = document.createElement("a");
+				anchor.href = url;
+				anchor.download = name;
+				anchor.click();
+				setTimeout(() => URL.revokeObjectURL(url), 10_000);
+				setRecordedVideoName(name);
+				setToast(isKo ? `${name} 저장됨 · ${result.frameCount}프레임` : `Saved ${name} · ${result.frameCount} frames`);
+			}
+			return result;
+		} finally {
+			for (const snapshot of rigSnapshots) restorePlaybackBones(snapshot.rig, snapshot.bones);
+			cam.position.copy(cameraSnapshot.position);
+			cam.rotation.order = cameraSnapshot.rotationOrder;
+			cam.quaternion.copy(cameraSnapshot.quaternion);
+			cam.fov = cameraSnapshot.fov;
+			cam.updateProjectionMatrix();
+			look.current.yaw = cameraSnapshot.yaw;
+			look.current.pitch = cameraSnapshot.pitch;
+			if (recRef.current === rec) recRef.current = null;
+			setRecState("idle");
+		}
+	}
+
+	function stopShotRecording() {
+		recRef.current?.controller.abort();
+	}
 
 	function toggleShotRecording() {
 		if (recRef.current) {
-			stopShotRecording("manual");
+			stopShotRecording();
 			return;
 		}
-		const stage = stageRef.current;
-		const glCanvas = stage ? stage.querySelector("canvas") : null;
-		if (!glCanvas) return;
-		// mp4 first where the platform encoder offers it (Safari, newer Chrome),
-		// webm as the everywhere-else answer. No support at all = no feature.
-		const MIMES = ["video/mp4;codecs=avc1.640028", "video/mp4", "video/webm;codecs=vp9", "video/webm"];
-		const mime = typeof MediaRecorder !== "undefined" ? MIMES.find((m) => MediaRecorder.isTypeSupported(m)) : null;
-		if (!mime) {
-			setToast(ko("This browser cannot encode video (MediaRecorder unavailable)", "이 브라우저는 영상 인코딩을 지원하지 않아요(MediaRecorder 없음)"));
-			return;
-		}
-		const mirror = document.createElement("canvas");
-		mirror.width = shotOutput.width;
-		mirror.height = shotOutput.height;
-		const ctx = mirror.getContext("2d");
-		// Frames go in manually (and only when one was actually drawn): the
-		// track must be exactly RECORD_FPS, not whatever the display runs at.
-		const track = mirror.captureStream(0).getVideoTracks()[0];
-		const recorder = new MediaRecorder(new MediaStream([track]), { mimeType: mime, videoBitsPerSecond: 12_000_000 });
-		const chunks = [];
-		const slate = (moveSequence?.slate ?? "shot").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "shot";
-		const rec = {
-			recorder,
-			track,
-			// all wall-clock anchors land on the first frame so a startup
-			// hiccup never stretches clip time
-			t0: 0,
-			playheadT0: 0,
-			outputFrames: 0,
-			armed: false,
-			warmup: 2,
-			aborted: false,
-			done: false,
-		};
-		recorder.ondataavailable = (e) => {
-			if (e.data && e.data.size > 0) chunks.push(e.data);
-		};
-		recorder.onstop = async () => {
-			if (rec.aborted || chunks.length === 0) return;
-			const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
-			const name = `cozyclay-${slate}.${ext}`;
-			const recordedBlob = new Blob(chunks, { type: mime });
-			let downloadBlob = recordedBlob;
-			if (ext === "mp4") {
-				try {
-					downloadBlob = await repairRecordedMp4(recordedBlob);
-				} catch {
-					// An unfamiliar muxer layout must never block the user's recording.
-					downloadBlob = recordedBlob;
-				}
-			}
-			const url = URL.createObjectURL(downloadBlob);
-			const anchor = document.createElement("a");
-			anchor.href = url;
-			anchor.download = name;
-			anchor.click();
-			setTimeout(() => URL.revokeObjectURL(url), 10_000);
-			setRecordedVideoName(name);
-			setToast(isKo ? `${name} 저장됨` : `Saved ${name}`);
-		};
-		recRef.current = rec;
-		setRecState("recording");
-		recordingRef.current = true;
-		// PlayView is the finished-output player, so record there: no gizmo, no
-		// inset, and the move rides the playhead regardless of Follow. Playing
-		// is forced even without a loaded motion so a camera-only move records.
-		setCenterTab("play");
-		setTlFrame(0);
-		setTlPlaying(true);
-
-		// The tick runs in setTimeout (the recorder keeps the event loop alive
-		// even in a background tab, where rAF is throttled to zero): wall-clock
-		// pacing must not depend on display refresh.
-		const timeoutTick = () => {
-			if (recRef.current !== rec) return;
-			const main = mainPaneRef.current;
-			if (!playModeRef.current || !main || !stage) {
-				rec.timer = setTimeout(timeoutTick, 20);
-				return;
-			}
-			// a couple of ticks for the PlayView layout + first playMode draw to
-			// land, so the file never opens on a stale Scene-tab composite
-			if (rec.warmup > 0) {
-				rec.warmup -= 1;
-				rec.timer = setTimeout(timeoutTick, 20);
-				return;
-			}
-			const now = performance.now();
-			if (!rec.armed) {
-				rec.armed = true;
-				rec.t0 = now;
-				rec.playheadT0 = now;
-				recorder.start();
-			}
-			// drive the playhead at fps/RECORD_FPS real time ourselves — the
-			// timeline's own clock is suspended while recording (below), so the
-			// exported speed is exact regardless of interval jitter
-			const clipSeconds = tlFrameCountRef2.current / tlFpsRef2.current;
-			const elapsed = now - rec.playheadT0;
-			const frame = Math.floor(elapsed / (1000 / RECORD_FPS));
-			if (frame >= tlFrameCountRef2.current || elapsed / 1000 > clipSeconds) {
-				rec.done = true;
-				setTlPlaying(false);
-				setRecState("idle");
-				recordingRef.current = false;
-				recRef.current = null;
-				recorder.stop();
-				return;
-			}
-			setTlFrame(frame);
-			const stageRect = stage.getBoundingClientRect();
-			const mainRect = main.getBoundingClientRect();
-			const pane = { x: mainRect.left - stageRect.left, y: mainRect.top - stageRect.top, w: mainRect.width, h: mainRect.height };
-			if (pane.w < 2 || pane.h < 2) {
-				rec.timer = setTimeout(timeoutTick, 20);
-				return;
-			}
-			const img = fitAspect(pane, shotOutput.aspect);
-			const scale = glCanvas.width / stageRect.width;
-			ctx.drawImage(
-				glCanvas,
-				img.x * scale,
-				img.y * scale,
-				img.w * scale,
-				img.h * scale,
-				0,
-				0,
-				mirror.width,
-				mirror.height,
-			);
-			// fixed output cadence: each captured frame spans exactly one
-			// 1/RECORD_FPS of the clip, so a stalled render repeats its frame
-			// (hold) instead of compressing the clip
-			const nextStamp = rec.t0 + (rec.outputFrames * 1000) / RECORD_FPS;
-			rec.outputFrames += 1;
-			if (typeof track.requestFrame === "function") {
-				track.requestFrame();
-				setTimeout(() => {
-					if (typeof track.requestFrame === "function") track.requestFrame();
-				}, 1000 / (2 * RECORD_FPS));
-			}
-			rec.timer = setTimeout(timeoutTick, Math.max(0, nextStamp - now + 1000 / RECORD_FPS));
-		};
-		rec.timer = setTimeout(timeoutTick, 20);
+		runShotExport().catch((error) => {
+			if (error?.name !== "AbortError") setToast(error?.message || String(error));
+		});
 	}
 
 	function captureCurrentFraming() {
@@ -3940,8 +3852,6 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	function advanceFrame() {
-		// recording paces the playhead on its own fixed-cadence clock
-		if (recordingRef.current) return;
 		const previewEnd = cameraPreviewEndRef.current;
 		if (previewEnd != null && tlFrameRef.current >= previewEnd - 1) {
 			cameraPreviewEndRef.current = null;
@@ -4842,6 +4752,43 @@ globalThis.playMode = centerTab === "play";
 		subjectTrack,
 		cameraTrack: followTrack,
 	}), [playbackSceneBase, subjectTrack, followTrack]);
+
+	// Browser acceptance seam: it invokes the exact production exporter but
+	// suppresses the download, returning only serializable evidence.
+	useEffect(() => {
+		const api = async (options = {}) => {
+			const { probeMetadata = false, ...range } = options;
+			const { blob, ...result } = await runShotExport({ ...range, download: false });
+			if (!probeMetadata) return { ...result, blobSize: blob.size };
+			const url = URL.createObjectURL(blob);
+			const video = document.createElement("video");
+			let metadata;
+			try {
+				metadata = await new Promise((resolve, reject) => {
+					const timer = setTimeout(() => reject(new Error("exported WebM metadata timed out")), 5000);
+					video.onloadedmetadata = () => {
+						clearTimeout(timer);
+						resolve({ duration: video.duration, width: video.videoWidth, height: video.videoHeight });
+					};
+					video.onerror = () => {
+						clearTimeout(timer);
+						reject(new Error("browser could not decode exported WebM metadata"));
+					};
+					video.preload = "metadata";
+					video.src = url;
+				});
+			} finally {
+				video.removeAttribute("src");
+				video.load();
+				URL.revokeObjectURL(url);
+			}
+			return { ...result, blobSize: blob.size, metadata };
+		};
+		window.__exportOffscreen = api;
+		return () => {
+			if (window.__exportOffscreen === api) delete window.__exportOffscreen;
+		};
+	});
 
 	// The follow camera owns the shot camera in the same situations key
 	// following would: never while an authoring mode holds the viewport.
