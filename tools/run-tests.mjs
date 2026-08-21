@@ -76,6 +76,7 @@ const BROWSER_FILES = [
 	"test/verify-ik-browser.mjs",
 	"test/verify-object-gizmo.mjs",
 	"test/verify-offscreen-export-browser.mjs",
+	"test/verify-project-menu-browser.mjs",
 ];
 
 function verificationFiles(directory) {

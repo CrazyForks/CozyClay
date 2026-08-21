@@ -2762,6 +2762,26 @@ globalThis.playMode = centerTab === "play";
 	const [projectDirty, setProjectDirty] = useState(false);
 	const [projectMenuOpen, setProjectMenuOpen] = useState(false);
 	const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
+
+	// Dismissal mirrors the inspector-actions menu: only listen while open,
+	// ignore presses inside the wrap (the trigger's own click keeps toggling),
+	// close on any outside pointerdown or Escape, and tear down on close.
+	useEffect(() => {
+		if (!projectMenuOpen) return undefined;
+		const onPointerDown = (event) => {
+			if (event.target instanceof Element && event.target.closest(".project-menu-wrap")) return;
+			setProjectMenuOpen(false);
+		};
+		const onKeyDown = (event) => {
+			if (event.key === "Escape") setProjectMenuOpen(false);
+		};
+		document.addEventListener("pointerdown", onPointerDown);
+		window.addEventListener("keydown", onKeyDown);
+		return () => {
+			document.removeEventListener("pointerdown", onPointerDown);
+			window.removeEventListener("keydown", onKeyDown);
+		};
+	}, [projectMenuOpen]);
 	const projectHandleRef = useRef(null);
 	const projectSnapshotRef = useRef("");
 	const projectStateRef = useRef(null);
