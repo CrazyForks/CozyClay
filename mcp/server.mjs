@@ -1863,10 +1863,23 @@ if (httpFlag === -1) {
 	// A child process per session keeps each client's scene its own, and reuses
 	// the stdio path that the tools already run on.
 	const sessions = new Map();
+	const allowedHttpHosts = new Set([`127.0.0.1:${port}`]);
+	const allowedHttpOrigins = new Set([`http://127.0.0.1:${port}`]);
+	const allowHttpRequest = (req, res) => {
+		const host = req.headers.host;
+		const origin = req.headers.origin;
+		if (typeof host === "string" && allowedHttpHosts.has(host) && (origin === undefined || allowedHttpOrigins.has(origin))) return true;
+		res.writeHead(403, { "content-type": "application/json" });
+		res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "MCP HTTP requests require a loopback Host and Origin." }, id: null }));
+		return false;
+	};
 
 	const openSession = async () => {
 		const transport = new StreamableHTTPServerTransport({
 			sessionIdGenerator: () => randomUUID(),
+			allowedHosts: [...allowedHttpHosts],
+			allowedOrigins: [...allowedHttpOrigins],
+			enableDnsRebindingProtection: true,
 			onsessioninitialized: (id) => sessions.set(id, { transport, child }),
 		});
 		const child = new StdioClientTransport({
@@ -1914,6 +1927,7 @@ if (httpFlag === -1) {
 		}
 
 		if (path === "/mcp") {
+			if (!allowHttpRequest(req, res)) return;
 			const existing = sessions.get(req.headers["mcp-session-id"])?.transport;
 			const ready = existing ? Promise.resolve(existing) : openSession();
 			ready
