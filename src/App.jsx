@@ -165,7 +165,10 @@ import { useGeneration } from "./generation/use-generation.js";
 import {
 	CAMERA_MOVES,
 	CUSTOM_MOVE,
+	DEFAULT_SENSOR_FORMAT,
 	IMAGE_MODELS,
+	SENSOR_FORMATS,
+	SHOT_ASPECT_RATIOS,
 	SUBJECT_HEIGHT_M,
 	VIDEO_MODELS,
 	composePrompt,
@@ -174,9 +177,9 @@ import {
 	fovToFocalMm,
 	slateLine,
 } from "./shot.js";
-import { captureFraming, classifyMove, cameraMoveAt, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
+import { captureFraming, classifyMove, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
+import { sampleAt } from "./sample-at.js";
 import {
-	cameraAtFrame,
 	addShotAtFrame,
 	cutAtFrame,
 	duplicateShot,
@@ -185,6 +188,7 @@ import {
 	renameShot,
 	reorderShot,
 	resizeShot,
+	shotAtFrame,
 	shotIndexAtFrame,
 } from "./cuts.js";
 
@@ -395,10 +399,11 @@ function hierarchyIdForIkFocus(focus) {
 const CAPTURE_W = 1920;
 const CAPTURE_H = 1080;
 const SHOT_ASPECT_PRESETS = Object.freeze({
-	"16:9": Object.freeze({ label: "16:9", aspect: 16 / 9, width: 1920, height: 1080 }),
-	"9:16": Object.freeze({ label: "9:16", aspect: 9 / 16, width: 1080, height: 1920 }),
-	"1:1": Object.freeze({ label: "1:1", aspect: 1, width: 1080, height: 1080 }),
-	"4:3": Object.freeze({ label: "4:3", aspect: 4 / 3, width: 1440, height: 1080 }),
+	"16:9": Object.freeze({ label: "16:9", aspect: SHOT_ASPECT_RATIOS["16:9"], width: 1920, height: 1080 }),
+	"2.39:1": Object.freeze({ label: "2.39:1", aspect: SHOT_ASPECT_RATIOS["2.39:1"], width: 2390, height: 1000 }),
+	"9:16": Object.freeze({ label: "9:16", aspect: SHOT_ASPECT_RATIOS["9:16"], width: 1080, height: 1920 }),
+	"1:1": Object.freeze({ label: "1:1", aspect: SHOT_ASPECT_RATIOS["1:1"], width: 1080, height: 1080 }),
+	"4:3": Object.freeze({ label: "4:3", aspect: SHOT_ASPECT_RATIOS["4:3"], width: 1440, height: 1080 }),
 });
 // Pre-generated clip shipped with the build so a bridge-less session (a hosted
 // static demo, or `npm run dev:ui`) still shows real generated motion.
@@ -680,13 +685,15 @@ function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probeX, probeZ, c
     ref — so ShotRig's metrics, the slate, and the inset all stay honest for
     free. A right-drag interrupts the dolly: the user always outranks it.
 
-    Two clocks can drive the move. Standalone preview runs on its own clock;
-    follow mode slaves the move to the timeline playhead, so the camera and
+    Two frame sources can drive the move. Standalone preview advances authored
+    frames at production cadence; follow mode reads the timeline playhead, so the camera and
     the character motion are two views of the same time axis — playing or
     scrubbing frame 72 at 24 fps puts the camera exactly 3 s into its move. */
-function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, camRef, look, isInterrupted, onDone }) {
-	const clock = useRef(0);
+function MoveRig({ playing, following, followFrame, fps, keys, shots, scene, camRef, look, isInterrupted, onDone }) {
 	const invalidate = useThree((state) => state.invalidate);
+	const preview = useRef({ frame: 0, finished: false, notified: false });
+	const handlers = useRef({ isInterrupted, onDone });
+	handlers.current = { isInterrupted, onDone };
 	// The follow branch only re-applies when its time changes; in demand mode
 	// each apply needs one more frame so ShotRig's metrics see the new pose.
 	const appliedFrame = useRef(null);
@@ -695,20 +702,42 @@ function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, ca
 		// component owns no three objects, so in demand mode nothing else will.
 		appliedFrame.current = null;
 		if (following) invalidate();
-	}, [keys, shots, anchor, fps, following, invalidate]);
+	}, [keys, shots, scene, fps, following, invalidate]);
 	useEffect(() => {
 		// A paused scrub changes the playhead without starting the render loop.
 		if (following && !playing) invalidate();
 	}, [followFrame, following, playing, invalidate]);
 	useEffect(() => {
-		if (playing) clock.current = 0;
-	}, [playing]);
-	useFrame((_, delta) => {
+		if (!playing || keys.length < 1) return undefined;
+		const firstFrame = keys[0].frame;
+		const lastFrame = keys[keys.length - 1].frame;
+		const spanFrames = Math.max(lastFrame - firstFrame, 1);
+		const spanSeconds = Math.max(spanFrames / Math.max(fps, 1), 0.1);
+		const tickMs = (spanSeconds * 1000) / spanFrames;
+		let tick = 0;
+		preview.current = { frame: firstFrame, finished: false, notified: false };
+		invalidate();
+		const timer = window.setInterval(() => {
+			if (preview.current.finished) return;
+			if (handlers.current.isInterrupted?.()) {
+				preview.current.finished = true;
+				invalidate();
+				return;
+			}
+			tick += 1;
+			preview.current = {
+				frame: firstFrame + (lastFrame - firstFrame) * Math.min(tick / spanFrames, 1),
+				finished: tick >= spanFrames,
+				notified: false,
+			};
+			invalidate();
+		}, tickMs);
+		return () => window.clearInterval(timer);
+	}, [playing, keys, fps, invalidate]);
+	useFrame(() => {
 		if ((playing && keys.length < 1) || (!playing && following && !shots.some((shot) => shot.cameraKeys.length))) return;
 		const cam = camRef.current;
 		if (!cam) return;
-		const firstFrame = keys[0]?.frame ?? 0;
-		const spanFrames = Math.max((keys[keys.length - 1]?.frame ?? firstFrame) - firstFrame, 1);
 		const apply = (frame) => {
 			// Timeline/PlayView sampling follows the editorial strips. Standalone
 			// preview stays scoped to the selected strip's keys. Entering a Shot
@@ -716,7 +745,11 @@ function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, ca
 			// gap returns null and deliberately applies nothing: the last physical
 			// camera pose stays put and FlyControls regain ownership, so we do not
 			// invent a second cut to an arbitrary "free camera" preset.
-			const f = following ? cameraAtFrame(shots, anchor, frame) : cameraMoveAt(keys, anchor, frame);
+			const timelineShot = following ? shotAtFrame(shots, frame) : null;
+			const sampledShot = timelineShot
+				? { ...timelineShot, camera: { mode: "keys" } }
+				: following ? null : { camera: { mode: "keys" }, cameraKeys: keys };
+			const f = sampleAt(scene, sampledShot, frame).camera;
 			if (!f) return null;
 			cam.position.set(f.pos.x, f.pos.y, f.pos.z);
 			look.current.yaw = f.yaw;
@@ -728,17 +761,11 @@ function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, ca
 			return f;
 		};
 		if (playing) {
-			if (isInterrupted?.()) {
-				onDone(cam.fov);
-				return;
+			const f = apply(preview.current.frame);
+			if (preview.current.finished && !preview.current.notified) {
+				preview.current.notified = true;
+				handlers.current.onDone(f ? f.fovDeg : cam.fov);
 			}
-			// The camera-only preview runs on its own clock across the key span:
-			// N keys play through every segment back to back.
-			const span = Math.max(spanFrames / Math.max(fps, 1), 0.1);
-			clock.current = Math.min(clock.current + delta, span);
-			const t = clock.current / span;
-			const f = apply(firstFrame + t * spanFrames);
-			if (t >= 1) onDone(f ? f.fovDeg : cam.fov);
 			return;
 		}
 		if (!following) return;
@@ -758,24 +785,24 @@ function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, ca
  * replay the identical deterministic move. Null-rendering, so every apply
  * must invalidate() by hand in demand mode, like MoveRig.
  */
-function FollowCamRig({ enabled, frame, track, camRef, look, isInterrupted }) {
+function FollowCamRig({ enabled, frame, scene, shot, camRef, look, isInterrupted }) {
 	const invalidate = useThree((state) => state.invalidate);
 	const applied = useRef(null);
 	useEffect(() => {
 		applied.current = null;
 		if (enabled) invalidate();
-	}, [track, enabled, invalidate]);
+	}, [scene, shot, enabled, invalidate]);
 	useEffect(() => {
 		if (enabled) invalidate();
 	}, [frame, enabled, invalidate]);
 	useFrame(() => {
-		if (!enabled || !track || track.length === 0) return;
+		if (!enabled) return;
 		if (isInterrupted?.()) return; // the user is flying; yield until released
 		const cam = camRef.current;
 		if (!cam) return;
-		const sample = track[Math.max(0, Math.min(frame, track.length - 1))];
-		if (applied.current === sample) return;
-		applied.current = sample;
+		const sample = sampleAt(scene, shot, frame).camera;
+		if (!sample || applied.current === frame) return;
+		applied.current = frame;
 		cam.position.set(sample.pos.x, sample.pos.y, sample.pos.z);
 		look.current.yaw = sample.yaw;
 		look.current.pitch = sample.pitch;
@@ -1113,6 +1140,11 @@ export default function App() {
 	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
 	const [shotAspectKey, setShotAspectKey] = useState(startupStage.shotAspect);
 	const shotOutput = SHOT_ASPECT_PRESETS[shotAspectKey] ?? SHOT_ASPECT_PRESETS["16:9"];
+	const [sensorId, setSensorFormat] = useState(startupStage.sensorId ?? DEFAULT_SENSOR_FORMAT);
+	const filmback = useMemo(
+		() => ({ sensorId, aspectRatio: shotOutput.aspect }),
+		[sensorId, shotOutput.aspect],
+	);
 	const [nonce, setNonce] = useState(0);
 	// The Top-View is always the inset: the old double-click swap that let the
 	// plan own the big pane is gone, so there is no view mode to toggle.
@@ -2586,6 +2618,7 @@ globalThis.playMode = centerTab === "play";
 		characters: characters.map(({ sessionMotion, ...entry }) => entry),
 		hasCharSheet,
 		shotAspect: shotAspectKey,
+		sensorId,
 	};
 
 	function snapshotActiveScene(sourceScenes = scenesRef.current) {
@@ -2857,6 +2890,7 @@ globalThis.playMode = centerTab === "play";
 		setRigMountEpoch((value) => value + 1);
 		setHasCharSheet(stage.hasCharSheet);
 		setShotAspectKey(stage.shotAspect);
+		setSensorFormat(stage.sensorId);
 		// The motion-layer buffer reloads from the scene's first character.
 		const firstLayer = stage.characters[0]?.layer;
 		setWaypoints(firstLayer?.waypoints ?? shotState.waypoints ?? []);
@@ -2946,6 +2980,7 @@ globalThis.playMode = centerTab === "play";
 		activeSceneId,
 		camera: cameraPos,
 		fovDeg,
+		filmback,
 		characters,
 		objects: sceneObjects,
 		commitManualCameraFraming,
@@ -2977,7 +3012,16 @@ globalThis.playMode = centerTab === "play";
 			const live = liveStateRef.current;
 			return {
 				sceneName: live.scenes.find((scene) => scene.id === live.activeSceneId)?.name ?? "",
-				camera: { ...live.camera, focalMm: Math.round(fovToFocalMm((live.fovDeg * Math.PI) / 180) * 100) / 100 },
+				camera: {
+					...live.camera,
+					focalMm: Math.round(fovToFocalMm(
+						(live.fovDeg * Math.PI) / 180,
+						live.filmback.sensorId,
+						live.filmback.aspectRatio,
+					) * 100) / 100,
+					sensorId: live.filmback.sensorId,
+					aspectRatio: live.filmback.aspectRatio,
+				},
 				// y rides too: a character standing on a roof must survive the
 				// same save/open round trip a renamed object just learned to.
 				characters: live.characters.map((entry) => ({ id: entry.id, subject: entry.subject, x: entry.x, y: entry.y ?? 0, z: entry.z, rot: entry.rot, hidden: entry.hidden })),
@@ -3016,7 +3060,11 @@ globalThis.playMode = centerTab === "play";
 				let nextFov = live.fovDeg;
 				if (args.focalMm !== undefined) {
 					if (!Number.isFinite(args.focalMm) || args.focalMm <= 0) throw new Error("Invalid focalMm");
-					nextFov = (focalMmToFov(args.focalMm) * 180) / Math.PI;
+					nextFov = (focalMmToFov(
+						args.focalMm,
+						live.filmback.sensorId,
+						live.filmback.aspectRatio,
+					) * 180) / Math.PI;
 					if (nextFov < 14 || nextFov > 90) throw new Error("focalMm is outside the editor lens range");
 				}
 				const next = { ...live.camera, ...patch };
@@ -3031,7 +3079,16 @@ globalThis.playMode = centerTab === "play";
 				setCameraPos(next);
 				setFovDeg(nextFov);
 				live.commitManualCameraFraming();
-				return { camera: { ...next, focalMm: Math.round(fovToFocalMm((nextFov * Math.PI) / 180) * 100) / 100 } };
+				return {
+					camera: {
+						...next,
+						focalMm: Math.round(fovToFocalMm(
+							(nextFov * Math.PI) / 180,
+							live.filmback.sensorId,
+							live.filmback.aspectRatio,
+						) * 100) / 100,
+					},
+				};
 			},
 			add_character: (args) => {
 				if (typeof args.subject !== "string") throw new Error("Invalid subject");
@@ -3248,7 +3305,7 @@ globalThis.playMode = centerTab === "play";
 		dirtyRef.current = true;
 		const timer = setTimeout(flushScenes, 400);
 		return () => clearTimeout(timer);
-	}, [sceneObjects, shots, waypoints, tlFrameCount, charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2, shotAspectKey, scenes, activeSceneId]);
+	}, [sceneObjects, shots, waypoints, tlFrameCount, charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2, shotAspectKey, sensorId, scenes, activeSceneId]);
 	useEffect(() => {
 		const onPageHide = () => flushScenes();
 		const onVisibility = () => {
@@ -3415,8 +3472,8 @@ globalThis.playMode = centerTab === "play";
 	const poserLook = useRef({ yaw: 0, pitch: 0 });
 
 	const shot = useMemo(
-		() => deriveShot(cameraPos, charA, (fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M),
-		[cameraPos, charA, fovDeg],
+		() => deriveShot(cameraPos, charA, (fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M, filmback),
+		[cameraPos, charA, fovDeg, filmback],
 	);
 
 	// The derived move sequence: what the keyframings geometrically prove
@@ -3428,6 +3485,7 @@ globalThis.playMode = centerTab === "play";
 			segs.push(
 				classifyMove(cameraKeys[i].framing, cameraKeys[i + 1].framing, charA, {
 					durationS: (cameraKeys[i + 1].frame - cameraKeys[i].frame) / tlFps,
+					...filmback,
 				}),
 			);
 		}
@@ -3439,7 +3497,7 @@ globalThis.playMode = centerTab === "play";
 			fromShot: segs[0].from,
 			spanS: Math.round(((cameraKeys[cameraKeys.length - 1].frame - cameraKeys[0].frame) / tlFps) * 10) / 10,
 		};
-	}, [cameraKeys, charA, tlFps]);
+	}, [cameraKeys, charA, filmback, tlFps]);
 	// With Follow armed, Preview means "watch the shot": it plays the timeline
 	// from frame 0 so character motion and the camera move share one clock.
 	// Follow off keeps the camera-only preview on its own clock.
@@ -4497,7 +4555,10 @@ globalThis.playMode = centerTab === "play";
 		for (const entry of characters) {
 			const clip = entry.id === activeChar.id ? motion : entry.sessionMotion;
 			const rig = rigs[entry.id];
-			if (clip && rig) applyMotionFrame(rig, clip, tlFrame);
+			if (clip && rig) {
+				const sampled = sampleAt({ frameCount: clip.frames, motion: clip }, null, tlFrame);
+				applyMotionFrame(rig, clip, sampled.motionFrame);
+			}
 		}
 	}, [characters, activeChar.id, motion, rigs, tlFrame]);
 
@@ -4722,20 +4783,18 @@ globalThis.playMode = centerTab === "play";
 		restorePlaybackBones(saved.rig, saved.bones);
 	}, [motion]);
 
-	const motionPos = useMemo(() => {
-		if (!motion) return null;
-		const f = Math.min(tlFrame, motion.frames - 1);
-		const a = Math.min(motion.anchorFrame, motion.frames - 1);
-		const offset = toSceneRootOffset(
-			motion.rootPos[f * 3] - motion.rootPos[a * 3],
-			motion.rootPos[f * 3 + 2] - motion.rootPos[a * 3 + 2],
-			motion.rotationDeg,
-		);
-		return {
-			x: motion.anchorX + offset.x,
-			z: motion.anchorZ + offset.z,
-		};
-	}, [motion, tlFrame]);
+	const playbackSceneBase = useMemo(() => ({
+		frameCount: tlFrameCount,
+		fps: tlFps,
+		subject: charA,
+		motion,
+		cameraAnchor: charA,
+		fovDeg,
+		filmback,
+	}), [tlFrameCount, tlFps, charA, motion, fovDeg, filmback]);
+	const motionPos = useMemo(() => (
+		motion ? sampleAt(playbackSceneBase, null, tlFrame).subject : null
+	), [motion, playbackSceneBase, tlFrame]);
 
 	// The subject's full per-frame scene trajectory — what the follow camera
 	// is derived from. Without a loaded motion the subject stands still and
@@ -4743,18 +4802,9 @@ globalThis.playMode = centerTab === "play";
 	const subjectTrack = useMemo(() => {
 		if (!shots.some((shot) => shot.camera?.mode === "follow" || shot.camera?.mode === "rail")) return null;
 		const frames = Math.max(tlFrameCount, 1);
-		if (!motion) return Array.from({ length: frames }, () => ({ x: charA.x, z: charA.z }));
-		const a = Math.min(motion.anchorFrame, motion.frames - 1);
-		return Array.from({ length: frames }, (_, f) => {
-			const ff = Math.min(f, motion.frames - 1);
-			const offset = toSceneRootOffset(
-				motion.rootPos[ff * 3] - motion.rootPos[a * 3],
-				motion.rootPos[ff * 3 + 2] - motion.rootPos[a * 3 + 2],
-				motion.rotationDeg,
-			);
-			return { x: motion.anchorX + offset.x, z: motion.anchorZ + offset.z };
-		});
-	}, [shots, motion, tlFrameCount, charA.x, charA.z]);
+		return Array.from({ length: frames }, (_, frame) =>
+			sampleAt(playbackSceneBase, null, frame).subject);
+	}, [shots, playbackSceneBase, tlFrameCount]);
 
 	// The dense rail (spline through the drawn control points) — shared by
 	// the follow controller and the Top-View display.
@@ -4786,6 +4836,12 @@ globalThis.playMode = centerTab === "play";
 		}
 		return combined;
 	}, [shots, subjectTrack, tlFps, charA.rot]);
+
+	const playbackScene = useMemo(() => ({
+		...playbackSceneBase,
+		subjectTrack,
+		cameraTrack: followTrack,
+	}), [playbackSceneBase, subjectTrack, followTrack]);
 
 	// The follow camera owns the shot camera in the same situations key
 	// following would: never while an authoring mode holds the viewport.
@@ -4958,7 +5014,7 @@ globalThis.playMode = centerTab === "play";
 			mode,
 			model,
 			shot: movePlan?.fromShot ?? (framingA
-				? deriveShot(framingA.pos, promptSubject, (framingA.fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M)
+				? deriveShot(framingA.pos, promptSubject, (framingA.fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M, filmback)
 				: shot),
 			subject,
 			subject2: showB ? subject2 : null,
@@ -5957,7 +6013,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								fps={tlFps}
 								keys={cameraKeys}
 								shots={shots}
-								anchor={charA}
+								scene={playbackScene}
 								camRef={shotCamRef}
 								look={look}
 								isInterrupted={() => flyingRef.current || manualCameraOverrideRef.current}
@@ -5969,7 +6025,8 @@ function resizePromptClip(id, edge, rawFrame) {
 							<FollowCamRig
 								enabled={followCamActive && !movePlaying}
 								frame={tlFrame}
-								track={followTrack}
+								scene={playbackScene}
+								shot={activeShot}
 								camRef={shotCamRef}
 								look={look}
 								isInterrupted={() => flyingRef.current || manualCameraOverrideRef.current}
@@ -6243,9 +6300,17 @@ function resizePromptClip(id, edge, rawFrame) {
 					    so keep its controls beside the Motion tools as well as Shot setup. */}
 					<Foldout hidden={!(sidebarTab === "shot" || (sidebarTab === "inspector" && selectedHierarchyId === "camera"))} title={ko("Camera", "카메라")}>
 					<Slider label={ko("Lens (FOV)", "렌즈 (FOV)")} min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
+					<Field label={ko("Filmback", "필름백")}>
+						<Dropdown
+							ariaLabel={ko("Filmback sensor format", "필름백 센서 포맷")}
+							value={sensorId}
+							options={Object.values(SENSOR_FORMATS).map((sensor) => ({ value: sensor.id, label: sensor.label }))}
+							onChange={setSensorFormat}
+						/>
+					</Field>
 						<div className="readout">
 						<span title={ko("camera to subject", "카메라와 피사체 거리")}>{shot.distance.toFixed(2)} m</span>
-						<span title={ko("nearest prime on a full-frame sensor", "풀프레임 기준 가장 가까운 단렌즈")}>{shot.focalMm} mm</span>
+						<span title={ko("nearest prime on the cropped filmback", "크롭된 필름백 기준 가장 가까운 단렌즈")}>{shot.focalMm} mm</span>
 						<span title={ko("angle relative to the subject's eyes", "피사체 눈높이 기준 각도")}>{shot.elevationDeg.toFixed(0)}°</span>
 						</div>
 						<button className="btn ghost" onClick={() => setNonce((n) => n + 1)}>
