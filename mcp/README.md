@@ -126,6 +126,9 @@ Pass a previous `motion_url` to reload a clip without generating again.
 
 `save_project` writes a real `.cclayproject` file, so a scene blocked here opens in the studio to
 be posed, timed and generated — and a scene built in the studio opens here with `open_project`.
+The configured project-root directory must only be writable by the trusted user running the MCP
+server; project I/O rejects symlinks and hard-linked project files but relies on that directory
+permission boundary to prevent an untrusted local process from adding links during an operation.
 
 ## Design
 

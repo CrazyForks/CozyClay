@@ -135,6 +135,16 @@ expect("motion edits send only tracked pending joints", app.includes("ikStateRef
 expect("successful motion edits commit and clear pending IK", app.includes("setCommittedIkEdits") && app.includes("job.ikState.keys.clear()") && app.includes("job.ikState.tracked.clear()"));
 expect("pending IK clears only after exact commit verification", app.includes("editCommitReport?.commit_verified !== true") && app.includes("ARDY returned motion without verified authored IK keys"));
 expect("failed key verification leaves pending IK intact", app.indexOf("ARDY returned motion without verified authored IK keys") < app.indexOf("job.ikState.keys.clear()"));
+expect(
+	"inactive live motion and its prompt clips commit in one character update",
+	app.includes("targetPromptClips =") &&
+		app.includes("sessionMotion: loaded,") &&
+		app.includes("promptClips: targetPromptClips"),
+);
+expect(
+	"a deleted inactive motion target cannot clear the active editing motion",
+	app.includes("if (targetCharacterId === activeChar.id) setMotion(null);"),
+);
 expect("individual block generation action is removed", !app.includes("Generate selected block"));
 expect("Prompt Block edits stay synced with ARDY input", app.includes("changePromptClip(selectedPromptId") && app.includes("setArdyPrompt(event.target.value)"));
 expect("desktop stage fills the remaining viewport", css.includes("aspect-ratio: auto") && css.includes("height: 100%"));

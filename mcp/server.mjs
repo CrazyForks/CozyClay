@@ -25,7 +25,7 @@
  * the real `.cclayproject` envelope, so anything authored here opens in the
  * studio, and anything authored in the studio opens here.
  */
-import { open as openFile, readFile, realpath, unlink, writeFile } from "node:fs/promises";
+import { link, open as openFile, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -116,6 +116,11 @@ const isInside = (root, candidate) => {
 	return offset === "" || (!offset.startsWith("..") && !isAbsolute(offset));
 };
 
+const requirePrivateProjectInode = async (file) => {
+	const stat = await file.stat();
+	if (stat.nlink !== 1) throw new Error("Project files must not have hard links.");
+};
+
 const resolveProjectPath = async (path, { existing }) => {
 	if (!path.endsWith(".cclayproject")) throw new Error("Project path must end in .cclayproject.");
 	const root = await projectRootPromise;
@@ -124,7 +129,14 @@ const resolveProjectPath = async (path, { existing }) => {
 	if (requestedParent !== root) throw new Error(`Project files must be direct children of configured project root ${root}.`);
 	const name = basename(requested);
 	if (!name || name.includes("/")) throw new Error("Project filename is invalid.");
-	if (existing) await openFile(name, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).then((file) => file.close());
+	if (existing) {
+		const file = await openFile(name, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+		try {
+			await requirePrivateProjectInode(file);
+		} finally {
+			await file.close();
+		}
+	}
 	return { displayPath: requested, descriptorPath: name };
 };
 
@@ -1661,6 +1673,7 @@ registerTool(
 			full = resolved.displayPath;
 			const file = await openFile(resolved.descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
 			try {
+				await requirePrivateProjectInode(file);
 				raw = await file.readFile("utf8");
 			} finally {
 				await file.close();
@@ -1729,13 +1742,40 @@ registerTool(
 			name: state.name,
 		});
 		try {
-			const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW |
-				(overwrite ? fsConstants.O_TRUNC : fsConstants.O_EXCL);
-			const file = await openFile(path, flags, 0o600);
+			if (overwrite) {
+				try {
+					const existing = await openFile(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+					try {
+						await requirePrivateProjectInode(existing);
+					} finally {
+						await existing.close();
+					}
+				} catch (error) {
+					if (error?.code !== "ENOENT") throw error;
+				}
+			}
+			const temporaryPath = `.${path}.${randomUUID()}.tmp`;
+			const file = await openFile(
+				temporaryPath,
+				fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+				0o600,
+			);
 			try {
+				await requirePrivateProjectInode(file);
 				await file.writeFile(JSON.stringify(project, null, "\t"), "utf8");
 			} finally {
 				await file.close();
+			}
+			try {
+				if (overwrite) {
+					await rename(temporaryPath, path);
+				} else {
+					await link(temporaryPath, path);
+					await unlink(temporaryPath);
+				}
+			} catch (error) {
+				await unlink(temporaryPath).catch(() => {});
+				throw error;
 			}
 		} catch (error) {
 			return text(`Could not write ${full}: ${error.message}`);
