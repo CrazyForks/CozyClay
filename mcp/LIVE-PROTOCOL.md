@@ -88,6 +88,8 @@ scene document already uses.
 | `group_objects` | `{ parent, children }` | `{ parent, children }` | attach every child under parent |
 | `ungroup_objects` | `{ children }` | `{ children }` | detach every child |
 | `apply_batch` | `{ ops, atomic?: false, stopOnError?: true, label?: "MCP batch" }` | `{ label, applied: number[], failed: [{ index, error }], rolledBack }` | executes at most 100 object mutations as one undo entry. `atomic` and `stopOnError` are independent; atomic failure restores the pre-batch objects and creates no undo entry. Nested batches are rejected. v1 rejects character mutations because cast history is a separate store. |
+| `set_prompt_blocks` | `{ blocks: [{ startFrame, endFrame, text }] }` | `{ blocks }` | replace the active character's authored prompt clips after validating each frame range and text |
+| `load_motion` | `{ url, prompt?, blocks?, drop? }` | `{ loaded, url, blocks }` | install an ARDY motion on the selected character. It has the dedicated 30-second editor-processing timeout; motion-job completion carries the character id captured when generation started |
 | `load_scenes` | `{ document }` | `{ sceneName, activeSceneId, scenes: [{ id, name }] }` | replace the whole scene document (same shape `serializeSceneDocument` emits); the response attests the full scene list and active scene for `add_scene` and `switch_scene` parity |
 
 ## Hard rules for the editor side

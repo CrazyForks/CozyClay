@@ -93,7 +93,7 @@ truth. Without one, every tool keeps its in-memory behaviour. In `--http` mode e
 child attempts to bind the live port, so one session owns the editor and the others
 intentionally run memory-only.
 
-The wire protocol — one WebSocket, ten commands, editor-side rules — is specified in
+The wire protocol — one WebSocket, sixteen commands, editor-side rules — is specified in
 [`LIVE-PROTOCOL.md`](LIVE-PROTOCOL.md).
 
 ## Motion generation
