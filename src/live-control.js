@@ -51,6 +51,8 @@ export async function dispatchLiveFrame(data, handlers = {}) {
 export function createLiveControl({
 	handlers = {},
 	onWorkspace = () => {},
+	onEvent = () => {},
+	workspaceId = "",
 	WebSocketImpl = globalThis.WebSocket,
 	url = LIVE_CONTROL_URL,
 	reconnectMs = LIVE_CONTROL_RECONNECT_MS,
@@ -91,7 +93,7 @@ export function createLiveControl({
 		const connected = socket;
 		connected.onopen = () => {
 			if (socket !== connected || stopped) return;
-			send({ type: "hello", role: "editor", version: 1 });
+			send({ type: "hello", role: "editor", version: 1, ...(workspaceId ? { workspaceId } : {}) });
 		};
 		connected.onmessage = async (event) => {
 			if (typeof event?.data === "string") {
@@ -99,6 +101,10 @@ export function createLiveControl({
 					const frame = JSON.parse(event.data);
 					if (frame?.type === "workspace" && typeof frame.handle === "string") {
 						onWorkspace(frame.handle);
+						return;
+					}
+					if (frame?.type === "event" && typeof frame.name === "string" && frame.payload && typeof frame.payload === "object") {
+						onEvent(frame.name, frame.payload);
 						return;
 					}
 				} catch {

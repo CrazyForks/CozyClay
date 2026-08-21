@@ -39,7 +39,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
 
-import { LiveMutationUncertainError, startLiveHub } from "./live-hub.mjs";
+import { LiveMutationUncertainError, MotionJobRegistry, startLiveHub } from "./live-hub.mjs";
 import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhases, splitLongBeat } from "./ardy-prompts.mjs";
 
 import {
@@ -90,6 +90,7 @@ const state = {
 };
 
 let liveHub = null;
+const motionJobs = new MotionJobRegistry();
 const liveWorkspace = new AsyncLocalStorage();
 const liveMutationTools = new Set([
 	"set_camera", "frame_shot", "add_character", "place_character", "remove_character",
@@ -297,6 +298,22 @@ const liveError = (error) => ({
 	content: [{ type: "text", text: `Live editor error: ${error.message}` }],
 	isError: true,
 });
+
+const motionJobEvent = (job) => ({
+	...motionJobs.task(job),
+	...(job.outcome === null ? {} : { outcome: job.outcome }),
+});
+
+const publishMotionJob = (job) => liveHub?.sendEvent(job.workspaceId, "motion_job", motionJobEvent(job));
+
+const cancelMotionJob = ({ workspaceId, payload }) => {
+	if (payload.taskId && typeof payload.taskId !== "string") return;
+	if (typeof payload.taskId !== "string") return;
+	const task = motionJobs.cancel(payload.taskId, workspaceId);
+	if (!task) return;
+	const job = motionJobs.jobs.get(task.taskId);
+	if (job) publishMotionJob(job);
+};
 
 /* ------------------------------ formatting ------------------------------- */
 
@@ -953,8 +970,9 @@ registerTool(
 	{
 		title: "Generate character motion (ARDY)",
 		description:
-			"Generate a multi-phase motion clip through the ARDY bridge and, when a live editor is " +
-			"connected, load it onto the active character so it appears on the timeline.\n\n" +
+			"Start a multi-phase ARDY motion job for the connected live editor and return immediately with its " +
+			"task-shaped identity. Completion, failure, or cancellation arrives as the live socket's motion_job event; " +
+			"the MCP model does not poll task state. A completed event loads the active character's timeline.\n\n" +
 			PROMPT_GUIDE,
 		inputSchema: {
 			phases: z
@@ -1006,12 +1024,6 @@ registerTool(
 		const phaseSeconds = rawPhases.map((p) => (typeof p === "string" ? null : p.seconds));
 		const timed = phaseSeconds.some((s) => s !== null);
 		const bridge = process.env.COZYCLAY_BRIDGE ?? "http://127.0.0.1:5181";
-		try {
-			const health = await fetch(`${bridge}/ardy/health`, { signal: AbortSignal.timeout(4000) }).then((r) => r.json());
-			if (!health.ok) throw new Error("bridge unhealthy");
-		} catch {
-			return text("The ARDY bridge is not running on " + bridge + ". Start the studio with `npm run dev` (it launches the bridge) and try again.");
-		}
 
 		// Every phase is rewritten into ARDY's own sentence shape before it is
 		// ever sent; a compound beat is split into the extra phase it was hiding.
@@ -1083,63 +1095,71 @@ registerTool(
 					chainNote
 				: "";
 
-		const deliver = async (motionUrl, note) => {
-			const summary = `${note} ${clipSeconds.toFixed(1)}s / ${clipFrames} frames — ${segments.length} phases:\n` +
-				segments
-					.map((s) => `  ${s.startFrame}-${s.endFrame}  (${((s.endFrame - s.startFrame) / ARDY_FPS).toFixed(1)}s)  ${s.prompt}`)
-					.join("\n") +
-				`\nmotion: ${motionUrl}${promptNote}`;
-			if (!liveHub?.connected) return text(`${summary}\n\nNo live editor connected — open the studio and it can load this URL.`);
-			try {
-				await liveHub.command("load_motion", { url: motionUrl, prompt: prompts.join(" "), blocks: segments, drop }, liveWorkspace.getStore());
-				return text(
-					`${summary}\n\nLoaded onto the active character with ${segments.length} prompt blocks on the timeline` +
-						`${drop ? ` — dropping ${drop.meters}m over ${drop.from_s}–${drop.to_s}s` : ""} — press play.`,
-				);
-			} catch (error) {
-				return liveError(error);
-			}
-		};
-
-		if (motion_url) return deliver(motion_url, "Reusing");
-		// segments run the autoregressive sequence generator, which is
-		// incompatible with pose pinning — the bridge requires posePin:false.
+		if (!liveHub?.connected) return text("generate_motion requires a connected CozyClay editor so completion can be delivered over its live socket.");
+		const workspaceHandle = liveWorkspace.getStore() ?? liveHub.resolveWorkspace("generate_motion");
+		const workspaceId = liveHub.workspaceId(workspaceHandle);
+		const job = motionJobs.create(workspaceId);
 		const body = { prompt: prompts.join(" "), duration: clipSeconds, segments, posePin: false };
 		if (seed !== undefined) body.seed = seed;
 
-		const res = await fetch(`${bridge}/ardy/generate`, {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify(body),
-		});
-		if (!res.ok) return text(`Generation refused (HTTP ${res.status}): ${await res.text()}`);
-
-		// The bridge streams ndjson progress lines and ends with a done/error event.
-		const reader = res.body.getReader();
-		const decoder = new TextDecoder();
-		let buffer = "";
-		let done = null;
-		let lastProgress = "";
-		for (;;) {
-			const chunk = await reader.read();
-			if (chunk.done) break;
-			buffer += decoder.decode(chunk.value, { stream: true });
-			let nl = buffer.indexOf("\n");
-			while (nl !== -1) {
-				const line = buffer.slice(0, nl).trim();
-				buffer = buffer.slice(nl + 1);
-				if (line) {
-					const event = JSON.parse(line);
-					if (event.event === "error") return text(`Generation failed: ${event.message ?? "generator error"}`);
-					if (event.event === "done") done = event;
-					else lastProgress = event.message ?? event.event ?? lastProgress;
+		// Abort tears down the HTTP stream. The bridge owns the child process group
+		// and kills it on disconnect, so cancellation stops generator work before a
+		// terminal cancelled event is sent; it never reaches editor installation.
+		const run = async () => {
+			if (job.status === "cancelled") return;
+			const controller = new AbortController();
+			job.cancel = () => controller.abort();
+			if (job.status === "cancelled") return;
+			motionJobs.transition(job, "running");
+			try {
+				let motionUrl = motion_url;
+				if (!motionUrl) {
+					const res = await fetch(`${bridge}/ardy/generate`, {
+						method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: controller.signal,
+					});
+					if (!res.ok) throw new Error(`Generation refused (HTTP ${res.status}): ${await res.text()}`);
+					const reader = res.body?.getReader();
+					if (!reader) throw new Error("Generation response has no body stream.");
+					const decoder = new TextDecoder();
+					let buffer = "";
+					for (;;) {
+						const chunk = await reader.read();
+						if (chunk.done) break;
+						buffer += decoder.decode(chunk.value, { stream: true });
+						let newline = buffer.indexOf("\n");
+						while (newline !== -1) {
+							const line = buffer.slice(0, newline).trim();
+							buffer = buffer.slice(newline + 1);
+							if (line) {
+								const event = JSON.parse(line);
+								if (event.event === "error") throw new Error(event.message ?? "Generator error.");
+								if (event.event === "done") motionUrl = event.motionUrl;
+							}
+							newline = buffer.indexOf("\n");
+						}
+						if (motionUrl) break;
+					}
 				}
-				nl = buffer.indexOf("\n");
+				if (job.status === "cancelled") return;
+				if (typeof motionUrl !== "string") throw new Error("Generation ended without a motion.");
+				motionJobs.transition(job, "completed", {
+					motionUrl, prompt: prompts.join(" "), blocks: segments, drop,
+					summary: `${clipSeconds.toFixed(1)}s / ${clipFrames} frames${promptNote}`,
+				});
+				publishMotionJob(job);
+			} catch (error) {
+				if (job.status === "cancelled" || error?.name === "AbortError") {
+					if (job.status !== "cancelled") motionJobs.transition(job, "cancelled", { message: "Generation cancelled before editor delivery." });
+				} else {
+					motionJobs.transition(job, "failed", { message: error instanceof Error ? error.message : "Motion generation failed." });
+				}
+				publishMotionJob(job);
+			} finally {
+				job.cancel = null;
 			}
-			if (done) break;
-		}
-		if (!done?.motionUrl) return text(`Generation ended without a motion (last progress: ${lastProgress || "none"}).`);
-		return deliver(done.motionUrl, "Generated");
+		};
+		queueMicrotask(run);
+		return text(JSON.stringify(motionJobs.task(job)));
 	},
 );
 
@@ -1551,8 +1571,19 @@ const livePort = Number(
 );
 if (!Number.isInteger(livePort) || livePort < 1 || livePort > 65535) throw new Error("--live-port must be a valid TCP port.");
 
+const configureLiveHub = (hub) => {
+	if (!hub) return;
+	hub.onEvent = ({ workspaceId, name, payload }) => {
+		if (name === "motion_job_cancel") cancelMotionJob({ workspaceId, payload });
+	};
+	hub.onWorkspaceConnected = ({ workspaceId }) => {
+		for (const job of motionJobs.forWorkspace(workspaceId)) publishMotionJob(job);
+	};
+};
+
 if (httpFlag === -1) {
 	liveHub = await startLiveHub(livePort);
+	configureLiveHub(liveHub);
 	await server.connect(new StdioServerTransport());
 } else {
 	// Tools execute in the stdio children, not this HTTP front. Each child tries

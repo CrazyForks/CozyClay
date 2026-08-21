@@ -18,10 +18,22 @@ server -> editor, once after `hello`:
 
 The handle is newly issued for this socket connection. The editor surfaces it to
 its operator. A disconnect invalidates it; a reconnect receives a fresh handle.
+The editor also sends its stable per-tab `workspaceId` in `hello`; it is not an
+MCP tool argument and lets the hub route retained terminal motion outcomes to
+the same editor after that fresh handle is issued.
 
 server -> editor, one per command:
 
     { "type": "cmd", "id": "<opaque string>", "name": "<command>", "args": { ... } }
+
+server -> editor, for an MCP-owned motion job state or terminal outcome (and again
+on reconnect while retained):
+
+    { "type": "event", "name": "motion_job", "payload": { "taskId", "status", "createdAt", "lastUpdatedAt", "ttlMs", "pollIntervalMs", "outcome?" } }
+
+editor -> server, to cancel its own active job before editor delivery:
+
+    { "type": "event", "name": "motion_job_cancel", "payload": { "taskId": "<opaque task id>" } }
 
 editor -> server, one per command, echoing `id`:
 
@@ -30,9 +42,28 @@ editor -> server, one per command, echoing `id`:
 
 Unknown `name` MUST answer `ok:false`, never silence. The server times a
 command out after 5 s and treats it as failed, except `load_motion`, which
-receives 30 s for editor decode and installation. A timeout or disconnect during
+retains its dedicated 30 s editor decode and installation bound. Measurement
+justifies the existing headroom: 12 real editor installs of one 94,672-byte
+ARDY NPZ had nearest-rank p50 29.96 ms, p95 547.29 ms, and p99 547.29 ms;
+30 s remains appropriate for materially larger cold-cache production takes. A timeout or disconnect during
 a mutation is ambiguous: it may already have applied, so callers MUST NOT retry
 blindly and should `describe` before recovering.
+
+## Motion jobs
+
+`generate_motion` returns immediately with exactly `{ taskId, status, createdAt,
+lastUpdatedAt, ttlMs, pollIntervalMs }`; `pollIntervalMs` is `0` because the
+model never polls it. The MCP server retains terminal outcomes for `ttlMs`
+(currently 10 minutes) and pushes `motion_job` to the matching stable workspace
+on completion, failure, cancellation, or reconnect. The editor installs a
+completed motion through its existing React `load_motion` handler. A retained
+outcome that passes its TTL is explicitly expired and is never replayed.
+
+Cancellation is cooperative at the bridge HTTP stream: `motion_job_cancel`
+aborts that request. The ARDY bridge detects the disconnected stream and kills
+its request-owned child process groups. A cancelled job is terminal and is never
+sent to editor installation. There are no `tasks/*` tools or start/status/list
+polling tools in the MCP surface.
 
 ## Commands (v1)
 

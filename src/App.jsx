@@ -2320,6 +2320,7 @@ globalThis.playMode = centerTab === "play";
 	const liveStateRef = useRef(null);
 	const liveHandlersRef = useRef(null);
 	const [liveWorkspaceHandle, setLiveWorkspaceHandle] = useState(null);
+	const liveWorkspaceIdRef = useRef(crypto.randomUUID());
 	const [result, setResult] = useState(null);
 	const [resultOpen, setResultOpen] = useState(false);
 	const [copied, setCopied] = useState(false);
@@ -3480,7 +3481,23 @@ globalThis.playMode = centerTab === "play";
 			if (!liveControlRef.current) {
 				liveControlRef.current = createLiveControl({
 					handlers: liveHandlersRef.current,
+					workspaceId: liveWorkspaceIdRef.current,
 					onWorkspace: setLiveWorkspaceHandle,
+					onEvent: (name, payload) => {
+						if (name !== "motion_job" || typeof payload.taskId !== "string") return;
+						if (payload.status === "completed" && typeof payload.outcome?.motionUrl === "string") {
+							liveHandlersRef.current.load_motion({
+								url: payload.outcome.motionUrl,
+								prompt: payload.outcome.prompt ?? "",
+								blocks: payload.outcome.blocks ?? [],
+								drop: payload.outcome.drop ?? null,
+							}).catch((error) => setToast(error instanceof Error ? error.message : String(error)));
+							return;
+						}
+						if (["failed", "cancelled", "expired"].includes(payload.status)) {
+							setToast(payload.outcome?.message ?? `Motion job ${payload.status}.`);
+						}
+					},
 				});
 			}
 		}, 0);

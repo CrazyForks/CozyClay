@@ -4,6 +4,74 @@ import { WebSocket, WebSocketServer } from "ws";
 
 export const DEFAULT_COMMAND_TIMEOUT_MS = 5_000;
 export const LOAD_MOTION_TIMEOUT_MS = 30_000;
+export const MOTION_JOB_TTL_MS = 10 * 60_000;
+export const MOTION_JOB_POLL_INTERVAL_MS = 0;
+
+const terminalMotionStatuses = new Set(["completed", "failed", "cancelled", "expired"]);
+
+/** MCP-internal job retention for push-only motion work. Its clock is injected
+ * so expiry is deterministic without a polling loop or timing-based test. */
+export class MotionJobRegistry {
+	constructor({ clock = () => Date.now(), ttlMs = MOTION_JOB_TTL_MS } = {}) {
+		this.clock = clock;
+		this.ttlMs = ttlMs;
+		this.jobs = new Map();
+	}
+
+	create(workspaceId) {
+		const now = this.clock();
+		const job = {
+			taskId: randomUUID(), workspaceId, status: "queued", createdAt: now,
+			lastUpdatedAt: now, ttlMs: this.ttlMs, pollIntervalMs: MOTION_JOB_POLL_INTERVAL_MS,
+			cancel: null, expiresAt: null, outcome: null,
+		};
+		this.jobs.set(job.taskId, job);
+		return job;
+	}
+
+	task(job) {
+		return {
+			taskId: job.taskId, status: job.status, createdAt: job.createdAt,
+			lastUpdatedAt: job.lastUpdatedAt, ttlMs: job.ttlMs, pollIntervalMs: job.pollIntervalMs,
+		};
+	}
+
+	transition(job, status, outcome = null) {
+		job.status = status;
+		job.lastUpdatedAt = this.clock();
+		job.outcome = outcome;
+		job.expiresAt = terminalMotionStatuses.has(status) ? job.lastUpdatedAt + job.ttlMs : null;
+		return this.task(job);
+	}
+
+	cancel(taskId, workspaceId) {
+		this.cleanup();
+		const job = this.jobs.get(taskId);
+		if (!job || job.workspaceId !== workspaceId || terminalMotionStatuses.has(job.status)) return null;
+		job.cancel?.();
+		return this.transition(job, "cancelled", { message: "Generation cancelled before editor delivery." });
+	}
+
+	forWorkspace(workspaceId) {
+		this.cleanup();
+		return [...this.jobs.values()].filter((job) => job.workspaceId === workspaceId && terminalMotionStatuses.has(job.status));
+	}
+
+	cleanup() {
+		const now = this.clock();
+		for (const job of this.jobs.values()) {
+			if (job.expiresAt === null || now < job.expiresAt) continue;
+			if (job.status === "expired") {
+				this.jobs.delete(job.taskId);
+				continue;
+			}
+			job.status = "expired";
+			job.lastUpdatedAt = now;
+			job.outcome = { message: "Motion job outcome expired before this workspace reconnected." };
+			job.expiresAt = now + job.ttlMs;
+		}
+	}
+}
 
 const mutationCommands = new Set([
 	"set_camera",
@@ -32,6 +100,9 @@ export class LiveHub {
 		this.server = server;
 		this.editors = new Map();
 		this.pending = new Map();
+		this.workspaceIds = new Map();
+		this.onWorkspaceConnected = null;
+		this.onEvent = null;
 	}
 
 	get connected() {
@@ -60,6 +131,19 @@ export class LiveHub {
 
 	static commandMayMutate(name) {
 		return mutationCommands.has(name);
+	}
+
+	workspaceId(workspaceHandle) {
+		const workspaceId = this.workspaceIds.get(workspaceHandle);
+		if (!workspaceId) throw new Error(`Unknown or stale live workspace handle "${workspaceHandle}".`);
+		return workspaceId;
+	}
+
+	sendEvent(workspaceId, name, payload) {
+		for (const [handle, socket] of this.editors) {
+			if (this.workspaceIds.get(handle) !== workspaceId || socket.readyState !== WebSocket.OPEN) continue;
+			socket.send(JSON.stringify({ type: "event", name, payload }));
+		}
 	}
 
 	async command(name, args, workspaceHandle) {
@@ -106,8 +190,16 @@ export class LiveHub {
 				}
 				greeted = true;
 				const workspaceHandle = randomUUID();
+				const workspaceId = typeof frame.workspaceId === "string" && frame.workspaceId ? frame.workspaceId : workspaceHandle;
 				this.editors.set(workspaceHandle, socket);
+				this.workspaceIds.set(workspaceHandle, workspaceId);
 				socket.send(JSON.stringify({ type: "workspace", handle: workspaceHandle }));
+				this.onWorkspaceConnected?.({ workspaceHandle, workspaceId });
+				return;
+			}
+			if (frame?.type === "event" && typeof frame.name === "string" && frame.payload && typeof frame.payload === "object") {
+				const workspaceHandle = [...this.editors.entries()].find(([, editor]) => editor === socket)?.[0];
+				if (workspaceHandle) this.onEvent?.({ workspaceHandle, workspaceId: this.workspaceId(workspaceHandle), name: frame.name, payload: frame.payload });
 				return;
 			}
 			if (frame?.type !== "result" || typeof frame.id !== "string") return;
@@ -124,7 +216,11 @@ export class LiveHub {
 
 	disconnect(socket) {
 		for (const [handle, editor] of this.editors) {
-			if (editor === socket) this.editors.delete(handle);
+			if (editor === socket) {
+				const workspaceId = this.workspaceIds.get(handle);
+				this.editors.delete(handle);
+				this.workspaceIds.delete(handle);
+			}
 		}
 		for (const [id, pending] of this.pending) {
 			if (pending.socket !== socket) continue;
