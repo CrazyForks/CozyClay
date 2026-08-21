@@ -15,7 +15,6 @@ import {
 	duplicateCutoutOptions,
 	cutoutFootprint,
 	CUTOUT_KIND,
-	CUTOUT_MAX_HEIGHT,
 	CUTOUT_THICKNESS,
 	dropToSurfacePatch,
 	placementInFront,
@@ -412,10 +411,8 @@ expect(
 	updateSceneObject([sofa], sofa.id, { footprint: { width: 99, depth: 99 } })[0] === sofa,
 );
 expect(
-	// Derived from the limit rather than written as a literal: the deck's
-	// headroom has already moved once, and a card is allowed to be a building.
-	"a cutout is clamped to the deck's headroom and above zero",
-	updateSceneObject([sofa], sofa.id, { height: 1e6 })[0].height === CUTOUT_MAX_HEIGHT &&
+	"a cutout height has no upper limit and stays above zero",
+	updateSceneObject([sofa], sofa.id, { height: 1e6 })[0].height === 1e6 &&
 		updateSceneObject([sofa], sofa.id, { height: 0 })[0].height === 0.05,
 );
 expect(
@@ -513,13 +510,13 @@ expect(
 	})(),
 );
 expect(
-	"a cutout stored out of range comes back inside it",
+	"a cutout stored at an extreme height keeps that height",
 	(() => {
 		const repaired = normalizeSceneObject({ ...sofa, height: 1e6, aspect: -4 });
 		return (
-			repaired.height === CUTOUT_MAX_HEIGHT &&
+			repaired.height === 1e6 &&
 			repaired.aspect === 0.02 &&
-			repaired.footprint.width === cutoutFootprint(CUTOUT_MAX_HEIGHT, 0.02).width
+			repaired.footprint.width === cutoutFootprint(1e6, 0.02).width
 		);
 	})(),
 );

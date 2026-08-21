@@ -244,6 +244,8 @@ assert.equal(createCharacterEntry({ scale: -1.2 }).scale, 1, "a negative stature
 assert.equal(createCharacterEntry({ scale: "1.2" }).scale, 1, "a non-numeric stature is not a stature");
 assert.equal(createCharacterEntry({ scale: 99 }).scale, 3, "an absurd stature clamps to the band");
 assert.equal(createCharacterEntry({ scale: 0.05 }).scale, 0.2, "a tiny stature clamps to the band");
+assert.equal(createCharacterEntry({ y: -2 }).y, 0, "lift cannot sink below the deck");
+assert.equal(createCharacterEntry({ y: 10 }).y, 10, "lift has no ceiling — a crane shot may hoist the body");
 const staturedStage = createSceneStage({ characters: [{ id: "char-a", scale: 1.18 }, { id: "char-b" }] });
 assert.equal(staturedStage.characters[0].scale, 1.18, "a stored stature survives the stage envelope");
 assert.equal(staturedStage.characters[1].scale, 1, "a cast member without a take stays canonical");

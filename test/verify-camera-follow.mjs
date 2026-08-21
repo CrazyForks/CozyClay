@@ -40,13 +40,29 @@ const EPS = 1e-9;
 }
 
 {
-	const measured = followFramingFromCamera(
+	const position = { x: 0, y: 12, z: 3 };
+	const authoredPitch = (-30 * Math.PI) / 180;
+	const measured = followFramingFromCamera(position, authoredPitch, { x: 0, z: 0 });
+	const replayed = buildFollowTrack([{ x: 0, z: 0 }], FPS, measured)[0];
+	ok(
+		"a high camera preserves its authored pitch through follow measurement and replay",
+		Math.abs(replayed.pitch - authoredPitch) < 0.002,
+		JSON.stringify({ measured, replayedPitchDeg: (replayed.pitch * 180) / Math.PI }),
+	);
+}
+
+{
+const measured = followFramingFromCamera(
 		{ x: 0, y: 1.6, z: 3 },
 		0,
 		{ x: 0, z: 0 },
 		FOLLOW_DEFAULTS.aimHeight,
 		{ x: 0, z: 1 },
-	);
+);
+ok(
+	"captured camera height has no six-metre ceiling",
+	followFramingFromCamera({ x: 0, y: 12, z: -3 }, 0, { x: 0, z: 0 }).height === 12,
+);
 	ok("viewport framing records a camera placed in front of the subject", Math.abs(measured.orbitOffsetDeg - 180) < 1e-6, JSON.stringify(measured));
 }
 
@@ -263,10 +279,10 @@ ok("free follow emits one sample per subject frame", free.length === walk.length
 	const highTarget = Array.from({ length: 2 }, () => ({ x: 0, z: 0 }));
 	const closeRail = buildRail([{ x: -0.001, z: 0 }, { x: -0.001, z: 1 }]);
 	const clamped = buildRailFollowTrack(highTarget, FPS, closeRail, { height: -10, pitchOffsetDeg: 30 });
-	const oversizedOffset = buildRailFollowTrack(subject, FPS, rail, { pitchOffsetDeg: 100 });
-	const maxOffset = buildRailFollowTrack(subject, FPS, rail, { pitchOffsetDeg: 30 });
+	const oversizedOffset = buildRailFollowTrack(subject, FPS, rail, { pitchOffsetDeg: 999 });
+	const maxOffset = buildRailFollowTrack(subject, FPS, rail, { pitchOffsetDeg: 170 });
 	ok("pitch safety clamp stays within ±85°", clamped.every((sample) => Math.abs(sample.pitch) <= (85 * Math.PI) / 180 + EPS));
-	ok("pitch input clamps to the authored ±30° range", oversizedOffset.every((sample, i) => sample.pitch === maxOffset[i].pitch));
+	ok("pitch input covers the full possible authored offset range", oversizedOffset.every((sample, i) => sample.pitch === maxOffset[i].pitch));
 
 	const raised = buildRailFollowTrack(subject, FPS, rail, { height: 2.4 });
 	ok("height changes rig position independently of pitch offset", raised.every((sample, i) => sample.pos.y !== plus[i].pos.y && plus[i].pos.y === zero[i].pos.y));

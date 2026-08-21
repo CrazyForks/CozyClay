@@ -47,7 +47,6 @@ import { SetProps } from "./props.jsx";
 import {
 	CUTOUT_DEFAULT_HEIGHT,
 	CUTOUT_KIND,
-	CUTOUT_MAX_HEIGHT,
 	DEFAULT_SCENE_OBJECTS,
 	OBJECT_COLORS,
 	createCutoutObject,
@@ -6158,7 +6157,10 @@ function resizePromptClip(id, edge, rawFrame) {
 									onChange={(id, patch) => moveCharacter(activeChar.id, () => {
 										const next = {};
 										if (patch.x !== undefined) next.x = THREE.MathUtils.clamp(patch.x, -4, 4);
-										if (patch.y !== undefined) next.y = THREE.MathUtils.clamp(patch.y, 0, 4);
+										// Lift floors at the deck but has no ceiling — a crane
+										// shot may hoist the body as high as the move needs
+										// (the inspector's Height scrub agrees).
+										if (patch.y !== undefined) next.y = Math.max(0, patch.y);
 										if (patch.z !== undefined) next.z = THREE.MathUtils.clamp(patch.z, -4, 4);
 										// a body only yaws — the X/Z rings and the screen ring's
 										// other channels have nowhere to go on a character
@@ -7273,7 +7275,6 @@ function resizePromptClip(id, edge, rawFrame) {
 												type="number"
 												data-field="cutout-height"
 												min="0.05"
-												max={CUTOUT_MAX_HEIGHT}
 												step="0.05"
 												value={selectedSceneObject.height ?? CUTOUT_DEFAULT_HEIGHT}
 												onChange={(event) => changeSceneObject(selectedSceneObject.id, { height: Number(event.target.value) })}
@@ -7889,9 +7890,14 @@ function SubjectBox({ label, value, onChange, onRemove, onPose, posing, color, o
 					)}
 				</div>
 			</div>
-			<Slider compact label={ko("Left / right", "좌 / 우")} min={-4} max={4} step={0.1} value={value.x} onChange={set("x")} />
-			<Slider compact label={ko("Height", "높이")} min={0} max={4} step={0.05} value={value.y ?? 0} onChange={set("y")} />
-			<Slider compact label={ko("Depth", "깊이")} min={-4} max={4} step={0.1} value={value.z} onChange={set("z")} />
+			<Vector3Row
+				label={ko("Position", "위치")}
+				fields={[
+					{ axis: "X", value: value.x, step: 0.05, precision: 2, onChange: (x) => set("x")(x) },
+					{ axis: "Y", value: value.y ?? 0, step: 0.05, precision: 2, onChange: (y) => set("y")(Math.max(0, y)) },
+					{ axis: "Z", value: value.z, step: 0.05, precision: 2, onChange: (z) => set("z")(z) },
+				]}
+			/>
 			<Slider compact label={ko("Rotate", "회전")} min={-180} max={180} step={1} value={value.rot} unit="°" onChange={set("rot")} />
 		</div>
 	);

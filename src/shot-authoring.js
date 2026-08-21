@@ -64,11 +64,11 @@ function rescaleShotAuthoringFrames(parsed) {
 
 const FOLLOW_BOUNDS = {
 	distance: [0.5, 15],
-	height: [0.2, 6],
+	height: [0.2, Number.POSITIVE_INFINITY],
 	response: [0.1, 3],
 	lead: [0, 1],
 	maxDollySpeed: [0.2, 8],
-	pitchOffsetDeg: [-30, 30],
+	pitchOffsetDeg: [-170, 170],
 	orbitOffsetDeg: [-180, 180],
 };
 const FOLLOW_DEFAULTS = {

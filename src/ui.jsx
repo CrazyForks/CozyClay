@@ -199,12 +199,40 @@ export function Toast({ message, onDone, duration = 2200 }) {
 // Range slider with the reference's filled-track gradient. `value` may be a
 // raw float (e.g. from drag interactions), so it is clamped and the label is
 // rounded to the slider's own step precision.
-export function Slider({ label, min, max, step, value, unit = "", onChange, compact }) {
-	const clamped = Math.min(max, Math.max(min, value));
+//
+// `softMax` keeps the track's useful range but treats `max` as a soft stop:
+// the compact head scrubs like a NumberField axis (pointer drag, Shift 10x,
+// Alt 0.1x), floored at `min` and unbounded above, and the readout shows the
+// true stored value even past `max`. The track itself still writes only
+// in-range values and the fill simply saturates.
+export function Slider({ label, min, max, step, value, unit = "", onChange, compact, softMax }) {
+	const scrubRef = useRef(null);
+	const floored = Math.max(min, value);
+	const clamped = Math.min(max, floored);
 	const percent = Math.max(0, Math.min(100, ((clamped - min) / (max - min)) * 100));
 	const decimals = (String(step).split(".")[1] || "").length;
 	const snapped = Math.round((clamped - min) / step) * step + min;
-	const text = String(decimals > 0 ? Number(snapped.toFixed(decimals)) : Math.round(snapped));
+	const shown = softMax ? floored : snapped;
+	const text = String(decimals > 0 ? Number(shown.toFixed(decimals)) : Math.round(shown));
+	const onScrubDown = (e) => {
+		e.preventDefault();
+		scrubRef.current = { x: e.clientX, base: floored };
+		e.currentTarget.setPointerCapture(e.pointerId);
+	};
+	const onScrubMove = (e) => {
+		const drag = scrubRef.current;
+		if (!drag) return;
+		const multiplier = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
+		onChange(Math.max(min, drag.base + (e.clientX - drag.x) * step * multiplier));
+	};
+	const onScrubEnd = (e) => {
+		if (!scrubRef.current) return;
+		scrubRef.current = null;
+		if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+	};
+	const scrubProps = softMax
+		? { onPointerDown: onScrubDown, onPointerMove: onScrubMove, onPointerUp: onScrubEnd, onPointerCancel: onScrubEnd }
+		: null;
 	const input = (
 		<input
 			type="range"
@@ -219,7 +247,7 @@ export function Slider({ label, min, max, step, value, unit = "", onChange, comp
 	if (compact) {
 		return (
 			<div className="cslider">
-				<div className="cslider-head">
+				<div className={"cslider-head" + (softMax ? " scrub" : "")} {...scrubProps}>
 					<span>{label}</span>
 					<span className="val">
 						{text}

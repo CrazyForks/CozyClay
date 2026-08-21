@@ -2425,6 +2425,12 @@ input[type=range]::-moz-range-thumb {
 	font-weight: 500;
 	flex: none;
 }
+/* A soft-max slider scrubs from its head like a NumberField axis. */
+.cslider-head.scrub {
+	cursor: ew-resize;
+	user-select: none;
+	touch-action: none;
+}
 .cslider input[type=range] {
 	width: 100%;
 	display: block;

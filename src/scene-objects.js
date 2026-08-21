@@ -91,11 +91,6 @@ export const CUTOUT_THICKNESS = 0.02;
 /** A fresh cutout stands as tall as the figure it blocks against
  * (SUBJECT_HEIGHT_M), so the first thing you see is honest scale. */
 export const CUTOUT_DEFAULT_HEIGHT = 1.8;
-/** A card can be as tall as anything else on the deck: the walls are gone and
- * a skyline piece or a building facade is a legitimate cutout. Exported so the
- * inspector's field and the tests take the limit from here rather than
- * repeating a number that has already changed once. */
-export const CUTOUT_MAX_HEIGHT = CEILING;
 const CUTOUT_HEIGHT_MIN = 0.05;
 const CUTOUT_ASPECT_MIN = 0.02;
 const CUTOUT_ASPECT_MAX = 50;
@@ -119,7 +114,7 @@ function objectLibraryEntry(kind) {
 	return OBJECT_LIBRARY.find((entry) => entry.kind === kind) ?? null;
 }
 
-const cutoutHeight = (value) => clamp(value, CUTOUT_HEIGHT_MIN, CUTOUT_MAX_HEIGHT);
+const cutoutHeight = (value) => Math.max(CUTOUT_HEIGHT_MIN, value);
 const cutoutAspect = (value) => clamp(value, CUTOUT_ASPECT_MIN, CUTOUT_ASPECT_MAX);
 
 /** How far a card may be pulled off the picture's own proportions. */

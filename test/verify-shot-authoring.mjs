@@ -83,6 +83,14 @@ assert.deepEqual(restored.state.shots[1].camera.railFollow, { mode: "range", sta
 const emptyV4 = readShotAuthoring(JSON.stringify({ version: 4, frameCount: 300, shots: [], waypoints: [] }));
 assert.equal(emptyV4.status, "valid");
 assert.deepEqual(emptyV4.state.shots, [], "zero Shots is a normal persisted state");
+const highCamera = readShotAuthoring(JSON.stringify({
+	version: 4,
+	frameCount: 300,
+	shots: [{ startFrame: 0, endFrame: 299, camera: { mode: "follow", followCam: { ...followCam, height: 12, pitchOffsetDeg: 120 } } }],
+	waypoints: [],
+}));
+assert.equal(highCamera.state.shots[0].camera.followCam.height, 12, "camera height has no six-metre persistence ceiling");
+assert.equal(highCamera.state.shots[0].camera.followCam.pitchOffsetDeg, 120, "high-camera pitch offset survives persistence");
 const gapV4 = readShotAuthoring(JSON.stringify({
 	version: 4,
 	frameCount: 300,
@@ -195,7 +203,7 @@ assert.deepEqual(repaired.shots[0].camera, {
 		lead: 0,
 		railStartMode: "head",
 		maxDollySpeed: 8,
-		pitchOffsetDeg: -30,
+		pitchOffsetDeg: -170,
 		orbitOffsetDeg: 0,
 	},
 	cameraRail: null,
