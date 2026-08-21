@@ -12,6 +12,13 @@ editor -> server, once after connect:
 
     { "type": "hello", "role": "editor", "version": 1 }
 
+server -> editor, once after `hello`:
+
+    { "type": "workspace", "handle": "<opaque workspace handle>" }
+
+The handle is newly issued for this socket connection. The editor surfaces it to
+its operator. A disconnect invalidates it; a reconnect receives a fresh handle.
+
 server -> editor, one per command:
 
     { "type": "cmd", "id": "<opaque string>", "name": "<command>", "args": { ... } }
@@ -60,10 +67,22 @@ scene document already uses.
   enabled; in dev it may always try. A failed connection must never surface
   an error to the user - silence and retry.
 
+## Workspace routing
+
+The hub allows multiple editor instances at once; it never displaces an existing
+editor for a newer connection. `live_status` lists every current workspace
+handle. Every MCP tool that can mutate a live editor accepts `workspace_handle`.
+When exactly one editor is connected, omitting it selects that editor. With two
+or more editors, omitting it fails before dispatch and enumerates every candidate
+handle. An unknown or disconnected handle fails as unknown or stale and is never
+routed to another editor. The hub owns this resolution rule for every transport;
+there is no last-active, heartbeat, focus, or recency fallback.
+
 ## Hard rules for the server side
 
-- When an editor is connected, live-capable tools forward to it and answer
-  from its `describe`; when none is connected they fall back to the in-memory
-  scene exactly as today. The tool surface does not change.
-- One editor at a time: a second `hello` replaces the first (last write wins),
-  and the displaced socket is closed.
+- When an editor is connected, live-capable tools forward to the workspace
+  selected by the rules above and answer from that workspace's `describe`; when
+  none is connected they fall back to the in-memory scene exactly as today.
+- A live mutation may only target the explicitly selected workspace, except for
+  the exactly-one-editor auto-selection case. Ambiguity is an error, never a
+  guess.

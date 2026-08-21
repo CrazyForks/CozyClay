@@ -28,6 +28,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -89,6 +90,12 @@ const state = {
 };
 
 let liveHub = null;
+const liveWorkspace = new AsyncLocalStorage();
+const liveMutationTools = new Set([
+	"set_camera", "frame_shot", "add_character", "place_character", "remove_character",
+	"place_object", "group_objects", "set_prompt_blocks", "generate_motion", "update_object",
+	"remove_object", "apply_batch", "open_project",
+]);
 
 const scene = () => activeScene(state.doc.scenes, state.doc.activeSceneId);
 const stage = () => scene().stage;
@@ -164,9 +171,10 @@ const framing = () => {
 const currentShot = () => deriveShot(state.camera, subject(), fov(), undefined, filmback());
 
 const appliedLiveMutation = async (name, args) => {
-	const value = await liveHub.command(name, args);
+	const workspaceHandle = liveWorkspace.getStore();
+	const value = await liveHub.command(name, args, workspaceHandle);
 	try {
-		if (!await refreshLiveDescription()) throw new Error("Live editor disconnected before verification.");
+		if (!await refreshLiveDescription(workspaceHandle)) throw new Error("Live editor disconnected before verification.");
 	} catch (error) {
 		throw new LiveMutationUncertainError(`Live editor accepted ${name}, but its state could not be verified: ${error.message} The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.`);
 	}
@@ -239,9 +247,9 @@ const applyLiveDescription = (description) => {
 	}
 };
 
-const refreshLiveDescription = async () => {
+const refreshLiveDescription = async (workspaceHandle = liveWorkspace.getStore()) => {
 	if (!liveHub?.connected) return false;
-	applyLiveDescription(await liveHub.command("describe", {}));
+	applyLiveDescription(await liveHub.command("describe", {}, workspaceHandle));
 	return true;
 };
 
@@ -362,7 +370,27 @@ const server = new McpServer(
 
 const registerTool = (name, config, handler) => {
 	registeredTools += 1;
-	return server.registerTool(name, config, handler);
+	if (!liveMutationTools.has(name)) return server.registerTool(name, config, handler);
+	return server.registerTool(
+		name,
+		{
+			...config,
+			description:
+				`${config.description} Multiple editor instances are supported; when more than one is connected, ` +
+				"workspace_handle is required so this mutation reaches only its named workspace.",
+			inputSchema: {
+				...config.inputSchema,
+				workspace_handle: z.string().optional().describe("live workspace handle from live_status; required when multiple editors are connected"),
+			},
+		},
+		async (args) => {
+			const workspaceHandle = args.workspace_handle;
+			if (workspaceHandle !== undefined && !liveHub?.connected) {
+				throw new Error(`Unknown or stale live workspace handle \"${workspaceHandle}\".`);
+			}
+			return liveWorkspace.run(workspaceHandle, () => handler(args));
+		},
+	);
 };
 
 registerTool(
@@ -388,10 +416,16 @@ registerTool(
 	"live_status",
 	{
 		title: "Live editor status",
-		description: "Report whether a CozyClay editor is connected to live mode.",
+		description:
+			"Report connected CozyClay editor workspaces and their handles. Multiple editor instances stay connected; " +
+			"mutations require a workspace_handle whenever routing would otherwise be ambiguous.",
 		inputSchema: {},
 	},
-	async () => text(liveHub?.connected ? "Live editor connected." : "No live editor connected; using in-memory state."),
+	async () => text(
+		liveHub?.connected
+			? `Live editor connected. Workspace handles: ${liveHub.workspaceHandles.join(", ")}`
+			: "No live editor connected; using in-memory state.",
+	),
 );
 
 registerTool(
@@ -1015,7 +1049,7 @@ registerTool(
 				`\nmotion: ${motionUrl}${promptNote}`;
 			if (!liveHub?.connected) return text(`${summary}\n\nNo live editor connected — open the studio and it can load this URL.`);
 			try {
-				await liveHub.command("load_motion", { url: motionUrl, prompt: prompts.join(" "), blocks: segments, drop });
+				await liveHub.command("load_motion", { url: motionUrl, prompt: prompts.join(" "), blocks: segments, drop }, liveWorkspace.getStore());
 				return text(
 					`${summary}\n\nLoaded onto the active character with ${segments.length} prompt blocks on the timeline` +
 						`${drop ? ` — dropping ${drop.meters}m over ${drop.from_s}–${drop.to_s}s` : ""} — press play.`,

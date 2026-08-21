@@ -2316,6 +2316,7 @@ globalThis.playMode = centerTab === "play";
 	const liveControlRef = useRef(null);
 	const liveStateRef = useRef(null);
 	const liveHandlersRef = useRef(null);
+	const [liveWorkspaceHandle, setLiveWorkspaceHandle] = useState(null);
 	const [result, setResult] = useState(null);
 	const [resultOpen, setResultOpen] = useState(false);
 	const [copied, setCopied] = useState(false);
@@ -3471,12 +3472,18 @@ globalThis.playMode = centerTab === "play";
 		// StrictMode replays effects in development. Delaying the open lets the
 		// replay cleanup cancel its first pass, so one tab owns one socket.
 		const timer = setTimeout(() => {
-			if (!liveControlRef.current) liveControlRef.current = createLiveControl({ handlers: liveHandlersRef.current });
+			if (!liveControlRef.current) {
+				liveControlRef.current = createLiveControl({
+					handlers: liveHandlersRef.current,
+					onWorkspace: setLiveWorkspaceHandle,
+				});
+			}
 		}, 0);
 		return () => {
 			clearTimeout(timer);
 			liveControlRef.current?.close();
 			liveControlRef.current = null;
+			setLiveWorkspaceHandle(null);
 		};
 	}, []);
 
@@ -5956,6 +5963,11 @@ function resizePromptClip(id, edge, rawFrame) {
 					)}
 				</div>
 				<div className="topbar-actions">
+					{liveWorkspaceHandle && (
+						<span className="live-workspace-handle" data-live-workspace={liveWorkspaceHandle} title={liveWorkspaceHandle}>
+							Live workspace {liveWorkspaceHandle}
+						</span>
+					)}
 					<LocaleToggle />
 				</div>
 			</header>

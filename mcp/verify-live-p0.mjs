@@ -286,11 +286,11 @@ try {
 // Read-only transport loss is retryable; mutation transport loss is not.
 const unitHub = new LiveHub();
 const unitSocket = { readyState: WebSocket.OPEN, send() {} };
-unitHub.editor = unitSocket;
-const readOnlyFailure = unitHub.command("describe", {});
+unitHub.editors.set("unit-workspace", unitSocket);
+const readOnlyFailure = unitHub.command("describe", {}, "unit-workspace");
 unitHub.disconnect(unitSocket);
 await assert.rejects(readOnlyFailure, (error) => !(error instanceof LiveMutationUncertainError));
-unitHub.editor = unitSocket;
-const mutationFailure = unitHub.command("add_character", {});
+unitHub.editors.set("unit-workspace", unitSocket);
+const mutationFailure = unitHub.command("add_character", {}, "unit-workspace");
 unitHub.disconnect(unitSocket);
 await assert.rejects(mutationFailure, (error) => error instanceof LiveMutationUncertainError && /do not retry/i.test(error.message));

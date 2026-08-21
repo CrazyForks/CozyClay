@@ -1,0 +1,164 @@
+#!/usr/bin/env node
+/** Regression coverage: a live mutation cannot cross a workspace boundary. */
+import assert from "node:assert/strict";
+import { createServer } from "node:net";
+import { fileURLToPath } from "node:url";
+
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { WebSocket } from "ws";
+
+const serverPath = fileURLToPath(new URL("./server.mjs", import.meta.url));
+
+const reservePort = () =>
+	new Promise((resolve, reject) => {
+		const server = createServer();
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			if (!address || typeof address === "string") {
+				reject(new Error("Could not reserve a TCP port."));
+				return;
+			}
+			server.close((error) => (error ? reject(error) : resolve(address.port)));
+		});
+	});
+
+const withTimeout = (promise, label) => {
+	let timer;
+	return Promise.race([
+		promise,
+		new Promise((_, reject) => {
+			timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), 2_000);
+		}),
+	]).finally(() => clearTimeout(timer));
+};
+
+const once = (target, event) =>
+	withTimeout(
+		new Promise((resolve, reject) => {
+			target.once(event, resolve);
+			target.once("error", reject);
+		}),
+		event,
+	);
+
+const clone = (value) => JSON.parse(JSON.stringify(value));
+const livePort = await reservePort();
+const url = `ws://127.0.0.1:${livePort}/live`;
+
+const connectEditor = async (name) => {
+	const state = {
+		sceneName: name,
+		camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35, sensorId: "super35", aspectRatio: 1.78 },
+		stage: { shotAspect: "16:9", sensorId: "super35", hasCharSheet: false },
+		timeline: { currentFrame: 0, frameCount: 240, fps: 24 },
+		characters: [{ id: "char-a", model: "y-bot-tpose", subject: name, x: 0, y: 0, z: 0, rot: 0, hidden: false }],
+		objects: [],
+	};
+	const socket = new WebSocket(url);
+	const workspace = withTimeout(
+		new Promise((resolve, reject) => {
+			socket.on("message", (raw) => {
+				const frame = JSON.parse(raw.toString());
+				if (frame.type === "workspace" && typeof frame.handle === "string") resolve(frame.handle);
+				if (frame.type === "cmd") {
+					try {
+						if (frame.name === "describe") socket.send(JSON.stringify({ type: "result", id: frame.id, ok: true, value: clone(state) }));
+						else if (frame.name === "set_camera") {
+							for (const key of ["x", "y", "z", "focalMm"]) if (frame.args[key] !== undefined) state.camera[key] = frame.args[key];
+							socket.send(JSON.stringify({ type: "result", id: frame.id, ok: true, value: { camera: clone(state.camera) } }));
+						} else socket.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: `Unexpected command: ${frame.name}` }));
+					} catch (error) {
+						reject(error);
+					}
+				}
+			});
+		}),
+		`${name} workspace handle`,
+	);
+	await once(socket, "open");
+	socket.send(JSON.stringify({ type: "hello", role: "editor", version: 1 }));
+	return { socket, state, workspace: await workspace };
+};
+
+const client = new Client({ name: "cozyclay-live-routing-verify", version: "1.0.0" });
+const transport = new StdioClientTransport({ command: process.execPath, args: [serverPath, "--live-port", String(livePort)] });
+let first;
+let second;
+let reconnected;
+try {
+	await client.connect(transport);
+	first = await connectEditor("FIRST");
+	second = await connectEditor("SECOND");
+	assert.notEqual(first.workspace, second.workspace, "each editor needs a distinct workspace handle");
+
+	const call = (name, args = {}) => client.callTool({ name, arguments: args });
+	const beforeBoundOther = clone(second.state);
+
+	// Given two live editors and a command explicitly bound to the first handle
+	// When MCP mutates the camera
+	const bound = await call("set_camera", { workspace_handle: first.workspace, x: 11 });
+	// Then only the requested editor changes; the other byte-for-byte survives.
+	assert.equal(bound.isError, undefined, JSON.stringify(bound));
+	assert.equal(first.state.camera.x, 11);
+	assert.deepEqual(second.state, beforeBoundOther);
+
+	const beforeAmbiguousFirst = clone(first.state);
+	const beforeAmbiguousSecond = clone(second.state);
+	// Given two live editors
+	// When a live mutation omits its workspace handle
+	const ambiguous = await call("set_camera", { x: 22 });
+	// Then the refusal names every candidate and applies nothing.
+	assert.equal(ambiguous.isError, true, JSON.stringify(ambiguous));
+	assert.match(ambiguous.content[0].text, new RegExp(first.workspace));
+	assert.match(ambiguous.content[0].text, new RegExp(second.workspace));
+	assert.deepEqual(first.state, beforeAmbiguousFirst);
+	assert.deepEqual(second.state, beforeAmbiguousSecond);
+
+	const beforeUnknownFirst = clone(first.state);
+	const beforeUnknownSecond = clone(second.state);
+	const unknown = await call("set_camera", { workspace_handle: "workspace-stale-unknown", x: 33 });
+	assert.equal(unknown.isError, true, JSON.stringify(unknown));
+	assert.match(unknown.content[0].text, /unknown|stale/i);
+	assert.deepEqual(first.state, beforeUnknownFirst);
+	assert.deepEqual(second.state, beforeUnknownSecond);
+
+	const formerHandle = second.workspace;
+	const secondClosed = once(second.socket, "close");
+	second.socket.close();
+	await secondClosed;
+	reconnected = await connectEditor("RECONNECTED");
+	assert.notEqual(reconnected.workspace, formerHandle, "reconnect must issue a fresh workspace handle");
+	const beforeStale = clone(reconnected.state);
+	const stale = await call("set_camera", { workspace_handle: formerHandle, x: 44 });
+	assert.equal(stale.isError, true, JSON.stringify(stale));
+	assert.match(stale.content[0].text, /unknown|stale/i);
+	assert.deepEqual(reconnected.state, beforeStale);
+
+	const firstClosed = once(first.socket, "close");
+	first.socket.close();
+	await firstClosed;
+	// Given exactly one live editor
+	// When a mutation omits its handle
+	const unboundSingle = await call("set_camera", { x: 55 });
+	// Then the ordinary one-tab path remains unambiguous.
+	assert.equal(unboundSingle.isError, undefined, JSON.stringify(unboundSingle));
+	assert.equal(reconnected.state.camera.x, 55);
+
+	const status = await call("live_status");
+	assert.match(status.content[0].text, new RegExp(reconnected.workspace));
+	console.log(JSON.stringify({
+		livePort,
+		handles: { first: first.workspace, second: formerHandle, reconnected: reconnected.workspace },
+		isolation: { first: first.state, second: beforeBoundOther },
+		ambiguity: ambiguous.content[0].text,
+		stale: stale.content[0].text,
+		single: { isError: unboundSingle.isError ?? false, state: reconnected.state },
+	}));
+} finally {
+	for (const editor of [first, second, reconnected]) {
+		if (editor?.socket.readyState === WebSocket.OPEN) editor.socket.close();
+	}
+	await client.close().catch(() => {});
+}

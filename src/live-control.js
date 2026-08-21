@@ -50,6 +50,7 @@ export async function dispatchLiveFrame(data, handlers = {}) {
  */
 export function createLiveControl({
 	handlers = {},
+	onWorkspace = () => {},
 	WebSocketImpl = globalThis.WebSocket,
 	url = LIVE_CONTROL_URL,
 	reconnectMs = LIVE_CONTROL_RECONNECT_MS,
@@ -93,6 +94,17 @@ export function createLiveControl({
 			send({ type: "hello", role: "editor", version: 1 });
 		};
 		connected.onmessage = async (event) => {
+			if (typeof event?.data === "string") {
+				try {
+					const frame = JSON.parse(event.data);
+					if (frame?.type === "workspace" && typeof frame.handle === "string") {
+						onWorkspace(frame.handle);
+						return;
+					}
+				} catch {
+					// dispatchLiveFrame owns malformed command handling.
+				}
+			}
 			const response = await dispatchLiveFrame(event?.data, currentHandlers);
 			if (response) send(response);
 		};

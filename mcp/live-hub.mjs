@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 
 import { WebSocket, WebSocketServer } from "ws";
 
-const CLOSE_REPLACED = 4000;
 export const DEFAULT_COMMAND_TIMEOUT_MS = 5_000;
 export const LOAD_MOTION_TIMEOUT_MS = 30_000;
 
@@ -31,12 +30,28 @@ export class LiveMutationUncertainError extends Error {}
 export class LiveHub {
 	constructor(server = null) {
 		this.server = server;
-		this.editor = null;
+		this.editors = new Map();
 		this.pending = new Map();
 	}
 
 	get connected() {
-		return this.editor?.readyState === WebSocket.OPEN;
+		return this.editors.size > 0;
+	}
+
+	get workspaceHandles() {
+		return [...this.editors.keys()];
+	}
+
+	resolveWorkspace(name, workspaceHandle) {
+		if (workspaceHandle !== undefined) {
+			const socket = this.editors.get(workspaceHandle);
+			if (socket?.readyState === WebSocket.OPEN) return workspaceHandle;
+			throw new Error(`Unknown or stale live workspace handle "${workspaceHandle}".`);
+		}
+		const handles = this.workspaceHandles;
+		if (handles.length === 0) throw new Error("No live editor is connected.");
+		if (handles.length === 1) return handles[0];
+		throw new Error(`Live command ${name} requires workspace_handle; connected workspaces: ${handles.join(", ")}.`);
 	}
 
 	static commandTimeoutMs(name) {
@@ -47,9 +62,10 @@ export class LiveHub {
 		return mutationCommands.has(name);
 	}
 
-	async command(name, args) {
-		const socket = this.editor;
-		if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("No live editor is connected.");
+	async command(name, args, workspaceHandle) {
+		const handle = this.resolveWorkspace(name, workspaceHandle);
+		const socket = this.editors.get(handle);
+		if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error(`Unknown or stale live workspace handle "${handle}".`);
 
 		const id = randomUUID();
 		return new Promise((resolve, reject) => {
@@ -89,9 +105,9 @@ export class LiveHub {
 					return;
 				}
 				greeted = true;
-				const displaced = this.editor;
-				this.editor = socket;
-				if (displaced && displaced !== socket) displaced.close(CLOSE_REPLACED, "Replaced by a newer editor");
+				const workspaceHandle = randomUUID();
+				this.editors.set(workspaceHandle, socket);
+				socket.send(JSON.stringify({ type: "workspace", handle: workspaceHandle }));
 				return;
 			}
 			if (frame?.type !== "result" || typeof frame.id !== "string") return;
@@ -107,7 +123,9 @@ export class LiveHub {
 	}
 
 	disconnect(socket) {
-		if (this.editor === socket) this.editor = null;
+		for (const [handle, editor] of this.editors) {
+			if (editor === socket) this.editors.delete(handle);
+		}
 		for (const [id, pending] of this.pending) {
 			if (pending.socket !== socket) continue;
 			clearTimeout(pending.timer);
