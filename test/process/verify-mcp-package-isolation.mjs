@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 const repo = new URL("../..", import.meta.url).pathname;
 const scratch = mkdtempSync(join(tmpdir(), "cozyclay-mcp-package-"));
@@ -12,7 +14,7 @@ const initialize = JSON.stringify({
 	jsonrpc: "2.0",
 	id: 1,
 	method: "initialize",
-	params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "cozyclay-package-test", version: "1.0.0" } },
+	params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "cozyclay-package-test", version: "1.0.0" } },
 });
 
 function run(command, args, options = {}) {
@@ -25,18 +27,53 @@ function sha256(file) {
 	return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
-function runAsync(command, args, options = {}) {
+function runMcp(command, args, options = {}) {
 	return new Promise((resolvePromise, reject) => {
-		const child = spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"] });
+		const child = spawn(command, args, {
+			...options,
+			detached: process.platform !== "win32",
+			stdio: ["pipe", "pipe", "pipe"],
+		});
 		let stdout = "";
 		let stderr = "";
+		let settled = false;
+		let responseSeen = false;
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
-		child.stdout.on("data", (chunk) => { stdout += chunk; });
+		const finish = (result) => {
+			if (settled) return;
+			settled = true;
+			resolvePromise(result);
+		};
+		const stopOwnedTree = async () => {
+			if (child.exitCode !== null) return;
+			if (process.platform === "win32") {
+				const taskkill = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore" });
+				await once(taskkill, "exit");
+			} else {
+				process.kill(-child.pid, "SIGTERM");
+			}
+		};
+		child.stdout.on("data", async (chunk) => {
+			stdout += chunk;
+			if (responseSeen || !stdout.includes("\n")) return;
+			responseSeen = true;
+			await stopOwnedTree();
+		});
 		child.stderr.on("data", (chunk) => { stderr += chunk; });
 		child.once("error", reject);
-		child.once("close", (status, signal) => resolvePromise({ status, signal, stdout, stderr }));
+		child.once("close", (status, signal) => finish({
+			status: responseSeen ? 0 : status,
+			signal,
+			stdout,
+			stderr,
+		}));
 		child.stdin.end(`${initialize}\n`);
+		delay(options.timeout ?? 120_000, undefined, { ref: false }).then(async () => {
+			if (settled) return;
+			await stopOwnedTree();
+			reject(new Error(`Timed out waiting for packaged MCP response: ${stderr}`));
+		});
 	});
 }
 
@@ -56,9 +93,8 @@ try {
 	const runtimeHome = join(scratch, "home");
 	const environment = { ...process.env, HOME: runtimeHome, npm_config_cache: cache };
 
-	const first = run(process.execPath, ["bin/cozyclay.mjs", "mcp"], {
+	const first = await runMcp(process.execPath, ["bin/cozyclay.mjs", "mcp"], {
 		cwd: packageRoot,
-		input: `${initialize}\n`,
 		env: environment,
 		timeout: 120_000,
 	});
@@ -71,9 +107,8 @@ try {
 	assert.equal(existsSync(rootLock), false, "MCP install must not create a root lockfile");
 	assert.match(first.stderr, /installing MCP server dependencies/, first.stderr);
 
-	const second = run(process.execPath, ["bin/cozyclay.mjs", "mcp"], {
+	const second = await runMcp(process.execPath, ["bin/cozyclay.mjs", "mcp"], {
 		cwd: packageRoot,
-		input: `${initialize}\n`,
 		env: environment,
 		timeout: 30_000,
 	});
@@ -88,8 +123,8 @@ try {
 		npm_config_cache: join(scratch, "concurrent-cache"),
 	};
 	const concurrent = await Promise.all([
-		runAsync(process.execPath, ["bin/cozyclay.mjs", "mcp"], { cwd: packageRoot, env: concurrentEnv }),
-		runAsync(process.execPath, ["bin/cozyclay.mjs", "mcp"], { cwd: packageRoot, env: concurrentEnv }),
+		runMcp(process.execPath, ["bin/cozyclay.mjs", "mcp"], { cwd: packageRoot, env: concurrentEnv }),
+		runMcp(process.execPath, ["bin/cozyclay.mjs", "mcp"], { cwd: packageRoot, env: concurrentEnv }),
 	]);
 	for (const result of concurrent) {
 		assert.equal(result.status, 0, result.stderr);
@@ -98,9 +133,8 @@ try {
 	assert.deepEqual(readFileSync(rootManifest), manifestBefore, "concurrent MCP installs must not rewrite the root manifest");
 	assert.equal(existsSync(rootLock), false, "concurrent MCP installs must not create a root lockfile");
 
-	const failure = run(process.execPath, ["bin/cozyclay.mjs", "mcp"], {
+	const failure = await runMcp(process.execPath, ["bin/cozyclay.mjs", "mcp"], {
 		cwd: packageRoot,
-		input: `${initialize}\n`,
 		env: { ...environment, HOME: join(scratch, "offline-home"), npm_config_cache: join(scratch, "offline-cache"), npm_config_offline: "true" },
 		timeout: 30_000,
 	});

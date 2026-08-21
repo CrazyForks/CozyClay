@@ -25,7 +25,7 @@
  * the real `.cclayproject` envelope, so anything authored here opens in the
  * studio, and anything authored in the studio opens here.
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -38,6 +38,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { ErrorCode, InitializeRequestSchema, LATEST_PROTOCOL_VERSION, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import { LiveMutationUncertainError, MotionJobRegistry, startLiveHub } from "./live-hub.mjs";
@@ -94,16 +95,21 @@ let liveHub = null;
 const motionJobs = new MotionJobRegistry();
 const liveWorkspace = new AsyncLocalStorage();
 const liveWorkspaceTools = new Set([
+	"describe_scene", "describe_shot", "render_prompt", "mark_camera_move", "describe_camera_move", "save_project",
 	"set_camera", "frame_shot", "add_character", "place_character", "remove_character",
-	"place_object", "group_objects", "set_prompt_blocks", "generate_motion", "update_object",
+	"focus_character", "place_object", "group_objects", "set_prompt_blocks", "generate_motion", "update_object",
 	"remove_object", "apply_batch", "add_scene", "switch_scene", "open_project", "capture_frame",
 ]);
+const MAX_CAPTURE_BYTES = 1_000_000;
+const CAPTURE_ARTIFACT_TTL_MS = 10 * 60_000;
+const MAX_CAPTURE_ARTIFACTS = 20;
+const captureArtifacts = [];
 
 const TOOL_ANNOTATIONS = Object.freeze({
 	describe_scene: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 	live_status: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 	describe_shot: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-	capture_frame: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	capture_frame: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
 	set_camera: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	frame_shot: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	add_character: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -251,6 +257,7 @@ const applyLiveDescription = (description) => {
 			if (Number.isFinite(description.timeline[key])) state.timeline[key] = description.timeline[key];
 		}
 	}
+	if (typeof description.activeCharacterId === "string") state.focus = description.activeCharacterId;
 	if (Array.isArray(description.characters)) {
 		const prior = new Map(stage().characters.map((character) => [character.id, character]));
 		stage().characters = description.characters.map((character, index) => {
@@ -420,6 +427,12 @@ const server = new McpServer(
 			"degrees of yaw. Save with save_project to a .cclayproject file the CozyClay studio opens.",
 	},
 );
+server.server.setRequestHandler(InitializeRequestSchema, async (request) => {
+	if (request.params.protocolVersion !== LATEST_PROTOCOL_VERSION) {
+		throw new McpError(ErrorCode.InvalidRequest, `CozyClay MCP requires protocol ${LATEST_PROTOCOL_VERSION}.`);
+	}
+	return server.server._oninitialize(request);
+});
 
 const registerTool = (name, config, handler) => {
 	registeredTools += 1;
@@ -444,7 +457,10 @@ const registerTool = (name, config, handler) => {
 			if (workspaceHandle !== undefined && !liveHub?.connected) {
 				throw new Error(`Unknown or stale live workspace handle \"${workspaceHandle}\".`);
 			}
-			return liveWorkspace.run(workspaceHandle, () => handler(args));
+			if (!liveHub?.connected) return liveWorkspace.run(workspaceHandle, () => handler(args));
+			return liveHub.runExclusive(name, workspaceHandle, (resolvedHandle) =>
+				liveWorkspace.run(resolvedHandle, () => handler(args)),
+			);
 		},
 	);
 };
@@ -534,7 +550,9 @@ registerTool(
 				throw new Error("Live editor returned an invalid capture payload.");
 			}
 			const bytes = Buffer.from(frame.data, "base64");
-			if (bytes.length === 0 || bytes.length !== frame.byteSize) throw new Error("Live editor returned an invalid compressed image size.");
+			if (bytes.length === 0 || bytes.length !== frame.byteSize || bytes.length > MAX_CAPTURE_BYTES) {
+				throw new Error(`Live editor returned an invalid compressed image size (maximum ${MAX_CAPTURE_BYTES} bytes).`);
+			}
 			if (frame.assertions?.renderable !== true || frame.assertions?.blackFrame === true) {
 				throw new Error("Live editor rejected the capture as non-renderable or black.");
 			}
@@ -549,8 +567,19 @@ registerTool(
 				stateHashAfter: afterHash,
 			};
 			if (bytes.length > max_inline_bytes) {
+				while (captureArtifacts.length >= MAX_CAPTURE_ARTIFACTS) {
+					const oldest = captureArtifacts.shift();
+					await unlink(oldest).catch(() => {});
+				}
 				const path = join(tmpdir(), `cozyclay-capture-${randomUUID()}.png`);
-				await writeFile(path, bytes);
+				await writeFile(path, bytes, { mode: 0o600 });
+				captureArtifacts.push(path);
+				const expiry = setTimeout(() => {
+					const index = captureArtifacts.indexOf(path);
+					if (index >= 0) captureArtifacts.splice(index, 1);
+					void unlink(path).catch(() => {});
+				}, CAPTURE_ARTIFACT_TTL_MS);
+				expiry.unref?.();
 				return text(JSON.stringify({ ...metadata, artifact: { path, width: frame.width, height: frame.height, byteSize: bytes.length } }));
 			}
 			return {
@@ -1175,7 +1204,13 @@ registerTool(
 		if (!liveHub?.connected) return text("generate_motion requires a connected CozyClay editor so completion can be delivered over its live socket.");
 		const workspaceHandle = liveWorkspace.getStore() ?? liveHub.resolveWorkspace("generate_motion");
 		const workspaceId = liveHub.workspaceId(workspaceHandle);
-		const job = motionJobs.create(workspaceId);
+		const targetCharacterId = stage().characters.find((character) => character.id === state.focus)?.id ?? stage().characters[0]?.id ?? null;
+		let job;
+		try {
+			job = motionJobs.create(workspaceId);
+		} catch (error) {
+			return liveError(error);
+		}
 		// A single beat has no sequence to chain: send it as a plain prompt;
 		// composite physical wording remains intact in the normalized text.
 		const body =
@@ -1190,6 +1225,8 @@ registerTool(
 		const run = async () => {
 			if (job.status === "cancelled") return;
 			const controller = new AbortController();
+			const deadline = setTimeout(() => controller.abort(new Error("Motion generation exceeded the 5 minute deadline.")), 5 * 60_000);
+			deadline.unref?.();
 			job.cancel = () => controller.abort();
 			if (job.status === "cancelled") return;
 			motionJobs.transition(job, "running");
@@ -1225,7 +1262,7 @@ registerTool(
 				if (job.status === "cancelled") return;
 				if (typeof motionUrl !== "string") throw new Error("Generation ended without a motion.");
 				motionJobs.transition(job, "completed", {
-					motionUrl, prompt: prompts.join(" "), blocks: segments, drop,
+					motionUrl, prompt: prompts.join(" "), blocks: segments, drop, targetCharacterId,
 					summary: `${clipSeconds.toFixed(1)}s / ${clipFrames} frames${promptNote}`,
 				});
 				publishMotionJob(job);
@@ -1237,6 +1274,7 @@ registerTool(
 				}
 				publishMotionJob(job);
 			} finally {
+				clearTimeout(deadline);
 				job.cancel = null;
 			}
 		};
@@ -1583,18 +1621,19 @@ registerTool(
 		// the current stage shape rather than trusted as-is.
 		const scenes = readSceneDocument(serializeSceneDocument(result.project.scenesDocument));
 		if (!scenes.document) return text(`That project was written by a newer CozyClay: ${full}`);
-		state.doc = scenes.document;
-		state.name = result.project.name;
-		state.focus = null;
-		state.markedFraming = null;
+		const nextDocument = scenes.document;
 		if (liveHub?.connected) {
 			try {
-				const live = await appliedLiveMutation("load_scenes", { document: state.doc });
-				if (typeof live?.sceneName === "string" && live.sceneName) scene().name = live.sceneName;
+				const live = await appliedLiveMutation("load_scenes", { document: nextDocument });
+				requireLiveSceneParity("open_project", nextDocument, live);
 			} catch (error) {
 				return liveError(error);
 			}
 		}
+		state.doc = nextDocument;
+		state.name = result.project.name;
+		state.focus = null;
+		state.markedFraming = null;
 		return text(`Opened ${full}.\n\n${sceneReport()}`);
 	},
 );

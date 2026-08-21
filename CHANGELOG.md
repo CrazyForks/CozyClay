@@ -30,7 +30,7 @@ the server and the UI cannot disagree about what a 35 mm medium shot is.
 - **Motion from plain beats.** `generate_motion` takes ordinary sentences, rewrites them into the
   shape ARDY was trained to read, splits compound beats, drops language a body cannot perform, and
   lands each phase as a Prompt Block on the timeline.
-- **21 tools**, all documented in [`mcp/README.md`](mcp/README.md).
+- **24 tools**, all documented in [`mcp/README.md`](mcp/README.md).
 
 ### Cut a photograph out and stand it up
 

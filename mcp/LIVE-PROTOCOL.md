@@ -1,5 +1,8 @@
 # CozyClay live-control protocol v1
 
+The MCP JSON-RPC endpoint deliberately negotiates only protocol version
+`2025-11-25`. Older and draft tracks are rejected during `initialize`.
+
 One WebSocket, JSON text frames. The **MCP server hosts** the socket
 (`ws://127.0.0.1:5184/live`); the **editor is the client** and reconnects
 every 3 s while the page is open. Either side may be absent: the editor works
@@ -73,8 +76,8 @@ scene document already uses.
 | name | args | value | notes |
 | --- | --- | --- | --- |
 | `ping` | `{}` | `{ "pong": true }` | liveness |
-| `describe` | `{}` | `{ sceneName, camera: { x, y, z, focalMm, sensorId, aspectRatio }, stage: { shotAspect, sensorId, hasCharSheet }, timeline: { currentFrame, frameCount, fps }, characters: [{ id, model, subject, x, y, z, rot, hidden, pose, tint, scale, motionRef, layer: { waypoints, promptClips } }], objects: [{ id, name, renderer, x, y, z, rot, rotX, rotZ, color, scaleX, scaleY, scaleZ, footprint, height, parent }] }` | read the live scene; `sensorId` is one of the stable wire ids `super16`, `super35`, `fullFrame`, `65mm`; camera filmback fields keep focal length and FOV interpretation identical in the editor and MCP, while `stage` reports the authored stage envelope; `model` is the selected mannequin id, and `pose`, `tint`, `motionRef`, and `color` are explicit values or `null`; `layer.waypoints` and `layer.promptClips` are authored sparse records only, never densified motion samples or decoded frames; object scale and footprint travel too, so sizes are reported from what was actually built; `renderer` is the object's kind — names are user-editable, so the kind must travel or a renamed object cannot be reconstructed; `parent` is null for a top-level object, or the id of another object it rides along with when that parent moves |
-| `capture_frame` | `{}` | `{ width: 640, height: 360, mimeType: "image/png", encoding: "base64", byteSize, data, assertions: { renderable, blackFrame, nonBlackPixels, behindCameraPlane, fartherAlongCameraForward, distanceToFloor, occludedBy, visiblePixelCount, characters } }` | read-only offscreen render from the shot camera. Character visibility and occlusion are computed from the mounted engine geometry with bounded ray samples. A missing camera or black frame fails explicitly. The MCP tool verifies identical authored-state hashes before/after and returns the PNG inline only within `max_inline_bytes`; otherwise it returns an artifact path with dimensions and byte size. |
+| `describe` | `{}` | `{ sceneName, camera, stage, timeline, activeCharacterId, characters, objects }` | read the live scene; `activeCharacterId` pins asynchronous work to the character selected when it started; `sensorId` is one of the stable wire ids `super16`, `super35`, `fullFrame`, `65mm`; camera filmback fields keep focal length and FOV interpretation identical in the editor and MCP, while `stage` reports the authored stage envelope; character model/pose/tint/scale/motion/layer and object renderer/transform/appearance/parent fields remain explicit authored values |
+| `capture_frame` | `{}` | `{ width: 640, height: 360, mimeType: "image/png", encoding: "base64", byteSize, data, assertions: { renderable, blackFrame, nonBlackPixels, behindCameraPlane, fartherAlongCameraForward, distanceToFloor, occludedBy, visiblePixelCount, characters } }` | leaves the authored document untouched, but is classified open-world/non-idempotent because an oversized PNG creates a mode-0600 managed temporary artifact. Character visibility and occlusion are computed from mounted engine geometry with bounded ray samples. Missing camera, black frame and compressed payloads above 1 MB fail explicitly. Inline responses honor `max_inline_bytes`; managed artifacts are capped at 20 and expire after 10 minutes. |
 | `set_camera` | `{ x?, y?, z?, focalMm? }` | `{ camera }` | omitted fields keep their value; the **viewport must visibly move** |
 | `add_character` | `{ subject, x?, z?, rot?, model? }` | `{ id }` | `model` is one of the stable character model ids |
 | `update_character` | `{ ref, x?, z?, rot?, subject?, hidden? }` | `{ id }` | `ref` = id, letter (`"A"`) or 1-based slot |
@@ -103,7 +106,7 @@ scene document already uses.
 
 The hub allows multiple editor instances at once; it never displaces an existing
 editor for a newer connection. `live_status` lists every current workspace
-handle. Every MCP tool that can mutate a live editor accepts `workspace_handle`.
+handle. Every MCP tool that reads or mutates a live editor accepts `workspace_handle`.
 When exactly one editor is connected, omitting it selects that editor. With two
 or more editors, omitting it fails before dispatch and enumerates every candidate
 handle. An unknown or disconnected handle fails as unknown or stale and is never
@@ -121,7 +124,11 @@ there is no last-active, heartbeat, focus, or recency fallback.
   lists. Without an editor they retain the in-memory fallback.
 - A live mutation may only target the explicitly selected workspace, except for
   the exactly-one-editor auto-selection case. Ambiguity is an error, never a
-  guess.
+guess.
+
+Browser editor connections are accepted only from loopback HTTP origins, and a
+stable workspace id may have only one live socket. Native loopback clients have
+no Origin header and remain part of the trusted-local MCP boundary.
 - Any bounded MCP read reports `total`, `returned`, `truncated`, and a
   `revision`. Omitted entries must be reachable by an explicit selector or
   cursor; `describe_scene` uses `character_cursor` and `object_cursor`.

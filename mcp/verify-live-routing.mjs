@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { WebSocket } from "ws";
+import { LiveHub } from "./live-hub.mjs";
 
 const serverPath = fileURLToPath(new URL("./server.mjs", import.meta.url));
 
@@ -44,10 +45,31 @@ const once = (target, event) =>
 	);
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
+const queueHub = new LiveHub();
+queueHub.editors.set("queue-workspace", { readyState: WebSocket.OPEN });
+let releaseFirst;
+let signalFirstStarted;
+const firstStarted = new Promise((resolve) => { signalFirstStarted = resolve; });
+const order = [];
+const firstQueued = queueHub.runExclusive("first", "queue-workspace", async () => {
+	order.push("first:start");
+	signalFirstStarted();
+	await new Promise((resolve) => { releaseFirst = resolve; });
+	order.push("first:end");
+});
+const secondQueued = queueHub.runExclusive("second", "queue-workspace", async () => {
+	order.push("second");
+});
+await firstStarted;
+assert.deepEqual(order, ["first:start"]);
+releaseFirst();
+await Promise.all([firstQueued, secondQueued]);
+assert.deepEqual(order, ["first:start", "first:end", "second"]);
+
 const livePort = await reservePort();
 const url = `ws://127.0.0.1:${livePort}/live`;
 
-const connectEditor = async (name) => {
+const connectEditor = async (name, workspaceId = `${name}-workspace`) => {
 	const state = {
 		sceneName: name,
 		camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35, sensorId: "super35", aspectRatio: 1.78 },
@@ -78,7 +100,7 @@ const connectEditor = async (name) => {
 		`${name} workspace handle`,
 	);
 	await once(socket, "open");
-	socket.send(JSON.stringify({ type: "hello", role: "editor", version: 1 }));
+	socket.send(JSON.stringify({ type: "hello", role: "editor", version: 1, workspaceId }));
 	return { socket, state, workspace: await workspace };
 };
 
@@ -89,7 +111,18 @@ let second;
 let reconnected;
 try {
 	await client.connect(transport);
+	const untrusted = new WebSocket(url, { headers: { Origin: "https://untrusted.example" } });
+	await once(untrusted, "open");
+	const untrustedClose = await withTimeout(new Promise((resolve) => untrusted.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))), "untrusted origin close");
+	assert.equal(untrustedClose.code, 1008);
+	assert.match(untrustedClose.reason, /origin.*loopback/i);
 	first = await connectEditor("FIRST");
+	const duplicate = new WebSocket(url);
+	await once(duplicate, "open");
+	duplicate.send(JSON.stringify({ type: "hello", role: "editor", version: 1, workspaceId: "FIRST-workspace" }));
+	const duplicateClose = await withTimeout(new Promise((resolve) => duplicate.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))), "duplicate workspace close");
+	assert.equal(duplicateClose.code, 1008);
+	assert.match(duplicateClose.reason, /already connected/i);
 	second = await connectEditor("SECOND");
 	assert.notEqual(first.workspace, second.workspace, "each editor needs a distinct workspace handle");
 
@@ -103,6 +136,10 @@ try {
 	assert.equal(bound.isError, undefined, JSON.stringify(bound));
 	assert.equal(first.state.camera.x, 11);
 	assert.deepEqual(second.state, beforeBoundOther);
+	const selectedRead = await call("describe_scene", { workspace_handle: first.workspace });
+	assert.equal(selectedRead.isError, undefined, JSON.stringify(selectedRead));
+	assert.match(selectedRead.content[0].text, /Scene: FIRST/);
+	assert.doesNotMatch(selectedRead.content[0].text, /Scene: SECOND/);
 
 	const beforeAmbiguousFirst = clone(first.state);
 	const beforeAmbiguousSecond = clone(second.state);
@@ -115,6 +152,10 @@ try {
 	assert.match(ambiguous.content[0].text, new RegExp(second.workspace));
 	assert.deepEqual(first.state, beforeAmbiguousFirst);
 	assert.deepEqual(second.state, beforeAmbiguousSecond);
+	const ambiguousRead = await call("describe_scene");
+	assert.equal(ambiguousRead.isError, true, JSON.stringify(ambiguousRead));
+	assert.match(ambiguousRead.content[0].text, new RegExp(first.workspace));
+	assert.match(ambiguousRead.content[0].text, new RegExp(second.workspace));
 
 	const beforeUnknownFirst = clone(first.state);
 	const beforeUnknownSecond = clone(second.state);
@@ -154,6 +195,7 @@ try {
 		isolation: { first: first.state, second: beforeBoundOther },
 		ambiguity: ambiguous.content[0].text,
 		stale: stale.content[0].text,
+		guards: { untrustedOrigin: untrustedClose, duplicateWorkspace: duplicateClose },
 		single: { isError: unboundSingle.isError ?? false, state: reconnected.state },
 	}));
 } finally {

@@ -127,6 +127,7 @@ try {
 	const completed = await withTimeout(editor.nextEvent(task.taskId, "completed"), "completed motion event");
 	assert.equal(completed.status, "completed");
 	assert.equal(completed.outcome.motionUrl, "/ardy/motions/123456-abcdef");
+	assert.equal(completed.outcome.targetCharacterId, "char-a");
 	assert.equal(editorState.loadCount, 0, "test editor must only observe a pushed terminal event; App owns installation");
 
 	// Given the model-visible tool inventory
@@ -171,9 +172,16 @@ try {
 	const expired = registry.create("expired-workspace");
 	registry.transition(expired, "completed", { motionUrl: "/ardy/motions/expired" });
 	now = 10;
-	const expiredOutcome = registry.forWorkspace("expired-workspace")[0];
-	// Then it is explicitly expired without a timing-based wait.
-	assert.equal(expiredOutcome.status, "expired");
+	const reconnectOutcomes = registry.forWorkspace("expired-workspace");
+	// Then it is explicitly expired internally and never replayed.
+	assert.equal(registry.jobs.get(expired.taskId).status, "expired");
+	assert.deepEqual(reconnectOutcomes, []);
+
+	const capacity = new MotionJobRegistry();
+	capacity.create("workspace-a");
+	assert.throws(() => capacity.create("workspace-a"), /already has an active motion job/);
+	capacity.create("workspace-b");
+	assert.throws(() => capacity.create("workspace-c"), /capacity reached/);
 
 	console.log("motion job immediate payload, push completion, cancellation, reconnect recovery, expiry, and no polling tools passed");
 } finally {

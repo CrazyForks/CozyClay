@@ -3271,6 +3271,7 @@ globalThis.playMode = centerTab === "play";
 				},
 				stage: live.stage,
 				timeline: live.timeline,
+				activeCharacterId: live.activeCharacterId,
 				// y rides too: a character standing on a roof must survive the
 				// same save/open round trip a renamed object just learned to.
 				characters: live.characters.map((entry) => {
@@ -3629,6 +3630,10 @@ globalThis.playMode = centerTab === "play";
 					onEvent: (name, payload) => {
 						if (name !== "motion_job" || typeof payload.taskId !== "string") return;
 						if (payload.status === "completed" && typeof payload.outcome?.motionUrl === "string") {
+							if (payload.outcome.targetCharacterId && payload.outcome.targetCharacterId !== liveStateRef.current.activeCharacterId) {
+								setToast(`Motion completed for ${payload.outcome.targetCharacterId}; select that character before loading it.`);
+								return;
+							}
 							liveHandlersRef.current.load_motion({
 								url: payload.outcome.motionUrl,
 								prompt: payload.outcome.prompt ?? "",

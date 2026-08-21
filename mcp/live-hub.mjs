@@ -6,6 +6,8 @@ export const DEFAULT_COMMAND_TIMEOUT_MS = 5_000;
 export const LOAD_MOTION_TIMEOUT_MS = 30_000;
 export const MOTION_JOB_TTL_MS = 10 * 60_000;
 export const MOTION_JOB_POLL_INTERVAL_MS = 0;
+export const MAX_ACTIVE_MOTION_JOBS = 2;
+export const MAX_ACTIVE_MOTION_JOBS_PER_WORKSPACE = 1;
 
 const terminalMotionStatuses = new Set(["completed", "failed", "cancelled", "expired"]);
 
@@ -19,6 +21,12 @@ export class MotionJobRegistry {
 	}
 
 	create(workspaceId) {
+		this.cleanup();
+		const active = [...this.jobs.values()].filter((job) => !terminalMotionStatuses.has(job.status));
+		if (active.length >= MAX_ACTIVE_MOTION_JOBS) throw new Error(`Motion job capacity reached (${MAX_ACTIVE_MOTION_JOBS} active globally).`);
+		if (active.filter((job) => job.workspaceId === workspaceId).length >= MAX_ACTIVE_MOTION_JOBS_PER_WORKSPACE) {
+			throw new Error(`This workspace already has an active motion job.`);
+		}
 		const now = this.clock();
 		const job = {
 			taskId: randomUUID(), workspaceId, status: "queued", createdAt: now,
@@ -37,10 +45,15 @@ export class MotionJobRegistry {
 	}
 
 	transition(job, status, outcome = null) {
+		this.cleanup();
 		job.status = status;
 		job.lastUpdatedAt = this.clock();
 		job.outcome = outcome;
 		job.expiresAt = terminalMotionStatuses.has(status) ? job.lastUpdatedAt + job.ttlMs : null;
+		if (job.expiresAt !== null) {
+			const timer = setTimeout(() => this.cleanup(), job.ttlMs);
+			timer.unref?.();
+		}
 		return this.task(job);
 	}
 
@@ -54,7 +67,8 @@ export class MotionJobRegistry {
 
 	forWorkspace(workspaceId) {
 		this.cleanup();
-		return [...this.jobs.values()].filter((job) => job.workspaceId === workspaceId && terminalMotionStatuses.has(job.status));
+		return [...this.jobs.values()].filter((job) =>
+			job.workspaceId === workspaceId && terminalMotionStatuses.has(job.status) && job.status !== "expired");
 	}
 
 	cleanup() {
@@ -101,6 +115,7 @@ export class LiveHub {
 		this.editors = new Map();
 		this.pending = new Map();
 		this.workspaceIds = new Map();
+		this.workspaceQueues = new Map();
 		this.onWorkspaceConnected = null;
 		this.onEvent = null;
 	}
@@ -139,6 +154,16 @@ export class LiveHub {
 		return workspaceId;
 	}
 
+	runExclusive(name, workspaceHandle, work) {
+		const handle = this.resolveWorkspace(name, workspaceHandle);
+		const previous = this.workspaceQueues.get(handle) ?? Promise.resolve();
+		const current = previous.catch(() => {}).then(() => work(handle));
+		this.workspaceQueues.set(handle, current);
+		return current.finally(() => {
+			if (this.workspaceQueues.get(handle) === current) this.workspaceQueues.delete(handle);
+		});
+	}
+
 	sendEvent(workspaceId, name, payload) {
 		for (const [handle, socket] of this.editors) {
 			if (this.workspaceIds.get(handle) !== workspaceId || socket.readyState !== WebSocket.OPEN) continue;
@@ -173,7 +198,21 @@ export class LiveHub {
 		});
 	}
 
-	accept(socket) {
+	accept(socket, request = null) {
+		const origin = request?.headers?.origin;
+		if (typeof origin === "string") {
+			let allowed = false;
+			try {
+				const parsed = new URL(origin);
+				allowed = parsed.protocol === "http:" && (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost");
+			} catch {
+				allowed = false;
+			}
+			if (!allowed) {
+				socket.close(1008, "Live editor origin must be loopback");
+				return;
+			}
+		}
 		let greeted = false;
 		socket.on("message", (message, isBinary) => {
 			if (isBinary) return;
@@ -191,6 +230,10 @@ export class LiveHub {
 				greeted = true;
 				const workspaceHandle = randomUUID();
 				const workspaceId = typeof frame.workspaceId === "string" && frame.workspaceId ? frame.workspaceId : workspaceHandle;
+				if ([...this.workspaceIds.values()].includes(workspaceId)) {
+					socket.close(1008, "Workspace id is already connected");
+					return;
+				}
 				this.editors.set(workspaceHandle, socket);
 				this.workspaceIds.set(workspaceHandle, workspaceId);
 				socket.send(JSON.stringify({ type: "workspace", handle: workspaceHandle }));
@@ -251,6 +294,6 @@ export async function startLiveHub(port) {
 		throw error;
 	}
 	const hub = new LiveHub(server);
-	server.on("connection", (socket) => hub.accept(socket));
+	server.on("connection", (socket, request) => hub.accept(socket, request));
 	return hub;
 }

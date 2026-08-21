@@ -234,4 +234,18 @@ const noCamera = await verifyRejectedCapture({
 	error: "No renderable shot camera is available for capture_frame.",
 	expected: /No renderable shot camera/,
 });
-console.log(JSON.stringify({ rejected: { blackFrame, noCamera } }));
+const oversize = await verifyRejectedCapture({
+	value: {
+		width: 640,
+		height: 360,
+		mimeType: "image/png",
+		encoding: "base64",
+		byteSize: 1_000_001,
+		data: Buffer.alloc(1_000_001).toString("base64"),
+		assertions: { renderable: true, blackFrame: false, nonBlackPixels: 1 },
+		authoredStateBefore: "{}",
+		authoredStateAfter: "{}",
+	},
+	expected: /maximum 1000000 bytes/,
+});
+console.log(JSON.stringify({ rejected: { blackFrame, noCamera, oversize } }));

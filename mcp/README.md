@@ -33,7 +33,7 @@ Then point a client at it. For Claude Desktop, in `claude_desktop_config.json`:
 }
 ```
 
-Restart the client; 20 tools appear.
+Restart the client; 24 tools appear.
 
 Prefer a long-lived endpoint? `node server.mjs --http 5183` serves Streamable HTTP at
 `http://127.0.0.1:5183/mcp` (one isolated session per client), with a plain status page at `/`.
@@ -63,6 +63,7 @@ generated frame matches the blocking instead of drifting off into a generic shot
 | `describe_scene` | the whole state: camera, framing, cast, set |
 | `live_status` | whether an editor tab is connected for live control |
 | `describe_shot` | current camera geometry as film vocabulary |
+| `capture_frame` | a compressed live render with camera-plane, visibility and occlusion assertions |
 | `set_camera` | move the lens / change focal length directly |
 | `frame_shot` | frame by intent — size, view, level, side |
 | `add_character` / `place_character` / `remove_character` | the cast |
@@ -70,6 +71,7 @@ generated frame matches the blocking instead of drifting off into a generic shot
 | `place_object` / `update_object` / `remove_object` | the set — `place_object` also accepts `name` and `parent`, so multi-part assets like "Building A" land as one named assembly |
 | `group_objects` | attach children to a parent so they move as one |
 | `ungroup_objects` | detach children from their parent (same as `group_objects` with `parent: null`) |
+| `apply_batch` | execute up to 100 object mutations as one user-visible undo transaction |
 | `render_prompt` | the shot as an AI image or video prompt |
 | `generate_motion` | multi-phase character motion through the ARDY bridge — phases land as prompt blocks |
 | `mark_camera_move` / `describe_camera_move` | name a move between two camera positions |
