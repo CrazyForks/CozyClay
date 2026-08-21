@@ -1,8 +1,10 @@
 // The Hierarchy lists what EXISTS in the 3D scene — camera, characters
 // (with their rig groups, which have viewport handles), environment, props.
-// Workflow surfaces (shot settings, prompt, ARDY motion, prompt blocks,
-// root path, IK keys) are NOT scene entities: they live in the right
-// sidebar's Shot and Motion tabs, keyed by `sidebarTab` in App.jsx.
+// It is also the Inspector's only router: the sidebar has no tabs, so the
+// selected node decides which panels App.jsx shows. Workflow surfaces are
+// filed under the node that owns them — the generation prompt under the
+// scene, the lens under the camera, and motion (capture, ARDY, prompt
+// blocks, root path) under the character it animates.
 export const HIERARCHY_NODES = [
 	{
 		// Keep the legacy selection id until App wiring moves to the document

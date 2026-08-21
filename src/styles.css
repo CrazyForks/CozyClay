@@ -447,6 +447,19 @@ select {
 	letter-spacing: -.035em;
 }
 
+.source-offer {
+	margin-left: auto;
+	color: var(--muted);
+	font-size: 11px;
+	text-decoration: none;
+}
+
+.source-offer:hover,
+.source-offer:focus-visible {
+	color: var(--text);
+	text-decoration: underline;
+}
+
 .tagline {
 	font-size: 12.5px;
 	color: var(--muted);
@@ -1214,6 +1227,9 @@ select {
 	margin: -2px 0 0;
 	line-height: 1.45;
 }
+.studio-hint.error {
+	color: var(--warn, #ff9c6e);
+}
 
 .studio-actions {
 	display: flex;
@@ -1352,6 +1368,24 @@ select {
 .pose-tile.add .add-text {
 	font-size: 11px;
 	font-weight: 700;
+}
+/* The photo tile reads as a second, distinct source next to Save pose rather
+   than a variant of it, so its dashed outline carries the accent hue. */
+.pose-tile.add.photo {
+	border-color: color-mix(in srgb, var(--cyan) 42%, var(--line2));
+	color: color-mix(in srgb, var(--cyan) 70%, var(--muted));
+}
+.pose-tile.add.photo .add-plus {
+	font-size: 22px;
+}
+.pose-tile.add.photo.busy {
+	border-style: solid;
+	opacity: 0.75;
+	cursor: progress;
+}
+.pose-tile.add.photo:disabled:hover {
+	border-color: color-mix(in srgb, var(--cyan) 42%, var(--line2));
+	background: transparent;
 }
 
 /* ------------------------------------------------------------ panel ------- */
@@ -7907,47 +7941,64 @@ input[type=range] {
 	}
 }
 
-/* ------------------------------------------- sidebar tabs ---------------- */
-/* Right-sidebar mode tabs: Inspector / Shot / Motion. A Unity-style tab
-   strip in the pane-title position; the Inspector heading renders below it
-   only while the Inspector tab is active. */
-.inspector-tabs {
-	flex: none;
+/* -------------------------------------------- rig picker ----------------- */
+/* Two shipped rigs, shown in the character's own pose so the pick is a
+   like-for-like comparison rather than a guess between two file names. */
+.rig-picker {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+}
+
+.rig-option {
 	display: flex;
-	height: 26px;
-	background: #2c2c2c;
-	border-bottom: 1px solid #1a1a1a;
-}
-
-.inspector-tabs button {
-	flex: 1;
-	border: none;
-	background: transparent;
-	color: #9a9a9a;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 6px 7px;
+	border: 1px solid var(--line2);
+	border-radius: 8px;
+	background: var(--card2);
+	color: var(--muted);
 	font-size: 11px;
-	font-weight: 600;
+	font-weight: 700;
 	cursor: pointer;
-	border-right: 1px solid #1a1a1a;
 }
 
-.inspector-tabs button:last-child {
-	border-right: none;
+.rig-option img,
+.rig-option .tile-blank {
+	width: 100%;
+	height: 66px;
+	object-fit: contain;
+	border-radius: 5px;
 }
 
-.inspector-tabs button:hover {
-	color: #d2d2d2;
+.rig-option:hover {
+	border-color: var(--accent);
+	color: var(--fg);
 }
 
-.inspector-tabs button.active {
-	background: #383838;
-	color: #fff;
-	box-shadow: inset 0 -2px 0 #3a7cbf;
+.rig-option.active {
+	border-color: var(--accent);
+	color: var(--fg);
+	background: var(--accent-soft);
+}
+
+/* ------------------------------------------ inspector empty -------------- */
+/* The Inspector is driven by the hierarchy selection alone. When the
+   selection owns no settings the column says so instead of sitting blank. */
+.inspector-empty {
+	margin: 0;
+	padding: 18px 16px;
+	font-size: 11.5px;
+	line-height: 1.5;
+	color: var(--muted);
 }
 
 /* The scroll column is a flex column; with several cards visible at once
-   (the Motion tab stacks the whole pipeline) default flex-shrink squishes
-   each card and overflow:hidden clips its last row. Cards keep natural
-   height and the column scrolls instead. */
+   (a character stacks pose and the whole motion pipeline) default
+   flex-shrink squishes each card and overflow:hidden clips its last row.
+   Cards keep natural height and the column scrolls instead. */
 .inspector-scroll > .card {
 	flex-shrink: 0;
 }

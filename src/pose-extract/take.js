@@ -85,3 +85,30 @@ export function bakeExtractedTake({ samples, rest, fps, durationS, ...options })
 	}
 	return { frames, fps, rotMats, rootPos, posedJoints, fitted, held };
 }
+
+// A still has no duration to sample, so the take is one frame wide. Any
+// duration under one second at 1 fps produces exactly that single frame under
+// bakeExtractedTake's own counting rule; naming it here keeps the constant
+// from reading as an arbitrary number at the call site.
+const STILL_FPS = 1;
+const STILL_DURATION_S = 0.5;
+
+/**
+ * Bake the one landmark sample a photograph yields into the same motion shape
+ * playback consumes, so a still is posed through the take path that footage
+ * already proves. The sample is pinned to t=0: a still has no timeline, and a
+ * stray timestamp would otherwise bake a held frame instead of a measured one.
+ */
+export function bakePoseFrame({ samples, rest, ...options }) {
+	const list = Array.isArray(samples) ? samples : [];
+	// A still that detected nobody is the same outcome as a clip that never
+	// fitted a frame, so it fails by that name rather than as a shape error.
+	if (list.length === 0) throw new Error("no-usable-pose");
+	return bakeExtractedTake({
+		samples: list.slice(0, 1).map((sample) => ({ ...sample, timeS: 0 })),
+		rest,
+		fps: STILL_FPS,
+		durationS: STILL_DURATION_S,
+		...options,
+	});
+}

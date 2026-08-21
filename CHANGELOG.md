@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- CozyClay now ships as an `AGPL-3.0-or-later` combined work. Modified versions
+  offered over a network must offer their users the corresponding source, and
+  the Studio footer carries that source offer.
+
 ## 1.3.0
 
 The release where the studio stops being something only a person can drive.

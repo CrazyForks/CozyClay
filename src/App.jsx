@@ -10,8 +10,9 @@ import { retimeMotion } from "./ardy/retime.js";
 import { applyRootDrop, normalizeRootDrop } from "./ardy/root-drop.js";
 import { sliceMotion } from "./ardy/trim.js";
 import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl, probeFootage, requestBridgeExtract, requestBridgeFootage, sourceLabel } from "./multimodel-ingest.js";
-import { bakeExtractedTake, collectLandmarkTrack, createPoseDetector, sampleTimes, videoFrames } from "./pose-extract/index.js";
+import { bakeExtractedTake, bakePoseFrame, collectLandmarkTrack, createPoseDetector, imageFrames, sampleTimes, videoFrames } from "./pose-extract/index.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
+import { PIN_BLOCKED, planPosePin } from "./ardy/pose-pin.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
 import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint, toSceneRootOffset, PATH_LIMITS } from "./ardy/waypoints.js";
@@ -93,6 +94,7 @@ import {
 	createCharacterLayer,
 	createSceneStage,
 	createSceneDocument,
+	CHARACTER_MODEL_IDS,
 	DEFAULT_CHARACTER_MODEL,
 	DEFAULT_SUBJECT_ONE,
 	DEFAULT_SUBJECT_TWO,
@@ -130,7 +132,7 @@ import ResultModal from "./result-modal.jsx";
 import LocaleToggle from "./locale-toggle.jsx";
 import { ko, isKo } from "./locale.js";
 import {
-	BUILT_IN_POSES,
+	DEFAULT_POSE,
 	POSE_BONES,
 	applyPose,
 	primeBindPose,
@@ -139,7 +141,7 @@ import {
 	loadCustomPoses,
 	saveCustomPoses,
 } from "./poses.js";
-import { IkHandles, PoseHandles, PoseStudioPanel, warmPoseThumbnails } from "./posestudio.jsx";
+import { IkHandles, PoseHandles, PoseStudioPanel, PoseThumbPreview, PoseTileGrid, warmPoseThumbnails } from "./posestudio.jsx";
 import {
 	MID_TRACKS,
 	createIkState,
@@ -160,6 +162,7 @@ import {
 } from "./ardy/ik.js";
 import { Dropdown, Field, Slider, Toast, Vector3Row } from "./ui.jsx";
 import { RENDER_ACTIVITY_EVENT, useRenderActivity } from "./use-render-activity.js";
+import SourceOffer from "./source-offer.jsx";
 import { useGeneration } from "./generation/use-generation.js";
 import {
 	CAMERA_MOVES,
@@ -418,6 +421,9 @@ const SHOT_ASPECT_PRESETS = Object.freeze({
 // never drift apart.
 const characterModelUrl = (model) => `/models/${model}.fbx`;
 
+/** Shipped rig names as the operator says them, not as the files spell them. */
+const CHARACTER_MODEL_LABELS = { "y-bot-tpose": "Y Bot", "x-bot-tpose": "X Bot" };
+
 /** Sequential ids for spawned characters, collision-free against the cast. */
 function nextCharacterId(list) {
 	const ids = new Set(list.map((entry) => entry.id));
@@ -431,6 +437,10 @@ function nextCharacterId(list) {
 }
 const DEMO_MOTION_URL = "/demo/walk-then-stop.npz";
 const DEMO_MOTION_PROMPT = "a person walking then a person stops";
+// How long a deletion keeps offering its one-press Undo. Both toasts use the
+// same window so the two deletion paths feel like one rule.
+const OBJECT_DELETE_UNDO_MS = 7000;
+const ASSET_DELETE_UNDO_MS = 7000;
 const CLAY = "#f2eee6";
 const CLAY_B = "#ddd6ca";
 // X Bot's shell is smooth (no raised exoskeleton like Y Bot's), so it gets a
@@ -439,7 +449,7 @@ const CLAY_X = "#faf8f2";
 // Model/role default for a cast member; a user-picked entry.tint always wins
 // over this at render time.
 const defaultCharacterTint = (entry, index) => (entry.model === "x-bot-tpose" ? CLAY_X : index === 0 ? CLAY : CLAY_B);
-const DEFAULT_POSE = BUILT_IN_POSES.find((p) => p.id === "relaxed") ?? BUILT_IN_POSES[0];
+
 const DEFAULT_SUBJECT = DEFAULT_SUBJECT_ONE;
 const DEFAULT_SUBJECT2 = DEFAULT_SUBJECT_TWO;
 const DEFAULT_ENVIRONMENT = "a sunlit modern living room";
@@ -458,6 +468,16 @@ const toArdyFrame = (frame) => Math.round((frame * ARDY_FPS) / TIMELINE_FPS);
 // Outbound converters: timeline-frame entries → strictly-ascending bridge
 // frames. Rounding can land two timeline frames on one bridge frame; the
 // first wins — the bridge refuses non-ascending lists outright.
+/** Where a placed pose lands, in TIMELINE frames, for a clip of `clipFrames`. */
+const POSE_PLACEMENTS = ["start", "middle", "end", "playhead"];
+function posePlacementFrame(placement, clipFrames, playheadFrame) {
+	const last = Math.max(0, clipFrames - 1);
+	if (placement === "end") return last;
+	if (placement === "middle") return Math.round(last / 2);
+	if (placement === "playhead") return Math.max(0, Math.min(last, playheadFrame));
+	return 0;
+}
+
 function toArdyFrameEntries(entries) {
 	const out = [];
 	for (const entry of entries) {
@@ -515,6 +535,9 @@ const MULTIMODEL_REASONS = {
 	"pose-engine-init-failed": ["The pose engine failed to start on this device", "이 기기에서 포즈 엔진을 시작하지 못했어요"],
 	"rest-unavailable": ["The rig rest data (/ardy/cskel27-rest.json) could not be loaded", "리그 레스트 데이터(/ardy/cskel27-rest.json)를 불러오지 못했어요"],
 	"no-person-found": ["No person was detected in the footage", "영상에서 사람을 감지하지 못했어요"],
+	"no-person-in-photo": ["No person was detected in that photograph", "사진에서 사람을 감지하지 못했어요"],
+	"image-load-timeout": ["The photograph never finished decoding", "사진 디코딩이 끝나지 않았어요"],
+	"pose-partly-occluded": ["Shoulders and hips must both be visible in the photograph", "사진에 어깨와 골반이 모두 보여야 해요"],
 	"no-usable-pose": ["A person was seen, but no stable pose could be fitted", "사람은 보였지만 안정적인 포즈를 만들지 못했어요"],
 	"rig-not-loaded": ["Subject 1's rig is not loaded yet", "인물 1 리그가 아직 로드되지 않았어요"],
 	"bridge-unreachable": ["The dev bridge did not answer", "개발 브리지가 응답하지 않아요"],
@@ -1493,7 +1516,6 @@ globalThis.playMode = centerTab === "play";
 		const id = nextCharacterId(characters);
 		setCharacters((list) => [...list, createCharacterEntry({ id, model, x, z, pose: DEFAULT_POSE, subject: "a person" }, list.length)]);
 		setSelectedHierarchyId(`character:${id}`);
-		setSidebarTab("inspector");
 		setToast(ko("Character added to the scene", "인물을 씬에 추가했어요"));
 	};
 	function beginAssetDrag(payload, event) {
@@ -1577,6 +1599,13 @@ globalThis.playMode = centerTab === "play";
 		if (id && characters.some((entry) => entry.id === id)) setActiveCharacterId(id);
 	}, [selectedHierarchyId, characters]);
 	const activeChar = characters.find((entry) => entry.id === activeCharacterId) ?? characters[0] ?? charA;
+	// Root paths and prompt blocks are the active character's animation layer.
+	// With the Inspector driven by selection, showing those tools means putting
+	// that character in the hierarchy selection.
+	const selectActiveCharacterInHierarchy = () => {
+		const id = activeCharacterId ?? characters[0]?.id;
+		if (id) setSelectedHierarchyId(`character:${id}`);
+	};
 	const activeCharIndex = Math.max(0, characters.findIndex((entry) => entry.id === activeChar.id));
 	const activeRig = rigs[activeChar.id] ?? null;
 	const waitForRig = (charId, timeoutMs = 10000) => {
@@ -1606,9 +1635,16 @@ globalThis.playMode = centerTab === "play";
 	// holds shot-global settings (type presets, prompt); "motion" holds the
 	// ARDY workflow in pipeline order. Selecting anything in the scene routes
 	// to the inspector tab; the root SHOT row routes to the shot tab.
-	const [sidebarTab, setSidebarTab] = useState("motion");
 	const [inspectorActionsOpen, setInspectorActionsOpen] = useState(false);
 	const [objectDeleteUndo, setObjectDeleteUndo] = useState(null);
+	// An undo offer is an offer, not a banner: without a window it sits on the
+	// screen for the rest of the session. Long enough to notice and reach, then
+	// gone — the deletion is still reversible through Undo history afterwards.
+	useEffect(() => {
+		if (!objectDeleteUndo) return undefined;
+		const timer = setTimeout(() => setObjectDeleteUndo(null), OBJECT_DELETE_UNDO_MS);
+		return () => clearTimeout(timer);
+	}, [objectDeleteUndo]);
 	// Scene persistence (plan §8): the startup load runs once in a lazy
 	// initializer so the store below can seed from the restored scene; the
 	// quarantine write and the save-block decision happen before the first
@@ -1668,12 +1704,6 @@ globalThis.playMode = centerTab === "play";
 		// applied tick re-renders, every drag would die after exactly one tick.
 		store.settle();
 		setSelectedHierarchyId(id);
-		// Character rows route to the Motion tab: picking a player means the
-		// operator wants their animation layer — its prompt, queue status and
-		// generate action all live there. SHOT keeps its bridge to shot-global
-		// settings; everything else is a scene entity.
-		const isCharacter = id === "characters" || id === "characterA" || id === "characterB" || id?.startsWith("character:");
-		setSidebarTab(id === "shot" ? "shot" : isCharacter ? "motion" : "inspector");
 		const focus = RIG_HIERARCHY_FOCUS[id];
 		if (focus && ikMode) setIkFocus(focus);
 	}
@@ -1693,7 +1723,6 @@ globalThis.playMode = centerTab === "play";
 		const hierarchyId = hierarchyIdForIkFocus(focus);
 		if (hierarchyId) {
 			setSelectedHierarchyId(hierarchyId);
-			setSidebarTab("inspector");
 		}
 	}
 
@@ -1835,7 +1864,6 @@ globalThis.playMode = centerTab === "play";
 		if (!object) return;
 		store.applyAtomic((objects) => [...objects, object]);
 		setSelectedHierarchyId(`object:${object.id}`);
-		setSidebarTab("inspector");
 		// Deliberate divergence from Unity's rename-on-create: creating an object
 		// here is followed by placing it, and dropping focus into a text field
 		// swallows the very next W/E/R. Renaming stays on F2/Return and the row's
@@ -1873,7 +1901,6 @@ globalThis.playMode = centerTab === "play";
 			if (!object) return;
 			store.applyAtomic((objects) => [...objects, object]);
 			setSelectedHierarchyId(`object:${object.id}`);
-			setSidebarTab("inspector");
 			setGizmoMode("move");
 			setToast(
 				isKo
@@ -1911,7 +1938,6 @@ globalThis.playMode = centerTab === "play";
 		if (!object) return;
 		store.applyAtomic((objects) => [...objects, object]);
 		setSelectedHierarchyId(`object:${object.id}`);
-		setSidebarTab("inspector");
 		setGizmoMode("move");
 		setToast(
 			isKo
@@ -1991,7 +2017,6 @@ globalThis.playMode = centerTab === "play";
 		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
 		store.applyAtomic((objects) => [...objects, placed]);
 		setSelectedHierarchyId(`object:${placed.id}`);
-		setSidebarTab("inspector");
 		setToast(isKo ? `${sceneObjectNameDisplayKo(placed.name)} 복제됨` : `${placed.name} duplicated`);
 	}
 
@@ -2259,6 +2284,18 @@ globalThis.playMode = centerTab === "play";
 	// box picks a fresh random one each run); otherwise a plain integer in
 	// 0..2**31-1 to reproduce a result.
 	const [ardySeed, setArdySeed] = useState("");
+	// Off by default on purpose: pinning runs the box's pose mode, which builds
+	// on a fixed reference base, so it is a choice the operator makes when they
+	// actually want the pose in the generated clip.
+	const [ardyStartFromPose, setArdyStartFromPose] = useState(false);
+	// WHERE the pose lands in the clip. "start" leaves from it, "end" arrives at
+	// it, "middle" passes through it, "playhead" places it on the frame the
+	// operator scrubbed to — the box takes any destination frame.
+	const [ardyPosePlacement, setArdyPosePlacement] = useState("start");
+	// Bumped when something outside the Inspector needs the Prompt Blocks panel
+	// on screen — selecting or adding a block on the timeline.
+	const [promptBlocksReveal, setPromptBlocksReveal] = useState(0);
+	const revealPromptBlocks = () => setPromptBlocksReveal((n) => n + 1);
 	const [ardyRunning, setArdyRunning] = useState(false);
 	const [ardyStatus, setArdyStatus] = useState("");
 	const [consoleLines, setConsoleLines] = useState([]);
@@ -2282,6 +2319,15 @@ globalThis.playMode = centerTab === "play";
 	// This is deliberately session-only. Each entry is a complete IndexedDB
 	// record, so Undo can put it back byte-for-byte until the page is reloaded.
 	const [assetTrash, setAssetTrash] = useState([]);
+	// Same rule as the object deletion offer: the toast is a window, not a
+	// banner. Only the OFFER expires — the trashed record itself is the restore
+	// data, so it is deliberately kept for the session and never timed out.
+	const [assetUndoOffered, setAssetUndoOffered] = useState(false);
+	useEffect(() => {
+		if (!assetUndoOffered) return undefined;
+		const timer = setTimeout(() => setAssetUndoOffered(false), ASSET_DELETE_UNDO_MS);
+		return () => clearTimeout(timer);
+	}, [assetUndoOffered]);
 	const [deletingAssetId, setDeletingAssetId] = useState(null);
 	const cutoutLineage = useMemo(
 		() => JSON.stringify(sceneObjects.flatMap((object) => (object.renderer === CUTOUT_KIND ? [[object.assetId, object.sourceAssetId, object.matteAssetId]] : []))),
@@ -2424,6 +2470,7 @@ globalThis.playMode = centerTab === "play";
 			}
 			evictAssetTexture(id);
 			setAssetTrash((current) => [...current.filter((asset) => asset.id !== record.id), record]);
+			setAssetUndoOffered(true);
 			deleted = true;
 			return true;
 		} catch (error) {
@@ -2444,6 +2491,7 @@ globalThis.playMode = centerTab === "play";
 		try {
 			await rememberAsset(record);
 			setAssetTrash((current) => current.filter((asset) => asset.id !== record.id));
+			setAssetUndoOffered(false);
 			restored = true;
 			setToast(isKo ? `${record.name || "이미지"} 복원됨` : `${record.name || "Image"} restored`);
 		} catch (error) {
@@ -3368,6 +3416,13 @@ globalThis.playMode = centerTab === "play";
 	const [multiModelExtractError, setMultiModelExtractError] = useState("");
 	const multiModelDetectorRef = useRef(null); // engine survives re-runs; the 15 MB download happens once
 	const multiModelRestRef = useRef(null);
+	// A still needs its own landmarker: MediaPipe fixes the running mode at
+	// creation and refuses detect() on a VIDEO-mode instance. The weights are
+	// already cached by then, so the second instance is cheap.
+	const photoPoseFileRef = useRef(null);
+	const photoPoseDetectorRef = useRef(null);
+	const [photoPoseState, setPhotoPoseState] = useState("idle");
+	const [photoPoseError, setPhotoPoseError] = useState("");
 
 	// Cast render props, memoized with Character itself (React.memo): during
 	// playback the playhead ticks 24 times a second, and a character whose
@@ -3674,7 +3729,6 @@ globalThis.playMode = centerTab === "play";
 			} : shot);
 		});
 		setSelectedHierarchyId("camera");
-		setSidebarTab("inspector");
 	}
 
 	// Re-time a key by dragging its dot along the lane. Landing on another
@@ -3732,7 +3786,6 @@ globalThis.playMode = centerTab === "play";
 		manualCameraOverrideRef.current = false;
 		setTlFrame(selected.startFrame);
 		setSelectedHierarchyId("camera");
-		setSidebarTab("inspector");
 	}
 
 	function duplicateTimelineShot(index) {
@@ -3749,11 +3802,33 @@ globalThis.playMode = centerTab === "play";
 		setShots((current) => reorderShot(current, fromIndex, targetFrame, tlFrameCount));
 	}
 
-	const allPoses = useMemo(() => [...BUILT_IN_POSES, ...customPoses], [customPoses]);
+	// The library is the user's own material: poses read from photographs and
+	// poses saved off the rig, accumulating across sessions and projects. No
+	// presets ship in it — DEFAULT_POSE is the character's spawn state, not a
+	// library entry.
+	const allPoses = customPoses;
+	// The dropdowns must be able to show and re-select the pose a character is
+	// actually in, and a fresh character is in the default — which is not a
+	// library entry. An empty library would otherwise render a blank select.
+	const selectablePoses = useMemo(() => [DEFAULT_POSE, ...customPoses], [customPoses]);
 	// The pose studio follows the character it was opened for: `posing` is a
 	// charId, so every cast member gets the same studio, not just the first two.
 	const posingIndex = characters.findIndex((entry) => entry.id === posing);
 	const posingChar = posingIndex >= 0 ? characters[posingIndex] : null;
+	// The Inspector is driven by the hierarchy selection alone — there are no
+	// sidebar tabs. Every panel belongs to the thing that owns it: the scene
+	// owns what gets generated, the camera owns the lens, and a character owns
+	// its pose and its motion.
+	const isSceneSelection = selectedHierarchyId === "shot";
+	const isCameraSelection = selectedHierarchyId === "camera";
+	const isCharacterSelection = selectedHierarchyId === "characters"
+		|| selectedHierarchyId === "characterA"
+		|| selectedHierarchyId === "characterB"
+		|| selectedHierarchyId.startsWith("character:");
+	const isRigSelection = selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig.");
+	const inspectorHasContent = isSceneSelection || isCameraSelection || isCharacterSelection || isRigSelection
+		|| selectedHierarchyId === "environment" || selectedHierarchyId === "props" || Boolean(selectedSceneObject);
+
 	const posedRig = () => rigs[posing] ?? null;
 	const setPosed = (pose) => {
 		if (posingIndex >= 0) updateCharacterAt(posingIndex, { pose: typeof pose === "function" ? pose(posingChar?.pose ?? DEFAULT_POSE) : pose });
@@ -3789,7 +3864,7 @@ globalThis.playMode = centerTab === "play";
 			setPendingWaypointFrame(null);
 			setTlFrame(target);
 			setWaypointMode(true);
-			setSidebarTab("motion");
+			selectActiveCharacterInHierarchy();
 			setToast(isKo ? `프레임 ${target}의 루트 웨이포인트를 선택했어요. 탑뷰에서 점을 드래그해 위치를 조정하세요.` : `Root waypoint at frame ${target} selected — drag the pin in the Top-View to reposition.`);
 			return;
 		}
@@ -3797,7 +3872,7 @@ globalThis.playMode = centerTab === "play";
 		setActiveWaypointFrame(null);
 		setTlFrame(target);
 		setWaypointMode(true);
-		setSidebarTab("motion");
+		selectActiveCharacterInHierarchy();
 		setToast(isKo ? `프레임 ${target}이 예약됐어요. 샷 뷰 바닥을 클릭하면 그 위치에 루트 웨이포인트가 생성됩니다.` : `Frame ${target} is reserved — click the Shot-view floor to drop the root waypoint there.`);
 	}
 	/** ARDY-demo style authoring: each empty-floor press in the Shot view drops
@@ -4869,8 +4944,6 @@ globalThis.playMode = centerTab === "play";
 		setPosingClosing(false);
 		const entry = characters.find((item) => item.id === charId);
 		setStudioPick((entry?.pose ?? DEFAULT_POSE)?.id ?? null);
-		// The panel docks under the Inspector — make sure that tab is showing.
-		setSidebarTab("inspector");
 	}
 
 	function closeStudio() {
@@ -4898,6 +4971,93 @@ globalThis.playMode = centerTab === "play";
 		setStudioPick(pose.id);
 		setPosed(pose);
 		setToast(ko("Pose saved", "포즈 저장됨"));
+	}
+
+	/**
+	 * Read a body pose out of one photograph.
+	 *
+	 * A still is the degenerate footage case, so it walks the same proven path:
+	 * landmarks -> one-frame take -> applyMotionFrame -> capturePose. Posing the
+	 * rig and reading it back is what makes the result an ordinary editable pose
+	 * rather than a motion layer — the IK handles keep working on it, and the
+	 * playback bones are restored so nothing about the take survives the read.
+	 *
+	 * Depth in a single frame is inferred, not measured, so this is a starting
+	 * pose to refine, which is why it lands in the studio instead of on the
+	 * character directly.
+	 */
+	async function posePhotoFile(file) {
+		if (!file || photoPoseState === "running") return;
+		// Reachable from the Inspector as well as the studio panel, and posedRig()
+		// only answers while the studio is open — fall back to the character the
+		// hierarchy has selected, which is the one the pose will be applied to.
+		const rig = posedRig() ?? activeRig;
+		let objectUrl = "";
+		setPhotoPoseState("running");
+		setPhotoPoseError("");
+		try {
+			if (!rig) throw new Error("rig-not-loaded");
+			if (!multiModelRestRef.current) {
+				const response = await fetch("/ardy/cskel27-rest.json").catch(() => null);
+				if (!response?.ok) throw new Error("rest-unavailable");
+				multiModelRestRef.current = await response.json().catch(() => {
+					throw new Error("rest-unavailable");
+				});
+			}
+			if (!photoPoseDetectorRef.current) {
+				photoPoseDetectorRef.current = await createPoseDetector({ runningMode: "IMAGE" });
+			}
+			objectUrl = URL.createObjectURL(file);
+			const samples = await collectLandmarkTrack({
+				frames: imageFrames(objectUrl, { createImage: () => new Image() }),
+				detect: photoPoseDetectorRef.current.detect,
+			});
+			if (samples.length === 0) throw new Error("no-person-in-photo");
+			const take = bakePoseFrame({ samples, rest: multiModelRestRef.current, createdMs: Date.now() });
+			// Pose the rig, read the pose back, then put the rig exactly as it was:
+			// the capture is the product, the posing is only how it is measured.
+			const snapshot = snapshotPlaybackBones(rig);
+			let bones;
+			try {
+				applyMotionFrame(rig, { ...take, anchorFrame: 0 }, 0);
+				bones = capturePose(rig);
+			} finally {
+				restorePlaybackBones(rig, snapshot);
+			}
+			const pose = {
+				id: `photo_${Date.now()}`,
+				label: isKo ? `사진 포즈 ${customPoses.length + 1}` : `Photo Pose ${customPoses.length + 1}`,
+				prompt: "in the exact body pose shown in the reference photograph",
+				bones,
+				custom: true,
+			};
+			const next = [...customPoses, pose];
+			setCustomPoses(next);
+			saveCustomPoses(next);
+			setStudioPick(pose.id);
+			// The studio poses whichever character it was opened on; the Inspector
+			// poses the selected one. Write the pose to whichever that is.
+			const poseTargetIndex = posingIndex >= 0 ? posingIndex : activeCharIndex;
+			// A running take drives the same bones a pose writes, so the read would
+			// land invisibly underneath it. Applying from a photo follows the same
+			// rule the Apply button already states: the motion goes first.
+			const hadMotion = Boolean(motion);
+			if (hadMotion) clearMotion();
+			updateCharacterAt(poseTargetIndex, { pose });
+			setPhotoPoseState("done");
+			setToast(hadMotion
+				? ko("Cleared the motion and posed from the photo — refine it with the handles", "모션을 지우고 사진으로 자세를 잡았어요 — 핸들로 다듬어 보세요")
+				: ko("Pose read from the photo — refine it with the handles", "사진에서 자세를 읽었어요 — 핸들로 다듬어 보세요"));
+		} catch (error) {
+			const code = error?.message ?? String(error);
+			// fitLandmarksToPose refuses a sample whose torso is not visible; that is
+			// a photograph problem, not an engine problem, so it is named as one.
+			const named = code.startsWith("fitLandmarksToPose:") ? "pose-partly-occluded" : code;
+			setPhotoPoseState("error");
+			setPhotoPoseError(MULTIMODEL_REASONS[named]?.[isKo ? 1 : 0] ?? named);
+		} finally {
+			if (objectUrl) URL.revokeObjectURL(objectUrl);
+		}
 	}
 
 	function removePose(id) {
@@ -5344,29 +5504,27 @@ function resizePromptClip(id, edge, rawFrame) {
 			)
 			: [];
 		const hasBlockEdits = editedSegments.length > 0;
-		// Pin ONLY for authored IK edits. A loaded motion by itself must NOT
-		// pin: pose-pinned calls run the box's pose mode, which builds on a
-		// fixed implicit reference base — the new prompt then dresses up the
-		// canned root path instead of driving its own motion ("I changed the
-		// prompt but got the same walk").
-		const shouldPin = hasBlockEdits || (!hasPromptSchedule && ikFrames.length > 0);
-		const constraintFrames = !shouldPin
-			? []
-			: waypointMode
-				? [0]
-				: hasBlockEdits
-					? ikFrames.filter((frame) =>
-						editedSegments.some((segment) => frame >= segment.startFrame && frame < segment.endFrame)
-					)
-				: [...new Set([
-				...segments.flatMap((segment) => [
-					segment.startFrame,
-					Math.min(segment.endFrame - 1, segment.startFrame + 1),
-					Math.max(segment.startFrame, segment.endFrame - 2),
-					segment.endFrame - 1,
-				]),
-				...ikFrames.filter((frame) => frame >= 0 && frame < clipFrames),
-			])].sort((a, b) => a - b);
+		// Which frames are pinned — and whether an opted-in pose start had to be
+		// refused — is decided in one testable place (ardy/pose-pin.js).
+		const pinPlan = planPosePin({
+			startFromPose: ardyStartFromPose,
+			poseFrame: posePlacementFrame(ardyPosePlacement, clipFrames, tlFrame),
+			hasPromptSchedule,
+			hasBlockEdits,
+			waypointMode,
+			ikFrames,
+			clipFrames,
+			segments,
+			editedSegments,
+		});
+		if (pinPlan.blockedBy === PIN_BLOCKED.SCHEDULE) {
+			setToast(ko(
+				"Prompt blocks and a pose start cannot be combined — generating from the prompt alone.",
+				"프롬프트 블록과 포즈 시작은 함께 쓸 수 없어요 — 프롬프트만으로 생성합니다.",
+			));
+		}
+		const shouldPin = pinPlan.pin;
+		const constraintFrames = pinPlan.frames;
 		const currentFrame = tlFrame;
 		const poses = constraintFrames.map((constraintFrame) => {
 			if (motion) applyMotionFrame(rig, motion, constraintFrame);
@@ -6219,7 +6377,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					aria-label={ko("Resize hierarchy and inspector panel", "계층 및 속성 패널 크기 조절")}
 					onPointerDown={(event) => beginWorkspaceResize("sidebar", event)}
 				/>
-				<aside className="panel hierarchy-sidebar inspector-sidebar" data-inspector={selectedHierarchyId} data-tab={sidebarTab}>
+				<aside className="panel hierarchy-sidebar inspector-sidebar" data-inspector={selectedHierarchyId}>
 					{/* Save failures live above the tab content, not inside the Props
 					    card: that card is hidden whenever any hierarchy node is
 					    selected, and saves fire exactly while objects are being
@@ -6234,26 +6392,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</p>
 					)}
 					<section className="inspector-pane">
-					<div className="inspector-tabs" role="tablist" aria-label={ko("Sidebar tabs", "사이드바 탭")}>
-						{[
-							["inspector", ko("Inspector", "속성")],
-							["shot", ko("Shot", "샷")],
-							["motion", ko("Motion", "모션")],
-						].map(([tab, label]) => (
-							<button
-								key={tab}
-								type="button"
-								role="tab"
-								aria-selected={sidebarTab === tab}
-								className={sidebarTab === tab ? "active" : ""}
-								onClick={() => setSidebarTab(tab)}
-							>
-								{label}
-							</button>
-						))}
-					</div>
-					{sidebarTab === "inspector" && (
-						<div className="inspector-heading">
+					<div className="inspector-heading">
 						<strong>{ko("Inspector", "속성")}</strong>
 						<span className="inspector-heading-selection">{selectedSceneObject ? sceneObjectNameDisplayKo(selectedSceneObject.name) : HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId] ?? ko("Selection", "선택 항목")}</span>
 						{selectedSceneObject && (
@@ -6279,15 +6418,24 @@ function resizePromptClip(id, edge, rawFrame) {
 								)}
 							</div>
 						)}
-						</div>
-					)}
+					</div>
 					<div className="inspector-scroll">
+				{/* Nothing is selected that owns settings — say so rather than
+				    showing an empty column the user has to interpret. */}
+				{!inspectorHasContent && (
+					<p className="inspector-empty" data-inspector-empty role="status">
+						{ko(
+							"Select something in the hierarchy — the scene, the camera, a character, the environment or a prop — and its settings appear here.",
+							"계층에서 항목을 고르면 — 씨, 카메라, 캐릭터, 환경, 소품 — 그 설정이 여기 나타납니다.",
+						)}
+					</p>
+				)}
 				{/* Shot TYPE presets live in the viewport toolbar dropdown — not
 					    duplicated here. */}
 
 					{/* Camera animation is authored against the same playhead as motion,
 					    so keep its controls beside the Motion tools as well as Shot setup. */}
-					<Foldout hidden={!(sidebarTab === "shot" || (sidebarTab === "inspector" && selectedHierarchyId === "camera"))} title={ko("Camera", "카메라")}>
+					<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>
 					<Slider label={ko("Lens (FOV)", "렌즈 (FOV)")} min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
 					<Field label={ko("Filmback", "필름백")}>
 						<Dropdown
@@ -6369,7 +6517,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</p>
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || !(selectedHierarchyId === "characters" || selectedHierarchyId === "characterA" || selectedHierarchyId === "characterB" || selectedHierarchyId.startsWith("character:"))} title={showB ? ko("Subjects", "인물들") : ko("Subject", "인물")}>
+				<Foldout hidden={!isCharacterSelection} title={showB ? ko("Subjects", "인물들") : ko("Subject", "인물")}>
 						<div className={"subjects-row" + (showB ? "" : " single")}>
 							{characters.map((entry, index) => entry.hidden ? null : (
 								<SubjectBox
@@ -6393,28 +6541,65 @@ function resizePromptClip(id, edge, rawFrame) {
 						)}
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || !(selectedHierarchyId === "characters" || selectedHierarchyId === "characterA" || selectedHierarchyId === "characterB" || selectedHierarchyId.startsWith("character:"))} title={ko("Pose", "포즈")}>
-					<Field label={showB ? ko("Subject 1 pose", "인물 1 포즈") : ko("Pose", "포즈")}>
-							<Dropdown
-							ariaLabel={ko("Subject 1 pose", "인물 1 포즈")}
-								value={poseA?.id}
-							options={allPoses.map((p) => ({ value: p.id, label: poseLabelKo(p) }))}
-								onChange={(id) => setPoseA(allPoses.find((p) => p.id === id))}
-							/>
-						</Field>
-						{showB && (
-						<Field label={ko("Subject 2 pose", "인물 2 포즈")}>
-								<Dropdown
-								ariaLabel={ko("Subject 2 pose", "인물 2 포즈")}
-									value={poseB?.id}
-								options={allPoses.map((p) => ({ value: p.id, label: poseLabelKo(p) }))}
-									onChange={(id) => setPoseB(allPoses.find((p) => p.id === id))}
-								/>
-							</Field>
-						)}
-					</Foldout>
+				<Foldout hidden={!isCharacterSelection} title={ko("Rig", "리그")}>
+					{/* The rig is a property of the character, and swapping it is a
+					    look decision made while blocking — so it belongs beside the
+					    subject, not buried in the project file. */}
+					<div className="rig-picker" role="radiogroup" aria-label={ko("Character rig", "캐릭터 리그")}>
+						{CHARACTER_MODEL_IDS.map((id) => (
+							<button
+								type="button"
+								key={id}
+								role="radio"
+								aria-checked={activeChar.model === id}
+								className={"rig-option" + (activeChar.model === id ? " active" : "")}
+								data-rig-id={id}
+								onClick={() => updateCharacterAt(activeCharIndex, { model: id })}
+							>
+								<PoseThumbPreview model={id} pose={activeChar.pose ?? DEFAULT_POSE} alt={CHARACTER_MODEL_LABELS[id]} />
+								<span>{CHARACTER_MODEL_LABELS[id]}</span>
+							</button>
+						))}
+					</div>
+				</Foldout>
 
-				<Foldout hidden={sidebarTab !== "shot"} title={ko("Prompt", "프롬프트")}>
+				<Foldout hidden={!isCharacterSelection} title={ko("Pose", "포즈")}>
+					{/* Tiles, not a dropdown: a pose read out of a photograph has no
+					    name worth reading — it is recognisable only as a shape. This
+					    is the same grid the studio shows, applied to whichever
+					    character the hierarchy has selected. */}
+					<p className="inspector-hint">
+						{isKo ? `인물 ${activeCharIndex + 1}의 자세입니다.` : `The pose on Subject ${activeCharIndex + 1}.`}
+					</p>
+					<PoseTileGrid
+						poses={selectablePoses}
+						model={activeChar.model}
+						selectedId={(activeChar.pose ?? DEFAULT_POSE)?.id}
+						onSelect={(id) => {
+							const pose = selectablePoses.find((entry) => entry.id === id);
+							if (!pose) return;
+							// A running take drives the same bones a pose writes, so the
+							// pick would otherwise land invisibly underneath it.
+							const hadMotion = Boolean(motion);
+							if (hadMotion) clearMotion();
+							updateCharacterAt(activeCharIndex, { pose });
+							setStudioPick(pose.id);
+							setToast(hadMotion
+								? ko("Cleared the current motion and applied the pose", "현재 모션을 지우고 포즈를 적용했어요")
+								: ko("Pose applied", "포즈를 적용했어요"));
+						}}
+						onDelete={removePose}
+						onPhoto={() => {
+							setPhotoPoseError("");
+							photoPoseFileRef.current?.click();
+						}}
+						photoState={photoPoseState}
+						labelOf={poseLabelKo}
+					/>
+					{photoPoseError && <p className="studio-hint error" data-pose-photo-error role="status">{photoPoseError}</p>}
+				</Foldout>
+
+				<Foldout hidden={!isSceneSelection} title={ko("Prompt", "프롬프트")}>
 						<div className="segmented" data-active={mode}>
 							<button className={mode === "image" ? "active" : ""} onClick={() => setMode("image")}>
 							{ko("Image", "이미지")}
@@ -6495,7 +6680,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							{mode === "video" ? ko("Generate video", "영상 만들기") : ko("Generate image", "이미지 만들기")}
 						</button>
 					</Foldout>
-				<Foldout hidden={sidebarTab !== "motion"} title={ko("Video capture", "영상 모캡")}>
+				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Video capture", "영상 모캡")}>
 					<div className="multimodel-card">
 						<div className="multimodel-card-head">
 							<div>
@@ -6654,7 +6839,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</p>
 					</div>
 				</Foldout>
-				<Foldout hidden={sidebarTab !== "motion"} title={ko("ARDY motion", "ARDY 모션")}>
+				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("ARDY motion", "ARDY 모션")}>
 					{/* One compact status line: which layer is being edited and on
 					    which box — the long hint texts lived here before. */}
 					<p className="ardy-meta">
@@ -6698,6 +6883,54 @@ function resizePromptClip(id, edge, rawFrame) {
 							    duration and a separate prompt/duration pair here could only
 							    disagree with it. This box reports the run instead of starting
 							    one. */}
+							{/* Continue out of the blocking pose. The bridge refuses poses
+							    alongside a prompt schedule, so the choice is disabled rather
+							    than accepted and dropped at the door. */}
+							<label className="check ardy-pose-start">
+								<input
+									type="checkbox"
+									data-ardy-start-from-pose
+									checked={ardyStartFromPose && promptClips.length < 2}
+									disabled={promptClips.length >= 2}
+									onChange={(event) => setArdyStartFromPose(event.target.checked)}
+								/>
+								<span>{ko("Pin the current pose", "현재 포즈 고정")}</span>
+							</label>
+							{ardyStartFromPose && promptClips.length < 2 && (
+								<>
+									{/* The box takes any destination frame, so the pose can open
+									    the clip, close it, or be passed through in the middle. */}
+									<div className="segmented ardy-pose-placement" data-active={ardyPosePlacement}>
+										{POSE_PLACEMENTS.map((placement) => (
+											<button
+												type="button"
+												key={placement}
+												data-pose-placement={placement}
+												className={ardyPosePlacement === placement ? "active" : ""}
+												onClick={() => setArdyPosePlacement(placement)}
+											>
+												{placement === "start"
+													? ko("First", "첫 프레임")
+													: placement === "middle"
+														? ko("Middle", "중간")
+														: placement === "end"
+															? ko("Last", "마지막")
+															: ko("Playhead", "재생헤드")}
+											</button>
+										))}
+									</div>
+									<p className="ardy-hint" data-pose-placement-frame>
+										{isKo
+											? `프레임 ${posePlacementFrame(ardyPosePlacement, Math.round(ardyDuration) * TIMELINE_FPS, tlFrame)}에 이 자세를 고정하고 나머지를 생성합니다.`
+											: `The pose is held at frame ${posePlacementFrame(ardyPosePlacement, Math.round(ardyDuration) * TIMELINE_FPS, tlFrame)} and the rest is generated around it.`}
+									</p>
+								</>
+							)}
+							{promptClips.length >= 2 && (
+								<p className="ardy-hint">
+									{ko("Prompt blocks generate from history, so they cannot also pin a pose.", "프롬프트 블록은 이전 프레임을 이어서 생성하므로 포즈 고정과 함께 쓸 수 없어요.")}
+								</p>
+							)}
 							{ardyRunning && (
 								<button type="button" className="btn ghost full" onClick={cancelArdy}>
 									{ko("Cancel run", "실행 취소")}
@@ -6782,7 +7015,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</>
 					)}
 				</Foldout>
-				<Foldout hidden={sidebarTab !== "motion"} title={ko("Prompt Blocks", "프롬프트 블록")}>
+				<Foldout hidden={!isCharacterSelection} defaultOpen={false} openSignal={promptBlocksReveal} title={ko("Prompt Blocks", "프롬프트 블록")}>
 					<p className="inspector-hint">{ko("Blocks define what ARDY generates over each frame range. Selecting one also moves editing context to that prompt.", "블록은 각 프레임 범위에서 ARDY가 생성할 내용을 정합니다. 블록을 선택하면 편집 기준도 해당 프롬프트로 이동합니다.")}</p>
 						<div className="inspector-list">
 							{promptClips.map((clip) => (
@@ -6849,7 +7082,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</button>
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || !(selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig."))} title={ko("Rig Control", "리그 제어")}>
+				<Foldout hidden={!isRigSelection} title={ko("Rig Control", "리그 제어")}>
 						<p className="inspector-hint">
 							{selectedHierarchyId.startsWith("rig.")
 							? (isKo ? `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]}이 활성 제어 그룹입니다.` : `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]} is the active control group.`)
@@ -6865,7 +7098,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</button>
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "environment"} title={ko("Environment", "환경")}>
+				<Foldout hidden={selectedHierarchyId !== "environment"} title={ko("Environment", "환경")}>
 						<label className="check">
 							<input type="checkbox" checked={hasEnvSheet} onChange={(event) => setHasEnvSheet(event.target.checked)} />
 						<span>{ko("I have an environment sheet", "환경 시트가 있어요")}</span>
@@ -6880,7 +7113,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</Field>
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
+				<Foldout hidden={selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
 					<div className="props-drop" data-drop={inspectorDrop.over ? "over" : "target"} {...inspectorDrop.handlers}>
 					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view. Drop a picture anywhere here — or on the shot view — to stand it up as a cutout.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요. 사진을 이 영역이나 샷 뷰에 끌어다 놓으면 컷아웃으로 세워집니다.")}</p>
 					<AddObjectMenu onAdd={addSceneObject} label={ko("Add object to the set", "세트에 오브젝트 추가")} />
@@ -6921,7 +7154,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					</div>
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || !selectedSceneObject} title={ko("Object Transform", "오브젝트 변환")}>
+				<Foldout hidden={!selectedSceneObject} title={ko("Object Transform", "오브젝트 변환")}>
 						{selectedSceneObject && (
 							<>
 								<p className="inspector-hint">
@@ -7220,6 +7453,20 @@ function resizePromptClip(id, edge, rawFrame) {
 						</div>
 					)}
 					</section>
+					{/* The reference-photo picker sits outside the panel so re-mounting
+					    the studio cannot cancel an in-flight read. */}
+					<input
+						ref={photoPoseFileRef}
+						className="multimodel-file-input"
+						type="file"
+						accept={ASSET_IMAGE_TYPES.join(",")}
+						data-pose-photo-input
+						onChange={(event) => {
+							const file = event.target.files?.[0];
+							event.target.value = ""; // the same photo must be re-pickable after an error
+							if (file) posePhotoFile(file);
+						}}
+					/>
 					{/* Pose Studio docks under the inspector instead of floating over
 					    the shot: the viewport keeps the posed character unobstructed. */}
 					{posing && (
@@ -7233,7 +7480,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							motionActive={Boolean(motion)}
 							onSelect={setStudioPick}
 							onApply={(selectedPoseId) => {
-								const pose = allPoses.find((p) => p.id === selectedPoseId);
+								const pose = selectablePoses.find((p) => p.id === selectedPoseId);
 								if (pose) {
 									const hadMotion = Boolean(motion);
 									if (hadMotion) clearMotion();
@@ -7251,6 +7498,12 @@ function resizePromptClip(id, edge, rawFrame) {
 								setToast(ko("Back to the default pose", "기본 포즈로 돌아왔어요"));
 							}}
 							onSave={savePose}
+							onPhoto={() => {
+								setPhotoPoseError("");
+								photoPoseFileRef.current?.click();
+							}}
+							photoState={photoPoseState}
+							photoError={photoPoseError}
 							onDelete={removePose}
 							onClose={closeStudio}
 						/>
@@ -7370,7 +7623,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					const frame = Math.min(f, tlFrameCount - 1);
 					setTlFrame(frame);
 					setWaypointMode(true);
-					setSidebarTab("motion");
+					selectActiveCharacterInHierarchy();
 					if (waypoints.some((waypoint) => waypoint.frame === frame)) {
 						setActiveWaypointFrame(frame);
 						setPendingWaypointFrame(null);
@@ -7381,11 +7634,16 @@ function resizePromptClip(id, edge, rawFrame) {
 				}}
 				onMarkerRemove={removeWaypoint}
 				onRootKeyframeAdd={queueRootWaypointFrame}
-				onPromptAdd={addPromptClip}
+				onPromptAdd={(frame) => {
+					addPromptClip(frame);
+					selectActiveCharacterInHierarchy();
+					revealPromptBlocks();
+				}}
 				onPromptSelect={(id) => {
 					setSelectedPromptId(id);
 					setArdyPrompt(promptClips.find((clip) => clip.id === id)?.text ?? "");
-					setSidebarTab("motion");
+					selectActiveCharacterInHierarchy();
+					revealPromptBlocks();
 				}}
 				onPromptChange={changePromptClip}
 				onPromptResize={resizePromptClip}
@@ -7393,7 +7651,6 @@ function resizePromptClip(id, edge, rawFrame) {
 				onPromptRemove={removePromptClip}
 				onCameraMoveSelect={() => {
 					setSelectedHierarchyId("camera");
-					setSidebarTab("inspector");
 				}}
 				onCameraKeyframeAdd={addCameraKeyframe}
 				onCameraKeyframeMove={moveCameraKeyframe}
@@ -7403,7 +7660,6 @@ function resizePromptClip(id, edge, rawFrame) {
 						if (!selected) return;
 						setTlFrame(selected.startFrame);
 						setSelectedHierarchyId("camera");
-						setSidebarTab("motion");
 					}}
 					onCameraBlockChange={(patch) => {
 						if (patch.mode === "follow") syncActiveCameraFraming();
@@ -7423,7 +7679,6 @@ function resizePromptClip(id, edge, rawFrame) {
 					onRailSelect={(index) => {
 						selectTimelineShot(index);
 						setSelectedHierarchyId("camera");
-						setSidebarTab("motion");
 					}}
 					onRailMove={(index, startFrame) => editRailSchedule(index, (base, duration) => moveRailRange(base, startFrame - base.startFrame, duration))}
 					onRailRangeChange={(index, edge, frame) => editRailSchedule(index, (base, duration) => resizeRailRange(base, edge, frame, duration))}
@@ -7448,6 +7703,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				<span className="wordmark">
 					Cozy <span>Clay</span>
 				</span>
+				<SourceOffer />
 			</footer>
 
 			{result && resultOpen && (
@@ -7487,7 +7743,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					</button>
 				</div>
 			)}
-			{assetTrash.length > 0 && (
+			{assetTrash.length > 0 && assetUndoOffered && (
 				<div className="asset-delete-toast" role="status">
 					<span>{ko("Image deleted. This session can undo it.", "이미지를 삭제했어요. 이 세션에서 실행 취소할 수 있어요.")}</span>
 					<button type="button" onClick={undoDeletedAsset} disabled={Boolean(deletingAssetId)}>{ko("Undo", "실행 취소")}</button>
@@ -7519,10 +7775,25 @@ function fmtMeters(value) {
 
 /** Unity Inspector-style foldout: a titled section the user can collapse.
  * Cards default to open; the fold state is per-title session state. */
-function Foldout({ title, hidden, children }) {
-	const [open, setOpen] = useState(true);
+function Foldout({ title, hidden, defaultOpen = true, openSignal = 0, children }) {
+	const [open, setOpen] = useState(defaultOpen);
+	const cardRef = useRef(null);
+	// A collapsed panel must still be reachable from elsewhere: selecting a
+	// prompt block on the timeline has to reveal the panel that edits it, or
+	// the click looks like it did nothing. Opening alone is not enough — the
+	// panel can sit below the fold of a long Inspector — so it is scrolled into
+	// view as well. The signal only ever opens; it never closes a panel.
+	useEffect(() => {
+		if (openSignal <= 0) return undefined;
+		setOpen(true);
+		// One frame later: the body has to exist before it can be scrolled to.
+		const raf = requestAnimationFrame(() => {
+			cardRef.current?.scrollIntoView({ block: "nearest" });
+		});
+		return () => cancelAnimationFrame(raf);
+	}, [openSignal]);
 	return (
-		<section className={"card foldout" + (open ? " open" : "")} hidden={hidden}>
+		<section ref={cardRef} className={"card foldout" + (open ? " open" : "")} hidden={hidden}>
 			<h3>
 				<button type="button" className="foldout-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
 					<span className="foldout-arrow" aria-hidden="true">{open ? "\u25BE" : "\u25B8"}</span>

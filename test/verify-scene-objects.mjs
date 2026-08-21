@@ -651,6 +651,29 @@ expect(
 );
 
 
+/* --- the delete-undo toast is an offer, not a permanent banner ------------- */
+// It sat on screen forever because nothing ever cleared it: only pressing Undo
+// or a later restore did. An undo offer has a window, and when the window
+// closes the toast has to go with it.
+const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+
+expect(
+	"the object delete-undo offer expires on its own",
+	appSource.includes("OBJECT_DELETE_UNDO_MS") && appSource.includes("setObjectDeleteUndo(null)"),
+);
+expect(
+	"the expiry is a timer effect keyed to the pending deletion",
+	appSource.includes("}, [objectDeleteUndo]);"),
+);
+expect(
+	"the offer is withdrawn the moment a newer edit invalidates it",
+	appSource.includes("store.depths().past !== objectDeleteUndo.pastDepth"),
+);
+expect(
+	"the image delete-undo offer expires the same way",
+	appSource.includes("ASSET_DELETE_UNDO_MS"),
+);
+
 if (failures) process.exit(1);
 console.log("all scene object checks PASS");
 
