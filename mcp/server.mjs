@@ -827,14 +827,18 @@ registerTool(
 		} catch (error) {
 			return liveError(error);
 		}
+		// Report the normalised text itself, not blocks[i]: a long beat becomes
+		// several blocks, so block indices run ahead of phase indices and quoting
+		// blocks[i] would attribute one beat's edits to another beat's wording.
 		const rewrites = normalized.notes
-			.map((notes, i) => (notes.length ? `  ${i + 1}. ${blocks[i].text}  ← ${notes.join("; ")}` : null))
+			.map((notes, i) => (notes.length ? `  ${i + 1}. ${normalized.texts[i]}  ← ${notes.join("; ")}` : null))
 			.filter(Boolean);
 		return text(
 			`${blocks.length} block(s) on the timeline (${(cursor / TIMELINE_FPS).toFixed(1)}s total):\n` +
 				blocks.map((b) => `  ${b.startFrame}-${b.endFrame}f  ${b.text}`).join("\n") +
 				(chained > 0 ? `\n  (${chained} block(s) chained to keep every block within ${BLOCK_MAX_SECONDS}s)` : "") +
 				(rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "") +
+				(normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "") +
 				"\n\nGenerate them from the studio's Prompt Blocks panel, or with generate_motion.",
 		);
 	},
@@ -859,13 +863,15 @@ registerTool(
 						}),
 					]),
 				)
-				.min(2)
+				.min(1)
 				.max(8)
 				.describe(
 					"one beat per phase, in order. Write each as ARDY writes them: " +
 						'"A person walks in a circle." — subject, one action, present tense, ' +
 						"full stop. Give a plain string to share the clip evenly, or " +
-						"{ text, seconds } to hold a beat for a specific time.",
+						"{ text, seconds } to hold a beat for a specific time. A single " +
+						"complete beat is accepted and generates one clip; a sequence needs " +
+						"one phase per action, never a compound sentence.",
 				),
 			seconds: z
 				.number()
@@ -876,9 +882,9 @@ registerTool(
 			seed: z.number().int().optional().describe("generation seed"),
 			motion_url: z
 				.string()
-				.regex(/^\/ardy\/motions\/[0-9]+-[0-9a-f]{6}$/)
+				.regex(/^\/(ardy\/motions\/[0-9]+-[0-9a-f]{6}|ardy\/assembled\/[A-Za-z0-9._-]+\.npz)$/)
 				.optional()
-				.describe("reuse an already-generated clip instead of generating again"),
+				.describe("reuse an already-generated clip, or a curated clip staged under public/ardy/assembled/"),
 			drop: z
 				.object({
 					from_s: z.number().min(0).describe("clip time the plunge begins, seconds"),
@@ -905,11 +911,21 @@ registerTool(
 			return text("The ARDY bridge is not running on " + bridge + ". Start the studio with `npm run dev` (it launches the bridge) and try again.");
 		}
 
-		// Every phase is rewritten into ARDY's own sentence shape before it is
-		// ever sent; a compound beat is split into the extra phase it was hiding.
+		// Every phase is rewritten into ARDY's own sentence shape before it is ever
+		// sent. One input beat stays one phase: the caller's phase list is the
+		// sequence, so a composite beat is theirs to split, not ours to re-cut.
 		const normalized = normalizePhases(phases);
-		const prompts = normalized.texts.filter(Boolean);
-		if (prompts.length < 2) return text("Give at least two distinct motion beats.");
+		// Keep notes beside the prompt they belong to: a blank beat normalises to
+		// "" and is dropped, which would otherwise slide every later note onto the
+		// wrong prompt in the rewrite report.
+		const kept = normalized.texts
+			.map((t, i) => ({ text: t, notes: normalized.notes[i], source: normalized.sources[i] }))
+			.filter((p) => p.text);
+		const prompts = kept.map((p) => p.text);
+		// One complete beat is a legitimate clip — ARDY's own examples are single
+		// prompts ("A person walks in a circle."), so a valid one-phase request must
+		// not fail merely for being one phase. Only an empty request is refused.
+		if (prompts.length === 0) return text("Give at least one motion beat.");
 
 		// ARDY Core is 20 fps; segments must tile 0..clipFrames exactly, and each
 		// one needs at least 3 frames.
@@ -918,17 +934,17 @@ registerTool(
 		let clipFrames;
 		let chained = 0;
 		if (timed) {
-			// A beat that split into pieces shares its time between them, so an
+			// A beat that became several blocks shares its time between them, so an
 			// explicit "6 seconds of walking" stays 6 seconds however it was phrased.
-			const pieceCount = normalized.sources.reduce((acc, source) => {
-				acc[source] = (acc[source] ?? 0) + 1;
+			const pieceCount = kept.reduce((acc, piece) => {
+				acc[piece.source] = (acc[piece.source] ?? 0) + 1;
 				return acc;
 			}, {});
 			segments = [];
 			let cursor = 0;
-			for (const [i, prompt] of prompts.entries()) {
-				const whole = phaseSeconds[normalized.sources[i]] ?? seconds / phases.length;
-				const share = whole / pieceCount[normalized.sources[i]];
+			for (const { text: prompt, source } of kept) {
+				const whole = phaseSeconds[source] ?? seconds / phases.length;
+				const share = whole / pieceCount[source];
 				// The studio caps a block at BLOCK_MAX_SECONDS and refuses to generate
 				// a longer one, so a long beat becomes consecutive blocks here rather
 				// than something the UI would reject.
@@ -963,16 +979,18 @@ registerTool(
 			}
 		}
 		const clipSeconds = clipFrames / ARDY_FPS;
-		const rewrites = normalized.notes
-			.map((notes, i) => (notes.length ? `  ${i + 1}. ${prompts[i]}  ← ${notes.join("; ")}` : null))
+		const rewrites = kept
+			.map(({ text: prompt, notes }, i) => (notes.length ? `  ${i + 1}. ${prompt}  ← ${notes.join("; ")}` : null))
 			.filter(Boolean);
 		const chainNote = chained > 0 ? `\n  (${chained} block(s) chained to keep every block within ${BLOCK_MAX_SECONDS}s)` : "";
+		// A drop is reported on its own account: a caller can send nine already-perfect
+		// phases, which produces no rewrite and no chaining yet still loses the ninth
+		// to the schema's 8-phase limit, and silence there would hide a lost beat.
+		const dropNote =
+			normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "";
 		const promptNote =
-			rewrites.length || chainNote
-				? (rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "\n") +
-					(normalized.expanded ? "\n  (a compound beat became its own phase)" : "") +
-					(normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "") +
-					chainNote
+			rewrites.length || chainNote || dropNote
+				? (rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "\n") + dropNote + chainNote
 				: "";
 
 		const deliver = async (motionUrl, note) => {
@@ -996,7 +1014,12 @@ registerTool(
 		if (motion_url) return deliver(motion_url, "Reusing");
 		// segments run the autoregressive sequence generator, which is
 		// incompatible with pose pinning — the bridge requires posePin:false.
-		const body = { prompt: prompts.join(" "), duration: clipSeconds, segments, posePin: false };
+		// A single beat has no sequence to chain: it goes out as a plain
+		// single-prompt generation (the bridge's `segments` requires 2..64 entries).
+		const body =
+			prompts.length === 1
+				? { prompt: prompts[0], duration: clipSeconds, posePin: false }
+				: { prompt: prompts.join(" "), duration: clipSeconds, segments, posePin: false };
 		if (seed !== undefined) body.seed = seed;
 
 		const res = await fetch(`${bridge}/ardy/generate`, {

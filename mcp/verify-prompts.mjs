@@ -4,9 +4,12 @@
  * (nv-tlabs/ardy, scripts/generate.py: "A person walks in a circle.").
  *
  * The rules under test are the ones the repository states or implies:
- * an explicit subject, exactly one action per prompt because the conditioning
- * collapses to a single text token, a closing full stop, and nothing the body
- * cannot perform (emotion, camera, scenery).
+ * an explicit subject, a closing full stop, and nothing the body cannot perform
+ * (emotion, camera, scenery).
+ *
+ * One action per prompt is guidance for whoever writes the phases, NOT a
+ * deletion the normaliser performs: a composite physical beat comes back whole,
+ * commas and "then"/"while"/"as"/"before" clauses included.
  */
 import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhase, normalizePhases, splitLongBeat } from "./ardy-prompts.mjs";
 
@@ -33,14 +36,31 @@ check("a missing full stop is closed", stop.text === "A person waves.", stop.tex
 const cased = normalizePhase("the woman walks in a circle");
 check("an existing subject is preserved", cased.text === "The woman walks in a circle.", cased.text);
 
-/* --------------------------- one action per prompt ----------------------- */
+/* ------------------------ composite beats survive ------------------------ */
+// The normaliser must never trade away wording the caller authored.
 
 const compound = normalizePhase("walks forward slowly, then stops abruptly");
-check("a compound beat keeps only its first action", compound.text === "A person walks forward slowly.", compound.text);
-check("the split is reported", compound.notes.some((n) => /own phase/.test(n)), compound.notes.join("; "));
+check(
+	"a comma + 'then' beat is kept whole",
+	compound.text === "A person walks forward slowly, then stops abruptly.",
+	compound.text,
+);
+check("keeping a beat whole reports no split", compound.notes.every((n) => !/own phase/.test(n)), compound.notes.join("; "));
 
 const comma = normalizePhase("stands up, brushes off the knees");
-check("a comma-joined pair keeps one action", comma.text === "A person stands up.", comma.text);
+check("a comma-joined pair keeps both actions", comma.text === "A person stands up, brushes off the knees.", comma.text);
+
+const simultaneous = normalizePhase("raises both arms while stepping back");
+check("a 'while' clause survives", simultaneous.text === "A person raises both arms while stepping back.", simultaneous.text);
+
+const ordered = normalizePhase("crouches low before springing straight up");
+check("a 'before' clause survives", ordered.text === "A person crouches low before springing straight up.", ordered.text);
+
+const asClause = normalizePhase("turns the head as the shoulders drop");
+check("an 'as' clause survives", asClause.text === "A person turns the head as the shoulders drop.", asClause.text);
+
+const leading = normalizePhase("then runs forward, arms swinging wide");
+check("a leading connective goes but the clause stays", leading.text === "A person runs forward, arms swinging wide.", leading.text);
 
 /* ------------------------------ unrenderable ----------------------------- */
 
@@ -53,12 +73,19 @@ check("scenery reference is dropped", !/enormous/i.test(scenery.text), scenery.t
 
 const camera = normalizePhase("turns while the camera pushes in");
 check("camera language is dropped", !/camera/i.test(camera.text), camera.text);
+check("the body action outlives the camera clause", /turns/i.test(camera.text), camera.text);
+
+const afterCamera = normalizePhase("turns while the camera pushes in and raises one arm");
+check("a body action after a camera clause survives", /raises one arm/i.test(afterCamera.text), afterCamera.text);
+check("and the camera clause is still gone", !/camera/i.test(afterCamera.text), afterCamera.text);
 
 /* -------------------------------- sequences ------------------------------ */
 
 const seq = normalizePhases(["stands up from a chair then runs forward", "trips and falls"]);
-check("a hidden action becomes its own phase", seq.texts.length === 3, seq.texts.join(" | "));
-check("expansion is reported", seq.expanded === true);
+check("one beat in, one phase out", seq.texts.length === 2, seq.texts.join(" | "));
+check("a composite beat is not re-cut", seq.texts[0] === "A person stands up from a chair then runs forward.", seq.texts[0]);
+check("no expansion is reported", seq.expanded === false);
+check("each phase still maps to its own input", seq.sources.join(",") === "0,1", seq.sources.join(","));
 check(
 	"every phase ends up in ARDY's shape",
 	seq.texts.every((t) => /^(A|The)\s+\w+.*\.$/.test(t)),
@@ -75,6 +102,7 @@ check("blank beats do not become prompts", blank.texts.filter(Boolean).length ==
 /* --------------------------------- guide --------------------------------- */
 
 check("the guide shows ARDY's own example", PROMPT_GUIDE.includes("A person walks in a circle."));
+check("the guide warns that phases are taken as written", /NOT split or trimmed for you/.test(PROMPT_GUIDE));
 check("the guide explains the single-token reason", /num_text_tokens=1/.test(PROMPT_GUIDE));
 
 if (failures > 0) {
