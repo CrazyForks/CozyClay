@@ -63,15 +63,18 @@ function parseArgs(argv) {
 		else {
 			console.error(`cozyclay: unknown option ${arg}`);
 			opts.help = true;
+			opts.invalid = true;
 		}
 	}
 	if (!Number.isInteger(opts.port) || opts.port < 1 || opts.port > 65534) {
 		console.error("cozyclay: --port must be an integer in 1..65534");
 		opts.help = true;
+		opts.invalid = true;
 	}
 	if (opts.host !== "127.0.0.1") {
 		console.error("cozyclay: --host is restricted to 127.0.0.1");
 		opts.help = true;
+		opts.invalid = true;
 	}
 	return opts;
 }
@@ -193,9 +196,9 @@ if (argv[0] === "mcp") {
 } else {
 
 const opts = parseArgs(argv);
-if (opts.help) {
-	console.log(HELP);
-	process.exit(0);
+	if (opts.help) {
+		console.log(HELP);
+		process.exit(opts.invalid ? 1 : 0);
 }
 if (opts.version) {
 	const pkg = JSON.parse(await import("node:fs").then((fs) => fs.promises.readFile(join(PKG_ROOT, "package.json"), "utf8")));

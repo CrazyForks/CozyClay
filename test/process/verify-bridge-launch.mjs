@@ -173,6 +173,17 @@ async function expectLaunchFailure(kind, env, expected) {
 	assert.match(output.all(), expected, `${kind} reports the bridge-port failure clearly`);
 }
 
+{
+	const invalidHost = spawnOwned(process.execPath, ["bin/cozyclay.mjs", "--host", "0.0.0.0", "--no-open", "--no-star"], {
+		cwd: REPO,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const output = createOutputWatcher(invalidHost);
+	const [code] = await waitForExit(invalidHost, "package non-loopback host rejection");
+	assert.notEqual(code, 0, "package rejects non-loopback host with a failure exit code");
+	assert.match(output.all(), /--host is restricted to 127\.0\.0\.1/, "package names the loopback-only restriction");
+}
+
 async function expectBridgeIpcReadiness() {
 	const reservation = createServer();
 	const port = await listen(reservation);
@@ -263,7 +274,8 @@ await expectForeignListenerDoesNotReportBridgeReady();
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	const output = createOutputWatcher(invalidMainPort);
-	await waitForExit(invalidMainPort, "package invalid main port");
+	const [code] = await waitForExit(invalidMainPort, "package invalid main port");
+	assert.notEqual(code, 0, "package rejects an invalid main port with a failure exit code");
 	assert.match(output.all(), /--port must be an integer in 1\.\.65534/, "package validates a main port that leaves room for its bridge");
 }
 for (const kind of ["dev", "package"]) {
