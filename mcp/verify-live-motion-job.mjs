@@ -188,7 +188,10 @@ try {
 	reconnect.socket.close();
 	await consumedClosed;
 	reconnect = await connectEditor("motion-job-workspace");
-	await assert.rejects(reconnect.nextEvent(recoverTask.taskId, "completed"), /Timed out waiting for completed motion event/);
+	await assert.rejects(
+		withTimeout(reconnect.nextEvent(recoverTask.taskId, "completed"), "completed motion event"),
+		/Timed out waiting for completed motion event/,
+	);
 
 	// Given a terminal job and an injected clock past its retention TTL
 	// When cleanup runs before reconnect delivery
