@@ -14,6 +14,85 @@ export const CHARACTER_ASSETS = CHARACTER_MODEL_IDS.map((id) => ({
 	label: id === "y-bot-tpose" ? "Y Bot" : "X Bot",
 }));
 
+function CharacterPreview({ model }) {
+	const yBot = model === "y-bot-tpose";
+	return (
+		<svg className="asset-card-preview" viewBox="0 0 48 48" aria-hidden="true">
+			<circle cx="24" cy="8.5" r="5.5" />
+			<path d="M18 15.5 15.5 29h17L30 15.5Z" />
+			<path className="preview-limb" d={yBot ? "M18 18 10 25M30 18l8 7" : "M18 18 7 18M30 18h11"} />
+			<path className="preview-limb" d="m20 29-4 12m12-12 4 12" />
+		</svg>
+	);
+}
+
+function ObjectPreview({ kind, color }) {
+	const fill = color || "#b8bec3";
+	const common = { fill, stroke: "#d7dde0", strokeWidth: 1.2, strokeLinejoin: "round" };
+	let shape;
+	switch (kind) {
+		case "cube":
+			shape = <>
+				<path {...common} d="m9 16 15-8 15 8-15 8Z" />
+				<path {...common} d="m9 16 15 8v16L9 31Z" opacity=".82" />
+				<path {...common} d="m39 16-15 8v16l15-9Z" opacity=".62" />
+			</>;
+			break;
+		case "sphere":
+			shape = <>
+				<circle {...common} cx="24" cy="24" r="16" />
+				<path className="preview-detail" d="M11 24h26M24 8c8 8 8 24 0 32M24 8c-8 8-8 24 0 32" />
+			</>;
+			break;
+		case "capsule":
+			shape = <>
+				<rect {...common} x="14" y="5" width="20" height="38" rx="10" />
+				<path className="preview-detail" d="M15 17h18M15 31h18" />
+			</>;
+			break;
+		case "cylinder":
+			shape = <>
+				<path {...common} d="M11 14c0-4 26-4 26 0v20c0 5-26 5-26 0Z" />
+				<ellipse cx="24" cy="14" rx="13" ry="5" fill={fill} stroke="#d7dde0" strokeWidth="1.2" />
+				<path className="preview-detail" d="M11 34c0 5 26 5 26 0" />
+			</>;
+			break;
+		case "cone":
+			shape = <>
+				<path {...common} d="m24 6 14 31H10Z" />
+				<ellipse cx="24" cy="37" rx="14" ry="4" fill={fill} stroke="#d7dde0" strokeWidth="1.2" />
+			</>;
+			break;
+		case "plane":
+			shape = <>
+				<path {...common} d="M7 28 29 14l12 7-22 14Z" />
+				<path className="preview-detail" d="m7 28 12 7 22-14" />
+			</>;
+			break;
+		case "chair":
+			shape = <>
+				<path {...common} d="M13 8h18v17H13Z" />
+				<path {...common} d="M12 25h24v8H12Z" />
+				<path className="preview-limb" d="M15 33v10m18-10v10M13 25V8" />
+			</>;
+			break;
+		case "car":
+			shape = <>
+				<path {...common} d="M7 27h5l5-9h15l7 9h3v9H7Z" />
+				<path className="preview-detail" d="M17 18h15l4 9H13Z" />
+				<circle cx="15" cy="36" r="4" fill="#181a1c" stroke="#d7dde0" />
+				<circle cx="35" cy="36" r="4" fill="#181a1c" stroke="#d7dde0" />
+			</>;
+			break;
+		case "small-plane":
+			shape = <path {...common} d="M22 5h4l3 15 13 8v4l-13-3-2 12 5 3v2l-8-2-8 2v-2l5-3-2-12-13 3v-4l13-8Z" />;
+			break;
+		default:
+			shape = <rect {...common} x="10" y="10" width="28" height="28" rx="4" />;
+	}
+	return <svg className="asset-card-preview" viewBox="0 0 48 48" aria-hidden="true">{shape}</svg>;
+}
+
 /** Shelf thumbnail edge: enough pixels for a 108 px card on a 2x display. */
 const THUMB_WIDTH = 96;
 
@@ -165,7 +244,7 @@ function StorageManager({ unusedAssetIds, usedAssetIds, usageCounts, graphSignat
 			) : empty ? (
 				<p className="assets-empty">{ko("No stored image assets.", "저장된 이미지 에셋이 없어요.")}</p>
 			) : <>
-				<section className="asset-storage-section" aria-labelledby="asset-storage-unused-title">
+				<section className="asset-storage-section is-unused" aria-labelledby="asset-storage-unused-title">
 					<h4 id="asset-storage-unused-title">{ko("Unused", "미사용")}</h4>
 					{unusedAssetIds.length === 0 ? (
 						<p className="assets-empty">{ko("No unused image assets. Every stored image is still used by a scene.", "사용되지 않는 이미지 에셋이 없어요. 저장된 모든 이미지를 씬에서 사용 중입니다.")}</p>
@@ -175,7 +254,7 @@ function StorageManager({ unusedAssetIds, usedAssetIds, usageCounts, graphSignat
 						</ul>
 					)}
 				</section>
-				<section className="asset-storage-section" aria-labelledby="asset-storage-used-title">
+				<section className="asset-storage-section is-used" aria-labelledby="asset-storage-used-title">
 					<h4 id="asset-storage-used-title">{ko("In use", "사용 중")}</h4>
 					{usedAssetIds.length === 0 ? (
 						<p className="assets-empty">{ko("No stored image assets are used by a scene.", "씬에서 사용하는 저장 이미지 에셋이 없어요.")}</p>
@@ -222,7 +301,7 @@ export default function AssetPane({ onAssetGrab, imageAssetIds, manageStorage, o
 								title={ko(`Drag ${asset.label} into the scene`, `${asset.label}을(를) 씬에 드래그하세요`)}
 								{...grabProps(onAssetGrab, { kind: "character", id: asset.id, label: asset.label })}
 							>
-								<span className="asset-card-swatch" data-model={asset.id} aria-hidden="true" />
+								<CharacterPreview model={asset.id} />
 								<span className="asset-card-label">{asset.label}</span>
 								<span className="asset-card-kind">{ko("Character", "인물")}</span>
 							</button>
@@ -243,7 +322,7 @@ export default function AssetPane({ onAssetGrab, imageAssetIds, manageStorage, o
 								)}
 								{...grabProps(onAssetGrab, { kind: "object", objectKind: entry.kind, label: displayObjectLabel(entry.label), color: entry.color })}
 							>
-								<span className="asset-card-swatch" style={{ background: entry.color }} aria-hidden="true" />
+								<ObjectPreview kind={entry.kind} color={entry.color} />
 								<span className="asset-card-label">{displayObjectLabel(entry.label)}</span>
 								<span className="asset-card-kind">{displayObjectGroupName(entry.group)}</span>
 							</button>
