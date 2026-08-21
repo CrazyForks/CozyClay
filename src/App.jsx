@@ -429,6 +429,10 @@ function nextCharacterId(list) {
 }
 const DEMO_MOTION_URL = "/demo/walk-then-stop.npz";
 const DEMO_MOTION_PROMPT = "a person walking then a person stops";
+// How long a deletion keeps offering its one-press Undo. Both toasts use the
+// same window so the two deletion paths feel like one rule.
+const OBJECT_DELETE_UNDO_MS = 7000;
+const ASSET_DELETE_UNDO_MS = 7000;
 const CLAY = "#f2eee6";
 const CLAY_B = "#ddd6ca";
 // X Bot's shell is smooth (no raised exoskeleton like Y Bot's), so it gets a
@@ -1581,6 +1585,14 @@ globalThis.playMode = centerTab === "play";
 	// to the inspector tab; the root SHOT row routes to the shot tab.
 	const [inspectorActionsOpen, setInspectorActionsOpen] = useState(false);
 	const [objectDeleteUndo, setObjectDeleteUndo] = useState(null);
+	// An undo offer is an offer, not a banner: without a window it sits on the
+	// screen for the rest of the session. Long enough to notice and reach, then
+	// gone — the deletion is still reversible through Undo history afterwards.
+	useEffect(() => {
+		if (!objectDeleteUndo) return undefined;
+		const timer = setTimeout(() => setObjectDeleteUndo(null), OBJECT_DELETE_UNDO_MS);
+		return () => clearTimeout(timer);
+	}, [objectDeleteUndo]);
 	// Scene persistence (plan §8): the startup load runs once in a lazy
 	// initializer so the store below can seed from the restored scene; the
 	// quarantine write and the save-block decision happen before the first
@@ -2243,6 +2255,15 @@ globalThis.playMode = centerTab === "play";
 	// This is deliberately session-only. Each entry is a complete IndexedDB
 	// record, so Undo can put it back byte-for-byte until the page is reloaded.
 	const [assetTrash, setAssetTrash] = useState([]);
+	// Same rule as the object deletion offer: the toast is a window, not a
+	// banner. Only the OFFER expires — the trashed record itself is the restore
+	// data, so it is deliberately kept for the session and never timed out.
+	const [assetUndoOffered, setAssetUndoOffered] = useState(false);
+	useEffect(() => {
+		if (!assetUndoOffered) return undefined;
+		const timer = setTimeout(() => setAssetUndoOffered(false), ASSET_DELETE_UNDO_MS);
+		return () => clearTimeout(timer);
+	}, [assetUndoOffered]);
 	const [deletingAssetId, setDeletingAssetId] = useState(null);
 	const cutoutLineage = useMemo(
 		() => JSON.stringify(sceneObjects.flatMap((object) => (object.renderer === CUTOUT_KIND ? [[object.assetId, object.sourceAssetId, object.matteAssetId]] : []))),
@@ -2385,6 +2406,7 @@ globalThis.playMode = centerTab === "play";
 			}
 			evictAssetTexture(id);
 			setAssetTrash((current) => [...current.filter((asset) => asset.id !== record.id), record]);
+			setAssetUndoOffered(true);
 			deleted = true;
 			return true;
 		} catch (error) {
@@ -2405,6 +2427,7 @@ globalThis.playMode = centerTab === "play";
 		try {
 			await rememberAsset(record);
 			setAssetTrash((current) => current.filter((asset) => asset.id !== record.id));
+			setAssetUndoOffered(false);
 			restored = true;
 			setToast(isKo ? `${record.name || "이미지"} 복원됨` : `${record.name || "Image"} restored`);
 		} catch (error) {
@@ -7590,7 +7613,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					</button>
 				</div>
 			)}
-			{assetTrash.length > 0 && (
+			{assetTrash.length > 0 && assetUndoOffered && (
 				<div className="asset-delete-toast" role="status">
 					<span>{ko("Image deleted. This session can undo it.", "이미지를 삭제했어요. 이 세션에서 실행 취소할 수 있어요.")}</span>
 					<button type="button" onClick={undoDeletedAsset} disabled={Boolean(deletingAssetId)}>{ko("Undo", "실행 취소")}</button>
