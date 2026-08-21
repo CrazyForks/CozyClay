@@ -5,7 +5,6 @@ import { shotMetadata } from "./otio.js";
 import { sampleAt } from "./sample-at.js";
 import { DEFAULT_ASPECT_RATIO, DEFAULT_SENSOR_FORMAT, SENSOR_FORMATS } from "./shot.js";
 
-const DEGREES_PER_RADIAN = 180 / Math.PI;
 const MILLIMETRES_PER_TENTH_METRE = 100;
 
 function finite(value, label) {
@@ -72,8 +71,8 @@ function aperturesMm(scene, metadata) {
  * Serialize one inclusive Shot range as an animated UsdGeomCamera.
  *
  * CozyClay and USD cameras are both right-handed, Y-up and look down local
- * -Z. Three's YXZ Euler therefore maps directly to USD rotateYXZ as
- * (pitchDegrees, yawDegrees, 0); no axis flip or 180-degree correction exists.
+ * -Z. Three's YXZ Euler composes as qY(yaw) * qX(pitch); exporting that result
+ * as one quaternion avoids USD Euler packing's different composition order.
  */
 export function serializeUsdCamera(scene, shot) {
 	const source = scene && typeof scene === "object" ? scene : {};
@@ -84,11 +83,22 @@ export function serializeUsdCamera(scene, shot) {
 	const aperture = aperturesMm(source, metadata);
 	const toUsdOpticalUnit = (millimetres) => millimetres / MILLIMETRES_PER_TENTH_METRE;
 	const translation = ({ camera }) => tuple([camera.pos.x, camera.pos.y, camera.pos.z]);
-	const rotation = ({ camera }) => tuple([
-		camera.pitch * DEGREES_PER_RADIAN,
-		camera.yaw * DEGREES_PER_RADIAN,
-		0,
-	]);
+	const orientation = ({ camera }) => {
+		const halfPitch = camera.pitch / 2;
+		const halfYaw = camera.yaw / 2;
+		const sinPitch = Math.sin(halfPitch);
+		const cosPitch = Math.cos(halfPitch);
+		const sinYaw = Math.sin(halfYaw);
+		const cosYaw = Math.cos(halfYaw);
+		// USDA quaternion tuples are (real, i, j, k). For Three's YXZ with
+		// zero roll, qY * qX = (cy*cp, cy*sp, sy*cp, -sy*sp).
+		return tuple([
+			cosYaw * cosPitch,
+			cosYaw * sinPitch,
+			sinYaw * cosPitch,
+			-sinYaw * sinPitch,
+		]);
+	};
 	const focalMm = ({ camera }) => number(camera.focalMm);
 	const focalUsd = ({ camera }) => number(toUsdOpticalUnit(camera.focalMm));
 
@@ -121,15 +131,15 @@ ${samplesBlock(samples, focalUsd)}
     float horizontalAperture = ${number(toUsdOpticalUnit(aperture.horizontal))}
     token projection = "perspective"
     float verticalAperture = ${number(toUsdOpticalUnit(aperture.vertical))}
-    float3 xformOp:rotateYXZ = ${rotation(first)}
-    float3 xformOp:rotateYXZ.timeSamples = {
-${samplesBlock(samples, rotation)}
+    quatf xformOp:orient = ${orientation(first)}
+    quatf xformOp:orient.timeSamples = {
+${samplesBlock(samples, orientation)}
     }
     double3 xformOp:translate = ${translation(first)}
     double3 xformOp:translate.timeSamples = {
 ${samplesBlock(samples, translation)}
     }
-    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateYXZ"]
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
 }
 `;
 }
