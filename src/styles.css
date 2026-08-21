@@ -447,6 +447,19 @@ select {
 	letter-spacing: -.035em;
 }
 
+.source-offer {
+	margin-left: auto;
+	color: var(--muted);
+	font-size: 11px;
+	text-decoration: none;
+}
+
+.source-offer:hover,
+.source-offer:focus-visible {
+	color: var(--text);
+	text-decoration: underline;
+}
+
 .tagline {
 	font-size: 12.5px;
 	color: var(--muted);

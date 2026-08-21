@@ -163,6 +163,7 @@ import {
 } from "./ardy/ik.js";
 import { Dropdown, Field, Slider, Toast, Vector3Row } from "./ui.jsx";
 import { RENDER_ACTIVITY_EVENT, useRenderActivity } from "./use-render-activity.js";
+import SourceOffer from "./source-offer.jsx";
 import { useGeneration } from "./generation/use-generation.js";
 import {
 	CAMERA_MOVES,
@@ -7648,6 +7649,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				<span className="wordmark">
 					Cozy <span>Clay</span>
 				</span>
+				<SourceOffer />
 			</footer>
 
 			{result && resultOpen && (
