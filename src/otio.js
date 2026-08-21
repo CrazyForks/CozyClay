@@ -155,7 +155,7 @@ function clip(scene, shot) {
 		},
 		metadata: { cozyclay: metadata },
 		name: typeof shot.name === "string" && shot.name.trim() ? shot.name.trim() : "Shot",
-		source_range: timeRange(shot.startFrame, shot.endFrame - shot.startFrame + 1),
+		source_range: timeRange(0, shot.endFrame - shot.startFrame + 1),
 	};
 }
 

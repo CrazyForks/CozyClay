@@ -102,7 +102,7 @@
               "start_time": {
                 "OTIO_SCHEMA": "RationalTime.1",
                 "rate": 24,
-                "value": 12
+                "value": 0
               }
             }
           },
@@ -188,7 +188,7 @@
               "start_time": {
                 "OTIO_SCHEMA": "RationalTime.1",
                 "rate": 24,
-                "value": 48
+                "value": 0
               }
             }
           }

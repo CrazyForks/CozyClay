@@ -97,7 +97,7 @@ const shots = [{
 	assert.equal(clips.length, shots.length, "one Shot becomes one Clip");
 	assert.deepEqual(items.map((item) => item.source_range.duration.value), [12, 24, 12, 48], "gaps and inclusive shot lengths preserve absolute placement");
 	assert.equal(items.reduce((frames, item) => frames + item.source_range.duration.value, 0), 96, "track spans frames 0 through 95 exactly");
-	assert.deepEqual(clips.map((clip) => clip.source_range.start_time.value), [12, 48]);
+	assert.deepEqual(clips.map((clip) => clip.source_range.start_time.value), [0, 0], "each shot-local media source begins at frame 0");
 	assert.deepEqual(clips.map((clip) => clip.source_range.duration.value), [35 - 12 + 1, 95 - 48 + 1]);
 	for (const clip of clips) {
 		assert.equal(clip.source_range.start_time.rate, 24);
