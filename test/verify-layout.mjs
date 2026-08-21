@@ -71,7 +71,22 @@ expect("legacy greeting demo migration is removed", !app.includes("GREETING_DEMO
 expect("batch generation spans through the final block frame", app.includes("Math.max(...clips.map((clip) => clip.endFrame))") && app.includes("Math.ceil(totalFrames / TIMELINE_FPS)"));
 expect("batch generation forwards all prompt clips", app.includes("promptClipsOverride: clips") && app.includes("hasPromptSchedule"));
 expect("normal motion generation excludes the prompt block schedule", app.includes("promptClipsOverride = []"));
-expect("unedited batch blocks use one unpinned autoregressive schedule", app.includes("!hasPromptSchedule && ikFrames.length > 0") && app.includes("else if (hasPromptSchedule) body.segments = toArdySegments(segments)"));
+// The pin decision moved into ardy/pose-pin.js so it can be tested directly
+// (test/ardy/verify-pose-pin.mjs); the call site only has to route it.
+expect(
+	"unedited batch blocks use one unpinned autoregressive schedule",
+	app.includes("const pinPlan = planPosePin({") && app.includes("else if (hasPromptSchedule) body.segments = toArdySegments(segments)"),
+);
+expect(
+	"the pose start is an explicit, off-by-default choice",
+	app.includes("const [ardyStartFromPose, setArdyStartFromPose] = useState(false);") &&
+	app.includes("startFromPose: ardyStartFromPose") &&
+	app.includes("data-ardy-start-from-pose"),
+);
+expect(
+	"a schedule conflict is reported instead of silently dropping the pose",
+	app.includes("pinPlan.blockedBy === PIN_BLOCKED.SCHEDULE"),
+);
 expect("IK-edited blocks use the motion edit session", app.includes("const editedSegments") && app.includes("body.motionEdit = {") && app.includes("sourceMotion: motion.url"));
 expect("IK regeneration inherits loaded clip duration", app.includes("motion && ikFrames.length > 0") && app.includes("motion.frames / motion.fps"));
 expect("motion edits send only tracked pending joints", app.includes("ikStateRef.current.keys.get(timelineFrame)?.keys()") && app.includes("tracks:"));

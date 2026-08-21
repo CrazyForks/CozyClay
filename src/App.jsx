@@ -13,6 +13,7 @@ import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl
 import { bakeExtractedTake, bakePoseFrame, collectLandmarkTrack, createPoseDetector, imageFrames, sampleTimes, videoFrames } from "./pose-extract/index.js";
 import { repairRecordedMp4 } from "./ardy/mp4-duration.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
+import { PIN_BLOCKED, planPosePin } from "./ardy/pose-pin.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
 import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint, toSceneRootOffset, PATH_LIMITS } from "./ardy/waypoints.js";
@@ -2232,6 +2233,10 @@ globalThis.playMode = centerTab === "play";
 	// box picks a fresh random one each run); otherwise a plain integer in
 	// 0..2**31-1 to reproduce a result.
 	const [ardySeed, setArdySeed] = useState("");
+	// Off by default on purpose: pinning runs the box's pose mode, which builds
+	// on a fixed reference base, so it is a choice the operator makes when they
+	// actually want the motion to leave from the pose they blocked.
+	const [ardyStartFromPose, setArdyStartFromPose] = useState(false);
 	const [ardyRunning, setArdyRunning] = useState(false);
 	const [ardyStatus, setArdyStatus] = useState("");
 	const [consoleLines, setConsoleLines] = useState([]);
@@ -5438,29 +5443,26 @@ function resizePromptClip(id, edge, rawFrame) {
 			)
 			: [];
 		const hasBlockEdits = editedSegments.length > 0;
-		// Pin ONLY for authored IK edits. A loaded motion by itself must NOT
-		// pin: pose-pinned calls run the box's pose mode, which builds on a
-		// fixed implicit reference base — the new prompt then dresses up the
-		// canned root path instead of driving its own motion ("I changed the
-		// prompt but got the same walk").
-		const shouldPin = hasBlockEdits || (!hasPromptSchedule && ikFrames.length > 0);
-		const constraintFrames = !shouldPin
-			? []
-			: waypointMode
-				? [0]
-				: hasBlockEdits
-					? ikFrames.filter((frame) =>
-						editedSegments.some((segment) => frame >= segment.startFrame && frame < segment.endFrame)
-					)
-				: [...new Set([
-				...segments.flatMap((segment) => [
-					segment.startFrame,
-					Math.min(segment.endFrame - 1, segment.startFrame + 1),
-					Math.max(segment.startFrame, segment.endFrame - 2),
-					segment.endFrame - 1,
-				]),
-				...ikFrames.filter((frame) => frame >= 0 && frame < clipFrames),
-			])].sort((a, b) => a - b);
+		// Which frames are pinned — and whether an opted-in pose start had to be
+		// refused — is decided in one testable place (ardy/pose-pin.js).
+		const pinPlan = planPosePin({
+			startFromPose: ardyStartFromPose,
+			hasPromptSchedule,
+			hasBlockEdits,
+			waypointMode,
+			ikFrames,
+			clipFrames,
+			segments,
+			editedSegments,
+		});
+		if (pinPlan.blockedBy === PIN_BLOCKED.SCHEDULE) {
+			setToast(ko(
+				"Prompt blocks and a pose start cannot be combined — generating from the prompt alone.",
+				"프롬프트 블록과 포즈 시작은 함께 쓸 수 없어요 — 프롬프트만으로 생성합니다.",
+			));
+		}
+		const shouldPin = pinPlan.pin;
+		const constraintFrames = pinPlan.frames;
 		const currentFrame = tlFrame;
 		const poses = constraintFrames.map((constraintFrame) => {
 			if (motion) applyMotionFrame(rig, motion, constraintFrame);
@@ -6807,6 +6809,24 @@ function resizePromptClip(id, edge, rawFrame) {
 							    duration and a separate prompt/duration pair here could only
 							    disagree with it. This box reports the run instead of starting
 							    one. */}
+							{/* Continue out of the blocking pose. The bridge refuses poses
+							    alongside a prompt schedule, so the choice is disabled rather
+							    than accepted and dropped at the door. */}
+							<label className="check ardy-pose-start">
+								<input
+									type="checkbox"
+									data-ardy-start-from-pose
+									checked={ardyStartFromPose && promptClips.length < 2}
+									disabled={promptClips.length >= 2}
+									onChange={(event) => setArdyStartFromPose(event.target.checked)}
+								/>
+								<span>{ko("Start from the current pose", "현재 포즈에서 시작")}</span>
+							</label>
+							<p className="ardy-hint">
+								{promptClips.length >= 2
+									? ko("Prompt blocks generate from history, so they cannot also start from a pose.", "프롬프트 블록은 이전 프레임을 이어서 생성하므로 포즈 시작과 함께 쓸 수 없어요.")
+									: ko("The motion leaves from the pose on this character instead of a neutral stance.", "중립 자세 대신 이 캐릭터의 현재 포즈에서 동작이 시작됩니다.")}
+							</p>
 							{ardyRunning && (
 								<button type="button" className="btn ghost full" onClick={cancelArdy}>
 									{ko("Cancel run", "실행 취소")}
