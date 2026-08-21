@@ -25,7 +25,8 @@
  * the real `.cclayproject` envelope, so anything authored here opens in the
  * studio, and anything authored in the studio opens here.
  */
-import { readFile, realpath, unlink, writeFile } from "node:fs/promises";
+import { open as openFile, readFile, realpath, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -1656,7 +1657,12 @@ registerTool(
 		let raw;
 		try {
 			full = await resolveProjectPath(path, { existing: true });
-			raw = await readFile(full, "utf8");
+			const file = await openFile(full, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+			try {
+				raw = await file.readFile("utf8");
+			} finally {
+				await file.close();
+			}
 		} catch (error) {
 			return text(`Could not read project: ${error.message}`);
 		}
@@ -1719,7 +1725,14 @@ registerTool(
 			name: state.name,
 		});
 		try {
-			await writeFile(full, JSON.stringify(project, null, "\t"), { encoding: "utf8", flag: overwrite ? "w" : "wx", mode: 0o600 });
+			const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_NOFOLLOW |
+				(overwrite ? fsConstants.O_TRUNC : fsConstants.O_EXCL);
+			const file = await openFile(full, flags, 0o600);
+			try {
+				await file.writeFile(JSON.stringify(project, null, "\t"), "utf8");
+			} finally {
+				await file.close();
+			}
 		} catch (error) {
 			return text(`Could not write ${full}: ${error.message}`);
 		}

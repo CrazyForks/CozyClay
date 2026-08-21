@@ -71,8 +71,7 @@ generated frame matches the blocking instead of drifting off into a generic shot
 | `add_character` / `place_character` / `remove_character` | the cast |
 | `focus_character` | choose who the camera frames |
 | `place_object` / `update_object` / `remove_object` | the set — `place_object` also accepts `name` and `parent`, so multi-part assets like "Building A" land as one named assembly |
-| `group_objects` | attach children to a parent so they move as one |
-| `ungroup_objects` | detach children from their parent (same as `group_objects` with `parent: null`) |
+| `group_objects` | attach children to a parent so they move as one; pass `parent: null` to detach |
 | `apply_batch` | execute up to 100 object mutations as one user-visible undo transaction |
 | `render_prompt` | the shot as an AI image or video prompt |
 | `generate_motion` | multi-phase character motion through the ARDY bridge — phases land as prompt blocks |
@@ -82,7 +81,8 @@ generated frame matches the blocking instead of drifting off into a generic shot
 
 Project file tools are restricted to `COZYCLAY_PROJECT_ROOT` (the server
 working directory by default), reject symlink escapes and non-project
-extensions, and require `overwrite: true` before replacing an existing file.
+extensions, open the final path with `O_NOFOLLOW`, and require
+`overwrite: true` before replacing an existing regular file.
 
 Coordinates are metres (`x` right, `z` toward the default camera, `y` height above the floor).
 Rotations are degrees of yaw. Characters are addressed by letter (`"A"`), slot (`"2"`) or id

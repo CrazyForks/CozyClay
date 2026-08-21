@@ -223,6 +223,9 @@ check("prompt carries both subjects", prompt.includes("detective") && prompt.inc
 /* ------------------------------- round-trip ------------------------------ */
 
 const file = new URL("./.verify-project.cclayproject", import.meta.url).pathname;
+const symlink = new URL("./.verify-project-link.cclayproject", import.meta.url).pathname;
+const outside = `/tmp/cozyclay-verify-outside-${process.pid}.cclayproject`;
+const fs = await import("node:fs/promises");
 await call("save_project", { path: file, name: "Verify" });
 check("save refuses implicit overwrite", (await call("save_project", { path: file })).startsWith("Could not write"), "overwrite unexpectedly succeeded");
 check("save allows explicit overwrite", (await call("save_project", { path: file, overwrite: true })).startsWith("Saved"), "explicit overwrite failed");
@@ -233,6 +236,12 @@ await import("node:fs/promises").then((fs) => fs.unlink(file).catch(() => {}));
 
 check("outside project root is rejected", (await call("open_project", { path: "/tmp/nope.cclayproject" })).includes("outside configured project root"));
 check("wrong extension is rejected", (await call("open_project", { path: "/etc/hosts" })).includes("must end in .cclayproject"));
+await fs.writeFile(outside, "outside sentinel", { mode: 0o600 });
+await fs.symlink(outside, symlink);
+check("open refuses final symlink", (await call("open_project", { path: symlink })).startsWith("Could not read"), "symlink open unexpectedly succeeded");
+check("save refuses final symlink", (await call("save_project", { path: symlink, overwrite: true })).startsWith("Could not write"), "symlink overwrite unexpectedly succeeded");
+check("symlink target remains byte-identical", await fs.readFile(outside, "utf8") === "outside sentinel");
+await Promise.all([fs.unlink(symlink).catch(() => {}), fs.unlink(outside).catch(() => {})]);
 
 /* --------------------------------- result -------------------------------- */
 

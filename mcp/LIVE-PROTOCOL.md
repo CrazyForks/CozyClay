@@ -80,7 +80,7 @@ scene document already uses.
 | `capture_frame` | `{}` | `{ width: 640, height: 360, mimeType: "image/png", encoding: "base64", byteSize, data, assertions: { renderable, blackFrame, nonBlackPixels, behindCameraPlane, fartherAlongCameraForward, distanceToFloor, occludedBy, visiblePixelCount, characters } }` | leaves the authored document untouched, but is classified open-world/non-idempotent because an oversized PNG creates a mode-0600 managed temporary artifact. Character visibility and occlusion are computed from mounted engine geometry with bounded ray samples. Missing camera, black frame and compressed payloads above 1 MB fail explicitly. Inline responses honor `max_inline_bytes`; managed artifacts are capped at 20 and expire after 10 minutes. |
 | `set_camera` | `{ x?, y?, z?, focalMm? }` | `{ camera }` | omitted fields keep their value; the **viewport must visibly move** |
 | `add_character` | `{ subject, x?, z?, rot?, model? }` | `{ id }` | `model` is one of the stable character model ids |
-| `update_character` | `{ ref, x?, z?, rot?, subject?, hidden? }` | `{ id }` | `ref` = id, letter (`"A"`) or 1-based slot |
+| `update_character` | `{ ref, x?, y?, z?, rot?, subject?, hidden? }` | `{ id }` | `ref` = id, letter (`"A"`) or 1-based slot |
 | `remove_character` | `{ ref }` | `{ id }` | must refuse to empty the cast |
 | `place_object` | `{ kind, x?, z?, y?, rot?, name?, parent? }` | `{ id }` | `kind` from OBJECT_LIBRARY; optional `name` labels the object and optional `parent` attaches it under another object |
 | `update_object` | `{ id, x?, y?, z?, rot?, rotX?, rotZ?, scale?, scaleX?, scaleY?, scaleZ?, color?, name? }` | `{ id }` | `scale` sets all three axes; per-axis values override it; `name` renames the object |

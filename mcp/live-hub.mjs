@@ -156,11 +156,15 @@ export class LiveHub {
 
 	runExclusive(name, workspaceHandle, work) {
 		const handle = this.resolveWorkspace(name, workspaceHandle);
-		const previous = this.workspaceQueues.get(handle) ?? Promise.resolve();
+		// The MCP server mirrors one selected editor into one in-process scene
+		// document while a tool runs. Serialize across workspaces so another
+		// editor cannot replace that mirror between refresh and mutation.
+		const queueKey = "__global_live_state__";
+		const previous = this.workspaceQueues.get(queueKey) ?? Promise.resolve();
 		const current = previous.catch(() => {}).then(() => work(handle));
-		this.workspaceQueues.set(handle, current);
+		this.workspaceQueues.set(queueKey, current);
 		return current.finally(() => {
-			if (this.workspaceQueues.get(handle) === current) this.workspaceQueues.delete(handle);
+			if (this.workspaceQueues.get(queueKey) === current) this.workspaceQueues.delete(queueKey);
 		});
 	}
 

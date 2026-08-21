@@ -47,6 +47,7 @@ const once = (target, event) =>
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const queueHub = new LiveHub();
 queueHub.editors.set("queue-workspace", { readyState: WebSocket.OPEN });
+queueHub.editors.set("other-workspace", { readyState: WebSocket.OPEN });
 let releaseFirst;
 let signalFirstStarted;
 const firstStarted = new Promise((resolve) => { signalFirstStarted = resolve; });
@@ -57,7 +58,7 @@ const firstQueued = queueHub.runExclusive("first", "queue-workspace", async () =
 	await new Promise((resolve) => { releaseFirst = resolve; });
 	order.push("first:end");
 });
-const secondQueued = queueHub.runExclusive("second", "queue-workspace", async () => {
+const secondQueued = queueHub.runExclusive("second", "other-workspace", async () => {
 	order.push("second");
 });
 await firstStarted;
