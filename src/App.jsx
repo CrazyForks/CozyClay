@@ -170,7 +170,6 @@ import {
 	CUSTOM_MOVE,
 	DEFAULT_SENSOR_FORMAT,
 	IMAGE_MODELS,
-	SENSOR_FORMATS,
 	SHOT_ASPECT_RATIOS,
 	SUBJECT_HEIGHT_M,
 	VIDEO_MODELS,
@@ -6505,14 +6504,6 @@ function resizePromptClip(id, edge, rawFrame) {
 					    so keep its controls beside the Motion tools as well as Shot setup. */}
 					<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>
 					<Slider label={ko("Lens (FOV)", "렌즈 (FOV)")} min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
-					<Field label={ko("Filmback", "필름백")}>
-						<Dropdown
-							ariaLabel={ko("Filmback sensor format", "필름백 센서 포맷")}
-							value={sensorId}
-							options={Object.values(SENSOR_FORMATS).map((sensor) => ({ value: sensor.id, label: sensor.label }))}
-							onChange={setSensorFormat}
-						/>
-					</Field>
 						<div className="readout">
 						<span title={ko("camera to subject", "카메라와 피사체 거리")}>{shot.distance.toFixed(2)} m</span>
 						<span title={ko("nearest prime on the cropped filmback", "크롭된 필름백 기준 가장 가까운 단렌즈")}>{shot.focalMm} mm</span>
