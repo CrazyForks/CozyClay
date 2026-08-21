@@ -49,7 +49,17 @@ expect("ARDY status lines accumulate in the console window", app.includes("repor
 expect("the sidebar has no mode tabs left", !app.includes("sidebarTab") && !app.includes("inspector-tabs") && !css.includes(".inspector-tabs"));
 expect("a character owns the ARDY generation form", app.includes('<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("ARDY motion", "ARDY 모션")}>'));
 expect("the camera owns the lens controls", app.includes('<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>'));
-expect("the scene owns the generation prompt", app.includes('<Foldout hidden={!isSceneSelection} title={ko("Prompt", "프롬프트")}>'));
+// The scene still owns the prompt — it describes the whole render, not one
+// performer — but reselecting the scene just to press Generate was friction,
+// so it is reachable from the character being staged as well.
+expect(
+	"the generation prompt is reachable from the scene and the character",
+	app.includes('<Foldout hidden={!(isSceneSelection || isCharacterSelection)} title={ko("Prompt", "프롬프트")}>'),
+);
+expect(
+	"the prompt does not leak onto selections that do not own it",
+	!app.includes('hidden={!isCameraSelection} title={ko("Prompt"') && app.includes('<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>'),
+);
 expect("selection routing is derived once, not repeated per foldout", app.includes("const isCharacterSelection = selectedHierarchyId ===") && app.includes("const inspectorHasContent ="));
 expect("an unowned selection explains itself instead of showing a blank column", app.includes("data-inspector-empty") && css.includes(".inspector-empty"));
 expect("the heavy motion pipeline starts collapsed", app.includes("function Foldout({ title, hidden, defaultOpen = true, openSignal = 0, children })") && app.includes("useState(defaultOpen)"));

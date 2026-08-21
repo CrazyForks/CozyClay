@@ -6596,7 +6596,12 @@ function resizePromptClip(id, edge, rawFrame) {
 					{photoPoseError && <p className="studio-hint error" data-pose-photo-error role="status">{photoPoseError}</p>}
 				</Foldout>
 
-				<Foldout hidden={!isSceneSelection} title={ko("Prompt", "프롬프트")}>
+				{/* Generating is the point of the whole panel, and the operator spends
+				    their time on a character — making them reselect the scene just to
+				    press Generate was friction for no gain. The scene still owns the
+				    prompt (it describes the whole render, not one performer), it is
+				    simply also reachable from the subject being staged. */}
+				<Foldout hidden={!(isSceneSelection || isCharacterSelection)} title={ko("Prompt", "프롬프트")}>
 						<div className="segmented" data-active={mode}>
 							<button className={mode === "image" ? "active" : ""} onClick={() => setMode("image")}>
 							{ko("Image", "이미지")}
