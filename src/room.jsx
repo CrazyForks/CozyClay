@@ -1,3 +1,6 @@
+import { useEffect, useMemo } from "react";
+import * as THREE from "three";
+
 /**
  * The blocking set: an open stage floor.
  *
@@ -14,16 +17,67 @@
 
 // Bright enough to sit clearly above the grid lines: the deck reads as a lit
 // surface with lines drawn ON it, not as a dark line-texture tiling to the fog.
-const FLOOR = "#f4f0e8";
+//
+// Lit, not unlit. An unlit deck renders one flat colour across its whole 500 m,
+// which costs an exported blocking frame two depth cues at once: the falloff
+// that says how far away the floor is, and the contact shading that says the
+// subject is standing ON it rather than floating. The colour is lifted to
+// compensate for the shading the lambert term now applies, so the deck keeps
+// the same on-screen brightness it had while unlit.
+const FLOOR = "#fffdf7";
 
 export const STAGE_SIZE = 500;
 
+/** Metres per grid tile; one heavy line per tile, minor lines every metre. */
+const TILE_M = 10;
+
+/**
+ * The measuring grid, drawn INTO the deck rather than floating above it.
+ *
+ * A GridHelper is a separate object a couple of millimetres over a 500 m
+ * plane, and at that separation it loses to the floor across almost the whole
+ * frame — it survives only where the surface is grazed near the horizon, which
+ * is exactly where it is useless. Baking the lines into the floor's own map
+ * ends the contest: the marks ARE the surface, so they cannot z-fight with it,
+ * cannot be sorted behind it, and shade and fog exactly as the deck does.
+ */
+function makeGridTexture() {
+	const PX = 1024;
+	const pxPerM = PX / TILE_M;
+	const canvas = document.createElement("canvas");
+	canvas.width = PX;
+	canvas.height = PX;
+	const ctx = canvas.getContext("2d");
+	ctx.fillStyle = "#ffffff";
+	ctx.fillRect(0, 0, PX, PX);
+	ctx.strokeStyle = "rgba(120, 110, 92, 0.34)";
+	ctx.lineWidth = 2;
+	for (let m = 1; m < TILE_M; m += 1) {
+		const p = Math.round(m * pxPerM) + 0.5;
+		ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, PX); ctx.stroke();
+		ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(PX, p); ctx.stroke();
+	}
+	// The ten-metre lines carry the scale read, so they stay heavier.
+	ctx.strokeStyle = "rgba(96, 86, 68, 0.6)";
+	ctx.lineWidth = 5;
+	ctx.strokeRect(0, 0, PX, PX);
+	const texture = new THREE.CanvasTexture(canvas);
+	texture.wrapS = THREE.RepeatWrapping;
+	texture.wrapT = THREE.RepeatWrapping;
+	texture.repeat.set(STAGE_SIZE / TILE_M, STAGE_SIZE / TILE_M);
+	texture.anisotropy = 8;
+	texture.colorSpace = THREE.SRGBColorSpace;
+	return texture;
+}
+
 export function Room() {
+	const grid = useMemo(() => makeGridTexture(), []);
+	useEffect(() => () => grid.dispose(), [grid]);
 	return (
 		<group>
-			<mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]}>
+			<mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
 				<planeGeometry args={[STAGE_SIZE, STAGE_SIZE]} />
-				<meshBasicMaterial color={FLOOR} />
+				<meshLambertMaterial color={FLOOR} map={grid} />
 			</mesh>
 		</group>
 	);
@@ -35,7 +89,26 @@ export function StageLights() {
 		<>
 			<hemisphereLight args={["#fffdf6", "#d8d0c3", 0.9]} />
 			<ambientLight intensity={0.18} />
-			<directionalLight color="#fff8e8" position={[6, 9, 4]} intensity={1.12} />
+			{/* Only the key casts: one soft, unambiguous contact shadow reads as
+			    ground contact, while three overlapping shadows read as noise. The
+			    map covers the blocking area rather than the whole 500 m deck — a
+			    stage-wide frustum would spend its resolution on empty floor. */}
+			<directionalLight
+				color="#fff8e8"
+				position={[6, 9, 4]}
+				intensity={1.12}
+				castShadow
+				shadow-mapSize-width={2048}
+				shadow-mapSize-height={2048}
+				shadow-camera-left={-14}
+				shadow-camera-right={14}
+				shadow-camera-top={14}
+				shadow-camera-bottom={-14}
+				shadow-camera-near={0.5}
+				shadow-camera-far={40}
+				shadow-bias={-0.0006}
+				shadow-normalBias={0.02}
+			/>
 			<directionalLight color="#dff6f7" position={[-6, 4, -4]} intensity={0.36} />
 			<directionalLight color="#ffffff" position={[2, 3, 9]} intensity={0.22} />
 		</>

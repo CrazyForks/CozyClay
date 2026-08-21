@@ -593,6 +593,9 @@ const Character = memo(function Character({ url, position, rot, tint, pose, scal
 					metalness: 0,
 				});
 				child.frustumCulled = false;
+				// The subject's own shadow is what plants it on the deck; a blocking
+				// frame without one leaves the figure floating over flat colour.
+				child.castShadow = true;
 			}
 		});
 		// Stamp the bind pose while the rig is still untouched: the pose effect
@@ -960,40 +963,16 @@ function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
 	);
 }
 
-/** Unity-style scene grid over the whole open stage, editor chrome only.
-    Two tiers keep it legible at any zoom: 1 m minor cells for placement and a
-    darker 10 m major line that survives wide framings where minor lines blur
-    into a wash. Both ride the gizmo layer so exports and the plan never pick
-    them up, sit a hair above the deck to dodge z-fighting, and never swallow
-    a raycast — floor clicks pass straight through to the ground plane. Warm
-    greys tuned to the clay floor (#e7e1d7). */
-function SceneGrid() {
-	const grids = useMemo(() => {
-		const make = (divisions, color, opacity, y) => {
-			const helper = new THREE.GridHelper(500, divisions, color, color);
-			helper.material.transparent = true;
-			helper.material.opacity = opacity;
-			helper.material.depthWrite = false;
-			helper.position.y = y;
-			helper.layers.set(GIZMO_LAYER);
-			helper.raycast = () => null;
-			return helper;
-		};
-		return [
-			// Value hierarchy against the bright deck (#f4f0e8): quiet 1 m cells
-			// for placement, assertive 10 m lines for structure. The gap between
-			// floor and minor keeps the tiling from reading as a repeating texture.
-			make(500, 0xa89d8a, 0.4, 0.002), // minor: 1 m cells, subtle
-			make(50, 0x6a5f4e, 0.9, 0.003), // major: 10 m lines, clearly darker
-		];
-	}, []);
-	return (
-		<>
-			<primitive object={grids[0]} />
-			<primitive object={grids[1]} />
-		</>
-	);
-}
+// How far the deck runs in an EXPORTED frame. The viewport fades it out at
+// 18..54 m to keep the working view clean; a blocking frame needs the far edge
+// to survive, so the falloff starts later and ends further away, letting the
+// floor resolve into a horizon instead of dissolving into the background.
+//
+// Both values must stay inside the shot camera's far plane (100 m) — geometry
+// past it is clipped outright, so a fog range that ended beyond it would cut
+// the deck off mid-fade and take the horizon with it.
+const CAPTURE_FOG_NEAR = 55;
+const CAPTURE_FOG_FAR = 95;
 
 /** Offscreen aspect-aware read-back, always from the shot camera. */
 function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
@@ -1018,12 +997,29 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 				cam.aspect = width / height;
 				cam.updateProjectionMatrix();
 				const previous = gl.getRenderTarget();
+				// The viewport's fog dissolves the deck into the background by ~54 m
+				// so the working view has no horizon to distract from blocking. An
+				// exported frame wants the opposite: the horizon IS the vanishing
+				// point, and without it the floor has no far edge to read depth
+				// against. Push the falloff back for this draw only, then restore
+				// it so the viewport is untouched.
+				const fog = scene.fog;
+				const fogNear = fog?.near;
+				const fogFar = fog?.far;
+				if (fog) {
+					fog.near = CAPTURE_FOG_NEAR;
+					fog.far = CAPTURE_FOG_FAR;
+				}
 				try {
 					gl.setRenderTarget(target);
 					gl.render(scene, cam);
 					gl.readRenderTargetPixels(target, 0, 0, width, height, buffer);
 				} finally {
 					gl.setRenderTarget(previous);
+					if (fog) {
+						fog.near = fogNear;
+						fog.far = fogFar;
+					}
 				}
 				return buffer;
 			},
@@ -6027,7 +6023,11 @@ function resizePromptClip(id, edge, rawFrame) {
 				</div>
 
 					<div className="stage" id="stage" ref={stageRef} data-render-loop={renderActive ? "always" : "demand"}>
-						<Canvas frameloop={renderActive ? "always" : "demand"} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true }}>
+						{/* Shadows were off, so every castShadow in props.jsx was inert and
+						    nothing on the open stage ever touched the floor. A contact
+						    shadow is the cue that says a subject stands ON the deck rather
+						    than floats above it — without walls it is the only one left. */}
+						<Canvas shadows frameloop={renderActive ? "always" : "demand"} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true }}>
 							<RenderLoopController stageRef={stageRef} />
 							<ViewportLayoutInvalidator
 								insetX={insetPos?.x ?? null}
@@ -6273,9 +6273,6 @@ function resizePromptClip(id, edge, rawFrame) {
 								}
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
 							/>
-							{/* Authoring chrome: the grid and pins belong to the Scene tab
-							    only — PlayView is the finished output and shows none of it. */}
-							{centerTab === "scene" && <SceneGrid />}
 							{centerTab === "scene" && railCurve && <CameraRailScenePreview points={railCurve.points} />}
 							{waypointMode && centerTab === "scene" && (
 								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />

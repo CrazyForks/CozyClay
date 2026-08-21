@@ -265,7 +265,7 @@ export function composePrompt({
 	const move = cameraMove === CUSTOM_MOVE ? customMove.trim() || "static, locked-off shot" : cameraMove.toLowerCase();
 
 	const guide =
-		"Use the attached blocking frame ONLY as a camera and staging guide — it fixes the exact framing, this camera angle, the lens, and the subject placement. Replace the entire setting with the described environment and render real people; do NOT reproduce its grey mannequins, grey box set, or flat lighting.";
+		"Use the attached blocking frame ONLY as a camera and staging guide — it fixes the exact framing, this camera angle, the lens, and the subject placement. Its floor grid is a measuring aid that encodes distance and scale: read the subject's depth and size from it, but do NOT draw the grid itself. Replace the entire setting with the described environment and render real people; do NOT reproduce its grey mannequins, grey box set, measurement grid, or flat lighting.";
 
 	const parts = [
 		opening,
