@@ -96,8 +96,9 @@ The server hosts `ws://127.0.0.1:5184/live` by default (`COZYCLAY_LIVE_PORT` or
 Vite build connects to the selected loopback endpoint; `npm run dev` preserves the environment
 variable for the browser. A CozyClay editor tab then connects on its own; `live_status` tells you whether one is attached. With an editor connected, mutations
 forward to it and reads report its real state — the screen you are looking at is the source of
-truth. Without one, headless-capable tools keep their in-memory behaviour while the four
-live-only tools named above return an explicit connected-editor error. In `--http` mode each session
+truth. Without one, headless-capable tools keep their in-memory behaviour while `capture_frame`
+returns an explicit connected-editor error. The other three live-only tools return a readable
+ordinary response explaining that an editor is required. In `--http` mode each session
 child attempts to bind the live port, so one session owns the editor and the others
 intentionally run memory-only.
 
@@ -117,8 +118,9 @@ seconds: 10
 
 It tiles them into contiguous ARDY segments, streams the generation through the local bridge
 (`127.0.0.1:5181`, started by `npm run dev`), and — when an editor is connected — loads the
-result onto the active character with one prompt block per phase on the timeline. Pass a
-previous `motion_url` to reload a clip without generating again.
+result onto the active character with prompt blocks on the timeline. Beats longer than the
+per-block limit are split into consecutive blocks, so one phase can produce multiple blocks.
+Pass a previous `motion_url` to reload a clip without generating again.
 
 ## Round-trips with the studio
 
