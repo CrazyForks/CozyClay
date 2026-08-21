@@ -33,6 +33,20 @@ expect("double-click no longer swaps Scene and Top-View", !app.includes('setView
 expect("Scene toolbar exposes shot preset, aspect, FOV, recenter, and Top-View controls", app.includes("viewport-toolbar-field shot-field") && app.includes("SHOT_ASPECT_PRESETS") && app.includes("viewport-fov-control") && app.includes("Recenter on subject") && app.includes('ko("Top", "탑")'));
 expect("Scene and PlayView tools share one horizontal title bar", app.includes('className="viewport-titlebar"') && css.includes(".viewport-titlebar") && css.includes("position: static"));
 expect("PlayView toolbar exposes framing readouts, playback, and recording", app.includes("editor-toolbar play-tools") && app.includes("shotOutput.label") && app.includes("toggleShotRecording"));
+// Letterbox bars are editor chrome. Painting them with the scene background
+// put a sheet of near-white either side of the frame the moment a narrower
+// aspect was picked; they wear the editor's own tone now, and the scene draw
+// is scissored to the image so the sky inside the frame is unchanged.
+expect(
+	"letterbox bars are painted in the editor's tone, not the sky",
+	dualview.includes('export const LETTERBOX = new THREE.Color("#1e1e1e");') &&
+	dualview.includes("gl.setClearColor(LETTERBOX, 1);") &&
+	css.includes("--bg: #1e1e1e"),
+);
+expect(
+	"the scene draw is scissored to the image so the bars survive it",
+	dualview.includes("gl.setScissor(img.x, imgY, img.w, img.h);\n\t\t\tgl.setViewport(img.x, imgY, img.w, img.h);"),
+);
 expect("selected aspect reaches the shot renderer", app.includes("shotAspect={shotOutput.aspect}") && dualview.includes("shotAspect = SHOT_ASPECT") && dualview.includes("fitAspect(mainRect, shotAspect)"));
 expect("video and still capture use the selected output dimensions", app.includes("width: shotOutput.width") && app.includes("width={shotOutput.width}") && app.includes("canvas.width = shotOutput.width"));
 expect("double-clicking the inset body folds it", app.includes('event.target.closest?.(".vp-inset-tag")') && app.includes("insetCollapsed: !current.insetCollapsed"));

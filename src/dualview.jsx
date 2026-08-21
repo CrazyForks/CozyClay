@@ -24,6 +24,10 @@ export const POSER_LAYER = 4;
 export const GIZMO_LAYER = 5;
 /** the shot camera is locked to the export aspect no matter which pane holds it */
 export const SHOT_ASPECT = 16 / 9;
+/** Letterbox bars are chrome, so they wear the editor's background (--bg in
+ * styles.css) rather than the scene's sky. Kept in sync by eye: a mismatch
+ * here reads as a seam around the frame, not as a wrong colour. */
+export const LETTERBOX = new THREE.Color("#1e1e1e");
 /** half-height of the plan frustum, in metres — covers the full camera throw */
 export const PLAN_EXTENT = 12.4;
 
@@ -213,13 +217,19 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 		const planPane = planIsMain ? mainRect : insetRect;
 		const shotPane = planIsMain ? insetRect : mainRect;
 
-		// scissor bounds the clear, viewport bounds the image: letterbox bars in
-		// the shot pane get painted with the scene background instead of leaking
-		// whatever was underneath.
+		// scissor bounds the clear, viewport bounds the image. The bars around a
+		// letterboxed frame are editor surface, not set: painting them with the
+		// scene background put a sheet of near-white either side of the shot the
+		// moment an aspect narrower than the pane was chosen, which is glare
+		// rather than information. They take the editor's own tone instead, and
+		// the scene draw is scissored to the image so the sky inside the frame is
+		// untouched.
 		const draw = (camera, pane, imageRect, ink = true) => {
 			const glY = size.height - (pane.y + pane.h);
 			gl.setScissorTest(true);
 			gl.setScissor(pane.x, glY, pane.w, pane.h);
+			gl.setClearColor(LETTERBOX, 1);
+			gl.clear(true, true, false);
 			const img = imageRect ?? pane;
 			const imgY = size.height - (img.y + img.h);
 			if (ink) {
@@ -244,7 +254,9 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 			}
 			gl.setRenderTarget(null);
 			gl.setScissorTest(true);
-			gl.setScissor(pane.x, glY, pane.w, pane.h);
+			// The image only: three.js clears with the scene background before it
+			// draws, so scissoring to the pane here would repaint the bars white.
+			gl.setScissor(img.x, imgY, img.w, img.h);
 			gl.setViewport(img.x, imgY, img.w, img.h);
 			gl.render(scene, camera);
 			if (ink) {
