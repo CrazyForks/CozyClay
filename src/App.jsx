@@ -179,6 +179,7 @@ import {
 import { captureFraming, classifyMove, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
 import { sampleAt } from "./sample-at.js";
 import { exportOffscreenVideo } from "./offscreen-export.js";
+import { serializeOtio } from "./otio.js";
 import {
 	addShotAtFrame,
 	cutAtFrame,
@@ -3614,6 +3615,44 @@ globalThis.playMode = centerTab === "play";
 		});
 	}
 
+	function downloadOtioCutList() {
+		if (!shots.length) {
+			setToast(ko("Add at least one Shot before exporting OTIO", "OTIO를 내보내려면 샷을 하나 이상 추가하세요"));
+			return;
+		}
+		try {
+			const activeScene = scenes.find((scene) => scene.id === activeSceneId);
+			const exportScene = {
+				...playbackScene,
+				name: activeScene?.name,
+				activeCharacterId: activeChar.id,
+				characters: characters.map((entry) => ({
+					...entry,
+					sessionMotion: entry.id === activeChar.id ? motion : entry.sessionMotion,
+				})),
+				objects: sceneObjects,
+			};
+			const serialized = serializeOtio(exportScene, shots);
+			const blob = new Blob([serialized], { type: "application/json" });
+			const url = URL.createObjectURL(blob);
+			const anchor = document.createElement("a");
+			const slug = (activeScene?.name ?? "cut-list")
+				.toLowerCase()
+				.replace(/[^a-z0-9]+/g, "-")
+				.replace(/^-+|-+$/g, "") || "cut-list";
+			anchor.href = url;
+			anchor.download = `cozyclay-${slug}.otio`;
+			anchor.click();
+			setTimeout(() => URL.revokeObjectURL(url), 10_000);
+			const frameCount = shots.reduce((total, shot) => total + shot.endFrame - shot.startFrame + 1, 0);
+			setToast(isKo
+				? `OTIO 저장됨 · ${shots.length}샷 · ${frameCount}프레임`
+				: `OTIO saved · ${shots.length} shots · ${frameCount} frames`);
+		} catch (error) {
+			setToast(error?.message || String(error));
+		}
+	}
+
 	function captureCurrentFraming() {
 		const cam = shotCamRef.current;
 		const pos = cam ? cam.position : cameraPos;
@@ -5814,6 +5853,9 @@ function resizePromptClip(id, edge, rawFrame) {
 						<button type="button" onClick={() => stepFrame(1)} aria-label={ko("Next frame", "다음 프레임")}>▶│</button>
 						<span className="viewport-readout">1.00×</span>
 						<span className="viewport-toolbar-separator" aria-hidden="true" />
+						<button type="button" disabled={!shots.length} onClick={downloadOtioCutList}>
+							OTIO
+						</button>
 						<button
 							type="button"
 							className={recState === "recording" ? "recording" : ""}
