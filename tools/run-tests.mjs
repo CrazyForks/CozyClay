@@ -69,6 +69,7 @@ const NODE_FILES = [
 	"test/verify-timeline-camera.mjs",
 	"test/verify-timeline-shots.mjs",
 	"test/verify-trim.mjs",
+	"test/verify-usd-camera.mjs",
 	"test/verify-video-frames.mjs",
 ];
 
