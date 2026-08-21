@@ -2,8 +2,9 @@ import { defineConfig } from "vite";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 
-const ardyBridgeUrl =
-	process.env.CCLAY_ARDY_BRIDGE_URL || "http://127.0.0.1:5181";
+const ardyBridgeUrl = process.env.COZYCLAY_BRIDGE_PORT
+	? `http://127.0.0.1:${process.env.COZYCLAY_BRIDGE_PORT}`
+	: process.env.CCLAY_ARDY_BRIDGE_URL || "http://127.0.0.1:5181";
 
 export default defineConfig({
 	// Root-absolute on purpose: the site has its own apex domain, and the studio
@@ -57,7 +58,8 @@ export default defineConfig({
 	server: {
 		port: 5180,
 		// Dev-only: the ARDY sidecar (tools/ardy/bridge.mjs) is an optional
-		// companion on 127.0.0.1:5181. The production build stays fully static
+		// companion on loopback. COZYCLAY_BRIDGE_PORT selects it for dev-full;
+		// direct Vite use falls back to 5181. The production build stays fully static
 		// (`base: "./"`, no build-time coupling), so this proxy must never be
 		// promoted into a server-side requirement.
 		proxy: {

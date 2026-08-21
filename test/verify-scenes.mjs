@@ -321,6 +321,22 @@ assert.match(
 	"the outgoing scene snapshots actor state and the shot aspect"
 );
 assert.match(appSource, /setCharacters\(stage\.characters\)/, "opening a scene restores its cast");
+const openSceneBody = /function openScene\(scene, nextScenes\) \{([\s\S]*?)\n\t\}/.exec(appSource)?.[1] ?? "";
+assert.doesNotMatch(
+	openSceneBody,
+	/setRigs\(\{\}\)/,
+	"opening a scene preserves mounted rig instances so motion can load immediately"
+);
+assert.match(
+	appSource,
+	/const rig = activeRig \?\? await waitForRig\(activeChar\.id\)/,
+	"motion loading waits for the active rig instead of losing the request to mount timing"
+);
+assert.match(
+	openSceneBody,
+	/setRigMountEpoch\(\(value\) => value \+ 1\)/,
+	"opening a scene remounts characters so their rig callbacks report again"
+);
 assert.doesNotMatch(appSource, /InstallApp/, "the premature Install app control is no longer mounted or imported");
 
 console.log("all scene document checks PASS");

@@ -2731,6 +2731,18 @@ input[type=range]::-moz-range-thumb {
 	color: #fff;
 }
 
+.tl-camera-tool.danger {
+	border-color: rgba(229, 72, 77, .38);
+	color: #ffc9cb;
+}
+
+.tl-camera-tool.danger:hover,
+.tl-camera-tool.danger:focus-visible {
+	background: rgba(229, 72, 77, .18);
+	border-color: #e5484d;
+	color: #fff;
+}
+
 .tl-camera-head:disabled,
 .tl-camera-tool:disabled,
 .tl-camera-editor input:disabled {

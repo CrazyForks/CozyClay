@@ -90,8 +90,8 @@ The studio ships an [MCP](https://modelcontextprotocol.io) server, so an AI assi
 ```
 
 Drop that into `claude_desktop_config.json` (or any MCP client config) and restart the client. The
-first run prints one `npm install` line: the MCP SDK is a 95-package tree, and opening the studio
-should never wait on it, so those dependencies are fetched only when you actually want the server.
+first run automatically installs the MCP SDK's 95-package tree; opening the studio never waits on
+it, so those dependencies are fetched only when you actually want the server.
 
 - **Editor open?** Tool calls move the visible viewport — camera, cast, set, generated motion, prompt blocks on the timeline.
 - **No editor?** The same tools run headless: block scenes, derive film vocabulary (“wide shot · right profile · knee level · 24mm”), render AI video prompts, and write `.cclayproject` files the studio opens.
@@ -152,8 +152,8 @@ See [`tools/ardy/README.md`](tools/ardy/README.md) for details. This workflow is
 | `npm run test:theme` / `test:appearance` / `test:layout` | UI theme, appearance, layout |
 | `npm run test:lifecycle` | Dev-server process lifecycle |
 | `npm run test:ardy` | ARDY conversion, playback, and IK pipeline |
-| `cd mcp && npm run verify` | MCP server over real stdio — all 420 framing combinations |
-| `cd mcp && npm run verify:live` | Live-control protocol against a fake editor |
+| `cd mcp && npm install && npm run verify` | MCP server over real stdio — all 420 framing combinations |
+| `cd mcp && npm run verify:live` | Live-control protocol against a fake editor (same `npm install` first) |
 | `npm run build` | Production build |
 
 Ad-hoc browser QA, while a dev server is available:
@@ -167,6 +167,8 @@ npm run qa:browser -- <qa-script>
 Found something broken, or want a feature? [Open an issue](https://github.com/HaD0Yun/CozyClay/issues) — bug reports with a repro are the most useful thing you can send.
 
 **Repository hygiene.** Generated motion archives, QA output, build output, logs and local runtime artifacts are not source files and must not be committed. Keep `tools/ardy/out/`, `artifacts/`, `dist/`, `.gjc/` and `.npz` files local.
+
+All runtime libraries intentionally live in `devDependencies` because the published npm package ships the prebuilt `dist/`, so `npx cozyclay` must not install the studio's dependency tree.
 
 ## License & credits
 

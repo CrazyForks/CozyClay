@@ -29,11 +29,13 @@ function springStep(pos, vel, target, omega, dt) {
 	return [pos + nextVel * dt, nextVel];
 }
 
-/** scalar spring whose speed limit is applied before position integration */
+/** scalar forward spring whose speed limit is applied before position integration */
 function cappedSpringStep(pos, vel, target, omega, dt, maxSpeed) {
 	const acc = omega * omega * (target - pos) - 2 * omega * vel;
 	const cap = Math.max(0, Number.isFinite(maxSpeed) ? maxSpeed : 0);
-	const nextVel = Math.max(-cap, Math.min(vel + acc * dt, cap));
+	// Rail targets never move backward; discard incompatible spring velocity
+	// before integration so the authored arc remains a forward-only invariant.
+	const nextVel = Math.max(0, Math.min(vel + acc * dt, cap));
 	return [pos + nextVel * dt, nextVel];
 }
 
@@ -58,18 +60,28 @@ const clamp = (value, min, max) => Math.max(min, Math.min(value, max));
 const rounded = (value, places) => Number(value.toFixed(places));
 
 /**
- * Turn the operator's current viewport framing into the three physical Follow
+ * Turn the operator's current viewport framing into the physical Follow
  * settings. These are observations, not knobs: moving the camera is the input.
  * Pitch is stored as an offset from the rig's automatic chest aim so replaying
- * the Follow track reproduces the angle the operator composed by hand.
+ * the Follow track reproduces the angle the operator composed by hand. The
+ * orbit offset records whether that composition was in front, beside or behind
+ * the subject relative to its travel direction.
  */
-export function followFramingFromCamera(position, pitch, subject, aimHeight = FOLLOW_DEFAULTS.aimHeight) {
+export function followFramingFromCamera(position, pitch, subject, aimHeight = FOLLOW_DEFAULTS.aimHeight, travelDir = null) {
 	const planarDistance = Math.hypot(position.x - subject.x, position.z - subject.z);
 	const automaticPitch = aimAngles(position, { x: subject.x, y: aimHeight, z: subject.z }).pitch;
+	const cameraOffset = normalize({ x: position.x - subject.x, z: position.z - subject.z });
+	const direction = travelDir && Math.hypot(travelDir.x, travelDir.z) > 1e-6 ? normalize(travelDir) : { x: 0, z: 1 };
+	const behind = { x: -direction.x, z: -direction.z };
+	const orbitOffsetDeg = (Math.atan2(
+		behind.x * cameraOffset.z - behind.z * cameraOffset.x,
+		behind.x * cameraOffset.x + behind.z * cameraOffset.z,
+	) * 180) / Math.PI;
 	return {
 		distance: rounded(clamp(planarDistance, 0.5, 15), 2),
 		height: rounded(clamp(position.y, 0.2, 6), 2),
 		pitchOffsetDeg: rounded(clamp(((pitch - automaticPitch) * 180) / Math.PI, -30, 30), 1),
+		orbitOffsetDeg: rounded(clamp(orbitOffsetDeg, -180, 180), 1),
 	};
 }
 
@@ -88,7 +100,9 @@ export const FOLLOW_DEFAULTS = {
 	aimHeight: 1.35,
 	/** vertical tilt added after automatic aiming, in degrees */
 	pitchOffsetDeg: 0,
-	/** hard cap on camera translation (m/s) — a crew has legs, not thrusters */
+	/** authored position around the subject: 0 behind, ±90 side, 180 front */
+	orbitOffsetDeg: 0,
+	/** cap on unconstrained steering (m/s); exact follow distance wins */
 	maxSpeed: 2.8,
 	/** where a rail dolly opens: the authored head or legacy auto placement */
 	railStartMode: "head",
@@ -144,6 +158,16 @@ function normalize(v) {
 	return { x: v.x / len, z: v.z / len };
 }
 
+function rotateDirection(direction, degrees) {
+	const angle = ((Number.isFinite(degrees) ? degrees : 0) * Math.PI) / 180;
+	const cos = Math.cos(angle);
+	const sin = Math.sin(angle);
+	return {
+		x: direction.x * cos - direction.z * sin,
+		z: direction.x * sin + direction.z * cos,
+	};
+}
+
 /** smoothed subject velocities (m/s), the operator's lead signal */
 function smoothedVelocities(subject, fps) {
 	const out = [];
@@ -162,8 +186,9 @@ function smoothedVelocities(subject, fps) {
 
 /**
  * Free follow (no rail): steadicam behind the subject. The position target
- * sits `distance` metres behind the smoothed travel direction; the camera
- * spring-chases it, the aim spring-chases a lead point. Returns one
+ * sits `distance` metres behind the smoothed travel direction; a spring
+ * chooses the trailing direction, then the camera is projected onto the
+ * exact authored radius. The aim spring chases a lead point. Returns one
  * {pos, yaw, pitch} per subject frame.
  */
 export function buildFollowTrack(subject, fps, params = {}) {
@@ -171,6 +196,7 @@ export function buildFollowTrack(subject, fps, params = {}) {
 	if (!subject || subject.length === 0) return [];
 	const dt = 1 / Math.max(fps, 1);
 	const dirs = travelDirections(subject, fps, p.initialDir ?? null, p.dirBlend);
+	const offsets = dirs.map((dir) => rotateDirection({ x: -dir.x, z: -dir.z }, p.orbitOffsetDeg));
 	const vels = smoothedVelocities(subject, fps);
 	const omega = omegaFor(p.response);
 	const aimOmega = omegaFor(p.aimResponse);
@@ -180,8 +206,8 @@ export function buildFollowTrack(subject, fps, params = {}) {
 	const lagComp = 2 / omega;
 
 	// start settled on the frame-0 target: a shot opens composed, not sliding
-	let px = subject[0].x - dirs[0].x * p.distance;
-	let pz = subject[0].z - dirs[0].z * p.distance;
+	let px = subject[0].x + offsets[0].x * p.distance;
+	let pz = subject[0].z + offsets[0].z * p.distance;
 	let py = p.height;
 	let vx = 0, vz = 0, vy = 0;
 	let ax = subject[0].x;
@@ -191,8 +217,10 @@ export function buildFollowTrack(subject, fps, params = {}) {
 	const track = [];
 	for (let f = 0; f < subject.length; f += 1) {
 		if (f > 0) {
-			const tx = subject[f].x - dirs[f].x * p.distance + vels[f].x * lagComp;
-			const tz = subject[f].z - dirs[f].z * p.distance + vels[f].z * lagComp;
+			const previousX = px;
+			const previousZ = pz;
+			const tx = subject[f].x + offsets[f].x * p.distance + vels[f].x * lagComp;
+			const tz = subject[f].z + offsets[f].z * p.distance + vels[f].z * lagComp;
 			// planar spring integrated by hand so the SPEED cap binds the
 			// velocity vector, not each axis separately
 			vx += (omega * omega * (tx - px) - 2 * omega * vx) * dt;
@@ -204,6 +232,25 @@ export function buildFollowTrack(subject, fps, params = {}) {
 			}
 			px += vx * dt;
 			pz += vz * dt;
+			// Follow distance is a hard framing constraint. The spring chooses
+			// the smooth trailing direction, then this projection puts the
+			// camera back on the requested radius for this exact subject frame.
+			let offsetX = px - subject[f].x;
+			let offsetZ = pz - subject[f].z;
+			const radius = Math.hypot(offsetX, offsetZ);
+			if (radius < 1e-6) {
+				offsetX = offsets[f].x;
+				offsetZ = offsets[f].z;
+			} else {
+				offsetX /= radius;
+				offsetZ /= radius;
+			}
+			px = subject[f].x + offsetX * p.distance;
+			pz = subject[f].z + offsetZ * p.distance;
+			// Keep the integrator honest after projection so radial error does
+			// not accumulate invisibly and burst into a later frame.
+			vx = (px - previousX) / dt;
+			vz = (pz - previousZ) / dt;
 			[py, vy] = springStep(py, vy, p.height, omega, dt);
 			const aimTx = subject[f].x + vels[f].x * p.lead;
 			const aimTz = subject[f].z + vels[f].z * p.lead;
@@ -334,20 +381,24 @@ function nearestS(rail, point) {
 }
 
 /**
- * Rail follow: the camera lives ON the drawn rail; each frame the grip finds
- * the nearby arc position whose distance to the subject is closest to
- * `distance` and spring-pushes toward it (speed-capped — a dolly has mass).
- * The operator aims exactly as in the free follow. Local search only: the
- * dolly never teleports across the stage to a globally better spot.
+ * Rail follow: the camera lives ON the drawn rail and traverses the authored
+ * arc over the clip. `distance` remains a soft framing preference: nearby
+ * arc positions can refine the timed target, but they can never make the
+ * dolly stop at the first point that happens to match the preference.
+ * The operator aims exactly as in the free follow. The timed target and its
+ * local distance correction are both speed-capped, so the dolly never
+ * teleports across the stage.
  */
 export function buildRailFollowTrack(subject, fps, rail, params = {}) {
-	const p = { ...FOLLOW_DEFAULTS, searchWindow: 2.5, backtrackPenalty: 1.0, ...params };
+	const p = { ...FOLLOW_DEFAULTS, searchWindow: 2.5, distanceInfluence: 0.35, ...params };
 	if (!subject || subject.length === 0 || !rail || rail.length < 1e-6) return [];
 	const dt = 1 / Math.max(fps, 1);
 	const vels = smoothedVelocities(subject, fps);
 	const omega = omegaFor(p.response);
 	const aimOmega = omegaFor(p.aimResponse);
 	const step = Math.max(rail.length / Math.max(rail.points.length - 1, 1), 1e-3);
+	const authoredSpeed = subject.length > 1 ? rail.length / ((subject.length - 1) * dt) : 0;
+	const progressLead = (2 * authoredSpeed) / omega;
 
 	const distanceErrorAt = (s, subj) => {
 		const rp = railPoint(rail, s);
@@ -373,7 +424,9 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 	};
 
 	// Head mode honours the authored start mark exactly. Nearest preserves the
-	// legacy auto-placement option by searching the whole rail once.
+	// legacy auto-placement option by searching the whole rail once. Once the
+	// clip starts, authored progress is the primary target; distance only
+	// nudges that target locally and can never reverse the dolly.
 	let s = p.railStartMode === "nearest"
 		? bestSNear(nearestS(rail, subject[0]), subject[0], rail.length, 0)
 		: 0;
@@ -387,7 +440,17 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 	const track = [];
 	for (let f = 0; f < subject.length; f += 1) {
 		if (f > 0) {
-			const sTarget = bestSNear(s, subject[f], p.searchWindow, p.backtrackPenalty);
+			const progress = f / Math.max(subject.length - 1, 1);
+			const authoredS = rail.length * progress;
+			const distanceS = bestSNear(authoredS, subject[f], p.searchWindow, 0);
+			// Distance influence fades to zero at both authored endpoints, so
+			// it refines the middle of the move without shifting its marks.
+			const correctionEnvelope = Math.sin(Math.PI * progress) ** 2;
+			const correction = (distanceS - authoredS) * clamp(p.distanceInfluence, 0, 1) * correctionEnvelope;
+			// A critically damped spring trails a constant-speed target by
+			// 2v/omega. Lead the authored target by that exact amount so the
+			// dolly reaches the end mark instead of stopping one spring-lag shy.
+			const sTarget = Math.max(s, Math.min(rail.length, authoredS + progressLead + correction));
 			[s, sVel] = cappedSpringStep(s, sVel, sTarget, omega, dt, p.maxDollySpeed);
 			s = Math.max(0, Math.min(s, rail.length));
 			[py, vy] = springStep(py, vy, p.height, omega, dt);

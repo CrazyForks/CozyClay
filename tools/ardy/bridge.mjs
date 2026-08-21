@@ -1162,14 +1162,25 @@ server.on("clientError", (err, socket) => {
 });
 
 server.listen(port, BIND_HOST, () => {
-	console.log(`[bridge] ARDY dev bridge listening on http://${BIND_HOST}:${port}`);
+	const address = server.address();
+	const boundPort = typeof address === "object" && address ? address.port : port;
+	process.send?.({ type: "cozyclay-bridge-ready", port: boundPort });
+	console.log(`[bridge] ARDY dev bridge listening on http://${BIND_HOST}:${boundPort}`);
 	console.log("[bridge] dev-only sidecar: the static dist/ build does not need it; stop with Ctrl-C");
 	console.log(`[bridge] ${runner.mode} backend: ${runner.describe()}`);
 });
 
 server.on("error", (err) => {
-	console.error(`[bridge] cannot listen on ${BIND_HOST}:${port}: ${err.message}`);
-	process.exit(1);
+	const override = "set COZYCLAY_BRIDGE_PORT to a free port or pass --port <n>";
+	console.error(
+		`[bridge] cannot listen on ${BIND_HOST}:${port}: ${err.message}` +
+			(err?.code === "EADDRINUSE" ? `; ${override}` : ""),
+	);
+	if (process.send && process.connected) {
+		process.send({ type: "cozyclay-bridge-listen-error", port, code: err?.code }, () => process.exit(1));
+	} else {
+		process.exit(1);
+	}
 });
 
 // Ctrl-C / SIGTERM: take the in-flight process groups down with us; ssh dies,

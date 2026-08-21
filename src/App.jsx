@@ -7,6 +7,7 @@ import { buildArdyPose } from "./ardy/export.js";
 import { checkBridge, generate as ardyGenerate } from "./ardy/client.js";
 import { characterScaleFor, loadMotionFromUrl } from "./ardy/npz.js";
 import { retimeMotion } from "./ardy/retime.js";
+import { applyRootDrop, normalizeRootDrop } from "./ardy/root-drop.js";
 import { sliceMotion } from "./ardy/trim.js";
 import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl, probeFootage, requestBridgeExtract, requestBridgeFootage, sourceLabel } from "./multimodel-ingest.js";
 import { bakeExtractedTake, collectLandmarkTrack, createPoseDetector, sampleTimes, videoFrames } from "./pose-extract/index.js";
@@ -31,13 +32,14 @@ import {
 	readShotAuthoring,
 } from "./shot-authoring.js";
 import { buildFollowTrack, buildRail, buildRailFollowTrack, followFramingFromCamera, simplifyStroke } from "./camera-follow.js";
-import { createCameraBlock, updateCameraBlock } from "./camera-block.js";
+import { createCameraBlock, removeCameraRail, updateCameraBlock } from "./camera-block.js";
 import {
 	RAIL_SCHEDULE_LEGACY,
 	RAIL_SCHEDULE_RANGE,
 	clampRailRange,
 	defaultRailRange,
 	moveRailRange,
+	railFollowForNewGeometry,
 	resizeRailRange,
 	resolveRailSchedule,
 } from "./camera-rail-schedule.js";
@@ -1351,6 +1353,7 @@ globalThis.playMode = centerTab === "play";
 	const [posingClosing, setPosingClosing] = useState(false);
 	const [studioPick, setStudioPick] = useState(null);
 	const [rigs, setRigs] = useState({});
+	const [rigMountEpoch, setRigMountEpoch] = useState(0);
 	const [poseRevision, setPoseTick] = useState(0);
 
 	/* --------------------- derived cast view + shims ---------------------- */
@@ -1423,9 +1426,17 @@ globalThis.playMode = centerTab === "play";
 	// Per-character rig report: stable callback identity per character so
 	// the Character effect does not re-fire on every App render.
 	const rigReportersRef = useRef(new Map());
+	const rigWaitersRef = useRef(new Map());
 	const reportRig = (charId) => {
 		if (!rigReportersRef.current.has(charId)) {
-			rigReportersRef.current.set(charId, (rig) => setRigs((current) => (current[charId] === rig ? current : { ...current, [charId]: rig })));
+			rigReportersRef.current.set(charId, (rig) => {
+				setRigs((current) => (current[charId] === rig ? current : { ...current, [charId]: rig }));
+				const waiter = rigWaitersRef.current.get(charId);
+				if (waiter) {
+					rigWaitersRef.current.delete(charId);
+					waiter(rig);
+				}
+			});
 		}
 		return rigReportersRef.current.get(charId);
 	};
@@ -1528,6 +1539,20 @@ globalThis.playMode = centerTab === "play";
 	const activeChar = characters.find((entry) => entry.id === activeCharacterId) ?? characters[0] ?? charA;
 	const activeCharIndex = Math.max(0, characters.findIndex((entry) => entry.id === activeChar.id));
 	const activeRig = rigs[activeChar.id] ?? null;
+	const waitForRig = (charId, timeoutMs = 10000) => {
+		const current = rigs[charId];
+		if (current) return Promise.resolve(current);
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				rigWaitersRef.current.delete(charId);
+				reject(new Error(ko("The active character's rig is not loaded", "활성 인물의 리그가 로드되지 않았어요")));
+			}, timeoutMs);
+			rigWaitersRef.current.set(charId, (rig) => {
+				clearTimeout(timer);
+				resolve(rig);
+			});
+		});
+	};
 	// Read-only previews of the other cast members' layers for the timeline,
 	// memoized: a fresh array every render would re-render every lane on
 	// every playhead tick.
@@ -2425,7 +2450,14 @@ globalThis.playMode = centerTab === "play";
 		const cam = shotCamRef.current;
 		if (!cam || !activeShot || ikMode || playMode) return;
 		const subjectPosition = motionPos ?? charA;
-		const measured = followFramingFromCamera(cam.position, look.current.pitch, subjectPosition, followCam.aimHeight);
+		const subjectYaw = (charA.rot * Math.PI) / 180;
+		const measured = followFramingFromCamera(
+			cam.position,
+			look.current.pitch,
+			subjectPosition,
+			followCam.aimHeight,
+			{ x: Math.sin(subjectYaw), z: Math.cos(subjectYaw) },
+		);
 		setShots((current) => current.map((shot, shotIndex) => {
 			if (shotIndex !== activeShotIdx) return shot;
 			const camera = createCameraBlock(shot.camera);
@@ -2433,7 +2465,8 @@ globalThis.playMode = centerTab === "play";
 			if (
 				previous.distance === measured.distance &&
 				previous.height === measured.height &&
-				previous.pitchOffsetDeg === measured.pitchOffsetDeg
+				previous.pitchOffsetDeg === measured.pitchOffsetDeg &&
+				previous.orbitOffsetDeg === measured.orbitOffsetDeg
 			) return shot;
 			return { ...shot, camera: updateCameraBlock(camera, { followCam: { ...previous, ...measured } }) };
 		}));
@@ -2446,7 +2479,7 @@ globalThis.playMode = centerTab === "play";
 	function changeCameraRail(points) {
 		changeActiveCamera({
 			cameraRail: points,
-			railFollow: points ? (activeCamera.railFollow ?? defaultRailRange(activeShotDuration)) : null,
+			railFollow: points ? railFollowForNewGeometry(activeCamera.railFollow, activeShotDuration) : null,
 			mode: points ? "rail" : activeCamera.mode === "rail" ? "follow" : activeCamera.mode,
 		});
 	}
@@ -2468,6 +2501,12 @@ globalThis.playMode = centerTab === "play";
 			setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
 			setToast(ko("Draw the selected Shot's rail in the Top-View", "탑뷰에서 선택한 샷의 레일을 그리세요"));
 		}
+	}
+	function deleteCameraRail() {
+		if (!cameraRail) return;
+		setRailDraw(false);
+		changeActiveCamera(removeCameraRail(activeCamera));
+		setToast(ko("Camera rail deleted — Follow keeps the current distance", "카메라 레일 삭제됨 — 팔로우가 현재 거리를 유지합니다"));
 	}
 	function previewCameraShot(index) {
 		const selected = shots[index];
@@ -2815,7 +2854,7 @@ globalThis.playMode = centerTab === "play";
 		setShots(shotState.shots);
 		setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS);
 		setCharacters(stage.characters);
-		setRigs({});
+		setRigMountEpoch((value) => value + 1);
 		setHasCharSheet(stage.hasCharSheet);
 		setShotAspectKey(stage.shotAspect);
 		// The motion-layer buffer reloads from the scene's first character.
@@ -2939,12 +2978,18 @@ globalThis.playMode = centerTab === "play";
 			return {
 				sceneName: live.scenes.find((scene) => scene.id === live.activeSceneId)?.name ?? "",
 				camera: { ...live.camera, focalMm: Math.round(fovToFocalMm((live.fovDeg * Math.PI) / 180) * 100) / 100 },
-				characters: live.characters.map((entry) => ({ id: entry.id, subject: entry.subject, x: entry.x, z: entry.z, rot: entry.rot, hidden: entry.hidden })),
+				// y rides too: a character standing on a roof must survive the
+				// same save/open round trip a renamed object just learned to.
+				characters: live.characters.map((entry) => ({ id: entry.id, subject: entry.subject, x: entry.x, y: entry.y ?? 0, z: entry.z, rot: entry.rot, hidden: entry.hidden })),
 				// Scale and the library footprint travel with each object: the server
 				// reports real sizes from them, and without them every prop reads as
 				// 1x1x1 no matter how it was actually built.
 				objects: live.objects.map((object) => ({
 					id: object.id, name: object.name,
+					// The kind travels with the report: a renamed object ("Building A")
+					// can no longer be recognised by its name, and a record that loses
+					// its renderer round-trips into something the set cannot draw.
+					renderer: object.renderer,
 					x: object.x, y: object.y, z: object.z, rot: object.rot,
 					scaleX: object.scaleX, scaleY: object.scaleY, scaleZ: object.scaleZ,
 					parent: object.parent ?? null,
@@ -3001,7 +3046,7 @@ globalThis.playMode = centerTab === "play";
 				const live = liveStateRef.current;
 				const character = characterForRef(live.characters, args.ref);
 				if (!character) throw new Error("Character not found");
-				const patch = finitePatch(args, ["x", "z", "rot"]);
+				const patch = finitePatch(args, ["x", "y", "z", "rot"]);
 				if (args.subject !== undefined) {
 					if (typeof args.subject !== "string") throw new Error("Invalid subject");
 					patch.subject = args.subject;
@@ -3027,12 +3072,28 @@ globalThis.playMode = centerTab === "play";
 			place_object: (args) => {
 				if (typeof args.kind !== "string") throw new Error("Invalid kind");
 				const live = liveStateRef.current;
+				// The parent is checked before anything is created: a bad id must
+				// not leave a half-made part lying around unattached.
+				if (args.parent !== undefined) {
+					if (typeof args.parent !== "string" || !live.objects.some((o) => o.id === args.parent)) {
+						throw new Error(`Parent object not found: ${args.parent}`);
+					}
+				}
+				if (args.name !== undefined && (typeof args.name !== "string" || !args.name.trim())) {
+					throw new Error("Invalid name");
+				}
 				const placement = finitePatch(args, ["x", "z", "rot"]);
 				const object = createSceneObject(args.kind, live.objects, placement);
 				if (!object) throw new Error(`Unknown object kind: ${args.kind}`);
 				const patch = finitePatch(args, ["y"]);
+				if (args.name !== undefined) patch.name = args.name;
 				const placed = updateSceneObject([object], object.id, patch)[0];
-				storeRef.current.applyAtomic((objects) => [...objects, placed]);
+				// One atomic entry: create, name and attach undo together, as the
+				// single "place part" gesture they are to the caller.
+				storeRef.current.applyAtomic((objects) => {
+					const next = [...objects, placed];
+					return args.parent !== undefined ? setSceneObjectParent(next, placed.id, args.parent) : next;
+				});
 				syncObjects();
 				return { id: placed.id };
 			},
@@ -3053,6 +3114,10 @@ globalThis.playMode = centerTab === "play";
 				if (args.color !== undefined) {
 					if (typeof args.color !== "string") throw new Error("Invalid color");
 					patch.color = args.color;
+				}
+				if (args.name !== undefined) {
+					if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
+					patch.name = args.name;
 				}
 				storeRef.current.applyAtomic((objects) => updateSceneObject(objects, args.id, patch));
 				syncObjects();
@@ -3140,7 +3205,8 @@ globalThis.playMode = centerTab === "play";
 			load_motion: async (args) => {
 				if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
 				const prompt = typeof args.prompt === "string" ? args.prompt : "";
-				await liveStateRef.current.loadMotion(args.url, prompt);
+				if (args.drop !== undefined && !normalizeRootDrop(args.drop)) throw new Error("Invalid drop");
+				await liveStateRef.current.loadMotion(args.url, prompt, undefined, args.drop ?? null);
 				// Optional per-phase blocks land on the Prompts lane the way hand-authored
 				// ones do. They arrive on ARDY's 20 fps clock; the lane runs on the 24 fps
 				// production clock, so each boundary is converted, not copied.
@@ -4259,16 +4325,17 @@ globalThis.playMode = centerTab === "play";
 	// Decoded motion + the world anchor: frame 0 always starts at Subject 1.
 	// Authored root destinations are generated by ARDY as sparse constraints,
 	// so playback consumes the returned trajectory without coordinate warping.
-	async function loadMotion(url, prompt, rotationDeg = charA.rot) {
+	async function loadMotion(url, prompt, rotationDeg = charA.rot, drop = null) {
 		setMotionBusy(true);
 		setMotionError("");
 		try {
 			// Inbound boundary: an ARDY take (20 fps) or a filmed one (30/60)
 			// becomes a production-clock clip here, once, before anything on
 			// the timeline counts its frames. Same-rate input rides through.
-			const decoded = retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS);
-			const rig = activeRig;
-			if (!rig) throw new Error(ko("The active character's rig is not loaded", "활성 인물의 리그가 로드되지 않았어요"));
+			// A drop is staging applied to the clip itself, so it happens at
+			// the same boundary — trims and IK then see the dropped take.
+			const decoded = applyRootDrop(retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS), drop);
+			const rig = activeRig ?? await waitForRig(activeChar.id);
 			beginPlaybackOn(rig);
 			// THE INVARIANT: the take's travel assumes the character is scaled.
 			// Extraction divided the root translation by the filmed person's
@@ -4321,6 +4388,7 @@ globalThis.playMode = centerTab === "play";
 		} catch (err) {
 			setMotion(null);
 			setMotionError(err?.message || String(err));
+			throw err;
 		} finally {
 			setMotionBusy(false);
 		}
@@ -5811,7 +5879,7 @@ function resizePromptClip(id, edge, rawFrame) {
 
 							{characterViews.map((view) => (
 								<Character
-									key={view.id}
+									key={`${view.id}:${rigMountEpoch}`}
 									url={view.url}
 									position={view.position}
 									rot={view.rot}
@@ -6213,15 +6281,6 @@ function resizePromptClip(id, edge, rawFrame) {
 								}}
 							>
 								{previewActive ? ko("Stop", "정지") : ko("Preview", "미리보기")}
-							</button>
-							<button
-								type="button"
-								className="btn ghost"
-								disabled={!hasCameraKeys}
-								title={ko("Slave the move to the timeline: play or scrub and the camera rides along. Turn off to fly freely while keys stay set", "움직임을 타임라인에 연결합니다. 재생하거나 스크럽하면 카메라가 함께 움직입니다. 끄면 키는 유지한 채 자유롭게 이동할 수 있습니다")}
-								onClick={() => setMoveFollow((follow) => !follow)}
-							>
-								{moveFollow ? ko("Follow ✓", "따라가기 ✓") : ko("Follow", "따라가기")}
 							</button>
 							<button type="button" className="btn ghost" disabled={cameraKeys.length < 1} onClick={clearMove}>
 								{ko("Clear", "지우기")}
@@ -7293,6 +7352,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						setSidebarTab("motion");
 					}}
 					onCameraBlockChange={(patch) => {
+						if (patch.mode === "follow") syncActiveCameraFraming();
 						const nextPatch = patch.mode === "rail" && activeCamera.railFollow?.mode === "off"
 							? { ...patch, railFollow: defaultRailRange(activeShotDuration) }
 							: patch;
@@ -7305,6 +7365,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					}}
 					onCameraPreview={previewCameraShot}
 					onCameraRailDrawToggle={toggleCameraRailDraw}
+					onCameraRailDelete={deleteCameraRail}
 					onRailSelect={(index) => {
 						selectTimelineShot(index);
 						setSelectedHierarchyId("camera");

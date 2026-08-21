@@ -67,6 +67,7 @@ const CAMERA_BLOCK_DEFAULTS = {
 	railStartMode: "head",
 	maxDollySpeed: 4,
 	pitchOffsetDeg: 0,
+	orbitOffsetDeg: 0,
 };
 
 function cameraBlockMode(shot) {
@@ -91,10 +92,11 @@ function signedValue(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}`;
 }
 
-function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, onChange, onPreview, onRailDrawToggle }) {
+function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, onChange, onPreview, onRailDrawToggle, onRailDelete }) {
 	if (!shot) return null;
 	const mode = cameraBlockMode(shot);
 	const follow = cameraBlockFollow(shot);
+	const patchCamera = (patch) => onChange?.(patch);
 	const patchFollow = (patch) => onChange?.({ followCam: { ...follow, ...patch } });
 	const numberValue = (event) => Number(event.currentTarget.value);
 	const metric = (value, places = 1) => Number(value).toFixed(places);
@@ -111,6 +113,25 @@ function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, on
 					<button type="button" className={"tl-camera-tool" + (railDraw ? " active" : "")} onClick={() => onRailDrawToggle?.()}>
 						{railDraw ? ko("Drawing…", "그리는 중…") : ko("Draw rail", "레일 그리기")}
 					</button>
+					<button
+						type="button"
+						className={"tl-camera-tool" + (mode === "follow" ? " active" : "")}
+						aria-pressed={mode === "follow"}
+						title={ko("Keep the camera at the captured distance from the subject", "카메라와 피사체 사이의 현재 거리를 유지합니다")}
+						onClick={() => patchCamera({ mode: mode === "follow" ? "keys" : "follow" })}
+					>
+						{mode === "follow" ? ko("Follow On", "팔로우 켜짐") : ko("Follow Off", "팔로우 꺼짐")}
+					</button>
+					{railLength != null && (
+						<button
+							type="button"
+							className="tl-camera-tool danger"
+							title={ko("Delete this Shot's rail geometry and return to Follow", "이 샷의 레일 경로를 삭제하고 팔로우로 돌아갑니다")}
+							onClick={() => onRailDelete?.()}
+						>
+							{ko("Delete rail", "레일 삭제")}
+						</button>
+					)}
 					<button
 						type="button"
 						className={"tl-camera-head" + (follow.railStartMode === "head" ? " active" : "")}
@@ -221,6 +242,7 @@ export default function Timeline({
 	railDraw = false,
 	cameraRailLength = null,
 	onCameraRailDrawToggle,
+	onCameraRailDelete,
 	onRailSelect,
 	onRailMove,
 	onRailRangeChange,
@@ -255,7 +277,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -923,6 +945,7 @@ export default function Timeline({
 							onChange={(patch) => handlers.current.onCameraBlockChange?.(patch)}
 							onPreview={() => handlers.current.onCameraPreview?.(cameraBlockIdx)}
 							onRailDrawToggle={() => handlers.current.onCameraRailDrawToggle?.()}
+							onRailDelete={() => handlers.current.onCameraRailDelete?.()}
 						/>
 					)}
 

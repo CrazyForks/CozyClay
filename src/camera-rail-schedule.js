@@ -72,6 +72,12 @@ export function defaultRailRange(frameCount) {
 	return { startFrame: 0, endFrame: Math.floor(frameCount) - 1 };
 }
 
+/** A redrawn geometry keeps an authored time range, but never stale OFF. */
+export function railFollowForNewGeometry(existing, frameCount) {
+	if (existing?.mode === "range") return existing;
+	return defaultRailRange(frameCount);
+}
+
 /**
  * Shrink-safe clamp for persisting an authored range when the timeline
  * changes: clamp once, store the result, and later growth cannot resurrect

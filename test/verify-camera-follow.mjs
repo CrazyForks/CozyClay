@@ -39,6 +39,17 @@ const EPS = 1e-9;
 	ok("viewport framing converts tilt to automatic-aim offset", measured.pitchOffsetDeg === 10, JSON.stringify(measured));
 }
 
+{
+	const measured = followFramingFromCamera(
+		{ x: 0, y: 1.6, z: 3 },
+		0,
+		{ x: 0, z: 0 },
+		FOLLOW_DEFAULTS.aimHeight,
+		{ x: 0, z: 1 },
+	);
+	ok("viewport framing records a camera placed in front of the subject", Math.abs(measured.orbitOffsetDeg - 180) < 1e-6, JSON.stringify(measured));
+}
+
 /** straight walk down +Z at 1.4 m/s for `seconds` */
 function straightWalk(seconds, speed = 1.4) {
 	const frames = Math.round(seconds * FPS);
@@ -61,10 +72,8 @@ const walk = straightWalk(8);
 const free = buildFollowTrack(walk, FPS);
 ok("free follow emits one sample per subject frame", free.length === walk.length);
 {
-	// after the spring settles, the grip holds the requested distance
-	const late = free.slice(60);
-	const errs = late.map((s, i) => Math.abs(dist(s.pos, walk[60 + i]) - FOLLOW_DEFAULTS.distance));
-	ok("free follow settles to the requested distance (±0.3 m)", Math.max(...errs) < 0.3, `max err ${Math.max(...errs).toFixed(3)}`);
+	const errs = free.map((sample, frame) => Math.abs(dist(sample.pos, walk[frame]) - FOLLOW_DEFAULTS.distance));
+	ok("free follow holds the requested distance exactly", Math.max(...errs) < 1e-6, `max err ${Math.max(...errs)}`);
 	ok("free follow keeps the requested height", Math.abs(free[100].pos.y - FOLLOW_DEFAULTS.height) < 0.05, String(free[100].pos.y));
 	ok(
 		"free follow opens already composed (no slide-in at frame 0)",
@@ -73,6 +82,13 @@ ok("free follow emits one sample per subject frame", free.length === walk.length
 	);
 	// behind means behind: for a +Z walk the camera sits at smaller z
 	ok("free follow trails behind the travel direction", free[100].pos.z < walk[100].z, `cam z ${free[100].pos.z} subj z ${walk[100].z}`);
+}
+
+{
+	const front = buildFollowTrack(walk, FPS, { orbitOffsetDeg: 180 });
+	const errors = front.map((sample, frame) => Math.abs(dist(sample.pos, walk[frame]) - FOLLOW_DEFAULTS.distance));
+	ok("front-authored follow holds the requested distance", Math.max(...errors) < 1e-6, `max err ${Math.max(...errors)}`);
+	ok("front-authored follow stays in front of a +Z walk", front.every((sample, frame) => sample.pos.z > walk[frame].z), `last cam z ${front.at(-1).pos.z}`);
 }
 
 {
@@ -85,8 +101,20 @@ ok("free follow emits one sample per subject frame", free.length === walk.length
 		maxYawStep < (3 * Math.PI) / 180,
 		`${((maxYawStep * 180) / Math.PI).toFixed(2)} deg/frame`,
 	);
-	const errs = track.slice(40).map((s, i) => Math.abs(dist(s.pos, corner[40 + i]) - FOLLOW_DEFAULTS.distance));
-	ok("corner: distance holds through the turn (±1 m)", Math.max(...errs) < 1, `max err ${Math.max(...errs).toFixed(3)}`);
+	const errs = track.map((sample, frame) => Math.abs(dist(sample.pos, corner[frame]) - FOLLOW_DEFAULTS.distance));
+	ok("corner: follow maintains exact planar distance", Math.max(...errs) < 1e-6, `max err ${Math.max(...errs)}`);
+}
+
+{
+	// Follow is a framing constraint, not merely a spring target. A rapidly
+	// accelerating subject must not leave the camera several metres behind.
+	const accelerating = Array.from({ length: 160 }, (_, frame) => ({
+		x: 0,
+		z: (0.02 * frame * frame) / FPS,
+	}));
+	const track = buildFollowTrack(accelerating, FPS);
+	const errors = track.map((sample, frame) => Math.abs(dist(sample.pos, accelerating[frame]) - FOLLOW_DEFAULTS.distance));
+	ok("accelerating follow maintains exact planar distance", Math.max(...errors) < 1e-6, `max err ${Math.max(...errors)}`);
 }
 
 {
@@ -136,22 +164,46 @@ ok("free follow emits one sample per subject frame", free.length === walk.length
 }
 
 {
-	// rail alongside a straight walk: dolly pushes parallel, holds distance
+	// rail alongside a straight walk: dolly follows the authored arc
 	const walkLong = straightWalk(10);
 	const rail = buildRail([{ x: -2.5, z: -2 }, { x: -2.5, z: 16 }]);
 	const track = buildRailFollowTrack(walkLong, FPS, rail);
 	ok("rail follow emits one sample per subject frame", track.length === walkLong.length);
 	const onRail = track.every((s) => Math.abs(s.pos.x - -2.5) < 1e-6);
 	ok("the camera never leaves the rail", onRail);
-	const late = track.slice(80);
-	const errs = late.map((s, i) => Math.abs(dist(s.pos, walkLong[80 + i]) - FOLLOW_DEFAULTS.distance));
-	ok("rail follow holds distance where the rail allows it (±0.5 m)", Math.max(...errs) < 0.5, `max err ${Math.max(...errs).toFixed(3)}`);
+	ok("rail follow advances through the authored rail", track.at(-1).s > rail.length - 0.2, `s ${track.at(-1).s.toFixed(3)} / ${rail.length.toFixed(3)}`);
 	const sSteps = track.slice(1).map((s, i) => s.s - track[i].s);
 	ok(
 		"the dolly respects its speed cap",
 		Math.max(...sSteps.map(Math.abs)) <= 4 / FPS + 1e-6,
 		`${(Math.max(...sSteps.map(Math.abs)) * FPS).toFixed(2)} m/s`,
 	);
+}
+
+{
+	// A rail that pulls away from a stationary subject must keep traversing.
+	// Distance is a framing preference, not permission to stop the authored move.
+	const stationary = Array.from({ length: 180 }, () => ({ x: 0, z: 0 }));
+	const rail = buildRail([{ x: 1, z: 0 }, { x: 8, z: 0 }]);
+	for (const maxDollySpeed of [FOLLOW_DEFAULTS.maxDollySpeed, 1]) {
+		const track = buildRailFollowTrack(stationary, FPS, rail, { response: 0.1, maxDollySpeed });
+		const sSteps = track.slice(1).map((sample, i) => sample.s - track[i].s);
+		ok(
+			`response 0.1 pull-out reaches the authored far end at ${maxDollySpeed} m/s`,
+			track.at(-1).s > rail.length - 0.2,
+			`s ${track.at(-1).s.toFixed(3)} / ${rail.length.toFixed(3)}`,
+		);
+		ok(
+			`response 0.1 pull-out never travels backward at ${maxDollySpeed} m/s`,
+			Math.min(...sSteps) >= -EPS,
+			`min Δs ${Math.min(...sSteps).toFixed(6)}`,
+		);
+		ok(
+			`response 0.1 pull-out respects the ${maxDollySpeed} m/s cap`,
+			Math.max(...sSteps) <= maxDollySpeed / FPS + EPS,
+			`max Δs ${(Math.max(...sSteps) * FPS).toFixed(6)} m/s`,
+		);
+	}
 }
 
 {

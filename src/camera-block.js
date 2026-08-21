@@ -11,6 +11,7 @@ export const CAMERA_FOLLOW_DEFAULTS = Object.freeze({
 	railStartMode: "head",
 	maxDollySpeed: 4,
 	pitchOffsetDeg: 0,
+	orbitOffsetDeg: 0,
 });
 
 function cloneRail(points) {
@@ -56,5 +57,15 @@ export function updateCameraBlock(camera, patch = {}) {
 			: current.followCam,
 		cameraRail: Object.hasOwn(change, "cameraRail") ? change.cameraRail : current.cameraRail,
 		railFollow: Object.hasOwn(change, "railFollow") ? change.railFollow : current.railFollow,
+	});
+}
+
+/** Delete authored rail geometry and return rail mode to free Follow. */
+export function removeCameraRail(camera) {
+	const current = createCameraBlock(camera);
+	return updateCameraBlock(current, {
+		mode: current.mode === "rail" ? "follow" : current.mode,
+		cameraRail: null,
+		railFollow: null,
 	});
 }

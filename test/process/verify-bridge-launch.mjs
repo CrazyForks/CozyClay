@@ -1,0 +1,263 @@
+#!/usr/bin/env node
+import assert from "node:assert/strict";
+import { execFile, fork } from "node:child_process";
+import { once } from "node:events";
+import { createConnection, createServer } from "node:net";
+import { promisify } from "node:util";
+import { spawnOwned, terminateOwned } from "../../tools/process-supervisor.mjs";
+
+const execFileAsync = promisify(execFile);
+const REPO = new URL("../..", import.meta.url);
+const BRIDGE = "tools/ardy/bridge.mjs";
+// Child readiness is event-driven; this timeout is only a deadlock bound.
+// A loaded CI host can take more than five seconds to start a fresh Node/Vite
+// pair even though no product timer is involved.
+const READY_TIMEOUT_MS = 15_000;
+
+function withTimeout(promise, label) {
+	let timer;
+	return Promise.race([
+		promise,
+		new Promise((_, reject) => {
+			timer = setTimeout(() => reject(new Error(`${label} did not happen within ${READY_TIMEOUT_MS} ms`)), READY_TIMEOUT_MS);
+		}),
+	]).finally(() => clearTimeout(timer));
+}
+
+function listen(server, port = 0) {
+	return new Promise((resolvePromise, reject) => {
+		server.once("error", reject);
+		server.listen(port, "127.0.0.1", () => {
+			server.off("error", reject);
+			resolvePromise(server.address().port);
+		});
+	});
+}
+
+function close(server) {
+	return new Promise((resolvePromise, reject) => server.close((error) => (error ? reject(error) : resolvePromise())));
+}
+
+function waitForExit(child, label) {
+	return withTimeout(once(child, "exit"), label);
+}
+
+async function listenerPids(port) {
+	try {
+		const { stdout } = await execFileAsync("lsof", ["-t", "-nP", `-iTCP:${port}`, "-sTCP:LISTEN"]);
+		return stdout
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map(Number);
+	} catch (error) {
+		if (error.code === 1) return [];
+		throw error;
+	}
+}
+
+function canConnect(port) {
+	return new Promise((resolvePromise) => {
+		const socket = createConnection({ host: "127.0.0.1", port });
+		socket.once("connect", () => {
+			socket.destroy();
+			resolvePromise(true);
+		});
+		socket.once("error", () => {
+			socket.destroy();
+			resolvePromise(false);
+		});
+	});
+}
+
+async function listenerPidsAfterConnect(port) {
+	for (let attempt = 0; attempt < 20; attempt += 1) {
+		const pids = await listenerPids(port);
+		if (pids.length) return pids;
+		await new Promise((resolvePromise) => setImmediate(resolvePromise));
+	}
+	return [];
+}
+
+async function reserveMainAndAdjacentPort() {
+	for (;;) {
+		const main = createServer();
+		const mainPort = await listen(main);
+		if (mainPort >= 65_534) {
+			await close(main);
+			continue;
+		}
+		const adjacent = createServer();
+		try {
+			await listen(adjacent, mainPort + 1);
+			await close(main);
+			return { mainPort, adjacent };
+		} catch {
+			await close(main);
+		}
+	}
+}
+
+function createOutputWatcher(child) {
+	let output = "";
+	const waiters = [];
+	const append = (chunk) => {
+		output += chunk.toString();
+		for (const waiter of waiters.splice(0)) waiter();
+	};
+	child.stdout.on("data", append);
+	child.stderr.on("data", append);
+	return {
+		all: () => output,
+		waitFor(pattern, label) {
+			return withTimeout(
+				new Promise((resolvePromise) => {
+					const check = () => {
+						const match = pattern.exec(output);
+						if (match) resolvePromise(match);
+						else waiters.push(check);
+					};
+					check();
+				}),
+				label,
+			).catch((error) => {
+				throw new Error(`${error.message}\n${output}`);
+			});
+		},
+	};
+}
+
+function launcherSpec(kind, port, env) {
+	if (kind === "dev") {
+		return {
+			args: ["tools/dev-full.mjs", "--host", "127.0.0.1", "--port", String(port)],
+			env,
+		};
+	}
+	return {
+		args: ["bin/cozyclay.mjs", "--host", "127.0.0.1", "--port", String(port), "--no-open", "--no-star"],
+		env: { ...env, CCLAY_ARDY_HOST: "test@ardy" },
+	};
+}
+
+function launch(kind, port, env = {}) {
+	const spec = launcherSpec(kind, port, { ...process.env, ...env });
+	const child = spawnOwned(process.execPath, spec.args, {
+		cwd: REPO,
+		env: spec.env,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	return { child, output: createOutputWatcher(child) };
+}
+
+async function expectLaunchFailure(kind, env, expected) {
+	const reservation = createServer();
+	const port = await listen(reservation);
+	await close(reservation);
+	const { child, output } = launch(kind, port, env);
+	await waitForExit(child, `${kind} invalid bridge launch`);
+	assert.match(output.all(), expected, `${kind} reports the bridge-port failure clearly`);
+}
+
+async function expectBridgeIpcReadiness() {
+	const reservation = createServer();
+	const port = await listen(reservation);
+	await close(reservation);
+	const child = fork(BRIDGE, [], {
+		cwd: REPO,
+		env: { ...process.env, CCLAY_ARDY_MODE: "remote", CCLAY_ARDY_HOST: "test@ardy", COZYCLAY_BRIDGE_PORT: String(port) },
+		stdio: ["ignore", "ignore", "ignore", "ipc"],
+		detached: true,
+	});
+	try {
+		const [message] = await withTimeout(once(child, "message"), "bridge child readiness IPC");
+		assert.deepEqual(message, { type: "cozyclay-bridge-ready", port }, "bridge identifies itself through IPC after listen");
+	} finally {
+		await terminateOwned(child);
+	}
+}
+
+async function expectForeignListenerDoesNotReportBridgeReady() {
+	const foreign = createServer();
+	const port = await listen(foreign);
+	const child = fork(BRIDGE, [], {
+		cwd: REPO,
+		env: { ...process.env, CCLAY_ARDY_MODE: "remote", CCLAY_ARDY_HOST: "test@ardy", COZYCLAY_BRIDGE_PORT: String(port) },
+		stdio: ["ignore", "ignore", "ignore", "ipc"],
+		detached: true,
+	});
+	try {
+		const [message] = await withTimeout(once(child, "message"), "bridge child listen-failure IPC");
+		assert.deepEqual(
+			message,
+			{ type: "cozyclay-bridge-listen-error", port, code: "EADDRINUSE" },
+			"a foreign listener cannot satisfy bridge readiness",
+		);
+		await waitForExit(child, "bridge child after listen failure");
+	} finally {
+		await terminateOwned(child);
+		await close(foreign);
+	}
+}
+
+async function expectLifecycle(kind) {
+	const { mainPort, adjacent } = await reserveMainAndAdjacentPort();
+	const bridgePort = mainPort + 2;
+	const { child, output } = launch(kind, mainPort, { CCLAY_ARDY_MODE: "remote" });
+	try {
+		const ready = await output.waitFor(/ARDY dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} bridge readiness`);
+		assert.equal(Number(ready[1]), bridgePort, `${kind} skips occupied main + 1`);
+		assert.equal(await canConnect(bridgePort), true, `${kind} accepts TCP after readiness`);
+		const bridgePids = await listenerPidsAfterConnect(bridgePort);
+		assert.equal(bridgePids.length, 1, `${kind} bridge owns the selected port`);
+
+		const [bridgePid] = bridgePids;
+		assert.ok(bridgePid, `${kind} bridge is listening before unexpected exit`);
+		const parentExit = waitForExit(child, `${kind} parent after bridge exit`);
+		process.kill(bridgePid, "SIGTERM");
+		const [code, signal] = await parentExit;
+		assert.ok(code !== 0 || signal, `${kind} parent fails when its bridge exits unexpectedly`);
+		assert.deepEqual(await listenerPids(bridgePort), [], `${kind} unexpected bridge exit leaves no listener`);
+	} finally {
+		await terminateOwned(child);
+		await close(adjacent);
+	}
+
+	const clean = await reserveMainAndAdjacentPort();
+	const cleanupPort = clean.mainPort + 2;
+	const next = launch(kind, clean.mainPort, { CCLAY_ARDY_MODE: "remote" });
+	try {
+		const ready = await next.output.waitFor(/ARDY dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} cleanup bridge readiness`);
+		assert.equal(Number(ready[1]), cleanupPort, `${kind} uses the expected cleanup bridge port`);
+		await terminateOwned(next.child);
+		assert.deepEqual(await listenerPids(cleanupPort), [], `${kind} parent termination leaves no bridge listener`);
+	} finally {
+		await terminateOwned(next.child);
+		await close(clean.adjacent);
+	}
+}
+
+await expectBridgeIpcReadiness();
+await expectForeignListenerDoesNotReportBridgeReady();
+{
+	const invalidMainPort = spawnOwned(process.execPath, ["bin/cozyclay.mjs", "--port", "65535", "--no-open", "--no-star"], {
+		cwd: REPO,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const output = createOutputWatcher(invalidMainPort);
+	await waitForExit(invalidMainPort, "package invalid main port");
+	assert.match(output.all(), /--port must be an integer in 1\.\.65534/, "package validates a main port that leaves room for its bridge");
+}
+for (const kind of ["dev", "package"]) {
+	await expectLaunchFailure(kind, { COZYCLAY_BRIDGE_PORT: "invalid", CCLAY_ARDY_MODE: "remote" }, /COZYCLAY_BRIDGE_PORT=.*not a valid port/);
+	const occupied = createServer();
+	const port = await listen(occupied);
+	try {
+		await expectLaunchFailure(kind, { COZYCLAY_BRIDGE_PORT: String(port), CCLAY_ARDY_MODE: "remote" }, /COZYCLAY_BRIDGE_PORT=.*already in use/);
+	} finally {
+		await close(occupied);
+	}
+	await expectLifecycle(kind);
+}
+
+console.log("all bridge launch checks PASS");

@@ -69,6 +69,7 @@ const FOLLOW_BOUNDS = {
 	lead: [0, 1],
 	maxDollySpeed: [0.2, 8],
 	pitchOffsetDeg: [-30, 30],
+	orbitOffsetDeg: [-180, 180],
 };
 const FOLLOW_DEFAULTS = {
 	distance: 3,
@@ -78,6 +79,7 @@ const FOLLOW_DEFAULTS = {
 	railStartMode: "head",
 	maxDollySpeed: 4,
 	pitchOffsetDeg: 0,
+	orbitOffsetDeg: 0,
 };
 const CAMERA_MODES = new Set(["keys", "follow", "rail"]);
 
