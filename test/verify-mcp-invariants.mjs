@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,6 +21,7 @@ const PROTOCOL_PATTERNS = [
 	/resultType\s*:\s*["']input_required["']/,
 	/["']2026-07-28["']/,
 ];
+const EXECUTABLE_ENTRYPOINTS = ["bin/cozyclay.mjs", "mcp/server.mjs"];
 
 function filesBelow(directory) {
 	return readdirSync(resolve(ROOT, directory), { withFileTypes: true }).flatMap((entry) => {
@@ -156,6 +157,14 @@ function verifyG013(packages) {
 	};
 }
 
+function verifyExecutableEntrypoints(entrypointModes) {
+	return {
+		failures: Object.entries(entrypointModes).flatMap(([path, mode]) =>
+			(mode & 0o111) === 0 ? [`published entrypoint is not executable: ${path} mode=${(mode & 0o777).toString(8)}`] : [],
+		),
+	};
+}
+
 function isLoopbackConstant(source, value) {
 	return new RegExp(`\\b(?:const|let)\\s+${value}\\s*=\\s*["']127\\.0\\.0\\.1["']`).test(source);
 }
@@ -194,8 +203,12 @@ function packages() {
 	};
 }
 
-function runChecks(sources, manifest) {
-	return [verifyG009(sources), verifyG010(sources), verifyG012(sources), verifyG013(manifest), loopbackSites(sources)];
+function entrypointModes() {
+	return Object.fromEntries(EXECUTABLE_ENTRYPOINTS.map((path) => [path, statSync(resolve(ROOT, path)).mode]));
+}
+
+function runChecks(sources, manifest, modes) {
+	return [verifyG009(sources), verifyG010(sources), verifyG012(sources), verifyG013(manifest), loopbackSites(sources), verifyExecutableEntrypoints(modes)];
 }
 
 function selfTest(name, checks) {
@@ -210,12 +223,14 @@ function runSelfTests() {
 	selfTest("G012", [verifyG012({ "mcp/server.mjs": 'const method = "tasks/get";' })]);
 	selfTest("G013", [verifyG013({ root: { dependencies: {} }, mcp: { dependencies: { ...MCP_DEPENDENCY_BASELINE, drift: "1.0.0" } } })]);
 	selfTest("G014", [loopbackSites({ "mcp/server.mjs": 'server.listen(5173, "0.0.0.0");' })]);
+	selfTest("executable entrypoints", [verifyExecutableEntrypoints({ "mcp/server.mjs": 0o100644, "bin/cozyclay.mjs": 0o100755 })]);
 }
 
 runSelfTests();
 const sources = readSources();
-const [g009, g010, g012, g013, g014] = runChecks(sources, packages());
-const failures = [g009, g010, g012, g013, g014].flatMap((check) => check.failures);
+const modes = entrypointModes();
+const [g009, g010, g012, g013, g014, executableEntrypoints] = runChecks(sources, packages(), modes);
+const failures = [g009, g010, g012, g013, g014, executableEntrypoints].flatMap((check) => check.failures);
 console.log(`G009 MCP tools scanned=${g009.tools.length}: ${g009.tools.map((tool) => tool.name).join(", ")}`);
 console.log(`G009 live handlers scanned=${g009.handlers.length}: ${g009.handlers.map((handler) => handler.name).join(", ")}`);
 console.log("G010 agent mutation path: MCP tool -> appliedLiveMutation/liveHub.command -> WebSocket cmd frame -> dispatchLiveFrame -> App liveHandlersRef React-state handlers");
@@ -224,8 +239,9 @@ console.log(`G012 MCP source files scanned=${Object.keys(sources).filter((path) 
 console.log(`G013 root runtime dependencies=0; MCP baseline=${JSON.stringify(MCP_DEPENDENCY_BASELINE)}`);
 console.log(`G014 listen sites checked=${g014.listeners.length}: ${g014.listeners.join(", ")}`);
 console.log(`G014 loopback client URL sites checked=${g014.urls.length}: ${g014.urls.join(", ")}`);
+console.log(`Executable entrypoints checked=${EXECUTABLE_ENTRYPOINTS.length}: ${EXECUTABLE_ENTRYPOINTS.map((path) => `${path}=${(modes[path] & 0o777).toString(8)}`).join(", ")}`);
 if (failures.length > 0) {
 	for (const failure of failures) console.error(`FAIL ${failure}`);
 	process.exit(1);
 }
-console.log("PASS MCP invariants G009, G010, G012, G013, G014");
+console.log("PASS MCP invariants G009, G010, G012, G013, G014 and executable entrypoints");
