@@ -3533,19 +3533,25 @@ globalThis.playMode = centerTab === "play";
 				const applied = [];
 				const failed = [];
 				batchToken = token;
-				for (const [index, operation] of args.ops.entries()) {
-					try {
-						liveHandlersRef.current[operation.name](operation.args);
-						applied.push(index + 1);
-					} catch (error) {
-						failed.push({ index: index + 1, error: error instanceof Error ? error.message : "Command failed" });
-						if (stopOnError) break;
+				let rolledBack = false;
+				let commit = false;
+				try {
+					for (const [index, operation] of args.ops.entries()) {
+						try {
+							liveHandlersRef.current[operation.name](operation.args);
+							applied.push(index + 1);
+						} catch (error) {
+							failed.push({ index: index + 1, error: error instanceof Error ? error.message : "Command failed" });
+							if (stopOnError) break;
+						}
 					}
+					rolledBack = atomic && failed.length > 0;
+					commit = !rolledBack;
+				} finally {
+					batchToken = null;
+					suppressObjectClockRef.current = priorSuppressObjectClock;
+					storeRef.current.end(token, { commit });
 				}
-				batchToken = null;
-				const rolledBack = atomic && failed.length > 0;
-				storeRef.current.end(token, { commit: !rolledBack });
-				suppressObjectClockRef.current = priorSuppressObjectClock;
 				if (!rolledBack && storeRef.current.depths().past > depthBefore) lastObjectOpRef.current = ++opClockRef.current;
 				syncObjects();
 				return { label: args.label?.trim() || "MCP batch", applied, failed, rolledBack };
