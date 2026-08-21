@@ -142,6 +142,7 @@ import {
 	saveCustomPoses,
 } from "./poses.js";
 import { IkHandles, PoseHandles, PoseStudioPanel, PoseThumbPreview, PoseTileGrid, warmPoseThumbnails } from "./posestudio.jsx";
+import { mergeProjectCustomPoses } from "./project-poses.js";
 import {
 	MID_TRACKS,
 	createIkState,
@@ -2881,11 +2882,12 @@ globalThis.playMode = centerTab === "play";
 		const doc = Number.isInteger(source.version) && source.version < SCENES_VERSION
 			? { ...source, version: SCENES_VERSION, scenes: source.scenes.map((scene) => ({ ...scene, stage: migrateStageFrames(scene.stage) })) }
 			: source;
+		const mergedCustomPoses = mergeProjectCustomPoses(customPoses, project.customPoses);
 		setScenes(doc.scenes);
 		setActiveSceneId(doc.activeSceneId);
 		if (project.workspaceLayout) setWorkspaceLayout({ ...DEFAULT_WORKSPACE_LAYOUT, ...project.workspaceLayout });
-		setCustomPoses(project.customPoses);
-		saveCustomPoses(project.customPoses);
+		setCustomPoses(mergedCustomPoses);
+		saveCustomPoses(mergedCustomPoses);
 		persistScenes(doc.scenes, doc.activeSceneId);
 		openScene(doc.scenes[activeSceneIndex(doc.scenes, doc.activeSceneId)], doc.scenes);
 		projectSnapshotRef.current = collectProjectSnapshot(project.name);
