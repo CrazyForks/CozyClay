@@ -1542,6 +1542,8 @@ globalThis.playMode = centerTab === "play";
 	// ARDY workflow in pipeline order. Selecting anything in the scene routes
 	// to the inspector tab; the root SHOT row routes to the shot tab.
 	const [sidebarTab, setSidebarTab] = useState("motion");
+	const [inspectorActionsOpen, setInspectorActionsOpen] = useState(false);
+	const [objectDeleteUndo, setObjectDeleteUndo] = useState(null);
 	// Scene persistence (plan §8): the startup load runs once in a lazy
 	// initializer so the store below can seed from the restored scene; the
 	// quarantine write and the save-block decision happen before the first
@@ -1652,6 +1654,8 @@ globalThis.playMode = centerTab === "play";
 		if (!id) return;
 		const wasSelected = id === selectedSceneObjectId;
 		store.applyAtomic((objects) => removeSceneObject(objects, id));
+		setObjectDeleteUndo({ id, pastDepth: store.depths().past });
+		setInspectorActionsOpen(false);
 		if (wasSelected) {
 			setSelectedHierarchyId("props");
 		}
@@ -2004,10 +2008,23 @@ globalThis.playMode = centerTab === "play";
 			return;
 		}
 		lastObjectOpRef.current = ++opClockRef.current;
-		if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
+		if (objectDeleteUndo?.id && restored.some((object) => object.id === objectDeleteUndo.id)) {
+			setSelectedHierarchyId(`object:${objectDeleteUndo.id}`);
+			setObjectDeleteUndo(null);
+		} else if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
 			setSelectedHierarchyId("props");
 		}
 		setToast(ko("Undone", "실행 취소됨"));
+	}
+
+	function undoObjectDeletion() {
+		if (!objectDeleteUndo) return;
+		if (store.depths().past !== objectDeleteUndo.pastDepth) {
+			setObjectDeleteUndo(null);
+			setToast(ko("A newer edit comes after this deletion. Use Undo history instead.", "삭제 이후의 편집이 있어요. 실행 취소 기록을 사용해 주세요."));
+			return;
+		}
+		undoScene();
 	}
 
 	function redoScene() {
@@ -2087,6 +2104,27 @@ globalThis.playMode = centerTab === "play";
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
 	});
+
+	useEffect(() => {
+		setInspectorActionsOpen(false);
+	}, [selectedSceneObjectId]);
+
+	useEffect(() => {
+		if (!inspectorActionsOpen) return undefined;
+		const onPointerDown = (event) => {
+			if (event.target instanceof Element && event.target.closest(".inspector-actions-wrap")) return;
+			setInspectorActionsOpen(false);
+		};
+		const onKeyDown = (event) => {
+			if (event.key === "Escape") setInspectorActionsOpen(false);
+		};
+		document.addEventListener("pointerdown", onPointerDown);
+		window.addEventListener("keydown", onKeyDown);
+		return () => {
+			document.removeEventListener("pointerdown", onPointerDown);
+			window.removeEventListener("keydown", onKeyDown);
+		};
+	}, [inspectorActionsOpen]);
 
 	const [mode, setMode] = useState("image");
 	const [imageModel, setImageModel] = useState("gpt_image_2");
@@ -6104,6 +6142,29 @@ function resizePromptClip(id, edge, rawFrame) {
 						<div className="inspector-heading">
 						<strong>{ko("Inspector", "속성")}</strong>
 						<span className="inspector-heading-selection">{selectedSceneObject ? sceneObjectNameDisplayKo(selectedSceneObject.name) : HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId] ?? ko("Selection", "선택 항목")}</span>
+						{selectedSceneObject && (
+							<div className="inspector-actions-wrap">
+								<button
+									type="button"
+									className="inspector-actions-trigger"
+									aria-label={ko("Object actions", "오브젝트 작업")}
+									aria-expanded={inspectorActionsOpen}
+									onClick={() => setInspectorActionsOpen((open) => !open)}
+								>
+									⋮
+								</button>
+								{inspectorActionsOpen && (
+									<div className="inspector-actions-menu" role="menu">
+										<button type="button" role="menuitem" onClick={() => { duplicateSelectedSceneObject(); setInspectorActionsOpen(false); }}>
+											{ko("Duplicate", "복제")}
+										</button>
+										<button type="button" role="menuitem" onClick={() => { deleteSelectedSceneObject(); setInspectorActionsOpen(false); }}>
+											{ko("Delete", "삭제")}
+										</button>
+									</div>
+								)}
+							</div>
+						)}
 						</div>
 					)}
 					<div className="inspector-scroll">
@@ -7042,14 +7103,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					</div>
 					{selectedSceneObject && (
 						<div className="inspector-footer">
-							<button
-								type="button"
-								className="btn ghost full"
-							title={ko("You can also press Delete or Backspace", "Delete 또는 Backspace를 눌러도 삭제할 수 있어요")}
-								onClick={deleteSelectedSceneObject}
-							>
-							{isKo ? `${sceneObjectNameDisplayKo(selectedSceneObject.name)} 삭제` : `Remove ${selectedSceneObject.name}`}
-							</button>
+							<span>{ko("Delete or Backspace to remove", "Delete 또는 Backspace로 삭제")}</span>
 						</div>
 					)}
 					</section>
@@ -7310,6 +7364,14 @@ function resizePromptClip(id, edge, rawFrame) {
 				/>
 			)}
 			<Toast message={toast} onDone={() => setToast("")} />
+			{objectDeleteUndo && (
+				<div className="scene-delete-toast" role="status">
+					<span>{ko("Object deleted.", "오브젝트를 삭제했어요.")}</span>
+					<button type="button" aria-label={ko("Undo object deletion", "오브젝트 삭제 실행 취소")} onClick={undoObjectDeletion}>
+						{ko("Undo", "실행 취소")}
+					</button>
+				</div>
+			)}
 			{assetTrash.length > 0 && (
 				<div className="asset-delete-toast" role="status">
 					<span>{ko("Image deleted. This session can undo it.", "이미지를 삭제했어요. 이 세션에서 실행 취소할 수 있어요.")}</span>
