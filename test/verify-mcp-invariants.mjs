@@ -180,8 +180,7 @@ function loopbackSites(sources) {
 			const line = lineAt(source, match.index);
 			const call = source.slice(match.index, source.indexOf("\n", match.index) + 240);
 			const allowed = /["']127\.0\.0\.1["']/.test(call)
-				|| [...call.matchAll(/\b([A-Z][A-Z0-9_]*)\b/g)].some((name) => isLoopbackConstant(source, name[1]))
-				|| (call.includes("opts.host") && /host:\s*["']127\.0\.0\.1["']/.test(source));
+				|| [...call.matchAll(/\b([A-Z][A-Z0-9_]*)\b/g)].some((name) => isLoopbackConstant(source, name[1]));
 			listeners.push(`${path}:${line}`);
 			if (!allowed) failures.push(`G014 listener is not bound to 127.0.0.1 at ${path}:${line}`);
 		}

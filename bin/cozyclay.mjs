@@ -69,6 +69,10 @@ function parseArgs(argv) {
 		console.error("cozyclay: --port must be an integer in 1..65534");
 		opts.help = true;
 	}
+	if (opts.host !== "127.0.0.1") {
+		console.error("cozyclay: --host is restricted to 127.0.0.1");
+		opts.help = true;
+	}
 	return opts;
 }
 
@@ -299,11 +303,11 @@ server.on("error", (err) => {
 	throw err;
 });
 
-server.listen({ port: opts.port, host: opts.host, ipv6Only: false }, () => {
+server.listen({ port: opts.port, host: "127.0.0.1", ipv6Only: false }, () => {
 	// The package exists to open the studio, which the site serves from /app/.
 	// Landing on "/" would greet someone who just typed `npx cozyclay` with a
 	// marketing page.
-	const url = `http://${opts.host}:${opts.port}/app/`;
+	const url = `http://127.0.0.1:${opts.port}/app/`;
 	console.log(`CozyClay is running at ${url}`);
 	if (!opts.ardy) console.log("Motion generation: off (--no-ardy).");
 	else if (bridge) console.log(`Motion generation: sidecar running against ${ardyHost}.`);
