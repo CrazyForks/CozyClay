@@ -405,6 +405,9 @@ function hierarchyIdForIkFocus(focus) {
 
 const CAPTURE_W = 1920;
 const CAPTURE_H = 1080;
+const MCP_CAPTURE_W = 640;
+const MCP_CAPTURE_H = 360;
+const MCP_CAPTURE_SAMPLE_STEP = 32;
 const SHOT_ASPECT_PRESETS = Object.freeze({
 	"16:9": Object.freeze({ label: "16:9", aspect: SHOT_ASPECT_RATIOS["16:9"], width: 1920, height: 1080 }),
 	"2.39:1": Object.freeze({ label: "2.39:1", aspect: SHOT_ASPECT_RATIOS["2.39:1"], width: 2390, height: 1000 }),
@@ -1035,6 +1038,7 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 		});
 		const buffer = new Uint8Array(width * height * 4);
 		const api = {
+			scene,
 			render() {
 				const source = camRef.current;
 				if (!source) return null;
@@ -1076,6 +1080,10 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 			},
 		};
 		apiRef.current = api;
+		if (width === MCP_CAPTURE_W && height === MCP_CAPTURE_H) {
+			window.__cozyclayMcpCaptureReady = true;
+			window.dispatchEvent(new Event("cozyclay:mcp-capture-ready"));
+		}
 		// QA hook: run one real export render and report what the capture
 		// camera saw — the layer mask plus an amber scan of the output
 		// frame (the selection cage's warm tone). Lets the suite prove the
@@ -1095,10 +1103,117 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 		};
 		return () => {
 			if (apiRef.current === api) apiRef.current = null;
+			if (width === MCP_CAPTURE_W && height === MCP_CAPTURE_H) window.__cozyclayMcpCaptureReady = false;
 			target.dispose();
 		};
 	}, [gl, scene, camRef, apiRef, width, height]);
 	return null;
+}
+
+async function captureMcpFrame({ capture, camera, characters, activeCharacterId, objects, rigs, readAuthoredState }) {
+	if (!capture || !camera) throw new Error("No renderable shot camera is available for capture_frame.");
+	const authoredStateBefore = JSON.stringify(readAuthoredState());
+	const buffer = capture.render();
+	if (!buffer) throw new Error("No renderable shot camera is available for capture_frame.");
+	let nonBlackPixels = 0;
+	for (let offset = 0; offset < buffer.length; offset += 4) {
+		if (buffer[offset] > 5 || buffer[offset + 1] > 5 || buffer[offset + 2] > 5) nonBlackPixels += 1;
+	}
+	if (nonBlackPixels === 0) throw new Error("capture_frame rejected a black rendered frame.");
+	camera.updateMatrixWorld();
+	const raycaster = new THREE.Raycaster();
+	const roots = [];
+	capture.scene.traverse((node) => {
+		const id = node.userData?.sceneObjectId;
+		if (typeof id === "string" && objects.some((object) => object.id === id)) roots.push({ id, root: node });
+	});
+	const assertions = characters.map((character) => {
+		const rig = rigs[character.id];
+		if (!rig || character.hidden) return { id: character.id, renderable: false, behindCameraPlane: null, fartherAlongCameraForward: null, distanceToFloor: null, occludedBy: null, visiblePixelCount: 0 };
+		rig.updateWorldMatrix(true, true);
+		const bounds = new THREE.Box3().setFromObject(rig);
+		const center = bounds.getCenter(new THREE.Vector3());
+		const cameraSpace = camera.worldToLocal(center.clone());
+		const behindCameraPlane = cameraSpace.z >= 0;
+		const distanceToFloor = Math.max(0, bounds.min.y);
+		if (behindCameraPlane || bounds.isEmpty()) {
+			return { id: character.id, renderable: true, behindCameraPlane, fartherAlongCameraForward: -cameraSpace.z, distanceToFloor, occludedBy: null, visiblePixelCount: 0 };
+		}
+		const corners = [
+			new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.min.z), new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.max.z),
+			new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.min.z), new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+			new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.min.z), new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
+			new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.min.z), new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
+		].map((corner) => corner.project(camera));
+		const minX = Math.max(0, Math.floor(((Math.min(...corners.map((corner) => corner.x)) + 1) * 0.5) * MCP_CAPTURE_W));
+		const maxX = Math.min(MCP_CAPTURE_W - 1, Math.ceil(((Math.max(...corners.map((corner) => corner.x)) + 1) * 0.5) * MCP_CAPTURE_W));
+		const minY = Math.max(0, Math.floor(((1 - Math.max(...corners.map((corner) => corner.y))) * 0.5) * MCP_CAPTURE_H));
+		const maxY = Math.min(MCP_CAPTURE_H - 1, Math.ceil(((1 - Math.min(...corners.map((corner) => corner.y))) * 0.5) * MCP_CAPTURE_H));
+		const occluders = new Map();
+		let visiblePixelCount = 0;
+		for (let y = minY; y <= maxY; y += MCP_CAPTURE_SAMPLE_STEP) {
+			for (let x = minX; x <= maxX; x += MCP_CAPTURE_SAMPLE_STEP) {
+				raycaster.setFromCamera({ x: (x / MCP_CAPTURE_W) * 2 - 1, y: 1 - (y / MCP_CAPTURE_H) * 2 }, camera);
+				const characterHit = raycaster.intersectObject(rig, true)[0];
+				if (!characterHit) continue;
+				const objectHit = raycaster.intersectObjects(roots.map((entry) => entry.root), true)[0];
+				const pixels = MCP_CAPTURE_SAMPLE_STEP * MCP_CAPTURE_SAMPLE_STEP;
+				if (!objectHit || objectHit.distance >= characterHit.distance - 1e-4) {
+					visiblePixelCount += pixels;
+					continue;
+				}
+				const occluder = roots.find((entry) => {
+					let node = objectHit.object;
+					while (node) {
+						if (node === entry.root) return true;
+						node = node.parent;
+					}
+					return false;
+				});
+				if (occluder) occluders.set(occluder.id, (occluders.get(occluder.id) ?? 0) + pixels);
+			}
+		}
+		const occludedBy = [...occluders.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null;
+		return { id: character.id, renderable: true, behindCameraPlane, fartherAlongCameraForward: -cameraSpace.z, distanceToFloor, occludedBy, visiblePixelCount };
+	});
+	const active = assertions.find((entry) => entry.id === activeCharacterId) ?? assertions[0];
+	const authoredStateAfter = JSON.stringify(readAuthoredState());
+	const canvas = document.createElement("canvas");
+	canvas.width = MCP_CAPTURE_W;
+	canvas.height = MCP_CAPTURE_H;
+	const context = canvas.getContext("2d");
+	if (!context) throw new Error("capture_frame could not encode the rendered image.");
+	const image = context.createImageData(MCP_CAPTURE_W, MCP_CAPTURE_H);
+	for (let row = 0; row < MCP_CAPTURE_H; row += 1) {
+		image.data.set(buffer.subarray((MCP_CAPTURE_H - 1 - row) * MCP_CAPTURE_W * 4, (MCP_CAPTURE_H - row) * MCP_CAPTURE_W * 4), row * MCP_CAPTURE_W * 4);
+	}
+	context.putImageData(image, 0, 0);
+	const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+	if (!blob) throw new Error("capture_frame could not compress the rendered image.");
+	const bytes = new Uint8Array(await blob.arrayBuffer());
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return {
+		width: MCP_CAPTURE_W,
+		height: MCP_CAPTURE_H,
+		mimeType: "image/png",
+		encoding: "base64",
+		byteSize: bytes.length,
+		data: btoa(binary),
+		authoredStateBefore,
+		authoredStateAfter,
+		assertions: {
+			renderable: true,
+			blackFrame: false,
+			nonBlackPixels,
+			behindCameraPlane: active?.behindCameraPlane ?? null,
+			fartherAlongCameraForward: active?.fartherAlongCameraForward ?? null,
+			distanceToFloor: active?.distanceToFloor ?? null,
+			occludedBy: active?.occludedBy ?? null,
+			visiblePixelCount: active?.visiblePixelCount ?? 0,
+			characters: assertions,
+		},
+	};
 }
 
 /**
@@ -1541,6 +1656,8 @@ globalThis.playMode = centerTab === "play";
 		if (!rigReportersRef.current.has(charId)) {
 			rigReportersRef.current.set(charId, (rig) => {
 				setRigs((current) => (current[charId] === rig ? current : { ...current, [charId]: rig }));
+				window.__cozyclayMcpRigReady = [...new Set([...(window.__cozyclayMcpRigReady ?? []), charId])];
+				window.dispatchEvent(new CustomEvent("cozyclay:mcp-rig-ready", { detail: charId }));
 				const waiter = rigWaitersRef.current.get(charId);
 				if (waiter) {
 					rigWaitersRef.current.delete(charId);
@@ -2316,6 +2433,7 @@ globalThis.playMode = centerTab === "play";
 
 	const [cameraPos, setCameraPos] = useState(DEFAULT_CAMERA_POSITION);
 	const [subjectVisible, setSubjectVisible] = useState(true);
+	const mcpCaptureRef = useRef(null);
 	const liveControlRef = useRef(null);
 	const liveStateRef = useRef(null);
 	const liveHandlersRef = useRef(null);
@@ -3111,6 +3229,7 @@ globalThis.playMode = centerTab === "play";
 		waypoints,
 		characters,
 		objects: sceneObjects,
+		rigs,
 		commitManualCameraFraming,
 		recordCharacterUndo,
 		removeCharacter,
@@ -3446,6 +3565,30 @@ globalThis.playMode = centerTab === "play";
 					live.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
 				}
 				return { blocks: clips.length };
+			},
+			capture_frame: async () => {
+				const live = liveStateRef.current;
+				return captureMcpFrame({
+					capture: mcpCaptureRef.current,
+					camera: shotCamRef.current,
+					characters: live.characters,
+					activeCharacterId: live.activeCharacterId,
+					objects: live.objects,
+					rigs: live.rigs,
+					readAuthoredState: () => ({
+						scenes: liveStateRef.current.scenes,
+						activeSceneId: liveStateRef.current.activeSceneId,
+						camera: liveStateRef.current.camera,
+						fovDeg: liveStateRef.current.fovDeg,
+						filmback: liveStateRef.current.filmback,
+						stage: liveStateRef.current.stage,
+						timeline: liveStateRef.current.timeline,
+						activeCharacterId: liveStateRef.current.activeCharacterId,
+						waypoints: liveStateRef.current.waypoints,
+						characters: liveStateRef.current.characters,
+						objects: liveStateRef.current.objects,
+					}),
+				});
 			},
 			load_motion: async (args) => {
 				if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
@@ -6429,6 +6572,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								width={shotOutput.width}
 								height={shotOutput.height}
 							/>
+							<CaptureRig apiRef={mcpCaptureRef} camRef={shotCamRef} width={MCP_CAPTURE_W} height={MCP_CAPTURE_H} />
 							<DualRender
 								stageRef={stageRef}
 								mainRef={mainPaneRef}

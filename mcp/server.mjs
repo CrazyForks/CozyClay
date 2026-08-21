@@ -26,7 +26,8 @@
  * studio, and anything authored in the studio opens here.
  */
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createServer } from "node:http";
@@ -92,16 +93,17 @@ const state = {
 let liveHub = null;
 const motionJobs = new MotionJobRegistry();
 const liveWorkspace = new AsyncLocalStorage();
-const liveMutationTools = new Set([
+const liveWorkspaceTools = new Set([
 	"set_camera", "frame_shot", "add_character", "place_character", "remove_character",
 	"place_object", "group_objects", "set_prompt_blocks", "generate_motion", "update_object",
-	"remove_object", "apply_batch", "add_scene", "switch_scene", "open_project",
+	"remove_object", "apply_batch", "add_scene", "switch_scene", "open_project", "capture_frame",
 ]);
 
 const TOOL_ANNOTATIONS = Object.freeze({
 	describe_scene: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 	live_status: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 	describe_shot: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	capture_frame: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 	set_camera: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	frame_shot: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	add_character: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -423,7 +425,7 @@ const registerTool = (name, config, handler) => {
 	registeredTools += 1;
 	const annotations = TOOL_ANNOTATIONS[name];
 	if (!annotations) throw new Error(`Missing explicit safety annotations for ${name}.`);
-	if (!liveMutationTools.has(name)) return server.registerTool(name, { ...config, annotations }, handler);
+	if (!liveWorkspaceTools.has(name)) return server.registerTool(name, { ...config, annotations }, handler);
 	return server.registerTool(
 		name,
 		{
@@ -431,7 +433,7 @@ const registerTool = (name, config, handler) => {
 			annotations,
 			description:
 				`${config.description} Multiple editor instances are supported; when more than one is connected, ` +
-				"workspace_handle is required so this mutation reaches only its named workspace.",
+				"workspace_handle is required so this command reaches only its named workspace.",
 			inputSchema: {
 				...config.inputSchema,
 				workspace_handle: z.string().optional().describe("live workspace handle from live_status; required when multiple editors are connected"),
@@ -500,6 +502,63 @@ registerTool(
 		try {
 			await refreshLiveDescription();
 			return text(shotReport());
+		} catch (error) {
+			return liveError(error);
+		}
+	},
+);
+
+registerTool(
+	"capture_frame",
+	{
+		title: "Capture a compressed blocking frame",
+		description:
+			"Unlike render_prompt, capture_frame reads the connected editor's rendered 640x360 preview and computed spatial assertions without changing authored scene, playback or camera state. " +
+			"It returns an inline PNG when it fits max_inline_bytes, otherwise a local artifact path with the same dimensions and byte size.",
+		inputSchema: {
+			max_inline_bytes: z.number().int().min(1024).max(1_000_000).default(200_000)
+				.describe("maximum PNG byte size returned inline; larger frames are written to a local artifact"),
+		},
+	},
+	async ({ max_inline_bytes }) => {
+		if (!liveHub?.connected) return liveError(new Error("capture_frame requires a connected CozyClay editor with a renderable shot camera."));
+		try {
+			const workspaceHandle = liveWorkspace.getStore();
+			const frame = await liveHub.command("capture_frame", {}, workspaceHandle);
+			const beforeHash = createHash("sha256").update(frame?.authoredStateBefore ?? "").digest("hex");
+			const afterHash = createHash("sha256").update(frame?.authoredStateAfter ?? "").digest("hex");
+			if (beforeHash !== afterHash) {
+				throw new Error(`capture_frame changed authored editor state; capture was rejected (${beforeHash} -> ${afterHash}).`);
+			}
+			if (!frame || frame.width !== 640 || frame.height !== 360 || frame.mimeType !== "image/png" || typeof frame.data !== "string") {
+				throw new Error("Live editor returned an invalid capture payload.");
+			}
+			const bytes = Buffer.from(frame.data, "base64");
+			if (bytes.length === 0 || bytes.length !== frame.byteSize) throw new Error("Live editor returned an invalid compressed image size.");
+			if (frame.assertions?.renderable !== true || frame.assertions?.blackFrame === true) {
+				throw new Error("Live editor rejected the capture as non-renderable or black.");
+			}
+			const metadata = {
+				width: frame.width,
+				height: frame.height,
+				mimeType: frame.mimeType,
+				encoding: frame.encoding,
+				byteSize: frame.byteSize,
+				assertions: frame.assertions,
+				stateHashBefore: beforeHash,
+				stateHashAfter: afterHash,
+			};
+			if (bytes.length > max_inline_bytes) {
+				const path = join(tmpdir(), `cozyclay-capture-${randomUUID()}.png`);
+				await writeFile(path, bytes);
+				return text(JSON.stringify({ ...metadata, artifact: { path, width: frame.width, height: frame.height, byteSize: bytes.length } }));
+			}
+			return {
+				content: [
+					{ type: "text", text: JSON.stringify({ ...metadata, image: { transport: "inline", width: frame.width, height: frame.height, byteSize: bytes.length } }) },
+					{ type: "image", data: frame.data, mimeType: frame.mimeType },
+				],
+			};
 		} catch (error) {
 			return liveError(error);
 		}
