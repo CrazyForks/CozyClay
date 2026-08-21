@@ -12,6 +12,7 @@ const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const planview = readFileSync(new URL("../src/planview.jsx", import.meta.url), "utf8");
 const timeline = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
 const dualview = readFileSync(new URL("../src/dualview.jsx", import.meta.url), "utf8");
+const offscreenExport = readFileSync(new URL("../src/offscreen-export.js", import.meta.url), "utf8");
 
 expect("workspace layout persists across reloads", app.includes("WORKSPACE_LAYOUT_KEY") && app.includes("localStorage.setItem"));
 expect("sidebar width has a pointer resize path", app.includes('beginWorkspaceResize("sidebar"'));
@@ -33,7 +34,7 @@ expect("Scene toolbar exposes shot preset, aspect, FOV, recenter, and Top-View c
 expect("Scene and PlayView tools share one horizontal title bar", app.includes('className="viewport-titlebar"') && css.includes(".viewport-titlebar") && css.includes("position: static"));
 expect("PlayView toolbar exposes framing readouts, playback, and recording", app.includes("editor-toolbar play-tools") && app.includes("shotOutput.label") && app.includes("toggleShotRecording"));
 expect("selected aspect reaches the shot renderer", app.includes("shotAspect={shotOutput.aspect}") && dualview.includes("shotAspect = SHOT_ASPECT") && dualview.includes("fitAspect(mainRect, shotAspect)"));
-expect("recording and still capture use the selected output dimensions", app.includes("mirror.width = shotOutput.width") && app.includes("width={shotOutput.width}") && app.includes("canvas.width = shotOutput.width"));
+expect("video and still capture use the selected output dimensions", app.includes("width: shotOutput.width") && app.includes("width={shotOutput.width}") && app.includes("canvas.width = shotOutput.width"));
 expect("double-clicking the inset body folds it", app.includes('event.target.closest?.(".vp-inset-tag")') && app.includes("insetCollapsed: !current.insetCollapsed"));
 expect("the tag strip works like a foldout header", app.includes("if (!moved && ev.detail <= 1) {") && app.includes("insetToggledAtRef"));
 expect("one fold per gesture, even on a double-click", app.includes("if (e.detail > 1) return;") && app.includes("ev.detail <= 1"));
@@ -50,15 +51,9 @@ expect("camera controls live in Shot and camera-inspector only, not duplicated i
 expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("Generate all ${promptClips.length} blocks"));
 expect("new sessions start without prompt blocks", app.includes("const DEFAULT_PROMPT_CLIPS = [];") && app.includes("useState(null)"));
 expect("new sessions start with an empty motion prompt", app.includes('const [ardyPrompt, setArdyPrompt] = useState("");'));
-expect(
-	"MP4 recording is repaired before its download URL is created",
-	app.includes('import { repairRecordedMp4 } from "./ardy/mp4-duration.js";') &&
-	app.indexOf("await repairRecordedMp4(recordedBlob)") < app.indexOf("URL.createObjectURL(downloadBlob)"),
-);
-expect(
-	"MP4 repair failure falls back to the original recording",
-	app.includes("catch {") && app.includes("downloadBlob = recordedBlob;"),
-);
+expect("recording addresses sampleAt frames into the offscreen renderer", app.includes("capture: applyExportFrame") && app.includes("sampleAt(playbackScene, shotAtFrame(shots, frame), frame)"));
+expect("recording uses WebCodecs with explicit timestamps and frame count", offscreenExport.includes("new VideoEncoderClass") && offscreenExport.includes("timestamp: Math.round(index * frameDurationUs)") && offscreenExport.includes("chunks.length !== range.frameCount"));
+expect("recording no longer uses MediaRecorder or a wall-clock capture loop", !app.includes("MediaRecorder") && !app.includes("performance.now()") && !app.includes("captureStream"));
 expect("pre-motion timeline initializes to 15 seconds", app.includes("const DEFAULT_DURATION_S = 15"));
 expect("motion preview stays at native 1x speed", app.includes("const DEFAULT_PLAYBACK_SPEED = 1") && app.includes("playbackSpeed={DEFAULT_PLAYBACK_SPEED}"));
 expect("timeline cadence and readout expose native preview speed", timeline.includes("fps * playbackSpeed") && timeline.includes("playbackSpeed.toFixed(2)"));

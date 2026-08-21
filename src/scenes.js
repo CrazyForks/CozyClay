@@ -2,6 +2,8 @@
 // A Scene is the set; shotDocument and stage are sealed department envelopes.
 // This module stores and copies those envelopes but never opens or validates them.
 
+import { DEFAULT_SENSOR_FORMAT, SENSOR_FORMATS } from "./shot.js";
+
 export const SCENES_VERSION = 4;
 export const SCENES_STORAGE_KEY = "cozyclay.scenes.v4";
 export const SCENES_QUARANTINE_KEY = "cozyclay.scenes.v4.quarantine";
@@ -39,6 +41,7 @@ export const DEFAULT_SCENE_STAGE = Object.freeze({
 	]),
 	hasCharSheet: false,
 	shotAspect: "16:9",
+	sensorId: DEFAULT_SENSOR_FORMAT,
 });
 
 let sceneSequence = 1;
@@ -210,7 +213,7 @@ function migrateLegacyCast(source) {
 }
 
 const STAGE_ENVELOPE_KEYS = new Set([
-	"characters", "hasCharSheet", "shotAspect",
+	"characters", "hasCharSheet", "shotAspect", "sensorId",
 	"charA", "charB", "showB", "poseA", "poseB", "subject", "subject2",
 ]);
 
@@ -229,9 +232,14 @@ export function createSceneStage(stage = null) {
 		...extras,
 		characters,
 		hasCharSheet: source.hasCharSheet === true,
-		shotAspect: ["16:9", "9:16", "1:1", "4:3"].includes(source.shotAspect)
+		shotAspect: ["16:9", "2.39:1", "9:16", "1:1", "4:3"].includes(source.shotAspect)
 			? source.shotAspect
 			: DEFAULT_SCENE_STAGE.shotAspect,
+		// `sensorFormat` was this field's name for one unreleased day; read it so
+		// a stage saved in that window still loads with its camera intact.
+		sensorId: Object.hasOwn(SENSOR_FORMATS, source.sensorId ?? source.sensorFormat)
+			? (source.sensorId ?? source.sensorFormat)
+			: DEFAULT_SCENE_STAGE.sensorId,
 	};
 }
 

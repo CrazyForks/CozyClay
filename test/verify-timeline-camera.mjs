@@ -34,7 +34,7 @@ expect("re-keying a frame overwrites its framing", app.includes("shot.cameraKeys
 
 expect("the move model is per-shot N keys, not A/B", app.includes("const [shots, setShots] = useState") && app.includes("const cameraKeys = activeShot?.cameraKeys ?? []") && !app.includes("setMoveA") && !app.includes("setMoveB"));
 expect("interpolation samples keys segment by segment", camMove.includes("export function cameraMoveAt") && camMove.includes("interpolateFraming(a.framing, b.framing, anchor"));
-expect("MoveRig plays and follows the keys", app.includes("keys={cameraKeys}") && app.includes("cameraMoveAt(keys, anchor, frame)"));
+expect("MoveRig plays and follows keys through the pure frame sampler", app.includes("keys={cameraKeys}") && app.includes("sampleAt(scene, sampledShot, frame).camera"));
 expect("sequence slate and phrase derive per segment", app.includes("moveSequenceSlate(segs)") && app.includes("moveSequencePhrase(segs)"));
 expect("generation exports first/last key conditioning frames", app.includes("captureFramingPng(cameraKeys[0].framing)") && app.includes("captureFramingPng(cameraKeys[cameraKeys.length - 1].framing)"));
 expect("the duration slider is gone — dots own timing", !app.includes("moveDurationS"));

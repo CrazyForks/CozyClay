@@ -11,7 +11,6 @@ import { applyRootDrop, normalizeRootDrop } from "./ardy/root-drop.js";
 import { sliceMotion } from "./ardy/trim.js";
 import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl, probeFootage, requestBridgeExtract, requestBridgeFootage, sourceLabel } from "./multimodel-ingest.js";
 import { bakeExtractedTake, collectLandmarkTrack, createPoseDetector, sampleTimes, videoFrames } from "./pose-extract/index.js";
-import { repairRecordedMp4 } from "./ardy/mp4-duration.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
@@ -20,7 +19,7 @@ import { FlyControls, aimAt, forwardFrom } from "./controls.jsx";
 import { createLiveControl } from "./live-control.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
-import { DualRender, GIZMO_LAYER, fitAspect } from "./dualview.jsx";
+import { DualRender, GIZMO_LAYER } from "./dualview.jsx";
 import { Room, StageLights } from "./room.jsx";
 import {
 	SHOT_AUTHORING_KEY,
@@ -165,7 +164,10 @@ import { useGeneration } from "./generation/use-generation.js";
 import {
 	CAMERA_MOVES,
 	CUSTOM_MOVE,
+	DEFAULT_SENSOR_FORMAT,
 	IMAGE_MODELS,
+	SENSOR_FORMATS,
+	SHOT_ASPECT_RATIOS,
 	SUBJECT_HEIGHT_M,
 	VIDEO_MODELS,
 	composePrompt,
@@ -174,9 +176,11 @@ import {
 	fovToFocalMm,
 	slateLine,
 } from "./shot.js";
-import { captureFraming, classifyMove, cameraMoveAt, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
+import { captureFraming, classifyMove, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
+import { sampleAt } from "./sample-at.js";
+import { exportOffscreenVideo } from "./offscreen-export.js";
+import { serializeOtio } from "./otio.js";
 import {
-	cameraAtFrame,
 	addShotAtFrame,
 	cutAtFrame,
 	duplicateShot,
@@ -185,6 +189,7 @@ import {
 	renameShot,
 	reorderShot,
 	resizeShot,
+	shotAtFrame,
 	shotIndexAtFrame,
 } from "./cuts.js";
 
@@ -395,10 +400,11 @@ function hierarchyIdForIkFocus(focus) {
 const CAPTURE_W = 1920;
 const CAPTURE_H = 1080;
 const SHOT_ASPECT_PRESETS = Object.freeze({
-	"16:9": Object.freeze({ label: "16:9", aspect: 16 / 9, width: 1920, height: 1080 }),
-	"9:16": Object.freeze({ label: "9:16", aspect: 9 / 16, width: 1080, height: 1920 }),
-	"1:1": Object.freeze({ label: "1:1", aspect: 1, width: 1080, height: 1080 }),
-	"4:3": Object.freeze({ label: "4:3", aspect: 4 / 3, width: 1440, height: 1080 }),
+	"16:9": Object.freeze({ label: "16:9", aspect: SHOT_ASPECT_RATIOS["16:9"], width: 1920, height: 1080 }),
+	"2.39:1": Object.freeze({ label: "2.39:1", aspect: SHOT_ASPECT_RATIOS["2.39:1"], width: 2390, height: 1000 }),
+	"9:16": Object.freeze({ label: "9:16", aspect: SHOT_ASPECT_RATIOS["9:16"], width: 1080, height: 1920 }),
+	"1:1": Object.freeze({ label: "1:1", aspect: SHOT_ASPECT_RATIOS["1:1"], width: 1080, height: 1080 }),
+	"4:3": Object.freeze({ label: "4:3", aspect: SHOT_ASPECT_RATIOS["4:3"], width: 1440, height: 1080 }),
 });
 // Pre-generated clip shipped with the build so a bridge-less session (a hosted
 // static demo, or `npm run dev:ui`) still shows real generated motion.
@@ -680,13 +686,15 @@ function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probeX, probeZ, c
     ref — so ShotRig's metrics, the slate, and the inset all stay honest for
     free. A right-drag interrupts the dolly: the user always outranks it.
 
-    Two clocks can drive the move. Standalone preview runs on its own clock;
-    follow mode slaves the move to the timeline playhead, so the camera and
+    Two frame sources can drive the move. Standalone preview advances authored
+    frames at production cadence; follow mode reads the timeline playhead, so the camera and
     the character motion are two views of the same time axis — playing or
     scrubbing frame 72 at 24 fps puts the camera exactly 3 s into its move. */
-function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, camRef, look, isInterrupted, onDone }) {
-	const clock = useRef(0);
+function MoveRig({ playing, following, followFrame, fps, keys, shots, scene, camRef, look, isInterrupted, onDone }) {
 	const invalidate = useThree((state) => state.invalidate);
+	const preview = useRef({ frame: 0, finished: false, notified: false });
+	const handlers = useRef({ isInterrupted, onDone });
+	handlers.current = { isInterrupted, onDone };
 	// The follow branch only re-applies when its time changes; in demand mode
 	// each apply needs one more frame so ShotRig's metrics see the new pose.
 	const appliedFrame = useRef(null);
@@ -695,20 +703,42 @@ function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, ca
 		// component owns no three objects, so in demand mode nothing else will.
 		appliedFrame.current = null;
 		if (following) invalidate();
-	}, [keys, shots, anchor, fps, following, invalidate]);
+	}, [keys, shots, scene, fps, following, invalidate]);
 	useEffect(() => {
 		// A paused scrub changes the playhead without starting the render loop.
 		if (following && !playing) invalidate();
 	}, [followFrame, following, playing, invalidate]);
 	useEffect(() => {
-		if (playing) clock.current = 0;
-	}, [playing]);
-	useFrame((_, delta) => {
+		if (!playing || keys.length < 1) return undefined;
+		const firstFrame = keys[0].frame;
+		const lastFrame = keys[keys.length - 1].frame;
+		const spanFrames = Math.max(lastFrame - firstFrame, 1);
+		const spanSeconds = Math.max(spanFrames / Math.max(fps, 1), 0.1);
+		const tickMs = (spanSeconds * 1000) / spanFrames;
+		let tick = 0;
+		preview.current = { frame: firstFrame, finished: false, notified: false };
+		invalidate();
+		const timer = window.setInterval(() => {
+			if (preview.current.finished) return;
+			if (handlers.current.isInterrupted?.()) {
+				preview.current.finished = true;
+				invalidate();
+				return;
+			}
+			tick += 1;
+			preview.current = {
+				frame: firstFrame + (lastFrame - firstFrame) * Math.min(tick / spanFrames, 1),
+				finished: tick >= spanFrames,
+				notified: false,
+			};
+			invalidate();
+		}, tickMs);
+		return () => window.clearInterval(timer);
+	}, [playing, keys, fps, invalidate]);
+	useFrame(() => {
 		if ((playing && keys.length < 1) || (!playing && following && !shots.some((shot) => shot.cameraKeys.length))) return;
 		const cam = camRef.current;
 		if (!cam) return;
-		const firstFrame = keys[0]?.frame ?? 0;
-		const spanFrames = Math.max((keys[keys.length - 1]?.frame ?? firstFrame) - firstFrame, 1);
 		const apply = (frame) => {
 			// Timeline/PlayView sampling follows the editorial strips. Standalone
 			// preview stays scoped to the selected strip's keys. Entering a Shot
@@ -716,7 +746,11 @@ function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, ca
 			// gap returns null and deliberately applies nothing: the last physical
 			// camera pose stays put and FlyControls regain ownership, so we do not
 			// invent a second cut to an arbitrary "free camera" preset.
-			const f = following ? cameraAtFrame(shots, anchor, frame) : cameraMoveAt(keys, anchor, frame);
+			const timelineShot = following ? shotAtFrame(shots, frame) : null;
+			const sampledShot = timelineShot
+				? { ...timelineShot, camera: { mode: "keys" } }
+				: following ? null : { camera: { mode: "keys" }, cameraKeys: keys };
+			const f = sampleAt(scene, sampledShot, frame).camera;
 			if (!f) return null;
 			cam.position.set(f.pos.x, f.pos.y, f.pos.z);
 			look.current.yaw = f.yaw;
@@ -728,17 +762,11 @@ function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, ca
 			return f;
 		};
 		if (playing) {
-			if (isInterrupted?.()) {
-				onDone(cam.fov);
-				return;
+			const f = apply(preview.current.frame);
+			if (preview.current.finished && !preview.current.notified) {
+				preview.current.notified = true;
+				handlers.current.onDone(f ? f.fovDeg : cam.fov);
 			}
-			// The camera-only preview runs on its own clock across the key span:
-			// N keys play through every segment back to back.
-			const span = Math.max(spanFrames / Math.max(fps, 1), 0.1);
-			clock.current = Math.min(clock.current + delta, span);
-			const t = clock.current / span;
-			const f = apply(firstFrame + t * spanFrames);
-			if (t >= 1) onDone(f ? f.fovDeg : cam.fov);
 			return;
 		}
 		if (!following) return;
@@ -758,24 +786,24 @@ function MoveRig({ playing, following, followFrame, fps, keys, shots, anchor, ca
  * replay the identical deterministic move. Null-rendering, so every apply
  * must invalidate() by hand in demand mode, like MoveRig.
  */
-function FollowCamRig({ enabled, frame, track, camRef, look, isInterrupted }) {
+function FollowCamRig({ enabled, frame, scene, shot, camRef, look, isInterrupted }) {
 	const invalidate = useThree((state) => state.invalidate);
 	const applied = useRef(null);
 	useEffect(() => {
 		applied.current = null;
 		if (enabled) invalidate();
-	}, [track, enabled, invalidate]);
+	}, [scene, shot, enabled, invalidate]);
 	useEffect(() => {
 		if (enabled) invalidate();
 	}, [frame, enabled, invalidate]);
 	useFrame(() => {
-		if (!enabled || !track || track.length === 0) return;
+		if (!enabled) return;
 		if (isInterrupted?.()) return; // the user is flying; yield until released
 		const cam = camRef.current;
 		if (!cam) return;
-		const sample = track[Math.max(0, Math.min(frame, track.length - 1))];
-		if (applied.current === sample) return;
-		applied.current = sample;
+		const sample = sampleAt(scene, shot, frame).camera;
+		if (!sample || applied.current === frame) return;
+		applied.current = frame;
 		cam.position.set(sample.pos.x, sample.pos.y, sample.pos.z);
 		look.current.yaw = sample.yaw;
 		look.current.pitch = sample.pitch;
@@ -948,14 +976,15 @@ function SceneGrid() {
 function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 	const { gl, scene } = useThree();
 	useEffect(() => {
-		apiRef.current = {
+		const target = new THREE.WebGLRenderTarget(width, height, {
+			colorSpace: THREE.SRGBColorSpace,
+			samples: 4,
+		});
+		const buffer = new Uint8Array(width * height * 4);
+		const api = {
 			render() {
 				const source = camRef.current;
 				if (!source) return null;
-				const target = new THREE.WebGLRenderTarget(width, height, {
-					colorSpace: THREE.SRGBColorSpace,
-					samples: 4,
-				});
 				const cam = source.clone();
 				// the transform gizmo is UI: it never reaches an exported frame
 				cam.layers.disable(GIZMO_LAYER);
@@ -966,15 +995,17 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 				cam.aspect = width / height;
 				cam.updateProjectionMatrix();
 				const previous = gl.getRenderTarget();
-				gl.setRenderTarget(target);
-				gl.render(scene, cam);
-				const buffer = new Uint8Array(width * height * 4);
-				gl.readRenderTargetPixels(target, 0, 0, width, height, buffer);
-				gl.setRenderTarget(previous);
-				target.dispose();
+				try {
+					gl.setRenderTarget(target);
+					gl.render(scene, cam);
+					gl.readRenderTargetPixels(target, 0, 0, width, height, buffer);
+				} finally {
+					gl.setRenderTarget(previous);
+				}
 				return buffer;
 			},
 		};
+		apiRef.current = api;
 		// QA hook: run one real export render and report what the capture
 		// camera saw — the layer mask plus an amber scan of the output
 		// frame (the selection cage's warm tone). Lets the suite prove the
@@ -991,6 +1022,10 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 				if (r >= 180 && g >= 165 && g - b >= 35) amber++;
 			}
 			return { layersMask: window.__captureCameraMask ?? 0, amber, pixels: buffer.length / 4 };
+		};
+		return () => {
+			if (apiRef.current === api) apiRef.current = null;
+			target.dispose();
 		};
 	}, [gl, scene, camRef, apiRef, width, height]);
 	return null;
@@ -1113,6 +1148,11 @@ export default function App() {
 	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
 	const [shotAspectKey, setShotAspectKey] = useState(startupStage.shotAspect);
 	const shotOutput = SHOT_ASPECT_PRESETS[shotAspectKey] ?? SHOT_ASPECT_PRESETS["16:9"];
+	const [sensorId, setSensorFormat] = useState(startupStage.sensorId ?? DEFAULT_SENSOR_FORMAT);
+	const filmback = useMemo(
+		() => ({ sensorId, aspectRatio: shotOutput.aspect }),
+		[sensorId, shotOutput.aspect],
+	);
 	const [nonce, setNonce] = useState(0);
 	// The Top-View is always the inset: the old double-click swap that let the
 	// plan own the big pane is gone, so there is no view mode to toggle.
@@ -2586,6 +2626,7 @@ globalThis.playMode = centerTab === "play";
 		characters: characters.map(({ sessionMotion, ...entry }) => entry),
 		hasCharSheet,
 		shotAspect: shotAspectKey,
+		sensorId,
 	};
 
 	function snapshotActiveScene(sourceScenes = scenesRef.current) {
@@ -2857,6 +2898,7 @@ globalThis.playMode = centerTab === "play";
 		setRigMountEpoch((value) => value + 1);
 		setHasCharSheet(stage.hasCharSheet);
 		setShotAspectKey(stage.shotAspect);
+		setSensorFormat(stage.sensorId);
 		// The motion-layer buffer reloads from the scene's first character.
 		const firstLayer = stage.characters[0]?.layer;
 		setWaypoints(firstLayer?.waypoints ?? shotState.waypoints ?? []);
@@ -2946,6 +2988,7 @@ globalThis.playMode = centerTab === "play";
 		activeSceneId,
 		camera: cameraPos,
 		fovDeg,
+		filmback,
 		characters,
 		objects: sceneObjects,
 		commitManualCameraFraming,
@@ -2977,7 +3020,16 @@ globalThis.playMode = centerTab === "play";
 			const live = liveStateRef.current;
 			return {
 				sceneName: live.scenes.find((scene) => scene.id === live.activeSceneId)?.name ?? "",
-				camera: { ...live.camera, focalMm: Math.round(fovToFocalMm((live.fovDeg * Math.PI) / 180) * 100) / 100 },
+				camera: {
+					...live.camera,
+					focalMm: Math.round(fovToFocalMm(
+						(live.fovDeg * Math.PI) / 180,
+						live.filmback.sensorId,
+						live.filmback.aspectRatio,
+					) * 100) / 100,
+					sensorId: live.filmback.sensorId,
+					aspectRatio: live.filmback.aspectRatio,
+				},
 				// y rides too: a character standing on a roof must survive the
 				// same save/open round trip a renamed object just learned to.
 				characters: live.characters.map((entry) => ({ id: entry.id, subject: entry.subject, x: entry.x, y: entry.y ?? 0, z: entry.z, rot: entry.rot, hidden: entry.hidden })),
@@ -3016,7 +3068,11 @@ globalThis.playMode = centerTab === "play";
 				let nextFov = live.fovDeg;
 				if (args.focalMm !== undefined) {
 					if (!Number.isFinite(args.focalMm) || args.focalMm <= 0) throw new Error("Invalid focalMm");
-					nextFov = (focalMmToFov(args.focalMm) * 180) / Math.PI;
+					nextFov = (focalMmToFov(
+						args.focalMm,
+						live.filmback.sensorId,
+						live.filmback.aspectRatio,
+					) * 180) / Math.PI;
 					if (nextFov < 14 || nextFov > 90) throw new Error("focalMm is outside the editor lens range");
 				}
 				const next = { ...live.camera, ...patch };
@@ -3031,7 +3087,16 @@ globalThis.playMode = centerTab === "play";
 				setCameraPos(next);
 				setFovDeg(nextFov);
 				live.commitManualCameraFraming();
-				return { camera: { ...next, focalMm: Math.round(fovToFocalMm((nextFov * Math.PI) / 180) * 100) / 100 } };
+				return {
+					camera: {
+						...next,
+						focalMm: Math.round(fovToFocalMm(
+							(nextFov * Math.PI) / 180,
+							live.filmback.sensorId,
+							live.filmback.aspectRatio,
+						) * 100) / 100,
+					},
+				};
 			},
 			add_character: (args) => {
 				if (typeof args.subject !== "string") throw new Error("Invalid subject");
@@ -3248,7 +3313,7 @@ globalThis.playMode = centerTab === "play";
 		dirtyRef.current = true;
 		const timer = setTimeout(flushScenes, 400);
 		return () => clearTimeout(timer);
-	}, [sceneObjects, shots, waypoints, tlFrameCount, charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2, shotAspectKey, scenes, activeSceneId]);
+	}, [sceneObjects, shots, waypoints, tlFrameCount, charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2, shotAspectKey, sensorId, scenes, activeSceneId]);
 	useEffect(() => {
 		const onPageHide = () => flushScenes();
 		const onVisibility = () => {
@@ -3415,8 +3480,8 @@ globalThis.playMode = centerTab === "play";
 	const poserLook = useRef({ yaw: 0, pitch: 0 });
 
 	const shot = useMemo(
-		() => deriveShot(cameraPos, charA, (fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M),
-		[cameraPos, charA, fovDeg],
+		() => deriveShot(cameraPos, charA, (fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M, filmback),
+		[cameraPos, charA, fovDeg, filmback],
 	);
 
 	// The derived move sequence: what the keyframings geometrically prove
@@ -3428,6 +3493,7 @@ globalThis.playMode = centerTab === "play";
 			segs.push(
 				classifyMove(cameraKeys[i].framing, cameraKeys[i + 1].framing, charA, {
 					durationS: (cameraKeys[i + 1].frame - cameraKeys[i].frame) / tlFps,
+					...filmback,
 				}),
 			);
 		}
@@ -3439,7 +3505,7 @@ globalThis.playMode = centerTab === "play";
 			fromShot: segs[0].from,
 			spanS: Math.round(((cameraKeys[cameraKeys.length - 1].frame - cameraKeys[0].frame) / tlFps) * 10) / 10,
 		};
-	}, [cameraKeys, charA, tlFps]);
+	}, [cameraKeys, charA, filmback, tlFps]);
 	// With Follow armed, Preview means "watch the shot": it plays the timeline
 	// from frame 0 so character motion and the camera move share one clock.
 	// Follow off keeps the camera-only preview on its own clock.
@@ -3447,201 +3513,144 @@ globalThis.playMode = centerTab === "play";
 	const previewActive = movePlaying || (followPreviewArmed && tlPlaying);
 
 	/* --------------------------- shot video export --------------------------- */
-	// Record = play the finished piece in PlayView while mirroring the shot
-	// pane into an offscreen 16:9 canvas that MediaRecorder encodes. The mirror
-	// crops the letterbox bars, so the file is exactly the frame the shot
-	// camera renders — camera move, character motion and the ink pass, none of
-	// the editor chrome. Recording rides the same clock as playback and stops
-	// itself when the playhead wraps at the clip end.
+	// Record is an offline frame-addressed export. It never starts playback and
+	// never samples a wall clock: sampleAt applies one absolute timeline frame,
+	// CaptureRig reads the shot camera's WebGLRenderTarget, and WebCodecs receives
+	// exactly one VideoFrame for every address in the inclusive export range.
 	const [recState, setRecState] = useState("idle"); // "idle" | "recording"
 	const recRef = useRef(null);
 	const tlFrameRef = useRef(0);
 	tlFrameRef.current = tlFrame;
-	const tlPlayingRef = useRef(false);
-	tlPlayingRef.current = tlPlaying;
-	const playModeRef = useRef(false);
-	playModeRef.current = centerTab === "play";
-	const tlFrameCountRef2 = useRef(tlFrameCount);
-	tlFrameCountRef2.current = tlFrameCount;
-	const tlFpsRef2 = useRef(tlFps);
-	tlFpsRef2.current = tlFps;
-	// While recording, the recorder's wall-clock loop is the playhead's
-	// master clock (fixed 1/RECORD_FPS cadence, immune to interval jitter);
-	// the timeline's own interval stands down.
-	const recordingRef = useRef(false);
-	recordingRef.current = recState === "recording";
 
-	function stopShotRecording(reason) {
-		const rec = recRef.current;
-		if (!rec) return;
-		recRef.current = null;
-		clearTimeout(rec.timer);
-		if (reason === "abort") rec.aborted = true;
-		recordingRef.current = false;
-		setTlPlaying(false);
-		setRecState("idle");
-		if (rec.recorder.state !== "inactive") rec.recorder.stop();
-		else if (!rec.armed) setToast(ko("Recording cancelled before any frame was captured", "프레임을 캡처하기 전에 녹화가 취소됐어요"));
+	function applyExportFrame(frame) {
+		for (const entry of characters) {
+			const clip = entry.id === activeChar.id ? motion : entry.sessionMotion;
+			const rig = rigs[entry.id];
+			if (!clip || !rig) continue;
+			const sampled = sampleAt({ frameCount: clip.frames, motion: clip }, null, frame);
+			applyMotionFrame(rig, clip, sampled.motionFrame);
+		}
+		if (activeRig && ikChains && ikStateRef.current.keys.size > 0) {
+			ikEvaluate(ikChains, ikStateRef.current, frame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
+		}
+		const sampled = sampleAt(playbackScene, shotAtFrame(shots, frame), frame);
+		const cam = shotCamRef.current;
+		if (cam && sampled.camera) {
+			cam.position.set(sampled.camera.pos.x, sampled.camera.pos.y, sampled.camera.pos.z);
+			cam.rotation.order = "YXZ";
+			cam.rotation.set(sampled.camera.pitch, sampled.camera.yaw, 0);
+			look.current.yaw = sampled.camera.yaw;
+			look.current.pitch = sampled.camera.pitch;
+			cam.fov = sampled.camera.fovDeg;
+			cam.updateProjectionMatrix();
+		}
+		return captureRef.current?.render() ?? null;
 	}
 
-	// Seedance's reference-video floor is 24 fps — and so is the production
-	// timeline now, so capture and timeline share one clock: the playhead
-	// advances one timeline frame per captured frame, each stamped 41.67 ms
-	// apart. The exported file is exactly 24 fps at true motion speed (the
-	// old 20-fps timeline needed a 20/24 real-time warp for the same result),
-	// valid as a camera/motion reference out of the box. This is the EXPORT
-	// clock, never the ARDY wire clock — it does not go through toArdyFrame.
-	const RECORD_FPS = TIMELINE_FPS;
+	async function runShotExport({ startFrame = 0, endFrame = tlFrameCount - 1, download = true } = {}) {
+		if (recRef.current) throw new Error(ko("An export is already running", "이미 내보내기 중입니다"));
+		if (!captureRef.current || !shotCamRef.current) throw new Error(ko("The shot renderer is not ready", "샷 렌더러가 아직 준비되지 않았어요"));
+		const controller = new AbortController();
+		const rec = { controller };
+		recRef.current = rec;
+		setRecState("recording");
+		const cam = shotCamRef.current;
+		const cameraSnapshot = {
+			position: cam.position.clone(),
+			quaternion: cam.quaternion.clone(),
+			rotationOrder: cam.rotation.order,
+			fov: cam.fov,
+			yaw: look.current.yaw,
+			pitch: look.current.pitch,
+		};
+		const rigSnapshots = Object.values(rigs).filter(Boolean).map((rig) => ({ rig, bones: snapshotPlaybackBones(rig) }));
+		try {
+			const result = await exportOffscreenVideo({
+				startFrame,
+				endFrame,
+				fps: TIMELINE_FPS,
+				width: shotOutput.width,
+				height: shotOutput.height,
+				capture: applyExportFrame,
+				signal: controller.signal,
+			});
+			if (download) {
+				const slate = (moveSequence?.slate ?? "shot").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "shot";
+				const name = `cozyclay-${slate}.webm`;
+				const url = URL.createObjectURL(result.blob);
+				const anchor = document.createElement("a");
+				anchor.href = url;
+				anchor.download = name;
+				anchor.click();
+				setTimeout(() => URL.revokeObjectURL(url), 10_000);
+				setRecordedVideoName(name);
+				setToast(isKo ? `${name} 저장됨 · ${result.frameCount}프레임` : `Saved ${name} · ${result.frameCount} frames`);
+			}
+			return result;
+		} finally {
+			for (const snapshot of rigSnapshots) restorePlaybackBones(snapshot.rig, snapshot.bones);
+			cam.position.copy(cameraSnapshot.position);
+			cam.rotation.order = cameraSnapshot.rotationOrder;
+			cam.quaternion.copy(cameraSnapshot.quaternion);
+			cam.fov = cameraSnapshot.fov;
+			cam.updateProjectionMatrix();
+			look.current.yaw = cameraSnapshot.yaw;
+			look.current.pitch = cameraSnapshot.pitch;
+			if (recRef.current === rec) recRef.current = null;
+			setRecState("idle");
+		}
+	}
+
+	function stopShotRecording() {
+		recRef.current?.controller.abort();
+	}
 
 	function toggleShotRecording() {
 		if (recRef.current) {
-			stopShotRecording("manual");
+			stopShotRecording();
 			return;
 		}
-		const stage = stageRef.current;
-		const glCanvas = stage ? stage.querySelector("canvas") : null;
-		if (!glCanvas) return;
-		// mp4 first where the platform encoder offers it (Safari, newer Chrome),
-		// webm as the everywhere-else answer. No support at all = no feature.
-		const MIMES = ["video/mp4;codecs=avc1.640028", "video/mp4", "video/webm;codecs=vp9", "video/webm"];
-		const mime = typeof MediaRecorder !== "undefined" ? MIMES.find((m) => MediaRecorder.isTypeSupported(m)) : null;
-		if (!mime) {
-			setToast(ko("This browser cannot encode video (MediaRecorder unavailable)", "이 브라우저는 영상 인코딩을 지원하지 않아요(MediaRecorder 없음)"));
+		runShotExport().catch((error) => {
+			if (error?.name !== "AbortError") setToast(error?.message || String(error));
+		});
+	}
+
+	function downloadOtioCutList() {
+		if (!shots.length) {
+			setToast(ko("Add at least one Shot before exporting OTIO", "OTIO를 내보내려면 샷을 하나 이상 추가하세요"));
 			return;
 		}
-		const mirror = document.createElement("canvas");
-		mirror.width = shotOutput.width;
-		mirror.height = shotOutput.height;
-		const ctx = mirror.getContext("2d");
-		// Frames go in manually (and only when one was actually drawn): the
-		// track must be exactly RECORD_FPS, not whatever the display runs at.
-		const track = mirror.captureStream(0).getVideoTracks()[0];
-		const recorder = new MediaRecorder(new MediaStream([track]), { mimeType: mime, videoBitsPerSecond: 12_000_000 });
-		const chunks = [];
-		const slate = (moveSequence?.slate ?? "shot").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "shot";
-		const rec = {
-			recorder,
-			track,
-			// all wall-clock anchors land on the first frame so a startup
-			// hiccup never stretches clip time
-			t0: 0,
-			playheadT0: 0,
-			outputFrames: 0,
-			armed: false,
-			warmup: 2,
-			aborted: false,
-			done: false,
-		};
-		recorder.ondataavailable = (e) => {
-			if (e.data && e.data.size > 0) chunks.push(e.data);
-		};
-		recorder.onstop = async () => {
-			if (rec.aborted || chunks.length === 0) return;
-			const ext = mime.startsWith("video/mp4") ? "mp4" : "webm";
-			const name = `cozyclay-${slate}.${ext}`;
-			const recordedBlob = new Blob(chunks, { type: mime });
-			let downloadBlob = recordedBlob;
-			if (ext === "mp4") {
-				try {
-					downloadBlob = await repairRecordedMp4(recordedBlob);
-				} catch {
-					// An unfamiliar muxer layout must never block the user's recording.
-					downloadBlob = recordedBlob;
-				}
-			}
-			const url = URL.createObjectURL(downloadBlob);
+		try {
+			const activeScene = scenes.find((scene) => scene.id === activeSceneId);
+			const exportScene = {
+				...playbackScene,
+				name: activeScene?.name,
+				activeCharacterId: activeChar.id,
+				characters: characters.map((entry) => ({
+					...entry,
+					sessionMotion: entry.id === activeChar.id ? motion : entry.sessionMotion,
+				})),
+				objects: sceneObjects,
+			};
+			const serialized = serializeOtio(exportScene, shots);
+			const blob = new Blob([serialized], { type: "application/json" });
+			const url = URL.createObjectURL(blob);
 			const anchor = document.createElement("a");
+			const slug = (activeScene?.name ?? "cut-list")
+				.toLowerCase()
+				.replace(/[^a-z0-9]+/g, "-")
+				.replace(/^-+|-+$/g, "") || "cut-list";
 			anchor.href = url;
-			anchor.download = name;
+			anchor.download = `cozyclay-${slug}.otio`;
 			anchor.click();
 			setTimeout(() => URL.revokeObjectURL(url), 10_000);
-			setRecordedVideoName(name);
-			setToast(isKo ? `${name} 저장됨` : `Saved ${name}`);
-		};
-		recRef.current = rec;
-		setRecState("recording");
-		recordingRef.current = true;
-		// PlayView is the finished-output player, so record there: no gizmo, no
-		// inset, and the move rides the playhead regardless of Follow. Playing
-		// is forced even without a loaded motion so a camera-only move records.
-		setCenterTab("play");
-		setTlFrame(0);
-		setTlPlaying(true);
-
-		// The tick runs in setTimeout (the recorder keeps the event loop alive
-		// even in a background tab, where rAF is throttled to zero): wall-clock
-		// pacing must not depend on display refresh.
-		const timeoutTick = () => {
-			if (recRef.current !== rec) return;
-			const main = mainPaneRef.current;
-			if (!playModeRef.current || !main || !stage) {
-				rec.timer = setTimeout(timeoutTick, 20);
-				return;
-			}
-			// a couple of ticks for the PlayView layout + first playMode draw to
-			// land, so the file never opens on a stale Scene-tab composite
-			if (rec.warmup > 0) {
-				rec.warmup -= 1;
-				rec.timer = setTimeout(timeoutTick, 20);
-				return;
-			}
-			const now = performance.now();
-			if (!rec.armed) {
-				rec.armed = true;
-				rec.t0 = now;
-				rec.playheadT0 = now;
-				recorder.start();
-			}
-			// drive the playhead at fps/RECORD_FPS real time ourselves — the
-			// timeline's own clock is suspended while recording (below), so the
-			// exported speed is exact regardless of interval jitter
-			const clipSeconds = tlFrameCountRef2.current / tlFpsRef2.current;
-			const elapsed = now - rec.playheadT0;
-			const frame = Math.floor(elapsed / (1000 / RECORD_FPS));
-			if (frame >= tlFrameCountRef2.current || elapsed / 1000 > clipSeconds) {
-				rec.done = true;
-				setTlPlaying(false);
-				setRecState("idle");
-				recordingRef.current = false;
-				recRef.current = null;
-				recorder.stop();
-				return;
-			}
-			setTlFrame(frame);
-			const stageRect = stage.getBoundingClientRect();
-			const mainRect = main.getBoundingClientRect();
-			const pane = { x: mainRect.left - stageRect.left, y: mainRect.top - stageRect.top, w: mainRect.width, h: mainRect.height };
-			if (pane.w < 2 || pane.h < 2) {
-				rec.timer = setTimeout(timeoutTick, 20);
-				return;
-			}
-			const img = fitAspect(pane, shotOutput.aspect);
-			const scale = glCanvas.width / stageRect.width;
-			ctx.drawImage(
-				glCanvas,
-				img.x * scale,
-				img.y * scale,
-				img.w * scale,
-				img.h * scale,
-				0,
-				0,
-				mirror.width,
-				mirror.height,
-			);
-			// fixed output cadence: each captured frame spans exactly one
-			// 1/RECORD_FPS of the clip, so a stalled render repeats its frame
-			// (hold) instead of compressing the clip
-			const nextStamp = rec.t0 + (rec.outputFrames * 1000) / RECORD_FPS;
-			rec.outputFrames += 1;
-			if (typeof track.requestFrame === "function") {
-				track.requestFrame();
-				setTimeout(() => {
-					if (typeof track.requestFrame === "function") track.requestFrame();
-				}, 1000 / (2 * RECORD_FPS));
-			}
-			rec.timer = setTimeout(timeoutTick, Math.max(0, nextStamp - now + 1000 / RECORD_FPS));
-		};
-		rec.timer = setTimeout(timeoutTick, 20);
+			const frameCount = shots.reduce((total, shot) => total + shot.endFrame - shot.startFrame + 1, 0);
+			setToast(isKo
+				? `OTIO 저장됨 · ${shots.length}샷 · ${frameCount}프레임`
+				: `OTIO saved · ${shots.length} shots · ${frameCount} frames`);
+		} catch (error) {
+			setToast(error?.message || String(error));
+		}
 	}
 
 	function captureCurrentFraming() {
@@ -3882,8 +3891,6 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	function advanceFrame() {
-		// recording paces the playhead on its own fixed-cadence clock
-		if (recordingRef.current) return;
 		const previewEnd = cameraPreviewEndRef.current;
 		if (previewEnd != null && tlFrameRef.current >= previewEnd - 1) {
 			cameraPreviewEndRef.current = null;
@@ -4497,7 +4504,10 @@ globalThis.playMode = centerTab === "play";
 		for (const entry of characters) {
 			const clip = entry.id === activeChar.id ? motion : entry.sessionMotion;
 			const rig = rigs[entry.id];
-			if (clip && rig) applyMotionFrame(rig, clip, tlFrame);
+			if (clip && rig) {
+				const sampled = sampleAt({ frameCount: clip.frames, motion: clip }, null, tlFrame);
+				applyMotionFrame(rig, clip, sampled.motionFrame);
+			}
 		}
 	}, [characters, activeChar.id, motion, rigs, tlFrame]);
 
@@ -4722,20 +4732,18 @@ globalThis.playMode = centerTab === "play";
 		restorePlaybackBones(saved.rig, saved.bones);
 	}, [motion]);
 
-	const motionPos = useMemo(() => {
-		if (!motion) return null;
-		const f = Math.min(tlFrame, motion.frames - 1);
-		const a = Math.min(motion.anchorFrame, motion.frames - 1);
-		const offset = toSceneRootOffset(
-			motion.rootPos[f * 3] - motion.rootPos[a * 3],
-			motion.rootPos[f * 3 + 2] - motion.rootPos[a * 3 + 2],
-			motion.rotationDeg,
-		);
-		return {
-			x: motion.anchorX + offset.x,
-			z: motion.anchorZ + offset.z,
-		};
-	}, [motion, tlFrame]);
+	const playbackSceneBase = useMemo(() => ({
+		frameCount: tlFrameCount,
+		fps: tlFps,
+		subject: charA,
+		motion,
+		cameraAnchor: charA,
+		fovDeg,
+		filmback,
+	}), [tlFrameCount, tlFps, charA, motion, fovDeg, filmback]);
+	const motionPos = useMemo(() => (
+		motion ? sampleAt(playbackSceneBase, null, tlFrame).subject : null
+	), [motion, playbackSceneBase, tlFrame]);
 
 	// The subject's full per-frame scene trajectory — what the follow camera
 	// is derived from. Without a loaded motion the subject stands still and
@@ -4743,18 +4751,9 @@ globalThis.playMode = centerTab === "play";
 	const subjectTrack = useMemo(() => {
 		if (!shots.some((shot) => shot.camera?.mode === "follow" || shot.camera?.mode === "rail")) return null;
 		const frames = Math.max(tlFrameCount, 1);
-		if (!motion) return Array.from({ length: frames }, () => ({ x: charA.x, z: charA.z }));
-		const a = Math.min(motion.anchorFrame, motion.frames - 1);
-		return Array.from({ length: frames }, (_, f) => {
-			const ff = Math.min(f, motion.frames - 1);
-			const offset = toSceneRootOffset(
-				motion.rootPos[ff * 3] - motion.rootPos[a * 3],
-				motion.rootPos[ff * 3 + 2] - motion.rootPos[a * 3 + 2],
-				motion.rotationDeg,
-			);
-			return { x: motion.anchorX + offset.x, z: motion.anchorZ + offset.z };
-		});
-	}, [shots, motion, tlFrameCount, charA.x, charA.z]);
+		return Array.from({ length: frames }, (_, frame) =>
+			sampleAt(playbackSceneBase, null, frame).subject);
+	}, [shots, playbackSceneBase, tlFrameCount]);
 
 	// The dense rail (spline through the drawn control points) — shared by
 	// the follow controller and the Top-View display.
@@ -4786,6 +4785,49 @@ globalThis.playMode = centerTab === "play";
 		}
 		return combined;
 	}, [shots, subjectTrack, tlFps, charA.rot]);
+
+	const playbackScene = useMemo(() => ({
+		...playbackSceneBase,
+		subjectTrack,
+		cameraTrack: followTrack,
+	}), [playbackSceneBase, subjectTrack, followTrack]);
+
+	// Browser acceptance seam: it invokes the exact production exporter but
+	// suppresses the download, returning only serializable evidence.
+	useEffect(() => {
+		const api = async (options = {}) => {
+			const { probeMetadata = false, ...range } = options;
+			const { blob, ...result } = await runShotExport({ ...range, download: false });
+			if (!probeMetadata) return { ...result, blobSize: blob.size };
+			const url = URL.createObjectURL(blob);
+			const video = document.createElement("video");
+			let metadata;
+			try {
+				metadata = await new Promise((resolve, reject) => {
+					const timer = setTimeout(() => reject(new Error("exported WebM metadata timed out")), 5000);
+					video.onloadedmetadata = () => {
+						clearTimeout(timer);
+						resolve({ duration: video.duration, width: video.videoWidth, height: video.videoHeight });
+					};
+					video.onerror = () => {
+						clearTimeout(timer);
+						reject(new Error("browser could not decode exported WebM metadata"));
+					};
+					video.preload = "metadata";
+					video.src = url;
+				});
+			} finally {
+				video.removeAttribute("src");
+				video.load();
+				URL.revokeObjectURL(url);
+			}
+			return { ...result, blobSize: blob.size, metadata };
+		};
+		window.__exportOffscreen = api;
+		return () => {
+			if (window.__exportOffscreen === api) delete window.__exportOffscreen;
+		};
+	});
 
 	// The follow camera owns the shot camera in the same situations key
 	// following would: never while an authoring mode holds the viewport.
@@ -4958,7 +5000,7 @@ globalThis.playMode = centerTab === "play";
 			mode,
 			model,
 			shot: movePlan?.fromShot ?? (framingA
-				? deriveShot(framingA.pos, promptSubject, (framingA.fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M)
+				? deriveShot(framingA.pos, promptSubject, (framingA.fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M, filmback)
 				: shot),
 			subject,
 			subject2: showB ? subject2 : null,
@@ -5811,6 +5853,9 @@ function resizePromptClip(id, edge, rawFrame) {
 						<button type="button" onClick={() => stepFrame(1)} aria-label={ko("Next frame", "다음 프레임")}>▶│</button>
 						<span className="viewport-readout">1.00×</span>
 						<span className="viewport-toolbar-separator" aria-hidden="true" />
+						<button type="button" disabled={!shots.length} onClick={downloadOtioCutList}>
+							OTIO
+						</button>
 						<button
 							type="button"
 							className={recState === "recording" ? "recording" : ""}
@@ -5957,7 +6002,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								fps={tlFps}
 								keys={cameraKeys}
 								shots={shots}
-								anchor={charA}
+								scene={playbackScene}
 								camRef={shotCamRef}
 								look={look}
 								isInterrupted={() => flyingRef.current || manualCameraOverrideRef.current}
@@ -5969,7 +6014,8 @@ function resizePromptClip(id, edge, rawFrame) {
 							<FollowCamRig
 								enabled={followCamActive && !movePlaying}
 								frame={tlFrame}
-								track={followTrack}
+								scene={playbackScene}
+								shot={activeShot}
 								camRef={shotCamRef}
 								look={look}
 								isInterrupted={() => flyingRef.current || manualCameraOverrideRef.current}
@@ -6243,9 +6289,17 @@ function resizePromptClip(id, edge, rawFrame) {
 					    so keep its controls beside the Motion tools as well as Shot setup. */}
 					<Foldout hidden={!(sidebarTab === "shot" || (sidebarTab === "inspector" && selectedHierarchyId === "camera"))} title={ko("Camera", "카메라")}>
 					<Slider label={ko("Lens (FOV)", "렌즈 (FOV)")} min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
+					<Field label={ko("Filmback", "필름백")}>
+						<Dropdown
+							ariaLabel={ko("Filmback sensor format", "필름백 센서 포맷")}
+							value={sensorId}
+							options={Object.values(SENSOR_FORMATS).map((sensor) => ({ value: sensor.id, label: sensor.label }))}
+							onChange={setSensorFormat}
+						/>
+					</Field>
 						<div className="readout">
 						<span title={ko("camera to subject", "카메라와 피사체 거리")}>{shot.distance.toFixed(2)} m</span>
-						<span title={ko("nearest prime on a full-frame sensor", "풀프레임 기준 가장 가까운 단렌즈")}>{shot.focalMm} mm</span>
+						<span title={ko("nearest prime on the cropped filmback", "크롭된 필름백 기준 가장 가까운 단렌즈")}>{shot.focalMm} mm</span>
 						<span title={ko("angle relative to the subject's eyes", "피사체 눈높이 기준 각도")}>{shot.elevationDeg.toFixed(0)}°</span>
 						</div>
 						<button className="btn ghost" onClick={() => setNonce((n) => n + 1)}>

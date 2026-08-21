@@ -5,7 +5,7 @@
 // names the move from the geometry, so the prompt claims "push-in" only when
 // the camera actually pushes in.
 
-import { FRAMING_PIVOT_Y, SUBJECT_HEIGHT_M, deriveShot, focalMmToFov, fovToFocalMm } from "./shot.js";
+import { FRAMING_PIVOT_Y, SUBJECT_HEIGHT_M, deriveShot, focalMmToFov, fovToFocalMm, usedSensorHeightMm } from "./shot.js";
 
 /* ------------------------------------------------------------ framing --- */
 
@@ -60,7 +60,7 @@ export function easeInOut(t) {
  * lens is aimed at (sampled at the subject's range, so an interpolated orbit
  * keeps looking where the framing did instead of at empty air).
  */
-function decompose(framing, anchor) {
+function decompose(framing, anchor, filmback = {}) {
 	const dx = framing.pos.x - anchor.x;
 	const dz = framing.pos.z - anchor.z;
 	const r = Math.max(Math.hypot(dx, dz), 1e-6);
@@ -73,7 +73,17 @@ function decompose(framing, anchor) {
 		y: framing.pos.y + dir.y * range,
 		z: framing.pos.z + dir.z * range,
 	};
-	return { r, azimuth, height: framing.pos.y, aim, focalMm: fovToFocalMm((framing.fovDeg * Math.PI) / 180) };
+	return {
+		r,
+		azimuth,
+		height: framing.pos.y,
+		aim,
+		focalMm: fovToFocalMm(
+			(framing.fovDeg * Math.PI) / 180,
+			filmback.sensorId,
+			filmback.aspectRatio,
+		),
+	};
 }
 
 /**
@@ -88,12 +98,13 @@ function decompose(framing, anchor) {
  * @param {{x:number,z:number}} anchor   subject ground position
  * @param {number} t          0..1 along the move
  * @param {(t:number)=>number} ease
+ * @param {{sensorId?:string,aspectRatio?:number}} filmback
  * @returns a framing record for time t; t=0 and t=1 reproduce A and B exactly
  */
-export function interpolateFraming(a, b, anchor, t, ease = easeInOut) {
+export function interpolateFraming(a, b, anchor, t, ease = easeInOut, filmback = {}) {
 	const k = ease(clamp01(t));
-	const A = decompose(a, anchor);
-	const B = decompose(b, anchor);
+	const A = decompose(a, anchor, filmback);
+	const B = decompose(b, anchor, filmback);
 	const r = lerp(A.r, B.r, k);
 	const azimuth = A.azimuth + shortestArc(A.azimuth, B.azimuth) * k;
 	const height = lerp(A.height, B.height, k);
@@ -109,7 +120,12 @@ export function interpolateFraming(a, b, anchor, t, ease = easeInOut) {
 	};
 	const { yaw, pitch } = aimAngles(pos, aim);
 	const focalMm = lerp(A.focalMm, B.focalMm, k);
-	return { pos, yaw, pitch, fovDeg: (focalMmToFov(focalMm) * 180) / Math.PI };
+	return {
+		pos,
+		yaw,
+		pitch,
+		fovDeg: (focalMmToFov(focalMm, filmback.sensorId, filmback.aspectRatio) * 180) / Math.PI,
+	};
 }
 
 /* ----------------------------------------------------------- naming ---- */
@@ -134,19 +150,29 @@ const VERTIGO_SIZE_DRIFT = 0.15; // dolly-zoom = distance changes, subject size 
  * @param {object} a  start framing
  * @param {object} b  end framing
  * @param {{x:number,z:number,rot:number}} subject
- * @param {{durationS?:number, height?:number}} [opts]
+ * @param {{durationS?:number, height?:number, sensorId?:string, aspectRatio?:number}} [opts]
  */
-export function classifyMove(a, b, subject, { durationS = 3, height = SUBJECT_HEIGHT_M } = {}) {
+export function classifyMove(a, b, subject, {
+	durationS = 3,
+	height = SUBJECT_HEIGHT_M,
+	sensorId,
+	aspectRatio,
+} = {}) {
 	const anchor = { x: subject.x, z: subject.z };
-	const A = decompose(a, anchor);
-	const B = decompose(b, anchor);
-	const shotA = deriveShot(a.pos, subject, (a.fovDeg * Math.PI) / 180, height);
-	const shotB = deriveShot(b.pos, subject, (b.fovDeg * Math.PI) / 180, height);
+	const filmback = { sensorId, aspectRatio };
+	const A = decompose(a, anchor, filmback);
+	const B = decompose(b, anchor, filmback);
+	const shotA = deriveShot(a.pos, subject, (a.fovDeg * Math.PI) / 180, height, filmback);
+	const shotB = deriveShot(b.pos, subject, (b.fovDeg * Math.PI) / 180, height, filmback);
 
 	const dr = B.r - A.r;
 	const dAzDeg = shortestArc(A.azimuth, B.azimuth) * DEG;
 	const dh = B.height - A.height;
 	const dFocal = B.focalMm - A.focalMm;
+	// The move vocabulary's thresholds predate selectable filmbacks and were
+	// authored against a 24mm-tall gate. Compare in that stable equivalent
+	// space so changing sensor or crop cannot rename the same FOV move.
+	const dFocal24mm = dFocal * (24 / usedSensorHeightMm(sensorId, aspectRatio));
 	const dYawDeg = shortestArc(a.yaw, b.yaw) * DEG;
 	const dPitchDeg = (b.pitch - a.pitch) * DEG;
 	const posDelta = Math.hypot(b.pos.x - a.pos.x, b.pos.y - a.pos.y, b.pos.z - a.pos.z);
@@ -163,11 +189,11 @@ export function classifyMove(a, b, subject, { durationS = 3, height = SUBJECT_HE
 	let label;
 	let phrase;
 
-	if (still && Math.abs(dYawDeg) < STILL_ANGLE_DEG && Math.abs(dPitchDeg) < STILL_ANGLE_DEG && Math.abs(dFocal) < ZOOM_MM) {
+	if (still && Math.abs(dYawDeg) < STILL_ANGLE_DEG && Math.abs(dPitchDeg) < STILL_ANGLE_DEG && Math.abs(dFocal24mm) < ZOOM_MM) {
 		id = "static";
 		label = "Static / locked-off";
 		phrase = "static, locked-off shot";
-	} else if (still && Math.abs(dFocal) >= ZOOM_MM) {
+	} else if (still && Math.abs(dFocal24mm) >= ZOOM_MM) {
 		id = dFocal > 0 ? "zoom-in" : "zoom-out";
 		label = dFocal > 0 ? "Zoom in" : "Zoom out";
 		phrase = `a ${tempo}zoom ${dFocal > 0 ? "in, tightening" : "out, widening"} ${sizes}`;
@@ -186,7 +212,7 @@ export function classifyMove(a, b, subject, { durationS = 3, height = SUBJECT_HE
 		}
 	} else if (
 		Math.abs(dr) >= DOLLY_M &&
-		Math.abs(dFocal) >= VERTIGO_MM &&
+		Math.abs(dFocal24mm) >= VERTIGO_MM &&
 		Math.sign(dFocal) === Math.sign(dr) &&
 		sizeDrift <= VERTIGO_SIZE_DRIFT
 	) {
@@ -226,7 +252,7 @@ export function classifyMove(a, b, subject, { durationS = 3, height = SUBJECT_HE
 		tempo: tempo.trim(),
 		from: shotA,
 		to: shotB,
-		deltas: { dr, dAzDeg, dh, dFocal, dYawDeg, dPitchDeg, posDelta, sizeDrift },
+		deltas: { dr, dAzDeg, dh, dFocal, dFocal24mm, dYawDeg, dPitchDeg, posDelta, sizeDrift },
 	};
 }
 
@@ -250,7 +276,7 @@ export function moveSlate(move) {
  * @param {number} frame
  * @returns a framing record, or null when there are no keys
  */
-export function cameraMoveAt(keys, anchor, frame) {
+export function cameraMoveAt(keys, anchor, frame, filmback = {}) {
 	if (!keys.length) return null;
 	const first = keys[0];
 	const last = keys[keys.length - 1];
@@ -260,7 +286,7 @@ export function cameraMoveAt(keys, anchor, frame) {
 		const a = keys[i];
 		const b = keys[i + 1];
 		if (frame <= b.frame) {
-			return interpolateFraming(a.framing, b.framing, anchor, (frame - a.frame) / (b.frame - a.frame));
+			return interpolateFraming(a.framing, b.framing, anchor, (frame - a.frame) / (b.frame - a.frame), easeInOut, filmback);
 		}
 	}
 	return last.framing;

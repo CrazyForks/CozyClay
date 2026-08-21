@@ -8,16 +8,51 @@ export const SUBJECT_HEIGHT_M = 1.8;
 // midpoint of their bounding box. A camera craned to the floor is still close
 // to the body it is pointing at, and only this pivot reports that honestly.
 export const FRAMING_PIVOT_Y = 1.3;
-const SENSOR_HALF_HEIGHT_MM = 12; // Blender/full-frame default 24mm sensor height
 
-/** vertical FOV (radians) -> focal length in mm on a 24mm-tall sensor */
-export function fovToFocalMm(fovRad) {
-	return SENSOR_HALF_HEIGHT_MM / Math.tan(fovRad / 2);
+// App-owned filmback presets, in millimetres. These are format/gate sizes,
+// not claims about every digital camera sold under the same family name.
+// Keeping the dimensions here makes lens vocabulary one shared contract for
+// the studio, camera-move interpolation and MCP. The object keys/ids are wire
+// identifiers persisted in scene metadata and exported to USD; do not rename
+// them without a document migration.
+export const SENSOR_FORMATS = Object.freeze({
+	super16: Object.freeze({ id: "super16", label: "Super 16", widthMm: 12.52, heightMm: 7.41 }),
+	super35: Object.freeze({ id: "super35", label: "Super 35", widthMm: 24.89, heightMm: 18.66 }),
+	fullFrame: Object.freeze({ id: "fullFrame", label: "Full Frame", widthMm: 36, heightMm: 24 }),
+	"65mm": Object.freeze({ id: "65mm", label: "65mm", widthMm: 52.63, heightMm: 23.01 }),
+});
+
+export const DEFAULT_SENSOR_FORMAT = "fullFrame";
+export const DEFAULT_ASPECT_RATIO = 16 / 9;
+export const SHOT_ASPECT_RATIOS = Object.freeze({
+	"16:9": 16 / 9,
+	"2.39:1": 2.39,
+	"9:16": 9 / 16,
+	"1:1": 1,
+	"4:3": 4 / 3,
+});
+
+export function shotAspectRatio(value) {
+	return SHOT_ASPECT_RATIOS[value] ?? DEFAULT_ASPECT_RATIO;
 }
 
-/** focal length in mm -> vertical FOV in radians */
-export function focalMmToFov(mm) {
-	return 2 * Math.atan(SENSOR_HALF_HEIGHT_MM / mm);
+/** The vertical gate left after the output aspect crops the sensor. Narrower
+ * outputs use the full sensor height and crop the sides; wider outputs crop
+ * top and bottom. Invalid inputs repair to the studio defaults. */
+export function usedSensorHeightMm(sensorId = DEFAULT_SENSOR_FORMAT, aspectRatio = DEFAULT_ASPECT_RATIO) {
+	const sensor = SENSOR_FORMATS[sensorId] ?? SENSOR_FORMATS[DEFAULT_SENSOR_FORMAT];
+	const aspect = Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : DEFAULT_ASPECT_RATIO;
+	return Math.min(sensor.heightMm, sensor.widthMm / aspect);
+}
+
+/** vertical FOV (radians) -> focal length in mm on the cropped filmback */
+export function fovToFocalMm(fovRad, sensorId = DEFAULT_SENSOR_FORMAT, aspectRatio = DEFAULT_ASPECT_RATIO) {
+	return usedSensorHeightMm(sensorId, aspectRatio) / (2 * Math.tan(fovRad / 2));
+}
+
+/** focal length in mm -> vertical FOV in radians on the cropped filmback */
+export function focalMmToFov(mm, sensorId = DEFAULT_SENSOR_FORMAT, aspectRatio = DEFAULT_ASPECT_RATIO) {
+	return 2 * Math.atan(usedSensorHeightMm(sensorId, aspectRatio) / (2 * mm));
 }
 
 // A crew does not carry a 47 mm lens. Reporting the nearest prime from a real
@@ -25,8 +60,8 @@ export function focalMmToFov(mm) {
 // more captions saying "35mm" than "47mm".
 export const PRIME_SET = [14, 18, 24, 28, 35, 50, 85, 100, 135];
 
-export function nearestPrime(fovRad) {
-	const exact = fovToFocalMm(fovRad);
+export function nearestPrime(fovRad, sensorId = DEFAULT_SENSOR_FORMAT, aspectRatio = DEFAULT_ASPECT_RATIO) {
+	const exact = fovToFocalMm(fovRad, sensorId, aspectRatio);
 	return PRIME_SET.reduce((best, mm) => (Math.abs(mm - exact) < Math.abs(best - exact) ? mm : best));
 }
 
@@ -63,8 +98,11 @@ const pick = (table, value) => table.find(([threshold]) => value >= threshold) ?
  * @param {{x:number,z:number,rot:number}} subject     subject ground position + facing in degrees
  * @param {number} fovRad                              vertical field of view
  * @param {number} height                              subject height in metres
+ * @param {{sensorId?:string,aspectRatio?:number}} filmback
  */
-export function deriveShot(cameraPos, subject, fovRad, height = SUBJECT_HEIGHT_M) {
+export function deriveShot(cameraPos, subject, fovRad, height = SUBJECT_HEIGHT_M, filmback = {}) {
+	const sensorId = filmback.sensorId ?? DEFAULT_SENSOR_FORMAT;
+	const aspectRatio = filmback.aspectRatio ?? DEFAULT_ASPECT_RATIO;
 	const dx = cameraPos.x - subject.x;
 	const dz = cameraPos.z - subject.z;
 	const dy = cameraPos.y - FRAMING_PIVOT_Y;
@@ -114,8 +152,10 @@ export function deriveShot(cameraPos, subject, fovRad, height = SUBJECT_HEIGHT_M
 		levelPhrase,
 		viewShort,
 		viewPhrase,
-		focalMm: nearestPrime(fovRad),
-		exactFocalMm: fovToFocalMm(fovRad),
+		focalMm: nearestPrime(fovRad, sensorId, aspectRatio),
+		exactFocalMm: fovToFocalMm(fovRad, sensorId, aspectRatio),
+		sensorId: SENSOR_FORMATS[sensorId]?.id ?? DEFAULT_SENSOR_FORMAT,
+		usedSensorHeightMm: usedSensorHeightMm(sensorId, aspectRatio),
 		distance,
 		screenFraction,
 		elevationDeg,

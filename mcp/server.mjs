@@ -43,6 +43,7 @@ import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhases, splitLongBeat } from 
 
 import {
 	CAMERA_MOVES,
+	DEFAULT_SENSOR_FORMAT,
 	IMAGE_MODELS,
 	VIDEO_MODELS,
 	composePrompt,
@@ -50,6 +51,7 @@ import {
 	focalMmToFov,
 	fovToFocalMm,
 	nearestPrime,
+	shotAspectRatio,
 	slateLine,
 } from "../src/shot.js";
 import {
@@ -117,8 +119,16 @@ const castHint = () =>
 		.map((c, i) => `${String.fromCharCode(65 + i)}=${c.id}`)
 		.join(", ")}`;
 
-/** The camera's vertical FOV, derived from the focal length the user set. */
-const fov = () => focalMmToFov(state.camera.focalMm);
+const filmback = () => ({
+	sensorId: state.camera.sensorId ?? stage().sensorId ?? DEFAULT_SENSOR_FORMAT,
+	aspectRatio: state.camera.aspectRatio ?? shotAspectRatio(stage().shotAspect),
+});
+
+/** The camera's vertical FOV, derived from the focal length and cropped gate. */
+const fov = () => {
+	const gate = filmback();
+	return focalMmToFov(state.camera.focalMm, gate.sensorId, gate.aspectRatio);
+};
 
 /** The subject `deriveShot` frames against: the framed character, which is the
  * first of the cast unless `focus_character` moved it. */
@@ -150,7 +160,7 @@ const framing = () => {
 	});
 };
 
-const currentShot = () => deriveShot(state.camera, subject(), fov());
+const currentShot = () => deriveShot(state.camera, subject(), fov(), undefined, filmback());
 
 const modelById = (id) =>
 	[...VIDEO_MODELS, ...IMAGE_MODELS].find((m) => m.id === id) ?? null;
@@ -166,6 +176,8 @@ const applyLiveDescription = (description) => {
 		for (const key of ["x", "y", "z", "focalMm"]) {
 			if (Number.isFinite(description.camera[key])) state.camera[key] = description.camera[key];
 		}
+		if (typeof description.camera.sensorId === "string") state.camera.sensorId = description.camera.sensorId;
+		if (Number.isFinite(description.camera.aspectRatio)) state.camera.aspectRatio = description.camera.aspectRatio;
 	}
 	if (Array.isArray(description.characters) && description.characters.length) {
 		const prior = new Map(stage().characters.map((character) => [character.id, character]));
@@ -231,7 +243,8 @@ function sceneReport() {
 		"",
 		"CAMERA",
 		`  position   x ${round(state.camera.x)}  y ${round(state.camera.y)}  z ${round(state.camera.z)}`,
-		`  lens       ${state.camera.focalMm}mm  (nearest prime ${nearestPrime(fov())}mm)`,
+		`  lens       ${state.camera.focalMm}mm  (nearest prime ${nearestPrime(fov(), filmback().sensorId, filmback().aspectRatio)}mm)`,
+		`  filmback   ${filmback().sensorId} · ${round(filmback().aspectRatio, 3)}:1`,
 		`  framing    ${slateLine(shot)}`,
 		`  distance   ${metres(shot.distance)} to the subject's centre of mass`,
 		"",
@@ -380,7 +393,7 @@ registerTool(
 				.min(8)
 				.max(300)
 				.optional()
-				.describe("focal length on a full-frame 24mm-tall sensor, e.g. 24, 35, 50, 85"),
+				.describe("focal length on the scene's cropped filmback, e.g. 24, 35, 50, 85"),
 		},
 	},
 	async ({ x, y, z: zPos, focal_mm }) => {
@@ -460,7 +473,10 @@ registerTool(
 		const s = subject();
 		let lensMm = focal_mm;
 		// Invert deriveShot's screenFraction: distance that yields the target size.
-		const distanceFor = (mm) => 1.8 / (2 * FRACTION[size] * Math.tan(focalMmToFov(mm) / 2));
+		const distanceFor = (mm) => {
+			const gate = filmback();
+			return 1.8 / (2 * FRACTION[size] * Math.tan(focalMmToFov(mm, gate.sensorId, gate.aspectRatio) / 2));
+		};
 
 		// Size and level can physically conflict: an extreme close-up on a wide
 		// lens sits half a metre from the pivot, which no overhead rig can also
@@ -1216,12 +1232,12 @@ registerTool(
 		if (!state.markedFraming) {
 			return text("No A position marked. Call mark_camera_move first, then move the camera.");
 		}
-		const move = classifyMove(state.markedFraming, framing(), subject(), { durationS: duration_s });
+		const move = classifyMove(state.markedFraming, framing(), subject(), { durationS: duration_s, ...filmback() });
 		return text(
 			[
 				moveSlate(move),
 				"",
-				`from  ${slateLine(deriveShot(state.markedFraming.pos, subject(), (state.markedFraming.fovDeg * Math.PI) / 180))}`,
+				`from  ${slateLine(deriveShot(state.markedFraming.pos, subject(), (state.markedFraming.fovDeg * Math.PI) / 180, undefined, filmback()))}`,
 				`to    ${slateLine(currentShot())}`,
 				`over  ${duration_s}s`,
 			].join("\n"),

@@ -48,6 +48,7 @@ scenes[0].stage = createSceneStage({
 	charB: { x: 7, z: 1, rot: -90 },
 	showB: true,
 	shotAspect: "9:16",
+	sensorId: "super35",
 	poseA: { id: "hero", bones: { hips: [1, 2, 3] } },
 	poseB: { id: "support", bones: { hips: [4, 5, 6] } },
 });
@@ -75,6 +76,7 @@ assert.notEqual(duplicated[1].stage.characters, scenes[0].stage.characters);
 assert.notEqual(duplicated[1].stage.characters[0], scenes[0].stage.characters[0]);
 assert.notEqual(duplicated[1].stage.characters[0].pose.bones, scenes[0].stage.characters[0].pose.bones);
 assert.equal(duplicated[1].stage.shotAspect, "9:16");
+assert.equal(duplicated[1].stage.sensorId, "super35");
 duplicated[1].objects[0].transform.x = 8;
 duplicated[1].shotDocument.cameraBlocks[0].keys.push(3);
 duplicated[1].stage.characters[0].x = 99;
@@ -84,6 +86,10 @@ assert.deepEqual(scenes[0].shotDocument.cameraBlocks[0].keys, [1, 2]);
 assert.equal(scenes[0].stage.characters[0].x, 4, "moving the duplicate's actor cannot contaminate the source scene");
 assert.equal(scenes[0].stage.characters[0].pose.bones.hips[0], 1, "posing the duplicate's actor cannot contaminate the source scene");
 assert.equal(createSceneStage({ shotAspect: "invalid" }).shotAspect, "16:9", "invalid shot aspects repair to the default");
+assert.equal(createSceneStage({ shotAspect: "2.39:1" }).shotAspect, "2.39:1", "scope aspect survives stage normalization");
+assert.equal(createSceneStage({}).sensorId, "fullFrame", "fullFrame is the default filmback");
+assert.equal(createSceneStage({ sensorId: "super16" }).sensorId, "super16", "a named filmback survives stage normalization");
+assert.equal(createSceneStage({ sensorId: "unknown" }).sensorId, "fullFrame", "an unknown filmback repairs to fullFrame");
 
 const isolatedScenes = [createScene("A"), createScene("B")];
 isolatedScenes[0].stage.characters[0].x = 8;
@@ -317,8 +323,8 @@ assert.deepEqual(takeAnchor(null, undefined, NaN), { x: 0, z: 0 }, "junk placeme
 const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 assert.match(
 	appSource,
-	/actorStageRef\.current = \{[\s\S]{0,240}shotAspect: shotAspectKey,/,
-	"the outgoing scene snapshots actor state and the shot aspect"
+	/actorStageRef\.current = \{[\s\S]{0,280}shotAspect: shotAspectKey,[\s\S]{0,80}sensorId,/,
+	"the outgoing scene snapshots actor state, shot aspect and filmback"
 );
 assert.match(appSource, /setCharacters\(stage\.characters\)/, "opening a scene restores its cast");
 const openSceneBody = /function openScene\(scene, nextScenes\) \{([\s\S]*?)\n\t\}/.exec(appSource)?.[1] ?? "";
