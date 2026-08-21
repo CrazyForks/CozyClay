@@ -43,6 +43,7 @@
     "test:blocking-depth": "node test/verify-blocking-depth.mjs",
     "test:image-pose": "node test/verify-image-pose.mjs",
     "test:pwa": "node test/verify-pwa.mjs",
+    "test:update-check": "node test/verify-update-check.mjs",
     "test:localization": "node test/verify-korean-ui.mjs",
     "test:korean-ui": "node test/verify-korean-ui.mjs",
     "prepack": "npm run build",
@@ -68,7 +69,8 @@
     "vite": "^8.2.0"
   },
   "bin": {
-    "cozyclay": "bin/cozyclay.mjs"
+    "cozyclay": "bin/cozyclay.mjs",
+    "cclay": "bin/cozyclay.mjs"
   },
   "files": [
     "bin",
@@ -123,11 +125,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/HaD0Yun/CozyClay.git"
+    "url": "git+https://github.com/NomaDamas/CozyClay.git"
   },
   "homepage": "https://cozyclay.org/",
   "bugs": {
-    "url": "https://github.com/HaD0Yun/CozyClay/issues"
+    "url": "https://github.com/NomaDamas/CozyClay/issues"
   },
   "publishConfig": {
     "access": "public"
