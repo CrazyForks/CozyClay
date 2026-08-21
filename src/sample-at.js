@@ -2,6 +2,7 @@
 // advance simulation state. That makes a frame an address, not a side effect.
 
 import { createCameraBlock } from "./camera-block.js";
+import { railCameraOwner, resolveRailSchedule, isRailUsable, RAIL_OWNER_KEYS } from "./camera-rail-schedule.js";
 import { cameraMoveAt } from "./camera-move.js";
 import { DEFAULT_SENSOR_FORMAT, SENSOR_FORMATS, fovToFocalMm } from "./shot.js";
 
@@ -92,14 +93,36 @@ export function sampleAt(scene, shot, frame) {
 	let camera = null;
 	if (shot) {
 		const block = createCameraBlock(shot.camera);
-		camera = block.mode === "keys"
-			? sharedCamera(cameraMoveAt(
-				shot.cameraKeys,
-				source.cameraAnchor ?? source.subject ?? { x: 0, z: 0 },
-				sampledFrame,
-				source.filmback,
-			), source)
-			: cameraOnTrack(source.cameraTrack, sampledFrame, source);
+		const keyedCamera = () => sharedCamera(cameraMoveAt(
+			shot.cameraKeys,
+			source.cameraAnchor ?? source.subject ?? { x: 0, z: 0 },
+			sampledFrame,
+			source.filmback,
+		), source);
+		if (block.mode === "keys") {
+			camera = keyedCamera();
+		} else if (block.mode === "rail") {
+			const startFrame = Number.isFinite(shot.startFrame) ? shot.startFrame : 0;
+			const frameCount = Number.isFinite(shot.endFrame)
+				? Math.max(0, Math.round(shot.endFrame - startFrame) + 1)
+				: maxFrame + 1;
+			const schedule = resolveRailSchedule({
+				railFollow: block.railFollow,
+				cameraRail: block.cameraRail,
+				frameCount,
+			});
+			const owner = railCameraOwner({
+				followEnabled: true,
+				railUsable: isRailUsable(block.cameraRail),
+				schedule,
+				frame: sampledFrame - startFrame,
+			});
+			camera = owner === RAIL_OWNER_KEYS
+				? keyedCamera()
+				: cameraOnTrack(source.cameraTrack, sampledFrame, source);
+		} else {
+			camera = cameraOnTrack(source.cameraTrack, sampledFrame, source);
+		}
 	}
 
 	return {
