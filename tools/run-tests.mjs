@@ -15,6 +15,7 @@ const NODE_FILES = [
 	"test/ardy/verify-prompt-move.mjs",
 	"test/ardy/verify-rest.mjs",
 	"test/ardy/verify-root-drop.mjs",
+	"test/ardy/verify-secure-artifacts.mjs",
 	"test/ardy/verify-sequence-bridge.mjs",
 	"test/ardy/verify-timeline-coordinates.mjs",
 	"test/ardy/verify-timeline-resize.mjs",
