@@ -106,13 +106,13 @@ const handle = (name, args) => {
 };
 
 const client = new Client({ name: "cozyclay-mcp-live-p0-verify", version: "1.0.0" });
+const projectDirectory = await mkdtemp(join(tmpdir(), "cozyclay-mcp-live-p0-"));
 const transport = new StdioClientTransport({
 	command: process.execPath,
 	args: [SERVER, "--live-port", String(livePort)],
-	env: { ...process.env, COZYCLAY_BRIDGE: `http://127.0.0.1:${bridgePort}` },
+	env: { ...process.env, COZYCLAY_BRIDGE: `http://127.0.0.1:${bridgePort}`, COZYCLAY_PROJECT_ROOT: projectDirectory },
 });
 let socket;
-const projectDirectory = await mkdtemp(join(tmpdir(), "cozyclay-mcp-live-p0-"));
 try {
 	await client.connect(transport);
 	socket = new WebSocket(`ws://127.0.0.1:${livePort}/live`);

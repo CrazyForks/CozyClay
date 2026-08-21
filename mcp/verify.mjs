@@ -224,12 +224,15 @@ check("prompt carries both subjects", prompt.includes("detective") && prompt.inc
 
 const file = new URL("./.verify-project.cclayproject", import.meta.url).pathname;
 await call("save_project", { path: file, name: "Verify" });
+check("save refuses implicit overwrite", (await call("save_project", { path: file })).startsWith("Could not write"), "overwrite unexpectedly succeeded");
+check("save allows explicit overwrite", (await call("save_project", { path: file, overwrite: true })).startsWith("Saved"), "explicit overwrite failed");
 const reopened = await call("open_project", { path: file });
 check("project round-trips the cast", reopened.includes("detective") && reopened.includes("courier"), reopened);
 check("project round-trips the set", reopened.includes("Chair"), reopened);
 await import("node:fs/promises").then((fs) => fs.unlink(file).catch(() => {}));
 
-check("missing file is reported", (await call("open_project", { path: "/tmp/nope.cclayproject" })).startsWith("Could not read"));
+check("outside project root is rejected", (await call("open_project", { path: "/tmp/nope.cclayproject" })).includes("outside configured project root"));
+check("wrong extension is rejected", (await call("open_project", { path: "/etc/hosts" })).includes("must end in .cclayproject"));
 
 /* --------------------------------- result -------------------------------- */
 

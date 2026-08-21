@@ -4,9 +4,17 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { WebSocket } from "ws";
 import { fileURLToPath } from "node:url";
+import { createServer } from "node:net";
 
 const SERVER = fileURLToPath(new URL("./server.mjs", import.meta.url));
-const LIVE_PORT = 54000 + (process.pid % 1000);
+const LIVE_PORT = await new Promise((resolve, reject) => {
+	const server = createServer();
+	server.once("error", reject);
+	server.listen(0, "127.0.0.1", () => {
+		const address = server.address();
+		server.close((error) => error ? reject(error) : resolve(address.port));
+	});
+});
 const LIVE_URL = `ws://127.0.0.1:${LIVE_PORT}/live`;
 
 const timeout = (promise, label) =>

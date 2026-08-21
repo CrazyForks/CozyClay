@@ -86,6 +86,23 @@ const connectEditor = async (workspaceId) => {
 			return;
 		}
 		if (frame.type !== "cmd") return;
+		if (frame.name === "describe") {
+			socket.send(JSON.stringify({
+				type: "result",
+				id: frame.id,
+				ok: true,
+				value: {
+					sceneName: "MOTION JOB",
+					activeCharacterId: "char-a",
+					camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35, sensorId: "super35", aspectRatio: 16 / 9 },
+					stage: { shotAspect: "16:9", sensorId: "super35", hasCharSheet: false },
+					timeline: { currentFrame: 0, frameCount: 240, fps: 24 },
+					characters: [{ id: "char-a", model: "y-bot-tpose", subject: "performer", x: 0, y: 0, z: 0, rot: 0, hidden: false }],
+					objects: [],
+				},
+			}));
+			return;
+		}
 		if (frame.name === "load_motion") {
 			editorState.loadCount += 1;
 			socket.send(JSON.stringify({ type: "result", id: frame.id, ok: true, value: { loaded: true } }));

@@ -78,6 +78,10 @@ generated frame matches the blocking instead of drifting off into a generic shot
 | `add_scene` / `switch_scene` | multiple scenes per project |
 | `open_project` / `save_project` | read and write `.cclayproject` files |
 
+Project file tools are restricted to `COZYCLAY_PROJECT_ROOT` (the server
+working directory by default), reject symlink escapes and non-project
+extensions, and require `overwrite: true` before replacing an existing file.
+
 Coordinates are metres (`x` right, `z` toward the default camera, `y` height above the floor).
 Rotations are degrees of yaw. Characters are addressed by letter (`"A"`), slot (`"2"`) or id
 (`"char-a"`).

@@ -99,7 +99,11 @@ const describeEditor = () => {
 };
 
 const client = new Client({ name: "cozyclay-g004-scene-parity-verify", version: "1.0.0" });
-const transport = new StdioClientTransport({ command: process.execPath, args: [serverPath, "--live-port", String(livePort)] });
+const transport = new StdioClientTransport({
+	command: process.execPath,
+	args: [serverPath, "--live-port", String(livePort)],
+	env: { ...process.env, COZYCLAY_PROJECT_ROOT: projectDirectory },
+});
 let socket;
 try {
 	await client.connect(transport);

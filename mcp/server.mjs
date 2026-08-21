@@ -25,9 +25,9 @@
  * the real `.cclayproject` envelope, so anything authored here opens in the
  * studio, and anything authored in the studio opens here.
  */
-import { readFile, unlink, writeFile } from "node:fs/promises";
+import { readFile, realpath, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createServer } from "node:http";
@@ -104,6 +104,32 @@ const MAX_CAPTURE_BYTES = 1_000_000;
 const CAPTURE_ARTIFACT_TTL_MS = 10 * 60_000;
 const MAX_CAPTURE_ARTIFACTS = 20;
 const captureArtifacts = [];
+const configuredProjectRoot = resolve(process.env.COZYCLAY_PROJECT_ROOT ?? process.cwd());
+
+const isInside = (root, candidate) => {
+	const offset = relative(root, candidate);
+	return offset === "" || (!offset.startsWith("..") && !isAbsolute(offset));
+};
+
+const resolveProjectPath = async (path, { existing }) => {
+	if (!path.endsWith(".cclayproject")) throw new Error("Project path must end in .cclayproject.");
+	const root = await realpath(configuredProjectRoot);
+	const requested = resolve(path);
+	const parent = await realpath(dirname(requested));
+	if (!isInside(root, parent)) throw new Error(`Project path is outside configured project root ${root}.`);
+	if (!existing) {
+		try {
+			const target = await realpath(requested);
+			if (target !== requested || !isInside(root, target)) throw new Error("Project path may not be a symbolic link.");
+		} catch (error) {
+			if (error?.code !== "ENOENT") throw error;
+		}
+		return requested;
+	}
+	const target = await realpath(requested);
+	if (!isInside(root, target)) throw new Error(`Project path is outside configured project root ${root}.`);
+	return target;
+};
 
 const TOOL_ANNOTATIONS = Object.freeze({
 	describe_scene: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -1202,6 +1228,11 @@ registerTool(
 				: "";
 
 		if (!liveHub?.connected) return text("generate_motion requires a connected CozyClay editor so completion can be delivered over its live socket.");
+		try {
+			await refreshLiveDescription();
+		} catch (error) {
+			return liveError(error);
+		}
 		const workspaceHandle = liveWorkspace.getStore() ?? liveHub.resolveWorkspace("generate_motion");
 		const workspaceId = liveHub.workspaceId(workspaceHandle);
 		const targetCharacterId = stage().characters.find((character) => character.id === state.focus)?.id ?? stage().characters[0]?.id ?? null;
@@ -1553,6 +1584,13 @@ registerTool(
 		inputSchema: { name: z.string().default("SCENE 02").describe("scene name") },
 	},
 	async ({ name }) => {
+		if (liveHub?.connected) {
+			try {
+				await refreshLiveDescription();
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		const document = JSON.parse(JSON.stringify(state.doc));
 		document.scenes = addScene(document.scenes, name);
 		document.activeSceneId = document.scenes[document.scenes.length - 1].id;
@@ -1579,6 +1617,13 @@ registerTool(
 		inputSchema: { name: z.string().describe("scene name to switch to") },
 	},
 	async ({ name }) => {
+		if (liveHub?.connected) {
+			try {
+				await refreshLiveDescription();
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		const target = state.doc.scenes.find((s) => s.name.toLowerCase() === name.toLowerCase());
 		if (!target) {
 			return text(`No scene "${name}". Have: ${state.doc.scenes.map((s) => s.name).join(", ")}`);
@@ -1607,12 +1652,13 @@ registerTool(
 		inputSchema: { path: z.string().describe("path to a .cclayproject file") },
 	},
 	async ({ path }) => {
-		const full = resolve(path);
+		let full;
 		let raw;
 		try {
+			full = await resolveProjectPath(path, { existing: true });
 			raw = await readFile(full, "utf8");
 		} catch (error) {
-			return text(`Could not read ${full}: ${error.message}`);
+			return text(`Could not read project: ${error.message}`);
 		}
 		const result = readProjectDocument(raw);
 		if (!result.ok) return text(`Not a usable project file (${result.reason}): ${full}`);
@@ -1648,9 +1694,10 @@ registerTool(
 		inputSchema: {
 			path: z.string().describe("destination path, ending in .cclayproject"),
 			name: z.string().optional().describe("project name recorded in the file"),
+			overwrite: z.boolean().default(false).describe("explicitly replace an existing project file"),
 		},
 	},
-	async ({ path, name }) => {
+	async ({ path, name, overwrite }) => {
 		if (name) state.name = name;
 		if (liveHub?.connected) {
 			try {
@@ -1659,7 +1706,12 @@ registerTool(
 				return liveError(error);
 			}
 		}
-		const full = resolve(path);
+		let full;
+		try {
+			full = await resolveProjectPath(path, { existing: false });
+		} catch (error) {
+			return text(`Could not write project: ${error.message}`);
+		}
 		const project = createProjectDocument({
 			scenesDocument: state.doc,
 			workspaceLayout: null,
@@ -1667,7 +1719,7 @@ registerTool(
 			name: state.name,
 		});
 		try {
-			await writeFile(full, JSON.stringify(project, null, "\t"), "utf8");
+			await writeFile(full, JSON.stringify(project, null, "\t"), { encoding: "utf8", flag: overwrite ? "w" : "wx", mode: 0o600 });
 		} catch (error) {
 			return text(`Could not write ${full}: ${error.message}`);
 		}

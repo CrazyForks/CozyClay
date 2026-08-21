@@ -70,6 +70,20 @@ function canConnect(port) {
 	});
 }
 
+async function assertPortReleased(port, message) {
+	const probe = createServer();
+	try {
+		await new Promise((resolvePromise, reject) => {
+			probe.once("error", reject);
+			probe.listen(port, "127.0.0.1", resolvePromise);
+		});
+	} catch (error) {
+		assert.fail(`${message}: ${error.code ?? error.message}`);
+	} finally {
+		if (probe.listening) await close(probe);
+	}
+}
+
 async function listenerPidsAfterConnect(port) {
 	for (let attempt = 0; attempt < 20; attempt += 1) {
 		const pids = await listenerPids(port);
@@ -217,7 +231,7 @@ async function expectLifecycle(kind) {
 		process.kill(bridgePid, "SIGTERM");
 		const [code, signal] = await parentExit;
 		assert.ok(code !== 0 || signal, `${kind} parent fails when its bridge exits unexpectedly`);
-		assert.deepEqual(await listenerPids(bridgePort), [], `${kind} unexpected bridge exit leaves no listener`);
+		await assertPortReleased(bridgePort, `${kind} unexpected bridge exit releases its port`);
 	} finally {
 		await terminateOwned(child);
 		await close(adjacent);
@@ -230,7 +244,7 @@ async function expectLifecycle(kind) {
 		const ready = await next.output.waitFor(/ARDY dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} cleanup bridge readiness`);
 		assert.equal(Number(ready[1]), cleanupPort, `${kind} uses the expected cleanup bridge port`);
 		await terminateOwned(next.child);
-		assert.deepEqual(await listenerPids(cleanupPort), [], `${kind} parent termination leaves no bridge listener`);
+		await assertPortReleased(cleanupPort, `${kind} parent termination releases its bridge port`);
 	} finally {
 		await terminateOwned(next.child);
 		await close(clean.adjacent);
