@@ -753,6 +753,11 @@ const straightPath = densifyArdyWaypoints([
 	{ frame: 60, x: 0, z: 10 },
 ]);
 ok(
+	"waypoints: default density preserves the authored 0.4-second cadence at 24 fps",
+	straightPath.map((point) => point.frame).join(",") === "0,10,20,30,40,50,60",
+	`frames=[${straightPath.map((point) => point.frame).join(",")}]`,
+);
+ok(
 	"waypoints: straight +Z path faces its travel direction (heading ≈ 0)",
 	straightPath.length >= 3 &&
 		straightPath.every((point) => angleDiff(point.heading, 0) < 1e-9 && point.x === 0),
