@@ -13,8 +13,10 @@
  * walk"). The cases below are the ones where a pin is what the operator asked
  * for:
  *
- *   - `startFromPose` — the character's blocking pose is the first frame, and
- *     the motion continues out of it. One frame, frame 0, opted in explicitly.
+ *   - `startFromPose` — the character's blocking pose is pinned at a chosen
+ *     frame and the motion is generated around it. The frame is the operator's
+ *     choice: the first frame to leave from, the last to arrive at, or any
+ *     frame in between to pass through.
  *   - authored IK edits — corrections addressed to specific frames.
  *   - block edits — IK keys inside a scheduled block, addressed to that take.
  */
@@ -39,6 +41,7 @@ export const PIN_BLOCKED = Object.freeze({
  */
 export function planPosePin({
 	startFromPose = false,
+	poseFrame = 0,
 	hasPromptSchedule = false,
 	hasBlockEdits = false,
 	waypointMode = false,
@@ -47,6 +50,10 @@ export function planPosePin({
 	segments = [],
 	editedSegments = [],
 }) {
+	// The pin must land inside the clip the box is about to generate: an
+	// out-of-range destination is refused at the far end of the pipeline, so it
+	// is clamped here where the clip length is known.
+	const pinFrame = Math.max(0, Math.min(Math.max(0, clipFrames - 1), Math.round(poseFrame) || 0));
 	// A schedule cannot be pinned at all: the bridge refuses the combination,
 	// so an opted-in pose start has to be reported as blocked rather than
 	// silently dropped.
@@ -72,12 +79,12 @@ export function planPosePin({
 		return { pin: frames.length > 0, frames, blockedBy: frames.length > 0 ? null : PIN_BLOCKED.NOTHING_TO_PIN };
 	}
 
-	// Continuing out of a blocking pose is exactly one constraint: frame 0.
-	// Anything more would pin motion the operator never authored.
-	if (ikFrames.length === 0) return { pin: true, frames: [0], blockedBy: null };
+	// A pose placement is exactly one constraint, at the chosen frame. Anything
+	// more would pin motion the operator never authored.
+	if (ikFrames.length === 0) return { pin: true, frames: [pinFrame], blockedBy: null };
 
 	const frames = [...new Set([
-		...(startFromPose ? [0] : []),
+		...(startFromPose ? [pinFrame] : []),
 		...segments.flatMap((segment) => [
 			segment.startFrame,
 			Math.min(segment.endFrame - 1, segment.startFrame + 1),

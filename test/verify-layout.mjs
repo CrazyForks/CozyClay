@@ -78,10 +78,20 @@ expect(
 	app.includes("const pinPlan = planPosePin({") && app.includes("else if (hasPromptSchedule) body.segments = toArdySegments(segments)"),
 );
 expect(
-	"the pose start is an explicit, off-by-default choice",
+	"the pose pin is an explicit, off-by-default choice",
 	app.includes("const [ardyStartFromPose, setArdyStartFromPose] = useState(false);") &&
 	app.includes("startFromPose: ardyStartFromPose") &&
 	app.includes("data-ardy-start-from-pose"),
+);
+expect(
+	"the pinned pose can be placed anywhere in the clip",
+	app.includes('const POSE_PLACEMENTS = ["start", "middle", "end", "playhead"];') &&
+	app.includes("poseFrame: posePlacementFrame(ardyPosePlacement, clipFrames, tlFrame)") &&
+	app.includes("data-pose-placement={placement}"),
+);
+expect(
+	"the placement names the exact frame it will pin",
+	app.includes("data-pose-placement-frame"),
 );
 expect(
 	"a schedule conflict is reported instead of silently dropping the pose",

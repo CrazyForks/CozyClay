@@ -461,6 +461,16 @@ const toArdyFrame = (frame) => Math.round((frame * ARDY_FPS) / TIMELINE_FPS);
 // Outbound converters: timeline-frame entries → strictly-ascending bridge
 // frames. Rounding can land two timeline frames on one bridge frame; the
 // first wins — the bridge refuses non-ascending lists outright.
+/** Where a placed pose lands, in TIMELINE frames, for a clip of `clipFrames`. */
+const POSE_PLACEMENTS = ["start", "middle", "end", "playhead"];
+function posePlacementFrame(placement, clipFrames, playheadFrame) {
+	const last = Math.max(0, clipFrames - 1);
+	if (placement === "end") return last;
+	if (placement === "middle") return Math.round(last / 2);
+	if (placement === "playhead") return Math.max(0, Math.min(last, playheadFrame));
+	return 0;
+}
+
 function toArdyFrameEntries(entries) {
 	const out = [];
 	for (const entry of entries) {
@@ -2235,8 +2245,12 @@ globalThis.playMode = centerTab === "play";
 	const [ardySeed, setArdySeed] = useState("");
 	// Off by default on purpose: pinning runs the box's pose mode, which builds
 	// on a fixed reference base, so it is a choice the operator makes when they
-	// actually want the motion to leave from the pose they blocked.
+	// actually want the pose in the generated clip.
 	const [ardyStartFromPose, setArdyStartFromPose] = useState(false);
+	// WHERE the pose lands in the clip. "start" leaves from it, "end" arrives at
+	// it, "middle" passes through it, "playhead" places it on the frame the
+	// operator scrubbed to — the box takes any destination frame.
+	const [ardyPosePlacement, setArdyPosePlacement] = useState("start");
 	const [ardyRunning, setArdyRunning] = useState(false);
 	const [ardyStatus, setArdyStatus] = useState("");
 	const [consoleLines, setConsoleLines] = useState([]);
@@ -5447,6 +5461,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// refused — is decided in one testable place (ardy/pose-pin.js).
 		const pinPlan = planPosePin({
 			startFromPose: ardyStartFromPose,
+			poseFrame: posePlacementFrame(ardyPosePlacement, clipFrames, tlFrame),
 			hasPromptSchedule,
 			hasBlockEdits,
 			waypointMode,
@@ -6820,13 +6835,43 @@ function resizePromptClip(id, edge, rawFrame) {
 									disabled={promptClips.length >= 2}
 									onChange={(event) => setArdyStartFromPose(event.target.checked)}
 								/>
-								<span>{ko("Start from the current pose", "현재 포즈에서 시작")}</span>
+								<span>{ko("Pin the current pose", "현재 포즈 고정")}</span>
 							</label>
-							<p className="ardy-hint">
-								{promptClips.length >= 2
-									? ko("Prompt blocks generate from history, so they cannot also start from a pose.", "프롬프트 블록은 이전 프레임을 이어서 생성하므로 포즈 시작과 함께 쓸 수 없어요.")
-									: ko("The motion leaves from the pose on this character instead of a neutral stance.", "중립 자세 대신 이 캐릭터의 현재 포즈에서 동작이 시작됩니다.")}
-							</p>
+							{ardyStartFromPose && promptClips.length < 2 && (
+								<>
+									{/* The box takes any destination frame, so the pose can open
+									    the clip, close it, or be passed through in the middle. */}
+									<div className="segmented ardy-pose-placement" data-active={ardyPosePlacement}>
+										{POSE_PLACEMENTS.map((placement) => (
+											<button
+												type="button"
+												key={placement}
+												data-pose-placement={placement}
+												className={ardyPosePlacement === placement ? "active" : ""}
+												onClick={() => setArdyPosePlacement(placement)}
+											>
+												{placement === "start"
+													? ko("First", "첫 프레임")
+													: placement === "middle"
+														? ko("Middle", "중간")
+														: placement === "end"
+															? ko("Last", "마지막")
+															: ko("Playhead", "재생헤드")}
+											</button>
+										))}
+									</div>
+									<p className="ardy-hint" data-pose-placement-frame>
+										{isKo
+											? `프레임 ${posePlacementFrame(ardyPosePlacement, Math.round(ardyDuration) * TIMELINE_FPS, tlFrame)}에 이 자세를 고정하고 나머지를 생성합니다.`
+											: `The pose is held at frame ${posePlacementFrame(ardyPosePlacement, Math.round(ardyDuration) * TIMELINE_FPS, tlFrame)} and the rest is generated around it.`}
+									</p>
+								</>
+							)}
+							{promptClips.length >= 2 && (
+								<p className="ardy-hint">
+									{ko("Prompt blocks generate from history, so they cannot also pin a pose.", "프롬프트 블록은 이전 프레임을 이어서 생성하므로 포즈 고정과 함께 쓸 수 없어요.")}
+								</p>
+							)}
 							{ardyRunning && (
 								<button type="button" className="btn ghost full" onClick={cancelArdy}>
 									{ko("Cancel run", "실행 취소")}

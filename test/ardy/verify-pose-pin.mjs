@@ -15,9 +15,27 @@ function pass(label) { console.log(`PASS ${label}`); }
 
 const fromPose = planPosePin({ startFromPose: true, clipFrames: 96 });
 assert.equal(fromPose.pin, true, "an opted-in pose start pins");
-assert.deepEqual(fromPose.frames, [0], "the blocking pose is frame 0 and nothing else");
+assert.deepEqual(fromPose.frames, [0], "the blocking pose defaults to the first frame");
 assert.equal(fromPose.blockedBy, null);
-pass("a pose start pins exactly frame 0");
+pass("a pose start pins exactly one frame");
+
+/* --- the pose can be placed anywhere in the clip --------------------------- */
+// First frame to leave from, last frame to arrive at, or a frame in between to
+// pass through: the whole point is that the operator chooses.
+const atEnd = planPosePin({ startFromPose: true, poseFrame: 95, clipFrames: 96 });
+assert.deepEqual(atEnd.frames, [95], "a pose can be pinned at the last frame");
+
+const atMiddle = planPosePin({ startFromPose: true, poseFrame: 48, clipFrames: 96 });
+assert.deepEqual(atMiddle.frames, [48], "a pose can be pinned mid-clip");
+pass("a pose pins at the frame it was placed on");
+
+const pastEnd = planPosePin({ startFromPose: true, poseFrame: 500, clipFrames: 96 });
+assert.deepEqual(pastEnd.frames, [95], "a pin past the end clamps to the last frame");
+const negative = planPosePin({ startFromPose: true, poseFrame: -20, clipFrames: 96 });
+assert.deepEqual(negative.frames, [0], "a negative pin clamps to the first frame");
+const fractional = planPosePin({ startFromPose: true, poseFrame: 47.6, clipFrames: 96 });
+assert.deepEqual(fractional.frames, [48], "a fractional frame lands on a whole one");
+pass("an out-of-range placement is clamped into the clip");
 
 const idle = planPosePin({ clipFrames: 96 });
 assert.equal(idle.pin, false, "nothing to pin without an opt-in or an edit");
@@ -58,10 +76,10 @@ assert.deepEqual(ikOnly.frames, [...ikOnly.frames].sort((a, b) => a - b), "frame
 assert.equal(new Set(ikOnly.frames).size, ikOnly.frames.length, "no frame is pinned twice");
 pass("authored IK keys keep pinning themselves");
 
-const ikPlusPose = planPosePin({ startFromPose: true, ikFrames: [40], clipFrames: 96, segments: [{ startFrame: 0, endFrame: 96 }] });
-assert.ok(ikPlusPose.frames.includes(0), "the pose start is added to the authored keys");
+const ikPlusPose = planPosePin({ startFromPose: true, poseFrame: 12, ikFrames: [40], clipFrames: 96, segments: [{ startFrame: 0, endFrame: 96 }] });
+assert.ok(ikPlusPose.frames.includes(12), "the placed pose is added to the authored keys");
 assert.ok(ikPlusPose.frames.includes(40));
-pass("a pose start joins authored IK keys");
+pass("a placed pose joins authored IK keys");
 
 const outOfRange = planPosePin({ ikFrames: [-5, 400], clipFrames: 96, segments: [{ startFrame: 0, endFrame: 96 }] });
 assert.ok(!outOfRange.frames.includes(-5) && !outOfRange.frames.includes(400), "keys outside the clip are dropped");
