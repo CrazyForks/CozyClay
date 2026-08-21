@@ -38,7 +38,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
 
-import { startLiveHub } from "./live-hub.mjs";
+import { LiveMutationUncertainError, startLiveHub } from "./live-hub.mjs";
 import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhases, splitLongBeat } from "./ardy-prompts.mjs";
 
 import {
@@ -162,6 +162,16 @@ const framing = () => {
 
 const currentShot = () => deriveShot(state.camera, subject(), fov(), undefined, filmback());
 
+const appliedLiveMutation = async (name, args) => {
+	const value = await liveHub.command(name, args);
+	try {
+		if (!await refreshLiveDescription()) throw new Error("Live editor disconnected before verification.");
+	} catch (error) {
+		throw new LiveMutationUncertainError(`Live editor accepted ${name}, but its state could not be verified: ${error.message} The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.`);
+	}
+	return value;
+};
+
 const modelById = (id) =>
 	[...VIDEO_MODELS, ...IMAGE_MODELS].find((m) => m.id === id) ?? null;
 
@@ -182,7 +192,7 @@ const applyLiveDescription = (description) => {
 	if (Array.isArray(description.characters) && description.characters.length) {
 		const prior = new Map(stage().characters.map((character) => [character.id, character]));
 		stage().characters = description.characters.map((character, index) =>
-			createCharacterEntry({ ...prior.get(character.id), ...character }, index),
+			createCharacterEntry({ ...character, model: character.model ?? prior.get(character.id)?.model }, index),
 		);
 		if (state.focus && !stage().characters.some((character) => character.id === state.focus)) state.focus = null;
 	}
@@ -223,7 +233,10 @@ const refreshLiveDescription = async () => {
 	return true;
 };
 
-const liveError = (error) => text(`Live editor error: ${error.message}`);
+const liveError = (error) => ({
+	content: [{ type: "text", text: `Live editor error: ${error.message}` }],
+	isError: true,
+});
 
 /* ------------------------------ formatting ------------------------------- */
 
@@ -399,8 +412,7 @@ registerTool(
 	async ({ x, y, z: zPos, focal_mm }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("set_camera", { x, y, z: zPos, focalMm: focal_mm });
-				await refreshLiveDescription();
+				await appliedLiveMutation("set_camera", { x, y, z: zPos, focalMm: focal_mm });
 				return text(`Camera set.\n\n${shotReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -521,8 +533,7 @@ registerTool(
 		};
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("set_camera", nextCamera);
-				await refreshLiveDescription();
+				await appliedLiveMutation("set_camera", nextCamera);
 			} catch (error) {
 				return liveError(error);
 			}
@@ -560,8 +571,9 @@ registerTool(
 	async ({ subject: desc, x, z: zPos, facing, model }) => {
 		if (liveHub?.connected) {
 			try {
-				const result = await liveHub.command("add_character", { subject: desc, x, z: zPos, rot: facing });
-				await refreshLiveDescription();
+				const result = await appliedLiveMutation("add_character", { subject: desc, x, z: zPos, rot: facing, model });
+				const added = stage().characters.find((character) => character.id === result?.id);
+				if (added && model !== undefined) added.model = model;
 				return text(`Added ${result?.id ?? "character"}.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -608,8 +620,7 @@ registerTool(
 	async ({ character, x, z: zPos, y, facing, subject: desc, hidden }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("update_character", { ref: character, x, y, z: zPos, rot: facing, subject: desc, hidden });
-				await refreshLiveDescription();
+				await appliedLiveMutation("update_character", { ref: character, x, y, z: zPos, rot: facing, subject: desc, hidden });
 				return text(`Character updated.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -639,8 +650,7 @@ registerTool(
 	async ({ character }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("remove_character", { ref: character });
-				await refreshLiveDescription();
+				await appliedLiveMutation("remove_character", { ref: character });
 				return text(`Character removed.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -706,8 +716,7 @@ registerTool(
 	async ({ kind, x, z: zPos, y, facing, name, parent }) => {
 		if (liveHub?.connected) {
 			try {
-				const result = await liveHub.command("place_object", { kind, x, z: zPos, y, rot: facing, name, parent });
-				await refreshLiveDescription();
+				const result = await appliedLiveMutation("place_object", { kind, x, z: zPos, y, rot: facing, name, parent });
 				return text(`Placed object as ${result?.id ?? "unknown"}.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -751,8 +760,7 @@ registerTool(
 	async ({ parent, children }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command(parent === null ? "ungroup_objects" : "group_objects", { parent, children });
-				await refreshLiveDescription();
+				await appliedLiveMutation(parent === null ? "ungroup_objects" : "group_objects", { parent, children });
 				return text(
 					(parent === null
 						? `Detached ${children.length} object(s).`
@@ -823,7 +831,7 @@ registerTool(
 			}
 		}
 		try {
-			await liveHub.command("set_prompt_blocks", { blocks });
+			await appliedLiveMutation("set_prompt_blocks", { blocks });
 		} catch (error) {
 			return liveError(error);
 		}
@@ -989,7 +997,7 @@ registerTool(
 						`${drop ? ` — dropping ${drop.meters}m over ${drop.from_s}–${drop.to_s}s` : ""} — press play.`,
 				);
 			} catch (error) {
-				return text(`${summary}\n\nGenerated, but the editor did not take it: ${error.message}`);
+				return liveError(error);
 			}
 		};
 
@@ -1065,11 +1073,10 @@ registerTool(
 	async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color, name }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("update_object", {
+				await appliedLiveMutation("update_object", {
 					id, x, y, z: zPos, rot: facing, rotX: tilt, rotZ: roll,
 					scale, scaleX: scale_x, scaleY: scale_y, scaleZ: scale_z, color, name,
 				});
-				await refreshLiveDescription();
 				return text(`Updated ${id}.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -1111,8 +1118,7 @@ registerTool(
 	async ({ id }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("remove_object", { id });
-				await refreshLiveDescription();
+				await appliedLiveMutation("remove_object", { id });
 				return text(`Removed ${id}.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -1311,9 +1317,8 @@ registerTool(
 		state.markedFraming = null;
 		if (liveHub?.connected) {
 			try {
-				const live = await liveHub.command("load_scenes", { document: state.doc });
+				const live = await appliedLiveMutation("load_scenes", { document: state.doc });
 				if (typeof live?.sceneName === "string" && live.sceneName) scene().name = live.sceneName;
-				await refreshLiveDescription();
 			} catch (error) {
 				return liveError(error);
 			}

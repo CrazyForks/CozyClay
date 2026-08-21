@@ -3,7 +3,25 @@ import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 
 const CLOSE_REPLACED = 4000;
-const COMMAND_TIMEOUT_MS = 5_000;
+export const DEFAULT_COMMAND_TIMEOUT_MS = 5_000;
+export const LOAD_MOTION_TIMEOUT_MS = 30_000;
+
+const mutationCommands = new Set([
+	"set_camera",
+	"add_character",
+	"update_character",
+	"remove_character",
+	"place_object",
+	"update_object",
+	"remove_object",
+	"group_objects",
+	"ungroup_objects",
+	"set_prompt_blocks",
+	"load_motion",
+	"load_scenes",
+]);
+
+export class LiveMutationUncertainError extends Error {}
 
 /**
  * Transport-only implementation of LIVE-PROTOCOL.md. Scene semantics remain
@@ -20,6 +38,14 @@ export class LiveHub {
 		return this.editor?.readyState === WebSocket.OPEN;
 	}
 
+	static commandTimeoutMs(name) {
+		return name === "load_motion" ? LOAD_MOTION_TIMEOUT_MS : DEFAULT_COMMAND_TIMEOUT_MS;
+	}
+
+	static commandMayMutate(name) {
+		return mutationCommands.has(name);
+	}
+
 	async command(name, args) {
 		const socket = this.editor;
 		if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("No live editor is connected.");
@@ -28,9 +54,14 @@ export class LiveHub {
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
-				reject(new Error(`Live editor timed out running ${name}.`));
-			}, COMMAND_TIMEOUT_MS);
-			this.pending.set(id, { socket, resolve, reject, timer });
+				const message = `Live editor timed out running ${name}.`;
+				reject(
+					LiveHub.commandMayMutate(name)
+						? new LiveMutationUncertainError(`${message} The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.`)
+						: new Error(message),
+				);
+			}, LiveHub.commandTimeoutMs(name));
+			this.pending.set(id, { name, socket, resolve, reject, timer });
 			try {
 				socket.send(JSON.stringify({ type: "cmd", id, name, args }));
 			} catch (error) {
@@ -80,7 +111,12 @@ export class LiveHub {
 			if (pending.socket !== socket) continue;
 			clearTimeout(pending.timer);
 			this.pending.delete(id);
-			pending.reject(new Error("Live editor disconnected while the command was running."));
+			const message = "Live editor disconnected while a command was running.";
+			pending.reject(
+				LiveHub.commandMayMutate(pending.name)
+					? new LiveMutationUncertainError(`${message} The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.`)
+					: new Error(message),
+			);
 		}
 	}
 }

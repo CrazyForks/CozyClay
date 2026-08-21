@@ -46,9 +46,9 @@ function handle(name, args) {
 		case "set_camera":
 			for (const key of ["x", "y", "z", "focalMm"]) if (args[key] !== undefined) editor.camera[key] = args[key];
 			return { camera: clone(editor.camera) };
-		case "add_character": {
+			case "add_character": {
 			const id = `char-${String.fromCharCode(97 + editor.characters.length)}`;
-			editor.characters.push({ id, subject: args.subject, x: args.x ?? 0, z: args.z ?? 0, rot: args.rot ?? 0, hidden: false });
+			editor.characters.push({ id, model: args.model ?? "y-bot-tpose", subject: args.subject, x: args.x ?? 0, z: args.z ?? 0, rot: args.rot ?? 0, hidden: false });
 			return { id };
 		}
 		case "update_character": {
@@ -83,7 +83,7 @@ function handle(name, args) {
 		case "load_scenes": {
 			const scene = args.document.scenes.find((entry) => entry.id === args.document.activeSceneId) ?? args.document.scenes[0];
 			editor.sceneName = scene.name;
-			editor.characters = scene.stage.characters.map(({ id, subject, x, z, rot, hidden }) => ({ id, subject, x, z, rot, hidden }));
+			editor.characters = scene.stage.characters.map(({ id, model, subject, x, z, rot, hidden }) => ({ id, model, subject, x, z, rot, hidden }));
 			editor.objects = clone(scene.objects);
 			return { sceneName: editor.sceneName };
 		}
@@ -117,6 +117,10 @@ try {
 	assert((await call("live_status")) === "Live editor connected.", "live_status did not report the editor connection");
 	await call("set_camera", { x: 3.25, y: 2, z: 6, focal_mm: 50 });
 	assert(commands.some(({ name, args }) => name === "set_camera" && args.x === 3.25 && args.focalMm === 50), "set_camera was not forwarded");
+	const added = await call("add_character", { subject: "an x-bot performer", model: "x-bot-tpose" });
+	assert(commands.some(({ name, args }) => name === "add_character" && args.model === "x-bot-tpose"), "add_character did not forward the requested model");
+	assert(added.includes("[x-bot-tpose]"), "add_character did not report the requested model");
+	assert((await call("describe_scene")).includes("[x-bot-tpose]"), "describe_scene did not retain the requested model");
 	const placed = await call("place_object", { kind: "chair", x: 1.5, z: -2, facing: 30 });
 	assert(commands.some(({ name, args }) => name === "place_object" && args.kind === "chair" && args.rot === 30), "place_object was not forwarded");
 	assert(placed.includes("chair-1"), "place_object did not return the live object id");

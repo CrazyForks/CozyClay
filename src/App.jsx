@@ -3218,7 +3218,7 @@ globalThis.playMode = centerTab === "play";
 				const patch = finitePatch(args, ["x", "z", "rot"]);
 				live.recordCharacterUndo();
 				const id = nextCharacterId(live.characters);
-				replaceCharacters([...live.characters, createCharacterEntry({ id, subject: args.subject, pose: DEFAULT_POSE, ...patch }, live.characters.length)]);
+				replaceCharacters([...live.characters, createCharacterEntry({ id, model: args.model, subject: args.subject, pose: DEFAULT_POSE, ...patch }, live.characters.length)]);
 				return { id };
 			},
 			update_character: (args) => {

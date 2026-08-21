@@ -22,7 +22,10 @@ editor -> server, one per command, echoing `id`:
     { "type": "result", "id": "<same id>", "ok": false, "error": "<human message>" }
 
 Unknown `name` MUST answer `ok:false`, never silence. The server times a
-command out after 5 s and treats it as failed.
+command out after 5 s and treats it as failed, except `load_motion`, which
+receives 30 s for editor decode and installation. A timeout or disconnect during
+a mutation is ambiguous: it may already have applied, so callers MUST NOT retry
+blindly and should `describe` before recovering.
 
 ## Commands (v1)
 
@@ -32,9 +35,9 @@ scene document already uses.
 | name | args | value | notes |
 | --- | --- | --- | --- |
 | `ping` | `{}` | `{ "pong": true }` | liveness |
-| `describe` | `{}` | `{ sceneName, camera: { x, y, z, focalMm, sensorId, aspectRatio }, characters: [{ id, subject, x, y, z, rot, hidden }], objects: [{ id, name, renderer, x, y, z, rot, scaleX, scaleY, scaleZ, footprint, height, parent }] }` | read the live scene; `sensorId` is one of the stable wire ids `super16`, `super35`, `fullFrame`, `65mm`; the filmback fields keep focal length and FOV interpretation identical in the editor and MCP; object scale and footprint travel too, so sizes are reported from what was actually built; `renderer` is the object's kind — names are user-editable, so the kind must travel or a renamed object cannot be reconstructed; `parent` is null for a top-level object, or the id of another object it rides along with when that parent moves |
+| `describe` | `{}` | `{ sceneName, camera: { x, y, z, focalMm, sensorId, aspectRatio }, characters: [{ id, model, subject, x, y, z, rot, hidden }], objects: [{ id, name, renderer, x, y, z, rot, scaleX, scaleY, scaleZ, footprint, height, parent }] }` | read the live scene; `sensorId` is one of the stable wire ids `super16`, `super35`, `fullFrame`, `65mm`; the filmback fields keep focal length and FOV interpretation identical in the editor and MCP; characters carry their selected mannequin `model`; object scale and footprint travel too, so sizes are reported from what was actually built; `renderer` is the object's kind — names are user-editable, so the kind must travel or a renamed object cannot be reconstructed; `parent` is null for a top-level object, or the id of another object it rides along with when that parent moves |
 | `set_camera` | `{ x?, y?, z?, focalMm? }` | `{ camera }` | omitted fields keep their value; the **viewport must visibly move** |
-| `add_character` | `{ subject, x?, z?, rot? }` | `{ id }` | |
+| `add_character` | `{ subject, x?, z?, rot?, model? }` | `{ id }` | `model` is one of the stable character model ids |
 | `update_character` | `{ ref, x?, z?, rot?, subject?, hidden? }` | `{ id }` | `ref` = id, letter (`"A"`) or 1-based slot |
 | `remove_character` | `{ ref }` | `{ id }` | must refuse to empty the cast |
 | `place_object` | `{ kind, x?, z?, y?, rot?, name?, parent? }` | `{ id }` | `kind` from OBJECT_LIBRARY; optional `name` labels the object and optional `parent` attaches it under another object |
