@@ -79,6 +79,31 @@ expect("a corrupted library degrades to only its valid entries", loadCustomPoses
 
 /* --- the studio tells an empty library what to do -------------------------- */
 
+/* --- the Inspector picks poses by shape, and the rig is free ---------------- */
+
+// A pose read out of a photograph has no name worth reading, so the Inspector
+// shows the same tiles the studio does instead of a dropdown of labels.
+expect("the pose tiles are a shared component", studioSource.includes("export function PoseTileGrid({"));
+expect("the Inspector renders pose tiles", appSource.includes("<PoseTileGrid") && appSource.includes("poses={selectablePoses}"));
+expect(
+	"the Inspector no longer picks a pose from a dropdown",
+	!appSource.includes('ariaLabel={ko("Subject 1 pose"') && !appSource.includes('ariaLabel={ko("Subject 2 pose"'),
+);
+expect("picking a tile clears a running take first", appSource.includes("const hadMotion = Boolean(motion);"));
+expect(
+	"a photo read from the Inspector poses the selected character",
+	appSource.includes("const rig = posedRig() ?? activeRig;") &&
+	appSource.includes("const poseTargetIndex = posingIndex >= 0 ? posingIndex : activeCharIndex;"),
+);
+expect(
+	"both shipped rigs are selectable per character",
+	appSource.includes("CHARACTER_MODEL_IDS.map((id) => (") &&
+	appSource.includes("updateCharacterAt(activeCharIndex, { model: id })") &&
+	appSource.includes('const CHARACTER_MODEL_LABELS = { "y-bot-tpose": "Y Bot", "x-bot-tpose": "X Bot" };'),
+);
+expect("the rig options preview the character's own pose", appSource.includes("<PoseThumbPreview model={id}") && studioSource.includes("export function PoseThumbPreview({"));
+expect("the rig picker is styled as a radio group", appSource.includes('role="radiogroup"') && stylesSource.includes(".rig-picker"));
+
 expect("Pose Studio exposes stable pose id hook", studioSource.includes("data-pose-id={pose.id}"));
 expect("Pose Studio exposes save custom hook", studioSource.includes('data-pose-id="save-custom"'));
 expect("Pose Studio exposes the photo source", studioSource.includes('data-pose-id="photo-pose"'));

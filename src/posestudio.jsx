@@ -1101,6 +1101,15 @@ function PoseThumb({ model, pose, alt }) {
 	return url ? <img src={url} alt={alt} /> : <div className="tile-blank" />;
 }
 
+/** The tile preview on its own, for surfaces that show a rig rather than a
+ * pose library — the rig picker renders each model in the character's own
+ * current pose so the choice is a like-for-like comparison. */
+export function PoseThumbPreview({ model, pose, alt }) {
+	// The stored thumb belongs to the model it was captured on, so a rig
+	// comparison must always re-render rather than reuse it.
+	return <PoseThumb model={model} pose={{ ...pose, thumb: undefined }} alt={alt} />;
+}
+
 // Warm the thumbnail rigs while the studio sits idle: the first pose-studio
 // open then pays no FBX parse. Both shipped models, one idle render each.
 let thumbnailsWarmed = false;
@@ -1194,20 +1203,60 @@ export function PoseStudioPanel({ subject, model, poses, selectedId, onSelect, o
 					)}
 				</p>
 			)}
+			<PoseTileGrid
+				poses={visiblePoses}
+				model={model}
+				selectedId={selectedId}
+				onSelect={selectPose}
+				onDelete={onDelete}
+				onSave={onSave}
+				onPhoto={onPhoto}
+				photoState={photoState}
+				categoryOf={poseCategory}
+				labelOf={displayPoseLabel}
+			/>
+			{photoError && (
+				<p className="studio-hint error" data-pose-photo-error role="status">{photoError}</p>
+			)}
+		</div>
+	);
+}
+
+/**
+ * The pose tiles themselves, without the studio around them.
+ *
+ * The Inspector shows the same library as the studio panel, so choosing a pose
+ * is the same act in both places: see the shape, click the shape. A dropdown
+ * of names cannot do that — a pose read out of a photograph is recognisable
+ * only by how the body looks.
+ */
+export function PoseTileGrid({
+	poses,
+	model,
+	selectedId,
+	onSelect,
+	onDelete,
+	onSave,
+	onPhoto,
+	photoState = "idle",
+	categoryOf = () => "custom",
+	labelOf = (pose) => pose.label,
+}) {
+	return (
 			<div className="pose-grid">
-				{visiblePoses.map((pose, index) => (
+				{poses.map((pose, index) => (
 					<button
 						type="button"
 						key={pose.id}
 						className={"pose-tile" + (pose.id === selectedId ? " active" : "")}
 						data-pose-id={pose.id}
-						data-pose-category={poseCategory(pose)}
+						data-pose-category={categoryOf(pose)}
 						style={{ animationDelay: `${0.04 + index * 0.028}s` }}
-						onClick={() => selectPose(pose.id)}
+						onClick={() => onSelect(pose.id)}
 					>
-						<PoseThumb model={model} pose={pose} alt={displayPoseLabel(pose)} />
-						<span>{displayPoseLabel(pose)}</span>
-						{pose.custom && (
+						<PoseThumb model={model} pose={pose} alt={labelOf(pose)} />
+						<span>{labelOf(pose)}</span>
+						{pose.custom && onDelete && (
 							<em
 								className="del"
 								title={ko("Delete", "삭제")}
@@ -1221,10 +1270,12 @@ export function PoseStudioPanel({ subject, model, poses, selectedId, onSelect, o
 						)}
 					</button>
 				))}
+				{onSave && (
 				<button type="button" className="pose-tile add" data-pose-id="save-custom" title={ko("Save the character's current pose", "현재 캐릭터 포즈 저장")} onClick={onSave}>
 					<span className="add-plus">＋</span>
 					<span className="add-text">{ko("Save pose", "포즈 저장")}</span>
 				</button>
+				)}
 				{onPhoto && (
 					<button
 						type="button"
@@ -1242,9 +1293,5 @@ export function PoseStudioPanel({ subject, model, poses, selectedId, onSelect, o
 					</button>
 				)}
 			</div>
-			{photoError && (
-				<p className="studio-hint error" data-pose-photo-error role="status">{photoError}</p>
-			)}
-		</div>
 	);
 }

@@ -7928,6 +7928,49 @@ input[type=range] {
 	}
 }
 
+/* -------------------------------------------- rig picker ----------------- */
+/* Two shipped rigs, shown in the character's own pose so the pick is a
+   like-for-like comparison rather than a guess between two file names. */
+.rig-picker {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px;
+}
+
+.rig-option {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 6px 7px;
+	border: 1px solid var(--line2);
+	border-radius: 8px;
+	background: var(--card2);
+	color: var(--muted);
+	font-size: 11px;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.rig-option img,
+.rig-option .tile-blank {
+	width: 100%;
+	height: 66px;
+	object-fit: contain;
+	border-radius: 5px;
+}
+
+.rig-option:hover {
+	border-color: var(--accent);
+	color: var(--fg);
+}
+
+.rig-option.active {
+	border-color: var(--accent);
+	color: var(--fg);
+	background: var(--accent-soft);
+}
+
 /* ------------------------------------------ inspector empty -------------- */
 /* The Inspector is driven by the hierarchy selection alone. When the
    selection owns no settings the column says so instead of sitting blank. */

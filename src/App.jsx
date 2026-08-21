@@ -94,6 +94,7 @@ import {
 	createCharacterLayer,
 	createSceneStage,
 	createSceneDocument,
+	CHARACTER_MODEL_IDS,
 	DEFAULT_CHARACTER_MODEL,
 	DEFAULT_SUBJECT_ONE,
 	DEFAULT_SUBJECT_TWO,
@@ -140,7 +141,7 @@ import {
 	loadCustomPoses,
 	saveCustomPoses,
 } from "./poses.js";
-import { IkHandles, PoseHandles, PoseStudioPanel, warmPoseThumbnails } from "./posestudio.jsx";
+import { IkHandles, PoseHandles, PoseStudioPanel, PoseThumbPreview, PoseTileGrid, warmPoseThumbnails } from "./posestudio.jsx";
 import {
 	MID_TRACKS,
 	createIkState,
@@ -411,6 +412,9 @@ const SHOT_ASPECT_PRESETS = Object.freeze({
 // public/models AND the wire rig name sent to ARDY, so mesh and export can
 // never drift apart.
 const characterModelUrl = (model) => `/models/${model}.fbx`;
+
+/** Shipped rig names as the operator says them, not as the files spell them. */
+const CHARACTER_MODEL_LABELS = { "y-bot-tpose": "Y Bot", "x-bot-tpose": "X Bot" };
 
 /** Sequential ids for spawned characters, collision-free against the cast. */
 function nextCharacterId(list) {
@@ -4895,7 +4899,10 @@ globalThis.playMode = centerTab === "play";
 	 */
 	async function posePhotoFile(file) {
 		if (!file || photoPoseState === "running") return;
-		const rig = posedRig();
+		// Reachable from the Inspector as well as the studio panel, and posedRig()
+		// only answers while the studio is open — fall back to the character the
+		// hierarchy has selected, which is the one the pose will be applied to.
+		const rig = posedRig() ?? activeRig;
 		let objectUrl = "";
 		setPhotoPoseState("running");
 		setPhotoPoseError("");
@@ -4939,12 +4946,15 @@ globalThis.playMode = centerTab === "play";
 			setCustomPoses(next);
 			saveCustomPoses(next);
 			setStudioPick(pose.id);
+			// The studio poses whichever character it was opened on; the Inspector
+			// poses the selected one. Write the pose to whichever that is.
+			const poseTargetIndex = posingIndex >= 0 ? posingIndex : activeCharIndex;
 			// A running take drives the same bones a pose writes, so the read would
 			// land invisibly underneath it. Applying from a photo follows the same
 			// rule the Apply button already states: the motion goes first.
 			const hadMotion = Boolean(motion);
 			if (hadMotion) clearMotion();
-			setPosed(pose);
+			updateCharacterAt(poseTargetIndex, { pose });
 			setPhotoPoseState("done");
 			setToast(hadMotion
 				? ko("Cleared the motion and posed from the photo — refine it with the handles", "모션을 지우고 사진으로 자세를 잡았어요 — 핸들로 다듬어 보세요")
@@ -6432,26 +6442,63 @@ function resizePromptClip(id, edge, rawFrame) {
 						)}
 					</Foldout>
 
+				<Foldout hidden={!isCharacterSelection} title={ko("Rig", "리그")}>
+					{/* The rig is a property of the character, and swapping it is a
+					    look decision made while blocking — so it belongs beside the
+					    subject, not buried in the project file. */}
+					<div className="rig-picker" role="radiogroup" aria-label={ko("Character rig", "캐릭터 리그")}>
+						{CHARACTER_MODEL_IDS.map((id) => (
+							<button
+								type="button"
+								key={id}
+								role="radio"
+								aria-checked={activeChar.model === id}
+								className={"rig-option" + (activeChar.model === id ? " active" : "")}
+								data-rig-id={id}
+								onClick={() => updateCharacterAt(activeCharIndex, { model: id })}
+							>
+								<PoseThumbPreview model={id} pose={activeChar.pose ?? DEFAULT_POSE} alt={CHARACTER_MODEL_LABELS[id]} />
+								<span>{CHARACTER_MODEL_LABELS[id]}</span>
+							</button>
+						))}
+					</div>
+				</Foldout>
+
 				<Foldout hidden={!isCharacterSelection} title={ko("Pose", "포즈")}>
-					<Field label={showB ? ko("Subject 1 pose", "인물 1 포즈") : ko("Pose", "포즈")}>
-							<Dropdown
-							ariaLabel={ko("Subject 1 pose", "인물 1 포즈")}
-								value={poseA?.id}
-							options={selectablePoses.map((p) => ({ value: p.id, label: poseLabelKo(p) }))}
-								onChange={(id) => setPoseA(selectablePoses.find((p) => p.id === id))}
-							/>
-						</Field>
-						{showB && (
-						<Field label={ko("Subject 2 pose", "인물 2 포즈")}>
-								<Dropdown
-								ariaLabel={ko("Subject 2 pose", "인물 2 포즈")}
-									value={poseB?.id}
-								options={selectablePoses.map((p) => ({ value: p.id, label: poseLabelKo(p) }))}
-									onChange={(id) => setPoseB(selectablePoses.find((p) => p.id === id))}
-								/>
-							</Field>
-						)}
-					</Foldout>
+					{/* Tiles, not a dropdown: a pose read out of a photograph has no
+					    name worth reading — it is recognisable only as a shape. This
+					    is the same grid the studio shows, applied to whichever
+					    character the hierarchy has selected. */}
+					<p className="inspector-hint">
+						{isKo ? `인물 ${activeCharIndex + 1}의 자세입니다.` : `The pose on Subject ${activeCharIndex + 1}.`}
+					</p>
+					<PoseTileGrid
+						poses={selectablePoses}
+						model={activeChar.model}
+						selectedId={(activeChar.pose ?? DEFAULT_POSE)?.id}
+						onSelect={(id) => {
+							const pose = selectablePoses.find((entry) => entry.id === id);
+							if (!pose) return;
+							// A running take drives the same bones a pose writes, so the
+							// pick would otherwise land invisibly underneath it.
+							const hadMotion = Boolean(motion);
+							if (hadMotion) clearMotion();
+							updateCharacterAt(activeCharIndex, { pose });
+							setStudioPick(pose.id);
+							setToast(hadMotion
+								? ko("Cleared the current motion and applied the pose", "현재 모션을 지우고 포즈를 적용했어요")
+								: ko("Pose applied", "포즈를 적용했어요"));
+						}}
+						onDelete={removePose}
+						onPhoto={() => {
+							setPhotoPoseError("");
+							photoPoseFileRef.current?.click();
+						}}
+						photoState={photoPoseState}
+						labelOf={poseLabelKo}
+					/>
+					{photoPoseError && <p className="studio-hint error" data-pose-photo-error role="status">{photoPoseError}</p>}
+				</Foldout>
 
 				<Foldout hidden={!isSceneSelection} title={ko("Prompt", "프롬프트")}>
 						<div className="segmented" data-active={mode}>
