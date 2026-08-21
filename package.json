@@ -48,7 +48,7 @@
     "test:footage-bridge": "node test/verify-footage-bridge.mjs",
     "test:bvh-cskel27": "node test/verify-bvh-cskel27.mjs"
   },
-  "license": "GPL-3.0-or-later",
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "dependencies": {},
   "devDependencies": {
@@ -82,6 +82,8 @@
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
+    "LICENSES",
+    "LICENSING.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "exports": {

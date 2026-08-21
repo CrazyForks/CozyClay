@@ -81,7 +81,7 @@ in `public/fonts/` next to the fonts themselves.
 The rigs in `public/models/` are Mixamo characters from Adobe. Adobe permits
 their use in projects but not the distribution of the raw character files, which
 is what shipping them in this repository, the npm package and the hosted site
-amounts to. They are also outside the scope of this repository's GPL-3.0 grant:
+amounts to. They are also outside the scope of this repository's AGPL-3.0 grant:
 nothing here relicenses them, and a fork does not acquire the right to
 redistribute them.
 
@@ -93,4 +93,4 @@ as third-party content that this licence does not cover.
 
 ## CozyClay license scope
 
-The CozyClay source code in this repository is licensed under GPL-3.0-or-later. That license does not replace or relicense Three.js, ARDY, ARDY model checkpoints, the bundled fonts, the character rigs, or any other third-party component.
+The CozyClay combined work in this repository is distributed under AGPL-3.0-or-later, subject to the transition details in `LICENSING.md`. That license does not replace or relicense Three.js, ARDY, ARDY model checkpoints, the bundled fonts, the character rigs, or any other third-party component.
