@@ -16,6 +16,7 @@ const mutationCommands = new Set([
 	"remove_object",
 	"group_objects",
 	"ungroup_objects",
+	"apply_batch",
 	"set_prompt_blocks",
 	"load_motion",
 	"load_scenes",

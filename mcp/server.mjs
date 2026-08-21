@@ -1158,6 +1158,57 @@ registerTool(
 );
 
 registerTool(
+	"apply_batch",
+	{
+		title: "Apply object mutations as one undo step",
+		description:
+			"Apply up to 100 object mutations in the connected CozyClay editor as one user-visible undo entry. " +
+			"This v1 batch is deliberately object-only: place_character, update_character and remove_character are rejected because character history is a separate store. " +
+			"atomic defaults to false; when true, any failed operation restores the whole batch. stopOnError defaults to true and independently controls whether later operations run after a failure.",
+		inputSchema: {
+			ops: z
+				.array(
+					z.object({
+						name: z.enum([
+							"place_object",
+							"update_object",
+							"remove_object",
+							"place_character",
+							"update_character",
+							"remove_character",
+							"group_objects",
+							"ungroup_objects",
+							"apply_batch",
+						]),
+						args: z.record(z.unknown()),
+					}),
+				)
+				.max(100)
+				.describe("existing mutation commands to execute in order; nested apply_batch is rejected"),
+			atomic: z.boolean().default(false).describe("roll back all operations if any operation fails"),
+			stopOnError: z.boolean().default(true).describe("stop executing later operations after a failure"),
+			label: z.string().min(1).default("MCP batch").describe("the single editor undo entry name"),
+		},
+	},
+	async ({ ops, atomic, stopOnError, label }) => {
+		if (!liveHub?.connected) return text("apply_batch requires a connected CozyClay editor.");
+		try {
+			const result = await appliedLiveMutation("apply_batch", { ops, atomic, stopOnError, label });
+			const applied = Array.isArray(result?.applied) ? result.applied : [];
+			const failed = Array.isArray(result?.failed) ? result.failed : [];
+			const failure = failed[0];
+			const summary = result?.rolledBack
+				? `Batch rolled back after failure at operation ${failure?.index ?? "unknown"}.`
+				: `Applied ${applied.length} operation(s).`;
+			const detail = failure ? ` Failure at operation ${failure.index}: ${failure.error}.` : "";
+			return text(`${summary}${detail}\n\n${sceneReport()}`);
+		} catch (error) {
+			return liveError(error);
+		}
+	},
+);
+
+registerTool(
 	"render_prompt",
 	{
 		title: "Render the AI prompt for this shot",

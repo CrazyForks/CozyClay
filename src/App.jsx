@@ -3187,6 +3187,12 @@ globalThis.playMode = centerTab === "play";
 		const syncObjects = () => {
 			liveStateRef.current.objects = storeRef.current.objects;
 		};
+		let batchToken = null;
+		const applyObjectMutation = (mutation) => {
+			if (batchToken === null) storeRef.current.applyAtomic(mutation);
+			else storeRef.current.applyIn(batchToken, mutation);
+			syncObjects();
+		};
 		liveHandlersRef.current = {
 			ping: () => ({ pong: true }),
 			describe,
@@ -3285,11 +3291,10 @@ globalThis.playMode = centerTab === "play";
 				const placed = updateSceneObject([object], object.id, patch)[0];
 				// One atomic entry: create, name and attach undo together, as the
 				// single "place part" gesture they are to the caller.
-				storeRef.current.applyAtomic((objects) => {
+				applyObjectMutation((objects) => {
 					const next = [...objects, placed];
 					return args.parent !== undefined ? setSceneObjectParent(next, placed.id, args.parent) : next;
 				});
-				syncObjects();
 				return { id: placed.id };
 			},
 			update_object: (args) => {
@@ -3314,15 +3319,13 @@ globalThis.playMode = centerTab === "play";
 					if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
 					patch.name = args.name;
 				}
-				storeRef.current.applyAtomic((objects) => updateSceneObject(objects, args.id, patch));
-				syncObjects();
+				applyObjectMutation((objects) => updateSceneObject(objects, args.id, patch));
 				return { id: args.id };
 			},
 			remove_object: (args) => {
 				const live = liveStateRef.current;
 				if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
-				storeRef.current.applyAtomic((objects) => removeSceneObject(objects, args.id));
-				syncObjects();
+				applyObjectMutation((objects) => removeSceneObject(objects, args.id));
 				return { id: args.id };
 			},
 			// Replacing a document follows the existing project-open path and clears
@@ -3357,10 +3360,9 @@ globalThis.playMode = centerTab === "play";
 				for (const child of args.children) {
 					if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
 				}
-				storeRef.current.applyAtomic((objects) =>
+				applyObjectMutation((objects) =>
 					args.children.reduce((acc, child) => setSceneObjectParent(acc, child, args.parent), objects),
 				);
-				syncObjects();
 				return { parent: args.parent, children: args.children.length };
 			},
 			ungroup_objects: (args) => {
@@ -3369,11 +3371,52 @@ globalThis.playMode = centerTab === "play";
 				for (const child of args.children) {
 					if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
 				}
-				storeRef.current.applyAtomic((objects) =>
+				applyObjectMutation((objects) =>
 					args.children.reduce((acc, child) => setSceneObjectParent(acc, child, null), objects),
 				);
-				syncObjects();
 				return { children: args.children.length };
+			},
+			apply_batch: (args) => {
+				if (batchToken !== null) throw new Error("Nested batches are not supported");
+				if (!Array.isArray(args.ops)) throw new Error("Invalid batch operations");
+				if (args.ops.length > 100) throw new Error("A batch may contain at most 100 operations");
+				if (args.atomic !== undefined && typeof args.atomic !== "boolean") throw new Error("Invalid atomic flag");
+				if (args.stopOnError !== undefined && typeof args.stopOnError !== "boolean") throw new Error("Invalid stopOnError flag");
+				if (args.label !== undefined && (typeof args.label !== "string" || !args.label.trim())) throw new Error("Invalid batch label");
+				const objectCommands = new Set(["place_object", "update_object", "remove_object", "group_objects", "ungroup_objects"]);
+				for (const operation of args.ops) {
+					if (!operation || typeof operation !== "object" || Array.isArray(operation)) throw new Error("Invalid batch operation");
+					if (operation.name === "apply_batch") throw new Error("Nested batches are not supported");
+					if (!objectCommands.has(operation.name)) {
+						throw new Error("Batch v1 supports object mutations only; character mutations are not supported");
+					}
+					if (!operation.args || typeof operation.args !== "object" || Array.isArray(operation.args)) throw new Error("Invalid batch operation arguments");
+				}
+				const atomic = args.atomic === true;
+				const stopOnError = args.stopOnError !== false;
+				const depthBefore = storeRef.current.depths().past;
+				const token = storeRef.current.begin(args.label?.trim() || "MCP batch", () => {});
+				const priorSuppressObjectClock = suppressObjectClockRef.current;
+				suppressObjectClockRef.current = true;
+				const applied = [];
+				const failed = [];
+				batchToken = token;
+				for (const [index, operation] of args.ops.entries()) {
+					try {
+						liveHandlersRef.current[operation.name](operation.args);
+						applied.push(index + 1);
+					} catch (error) {
+						failed.push({ index: index + 1, error: error instanceof Error ? error.message : "Command failed" });
+						if (stopOnError) break;
+					}
+				}
+				batchToken = null;
+				const rolledBack = atomic && failed.length > 0;
+				storeRef.current.end(token, { commit: !rolledBack });
+				suppressObjectClockRef.current = priorSuppressObjectClock;
+				if (!rolledBack && storeRef.current.depths().past > depthBefore) lastObjectOpRef.current = ++opClockRef.current;
+				syncObjects();
+				return { label: args.label?.trim() || "MCP batch", applied, failed, rolledBack };
 			},
 			// Authoring blocks is not generating: a director writes the beats and
 			// their ranges first, then generates when the schedule reads right.
