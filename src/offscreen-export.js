@@ -116,6 +116,7 @@ export async function exportOffscreenVideo({
 				videoFrame.close();
 			}
 			if (encoderError) throw encoderError;
+			// Encoder-paced flush boundaries may change file bytes; determinism covers addressed pixels and their hashes only.
 			if (encoder.encodeQueueSize > 4) await encoder.flush();
 			onFrame?.({ frame, index, frameCount: range.frameCount, hash });
 		}
