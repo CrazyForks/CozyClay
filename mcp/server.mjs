@@ -97,6 +97,32 @@ const liveMutationTools = new Set([
 	"remove_object", "apply_batch", "add_scene", "switch_scene", "open_project",
 ]);
 
+const TOOL_ANNOTATIONS = Object.freeze({
+	describe_scene: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	live_status: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	describe_shot: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	set_camera: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	frame_shot: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	add_character: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+	place_character: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	remove_character: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+	focus_character: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	place_object: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+	group_objects: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	set_prompt_blocks: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	generate_motion: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+	update_object: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	remove_object: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+	apply_batch: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+	render_prompt: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	mark_camera_move: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	describe_camera_move: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	add_scene: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+	switch_scene: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	open_project: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+	save_project: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+});
+
 const scene = () => activeScene(state.doc.scenes, state.doc.activeSceneId);
 const stage = () => scene().stage;
 
@@ -378,11 +404,14 @@ const server = new McpServer(
 
 const registerTool = (name, config, handler) => {
 	registeredTools += 1;
-	if (!liveMutationTools.has(name)) return server.registerTool(name, config, handler);
+	const annotations = TOOL_ANNOTATIONS[name];
+	if (!annotations) throw new Error(`Missing explicit safety annotations for ${name}.`);
+	if (!liveMutationTools.has(name)) return server.registerTool(name, { ...config, annotations }, handler);
 	return server.registerTool(
 		name,
 		{
 			...config,
+			annotations,
 			description:
 				`${config.description} Multiple editor instances are supported; when more than one is connected, ` +
 				"workspace_handle is required so this mutation reaches only its named workspace.",
@@ -465,8 +494,8 @@ registerTool(
 	{
 		title: "Set the camera",
 		description:
-			"Move the camera and/or change the lens. Every field is optional — omitted fields keep " +
-			"their current value. The camera always aims at the subject. Use focal_mm to change " +
+			"Unlike frame_shot, set_camera applies explicit camera coordinates or focal length rather than deriving a shot. " +
+			"Every field is optional — omitted fields keep their current value. The camera always aims at the subject. Use focal_mm to change " +
 			"framing without moving (longer = tighter), or move x/y/z to change the angle.",
 		inputSchema: {
 			x: z.number().optional().describe("world x in metres (right)"),
@@ -502,8 +531,8 @@ registerTool(
 	{
 		title: "Frame a shot by intent",
 		description:
-			"Place the camera by describing the shot you want instead of doing the trigonometry. " +
-			"Chooses a distance and height that actually produce the requested size and level, " +
+			"Unlike set_camera, frame_shot derives camera position and lens from shot intent rather than applying explicit coordinates. " +
+			"It chooses a distance and height that actually produce the requested size and level, " +
 			"orbiting to the requested side of the subject.",
 		inputSchema: {
 			size: z
@@ -626,8 +655,8 @@ registerTool(
 	{
 		title: "Add a character to the cast",
 		description:
-			"Put another character in the scene. The cast is unbounded — each one gets its own " +
-			"letter (A, B, C…), position and prompt description.",
+			"Unlike place_character, add_character adds a new cast member instead of changing an existing one. " +
+			"The cast is unbounded — each one gets its own letter (A, B, C…), position and prompt description.",
 		inputSchema: {
 			subject: z.string().describe('prompt description, e.g. "a courier holding a package"'),
 			x: z.number().default(0).describe("floor position x in metres"),
@@ -669,8 +698,8 @@ registerTool(
 	{
 		title: "Move or re-describe a character",
 		description:
-			"Change a character already in the cast. Every field is optional; omitted fields keep " +
-			"their value. Use add_character to introduce a new one.",
+			"Unlike add_character, place_character changes an existing cast member instead of adding one. " +
+			"Every field is optional; omitted fields keep their value.",
 		inputSchema: {
 			character: z
 				.string()
@@ -767,8 +796,8 @@ registerTool(
 	{
 		title: "Place an object in the set",
 		description:
-			`Add a prop to the set. Available kinds: ${OBJECT_LIBRARY.map((o) => o.kind).join(", ")}. ` +
-			"Returns the object id, which update_object and remove_object take.",
+			`Unlike update_object, place_object adds a new prop instead of changing an existing one. Available kinds: ${OBJECT_LIBRARY.map((o) => o.kind).join(", ")}. ` +
+			"It returns the object id, which update_object and remove_object take.",
 		inputSchema: {
 			kind: z
 				.enum(OBJECT_LIBRARY.map((o) => o.kind))
@@ -1119,8 +1148,8 @@ registerTool(
 	{
 		title: "Move, rotate or scale an object",
 		description:
-			"Change an object already in the set. Every field is optional; omitted fields are left " +
-			"alone. Transforms go through the same clamp/snap path the studio's gizmo uses.",
+			"Unlike place_object, update_object changes an existing prop instead of adding one. " +
+			"Every field is optional; omitted fields are left alone. Transforms go through the same clamp/snap path the studio's gizmo uses.",
 		inputSchema: {
 			id: z.string().describe("object id from place_object or describe_scene"),
 			x: z.number().optional(),
