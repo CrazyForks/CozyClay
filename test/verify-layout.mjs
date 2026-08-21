@@ -43,10 +43,15 @@ expect("inspector is always visible beside the scene", app.includes("inspector-s
 expect("legacy hierarchy/inspector splitter is removed", !app.includes("hierarchy-splitter"));
 expect("bottom window separates Timeline from the ARDY console", app.includes("bottom-window-tabs") && app.includes("console-pane") && app.includes('hidden={bottomTab !== "timeline"}'));
 expect("ARDY status lines accumulate in the console window", app.includes("reportArdyStatus") && app.includes("consoleLines"));
-expect("Motion tab owns the ARDY generation form", app.includes('<Foldout hidden={sidebarTab !== "motion"} title={ko("ARDY motion", "ARDY 모션")}>'));
-// The camera foldout was duplicated into the Motion tab; after the sidebar
-// cleanup it lives only in Shot (and Inspector when the camera is picked).
-expect("camera controls live in Shot and camera-inspector only, not duplicated into Motion", app.includes('sidebarTab === "shot" || (sidebarTab === "inspector" && selectedHierarchyId === "camera")'));
+// The sidebar has no tabs: one Inspector, driven by the hierarchy selection,
+// so every panel is reached by selecting the thing that owns it.
+expect("the sidebar has no mode tabs left", !app.includes("sidebarTab") && !app.includes("inspector-tabs") && !css.includes(".inspector-tabs"));
+expect("a character owns the ARDY generation form", app.includes('<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("ARDY motion", "ARDY 모션")}>'));
+expect("the camera owns the lens controls", app.includes('<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>'));
+expect("the scene owns the generation prompt", app.includes('<Foldout hidden={!isSceneSelection} title={ko("Prompt", "프롬프트")}>'));
+expect("selection routing is derived once, not repeated per foldout", app.includes("const isCharacterSelection = selectedHierarchyId ===") && app.includes("const inspectorHasContent ="));
+expect("an unowned selection explains itself instead of showing a blank column", app.includes("data-inspector-empty") && css.includes(".inspector-empty"));
+expect("the heavy motion pipeline starts collapsed", app.includes("function Foldout({ title, hidden, defaultOpen = true, children })") && app.includes("useState(defaultOpen)"));
 expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("Generate all ${promptClips.length} blocks"));
 expect("new sessions start without prompt blocks", app.includes("const DEFAULT_PROMPT_CLIPS = [];") && app.includes("useState(null)"));
 expect("new sessions start with an empty motion prompt", app.includes('const [ardyPrompt, setArdyPrompt] = useState("");'));
@@ -129,8 +134,8 @@ expect("resize handles opt out on compact layouts", css.includes(".workspace-spl
 // extracted take play at the right size, on the right layer, at the right
 // place — each of them was a bug in the two-character prototype.
 expect(
-	"the Motion tab owns a Video capture foldout above ARDY motion",
-	app.includes('<Foldout hidden={sidebarTab !== "motion"} title={ko("Video capture", "영상 모캡")}>') &&
+	"a character owns a Video capture foldout above ARDY motion",
+	app.includes('<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Video capture", "영상 모캡")}>') &&
 	app.indexOf('title={ko("Video capture", "영상 모캡")}') < app.indexOf('title={ko("ARDY motion", "ARDY 모션")}'),
 );
 expect(

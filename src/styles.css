@@ -7928,47 +7928,21 @@ input[type=range] {
 	}
 }
 
-/* ------------------------------------------- sidebar tabs ---------------- */
-/* Right-sidebar mode tabs: Inspector / Shot / Motion. A Unity-style tab
-   strip in the pane-title position; the Inspector heading renders below it
-   only while the Inspector tab is active. */
-.inspector-tabs {
-	flex: none;
-	display: flex;
-	height: 26px;
-	background: #2c2c2c;
-	border-bottom: 1px solid #1a1a1a;
-}
-
-.inspector-tabs button {
-	flex: 1;
-	border: none;
-	background: transparent;
-	color: #9a9a9a;
-	font-size: 11px;
-	font-weight: 600;
-	cursor: pointer;
-	border-right: 1px solid #1a1a1a;
-}
-
-.inspector-tabs button:last-child {
-	border-right: none;
-}
-
-.inspector-tabs button:hover {
-	color: #d2d2d2;
-}
-
-.inspector-tabs button.active {
-	background: #383838;
-	color: #fff;
-	box-shadow: inset 0 -2px 0 #3a7cbf;
+/* ------------------------------------------ inspector empty -------------- */
+/* The Inspector is driven by the hierarchy selection alone. When the
+   selection owns no settings the column says so instead of sitting blank. */
+.inspector-empty {
+	margin: 0;
+	padding: 18px 16px;
+	font-size: 11.5px;
+	line-height: 1.5;
+	color: var(--muted);
 }
 
 /* The scroll column is a flex column; with several cards visible at once
-   (the Motion tab stacks the whole pipeline) default flex-shrink squishes
-   each card and overflow:hidden clips its last row. Cards keep natural
-   height and the column scrolls instead. */
+   (a character stacks pose and the whole motion pipeline) default
+   flex-shrink squishes each card and overflow:hidden clips its last row.
+   Cards keep natural height and the column scrolls instead. */
 .inspector-scroll > .card {
 	flex-shrink: 0;
 }

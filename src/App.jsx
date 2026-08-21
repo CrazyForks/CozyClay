@@ -1456,7 +1456,6 @@ globalThis.playMode = centerTab === "play";
 		const id = nextCharacterId(characters);
 		setCharacters((list) => [...list, createCharacterEntry({ id, model, x, z, pose: DEFAULT_POSE, subject: "a person" }, list.length)]);
 		setSelectedHierarchyId(`character:${id}`);
-		setSidebarTab("inspector");
 		setToast(ko("Character added to the scene", "인물을 씬에 추가했어요"));
 	};
 	function beginAssetDrag(payload, event) {
@@ -1540,6 +1539,13 @@ globalThis.playMode = centerTab === "play";
 		if (id && characters.some((entry) => entry.id === id)) setActiveCharacterId(id);
 	}, [selectedHierarchyId, characters]);
 	const activeChar = characters.find((entry) => entry.id === activeCharacterId) ?? characters[0] ?? charA;
+	// Root paths and prompt blocks are the active character's animation layer.
+	// With the Inspector driven by selection, showing those tools means putting
+	// that character in the hierarchy selection.
+	const selectActiveCharacterInHierarchy = () => {
+		const id = activeCharacterId ?? characters[0]?.id;
+		if (id) setSelectedHierarchyId(`character:${id}`);
+	};
 	const activeCharIndex = Math.max(0, characters.findIndex((entry) => entry.id === activeChar.id));
 	const activeRig = rigs[activeChar.id] ?? null;
 	const waitForRig = (charId, timeoutMs = 10000) => {
@@ -1569,7 +1575,6 @@ globalThis.playMode = centerTab === "play";
 	// holds shot-global settings (type presets, prompt); "motion" holds the
 	// ARDY workflow in pipeline order. Selecting anything in the scene routes
 	// to the inspector tab; the root SHOT row routes to the shot tab.
-	const [sidebarTab, setSidebarTab] = useState("motion");
 	const [inspectorActionsOpen, setInspectorActionsOpen] = useState(false);
 	const [objectDeleteUndo, setObjectDeleteUndo] = useState(null);
 	// Scene persistence (plan §8): the startup load runs once in a lazy
@@ -1631,12 +1636,6 @@ globalThis.playMode = centerTab === "play";
 		// applied tick re-renders, every drag would die after exactly one tick.
 		store.settle();
 		setSelectedHierarchyId(id);
-		// Character rows route to the Motion tab: picking a player means the
-		// operator wants their animation layer — its prompt, queue status and
-		// generate action all live there. SHOT keeps its bridge to shot-global
-		// settings; everything else is a scene entity.
-		const isCharacter = id === "characters" || id === "characterA" || id === "characterB" || id?.startsWith("character:");
-		setSidebarTab(id === "shot" ? "shot" : isCharacter ? "motion" : "inspector");
 		const focus = RIG_HIERARCHY_FOCUS[id];
 		if (focus && ikMode) setIkFocus(focus);
 	}
@@ -1656,7 +1655,6 @@ globalThis.playMode = centerTab === "play";
 		const hierarchyId = hierarchyIdForIkFocus(focus);
 		if (hierarchyId) {
 			setSelectedHierarchyId(hierarchyId);
-			setSidebarTab("inspector");
 		}
 	}
 
@@ -1798,7 +1796,6 @@ globalThis.playMode = centerTab === "play";
 		if (!object) return;
 		store.applyAtomic((objects) => [...objects, object]);
 		setSelectedHierarchyId(`object:${object.id}`);
-		setSidebarTab("inspector");
 		// Deliberate divergence from Unity's rename-on-create: creating an object
 		// here is followed by placing it, and dropping focus into a text field
 		// swallows the very next W/E/R. Renaming stays on F2/Return and the row's
@@ -1836,7 +1833,6 @@ globalThis.playMode = centerTab === "play";
 			if (!object) return;
 			store.applyAtomic((objects) => [...objects, object]);
 			setSelectedHierarchyId(`object:${object.id}`);
-			setSidebarTab("inspector");
 			setGizmoMode("move");
 			setToast(
 				isKo
@@ -1874,7 +1870,6 @@ globalThis.playMode = centerTab === "play";
 		if (!object) return;
 		store.applyAtomic((objects) => [...objects, object]);
 		setSelectedHierarchyId(`object:${object.id}`);
-		setSidebarTab("inspector");
 		setGizmoMode("move");
 		setToast(
 			isKo
@@ -1954,7 +1949,6 @@ globalThis.playMode = centerTab === "play";
 		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
 		store.applyAtomic((objects) => [...objects, placed]);
 		setSelectedHierarchyId(`object:${placed.id}`);
-		setSidebarTab("inspector");
 		setToast(isKo ? `${sceneObjectNameDisplayKo(placed.name)} 복제됨` : `${placed.name} duplicated`);
 	}
 
@@ -3675,7 +3669,6 @@ globalThis.playMode = centerTab === "play";
 			} : shot);
 		});
 		setSelectedHierarchyId("camera");
-		setSidebarTab("inspector");
 	}
 
 	// Re-time a key by dragging its dot along the lane. Landing on another
@@ -3733,7 +3726,6 @@ globalThis.playMode = centerTab === "play";
 		manualCameraOverrideRef.current = false;
 		setTlFrame(selected.startFrame);
 		setSelectedHierarchyId("camera");
-		setSidebarTab("inspector");
 	}
 
 	function duplicateTimelineShot(index) {
@@ -3763,6 +3755,20 @@ globalThis.playMode = centerTab === "play";
 	// charId, so every cast member gets the same studio, not just the first two.
 	const posingIndex = characters.findIndex((entry) => entry.id === posing);
 	const posingChar = posingIndex >= 0 ? characters[posingIndex] : null;
+	// The Inspector is driven by the hierarchy selection alone — there are no
+	// sidebar tabs. Every panel belongs to the thing that owns it: the scene
+	// owns what gets generated, the camera owns the lens, and a character owns
+	// its pose and its motion.
+	const isSceneSelection = selectedHierarchyId === "shot";
+	const isCameraSelection = selectedHierarchyId === "camera";
+	const isCharacterSelection = selectedHierarchyId === "characters"
+		|| selectedHierarchyId === "characterA"
+		|| selectedHierarchyId === "characterB"
+		|| selectedHierarchyId.startsWith("character:");
+	const isRigSelection = selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig.");
+	const inspectorHasContent = isSceneSelection || isCameraSelection || isCharacterSelection || isRigSelection
+		|| selectedHierarchyId === "environment" || selectedHierarchyId === "props" || Boolean(selectedSceneObject);
+
 	const posedRig = () => rigs[posing] ?? null;
 	const setPosed = (pose) => {
 		if (posingIndex >= 0) updateCharacterAt(posingIndex, { pose: typeof pose === "function" ? pose(posingChar?.pose ?? DEFAULT_POSE) : pose });
@@ -3798,7 +3804,7 @@ globalThis.playMode = centerTab === "play";
 			setPendingWaypointFrame(null);
 			setTlFrame(target);
 			setWaypointMode(true);
-			setSidebarTab("motion");
+			selectActiveCharacterInHierarchy();
 			setToast(isKo ? `프레임 ${target}의 루트 웨이포인트를 선택했어요. 탑뷰에서 점을 드래그해 위치를 조정하세요.` : `Root waypoint at frame ${target} selected — drag the pin in the Top-View to reposition.`);
 			return;
 		}
@@ -3806,7 +3812,7 @@ globalThis.playMode = centerTab === "play";
 		setActiveWaypointFrame(null);
 		setTlFrame(target);
 		setWaypointMode(true);
-		setSidebarTab("motion");
+		selectActiveCharacterInHierarchy();
 		setToast(isKo ? `프레임 ${target}이 예약됐어요. 샷 뷰 바닥을 클릭하면 그 위치에 루트 웨이포인트가 생성됩니다.` : `Frame ${target} is reserved — click the Shot-view floor to drop the root waypoint there.`);
 	}
 	/** ARDY-demo style authoring: each empty-floor press in the Shot view drops
@@ -4845,8 +4851,6 @@ globalThis.playMode = centerTab === "play";
 		setPosingClosing(false);
 		const entry = characters.find((item) => item.id === charId);
 		setStudioPick((entry?.pose ?? DEFAULT_POSE)?.id ?? null);
-		// The panel docks under the Inspector — make sure that tab is showing.
-		setSidebarTab("inspector");
 	}
 
 	function closeStudio() {
@@ -6272,7 +6276,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					aria-label={ko("Resize hierarchy and inspector panel", "계층 및 속성 패널 크기 조절")}
 					onPointerDown={(event) => beginWorkspaceResize("sidebar", event)}
 				/>
-				<aside className="panel hierarchy-sidebar inspector-sidebar" data-inspector={selectedHierarchyId} data-tab={sidebarTab}>
+				<aside className="panel hierarchy-sidebar inspector-sidebar" data-inspector={selectedHierarchyId}>
 					{/* Save failures live above the tab content, not inside the Props
 					    card: that card is hidden whenever any hierarchy node is
 					    selected, and saves fire exactly while objects are being
@@ -6287,26 +6291,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</p>
 					)}
 					<section className="inspector-pane">
-					<div className="inspector-tabs" role="tablist" aria-label={ko("Sidebar tabs", "사이드바 탭")}>
-						{[
-							["inspector", ko("Inspector", "속성")],
-							["shot", ko("Shot", "샷")],
-							["motion", ko("Motion", "모션")],
-						].map(([tab, label]) => (
-							<button
-								key={tab}
-								type="button"
-								role="tab"
-								aria-selected={sidebarTab === tab}
-								className={sidebarTab === tab ? "active" : ""}
-								onClick={() => setSidebarTab(tab)}
-							>
-								{label}
-							</button>
-						))}
-					</div>
-					{sidebarTab === "inspector" && (
-						<div className="inspector-heading">
+					<div className="inspector-heading">
 						<strong>{ko("Inspector", "속성")}</strong>
 						<span className="inspector-heading-selection">{selectedSceneObject ? sceneObjectNameDisplayKo(selectedSceneObject.name) : HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId] ?? ko("Selection", "선택 항목")}</span>
 						{selectedSceneObject && (
@@ -6332,15 +6317,24 @@ function resizePromptClip(id, edge, rawFrame) {
 								)}
 							</div>
 						)}
-						</div>
-					)}
+					</div>
 					<div className="inspector-scroll">
+				{/* Nothing is selected that owns settings — say so rather than
+				    showing an empty column the user has to interpret. */}
+				{!inspectorHasContent && (
+					<p className="inspector-empty" data-inspector-empty role="status">
+						{ko(
+							"Select something in the hierarchy — the scene, the camera, a character, the environment or a prop — and its settings appear here.",
+							"계층에서 항목을 고르면 — 씨, 카메라, 캐릭터, 환경, 소품 — 그 설정이 여기 나타납니다.",
+						)}
+					</p>
+				)}
 				{/* Shot TYPE presets live in the viewport toolbar dropdown — not
 					    duplicated here. */}
 
 					{/* Camera animation is authored against the same playhead as motion,
 					    so keep its controls beside the Motion tools as well as Shot setup. */}
-					<Foldout hidden={!(sidebarTab === "shot" || (sidebarTab === "inspector" && selectedHierarchyId === "camera"))} title={ko("Camera", "카메라")}>
+					<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>
 					<Slider label={ko("Lens (FOV)", "렌즈 (FOV)")} min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
 						<div className="readout">
 						<span title={ko("camera to subject", "카메라와 피사체 거리")}>{shot.distance.toFixed(2)} m</span>
@@ -6414,7 +6408,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</p>
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || !(selectedHierarchyId === "characters" || selectedHierarchyId === "characterA" || selectedHierarchyId === "characterB" || selectedHierarchyId.startsWith("character:"))} title={showB ? ko("Subjects", "인물들") : ko("Subject", "인물")}>
+				<Foldout hidden={!isCharacterSelection} title={showB ? ko("Subjects", "인물들") : ko("Subject", "인물")}>
 						<div className={"subjects-row" + (showB ? "" : " single")}>
 							{characters.map((entry, index) => entry.hidden ? null : (
 								<SubjectBox
@@ -6438,7 +6432,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						)}
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || !(selectedHierarchyId === "characters" || selectedHierarchyId === "characterA" || selectedHierarchyId === "characterB" || selectedHierarchyId.startsWith("character:"))} title={ko("Pose", "포즈")}>
+				<Foldout hidden={!isCharacterSelection} title={ko("Pose", "포즈")}>
 					<Field label={showB ? ko("Subject 1 pose", "인물 1 포즈") : ko("Pose", "포즈")}>
 							<Dropdown
 							ariaLabel={ko("Subject 1 pose", "인물 1 포즈")}
@@ -6459,7 +6453,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						)}
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "shot"} title={ko("Prompt", "프롬프트")}>
+				<Foldout hidden={!isSceneSelection} title={ko("Prompt", "프롬프트")}>
 						<div className="segmented" data-active={mode}>
 							<button className={mode === "image" ? "active" : ""} onClick={() => setMode("image")}>
 							{ko("Image", "이미지")}
@@ -6540,7 +6534,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							{mode === "video" ? ko("Generate video", "영상 만들기") : ko("Generate image", "이미지 만들기")}
 						</button>
 					</Foldout>
-				<Foldout hidden={sidebarTab !== "motion"} title={ko("Video capture", "영상 모캡")}>
+				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Video capture", "영상 모캡")}>
 					<div className="multimodel-card">
 						<div className="multimodel-card-head">
 							<div>
@@ -6699,7 +6693,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</p>
 					</div>
 				</Foldout>
-				<Foldout hidden={sidebarTab !== "motion"} title={ko("ARDY motion", "ARDY 모션")}>
+				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("ARDY motion", "ARDY 모션")}>
 					{/* One compact status line: which layer is being edited and on
 					    which box — the long hint texts lived here before. */}
 					<p className="ardy-meta">
@@ -6827,7 +6821,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</>
 					)}
 				</Foldout>
-				<Foldout hidden={sidebarTab !== "motion"} title={ko("Prompt Blocks", "프롬프트 블록")}>
+				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Prompt Blocks", "프롬프트 블록")}>
 					<p className="inspector-hint">{ko("Blocks define what ARDY generates over each frame range. Selecting one also moves editing context to that prompt.", "블록은 각 프레임 범위에서 ARDY가 생성할 내용을 정합니다. 블록을 선택하면 편집 기준도 해당 프롬프트로 이동합니다.")}</p>
 						<div className="inspector-list">
 							{promptClips.map((clip) => (
@@ -6894,7 +6888,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</button>
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || !(selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig."))} title={ko("Rig Control", "리그 제어")}>
+				<Foldout hidden={!isRigSelection} title={ko("Rig Control", "리그 제어")}>
 						<p className="inspector-hint">
 							{selectedHierarchyId.startsWith("rig.")
 							? (isKo ? `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]}이 활성 제어 그룹입니다.` : `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]} is the active control group.`)
@@ -6910,7 +6904,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</button>
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "environment"} title={ko("Environment", "환경")}>
+				<Foldout hidden={selectedHierarchyId !== "environment"} title={ko("Environment", "환경")}>
 						<label className="check">
 							<input type="checkbox" checked={hasEnvSheet} onChange={(event) => setHasEnvSheet(event.target.checked)} />
 						<span>{ko("I have an environment sheet", "환경 시트가 있어요")}</span>
@@ -6925,7 +6919,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</Field>
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
+				<Foldout hidden={selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
 					<div className="props-drop" data-drop={inspectorDrop.over ? "over" : "target"} {...inspectorDrop.handlers}>
 					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view. Drop a picture anywhere here — or on the shot view — to stand it up as a cutout.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요. 사진을 이 영역이나 샷 뷰에 끌어다 놓으면 컷아웃으로 세워집니다.")}</p>
 					<AddObjectMenu onAdd={addSceneObject} label={ko("Add object to the set", "세트에 오브젝트 추가")} />
@@ -6966,7 +6960,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					</div>
 					</Foldout>
 
-				<Foldout hidden={sidebarTab !== "inspector" || !selectedSceneObject} title={ko("Object Transform", "오브젝트 변환")}>
+				<Foldout hidden={!selectedSceneObject} title={ko("Object Transform", "오브젝트 변환")}>
 						{selectedSceneObject && (
 							<>
 								<p className="inspector-hint">
@@ -7435,7 +7429,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					const frame = Math.min(f, tlFrameCount - 1);
 					setTlFrame(frame);
 					setWaypointMode(true);
-					setSidebarTab("motion");
+					selectActiveCharacterInHierarchy();
 					if (waypoints.some((waypoint) => waypoint.frame === frame)) {
 						setActiveWaypointFrame(frame);
 						setPendingWaypointFrame(null);
@@ -7450,7 +7444,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				onPromptSelect={(id) => {
 					setSelectedPromptId(id);
 					setArdyPrompt(promptClips.find((clip) => clip.id === id)?.text ?? "");
-					setSidebarTab("motion");
+					selectActiveCharacterInHierarchy();
 				}}
 				onPromptChange={changePromptClip}
 				onPromptResize={resizePromptClip}
@@ -7458,7 +7452,6 @@ function resizePromptClip(id, edge, rawFrame) {
 				onPromptRemove={removePromptClip}
 				onCameraMoveSelect={() => {
 					setSelectedHierarchyId("camera");
-					setSidebarTab("inspector");
 				}}
 				onCameraKeyframeAdd={addCameraKeyframe}
 				onCameraKeyframeMove={moveCameraKeyframe}
@@ -7468,7 +7461,6 @@ function resizePromptClip(id, edge, rawFrame) {
 						if (!selected) return;
 						setTlFrame(selected.startFrame);
 						setSelectedHierarchyId("camera");
-						setSidebarTab("motion");
 					}}
 					onCameraBlockChange={(patch) => {
 						if (patch.mode === "follow") syncActiveCameraFraming();
@@ -7488,7 +7480,6 @@ function resizePromptClip(id, edge, rawFrame) {
 					onRailSelect={(index) => {
 						selectTimelineShot(index);
 						setSelectedHierarchyId("camera");
-						setSidebarTab("motion");
 					}}
 					onRailMove={(index, startFrame) => editRailSchedule(index, (base, duration) => moveRailRange(base, startFrame - base.startFrame, duration))}
 					onRailRangeChange={(index, edge, frame) => editRailSchedule(index, (base, duration) => resizeRailRange(base, edge, frame, duration))}
@@ -7584,8 +7575,8 @@ function fmtMeters(value) {
 
 /** Unity Inspector-style foldout: a titled section the user can collapse.
  * Cards default to open; the fold state is per-title session state. */
-function Foldout({ title, hidden, children }) {
-	const [open, setOpen] = useState(true);
+function Foldout({ title, hidden, defaultOpen = true, children }) {
+	const [open, setOpen] = useState(defaultOpen);
 	return (
 		<section className={"card foldout" + (open ? " open" : "")} hidden={hidden}>
 			<h3>
