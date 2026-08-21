@@ -94,7 +94,7 @@ await call("add_character", { subject: "a courier holding a package", x: 1.6, z:
 await call("add_character", { subject: "a street vendor", x: -2.2, z: 1.1, facing: 70 });
 
 const cast = await call("describe_scene");
-check("cast holds three characters", cast.includes("CAST (3)"), cast);
+check("cast holds three characters", cast.includes("CAST (total: 3, returned: 3, truncated: false"), cast);
 check("third character is labelled C", /^\s+C /m.test(cast), cast);
 
 const focused = await call("focus_character", { character: "B" });
@@ -110,7 +110,7 @@ check("unknown character is reported", (await call("place_character", { characte
 
 const removed = await call("remove_character", { character: "C" });
 check("character removal works", removed.startsWith("Removed C"), removed.split("\n")[0]);
-check("cast shrinks after removal", removed.includes("CAST (2)"), removed);
+check("cast shrinks after removal", removed.includes("CAST (total: 2, returned: 2, truncated: false"), removed);
 
 // Down to one character, the scene must refuse to empty its cast.
 await call("remove_character", { character: "B" });
@@ -177,8 +177,8 @@ const parentXBefore = Number(parentLineBefore.match(/x (-?[\d.]+)/)?.[1] ?? NaN)
 const indent = (line) => line.match(/^(\s*)/)?.[1].length ?? 0;
 check(
 	"describe_scene associates child with parent",
-	childLineBefore.includes(`under ${parentId}`) || indent(childLineBefore) > indent(parentLineBefore),
-	childLineBefore,
+	childLineBefore.includes(`under ${parentId}`) || beforeMove.includes(`parent: ${parentId}`) || indent(childLineBefore) > indent(parentLineBefore),
+	`${childLineBefore}\n${beforeMove}`,
 );
 
 const shift = 3.0;

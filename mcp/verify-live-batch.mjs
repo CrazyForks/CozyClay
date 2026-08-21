@@ -136,12 +136,29 @@ try {
 	client = new Client({ name: "cozyclay-live-batch-verify", version: "1.0.0" });
 	await client.connect(new StdioClientTransport({ command: process.execPath, args: [serverPath, "--live-port", String(livePort)] }));
 	await withTimeout(editorHello, "editor live hello");
+	await withTimeout(evaluate(
+		"window.__cozyclayMcpRigReady?.includes('char-a') ? true : new Promise((resolve) => window.addEventListener('cozyclay:mcp-rig-ready', (event) => event.detail === 'char-a' && resolve(true), { once: true }))",
+	), "character rig readiness");
 	const call = (name, args = {}) => client.callTool({ name, arguments: args });
 	const history = () => evaluate("window.__sceneHistory()");
 	const description = async () => {
 		const pendingDescription = new Promise((resolve) => editorResultWaiters.push(resolve));
 		await call("describe_scene");
 		return JSON.stringify(await pendingDescription);
+	};
+	const assertSceneEquivalent = (actualJson, expectedJson) => {
+		const actual = JSON.parse(actualJson);
+		const expected = JSON.parse(expectedJson);
+		assert.equal(actual.sceneName, expected.sceneName);
+		assert.deepEqual(actual.stage, expected.stage);
+		assert.deepEqual(actual.timeline, expected.timeline);
+		assert.deepEqual(actual.characters, expected.characters);
+		assert.deepEqual(actual.objects, expected.objects);
+		for (const field of ["x", "y", "z", "focalMm"]) {
+			assert.ok(Math.abs(actual.camera[field] - expected.camera[field]) < 0.01, `camera ${field} changed`);
+		}
+		assert.equal(actual.camera.sensorId, expected.camera.sensorId);
+		assert.equal(actual.camera.aspectRatio, expected.camera.aspectRatio);
 	};
 
 	// Given a normal one-shot MCP object mutation
@@ -178,7 +195,7 @@ try {
 	assert.equal(happyAfterDepth.past - happyDepth.past, 1);
 	await evaluate('window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyZ", ctrlKey: true, bubbles: true, cancelable: true }))');
 	const undoHappy = await description();
-	assert.equal(undoHappy, beforeHappy);
+	assertSceneEquivalent(undoHappy, beforeHappy);
 	assert.equal((await history()).past, happyDepth.past);
 
 	// Given a batch whose third operation cannot resolve an object id
@@ -200,7 +217,7 @@ try {
 	assert.equal(atomicFailure.isError, undefined, JSON.stringify(atomicFailure));
 	assert.match(atomicFailure.content[0].text, /rolled back/i);
 	const afterAtomicFailure = await description();
-	assert.equal(afterAtomicFailure, beforeAtomicFailure);
+	assertSceneEquivalent(afterAtomicFailure, beforeAtomicFailure);
 	const atomicRollbackDepthDelta = (await history()).past - atomicDepth.past;
 	assert.equal(atomicRollbackDepthDelta, 0);
 

@@ -371,7 +371,7 @@ function sceneReport({ characterCursor = 0, objectCursor = 0, limit = 50 } = {})
 			lines.push(
 				`  ${object.id}  ${object.name}  at x ${round(object.x)}, y ${round(object.y)}, z ${round(object.z)}` +
 					`  yaw ${round(object.rot, 1)}deg  size ${round(size.width)}x${round(size.height)}x${round(size.depth)}m`,
-				`    rotX: ${round(object.rotX ?? 0, 1)}  rotZ: ${round(object.rotZ ?? 0, 1)}  color: ${object.color ?? null}`,
+				`    rotX: ${round(object.rotX ?? 0, 1)}  rotZ: ${round(object.rotZ ?? 0, 1)}  color: ${object.color ?? null}  parent: ${object.parent ?? null}`,
 			);
 		}
 	}
