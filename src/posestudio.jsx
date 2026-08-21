@@ -1186,6 +1186,14 @@ export function PoseStudioPanel({ subject, model, poses, selectedId, onSelect, o
 					))}
 				</div>
 			)}
+			{poses.length === 0 && (
+				<p className="studio-hint" data-pose-empty role="status">
+					{ko(
+						"Your pose library is empty. Read a pose out of a photograph, or pose the character and save it — both stay here for every project.",
+						"포즈 라이브러리가 비어 있어요. 사진에서 자세를 읽어오거나 캐릭터 자세를 잡아 저장하면, 모든 프로젝트에서 계속 쓸 수 있어요.",
+					)}
+				</p>
+			)}
 			<div className="pose-grid">
 				{visiblePoses.map((pose, index) => (
 					<button

@@ -131,7 +131,7 @@ import ResultModal from "./result-modal.jsx";
 import LocaleToggle from "./locale-toggle.jsx";
 import { ko, isKo } from "./locale.js";
 import {
-	BUILT_IN_POSES,
+	DEFAULT_POSE,
 	POSE_BONES,
 	applyPose,
 	primeBindPose,
@@ -433,7 +433,7 @@ const CLAY_X = "#faf8f2";
 // Model/role default for a cast member; a user-picked entry.tint always wins
 // over this at render time.
 const defaultCharacterTint = (entry, index) => (entry.model === "x-bot-tpose" ? CLAY_X : index === 0 ? CLAY : CLAY_B);
-const DEFAULT_POSE = BUILT_IN_POSES.find((p) => p.id === "relaxed") ?? BUILT_IN_POSES[0];
+
 const DEFAULT_SUBJECT = DEFAULT_SUBJECT_ONE;
 const DEFAULT_SUBJECT2 = DEFAULT_SUBJECT_TWO;
 const DEFAULT_ENVIRONMENT = "a sunlit modern living room";
@@ -3750,7 +3750,15 @@ globalThis.playMode = centerTab === "play";
 		setShots((current) => reorderShot(current, fromIndex, targetFrame, tlFrameCount));
 	}
 
-	const allPoses = useMemo(() => [...BUILT_IN_POSES, ...customPoses], [customPoses]);
+	// The library is the user's own material: poses read from photographs and
+	// poses saved off the rig, accumulating across sessions and projects. No
+	// presets ship in it — DEFAULT_POSE is the character's spawn state, not a
+	// library entry.
+	const allPoses = customPoses;
+	// The dropdowns must be able to show and re-select the pose a character is
+	// actually in, and a fresh character is in the default — which is not a
+	// library entry. An empty library would otherwise render a blank select.
+	const selectablePoses = useMemo(() => [DEFAULT_POSE, ...customPoses], [customPoses]);
 	// The pose studio follows the character it was opened for: `posing` is a
 	// charId, so every cast member gets the same studio, not just the first two.
 	const posingIndex = characters.findIndex((entry) => entry.id === posing);
@@ -6435,8 +6443,8 @@ function resizePromptClip(id, edge, rawFrame) {
 							<Dropdown
 							ariaLabel={ko("Subject 1 pose", "인물 1 포즈")}
 								value={poseA?.id}
-							options={allPoses.map((p) => ({ value: p.id, label: poseLabelKo(p) }))}
-								onChange={(id) => setPoseA(allPoses.find((p) => p.id === id))}
+							options={selectablePoses.map((p) => ({ value: p.id, label: poseLabelKo(p) }))}
+								onChange={(id) => setPoseA(selectablePoses.find((p) => p.id === id))}
 							/>
 						</Field>
 						{showB && (
@@ -6444,8 +6452,8 @@ function resizePromptClip(id, edge, rawFrame) {
 								<Dropdown
 								ariaLabel={ko("Subject 2 pose", "인물 2 포즈")}
 									value={poseB?.id}
-								options={allPoses.map((p) => ({ value: p.id, label: poseLabelKo(p) }))}
-									onChange={(id) => setPoseB(allPoses.find((p) => p.id === id))}
+								options={selectablePoses.map((p) => ({ value: p.id, label: poseLabelKo(p) }))}
+									onChange={(id) => setPoseB(selectablePoses.find((p) => p.id === id))}
 								/>
 							</Field>
 						)}
@@ -7284,7 +7292,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							motionActive={Boolean(motion)}
 							onSelect={setStudioPick}
 							onApply={(selectedPoseId) => {
-								const pose = allPoses.find((p) => p.id === selectedPoseId);
+								const pose = selectablePoses.find((p) => p.id === selectedPoseId);
 								if (pose) {
 									const hadMotion = Boolean(motion);
 									if (hadMotion) clearMotion();
