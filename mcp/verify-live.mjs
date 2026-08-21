@@ -85,7 +85,11 @@ function handle(name, args) {
 			editor.sceneName = scene.name;
 			editor.characters = scene.stage.characters.map(({ id, model, subject, x, z, rot, hidden }) => ({ id, model, subject, x, z, rot, hidden }));
 			editor.objects = clone(scene.objects);
-			return { sceneName: editor.sceneName };
+			return {
+				sceneName: editor.sceneName,
+				activeSceneId: args.document.activeSceneId,
+				scenes: args.document.scenes.map((entry) => ({ id: entry.id, name: entry.name })),
+			};
 		}
 		default: throw new Error(`Unknown command ${name}`);
 	}

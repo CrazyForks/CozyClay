@@ -53,7 +53,7 @@ scene document already uses.
 | `group_objects` | `{ parent, children }` | `{ parent, children }` | attach every child under parent |
 | `ungroup_objects` | `{ children }` | `{ children }` | detach every child |
 | `apply_batch` | `{ ops, atomic?: false, stopOnError?: true, label?: "MCP batch" }` | `{ label, applied: number[], failed: [{ index, error }], rolledBack }` | executes at most 100 object mutations as one undo entry. `atomic` and `stopOnError` are independent; atomic failure restores the pre-batch objects and creates no undo entry. Nested batches are rejected. v1 rejects character mutations because cast history is a separate store. |
-| `load_scenes` | `{ document }` | `{ sceneName }` | replace the whole scene document (same shape `serializeSceneDocument` emits); the big hammer that guarantees parity |
+| `load_scenes` | `{ document }` | `{ sceneName, activeSceneId, scenes: [{ id, name }] }` | replace the whole scene document (same shape `serializeSceneDocument` emits); the response attests the full scene list and active scene for `add_scene` and `switch_scene` parity |
 
 ## Hard rules for the editor side
 
@@ -83,6 +83,13 @@ there is no last-active, heartbeat, focus, or recency fallback.
 - When an editor is connected, live-capable tools forward to the workspace
   selected by the rules above and answer from that workspace's `describe`; when
   none is connected they fall back to the in-memory scene exactly as today.
+- `add_scene` and `switch_scene` forward the complete scene document through
+  `load_scenes` and verify it through `describe` before reporting success. They
+  never succeed while the MCP server and selected editor have different scene
+  lists. Without an editor they retain the in-memory fallback.
 - A live mutation may only target the explicitly selected workspace, except for
   the exactly-one-editor auto-selection case. Ambiguity is an error, never a
   guess.
+- Any bounded MCP read reports `total`, `returned`, `truncated`, and a
+  `revision`. Omitted entries must be reachable by an explicit selector or
+  cursor; `describe_scene` uses `character_cursor` and `object_cursor`.

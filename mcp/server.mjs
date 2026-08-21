@@ -30,7 +30,7 @@ import { resolve } from "node:path";
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -94,7 +94,7 @@ const liveWorkspace = new AsyncLocalStorage();
 const liveMutationTools = new Set([
 	"set_camera", "frame_shot", "add_character", "place_character", "remove_character",
 	"place_object", "group_objects", "set_prompt_blocks", "generate_motion", "update_object",
-	"remove_object", "apply_batch", "open_project",
+	"remove_object", "apply_batch", "add_scene", "switch_scene", "open_project",
 ]);
 
 const scene = () => activeScene(state.doc.scenes, state.doc.activeSceneId);
@@ -179,6 +179,20 @@ const appliedLiveMutation = async (name, args) => {
 		throw new LiveMutationUncertainError(`Live editor accepted ${name}, but its state could not be verified: ${error.message} The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.`);
 	}
 	return value;
+};
+
+const requireLiveSceneParity = (name, document, result) => {
+	const expected = document.scenes.map(({ id, name: sceneName }) => ({ id, name: sceneName }));
+	const received = Array.isArray(result?.scenes) ? result.scenes : [];
+	const sameScenes = received.length === expected.length && received.every((scene, index) =>
+		scene?.id === expected[index].id && scene?.name === expected[index].name,
+	);
+	if (sameScenes && result?.activeSceneId === document.activeSceneId) return;
+	throw new LiveMutationUncertainError(
+		`Live editor accepted ${name}, but did not confirm the complete scene list and active scene ` +
+		`(expected ${JSON.stringify(expected)} active ${document.activeSceneId}; received ${JSON.stringify(received)} active ${result?.activeSceneId ?? "none"}). ` +
+		"The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.",
+	);
 };
 
 const modelById = (id) =>
@@ -266,10 +280,16 @@ const metres = (n) => `${round(n)}m`;
 const text = (body) => ({ content: [{ type: "text", text: body }] });
 
 /** A scene rendered the way a crew would read it, not as JSON. */
-function sceneReport() {
+function sceneReport({ characterCursor = 0, objectCursor = 0, limit = 50 } = {}) {
 	const sc = scene();
 	const st = sc.stage;
 	const shot = currentShot();
+	const revision = createHash("sha256")
+		.update(JSON.stringify({ document: state.doc, camera: state.camera, timeline: state.timeline }))
+		.digest("hex")
+		.slice(0, 12);
+	const characterPage = st.characters.slice(characterCursor, characterCursor + limit);
+	const objectPage = sc.objects.slice(objectCursor, objectCursor + limit);
 	const lines = [
 		`Project: ${state.name}`,
 		`Scene: ${sc.name}  (${state.doc.scenes.length} scene${state.doc.scenes.length === 1 ? "" : "s"} in project)`,
@@ -281,11 +301,11 @@ function sceneReport() {
 		`  framing    ${slateLine(shot)}`,
 		`  distance   ${metres(shot.distance)} to the subject's centre of mass`,
 		"",
-		`CAST (${st.characters.length})`,
+		`CAST (total: ${st.characters.length}, returned: ${characterPage.length}, truncated: ${characterCursor + characterPage.length < st.characters.length}, revision: ${revision})`,
 	];
 	const framed = findCharacter(state.focus) ?? st.characters[0];
-	for (const [index, c] of st.characters.entries()) {
-		const letter = String.fromCharCode(65 + index);
+	for (const [offset, c] of characterPage.entries()) {
+		const letter = String.fromCharCode(65 + characterCursor + offset);
 		lines.push(
 			`  ${letter} ${c.id}  "${c.subject}"  at x ${round(c.x)}, z ${round(c.z)}, ` +
 				`facing ${round(c.rot, 1)}deg  [${c.model}]` +
@@ -297,30 +317,18 @@ function sceneReport() {
 		);
 	}
 
-	lines.push("", `SET (${sc.objects.length} object${sc.objects.length === 1 ? "" : "s"})`);
+	lines.push("", `SET (total: ${sc.objects.length}, returned: ${objectPage.length}, truncated: ${objectCursor + objectPage.length < sc.objects.length}, revision: ${revision})`);
 	if (sc.objects.length === 0) {
 		lines.push("  empty — add with place_object");
 	} else {
-		// The set reads back as the tree it is: a child is indented under the
-		// object that carries it — the same structure the studio's Hierarchy
-		// shows and the one group_objects (or place_object's parent arg) built.
-		// The seen-set keeps this total even if stored data were hand-edited
-		// into a loop, matching descendantsOf's own discipline.
-		const ids = new Set(sc.objects.map((o) => o.id));
-		const seen = new Set();
-		const describeLine = (o, depth) => {
-			if (seen.has(o.id)) return;
-			seen.add(o.id);
-			const size = objectSize(o);
+		for (const object of objectPage) {
+			const size = objectSize(object);
 			lines.push(
-				`${"  ".repeat(depth + 1)}${o.id}  ${o.name}  at x ${round(o.x)}, y ${round(o.y)}, z ${round(o.z)}` +
-					`  yaw ${round(o.rot, 1)}deg  size ${round(size.width)}x${round(size.height)}x${round(size.depth)}m`,
-				`${"  ".repeat(depth + 2)}rotX: ${round(o.rotX ?? 0, 1)}  rotZ: ${round(o.rotZ ?? 0, 1)}  color: ${o.color ?? null}`,
+				`  ${object.id}  ${object.name}  at x ${round(object.x)}, y ${round(object.y)}, z ${round(object.z)}` +
+					`  yaw ${round(object.rot, 1)}deg  size ${round(size.width)}x${round(size.height)}x${round(size.depth)}m`,
+				`    rotX: ${round(object.rotX ?? 0, 1)}  rotZ: ${round(object.rotZ ?? 0, 1)}  color: ${object.color ?? null}`,
 			);
-			for (const child of sc.objects.filter((c) => c.parent === o.id)) describeLine(child, depth + 1);
-		};
-		for (const o of sc.objects.filter((o) => (o.parent ?? null) === null || !ids.has(o.parent))) describeLine(o, 0);
-		for (const o of sc.objects) describeLine(o, 0);
+		}
 	}
 	lines.push(
 		"",
@@ -398,14 +406,19 @@ registerTool(
 	{
 		title: "Describe the scene",
 		description:
-			"Read the whole authoring state: camera, lens, current framing, cast positions and every " +
-			"object in the set. Call this before changing anything, and after, to confirm the result.",
-		inputSchema: {},
+			"Read the authoring state: camera, lens, current framing, cast positions and set objects. " +
+			"Cast and set reads return at most 50 entries by default (100 maximum); each section reports " +
+			"total, returned, truncated and revision. Use character_cursor or object_cursor to read omitted entries.",
+		inputSchema: {
+			character_cursor: z.number().int().min(0).default(0).describe("zero-based cast entry offset"),
+			object_cursor: z.number().int().min(0).default(0).describe("zero-based set object offset"),
+			limit: z.number().int().min(1).max(100).default(50).describe("entries returned per cast and set section"),
+		},
 	},
-	async () => {
+	async ({ character_cursor, object_cursor, limit }) => {
 		try {
 			await refreshLiveDescription();
-			return text(sceneReport());
+			return text(sceneReport({ characterCursor: character_cursor, objectCursor: object_cursor, limit }));
 		} catch (error) {
 			return liveError(error);
 		}
@@ -1365,15 +1378,25 @@ registerTool(
 	{
 		title: "Add a scene",
 		description:
-			"Add another scene to the project and make it active. This remains MCP memory-only while " +
-			"an editor is connected; use load_scenes via open_project to replace the live document.",
+			"Add another scene to the project and make it active. With a connected editor, the complete " +
+			"scene document is forwarded through that workspace's load_scenes command before success is reported; " +
+			"without one, this changes MCP memory only.",
 		inputSchema: { name: z.string().default("SCENE 02").describe("scene name") },
 	},
 	async ({ name }) => {
-		state.doc.scenes = addScene(state.doc.scenes, name);
-		state.doc.activeSceneId = state.doc.scenes[state.doc.scenes.length - 1].id;
-		const note = liveHub?.connected ? " (memory-only; the connected editor was not changed)" : "";
-		return text(`Added "${name}"${note}.\n\n${sceneReport()}`);
+		const document = JSON.parse(JSON.stringify(state.doc));
+		document.scenes = addScene(document.scenes, name);
+		document.activeSceneId = document.scenes[document.scenes.length - 1].id;
+		if (liveHub?.connected) {
+			try {
+				const live = await appliedLiveMutation("load_scenes", { document });
+				requireLiveSceneParity("add_scene", document, live);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
+		state.doc = document;
+		return text(`Added "${scene().name}".\n\n${sceneReport()}`);
 	},
 );
 
@@ -1382,8 +1405,8 @@ registerTool(
 	{
 		title: "Switch the active scene",
 		description:
-			"Make a different scene active. This remains MCP memory-only while an editor is connected; " +
-			"everything else operates on the active scene.",
+			"Make a different scene active. With a connected editor, the complete scene document is forwarded " +
+			"through that workspace's load_scenes command before success is reported; without one, this changes MCP memory only.",
 		inputSchema: { name: z.string().describe("scene name to switch to") },
 	},
 	async ({ name }) => {
@@ -1391,9 +1414,18 @@ registerTool(
 		if (!target) {
 			return text(`No scene "${name}". Have: ${state.doc.scenes.map((s) => s.name).join(", ")}`);
 		}
-		state.doc.activeSceneId = target.id;
-		const note = liveHub?.connected ? " (memory-only; the connected editor was not changed)" : "";
-		return text(`Switched to "${target.name}"${note}.\n\n${sceneReport()}`);
+		const document = JSON.parse(JSON.stringify(state.doc));
+		document.activeSceneId = target.id;
+		if (liveHub?.connected) {
+			try {
+				const live = await appliedLiveMutation("load_scenes", { document });
+				requireLiveSceneParity("switch_scene", document, live);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
+		state.doc = document;
+		return text(`Switched to "${scene().name}".\n\n${sceneReport()}`);
 	},
 );
 

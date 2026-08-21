@@ -3345,7 +3345,11 @@ globalThis.playMode = centerTab === "play";
 				live.objects = storeRef.current.objects;
 				live.characters = createSceneStage(target.stage).characters;
 				charactersRef.current = live.characters;
-				return { sceneName: target.name };
+				return {
+					sceneName: target.name,
+					activeSceneId: document.activeSceneId,
+					scenes: document.scenes.map((scene) => ({ id: scene.id, name: scene.name })),
+				};
 			},
 			// Loads a bridge-generated take onto the active character — the same
 			// path the demo seed and the Motion panel use. Replacing a take is not
