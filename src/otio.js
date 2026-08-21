@@ -88,8 +88,8 @@ function checkedShot(shot, index) {
 /**
  * One shared, machine-readable shot record for editorial/package exporters.
  * Camera is sampled at the inclusive start frame and retains sampleAt's exact
- * { pos, yaw, pitch, fovDeg, focalMm, sensorId } contract. apertureMm is the
- * vertical gate actually used after the output-aspect crop.
+ * { pos, yaw, pitch, fovDeg, focalMm, sensorId } contract. The camera field
+ * is that single start-frame sample, not a camera animation.
  */
 export function shotMetadata(scene, shot) {
 	const source = scene && typeof scene === "object" ? scene : {};
@@ -101,7 +101,7 @@ export function shotMetadata(scene, shot) {
 		lens: {
 			focalMm: camera.focalMm,
 			sensorId: camera.sensorId,
-			apertureMm: usedSensorHeightMm(camera.sensorId, source.filmback?.aspectRatio),
+			verticalApertureMm: usedSensorHeightMm(camera.sensorId, source.filmback?.aspectRatio),
 		},
 		range: {
 			startFrame: checked.startFrame,

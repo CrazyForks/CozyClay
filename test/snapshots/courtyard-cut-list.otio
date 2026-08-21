@@ -69,7 +69,7 @@
                 "lens": {
                   "focalMm": 50,
                   "sensorId": "fullFrame",
-                  "apertureMm": 20.25
+                  "verticalApertureMm": 20.25
                 },
                 "range": {
                   "startFrame": 12,
@@ -155,7 +155,7 @@
                 "lens": {
                   "focalMm": 85,
                   "sensorId": "fullFrame",
-                  "apertureMm": 20.25
+                  "verticalApertureMm": 20.25
                 },
                 "range": {
                   "startFrame": 48,

@@ -75,7 +75,7 @@ const shots = [{
 	const metadata = shotMetadata(scene, shots[0]);
 	assert.deepEqual(Object.keys(metadata.camera), ["pos", "yaw", "pitch", "fovDeg", "focalMm", "sensorId"]);
 	assert.deepEqual(metadata.range, { startFrame: 12, endFrame: 35, fps: 24 });
-	assert.deepEqual(metadata.lens, { focalMm: 50, sensorId: "fullFrame", apertureMm: 20.25 });
+	assert.deepEqual(metadata.lens, { focalMm: 50, sensorId: "fullFrame", verticalApertureMm: 20.25 });
 	assert.equal(metadata.blocking.length, 2, "hidden cast is omitted; visible cast and props remain");
 	assert.deepEqual(metadata.blocking[0].pos, { x: 1.2, y: 0.1, z: -0.6 }, "blocking samples the shot's first inclusive frame");
 	assert.deepEqual(metadata.blocking[1].rotationDeg, { x: 5, y: 30, z: -2 });
