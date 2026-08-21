@@ -146,17 +146,17 @@ try {
 	});
 	await withTimeout(xBotRequest, "x-bot mesh request", 5_000);
 	const described = await client.callTool({ name: "describe_scene", arguments: {} });
-	// Then the real editor loads X Bot; its describe frame may omit model, but MCP preserves it.
+	// Then the real editor loads and reports X Bot through the live describe frame.
 	assert.equal(added.isError, undefined, JSON.stringify(added));
 	const describedFrames = editorFrames.filter((frame) => frame.type === "result" && frame.value?.characters);
-	assert.ok(describedFrames.some((frame) => frame.value.characters.every((character) => character.model === undefined)), JSON.stringify(describedFrames));
+	assert.ok(describedFrames.some((frame) => frame.value.characters.some((character) => character.model === "x-bot-tpose")), JSON.stringify(describedFrames));
 	assert.match(described.content[0].text, /\[x-bot-tpose\]/, described.content[0].text);
 	console.log(JSON.stringify({
 		vitePort,
 		livePort,
 		model: "x-bot-tpose",
-		editorDescribeOmittedModel: true,
-		mcpDescribePreservedModel: /\[x-bot-tpose\]/.test(described.content[0].text),
+		editorDescribeReportedModel: true,
+		mcpDescribeReportedModel: /\[x-bot-tpose\]/.test(described.content[0].text),
 	}));
 } finally {
 	socket?.close();

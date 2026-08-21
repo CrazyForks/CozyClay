@@ -3102,6 +3102,10 @@ globalThis.playMode = centerTab === "play";
 		camera: cameraPos,
 		fovDeg,
 		filmback,
+		stage: { shotAspect: shotAspectKey, sensorId, hasCharSheet },
+		timeline: { currentFrame: tlFrame, frameCount: tlFrameCount, fps: tlFps },
+		activeCharacterId,
+		waypoints,
 		characters,
 		objects: sceneObjects,
 		commitManualCameraFraming,
@@ -3143,9 +3147,21 @@ globalThis.playMode = centerTab === "play";
 					sensorId: live.filmback.sensorId,
 					aspectRatio: live.filmback.aspectRatio,
 				},
+				stage: live.stage,
+				timeline: live.timeline,
 				// y rides too: a character standing on a roof must survive the
 				// same save/open round trip a renamed object just learned to.
-				characters: live.characters.map((entry) => ({ id: entry.id, subject: entry.subject, x: entry.x, y: entry.y ?? 0, z: entry.z, rot: entry.rot, hidden: entry.hidden })),
+				characters: live.characters.map((entry) => {
+					const layer = entry.id === live.activeCharacterId
+						? { waypoints: live.waypoints ?? [], promptClips: live.promptClips ?? [] }
+						: entry.layer ?? { waypoints: [], promptClips: [] };
+					return {
+						id: entry.id, model: entry.model, subject: entry.subject,
+						x: entry.x, y: entry.y ?? 0, z: entry.z, rot: entry.rot, hidden: entry.hidden,
+						pose: entry.pose ?? null, tint: entry.tint ?? null, scale: entry.scale ?? 1,
+						motionRef: entry.motionRef ?? null, layer,
+					};
+				}),
 				// Scale and the library footprint travel with each object: the server
 				// reports real sizes from them, and without them every prop reads as
 				// 1x1x1 no matter how it was actually built.
@@ -3156,6 +3172,7 @@ globalThis.playMode = centerTab === "play";
 					// its renderer round-trips into something the set cannot draw.
 					renderer: object.renderer,
 					x: object.x, y: object.y, z: object.z, rot: object.rot,
+					rotX: object.rotX ?? 0, rotZ: object.rotZ ?? 0, color: object.color ?? null,
 					scaleX: object.scaleX, scaleY: object.scaleY, scaleZ: object.scaleZ,
 					parent: object.parent ?? null,
 					footprint: object.footprint, height: object.height,
@@ -3443,7 +3460,7 @@ globalThis.playMode = centerTab === "play";
 	const [promptClips, setPromptClips] = useState(() => (startupStage.characters?.[0]?.layer?.promptClips ?? DEFAULT_PROMPT_CLIPS).map((clip) => ({ ...clip })));
 	// These hooks are declared after the liveStateRef assignment above runs, so
 	// they join the live read model here — same render, no TDZ.
-	Object.assign(liveStateRef.current, { setPromptClips, setTlFrameCount });
+	Object.assign(liveStateRef.current, { promptClips, setPromptClips, setTlFrameCount });
 
 	// Dirty tracking: any divergence from the last saved file lights the dot.
 	useEffect(() => {

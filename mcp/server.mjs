@@ -81,6 +81,7 @@ const state = {
 	doc: createSceneDocument(),
 	name: "Untitled",
 	camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35 },
+	timeline: { currentFrame: 0, frameCount: 360, fps: 24 },
 	/** which character the camera frames against; null means the first of the cast */
 	focus: null,
 	/** framing snapshot taken by `mark_camera_move`, consumed by `describe_camera_move` */
@@ -134,7 +135,7 @@ const fov = () => {
  * first of the cast unless `focus_character` moved it. */
 const subject = () => {
 	const a = findCharacter(state.focus) ?? cast()[0];
-	return { x: a.x, z: a.z, rot: a.rot };
+	return a ? { x: a.x, z: a.z, rot: a.rot } : { x: 0, z: 0, rot: 0 };
 };
 
 /** Yaw/pitch that aim the camera at the framing pivot — what captureFraming wants. */
@@ -189,7 +190,17 @@ const applyLiveDescription = (description) => {
 		if (typeof description.camera.sensorId === "string") state.camera.sensorId = description.camera.sensorId;
 		if (Number.isFinite(description.camera.aspectRatio)) state.camera.aspectRatio = description.camera.aspectRatio;
 	}
-	if (Array.isArray(description.characters) && description.characters.length) {
+	if (description.stage && typeof description.stage === "object") {
+		if (typeof description.stage.shotAspect === "string") sc.stage.shotAspect = description.stage.shotAspect;
+		if (typeof description.stage.sensorId === "string") sc.stage.sensorId = description.stage.sensorId;
+		if (typeof description.stage.hasCharSheet === "boolean") sc.stage.hasCharSheet = description.stage.hasCharSheet;
+	}
+	if (description.timeline && typeof description.timeline === "object") {
+		for (const key of ["currentFrame", "frameCount", "fps"]) {
+			if (Number.isFinite(description.timeline[key])) state.timeline[key] = description.timeline[key];
+		}
+	}
+	if (Array.isArray(description.characters)) {
 		const prior = new Map(stage().characters.map((character) => [character.id, character]));
 		stage().characters = description.characters.map((character, index) => {
 			const previous = prior.get(character.id);
@@ -272,6 +283,9 @@ function sceneReport() {
 				`facing ${round(c.rot, 1)}deg  [${c.model}]` +
 				`${c.pose ? " posed" : ""}${c.hidden ? " hidden" : ""}` +
 				`${c === framed ? "  <- framed" : ""}`,
+			`    model: ${c.model}  pose: ${JSON.stringify(c.pose ?? null)}  tint: ${c.tint ?? null}  scale: ${c.scale ?? 1}`,
+			`    motionRef: ${JSON.stringify(c.motionRef ?? null)}`,
+			`    layer: ${JSON.stringify({ waypoints: c.layer?.waypoints ?? [], promptClips: c.layer?.promptClips ?? [] })}`,
 		);
 	}
 
@@ -293,12 +307,21 @@ function sceneReport() {
 			lines.push(
 				`${"  ".repeat(depth + 1)}${o.id}  ${o.name}  at x ${round(o.x)}, y ${round(o.y)}, z ${round(o.z)}` +
 					`  yaw ${round(o.rot, 1)}deg  size ${round(size.width)}x${round(size.height)}x${round(size.depth)}m`,
+				`${"  ".repeat(depth + 2)}rotX: ${round(o.rotX ?? 0, 1)}  rotZ: ${round(o.rotZ ?? 0, 1)}  color: ${o.color ?? null}`,
 			);
 			for (const child of sc.objects.filter((c) => c.parent === o.id)) describeLine(child, depth + 1);
 		};
 		for (const o of sc.objects.filter((o) => (o.parent ?? null) === null || !ids.has(o.parent))) describeLine(o, 0);
 		for (const o of sc.objects) describeLine(o, 0);
 	}
+	lines.push(
+		"",
+		"STAGE",
+		`  shotAspect: ${st.shotAspect}  sensorId: ${st.sensorId}  hasCharSheet: ${st.hasCharSheet}`,
+		"",
+		"TIMELINE",
+		`  currentFrame: ${state.timeline.currentFrame}  frameCount: ${state.timeline.frameCount}  fps: ${state.timeline.fps}`,
+	);
 	return lines.join("\n");
 }
 

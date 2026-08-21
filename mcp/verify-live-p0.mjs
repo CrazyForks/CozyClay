@@ -61,6 +61,8 @@ await new Promise((resolve, reject) => {
 const editor = {
 	sceneName: "MCP P0 LIVE",
 	camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35, sensorId: "super35", aspectRatio: 1.78 },
+	stage: { shotAspect: "2.39:1", sensorId: "super35", hasCharSheet: true },
+	timeline: { currentFrame: 17, frameCount: 240, fps: 24 },
 	characters: [{ id: "char-a", model: "y-bot-tpose", subject: "a performer", x: 0, y: 0, z: 0, rot: 0, hidden: false }],
 	objects: [],
 };
@@ -130,25 +132,59 @@ try {
 
 	const call = (name, args = {}) => client.callTool({ name, arguments: args });
 
-	// Given a live character whose retained authoring fields differ from defaults
+	// Given a live character and object whose authored fields differ from defaults
 	omitCharacterFields = false;
 	editor.characters[0] = {
-		id: "char-a",
-		model: "x-bot-tpose",
-		subject: "a prior performer",
-		x: 1,
-		y: 0,
-		z: 2,
-		rot: 30,
-		hidden: false,
-		tint: "#123456",
-		pose: { label: "Walking", bones: { hips: [1, 2, 3] } },
-		scale: 1.4,
+		id: "char-a", model: "x-bot-tpose", subject: "a prior performer", x: 1, y: 0, z: 2, rot: 30, hidden: false,
+		tint: "#123456", pose: { label: "Walking", bones: { hips: [1, 2, 3] } }, scale: 1.4,
 		layer: { waypoints: [{ frame: 12, x: 1, z: 2 }], promptClips: [{ startFrame: 0, endFrame: 24, text: "Walk." }] },
 		motionRef: { url: "/ardy/motions/123456-abcdef", prompt: "Walk.", rotationDeg: 30, anchorX: 1, anchorZ: 2 },
 	};
+	editor.objects = [{
+		id: "cube-1", name: "Cube", renderer: "cube", x: 1, y: 0, z: -2, rot: 15,
+		rotX: 12, rotZ: -8, scaleX: 1, scaleY: 1, scaleZ: 1, color: "#d9b18c",
+		parent: null, footprint: { width: 1, depth: 1 }, height: 1,
+	}];
+	const seededReport = await call("describe_scene");
+	assert.equal(seededReport.isError, undefined, JSON.stringify(seededReport));
+	assert.match(
+		seededReport.content[0].text,
+		/"label":"Walking"[\s\S]*tint: #123456[\s\S]*scale: 1\.4[\s\S]*"url":"\/ardy\/motions\/123456-abcdef"[\s\S]*"waypoints":\[\{"frame":12,"x":1,"z":2}\][\s\S]*"promptClips":\[\{"startFrame":0,"endFrame":24,"text":"Walk\."}\][\s\S]*rotX: 12[\s\S]*rotZ: -8[\s\S]*color: #d9b18c[\s\S]*shotAspect: 2\.39:1[\s\S]*sensorId: super35[\s\S]*hasCharSheet: true[\s\S]*currentFrame: 17[\s\S]*frameCount: 240[\s\S]*fps: 24/,
+		"describe missing fields: pose, tint, scale, motionRef, layer.waypoints, layer.promptClips, object.rotX, object.rotZ, object.color, stage.shotAspect, stage.sensorId, stage.hasCharSheet, timeline.currentFrame, timeline.frameCount, timeline.fps",
+	);
+
+	// Given fields that are honestly absent, describe must keep their explicit null or empty shape.
+	editor.characters[0] = {
+		id: "char-a", model: "y-bot-tpose", subject: "an unposed performer", x: 0, y: 0, z: 0, rot: 0, hidden: false,
+		tint: null, pose: null, scale: 1, layer: { waypoints: [], promptClips: [] }, motionRef: null,
+	};
+	editor.objects = [{
+		id: "cube-1", name: "Cube", renderer: "cube", x: 0, y: 0, z: 0, rot: 0,
+		rotX: 0, rotZ: 0, scaleX: 1, scaleY: 1, scaleZ: 1, color: null,
+		parent: null, footprint: { width: 1, depth: 1 }, height: 1,
+	}];
+	const absentReport = await call("describe_scene");
+	assert.equal(absentReport.isError, undefined, JSON.stringify(absentReport));
+	assert.match(absentReport.content[0].text, /pose: null[\s\S]*tint: null[\s\S]*scale: 1[\s\S]*motionRef: null[\s\S]*"waypoints":\[\][\s\S]*"promptClips":\[\][\s\S]*rotX: 0[\s\S]*rotZ: 0[\s\S]*color: null/);
+
+	// Given an empty scene, camera, stage and timeline sections remain well formed.
+	editor.characters = [];
+	editor.objects = [];
+	const emptyReport = await call("describe_scene");
+	assert.equal(emptyReport.isError, undefined, JSON.stringify(emptyReport));
+	assert.match(emptyReport.content[0].text, /CAMERA[\s\S]*STAGE[\s\S]*TIMELINE/);
+
+	// Restore authored fields, then send a partial report to prove the existing
+	// omitted-field preservation seam still keeps every omitted value.
+	editor.characters = [{
+		id: "char-a", model: "x-bot-tpose", subject: "a prior performer", x: 1, y: 0, z: 2, rot: 30, hidden: false,
+		tint: "#123456", pose: { label: "Walking", bones: { hips: [1, 2, 3] } }, scale: 1.4,
+		layer: { waypoints: [{ frame: 12, x: 1, z: 2 }], promptClips: [{ startFrame: 0, endFrame: 24, text: "Walk." }] },
+		motionRef: { url: "/ardy/motions/123456-abcdef", prompt: "Walk.", rotationDeg: 30, anchorX: 1, anchorZ: 2 },
+	}];
 	await call("describe_scene");
-	editor.characters[0] = { id: "char-a", subject: "the described performer", x: 7 };
+	editor.characters = [{ id: "char-a", subject: "the described performer", x: 7 }];
+	editor.objects = [];
 	omitCharacterFields = false;
 	// When the editor reports only its authoritative subject and x fields
 	const projectPath = join(projectDirectory, "description-merge.cclayproject");
@@ -232,6 +268,8 @@ try {
 		uncertainAfterDisconnect: { isError: disconnected.isError === true, doNotRetry: /do not retry/i.test(disconnected.content[0].text) },
 		loadMotion: { isError: loaded.isError ?? false, timeoutMs: LiveHub.commandTimeoutMs("load_motion") },
 		defaultCommandTimeoutMs: LiveHub.commandTimeoutMs("describe"),
+		seededDescribe: seededReport,
+		emptyDescribe: emptyReport,
 		descriptionMerge: {
 			before: { model: "x-bot-tpose", pose: "Walking", tint: "#123456", scale: 1.4, layer: true, motionRef: "/ardy/motions/123456-abcdef" },
 			describe: { subject: "the described performer", x: 7 },
