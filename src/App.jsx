@@ -568,6 +568,53 @@ const MULTIMODEL_SAMPLE_FPS = TIMELINE_FPS;
 /* ------------------------------------------------------------------ 3D --- */
 
 // Memoized: unchanged cast members skip re-rendering on every playhead tick.
+/**
+ * Give the head a front.
+ *
+ * Both shipped rigs are smooth helmets with no facial geometry and no texture
+ * of any kind — the FBX materials carry a flat colour and nothing else — and
+ * the app then replaces every material with one clay tone. The result reads as
+ * an ovoid with no direction, which matters most in an exported blocking
+ * frame: the prompt claims a three-quarter front view and the picture has to
+ * back it up.
+ *
+ * Two marks, because they fail in different conditions. The visor is a value
+ * cue and disappears in silhouette or backlight; the brow ridge is a shape cue
+ * and survives both. Both hang off the head bone, so posing, playback and
+ * pose extraction are untouched — nothing here is skinned or animated.
+ *
+ * Sizes are in the head bone's own units. The rig is authored in Mixamo
+ * centimetres and the whole clone is scaled by 0.01 afterwards, so a child of
+ * the bone is written in centimetres too: the skull reaches ~6 cm forward of
+ * the bone, which is 6 units here. Deliberately small — the maquette should
+ * keep reading as a mannequin rather than a robot.
+ */
+function addFacingMarks(clone, markTint) {
+	let head = null;
+	clone.traverse((node) => {
+		if (!head && node.isBone && /head$/i.test(node.name)) head = node;
+	});
+	if (!head) return;
+	const material = new THREE.MeshStandardMaterial({ color: markTint, roughness: 0.7, metalness: 0 });
+	const mark = (geometry, position, rotation) => {
+		const mesh = new THREE.Mesh(geometry, material);
+		mesh.position.set(...position);
+		if (rotation) mesh.rotation.set(...rotation);
+		mesh.castShadow = true;
+		mesh.frustumCulled = false;
+		// The head bone's local +Z is the face direction on both rigs.
+		head.add(mesh);
+		return mesh;
+	};
+	// The skull surface sits ~6 units forward of the bone, so both marks are
+	// placed to break that plane rather than rest on it — flush is invisible.
+	// Visor: a wide, shallow band across the eyeline.
+	mark(new THREE.BoxGeometry(8.5, 2.4, 1.8), [0, 5.5, 6.6], [-0.2, 0, 0]);
+	// Brow ridge: a short wedge that breaks the skull's outline from the side,
+	// so facing survives silhouette and backlight where the visor does not.
+	mark(new THREE.ConeGeometry(1.7, 3.6, 4), [0, 2.8, 6.4], [Math.PI / 2, Math.PI / 4, 0]);
+}
+
 const Character = memo(function Character({ url, position, rot, tint, pose, scale = 1, onRig, pickId }) {
 	const fbx = useFBX(url);
 	const model = useMemo(() => {
@@ -598,6 +645,7 @@ const Character = memo(function Character({ url, position, rot, tint, pose, scal
 				child.castShadow = true;
 			}
 		});
+		addFacingMarks(clone, jointTint);
 		// Stamp the bind pose while the rig is still untouched: the pose effect
 		// below runs immediately after and would otherwise be baked into "rest".
 		primeBindPose(clone);
