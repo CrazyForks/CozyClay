@@ -1,5 +1,5 @@
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * Creates a mode-0700 request directory beneath a mode-0700 artifact root.
@@ -20,4 +20,15 @@ export function createPrivateArtifactDir(parentDir, label) {
 /** Removes a failed request's private artifacts without following contents. */
 export function removePrivateArtifactDir(path) {
 	rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+}
+
+/** Drop one allowlist id and remove its request directory only after every
+ * sibling artifact from that same request has also expired. */
+export function evictPrivateArtifact(allowlist, id) {
+	const evictedPath = allowlist.get(id);
+	allowlist.delete(id);
+	if (!evictedPath) return;
+	const artifactDir = dirname(evictedPath);
+	const siblingRemains = [...allowlist.values()].some((path) => dirname(path) === artifactDir);
+	if (!siblingRemains) removePrivateArtifactDir(artifactDir);
 }

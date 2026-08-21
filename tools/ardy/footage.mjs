@@ -298,9 +298,11 @@ export async function handleFootage(req, res, readBody) {
 			/* socket gone */
 		}
 	};
+	let cleanupArtifacts = () => {};
 	const fail = (message) => {
 		send({ event: "error", message });
 		res.end();
+		cleanupArtifacts();
 	};
 
 	const children = new Set();
@@ -309,6 +311,7 @@ export async function handleFootage(req, res, readBody) {
 			console.error(`[bridge] client disconnected mid-footage; killing ${children.size} child group(s)`);
 			for (const child of children) killGroup(child);
 			children.clear();
+			cleanupArtifacts();
 		}
 	});
 
@@ -316,7 +319,7 @@ export async function handleFootage(req, res, readBody) {
 	const artifactDir = createPrivateArtifactDir(FOOTAGE_DIR, "footage");
 	const rawPrefix = "raw";
 	const outPath = join(artifactDir, "normalized.mp4");
-	const cleanupArtifacts = () => removePrivateArtifactDir(artifactDir);
+	cleanupArtifacts = () => removePrivateArtifactDir(artifactDir);
 
 	// 1) probe: refuse lives (no duration) and long videos before any bytes.
 	send({ event: "status", message: "probing" });

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /** Real MCP + browser-editor coverage for G007 capture_frame. */
 import assert from "node:assert/strict";
-import { access, writeFile } from "node:fs/promises";
+import { access, unlink, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
@@ -13,6 +15,8 @@ import { WebSocket } from "ws";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const serverPath = fileURLToPath(new URL("./server.mjs", import.meta.url));
 const chromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const peerArtifactPath = join(tmpdir(), `cozyclay-capture-${randomUUID()}.png`);
+await writeFile(peerArtifactPath, "owned by another live MCP process", { mode: 0o600 });
 
 const reservePort = () => new Promise((resolve, reject) => {
 	const server = createServer();
@@ -49,6 +53,8 @@ const verifyRejectedCapture = async ({ value, error, expected }) => {
 	const port = await reservePort();
 	const stalePath = `/tmp/cozyclay-capture-${randomUUID()}.png`;
 	await writeFile(stalePath, Buffer.from("stale"), { mode: 0o600 });
+	const staleAt = new Date(Date.now() - 2 * 10 * 60_000);
+	await utimes(stalePath, staleAt, staleAt);
 	const edgeClient = new Client({ name: "cozyclay-g007-capture-edge", version: "1.0.0" });
 	const edgeTransport = new StdioClientTransport({ command: process.execPath, args: [serverPath, "--live-port", String(port)] });
 	let socket;
@@ -56,12 +62,18 @@ const verifyRejectedCapture = async ({ value, error, expected }) => {
 		await edgeClient.connect(edgeTransport);
 		await assert.rejects(access(stalePath), "startup sweep must remove a stale capture artifact");
 		socket = new WebSocket(`ws://127.0.0.1:${port}/live`);
+		let workspaceReady;
+		const workspace = new Promise((resolve) => { workspaceReady = resolve; });
 		await withTimeout(new Promise((resolve, reject) => {
 			socket.once("open", resolve);
 			socket.once("error", reject);
 		}), "edge editor connection");
 		socket.on("message", (raw) => {
 			const frame = JSON.parse(raw.toString());
+			if (frame.type === "workspace") {
+				workspaceReady();
+				return;
+			}
 			if (frame.type !== "cmd") return;
 			if (frame.name === "describe") {
 				socket.send(JSON.stringify({
@@ -86,6 +98,7 @@ const verifyRejectedCapture = async ({ value, error, expected }) => {
 			}
 		});
 		socket.send(JSON.stringify({ type: "hello", role: "editor", version: 1, workspaceId: `g007-edge-${port}` }));
+		await withTimeout(workspace, "edge workspace handshake");
 		const result = await edgeClient.callTool({ name: "capture_frame", arguments: {} });
 		assert.equal(result.isError, true, JSON.stringify(result));
 		assert.match(result.content[0].text, expected);
@@ -209,6 +222,7 @@ try {
 	assert.equal(artifact.body.artifact.height, 360);
 	assert.equal(artifact.body.artifact.byteSize, artifact.body.byteSize);
 	await assert.doesNotReject(access(artifactPath), "capture artifact must remain available until the MCP session closes");
+	await assert.doesNotReject(access(peerArtifactPath), "starting another MCP process must not delete a fresh peer artifact");
 
 	console.log(JSON.stringify({
 		vitePort, livePort,
@@ -222,6 +236,8 @@ try {
 	await Promise.all([terminate(browser), terminate(vite)]);
 }
 if (artifactPath) await assert.rejects(access(artifactPath), "stdio process exit must remove capture artifacts");
+await assert.doesNotReject(access(peerArtifactPath), "one MCP process exiting must not delete another process's artifact");
+await unlink(peerArtifactPath);
 
 const blackFrame = await verifyRejectedCapture({
 	value: {

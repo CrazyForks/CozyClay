@@ -26,7 +26,7 @@
  * studio, and anything authored in the studio opens here.
  */
 import { link, open as openFile, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
-import { constants as fsConstants, readdirSync, unlinkSync } from "node:fs";
+import { constants as fsConstants, readdirSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -116,7 +116,10 @@ const cleanupCaptureArtifacts = () => {
 const sweepCaptureArtifacts = () => {
 	for (const name of readdirSync(tmpdir())) {
 		if (!captureArtifactPattern.test(name)) continue;
-		try { unlinkSync(join(tmpdir(), name)); } catch {}
+		try {
+			const path = join(tmpdir(), name);
+			if (Date.now() - statSync(path).mtimeMs >= CAPTURE_ARTIFACT_TTL_MS) unlinkSync(path);
+		} catch {}
 	}
 };
 sweepCaptureArtifacts();

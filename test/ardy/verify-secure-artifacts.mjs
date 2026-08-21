@@ -4,7 +4,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createPrivateArtifactDir, removePrivateArtifactDir } from "../../tools/ardy/artifacts.mjs";
+import { createPrivateArtifactDir, evictPrivateArtifact, removePrivateArtifactDir } from "../../tools/ardy/artifacts.mjs";
 import { handleExtract } from "../../tools/ardy/extract.mjs";
 
 class Response extends EventEmitter {
@@ -71,6 +71,19 @@ try {
 	assert.equal((lstatSync(requestDir).mode & 0o777), 0o700);
 	assert.equal((lstatSync(artifact).mode & 0o777), 0o600);
 	removePrivateArtifactDir(requestDir);
+
+	// Two extracted people share one private request directory. Evicting the
+	// older id must keep that directory while its newer sibling remains live.
+	const sharedDir = createPrivateArtifactDir(secureRoot, "extract");
+	const firstTake = join(sharedDir, "motion-0.npz");
+	const secondTake = join(sharedDir, "motion-1.npz");
+	writeFileSync(firstTake, "first", { flag: "wx", mode: 0o600 });
+	writeFileSync(secondTake, "second", { flag: "wx", mode: 0o600 });
+	const motions = new Map([["first", firstTake], ["second", secondTake]]);
+	evictPrivateArtifact(motions, "first");
+	assert.equal(readFileSync(secondTake, "utf8"), "second");
+	evictPrivateArtifact(motions, "second");
+	assert.throws(() => lstatSync(sharedDir));
 	console.log("secure ARDY artifact creation preserves planted symlink targets and enforces private modes");
 } finally {
 	Date.now = originalNow;

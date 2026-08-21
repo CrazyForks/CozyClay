@@ -45,7 +45,7 @@ import { globalChildren, killGroup, runStreaming, track } from "./runners/proc.m
 import { createRunner } from "./runners/index.mjs";
 import { footagePath, handleFootage, serveFootage } from "./footage.mjs";
 import { handleExtract } from "./extract.mjs";
-import { createPrivateArtifactDir, removePrivateArtifactDir } from "./artifacts.mjs";
+import { createPrivateArtifactDir, evictPrivateArtifact, removePrivateArtifactDir } from "./artifacts.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const OUT_DIR = join(HERE, "out");
@@ -506,8 +506,7 @@ function registerMotion(runId, absPath) {
 	motionAllowlist.set(runId, absPath);
 	if (motionAllowlist.size > MOTION_ALLOWLIST_MAX) {
 		const oldest = motionAllowlist.keys().next().value;
-		removePrivateArtifactDir(dirname(motionAllowlist.get(oldest)));
-		motionAllowlist.delete(oldest);
+		evictPrivateArtifact(motionAllowlist, oldest);
 	}
 }
 
