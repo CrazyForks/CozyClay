@@ -355,7 +355,7 @@ function CameraRailLine({ points, live = false }) {
  * in chronological frame order. Lies flat on the deck like the pucks, so it
  * reads from straight above and never enters shot-camera exports.
  */
-function WaypointPath({ waypoints, start, activeWaypointFrame }) {
+function WaypointPath({ waypoints, start, activeWaypointId }) {
 	const pathPoints = useMemo(() => [{ x: start.x, z: start.z }, ...waypoints], [start.x, start.z, waypoints]);
 
 	return (
@@ -364,9 +364,9 @@ function WaypointPath({ waypoints, start, activeWaypointFrame }) {
 				<Line points={pathPoints.map((point) => [point.x, 0.02, point.z])} color={WAYPOINT_COLOR} lineWidth={2.5} transparent opacity={0.9} depthWrite={false} depthTest={false} renderOrder={9} />
 			)}
 			{waypoints.map((w, i) => {
-				const active = w.frame === activeWaypointFrame;
+				const active = w.id === activeWaypointId;
 				return (
-				<group key={w.frame} position={[w.x, 0, w.z]}>
+				<group key={w.id} position={[w.x, 0, w.z]}>
 					<mesh position={[0, 0.045, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={11}>
 						<circleGeometry args={[active ? 0.2 : 0.15, 20]} />
 						<meshBasicMaterial color={active ? "#ffd76c" : WAYPOINT_COLOR} depthWrite={false} depthTest={false} />
@@ -405,7 +405,7 @@ function WaypointPath({ waypoints, start, activeWaypointFrame }) {
  * reports moves that still hit it, so a fast drag off the edge silently strands
  * the puck.
  */
-export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, characters = [], onMoveCharacter, onCharacterGestureStart, pathStart = null, waypoints, activeWaypointFrame, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null, onCameraChange }) {
+export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, characters = [], onMoveCharacter, onCharacterGestureStart, pathStart = null, waypoints, activeWaypointId, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null, onCameraChange }) {
 	const [drag, setDrag] = useState(null); // { id, mode }
 	// live stroke while the rail is being drawn; world XZ, display only
 	const [railStroke, setRailStroke] = useState(null);
@@ -519,7 +519,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 				}
 			}
 			if (nearestWaypoint && nearestDistance < 0.5 ** 2) {
-				return { id: `waypoint:${nearestWaypoint.frame}`, mode: "waypoint", origin: nearestWaypoint };
+				return { id: `waypoint:${nearestWaypoint.id}`, mode: "waypoint", origin: nearestWaypoint };
 			}
 			// Overlapping pucks (S1 sitting on the camera, like a close-up
 			// setup): the FIRST list entry used to win, so grabbing S1 near the
@@ -561,7 +561,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 			event.stopPropagation();
 			dragRef.current = grip;
 			setDrag({ id: grip.id, mode: grip.mode });
-			if (grip.mode === "waypoint") latest.current.onSelectWaypoint?.(grip.origin.frame);
+			if (grip.mode === "waypoint") latest.current.onSelectWaypoint?.(grip.origin.id);
 			else latest.current.onSelectEntity?.(grip.id);
 			// Scene-object grips only: select FIRST (the call above), then
 			// begin — App's select handler settles any open transaction, so
@@ -614,7 +614,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 			}
 
 			if (grip.mode === "waypoint") {
-				latest.current.onMoveWaypoint?.(grip.origin.frame, snap(p.x, ROOM_LIMIT), snap(p.z, ROOM_LIMIT));
+				latest.current.onMoveWaypoint?.(grip.origin.id, snap(p.x, ROOM_LIMIT), snap(p.z, ROOM_LIMIT));
 				return;
 			}
 
@@ -763,7 +763,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 				/>
 			))}
 
-			{waypoints.length > 0 && <WaypointPath waypoints={waypoints} start={pathStart ?? characters[0] ?? { x: 0, z: 0 }} activeWaypointFrame={activeWaypointFrame} />}
+			{waypoints.length > 0 && <WaypointPath waypoints={waypoints} start={pathStart ?? characters[0] ?? { x: 0, z: 0 }} activeWaypointId={activeWaypointId} />}
 			{(railDraw || cameraRailPoints) && <SubjectMovementGuide track={subjectTrack} />}
 			{cameraRailPoints && cameraRailPoints.length > 1 && <CameraRailLine points={cameraRailPoints} />}
 			{railStroke && railStroke.length > 1 && <CameraRailLine points={railStroke} live />}

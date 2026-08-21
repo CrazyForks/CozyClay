@@ -3,6 +3,7 @@
 // This module stores and copies those envelopes but never opens or validates them.
 
 import { DEFAULT_SENSOR_FORMAT, SENSOR_FORMATS } from "./shot.js";
+import { normalizeStableItems } from "./stable-items.js";
 
 export const SCENES_VERSION = 4;
 export const SCENES_STORAGE_KEY = "cozyclay.scenes.v4";
@@ -143,8 +144,25 @@ function normalizeMotionRef(ref) {
 function normalizeLayer(layer) {
 	const source = plainObject(layer) ? layer : {};
 	return {
-		waypoints: Array.isArray(source.waypoints) ? cloneValue(source.waypoints) : [],
-		promptClips: Array.isArray(source.promptClips) ? cloneValue(source.promptClips) : [],
+		waypoints: normalizeStableItems(cloneValue(source.waypoints), "waypoint"),
+		promptClips: normalizeStableItems(cloneValue(source.promptClips), "prompt-clip"),
+	};
+}
+
+function normalizeStageLayers(stage) {
+	const source = plainObject(stage) ? stage : {};
+	const ids = new Set();
+	return {
+		...source,
+		characters: Array.isArray(source.characters)
+			? source.characters.map((character) => ({
+				...character,
+				layer: {
+					waypoints: normalizeStableItems(cloneValue(character.layer?.waypoints), "waypoint", ids),
+					promptClips: normalizeStableItems(cloneValue(character.layer?.promptClips), "prompt-clip", ids),
+				},
+			}))
+			: source.characters,
 	};
 }
 
@@ -322,7 +340,7 @@ export function createSceneDocument() {
 function repairScene(record, existing, fallbackNumber, fallbackStage, legacyClock = false) {
 	if (!plainObject(record) || typeof record.id !== "string" || !record.id || !Array.isArray(record.objects)) return null;
 	if (existing.some((scene) => scene.id === record.id)) return null;
-	const stage = cloneValue(plainObject(record.stage) ? record.stage : fallbackStage);
+	const stage = normalizeStageLayers(createSceneStage(cloneValue(plainObject(record.stage) ? record.stage : fallbackStage)));
 	return {
 		id: record.id,
 		name: uniqueName(typeof record.name === "string" ? record.name : `SCENE ${String(fallbackNumber).padStart(2, "0")}`, existing),

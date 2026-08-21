@@ -31,7 +31,7 @@ const shots = [
 		name: "Wide",
 		startFrame: 0,
 		endFrame: 99,
-		cameraKeys: [{ frame: 0, framing: framing(40) }],
+		cameraKeys: [{ id: "camera-key-wide", frame: 0, framing: framing(40) }],
 		camera: { mode: "keys", followCam, cameraRail: null, railFollow: null },
 	},
 	{
@@ -39,7 +39,7 @@ const shots = [
 		name: "Close",
 		startFrame: 100,
 		endFrame: 299,
-		cameraKeys: [{ frame: 100, framing: framing(70) }],
+		cameraKeys: [{ id: "camera-key-close", frame: 100, framing: framing(70) }],
 		camera: { mode: "rail", followCam, cameraRail, railFollow: { mode: "range", startFrame: 10, endFrame: 80 } },
 	},
 ];
@@ -47,13 +47,13 @@ const shots = [
 // v4 writes only the canonical body and round-trips per-shot camera blocks.
 const authored = {
 	shots,
-	waypoints: [{ frame: 60, x: 1.5, z: -2, heading: null }],
+	waypoints: [{ id: "waypoint-authored", frame: 60, x: 1.5, z: -2, heading: null }],
 	frameCount: 300,
 	followCam: { enabled: true },
 	cameraRail,
 };
 const document = createShotAuthoringDocument(authored);
-assert.deepEqual(Object.keys(document), ["version", "frameCount", "shots", "waypoints"]);
+assert.deepEqual(Object.keys(document), ["version", "frameCount", "waypoints", "shots"]);
 assert.equal(document.version, 4);
 const objectRestored = readShotAuthoringDocument(document);
 assert.equal(objectRestored.status, "valid");
@@ -185,7 +185,7 @@ assert.equal(new Set(repaired.shots.map((shot) => shot.id)).size, 2);
 assert.equal(repaired.shots[0].name, "A");
 assert.equal(repaired.shots[0].cameraKeys[0].frame, 30);
 assert.equal(repaired.shots[1].cameraKeys[0].frame, 99);
-assert.deepEqual(repaired.waypoints, [{ frame: 4, x: 1, z: 2, heading: null }]);
+assert.deepEqual(repaired.waypoints.map(({ id, ...waypoint }) => waypoint), [{ frame: 4, x: 1, z: 2, heading: null }]);
 assert.deepEqual(repaired.shots[0].camera, {
 	mode: "follow",
 	followCam: {
@@ -236,17 +236,17 @@ const v3 = readShotAuthoring(JSON.stringify({
 	version: 3,
 	frameCount: 300,
 	shots: [
-		{ id: "wide", name: "Wide", startFrame: 0, endFrame: 99, cameraKeys: [{ frame: 0, framing: framing(40) }], camera: { mode: "keys", followCam } },
+		{ id: "wide", name: "Wide", startFrame: 0, endFrame: 99, cameraKeys: [{ id: "camera-key-wide", frame: 0, framing: framing(40) }], camera: { mode: "keys", followCam } },
 		{
 			id: "close",
 			name: "Close",
 			startFrame: 100,
 			endFrame: 299,
-			cameraKeys: [{ frame: 100, framing: framing(70) }],
+			cameraKeys: [{ id: "camera-key-close", frame: 100, framing: framing(70) }],
 			camera: { mode: "rail", followCam, cameraRail, railFollow: { mode: "range", startFrame: 10, endFrame: 80 } },
 		},
 	],
-	waypoints: [{ frame: 60, x: 1.5, z: -2, heading: null }],
+	waypoints: [{ id: "waypoint-authored", frame: 60, x: 1.5, z: -2, heading: null }],
 }));
 assert.equal(v3.status, "migrated", "a v3 body is rewritten onto the production clock");
 assert.equal(v3.state.frameCount, 360, "a 300-frame 15 s roll stays 15 s as 360 frames");

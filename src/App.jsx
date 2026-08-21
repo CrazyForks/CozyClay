@@ -192,9 +192,12 @@ import {
 	renameShot,
 	reorderShot,
 	resizeShot,
+	moveCameraKey,
+	removeCameraKey,
 	shotAtFrame,
 	shotIndexAtFrame,
 } from "./cuts.js";
+import { createStableItemId, removeStableItem, updateStableItem } from "./stable-items.js";
 
 // Stated the way a crew states a setup: how far back, which side, how high the
 // lens rides, and what glass is on it. Order matters — Medium is the setup a
@@ -954,7 +957,7 @@ function CameraRailScenePreview({ points }) {
 	);
 }
 
-function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
+function ShotPathPreview({ waypoints, start, activeWaypointId }) {
 	const rootRef = useRef(null);
 	const line = useMemo(() => {
 		if (!waypoints.length) return null;
@@ -983,10 +986,10 @@ function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
 				</line>
 			)}
 			{waypoints.map((waypoint, i) => {
-				const active = waypoint.frame === activeWaypointFrame;
+				const active = waypoint.id === activeWaypointId;
 				const color = active ? "#ffd76c" : "#4e9fb3";
 				return (
-					<group key={waypoint.frame} position={[waypoint.x, 0.03, waypoint.z]}>
+					<group key={waypoint.id} position={[waypoint.x, 0.03, waypoint.z]}>
 						<mesh rotation={[-Math.PI / 2, 0, 0]}>
 							<ringGeometry args={[0.13, 0.19, 28]} />
 							<meshBasicMaterial color={color} depthWrite={false} />
@@ -2574,10 +2577,8 @@ globalThis.playMode = centerTab === "play";
 	const cameraRail = activeCamera.cameraRail;
 	const activeShotDuration = activeShot ? activeShot.endFrame - activeShot.startFrame + 1 : 0;
 	const hasCameraKeys = shots.some((shot) => shot.cameraKeys.length > 0);
-	function changeActiveCamera(patch, index = activeShotIdx) {
-		setShots((current) => current.map((shot, shotIndex) => shotIndex === index
-			? { ...shot, camera: updateCameraBlock(shot.camera, patch) }
-			: shot));
+	function changeActiveCamera(patch, shotId = activeShot?.id) {
+		setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, patch) }), "shots"));
 	}
 	function syncActiveCameraFraming() {
 		const cam = shotCamRef.current;
@@ -2591,8 +2592,8 @@ globalThis.playMode = centerTab === "play";
 			followCam.aimHeight,
 			{ x: Math.sin(subjectYaw), z: Math.cos(subjectYaw) },
 		);
-		setShots((current) => current.map((shot, shotIndex) => {
-			if (shotIndex !== activeShotIdx) return shot;
+		setShots((current) => current.map((shot) => {
+			if (shot.id !== activeShot?.id) return shot;
 			const camera = createCameraBlock(shot.camera);
 			const previous = camera.followCam;
 			if (
@@ -2641,9 +2642,10 @@ globalThis.playMode = centerTab === "play";
 		changeActiveCamera(removeCameraRail(activeCamera));
 		setToast(ko("Camera rail deleted — Follow keeps the current distance", "카메라 레일 삭제됨 — 팔로우가 현재 거리를 유지합니다"));
 	}
-	function previewCameraShot(index) {
-		const selected = shots[index];
-		if (!selected || waypointMode) return;
+	function previewCameraShot(shotId) {
+		const selected = shots.find((entry) => entry.id === shotId);
+		if (!selected) throw new Error(`Unknown shots ID: ${shotId}`);
+		if (waypointMode) return;
 		if (tlPlaying && cameraPreviewEndRef.current === selected.endFrame) {
 			cameraPreviewEndRef.current = null;
 			setTlPlaying(false);
@@ -2655,9 +2657,8 @@ globalThis.playMode = centerTab === "play";
 		setTlFrame(selected.startFrame);
 		setTlPlaying(true);
 	}
-	function editRailSchedule(index, edit) {
-		setShots((current) => current.map((shot, shotIndex) => {
-			if (shotIndex !== index) return shot;
+	function editRailSchedule(shotId, edit) {
+		setShots((current) => updateStableItem(current, shotId, (shot) => {
 			const camera = createCameraBlock(shot.camera);
 			const duration = shot.endFrame - shot.startFrame + 1;
 			const resolved = resolveRailSchedule({ railFollow: camera.railFollow, cameraRail: camera.cameraRail, frameCount: duration });
@@ -2666,7 +2667,7 @@ globalThis.playMode = centerTab === "play";
 				: defaultRailRange(duration);
 			const railFollow = base ? edit(base, duration) : null;
 			return railFollow ? { ...shot, camera: updateCameraBlock(camera, { railFollow: { mode: "range", ...railFollow } }) } : shot;
-		}));
+		}, "shots"));
 	}
 	const frameCountRef = useRef(DEFAULT_DURATION_S * TIMELINE_FPS);
 	frameCountRef.current = tlFrameCount;
@@ -2674,13 +2675,13 @@ globalThis.playMode = centerTab === "play";
 	// the fixed bridge contract rejects out-of-order or duplicate frames.
 	const [waypointMode, setWaypointMode] = useState(false);
 	const [waypoints, setWaypoints] = useState(startupStage.characters?.[0]?.layer?.waypoints ?? startupShotState?.waypoints ?? []);
-	const [activeWaypointFrame, setActiveWaypointFrame] = useState(null);
+	const [activeWaypointId, setActiveWaypointId] = useState(null);
 	const [pendingWaypointFrame, setPendingWaypointFrame] = useState(null);
 	useEffect(() => {
 		// Subject 1 is the sole frame-zero root start. Drop any legacy seeded
 		// waypoint so Top-View never renders two start markers.
 		setWaypoints((current) => current.filter((waypoint) => waypoint.frame !== 0));
-		setActiveWaypointFrame((current) => (current === 0 ? null : current));
+		setActiveWaypointId(null);
 		setPendingWaypointFrame((current) => (current === 0 ? null : current));
 	}, []);
 
@@ -3032,7 +3033,7 @@ globalThis.playMode = centerTab === "play";
 		setMovePlaying(false);
 		manualCameraOverrideRef.current = false;
 		setRailDraw(false);
-		setActiveWaypointFrame(null);
+		setActiveWaypointId(null);
 		setPendingWaypointFrame(null);
 		setSelectedHierarchyId("shot");
 		scenesRef.current = nextScenes;
@@ -3652,7 +3653,7 @@ globalThis.playMode = centerTab === "play";
 		setMotion(activeChar.sessionMotion ?? null);
 		setSelectedPromptId(null);
 		setWaypointMode(false);
-		setActiveWaypointFrame(null);
+		setActiveWaypointId(null);
 		setPendingWaypointFrame(null);
 		ikStateRef.current = ikStatesRef.current.get(activeChar.id) ?? createIkState();
 		loadedLayerCharRef.current = activeChar.id;
@@ -3852,54 +3853,34 @@ globalThis.playMode = centerTab === "play";
 
 	// Key authoring lives in each unified Shot block's lower key strip: clicking
 	// an empty point stores the CURRENT framing there. Re-keying overwrites it.
-	function addCameraKeyframe(frame, requestedIndex = null) {
+	function addCameraKeyframe(frame, shotId = activeShot?.id) {
 		const framing = captureCurrentFraming();
 		const target = Math.max(0, Math.min(Math.round(frame), tlFrameCount - 1));
-		setShots((current) => {
-			const index = requestedIndex ?? shotIndexAtFrame(current, target);
-			if (index < 0 || target < current[index].startFrame || target > current[index].endFrame) return current;
-			return current.map((shot, shotIndex) => shotIndex === index ? {
-				...shot,
-				cameraKeys: shot.cameraKeys.filter((key) => key.frame !== target)
-					.concat({ frame: target, framing }).sort((a, b) => a.frame - b.frame),
-			} : shot);
-		});
+		setShots((current) => updateStableItem(current, shotId, (shot) => {
+			if (target < shot.startFrame || target > shot.endFrame) return shot;
+			const replaced = shot.cameraKeys.filter((key) => key.frame !== target);
+			return { ...shot, cameraKeys: [...replaced, { id: createStableItemId("camera-key"), frame: target, framing }].sort((a, b) => a.frame - b.frame) };
+		}, "shots"));
 		setSelectedHierarchyId("camera");
 	}
 
 	// Re-time a key by dragging its dot along the lane. Landing on another
 	// key's frame is rejected — keys stay frame-unique.
-	function moveCameraKeyframe(from, to, requestedIndex = null) {
-		const sourceIndex = requestedIndex ?? shotIndexAtFrame(shots, from);
-		const min = shots[sourceIndex]?.startFrame ?? 0;
-		const max = shots[sourceIndex]?.endFrame ?? tlFrameCount - 1;
-		const target = Math.max(min, Math.min(Math.round(to), max));
+	function moveCameraKeyframe(shotId, keyId, from, to) {
+		const shot = shots.find((entry) => entry.id === shotId);
+		if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
+		const target = Math.max(shot.startFrame, Math.min(Math.round(to), shot.endFrame));
 		if (target === from) return;
-		setShots((current) => {
-			const index = requestedIndex ?? shotIndexAtFrame(current, from);
-			if (index < 0) return current;
-			const keys = current[index]?.cameraKeys ?? [];
-			if (keys.some((key) => key.frame === target)) return current;
-			return current.map((shot, shotIndex) => shotIndex === index ? {
-				...shot,
-				cameraKeys: keys.map((key) => key.frame === from ? { ...key, frame: target } : key).sort((a, b) => a.frame - b.frame),
-			} : shot);
-		});
+		setShots((current) => updateStableItem(current, shotId, (entry) => ({ ...entry, cameraKeys: moveCameraKey(entry.cameraKeys, keyId, target) }), "shots"));
 	}
 
-	function removeCameraKeyframe(frame, requestedIndex = null) {
-		setShots((current) => {
-			const index = requestedIndex ?? shotIndexAtFrame(current, frame);
-			if (index < 0) return current;
-			return current.map((shot, shotIndex) => shotIndex === index
-				? { ...shot, cameraKeys: shot.cameraKeys.filter((key) => key.frame !== frame) }
-				: shot);
-		});
+	function removeCameraKeyframe(shotId, keyId) {
+		setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, cameraKeys: removeCameraKey(shot.cameraKeys, keyId) }), "shots"));
 	}
 
 	function clearMove() {
 		setMovePlaying(false);
-		setShots((current) => current.map((shot, index) => index === activeShotIdx ? { ...shot, cameraKeys: [] } : shot));
+		setShots((current) => updateStableItem(current, activeShot?.id, (shot) => ({ ...shot, cameraKeys: [] }), "shots"));
 	}
 
 	function addTimelineShot() {
@@ -3907,35 +3888,35 @@ globalThis.playMode = centerTab === "play";
 		setShots((current) => addShotAtFrame(current, tlFrame, tlFrameCount, captureCurrentFraming()));
 	}
 
-	function splitTimelineShot(index) {
+	function splitTimelineShot(shotId) {
 		setMovePlaying(false);
 		setShots((current) => {
-			const shot = current[index];
-			if (!shot || tlFrame <= shot.startFrame || tlFrame > shot.endFrame) return current;
-			return cutAtFrame(current, tlFrame, captureCurrentFraming());
+			const shot = current.find((entry) => entry.id === shotId);
+			if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
+			if (tlFrame <= shot.startFrame || tlFrame > shot.endFrame) return current;
+			return cutAtFrame(current, shotId, tlFrame, captureCurrentFraming());
 		});
 	}
 
-	function selectTimelineShot(index) {
-		const selected = shots[index];
-		if (!selected) return;
+	function selectTimelineShot(shotId) {
+		const selected = shots.find((entry) => entry.id === shotId);
+		if (!selected) throw new Error(`Unknown shots ID: ${shotId}`);
 		manualCameraOverrideRef.current = false;
 		setTlFrame(selected.startFrame);
 		setSelectedHierarchyId("camera");
 	}
 
-	function duplicateTimelineShot(index) {
-		const next = duplicateShot(shots, index, tlFrameCount);
+	function duplicateTimelineShot(shotId) {
+		const next = duplicateShot(shots, shotId, tlFrameCount);
 		setShots(next);
 		if (next !== shots) {
-			const sourceId = shots[index]?.id;
-			const duplicate = next.find((shot) => shot.id !== sourceId && !shots.some((existing) => existing.id === shot.id));
+			const duplicate = next.find((shot) => shot.id !== shotId && !shots.some((existing) => existing.id === shot.id));
 			if (duplicate) setTlFrame(duplicate.startFrame);
 		}
 	}
 
-	function moveTimelineShot(fromIndex, targetFrame) {
-		setShots((current) => reorderShot(current, fromIndex, targetFrame, tlFrameCount));
+	function moveTimelineShot(shotId, targetFrame) {
+		setShots((current) => reorderShot(current, shotId, targetFrame, tlFrameCount));
 	}
 
 	// The library is the user's own material: poses read from photographs and
@@ -3995,8 +3976,9 @@ globalThis.playMode = centerTab === "play";
 
 	function queueRootWaypointFrame(frame) {
 		const target = Math.max(1, Math.min(Math.round(frame), tlFrameCount - 1));
-		if (waypoints.some((waypoint) => waypoint.frame === target)) {
-			setActiveWaypointFrame(target);
+		const existing = waypoints.find((waypoint) => waypoint.frame === target);
+		if (existing) {
+			setActiveWaypointId(existing.id);
 			setPendingWaypointFrame(null);
 			setTlFrame(target);
 			setWaypointMode(true);
@@ -4005,7 +3987,7 @@ globalThis.playMode = centerTab === "play";
 			return;
 		}
 		setPendingWaypointFrame(target);
-		setActiveWaypointFrame(null);
+		setActiveWaypointId(null);
 		setTlFrame(target);
 		setWaypointMode(true);
 		selectActiveCharacterInHierarchy();
@@ -4044,7 +4026,7 @@ globalThis.playMode = centerTab === "play";
 		// last moment a human can: block out-of-band legs with the fix named.
 		const insertAt = ordered.findIndex((waypoint) => waypoint.frame > frame);
 		const index = insertAt === -1 ? ordered.length : insertAt;
-		const waypoint = { frame, x, z, heading: null };
+		const waypoint = { id: createStableItemId("waypoint"), frame, x, z, heading: null };
 		const nextWaypoints = [...ordered.slice(0, index), waypoint, ...ordered.slice(index)];
 		const verdict = validateWaypointAt(nextWaypoints, index, waypoint);
 		if (!verdict.ok) {
@@ -4053,7 +4035,7 @@ globalThis.playMode = centerTab === "play";
 		}
 		setWaypoints(nextWaypoints);
 		setTlFrame(frame);
-		setActiveWaypointFrame(frame);
+		setActiveWaypointId(waypoint.id);
 		setPendingWaypointFrame(null);
 		const placed = isKo
 			? `루트 웨이포인트 ${index + 1} 추가: 프레임 ${frame}${pendingFrame != null ? " (타임라인 예약 프레임)" : pinned ? " (재생 헤드 위치)" : ` (~${(frame / tlFps).toFixed(1)}초 걷기 기준)`}`
@@ -4061,32 +4043,33 @@ globalThis.playMode = centerTab === "play";
 		setToast(verdict.warnings.length ? `${placed} · ⚠ ${verdict.warnings[0]}` : placed);
 	}
 
-	function moveWaypoint(frame, x, z) {
-		const target = Math.round(frame);
+	function moveWaypoint(id, x, z) {
 		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);
-		const index = ordered.findIndex((waypoint) => waypoint.frame === target);
-		if (index === -1) return;
+		const index = ordered.findIndex((waypoint) => waypoint.id === id);
+		if (index === -1) throw new Error(`Unknown waypoints ID: ${id}`);
 		const nextWaypoint = {
 			...ordered[index],
 			x: clampRootPosition(x),
 			z: clampRootPosition(z),
 		};
-		const nextOrdered = ordered.map((waypoint, i) => (i === index ? nextWaypoint : waypoint));
+		const nextOrdered = ordered.map((waypoint) => waypoint.id === id ? nextWaypoint : waypoint);
 		const verdict = validateWaypointAt(nextOrdered, index, nextWaypoint);
 		if (!verdict.ok) {
 			setToast(isKo ? `이 위치는 루트 경로에 맞지 않아요: ${verdict.error}` : `This position doesn't fit the root path: ${verdict.error}`);
 			return;
 		}
 		setWaypoints(nextOrdered);
-		setActiveWaypointFrame(target);
-		setPendingWaypointFrame((current) => (current === target ? null : current));
+		setActiveWaypointId(id);
+		setPendingWaypointFrame((current) => (current === nextWaypoint.frame ? null : current));
 		if (verdict.warnings.length) setToast(isKo ? `루트 웨이포인트 이동됨: ${verdict.warnings[0]}` : `Root waypoint moved: ${verdict.warnings[0]}`);
 	}
 
-	function removeWaypoint(frame) {
-		setWaypoints((prev) => prev.filter((w) => w.frame !== frame));
-		setActiveWaypointFrame((current) => (current === frame ? null : current));
-		setPendingWaypointFrame((current) => (current === frame ? null : current));
+	function removeWaypoint(id) {
+		const waypoint = waypoints.find((entry) => entry.id === id);
+		if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`);
+		setWaypoints((prev) => removeStableItem(prev, id, "waypoints"));
+		setActiveWaypointId((current) => (current === id ? null : current));
+		setPendingWaypointFrame((current) => (current === waypoint.frame ? null : current));
 	}
 
 	function toggleWaypointMode() {
@@ -5424,7 +5407,7 @@ globalThis.playMode = centerTab === "play";
 	function addPromptClip(frame) {
 		const snapped = Math.max(0, Math.round(frame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
 		const startFrame = Math.max(snapped, promptClips.reduce((max, clip) => Math.max(max, clip.endFrame), 0));
-		const clip = { id: `prompt-${Date.now()}`, startFrame, endFrame: startFrame + ARDY_PROMPT_HORIZON_FRAMES, text: "" };
+		const clip = { id: createStableItemId("prompt-clip"), startFrame, endFrame: startFrame + ARDY_PROMPT_HORIZON_FRAMES, text: "" };
 		setPromptClips((prev) => [...prev, clip]);
 		setSelectedPromptId(clip.id);
 		setTlFrameCount((count) => Math.max(count, clip.endFrame));
@@ -5432,7 +5415,7 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	function changePromptClip(id, text) {
-		setPromptClips((prev) => prev.map((clip) => (clip.id === id ? { ...clip, text } : clip)));
+		setPromptClips((prev) => updateStableItem(prev, id, (clip) => ({ ...clip, text }), "promptClips"));
 		if (id === selectedPromptId) setArdyPrompt(text);
 	}
 
@@ -5443,13 +5426,12 @@ const PROMPT_BLOCK_MAX_FRAMES = 4 * TIMELINE_FPS;
 
 function resizePromptClip(id, edge, rawFrame) {
 		setPromptClips((prev) => {
-			const next = prev.map((clip) => {
-				if (clip.id !== id) return clip;
+			const next = updateStableItem(prev, id, (clip) => {
 				const snapped = Math.max(0, Math.round(rawFrame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
 				return edge === "start"
 					? { ...clip, startFrame: Math.min(Math.max(snapped, clip.endFrame - PROMPT_BLOCK_MAX_FRAMES), clip.endFrame - ARDY_PROMPT_HORIZON_FRAMES) }
 					: { ...clip, endFrame: Math.min(Math.max(clip.startFrame + ARDY_PROMPT_HORIZON_FRAMES, snapped), clip.startFrame + PROMPT_BLOCK_MAX_FRAMES) };
-			});
+			}, "promptClips");
 			const end = next.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
 			setTlFrameCount((count) => Math.max(count, end));
 			setArdyDuration(end / TIMELINE_FPS);
@@ -5458,6 +5440,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 
 	function movePromptClip(id, rawStartFrame) {
+		if (!promptClips.some((clip) => clip.id === id)) throw new Error(`Unknown promptClips ID: ${id}`);
 		setPromptClips((prev) => {
 			const next = movePromptClipFrames(prev, id, rawStartFrame, ARDY_PROMPT_HORIZON_FRAMES);
 			if (next === prev) return prev;
@@ -5469,7 +5452,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 
 	function removePromptClip(id) {
-		setPromptClips((prev) => prev.filter((clip) => clip.id !== id));
+		setPromptClips((prev) => removeStableItem(prev, id, "promptClips"));
 		if (selectedPromptId === id) setSelectedPromptId(null);
 	}
 
@@ -6368,8 +6351,8 @@ function resizePromptClip(id, edge, rawFrame) {
 								onCharacterGestureStart={recordCharacterUndo}
 								pathStart={activeChar}
 								waypoints={waypoints}
-								activeWaypointFrame={activeWaypointFrame}
-								onSelectWaypoint={(frame) => { setActiveWaypointFrame(frame); setTlFrame(Math.min(frame, tlFrameCount - 1)); setWaypointMode(true); }}
+								activeWaypointId={activeWaypointId}
+								onSelectWaypoint={(id) => { const waypoint = waypoints.find((entry) => entry.id === id); if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`); setActiveWaypointId(id); setTlFrame(Math.min(waypoint.frame, tlFrameCount - 1)); setWaypointMode(true); }}
 								onMoveWaypoint={moveWaypoint}
 								// Selection switch first, then the producer begins its
 								// transaction (plan §6.4): the settle here commits any
@@ -6421,7 +6404,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							/>
 							{centerTab === "scene" && railCurve && <CameraRailScenePreview points={railCurve.points} />}
 							{waypointMode && centerTab === "scene" && (
-								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />
+								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointId={activeWaypointId} />
 							)}
 							<CaptureRig
 								apiRef={captureRef}
@@ -7723,7 +7706,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				pathSpeed={pathSpeed}
 				playing={tlPlaying}
 				waypointMode={waypointMode}
-				waypointFrames={waypoints.map((w) => w.frame)}
+				waypoints={waypoints}
 				pathSpeed={pathSpeed}
 				pendingWaypointFrame={pendingWaypointFrame}
 				promptClips={promptClips}
@@ -7759,18 +7742,14 @@ function resizePromptClip(id, edge, rawFrame) {
 					setTlPlaying((v) => !v);
 				}}
 				onWaypointToggle={toggleWaypointMode}
-				onMarkerSelect={(f) => {
-					const frame = Math.min(f, tlFrameCount - 1);
-					setTlFrame(frame);
+				onMarkerSelect={(id) => {
+					const waypoint = waypoints.find((entry) => entry.id === id);
+					if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`);
+					setTlFrame(Math.min(waypoint.frame, tlFrameCount - 1));
 					setWaypointMode(true);
 					selectActiveCharacterInHierarchy();
-					if (waypoints.some((waypoint) => waypoint.frame === frame)) {
-						setActiveWaypointFrame(frame);
-						setPendingWaypointFrame(null);
-					} else {
-						setActiveWaypointFrame(null);
-						setPendingWaypointFrame(frame);
-					}
+					setActiveWaypointId(id);
+					setPendingWaypointFrame(null);
 				}}
 				onMarkerRemove={removeWaypoint}
 				onRootKeyframeAdd={queueRootWaypointFrame}
@@ -7795,9 +7774,9 @@ function resizePromptClip(id, edge, rawFrame) {
 				onCameraKeyframeAdd={addCameraKeyframe}
 				onCameraKeyframeMove={moveCameraKeyframe}
 					onCameraKeyframeRemove={removeCameraKeyframe}
-					onCameraBlockSelect={(index) => {
-						const selected = shots[index];
-						if (!selected) return;
+					onCameraBlockSelect={(shotId) => {
+						const selected = shots.find((entry) => entry.id === shotId);
+						if (!selected) throw new Error(`Unknown shots ID: ${shotId}`);
 						setTlFrame(selected.startFrame);
 						setSelectedHierarchyId("camera");
 					}}
@@ -7816,19 +7795,17 @@ function resizePromptClip(id, edge, rawFrame) {
 					onCameraPreview={previewCameraShot}
 					onCameraRailDrawToggle={toggleCameraRailDraw}
 					onCameraRailDelete={deleteCameraRail}
-					onRailSelect={(index) => {
-						selectTimelineShot(index);
+					onRailSelect={(shotId) => {
+						selectTimelineShot(shotId);
 						setSelectedHierarchyId("camera");
 					}}
-					onRailMove={(index, startFrame) => editRailSchedule(index, (base, duration) => moveRailRange(base, startFrame - base.startFrame, duration))}
-					onRailRangeChange={(index, edge, frame) => editRailSchedule(index, (base, duration) => resizeRailRange(base, edge, frame, duration))}
-					onRailRemove={(index) => setShots((current) => current.map((shot, shotIndex) => shotIndex === index
-						? { ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "off" } }) }
-						: shot))}
+					onRailMove={(shotId, startFrame) => editRailSchedule(shotId, (base, duration) => moveRailRange(base, startFrame - base.startFrame, duration))}
+					onRailRangeChange={(shotId, edge, frame) => editRailSchedule(shotId, (base, duration) => resizeRailRange(base, edge, frame, duration))}
+					onRailRemove={(shotId) => setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "off" } }) }), "shots"))}
 				onShotSelect={selectTimelineShot}
-				onShotBoundaryMove={(index, edge, frame) => setShots((current) => resizeShot(current, index, edge, frame, tlFrameCount))}
-				onShotRename={(index, name) => setShots((current) => renameShot(current, index, name))}
-				onShotRemove={(index) => setShots((current) => removeShot(current, index))}
+				onShotBoundaryMove={(shotId, edge, frame) => setShots((current) => resizeShot(current, shotId, edge, frame, tlFrameCount))}
+				onShotRename={(shotId, name) => setShots((current) => renameShot(current, shotId, name))}
+				onShotRemove={(shotId) => setShots((current) => removeShot(current, shotId))}
 				onShotDuplicate={duplicateTimelineShot}
 				onShotCut={addTimelineShot}
 				onShotSplit={splitTimelineShot}
