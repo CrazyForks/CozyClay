@@ -21,11 +21,20 @@
  *
  * What that rules out, and what this module rewrites:
  *   - no subject            "runs forward"        -> "A person runs forward."
- *   - compound actions      "stands, then runs"   -> split across phases
  *   - interior states       "in astonishment"     -> dropped; ARDY animates
  *                                                    bodies, not feelings
- *   - camera/scene language "the rocket looms"    -> dropped; the prompt
+ *   - camera/scene language "the camera pushes in" -> dropped; the prompt
  *                                                    describes the BODY only
+ *
+ * What it deliberately does NOT do: rewrite a caller's composite physical
+ * description into something shorter. A phrase like "raises both arms while
+ * stepping back, then lowers them" is the caller's authored beat; splitting it
+ * on the comma or on "while"/"then" and keeping only the first fragment throws
+ * away motion the caller asked for and silently animates something else.
+ * One-action-per-phase is guidance (see PROMPT_GUIDE) that callers apply when
+ * they author phases — never a deletion this module performs on their behalf.
+ * Normalisation here is non-destructive: subject, full stop, and removal of
+ * language ARDY has no body channel for. Everything else survives verbatim.
  */
 
 /**
@@ -56,7 +65,9 @@ export const PROMPT_GUIDE = [
 	'  - One action per phase, phrased like ARDY\'s own examples: "A person walks in a circle."',
 	"  - Subject + single present-tense action + full stop. The prompt becomes ONE embedding",
 	"    (num_text_tokens=1), so two actions in one phase average together instead of playing in order.",
-	"  - Sequence = more phases, never a compound sentence.",
+	"  - Sequence = more phases, never a compound sentence. Phases are taken as written:",
+	"    a comma or a 'then'/'while'/'as'/'before' clause is NOT split or trimmed for you, so",
+	"    split sequential beats yourself instead of relying on a rewrite.",
 	`  - A block holds at most ${BLOCK_MAX_SECONDS} s. Longer beats are chained into consecutive blocks,`,
 	"    because a single long block drifts away from its prompt.",
 	"  - Describe the BODY: no emotions, no camera, no scenery, no props the model cannot infer.",
@@ -67,19 +78,30 @@ export const PROMPT_GUIDE = [
 	"    describing ONE pose is fine; sequential actions still need separate phases.",
 	'  - Good: ["A person strides forward quickly.", "A person stops abruptly.", "A person leans far back and looks straight up."]',
 	'  - Bad:  ["walks forward slowly, then stops abruptly", "staggers back in astonishment"]',
+	'  - Tested preset (backward airborne flail): "A person leaps backward with arms and legs flailing."',
+	"    Tested caveat: 'flailing' reads as ONE action, so the prompt normalises unchanged; split it",
+	'    yourself only if you want the leap and the flail as separate beats.',
 ].join("\n");
 
-/** Interior states and cinematic language ARDY has no body channel for. */
+/**
+ * Interior states and cinematic language ARDY has no body channel for.
+ *
+ * Every pattern is bounded to the offending words themselves. None of them may
+ * run to the end of a clause or sentence, because a caller's physical wording
+ * often sits on the far side of the phrase being removed ("turns while the
+ * camera pushes in and raises one arm" must keep the arm).
+ */
 const UNRENDERABLE = [
 	/\b(in|with)\s+(astonishment|awe|wonder|surprise|fear|joy|excitement|disbelief)\b/gi,
 	/\b(astonished|amazed|awestruck|terrified|delighted|confused|nervous|curious)ly?\b/gi,
-	/\b(as if|like)\s+[^,.]+/gi,
-	/\b(at|toward|towards)\s+(something|the)\s+(enormous|huge|massive|towering|giant)\b/gi,
-	/\b(the\s+)?(camera|shot|frame|rocket|spaceship|building)\b[^,.]*/gi,
+	/\b(at|toward|towards)\s+(something|the)\s+(enormous|huge|massive|towering|giant)(\s+\w+)?\b/gi,
+	// A camera/scene clause: the noun plus the verb phrase attached to it, stopping
+	// at the next clause boundary so the body action after it survives.
+	/\b(?:while|as|and)?\s*(?:the\s+)?(?:camera|shot|frame|rocket|spaceship|building)\b(?:\s+(?!and\b)\w+){0,3}/gi,
 ];
 
-/** Connectives that mean "a second action is hiding in this sentence". */
-const SPLIT_ON = /\s*,?\s*\b(?:and then|then|after that|before|while|as)\b\s*/i;
+/** A leftover connective at either end once an unrenderable clause is removed. */
+const DANGLING_CONNECTIVE = /^(?:and|then|so|while|as|before|after that)\s+|\s+(?:and|while|as|before)$/gi;
 
 const SUBJECT = /^(a|the)\s+(person|man|woman|character|figure|human)\b/i;
 
@@ -100,27 +122,24 @@ export function normalizePhase(raw) {
 	let s = tidy(String(raw ?? ""));
 	if (!s) return { text: "", notes: ["empty phrase"] };
 
+	let stripped = false;
 	for (const pattern of UNRENDERABLE) {
+		pattern.lastIndex = 0;
 		if (pattern.test(s)) {
-			s = tidy(s.replace(pattern, ""));
-			notes.push("dropped language ARDY cannot animate (emotion, camera or scenery)");
-			break;
+			pattern.lastIndex = 0;
+			s = tidy(s.replace(pattern, " "));
+			stripped = true;
 		}
 	}
-
-	// Keep the first action; a trailing clause belongs in its own phase.
-	const parts = s.split(SPLIT_ON).map(tidy).filter(Boolean);
-	if (parts.length > 1) {
-		s = parts[0];
-		notes.push(`kept the first action; "${parts.slice(1).join(" / ")}" belongs in its own phase`);
+	if (stripped) {
+		s = tidy(s.replace(DANGLING_CONNECTIVE, " "));
+		notes.push("dropped language ARDY cannot animate (emotion, camera or scenery)");
 	}
+	if (!s) return { text: "", notes: [...notes, "nothing physical left to animate"] };
 
-	// A comma usually joins two actions too ("walks forward, stops abruptly").
-	const commaParts = s.split(/\s*,\s*/).map(tidy).filter(Boolean);
-	if (commaParts.length > 1) {
-		s = commaParts[0];
-		notes.push("kept one action per prompt");
-	}
+	// Commas and "then"/"while"/"as"/"before" clauses are the caller's wording and
+	// stay put. Composite beats are their problem to split into phases; silently
+	// deleting half a prompt animates something the caller never asked for.
 
 	s = s.replace(/^(and|then|so)\s+/i, "");
 	if (!SUBJECT.test(s)) {
@@ -139,24 +158,23 @@ export function normalizePhase(raw) {
 }
 
 /**
- * Normalise a whole beat list. A phrase that carried a trailing action gets it
- * back as its own phase, so "stands up then runs" becomes two real beats
- * instead of one averaged embedding — capped so a caller cannot blow past the
- * schema's phase limit.
+ * Normalise a whole beat list. One input beat is one output phase: a beat is
+ * never split on a connective, because the caller's phase list is the sequence
+ * and re-cutting it silently changes the animation they asked for. The list is
+ * still capped so a caller cannot blow past the schema's phase limit.
+ *
+ * `sources` therefore maps 1:1 onto the inputs, and `expanded` is always false;
+ * both are kept so callers that divide a beat's duration across its pieces
+ * (server.mjs) keep working unchanged.
  */
 export function normalizePhases(phases, max = 8) {
 	const expanded = [];
 	const sources = [];
 	for (const [index, phase] of phases.entries()) {
-		const pieces = String(phase ?? "")
-			.split(SPLIT_ON)
-			.map(tidy)
-			.filter(Boolean);
-		const parts = pieces.length ? pieces : [phase];
-		expanded.push(...parts);
+		expanded.push(String(phase ?? ""));
 		// Which input each output came from, so a caller that attached a duration
-		// to a beat can split that duration across the pieces it became.
-		sources.push(...parts.map(() => index));
+		// to a beat can still line its beats up with the prompts they produced.
+		sources.push(index);
 	}
 	const capped = expanded.slice(0, max);
 	const results = capped.map((piece) => normalizePhase(piece));
@@ -164,7 +182,8 @@ export function normalizePhases(phases, max = 8) {
 		texts: results.map((r) => r.text),
 		notes: results.map((r) => r.notes),
 		sources: sources.slice(0, max),
-		expanded: expanded.length > phases.length,
+		// Kept for the callers that report it; normalisation never adds a phase now.
+		expanded: false,
 		dropped: expanded.length - capped.length,
 	};
 }
