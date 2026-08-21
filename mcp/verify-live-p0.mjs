@@ -3,6 +3,9 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { createServer as createHttpServer } from "node:http";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { WebSocket } from "ws";
@@ -63,6 +66,7 @@ const editor = {
 };
 let rejectDescribe = false;
 let disconnectBeforeDescribe = false;
+let omitCharacterFields = true;
 
 const handle = (name, args) => {
 	switch (name) {
@@ -71,10 +75,10 @@ const handle = (name, args) => {
 				rejectDescribe = false;
 				throw new Error("Describe unavailable after mutation");
 			}
-			return {
-				...clone(editor),
-				characters: editor.characters.map(({ model, ...character }) => character),
-			};
+			const description = clone(editor);
+			return omitCharacterFields
+				? { ...description, characters: description.characters.map(({ model, ...character }) => character) }
+				: description;
 		case "add_character": {
 			const id = `char-${String.fromCharCode(97 + editor.characters.length)}`;
 			editor.characters.push({
@@ -106,6 +110,7 @@ const transport = new StdioClientTransport({
 	env: { ...process.env, COZYCLAY_BRIDGE: `http://127.0.0.1:${bridgePort}` },
 });
 let socket;
+const projectDirectory = await mkdtemp(join(tmpdir(), "cozyclay-mcp-live-p0-"));
 try {
 	await client.connect(transport);
 	socket = new WebSocket(`ws://127.0.0.1:${livePort}/live`);
@@ -124,6 +129,50 @@ try {
 	socket.send(JSON.stringify({ type: "hello", role: "editor", version: 1 }));
 
 	const call = (name, args = {}) => client.callTool({ name, arguments: args });
+
+	// Given a live character whose retained authoring fields differ from defaults
+	omitCharacterFields = false;
+	editor.characters[0] = {
+		id: "char-a",
+		model: "x-bot-tpose",
+		subject: "a prior performer",
+		x: 1,
+		y: 0,
+		z: 2,
+		rot: 30,
+		hidden: false,
+		tint: "#123456",
+		pose: { label: "Walking", bones: { hips: [1, 2, 3] } },
+		scale: 1.4,
+		layer: { waypoints: [{ frame: 12, x: 1, z: 2 }], promptClips: [{ startFrame: 0, endFrame: 24, text: "Walk." }] },
+		motionRef: { url: "/ardy/motions/123456-abcdef", prompt: "Walk.", rotationDeg: 30, anchorX: 1, anchorZ: 2 },
+	};
+	await call("describe_scene");
+	editor.characters[0] = { id: "char-a", subject: "the described performer", x: 7 };
+	omitCharacterFields = false;
+	// When the editor reports only its authoritative subject and x fields
+	const projectPath = join(projectDirectory, "description-merge.cclayproject");
+	const merged = await call("save_project", { path: projectPath });
+	const saved = JSON.parse(await readFile(projectPath, "utf8"));
+	const mergedCharacter = saved.scenes.scenes[0].stage.characters[0];
+	// Then reported values update, while every omitted prior field survives normalization.
+	assert.equal(merged.isError, undefined, JSON.stringify(merged));
+	assert.deepEqual(mergedCharacter, {
+		id: "char-a",
+		model: "x-bot-tpose",
+		x: 7,
+		y: 0,
+		z: 2,
+		rot: 30,
+		hidden: false,
+		tint: "#123456",
+		pose: { label: "Walking", bones: { hips: [1, 2, 3] } },
+		scale: 1.4,
+		subject: "the described performer",
+		layer: { waypoints: [{ frame: 12, x: 1, z: 2 }], promptClips: [{ startFrame: 0, endFrame: 24, text: "Walk." }] },
+		motionRef: { url: "/ardy/motions/123456-abcdef", prompt: "Walk.", rotationDeg: 30, anchorX: 1, anchorZ: 2 },
+	});
+	omitCharacterFields = true;
 
 	// Given a requested non-default mannequin
 	// When the live add command is acknowledged and described
@@ -183,11 +232,17 @@ try {
 		uncertainAfterDisconnect: { isError: disconnected.isError === true, doNotRetry: /do not retry/i.test(disconnected.content[0].text) },
 		loadMotion: { isError: loaded.isError ?? false, timeoutMs: LiveHub.commandTimeoutMs("load_motion") },
 		defaultCommandTimeoutMs: LiveHub.commandTimeoutMs("describe"),
+		descriptionMerge: {
+			before: { model: "x-bot-tpose", pose: "Walking", tint: "#123456", scale: 1.4, layer: true, motionRef: "/ardy/motions/123456-abcdef" },
+			describe: { subject: "the described performer", x: 7 },
+			after: { model: mergedCharacter.model, pose: mergedCharacter.pose?.label, tint: mergedCharacter.tint, scale: mergedCharacter.scale, layer: mergedCharacter.layer.promptClips.length, motionRef: mergedCharacter.motionRef?.url, subject: mergedCharacter.subject, x: mergedCharacter.x },
+		},
 	}));
 } finally {
 	if (socket && socket.readyState === WebSocket.OPEN) socket.close();
 	await client.close().catch(() => {});
 	await new Promise((resolve, reject) => bridge.close((error) => (error ? reject(error) : resolve())));
+	await rm(projectDirectory, { recursive: true, force: true });
 }
 
 // Read-only transport loss is retryable; mutation transport loss is not.

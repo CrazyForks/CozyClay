@@ -191,9 +191,10 @@ const applyLiveDescription = (description) => {
 	}
 	if (Array.isArray(description.characters) && description.characters.length) {
 		const prior = new Map(stage().characters.map((character) => [character.id, character]));
-		stage().characters = description.characters.map((character, index) =>
-			createCharacterEntry({ ...character, model: character.model ?? prior.get(character.id)?.model }, index),
-		);
+		stage().characters = description.characters.map((character, index) => {
+			const previous = prior.get(character.id);
+			return createCharacterEntry({ ...previous, ...character, model: character.model ?? previous?.model }, index);
+		});
 		if (state.focus && !stage().characters.some((character) => character.id === state.focus)) state.focus = null;
 	}
 	if (Array.isArray(description.objects)) {
