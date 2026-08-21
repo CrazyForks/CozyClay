@@ -181,6 +181,14 @@ try {
 	assert.equal(recovered.taskId, recoverTask.taskId);
 	assert.equal(recovered.status, "completed");
 	assert.equal(recovered.outcome.motionUrl, "/ardy/motions/654321-fedcba");
+	// Given the reconnect consumed the retained terminal outcome
+	// When that same stable workspace reconnects again
+	// Then the completed motion is not replayed a second time.
+	const consumedClosed = once(reconnect.socket, "close");
+	reconnect.socket.close();
+	await consumedClosed;
+	reconnect = await connectEditor("motion-job-workspace");
+	await assert.rejects(reconnect.nextEvent(recoverTask.taskId, "completed"), /Timed out waiting for completed motion event/);
 
 	// Given a terminal job and an injected clock past its retention TTL
 	// When cleanup runs before reconnect delivery

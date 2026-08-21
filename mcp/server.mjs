@@ -26,7 +26,7 @@
  * studio, and anything authored in the studio opens here.
  */
 import { link, open as openFile, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, readdirSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -88,6 +88,8 @@ const state = {
 	timeline: { currentFrame: 0, frameCount: 360, fps: 24 },
 	/** which character the camera frames against; null means the first of the cast */
 	focus: null,
+	/** true after focus_character explicitly selects the server-side subject */
+	focusLocked: false,
 	/** framing snapshot taken by `mark_camera_move`, consumed by `describe_camera_move` */
 	markedFraming: null,
 };
@@ -105,6 +107,21 @@ const MAX_CAPTURE_BYTES = 1_000_000;
 const CAPTURE_ARTIFACT_TTL_MS = 10 * 60_000;
 const MAX_CAPTURE_ARTIFACTS = 20;
 const captureArtifacts = [];
+const captureArtifactPattern = /^cozyclay-capture-[0-9a-f-]+\.png$/;
+const cleanupCaptureArtifacts = () => {
+	for (const path of captureArtifacts.splice(0)) {
+		try { unlinkSync(path); } catch {}
+	}
+};
+const sweepCaptureArtifacts = () => {
+	for (const name of readdirSync(tmpdir())) {
+		if (!captureArtifactPattern.test(name)) continue;
+		try { unlinkSync(join(tmpdir(), name)); } catch {}
+	}
+};
+sweepCaptureArtifacts();
+process.once("exit", cleanupCaptureArtifacts);
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { cleanupCaptureArtifacts(); process.exit(128 + (signal === "SIGINT" ? 2 : 15)); });
 const configuredProjectRoot = resolve(process.env.COZYCLAY_PROJECT_ROOT ?? process.cwd());
 const projectRootPromise = realpath(configuredProjectRoot).then((root) => {
 	process.chdir(root);
@@ -297,14 +314,17 @@ const applyLiveDescription = (description) => {
 			if (Number.isFinite(description.timeline[key])) state.timeline[key] = description.timeline[key];
 		}
 	}
-	if (typeof description.activeCharacterId === "string") state.focus = description.activeCharacterId;
+	if (!state.focusLocked && typeof description.activeCharacterId === "string") state.focus = description.activeCharacterId;
 	if (Array.isArray(description.characters)) {
 		const prior = new Map(stage().characters.map((character) => [character.id, character]));
 		stage().characters = description.characters.map((character, index) => {
 			const previous = prior.get(character.id);
 			return createCharacterEntry({ ...previous, ...character, model: character.model ?? previous?.model }, index);
 		});
-		if (state.focus && !stage().characters.some((character) => character.id === state.focus)) state.focus = null;
+		if (state.focus && !stage().characters.some((character) => character.id === state.focus)) {
+			state.focus = null;
+			state.focusLocked = false;
+		}
 	}
 	if (Array.isArray(description.objects)) {
 		const prior = new Map(sc.objects.map((object) => [object.id, object]));
@@ -353,7 +373,10 @@ const motionJobEvent = (job) => ({
 	...(job.outcome === null ? {} : { outcome: job.outcome }),
 });
 
-const publishMotionJob = (job) => liveHub?.sendEvent(job.workspaceId, "motion_job", motionJobEvent(job));
+const publishMotionJob = (job) => {
+	if (job.deliveredWorkspaceIds.has(job.workspaceId)) return;
+	if (liveHub?.sendEvent(job.workspaceId, "motion_job", motionJobEvent(job)) > 0) job.deliveredWorkspaceIds.add(job.workspaceId);
+};
 
 const cancelMotionJob = ({ workspaceId, payload }) => {
 	if (payload.taskId && typeof payload.taskId !== "string") return;
@@ -907,7 +930,10 @@ registerTool(
 		if (st.characters.length === 1) return text("The scene needs at least one character.");
 		const letter = letterFor(target);
 		st.characters = st.characters.filter((c) => c !== target);
-		if (state.focus && !findCharacter(state.focus)) state.focus = null;
+		if (state.focus && !findCharacter(state.focus)) {
+			state.focus = null;
+			state.focusLocked = false;
+		}
 		return text(`Removed ${letter}.\n\n${sceneReport()}`);
 	},
 );
@@ -932,6 +958,7 @@ registerTool(
 		const target = findCharacter(character);
 		if (!target) return text(`No character "${character}". ${castHint()}`);
 		state.focus = target.id;
+		state.focusLocked = true;
 		return text(`Framing ${letterFor(target)} "${target.subject}".\n\n${shotReport()}`);
 	},
 );
@@ -1700,6 +1727,7 @@ registerTool(
 		state.doc = nextDocument;
 		state.name = result.project.name;
 		state.focus = null;
+		state.focusLocked = false;
 		state.markedFraming = null;
 		return text(`Opened ${full}.\n\n${sceneReport()}`);
 	},

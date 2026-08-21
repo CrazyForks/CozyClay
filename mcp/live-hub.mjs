@@ -32,6 +32,7 @@ export class MotionJobRegistry {
 			taskId: randomUUID(), workspaceId, status: "queued", createdAt: now,
 			lastUpdatedAt: now, ttlMs: this.ttlMs, pollIntervalMs: MOTION_JOB_POLL_INTERVAL_MS,
 			cancel: null, expiresAt: null, outcome: null,
+			deliveredWorkspaceIds: new Set(),
 		};
 		this.jobs.set(job.taskId, job);
 		return job;
@@ -68,7 +69,7 @@ export class MotionJobRegistry {
 	forWorkspace(workspaceId) {
 		this.cleanup();
 		return [...this.jobs.values()].filter((job) =>
-			job.workspaceId === workspaceId && terminalMotionStatuses.has(job.status) && job.status !== "expired");
+			job.workspaceId === workspaceId && terminalMotionStatuses.has(job.status) && job.status !== "expired" && !job.deliveredWorkspaceIds.has(workspaceId));
 	}
 
 	cleanup() {
@@ -169,10 +170,13 @@ export class LiveHub {
 	}
 
 	sendEvent(workspaceId, name, payload) {
+		let delivered = 0;
 		for (const [handle, socket] of this.editors) {
 			if (this.workspaceIds.get(handle) !== workspaceId || socket.readyState !== WebSocket.OPEN) continue;
 			socket.send(JSON.stringify({ type: "event", name, payload }));
+			delivered += 1;
 		}
+		return delivered;
 	}
 
 	async command(name, args, workspaceHandle) {

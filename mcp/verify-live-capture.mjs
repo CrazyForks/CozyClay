@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /** Real MCP + browser-editor coverage for G007 capture_frame. */
 import assert from "node:assert/strict";
-import { unlink } from "node:fs/promises";
+import { access, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -46,11 +47,14 @@ const terminate = async (child) => {
 };
 const verifyRejectedCapture = async ({ value, error, expected }) => {
 	const port = await reservePort();
+	const stalePath = `/tmp/cozyclay-capture-${randomUUID()}.png`;
+	await writeFile(stalePath, Buffer.from("stale"), { mode: 0o600 });
 	const edgeClient = new Client({ name: "cozyclay-g007-capture-edge", version: "1.0.0" });
 	const edgeTransport = new StdioClientTransport({ command: process.execPath, args: [serverPath, "--live-port", String(port)] });
 	let socket;
 	try {
 		await edgeClient.connect(edgeTransport);
+		await assert.rejects(access(stalePath), "startup sweep must remove a stale capture artifact");
 		socket = new WebSocket(`ws://127.0.0.1:${port}/live`);
 		await withTimeout(new Promise((resolve, reject) => {
 			socket.once("open", resolve);
@@ -204,6 +208,7 @@ try {
 	assert.equal(artifact.body.artifact.width, 640);
 	assert.equal(artifact.body.artifact.height, 360);
 	assert.equal(artifact.body.artifact.byteSize, artifact.body.byteSize);
+	await assert.doesNotReject(access(artifactPath), "capture artifact must remain available until the MCP session closes");
 
 	console.log(JSON.stringify({
 		vitePort, livePort,
@@ -212,11 +217,11 @@ try {
 		artifact: artifact.body.artifact,
 	}));
 } finally {
-	if (artifactPath) await unlink(artifactPath).catch(() => {});
 	cdp?.close();
 	await client?.close().catch(() => {});
 	await Promise.all([terminate(browser), terminate(vite)]);
 }
+if (artifactPath) await assert.rejects(access(artifactPath), "stdio process exit must remove capture artifacts");
 
 const blackFrame = await verifyRejectedCapture({
 	value: {

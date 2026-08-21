@@ -34,6 +34,7 @@ const editor = {
 	camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35, sensorId: "super35", aspectRatio: 2.39 },
 	characters: [{ id: "char-a", subject: "a live-test performer", x: 0, z: 0, rot: 0, hidden: false }],
 	objects: [],
+	activeCharacterId: "char-a",
 };
 const commands = [];
 
@@ -133,6 +134,15 @@ try {
 	assert(commands.some(({ name, args }) => name === "add_character" && args.model === "x-bot-tpose"), "add_character did not forward the requested model");
 	assert(added.includes("[x-bot-tpose]"), "add_character did not report the requested model");
 	assert((await call("describe_scene")).includes("[x-bot-tpose]"), "describe_scene did not retain the requested model");
+	// Given focus_character chooses B for the MCP server
+	// When the editor later reports its independently active A character
+	// Then MCP framing remains on its explicitly selected B character.
+	const focused = await call("focus_character", { character: "B" });
+	assert(focused.includes('Framing B "an x-bot performer"'), "focus_character did not select the requested character");
+	editor.activeCharacterId = "char-a";
+	const refreshed = await call("describe_scene");
+	assert(/char-b[\s\S]*<- framed/.test(refreshed), "editor activeCharacterId silently replaced the MCP focus after live refresh");
+	assert(!refreshed.split("\n").some((line) => line.includes("char-a") && line.includes("<- framed")), "the editor activeCharacterId remained authoritative after MCP focus_character");
 	const placed = await call("place_object", { kind: "chair", x: 1.5, z: -2, facing: 30 });
 	assert(commands.some(({ name, args }) => name === "place_object" && args.kind === "chair" && args.rot === 30), "place_object was not forwarded");
 	assert(placed.includes("chair-1"), "place_object did not return the live object id");
