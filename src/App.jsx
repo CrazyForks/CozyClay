@@ -10,7 +10,7 @@ import { retimeMotion } from "./ardy/retime.js";
 import { applyRootDrop, normalizeRootDrop } from "./ardy/root-drop.js";
 import { sliceMotion } from "./ardy/trim.js";
 import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl, probeFootage, requestBridgeExtract, requestBridgeFootage, sourceLabel } from "./multimodel-ingest.js";
-import { bakeExtractedTake, collectLandmarkTrack, createPoseDetector, sampleTimes, videoFrames } from "./pose-extract/index.js";
+import { bakeExtractedTake, bakePoseFrame, collectLandmarkTrack, createPoseDetector, imageFrames, sampleTimes, videoFrames } from "./pose-extract/index.js";
 import { repairRecordedMp4 } from "./ardy/mp4-duration.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
@@ -509,6 +509,9 @@ const MULTIMODEL_REASONS = {
 	"pose-engine-init-failed": ["The pose engine failed to start on this device", "이 기기에서 포즈 엔진을 시작하지 못했어요"],
 	"rest-unavailable": ["The rig rest data (/ardy/cskel27-rest.json) could not be loaded", "리그 레스트 데이터(/ardy/cskel27-rest.json)를 불러오지 못했어요"],
 	"no-person-found": ["No person was detected in the footage", "영상에서 사람을 감지하지 못했어요"],
+	"no-person-in-photo": ["No person was detected in that photograph", "사진에서 사람을 감지하지 못했어요"],
+	"image-load-timeout": ["The photograph never finished decoding", "사진 디코딩이 끝나지 않았어요"],
+	"pose-partly-occluded": ["Shoulders and hips must both be visible in the photograph", "사진에 어깨와 골반이 모두 보여야 해요"],
 	"no-usable-pose": ["A person was seen, but no stable pose could be fitted", "사람은 보였지만 안정적인 포즈를 만들지 못했어요"],
 	"rig-not-loaded": ["Subject 1's rig is not loaded yet", "인물 1 리그가 아직 로드되지 않았어요"],
 	"bridge-unreachable": ["The dev bridge did not answer", "개발 브리지가 응답하지 않아요"],
@@ -3303,6 +3306,13 @@ globalThis.playMode = centerTab === "play";
 	const [multiModelExtractError, setMultiModelExtractError] = useState("");
 	const multiModelDetectorRef = useRef(null); // engine survives re-runs; the 15 MB download happens once
 	const multiModelRestRef = useRef(null);
+	// A still needs its own landmarker: MediaPipe fixes the running mode at
+	// creation and refuses detect() on a VIDEO-mode instance. The weights are
+	// already cached by then, so the second instance is cheap.
+	const photoPoseFileRef = useRef(null);
+	const photoPoseDetectorRef = useRef(null);
+	const [photoPoseState, setPhotoPoseState] = useState("idle");
+	const [photoPoseError, setPhotoPoseError] = useState("");
 
 	// Cast render props, memoized with Character itself (React.memo): during
 	// playback the playhead ticks 24 times a second, and a character whose
@@ -4856,6 +4866,87 @@ globalThis.playMode = centerTab === "play";
 		setStudioPick(pose.id);
 		setPosed(pose);
 		setToast(ko("Pose saved", "포즈 저장됨"));
+	}
+
+	/**
+	 * Read a body pose out of one photograph.
+	 *
+	 * A still is the degenerate footage case, so it walks the same proven path:
+	 * landmarks -> one-frame take -> applyMotionFrame -> capturePose. Posing the
+	 * rig and reading it back is what makes the result an ordinary editable pose
+	 * rather than a motion layer — the IK handles keep working on it, and the
+	 * playback bones are restored so nothing about the take survives the read.
+	 *
+	 * Depth in a single frame is inferred, not measured, so this is a starting
+	 * pose to refine, which is why it lands in the studio instead of on the
+	 * character directly.
+	 */
+	async function posePhotoFile(file) {
+		if (!file || photoPoseState === "running") return;
+		const rig = posedRig();
+		let objectUrl = "";
+		setPhotoPoseState("running");
+		setPhotoPoseError("");
+		try {
+			if (!rig) throw new Error("rig-not-loaded");
+			if (!multiModelRestRef.current) {
+				const response = await fetch("/ardy/cskel27-rest.json").catch(() => null);
+				if (!response?.ok) throw new Error("rest-unavailable");
+				multiModelRestRef.current = await response.json().catch(() => {
+					throw new Error("rest-unavailable");
+				});
+			}
+			if (!photoPoseDetectorRef.current) {
+				photoPoseDetectorRef.current = await createPoseDetector({ runningMode: "IMAGE" });
+			}
+			objectUrl = URL.createObjectURL(file);
+			const samples = await collectLandmarkTrack({
+				frames: imageFrames(objectUrl, { createImage: () => new Image() }),
+				detect: photoPoseDetectorRef.current.detect,
+			});
+			if (samples.length === 0) throw new Error("no-person-in-photo");
+			const take = bakePoseFrame({ samples, rest: multiModelRestRef.current, createdMs: Date.now() });
+			// Pose the rig, read the pose back, then put the rig exactly as it was:
+			// the capture is the product, the posing is only how it is measured.
+			const snapshot = snapshotPlaybackBones(rig);
+			let bones;
+			try {
+				applyMotionFrame(rig, { ...take, anchorFrame: 0 }, 0);
+				bones = capturePose(rig);
+			} finally {
+				restorePlaybackBones(rig, snapshot);
+			}
+			const pose = {
+				id: `photo_${Date.now()}`,
+				label: isKo ? `사진 포즈 ${customPoses.length + 1}` : `Photo Pose ${customPoses.length + 1}`,
+				prompt: "in the exact body pose shown in the reference photograph",
+				bones,
+				custom: true,
+			};
+			const next = [...customPoses, pose];
+			setCustomPoses(next);
+			saveCustomPoses(next);
+			setStudioPick(pose.id);
+			// A running take drives the same bones a pose writes, so the read would
+			// land invisibly underneath it. Applying from a photo follows the same
+			// rule the Apply button already states: the motion goes first.
+			const hadMotion = Boolean(motion);
+			if (hadMotion) clearMotion();
+			setPosed(pose);
+			setPhotoPoseState("done");
+			setToast(hadMotion
+				? ko("Cleared the motion and posed from the photo — refine it with the handles", "모션을 지우고 사진으로 자세를 잡았어요 — 핸들로 다듬어 보세요")
+				: ko("Pose read from the photo — refine it with the handles", "사진에서 자세를 읽었어요 — 핸들로 다듬어 보세요"));
+		} catch (error) {
+			const code = error?.message ?? String(error);
+			// fitLandmarksToPose refuses a sample whose torso is not visible; that is
+			// a photograph problem, not an engine problem, so it is named as one.
+			const named = code.startsWith("fitLandmarksToPose:") ? "pose-partly-occluded" : code;
+			setPhotoPoseState("error");
+			setPhotoPoseError(MULTIMODEL_REASONS[named]?.[isKo ? 1 : 0] ?? named);
+		} finally {
+			if (objectUrl) URL.revokeObjectURL(objectUrl);
+		}
 	}
 
 	function removePose(id) {
@@ -7166,6 +7257,20 @@ function resizePromptClip(id, edge, rawFrame) {
 						</div>
 					)}
 					</section>
+					{/* The reference-photo picker sits outside the panel so re-mounting
+					    the studio cannot cancel an in-flight read. */}
+					<input
+						ref={photoPoseFileRef}
+						className="multimodel-file-input"
+						type="file"
+						accept={ASSET_IMAGE_TYPES.join(",")}
+						data-pose-photo-input
+						onChange={(event) => {
+							const file = event.target.files?.[0];
+							event.target.value = ""; // the same photo must be re-pickable after an error
+							if (file) posePhotoFile(file);
+						}}
+					/>
 					{/* Pose Studio docks under the inspector instead of floating over
 					    the shot: the viewport keeps the posed character unobstructed. */}
 					{posing && (
@@ -7197,6 +7302,12 @@ function resizePromptClip(id, edge, rawFrame) {
 								setToast(ko("Back to the default pose", "기본 포즈로 돌아왔어요"));
 							}}
 							onSave={savePose}
+							onPhoto={() => {
+								setPhotoPoseError("");
+								photoPoseFileRef.current?.click();
+							}}
+							photoState={photoPoseState}
+							photoError={photoPoseError}
 							onDelete={removePose}
 							onClose={closeStudio}
 						/>

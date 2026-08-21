@@ -30,6 +30,7 @@ export async function createPoseDetector({
 	fetchImpl,
 	loadRuntime,
 	numPoses = 2, // the footage guidance allows two performers in frame; selectMostConfidentPerson picks one
+	runningMode = "VIDEO", // "IMAGE" for a still: MediaPipe rejects detectForVideo outside VIDEO mode
 } = {}) {
 	const doFetch = fetchImpl ?? globalThis.fetch;
 	let runtime;
@@ -54,7 +55,7 @@ export async function createPoseDetector({
 	}
 	const optionsFor = (delegate) => ({
 		baseOptions: { modelAssetBuffer, delegate },
-		runningMode: "VIDEO",
+		runningMode,
 		numPoses,
 		outputSegmentationMasks: false,
 	});
@@ -69,7 +70,11 @@ export async function createPoseDetector({
 		}
 	}
 	return {
-		detect: (image, timestampMs) => landmarker.detectForVideo(image, Math.round(timestampMs)),
+		// One `detect(image, timestampMs)` shape for both modes so the frame
+		// supply — a clip or a still — is the only thing that differs.
+		detect: runningMode === "IMAGE"
+			? (image) => landmarker.detect(image)
+			: (image, timestampMs) => landmarker.detectForVideo(image, Math.round(timestampMs)),
 		close: () => landmarker.close?.(),
 	};
 }

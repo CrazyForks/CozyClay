@@ -1110,7 +1110,7 @@ export function warmPoseThumbnails() {
 	warmThumbnailModels(["y-bot-tpose", "x-bot-tpose"]);
 }
 
-export function PoseStudioPanel({ subject, model, poses, selectedId, onSelect, onApply, onReset, onSave, onDelete, onClose, closing, motionActive = false, docked = false }) {
+export function PoseStudioPanel({ subject, model, poses, selectedId, onSelect, onApply, onReset, onSave, onDelete, onClose, closing, motionActive = false, docked = false, onPhoto, photoState = "idle", photoError = "" }) {
 	const poseLabelsKo = {
 		"T-pose": ko("T-pose", "T 포즈"),
 		Relaxed: ko("Relaxed", "편안한 자세"),
@@ -1217,7 +1217,26 @@ export function PoseStudioPanel({ subject, model, poses, selectedId, onSelect, o
 					<span className="add-plus">＋</span>
 					<span className="add-text">{ko("Save pose", "포즈 저장")}</span>
 				</button>
+				{onPhoto && (
+					<button
+						type="button"
+						className={"pose-tile add photo" + (photoState === "running" ? " busy" : "")}
+						data-pose-id="photo-pose"
+						data-photo-state={photoState}
+						disabled={photoState === "running"}
+						title={ko("Read the pose out of a reference photograph", "참조 사진에서 자세 읽어오기")}
+						onClick={onPhoto}
+					>
+						<span className="add-plus">{photoState === "running" ? "◌" : "◳"}</span>
+						<span className="add-text">
+							{photoState === "running" ? ko("Reading…", "읽는 중…") : ko("From photo", "사진에서")}
+						</span>
+					</button>
+				)}
 			</div>
+			{photoError && (
+				<p className="studio-hint error" data-pose-photo-error role="status">{photoError}</p>
+			)}
 		</div>
 	);
 }

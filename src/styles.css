@@ -1214,6 +1214,9 @@ select {
 	margin: -2px 0 0;
 	line-height: 1.45;
 }
+.studio-hint.error {
+	color: var(--warn, #ff9c6e);
+}
 
 .studio-actions {
 	display: flex;
@@ -1352,6 +1355,24 @@ select {
 .pose-tile.add .add-text {
 	font-size: 11px;
 	font-weight: 700;
+}
+/* The photo tile reads as a second, distinct source next to Save pose rather
+   than a variant of it, so its dashed outline carries the accent hue. */
+.pose-tile.add.photo {
+	border-color: color-mix(in srgb, var(--cyan) 42%, var(--line2));
+	color: color-mix(in srgb, var(--cyan) 70%, var(--muted));
+}
+.pose-tile.add.photo .add-plus {
+	font-size: 22px;
+}
+.pose-tile.add.photo.busy {
+	border-style: solid;
+	opacity: 0.75;
+	cursor: progress;
+}
+.pose-tile.add.photo:disabled:hover {
+	border-color: color-mix(in srgb, var(--cyan) 42%, var(--line2));
+	background: transparent;
 }
 
 /* ------------------------------------------------------------ panel ------- */
