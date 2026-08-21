@@ -144,6 +144,19 @@ export function createGenerationServer({ store = createJobStore(), providers = {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const server = createGenerationServer();
-  server.listen(PORT, HOST, () => console.log(`[generation] listening on http://${HOST}:${PORT}`));
+  server.listen(PORT, HOST, () => {
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : PORT;
+    process.send?.({ type: "cozyclay-generation-ready", port });
+    console.log(`[generation] listening on http://${HOST}:${port}`);
+  });
+  server.on("error", (error) => {
+    if (process.send && process.connected) {
+      process.send({ type: "cozyclay-generation-listen-error", port: PORT, code: error?.code }, () => process.exit(1));
+    } else {
+      console.error(`[generation] cannot listen on http://${HOST}:${PORT}: ${error.message}`);
+      process.exit(1);
+    }
+  });
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => server.close(() => process.exit(0)));
 }

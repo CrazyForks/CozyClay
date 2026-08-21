@@ -5,6 +5,9 @@ import react from "@vitejs/plugin-react";
 const ardyBridgeUrl = process.env.COZYCLAY_BRIDGE_PORT
 	? `http://127.0.0.1:${process.env.COZYCLAY_BRIDGE_PORT}`
 	: process.env.CCLAY_ARDY_BRIDGE_URL || "http://127.0.0.1:5181";
+const generationBridgeUrl = process.env.CCLAY_GENERATION_PORT
+	? `http://127.0.0.1:${process.env.CCLAY_GENERATION_PORT}`
+	: "http://127.0.0.1:5182";
 
 export default defineConfig({
 	// Root-absolute on purpose: the site has its own apex domain, and the studio
@@ -74,7 +77,7 @@ export default defineConfig({
 					return req.url; // not a bridge route: serve the static asset
 				},
 			},
-			"/generation": "http://127.0.0.1:5182",
+			"/generation": generationBridgeUrl,
 		},
 	},
 });

@@ -29,6 +29,7 @@ const NODE_FILES = [
 	"test/generation/verify-veo-provider.mjs",
 	"test/ik/verify-ik.mjs",
 	"test/process/verify-bridge-launch.mjs",
+	"test/process/verify-generation-bridge-launch.mjs",
 	"test/process/verify-lifecycle.mjs",
 	"test/process/verify-mcp-package-isolation.mjs",
 	"test/verify-appearance.mjs",
