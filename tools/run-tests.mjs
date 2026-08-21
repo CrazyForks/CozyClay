@@ -51,6 +51,7 @@ const NODE_FILES = [
 	"test/verify-matte-editor.mjs",
 	"test/verify-matte.mjs",
 	"test/verify-mp4-duration.mjs",
+	"test/verify-mcp-invariants.mjs",
 	"test/verify-multimodel-ingest.mjs",
 	"test/verify-offscreen-export.mjs",
 	"test/verify-otio.mjs",
