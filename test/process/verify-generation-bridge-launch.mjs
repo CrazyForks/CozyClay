@@ -17,6 +17,13 @@ const PROVIDER_KEYS = [
 	"GOOGLE_CLOUD_PROJECT",
 ];
 const READY_TIMEOUT_MS = 15_000;
+const stripAnsi = (value) => value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+
+assert.match(
+	stripAnsi("\u001b[32m➜\u001b[39m \u001b[1mLocal\u001b[22m:   \u001b[36mhttp://127.0.0.1:\u001b[1m5180\u001b[22m/\u001b[39m"),
+	/Local:\s+http:\/\/127\.0\.0\.1:(\d+)\//,
+	"readiness matching ignores ANSI formatting added by CI",
+);
 
 function withoutProviderKeys(env = process.env) {
 	const clean = { ...env };
@@ -96,7 +103,7 @@ function createOutputWatcher(child) {
 			return withTimeout(
 				new Promise((resolvePromise) => {
 					const check = () => {
-						const match = pattern.exec(output);
+						const match = pattern.exec(stripAnsi(output));
 						if (match) resolvePromise(match);
 						else waiters.push(check);
 					};
