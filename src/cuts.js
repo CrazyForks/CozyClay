@@ -3,11 +3,16 @@
 
 import { cameraMoveAt } from "./camera-move.js";
 import { cloneCameraBlock, createCameraBlock } from "./camera-block.js";
+import {
+	createStableItemId,
+	normalizeStableItems,
+	removeStableItem,
+	requireStableItem,
+	updateStableItem,
+} from "./stable-items.js";
 
 export const DEFAULT_SHOT_FRAMES = 40;
 
-let nextShotId = 1;
-const id = () => `shot-${Date.now().toString(36)}-${nextShotId++}`;
 const frameNumber = (value, fallback = 0) => Number.isFinite(value) ? Math.round(value) : fallback;
 
 function cloneFraming(framing) {
@@ -16,19 +21,28 @@ function cloneFraming(framing) {
 
 function uniqueKeys(keys, min = -Infinity, max = Infinity) {
 	const byFrame = new Map();
-	for (const key of Array.isArray(keys) ? keys : []) {
-		if (!key || !Number.isFinite(key.frame) || !key.framing) continue;
+	for (const key of normalizeStableItems(keys, "camera-key")) {
+		if (!Number.isFinite(key.frame) || !key.framing) continue;
 		const frame = Math.max(min, Math.min(max, Math.round(key.frame)));
-		byFrame.set(frame, { frame, framing: cloneFraming(key.framing) });
+		byFrame.set(frame, { id: key.id, frame, framing: cloneFraming(key.framing) });
 	}
 	return [...byFrame.values()].sort((a, b) => a.frame - b.frame);
+}
+
+function shotById(shots, shotId) {
+	return requireStableItem(shots, shotId, "shots");
+}
+
+function shotIndexById(shots, shotId) {
+	shotById(shots, shotId);
+	return shots.findIndex((shot) => shot.id === shotId);
 }
 
 export function createShot(name = "Shot", startFrame = 0, endFrame = startFrame + DEFAULT_SHOT_FRAMES - 1, cameraKeys = [], camera = null) {
 	const start = Math.max(0, frameNumber(startFrame));
 	const end = Math.max(start, frameNumber(endFrame, start));
 	return {
-		id: id(),
+		id: createStableItemId("shot"),
 		name: typeof name === "string" && name.trim() ? name.trim() : "Shot",
 		startFrame: start,
 		endFrame: end,
@@ -62,17 +76,16 @@ export function shotAtFrame(shots, frame) {
 	return index < 0 ? null : shots[index];
 }
 
-function overlaps(shots, startFrame, endFrame, ignoredIndex = -1) {
-	return shots.some((shot, index) => index !== ignoredIndex && startFrame <= shot.endFrame && endFrame >= shot.startFrame);
+function overlaps(shots, startFrame, endFrame, ignoredShotId = null) {
+	return shots.some((shot) => shot.id !== ignoredShotId && startFrame <= shot.endFrame && endFrame >= shot.startFrame);
 }
 
-/** Split only the Shot that actually covers the cut frame. Gap frames remain gaps. */
-export function cutAtFrame(shots, frame, currentFraming) {
+/** Split the named Shot at the frame. Gap frames remain gaps. */
+export function cutAtFrame(shots, shotId, frame, currentFraming) {
 	if (!Array.isArray(shots) || !currentFraming) return shots;
+	const source = shotById(shots, shotId);
+	const index = shotIndexById(shots, shotId);
 	const cutFrame = frameNumber(frame);
-	const index = shotIndexAtFrame(shots, cutFrame);
-	if (index < 0) return shots;
-	const source = shots[index];
 	if (cutFrame <= source.startFrame || cutFrame > source.endFrame) return shots;
 	const upstream = {
 		...source,
@@ -82,17 +95,12 @@ export function cutAtFrame(shots, frame, currentFraming) {
 	};
 	const downstream = createShot(`Shot ${shots.length + 1}`, cutFrame, source.endFrame, [
 		...source.cameraKeys.filter((key) => key.frame >= cutFrame),
-		{ frame: cutFrame, framing: currentFraming },
+		{ id: createStableItemId("camera-key"), frame: cutFrame, framing: currentFraming },
 	], source.camera);
 	return [...shots.slice(0, index), upstream, downstream, ...shots.slice(index + 1)];
 }
 
-/**
- * Add a 2-second Shot without editing an existing one. If the playhead is
- * occupied, place the new card in the next full-size free range instead. Add
- * and Split are separate editorial actions: hanging a new card on the board
- * must never cut the card already there.
- */
+/** Add a 2-second Shot without editing an existing one. */
 export function addShotAtFrame(shots, frame, frameCount, currentFraming, duration = DEFAULT_SHOT_FRAMES) {
 	const list = Array.isArray(shots) ? shots : [];
 	const count = Math.max(1, frameNumber(frameCount, 1));
@@ -103,61 +111,57 @@ export function addShotAtFrame(shots, frame, frameCount, currentFraming, duratio
 		const length = Math.max(1, frameNumber(duration, DEFAULT_SHOT_FRAMES));
 		const startFrame = freeStart(list, length, count, source.endFrame + 1);
 		if (startFrame === undefined) return list;
-		const keys = currentFraming ? [{ frame: startFrame, framing: currentFraming }] : [];
+		const keys = currentFraming ? [{ id: createStableItemId("camera-key"), frame: startFrame, framing: currentFraming }] : [];
 		return [...list, createShot(`Shot ${list.length + 1}`, startFrame, startFrame + length - 1, keys)].sort((a, b) => a.startFrame - b.startFrame);
 	}
 	const nextStart = list.find((shot) => shot.startFrame > target)?.startFrame ?? count;
 	const endFrame = Math.min(count - 1, nextStart - 1, target + Math.max(1, frameNumber(duration, DEFAULT_SHOT_FRAMES)) - 1);
 	if (endFrame < target || overlaps(list, target, endFrame)) return list;
-	const keys = currentFraming ? [{ frame: target, framing: currentFraming }] : [];
+	const keys = currentFraming ? [{ id: createStableItemId("camera-key"), frame: target, framing: currentFraming }] : [];
 	return [...list, createShot(`Shot ${list.length + 1}`, target, endFrame, keys)].sort((a, b) => a.startFrame - b.startFrame);
 }
 
-export function resizeShot(shots, index, edge, rawFrame, frameCount) {
-	if (!Array.isArray(shots) || index < 0 || index >= shots.length || (edge !== "start" && edge !== "end")) return shots;
+export function resizeShot(shots, shotId, edge, rawFrame, frameCount) {
+	const shot = shotById(shots, shotId);
+	if (edge !== "start" && edge !== "end") return shots;
 	const count = Math.max(1, frameNumber(frameCount, 1));
-	const shot = shots[index];
 	const frame = Math.max(0, Math.min(count - 1, frameNumber(rawFrame, edge === "start" ? shot.startFrame : shot.endFrame)));
 	const startFrame = edge === "start" ? Math.min(frame, shot.endFrame) : shot.startFrame;
 	const endFrame = edge === "end" ? Math.max(frame, shot.startFrame) : shot.endFrame;
-	if ((startFrame === shot.startFrame && endFrame === shot.endFrame) || overlaps(shots, startFrame, endFrame, index)) return shots;
-	const next = shots.slice();
-	next[index] = { ...shot, startFrame, endFrame, cameraKeys: uniqueKeys(shot.cameraKeys, startFrame, endFrame) };
-	return next.sort((a, b) => a.startFrame - b.startFrame);
+	if ((startFrame === shot.startFrame && endFrame === shot.endFrame) || overlaps(shots, startFrame, endFrame, shotId)) return shots;
+	return updateStableItem(shots, shotId, (entry) => ({ ...entry, startFrame, endFrame, cameraKeys: uniqueKeys(entry.cameraKeys, startFrame, endFrame) }), "shots")
+		.sort((a, b) => a.startFrame - b.startFrame);
 }
 
 /** Compatibility name for callers that move the left edge. */
-export function moveBoundary(shots, index, newStartFrame, frameCount) {
-	return resizeShot(shots, index, "start", newStartFrame, frameCount);
+export function moveBoundary(shots, shotId, newStartFrame, frameCount) {
+	return resizeShot(shots, shotId, "start", newStartFrame, frameCount);
 }
 
-export function removeShot(shots, index) {
-	if (!Array.isArray(shots) || index < 0 || index >= shots.length) return shots;
-	return shots.filter((_, shotIndex) => shotIndex !== index);
+export function removeShot(shots, shotId) {
+	return removeStableItem(shots, shotId, "shots");
 }
 
-export function renameShot(shots, index, name) {
-	if (!Array.isArray(shots) || index < 0 || index >= shots.length || typeof name !== "string" || !name.trim()) return shots;
-	return shots.map((shot, shotIndex) => shotIndex === index ? { ...shot, name: name.trim() } : shot);
+export function renameShot(shots, shotId, name) {
+	shotById(shots, shotId);
+	if (typeof name !== "string" || !name.trim()) return shots;
+	return updateStableItem(shots, shotId, (shot) => ({ ...shot, name: name.trim() }), "shots");
 }
 
-/** Move a card in absolute time. Duration and local camera instruction travel together. */
-export function reorderShot(shots, fromIndex, rawStartFrame, frameCount) {
-	if (!Array.isArray(shots) || fromIndex < 0 || fromIndex >= shots.length) return shots;
-	const shot = shots[fromIndex];
+/** Move a named card in absolute time. Duration and local camera instruction travel together. */
+export function reorderShot(shots, shotId, rawStartFrame, frameCount) {
+	const shot = shotById(shots, shotId);
 	const count = Math.max(1, frameNumber(frameCount, 1));
 	const duration = shot.endFrame - shot.startFrame + 1;
 	const startFrame = Math.max(0, Math.min(count - duration, frameNumber(rawStartFrame, shot.startFrame)));
 	const endFrame = startFrame + duration - 1;
-	if (startFrame === shot.startFrame || overlaps(shots, startFrame, endFrame, fromIndex)) return shots;
-	const delta = startFrame - shot.startFrame;
-	const moved = {
-		...shot,
+	if (startFrame === shot.startFrame || overlaps(shots, startFrame, endFrame, shotId)) return shots;
+	return updateStableItem(shots, shotId, (entry) => ({
+		...entry,
 		startFrame,
 		endFrame,
-		cameraKeys: uniqueKeys(shot.cameraKeys.map((key) => ({ ...key, frame: key.frame + delta })), startFrame, endFrame),
-	};
-	return shots.map((entry, index) => index === fromIndex ? moved : entry).sort((a, b) => a.startFrame - b.startFrame);
+		cameraKeys: uniqueKeys(entry.cameraKeys.map((key) => ({ ...key, frame: key.frame + startFrame - entry.startFrame })), startFrame, endFrame),
+	}), "shots").sort((a, b) => a.startFrame - b.startFrame);
 }
 
 function freeStart(shots, duration, frameCount, preferred) {
@@ -165,16 +169,25 @@ function freeStart(shots, duration, frameCount, preferred) {
 	return candidates.find((start) => start >= 0 && start + duration <= frameCount && !overlaps(shots, start, start + duration - 1));
 }
 
-export function duplicateShot(shots, index, frameCount) {
-	if (!Array.isArray(shots) || index < 0 || index >= shots.length) return shots;
-	const source = shots[index];
+export function duplicateShot(shots, shotId, frameCount) {
+	const source = shotById(shots, shotId);
 	const duration = source.endFrame - source.startFrame + 1;
 	const startFrame = freeStart(shots, duration, Math.max(1, frameNumber(frameCount, 1)), source.endFrame + 1);
 	if (startFrame === undefined) return shots;
 	const delta = startFrame - source.startFrame;
 	const duplicate = createShot(`${source.name} copy`, startFrame, startFrame + duration - 1,
-		source.cameraKeys.map((key) => ({ ...key, frame: key.frame + delta })), source.camera);
+		source.cameraKeys.map((key) => ({ ...key, id: createStableItemId("camera-key"), frame: key.frame + delta })), source.camera);
 	return [...shots, duplicate].sort((a, b) => a.startFrame - b.startFrame);
+}
+
+export function moveCameraKey(keys, keyId, frame) {
+	requireStableItem(keys, keyId, "cameraKeys");
+	if (keys.some((key) => key.id !== keyId && key.frame === frame)) return keys;
+	return updateStableItem(keys, keyId, (key) => ({ ...key, frame }), "cameraKeys").sort((a, b) => a.frame - b.frame);
+}
+
+export function removeCameraKey(keys, keyId) {
+	return removeStableItem(keys, keyId, "cameraKeys");
 }
 
 /** Gaps deliberately return null; the caller interprets null as free camera. */

@@ -10,14 +10,15 @@ import { ASSET_MAX_SOURCE_BYTES, assetIdForBytes, referencedAssetIds } from "../
 const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 
 // --- envelope round trip --------------------------------------------------
+const projectPose = { id: "custom_1", label: "My Pose", bones: { hips: [0.1, 0, 0] } };
 const scenesDocument = createSceneDocument("SCENE 01");
 scenesDocument.scenes[0].stage = createSceneStage({
-	characters: [{ id: "char-a", model: "x-bot-tpose", x: 1, z: -2, rot: 30, tint: "#a1b2c3", subject: "a robot" }],
+	characters: [{ id: "char-a", model: "x-bot-tpose", x: 1, z: -2, rot: 30, tint: "#a1b2c3", subject: "a robot", pose: projectPose }],
 });
 const doc = createProjectDocument({
 	scenesDocument,
 	workspaceLayout: { hierarchyWidth: 320, sidebarWidth: 400 },
-	customPoses: [{ id: "custom_1", label: "My Pose", bones: { hips: [0.1, 0, 0] } }],
+	customPoses: [projectPose],
 	name: "Demo Reel",
 });
 const parsed = readProjectDocument(JSON.stringify(doc));
@@ -27,6 +28,7 @@ assert.equal(parsed.project.scenesDocument.scenes[0].stage.characters[0].model, 
 assert.equal(parsed.project.scenesDocument.scenes[0].stage.characters[0].tint, "#a1b2c3");
 assert.equal(parsed.project.workspaceLayout.hierarchyWidth, 320);
 assert.equal(parsed.project.customPoses.length, 1);
+assert.deepEqual(parsed.project.scenesDocument.scenes[0].stage.characters[0].pose, projectPose, "a project scene keeps its embedded pose data after a file round-trip");
 
 // --- embedded scene assets -------------------------------------------------
 const renderedBytes = new Uint8Array([1, 2, 3]);

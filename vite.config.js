@@ -5,8 +5,15 @@ import react from "@vitejs/plugin-react";
 const ardyBridgeUrl = process.env.COZYCLAY_BRIDGE_PORT
 	? `http://127.0.0.1:${process.env.COZYCLAY_BRIDGE_PORT}`
 	: process.env.CCLAY_ARDY_BRIDGE_URL || "http://127.0.0.1:5181";
+const generationBridgeUrl = process.env.CCLAY_GENERATION_PORT
+	? `http://127.0.0.1:${process.env.CCLAY_GENERATION_PORT}`
+	: "http://127.0.0.1:5182";
+const livePort = process.env.COZYCLAY_LIVE_PORT ?? "5184";
 
 export default defineConfig({
+	define: {
+		"import.meta.env.VITE_COZYCLAY_LIVE_PORT": JSON.stringify(livePort),
+	},
 	// Root-absolute on purpose: the site has its own apex domain, and the studio
 	// is served from "/app/" while its public assets stay at the root. A relative
 	// base would resolve those to "/app/models/..." and 404.
@@ -74,7 +81,7 @@ export default defineConfig({
 					return req.url; // not a bridge route: serve the static asset
 				},
 			},
-			"/generation": "http://127.0.0.1:5182",
+			"/generation": generationBridgeUrl,
 		},
 	},
 });

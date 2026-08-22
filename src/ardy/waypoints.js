@@ -1,5 +1,8 @@
 const cleanZero = (value) => (Object.is(value, -0) || Math.abs(value) < 1e-9 ? 0 : value);
 import { isKo } from "../locale.js";
+import { TIMELINE_FRAME_FPS } from "../scenes.js";
+
+const DEFAULT_WAYPOINT_SPACING_FRAMES = Math.round(0.4 * TIMELINE_FRAME_FPS);
 
 /**
  * ARDY root constraints live in the actor's clip-local coordinates. CozyClay's
@@ -39,7 +42,7 @@ export function toArdyWaypoints(waypoints, actorRotationDeg = 0) {
  * through stalls shorter than 1e-6 and 0 when the whole path is
  * stationary; headings are always finite numbers in [-2π, 2π].
  */
-export function densifyArdyWaypoints(waypoints, actorRotationDeg = 0, maxPoints = 32, spacing = 8) {
+export function densifyArdyWaypoints(waypoints, actorRotationDeg = 0, maxPoints = 32, spacing = DEFAULT_WAYPOINT_SPACING_FRAMES) {
 	if (waypoints.length < 2) return [];
 	const local = toArdyWaypoints(waypoints, actorRotationDeg);
 

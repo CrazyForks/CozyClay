@@ -142,6 +142,7 @@ import {
 	saveCustomPoses,
 } from "./poses.js";
 import { IkHandles, PoseHandles, PoseStudioPanel, PoseThumbPreview, PoseTileGrid, warmPoseThumbnails } from "./posestudio.jsx";
+import { mergeProjectCustomPoses } from "./project-poses.js";
 import {
 	MID_TRACKS,
 	createIkState,
@@ -191,9 +192,12 @@ import {
 	renameShot,
 	reorderShot,
 	resizeShot,
+	moveCameraKey,
+	removeCameraKey,
 	shotAtFrame,
 	shotIndexAtFrame,
 } from "./cuts.js";
+import { createStableItemId, removeStableItem, updateStableItem } from "./stable-items.js";
 
 // Stated the way a crew states a setup: how far back, which side, how high the
 // lens rides, and what glass is on it. Order matters — Medium is the setup a
@@ -401,6 +405,9 @@ function hierarchyIdForIkFocus(focus) {
 
 const CAPTURE_W = 1920;
 const CAPTURE_H = 1080;
+const MCP_CAPTURE_W = 640;
+const MCP_CAPTURE_H = 360;
+const MCP_CAPTURE_SAMPLE_STEP = 32;
 const SHOT_ASPECT_PRESETS = Object.freeze({
 	"16:9": Object.freeze({ label: "16:9", aspect: SHOT_ASPECT_RATIOS["16:9"], width: 1920, height: 1080 }),
 	"2.39:1": Object.freeze({ label: "2.39:1", aspect: SHOT_ASPECT_RATIOS["2.39:1"], width: 2390, height: 1000 }),
@@ -567,6 +574,53 @@ const MULTIMODEL_SAMPLE_FPS = TIMELINE_FPS;
 /* ------------------------------------------------------------------ 3D --- */
 
 // Memoized: unchanged cast members skip re-rendering on every playhead tick.
+/**
+ * Give the head a front.
+ *
+ * Both shipped rigs are smooth helmets with no facial geometry and no texture
+ * of any kind — the FBX materials carry a flat colour and nothing else — and
+ * the app then replaces every material with one clay tone. The result reads as
+ * an ovoid with no direction, which matters most in an exported blocking
+ * frame: the prompt claims a three-quarter front view and the picture has to
+ * back it up.
+ *
+ * Two marks, because they fail in different conditions. The visor is a value
+ * cue and disappears in silhouette or backlight; the brow ridge is a shape cue
+ * and survives both. Both hang off the head bone, so posing, playback and
+ * pose extraction are untouched — nothing here is skinned or animated.
+ *
+ * Sizes are in the head bone's own units. The rig is authored in Mixamo
+ * centimetres and the whole clone is scaled by 0.01 afterwards, so a child of
+ * the bone is written in centimetres too: the skull reaches ~6 cm forward of
+ * the bone, which is 6 units here. Deliberately small — the maquette should
+ * keep reading as a mannequin rather than a robot.
+ */
+function addFacingMarks(clone, markTint) {
+	let head = null;
+	clone.traverse((node) => {
+		if (!head && node.isBone && /head$/i.test(node.name)) head = node;
+	});
+	if (!head) return;
+	const material = new THREE.MeshStandardMaterial({ color: markTint, roughness: 0.7, metalness: 0 });
+	const mark = (geometry, position, rotation) => {
+		const mesh = new THREE.Mesh(geometry, material);
+		mesh.position.set(...position);
+		if (rotation) mesh.rotation.set(...rotation);
+		mesh.castShadow = true;
+		mesh.frustumCulled = false;
+		// The head bone's local +Z is the face direction on both rigs.
+		head.add(mesh);
+		return mesh;
+	};
+	// The skull surface sits ~6 units forward of the bone, so both marks are
+	// placed to break that plane rather than rest on it — flush is invisible.
+	// Visor: a wide, shallow band across the eyeline.
+	mark(new THREE.BoxGeometry(8.5, 2.4, 1.8), [0, 5.5, 6.6], [-0.2, 0, 0]);
+	// Brow ridge: a short wedge that breaks the skull's outline from the side,
+	// so facing survives silhouette and backlight where the visor does not.
+	mark(new THREE.ConeGeometry(1.7, 3.6, 4), [0, 2.8, 6.4], [Math.PI / 2, Math.PI / 4, 0]);
+}
+
 const Character = memo(function Character({ url, position, rot, tint, pose, scale = 1, onRig, pickId }) {
 	const fbx = useFBX(url);
 	const model = useMemo(() => {
@@ -592,8 +646,12 @@ const Character = memo(function Character({ url, position, rot, tint, pose, scal
 					metalness: 0,
 				});
 				child.frustumCulled = false;
+				// The subject's own shadow is what plants it on the deck; a blocking
+				// frame without one leaves the figure floating over flat colour.
+				child.castShadow = true;
 			}
 		});
+		addFacingMarks(clone, jointTint);
 		// Stamp the bind pose while the rig is still untouched: the pose effect
 		// below runs immediately after and would otherwise be baked into "rest".
 		primeBindPose(clone);
@@ -902,7 +960,7 @@ function CameraRailScenePreview({ points }) {
 	);
 }
 
-function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
+function ShotPathPreview({ waypoints, start, activeWaypointId }) {
 	const rootRef = useRef(null);
 	const line = useMemo(() => {
 		if (!waypoints.length) return null;
@@ -931,10 +989,10 @@ function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
 				</line>
 			)}
 			{waypoints.map((waypoint, i) => {
-				const active = waypoint.frame === activeWaypointFrame;
+				const active = waypoint.id === activeWaypointId;
 				const color = active ? "#ffd76c" : "#4e9fb3";
 				return (
-					<group key={waypoint.frame} position={[waypoint.x, 0.03, waypoint.z]}>
+					<group key={waypoint.id} position={[waypoint.x, 0.03, waypoint.z]}>
 						<mesh rotation={[-Math.PI / 2, 0, 0]}>
 							<ringGeometry args={[0.13, 0.19, 28]} />
 							<meshBasicMaterial color={color} depthWrite={false} />
@@ -959,40 +1017,16 @@ function ShotPathPreview({ waypoints, start, activeWaypointFrame }) {
 	);
 }
 
-/** Unity-style scene grid over the whole open stage, editor chrome only.
-    Two tiers keep it legible at any zoom: 1 m minor cells for placement and a
-    darker 10 m major line that survives wide framings where minor lines blur
-    into a wash. Both ride the gizmo layer so exports and the plan never pick
-    them up, sit a hair above the deck to dodge z-fighting, and never swallow
-    a raycast — floor clicks pass straight through to the ground plane. Warm
-    greys tuned to the clay floor (#e7e1d7). */
-function SceneGrid() {
-	const grids = useMemo(() => {
-		const make = (divisions, color, opacity, y) => {
-			const helper = new THREE.GridHelper(500, divisions, color, color);
-			helper.material.transparent = true;
-			helper.material.opacity = opacity;
-			helper.material.depthWrite = false;
-			helper.position.y = y;
-			helper.layers.set(GIZMO_LAYER);
-			helper.raycast = () => null;
-			return helper;
-		};
-		return [
-			// Value hierarchy against the bright deck (#f4f0e8): quiet 1 m cells
-			// for placement, assertive 10 m lines for structure. The gap between
-			// floor and minor keeps the tiling from reading as a repeating texture.
-			make(500, 0xa89d8a, 0.4, 0.002), // minor: 1 m cells, subtle
-			make(50, 0x6a5f4e, 0.9, 0.003), // major: 10 m lines, clearly darker
-		];
-	}, []);
-	return (
-		<>
-			<primitive object={grids[0]} />
-			<primitive object={grids[1]} />
-		</>
-	);
-}
+// How far the deck runs in an EXPORTED frame. The viewport fades it out at
+// 18..54 m to keep the working view clean; a blocking frame needs the far edge
+// to survive, so the falloff starts later and ends further away, letting the
+// floor resolve into a horizon instead of dissolving into the background.
+//
+// Both values must stay inside the shot camera's far plane (100 m) — geometry
+// past it is clipped outright, so a fog range that ended beyond it would cut
+// the deck off mid-fade and take the horizon with it.
+const CAPTURE_FOG_NEAR = 55;
+const CAPTURE_FOG_FAR = 95;
 
 /** Offscreen aspect-aware read-back, always from the shot camera. */
 function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
@@ -1004,6 +1038,7 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 		});
 		const buffer = new Uint8Array(width * height * 4);
 		const api = {
+			scene,
 			render() {
 				const source = camRef.current;
 				if (!source) return null;
@@ -1017,17 +1052,38 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 				cam.aspect = width / height;
 				cam.updateProjectionMatrix();
 				const previous = gl.getRenderTarget();
+				// The viewport's fog dissolves the deck into the background by ~54 m
+				// so the working view has no horizon to distract from blocking. An
+				// exported frame wants the opposite: the horizon IS the vanishing
+				// point, and without it the floor has no far edge to read depth
+				// against. Push the falloff back for this draw only, then restore
+				// it so the viewport is untouched.
+				const fog = scene.fog;
+				const fogNear = fog?.near;
+				const fogFar = fog?.far;
+				if (fog) {
+					fog.near = CAPTURE_FOG_NEAR;
+					fog.far = CAPTURE_FOG_FAR;
+				}
 				try {
 					gl.setRenderTarget(target);
 					gl.render(scene, cam);
 					gl.readRenderTargetPixels(target, 0, 0, width, height, buffer);
 				} finally {
 					gl.setRenderTarget(previous);
+					if (fog) {
+						fog.near = fogNear;
+						fog.far = fogFar;
+					}
 				}
 				return buffer;
 			},
 		};
 		apiRef.current = api;
+		if (width === MCP_CAPTURE_W && height === MCP_CAPTURE_H) {
+			window.__cozyclayMcpCaptureReady = true;
+			window.dispatchEvent(new Event("cozyclay:mcp-capture-ready"));
+		}
 		// QA hook: run one real export render and report what the capture
 		// camera saw — the layer mask plus an amber scan of the output
 		// frame (the selection cage's warm tone). Lets the suite prove the
@@ -1047,10 +1103,117 @@ function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE_H }) {
 		};
 		return () => {
 			if (apiRef.current === api) apiRef.current = null;
+			if (width === MCP_CAPTURE_W && height === MCP_CAPTURE_H) window.__cozyclayMcpCaptureReady = false;
 			target.dispose();
 		};
 	}, [gl, scene, camRef, apiRef, width, height]);
 	return null;
+}
+
+async function captureMcpFrame({ capture, camera, characters, activeCharacterId, objects, rigs, readAuthoredState }) {
+	if (!capture || !camera) throw new Error("No renderable shot camera is available for capture_frame.");
+	const authoredStateBefore = JSON.stringify(readAuthoredState());
+	const buffer = capture.render();
+	if (!buffer) throw new Error("No renderable shot camera is available for capture_frame.");
+	let nonBlackPixels = 0;
+	for (let offset = 0; offset < buffer.length; offset += 4) {
+		if (buffer[offset] > 5 || buffer[offset + 1] > 5 || buffer[offset + 2] > 5) nonBlackPixels += 1;
+	}
+	if (nonBlackPixels === 0) throw new Error("capture_frame rejected a black rendered frame.");
+	camera.updateMatrixWorld();
+	const raycaster = new THREE.Raycaster();
+	const roots = [];
+	capture.scene.traverse((node) => {
+		const id = node.userData?.sceneObjectId;
+		if (typeof id === "string" && objects.some((object) => object.id === id)) roots.push({ id, root: node });
+	});
+	const assertions = characters.map((character) => {
+		const rig = rigs[character.id];
+		if (!rig || character.hidden) return { id: character.id, renderable: false, behindCameraPlane: null, fartherAlongCameraForward: null, distanceToFloor: null, occludedBy: null, visiblePixelCount: 0 };
+		rig.updateWorldMatrix(true, true);
+		const bounds = new THREE.Box3().setFromObject(rig);
+		const center = bounds.getCenter(new THREE.Vector3());
+		const cameraSpace = camera.worldToLocal(center.clone());
+		const behindCameraPlane = cameraSpace.z >= 0;
+		const distanceToFloor = Math.max(0, bounds.min.y);
+		if (behindCameraPlane || bounds.isEmpty()) {
+			return { id: character.id, renderable: true, behindCameraPlane, fartherAlongCameraForward: -cameraSpace.z, distanceToFloor, occludedBy: null, visiblePixelCount: 0 };
+		}
+		const corners = [
+			new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.min.z), new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.max.z),
+			new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.min.z), new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+			new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.min.z), new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
+			new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.min.z), new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
+		].map((corner) => corner.project(camera));
+		const minX = Math.max(0, Math.floor(((Math.min(...corners.map((corner) => corner.x)) + 1) * 0.5) * MCP_CAPTURE_W));
+		const maxX = Math.min(MCP_CAPTURE_W - 1, Math.ceil(((Math.max(...corners.map((corner) => corner.x)) + 1) * 0.5) * MCP_CAPTURE_W));
+		const minY = Math.max(0, Math.floor(((1 - Math.max(...corners.map((corner) => corner.y))) * 0.5) * MCP_CAPTURE_H));
+		const maxY = Math.min(MCP_CAPTURE_H - 1, Math.ceil(((1 - Math.min(...corners.map((corner) => corner.y))) * 0.5) * MCP_CAPTURE_H));
+		const occluders = new Map();
+		let visiblePixelCount = 0;
+		for (let y = minY; y <= maxY; y += MCP_CAPTURE_SAMPLE_STEP) {
+			for (let x = minX; x <= maxX; x += MCP_CAPTURE_SAMPLE_STEP) {
+				raycaster.setFromCamera({ x: (x / MCP_CAPTURE_W) * 2 - 1, y: 1 - (y / MCP_CAPTURE_H) * 2 }, camera);
+				const characterHit = raycaster.intersectObject(rig, true)[0];
+				if (!characterHit) continue;
+				const objectHit = raycaster.intersectObjects(roots.map((entry) => entry.root), true)[0];
+				const pixels = MCP_CAPTURE_SAMPLE_STEP * MCP_CAPTURE_SAMPLE_STEP;
+				if (!objectHit || objectHit.distance >= characterHit.distance - 1e-4) {
+					visiblePixelCount += pixels;
+					continue;
+				}
+				const occluder = roots.find((entry) => {
+					let node = objectHit.object;
+					while (node) {
+						if (node === entry.root) return true;
+						node = node.parent;
+					}
+					return false;
+				});
+				if (occluder) occluders.set(occluder.id, (occluders.get(occluder.id) ?? 0) + pixels);
+			}
+		}
+		const occludedBy = [...occluders.entries()].sort((left, right) => right[1] - left[1])[0]?.[0] ?? null;
+		return { id: character.id, renderable: true, behindCameraPlane, fartherAlongCameraForward: -cameraSpace.z, distanceToFloor, occludedBy, visiblePixelCount };
+	});
+	const active = assertions.find((entry) => entry.id === activeCharacterId) ?? assertions[0];
+	const authoredStateAfter = JSON.stringify(readAuthoredState());
+	const canvas = document.createElement("canvas");
+	canvas.width = MCP_CAPTURE_W;
+	canvas.height = MCP_CAPTURE_H;
+	const context = canvas.getContext("2d");
+	if (!context) throw new Error("capture_frame could not encode the rendered image.");
+	const image = context.createImageData(MCP_CAPTURE_W, MCP_CAPTURE_H);
+	for (let row = 0; row < MCP_CAPTURE_H; row += 1) {
+		image.data.set(buffer.subarray((MCP_CAPTURE_H - 1 - row) * MCP_CAPTURE_W * 4, (MCP_CAPTURE_H - row) * MCP_CAPTURE_W * 4), row * MCP_CAPTURE_W * 4);
+	}
+	context.putImageData(image, 0, 0);
+	const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+	if (!blob) throw new Error("capture_frame could not compress the rendered image.");
+	const bytes = new Uint8Array(await blob.arrayBuffer());
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return {
+		width: MCP_CAPTURE_W,
+		height: MCP_CAPTURE_H,
+		mimeType: "image/png",
+		encoding: "base64",
+		byteSize: bytes.length,
+		data: btoa(binary),
+		authoredStateBefore,
+		authoredStateAfter,
+		assertions: {
+			renderable: true,
+			blackFrame: false,
+			nonBlackPixels,
+			behindCameraPlane: active?.behindCameraPlane ?? null,
+			fartherAlongCameraForward: active?.fartherAlongCameraForward ?? null,
+			distanceToFloor: active?.distanceToFloor ?? null,
+			occludedBy: active?.occludedBy ?? null,
+			visiblePixelCount: active?.visiblePixelCount ?? 0,
+			characters: assertions,
+		},
+	};
 }
 
 /**
@@ -1493,6 +1656,8 @@ globalThis.playMode = centerTab === "play";
 		if (!rigReportersRef.current.has(charId)) {
 			rigReportersRef.current.set(charId, (rig) => {
 				setRigs((current) => (current[charId] === rig ? current : { ...current, [charId]: rig }));
+				window.__cozyclayMcpRigReady = [...new Set([...(window.__cozyclayMcpRigReady ?? []), charId])];
+				window.dispatchEvent(new CustomEvent("cozyclay:mcp-rig-ready", { detail: charId }));
 				const waiter = rigWaitersRef.current.get(charId);
 				if (waiter) {
 					rigWaitersRef.current.delete(charId);
@@ -2268,9 +2433,12 @@ globalThis.playMode = centerTab === "play";
 
 	const [cameraPos, setCameraPos] = useState(DEFAULT_CAMERA_POSITION);
 	const [subjectVisible, setSubjectVisible] = useState(true);
+	const mcpCaptureRef = useRef(null);
 	const liveControlRef = useRef(null);
 	const liveStateRef = useRef(null);
 	const liveHandlersRef = useRef(null);
+	const [liveWorkspaceHandle, setLiveWorkspaceHandle] = useState(null);
+	const liveWorkspaceIdRef = useRef(crypto.randomUUID());
 	const [result, setResult] = useState(null);
 	const [resultOpen, setResultOpen] = useState(false);
 	const [copied, setCopied] = useState(false);
@@ -2528,10 +2696,8 @@ globalThis.playMode = centerTab === "play";
 	const cameraRail = activeCamera.cameraRail;
 	const activeShotDuration = activeShot ? activeShot.endFrame - activeShot.startFrame + 1 : 0;
 	const hasCameraKeys = shots.some((shot) => shot.cameraKeys.length > 0);
-	function changeActiveCamera(patch, index = activeShotIdx) {
-		setShots((current) => current.map((shot, shotIndex) => shotIndex === index
-			? { ...shot, camera: updateCameraBlock(shot.camera, patch) }
-			: shot));
+	function changeActiveCamera(patch, shotId = activeShot?.id) {
+		setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, patch) }), "shots"));
 	}
 	function syncActiveCameraFraming() {
 		const cam = shotCamRef.current;
@@ -2545,8 +2711,8 @@ globalThis.playMode = centerTab === "play";
 			followCam.aimHeight,
 			{ x: Math.sin(subjectYaw), z: Math.cos(subjectYaw) },
 		);
-		setShots((current) => current.map((shot, shotIndex) => {
-			if (shotIndex !== activeShotIdx) return shot;
+		setShots((current) => current.map((shot) => {
+			if (shot.id !== activeShot?.id) return shot;
 			const camera = createCameraBlock(shot.camera);
 			const previous = camera.followCam;
 			if (
@@ -2595,9 +2761,10 @@ globalThis.playMode = centerTab === "play";
 		changeActiveCamera(removeCameraRail(activeCamera));
 		setToast(ko("Camera rail deleted — Follow keeps the current distance", "카메라 레일 삭제됨 — 팔로우가 현재 거리를 유지합니다"));
 	}
-	function previewCameraShot(index) {
-		const selected = shots[index];
-		if (!selected || waypointMode) return;
+	function previewCameraShot(shotId) {
+		const selected = shots.find((entry) => entry.id === shotId);
+		if (!selected) throw new Error(`Unknown shots ID: ${shotId}`);
+		if (waypointMode) return;
 		if (tlPlaying && cameraPreviewEndRef.current === selected.endFrame) {
 			cameraPreviewEndRef.current = null;
 			setTlPlaying(false);
@@ -2609,9 +2776,8 @@ globalThis.playMode = centerTab === "play";
 		setTlFrame(selected.startFrame);
 		setTlPlaying(true);
 	}
-	function editRailSchedule(index, edit) {
-		setShots((current) => current.map((shot, shotIndex) => {
-			if (shotIndex !== index) return shot;
+	function editRailSchedule(shotId, edit) {
+		setShots((current) => updateStableItem(current, shotId, (shot) => {
 			const camera = createCameraBlock(shot.camera);
 			const duration = shot.endFrame - shot.startFrame + 1;
 			const resolved = resolveRailSchedule({ railFollow: camera.railFollow, cameraRail: camera.cameraRail, frameCount: duration });
@@ -2620,7 +2786,7 @@ globalThis.playMode = centerTab === "play";
 				: defaultRailRange(duration);
 			const railFollow = base ? edit(base, duration) : null;
 			return railFollow ? { ...shot, camera: updateCameraBlock(camera, { railFollow: { mode: "range", ...railFollow } }) } : shot;
-		}));
+		}, "shots"));
 	}
 	const frameCountRef = useRef(DEFAULT_DURATION_S * TIMELINE_FPS);
 	frameCountRef.current = tlFrameCount;
@@ -2628,13 +2794,13 @@ globalThis.playMode = centerTab === "play";
 	// the fixed bridge contract rejects out-of-order or duplicate frames.
 	const [waypointMode, setWaypointMode] = useState(false);
 	const [waypoints, setWaypoints] = useState(startupStage.characters?.[0]?.layer?.waypoints ?? startupShotState?.waypoints ?? []);
-	const [activeWaypointFrame, setActiveWaypointFrame] = useState(null);
+	const [activeWaypointId, setActiveWaypointId] = useState(null);
 	const [pendingWaypointFrame, setPendingWaypointFrame] = useState(null);
 	useEffect(() => {
 		// Subject 1 is the sole frame-zero root start. Drop any legacy seeded
 		// waypoint so Top-View never renders two start markers.
 		setWaypoints((current) => current.filter((waypoint) => waypoint.frame !== 0));
-		setActiveWaypointFrame((current) => (current === 0 ? null : current));
+		setActiveWaypointId(null);
 		setPendingWaypointFrame((current) => (current === 0 ? null : current));
 	}, []);
 
@@ -2717,6 +2883,26 @@ globalThis.playMode = centerTab === "play";
 	const [projectDirty, setProjectDirty] = useState(false);
 	const [projectMenuOpen, setProjectMenuOpen] = useState(false);
 	const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
+
+	// Dismissal mirrors the inspector-actions menu: only listen while open,
+	// ignore presses inside the wrap (the trigger's own click keeps toggling),
+	// close on any outside pointerdown or Escape, and tear down on close.
+	useEffect(() => {
+		if (!projectMenuOpen) return undefined;
+		const onPointerDown = (event) => {
+			if (event.target instanceof Element && event.target.closest(".project-menu-wrap")) return;
+			setProjectMenuOpen(false);
+		};
+		const onKeyDown = (event) => {
+			if (event.key === "Escape") setProjectMenuOpen(false);
+		};
+		document.addEventListener("pointerdown", onPointerDown);
+		window.addEventListener("keydown", onKeyDown);
+		return () => {
+			document.removeEventListener("pointerdown", onPointerDown);
+			window.removeEventListener("keydown", onKeyDown);
+		};
+	}, [projectMenuOpen]);
 	const projectHandleRef = useRef(null);
 	const projectSnapshotRef = useRef("");
 	const projectStateRef = useRef(null);
@@ -2816,11 +3002,12 @@ globalThis.playMode = centerTab === "play";
 		const doc = Number.isInteger(source.version) && source.version < SCENES_VERSION
 			? { ...source, version: SCENES_VERSION, scenes: source.scenes.map((scene) => ({ ...scene, stage: migrateStageFrames(scene.stage) })) }
 			: source;
+		const mergedCustomPoses = mergeProjectCustomPoses(customPoses, project.customPoses);
 		setScenes(doc.scenes);
 		setActiveSceneId(doc.activeSceneId);
 		if (project.workspaceLayout) setWorkspaceLayout({ ...DEFAULT_WORKSPACE_LAYOUT, ...project.workspaceLayout });
-		setCustomPoses(project.customPoses);
-		saveCustomPoses(project.customPoses);
+		setCustomPoses(mergedCustomPoses);
+		saveCustomPoses(mergedCustomPoses);
 		persistScenes(doc.scenes, doc.activeSceneId);
 		openScene(doc.scenes[activeSceneIndex(doc.scenes, doc.activeSceneId)], doc.scenes);
 		projectSnapshotRef.current = collectProjectSnapshot(project.name);
@@ -2965,7 +3152,7 @@ globalThis.playMode = centerTab === "play";
 		setMovePlaying(false);
 		manualCameraOverrideRef.current = false;
 		setRailDraw(false);
-		setActiveWaypointFrame(null);
+		setActiveWaypointId(null);
 		setPendingWaypointFrame(null);
 		setSelectedHierarchyId("shot");
 		scenesRef.current = nextScenes;
@@ -3036,8 +3223,13 @@ globalThis.playMode = centerTab === "play";
 		camera: cameraPos,
 		fovDeg,
 		filmback,
+		stage: { shotAspect: shotAspectKey, sensorId, hasCharSheet },
+		timeline: { currentFrame: tlFrame, frameCount: tlFrameCount, fps: tlFps },
+		activeCharacterId,
+		waypoints,
 		characters,
 		objects: sceneObjects,
+		rigs,
 		commitManualCameraFraming,
 		recordCharacterUndo,
 		removeCharacter,
@@ -3066,6 +3258,11 @@ globalThis.playMode = centerTab === "play";
 		const describe = () => {
 			const live = liveStateRef.current;
 			return {
+				document: {
+					version: SCENES_VERSION,
+					activeSceneId: activeSceneIdRef.current,
+					scenes: snapshotActiveScene(),
+				},
 				sceneName: live.scenes.find((scene) => scene.id === live.activeSceneId)?.name ?? "",
 				camera: {
 					...live.camera,
@@ -3077,9 +3274,22 @@ globalThis.playMode = centerTab === "play";
 					sensorId: live.filmback.sensorId,
 					aspectRatio: live.filmback.aspectRatio,
 				},
+				stage: live.stage,
+				timeline: live.timeline,
+				activeCharacterId: live.activeCharacterId,
 				// y rides too: a character standing on a roof must survive the
 				// same save/open round trip a renamed object just learned to.
-				characters: live.characters.map((entry) => ({ id: entry.id, subject: entry.subject, x: entry.x, y: entry.y ?? 0, z: entry.z, rot: entry.rot, hidden: entry.hidden })),
+				characters: live.characters.map((entry) => {
+					const layer = entry.id === live.activeCharacterId
+						? { waypoints: live.waypoints ?? [], promptClips: live.promptClips ?? [] }
+						: entry.layer ?? { waypoints: [], promptClips: [] };
+					return {
+						id: entry.id, model: entry.model, subject: entry.subject,
+						x: entry.x, y: entry.y ?? 0, z: entry.z, rot: entry.rot, hidden: entry.hidden,
+						pose: entry.pose ?? null, tint: entry.tint ?? null, scale: entry.scale ?? 1,
+						motionRef: entry.motionRef ?? null, layer,
+					};
+				}),
 				// Scale and the library footprint travel with each object: the server
 				// reports real sizes from them, and without them every prop reads as
 				// 1x1x1 no matter how it was actually built.
@@ -3090,6 +3300,7 @@ globalThis.playMode = centerTab === "play";
 					// its renderer round-trips into something the set cannot draw.
 					renderer: object.renderer,
 					x: object.x, y: object.y, z: object.z, rot: object.rot,
+					rotX: object.rotX ?? 0, rotZ: object.rotZ ?? 0, color: object.color ?? null,
 					scaleX: object.scaleX, scaleY: object.scaleY, scaleZ: object.scaleZ,
 					parent: object.parent ?? null,
 					footprint: object.footprint, height: object.height,
@@ -3103,6 +3314,12 @@ globalThis.playMode = centerTab === "play";
 		};
 		const syncObjects = () => {
 			liveStateRef.current.objects = storeRef.current.objects;
+		};
+		let batchToken = null;
+		const applyObjectMutation = (mutation) => {
+			if (batchToken === null) storeRef.current.applyAtomic(mutation);
+			else storeRef.current.applyIn(batchToken, mutation);
+			syncObjects();
 		};
 		liveHandlersRef.current = {
 			ping: () => ({ pong: true }),
@@ -3151,7 +3368,7 @@ globalThis.playMode = centerTab === "play";
 				const patch = finitePatch(args, ["x", "z", "rot"]);
 				live.recordCharacterUndo();
 				const id = nextCharacterId(live.characters);
-				replaceCharacters([...live.characters, createCharacterEntry({ id, subject: args.subject, pose: DEFAULT_POSE, ...patch }, live.characters.length)]);
+				replaceCharacters([...live.characters, createCharacterEntry({ id, model: args.model, subject: args.subject, pose: DEFAULT_POSE, ...patch }, live.characters.length)]);
 				return { id };
 			},
 			update_character: (args) => {
@@ -3202,11 +3419,10 @@ globalThis.playMode = centerTab === "play";
 				const placed = updateSceneObject([object], object.id, patch)[0];
 				// One atomic entry: create, name and attach undo together, as the
 				// single "place part" gesture they are to the caller.
-				storeRef.current.applyAtomic((objects) => {
+				applyObjectMutation((objects) => {
 					const next = [...objects, placed];
 					return args.parent !== undefined ? setSceneObjectParent(next, placed.id, args.parent) : next;
 				});
-				syncObjects();
 				return { id: placed.id };
 			},
 			update_object: (args) => {
@@ -3231,15 +3447,13 @@ globalThis.playMode = centerTab === "play";
 					if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
 					patch.name = args.name;
 				}
-				storeRef.current.applyAtomic((objects) => updateSceneObject(objects, args.id, patch));
-				syncObjects();
+				applyObjectMutation((objects) => updateSceneObject(objects, args.id, patch));
 				return { id: args.id };
 			},
 			remove_object: (args) => {
 				const live = liveStateRef.current;
 				if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
-				storeRef.current.applyAtomic((objects) => removeSceneObject(objects, args.id));
-				syncObjects();
+				applyObjectMutation((objects) => removeSceneObject(objects, args.id));
 				return { id: args.id };
 			},
 			// Replacing a document follows the existing project-open path and clears
@@ -3258,7 +3472,11 @@ globalThis.playMode = centerTab === "play";
 				live.objects = storeRef.current.objects;
 				live.characters = createSceneStage(target.stage).characters;
 				charactersRef.current = live.characters;
-				return { sceneName: target.name };
+				return {
+					sceneName: target.name,
+					activeSceneId: document.activeSceneId,
+					scenes: document.scenes.map((scene) => ({ id: scene.id, name: scene.name })),
+				};
 			},
 			// Loads a bridge-generated take onto the active character — the same
 			// path the demo seed and the Motion panel use. Replacing a take is not
@@ -3274,10 +3492,9 @@ globalThis.playMode = centerTab === "play";
 				for (const child of args.children) {
 					if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
 				}
-				storeRef.current.applyAtomic((objects) =>
+				applyObjectMutation((objects) =>
 					args.children.reduce((acc, child) => setSceneObjectParent(acc, child, args.parent), objects),
 				);
-				syncObjects();
 				return { parent: args.parent, children: args.children.length };
 			},
 			ungroup_objects: (args) => {
@@ -3286,11 +3503,58 @@ globalThis.playMode = centerTab === "play";
 				for (const child of args.children) {
 					if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
 				}
-				storeRef.current.applyAtomic((objects) =>
+				applyObjectMutation((objects) =>
 					args.children.reduce((acc, child) => setSceneObjectParent(acc, child, null), objects),
 				);
-				syncObjects();
 				return { children: args.children.length };
+			},
+			apply_batch: (args) => {
+				if (batchToken !== null) throw new Error("Nested batches are not supported");
+				if (!Array.isArray(args.ops)) throw new Error("Invalid batch operations");
+				if (args.ops.length > 100) throw new Error("A batch may contain at most 100 operations");
+				if (args.atomic !== undefined && typeof args.atomic !== "boolean") throw new Error("Invalid atomic flag");
+				if (args.stopOnError !== undefined && typeof args.stopOnError !== "boolean") throw new Error("Invalid stopOnError flag");
+				if (args.label !== undefined && (typeof args.label !== "string" || !args.label.trim())) throw new Error("Invalid batch label");
+				const objectCommands = new Set(["place_object", "update_object", "remove_object", "group_objects", "ungroup_objects"]);
+				for (const operation of args.ops) {
+					if (!operation || typeof operation !== "object" || Array.isArray(operation)) throw new Error("Invalid batch operation");
+					if (operation.name === "apply_batch") throw new Error("Nested batches are not supported");
+					if (!objectCommands.has(operation.name)) {
+						throw new Error("Batch v1 supports object mutations only; character mutations are not supported");
+					}
+					if (!operation.args || typeof operation.args !== "object" || Array.isArray(operation.args)) throw new Error("Invalid batch operation arguments");
+				}
+				const atomic = args.atomic === true;
+				const stopOnError = args.stopOnError !== false;
+				const depthBefore = storeRef.current.depths().past;
+				const token = storeRef.current.begin(args.label?.trim() || "MCP batch", () => {});
+				const priorSuppressObjectClock = suppressObjectClockRef.current;
+				suppressObjectClockRef.current = true;
+				const applied = [];
+				const failed = [];
+				batchToken = token;
+				let rolledBack = false;
+				let commit = false;
+				try {
+					for (const [index, operation] of args.ops.entries()) {
+						try {
+							liveHandlersRef.current[operation.name](operation.args);
+							applied.push(index + 1);
+						} catch (error) {
+							failed.push({ index: index + 1, error: error instanceof Error ? error.message : "Command failed" });
+							if (stopOnError) break;
+						}
+					}
+					rolledBack = atomic && failed.length > 0;
+					commit = !rolledBack;
+				} finally {
+					batchToken = null;
+					suppressObjectClockRef.current = priorSuppressObjectClock;
+					storeRef.current.end(token, { commit });
+				}
+				if (!rolledBack && storeRef.current.depths().past > depthBefore) lastObjectOpRef.current = ++opClockRef.current;
+				syncObjects();
+				return { label: args.label?.trim() || "MCP batch", applied, failed, rolledBack };
 			},
 			// Authoring blocks is not generating: a director writes the beats and
 			// their ranges first, then generates when the schedule reads right.
@@ -3308,30 +3572,66 @@ globalThis.playMode = centerTab === "play";
 					return { id: `prompt-${stamp}-${i}`, startFrame, endFrame, text: block.text.trim() };
 				});
 				const live = liveStateRef.current;
+				live.promptClips = clips;
 				live.setPromptClips(clips);
 				if (clips.length) {
 					live.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
 				}
 				return { blocks: clips.length };
 			},
+			capture_frame: async () => {
+				const live = liveStateRef.current;
+				return captureMcpFrame({
+					capture: mcpCaptureRef.current,
+					camera: shotCamRef.current,
+					characters: live.characters,
+					activeCharacterId: live.activeCharacterId,
+					objects: live.objects,
+					rigs: live.rigs,
+					readAuthoredState: () => ({
+						scenes: liveStateRef.current.scenes,
+						activeSceneId: liveStateRef.current.activeSceneId,
+						camera: liveStateRef.current.camera,
+						fovDeg: liveStateRef.current.fovDeg,
+						filmback: liveStateRef.current.filmback,
+						stage: liveStateRef.current.stage,
+						timeline: liveStateRef.current.timeline,
+						activeCharacterId: liveStateRef.current.activeCharacterId,
+						waypoints: liveStateRef.current.waypoints,
+						characters: liveStateRef.current.characters,
+						objects: liveStateRef.current.objects,
+					}),
+				});
+			},
 			load_motion: async (args) => {
 				if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
 				const prompt = typeof args.prompt === "string" ? args.prompt : "";
 				if (args.drop !== undefined && !normalizeRootDrop(args.drop)) throw new Error("Invalid drop");
-				await liveStateRef.current.loadMotion(args.url, prompt, undefined, args.drop ?? null);
 				// Optional per-phase blocks land on the Prompts lane the way hand-authored
 				// ones do. They arrive on ARDY's 20 fps clock; the lane runs on the 24 fps
 				// production clock, so each boundary is converted, not copied.
+				let clips = null;
 				if (Array.isArray(args.blocks) && args.blocks.length) {
 					const toTimeline = (frame) => Math.round((frame * TIMELINE_FPS) / ARDY_FPS);
 					const stamp = Date.now();
-					const clips = args.blocks.map((block, i) => ({
+					clips = args.blocks.map((block, i) => ({
 						id: `prompt-${stamp}-${i}`,
 						startFrame: toTimeline(block.startFrame),
 						endFrame: toTimeline(block.endFrame),
 						text: typeof block.prompt === "string" ? block.prompt : "",
 					}));
-					liveStateRef.current.setPromptClips(clips);
+				}
+				const targetCharacterId = args.characterId ?? liveStateRef.current.activeCharacterId;
+				const targetPromptClips = clips;
+				await liveStateRef.current.loadMotion(
+					args.url,
+					prompt,
+					undefined,
+					args.drop ?? null,
+					targetCharacterId,
+					targetPromptClips,
+				);
+				if (clips) {
 					liveStateRef.current.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
 				}
 				return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
@@ -3345,12 +3645,35 @@ globalThis.playMode = centerTab === "play";
 		// StrictMode replays effects in development. Delaying the open lets the
 		// replay cleanup cancel its first pass, so one tab owns one socket.
 		const timer = setTimeout(() => {
-			if (!liveControlRef.current) liveControlRef.current = createLiveControl({ handlers: liveHandlersRef.current });
+			if (!liveControlRef.current) {
+				liveControlRef.current = createLiveControl({
+					handlers: liveHandlersRef.current,
+					workspaceId: liveWorkspaceIdRef.current,
+					onWorkspace: setLiveWorkspaceHandle,
+					onEvent: (name, payload) => {
+						if (name !== "motion_job" || typeof payload.taskId !== "string") return;
+						if (payload.status === "completed" && typeof payload.outcome?.motionUrl === "string") {
+							liveHandlersRef.current.load_motion({
+								url: payload.outcome.motionUrl,
+								prompt: payload.outcome.prompt ?? "",
+								blocks: payload.outcome.blocks ?? [],
+								drop: payload.outcome.drop ?? null,
+								characterId: payload.outcome.targetCharacterId,
+							}).catch((error) => setToast(error instanceof Error ? error.message : String(error)));
+							return;
+						}
+						if (["failed", "cancelled", "expired"].includes(payload.status)) {
+							setToast(payload.outcome?.message ?? `Motion job ${payload.status}.`);
+						}
+					},
+				});
+			}
 		}, 0);
 		return () => {
 			clearTimeout(timer);
 			liveControlRef.current?.close();
 			liveControlRef.current = null;
+			setLiveWorkspaceHandle(null);
 		};
 	}, []);
 
@@ -3377,7 +3700,7 @@ globalThis.playMode = centerTab === "play";
 	const [promptClips, setPromptClips] = useState(() => (startupStage.characters?.[0]?.layer?.promptClips ?? DEFAULT_PROMPT_CLIPS).map((clip) => ({ ...clip })));
 	// These hooks are declared after the liveStateRef assignment above runs, so
 	// they join the live read model here — same render, no TDZ.
-	Object.assign(liveStateRef.current, { setPromptClips, setTlFrameCount });
+	Object.assign(liveStateRef.current, { promptClips, setPromptClips, setTlFrameCount });
 
 	// Dirty tracking: any divergence from the last saved file lights the dot.
 	useEffect(() => {
@@ -3515,7 +3838,7 @@ globalThis.playMode = centerTab === "play";
 		setMotion(activeChar.sessionMotion ?? null);
 		setSelectedPromptId(null);
 		setWaypointMode(false);
-		setActiveWaypointFrame(null);
+		setActiveWaypointId(null);
 		setPendingWaypointFrame(null);
 		ikStateRef.current = ikStatesRef.current.get(activeChar.id) ?? createIkState();
 		loadedLayerCharRef.current = activeChar.id;
@@ -3715,54 +4038,34 @@ globalThis.playMode = centerTab === "play";
 
 	// Key authoring lives in each unified Shot block's lower key strip: clicking
 	// an empty point stores the CURRENT framing there. Re-keying overwrites it.
-	function addCameraKeyframe(frame, requestedIndex = null) {
+	function addCameraKeyframe(frame, shotId = activeShot?.id) {
 		const framing = captureCurrentFraming();
 		const target = Math.max(0, Math.min(Math.round(frame), tlFrameCount - 1));
-		setShots((current) => {
-			const index = requestedIndex ?? shotIndexAtFrame(current, target);
-			if (index < 0 || target < current[index].startFrame || target > current[index].endFrame) return current;
-			return current.map((shot, shotIndex) => shotIndex === index ? {
-				...shot,
-				cameraKeys: shot.cameraKeys.filter((key) => key.frame !== target)
-					.concat({ frame: target, framing }).sort((a, b) => a.frame - b.frame),
-			} : shot);
-		});
+		setShots((current) => updateStableItem(current, shotId, (shot) => {
+			if (target < shot.startFrame || target > shot.endFrame) return shot;
+			const replaced = shot.cameraKeys.filter((key) => key.frame !== target);
+			return { ...shot, cameraKeys: [...replaced, { id: createStableItemId("camera-key"), frame: target, framing }].sort((a, b) => a.frame - b.frame) };
+		}, "shots"));
 		setSelectedHierarchyId("camera");
 	}
 
 	// Re-time a key by dragging its dot along the lane. Landing on another
 	// key's frame is rejected — keys stay frame-unique.
-	function moveCameraKeyframe(from, to, requestedIndex = null) {
-		const sourceIndex = requestedIndex ?? shotIndexAtFrame(shots, from);
-		const min = shots[sourceIndex]?.startFrame ?? 0;
-		const max = shots[sourceIndex]?.endFrame ?? tlFrameCount - 1;
-		const target = Math.max(min, Math.min(Math.round(to), max));
+	function moveCameraKeyframe(shotId, keyId, from, to) {
+		const shot = shots.find((entry) => entry.id === shotId);
+		if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
+		const target = Math.max(shot.startFrame, Math.min(Math.round(to), shot.endFrame));
 		if (target === from) return;
-		setShots((current) => {
-			const index = requestedIndex ?? shotIndexAtFrame(current, from);
-			if (index < 0) return current;
-			const keys = current[index]?.cameraKeys ?? [];
-			if (keys.some((key) => key.frame === target)) return current;
-			return current.map((shot, shotIndex) => shotIndex === index ? {
-				...shot,
-				cameraKeys: keys.map((key) => key.frame === from ? { ...key, frame: target } : key).sort((a, b) => a.frame - b.frame),
-			} : shot);
-		});
+		setShots((current) => updateStableItem(current, shotId, (entry) => ({ ...entry, cameraKeys: moveCameraKey(entry.cameraKeys, keyId, target) }), "shots"));
 	}
 
-	function removeCameraKeyframe(frame, requestedIndex = null) {
-		setShots((current) => {
-			const index = requestedIndex ?? shotIndexAtFrame(current, frame);
-			if (index < 0) return current;
-			return current.map((shot, shotIndex) => shotIndex === index
-				? { ...shot, cameraKeys: shot.cameraKeys.filter((key) => key.frame !== frame) }
-				: shot);
-		});
+	function removeCameraKeyframe(shotId, keyId) {
+		setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, cameraKeys: removeCameraKey(shot.cameraKeys, keyId) }), "shots"));
 	}
 
 	function clearMove() {
 		setMovePlaying(false);
-		setShots((current) => current.map((shot, index) => index === activeShotIdx ? { ...shot, cameraKeys: [] } : shot));
+		setShots((current) => updateStableItem(current, activeShot?.id, (shot) => ({ ...shot, cameraKeys: [] }), "shots"));
 	}
 
 	function addTimelineShot() {
@@ -3770,35 +4073,35 @@ globalThis.playMode = centerTab === "play";
 		setShots((current) => addShotAtFrame(current, tlFrame, tlFrameCount, captureCurrentFraming()));
 	}
 
-	function splitTimelineShot(index) {
+	function splitTimelineShot(shotId) {
 		setMovePlaying(false);
 		setShots((current) => {
-			const shot = current[index];
-			if (!shot || tlFrame <= shot.startFrame || tlFrame > shot.endFrame) return current;
-			return cutAtFrame(current, tlFrame, captureCurrentFraming());
+			const shot = current.find((entry) => entry.id === shotId);
+			if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
+			if (tlFrame <= shot.startFrame || tlFrame > shot.endFrame) return current;
+			return cutAtFrame(current, shotId, tlFrame, captureCurrentFraming());
 		});
 	}
 
-	function selectTimelineShot(index) {
-		const selected = shots[index];
-		if (!selected) return;
+	function selectTimelineShot(shotId) {
+		const selected = shots.find((entry) => entry.id === shotId);
+		if (!selected) throw new Error(`Unknown shots ID: ${shotId}`);
 		manualCameraOverrideRef.current = false;
 		setTlFrame(selected.startFrame);
 		setSelectedHierarchyId("camera");
 	}
 
-	function duplicateTimelineShot(index) {
-		const next = duplicateShot(shots, index, tlFrameCount);
+	function duplicateTimelineShot(shotId) {
+		const next = duplicateShot(shots, shotId, tlFrameCount);
 		setShots(next);
 		if (next !== shots) {
-			const sourceId = shots[index]?.id;
-			const duplicate = next.find((shot) => shot.id !== sourceId && !shots.some((existing) => existing.id === shot.id));
+			const duplicate = next.find((shot) => shot.id !== shotId && !shots.some((existing) => existing.id === shot.id));
 			if (duplicate) setTlFrame(duplicate.startFrame);
 		}
 	}
 
-	function moveTimelineShot(fromIndex, targetFrame) {
-		setShots((current) => reorderShot(current, fromIndex, targetFrame, tlFrameCount));
+	function moveTimelineShot(shotId, targetFrame) {
+		setShots((current) => reorderShot(current, shotId, targetFrame, tlFrameCount));
 	}
 
 	// The library is the user's own material: poses read from photographs and
@@ -3858,8 +4161,9 @@ globalThis.playMode = centerTab === "play";
 
 	function queueRootWaypointFrame(frame) {
 		const target = Math.max(1, Math.min(Math.round(frame), tlFrameCount - 1));
-		if (waypoints.some((waypoint) => waypoint.frame === target)) {
-			setActiveWaypointFrame(target);
+		const existing = waypoints.find((waypoint) => waypoint.frame === target);
+		if (existing) {
+			setActiveWaypointId(existing.id);
 			setPendingWaypointFrame(null);
 			setTlFrame(target);
 			setWaypointMode(true);
@@ -3868,7 +4172,7 @@ globalThis.playMode = centerTab === "play";
 			return;
 		}
 		setPendingWaypointFrame(target);
-		setActiveWaypointFrame(null);
+		setActiveWaypointId(null);
 		setTlFrame(target);
 		setWaypointMode(true);
 		selectActiveCharacterInHierarchy();
@@ -3907,7 +4211,7 @@ globalThis.playMode = centerTab === "play";
 		// last moment a human can: block out-of-band legs with the fix named.
 		const insertAt = ordered.findIndex((waypoint) => waypoint.frame > frame);
 		const index = insertAt === -1 ? ordered.length : insertAt;
-		const waypoint = { frame, x, z, heading: null };
+		const waypoint = { id: createStableItemId("waypoint"), frame, x, z, heading: null };
 		const nextWaypoints = [...ordered.slice(0, index), waypoint, ...ordered.slice(index)];
 		const verdict = validateWaypointAt(nextWaypoints, index, waypoint);
 		if (!verdict.ok) {
@@ -3916,7 +4220,7 @@ globalThis.playMode = centerTab === "play";
 		}
 		setWaypoints(nextWaypoints);
 		setTlFrame(frame);
-		setActiveWaypointFrame(frame);
+		setActiveWaypointId(waypoint.id);
 		setPendingWaypointFrame(null);
 		const placed = isKo
 			? `루트 웨이포인트 ${index + 1} 추가: 프레임 ${frame}${pendingFrame != null ? " (타임라인 예약 프레임)" : pinned ? " (재생 헤드 위치)" : ` (~${(frame / tlFps).toFixed(1)}초 걷기 기준)`}`
@@ -3924,32 +4228,33 @@ globalThis.playMode = centerTab === "play";
 		setToast(verdict.warnings.length ? `${placed} · ⚠ ${verdict.warnings[0]}` : placed);
 	}
 
-	function moveWaypoint(frame, x, z) {
-		const target = Math.round(frame);
+	function moveWaypoint(id, x, z) {
 		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);
-		const index = ordered.findIndex((waypoint) => waypoint.frame === target);
-		if (index === -1) return;
+		const index = ordered.findIndex((waypoint) => waypoint.id === id);
+		if (index === -1) throw new Error(`Unknown waypoints ID: ${id}`);
 		const nextWaypoint = {
 			...ordered[index],
 			x: clampRootPosition(x),
 			z: clampRootPosition(z),
 		};
-		const nextOrdered = ordered.map((waypoint, i) => (i === index ? nextWaypoint : waypoint));
+		const nextOrdered = ordered.map((waypoint) => waypoint.id === id ? nextWaypoint : waypoint);
 		const verdict = validateWaypointAt(nextOrdered, index, nextWaypoint);
 		if (!verdict.ok) {
 			setToast(isKo ? `이 위치는 루트 경로에 맞지 않아요: ${verdict.error}` : `This position doesn't fit the root path: ${verdict.error}`);
 			return;
 		}
 		setWaypoints(nextOrdered);
-		setActiveWaypointFrame(target);
-		setPendingWaypointFrame((current) => (current === target ? null : current));
+		setActiveWaypointId(id);
+		setPendingWaypointFrame((current) => (current === nextWaypoint.frame ? null : current));
 		if (verdict.warnings.length) setToast(isKo ? `루트 웨이포인트 이동됨: ${verdict.warnings[0]}` : `Root waypoint moved: ${verdict.warnings[0]}`);
 	}
 
-	function removeWaypoint(frame) {
-		setWaypoints((prev) => prev.filter((w) => w.frame !== frame));
-		setActiveWaypointFrame((current) => (current === frame ? null : current));
-		setPendingWaypointFrame((current) => (current === frame ? null : current));
+	function removeWaypoint(id) {
+		const waypoint = waypoints.find((entry) => entry.id === id);
+		if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`);
+		setWaypoints((prev) => removeStableItem(prev, id, "waypoints"));
+		setActiveWaypointId((current) => (current === id ? null : current));
+		setPendingWaypointFrame((current) => (current === waypoint.frame ? null : current));
 	}
 
 	function toggleWaypointMode() {
@@ -4406,7 +4711,14 @@ globalThis.playMode = centerTab === "play";
 	// Decoded motion + the world anchor: frame 0 always starts at Subject 1.
 	// Authored root destinations are generated by ARDY as sparse constraints,
 	// so playback consumes the returned trajectory without coordinate warping.
-	async function loadMotion(url, prompt, rotationDeg = charA.rot, drop = null) {
+	async function loadMotion(
+		url,
+		prompt,
+		rotationDeg = charA.rot,
+		drop = null,
+		targetCharacterId = activeChar.id,
+		targetPromptClips = null,
+	) {
 		setMotionBusy(true);
 		setMotionError("");
 		try {
@@ -4416,7 +4728,12 @@ globalThis.playMode = centerTab === "play";
 			// A drop is staging applied to the clip itself, so it happens at
 			// the same boundary — trims and IK then see the dropped take.
 			const decoded = applyRootDrop(retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS), drop);
-			const rig = activeRig ?? await waitForRig(activeChar.id);
+			const targetCharacter = charactersRef.current.find((entry) => entry.id === targetCharacterId);
+			if (!targetCharacter) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
+			const rig = rigs[targetCharacter.id] ?? await waitForRig(targetCharacter.id);
+			const targetStillExists = charactersRef.current.some((entry) => entry.id === targetCharacter.id);
+			if (!targetStillExists) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
+			const bufferOwnsTarget = targetCharacter.id === loadedLayerCharRef.current;
 			beginPlaybackOn(rig);
 			// THE INVARIANT: the take's travel assumes the character is scaled.
 			// Extraction divided the root translation by the filmed person's
@@ -4426,7 +4743,6 @@ globalThis.playMode = centerTab === "play";
 			// that loads a motion; an ARDY-generated take stores none and is
 			// canonical, 1.
 			const scale = characterScaleFor(decoded);
-			setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? { ...entry, scale } : entry));
 			const loaded = {
 			// Capture the exact prompt this motion was generated from; the
 			// timeline keeps showing it even if the input field is edited
@@ -4434,30 +4750,47 @@ globalThis.playMode = centerTab === "play";
 			prompt: typeof prompt === "string" ? prompt : "",
 				...decoded,
 				url,
-				anchorX: activeChar.x,
-				anchorZ: activeChar.z,
+				anchorX: targetCharacter.x,
+				anchorZ: targetCharacter.z,
 				anchorFrame: 0,
 				rotationDeg,
 			};
+			setCharacters((list) => {
+				const next = list.map((entry) => entry.id === targetCharacter.id
+					? {
+						...entry,
+						scale,
+						sessionMotion: loaded,
+						layer: targetPromptClips
+							? { ...(entry.layer ?? {}), promptClips: targetPromptClips }
+							: entry.layer,
+					}
+					: entry);
+				liveStateRef.current.characters = next;
+				return next;
+			});
 			// The take as loaded is what every future trim cuts from.
-			motionFullRef.current.set(activeChar.id, loaded);
-			setMotion(loaded);
-			setTlFrameCount(decoded.frames);
-			setTlFps(decoded.fps);
-			setTlFrame(0);
-			setTlPlaying(false);
+			motionFullRef.current.set(targetCharacter.id, loaded);
+			if (bufferOwnsTarget) {
+				setMotion(loaded);
+				if (targetPromptClips) setPromptClips(targetPromptClips);
+				setTlFrameCount(decoded.frames);
+				setTlFps(decoded.fps);
+				setTlFrame(0);
+				setTlPlaying(false);
+			}
 			// IK keys correct SPECIFIC frames of the take they were authored on, so
 			// a replacement take leaves them pointing at poses that no longer exist
 			// — the same reason a trim clears them. The Full-Body lane would
 			// otherwise keep showing corrections that belong to a discarded clip.
-			const hadIkKeys = ikStateRef.current.keys.size > 0;
+			const hadIkKeys = bufferOwnsTarget && ikStateRef.current.keys.size > 0;
 			if (hadIkKeys) {
 				ikStateRef.current.keys.clear();
 				ikStateRef.current.tracked.clear();
 				ikStateRef.current.plants.clear();
 				setIkTick((value) => value + 1);
 			}
-			setCommittedIkEdits([]);
+			if (bufferOwnsTarget) setCommittedIkEdits([]);
 			setToast(
 				isKo
 					? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps${hadIkKeys ? " — 이전 테이크의 IK 키는 초기화됐어요" : ""}`
@@ -4467,7 +4800,7 @@ globalThis.playMode = centerTab === "play";
 			// (and cannot derive a different one).
 			return scale;
 		} catch (err) {
-			setMotion(null);
+			if (targetCharacterId === loadedLayerCharRef.current) setMotion(null);
 			setMotionError(err?.message || String(err));
 			throw err;
 		} finally {
@@ -5199,6 +5532,7 @@ globalThis.playMode = centerTab === "play";
 				endFrame: activeShot.endFrame,
 			} : null,
 			fps: tlFps,
+			aspectRatio: shotOutput.label,
 			camera: activeShot ? {
 				mode: activeCamera.mode,
 				followCam: activeCamera.followCam,
@@ -5286,7 +5620,7 @@ globalThis.playMode = centerTab === "play";
 	function addPromptClip(frame) {
 		const snapped = Math.max(0, Math.round(frame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
 		const startFrame = Math.max(snapped, promptClips.reduce((max, clip) => Math.max(max, clip.endFrame), 0));
-		const clip = { id: `prompt-${Date.now()}`, startFrame, endFrame: startFrame + ARDY_PROMPT_HORIZON_FRAMES, text: "" };
+		const clip = { id: createStableItemId("prompt-clip"), startFrame, endFrame: startFrame + ARDY_PROMPT_HORIZON_FRAMES, text: "" };
 		setPromptClips((prev) => [...prev, clip]);
 		setSelectedPromptId(clip.id);
 		setTlFrameCount((count) => Math.max(count, clip.endFrame));
@@ -5294,7 +5628,7 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	function changePromptClip(id, text) {
-		setPromptClips((prev) => prev.map((clip) => (clip.id === id ? { ...clip, text } : clip)));
+		setPromptClips((prev) => updateStableItem(prev, id, (clip) => ({ ...clip, text }), "promptClips"));
 		if (id === selectedPromptId) setArdyPrompt(text);
 	}
 
@@ -5305,13 +5639,12 @@ const PROMPT_BLOCK_MAX_FRAMES = 4 * TIMELINE_FPS;
 
 function resizePromptClip(id, edge, rawFrame) {
 		setPromptClips((prev) => {
-			const next = prev.map((clip) => {
-				if (clip.id !== id) return clip;
+			const next = updateStableItem(prev, id, (clip) => {
 				const snapped = Math.max(0, Math.round(rawFrame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
 				return edge === "start"
 					? { ...clip, startFrame: Math.min(Math.max(snapped, clip.endFrame - PROMPT_BLOCK_MAX_FRAMES), clip.endFrame - ARDY_PROMPT_HORIZON_FRAMES) }
 					: { ...clip, endFrame: Math.min(Math.max(clip.startFrame + ARDY_PROMPT_HORIZON_FRAMES, snapped), clip.startFrame + PROMPT_BLOCK_MAX_FRAMES) };
-			});
+			}, "promptClips");
 			const end = next.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
 			setTlFrameCount((count) => Math.max(count, end));
 			setArdyDuration(end / TIMELINE_FPS);
@@ -5320,6 +5653,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 
 	function movePromptClip(id, rawStartFrame) {
+		if (!promptClips.some((clip) => clip.id === id)) throw new Error(`Unknown promptClips ID: ${id}`);
 		setPromptClips((prev) => {
 			const next = movePromptClipFrames(prev, id, rawStartFrame, ARDY_PROMPT_HORIZON_FRAMES);
 			if (next === prev) return prev;
@@ -5331,7 +5665,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 
 	function removePromptClip(id) {
-		setPromptClips((prev) => prev.filter((clip) => clip.id !== id));
+		setPromptClips((prev) => removeStableItem(prev, id, "promptClips"));
 		if (selectedPromptId === id) setSelectedPromptId(null);
 	}
 
@@ -5829,6 +6163,11 @@ function resizePromptClip(id, edge, rawFrame) {
 					)}
 				</div>
 				<div className="topbar-actions">
+					{liveWorkspaceHandle && (
+						<span className="live-workspace-handle" data-live-workspace={liveWorkspaceHandle} title={liveWorkspaceHandle}>
+							Live workspace {liveWorkspaceHandle}
+						</span>
+					)}
 					<LocaleToggle />
 				</div>
 			</header>
@@ -6026,7 +6365,11 @@ function resizePromptClip(id, edge, rawFrame) {
 				</div>
 
 					<div className="stage" id="stage" ref={stageRef} data-render-loop={renderActive ? "always" : "demand"}>
-						<Canvas frameloop={renderActive ? "always" : "demand"} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true }}>
+						{/* Shadows were off, so every castShadow in props.jsx was inert and
+						    nothing on the open stage ever touched the floor. A contact
+						    shadow is the cue that says a subject stands ON the deck rather
+						    than floats above it — without walls it is the only one left. */}
+						<Canvas shadows frameloop={renderActive ? "always" : "demand"} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true }}>
 							<RenderLoopController stageRef={stageRef} />
 							<ViewportLayoutInvalidator
 								insetX={insetPos?.x ?? null}
@@ -6221,8 +6564,8 @@ function resizePromptClip(id, edge, rawFrame) {
 								onCharacterGestureStart={recordCharacterUndo}
 								pathStart={activeChar}
 								waypoints={waypoints}
-								activeWaypointFrame={activeWaypointFrame}
-								onSelectWaypoint={(frame) => { setActiveWaypointFrame(frame); setTlFrame(Math.min(frame, tlFrameCount - 1)); setWaypointMode(true); }}
+								activeWaypointId={activeWaypointId}
+								onSelectWaypoint={(id) => { const waypoint = waypoints.find((entry) => entry.id === id); if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`); setActiveWaypointId(id); setTlFrame(Math.min(waypoint.frame, tlFrameCount - 1)); setWaypointMode(true); }}
 								onMoveWaypoint={moveWaypoint}
 								// Selection switch first, then the producer begins its
 								// transaction (plan §6.4): the settle here commits any
@@ -6272,12 +6615,9 @@ function resizePromptClip(id, edge, rawFrame) {
 								}
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
 							/>
-							{/* Authoring chrome: the grid and pins belong to the Scene tab
-							    only — PlayView is the finished output and shows none of it. */}
-							{centerTab === "scene" && <SceneGrid />}
 							{centerTab === "scene" && railCurve && <CameraRailScenePreview points={railCurve.points} />}
 							{waypointMode && centerTab === "scene" && (
-								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointFrame={activeWaypointFrame} />
+								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointId={activeWaypointId} />
 							)}
 							<CaptureRig
 								apiRef={captureRef}
@@ -6285,6 +6625,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								width={shotOutput.width}
 								height={shotOutput.height}
 							/>
+							<CaptureRig apiRef={mcpCaptureRef} camRef={shotCamRef} width={MCP_CAPTURE_W} height={MCP_CAPTURE_H} />
 							<DualRender
 								stageRef={stageRef}
 								mainRef={mainPaneRef}
@@ -6590,7 +6931,12 @@ function resizePromptClip(id, edge, rawFrame) {
 					{photoPoseError && <p className="studio-hint error" data-pose-photo-error role="status">{photoPoseError}</p>}
 				</Foldout>
 
-				<Foldout hidden={!isSceneSelection} title={ko("Prompt", "프롬프트")}>
+				{/* Generating is the point of the whole panel, and the operator spends
+				    their time on a character — making them reselect the scene just to
+				    press Generate was friction for no gain. The scene still owns the
+				    prompt (it describes the whole render, not one performer), it is
+				    simply also reachable from the subject being staged. */}
+				<Foldout hidden={!(isSceneSelection || isCharacterSelection)} title={ko("Prompt", "프롬프트")}>
 						<div className="segmented" data-active={mode}>
 							<button className={mode === "image" ? "active" : ""} onClick={() => setMode("image")}>
 							{ko("Image", "이미지")}
@@ -7574,7 +7920,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				pathSpeed={pathSpeed}
 				playing={tlPlaying}
 				waypointMode={waypointMode}
-				waypointFrames={waypoints.map((w) => w.frame)}
+				waypoints={waypoints}
 				pathSpeed={pathSpeed}
 				pendingWaypointFrame={pendingWaypointFrame}
 				promptClips={promptClips}
@@ -7610,18 +7956,14 @@ function resizePromptClip(id, edge, rawFrame) {
 					setTlPlaying((v) => !v);
 				}}
 				onWaypointToggle={toggleWaypointMode}
-				onMarkerSelect={(f) => {
-					const frame = Math.min(f, tlFrameCount - 1);
-					setTlFrame(frame);
+				onMarkerSelect={(id) => {
+					const waypoint = waypoints.find((entry) => entry.id === id);
+					if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`);
+					setTlFrame(Math.min(waypoint.frame, tlFrameCount - 1));
 					setWaypointMode(true);
 					selectActiveCharacterInHierarchy();
-					if (waypoints.some((waypoint) => waypoint.frame === frame)) {
-						setActiveWaypointFrame(frame);
-						setPendingWaypointFrame(null);
-					} else {
-						setActiveWaypointFrame(null);
-						setPendingWaypointFrame(frame);
-					}
+					setActiveWaypointId(id);
+					setPendingWaypointFrame(null);
 				}}
 				onMarkerRemove={removeWaypoint}
 				onRootKeyframeAdd={queueRootWaypointFrame}
@@ -7646,9 +7988,9 @@ function resizePromptClip(id, edge, rawFrame) {
 				onCameraKeyframeAdd={addCameraKeyframe}
 				onCameraKeyframeMove={moveCameraKeyframe}
 					onCameraKeyframeRemove={removeCameraKeyframe}
-					onCameraBlockSelect={(index) => {
-						const selected = shots[index];
-						if (!selected) return;
+					onCameraBlockSelect={(shotId) => {
+						const selected = shots.find((entry) => entry.id === shotId);
+						if (!selected) throw new Error(`Unknown shots ID: ${shotId}`);
 						setTlFrame(selected.startFrame);
 						setSelectedHierarchyId("camera");
 					}}
@@ -7667,19 +8009,17 @@ function resizePromptClip(id, edge, rawFrame) {
 					onCameraPreview={previewCameraShot}
 					onCameraRailDrawToggle={toggleCameraRailDraw}
 					onCameraRailDelete={deleteCameraRail}
-					onRailSelect={(index) => {
-						selectTimelineShot(index);
+					onRailSelect={(shotId) => {
+						selectTimelineShot(shotId);
 						setSelectedHierarchyId("camera");
 					}}
-					onRailMove={(index, startFrame) => editRailSchedule(index, (base, duration) => moveRailRange(base, startFrame - base.startFrame, duration))}
-					onRailRangeChange={(index, edge, frame) => editRailSchedule(index, (base, duration) => resizeRailRange(base, edge, frame, duration))}
-					onRailRemove={(index) => setShots((current) => current.map((shot, shotIndex) => shotIndex === index
-						? { ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "off" } }) }
-						: shot))}
+					onRailMove={(shotId, startFrame) => editRailSchedule(shotId, (base, duration) => moveRailRange(base, startFrame - base.startFrame, duration))}
+					onRailRangeChange={(shotId, edge, frame) => editRailSchedule(shotId, (base, duration) => resizeRailRange(base, edge, frame, duration))}
+					onRailRemove={(shotId) => setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "off" } }) }), "shots"))}
 				onShotSelect={selectTimelineShot}
-				onShotBoundaryMove={(index, edge, frame) => setShots((current) => resizeShot(current, index, edge, frame, tlFrameCount))}
-				onShotRename={(index, name) => setShots((current) => renameShot(current, index, name))}
-				onShotRemove={(index) => setShots((current) => removeShot(current, index))}
+				onShotBoundaryMove={(shotId, edge, frame) => setShots((current) => resizeShot(current, shotId, edge, frame, tlFrameCount))}
+				onShotRename={(shotId, name) => setShots((current) => renameShot(current, shotId, name))}
+				onShotRemove={(shotId) => setShots((current) => removeShot(current, shotId))}
 				onShotDuplicate={duplicateTimelineShot}
 				onShotCut={addTimelineShot}
 				onShotSplit={splitTimelineShot}

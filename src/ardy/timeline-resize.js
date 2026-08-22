@@ -1,4 +1,6 @@
-const PROMPT_BLOCK_FRAMES = 40; // 2 s at ARDY's 20 fps horizon
+import { TIMELINE_FRAME_FPS } from "../scenes.js";
+
+const PROMPT_BLOCK_FRAMES = 2 * TIMELINE_FRAME_FPS;
 const PROMPT_RESIZE_BLOCK_PX = 120; // one deliberate drag step = one prompt block
 
 /** Resize from the immutable pointer-down frame. Keeping both the frame and

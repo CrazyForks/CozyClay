@@ -106,6 +106,52 @@ function sameState(a, b) {
 }
 
 {
+	// Given: a rail-mode shot whose rail schedule only owns frames 20..40.
+	const railShot = {
+		startFrame: 0,
+		endFrame: 80,
+		camera: {
+			mode: "rail",
+			cameraRail: [{ x: 0, z: 0 }, { x: 1, z: 1 }],
+			railFollow: { mode: "range", startFrame: 20, endFrame: 40 },
+		},
+		cameraKeys: [
+			{ frame: 0, framing: { pos: { x: 100, y: 1, z: 200 }, yaw: 0, pitch: 0, fovDeg: 40 } },
+			{ frame: 10, framing: { pos: { x: 110, y: 1, z: 210 }, yaw: 0, pitch: 0, fovDeg: 40 } },
+			{ frame: 50, framing: { pos: { x: 150, y: 1, z: 250 }, yaw: 0, pitch: 0, fovDeg: 40 } },
+			{ frame: 80, framing: { pos: { x: 180, y: 1, z: 280 }, yaw: 0, pitch: 0, fovDeg: 40 } },
+		],
+	};
+	const railScene = {
+		...scene,
+		frameCount: 81,
+		cameraTrack: Array.from({ length: 81 }, (_, frame) => ({
+			pos: { x: 1000 + frame, y: 2, z: 2000 + frame },
+			yaw: 0.5,
+			pitch: -0.2,
+			fovDeg: 55,
+		})),
+	};
+
+	// When: playback addresses frames on both sides of the rail range.
+	const keyedFrames = [0, 10, 50, 80];
+	const railFrames = [20, 30, 40];
+
+	// Then: keyed frames retain their authored cameras and active rail frames
+	// read the precomputed rail samples.
+	expect(
+		"partial rail range uses keyed cameras outside its authored range",
+		keyedFrames.every((frame) => sampleAt(railScene, railShot, frame).camera.pos.x === 100 + frame),
+		keyedFrames.map((frame) => `${frame}:${sampleAt(railScene, railShot, frame).camera.pos.x}`).join(", "),
+	);
+	expect(
+		"partial rail range uses rail track samples inside its authored range",
+		railFrames.every((frame) => sampleAt(railScene, railShot, frame).camera.pos.x === 1000 + frame),
+		railFrames.map((frame) => `${frame}:${sampleAt(railScene, railShot, frame).camera.pos.x}`).join(", "),
+	);
+}
+
+{
 	const motion = {
 		frames: 3,
 		anchorFrame: 0,

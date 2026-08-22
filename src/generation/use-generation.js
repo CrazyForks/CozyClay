@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { checkGenerationBridge, listGenerationJobs, listGenerationModels } from "./client.js";
+import { generationRequestForResult } from "./generation-request.js";
 import { runGeneration } from "./session.js";
-import { compileShotSpec, generationDurationForShot } from "./shot-spec.js";
+import { compileShotSpec } from "./shot-spec.js";
 
 const IDLE = { status: "idle", job: null, validation: null, error: null };
 
@@ -35,19 +36,7 @@ export function useGeneration() {
     }
   }, []);
 
-  const startResult = useCallback((result, model) => start({
-    provider: model.provider,
-    model: model.id,
-    prompt: result.prompt,
-    durationSeconds: generationDurationForShot(result.shot, result.fps, model.durations),
-    aspectRatio: "16:9",
-    resolution: "720p",
-    startFrame: result.frame,
-    endFrame: model.capabilities?.endFrame ? result.frameB : null,
-    shot: result.shot,
-    camera: result.camera,
-    subjects: result.subjects,
-  }), [start]);
+  const startResult = useCallback((result, model) => start(generationRequestForResult(result, model)), [start]);
 
   const cancel = useCallback(() => abortRef.current?.abort(new Error("generation canceled")), []);
   const reset = useCallback(() => setState(IDLE), []);

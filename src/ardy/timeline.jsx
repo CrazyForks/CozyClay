@@ -196,7 +196,7 @@ export default function Timeline({
 	// cast's schedule is visible while only the active layer is editable.
 	ghostLayers = [], // [{ owner, promptClips: [], waypointFrames: [] }]
 	waypointMode,
-	waypointFrames = [],
+	waypoints = [],
 	pathSpeed = null, // { min, max, warn } in m/s, shown on the 2D Root label
 	badge,
 	promptClips = [],
@@ -416,6 +416,7 @@ export default function Timeline({
 	// Chips clamp into the surface; markers use framePct directly. One scale
 	// for everything — the old /count chip scale drifted off the gridlines.
 	const clipPct = (value) => Math.max(0, Math.min(1, framePct(value, displayFrameCount)));
+	const waypointFrames = waypoints.map((waypoint) => waypoint.frame);
 	const moveRef = useRef(null);
 	const suppressPromptClickRef = useRef(false);
 	const resizeRef = useRef(null);
@@ -561,7 +562,7 @@ export default function Timeline({
 	// Camera key dots re-time by dragging, like prompt clips move: the frame
 	// delta comes from the pointer-down geometry so a growing timeline cannot
 	// feed back into the next pointermove.
-	function beginCameraKeyDrag(e, keyFrame, shotIndex) {
+	function beginCameraKeyDrag(e, key, shotIndex) {
 		if (e.button !== 0) return;
 		e.stopPropagation();
 		selectUnifiedShotBlock(shotIndex);
@@ -573,9 +574,10 @@ export default function Timeline({
 		camDragRef.current = {
 			pointerId: e.pointerId,
 			startClientX: e.clientX,
-			fromFrame: keyFrame,
-			shotIndex,
-			currentFrame: keyFrame,
+			keyId: key.id,
+			fromFrame: key.frame,
+			shotId: shots[shotIndex]?.id,
+			currentFrame: key.frame,
 			laneWidth: rect?.width ?? 1,
 			displayFrameCount,
 			moved: false,
@@ -597,7 +599,7 @@ export default function Timeline({
 		if (next === active.currentFrame) return;
 		const from = active.currentFrame;
 		active.currentFrame = next;
-		handlers.current.onCameraKeyframeMove?.(from, next, active.shotIndex);
+		handlers.current.onCameraKeyframeMove?.(active.shotId, active.keyId, from, next);
 	}
 
 	function endCameraKeyDrag(e) {
@@ -613,7 +615,7 @@ export default function Timeline({
 		camDragRef.current = null;
 	}
 
-	function onCameraKeyClick(e, keyFrame, shotIndex) {
+	function onCameraKeyClick(e, key, shotIndex) {
 		if (camSuppressClickRef.current) {
 			e.preventDefault();
 			e.stopPropagation();
@@ -621,16 +623,16 @@ export default function Timeline({
 		}
 		e.stopPropagation();
 		selectUnifiedShotBlock(shotIndex);
-		handlers.current.onScrub?.(keyFrame);
+		handlers.current.onScrub?.(key.frame);
 	}
 
-	function beginRailMove(e, shotIndex, range, duration) {
+	function beginRailMove(e, shot, range, duration) {
 		if (e.button !== 0) return;
 		e.stopPropagation();
-		handlers.current.onRailSelect?.(shotIndex);
+		handlers.current.onRailSelect?.(shot.id);
 		const lane = e.currentTarget.closest(".tl-lane");
 		const rect = lane?.getBoundingClientRect();
-		railDragRef.current = { shotIndex, pointerId: e.pointerId, startClientX: e.clientX, startFrame: range.start, length: range.end - range.start + 1, duration, laneWidth: rect?.width ?? 1, moved: false };
+		railDragRef.current = { shotId: shot.id, pointerId: e.pointerId, startClientX: e.clientX, startFrame: range.start, length: range.end - range.start + 1, duration, laneWidth: rect?.width ?? 1, moved: false };
 	}
 
 	function moveRail(e) {
@@ -643,7 +645,7 @@ export default function Timeline({
 		e.currentTarget.setPointerCapture?.(e.pointerId);
 		const delta = Math.round((e.clientX - active.startClientX) * Math.max(0, displayFrameCount - 1) / Math.max(1, active.laneWidth));
 		const next = Math.max(0, Math.min(active.duration - active.length, active.startFrame + delta));
-		handlers.current.onRailMove?.(active.shotIndex, next);
+		handlers.current.onRailMove?.(active.shotId, next);
 	}
 
 	function endRailMove(e) {
@@ -659,15 +661,15 @@ export default function Timeline({
 		e.currentTarget.releasePointerCapture?.(e.pointerId);
 	}
 
-	function beginRailResize(e, shotIndex, edge, range, duration) {
+	function beginRailResize(e, shot, edge, range, duration) {
 		if (e.button !== 0) return;
 		e.preventDefault();
 		e.stopPropagation();
 		e.currentTarget.setPointerCapture?.(e.pointerId);
-		handlers.current.onRailSelect?.(shotIndex);
+		handlers.current.onRailSelect?.(shot.id);
 		const lane = e.currentTarget.closest(".tl-lane");
 		const rect = lane?.getBoundingClientRect();
-		railResizeRef.current = { shotIndex, edge, pointerId: e.pointerId, startClientX: e.clientX, startFrame: edge === "start" ? range.start : range.end, duration, laneWidth: rect?.width ?? 1 };
+		railResizeRef.current = { shotId: shot.id, edge, pointerId: e.pointerId, startClientX: e.clientX, startFrame: edge === "start" ? range.start : range.end, duration, laneWidth: rect?.width ?? 1 };
 	}
 
 	function moveRailResize(e) {
@@ -677,7 +679,7 @@ export default function Timeline({
 		e.stopPropagation();
 		const delta = Math.round((e.clientX - active.startClientX) * Math.max(0, displayFrameCount - 1) / Math.max(1, active.laneWidth));
 		const next = Math.max(0, Math.min(active.duration - 1, active.startFrame + delta));
-		handlers.current.onRailRangeChange?.(active.shotIndex, active.edge, next);
+		handlers.current.onRailRangeChange?.(active.shotId, active.edge, next);
 	}
 
 	function endRailResize(e) {
@@ -686,20 +688,20 @@ export default function Timeline({
 		e.currentTarget.releasePointerCapture?.(e.pointerId);
 	}
 
-	function onRailKeyDown(e, shotIndex, range, duration) {
+	function onRailKeyDown(e, shotId, range, duration) {
 		const edge = e.currentTarget.dataset.railEdge;
 		if (e.key === "Delete" || e.key === "Backspace") {
 			e.preventDefault();
 			e.stopPropagation();
-			handlers.current.onRailRemove?.(shotIndex);
+			handlers.current.onRailRemove?.(shotId);
 			return;
 		}
 		if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
 		e.preventDefault();
 		e.stopPropagation();
 		const delta = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1);
-		if (edge === "body") handlers.current.onRailMove?.(shotIndex, Math.max(0, Math.min(duration - (range.end - range.start + 1), range.start + delta)));
-		else handlers.current.onRailRangeChange?.(shotIndex, edge, Math.max(0, Math.min(duration - 1, (edge === "start" ? range.start : range.end) + delta)));
+		if (edge === "body") handlers.current.onRailMove?.(shotId, Math.max(0, Math.min(duration - (range.end - range.start + 1), range.start + delta)));
+		else handlers.current.onRailRangeChange?.(shotId, edge, Math.max(0, Math.min(duration - 1, (edge === "start" ? range.start : range.end) + delta)));
 	}
 
 	function beginShotBoundaryDrag(e, shotIndex, edge) {
@@ -709,7 +711,7 @@ export default function Timeline({
 		e.currentTarget.setPointerCapture?.(e.pointerId);
 		const lane = e.currentTarget.closest(".tl-lane");
 		const rect = lane?.getBoundingClientRect();
-		shotBoundaryRef.current = { shotIndex, edge, pointerId: e.pointerId, left: rect?.left ?? 0, width: rect?.width ?? 1, displayFrameCount };
+		shotBoundaryRef.current = { shotId: shots[shotIndex]?.id, edge, pointerId: e.pointerId, left: rect?.left ?? 0, width: rect?.width ?? 1, displayFrameCount };
 	}
 
 	function moveShotBoundary(e) {
@@ -719,7 +721,7 @@ export default function Timeline({
 		e.stopPropagation();
 		const ratio = (e.clientX - active.left) / Math.max(1, active.width);
 		const rawFrame = Math.round(ratio * Math.max(0, active.displayFrameCount - 1));
-		handlers.current.onShotBoundaryMove?.(active.shotIndex, active.edge, Math.max(0, Math.min(frameCount - 1, rawFrame)));
+		handlers.current.onShotBoundaryMove?.(active.shotId, active.edge, Math.max(0, Math.min(frameCount - 1, rawFrame)));
 	}
 
 	function endShotBoundaryDrag(e) {
@@ -733,7 +735,7 @@ export default function Timeline({
 		if (e.button !== 0 || e.target.closest("button, input")) return;
 		const lane = e.currentTarget.closest(".tl-lane");
 		const rect = lane?.getBoundingClientRect();
-		shotMoveRef.current = { id: shot.id, index, pointerId: e.pointerId, startClientX: e.clientX, left: rect?.left ?? 0, width: rect?.width ?? 1, targetFrame: shot.startFrame, moved: false };
+		shotMoveRef.current = { id: shot.id, pointerId: e.pointerId, startClientX: e.clientX, left: rect?.left ?? 0, width: rect?.width ?? 1, targetFrame: shot.startFrame, moved: false };
 		e.currentTarget.setPointerCapture?.(e.pointerId);
 	}
 
@@ -755,7 +757,7 @@ export default function Timeline({
 			e.preventDefault();
 			e.stopPropagation();
 			shotSuppressClickRef.current = true;
-			handlers.current.onShotMove?.(active.index, active.targetFrame);
+			handlers.current.onShotMove?.(active.id, active.targetFrame);
 			queueMicrotask(() => { shotSuppressClickRef.current = false; });
 		}
 		shotMoveRef.current = null;
@@ -765,10 +767,12 @@ export default function Timeline({
 
 	function selectUnifiedShotBlock(index) {
 		if (shotSuppressClickRef.current) return;
+		const shot = shots[index];
+		if (!shot) return;
 		setLocalCameraBlockIdx(index);
-		handlers.current.onCameraBlockSelect?.(index);
-		handlers.current.onShotSelect?.(index);
-		if (!handlers.current.onShotSelect) handlers.current.onScrub?.(shots[index]?.startFrame ?? 0);
+		handlers.current.onCameraBlockSelect?.(shot.id);
+		handlers.current.onShotSelect?.(shot.id);
+		if (!handlers.current.onShotSelect) handlers.current.onScrub?.(shot.startFrame);
 		handlers.current.onCameraMoveSelect?.();
 	}
 
@@ -781,12 +785,12 @@ export default function Timeline({
 		if (!rect) return;
 		const target = frameFromClientX(e.clientX, rect.left, rect.width, displayFrameCount, frameCount);
 		selectUnifiedShotBlock(index);
-		handlers.current.onCameraKeyframeAdd?.(target, index);
+		handlers.current.onCameraKeyframeAdd?.(target, shots[index]?.id);
 	}
 
 	function finishShotRename(shot, index, value) {
 		const name = value.trim();
-		if (name && name !== shot.name) handlers.current.onShotRename?.(index, name);
+		if (name && name !== shot.name) handlers.current.onShotRename?.(shot.id, name);
 		setRenamingShotId(null);
 	}
 
@@ -1125,9 +1129,9 @@ export default function Timeline({
 													</span>
 												)}
 											<span className="tl-shot-actions">
-												<button type="button" title={ko("Split at the playhead", "재생 헤드에서 분할")} disabled={frame <= shot.startFrame || frame > shot.endFrame} onClick={(e) => { e.stopPropagation(); handlers.current.onShotSplit?.(index); }}>{ko("Split", "분할")}</button>
-												<button type="button" title={ko("Duplicate shot", "샷 복제")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotDuplicate?.(index); }}>{ko("Duplicate", "복제")}</button>
-													<button type="button" title={ko("Delete shot and leave free-camera time", "샷을 지우고 자유 카메라 구간으로 비우기")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotRemove?.(index); }}>{ko("Delete", "삭제")}</button>
+												<button type="button" title={ko("Split at the playhead", "재생 헤드에서 분할")} disabled={frame <= shot.startFrame || frame > shot.endFrame} onClick={(e) => { e.stopPropagation(); handlers.current.onShotSplit?.(shot.id); }}>{ko("Split", "분할")}</button>
+												<button type="button" title={ko("Duplicate shot", "샷 복제")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotDuplicate?.(shot.id); }}>{ko("Duplicate", "복제")}</button>
+													<button type="button" title={ko("Delete shot and leave free-camera time", "샷을 지우고 자유 카메라 구간으로 비우기")} onClick={(e) => { e.stopPropagation(); handlers.current.onShotRemove?.(shot.id); }}>{ko("Delete", "삭제")}</button>
 												</span>
 												<span className="tl-shot-camera-summary">
 													<span className="tl-camera-block-state">{stateLabel}</span>
@@ -1140,14 +1144,14 @@ export default function Timeline({
 														aria-label={ko(`Rail follow range for ${shot.name}`, `${shot.name} 레일 팔로우 구간`)}
 														className={"tl-rail" + (index === cameraBlockIdx ? " selected" : "") + (railOff ? " off" : "")}
 														style={{ "--tl-f-start": railRange.start / Math.max(1, durationFrames - 1), "--tl-f-end": railRange.end / Math.max(1, durationFrames - 1) }}
-														onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handlers.current.onRailRemove?.(index); }}
+														onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handlers.current.onRailRemove?.(shot.id); }}
 													>
-														<button type="button" tabIndex={0} data-rail-edge="start" className="tl-rail-handle start" aria-label={ko("Resize rail follow start", "레일 팔로우 시작점 조절")} onKeyDown={(e) => onRailKeyDown(e, index, railRange, durationFrames)} onPointerDown={(e) => beginRailResize(e, index, "start", railRange, durationFrames)} onPointerMove={moveRailResize} onPointerUp={endRailResize} onPointerCancel={endRailResize} />
-														<button type="button" tabIndex={0} data-rail-edge="body" className="tl-rail-body" aria-label={ko("Rail follow — drag to move, right-click to remove", "레일 팔로우 — 드래그로 이동, 오른쪽 클릭으로 삭제")} onKeyDown={(e) => onRailKeyDown(e, index, railRange, durationFrames)} onPointerDown={(e) => beginRailMove(e, index, railRange, durationFrames)} onPointerMove={moveRail} onPointerUp={endRailMove} onPointerCancel={endRailMove} onClick={(e) => { e.stopPropagation(); if (!railSuppressClickRef.current) handlers.current.onRailSelect?.(index); }}>
+														<button type="button" tabIndex={0} data-rail-edge="start" className="tl-rail-handle start" aria-label={ko("Resize rail follow start", "레일 팔로우 시작점 조절")} onKeyDown={(e) => onRailKeyDown(e, shot.id, railRange, durationFrames)} onPointerDown={(e) => beginRailResize(e, shot, "start", railRange, durationFrames)} onPointerMove={moveRailResize} onPointerUp={endRailResize} onPointerCancel={endRailResize} />
+														<button type="button" tabIndex={0} data-rail-edge="body" className="tl-rail-body" aria-label={ko("Rail follow — drag to move, right-click to remove", "레일 팔로우 — 드래그로 이동, 오른쪽 클릭으로 삭제")} onKeyDown={(e) => onRailKeyDown(e, shot.id, railRange, durationFrames)} onPointerDown={(e) => beginRailMove(e, shot, railRange, durationFrames)} onPointerMove={moveRail} onPointerUp={endRailMove} onPointerCancel={endRailMove} onClick={(e) => { e.stopPropagation(); if (!railSuppressClickRef.current) handlers.current.onRailSelect?.(shot.id); }}>
 															<span className="tl-rail-label">{ko("Rail Follow", "레일 팔로우")}</span>
 															{railOff && <span className="tl-rail-off">{ko("OFF", "꺼짐")}</span>}
 														</button>
-														<button type="button" tabIndex={0} data-rail-edge="end" className="tl-rail-handle end" aria-label={ko("Resize rail follow end", "레일 팔로우 끝점 조절")} onKeyDown={(e) => onRailKeyDown(e, index, railRange, durationFrames)} onPointerDown={(e) => beginRailResize(e, index, "end", railRange, durationFrames)} onPointerMove={moveRailResize} onPointerUp={endRailResize} onPointerCancel={endRailResize} />
+														<button type="button" tabIndex={0} data-rail-edge="end" className="tl-rail-handle end" aria-label={ko("Resize rail follow end", "레일 팔로우 끝점 조절")} onKeyDown={(e) => onRailKeyDown(e, shot.id, railRange, durationFrames)} onPointerDown={(e) => beginRailResize(e, shot, "end", railRange, durationFrames)} onPointerMove={moveRailResize} onPointerUp={endRailResize} onPointerCancel={endRailResize} />
 														{railProgress != null && <i className="tl-rail-progress" style={{ "--tl-rail-p": railProgress }} aria-hidden="true" />}
 													</div>
 												)}
@@ -1251,7 +1255,7 @@ export default function Timeline({
 										/>
 									)))}
 									{name === "2D Root" &&
-										[...waypointFrames, ...(pendingWaypointFrame == null || waypointFrames.includes(pendingWaypointFrame) ? [] : [pendingWaypointFrame])].map((f) => (
+										[...waypoints.map((waypoint) => waypoint.frame), ...(pendingWaypointFrame == null || waypoints.some((waypoint) => waypoint.frame === pendingWaypointFrame) ? [] : [pendingWaypointFrame])].map((f) => (
 											<span
 												key={f}
 												className={"tl-marker wp" + (f === pendingWaypointFrame ? " pending" : "")}
@@ -1262,12 +1266,13 @@ export default function Timeline({
 													// must reach contextmenu so it removes without scrubbing.
 													if (e.button !== 0) return;
 													e.stopPropagation();
-													handlers.current.onMarkerSelect?.(f);
+													waypoints.find((waypoint) => waypoint.frame === f) ? handlers.current.onMarkerSelect?.(waypoints.find((waypoint) => waypoint.frame === f).id) : handlers.current.onRootKeyframeAdd?.(f);
 												}}
 												onContextMenu={(e) => {
 													e.preventDefault();
 													e.stopPropagation();
-													handlers.current.onMarkerRemove?.(f);
+													const waypoint = waypoints.find((entry) => entry.frame === f);
+											if (waypoint) handlers.current.onMarkerRemove?.(waypoint.id);
 												}}
 											/>
 										))}
@@ -1277,15 +1282,15 @@ export default function Timeline({
 											className="tl-marker cam"
 											style={{ "--tl-f": framePct(key.frame, displayFrameCount) }}
 											title={isKo ? `${key.frame}프레임의 카메라 키 — 클릭해 이동, 드래그로 시간 변경, 오른쪽 클릭으로 삭제` : `Camera key at frame ${key.frame} — click to jump, drag to re-time, right-click to remove`}
-											onPointerDown={(e) => beginCameraKeyDrag(e, key.frame, index)}
+											onPointerDown={(e) => beginCameraKeyDrag(e, key, index)}
 											onPointerMove={moveCameraKeyDrag}
 											onPointerUp={endCameraKeyDrag}
 											onPointerCancel={endCameraKeyDrag}
-											onClick={(e) => onCameraKeyClick(e, key.frame, index)}
+											onClick={(e) => onCameraKeyClick(e, key, index)}
 											onContextMenu={(e) => {
 												e.preventDefault();
 												e.stopPropagation();
-												handlers.current.onCameraKeyframeRemove?.(key.frame, index);
+												handlers.current.onCameraKeyframeRemove?.(shot.id, key.id);
 											}}
 										/>
 									)))}

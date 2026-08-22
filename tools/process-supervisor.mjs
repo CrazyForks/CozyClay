@@ -27,13 +27,13 @@ export function waitForExit(child) {
 	});
 }
 
-function bridgeError(port, detail, code) {
-	const error = new Error(`ARDY bridge on 127.0.0.1:${port} ${detail}`);
+function bridgeError(name, port, detail, code) {
+	const error = new Error(`${name} on 127.0.0.1:${port} ${detail}`);
 	error.code = code;
 	return error;
 }
 
-export function waitForBridgeReady(child, port, timeoutMs = 5000) {
+export function waitForBridgeReady(child, { name, port, readyType, listenErrorType }, timeoutMs = 5000) {
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		const finish = (callback, value) => {
@@ -45,11 +45,11 @@ export function waitForBridgeReady(child, port, timeoutMs = 5000) {
 			child.off("error", onError);
 			callback(value);
 		};
-		const fail = (detail, code) => finish(reject, bridgeError(port, detail, code));
+		const fail = (detail, code) => finish(reject, bridgeError(name, port, detail, code));
 		const onMessage = (message) => {
 			if (!message || message.port !== port) return;
-			if (message.type === "cozyclay-bridge-ready") finish(resolve);
-			if (message.type === "cozyclay-bridge-listen-error") {
+			if (message.type === readyType) finish(resolve);
+			if (message.type === listenErrorType) {
 				fail(`could not listen: ${message.code ?? "unknown error"}`, message.code);
 			}
 		};
@@ -62,12 +62,25 @@ export function waitForBridgeReady(child, port, timeoutMs = 5000) {
 	});
 }
 
-export async function startBridge({ command, args, cwd, env, mainPort, onSpawn, onReady }) {
-	const explicitPort = env.COZYCLAY_BRIDGE_PORT;
+export async function startBridge({
+	command,
+	args,
+	cwd,
+	env,
+	mainPort,
+	portEnv = "COZYCLAY_BRIDGE_PORT",
+	name = "ARDY bridge",
+	readyType = "cozyclay-bridge-ready",
+	listenErrorType = "cozyclay-bridge-listen-error",
+	onSpawn,
+	onFailure,
+	onReady,
+}) {
+	const explicitPort = env[portEnv];
 	if (explicitPort !== undefined) {
 		const port = Number(explicitPort);
 		if (!Number.isInteger(port) || port < 1 || port > 65535) {
-			throw new Error(`COZYCLAY_BRIDGE_PORT=${JSON.stringify(explicitPort)} is not a valid port`);
+			throw new Error(`${portEnv}=${JSON.stringify(explicitPort)} is not a valid port`);
 		}
 		return startBridgeAt(port, true);
 	}
@@ -83,18 +96,19 @@ export async function startBridge({ command, args, cwd, env, mainPort, onSpawn, 
 	async function startBridgeAt(port, isExplicit) {
 		const child = spawnOwned(command, args, {
 			cwd,
-			env: { ...env, COZYCLAY_BRIDGE_PORT: String(port) },
+			env: { ...env, [portEnv]: String(port) },
 			stdio: ["inherit", "inherit", "inherit", "ipc"],
 		});
 		onSpawn?.(child);
 		try {
-			await waitForBridgeReady(child, port);
+			await waitForBridgeReady(child, { name, port, readyType, listenErrorType });
 			onReady?.(child);
 			return { child, port };
 		} catch (error) {
+			onFailure?.(child);
 			await terminateOwned(child);
 			if (isExplicit && error?.code === "EADDRINUSE") {
-				throw new Error(`COZYCLAY_BRIDGE_PORT=${port} is already in use; choose another COZYCLAY_BRIDGE_PORT`);
+				throw new Error(`${portEnv}=${port} is already in use; choose another ${portEnv}`);
 			}
 			throw error;
 		}

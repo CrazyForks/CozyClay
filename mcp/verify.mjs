@@ -18,7 +18,11 @@ import { fileURLToPath } from "node:url";
 const SERVER = fileURLToPath(new URL("./server.mjs", import.meta.url));
 
 const client = new Client({ name: "cozyclay-mcp-verify", version: "1.0.0" });
-await client.connect(new StdioClientTransport({ command: "node", args: [SERVER] }));
+await client.connect(new StdioClientTransport({
+	command: "node",
+	args: [SERVER],
+	env: { ...process.env, COZYCLAY_PROJECT_ROOT: new URL(".", import.meta.url).pathname },
+}));
 
 let failures = 0;
 const check = (label, ok, detail = "") => {
@@ -94,7 +98,7 @@ await call("add_character", { subject: "a courier holding a package", x: 1.6, z:
 await call("add_character", { subject: "a street vendor", x: -2.2, z: 1.1, facing: 70 });
 
 const cast = await call("describe_scene");
-check("cast holds three characters", cast.includes("CAST (3)"), cast);
+check("cast holds three characters", cast.includes("CAST (total: 3, returned: 3, truncated: false"), cast);
 check("third character is labelled C", /^\s+C /m.test(cast), cast);
 
 const focused = await call("focus_character", { character: "B" });
@@ -110,7 +114,7 @@ check("unknown character is reported", (await call("place_character", { characte
 
 const removed = await call("remove_character", { character: "C" });
 check("character removal works", removed.startsWith("Removed C"), removed.split("\n")[0]);
-check("cast shrinks after removal", removed.includes("CAST (2)"), removed);
+check("cast shrinks after removal", removed.includes("CAST (total: 2, returned: 2, truncated: false"), removed);
 
 // Down to one character, the scene must refuse to empty its cast.
 await call("remove_character", { character: "B" });
@@ -177,8 +181,8 @@ const parentXBefore = Number(parentLineBefore.match(/x (-?[\d.]+)/)?.[1] ?? NaN)
 const indent = (line) => line.match(/^(\s*)/)?.[1].length ?? 0;
 check(
 	"describe_scene associates child with parent",
-	childLineBefore.includes(`under ${parentId}`) || indent(childLineBefore) > indent(parentLineBefore),
-	childLineBefore,
+	childLineBefore.includes(`under ${parentId}`) || beforeMove.includes(`parent: ${parentId}`) || indent(childLineBefore) > indent(parentLineBefore),
+	`${childLineBefore}\n${beforeMove}`,
 );
 
 const shift = 3.0;
@@ -223,13 +227,31 @@ check("prompt carries both subjects", prompt.includes("detective") && prompt.inc
 /* ------------------------------- round-trip ------------------------------ */
 
 const file = new URL("./.verify-project.cclayproject", import.meta.url).pathname;
+const symlink = new URL("./.verify-project-link.cclayproject", import.meta.url).pathname;
+const hardlink = new URL("./.verify-project-hardlink.cclayproject", import.meta.url).pathname;
+const outside = `/tmp/cozyclay-verify-outside-${process.pid}.cclayproject`;
+const fs = await import("node:fs/promises");
 await call("save_project", { path: file, name: "Verify" });
+check("save refuses implicit overwrite", (await call("save_project", { path: file })).startsWith("Could not write"), "overwrite unexpectedly succeeded");
+check("save allows explicit overwrite", (await call("save_project", { path: file, overwrite: true })).startsWith("Saved"), "explicit overwrite failed");
 const reopened = await call("open_project", { path: file });
 check("project round-trips the cast", reopened.includes("detective") && reopened.includes("courier"), reopened);
 check("project round-trips the set", reopened.includes("Chair"), reopened);
 await import("node:fs/promises").then((fs) => fs.unlink(file).catch(() => {}));
 
-check("missing file is reported", (await call("open_project", { path: "/tmp/nope.cclayproject" })).startsWith("Could not read"));
+check("outside project root is rejected", (await call("open_project", { path: "/tmp/nope.cclayproject" })).includes("direct children of configured project root"));
+check("wrong extension is rejected", (await call("open_project", { path: "/etc/hosts" })).includes("must end in .cclayproject"));
+await fs.writeFile(outside, "outside sentinel", { mode: 0o600 });
+await fs.symlink(outside, symlink);
+check("open refuses final symlink", (await call("open_project", { path: symlink })).startsWith("Could not read"), "symlink open unexpectedly succeeded");
+check("save refuses final symlink", (await call("save_project", { path: symlink, overwrite: true })).startsWith("Could not write"), "symlink overwrite unexpectedly succeeded");
+check("symlink target remains byte-identical", await fs.readFile(outside, "utf8") === "outside sentinel");
+await fs.unlink(symlink);
+await fs.link(outside, hardlink);
+check("open refuses external hard link", (await call("open_project", { path: hardlink })).startsWith("Could not read"), "hard-link open unexpectedly succeeded");
+check("save refuses external hard link", (await call("save_project", { path: hardlink, overwrite: true })).startsWith("Could not write"), "hard-link overwrite unexpectedly succeeded");
+check("hard-link target remains byte-identical", await fs.readFile(outside, "utf8") === "outside sentinel");
+await Promise.all([fs.unlink(hardlink).catch(() => {}), fs.unlink(outside).catch(() => {})]);
 
 /* --------------------------------- result -------------------------------- */
 

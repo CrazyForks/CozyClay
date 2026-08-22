@@ -8,11 +8,11 @@ function pass(message) {
 
 const manifest = JSON.parse(readFileSync("public/manifest.webmanifest", "utf8"));
 assert.equal(manifest.name, "Cozy Clay");
-assert.equal(manifest.start_url, "./");
-assert.equal(manifest.scope, "./");
+assert.equal(manifest.start_url, "/app/");
+assert.equal(manifest.scope, "/app/");
 assert.equal(manifest.display, "standalone");
 assert.equal(manifest.lang, "en");
-pass("manifest launches Cozy Clay in standalone mode from the repository base");
+pass("manifest launches the Cozy Clay studio at /app/");
 
 const iconBySize = new Map(manifest.icons.map((icon) => [icon.sizes, icon]));
 assert.equal(iconBySize.get("192x192")?.type, "image/png");
@@ -30,9 +30,9 @@ for (const icon of manifest.icons) {
 }
 pass("manifest exposes installable 192px, 512px, and maskable PNG icons");
 
-const index = readFileSync("index.html", "utf8");
+const index = readFileSync("app/index.html", "utf8");
 assert.match(index, /<html lang="en">/);
-assert.match(index, /rel="manifest" href="\.\/manifest\.webmanifest"/);
+assert.match(index, /rel="manifest" href="\/manifest\.webmanifest"/);
 assert.match(index, /name="theme-color" content="#232323"/);
 assert.match(index, /rel="apple-touch-icon"/);
 pass("document metadata advertises the manifest, theme, and Apple icon");
@@ -52,7 +52,7 @@ pass("service worker registers install, activation, offline fetch, range request
 function simulateWorkerInstall(missingPath = null) {
 	const listeners = new Map();
 	const scope = {
-		location: new URL("https://example.test/CozyClay/sw.js"),
+		location: new URL("https://example.test/sw.js"),
 		clients: { claim: async () => {} },
 		skipWaiting: async () => {},
 		addEventListener(type, handler) {
@@ -71,8 +71,8 @@ function simulateWorkerInstall(missingPath = null) {
 		fetch: async (input) => {
 			const url = new URL(String(input), scope.location.href);
 			if (missingPath && url.pathname.endsWith(missingPath)) return new Response("missing", { status: 404 });
-			if (url.pathname.endsWith("/CozyClay/") || url.pathname.endsWith("/index.html")) {
-				return new Response('<link rel="manifest" href="./manifest.webmanifest"><script src="./assets/app.js"></script>');
+			if (url.pathname === "/app/" || url.pathname === "/app/index.html") {
+				return new Response('<link rel="manifest" href="/manifest.webmanifest"><script src="/assets/app.js"></script>');
 			}
 			return new Response("asset");
 		},
@@ -90,7 +90,7 @@ await assert.rejects(simulateWorkerInstall("models/x-bot-tpose.fbx"), /Required 
 pass("service worker installation fails fast when a required offline asset is missing");
 
 const vite = readFileSync("vite.config.js", "utf8");
-assert.match(vite, /base:\s*"\.\/"/);
-pass("relative Vite base keeps the PWA portable on GitHub Pages");
+assert.match(vite, /base:\s*"\/"/);
+pass("root Vite base keeps studio assets reachable from /app/");
 
 console.log("all Cozy Clay PWA checks PASS");

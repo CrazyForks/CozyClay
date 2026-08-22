@@ -335,8 +335,14 @@ assert.doesNotMatch(
 );
 assert.match(
 	appSource,
-	/const rig = activeRig \?\? await waitForRig\(activeChar\.id\)/,
+	/const targetCharacter = charactersRef\.current\.find\(\(entry\) => entry\.id === targetCharacterId\)[\s\S]{0,300}await waitForRig\(targetCharacter\.id\)/,
 	"motion loading waits for the active rig instead of losing the request to mount timing"
+);
+const batchSource = /apply_batch:\s*\(args\) => \{([\s\S]*?)\n\t\t\t\},\n\t\t\t\/\/ Authoring blocks/.exec(appSource)?.[1] ?? "";
+assert.match(
+	batchSource,
+	/const token = storeRef\.current\.begin[\s\S]*?try \{[\s\S]*?finally \{[\s\S]*?batchToken = null;[\s\S]*?storeRef\.current\.end\(token,/,
+	"apply_batch always releases its transaction and restores mutation state",
 );
 assert.match(
 	openSceneBody,

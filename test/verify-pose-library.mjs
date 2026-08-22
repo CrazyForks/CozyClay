@@ -8,6 +8,7 @@
 
 import { readFileSync } from "node:fs";
 import { DEFAULT_POSE, POSE_BONES, deleteCustomPose, loadCustomPoses, saveCustomPoses } from "../src/poses.js";
+import { mergeProjectCustomPoses } from "../src/project-poses.js";
 
 const failures = [];
 const expect = (name, condition, detail = "") => {
@@ -72,6 +73,46 @@ expect("both sources land in the same library", reloaded.map((p) => p.id).join("
 const afterDelete = deleteCustomPose("photo_1", reloaded);
 expect("deleting removes only the named pose", afterDelete.length === 1 && afterDelete[0].id === "custom_1");
 expect("the deletion is persisted", loadCustomPoses().length === 1);
+
+/* --- project imports preserve the local library --------------------------- */
+
+const localOnlyPose = { id: "local-only", label: "Local only", bones: { hips: [1, 0, 0] }, custom: true };
+const localConflictPose = { id: "shared", label: "Stale local", bones: { hips: [2, 0, 0] }, custom: true };
+const projectOnlyPose = { id: "project-only", label: "Project only", bones: { hips: [3, 0, 0] }, custom: true };
+const projectConflictPose = { id: "shared", label: "Project wins", bones: { hips: [4, 0, 0] }, custom: true };
+
+// Given: a local library with one unrelated pose and one stale shared pose.
+const localLibrary = [localOnlyPose, localConflictPose];
+// When: a project with one unrelated pose and a replacement for the shared id opens.
+const mergedProjectLibrary = mergeProjectCustomPoses(localLibrary, [projectOnlyPose, projectConflictPose]);
+// Then: local-only and project-only entries remain, and exactly one project-owned shared entry wins.
+expect(
+	"project import merges local and project-only poses in stable source order",
+	JSON.stringify(mergedProjectLibrary) === JSON.stringify([localOnlyPose, projectOnlyPose, projectConflictPose]),
+	JSON.stringify(mergedProjectLibrary),
+);
+expect(
+	"project import keeps exactly one project-owned conflicting pose",
+	mergedProjectLibrary.filter((pose) => pose.id === "shared").length === 1 && mergedProjectLibrary.find((pose) => pose.id === "shared")?.label === "Project wins",
+	JSON.stringify(mergedProjectLibrary),
+);
+saveCustomPoses(mergedProjectLibrary);
+expect(
+	"the merged project library persists both sources",
+	JSON.stringify(loadCustomPoses()) === JSON.stringify([localOnlyPose, projectOnlyPose, projectConflictPose]),
+	JSON.stringify(loadCustomPoses()),
+);
+
+// Given: a local library.
+const localLibraryForEmptyProject = [localOnlyPose, localConflictPose];
+// When: a project without custom poses opens.
+const mergedEmptyProjectLibrary = mergeProjectCustomPoses(localLibraryForEmptyProject, []);
+// Then: the local library is unchanged.
+expect(
+	"an empty project pose library preserves every local pose",
+	JSON.stringify(mergedEmptyProjectLibrary) === JSON.stringify(localLibraryForEmptyProject),
+	JSON.stringify(mergedEmptyProjectLibrary),
+);
 
 const malformed = JSON.stringify([{ id: "ok", bones: {} }, { id: 5 }, null, { bones: {} }]);
 store.set("cozyclay_poses", malformed);

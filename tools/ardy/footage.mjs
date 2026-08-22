@@ -14,10 +14,11 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { killGroup, track } from "./runners/proc.mjs";
+import { createPrivateArtifactDir, removePrivateArtifactDir } from "./artifacts.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FOOTAGE_DIR = join(HERE, "out", "footage");
@@ -297,9 +298,11 @@ export async function handleFootage(req, res, readBody) {
 			/* socket gone */
 		}
 	};
+	let cleanupArtifacts = () => {};
 	const fail = (message) => {
 		send({ event: "error", message });
 		res.end();
+		cleanupArtifacts();
 	};
 
 	const children = new Set();
@@ -308,13 +311,15 @@ export async function handleFootage(req, res, readBody) {
 			console.error(`[bridge] client disconnected mid-footage; killing ${children.size} child group(s)`);
 			for (const child of children) killGroup(child);
 			children.clear();
+			cleanupArtifacts();
 		}
 	});
 
-	mkdirSync(FOOTAGE_DIR, { recursive: true });
 	const stamp = `${Date.now()}-${randomBytes(3).toString("hex")}`;
-	const rawPrefix = `raw-${stamp}`;
-	const outPath = join(FOOTAGE_DIR, `${stamp}.mp4`);
+	const artifactDir = createPrivateArtifactDir(FOOTAGE_DIR, "footage");
+	const rawPrefix = "raw";
+	const outPath = join(artifactDir, "normalized.mp4");
+	cleanupArtifacts = () => removePrivateArtifactDir(artifactDir);
 
 	// 1) probe: refuse lives (no duration) and long videos before any bytes.
 	send({ event: "status", message: "probing" });
@@ -346,7 +351,7 @@ export async function handleFootage(req, res, readBody) {
 			[
 				"--newline",
 				"-f", `bv*[height<=${FOOTAGE_MAX_HEIGHT}]/b[height<=${FOOTAGE_MAX_HEIGHT}]/b`,
-				"-o", join(FOOTAGE_DIR, `${rawPrefix}.%(ext)s`),
+				"-o", join(artifactDir, `${rawPrefix}.%(ext)s`),
 				url,
 			],
 			{
@@ -360,16 +365,16 @@ export async function handleFootage(req, res, readBody) {
 		);
 	} catch (err) {
 		console.error(`[bridge] footage download failed: ${err.message}`);
-		cleanup(readdirSync(FOOTAGE_DIR).filter((f) => f.startsWith(rawPrefix)).map((f) => join(FOOTAGE_DIR, f)));
+		cleanupArtifacts();
 		fail("footage-download-failed");
 		return;
 	}
-	const rawName = readdirSync(FOOTAGE_DIR).find((f) => f.startsWith(rawPrefix));
+	const rawName = readdirSync(artifactDir).find((f) => f.startsWith(rawPrefix));
 	if (!rawName) {
 		fail("footage-download-failed");
 		return;
 	}
-	const rawPath = join(FOOTAGE_DIR, rawName);
+	const rawPath = join(artifactDir, rawName);
 
 	// 3) lock to a CONSTANT rate at the source's own fps, capped at the rate
 	// extraction can use: VFR platform video would otherwise make "frame 385"
@@ -394,7 +399,7 @@ export async function handleFootage(req, res, readBody) {
 		);
 	} catch (err) {
 		console.error(`[bridge] footage normalize failed: ${err.message}`);
-		cleanup([rawPath, outPath]);
+		cleanupArtifacts();
 		fail("footage-normalize-failed");
 		return;
 	}
@@ -403,7 +408,7 @@ export async function handleFootage(req, res, readBody) {
 	footageAllowlist.set(stamp, outPath);
 	if (footageAllowlist.size > FOOTAGE_ALLOWLIST_MAX) {
 		const oldest = footageAllowlist.keys().next().value;
-		cleanup([footageAllowlist.get(oldest)]);
+		removePrivateArtifactDir(dirname(footageAllowlist.get(oldest)));
 		footageAllowlist.delete(oldest);
 	}
 	send({

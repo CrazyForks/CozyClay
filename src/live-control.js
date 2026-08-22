@@ -2,7 +2,9 @@
 // module deliberately has no browser imports so its frame dispatcher is
 // directly testable in Node with a fake WebSocket.
 
-export const LIVE_CONTROL_URL = "ws://127.0.0.1:5184/live";
+export const LIVE_CONTROL_PORT = import.meta.env?.VITE_COZYCLAY_LIVE_PORT ?? "5184";
+export const liveControlUrl = (port = LIVE_CONTROL_PORT) => `ws://127.0.0.1:${port}/live`;
+export const LIVE_CONTROL_URL = liveControlUrl();
 export const LIVE_CONTROL_RECONNECT_MS = 3000;
 
 function errorMessage(error) {
@@ -48,6 +50,9 @@ export async function dispatchLiveFrame(data, handlers = {}) {
  */
 export function createLiveControl({
 	handlers = {},
+	onWorkspace = () => {},
+	onEvent = () => {},
+	workspaceId = "",
 	WebSocketImpl = globalThis.WebSocket,
 	url = LIVE_CONTROL_URL,
 	reconnectMs = LIVE_CONTROL_RECONNECT_MS,
@@ -88,9 +93,24 @@ export function createLiveControl({
 		const connected = socket;
 		connected.onopen = () => {
 			if (socket !== connected || stopped) return;
-			send({ type: "hello", role: "editor", version: 1 });
+			send({ type: "hello", role: "editor", version: 1, ...(workspaceId ? { workspaceId } : {}) });
 		};
 		connected.onmessage = async (event) => {
+			if (typeof event?.data === "string") {
+				try {
+					const frame = JSON.parse(event.data);
+					if (frame?.type === "workspace" && typeof frame.handle === "string") {
+						onWorkspace(frame.handle);
+						return;
+					}
+					if (frame?.type === "event" && typeof frame.name === "string" && frame.payload && typeof frame.payload === "object") {
+						onEvent(frame.name, frame.payload);
+						return;
+					}
+				} catch {
+					// dispatchLiveFrame owns malformed command handling.
+				}
+			}
 			const response = await dispatchLiveFrame(event?.data, currentHandlers);
 			if (response) send(response);
 		};

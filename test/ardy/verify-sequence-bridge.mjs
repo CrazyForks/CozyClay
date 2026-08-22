@@ -212,7 +212,7 @@ expect(
 expect(
 	"replacing a take clears the corrections authored against the old one",
 	/IK keys correct SPECIFIC frames of the take they were authored on/.test(app) &&
-		/const hadIkKeys = ikStateRef\.current\.keys\.size > 0;/.test(app),
+		/const hadIkKeys = bufferOwnsTarget && ikStateRef\.current\.keys\.size > 0;/.test(app),
 );
 
 if (failures) process.exit(1);

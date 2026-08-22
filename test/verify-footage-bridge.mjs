@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
 	EXTRACT_FPS_MAX,
 	capExtractFps,
@@ -8,6 +9,18 @@ import {
 	parseProbeLine,
 	parseProbeStreamInfo,
 } from "../tools/ardy/footage.mjs";
+
+const footageSource = readFileSync(new URL("../tools/ardy/footage.mjs", import.meta.url), "utf8");
+assert.match(
+	footageSource,
+	/const fail = \(message\) => \{[\s\S]{0,180}cleanupArtifacts\(\);/,
+	"every terminal footage failure removes its private request directory",
+);
+assert.match(
+	footageSource,
+	/client disconnected mid-footage[\s\S]{0,240}cleanupArtifacts\(\);/,
+	"a disconnected footage request removes partial private artifacts",
+);
 
 function pass(label) { console.log(`PASS ${label}`); }
 function near(a, b, tolerance = 1e-9) { return Math.abs(a - b) <= tolerance; }

@@ -456,7 +456,7 @@ select {
 
 .source-offer:hover,
 .source-offer:focus-visible {
-	color: var(--text);
+	color: var(--fg);
 	text-decoration: underline;
 }
 
@@ -4081,8 +4081,6 @@ input[type=range]::-moz-range-thumb {
 		width: var(--sidebar-width);
 		min-width: 280px;
 		max-width: 50vw;
-		display: grid;
-		grid-template-rows: var(--hierarchy-height) 6px minmax(0, 1fr);
 	}
 
 	.hierarchy-pane {

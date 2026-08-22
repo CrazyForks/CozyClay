@@ -70,6 +70,20 @@ function canConnect(port) {
 	});
 }
 
+async function assertPortReleased(port, message) {
+	const probe = createServer();
+	try {
+		await new Promise((resolvePromise, reject) => {
+			probe.once("error", reject);
+			probe.listen(port, "127.0.0.1", resolvePromise);
+		});
+	} catch (error) {
+		assert.fail(`${message}: ${error.code ?? error.message}`);
+	} finally {
+		if (probe.listening) await close(probe);
+	}
+}
+
 async function listenerPidsAfterConnect(port) {
 	for (let attempt = 0; attempt < 20; attempt += 1) {
 		const pids = await listenerPids(port);
@@ -159,6 +173,17 @@ async function expectLaunchFailure(kind, env, expected) {
 	assert.match(output.all(), expected, `${kind} reports the bridge-port failure clearly`);
 }
 
+{
+	const invalidHost = spawnOwned(process.execPath, ["bin/cozyclay.mjs", "--host", "0.0.0.0", "--no-open", "--no-star"], {
+		cwd: REPO,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const output = createOutputWatcher(invalidHost);
+	const [code] = await waitForExit(invalidHost, "package non-loopback host rejection");
+	assert.notEqual(code, 0, "package rejects non-loopback host with a failure exit code");
+	assert.match(output.all(), /--host is restricted to 127\.0\.0\.1/, "package names the loopback-only restriction");
+}
+
 async function expectBridgeIpcReadiness() {
 	const reservation = createServer();
 	const port = await listen(reservation);
@@ -202,7 +227,9 @@ async function expectForeignListenerDoesNotReportBridgeReady() {
 
 async function expectLifecycle(kind) {
 	const { mainPort, adjacent } = await reserveMainAndAdjacentPort();
-	const bridgePort = mainPort + 2;
+	const bridgeReservation = createServer();
+	const bridgePort = await listen(bridgeReservation, mainPort + 2);
+	await close(bridgeReservation);
 	const { child, output } = launch(kind, mainPort, { CCLAY_ARDY_MODE: "remote" });
 	try {
 		const ready = await output.waitFor(/ARDY dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} bridge readiness`);
@@ -217,20 +244,22 @@ async function expectLifecycle(kind) {
 		process.kill(bridgePid, "SIGTERM");
 		const [code, signal] = await parentExit;
 		assert.ok(code !== 0 || signal, `${kind} parent fails when its bridge exits unexpectedly`);
-		assert.deepEqual(await listenerPids(bridgePort), [], `${kind} unexpected bridge exit leaves no listener`);
+		await assertPortReleased(bridgePort, `${kind} unexpected bridge exit releases its port`);
 	} finally {
 		await terminateOwned(child);
 		await close(adjacent);
 	}
 
 	const clean = await reserveMainAndAdjacentPort();
-	const cleanupPort = clean.mainPort + 2;
+	const cleanupReservation = createServer();
+	const cleanupPort = await listen(cleanupReservation, clean.mainPort + 2);
+	await close(cleanupReservation);
 	const next = launch(kind, clean.mainPort, { CCLAY_ARDY_MODE: "remote" });
 	try {
 		const ready = await next.output.waitFor(/ARDY dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} cleanup bridge readiness`);
 		assert.equal(Number(ready[1]), cleanupPort, `${kind} uses the expected cleanup bridge port`);
 		await terminateOwned(next.child);
-		assert.deepEqual(await listenerPids(cleanupPort), [], `${kind} parent termination leaves no bridge listener`);
+		await assertPortReleased(cleanupPort, `${kind} parent termination releases its bridge port`);
 	} finally {
 		await terminateOwned(next.child);
 		await close(clean.adjacent);
@@ -245,7 +274,8 @@ await expectForeignListenerDoesNotReportBridgeReady();
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	const output = createOutputWatcher(invalidMainPort);
-	await waitForExit(invalidMainPort, "package invalid main port");
+	const [code] = await waitForExit(invalidMainPort, "package invalid main port");
+	assert.notEqual(code, 0, "package rejects an invalid main port with a failure exit code");
 	assert.match(output.all(), /--port must be an integer in 1\.\.65534/, "package validates a main port that leaves room for its bridge");
 }
 for (const kind of ["dev", "package"]) {

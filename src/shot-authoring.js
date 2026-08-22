@@ -5,6 +5,7 @@
  */
 
 import { createShot } from "./cuts.js";
+import { normalizeStableItems } from "./stable-items.js";
 
 export const SHOT_AUTHORING_VERSION = 4;
 export const SHOT_AUTHORING_KEY = "cozyclay.shot-authoring.v4";
@@ -95,12 +96,13 @@ function repairFrameCount(value) {
 	return finite(value) ? Math.max(FRAME_COUNT_MIN, Math.min(FRAME_COUNT_MAX, Math.round(value))) : null;
 }
 
-function repairKeys(entries, minFrame, maxFrame) {
+function repairKeys(entries, minFrame, maxFrame, ids = new Set()) {
 	const byFrame = new Map();
-	for (const key of Array.isArray(entries) ? entries : []) {
-		if (!key || !finite(key.frame) || !validFraming(key.framing)) continue;
+	for (const key of normalizeStableItems(entries, "camera-key", ids)) {
+		if (!finite(key.frame) || !validFraming(key.framing)) continue;
 		const frame = Math.max(minFrame, Math.min(maxFrame, Math.round(key.frame)));
 		byFrame.set(frame, {
+			id: key.id,
 			frame,
 			framing: {
 				pos: { x: key.framing.pos.x, y: key.framing.pos.y, z: key.framing.pos.z },
@@ -113,7 +115,7 @@ function repairKeys(entries, minFrame, maxFrame) {
 	return [...byFrame.values()].sort((a, b) => a.frame - b.frame);
 }
 
-function repairShots(entries, frameCount, inheritedCamera = null) {
+function repairShots(entries, frameCount, inheritedCamera = null, ids = new Set()) {
 	const candidates = [];
 	for (const entry of Array.isArray(entries) ? entries : []) {
 		if (!entry || typeof entry !== "object" || !finite(entry.startFrame)) continue;
@@ -125,34 +127,35 @@ function repairShots(entries, frameCount, inheritedCamera = null) {
 
 	// One boundary per frame. The later stored entry wins, just like re-keying.
 	const byStart = new Map(candidates.map((candidate) => [candidate.startFrame, candidate.entry]));
-	const ordered = [...byStart.entries()].sort((a, b) => a[0] - b[0]);
-	const seenIds = new Set();
-	return ordered.map(([startFrame, entry], index) => {
-		const nextStart = ordered[index + 1]?.[0] ?? frameCount;
+	const ordered = normalizeStableItems(
+		[...byStart.entries()].sort((a, b) => a[0] - b[0]).map(([startFrame, entry]) => ({ ...entry, startFrame })),
+		"shot",
+		ids,
+	);
+	return ordered.map((entry, index) => {
+		const startFrame = entry.startFrame;
+		const nextStart = ordered[index + 1]?.startFrame ?? frameCount;
 		// Pre-overlay v3 bodies had no endFrame and were gapless by definition.
 		// Infer their old boundary exactly; new bodies persist an explicit end.
 		const storedEnd = finite(entry.endFrame) ? Math.round(entry.endFrame) : nextStart - 1;
 		const endFrame = Math.max(startFrame, Math.min(frameCount - 1, nextStart - 1, storedEnd));
-		const fallback = createShot(`Shot ${index + 1}`, startFrame, endFrame);
-		const storedId = typeof entry.id === "string" && entry.id.trim() && !seenIds.has(entry.id) ? entry.id : fallback.id;
-		seenIds.add(storedId);
 		return {
-			id: storedId,
+			id: entry.id,
 			name: typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : `Shot ${index + 1}`,
 			startFrame,
 			endFrame,
-			cameraKeys: repairKeys(entry.cameraKeys, startFrame, endFrame),
+			cameraKeys: repairKeys(entry.cameraKeys, startFrame, endFrame, ids),
 			camera: repairCamera(inheritedCamera ?? entry.camera),
 		};
 	});
 }
 
-function repairWaypoints(entries) {
+function repairWaypoints(entries, ids = new Set()) {
 	const byFrame = new Map();
-	for (const waypoint of Array.isArray(entries) ? entries : []) {
-		if (!waypoint || !finite(waypoint.frame) || waypoint.frame < 0 || !finite(waypoint.x) || !finite(waypoint.z)) continue;
+	for (const waypoint of normalizeStableItems(entries, "waypoint", ids)) {
+		if (!finite(waypoint.frame) || waypoint.frame < 0 || !finite(waypoint.x) || !finite(waypoint.z)) continue;
 		const frame = Math.round(waypoint.frame);
-		byFrame.set(frame, { frame, x: waypoint.x, z: waypoint.z, heading: finite(waypoint.heading) ? waypoint.heading : null });
+		byFrame.set(frame, { id: waypoint.id, frame, x: waypoint.x, z: waypoint.z, heading: finite(waypoint.heading) ? waypoint.heading : null });
 	}
 	return [...byFrame.values()].sort((a, b) => a.frame - b.frame);
 }
@@ -204,10 +207,10 @@ function migratedCamera(followCam, cameraRail, railFollow = null) {
 	});
 }
 
-function repairShared(parsed, frameCount) {
+function repairShared(parsed, frameCount, ids) {
 	return {
 		frameCount,
-		waypoints: repairWaypoints(parsed.waypoints),
+		waypoints: repairWaypoints(parsed.waypoints, ids),
 	};
 }
 
@@ -218,11 +221,12 @@ function repairShared(parsed, frameCount) {
 export function createShotAuthoringDocument({ shots = [], waypoints = [], frameCount = null } = {}) {
 	const repairedFrameCount = repairFrameCount(frameCount);
 	const effectiveFrameCount = repairedFrameCount ?? DEFAULT_FRAME_COUNT;
+	const ids = new Set();
 	return {
 		version: SHOT_AUTHORING_VERSION,
 		frameCount: repairedFrameCount,
-		shots: repairShots(shots, effectiveFrameCount),
-		waypoints: repairWaypoints(waypoints),
+		waypoints: repairWaypoints(waypoints, ids),
+		shots: repairShots(shots, effectiveFrameCount, null, ids),
 	};
 }
 
@@ -239,28 +243,31 @@ export function readShotAuthoringDocument(raw) {
 	const frameCount = repairFrameCount(parsed.frameCount);
 	const effectiveFrameCount = frameCount ?? DEFAULT_FRAME_COUNT;
 	if (version === 1) {
-		const keys = repairKeys(parsed.cameraKeys, 0, effectiveFrameCount - 1);
+		const ids = new Set();
+		const keys = repairKeys(parsed.cameraKeys, 0, effectiveFrameCount - 1, ids);
 		const camera = migratedCamera(parsed.followCam, parsed.cameraRail, parsed.railFollow);
 		// v1 was one whole-timeline camera roll even when it had no keys.
 		const shots = [createShot("Shot 1", 0, effectiveFrameCount - 1, keys, repairCamera(camera))];
 		return {
 			status: "migrated",
-			state: { ...repairShared(parsed, frameCount), shots },
+			state: { ...repairShared(parsed, frameCount, ids), shots },
 		};
 	}
 	if (!Array.isArray(parsed.shots)) return { status: "corrupt", state: null };
 	if (version === 2) {
+		const ids = new Set();
 		const camera = migratedCamera(parsed.followCam, parsed.cameraRail, parsed.railFollow);
 		return {
 			status: "migrated",
-			state: { ...repairShared(parsed, frameCount), shots: repairShots(parsed.shots, effectiveFrameCount, camera) },
+			state: { ...repairShared(parsed, frameCount, ids), shots: repairShots(parsed.shots, effectiveFrameCount, camera, ids) },
 		};
 	}
+	const ids = new Set();
 	return {
 		// A v3 body is structurally current but was authored on the old clock;
 		// it is rewritten, so it reports as migrated, not valid.
 		status: version < SHOT_AUTHORING_VERSION ? "migrated" : "valid",
-		state: { ...repairShared(parsed, frameCount), shots: repairShots(parsed.shots, effectiveFrameCount) },
+		state: { ...repairShared(parsed, frameCount, ids), shots: repairShots(parsed.shots, effectiveFrameCount, null, ids) },
 	};
 }
 

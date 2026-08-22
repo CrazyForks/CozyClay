@@ -20,6 +20,7 @@ const mapped = mapSeedanceRequest(spec);
 assert.deepEqual(mapped.content.slice(1).map(({ role }) => role), ["first_frame", "last_frame"]);
 assert.equal(mapped.duration, 6);
 assert.equal(mapped.ratio, "16:9");
+assert.equal(mapSeedanceRequest({ ...spec, aspectRatio: "9:16" }).ratio, "9:16");
 assert.equal("seed" in mapped, false, "unsupported Seedance 2.0 seed is not guessed into the request");
 
 let submitted;

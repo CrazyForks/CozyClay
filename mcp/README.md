@@ -4,11 +4,13 @@ Lets an AI assistant (Claude Desktop, Cursor, any MCP client) block a scene, pla
 generate character motion and read the shot back as film vocabulary — then turn it into an AI
 image/video prompt.
 
-Works two ways, with the same tools:
+Works two ways, with one tool catalog:
 
 - **Editor open** — tool calls drive the visible viewport live: camera, cast, set, motion,
   prompt blocks on the timeline.
-- **No editor** — everything runs headless: no browser, no GPU, no build step.
+- **No editor** — scene, camera, prompt and project-file tools run in memory with no browser,
+  GPU or build step. `capture_frame`, `set_prompt_blocks`, `generate_motion`, and
+  `apply_batch` explicitly require a live editor.
 
 ## Run it locally
 
@@ -33,7 +35,7 @@ Then point a client at it. For Claude Desktop, in `claude_desktop_config.json`:
 }
 ```
 
-Restart the client; 20 tools appear.
+Restart the client; 24 tools appear.
 
 Prefer a long-lived endpoint? `node server.mjs --http 5183` serves Streamable HTTP at
 `http://127.0.0.1:5183/mcp` (one isolated session per client), with a plain status page at `/`.
@@ -63,18 +65,25 @@ generated frame matches the blocking instead of drifting off into a generic shot
 | `describe_scene` | the whole state: camera, framing, cast, set |
 | `live_status` | whether an editor tab is connected for live control |
 | `describe_shot` | current camera geometry as film vocabulary |
+| `capture_frame` | a compressed live render with camera-plane, visibility and occlusion assertions |
 | `set_camera` | move the lens / change focal length directly |
 | `frame_shot` | frame by intent — size, view, level, side |
 | `add_character` / `place_character` / `remove_character` | the cast |
 | `focus_character` | choose who the camera frames |
 | `place_object` / `update_object` / `remove_object` | the set — `place_object` also accepts `name` and `parent`, so multi-part assets like "Building A" land as one named assembly |
-| `group_objects` | attach children to a parent so they move as one |
-| `ungroup_objects` | detach children from their parent (same as `group_objects` with `parent: null`) |
+| `group_objects` | attach children to a parent so they move as one; pass `parent: null` to detach |
+| `apply_batch` | execute up to 100 object mutations as one user-visible undo transaction |
 | `render_prompt` | the shot as an AI image or video prompt |
 | `generate_motion` | multi-phase character motion through the ARDY bridge — phases land as prompt blocks |
 | `mark_camera_move` / `describe_camera_move` | name a move between two camera positions |
 | `add_scene` / `switch_scene` | multiple scenes per project |
 | `open_project` / `save_project` | read and write `.cclayproject` files |
+
+Project file tools are restricted to `COZYCLAY_PROJECT_ROOT` (the server
+working directory by default), accept direct child `.cclayproject` files only,
+anchor relative opens to the retained project-root working-directory inode, reject symlink escapes,
+open the final name with `O_NOFOLLOW`, and require
+`overwrite: true` before replacing an existing regular file.
 
 Coordinates are metres (`x` right, `z` toward the default camera, `y` height above the floor).
 Rotations are degrees of yaw. Characters are addressed by letter (`"A"`), slot (`"2"`) or id
@@ -83,14 +92,17 @@ Rotations are degrees of yaw. Characters are addressed by letter (`"A"`), slot (
 ## Live editor control
 
 The server hosts `ws://127.0.0.1:5184/live` by default (`COZYCLAY_LIVE_PORT` or
-`--live-port <port>` to change it). A CozyClay editor tab served by `npm run dev` connects on
-its own; `live_status` tells you whether one is attached. With an editor connected, mutations
+`--live-port <port>` to change it). Start the editor with that same `COZYCLAY_LIVE_PORT` so its
+Vite build connects to the selected loopback endpoint; `npm run dev` preserves the environment
+variable for the browser. A CozyClay editor tab then connects on its own; `live_status` tells you whether one is attached. With an editor connected, mutations
 forward to it and reads report its real state — the screen you are looking at is the source of
-truth. Without one, every tool keeps its in-memory behaviour. In `--http` mode each session
+truth. Without one, headless-capable tools keep their in-memory behaviour while `capture_frame`
+returns an explicit connected-editor error. The other three live-only tools return a readable
+ordinary response explaining that an editor is required. In `--http` mode each session
 child attempts to bind the live port, so one session owns the editor and the others
 intentionally run memory-only.
 
-The wire protocol — one WebSocket, ten commands, editor-side rules — is specified in
+The wire protocol — one WebSocket, sixteen commands, editor-side rules — is specified in
 [`LIVE-PROTOCOL.md`](LIVE-PROTOCOL.md).
 
 ## Motion generation
@@ -106,13 +118,17 @@ seconds: 10
 
 It tiles them into contiguous ARDY segments, streams the generation through the local bridge
 (`127.0.0.1:5181`, started by `npm run dev`), and — when an editor is connected — loads the
-result onto the active character with one prompt block per phase on the timeline. Pass a
-previous `motion_url` to reload a clip without generating again.
+result onto the active character with prompt blocks on the timeline. Beats longer than the
+per-block limit are split into consecutive blocks, so one phase can produce multiple blocks.
+Pass a previous `motion_url` to reload a clip without generating again.
 
 ## Round-trips with the studio
 
 `save_project` writes a real `.cclayproject` file, so a scene blocked here opens in the studio to
 be posed, timed and generated — and a scene built in the studio opens here with `open_project`.
+The configured project-root directory must only be writable by the trusted user running the MCP
+server; project I/O rejects symlinks and hard-linked project files but relies on that directory
+permission boundary to prevent an untrusted local process from adding links during an operation.
 
 ## Design
 

@@ -14,13 +14,14 @@
 
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { killGroup, track } from "./runners/proc.mjs";
 import { EXTRACT_FPS_MAX, conformToExtractFps } from "./footage.mjs";
 import { motionArraysToNpzMembers, writeNpz } from "./npz.mjs";
 import { bvhToCskel27Motion, parseBvh } from "./bvh-cskel27.mjs";
+import { createPrivateArtifactDir, removePrivateArtifactDir } from "./artifacts.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = join(HERE, "out");
@@ -118,12 +119,13 @@ function run(command, args, { children, timeoutMs, onLine }) {
  *   {event:"done", motionUrl, frames, fps}
  *   {event:"error", message}                   a NAMED reason
  */
-export async function handleExtract(req, res, { readBody, footagePath, registerMotion }) {
+export async function handleExtract(req, res, { readBody, footagePath, registerMotion, artifactRoot = OUT_DIR }) {
 	const host = sshHost();
 	const contentType = req.headers["content-type"] ?? "";
 	let localVideo = null;
 	let uploadedTemp = null;
 	let cappedTemp = null;
+	let artifactDir = null;
 
 	if (/^application\/json\b/.test(contentType)) {
 		let body;
@@ -154,8 +156,8 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 			res.end(`${JSON.stringify({ ok: false, reason: "extract-upload-empty" })}\n`);
 			return;
 		}
-		mkdirSync(OUT_DIR, { recursive: true });
-		uploadedTemp = join(OUT_DIR, `extract-upload-${Date.now()}.mp4`);
+		artifactDir = createPrivateArtifactDir(artifactRoot, "extract");
+		uploadedTemp = join(artifactDir, "upload.mp4");
 		writeFileSync(uploadedTemp, bytes);
 		localVideo = uploadedTemp;
 	}
@@ -174,17 +176,21 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 		if (uploadedTemp) rmSync(uploadedTemp, { force: true });
 		if (cappedTemp) rmSync(cappedTemp, { force: true });
 	};
+	const cleanupFailure = () => {
+		cleanupLocal();
+		if (artifactDir) removePrivateArtifactDir(artifactDir);
+	};
 	const fail = (message) => {
 		send({ event: "error", message });
 		res.end();
-		cleanupLocal();
+		cleanupFailure();
 	};
 	res.on("close", () => {
 		if (!res.writableEnded) {
 			console.error(`[bridge] client disconnected mid-extract; killing ${children.size} child group(s)`);
 			for (const child of children) killGroup(child);
 			children.clear();
-			cleanupLocal();
+			cleanupFailure();
 		}
 	});
 
@@ -209,11 +215,11 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	// cost a generation of quality for no frames removed), while raw bytes
 	// posted from the browser are whatever the user's camera shot. Frame rate
 	// only: the clip keeps its length and its speed.
-	mkdirSync(OUT_DIR, { recursive: true });
+	artifactDir ??= createPrivateArtifactDir(artifactRoot, "extract");
 	// Claimed before the pass runs, not after it succeeds: a half-written file
 	// from an ffmpeg that died mid-encode has to be swept too, and the rm is a
 	// no-op when the pass never wrote anything.
-	cappedTemp = join(OUT_DIR, `extract-capped-${stamp}.mp4`);
+	cappedTemp = join(artifactDir, "capped.mp4");
 	try {
 		const conformed = await conformToExtractFps(localVideo, cappedTemp, {
 			children,
@@ -286,12 +292,11 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	}
 
 	send({ event: "status", message: "converting" });
-	mkdirSync(OUT_DIR, { recursive: true });
 	// One BVH per tracked person. Person 0 must exist; person 1 is optional
 	// (a single-person clip yields one file, and that is not an error).
 	const motions = [];
 	for (let person = 0; person < 2; person += 1) {
-		const localBvh = join(OUT_DIR, `extract-${stamp}-p${person}.bvh`);
+		const localBvh = join(artifactDir, `person-${person}.bvh`);
 		try {
 			await run("scp", [...SCP_OPTS, `${host}:${remoteBvh.replace(/\.bvh$/, "")}_${person}.bvh`, localBvh], {
 				children,
@@ -326,7 +331,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	for (let person = 0; person < motions.length; person += 1) {
 		const motion = motions[person];
 		const id = person === 0 ? stamp : `${Date.now()}-${randomBytes(3).toString("hex")}`;
-		const npzPath = join(OUT_DIR, `extract-${id}.npz`);
+		const npzPath = join(artifactDir, `motion-${person}.npz`);
 		try {
 			// motion.personScale goes into the archive as `person_scale`: the
 			// conversion divided this person's root travel by it, so the take

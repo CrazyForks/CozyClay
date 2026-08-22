@@ -27,7 +27,7 @@ expect("IK uses pencil red", css.includes(".tl-marker.ik") && css.includes("back
 expect("current frame uses lightbox amber", css.includes(".tl-frame-box") && css.includes("background: #e7b557"));
 expect("Canvas uses a bright neutral toon background", app.includes('<color attach="background" args={["#eef4f3"]} />'));
 expect("Character uses bright ivory clay", app.includes('const CLAY = "#f2eee6"'));
-expect("Room uses a high-key floor", room.includes('const FLOOR = "#f4f0e8"'));
+expect("Room uses a high-key floor", room.includes('const FLOOR = "#fffdf7"'));
 // The walls are gone on purpose: the set is an open deck, so a shot can stage a
 // run or a chase without meeting a corner. These assert their ABSENCE, which is
 // what would regress if a wall were ever reintroduced by accident.

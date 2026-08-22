@@ -24,13 +24,13 @@ expect("gridlines render from the ruler's framePct", timeline.includes('classNam
 expect("chips and markers share one frame scale", !timeline.includes("promptFramePct") && timeline.includes("clipPct(clip.startFrame)"));
 
 expect("camera keys render as dots, not a chip", timeline.includes('className="tl-marker cam"') && !timeline.includes("tl-chip camera"));
-expect("block key strip keys the current framing", timeline.includes("handlers.current.onCameraKeyframeAdd?.(target, index)") && timeline.includes('className="tl-shot-key-surface"') && app.includes("onCameraKeyframeAdd={addCameraKeyframe}"));
+expect("block key strip keys the current framing", timeline.includes("handlers.current.onCameraKeyframeAdd?.(target, shots[index]?.id)") && timeline.includes('className="tl-shot-key-surface"') && app.includes("onCameraKeyframeAdd={addCameraKeyframe}"));
 expect("key strip is a crosshair affordance", css.includes(".tl-shot-key-surface") && css.includes("cursor: crosshair"));
-expect("dot click jumps the playhead and selects the camera", timeline.includes("handlers.current.onScrub?.(keyFrame)") && timeline.includes("handlers.current.onCameraMoveSelect?.();"));
-expect("dot right-click removes the key", timeline.includes("handlers.current.onCameraKeyframeRemove?.(key.frame, index)") && app.includes("shot.cameraKeys.filter((key) => key.frame !== frame)"));
-expect("dot drag re-times the key", timeline.includes("handlers.current.onCameraKeyframeMove?.(from, next, active.shotIndex)") && app.includes("onCameraKeyframeMove={moveCameraKeyframe}"));
-expect("keys stay frame-unique on re-time", app.includes("if (keys.some((key) => key.frame === target)) return current;"));
-expect("re-keying a frame overwrites its framing", app.includes("shot.cameraKeys.filter((key) => key.frame !== target)") && app.includes(".concat({ frame: target, framing })"));
+expect("dot click jumps the playhead and selects the camera", timeline.includes("handlers.current.onScrub?.(key.frame)") && timeline.includes("handlers.current.onCameraMoveSelect?.();"));
+expect("dot right-click removes the key", timeline.includes("handlers.current.onCameraKeyframeRemove?.(shot.id, key.id)") && app.includes("removeCameraKey(shot.cameraKeys, keyId)"));
+expect("dot drag re-times the key", timeline.includes("handlers.current.onCameraKeyframeMove?.(active.shotId, active.keyId, from, next)") && app.includes("onCameraKeyframeMove={moveCameraKeyframe}"));
+expect("keys stay frame-unique on re-time", app.includes("moveCameraKey(entry.cameraKeys, keyId, target)"));
+expect("re-keying a frame overwrites its framing", app.includes("shot.cameraKeys.filter((key) => key.frame !== target)") && app.includes('createStableItemId("camera-key")'));
 
 expect("the move model is per-shot N keys, not A/B", app.includes("const [shots, setShots] = useState") && app.includes("const cameraKeys = activeShot?.cameraKeys ?? []") && !app.includes("setMoveA") && !app.includes("setMoveB"));
 expect("interpolation samples keys segment by segment", camMove.includes("export function cameraMoveAt") && camMove.includes("interpolateFraming(a.framing, b.framing, anchor"));
@@ -56,7 +56,7 @@ expect("lane gridlines are frame-based, not width-based", css.includes(".tl-grid
 expect("camera dots have a distinct violet identity", css.includes(".tl-marker.cam {") && css.includes("#a78bfa"));
 expect("Rail Follow lives inside each unified Shot block", timeline.includes("shot.camera?.railFollow") && timeline.includes('className={"tl-rail"') && !timeline.includes("name === CAMERA_LANE"));
 expect("Rail Follow keeps move, resize, keyboard and remove editing", ["beginRailMove", "beginRailResize", "onRailKeyDown", "onRailRemove"].every((name) => timeline.includes(name)));
-expect("Rail Follow callbacks target the owning shot", timeline.includes("onRailMove?.(active.shotIndex, next)") && app.includes("editRailSchedule(index"));
+expect("Rail Follow callbacks target the owning shot", timeline.includes("onRailMove?.(active.shotId, next)") && app.includes("editRailSchedule(shotId"));
 expect("Rail range playback is resolved per shot", app.includes("resolveRailSchedule({ railFollow: camera.railFollow") && app.includes("subjectSlice.slice(schedule.startFrame, schedule.endFrame + 1)"));
 expect("disabled Rail Follow stays visible as OFF", timeline.includes('ko("Rail Follow", "레일 팔로우")') && timeline.includes('ko("OFF", "꺼짐")') && timeline.includes('mode !== "rail"'));
 
@@ -76,8 +76,8 @@ expect(
 );
 expect(
 	"camera block selection also selects its owning shot",
-	timeline.includes("handlers.current.onCameraBlockSelect?.(index)") &&
-	timeline.includes("handlers.current.onShotSelect?.(index)") &&
+	timeline.includes("handlers.current.onCameraBlockSelect?.(shot.id)") &&
+	timeline.includes("handlers.current.onShotSelect?.(shot.id)") &&
 	timeline.includes("handlers.current.onCameraMoveSelect?.()"),
 );
 expect(
@@ -160,7 +160,7 @@ expect(
 );
 expect(
 	"preview starts at the selected shot and stops at its end",
-	app.includes("function previewCameraShot(index)") &&
+	app.includes("function previewCameraShot(shotId)") &&
 	app.includes("cameraPreviewEndRef.current = selected.endFrame") &&
 	app.includes("setTlFrame(selected.startFrame)") &&
 	app.includes("tlFrameRef.current >= previewEnd - 1") &&

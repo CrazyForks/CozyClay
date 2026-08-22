@@ -33,6 +33,20 @@ expect("double-click no longer swaps Scene and Top-View", !app.includes('setView
 expect("Scene toolbar exposes shot preset, aspect, FOV, recenter, and Top-View controls", app.includes("viewport-toolbar-field shot-field") && app.includes("SHOT_ASPECT_PRESETS") && app.includes("viewport-fov-control") && app.includes("Recenter on subject") && app.includes('ko("Top", "탑")'));
 expect("Scene and PlayView tools share one horizontal title bar", app.includes('className="viewport-titlebar"') && css.includes(".viewport-titlebar") && css.includes("position: static"));
 expect("PlayView toolbar exposes framing readouts, playback, and recording", app.includes("editor-toolbar play-tools") && app.includes("shotOutput.label") && app.includes("toggleShotRecording"));
+// Letterbox bars are editor chrome. Painting them with the scene background
+// put a sheet of near-white either side of the frame the moment a narrower
+// aspect was picked; they wear the editor's own tone now, and the scene draw
+// is scissored to the image so the sky inside the frame is unchanged.
+expect(
+	"letterbox bars are painted in the editor's tone, not the sky",
+	dualview.includes('export const LETTERBOX = new THREE.Color("#1e1e1e");') &&
+	dualview.includes("gl.setClearColor(LETTERBOX, 1);") &&
+	css.includes("--bg: #1e1e1e"),
+);
+expect(
+	"the scene draw is scissored to the image so the bars survive it",
+	dualview.includes("gl.setScissor(img.x, imgY, img.w, img.h);\n\t\t\tgl.setViewport(img.x, imgY, img.w, img.h);"),
+);
 expect("selected aspect reaches the shot renderer", app.includes("shotAspect={shotOutput.aspect}") && dualview.includes("shotAspect = SHOT_ASPECT") && dualview.includes("fitAspect(mainRect, shotAspect)"));
 expect("video and still capture use the selected output dimensions", app.includes("width: shotOutput.width") && app.includes("width={shotOutput.width}") && app.includes("canvas.width = shotOutput.width"));
 expect("double-clicking the inset body folds it", app.includes('event.target.closest?.(".vp-inset-tag")') && app.includes("insetCollapsed: !current.insetCollapsed"));
@@ -49,7 +63,17 @@ expect("ARDY status lines accumulate in the console window", app.includes("repor
 expect("the sidebar has no mode tabs left", !app.includes("sidebarTab") && !app.includes("inspector-tabs") && !css.includes(".inspector-tabs"));
 expect("a character owns the ARDY generation form", app.includes('<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("ARDY motion", "ARDY 모션")}>'));
 expect("the camera owns the lens controls", app.includes('<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>'));
-expect("the scene owns the generation prompt", app.includes('<Foldout hidden={!isSceneSelection} title={ko("Prompt", "프롬프트")}>'));
+// The scene still owns the prompt — it describes the whole render, not one
+// performer — but reselecting the scene just to press Generate was friction,
+// so it is reachable from the character being staged as well.
+expect(
+	"the generation prompt is reachable from the scene and the character",
+	app.includes('<Foldout hidden={!(isSceneSelection || isCharacterSelection)} title={ko("Prompt", "프롬프트")}>'),
+);
+expect(
+	"the prompt does not leak onto selections that do not own it",
+	!app.includes('hidden={!isCameraSelection} title={ko("Prompt"') && app.includes('<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>'),
+);
 expect("selection routing is derived once, not repeated per foldout", app.includes("const isCharacterSelection = selectedHierarchyId ===") && app.includes("const inspectorHasContent ="));
 expect("an unowned selection explains itself instead of showing a blank column", app.includes("data-inspector-empty") && css.includes(".inspector-empty"));
 expect("the heavy motion pipeline starts collapsed", app.includes("function Foldout({ title, hidden, defaultOpen = true, openSignal = 0, children })") && app.includes("useState(defaultOpen)"));
@@ -111,6 +135,30 @@ expect("motion edits send only tracked pending joints", app.includes("ikStateRef
 expect("successful motion edits commit and clear pending IK", app.includes("setCommittedIkEdits") && app.includes("job.ikState.keys.clear()") && app.includes("job.ikState.tracked.clear()"));
 expect("pending IK clears only after exact commit verification", app.includes("editCommitReport?.commit_verified !== true") && app.includes("ARDY returned motion without verified authored IK keys"));
 expect("failed key verification leaves pending IK intact", app.indexOf("ARDY returned motion without verified authored IK keys") < app.indexOf("job.ikState.keys.clear()"));
+expect(
+	"inactive live motion and its prompt clips commit in one character update",
+	app.includes("targetPromptClips =") &&
+		app.includes("sessionMotion: loaded,") &&
+		app.includes("promptClips: targetPromptClips"),
+);
+expect(
+	"a deleted inactive motion target cannot clear the active editing motion",
+	app.includes("if (targetCharacterId === loadedLayerCharRef.current) setMotion(null);"),
+);
+// Given B owns a completed motion while A becomes the editing buffer during
+// decode or the B-rig wait, when completion resumes, then B keeps both its
+// take and prompt schedule without installing either into A.
+expect(
+	"a B completion after selection changes retains B ownership through decode and rig waits",
+	app.includes("const targetCharacter = charactersRef.current.find((entry) => entry.id === targetCharacterId);") && app.includes("const targetStillExists = charactersRef.current.some((entry) => entry.id === targetCharacter.id);") && app.includes("const bufferOwnsTarget = targetCharacter.id === loadedLayerCharRef.current;") && app.includes("if (bufferOwnsTarget) {") && app.includes("setPromptClips(targetPromptClips);"),
+);
+// Given A starts a completion and B becomes active before it settles, when
+// the target-owned completion resumes, then B's editing buffer receives B's
+// clip and prompts and an A failure cannot clear B's motion.
+expect(
+	"an active B receives its own completion after an A to B selection interleaving",
+	app.includes("const targetCharacterId = args.characterId ?? liveStateRef.current.activeCharacterId;") && app.includes("const targetPromptClips = clips;") && app.includes("targetCharacterId,") && app.includes("if (targetCharacterId === loadedLayerCharRef.current) setMotion(null);"),
+);
 expect("individual block generation action is removed", !app.includes("Generate selected block"));
 expect("Prompt Block edits stay synced with ARDY input", app.includes("changePromptClip(selectedPromptId") && app.includes("setArdyPrompt(event.target.value)"));
 expect("desktop stage fills the remaining viewport", css.includes("aspect-ratio: auto") && css.includes("height: 100%"));

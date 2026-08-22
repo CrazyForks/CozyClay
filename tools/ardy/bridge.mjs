@@ -36,7 +36,7 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decodeMotionNpz } from "../../src/ardy/npz.js";
@@ -45,6 +45,7 @@ import { globalChildren, killGroup, runStreaming, track } from "./runners/proc.m
 import { createRunner } from "./runners/index.mjs";
 import { footagePath, handleFootage, serveFootage } from "./footage.mjs";
 import { handleExtract } from "./extract.mjs";
+import { createPrivateArtifactDir, evictPrivateArtifact, removePrivateArtifactDir } from "./artifacts.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const OUT_DIR = join(HERE, "out");
@@ -504,7 +505,8 @@ const motionAllowlist = new Map();
 function registerMotion(runId, absPath) {
 	motionAllowlist.set(runId, absPath);
 	if (motionAllowlist.size > MOTION_ALLOWLIST_MAX) {
-		motionAllowlist.delete(motionAllowlist.keys().next().value);
+		const oldest = motionAllowlist.keys().next().value;
+		evictPrivateArtifact(motionAllowlist, oldest);
 	}
 }
 
@@ -656,23 +658,28 @@ async function handleGenerate(req, res) {
 		for (const child of children) killGroup(child);
 		children.clear();
 	};
+	let artifactDir = null;
+	const cleanupArtifacts = () => {
+		if (artifactDir) removePrivateArtifactDir(artifactDir);
+	};
 	res.on("close", () => {
 		if (!res.writableEnded) {
 			console.error(
 				`[bridge] client disconnected mid-generate; killing ${children.size} child process group(s)`
 			);
 			killChildren();
+			cleanupArtifacts();
 		}
 	});
 
 	const stamp = `${Date.now()}-${randomBytes(3).toString("hex")}`;
-	const poseJsonPaths = requestedPoses.map((_, index) => join(OUT_DIR, `gen-${stamp}-pose-${index}.json`));
-	const poseNpzPaths = requestedPoses.map((_, index) => join(OUT_DIR, `gen-${stamp}-pose-${index}.npz`));
+	artifactDir = createPrivateArtifactDir(OUT_DIR, "generate");
+	const poseJsonPaths = requestedPoses.map((_, index) => join(artifactDir, `pose-${index}.json`));
+	const poseNpzPaths = requestedPoses.map((_, index) => join(artifactDir, `pose-${index}.npz`));
 	// posePin:false runs carry no pose, so the artifact name says what the
 	// run actually was: constrained (pose pinned) vs generated (no pose).
-	const outNpzPath = join(OUT_DIR, posePinned ? `gen-${stamp}-constrained.npz` : `gen-${stamp}-generated.npz`);
+	const outNpzPath = join(artifactDir, posePinned ? "constrained.npz" : "generated.npz");
 	try {
-		mkdirSync(OUT_DIR, { recursive: true });
 
 		// --- pose -> ARDY motion npz (local, fast). Skipped when posePin is
 		// false: the pose constraint is dropped, so there is nothing to
@@ -699,6 +706,7 @@ async function handleGenerate(req, res) {
 				if (convCode !== 0) {
 					killChildren();
 					sendError(`pose-to-npz failed (exit ${convCode}): ${convLast.stderr || convLast.stdout || "no output"}`);
+					cleanupArtifacts();
 					finish(200);
 					return;
 				}
@@ -709,7 +717,7 @@ async function handleGenerate(req, res) {
 		const clipFrames = Math.floor(body.duration * FPS);
 		const segments = body.segments || [{ startFrame: 0, endFrame: clipFrames, prompt: body.prompt }];
 		if (body.motionEdit) {
-			const manifestPath = join(OUT_DIR, `gen-${stamp}-edit-manifest.json`);
+			const manifestPath = join(artifactDir, "edit-manifest.json");
 			const manifest = {
 				start_frame: body.motionEdit.startFrame,
 				end_frame: body.motionEdit.endFrame,
@@ -895,7 +903,7 @@ async function handleGenerate(req, res) {
 			const reports = [];
 			for (let index = 0; index < body.regenerateSegments.length; index += 1) {
 				const segment = body.regenerateSegments[index];
-				const segmentPath = join(OUT_DIR, `gen-${stamp}-edit-${index}.npz`);
+				const segmentPath = join(artifactDir, `edit-${index}.npz`);
 				const report = await runSingle(segment, segmentPath);
 				const generated = await decodeMotionNpz(new Uint8Array(readFileSync(segmentPath)));
 				const segmentFrames = segment.endFrame - segment.startFrame;
@@ -969,6 +977,7 @@ async function handleGenerate(req, res) {
 		finish(200);
 	} catch (err) {
 		killChildren();
+		cleanupArtifacts();
 		if (!res.writableEnded) sendError(`generate failed: ${err.message}`);
 		console.error(`[bridge] generate error: ${err.stack || err}`);
 		finish(200);
@@ -1123,6 +1132,7 @@ const server = createServer((req, res) => {
 			readBody: (request) => readBody(request, MAX_BODY_BYTES),
 			footagePath,
 			registerMotion,
+			artifactRoot: OUT_DIR,
 		}).catch((err) => {
 			if (!res.headersSent) sendJson(res, 500, { ok: false, reason: `internal error: ${err.message}` });
 			else {

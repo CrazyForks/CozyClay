@@ -25,20 +25,24 @@
  * the real `.cclayproject` envelope, so anything authored here opens in the
  * studio, and anything authored in the studio opens here.
  */
-import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { link, open as openFile, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, readdirSync, statSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { ErrorCode, InitializeRequestSchema, LATEST_PROTOCOL_VERSION, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import { startLiveHub } from "./live-hub.mjs";
+import { LiveMutationUncertainError, MotionJobRegistry, startLiveHub } from "./live-hub.mjs";
 import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhases, splitLongBeat } from "./ardy-prompts.mjs";
 
 import {
@@ -81,13 +85,107 @@ const state = {
 	doc: createSceneDocument(),
 	name: "Untitled",
 	camera: { x: 0, y: 1.6, z: 4.5, focalMm: 35 },
+	timeline: { currentFrame: 0, frameCount: 360, fps: 24 },
 	/** which character the camera frames against; null means the first of the cast */
 	focus: null,
+	/** true after focus_character explicitly selects the server-side subject */
+	focusLocked: false,
 	/** framing snapshot taken by `mark_camera_move`, consumed by `describe_camera_move` */
 	markedFraming: null,
 };
 
 let liveHub = null;
+const motionJobs = new MotionJobRegistry();
+const liveWorkspace = new AsyncLocalStorage();
+const liveWorkspaceTools = new Set([
+	"describe_scene", "describe_shot", "render_prompt", "mark_camera_move", "describe_camera_move", "save_project",
+	"set_camera", "frame_shot", "add_character", "place_character", "remove_character",
+	"focus_character", "place_object", "group_objects", "set_prompt_blocks", "generate_motion", "update_object",
+	"remove_object", "apply_batch", "add_scene", "switch_scene", "open_project", "capture_frame",
+]);
+const MAX_CAPTURE_BYTES = 1_000_000;
+const CAPTURE_ARTIFACT_TTL_MS = 10 * 60_000;
+const MAX_CAPTURE_ARTIFACTS = 20;
+const captureArtifacts = [];
+const captureArtifactPattern = /^cozyclay-capture-[0-9a-f-]+\.png$/;
+const cleanupCaptureArtifacts = () => {
+	for (const path of captureArtifacts.splice(0)) {
+		try { unlinkSync(path); } catch {}
+	}
+};
+const sweepCaptureArtifacts = () => {
+	for (const name of readdirSync(tmpdir())) {
+		if (!captureArtifactPattern.test(name)) continue;
+		try {
+			const path = join(tmpdir(), name);
+			if (Date.now() - statSync(path).mtimeMs >= CAPTURE_ARTIFACT_TTL_MS) unlinkSync(path);
+		} catch {}
+	}
+};
+sweepCaptureArtifacts();
+process.once("exit", cleanupCaptureArtifacts);
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { cleanupCaptureArtifacts(); process.exit(128 + (signal === "SIGINT" ? 2 : 15)); });
+const configuredProjectRoot = resolve(process.env.COZYCLAY_PROJECT_ROOT ?? process.cwd());
+const projectRootPromise = realpath(configuredProjectRoot).then((root) => {
+	process.chdir(root);
+	return root;
+});
+
+const isInside = (root, candidate) => {
+	const offset = relative(root, candidate);
+	return offset === "" || (!offset.startsWith("..") && !isAbsolute(offset));
+};
+
+const requirePrivateProjectInode = async (file) => {
+	const stat = await file.stat();
+	if (stat.nlink !== 1) throw new Error("Project files must not have hard links.");
+};
+
+const resolveProjectPath = async (path, { existing }) => {
+	if (!path.endsWith(".cclayproject")) throw new Error("Project path must end in .cclayproject.");
+	const root = await projectRootPromise;
+	const requested = resolve(path);
+	const requestedParent = await realpath(dirname(requested));
+	if (requestedParent !== root) throw new Error(`Project files must be direct children of configured project root ${root}.`);
+	const name = basename(requested);
+	if (!name || name.includes("/")) throw new Error("Project filename is invalid.");
+	if (existing) {
+		const file = await openFile(name, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+		try {
+			await requirePrivateProjectInode(file);
+		} finally {
+			await file.close();
+		}
+	}
+	return { displayPath: requested, descriptorPath: name };
+};
+
+const TOOL_ANNOTATIONS = Object.freeze({
+	describe_scene: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	live_status: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	describe_shot: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	capture_frame: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+	set_camera: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	frame_shot: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	add_character: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+	place_character: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	remove_character: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+	focus_character: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	place_object: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+	group_objects: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	set_prompt_blocks: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	generate_motion: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+	update_object: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	remove_object: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+	apply_batch: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+	render_prompt: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	mark_camera_move: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	describe_camera_move: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	add_scene: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+	switch_scene: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	open_project: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+	save_project: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+});
 
 const scene = () => activeScene(state.doc.scenes, state.doc.activeSceneId);
 const stage = () => scene().stage;
@@ -134,7 +232,7 @@ const fov = () => {
  * first of the cast unless `focus_character` moved it. */
 const subject = () => {
 	const a = findCharacter(state.focus) ?? cast()[0];
-	return { x: a.x, z: a.z, rot: a.rot };
+	return a ? { x: a.x, z: a.z, rot: a.rot } : { x: 0, z: 0, rot: 0 };
 };
 
 /** Yaw/pitch that aim the camera at the framing pivot — what captureFraming wants. */
@@ -162,6 +260,31 @@ const framing = () => {
 
 const currentShot = () => deriveShot(state.camera, subject(), fov(), undefined, filmback());
 
+const appliedLiveMutation = async (name, args) => {
+	const workspaceHandle = liveWorkspace.getStore();
+	const value = await liveHub.command(name, args, workspaceHandle);
+	try {
+		if (!await refreshLiveDescription(workspaceHandle)) throw new Error("Live editor disconnected before verification.");
+	} catch (error) {
+		throw new LiveMutationUncertainError(`Live editor accepted ${name}, but its state could not be verified: ${error.message} The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.`);
+	}
+	return value;
+};
+
+const requireLiveSceneParity = (name, document, result) => {
+	const expected = document.scenes.map(({ id, name: sceneName }) => ({ id, name: sceneName }));
+	const received = Array.isArray(result?.scenes) ? result.scenes : [];
+	const sameScenes = received.length === expected.length && received.every((scene, index) =>
+		scene?.id === expected[index].id && scene?.name === expected[index].name,
+	);
+	if (sameScenes && result?.activeSceneId === document.activeSceneId) return;
+	throw new LiveMutationUncertainError(
+		`Live editor accepted ${name}, but did not confirm the complete scene list and active scene ` +
+		`(expected ${JSON.stringify(expected)} active ${document.activeSceneId}; received ${JSON.stringify(received)} active ${result?.activeSceneId ?? "none"}). ` +
+		"The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.",
+	);
+};
+
 const modelById = (id) =>
 	[...VIDEO_MODELS, ...IMAGE_MODELS].find((m) => m.id === id) ?? null;
 
@@ -170,6 +293,11 @@ const modelById = (id) =>
  * same code paths as memory-only mode. */
 const applyLiveDescription = (description) => {
 	if (!description || typeof description !== "object") throw new Error("Live editor returned an invalid scene description.");
+	if (description.document && typeof description.document === "object") {
+		const parsed = readSceneDocument(serializeSceneDocument(description.document));
+		if (!parsed.document) throw new Error("Live editor returned an invalid scene document.");
+		state.doc = parsed.document;
+	}
 	const sc = scene();
 	if (typeof description.sceneName === "string" && description.sceneName) sc.name = description.sceneName;
 	if (description.camera && typeof description.camera === "object") {
@@ -179,12 +307,27 @@ const applyLiveDescription = (description) => {
 		if (typeof description.camera.sensorId === "string") state.camera.sensorId = description.camera.sensorId;
 		if (Number.isFinite(description.camera.aspectRatio)) state.camera.aspectRatio = description.camera.aspectRatio;
 	}
-	if (Array.isArray(description.characters) && description.characters.length) {
+	if (description.stage && typeof description.stage === "object") {
+		if (typeof description.stage.shotAspect === "string") sc.stage.shotAspect = description.stage.shotAspect;
+		if (typeof description.stage.sensorId === "string") sc.stage.sensorId = description.stage.sensorId;
+		if (typeof description.stage.hasCharSheet === "boolean") sc.stage.hasCharSheet = description.stage.hasCharSheet;
+	}
+	if (description.timeline && typeof description.timeline === "object") {
+		for (const key of ["currentFrame", "frameCount", "fps"]) {
+			if (Number.isFinite(description.timeline[key])) state.timeline[key] = description.timeline[key];
+		}
+	}
+	if (!state.focusLocked && typeof description.activeCharacterId === "string") state.focus = description.activeCharacterId;
+	if (Array.isArray(description.characters)) {
 		const prior = new Map(stage().characters.map((character) => [character.id, character]));
-		stage().characters = description.characters.map((character, index) =>
-			createCharacterEntry({ ...prior.get(character.id), ...character }, index),
-		);
-		if (state.focus && !stage().characters.some((character) => character.id === state.focus)) state.focus = null;
+		stage().characters = description.characters.map((character, index) => {
+			const previous = prior.get(character.id);
+			return createCharacterEntry({ ...previous, ...character, model: character.model ?? previous?.model }, index);
+		});
+		if (state.focus && !stage().characters.some((character) => character.id === state.focus)) {
+			state.focus = null;
+			state.focusLocked = false;
+		}
 	}
 	if (Array.isArray(description.objects)) {
 		const prior = new Map(sc.objects.map((object) => [object.id, object]));
@@ -217,13 +360,35 @@ const applyLiveDescription = (description) => {
 	}
 };
 
-const refreshLiveDescription = async () => {
+const refreshLiveDescription = async (workspaceHandle = liveWorkspace.getStore()) => {
 	if (!liveHub?.connected) return false;
-	applyLiveDescription(await liveHub.command("describe", {}));
+	applyLiveDescription(await liveHub.command("describe", {}, workspaceHandle));
 	return true;
 };
 
-const liveError = (error) => text(`Live editor error: ${error.message}`);
+const liveError = (error) => ({
+	content: [{ type: "text", text: `Live editor error: ${error.message}` }],
+	isError: true,
+});
+
+const motionJobEvent = (job) => ({
+	...motionJobs.task(job),
+	...(job.outcome === null ? {} : { outcome: job.outcome }),
+});
+
+const publishMotionJob = (job) => {
+	if (job.deliveredWorkspaceIds.has(job.workspaceId)) return;
+	if (liveHub?.sendEvent(job.workspaceId, "motion_job", motionJobEvent(job)) > 0) job.deliveredWorkspaceIds.add(job.workspaceId);
+};
+
+const cancelMotionJob = ({ workspaceId, payload }) => {
+	if (payload.taskId && typeof payload.taskId !== "string") return;
+	if (typeof payload.taskId !== "string") return;
+	const task = motionJobs.cancel(payload.taskId, workspaceId);
+	if (!task) return;
+	const job = motionJobs.jobs.get(task.taskId);
+	if (job) publishMotionJob(job);
+};
 
 /* ------------------------------ formatting ------------------------------- */
 
@@ -233,10 +398,16 @@ const metres = (n) => `${round(n)}m`;
 const text = (body) => ({ content: [{ type: "text", text: body }] });
 
 /** A scene rendered the way a crew would read it, not as JSON. */
-function sceneReport() {
+function sceneReport({ characterCursor = 0, objectCursor = 0, limit = 50 } = {}) {
 	const sc = scene();
 	const st = sc.stage;
 	const shot = currentShot();
+	const revision = createHash("sha256")
+		.update(JSON.stringify({ document: state.doc, camera: state.camera, timeline: state.timeline }))
+		.digest("hex")
+		.slice(0, 12);
+	const characterPage = st.characters.slice(characterCursor, characterCursor + limit);
+	const objectPage = sc.objects.slice(objectCursor, objectCursor + limit);
 	const lines = [
 		`Project: ${state.name}`,
 		`Scene: ${sc.name}  (${state.doc.scenes.length} scene${state.doc.scenes.length === 1 ? "" : "s"} in project)`,
@@ -248,43 +419,43 @@ function sceneReport() {
 		`  framing    ${slateLine(shot)}`,
 		`  distance   ${metres(shot.distance)} to the subject's centre of mass`,
 		"",
-		`CAST (${st.characters.length})`,
+		`CAST (total: ${st.characters.length}, returned: ${characterPage.length}, truncated: ${characterCursor + characterPage.length < st.characters.length}, revision: ${revision})`,
 	];
 	const framed = findCharacter(state.focus) ?? st.characters[0];
-	for (const [index, c] of st.characters.entries()) {
-		const letter = String.fromCharCode(65 + index);
+	for (const [offset, c] of characterPage.entries()) {
+		const letter = String.fromCharCode(65 + characterCursor + offset);
 		lines.push(
 			`  ${letter} ${c.id}  "${c.subject}"  at x ${round(c.x)}, z ${round(c.z)}, ` +
 				`facing ${round(c.rot, 1)}deg  [${c.model}]` +
 				`${c.pose ? " posed" : ""}${c.hidden ? " hidden" : ""}` +
 				`${c === framed ? "  <- framed" : ""}`,
+			`    model: ${c.model}  pose: ${JSON.stringify(c.pose ?? null)}  tint: ${c.tint ?? null}  scale: ${c.scale ?? 1}`,
+			`    motionRef: ${JSON.stringify(c.motionRef ?? null)}`,
+			`    layer: ${JSON.stringify({ waypoints: c.layer?.waypoints ?? [], promptClips: c.layer?.promptClips ?? [] })}`,
 		);
 	}
 
-	lines.push("", `SET (${sc.objects.length} object${sc.objects.length === 1 ? "" : "s"})`);
+	lines.push("", `SET (total: ${sc.objects.length}, returned: ${objectPage.length}, truncated: ${objectCursor + objectPage.length < sc.objects.length}, revision: ${revision})`);
 	if (sc.objects.length === 0) {
 		lines.push("  empty — add with place_object");
 	} else {
-		// The set reads back as the tree it is: a child is indented under the
-		// object that carries it — the same structure the studio's Hierarchy
-		// shows and the one group_objects (or place_object's parent arg) built.
-		// The seen-set keeps this total even if stored data were hand-edited
-		// into a loop, matching descendantsOf's own discipline.
-		const ids = new Set(sc.objects.map((o) => o.id));
-		const seen = new Set();
-		const describeLine = (o, depth) => {
-			if (seen.has(o.id)) return;
-			seen.add(o.id);
-			const size = objectSize(o);
+		for (const object of objectPage) {
+			const size = objectSize(object);
 			lines.push(
-				`${"  ".repeat(depth + 1)}${o.id}  ${o.name}  at x ${round(o.x)}, y ${round(o.y)}, z ${round(o.z)}` +
-					`  yaw ${round(o.rot, 1)}deg  size ${round(size.width)}x${round(size.height)}x${round(size.depth)}m`,
+				`  ${object.id}  ${object.name}  at x ${round(object.x)}, y ${round(object.y)}, z ${round(object.z)}` +
+					`  yaw ${round(object.rot, 1)}deg  size ${round(size.width)}x${round(size.height)}x${round(size.depth)}m`,
+				`    rotX: ${round(object.rotX ?? 0, 1)}  rotZ: ${round(object.rotZ ?? 0, 1)}  color: ${object.color ?? null}  parent: ${object.parent ?? null}`,
 			);
-			for (const child of sc.objects.filter((c) => c.parent === o.id)) describeLine(child, depth + 1);
-		};
-		for (const o of sc.objects.filter((o) => (o.parent ?? null) === null || !ids.has(o.parent))) describeLine(o, 0);
-		for (const o of sc.objects) describeLine(o, 0);
+		}
 	}
+	lines.push(
+		"",
+		"STAGE",
+		`  shotAspect: ${st.shotAspect}  sensorId: ${st.sensorId}  hasCharSheet: ${st.hasCharSheet}`,
+		"",
+		"TIMELINE",
+		`  currentFrame: ${state.timeline.currentFrame}  frameCount: ${state.timeline.frameCount}  fps: ${state.timeline.fps}`,
+	);
 	return lines.join("\n");
 }
 
@@ -322,10 +493,42 @@ const server = new McpServer(
 			"degrees of yaw. Save with save_project to a .cclayproject file the CozyClay studio opens.",
 	},
 );
+server.server.setRequestHandler(InitializeRequestSchema, async (request) => {
+	if (request.params.protocolVersion !== LATEST_PROTOCOL_VERSION) {
+		throw new McpError(ErrorCode.InvalidRequest, `CozyClay MCP requires protocol ${LATEST_PROTOCOL_VERSION}.`);
+	}
+	return server.server._oninitialize(request);
+});
 
 const registerTool = (name, config, handler) => {
 	registeredTools += 1;
-	return server.registerTool(name, config, handler);
+	const annotations = TOOL_ANNOTATIONS[name];
+	if (!annotations) throw new Error(`Missing explicit safety annotations for ${name}.`);
+	if (!liveWorkspaceTools.has(name)) return server.registerTool(name, { ...config, annotations }, handler);
+	return server.registerTool(
+		name,
+		{
+			...config,
+			annotations,
+			description:
+				`${config.description} Multiple editor instances are supported; when more than one is connected, ` +
+				"workspace_handle is required so this command reaches only its named workspace.",
+			inputSchema: {
+				...config.inputSchema,
+				workspace_handle: z.string().optional().describe("live workspace handle from live_status; required when multiple editors are connected"),
+			},
+		},
+		async (args) => {
+			const workspaceHandle = args.workspace_handle;
+			if (workspaceHandle !== undefined && !liveHub?.connected) {
+				throw new Error(`Unknown or stale live workspace handle \"${workspaceHandle}\".`);
+			}
+			if (!liveHub?.connected) return liveWorkspace.run(workspaceHandle, () => handler(args));
+			return liveHub.runExclusive(name, workspaceHandle, (resolvedHandle) =>
+				liveWorkspace.run(resolvedHandle, () => handler(args)),
+			);
+		},
+	);
 };
 
 registerTool(
@@ -333,14 +536,19 @@ registerTool(
 	{
 		title: "Describe the scene",
 		description:
-			"Read the whole authoring state: camera, lens, current framing, cast positions and every " +
-			"object in the set. Call this before changing anything, and after, to confirm the result.",
-		inputSchema: {},
+			"Read the authoring state: camera, lens, current framing, cast positions and set objects. " +
+			"Cast and set reads return at most 50 entries by default (100 maximum); each section reports " +
+			"total, returned, truncated and revision. Use character_cursor or object_cursor to read omitted entries.",
+		inputSchema: {
+			character_cursor: z.number().int().min(0).default(0).describe("zero-based cast entry offset"),
+			object_cursor: z.number().int().min(0).default(0).describe("zero-based set object offset"),
+			limit: z.number().int().min(1).max(100).default(50).describe("entries returned per cast and set section"),
+		},
 	},
-	async () => {
+	async ({ character_cursor, object_cursor, limit }) => {
 		try {
 			await refreshLiveDescription();
-			return text(sceneReport());
+			return text(sceneReport({ characterCursor: character_cursor, objectCursor: object_cursor, limit }));
 		} catch (error) {
 			return liveError(error);
 		}
@@ -351,10 +559,16 @@ registerTool(
 	"live_status",
 	{
 		title: "Live editor status",
-		description: "Report whether a CozyClay editor is connected to live mode.",
+		description:
+			"Report connected CozyClay editor workspaces and their handles. Multiple editor instances stay connected; " +
+			"mutations require a workspace_handle whenever routing would otherwise be ambiguous.",
 		inputSchema: {},
 	},
-	async () => text(liveHub?.connected ? "Live editor connected." : "No live editor connected; using in-memory state."),
+	async () => text(
+		liveHub?.connected
+			? `Live editor connected. Workspace handles: ${liveHub.workspaceHandles.join(", ")}`
+			: "No live editor connected; using in-memory state.",
+	),
 );
 
 registerTool(
@@ -377,12 +591,82 @@ registerTool(
 );
 
 registerTool(
+	"capture_frame",
+	{
+		title: "Capture a compressed blocking frame",
+		description:
+			"Unlike render_prompt, capture_frame reads the connected editor's rendered 640x360 preview and computed spatial assertions without changing authored scene, playback or camera state. " +
+			"It returns an inline PNG when it fits max_inline_bytes, otherwise a local artifact path with the same dimensions and byte size.",
+		inputSchema: {
+			max_inline_bytes: z.number().int().min(1024).max(1_000_000).default(200_000)
+				.describe("maximum PNG byte size returned inline; larger frames are written to a local artifact"),
+		},
+	},
+	async ({ max_inline_bytes }) => {
+		if (!liveHub?.connected) return liveError(new Error("capture_frame requires a connected CozyClay editor with a renderable shot camera."));
+		try {
+			const workspaceHandle = liveWorkspace.getStore();
+			const frame = await liveHub.command("capture_frame", {}, workspaceHandle);
+			const beforeHash = createHash("sha256").update(frame?.authoredStateBefore ?? "").digest("hex");
+			const afterHash = createHash("sha256").update(frame?.authoredStateAfter ?? "").digest("hex");
+			if (beforeHash !== afterHash) {
+				throw new Error(`capture_frame changed authored editor state; capture was rejected (${beforeHash} -> ${afterHash}).`);
+			}
+			if (!frame || frame.width !== 640 || frame.height !== 360 || frame.mimeType !== "image/png" || typeof frame.data !== "string") {
+				throw new Error("Live editor returned an invalid capture payload.");
+			}
+			const bytes = Buffer.from(frame.data, "base64");
+			if (bytes.length === 0 || bytes.length !== frame.byteSize || bytes.length > MAX_CAPTURE_BYTES) {
+				throw new Error(`Live editor returned an invalid compressed image size (maximum ${MAX_CAPTURE_BYTES} bytes).`);
+			}
+			if (frame.assertions?.renderable !== true || frame.assertions?.blackFrame === true) {
+				throw new Error("Live editor rejected the capture as non-renderable or black.");
+			}
+			const metadata = {
+				width: frame.width,
+				height: frame.height,
+				mimeType: frame.mimeType,
+				encoding: frame.encoding,
+				byteSize: frame.byteSize,
+				assertions: frame.assertions,
+				stateHashBefore: beforeHash,
+				stateHashAfter: afterHash,
+			};
+			if (bytes.length > max_inline_bytes) {
+				while (captureArtifacts.length >= MAX_CAPTURE_ARTIFACTS) {
+					const oldest = captureArtifacts.shift();
+					await unlink(oldest).catch(() => {});
+				}
+				const path = join(tmpdir(), `cozyclay-capture-${randomUUID()}.png`);
+				await writeFile(path, bytes, { mode: 0o600 });
+				captureArtifacts.push(path);
+				const expiry = setTimeout(() => {
+					const index = captureArtifacts.indexOf(path);
+					if (index >= 0) captureArtifacts.splice(index, 1);
+					void unlink(path).catch(() => {});
+				}, CAPTURE_ARTIFACT_TTL_MS);
+				expiry.unref?.();
+				return text(JSON.stringify({ ...metadata, artifact: { path, width: frame.width, height: frame.height, byteSize: bytes.length } }));
+			}
+			return {
+				content: [
+					{ type: "text", text: JSON.stringify({ ...metadata, image: { transport: "inline", width: frame.width, height: frame.height, byteSize: bytes.length } }) },
+					{ type: "image", data: frame.data, mimeType: frame.mimeType },
+				],
+			};
+		} catch (error) {
+			return liveError(error);
+		}
+	},
+);
+
+registerTool(
 	"set_camera",
 	{
 		title: "Set the camera",
 		description:
-			"Move the camera and/or change the lens. Every field is optional — omitted fields keep " +
-			"their current value. The camera always aims at the subject. Use focal_mm to change " +
+			"Unlike frame_shot, set_camera applies explicit camera coordinates or focal length rather than deriving a shot. " +
+			"Every field is optional — omitted fields keep their current value. The camera always aims at the subject. Use focal_mm to change " +
 			"framing without moving (longer = tighter), or move x/y/z to change the angle.",
 		inputSchema: {
 			x: z.number().optional().describe("world x in metres (right)"),
@@ -399,8 +683,7 @@ registerTool(
 	async ({ x, y, z: zPos, focal_mm }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("set_camera", { x, y, z: zPos, focalMm: focal_mm });
-				await refreshLiveDescription();
+				await appliedLiveMutation("set_camera", { x, y, z: zPos, focalMm: focal_mm });
 				return text(`Camera set.\n\n${shotReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -419,8 +702,8 @@ registerTool(
 	{
 		title: "Frame a shot by intent",
 		description:
-			"Place the camera by describing the shot you want instead of doing the trigonometry. " +
-			"Chooses a distance and height that actually produce the requested size and level, " +
+			"Unlike set_camera, frame_shot derives camera position and lens from shot intent rather than applying explicit coordinates. " +
+			"It chooses a distance and height that actually produce the requested size and level, " +
 			"orbiting to the requested side of the subject.",
 		inputSchema: {
 			size: z
@@ -521,8 +804,7 @@ registerTool(
 		};
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("set_camera", nextCamera);
-				await refreshLiveDescription();
+				await appliedLiveMutation("set_camera", nextCamera);
 			} catch (error) {
 				return liveError(error);
 			}
@@ -544,8 +826,8 @@ registerTool(
 	{
 		title: "Add a character to the cast",
 		description:
-			"Put another character in the scene. The cast is unbounded — each one gets its own " +
-			"letter (A, B, C…), position and prompt description.",
+			"Unlike place_character, add_character adds a new cast member instead of changing an existing one. " +
+			"The cast is unbounded — each one gets its own letter (A, B, C…), position and prompt description.",
 		inputSchema: {
 			subject: z.string().describe('prompt description, e.g. "a courier holding a package"'),
 			x: z.number().default(0).describe("floor position x in metres"),
@@ -560,8 +842,9 @@ registerTool(
 	async ({ subject: desc, x, z: zPos, facing, model }) => {
 		if (liveHub?.connected) {
 			try {
-				const result = await liveHub.command("add_character", { subject: desc, x, z: zPos, rot: facing });
-				await refreshLiveDescription();
+				const result = await appliedLiveMutation("add_character", { subject: desc, x, z: zPos, rot: facing, model });
+				const added = stage().characters.find((character) => character.id === result?.id);
+				if (added && model !== undefined) added.model = model;
 				return text(`Added ${result?.id ?? "character"}.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -586,8 +869,8 @@ registerTool(
 	{
 		title: "Move or re-describe a character",
 		description:
-			"Change a character already in the cast. Every field is optional; omitted fields keep " +
-			"their value. Use add_character to introduce a new one.",
+			"Unlike add_character, place_character changes an existing cast member instead of adding one. " +
+			"Every field is optional; omitted fields keep their value.",
 		inputSchema: {
 			character: z
 				.string()
@@ -608,8 +891,7 @@ registerTool(
 	async ({ character, x, z: zPos, y, facing, subject: desc, hidden }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("update_character", { ref: character, x, y, z: zPos, rot: facing, subject: desc, hidden });
-				await refreshLiveDescription();
+				await appliedLiveMutation("update_character", { ref: character, x, y, z: zPos, rot: facing, subject: desc, hidden });
 				return text(`Character updated.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -639,8 +921,7 @@ registerTool(
 	async ({ character }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("remove_character", { ref: character });
-				await refreshLiveDescription();
+				await appliedLiveMutation("remove_character", { ref: character });
 				return text(`Character removed.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -652,7 +933,10 @@ registerTool(
 		if (st.characters.length === 1) return text("The scene needs at least one character.");
 		const letter = letterFor(target);
 		st.characters = st.characters.filter((c) => c !== target);
-		if (state.focus && !findCharacter(state.focus)) state.focus = null;
+		if (state.focus && !findCharacter(state.focus)) {
+			state.focus = null;
+			state.focusLocked = false;
+		}
 		return text(`Removed ${letter}.\n\n${sceneReport()}`);
 	},
 );
@@ -677,6 +961,7 @@ registerTool(
 		const target = findCharacter(character);
 		if (!target) return text(`No character "${character}". ${castHint()}`);
 		state.focus = target.id;
+		state.focusLocked = true;
 		return text(`Framing ${letterFor(target)} "${target.subject}".\n\n${shotReport()}`);
 	},
 );
@@ -686,8 +971,8 @@ registerTool(
 	{
 		title: "Place an object in the set",
 		description:
-			`Add a prop to the set. Available kinds: ${OBJECT_LIBRARY.map((o) => o.kind).join(", ")}. ` +
-			"Returns the object id, which update_object and remove_object take.",
+			`Unlike update_object, place_object adds a new prop instead of changing an existing one. Available kinds: ${OBJECT_LIBRARY.map((o) => o.kind).join(", ")}. ` +
+			"It returns the object id, which update_object and remove_object take.",
 		inputSchema: {
 			kind: z
 				.enum(OBJECT_LIBRARY.map((o) => o.kind))
@@ -706,8 +991,7 @@ registerTool(
 	async ({ kind, x, z: zPos, y, facing, name, parent }) => {
 		if (liveHub?.connected) {
 			try {
-				const result = await liveHub.command("place_object", { kind, x, z: zPos, y, rot: facing, name, parent });
-				await refreshLiveDescription();
+				const result = await appliedLiveMutation("place_object", { kind, x, z: zPos, y, rot: facing, name, parent });
 				return text(`Placed object as ${result?.id ?? "unknown"}.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -751,8 +1035,7 @@ registerTool(
 	async ({ parent, children }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command(parent === null ? "ungroup_objects" : "group_objects", { parent, children });
-				await refreshLiveDescription();
+				await appliedLiveMutation(parent === null ? "ungroup_objects" : "group_objects", { parent, children });
 				return text(
 					(parent === null
 						? `Detached ${children.length} object(s).`
@@ -823,18 +1106,22 @@ registerTool(
 			}
 		}
 		try {
-			await liveHub.command("set_prompt_blocks", { blocks });
+			await appliedLiveMutation("set_prompt_blocks", { blocks });
 		} catch (error) {
 			return liveError(error);
 		}
+		// Report the normalised text itself, not blocks[i]: a long beat becomes
+		// several blocks, so block indices run ahead of phase indices and quoting
+		// blocks[i] would attribute one beat's edits to another beat's wording.
 		const rewrites = normalized.notes
-			.map((notes, i) => (notes.length ? `  ${i + 1}. ${blocks[i].text}  ← ${notes.join("; ")}` : null))
+			.map((notes, i) => (notes.length ? `  ${i + 1}. ${normalized.texts[i]}  ← ${notes.join("; ")}` : null))
 			.filter(Boolean);
 		return text(
 			`${blocks.length} block(s) on the timeline (${(cursor / TIMELINE_FPS).toFixed(1)}s total):\n` +
 				blocks.map((b) => `  ${b.startFrame}-${b.endFrame}f  ${b.text}`).join("\n") +
 				(chained > 0 ? `\n  (${chained} block(s) chained to keep every block within ${BLOCK_MAX_SECONDS}s)` : "") +
 				(rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "") +
+				(normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "") +
 				"\n\nGenerate them from the studio's Prompt Blocks panel, or with generate_motion.",
 		);
 	},
@@ -845,8 +1132,9 @@ registerTool(
 	{
 		title: "Generate character motion (ARDY)",
 		description:
-			"Generate a multi-phase motion clip through the ARDY bridge and, when a live editor is " +
-			"connected, load it onto the active character so it appears on the timeline.\n\n" +
+			"Start a multi-phase ARDY motion job for the connected live editor and return immediately with its " +
+			"task-shaped identity. Completion, failure, or cancellation arrives as the live socket's motion_job event; " +
+			"the MCP model does not poll task state. A completed event loads the active character's timeline.\n\n" +
 			PROMPT_GUIDE,
 		inputSchema: {
 			phases: z
@@ -859,13 +1147,15 @@ registerTool(
 						}),
 					]),
 				)
-				.min(2)
+				.min(1)
 				.max(8)
 				.describe(
 					"one beat per phase, in order. Write each as ARDY writes them: " +
 						'"A person walks in a circle." — subject, one action, present tense, ' +
 						"full stop. Give a plain string to share the clip evenly, or " +
-						"{ text, seconds } to hold a beat for a specific time.",
+						"{ text, seconds } to hold a beat for a specific time. A single " +
+						"complete beat is accepted and generates one clip; a sequence needs " +
+						"one phase per action, never a compound sentence.",
 				),
 			seconds: z
 				.number()
@@ -876,9 +1166,9 @@ registerTool(
 			seed: z.number().int().optional().describe("generation seed"),
 			motion_url: z
 				.string()
-				.regex(/^\/ardy\/motions\/[0-9]+-[0-9a-f]{6}$/)
+				.regex(/^\/(ardy\/motions\/[0-9]+-[0-9a-f]{6}|ardy\/assembled\/[A-Za-z0-9._-]+\.npz)$/)
 				.optional()
-				.describe("reuse an already-generated clip instead of generating again"),
+				.describe("reuse an already-generated clip, or a curated clip staged under public/ardy/assembled/"),
 			drop: z
 				.object({
 					from_s: z.number().min(0).describe("clip time the plunge begins, seconds"),
@@ -898,18 +1188,22 @@ registerTool(
 		const phaseSeconds = rawPhases.map((p) => (typeof p === "string" ? null : p.seconds));
 		const timed = phaseSeconds.some((s) => s !== null);
 		const bridge = process.env.COZYCLAY_BRIDGE ?? "http://127.0.0.1:5181";
-		try {
-			const health = await fetch(`${bridge}/ardy/health`, { signal: AbortSignal.timeout(4000) }).then((r) => r.json());
-			if (!health.ok) throw new Error("bridge unhealthy");
-		} catch {
-			return text("The ARDY bridge is not running on " + bridge + ". Start the studio with `npm run dev` (it launches the bridge) and try again.");
-		}
 
-		// Every phase is rewritten into ARDY's own sentence shape before it is
-		// ever sent; a compound beat is split into the extra phase it was hiding.
+		// Every phase is rewritten into ARDY's own sentence shape before it is ever
+		// sent. One input beat stays one phase: the caller's phase list is the
+		// sequence, so a composite beat is theirs to split, not ours to re-cut.
 		const normalized = normalizePhases(phases);
-		const prompts = normalized.texts.filter(Boolean);
-		if (prompts.length < 2) return text("Give at least two distinct motion beats.");
+		// Keep notes beside the prompt they belong to: a blank beat normalises to
+		// "" and is dropped, which would otherwise slide every later note onto the
+		// wrong prompt in the rewrite report.
+		const kept = normalized.texts
+			.map((t, i) => ({ text: t, notes: normalized.notes[i], source: normalized.sources[i] }))
+			.filter((p) => p.text);
+		const prompts = kept.map((p) => p.text);
+		// One complete beat is a legitimate clip — ARDY's own examples are single
+		// prompts ("A person walks in a circle."), so a valid one-phase request must
+		// not fail merely for being one phase. Only an empty request is refused.
+		if (prompts.length === 0) return text("Give at least one motion beat.");
 
 		// ARDY Core is 20 fps; segments must tile 0..clipFrames exactly, and each
 		// one needs at least 3 frames.
@@ -918,17 +1212,17 @@ registerTool(
 		let clipFrames;
 		let chained = 0;
 		if (timed) {
-			// A beat that split into pieces shares its time between them, so an
+			// A beat that became several blocks shares its time between them, so an
 			// explicit "6 seconds of walking" stays 6 seconds however it was phrased.
-			const pieceCount = normalized.sources.reduce((acc, source) => {
-				acc[source] = (acc[source] ?? 0) + 1;
+			const pieceCount = kept.reduce((acc, piece) => {
+				acc[piece.source] = (acc[piece.source] ?? 0) + 1;
 				return acc;
 			}, {});
 			segments = [];
 			let cursor = 0;
-			for (const [i, prompt] of prompts.entries()) {
-				const whole = phaseSeconds[normalized.sources[i]] ?? seconds / phases.length;
-				const share = whole / pieceCount[normalized.sources[i]];
+			for (const { text: prompt, source } of kept) {
+				const whole = phaseSeconds[source] ?? seconds / phases.length;
+				const share = whole / pieceCount[source];
 				// The studio caps a block at BLOCK_MAX_SECONDS and refuses to generate
 				// a longer one, so a long beat becomes consecutive blocks here rather
 				// than something the UI would reject.
@@ -963,75 +1257,104 @@ registerTool(
 			}
 		}
 		const clipSeconds = clipFrames / ARDY_FPS;
-		const rewrites = normalized.notes
-			.map((notes, i) => (notes.length ? `  ${i + 1}. ${prompts[i]}  ← ${notes.join("; ")}` : null))
+		const rewrites = kept
+			.map(({ text: prompt, notes }, i) => (notes.length ? `  ${i + 1}. ${prompt}  ← ${notes.join("; ")}` : null))
 			.filter(Boolean);
 		const chainNote = chained > 0 ? `\n  (${chained} block(s) chained to keep every block within ${BLOCK_MAX_SECONDS}s)` : "";
+		// A drop is reported on its own account: a caller can send nine already-perfect
+		// phases, which produces no rewrite and no chaining yet still loses the ninth
+		// to the schema's 8-phase limit, and silence there would hide a lost beat.
+		const dropNote =
+			normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "";
 		const promptNote =
-			rewrites.length || chainNote
-				? (rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "\n") +
-					(normalized.expanded ? "\n  (a compound beat became its own phase)" : "") +
-					(normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "") +
-					chainNote
+			rewrites.length || chainNote || dropNote
+				? (rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "\n") + dropNote + chainNote
 				: "";
 
-		const deliver = async (motionUrl, note) => {
-			const summary = `${note} ${clipSeconds.toFixed(1)}s / ${clipFrames} frames — ${segments.length} phases:\n` +
-				segments
-					.map((s) => `  ${s.startFrame}-${s.endFrame}  (${((s.endFrame - s.startFrame) / ARDY_FPS).toFixed(1)}s)  ${s.prompt}`)
-					.join("\n") +
-				`\nmotion: ${motionUrl}${promptNote}`;
-			if (!liveHub?.connected) return text(`${summary}\n\nNo live editor connected — open the studio and it can load this URL.`);
-			try {
-				await liveHub.command("load_motion", { url: motionUrl, prompt: prompts.join(" "), blocks: segments, drop });
-				return text(
-					`${summary}\n\nLoaded onto the active character with ${segments.length} prompt blocks on the timeline` +
-						`${drop ? ` — dropping ${drop.meters}m over ${drop.from_s}–${drop.to_s}s` : ""} — press play.`,
-				);
-			} catch (error) {
-				return text(`${summary}\n\nGenerated, but the editor did not take it: ${error.message}`);
-			}
-		};
-
-		if (motion_url) return deliver(motion_url, "Reusing");
-		// segments run the autoregressive sequence generator, which is
-		// incompatible with pose pinning — the bridge requires posePin:false.
-		const body = { prompt: prompts.join(" "), duration: clipSeconds, segments, posePin: false };
+		if (!liveHub?.connected) return text("generate_motion requires a connected CozyClay editor so completion can be delivered over its live socket.");
+		try {
+			await refreshLiveDescription();
+		} catch (error) {
+			return liveError(error);
+		}
+		const workspaceHandle = liveWorkspace.getStore() ?? liveHub.resolveWorkspace("generate_motion");
+		const workspaceId = liveHub.workspaceId(workspaceHandle);
+		const targetCharacterId = stage().characters.find((character) => character.id === state.focus)?.id ?? stage().characters[0]?.id ?? null;
+		let job;
+		try {
+			job = motionJobs.create(workspaceId);
+		} catch (error) {
+			return liveError(error);
+		}
+		// A single beat has no sequence to chain: send it as a plain prompt;
+		// composite physical wording remains intact in the normalized text.
+		const body =
+			prompts.length === 1
+				? { prompt: prompts[0], duration: clipSeconds, posePin: false }
+				: { prompt: prompts.join(" "), duration: clipSeconds, segments, posePin: false };
 		if (seed !== undefined) body.seed = seed;
 
-		const res = await fetch(`${bridge}/ardy/generate`, {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify(body),
-		});
-		if (!res.ok) return text(`Generation refused (HTTP ${res.status}): ${await res.text()}`);
-
-		// The bridge streams ndjson progress lines and ends with a done/error event.
-		const reader = res.body.getReader();
-		const decoder = new TextDecoder();
-		let buffer = "";
-		let done = null;
-		let lastProgress = "";
-		for (;;) {
-			const chunk = await reader.read();
-			if (chunk.done) break;
-			buffer += decoder.decode(chunk.value, { stream: true });
-			let nl = buffer.indexOf("\n");
-			while (nl !== -1) {
-				const line = buffer.slice(0, nl).trim();
-				buffer = buffer.slice(nl + 1);
-				if (line) {
-					const event = JSON.parse(line);
-					if (event.event === "error") return text(`Generation failed: ${event.message ?? "generator error"}`);
-					if (event.event === "done") done = event;
-					else lastProgress = event.message ?? event.event ?? lastProgress;
+		// Abort tears down the HTTP stream. The bridge owns the child process group
+		// and kills it on disconnect, so cancellation stops generator work before a
+		// terminal cancelled event is sent; it never reaches editor installation.
+		const run = async () => {
+			if (job.status === "cancelled") return;
+			const controller = new AbortController();
+			const deadline = setTimeout(() => controller.abort(new Error("Motion generation exceeded the 5 minute deadline.")), 5 * 60_000);
+			deadline.unref?.();
+			job.cancel = () => controller.abort();
+			if (job.status === "cancelled") return;
+			motionJobs.transition(job, "running");
+			try {
+				let motionUrl = motion_url;
+				if (!motionUrl) {
+					const res = await fetch(`${bridge}/ardy/generate`, {
+						method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: controller.signal,
+					});
+					if (!res.ok) throw new Error(`Generation refused (HTTP ${res.status}): ${await res.text()}`);
+					const reader = res.body?.getReader();
+					if (!reader) throw new Error("Generation response has no body stream.");
+					const decoder = new TextDecoder();
+					let buffer = "";
+					for (;;) {
+						const chunk = await reader.read();
+						if (chunk.done) break;
+						buffer += decoder.decode(chunk.value, { stream: true });
+						let newline = buffer.indexOf("\n");
+						while (newline !== -1) {
+							const line = buffer.slice(0, newline).trim();
+							buffer = buffer.slice(newline + 1);
+							if (line) {
+								const event = JSON.parse(line);
+								if (event.event === "error") throw new Error(event.message ?? "Generator error.");
+								if (event.event === "done") motionUrl = event.motionUrl;
+							}
+							newline = buffer.indexOf("\n");
+						}
+						if (motionUrl) break;
+					}
 				}
-				nl = buffer.indexOf("\n");
+				if (job.status === "cancelled") return;
+				if (typeof motionUrl !== "string") throw new Error("Generation ended without a motion.");
+				motionJobs.transition(job, "completed", {
+					motionUrl, prompt: prompts.join(" "), blocks: segments, drop, targetCharacterId,
+					summary: `${clipSeconds.toFixed(1)}s / ${clipFrames} frames${promptNote}`,
+				});
+				publishMotionJob(job);
+			} catch (error) {
+				if (job.status === "cancelled" || error?.name === "AbortError") {
+					if (job.status !== "cancelled") motionJobs.transition(job, "cancelled", { message: "Generation cancelled before editor delivery." });
+				} else {
+					motionJobs.transition(job, "failed", { message: error instanceof Error ? error.message : "Motion generation failed." });
+				}
+				publishMotionJob(job);
+			} finally {
+				clearTimeout(deadline);
+				job.cancel = null;
 			}
-			if (done) break;
-		}
-		if (!done?.motionUrl) return text(`Generation ended without a motion (last progress: ${lastProgress || "none"}).`);
-		return deliver(done.motionUrl, "Generated");
+		};
+		queueMicrotask(run);
+		return text(JSON.stringify(motionJobs.task(job)));
 	},
 );
 
@@ -1040,8 +1363,8 @@ registerTool(
 	{
 		title: "Move, rotate or scale an object",
 		description:
-			"Change an object already in the set. Every field is optional; omitted fields are left " +
-			"alone. Transforms go through the same clamp/snap path the studio's gizmo uses.",
+			"Unlike place_object, update_object changes an existing prop instead of adding one. " +
+			"Every field is optional; omitted fields are left alone. Transforms go through the same clamp/snap path the studio's gizmo uses.",
 		inputSchema: {
 			id: z.string().describe("object id from place_object or describe_scene"),
 			x: z.number().optional(),
@@ -1065,11 +1388,10 @@ registerTool(
 	async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color, name }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("update_object", {
+				await appliedLiveMutation("update_object", {
 					id, x, y, z: zPos, rot: facing, rotX: tilt, rotZ: roll,
 					scale, scaleX: scale_x, scaleY: scale_y, scaleZ: scale_z, color, name,
 				});
-				await refreshLiveDescription();
 				return text(`Updated ${id}.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -1111,8 +1433,7 @@ registerTool(
 	async ({ id }) => {
 		if (liveHub?.connected) {
 			try {
-				await liveHub.command("remove_object", { id });
-				await refreshLiveDescription();
+				await appliedLiveMutation("remove_object", { id });
 				return text(`Removed ${id}.\n\n${sceneReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -1124,6 +1445,57 @@ registerTool(
 		}
 		sc.objects = removeSceneObject(sc.objects, id);
 		return text(`Removed ${id}.\n\n${sceneReport()}`);
+	},
+);
+
+registerTool(
+	"apply_batch",
+	{
+		title: "Apply object mutations as one undo step",
+		description:
+			"Apply up to 100 object mutations in the connected CozyClay editor as one user-visible undo entry. " +
+			"This v1 batch is deliberately object-only: place_character, update_character and remove_character are rejected because character history is a separate store. " +
+			"atomic defaults to false; when true, any failed operation restores the whole batch. stopOnError defaults to true and independently controls whether later operations run after a failure.",
+		inputSchema: {
+			ops: z
+				.array(
+					z.object({
+						name: z.enum([
+							"place_object",
+							"update_object",
+							"remove_object",
+							"place_character",
+							"update_character",
+							"remove_character",
+							"group_objects",
+							"ungroup_objects",
+							"apply_batch",
+						]),
+						args: z.record(z.unknown()),
+					}),
+				)
+				.max(100)
+				.describe("existing mutation commands to execute in order; nested apply_batch is rejected"),
+			atomic: z.boolean().default(false).describe("roll back all operations if any operation fails"),
+			stopOnError: z.boolean().default(true).describe("stop executing later operations after a failure"),
+			label: z.string().min(1).default("MCP batch").describe("the single editor undo entry name"),
+		},
+	},
+	async ({ ops, atomic, stopOnError, label }) => {
+		if (!liveHub?.connected) return text("apply_batch requires a connected CozyClay editor.");
+		try {
+			const result = await appliedLiveMutation("apply_batch", { ops, atomic, stopOnError, label });
+			const applied = Array.isArray(result?.applied) ? result.applied : [];
+			const failed = Array.isArray(result?.failed) ? result.failed : [];
+			const failure = failed[0];
+			const summary = result?.rolledBack
+				? `Batch rolled back after failure at operation ${failure?.index ?? "unknown"}.`
+				: `Applied ${applied.length} operation(s).`;
+			const detail = failure ? ` Failure at operation ${failure.index}: ${failure.error}.` : "";
+			return text(`${summary}${detail}\n\n${sceneReport()}`);
+		} catch (error) {
+			return liveError(error);
+		}
 	},
 );
 
@@ -1250,15 +1622,32 @@ registerTool(
 	{
 		title: "Add a scene",
 		description:
-			"Add another scene to the project and make it active. This remains MCP memory-only while " +
-			"an editor is connected; use load_scenes via open_project to replace the live document.",
+			"Add another scene to the project and make it active. With a connected editor, the complete " +
+			"scene document is forwarded through that workspace's load_scenes command before success is reported; " +
+			"without one, this changes MCP memory only.",
 		inputSchema: { name: z.string().default("SCENE 02").describe("scene name") },
 	},
 	async ({ name }) => {
-		state.doc.scenes = addScene(state.doc.scenes, name);
-		state.doc.activeSceneId = state.doc.scenes[state.doc.scenes.length - 1].id;
-		const note = liveHub?.connected ? " (memory-only; the connected editor was not changed)" : "";
-		return text(`Added "${name}"${note}.\n\n${sceneReport()}`);
+		if (liveHub?.connected) {
+			try {
+				await refreshLiveDescription();
+			} catch (error) {
+				return liveError(error);
+			}
+		}
+		const document = JSON.parse(JSON.stringify(state.doc));
+		document.scenes = addScene(document.scenes, name);
+		document.activeSceneId = document.scenes[document.scenes.length - 1].id;
+		if (liveHub?.connected) {
+			try {
+				const live = await appliedLiveMutation("load_scenes", { document });
+				requireLiveSceneParity("add_scene", document, live);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
+		state.doc = document;
+		return text(`Added "${scene().name}".\n\n${sceneReport()}`);
 	},
 );
 
@@ -1267,18 +1656,34 @@ registerTool(
 	{
 		title: "Switch the active scene",
 		description:
-			"Make a different scene active. This remains MCP memory-only while an editor is connected; " +
-			"everything else operates on the active scene.",
+			"Make a different scene active. With a connected editor, the complete scene document is forwarded " +
+			"through that workspace's load_scenes command before success is reported; without one, this changes MCP memory only.",
 		inputSchema: { name: z.string().describe("scene name to switch to") },
 	},
 	async ({ name }) => {
+		if (liveHub?.connected) {
+			try {
+				await refreshLiveDescription();
+			} catch (error) {
+				return liveError(error);
+			}
+		}
 		const target = state.doc.scenes.find((s) => s.name.toLowerCase() === name.toLowerCase());
 		if (!target) {
 			return text(`No scene "${name}". Have: ${state.doc.scenes.map((s) => s.name).join(", ")}`);
 		}
-		state.doc.activeSceneId = target.id;
-		const note = liveHub?.connected ? " (memory-only; the connected editor was not changed)" : "";
-		return text(`Switched to "${target.name}"${note}.\n\n${sceneReport()}`);
+		const document = JSON.parse(JSON.stringify(state.doc));
+		document.activeSceneId = target.id;
+		if (liveHub?.connected) {
+			try {
+				const live = await appliedLiveMutation("load_scenes", { document });
+				requireLiveSceneParity("switch_scene", document, live);
+			} catch (error) {
+				return liveError(error);
+			}
+		}
+		state.doc = document;
+		return text(`Switched to "${scene().name}".\n\n${sceneReport()}`);
 	},
 );
 
@@ -1291,12 +1696,20 @@ registerTool(
 		inputSchema: { path: z.string().describe("path to a .cclayproject file") },
 	},
 	async ({ path }) => {
-		const full = resolve(path);
+		let full;
 		let raw;
 		try {
-			raw = await readFile(full, "utf8");
+			const resolved = await resolveProjectPath(path, { existing: true });
+			full = resolved.displayPath;
+			const file = await openFile(resolved.descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+			try {
+				await requirePrivateProjectInode(file);
+				raw = await file.readFile("utf8");
+			} finally {
+				await file.close();
+			}
 		} catch (error) {
-			return text(`Could not read ${full}: ${error.message}`);
+			return text(`Could not read project: ${error.message}`);
 		}
 		const result = readProjectDocument(raw);
 		if (!result.ok) return text(`Not a usable project file (${result.reason}): ${full}`);
@@ -1305,19 +1718,20 @@ registerTool(
 		// the current stage shape rather than trusted as-is.
 		const scenes = readSceneDocument(serializeSceneDocument(result.project.scenesDocument));
 		if (!scenes.document) return text(`That project was written by a newer CozyClay: ${full}`);
-		state.doc = scenes.document;
-		state.name = result.project.name;
-		state.focus = null;
-		state.markedFraming = null;
+		const nextDocument = scenes.document;
 		if (liveHub?.connected) {
 			try {
-				const live = await liveHub.command("load_scenes", { document: state.doc });
-				if (typeof live?.sceneName === "string" && live.sceneName) scene().name = live.sceneName;
-				await refreshLiveDescription();
+				const live = await appliedLiveMutation("load_scenes", { document: nextDocument });
+				requireLiveSceneParity("open_project", nextDocument, live);
 			} catch (error) {
 				return liveError(error);
 			}
 		}
+		state.doc = nextDocument;
+		state.name = result.project.name;
+		state.focus = null;
+		state.focusLocked = false;
+		state.markedFraming = null;
 		return text(`Opened ${full}.\n\n${sceneReport()}`);
 	},
 );
@@ -1332,9 +1746,10 @@ registerTool(
 		inputSchema: {
 			path: z.string().describe("destination path, ending in .cclayproject"),
 			name: z.string().optional().describe("project name recorded in the file"),
+			overwrite: z.boolean().default(false).describe("explicitly replace an existing project file"),
 		},
 	},
-	async ({ path, name }) => {
+	async ({ path, name, overwrite }) => {
 		if (name) state.name = name;
 		if (liveHub?.connected) {
 			try {
@@ -1343,7 +1758,14 @@ registerTool(
 				return liveError(error);
 			}
 		}
-		const full = resolve(path);
+		let full;
+		try {
+			const resolved = await resolveProjectPath(path, { existing: false });
+			full = resolved.displayPath;
+			path = resolved.descriptorPath;
+		} catch (error) {
+			return text(`Could not write project: ${error.message}`);
+		}
 		const project = createProjectDocument({
 			scenesDocument: state.doc,
 			workspaceLayout: null,
@@ -1351,7 +1773,41 @@ registerTool(
 			name: state.name,
 		});
 		try {
-			await writeFile(full, JSON.stringify(project, null, "\t"), "utf8");
+			if (overwrite) {
+				try {
+					const existing = await openFile(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+					try {
+						await requirePrivateProjectInode(existing);
+					} finally {
+						await existing.close();
+					}
+				} catch (error) {
+					if (error?.code !== "ENOENT") throw error;
+				}
+			}
+			const temporaryPath = `.${path}.${randomUUID()}.tmp`;
+			const file = await openFile(
+				temporaryPath,
+				fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+				0o600,
+			);
+			try {
+				await requirePrivateProjectInode(file);
+				await file.writeFile(JSON.stringify(project, null, "\t"), "utf8");
+			} finally {
+				await file.close();
+			}
+			try {
+				if (overwrite) {
+					await rename(temporaryPath, path);
+				} else {
+					await link(temporaryPath, path);
+					await unlink(temporaryPath);
+				}
+			} catch (error) {
+				await unlink(temporaryPath).catch(() => {});
+				throw error;
+			}
 		} catch (error) {
 			return text(`Could not write ${full}: ${error.message}`);
 		}
@@ -1376,8 +1832,19 @@ const livePort = Number(
 );
 if (!Number.isInteger(livePort) || livePort < 1 || livePort > 65535) throw new Error("--live-port must be a valid TCP port.");
 
+const configureLiveHub = (hub) => {
+	if (!hub) return;
+	hub.onEvent = ({ workspaceId, name, payload }) => {
+		if (name === "motion_job_cancel") cancelMotionJob({ workspaceId, payload });
+	};
+	hub.onWorkspaceConnected = ({ workspaceId }) => {
+		for (const job of motionJobs.forWorkspace(workspaceId)) publishMotionJob(job);
+	};
+};
+
 if (httpFlag === -1) {
 	liveHub = await startLiveHub(livePort);
+	configureLiveHub(liveHub);
 	await server.connect(new StdioServerTransport());
 } else {
 	// Tools execute in the stdio children, not this HTTP front. Each child tries
@@ -1396,10 +1863,23 @@ if (httpFlag === -1) {
 	// A child process per session keeps each client's scene its own, and reuses
 	// the stdio path that the tools already run on.
 	const sessions = new Map();
+	const allowedHttpHosts = new Set([`127.0.0.1:${port}`]);
+	const allowedHttpOrigins = new Set([`http://127.0.0.1:${port}`]);
+	const allowHttpRequest = (req, res) => {
+		const host = req.headers.host;
+		const origin = req.headers.origin;
+		if (typeof host === "string" && allowedHttpHosts.has(host) && (origin === undefined || allowedHttpOrigins.has(origin))) return true;
+		res.writeHead(403, { "content-type": "application/json" });
+		res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "MCP HTTP requests require a loopback Host and Origin." }, id: null }));
+		return false;
+	};
 
 	const openSession = async () => {
 		const transport = new StreamableHTTPServerTransport({
 			sessionIdGenerator: () => randomUUID(),
+			allowedHosts: [...allowedHttpHosts],
+			allowedOrigins: [...allowedHttpOrigins],
+			enableDnsRebindingProtection: true,
 			onsessioninitialized: (id) => sessions.set(id, { transport, child }),
 		});
 		const child = new StdioClientTransport({
@@ -1447,6 +1927,7 @@ if (httpFlag === -1) {
 		}
 
 		if (path === "/mcp") {
+			if (!allowHttpRequest(req, res)) return;
 			const existing = sessions.get(req.headers["mcp-session-id"])?.transport;
 			const ready = existing ? Promise.resolve(existing) : openSession();
 			ready
