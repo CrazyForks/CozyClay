@@ -55,6 +55,7 @@ const NODE_FILES = [
 	"test/verify-mcp-http-origin.mjs",
 	"test/verify-mp4-duration.mjs",
 	"test/verify-mcp-invariants.mjs",
+	"test/verify-motion-edit.mjs",
 	"test/verify-multimodel-ingest.mjs",
 	"test/verify-offscreen-export.mjs",
 	"test/verify-otio.mjs",
@@ -74,6 +75,7 @@ const NODE_FILES = [
 	"test/verify-timeline-camera.mjs",
 	"test/verify-timeline-shots.mjs",
 	"test/verify-trim.mjs",
+	"test/verify-update-check.mjs",
 	"test/verify-usd-camera.mjs",
 	"test/verify-video-frames.mjs",
 ];
@@ -82,6 +84,7 @@ const BROWSER_FILES = [
 	"test/verify-camera-rail-browser.mjs",
 	"test/verify-cutout-browser.mjs",
 	"test/verify-ik-browser.mjs",
+	"test/verify-motion-edit-browser.mjs",
 	"test/verify-object-gizmo.mjs",
 	"test/verify-offscreen-export-browser.mjs",
 	"test/verify-project-menu-browser.mjs",
