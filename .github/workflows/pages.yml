@@ -23,6 +23,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - run: npm --prefix mcp ci
       - run: npm test
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
