@@ -1944,6 +1944,7 @@ if (httpFlag === -1) {
 	});
 
 	http.listen(port, "127.0.0.1", () => {
+		process.send?.({ type: "cozyclay-mcp-http-ready", port });
 		console.log(`CozyClay MCP on http://127.0.0.1:${port}/mcp  (${TOOL_COUNT} tools)`);
 	});
 }

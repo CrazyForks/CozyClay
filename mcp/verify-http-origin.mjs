@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { fork, spawn } from "node:child_process";
 import { createServer, request } from "node:http";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
@@ -44,20 +44,18 @@ const waitForExit = (child) => child.exitCode !== null
 	: once(child, "exit");
 
 const port = await reservePort();
-const child = spawn(process.execPath, [SERVER, "--http", String(port)], {
+const child = fork(SERVER, ["--http", String(port)], {
 	cwd: fileURLToPath(new URL("..", import.meta.url)),
 	env: { ...process.env, COZYCLAY_PROJECT_ROOT: fileURLToPath(new URL("..", import.meta.url)) },
-	stdio: ["ignore", "pipe", "pipe"],
+	stdio: ["ignore", "pipe", "pipe", "ipc"],
 	detached: process.platform !== "win32",
 });
 let output = "";
 child.stdout.on("data", (chunk) => { output += chunk; });
 child.stderr.on("data", (chunk) => { output += chunk; });
 try {
-	await timeout(new Promise((resolve) => {
-		const check = () => output.includes(`/mcp`) ? resolve() : setImmediate(check);
-		check();
-	}), "HTTP MCP startup");
+	const [ready] = await timeout(once(child, "message"), "HTTP MCP startup");
+	assert.deepEqual(ready, { type: "cozyclay-mcp-http-ready", port });
 	const initialize = {
 		jsonrpc: "2.0",
 		id: 1,
