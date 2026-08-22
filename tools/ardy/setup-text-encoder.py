@@ -236,7 +236,15 @@ def main():
     args = ap.parse_args()
 
     dest = os.path.abspath(os.path.expanduser(args.dest))
+    dest_real = os.path.realpath(dest)
     base_path = os.path.join(dest, BASE_DIR)
+
+    def safe_join(base, *parts):
+        """Join paths and verify the result stays within base."""
+        full = os.path.realpath(os.path.join(base, *parts))
+        if full != dest_real and not full.startswith(dest_real + os.sep):
+            fail("path traversal detected: %s" % os.path.join(*parts))
+        return full
 
     if args.print_plan:
         for local_dir, repo, rev, files in MANIFEST:
