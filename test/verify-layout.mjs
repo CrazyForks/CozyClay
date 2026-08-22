@@ -13,6 +13,7 @@ const planview = readFileSync(new URL("../src/planview.jsx", import.meta.url), "
 const timeline = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
 const dualview = readFileSync(new URL("../src/dualview.jsx", import.meta.url), "utf8");
 const offscreenExport = readFileSync(new URL("../src/offscreen-export.js", import.meta.url), "utf8");
+const ui = readFileSync(new URL("../src/ui.jsx", import.meta.url), "utf8");
 
 expect("workspace layout persists across reloads", app.includes("WORKSPACE_LAYOUT_KEY") && app.includes("localStorage.setItem"));
 expect("sidebar width has a pointer resize path", app.includes('beginWorkspaceResize("sidebar"'));
@@ -176,6 +177,19 @@ expect(
 	app.includes("judgeAuthoredPath(rootPath, TIMELINE_FPS, clipFrames, { chained: hasPromptSchedule })") &&
 	app.includes("PROMPT_BLOCK_MAX_FRAMES"),
 );
+expect(
+	"ARDY bridge health recovers after the sidecar starts late",
+	app.includes("const BRIDGE_RECHECK_MS = 3000;") &&
+	app.includes("const refreshBridge = () => checkBridge().then") &&
+	app.includes("const id = window.setInterval(refreshBridge, BRIDGE_RECHECK_MS);") &&
+	app.includes("return () => {") &&
+	app.includes("window.clearInterval(id);"),
+);
+expect(
+	"disabled Prompt Block generation explains the exact missing prerequisite",
+	app.includes('ko("Waiting for the ARDY bridge — it reconnects automatically"') &&
+	app.includes('ko("Add a prompt block and describe its motion first"'),
+);
 expect("generated motion anchors frame zero at the active character", app.includes("anchorX: activeChar.x") && app.includes("anchorZ: activeChar.z") && app.includes("anchorFrame: 0"));
 expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));
 expect("Top-View root path draws from Subject 1 without a duplicate marker", planview.includes("[{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));
@@ -207,6 +221,34 @@ expect(
 	app.includes("subjectTrack={motion ? subjectTrack : null}") &&
 	!app.includes("subjectTrackStart=") &&
 	!app.includes("subjectTrackEnd="),
+);
+// Subject Height is world lift: floored at the deck, unbounded above. The
+// control keeps its compact .cslider body — the track stays a useful 0..4
+// band — while `softMax` lets the head scrub past 4 like a NumberField axis
+// and the readout shows the true stored value. Both write paths (head
+// scrub, viewport gizmo) agree on max(0, y).
+expect(
+	"Subject position uses the same X Y Z numeric row as scene objects",
+	app.includes('label={ko("Position", "위치")}') &&
+		app.includes('{ axis: "X", value: value.x, step: 0.05') &&
+		app.includes('{ axis: "Y", value: value.y ?? 0, step: 0.05') &&
+		app.includes('{ axis: "Z", value: value.z, step: 0.05') &&
+		!app.includes('<Slider compact label={ko("Left / right", "좌 / 우")}') &&
+		!app.includes('<Slider compact softMax label={ko("Height", "높이")}') &&
+		!app.includes('<Slider compact label={ko("Depth", "깊이")}'),
+);
+expect(
+	"the character gizmo no longer caps lift at 4 m",
+	app.includes("if (patch.y !== undefined) next.y = Math.max(0, patch.y);") &&
+	!app.includes("clamp(patch.y, 0, 4)"),
+);
+expect(
+	"the head scrub is floored at min with no upper clamp",
+	ui.includes("onChange(Math.max(min, drag.base + (e.clientX - drag.x) * step * multiplier));"),
+);
+expect(
+	"a soft-max readout shows the true stored value past the track",
+	ui.includes("const shown = softMax ? floored : snapped;"),
 );
 expect("resize handles opt out on compact layouts", css.includes(".workspace-splitter,") && css.includes("display: none"));
 

@@ -257,6 +257,8 @@ export default function Timeline({
 	onShotMove,
 	onMotionTrim,
 	onMotionTrimReset,
+	onMotionCut,
+	onMotionSpeedChange,
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [zoom, setZoom] = useState(ZOOM_DEFAULT);
@@ -277,7 +279,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -826,6 +828,21 @@ export default function Timeline({
 
 	const cameraBlockIdx = selectedCameraBlockIdx === undefined ? localCameraBlockIdx : selectedCameraBlockIdx;
 	const selectedCameraShot = cameraBlockIdx == null ? null : shots[cameraBlockIdx] ?? null;
+	const motionSegments = motion?.segments ?? [];
+	const selectedMotionSegment = motionSegments.find((segment) => frame >= segment.timelineStart && frame <= segment.timelineEnd) ?? motionSegments[0] ?? null;
+	const visibleMotionSegments = trimPreview
+		? [{
+			id: "motion-trim-preview",
+			timelineStart: trimPreview.start,
+			timelineEnd: trimPreview.end,
+			speed: null,
+			preview: true,
+		}]
+		: motionSegments;
+	const changeSelectedMotionSpeed = (speed) => {
+		if (!selectedMotionSegment || !Number.isFinite(speed)) return;
+		handlers.current.onMotionSpeedChange?.(selectedMotionSegment.id, Math.max(0.1, Math.min(4, speed)));
+	};
 
 	return (
 		<section className={"timeline" + (expanded ? "" : " collapsed")} aria-label={ko("Animation timeline", "애니메이션 타임라인")}>
@@ -864,6 +881,30 @@ export default function Timeline({
 								<b>{frame}</b> / {frameCount - 1} · {fps} fps · {playbackSpeed.toFixed(2)}×
 							</span>
 						</div>
+						{selectedMotionSegment && (
+							<label className="tl-motion-speed-editor">
+								<span>{ko(`Segment ${motionSegments.indexOf(selectedMotionSegment) + 1} speed`, `구간 ${motionSegments.indexOf(selectedMotionSegment) + 1} 배율`)}</span>
+								<input
+									type="range"
+									min="0.1"
+									max="4"
+									step="0.1"
+									value={selectedMotionSegment.speed}
+									aria-label={ko("Selected Full-Body segment speed", "선택한 전신 구간 배율")}
+									onChange={(event) => changeSelectedMotionSpeed(event.currentTarget.valueAsNumber)}
+								/>
+								<input
+									type="number"
+									min="0.1"
+									max="4"
+									step="0.1"
+									value={selectedMotionSegment.speed}
+									aria-label={ko("Selected Full-Body segment speed value", "선택한 전신 구간 배율 값")}
+									onChange={(event) => changeSelectedMotionSpeed(event.currentTarget.valueAsNumber)}
+								/>
+								<small>×</small>
+							</label>
+						)}
 						<button
 							type="button"
 							className={"tl-btn zoom" + (zoom !== ZOOM_DEFAULT ? " on" : "")}
@@ -1029,6 +1070,17 @@ export default function Timeline({
 											+
 										</button>
 									)}
+									{name === IK_LANE && motion && (
+										<button
+											className="tl-track-add motion-cut"
+											type="button"
+											disabled={frame <= 0 || frame >= motion.frames}
+											title={ko("Cut the Full-Body clip at the playhead", "재생 헤드에서 전신 클립 컷")}
+											onClick={() => handlers.current.onMotionCut?.()}
+										>
+											{ko("Cut", "컷")}
+										</button>
+									)}
 								</span>
 								<div
 									className={"tl-lane" + (name === "2D Root" ? " root" : "") + (name === SHOTS_LANE ? " shots" : "")}
@@ -1189,18 +1241,19 @@ export default function Timeline({
 											</div>
 										);
 									})}
-									{name === IK_LANE && motion && (
+									{name === IK_LANE && visibleMotionSegments.map((segment, index) => (
 										<div
-											className={"tl-motion-clip" + (trimPreview ? " trimming" : "")}
+											key={segment.id}
+											className={"tl-motion-clip" + (trimPreview ? " trimming" : "") + (selectedMotionSegment?.id === segment.id ? " selected" : "")}
 											style={{
-												"--tl-f-start": clipPct(trimPreview ? trimPreview.start : 0),
-												"--tl-f-end": clipPct(trimPreview ? trimPreview.end + 1 : Math.min(motion.frames, displayFrameCount)),
+												"--tl-f-start": clipPct(trimPreview ? trimPreview.start : segment.timelineStart),
+												"--tl-f-end": clipPct(trimPreview ? trimPreview.end + 1 : Math.min(segment.timelineEnd + 1, displayFrameCount)),
 											}}
-											title={isKo
-												? `불러온 테이크 — ${motion.frames}프레임. 양끝 핸들로 잘라내고, 핸들 우클릭으로 전체 길이 복원`
-												: `Loaded take — ${motion.frames} frames. Drag the end handles to cut; right-click a handle to restore the full take`}
+											title={segment.preview ? undefined : isKo
+												? `전신 구간 ${index + 1} — ${segment.speed}×. 컷은 재생 헤드에서, 속도는 메뉴에서 변경`
+												: `Full-Body segment ${index + 1} — ${segment.speed}×. Cut at the playhead; change speed from the menu`}
 										>
-											<button
+											{index === 0 && <button
 												className="tl-motion-clip-handle start"
 												type="button"
 												aria-label={ko("Trim take start", "테이크 시작점 자르기")}
@@ -1209,13 +1262,13 @@ export default function Timeline({
 												onPointerUp={endMotionTrim}
 												onPointerCancel={endMotionTrim}
 												onContextMenu={(e) => { e.preventDefault(); handlers.current.onMotionTrimReset?.(); }}
-											/>
+											/>}
 											<span className="tl-motion-clip-label">
-												{trimPreview
+												{segment.preview
 													? `${trimPreview.start}–${trimPreview.end} (${trimPreview.end - trimPreview.start + 1}f)`
-													: motion.label}
+													: `${index + 1} · ${segment.speed}×`}
 											</span>
-											<button
+											{index === visibleMotionSegments.length - 1 && <button
 												className="tl-motion-clip-handle end"
 												type="button"
 												aria-label={ko("Trim take end", "테이크 끝점 자르기")}
@@ -1224,9 +1277,9 @@ export default function Timeline({
 												onPointerUp={endMotionTrim}
 												onPointerCancel={endMotionTrim}
 												onContextMenu={(e) => { e.preventDefault(); handlers.current.onMotionTrimReset?.(); }}
-											/>
+											/>}
 										</div>
-									)}
+									))}
 									{name === IK_LANE &&
 										ikFrames.map((f) => (
 											<span

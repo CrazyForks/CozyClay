@@ -24,6 +24,7 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { runMcp } from "./mcp-runtime.mjs";
 import { openBrowser } from "./open-browser.mjs";
+import { checkForUpdate, runUpdate } from "./update-check.mjs";
 
 const PKG_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const DIST = join(PKG_ROOT, "dist");
@@ -48,7 +49,7 @@ const TYPES = {
 };
 
 function parseArgs(argv) {
-	const opts = { port: 5180, host: "127.0.0.1", ardy: true, open: true, star: true };
+	const opts = { port: 5180, host: "127.0.0.1", ardy: true, open: true, star: true, updateCheck: true };
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === "--port" || arg === "-p") opts.port = Number(argv[++i]);
@@ -58,6 +59,7 @@ function parseArgs(argv) {
 		else if (arg === "--no-ardy") opts.ardy = false;
 		else if (arg === "--no-open") opts.open = false;
 		else if (arg === "--no-star") opts.star = false;
+		else if (arg === "--no-update-check") opts.updateCheck = false;
 		else if (arg === "--help" || arg === "-h") opts.help = true;
 		else if (arg === "--version" || arg === "-v") opts.version = true;
 		else {
@@ -79,7 +81,7 @@ function parseArgs(argv) {
 	return opts;
 }
 
-const REPO_URL = "https://github.com/HaD0Yun/CozyClay";
+const REPO_URL = "https://github.com/NomaDamas/CozyClay";
 const STATE_DIR = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cozyclay");
 const STATE_FILE = join(STATE_DIR, "state.json");
 // Only worth asking someone who actually used the thing. A prompt three
@@ -90,10 +92,15 @@ const HELP = `cozyclay - browser-based 3D staging studio
 
   npx cozyclay              start the studio and open it
   npx cozyclay mcp          run the MCP server (for Claude, Cursor, any MCP client)
+  cclay update              install the latest cozyclay globally (npm install -g)
   npx cozyclay --port 5200  serve on another port
   npx cozyclay --no-ardy    skip the optional motion-generation sidecar
   npx cozyclay --no-open    do not open a browser
   npx cozyclay --no-star    never ask about starring the repo
+  npx cozyclay --no-update-check
+                            do not look for a newer release
+
+cclay is the same command, shorter: a global install gives you both.
 
 Motion generation needs an SSH-reachable NVIDIA machine running ARDY; point
 the sidecar at it with CCLAY_ARDY_HOST. Everything else - staging, posing,
@@ -149,7 +156,7 @@ function writeState(patch) {
 
 async function starCount() {
 	try {
-		const res = await fetch("https://api.github.com/repos/HaD0Yun/CozyClay", {
+		const res = await fetch("https://api.github.com/repos/NomaDamas/CozyClay", {
 			headers: { accept: "application/vnd.github+json" },
 			signal: AbortSignal.timeout(2500),
 		});
@@ -190,9 +197,27 @@ async function maybeAskForStar(startedAt, opts) {
 	}
 }
 
+// Read on every launch now, so it must not be able to take the launcher down:
+// the version is cosmetic here, and "0.0.0" just suppresses a bogus notice.
+function readVersion() {
+	try {
+		return JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8")).version ?? "0.0.0";
+	} catch {
+		return "0.0.0";
+	}
+}
+
 const argv = process.argv.slice(2);
 if (argv[0] === "mcp") {
 	await runMcp(argv.slice(1));
+} else if (argv[0] === "update") {
+	// This branch bypasses parseArgs, so anything trailing would be swallowed
+	// and `cclay update --help` would perform an unrequested global install.
+	if (argv.length > 1) {
+		console.error(`cozyclay: update takes no arguments (got ${argv.slice(1).join(" ")})`);
+		process.exit(1);
+	}
+	runUpdate();
 } else {
 
 const opts = parseArgs(argv);
@@ -200,11 +225,14 @@ const opts = parseArgs(argv);
 		console.log(HELP);
 		process.exit(opts.invalid ? 1 : 0);
 }
+const version = readVersion();
 if (opts.version) {
-	const pkg = JSON.parse(await import("node:fs").then((fs) => fs.promises.readFile(join(PKG_ROOT, "package.json"), "utf8")));
-	console.log(pkg.version);
+	console.log(version);
 	process.exit(0);
 }
+// Fired before anything blocking and never awaited on the launch path: the
+// notice is worth a line of output, never a second of startup.
+const updatePending = opts.updateCheck && !process.env.CI && !process.env.COZYCLAY_NO_UPDATE_CHECK ? checkForUpdate(version, STATE_DIR) : null;
 if (!existsSync(join(DIST, "app", "index.html"))) {
 	console.error("cozyclay: this package is missing its build (dist/app/index.html).");
 	console.error("cozyclay: from a clone, run `npm install && npm run build` first.");
@@ -320,6 +348,11 @@ server.listen({ port: opts.port, host: "127.0.0.1", ipv6Only: false }, () => {
 				"set CCLAY_ARDY_HOST=user@host to turn it on. Everything else works without it.",
 		);
 	if (opts.open) openBrowser(url);
+	void updatePending?.then((latest) => {
+		// `cclay` only exists after a global install, so name the command that
+		// works from an npx run too.
+		if (latest) console.log(`cozyclay ${latest} is available (you have ${version}). Run: npm install -g cozyclay@latest`);
+	});
 });
 
 }

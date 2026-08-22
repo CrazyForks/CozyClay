@@ -67,6 +67,8 @@ bunx cozyclay
 
 That downloads the built studio and opens it at `http://127.0.0.1:5180`. Nothing to compile, no dependency tree to install. Useful flags: `--port 5200`, `--no-open`, `--no-ardy`.
 
+A global install gives you `cclay`, the same command with less typing. Once a day the launcher checks npm for a newer release and prints a one-line notice after the studio is up; it stays quiet when you're current or offline. `cclay update` installs the latest release, and `--no-update-check` skips the check entirely.
+
 Motion generation stays off until you point it at a machine that can run it:
 
 ```bash

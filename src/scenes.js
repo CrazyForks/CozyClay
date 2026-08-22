@@ -108,7 +108,9 @@ export function createCharacterEntry(source = null, index = 0) {
 		id: typeof s.id === "string" && s.id ? s.id : `char-${index + 1}`,
 		model: CHARACTER_MODEL_IDS.includes(s.model) ? s.model : DEFAULT_CHARACTER_MODEL,
 		x: finiteOr(s.x, 0),
-		y: finiteOr(s.y, 0),
+		// Lift floors at the deck; there is deliberately no ceiling, so every
+		// writer (inspector field, viewport gizmo, load path) shares max(0, y).
+		y: Math.max(0, finiteOr(s.y, 0)),
 		z: finiteOr(s.z, 0),
 		rot: finiteOr(s.rot, 0),
 		hidden: s.hidden === true,

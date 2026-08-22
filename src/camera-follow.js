@@ -42,7 +42,7 @@ function cappedSpringStep(pos, vel, target, omega, dt, maxSpeed) {
 const PITCH_LIMIT = (85 * Math.PI) / 180;
 
 function offsetPitch(pitch, offsetDeg) {
-	const safeOffset = Math.max(-30, Math.min(Number.isFinite(offsetDeg) ? offsetDeg : 0, 30));
+	const safeOffset = Math.max(-170, Math.min(Number.isFinite(offsetDeg) ? offsetDeg : 0, 170));
 	return Math.max(-PITCH_LIMIT, Math.min(pitch + (safeOffset * Math.PI) / 180, PITCH_LIMIT));
 }
 
@@ -82,8 +82,8 @@ export function followFramingFromCamera(position, pitch, subject, aimHeight = FO
 	) * 180) / Math.PI;
 	return {
 		distance: rounded(clamp(planarDistance, 0.5, 15), 2),
-		height: rounded(clamp(position.y, 0.2, 6), 2),
-		pitchOffsetDeg: rounded(clamp(((pitch - automaticPitch) * 180) / Math.PI, -30, 30), 1),
+		height: rounded(Math.max(position.y, 0.2), 2),
+		pitchOffsetDeg: rounded(clamp(((pitch - automaticPitch) * 180) / Math.PI, -170, 170), 1),
 		orbitOffsetDeg: rounded(clamp(orbitOffsetDeg, -180, 180), 1),
 	};
 }

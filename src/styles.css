@@ -2425,6 +2425,12 @@ input[type=range]::-moz-range-thumb {
 	font-weight: 500;
 	flex: none;
 }
+/* A soft-max slider scrubs from its head like a NumberField axis. */
+.cslider-head.scrub {
+	cursor: ew-resize;
+	user-select: none;
+	touch-action: none;
+}
 .cslider input[type=range] {
 	width: 100%;
 	display: block;
@@ -2880,6 +2886,51 @@ input[type=range]::-moz-range-thumb {
 	gap: 6px;
 }
 
+.tl-motion-speed-editor {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	min-width: 220px;
+	padding: 2px 7px;
+	border: 1px solid rgba(126, 208, 143, .32);
+	border-radius: 5px;
+	background: rgba(23, 29, 25, .92);
+	color: #b9efc0;
+	font-size: 9px;
+	white-space: nowrap;
+}
+
+.tl-motion-speed-editor > span {
+	font-weight: 600;
+}
+
+.tl-motion-speed-editor input[type="range"] {
+	width: 90px;
+	accent-color: #7ed08f;
+	cursor: ew-resize;
+}
+
+.tl-motion-speed-editor input[type="number"] {
+	width: 44px;
+	height: 18px;
+	padding: 0 3px;
+	border: 1px solid rgba(159, 224, 167, .42);
+	border-radius: 3px;
+	background: #101713;
+	color: #d3f5d8;
+	font: inherit;
+	font-variant-numeric: tabular-nums;
+}
+
+.tl-motion-speed-editor input:focus-visible {
+	outline: 2px solid #fff;
+	outline-offset: 1px;
+}
+
+.tl-motion-speed-editor small {
+	color: #7ed08f;
+}
+
 .tl-btn {
 	width: 26px;
 	height: 22px;
@@ -3170,7 +3221,8 @@ input[type=range]::-moz-range-thumb {
 	letter-spacing: .02em;
 	white-space: nowrap;
 	overflow: hidden;
-	pointer-events: none; /* passive: IK markers on this lane stay clickable */
+	pointer-events: auto;
+	container-type: inline-size;
 }
 
 .tl-motion-clip.trimming {
@@ -3178,11 +3230,30 @@ input[type=range]::-moz-range-thumb {
 	border-color: rgba(126, 208, 143, .8);
 }
 
+.tl-motion-clip.selected {
+	border-color: rgba(159, 224, 167, .95);
+	box-shadow: 0 0 10px rgba(126, 208, 143, .28);
+}
+
 .tl-motion-clip-label {
 	flex: 1;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	text-align: center;
+}
+
+.tl-track-add.motion-cut {
+	width: auto;
+	min-width: 34px;
+	padding: 0 6px;
+	color: #9fe0a7;
+	border-color: rgba(126, 208, 143, .38);
+	font-size: 9px;
+}
+
+.tl-track-add.motion-cut:disabled {
+	opacity: .35;
+	cursor: default;
 }
 
 /* the strip body stays click-through (IK markers live on this lane); only
