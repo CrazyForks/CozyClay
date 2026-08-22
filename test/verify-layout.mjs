@@ -153,6 +153,19 @@ expect(
 	app.includes("judgeAuthoredPath(rootPath, TIMELINE_FPS, clipFrames, { chained: hasPromptSchedule })") &&
 	app.includes("PROMPT_BLOCK_MAX_FRAMES"),
 );
+expect(
+	"ARDY bridge health recovers after the sidecar starts late",
+	app.includes("const BRIDGE_RECHECK_MS = 3000;") &&
+	app.includes("const refreshBridge = () => checkBridge().then") &&
+	app.includes("const id = window.setInterval(refreshBridge, BRIDGE_RECHECK_MS);") &&
+	app.includes("return () => {") &&
+	app.includes("window.clearInterval(id);"),
+);
+expect(
+	"disabled Prompt Block generation explains the exact missing prerequisite",
+	app.includes('ko("Waiting for the ARDY bridge — it reconnects automatically"') &&
+	app.includes('ko("Add a prompt block and describe its motion first"'),
+);
 expect("generated motion anchors frame zero at the active character", app.includes("anchorX: activeChar.x") && app.includes("anchorZ: activeChar.z") && app.includes("anchorFrame: 0"));
 expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));
 expect("Top-View root path draws from Subject 1 without a duplicate marker", planview.includes("[{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));

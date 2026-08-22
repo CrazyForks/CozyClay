@@ -507,6 +507,7 @@ function toArdySegments(segments) {
 
 const DEFAULT_DURATION_S = 15; // pre-motion timeline duration; shown as duration × TIMELINE_FPS frames
 const DEFAULT_PLAYBACK_SPEED = 1;
+const BRIDGE_RECHECK_MS = 3000;
 const ARDY_PROMPT_HORIZON_FRAMES = 2 * TIMELINE_FPS; // core model horizon: 2 seconds, counted on the timeline clock
 const MAX_WAYPOINTS = 32; // ARDY bridge contract: a root path holds 2..32 distinct waypoint frames
 const ARDY_PROMPT_MAX = 500; // bridge contract: prompt must be non-empty, capped at 500 chars
@@ -5347,16 +5348,19 @@ globalThis.playMode = centerTab === "play";
 		URL.revokeObjectURL(url);
 		setToast(ko("ARDY pose exported", "ARDY 포즈 내보내기 완료"));
 	}
-	// Probe the dev sidecar exactly once. A missing bridge is an expected
-	// state — CozyClay is a static app and the sidecar is an optional dev
-	// companion — so the panel degrades to a hint instead of erroring.
+	// Keep the optional sidecar live instead of freezing its startup state.
+	// Developers commonly open the studio first and start `npm run bridge`
+	// second; a one-shot failed probe left Generate disabled until reload.
 	useEffect(() => {
 		let alive = true;
-		checkBridge().then((state) => {
+		const refreshBridge = () => checkBridge().then((state) => {
 			if (alive) setBridge(state);
 		});
+		refreshBridge();
+		const id = window.setInterval(refreshBridge, BRIDGE_RECHECK_MS);
 		return () => {
 			alive = false;
+			window.clearInterval(id);
 		};
 	}, []);
 
@@ -7149,6 +7153,11 @@ function resizePromptClip(id, edge, rawFrame) {
 							type="button"
 							className="btn primary full generate prompt-block-generate"
 							disabled={!bridge?.ok || !promptClips.some((clip) => clip.text.trim())}
+							title={!bridge?.ok
+								? ko("Waiting for the ARDY bridge — it reconnects automatically", "ARDY 브리지를 기다리는 중 — 자동으로 다시 연결됩니다")
+								: !promptClips.some((clip) => clip.text.trim())
+									? ko("Add a prompt block and describe its motion first", "프롬프트 블록을 추가하고 동작을 먼저 적어 주세요")
+									: ""}
 							onClick={runAllPromptBlocks}
 						>
 							{ardyRunning || genQueue.some((job) => job.status === "queued")
