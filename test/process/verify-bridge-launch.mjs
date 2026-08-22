@@ -145,7 +145,7 @@ function launcherSpec(kind, port, env) {
 	if (kind === "dev") {
 		return {
 			args: ["tools/dev-full.mjs", "--host", "127.0.0.1", "--port", String(port)],
-			env,
+			env: { CCLAY_ARDY_HOST: "test@ardy", ...env },
 		};
 	}
 	return {
