@@ -236,15 +236,17 @@ def main():
     args = ap.parse_args()
 
     dest = os.path.abspath(os.path.expanduser(args.dest))
+    os.makedirs(dest, exist_ok=True)
     dest_real = os.path.realpath(dest)
-    base_path = os.path.join(dest, BASE_DIR)
 
-    def safe_join(base, *parts):
+    def safe_join(*parts):
         """Join paths and verify the result stays within base."""
-        full = os.path.realpath(os.path.join(base, *parts))
+        full = os.path.realpath(os.path.join(dest_real, *parts))
         if full != dest_real and not full.startswith(dest_real + os.sep):
             fail("path traversal detected: %s" % os.path.join(*parts))
         return full
+
+    base_path = safe_join(BASE_DIR)
 
     if args.print_plan:
         for local_dir, repo, rev, files in MANIFEST:
@@ -257,7 +259,7 @@ def main():
     missing = []
     for local_dir, repo, rev, files in MANIFEST:
         for path, size, sha in files:
-            target = os.path.join(dest, local_dir, path)
+            target = safe_join(local_dir, path)
             if not file_ok(target, size, sha, verify_hash=args.verify_only):
                 missing.append((local_dir, repo, rev, path, size, sha))
 
@@ -278,12 +280,12 @@ def main():
         for local_dir, repo, rev, path, size, sha in missing:
             url = "%s/%s/resolve/%s/%s?download=true" % (HF, repo, rev, path)
             log("fetch %s/%s (%d bytes)" % (local_dir, path, size))
-            download(url, os.path.join(dest, local_dir, path), size, sha)
+            download(url, safe_join(local_dir, path), size, sha)
     else:
         log("all pinned files already present under %s" % dest)
 
     for adapter_dir in (MNTP_SRC_DIR, SUP_DIR):
-        cfg = os.path.join(dest, adapter_dir, "adapter_config.json")
+        cfg = safe_join(adapter_dir, "adapter_config.json")
         if rewrite_adapter_config(cfg, base_path):
             log("repointed %s -> local base" % os.path.join(adapter_dir, "adapter_config.json"))
 
