@@ -311,12 +311,12 @@ expect(
 	"trim composes from the per-character full-take map",
 	app.includes("const motionFullRef = useRef(new Map());") &&
 	app.includes("const full = motionFullRef.current.get(activeChar.id);") &&
-	app.includes("const offset = (motion.trimOffset ?? 0) + start;") &&
-	app.includes("sliceMotion(full, offset, last)"),
+	app.includes("trimMotionEdit(motion.editSegments ?? createMotionEdit(full.frames), start, end)") &&
+	app.includes("const sliced = renderMotionEdit(full, segments);"),
 );
 expect(
 	"a cut take drops its source url and clears the IK keys authored on the old frames",
-	app.includes("url: isFull ? full.url : null, trimOffset: offset") &&
+	app.includes("setMotion({ ...sliced, url: null });") &&
 	app.includes("ikStateRef.current.keys.clear();"),
 );
 expect(
@@ -328,7 +328,9 @@ expect(
 	"the timeline receives the active take and both trim handlers",
 	app.includes("onMotionTrim={applyMotionTrim}") &&
 	app.includes("onMotionTrimReset={resetMotionTrim}") &&
-	app.includes("motion={motion ? { frames: motion.frames, label:"),
+	app.includes("motion={motion ? {") &&
+	app.includes("frames: motion.frames,") &&
+	app.includes("segments: motionEditLayout("),
 );
 expect("a deleted character takes its full take with it", app.includes("motionFullRef.current.delete(charId);"));
 
