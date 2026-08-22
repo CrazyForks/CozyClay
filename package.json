@@ -52,6 +52,7 @@
     "test:video-frames": "node test/verify-video-frames.mjs",
     "test:retime": "node test/verify-retime.mjs",
     "test:trim": "node test/verify-trim.mjs",
+    "test:motion-edit": "node test/verify-motion-edit.mjs",
     "test:footage-bridge": "node test/verify-footage-bridge.mjs",
     "test:bvh-cskel27": "node test/verify-bvh-cskel27.mjs"
   },

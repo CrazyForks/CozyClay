@@ -35,6 +35,16 @@ technical, and close to the timeline state they change.
 - Destructive rail deletion uses a red hover/focus cue and an explicit text
   label; no icon-only or right-click-only deletion.
 - Keyboard focus must remain visible.
+- Full-Body editing is direct and frame-addressed: `Cut` splits at the
+  playhead, while each resulting green segment owns a compact speed selector.
+  Speed changes redraw the segment width immediately; there is no decorative
+  transition because the new duration is the information.
+- Full-Body speed runs from `0.1×` to `4.0×` in `0.1×` steps. The current
+  segment is identified by the playhead and receives the brighter green
+  selected state. Its slider and numeric stepper stay in the fixed timeline
+  header instead of inside the segment, so a one-frame segment remains
+  editable. Outer trim handles continue to own only the complete take's
+  in/out points.
 
 ## 5. Reusable Primitives
 
@@ -42,3 +52,7 @@ technical, and close to the timeline state they change.
 - `.tl-camera-tool.active`: active/engaged action.
 - `.tl-camera-tool.danger`: destructive camera-toolbar action.
 - `.tl-camera-metric`: read-only measured camera value.
+- `.tl-motion-clip`: one cut Full-Body segment.
+- `.tl-motion-clip.selected`: segment currently under the playhead.
+- `.tl-motion-speed-editor`: fixed header slider + numeric stepper for the
+  Full-Body segment under the playhead.

@@ -8,7 +8,14 @@ import { checkBridge, generate as ardyGenerate } from "./ardy/client.js";
 import { characterScaleFor, loadMotionFromUrl } from "./ardy/npz.js";
 import { retimeMotion } from "./ardy/retime.js";
 import { applyRootDrop, normalizeRootDrop } from "./ardy/root-drop.js";
-import { sliceMotion } from "./ardy/trim.js";
+import {
+	createMotionEdit,
+	motionEditLayout,
+	renderMotionEdit,
+	setMotionSegmentSpeed,
+	splitMotionEdit,
+	trimMotionEdit,
+} from "./ardy/motion-edit.js";
 import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl, probeFootage, requestBridgeExtract, requestBridgeFootage, sourceLabel } from "./multimodel-ingest.js";
 import { bakeExtractedTake, bakePoseFrame, collectLandmarkTrack, createPoseDetector, imageFrames, sampleTimes, videoFrames } from "./pose-extract/index.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
@@ -4341,6 +4348,7 @@ globalThis.playMode = centerTab === "play";
 						anchorZ: take.anchor.z,
 						anchorFrame: 0,
 						rotationDeg: take.rotationDeg,
+						editSegments: createMotionEdit(take.clip.frames),
 					},
 				},
 			};
@@ -4415,6 +4423,7 @@ globalThis.playMode = centerTab === "play";
 				anchorZ: activeChar.z,
 				anchorFrame: 0,
 				rotationDeg: activeChar.rot,
+				editSegments: createMotionEdit(take.frames),
 			};
 			// A baked take is trimmable like any other: without this the strip's
 			// handles would drag against an empty map and cut nothing at all.
@@ -4482,6 +4491,7 @@ globalThis.playMode = centerTab === "play";
 				anchorZ: activeChar.z,
 				anchorFrame: 0,
 				rotationDeg,
+				editSegments: createMotionEdit(decoded.frames),
 			};
 			// The take as loaded is what every future trim cuts from.
 			motionFullRef.current.set(activeChar.id, loaded);
@@ -4581,12 +4591,9 @@ globalThis.playMode = centerTab === "play";
 	function applyMotionTrim(start, end) {
 		const full = motionFullRef.current.get(activeChar.id);
 		if (!full || !motion) return;
-		const offset = (motion.trimOffset ?? 0) + start;
-		const last = (motion.trimOffset ?? 0) + end;
-		if (last >= full.frames || offset > last) return;
-		const sliced = sliceMotion(full, offset, last);
-		const isFull = offset === 0 && sliced.frames === full.frames;
-		setMotion({ ...sliced, url: isFull ? full.url : null, trimOffset: offset });
+		const segments = trimMotionEdit(motion.editSegments ?? createMotionEdit(full.frames), start, end);
+		const sliced = renderMotionEdit(full, segments);
+		setMotion({ ...sliced, url: null });
 		setTlFrameCount(sliced.frames);
 		setTlFrame((frame) => Math.min(frame, sliced.frames - 1));
 		setTlPlaying(false);
@@ -4597,22 +4604,48 @@ globalThis.playMode = centerTab === "play";
 			ikStateRef.current.plants.clear();
 			setIkTick((value) => value + 1);
 			setToast(isKo
-				? `테이크 잘라냄 — ${sliced.frames}프레임 (원본 ${offset}–${last}). 기존 프레임의 IK 키는 초기화됐어요`
-				: `Take cut to ${sliced.frames} frames (source ${offset}–${last}); IK keys keyed to the old frames were cleared`);
+				? `테이크 잘라냄 — ${sliced.frames}프레임. 기존 프레임의 IK 키는 초기화됐어요`
+				: `Take cut to ${sliced.frames} frames; IK keys keyed to the old frames were cleared`);
 		} else {
 			setToast(isKo
-				? `테이크 잘라냄 — ${sliced.frames}프레임 (원본 ${offset}–${last})`
-				: `Take cut to ${sliced.frames} frames (source ${offset}–${last})`);
+				? `테이크 잘라냄 — ${sliced.frames}프레임`
+				: `Take cut to ${sliced.frames} frames`);
 		}
 	}
 
 	function resetMotionTrim() {
 		const full = motionFullRef.current.get(activeChar.id);
-		if (!full || !motion || (motion.trimOffset ?? 0) === 0 && motion.frames === full.frames) return;
-		setMotion({ ...full });
+		if (!full || !motion || motion.frames === full.frames && motion.editSegments?.length === 1) return;
+		setMotion({ ...full, editSegments: createMotionEdit(full.frames) });
 		setTlFrameCount(full.frames);
 		setTlFrame((frame) => Math.min(frame, full.frames - 1));
 		setToast(ko("Full take restored", "테이크 전체 길이 복원"));
+	}
+
+	function editMotionSegments(edit) {
+		const full = motionFullRef.current.get(activeChar.id);
+		if (!full || !motion) return;
+		const rendered = renderMotionEdit(full, edit);
+		setMotion({ ...rendered, url: null });
+		setTlFrameCount(rendered.frames);
+		setTlFrame((frame) => Math.min(frame, rendered.frames - 1));
+		setTlPlaying(false);
+	}
+
+	function cutMotionAtPlayhead() {
+		if (!motion) return;
+		const current = motion.editSegments ?? createMotionEdit(motionFullRef.current.get(activeChar.id)?.frames ?? motion.frames);
+		const next = splitMotionEdit(current, tlFrame);
+		if (next === current) return;
+		editMotionSegments(next);
+		setToast(ko("Full-Body clip cut at the playhead", "전신 클립을 재생 헤드에서 컷했어요"));
+	}
+
+	function changeMotionSegmentSpeed(id, speed) {
+		if (!motion) return;
+		const current = motion.editSegments ?? createMotionEdit(motionFullRef.current.get(activeChar.id)?.frames ?? motion.frames);
+		editMotionSegments(setMotionSegmentSpeed(current, id, speed));
+		setToast(ko(`${speed}× speed applied to the selected segment`, `선택한 구간을 ${speed}×로 설정했어요`));
 	}
 
 	// Drive every cast member from ITS OWN clip on the shared playhead. The
@@ -5787,6 +5820,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			anchorZ: job.anchor.z,
 			anchorFrame: 0,
 			rotationDeg: job.rootRotationDeg,
+			editSegments: createMotionEdit(decoded.frames),
 		};
 		// Same stature rule as loadMotion, on the layer that asked for the clip.
 		const scale = characterScaleFor(decoded);
@@ -5814,6 +5848,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					anchorZ: entry.motionRef.anchorZ,
 					anchorFrame: 0,
 					rotationDeg: entry.motionRef.rotationDeg,
+					editSegments: createMotionEdit(decoded.frames),
 				};
 				motionFullRef.current.set(entry.id, clip);
 				setCharacters((current) => current.map((item) => item.id === entry.id
@@ -7642,9 +7677,15 @@ function resizePromptClip(id, edge, rawFrame) {
 				badge={stateBadge}
 				ikMode={ikMode}
 				ikDisabled={!ikChains}
-				motion={motion ? { frames: motion.frames, label: motion.prompt || ko("Loaded take", "불러온 테이크") } : null}
+				motion={motion ? {
+					frames: motion.frames,
+					label: motion.prompt || ko("Loaded take", "불러온 테이크"),
+					segments: motionEditLayout(motion.editSegments ?? createMotionEdit(motion.frames)),
+				} : null}
 				onMotionTrim={applyMotionTrim}
 				onMotionTrimReset={resetMotionTrim}
+				onMotionCut={cutMotionAtPlayhead}
+				onMotionSpeedChange={changeMotionSegmentSpeed}
 				ikFrames={ikFrames}
 				footSnap={footSnap}
 					shots={shots}
