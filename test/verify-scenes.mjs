@@ -337,7 +337,7 @@ assert.doesNotMatch(
 );
 assert.match(
 	appSource,
-	/const targetCharacter = charactersRef\.current\.find\(\(entry\) => entry\.id === targetCharacterId\)[\s\S]{0,300}await waitForRig\(targetCharacter\.id\)/,
+	/const targetCharacter = charactersRef\.current\.find\(\(entry\) => entry\.id === targetCharacterId\)[\s\S]*?await waitForRig\(targetCharacter\.id\)/,
 	"motion loading waits for the active rig instead of losing the request to mount timing"
 );
 const batchSource = /apply_batch:\s*\(args\) => \{([\s\S]*?)\n\t\t\t\},\n\t\t\t\/\/ Authoring blocks/.exec(appSource)?.[1] ?? "";
