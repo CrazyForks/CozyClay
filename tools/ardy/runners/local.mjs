@@ -405,7 +405,7 @@ export function createLocalRunner() {
 		return { command: process.execPath, args, env: generatorEnv(cpu), doneRe: DONE_RE, label: "run-local" };
 	}
 
-	async function sequenceCommand({ segments, waypoints, seed, cpu, output }) {
+	async function sequenceCommand({ segments, waypoints, seed, cpu, rootMargin, contactThreshold, historyFrames, output }) {
 		requireSetup();
 		await ensureBackends(cpu);
 		const args = [RUN_LOCAL, "sequence"];
@@ -416,6 +416,9 @@ export function createLocalRunner() {
 			args.push("--root-2d", String(wp.frame), String(wp.x), String(wp.z), wp.heading === null ? "none" : String(wp.heading));
 		}
 		if (Number.isInteger(seed)) args.push("--seed", String(seed));
+		if (Number.isFinite(rootMargin)) args.push("--root-margin", String(rootMargin));
+		if (Number.isFinite(contactThreshold)) args.push("--contact-threshold", String(contactThreshold));
+		if (Number.isInteger(historyFrames)) args.push("--history_frames", String(historyFrames));
 		args.push("--output", output);
 		return { command: process.execPath, args, env: generatorEnv(cpu), doneRe: DONE_RE, label: "run-local" };
 	}
