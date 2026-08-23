@@ -186,6 +186,13 @@ function repairRailFollow(value) {
 	return startFrame <= endFrame ? { mode: "range", startFrame, endFrame } : null;
 }
 
+/** The crane axis rides the rail's arc; marks share camera-block.js's 0.1 m floor. */
+function repairCraneHeight(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	if (!finite(value.start) || !finite(value.end)) return null;
+	return { start: Math.max(0.1, value.start), end: Math.max(0.1, value.end) };
+}
+
 function repairCamera(value) {
 	const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
 	const cameraRail = repairRail(source.cameraRail);
@@ -193,7 +200,14 @@ function repairCamera(value) {
 	// A rail block without a usable two-point rail behaves like ordinary
 	// follow, never like a mysteriously enabled but motionless dolly.
 	if (mode === "rail" && !cameraRail) mode = "follow";
-	return { mode, followCam: repairFollowCam(source.followCam), cameraRail, railFollow: repairRailFollow(source.railFollow) };
+	return {
+		mode,
+		followCam: repairFollowCam(source.followCam),
+		cameraRail,
+		railFollow: repairRailFollow(source.railFollow),
+		// A crane cannot outlive the rail it rides.
+		craneHeight: cameraRail ? repairCraneHeight(source.craneHeight) : null,
+	};
 }
 
 function migratedCamera(followCam, cameraRail, railFollow = null) {

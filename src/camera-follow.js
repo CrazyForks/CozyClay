@@ -403,6 +403,18 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 	const authoredSpeed = subject.length > 1 ? rail.length / ((subject.length - 1) * dt) : 0;
 	const progressLead = (2 * authoredSpeed) / omega;
 
+	// The crane axis: lens height follows the dolly's own arc progress, so the
+	// height always matches where the camera physically is on the track — a
+	// stalled dolly holds its height instead of sinking on a timer.
+	const crane = p.craneHeight && Number.isFinite(p.craneHeight.start) && Number.isFinite(p.craneHeight.end)
+		? p.craneHeight
+		: null;
+	const craneTargetAt = (arc) => {
+		if (!crane) return p.height;
+		const progress = rail.length < 1e-9 ? 1 : Math.max(0, Math.min(1, arc / rail.length));
+		return crane.start + (crane.end - crane.start) * progress;
+	};
+
 	const distanceErrorAt = (s, subj) => {
 		const rp = railPoint(rail, s);
 		return Math.abs(Math.hypot(rp.x - subj.x, rp.z - subj.z) - p.distance);
@@ -434,7 +446,7 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 		? bestSNear(nearestS(rail, subject[0]), subject[0], rail.length, 0)
 		: 0;
 	let sVel = 0;
-	let py = p.height;
+	let py = craneTargetAt(s);
 	let vy = 0;
 	let ax = subject[0].x;
 	let az = subject[0].z;
@@ -456,7 +468,7 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 			const sTarget = Math.max(s, Math.min(rail.length, authoredS + progressLead + correction));
 			[s, sVel] = cappedSpringStep(s, sVel, sTarget, omega, dt, p.maxDollySpeed);
 			s = Math.max(0, Math.min(s, rail.length));
-			[py, vy] = springStep(py, vy, p.height, omega, dt);
+			[py, vy] = springStep(py, vy, craneTargetAt(s), omega, dt);
 			const aimTx = subject[f].x + vels[f].x * p.lead;
 			const aimTz = subject[f].z + vels[f].z * p.lead;
 			[ax, avx] = springStep(ax, avx, aimTx, aimOmega, dt);

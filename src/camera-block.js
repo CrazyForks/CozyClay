@@ -18,6 +18,18 @@ function cloneRail(points) {
 	return Array.isArray(points) ? points.map((point) => ({ x: point.x, z: point.z })) : null;
 }
 
+/**
+ * The crane axis a rail may carry: lens height at the rail head and tail,
+ * lerped along the dolly's arc progress. Null = flat rail at the follow
+ * height (every pre-crane document). Marks clamp to a 0.1 m floor — a lens
+ * below the deck is never an authorable intent.
+ */
+function cloneCraneHeight(value) {
+	if (!value || typeof value !== "object") return null;
+	if (!Number.isFinite(value.start) || !Number.isFinite(value.end)) return null;
+	return { start: Math.max(0.1, value.start), end: Math.max(0.1, value.end) };
+}
+
 function cloneRailFollow(value) {
 	if (!value || typeof value !== "object") return null;
 	if (value.mode === "off") return { mode: "off" };
@@ -37,6 +49,7 @@ export function createCameraBlock(input = {}) {
 		followCam: { ...CAMERA_FOLLOW_DEFAULTS, ...(value.followCam ?? {}) },
 		cameraRail: cloneRail(value.cameraRail),
 		railFollow: cloneRailFollow(value.railFollow),
+		craneHeight: cloneCraneHeight(value.craneHeight),
 	};
 }
 
@@ -57,6 +70,7 @@ export function updateCameraBlock(camera, patch = {}) {
 			: current.followCam,
 		cameraRail: Object.hasOwn(change, "cameraRail") ? change.cameraRail : current.cameraRail,
 		railFollow: Object.hasOwn(change, "railFollow") ? change.railFollow : current.railFollow,
+		craneHeight: Object.hasOwn(change, "craneHeight") ? change.craneHeight : current.craneHeight,
 	});
 }
 
@@ -67,5 +81,6 @@ export function removeCameraRail(camera) {
 		mode: current.mode === "rail" ? "follow" : current.mode,
 		cameraRail: null,
 		railFollow: null,
+		craneHeight: null,
 	});
 }
