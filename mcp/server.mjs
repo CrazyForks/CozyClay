@@ -1894,6 +1894,11 @@ if (httpFlag === -1) {
 		const child = new StdioClientTransport({
 			command: process.execPath,
 			args: [fileURLToPath(import.meta.url), "--live-port", String(livePort)],
+			// StdioClientTransport strips the environment to a safe default set, which
+			// silently discards COZYCLAY_* configuration (bridge URL, project root) in
+			// HTTP mode. The children are this same file in the same trust domain, so
+			// they get the full parent environment.
+			env: process.env,
 		});
 
 		// Splice the two transports together: the browser-facing session and the
