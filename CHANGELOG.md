@@ -1,10 +1,62 @@
 # Changelog
 
-## Unreleased
+## 1.4.0
 
-- CozyClay now ships as an `AGPL-3.0-or-later` combined work. Modified versions
-  offered over a network must offer their users the corresponding source, and
-  the Studio footer carries that source offer.
+The release where every edit can be taken back.
+
+### Undo, everywhere
+
+One Ctrl+Z history now covers the whole editor, not just character moves. Newly undoable:
+
+- **Prompt blocks** — add, remove, drag, edge-resize, and text edits (one entry per editing
+  session, not per keystroke).
+- **Root waypoints** — floor-click placement, timeline removal, and Top-View drags.
+- **Camera authoring** — camera keys (add / re-time / remove / clear), camera-block settings,
+  rail schedule moves and resizes, rail removal, and viewport or plan framing commits.
+- **Shots** — delete, add, split, duplicate, reorder, boundary resize, and rename.
+- **The Full-Body take** — segment cuts, retimes, deletions, trims, and clearing the take
+  (the cleared clip, IK keys, and stature all come back).
+- **Poses and the cast** — pose apply / reset / save, model swap, tint, subject text, and
+  inspector position scrubs.
+- **IK keys** — add, remove, and drag-bake; undo snapshots now carry the key map itself.
+
+Every continuous drag records exactly once at gesture start, so a long drag is one Ctrl+Z,
+never a hundred.
+
+### Cut the take like film
+
+The Full-Body strip is now a cutting room: cut at the playhead, then grab a segment's amber
+right-edge grip and stretch it — the width IS the playback rate (wider is slower, 0.1×–4× on
+the same grid as the numeric editor). Right-click a segment to delete it outright. All of it
+is non-destructive: the source frames stay whole, and a right-click on a trim handle still
+restores the full take.
+
+### Two cameras, one stage
+
+The editing view and the recording camera are no longer the same eye. The main pane belongs
+to a free editor camera — fly it, inspect the set, scrub playback — while the shot camera
+records through a chrome-free 16:9 preview and stands in the scene as a selectable ghost you
+block like any other body. Look-through hands you the old framing-by-flying when you want it,
+and leaves your view alone when you don't.
+
+### A hardened MCP
+
+The server now enforces loopback-only hosting, rejects forged HTTP origins, refuses project
+files with hard links, isolates live scene documents and generation artifacts per session,
+and preserves motion-job ownership across reconnects. HTTP session children inherit the
+parent's configuration (a configured bridge URL no longer silently vanishes), and a session
+that cannot own the live editor port now says exactly why instead of pretending no editor
+exists.
+
+### Everything else
+
+- **Selection** — clicking empty floor or sky reliably clears the selection; the selection
+  cage's generous line hitbox no longer swallows the press.
+- **Timeline** — the camera block's preview button plays its shot instead of throwing.
+- **CI** — pull requests are gated on the node and browser suites.
+- CozyClay now ships as an `AGPL-3.0-or-later` combined work. Modified versions offered over
+  a network must offer their users the corresponding source, and the Studio footer carries
+  that source offer.
 
 ## 1.3.0
 
