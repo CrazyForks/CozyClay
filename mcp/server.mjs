@@ -1158,12 +1158,10 @@ registerTool(
 				.min(1)
 				.max(8)
 				.describe(
-					"one beat per phase, in order. Write each as ARDY writes them: " +
-						'"A person walks in a circle." — subject, one action, present tense, ' +
-						"full stop. Give a plain string to share the clip evenly, or " +
-						"{ text, seconds } to hold a beat for a specific time. A single " +
-						"complete beat is accepted and generates one clip; a sequence needs " +
-						"one phase per action, never a compound sentence.",
+					"one beat per phase, in order. Follow the shared ARDY prompt guide in this tool's " +
+						"description; it is the single source for prompt wording and phase guidance. Give a " +
+						"plain string to share the clip evenly, or { text, seconds } to hold a beat for a " +
+						"specific time.",
 				),
 			seconds: z
 				.number()

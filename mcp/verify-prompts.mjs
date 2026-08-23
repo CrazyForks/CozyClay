@@ -124,9 +124,17 @@ check("blank beats do not become prompts", blank.texts.filter(Boolean).length ==
 
 /* --------------------------------- guide --------------------------------- */
 
-check("the guide shows ARDY's own example", PROMPT_GUIDE.includes("A person walks in a circle."));
-check("the guide warns that phases are taken as written", /NOT split or trimmed for you/.test(PROMPT_GUIDE));
-check("the guide explains the single-token reason", /num_text_tokens=1/.test(PROMPT_GUIDE));
+check("the guide labels CozyClay heuristics honestly", PROMPT_GUIDE.includes("CozyClay ARDY production heuristics:"));
+check("the guide shows an upstream example without presenting it as a rule", PROMPT_GUIDE.includes("A person walks in a circle."));
+check("the guide warns that phases are taken as written", /NOT split\s+or trimmed for you/.test(PROMPT_GUIDE));
+check("the guide explains the pooled conditioning vector", /MNTP \+ supervised adapters mean-pools\s+every prompt into one pooled sentence vector/.test(PROMPT_GUIDE));
+check("the guide scopes num_text_tokens to the optional ONNX-TRT branch", /num_text_tokens=1.*optional ONNX-TRT loading branch/.test(PROMPT_GUIDE));
+check("the guide rejects the unsupported averaging claim", !PROMPT_GUIDE.includes("average into"));
+check("the guide rejects the unsupported confused-pose claim", !PROMPT_GUIDE.includes("confused pose"));
+check("the guide includes the model-card neutral-terms rule", /Use neutral physical action terms rather than demographic adjectives/.test(PROMPT_GUIDE));
+check("the guide states the encoder token limit", PROMPT_GUIDE.includes("truncates prompts at 512 tokens"));
+check("the guide scopes the block cap as CozyClay policy", PROMPT_GUIDE.includes("[CozyClay studio policy]"));
+check("the guide states the normalizer-only flail result", /The normalizer leaves it unchanged/.test(PROMPT_GUIDE));
 
 if (failures > 0) {
 	console.log(`\n${failures} check(s) failed`);
