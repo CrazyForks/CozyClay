@@ -18,6 +18,34 @@ function cloneRail(points) {
 	return Array.isArray(points) ? points.map((point) => ({ x: point.x, z: point.z })) : null;
 }
 
+/**
+ * The crane axis a rail may carry: height marks along the dolly's arc
+ * progress ({ points: [{ t, height }] }, endpoints pinned at t 0 and 1, at
+ * most 8 marks). A legacy { start, end } pair reads as its two endpoints.
+ * Null = flat rail at the follow height (every pre-crane document). Marks
+ * clamp to a 0.1 m floor — a lens below the deck is never authorable.
+ */
+function cloneCraneHeight(value) {
+	if (!value || typeof value !== "object") return null;
+	const raw = Array.isArray(value.points)
+		? value.points
+		: Number.isFinite(value.start) && Number.isFinite(value.end)
+			? [{ t: 0, height: value.start }, { t: 1, height: value.end }]
+			: null;
+	if (!raw) return null;
+	const cleaned = raw
+		.filter((point) => point && Number.isFinite(point.t) && Number.isFinite(point.height))
+		.map((point) => ({ t: Math.max(0, Math.min(1, point.t)), height: Math.max(0.1, point.height) }))
+		.sort((a, b) => a.t - b.t)
+		// duplicate marks: the later-authored one wins
+		.filter((point, i, arr) => i === arr.length - 1 || arr[i + 1].t - point.t > 1e-6)
+		.slice(0, 8);
+	if (cleaned.length < 2) return null;
+	cleaned[0] = { ...cleaned[0], t: 0 };
+	cleaned[cleaned.length - 1] = { ...cleaned[cleaned.length - 1], t: 1 };
+	return { points: cleaned };
+}
+
 function cloneRailFollow(value) {
 	if (!value || typeof value !== "object") return null;
 	if (value.mode === "off") return { mode: "off" };
@@ -37,6 +65,7 @@ export function createCameraBlock(input = {}) {
 		followCam: { ...CAMERA_FOLLOW_DEFAULTS, ...(value.followCam ?? {}) },
 		cameraRail: cloneRail(value.cameraRail),
 		railFollow: cloneRailFollow(value.railFollow),
+		craneHeight: cloneCraneHeight(value.craneHeight),
 	};
 }
 
@@ -57,6 +86,7 @@ export function updateCameraBlock(camera, patch = {}) {
 			: current.followCam,
 		cameraRail: Object.hasOwn(change, "cameraRail") ? change.cameraRail : current.cameraRail,
 		railFollow: Object.hasOwn(change, "railFollow") ? change.railFollow : current.railFollow,
+		craneHeight: Object.hasOwn(change, "craneHeight") ? change.craneHeight : current.craneHeight,
 	});
 }
 
@@ -67,5 +97,6 @@ export function removeCameraRail(camera) {
 		mode: current.mode === "rail" ? "follow" : current.mode,
 		cameraRail: null,
 		railFollow: null,
+		craneHeight: null,
 	});
 }

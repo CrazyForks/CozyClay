@@ -32,7 +32,7 @@ const shots = [
 		startFrame: 0,
 		endFrame: 99,
 		cameraKeys: [{ id: "camera-key-wide", frame: 0, framing: framing(40) }],
-		camera: { mode: "keys", followCam, cameraRail: null, railFollow: null },
+		camera: { mode: "keys", followCam, cameraRail: null, railFollow: null, craneHeight: null },
 	},
 	{
 		id: "close",
@@ -40,7 +40,7 @@ const shots = [
 		startFrame: 100,
 		endFrame: 299,
 		cameraKeys: [{ id: "camera-key-close", frame: 100, framing: framing(70) }],
-		camera: { mode: "rail", followCam, cameraRail, railFollow: { mode: "range", startFrame: 10, endFrame: 80 } },
+		camera: { mode: "rail", followCam, cameraRail, railFollow: { mode: "range", startFrame: 10, endFrame: 80 }, craneHeight: null },
 	},
 ];
 
@@ -208,6 +208,7 @@ assert.deepEqual(repaired.shots[0].camera, {
 	},
 	cameraRail: null,
 	railFollow: null,
+	craneHeight: null,
 });
 assert.equal(repaired.shots[1].camera.mode, "keys");
 
@@ -228,7 +229,29 @@ assert.deepEqual(removeCameraRail({
 	followCam,
 	cameraRail: null,
 	railFollow: null,
+	craneHeight: null,
 });
+// The crane axis persists with its rail and cannot outlive it.
+const cranedRoundTrip = loadShotAuthoring(serializeShotAuthoring({
+	frameCount: 100,
+	shots: [{ startFrame: 0, camera: { mode: "rail", cameraRail, railFollow: { mode: "off" }, craneHeight: { start: 3, end: 1.2 } } }],
+}));
+assert.deepEqual(cranedRoundTrip.shots[0].camera.craneHeight, { points: [{ t: 0, height: 3 }, { t: 1, height: 1.2 }] });
+const pointCraneRoundTrip = loadShotAuthoring(serializeShotAuthoring({
+	frameCount: 100,
+	shots: [{ startFrame: 0, camera: { mode: "rail", cameraRail, railFollow: { mode: "off" }, craneHeight: { points: [{ t: 0, height: 3 }, { t: 0.4, height: 0.8 }, { t: 1, height: 2 }] } } }],
+}));
+assert.deepEqual(
+	pointCraneRoundTrip.shots[0].camera.craneHeight,
+	{ points: [{ t: 0, height: 3 }, { t: 0.4, height: 0.8 }, { t: 1, height: 2 }] },
+	"a point crane survives serialize → load untouched",
+);
+const orphanCrane = loadShotAuthoring(serializeShotAuthoring({
+	frameCount: 100,
+	shots: [{ startFrame: 0, camera: { mode: "follow", craneHeight: { start: 3, end: 1.2 } } }],
+}));
+assert.equal(orphanCrane.shots[0].camera.craneHeight, null, "a crane without a rail does not persist");
+
 const badRail = loadShotAuthoring(JSON.stringify({
 	version: 4,
 	frameCount: 100,

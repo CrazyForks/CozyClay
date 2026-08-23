@@ -39,7 +39,7 @@ import {
 	readShotAuthoringDocument,
 	readShotAuthoring,
 } from "./shot-authoring.js";
-import { buildFollowTrack, buildRail, buildRailFollowTrack, followFramingFromCamera, simplifyStroke } from "./camera-follow.js";
+import { buildFollowTrack, buildRail, buildRailFollowTrack, craneHeightAt, followFramingFromCamera, railPoint, simplifyStroke } from "./camera-follow.js";
 import { createCameraBlock, removeCameraRail, updateCameraBlock } from "./camera-block.js";
 import {
 	RAIL_SCHEDULE_LEGACY,
@@ -1046,30 +1046,235 @@ function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, hi
  * The drawn camera rail in the 3D Scene view: editor furniture on the gizmo
  * layer, so PlayView, the ink prepass and exports never see it.
  */
-function CameraRailScenePreview({ points }) {
+function CameraRailScenePreview({ points, cumLen, length, crane }) {
 	const rootRef = useRef(null);
-	const line = useMemo(() => {
+	const lines = useMemo(() => {
 		if (!points || points.length < 2) return null;
-		const positions = new Float32Array(points.length * 3);
+		const floor = new Float32Array(points.length * 3);
 		points.forEach((point, i) => {
-			positions[i * 3] = point.x;
-			positions[i * 3 + 1] = 0.03;
-			positions[i * 3 + 2] = point.z;
+			floor[i * 3] = point.x;
+			floor[i * 3 + 1] = 0.03;
+			floor[i * 3 + 2] = point.z;
 		});
-		const geometry = new THREE.BufferGeometry();
-		geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-		return geometry;
-	}, [points]);
-	useEffect(() => () => line?.dispose(), [line]);
+		const floorGeometry = new THREE.BufferGeometry();
+		floorGeometry.setAttribute("position", new THREE.BufferAttribute(floor, 3));
+		// A craned rail shows WHERE THE LENS RIDES: the same path lifted along
+		// the crane's start→end heights by arc progress, with the floor line
+		// kept as the track's ground projection.
+		let liftedGeometry = null;
+		if (crane && cumLen && length > 1e-9) {
+			const lifted = new Float32Array(points.length * 3);
+			points.forEach((point, i) => {
+				lifted[i * 3] = point.x;
+				lifted[i * 3 + 1] = craneHeightAt(crane, cumLen[i] / length);
+				lifted[i * 3 + 2] = point.z;
+			});
+			liftedGeometry = new THREE.BufferGeometry();
+			liftedGeometry.setAttribute("position", new THREE.BufferAttribute(lifted, 3));
+		}
+		return { floorGeometry, liftedGeometry };
+	}, [points, cumLen, length, crane]);
+	useEffect(() => () => {
+		lines?.floorGeometry.dispose();
+		lines?.liftedGeometry?.dispose();
+	}, [lines]);
 	useEffect(() => {
 		rootRef.current?.traverse((node) => node.layers.set(GIZMO_LAYER));
 	});
-	if (!line) return null;
+	if (!lines) return null;
 	return (
 		<group ref={rootRef}>
-			<line geometry={line}>
-				<lineBasicMaterial color="#a78bfa" transparent opacity={0.8} depthWrite={false} />
+			<line geometry={lines.floorGeometry}>
+				<lineBasicMaterial color="#a78bfa" transparent opacity={lines.liftedGeometry ? 0.35 : 0.8} depthWrite={false} />
 			</line>
+			{lines.liftedGeometry && (
+				<line geometry={lines.liftedGeometry}>
+					<lineBasicMaterial color="#a78bfa" transparent opacity={0.9} depthWrite={false} />
+				</line>
+			)}
+		</group>
+	);
+}
+
+
+/**
+ * The crane's height marks as grabbable dots on the lifted curve. Click a
+ * dot to select it, drag to set its height (the drag rides a camera-facing
+ * vertical plane through the dot's rail point), Shift-drag to slide an
+ * interior mark along the arc, double-click the curve to add a mark and
+ * Delete to remove a non-endpoint. Dots live on GIZMO_LAYER, so the
+ * recording never sees them.
+ */
+function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, onSelect, onChangePoints, onDragStart, onDragEnd }) {
+	const { gl } = useThree();
+	const invalidate = useThree((state) => state.invalidate);
+	const groupRef = useRef(null);
+	const dragRef = useRef(null);
+	const stateRef = useRef(null);
+	stateRef.current = { rail, crane, selectedIndex, enabled, onSelect, onChangePoints, onDragStart, onDragEnd };
+	useEffect(() => {
+		groupRef.current?.traverse((node) => node.layers?.set(GIZMO_LAYER));
+	});
+	useEffect(() => {
+		if (!enabled) return undefined;
+		const raycaster = new THREE.Raycaster();
+		raycaster.layers.set(GIZMO_LAYER);
+		const rayFrom = (event) => {
+			const pane = paneRef.current;
+			const camera = camRef.current;
+			if (!pane || !camera) return null;
+			const bounds = pane.getBoundingClientRect();
+			if (bounds.width < 2 || bounds.height < 2) return null;
+			const ndc = new THREE.Vector2(
+				((event.clientX - bounds.left) / bounds.width) * 2 - 1,
+				-((event.clientY - bounds.top) / bounds.height) * 2 + 1,
+			);
+			if (Math.abs(ndc.x) > 1 || Math.abs(ndc.y) > 1) return null;
+			camera.updateMatrixWorld();
+			raycaster.setFromCamera(ndc, camera);
+			return raycaster;
+		};
+		const paneScreen = (world) => {
+			const pane = paneRef.current.getBoundingClientRect();
+			const projected = world.project(camRef.current);
+			return projected.z > 1 ? null : {
+				x: pane.left + ((projected.x + 1) / 2) * pane.width,
+				y: pane.top + ((1 - projected.y) / 2) * pane.height,
+			};
+		};
+		const onDown = (event) => {
+			const s = stateRef.current;
+			if (!s.enabled || !s.crane || event.button !== 0) return;
+			if (!groupRef.current || !rayFrom(event)) return;
+			const hits = raycaster.intersectObjects(groupRef.current.children, true);
+			const hit = hits.find((entry) => entry.object.userData?.craneIndex !== undefined);
+			if (!hit) return;
+			event.stopImmediatePropagation();
+			event.preventDefault();
+			const index = hit.object.userData.craneIndex;
+			s.onSelect(index);
+			dragRef.current = { index, slide: event.shiftKey, recorded: false };
+			invalidate();
+		};
+		const onMove = (event) => {
+			const s = stateRef.current;
+			const drag = dragRef.current;
+			if (!drag || !s.enabled || !s.crane || !s.rail) return;
+			if (!rayFrom(event)) return;
+			const points = s.crane.points;
+			const point = points[drag.index];
+			if (!point) return;
+			if (!drag.recorded) {
+				s.onDragStart?.();
+				drag.recorded = true;
+			}
+			if (drag.slide && drag.index > 0 && drag.index < points.length - 1) {
+				// slide along the arc: ray onto the horizontal plane at the mark
+				const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -point.height);
+				const world = new THREE.Vector3();
+				if (!raycaster.ray.intersectPlane(plane, world)) return;
+				let bestI = 0;
+				let bestD = Infinity;
+				for (let i = 0; i < s.rail.points.length; i += 1) {
+					const d = Math.hypot(s.rail.points[i].x - world.x, s.rail.points[i].z - world.z);
+					if (d < bestD) {
+						bestD = d;
+						bestI = i;
+					}
+				}
+				const t = Math.max(
+					points[drag.index - 1].t + 0.02,
+					Math.min(points[drag.index + 1].t - 0.02, s.rail.cumLen[bestI] / s.rail.length),
+				);
+				s.onChangePoints(points.map((entry, i) => (i === drag.index ? { ...entry, t } : entry)), { dragging: true });
+			} else {
+				// height: ray onto the camera-facing vertical plane at the base
+				const base = railPoint(s.rail, point.t * s.rail.length);
+				const camera = camRef.current;
+				const facing = new THREE.Vector3();
+				camera.getWorldDirection(facing);
+				facing.y = 0;
+				if (facing.lengthSq() < 1e-6) return; // looking straight down: height is unreadable
+				facing.normalize();
+				const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(facing, new THREE.Vector3(base.x, 0, base.z));
+				const world = new THREE.Vector3();
+				if (!raycaster.ray.intersectPlane(plane, world)) return;
+				const height = Math.max(0.1, Math.min(12, world.y));
+				s.onChangePoints(points.map((entry, i) => (i === drag.index ? { ...entry, height } : entry)), { dragging: true });
+			}
+			invalidate();
+		};
+		const onUp = () => {
+			if (dragRef.current?.recorded) stateRef.current.onDragEnd?.();
+			dragRef.current = null;
+		};
+		const onDouble = (event) => {
+			const s = stateRef.current;
+			if (!s.enabled || !s.crane || !s.rail || !camRef.current) return;
+			camRef.current.updateMatrixWorld();
+			let best = null;
+			for (let i = 0; i < s.rail.points.length; i += 1) {
+				const t = s.rail.cumLen[i] / s.rail.length;
+				const screen = paneScreen(new THREE.Vector3(s.rail.points[i].x, craneHeightAt(s.crane, t), s.rail.points[i].z));
+				if (!screen) continue;
+				const d = Math.hypot(screen.x - event.clientX, screen.y - event.clientY);
+				if (!best || d < best.d) best = { d, t };
+			}
+			if (!best || best.d > 14) return;
+			if (s.crane.points.length >= 8) return;
+			if (s.crane.points.some((entry) => Math.abs(entry.t - best.t) < 0.03)) return;
+			event.stopImmediatePropagation();
+			event.preventDefault();
+			const added = [...s.crane.points, { t: best.t, height: craneHeightAt(s.crane, best.t) }].sort((a, b) => a.t - b.t);
+			s.onChangePoints(added);
+			s.onSelect(added.findIndex((entry) => entry.t === best.t));
+			invalidate();
+		};
+		const onKey = (event) => {
+			const s = stateRef.current;
+			if (!s.enabled || !s.crane) return;
+			if (event.key !== "Delete" && event.key !== "Backspace") return;
+			if (document.activeElement && /INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
+			const index = s.selectedIndex;
+			if (index == null || index <= 0 || index >= s.crane.points.length - 1) return;
+			event.preventDefault();
+			s.onChangePoints(s.crane.points.filter((_, i) => i !== index));
+			s.onSelect(null);
+			invalidate();
+		};
+		const el = gl.domElement;
+		el.addEventListener("pointerdown", onDown, true);
+		window.addEventListener("pointermove", onMove, true);
+		window.addEventListener("pointerup", onUp, true);
+		el.addEventListener("dblclick", onDouble, true);
+		window.addEventListener("keydown", onKey);
+		return () => {
+			el.removeEventListener("pointerdown", onDown, true);
+			window.removeEventListener("pointermove", onMove, true);
+			window.removeEventListener("pointerup", onUp, true);
+			el.removeEventListener("dblclick", onDouble, true);
+			window.removeEventListener("keydown", onKey);
+		};
+		// paneRef/camRef are stable refs; handlers read live state through stateRef
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [enabled, gl, invalidate]);
+	if (!enabled || !crane || !rail) return null;
+	return (
+		<group ref={groupRef}>
+			{crane.points.map((point, index) => {
+				const base = railPoint(rail, point.t * rail.length);
+				return (
+					<mesh
+						key={`${index}:${crane.points.length}`}
+						position={[base.x, point.height, base.z]}
+						userData={{ craneIndex: index }}
+						renderOrder={998}
+					>
+						<sphereGeometry args={[0.085, 16, 12]} />
+						<meshBasicMaterial color={index === selectedIndex ? "#ffb454" : "#a78bfa"} depthTest={false} transparent opacity={0.95} />
+					</mesh>
+				);
+			})}
 		</group>
 	);
 }
@@ -2638,6 +2843,9 @@ globalThis.playMode = centerTab === "play";
 	// motion share one time axis; off frees the camera while both stay set.
 	const [moveFollow, setMoveFollow] = useState(true);
 	const [railDraw, setRailDraw] = useState(false);
+	// Which crane height mark the scene dots have selected; the timeline's
+	// Point height input edits this one. Reset lives after activeCamera below.
+	const [craneSelectedIndex, setCraneSelectedIndex] = useState(null);
 	const [hasCharSheet, setHasCharSheet] = useState(startupStage.hasCharSheet);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
 	const [environment, setEnvironment] = useState(DEFAULT_ENVIRONMENT);
@@ -2904,6 +3112,11 @@ globalThis.playMode = centerTab === "play";
 	const activeShot = shots[activeShotIdx] ?? null;
 	const cameraKeys = activeShot?.cameraKeys ?? [];
 	const activeCamera = createCameraBlock(activeShot?.camera);
+	// A crane/shot switch invalidates the scene-dot selection.
+	const craneActive = !!activeCamera.craneHeight;
+	useEffect(() => {
+		setCraneSelectedIndex(null);
+	}, [activeShot?.id, craneActive]);
 	const followCam = activeCamera.followCam;
 	const cameraRail = activeCamera.cameraRail;
 	const activeShotDuration = activeShot ? activeShot.endFrame - activeShot.startFrame + 1 : 0;
@@ -2919,6 +3132,43 @@ globalThis.playMode = centerTab === "play";
 		if (framingSessionOpen(shotId)) framingSessionRef.current = null;
 		else recordShotUndo();
 		setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, patch) }), "shots"));
+	}
+	function addActiveCranePoint(requestedT = null, shotId = activeShot?.id) {
+		const shot = shots.find((entry) => entry.id === shotId);
+		const camera = createCameraBlock(shot?.camera);
+		const points = camera.craneHeight?.points;
+		if (!points || points.length >= 8) return;
+		let t = Number.isFinite(requestedT) ? Math.max(0.02, Math.min(0.98, requestedT)) : null;
+		if (t != null) {
+			const nearbyIndex = points.findIndex((point) => Math.abs(point.t - t) < 0.02);
+			if (nearbyIndex >= 0) {
+				setCraneSelectedIndex(nearbyIndex);
+				return;
+			}
+		}
+		let gapIndex = 0;
+		if (t == null) {
+			for (let i = 1; i < points.length - 1; i += 1) {
+				if (points[i + 1].t - points[i].t > points[gapIndex + 1].t - points[gapIndex].t) gapIndex = i;
+			}
+			t = (points[gapIndex].t + points[gapIndex + 1].t) / 2;
+		} else {
+			gapIndex = points.findIndex((point, index) => index < points.length - 1 && t > point.t && t < points[index + 1].t);
+			if (gapIndex < 0) return;
+		}
+		const added = [
+			...points.slice(0, gapIndex + 1),
+			{ t, height: craneHeightAt(camera.craneHeight, t) },
+			...points.slice(gapIndex + 1),
+		];
+		changeActiveCamera({ craneHeight: { points: added } }, shotId);
+		setCraneSelectedIndex(gapIndex + 1);
+	}
+	function deleteSelectedCranePoint() {
+		const points = activeCamera.craneHeight?.points;
+		if (!points || craneSelectedIndex == null || craneSelectedIndex <= 0 || craneSelectedIndex >= points.length - 1) return;
+		changeActiveCamera({ craneHeight: { points: points.filter((_, index) => index !== craneSelectedIndex) } });
+		setCraneSelectedIndex(null);
 	}
 	function syncActiveCameraFraming() {
 		const cam = shotCamRef.current;
@@ -5581,7 +5831,7 @@ globalThis.playMode = centerTab === "play";
 			const start = shot.startFrame;
 			const end = Math.min(subjectTrack.length, shot.endFrame + 1);
 			const subjectSlice = subjectTrack.slice(start, end);
-			const params = { ...camera.followCam, initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) } };
+			const params = { ...camera.followCam, craneHeight: camera.craneHeight, initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) } };
 			const rail = camera.mode === "rail" ? buildRail(camera.cameraRail) : null;
 			if (rail) {
 				const schedule = resolveRailSchedule({ railFollow: camera.railFollow, cameraRail: camera.cameraRail, frameCount: subjectSlice.length });
@@ -7078,7 +7328,38 @@ function resizePromptClip(id, edge, rawFrame) {
 								}
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
 							/>
-							{centerTab === "scene" && railCurve && <CameraRailScenePreview points={railCurve.points} />}
+							{centerTab === "scene" && railCurve && (
+								<CameraRailScenePreview
+									points={railCurve.points}
+									cumLen={railCurve.cumLen}
+									length={railCurve.length}
+									crane={activeCamera.craneHeight}
+								/>
+							)}
+							<CraneHandles
+								rail={railCurve}
+								crane={activeCamera.craneHeight}
+								selectedIndex={craneSelectedIndex}
+								enabled={centerTab === "scene" && !lookThroughShot && !ikMode && !posing && !playMode && !!railCurve && !!activeCamera.craneHeight}
+								paneRef={mainPaneRef}
+								camRef={editorCamRef}
+								onSelect={setCraneSelectedIndex}
+								onChangePoints={(points, options) => {
+									if (!options?.dragging) {
+										changeActiveCamera({ craneHeight: { points } });
+										return;
+									}
+									setShots((current) =>
+										updateStableItem(
+											current,
+											activeShot.id,
+											(shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { craneHeight: { points } }) }),
+											"shots",
+										),
+									);
+								}}
+								onDragStart={recordShotUndo}
+							/>
 							<EditorCamSeed camRef={editorCamRef} lookRef={editorLook} shotCamRef={shotCamRef} subject={charA} />
 							<ShotLookApplier camRef={shotCamRef} look={look} />
 							<ShotCameraGhost
@@ -8446,6 +8727,10 @@ function resizePromptClip(id, edge, rawFrame) {
 				<div className="bottom-timeline" hidden={bottomTab !== "timeline"}>
 				<Timeline
 					frame={tlFrame}
+					craneSelectedIndex={craneSelectedIndex}
+					onCranePointAdd={addActiveCranePoint}
+					onCranePointDelete={deleteSelectedCranePoint}
+					onCranePointSelect={setCraneSelectedIndex}
 					frameCount={tlFrameCount}
 					fps={tlFps}
 					playbackSpeed={DEFAULT_PLAYBACK_SPEED}

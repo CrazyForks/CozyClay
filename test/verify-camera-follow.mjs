@@ -7,6 +7,7 @@ import {
 	buildFollowTrack,
 	buildRailFollowTrack,
 	buildRail,
+	craneHeightAt,
 	followFramingFromCamera,
 	railPoint,
 	simplifyStroke,
@@ -306,6 +307,61 @@ ok("free follow emits one sample per subject frame", free.length === walk.length
 	const a = buildRailFollowTrack(cornerWalk(), FPS, buildRail([{ x: -2, z: -2 }, { x: -2, z: 8 }, { x: 8, z: 8 }]));
 	const b = buildRailFollowTrack(cornerWalk(), FPS, buildRail([{ x: -2, z: -2 }, { x: -2, z: 8 }, { x: 8, z: 8 }]));
 	ok("rail track is deterministic", JSON.stringify(a) === JSON.stringify(b));
+}
+
+/* ------------------------------------------------------ rail crane --- */
+
+{
+	// Legacy pin: without craneHeight the dolly holds the follow height the
+	// whole way — the flat-rail contract the crane must not disturb.
+	const walk = straightWalk(10);
+	const rail = buildRail([{ x: -2.5, z: -2 }, { x: -2.5, z: 16 }]);
+	const flat = buildRailFollowTrack(walk, FPS, rail, { height: 1.6 });
+	ok("flat rail holds the follow height", flat.every((f) => Math.abs(f.pos.y - 1.6) < 1e-6), String(flat.at(-1)?.pos.y));
+
+	// Crane: the lens height rides the dolly's own arc progress start → end.
+	const crane = buildRailFollowTrack(walk, FPS, rail, { height: 1.6, craneHeight: { start: 3, end: 1.2 } });
+	ok("crane opens at its start height", Math.abs(crane[0].pos.y - 3) < 1e-6, String(crane[0].pos.y));
+	ok("crane lands at its end height", Math.abs(crane.at(-1).pos.y - 1.2) < 0.2, String(crane.at(-1).pos.y));
+	const mid = crane[Math.floor(crane.length / 2)].pos.y;
+	ok("crane passes between its marks mid-move", mid < 3 - 0.1 && mid > 1.2 + 0.05, String(mid));
+	ok(
+		"a descending crane never climbs back",
+		crane.every((f, i) => i === 0 || f.pos.y <= crane[i - 1].pos.y + 0.02),
+	);
+
+	// start == end degenerates to the flat contract exactly.
+	const level = buildRailFollowTrack(walk, FPS, rail, { height: 1.6, craneHeight: { start: 1.6, end: 1.6 } });
+	ok("equal crane marks reproduce the flat rail", level.every((f, i) => Math.abs(f.pos.y - flat[i].pos.y) < 1e-6));
+
+	// The generalized crane: N height points, monotone between marks.
+	const points = { points: [{ t: 0, height: 3 }, { t: 0.5, height: 0.8 }, { t: 1, height: 2 }] };
+	ok("craneHeightAt hits every mark exactly",
+		Math.abs(craneHeightAt(points, 0) - 3) < 1e-9 &&
+		Math.abs(craneHeightAt(points, 0.5) - 0.8) < 1e-9 &&
+		Math.abs(craneHeightAt(points, 1) - 2) < 1e-9);
+	ok("craneHeightAt clamps outside the arc", craneHeightAt(points, -1) === 3 && craneHeightAt(points, 2) === 2);
+	ok("the profile never overshoots its marks (monotone)", (() => {
+		for (let i = 0; i <= 200; i += 1) {
+			const h = craneHeightAt(points, i / 200);
+			if (h < 0.8 - 1e-6 || h > 3 + 1e-6) return false;
+		}
+		return true;
+	})());
+	ok("legacy two-mark cranes evaluate as the straight lerp", (() => {
+		const legacy = { start: 3, end: 1.2 };
+		for (let i = 0; i <= 20; i += 1) {
+			const progress = i / 20;
+			if (Math.abs(craneHeightAt(legacy, progress) - (3 + (1.2 - 3) * progress)) > 1e-9) return false;
+		}
+		return true;
+	})());
+	const dip = buildRailFollowTrack(walk, FPS, rail, { height: 1.6, craneHeight: points });
+	ok("a point crane opens at its first mark", Math.abs(dip[0].pos.y - 3) < 1e-6, String(dip[0].pos.y));
+	const dipMin = Math.min(...dip.map((f) => f.pos.y));
+	ok("a point crane dips toward its low mark", dipMin < 1.15, String(dipMin));
+	ok("a point crane never undershoots the low mark", dipMin > 0.8 - 0.05, String(dipMin));
+	ok("a point crane rises back toward its final mark", Math.abs(dip.at(-1).pos.y - 2) < 0.25, String(dip.at(-1).pos.y));
 }
 
 console.log(failures === 0 ? "all camera-follow checks PASS" : `${failures} FAILURES`);

@@ -93,10 +93,24 @@ function signedValue(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}`;
 }
 
-function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, onChange, onPreview, onRailDrawToggle, onRailDelete }) {
+function CameraBlockEditor({
+	shot,
+	blocked,
+	previewing,
+	railDraw,
+	railLength,
+	craneSelectedIndex = null,
+	onChange,
+	onPreview,
+	onRailDrawToggle,
+	onRailDelete,
+	onCranePointAdd,
+	onCranePointDelete,
+}) {
 	if (!shot) return null;
 	const mode = cameraBlockMode(shot);
 	const follow = cameraBlockFollow(shot);
+	const crane = shot?.camera?.craneHeight ?? null;
 	const patchCamera = (patch) => onChange?.(patch);
 	const patchFollow = (patch) => onChange?.({ followCam: { ...follow, ...patch } });
 	const numberValue = (event) => Number(event.currentTarget.value);
@@ -152,16 +166,65 @@ function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, on
 						<input type="number" min="0.2" max="8" step="0.1" value={follow.maxDollySpeed} onChange={(event) => patchFollow({ maxDollySpeed: numberValue(event) })} />
 						<small>m/s</small>
 					</label>
-					<label title={ko("Read automatically from the camera position", "현재 카메라 위치에서 자동으로 읽습니다")}>
-						<span>{ko("Height", "높이")}</span>
-						<output className="tl-camera-metric">{metric(follow.height, 2)}</output>
-						<small>m</small>
-					</label>
+					{!(mode === "rail" && crane) && (
+						<label title={ko("Read automatically from the camera position", "현재 카메라 위치에서 자동으로 읽습니다")}>
+							<span>{ko("Height", "높이")}</span>
+							<output className="tl-camera-metric">{metric(follow.height, 2)}</output>
+							<small>m</small>
+						</label>
+					)}
 					<label title={ko("Read automatically from the camera tilt", "현재 카메라 틸트에서 자동으로 읽습니다")}>
 						<span>{ko("Pitch", "피치")}</span>
 						<output className="tl-camera-metric">{signedValue(follow.pitchOffsetDeg)}</output>
 						<small>°</small>
 					</label>
+					{mode === "rail" && railLength != null && (
+						<button
+							type="button"
+							className={"tl-camera-tool" + (crane ? " active" : "")}
+							aria-pressed={!!crane}
+							title={ko("Crane the lens across authored height points along the rail", "레일을 따라 설정한 여러 높이 점으로 렌즈를 움직입니다")}
+							onClick={() => patchCamera({ craneHeight: crane ? null : { points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] } })}
+						>
+							{crane ? ko("Crane On", "크레인 켜짐") : ko("Crane Off", "크레인 꺼짐")}
+						</button>
+					)}
+					{mode === "rail" && crane && (() => {
+						const points = crane.points;
+						const index = craneSelectedIndex != null && craneSelectedIndex >= 0 && craneSelectedIndex < points.length ? craneSelectedIndex : points.length - 1;
+						const patchPointHeight = (height) => {
+							const next = points.map((point, i) => (i === index ? { ...point, height } : point));
+							patchCamera({ craneHeight: { points: next } });
+						};
+						return (
+							<>
+								<label title={ko("Lens height of the selected crane point — click a purple dot in the scene to pick one, double-click the lifted curve to add one", "선택한 크레인 점의 렌즈 높이 — 씨의 보라 점을 클릭해 선택, 커브 더블클릭으로 추가")}>
+									<span>{ko("Point height", "점 높이")}</span>
+									<input type="number" min="0.1" max="12" step="0.1" value={points[index].height} onChange={(event) => patchPointHeight(numberValue(event))} />
+									<small>m</small>
+								</label>
+								<output className="tl-camera-count" title={ko("Crane points on this rail", "이 레일의 크레인 점 개수")}>{points.length}{ko(" pts", "점")}</output>
+								<button
+									type="button"
+									className="tl-camera-tool"
+									disabled={points.length >= 8}
+									title={ko("Add a crane point in the largest gap on this Shot's rail", "이 샷 레일의 가장 큰 빈 구간에 크레인 점을 추가합니다")}
+									onClick={() => onCranePointAdd?.()}
+								>
+									{ko("Add point", "점 추가")}
+								</button>
+								<button
+									type="button"
+									className="tl-camera-tool danger"
+									disabled={craneSelectedIndex == null || craneSelectedIndex <= 0 || craneSelectedIndex >= points.length - 1}
+									title={ko("Remove the selected interior crane point", "선택한 중간 크레인 점을 삭제합니다")}
+									onClick={() => onCranePointDelete?.()}
+								>
+									{ko("Remove point", "점 삭제")}
+								</button>
+							</>
+						);
+					})()}
 					<details className="tl-camera-advanced">
 						<summary>{ko("Advanced", "고급")}</summary>
 						<label title={ko("Set how softly the rig catches up", "카메라가 얼마나 부드럽게 따라붙는지 정합니다")}>
@@ -241,6 +304,10 @@ export default function Timeline({
 	onCameraBlockChange,
 	onCameraPreview,
 	railDraw = false,
+	craneSelectedIndex = null,
+	onCranePointAdd,
+	onCranePointDelete,
+	onCranePointSelect,
 	cameraRailLength = null,
 	onCameraRailDrawToggle,
 	onCameraRailDelete,
@@ -832,16 +899,26 @@ export default function Timeline({
 		handlers.current.onCameraMoveSelect?.();
 	}
 
-	function addCameraKeyFromBlock(e, index) {
+	function addShotPointFromBlock(e, shot, index) {
 		if (e.button !== 0) return;
 		e.preventDefault();
 		e.stopPropagation();
-		const lane = e.currentTarget.closest(".tl-lane");
-		const rect = lane?.getBoundingClientRect();
-		if (!rect) return;
-		const target = frameFromClientX(e.clientX, rect.left, rect.width, displayFrameCount, frameCount);
+		const keySurface = e.currentTarget.closest(".tl-shot-key-surface");
+		if (!keySurface) return;
 		selectUnifiedShotBlock(index);
-		handlers.current.onCameraKeyframeAdd?.(target, shots[index]?.id);
+		if (shot.camera?.mode === "rail" && shot.camera?.craneHeight) {
+			const rail = keySurface.parentElement?.querySelector(".tl-rail");
+			const railRect = rail?.getBoundingClientRect();
+			if (!railRect || e.clientX < railRect.left || e.clientX > railRect.right) return;
+			const t = Math.max(0, Math.min(1, (e.clientX - railRect.left) / Math.max(1, railRect.width)));
+			onCranePointAdd?.(t, shot.id);
+			return;
+		}
+		const lane = e.currentTarget.closest(".tl-lane");
+		const laneRect = lane?.getBoundingClientRect();
+		if (!laneRect) return;
+		const target = frameFromClientX(e.clientX, laneRect.left, laneRect.width, displayFrameCount, frameCount);
+		handlers.current.onCameraKeyframeAdd?.(target, shot.id);
 	}
 
 	function finishShotRename(shot, index, value) {
@@ -1061,10 +1138,13 @@ export default function Timeline({
 							previewing={playing}
 							railDraw={railDraw}
 							railLength={cameraRailLength}
+							craneSelectedIndex={craneSelectedIndex}
 							onChange={(patch) => handlers.current.onCameraBlockChange?.(patch)}
 							onPreview={() => handlers.current.onCameraPreview?.(selectedCameraShot.id)}
 							onRailDrawToggle={() => handlers.current.onCameraRailDrawToggle?.()}
 							onRailDelete={() => handlers.current.onCameraRailDelete?.()}
+							onCranePointAdd={onCranePointAdd}
+							onCranePointDelete={onCranePointDelete}
 						/>
 					)}
 
@@ -1273,12 +1353,46 @@ export default function Timeline({
 														onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handlers.current.onRailRemove?.(shot.id); }}
 													>
 														<button type="button" tabIndex={0} data-rail-edge="start" className="tl-rail-handle start" aria-label={ko("Resize rail follow start", "레일 팔로우 시작점 조절")} onKeyDown={(e) => onRailKeyDown(e, shot.id, railRange, durationFrames)} onPointerDown={(e) => beginRailResize(e, shot, "start", railRange, durationFrames)} onPointerMove={moveRailResize} onPointerUp={endRailResize} onPointerCancel={endRailResize} />
-														<button type="button" tabIndex={0} data-rail-edge="body" className="tl-rail-body" aria-label={ko("Rail follow — drag to move, right-click to remove", "레일 팔로우 — 드래그로 이동, 오른쪽 클릭으로 삭제")} onKeyDown={(e) => onRailKeyDown(e, shot.id, railRange, durationFrames)} onPointerDown={(e) => beginRailMove(e, shot, railRange, durationFrames)} onPointerMove={moveRail} onPointerUp={endRailMove} onPointerCancel={endRailMove} onClick={(e) => { e.stopPropagation(); if (!railSuppressClickRef.current) handlers.current.onRailSelect?.(shot.id); }}>
+														<button
+															type="button"
+															tabIndex={0}
+															data-rail-edge="body"
+															className="tl-rail-body"
+															aria-label={ko("Rail follow — drag to move, right-click to remove", "레일 팔로우 — 드래그로 이동, 오른쪽 클릭으로 삭제")}
+															title={ko("Drag to move the Rail Follow range", "드래그해 레일 팔로우 구간 이동")}
+															onKeyDown={(e) => onRailKeyDown(e, shot.id, railRange, durationFrames)}
+															onPointerDown={(e) => beginRailMove(e, shot, railRange, durationFrames)}
+															onPointerMove={moveRail}
+															onPointerUp={endRailMove}
+															onPointerCancel={endRailMove}
+															onClick={(e) => {
+																e.stopPropagation();
+																if (railSuppressClickRef.current) return;
+																handlers.current.onRailSelect?.(shot.id);
+															}}
+														>
 															<span className="tl-rail-label">{ko("Rail Follow", "레일 팔로우")}</span>
 															{railOff && <span className="tl-rail-off">{ko("OFF", "꺼짐")}</span>}
 														</button>
 														<button type="button" tabIndex={0} data-rail-edge="end" className="tl-rail-handle end" aria-label={ko("Resize rail follow end", "레일 팔로우 끝점 조절")} onKeyDown={(e) => onRailKeyDown(e, shot.id, railRange, durationFrames)} onPointerDown={(e) => beginRailResize(e, shot, "end", railRange, durationFrames)} onPointerMove={moveRailResize} onPointerUp={endRailResize} onPointerCancel={endRailResize} />
 														{railProgress != null && <i className="tl-rail-progress" style={{ "--tl-rail-p": railProgress }} aria-hidden="true" />}
+														{!railOff && (shot.camera?.craneHeight?.points ?? []).map((point, pointIndex) => (
+															<button
+																key={`${shot.id}:crane:${pointIndex}`}
+																type="button"
+																className={"tl-crane-point" + (index === cameraBlockIdx && pointIndex === craneSelectedIndex ? " selected" : "")}
+																style={{ "--tl-crane-p": point.t }}
+																aria-label={ko(`Select crane point ${pointIndex + 1}`, `크레인 점 ${pointIndex + 1} 선택`)}
+																title={ko(`Crane point ${pointIndex + 1} · ${point.height.toFixed(2)} m`, `크레인 점 ${pointIndex + 1} · ${point.height.toFixed(2)} m`)}
+																onPointerDown={(event) => event.stopPropagation()}
+																onClick={(event) => {
+																	event.stopPropagation();
+																	selectUnifiedShotBlock(index);
+																	onCranePointSelect?.(pointIndex, shot.id);
+																}}
+																onDoubleClick={(event) => event.stopPropagation()}
+															/>
+														))}
 													</div>
 												)}
 												{/* The card body owns selection/reorder; this narrow empty strip
@@ -1287,9 +1401,13 @@ export default function Timeline({
 												<button
 													type="button"
 													className="tl-shot-key-surface"
-													aria-label={ko(`Add camera key in ${shot.name}`, `${shot.name}에 카메라 키 추가`)}
-													title={ko("Click at a frame to store the current camera framing", "프레임 위치를 클릭해 현재 카메라 프레이밍을 저장합니다")}
-													onClick={(event) => addCameraKeyFromBlock(event, index)}
+													aria-label={shot.camera?.mode === "rail" && shot.camera?.craneHeight
+														? ko(`Add crane point in ${shot.name}`, `${shot.name}에 크레인 점 추가`)
+														: ko(`Add camera key in ${shot.name}`, `${shot.name}에 카메라 키 추가`)}
+													title={shot.camera?.mode === "rail" && shot.camera?.craneHeight
+														? ko("Click below Rail Follow to add a crane point at that position", "레일 팔로우 아래를 클릭해 해당 위치에 크레인 점을 추가합니다")
+														: ko("Click at a frame to store the current camera framing", "프레임 위치를 클릭해 현재 카메라 프레이밍을 저장합니다")}
+													onClick={(event) => addShotPointFromBlock(event, shot, index)}
 													onDoubleClick={(event) => event.stopPropagation()}
 												/>
 											</div>

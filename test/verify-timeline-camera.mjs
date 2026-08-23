@@ -24,7 +24,7 @@ expect("gridlines render from the ruler's framePct", timeline.includes('classNam
 expect("chips and markers share one frame scale", !timeline.includes("promptFramePct") && timeline.includes("clipPct(clip.startFrame)"));
 
 expect("camera keys render as dots, not a chip", timeline.includes('className="tl-marker cam"') && !timeline.includes("tl-chip camera"));
-expect("block key strip keys the current framing", timeline.includes("handlers.current.onCameraKeyframeAdd?.(target, shots[index]?.id)") && timeline.includes('className="tl-shot-key-surface"') && app.includes("onCameraKeyframeAdd={addCameraKeyframe}"));
+expect("block key strip keys framing or authors crane progress for a Rail Shot", timeline.includes("handlers.current.onCameraKeyframeAdd?.(target, shot.id)") && timeline.includes("onCranePointAdd?.(t, shot.id)") && timeline.includes('className="tl-shot-key-surface"') && app.includes("onCameraKeyframeAdd={addCameraKeyframe}"));
 expect("key strip is a crosshair affordance", css.includes(".tl-shot-key-surface") && css.includes("cursor: crosshair"));
 expect("dot click jumps the playhead and selects the camera", timeline.includes("handlers.current.onScrub?.(key.frame)") && timeline.includes("handlers.current.onCameraMoveSelect?.();"));
 expect("dot right-click removes the key", timeline.includes("handlers.current.onCameraKeyframeRemove?.(shot.id, key.id)") && app.includes("removeCameraKey(shot.cameraKeys, keyId)"));
@@ -133,6 +133,31 @@ expect(
 	// controls the shot camera itself; editor-camera flights never touch it
 	(app.match(/\(lookThroughShot && flyingRef\.current\) \|\| manualCameraOverrideRef\.current/g) ?? []).length === 2 &&
 	app.includes("manualCameraOverrideRef.current = false"),
+);
+expect(
+	"the rail crane is an explicit toggle with start and end height inputs",
+	timeline.includes('ko("Crane On", "\ud06c\ub808\uc778 \ucf1c\uc9d0")') &&
+	timeline.includes('ko("Crane Off", "\ud06c\ub808\uc778 \uaebc\uc9d0")') &&
+	timeline.includes('ko("Point height", "\uc810 \ub192\uc774")') &&
+	// turning the crane on seeds two endpoint POINTS from the measured follow
+	// height, and turning it off returns the block to the flat-rail null
+	timeline.includes("craneHeight: crane ? null : { points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] }") &&
+	// the scene dots are the primary editor; the bar edits the SELECTED point
+	timeline.includes("craneSelectedIndex"),
+);
+expect(
+	"the crane editor makes adding and removing interior points explicit",
+	timeline.includes('ko("Add point", "점 추가")') &&
+		timeline.includes('ko("Remove point", "점 삭제")') &&
+		timeline.includes("onCranePointAdd") &&
+		timeline.includes("onCranePointDelete"),
+);
+expect(
+	"rail crane points are authored and selected directly in the Shot key strip",
+	timeline.includes("addShotPointFromBlock") &&
+		timeline.includes("tl-crane-point") &&
+		timeline.includes("--tl-crane-p") &&
+		timeline.includes("onCranePointSelect"),
 );
 expect(
 	"waypoint mode replaces camera controls with one clear message",

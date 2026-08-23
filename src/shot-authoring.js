@@ -186,6 +186,27 @@ function repairRailFollow(value) {
 	return startFrame <= endFrame ? { mode: "range", startFrame, endFrame } : null;
 }
 
+/** The crane axis rides the rail's arc; mirrors camera-block.js's normalization. */
+function repairCraneHeight(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const raw = Array.isArray(value.points)
+		? value.points
+		: finite(value.start) && finite(value.end)
+			? [{ t: 0, height: value.start }, { t: 1, height: value.end }]
+			: null;
+	if (!raw) return null;
+	const cleaned = raw
+		.filter((point) => point && finite(point.t) && finite(point.height))
+		.map((point) => ({ t: Math.max(0, Math.min(1, point.t)), height: Math.max(0.1, point.height) }))
+		.sort((a, b) => a.t - b.t)
+		.filter((point, i, arr) => i === arr.length - 1 || arr[i + 1].t - point.t > 1e-6)
+		.slice(0, 8);
+	if (cleaned.length < 2) return null;
+	cleaned[0] = { ...cleaned[0], t: 0 };
+	cleaned[cleaned.length - 1] = { ...cleaned[cleaned.length - 1], t: 1 };
+	return { points: cleaned };
+}
+
 function repairCamera(value) {
 	const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
 	const cameraRail = repairRail(source.cameraRail);
@@ -193,7 +214,14 @@ function repairCamera(value) {
 	// A rail block without a usable two-point rail behaves like ordinary
 	// follow, never like a mysteriously enabled but motionless dolly.
 	if (mode === "rail" && !cameraRail) mode = "follow";
-	return { mode, followCam: repairFollowCam(source.followCam), cameraRail, railFollow: repairRailFollow(source.railFollow) };
+	return {
+		mode,
+		followCam: repairFollowCam(source.followCam),
+		cameraRail,
+		railFollow: repairRailFollow(source.railFollow),
+		// A crane cannot outlive the rail it rides.
+		craneHeight: cameraRail ? repairCraneHeight(source.craneHeight) : null,
+	};
 }
 
 function migratedCamera(followCam, cameraRail, railFollow = null) {

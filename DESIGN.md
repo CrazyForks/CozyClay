@@ -28,6 +28,14 @@ technical, and close to the timeline state they change.
 ## 4. Motion and Interaction
 
 - Camera toolbar actions respond immediately.
+- Crane editing exposes explicit Add point and Remove point actions beside the
+  selected point height and count. Add point fills the largest un-authored
+  interval and selects the new mark; Remove point is enabled only for a
+  selected interior mark. The scene double-click/Delete gestures remain
+  accelerators, never the only discoverable route.
+- When a Shot uses Rail + Crane, its lower key strip represents crane progress:
+  clicking the strip authors a crane point at that rail position, and the
+  matching purple/amber marker stays synchronized with the scene handle.
 - Binary camera actions state themselves in text (`Follow On` / `Follow Off`)
   and expose `aria-pressed`; Follow sits directly beside `Draw rail` and uses
   the existing violet Camera Block active state.
