@@ -11,6 +11,7 @@ import { applyRootDrop, normalizeRootDrop } from "./ardy/root-drop.js";
 import {
 	createMotionEdit,
 	motionEditLayout,
+	removeMotionSegment,
 	renderMotionEdit,
 	setMotionSegmentSpeed,
 	splitMotionEdit,
@@ -2354,7 +2355,7 @@ globalThis.playMode = centerTab === "play";
 	 * Character gestures (spawn, remove, show/hide, plan-board drags) push a
 	 * full-cast snapshot with the editing buffer folded in, and undo/redo
 	 * picks the newer of the two stacks so one Ctrl+Z history covers both. */
-	const snapshotCast = () => ({
+	const snapshotCast = (includeShots = false) => ({
 		characters: charactersRef.current.map((entry) => ({
 			...entry,
 			layer: entry.id === activeChar.id
@@ -2363,12 +2364,78 @@ globalThis.playMode = centerTab === "play";
 		})),
 		bufferMotion: bufferRef.current.motion,
 		bufferCharId: loadedLayerCharRef.current,
+		// The ACTIVE character's authored IK layer. Only the keys (deep-copied so
+		// undo can never hand back live quaternions) and the committed-edit list
+		// travel: targets/plants/tracked are transient solver state the next
+		// seed/drag rebuilds anyway.
+		ikKeys: snapshotIkKeys(ikStateRef.current),
+		committedIkEdits,
+		// Shot-op entries carry the shot list too; character-op entries leave it
+		// out so undoing a character move never rolls back unrecorded shot edits.
+		...(includeShots ? { shots } : {}),
 	});
+	/** Deep copy of an IK state's key map: frame → Map(trackId → {q,p}), with
+	 * every quaternion/position cloned so a snapshot never shares references
+	 * with the live rig state (a later bake would otherwise rewrite history). */
+	function snapshotIkKeys(ikState) {
+		const out = new Map();
+		for (const [frame, entry] of ikState?.keys ?? []) {
+			const copy = new Map();
+			for (const [trackId, value] of entry) {
+				copy.set(trackId, {
+					q: value.q ? value.q.map((quat) => quat.clone()) : null,
+					p: value.p ? value.p.clone() : null,
+				});
+			}
+			out.set(frame, copy);
+		}
+		return out;
+	}
 	function recordCharacterUndo() {
 		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast() });
 		charHistoryRef.current.future = [];
 	}
+	/** One Ctrl+Z entry for a structural shot edit (delete, split, duplicate,
+	 * add, reorder): the same history as the cast, with the shot list aboard. */
+	function recordShotUndo() {
+		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast(true) });
+		charHistoryRef.current.future = [];
+	}
+	/** One Ctrl+Z entry per EDITING SESSION rather than per event, for the
+	 * streams that fire continuously: per-keystroke text and per-pointermove
+	 * camera framing. The session is open while the entry it pushed is still
+	 * the newest one on the stack and the key (clip id, gesture name) has not
+	 * changed; any other edit, undo or redo in between closes it, so the next
+	 * keystroke or drag opens a fresh entry. `sessionRef` is a plain ref of
+	 * `{ key, tick }`. */
+	function recordSessionUndo(sessionRef, key, record = recordCharacterUndo) {
+		const past = charHistoryRef.current.past;
+		const open = sessionRef.current
+			&& sessionRef.current.key === key
+			&& past[past.length - 1]?.tick === sessionRef.current.tick;
+		if (open) return;
+		record();
+		sessionRef.current = { key, tick: past[past.length - 1].tick };
+	}
+	// Prompt-block text (inspector field AND the timeline chip both land in
+	// changePromptClip) and viewport/plan camera framing are the two streams
+	// that would otherwise push an entry per keystroke / per pointermove.
+	const promptTextSessionRef = useRef(null);
+	const framingSessionRef = useRef(null);
+	// A colour picker streams values for as long as its dialog is open.
+	const tintSessionRef = useRef(null);
+	/** True while a framing capture for `shotId` is the newest history entry. */
+	function framingSessionOpen(shotId) {
+		const past = charHistoryRef.current.past;
+		return Boolean(framingSessionRef.current)
+			&& framingSessionRef.current.key === `framing:${shotId}`
+			&& past[past.length - 1]?.tick === framingSessionRef.current.tick;
+	}
 	function restoreCast(snapshot) {
+		// Captured BEFORE the buffer pointer moves: whose IK state the live ref
+		// currently holds.
+		const loadedIk = loadedLayerCharRef.current;
+		if (snapshot.shots) setShots(snapshot.shots);
 		setCharacters(snapshot.characters);
 		const bufferChar = snapshot.characters.find((entry) => entry.id === snapshot.bufferCharId) ?? snapshot.characters[0];
 		setWaypoints((bufferChar?.layer?.waypoints ?? []).map((waypoint) => ({ ...waypoint })));
@@ -2376,13 +2443,24 @@ globalThis.playMode = centerTab === "play";
 		setMotion(snapshot.bufferMotion);
 		loadedLayerCharRef.current = bufferChar?.id ?? null;
 		setActiveCharacterId(bufferChar?.id ?? null);
+		// IK keys go back onto the snapshot owner's layer state (again deep-copied,
+		// so stepping through the same entry twice cannot alias what the rig is now
+		// mutating) and the tick bumps so markers and the keyed pose re-derive.
+		if (snapshot.ikKeys) {
+			const target = bufferChar?.id === loadedIk
+				? ikStateRef.current
+				: ikStatesRef.current.get(bufferChar?.id) ?? ikStateRef.current;
+			target.keys = snapshotIkKeys({ keys: snapshot.ikKeys });
+			setCommittedIkEdits(snapshot.committedIkEdits ?? []);
+			setIkTick((value) => value + 1);
+		}
 	}
 
 	// props so the inspector cannot show a ghost.
 	function undoScene() {
 		const charTop = charHistoryRef.current.past[charHistoryRef.current.past.length - 1];
 		if (charTop && charTop.tick > lastObjectOpRef.current) {
-			charHistoryRef.current.future.push({ tick: charTop.tick, snapshot: snapshotCast() });
+			charHistoryRef.current.future.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
 			charHistoryRef.current.past.pop();
 			restoreCast(charTop.snapshot);
 			setToast(ko("Undone", "실행 취소됨"));
@@ -2418,7 +2496,7 @@ globalThis.playMode = centerTab === "play";
 	function redoScene() {
 		const charTop = charHistoryRef.current.future[charHistoryRef.current.future.length - 1];
 		if (charTop && charTop.tick > lastObjectOpRef.current) {
-			charHistoryRef.current.past.push({ tick: charTop.tick, snapshot: snapshotCast() });
+			charHistoryRef.current.past.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
 			charHistoryRef.current.future.pop();
 			restoreCast(charTop.snapshot);
 			setToast(ko("Redone", "다시 실행됨"));
@@ -2831,6 +2909,15 @@ globalThis.playMode = centerTab === "play";
 	const activeShotDuration = activeShot ? activeShot.endFrame - activeShot.startFrame + 1 : 0;
 	const hasCameraKeys = shots.some((shot) => shot.cameraKeys.length > 0);
 	function changeActiveCamera(patch, shotId = activeShot?.id) {
+		// Every camera-block commit (mode switch, rail draw, rail delete, lens
+		// patch) funnels through here, so this is where the shot snapshot goes.
+		// No shot resolved means the setShots below is a no-op — record nothing.
+		if (!shots.some((shot) => shot.id === shotId)) return;
+		// A framing capture in the same gesture (rail draw toggle, Follow switch
+		// re-measure) already snapshotted the pre-gesture shots, so this commit
+		// joins that entry instead of pushing a second one for one click.
+		if (framingSessionOpen(shotId)) framingSessionRef.current = null;
+		else recordShotUndo();
 		setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, patch) }), "shots"));
 	}
 	function syncActiveCameraFraming() {
@@ -2845,16 +2932,22 @@ globalThis.playMode = centerTab === "play";
 			followCam.aimHeight,
 			{ x: Math.sin(subjectYaw), z: Math.cos(subjectYaw) },
 		);
+		const unchanged = (previous) =>
+			previous.distance === measured.distance &&
+			previous.height === measured.height &&
+			previous.pitchOffsetDeg === measured.pitchOffsetDeg &&
+			previous.orbitOffsetDeg === measured.orbitOffsetDeg;
+		// Framing is re-measured on every orbit/drag tick, so the entry is per
+		// GESTURE: the first tick that actually moves the framing records, the
+		// rest of the drag keeps writing into that same session.
+		if (!unchanged(createCameraBlock(activeShot.camera).followCam)) {
+			recordSessionUndo(framingSessionRef, `framing:${activeShot.id}`, recordShotUndo);
+		}
 		setShots((current) => current.map((shot) => {
 			if (shot.id !== activeShot?.id) return shot;
 			const camera = createCameraBlock(shot.camera);
 			const previous = camera.followCam;
-			if (
-				previous.distance === measured.distance &&
-				previous.height === measured.height &&
-				previous.pitchOffsetDeg === measured.pitchOffsetDeg &&
-				previous.orbitOffsetDeg === measured.orbitOffsetDeg
-			) return shot;
+			if (unchanged(previous)) return shot;
 			return { ...shot, camera: updateCameraBlock(camera, { followCam: { ...previous, ...measured } }) };
 		}));
 	}
@@ -2862,6 +2955,30 @@ globalThis.playMode = centerTab === "play";
 		if (ikMode || playMode) return;
 		manualCameraOverrideRef.current = true;
 		syncActiveCameraFraming();
+	}
+	/** Camera-puck / viewport framing gesture start. Opens the SAME framing
+	 * session syncActiveCameraFraming writes into, so the whole drag is one
+	 * Ctrl+Z entry snapshotted before the first tick moves the lens. */
+	function beginCameraFramingGesture() {
+		if (ikMode || playMode || !activeShot) return;
+		recordSessionUndo(framingSessionRef, `framing:${activeShot.id}`, recordShotUndo);
+	}
+	/** One Ctrl+Z entry per timeline editing gesture. The timeline fires this
+	 * once when a drag (or an arrow nudge, or a text session) begins, before
+	 * any mutation lands; the per-tick handlers then write on top of it. */
+	function beginTimelineEditGesture(kind, id) {
+		if (kind === "camera-key" || kind === "rail" || kind === "shot-boundary") {
+			recordShotUndo();
+			return;
+		}
+		if (kind === "prompt-move" || kind === "prompt-resize") {
+			recordCharacterUndo();
+			return;
+		}
+		// Typing shares changePromptClip's per-session entry: focusing the chip
+		// opens the session so the first keystroke joins it instead of pushing
+		// a second entry for one edit.
+		if (kind === "prompt-text") recordSessionUndo(promptTextSessionRef, `prompt-text:${id}`);
 	}
 	function changeCameraRail(points) {
 		changeActiveCamera({
@@ -3706,6 +3823,7 @@ globalThis.playMode = centerTab === "play";
 					return { id: `prompt-${stamp}-${i}`, startFrame, endFrame, text: block.text.trim() };
 				});
 				const live = liveStateRef.current;
+				live.recordCharacterUndo();
 				live.promptClips = clips;
 				live.setPromptClips(clips);
 				if (clips.length) {
@@ -4212,11 +4330,18 @@ globalThis.playMode = centerTab === "play";
 	function addCameraKeyframe(frame, shotId = activeShot?.id) {
 		const framing = captureCurrentFraming();
 		const target = Math.max(0, Math.min(Math.round(frame), tlFrameCount - 1));
-		setShots((current) => updateStableItem(current, shotId, (shot) => {
-			if (target < shot.startFrame || target > shot.endFrame) return shot;
-			const replaced = shot.cameraKeys.filter((key) => key.frame !== target);
-			return { ...shot, cameraKeys: [...replaced, { id: createStableItemId("camera-key"), frame: target, framing }].sort((a, b) => a.frame - b.frame) };
-		}, "shots"));
+		// Out-of-range keys are dropped by the updater below; only a key that will
+		// actually land gets a Ctrl+Z entry.
+		const owner = shots.find((entry) => entry.id === shotId);
+		const lands = Boolean(owner) && target >= owner.startFrame && target <= owner.endFrame;
+		if (lands) {
+			recordShotUndo();
+			setShots((current) => updateStableItem(current, shotId, (shot) => {
+				if (target < shot.startFrame || target > shot.endFrame) return shot;
+				const replaced = shot.cameraKeys.filter((key) => key.frame !== target);
+				return { ...shot, cameraKeys: [...replaced, { id: createStableItemId("camera-key"), frame: target, framing }].sort((a, b) => a.frame - b.frame) };
+			}, "shots"));
+		}
 		setSelectedHierarchyId("camera");
 	}
 
@@ -4231,27 +4356,37 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	function removeCameraKeyframe(shotId, keyId) {
+		const owner = shots.find((shot) => shot.id === shotId);
+		if (!owner) throw new Error(`Unknown shots ID: ${shotId}`);
+		if (!owner.cameraKeys.some((key) => key.id === keyId)) return;
+		recordShotUndo();
 		setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, cameraKeys: removeCameraKey(shot.cameraKeys, keyId) }), "shots"));
 	}
 
 	function clearMove() {
 		setMovePlaying(false);
+		if (!activeShot || activeShot.cameraKeys.length === 0) return;
+		recordShotUndo();
 		setShots((current) => updateStableItem(current, activeShot?.id, (shot) => ({ ...shot, cameraKeys: [] }), "shots"));
 	}
 
 	function addTimelineShot() {
 		setMovePlaying(false);
-		setShots((current) => addShotAtFrame(current, tlFrame, tlFrameCount, captureCurrentFraming()));
+		const next = addShotAtFrame(shots, tlFrame, tlFrameCount, captureCurrentFraming());
+		if (next === shots) return;
+		recordShotUndo();
+		setShots(next);
 	}
 
 	function splitTimelineShot(shotId) {
 		setMovePlaying(false);
-		setShots((current) => {
-			const shot = current.find((entry) => entry.id === shotId);
-			if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
-			if (tlFrame <= shot.startFrame || tlFrame > shot.endFrame) return current;
-			return cutAtFrame(current, shotId, tlFrame, captureCurrentFraming());
-		});
+		const shot = shots.find((entry) => entry.id === shotId);
+		if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
+		if (tlFrame <= shot.startFrame || tlFrame > shot.endFrame) return;
+		const next = cutAtFrame(shots, shotId, tlFrame, captureCurrentFraming());
+		if (next === shots) return;
+		recordShotUndo();
+		setShots(next);
 	}
 
 	function selectTimelineShot(shotId) {
@@ -4264,6 +4399,7 @@ globalThis.playMode = centerTab === "play";
 
 	function duplicateTimelineShot(shotId) {
 		const next = duplicateShot(shots, shotId, tlFrameCount);
+		if (next !== shots) recordShotUndo();
 		setShots(next);
 		if (next !== shots) {
 			const duplicate = next.find((shot) => shot.id !== shotId && !shots.some((existing) => existing.id === shot.id));
@@ -4272,7 +4408,17 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	function moveTimelineShot(shotId, targetFrame) {
-		setShots((current) => reorderShot(current, shotId, targetFrame, tlFrameCount));
+		const next = reorderShot(shots, shotId, targetFrame, tlFrameCount);
+		if (next === shots) return;
+		recordShotUndo();
+		setShots(next);
+	}
+
+	function removeTimelineShot(shotId) {
+		const next = removeShot(shots, shotId);
+		if (next === shots) return;
+		recordShotUndo();
+		setShots(next);
 	}
 
 	// The library is the user's own material: poses read from photographs and
@@ -4389,6 +4535,9 @@ globalThis.playMode = centerTab === "play";
 			setToast(isKo ? `배치하지 못했어요 — ${verdict.error}` : `Not placed — ${verdict.error}`);
 			return;
 		}
+		// Past every refusal: the waypoint is going down, so the pre-drop path is
+		// worth one Ctrl+Z entry.
+		recordCharacterUndo();
 		setWaypoints(nextWaypoints);
 		setTlFrame(frame);
 		setActiveWaypointId(waypoint.id);
@@ -4423,6 +4572,7 @@ globalThis.playMode = centerTab === "play";
 	function removeWaypoint(id) {
 		const waypoint = waypoints.find((entry) => entry.id === id);
 		if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`);
+		recordCharacterUndo();
 		setWaypoints((prev) => removeStableItem(prev, id, "waypoints"));
 		setActiveWaypointId((current) => (current === id ? null : current));
 		setPendingWaypointFrame((current) => (current === waypoint.frame ? null : current));
@@ -5013,7 +5163,16 @@ globalThis.playMode = centerTab === "play";
 		});
 	}, [bridge, activeRig, motion, motionBusy]);
 
+	/** Drop the ACTIVE character's take, its IK corrections and the stature the
+	 * take imposed. One Ctrl+Z entry brings all three back; nothing to clear
+	 * records nothing, so the shortcut never becomes a dead press.
+	 *
+	 * The pose flows (studio Apply/Reset, pose tiles, photo pose) call this
+	 * first and then write the pose: the snapshot taken here predates both, so
+	 * one undo restores the take AND the pose it replaced. */
 	function clearMotion() {
+		if (!motion && ikStateRef.current.keys.size === 0 && (activeChar.scale ?? 1) === 1) return;
+		recordCharacterUndo();
 		setMotion(null);
 		setMotionError("");
 		motionFullRef.current.delete(activeChar.id);
@@ -5044,6 +5203,9 @@ globalThis.playMode = centerTab === "play";
 	function applyMotionTrim(start, end) {
 		const full = motionFullRef.current.get(activeChar.id);
 		if (!full || !motion) return;
+		// One Ctrl+Z entry per edit: the cast snapshot carries the pre-edit clip
+		// (snapshotCast → bufferMotion), so undo restores the take as it was.
+		recordCharacterUndo();
 		const segments = trimMotionEdit(motion.editSegments ?? createMotionEdit(full.frames), start, end);
 		const sliced = renderMotionEdit(full, segments);
 		setMotion({ ...sliced, url: null });
@@ -5069,6 +5231,7 @@ globalThis.playMode = centerTab === "play";
 	function resetMotionTrim() {
 		const full = motionFullRef.current.get(activeChar.id);
 		if (!full || !motion || motion.frames === full.frames && motion.editSegments?.length === 1) return;
+		recordCharacterUndo();
 		setMotion({ ...full, editSegments: createMotionEdit(full.frames) });
 		setTlFrameCount(full.frames);
 		setTlFrame((frame) => Math.min(frame, full.frames - 1));
@@ -5078,6 +5241,9 @@ globalThis.playMode = centerTab === "play";
 	function editMotionSegments(edit) {
 		const full = motionFullRef.current.get(activeChar.id);
 		if (!full || !motion) return;
+		// Covers cut, retime and segment delete alike — every segment edit lands
+		// on the same Ctrl+Z history the cast uses (snapshotCast → bufferMotion).
+		recordCharacterUndo();
 		const rendered = renderMotionEdit(full, edit);
 		setMotion({ ...rendered, url: null });
 		setTlFrameCount(rendered.frames);
@@ -5099,6 +5265,22 @@ globalThis.playMode = centerTab === "play";
 		const current = motion.editSegments ?? createMotionEdit(motionFullRef.current.get(activeChar.id)?.frames ?? motion.frames);
 		editMotionSegments(setMotionSegmentSpeed(current, id, speed));
 		setToast(ko(`${speed}× speed applied to the selected segment`, `선택한 구간을 ${speed}×로 설정했어요`));
+	}
+
+	/** Drop one Full-Body segment from the take. The removal composes like a
+	 * trim: the source frames stay untouched, so the trim-reset path (right-click
+	 * an outer handle) still restores the whole take. */
+	function removeMotionSegmentById(id) {
+		if (!motion) return;
+		const current = motion.editSegments ?? createMotionEdit(motionFullRef.current.get(activeChar.id)?.frames ?? motion.frames);
+		if (current.length <= 1) {
+			setToast(ko("The only segment cannot be deleted — use ✕ Motion to clear the take", "마지막 남은 구간은 지울 수 없어요 — ✕ 모션으로 테이크를 비워요"));
+			return;
+		}
+		const next = removeMotionSegment(current, id);
+		if (next === current) return;
+		editMotionSegments(next);
+		setToast(ko("Segment removed — right-click a trim handle to restore the full take", "구간을 지웠어요 — 핸들 우클릭으로 전체 테이크 복원"));
 	}
 
 	// Drive every cast member from ITS OWN clip on the shared playhead. The
@@ -5251,19 +5433,29 @@ globalThis.playMode = centerTab === "play";
 	// scrub away and back restores the dragged pose exactly (slerp).
 	function ikDragEnd() {
 		ikBodyDragRef.current = false;
-		if (ikChains) ikBakeKeyframe(ikChains, ikStateRef.current, tlFrame, ikFkJoints);
+		if (ikChains) {
+			// One entry per drag: the pointermoves only moved bones, the keys map is
+			// untouched until this bake — recording here captures the pre-drag keys.
+			if (ikStateRef.current.tracked.size > 0) recordCharacterUndo();
+			ikBakeKeyframe(ikChains, ikStateRef.current, tlFrame, ikFkJoints);
+		}
 		setIkTick((n) => n + 1);
 	}
 
 	// Manual key: bake the current tracked rotations at the playhead.
 	function ikAddKeyframe() {
 		if (!ikChains) return;
+		// A bake only writes TRACKED parts: with nothing dragged yet there is no
+		// key to undo, so no entry is pushed and Ctrl+Z never goes dead.
+		if (ikStateRef.current.tracked.size > 0) recordCharacterUndo();
 		ikBakeKeyframe(ikChains, ikStateRef.current, tlFrame, ikFkJoints);
 		setIkTick((n) => n + 1);
 		setToast(isKo ? `${tlFrame}프레임에 전신 IK 키를 추가했어요` : `Full-body IK key at frame ${tlFrame}`);
 	}
 
 	function ikDeleteKeyframe(frame) {
+		if (!ikStateRef.current.keys.has(frame)) return;
+		recordCharacterUndo();
 		ikRemoveKeyframe(ikStateRef.current, frame);
 		setIkTick((n) => n + 1);
 	}
@@ -5501,6 +5693,9 @@ globalThis.playMode = centerTab === "play";
 		setCustomPoses(next);
 		saveCustomPoses(next);
 		setStudioPick(pose.id);
+		// The library is not on the cast history; writing the saved pose onto the
+		// posed character is, and setPosed only writes when one is being posed.
+		if (posingIndex >= 0) recordCharacterUndo();
 		setPosed(pose);
 		setToast(ko("Pose saved", "포즈 저장됨"));
 	}
@@ -5574,7 +5769,12 @@ globalThis.playMode = centerTab === "play";
 			// land invisibly underneath it. Applying from a photo follows the same
 			// rule the Apply button already states: the motion goes first.
 			const hadMotion = Boolean(motion);
+			// One gesture, one Ctrl+Z entry. clearMotion() already snapshots the
+			// pre-gesture cast — pose included — so undoing it brings back the take
+			// AND the pose this write replaces. With no take to clear, the pose
+			// write is the whole edit and records itself.
 			if (hadMotion) clearMotion();
+			else recordCharacterUndo();
 			updateCharacterAt(poseTargetIndex, { pose });
 			setPhotoPoseState("done");
 			setToast(hadMotion
@@ -5596,6 +5796,10 @@ globalThis.playMode = centerTab === "play";
 		const next = deleteCustomPose(id, customPoses);
 		setCustomPoses(next);
 		saveCustomPoses(next);
+		// Deleting a pose that is ON a character resets that character to the
+		// default — a cast change, so it belongs on Ctrl+Z. Deleting an unused
+		// library entry changes no character and records nothing.
+		if (poseA?.id === id || poseB?.id === id) recordCharacterUndo();
 		if (poseA?.id === id) setPoseA(DEFAULT_POSE);
 		if (poseB?.id === id) setPoseB(DEFAULT_POSE);
 		if (studioPick === id) setStudioPick(DEFAULT_POSE.id);
@@ -5824,6 +6028,7 @@ globalThis.playMode = centerTab === "play";
 		const snapped = Math.max(0, Math.round(frame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
 		const startFrame = Math.max(snapped, promptClips.reduce((max, clip) => Math.max(max, clip.endFrame), 0));
 		const clip = { id: createStableItemId("prompt-clip"), startFrame, endFrame: startFrame + ARDY_PROMPT_HORIZON_FRAMES, text: "" };
+		recordCharacterUndo();
 		setPromptClips((prev) => [...prev, clip]);
 		setSelectedPromptId(clip.id);
 		setTlFrameCount((count) => Math.max(count, clip.endFrame));
@@ -5831,6 +6036,14 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	function changePromptClip(id, text) {
+		const clip = promptClips.find((entry) => entry.id === id);
+		if (!clip) throw new Error(`Unknown promptClips ID: ${id}`);
+		if (clip.text === text) return;
+		// Typing is one entry per editing session, not per keystroke: the first
+		// change on a clip snapshots the text as it stood, and the rest of the
+		// session keeps writing into that same entry. Reached from the inspector
+		// field and from the timeline chip alike.
+		recordSessionUndo(promptTextSessionRef, `prompt-text:${id}`);
 		setPromptClips((prev) => updateStableItem(prev, id, (clip) => ({ ...clip, text }), "promptClips"));
 		if (id === selectedPromptId) setArdyPrompt(text);
 	}
@@ -5868,6 +6081,8 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 
 	function removePromptClip(id) {
+		if (!promptClips.some((clip) => clip.id === id)) throw new Error(`Unknown promptClips ID: ${id}`);
+		recordCharacterUndo();
 		setPromptClips((prev) => removeStableItem(prev, id, "promptClips"));
 		if (selectedPromptId === id) setSelectedPromptId(null);
 	}
@@ -6781,6 +6996,8 @@ function resizePromptClip(id, edge, rawFrame) {
 								characters={characters}
 								onMoveCharacter={moveCharacter}
 								onCharacterGestureStart={recordCharacterUndo}
+								onWaypointGestureStart={recordCharacterUndo}
+								onCameraGestureStart={beginCameraFramingGesture}
 								pathStart={activeChar}
 								waypoints={waypoints}
 								activeWaypointId={activeWaypointId}
@@ -7134,6 +7351,9 @@ function resizePromptClip(id, edge, rawFrame) {
 									posing={posing === entry.id}
 									onRemove={index > 0 ? () => removeCharacter(entry.id) : undefined}
 									color={entry.tint ?? defaultCharacterTint(entry, index)}
+									/* A colour picker streams values while it is open, so the
+									   whole picking session is one Ctrl+Z entry. */
+									onColorEditStart={() => recordSessionUndo(tintSessionRef, `tint:${entry.id}`)}
 									onColorChange={(tint) => updateCharacterAt(index, { tint })}
 								/>
 							))}
@@ -7159,7 +7379,11 @@ function resizePromptClip(id, edge, rawFrame) {
 								aria-checked={activeChar.model === id}
 								className={"rig-option" + (activeChar.model === id ? " active" : "")}
 								data-rig-id={id}
-								onClick={() => updateCharacterAt(activeCharIndex, { model: id })}
+								onClick={() => {
+									if (activeChar.model === id) return;
+									recordCharacterUndo();
+									updateCharacterAt(activeCharIndex, { model: id });
+								}}
 							>
 								<PoseThumbPreview model={id} pose={activeChar.pose ?? DEFAULT_POSE} alt={CHARACTER_MODEL_LABELS[id]} />
 								<span>{CHARACTER_MODEL_LABELS[id]}</span>
@@ -7186,7 +7410,10 @@ function resizePromptClip(id, edge, rawFrame) {
 							// A running take drives the same bones a pose writes, so the
 							// pick would otherwise land invisibly underneath it.
 							const hadMotion = Boolean(motion);
+							// One pick, one Ctrl+Z entry: clearMotion()'s snapshot already
+							// carries the pose this write replaces.
 							if (hadMotion) clearMotion();
+							else recordCharacterUndo();
 							updateCharacterAt(activeCharIndex, { pose });
 							setStudioPick(pose.id);
 							setToast(hadMotion
@@ -7243,6 +7470,9 @@ function resizePromptClip(id, edge, rawFrame) {
 								<input
 									type="text"
 									value={entry.subject ?? ""}
+									/* One entry per editing session, not per keystroke: the
+									   snapshot is taken when the field takes focus. */
+									onFocus={recordCharacterUndo}
 									onChange={(e) => updateCharacterAt(index, { subject: e.target.value })}
 								/>
 							</Field>
@@ -8097,7 +8327,10 @@ function resizePromptClip(id, edge, rawFrame) {
 								const pose = selectablePoses.find((p) => p.id === selectedPoseId);
 								if (pose) {
 									const hadMotion = Boolean(motion);
+									// Apply is one gesture: the clear's snapshot covers the pose
+									// write that follows it.
 									if (hadMotion) clearMotion();
+									else if (posingIndex >= 0) recordCharacterUndo();
 									setPosed(pose);
 									closeStudio();
 									setToast(hadMotion ? ko("Cleared the current motion and applied the pose", "현재 모션을 지우고 포즈를 적용했어요") : ko("Pose applied", "포즈를 적용했어요"));
@@ -8107,6 +8340,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							}}
 							onReset={() => {
 								if (motion) clearMotion();
+								else if (posingIndex >= 0) recordCharacterUndo();
 								setStudioPick(DEFAULT_POSE.id);
 								setPosed(DEFAULT_POSE);
 								setToast(ko("Back to the default pose", "기본 포즈로 돌아왔어요"));
@@ -8214,6 +8448,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				onMotionTrimReset={resetMotionTrim}
 				onMotionCut={cutMotionAtPlayhead}
 				onMotionSpeedChange={changeMotionSegmentSpeed}
+				onMotionSegmentRemove={removeMotionSegmentById}
 				ikFrames={ikFrames}
 				footSnap={footSnap}
 					shots={shots}
@@ -8298,15 +8533,29 @@ function resizePromptClip(id, edge, rawFrame) {
 					}}
 					onRailMove={(shotId, startFrame) => editRailSchedule(shotId, (base, duration) => moveRailRange(base, startFrame - base.startFrame, duration))}
 					onRailRangeChange={(shotId, edge, frame) => editRailSchedule(shotId, (base, duration) => resizeRailRange(base, edge, frame, duration))}
-					onRailRemove={(shotId) => setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "off" } }) }), "shots"))}
+					onRailRemove={(shotId) => {
+						if (!shots.some((shot) => shot.id === shotId)) throw new Error(`Unknown shots ID: ${shotId}`);
+						recordShotUndo();
+						setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "off" } }) }), "shots"));
+					}}
 				onShotSelect={selectTimelineShot}
 				onShotBoundaryMove={(shotId, edge, frame) => setShots((current) => resizeShot(current, shotId, edge, frame, tlFrameCount))}
-				onShotRename={(shotId, name) => setShots((current) => renameShot(current, shotId, name))}
-				onShotRemove={(shotId) => setShots((current) => removeShot(current, shotId))}
+				onShotRename={(shotId, name) => {
+					const shot = shots.find((entry) => entry.id === shotId);
+					if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
+					// The rename dialog commits once on accept. renameShot ignores a
+					// blank name and stores the trimmed one, so an unchanged or empty
+					// name is no edit at all: it neither writes nor records.
+					if (typeof name !== "string" || !name.trim() || shot.name === name.trim()) return;
+					recordShotUndo();
+					setShots((current) => renameShot(current, shotId, name));
+				}}
+				onShotRemove={removeTimelineShot}
 				onShotDuplicate={duplicateTimelineShot}
 				onShotCut={addTimelineShot}
 				onShotSplit={splitTimelineShot}
 				onShotMove={moveTimelineShot}
+				onEditGestureStart={beginTimelineEditGesture}
 				onClearMotion={motion ? clearMotion : null}
 			/>
 				</div>
@@ -8419,7 +8668,7 @@ function Foldout({ title, hidden, defaultOpen = true, openSignal = 0, children }
 	);
 }
 
-function SubjectBox({ label, value, onChange, onRemove, onPose, posing, color, onColorChange }) {
+function SubjectBox({ label, value, onChange, onRemove, onPose, posing, color, onColorChange, onColorEditStart }) {
 	const set = (key) => (v) => onChange((prev) => ({ ...prev, [key]: v }));
 	return (
 		<div className="subject-box">
@@ -8433,7 +8682,15 @@ function SubjectBox({ label, value, onChange, onRemove, onPose, posing, color, o
 							title={ko("Character color", "인물 색상")}
 							aria-label={ko("Character color", "인물 색상")}
 							value={color}
-							onChange={(e) => onColorChange(e.target.value)}
+							/* Focus opens the session for keyboard/eyedropper use; the
+							   native swatch dialog can drive onChange without focus, so the
+							   first change of a session opens it too (the handler is
+							   session-idempotent). */
+							onFocus={onColorEditStart}
+							onChange={(e) => {
+								onColorEditStart?.();
+								onColorChange(e.target.value);
+							}}
 						/>
 					)}
 					{onPose && (

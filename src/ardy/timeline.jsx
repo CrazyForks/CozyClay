@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { frameFromClientX, motionTrimRange, promptMoveStartFrame, shotBlockGeometry } from "./timeline-coordinates.js";
+import { motionSegmentSpeedForFrames } from "./motion-edit.js";
 import { promptResizeFrame } from "./timeline-resize.js";
 import { ko, isKo } from "../locale.js";
 
@@ -259,6 +260,12 @@ export default function Timeline({
 	onMotionTrimReset,
 	onMotionCut,
 	onMotionSpeedChange,
+	onMotionSegmentRemove,
+	// One undo entry per editing GESTURE. Fired once when a continuous drag
+	// (or a keyboard nudge, or a text-editing session) begins, BEFORE the
+	// first mutation lands, so App can snapshot the pre-gesture state exactly
+	// once instead of once per pointermove tick.
+	onEditGestureStart,
 }) {
 	const [expanded, setExpanded] = useState(true);
 	const [zoom, setZoom] = useState(ZOOM_DEFAULT);
@@ -279,7 +286,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -445,6 +452,7 @@ export default function Timeline({
 			displayFrameCount,
 			moving: false,
 		};
+		handlers.current.onEditGestureStart?.("prompt-move");
 		handlers.current.onPromptSelect?.(clip.id);
 	}
 
@@ -502,6 +510,7 @@ export default function Timeline({
 			startFrame: edge === "start" ? clip.startFrame : clip.endFrame,
 			lastFrame: edge === "start" ? clip.startFrame : clip.endFrame,
 		};
+		handlers.current.onEditGestureStart?.("prompt-resize");
 		handlers.current.onPromptSelect?.(clip.id);
 	}
 
@@ -561,6 +570,45 @@ export default function Timeline({
 		}
 	}
 
+	// Segment speed by stretch: dragging a segment's right-edge grip resizes it
+	// on the strip, and the width IS the playback rate — wider is slower. The
+	// preview lives here; the retime itself is App's, committed once on release.
+	const motionSpeedRef = useRef(null);
+	const [speedPreview, setSpeedPreview] = useState(null);
+
+	function beginMotionSpeed(e, segment) {
+		if (e.button !== 0 || !motion) return;
+		e.preventDefault();
+		e.stopPropagation();
+		e.currentTarget.setPointerCapture?.(e.pointerId);
+		const rect = e.currentTarget.closest(".tl-lane")?.getBoundingClientRect();
+		if (!rect || rect.width < 2) return;
+		motionSpeedRef.current = { segment, rect, displayFrameCount, preview: null };
+	}
+
+	function moveMotionSpeed(e) {
+		const active = motionSpeedRef.current;
+		if (!active) return;
+		const pointerFrame = frameFromClientX(e.clientX, active.rect.left, active.rect.width, active.displayFrameCount, frameCount);
+		const frames = Math.max(1, Math.round(pointerFrame) - active.segment.timelineStart + 1);
+		const speed = motionSegmentSpeedForFrames(active.segment, frames);
+		const sourceFrames = active.segment.sourceEnd - active.segment.sourceStart + 1;
+		const next = { id: active.segment.id, timelineFrames: Math.max(1, Math.round(sourceFrames / speed)), speed };
+		if (active.preview?.speed === next.speed && active.preview?.timelineFrames === next.timelineFrames) return;
+		active.preview = next;
+		setSpeedPreview(next);
+	}
+
+	function endMotionSpeed(e) {
+		const active = motionSpeedRef.current;
+		motionSpeedRef.current = null;
+		e.currentTarget.releasePointerCapture?.(e.pointerId);
+		setSpeedPreview(null);
+		if (active?.preview && active.preview.speed !== active.segment.speed) {
+			handlers.current.onMotionSpeedChange?.(active.segment.id, active.preview.speed);
+		}
+	}
+
 	// Camera key dots re-time by dragging, like prompt clips move: the frame
 	// delta comes from the pointer-down geometry so a growing timeline cannot
 	// feed back into the next pointermove.
@@ -584,6 +632,7 @@ export default function Timeline({
 			displayFrameCount,
 			moved: false,
 		};
+		handlers.current.onEditGestureStart?.("camera-key");
 	}
 
 	function moveCameraKeyDrag(e) {
@@ -631,6 +680,7 @@ export default function Timeline({
 	function beginRailMove(e, shot, range, duration) {
 		if (e.button !== 0) return;
 		e.stopPropagation();
+		handlers.current.onEditGestureStart?.("rail");
 		handlers.current.onRailSelect?.(shot.id);
 		const lane = e.currentTarget.closest(".tl-lane");
 		const rect = lane?.getBoundingClientRect();
@@ -668,6 +718,7 @@ export default function Timeline({
 		e.preventDefault();
 		e.stopPropagation();
 		e.currentTarget.setPointerCapture?.(e.pointerId);
+		handlers.current.onEditGestureStart?.("rail");
 		handlers.current.onRailSelect?.(shot.id);
 		const lane = e.currentTarget.closest(".tl-lane");
 		const rect = lane?.getBoundingClientRect();
@@ -702,6 +753,8 @@ export default function Timeline({
 		e.preventDefault();
 		e.stopPropagation();
 		const delta = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1);
+		// A nudge is a complete gesture on its own: one keydown, one entry.
+		handlers.current.onEditGestureStart?.("rail");
 		if (edge === "body") handlers.current.onRailMove?.(shotId, Math.max(0, Math.min(duration - (range.end - range.start + 1), range.start + delta)));
 		else handlers.current.onRailRangeChange?.(shotId, edge, Math.max(0, Math.min(duration - 1, (edge === "start" ? range.start : range.end) + delta)));
 	}
@@ -714,6 +767,7 @@ export default function Timeline({
 		const lane = e.currentTarget.closest(".tl-lane");
 		const rect = lane?.getBoundingClientRect();
 		shotBoundaryRef.current = { shotId: shots[shotIndex]?.id, edge, pointerId: e.pointerId, left: rect?.left ?? 0, width: rect?.width ?? 1, displayFrameCount };
+		handlers.current.onEditGestureStart?.("shot-boundary");
 	}
 
 	function moveShotBoundary(e) {
@@ -839,6 +893,26 @@ export default function Timeline({
 			preview: true,
 		}]
 		: motionSegments;
+	// While a speed grip is held, the dragged segment shows its would-be width
+	// and everything after it slides by the delta — the same reflow the commit
+	// will produce, so the release is never a surprise.
+	const displayMotionSegments = (() => {
+		if (!speedPreview || trimPreview) return visibleMotionSegments;
+		let shift = 0;
+		return visibleMotionSegments.map((segment) => {
+			if (segment.id === speedPreview.id) {
+				const shown = {
+					...segment,
+					timelineStart: segment.timelineStart + shift,
+					timelineEnd: segment.timelineStart + shift + speedPreview.timelineFrames - 1,
+					previewSpeed: speedPreview.speed,
+				};
+				shift += speedPreview.timelineFrames - (segment.timelineEnd - segment.timelineStart + 1);
+				return shown;
+			}
+			return shift === 0 ? segment : { ...segment, timelineStart: segment.timelineStart + shift, timelineEnd: segment.timelineEnd + shift };
+		});
+	})();
 	const changeSelectedMotionSpeed = (speed) => {
 		if (!selectedMotionSegment || !Number.isFinite(speed)) return;
 		handlers.current.onMotionSpeedChange?.(selectedMotionSegment.id, Math.max(0.1, Math.min(4, speed)));
@@ -1236,22 +1310,27 @@ export default function Timeline({
 										return (
 											<div key={clip.id} className={"tl-chip" + (selectedPromptId === clip.id ? " selected" : "") + (movingPromptId === clip.id ? " moving" : "")} style={{ "--tl-f-start": clipPct(clip.startFrame), "--tl-f-end": clipPct(clip.endFrame) }} title={ko("Drag to move · edge handles resize · right-click removes", "드래그로 이동 · 가장자리 핸들로 길이 조절 · 오른쪽 클릭으로 삭제")} onPointerDown={(e) => beginPromptMove(e, clip)} onPointerMove={movePrompt} onPointerUp={endPromptMove} onPointerCancel={endPromptMove} onClick={blockPromptClick} onContextMenu={(e) => { e.preventDefault(); handlers.current.onPromptRemove?.(clip.id); }}>
 												<button className="tl-chip-handle start" type="button" aria-label={ko("Resize prompt start", "프롬프트 시작점 조절")} onPointerDown={(e) => beginPromptResize(e, clip, "start")} onPointerMove={movePromptResize} onPointerUp={endPromptResize} onPointerCancel={endPromptResize} />
-												<input className="tl-chip-input" value={clip.text} placeholder={isKo ? `${duration}초 · 모션 프롬프트` : `${duration}s · motion prompt`} maxLength={500} onChange={(e) => handlers.current.onPromptChange?.(clip.id, e.target.value)} />
+												<input className="tl-chip-input" value={clip.text} placeholder={isKo ? `${duration}초 · 모션 프롬프트` : `${duration}s · motion prompt`} maxLength={500} onFocus={() => handlers.current.onEditGestureStart?.("prompt-text", clip.id)} onChange={(e) => handlers.current.onPromptChange?.(clip.id, e.target.value)} />
 												<button className="tl-chip-handle end" type="button" aria-label={ko("Resize prompt end", "프롬프트 끝점 조절")} onPointerDown={(e) => beginPromptResize(e, clip, "end")} onPointerMove={movePromptResize} onPointerUp={endPromptResize} onPointerCancel={endPromptResize} />
 											</div>
 										);
 									})}
-									{name === IK_LANE && visibleMotionSegments.map((segment, index) => (
+									{name === IK_LANE && displayMotionSegments.map((segment, index) => (
 										<div
 											key={segment.id}
-											className={"tl-motion-clip" + (trimPreview ? " trimming" : "") + (selectedMotionSegment?.id === segment.id ? " selected" : "")}
+											className={"tl-motion-clip" + (trimPreview ? " trimming" : "") + (segment.previewSpeed !== undefined ? " retiming" : "") + (selectedMotionSegment?.id === segment.id ? " selected" : "")}
 											style={{
-												"--tl-f-start": clipPct(trimPreview ? trimPreview.start : segment.timelineStart),
+												"--tl-f-start": clipPct(trimPreview ? trimPreview.start : Math.min(segment.timelineStart, displayFrameCount)),
 												"--tl-f-end": clipPct(trimPreview ? trimPreview.end + 1 : Math.min(segment.timelineEnd + 1, displayFrameCount)),
 											}}
 											title={segment.preview ? undefined : isKo
-												? `전신 구간 ${index + 1} — ${segment.speed}×. 컷은 재생 헤드에서, 속도는 메뉴에서 변경`
-												: `Full-Body segment ${index + 1} — ${segment.speed}×. Cut at the playhead; change speed from the menu`}
+												? `전신 구간 ${index + 1} — ${segment.speed}×. 컷은 재생 헤드에서 · 오른쪽 그립을 끌어 배속 조절 · 우클릭으로 구간 삭제`
+												: `Full-Body segment ${index + 1} — ${segment.speed}×. Cut at the playhead; drag the right grip to retime; right-click to delete`}
+											onContextMenu={segment.preview ? undefined : (e) => {
+												e.preventDefault();
+												e.stopPropagation();
+												handlers.current.onMotionSegmentRemove?.(segment.id);
+											}}
 										>
 											{index === 0 && <button
 												className="tl-motion-clip-handle start"
@@ -1266,9 +1345,19 @@ export default function Timeline({
 											<span className="tl-motion-clip-label">
 												{segment.preview
 													? `${trimPreview.start}–${trimPreview.end} (${trimPreview.end - trimPreview.start + 1}f)`
-													: `${index + 1} · ${segment.speed}×`}
+													: `${index + 1} · ${segment.previewSpeed ?? segment.speed}×`}
 											</span>
-											{index === visibleMotionSegments.length - 1 && <button
+											{!segment.preview && <button
+												className="tl-motion-clip-handle speed"
+												type="button"
+												aria-label={ko("Retime segment by stretch", "드래그로 구간 배속 조절")}
+												title={ko("Drag — wider is slower, narrower is faster", "드래그 — 늘리면 느리게, 줄이면 빠르게")}
+												onPointerDown={(e) => beginMotionSpeed(e, segment)}
+												onPointerMove={moveMotionSpeed}
+												onPointerUp={endMotionSpeed}
+												onPointerCancel={endMotionSpeed}
+											/>}
+											{index === displayMotionSegments.length - 1 && <button
 												className="tl-motion-clip-handle end"
 												type="button"
 												aria-label={ko("Trim take end", "테이크 끝점 자르기")}
@@ -1280,6 +1369,7 @@ export default function Timeline({
 											/>}
 										</div>
 									))}
+
 									{name === IK_LANE &&
 										ikFrames.map((f) => (
 											<span

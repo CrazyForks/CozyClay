@@ -405,7 +405,7 @@ function WaypointPath({ waypoints, start, activeWaypointId }) {
  * reports moves that still hit it, so a fast drag off the edge silently strands
  * the puck.
  */
-export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, characters = [], onMoveCharacter, onCharacterGestureStart, pathStart = null, waypoints, activeWaypointId, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null, onCameraChange }) {
+export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, characters = [], onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, pathStart = null, waypoints, activeWaypointId, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null, onCameraChange }) {
 	const [drag, setDrag] = useState(null); // { id, mode }
 	// live stroke while the rail is being drawn; world XZ, display only
 	const [railStroke, setRailStroke] = useState(null);
@@ -435,8 +435,8 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 	// clears dragRef, so a dep that changes while dragging (charA.x does, on the
 	// very first move) would kill the drag after one frame. Read live values
 	// through a ref and keep the effect's deps stable.
-	const latest = useRef({ characters, waypoints, onSelectWaypoint, onMoveWaypoint, onMoveCharacter, onCharacterGestureStart, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange });
-	latest.current = { characters, waypoints, onSelectWaypoint, onMoveWaypoint, onMoveCharacter, onCharacterGestureStart, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange };
+	const latest = useRef({ characters, waypoints, onSelectWaypoint, onMoveWaypoint, onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange });
+	latest.current = { characters, waypoints, onSelectWaypoint, onMoveWaypoint, onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange };
 
 	const targets = () => {
 		const cast = latest.current.characters;
@@ -577,6 +577,14 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 				// One undo entry per character gesture: App snapshots the cast
 				// here, the drag's per-tick moves then apply on top.
 				latest.current.onCharacterGestureStart?.();
+			} else if (grip.mode === "waypoint") {
+				// Same contract for the root path: one entry per waypoint drag,
+				// snapshotted before the first onMoveWaypoint tick lands.
+				latest.current.onWaypointGestureStart?.();
+			} else if (grip.id === "cam") {
+				// The camera puck writes shot framing (move AND turn), so its
+				// gesture opens a shot-level entry before the first commit.
+				latest.current.onCameraGestureStart?.();
 			}
 			host.style.cursor = grip.mode === "turn" ? "ew-resize" : "grabbing";
 		};

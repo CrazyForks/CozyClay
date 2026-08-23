@@ -55,7 +55,7 @@ const expect = (name, condition, detail = "") => {
 await send("Runtime.enable");
 await send("Page.enable");
 await send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-await send("Page.navigate", { url: "http://127.0.0.1:5180/app/" });
+await send("Page.navigate", { url: process.env.QA_URL ?? "http://127.0.0.1:5180/app/" });
 expect("app becomes ready", await waitFor("!!window.__cozyclay?.rigA"));
 expect("the demo take draws one Full-Body segment", await waitFor("document.querySelectorAll('.tl-motion-clip').length === 1"));
 
@@ -128,6 +128,22 @@ const afterSlow = await evaluate(`(() => ({
 expect("the header and tiny segment agree on 0.8x", afterSlow.labels[0]?.includes("0.8×") && afterSlow.speed === "0.8", JSON.stringify(afterSlow));
 expect("the playhead identifies the active segment", afterSlow.selected.some(Boolean), JSON.stringify(afterSlow));
 expect("reduced-motion mode keeps the controls usable", await evaluate("matchMedia('(prefers-reduced-motion: reduce)').matches"));
+
+/* ------------------------------------------- segment delete + undo ---- */
+
+const clipSpot = await evaluate(
+	"(() => { const clip = [...document.querySelectorAll('.tl-motion-clip')].at(-1); if (!clip) return null;" +
+		" const r = clip.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()",
+);
+expect("the wide segment offers a right-click target", !!clipSpot);
+await send("Input.dispatchMouseEvent", { type: "mousePressed", x: clipSpot.x, y: clipSpot.y, button: "right", buttons: 2, clickCount: 1 });
+await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: clipSpot.x, y: clipSpot.y, button: "right", buttons: 0, clickCount: 1 });
+expect("right-clicking a segment deletes it", await waitFor("document.querySelectorAll('.tl-motion-clip').length === 1"));
+await send("Input.dispatchKeyEvent", { type: "keyDown", key: "z", code: "KeyZ", modifiers: 2, windowsVirtualKeyCode: 90 });
+await send("Input.dispatchKeyEvent", { type: "keyUp", key: "z", code: "KeyZ", modifiers: 2, windowsVirtualKeyCode: 90 });
+expect("Ctrl+Z restores the deleted segment", await waitFor("document.querySelectorAll('.tl-motion-clip').length === 2"));
+expect("the restored segments keep their speeds", await waitFor("[...document.querySelectorAll('.tl-motion-clip-label')].some((l) => l.textContent.includes('0.8\u00d7'))"));
+
 expect("browser run has no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));
 
 ws.close();
