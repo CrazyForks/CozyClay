@@ -3,6 +3,8 @@ import { CSKEL27_JOINTS } from "../src/ardy/cskel27.js";
 import {
 	createMotionEdit,
 	motionEditDuration,
+	motionSegmentSpeedForFrames,
+	removeMotionSegment,
 	renderMotionEdit,
 	setMotionSegmentSpeed,
 	splitMotionEdit,
@@ -114,6 +116,41 @@ function linearMotion(frames) {
 	assert.equal(rendered.rootPos[12], 3);
 	assert.equal(rendered.rootPos[15], 3);
 	pass("rendering a slow segment creates a normal 24 fps clip for every consumer");
+}
+
+{
+	const split = splitMotionEdit(splitMotionEdit(createMotionEdit(240), 60), 180);
+	assert.equal(split.length, 3);
+	const removed = removeMotionSegment(split, split[1].id);
+	assert.deepEqual(removed.map(({ sourceStart, sourceEnd }) => ({ sourceStart, sourceEnd })), [
+		{ sourceStart: 0, sourceEnd: 59 },
+		{ sourceStart: 180, sourceEnd: 239 },
+	]);
+	assert.equal(motionEditDuration(removed), 120);
+	// the source stays intact: rendering after removal still samples the original frames
+	const rendered = renderMotionEdit(linearMotion(240), removed);
+	near(rendered.rootPos[0], 0);
+	near(rendered.rootPos[60 * 3], 180);
+	// guards: unknown id and the final segment are both no-ops
+	assert.equal(removeMotionSegment(removed, "nope"), removed);
+	const only = createMotionEdit(240);
+	assert.equal(removeMotionSegment(only, only[0].id), only);
+	pass("removing a segment deletes its span and keeps the source restorable");
+}
+
+{
+	const [segment] = createMotionEdit(240);
+	assert.equal(motionSegmentSpeedForFrames(segment, 240), 1);
+	assert.equal(motionSegmentSpeedForFrames(segment, 480), 0.5);
+	assert.equal(motionSegmentSpeedForFrames(segment, 120), 2);
+	// clamped to the numeric input's own range and 0.1 grid
+	assert.equal(motionSegmentSpeedForFrames(segment, 1), 4);
+	assert.equal(motionSegmentSpeedForFrames(segment, 100000), 0.1);
+	assert.equal(motionSegmentSpeedForFrames(segment, 230), 1);
+	// a resized width round-trips through the speed it produced
+	const speed = motionSegmentSpeedForFrames(segment, 300);
+	assert.equal(speed, 0.8);
+	pass("stretch widths map onto the clamped 0.1x speed grid");
 }
 
 console.log("verify-motion-edit: all checks passed");

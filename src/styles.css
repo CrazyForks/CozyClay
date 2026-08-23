@@ -3326,6 +3326,21 @@ input[type=range]::-moz-range-thumb {
 	background: rgba(126, 208, 143, .95);
 }
 
+/* the retime grip: amber, so stretch-for-speed never reads as a trim */
+.tl-motion-clip-handle.speed {
+	background: rgba(235, 190, 96, .55);
+	margin-left: auto;
+}
+
+.tl-motion-clip-handle.speed:hover {
+	background: rgba(235, 190, 96, .95);
+}
+
+.tl-motion-clip.retiming {
+	border-color: rgba(235, 190, 96, .8);
+	box-shadow: 0 0 10px rgba(235, 190, 96, .25);
+}
+
 .tl-chip {
 	box-sizing: border-box;
 	position: absolute;

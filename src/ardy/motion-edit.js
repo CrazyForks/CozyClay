@@ -76,6 +76,26 @@ export function setMotionSegmentSpeed(edit, id, speed) {
 	return edit.map((segment) => segment.id === id ? { ...segment, speed: Number(normalized.toFixed(1)) } : segment);
 }
 
+/** Delete one segment from the edit. The last remaining segment stays: an
+ * empty edit has no duration, and "no motion" is clearMotion's job, not a
+ * segment operation's. Unknown ids return the edit unchanged. */
+export function removeMotionSegment(edit, id) {
+	if (!Array.isArray(edit) || edit.length < 2) return edit;
+	const next = edit.filter((segment) => segment.id !== id);
+	return next.length === edit.length ? edit : next;
+}
+
+/** The speed that renders a segment across `timelineFrames` production
+ * frames — the drag-resize inverse of segmentTimelineFrames. Clamped to the
+ * same 0.1x..4x range and 0.1 grid setMotionSegmentSpeed enforces, so a drag
+ * can never commit a speed the numeric input would reject. */
+export function motionSegmentSpeedForFrames(segment, timelineFrames) {
+	const frames = Math.max(1, Math.round(Number(timelineFrames) || 1));
+	const raw = segmentSourceFrames(segment) / frames;
+	const clamped = Math.min(SPEED_MAX, Math.max(SPEED_MIN, raw));
+	return Number(normalizeSpeed(clamped).toFixed(1));
+}
+
 export function trimMotionEdit(edit, startFrame, endFrame) {
 	if (!Array.isArray(edit) || edit.length < 1) return edit;
 	const duration = motionEditDuration(edit);
