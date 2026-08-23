@@ -97,6 +97,7 @@ function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, on
 	if (!shot) return null;
 	const mode = cameraBlockMode(shot);
 	const follow = cameraBlockFollow(shot);
+	const crane = shot?.camera?.craneHeight ?? null;
 	const patchCamera = (patch) => onChange?.(patch);
 	const patchFollow = (patch) => onChange?.({ followCam: { ...follow, ...patch } });
 	const numberValue = (event) => Number(event.currentTarget.value);
@@ -152,16 +153,43 @@ function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, on
 						<input type="number" min="0.2" max="8" step="0.1" value={follow.maxDollySpeed} onChange={(event) => patchFollow({ maxDollySpeed: numberValue(event) })} />
 						<small>m/s</small>
 					</label>
-					<label title={ko("Read automatically from the camera position", "현재 카메라 위치에서 자동으로 읽습니다")}>
-						<span>{ko("Height", "높이")}</span>
-						<output className="tl-camera-metric">{metric(follow.height, 2)}</output>
-						<small>m</small>
-					</label>
+					{!(mode === "rail" && crane) && (
+						<label title={ko("Read automatically from the camera position", "현재 카메라 위치에서 자동으로 읽습니다")}>
+							<span>{ko("Height", "높이")}</span>
+							<output className="tl-camera-metric">{metric(follow.height, 2)}</output>
+							<small>m</small>
+						</label>
+					)}
 					<label title={ko("Read automatically from the camera tilt", "현재 카메라 틸트에서 자동으로 읽습니다")}>
 						<span>{ko("Pitch", "피치")}</span>
 						<output className="tl-camera-metric">{signedValue(follow.pitchOffsetDeg)}</output>
 						<small>°</small>
 					</label>
+					{mode === "rail" && railLength != null && (
+						<button
+							type="button"
+							className={"tl-camera-tool" + (crane ? " active" : "")}
+							aria-pressed={!!crane}
+							title={ko("Crane the lens between two heights along the rail", "레일을 따라 렌즈 높이를 두 지점 사이로 옮깁니다")}
+							onClick={() => patchCamera({ craneHeight: crane ? null : { start: follow.height, end: follow.height } })}
+						>
+							{crane ? ko("Crane On", "크레인 켜짐") : ko("Crane Off", "크레인 꺼짐")}
+						</button>
+					)}
+					{mode === "rail" && crane && (
+						<>
+							<label title={ko("Lens height where the rail starts", "레일 시작점에서의 렌즈 높이")}>
+								<span>{ko("Start height", "시작 높이")}</span>
+								<input type="number" min="0.1" max="12" step="0.1" value={crane.start} onChange={(event) => patchCamera({ craneHeight: { ...crane, start: numberValue(event) } })} />
+								<small>m</small>
+							</label>
+							<label title={ko("Lens height where the rail ends", "레일 끝점에서의 렌즈 높이")}>
+								<span>{ko("End height", "끝 높이")}</span>
+								<input type="number" min="0.1" max="12" step="0.1" value={crane.end} onChange={(event) => patchCamera({ craneHeight: { ...crane, end: numberValue(event) } })} />
+								<small>m</small>
+							</label>
+						</>
+					)}
 					<details className="tl-camera-advanced">
 						<summary>{ko("Advanced", "고급")}</summary>
 						<label title={ko("Set how softly the rig catches up", "카메라가 얼마나 부드럽게 따라붙는지 정합니다")}>

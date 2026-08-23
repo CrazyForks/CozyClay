@@ -135,6 +135,16 @@ expect(
 	app.includes("manualCameraOverrideRef.current = false"),
 );
 expect(
+	"the rail crane is an explicit toggle with start and end height inputs",
+	timeline.includes('ko("Crane On", "\ud06c\ub808\uc778 \ucf1c\uc9d0")') &&
+	timeline.includes('ko("Crane Off", "\ud06c\ub808\uc778 \uaebc\uc9d0")') &&
+	timeline.includes('ko("Start height", "\uc2dc\uc791 \ub192\uc774")') &&
+	timeline.includes('ko("End height", "\ub05d \ub192\uc774")') &&
+	// turning the crane on seeds both marks from the measured follow height,
+	// and turning it off returns the block to the flat-rail null
+	timeline.includes("craneHeight: crane ? null : { start: follow.height, end: follow.height }"),
+);
+expect(
 	"waypoint mode replaces camera controls with one clear message",
 	timeline.includes("blocked={waypointMode}") &&
 	timeline.includes('className="tl-camera-blocked"') &&

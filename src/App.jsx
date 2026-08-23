@@ -1046,30 +1046,52 @@ function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, hi
  * The drawn camera rail in the 3D Scene view: editor furniture on the gizmo
  * layer, so PlayView, the ink prepass and exports never see it.
  */
-function CameraRailScenePreview({ points }) {
+function CameraRailScenePreview({ points, cumLen, length, crane }) {
 	const rootRef = useRef(null);
-	const line = useMemo(() => {
+	const lines = useMemo(() => {
 		if (!points || points.length < 2) return null;
-		const positions = new Float32Array(points.length * 3);
+		const floor = new Float32Array(points.length * 3);
 		points.forEach((point, i) => {
-			positions[i * 3] = point.x;
-			positions[i * 3 + 1] = 0.03;
-			positions[i * 3 + 2] = point.z;
+			floor[i * 3] = point.x;
+			floor[i * 3 + 1] = 0.03;
+			floor[i * 3 + 2] = point.z;
 		});
-		const geometry = new THREE.BufferGeometry();
-		geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-		return geometry;
-	}, [points]);
-	useEffect(() => () => line?.dispose(), [line]);
+		const floorGeometry = new THREE.BufferGeometry();
+		floorGeometry.setAttribute("position", new THREE.BufferAttribute(floor, 3));
+		// A craned rail shows WHERE THE LENS RIDES: the same path lifted along
+		// the crane's start→end heights by arc progress, with the floor line
+		// kept as the track's ground projection.
+		let liftedGeometry = null;
+		if (crane && cumLen && length > 1e-9) {
+			const lifted = new Float32Array(points.length * 3);
+			points.forEach((point, i) => {
+				lifted[i * 3] = point.x;
+				lifted[i * 3 + 1] = crane.start + (crane.end - crane.start) * (cumLen[i] / length);
+				lifted[i * 3 + 2] = point.z;
+			});
+			liftedGeometry = new THREE.BufferGeometry();
+			liftedGeometry.setAttribute("position", new THREE.BufferAttribute(lifted, 3));
+		}
+		return { floorGeometry, liftedGeometry };
+	}, [points, cumLen, length, crane]);
+	useEffect(() => () => {
+		lines?.floorGeometry.dispose();
+		lines?.liftedGeometry?.dispose();
+	}, [lines]);
 	useEffect(() => {
 		rootRef.current?.traverse((node) => node.layers.set(GIZMO_LAYER));
 	});
-	if (!line) return null;
+	if (!lines) return null;
 	return (
 		<group ref={rootRef}>
-			<line geometry={line}>
-				<lineBasicMaterial color="#a78bfa" transparent opacity={0.8} depthWrite={false} />
+			<line geometry={lines.floorGeometry}>
+				<lineBasicMaterial color="#a78bfa" transparent opacity={lines.liftedGeometry ? 0.35 : 0.8} depthWrite={false} />
 			</line>
+			{lines.liftedGeometry && (
+				<line geometry={lines.liftedGeometry}>
+					<lineBasicMaterial color="#a78bfa" transparent opacity={0.9} depthWrite={false} />
+				</line>
+			)}
 		</group>
 	);
 }
@@ -5569,7 +5591,7 @@ globalThis.playMode = centerTab === "play";
 			const start = shot.startFrame;
 			const end = Math.min(subjectTrack.length, shot.endFrame + 1);
 			const subjectSlice = subjectTrack.slice(start, end);
-			const params = { ...camera.followCam, initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) } };
+			const params = { ...camera.followCam, craneHeight: camera.craneHeight, initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) } };
 			const rail = camera.mode === "rail" ? buildRail(camera.cameraRail) : null;
 			if (rail) {
 				const schedule = resolveRailSchedule({ railFollow: camera.railFollow, cameraRail: camera.cameraRail, frameCount: subjectSlice.length });
@@ -7055,7 +7077,14 @@ function resizePromptClip(id, edge, rawFrame) {
 								}
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
 							/>
-							{centerTab === "scene" && railCurve && <CameraRailScenePreview points={railCurve.points} />}
+							{centerTab === "scene" && railCurve && (
+								<CameraRailScenePreview
+									points={railCurve.points}
+									cumLen={railCurve.cumLen}
+									length={railCurve.length}
+									crane={activeCamera.craneHeight}
+								/>
+							)}
 							<EditorCamSeed camRef={editorCamRef} lookRef={editorLook} shotCamRef={shotCamRef} subject={charA} />
 							<ShotLookApplier camRef={shotCamRef} look={look} />
 							<ShotCameraGhost
