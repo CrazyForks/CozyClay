@@ -186,11 +186,25 @@ function repairRailFollow(value) {
 	return startFrame <= endFrame ? { mode: "range", startFrame, endFrame } : null;
 }
 
-/** The crane axis rides the rail's arc; marks share camera-block.js's 0.1 m floor. */
+/** The crane axis rides the rail's arc; mirrors camera-block.js's normalization. */
 function repairCraneHeight(value) {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-	if (!finite(value.start) || !finite(value.end)) return null;
-	return { start: Math.max(0.1, value.start), end: Math.max(0.1, value.end) };
+	const raw = Array.isArray(value.points)
+		? value.points
+		: finite(value.start) && finite(value.end)
+			? [{ t: 0, height: value.start }, { t: 1, height: value.end }]
+			: null;
+	if (!raw) return null;
+	const cleaned = raw
+		.filter((point) => point && finite(point.t) && finite(point.height))
+		.map((point) => ({ t: Math.max(0, Math.min(1, point.t)), height: Math.max(0.1, point.height) }))
+		.sort((a, b) => a.t - b.t)
+		.filter((point, i, arr) => i === arr.length - 1 || arr[i + 1].t - point.t > 1e-6)
+		.slice(0, 8);
+	if (cleaned.length < 2) return null;
+	cleaned[0] = { ...cleaned[0], t: 0 };
+	cleaned[cleaned.length - 1] = { ...cleaned[cleaned.length - 1], t: 1 };
+	return { points: cleaned };
 }
 
 function repairCamera(value) {

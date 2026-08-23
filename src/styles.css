@@ -2906,6 +2906,13 @@ input[type=range]::-moz-range-thumb {
 	color: #cbb8ef;
 }
 
+.tl-camera-count {
+	font-size: 10px;
+	opacity: .65;
+	letter-spacing: .02em;
+	align-self: center;
+}
+
 .tl-camera-slate {
 	flex: none;
 	padding-left: 7px;

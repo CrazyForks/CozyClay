@@ -236,7 +236,16 @@ const cranedRoundTrip = loadShotAuthoring(serializeShotAuthoring({
 	frameCount: 100,
 	shots: [{ startFrame: 0, camera: { mode: "rail", cameraRail, railFollow: { mode: "off" }, craneHeight: { start: 3, end: 1.2 } } }],
 }));
-assert.deepEqual(cranedRoundTrip.shots[0].camera.craneHeight, { start: 3, end: 1.2 });
+assert.deepEqual(cranedRoundTrip.shots[0].camera.craneHeight, { points: [{ t: 0, height: 3 }, { t: 1, height: 1.2 }] });
+const pointCraneRoundTrip = loadShotAuthoring(serializeShotAuthoring({
+	frameCount: 100,
+	shots: [{ startFrame: 0, camera: { mode: "rail", cameraRail, railFollow: { mode: "off" }, craneHeight: { points: [{ t: 0, height: 3 }, { t: 0.4, height: 0.8 }, { t: 1, height: 2 }] } } }],
+}));
+assert.deepEqual(
+	pointCraneRoundTrip.shots[0].camera.craneHeight,
+	{ points: [{ t: 0, height: 3 }, { t: 0.4, height: 0.8 }, { t: 1, height: 2 }] },
+	"a point crane survives serialize → load untouched",
+);
 const orphanCrane = loadShotAuthoring(serializeShotAuthoring({
 	frameCount: 100,
 	shots: [{ startFrame: 0, camera: { mode: "follow", craneHeight: { start: 3, end: 1.2 } } }],

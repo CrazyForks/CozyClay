@@ -93,7 +93,7 @@ function signedValue(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}`;
 }
 
-function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, onChange, onPreview, onRailDrawToggle, onRailDelete }) {
+function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, craneSelectedIndex = null, onChange, onPreview, onRailDrawToggle, onRailDelete }) {
 	if (!shot) return null;
 	const mode = cameraBlockMode(shot);
 	const follow = cameraBlockFollow(shot);
@@ -171,25 +171,29 @@ function CameraBlockEditor({ shot, blocked, previewing, railDraw, railLength, on
 							className={"tl-camera-tool" + (crane ? " active" : "")}
 							aria-pressed={!!crane}
 							title={ko("Crane the lens between two heights along the rail", "레일을 따라 렌즈 높이를 두 지점 사이로 옮깁니다")}
-							onClick={() => patchCamera({ craneHeight: crane ? null : { start: follow.height, end: follow.height } })}
+							onClick={() => patchCamera({ craneHeight: crane ? null : { points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] } })}
 						>
 							{crane ? ko("Crane On", "크레인 켜짐") : ko("Crane Off", "크레인 꺼짐")}
 						</button>
 					)}
-					{mode === "rail" && crane && (
-						<>
-							<label title={ko("Lens height where the rail starts", "레일 시작점에서의 렌즈 높이")}>
-								<span>{ko("Start height", "시작 높이")}</span>
-								<input type="number" min="0.1" max="12" step="0.1" value={crane.start} onChange={(event) => patchCamera({ craneHeight: { ...crane, start: numberValue(event) } })} />
-								<small>m</small>
-							</label>
-							<label title={ko("Lens height where the rail ends", "레일 끝점에서의 렌즈 높이")}>
-								<span>{ko("End height", "끝 높이")}</span>
-								<input type="number" min="0.1" max="12" step="0.1" value={crane.end} onChange={(event) => patchCamera({ craneHeight: { ...crane, end: numberValue(event) } })} />
-								<small>m</small>
-							</label>
-						</>
-					)}
+					{mode === "rail" && crane && (() => {
+						const points = crane.points;
+						const index = craneSelectedIndex != null && craneSelectedIndex >= 0 && craneSelectedIndex < points.length ? craneSelectedIndex : points.length - 1;
+						const patchPointHeight = (height) => {
+							const next = points.map((point, i) => (i === index ? { ...point, height } : point));
+							patchCamera({ craneHeight: { points: next } });
+						};
+						return (
+							<>
+								<label title={ko("Lens height of the selected crane point — click a purple dot in the scene to pick one, double-click the lifted curve to add one", "선택한 크레인 점의 렌즈 높이 — 씨의 보라 점을 클릭해 선택, 커브 더블클릭으로 추가")}>
+									<span>{ko("Point height", "점 높이")}</span>
+									<input type="number" min="0.1" max="12" step="0.1" value={points[index].height} onChange={(event) => patchPointHeight(numberValue(event))} />
+									<small>m</small>
+								</label>
+								<output className="tl-camera-count" title={ko("Crane points on this rail", "이 레일의 크레인 점 개수")}>{points.length}{ko(" pts", "점")}</output>
+							</>
+						);
+					})()}
 					<details className="tl-camera-advanced">
 						<summary>{ko("Advanced", "고급")}</summary>
 						<label title={ko("Set how softly the rig catches up", "카메라가 얼마나 부드럽게 따라붙는지 정합니다")}>
@@ -269,6 +273,7 @@ export default function Timeline({
 	onCameraBlockChange,
 	onCameraPreview,
 	railDraw = false,
+	craneSelectedIndex = null,
 	cameraRailLength = null,
 	onCameraRailDrawToggle,
 	onCameraRailDelete,
@@ -1089,6 +1094,7 @@ export default function Timeline({
 							previewing={playing}
 							railDraw={railDraw}
 							railLength={cameraRailLength}
+							craneSelectedIndex={craneSelectedIndex}
 							onChange={(patch) => handlers.current.onCameraBlockChange?.(patch)}
 							onPreview={() => handlers.current.onCameraPreview?.(selectedCameraShot.id)}
 							onRailDrawToggle={() => handlers.current.onCameraRailDrawToggle?.()}
