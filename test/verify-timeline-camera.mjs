@@ -129,7 +129,9 @@ expect(
 expect(
 	"manual viewport framing stays put until preview or playback",
 	app.includes("manualCameraOverrideRef.current = true") &&
-	(app.match(/flyingRef\.current \|\| manualCameraOverrideRef\.current/g) ?? []).length === 2 &&
+	// flying only interrupts playback while look-through hands the fly
+	// controls the shot camera itself; editor-camera flights never touch it
+	(app.match(/\(lookThroughShot && flyingRef\.current\) \|\| manualCameraOverrideRef\.current/g) ?? []).length === 2 &&
 	app.includes("manualCameraOverrideRef.current = false"),
 );
 expect(

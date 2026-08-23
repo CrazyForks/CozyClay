@@ -662,6 +662,56 @@ select {
 	box-shadow: 0 10px 30px #00000073, 0 0 0 1px #ffffff1f;
 	animation: rise var(--med) var(--ease) both;
 }
+/* The shot preview: the recording camera's framed output, bottom-right,
+   always at the export aspect. Chrome-free — what you see is what records. */
+.vp-shot-preview {
+	top: auto;
+	bottom: 16px;
+	right: 15px;
+	width: 21%;
+	min-width: 200px;
+	max-width: 330px;
+	aspect-ratio: var(--shot-aspect, 16 / 9);
+	border-radius: 9px;
+	overflow: hidden;
+	box-shadow: 0 12px 32px #00000080, 0 0 0 1px #00000055, inset 0 0 0 1px #ffffff14;
+	animation: rise var(--med) var(--ease) both;
+}
+.vp-shot-preview-tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	cursor: default;
+}
+/* the live-recording cue: one static red dot, no motion */
+.vp-rec-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: #e5484d;
+	box-shadow: 0 0 0 1.5px #e5484d33;
+	flex: none;
+}
+/* compact icon affordance inside the tag, mirroring the caret's manners */
+.vp-look-through {
+	pointer-events: auto;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 2px;
+	margin: -2px -2px -2px 0;
+	background: none;
+	border: none;
+	border-radius: 4px;
+	color: inherit;
+	opacity: .7;
+}
+.vp-look-through:hover {
+	opacity: 1;
+	color: var(--accent);
+}
+
 /* the plan pane is the interactive one wherever it lands */
 .vp-pane.plan {
 	pointer-events: auto;
@@ -8244,4 +8294,29 @@ input[type=range] {
 .matte-tools .presets.matte-icons button {
 	width: 2.3rem;
 	font-size: 13px;
+}
+
+/* Look-through pill: the inset tag's glass, floated top-centre of the stage.
+   Declared last so it outranks the base .vp-inset-tag corner anchoring. */
+.vp-inset-tag.vp-look-through-exit {
+	position: absolute;
+	/* the containing block includes the toolbar row — 60px clears it, the
+	   same band the Top-View inset opens in */
+	top: 60px;
+	left: 50%;
+	right: auto;
+	transform: translateX(-50%);
+	z-index: 6;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	pointer-events: auto;
+	cursor: pointer;
+	border-radius: 999px;
+	padding: 4px 11px;
+}
+.vp-look-through-exit .vp-exit-hint {
+	opacity: .6;
+	font-size: 9px;
+	letter-spacing: .04em;
 }

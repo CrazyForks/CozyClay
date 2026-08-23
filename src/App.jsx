@@ -899,6 +899,112 @@ function FollowCamRig({ enabled, frame, scene, shot, camRef, look, isInterrupted
 	return null;
 }
 
+/**
+ * Applies the shot camera's yaw/pitch from its look ref every frame. Before
+ * the camera split, FlyControls owned the shot camera and performed this
+ * apply as a side effect of flying; with the fly controls bound to the
+ * editor camera, the recording camera still needs its aim (ShotRig, follow,
+ * frame-selection) reflected in its actual rotation — the preview and the
+ * capture read the camera object, not the ref.
+ */
+function ShotLookApplier({ camRef, look }) {
+	useFrame(() => {
+		const cam = camRef.current;
+		if (!cam) return;
+		if (cam.rotation.order !== "YXZ") cam.rotation.order = "YXZ";
+		if (cam.rotation.x !== look.current.pitch || cam.rotation.y !== look.current.yaw || cam.rotation.z !== 0) {
+			cam.rotation.set(look.current.pitch, look.current.yaw, 0);
+		}
+	});
+	return null;
+}
+
+/**
+ * Seeds the editor camera once, inside the Canvas root — App-level effects
+ * run before R3F mounts its children, so the ref is still null there. The
+ * seed frames both the subject and the shot camera: the first editor frame
+ * must read as "the set with the camera in it".
+ */
+function EditorCamSeed({ camRef, lookRef, shotCamRef, subject }) {
+	const seeded = useRef(false);
+	const invalidate = useThree((state) => state.invalidate);
+	useEffect(() => {
+		if (seeded.current) return;
+		const cam = camRef.current;
+		if (!cam) return;
+		seeded.current = true;
+		const shot = shotCamRef.current;
+		const target = {
+			x: ((subject?.x ?? 0) + (shot?.position.x ?? 1)) / 2,
+			y: 1.1,
+			z: ((subject?.z ?? 0) + (shot?.position.z ?? 2.4)) / 2,
+		};
+		cam.position.set(target.x + 3.2, 2.9, target.z + 4.2);
+		const angles = aimAt(cam.position, target);
+		lookRef.current = { yaw: angles.yaw, pitch: angles.pitch };
+		cam.rotation.order = "YXZ";
+		cam.rotation.set(angles.pitch, angles.yaw, 0);
+		invalidate();
+	});
+	return null;
+}
+
+/**
+ * The shot camera drawn as an object in the editor view: a body and a short
+ * frustum wireframe on GIZMO_LAYER, synced from the live camera every frame.
+ * Preview, capture and PlayView draws all drop GIZMO_LAYER, so the ghost can
+ * never reach a recorded frame.
+ */
+function ShotCameraGhost({ camRef, fovDeg, aspect, visible, selected }) {
+	const groupRef = useRef(null);
+	const invalidate = useThree((state) => state.invalidate);
+	const frustum = useMemo(() => {
+		const depth = 0.62;
+		const h = Math.tan(THREE.MathUtils.degToRad(fovDeg) / 2) * depth;
+		const w = h * aspect;
+		const corners = [[-w, h], [w, h], [w, -h], [-w, -h]];
+		const points = [];
+		for (const [x, y] of corners) points.push(0, 0, 0, x, y, -depth);
+		for (let i = 0; i < 4; i++) {
+			const [ax, ay] = corners[i];
+			const [bx, by] = corners[(i + 1) % 4];
+			points.push(ax, ay, -depth, bx, by, -depth);
+		}
+		return new Float32Array(points);
+	}, [fovDeg, aspect]);
+	useEffect(() => {
+		groupRef.current?.traverse((node) => node.layers?.set(GIZMO_LAYER));
+		invalidate();
+	}, [visible, frustum, selected, invalidate]);
+	useFrame(() => {
+		const cam = camRef.current;
+		const group = groupRef.current;
+		if (!cam || !group) return;
+		group.position.copy(cam.position);
+		group.quaternion.copy(cam.quaternion);
+	});
+	if (!visible) return null;
+	return (
+		<group ref={groupRef}>
+			<mesh userData={{ shotCameraPick: true }} position={[0, 0, 0.06]}>
+				<boxGeometry args={[0.15, 0.11, 0.2]} />
+				<meshBasicMaterial color={selected ? "#ffb454" : "#3b6ea5"} />
+			</mesh>
+			{/* the lens: a short cone opening toward the view direction */}
+			<mesh userData={{ shotCameraPick: true }} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, -0.075]}>
+				<coneGeometry args={[0.052, 0.09, 20, 1, true]} />
+				<meshBasicMaterial color={selected ? "#e09a3e" : "#2f5a8a"} side={THREE.DoubleSide} />
+			</mesh>
+			<lineSegments key={`${fovDeg}:${aspect}`}>
+				<bufferGeometry>
+					<bufferAttribute attach="attributes-position" array={frustum} count={frustum.length / 3} itemSize={3} />
+				</bufferGeometry>
+				<lineBasicMaterial color={selected ? "#ffb454" : "#6f9cc9"} transparent opacity={0.85} />
+			</lineSegments>
+		</group>
+	);
+}
+
 function RenderLoopController({ stageRef }) {
 	const frameloop = useThree((state) => state.frameloop);
 	const setFrameloop = useThree((state) => state.setFrameloop);
@@ -1361,6 +1467,19 @@ globalThis.playMode = centerTab === "play";
 	// their hands. Follow/Rail only take it back through an explicit Preview or
 	// timeline Play, avoiding the snap-back that used to happen on pointer-up.
 	const manualCameraOverrideRef = useRef(false);
+	// Split cameras: the EDITOR camera is the user's own eye and never
+	// records; the shot camera keeps the framing. Look-through hands the fly
+	// controls the shot camera itself — the pre-split single-view behaviour —
+	// for framing by flying.
+	const [lookThroughShot, setLookThroughShot] = useState(false);
+	useEffect(() => {
+		if (!lookThroughShot) return undefined;
+		const onKey = (event) => {
+			if (event.key === "Escape") setLookThroughShot(false);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [lookThroughShot]);
 	useEffect(() => {
 		// The player always starts the finished piece from frame 0; auto-play
 		// only exists once there is a motion to play.
@@ -1372,6 +1491,10 @@ globalThis.playMode = centerTab === "play";
 	const stageRef = useRef();
 	const mainPaneRef = useRef();
 	const insetPaneRef = useRef();
+	// The shot preview pane: the recording camera's framed output, rendered
+	// like an exported frame (no editing chrome) while the editor camera owns
+	// the main pane.
+	const shotPreviewRef = useRef();
 	// User-dragged inset position (px, stage-relative). null = the CSS default
 	// (top-right); double-clicking the tag snaps back to it.
 	const [insetPos, setInsetPos] = useState(null);
@@ -1699,7 +1822,7 @@ globalThis.playMode = centerTab === "play";
 			window.removeEventListener("pointercancel", onUp);
 			setAssetDrag(null);
 			const host = mainPaneRef.current;
-			const cam = shotCamRef.current;
+			const cam = (lookThroughShot ? shotCamRef : editorCamRef).current;
 			if (!host || !cam) return;
 			const rect = host.getBoundingClientRect();
 			if (up.clientX < rect.left || up.clientX > rect.right || up.clientY < rect.top || up.clientY > rect.bottom) return;
@@ -2027,9 +2150,10 @@ globalThis.playMode = centerTab === "play";
 	/** `at` overrides the floor point: the Assets-shelf drop already knows
 	 * where the pointer hit, everyone else gets in-front-of-camera. */
 	function addSceneObject(kind, at) {
-		const camera = shotCamRef.current;
+		const camera = (lookThroughShot ? shotCamRef : editorCamRef).current;
+		const paneYaw = (lookThroughShot ? look : editorLook).current.yaw;
 		const placement = at ?? (camera
-			? placementInFront({ x: camera.position.x, z: camera.position.z }, look.current.yaw)
+			? placementInFront({ x: camera.position.x, z: camera.position.z }, paneYaw)
 			: {});
 		const object = createSceneObject(kind, sceneObjects, placement);
 		if (!object) return;
@@ -2060,9 +2184,9 @@ globalThis.playMode = centerTab === "play";
 		if (!file) return;
 		try {
 			const asset = await rememberAsset(await importImageFile(file));
-			const camera = shotCamRef.current;
+			const camera = (lookThroughShot ? shotCamRef : editorCamRef).current;
 			const placement = camera
-				? placementInFront({ x: camera.position.x, z: camera.position.z }, look.current.yaw)
+				? placementInFront({ x: camera.position.x, z: camera.position.z }, (lookThroughShot ? look : editorLook).current.yaw)
 				: {};
 			const object = createCutoutObject(
 				{ assetId: asset.id, aspect: assetAspect(asset) ?? 1, height: CUTOUT_DEFAULT_HEIGHT, name: cutoutNameFromFile(asset.name) },
@@ -2195,7 +2319,8 @@ globalThis.playMode = centerTab === "play";
 	 * the current view direction, the way Unity's F key does. Defaults to the
 	 * selection; the hierarchy context menu passes a specific row's id. */
 	function frameSelection(id = selectedSceneObjectId) {
-		const camera = shotCamRef.current;
+		const camera = (lookThroughShot ? shotCamRef : editorCamRef).current;
+		const paneLook = lookThroughShot ? look : editorLook;
 		const object = sceneObjects.find((item) => item.id === id) ?? null;
 		if (!camera || !object) return;
 		const size = objectSize(object);
@@ -2206,11 +2331,13 @@ globalThis.playMode = centerTab === "play";
 		};
 		const reach = Math.max(size.width, size.height, size.depth, 0.5);
 		const distance = reach * 2.4 + 0.6;
-		const back = forwardFrom(look.current.yaw, look.current.pitch).multiplyScalar(-distance);
+		const back = forwardFrom(paneLook.current.yaw, paneLook.current.pitch).multiplyScalar(-distance);
 		camera.position.set(target.x + back.x, Math.max(target.y + back.y, 0.3), target.z + back.z);
 		const angles = aimAt(camera.position, target);
-		look.current.yaw = angles.yaw;
-		look.current.pitch = angles.pitch;
+		paneLook.current.yaw = angles.yaw;
+		paneLook.current.pitch = angles.pitch;
+		camera.rotation.order = "YXZ";
+		camera.rotation.set(angles.pitch, angles.yaw, 0);
 	}
 
 	/** In-place rename commit from the hierarchy (F2 / Return / rename on
@@ -3862,6 +3989,43 @@ globalThis.playMode = centerTab === "play";
 	// the framing and shows in the inset. Two separate screens by design.
 	const poserCamRef = useRef(null);
 	const poserLook = useRef({ yaw: 0, pitch: 0 });
+	// The editor camera: the free working view the operator flies. Playback,
+	// follow, rail and capture never touch it — that is the whole split.
+	const editorCamRef = useRef(null);
+	const editorLook = useRef({ yaw: 0, pitch: 0 });
+
+	/* The shot camera as a manipulable object in the editor view: the proxy
+	 * mirrors the live camera, gizmo patches write straight back to it and
+	 * commit manual framing — the same contract as dragging its plan puck. */
+	const shotCameraSelected = selectedHierarchyId === "camera";
+	const cameraGizmoObject = useMemo(() => {
+		if (lookThroughShot || ikMode || !shotCameraSelected) return null;
+		return {
+			id: "__shotcam__",
+			x: cameraPos.x,
+			y: Math.max(0, cameraPos.y - 0.12),
+			z: cameraPos.z,
+			height: 0.24,
+			footprint: { width: 0.34, depth: 0.34 },
+			rotY: THREE.MathUtils.radToDeg(look.current.yaw),
+			scaleX: 1,
+			scaleY: 1,
+			scaleZ: 1,
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [cameraPos, lookThroughShot, ikMode, shotCameraSelected]);
+	function changeShotCameraFromGizmo(_id, patch) {
+		const cam = shotCamRef.current;
+		if (!cam) return;
+		if (patch.x !== undefined) cam.position.x = THREE.MathUtils.clamp(patch.x, -30, 30);
+		if (patch.y !== undefined) cam.position.y = Math.max(0.12, patch.y + 0.12);
+		if (patch.z !== undefined) cam.position.z = THREE.MathUtils.clamp(patch.z, -30, 30);
+		if (patch.rotY !== undefined) look.current.yaw = THREE.MathUtils.degToRad(patch.rotY);
+		cam.rotation.order = "YXZ";
+		cam.rotation.set(look.current.pitch, look.current.yaw, 0);
+		commitManualCameraFraming();
+	}
+
 
 	const shot = useMemo(
 		() => deriveShot(cameraPos, charA, (fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M, filmback),
@@ -5146,14 +5310,17 @@ globalThis.playMode = centerTab === "play";
 			committedIkEdits, waypoints,
 			// the camera the main view renders through (poser in IK mode) — QA
 			// projections must use this one, not the frozen shot camera
-			activeCam: ikMode ? poserCamRef.current : shotCamRef.current,
+			activeCam: ikMode ? poserCamRef.current : lookThroughShot ? shotCamRef.current : editorCamRef.current,
 			shotCam: shotCamRef.current,
 			poserCam: poserCamRef.current,
 			planCam: planCamRef.current,
+			editorCam: editorCamRef.current,
+			lookThroughShot,
+			setLookThrough: (value) => setLookThroughShot(!!value),
 			charA,
 			insetPane: insetPaneRef.current,
 		};
-	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints]);
+	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot]);
 	// QA hook (plan §6.5): exposes history depth and the present === objects
 	// invariant so the browser suite can assert undo entry counts directly.
 	// Reads live store state at call time; re-registered after every render.
@@ -6434,11 +6601,22 @@ function resizePromptClip(id, edge, rawFrame) {
 
 							<PerspectiveCamera
 								ref={shotCamRef}
-								makeDefault={!ikMode}
+								makeDefault={!ikMode && lookThroughShot}
 								fov={fovDeg}
 								near={0.1}
 								far={100}
 								position={[0.97, 1.62, 2.39]}
+							/>
+							{/* the EDITOR camera: the user's working eye. Fixed lens — the
+							    shot's focal length belongs to the recording, not to the
+							    operator's own view of the set. */}
+							<PerspectiveCamera
+								ref={editorCamRef}
+								makeDefault={!ikMode && !lookThroughShot}
+								fov={55}
+								near={0.1}
+								far={100}
+								position={[3.6, 2.7, 5.4]}
 							/>
 							{/* the poser camera is the default (event/raycast) camera in
 							    IK mode so handle hit-testing matches what you see */}
@@ -6485,8 +6663,8 @@ function resizePromptClip(id, edge, rawFrame) {
 									snap={snapEnabled}
 									enabled={!planIsMain && !posing && !ikMode && !playMode && !!characterGizmoObject}
 									paneRef={mainPaneRef}
-									camRef={shotCamRef}
-									shotAspect={shotOutput.aspect}
+									camRef={lookThroughShot ? shotCamRef : editorCamRef}
+									shotAspect={lookThroughShot ? shotOutput.aspect : null}
 									onChange={(id, patch) => moveCharacter(activeChar.id, () => {
 										const next = {};
 										if (patch.x !== undefined) next.x = THREE.MathUtils.clamp(patch.x, -4, 4);
@@ -6546,7 +6724,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								scene={playbackScene}
 								camRef={shotCamRef}
 								look={look}
-								isInterrupted={() => flyingRef.current || manualCameraOverrideRef.current}
+								isInterrupted={() => (lookThroughShot && flyingRef.current) || manualCameraOverrideRef.current}
 								onDone={(finalFov) => {
 									setMovePlaying(false);
 									setFovDeg(Math.round(finalFov * 10) / 10);
@@ -6559,7 +6737,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								shot={activeShot}
 								camRef={shotCamRef}
 								look={look}
-								isInterrupted={() => flyingRef.current || manualCameraOverrideRef.current}
+								isInterrupted={() => (lookThroughShot && flyingRef.current) || manualCameraOverrideRef.current}
 							/>
 							{/* Camera stays live in IK mode but drives the POSER camera,
 							    never the shot camera: the handle layer only consumes
@@ -6567,8 +6745,8 @@ function resizePromptClip(id, edge, rawFrame) {
 							    and the wheel dollies without wrecking the framing. */}
 							<FlyControls
 								enabled={!posing && !playMode}
-								camRef={ikMode ? poserCamRef : shotCamRef}
-								look={ikMode ? poserLook : look}
+								camRef={ikMode ? poserCamRef : lookThroughShot ? shotCamRef : editorCamRef}
+								look={ikMode ? poserLook : lookThroughShot ? look : editorLook}
 								getPivot={() => {
 									if (!selectedSceneObject) return null;
 									const size = objectSize(selectedSceneObject);
@@ -6577,7 +6755,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								onFlyStateChange={(flying) => {
 									flyingRef.current = flying;
 								}}
-								onCameraChange={commitManualCameraFraming}
+								onCameraChange={lookThroughShot && !ikMode ? commitManualCameraFraming : undefined}
 							/>
 							<PoseHandles
 								root={posedRig()}
@@ -6638,25 +6816,38 @@ function resizePromptClip(id, edge, rawFrame) {
 							    the plan owns the big pane (the pucks are the handles there)
 							    and while posing/IK owns the pointer. */}
 							<ObjectGizmo
-								object={selectedSceneObject}
+								object={cameraGizmoObject ?? selectedSceneObject}
 								objects={sceneObjects}
-								mode={gizmoMode}
+								mode={cameraGizmoObject ? (gizmoMode === "scale" ? "move" : gizmoMode) : gizmoMode}
 								snap={snapEnabled}
 								enabled={!planIsMain && !posing && !ikMode && !playMode}
 								paneRef={mainPaneRef}
-								camRef={shotCamRef}
-								shotAspect={shotOutput.aspect}
-								onChange={changeSceneObject}
-								onDragStart={beginSceneTransaction}
-								onDragEnd={endSceneTransaction}
+								camRef={lookThroughShot ? shotCamRef : editorCamRef}
+								shotAspect={lookThroughShot ? shotOutput.aspect : null}
+								onChange={(id, patch) => (id === "__shotcam__" ? changeShotCameraFromGizmo(id, patch) : changeSceneObject(id, patch))}
+								onDragStart={(...args) => {
+									if (!cameraGizmoObject) beginSceneTransaction(...args);
+								}}
+								onDragEnd={(...args) => {
+									if (!cameraGizmoObject) endSceneTransaction(...args);
+								}}
 								onSelect={(id) =>
 									selectHierarchy(
-										id?.startsWith("char:") ? charKeyToHierarchyId(id) : id ? `object:${id}` : "props",
+										id === "__shotcam__" ? "camera" : id?.startsWith("char:") ? charKeyToHierarchyId(id) : id ? `object:${id}` : "props",
 									)
 								}
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
 							/>
 							{centerTab === "scene" && railCurve && <CameraRailScenePreview points={railCurve.points} />}
+							<EditorCamSeed camRef={editorCamRef} lookRef={editorLook} shotCamRef={shotCamRef} subject={charA} />
+							<ShotLookApplier camRef={shotCamRef} look={look} />
+							<ShotCameraGhost
+								camRef={shotCamRef}
+								fovDeg={fovDeg}
+								aspect={shotOutput.aspect}
+								visible={centerTab === "scene" && !lookThroughShot && !ikMode && !posing}
+								selected={shotCameraSelected}
+							/>
 							{waypointMode && centerTab === "scene" && (
 								<ShotPathPreview waypoints={waypoints} start={charA} activeWaypointId={activeWaypointId} />
 							)}
@@ -6671,12 +6862,15 @@ function resizePromptClip(id, edge, rawFrame) {
 								stageRef={stageRef}
 								mainRef={mainPaneRef}
 								insetRef={insetPaneRef}
+								shotPreviewRef={shotPreviewRef}
 								shotCamRef={shotCamRef}
 								planCamRef={planCamRef}
 								poserCamRef={poserCamRef}
+								editorCamRef={editorCamRef}
 								ikMode={ikMode}
 								planIsMain={planIsMain}
 								playMode={playMode}
+								lookThrough={lookThroughShot}
 								insetCollapsed={workspaceLayout.insetCollapsed}
 								planZoom={workspaceLayout.planZoom}
 								shotAspect={shotOutput.aspect}
@@ -6732,13 +6926,51 @@ function resizePromptClip(id, edge, rawFrame) {
 							)}
 						</div>
 
-						<div className="film-frame" hidden={playMode}>
+						<div
+							ref={shotPreviewRef}
+							hidden={playMode || ikMode || lookThroughShot}
+							className="vp-pane vp-shot-preview"
+							style={{ "--shot-aspect": shotOutput.aspect }}
+						>
+							<span className="vp-inset-tag vp-shot-preview-tag">
+								<span className="vp-rec-dot" aria-hidden="true" />
+								{ko("Shot", "샷")}
+								<button
+									type="button"
+									className="vp-look-through"
+									aria-label={ko("Look through the shot camera", "샷 카메라 시점으로 보기")}
+									title={ko("Fly the shot camera itself (Esc returns)", "샷 카메라를 직접 조종 (Esc로 복귀)")}
+									onClick={() => setLookThroughShot(true)}
+								>
+									<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+										<path d="M15 3h6v6" />
+										<path d="M21 3l-8 8" />
+										<path d="M9 21H3v-6" />
+										<path d="M3 21l8-8" />
+									</svg>
+								</button>
+							</span>
+						</div>
+						{lookThroughShot && !playMode && !ikMode && (
+							<button
+								type="button"
+								className="vp-inset-tag vp-look-through-exit"
+								title={ko("Return to the editor view (Esc)", "에디터 시점으로 돌아가기 (Esc)")}
+								onClick={() => setLookThroughShot(false)}
+							>
+								<span className="vp-rec-dot" aria-hidden="true" />
+								{ko("Shot camera", "샷 카메라")}
+								<span className="vp-exit-hint">{ko("Esc · exit", "Esc · 나가기")}</span>
+							</button>
+						)}
+
+						<div className="film-frame" hidden={playMode || !lookThroughShot}>
 							<span />
 							<span />
 							<span />
 							<span />
 						</div>
-						<div className={"caption" + (subjectVisible ? "" : " off")} hidden={playMode}>
+						<div className={"caption" + (subjectVisible ? "" : " off")} hidden={playMode || !lookThroughShot}>
 							{subjectVisible ? slateLineKo(shot) : ko("SUBJECT OUT OF FRAME", "피사체가 프레임 밖에 있어요")}
 						</div>
 

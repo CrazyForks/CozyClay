@@ -149,6 +149,21 @@ const GROUND = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
 export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, pickOnly = false, paneRef, camRef, shotAspect = SHOT_ASPECT, onChange, onSelect, onGroundClick, onDragStart, onDragEnd }) {
 	const { gl, scene } = useThree();
+	// shotAspect null = the camera fills the pane (the editor working view):
+	// pointer mapping uses the pane rect itself instead of a letterboxed
+	// sub-rect, and the camera takes the pane's own aspect.
+	const imageRect = (bounds) => {
+		const rect = { x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height };
+		return shotAspect ? fitAspect(rect, shotAspect) : rect;
+	};
+	const applyAspect = (camera) => {
+		if (shotAspect) {
+			camera.aspect = shotAspect;
+		} else {
+			const bounds = paneRef?.current?.getBoundingClientRect();
+			if (bounds && bounds.height >= 1) camera.aspect = bounds.width / bounds.height;
+		}
+	};
 	const rootRef = useRef(null);
 	const handlesRef = useRef(new Map()); // axis -> { mesh (pick proxy), axis, dir }
 	const screenRingRef = useRef(null); // the outer ring's group, billboarded to the camera each frame
@@ -203,6 +218,15 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 	}
 	activeScopeRef.current = { id: object?.id, mode };
 
+	// The WHOLE gizmo — visible arrows and rings included, not only the pick
+	// proxies — belongs on GIZMO_LAYER: the working views enable that layer,
+	// while the shot preview, capture and PlayView draws drop it, so editing
+	// chrome can never reach a recorded frame. No dependency list: the handle
+	// meshes remount on tool/selection changes and must be re-layered each time.
+	useEffect(() => {
+		rootRef.current?.traverse((node) => node.layers?.set(GIZMO_LAYER));
+	});
+
 	/** pointer -> NDC inside the rect the shot camera actually rendered into */
 	const pointerRay = (event) => {
 		const pane = paneRef.current;
@@ -210,7 +234,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		if (!pane || !camera) return null;
 		const bounds = pane.getBoundingClientRect();
 		if (bounds.width < 2 || bounds.height < 2) return null;
-		const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
+		const rect = imageRect(bounds);
 		tools.ndc.set(
 			((event.clientX - rect.x) / rect.w) * 2 - 1,
 			-((event.clientY - rect.y) / rect.h) * 2 + 1,
@@ -226,6 +250,16 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		// Picking walks past lines/points to the first real surface.
 		const hits = tools.raycaster.intersectObjects(scene.children, true);
 		const hit = hits.find((entry) => entry.object.isMesh);
+		// The camera ghost lives on GIZMO_LAYER so the recording never sees it;
+		// give it its own pick pass and prefer whichever surface is nearer.
+		tools.raycaster.layers.set(GIZMO_LAYER);
+		const ghostHit = tools.raycaster.intersectObjects(scene.children, true).find((entry) => {
+			if (!entry.object.isMesh) return false;
+			for (let node = entry.object; node; node = node.parent) if (node.userData?.shotCameraPick) return true;
+			return false;
+		});
+		tools.raycaster.layers.set(0);
+		if (ghostHit && (!hit || ghostHit.distance < hit.distance)) return { id: "__shotcam__", point: ghostHit.point.clone() };
 		if (!hit) return null;
 		for (let node = hit.object; node; node = node.parent) {
 			if (node.userData?.sceneObjectId) return { id: node.userData.sceneObjectId, point: hit.point.clone() };
@@ -243,7 +277,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		if (!pane || !camera) return null;
 		const bounds = pane.getBoundingClientRect();
 		if (bounds.width < 2 || bounds.height < 2) return null;
-		const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
+		const rect = imageRect(bounds);
 		tools.ndc.set(
 			((event.clientX - rect.x) / rect.w) * 2 - 1,
 			-((event.clientY - rect.y) / rect.h) * 2 + 1,
@@ -268,7 +302,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// loop (dualview); under demand rendering a layout change may not
 			// have had a frame yet, leaving a stale projection. Re-apply the
 			// render contract here so the pick matches what is on screen.
-			camera.aspect = shotAspect;
+			applyAspect(camera);
 			camera.updateProjectionMatrix();
 			camera.updateMatrixWorld();
 			camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
@@ -696,13 +730,13 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// render tick under demand rendering, and re-apply the render
 			// loop's locked aspect (dualview) so QA geometry matches the
 			// drawn frame exactly
-			camera.aspect = shotAspect;
+			applyAspect(camera);
 			camera.updateProjectionMatrix();
 			camera.updateMatrixWorld();
 			camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
 			rootRef.current?.updateMatrixWorld(true);
 			const bounds = pane.getBoundingClientRect();
-			const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
+			const rect = imageRect(bounds);
 			return [...handlesRef.current.values()]
 				.filter((entry) => entry.mesh?.parent)
 				.map((entry) => {

@@ -113,7 +113,7 @@ export function fitAspect(rect, aspect) {
 	return { x: rect.x + (rect.w - w) / 2, y: rect.y + (rect.h - h) / 2, w, h };
 }
 
-export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef, poserCamRef, ikMode = false, planIsMain, playMode = false, insetCollapsed = false, planZoom = 1, shotAspect = SHOT_ASPECT }) {
+export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCamRef, planCamRef, poserCamRef, editorCamRef, ikMode = false, planIsMain, playMode = false, lookThrough = false, insetCollapsed = false, planZoom = 1, shotAspect = SHOT_ASPECT }) {
 	const invalidate = useThree((state) => state.invalidate);
 	// Demand mode draws nothing by itself: the first frame can land before the
 	// layout settles (the inset reads 0x0), and async scene content commits
@@ -178,10 +178,18 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 		const shot = shotCamRef.current;
 		const plan = planCamRef.current;
 		const poser = poserCamRef?.current;
+		const editor = editorCamRef?.current;
 		if (shot) {
 			shot.layers.set(0);
 			shot.layers.enable(SHOT_LAYER);
 			shot.layers.enable(GIZMO_LAYER);
+		}
+		if (editor) {
+			// The editor working view sees the set exactly like the shot camera
+			// (ceiling included) plus the editing chrome, never the plan overlay.
+			editor.layers.set(0);
+			editor.layers.enable(SHOT_LAYER);
+			editor.layers.enable(GIZMO_LAYER);
 		}
 		if (plan) {
 			plan.layers.set(0);
@@ -200,6 +208,7 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 		const shotCam = shotCamRef.current;
 		const planCam = planCamRef.current;
 		const poserCam = poserCamRef?.current;
+		const editorCam = editorCamRef?.current;
 		const stage = stageRef.current;
 		if (!shotCam || !planCam || !stage || !mainRef.current || !insetRef.current) return;
 
@@ -310,6 +319,25 @@ export function DualRender({ stageRef, mainRef, insetRef, shotCamRef, planCamRef
 		} else if (planIsMain) {
 			draw(planCam, planPane, null, false);
 			if (!insetCollapsed) draw(shotCam, shotPane, fitAspect(shotPane, shotAspect));
+		} else if (editorCam && !lookThrough) {
+			// Split-camera editing: the main pane is the EDITOR camera — free
+			// navigation that never touches the recording. The shot camera only
+			// appears in its own preview pane, framed to the export aspect and
+			// stripped of editing chrome, exactly like an exported frame.
+			editorCam.aspect = mainRect.w / mainRect.h;
+			editorCam.updateProjectionMatrix();
+			draw(editorCam, mainRect);
+			if (!insetCollapsed) draw(planCam, planPane, null, false);
+			const previewEl = shotPreviewRef?.current;
+			if (previewEl && !previewEl.hidden) {
+				const previewRect = rectOf(previewEl);
+				if (previewRect.w >= 2) {
+					const previewMask = shotCam.layers.mask;
+					shotCam.layers.disable(GIZMO_LAYER);
+					draw(shotCam, previewRect, fitAspect(previewRect, shotAspect));
+					shotCam.layers.mask = previewMask;
+				}
+			}
 		} else {
 			draw(shotCam, shotPane, fitAspect(shotPane, shotAspect));
 			if (!insetCollapsed) draw(planCam, planPane, null, false);
