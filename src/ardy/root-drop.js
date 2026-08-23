@@ -1,3 +1,5 @@
+import { sliceMotion } from "./trim.js";
+
 // A vertical drop authored ONTO a take. ARDY generates motion on flat
 // ground — nothing in a generated clip can carry a body off a 14 m roof.
 // The plunge is previs staging, not motion synthesis, so it is applied to
@@ -45,7 +47,7 @@ function insideSupport(support, px, pz) {
  * the ground, never stood on a support, or never leaves it — null means
  * "stage nothing", so this is safe to leave on the load path.
  */
-export function autoRoofDrop(motion, subject, supports, { gravity = 9.81, topTolerance = 0.3, fallTimeScale = 1.6 } = {}) {
+export function autoRoofDrop(motion, subject, supports, { gravity = 9.81, topTolerance = 0.3, fallTimeScale = 1.15 } = {}) {
 	if (!motion || !Number.isFinite(motion.fps) || motion.fps <= 0 || !motion.rootPos) return null;
 	const frames = motion.frames;
 	if (!Number.isFinite(frames) || frames < 2) return null;
@@ -82,12 +84,72 @@ export function autoRoofDrop(motion, subject, supports, { gravity = 9.81, topTol
 		const meters = y - landing;
 		if (meters <= 0) return null;
 		const fromS = frame / motion.fps;
-		// Physically true free fall (√(2h/g)) reads as a cut, not a stunt — a
-		// 12 m drop is over in 1.6 s. Previz stretches the clock the way film
-		// does: the same t² curve, held longer, so the eye can ride the fall.
+		// Near-real gravity: a lightly stretched clock keeps weight without
+		// drifting into moon-fall. The readability comes from applyAutoFall's
+		// ballistic arc and impact cut, not from slowing the clock down.
 		return { fromS, toS: fromS + Math.sqrt((2 * meters) / gravity) * fallTimeScale, meters };
 	}
 	return null;
+}
+
+/**
+ * Bake an auto-staged fall so it reads like a stunt, not a glitch:
+ * - past the edge the root leaves the authored walk path and flies a true
+ *   ballistic arc — the exit velocity carries, gravity owns the vertical;
+ * - the horizontal drift stops at impact (bodies do not keep strolling);
+ * - the take is cut just after the landing, because whatever the flat-ground
+ *   clip does next (walking away twelve metres underground-level) is comedy.
+ * Explicit MCP drops keep the rigid applyRootDrop bake below.
+ */
+export function applyAutoFall(motion, spec, { landHoldS = 0.35, launchLookbackS = 0.15 } = {}) {
+	if (!spec || !motion || !Number.isFinite(motion.fps) || motion.fps <= 0) return motion;
+	const fps = motion.fps;
+	const fExit = Math.max(0, Math.round(spec.fromS * fps));
+	if (fExit >= motion.frames - 1) return motion;
+	const fallS = Math.max(spec.toS - spec.fromS, 1 / fps);
+	const joints = Math.round(motion.posedJoints.length / motion.frames / 3);
+	const rootPos = Float32Array.from(motion.rootPos);
+	const posedJoints = Float32Array.from(motion.posedJoints);
+	const lookback = Math.max(1, Math.round(launchLookbackS * fps));
+	const f0 = Math.max(0, fExit - lookback);
+	const span = Math.max(1, fExit - f0);
+	const vx = ((rootPos[fExit * 3] - rootPos[f0 * 3]) / span) * fps;
+	const vz = ((rootPos[fExit * 3 + 2] - rootPos[f0 * 3 + 2]) / span) * fps;
+	const exitX = rootPos[fExit * 3];
+	const exitZ = rootPos[fExit * 3 + 2];
+	const fLand = Math.min(motion.frames - 1, Math.ceil(spec.toS * fps));
+	for (let f = fExit + 1; f < motion.frames; f += 1) {
+		const t = (f - fExit) / fps;
+		const progress = Math.min(t / fallS, 1);
+		const air = Math.min(t, fallS);
+		const dy = -spec.meters * progress * progress;
+		const dx = exitX + vx * air - rootPos[f * 3];
+		const dz = exitZ + vz * air - rootPos[f * 3 + 2];
+		rootPos[f * 3] += dx;
+		rootPos[f * 3 + 1] += dy;
+		rootPos[f * 3 + 2] += dz;
+		for (let j = 0; j < joints; j += 1) {
+			const base = (f * joints + j) * 3;
+			posedJoints[base] += dx;
+			posedJoints[base + 1] += dy;
+			posedJoints[base + 2] += dz;
+		}
+	}
+	const rotMats = Float32Array.from(motion.rotMats);
+	for (let f = fLand + 1; f < motion.frames; f += 1) {
+		rootPos.set(rootPos.subarray(fLand * 3, fLand * 3 + 3), f * 3);
+		posedJoints.set(
+			posedJoints.subarray(fLand * joints * 3, (fLand + 1) * joints * 3),
+			f * joints * 3,
+		);
+		rotMats.set(
+			rotMats.subarray(fLand * joints * 9, (fLand + 1) * joints * 9),
+			f * joints * 9,
+		);
+	}
+	const baked = { ...motion, rootPos, posedJoints, rotMats };
+	const fEnd = Math.min(motion.frames - 1, Math.ceil((spec.toS + landHoldS) * fps));
+	return fEnd < motion.frames - 1 ? sliceMotion(baked, 0, fEnd) : baked;
 }
 
 /**

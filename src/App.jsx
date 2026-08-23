@@ -7,7 +7,7 @@ import { buildArdyPose } from "./ardy/export.js";
 import { checkBridge, generate as ardyGenerate } from "./ardy/client.js";
 import { characterScaleFor, loadMotionFromUrl } from "./ardy/npz.js";
 import { retimeMotion } from "./ardy/retime.js";
-import { applyRootDrop, autoRoofDrop, normalizeRootDrop } from "./ardy/root-drop.js";
+import { applyAutoFall, applyRootDrop, autoRoofDrop, normalizeRootDrop } from "./ardy/root-drop.js";
 import {
 	createMotionEdit,
 	motionEditLayout,
@@ -5068,7 +5068,7 @@ globalThis.playMode = centerTab === "play";
 					depth: (object.footprint?.depth ?? 0) * (object.scaleZ ?? 1),
 				})),
 			);
-			const decoded = applyRootDrop(raw, staging);
+			const decoded = drop ? applyRootDrop(raw, staging) : applyAutoFall(raw, staging);
 			if (!drop && staging) {
 				setToast(ko(
 					`Auto drop staged: the take leaves its support at ${staging.fromS.toFixed(1)}s and falls ${staging.meters.toFixed(1)}m`,

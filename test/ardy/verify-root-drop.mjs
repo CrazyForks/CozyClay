@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // A drop staged onto a take: rigid vertical offset on a gravity curve.
-import { applyRootDrop, autoRoofDrop, normalizeRootDrop } from "../../src/ardy/root-drop.js";
+import { applyAutoFall, applyRootDrop, autoRoofDrop, normalizeRootDrop } from "../../src/ardy/root-drop.js";
 
 let failures = 0;
 function expect(name, condition, detail = "") {
@@ -68,7 +68,7 @@ const subjectOnRoof = { x: 0, z: 0, y: 12, rotationDeg: 0 };
 	const drop = autoRoofDrop(walk(), subjectOnRoof, [roof]);
 	// the edge sits at x=1; the walk crosses it between frames 3 (0.99m) and 4 (1.32m)
 	expect("walking off a roof stages a fall at the edge crossing", !!drop && Math.abs(drop.fromS - 0.4) < 1e-9, JSON.stringify(drop));
-	expect("the fall covers the full height on a stretched gravity clock", !!drop && drop.meters === 12 && Math.abs(drop.toS - drop.fromS - Math.sqrt(24 / 9.81) * 1.6) < 1e-9, JSON.stringify(drop));
+	expect("the fall keeps a near-real gravity clock", !!drop && drop.meters === 12 && Math.abs(drop.toS - drop.fromS - Math.sqrt(24 / 9.81) * 1.15) < 1e-9, JSON.stringify(drop));
 	const realtime = autoRoofDrop(walk(), subjectOnRoof, [roof], { fallTimeScale: 1 });
 	expect("fallTimeScale 1 restores physical free-fall time", !!realtime && Math.abs(realtime.toS - realtime.fromS - Math.sqrt(24 / 9.81)) < 1e-9, JSON.stringify(realtime));
 	expect("the staged drop is applyRootDrop-compatible", normalizeRootDrop(drop)?.meters === 12);
@@ -89,6 +89,40 @@ expect("a walk that stays on the roof stages nothing", autoRoofDrop(walk(), subj
 	const terrace = { x: 2, z: 0, rotDeg: 0, topY: 7, width: 4, depth: 4 };
 	const drop = autoRoofDrop(walk(), subjectOnRoof, [roof, terrace]);
 	expect("a lower support under the exit shortens the fall", !!drop && drop.meters === 5, JSON.stringify(drop));
+}
+
+/* ------------------------------------------------ cinematic bake ---- */
+const CINEMATIC_FRAMES = 80;
+const CINEMATIC_JOINTS = 27;
+const cinematicWalk = () => {
+	const rootPos = new Float32Array(CINEMATIC_FRAMES * 3);
+	const posedJoints = new Float32Array(CINEMATIC_FRAMES * CINEMATIC_JOINTS * 3);
+	const rotMats = new Float32Array(CINEMATIC_FRAMES * CINEMATIC_JOINTS * 9);
+	for (let f = 0; f < CINEMATIC_FRAMES; f += 1) {
+		// The authored take accelerates wildly after frame 10. A believable
+		// fall must ignore that airborne walk path and carry edge velocity.
+		const x = f <= 10 ? f * 0.1 : 1 + (f - 10) * (f - 10) * 0.04;
+		rootPos[f * 3] = x;
+		for (let j = 0; j < CINEMATIC_JOINTS; j += 1) {
+			posedJoints[(f * CINEMATIC_JOINTS + j) * 3] = x;
+			posedJoints[(f * CINEMATIC_JOINTS + j) * 3 + 1] = 2 + f * 0.01;
+			rotMats[(f * CINEMATIC_JOINTS + j) * 9] = f;
+		}
+	}
+	return { frames: CINEMATIC_FRAMES, fps: 10, rootPos, posedJoints, rotMats };
+};
+
+{
+	const sourceWalk = cinematicWalk();
+	const staged = applyAutoFall(sourceWalk, { fromS: 1, toS: 3, meters: 12 });
+	expect("auto fall never mutates its source take", sourceWalk.frames === CINEMATIC_FRAMES && sourceWalk.rootPos[30 * 3] > 10);
+	expect("airborne x follows launch velocity instead of the authored walk", Math.abs(staged.rootPos[20 * 3] - 2) < 1e-5, String(staged.rootPos[20 * 3]));
+	expect("the body and root share the same ballistic translation", Math.abs(staged.posedJoints[(20 * CINEMATIC_JOINTS) * 3] - staged.rootPos[20 * 3]) < 1e-5);
+	expect("landing reaches the requested floor height", Math.abs(staged.rootPos[30 * 3 + 1] + 12) < 1e-5, String(staged.rootPos[30 * 3 + 1]));
+	expect("horizontal drift stops after impact", Math.abs(staged.rootPos[33 * 3] - staged.rootPos[30 * 3]) < 1e-5);
+	expect("the landing pose freezes during the impact hold", staged.posedJoints[(33 * CINEMATIC_JOINTS) * 3 + 1] === staged.posedJoints[(30 * CINEMATIC_JOINTS) * 3 + 1]);
+	expect("the landing rotations freeze during the impact hold", staged.rotMats[(33 * CINEMATIC_JOINTS) * 9] === staged.rotMats[(30 * CINEMATIC_JOINTS) * 9]);
+	expect("the take cuts shortly after impact", staged.frames === 35, String(staged.frames));
 }
 
 if (failures) process.exit(1);
