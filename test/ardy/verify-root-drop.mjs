@@ -68,7 +68,9 @@ const subjectOnRoof = { x: 0, z: 0, y: 12, rotationDeg: 0 };
 	const drop = autoRoofDrop(walk(), subjectOnRoof, [roof]);
 	// the edge sits at x=1; the walk crosses it between frames 3 (0.99m) and 4 (1.32m)
 	expect("walking off a roof stages a fall at the edge crossing", !!drop && Math.abs(drop.fromS - 0.4) < 1e-9, JSON.stringify(drop));
-	expect("the fall covers the full height on a gravity clock", !!drop && drop.meters === 12 && Math.abs(drop.toS - drop.fromS - Math.sqrt(24 / 9.81)) < 1e-9, JSON.stringify(drop));
+	expect("the fall covers the full height on a stretched gravity clock", !!drop && drop.meters === 12 && Math.abs(drop.toS - drop.fromS - Math.sqrt(24 / 9.81) * 1.6) < 1e-9, JSON.stringify(drop));
+	const realtime = autoRoofDrop(walk(), subjectOnRoof, [roof], { fallTimeScale: 1 });
+	expect("fallTimeScale 1 restores physical free-fall time", !!realtime && Math.abs(realtime.toS - realtime.fromS - Math.sqrt(24 / 9.81)) < 1e-9, JSON.stringify(realtime));
 	expect("the staged drop is applyRootDrop-compatible", normalizeRootDrop(drop)?.meters === 12);
 }
 

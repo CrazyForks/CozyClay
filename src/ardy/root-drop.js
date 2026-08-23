@@ -45,7 +45,7 @@ function insideSupport(support, px, pz) {
  * the ground, never stood on a support, or never leaves it — null means
  * "stage nothing", so this is safe to leave on the load path.
  */
-export function autoRoofDrop(motion, subject, supports, { gravity = 9.81, topTolerance = 0.3 } = {}) {
+export function autoRoofDrop(motion, subject, supports, { gravity = 9.81, topTolerance = 0.3, fallTimeScale = 1.6 } = {}) {
 	if (!motion || !Number.isFinite(motion.fps) || motion.fps <= 0 || !motion.rootPos) return null;
 	const frames = motion.frames;
 	if (!Number.isFinite(frames) || frames < 2) return null;
@@ -82,7 +82,10 @@ export function autoRoofDrop(motion, subject, supports, { gravity = 9.81, topTol
 		const meters = y - landing;
 		if (meters <= 0) return null;
 		const fromS = frame / motion.fps;
-		return { fromS, toS: fromS + Math.sqrt((2 * meters) / gravity), meters };
+		// Physically true free fall (√(2h/g)) reads as a cut, not a stunt — a
+		// 12 m drop is over in 1.6 s. Previz stretches the clock the way film
+		// does: the same t² curve, held longer, so the eye can ride the fall.
+		return { fromS, toS: fromS + Math.sqrt((2 * meters) / gravity) * fallTimeScale, meters };
 	}
 	return null;
 }
