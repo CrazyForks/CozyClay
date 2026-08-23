@@ -627,7 +627,17 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// deselected the character and killed the drag it had just started.
 			if (!rayFrom(event)) return;
 			tools.raycaster.layers.set(GIZMO_LAYER);
-			if (tools.raycaster.intersectObjects(scene.children, true).length) return;
+			// The default Line threshold is 1 WORLD METRE, and the layer also holds
+			// line furniture (the selection cage, axis lines). At that slop a large
+			// selected object's cage claims presses across most of the frame, so an
+			// empty-space press never reaches the deselect below. The twin's grabbable
+			// handles are solid surfaces; only a press truly ON a line should count.
+			const lineParams = tools.raycaster.params.Line;
+			const prevThreshold = lineParams.threshold;
+			lineParams.threshold = 0.02;
+			const twinClaims = tools.raycaster.intersectObjects(scene.children, true).length;
+			lineParams.threshold = prevThreshold;
+			if (twinClaims) return;
 			// Selection. A left press on a body selects it and does nothing else;
 			// a press on empty space clears the selection. Both claim the press so
 			// the fly camera cannot also react — navigation lives on the right and
