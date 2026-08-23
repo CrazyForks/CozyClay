@@ -149,6 +149,21 @@ const GROUND = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
 export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, pickOnly = false, paneRef, camRef, shotAspect = SHOT_ASPECT, onChange, onSelect, onGroundClick, onDragStart, onDragEnd }) {
 	const { gl, scene } = useThree();
+	// shotAspect null = the camera fills the pane (the editor working view):
+	// pointer mapping uses the pane rect itself instead of a letterboxed
+	// sub-rect, and the camera takes the pane's own aspect.
+	const imageRect = (bounds) => {
+		const rect = { x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height };
+		return shotAspect ? fitAspect(rect, shotAspect) : rect;
+	};
+	const applyAspect = (camera) => {
+		if (shotAspect) {
+			camera.aspect = shotAspect;
+		} else {
+			const bounds = paneRef?.current?.getBoundingClientRect();
+			if (bounds && bounds.height >= 1) camera.aspect = bounds.width / bounds.height;
+		}
+	};
 	const rootRef = useRef(null);
 	const handlesRef = useRef(new Map()); // axis -> { mesh (pick proxy), axis, dir }
 	const screenRingRef = useRef(null); // the outer ring's group, billboarded to the camera each frame
@@ -210,7 +225,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		if (!pane || !camera) return null;
 		const bounds = pane.getBoundingClientRect();
 		if (bounds.width < 2 || bounds.height < 2) return null;
-		const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
+		const rect = imageRect(bounds);
 		tools.ndc.set(
 			((event.clientX - rect.x) / rect.w) * 2 - 1,
 			-((event.clientY - rect.y) / rect.h) * 2 + 1,
@@ -232,6 +247,9 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// Characters are click targets too: a namespaced id routes the
 			// selection to the hierarchy, so the Inspector owns the controls.
 			if (node.userData?.characterPick) return { id: `char:${node.userData.characterPick}`, point: hit.point.clone() };
+			// The shot camera's ghost body: selecting it routes to the camera
+			// hierarchy entry, same as clicking its puck on the plan.
+			if (node.userData?.shotCameraPick) return { id: "__shotcam__", point: hit.point.clone() };
 		}
 		return null; // whatever is in front is set, not an object
 	};
@@ -243,7 +261,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		if (!pane || !camera) return null;
 		const bounds = pane.getBoundingClientRect();
 		if (bounds.width < 2 || bounds.height < 2) return null;
-		const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
+		const rect = imageRect(bounds);
 		tools.ndc.set(
 			((event.clientX - rect.x) / rect.w) * 2 - 1,
 			-((event.clientY - rect.y) / rect.h) * 2 + 1,
@@ -268,7 +286,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// loop (dualview); under demand rendering a layout change may not
 			// have had a frame yet, leaving a stale projection. Re-apply the
 			// render contract here so the pick matches what is on screen.
-			camera.aspect = shotAspect;
+			applyAspect(camera);
 			camera.updateProjectionMatrix();
 			camera.updateMatrixWorld();
 			camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
@@ -696,13 +714,13 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// render tick under demand rendering, and re-apply the render
 			// loop's locked aspect (dualview) so QA geometry matches the
 			// drawn frame exactly
-			camera.aspect = shotAspect;
+			applyAspect(camera);
 			camera.updateProjectionMatrix();
 			camera.updateMatrixWorld();
 			camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
 			rootRef.current?.updateMatrixWorld(true);
 			const bounds = pane.getBoundingClientRect();
-			const rect = fitAspect({ x: bounds.left, y: bounds.top, w: bounds.width, h: bounds.height }, shotAspect);
+			const rect = imageRect(bounds);
 			return [...handlesRef.current.values()]
 				.filter((entry) => entry.mesh?.parent)
 				.map((entry) => {

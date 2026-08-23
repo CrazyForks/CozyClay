@@ -662,6 +662,61 @@ select {
 	box-shadow: 0 10px 30px #00000073, 0 0 0 1px #ffffff1f;
 	animation: rise var(--med) var(--ease) both;
 }
+/* The shot preview: the recording camera's framed output, bottom-right,
+   always at the export aspect. Chrome-free — what you see is what records. */
+.vp-shot-preview {
+	top: auto;
+	bottom: 14px;
+	right: 15px;
+	width: 24%;
+	min-width: 220px;
+	max-width: 360px;
+	aspect-ratio: var(--shot-aspect, 16 / 9);
+	border-radius: 11px;
+	overflow: hidden;
+	box-shadow: 0 10px 30px #00000073, 0 0 0 1px #ffffff1f;
+	animation: rise var(--med) var(--ease) both;
+}
+.vp-shot-preview-tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	cursor: default;
+}
+.vp-look-through {
+	pointer-events: auto;
+	cursor: pointer;
+	background: none;
+	border: 1px solid var(--line2);
+	border-radius: 4px;
+	color: var(--accent, #ffb454);
+	font: inherit;
+	font-size: 9px;
+	padding: 1px 6px;
+}
+.vp-look-through:hover {
+	border-color: var(--accent, #ffb454);
+}
+/* Pill overlay while flying the shot camera itself */
+.vp-look-through-exit {
+	position: absolute;
+	top: 14px;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 6;
+	pointer-events: auto;
+	cursor: pointer;
+	padding: 5px 12px;
+	border-radius: 999px;
+	background: #0e0d10d9;
+	border: 1px solid var(--accent, #ffb454);
+	color: var(--accent, #ffb454);
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: .08em;
+	text-transform: uppercase;
+}
+
 /* the plan pane is the interactive one wherever it lands */
 .vp-pane.plan {
 	pointer-events: auto;
