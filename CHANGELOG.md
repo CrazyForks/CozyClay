@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.5.0
+
+The release where the camera can climb a shaped path, recordings leave the studio as
+standard MP4 files, and generated falls finally reach the ground.
+
+### Shape a crane move
+
+Rail Follow now carries a persisted crane-height profile with two to eight points instead
+of only a start and end height. The camera evaluates the profile with a monotone cubic
+curve, so it passes through every authored height without overshooting. Purple handles in
+the scene and matching markers in each Shot card stay synchronized: drag vertically to set
+height, Shift-drag along the rail, double-click to add a point, and delete an interior point.
+One undo reverses one complete gesture, and older `{start,end}` projects migrate to pinned
+endpoints automatically.
+
+### Record a real MP4
+
+Record now downloads a fast-start H.264 MP4 at 24 fps instead of WebM. The exporter tries
+High, Main, then Baseline AVC profiles, keeps frame-addressed deterministic rendering, and
+fails by name when the browser has no compatible H.264 WebCodecs encoder rather than
+producing a misleading MP4 that desktop editors cannot open. Mediabunny performs the
+in-browser muxing and is documented in the third-party notices.
+
+### Falls that read in previs
+
+When generated motion walks off its support, CozyClay can stage a ballistic root drop with
+horizontal drift, a readable fall clock, and an impact hold instead of leaving the character
+suspended at the roof edge. Motion completion now means the editor acknowledged and
+installed the take: explicit rejection fails visibly, reconnects do not duplicate the
+installation, and an uncertain lost acknowledgement is never retried as though nothing
+happened.
+
+### ARDY bridge fixes
+
+- Local runner options now reach the bridge instead of disappearing between processes.
+- Camera-clause cleanup no longer mistakes ordinary object nouns for camera instructions.
+- The prompt guide distinguishes measured upstream behavior from local authoring heuristics.
+- Demo and operations documentation now use supported options and cite the four-second
+  waypoint-history evidence honestly.
+
 ## 1.4.1
 
 Gizmo drags survive past their first tick again. The split-camera work in 1.4.0 wrapped the
