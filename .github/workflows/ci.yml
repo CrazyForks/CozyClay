@@ -1,0 +1,83 @@
+name: CI
+
+# Pre-merge gate. pages.yml already runs the same node suite on main pushes
+# before deploying, so this only needs to cover pull requests.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The full node suite (vite build + tools/run-tests.mjs), identical to the
+  # test step pages.yml runs before deploying: green here means the merge
+  # cannot break the deploy.
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mcp/package-lock.json
+      - run: npm ci
+      - run: npm --prefix mcp ci
+      - run: npm test
+
+  # Real-browser rendering regressions via the CDP QA wrapper. Only the suites
+  # that are green against origin/main run here (ik, camera-rail); the other
+  # browser suites fail on main in a clean headless environment and can join
+  # once fixed.
+  #
+  # Observation mode: the runner's software GL (SwiftShader) currently fails
+  # occlusion checks that pass on real GPUs, so results go to the step summary
+  # instead of failing the check. Make this step exit non-zero once the suites
+  # are green on the runner.
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Start dev server (vite + ardy bridge + generation)
+        run: |
+          npm run dev &
+          for _ in $(seq 1 120); do
+            curl -sf -o /dev/null http://127.0.0.1:5180/ && exit 0
+            sleep 1
+          done
+          echo "dev server did not come up" >&2
+          exit 1
+      - name: Browser suites (observation mode)
+        run: |
+          {
+            echo "## Browser suites (observation mode)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          for t in verify-ik-browser verify-camera-rail-browser; do
+            if node tools/qa-browser.mjs -- node "test/$t.mjs" > "/tmp/$t.log" 2>&1; then
+              echo "- :white_check_mark: $t ($(grep -c '^PASS' "/tmp/$t.log") checks)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::warning title=browser suite failed::$t (see step summary)"
+              {
+                echo "- :x: $t"
+                echo "  <details><summary>log tail</summary>"
+                echo ""
+                echo '  ```'
+                tail -40 "/tmp/$t.log" | sed 's/^/  /'
+                echo '  ```'
+                echo "  </details>"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
