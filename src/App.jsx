@@ -3133,6 +3133,43 @@ globalThis.playMode = centerTab === "play";
 		else recordShotUndo();
 		setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, patch) }), "shots"));
 	}
+	function addActiveCranePoint(requestedT = null, shotId = activeShot?.id) {
+		const shot = shots.find((entry) => entry.id === shotId);
+		const camera = createCameraBlock(shot?.camera);
+		const points = camera.craneHeight?.points;
+		if (!points || points.length >= 8) return;
+		let t = Number.isFinite(requestedT) ? Math.max(0.02, Math.min(0.98, requestedT)) : null;
+		if (t != null) {
+			const nearbyIndex = points.findIndex((point) => Math.abs(point.t - t) < 0.02);
+			if (nearbyIndex >= 0) {
+				setCraneSelectedIndex(nearbyIndex);
+				return;
+			}
+		}
+		let gapIndex = 0;
+		if (t == null) {
+			for (let i = 1; i < points.length - 1; i += 1) {
+				if (points[i + 1].t - points[i].t > points[gapIndex + 1].t - points[gapIndex].t) gapIndex = i;
+			}
+			t = (points[gapIndex].t + points[gapIndex + 1].t) / 2;
+		} else {
+			gapIndex = points.findIndex((point, index) => index < points.length - 1 && t > point.t && t < points[index + 1].t);
+			if (gapIndex < 0) return;
+		}
+		const added = [
+			...points.slice(0, gapIndex + 1),
+			{ t, height: craneHeightAt(camera.craneHeight, t) },
+			...points.slice(gapIndex + 1),
+		];
+		changeActiveCamera({ craneHeight: { points: added } }, shotId);
+		setCraneSelectedIndex(gapIndex + 1);
+	}
+	function deleteSelectedCranePoint() {
+		const points = activeCamera.craneHeight?.points;
+		if (!points || craneSelectedIndex == null || craneSelectedIndex <= 0 || craneSelectedIndex >= points.length - 1) return;
+		changeActiveCamera({ craneHeight: { points: points.filter((_, index) => index !== craneSelectedIndex) } });
+		setCraneSelectedIndex(null);
+	}
 	function syncActiveCameraFraming() {
 		const cam = shotCamRef.current;
 		if (!cam || !activeShot || ikMode || playMode) return;
@@ -8668,6 +8705,9 @@ function resizePromptClip(id, edge, rawFrame) {
 				<Timeline
 					frame={tlFrame}
 					craneSelectedIndex={craneSelectedIndex}
+					onCranePointAdd={addActiveCranePoint}
+					onCranePointDelete={deleteSelectedCranePoint}
+					onCranePointSelect={setCraneSelectedIndex}
 					frameCount={tlFrameCount}
 					fps={tlFps}
 					playbackSpeed={DEFAULT_PLAYBACK_SPEED}

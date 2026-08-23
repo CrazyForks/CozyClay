@@ -3776,6 +3776,36 @@ input[type=range]::-moz-range-thumb {
 	z-index: 3;
 }
 
+.tl-crane-point {
+	box-sizing: border-box;
+	position: absolute;
+	bottom: -13px;
+	left: clamp(7px, calc(var(--tl-crane-p) * 100%), calc(100% - 7px));
+	width: 12px;
+	height: 12px;
+	padding: 0;
+	transform: translate(-50%, -50%);
+	border: 2px solid #211b31;
+	border-radius: 50%;
+	background: #a78bfa;
+	box-shadow: 0 0 0 1px rgba(203, 183, 255, .65), 0 0 8px rgba(167, 139, 250, .9);
+	cursor: pointer;
+	pointer-events: auto;
+	z-index: 5;
+}
+
+.tl-crane-point:hover,
+.tl-crane-point:focus-visible {
+	outline: 2px solid #fff;
+	outline-offset: 1px;
+}
+
+.tl-crane-point.selected {
+	background: #ffb454;
+	border-color: #40270f;
+	box-shadow: 0 0 0 1px #ffe0a8, 0 0 9px rgba(255, 180, 84, .95);
+}
+
 .tl-marker {
 	position: absolute;
 	top: 50%;
