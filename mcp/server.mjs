@@ -95,6 +95,14 @@ const state = {
 };
 
 let liveHub = null;
+/** True when another process (a sibling MCP session's child) already owns the live editor port. */
+let liveHubPortBusy = false;
+/** Explain a missing live editor, naming the sibling session that owns the port when that is the cause. */
+const noLiveEditor = (requirement) =>
+	liveHubPortBusy
+		? `${requirement} Live port ${livePort} is owned by the first MCP session of this server, so this ` +
+			"session is memory-only; reuse that first session, or restart the server and reconnect, to drive the editor."
+		: requirement;
 const motionJobs = new MotionJobRegistry();
 const liveWorkspace = new AsyncLocalStorage();
 const liveWorkspaceTools = new Set([
@@ -567,7 +575,7 @@ registerTool(
 	async () => text(
 		liveHub?.connected
 			? `Live editor connected. Workspace handles: ${liveHub.workspaceHandles.join(", ")}`
-			: "No live editor connected; using in-memory state.",
+			: noLiveEditor("No live editor connected; using in-memory state."),
 	),
 );
 
@@ -603,7 +611,7 @@ registerTool(
 		},
 	},
 	async ({ max_inline_bytes }) => {
-		if (!liveHub?.connected) return liveError(new Error("capture_frame requires a connected CozyClay editor with a renderable shot camera."));
+		if (!liveHub?.connected) return liveError(new Error(noLiveEditor("capture_frame requires a connected CozyClay editor with a renderable shot camera.")));
 		try {
 			const workspaceHandle = liveWorkspace.getStore();
 			const frame = await liveHub.command("capture_frame", {}, workspaceHandle);
@@ -1271,7 +1279,7 @@ registerTool(
 				? (rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "\n") + dropNote + chainNote
 				: "";
 
-		if (!liveHub?.connected) return text("generate_motion requires a connected CozyClay editor so completion can be delivered over its live socket.");
+		if (!liveHub?.connected) return text(noLiveEditor("generate_motion requires a connected CozyClay editor so completion can be delivered over its live socket."));
 		try {
 			await refreshLiveDescription();
 		} catch (error) {
@@ -1482,7 +1490,7 @@ registerTool(
 		},
 	},
 	async ({ ops, atomic, stopOnError, label }) => {
-		if (!liveHub?.connected) return text("apply_batch requires a connected CozyClay editor.");
+		if (!liveHub?.connected) return text(noLiveEditor("apply_batch requires a connected CozyClay editor."));
 		try {
 			const result = await appliedLiveMutation("apply_batch", { ops, atomic, stopOnError, label });
 			const applied = Array.isArray(result?.applied) ? result.applied : [];
@@ -1844,6 +1852,7 @@ const configureLiveHub = (hub) => {
 
 if (httpFlag === -1) {
 	liveHub = await startLiveHub(livePort);
+	liveHubPortBusy = liveHub === null;
 	configureLiveHub(liveHub);
 	await server.connect(new StdioServerTransport());
 } else {
