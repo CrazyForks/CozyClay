@@ -79,6 +79,29 @@ const afterCamera = normalizePhase("turns while the camera pushes in and raises 
 check("a body action after a camera clause survives", /raises one arm/i.test(afterCamera.text), afterCamera.text);
 check("and the camera clause is still gone", !/camera/i.test(afterCamera.text), afterCamera.text);
 
+// Physical-world nouns a character interacts with are NOT camera/scene language.
+// The normaliser must leave them alone entirely (no note, no edit).
+const building = normalizePhase("A person climbs a building.");
+check("a building as an object survives", building.text === "A person climbs a building.", building.text);
+
+const rocket = normalizePhase("A person boards a rocket.");
+check("a rocket as an object survives", rocket.text === "A person boards a rocket.", rocket.text);
+
+const spaceship = normalizePhase("A person enters the spaceship.");
+check("a spaceship as an object survives", spaceship.text === "A person enters the spaceship.", spaceship.text);
+
+const filmedCamera = normalizePhase("A person films the camera.");
+check("a camera as an object survives", filmedCamera.text === "A person films the camera.", filmedCamera.text);
+
+// ...while genuine camera clauses are still stripped, note included.
+const wavesCamera = normalizePhase("A person waves while the camera pushes in.");
+check("a trailing camera clause is dropped", wavesCamera.text === "A person waves.", wavesCamera.text);
+check("the drop is still explained", wavesCamera.notes.some((n) => /cannot animate/.test(n)), wavesCamera.notes.join("; "));
+
+const bowsShot = normalizePhase("the shot widens as a person bows");
+check("a leading shot clause is dropped", bowsShot.text === "A person bows.", bowsShot.text);
+check("the shot drop is still explained", bowsShot.notes.some((n) => /cannot animate/.test(n)), bowsShot.notes.join("; "));
+
 /* -------------------------------- sequences ------------------------------ */
 
 const seq = normalizePhases(["stands up from a chair then runs forward", "trips and falls"]);

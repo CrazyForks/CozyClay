@@ -95,9 +95,13 @@ const UNRENDERABLE = [
 	/\b(in|with)\s+(astonishment|awe|wonder|surprise|fear|joy|excitement|disbelief)\b/gi,
 	/\b(astonished|amazed|awestruck|terrified|delighted|confused|nervous|curious)ly?\b/gi,
 	/\b(at|toward|towards)\s+(something|the)\s+(enormous|huge|massive|towering|giant)(\s+\w+)?\b/gi,
-	// A camera/scene clause: the noun plus the verb phrase attached to it, stopping
-	// at the next clause boundary so the body action after it survives.
-	/\b(?:while|as|and)?\s*(?:the\s+)?(?:camera|shot|frame|rocket|spaceship|building)\b(?:\s+(?!and\b)\w+){0,3}/gi,
+	// A camera/scene clause: the noun used as the SUBJECT of a cinematic verb
+	// phrase ("the camera pushes in"), never as an object ("films the camera") —
+	// so at least one following word is required, and the phrase stops at the
+	// next clause boundary so the body action after it survives. Physical props
+	// a character interacts with (rocket, building, spaceship) are not listed:
+	// they are body-relevant, not cinematic.
+	/\b(?:while|as|and)?\s*(?:the\s+)?(?:camera|shot|frame)\b(?:\s+(?!(?:and|as|while)\b)\w+){1,3}/gi,
 ];
 
 /** A leftover connective at either end once an unrenderable clause is removed. */
