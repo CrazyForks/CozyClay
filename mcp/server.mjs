@@ -116,6 +116,7 @@ const CAPTURE_ARTIFACT_TTL_MS = 10 * 60_000;
 const MAX_CAPTURE_ARTIFACTS = 20;
 const captureArtifacts = [];
 const captureArtifactPattern = /^cozyclay-capture-[0-9a-f-]+\.png$/;
+const motionUrlPattern = /^\/(ardy\/motions\/[0-9]+-[0-9a-f]{6}|ardy\/assembled\/[A-Za-z0-9._-]+\.npz)$/;
 const cleanupCaptureArtifacts = () => {
 	for (const path of captureArtifacts.splice(0)) {
 		try { unlinkSync(path); } catch {}
@@ -384,9 +385,53 @@ const motionJobEvent = (job) => ({
 	...(job.outcome === null ? {} : { outcome: job.outcome }),
 });
 
-const publishMotionJob = (job) => {
+const sendMotionJobEvent = (job) => {
+	try {
+		if (liveHub?.sendEvent(job.workspaceId, "motion_job", motionJobEvent(job)) > 0) {
+			job.deliveredWorkspaceIds.add(job.workspaceId);
+		}
+	} catch (error) {
+		console.error(`[motion_job] lifecycle event delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
+};
+
+const publishMotionJob = async (job) => {
 	if (job.deliveredWorkspaceIds.has(job.workspaceId)) return;
-	if (liveHub?.sendEvent(job.workspaceId, "motion_job", motionJobEvent(job)) > 0) job.deliveredWorkspaceIds.add(job.workspaceId);
+	const outcome = job.outcome;
+	if (!liveHub || job.status !== "completed" || typeof outcome?.motionUrl !== "string") {
+		sendMotionJobEvent(job);
+		return;
+	}
+	const installationState = job.installationStates.get(job.workspaceId);
+	if (installationState === "installing") return;
+	if (installationState === "installed") {
+		sendMotionJobEvent(job);
+		return;
+	}
+	const handle = liveHub.handleForWorkspaceId(job.workspaceId);
+	if (!handle) return;
+	job.installationStates.set(job.workspaceId, "installing");
+	try {
+		await liveHub.command("load_motion", {
+			url: outcome.motionUrl,
+			prompt: outcome.prompt ?? "",
+			blocks: outcome.blocks ?? [],
+			drop: outcome.drop ?? null,
+			characterId: outcome.targetCharacterId,
+		}, handle);
+	} catch (error) {
+		const uncertain = error instanceof LiveMutationUncertainError;
+		job.installationStates.set(job.workspaceId, uncertain ? "uncertain" : "failed");
+		motionJobs.transition(job, "failed", {
+			message: uncertain
+				? "The editor connection was lost while installing the completed take. Installation may have applied, so it will not be retried."
+				: `The editor rejected the completed take: ${error instanceof Error ? error.message : String(error)}`,
+		});
+		sendMotionJobEvent(job);
+		return;
+	}
+	job.installationStates.set(job.workspaceId, "installed");
+	sendMotionJobEvent(job);
 };
 
 const cancelMotionJob = ({ workspaceId, payload }) => {
@@ -395,7 +440,7 @@ const cancelMotionJob = ({ workspaceId, payload }) => {
 	const task = motionJobs.cancel(payload.taskId, workspaceId);
 	if (!task) return;
 	const job = motionJobs.jobs.get(task.taskId);
-	if (job) publishMotionJob(job);
+	if (job) void publishMotionJob(job);
 };
 
 /* ------------------------------ formatting ------------------------------- */
@@ -1172,7 +1217,7 @@ registerTool(
 			seed: z.number().int().optional().describe("generation seed"),
 			motion_url: z
 				.string()
-				.regex(/^\/(ardy\/motions\/[0-9]+-[0-9a-f]{6}|ardy\/assembled\/[A-Za-z0-9._-]+\.npz)$/)
+				.regex(motionUrlPattern)
 				.optional()
 				.describe("reuse an already-generated clip, or a curated clip staged under public/ardy/assembled/"),
 			drop: z
@@ -1342,18 +1387,19 @@ registerTool(
 				}
 				if (job.status === "cancelled") return;
 				if (typeof motionUrl !== "string") throw new Error("Generation ended without a motion.");
+				if (!motionUrlPattern.test(motionUrl)) throw new Error("Generator returned an invalid motion URL.");
 				motionJobs.transition(job, "completed", {
 					motionUrl, prompt: prompts.join(" "), blocks: segments, drop, targetCharacterId,
 					summary: `${clipSeconds.toFixed(1)}s / ${clipFrames} frames${promptNote}`,
 				});
-				publishMotionJob(job);
+				await publishMotionJob(job);
 			} catch (error) {
 				if (job.status === "cancelled" || error?.name === "AbortError") {
 					if (job.status !== "cancelled") motionJobs.transition(job, "cancelled", { message: "Generation cancelled before editor delivery." });
 				} else {
 					motionJobs.transition(job, "failed", { message: error instanceof Error ? error.message : "Motion generation failed." });
 				}
-				publishMotionJob(job);
+				await publishMotionJob(job);
 			} finally {
 				clearTimeout(deadline);
 				job.cancel = null;
@@ -1844,7 +1890,7 @@ const configureLiveHub = (hub) => {
 		if (name === "motion_job_cancel") cancelMotionJob({ workspaceId, payload });
 	};
 	hub.onWorkspaceConnected = ({ workspaceId }) => {
-		for (const job of motionJobs.forWorkspace(workspaceId)) publishMotionJob(job);
+		for (const job of motionJobs.forWorkspace(workspaceId)) void publishMotionJob(job);
 	};
 };
 

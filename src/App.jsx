@@ -3858,7 +3858,7 @@ globalThis.playMode = centerTab === "play";
 			load_motion: async (args) => {
 				if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
 				const prompt = typeof args.prompt === "string" ? args.prompt : "";
-				if (args.drop !== undefined && !normalizeRootDrop(args.drop)) throw new Error("Invalid drop");
+				if (args.drop != null && !normalizeRootDrop(args.drop)) throw new Error("Invalid drop");
 				// Optional per-phase blocks land on the Prompts lane the way hand-authored
 				// ones do. They arrive on ARDY's 20 fps clock; the lane runs on the 24 fps
 				// production clock, so each boundary is converted, not copied.
@@ -3904,16 +3904,6 @@ globalThis.playMode = centerTab === "play";
 					onWorkspace: setLiveWorkspaceHandle,
 					onEvent: (name, payload) => {
 						if (name !== "motion_job" || typeof payload.taskId !== "string") return;
-						if (payload.status === "completed" && typeof payload.outcome?.motionUrl === "string") {
-							liveHandlersRef.current.load_motion({
-								url: payload.outcome.motionUrl,
-								prompt: payload.outcome.prompt ?? "",
-								blocks: payload.outcome.blocks ?? [],
-								drop: payload.outcome.drop ?? null,
-								characterId: payload.outcome.targetCharacterId,
-							}).catch((error) => setToast(error instanceof Error ? error.message : String(error)));
-							return;
-						}
 						if (["failed", "cancelled", "expired"].includes(payload.status)) {
 							setToast(payload.outcome?.message ?? `Motion job ${payload.status}.`);
 						}
@@ -5053,6 +5043,7 @@ globalThis.playMode = centerTab === "play";
 			const raw = retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS);
 			const targetCharacter = charactersRef.current.find((entry) => entry.id === targetCharacterId);
 			if (!targetCharacter) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
+			const rig = rigs[targetCharacter.id] ?? await waitForRig(targetCharacter.id);
 			// No explicit drop staged: a character standing on a raised object
 			// whose take walks off the edge falls on its own — ARDY motion is
 			// flat-ground, so the stage supplies the gravity.
@@ -5075,7 +5066,6 @@ globalThis.playMode = centerTab === "play";
 					`자동 낙하 적용: ${staging.fromS.toFixed(1)}초에 지지면을 벗어나 ${staging.meters.toFixed(1)}m 낙하`,
 				));
 			}
-			const rig = rigs[targetCharacter.id] ?? await waitForRig(targetCharacter.id);
 			const targetStillExists = charactersRef.current.some((entry) => entry.id === targetCharacter.id);
 			if (!targetStillExists) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
 			const bufferOwnsTarget = targetCharacter.id === loadedLayerCharRef.current;
