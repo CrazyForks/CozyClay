@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // A drop staged onto a take: rigid vertical offset on a gravity curve.
-import { applyRootDrop, normalizeRootDrop } from "../../src/ardy/root-drop.js";
+import { applyRootDrop, autoRoofDrop, normalizeRootDrop } from "../../src/ardy/root-drop.js";
 
 let failures = 0;
 function expect(name, condition, detail = "") {
@@ -52,6 +52,42 @@ expect("a landing past the clip end still falls", yOf(partial, 9, 0) < 5 && yOf(
 expect("no drop returns the clip untouched", applyRootDrop(source, null) === source);
 expect("an invalid drop returns the clip untouched", applyRootDrop(source, { from_s: 3, to_s: 1, meters: 5 }) === source);
 expect("a clip without a clock is left alone", applyRootDrop({ frames: 10, fps: 0 }, { from_s: 0, to_s: 1, meters: 5 }) === undefined || true);
+
+/* ---------------------------------------------------- auto drop ----- */
+// A 3 m walk along +x over 1 second, sampled straight off the root, on a
+// 2x2 support whose top sits at the subject's height.
+const walk = () => {
+	const rootPos = new Float32Array(FRAMES * 3);
+	for (let f = 0; f < FRAMES; f += 1) rootPos[f * 3] = (3 * f) / (FRAMES - 1);
+	return { frames: FRAMES, fps: 10, rootPos };
+};
+const roof = { x: 0, z: 0, rotDeg: 0, topY: 12, width: 2, depth: 2 };
+const subjectOnRoof = { x: 0, z: 0, y: 12, rotationDeg: 0 };
+
+{
+	const drop = autoRoofDrop(walk(), subjectOnRoof, [roof]);
+	// the edge sits at x=1; the walk crosses it between frames 3 (0.99m) and 4 (1.32m)
+	expect("walking off a roof stages a fall at the edge crossing", !!drop && Math.abs(drop.fromS - 0.4) < 1e-9, JSON.stringify(drop));
+	expect("the fall covers the full height on a gravity clock", !!drop && drop.meters === 12 && Math.abs(drop.toS - drop.fromS - Math.sqrt(24 / 9.81)) < 1e-9, JSON.stringify(drop));
+	expect("the staged drop is applyRootDrop-compatible", normalizeRootDrop(drop)?.meters === 12);
+}
+
+expect("a grounded subject stages nothing", autoRoofDrop(walk(), { ...subjectOnRoof, y: 0 }, [roof]) === null);
+expect("a subject never on the support stages nothing", autoRoofDrop(walk(), { ...subjectOnRoof, x: 9 }, [roof]) === null);
+expect("a walk that stays on the roof stages nothing", autoRoofDrop(walk(), subjectOnRoof, [{ ...roof, width: 40, depth: 40 }]) === null);
+{
+	// root rotation turns the +x walk into a +z walk: the 2x40 support only
+	// shelters the rotated path, so the unrotated math would exit instantly.
+	const shelter = { x: 0, z: 0, rotDeg: 0, topY: 12, width: 2, depth: 40 };
+	const drop = autoRoofDrop(walk(), { ...subjectOnRoof, rotationDeg: 90 }, [shelter]);
+	expect("the walk is rotated into scene space before the edge test", drop === null, JSON.stringify(drop));
+}
+{
+	// a lower terrace under the exit point shortens the fall
+	const terrace = { x: 2, z: 0, rotDeg: 0, topY: 7, width: 4, depth: 4 };
+	const drop = autoRoofDrop(walk(), subjectOnRoof, [roof, terrace]);
+	expect("a lower support under the exit shortens the fall", !!drop && drop.meters === 5, JSON.stringify(drop));
+}
 
 if (failures) process.exit(1);
 console.log("all root-drop checks PASS");

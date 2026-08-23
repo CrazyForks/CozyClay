@@ -7,7 +7,7 @@ import { buildArdyPose } from "./ardy/export.js";
 import { checkBridge, generate as ardyGenerate } from "./ardy/client.js";
 import { characterScaleFor, loadMotionFromUrl } from "./ardy/npz.js";
 import { retimeMotion } from "./ardy/retime.js";
-import { applyRootDrop, normalizeRootDrop } from "./ardy/root-drop.js";
+import { applyRootDrop, autoRoofDrop, normalizeRootDrop } from "./ardy/root-drop.js";
 import {
 	createMotionEdit,
 	motionEditLayout,
@@ -5050,9 +5050,31 @@ globalThis.playMode = centerTab === "play";
 			// the timeline counts its frames. Same-rate input rides through.
 			// A drop is staging applied to the clip itself, so it happens at
 			// the same boundary — trims and IK then see the dropped take.
-			const decoded = applyRootDrop(retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS), drop);
+			const raw = retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS);
 			const targetCharacter = charactersRef.current.find((entry) => entry.id === targetCharacterId);
 			if (!targetCharacter) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
+			// No explicit drop staged: a character standing on a raised object
+			// whose take walks off the edge falls on its own — ARDY motion is
+			// flat-ground, so the stage supplies the gravity.
+			const staging = drop ?? autoRoofDrop(
+				raw,
+				{ x: targetCharacter.x, z: targetCharacter.z, y: targetCharacter.y ?? 0, rotationDeg },
+				sceneObjects.map((object) => ({
+					x: object.x,
+					z: object.z,
+					rotDeg: object.rot ?? 0,
+					topY: (object.y ?? 0) + (object.height ?? 0) * (object.scaleY ?? 1),
+					width: (object.footprint?.width ?? 0) * (object.scaleX ?? 1),
+					depth: (object.footprint?.depth ?? 0) * (object.scaleZ ?? 1),
+				})),
+			);
+			const decoded = applyRootDrop(raw, staging);
+			if (!drop && staging) {
+				setToast(ko(
+					`Auto drop staged: the take leaves its support at ${staging.fromS.toFixed(1)}s and falls ${staging.meters.toFixed(1)}m`,
+					`자동 낙하 적용: ${staging.fromS.toFixed(1)}초에 지지면을 벗어나 ${staging.meters.toFixed(1)}m 낙하`,
+				));
+			}
 			const rig = rigs[targetCharacter.id] ?? await waitForRig(targetCharacter.id);
 			const targetStillExists = charactersRef.current.some((entry) => entry.id === targetCharacter.id);
 			if (!targetStillExists) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);

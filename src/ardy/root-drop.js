@@ -19,6 +19,74 @@ export function normalizeRootDrop(drop) {
 	return { fromS, toS, meters };
 }
 
+/** Point-in-footprint on the floor plane, honouring the support's yaw. */
+function insideSupport(support, px, pz) {
+	const yaw = ((support.rotDeg ?? 0) * Math.PI) / 180;
+	const cos = Math.cos(yaw);
+	const sin = Math.sin(yaw);
+	const dx = px - support.x;
+	const dz = pz - support.z;
+	const lx = cos * dx - sin * dz;
+	const lz = sin * dx + cos * dz;
+	return Math.abs(lx) <= support.width / 2 && Math.abs(lz) <= support.depth / 2;
+}
+
+/**
+ * Stage a fall the author did not have to ask for: a character standing on a
+ * raised support (a roof — place_character's y) whose take walks past the
+ * support's edge should drop, because ARDY only generates flat-ground motion.
+ *
+ * `subject` is { x, z, y, rotationDeg } — the character's blocking, with the
+ * take's root rotation. `supports` are world-space tops: { x, z, rotDeg,
+ * topY, width, depth }. The walk is sampled with the same root convention
+ * playback uses (frame-zero anchored, yaw-rotated into scene space).
+ *
+ * Returns a { fromS, toS, meters } drop, or null when the character is on
+ * the ground, never stood on a support, or never leaves it — null means
+ * "stage nothing", so this is safe to leave on the load path.
+ */
+export function autoRoofDrop(motion, subject, supports, { gravity = 9.81, topTolerance = 0.3 } = {}) {
+	if (!motion || !Number.isFinite(motion.fps) || motion.fps <= 0 || !motion.rootPos) return null;
+	const frames = motion.frames;
+	if (!Number.isFinite(frames) || frames < 2) return null;
+	const y = Number(subject?.y) || 0;
+	if (y <= 0.05 || !Array.isArray(supports) || supports.length === 0) return null;
+
+	const radians = ((Number.isFinite(subject.rotationDeg) ? subject.rotationDeg : 0) * Math.PI) / 180;
+	const cos = Math.cos(radians);
+	const sin = Math.sin(radians);
+	const worldAt = (frame) => {
+		const dx = motion.rootPos[frame * 3] - motion.rootPos[0];
+		const dz = motion.rootPos[frame * 3 + 2] - motion.rootPos[2];
+		return {
+			x: subject.x + dx * cos + dz * sin,
+			z: subject.z + (-dx * sin + dz * cos),
+		};
+	};
+
+	const start = worldAt(0);
+	const carriers = supports.filter((support) =>
+		support.width > 0 && support.depth > 0 &&
+		Math.abs(support.topY - y) <= topTolerance &&
+		insideSupport(support, start.x, start.z));
+	if (carriers.length === 0) return null;
+
+	for (let frame = 1; frame < frames; frame += 1) {
+		const point = worldAt(frame);
+		if (carriers.some((support) => insideSupport(support, point.x, point.z))) continue;
+		// Land on the tallest lower support under the exit point, else the street.
+		const landing = supports.reduce((top, support) =>
+			support.topY < y - topTolerance && support.topY > top && insideSupport(support, point.x, point.z)
+				? support.topY
+				: top, 0);
+		const meters = y - landing;
+		if (meters <= 0) return null;
+		const fromS = frame / motion.fps;
+		return { fromS, toS: fromS + Math.sqrt((2 * meters) / gravity), meters };
+	}
+	return null;
+}
+
 /**
  * The clip with the drop applied. The input clip is never mutated — the
  * caller may hold it as a trim source — and an invalid drop returns the
