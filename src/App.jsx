@@ -7041,10 +7041,11 @@ function resizePromptClip(id, edge, rawFrame) {
 								paneRef={mainPaneRef}
 								camRef={lookThroughShot ? shotCamRef : editorCamRef}
 								shotAspect={lookThroughShot ? shotOutput.aspect : null}
-								onChange={(id, patch) => (id === "__shotcam__" ? changeShotCameraFromGizmo(id, patch) : changeSceneObject(id, patch))}
-								onDragStart={(...args) => {
-									if (!cameraGizmoObject) beginSceneTransaction(...args);
-								}}
+								// The token MUST round-trip: dropping it sends every drag tick
+								// through applyAtomic, whose settle cancels the open drag after
+								// its first move (the gizmo hands its teardown as the cancel).
+								onChange={(id, patch, token) => (id === "__shotcam__" ? changeShotCameraFromGizmo(id, patch) : changeSceneObject(id, patch, token))}
+								onDragStart={(...args) => (cameraGizmoObject ? undefined : beginSceneTransaction(...args))}
 								onDragEnd={(...args) => {
 									if (!cameraGizmoObject) endSceneTransaction(...args);
 								}}
