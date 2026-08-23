@@ -30,7 +30,8 @@ server -> editor, one per command:
     { "type": "cmd", "id": "<opaque string>", "name": "<command>", "args": { ... } }
 
 server -> editor, for an MCP-owned motion job state or terminal outcome (and again
-on reconnect while retained):
+on reconnect while retained). A completed event follows the editor's successful
+`load_motion` acknowledgement:
 
     { "type": "event", "name": "motion_job", "payload": { "taskId", "status", "createdAt", "lastUpdatedAt", "ttlMs", "pollIntervalMs", "outcome?" } }
 
@@ -58,9 +59,16 @@ blindly and should `describe` before recovering.
 lastUpdatedAt, ttlMs, pollIntervalMs }`; `pollIntervalMs` is `0` because the
 model never polls it. The MCP server retains terminal outcomes for `ttlMs`
 (currently 10 minutes) and pushes `motion_job` to the matching stable workspace
-on completion, failure, cancellation, or reconnect. The editor installs a
-completed motion through its existing React `load_motion` handler. A retained
-outcome that passes its TTL is explicitly expired and is never replayed.
+on completion, failure, cancellation, or reconnect. For a completed job, the
+server first installs the take through the request/response `load_motion`
+command, then publishes the terminal lifecycle event. The event never installs
+the take a second time. A retained outcome that passes its TTL is explicitly
+expired and is never replayed.
+
+If the editor explicitly rejects `load_motion`, the job transitions to `failed`
+and publishes that terminal event. If the socket disconnects or times out while
+installation is in flight, the job also fails but is not retried: the mutation
+may already have applied, so retrying could install the same take twice.
 
 Cancellation is cooperative at the bridge HTTP stream: `motion_job_cancel`
 aborts that request. The ARDY bridge detects the disconnected stream and kills

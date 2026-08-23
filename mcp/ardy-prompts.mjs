@@ -1,48 +1,38 @@
 /**
- * Writing prompts the way ARDY was trained to read them.
+ * CozyClay production prompt heuristics for ARDY. They are informed by NVIDIA's
+ * upstream examples, not by an upstream prompt-rules document; upstream facts
+ * and CozyClay policy are labeled separately in PROMPT_GUIDE.
  *
- * ARDY's own examples are the specification (nv-tlabs/ardy, scripts/generate.py):
+ * Upstream architecture: LLM2Vec on Llama-3-8B with MNTP and supervised
+ * adapters mean-pools each prompt into one 4096-D vector, returned as
+ * [B, 1, 4096]. `num_text_tokens=1` appears only in the interactive demo's
+ * optional ONNX-TRT loading branch; it is not the reason every prompt has one
+ * conditioning vector. NVIDIA's paper and demo presets support compound and
+ * ordered prompts, so their fidelity is checkpoint-dependent.
  *
- *     python scripts/generate.py "A person walks in a circle."
- *     python scripts/generate.py "A person jumps." --model core --duration 8.0
- *     python scripts/generate.py "A person waves." --model g1 --num_samples 4
- *
- * Three properties do the work: an explicit subject ("A person"), exactly one
- * physical action, and a full stop. The demo's preset Prompt List is built the
- * same way, so this is the distribution the text encoder actually saw.
- *
- * The reason one action per prompt matters is architectural, not stylistic:
- * the interactive demo builds its denoiser with `num_text_tokens=1`
- * (scripts/interactive_demo/loading.py), so the entire prompt collapses into a
- * SINGLE conditioning embedding. Two actions in one sentence do not run in
- * sequence — they average into one confused pose. A sequence of actions is
- * expressed as a sequence of prompts (CozyClay's Prompt Blocks), never as a
- * compound sentence.
- *
- * What that rules out, and what this module rewrites:
+ * What this module rewrites:
  *   - no subject            "runs forward"        -> "A person runs forward."
- *   - interior states       "in astonishment"     -> dropped; ARDY animates
- *                                                    bodies, not feelings
- *   - camera/scene language "the camera pushes in" -> dropped; the prompt
- *                                                    describes the BODY only
+ *   - interior states       "in astonishment"     -> dropped by CozyClay's
+ *                                                    local body-action filter
+ *   - camera/scene language "the camera pushes in" -> dropped by the same
+ *                                                    local filter
  *
  * What it deliberately does NOT do: rewrite a caller's composite physical
  * description into something shorter. A phrase like "raises both arms while
  * stepping back, then lowers them" is the caller's authored beat; splitting it
  * on the comma or on "while"/"then" and keeping only the first fragment throws
  * away motion the caller asked for and silently animates something else.
- * One-action-per-phase is guidance (see PROMPT_GUIDE) that callers apply when
- * they author phases — never a deletion this module performs on their behalf.
- * Normalisation here is non-destructive: subject, full stop, and removal of
- * language ARDY has no body channel for. Everything else survives verbatim.
+ * One-action-per-phase is CozyClay guidance (see PROMPT_GUIDE) that callers
+ * apply when authoring phases — never a deletion this module performs on their
+ * behalf. Normalisation is non-destructive: subject, full stop, and the local
+ * body-action filter. Everything else survives verbatim.
  */
 
 /**
- * Quality policy, mirrored from the studio (App.jsx PROMPT_BLOCK_MAX_FRAMES):
- * one block never spans more than 4 s. ARDY's trained window is 10 s, but a
- * long single block drifts — chained 4 s blocks keep each call inside the
- * model's sweet spot. The studio refuses to generate a longer block, so a tool
- * that produced one would be authoring something the UI would then reject.
+ * CozyClay studio policy, mirrored from App.jsx PROMPT_BLOCK_MAX_FRAMES: one
+ * block never spans more than 4 s, and the UI rejects longer blocks. This is
+ * not an upstream limit: ARDY's CLI defaults to 5 s and its trained window is
+ * 10 s.
  */
 export const BLOCK_MAX_SECONDS = 4;
 
@@ -61,26 +51,31 @@ export function splitLongBeat(seconds, max = BLOCK_MAX_SECONDS) {
 
 /** Shown in the tool description so a caller writes good phases first time. */
 export const PROMPT_GUIDE = [
-	"ARDY prompt rules (from nv-tlabs/ardy):",
-	'  - One action per phase, phrased like ARDY\'s own examples: "A person walks in a circle."',
-	"  - Subject + single present-tense action + full stop. The prompt becomes ONE embedding",
-	"    (num_text_tokens=1), so two actions in one phase average together instead of playing in order.",
-	"  - Sequence = more phases, never a compound sentence. Phases are taken as written:",
-	"    a comma or a 'then'/'while'/'as'/'before' clause is NOT split or trimmed for you, so",
-	"    split sequential beats yourself instead of relying on a rewrite.",
-	`  - A block holds at most ${BLOCK_MAX_SECONDS} s. Longer beats are chained into consecutive blocks,`,
-	"    because a single long block drifts away from its prompt.",
-	"  - Describe the BODY: no emotions, no camera, no scenery, no props the model cannot infer.",
-	"  - WRITE THE AMPLITUDE. A diffusion model regresses toward the mean, so a neutral verb",
-	"    generates a smaller motion than the words suggest. Pick the strong verb and state the",
-	"    magnitude: 'strides forward quickly' over 'walks forward', 'stops abruptly' over 'slows",
-	"    to a stop', 'leans far back and looks straight up' over 'looks up'. Simultaneous detail",
-	"    describing ONE pose is fine; sequential actions still need separate phases.",
-	'  - Good: ["A person strides forward quickly.", "A person stops abruptly.", "A person leans far back and looks straight up."]',
-	'  - Bad:  ["walks forward slowly, then stops abruptly", "staggers back in astonishment"]',
-	'  - Tested preset (backward airborne flail): "A person leaps backward with arms and legs flailing."',
-	"    Tested caveat: 'flailing' reads as ONE action, so the prompt normalises unchanged; split it",
-	'    yourself only if you want the leap and the flail as separate beats.',
+	"CozyClay ARDY production heuristics:",
+	"  These local workflow rules are informed by NVIDIA's upstream examples; no upstream ARDY",
+	"  prompt-rules document exists. Upstream facts and CozyClay policy are labeled below.",
+	'  - [Upstream examples] "A person walks in a circle." is a common example shape, not a required template.',
+	"  - [Upstream architecture] LLM2Vec on Llama-3-8B with MNTP + supervised adapters mean-pools",
+	"    every prompt into one pooled sentence vector: one 4096-D conditioning vector returned as",
+	"    [B, 1, 4096]. `num_text_tokens=1` exists only in the optional ONNX-TRT loading branch.",
+	"  - [Upstream support] Compound and ordered prompts are supported; NVIDIA includes",
+	'    "A person bows down and then stands upright." Fidelity is checkpoint-dependent.',
+	"  - [CozyClay reliability heuristic] For critical sequences, prefer one physical action per phase.",
+	"    Phases are taken as written: a comma or a 'then'/'while'/'as'/'before' clause is NOT split",
+	"    or trimmed for you, so split beats yourself when separate blocks are the safer choice.",
+	`  - [CozyClay studio policy] A block holds at most ${BLOCK_MAX_SECONDS} s; longer beats are chained into`,
+	"    consecutive blocks. This is not an upstream limit: the upstream CLI defaults to 5 s and the",
+	"    trained window is 10 s.",
+	"  - [Upstream model cards] Use neutral physical action terms rather than demographic adjectives",
+	"    (a bias-mitigation rule). The model is strongest at locomotion, gestures, combat, dancing, and",
+	"    everyday activities. It is not aware of scene objects: describe the body action, not object",
+	"    interaction (pantomime). The text encoder truncates prompts at 512 tokens.",
+	"  - [CozyClay pipeline observation] Long single-prompt takes dilute secondary actions in local",
+	"    measurements. Verb choice changes action category, not a documented magnitude mechanism. State",
+	"    observable intensity when useful: 'strides forward quickly', 'stops abruptly', or 'leans far",
+	"    back and looks straight up'. Test intensity variants — text adherence is not guaranteed.",
+	'  - Normalizer check (backward airborne flail): "A person leaps backward with arms and legs flailing."',
+	"    The normalizer leaves it unchanged; split it only when separate beats are your intended workflow.",
 ].join("\n");
 
 /**
@@ -95,9 +90,13 @@ const UNRENDERABLE = [
 	/\b(in|with)\s+(astonishment|awe|wonder|surprise|fear|joy|excitement|disbelief)\b/gi,
 	/\b(astonished|amazed|awestruck|terrified|delighted|confused|nervous|curious)ly?\b/gi,
 	/\b(at|toward|towards)\s+(something|the)\s+(enormous|huge|massive|towering|giant)(\s+\w+)?\b/gi,
-	// A camera/scene clause: the noun plus the verb phrase attached to it, stopping
-	// at the next clause boundary so the body action after it survives.
-	/\b(?:while|as|and)?\s*(?:the\s+)?(?:camera|shot|frame|rocket|spaceship|building)\b(?:\s+(?!and\b)\w+){0,3}/gi,
+	// A camera/scene clause: the noun used as the SUBJECT of a cinematic verb
+	// phrase ("the camera pushes in"), never as an object ("films the camera") —
+	// so at least one following word is required, and the phrase stops at the
+	// next clause boundary so the body action after it survives. Physical props
+	// a character interacts with (rocket, building, spaceship) are not listed:
+	// they are body-relevant, not cinematic.
+	/\b(?:while|as|and)?\s*(?:the\s+)?(?:camera|shot|frame)\b(?:\s+(?!(?:and|as|while)\b)\w+){1,3}/gi,
 ];
 
 /** A leftover connective at either end once an unrenderable clause is removed. */

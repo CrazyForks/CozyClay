@@ -7,7 +7,7 @@ import { buildArdyPose } from "./ardy/export.js";
 import { checkBridge, generate as ardyGenerate } from "./ardy/client.js";
 import { characterScaleFor, loadMotionFromUrl } from "./ardy/npz.js";
 import { retimeMotion } from "./ardy/retime.js";
-import { applyRootDrop, autoRoofDrop, normalizeRootDrop } from "./ardy/root-drop.js";
+import { applyAutoFall, applyRootDrop, autoRoofDrop, normalizeRootDrop } from "./ardy/root-drop.js";
 import {
 	createMotionEdit,
 	motionEditLayout,
@@ -449,7 +449,7 @@ function nextCharacterId(list) {
 	return id;
 }
 const DEMO_MOTION_URL = "/demo/walk-then-stop.npz";
-const DEMO_MOTION_PROMPT = "a person walking then a person stops";
+const DEMO_MOTION_PROMPT = "A person walks forward.";
 // How long a deletion keeps offering its one-press Undo. Both toasts use the
 // same window so the two deletion paths feel like one rule.
 const OBJECT_DELETE_UNDO_MS = 7000;
@@ -3858,7 +3858,7 @@ globalThis.playMode = centerTab === "play";
 			load_motion: async (args) => {
 				if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
 				const prompt = typeof args.prompt === "string" ? args.prompt : "";
-				if (args.drop !== undefined && !normalizeRootDrop(args.drop)) throw new Error("Invalid drop");
+				if (args.drop != null && !normalizeRootDrop(args.drop)) throw new Error("Invalid drop");
 				// Optional per-phase blocks land on the Prompts lane the way hand-authored
 				// ones do. They arrive on ARDY's 20 fps clock; the lane runs on the 24 fps
 				// production clock, so each boundary is converted, not copied.
@@ -3904,16 +3904,6 @@ globalThis.playMode = centerTab === "play";
 					onWorkspace: setLiveWorkspaceHandle,
 					onEvent: (name, payload) => {
 						if (name !== "motion_job" || typeof payload.taskId !== "string") return;
-						if (payload.status === "completed" && typeof payload.outcome?.motionUrl === "string") {
-							liveHandlersRef.current.load_motion({
-								url: payload.outcome.motionUrl,
-								prompt: payload.outcome.prompt ?? "",
-								blocks: payload.outcome.blocks ?? [],
-								drop: payload.outcome.drop ?? null,
-								characterId: payload.outcome.targetCharacterId,
-							}).catch((error) => setToast(error instanceof Error ? error.message : String(error)));
-							return;
-						}
 						if (["failed", "cancelled", "expired"].includes(payload.status)) {
 							setToast(payload.outcome?.message ?? `Motion job ${payload.status}.`);
 						}
@@ -5053,6 +5043,7 @@ globalThis.playMode = centerTab === "play";
 			const raw = retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS);
 			const targetCharacter = charactersRef.current.find((entry) => entry.id === targetCharacterId);
 			if (!targetCharacter) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
+			const rig = rigs[targetCharacter.id] ?? await waitForRig(targetCharacter.id);
 			// No explicit drop staged: a character standing on a raised object
 			// whose take walks off the edge falls on its own — ARDY motion is
 			// flat-ground, so the stage supplies the gravity.
@@ -5068,14 +5059,13 @@ globalThis.playMode = centerTab === "play";
 					depth: (object.footprint?.depth ?? 0) * (object.scaleZ ?? 1),
 				})),
 			);
-			const decoded = applyRootDrop(raw, staging);
+			const decoded = drop ? applyRootDrop(raw, staging) : applyAutoFall(raw, staging);
 			if (!drop && staging) {
 				setToast(ko(
 					`Auto drop staged: the take leaves its support at ${staging.fromS.toFixed(1)}s and falls ${staging.meters.toFixed(1)}m`,
 					`자동 낙하 적용: ${staging.fromS.toFixed(1)}초에 지지면을 벗어나 ${staging.meters.toFixed(1)}m 낙하`,
 				));
 			}
-			const rig = rigs[targetCharacter.id] ?? await waitForRig(targetCharacter.id);
 			const targetStillExists = charactersRef.current.some((entry) => entry.id === targetCharacter.id);
 			if (!targetStillExists) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
 			const bufferOwnsTarget = targetCharacter.id === loadedLayerCharRef.current;
@@ -6348,6 +6338,16 @@ function resizePromptClip(id, edge, rawFrame) {
 			// A path asks the model to CHANGE course at authored frames, so a
 			// shorter 4 s history reacts faster to the pins than the default
 			// full-window lookback (which favors continuing whatever came before).
+			// This is deliberate, not arbitrary: upstream's README documents the
+			// tradeoff -- a smaller history crop adapts faster to new
+			// prompts/constraints, a larger one keeps longer context for complex
+			// semantics and smoother transitions. Waypoint mode re-plans on
+			// prompt/constraint changes, so faster adaptation wins here. The
+			// initial beat is already covered: when no historyFrames arrives,
+			// cclay_sequence_generate.py falls back to the trained 10 s window
+			// minus the model's generation horizon (~8 s on Core-Horizon40), and
+			// chained segments after the first carry only a ~0.6 s transition
+			// tail, so the long-context case barely applies mid-chain.
 			// A bridge-side frame count, so it is 4 s counted on the WIRE clock.
 			body.historyFrames = 4 * ARDY_FPS;
 		} else if (hasBlockEdits) {

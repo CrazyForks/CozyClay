@@ -72,7 +72,7 @@ const transport = new StdioClientTransport({
 	args: [serverPath, "--live-port", String(livePort)],
 	env: { ...process.env, COZYCLAY_BRIDGE: `http://127.0.0.1:${bridgePort}` },
 });
-const editorState = { loadCount: 0 };
+const editorState = { loadCount: 0, loadMode: "ok" };
 const connectEditor = async (workspaceId) => {
 	const socket = new WebSocket(`ws://127.0.0.1:${livePort}/live`);
 	const events = [];
@@ -105,6 +105,16 @@ const connectEditor = async (workspaceId) => {
 		}
 		if (frame.name === "load_motion") {
 			editorState.loadCount += 1;
+			if (editorState.loadMode === "reject") {
+				editorState.loadMode = "ok";
+				socket.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: "test editor rejected motion" }));
+				return;
+			}
+			if (editorState.loadMode === "disconnect") {
+				editorState.loadMode = "ok";
+				socket.close();
+				return;
+			}
 			socket.send(JSON.stringify({ type: "result", id: frame.id, ok: true, value: { loaded: true } }));
 			return;
 		}
@@ -126,6 +136,7 @@ const connectEditor = async (workspaceId) => {
 
 let editor;
 let reconnect;
+let uncertainReconnect;
 try {
 	await client.connect(transport);
 	editor = await connectEditor("motion-job-workspace");
@@ -145,7 +156,30 @@ try {
 	assert.equal(completed.status, "completed");
 	assert.equal(completed.outcome.motionUrl, "/ardy/motions/123456-abcdef");
 	assert.equal(completed.outcome.targetCharacterId, "char-a");
-	assert.equal(editorState.loadCount, 0, "test editor must only observe a pushed terminal event; App owns installation");
+	assert.equal(editorState.loadCount, 1, "completed event must follow exactly one confirmed editor installation");
+
+	// Given a completed generation whose editor rejects installation
+	// When load_motion returns an explicit error
+	editorState.loadMode = "reject";
+	const rejectedStart = await call("generate_motion", { phases: ["A person jumps upward."] });
+	const rejectedTask = JSON.parse(rejectedStart.content[0].text);
+	const rejectedGeneration = await withTimeout(nextGeneration(), "rejected generation request");
+	rejectedGeneration.resolve({ motionUrl: "/ardy/motions/222222-badbad" });
+	// Then the terminal job fails visibly instead of remaining silently completed.
+	const rejected = await withTimeout(editor.nextEvent(rejectedTask.taskId, "failed"), "rejected motion event");
+	assert.match(rejected.outcome.message, /test editor rejected motion/);
+	assert.equal(editorState.loadCount, 2, "rejected installation must be attempted exactly once");
+
+	// Given a bridge response outside the allowed motion artifact paths
+	// When generation completes
+	const invalidUrlStart = await call("generate_motion", { phases: ["A person jumps upward."] });
+	const invalidUrlTask = JSON.parse(invalidUrlStart.content[0].text);
+	const invalidUrlGeneration = await withTimeout(nextGeneration(), "invalid-url generation request");
+	invalidUrlGeneration.resolve({ motionUrl: "/ardy/../../outside.npz" });
+	// Then the server fails the job before any editor mutation.
+	const invalidUrl = await withTimeout(editor.nextEvent(invalidUrlTask.taskId, "failed"), "invalid-url motion event");
+	assert.match(invalidUrl.outcome.message, /invalid motion URL/);
+	assert.equal(editorState.loadCount, 2, "invalid bridge URL must never reach load_motion");
 
 	// Given the model-visible tool inventory
 	// When its names are inspected
@@ -163,7 +197,7 @@ try {
 	editor.socket.send(JSON.stringify({ type: "event", name: "motion_job_cancel", payload: { taskId: cancelledTask.taskId } }));
 	const cancelled = await withTimeout(editor.nextEvent(cancelledTask.taskId, "cancelled"), "cancelled motion event");
 	assert.equal(cancelled.status, "cancelled");
-	assert.equal(editorState.loadCount, 0, "cancelled motion must not mutate the editor");
+	assert.equal(editorState.loadCount, 2, "cancelled motion must not install another take");
 	cancellableGeneration.resolve({ cancelled: true });
 
 	// Given a job that completes while its stable workspace is disconnected
@@ -181,6 +215,7 @@ try {
 	assert.equal(recovered.taskId, recoverTask.taskId);
 	assert.equal(recovered.status, "completed");
 	assert.equal(recovered.outcome.motionUrl, "/ardy/motions/654321-fedcba");
+	assert.equal(editorState.loadCount, 3, "reconnected workspace must install its retained take exactly once");
 	// Given the reconnect consumed the retained terminal outcome
 	// When that same stable workspace reconnects again
 	// Then the completed motion is not replayed a second time.
@@ -192,6 +227,22 @@ try {
 		withTimeout(reconnect.nextEvent(recoverTask.taskId, "completed"), "completed motion event"),
 		/Timed out waiting for completed motion event/,
 	);
+
+	// Given a completed take whose install acknowledgement is lost with the socket
+	// When the stable workspace reconnects
+	editorState.loadMode = "disconnect";
+	const uncertainStart = await call("generate_motion", { phases: ["A person falls backward."] });
+	const uncertainTask = JSON.parse(uncertainStart.content[0].text);
+	const uncertainGeneration = await withTimeout(nextGeneration(), "uncertain generation request");
+	const uncertainClosed = once(reconnect.socket, "close");
+	uncertainGeneration.resolve({ motionUrl: "/ardy/motions/777777-abcdef" });
+	await withTimeout(uncertainClosed, "uncertain install disconnect");
+	assert.equal(editorState.loadCount, 4, "uncertain installation must be attempted exactly once");
+	uncertainReconnect = await connectEditor("motion-job-workspace");
+	// Then a failed outcome is reported without replaying the uncertain mutation.
+	const uncertain = await withTimeout(uncertainReconnect.nextEvent(uncertainTask.taskId, "failed"), "uncertain motion event");
+	assert.match(uncertain.outcome.message, /may have applied/);
+	assert.equal(editorState.loadCount, 4, "uncertain installation must never be retried");
 
 	// Given a terminal job and an injected clock past its retention TTL
 	// When cleanup runs before reconnect delivery
@@ -211,9 +262,9 @@ try {
 	capacity.create("workspace-b");
 	assert.throws(() => capacity.create("workspace-c"), /capacity reached/);
 
-	console.log("motion job immediate payload, push completion, cancellation, reconnect recovery, expiry, and no polling tools passed");
+	console.log("motion job confirmed installation, rejection, cancellation, reconnect recovery, uncertain delivery, expiry, and no polling tools passed");
 } finally {
-	for (const connection of [editor, reconnect]) {
+	for (const connection of [editor, reconnect, uncertainReconnect]) {
 		if (connection?.socket.readyState === WebSocket.OPEN) connection.socket.close();
 	}
 	await client.close().catch(() => {});

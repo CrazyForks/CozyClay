@@ -33,6 +33,7 @@ export class MotionJobRegistry {
 			lastUpdatedAt: now, ttlMs: this.ttlMs, pollIntervalMs: MOTION_JOB_POLL_INTERVAL_MS,
 			cancel: null, expiresAt: null, outcome: null,
 			deliveredWorkspaceIds: new Set(),
+			installationStates: new Map(),
 		};
 		this.jobs.set(job.taskId, job);
 		return job;
@@ -153,6 +154,17 @@ export class LiveHub {
 		const workspaceId = this.workspaceIds.get(workspaceHandle);
 		if (!workspaceId) throw new Error(`Unknown or stale live workspace handle "${workspaceHandle}".`);
 		return workspaceId;
+	}
+
+	// Resolve the current command handle from the job's stable workspace id.
+	// Motion jobs outlive socket handles across editor reconnects.
+	handleForWorkspaceId(workspaceId) {
+		for (const [handle, id] of this.workspaceIds) {
+			if (id !== workspaceId) continue;
+			const socket = this.editors.get(handle);
+			if (socket && socket.readyState === WebSocket.OPEN) return handle;
+		}
+		return null;
 	}
 
 	runExclusive(name, workspaceHandle, work) {

@@ -193,3 +193,18 @@ constraint lines, final JSON result), and the pulled npz lands at
 `--output` (default `tools/ardy/out/<pose>-constrained.npz`, gitignored).
 The result is a full ARDY motion npz and can be used like any other
 generated motion.
+
+## Operational notes
+
+- Prompt-block 4 s cap: this is a CozyClay local quality policy, not an
+  ARDY limit. Upstream's CLI defaults to 5 s (`--duration` in
+  scripts/generate.py), and
+  the model's trained window is 10 s — CozyClay caps at 4 s because blocks
+  beyond that drift visibly on this bridge.
+- Embedding-cache footgun (upstream nv-tlabs/ardy PR #8): cache keys hash
+  only the prompt text. After changing the text encoder or adapters, clear
+  the cache dir or stale embeddings are silently reused under the new
+  encoder.
+- Prompts are conditioned per segment (`segments[].prompt`); in multi-phase
+  MCP requests the joined top-level `prompt` field is transport metadata
+  only and is not what the model attends to.

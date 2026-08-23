@@ -79,6 +79,29 @@ const afterCamera = normalizePhase("turns while the camera pushes in and raises 
 check("a body action after a camera clause survives", /raises one arm/i.test(afterCamera.text), afterCamera.text);
 check("and the camera clause is still gone", !/camera/i.test(afterCamera.text), afterCamera.text);
 
+// Physical-world nouns a character interacts with are NOT camera/scene language.
+// The normaliser must leave them alone entirely (no note, no edit).
+const building = normalizePhase("A person climbs a building.");
+check("a building as an object survives", building.text === "A person climbs a building.", building.text);
+
+const rocket = normalizePhase("A person boards a rocket.");
+check("a rocket as an object survives", rocket.text === "A person boards a rocket.", rocket.text);
+
+const spaceship = normalizePhase("A person enters the spaceship.");
+check("a spaceship as an object survives", spaceship.text === "A person enters the spaceship.", spaceship.text);
+
+const filmedCamera = normalizePhase("A person films the camera.");
+check("a camera as an object survives", filmedCamera.text === "A person films the camera.", filmedCamera.text);
+
+// ...while genuine camera clauses are still stripped, note included.
+const wavesCamera = normalizePhase("A person waves while the camera pushes in.");
+check("a trailing camera clause is dropped", wavesCamera.text === "A person waves.", wavesCamera.text);
+check("the drop is still explained", wavesCamera.notes.some((n) => /cannot animate/.test(n)), wavesCamera.notes.join("; "));
+
+const bowsShot = normalizePhase("the shot widens as a person bows");
+check("a leading shot clause is dropped", bowsShot.text === "A person bows.", bowsShot.text);
+check("the shot drop is still explained", bowsShot.notes.some((n) => /cannot animate/.test(n)), bowsShot.notes.join("; "));
+
 /* -------------------------------- sequences ------------------------------ */
 
 const seq = normalizePhases(["stands up from a chair then runs forward", "trips and falls"]);
@@ -101,9 +124,17 @@ check("blank beats do not become prompts", blank.texts.filter(Boolean).length ==
 
 /* --------------------------------- guide --------------------------------- */
 
-check("the guide shows ARDY's own example", PROMPT_GUIDE.includes("A person walks in a circle."));
-check("the guide warns that phases are taken as written", /NOT split or trimmed for you/.test(PROMPT_GUIDE));
-check("the guide explains the single-token reason", /num_text_tokens=1/.test(PROMPT_GUIDE));
+check("the guide labels CozyClay heuristics honestly", PROMPT_GUIDE.includes("CozyClay ARDY production heuristics:"));
+check("the guide shows an upstream example without presenting it as a rule", PROMPT_GUIDE.includes("A person walks in a circle."));
+check("the guide warns that phases are taken as written", /NOT split\s+or trimmed for you/.test(PROMPT_GUIDE));
+check("the guide explains the pooled conditioning vector", /MNTP \+ supervised adapters mean-pools\s+every prompt into one pooled sentence vector/.test(PROMPT_GUIDE));
+check("the guide scopes num_text_tokens to the optional ONNX-TRT branch", /num_text_tokens=1.*optional ONNX-TRT loading branch/.test(PROMPT_GUIDE));
+check("the guide rejects the unsupported averaging claim", !PROMPT_GUIDE.includes("average into"));
+check("the guide rejects the unsupported confused-pose claim", !PROMPT_GUIDE.includes("confused pose"));
+check("the guide includes the model-card neutral-terms rule", /Use neutral physical action terms rather than demographic adjectives/.test(PROMPT_GUIDE));
+check("the guide states the encoder token limit", PROMPT_GUIDE.includes("truncates prompts at 512 tokens"));
+check("the guide scopes the block cap as CozyClay policy", PROMPT_GUIDE.includes("[CozyClay studio policy]"));
+check("the guide states the normalizer-only flail result", /The normalizer leaves it unchanged/.test(PROMPT_GUIDE));
 
 if (failures > 0) {
 	console.log(`\n${failures} check(s) failed`);
