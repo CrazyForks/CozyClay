@@ -449,7 +449,7 @@ function nextCharacterId(list) {
 	return id;
 }
 const DEMO_MOTION_URL = "/demo/walk-then-stop.npz";
-const DEMO_MOTION_PROMPT = "a person walking then a person stops";
+const DEMO_MOTION_PROMPT = "A person walks forward.";
 // How long a deletion keeps offering its one-press Undo. Both toasts use the
 // same window so the two deletion paths feel like one rule.
 const OBJECT_DELETE_UNDO_MS = 7000;
