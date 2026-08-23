@@ -240,7 +240,22 @@ const screenGrab = await evaluate(
 expect("the screen-space ring is grabbable", !!screenGrab);
 if (screenGrab) {
 	const beforeRoll = await transform();
-	await drag(screenGrab, { x: screenGrab.x + 70, y: screenGrab.y + 50 });
+	// Roll with a true arc around the gizmo centre: under the free editor
+	// camera a straight chord can subtend less than the 5-degree snap and
+	// read as a no-op even though the ring works.
+	const hubRoll = await evaluate(
+		"(() => { const hs = window.__gizmoHandles(); return { x: hs.reduce((a, h) => a + h.x / hs.length, 0), y: hs.reduce((a, h) => a + h.y / hs.length, 0) }; })()",
+	);
+	const rollRadius = Math.hypot(screenGrab.x - hubRoll.x, screenGrab.y - hubRoll.y);
+	const rollStart = Math.atan2(screenGrab.y - hubRoll.y, screenGrab.x - hubRoll.x);
+	await mouse("mousePressed", screenGrab.x, screenGrab.y);
+	for (let i = 1; i <= 18; i++) {
+		const a = rollStart + (i / 18) * (Math.PI / 2);
+		await mouse("mouseMoved", Math.round(hubRoll.x + rollRadius * Math.cos(a)), Math.round(hubRoll.y + rollRadius * Math.sin(a)), { buttons: 1 });
+		await sleep(16);
+	}
+	await mouse("mouseReleased", Math.round(hubRoll.x + rollRadius * Math.cos(rollStart + Math.PI / 2)), Math.round(hubRoll.y + rollRadius * Math.sin(rollStart + Math.PI / 2)));
+	await sleep(150);
 	const afterRoll = await transform();
 	expect("the screen ring rolls the object about the view axis", JSON.stringify(afterRoll.Rotation) !== JSON.stringify(beforeRoll.Rotation), `${JSON.stringify(beforeRoll.Rotation)} -> ${JSON.stringify(afterRoll.Rotation)}`);
 	expect("the screen ring never moves or scales the object", JSON.stringify(afterRoll.Position) === JSON.stringify(beforeRoll.Position) && JSON.stringify(afterRoll.Scale) === JSON.stringify(beforeRoll.Scale));
@@ -422,20 +437,15 @@ expect(
 
 /* ----------------------------------------------------- plan parity --- */
 
+// The Top-View is always the inset now (the double-click big-pane swap is
+// gone; double-click folds the inset instead), so the puck is dragged in
+// the inset itself: PLAN_EXTENT (12.4 m) maps to half its shorter side.
 const beforePlan = await transform();
-const insetCtr = await evaluate("(() => { const p = document.querySelector('.vp-inset'); const r = p.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()");
-await send("Input.dispatchMouseEvent", { type: "mousePressed", x: insetCtr.x, y: insetCtr.y, button: "left", buttons: 1, clickCount: 2 });
-await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: insetCtr.x, y: insetCtr.y, button: "left", buttons: 0, clickCount: 2 });
-await sleep(1200);
 const planGrab = await evaluate(
-	`(() => { const b = document.querySelector('.vp-main').getBoundingClientRect(); const scale = (b.height / 2) / 12.4;
+	`(() => { const b = document.querySelector('.vp-inset').getBoundingClientRect(); const scale = Math.min(b.width, b.height) / 2 / 12.4;
 		return { x: Math.round(b.left + b.width / 2 + ${beforePlan.Position[0]} * scale), y: Math.round(b.top + b.height / 2 + ${beforePlan.Position[2]} * scale) }; })()`,
 );
-await drag(planGrab, { x: planGrab.x, y: planGrab.y + 60 });
-const insetCtr2 = await evaluate("(() => { const p = document.querySelector('.vp-inset'); const r = p.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()");
-await send("Input.dispatchMouseEvent", { type: "mousePressed", x: insetCtr2.x, y: insetCtr2.y, button: "left", buttons: 1, clickCount: 2 });
-await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: insetCtr2.x, y: insetCtr2.y, button: "left", buttons: 0, clickCount: 2 });
-await sleep(700);
+await drag(planGrab, { x: planGrab.x, y: planGrab.y + 40 });
 const afterPlan = await transform();
 expect("the bird's-eye board drives the same object record", afterPlan.Position[2] !== beforePlan.Position[2], JSON.stringify(afterPlan));
 
