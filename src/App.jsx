@@ -6348,6 +6348,16 @@ function resizePromptClip(id, edge, rawFrame) {
 			// A path asks the model to CHANGE course at authored frames, so a
 			// shorter 4 s history reacts faster to the pins than the default
 			// full-window lookback (which favors continuing whatever came before).
+			// This is deliberate, not arbitrary: upstream's README documents the
+			// tradeoff -- a smaller history crop adapts faster to new
+			// prompts/constraints, a larger one keeps longer context for complex
+			// semantics and smoother transitions. Waypoint mode re-plans on
+			// prompt/constraint changes, so faster adaptation wins here. The
+			// initial beat is already covered: when no historyFrames arrives,
+			// cclay_sequence_generate.py falls back to the trained 10 s window
+			// minus the model's generation horizon (~8 s on Core-Horizon40), and
+			// chained segments after the first carry only a ~0.6 s transition
+			// tail, so the long-context case barely applies mid-chain.
 			// A bridge-side frame count, so it is 4 s counted on the WIRE clock.
 			body.historyFrames = 4 * ARDY_FPS;
 		} else if (hasBlockEdits) {
