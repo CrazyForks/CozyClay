@@ -900,6 +900,56 @@ function FollowCamRig({ enabled, frame, scene, shot, camRef, look, isInterrupted
 }
 
 /**
+ * Applies the shot camera's yaw/pitch from its look ref every frame. Before
+ * the camera split, FlyControls owned the shot camera and performed this
+ * apply as a side effect of flying; with the fly controls bound to the
+ * editor camera, the recording camera still needs its aim (ShotRig, follow,
+ * frame-selection) reflected in its actual rotation — the preview and the
+ * capture read the camera object, not the ref.
+ */
+function ShotLookApplier({ camRef, look }) {
+	useFrame(() => {
+		const cam = camRef.current;
+		if (!cam) return;
+		if (cam.rotation.order !== "YXZ") cam.rotation.order = "YXZ";
+		if (cam.rotation.x !== look.current.pitch || cam.rotation.y !== look.current.yaw || cam.rotation.z !== 0) {
+			cam.rotation.set(look.current.pitch, look.current.yaw, 0);
+		}
+	});
+	return null;
+}
+
+/**
+ * Seeds the editor camera once, inside the Canvas root — App-level effects
+ * run before R3F mounts its children, so the ref is still null there. The
+ * seed frames both the subject and the shot camera: the first editor frame
+ * must read as "the set with the camera in it".
+ */
+function EditorCamSeed({ camRef, lookRef, shotCamRef, subject }) {
+	const seeded = useRef(false);
+	const invalidate = useThree((state) => state.invalidate);
+	useEffect(() => {
+		if (seeded.current) return;
+		const cam = camRef.current;
+		if (!cam) return;
+		seeded.current = true;
+		const shot = shotCamRef.current;
+		const target = {
+			x: ((subject?.x ?? 0) + (shot?.position.x ?? 1)) / 2,
+			y: 1.1,
+			z: ((subject?.z ?? 0) + (shot?.position.z ?? 2.4)) / 2,
+		};
+		cam.position.set(target.x + 3.2, 2.9, target.z + 4.2);
+		const angles = aimAt(cam.position, target);
+		lookRef.current = { yaw: angles.yaw, pitch: angles.pitch };
+		cam.rotation.order = "YXZ";
+		cam.rotation.set(angles.pitch, angles.yaw, 0);
+		invalidate();
+	});
+	return null;
+}
+
+/**
  * The shot camera drawn as an object in the editor view: a body and a short
  * frustum wireframe on GIZMO_LAYER, synced from the live camera every frame.
  * Preview, capture and PlayView draws all drop GIZMO_LAYER, so the ghost can
@@ -936,15 +986,20 @@ function ShotCameraGhost({ camRef, fovDeg, aspect, visible, selected }) {
 	if (!visible) return null;
 	return (
 		<group ref={groupRef}>
-			<mesh userData={{ shotCameraPick: true }}>
-				<boxGeometry args={[0.22, 0.16, 0.34]} />
-				<meshBasicMaterial color={selected ? "#ffb454" : "#46536a"} />
+			<mesh userData={{ shotCameraPick: true }} position={[0, 0, 0.06]}>
+				<boxGeometry args={[0.15, 0.11, 0.2]} />
+				<meshBasicMaterial color={selected ? "#ffb454" : "#3b6ea5"} />
+			</mesh>
+			{/* the lens: a short cone opening toward the view direction */}
+			<mesh userData={{ shotCameraPick: true }} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, -0.075]}>
+				<coneGeometry args={[0.052, 0.09, 20, 1, true]} />
+				<meshBasicMaterial color={selected ? "#e09a3e" : "#2f5a8a"} side={THREE.DoubleSide} />
 			</mesh>
 			<lineSegments key={`${fovDeg}:${aspect}`}>
 				<bufferGeometry>
 					<bufferAttribute attach="attributes-position" array={frustum} count={frustum.length / 3} itemSize={3} />
 				</bufferGeometry>
-				<lineBasicMaterial color={selected ? "#ffb454" : "#8a97ad"} transparent opacity={0.9} />
+				<lineBasicMaterial color={selected ? "#ffb454" : "#6f9cc9"} transparent opacity={0.85} />
 			</lineSegments>
 		</group>
 	);
@@ -1417,6 +1472,14 @@ globalThis.playMode = centerTab === "play";
 	// controls the shot camera itself — the pre-split single-view behaviour —
 	// for framing by flying.
 	const [lookThroughShot, setLookThroughShot] = useState(false);
+	useEffect(() => {
+		if (!lookThroughShot) return undefined;
+		const onKey = (event) => {
+			if (event.key === "Escape") setLookThroughShot(false);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [lookThroughShot]);
 	useEffect(() => {
 		// The player always starts the finished piece from frame 0; auto-play
 		// only exists once there is a motion to play.
@@ -3930,17 +3993,6 @@ globalThis.playMode = centerTab === "play";
 	// follow, rail and capture never touch it — that is the whole split.
 	const editorCamRef = useRef(null);
 	const editorLook = useRef({ yaw: 0, pitch: 0 });
-	// Seed once: a 3/4 overview aimed at the subject, so the first frame of
-	// the editor view reads as "the set with the camera in it".
-	useEffect(() => {
-		const cam = editorCamRef.current;
-		if (!cam) return;
-		const angles = aimAt(cam.position, { x: charA.x, y: 1.0, z: charA.z });
-		editorLook.current = { yaw: angles.yaw, pitch: angles.pitch };
-		cam.rotation.order = "YXZ";
-		cam.rotation.set(angles.pitch, angles.yaw, 0);
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
 
 	/* The shot camera as a manipulable object in the editor view: the proxy
 	 * mirrors the live camera, gizmo patches write straight back to it and
@@ -6787,6 +6839,8 @@ function resizePromptClip(id, edge, rawFrame) {
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
 							/>
 							{centerTab === "scene" && railCurve && <CameraRailScenePreview points={railCurve.points} />}
+							<EditorCamSeed camRef={editorCamRef} lookRef={editorLook} shotCamRef={shotCamRef} subject={charA} />
+							<ShotLookApplier camRef={shotCamRef} look={look} />
 							<ShotCameraGhost
 								camRef={shotCamRef}
 								fovDeg={fovDeg}
@@ -6879,25 +6933,34 @@ function resizePromptClip(id, edge, rawFrame) {
 							style={{ "--shot-aspect": shotOutput.aspect }}
 						>
 							<span className="vp-inset-tag vp-shot-preview-tag">
-								{ko("Shot preview", "샷 프리뷰")}
+								<span className="vp-rec-dot" aria-hidden="true" />
+								{ko("Shot", "샷")}
 								<button
 									type="button"
 									className="vp-look-through"
-									title={ko("Fly the shot camera itself to frame the shot", "샷 카메라를 직접 조종해 프레이밍")}
+									aria-label={ko("Look through the shot camera", "샷 카메라 시점으로 보기")}
+									title={ko("Fly the shot camera itself (Esc returns)", "샷 카메라를 직접 조종 (Esc로 복귀)")}
 									onClick={() => setLookThroughShot(true)}
 								>
-									{ko("Look through", "시점 들어가기")}
+									<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+										<path d="M15 3h6v6" />
+										<path d="M21 3l-8 8" />
+										<path d="M9 21H3v-6" />
+										<path d="M3 21l8-8" />
+									</svg>
 								</button>
 							</span>
 						</div>
 						{lookThroughShot && !playMode && !ikMode && (
 							<button
 								type="button"
-								className="vp-look-through-exit"
-								title={ko("Return to the editor view", "에디터 시점으로 돌아가기")}
+								className="vp-inset-tag vp-look-through-exit"
+								title={ko("Return to the editor view (Esc)", "에디터 시점으로 돌아가기 (Esc)")}
 								onClick={() => setLookThroughShot(false)}
 							>
-								{ko("◉ Shot camera — exit", "◉ 샷 카메라 시점 — 나가기")}
+								<span className="vp-rec-dot" aria-hidden="true" />
+								{ko("Shot camera", "샷 카메라")}
+								<span className="vp-exit-hint">{ko("Esc · exit", "Esc · 나가기")}</span>
 							</button>
 						)}
 

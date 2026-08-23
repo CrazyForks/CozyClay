@@ -218,6 +218,15 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 	}
 	activeScopeRef.current = { id: object?.id, mode };
 
+	// The WHOLE gizmo — visible arrows and rings included, not only the pick
+	// proxies — belongs on GIZMO_LAYER: the working views enable that layer,
+	// while the shot preview, capture and PlayView draws drop it, so editing
+	// chrome can never reach a recorded frame. No dependency list: the handle
+	// meshes remount on tool/selection changes and must be re-layered each time.
+	useEffect(() => {
+		rootRef.current?.traverse((node) => node.layers?.set(GIZMO_LAYER));
+	});
+
 	/** pointer -> NDC inside the rect the shot camera actually rendered into */
 	const pointerRay = (event) => {
 		const pane = paneRef.current;
@@ -241,15 +250,22 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		// Picking walks past lines/points to the first real surface.
 		const hits = tools.raycaster.intersectObjects(scene.children, true);
 		const hit = hits.find((entry) => entry.object.isMesh);
+		// The camera ghost lives on GIZMO_LAYER so the recording never sees it;
+		// give it its own pick pass and prefer whichever surface is nearer.
+		tools.raycaster.layers.set(GIZMO_LAYER);
+		const ghostHit = tools.raycaster.intersectObjects(scene.children, true).find((entry) => {
+			if (!entry.object.isMesh) return false;
+			for (let node = entry.object; node; node = node.parent) if (node.userData?.shotCameraPick) return true;
+			return false;
+		});
+		tools.raycaster.layers.set(0);
+		if (ghostHit && (!hit || ghostHit.distance < hit.distance)) return { id: "__shotcam__", point: ghostHit.point.clone() };
 		if (!hit) return null;
 		for (let node = hit.object; node; node = node.parent) {
 			if (node.userData?.sceneObjectId) return { id: node.userData.sceneObjectId, point: hit.point.clone() };
 			// Characters are click targets too: a namespaced id routes the
 			// selection to the hierarchy, so the Inspector owns the controls.
 			if (node.userData?.characterPick) return { id: `char:${node.userData.characterPick}`, point: hit.point.clone() };
-			// The shot camera's ghost body: selecting it routes to the camera
-			// hierarchy entry, same as clicking its puck on the plan.
-			if (node.userData?.shotCameraPick) return { id: "__shotcam__", point: hit.point.clone() };
 		}
 		return null; // whatever is in front is set, not an object
 	};
