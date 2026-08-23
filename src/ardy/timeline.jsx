@@ -988,7 +988,7 @@ export default function Timeline({
 							railDraw={railDraw}
 							railLength={cameraRailLength}
 							onChange={(patch) => handlers.current.onCameraBlockChange?.(patch)}
-							onPreview={() => handlers.current.onCameraPreview?.(cameraBlockIdx)}
+							onPreview={() => handlers.current.onCameraPreview?.(selectedCameraShot.id)}
 							onRailDrawToggle={() => handlers.current.onCameraRailDrawToggle?.()}
 							onRailDelete={() => handlers.current.onCameraRailDelete?.()}
 						/>
