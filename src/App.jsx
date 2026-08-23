@@ -4232,7 +4232,7 @@ globalThis.playMode = centerTab === "play";
 			});
 			if (download) {
 				const slate = (moveSequence?.slate ?? "shot").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "shot";
-				const name = `cozyclay-${slate}.webm`;
+				const name = `cozyclay-${slate}.mp4`;
 				const url = URL.createObjectURL(result.blob);
 				const anchor = document.createElement("a");
 				anchor.href = url;
@@ -5615,14 +5615,14 @@ globalThis.playMode = centerTab === "play";
 			let metadata;
 			try {
 				metadata = await new Promise((resolve, reject) => {
-					const timer = setTimeout(() => reject(new Error("exported WebM metadata timed out")), 5000);
+					const timer = setTimeout(() => reject(new Error("exported MP4 metadata timed out")), 5000);
 					video.onloadedmetadata = () => {
 						clearTimeout(timer);
 						resolve({ duration: video.duration, width: video.videoWidth, height: video.videoHeight });
 					};
 					video.onerror = () => {
 						clearTimeout(timer);
-						reject(new Error("browser could not decode exported WebM metadata"));
+						reject(new Error("browser could not decode exported MP4 metadata"));
 					};
 					video.preload = "metadata";
 					video.src = url;

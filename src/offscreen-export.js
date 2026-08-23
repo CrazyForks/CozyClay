@@ -1,6 +1,10 @@
-import { muxWebM } from "./webm-muxer.js";
+import { muxMP4 } from "./mp4-muxer.js";
 
-const CODECS = Object.freeze(["vp09.00.10.08", "vp8"]);
+const CODECS = Object.freeze([
+	Object.freeze({ codec: "avc1.640032", avc: Object.freeze({ format: "avc" }) }),
+	Object.freeze({ codec: "avc1.4d0032", avc: Object.freeze({ format: "avc" }) }),
+	Object.freeze({ codec: "avc1.420032", avc: Object.freeze({ format: "avc" }) }),
+]);
 
 export function normalizeFrameRange(startFrame, endFrame) {
 	const start = Math.round(startFrame);
@@ -26,9 +30,9 @@ function flipRows(source, destination, width, height) {
 }
 
 async function supportedEncoderConfig(width, height, fps, VideoEncoderClass) {
-	for (const codec of CODECS) {
+	for (const candidate of CODECS) {
 		const config = {
-			codec,
+			...candidate,
 			width,
 			height,
 			framerate: fps,
@@ -39,11 +43,11 @@ async function supportedEncoderConfig(width, height, fps, VideoEncoderClass) {
 			const support = await VideoEncoderClass.isConfigSupported(config);
 			if (support.supported) return support.config;
 		} catch {
-			// Try the next WebM codec. A browser can expose WebCodecs while a
-			// particular hardware/software encoder is unavailable.
+			// Try the next H.264 profile. A browser can expose WebCodecs while a
+			// particular hardware/software encoder profile is unavailable.
 		}
 	}
-	throw new Error("This browser has no VP9/VP8 WebCodecs encoder");
+	throw new Error("This browser has no H.264 WebCodecs encoder for MP4 export");
 }
 
 function abortError() {
@@ -75,13 +79,20 @@ export async function exportOffscreenVideo({
 
 	const config = await supportedEncoderConfig(width, height, fps, VideoEncoderClass);
 	const chunks = [];
+	let decoderConfig = null;
 	const hashes = [];
 	let encoderError = null;
 	const encoder = new VideoEncoderClass({
-		output(chunk) {
+		output(chunk, metadata) {
 			const data = new Uint8Array(chunk.byteLength);
 			chunk.copyTo(data);
-			chunks.push({ timestamp: chunk.timestamp, type: chunk.type, data });
+			chunks.push({
+				timestamp: chunk.timestamp,
+				duration: chunk.duration ?? Math.round(1_000_000 / fps),
+				type: chunk.type,
+				data,
+			});
+			if (!decoderConfig && metadata?.decoderConfig) decoderConfig = metadata.decoderConfig;
 		},
 		error(error) {
 			encoderError = error;
@@ -131,7 +142,16 @@ export async function exportOffscreenVideo({
 	if (chunks.length !== range.frameCount) {
 		throw new Error(`WebCodecs emitted ${chunks.length} frames for ${range.frameCount} inputs`);
 	}
-	const blob = muxWebM({ chunks, width, height, fps, codec: config.codec });
+	const blob = await muxMP4({
+		chunks,
+		codec: config.codec,
+		decoderConfig: decoderConfig ?? {
+			codec: config.codec,
+			codedWidth: width,
+			codedHeight: height,
+		},
+		signal,
+	});
 	return {
 		...range,
 		fps,

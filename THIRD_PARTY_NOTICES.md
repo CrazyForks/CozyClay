@@ -11,6 +11,16 @@ CozyClay's browser-based 3D studio uses [Three.js](https://threejs.org/) through
 - Source: https://github.com/mrdoob/three.js
 - License text: https://github.com/mrdoob/three.js/blob/dev/LICENSE
 
+## Mediabunny
+
+CozyClay uses [Mediabunny](https://mediabunny.dev/) to mux recorded WebCodecs
+video frames into MP4 files in the browser.
+
+- Copyright (c) 2024-2026 Vanilagy
+- License: MPL-2.0
+- Source: https://github.com/Vanilagy/mediabunny
+- License text: https://github.com/Vanilagy/mediabunny/blob/main/LICENSE
+
 ## NVIDIA ARDY
 
 CozyClay provides an optional bridge and data-conversion workflow for externally installed [ARDY](https://github.com/nv-tlabs/ardy), an interactive human-motion generation project from NVIDIA Research.

@@ -13,7 +13,7 @@ class FakeVideoFrame {
 
 class FakeVideoEncoder {
 	static async isConfigSupported(config) {
-		return { supported: config.codec.startsWith("vp09"), config };
+		return { supported: config.codec.startsWith("avc1"), config };
 	}
 
 	constructor({ output, error }) {
@@ -30,11 +30,23 @@ class FakeVideoEncoder {
 
 	encode(frame, options) {
 		const byte = Math.round(frame.timestamp / frame.duration) & 0xff;
-		this.output({
+		const chunk = {
 			byteLength: 1,
 			timestamp: frame.timestamp,
+			duration: frame.duration,
 			type: options.keyFrame ? "key" : "delta",
 			copyTo(destination) { destination[0] = byte; },
+		};
+		this.output(chunk, {
+			decoderConfig: {
+				codec: this.config.codec,
+				codedWidth: this.config.width,
+				codedHeight: this.config.height,
+				description: new Uint8Array([
+					1, 100, 0, 50, 255, 225, 0, 4, 103, 100, 0, 50,
+					1, 0, 4, 104, 238, 60, 128,
+				]),
+			},
 		});
 	}
 
@@ -42,6 +54,35 @@ class FakeVideoEncoder {
 
 	close() {
 		this.state = "closed";
+	}
+}
+
+class UnsupportedVideoEncoder {
+	static async isConfigSupported(config) {
+		return { supported: false, config };
+	}
+}
+
+class MissingAvcDescriptionEncoder extends FakeVideoEncoder {
+	static async isConfigSupported(config) {
+		return { supported: config.codec.startsWith("avc1"), config };
+	}
+
+	encode(frame, options) {
+		const byte = Math.round(frame.timestamp / frame.duration) & 0xff;
+		this.output({
+			byteLength: 1,
+			timestamp: frame.timestamp,
+			duration: frame.duration,
+			type: options.keyFrame ? "key" : "delta",
+			copyTo(destination) { destination[0] = byte; },
+		}, {
+			decoderConfig: {
+				codec: this.config.codec,
+				codedWidth: this.config.width,
+				codedHeight: this.config.height,
+			},
+		});
 	}
 }
 
@@ -75,13 +116,40 @@ assert.equal(first.addressed.length, 144);
 assert.equal(first.addressed[0], 10);
 assert.equal(first.addressed.at(-1), 153);
 assert.deepEqual(first.result.hashes, second.result.hashes);
-assert.equal(first.result.blob.type, "video/webm");
-assert.ok(first.result.blob.size > 144, "muxed WebM should contain the encoded frames and headers");
+assert.equal(first.result.blob.type, "video/mp4");
+assert.ok(first.result.blob.size > 144, "muxed MP4 should contain the encoded frames and headers");
 
 const bytes = new Uint8Array(await first.result.blob.arrayBuffer());
-assert.deepEqual([...bytes.subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3]);
-assert.ok(new TextDecoder().decode(bytes).includes("V_VP9"));
+assert.equal(new TextDecoder().decode(bytes.subarray(4, 8)), "ftyp");
+await assert.rejects(
+	exportOffscreenVideo({
+		startFrame: 0,
+		endFrame: 0,
+		fps: 24,
+		width: 2,
+		height: 2,
+		capture: () => new Uint8Array(16),
+		VideoEncoderClass: UnsupportedVideoEncoder,
+		VideoFrameClass: FakeVideoFrame,
+	}),
+	/H\.264 WebCodecs encoder for MP4 export/,
+);
+await assert.rejects(
+	exportOffscreenVideo({
+		startFrame: 0,
+		endFrame: 0,
+		fps: 24,
+		width: 2,
+		height: 2,
+		capture: () => new Uint8Array(16),
+		VideoEncoderClass: MissingAvcDescriptionEncoder,
+		VideoFrameClass: FakeVideoFrame,
+	}),
+	/H\.264 MP4 needs the encoder's AVC decoder configuration/,
+);
 
 console.log("PASS 6-second range addresses and encodes exactly 144 frames");
 console.log("PASS two exports have identical per-frame SHA-256 pixel hashes");
-console.log("PASS WebCodecs chunks are muxed into a WebM container");
+console.log("PASS WebCodecs chunks are muxed into an MP4 container");
+console.log("PASS browsers without an MP4-capable encoder fail by name");
+console.log("PASS H.264 export fails closed without AVC decoder metadata");
