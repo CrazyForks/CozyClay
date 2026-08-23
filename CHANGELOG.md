@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.1
+
+Gizmo drags survive past their first tick again. The split-camera work in 1.4.0 wrapped the
+gizmo's change callback in a shot-camera dispatcher that dropped the drag-transaction token,
+so every arrow, plane, knob, and ring drag was closed by its own first move — objects moved
+one snap step and stopped. The token now round-trips, and the gizmo suite drives the ring
+with a real arc and the plan puck in the Top-View inset, matching how the studio actually
+works today.
+
 ## 1.4.0
 
 The release where every edit can be taken back.
