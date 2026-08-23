@@ -60,6 +60,7 @@ const NODE_FILES = [
 	"test/verify-motion-edit.mjs",
 	"test/verify-multimodel-ingest.mjs",
 	"test/verify-offscreen-export.mjs",
+	"test/verify-record-mp4-source.mjs",
 	"test/verify-otio.mjs",
 	"test/verify-pose-extract.mjs",
 	"test/verify-pose-library.mjs",

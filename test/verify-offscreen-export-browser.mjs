@@ -104,8 +104,8 @@ const mismatchedHashes = first.hashes.flatMap((hash, index) => hash === second.h
 expect("second export has the same 144 pixel hashes", mismatchedHashes.length === 0, `mismatches=${mismatchedHashes.slice(0, 20).join(",")} total=${mismatchedHashes.length}`);
 expect("authored camera move produces more than one distinct frame", new Set(first.hashes).size > 1, `unique=${new Set(first.hashes).size}`);
 expect("offline export does not advance the playback head", beforeFrame === afterFrame, JSON.stringify({ beforeFrame, afterFrame }));
-expect("both exports produce non-empty WebM files", first.mimeType === "video/webm" && first.blobSize > 0 && second.blobSize > 0, JSON.stringify({ first: first.blobSize, second: second.blobSize }));
-expect("browser reads exact six-second WebM metadata", Math.abs(second.metadata?.duration - 6) < 0.001 && second.metadata?.width === 1920 && second.metadata?.height === 1080, JSON.stringify(second.metadata));
+expect("both exports produce non-empty MP4 files", first.mimeType === "video/mp4" && first.blobSize > 0 && second.blobSize > 0, JSON.stringify({ first: first.blobSize, second: second.blobSize }));
+expect("browser reads exact six-second MP4 metadata", Math.abs(second.metadata?.duration - 6) < 0.001 && second.metadata?.width === 1920 && second.metadata?.height === 1080, JSON.stringify(second.metadata));
 expect("browser run has no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));
 
 ws.close();
