@@ -119,9 +119,25 @@ export function getAnalyticsOptOut() {
 	return readStorage(OPT_OUT_KEY) === "1";
 }
 
+function clearAnalyticsStorage() {
+	try {
+		const store = storage();
+		if (!store) return;
+		const doomed = [];
+		for (let i = 0; i < store.length; i += 1) {
+			const key = store.key(i);
+			if (key && key.startsWith("ph_") && key.endsWith("_posthog")) doomed.push(key);
+		}
+		for (const key of doomed) store.removeItem(key);
+	} catch {
+		// Best effort; never let cleanup break the app.
+	}
+}
+
 export function setAnalyticsOptOut(optOut) {
 	const value = optOut === true;
 	writeStorage(OPT_OUT_KEY, value ? "1" : "0");
+	if (value) clearAnalyticsStorage();
 	if (!posthog) return;
 	try {
 		if (value) {
@@ -177,9 +193,14 @@ export async function initAnalytics() {
 				// Keep the wire contract at the nine disclosed events: no $pageleave.
 				capture_pageleave: false,
 				person_profiles: "never",
-				persistence: "memory",
+				// Device-scoped anonymous id in localStorage (no cookies): keeps
+				// unique-user and retention metrics real across visits.
+				persistence: "localStorage",
 				respect_dnt: true,
 				disable_session_recording: true,
+				capture_dead_clicks: false,
+				// Needed once api_host points at a first-party proxy; harmless otherwise.
+				ui_host: "https://us.posthog.com",
 				before_send: scrubEventUrls,
 			});
 			initialized = true;
