@@ -161,6 +161,9 @@ export async function initAnalytics() {
 			});
 			initialized = true;
 			enabled = true;
+			// Test hook, mirroring the window.__cozyclay convention: lets QA
+			// drivers inspect the live SDK without shipping a real global API.
+			globalThis.__cozyclayAnalytics = { instance: posthog };
 		} catch {
 			console.info("[analytics] initialization failed");
 		}
