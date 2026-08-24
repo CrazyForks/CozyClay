@@ -25,6 +25,8 @@ jobs:
       - run: npm ci
       - run: npm --prefix mcp ci
       - run: npm test
+        env:
+          VITE_POSTHOG_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
