@@ -154,6 +154,8 @@ export async function initAnalytics() {
 				defaults: "2025-05-24",
 				autocapture: false,
 				capture_pageview: true,
+				// Keep the wire contract at the nine disclosed events: no $pageleave.
+				capture_pageleave: false,
 				person_profiles: "never",
 				persistence: "memory",
 				respect_dnt: true,

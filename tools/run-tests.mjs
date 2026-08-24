@@ -36,6 +36,7 @@ const NODE_FILES = [
 	"test/process/verify-lifecycle.mjs",
 	"test/process/verify-mcp-package-isolation.mjs",
 	"test/verify-mcp-motion-job.mjs",
+	"test/verify-analytics.mjs",
 	"test/verify-appearance.mjs",
 	"test/verify-asset-shelf.mjs",
 	"test/verify-blocking-depth.mjs",
