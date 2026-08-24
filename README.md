@@ -55,7 +55,7 @@ https://github.com/user-attachments/assets/1d0113e5-6922-443d-affc-1bdabc666247
 - Node.js 22 or newer
 - npm, or bun
 - A Chromium-based browser
-- *Optional:* an SSH-accessible NVIDIA machine running ARDY, for motion generation
+- *Optional:* an SSH-accessible NVIDIA machine running ARDY, for motion generation — first-time setup downloads a ~16.4 GB text-encoder stack onto that machine; see [`tools/ardy/README.md`](tools/ardy/README.md)
 
 ## Quick start
 

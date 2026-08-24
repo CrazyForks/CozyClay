@@ -340,6 +340,7 @@ server.listen({ port: opts.port, host: "127.0.0.1", ipv6Only: false }, () => {
 	// marketing page.
 	const url = `http://127.0.0.1:${opts.port}/app/`;
 	console.log(`CozyClay is running at ${url}`);
+	console.log("Use a Chromium-based browser — Safari and Firefox are not supported.");
 	if (!opts.ardy) console.log("Motion generation: off (--no-ardy).");
 	else if (bridge) console.log(`Motion generation: sidecar running against ${ardyHost}.`);
 	else

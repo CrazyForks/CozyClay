@@ -15,7 +15,7 @@ import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
-const REPO = process.env.TRAFFIC_REPO ?? "HaD0Yun/CozyClay";
+const REPO = process.env.TRAFFIC_REPO ?? "NomaDamas/CozyClay";
 const OUT = path.resolve(process.env.TRAFFIC_OUT ?? ".metrics");
 
 async function resolveToken() {
