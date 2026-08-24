@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import {
 	bucketMs,
+	scrubEventUrls,
 	isOriginAllowed,
 	normalizeOrigin,
 	parseAllowlist,
@@ -64,5 +65,25 @@ assert.equal(bucketMs(9999), "3-10s");
 assert.equal(bucketMs(10000), "10-30s");
 assert.equal(bucketMs(29999), "10-30s");
 assert.equal(bucketMs(30000), "gte30s");
+
+assert.deepEqual(
+	scrubEventUrls({
+		event: "$pageview",
+		properties: {
+			$current_url: "https://cozyclay.org/app/?token=secret#pose=7",
+			$referrer: "https://news.ycombinator.com/item?id=123",
+			$referring_domain: "news.ycombinator.com",
+			$pathname: "/app/",
+		},
+	}).properties,
+	{
+		$current_url: "https://cozyclay.org/app/",
+		$referrer: "https://news.ycombinator.com/item",
+		$referring_domain: "news.ycombinator.com",
+		$pathname: "/app/",
+	},
+	"query strings and fragments never leave the browser",
+);
+assert.equal(scrubEventUrls(null), null);
 
 console.log("all analytics checks PASS");

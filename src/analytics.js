@@ -91,6 +91,26 @@ export function bucketMs(ms) {
 	return "gte30s";
 }
 
+const URL_PROPERTY_KEYS = ["$current_url", "$referrer"];
+
+function stripUrlTail(value) {
+	if (typeof value !== "string") return value;
+	return value.split("#")[0].split("?")[0];
+}
+
+// SDK-standard pageview properties carry location.href/document.referrer;
+// strip query strings and fragments so tokens or future URL state never
+// leave the browser. Runs as posthog's before_send hook.
+export function scrubEventUrls(event) {
+	if (!event || typeof event !== "object" || !event.properties) return event;
+	for (const key of URL_PROPERTY_KEYS) {
+		if (typeof event.properties[key] === "string") {
+			event.properties[key] = stripUrlTail(event.properties[key]);
+		}
+	}
+	return event;
+}
+
 export function shouldFireActivation(state) {
 	return state?.activationTracked !== true;
 }
@@ -160,6 +180,7 @@ export async function initAnalytics() {
 				persistence: "memory",
 				respect_dnt: true,
 				disable_session_recording: true,
+				before_send: scrubEventUrls,
 			});
 			initialized = true;
 			enabled = true;
