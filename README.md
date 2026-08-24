@@ -181,7 +181,7 @@ All runtime libraries intentionally live in `devDependencies` because the publis
 
 ## Analytics & privacy
 
-The hosted site at [cozyclay.org](https://cozyclay.org/) collects anonymous usage analytics via [PostHog](https://posthog.com/) (US Cloud). There are no cookies — PostHog is configured with in-memory persistence only — no session recording, and Do-Not-Track is respected.
+The hosted site at [cozyclay.org](https://cozyclay.org/) collects anonymous usage analytics via [PostHog](https://posthog.com/) (US Cloud). There are no cookies and no session recording, and Do-Not-Track is respected. A random anonymous identifier is kept in your browser's localStorage so that returning visits and retention can be counted; it contains no personal data, is never linked to an identity, and is removed by clearing site data or using the opt-out toggle.
 
 Events collected:
 
