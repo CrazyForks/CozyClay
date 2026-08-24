@@ -136,7 +136,9 @@ import ObjectGizmo from "./object-gizmo.jsx";
 import AssetPane from "./asset-pane.jsx";
 import AddObjectMenu from "./object-catalog.jsx";
 import ResultModal from "./result-modal.jsx";
+import AnalyticsToggle from "./analytics-toggle.jsx";
 import LocaleToggle from "./locale-toggle.jsx";
+import { bucketMs, track, trackActivation } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
 import {
 	DEFAULT_POSE,
@@ -1644,6 +1646,12 @@ function loadSceneStartup() {
 }
 
 export default function App() {
+	const craftActionTrackedRef = useRef(false);
+	const markCraftAction = (actionKind) => {
+		if (craftActionTrackedRef.current) return;
+		craftActionTrackedRef.current = true;
+		track("craft:first_action", { action_kind: actionKind });
+	};
 	const [startup] = useState(loadSceneStartup);
 	const startupScene = startup.document.scenes[activeSceneIndex(startup.document.scenes, startup.document.activeSceneId)];
 	const startupStage = createSceneStage(startupScene.stage);
@@ -2364,6 +2372,7 @@ globalThis.playMode = centerTab === "play";
 		const object = createSceneObject(kind, sceneObjects, placement);
 		if (!object) return;
 		store.applyAtomic((objects) => [...objects, object]);
+		markCraftAction("object");
 		setSelectedHierarchyId(`object:${object.id}`);
 		// Deliberate divergence from Unity's rename-on-create: creating an object
 		// here is followed by placing it, and dropping focus into a text field
@@ -3660,6 +3669,7 @@ globalThis.playMode = centerTab === "play";
 		activeSceneIdRef.current = scene.id;
 		setScenes(nextScenes);
 		setActiveSceneId(scene.id);
+		track("scene:loaded", { scene_source: "local" });
 	}
 
 	function selectSceneDocument(sceneId) {
@@ -3677,6 +3687,7 @@ globalThis.playMode = centerTab === "play";
 		const target = nextScenes[nextScenes.length - 1];
 		persistScenes(nextScenes, target.id);
 		openScene(target, nextScenes);
+		track("scene:created", { scene_source: "ui" });
 	}
 
 	function duplicateSceneDocumentFromUi(sceneId) {
@@ -4575,6 +4586,7 @@ globalThis.playMode = centerTab === "play";
 		const owner = shots.find((entry) => entry.id === shotId);
 		const lands = Boolean(owner) && target >= owner.startFrame && target <= owner.endFrame;
 		if (lands) {
+			markCraftAction("camera_key");
 			recordShotUndo();
 			setShots((current) => updateStableItem(current, shotId, (shot) => {
 				if (target < shot.startFrame || target > shot.endFrame) return shot;
@@ -6237,11 +6249,15 @@ globalThis.playMode = centerTab === "play";
 			save(result.frameB, "blocking-frame-B-end.png");
 			setToast(ko("Start & end frames downloaded", "시작·끝 프레임 다운로드됨"));
 			setResult((current) => current ? { ...current, downloaded: true } : current);
+			track("export:blocking_frame_succeeded", { format: "png" });
+			trackActivation("export");
 			return;
 		}
 		save(result.frame, "blocking-frame.png");
 		setToast(ko("Frame downloaded", "프레임 다운로드됨"));
 		setResult((current) => current ? { ...current, downloaded: true } : current);
+		track("export:blocking_frame_succeeded", { format: "png" });
+		trackActivation("export");
 	}
 	function downloadArdyPose() {
 		const rig = posedRig();
@@ -6689,6 +6705,9 @@ function resizePromptClip(id, edge, rawFrame) {
 		reportArdyStatus(ko("connecting…", "연결 중…"));
 		setArdyReport(null);
 		setArdyOutcome(null);
+		const inputMode = job.hasBlockEdits ? "edit" : job.body.posePin ? "pose" : "prompt";
+		const startedAt = Date.now();
+		track("motion:job_started", { input_mode: inputMode });
 		let editCommitReport = null;
 		try {
 			const done = await ardyGenerate(
@@ -6714,6 +6733,8 @@ function resizePromptClip(id, edge, rawFrame) {
 				throw new Error(ko("ARDY returned motion without verified authored IK keys", "ARDY가 검증된 수동 IK 키 없이 모션을 반환했어요"));
 			}
 			setArdyOutcome({ ok: true, output: done.output, bytes: done.bytes, motionUrl: done.motionUrl, rotationDeg: job.rootRotationDeg });
+			track("motion:job_succeeded", { latency_bucket: bucketMs(Date.now() - startedAt), input_mode: inputMode });
+			trackActivation("motion");
 			// Fetch and decode the real npz right away; decode errors are shown
 			// in the card, playback is never faked. The clip lands on the
 			// REQUESTING character, not whoever is selected now.
@@ -6732,6 +6753,11 @@ function resizePromptClip(id, edge, rawFrame) {
 			setArdyOutcome({
 				ok: false,
 				message: err?.name === "AbortError" ? ko("Cancelled", "취소됨") : err?.message || String(err),
+			});
+			track("motion:job_failed", {
+				latency_bucket: bucketMs(Date.now() - startedAt),
+				input_mode: inputMode,
+				error_code: err?.name === "AbortError" ? "aborted" : (err?.name || "error"),
 			});
 			throw err;
 		} finally {
@@ -6861,6 +6887,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</span>
 					)}
 					<LocaleToggle />
+					<AnalyticsToggle />
 				</div>
 			</header>
 
