@@ -33,7 +33,9 @@ jobs:
           fi
       - name: Append snapshots
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The default Actions token cannot read the traffic API (403);
+          # METRICS_TOKEN is a PAT with push/Administration-read access.
+          GITHUB_TOKEN: ${{ secrets.METRICS_TOKEN }}
         run: node tools/metrics-snapshot.mjs ../metrics/data
       - name: Commit and push
         run: |
