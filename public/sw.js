@@ -5,7 +5,8 @@ const CACHE_PREFIX = "cozyclay-pwa-";
 // v3: app shell moved from "/" to "/app/".
 // v4: icons redrawn from the CozyClay mark.
 // v5: tab icons cut to a circle so they stop reading as a sticker.
-const CACHE_NAME = `${CACHE_PREFIX}v5`;
+// v6: Google-sized frog set — 192 PNG first, ico frames 48/96/192.
+const CACHE_NAME = `${CACHE_PREFIX}v6`;
 // The installable app is the studio, not the landing page.
 const APP_SHELL = "/app/";
 const CORE_ASSETS = [
