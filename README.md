@@ -179,6 +179,30 @@ Found something broken, or want a feature? [Open an issue](https://github.com/No
 
 All runtime libraries intentionally live in `devDependencies` because the published npm package ships the prebuilt `dist/`, so `npx cozyclay` must not install the studio's dependency tree.
 
+## Analytics & privacy
+
+The hosted site at [cozyclay.org](https://cozyclay.org/) collects anonymous usage analytics via [PostHog](https://posthog.com/) (US Cloud). There are no cookies — PostHog is configured with in-memory persistence only — no session recording, and Do-Not-Track is respected.
+
+Events collected:
+
+| Event | Purpose |
+| --- | --- |
+| `$pageview` | Funnel and drop-off analysis |
+| `scene:created` | Funnel and drop-off analysis |
+| `scene:loaded` | Funnel and drop-off analysis |
+| `craft:first_action` | Funnel and drop-off analysis |
+| `motion:job_started` | Motion reliability |
+| `motion:job_succeeded` | Motion reliability |
+| `motion:job_failed` | Motion reliability |
+| `export:blocking_frame_succeeded` | Funnel and drop-off analysis |
+| `activation:completed` | Funnel and drop-off analysis |
+
+Geo data comes from ingest-time GeoIP country lookup only — no precise location is collected. Prompt text, asset names, file names, and any user-entered text are never collected.
+
+To opt out, use the in-app topbar analytics toggle, enable Do-Not-Track in your browser, or use a content blocker. The npm CLI, local builds, and forked builds never send analytics: initialization is restricted to the official production origin.
+
+PostHog's free plan retains events for 1 year.
+
 ## License & credits
 
 GNU Affero General Public License v3.0 or later — see [`LICENSE`](LICENSE) and the transition details in [`LICENSING.md`](LICENSING.md). Modified network services must offer their users the corresponding source. Third-party projects retain their own licenses and copyright; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

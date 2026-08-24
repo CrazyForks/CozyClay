@@ -101,6 +101,14 @@ as third-party content that this licence does not cover.
 - `x-bot-tpose.fbx`, `y-bot-tpose.fbx` — Adobe Mixamo
 - Terms: https://www.adobe.com/legal/terms.html
 
+## posthog-js
+
+The hosted site at cozyclay.org uses [posthog-js](https://posthog.com/docs/libraries/js) for anonymous usage analytics.
+
+- Copyright PostHog Inc.
+- License: Apache-2.0 AND MIT
+- Source: https://github.com/PostHog/posthog-js
+
 ## CozyClay license scope
 
 The CozyClay combined work in this repository is distributed under AGPL-3.0-or-later, subject to the transition details in `LICENSING.md`. That license does not replace or relicense Three.js, ARDY, ARDY model checkpoints, the bundled fonts, the character rigs, or any other third-party component.
