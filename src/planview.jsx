@@ -405,7 +405,7 @@ function WaypointPath({ waypoints, start, activeWaypointId }) {
  * reports moves that still hit it, so a fast drag off the edge silently strands
  * the puck.
  */
-export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, characters = [], onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, pathStart = null, waypoints, activeWaypointId, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null, onCameraChange }) {
+export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, characters = [], onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, pathStart = null, waypoints, activeWaypointId, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null, onCameraChange, keyLight = null }) {
 	const [drag, setDrag] = useState(null); // { id, mode }
 	// live stroke while the rail is being drawn; world XZ, display only
 	const [railStroke, setRailStroke] = useState(null);
@@ -775,6 +775,32 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 			{(railDraw || cameraRailPoints) && <SubjectMovementGuide track={subjectTrack} />}
 			{cameraRailPoints && cameraRailPoints.length > 1 && <CameraRailLine points={cameraRailPoints} />}
 			{railStroke && railStroke.length > 1 && <CameraRailLine points={railStroke} live />}
+			{/* The sun on the floor plan: a gold disc + a stem toward the stage
+			    centre, so blocking can read where the light comes from without
+			    switching to the 3D scene. Not draggable here — the 3D puck owns
+			    the gesture; this is a readout. */}
+			{keyLight && (
+				<group position={[keyLight.x, 0, keyLight.z]}>
+					<mesh position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={10}>
+						<circleGeometry args={[PUCK_R * 0.7, 20]} />
+						<meshBasicMaterial color="#f2b544" transparent opacity={0.85} depthWrite={false} depthTest={false} />
+					</mesh>
+					{(() => {
+						// stem pointing at the stage centre, in the light's local frame
+						const angle = Math.atan2(-keyLight.x, -keyLight.z);
+						const dist = Math.hypot(keyLight.x, keyLight.z);
+						return (
+							<group rotation={[0, angle, 0]}>
+								<mesh position={[0, 0.045, dist / 2]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={9}>
+									<planeGeometry args={[0.05, dist]} />
+									<meshBasicMaterial color="#f2b544" transparent opacity={0.35} depthWrite={false} depthTest={false} />
+								</mesh>
+							</group>
+						);
+					})()}
+					<PlanLabel text={ko("LIGHT", "조명")} color="#f2b544" offset={-0.5} />
+				</group>
+			)}
 		</group>
 	);
 }

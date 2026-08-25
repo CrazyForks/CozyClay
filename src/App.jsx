@@ -7977,6 +7977,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								cameraRailPoints={railCurve ? railCurve.points : null}
 								railDraw={railDraw}
 								subjectTrack={motion ? subjectTrack : null}
+								keyLight={keyLight}
 								onRailStroke={(stroke) => {
 									const simplified = simplifyStroke(stroke, 0.12);
 									if (simplified.length < 2) return;
