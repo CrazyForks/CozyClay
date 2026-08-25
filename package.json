@@ -1,6 +1,6 @@
 {
   "name": "cozyclay",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Open source previs software in the browser: block a scene, pose characters, author camera moves and cuts, then take the same shots to an AI video model.",
   "scripts": {
     "dev": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
@@ -52,7 +52,9 @@
     "test:update-check": "node test/verify-update-check.mjs",
     "test:localization": "node test/verify-korean-ui.mjs",
     "test:korean-ui": "node test/verify-korean-ui.mjs",
-    "prepack": "npm run build",
+    "prepack": "npm run build && node tools/prepare-package.mjs",
+    "postpack": "node tools/prepare-package.mjs --clean",
+    "prepublishOnly": "node tools/prepare-package.mjs --check-key",
     "metrics:traffic": "node tools/metrics/archive-traffic.mjs",
     "test:multimodel": "node test/verify-multimodel-ingest.mjs",
     "test:video-frames": "node test/verify-video-frames.mjs",
