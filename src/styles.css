@@ -43,6 +43,52 @@
 }
 
 html,
+/* Crash screen for the last-ditch error boundary (issue #63) */
+.crash-screen {
+	min-height: 100vh;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--bg);
+	font-family: var(--sans);
+	padding: 24px;
+}
+.crash-card {
+	max-width: 440px;
+	background: var(--panel);
+	border: 1px solid var(--line2);
+	border-radius: 10px;
+	padding: 28px;
+	color: var(--fg);
+	text-align: center;
+}
+.crash-card h1 { font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+.crash-card p { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 14px; }
+.crash-card code {
+	display: block;
+	background: var(--card);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 10px;
+	font-family: var(--mono);
+	font-size: 11px;
+	color: #e08a7a;
+	text-align: left;
+	word-break: break-all;
+	margin-bottom: 18px;
+}
+.crash-card button {
+	background: var(--accent);
+	color: #fff;
+	border: 0;
+	border-radius: 6px;
+	padding: 9px 22px;
+	font-size: 14px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.crash-card button:hover { filter: brightness(1.12); }
+
 body,
 #root {
 	height: 100%;

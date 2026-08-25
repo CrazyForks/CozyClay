@@ -2177,7 +2177,13 @@ globalThis.playMode = centerTab === "play";
 	const planHostRef = planIsMain ? mainPaneRef : insetPaneRef;
 
 	useEffect(() => {
-		localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify(workspaceLayout));
+		// Quota-guarded like persistScenes: a full disk used to throw out of
+		// this effect and blank the studio mid-resize (issue #63).
+		try {
+			localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify(workspaceLayout));
+		} catch (err) {
+			console.warn("[cozyclay] workspace layout not saved:", err?.name ?? err);
+		}
 	}, [workspaceLayout]);
 
 	// Wheel over the inset zooms the Top-View plan: scroll up closes in on
@@ -3929,7 +3935,17 @@ globalThis.playMode = centerTab === "play";
 		const input = projectDocumentInput(name);
 		const db = await openAssetDb();
 		try {
-			const assets = await Promise.all([...referencedAssetIds(input.scenesDocument.scenes)].map((id) => getAsset(db, id)));
+			const ids = [...referencedAssetIds(input.scenesDocument.scenes)];
+			const assets = await Promise.all(ids.map((id) => getAsset(db, id)));
+			// A referenced asset whose record vanished (swept elsewhere, another
+			// tab) would drop out of the export in silence — the user would
+			// learn on the machine they open it on. Say it here, at save time.
+			const missing = ids.filter((id, index) => !assets[index]);
+			if (missing.length) {
+				setToast(isKo
+					? `참조된 사진 ${missing.length}개를 찾지 못해보내기에서 빠졌어요`
+					: `${missing.length} referenced image${missing.length > 1 ? "s" : ""} missing — left out of the export`);
+			}
 			return JSON.stringify(createProjectDocument({ ...input, assets }), null, 2);
 		} finally {
 			db.close();
@@ -7392,7 +7408,15 @@ function resizePromptClip(id, edge, rawFrame) {
 					setTlFrameCount((count) => Math.max(count, decoded.frames));
 					setTlFps(decoded.fps);
 				}
-			}).catch(() => {});
+			}).catch(() => {
+				// A saved take that fails to refetch used to vanish silently — the
+				// user would find a merely posed character and assume their motion
+				// was lost. Name it and offer the reload path.
+				const subject = entry.subject || entry.id;
+				setToast(isKo
+					? `저장된 모션을 다시 불러오지 못했어요 (${subject}) — 새로고침하거나 모션을 다시 생성해 주세요`
+					: `Saved motion could not be restored for ${subject} — reload or generate it again`);
+			});
 		}
 	}
 

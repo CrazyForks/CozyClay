@@ -53,6 +53,7 @@ const NODE_FILES = [
 	"test/verify-camera-move.mjs",
 	"test/verify-camera-rail-schedule.mjs",
 	"test/verify-cuts.mjs",
+	"test/verify-error-boundary.mjs",
 	"test/verify-footage-bridge.mjs",
 	"test/verify-g006-css.mjs",
 	"test/verify-hierarchy.mjs",
