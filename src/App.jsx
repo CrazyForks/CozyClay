@@ -140,6 +140,7 @@ import AssetPane from "./asset-pane.jsx";
 import AddObjectMenu from "./object-catalog.jsx";
 import ResultModal from "./result-modal.jsx";
 import AnalyticsToggle from "./analytics-toggle.jsx";
+import { PWA_UPDATE_EVENT } from "./pwa.js";
 import LocaleToggle from "./locale-toggle.jsx";
 import { bucketMs, track, trackActivation } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
@@ -3396,6 +3397,13 @@ globalThis.playMode = centerTab === "play";
 	const [copied, setCopied] = useState(false);
 	const [recordedVideoName, setRecordedVideoName] = useState(null);
 	const [toast, setToast] = useState(startup.toast ?? "");
+	// The PWA's "a newer studio is waiting" registration, once one arrives.
+	const [pwaUpdate, setPwaUpdate] = useState(null);
+	useEffect(() => {
+		const onUpdate = (event) => setPwaUpdate(event.detail ?? null);
+		window.addEventListener(PWA_UPDATE_EVENT, onUpdate);
+		return () => window.removeEventListener(PWA_UPDATE_EVENT, onUpdate);
+	}, []);
 	const [bridge, setBridge] = useState(null);
 	const [ardyPrompt, setArdyPrompt] = useState("");
 	const [ardyDuration, setArdyDuration] = useState(4); // matches the 4 s generation cap
@@ -9690,6 +9698,25 @@ function resizePromptClip(id, edge, rawFrame) {
 				/>
 			)}
 			<Toast message={toast} onDone={() => setToast("")} />
+			{pwaUpdate && (
+				<div className="scene-delete-toast" role="status">
+					<span>{ko("A new version of CozyClay is ready.", "CozyClay 새 버전이 준비됐어요.")}</span>
+					<button
+						type="button"
+						onClick={() => {
+							// The worker is waiting; tell it to take over, which the
+							// controllerchange listener turns into one reload.
+							pwaUpdate.waiting?.postMessage({ type: "SKIP_WAITING" });
+							setPwaUpdate(null);
+						}}
+					>
+						{ko("Reload to update", "새로고침해 업데이트")}
+					</button>
+					<button type="button" className="ghost" onClick={() => setPwaUpdate(null)}>
+						{ko("Later", "나중에")}
+					</button>
+				</div>
+			)}
 			{objectDeleteUndo && (
 				<div className="scene-delete-toast" role="status">
 					<span>{ko("Object deleted.", "오브젝트를 삭제했어요.")}</span>
