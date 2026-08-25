@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
+import { PROMPT_MAX_CHARS } from "./tools/ardy/prompt-limits.mjs";
 
 const ardyBridgeUrl = process.env.COZYCLAY_BRIDGE_PORT
 	? `http://127.0.0.1:${process.env.COZYCLAY_BRIDGE_PORT}`
@@ -13,6 +14,9 @@ const livePort = process.env.COZYCLAY_LIVE_PORT ?? "5184";
 export default defineConfig({
 	define: {
 		"import.meta.env.VITE_COZYCLAY_LIVE_PORT": JSON.stringify(livePort),
+		// The API imports the same shared constant. Do not make this client cap
+		// environment-overridable: a divergent build would accept prompts the API rejects.
+		"import.meta.env.VITE_DEMO_PROMPT_MAX_CHARS": JSON.stringify(String(PROMPT_MAX_CHARS)),
 	},
 	// Root-absolute on purpose: the site has its own apex domain, and the studio
 	// is served from "/app/" while its public assets stay at the root. A relative
@@ -27,6 +31,9 @@ export default defineConfig({
 				app: resolve(import.meta.dirname, "app/index.html"),
 				// Search-facing article on camera control for AI video.
 				aiCameraControl: resolve(import.meta.dirname, "ai-camera-control/index.html"),
+				// Hosted demo composer and its queue/result ticket.
+				demo: resolve(import.meta.dirname, "demo/index.html"),
+				ticket: resolve(import.meta.dirname, "d/index.html"),
 			},
 		},
 	},

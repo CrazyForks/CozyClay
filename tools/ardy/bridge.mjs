@@ -43,6 +43,7 @@ import { decodeMotionNpz } from "../../src/ardy/npz.js";
 import { motionArraysToNpzMembers, replaceMotionSegment, writeNpz } from "./npz.mjs";
 import { globalChildren, killGroup, runStreaming, track } from "./runners/proc.mjs";
 import { createRunner } from "./runners/index.mjs";
+import { DURATION_MAX, DURATION_MIN, PROMPT_MAX_CHARS } from "./prompt-limits.mjs";
 import { footagePath, handleFootage, serveFootage } from "./footage.mjs";
 import { handleExtract } from "./extract.mjs";
 import { createPrivateArtifactDir, evictPrivateArtifact, removePrivateArtifactDir } from "./artifacts.mjs";
@@ -56,9 +57,6 @@ const DEFAULT_PORT = 5181;
 const HEALTH_TTL_MS = 5000; // the UI polls health; a cached answer avoids hammering ssh
 const BASES_TTL_MS = 120000; // the box's motion list changes rarely
 const MAX_BODY_BYTES = 1024 * 1024;
-const PROMPT_MAX_CHARS = 500;
-const DURATION_MIN = 0.15;
-const DURATION_MAX = 1200;
 const SEED_MAX = 2 ** 31 - 1; // optional request seed: an integer in 0..2**31-1 (bridge contract)
 const FPS = 20; // ARDY Core is 20 fps; clip length is int(duration * 20)
 const ROOT_2D_RANGE_M = 20; // |x| and |z| cap, meters (ARDY Y-up, X/Z horizontal)

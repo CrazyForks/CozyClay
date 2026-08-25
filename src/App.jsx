@@ -6,6 +6,7 @@ import { SkeletonUtils } from "three/examples/jsm/Addons.js";
 import { buildArdyPose } from "./ardy/export.js";
 import { checkBridge, generate as ardyGenerate } from "./ardy/client.js";
 import { characterScaleFor, loadMotionFromUrl } from "./ardy/npz.js";
+import { motionUrlFromQuery } from "./ardy/motion-url.js";
 import { retimeMotion } from "./ardy/retime.js";
 import { applyAutoFall, applyRootDrop, autoRoofDrop, normalizeRootDrop } from "./ardy/root-drop.js";
 import {
@@ -5443,8 +5444,20 @@ globalThis.playMode = centerTab === "play";
 	const demoSeeded = useRef(false);
 	useEffect(() => {
 		if (demoSeeded.current) return;
-		if (!bridge || bridge.ok) return;
 		if (!activeRig || motion || motionBusy) return;
+		// A hosted-demo result link opens the app with ?motion=<url>. The value
+		// is gated by motionUrlFromQuery (same-origin or allowlisted https host
+		// only) and, unlike the shipped seed below, loads regardless of bridge
+		// state — the visitor followed a link whose whole point is this clip.
+		const queryMotion = motionUrlFromQuery(window.location.search, window.location.origin);
+		if (queryMotion) {
+			demoSeeded.current = true;
+			loadMotion(queryMotion, "").catch(() => {
+				/* a dead link degrades to the normal empty stage, not an error */
+			});
+			return;
+		}
+		if (!bridge || bridge.ok) return;
 		demoSeeded.current = true;
 		// Loaded, not played: the clip walks the subject out of the default
 		// framing, so autoplay would greet a first-time visitor with an empty

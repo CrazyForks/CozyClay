@@ -1,4 +1,5 @@
 User-agent: *
 Allow: /
+Disallow: /d/
 
 Sitemap: https://cozyclay.org/sitemap.xml

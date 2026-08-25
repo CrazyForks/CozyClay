@@ -131,6 +131,52 @@ See [`tools/ardy/README.md`](tools/ardy/README.md) for details. This workflow is
 
 </details>
 
+## Hosted demo
+
+Installing ARDY is the hard part, so `cozyclay.org` also runs a queued demo: a visitor writes one prompt, gets a ticket link, and a GPU box owned by the maintainer generates the motion and uploads it. The visitor never installs anything and never leaves the site — the result opens in the studio itself.
+
+The pieces live in this repository, under `AGPL-3.0-or-later` like everything else:
+
+| Path | Role |
+| --- | --- |
+| `demo/`, `d/` | Static composer and ticket/result pages, built into `dist/` by the same `npm run build` |
+| `workers/api/` | Cloudflare Worker queue API (D1 for state, R2 for results), with its own pinned toolchain |
+| `tools/demo-worker/` | The GPU-box poller. Outbound fetch only — it never opens a listening socket |
+
+**Queue policy.** Jobs run in a single FIFO queue. All of these values live in `workers/api/src/policy.js`; nothing else carries a copy.
+
+| Rule | Value |
+| --- | --- |
+| Active jobs per account | 1 |
+| Daily cap | 2 per account |
+| Global waiting cap | 200, then submissions are refused |
+| Lease / heartbeat / hard timeout | 15 min lease, renewed every 60 s, 20 min hard stop |
+| Attempts | 2 (one automatic retry); a failed job refunds the daily cap |
+| Result retention | 30 days, then the R2 object is deleted |
+| Prompt limit | shared with the studio via `tools/ardy/prompt-limits.mjs` |
+
+**Secrets.** Never committed. Configure each with `wrangler secret put` against `workers/api/wrangler.toml`:
+`GOOGLE_CLIENT_SECRET`, `CC_WORKER_SECRET`, `SESSION_SIGNING_KEY`, `TURNSTILE_SECRET_KEY`. The non-secret `GOOGLE_CLIENT_ID` and `TURNSTILE_SITE_KEY` vars in `wrangler.toml` must also be replaced before a real deployment.
+
+**Running the API locally.**
+
+```bash
+npm run demo:api:install   # npm --prefix workers/api ci
+npm --prefix workers/api exec -- wrangler d1 migrations apply cozyclay-demo --local
+npm run demo:api           # wrangler dev on 127.0.0.1:8787
+```
+
+**Running the GPU-box worker.** The box needs a working local ARDY install (`npm run ardy:setup`) and nothing else; it reaches the API outbound only.
+
+```bash
+CC_DEMO_API_BASE=https://api.cozyclay.org \
+CC_WORKER_ID=box1 \
+CC_WORKER_SECRET=... \
+  npm run demo:worker
+```
+
+See [`workers/api/README.md`](workers/api/README.md) for the deployment, migration and rollback runbook, and [`tools/demo-worker/README.md`](tools/demo-worker/README.md) for service units, environment-file permissions and the listening-socket check.
+
 ## Controls
 
 | Input | Action |

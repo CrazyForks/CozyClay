@@ -6,6 +6,7 @@ const CACHE_PREFIX = "cozyclay-pwa-";
 // v4: icons redrawn from the CozyClay mark.
 // v5: tab icons cut to a circle so they stop reading as a sticker.
 // v6: Google-sized frog set — 192 PNG first, ico frames 48/96/192.
+// v6 also: hosted demo and ticket pages are network-only; never freeze queue state.
 const CACHE_NAME = `${CACHE_PREFIX}v6`;
 // The installable app is the studio, not the landing page.
 const APP_SHELL = "/app/";
@@ -75,8 +76,11 @@ self.addEventListener("message", (event) => {
 
 self.addEventListener("fetch", (event) => {
 	const { request } = event;
-	if (request.method !== "GET") return;
 	const url = new URL(request.url);
+	// The composer and ticket are live API surfaces. A stale shell would either
+	// submit with an old Turnstile key or show a frozen queue position.
+	if (url.pathname.startsWith("/d/") || url.pathname.startsWith("/demo/")) return;
+	if (request.method !== "GET") return;
 	if (url.origin !== self.location.origin || url.pathname.includes("/ardy/")) return;
 	if (request.headers.has("range")) {
 		event.respondWith((async () => {
