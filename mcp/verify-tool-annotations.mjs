@@ -20,6 +20,7 @@ const EXPECTED_ANNOTATIONS = Object.freeze({
 	place_object: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 	group_objects: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	set_prompt_blocks: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	load_motion: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	generate_motion: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
 	update_object: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	remove_object: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },

@@ -109,7 +109,7 @@ const liveWorkspaceTools = new Set([
 	"describe_scene", "describe_shot", "render_prompt", "mark_camera_move", "describe_camera_move", "save_project",
 	"set_camera", "frame_shot", "add_character", "place_character", "remove_character",
 	"focus_character", "place_object", "group_objects", "set_prompt_blocks", "generate_motion", "update_object",
-	"remove_object", "apply_batch", "add_scene", "switch_scene", "open_project", "capture_frame",
+	"remove_object", "apply_batch", "add_scene", "switch_scene", "open_project", "capture_frame", "load_motion",
 ]);
 const MAX_CAPTURE_BYTES = 1_000_000;
 const CAPTURE_ARTIFACT_TTL_MS = 10 * 60_000;
@@ -183,6 +183,7 @@ const TOOL_ANNOTATIONS = Object.freeze({
 	place_object: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 	group_objects: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	set_prompt_blocks: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+	load_motion: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	generate_motion: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
 	update_object: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	remove_object: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -501,15 +502,34 @@ function sceneReport({ characterCursor = 0, objectCursor = 0, limit = 50 } = {})
 			);
 		}
 	}
-	lines.push(
-		"",
-		"STAGE",
-		`  shotAspect: ${st.shotAspect}  sensorId: ${st.sensorId}  hasCharSheet: ${st.hasCharSheet}`,
-		"",
-		"TIMELINE",
-		`  currentFrame: ${state.timeline.currentFrame}  frameCount: ${state.timeline.frameCount}  fps: ${state.timeline.fps}`,
-	);
-	return lines.join("\n");
+		lines.push(
+			"",
+			"STAGE",
+			`  shotAspect: ${st.shotAspect}  sensorId: ${st.sensorId}  hasCharSheet: ${st.hasCharSheet}`,
+		);
+		// The stage's key light crosses the socket inside the stage envelope; a
+		// director tool that cannot see it cannot describe the scene's light.
+		const keyLight = sc.stage?.keyLight ?? st.keyLight;
+		if (keyLight && typeof keyLight === "object") {
+			lines.push(`  keyLight: x ${round(keyLight.x, 1)}  y ${round(keyLight.y, 1)}  z ${round(keyLight.z, 1)}  intensity ${round(keyLight.intensity, 2)}`);
+		}
+		// The editorial structure crosses the socket too — list the shots so an
+		// agent reading describe_scene is not blind to cuts and rail/crane rigs.
+		const shots = Array.isArray(sc.shotDocument?.shots) ? sc.shotDocument.shots : [];
+		if (shots.length) {
+			lines.push("", "SHOTS");
+			for (const shotEntry of shots) {
+				const cam = shotEntry.camera ?? {};
+				const rig = cam.mode === "rail" ? "rail" + (cam.craneHeight ? "+crane" : "") : cam.mode ?? "keys";
+				lines.push(`  ${shotEntry.name ?? shotEntry.id}  frames ${shotEntry.startFrame ?? "?"}-${shotEntry.endFrame ?? "?"}  ${rig}`);
+			}
+		}
+		lines.push(
+			"",
+			"TIMELINE",
+			`  currentFrame: ${state.timeline.currentFrame}  frameCount: ${state.timeline.frameCount}  fps: ${state.timeline.fps}`,
+		);
+		return lines.join("\n");
 }
 
 /** The shot, described in the vocabulary a director and an image model share. */
@@ -619,7 +639,12 @@ registerTool(
 	},
 	async () => text(
 		liveHub?.connected
-			? `Live editor connected. Workspace handles: ${liveHub.workspaceHandles.join(", ")}`
+			? `Live editor connected. Workspaces:\n` + liveHub.workspaceHandleDetails().map((entry) => {
+				const label = entry.meta?.project || entry.meta?.scene
+					? ` — ${[entry.meta.project, entry.meta.scene, entry.meta.cast != null ? `${entry.meta.cast} in cast` : null].filter(Boolean).join(" / ")}`
+					: "";
+				return `  ${entry.handle}${label}`;
+			}).join("\n")
 			: noLiveEditor("No live editor connected; using in-memory state."),
 	),
 );
@@ -1177,6 +1202,29 @@ registerTool(
 				(normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "") +
 				"\n\nGenerate them from the studio's Prompt Blocks panel, or with generate_motion.",
 		);
+	},
+);
+
+registerTool(
+	"load_motion",
+	{
+		title: "Load an existing motion take",
+		description:
+			"Unlike generate_motion, load_motion installs a previously generated or assembled motion take WITHOUT regenerating — " +
+			"re-using a completed /ardy/motions/<id> take or an /ardy/assembled/*.npz tile (the long-take recipe). " +
+			"It is synchronous and returns the editor's confirmation.",
+		inputSchema: {
+			url: z.string().describe("/ardy/motions/<id> or /ardy/assembled/<name>.npz"),
+			prompt: z.string().optional().describe("Label shown on the timeline block."),
+		},
+	},
+	async (args) => {
+		if (!motionUrlPattern.test(args.url)) {
+			throw new Error(`Unsupported motion url "${args.url}". Use /ardy/motions/<id> or /ardy/assembled/<name>.npz.`);
+		}
+		const workspaceHandle = liveWorkspace.getStore() ?? liveHub.resolveWorkspace("load_motion", args.workspace_handle);
+		await liveHub.command("load_motion", { url: args.url, prompt: args.prompt ?? "" }, workspaceHandle);
+		return text(`Motion installed from ${args.url}.`);
 	},
 );
 

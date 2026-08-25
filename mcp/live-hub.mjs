@@ -117,6 +117,7 @@ export class LiveHub {
 		this.editors = new Map();
 		this.pending = new Map();
 		this.workspaceIds = new Map();
+		this.workspaceMeta = new Map();
 		this.workspaceQueues = new Map();
 		this.onWorkspaceConnected = null;
 		this.onEvent = null;
@@ -128,6 +129,11 @@ export class LiveHub {
 
 	get workspaceHandles() {
 		return [...this.editors.keys()];
+	}
+
+	/** handle → the editor's self-label ({ project, scene, cast }), when given. */
+	workspaceHandleDetails() {
+		return [...this.editors.keys()].map((handle) => ({ handle, meta: this.workspaceMeta.get(handle) ?? null }));
 	}
 
 	resolveWorkspace(name, workspaceHandle) {
@@ -256,6 +262,9 @@ export class LiveHub {
 				}
 				this.editors.set(workspaceHandle, socket);
 				this.workspaceIds.set(workspaceHandle, workspaceId);
+				// The editor can label itself so live_status can tell tabs apart.
+				const meta = frame.meta && typeof frame.meta === "object" ? frame.meta : null;
+				this.workspaceMeta.set(workspaceHandle, meta);
 				socket.send(JSON.stringify({ type: "workspace", handle: workspaceHandle }));
 				this.onWorkspaceConnected?.({ workspaceHandle, workspaceId });
 				return;
@@ -283,6 +292,7 @@ export class LiveHub {
 				const workspaceId = this.workspaceIds.get(handle);
 				this.editors.delete(handle);
 				this.workspaceIds.delete(handle);
+				this.workspaceMeta.delete(handle);
 			}
 		}
 		for (const [id, pending] of this.pending) {

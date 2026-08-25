@@ -4696,6 +4696,11 @@ globalThis.playMode = centerTab === "play";
 				liveControlRef.current = createLiveControl({
 					handlers: liveHandlersRef.current,
 					workspaceId: liveWorkspaceIdRef.current,
+					meta: {
+						project: projectName ?? "Untitled",
+						scene: scenes.find((entry) => entry.id === activeSceneId)?.name ?? "",
+						cast: charactersRef.current.length,
+					},
 					onWorkspace: setLiveWorkspaceHandle,
 					onEvent: (name, payload) => {
 						if (name !== "motion_job" || typeof payload.taskId !== "string") return;
