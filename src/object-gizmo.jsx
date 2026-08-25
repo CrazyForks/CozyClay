@@ -250,16 +250,27 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		// Picking walks past lines/points to the first real surface.
 		const hits = tools.raycaster.intersectObjects(scene.children, true);
 		const hit = hits.find((entry) => entry.object.isMesh);
-		// The camera ghost lives on GIZMO_LAYER so the recording never sees it;
-		// give it its own pick pass and prefer whichever surface is nearer.
+		// The camera ghost and the key-light sun live on GIZMO_LAYER so the
+		// recording never sees them; give them their own pick pass and prefer
+		// whichever surface is nearer.
 		tools.raycaster.layers.set(GIZMO_LAYER);
+		let ghostId = null;
 		const ghostHit = tools.raycaster.intersectObjects(scene.children, true).find((entry) => {
 			if (!entry.object.isMesh) return false;
-			for (let node = entry.object; node; node = node.parent) if (node.userData?.shotCameraPick) return true;
+			for (let node = entry.object; node; node = node.parent) {
+				if (node.userData?.shotCameraPick) {
+					ghostId = "__shotcam__";
+					return true;
+				}
+				if (node.userData?.keyLightPick) {
+					ghostId = "__keylight__";
+					return true;
+				}
+			}
 			return false;
 		});
 		tools.raycaster.layers.set(0);
-		if (ghostHit && (!hit || ghostHit.distance < hit.distance)) return { id: "__shotcam__", point: ghostHit.point.clone() };
+		if (ghostHit && (!hit || ghostHit.distance < hit.distance)) return { id: ghostId, point: ghostHit.point.clone() };
 		if (!hit) return null;
 		for (let node = hit.object; node; node = node.parent) {
 			if (node.userData?.sceneObjectId) return { id: node.userData.sceneObjectId, point: hit.point.clone() };
@@ -320,7 +331,11 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			if (!rayFrom(event)) return;
 			if (!tools.raycaster.ray.intersectPlane(drag.plane, tools.hit)) return;
 			const { objects: all, onChange: change, snap: snapOn } = stateRef.current;
-			const live = all.find((entry) => entry.id === drag.id);
+			// "Still exists" guard. Proxy objects (the shot camera, the key
+			// light) never live in the scene-object list — for those the current
+			// `object` prop is the liveness check, or every drag tick is a no-op.
+			const live = all.find((entry) => entry.id === drag.id)
+				?? (stateRef.current.object?.id === drag.id ? stateRef.current.object : null);
 			if (!live) return;
 			// Unity's polarity: a drag is continuous, and Ctrl/Cmd snaps it to the
 			// increment. A persistent Snap toggle flips which one the modifier
@@ -635,7 +650,15 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			const lineParams = tools.raycaster.params.Line;
 			const prevThreshold = lineParams.threshold;
 			lineParams.threshold = 0.02;
-			const twinClaims = tools.raycaster.intersectObjects(scene.children, true).length;
+			// Pickable BODIES ride GIZMO_LAYER too (the camera ghost, the key-light
+			// sun) so recordings never see them — those are selection targets for
+			// pickObject below, not a twin's handles, and must not eat the press.
+			const twinClaims = tools.raycaster.intersectObjects(scene.children, true).filter((entry) => {
+				for (let node = entry.object; node; node = node.parent) {
+					if (node.userData?.shotCameraPick || node.userData?.keyLightPick) return false;
+				}
+				return true;
+			}).length;
 			lineParams.threshold = prevThreshold;
 			if (twinClaims) return;
 			// Selection. A left press on a body selects it and does nothing else;
