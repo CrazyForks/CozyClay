@@ -342,6 +342,14 @@ async function requestWithSession(env, accountId, url, init = {}) {
     assert.equal(response.status, 404, `${routePath} must remain removed`);
   }
 
+  // Regression: /auth/google/start must issue the provider redirect, never
+  // fall through to the callback handler (match-group off-by-one shipped a 400).
+  const start = await api.fetch(new Request("http://127.0.0.1:8787/auth/google/start?next=/demo/"), env, {});
+  assert.equal(start.status, 302, "/auth/google/start redirects to Google");
+  const startLocation = new URL(start.headers.get("location"));
+  assert.equal(startLocation.hostname, "accounts.google.com");
+  assert.ok(start.headers.get("set-cookie")?.includes("__Host-cc_oauth="), "start sets the state cookie");
+
   job(db, { id: "shape-job", token: "shape-token", accountId: "shape-account", status: "queued" });
   const ticket = await api.fetch(new Request("http://127.0.0.1:8787/jobs/shape-token"), env, {});
   assert.equal(ticket.status, 200);
