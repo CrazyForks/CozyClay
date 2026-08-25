@@ -40,7 +40,9 @@ expect("the deck receives shadow", room.includes("receiveShadow"));
 expect("the key light casts one shadow", room.includes("castShadow") && room.includes("shadow-mapSize-width={2048}"));
 expect(
 	"the shadow frustum covers the blocking area, not the whole 500 m deck",
-	room.includes("shadow-camera-left={-14}") && room.includes("shadow-camera-far={40}"),
+	// far=40 clipped every shadow once the user dragged the light past 40 m
+	// (verified with the three.js shadow frustum); 60 covers the clamp corner.
+	room.includes("shadow-camera-left={-14}") && room.includes("shadow-camera-far={60}"),
 );
 expect("the renderer actually has shadows enabled", app.includes("<Canvas") && app.includes("shadows") && app.includes("frameloop={renderActive ?"));
 expect("the subject casts its own shadow", app.includes("child.castShadow = true;"));

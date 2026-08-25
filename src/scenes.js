@@ -43,10 +43,11 @@ export const DEFAULT_SCENE_STAGE = Object.freeze({
 	hasCharSheet: false,
 	shotAspect: "16:9",
 	sensorId: DEFAULT_SENSOR_FORMAT,
-	// The key light the user can grab: position of the sun puck and the rig's
-	// master brightness. Values mirror the tuned StageLights defaults, so a
-	// stage saved before the light was movable renders exactly as it did.
-	keyLight: Object.freeze({ x: 6, y: 9, z: 4, intensity: 1.12 }),
+	// The key light the user can grab: position of the sun puck, the rig's
+	// master brightness, and a warm/cool colour offset. Values mirror the
+	// tuned StageLights defaults, so a stage saved before the light was
+	// movable renders exactly as it did.
+	keyLight: Object.freeze({ x: 6, y: 9, z: 4, intensity: 1.12, warmth: 0.5 }),
 });
 
 /** Clamp a stored key light back into the stage's usable envelope. */
@@ -59,6 +60,8 @@ export function createKeyLight(value) {
 		y: Math.max(0.5, Math.min(30, finite(source.y, fallback.y))),
 		z: Math.max(-30, Math.min(30, finite(source.z, fallback.z))),
 		intensity: Math.max(0, Math.min(4, finite(source.intensity, fallback.intensity))),
+		// 0 = cool daylight, 0.5 = the tuned warm default, 1 = sunset amber
+		warmth: Math.max(0, Math.min(1, finite(source.warmth, fallback.warmth))),
 	};
 }
 

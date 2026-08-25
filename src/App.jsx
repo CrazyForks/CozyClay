@@ -1996,7 +1996,7 @@ async function captureMcpFrame({ capture, camera, characters, activeCharacterId,
  *
  * `dragover` must preventDefault, or the browser navigates away to the file.
  */
-function useImageDrop(onFiles) {
+function useImageDrop(onFiles, onRejected) {
 	const [over, setOver] = useState(false);
 	const depth = useRef(0);
 	const carriesFiles = (event) => !!event.dataTransfer?.types?.includes?.("Files");
@@ -2024,7 +2024,14 @@ function useImageDrop(onFiles) {
 				const files = imageFilesFrom(event.dataTransfer);
 				depth.current = 0;
 				setOver(false);
-				if (!files.length) return;
+				// Dropped files that are not supported images (HEIC from an iPhone
+				// is the mainline case) used to die here with zero feedback — the
+				// user concluded drag-and-drop was broken. Name the rejection.
+				if (!files.length) {
+					const dropped = event.dataTransfer?.files?.length ?? 0;
+					if (dropped > 0) onRejected?.(dropped);
+					return;
+				}
 				event.preventDefault();
 				event.stopPropagation();
 				onFiles(files);
@@ -2766,7 +2773,13 @@ globalThis.playMode = centerTab === "play";
 				if (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
 			}
 			const files = imageFilesFromClipboard(event.clipboardData);
-			if (!files.length) return;
+			if (!files.length) {
+				// A clipboard that carried a file but no supported image (HEIC is
+				// the mainline iPhone case) gets a named rejection, not silence.
+				const carriedFile = Array.from(event.clipboardData?.items ?? []).some((item) => item.kind === "file");
+				if (carriedFile) setToast(ko("That picture format is not supported — use PNG, JPG, WebP or GIF", "지원하지 않는 사진 형식이에요 — PNG, JPG, WebP, GIF만 가능해요"));
+				return;
+			}
 			event.preventDefault();
 			importCutouts(files);
 		};
@@ -2775,8 +2788,12 @@ globalThis.playMode = centerTab === "play";
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	const propsDrop = useImageDrop((files) => importCutouts(files));
-	const inspectorDrop = useImageDrop((files) => importCutouts(files));
+	const rejectImageDrop = (count) => setToast(ko(
+		`${count} file${count > 1 ? "s" : ""} not supported — use PNG, JPG, WebP or GIF (iPhone HEIC photos need converting first)`,
+		`지원하지 않는 파일 ${count}개 — PNG, JPG, WebP, GIF만 가능해요 (아이폰 HEIC 사진은 먼저 변환해 주세요)`,
+	));
+	const propsDrop = useImageDrop((files) => importCutouts(files), rejectImageDrop);
+	const inspectorDrop = useImageDrop((files) => importCutouts(files), rejectImageDrop);
 	const viewportDrop = useImageDrop((files) => importCutouts(files));
 	// How much of the wall counts as the wall, and how wide the brush that
 	// argues with the answer is.
@@ -8266,6 +8283,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					<Foldout hidden={!keyLightSelected} title={ko("Light", "조명")}>
 						<p className="hint">{ko("Drag the sun in the scene to move the light. Shadows and warmth follow it.", "씬의 해를 드래그해 조명을 옮깁니다. 그림자와 빛의 방향이 따라옵니다.")}</p>
 						<Slider label={ko("Brightness", "밝기")} min={0} max={4} step={0.05} value={keyLight.intensity} onChange={(value) => setKeyLight((current) => createKeyLight({ ...current, intensity: value }))} />
+						<Slider label={ko("Warm ↔ Cool", "따뜻함 ↔ 차가움")} min={0} max={1} step={0.05} value={keyLight.warmth ?? 0.5} onChange={(value) => setKeyLight((current) => createKeyLight({ ...current, warmth: value }))} />
 						<div className="readout">
 							<span title={ko("light position", "조명 위치")}>{`x ${keyLight.x.toFixed(1)}  y ${keyLight.y.toFixed(1)}  z ${keyLight.z.toFixed(1)}`}</span>
 						</div>

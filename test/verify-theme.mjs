@@ -40,7 +40,9 @@ expect(
 	// DEFAULTS, so an untouched stage still renders the same high-key look.
 	room.includes('"#fffdf6", "#d8d0c3", 0.9') &&
 		room.includes("<ambientLight intensity={0.18 * ") &&
-		room.includes("{ x: 6, y: 9, z: 4, intensity: 1.12 }"),
+		// the key colour is now the user's warmth dial, defaulting to the
+		// tuned warm value — the default keyLight shape carries it
+		room.includes("{ x: 6, y: 9, z: 4, intensity: 1.12, warmth: 0.5 }"),
 );
 
 if (failures) process.exit(1);
