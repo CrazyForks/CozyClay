@@ -80,6 +80,9 @@ export function createAssetTextureCache({
 				return texture;
 			})().catch((error) => {
 				console.warn(`[cozyclay] could not load image asset ${id}`, error);
+				// Mark the failure so callers can distinguish "gone" from "decode
+				// failed" and offer a retry instead of a forever-grey card.
+				entry.failed = true;
 				return null;
 			}).finally(() => {
 				// Never let an old, invalidated promise block a later rehydration.

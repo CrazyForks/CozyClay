@@ -108,7 +108,10 @@ function loadThumb(id) {
 	if (!thumbCache.has(id)) {
 		thumbCache.set(id, (async () => {
 			const record = await assetRecord(id);
-			if (!record) return null;
+			// A missing record means another tab swept it — undefined, so the
+			// card hides. A present record whose bytes fail below resolves null
+			// instead, and the card stays visible so it can be deleted.
+			if (!record) return undefined;
 			const bitmap = await createImageBitmap(new Blob([record.bytes], { type: record.type }), {
 				resizeWidth: THUMB_WIDTH,
 				resizeQuality: "high",
@@ -157,15 +160,20 @@ function ImageAssetCard({ id, onAssetGrab }) {
 		};
 	}, [id]);
 	// undefined = the record is gone (another tab swept it); show nothing
-	// rather than a card that spawns a blank quad.
+	// rather than a card that spawns a blank quad. null = the record is
+	// there but its bytes did not decode — the card MUST stay visible, or
+	// the failure leaves garbage the storage manager cannot even show.
 	if (thumb === undefined) return null;
 	const label = thumb?.name?.replace(/\.[^.]+$/, "") || ko("Image", "이미지");
+	const failed = thumb === null;
 	return (
 		<button
 			type="button"
-			className="asset-card"
-			title={ko(`Drag ${label} into the scene`, `${label}을(를) 씬에 드래그하세요`)}
-			{...grabProps(onAssetGrab, { kind: "image", assetId: id, label, aspect: thumb?.aspect ?? 1, thumb: thumb?.url ?? null })}
+			className={"asset-card" + (failed ? " asset-card-failed" : "")}
+			title={failed
+				? ko(`${label} — could not decode; delete it from Manage storage`, `${label} — 불러오지 못했어요. 저장소 관리에서 삭제할 수 있어요`)
+				: ko(`Drag ${label} into the scene`, `${label}을(를) 씬에 드래그하세요`)}
+			{...(failed ? {} : grabProps(onAssetGrab, { kind: "image", assetId: id, label, aspect: thumb?.aspect ?? 1, thumb: thumb?.url ?? null }))}
 		>
 			{thumb ? (
 				<img className="asset-card-thumb" src={thumb.url} alt="" draggable={false} />
@@ -173,7 +181,7 @@ function ImageAssetCard({ id, onAssetGrab }) {
 				<span className="asset-card-thumb asset-card-thumb-skeleton" aria-hidden="true" />
 			)}
 			<span className="asset-card-label">{label}</span>
-			<span className="asset-card-kind">{ko("Image", "이미지")}</span>
+			<span className="asset-card-kind">{failed ? ko("Unreadable", "읽을 수 없음") : ko("Image", "이미지")}</span>
 		</button>
 	);
 }
@@ -193,8 +201,11 @@ function StorageAssetRow({ id, onDelete, deleting, usageCount = 0, graphSignatur
 			alive = false;
 		};
 	}, [id]);
+	// Same rule as the shelf card: a decode failure must stay visible so the
+	// one screen whose job is deleting broken assets can actually reach it.
 	if (thumb === undefined) return null;
-	const name = thumb?.name || ko("Untitled image", "이름 없는 이미지");
+	const failed = thumb === null;
+	const name = thumb?.name || (failed ? ko("(unreadable image)", "(읽을 수 없는 이미지)") : ko("Untitled image", "이름 없는 이미지"));
 	const usageLabel = ko(`Used by ${usageCount} scene object${usageCount === 1 ? "" : "s"}`, `${usageCount}개 씬 오브젝트에서 사용 중`);
 	const deleteLabel = ko(`Delete ${name} from storage`, `${name}을(를) 저장소에서 삭제`);
 	const confirmationId = `asset-storage-warning-${id}`;
