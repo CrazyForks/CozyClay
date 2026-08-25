@@ -2800,6 +2800,10 @@ globalThis.playMode = centerTab === "play";
 	// argues with the answer is.
 	const [matteTolerance, setMatteTolerance] = useState(0.18);
 	const [matteBrush, setMatteBrush] = useState(18);
+	// Edge cleanup for the cut: shrink eats the blended rim, feather softens
+	// what is left. Both ride into applyMask; the defaults match applyMask's.
+	const [matteShrink, setMatteShrink] = useState(1);
+	const [matteFeather, setMatteFeather] = useState(1);
 	const [matteMode, setMatteMode] = useState("paint");
 	const [matteStats, setMatteStats] = useState({ painted: 0, coverage: 0, zoom: 1, canUndo: false, canRedo: false });
 	const [matteBusy, setMatteBusy] = useState(false);
@@ -2969,7 +2973,7 @@ globalThis.playMode = centerTab === "play";
 			const source = await assetRecord(sourceId);
 			if (!source) throw new Error(ko("its picture is missing from the store", "저장소에 사진이 없습니다"));
 			const [cut, matte] = await Promise.all([
-				cutOutBackground(source, { mask: options.mask }),
+				cutOutBackground(source, { mask: options.mask, shrink: matteShrink, feather: matteFeather }),
 				maskAsset(options.mask, { width: options.maskWidth, height: options.maskHeight, name: `${source.name || "cutout"} matte` }),
 			]);
 			await Promise.all([
@@ -9314,6 +9318,56 @@ function resizePromptClip(id, edge, rawFrame) {
 													if (!Number.isFinite(value)) return;
 													setMatteBrush(value);
 													matteEditorRef.current?.setBrush(value);
+												}}
+											/>
+										</div>
+										<div className="matte-slider">
+											<label htmlFor="matte-shrink">{ko("Edge shrink", "가장자리 먹기")}</label>
+											<input
+												id="matte-shrink"
+												type="range"
+												min="0"
+												max="3"
+												step="0.5"
+												value={matteShrink}
+												onChange={(event) => setMatteShrink(Number(event.target.value))}
+											/>
+											<input
+												type="number"
+												data-field="matte-shrink"
+												min="0"
+												max="3"
+												step="0.5"
+												value={matteShrink}
+												aria-label={ko("Edge shrink", "가장자리 먹기")}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													if (Number.isFinite(value)) setMatteShrink(value);
+												}}
+											/>
+										</div>
+										<div className="matte-slider">
+											<label htmlFor="matte-feather">{ko("Edge feather", "가장자리 부드럽게")}</label>
+											<input
+												id="matte-feather"
+												type="range"
+												min="0"
+												max="3"
+												step="0.5"
+												value={matteFeather}
+												onChange={(event) => setMatteFeather(Number(event.target.value))}
+											/>
+											<input
+												type="number"
+												data-field="matte-feather"
+												min="0"
+												max="3"
+												step="0.5"
+												value={matteFeather}
+												aria-label={ko("Edge feather", "가장자리 부드럽게")}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													if (Number.isFinite(value)) setMatteFeather(value);
 												}}
 											/>
 										</div>
