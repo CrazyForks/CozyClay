@@ -2083,6 +2083,9 @@ function loadSceneStartup() {
 			document,
 			saveBlocked: false,
 			error: null,
+			// The startup scene is authored silently; without this flag the
+			// funnel's "scene created" step never fires for a brand-new room.
+			startupCreatedScene: result.status === "absent" || result.status === "corrupt",
 			toast: result.status === "corrupt"
 				? ko(`Saved scenes were unreadable — starting fresh; the old data is kept under ${SCENES_QUARANTINE_KEY}`, `저장된 장면을 읽을 수 없어 새로 시작합니다. 기존 데이터는 ${SCENES_QUARANTINE_KEY}에 보관했어요.`)
 				: result.dropped > 0
@@ -2092,7 +2095,7 @@ function loadSceneStartup() {
 	} catch {
 		const document = createSceneDocument();
 		document.scenes[0].objects = defaults();
-		return { document, saveBlocked: false, error: null, toast: null };
+		return { document, saveBlocked: false, error: null, startupCreatedScene: true, toast: null };
 	}
 }
 
@@ -2106,6 +2109,7 @@ export default function App() {
 	const [startup] = useState(loadSceneStartup);
 	const startupScene = startup.document.scenes[activeSceneIndex(startup.document.scenes, startup.document.activeSceneId)];
 	const startupStage = createSceneStage(startupScene.stage);
+	const startupCreatedScene = startup.startupCreatedScene === true;
 	const [workspaceLayout, setWorkspaceLayout] = useState(loadWorkspaceLayout);
 	const [preset, setPreset] = useState("medium");
 	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
@@ -2900,6 +2904,7 @@ globalThis.playMode = centerTab === "play";
 	 * and name, mint the card, one atomic history entry.
 	 */
 	async function spawnCutoutAt(assetId, placement) {
+		markCraftAction("cutout");
 		const record = await assetRecord(assetId);
 		if (!record) {
 			setToast(ko("That image is no longer stored", "그 이미지는 더 이상 저장되어 있지 않아요"));
@@ -5086,7 +5091,7 @@ globalThis.playMode = centerTab === "play";
 			stopShotRecording();
 			return;
 		}
-		runShotExport().catch((error) => {
+		runShotExport().then(() => track("export:video_succeeded", { format: "mp4" })).catch((error) => {
 			if (error?.name !== "AbortError") setToast(error?.message || String(error));
 		});
 	}
@@ -5979,6 +5984,7 @@ globalThis.playMode = centerTab === "play";
 		// Parse the thumbnail rigs during startup idle so the first pose-studio
 		// open starts rendering immediately instead of paying a 100ms+ FBX parse.
 		warmPoseThumbnails();
+		if (startupCreatedScene) track("scene:created", { scene_source: "startup" });
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
@@ -8132,7 +8138,16 @@ function resizePromptClip(id, edge, rawFrame) {
 						{playMode && !motion && (
 							<div className="playview-empty" role="status">
 								<strong>{ko("No motion yet", "아직 모션이 없어요")}</strong>
-								<span>{ko("Generate motion in the Scene tab — PlayView plays the finished result.", "장면 탭에서 모션을 생성하세요. 재생 보기는 완성 결과를 보여줍니다.")}</span>
+								{bridge?.ok ? (
+									<span>{ko("Generate motion in the Scene tab — PlayView plays the finished result.", "장면 탭에서 모션을 생성하세요. 재생 보기는 완성 결과를 보여줍니다.")}</span>
+								) : (
+									<>
+										<span>{ko("This hosted demo loads a sample walk cycle for you — switch to the Scene tab and press play.", "이 데모는 샘플 걷기 모션을 불러왔어요 — 장면 탭에서 재생을 눌러보세요.")}</span>
+										<button type="button" className="btn ghost" onClick={() => { setCenterTab("scene"); track("sample:played", { from: "playview_empty" }); }}>
+											{ko("▶ Watch the sample", "▶ 샘플 구경하기")}
+										</button>
+									</>
+								)}
 							</div>
 						)}
 
