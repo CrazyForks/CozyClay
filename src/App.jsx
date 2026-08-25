@@ -7694,7 +7694,28 @@ function resizePromptClip(id, edge, rawFrame) {
 						    nothing on the open stage ever touched the floor. A contact
 						    shadow is the cue that says a subject stands ON the deck rather
 						    than floats above it — without walls it is the only one left. */}
-						<Canvas shadows frameloop={renderActive ? "always" : "demand"} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true }}>
+						<Canvas
+							shadows
+							frameloop={renderActive ? "always" : "demand"}
+							dpr={[1, 2]}
+							gl={{ preserveDrawingBuffer: true, antialias: true }}
+							onCreated={({ gl }) => {
+								// GPU context loss (sleep/wake, driver reset, VRAM
+								// pressure) used to leave a black stage with no path
+								// back. preventDefault opts into restoration; the
+								// toast tells the operator what just happened.
+								gl.domElement.addEventListener("webglcontextlost", (event) => {
+									event.preventDefault();
+									setToast(ko(
+										"The graphics context was lost — restoring the stage. If it stays black, reload the page; your work is autosaved.",
+										"그래픽 컨텍스트가 끊겼어요 — 무대를 복구합니다. 검게 남으면 새로고침하세요. 작업은 자동 저장돼 있습니다.",
+									));
+								});
+								gl.domElement.addEventListener("webglcontextrestored", () => {
+									setToast(ko("Graphics restored.", "그래픽이 복구됐어요."));
+								});
+							}}
+						>
 							<RenderLoopController stageRef={stageRef} />
 							<ViewportLayoutInvalidator
 								insetX={insetPos?.x ?? null}
