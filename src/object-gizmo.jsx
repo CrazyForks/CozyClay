@@ -617,6 +617,18 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// belong to the camera and must pass straight through.
 			if (event.button !== 0 || event.altKey || event.target !== gl.domElement) return;
 			const grabbed = pickHandle(event);
+			// A press ON the key-light sun outranks any handle overlapping it:
+			// the puck's own body-drag is the primary interaction there, and the
+			// centre plane-square would otherwise silently claim the grab.
+			if (grabbed && rayFrom(event)) {
+				tools.raycaster.layers.set(GIZMO_LAYER);
+				const sunClaims = tools.raycaster.intersectObjects(scene.children, true).some((entry) => {
+					for (let node = entry.object; node; node = node.parent) if (node.userData?.keyLightPick) return true;
+					return false;
+				});
+				tools.raycaster.layers.set(0);
+				if (sunClaims) return;
+			}
 			if (
 				grabbed &&
 				beginDrag(
@@ -650,12 +662,13 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			const lineParams = tools.raycaster.params.Line;
 			const prevThreshold = lineParams.threshold;
 			lineParams.threshold = 0.02;
-			// Pickable BODIES ride GIZMO_LAYER too (the camera ghost, the key-light
-			// sun) so recordings never see them — those are selection targets for
-			// pickObject below, not a twin's handles, and must not eat the press.
+			// The camera ghost rides GIZMO_LAYER too, but it is a selection target
+			// for pickObject below, not a twin's handles — it must not eat the
+			// press. The key-light sun is NOT exempted: its puck owns its own press
+			// (select + body drag) after this guard lets the event through.
 			const twinClaims = tools.raycaster.intersectObjects(scene.children, true).filter((entry) => {
 				for (let node = entry.object; node; node = node.parent) {
-					if (node.userData?.shotCameraPick || node.userData?.keyLightPick) return false;
+					if (node.userData?.shotCameraPick) return false;
 				}
 				return true;
 			}).length;

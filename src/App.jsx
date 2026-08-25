@@ -932,6 +932,65 @@ function ShotLookApplier({ camRef, look }) {
  * seed frames both the subject and the shot camera: the first editor frame
  * must read as "the set with the camera in it".
  */
+/**
+ * A short editor-camera glide: 260 ms ease toward a target orientation (and
+ * optionally a position), instead of the teleport that made "look at the
+ * light" and F-framing feel like a cut. Any user press cancels it — the
+ * operator always outranks the tour guide.
+ */
+function CameraGlide({ glide, camRef, lookRef, onDone }) {
+	const { gl } = useThree();
+	const invalidate = useThree((state) => state.invalidate);
+	const animRef = useRef(null);
+	useEffect(() => {
+		if (!glide) {
+			animRef.current = null;
+			return undefined;
+		}
+		const cam = camRef.current;
+		if (!cam) return undefined;
+		const fromPos = cam.position.clone();
+		const toPos = glide.position ? new THREE.Vector3(glide.position.x, glide.position.y, glide.position.z) : fromPos.clone();
+		const angles = aimAt(toPos, glide.target);
+		const from = { yaw: lookRef.current.yaw, pitch: lookRef.current.pitch };
+		let dYaw = angles.yaw - from.yaw;
+		while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
+		while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
+		// elapsed accumulates render-loop deltas: the glide needs no wall clock
+		animRef.current = { fromPos, toPos, from, dYaw, dPitch: angles.pitch - from.pitch, elapsed: 0 };
+		const cancel = () => {
+			animRef.current = null;
+			onDone?.();
+		};
+		gl.domElement.addEventListener("pointerdown", cancel, true);
+		invalidate();
+		return () => gl.domElement.removeEventListener("pointerdown", cancel, true);
+		// camRef/lookRef are stable refs; onDone identity is per-glide noise
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [glide, gl, invalidate]);
+	useFrame((_, delta) => {
+		const anim = animRef.current;
+		const cam = camRef.current;
+		if (!anim || !cam) return;
+		anim.elapsed += Math.min(delta, 0.1) * 1000;
+		const t = Math.min(1, anim.elapsed / 260);
+		const eased = 1 - (1 - t) ** 3;
+		cam.position.lerpVectors(anim.fromPos, anim.toPos, eased);
+		const yaw = anim.from.yaw + anim.dYaw * eased;
+		const pitch = anim.from.pitch + anim.dPitch * eased;
+		lookRef.current = { yaw, pitch };
+		cam.rotation.order = "YXZ";
+		cam.rotation.set(pitch, yaw, 0);
+		if (t >= 1) {
+			animRef.current = null;
+			onDone?.();
+		} else {
+			invalidate();
+		}
+	});
+	return null;
+}
+
 function EditorCamSeed({ camRef, lookRef, shotCamRef, subject }) {
 	const seeded = useRef(false);
 	const invalidate = useThree((state) => state.invalidate);
@@ -960,21 +1019,116 @@ function EditorCamSeed({ camRef, lookRef, shotCamRef, subject }) {
  * The key light drawn as a grabbable sun in the editor view: a warm core with
  * rays, on GIZMO_LAYER so preview, capture and PlayView never see it. A line
  * drops to the floor so its height reads against the stage, like the crane's.
+ * The sun's own body is the drag surface — a grab moves it freely on the
+ * camera-facing plane (the cursor and the sun stay glued), and the gizmo's
+ * arrows (via ObjectGizmo) stay available for single-axis precision. Its
+ * colour follows the dial, and while selected a ray points at the stage so
+ * the light's direction reads at a glance.
  */
-function KeyLightPuck({ keyLight, selected, visible }) {
+function KeyLightPuck({ keyLight, selected, visible, paneRef, camRef, onSelect, onChange, onDragEnd }) {
+	const { gl } = useThree();
 	const groupRef = useRef(null);
+	const dragRef = useRef(null);
+	const stateRef = useRef(null);
+	const [dragKind, setDragKind] = useState(null);
 	const invalidate = useThree((state) => state.invalidate);
+	stateRef.current = { keyLight, visible, onSelect, onChange, onDragEnd };
 	useEffect(() => {
 		groupRef.current?.traverse((node) => node.layers?.set(GIZMO_LAYER));
 		invalidate();
-	}, [visible, selected, keyLight, invalidate]);
+	}, [visible, selected, keyLight, dragKind, invalidate]);
+	useEffect(() => {
+		if (!visible) return undefined;
+		const raycaster = new THREE.Raycaster();
+		raycaster.layers.set(GIZMO_LAYER);
+		const rayFrom = (event) => {
+			const pane = paneRef.current;
+			const camera = camRef.current;
+			if (!pane || !camera) return null;
+			const bounds = pane.getBoundingClientRect();
+			if (bounds.width < 2 || bounds.height < 2) return null;
+			const ndc = new THREE.Vector2(
+				((event.clientX - bounds.left) / bounds.width) * 2 - 1,
+				-((event.clientY - bounds.top) / bounds.height) * 2 + 1,
+			);
+			if (Math.abs(ndc.x) > 1 || Math.abs(ndc.y) > 1) return null;
+			camera.updateMatrixWorld();
+			raycaster.setFromCamera(ndc, camera);
+			return raycaster;
+		};
+		const onDown = (event) => {
+			const s = stateRef.current;
+			if (event.button !== 0 || event.altKey) return;
+			if (!groupRef.current || !rayFrom(event)) return;
+			const hit = raycaster.intersectObjects(groupRef.current.children, true)
+				.find((entry) => {
+					for (let node = entry.object; node; node = node.parent) if (node.userData?.keyLightPick) return true;
+					return false;
+				});
+			if (!hit) return;
+			event.stopImmediatePropagation();
+			event.preventDefault();
+			s.onSelect?.();
+			const start = { ...s.keyLight };
+			const origin = new THREE.Vector3(start.x, start.y, start.z);
+			// free move on the camera-facing plane through the sun: the cursor
+			// and the sun stay glued from any viewing angle — no degenerate
+			// floor-plane geometry when the sun is viewed from below
+			const facing = new THREE.Vector3();
+			camRef.current.getWorldDirection(facing);
+			const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(facing, origin);
+			const hitStart = new THREE.Vector3();
+			if (!raycaster.ray.intersectPlane(plane, hitStart)) return;
+			dragRef.current = { start, plane, hitStart, moved: false };
+			setDragKind("move");
+			invalidate();
+		};
+		const onMove = (event) => {
+			const drag = dragRef.current;
+			if (!drag || !rayFrom(event)) return;
+			const world = new THREE.Vector3();
+			if (!raycaster.ray.intersectPlane(drag.plane, world)) return;
+			drag.moved = true;
+			stateRef.current.onChange?.({
+				x: drag.start.x + (world.x - drag.hitStart.x),
+				y: drag.start.y + (world.y - drag.hitStart.y),
+				z: drag.start.z + (world.z - drag.hitStart.z),
+			}, { dragging: true });
+			invalidate();
+		};
+		const onUp = () => {
+			const drag = dragRef.current;
+			if (!drag) return;
+			dragRef.current = null;
+			setDragKind(null);
+			if (drag.moved) stateRef.current.onDragEnd?.();
+			invalidate();
+		};
+		const el = gl.domElement;
+		el.addEventListener("pointerdown", onDown);
+		window.addEventListener("pointermove", onMove, true);
+		window.addEventListener("pointerup", onUp, true);
+		return () => {
+			el.removeEventListener("pointerdown", onDown);
+			window.removeEventListener("pointermove", onMove, true);
+			window.removeEventListener("pointerup", onUp, true);
+		};
+		// paneRef/camRef are stable refs; handlers read live state through stateRef
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [visible, gl, invalidate]);
 	const drop = useMemo(() => new Float32Array([0, 0, 0, 0, -keyLight.y, 0]), [keyLight.y]);
+	// the sun dims with its own dial, so the stage's mood reads off the puck
+	const glow = Math.max(0.18, Math.min(1, keyLight.intensity / 1.12));
+	const sunColor = useMemo(
+		() => new THREE.Color("#5c5040").lerp(new THREE.Color(selected ? "#ffcf5e" : "#f2b544"), glow).getStyle(),
+		[selected, glow],
+	);
 	if (!visible) return null;
 	return (
 		<group ref={groupRef} position={[keyLight.x, keyLight.y, keyLight.z]}>
 			<mesh userData={{ keyLightPick: true }}>
 				<sphereGeometry args={[0.16, 20, 16]} />
-				<meshBasicMaterial color={selected ? "#ffcf5e" : "#f2b544"} toneMapped={false} />
+				<meshBasicMaterial color={sunColor} toneMapped={false} />
 			</mesh>
 			{/* rays: eight short spokes so it reads as a sun, not a ball */}
 			{Array.from({ length: 8 }, (_, i) => {
@@ -982,16 +1136,42 @@ function KeyLightPuck({ keyLight, selected, visible }) {
 				return (
 					<mesh key={i} userData={{ keyLightPick: true }} position={[Math.cos(angle) * 0.27, Math.sin(angle) * 0.27, 0]} rotation={[0, 0, angle + Math.PI / 2]}>
 						<cylinderGeometry args={[0.014, 0.014, 0.1, 6]} />
-						<meshBasicMaterial color={selected ? "#ffcf5e" : "#f2b544"} toneMapped={false} />
+						<meshBasicMaterial color={sunColor} toneMapped={false} />
 					</mesh>
 				);
 			})}
+			{/* the real grab surface: generous, invisible, around the whole sun */}
+			<mesh userData={{ keyLightPick: true }}>
+				<sphereGeometry args={[0.42, 12, 10]} />
+				<meshBasicMaterial visible={false} />
+			</mesh>
 			<lineSegments>
 				<bufferGeometry>
 					<bufferAttribute attach="attributes-position" array={drop} count={2} itemSize={3} />
 				</bufferGeometry>
 				<lineBasicMaterial color="#f2b544" transparent opacity={selected ? 0.6 : 0.25} />
 			</lineSegments>
+			{/* where the light points: a dashed ray toward the stage centre */}
+			{selected && (
+				<Line
+					points={[[0, 0, 0], [-keyLight.x * 0.86, -keyLight.y * 0.86, -keyLight.z * 0.86]]}
+					color="#ffb454"
+					lineWidth={1.6}
+					dashed
+					dashSize={0.32}
+					gapSize={0.22}
+					transparent
+					opacity={0.45}
+				/>
+			)}
+			{/* live readout while the sun is being dragged */}
+			{dragKind && (
+				<GizmoLabel
+					position={[0, 0.5, 0]}
+					text={`x ${keyLight.x.toFixed(1)}  y ${keyLight.y.toFixed(1)}  z ${keyLight.z.toFixed(1)}`}
+					camRef={camRef}
+				/>
+			)}
 		</group>
 	);
 }
@@ -1201,7 +1381,41 @@ function prepareRailBend(controlPoints, base, marks, markIndex) {
 		const d = Math.abs(t - t0);
 		return d >= radius ? 0 : 0.5 * (1 + Math.cos((Math.PI * d) / radius));
 	});
-	return { startControls: controls, weights };
+	return { startControls: controls, weights, t0, radius };
+}
+
+/**
+ * A floating readout beside a drag — billboarded, sized to the screen, on
+ * GIZMO_LAYER so it is editor furniture the recording never sees.
+ */
+function GizmoLabel({ position, text, camRef }) {
+	const ref = useRef(null);
+	useFrame(() => {
+		const cam = camRef?.current;
+		const node = ref.current;
+		if (!cam || !node) return;
+		node.quaternion.copy(cam.getWorldQuaternion(new THREE.Quaternion()));
+		const world = node.getWorldPosition(new THREE.Vector3());
+		node.scale.setScalar(Math.max(0.4, cam.getWorldPosition(new THREE.Vector3()).distanceTo(world) * 0.11));
+		node.traverse((child) => child.layers?.set(GIZMO_LAYER));
+	});
+	return (
+		<Text
+			ref={ref}
+			position={position}
+			fontSize={0.19}
+			color="#ffd27a"
+			outlineWidth={0.014}
+			outlineColor="#241a05"
+			anchorX="center"
+			anchorY="bottom"
+			renderOrder={1000}
+			material-depthTest={false}
+			material-transparent
+		>
+			{text}
+		</Text>
+	);
 }
 
 function CraneHandles({ rail, crane, controlPoints, selectedIndex, enabled, paneRef, camRef, onSelect, onChangePoints, onChangeRail, onDragStart, onDragEnd }) {
@@ -1211,6 +1425,10 @@ function CraneHandles({ rail, crane, controlPoints, selectedIndex, enabled, pane
 	const gizmoRef = useRef(null);
 	const dragRef = useRef(null);
 	const stateRef = useRef(null);
+	// What the pointer is doing right now, for the in-scene feedback layer:
+	// height-ish drags float a metre readout, a bend drag lights up the arc
+	// span the bump will actually deform.
+	const [dragInfo, setDragInfo] = useState(null);
 	stateRef.current = { rail, crane, controlPoints, selectedIndex, enabled, onSelect, onChangePoints, onChangeRail, onDragStart, onDragEnd };
 	// Constant on-screen size for the axis gizmo: it is UI, not set dressing.
 	useFrame(() => {
@@ -1291,6 +1509,7 @@ function CraneHandles({ rail, crane, controlPoints, selectedIndex, enabled, pane
 					bendWeights: bend?.weights ?? null,
 					recorded: false,
 				};
+				setDragInfo(axis === "y" ? { kind: "height" } : { kind: "bend", t0: bend.t0, radius: bend.radius });
 				invalidate();
 				return;
 			}
@@ -1301,6 +1520,7 @@ function CraneHandles({ rail, crane, controlPoints, selectedIndex, enabled, pane
 			const index = hit.object.userData.craneIndex;
 			s.onSelect(index);
 			dragRef.current = { index, slide: event.shiftKey, recorded: false };
+			setDragInfo({ kind: event.shiftKey ? "slide" : "free" });
 			invalidate();
 		};
 		const onMove = (event) => {
@@ -1391,6 +1611,7 @@ function CraneHandles({ rail, crane, controlPoints, selectedIndex, enabled, pane
 		const onUp = () => {
 			if (dragRef.current?.recorded) stateRef.current.onDragEnd?.();
 			dragRef.current = null;
+			setDragInfo(null);
 		};
 		const onDouble = (event) => {
 			const s = stateRef.current;
@@ -1473,17 +1694,40 @@ function CraneHandles({ rail, crane, controlPoints, selectedIndex, enabled, pane
 			{crane.points.map((point, index) => {
 				const base = railPoint(rail, point.t * rail.length);
 				return (
-					<mesh
-						key={`${index}:${crane.points.length}`}
-						position={[base.x, point.height, base.z]}
-						userData={{ craneIndex: index }}
-						renderOrder={998}
-					>
-						<sphereGeometry args={[0.085, 16, 12]} />
-						<meshBasicMaterial color={index === selectedIndex ? "#ffb454" : "#a78bfa"} depthTest={false} transparent opacity={0.95} />
-					</mesh>
+					<group key={`${index}:${crane.points.length}`} position={[base.x, point.height, base.z]}>
+						<mesh userData={{ craneIndex: index }} renderOrder={998}>
+							<sphereGeometry args={[0.085, 16, 12]} />
+							<meshBasicMaterial color={index === selectedIndex ? "#ffb454" : "#a78bfa"} depthTest={false} transparent opacity={0.95} />
+						</mesh>
+						{/* the real click target: a dot is a dozen pixels from a few
+						    metres back, so an invisible halo carries the press */}
+						<mesh userData={{ craneIndex: index }}>
+							<sphereGeometry args={[0.24, 10, 8]} />
+							<meshBasicMaterial visible={false} />
+						</mesh>
+					</group>
 				);
 			})}
+			{/* live readout while a drag changes the mark's height */}
+			{dragInfo && dragInfo.kind !== "bend" && selectedPoint && (
+				<GizmoLabel
+					position={[selectedBase.x, selectedPoint.height + 0.28, selectedBase.z]}
+					text={dragInfo.kind === "slide" ? `${Math.round(selectedPoint.t * 100)}%` : `${selectedPoint.height.toFixed(1)} m`}
+					camRef={camRef}
+				/>
+			)}
+			{/* the span a bend drag will actually deform, lit on the floor path */}
+			{dragInfo?.kind === "bend" && (() => {
+				const span = [];
+				for (let i = 0; i < rail.points.length; i += 1) {
+					const t = rail.cumLen[i] / rail.length;
+					if (t >= dragInfo.t0 - dragInfo.radius && t <= dragInfo.t0 + dragInfo.radius) {
+						span.push([rail.points[i].x, 0.035, rail.points[i].z]);
+					}
+				}
+				if (span.length < 2) return null;
+				return <Line points={span} color="#ffb454" lineWidth={4} transparent opacity={0.9} />;
+			})()}
 		</group>
 	);
 }
@@ -1868,6 +2112,11 @@ export default function App() {
 	const [shotAspectKey, setShotAspectKey] = useState(startupStage.shotAspect);
 	const shotOutput = SHOT_ASPECT_PRESETS[shotAspectKey] ?? SHOT_ASPECT_PRESETS["16:9"];
 	const [sensorId, setSensorFormat] = useState(startupStage.sensorId ?? DEFAULT_SENSOR_FORMAT);
+	// The stage's key light and the in-flight editor-camera glide. Declared
+	// this early because the keyboard effect lists them in its dependency
+	// array — a later declaration is a temporal-dead-zone crash at mount.
+	const [keyLight, setKeyLight] = useState(startupStage.keyLight);
+	const [camGlide, setCamGlide] = useState(null);
 	const filmback = useMemo(
 		() => ({ sensorId, aspectRatio: shotOutput.aspect }),
 		[sensorId, shotOutput.aspect],
@@ -2743,26 +2992,39 @@ globalThis.playMode = centerTab === "play";
 	/** Frame the selection: fly the shot camera to a comfortable distance along
 	 * the current view direction, the way Unity's F key does. Defaults to the
 	 * selection; the hierarchy context menu passes a specific row's id. */
-	function frameSelection(id = selectedSceneObjectId) {
+	/** Dolly-and-aim onto a world point. The editor camera glides; the shot
+	 * camera (look-through) still cuts, because reframing the RECORDING lens
+	 * is a deliberate act, not a tour. */
+	function frameWorldTarget(target, reach) {
 		const camera = (lookThroughShot ? shotCamRef : editorCamRef).current;
 		const paneLook = lookThroughShot ? look : editorLook;
-		const object = sceneObjects.find((item) => item.id === id) ?? null;
-		if (!camera || !object) return;
-		const size = objectSize(object);
-		const target = {
-			x: object.x,
-			y: (object.y ?? 0) + size.height / 2,
-			z: object.z,
-		};
-		const reach = Math.max(size.width, size.height, size.depth, 0.5);
+		if (!camera) return;
 		const distance = reach * 2.4 + 0.6;
 		const back = forwardFrom(paneLook.current.yaw, paneLook.current.pitch).multiplyScalar(-distance);
-		camera.position.set(target.x + back.x, Math.max(target.y + back.y, 0.3), target.z + back.z);
+		const position = {
+			x: target.x + back.x,
+			y: Math.max(target.y + back.y, 0.3),
+			z: target.z + back.z,
+		};
+		if (!lookThroughShot) {
+			setCamGlide({ position, target });
+			return;
+		}
+		camera.position.set(position.x, position.y, position.z);
 		const angles = aimAt(camera.position, target);
 		paneLook.current.yaw = angles.yaw;
 		paneLook.current.pitch = angles.pitch;
 		camera.rotation.order = "YXZ";
 		camera.rotation.set(angles.pitch, angles.yaw, 0);
+	}
+	function frameSelection(id = selectedSceneObjectId) {
+		const object = sceneObjects.find((item) => item.id === id) ?? null;
+		if (!object) return;
+		const size = objectSize(object);
+		frameWorldTarget(
+			{ x: object.x, y: (object.y ?? 0) + size.height / 2, z: object.z },
+			Math.max(size.width, size.height, size.depth, 0.5),
+		);
 	}
 
 	/** In-place rename commit from the hierarchy (F2 / Return / rename on
@@ -2967,10 +3229,27 @@ globalThis.playMode = centerTab === "play";
 				setGizmoMode(GIZMO_HOTKEYS[event.code]);
 				return;
 			}
-			if (event.code === "KeyF" && selectedSceneObjectId) {
-				event.preventDefault();
-				frameSelection();
-				return;
+			if (event.code === "KeyF") {
+				// Frame whatever is selected — Unity's F, not just for props: the
+				// sun and the cast are selections the eye wants to travel to too.
+				if (selectedSceneObjectId) {
+					event.preventDefault();
+					frameSelection();
+					return;
+				}
+				if (selectedHierarchyId === "light") {
+					event.preventDefault();
+					frameWorldTarget({ x: keyLight.x, y: keyLight.y, z: keyLight.z }, 0.8);
+					return;
+				}
+				const framedChar = selectedHierarchyId.startsWith("characterB") ? (showB ? charB : null)
+					: selectedHierarchyId.startsWith("characterA") || selectedHierarchyId.startsWith("rig.") ? charA
+					: null;
+				if (framedChar) {
+					event.preventDefault();
+					frameWorldTarget({ x: framedChar.x, y: 1, z: framedChar.z }, 1.8);
+					return;
+				}
 			}
 			if (event.code === "KeyD" && (event.ctrlKey || event.metaKey) && selectedSceneObjectId) {
 				event.preventDefault();
@@ -2997,7 +3276,7 @@ globalThis.playMode = centerTab === "play";
 
 	useEffect(() => {
 		setInspectorActionsOpen(false);
-	}, [selectedSceneObjectId]);
+	}, [selectedSceneObjectId, selectedHierarchyId, keyLight, charA, charB, showB]);
 
 	useEffect(() => {
 		if (!inspectorActionsOpen) return undefined;
@@ -3066,7 +3345,6 @@ globalThis.playMode = centerTab === "play";
 	// Point height input edits this one. Reset lives after activeCamera below.
 	const [craneSelectedIndex, setCraneSelectedIndex] = useState(null);
 	const [hasCharSheet, setHasCharSheet] = useState(startupStage.hasCharSheet);
-	const [keyLight, setKeyLight] = useState(startupStage.keyLight);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
 	const [environment, setEnvironment] = useState(DEFAULT_ENVIRONMENT);
 	const [style, setStyle] = useState("moody cinematic lighting, 35mm film look");
@@ -4646,14 +4924,10 @@ globalThis.playMode = centerTab === "play";
 	}, [keyLightSelected, ikMode, keyLight]);
 	/* Selecting the Light from the hierarchy must SHOW the light: the sun sits
 	 * high above the stage and the default view often does not contain it, so
-	 * the editor camera turns in place to face it (position untouched). */
+	 * the editor camera glides in place to face it (position untouched). */
 	function aimEditorAtKeyLight() {
-		const cam = editorCamRef.current;
-		if (!cam || lookThroughShot || ikMode) return;
-		const angles = aimAt(cam.position, keyLight);
-		editorLook.current = { yaw: angles.yaw, pitch: angles.pitch };
-		cam.rotation.order = "YXZ";
-		cam.rotation.set(angles.pitch, angles.yaw, 0);
+		if (!editorCamRef.current || lookThroughShot || ikMode) return;
+		setCamGlide({ target: { x: keyLight.x, y: keyLight.y, z: keyLight.z } });
 	}
 	function changeKeyLightFromGizmo(_id, patch) {
 		setKeyLight((current) => createKeyLight({
@@ -7394,7 +7668,15 @@ function resizePromptClip(id, edge, rawFrame) {
 							    line, no clip edge and no tone break. */}
 							<fog attach="fog" args={["#eef4f3", 18, 54]} />
 							<StageLights keyLight={keyLight} />
-							<KeyLightPuck keyLight={keyLight} selected={keyLightSelected} visible={centerTab === "scene" && !lookThroughShot && !playMode} />
+							<KeyLightPuck
+								keyLight={keyLight}
+								selected={keyLightSelected}
+								visible={centerTab === "scene" && !lookThroughShot && !playMode}
+								paneRef={mainPaneRef}
+								camRef={editorCamRef}
+								onSelect={() => selectHierarchy("light")}
+								onChange={(patch) => setKeyLight((current) => createKeyLight({ ...current, ...patch }))}
+							/>
 							<Room />
 							<SetProps objects={sceneObjects} selectedId={selectedSceneObjectId} />
 
@@ -7688,6 +7970,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								onDragStart={recordShotUndo}
 							/>
 							<EditorCamSeed camRef={editorCamRef} lookRef={editorLook} shotCamRef={shotCamRef} subject={charA} />
+							<CameraGlide glide={camGlide} camRef={editorCamRef} lookRef={editorLook} onDone={() => setCamGlide(null)} />
 							<ShotLookApplier camRef={shotCamRef} look={look} />
 							<ShotCameraGhost
 								camRef={shotCamRef}
