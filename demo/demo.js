@@ -1,4 +1,6 @@
-import { API_BASE, TURNSTILE_SITE_KEY, configuredPromptLimit } from "./config.js";
+import { API_BASE, DEMO_DISABLED, TURNSTILE_SITE_KEY, configuredPromptLimit } from "./config.js";
+
+const DISABLED_MESSAGE = "아직 동작하지 않는 기능입니다. This feature is not available yet.";
 
 const PROMPT_STORAGE_KEY = "cozyclay.demo.prompt";
 
@@ -385,7 +387,30 @@ function bindComposer() {
   });
 }
 
+/** Preview lock: every actionable control answers with the notice instead. */
+function bindDisabledComposer() {
+  byId("job-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    setMessage(DISABLED_MESSAGE);
+  });
+  document.querySelectorAll("[data-provider], [data-prompt]").forEach((button) => {
+    button.addEventListener("click", () => setMessage(DISABLED_MESSAGE));
+  });
+}
+
+function bootDisabled() {
+  const status = byId("session-status");
+  if (status) status.textContent = "Preview";
+  renderSessionError(DISABLED_MESSAGE);
+  byId("turnstile-widget")?.closest(".turnstile-wrap")?.classList.add("is-hidden");
+  bindDisabledComposer();
+}
+
 function boot() {
+  if (DEMO_DISABLED) {
+    bootDisabled();
+    return;
+  }
   const field = byId("prompt");
   if (field) field.maxLength = configuredPromptLimit;
   restorePrompt();
