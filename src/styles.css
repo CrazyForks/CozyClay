@@ -8248,7 +8248,9 @@ input[type=range] {
 	   own ground, so the picture sits ON it and nothing outside the canvas can
 	   crop the picture once it is zoomed past fit. */
 	width: 100%;
-	height: 240px;
+	/* 240px was a letterbox; cutting a person out of a photo deserves more
+	   working room without leaving the inspector's flow. */
+	height: 340px;
 	background: #141819;
 	border: 1px solid var(--line);
 	border-radius: 3px;

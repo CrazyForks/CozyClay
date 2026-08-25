@@ -2781,6 +2781,7 @@ globalThis.playMode = centerTab === "play";
 	// How much of the wall counts as the wall, and how wide the brush that
 	// argues with the answer is.
 	const [matteTolerance, setMatteTolerance] = useState(0.18);
+	const [matteBrush, setMatteBrush] = useState(18);
 	const [matteMode, setMatteMode] = useState("paint");
 	const [matteStats, setMatteStats] = useState({ painted: 0, coverage: 0, zoom: 1, canUndo: false, canRedo: false });
 	const [matteBusy, setMatteBusy] = useState(false);
@@ -9253,6 +9254,37 @@ function resizePromptClip(id, edge, rawFrame) {
 													matteEditorRef.current?.setTolerance(value);
 												}}
 											/>
+										<div className="matte-slider">
+											<label htmlFor="matte-brush">{ko("Brush", "붓 크기")}</label>
+											<input
+												id="matte-brush"
+												type="range"
+												min="2"
+												max="200"
+												step="1"
+												value={matteBrush}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													setMatteBrush(value);
+													matteEditorRef.current?.setBrush(value);
+												}}
+											/>
+											<input
+												type="number"
+												data-field="matte-brush"
+												min="2"
+												max="200"
+												step="1"
+												value={matteBrush}
+												aria-label={ko("Brush size", "붓 크기")}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													if (!Number.isFinite(value)) return;
+													setMatteBrush(value);
+													matteEditorRef.current?.setBrush(value);
+												}}
+											/>
+										</div>
 										</div>
 										<p className="inspector-hint">
 											{ko(
