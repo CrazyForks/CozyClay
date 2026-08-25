@@ -9021,6 +9021,27 @@ function resizePromptClip(id, edge, rawFrame) {
 										onChange={(event) => changeSceneObject(selectedSceneObject.id, { name: event.target.value })}
 									/>
 								</Field>
+								<Field label={ko("Parent", "상위 그룹")}>
+									<select
+										value={selectedSceneObject.parent ?? ""}
+										onChange={(event) => {
+											const parent = event.target.value || null;
+											const next = setSceneObjectParent(sceneObjects, selectedSceneObject.id, parent);
+											if (next !== sceneObjects) {
+												const token = beginSceneTransaction({ owner: "reparent", cancel: () => {} });
+												setSceneObjects(next);
+												endSceneTransaction(token, { commit: true });
+											}
+										}}
+									>
+										<option value="">{ko("(none)", "(없음)")}</option>
+										{sceneObjects
+											.filter((object) => object.id !== selectedSceneObject.id)
+											.map((object) => (
+												<option key={object.id} value={object.id}>{sceneObjectNameDisplayKo(object.name)}</option>
+											))}
+									</select>
+								</Field>
 								<Vector3Row
 							label={ko("Position", "위치")}
 									fields={[
