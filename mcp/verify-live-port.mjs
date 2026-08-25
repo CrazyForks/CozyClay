@@ -22,20 +22,20 @@ const reservePort = () =>
 		});
 	});
 
-const withTimeout = (promise, label) => {
+const withTimeout = (promise, label, milliseconds = 30_000) => {
 	let timer;
 	return Promise.race([
 		promise,
 		new Promise((_, reject) => {
-			timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), 30_000);
+			timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), milliseconds);
 		}),
 	]).finally(() => clearTimeout(timer));
 };
 
-const waitForOutput = (child, pattern, label) =>
-	withTimeout(
+const waitForOutput = (child, pattern, label, milliseconds) => {
+	let output = "";
+	return withTimeout(
 		new Promise((resolve, reject) => {
-			let output = "";
 			const inspect = (chunk) => {
 				output += chunk.toString();
 				if (pattern.test(output)) finish(resolve);
@@ -52,7 +52,13 @@ const waitForOutput = (child, pattern, label) =>
 			child.once("exit", onExit);
 		}),
 		label,
-	);
+		milliseconds,
+	).catch((error) => {
+		// A bare timeout hides what the child actually said; name it.
+		error.message += output ? `\nchild output:\n${output}` : "\n(child produced no output)";
+		throw error;
+	});
+};
 
 const terminate = async (child) => {
 	if (child.exitCode !== null || child.signalCode !== null) return;
@@ -71,11 +77,17 @@ const child = spawn(process.execPath, ["tools/dev-full.mjs", "--host", "127.0.0.
 		CCLAY_ARDY_MODE: "remote",
 		CCLAY_ARDY_HOST: "test@ardy",
 		COZYCLAY_LIVE_PORT: String(livePort),
+		// On CI runners picocolors turns color on for a piped Vite, wrapping
+		// the port in ANSI bold and defeating the URL match below.
+		NO_COLOR: "1",
 	},
 	stdio: ["ignore", "pipe", "pipe"],
 });
 try {
-	await waitForOutput(child, new RegExp(`http://127\\.0\\.0\\.1:${vitePort}/`), "dev-full Vite startup");
+	// A cold Vite start on a CI runner optimizes dependencies first and can
+	// take well past 30s; ci.yml's own dev-server step allows 120s for the
+	// same boot.
+	await waitForOutput(child, new RegExp(`http://127\\.0\\.0\\.1:${vitePort}/`), "dev-full Vite startup", 120_000);
 	const source = await (await fetch(`http://127.0.0.1:${vitePort}/src/live-control.js`)).text();
 	assert.match(source, new RegExp(`\"VITE_COZYCLAY_LIVE_PORT\": \"${livePort}\"`));
 	assert.equal(liveControlUrl(String(livePort)), `ws://127.0.0.1:${livePort}/live`);
