@@ -121,7 +121,17 @@ function signalOwned(child, signal) {
 		if (IS_WINDOWS) child.kill(signal);
 		else process.kill(-child.pid, signal);
 	} catch (error) {
-		if (error?.code !== "ESRCH") throw error;
+		if (error?.code === "ESRCH") return;
+		if (!IS_WINDOWS && error?.code === "EPERM") {
+			try {
+				child.kill(signal);
+				return;
+			} catch (fallbackError) {
+				if (fallbackError?.code === "ESRCH") return;
+				throw fallbackError;
+			}
+		}
+		throw error;
 	}
 }
 

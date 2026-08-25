@@ -181,12 +181,14 @@ All runtime libraries intentionally live in `devDependencies` because the publis
 
 ## Analytics & privacy
 
-The hosted site at [cozyclay.org](https://cozyclay.org/) collects anonymous usage analytics via [PostHog](https://posthog.com/) (US Cloud). There are no cookies and no session recording, and Do-Not-Track is respected. A random anonymous identifier is kept in your browser's localStorage so that returning visits and retention can be counted; it contains no personal data, is never linked to an identity, and is removed by clearing site data or using the opt-out toggle.
+The hosted site at [cozyclay.org](https://cozyclay.org/) collects anonymous usage analytics via [PostHog](https://posthog.com/) (US Cloud). There are no cookies and no session recording, and Do-Not-Track is respected. A random pseudonymous identifier is kept in your browser's localStorage so that returning visits and retention can be counted; it is never linked to an account or project content and is removed by clearing site data or using the opt-out toggle.
 
 Events collected:
 
 | Event | Purpose |
 | --- | --- |
+| `install:first_launch` | First run of the official npm package |
+| `app:session_started` | Start of an official npm package session |
 | `$pageview` | Funnel and drop-off analysis |
 | `scene:created` | Funnel and drop-off analysis |
 | `scene:loaded` | Funnel and drop-off analysis |
@@ -197,9 +199,29 @@ Events collected:
 | `export:blocking_frame_succeeded` | Funnel and drop-off analysis |
 | `activation:completed` | Funnel and drop-off analysis |
 
-Geo data comes from ingest-time GeoIP country lookup only — no precise location is collected. Prompt text, asset names, file names, and any user-entered text are never collected.
+Geo data comes from ingest-time GeoIP country lookup only — no precise location is collected. Prompt text, asset names, file names, project content, local paths, and any user-entered text are never collected.
 
-To opt out, use the in-app topbar analytics toggle, enable Do-Not-Track in your browser, or use a content blocker. The npm CLI, local builds, and forked builds never send analytics: initialization is restricted to the official production origin.
+The official npm package also measures anonymous first launches, sessions, and
+the same in-app funnel on its `127.0.0.1` studio. It stores one random
+installation identifier in `~/.config/cozyclay/state.json` so returning use can
+be counted across ports and browser storage resets. Source checkouts, forks,
+development servers, CI, and tests do not send analytics. Official npm
+artifacts carry a signature checked by the launcher, so copying or repackaging
+the source does not enable telemetry.
+
+The npm package prints this disclosure once on first launch. Control it at any
+time:
+
+```bash
+cclay telemetry status
+cclay telemetry off
+cclay telemetry on
+```
+
+`COZYCLAY_TELEMETRY=0` and `DO_NOT_TRACK=1` disable collection for a launch.
+The in-app topbar toggle changes the same npm-package setting and removes its
+anonymous installation identifier. Hosted-site visitors can opt out with that
+toggle, browser Do-Not-Track, or a content blocker.
 
 PostHog's free plan retains events for 1 year.
 

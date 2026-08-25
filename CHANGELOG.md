@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.6.0
+
+The official npm package now records anonymous product usage so downloads can
+be distinguished from real launches and returning use.
+
+- `npx cozyclay`, `bunx cozyclay`, and global `cclay` launches get a
+  signed-package-verified anonymous installation ID.
+- The existing scene, edit, motion, export, and activation funnel is available
+  for npm sessions with `distribution: npm` and `app_version` properties.
+- Source checkouts, forks, CI, tests, malformed or unsigned packages, and
+  opted-out launches remain untracked.
+- `cclay telemetry status|on|off` controls the package-wide setting; the
+  in-app toggle stays synchronized with it.
+- URL/referrer/campaign-derived values are scrubbed before any event leaves the
+  browser, and corrupted telemetry state fails closed.
+
 ## 1.5.0
 
 The release where the camera can climb a shaped path, recordings leave the studio as
