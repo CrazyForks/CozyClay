@@ -5,6 +5,8 @@ const DEFAULT_ALLOWED_ORIGINS = Object.freeze([
 	"https://www.cozyclay.org",
 ]);
 const EVENT_PROPERTIES = Object.freeze({
+	"install:first_launch": [],
+	"app:session_started": [],
 	"scene:created": ["scene_source"],
 	"scene:loaded": ["scene_source"],
 	"craft:first_action": ["action_kind"],
@@ -91,7 +93,39 @@ export function bucketMs(ms) {
 	return "gte30s";
 }
 
-const URL_PROPERTY_KEYS = ["$current_url", "$referrer"];
+const URL_PROPERTY_KEYS = [
+	"$current_url",
+	"$initial_current_url",
+	"$referrer",
+	"$initial_referrer",
+];
+const CAMPAIGN_PROPERTY_KEYS = [
+	"utm_source",
+	"utm_medium",
+	"utm_campaign",
+	"utm_content",
+	"utm_term",
+	"gad_source",
+	"mc_cid",
+	"gclid",
+	"gclsrc",
+	"dclid",
+	"gbraid",
+	"wbraid",
+	"fbclid",
+	"msclkid",
+	"twclid",
+	"li_fat_id",
+	"igshid",
+	"ttclid",
+	"rdt_cid",
+	"epik",
+	"qclid",
+	"sccid",
+	"irclid",
+	"_kx",
+	"ph_keyword",
+];
 
 function stripUrlTail(value) {
 	if (typeof value !== "string") return value;
@@ -103,9 +137,25 @@ function stripUrlTail(value) {
 // leave the browser. Runs as posthog's before_send hook.
 export function scrubEventUrls(event) {
 	if (!event || typeof event !== "object" || !event.properties) return event;
-	for (const key of URL_PROPERTY_KEYS) {
-		if (typeof event.properties[key] === "string") {
-			event.properties[key] = stripUrlTail(event.properties[key]);
+	const containers = [
+		event.properties,
+		event.properties.$set,
+		event.properties.$set_once,
+		event.$set,
+		event.$set_once,
+	].filter((value) => value && typeof value === "object" && !Array.isArray(value));
+	for (const properties of containers) {
+		for (const key of URL_PROPERTY_KEYS) {
+			if (typeof properties[key] === "string") {
+				properties[key] = stripUrlTail(properties[key]);
+			}
+		}
+		for (const key of CAMPAIGN_PROPERTY_KEYS) {
+			delete properties[key];
+			delete properties[`$initial_${key}`];
+		}
+		for (const key of Object.keys(properties)) {
+			if (key.startsWith("$session_entry_")) delete properties[key];
 		}
 	}
 	return event;
@@ -116,7 +166,9 @@ export function shouldFireActivation(state) {
 }
 
 export function getAnalyticsOptOut() {
-	return readStorage(OPT_OUT_KEY) === "1";
+	return runtimeConfig()?.distribution === "npm"
+		? runtimeConfig()?.telemetryEnabled !== true
+		: readStorage(OPT_OUT_KEY) === "1";
 }
 
 function clearAnalyticsStorage() {
@@ -134,11 +186,38 @@ function clearAnalyticsStorage() {
 	}
 }
 
-export function setAnalyticsOptOut(optOut) {
-	const value = optOut === true;
+async function syncPackageTelemetry(enabled) {
+	if (runtimeConfig()?.distribution !== "npm") return { ok: true, enabled };
+	try {
+		const response = await fetch("/__cozyclay/telemetry", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ enabled }),
+		});
+		if (!response.ok) return { ok: false, enabled: !enabled };
+		const next = await response.json();
+		globalThis.__COZYCLAY_RUNTIME__ = next;
+		return { ok: true, enabled: next.telemetryEnabled === true };
+	} catch {
+		return { ok: false, enabled: !enabled };
+	}
+}
+
+export async function setAnalyticsOptOut(optOut) {
+	const requestedOptOut = optOut === true;
+	const packageRuntime = runtimeConfig()?.distribution === "npm";
+	const syncResult = await syncPackageTelemetry(!requestedOptOut);
+	if (!syncResult.ok) return getAnalyticsOptOut();
+	const telemetryEnabled = syncResult.enabled;
+	const value = !telemetryEnabled;
 	writeStorage(OPT_OUT_KEY, value ? "1" : "0");
 	if (value) clearAnalyticsStorage();
-	if (!posthog) return;
+	if (packageRuntime && !value) {
+		globalThis.location?.reload();
+		return false;
+	}
+	if (!posthog && !value) await initAnalytics();
+	if (!posthog) return value;
 	try {
 		if (value) {
 			enabled = false;
@@ -151,21 +230,68 @@ export function setAnalyticsOptOut(optOut) {
 		enabled = false;
 		// SDK opt-in/out is best effort.
 	}
+	return value;
 }
 
 function environment() {
 	return import.meta.env ?? {};
 }
 
-function disabledReason(env) {
-	if (!env.PROD) return "not production";
-	if (!env.VITE_POSTHOG_KEY) return "no key";
-	const origin = normalizeOrigin(globalThis.location?.origin);
-	if (!isOriginAllowed(origin, parseAllowlist(env.VITE_POSTHOG_ALLOWED_ORIGINS))) {
-		return "unapproved origin";
+function runtimeConfig() {
+	const value = globalThis.__COZYCLAY_RUNTIME__;
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	return value;
+}
+
+function isLoopbackOrigin(origin) {
+	try {
+		const parsed = new URL(origin);
+		return parsed.protocol === "http:" && parsed.hostname === "127.0.0.1";
+	} catch {
+		return false;
 	}
-	if (getAnalyticsOptOut()) return "opted out";
-	return null;
+}
+
+export function resolveAnalyticsRuntime({
+	env = environment(),
+	origin = globalThis.location?.origin ?? "",
+	runtime = runtimeConfig(),
+} = {}) {
+	if (!env.PROD) return { kind: "disabled", reason: "not production" };
+	if (runtime?.distribution === "npm") {
+		if (runtime.telemetryEnabled !== true) return { kind: "disabled", reason: "opted out" };
+		if (!isLoopbackOrigin(origin)) return { kind: "disabled", reason: "unapproved origin" };
+		if (typeof runtime.apiKey !== "string" || runtime.apiKey.length === 0) {
+			return { kind: "disabled", reason: "no key" };
+		}
+		return {
+			kind: "enabled",
+			distribution: "npm",
+			apiKey: runtime.apiKey,
+			apiHost: runtime.apiHost || "https://t.cozyclay.org",
+			appVersion: runtime.appVersion || null,
+			installationId: runtime.installationId || null,
+			firstLaunch: runtime.firstLaunch === true,
+		};
+	}
+	if (!env.VITE_POSTHOG_KEY) return { kind: "disabled", reason: "no key" };
+	if (!isOriginAllowed(origin, parseAllowlist(env.VITE_POSTHOG_ALLOWED_ORIGINS))) {
+		return { kind: "disabled", reason: "unapproved origin" };
+	}
+	return {
+		kind: "enabled",
+		distribution: "hosted",
+		apiKey: env.VITE_POSTHOG_KEY,
+		apiHost: env.VITE_POSTHOG_HOST || "https://us.i.posthog.com",
+		appVersion: env.VITE_APP_VERSION || null,
+		installationId: null,
+		firstLaunch: false,
+	};
+}
+
+function disabledReason(env) {
+	const runtime = resolveAnalyticsRuntime({ env });
+	return runtime.kind === "disabled" ? runtime.reason : getAnalyticsOptOut() ? "opted out" : null;
 }
 
 export async function initAnalytics() {
@@ -184,30 +310,53 @@ export async function initAnalytics() {
 		try {
 			const module = await import("posthog-js");
 			if (getAnalyticsOptOut()) return;
+			const resolved = resolveAnalyticsRuntime({ env });
+			if (resolved.kind === "disabled") return;
 			posthog = module.default ?? module;
-			posthog.init(env.VITE_POSTHOG_KEY, {
-				api_host: env.VITE_POSTHOG_HOST || "https://us.i.posthog.com",
+			posthog.init(resolved.apiKey, {
+				api_host: resolved.apiHost,
 				defaults: "2025-05-24",
 				autocapture: false,
-				capture_pageview: true,
-				// Keep the wire contract at the nine disclosed events: no $pageleave.
+				capture_pageview: false,
+				// Keep the wire contract at the disclosed events: no $pageleave.
 				capture_pageleave: false,
 				person_profiles: "never",
-				// Device-scoped anonymous id in localStorage (no cookies): keeps
-				// unique-user and retention metrics real across visits.
-				persistence: "localStorage",
+				// Hosted visits persist in the browser. Official npm sessions
+				// bootstrap from the CLI-owned installation id instead.
+				persistence: resolved.distribution === "npm" ? "memory" : "localStorage",
 				respect_dnt: true,
 				disable_session_recording: true,
 				capture_dead_clicks: false,
+				capture_performance: false,
+				disable_capture_url_hashes: true,
+				save_campaign_params: false,
+				save_referrer: false,
+				mask_personal_data_properties: true,
+				request_batching: false,
+				advanced_disable_feature_flags: true,
+				disable_external_dependency_loading: true,
+				disable_surveys: true,
 				// Needed once api_host points at a first-party proxy; harmless otherwise.
 				ui_host: "https://us.posthog.com",
+				bootstrap: resolved.installationId
+					? { distinctID: resolved.installationId, isIdentifiedID: false }
+					: undefined,
 				before_send: scrubEventUrls,
 			});
 			initialized = true;
 			enabled = true;
+			posthog.register({
+				distribution: resolved.distribution,
+				...(resolved.appVersion ? { app_version: resolved.appVersion } : {}),
+			});
 			// Test hook, mirroring the window.__cozyclay convention: lets QA
 			// drivers inspect the live SDK without shipping a real global API.
 			globalThis.__cozyclayAnalytics = { instance: posthog };
+			posthog.capture("$pageview");
+			if (resolved.distribution === "npm") {
+				track("app:session_started");
+				if (resolved.firstLaunch) track("install:first_launch");
+			}
 		} catch {
 			console.info("[analytics] initialization failed");
 		}

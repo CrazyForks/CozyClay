@@ -82,7 +82,7 @@
             "name": "Is there free previs software?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "CozyClay is free and open source under AGPL-3.0-or-later, and it runs in the browser. Run it locally with npx cozyclay and nothing leaves your machine. Modified network services must offer their users the corresponding source."
+              "text": "CozyClay is free and open source under AGPL-3.0-or-later, and it runs in the browser. Run it locally with npx cozyclay: project content stays on your machine, while anonymous usage metrics can be disabled at any time with cclay telemetry off. Modified network services must offer their users the corresponding source."
             }
           },
           {
@@ -114,7 +114,7 @@
             "name": "Can I run CozyClay offline?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Yes. CozyClay runs entirely on your own machine with npx cozyclay or from a clone. Nothing is uploaded, and the studio keeps working without a network connection once it is running."
+              "text": "Yes. CozyClay runs on your own machine with npx cozyclay or from a clone, and the studio keeps working without a network connection once it is running. Project content is never uploaded; the official npm package sends anonymous usage metrics by default, which can be disabled with cclay telemetry off. Source checkouts do not send analytics."
             }
           }
         ]
@@ -390,8 +390,10 @@ npm run dev</code></pre>
           <summary>Is there free previs software?</summary>
           <p>
             CozyClay is free and open source under AGPL-3.0-or-later, and it runs in the browser.
-            Run it locally with <code>npx cozyclay</code> and nothing leaves your machine. Modified
-            network services must offer their users the corresponding source.
+            Run it locally with <code>npx cozyclay</code>; project content stays on your machine,
+            while the official npm package sends anonymous usage metrics by default. Disable them
+            anytime with <code>cclay telemetry off</code>. Modified network services must offer
+            their users the corresponding source.
           </p>
         </details>
         <details>
@@ -434,9 +436,11 @@ npm run dev</code></pre>
         <details>
           <summary>Can I run it offline?</summary>
           <p>
-            Yes. CozyClay runs entirely on your own machine with <code>npx cozyclay</code> or from
-            a clone. Nothing is uploaded, and the studio keeps working without a network
-            connection once it is running.
+            Yes. CozyClay runs on your own machine with <code>npx cozyclay</code> or from a clone,
+            and the studio keeps working without a network connection once it is running. Project
+            content is never uploaded; the official npm package sends anonymous usage metrics by
+            default, which can be disabled with <code>cclay telemetry off</code>. Source checkouts
+            do not send analytics.
           </p>
         </details>
       </section>

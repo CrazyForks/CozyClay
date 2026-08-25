@@ -12,10 +12,10 @@ export default function AnalyticsToggle() {
 			className="locale-toggle"
 			title={nextLabel}
 			aria-label={nextLabel}
-			onClick={() => {
+			onClick={async () => {
 				const next = !optedOut;
-				setAnalyticsOptOut(next);
-				setOptedOut(next);
+				const actual = await setAnalyticsOptOut(next);
+				setOptedOut(actual);
 			}}
 		>
 			{label}

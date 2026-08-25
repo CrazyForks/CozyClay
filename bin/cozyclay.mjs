@@ -16,7 +16,7 @@
  */
 import { spawn } from "node:child_process";
 import { startBridge, terminateOwned } from "../tools/process-supervisor.mjs";
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { homedir } from "node:os";
 import { extname, join, normalize, resolve } from "node:path";
@@ -25,10 +25,31 @@ import { fileURLToPath } from "node:url";
 import { runMcp } from "./mcp-runtime.mjs";
 import { openBrowser } from "./open-browser.mjs";
 import { checkForUpdate, runUpdate } from "./update-check.mjs";
+import { verifyPackageMarker } from "./package-signature.mjs";
+import {
+	markTelemetryNoticeShown,
+	markTelemetryFirstLaunch,
+	effectiveTelemetryEnabled,
+	readTelemetryState,
+	setTelemetryEnabled,
+	takeRuntimeTelemetryConfig,
+	TELEMETRY_NOTICE_VERSION,
+} from "./telemetry-state.mjs";
 
 const PKG_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
+let packageMetadata = {};
+try {
+	packageMetadata = JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8"));
+} catch {
+	// An unreadable package is handled by the existing missing-build checks.
+}
 const DIST = join(PKG_ROOT, "dist");
 const BRIDGE = join(PKG_ROOT, "tools", "ardy", "bridge.mjs");
+const OFFICIAL_PACKAGE = (
+	packageMetadata.name === "cozyclay"
+	&& !existsSync(join(PKG_ROOT, ".git"))
+	&& verifyPackageMarker(join(DIST, "cozyclay-package.json"), PKG_ROOT, packageMetadata)
+);
 let bridgePort = 5181;
 
 const TYPES = {
@@ -99,6 +120,9 @@ const HELP = `cozyclay - browser-based 3D staging studio
   npx cozyclay --no-star    never ask about starring the repo
   npx cozyclay --no-update-check
                             do not look for a newer release
+  cclay telemetry status   show anonymous telemetry status
+  cclay telemetry off      disable anonymous telemetry
+  cclay telemetry on       enable anonymous telemetry
 
 cclay is the same command, shorter: a global install gives you both.
 
@@ -148,7 +172,9 @@ function readState() {
 function writeState(patch) {
 	try {
 		mkdirSync(STATE_DIR, { recursive: true });
-		writeFileSync(STATE_FILE, JSON.stringify({ ...readState(), ...patch }, null, "\t"));
+		const temporary = `${STATE_FILE}.${process.pid}.tmp`;
+		writeFileSync(temporary, JSON.stringify({ ...readState(), ...patch }, null, "\t"), { mode: 0o600 });
+		renameSync(temporary, STATE_FILE);
 	} catch {
 		/* a read-only home is not a reason to fail a local dev server */
 	}
@@ -200,11 +226,7 @@ async function maybeAskForStar(startedAt, opts) {
 // Read on every launch now, so it must not be able to take the launcher down:
 // the version is cosmetic here, and "0.0.0" just suppresses a bogus notice.
 function readVersion() {
-	try {
-		return JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf8")).version ?? "0.0.0";
-	} catch {
-		return "0.0.0";
-	}
+	return typeof packageMetadata.version === "string" ? packageMetadata.version : "0.0.0";
 }
 
 const argv = process.argv.slice(2);
@@ -218,6 +240,23 @@ if (argv[0] === "mcp") {
 		process.exit(1);
 	}
 	runUpdate();
+} else if (argv[0] === "telemetry") {
+	const action = argv[1] ?? "status";
+	if (argv.length > 2 || !["status", "on", "off"].includes(action)) {
+		console.error("cozyclay: telemetry accepts status, on, or off");
+		process.exit(1);
+	}
+	if (action === "on") setTelemetryEnabled(STATE_FILE, true);
+	if (action === "off") setTelemetryEnabled(STATE_FILE, false);
+	const state = readTelemetryState(STATE_FILE);
+	const effective = OFFICIAL_PACKAGE && effectiveTelemetryEnabled(state);
+	const reason = !OFFICIAL_PACKAGE
+		? " (source checkout)"
+		: state.telemetryEnabled && !effective
+			? " (environment override)"
+			: "";
+	console.log(`Telemetry: ${effective ? "on" : "off"}${reason}`);
+	if (action !== "status") console.log("Reload any open CozyClay studio tab to apply this setting.");
 } else {
 
 const opts = parseArgs(argv);
@@ -229,6 +268,21 @@ const version = readVersion();
 if (opts.version) {
 	console.log(version);
 	process.exit(0);
+}
+let runtimeTelemetry = takeRuntimeTelemetryConfig(STATE_FILE, {
+	appVersion: version,
+	officialPackage: OFFICIAL_PACKAGE,
+});
+const telemetryState = readTelemetryState(STATE_FILE);
+if (
+	runtimeTelemetry.telemetryEnabled
+	&& telemetryState.noticeVersion < TELEMETRY_NOTICE_VERSION
+) {
+	console.log(
+		"Anonymous usage metrics are on (no prompts, project content, filenames, or account information).\n" +
+			"Disable anytime: cclay telemetry off",
+	);
+	markTelemetryNoticeShown(STATE_FILE);
 }
 // Fired before anything blocking and never awaited on the launch path: the
 // notice is worth a line of output, never a second of startup.
@@ -296,6 +350,46 @@ if (opts.ardy && ardyHost && existsSync(BRIDGE)) {
 
 server = createServer((req, res) => {
 	const url = new URL(req.url ?? "/", "http://localhost");
+	if (url.pathname === "/__cozyclay/telemetry") {
+		if (req.method === "POST") {
+			const origin = req.headers.origin;
+			const expectedOrigin = `http://127.0.0.1:${opts.port}`;
+			if (origin !== expectedOrigin) {
+				res.writeHead(403, { "content-type": "application/json; charset=utf-8" });
+				res.end(JSON.stringify({ error: "forbidden origin" }));
+				return;
+			}
+			let body = "";
+			req.setEncoding("utf8");
+			req.on("data", (chunk) => {
+				body += chunk;
+				if (body.length > 1024) req.destroy();
+			});
+			req.on("end", () => {
+				try {
+					const value = JSON.parse(body);
+					if (typeof value.enabled !== "boolean") throw new TypeError("enabled must be boolean");
+					setTelemetryEnabled(STATE_FILE, value.enabled);
+					runtimeTelemetry = takeRuntimeTelemetryConfig(STATE_FILE, {
+						appVersion: version,
+						officialPackage: OFFICIAL_PACKAGE,
+					});
+					res.writeHead(200, {
+						"content-type": "application/json; charset=utf-8",
+						"cache-control": "no-store",
+					});
+					res.end(JSON.stringify(runtimeTelemetry));
+				} catch {
+					res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+					res.end(JSON.stringify({ error: "invalid telemetry setting" }));
+				}
+			});
+			return;
+		}
+		res.writeHead(405, { allow: "POST", "content-type": "application/json; charset=utf-8" });
+		res.end(JSON.stringify({ error: "method not allowed" }));
+		return;
+	}
 	// Only the routes the bridge actually owns: /ardy/ is ALSO a public asset
 	// directory (cskel27-rest.json), and those files live in dist/, not behind
 	// the sidecar. Same rule as the Vite dev proxy bypass.
@@ -303,7 +397,14 @@ server = createServer((req, res) => {
 		proxyToBridge(req, res);
 		return;
 	}
-	const rel = decodeURIComponent(url.pathname);
+	let rel;
+	try {
+		rel = decodeURIComponent(url.pathname);
+	} catch {
+		res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+		res.end("invalid URL encoding");
+		return;
+	}
 	// normalize + prefix check: a request must not escape dist/.
 	let target = join(DIST, normalize(rel));
 	if (!target.startsWith(DIST)) {
@@ -320,6 +421,25 @@ server = createServer((req, res) => {
 	if (!existsSync(target) || statSync(target).isDirectory()) {
 		res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
 		res.end("not found");
+		return;
+	}
+	if (target === join(DIST, "app", "index.html")) {
+		runtimeTelemetry = takeRuntimeTelemetryConfig(STATE_FILE, {
+			appVersion: version,
+			officialPackage: OFFICIAL_PACKAGE,
+		});
+		const runtime = runtimeTelemetry;
+		if (runtime.firstLaunch) {
+			markTelemetryFirstLaunch(STATE_FILE);
+		}
+		const script = `<script>window.__COZYCLAY_RUNTIME__ = ${JSON.stringify(runtime).replaceAll("<", "\\u003c")};</script>`;
+		const html = readFileSync(target, "utf8").replace("</head>", `${script}\n</head>`);
+		res.writeHead(200, {
+			"content-type": "text/html; charset=utf-8",
+			"content-length": Buffer.byteLength(html),
+			"cache-control": "no-store",
+		});
+		res.end(html);
 		return;
 	}
 	serveFile(res, target);

@@ -6,6 +6,12 @@ function announceUpdate(registration) {
 
 export function registerPwa() {
 	if (!import.meta.env.PROD || !("serviceWorker" in navigator)) return;
+	if (globalThis.__COZYCLAY_RUNTIME__?.distribution === "npm") {
+		void navigator.serviceWorker.getRegistrations().then((registrations) => (
+			Promise.all(registrations.map((registration) => registration.unregister()))
+		));
+		return;
+	}
 
 	let hasController = Boolean(navigator.serviceWorker.controller);
 	let reloading = false;

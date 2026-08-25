@@ -6,6 +6,7 @@ import {
 	isOriginAllowed,
 	normalizeOrigin,
 	parseAllowlist,
+	resolveAnalyticsRuntime,
 	sanitizeProps,
 } from "../src/analytics.js";
 
@@ -66,24 +67,134 @@ assert.equal(bucketMs(10000), "10-30s");
 assert.equal(bucketMs(29999), "10-30s");
 assert.equal(bucketMs(30000), "gte30s");
 
-assert.deepEqual(
-	scrubEventUrls({
+const scrubbedEvent = scrubEventUrls({
 		event: "$pageview",
 		properties: {
 			$current_url: "https://cozyclay.org/app/?token=secret#pose=7",
 			$referrer: "https://news.ycombinator.com/item?id=123",
 			$referring_domain: "news.ycombinator.com",
 			$pathname: "/app/",
+			$set_once: {
+				$initial_current_url: "https://cozyclay.org/app/?prompt=secret#pose=7",
+				$initial_referrer: "https://search.example/?q=private",
+				$initial_utm_source: "private-source",
+				ph_keyword: "private search",
+			},
+			utm_source: "private-source",
+			fbclid: "private-click-id",
 		},
-	}).properties,
+		$set_once: {
+			$initial_current_url: "https://cozyclay.org/app/?token=secret",
+			$initial_referrer: "https://search.example/?q=private",
+			$initial_utm_campaign: "private-campaign",
+			ph_keyword: "private search",
+			$session_entry_url: "https://cozyclay.org/app/?token=secret",
+			$session_entry_utm_source: "private-source",
+		},
+	});
+assert.deepEqual(
+	scrubbedEvent.properties,
 	{
 		$current_url: "https://cozyclay.org/app/",
 		$referrer: "https://news.ycombinator.com/item",
 		$referring_domain: "news.ycombinator.com",
 		$pathname: "/app/",
+		$set_once: {
+			$initial_current_url: "https://cozyclay.org/app/",
+			$initial_referrer: "https://search.example/",
+		},
 	},
-	"query strings and fragments never leave the browser",
+	"URL tails, search terms, and campaign values never leave the browser",
 );
+assert.deepEqual(scrubbedEvent.$set_once, {
+	$initial_current_url: "https://cozyclay.org/app/",
+	$initial_referrer: "https://search.example/",
+});
 assert.equal(scrubEventUrls(null), null);
+
+const installationId = "018f0d66-3a4b-7c2d-8e9f-123456789abc";
+assert.deepEqual(
+	resolveAnalyticsRuntime({
+		env: { PROD: true, VITE_POSTHOG_KEY: "phc_hosted", VITE_POSTHOG_HOST: "https://t.cozyclay.org" },
+		origin: "https://cozyclay.org",
+		runtime: null,
+	}),
+	{
+		kind: "enabled",
+		distribution: "hosted",
+		apiKey: "phc_hosted",
+		apiHost: "https://t.cozyclay.org",
+		appVersion: null,
+		installationId: null,
+		firstLaunch: false,
+	},
+);
+assert.deepEqual(
+	resolveAnalyticsRuntime({
+		env: { PROD: true },
+		origin: "http://127.0.0.1:5180",
+		runtime: {
+			distribution: "npm",
+			telemetryEnabled: true,
+			installationId,
+			appVersion: "1.5.0",
+			apiKey: "phc_npm",
+			apiHost: "https://t.cozyclay.org",
+			firstLaunch: true,
+		},
+	}),
+	{
+		kind: "enabled",
+		distribution: "npm",
+		apiKey: "phc_npm",
+		apiHost: "https://t.cozyclay.org",
+		appVersion: "1.5.0",
+		installationId,
+		firstLaunch: true,
+	},
+	"the official package can enable localhost with its injected runtime contract",
+);
+assert.deepEqual(
+	resolveAnalyticsRuntime({
+		env: { PROD: true, VITE_POSTHOG_KEY: "phc_hosted" },
+		origin: "http://127.0.0.1:5180",
+		runtime: null,
+	}),
+	{ kind: "disabled", reason: "unapproved origin" },
+	"a clone or preview cannot enable localhost by origin alone",
+);
+assert.deepEqual(
+	resolveAnalyticsRuntime({
+		env: { PROD: false, VITE_POSTHOG_KEY: "phc_hosted" },
+		origin: "http://127.0.0.1:5180",
+		runtime: {
+			distribution: "npm",
+			telemetryEnabled: true,
+			installationId,
+			appVersion: "1.5.0",
+			apiKey: "phc_npm",
+			apiHost: "https://t.cozyclay.org",
+			firstLaunch: false,
+		},
+	}),
+	{ kind: "disabled", reason: "not production" },
+	"source development remains excluded even if a hostile page defines the global",
+);
+assert.deepEqual(
+	resolveAnalyticsRuntime({
+		env: { PROD: true },
+		origin: "http://127.0.0.1:5180",
+		runtime: {
+			distribution: "npm",
+			telemetryEnabled: false,
+			installationId,
+			appVersion: "1.5.0",
+			apiKey: "phc_npm",
+			apiHost: "https://t.cozyclay.org",
+			firstLaunch: false,
+		},
+	}),
+	{ kind: "disabled", reason: "opted out" },
+);
 
 console.log("all analytics checks PASS");
