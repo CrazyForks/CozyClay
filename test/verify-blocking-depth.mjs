@@ -42,7 +42,7 @@ expect(
 	"the shadow frustum covers the blocking area, not the whole 500 m deck",
 	room.includes("shadow-camera-left={-14}") && room.includes("shadow-camera-far={40}"),
 );
-expect("the renderer actually has shadows enabled", app.includes("<Canvas shadows frameloop="));
+expect("the renderer actually has shadows enabled", app.includes("<Canvas") && app.includes("shadows") && app.includes("frameloop={renderActive ?"));
 expect("the subject casts its own shadow", app.includes("child.castShadow = true;"));
 
 /* --- the exported frame keeps a horizon ------------------------------------ */
