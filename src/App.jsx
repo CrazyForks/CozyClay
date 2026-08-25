@@ -3053,6 +3053,10 @@ globalThis.playMode = centerTab === "play";
 	 * full-cast snapshot with the editing buffer folded in, and undo/redo
 	 * picks the newer of the two stacks so one Ctrl+Z history covers both. */
 	const snapshotCast = (includeShots = false) => ({
+		// The key light rides the same undo stack as everything else — its
+		// absence used to make Ctrl+Z after a light edit undo an unrelated
+		// earlier action while the light stayed put (research claim C1).
+		keyLight: { ...keyLight },
 		characters: charactersRef.current.map((entry) => ({
 			...entry,
 			layer: entry.id === activeChar.id
@@ -3151,6 +3155,7 @@ globalThis.playMode = centerTab === "play";
 			setCommittedIkEdits(snapshot.committedIkEdits ?? []);
 			setIkTick((value) => value + 1);
 		}
+		if (snapshot.keyLight) setKeyLight(createKeyLight(snapshot.keyLight));
 	}
 
 	// props so the inspector cannot show a ghost.
@@ -4739,7 +4744,7 @@ globalThis.playMode = centerTab === "play";
 		const serialized = collectProjectSnapshot(projectName);
 		setProjectDirty(serialized !== projectSnapshotRef.current);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [scenes, activeSceneId, workspaceLayout, customPoses, characters, shots, waypoints, promptClips, projectName]);
+	}, [scenes, activeSceneId, workspaceLayout, customPoses, characters, shots, waypoints, promptClips, projectName, keyLight, sceneObjects, shotAspectKey, sensorId, tlFrameCount]);
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
 	const [motion, setMotion] = useState(null);
