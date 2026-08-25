@@ -36,9 +36,11 @@ expect("the deck is large enough to read as open", room.includes("export const S
 expect("Room has no ceiling plane", !room.includes("function Ceiling") && !room.includes("SHOT_LAYER"));
 expect(
 	"Studio uses directional high-key toon lighting",
+	// The key is user-movable now: the tuned rig survives as the keyLight
+	// DEFAULTS, so an untouched stage still renders the same high-key look.
 	room.includes('"#fffdf6", "#d8d0c3", 0.9') &&
-		room.includes("<ambientLight intensity={0.18}") &&
-		room.includes('intensity={1.12}'),
+		room.includes("<ambientLight intensity={0.18 * ") &&
+		room.includes("{ x: 6, y: 9, z: 4, intensity: 1.12 }"),
 );
 
 if (failures) process.exit(1);

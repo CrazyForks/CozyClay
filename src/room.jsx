@@ -83,20 +83,24 @@ export function Room() {
 	);
 }
 
-/** Key/fill/rim rig tuned so a clay figure keeps readable form from any angle. */
-export function StageLights() {
+/** Key/fill/rim rig tuned so a clay figure keeps readable form from any angle.
+ * The key is the USER'S light: `keyLight` carries its grabbable position and
+ * the rig's master brightness — fill and rim ride the same dimmer so turning
+ * the key down darkens the whole stage instead of flattening it. */
+export function StageLights({ keyLight = { x: 6, y: 9, z: 4, intensity: 1.12 } }) {
+	const dim = keyLight.intensity / 1.12;
 	return (
 		<>
-			<hemisphereLight args={["#fffdf6", "#d8d0c3", 0.9]} />
-			<ambientLight intensity={0.18} />
+			<hemisphereLight args={["#fffdf6", "#d8d0c3", 0.9]} intensity={0.9 * Math.min(1, 0.35 + 0.65 * dim)} />
+			<ambientLight intensity={0.18 * Math.min(1, 0.35 + 0.65 * dim)} />
 			{/* Only the key casts: one soft, unambiguous contact shadow reads as
 			    ground contact, while three overlapping shadows read as noise. The
 			    map covers the blocking area rather than the whole 500 m deck — a
 			    stage-wide frustum would spend its resolution on empty floor. */}
 			<directionalLight
 				color="#fff8e8"
-				position={[6, 9, 4]}
-				intensity={1.12}
+				position={[keyLight.x, keyLight.y, keyLight.z]}
+				intensity={keyLight.intensity}
 				castShadow
 				shadow-mapSize-width={2048}
 				shadow-mapSize-height={2048}
@@ -109,8 +113,8 @@ export function StageLights() {
 				shadow-bias={-0.0006}
 				shadow-normalBias={0.02}
 			/>
-			<directionalLight color="#dff6f7" position={[-6, 4, -4]} intensity={0.36} />
-			<directionalLight color="#ffffff" position={[2, 3, 9]} intensity={0.22} />
+			<directionalLight color="#dff6f7" position={[-6, 4, -4]} intensity={0.36 * dim} />
+			<directionalLight color="#ffffff" position={[2, 3, 9]} intensity={0.22 * dim} />
 		</>
 	);
 }

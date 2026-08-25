@@ -43,7 +43,24 @@ export const DEFAULT_SCENE_STAGE = Object.freeze({
 	hasCharSheet: false,
 	shotAspect: "16:9",
 	sensorId: DEFAULT_SENSOR_FORMAT,
+	// The key light the user can grab: position of the sun puck and the rig's
+	// master brightness. Values mirror the tuned StageLights defaults, so a
+	// stage saved before the light was movable renders exactly as it did.
+	keyLight: Object.freeze({ x: 6, y: 9, z: 4, intensity: 1.12 }),
 });
+
+/** Clamp a stored key light back into the stage's usable envelope. */
+export function createKeyLight(value) {
+	const source = plainObject(value) ? value : {};
+	const fallback = DEFAULT_SCENE_STAGE.keyLight;
+	const finite = (entry, base) => (typeof entry === "number" && Number.isFinite(entry) ? entry : base);
+	return {
+		x: Math.max(-30, Math.min(30, finite(source.x, fallback.x))),
+		y: Math.max(0.5, Math.min(30, finite(source.y, fallback.y))),
+		z: Math.max(-30, Math.min(30, finite(source.z, fallback.z))),
+		intensity: Math.max(0, Math.min(4, finite(source.intensity, fallback.intensity))),
+	};
+}
 
 let sceneSequence = 1;
 
@@ -233,7 +250,7 @@ function migrateLegacyCast(source) {
 }
 
 const STAGE_ENVELOPE_KEYS = new Set([
-	"characters", "hasCharSheet", "shotAspect", "sensorId",
+	"characters", "hasCharSheet", "shotAspect", "sensorId", "keyLight",
 	"charA", "charB", "showB", "poseA", "poseB", "subject", "subject2",
 ]);
 
@@ -260,6 +277,7 @@ export function createSceneStage(stage = null) {
 		sensorId: Object.hasOwn(SENSOR_FORMATS, source.sensorId ?? source.sensorFormat)
 			? (source.sensorId ?? source.sensorFormat)
 			: DEFAULT_SCENE_STAGE.sensorId,
+		keyLight: createKeyLight(source.keyLight),
 	};
 }
 

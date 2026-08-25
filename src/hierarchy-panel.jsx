@@ -33,6 +33,7 @@ const HIERARCHY_LABELS_KO = {
 	"Right Foot": "오른발",
 	Environment: "환경",
 	Props: "소품",
+	Light: "조명",
 };
 
 const FALLBACK_SCENES = [{ id: "current-scene", name: "SCENE 01" }];
@@ -63,6 +64,13 @@ function HierarchyIcon({ kind, className = "" }) {
 					<rect x="3" y="6.5" width="13.5" height="11" rx="2" />
 					<path d="m16.5 10 4.5-2.25v8.5L16.5 14" />
 					<circle cx="9.5" cy="12" r="2.4" />
+				</svg>
+			);
+		case "light":
+			return (
+				<svg {...common}>
+					<circle cx="12" cy="12" r="4" fill="currentColor" fillOpacity=".16" />
+					<path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" />
 				</svg>
 			);
 		case "group":

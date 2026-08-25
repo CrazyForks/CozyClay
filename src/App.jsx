@@ -100,6 +100,7 @@ import {
 	addScene,
 	createCharacterEntry,
 	createCharacterLayer,
+	createKeyLight,
 	createSceneStage,
 	createSceneDocument,
 	CHARACTER_MODEL_IDS,
@@ -247,6 +248,7 @@ const RIG_HIERARCHY_FOCUS = {
 const HIERARCHY_INSPECTOR_TITLES = {
 	shot: ko("Shot settings", "샷 설정"),
 	camera: ko("Camera", "카메라"),
+	light: ko("Light", "조명"),
 	characters: ko("Characters", "인물"),
 	characterA: ko("Character 1", "인물 1"),
 	"characterA.rig": ko("Rig", "리그"),
@@ -952,6 +954,46 @@ function EditorCamSeed({ camRef, lookRef, shotCamRef, subject }) {
 		invalidate();
 	});
 	return null;
+}
+
+/**
+ * The key light drawn as a grabbable sun in the editor view: a warm core with
+ * rays, on GIZMO_LAYER so preview, capture and PlayView never see it. A line
+ * drops to the floor so its height reads against the stage, like the crane's.
+ */
+function KeyLightPuck({ keyLight, selected, visible }) {
+	const groupRef = useRef(null);
+	const invalidate = useThree((state) => state.invalidate);
+	useEffect(() => {
+		groupRef.current?.traverse((node) => node.layers?.set(GIZMO_LAYER));
+		invalidate();
+	}, [visible, selected, keyLight, invalidate]);
+	const drop = useMemo(() => new Float32Array([0, 0, 0, 0, -keyLight.y, 0]), [keyLight.y]);
+	if (!visible) return null;
+	return (
+		<group ref={groupRef} position={[keyLight.x, keyLight.y, keyLight.z]}>
+			<mesh userData={{ keyLightPick: true }}>
+				<sphereGeometry args={[0.16, 20, 16]} />
+				<meshBasicMaterial color={selected ? "#ffcf5e" : "#f2b544"} toneMapped={false} />
+			</mesh>
+			{/* rays: eight short spokes so it reads as a sun, not a ball */}
+			{Array.from({ length: 8 }, (_, i) => {
+				const angle = (i / 8) * Math.PI * 2;
+				return (
+					<mesh key={i} userData={{ keyLightPick: true }} position={[Math.cos(angle) * 0.27, Math.sin(angle) * 0.27, 0]} rotation={[0, 0, angle + Math.PI / 2]}>
+						<cylinderGeometry args={[0.014, 0.014, 0.1, 6]} />
+						<meshBasicMaterial color={selected ? "#ffcf5e" : "#f2b544"} toneMapped={false} />
+					</mesh>
+				);
+			})}
+			<lineSegments>
+				<bufferGeometry>
+					<bufferAttribute attach="attributes-position" array={drop} count={2} itemSize={3} />
+				</bufferGeometry>
+				<lineBasicMaterial color="#f2b544" transparent opacity={selected ? 0.6 : 0.25} />
+			</lineSegments>
+		</group>
+	);
 }
 
 /**
@@ -3024,6 +3066,7 @@ globalThis.playMode = centerTab === "play";
 	// Point height input edits this one. Reset lives after activeCamera below.
 	const [craneSelectedIndex, setCraneSelectedIndex] = useState(null);
 	const [hasCharSheet, setHasCharSheet] = useState(startupStage.hasCharSheet);
+	const [keyLight, setKeyLight] = useState(startupStage.keyLight);
 	const [hasEnvSheet, setHasEnvSheet] = useState(false);
 	const [environment, setEnvironment] = useState(DEFAULT_ENVIRONMENT);
 	const [style, setStyle] = useState("moody cinematic lighting, 35mm film look");
@@ -3518,6 +3561,7 @@ globalThis.playMode = centerTab === "play";
 		hasCharSheet,
 		shotAspect: shotAspectKey,
 		sensorId,
+		keyLight,
 	};
 
 	function snapshotActiveScene(sourceScenes = scenesRef.current) {
@@ -3827,6 +3871,7 @@ globalThis.playMode = centerTab === "play";
 		setHasCharSheet(stage.hasCharSheet);
 		setShotAspectKey(stage.shotAspect);
 		setSensorFormat(stage.sensorId);
+		setKeyLight(stage.keyLight);
 		// The motion-layer buffer reloads from the scene's first character.
 		const firstLayer = stage.characters[0]?.layer;
 		setWaypoints(firstLayer?.waypoints ?? shotState.waypoints ?? []);
@@ -4370,7 +4415,7 @@ globalThis.playMode = centerTab === "play";
 		dirtyRef.current = true;
 		const timer = setTimeout(flushScenes, 400);
 		return () => clearTimeout(timer);
-	}, [sceneObjects, shots, waypoints, tlFrameCount, charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2, shotAspectKey, sensorId, scenes, activeSceneId]);
+	}, [sceneObjects, shots, waypoints, tlFrameCount, charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2, shotAspectKey, sensorId, keyLight, scenes, activeSceneId]);
 	useEffect(() => {
 		const onPageHide = () => flushScenes();
 		const onVisibility = () => {
@@ -4577,6 +4622,46 @@ globalThis.playMode = centerTab === "play";
 		cam.rotation.order = "YXZ";
 		cam.rotation.set(look.current.pitch, look.current.yaw, 0);
 		commitManualCameraFraming();
+	}
+
+	/* The key light as a manipulable object: same proxy contract as the shot
+	 * camera — the sun puck mirrors the light, gizmo patches write straight
+	 * back to the stage's keyLight. Move only; brightness lives in the
+	 * Inspector. */
+	const keyLightSelected = selectedHierarchyId === "light";
+	const lightGizmoObject = useMemo(() => {
+		if (!keyLightSelected || ikMode) return null;
+		return {
+			id: "__keylight__",
+			x: keyLight.x,
+			y: keyLight.y - 0.2,
+			z: keyLight.z,
+			height: 0.4,
+			footprint: { width: 0.4, depth: 0.4 },
+			rotY: 0,
+			scaleX: 1,
+			scaleY: 1,
+			scaleZ: 1,
+		};
+	}, [keyLightSelected, ikMode, keyLight]);
+	/* Selecting the Light from the hierarchy must SHOW the light: the sun sits
+	 * high above the stage and the default view often does not contain it, so
+	 * the editor camera turns in place to face it (position untouched). */
+	function aimEditorAtKeyLight() {
+		const cam = editorCamRef.current;
+		if (!cam || lookThroughShot || ikMode) return;
+		const angles = aimAt(cam.position, keyLight);
+		editorLook.current = { yaw: angles.yaw, pitch: angles.pitch };
+		cam.rotation.order = "YXZ";
+		cam.rotation.set(angles.pitch, angles.yaw, 0);
+	}
+	function changeKeyLightFromGizmo(_id, patch) {
+		setKeyLight((current) => createKeyLight({
+			...current,
+			x: patch.x !== undefined ? patch.x : current.x,
+			y: patch.y !== undefined ? patch.y + 0.2 : current.y,
+			z: patch.z !== undefined ? patch.z : current.z,
+		}));
 	}
 
 
@@ -4882,7 +4967,7 @@ globalThis.playMode = centerTab === "play";
 		|| selectedHierarchyId.startsWith("character:");
 	const isRigSelection = selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig.");
 	const inspectorHasContent = isSceneSelection || isCameraSelection || isCharacterSelection || isRigSelection
-		|| selectedHierarchyId === "environment" || selectedHierarchyId === "props" || Boolean(selectedSceneObject);
+		|| selectedHierarchyId === "environment" || selectedHierarchyId === "props" || selectedHierarchyId === "light" || Boolean(selectedSceneObject);
 
 	const posedRig = () => rigs[posing] ?? null;
 	const setPosed = (pose) => {
@@ -7100,7 +7185,10 @@ function resizePromptClip(id, edge, rawFrame) {
 				</div>
 				<HierarchyPanel
 					selectedId={selectedHierarchyId}
-					onSelect={selectHierarchy}
+					onSelect={(id) => {
+						selectHierarchy(id);
+						if (id === "light") aimEditorAtKeyLight();
+					}}
 					characters={characters}
 					showB={showB}
 					motionFrames={motion?.frames ?? 0}
@@ -7305,7 +7393,8 @@ function resizePromptClip(id, edge, rawFrame) {
 							    past ~120 m the deck simply ceases to exist with no horizon
 							    line, no clip edge and no tone break. */}
 							<fog attach="fog" args={["#eef4f3", 18, 54]} />
-							<StageLights />
+							<StageLights keyLight={keyLight} />
+							<KeyLightPuck keyLight={keyLight} selected={keyLightSelected} visible={centerTab === "scene" && !lookThroughShot && !playMode} />
 							<Room />
 							<SetProps objects={sceneObjects} selectedId={selectedSceneObjectId} />
 
@@ -7528,9 +7617,9 @@ function resizePromptClip(id, edge, rawFrame) {
 							    the plan owns the big pane (the pucks are the handles there)
 							    and while posing/IK owns the pointer. */}
 							<ObjectGizmo
-								object={cameraGizmoObject ?? selectedSceneObject}
+								object={cameraGizmoObject ?? lightGizmoObject ?? selectedSceneObject}
 								objects={sceneObjects}
-								mode={cameraGizmoObject ? (gizmoMode === "scale" ? "move" : gizmoMode) : gizmoMode}
+								mode={lightGizmoObject ? "move" : cameraGizmoObject ? (gizmoMode === "scale" ? "move" : gizmoMode) : gizmoMode}
 								snap={snapEnabled}
 								enabled={!planIsMain && !posing && !ikMode && !playMode}
 								paneRef={mainPaneRef}
@@ -7539,14 +7628,14 @@ function resizePromptClip(id, edge, rawFrame) {
 								// The token MUST round-trip: dropping it sends every drag tick
 								// through applyAtomic, whose settle cancels the open drag after
 								// its first move (the gizmo hands its teardown as the cancel).
-								onChange={(id, patch, token) => (id === "__shotcam__" ? changeShotCameraFromGizmo(id, patch) : changeSceneObject(id, patch, token))}
-								onDragStart={(...args) => (cameraGizmoObject ? undefined : beginSceneTransaction(...args))}
+								onChange={(id, patch, token) => (id === "__shotcam__" ? changeShotCameraFromGizmo(id, patch) : id === "__keylight__" ? changeKeyLightFromGizmo(id, patch) : changeSceneObject(id, patch, token))}
+								onDragStart={(...args) => (cameraGizmoObject || lightGizmoObject ? undefined : beginSceneTransaction(...args))}
 								onDragEnd={(...args) => {
-									if (!cameraGizmoObject) endSceneTransaction(...args);
+									if (!cameraGizmoObject && !lightGizmoObject) endSceneTransaction(...args);
 								}}
 								onSelect={(id) =>
 									selectHierarchy(
-										id === "__shotcam__" ? "camera" : id?.startsWith("char:") ? charKeyToHierarchyId(id) : id ? `object:${id}` : "props",
+										id === "__shotcam__" ? "camera" : id === "__keylight__" ? "light" : id?.startsWith("char:") ? charKeyToHierarchyId(id) : id ? `object:${id}` : "props",
 									)
 								}
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
@@ -7807,6 +7896,16 @@ function resizePromptClip(id, edge, rawFrame) {
 
 					{/* Camera animation is authored against the same playhead as motion,
 					    so keep its controls beside the Motion tools as well as Shot setup. */}
+					<Foldout hidden={!keyLightSelected} title={ko("Light", "조명")}>
+						<p className="hint">{ko("Drag the sun in the scene to move the light. Shadows and warmth follow it.", "씬의 해를 드래그해 조명을 옮깁니다. 그림자와 빛의 방향이 따라옵니다.")}</p>
+						<Slider label={ko("Brightness", "밝기")} min={0} max={4} step={0.05} value={keyLight.intensity} onChange={(value) => setKeyLight((current) => createKeyLight({ ...current, intensity: value }))} />
+						<div className="readout">
+							<span title={ko("light position", "조명 위치")}>{`x ${keyLight.x.toFixed(1)}  y ${keyLight.y.toFixed(1)}  z ${keyLight.z.toFixed(1)}`}</span>
+						</div>
+						<button className="btn ghost" onClick={() => setKeyLight(createKeyLight(null))}>
+							{ko("Reset light", "조명 초기화")}
+						</button>
+					</Foldout>
 					<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>
 					<Slider label={ko("Lens (FOV)", "렌즈 (FOV)")} min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
 						<div className="readout">
