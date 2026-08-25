@@ -135,19 +135,22 @@ expect(
 	app.includes("manualCameraOverrideRef.current = false"),
 );
 expect(
-	"the rail crane is an explicit toggle with start and end height inputs",
-	timeline.includes('ko("Crane On", "\ud06c\ub808\uc778 \ucf1c\uc9d0")') &&
-	timeline.includes('ko("Crane Off", "\ud06c\ub808\uc778 \uaebc\uc9d0")') &&
+	"the rail crane is always on, with a per-point height input",
+	// no toggle: a rail block is always craned (camera-block.js normalizes a
+	// stored null to the flat profile), so the on/off button is gone
+	!timeline.includes('ko("Crane On", "\ud06c\ub808\uc778 \ucf1c\uc9d0")') &&
+	!timeline.includes('ko("Crane Off", "\ud06c\ub808\uc778 \uaebc\uc9d0")') &&
 	timeline.includes('ko("Point height", "\uc810 \ub192\uc774")') &&
-	// turning the crane on seeds two endpoint POINTS from the measured follow
-	// height, and turning it off returns the block to the flat-rail null
-	timeline.includes("craneHeight: crane ? null : { points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] }") &&
+	// a missing stored value seeds the same flat two-mark profile inline
+	timeline.includes("{ points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] }") &&
 	// the scene dots are the primary editor; the bar edits the SELECTED point
 	timeline.includes("craneSelectedIndex"),
 );
 expect(
-	"the crane editor makes adding and removing interior points explicit",
-	timeline.includes('ko("Add point", "점 추가")') &&
+	"crane points are added on the Shot key strip only, removed explicitly",
+	// no Add point button: the Shot block's key strip is the single authoring
+	// surface for new crane marks (plus double-clicking the lifted curve)
+	!timeline.includes('ko("Add point", "점 추가")') &&
 		timeline.includes('ko("Remove point", "점 삭제")') &&
 		timeline.includes("onCranePointAdd") &&
 		timeline.includes("onCranePointDelete"),

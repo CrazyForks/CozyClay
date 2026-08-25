@@ -60,12 +60,22 @@ function cloneRailFollow(value) {
 /** Build a complete block from a partial or stored camera value. */
 export function createCameraBlock(input = {}) {
 	const value = input && typeof input === "object" ? input : {};
+	const mode = CAMERA_MODES.includes(value.mode) ? value.mode : "keys";
+	const followCam = { ...CAMERA_FOLLOW_DEFAULTS, ...(value.followCam ?? {}) };
+	const cameraRail = cloneRail(value.cameraRail);
+	// The crane is always on for a rail: a stored null (older projects, an
+	// explicit "off" patch) normalizes to the flat two-mark profile at the
+	// follow height, which is exactly what "no crane" rendered as.
+	const craneHeight = cloneCraneHeight(value.craneHeight)
+		?? (mode === "rail" && cameraRail
+			? { points: [{ t: 0, height: followCam.height }, { t: 1, height: followCam.height }] }
+			: null);
 	return {
-		mode: CAMERA_MODES.includes(value.mode) ? value.mode : "keys",
-		followCam: { ...CAMERA_FOLLOW_DEFAULTS, ...(value.followCam ?? {}) },
-		cameraRail: cloneRail(value.cameraRail),
+		mode,
+		followCam,
+		cameraRail,
 		railFollow: cloneRailFollow(value.railFollow),
-		craneHeight: cloneCraneHeight(value.craneHeight),
+		craneHeight,
 	};
 }
 

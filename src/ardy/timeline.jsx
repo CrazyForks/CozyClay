@@ -104,13 +104,17 @@ function CameraBlockEditor({
 	onPreview,
 	onRailDrawToggle,
 	onRailDelete,
-	onCranePointAdd,
 	onCranePointDelete,
 }) {
 	if (!shot) return null;
 	const mode = cameraBlockMode(shot);
 	const follow = cameraBlockFollow(shot);
-	const crane = shot?.camera?.craneHeight ?? null;
+	// The crane is always on for a rail (camera-block.js normalizes a stored
+	// null to the flat profile), so a missing value only means "not rail yet".
+	const crane = shot?.camera?.craneHeight
+		?? (mode === "rail" && shot?.camera?.cameraRail
+			? { points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] }
+			: null);
 	const patchCamera = (patch) => onChange?.(patch);
 	const patchFollow = (patch) => onChange?.({ followCam: { ...follow, ...patch } });
 	const numberValue = (event) => Number(event.currentTarget.value);
@@ -178,17 +182,6 @@ function CameraBlockEditor({
 						<output className="tl-camera-metric">{signedValue(follow.pitchOffsetDeg)}</output>
 						<small>°</small>
 					</label>
-					{mode === "rail" && railLength != null && (
-						<button
-							type="button"
-							className={"tl-camera-tool" + (crane ? " active" : "")}
-							aria-pressed={!!crane}
-							title={ko("Crane the lens across authored height points along the rail", "레일을 따라 설정한 여러 높이 점으로 렌즈를 움직입니다")}
-							onClick={() => patchCamera({ craneHeight: crane ? null : { points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] } })}
-						>
-							{crane ? ko("Crane On", "크레인 켜짐") : ko("Crane Off", "크레인 꺼짐")}
-						</button>
-					)}
 					{mode === "rail" && crane && (() => {
 						const points = crane.points;
 						const index = craneSelectedIndex != null && craneSelectedIndex >= 0 && craneSelectedIndex < points.length ? craneSelectedIndex : points.length - 1;
@@ -198,21 +191,12 @@ function CameraBlockEditor({
 						};
 						return (
 							<>
-								<label title={ko("Lens height of the selected crane point — click a purple dot in the scene to pick one, double-click the lifted curve to add one", "선택한 크레인 점의 렌즈 높이 — 씨의 보라 점을 클릭해 선택, 커브 더블클릭으로 추가")}>
+								<label title={ko("Lens height of the selected crane point — click a purple dot in the scene to pick one, double-click the lifted curve to add one", "선택한 크레인 점의 렌즈 높이 — 씬의 보라 점을 클릭해 선택, 커브 더블클릭으로 추가")}>
 									<span>{ko("Point height", "점 높이")}</span>
 									<input type="number" min="0.1" max="12" step="0.1" value={points[index].height} onChange={(event) => patchPointHeight(numberValue(event))} />
 									<small>m</small>
 								</label>
-								<output className="tl-camera-count" title={ko("Crane points on this rail", "이 레일의 크레인 점 개수")}>{points.length}{ko(" pts", "점")}</output>
-								<button
-									type="button"
-									className="tl-camera-tool"
-									disabled={points.length >= 8}
-									title={ko("Add a crane point in the largest gap on this Shot's rail", "이 샷 레일의 가장 큰 빈 구간에 크레인 점을 추가합니다")}
-									onClick={() => onCranePointAdd?.()}
-								>
-									{ko("Add point", "점 추가")}
-								</button>
+								<output className="tl-camera-count" title={ko("Crane points on this rail — click the Shot block's key strip to add one", "이 레일의 크레인 점 개수 — 샷 블록 키 줄을 클릭해 추가")}>{points.length}{ko(" pts", "점")}</output>
 								<button
 									type="button"
 									className="tl-camera-tool danger"
@@ -1143,7 +1127,6 @@ export default function Timeline({
 							onPreview={() => handlers.current.onCameraPreview?.(selectedCameraShot.id)}
 							onRailDrawToggle={() => handlers.current.onCameraRailDrawToggle?.()}
 							onRailDelete={() => handlers.current.onCameraRailDelete?.()}
-							onCranePointAdd={onCranePointAdd}
 							onCranePointDelete={onCranePointDelete}
 						/>
 					)}

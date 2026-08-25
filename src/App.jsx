@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrthographicCamera, PerspectiveCamera, Text, useFBX } from "@react-three/drei";
+import { Line, OrthographicCamera, PerspectiveCamera, Text, useFBX } from "@react-three/drei";
 import * as THREE from "three";
 import { SkeletonUtils } from "three/examples/jsm/Addons.js";
 import { buildArdyPose } from "./ardy/export.js";
@@ -1054,47 +1054,26 @@ function CameraRailScenePreview({ points, cumLen, length, crane }) {
 	const rootRef = useRef(null);
 	const lines = useMemo(() => {
 		if (!points || points.length < 2) return null;
-		const floor = new Float32Array(points.length * 3);
-		points.forEach((point, i) => {
-			floor[i * 3] = point.x;
-			floor[i * 3 + 1] = 0.03;
-			floor[i * 3 + 2] = point.z;
-		});
-		const floorGeometry = new THREE.BufferGeometry();
-		floorGeometry.setAttribute("position", new THREE.BufferAttribute(floor, 3));
+		const floor = points.map((point) => [point.x, 0.03, point.z]);
 		// A craned rail shows WHERE THE LENS RIDES: the same path lifted along
 		// the crane's start→end heights by arc progress, with the floor line
 		// kept as the track's ground projection.
-		let liftedGeometry = null;
-		if (crane && cumLen && length > 1e-9) {
-			const lifted = new Float32Array(points.length * 3);
-			points.forEach((point, i) => {
-				lifted[i * 3] = point.x;
-				lifted[i * 3 + 1] = craneHeightAt(crane, cumLen[i] / length);
-				lifted[i * 3 + 2] = point.z;
-			});
-			liftedGeometry = new THREE.BufferGeometry();
-			liftedGeometry.setAttribute("position", new THREE.BufferAttribute(lifted, 3));
-		}
-		return { floorGeometry, liftedGeometry };
+		const lifted = crane && cumLen && length > 1e-9
+			? points.map((point, i) => [point.x, craneHeightAt(crane, cumLen[i] / length), point.z])
+			: null;
+		return { floor, lifted };
 	}, [points, cumLen, length, crane]);
-	useEffect(() => () => {
-		lines?.floorGeometry.dispose();
-		lines?.liftedGeometry?.dispose();
-	}, [lines]);
 	useEffect(() => {
 		rootRef.current?.traverse((node) => node.layers.set(GIZMO_LAYER));
 	});
 	if (!lines) return null;
+	// drei's Line renders screen-space fat lines: a WebGL <line> is always
+	// 1px, which reads as a hairline on dense displays.
 	return (
 		<group ref={rootRef}>
-			<line geometry={lines.floorGeometry}>
-				<lineBasicMaterial color="#a78bfa" transparent opacity={lines.liftedGeometry ? 0.35 : 0.8} depthWrite={false} />
-			</line>
-			{lines.liftedGeometry && (
-				<line geometry={lines.liftedGeometry}>
-					<lineBasicMaterial color="#a78bfa" transparent opacity={0.9} depthWrite={false} />
-				</line>
+			<Line points={lines.floor} color="#a78bfa" lineWidth={2} transparent opacity={lines.lifted ? 0.35 : 0.8} depthWrite={false} />
+			{lines.lifted && (
+				<Line points={lines.lifted} color="#a78bfa" lineWidth={2.5} transparent opacity={0.9} depthWrite={false} />
 			)}
 		</group>
 	);
@@ -1103,19 +1082,102 @@ function CameraRailScenePreview({ points, cumLen, length, crane }) {
 
 /**
  * The crane's height marks as grabbable dots on the lifted curve. Click a
- * dot to select it, drag to set its height (the drag rides a camera-facing
- * vertical plane through the dot's rail point), Shift-drag to slide an
- * interior mark along the arc, double-click the curve to add a mark and
- * Delete to remove a non-endpoint. Dots live on GIZMO_LAYER, so the
+ * dot to select it; the selected dot grows a 3-axis gizmo — Y sets the
+ * mark's height, X/Z bend the camera path itself by moving the drawn rail
+ * control point nearest the mark. A free drag on the dot rides a
+ * camera-facing vertical plane (height, plus arc slide for interior marks),
+ * Shift-drag slides along the arc at a fixed height, double-click the curve
+ * adds a mark and Delete removes a non-endpoint. Dots live on GIZMO_LAYER, so the
  * recording never sees them.
  */
-function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, onSelect, onChangePoints, onDragStart, onDragEnd }) {
+const CRANE_AXES = [
+	{ axis: "x", dir: new THREE.Vector3(1, 0, 0), color: "#ff5340" },
+	{ axis: "y", dir: new THREE.Vector3(0, 1, 0), color: "#54e05c" },
+	{ axis: "z", dir: new THREE.Vector3(0, 0, 1), color: "#3d8bff" },
+];
+const CRANE_ARROW_LEN = 0.5;
+const CRANE_GIZMO_SCALE = 0.16; // metres of gizmo per metre of camera distance
+
+/**
+ * Prepare an x/z rail bend for one crane mark: a copy of the drawn control
+ * points (with one inserted at the mark's base when none is close enough to
+ * anchor the bend) plus a per-point weight — a cosine bump centred on the
+ * anchor that fades to zero by the neighbouring crane marks, so dragging one
+ * mark can never tow the marks beside it. For an interior mark both rail
+ * ends are pinned outright.
+ */
+function prepareRailBend(controlPoints, base, marks, markIndex) {
+	const controls = (controlPoints ?? []).map((entry) => ({ ...entry }));
+	if (controls.length < 2) return null;
+	// nearest control point / segment to the mark's base
+	let nearestIdx = 0;
+	let nearestD = Infinity;
+	for (let i = 0; i < controls.length; i += 1) {
+		const d = Math.hypot(controls[i].x - base.x, controls[i].z - base.z);
+		if (d < nearestD) {
+			nearestD = d;
+			nearestIdx = i;
+		}
+	}
+	const interior = markIndex > 0 && markIndex < marks.length - 1;
+	let anchorIdx = nearestIdx;
+	if (interior && nearestD > 0.25) {
+		// no control point near the mark: bend needs a vertex to pull, so one
+		// is seeded at the base, on the segment the base projects onto
+		let segmentIdx = 0;
+		let segmentD = Infinity;
+		for (let i = 0; i < controls.length - 1; i += 1) {
+			const ax = controls[i].x;
+			const az = controls[i].z;
+			const bx = controls[i + 1].x;
+			const bz = controls[i + 1].z;
+			const lenSq = Math.max((bx - ax) ** 2 + (bz - az) ** 2, 1e-9);
+			const u = Math.max(0, Math.min(1, ((base.x - ax) * (bx - ax) + (base.z - az) * (bz - az)) / lenSq));
+			const d = Math.hypot(ax + (bx - ax) * u - base.x, az + (bz - az) * u - base.z);
+			if (d < segmentD) {
+				segmentD = d;
+				segmentIdx = i;
+			}
+		}
+		controls.splice(segmentIdx + 1, 0, { x: base.x, z: base.z });
+		anchorIdx = segmentIdx + 1;
+	}
+	// normalized arc parameter of each control point along the control polygon
+	const ts = [0];
+	for (let i = 1; i < controls.length; i += 1) {
+		ts.push(ts[i - 1] + Math.hypot(controls[i].x - controls[i - 1].x, controls[i].z - controls[i - 1].z));
+	}
+	const total = Math.max(ts[ts.length - 1], 1e-9);
+	for (let i = 0; i < ts.length; i += 1) ts[i] /= total;
+	// the bump reaches exactly to the neighbouring crane marks
+	const t0 = ts[anchorIdx];
+	const previous = markIndex > 0 ? marks[markIndex - 1].t : null;
+	const next = markIndex < marks.length - 1 ? marks[markIndex + 1].t : null;
+	const radius = Math.max(0.15, Math.min(previous != null ? t0 - previous : 1, next != null ? next - t0 : 1));
+	const weights = ts.map((t, i) => {
+		if (interior && (i === 0 || i === ts.length - 1)) return 0;
+		const d = Math.abs(t - t0);
+		return d >= radius ? 0 : 0.5 * (1 + Math.cos((Math.PI * d) / radius));
+	});
+	return { startControls: controls, weights };
+}
+
+function CraneHandles({ rail, crane, controlPoints, selectedIndex, enabled, paneRef, camRef, onSelect, onChangePoints, onChangeRail, onDragStart, onDragEnd }) {
 	const { gl } = useThree();
 	const invalidate = useThree((state) => state.invalidate);
 	const groupRef = useRef(null);
+	const gizmoRef = useRef(null);
 	const dragRef = useRef(null);
 	const stateRef = useRef(null);
-	stateRef.current = { rail, crane, selectedIndex, enabled, onSelect, onChangePoints, onDragStart, onDragEnd };
+	stateRef.current = { rail, crane, controlPoints, selectedIndex, enabled, onSelect, onChangePoints, onChangeRail, onDragStart, onDragEnd };
+	// Constant on-screen size for the axis gizmo: it is UI, not set dressing.
+	useFrame(() => {
+		const gizmo = gizmoRef.current;
+		const camera = camRef.current;
+		if (!gizmo || !camera) return;
+		const world = gizmo.getWorldPosition(new THREE.Vector3());
+		gizmo.scale.setScalar(Math.max(0.35, camera.getWorldPosition(new THREE.Vector3()).distanceTo(world) * CRANE_GIZMO_SCALE));
+	});
 	useEffect(() => {
 		groupRef.current?.traverse((node) => node.layers?.set(GIZMO_LAYER));
 	});
@@ -1151,6 +1213,45 @@ function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, on
 			if (!s.enabled || !s.crane || event.button !== 0) return;
 			if (!groupRef.current || !rayFrom(event)) return;
 			const hits = raycaster.intersectObjects(groupRef.current.children, true);
+			// The axis gizmo outranks the dots: its arrows sit on the selected
+			// dot, and a press on an arrow is a directed move, not a reselect.
+			const axisHit = hits.find((entry) => entry.object.userData?.craneAxis);
+			if (axisHit && s.selectedIndex != null && s.crane.points[s.selectedIndex]) {
+				const axis = axisHit.object.userData.craneAxis;
+				const point = s.crane.points[s.selectedIndex];
+				const base = railPoint(s.rail, point.t * s.rail.length);
+				const origin = new THREE.Vector3(base.x, point.height, base.z);
+				const dir = CRANE_AXES.find((entry) => entry.axis === axis).dir;
+				const eye = new THREE.Vector3();
+				camRef.current.getWorldDirection(eye);
+				// slide plane: contains the axis and faces the camera as squarely
+				// as it can — the same construction the object gizmo uses
+				const normal = dir.clone().cross(eye).cross(dir);
+				if (normal.lengthSq() < 1e-6) return;
+				normal.normalize();
+				const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
+				const hitStart = new THREE.Vector3();
+				if (!raycaster.ray.intersectPlane(plane, hitStart)) return;
+				// x/z bend the rail: a weighted bump around the mark's base, so
+				// the path deforms locally and the marks beside it stay put.
+				const bend = axis === "y" ? null : prepareRailBend(s.controlPoints, base, s.crane.points, s.selectedIndex);
+				if (axis !== "y" && !bend) return;
+				event.stopImmediatePropagation();
+				event.preventDefault();
+				dragRef.current = {
+					axis,
+					index: s.selectedIndex,
+					dir: dir.clone(),
+					plane,
+					hitStart,
+					startHeight: point.height,
+					startControls: bend?.startControls ?? null,
+					bendWeights: bend?.weights ?? null,
+					recorded: false,
+				};
+				invalidate();
+				return;
+			}
 			const hit = hits.find((entry) => entry.object.userData?.craneIndex !== undefined);
 			if (!hit) return;
 			event.stopImmediatePropagation();
@@ -1172,6 +1273,24 @@ function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, on
 				s.onDragStart?.();
 				drag.recorded = true;
 			}
+			if (drag.axis) {
+				const world = new THREE.Vector3();
+				if (!raycaster.ray.intersectPlane(drag.plane, world)) return;
+				const travel = world.sub(drag.hitStart).dot(drag.dir);
+				if (drag.axis === "y") {
+					const height = Math.max(0.1, Math.min(12, drag.startHeight + travel));
+					s.onChangePoints(points.map((entry, i) => (i === drag.index ? { ...entry, height } : entry)), { dragging: true });
+				} else if (drag.startControls && drag.bendWeights && s.onChangeRail) {
+					const dx = drag.axis === "x" ? travel : 0;
+					const dz = drag.axis === "z" ? travel : 0;
+					const moved = drag.startControls.map((entry, i) => (drag.bendWeights[i] > 0
+						? { ...entry, x: entry.x + dx * drag.bendWeights[i], z: entry.z + dz * drag.bendWeights[i] }
+						: entry));
+					s.onChangeRail(moved, { dragging: true });
+				}
+				invalidate();
+				return;
+			}
 			if (drag.slide && drag.index > 0 && drag.index < points.length - 1) {
 				// slide along the arc: ray onto the horizontal plane at the mark
 				const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -point.height);
@@ -1192,7 +1311,10 @@ function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, on
 				);
 				s.onChangePoints(points.map((entry, i) => (i === drag.index ? { ...entry, t } : entry)), { dragging: true });
 			} else {
-				// height: ray onto the camera-facing vertical plane at the base
+				// free move: ray onto the camera-facing vertical plane at the base.
+				// Its y sets the height; its x/z re-projects an interior mark onto
+				// the nearest rail arc position, so one drag steers both axes — the
+				// rail is the only x/z a crane mark can occupy.
 				const base = railPoint(s.rail, point.t * s.rail.length);
 				const camera = camRef.current;
 				const facing = new THREE.Vector3();
@@ -1204,7 +1326,23 @@ function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, on
 				const world = new THREE.Vector3();
 				if (!raycaster.ray.intersectPlane(plane, world)) return;
 				const height = Math.max(0.1, Math.min(12, world.y));
-				s.onChangePoints(points.map((entry, i) => (i === drag.index ? { ...entry, height } : entry)), { dragging: true });
+				let t = point.t;
+				if (drag.index > 0 && drag.index < points.length - 1) {
+					let bestI = 0;
+					let bestD = Infinity;
+					for (let i = 0; i < s.rail.points.length; i += 1) {
+						const d = Math.hypot(s.rail.points[i].x - world.x, s.rail.points[i].z - world.z);
+						if (d < bestD) {
+							bestD = d;
+							bestI = i;
+						}
+					}
+					t = Math.max(
+						points[drag.index - 1].t + 0.02,
+						Math.min(points[drag.index + 1].t - 0.02, s.rail.cumLen[bestI] / s.rail.length),
+					);
+				}
+				s.onChangePoints(points.map((entry, i) => (i === drag.index ? { ...entry, t, height } : entry)), { dragging: true });
 			}
 			invalidate();
 		};
@@ -1263,8 +1401,33 @@ function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, on
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [enabled, gl, invalidate]);
 	if (!enabled || !crane || !rail) return null;
+	const selectedPoint = selectedIndex != null ? crane.points[selectedIndex] : null;
+	const selectedBase = selectedPoint ? railPoint(rail, selectedPoint.t * rail.length) : null;
 	return (
 		<group ref={groupRef}>
+			{selectedPoint && (
+				<group ref={gizmoRef} position={[selectedBase.x, selectedPoint.height, selectedBase.z]} renderOrder={999}>
+					{CRANE_AXES.map(({ axis, dir, color }) => {
+						const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+						return (
+							<group key={axis} quaternion={quat}>
+								<mesh position={[0, CRANE_ARROW_LEN / 2 + 0.08, 0]} renderOrder={999}>
+									<cylinderGeometry args={[0.016, 0.016, CRANE_ARROW_LEN, 8]} />
+									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.2} toneMapped={false} depthTest={false} depthWrite={false} transparent opacity={0.95} />
+								</mesh>
+								<mesh position={[0, CRANE_ARROW_LEN + 0.08 + 0.07, 0]} renderOrder={999}>
+									<coneGeometry args={[0.05, 0.14, 14]} />
+									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.2} toneMapped={false} depthTest={false} depthWrite={false} transparent opacity={0.95} />
+								</mesh>
+								<mesh position={[0, (CRANE_ARROW_LEN + 0.14) / 2 + 0.08, 0]} userData={{ craneAxis: axis }}>
+									<cylinderGeometry args={[0.09, 0.09, CRANE_ARROW_LEN + 0.14, 8]} />
+									<meshBasicMaterial visible={false} />
+								</mesh>
+							</group>
+						);
+					})}
+				</group>
+			)}
 			{crane.points.map((point, index) => {
 				const base = railPoint(rail, point.t * rail.length);
 				return (
@@ -2214,6 +2377,9 @@ globalThis.playMode = centerTab === "play";
 		// applied tick re-renders, every drag would die after exactly one tick.
 		store.settle();
 		setSelectedHierarchyId(id);
+		// Moving the focus anywhere but the camera releases the crane dot too:
+		// a press on the floor or the sky must not leave a mark selected.
+		if (id !== "camera") setCraneSelectedIndex(null);
 		const focus = RIG_HIERARCHY_FOCUS[id];
 		if (focus && ikMode) setIkFocus(focus);
 	}
@@ -7396,6 +7562,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							<CraneHandles
 								rail={railCurve}
 								crane={activeCamera.craneHeight}
+								controlPoints={activeCamera.cameraRail}
 								selectedIndex={craneSelectedIndex}
 								enabled={centerTab === "scene" && !lookThroughShot && !ikMode && !posing && !playMode && !!railCurve && !!activeCamera.craneHeight}
 								paneRef={mainPaneRef}
@@ -7411,6 +7578,20 @@ function resizePromptClip(id, edge, rawFrame) {
 											current,
 											activeShot.id,
 											(shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { craneHeight: { points } }) }),
+											"shots",
+										),
+									);
+								}}
+								onChangeRail={(points, options) => {
+									if (!options?.dragging) {
+										changeActiveCamera({ cameraRail: points });
+										return;
+									}
+									setShots((current) =>
+										updateStableItem(
+											current,
+											activeShot.id,
+											(shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { cameraRail: points }) }),
 											"shots",
 										),
 									);
@@ -8883,6 +9064,12 @@ function resizePromptClip(id, edge, rawFrame) {
 							? { ...patch, railFollow: defaultRailRange(activeShotDuration) }
 							: patch;
 						changeActiveCamera(nextPatch);
+						if (patch.mode === "follow" && !motion) {
+							setToast(ko(
+								"Follow rides the subject's motion — without a loaded motion the camera composes a static frame",
+								"팔로우 카메라는 인물 모션을 따라 움직입니다 — 모션이 없으면 카메라는 정지 구도를 유지합니다",
+							));
+						}
 						if (patch.mode === "rail" && !cameraRail) {
 							setRailDraw(true);
 							setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
