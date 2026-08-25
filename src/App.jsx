@@ -6916,6 +6916,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							Live workspace {liveWorkspaceHandle}
 						</span>
 					)}
+					<a className="topbar-demo-link" href="/demo/">{ko("Try the demo", "데모 체험")}</a>
 					<LocaleToggle />
 					<AnalyticsToggle />
 				</div>

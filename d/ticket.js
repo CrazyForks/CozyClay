@@ -1,7 +1,7 @@
 import { API_BASE } from "../demo/config.js";
 
 const POSITION_POLL_MS = 30_000;
-const ETA_FALLBACK_TEXT = "Usually within a few hours — at most 48 hours.";
+const ETA_FALLBACK_TEXT = "Usually a few minutes while the generator is online.";
 
 let ticketToken = null;
 let pollTimer = null;
@@ -94,9 +94,12 @@ function renderQueued(state) {
     setText("ticket-eta", suppliedEta || `About ${etaMinutes} minute${etaMinutes === 1 ? "" : "s"}`);
   } else {
     // Do not display a stale numeric estimate when the API has withdrawn it.
-    setText("ticket-eta", /\b\d+\s+minutes?\b/iu.test(suppliedEta) ? ETA_FALLBACK_TEXT : (suppliedEta || ETA_FALLBACK_TEXT));
+    const hasStaleEstimate = /\b\d+\s+minutes?\b/iu.test(suppliedEta)
+      || /^Usually within a few hours\s+(?:—|-)\s+at most 48 hours\.$/iu.test(suppliedEta);
+    setText("ticket-eta", hasStaleEstimate ? ETA_FALLBACK_TEXT : (suppliedEta || ETA_FALLBACK_TEXT));
   }
   resetActions();
+  show("copy-link", true);
   setMessage("");
 }
 
@@ -105,6 +108,7 @@ function renderRunning(state = null) {
   setText("ticket-position", "Your motion is being prepared.");
   setText("ticket-eta", "The generator is working on it now.");
   resetActions();
+  show("copy-link", true);
   setMessage("");
 }
 

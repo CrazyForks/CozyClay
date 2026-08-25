@@ -227,7 +227,7 @@ try {
   ]);
   demo.updateSessionUi({ signedIn: true, provider: "google", dailyRemaining: 2 });
   const sessionStatus = globalThis.document.elements.get("session-status");
-  assert.equal(sessionStatus.textContent, "Signed in as google · 2 left today");
+  assert.equal(sessionStatus.textContent, "Signed in with Google · 2 left today");
   assert.equal(globalThis.document.elements.get("sign-in-panel").classList.contains("is-hidden"), true);
 
   let replaced = "";
