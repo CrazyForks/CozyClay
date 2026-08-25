@@ -105,6 +105,7 @@ function CameraBlockEditor({
 	onRailDrawToggle,
 	onRailDelete,
 	onCranePointDelete,
+	onWaypointToggle,
 }) {
 	if (!shot) return null;
 	const mode = cameraBlockMode(shot);
@@ -123,7 +124,12 @@ function CameraBlockEditor({
 		<section className="tl-camera-editor" aria-label={ko(`Camera controls for ${shot.name}`, `${shot.name} 카메라 컨트롤`)}>
 			<strong className="tl-camera-editor-title">{shot.name}</strong>
 			{blocked ? (
-				<span className="tl-camera-blocked">{ko("Turn Waypoint off to edit or preview this camera.", "카메라를 편집하거나 미리 보려면 Waypoint를 꺼주세요.")}</span>
+				<span className="tl-camera-blocked">
+					{ko("Turn Waypoint off to edit or preview this camera.", "카메라를 편집하거나 미리 보려면 Waypoint를 꺼주세요.")}
+					<button type="button" className="tl-camera-tool" onClick={() => onWaypointToggle?.()}>
+						{ko("Turn Waypoint off", "Waypoint 끄기")}
+					</button>
+				</span>
 			) : (
 				<>
 					<button type="button" className={"tl-camera-tool" + (previewing ? " active" : "")} onClick={() => onPreview?.()}>
@@ -1128,6 +1134,7 @@ export default function Timeline({
 							onRailDrawToggle={() => handlers.current.onCameraRailDrawToggle?.()}
 							onRailDelete={() => handlers.current.onCameraRailDelete?.()}
 							onCranePointDelete={onCranePointDelete}
+							onWaypointToggle={() => handlers.current.onWaypointToggle?.()}
 						/>
 					)}
 
@@ -1185,7 +1192,7 @@ export default function Timeline({
 												: `${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)} m/s`}
 										</em>
 									)}
-									{name === "Prompts" && <button className="tl-track-add" type="button" title={ko("Add 2 second prompt clip", "2초 프롬프트 클립 추가")} onClick={() => handlers.current.onPromptAdd?.(frame)}>+</button>}
+									{name === "Prompts" && <button className="tl-track-add" type="button" title={ko("Add a 2–4 second prompt clip — one action per block", "2–4초 프롬프트 클립 추가 — 한 블록에 한 동작")} onClick={() => handlers.current.onPromptAdd?.(frame)}>+</button>}
 									{name === SHOTS_LANE && (
 										<button
 											type="button"

@@ -6881,7 +6881,13 @@ globalThis.playMode = centerTab === "play";
 
 	function addPromptClip(frame) {
 		const snapped = Math.max(0, Math.round(frame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
-		const startFrame = Math.max(snapped, promptClips.reduce((max, clip) => Math.max(max, clip.endFrame), 0));
+		// Add at the playhead when the spot is free; only fall through to
+		// after-the-last-block when the playhead slot is taken. The old
+		// unconditional max() made the button's "at frame N" label a lie.
+		const blocked = promptClips.some((clip) => snapped < clip.endFrame && snapped + ARDY_PROMPT_HORIZON_FRAMES > clip.startFrame);
+		const startFrame = blocked
+			? Math.max(snapped, promptClips.reduce((max, clip) => Math.max(max, clip.endFrame), 0))
+			: snapped;
 		const clip = { id: createStableItemId("prompt-clip"), startFrame, endFrame: startFrame + ARDY_PROMPT_HORIZON_FRAMES, text: "" };
 		recordCharacterUndo();
 		setPromptClips((prev) => [...prev, clip]);
@@ -6910,16 +6916,23 @@ const PROMPT_BLOCK_MAX_FRAMES = 4 * TIMELINE_FPS;
 
 function resizePromptClip(id, edge, rawFrame) {
 		setPromptClips((prev) => {
-			const next = updateStableItem(prev, id, (clip) => {
+			const candidate = updateStableItem(prev, id, (clip) => {
 				const snapped = Math.max(0, Math.round(rawFrame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
 				return edge === "start"
 					? { ...clip, startFrame: Math.min(Math.max(snapped, clip.endFrame - PROMPT_BLOCK_MAX_FRAMES), clip.endFrame - ARDY_PROMPT_HORIZON_FRAMES) }
 					: { ...clip, endFrame: Math.min(Math.max(clip.startFrame + ARDY_PROMPT_HORIZON_FRAMES, snapped), clip.startFrame + PROMPT_BLOCK_MAX_FRAMES) };
 			}, "promptClips");
-			const end = next.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
+			// Same rule the move path enforces: one prompt per frame range.
+			// A resize that lands on a neighbour used to slip through and get
+			// silently truncated by the generator; reject it at the handle.
+			const resized = candidate.find((clip) => clip.id === id);
+			if (resized && candidate.some((clip) => clip.id !== id && resized.startFrame < clip.endFrame && resized.endFrame > clip.startFrame)) {
+				return prev;
+			}
+			const end = candidate.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
 			setTlFrameCount((count) => Math.max(count, end));
 			setArdyDuration(end / TIMELINE_FPS);
-			return next;
+			return candidate;
 		});
 	}
 
@@ -8729,7 +8742,10 @@ function resizePromptClip(id, edge, rawFrame) {
 									</p>
 								</>
 							)}
-							{promptClips.length >= 2 && (
+							{/* The schedule rule counts only blocks that actually carry a
+							    prompt — an empty block cannot combine and must not lock
+							    the pose checkbox (it used to gate on raw length). */}
+							{promptClips.filter((clip) => clip.text.trim()).length >= 2 && (
 								<p className="ardy-hint">
 									{ko("Prompt blocks generate from history, so they cannot also pin a pose.", "프롬프트 블록은 이전 프레임을 이어서 생성하므로 포즈 고정과 함께 쓸 수 없어요.")}
 								</p>
