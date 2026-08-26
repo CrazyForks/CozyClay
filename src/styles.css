@@ -2838,8 +2838,45 @@ input[type=range]::-moz-range-thumb {
 	font-size: 10px;
 }
 
+/* A prop's route is not camera work and not character work: it borrows the
+   camera bar's shape (same row, same controls) but wears the path's own green
+   so a glance at the strip says which subject the row edits. */
+.tl-object-editor {
+	background: #1b2620;
+	border-bottom-color: rgba(111, 207, 151, .42);
+	color: #d3e7dc;
+}
+
+.tl-object-editor .tl-camera-editor-title { color: #9fe0bb; }
+
+.tl-object-editor .tl-camera-tool.active {
+	background: #2f6b4d;
+	border-color: #6fcf97;
+	color: #eafff3;
+}
+
+.tl-subject-kind {
+	display: inline-block;
+	margin-right: 6px;
+	padding: 1px 5px;
+	border-radius: 3px;
+	background: rgba(154, 123, 212, .22);
+	color: #cbb8ef;
+	font-size: 8px;
+	font-weight: 700;
+	letter-spacing: .08em;
+	vertical-align: 1px;
+}
+
+.tl-object-editor .tl-subject-kind {
+	background: rgba(111, 207, 151, .2);
+	color: #9fe0bb;
+}
+
 .tl-camera-editor-title {
-	max-width: 92px;
+	display: flex;
+	align-items: center;
+	max-width: 148px;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;

@@ -104,8 +104,11 @@ function ObjectPathEditor({ object, pathDraw, onPathDrawToggle, onPathChange, on
 	const path = object.path;
 	const patch = (change) => onPathChange?.({ ...path, ...change });
 	return (
-		<section className="tl-camera-editor" aria-label={ko(`Travel path for ${object.name}`, `${object.name} 이동 경로`)}>
-			<strong className="tl-camera-editor-title">{object.name}</strong>
+		<section className="tl-camera-editor tl-object-editor" aria-label={ko(`Travel path for ${object.name}`, `${object.name} 이동 경로`)}>
+			<strong className="tl-camera-editor-title">
+				<span className="tl-subject-kind">{ko("PROP", "소품")}</span>
+				{object.name}
+			</strong>
 			<button type="button" className={"tl-camera-tool" + (pathDraw ? " active" : "")} onClick={() => onPathDrawToggle?.()}>
 				{pathDraw ? ko("Drawing…", "그리는 중…") : path ? ko("Redraw path", "경로 다시 그리기") : ko("Draw path", "경로 그리기")}
 			</button>
@@ -196,7 +199,10 @@ function CameraBlockEditor({
 	const metric = (value, places = 1) => Number(value).toFixed(places);
 	return (
 		<section className="tl-camera-editor" aria-label={ko(`Camera controls for ${shot.name}`, `${shot.name} 카메라 컨트롤`)}>
-			<strong className="tl-camera-editor-title">{shot.name}</strong>
+			<strong className="tl-camera-editor-title">
+				<span className="tl-subject-kind">{ko("CAMERA", "카메라")}</span>
+				{shot.name}
+			</strong>
 			{blocked ? (
 				<span className="tl-camera-blocked">
 					{ko("Turn Waypoint off to edit or preview this camera.", "카메라를 편집하거나 미리 보려면 Waypoint를 꺼주세요.")}
@@ -1200,6 +1206,10 @@ export default function Timeline({
 							▾
 						</button>
 					</div>
+					{/* One subject, one editor. Selecting a prop hands the row to
+					    its route so the camera's controls and the object's can
+					    never stack into one ambiguous bar above the character
+					    lanes. */}
 					{pathObject && (
 						<ObjectPathEditor
 							object={pathObject}
@@ -1209,7 +1219,7 @@ export default function Timeline({
 							onPathClear={() => handlers.current.onObjectPathClear?.()}
 						/>
 					)}
-					{selectedCameraShot && (
+					{selectedCameraShot && !pathObject && (
 						<CameraBlockEditor
 							shot={selectedCameraShot}
 							blocked={waypointMode}

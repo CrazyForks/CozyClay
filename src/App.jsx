@@ -141,7 +141,7 @@ import AddObjectMenu from "./object-catalog.jsx";
 import ResultModal from "./result-modal.jsx";
 import AnalyticsToggle from "./analytics-toggle.jsx";
 import { PWA_UPDATE_EVENT } from "./pwa.js";
-import { createObjectPath, objectTransformAt, pathMetrics } from "./object-path.js";
+import { createObjectPath, objectTransformAt, pathMetrics, MAX_PATH_POINTS } from "./object-path.js";
 import LocaleToggle from "./locale-toggle.jsx";
 import { bucketMs, track, trackActivation } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
@@ -1545,14 +1545,88 @@ function ObjectPathHandles({ path, selectedIndex, enabled, paneRef, camRef, onSe
 			if (drag?.recorded) stateRef.current.onDragEnd?.();
 			invalidate();
 		};
+		const paneScreen = (world) => {
+			const pane = paneRef.current?.getBoundingClientRect();
+			if (!pane) return null;
+			const projected = world.project(camRef.current);
+			return projected.z > 1 ? null : {
+				x: pane.left + ((projected.x + 1) / 2) * pane.width,
+				y: pane.top + ((1 - projected.y) / 2) * pane.height,
+			};
+		};
+		// Double-click the route to drop a point mid-path — the crane curve's
+		// gesture, so one habit covers both. The new point lands ON the line,
+		// so adding it never changes where the object goes; it only gives the
+		// next drag something to grab in the middle.
+		const onDouble = (event) => {
+			const s = stateRef.current;
+			if (!s.enabled || !s.path || !camRef.current) return;
+			const points = s.path.points;
+			if (points.length >= MAX_PATH_POINTS) return;
+			camRef.current.updateMatrixWorld();
+			let best = null;
+			for (let i = 0; i < points.length - 1; i += 1) {
+				const a = paneScreen(new THREE.Vector3(points[i].x, points[i].y ?? 0, points[i].z));
+				const b = paneScreen(new THREE.Vector3(points[i + 1].x, points[i + 1].y ?? 0, points[i + 1].z));
+				if (!a || !b) continue;
+				const dx = b.x - a.x;
+				const dy = b.y - a.y;
+				const lenSq = dx * dx + dy * dy;
+				const t = lenSq < 1e-6 ? 0 : Math.min(1, Math.max(0, ((event.clientX - a.x) * dx + (event.clientY - a.y) * dy) / lenSq));
+				const d = Math.hypot(a.x + dx * t - event.clientX, a.y + dy * t - event.clientY);
+				if (!best || d < best.d) best = { d, index: i, t };
+			}
+			if (!best || best.d > 14) return;
+			// Refuse a point that would sit on top of a neighbour: a zero-length
+			// segment is not a handle, it is a duplicate the schema would drop.
+			if (best.t < 0.02 || best.t > 0.98) return;
+			event.stopImmediatePropagation();
+			event.preventDefault();
+			const a = points[best.index];
+			const b = points[best.index + 1];
+			const inserted = {
+				x: a.x + (b.x - a.x) * best.t,
+				y: (a.y ?? 0) + ((b.y ?? 0) - (a.y ?? 0)) * best.t,
+				z: a.z + (b.z - a.z) * best.t,
+			};
+			const next = [...points.slice(0, best.index + 1), inserted, ...points.slice(best.index + 1)];
+			s.onDragStart?.();
+			s.onChangePoints(next);
+			s.onDragEnd?.();
+			s.onSelect(best.index + 1);
+			invalidate();
+		};
+		// Delete removes the selected point, never the object: while a point is
+		// selected this handler owns the key, and the scene-object delete
+		// handler stands down (it checks the same selection).
+		const onKey = (event) => {
+			const s = stateRef.current;
+			if (!s.enabled || !s.path || s.selectedIndex == null) return;
+			if (event.key !== "Delete" && event.key !== "Backspace") return;
+			if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			const remaining = s.path.points.filter((_, index) => index !== s.selectedIndex);
+			// Two points are the least a route can be; the last removal clears
+			// the whole path instead of leaving a stub that cannot be walked.
+			s.onDragStart?.();
+			s.onChangePoints(remaining.length >= 2 ? remaining : null);
+			s.onDragEnd?.();
+			s.onSelect(null);
+			invalidate();
+		};
 		const el = gl.domElement;
 		el.addEventListener("pointerdown", onDown);
 		window.addEventListener("pointermove", onMove, true);
 		window.addEventListener("pointerup", onUp, true);
+		el.addEventListener("dblclick", onDouble, true);
+		window.addEventListener("keydown", onKey, true);
 		return () => {
 			el.removeEventListener("pointerdown", onDown);
 			window.removeEventListener("pointermove", onMove, true);
 			window.removeEventListener("pointerup", onUp, true);
+			el.removeEventListener("dblclick", onDouble, true);
+			window.removeEventListener("keydown", onKey, true);
 		};
 		// paneRef/camRef are stable; handlers read live state through stateRef
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3499,6 +3573,10 @@ globalThis.playMode = centerTab === "play";
 			}
 			if (!selectedSceneObjectId) return;
 			if (event.key !== "Delete" && event.key !== "Backspace") return;
+			// A selected path point owns Delete: the route's handles are the
+			// finer target, and deleting the whole prop out from under a point
+			// edit is never what the press meant.
+			if (pathPointIndex != null) return;
 			event.preventDefault();
 			deleteSelectedSceneObject();
 		};
@@ -3509,6 +3587,11 @@ globalThis.playMode = centerTab === "play";
 	useEffect(() => {
 		setInspectorActionsOpen(false);
 	}, [selectedSceneObjectId, selectedHierarchyId, keyLight, charA, charB, showB]);
+	// A point index belongs to one object's route; carrying it to the next
+	// selection would point the gizmo at a stale dot.
+	useEffect(() => {
+		setPathPointIndex(null);
+	}, [selectedSceneObjectId]);
 
 	useEffect(() => {
 		if (!inspectorActionsOpen) return undefined;
@@ -6630,8 +6713,15 @@ globalThis.playMode = centerTab === "play";
 			setLookThrough: (value) => setLookThroughShot(!!value),
 			charA,
 			insetPane: insetPaneRef.current,
+			mainPane: mainPaneRef.current,
+			// the selected prop's route, so QA can aim a gesture at the line
+			objectPath: selectedSceneObject?.path ?? null,
+			pathPointIndex,
+			pathHandlesEnabled: centerTab === "scene" && !lookThroughShot && !ikMode && !posing && !playMode && !!selectedSceneObject?.path,
+			centerTab,
+			pathDraw,
 		};
-	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot]);
+	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, pathPointIndex, centerTab, posing, playMode, pathDraw]);
 	// QA hook (plan §6.5): exposes history depth and the present === objects
 	// invariant so the browser suite can assert undo entry counts directly.
 	// Reads live store state at call time; re-registered after every render.
@@ -8290,7 +8380,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								onSelect={setPathPointIndex}
 								onChangePoints={(points) => {
 									if (!selectedSceneObject) return;
-									changeSceneObject(selectedSceneObject.id, { path: { ...selectedSceneObject.path, points } });
+									changeSceneObject(selectedSceneObject.id, { path: points === null ? null : { ...selectedSceneObject.path, points } });
 								}}
 								onDragStart={() => {
 									pathDragTokenRef.current = beginSceneTransaction({ owner: "object-path", cancel: () => {} });

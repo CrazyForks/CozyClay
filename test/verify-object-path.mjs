@@ -130,5 +130,37 @@ ok(
 	!appSource.includes('ko("Travel path", "이동 경로")') && appSource.includes("pathObject={"),
 );
 
+/* --- mid-path points ------------------------------------------------------- */
+
+const handlesSource = appSource.slice(
+	appSource.indexOf("function ObjectPathHandles("),
+	appSource.indexOf("function CraneHandles("),
+);
+
+ok("the route takes a mid-path point on double-click", handlesSource.includes('addEventListener("dblclick", onDouble'));
+ok(
+	"an inserted point lands on the segment, so adding one never moves the route",
+	handlesSource.includes("a.x + (b.x - a.x) * best.t") &&
+	handlesSource.includes("a.z + (b.z - a.z) * best.t"),
+);
+ok("a point cannot be dropped on top of its neighbour", handlesSource.includes("best.t < 0.02 || best.t > 0.98"));
+ok("the route refuses to grow past the point ceiling", handlesSource.includes("points.length >= MAX_PATH_POINTS"));
+ok(
+	"deleting the last removable point clears the route instead of leaving a stub",
+	handlesSource.includes("remaining.length >= 2 ? remaining : null"),
+);
+ok(
+	"a selected point owns Delete, so the prop survives the press",
+	appSource.includes("if (pathPointIndex != null) return;"),
+);
+ok(
+	"one subject editor at a time: the camera bar stands down for a selected prop",
+	timelineSource.includes("{selectedCameraShot && !pathObject && ("),
+);
+ok(
+	"the strip labels which subject a row edits",
+	timelineSource.includes('ko("PROP", "소품")') && timelineSource.includes('ko("CAMERA", "카메라")'),
+);
+
 console.log(failures === 0 ? "all object-path checks PASS" : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
