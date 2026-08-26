@@ -103,6 +103,8 @@ const NODE_FILES = [
 	"mcp/verify-prompts.mjs",
 	"mcp/verify-protocol-version.mjs",
 	"mcp/verify-tool-annotations.mjs",
+	"test/verify-object-path.mjs",
+	"test/verify-speed-envelope.mjs",
 ];
 
 const BROWSER_FILES = [
@@ -111,8 +113,6 @@ const BROWSER_FILES = [
 	"test/verify-ik-browser.mjs",
 	"test/verify-motion-edit-browser.mjs",
 	"test/verify-object-gizmo.mjs",
-	"test/verify-object-path.mjs",
-	"test/verify-speed-envelope.mjs",
 	"test/verify-offscreen-export-browser.mjs",
 	"test/verify-project-menu-browser.mjs",
 ];
