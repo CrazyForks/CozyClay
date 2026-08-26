@@ -93,91 +93,6 @@ function signedValue(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}`;
 }
 
-/**
- * A selected prop's travel path, sitting in the Animation strip beside the
- * camera's own controls. Movement is timeline work: an object that travels
- * belongs next to the playhead that drives it, not buried in the inspector
- * among its static transforms.
- */
-function ObjectPathEditor({ object, pathDraw, onPathDrawToggle, onPathChange, onPathClear }) {
-	if (!object) return null;
-	const path = object.path;
-	const patch = (change) => onPathChange?.({ ...path, ...change });
-	return (
-		<section className="tl-camera-editor tl-object-editor" aria-label={ko(`Travel path for ${object.name}`, `${object.name} 이동 경로`)}>
-			<strong className="tl-camera-editor-title">
-				<span className="tl-subject-kind">{ko("PROP", "소품")}</span>
-				{object.name}
-			</strong>
-			<button type="button" className={"tl-camera-tool" + (pathDraw ? " active" : "")} onClick={() => onPathDrawToggle?.()}>
-				{pathDraw ? ko("Drawing…", "그리는 중…") : path ? ko("Redraw path", "경로 다시 그리기") : ko("Draw path", "경로 그리기")}
-			</button>
-			{!path ? (
-				<span className="tl-camera-blocked">
-					{ko("Draw a route on the Top-View map, then drag its points in the scene to lift it.", "위에서 본 지도에 경로를 그린 뒤, 씬에서 점을 끌어 높이를 조절하세요.")}
-				</span>
-			) : (
-				<>
-					<label title={ko("Metres per second; 0 spreads the route across the whole take", "초당 미터; 0이면 전체 길이에 맞춰 이동합니다")}>
-						<span>{ko("Speed", "속도")}</span>
-						<input
-							type="range"
-							min={0}
-							max={20}
-							step={0.1}
-							value={path.speed ?? 0}
-							onChange={(event) => patch({ speed: Number(event.currentTarget.value) })}
-						/>
-						<output className="tl-camera-metric">{(path.speed ?? 0) === 0 ? ko("take", "전체") : `${Number(path.speed).toFixed(1)} m/s`}</output>
-					</label>
-					<button
-						type="button"
-						className={"tl-camera-tool" + (path.faceTravel ? " active" : "")}
-						aria-pressed={!!path.faceTravel}
-						title={ko("Turn to face the direction of travel", "진행 방향을 바라보게 합니다")}
-						onClick={() => patch({ faceTravel: !path.faceTravel })}
-					>
-						{path.faceTravel ? ko("Faces travel", "진행 방향 봄") : ko("Fixed facing", "방향 고정")}
-					</button>
-					<button
-						type="button"
-						className={"tl-camera-tool" + (path.extend ? " active" : "")}
-						aria-pressed={!!path.extend}
-						title={ko("Keep going in the last direction after the route ends", "경로가 끝나도 마지막 방향으로 계속 갑니다")}
-						onClick={() => patch({ extend: !path.extend })}
-					>
-						{ko("Keep going", "계속 가기")}
-					</button>
-					<button
-						type="button"
-						className={"tl-camera-tool" + (path.loop ? " active" : "")}
-						aria-pressed={!!path.loop}
-						onClick={() => patch({ loop: !path.loop })}
-					>
-						{ko("Loop", "반복")}
-					</button>
-					<button
-						type="button"
-						className="tl-camera-tool danger"
-						title={ko("Delete this route; the object stands still again", "경로를 지웁니다. 오브젝트는 다시 제자리에 섭니다")}
-						onClick={() => onPathClear?.()}
-					>
-						{ko("Delete path", "경로 삭제")}
-					</button>
-					{/* The two gestures nobody guesses. Stated once, next to the
-					    controls, rather than left to be discovered. */}
-					<span className="tl-path-hint">
-						{ko(
-							`${path.points.length} points · double-click the line to add one · Delete removes the selected one`,
-							`점 ${path.points.length}개 · 선을 더블클릭하면 점 추가 · 점 선택 후 Delete로 삭제`,
-						)}
-					</span>
-				</>
-			)}
-		</section>
-	);
-}
-
 function CameraBlockEditor({
 	shot,
 	blocked,
@@ -382,17 +297,12 @@ export default function Timeline({
 	onCameraBlockChange,
 	onCameraPreview,
 	railDraw = false,
-	pathDraw = false,
-	pathObject = null,
 	craneSelectedIndex = null,
 	onCranePointAdd,
 	onCranePointDelete,
 	onCranePointSelect,
 	cameraRailLength = null,
 	onCameraRailDrawToggle,
-	onObjectPathDrawToggle,
-	onObjectPathChange,
-	onObjectPathClear,
 	onCameraRailDelete,
 	onRailSelect,
 	onRailMove,
@@ -436,7 +346,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onObjectPathDrawToggle, onObjectPathChange, onObjectPathClear, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -1214,20 +1124,7 @@ export default function Timeline({
 							▾
 						</button>
 					</div>
-					{/* One subject, one editor. Selecting a prop hands the row to
-					    its route so the camera's controls and the object's can
-					    never stack into one ambiguous bar above the character
-					    lanes. */}
-					{pathObject && (
-						<ObjectPathEditor
-							object={pathObject}
-							pathDraw={pathDraw}
-							onPathDrawToggle={() => handlers.current.onObjectPathDrawToggle?.()}
-							onPathChange={(path) => handlers.current.onObjectPathChange?.(path)}
-							onPathClear={() => handlers.current.onObjectPathClear?.()}
-						/>
-					)}
-					{selectedCameraShot && !pathObject && (
+					{selectedCameraShot && (
 						<CameraBlockEditor
 							shot={selectedCameraShot}
 							blocked={waypointMode}

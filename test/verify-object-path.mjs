@@ -1,7 +1,8 @@
 // Object travel paths: schema repair, arc-length sampling and the frame →
 // transform answer that playback, export and MCP all share.
 import { readFileSync } from "node:fs";
-import { createObjectPath, pathMetrics, objectTransformAt, MAX_PATH_POINTS } from "../src/object-path.js";
+import { createObjectPath, pathMetrics, objectTransformAt, strokeToPathPoints, MAX_PATH_POINTS, STROKE_MAX_POINTS } from "../src/object-path.js";
+import { simplifyStroke } from "../src/camera-follow.js";
 
 let failures = 0;
 const ok = (name, pass, detail = "") => {
@@ -106,29 +107,55 @@ const take = { frameCount: 25, fps: 24 }; // exactly one second of travel
 	})());
 }
 
-/* --- where the controls live ----------------------------------------------- */
+/* --- a stroke drops few dots -------------------------------------------- */
 
-// Movement is timeline work: the path controls belong in the Animation strip
-// beside the camera's, never back in the inspector's static transform stack.
-const timelineSource = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
-const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+// The stroke sets the shape; the operator adds the handles they want by
+// double-clicking the line. A route littered with twenty dots is unusable.
+const straightDrag = Array.from({ length: 60 }, (_, i) => ({ x: i * 0.1, z: 0 }));
+const dogLeg = [
+	...Array.from({ length: 30 }, (_, i) => ({ x: i * 0.2, z: 0 })),
+	...Array.from({ length: 30 }, (_, i) => ({ x: 6, z: i * 0.2 })),
+];
+const circle = Array.from({ length: 120 }, (_, i) => ({ x: Math.cos((i / 120) * Math.PI * 2) * 5, z: Math.sin((i / 120) * Math.PI * 2) * 5 }));
+const noisy = Array.from({ length: 200 }, (_, i) => ({ x: i * 0.05, z: Math.sin(i) * 0.4 }));
 
-ok("the Animation strip owns a travel path editor", timelineSource.includes("function ObjectPathEditor("));
+ok("a straight drag is two points", strokeToPathPoints(straightDrag, simplifyStroke).length === 2);
+ok("a dog-leg keeps its corner", strokeToPathPoints(dogLeg, simplifyStroke).length === 3);
 ok(
-	"the path editor carries draw, speed, facing, extend, loop and delete",
+	"no stroke exceeds the ceiling",
+	[straightDrag, dogLeg, circle, noisy].every((stroke) => strokeToPathPoints(stroke, simplifyStroke).length <= STROKE_MAX_POINTS),
+);
+ok(
+	"the stroke's ends survive simplification",
 	(() => {
-		const editor = timelineSource.slice(
-			timelineSource.indexOf("function ObjectPathEditor("),
-			timelineSource.indexOf("function ", timelineSource.indexOf("function ObjectPathEditor(") + 1),
-		);
-		return ['ko("Draw path", "경로 그리기")', 'ko("Speed", "속도")', 'ko("Keep going", "계속 가기")',
-			'ko("Loop", "반복")', 'ko("Delete path", "경로 삭제")', "faceTravel"].every((token) => editor.includes(token));
+		const points = strokeToPathPoints(dogLeg, simplifyStroke);
+		const first = points[0];
+		const last = points[points.length - 1];
+		return Math.abs(first.x - dogLeg[0].x) < 1e-9 && Math.abs(last.z - dogLeg[dogLeg.length - 1].z) < 1e-9;
 	})(),
 );
+ok("a stroke that is not a stroke yields nothing", strokeToPathPoints([{ x: 0, z: 0 }], simplifyStroke).length === 0);
+ok("stroke points come in floor form, height authored later", strokeToPathPoints(dogLeg, simplifyStroke).every((point) => point.y === 0));
+
+/* --- prop motion is its own surface -------------------------------------- */
+
+const timelineSource = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+const motionSource = readFileSync(new URL("../src/object-motion.jsx", import.meta.url), "utf8");
+
+ok("a prop's motion has its own panel", motionSource.includes("export function ObjectMotionPanel("));
+ok("the bottom window offers it as its own tab", appSource.includes('bottomTab === "object"') && appSource.includes('ko("Prop Motion", "소품 이동")'));
 ok(
-	"the inspector no longer hosts the path controls",
-	!appSource.includes('ko("Travel path", "이동 경로")') && appSource.includes("pathObject={"),
+	"the performer's lanes are nowhere on the prop's surface",
+	!/Prompts|Full-Body|2D Root|Shots/.test(motionSource),
 );
+ok(
+	"the Animation strip is back to performer and camera only",
+	!timelineSource.includes("ObjectPathEditor") && !timelineSource.includes("pathObject"),
+);
+ok("the inspector still does not host the path controls", !appSource.includes('ko("Travel path", "이동 경로")'));
+ok("the prop panel carries the route controls", ["Draw path", "Speed", "Keep going", "Loop", "Delete path"].every((label) => motionSource.includes(label)));
+ok("the prop panel shows travel on the take's clock", motionSource.includes("objmo-lane") && motionSource.includes("objmo-playhead"));
 
 /* --- mid-path points ------------------------------------------------------- */
 
@@ -153,14 +180,7 @@ ok(
 	"a selected point owns Delete, so the prop survives the press",
 	appSource.includes("if (pathPointIndex != null) return;"),
 );
-ok(
-	"one subject editor at a time: the camera bar stands down for a selected prop",
-	timelineSource.includes("{selectedCameraShot && !pathObject && ("),
-);
-ok(
-	"the strip labels which subject a row edits",
-	timelineSource.includes('ko("PROP", "소품")') && timelineSource.includes('ko("CAMERA", "카메라")'),
-);
+ok("the prop panel names its subject", motionSource.includes('ko("PROP", "소품")'));
 
 /* --- the same gesture on the board it was drawn on -------------------------- */
 
@@ -175,9 +195,8 @@ ok(
 	appSource.includes("{ ...point, x: floor.x, z: floor.z }"),
 );
 ok(
-	"the strip teaches both gestures instead of leaving them to be found",
-	timelineSource.includes("tl-path-hint") &&
-	timelineSource.includes("선을 더블클릭하면 점 추가"),
+	"the panel teaches both gestures instead of leaving them to be found",
+	motionSource.includes("선을 더블클릭하면 점 추가") && motionSource.includes("Delete로 삭제"),
 );
 
 console.log(failures === 0 ? "all object-path checks PASS" : `${failures} FAILURES`);

@@ -150,4 +150,37 @@ export function objectTransformAt(object, frame, take = {}) {
 	};
 }
 
-export { MAX_PATH_POINTS, MAX_HEIGHT as MAX_PATH_HEIGHT };
+/**
+ * A drawn stroke becomes the FEWEST points that still carry its shape.
+ *
+ * The rail wants fidelity to the drawn curve; a travel route does not. A route
+ * is a plan the operator then adjusts point by point, and a stroke that lands
+ * twenty dots on the floor is a route nobody can grab. So this simplifies
+ * coarsely and, if the shape is still busy, keeps coarsening until the count
+ * fits under the ceiling: a straight drag gives two points, a dog-leg three,
+ * and anything more elaborate stays inside a handful the hand can manage.
+ * Points are added deliberately afterwards, by double-clicking the line.
+ */
+const STROKE_MAX_POINTS = 5;
+
+export function strokeToPathPoints(stroke, simplify, { maxPoints = STROKE_MAX_POINTS, epsilon = 0.55 } = {}) {
+	if (!stroke || stroke.length < 2) return [];
+	let points = simplify(stroke, epsilon);
+	// Escalate rather than pick a single magic epsilon: the right coarseness
+	// depends on how big the drawn route is, which only the stroke knows.
+	for (let step = 0; step < 12 && points.length > maxPoints; step += 1) {
+		epsilon *= 1.8;
+		points = simplify(stroke, epsilon);
+	}
+	if (points.length > maxPoints) {
+		// A pathological stroke (every sample a corner) still ends bounded:
+		// keep the ends and spread the rest evenly along the drawn order.
+		const picked = [points[0]];
+		for (let i = 1; i < maxPoints - 1; i += 1) picked.push(points[Math.round((i * (points.length - 1)) / (maxPoints - 1))]);
+		picked.push(points[points.length - 1]);
+		points = picked;
+	}
+	return points.map((point) => ({ x: point.x, y: 0, z: point.z }));
+}
+
+export { MAX_PATH_POINTS, MAX_HEIGHT as MAX_PATH_HEIGHT, STROKE_MAX_POINTS };
