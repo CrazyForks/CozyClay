@@ -234,5 +234,13 @@ ok("cuts are visible affordances, not hidden gestures",
 ok("filling the take whispers instead of shouting", cssSource.includes(".objmo-travel.fills") && cssSource.includes("border-style: dashed"));
 ok("the travel bar states its duration", travelTrackSource.includes("seconds.toFixed(1)"));
 
+ok("the speed graph never display-clamps: the axis follows the data",
+	timelineSource.includes("GRAPH_MIN_SCALE") &&
+	!timelineSource.includes("Math.min(value, GRAPH_MAX_SCALE)") &&
+	timelineSource.includes("envelopePeak"));
+ok("the axis never shrinks under the pointer mid-drag",
+	timelineSource.includes("setDragPeak((peak) => Math.max(peak, at.value))") &&
+	timelineSource.includes("setDragPeak(0)"));
+
 console.log(failures === 0 ? "all object-path checks PASS" : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

@@ -95,10 +95,13 @@ function signedValue(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}`;
 }
 
-/** y-axis ceiling of the speed graph, in multiples of the average speed. */
-const GRAPH_MAX_SCALE = 3;
+/** The y-axis follows the data — a display clamp would flatten a real curve
+ * into a ceiling plateau and break the visible area, which is the whole
+ * point of the editor. Floor at 2x average so a flat route keeps sane
+ * proportions; headroom 15% so the peak never kisses the frame. */
+const GRAPH_MIN_SCALE = 2;
 
-const sgY = (value) => 1 - Math.min(value, GRAPH_MAX_SCALE) / GRAPH_MAX_SCALE;
+const sgY = (value, yMax) => 1 - Math.min(value, yMax) / yMax;
 
 /**
  * The speed editor, designed as its own instrument rather than a lane
@@ -133,6 +136,12 @@ function SpeedGraph({
 	const span = Math.max(1e-6, Math.min(1, windowFrac));
 	const origin = Math.max(0, Math.min(1, windowStart));
 	const hasCurve = !timingIsFlat(timing);
+	// While dragging, the axis may need to grow past the envelope's own peak;
+	// it never shrinks mid-gesture (that would move the curve out from under
+	// the pointer), and settles back to the data on release.
+	const [dragPeak, setDragPeak] = useState(0);
+	const envelopePeak = useMemo(() => Math.max(1, ...shown.envelopes.flat()), [shown]);
+	const yMax = Math.max(GRAPH_MIN_SCALE, Math.ceil(Math.max(envelopePeak, dragPeak) * 1.15 * 2) / 2);
 
 	const segments = useMemo(() => {
 		const bounds = [{ t: 0, d: 0 }, ...shown.cuts, { t: 1, d: 1 }];
@@ -141,18 +150,18 @@ function SpeedGraph({
 			const b = bounds[index + 1].t;
 			const points = envelope.map((value, i) => {
 				const x = origin + (a + (b - a) * (i / (envelope.length - 1))) * span;
-				return `${x.toFixed(4)},${sgY(value).toFixed(4)}`;
+				return `${x.toFixed(4)},${sgY(value, yMax).toFixed(4)}`;
 			});
 			return { key: index, a, b, line: points.join(" ") };
 		});
-	}, [shown, span, origin]);
+	}, [shown, span, origin, yMax]);
 
 	const locate = (event) => {
 		const rect = svgRef.current?.getBoundingClientRect();
 		if (!rect || rect.width < 2) return null;
 		const takeX = (event.clientX - rect.left) / rect.width;
 		const u = Math.min(1, Math.max(0, (takeX - origin) / span));
-		const value = Math.max(0, (1 - (event.clientY - rect.top) / rect.height) * GRAPH_MAX_SCALE);
+		const value = Math.max(0, (1 - (event.clientY - rect.top) / rect.height) * yMax);
 		return { takeX, u, value };
 	};
 
@@ -177,6 +186,7 @@ function SpeedGraph({
 		const radius = Math.min(0.45, 0.1 / Math.max(0.05, b - a));
 		const envelopes = shown.envelopes.map((envelope, i) => (i === index ? envelopeDrag(envelope, local, at.value, radius) : envelope));
 		onChange?.({ ...shown, envelopes }, { dragging: true });
+		setDragPeak((peak) => Math.max(peak, at.value));
 		setReadout({ x: at.takeX, value: at.value });
 	};
 
@@ -207,6 +217,7 @@ function SpeedGraph({
 		const drag = dragRef.current;
 		dragRef.current = null;
 		setReadout(null);
+		setDragPeak(0);
 		if (drag?.recorded) onGestureEnd?.();
 	};
 	const addCutAt = (u) => {
@@ -245,7 +256,7 @@ function SpeedGraph({
 		return () => window.removeEventListener("keydown", onKey, true);
 	});
 
-	const avgY = sgY(1);
+	const avgY = sgY(1, yMax);
 	return (
 		<div className="sg">
 			<header className="sg-head">
@@ -330,7 +341,7 @@ function SpeedGraph({
 					})}
 					<line className="sg-playhead" x1={playheadTakeX} y1="0" x2={playheadTakeX} y2="1" />
 				</svg>
-				<span className="sg-scale-top">{Math.round(GRAPH_MAX_SCALE * averageSpeed * 10) / 10}</span>
+				<span className="sg-scale-top">{Math.round(yMax * averageSpeed * 10) / 10}</span>
 				<span className="sg-scale-avg" style={{ top: `${avgY * 100}%` }}>{averageSpeed.toFixed(1)}</span>
 				<span className="sg-scale-zero">0</span>
 				{readout && (
