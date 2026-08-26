@@ -3123,6 +3123,43 @@ input[type=range]::-moz-range-thumb {
 }
 .sg-cam .sg-readout { background: #4a3d6e; }
 
+/* The dolly's curve sits INSIDE its shot card, under the Rail Follow ribbon:
+   compact, full-width within the card, same instrument in a tighter frame. */
+/* The band sits above the Rail Follow ribbon and the key strip; the card
+   carries the extra padding so nothing overlaps. */
+.tl-shot-block.has-dolly { padding-bottom: 124px; }
+
+.sg-shot {
+	position: absolute;
+	left: 12px;
+	right: 12px;
+	bottom: 28px;
+	height: 92px;
+	pointer-events: auto;
+}
+
+.sg-shot .sg-head {
+	padding: 1px 6px;
+	font-size: 9.5px;
+}
+
+.sg-shot .sg-head .tl-path-hint { display: none; }
+
+.sg-shot .sg-body {
+	margin: 0 4px 2px;
+	border-color: rgba(154, 123, 212, .3);
+	background: #120f17;
+}
+
+.sg-shot .sg-line { stroke: #b9a1e8; }
+.sg-shot .sg-axis, .sg-shot .sg-average { stroke: rgba(185, 161, 232, .4); }
+.sg-shot .sg-readout { background: #4a3d6e; }
+.sg-shot .sg-scale-top, .sg-shot .sg-scale-avg, .sg-shot .sg-scale-zero { color: #7d6a9e; }
+
+/* A card carrying the curve needs the room for it: ribbon + keys + graph. */
+.tl-track.shots:has(.sg-shot) { min-height: 186px; }
+
+
 
 .objmo-travel {
 	position: absolute;
@@ -6283,7 +6320,7 @@ input[type=range]::-moz-range-thumb {
 	/* The speed graph is an instrument, not a lane: when the strip carries one
 	   (a routed prop, or a rail shot's dolly curve), the bottom window grows
 	   to show it whole instead of scrolling it under the fold. */
-	.timeline:not(.collapsed):has(.tl-track.sg-row) {
+	.timeline:not(.collapsed):has(.tl-track.sg-row), .timeline:not(.collapsed):has(.sg-shot) {
 		height: max(calc(var(--timeline-height) + 96px), 300px);
 		max-height: none;
 	}

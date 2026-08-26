@@ -3,6 +3,7 @@ import { frameFromClientX, motionTrimRange, promptMoveStartFrame, shotBlockGeome
 import { motionSegmentSpeedForFrames } from "./motion-edit.js";
 import { promptResizeFrame } from "./timeline-resize.js";
 import { ko, isKo } from "../locale.js";
+import { buildRail } from "../camera-follow.js";
 import { pathMetrics } from "../object-path.js";
 import { flatTiming, timingIsFlat, envelopeDrag, insertCut, removeCut, CUT_MIN_GAP } from "../speed-envelope.js";
 
@@ -1371,7 +1372,17 @@ export default function Timeline({
 	// The dolly's speed curve edits as a DRAFT and commits once on release:
 	// every commit rebuilds the whole camera track and records an undo entry,
 	// so streaming per-pointer-move commits would jank and spam history.
-	const [dollyDraft, setDollyDraft] = useState(null);
+	const railLengthByShot = useMemo(() => {
+		const map = new Map();
+		for (const shot of shots) {
+			const rail = Array.isArray(shot.camera?.cameraRail) && shot.camera.cameraRail.length >= 2
+				? buildRail(shot.camera.cameraRail)
+				: null;
+			if (rail) map.set(shot.id, rail.length);
+		}
+		return map;
+	}, [shots]);
+	const [dollyDraft, setDollyDraft] = useState(null); // { shotId, timing }
 	const dollyDraftRef = useRef(null);
 	useEffect(() => {
 		setDollyDraft(null);
@@ -1719,7 +1730,7 @@ export default function Timeline({
 										return (
 											<div
 												key={shot.id}
-												className={"tl-shot-block" + (index === cameraBlockIdx ? " selected" : "") + (index === activeShotIdx ? " active" : "") + (movingShotId === shot.id ? " moving" : "")}
+												className={"tl-shot-block" + (index === cameraBlockIdx ? " selected" : "") + (index === activeShotIdx ? " active" : "") + (movingShotId === shot.id ? " moving" : "") + (!railOff && railRange && railLengthByShot.has(shot.id) ? " has-dolly" : "")}
 												style={{ "--tl-f-start": geometry.startPct, "--tl-f-end": geometry.endPct }}
 												title={isKo ? `${shot.name} · ${shot.startFrame}–${lastFrame}프레임 · 드래그해 순서 이동, 양끝으로 컷 조절, 아래 빈 줄을 클릭해 카메라 키 추가` : `${shot.name} · frames ${shot.startFrame}–${lastFrame} · drag to reorder, trim cuts at either edge, click the empty lower strip to add a camera key`}
 												onPointerDown={(e) => beginShotMove(e, shot, index)}
@@ -1830,7 +1841,38 @@ export default function Timeline({
 														))}
 													</div>
 												)}
-												{/* The card body owns selection/reorder; this narrow empty strip
+											{/* The dolly's speed curve lives IN the shot card, under the Rail
+											    Follow ribbon it shapes: a floating row below the lanes pushed the
+											    editor away from the thing it edits. One instrument per shot,
+											    time across the card's own span. */}
+											{!railOff && railRange && railLengthByShot.has(shot.id) && (
+												<div
+													className="sg-shot"
+													onPointerDown={(event) => event.stopPropagation()}
+													onClick={(event) => event.stopPropagation()}
+												>
+													<SpeedGraph
+														timing={dollyDraft?.shotId === shot.id ? dollyDraft.timing : shot.camera?.dollyTiming ?? null}
+														windowStart={durationFrames > 1 ? railRange.start / (durationFrames - 1) : 0}
+														windowFrac={durationFrames > 1 ? Math.max(1, railRange.end - railRange.start) / (durationFrames - 1) : 1}
+														frame={Math.min(Math.max(0, localProgress), Math.max(0, durationFrames - 1))}
+														frameCount={durationFrames}
+														averageSpeed={railLengthByShot.get(shot.id) / Math.max(1 / fps, (railRange.end - railRange.start) / fps)}
+														conserve
+														onChange={(timing) => {
+															dollyDraftRef.current = { shotId: shot.id, timing };
+															setDollyDraft({ shotId: shot.id, timing });
+														}}
+														onGestureEnd={() => {
+															const draft = dollyDraftRef.current;
+															dollyDraftRef.current = null;
+															setDollyDraft(null);
+															if (draft) handlers.current.onCameraBlockChange?.({ dollyTiming: timingIsFlat(draft.timing) ? null : draft.timing }, draft.shotId);
+														}}
+													/>
+												</div>
+											)}
+											{/* The card body owns selection/reorder; this narrow empty strip
 												    owns keying. Keeping it a button excludes it from beginShotMove,
 												    so one gesture cannot both reorder a shot and author a key. */}
 												<button
@@ -1994,32 +2036,6 @@ export default function Timeline({
 							</div>
 						))}
 
-						{!pathObject && selectedCameraShot && cameraBlockMode(selectedCameraShot) === "rail" && cameraRailLength != null && (
-							<div className="tl-track sg-row sg-cam">
-								<span className="tl-track-label">{ko("Dolly speed", "돌리 속도")}</span>
-								<div className="tl-lane sg-lane">
-									<SpeedGraph
-										timing={dollyDraft ?? selectedCameraShot.camera?.dollyTiming ?? null}
-										windowStart={frameCount > 1 ? selectedCameraShot.startFrame / (frameCount - 1) : 0}
-										windowFrac={frameCount > 1 ? (selectedCameraShot.endFrame - selectedCameraShot.startFrame) / (frameCount - 1) : 1}
-										frame={frame}
-										frameCount={frameCount}
-										averageSpeed={cameraRailLength / Math.max(1 / fps, (selectedCameraShot.endFrame - selectedCameraShot.startFrame) / fps)}
-										conserve
-										onChange={(timing) => {
-											dollyDraftRef.current = timing;
-											setDollyDraft(timing);
-										}}
-										onGestureEnd={() => {
-											const draft = dollyDraftRef.current;
-											dollyDraftRef.current = null;
-											setDollyDraft(null);
-											if (draft) handlers.current.onCameraBlockChange?.({ dollyTiming: timingIsFlat(draft) ? null : draft });
-										}}
-									/>
-								</div>
-							</div>
-						)}
 						<div className="tl-playhead" style={{ "--tl-f": framePct(frame, displayFrameCount) }} aria-hidden="true" />
 						</div>
 					</div>

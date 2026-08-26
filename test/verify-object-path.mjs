@@ -242,5 +242,10 @@ ok("the axis never shrinks under the pointer mid-drag",
 	timelineSource.includes("setDragPeak((peak) => Math.max(peak, at.value))") &&
 	timelineSource.includes("setDragPeak(0)"));
 
+ok("the dolly graph lives inside its shot card, not a floating row",
+	timelineSource.includes("sg-shot") &&
+	timelineSource.includes("railLengthByShot") &&
+	!timelineSource.includes("sg-cam .sg-lane"));
+
 console.log(failures === 0 ? "all object-path checks PASS" : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

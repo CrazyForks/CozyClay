@@ -10076,12 +10076,14 @@ function resizePromptClip(id, edge, rawFrame) {
 						setTlFrame(selected.startFrame);
 						setSelectedHierarchyId("camera");
 					}}
-					onCameraBlockChange={(patch) => {
+					onCameraBlockChange={(patch, shotId) => {
 						if (patch.mode === "follow") syncActiveCameraFraming();
 						const nextPatch = patch.mode === "rail" && activeCamera.railFollow?.mode === "off"
 							? { ...patch, railFollow: defaultRailRange(activeShotDuration) }
 							: patch;
-						changeActiveCamera(nextPatch);
+						// The embedded dolly graph edits the shot it sits in; the
+						// camera bar above edits the selected one.
+						changeActiveCamera(nextPatch, shotId);
 						if (patch.mode === "follow" && !motion) {
 							setToast(ko(
 								"Follow rides the subject's motion — without a loaded motion the camera composes a static frame",
