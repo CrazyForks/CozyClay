@@ -6272,6 +6272,18 @@ input[type=range]::-moz-range-thumb {
 	animation: asset-skeleton 1.1s ease-in-out infinite alternate;
 }
 
+/* Inline button rows in the inspector (travel-path tools, mode toggles). */
+.inspector-row-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 2px 0 8px;
+}
+.inspector-row-buttons .btn {
+	flex: 1 1 auto;
+	min-width: 84px;
+}
+
 /* A card whose bytes failed to decode: visible so it can be deleted from
    Manage storage, clearly marked so nobody drags a broken image on stage. */
 .asset-card-failed {

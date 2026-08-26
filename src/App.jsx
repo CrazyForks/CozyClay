@@ -141,6 +141,7 @@ import AddObjectMenu from "./object-catalog.jsx";
 import ResultModal from "./result-modal.jsx";
 import AnalyticsToggle from "./analytics-toggle.jsx";
 import { PWA_UPDATE_EVENT } from "./pwa.js";
+import { createObjectPath, objectTransformAt, pathMetrics } from "./object-path.js";
 import LocaleToggle from "./locale-toggle.jsx";
 import { bucketMs, track, trackActivation } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
@@ -1416,6 +1417,198 @@ function GizmoLabel({ position, text, camRef }) {
 		>
 			{text}
 		</Text>
+	);
+}
+
+/**
+ * A scene object's travel path in the 3D view: the route as a line, its points
+ * as grabbable dots, and a 3-axis gizmo on the selected dot. The grammar is
+ * the crane's on purpose — Top-View draws the floor route, the scene lifts and
+ * nudges the individual points, so a plane can climb along its own path.
+ */
+function ObjectPathHandles({ path, selectedIndex, enabled, paneRef, camRef, onSelect, onChangePoints, onDragStart, onDragEnd }) {
+	const { gl } = useThree();
+	const invalidate = useThree((state) => state.invalidate);
+	const groupRef = useRef(null);
+	const gizmoRef = useRef(null);
+	const dragRef = useRef(null);
+	const stateRef = useRef(null);
+	const [dragging, setDragging] = useState(false);
+	stateRef.current = { path, selectedIndex, enabled, onSelect, onChangePoints, onDragStart, onDragEnd };
+	useFrame(() => {
+		const gizmo = gizmoRef.current;
+		const camera = camRef.current;
+		if (!gizmo || !camera) return;
+		const world = gizmo.getWorldPosition(new THREE.Vector3());
+		gizmo.scale.setScalar(Math.max(0.35, camera.getWorldPosition(new THREE.Vector3()).distanceTo(world) * CRANE_GIZMO_SCALE));
+	});
+	useEffect(() => {
+		groupRef.current?.traverse((node) => node.layers?.set(GIZMO_LAYER));
+		invalidate();
+	}, [path, selectedIndex, enabled, dragging, invalidate]);
+	useEffect(() => {
+		if (!enabled) return undefined;
+		const raycaster = new THREE.Raycaster();
+		raycaster.layers.set(GIZMO_LAYER);
+		const rayFrom = (event) => {
+			const pane = paneRef.current;
+			const camera = camRef.current;
+			if (!pane || !camera) return null;
+			const bounds = pane.getBoundingClientRect();
+			if (bounds.width < 2 || bounds.height < 2) return null;
+			const ndc = new THREE.Vector2(
+				((event.clientX - bounds.left) / bounds.width) * 2 - 1,
+				-((event.clientY - bounds.top) / bounds.height) * 2 + 1,
+			);
+			if (Math.abs(ndc.x) > 1 || Math.abs(ndc.y) > 1) return null;
+			camera.updateMatrixWorld();
+			raycaster.setFromCamera(ndc, camera);
+			return raycaster;
+		};
+		const onDown = (event) => {
+			const s = stateRef.current;
+			if (!s.enabled || !s.path || event.button !== 0) return;
+			if (!groupRef.current || !rayFrom(event)) return;
+			const hits = raycaster.intersectObjects(groupRef.current.children, true);
+			// The axis gizmo outranks the dots, exactly like the crane's.
+			const axisHit = hits.find((entry) => entry.object.userData?.pathAxis);
+			if (axisHit && s.selectedIndex != null && s.path.points[s.selectedIndex]) {
+				const axis = axisHit.object.userData.pathAxis;
+				const point = s.path.points[s.selectedIndex];
+				const origin = new THREE.Vector3(point.x, point.y, point.z);
+				const dir = CRANE_AXES.find((entry) => entry.axis === axis).dir;
+				const eye = new THREE.Vector3();
+				camRef.current.getWorldDirection(eye);
+				const normal = dir.clone().cross(eye).cross(dir);
+				if (normal.lengthSq() < 1e-6) return;
+				normal.normalize();
+				const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
+				const hitStart = new THREE.Vector3();
+				if (!raycaster.ray.intersectPlane(plane, hitStart)) return;
+				event.stopImmediatePropagation();
+				event.preventDefault();
+				dragRef.current = { axis, index: s.selectedIndex, dir: dir.clone(), plane, hitStart, start: { ...point }, recorded: false };
+				setDragging(true);
+				invalidate();
+				return;
+			}
+			const hit = hits.find((entry) => entry.object.userData?.pathIndex !== undefined);
+			if (!hit) return;
+			event.stopImmediatePropagation();
+			event.preventDefault();
+			const index = hit.object.userData.pathIndex;
+			s.onSelect(index);
+			// A press on the dot itself moves it freely on the camera plane —
+			// the sun puck's grammar, so a point can be nudged without aiming.
+			const point = s.path.points[index];
+			const origin = new THREE.Vector3(point.x, point.y, point.z);
+			const facing = new THREE.Vector3();
+			camRef.current.getWorldDirection(facing);
+			const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(facing, origin);
+			const hitStart = new THREE.Vector3();
+			if (!raycaster.ray.intersectPlane(plane, hitStart)) return;
+			dragRef.current = { axis: null, index, plane, hitStart, start: { ...point }, recorded: false };
+			setDragging(true);
+			invalidate();
+		};
+		const onMove = (event) => {
+			const s = stateRef.current;
+			const drag = dragRef.current;
+			if (!drag || !s.enabled || !s.path) return;
+			if (!rayFrom(event)) return;
+			const world = new THREE.Vector3();
+			if (!raycaster.ray.intersectPlane(drag.plane, world)) return;
+			if (!drag.recorded) {
+				s.onDragStart?.();
+				drag.recorded = true;
+			}
+			const points = s.path.points.map((entry) => ({ ...entry }));
+			if (drag.axis) {
+				const travel = world.clone().sub(drag.hitStart).dot(drag.dir);
+				const axis = drag.axis;
+				points[drag.index][axis] = drag.start[axis] + travel;
+			} else {
+				points[drag.index] = {
+					x: drag.start.x + (world.x - drag.hitStart.x),
+					y: drag.start.y + (world.y - drag.hitStart.y),
+					z: drag.start.z + (world.z - drag.hitStart.z),
+				};
+			}
+			if (points[drag.index].y < 0) points[drag.index].y = 0;
+			s.onChangePoints(points, { dragging: true });
+			invalidate();
+		};
+		const onUp = () => {
+			const drag = dragRef.current;
+			dragRef.current = null;
+			setDragging(false);
+			if (drag?.recorded) stateRef.current.onDragEnd?.();
+			invalidate();
+		};
+		const el = gl.domElement;
+		el.addEventListener("pointerdown", onDown);
+		window.addEventListener("pointermove", onMove, true);
+		window.addEventListener("pointerup", onUp, true);
+		return () => {
+			el.removeEventListener("pointerdown", onDown);
+			window.removeEventListener("pointermove", onMove, true);
+			window.removeEventListener("pointerup", onUp, true);
+		};
+		// paneRef/camRef are stable; handlers read live state through stateRef
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [enabled, gl, invalidate]);
+	const linePoints = useMemo(
+		() => (path?.points ?? []).map((point) => [point.x, point.y + 0.02, point.z]),
+		[path],
+	);
+	if (!enabled || !path || linePoints.length < 2) return null;
+	const selected = selectedIndex != null ? path.points[selectedIndex] : null;
+	return (
+		<group ref={groupRef}>
+			<Line points={linePoints} color="#6fcf97" lineWidth={2.5} transparent opacity={0.9} />
+			{selected && (
+				<group ref={gizmoRef} position={[selected.x, selected.y, selected.z]} renderOrder={999}>
+					{CRANE_AXES.map(({ axis, dir, color }) => {
+						const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+						return (
+							<group key={axis} quaternion={quat}>
+								<mesh position={[0, CRANE_ARROW_LEN / 2 + 0.08, 0]} renderOrder={999}>
+									<cylinderGeometry args={[0.016, 0.016, CRANE_ARROW_LEN, 8]} />
+									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.2} toneMapped={false} depthTest={false} depthWrite={false} transparent opacity={0.95} />
+								</mesh>
+								<mesh position={[0, CRANE_ARROW_LEN + 0.08 + 0.07, 0]} renderOrder={999}>
+									<coneGeometry args={[0.05, 0.14, 14]} />
+									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.2} toneMapped={false} depthTest={false} depthWrite={false} transparent opacity={0.95} />
+								</mesh>
+								<mesh position={[0, (CRANE_ARROW_LEN + 0.14) / 2 + 0.08, 0]} userData={{ pathAxis: axis }}>
+									<cylinderGeometry args={[0.09, 0.09, CRANE_ARROW_LEN + 0.14, 8]} />
+									<meshBasicMaterial visible={false} />
+								</mesh>
+							</group>
+						);
+					})}
+				</group>
+			)}
+			{path.points.map((point, index) => (
+				<group key={`${index}:${path.points.length}`} position={[point.x, point.y, point.z]}>
+					<mesh userData={{ pathIndex: index }} renderOrder={998}>
+						<sphereGeometry args={[0.075, 14, 10]} />
+						<meshBasicMaterial color={index === selectedIndex ? "#ffb454" : "#6fcf97"} depthTest={false} transparent opacity={0.95} />
+					</mesh>
+					<mesh userData={{ pathIndex: index }}>
+						<sphereGeometry args={[0.22, 10, 8]} />
+						<meshBasicMaterial visible={false} />
+					</mesh>
+				</group>
+			))}
+			{dragging && selected && (
+				<GizmoLabel
+					position={[selected.x, selected.y + 0.42, selected.z]}
+					text={`x ${selected.x.toFixed(1)}  y ${selected.y.toFixed(1)}  z ${selected.z.toFixed(1)}`}
+					camRef={camRef}
+				/>
+			)}
+		</group>
 	);
 }
 
@@ -3380,6 +3573,18 @@ globalThis.playMode = centerTab === "play";
 	// motion share one time axis; off frees the camera while both stay set.
 	const [moveFollow, setMoveFollow] = useState(true);
 	const [railDraw, setRailDraw] = useState(false);
+	// Object travel-path drawing: the same Top-View stroke gesture as the rail,
+	// aimed at the selected object instead of the shot camera.
+	const [pathDraw, setPathDraw] = useState(false);
+	const [pathPointIndex, setPathPointIndex] = useState(null);
+	const pathDragTokenRef = useRef(null);
+	// The frame props follow. Live playback keeps it at the playhead; the
+	// offscreen export drives it per captured frame without re-rendering.
+	const propFrameRef = useRef(0);
+	/* Objects with a travel path stand where their path puts them at the
+	 * playhead. Authoring still edits the RECORD (the path and its start
+	 * pose); this derived list is what the scene, the plan board and the
+	 * export all draw, so preview and recording can never disagree. */
 	// Which crane height mark the scene dots have selected; the timeline's
 	// Point height input edits this one. Reset lives after activeCamera below.
 	const [craneSelectedIndex, setCraneSelectedIndex] = useState(null);
@@ -3652,6 +3857,20 @@ globalThis.playMode = centerTab === "play";
 	const renderActive = useRenderActivity(tlPlaying || movePlaying);
 	const [tlFrameCount, setTlFrameCount] = useState(startupShotState?.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS); // the clip length on the production clock
 	const [tlFps, setTlFps] = useState(TIMELINE_FPS);
+	// Keep the imperative frame in step with the playhead for live playback;
+	// the export overwrites it per captured frame and restores nothing, which
+	// is correct — the next render puts it back.
+	propFrameRef.current = tlFrame;
+	const animatedSceneObjects = useMemo(() => {
+		if (!sceneObjects.some((object) => object.path)) return sceneObjects;
+		const take = { frameCount: tlFrameCount, fps: tlFps };
+		return sceneObjects.map((object) => {
+			const at = objectTransformAt(object, tlFrame, take);
+			if (!at) return object;
+			return { ...object, x: at.x, y: at.y, z: at.z, rot: at.rot ?? object.rot };
+		});
+	}, [sceneObjects, tlFrame, tlFrameCount, tlFps]);
+
 	const activeShotIdx = shotIndexAtFrame(shots, tlFrame);
 	const activeShot = shots[activeShotIdx] ?? null;
 	const cameraKeys = activeShot?.cameraKeys ?? [];
@@ -5044,6 +5263,9 @@ globalThis.playMode = centerTab === "play";
 	tlFrameRef.current = tlFrame;
 
 	function applyExportFrame(frame) {
+		// Props on a travel path read this ref inside their own useFrame, so a
+		// recorded frame shows the same placement the preview would.
+		propFrameRef.current = frame;
 		for (const entry of characters) {
 			const clip = entry.id === activeChar.id ? motion : entry.sessionMotion;
 			const rig = rigs[entry.id];
@@ -7782,7 +8004,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								onChange={(patch) => setKeyLight((current) => createKeyLight({ ...current, ...patch }))}
 							/>
 							<Room />
-							<SetProps objects={sceneObjects} selectedId={selectedSceneObjectId} />
+							<SetProps objects={animatedSceneObjects} selectedId={selectedSceneObjectId} frameRef={propFrameRef} take={{ frameCount: tlFrameCount, fps: tlFps }} />
 
 							<PerspectiveCamera
 								ref={shotCamRef}
@@ -7981,13 +8203,15 @@ function resizePromptClip(id, edge, rawFrame) {
 									store.settle();
 									setSelectedHierarchyId(id.startsWith("object:") ? id : id === "cam" ? "camera" : charKeyToHierarchyId(id));
 								}}
-								sceneObjects={sceneObjects}
+								sceneObjects={animatedSceneObjects}
 								selectedSceneObjectId={selectedSceneObjectId}
 								onMoveSceneObject={changeSceneObject}
 								onObjectMoveStart={beginSceneTransaction}
 								onObjectMoveEnd={endSceneTransaction}
 								cameraRailPoints={railCurve ? railCurve.points : null}
 								railDraw={railDraw}
+								pathDraw={pathDraw}
+								objectPathPoints={selectedSceneObject?.path?.points ?? null}
 								subjectTrack={motion ? subjectTrack : null}
 								keyLight={keyLight}
 								onRailStroke={(stroke) => {
@@ -7997,6 +8221,22 @@ function resizePromptClip(id, edge, rawFrame) {
 									setRailDraw(false);
 									const curve = buildRail(simplified);
 									setToast(isKo ? `카메라 레일 완성 — ${curve ? curve.length.toFixed(1) : "?"} m, 제어점 ${simplified.length}개` : `Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
+								}}
+								onPathStroke={(stroke) => {
+									if (!selectedSceneObject) return;
+									const simplified = simplifyStroke(stroke, 0.12);
+									if (simplified.length < 2) return;
+									// The stroke is a floor route; height is authored afterwards
+									// by dragging the path's points in the scene.
+									const points = simplified.map((point) => ({ x: point.x, y: 0, z: point.z }));
+									const token = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
+									changeSceneObject(selectedSceneObject.id, { path: { ...(selectedSceneObject.path ?? {}), points } }, token);
+									endSceneTransaction(token, { commit: true });
+									setPathDraw(false);
+									const metrics = pathMetrics(createObjectPath({ points }));
+									setToast(isKo
+										? `이동 경로 완성 — ${metrics.length.toFixed(1)} m, 점 ${points.length}개`
+										: `Travel path drawn — ${metrics.length.toFixed(1)} m, ${points.length} points`);
 								}}
 								onCameraChange={commitManualCameraFraming}
 							/>
@@ -8035,6 +8275,25 @@ function resizePromptClip(id, edge, rawFrame) {
 									crane={activeCamera.craneHeight}
 								/>
 							)}
+							<ObjectPathHandles
+								path={selectedSceneObject?.path ?? null}
+								selectedIndex={pathPointIndex}
+								enabled={centerTab === "scene" && !lookThroughShot && !ikMode && !posing && !playMode && !!selectedSceneObject?.path}
+								paneRef={mainPaneRef}
+								camRef={editorCamRef}
+								onSelect={setPathPointIndex}
+								onChangePoints={(points) => {
+									if (!selectedSceneObject) return;
+									changeSceneObject(selectedSceneObject.id, { path: { ...selectedSceneObject.path, points } });
+								}}
+								onDragStart={() => {
+									pathDragTokenRef.current = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
+								}}
+								onDragEnd={() => {
+									if (pathDragTokenRef.current) endSceneTransaction(pathDragTokenRef.current, { commit: true });
+									pathDragTokenRef.current = null;
+								}}
+							/>
 							<CraneHandles
 								rail={railCurve}
 								crane={activeCamera.craneHeight}
@@ -9100,6 +9359,73 @@ function resizePromptClip(id, edge, rawFrame) {
 											))}
 									</select>
 								</Field>
+								{/* Travel path: drawn on the Top-View floor like a camera rail,
+								    refined in the scene by dragging its points. */}
+								<Field label={ko("Travel path", "이동 경로")}>
+									<div className="inspector-row-buttons">
+										<button
+											type="button"
+											className={"btn" + (pathDraw ? " active" : "")}
+											onClick={() => {
+												setPathDraw((current) => !current);
+												if (!pathDraw) setRailDraw(false);
+												setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
+											}}
+											title={ko("Draw a route on the Top-View floor", "위에서 본 지도에 이동 경로를 그립니다")}
+										>
+											{pathDraw ? ko("Drawing…", "그리는 중…") : selectedSceneObject.path ? ko("Redraw path", "경로 다시 그리기") : ko("Draw path", "경로 그리기")}
+										</button>
+										{selectedSceneObject.path && (
+											<button
+												type="button"
+												className="btn ghost"
+												onClick={() => {
+													const token = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
+													changeSceneObject(selectedSceneObject.id, { path: null }, token);
+													endSceneTransaction(token, { commit: true });
+												}}
+											>
+												{ko("Clear", "지우기")}
+											</button>
+										)}
+									</div>
+								</Field>
+								{selectedSceneObject.path && (
+									<>
+										<Slider
+											label={ko("Speed (m/s, 0 = fill take)", "속도 (m/s, 0 = 전체 길이)")}
+											min={0}
+											max={20}
+											step={0.1}
+											value={selectedSceneObject.path.speed ?? 0}
+											onChange={(speed) => changeSceneObject(selectedSceneObject.id, { path: { ...selectedSceneObject.path, speed } })}
+										/>
+										<div className="inspector-row-buttons">
+											<button
+												type="button"
+												className={"btn" + (selectedSceneObject.path.faceTravel ? " active" : "")}
+												onClick={() => changeSceneObject(selectedSceneObject.id, { path: { ...selectedSceneObject.path, faceTravel: !selectedSceneObject.path.faceTravel } })}
+											>
+												{ko("Face travel", "진행 방향 보기")}
+											</button>
+											<button
+												type="button"
+												className={"btn" + (selectedSceneObject.path.extend ? " active" : "")}
+												onClick={() => changeSceneObject(selectedSceneObject.id, { path: { ...selectedSceneObject.path, extend: !selectedSceneObject.path.extend } })}
+												title={ko("Keep going in the last direction after the path ends", "경로가 끝나도 마지막 방향으로 계속 갑니다")}
+											>
+												{ko("Keep going", "계속 가기")}
+											</button>
+											<button
+												type="button"
+												className={"btn" + (selectedSceneObject.path.loop ? " active" : "")}
+												onClick={() => changeSceneObject(selectedSceneObject.id, { path: { ...selectedSceneObject.path, loop: !selectedSceneObject.path.loop } })}
+											>
+												{ko("Loop", "반복")}
+											</button>
+										</div>
+									</>
+								)}
 								<Vector3Row
 							label={ko("Position", "위치")}
 									fields={[
