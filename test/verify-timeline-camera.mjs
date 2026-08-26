@@ -54,11 +54,11 @@ expect(
 expect("surface lays out four tracks after removing duplicate Camera row", css.includes("grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr)"));
 expect("lane gridlines are frame-based, not width-based", css.includes(".tl-grid {") && !css.includes("100% / 23"));
 expect("camera dots have a distinct violet identity", css.includes(".tl-marker.cam {") && css.includes("#a78bfa"));
-expect("Rail Follow lives inside each unified Shot block", timeline.includes("shot.camera?.railFollow") && timeline.includes('className={"tl-rail"') && !timeline.includes("name === CAMERA_LANE"));
-expect("Rail Follow keeps move, resize, keyboard and remove editing", ["beginRailMove", "beginRailResize", "onRailKeyDown", "onRailRemove"].every((name) => timeline.includes(name)));
-expect("Rail Follow callbacks target the owning shot", timeline.includes("onRailMove?.(active.shotId, next)") && app.includes("editRailSchedule(shotId"));
+expect("the Rail Follow ribbon is gone; the curve shows the window and crane dots float on the card", timeline.includes("shot.camera?.railFollow") && timeline.includes('className="tl-crane-strip"') && !timeline.includes('className={"tl-rail"') && !timeline.includes("name === CAMERA_LANE"));
+expect("no ribbon editing gestures survive in the timeline", !["beginRailMove", "beginRailResize", "onRailKeyDown", "railDragRef"].some((name) => timeline.includes(name)));
+expect("the rail schedule model still resolves per shot in the app", app.includes("resolveRailSchedule({ railFollow: camera.railFollow"));
 expect("Rail range playback is resolved per shot", app.includes("resolveRailSchedule({ railFollow: camera.railFollow") && app.includes("subjectSlice.slice(schedule.startFrame, schedule.endFrame + 1)"));
-expect("disabled Rail Follow stays visible as OFF", timeline.includes('ko("Rail Follow", "레일 팔로우")') && timeline.includes('ko("OFF", "꺼짐")') && timeline.includes('mode !== "rail"'));
+expect("the crane strip replaces the ribbon and keeps point selection", timeline.includes('className="tl-crane-strip"') && timeline.includes("onCranePointSelect?.(pointIndex, shot.id)"));
 
 expect(
 	"unified lane renders exactly one block from each shot geometry",

@@ -47,9 +47,7 @@ import {
 	RAIL_SCHEDULE_RANGE,
 	clampRailRange,
 	defaultRailRange,
-	moveRailRange,
 	railFollowForNewGeometry,
-	resizeRailRange,
 	resolveRailSchedule,
 } from "./camera-rail-schedule.js";
 import { SetProps } from "./props.jsx";
@@ -4124,18 +4122,6 @@ globalThis.playMode = centerTab === "play";
 		cameraPreviewEndRef.current = selected.endFrame;
 		setTlFrame(selected.startFrame);
 		setTlPlaying(true);
-	}
-	function editRailSchedule(shotId, edit) {
-		setShots((current) => updateStableItem(current, shotId, (shot) => {
-			const camera = createCameraBlock(shot.camera);
-			const duration = shot.endFrame - shot.startFrame + 1;
-			const resolved = resolveRailSchedule({ railFollow: camera.railFollow, cameraRail: camera.cameraRail, frameCount: duration });
-			const base = resolved.kind === RAIL_SCHEDULE_RANGE || resolved.kind === RAIL_SCHEDULE_LEGACY
-				? { startFrame: resolved.startFrame, endFrame: resolved.endFrame }
-				: defaultRailRange(duration);
-			const railFollow = base ? edit(base, duration) : null;
-			return railFollow ? { ...shot, camera: updateCameraBlock(camera, { railFollow: { mode: "range", ...railFollow } }) } : shot;
-		}, "shots"));
 	}
 	const frameCountRef = useRef(DEFAULT_DURATION_S * TIMELINE_FPS);
 	frameCountRef.current = tlFrameCount;
@@ -10099,17 +10085,6 @@ function resizePromptClip(id, edge, rawFrame) {
 					onCameraPreview={previewCameraShot}
 					onCameraRailDrawToggle={toggleCameraRailDraw}
 					onCameraRailDelete={deleteCameraRail}
-					onRailSelect={(shotId) => {
-						selectTimelineShot(shotId);
-						setSelectedHierarchyId("camera");
-					}}
-					onRailMove={(shotId, startFrame) => editRailSchedule(shotId, (base, duration) => moveRailRange(base, startFrame - base.startFrame, duration))}
-					onRailRangeChange={(shotId, edge, frame) => editRailSchedule(shotId, (base, duration) => resizeRailRange(base, edge, frame, duration))}
-					onRailRemove={(shotId) => {
-						if (!shots.some((shot) => shot.id === shotId)) throw new Error(`Unknown shots ID: ${shotId}`);
-						recordShotUndo();
-						setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "off" } }) }), "shots"));
-					}}
 				onShotSelect={selectTimelineShot}
 				onShotBoundaryMove={(shotId, edge, frame) => setShots((current) => resizeShot(current, shotId, edge, frame, tlFrameCount))}
 				onShotRename={(shotId, name) => {
