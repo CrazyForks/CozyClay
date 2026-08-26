@@ -201,5 +201,41 @@ ok("garbage timing is dropped, not crashed on", (() => {
 		(path.timing.cuts.length === 0 && path.timing.envelopes.length === 1));
 })());
 
+/* --- the camera dolly reads the same timing (C4) ---------------------------- */
+
+const { buildRail, buildRailFollowTrack } = await import("../src/camera-follow.js");
+const { createCameraBlock, updateCameraBlock } = await import("../src/camera-block.js");
+
+const rail = buildRail([{ x: 0, z: 0 }, { x: 10, z: 0 }]);
+const still = Array.from({ length: 97 }, () => ({ x: 5, z: 6 }));
+
+ok("without timing the dolly walks the whole rail", (() => {
+	const track = buildRailFollowTrack(still, 24, rail, { railStartMode: "head" });
+	return track.length === still.length && track[track.length - 1].s > rail.length * 0.9;
+})());
+ok("a zero first half holds the dolly, then it still arrives", (() => {
+	const timing = createTiming({ cuts: [], envelopes: [envelopeDrag(flatTiming().envelopes[0], 0.2, 0, 0.4)] });
+	const track = buildRailFollowTrack(still, 24, rail, { railStartMode: "head", dollyTiming: timing });
+	const early = track[Math.round(track.length * 0.3)].s;
+	const end = track[track.length - 1].s;
+	return early < rail.length * 0.12 && end > rail.length * 0.9;
+})());
+ok("the dolly's cut frame is pinned like the prop's", (() => {
+	const pinned = createTiming({ cuts: [{ t: 0.5, d: 0.3 }], envelopes: [] });
+	const track = buildRailFollowTrack(still, 24, rail, { railStartMode: "head", dollyTiming: pinned });
+	const mid = track[Math.round((track.length - 1) * 0.5)].s;
+	// the spring trails its target a little; the pin is the target, not the lag
+	return Math.abs(mid - rail.length * 0.3) < rail.length * 0.12;
+})());
+ok("the camera block carries dollyTiming and heals garbage", (() => {
+	const timing = createTiming({ cuts: [{ t: 0.5, d: 0.6 }], envelopes: [] });
+	const block = createCameraBlock({ mode: "rail", cameraRail: { points: [{ x: 0, z: 0 }, { x: 5, z: 0 }] }, dollyTiming: timing });
+	if (!block.dollyTiming || block.dollyTiming.cuts.length !== 1) return false;
+	const patched = updateCameraBlock(block, { dollyTiming: null });
+	if (patched.dollyTiming !== null) return false;
+	const garbage = createCameraBlock({ mode: "rail", dollyTiming: { cuts: "x", envelopes: 1 } });
+	return garbage.dollyTiming === null; // flat garbage heals to null
+})());
+
 console.log(failures === 0 ? "all speed-envelope checks PASS" : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

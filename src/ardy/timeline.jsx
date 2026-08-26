@@ -4,7 +4,7 @@ import { motionSegmentSpeedForFrames } from "./motion-edit.js";
 import { promptResizeFrame } from "./timeline-resize.js";
 import { ko, isKo } from "../locale.js";
 import { pathMetrics } from "../object-path.js";
-import { flatTiming, timingIsFlat, envelopeDrag, envelopePaint, insertCut, removeCut, CUT_MIN_GAP } from "../speed-envelope.js";
+import { flatTiming, timingIsFlat, envelopeDrag, insertCut, removeCut, CUT_MIN_GAP } from "../speed-envelope.js";
 
 /**
  * ARDY Viser-style animation timeline — the live motion workspace.
@@ -108,6 +108,7 @@ const GRAPH_MAX_SCALE = 3;
  */
 function SpeedGraph({
 	timing,
+	windowStart = 0,
 	windowFrac = 1,
 	frame,
 	frameCount,
@@ -124,6 +125,7 @@ function SpeedGraph({
 	const [dragReadout, setDragReadout] = useState(null);
 	const shown = timing ?? flatTiming();
 	const span = Math.max(1e-6, Math.min(1, windowFrac));
+	const origin = Math.max(0, Math.min(1, windowStart));
 
 	// One polyline per segment, in take-fraction x and 0..1 y (1 = ceiling).
 	const segments = useMemo(() => {
@@ -132,7 +134,7 @@ function SpeedGraph({
 			const a = bounds[index].t;
 			const b = bounds[index + 1].t;
 			const points = envelope.map((value, i) => {
-				const x = (a + (b - a) * (i / (envelope.length - 1))) * span;
+				const x = origin + (a + (b - a) * (i / (envelope.length - 1))) * span;
 				const y = 1 - Math.min(value, GRAPH_MAX_SCALE) / GRAPH_MAX_SCALE;
 				return `${x.toFixed(4)},${y.toFixed(4)}`;
 			});
@@ -144,7 +146,7 @@ function SpeedGraph({
 		const rect = svgRef.current?.getBoundingClientRect();
 		if (!rect || rect.width < 2) return null;
 		const takeX = (event.clientX - rect.left) / rect.width;
-		const u = Math.min(1, Math.max(0, takeX / span));
+		const u = Math.min(1, Math.max(0, (takeX - origin) / span));
 		const value = Math.max(0, (1 - (event.clientY - rect.top) / rect.height) * GRAPH_MAX_SCALE);
 		return { takeX, u, value };
 	};
@@ -173,7 +175,7 @@ function SpeedGraph({
 	const onPointerDown = (event) => {
 		if (event.button !== 0) return;
 		const at = locate(event);
-		if (!at || at.takeX > span + 0.02) return;
+		if (!at || at.takeX > origin + span + 0.02 || at.takeX < origin - 0.02) return;
 		event.preventDefault();
 		// Capture is a nicety for the drag; an unknown pointerId (synthetic
 		// events, exotic devices) throws, and that must not kill the press.
@@ -249,26 +251,27 @@ function SpeedGraph({
 				onDoubleClick={onDoubleClick}
 			>
 				{/* the average line: what "flat" means, in this segment's units */}
-				<line className="sg-average" x1="0" y1={averageY} x2={span} y2={averageY} />
-				{span < 0.999 && <rect className="sg-outside" x={span} y="0" width={1 - span} height="1" />}
+				<line className="sg-average" x1={origin} y1={averageY} x2={origin + span} y2={averageY} />
+				{origin > 0.001 && <rect className="sg-outside" x="0" y="0" width={origin} height="1" />}
+				{origin + span < 0.999 && <rect className="sg-outside" x={origin + span} y="0" width={1 - origin - span} height="1" />}
 				{segments.map((segment) => (
 					<g key={segment.key}>
 						<polygon
 							className="sg-fill"
-							points={`${segment.a * span},1 ${segment.line} ${segment.b * span},1`}
+							points={`${origin + segment.a * span},1 ${segment.line} ${origin + segment.b * span},1`}
 						/>
 						<polyline className="sg-line" points={segment.line} />
 					</g>
 				))}
 				{shown.cuts.map((cut, index) => (
 					<g key={index}>
-						<line className={"sg-cut" + (index === selectedCut ? " selected" : "")} x1={cut.t * span} y1="0" x2={cut.t * span} y2="1" />
+						<line className={"sg-cut" + (index === selectedCut ? " selected" : "")} x1={origin + cut.t * span} y1="0" x2={origin + cut.t * span} y2="1" />
 						{/* fat pick: the visible line is unclickably thin */}
 						<line
 							className="sg-cut-pick"
-							x1={cut.t * span}
+							x1={origin + cut.t * span}
 							y1="0"
-							x2={cut.t * span}
+							x2={origin + cut.t * span}
 							y2="1"
 							onPointerDown={(event) => {
 								event.stopPropagation();
@@ -1304,6 +1307,15 @@ export default function Timeline({
 
 	const cameraBlockIdx = selectedCameraBlockIdx === undefined ? localCameraBlockIdx : selectedCameraBlockIdx;
 	const selectedCameraShot = cameraBlockIdx == null ? null : shots[cameraBlockIdx] ?? null;
+	// The dolly's speed curve edits as a DRAFT and commits once on release:
+	// every commit rebuilds the whole camera track and records an undo entry,
+	// so streaming per-pointer-move commits would jank and spam history.
+	const [dollyDraft, setDollyDraft] = useState(null);
+	const dollyDraftRef = useRef(null);
+	useEffect(() => {
+		setDollyDraft(null);
+		dollyDraftRef.current = null;
+	}, [selectedCameraShot?.id]);
 	const motionSegments = motion?.segments ?? [];
 	const selectedMotionSegment = motionSegments.find((segment) => frame >= segment.timelineStart && frame <= segment.timelineEnd) ?? motionSegments[0] ?? null;
 	const visibleMotionSegments = trimPreview
@@ -1921,6 +1933,32 @@ export default function Timeline({
 							</div>
 						))}
 
+						{!pathObject && selectedCameraShot && cameraBlockMode(selectedCameraShot) === "rail" && cameraRailLength != null && (
+							<div className="tl-track sg-row sg-cam">
+								<span className="tl-track-label">{ko("Dolly speed", "돌리 속도")}</span>
+								<div className="tl-lane sg-lane">
+									<SpeedGraph
+										timing={dollyDraft ?? selectedCameraShot.camera?.dollyTiming ?? null}
+										windowStart={frameCount > 1 ? selectedCameraShot.startFrame / (frameCount - 1) : 0}
+										windowFrac={frameCount > 1 ? (selectedCameraShot.endFrame - selectedCameraShot.startFrame) / (frameCount - 1) : 1}
+										frame={frame}
+										frameCount={frameCount}
+										averageSpeed={cameraRailLength / Math.max(1 / fps, (selectedCameraShot.endFrame - selectedCameraShot.startFrame) / fps)}
+										conserve
+										onChange={(timing) => {
+											dollyDraftRef.current = timing;
+											setDollyDraft(timing);
+										}}
+										onGestureEnd={() => {
+											const draft = dollyDraftRef.current;
+											dollyDraftRef.current = null;
+											setDollyDraft(null);
+											if (draft) handlers.current.onCameraBlockChange?.({ dollyTiming: timingIsFlat(draft) ? null : draft });
+										}}
+									/>
+								</div>
+							</div>
+						)}
 						<div className="tl-playhead" style={{ "--tl-f": framePct(frame, displayFrameCount) }} aria-hidden="true" />
 						</div>
 					</div>

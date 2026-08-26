@@ -6781,7 +6781,7 @@ globalThis.playMode = centerTab === "play";
 			const start = shot.startFrame;
 			const end = Math.min(subjectTrack.length, shot.endFrame + 1);
 			const subjectSlice = subjectTrack.slice(start, end);
-			const params = { ...camera.followCam, craneHeight: camera.craneHeight, initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) } };
+			const params = { ...camera.followCam, craneHeight: camera.craneHeight, dollyTiming: camera.dollyTiming, initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) } };
 			const rail = camera.mode === "rail" ? buildRail(camera.cameraRail) : null;
 			if (rail) {
 				const schedule = resolveRailSchedule({ railFollow: camera.railFollow, cameraRail: camera.cameraRail, frameCount: subjectSlice.length });

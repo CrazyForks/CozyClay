@@ -1,3 +1,5 @@
+import { createTiming, timingIsFlat } from "./speed-envelope.js";
+
 // Pure Camera Block model. A shot owns one complete camera instruction, like
 // the camera card clipped to a single strip of film.
 
@@ -70,12 +72,16 @@ export function createCameraBlock(input = {}) {
 		?? (mode === "rail" && cameraRail
 			? { points: [{ t: 0, height: followCam.height }, { t: 1, height: followCam.height }] }
 			: null);
+	// The dolly's speed curve along the rail — same grammar as a prop path's
+	// timing. Flat heals to null so untouched shots stay byte-stable.
+	const dollyTiming = createTiming(value.dollyTiming);
 	return {
 		mode,
 		followCam,
 		cameraRail,
 		railFollow: cloneRailFollow(value.railFollow),
 		craneHeight,
+		dollyTiming: timingIsFlat(dollyTiming) ? null : dollyTiming,
 	};
 }
 
@@ -97,6 +103,7 @@ export function updateCameraBlock(camera, patch = {}) {
 		cameraRail: Object.hasOwn(change, "cameraRail") ? change.cameraRail : current.cameraRail,
 		railFollow: Object.hasOwn(change, "railFollow") ? change.railFollow : current.railFollow,
 		craneHeight: Object.hasOwn(change, "craneHeight") ? change.craneHeight : current.craneHeight,
+		dollyTiming: Object.hasOwn(change, "dollyTiming") ? change.dollyTiming : current.dollyTiming,
 	});
 }
 

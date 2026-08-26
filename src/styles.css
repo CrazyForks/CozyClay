@@ -2970,6 +2970,11 @@ input[type=range]::-moz-range-thumb {
 
 /* Filling the take is the default, so it whispers rather than shouts. */
 /* The speed graph: a real editing surface, so it gets real height. */
+.sg-cam .sg-line { stroke: #b9a1e8; }
+.sg-cam .sg-fill { fill: rgba(154, 123, 212, .18); }
+.sg-cam .sg-average { stroke: rgba(185, 161, 232, .3); }
+.sg-cam .tl-track-label { color: #cbb8ef; }
+
 .tl-track.sg-row .tl-lane { height: 64px; }
 
 .speed-graph {

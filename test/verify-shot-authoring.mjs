@@ -32,7 +32,7 @@ const shots = [
 		startFrame: 0,
 		endFrame: 99,
 		cameraKeys: [{ id: "camera-key-wide", frame: 0, framing: framing(40) }],
-		camera: { mode: "keys", followCam, cameraRail: null, railFollow: null, craneHeight: null },
+		camera: { mode: "keys", followCam, cameraRail: null, railFollow: null, craneHeight: null, dollyTiming: null },
 	},
 	{
 		id: "close",
@@ -40,7 +40,7 @@ const shots = [
 		startFrame: 100,
 		endFrame: 299,
 		cameraKeys: [{ id: "camera-key-close", frame: 100, framing: framing(70) }],
-		camera: { mode: "rail", followCam, cameraRail, railFollow: { mode: "range", startFrame: 10, endFrame: 80 }, craneHeight: null },
+		camera: { mode: "rail", followCam, cameraRail, railFollow: { mode: "range", startFrame: 10, endFrame: 80 }, craneHeight: null, dollyTiming: null },
 	},
 ];
 
@@ -209,6 +209,7 @@ assert.deepEqual(repaired.shots[0].camera, {
 	cameraRail: null,
 	railFollow: null,
 	craneHeight: null,
+				dollyTiming: null,
 });
 assert.equal(repaired.shots[1].camera.mode, "keys");
 
@@ -230,6 +231,7 @@ assert.deepEqual(removeCameraRail({
 	cameraRail: null,
 	railFollow: null,
 	craneHeight: null,
+				dollyTiming: null,
 });
 // The crane axis persists with its rail and cannot outlive it.
 const cranedRoundTrip = loadShotAuthoring(serializeShotAuthoring({
