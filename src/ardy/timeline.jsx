@@ -119,6 +119,8 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 	const finishDrag = (event) => {
 		const drag = dragRef.current;
 		if (!drag) return;
+		event.preventDefault();
+		event.stopPropagation();
 		dragRef.current = null;
 		if (drag.points) onChangePoints?.(drag.points);
 		setDraftPoints(null);
@@ -130,7 +132,7 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 		event.stopPropagation();
 		onSelect?.(index);
 		dragRef.current = { index, points };
-		event.currentTarget.setPointerCapture?.(event.pointerId);
+		svgRef.current?.setPointerCapture?.(event.pointerId);
 	};
 	const onPointerDown = (event) => {
 		if (event.button !== 0) return;
@@ -153,12 +155,26 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 	const onPointerMove = (event) => {
 		const drag = dragRef.current;
 		if (!drag) return;
+		event.preventDefault();
+		event.stopPropagation();
 		const at = locate(event);
 		if (!at) return;
 		const next = points.map((point, index) => index === drag.index ? { ...point, height: at.height } : point);
 		dragRef.current = { ...drag, points: next };
 		setDraftPoints(next);
 	};
+	useEffect(() => {
+		const move = (event) => onPointerMove(event);
+		const up = (event) => finishDrag(event);
+		window.addEventListener("pointermove", move, true);
+		window.addEventListener("pointerup", up, true);
+		window.addEventListener("pointercancel", up, true);
+		return () => {
+			window.removeEventListener("pointermove", move, true);
+			window.removeEventListener("pointerup", up, true);
+			window.removeEventListener("pointercancel", up, true);
+		};
+	}, [points, origin, span, maxHeight]);
 	return (
 		<div className="tl-crane-editor" title={ko("Crane height: click to add, click a point to select, drag vertically to change height", "크레인 높이: 클릭해 추가하고, 점을 눌러 선택하고, 위아래로 끌어 높이를 바꿉니다")}>
 			<span className="tl-crane-editor-label">{ko("CRANE", "크레인")}</span>
@@ -1807,7 +1823,7 @@ export default function Timeline({
 															selectUnifiedShotBlock(index);
 															onCranePointAdd?.(t, shot.id);
 														}}
-														onChangePoints={(points, options) => {
+														onChangePoints={(points) => {
 															selectUnifiedShotBlock(index);
 															onCameraBlockChange?.({ craneHeight: { points } }, shot.id);
 														}}
