@@ -112,17 +112,17 @@ expect(
 	timeline.includes('ko("Distance", "거리")') &&
 	timeline.includes('ko("Height", "높이")'),
 );
-expect(
-	"height and pitch are adjacent in the camera bar",
-	timeline.indexOf('ko("Height", "높이")') < timeline.indexOf('ko("Pitch", "피치")') &&
-	(timeline.slice(timeline.indexOf('ko("Height", "높이")'), timeline.indexOf('ko("Pitch", "피치")')).match(/<label/g) ?? []).length === 1,
-);
 // Scope the count to CameraBlockEditor: other editors in this file (the
 // object travel path) reuse the same readout class, so a file-wide count
 // would break every time the strip grows a neighbour.
 const cameraEditorSource = timeline.slice(
 	timeline.indexOf("function CameraBlockEditor("),
 	timeline.indexOf("function ", timeline.indexOf("function CameraBlockEditor(") + 1),
+);
+expect(
+	"height and pitch are adjacent in the camera bar",
+	cameraEditorSource.indexOf('ko("Height", "높이")') < cameraEditorSource.indexOf('ko("Pitch", "피치")') &&
+	(cameraEditorSource.slice(cameraEditorSource.indexOf('ko("Height", "높이")'), cameraEditorSource.indexOf('ko("Pitch", "피치")')).match(/<label/g) ?? []).length === 1,
 );
 expect(
 	"distance, height and pitch are measured from viewport manipulation instead of typed",
@@ -165,11 +165,11 @@ expect(
 expect(
 	"rail crane points are authored and selected directly in the crane graph",
 	timeline.includes("function CraneHeightEditor") &&
-	timeline.includes("tl-crane-point") &&
-		timeline.includes("tl-crane-editor") &&
+	timeline.includes("tl-crane-knob") &&
+	timeline.includes("tl-crane-editor") &&
 	timeline.includes("onAddPoint?.(drag.addAt)") &&
 	timeline.includes("onChangePoints?.(drag.points)") &&
-		timeline.includes("onCranePointSelect"),
+	timeline.includes("onCranePointSelect"),
 );
 expect(
 	"waypoint mode replaces camera controls with one clear message",

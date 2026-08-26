@@ -96,15 +96,31 @@ function signedValue(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}`;
 }
 
+/**
+ * The crane's height curve, drawn as a real graph: time across the take's own
+ * window, metres up. It is the twin of the speed graph rather than a strip of
+ * dots — same zero line, same fill, same readout — because a height profile is
+ * read the same way a speed profile is, and two instruments that answer
+ * different questions should still be read with one pair of eyes.
+ *
+ * Every gesture lands on the graph itself: press near a point to take it,
+ * press anywhere else to add one there, drag to set the height. The points are
+ * generous circles, not pixel dots, so a lens height is aimed at with the
+ * wrist rather than with the fingertip.
+ */
 function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, onSelect, onAddPoint, onChangePoints }) {
 	const svgRef = useRef(null);
 	const dragRef = useRef(null);
 	const [draftPoints, setDraftPoints] = useState(null);
+	// The axis is frozen for the whole gesture. A scale that grew with the draft
+	// would re-map the pointer under itself on every move — one flick of the
+	// wrist and the value runs away by tens of metres.
+	const [heldScale, setHeldScale] = useState(null);
 	if (!crane?.points?.length || !railRange) return null;
 	const points = draftPoints ?? crane.points;
 	const origin = railRange.start / Math.max(1, durationFrames - 1);
 	const span = Math.max(0.001, (railRange.end - railRange.start) / Math.max(1, durationFrames - 1));
-	const maxHeight = Math.max(4, Math.ceil(Math.max(...points.map((point) => point.height), 1) * 1.25));
+	const maxHeight = heldScale ?? Math.max(4, Math.ceil(Math.max(...crane.points.map((point) => point.height), 1) * 1.25));
 	const xFor = (t) => origin + t * span;
 	const yFor = (height) => 0.9 - (Math.max(0.1, Math.min(maxHeight, height)) - 0.1) / Math.max(0.1, maxHeight - 0.1) * 0.78;
 	const locate = (event) => {
@@ -125,6 +141,7 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 		if (drag.points && drag.moved) onChangePoints?.(drag.points);
 		else if (!drag.moved && drag.addAt != null) onAddPoint?.(drag.addAt);
 		setDraftPoints(null);
+		setHeldScale(null);
 		event.currentTarget.releasePointerCapture?.(event.pointerId);
 	};
 	const onPointerDown = (event) => {
@@ -140,6 +157,7 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 		if (nearest.index >= 0 && nearest.distance <= 0.12) {
 			onSelect?.(nearest.index);
 			dragRef.current = { index: nearest.index, points, moved: false };
+			setHeldScale(maxHeight);
 			svgRef.current?.setPointerCapture?.(event.pointerId);
 			return;
 		}
@@ -173,9 +191,10 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 			window.removeEventListener("pointercancel", up, true);
 		};
 	}, [points, origin, span, maxHeight]);
+	const topLabel = maxHeight.toFixed(1);
+	const midLabel = (maxHeight / 2).toFixed(1);
 	return (
 		<div className="tl-crane-editor" title={ko("Crane height: click to add, click a point to select, drag vertically to change height", "크레인 높이: 클릭해 추가하고, 점을 눌러 선택하고, 위아래로 끌어 높이를 바꿉니다")}>
-			<span className="tl-crane-editor-label">{ko("CRANE", "크레인")}</span>
 			<svg
 				ref={svgRef}
 				className="tl-crane-editor-svg"
@@ -188,19 +207,181 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 				onDoubleClick={(event) => event.stopPropagation()}
 			>
 				<rect className="tl-crane-editor-hit" x="0" y="0" width="1" height="1" />
-				<line className="tl-crane-grid" x1={origin} y1=".12" x2={origin + span} y2=".12" />
-				<line className="tl-crane-grid" x1={origin} y1=".5" x2={origin + span} y2=".5" />
-				<line className="tl-crane-grid" x1={origin} y1=".9" x2={origin + span} y2=".9" />
+				{origin > 0.001 && <rect className="sg-outside" x="0" y="0" width={origin} height="1" />}
+				{origin + span < 0.999 && <rect className="sg-outside" x={origin + span} y="0" width={1 - origin - span} height="1" />}
+				<line className="tl-crane-grid" x1={origin} y1={yFor(maxHeight / 2)} x2={origin + span} y2={yFor(maxHeight / 2)} />
+				<line className="sg-axis" x1="0" y1=".9" x2="1" y2=".9" />
+				<polygon
+					className="tl-crane-fill"
+					points={`${xFor(0)},0.9 ${points.map((point) => `${xFor(point.t)},${yFor(point.height)}`).join(" ")} ${xFor(1)},0.9`}
+				/>
 				<polyline className="tl-crane-line" points={points.map((point) => `${xFor(point.t)},${yFor(point.height)}`).join(" ")} />
 				{points.map((point, index) => (
-					<g key={index} className={index === selectedIndex ? "selected" : ""}>
-						<line className="tl-crane-time-pick" x1={xFor(point.t)} y1=".08" x2={xFor(point.t)} y2=".94" />
-						<circle className="tl-crane-point-hit" cx={xFor(point.t)} cy={yFor(point.height)} r=".07" />
-						<circle className="tl-crane-point-dot" cx={xFor(point.t)} cy={yFor(point.height)} r=".024" />
-					</g>
+					<line
+						key={index}
+						className={"tl-crane-time-pick" + (index === selectedIndex ? " selected" : "")}
+						x1={xFor(point.t)}
+						y1={yFor(point.height)}
+						x2={xFor(point.t)}
+						y2=".9"
+					/>
 				))}
 			</svg>
-			<span className="tl-crane-editor-hint">{ko("drag graph · click empty time to add", "그래프 드래그 · 빈 시간 클릭해 추가")}</span>
+			{/* The dots are HTML, not SVG: the graph's viewBox is stretched to the
+			    lane, which would squash a circle into a sliver and take its hit
+			    area with it. */}
+			{points.map((point, index) => (
+				<button
+					key={index}
+					type="button"
+					className={"tl-crane-knob" + (index === selectedIndex ? " selected" : "")}
+					// an end point sits ON the window edge; clamp it inside so the knob stays a whole, grabbable circle
+					style={{ left: `clamp(9px, ${xFor(point.t) * 100}%, calc(100% - 9px))`, top: `clamp(9px, ${yFor(point.height) * 100}%, calc(100% - 9px))` }}
+					aria-label={ko(`Crane point ${index + 1}, ${point.height.toFixed(1)} metres`, `크레인 점 ${index + 1}, ${point.height.toFixed(1)}미터`)}
+					onPointerDown={(event) => {
+						event.preventDefault();
+						event.stopPropagation();
+						onSelect?.(index);
+						dragRef.current = { index, points, moved: false };
+						setHeldScale(maxHeight);
+						svgRef.current?.setPointerCapture?.(event.pointerId);
+					}}
+				/>
+			))}
+			<span className="sg-scale-top">{topLabel}</span>
+			<span className="sg-scale-avg" style={{ top: `${yFor(maxHeight / 2) * 100}%` }}>{midLabel}</span>
+			<span className="sg-scale-zero">0</span>
+			{draftPoints && dragRef.current?.index >= 0 && (
+				<span className="sg-readout" style={{ left: `${xFor(points[dragRef.current.index].t) * 100}%` }}>
+					{points[dragRef.current.index].height.toFixed(2)} m
+				</span>
+			)}
+		</div>
+	);
+}
+
+/**
+ * The camera's move, given the same room the prop's travel already has.
+ *
+ * A shot card is 61 px of a 68 px lane, and the move needs a title, a speed
+ * curve, a height curve and a key strip — 95 px of instrument in 61 px of
+ * card, which is how the curves ended up drawn on top of each other and under
+ * the shot's own name. So selecting a rail Shot loads the camera into the
+ * strip the way selecting a prop loads its travel: the three performer lanes
+ * (which nothing in a camera move reads) become one instrument, the Shots lane
+ * stays exactly where it is so shots are still selectable, and the window's
+ * height never changes.
+ *
+ * One instrument, two readings: Speed is metres per second along the rail,
+ * Height is metres off the floor. They share a clock and a shape language, so
+ * the switch is a switch rather than a second editor.
+ */
+function CameraMotionTrack({
+	shot,
+	railLength,
+	railRange,
+	durationFrames,
+	localFrame,
+	fps,
+	mode,
+	onModeChange,
+	timing,
+	craneSelectedIndex,
+	onTimingChange,
+	onTimingGestureEnd,
+	onCraneChange,
+	onCranePointAdd,
+	onCranePointSelect,
+	onCranePointDelete,
+}) {
+	const windowFrames = Math.max(1, railRange.end - railRange.start);
+	const seconds = windowFrames / Math.max(1, fps);
+	const averageSpeed = railLength != null ? railLength / Math.max(1 / fps, seconds) : 1;
+	const crane = shot.camera?.craneHeight ?? null;
+	const heights = crane?.points?.map((point) => point.height) ?? [];
+	const facts = railLength != null
+		? `${railLength.toFixed(1)} m · ${seconds.toFixed(1)}${isKo ? "초" : "s"} · ${averageSpeed.toFixed(1)} m/s`
+		: `${seconds.toFixed(1)}${isKo ? "초" : "s"}`;
+	const heightFacts = heights.length
+		? `${Math.min(...heights).toFixed(1)}–${Math.max(...heights).toFixed(1)} m · ${heights.length}${ko(" pts", "점")}`
+		: null;
+	const interiorSelected = craneSelectedIndex != null && craneSelectedIndex > 0 && craneSelectedIndex < heights.length - 1;
+	const modeSwitch = (
+		<span className="cam-mode-switch" role="group" aria-label={ko("Camera curve", "카메라 곡선")}>
+			<button
+				type="button"
+				className={"tl-camera-tool" + (mode === "speed" ? " active" : "")}
+				aria-pressed={mode === "speed"}
+				title={ko("How fast the dolly runs the rail", "돌리가 레일을 달리는 속도")}
+				onClick={() => onModeChange?.("speed")}
+			>
+				{ko("Speed", "속도")}
+			</button>
+			<button
+				type="button"
+				className={"tl-camera-tool" + (mode === "height" ? " active" : "")}
+				aria-pressed={mode === "height"}
+				disabled={!crane}
+				title={ko("How high the lens rides", "렌즈가 떠가는 높이")}
+				onClick={() => onModeChange?.("height")}
+			>
+				{ko("Height", "높이")}
+			</button>
+		</span>
+	);
+	return (
+		<div className="tl-track cam-instrument sg-row">
+			<span className="tl-track-label">
+				<span className="tl-subject-kind">{ko("CAMERA", "카메라")}</span>
+				<span className="objmo-name">{shot.name}</span>
+			</span>
+			<div className="tl-lane sg-lane cam">
+				{mode === "height" && crane ? (
+					<div className="sg">
+						<header className="sg-head">
+							{modeSwitch}
+							<span className="sg-facts">{heightFacts ?? facts}</span>
+							<span className="tl-path-hint">
+								{ko("drag a point to set lens height · click empty time to add one", "점을 끌어 렌즈 높이 조절 · 빈 시간을 클릭해 점 추가")}
+							</span>
+							<button
+								type="button"
+								className="tl-camera-tool danger"
+								disabled={!interiorSelected}
+								title={ko("Remove the selected interior crane point", "선택한 중간 크레인 점을 삭제합니다")}
+								onClick={() => onCranePointDelete?.()}
+							>
+								{ko("Remove point", "점 삭제")}
+							</button>
+						</header>
+						<div className="sg-body">
+							<CraneHeightEditor
+								crane={crane}
+								railRange={railRange}
+								durationFrames={durationFrames}
+								selectedIndex={craneSelectedIndex}
+								onSelect={(index) => onCranePointSelect?.(index)}
+								onAddPoint={(t) => onCranePointAdd?.(t)}
+								onChangePoints={(points) => onCraneChange?.(points)}
+							/>
+						</div>
+					</div>
+				) : (
+					<SpeedGraph
+						leading={modeSwitch}
+						facts={facts}
+						timing={timing}
+						windowStart={durationFrames > 1 ? railRange.start / (durationFrames - 1) : 0}
+						windowFrac={durationFrames > 1 ? windowFrames / (durationFrames - 1) : 1}
+						frame={Math.min(Math.max(0, localFrame), Math.max(0, durationFrames - 1))}
+						frameCount={durationFrames}
+						averageSpeed={averageSpeed}
+						conserve
+						onChange={(next) => onTimingChange?.(next)}
+						onGestureEnd={() => onTimingGestureEnd?.()}
+					/>
+				)}
+			</div>
 		</div>
 	);
 }
@@ -226,6 +407,8 @@ const sgY = (value, yMax) => 1 - Math.min(value, yMax) / yMax;
  * size of a handle — click to select, Delete to remove.
  */
 function SpeedGraph({
+	facts = null,
+	leading = null, // controls that belong to the instrument, not to the curve
 	timing,
 	windowStart = 0,
 	windowFrac = 1,
@@ -370,7 +553,8 @@ function SpeedGraph({
 	return (
 		<div className="sg">
 			<header className="sg-head">
-				<span className="sg-facts">{averageSpeed.toFixed(1)} {speedUnit} {ko("average", "평균")}</span>
+				{leading}
+				<span className="sg-facts">{facts ?? `${averageSpeed.toFixed(1)} ${speedUnit} ${ko("average", "평균")}`}</span>
 				<span className="tl-path-hint">
 					{ko("drag the curve · double-click or the button cuts · Delete removes a cut", "곡선을 끌어 조절 · 더블클릭이나 버튼으로 컷 · 컷 선택 후 Delete로 삭제")}
 				</span>
@@ -1398,10 +1582,30 @@ export default function Timeline({
 	}, [shots]);
 	const [dollyDraft, setDollyDraft] = useState(null); // { shotId, timing }
 	const dollyDraftRef = useRef(null);
+	const [cameraCurve, setCameraCurve] = useState("speed"); // which reading the camera instrument shows
 	useEffect(() => {
 		setDollyDraft(null);
 		dollyDraftRef.current = null;
 	}, [selectedCameraShot?.id]);
+	// The camera instrument only exists for a Shot whose camera actually rides a
+	// rail: a keyed or follow camera has no dolly to time and no crane to lift.
+	const cameraTrackShot = selectedCameraShot && cameraBlockMode(selectedCameraShot) === "rail" && railLengthByShot.has(selectedCameraShot.id)
+		? selectedCameraShot
+		: null;
+	const cameraTrackRange = useMemo(() => {
+		if (!cameraTrackShot) return null;
+		const duration = cameraTrackShot.endFrame - cameraTrackShot.startFrame + 1;
+		const stored = cameraTrackShot.camera?.railFollow;
+		if (stored?.mode === "off") return null;
+		const range = stored?.mode === "range"
+			? { start: Math.max(0, Math.min(duration - 1, stored.startFrame)), end: Math.max(0, Math.min(duration - 1, stored.endFrame)) }
+			: { start: 0, end: duration - 1 };
+		return { range, duration };
+	}, [cameraTrackShot]);
+	// Editing a camera move reads nothing from the performer's lanes, so they
+	// stand aside for the instrument exactly as they do for a prop's travel.
+	// The Shots lane stays: it is how the next shot gets picked.
+	const visibleTracks = cameraTrackRange ? [SHOTS_LANE] : TRACKS;
 	const motionSegments = motion?.segments ?? [];
 	const selectedMotionSegment = motionSegments.find((segment) => frame >= segment.timelineStart && frame <= segment.timelineEnd) ?? motionSegments[0] ?? null;
 	const visibleMotionSegments = trimPreview
@@ -1634,6 +1838,34 @@ export default function Timeline({
 						    is a different subject on the same clock, so selecting one
 						    swaps the performer's lanes for the prop's instead of
 						    stacking both and making every row ambiguous. */}
+						{!pathObject && cameraTrackRange && (
+							<CameraMotionTrack
+								shot={cameraTrackShot}
+								railLength={railLengthByShot.get(cameraTrackShot.id) ?? null}
+								railRange={cameraTrackRange.range}
+								durationFrames={cameraTrackRange.duration}
+								localFrame={frame - cameraTrackShot.startFrame}
+								fps={fps}
+								mode={cameraCurve}
+								onModeChange={setCameraCurve}
+								timing={dollyDraft?.shotId === cameraTrackShot.id ? dollyDraft.timing : cameraTrackShot.camera?.dollyTiming ?? null}
+								craneSelectedIndex={craneSelectedIndex}
+								onTimingChange={(next) => {
+									dollyDraftRef.current = { shotId: cameraTrackShot.id, timing: next };
+									setDollyDraft({ shotId: cameraTrackShot.id, timing: next });
+								}}
+								onTimingGestureEnd={() => {
+									const draft = dollyDraftRef.current;
+									dollyDraftRef.current = null;
+									setDollyDraft(null);
+									if (draft) handlers.current.onCameraBlockChange?.({ dollyTiming: timingIsFlat(draft.timing) ? null : draft.timing }, draft.shotId);
+								}}
+								onCraneChange={(points) => onCameraBlockChange?.({ craneHeight: { points } }, cameraTrackShot.id)}
+								onCranePointAdd={(t) => onCranePointAdd?.(t, cameraTrackShot.id)}
+								onCranePointSelect={(index) => onCranePointSelect?.(index, cameraTrackShot.id)}
+								onCranePointDelete={() => onCranePointDelete?.()}
+							/>
+						)}
 						{pathObject ? (
 							<ObjectTravelTrack
 								object={pathObject}
@@ -1647,7 +1879,7 @@ export default function Timeline({
 								onTimingGestureStart={() => handlers.current.onObjectTimingGestureStart?.()}
 								onTimingGestureEnd={() => handlers.current.onObjectTimingGestureEnd?.()}
 							/>
-						) : TRACKS.map((name) => (
+						) : visibleTracks.map((name) => (
 							<div className={"tl-track" + (name === "Prompts" ? " prompts" : "") + (name === IK_LANE ? " ik" : "") + (name === SHOTS_LANE ? " shots" : "")} key={name}>
 								<span className="tl-track-label">
 									{TRACK_LABELS_KO[name]}
@@ -1801,57 +2033,25 @@ export default function Timeline({
 													<b>{modeLabel}</b>
 													{detailLabel && <small>{detailLabel}</small>}
 												</span>
-												{!railOff && railRange && (
-													<CraneHeightEditor
-														crane={shot.camera?.craneHeight}
-														railRange={railRange}
-														durationFrames={durationFrames}
-														selectedIndex={index === cameraBlockIdx ? craneSelectedIndex : null}
-														onSelect={(pointIndex) => {
-															selectUnifiedShotBlock(index);
-															onCranePointSelect?.(pointIndex, shot.id);
-														}}
-														onAddPoint={(t) => {
-															selectUnifiedShotBlock(index);
-															onCranePointAdd?.(t, shot.id);
-														}}
-														onChangePoints={(points) => {
-															selectUnifiedShotBlock(index);
-															onCameraBlockChange?.({ craneHeight: { points } }, shot.id);
-														}}
-													/>
-												)}
-											{/* The dolly's speed curve and crane-height graph live inside the
-											    Shot card. One compact instrument per authored camera property,
-											    both on the card's own timeline clock. */}
-											{!railOff && railRange && railLengthByShot.has(shot.id) && (
-												<div
-													className="sg-shot"
-													title={ko("Dolly speed: drag the curve, double-click to cut, Delete removes a cut", "돌리 속도: 드래그로 모양, 더블클릭으로 컷, Delete로 컷 삭제")}
-													onPointerDown={(event) => event.stopPropagation()}
-													onClick={(event) => event.stopPropagation()}
-												>
-													<SpeedGraph
-														timing={dollyDraft?.shotId === shot.id ? dollyDraft.timing : shot.camera?.dollyTiming ?? null}
-														windowStart={durationFrames > 1 ? railRange.start / (durationFrames - 1) : 0}
-														windowFrac={durationFrames > 1 ? Math.max(1, railRange.end - railRange.start) / (durationFrames - 1) : 1}
-														frame={Math.min(Math.max(0, localProgress), Math.max(0, durationFrames - 1))}
-														frameCount={durationFrames}
-														averageSpeed={railLengthByShot.get(shot.id) / Math.max(1 / fps, (railRange.end - railRange.start) / fps)}
-														conserve
-														onChange={(timing) => {
-															dollyDraftRef.current = { shotId: shot.id, timing };
-															setDollyDraft({ shotId: shot.id, timing });
-														}}
-														onGestureEnd={() => {
-															const draft = dollyDraftRef.current;
-															dollyDraftRef.current = null;
-															setDollyDraft(null);
-															if (draft) handlers.current.onCameraBlockChange?.({ dollyTiming: timingIsFlat(draft.timing) ? null : draft.timing }, draft.shotId);
-														}}
-													/>
-												</div>
-											)}
+										{/* The card is a card again: it SHOWS the move, it does not host the
+										    editor. Three instruments stacked in 61 px of a 68 px lane drew on
+										    top of each other and under the shot's own name, so every gesture
+										    landed on the wrong one. Editing moved to the camera instrument in
+										    the strip; what stays here is one passive curve — the shape of the
+										    move, at a glance. */}
+										{!railOff && railRange && railLengthByShot.has(shot.id) && (
+											<div className="sg-shot" aria-hidden="true">
+												<SpeedGraph
+													timing={dollyDraft?.shotId === shot.id ? dollyDraft.timing : shot.camera?.dollyTiming ?? null}
+													windowStart={durationFrames > 1 ? railRange.start / (durationFrames - 1) : 0}
+													windowFrac={durationFrames > 1 ? Math.max(1, railRange.end - railRange.start) / (durationFrames - 1) : 1}
+													frame={Math.min(Math.max(0, localProgress), Math.max(0, durationFrames - 1))}
+													frameCount={durationFrames}
+													averageSpeed={railLengthByShot.get(shot.id) / Math.max(1 / fps, (railRange.end - railRange.start) / fps)}
+													conserve
+												/>
+											</div>
+										)}
 											{/* Camera-key authoring remains separate from the crane graph so
 												    one gesture cannot both reorder a shot and edit a curve. */}
 												<button

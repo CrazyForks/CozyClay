@@ -3109,49 +3109,75 @@ input[type=range]::-moz-range-thumb {
    The full instrument (header, Cut/Reset buttons) lives on the prop strip;
    the card carries the compact curve and its gestures (drag shapes,
    double-click cuts, Delete removes — discoverable via the hover tooltip). */
+/* The card's curve is a READOUT, not an editor: the editing lives in the
+   camera instrument, so nothing here competes with selecting or dragging the
+   shot itself. It sits under the title row rather than behind it. */
 .sg-shot {
 	position: absolute;
 	left: 12px;
 	right: 12px;
-	top: 2px;
-	bottom: 28px;
-	pointer-events: auto;
+	top: 22px;
+	bottom: 13px;
+	opacity: .82;
+	pointer-events: none;
 }
 
 /* The title row rides over the curve's top edge; a slim scrim keeps the
    words legible without giving the curve a header of its own. */
-/* Crane height is a compact, real editing surface inside the Shot card.
-   Time runs left-to-right and height runs bottom-to-top. */
+/* Crane height is a full instrument in the strip, the twin of the speed
+   graph: time across, metres up, the same axis labels and readout. */
 .tl-crane-editor {
 	position: absolute;
-	left: 15px;
-	right: 15px;
-	bottom: 14px;
-	height: 28px;
-	border-top: 1px solid rgba(167, 139, 250, .35);
-	background: rgba(20, 12, 36, .66);
+	inset: 0;
 	pointer-events: auto;
-	z-index: 4;
 }
 
-.tl-crane-editor-label,
-.tl-crane-editor-hint {
-	position: absolute;
-	top: 2px;
-	padding: 0 3px;
-	color: rgba(221, 208, 247, .76);
-	font-size: 7px;
-	font-weight: 700;
-	letter-spacing: .08em;
-	pointer-events: none;
+/* The camera loads into the strip the way a prop's travel does. */
+.tl-track.cam-instrument .tl-track-label {
+	align-items: flex-start;
+	padding-top: 8px;
+	color: #cbb8ef;
+	gap: 6px;
+	min-width: 0;
 }
 
-.tl-crane-editor-label { left: 3px; }
-.tl-crane-editor-hint {
-	right: 3px;
-	font-weight: 500;
-	letter-spacing: 0;
-	opacity: .72;
+.tl-track.cam-instrument .tl-track-label .objmo-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tl-track.cam-instrument .tl-lane {
+	background: #16131f;
+	border-bottom: 1px solid rgba(167, 139, 250, .16);
+}
+
+.cam-mode-switch {
+	flex: none;
+	display: flex;
+	gap: 2px;
+}
+
+.tl-lane.sg-lane.cam .sg-line,
+.tl-lane.sg-lane.cam .tl-crane-line { stroke: #b9a1e8; }
+.tl-lane.sg-lane.cam .sg-fill { fill: rgba(154, 123, 212, .18); }
+.tl-lane.sg-lane.cam .sg-average { stroke: rgba(185, 161, 232, .32); }
+.tl-lane.sg-lane.cam .sg-readout { background: #4a3d6e; }
+.tl-lane.sg-lane.cam .sg-scale-top,
+.tl-lane.sg-lane.cam .sg-scale-avg,
+.tl-lane.sg-lane.cam .sg-scale-zero { color: #9c8bc4; }
+
+.tl-lane.sg-lane.cam .sg-body {
+	border-color: rgba(154, 123, 212, .3);
+	background: #120f17;
+}
+
+.tl-lane.sg-lane.cam .sg-axis { stroke: rgba(185, 161, 232, .45); }
+
+/* The camera lane keeps the Shots lane at its own height: the instrument
+   takes the room the three performer lanes had, not the shot card's. */
+.tl-surface:has(.tl-track.cam-instrument) {
+	grid-template-rows: 28px minmax(60px, 3fr) minmax(68px, 1.7fr) auto;
 }
 
 .tl-crane-editor-svg {
@@ -3170,49 +3196,64 @@ input[type=range]::-moz-range-thumb {
 }
 
 .tl-crane-grid {
-	stroke: rgba(185, 161, 232, .2);
-	stroke-width: .006;
-	stroke-dasharray: .012 .012;
+	stroke: rgba(185, 161, 232, .28);
+	stroke-width: 1;
+	stroke-dasharray: 3 3;
+	vector-effect: non-scaling-stroke;
+	pointer-events: none;
+}
+
+.tl-crane-fill {
+	fill: rgba(154, 123, 212, .16);
 	pointer-events: none;
 }
 
 .tl-crane-line {
 	fill: none;
 	stroke: #b9a1e8;
-	stroke-width: .012;
+	stroke-width: 1.6;
 	vector-effect: non-scaling-stroke;
 	pointer-events: none;
-}
-
-.tl-crane-point-hit {
-	fill: transparent;
-	stroke: transparent;
-	pointer-events: all;
-	cursor: ns-resize;
 }
 
 .tl-crane-time-pick {
-	stroke: rgba(255, 180, 84, .4);
-	stroke-width: .004;
-	stroke-dasharray: .012 .012;
-	pointer-events: none;
-}
-
-.tl-crane-point-dot {
-	fill: #a78bfa;
-	stroke: #211b31;
-	stroke-width: .008;
+	stroke: rgba(167, 139, 250, .38);
+	stroke-width: 1;
 	vector-effect: non-scaling-stroke;
 	pointer-events: none;
 }
 
-.tl-crane-editor g.selected .tl-crane-point-dot {
-	fill: #ffb454;
-	stroke: #40270f;
+.tl-crane-time-pick.selected {
+	stroke: rgba(255, 180, 84, .85);
 }
 
-.tl-crane-editor g.selected .tl-crane-time-pick {
-	stroke: rgba(255, 180, 84, .8);
+/* A lens height is aimed at with the wrist: the knob is a real target, and
+   the whole graph accepts the drag once it is taken. */
+.tl-crane-knob {
+	box-sizing: border-box;
+	position: absolute;
+	width: 15px;
+	height: 15px;
+	padding: 0;
+	transform: translate(-50%, -50%);
+	border: 2px solid #211b31;
+	border-radius: 50%;
+	background: #a78bfa;
+	box-shadow: 0 0 0 1px rgba(203, 183, 255, .5), 0 0 10px rgba(167, 139, 250, .55);
+	cursor: ns-resize;
+	z-index: 4;
+}
+
+.tl-crane-knob:hover,
+.tl-crane-knob:focus-visible {
+	outline: 2px solid #fff;
+	outline-offset: 1px;
+}
+
+.tl-crane-knob.selected {
+	background: #ffb454;
+	border-color: #40270f;
+	box-shadow: 0 0 0 1px #ffe0a8, 0 0 12px rgba(255, 180, 84, .9);
 }
 
 .tl-shot-block.has-dolly .tl-shot-title,
