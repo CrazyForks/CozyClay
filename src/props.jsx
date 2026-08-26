@@ -356,6 +356,11 @@ function SceneObject({ object, selected, frameRef = null, take = null }) {
 		if (!at) return;
 		group.position.set(at.x, at.y, at.z);
 		if (at.rot !== null) group.rotation.y = at.rot * DEG;
+		// QA hook: headless checks read the ANIMATED position here, because the
+		// store only knows the authored one. Harmless in normal use.
+		if (typeof window !== "undefined") {
+			(window.__cclayPropWorld ??= {})[object.id] = { x: at.x, y: at.y, z: at.z, frame: frameRef.current ?? 0 };
+		}
 	});
 	return (
 		<group

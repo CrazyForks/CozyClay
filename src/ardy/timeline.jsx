@@ -4,6 +4,7 @@ import { motionSegmentSpeedForFrames } from "./motion-edit.js";
 import { promptResizeFrame } from "./timeline-resize.js";
 import { ko, isKo } from "../locale.js";
 import { pathMetrics } from "../object-path.js";
+import { flatTiming, timingIsFlat, envelopeDrag, envelopePaint, insertCut, removeCut, CUT_MIN_GAP } from "../speed-envelope.js";
 
 /**
  * ARDY Viser-style animation timeline — the live motion workspace.
@@ -94,6 +95,201 @@ function signedValue(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}`;
 }
 
+/** y-axis ceiling of the speed graph, in multiples of the average speed. */
+const GRAPH_MAX_SCALE = 3;
+
+/**
+ * The speed graph: time across, speed up, the area under the curve is the
+ * distance. Drag the curve to shape it — with `conserve`, raising one stretch
+ * lowers the rest of the same segment, because the distance is a fact of the
+ * route. Double-click drops a cut (a time-distance pin): everything between
+ * two pins is a sealed room, so a cut is how one stretch is detailed without
+ * disturbing the take around it. Delete removes the selected cut.
+ */
+function SpeedGraph({
+	timing,
+	windowFrac = 1,
+	frame,
+	frameCount,
+	averageSpeed = 1,
+	speedUnit = "m/s",
+	conserve = true,
+	onChange,
+	onGestureStart,
+	onGestureEnd,
+}) {
+	const svgRef = useRef(null);
+	const dragRef = useRef(null);
+	const [selectedCut, setSelectedCut] = useState(null);
+	const [dragReadout, setDragReadout] = useState(null);
+	const shown = timing ?? flatTiming();
+	const span = Math.max(1e-6, Math.min(1, windowFrac));
+
+	// One polyline per segment, in take-fraction x and 0..1 y (1 = ceiling).
+	const segments = useMemo(() => {
+		const bounds = [{ t: 0, d: 0 }, ...shown.cuts, { t: 1, d: 1 }];
+		return shown.envelopes.map((envelope, index) => {
+			const a = bounds[index].t;
+			const b = bounds[index + 1].t;
+			const points = envelope.map((value, i) => {
+				const x = (a + (b - a) * (i / (envelope.length - 1))) * span;
+				const y = 1 - Math.min(value, GRAPH_MAX_SCALE) / GRAPH_MAX_SCALE;
+				return `${x.toFixed(4)},${y.toFixed(4)}`;
+			});
+			return { key: index, a, b, line: points.join(" ") };
+		});
+	}, [shown, span]);
+
+	const locate = (event) => {
+		const rect = svgRef.current?.getBoundingClientRect();
+		if (!rect || rect.width < 2) return null;
+		const takeX = (event.clientX - rect.left) / rect.width;
+		const u = Math.min(1, Math.max(0, takeX / span));
+		const value = Math.max(0, (1 - (event.clientY - rect.top) / rect.height) * GRAPH_MAX_SCALE);
+		return { takeX, u, value };
+	};
+
+	const segmentAt = (u) => {
+		let index = 0;
+		while (index < shown.cuts.length && u > shown.cuts[index].t) index += 1;
+		return index;
+	};
+
+	const applyDrag = (at) => {
+		const bounds = [{ t: 0 }, ...shown.cuts, { t: 1 }];
+		const index = segmentAt(at.u);
+		const a = bounds[index].t;
+		const b = bounds[index + 1].t;
+		const local = (at.u - a) / Math.max(1e-9, b - a);
+		// The drag radius is authored in TAKE space so the touch feels the same
+		// width everywhere, then mapped into the segment's own span.
+		const radius = Math.min(0.45, 0.1 / Math.max(0.05, b - a));
+		const op = conserve ? envelopeDrag : envelopePaint;
+		const envelopes = shown.envelopes.map((envelope, i) => (i === index ? op(envelope, local, at.value, radius) : envelope));
+		onChange?.({ ...shown, envelopes }, { dragging: true });
+		setDragReadout({ x: at.takeX, value: at.value });
+	};
+
+	const onPointerDown = (event) => {
+		if (event.button !== 0) return;
+		const at = locate(event);
+		if (!at || at.takeX > span + 0.02) return;
+		event.preventDefault();
+		// Capture is a nicety for the drag; an unknown pointerId (synthetic
+		// events, exotic devices) throws, and that must not kill the press.
+		try {
+			event.currentTarget.setPointerCapture?.(event.pointerId);
+		} catch {
+			/* drag still works through the element's own move events */
+		}
+		dragRef.current = { recorded: false };
+		setSelectedCut(null);
+	};
+	const onPointerMove = (event) => {
+		if (!dragRef.current) return;
+		const at = locate(event);
+		if (!at) return;
+		if (!dragRef.current.recorded) {
+			dragRef.current.recorded = true;
+			onGestureStart?.();
+		}
+		applyDrag(at);
+	};
+	const onPointerUp = () => {
+		const drag = dragRef.current;
+		dragRef.current = null;
+		setDragReadout(null);
+		if (drag?.recorded) onGestureEnd?.();
+	};
+	const onDoubleClick = (event) => {
+		const at = locate(event);
+		if (!at) return;
+		event.preventDefault();
+		const next = insertCut(shown, at.u);
+		if (next === shown || next === timing) return;
+		onGestureStart?.();
+		onChange?.(next, { dragging: false });
+		onGestureEnd?.();
+		setSelectedCut(next.cuts.findIndex((cut) => Math.abs(cut.t - at.u) < CUT_MIN_GAP));
+	};
+
+	// Delete removes the selected cut; capture phase so the scene-object
+	// delete handler (which would take the whole prop) never sees the press.
+	useEffect(() => {
+		if (selectedCut == null) return undefined;
+		const onKey = (event) => {
+			if (event.key !== "Delete" && event.key !== "Backspace") return;
+			if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			const next = removeCut(shown, selectedCut);
+			setSelectedCut(null);
+			if (next !== shown) {
+				onGestureStart?.();
+				onChange?.(next, { dragging: false });
+				onGestureEnd?.();
+			}
+		};
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
+	});
+
+	const averageY = 1 - 1 / GRAPH_MAX_SCALE;
+	const playheadX = frameCount > 1 ? frame / (frameCount - 1) : 0;
+	return (
+		<div className="speed-graph">
+			<svg
+				ref={svgRef}
+				viewBox="0 0 1 1"
+				preserveAspectRatio="none"
+				onPointerDown={onPointerDown}
+				onPointerMove={onPointerMove}
+				onPointerUp={onPointerUp}
+				onPointerCancel={onPointerUp}
+				onDoubleClick={onDoubleClick}
+			>
+				{/* the average line: what "flat" means, in this segment's units */}
+				<line className="sg-average" x1="0" y1={averageY} x2={span} y2={averageY} />
+				{span < 0.999 && <rect className="sg-outside" x={span} y="0" width={1 - span} height="1" />}
+				{segments.map((segment) => (
+					<g key={segment.key}>
+						<polygon
+							className="sg-fill"
+							points={`${segment.a * span},1 ${segment.line} ${segment.b * span},1`}
+						/>
+						<polyline className="sg-line" points={segment.line} />
+					</g>
+				))}
+				{shown.cuts.map((cut, index) => (
+					<g key={index}>
+						<line className={"sg-cut" + (index === selectedCut ? " selected" : "")} x1={cut.t * span} y1="0" x2={cut.t * span} y2="1" />
+						{/* fat pick: the visible line is unclickably thin */}
+						<line
+							className="sg-cut-pick"
+							x1={cut.t * span}
+							y1="0"
+							x2={cut.t * span}
+							y2="1"
+							onPointerDown={(event) => {
+								event.stopPropagation();
+								setSelectedCut(index === selectedCut ? null : index);
+							}}
+						/>
+					</g>
+				))}
+				<line className="sg-playhead" x1={playheadX} y1="0" x2={playheadX} y2="1" />
+			</svg>
+			<span className="sg-scale-top">{(GRAPH_MAX_SCALE * averageSpeed).toFixed(1)} {speedUnit}</span>
+			<span className="sg-scale-avg" style={{ top: `${averageY * 100}%` }}>{averageSpeed.toFixed(1)}</span>
+			{dragReadout && (
+				<span className="sg-readout" style={{ left: `${dragReadout.x * 100}%` }}>
+					{(dragReadout.value * averageSpeed).toFixed(1)} {speedUnit}
+				</span>
+			)}
+		</div>
+	);
+}
+
 /** Frames the prop is actually travelling for, given its speed. */
 function travelSpan(path, metrics, frameCount, fps) {
 	if (!path || !metrics || metrics.length <= 0) return null;
@@ -111,7 +307,7 @@ function travelSpan(path, metrics, frameCount, fps) {
  * row ask "whose?". The frame ruler and the transport above stay put, because
  * those belong to the take, not to any one subject.
  */
-function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDrawToggle, onPathChange, onPathClear }) {
+function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDrawToggle, onPathChange, onPathClear, onTimingGestureStart, onTimingGestureEnd }) {
 	const path = object?.path ?? null;
 	const metrics = useMemo(() => (path ? pathMetrics(path) : null), [path]);
 	const span = useMemo(() => travelSpan(path, metrics, frameCount, fps), [path, metrics, frameCount, fps]);
@@ -217,6 +413,24 @@ function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDra
 								</span>
 							</div>
 						)}
+					</div>
+				</div>
+			)}
+			{path && span && (
+				<div className="tl-track objmo sg-row">
+					<span className="tl-track-label">{ko("Speed", "속도 곡선")}</span>
+					<div className="tl-lane sg-lane">
+						<SpeedGraph
+							timing={path.timing ?? null}
+							windowFrac={span.fills ? 1 : span.end / Math.max(1, frameCount - 1)}
+							frame={frame}
+							frameCount={frameCount}
+							averageSpeed={metrics && span ? metrics.length / Math.max(1 / fps, (span.end - span.start) / fps) : 1}
+							conserve
+							onChange={(timing) => onPathChange?.({ ...path, timing: timingIsFlat(timing) ? null : timing })}
+							onGestureStart={onTimingGestureStart}
+							onGestureEnd={onTimingGestureEnd}
+						/>
 					</div>
 				</div>
 			)}
@@ -439,6 +653,8 @@ export default function Timeline({
 	onObjectPathDrawToggle,
 	onObjectPathChange,
 	onObjectPathClear,
+	onObjectTimingGestureStart,
+	onObjectTimingGestureEnd,
 	onCameraRailDelete,
 	onRailSelect,
 	onRailMove,
@@ -482,7 +698,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onObjectPathDrawToggle, onObjectPathChange, onObjectPathClear, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onObjectPathDrawToggle, onObjectPathChange, onObjectPathClear, onObjectTimingGestureStart, onObjectTimingGestureEnd, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -1330,6 +1546,8 @@ export default function Timeline({
 								onPathDrawToggle={() => handlers.current.onObjectPathDrawToggle?.()}
 								onPathChange={(path) => handlers.current.onObjectPathChange?.(path)}
 								onPathClear={() => handlers.current.onObjectPathClear?.()}
+								onTimingGestureStart={() => handlers.current.onObjectTimingGestureStart?.()}
+								onTimingGestureEnd={() => handlers.current.onObjectTimingGestureEnd?.()}
 							/>
 						) : TRACKS.map((name) => (
 							<div className={"tl-track" + (name === "Prompts" ? " prompts" : "") + (name === IK_LANE ? " ik" : "") + (name === SHOTS_LANE ? " shots" : "")} key={name}>

@@ -148,6 +148,29 @@ export function envelopeDrag(envelope, at, targetValue, radius = 0.18) {
 	return next;
 }
 
+/**
+ * The camera's drag: same plateau bump, NO renormalization. A dolly cap is a
+ * limit, not a distance budget — the subject drives how far the camera
+ * actually travels — so pulling one stretch does not owe the rest anything.
+ */
+export function envelopePaint(envelope, at, targetValue, radius = 0.18) {
+	const n = envelope.length;
+	const target = Math.max(0, finite(targetValue, 0));
+	const center = clamp(finite(at, 0), 0, 1);
+	const plateau = radius / 3;
+	const next = new Array(n);
+	for (let i = 0; i < n; i += 1) {
+		const distance = Math.abs(i / (n - 1) - center);
+		const weight = distance <= plateau
+			? 1
+			: distance >= radius
+				? 0
+				: 0.5 * (1 + Math.cos(((distance - plateau) / (radius - plateau)) * Math.PI));
+		next[i] = Math.max(0, envelope[i] * (1 - weight) + target * weight);
+	}
+	return next;
+}
+
 /** Integral of the envelope from 0 to x, as a fraction of its whole area. */
 function envelopePrefix(envelope, x) {
 	const n = envelope.length;

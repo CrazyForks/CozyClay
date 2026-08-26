@@ -3662,6 +3662,7 @@ globalThis.playMode = centerTab === "play";
 	const [pathPointIndex, setPathPointIndex] = useState(null);
 	const pathDragTokenRef = useRef(null);
 	const planPathTokenRef = useRef(null);
+	const timingTokenRef = useRef(null);
 	// The frame props follow. Live playback keeps it at the playhead; the
 	// offscreen export drives it per captured frame without re-rendering.
 	const propFrameRef = useRef(0);
@@ -6719,6 +6720,7 @@ globalThis.playMode = centerTab === "play";
 			objectPath: selectedSceneObject?.path ?? null,
 			pathPointIndex,
 			pathHandlesEnabled: centerTab === "scene" && !lookThroughShot && !ikMode && !posing && !playMode && !!selectedSceneObject?.path,
+			scrub: (frame) => setTlFrame(Math.max(0, Math.min(tlFrameCount - 1, Math.round(frame)))),
 			centerTab,
 			pathDraw,
 		};
@@ -10001,13 +10003,20 @@ function resizePromptClip(id, edge, rawFrame) {
 						setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
 					}}
 					onObjectPathChange={(path) => {
-						if (selectedSceneObject) changeSceneObject(selectedSceneObject.id, { path });
+						if (selectedSceneObject) changeSceneObject(selectedSceneObject.id, { path }, timingTokenRef.current ?? undefined);
 					}}
 					onObjectPathClear={() => {
 						if (!selectedSceneObject) return;
 						const token = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
 						changeSceneObject(selectedSceneObject.id, { path: null }, token);
 						endSceneTransaction(token, { commit: true });
+					}}
+					onObjectTimingGestureStart={() => {
+						timingTokenRef.current = beginSceneTransaction({ owner: "object-timing", cancel: () => { timingTokenRef.current = null; } });
+					}}
+					onObjectTimingGestureEnd={() => {
+						if (timingTokenRef.current != null) endSceneTransaction(timingTokenRef.current, { commit: true });
+						timingTokenRef.current = null;
 					}}
 					cameraRailLength={railCurve?.length ?? null}
 				shotCutDisabled={!!posing || ikMode || waypointMode}

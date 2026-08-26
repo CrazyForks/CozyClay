@@ -2969,6 +2969,91 @@ input[type=range]::-moz-range-thumb {
 }
 
 /* Filling the take is the default, so it whispers rather than shouts. */
+/* The speed graph: a real editing surface, so it gets real height. */
+.tl-track.sg-row .tl-lane { height: 64px; }
+
+.speed-graph {
+	position: absolute;
+	inset: 0;
+}
+
+.speed-graph svg {
+	width: 100%;
+	height: 100%;
+	display: block;
+	cursor: crosshair;
+	touch-action: none;
+}
+
+.sg-fill { fill: rgba(111, 207, 151, .18); }
+
+.sg-line {
+	fill: none;
+	stroke: #6fcf97;
+	stroke-width: 1.6;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-average {
+	stroke: rgba(159, 224, 187, .3);
+	stroke-width: 1;
+	stroke-dasharray: 3 3;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-outside { fill: rgba(255, 255, 255, .04); }
+
+.sg-cut {
+	stroke: #ffb454;
+	stroke-width: 1.2;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-cut.selected { stroke-width: 2.4; }
+
+.sg-cut-pick {
+	stroke: transparent;
+	stroke-width: 10;
+	vector-effect: non-scaling-stroke;
+	cursor: pointer;
+	/* a transparent stroke is not "painted", so the default visiblePainted
+	   hit-test would never catch it — hit the stroke geometry instead */
+	pointer-events: stroke;
+}
+
+.sg-playhead {
+	stroke: #ffb454;
+	stroke-width: 1;
+	vector-effect: non-scaling-stroke;
+	opacity: .7;
+	pointer-events: none;
+}
+
+.sg-scale-top,
+.sg-scale-avg {
+	position: absolute;
+	left: 4px;
+	color: #7fae95;
+	font-size: 8px;
+	pointer-events: none;
+}
+
+.sg-scale-top { top: 2px; }
+.sg-scale-avg { transform: translateY(-100%); }
+
+.sg-readout {
+	position: absolute;
+	top: 2px;
+	transform: translateX(-50%);
+	padding: 1px 5px;
+	border-radius: 3px;
+	background: #2f6b4d;
+	color: #eafff3;
+	font-size: 9px;
+	white-space: nowrap;
+	pointer-events: none;
+}
+
 .objmo-travel.fills {
 	border-style: dashed;
 	background: linear-gradient(180deg, rgba(111, 207, 151, .2), rgba(111, 207, 151, .08));
