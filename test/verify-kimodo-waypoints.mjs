@@ -315,4 +315,117 @@ const GEN_FPS = 30;
 	pass("a single-segment take is unaffected by the transition-window rule");
 }
 
+// ---- densifyStride lays interpolated constraints along the path -----------
+// THE seam fix. A waypoint on a prompt boundary belongs entirely to segment 2
+// (crop_move is half-open), so segment 1 never learns the path exists, walks
+// wherever it likes, and the root teleports 2.353 m at the seam to satisfy the
+// constraint one frame later. Densifying the authored polyline gives segment 1
+// intermediate targets, so it arrives at the boundary already in place.
+{
+	const waypoints = [
+		{ frame: 0, x: 0, z: 0, heading: null },
+		{ frame: 60, x: 2, z: 3, heading: null },
+	];
+	// 3 s + 3 s at 20 fps app / 30 fps generation: segment 2 starts at gen 90,
+	// which is exactly where the second waypoint lands.
+	const out = buildRoot2dConstraints(waypoints, {
+		appFps: 20,
+		genFps: 30,
+		genFrames: 180,
+		segmentStarts: [90],
+		transitionFrames: 5,
+		densifyStride: 10,
+	});
+	const indices = out[0].frame_indices;
+	// Segment 1 must now see the path: intermediate frames every stride.
+	for (const expected of [10, 20, 30, 40, 50, 60, 70, 80]) {
+		assert.ok(indices.includes(expected), `densified path must constrain gen frame ${expected}, got ${indices}`);
+	}
+	// Densified samples sit ON the authored straight line (linear interpolation).
+	const at30 = out[0].smooth_root_2d[indices.indexOf(30)];
+	assert.ok(near(at30[0], 2 / 3, 1e-6) && near(at30[1], 1, 1e-6), `frame 30 must sample the line, got ${at30}`);
+	// No constraint may land inside the transition window [90, 95).
+	for (const frame of indices) {
+		assert.ok(frame < 90 || frame >= 95, `frame ${frame} lands in the transition window [90,95)`);
+	}
+	// The authored target survives, nudged just past the window, position intact.
+	const lastIndex = indices.length - 1;
+	assert.equal(indices[lastIndex], 95, `the boundary waypoint must sit right after the window, got ${indices[lastIndex]}`);
+	assert.deepEqual(out[0].smooth_root_2d[lastIndex], [2, 3], "densifying must not move the authored target");
+	// Structural invariants.
+	assert.equal(new Set(indices).size, indices.length, "densifying must not duplicate frames");
+	assert.deepEqual([...indices].sort((a, b) => a - b), indices, "frame_indices must stay ascending");
+	assert.equal(out[0].smooth_root_2d.length, indices.length, "arrays must stay index-aligned");
+	assert.ok(out[0].smooth_root_2d.flat().every(Number.isFinite), "densified samples must be finite");
+	assert.equal("global_root_heading" in out[0], false, "an all-null-heading path stays heading-free when densified");
+	pass("densifyStride lays interpolated constraints so segment 1 sees the path");
+}
+
+// ---- densified samples never outrun the authored path ---------------------
+// Sampling past the last waypoint would invent motion the author never asked
+// for, so densification stays strictly inside [first, last] authored frames.
+{
+	const out = buildRoot2dConstraints(
+		[
+			{ frame: 0, x: 0, z: 0, heading: null },
+			{ frame: 40, x: 0, z: 4, heading: null },
+		],
+		{ appFps: 20, genFps: 30, genFrames: 180, densifyStride: 10 }
+	);
+	const indices = out[0].frame_indices;
+	assert.equal(indices[indices.length - 1], 60, `nothing may be constrained past the last authored frame, got ${indices}`);
+	pass("densification stops at the last authored waypoint");
+}
+
+// ---- densifyStride 0 (the default) changes nothing ------------------------
+{
+	const waypoints = [
+		{ frame: 0, x: 0, z: 0, heading: null },
+		{ frame: 60, x: 2, z: 3, heading: null },
+	];
+	const plain = buildRoot2dConstraints(waypoints, { appFps: 20, genFps: 30, genFrames: 180 });
+	const zero = buildRoot2dConstraints(waypoints, { appFps: 20, genFps: 30, genFrames: 180, densifyStride: 0 });
+	assert.deepEqual(plain, zero, "densifyStride 0 must be a no-op");
+	pass("densifyStride defaults off and 0 is a no-op");
+}
+
+// ---- densified frames keep heading arrays index-aligned -------------------
+// Inserted samples author no heading; they borrow the next authored one so the
+// character keeps facing along the path it is walking, and the arrays stay the
+// same length as frame_indices.
+{
+	const out = buildRoot2dConstraints(
+		[
+			{ frame: 0, x: 0, z: 0, heading: null },
+			{ frame: 60, x: 2, z: 3, heading: Math.PI / 2 },
+		],
+		{ appFps: 20, genFps: 30, genFrames: 180, densifyStride: 10 }
+	);
+	assert.equal(
+		out[0].global_root_heading.length,
+		out[0].frame_indices.length,
+		"heading must stay index-aligned after densification"
+	);
+	const mid = out[0].global_root_heading[out[0].frame_indices.indexOf(30)];
+	assert.ok(near(mid[0], 0) && near(mid[1], 1), `an inserted frame borrows the next authored heading, got ${mid}`);
+	pass("densified frames borrow the next authored heading and stay aligned");
+}
+
+// ---- a bad stride is refused ----------------------------------------------
+{
+	const waypoints = [
+		{ frame: 0, x: 0, z: 0, heading: null },
+		{ frame: 60, x: 2, z: 3, heading: null },
+	];
+	assert.throws(
+		() => buildRoot2dConstraints(waypoints, { appFps: 20, genFps: 30, genFrames: 180, densifyStride: -1 }),
+		/densifyStride/
+	);
+	assert.throws(
+		() => buildRoot2dConstraints(waypoints, { appFps: 20, genFps: 30, genFrames: 180, densifyStride: 2.5 }),
+		/densifyStride/
+	);
+	pass("a negative or fractional densifyStride is refused by name");
+}
+
 console.log("OK verify-kimodo-waypoints");

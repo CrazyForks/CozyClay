@@ -155,16 +155,35 @@ export async function generateOnBox({
 	// NOTE: segmentBoundaries (re-expressing constraint POSITIONS per segment) is
 	// deliberately NOT passed. That was implemented and measured twice on the
 	// box, and both times it tracked far worse than whole-clip absolute authoring
-	// (waypoint error 0.11 m -> 3.6 m). Only the FRAME nudge below helped.
+	// (waypoint error 0.11 m -> 3.6 m).
 	//
-	// The transition-window nudge (segmentStarts) is ALSO not passed. It does cut
-	// the seam teleport (2.353 m -> 0.728 m) but it moves the constraint's TIMING,
-	// so the character reaches the authored position ~0.3 s late and the waypoint
-	// misses its own frame by 2.26 m. Trading a 0.11 m tracking error for a 2.26 m
-	// one is a worse deal than the seam it fixes, so both mitigations stay off
-	// until one is found that costs neither. Both remain implemented and pinned by
-	// test/verify-kimodo-waypoints.mjs so the findings are not lost.
-	const root2d = buildRoot2dConstraints(waypoints, { appFps, genFps, genFrames });
+	// What DOES ship for a multi-segment take is DENSIFICATION plus the
+	// transition-window nudge. Kimodo crops constraints per segment with a
+	// half-open [start, end), so a waypoint on a boundary belongs entirely to the
+	// later segment and the earlier one never learns the path exists -- it ends
+	// wherever it likes and the root teleports at the seam (measured 2.353 m).
+	// The nudge ALONE traded that for arriving ~0.3 s late (waypoint miss 2.26 m);
+	// densifying the authored polyline every `densifyStride` generation frames
+	// gives the earlier segment intermediate targets, so it arrives at the
+	// boundary already in place and the nudged pin merely confirms it. Both
+	// behaviours are pinned by test/verify-kimodo-waypoints.mjs.
+	const segmentStarts = [];
+	{
+		let cursorS = 0;
+		for (const segment of segments.slice(0, -1)) {
+			cursorS += Number(segment.duration);
+			segmentStarts.push(Math.round(cursorS * genFps));
+		}
+	}
+	const densifyStride = segmentStarts.length > 0 ? Number(process.env.CCLAY_KIMODO_DENSIFY_STRIDE || 10) : 0;
+	const root2d = buildRoot2dConstraints(waypoints, {
+		appFps,
+		genFps,
+		genFrames,
+		segmentStarts,
+		transitionFrames,
+		densifyStride,
+	});
 
 	// Pinned poses ride in the SAME constraints file as the path: Kimodo's loader
 	// reads a JSON array and dispatches per entry `type`, so one file can carry a

@@ -59,8 +59,11 @@ function requireFinite(value, label) {
  */
 export function buildRoot2dConstraints(
 	waypoints,
-	{ appFps, genFps, genFrames, segmentBoundaries = [], segmentStarts = [], transitionFrames = 5 } = {}
+	{ appFps, genFps, genFrames, segmentBoundaries = [], segmentStarts = [], transitionFrames = 5, densifyStride = 0 } = {}
 ) {
+	if (!Number.isInteger(densifyStride) || densifyStride < 0) {
+		throw new Error(`buildRoot2dConstraints: densifyStride must be a non-negative integer, got ${JSON.stringify(densifyStride)}`);
+	}
 	if (!waypoints || waypoints.length === 0) return [];
 	if (!Array.isArray(waypoints)) {
 		throw new Error("buildRoot2dConstraints: waypoints must be an array");
@@ -113,6 +116,11 @@ export function buildRoot2dConstraints(
 	for (const entry of normalised) byFrame.set(entry.genFrame, entry);
 	const points = [...byFrame.values()].sort((a, b) => a.genFrame - b.genFrame);
 
+	// The AUTHORED polyline, frozen before any nudge or densification mutates
+	// `points`: every later interpolation samples what the author drew, never a
+	// constraint that has already been moved for Kimodo's benefit.
+	const authored = points.map((point) => ({ ...point }));
+
 	// Where does the authored path sit when each segment BEGINS? That position is
 	// the origin Kimodo will re-zero this segment to, so every constraint inside
 	// the segment is emitted as a displacement from it. The path is sampled
@@ -122,12 +130,12 @@ export function buildRoot2dConstraints(
 		(a, b) => a - b
 	);
 	const sampleAt = (genFrame) => {
-		if (genFrame <= points[0].genFrame) return points[0];
-		const last = points[points.length - 1];
+		if (genFrame <= authored[0].genFrame) return authored[0];
+		const last = authored[authored.length - 1];
 		if (genFrame >= last.genFrame) return last;
-		for (let index = 1; index < points.length; index += 1) {
-			const a = points[index - 1];
-			const b = points[index];
+		for (let index = 1; index < authored.length; index += 1) {
+			const a = authored[index - 1];
+			const b = authored[index];
 			if (genFrame <= b.genFrame) {
 				const span = b.genFrame - a.genFrame;
 				const t = span === 0 ? 0 : (genFrame - a.genFrame) / span;
@@ -173,6 +181,32 @@ export function buildRoot2dConstraints(
 		for (const point of points) deduped.set(point.genFrame, point);
 		points.length = 0;
 		points.push(...[...deduped.values()].sort((a, b) => a.genFrame - b.genFrame));
+	}
+
+	// DENSIFICATION — the seam fix. Kimodo generates each prompt segment
+	// separately and crops constraints with a half-open [start, end): a waypoint
+	// ON a boundary belongs entirely to the segment that starts there, so the
+	// segment BEFORE it never learns the path exists, ends wherever it likes, and
+	// the root teleports at the seam (measured 2.353 m) to satisfy the constraint
+	// one frame later. Laying interpolated samples of the authored polyline every
+	// `densifyStride` generation frames tells every segment where the path goes,
+	// so each one arrives at its boundary already in place. Samples stay strictly
+	// inside [first, last] authored frames (constraining past the path's end
+	// would invent motion) and out of every transition window (Kimodo owns those
+	// frames with its own constraints; see the nudge above).
+	if (densifyStride > 0 && points.length >= 2) {
+		const windows = [...new Set(segmentStarts.map((frame) => Math.round(frame)))];
+		const inWindow = (frame) => windows.some((start) => frame >= start && frame < start + transitionFrames);
+		const taken = new Set(points.map((point) => point.genFrame));
+		const first = authored[0].genFrame;
+		const last = authored[authored.length - 1].genFrame;
+		for (let frame = first + densifyStride; frame < last; frame += densifyStride) {
+			if (taken.has(frame) || inWindow(frame)) continue;
+			const { x, z } = sampleAt(frame);
+			points.push({ genFrame: frame, x, z, heading: null });
+			taken.add(frame);
+		}
+		points.sort((a, b) => a.genFrame - b.genFrame);
 	}
 
 	const anyHeading = points.some((point) => point.heading !== null);
