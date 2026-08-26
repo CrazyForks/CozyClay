@@ -11,7 +11,8 @@
  * deletion the normaliser performs: a composite physical beat comes back whole,
  * commas and "then"/"while"/"as"/"before" clauses included.
  */
-import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhase, normalizePhases, splitLongBeat } from "./ardy-prompts.mjs";
+import { readFileSync } from "node:fs";
+import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhase, normalizePhases, splitLongBeat, tileClipFrames } from "./ardy-prompts.mjs";
 
 let failures = 0;
 const check = (label, ok, detail = "") => {
@@ -142,13 +143,13 @@ if (failures > 0) {
 }
 console.log("all ARDY prompt checks passed");
 
-/* ------------------------------ the 4 s cap ------------------------------ */
+/* ------------------------------ the 5 s cap ------------------------------ */
 // Mirrors the studio's PROMPT_BLOCK_MAX_FRAMES: a longer block drifts, and the
 // UI refuses to generate one, so the tools must never author one either.
 
-check("the cap is four seconds", BLOCK_MAX_SECONDS === 4);
+check("the cap is five seconds", BLOCK_MAX_SECONDS === 5);
 check("a short beat is left whole", splitLongBeat(3).length === 1);
-check("a beat exactly at the cap is left whole", splitLongBeat(4).length === 1);
+check("a beat exactly at the cap is left whole", splitLongBeat(5).length === 1);
 
 const six = splitLongBeat(6);
 check("a 6 s beat becomes two blocks", six.length === 2, JSON.stringify(six));
@@ -159,3 +160,41 @@ const eleven = splitLongBeat(11);
 check("an 11 s beat becomes three blocks", eleven.length === 3, JSON.stringify(eleven));
 check("every piece of a long beat is within the cap", eleven.every((s) => s <= BLOCK_MAX_SECONDS + 1e-9));
 check("the guide states the cap", PROMPT_GUIDE.includes(`${BLOCK_MAX_SECONDS} s`));
+const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+check(
+	"the studio mirrors the cap (App.jsx PROMPT_BLOCK_MAX_FRAMES)",
+	appSource.includes(`const PROMPT_BLOCK_MAX_FRAMES = ${BLOCK_MAX_SECONDS} * TIMELINE_FPS`),
+);
+
+/* ------------------------- single-prompt tiling -------------------------- */
+
+const contiguous = (blocks) =>
+	blocks.every((block, i) => i === 0 ? block.startFrame === 0 : block.startFrame === blocks[i - 1].endFrame);
+const balanced = (blocks) => {
+	const spans = blocks.map((block) => block.endFrame - block.startFrame);
+	return Math.max(...spans) - Math.min(...spans) <= 1;
+};
+const totalFrames = (blocks) => blocks.reduce((sum, block) => sum + block.endFrame - block.startFrame, 0);
+
+const elevenTile = tileClipFrames(220, 11);
+check("11 s / 220 frames tiles into three blocks", elevenTile.length === 3, JSON.stringify(elevenTile));
+check("11 s tile starts at frame 0 and is contiguous", contiguous(elevenTile), JSON.stringify(elevenTile));
+check("11 s tile ends at frame 220", elevenTile.at(-1)?.endFrame === 220, JSON.stringify(elevenTile));
+check("11 s tile spans are balanced and within the 5 s wire cap", balanced(elevenTile) && elevenTile.every((b) => b.endFrame - b.startFrame <= Math.ceil(BLOCK_MAX_SECONDS * 20)), JSON.stringify(elevenTile));
+check("11 s tile preserves all 220 frames", totalFrames(elevenTile) === 220, JSON.stringify(elevenTile));
+
+const quantizedTile = tileClipFrames(219, 10.95);
+check("10.95 s / 219 frames tiles into three contiguous blocks", quantizedTile.length === 3 && contiguous(quantizedTile), JSON.stringify(quantizedTile));
+check("10.95 s tile ends at frame 219", quantizedTile.at(-1)?.endFrame === 219, JSON.stringify(quantizedTile));
+
+const sixTile = tileClipFrames(120, 6);
+check("6 s / 120 frames tiles into two blocks", sixTile.length === 2 && contiguous(sixTile), JSON.stringify(sixTile));
+check("6 s tile ends at frame 120", sixTile.at(-1)?.endFrame === 120, JSON.stringify(sixTile));
+
+const shortTile = tileClipFrames(80, 4);
+check("4 s / 80 frames stays one whole block", shortTile.length === 1 && shortTile[0]?.startFrame === 0 && shortTile[0]?.endFrame === 80, JSON.stringify(shortTile));
+
+if (failures > 0) {
+	console.log(`\n${failures} check(s) failed`);
+	process.exit(1);
+}
