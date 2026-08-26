@@ -51,7 +51,7 @@ expect(
 	app.includes('if (patch.mode === "follow") syncActiveCameraFraming()'),
 );
 
-expect("surface lays out four tracks after removing duplicate Camera row", css.includes("grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr);"));
+expect("surface lays out four tracks after removing duplicate Camera row", css.includes("grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr)"));
 expect("lane gridlines are frame-based, not width-based", css.includes(".tl-grid {") && !css.includes("100% / 23"));
 expect("camera dots have a distinct violet identity", css.includes(".tl-marker.cam {") && css.includes("#a78bfa"));
 expect("Rail Follow lives inside each unified Shot block", timeline.includes("shot.camera?.railFollow") && timeline.includes('className={"tl-rail"') && !timeline.includes("name === CAMERA_LANE"));

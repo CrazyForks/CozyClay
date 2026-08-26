@@ -98,13 +98,19 @@ function signedValue(value) {
 /** y-axis ceiling of the speed graph, in multiples of the average speed. */
 const GRAPH_MAX_SCALE = 3;
 
+const sgY = (value) => 1 - Math.min(value, GRAPH_MAX_SCALE) / GRAPH_MAX_SCALE;
+
 /**
- * The speed graph: time across, speed up, the area under the curve is the
- * distance. Drag the curve to shape it — with `conserve`, raising one stretch
- * lowers the rest of the same segment, because the distance is a fact of the
- * route. Double-click drops a cut (a time-distance pin): everything between
- * two pins is a sealed room, so a cut is how one stretch is detailed without
- * disturbing the take around it. Delete removes the selected cut.
+ * The speed editor, designed as its own instrument rather than a lane
+ * decoration: a header carrying the facts (distance, time, average) and the
+ * actions (cut, reset), and a body that reads like a graph — a zero line, a
+ * dashed average line, an area-filled curve. Time across, speed up, and the
+ * area under the curve is the distance: dragging a stretch up visibly sinks
+ * the rest of its segment, because the arrival frame is not negotiable.
+ *
+ * Cuts are first-class: a header button pins the playhead's instant, a
+ * double-click pins the pointer's, and each pin draws an amber diamond the
+ * size of a handle — click to select, Delete to remove.
  */
 function SpeedGraph({
 	timing,
@@ -122,12 +128,12 @@ function SpeedGraph({
 	const svgRef = useRef(null);
 	const dragRef = useRef(null);
 	const [selectedCut, setSelectedCut] = useState(null);
-	const [dragReadout, setDragReadout] = useState(null);
+	const [readout, setReadout] = useState(null);
 	const shown = timing ?? flatTiming();
 	const span = Math.max(1e-6, Math.min(1, windowFrac));
 	const origin = Math.max(0, Math.min(1, windowStart));
+	const hasCurve = !timingIsFlat(timing);
 
-	// One polyline per segment, in take-fraction x and 0..1 y (1 = ceiling).
 	const segments = useMemo(() => {
 		const bounds = [{ t: 0, d: 0 }, ...shown.cuts, { t: 1, d: 1 }];
 		return shown.envelopes.map((envelope, index) => {
@@ -135,12 +141,11 @@ function SpeedGraph({
 			const b = bounds[index + 1].t;
 			const points = envelope.map((value, i) => {
 				const x = origin + (a + (b - a) * (i / (envelope.length - 1))) * span;
-				const y = 1 - Math.min(value, GRAPH_MAX_SCALE) / GRAPH_MAX_SCALE;
-				return `${x.toFixed(4)},${y.toFixed(4)}`;
+				return `${x.toFixed(4)},${sgY(value).toFixed(4)}`;
 			});
 			return { key: index, a, b, line: points.join(" ") };
 		});
-	}, [shown, span]);
+	}, [shown, span, origin]);
 
 	const locate = (event) => {
 		const rect = svgRef.current?.getBoundingClientRect();
@@ -157,19 +162,22 @@ function SpeedGraph({
 		return index;
 	};
 
+	const commit = (next, { gesture }) => {
+		if (gesture) onGestureStart?.();
+		onChange?.(next, { dragging: gesture });
+		if (gesture) onGestureEnd?.();
+	};
+
 	const applyDrag = (at) => {
 		const bounds = [{ t: 0 }, ...shown.cuts, { t: 1 }];
 		const index = segmentAt(at.u);
 		const a = bounds[index].t;
 		const b = bounds[index + 1].t;
 		const local = (at.u - a) / Math.max(1e-9, b - a);
-		// The drag radius is authored in TAKE space so the touch feels the same
-		// width everywhere, then mapped into the segment's own span.
 		const radius = Math.min(0.45, 0.1 / Math.max(0.05, b - a));
-		const op = conserve ? envelopeDrag : envelopePaint;
-		const envelopes = shown.envelopes.map((envelope, i) => (i === index ? op(envelope, local, at.value, radius) : envelope));
+		const envelopes = shown.envelopes.map((envelope, i) => (i === index ? envelopeDrag(envelope, local, at.value, radius) : envelope));
 		onChange?.({ ...shown, envelopes }, { dragging: true });
-		setDragReadout({ x: at.takeX, value: at.value });
+		setReadout({ x: at.takeX, value: at.value });
 	};
 
 	const onPointerDown = (event) => {
@@ -177,12 +185,10 @@ function SpeedGraph({
 		const at = locate(event);
 		if (!at || at.takeX > origin + span + 0.02 || at.takeX < origin - 0.02) return;
 		event.preventDefault();
-		// Capture is a nicety for the drag; an unknown pointerId (synthetic
-		// events, exotic devices) throws, and that must not kill the press.
 		try {
 			event.currentTarget.setPointerCapture?.(event.pointerId);
 		} catch {
-			/* drag still works through the element's own move events */
+			/* an unknown pointerId must not kill the press */
 		}
 		dragRef.current = { recorded: false };
 		setSelectedCut(null);
@@ -200,23 +206,30 @@ function SpeedGraph({
 	const onPointerUp = () => {
 		const drag = dragRef.current;
 		dragRef.current = null;
-		setDragReadout(null);
+		setReadout(null);
 		if (drag?.recorded) onGestureEnd?.();
+	};
+	const addCutAt = (u) => {
+		const next = insertCut(shown, u);
+		if (next === shown || next === timing) return false;
+		commit(next, { gesture: true });
+		setSelectedCut(next.cuts.findIndex((cut) => Math.abs(cut.t - u) < CUT_MIN_GAP));
+		return true;
 	};
 	const onDoubleClick = (event) => {
 		const at = locate(event);
 		if (!at) return;
 		event.preventDefault();
-		const next = insertCut(shown, at.u);
-		if (next === shown || next === timing) return;
-		onGestureStart?.();
-		onChange?.(next, { dragging: false });
-		onGestureEnd?.();
-		setSelectedCut(next.cuts.findIndex((cut) => Math.abs(cut.t - at.u) < CUT_MIN_GAP));
+		addCutAt(at.u);
 	};
 
-	// Delete removes the selected cut; capture phase so the scene-object
-	// delete handler (which would take the whole prop) never sees the press.
+	// The playhead's position on the envelope's own clock — null when the
+	// playhead stands outside the window the envelope shapes.
+	const playheadTakeX = frameCount > 1 ? frame / (frameCount - 1) : 0;
+	const playheadU = (playheadTakeX - origin) / span;
+	const canCutAtPlayhead = playheadU > CUT_MIN_GAP && playheadU < 1 - CUT_MIN_GAP &&
+		!shown.cuts.some((cut) => Math.abs(cut.t - playheadU) < CUT_MIN_GAP);
+
 	useEffect(() => {
 		if (selectedCut == null) return undefined;
 		const onKey = (event) => {
@@ -226,69 +239,106 @@ function SpeedGraph({
 			event.stopImmediatePropagation();
 			const next = removeCut(shown, selectedCut);
 			setSelectedCut(null);
-			if (next !== shown) {
-				onGestureStart?.();
-				onChange?.(next, { dragging: false });
-				onGestureEnd?.();
-			}
+			if (next !== shown) commit(next, { gesture: true });
 		};
 		window.addEventListener("keydown", onKey, true);
 		return () => window.removeEventListener("keydown", onKey, true);
 	});
 
-	const averageY = 1 - 1 / GRAPH_MAX_SCALE;
-	const playheadX = frameCount > 1 ? frame / (frameCount - 1) : 0;
+	const avgY = sgY(1);
 	return (
-		<div className="speed-graph">
-			<svg
-				ref={svgRef}
-				viewBox="0 0 1 1"
-				preserveAspectRatio="none"
-				onPointerDown={onPointerDown}
-				onPointerMove={onPointerMove}
-				onPointerUp={onPointerUp}
-				onPointerCancel={onPointerUp}
-				onDoubleClick={onDoubleClick}
-			>
-				{/* the average line: what "flat" means, in this segment's units */}
-				<line className="sg-average" x1={origin} y1={averageY} x2={origin + span} y2={averageY} />
-				{origin > 0.001 && <rect className="sg-outside" x="0" y="0" width={origin} height="1" />}
-				{origin + span < 0.999 && <rect className="sg-outside" x={origin + span} y="0" width={1 - origin - span} height="1" />}
-				{segments.map((segment) => (
-					<g key={segment.key}>
-						<polygon
-							className="sg-fill"
-							points={`${origin + segment.a * span},1 ${segment.line} ${origin + segment.b * span},1`}
-						/>
-						<polyline className="sg-line" points={segment.line} />
-					</g>
-				))}
-				{shown.cuts.map((cut, index) => (
-					<g key={index}>
-						<line className={"sg-cut" + (index === selectedCut ? " selected" : "")} x1={origin + cut.t * span} y1="0" x2={origin + cut.t * span} y2="1" />
-						{/* fat pick: the visible line is unclickably thin */}
-						<line
-							className="sg-cut-pick"
-							x1={origin + cut.t * span}
-							y1="0"
-							x2={origin + cut.t * span}
-							y2="1"
-							onPointerDown={(event) => {
-								event.stopPropagation();
-								setSelectedCut(index === selectedCut ? null : index);
-							}}
-						/>
-					</g>
-				))}
-				<line className="sg-playhead" x1={playheadX} y1="0" x2={playheadX} y2="1" />
-			</svg>
-			<span className="sg-scale-top">{(GRAPH_MAX_SCALE * averageSpeed).toFixed(1)} {speedUnit}</span>
-			<span className="sg-scale-avg" style={{ top: `${averageY * 100}%` }}>{averageSpeed.toFixed(1)}</span>
-			{dragReadout && (
-				<span className="sg-readout" style={{ left: `${dragReadout.x * 100}%` }}>
-					{(dragReadout.value * averageSpeed).toFixed(1)} {speedUnit}
+		<div className="sg">
+			<header className="sg-head">
+				<span className="sg-facts">{averageSpeed.toFixed(1)} {speedUnit} {ko("average", "평균")}</span>
+				<span className="tl-path-hint">
+					{ko("drag the curve · double-click or the button cuts · Delete removes a cut", "곡선을 끌어 조절 · 더블클릭이나 버튼으로 컷 · 컷 선택 후 Delete로 삭제")}
 				</span>
-			)}
+				<button
+					type="button"
+					className="tl-camera-tool"
+					disabled={!canCutAtPlayhead}
+					title={ko("Pin the instant at the playhead: the spot being walked then never moves again", "재생 위치의 순간을 고정합니다 — 그때 지나는 자리는 다시 움직이지 않습니다")}
+					onClick={() => addCutAt(playheadU)}
+				>
+					{ko("Cut at playhead", "재생 위치에 컷")}
+				</button>
+				{hasCurve && (
+					<button
+						type="button"
+						className="tl-camera-tool danger"
+						title={ko("Back to constant speed — clears the curve and every cut", "등속으로 되돌립니다 — 곡선과 컷을 모두 지웁니다")}
+						onClick={() => {
+							setSelectedCut(null);
+							commit(flatTiming(), { gesture: true });
+						}}
+					>
+						{ko("Reset curve", "곡선 초기화")}
+					</button>
+				)}
+			</header>
+			<div className="sg-body">
+				<svg
+					ref={svgRef}
+					viewBox="0 0 1 1"
+					preserveAspectRatio="none"
+					onPointerDown={onPointerDown}
+					onPointerMove={onPointerMove}
+					onPointerUp={onPointerUp}
+					onPointerCancel={onPointerUp}
+					onDoubleClick={onDoubleClick}
+				>
+					<defs>
+						<linearGradient id="sg-fade" x1="0" y1="0" x2="0" y2="1">
+							<stop offset="0%" stopOpacity="0.34" />
+							<stop offset="100%" stopOpacity="0.05" />
+						</linearGradient>
+					</defs>
+					{/* axes: the floor is zero speed, the dashed line is the average */}
+					<line className="sg-axis" x1="0" y1="1" x2="1" y2="1" />
+					<line className="sg-average" x1={origin} y1={avgY} x2={origin + span} y2={avgY} />
+					{origin > 0.001 && <rect className="sg-outside" x="0" y="0" width={origin} height="1" />}
+					{origin + span < 0.999 && <rect className="sg-outside" x={origin + span} y="0" width={1 - origin - span} height="1" />}
+					{segments.map((segment) => (
+						<g key={segment.key}>
+							<polygon
+								className="sg-fill"
+								fill="url(#sg-fade)"
+								points={`${origin + segment.a * span},1 ${segment.line} ${origin + segment.b * span},1`}
+							/>
+							<polyline className="sg-line" points={segment.line} />
+						</g>
+					))}
+					{shown.cuts.map((cut, index) => {
+						const x = origin + cut.t * span;
+						return (
+							<g key={index} className={"sg-pin" + (index === selectedCut ? " selected" : "")}>
+								<line className="sg-cut" x1={x} y1="0.06" x2={x} y2="1" />
+								<path className="sg-cut-diamond" d={`M ${x} 0.055 l 0.007 -0.045 l -0.014 0 l 0.007 0.045 z`} />
+								<line
+									className="sg-cut-pick"
+									x1={x}
+									y1="0"
+									x2={x}
+									y2="1"
+									onPointerDown={(event) => {
+										event.stopPropagation();
+										setSelectedCut(index === selectedCut ? null : index);
+									}}
+								/>
+							</g>
+						);
+					})}
+					<line className="sg-playhead" x1={playheadTakeX} y1="0" x2={playheadTakeX} y2="1" />
+				</svg>
+				<span className="sg-scale-top">{Math.round(GRAPH_MAX_SCALE * averageSpeed * 10) / 10}</span>
+				<span className="sg-scale-avg" style={{ top: `${avgY * 100}%` }}>{averageSpeed.toFixed(1)}</span>
+				<span className="sg-scale-zero">0</span>
+				{readout && (
+					<span className="sg-readout" style={{ left: `${readout.x * 100}%` }}>
+						{(readout.value * averageSpeed).toFixed(1)} {speedUnit}
+					</span>
+				)}
+			</div>
 		</div>
 	);
 }

@@ -225,6 +225,12 @@ ok(
 	(travelTrackSource.match(/className="tl-track objmo"/g) ?? []).length === 2,
 );
 ok("the travel bar is inset, not a full-bleed fill", /\.objmo-travel \{[^}]*top: 4px[^}]*bottom: 4px/s.test(cssSource));
+ok("the speed editor is a real instrument: header, graph body, axes",
+	cssSource.includes(".sg-head") && cssSource.includes(".sg-body svg") &&
+	cssSource.includes(".sg-axis") && cssSource.includes(".sg-average"));
+ok("cuts are visible affordances, not hidden gestures",
+	timelineSource.includes('ko("Cut at playhead", "재생 위치에 컷")') &&
+	cssSource.includes(".sg-cut-diamond"));
 ok("filling the take whispers instead of shouting", cssSource.includes(".objmo-travel.fills") && cssSource.includes("border-style: dashed"));
 ok("the travel bar states its duration", travelTrackSource.includes("seconds.toFixed(1)"));
 

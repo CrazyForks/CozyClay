@@ -2842,6 +2842,11 @@ input[type=range]::-moz-range-thumb {
    it uses the same track grid and wears the route's green to say whose row
    this is. These rows carry controls rather than clips, so they set their own
    sizing: the camera bar's input rules do not reach inside a lane. */
+.tl-track.objmo.sg-row .tl-track-label {
+	align-items: flex-start;
+	padding-top: 8px;
+}
+
 .tl-track.objmo .tl-track-label {
 	color: #9fe0bb;
 	gap: 6px;
@@ -2969,26 +2974,180 @@ input[type=range]::-moz-range-thumb {
 }
 
 /* Filling the take is the default, so it whispers rather than shouts. */
-/* The speed graph: a real editing surface, so it gets real height. */
-.sg-cam .sg-line { stroke: #b9a1e8; }
-.sg-cam .sg-fill { fill: rgba(154, 123, 212, .18); }
-.sg-cam .sg-average { stroke: rgba(185, 161, 232, .3); }
-.sg-cam .tl-track-label { color: #cbb8ef; }
+/* The speed editor: a real instrument — header with facts and actions above,
+   a graph with a zero line and an average line below. */
+.tl-track.sg-row .tl-lane { height: 150px; overflow: hidden; }
 
-.tl-track.sg-row .tl-lane { height: 64px; }
-
-.speed-graph {
+.sg {
 	position: absolute;
 	inset: 0;
+	display: flex;
+	flex-direction: column;
 }
 
-.speed-graph svg {
+.sg-head {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 5px 10px 4px;
+	font-size: 11px;
+	color: #9fe0bb;
+}
+
+.sg-head .sg-facts { font-variant-numeric: tabular-nums; }
+
+.sg-head .tl-path-hint {
+	margin-left: 0;
+	opacity: .8;
+}
+
+.sg-head .tl-camera-tool {
+	margin-left: auto;
+	padding: 3px 10px;
+	font-size: 10px;
+}
+
+.sg-head .tl-camera-tool + .tl-camera-tool { margin-left: 0; }
+
+.sg-body {
+	position: relative;
+	flex: 1;
+	/* The header's height must never eat the graph: the panel row is a fixed
+	   lane, so the body carries its own floor and the header can wrap. */
+	min-height: 88px;
+	margin: 0 8px 6px;
+	border: 1px solid rgba(111, 207, 151, .22);
+	border-radius: 5px;
+	background: #0d1411;
+	overflow: hidden;
+}
+
+.sg-body svg {
 	width: 100%;
 	height: 100%;
 	display: block;
 	cursor: crosshair;
 	touch-action: none;
 }
+
+.sg-axis {
+	stroke: rgba(159, 224, 187, .35);
+	stroke-width: 1;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-average {
+	stroke: rgba(159, 224, 187, .38);
+	stroke-width: 1;
+	stroke-dasharray: 4 3;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-outside { fill: rgba(255, 255, 255, .05); }
+
+.sg-fill { fill: url(#sg-fade); }
+
+.sg .sg-line {
+	fill: none;
+	stroke: #6fcf97;
+	stroke-width: 2;
+	stroke-linejoin: round;
+	stroke-linecap: round;
+	vector-effect: non-scaling-stroke;
+}
+
+/* The camera's copy wears the rail's colour. */
+.sg-cam .sg-head { color: #cbb8ef; }
+.sg-cam .sg-body { border-color: rgba(154, 123, 212, .3); background: #120f17; }
+.sg-cam .sg-line { stroke: #b9a1e8; }
+.sg-cam .sg-axis, .sg-cam .sg-average { stroke: rgba(185, 161, 232, .4); }
+
+.sg-cut {
+	stroke: #ffb454;
+	stroke-width: 1;
+	stroke-dasharray: 3 3;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-cut-diamond { fill: #ffb454; }
+
+.sg-pin.selected .sg-cut-diamond { fill: #ffd08a; }
+.sg-pin.selected .sg-cut { stroke-width: 2; stroke-dasharray: none; }
+
+.sg-cut-pick {
+	stroke: transparent;
+	stroke-width: 10;
+	vector-effect: non-scaling-stroke;
+	cursor: pointer;
+	/* a transparent stroke is not "painted", so the default hit-test would
+	   never catch it — hit the stroke geometry instead */
+	pointer-events: stroke;
+}
+
+.sg-playhead {
+	stroke: #ffb454;
+	stroke-width: 1;
+	vector-effect: non-scaling-stroke;
+	opacity: .55;
+	pointer-events: none;
+}
+
+.sg-scale-top, .sg-scale-avg, .sg-scale-zero {
+	position: absolute;
+	right: 8px;
+	color: #5f7a6d;
+	font-size: 9px;
+	font-variant-numeric: tabular-nums;
+	pointer-events: none;
+}
+
+.sg-scale-top { top: 3px; }
+.sg-scale-avg { transform: translateY(-100%); padding-bottom: 2px; }
+.sg-scale-zero { bottom: 3px; }
+.sg-cam .sg-scale-top, .sg-cam .sg-scale-avg, .sg-cam .sg-scale-zero { color: #7d6a9e; }
+
+.sg-readout {
+	position: absolute;
+	top: 3px;
+	transform: translateX(-50%);
+	padding: 1px 6px;
+	border-radius: 3px;
+	background: #2f6b4d;
+	color: #eafff3;
+	font-size: 9px;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	pointer-events: none;
+}
+.sg-cam .sg-readout { background: #4a3d6e; }
+
+
+.objmo-travel {
+	position: absolute;
+	top: 4px;
+	bottom: 4px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 0 8px;
+	border: 1px solid rgba(111, 207, 151, .5);
+	border-radius: 3px;
+	background: linear-gradient(180deg, rgba(111, 207, 151, .34), rgba(111, 207, 151, .16));
+	color: #eafff3;
+	font-size: 9px;
+	white-space: nowrap;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+/* Filling the take is the default, so it whispers rather than shouts. */
+/* The speed graph: a real editing surface, so it gets real height. */
+.sg-cam .sg-line { stroke: #b9a1e8; }
+.sg-cam .sg-fill { fill: rgba(154, 123, 212, .18); }
+.sg-cam .sg-average { stroke: rgba(185, 161, 232, .3); }
+.sg-cam .tl-track-label { color: #cbb8ef; }
+
 
 .sg-fill { fill: rgba(111, 207, 151, .18); }
 
@@ -3372,6 +3531,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .tl-body {
+	overflow-y: auto;
 	position: relative;
 	flex: 1;
 	/* Ruler + three utility tracks + the unified Shot track. Camera controls
@@ -3379,10 +3539,10 @@ input[type=range]::-moz-range-thumb {
 	min-height: 156px;
 	--tl-label-w: 148px;
 	/* The zoomed time surface scrolls horizontally inside the timeline; the
-	   page itself never overflows. Vertical stays clipped so only the x axis
-	   ever scrolls. */
+	   page itself never overflows. Vertical scrolls too, because the speed
+	   graph is taller than a clip lane by design. */
 	overflow-x: auto;
-	overflow-y: hidden;
+	overflow-y: auto;
 }
 
 /* The zoomed time surface: every time-coordinate surface (ruler lane, lane
@@ -3391,13 +3551,13 @@ input[type=range]::-moz-range-thumb {
    --tl-label-w and never scales. */
 .tl-surface {
 	position: relative;
-	height: 100%;
 	width: calc(var(--tl-label-w) + (100% - var(--tl-label-w)) * var(--tl-zoom));
 	display: grid;
-	/* The unified Shot row carries title, optional Rail ribbon and key strip.
-	   Give that one row real working height instead of squeezing all four
-	   tracks equally when the camera mini editor is open. */
-	grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr);
+	/* Performer rows share the room evenly; the Shot row carries title, Rail
+	   ribbon and key strip so it gets real height; the prop/camera speed
+	   graph is a fixed instrument, and any overflow scrolls the surface —
+	   a squeezed graph reads as a broken one. */
+	grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr) auto;
 }
 
 .tl-ruler {
@@ -6117,6 +6277,14 @@ input[type=range]::-moz-range-thumb {
 
 	.timeline:not(.collapsed):has(.tl-camera-advanced[open]) {
 		height: max(calc(var(--timeline-height) + 48px), 270px);
+	}
+
+	/* The speed graph is an instrument, not a lane: when the strip carries one
+	   (a routed prop, or a rail shot's dolly curve), the bottom window grows
+	   to show it whole instead of scrolling it under the fold. */
+	.timeline:not(.collapsed):has(.tl-track.sg-row) {
+		height: max(calc(var(--timeline-height) + 96px), 300px);
+		max-height: none;
 	}
 }
 
