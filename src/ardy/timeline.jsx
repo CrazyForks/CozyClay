@@ -3,6 +3,7 @@ import { frameFromClientX, motionTrimRange, promptMoveStartFrame, shotBlockGeome
 import { motionSegmentSpeedForFrames } from "./motion-edit.js";
 import { promptResizeFrame } from "./timeline-resize.js";
 import { ko, isKo } from "../locale.js";
+import { pathMetrics } from "../object-path.js";
 
 /**
  * ARDY Viser-style animation timeline — the live motion workspace.
@@ -91,6 +92,134 @@ function signedDegrees(value) {
 function signedValue(value) {
 	const rounded = Math.round((Number(value) || 0) * 10) / 10;
 	return `${rounded >= 0 ? "+" : ""}${rounded}`;
+}
+
+/** Frames the prop is actually travelling for, given its speed. */
+function travelSpan(path, metrics, frameCount, fps) {
+	if (!path || !metrics || metrics.length <= 0) return null;
+	const last = Math.max(1, frameCount - 1);
+	// Speed 0 means "fill the take", which is the path's default timing.
+	if (!path.speed) return { start: 0, end: last, fills: true };
+	return { start: 0, end: Math.min(last, Math.round((metrics.length / path.speed) * fps)), fills: false };
+}
+
+/**
+ * The selected prop's travel, drawn in the timeline's own grid.
+ *
+ * This REPLACES the performer's lanes rather than joining them: a prop is a
+ * different subject on the same clock, and a strip that shows both makes every
+ * row ask "whose?". The frame ruler and the transport above stay put, because
+ * those belong to the take, not to any one subject.
+ */
+function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDrawToggle, onPathChange, onPathClear }) {
+	const path = object?.path ?? null;
+	const metrics = useMemo(() => (path ? pathMetrics(path) : null), [path]);
+	const span = useMemo(() => travelSpan(path, metrics, frameCount, fps), [path, metrics, frameCount, fps]);
+	const patch = (change) => onPathChange?.({ ...path, ...change });
+	return (
+		<>
+			<div className="tl-track objmo">
+				<span className="tl-track-label">
+					<span className="tl-subject-kind">{ko("PROP", "소품")}</span>
+					{object.name}
+				</span>
+				<div className="tl-lane objmo-tools">
+					<button
+						type="button"
+						className={"tl-camera-tool" + (pathDraw ? " active" : "")}
+						onClick={() => onPathDrawToggle?.()}
+					>
+						{pathDraw ? ko("Drawing…", "그리는 중…") : path ? ko("Redraw path", "경로 다시 그리기") : ko("Draw path", "경로 그리기")}
+					</button>
+					{path ? (
+						<>
+							<label title={ko("Metres per second; 0 spreads the route across the whole take", "초당 미터; 0이면 전체 길이에 맞춰 이동합니다")}>
+								<span>{ko("Speed", "속도")}</span>
+								<input
+									type="range"
+									min={0}
+									max={20}
+									step={0.1}
+									value={path.speed ?? 0}
+									onChange={(event) => patch({ speed: Number(event.currentTarget.value) })}
+								/>
+								<output className="tl-camera-metric">
+									{(path.speed ?? 0) === 0 ? ko("take", "전체") : `${Number(path.speed).toFixed(1)} m/s`}
+								</output>
+							</label>
+							<button
+								type="button"
+								className={"tl-camera-tool" + (path.faceTravel ? " active" : "")}
+								aria-pressed={!!path.faceTravel}
+								title={ko("Turn to face the direction of travel", "진행 방향을 바라보게 합니다")}
+								onClick={() => patch({ faceTravel: !path.faceTravel })}
+							>
+								{path.faceTravel ? ko("Faces travel", "진행 방향 봄") : ko("Fixed facing", "방향 고정")}
+							</button>
+							<button
+								type="button"
+								className={"tl-camera-tool" + (path.extend ? " active" : "")}
+								aria-pressed={!!path.extend}
+								title={ko("Keep going in the last direction after the route ends", "경로가 끝나도 마지막 방향으로 계속 갑니다")}
+								onClick={() => patch({ extend: !path.extend })}
+							>
+								{ko("Keep going", "계속 가기")}
+							</button>
+							<button
+								type="button"
+								className={"tl-camera-tool" + (path.loop ? " active" : "")}
+								aria-pressed={!!path.loop}
+								onClick={() => patch({ loop: !path.loop })}
+							>
+								{ko("Loop", "반복")}
+							</button>
+							<button
+								type="button"
+								className="tl-camera-tool danger"
+								title={ko("Delete this route; the object stands still again", "경로를 지웁니다. 오브젝트는 다시 제자리에 섭니다")}
+								onClick={() => onPathClear?.()}
+							>
+								{ko("Delete path", "경로 삭제")}
+							</button>
+						</>
+					) : (
+						<span className="tl-path-hint">
+							{ko("Draw a route on the Top-View map to make this prop travel.", "위에서 본 지도에 경로를 그리면 이 소품이 이동합니다.")}
+						</span>
+					)}
+				</div>
+			</div>
+			<div className="tl-track objmo">
+				<span className="tl-track-label">{ko("Travel", "이동")}</span>
+				<div className="tl-lane">
+					{span && (
+						<div
+							className={"objmo-travel" + (span.fills ? " fills" : "")}
+							style={{
+								left: `${(span.start / Math.max(1, frameCount - 1)) * 100}%`,
+								width: `${((span.end - span.start) / Math.max(1, frameCount - 1)) * 100}%`,
+							}}
+						>
+							{path.loop ? ko("loops", "반복") : path.extend ? ko("keeps going", "계속 감") : ko("travels", "이동")}
+						</div>
+					)}
+				</div>
+			</div>
+			{path && (
+				<div className="tl-track objmo">
+					<span className="tl-track-label" />
+					<div className="tl-lane objmo-tools">
+						<span className="tl-path-hint">
+							{ko(
+								`${metrics.length.toFixed(1)} m · ${path.points.length} points · double-click the line to add one · Delete removes the selected one`,
+								`${metrics.length.toFixed(1)} m · 점 ${path.points.length}개 · 선을 더블클릭하면 점 추가 · 점 선택 후 Delete로 삭제`,
+							)}
+						</span>
+					</div>
+				</div>
+			)}
+		</>
+	);
 }
 
 function CameraBlockEditor({
@@ -297,12 +426,17 @@ export default function Timeline({
 	onCameraBlockChange,
 	onCameraPreview,
 	railDraw = false,
+	pathDraw = false,
+	pathObject = null,
 	craneSelectedIndex = null,
 	onCranePointAdd,
 	onCranePointDelete,
 	onCranePointSelect,
 	cameraRailLength = null,
 	onCameraRailDrawToggle,
+	onObjectPathDrawToggle,
+	onObjectPathChange,
+	onObjectPathClear,
 	onCameraRailDelete,
 	onRailSelect,
 	onRailMove,
@@ -346,7 +480,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onObjectPathDrawToggle, onObjectPathChange, onObjectPathClear, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -1180,7 +1314,22 @@ export default function Timeline({
 							</div>
 						</div>
 
-						{TRACKS.map((name) => (
+						{/* What the strip LOADS follows the selection. A prop's travel
+						    is a different subject on the same clock, so selecting one
+						    swaps the performer's lanes for the prop's instead of
+						    stacking both and making every row ambiguous. */}
+						{pathObject ? (
+							<ObjectTravelTrack
+								object={pathObject}
+								frame={frame}
+								frameCount={frameCount}
+								fps={fps}
+								pathDraw={pathDraw}
+								onPathDrawToggle={() => handlers.current.onObjectPathDrawToggle?.()}
+								onPathChange={(path) => handlers.current.onObjectPathChange?.(path)}
+								onPathClear={() => handlers.current.onObjectPathClear?.()}
+							/>
+						) : TRACKS.map((name) => (
 							<div className={"tl-track" + (name === "Prompts" ? " prompts" : "") + (name === IK_LANE ? " ik" : "") + (name === SHOTS_LANE ? " shots" : "")} key={name}>
 								<span className="tl-track-label">
 									{TRACK_LABELS_KO[name]}

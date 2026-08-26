@@ -2838,78 +2838,43 @@ input[type=range]::-moz-range-thumb {
 	font-size: 10px;
 }
 
-/* Prop motion lives on its own pane, so it gets its own room rather than a
-   row squeezed above the performer's lanes. Green throughout, matching the
-   route drawn on the floor. */
-.objmo-pane {
-	flex: 1;
-	min-height: 0;
-	overflow: auto;
-	background: #171f1b;
+/* A prop's travel loads into the strip in place of the performer's lanes, so
+   it uses the same track grid and wears the route's green to say whose row
+   this is. */
+.tl-track.objmo .tl-track-label { color: #9fe0bb; }
+
+.tl-track.objmo .tl-lane {
+	background: #151d19;
+	border-color: rgba(111, 207, 151, .22);
 }
 
-.objmo {
-	display: flex;
-	flex-direction: column;
-	gap: 8px;
-	padding: 10px 12px;
-}
-
-.objmo-head {
+.objmo-tools {
 	display: flex;
 	align-items: center;
 	gap: 7px;
 	flex-wrap: wrap;
+	padding: 0 8px;
+	overflow-x: auto;
 	color: #d3e7dc;
 	font-size: 10px;
 }
 
-.objmo-head label {
+.objmo-tools label {
 	display: flex;
 	align-items: center;
 	gap: 5px;
 }
 
-.objmo-head .tl-camera-tool.active {
+.objmo-tools .tl-camera-tool.active {
 	background: #2f6b4d;
 	border-color: #6fcf97;
 	color: #eafff3;
 }
 
-.objmo-name {
-	color: #9fe0bb;
-	font-size: 12px;
-}
-
-.objmo-hint {
-	margin: 0;
-	color: #7fae95;
-	font-size: 10px;
-}
-
-.objmo-lane-row {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-}
-
-.objmo-lane-label {
-	width: 52px;
+.tl-path-hint {
 	color: #7fae95;
 	font-size: 9px;
-	text-transform: uppercase;
-	letter-spacing: .06em;
-}
-
-.objmo-lane {
-	position: relative;
-	flex: 1;
-	height: 26px;
-	border: 1px solid rgba(111, 207, 151, .24);
-	border-radius: 4px;
-	background: #101714;
-	cursor: pointer;
-	overflow: hidden;
+	white-space: nowrap;
 }
 
 .objmo-travel {
@@ -2925,28 +2890,10 @@ input[type=range]::-moz-range-thumb {
 	font-size: 9px;
 	white-space: nowrap;
 	overflow: hidden;
-}
-
-.objmo-travel.fills { background: linear-gradient(90deg, rgba(111, 207, 151, .42), rgba(111, 207, 151, .2)); }
-
-.objmo-playhead {
-	position: absolute;
-	top: 0;
-	bottom: 0;
-	width: 2px;
-	margin-left: -1px;
-	background: #ffb454;
 	pointer-events: none;
 }
 
-.objmo-empty {
-	padding: 18px 16px;
-	color: #86a396;
-	font-size: 11px;
-}
-
-.objmo-empty p { margin: 0 0 6px; }
-.objmo-empty-sub { color: #5f7a6d; font-size: 10px; }
+.objmo-travel.fills { background: linear-gradient(90deg, rgba(111, 207, 151, .42), rgba(111, 207, 151, .2)); }
 
 .tl-subject-kind {
 	display: inline-block;

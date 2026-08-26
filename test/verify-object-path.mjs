@@ -137,25 +137,29 @@ ok(
 ok("a stroke that is not a stroke yields nothing", strokeToPathPoints([{ x: 0, z: 0 }], simplifyStroke).length === 0);
 ok("stroke points come in floor form, height authored later", strokeToPathPoints(dogLeg, simplifyStroke).every((point) => point.y === 0));
 
-/* --- prop motion is its own surface -------------------------------------- */
+/* --- the strip loads the selected subject -------------------------------- */
 
 const timelineSource = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
-const motionSource = readFileSync(new URL("../src/object-motion.jsx", import.meta.url), "utf8");
 
-ok("a prop's motion has its own panel", motionSource.includes("export function ObjectMotionPanel("));
-ok("the bottom window offers it as its own tab", appSource.includes('bottomTab === "object"') && appSource.includes('ko("Prop Motion", "소품 이동")'));
+const travelTrackSource = timelineSource.slice(
+	timelineSource.indexOf("function ObjectTravelTrack("),
+	timelineSource.indexOf("function CameraBlockEditor("),
+);
+
+ok("the strip has a travel track for a selected prop", timelineSource.includes("function ObjectTravelTrack("));
 ok(
-	"the performer's lanes are nowhere on the prop's surface",
-	!/Prompts|Full-Body|2D Root|Shots/.test(motionSource),
+	"selecting a prop swaps the performer's lanes instead of joining them",
+	timelineSource.includes("{pathObject ? (") && timelineSource.includes(") : TRACKS.map((name) => ("),
 );
 ok(
-	"the Animation strip is back to performer and camera only",
-	!timelineSource.includes("ObjectPathEditor") && !timelineSource.includes("pathObject"),
+	"the prop's track carries the route controls",
+	["Draw path", "Speed", "Keep going", "Loop", "Delete path"].every((label) => travelTrackSource.includes(label)),
 );
+ok("the prop's track names its subject", travelTrackSource.includes('ko("PROP", "소품")'));
+ok("the prop's track shows travel on the take's clock", travelTrackSource.includes("objmo-travel"));
+ok("prop motion did not become a separate bottom tab", !appSource.includes('bottomTab === "object"'));
 ok("the inspector still does not host the path controls", !appSource.includes('ko("Travel path", "이동 경로")'));
-ok("the prop panel carries the route controls", ["Draw path", "Speed", "Keep going", "Loop", "Delete path"].every((label) => motionSource.includes(label)));
-ok("the prop panel shows travel on the take's clock", motionSource.includes("objmo-lane") && motionSource.includes("objmo-playhead"));
 
 /* --- mid-path points ------------------------------------------------------- */
 
@@ -180,7 +184,7 @@ ok(
 	"a selected point owns Delete, so the prop survives the press",
 	appSource.includes("if (pathPointIndex != null) return;"),
 );
-ok("the prop panel names its subject", motionSource.includes('ko("PROP", "소품")'));
+
 
 /* --- the same gesture on the board it was drawn on -------------------------- */
 
@@ -195,8 +199,8 @@ ok(
 	appSource.includes("{ ...point, x: floor.x, z: floor.z }"),
 );
 ok(
-	"the panel teaches both gestures instead of leaving them to be found",
-	motionSource.includes("선을 더블클릭하면 점 추가") && motionSource.includes("Delete로 삭제"),
+	"the strip teaches both gestures instead of leaving them to be found",
+	travelTrackSource.includes("선을 더블클릭하면 점 추가") && travelTrackSource.includes("Delete로 삭제"),
 );
 
 console.log(failures === 0 ? "all object-path checks PASS" : `${failures} FAILURES`);

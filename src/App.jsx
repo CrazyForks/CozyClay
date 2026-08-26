@@ -142,7 +142,6 @@ import ResultModal from "./result-modal.jsx";
 import AnalyticsToggle from "./analytics-toggle.jsx";
 import { PWA_UPDATE_EVENT } from "./pwa.js";
 import { createObjectPath, objectTransformAt, pathMetrics, strokeToPathPoints, MAX_PATH_POINTS } from "./object-path.js";
-import { ObjectMotionPanel } from "./object-motion.jsx";
 import LocaleToggle from "./locale-toggle.jsx";
 import { bucketMs, track, trackActivation } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
@@ -9913,15 +9912,6 @@ function resizePromptClip(id, edge, rawFrame) {
 					</button>
 					<button
 						type="button"
-						className={bottomTab === "object" ? "active" : ""}
-						aria-pressed={bottomTab === "object"}
-						onClick={() => setBottomTab("object")}
-						title={ko("Prop movement — its own track, away from the performer's lanes", "소품 이동 — 캐릭터 레인과 분리된 자체 트랙")}
-					>
-						{ko("Prop Motion", "소품 이동")}
-					</button>
-					<button
-						type="button"
 						className={bottomTab === "console" ? "active" : ""}
 						aria-pressed={bottomTab === "console"}
 						onClick={() => setBottomTab("console")}
@@ -9951,30 +9941,6 @@ function resizePromptClip(id, edge, rawFrame) {
 						onDeleteUnusedAsset={deleteUnusedAsset}
 						onUndoDelete={undoDeletedAsset}
 						deletingAssetId={deletingAssetId}
-					/>
-				</div>
-				<div className="objmo-pane" hidden={bottomTab !== "object"}>
-					<ObjectMotionPanel
-						object={selectedSceneObject ? { id: selectedSceneObject.id, name: sceneObjectNameDisplayKo(selectedSceneObject.name), path: selectedSceneObject.path } : null}
-						frame={tlFrame}
-						frameCount={tlFrameCount}
-						fps={tlFps}
-						pathDraw={pathDraw}
-						onScrub={setTlFrame}
-						onPathDrawToggle={() => {
-							setPathDraw((current) => !current);
-							if (!pathDraw) setRailDraw(false);
-							setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
-						}}
-						onPathChange={(path) => {
-							if (selectedSceneObject) changeSceneObject(selectedSceneObject.id, { path });
-						}}
-						onPathClear={() => {
-							if (!selectedSceneObject) return;
-							const token = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
-							changeSceneObject(selectedSceneObject.id, { path: null }, token);
-							endSceneTransaction(token, { commit: true });
-						}}
 					/>
 				</div>
 				<div className="console-pane" hidden={bottomTab !== "console"}>
@@ -10027,6 +9993,22 @@ function resizePromptClip(id, edge, rawFrame) {
 					shots={shots}
 					activeShotIdx={activeShotIdx}
 					railDraw={railDraw}
+					pathDraw={pathDraw}
+					pathObject={selectedSceneObject ? { id: selectedSceneObject.id, name: sceneObjectNameDisplayKo(selectedSceneObject.name), path: selectedSceneObject.path } : null}
+					onObjectPathDrawToggle={() => {
+						setPathDraw((current) => !current);
+						if (!pathDraw) setRailDraw(false);
+						setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
+					}}
+					onObjectPathChange={(path) => {
+						if (selectedSceneObject) changeSceneObject(selectedSceneObject.id, { path });
+					}}
+					onObjectPathClear={() => {
+						if (!selectedSceneObject) return;
+						const token = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
+						changeSceneObject(selectedSceneObject.id, { path: null }, token);
+						endSceneTransaction(token, { commit: true });
+					}}
 					cameraRailLength={railCurve?.length ?? null}
 				shotCutDisabled={!!posing || ikMode || waypointMode}
 				onIkToggle={toggleIkMode}
