@@ -58,7 +58,7 @@ expect("the Rail Follow ribbon is gone; the crane height editor owns the card in
 expect("no ribbon editing gestures survive in the timeline", !["beginRailMove", "beginRailResize", "onRailKeyDown", "railDragRef"].some((name) => timeline.includes(name)));
 expect("the rail schedule model still resolves per shot in the app", app.includes("resolveRailSchedule({ railFollow: camera.railFollow"));
 expect("Rail range playback is resolved per shot", app.includes("resolveRailSchedule({ railFollow: camera.railFollow") && app.includes("subjectSlice.slice(schedule.startFrame, schedule.endFrame + 1)"));
-expect("the crane graph selects, adds, and vertically drags height points", timeline.includes("function CraneHeightEditor") && timeline.includes("onCranePointSelect?.(pointIndex, shot.id)") && timeline.includes("onChangePoints?.(drag.points)") && timeline.includes("onAddPoint?.(at.t)"));
+expect("the crane graph itself selects, adds, and vertically drags height points", timeline.includes("function CraneHeightEditor") && timeline.includes("onSelect?.(nearest.index)") && timeline.includes("onChangePoints?.(drag.points)") && timeline.includes("onAddPoint?.(drag.addAt)"));
 
 expect(
 	"unified lane renders exactly one block from each shot geometry",
@@ -167,8 +167,8 @@ expect(
 	timeline.includes("function CraneHeightEditor") &&
 	timeline.includes("tl-crane-point") &&
 		timeline.includes("tl-crane-editor") &&
-	timeline.includes("onAddPoint?.(at.t)") &&
-		timeline.includes("onChangePoints?.(drag.points)") &&
+	timeline.includes("onAddPoint?.(drag.addAt)") &&
+	timeline.includes("onChangePoints?.(drag.points)") &&
 		timeline.includes("onCranePointSelect"),
 );
 expect(

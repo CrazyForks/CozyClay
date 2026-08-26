@@ -122,35 +122,28 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 		event.preventDefault();
 		event.stopPropagation();
 		dragRef.current = null;
-		if (drag.points) onChangePoints?.(drag.points);
+		if (drag.points && drag.moved) onChangePoints?.(drag.points);
+		else if (!drag.moved && drag.addAt != null) onAddPoint?.(drag.addAt);
 		setDraftPoints(null);
 		event.currentTarget.releasePointerCapture?.(event.pointerId);
-	};
-	const beginPointDrag = (event, index) => {
-		if (event.button !== 0) return;
-		event.preventDefault();
-		event.stopPropagation();
-		onSelect?.(index);
-		dragRef.current = { index, points };
-		svgRef.current?.setPointerCapture?.(event.pointerId);
 	};
 	const onPointerDown = (event) => {
 		if (event.button !== 0) return;
 		const at = locate(event);
 		if (!at) return;
 		const nearest = points.reduce((best, point, index) => {
-			const distance = Math.hypot((xFor(point.t) - at.takeX) * 2, yFor(point.height) - at.graphY);
+			const distance = Math.abs(point.t - at.t);
 			return distance < best.distance ? { index, distance } : best;
-		}, { index: -1, distance: 0.09 });
+		}, { index: -1, distance: 0.12 });
 		event.preventDefault();
 		event.stopPropagation();
-		if (nearest.index >= 0 && nearest.distance <= 0.06) {
+		if (nearest.index >= 0 && nearest.distance <= 0.12) {
 			onSelect?.(nearest.index);
-			dragRef.current = { index: nearest.index, points };
-			event.currentTarget.setPointerCapture?.(event.pointerId);
+			dragRef.current = { index: nearest.index, points, moved: false };
+			svgRef.current?.setPointerCapture?.(event.pointerId);
 			return;
 		}
-		if (at.t > 0.01 && at.t < 0.99) onAddPoint?.(at.t);
+		if (at.t > 0.01 && at.t < 0.99) dragRef.current = { index: -1, points: null, moved: false, addAt: at.t };
 	};
 	const onPointerMove = (event) => {
 		const drag = dragRef.current;
@@ -159,8 +152,13 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 		event.stopPropagation();
 		const at = locate(event);
 		if (!at) return;
+		const moved = drag.moved || Math.abs(at.graphY - yFor(points[drag.index]?.height ?? 0)) > 0.01;
+		if (drag.index < 0) {
+			dragRef.current = { ...drag, moved: true };
+			return;
+		}
 		const next = points.map((point, index) => index === drag.index ? { ...point, height: at.height } : point);
-		dragRef.current = { ...drag, points: next };
+		dragRef.current = { ...drag, points: next, moved };
 		setDraftPoints(next);
 	};
 	useEffect(() => {
@@ -194,21 +192,15 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 				<line className="tl-crane-grid" x1={origin} y1=".5" x2={origin + span} y2=".5" />
 				<line className="tl-crane-grid" x1={origin} y1=".9" x2={origin + span} y2=".9" />
 				<polyline className="tl-crane-line" points={points.map((point) => `${xFor(point.t)},${yFor(point.height)}`).join(" ")} />
+				{points.map((point, index) => (
+					<g key={index} className={index === selectedIndex ? "selected" : ""}>
+						<line className="tl-crane-time-pick" x1={xFor(point.t)} y1=".08" x2={xFor(point.t)} y2=".94" />
+						<circle className="tl-crane-point-hit" cx={xFor(point.t)} cy={yFor(point.height)} r=".07" />
+						<circle className="tl-crane-point-dot" cx={xFor(point.t)} cy={yFor(point.height)} r=".024" />
+					</g>
+				))}
 			</svg>
-			{points.map((point, index) => (
-				<button
-					key={index}
-					type="button"
-					className={"tl-crane-point" + (index === selectedIndex ? " selected" : "")}
-					style={{ left: `${xFor(point.t) * 100}%`, top: `${yFor(point.height) * 100}%` }}
-					aria-label={ko(`Crane point ${index + 1}, ${point.height.toFixed(1)} metres`, `크레인 점 ${index + 1}, ${point.height.toFixed(1)}미터`)}
-					onPointerDown={(event) => beginPointDrag(event, index)}
-					onPointerMove={onPointerMove}
-					onPointerUp={finishDrag}
-					onPointerCancel={finishDrag}
-				/>
-			))}
-			<span className="tl-crane-editor-hint">{ko("click to add · drag height", "클릭 추가 · 높이 드래그")}</span>
+			<span className="tl-crane-editor-hint">{ko("drag graph · click empty time to add", "그래프 드래그 · 빈 시간 클릭해 추가")}</span>
 		</div>
 	);
 }

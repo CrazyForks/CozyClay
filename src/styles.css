@@ -3191,6 +3191,13 @@ input[type=range]::-moz-range-thumb {
 	cursor: ns-resize;
 }
 
+.tl-crane-time-pick {
+	stroke: rgba(255, 180, 84, .4);
+	stroke-width: .004;
+	stroke-dasharray: .012 .012;
+	pointer-events: none;
+}
+
 .tl-crane-point-dot {
 	fill: #a78bfa;
 	stroke: #211b31;
@@ -3202,6 +3209,10 @@ input[type=range]::-moz-range-thumb {
 .tl-crane-editor g.selected .tl-crane-point-dot {
 	fill: #ffb454;
 	stroke: #40270f;
+}
+
+.tl-crane-editor g.selected .tl-crane-time-pick {
+	stroke: rgba(255, 180, 84, .8);
 }
 
 .tl-shot-block.has-dolly .tl-shot-title,
