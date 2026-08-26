@@ -18,7 +18,7 @@
  */
 
 import { Euler, Quaternion } from "three";
-import { createObjectPath } from "./object-path.js";
+import { createObjectPath, translateObjectPath } from "./object-path.js";
 
 export const DEFAULT_SCENE_OBJECTS = [];
 /** The persistence contract (plan §8.1): the version lives in the key AND in
@@ -332,10 +332,18 @@ export function updateSceneObject(objects, id, patch) {
 		if (object.id !== id) {
 			if (!shifts || !moving.has(object.id)) return object;
 			const update = {};
+			const carriedDelta = { x: 0, y: 0, z: 0 };
 			for (const axis of ["x", "y", "z"]) {
 				if (!delta[axis]) continue;
 				const bounded = TRANSFORM_LIMITS[axis](object[axis] + delta[axis]);
-				if (bounded !== object[axis]) update[axis] = bounded;
+				if (bounded === object[axis]) continue;
+				update[axis] = bounded;
+				carriedDelta[axis] = bounded - object[axis];
+			}
+			// A carried child takes its route along too, or the group would move
+			// while the child stayed nailed to its old route.
+			if (object.path && (carriedDelta.x || carriedDelta.y || carriedDelta.z)) {
+				update.path = translateObjectPath(object.path, carriedDelta);
 			}
 			if (!Object.keys(update).length) return object;
 			changed = true;
@@ -360,6 +368,13 @@ export function updateSceneObject(objects, id, patch) {
 		if (patch.path !== undefined) {
 			const next = patch.path === null ? null : createObjectPath(patch.path);
 			if (JSON.stringify(next ?? null) !== JSON.stringify(object.path ?? null)) update.path = next;
+		} else if (object.path && shifts) {
+			// Moving a prop that owns a route moves the route with it. Playback
+			// places a routed prop FROM its route, so without this the card sits
+			// exactly where it was while the inspector reports the new position —
+			// a drag that changes numbers and nothing on screen.
+			const moved = translateObjectPath(object.path, delta);
+			if (JSON.stringify(moved ?? null) !== JSON.stringify(object.path ?? null)) update.path = moved;
 		}
 		// A cutout is sized in metres — you measure something in the picture and
 		// type its height — so `height` and `aspect` are writable where every

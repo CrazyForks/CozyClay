@@ -67,6 +67,25 @@ export function createObjectPath(value) {
 	};
 }
 
+/**
+ * The same route, moved bodily by a translation. A prop and its route are one
+ * body: playback reads the prop's position from the route alone, so a route
+ * left behind would pin the prop to its old ground while every readout claimed
+ * it had moved. Shape is preserved — only the room walls can bend it.
+ */
+export function translateObjectPath(path, delta) {
+	const source = createObjectPath(path);
+	if (!source) return null;
+	const dx = finite(delta?.x);
+	const dy = finite(delta?.y);
+	const dz = finite(delta?.z);
+	if (!dx && !dy && !dz) return source;
+	return createObjectPath({
+		...source,
+		points: source.points.map((point) => ({ x: point.x + dx, y: point.y + dy, z: point.z + dz })),
+	});
+}
+
 /** Cumulative arc length per point, plus the total. */
 export function pathMetrics(path) {
 	const points = path?.points ?? [];

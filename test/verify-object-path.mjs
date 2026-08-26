@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { createObjectPath, pathMetrics, objectTransformAt, strokeToPathPoints, MAX_PATH_POINTS, STROKE_MAX_POINTS } from "../src/object-path.js";
 import { simplifyStroke } from "../src/camera-follow.js";
+import { updateSceneObject } from "../src/scene-objects.js";
 
 let failures = 0;
 const ok = (name, pass, detail = "") => {
@@ -247,6 +248,64 @@ ok("the dolly graph lives inside its shot card, not a floating row",
 	timelineSource.includes("sg-shot") &&
 	timelineSource.includes("railLengthByShot") &&
 	!timelineSource.includes("sg-cam .sg-lane"));
+
+/* --- moving a prop that owns a route -------------------------------------- */
+
+// The route is the prop's own geometry, so a prop and its route are one body:
+// the frame-by-frame placement comes from the path alone, and a route that
+// stayed behind would pin the prop to its old ground while the inspector
+// claimed it had moved.
+const routed = (over = {}) => ({
+	id: "card",
+	name: "Card",
+	renderer: "cube",
+	x: 0,
+	y: 0,
+	z: 0,
+	rot: 0,
+	rotX: 0,
+	rotZ: 0,
+	scaleX: 1,
+	scaleY: 1,
+	scaleZ: 1,
+	parent: null,
+	color: "#c8c8c8",
+	footprint: { width: 1, depth: 1 },
+	height: 1,
+	path: { points: [{ x: -2, y: 0, z: 0 }, { x: 2, y: 0, z: 0 }], speed: 0, faceTravel: true, loop: false, extend: false, timing: null },
+	...over,
+});
+
+ok("dragging a routed prop carries its route with it", (() => {
+	const [moved] = updateSceneObject([routed()], "card", { x: 3, z: 1.5 });
+	return moved.path.points[0].x === 1 && moved.path.points[0].z === 1.5 &&
+		moved.path.points[1].x === 5 && moved.path.points[1].z === 1.5;
+})());
+ok("a lifted prop lifts its route by the same metres", (() => {
+	const [moved] = updateSceneObject([routed()], "card", { y: 2 });
+	return moved.path.points.every((point) => point.y === 2);
+})());
+ok("the route keeps its shape, so the prop still travels the same distance", (() => {
+	const before = pathMetrics(createObjectPath(routed().path)).length;
+	const [moved] = updateSceneObject([routed()], "card", { x: 7, z: -4 });
+	return near(pathMetrics(moved.path).length, before, 1e-6);
+})());
+ok("an authored route edit wins over the drag it arrives with", (() => {
+	const [moved] = updateSceneObject([routed()], "card", { x: 3, path: { points: [{ x: 0, z: 0 }, { x: 1, z: 0 }] } });
+	return moved.path.points[0].x === 0 && moved.path.points[1].x === 1;
+})());
+ok("a routed child is carried by its parent, route and all", (() => {
+	const parent = routed({ id: "parent", path: null });
+	const child = routed({ id: "child", parent: "parent" });
+	const next = updateSceneObject([parent, child], "parent", { x: 2 });
+	const moved = next.find((object) => object.id === "child");
+	return moved.path.points[0].x === 0 && moved.path.points[1].x === 4;
+})());
+ok("a standing prop is untouched by the carry", (() => {
+	const standing = routed({ id: "standing", path: null });
+	const [moved] = updateSceneObject([standing], "standing", { x: 2 });
+	return moved.path === null && moved.x === 2;
+})());
 
 console.log(failures === 0 ? "all object-path checks PASS" : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
