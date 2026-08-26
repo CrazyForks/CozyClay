@@ -4741,6 +4741,12 @@ globalThis.playMode = centerTab === "play";
 					if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
 					patch.name = args.name;
 				}
+				// A travel path arrives whole (or null to clear it); the object
+				// schema repairs or refuses it, so a bad route cannot land.
+				if (args.path !== undefined) {
+					if (args.path !== null && createObjectPath(args.path) === null) throw new Error("Invalid path: needs two or more distinct points");
+					patch.path = args.path;
+				}
 				applyObjectMutation((objects) => updateSceneObject(objects, args.id, patch));
 				return { id: args.id };
 			},

@@ -500,6 +500,12 @@ function sceneReport({ characterCursor = 0, objectCursor = 0, limit = 50 } = {})
 					`  yaw ${round(object.rot, 1)}deg  size ${round(size.width)}x${round(size.height)}x${round(size.depth)}m`,
 				`    rotX: ${round(object.rotX ?? 0, 1)}  rotZ: ${round(object.rotZ ?? 0, 1)}  color: ${object.color ?? null}  parent: ${object.parent ?? null}`,
 			);
+			if (object.path?.points?.length >= 2) {
+				const points = object.path.points;
+				const first = points[0];
+				const last = points[points.length - 1];
+				lines.push(`    path: ${points.length} pts  (${round(first.x, 1)},${round(first.z, 1)}) → (${round(last.x, 1)},${round(last.z, 1)})  speed: ${object.path.speed || "fills take"}${object.path.extend ? "  keeps going" : ""}${object.path.loop ? "  loops" : ""}`);
+			}
 		}
 	}
 		lines.push(
@@ -1483,14 +1489,34 @@ registerTool(
 				.optional()
 				.describe("hex colour, e.g. #d9b18c"),
 			name: z.string().min(1).optional().describe("new display name, e.g. 'Building A'"),
+			path: z
+				.object({
+					points: z
+						.array(z.object({ x: z.number(), y: z.number().optional(), z: z.number() }))
+						.min(2)
+						.describe("route through the set; y lifts the object so it can climb"),
+					speed: z.number().min(0).optional().describe("metres per second; 0 or omitted spans the whole take"),
+					face_travel: z.boolean().optional().describe("turn to face the direction of travel (default true)"),
+					loop: z.boolean().optional(),
+					extend: z.boolean().optional().describe("keep going in the final direction after the route ends"),
+				})
+				.nullable()
+				.optional()
+				.describe("travel path; null clears it and the object stands still again"),
 		},
 	},
-	async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color, name }) => {
+	async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color, name, path }) => {
+		const travelPath = path === null
+			? null
+			: path
+				? { points: path.points.map((point) => ({ x: point.x, y: point.y ?? 0, z: point.z })), speed: path.speed ?? 0, faceTravel: path.face_travel !== false, loop: path.loop === true, extend: path.extend === true }
+				: undefined;
 		if (liveHub?.connected) {
 			try {
 				await appliedLiveMutation("update_object", {
 					id, x, y, z: zPos, rot: facing, rotX: tilt, rotZ: roll,
 					scale, scaleX: scale_x, scaleY: scale_y, scaleZ: scale_z, color, name,
+					...(travelPath !== undefined ? { path: travelPath } : {}),
 				});
 				return text(`Updated ${id}.\n\n${sceneReport()}`);
 			} catch (error) {
