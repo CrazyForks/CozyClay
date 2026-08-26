@@ -42,8 +42,9 @@
 	box-sizing: border-box;
 }
 
-html,
-/* Crash screen for the last-ditch error boundary (issue #63) */
+/* Crash screen for the last-ditch error boundary (issue #63). Scoping this
+   to .crash-screen matters: applying the flex-centering to <html> shrunk the
+   whole app to a 978px centered column on wide windows. */
 .crash-screen {
 	min-height: 100vh;
 	display: flex;
