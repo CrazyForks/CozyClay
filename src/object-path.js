@@ -12,6 +12,8 @@
  * length divided by the take's duration fills the timeline exactly.
  */
 
+import { createTiming, timingIsFlat, timingProgress } from "./speed-envelope.js";
+
 const MAX_PATH_POINTS = 64;
 const ROOM_LIMIT = 240;
 const MAX_HEIGHT = 60;
@@ -48,8 +50,12 @@ export function createObjectPath(value) {
 	}
 	if (points.length < 2) return null;
 	const speed = finite(value.speed, 0);
+	// A flat timing changes nothing; storing null keeps saves clean and makes
+	// "has a custom speed curve" a simple null check.
+	const timing = createTiming(value.timing);
 	return {
 		points,
+		timing: timingIsFlat(timing) ? null : timing,
 		// 0 means "fill the timeline": the length/duration answer is computed at
 		// sample time, where the take's duration is known.
 		speed: speed > 0 ? clamp(speed, 0.01, 50) : 0,
@@ -139,8 +145,21 @@ export function objectTransformAt(object, frame, take = {}) {
 	// speed 0 = fill the timeline: cover the whole path across the take.
 	const duration = Math.max(1e-6, (frameCount - 1) / fps);
 	const speed = path.speed > 0 ? path.speed : metrics.length / duration;
-	let distance = speed * seconds;
-	if (path.loop && metrics.length > 1e-9) distance %= metrics.length;
+	// The travel window: the stretch of the take the route is walked in. The
+	// timing envelope shapes progress INSIDE this window; the window's length
+	// (and so the arrival frame) never moves — the area is the distance.
+	const window = metrics.length / speed;
+	const u = seconds / Math.max(1e-6, window);
+	let distance;
+	if (path.loop && metrics.length > 1e-9) {
+		distance = metrics.length * timingProgress(path.timing, u - Math.floor(u));
+	} else if (u >= 1) {
+		// Past the window: arrived. Extend keeps walking the final heading at
+		// the plain average speed, exactly as it did before envelopes existed.
+		distance = metrics.length + (path.extend ? speed * (seconds - window) : 0);
+	} else {
+		distance = metrics.length * timingProgress(path.timing, u);
+	}
 	const at = pointAtDistance(path, metrics, distance);
 	return {
 		x: at.x,

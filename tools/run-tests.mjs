@@ -112,6 +112,7 @@ const BROWSER_FILES = [
 	"test/verify-motion-edit-browser.mjs",
 	"test/verify-object-gizmo.mjs",
 	"test/verify-object-path.mjs",
+	"test/verify-speed-envelope.mjs",
 	"test/verify-offscreen-export-browser.mjs",
 	"test/verify-project-menu-browser.mjs",
 ];
