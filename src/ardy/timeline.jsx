@@ -96,6 +96,107 @@ function signedValue(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}`;
 }
 
+function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, onSelect, onAddPoint, onChangePoints }) {
+	const svgRef = useRef(null);
+	const dragRef = useRef(null);
+	const [draftPoints, setDraftPoints] = useState(null);
+	if (!crane?.points?.length || !railRange) return null;
+	const points = draftPoints ?? crane.points;
+	const origin = railRange.start / Math.max(1, durationFrames - 1);
+	const span = Math.max(0.001, (railRange.end - railRange.start) / Math.max(1, durationFrames - 1));
+	const maxHeight = Math.max(4, Math.ceil(Math.max(...points.map((point) => point.height), 1) * 1.25));
+	const xFor = (t) => origin + t * span;
+	const yFor = (height) => 0.9 - (Math.max(0.1, Math.min(maxHeight, height)) - 0.1) / Math.max(0.1, maxHeight - 0.1) * 0.78;
+	const locate = (event) => {
+		const rect = svgRef.current?.getBoundingClientRect();
+		if (!rect || rect.width < 2 || rect.height < 2) return null;
+		const takeX = (event.clientX - rect.left) / rect.width;
+		const graphY = (event.clientY - rect.top) / rect.height;
+		const t = Math.max(0, Math.min(1, (takeX - origin) / span));
+		const height = 0.1 + (0.9 - graphY) / 0.78 * (maxHeight - 0.1);
+		return { takeX, graphY, t, height: Math.max(0.1, Math.min(maxHeight, height)) };
+	};
+	const finishDrag = (event) => {
+		const drag = dragRef.current;
+		if (!drag) return;
+		dragRef.current = null;
+		if (drag.points) onChangePoints?.(drag.points);
+		setDraftPoints(null);
+		event.currentTarget.releasePointerCapture?.(event.pointerId);
+	};
+	const beginPointDrag = (event, index) => {
+		if (event.button !== 0) return;
+		event.preventDefault();
+		event.stopPropagation();
+		onSelect?.(index);
+		dragRef.current = { index, points };
+		event.currentTarget.setPointerCapture?.(event.pointerId);
+	};
+	const onPointerDown = (event) => {
+		if (event.button !== 0) return;
+		const at = locate(event);
+		if (!at) return;
+		const nearest = points.reduce((best, point, index) => {
+			const distance = Math.hypot((xFor(point.t) - at.takeX) * 2, yFor(point.height) - at.graphY);
+			return distance < best.distance ? { index, distance } : best;
+		}, { index: -1, distance: 0.09 });
+		event.preventDefault();
+		event.stopPropagation();
+		if (nearest.index >= 0 && nearest.distance <= 0.06) {
+			onSelect?.(nearest.index);
+			dragRef.current = { index: nearest.index, points };
+			event.currentTarget.setPointerCapture?.(event.pointerId);
+			return;
+		}
+		if (at.t > 0.01 && at.t < 0.99) onAddPoint?.(at.t);
+	};
+	const onPointerMove = (event) => {
+		const drag = dragRef.current;
+		if (!drag) return;
+		const at = locate(event);
+		if (!at) return;
+		const next = points.map((point, index) => index === drag.index ? { ...point, height: at.height } : point);
+		dragRef.current = { ...drag, points: next };
+		setDraftPoints(next);
+	};
+	return (
+		<div className="tl-crane-editor" title={ko("Crane height: click to add, click a point to select, drag vertically to change height", "크레인 높이: 클릭해 추가하고, 점을 눌러 선택하고, 위아래로 끌어 높이를 바꿉니다")}>
+			<span className="tl-crane-editor-label">{ko("CRANE", "크레인")}</span>
+			<svg
+				ref={svgRef}
+				className="tl-crane-editor-svg"
+				viewBox="0 0 1 1"
+				preserveAspectRatio="none"
+				onPointerDown={onPointerDown}
+				onPointerMove={onPointerMove}
+				onPointerUp={finishDrag}
+				onPointerCancel={finishDrag}
+				onDoubleClick={(event) => event.stopPropagation()}
+			>
+				<rect className="tl-crane-editor-hit" x="0" y="0" width="1" height="1" />
+				<line className="tl-crane-grid" x1={origin} y1=".12" x2={origin + span} y2=".12" />
+				<line className="tl-crane-grid" x1={origin} y1=".5" x2={origin + span} y2=".5" />
+				<line className="tl-crane-grid" x1={origin} y1=".9" x2={origin + span} y2=".9" />
+				<polyline className="tl-crane-line" points={points.map((point) => `${xFor(point.t)},${yFor(point.height)}`).join(" ")} />
+			</svg>
+			{points.map((point, index) => (
+				<button
+					key={index}
+					type="button"
+					className={"tl-crane-point" + (index === selectedIndex ? " selected" : "")}
+					style={{ left: `${xFor(point.t) * 100}%`, top: `${yFor(point.height) * 100}%` }}
+					aria-label={ko(`Crane point ${index + 1}, ${point.height.toFixed(1)} metres`, `크레인 점 ${index + 1}, ${point.height.toFixed(1)}미터`)}
+					onPointerDown={(event) => beginPointDrag(event, index)}
+					onPointerMove={onPointerMove}
+					onPointerUp={finishDrag}
+					onPointerCancel={finishDrag}
+				/>
+			))}
+			<span className="tl-crane-editor-hint">{ko("click to add · drag height", "클릭 추가 · 높이 드래그")}</span>
+		</div>
+	);
+}
+
 /** The y-axis follows the data — a display clamp would flatten a real curve
  * into a ceiling plateau and break the visible area, which is the whole
  * point of the editor. Floor at 2x average so a flat route keeps sane
@@ -1692,36 +1793,29 @@ export default function Timeline({
 													<b>{modeLabel}</b>
 													{detailLabel && <small>{detailLabel}</small>}
 												</span>
-												{/* The Rail Follow ribbon is gone: the dolly curve shows the window
-												    (bright inside, dimmed outside), so a second purple band only
-												    repeated it. The crane dots keep their home — a plain strip along
-												    the card's bottom edge, each dot placed on the take's own clock:
-												    cardX = rangeStart + t · rangeSpan. */}
-												{!railOff && (shot.camera?.craneHeight?.points ?? []).length > 0 && (
-													<div className="tl-crane-strip">
-														{(shot.camera?.craneHeight?.points ?? []).map((point, pointIndex) => (
-															<button
-																key={`${shot.id}:crane:${pointIndex}`}
-																type="button"
-																className={"tl-crane-point" + (index === cameraBlockIdx && pointIndex === craneSelectedIndex ? " selected" : "")}
-																style={{ "--tl-crane-p": railRange ? (railRange.start + point.t * (railRange.end - railRange.start)) / Math.max(1, durationFrames - 1) : point.t }}
-																aria-label={ko(`Select crane point ${pointIndex + 1}`, `크레인 점 ${pointIndex + 1} 선택`)}
-																title={ko(`Crane point ${pointIndex + 1} · ${point.height.toFixed(2)} m`, `크레인 점 ${pointIndex + 1} · ${point.height.toFixed(2)} m`)}
-																onPointerDown={(event) => event.stopPropagation()}
-																onClick={(event) => {
-																	event.stopPropagation();
-																	selectUnifiedShotBlock(index);
-																	onCranePointSelect?.(pointIndex, shot.id);
-																}}
-																onDoubleClick={(event) => event.stopPropagation()}
-															/>
-														))}
-													</div>
+												{!railOff && railRange && (
+													<CraneHeightEditor
+														crane={shot.camera?.craneHeight}
+														railRange={railRange}
+														durationFrames={durationFrames}
+														selectedIndex={index === cameraBlockIdx ? craneSelectedIndex : null}
+														onSelect={(pointIndex) => {
+															selectUnifiedShotBlock(index);
+															onCranePointSelect?.(pointIndex, shot.id);
+														}}
+														onAddPoint={(t) => {
+															selectUnifiedShotBlock(index);
+															onCranePointAdd?.(t, shot.id);
+														}}
+														onChangePoints={(points, options) => {
+															selectUnifiedShotBlock(index);
+															onCameraBlockChange?.({ craneHeight: { points } }, shot.id);
+														}}
+													/>
 												)}
-											{/* The dolly's speed curve lives IN the shot card, under the Rail
-											    Follow ribbon it shapes: a floating row below the lanes pushed the
-											    editor away from the thing it edits. One instrument per shot,
-											    time across the card's own span. */}
+											{/* The dolly's speed curve and crane-height graph live inside the
+											    Shot card. One compact instrument per authored camera property,
+											    both on the card's own timeline clock. */}
 											{!railOff && railRange && railLengthByShot.has(shot.id) && (
 												<div
 													className="sg-shot"
@@ -1750,9 +1844,8 @@ export default function Timeline({
 													/>
 												</div>
 											)}
-											{/* The card body owns selection/reorder; this narrow empty strip
-												    owns keying. Keeping it a button excludes it from beginShotMove,
-												    so one gesture cannot both reorder a shot and author a key. */}
+											{/* Camera-key authoring remains separate from the crane graph so
+												    one gesture cannot both reorder a shot and edit a curve. */}
 												<button
 													type="button"
 													className="tl-shot-key-surface"
@@ -1760,7 +1853,7 @@ export default function Timeline({
 														? ko(`Add crane point in ${shot.name}`, `${shot.name}에 크레인 점 추가`)
 														: ko(`Add camera key in ${shot.name}`, `${shot.name}에 카메라 키 추가`)}
 													title={shot.camera?.mode === "rail" && shot.camera?.craneHeight
-														? ko("Click below Rail Follow to add a crane point at that position", "레일 팔로우 아래를 클릭해 해당 위치에 크레인 점을 추가합니다")
+														? ko("Click the crane graph to add a point; click a point and drag it to change height", "크레인 그래프를 클릭해 점 추가 · 점을 눌러 끌어 높이 조절")
 														: ko("Click at a frame to store the current camera framing", "프레임 위치를 클릭해 현재 카메라 프레이밍을 저장합니다")}
 													onClick={(event) => addShotPointFromBlock(event, shot, index)}
 													onDoubleClick={(event) => event.stopPropagation()}

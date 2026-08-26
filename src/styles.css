@@ -3120,18 +3120,89 @@ input[type=range]::-moz-range-thumb {
 
 /* The title row rides over the curve's top edge; a slim scrim keeps the
    words legible without giving the curve a header of its own. */
-/* The crane dots live directly on the card now that the ribbon is gone —
-   same bottom strip, positioned across the card's whole span. */
-.tl-crane-strip {
+/* Crane height is a compact, real editing surface inside the Shot card.
+   Time runs left-to-right and height runs bottom-to-top. */
+.tl-crane-editor {
 	position: absolute;
 	left: 15px;
 	right: 15px;
-	bottom: 13px;
-	height: 14px;
+	bottom: 14px;
+	height: 28px;
+	border-top: 1px solid rgba(167, 139, 250, .35);
+	background: rgba(20, 12, 36, .66);
+	pointer-events: auto;
+	z-index: 4;
+}
+
+.tl-crane-editor-label,
+.tl-crane-editor-hint {
+	position: absolute;
+	top: 2px;
+	padding: 0 3px;
+	color: rgba(221, 208, 247, .76);
+	font-size: 7px;
+	font-weight: 700;
+	letter-spacing: .08em;
 	pointer-events: none;
 }
 
-.tl-crane-strip .tl-crane-point { pointer-events: auto; }
+.tl-crane-editor-label { left: 3px; }
+.tl-crane-editor-hint {
+	right: 3px;
+	font-weight: 500;
+	letter-spacing: 0;
+	opacity: .72;
+}
+
+.tl-crane-editor-svg {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	overflow: visible;
+	cursor: crosshair;
+	touch-action: none;
+}
+
+.tl-crane-editor-hit {
+	fill: transparent;
+	pointer-events: all;
+}
+
+.tl-crane-grid {
+	stroke: rgba(185, 161, 232, .2);
+	stroke-width: .006;
+	stroke-dasharray: .012 .012;
+	pointer-events: none;
+}
+
+.tl-crane-line {
+	fill: none;
+	stroke: #b9a1e8;
+	stroke-width: .012;
+	vector-effect: non-scaling-stroke;
+	pointer-events: none;
+}
+
+.tl-crane-point-hit {
+	fill: transparent;
+	stroke: transparent;
+	pointer-events: all;
+	cursor: ns-resize;
+}
+
+.tl-crane-point-dot {
+	fill: #a78bfa;
+	stroke: #211b31;
+	stroke-width: .008;
+	vector-effect: non-scaling-stroke;
+	pointer-events: none;
+}
+
+.tl-crane-editor g.selected .tl-crane-point-dot {
+	fill: #ffb454;
+	stroke: #40270f;
+}
 
 .tl-shot-block.has-dolly .tl-shot-title,
 .tl-shot-block.has-dolly .tl-shot-meta {
@@ -4152,17 +4223,15 @@ input[type=range]::-moz-range-thumb {
 .tl-crane-point {
 	box-sizing: border-box;
 	position: absolute;
-	top: 50%;
-	left: clamp(7px, calc(var(--tl-crane-p) * 100%), calc(100% - 7px));
-	width: 12px;
-	height: 12px;
+	width: 18px;
+	height: 18px;
 	padding: 0;
 	transform: translate(-50%, -50%);
 	border: 2px solid #211b31;
 	border-radius: 50%;
 	background: #a78bfa;
 	box-shadow: 0 0 0 1px rgba(203, 183, 255, .65), 0 0 8px rgba(167, 139, 250, .9);
-	cursor: pointer;
+	cursor: ns-resize;
 	pointer-events: auto;
 	z-index: 5;
 }

@@ -24,7 +24,7 @@ expect("gridlines render from the ruler's framePct", timeline.includes('classNam
 expect("chips and markers share one frame scale", !timeline.includes("promptFramePct") && timeline.includes("clipPct(clip.startFrame)"));
 
 expect("camera keys render as dots, not a chip", timeline.includes('className="tl-marker cam"') && !timeline.includes("tl-chip camera"));
-expect("block key strip keys framing or authors crane progress for a Rail Shot", timeline.includes("handlers.current.onCameraKeyframeAdd?.(target, shot.id)") && timeline.includes("onCranePointAdd?.(t, shot.id)") && timeline.includes('className="tl-shot-key-surface"') && app.includes("onCameraKeyframeAdd={addCameraKeyframe}"));
+expect("block key strip keys framing while a dedicated crane graph authors Rail points", timeline.includes("handlers.current.onCameraKeyframeAdd?.(target, shot.id)") && timeline.includes("onCranePointAdd?.(t, shot.id)") && timeline.includes('className="tl-crane-editor"') && app.includes("onCameraKeyframeAdd={addCameraKeyframe}"));
 expect("key strip is a crosshair affordance", css.includes(".tl-shot-key-surface") && css.includes("cursor: crosshair"));
 expect("dot click jumps the playhead and selects the camera", timeline.includes("handlers.current.onScrub?.(key.frame)") && timeline.includes("handlers.current.onCameraMoveSelect?.();"));
 expect("dot right-click removes the key", timeline.includes("handlers.current.onCameraKeyframeRemove?.(shot.id, key.id)") && app.includes("removeCameraKey(shot.cameraKeys, keyId)"));
@@ -54,11 +54,11 @@ expect(
 expect("surface lays out four tracks after removing duplicate Camera row", css.includes("grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr)"));
 expect("lane gridlines are frame-based, not width-based", css.includes(".tl-grid {") && !css.includes("100% / 23"));
 expect("camera dots have a distinct violet identity", css.includes(".tl-marker.cam {") && css.includes("#a78bfa"));
-expect("the Rail Follow ribbon is gone; the curve shows the window and crane dots float on the card", timeline.includes("shot.camera?.railFollow") && timeline.includes('className="tl-crane-strip"') && !timeline.includes('className={"tl-rail"') && !timeline.includes("name === CAMERA_LANE"));
+expect("the Rail Follow ribbon is gone; the crane height editor owns the card interaction", timeline.includes("shot.camera?.railFollow") && timeline.includes('className="tl-crane-editor"') && timeline.includes('className="tl-crane-editor-hit"') && !timeline.includes('className="tl-crane-strip"') && !timeline.includes('className={"tl-rail"') && !timeline.includes("name === CAMERA_LANE"));
 expect("no ribbon editing gestures survive in the timeline", !["beginRailMove", "beginRailResize", "onRailKeyDown", "railDragRef"].some((name) => timeline.includes(name)));
 expect("the rail schedule model still resolves per shot in the app", app.includes("resolveRailSchedule({ railFollow: camera.railFollow"));
 expect("Rail range playback is resolved per shot", app.includes("resolveRailSchedule({ railFollow: camera.railFollow") && app.includes("subjectSlice.slice(schedule.startFrame, schedule.endFrame + 1)"));
-expect("the crane strip replaces the ribbon and keeps point selection", timeline.includes('className="tl-crane-strip"') && timeline.includes("onCranePointSelect?.(pointIndex, shot.id)"));
+expect("the crane graph selects, adds, and vertically drags height points", timeline.includes("function CraneHeightEditor") && timeline.includes("onCranePointSelect?.(pointIndex, shot.id)") && timeline.includes("onChangePoints?.(drag.points)") && timeline.includes("onAddPoint?.(at.t)"));
 
 expect(
 	"unified lane renders exactly one block from each shot geometry",
@@ -163,10 +163,12 @@ expect(
 		timeline.includes("onCranePointDelete"),
 );
 expect(
-	"rail crane points are authored and selected directly in the Shot key strip",
-	timeline.includes("addShotPointFromBlock") &&
-		timeline.includes("tl-crane-point") &&
-		timeline.includes("--tl-crane-p") &&
+	"rail crane points are authored and selected directly in the crane graph",
+	timeline.includes("function CraneHeightEditor") &&
+	timeline.includes("tl-crane-point") &&
+		timeline.includes("tl-crane-editor") &&
+	timeline.includes("onAddPoint?.(at.t)") &&
+		timeline.includes("onChangePoints?.(drag.points)") &&
 		timeline.includes("onCranePointSelect"),
 );
 expect(
