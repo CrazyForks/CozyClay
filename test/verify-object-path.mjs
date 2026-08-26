@@ -1,5 +1,6 @@
 // Object travel paths: schema repair, arc-length sampling and the frame →
 // transform answer that playback, export and MCP all share.
+import { readFileSync } from "node:fs";
 import { createObjectPath, pathMetrics, objectTransformAt, MAX_PATH_POINTS } from "../src/object-path.js";
 
 let failures = 0;
@@ -104,6 +105,30 @@ const take = { frameCount: 25, fps: 24 }; // exactly one second of travel
 		return near(beyond.x, 24, 1e-3);
 	})());
 }
+
+/* --- where the controls live ----------------------------------------------- */
+
+// Movement is timeline work: the path controls belong in the Animation strip
+// beside the camera's, never back in the inspector's static transform stack.
+const timelineSource = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+
+ok("the Animation strip owns a travel path editor", timelineSource.includes("function ObjectPathEditor("));
+ok(
+	"the path editor carries draw, speed, facing, extend, loop and delete",
+	(() => {
+		const editor = timelineSource.slice(
+			timelineSource.indexOf("function ObjectPathEditor("),
+			timelineSource.indexOf("function ", timelineSource.indexOf("function ObjectPathEditor(") + 1),
+		);
+		return ['ko("Draw path", "경로 그리기")', 'ko("Speed", "속도")', 'ko("Keep going", "계속 가기")',
+			'ko("Loop", "반복")', 'ko("Delete path", "경로 삭제")', "faceTravel"].every((token) => editor.includes(token));
+	})(),
+);
+ok(
+	"the inspector no longer hosts the path controls",
+	!appSource.includes('ko("Travel path", "이동 경로")') && appSource.includes("pathObject={"),
+);
 
 console.log(failures === 0 ? "all object-path checks PASS" : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

@@ -6273,12 +6273,6 @@ input[type=range]::-moz-range-thumb {
 }
 
 /* Inline button rows in the inspector (travel-path tools, mode toggles). */
-.inspector-row-buttons {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
-	margin: 2px 0 8px;
-}
 .inspector-row-buttons .btn {
 	flex: 1 1 auto;
 	min-width: 84px;

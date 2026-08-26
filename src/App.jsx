@@ -9365,73 +9365,6 @@ function resizePromptClip(id, edge, rawFrame) {
 											))}
 									</select>
 								</Field>
-								{/* Travel path: drawn on the Top-View floor like a camera rail,
-								    refined in the scene by dragging its points. */}
-								<Field label={ko("Travel path", "이동 경로")}>
-									<div className="inspector-row-buttons">
-										<button
-											type="button"
-											className={"btn" + (pathDraw ? " active" : "")}
-											onClick={() => {
-												setPathDraw((current) => !current);
-												if (!pathDraw) setRailDraw(false);
-												setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
-											}}
-											title={ko("Draw a route on the Top-View floor", "위에서 본 지도에 이동 경로를 그립니다")}
-										>
-											{pathDraw ? ko("Drawing…", "그리는 중…") : selectedSceneObject.path ? ko("Redraw path", "경로 다시 그리기") : ko("Draw path", "경로 그리기")}
-										</button>
-										{selectedSceneObject.path && (
-											<button
-												type="button"
-												className="btn ghost"
-												onClick={() => {
-													const token = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
-													changeSceneObject(selectedSceneObject.id, { path: null }, token);
-													endSceneTransaction(token, { commit: true });
-												}}
-											>
-												{ko("Clear", "지우기")}
-											</button>
-										)}
-									</div>
-								</Field>
-								{selectedSceneObject.path && (
-									<>
-										<Slider
-											label={ko("Speed (m/s, 0 = fill take)", "속도 (m/s, 0 = 전체 길이)")}
-											min={0}
-											max={20}
-											step={0.1}
-											value={selectedSceneObject.path.speed ?? 0}
-											onChange={(speed) => changeSceneObject(selectedSceneObject.id, { path: { ...selectedSceneObject.path, speed } })}
-										/>
-										<div className="inspector-row-buttons">
-											<button
-												type="button"
-												className={"btn" + (selectedSceneObject.path.faceTravel ? " active" : "")}
-												onClick={() => changeSceneObject(selectedSceneObject.id, { path: { ...selectedSceneObject.path, faceTravel: !selectedSceneObject.path.faceTravel } })}
-											>
-												{ko("Face travel", "진행 방향 보기")}
-											</button>
-											<button
-												type="button"
-												className={"btn" + (selectedSceneObject.path.extend ? " active" : "")}
-												onClick={() => changeSceneObject(selectedSceneObject.id, { path: { ...selectedSceneObject.path, extend: !selectedSceneObject.path.extend } })}
-												title={ko("Keep going in the last direction after the path ends", "경로가 끝나도 마지막 방향으로 계속 갑니다")}
-											>
-												{ko("Keep going", "계속 가기")}
-											</button>
-											<button
-												type="button"
-												className={"btn" + (selectedSceneObject.path.loop ? " active" : "")}
-												onClick={() => changeSceneObject(selectedSceneObject.id, { path: { ...selectedSceneObject.path, loop: !selectedSceneObject.path.loop } })}
-											>
-												{ko("Loop", "반복")}
-											</button>
-										</div>
-									</>
-								)}
 								<Vector3Row
 							label={ko("Position", "위치")}
 									fields={[
@@ -9934,6 +9867,22 @@ function resizePromptClip(id, edge, rawFrame) {
 					shots={shots}
 					activeShotIdx={activeShotIdx}
 					railDraw={railDraw}
+					pathDraw={pathDraw}
+					pathObject={selectedSceneObject ? { id: selectedSceneObject.id, name: sceneObjectNameDisplayKo(selectedSceneObject.name), path: selectedSceneObject.path } : null}
+					onObjectPathDrawToggle={() => {
+						setPathDraw((current) => !current);
+						if (!pathDraw) setRailDraw(false);
+						setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
+					}}
+					onObjectPathChange={(path) => {
+						if (selectedSceneObject) changeSceneObject(selectedSceneObject.id, { path });
+					}}
+					onObjectPathClear={() => {
+						if (!selectedSceneObject) return;
+						const token = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
+						changeSceneObject(selectedSceneObject.id, { path: null }, token);
+						endSceneTransaction(token, { commit: true });
+					}}
 					cameraRailLength={railCurve?.length ?? null}
 				shotCutDisabled={!!posing || ikMode || waypointMode}
 				onIkToggle={toggleIkMode}

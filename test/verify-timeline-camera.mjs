@@ -117,10 +117,17 @@ expect(
 	timeline.indexOf('ko("Height", "높이")') < timeline.indexOf('ko("Pitch", "피치")') &&
 	(timeline.slice(timeline.indexOf('ko("Height", "높이")'), timeline.indexOf('ko("Pitch", "피치")')).match(/<label/g) ?? []).length === 1,
 );
+// Scope the count to CameraBlockEditor: other editors in this file (the
+// object travel path) reuse the same readout class, so a file-wide count
+// would break every time the strip grows a neighbour.
+const cameraEditorSource = timeline.slice(
+	timeline.indexOf("function CameraBlockEditor("),
+	timeline.indexOf("function ", timeline.indexOf("function CameraBlockEditor(") + 1),
+);
 expect(
 	"distance, height and pitch are measured from viewport manipulation instead of typed",
-	timeline.includes('className="tl-camera-metric"') &&
-	(timeline.match(/className="tl-camera-metric"/g) ?? []).length === 3 &&
+	cameraEditorSource.includes('className="tl-camera-metric"') &&
+	(cameraEditorSource.match(/className="tl-camera-metric"/g) ?? []).length === 3 &&
 	app.includes("followFramingFromCamera(") &&
 	app.includes("cam.position,") &&
 	app.includes("look.current.pitch,") &&
