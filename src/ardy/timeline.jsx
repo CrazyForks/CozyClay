@@ -460,32 +460,12 @@ function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDra
 					)}
 				</div>
 			</div>
-			{path && (
-				<div className="tl-track objmo">
-					<span className="tl-track-label">{ko("Travel", "이동")}</span>
-					<div className="tl-lane">
-						{span && (
-							<div
-								className={"objmo-travel" + (span.fills ? " fills" : "")}
-								style={{
-									left: `${(span.start / Math.max(1, frameCount - 1)) * 100}%`,
-									width: `${((span.end - span.start) / Math.max(1, frameCount - 1)) * 100}%`,
-								}}
-							>
-								<span>{path.loop ? ko("loops", "반복") : path.extend ? ko("keeps going", "계속 감") : ko("travels", "이동")}</span>
-								<span className="objmo-travel-note">
-									{ko(`${seconds.toFixed(1)}s`, `${seconds.toFixed(1)}초`)}
-								</span>
-							</div>
-						)}
-					</div>
-				</div>
-			)}
 			{path && span && (
 				<div className="tl-track objmo sg-row">
 					<span className="tl-track-label">{ko("Speed", "속도 곡선")}</span>
 					<div className="tl-lane sg-lane">
 						<SpeedGraph
+							facts={metrics && span ? `${metrics.length.toFixed(1)} m · ${seconds.toFixed(1)}${isKo ? "초" : "s"}` : null}
 							timing={path.timing ?? null}
 							windowFrac={span.fills ? 1 : span.end / Math.max(1, frameCount - 1)}
 							frame={frame}
