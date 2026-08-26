@@ -116,12 +116,13 @@ function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDra
 	const metrics = useMemo(() => (path ? pathMetrics(path) : null), [path]);
 	const span = useMemo(() => travelSpan(path, metrics, frameCount, fps), [path, metrics, frameCount, fps]);
 	const patch = (change) => onPathChange?.({ ...path, ...change });
+	const seconds = span ? (span.end - span.start) / Math.max(1, fps) : 0;
 	return (
 		<>
 			<div className="tl-track objmo">
 				<span className="tl-track-label">
 					<span className="tl-subject-kind">{ko("PROP", "소품")}</span>
-					{object.name}
+					<span className="objmo-name">{object.name}</span>
 				</span>
 				<div className="tl-lane objmo-tools">
 					<button
@@ -133,20 +134,21 @@ function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDra
 					</button>
 					{path ? (
 						<>
-							<label title={ko("Metres per second; 0 spreads the route across the whole take", "초당 미터; 0이면 전체 길이에 맞춰 이동합니다")}>
+							<span className="objmo-speed" title={ko("Metres per second; 0 spreads the route across the whole take", "초당 미터; 0이면 전체 길이에 맞춰 이동합니다")}>
 								<span>{ko("Speed", "속도")}</span>
 								<input
 									type="range"
 									min={0}
 									max={20}
 									step={0.1}
+									aria-label={ko("Travel speed", "이동 속도")}
 									value={path.speed ?? 0}
 									onChange={(event) => patch({ speed: Number(event.currentTarget.value) })}
 								/>
-								<output className="tl-camera-metric">
-									{(path.speed ?? 0) === 0 ? ko("take", "전체") : `${Number(path.speed).toFixed(1)} m/s`}
+								<output className="objmo-speed-value">
+									{(path.speed ?? 0) === 0 ? ko("fills take", "전체") : `${Number(path.speed).toFixed(1)} m/s`}
 								</output>
-							</label>
+							</span>
 							<button
 								type="button"
 								className={"tl-camera-tool" + (path.faceTravel ? " active" : "")}
@@ -181,6 +183,14 @@ function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDra
 							>
 								{ko("Delete path", "경로 삭제")}
 							</button>
+							{/* The two gestures nobody guesses, on the same row rather than
+							    a lane of their own — an empty track reads as broken. */}
+							<span className="tl-path-hint">
+								{ko(
+									`${metrics.length.toFixed(1)} m · ${path.points.length} points · double-click the line to add a point · Delete removes it`,
+									`${metrics.length.toFixed(1)} m · 점 ${path.points.length}개 · 선을 더블클릭하면 점 추가 · Delete로 삭제`,
+								)}
+							</span>
 						</>
 					) : (
 						<span className="tl-path-hint">
@@ -189,32 +199,24 @@ function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDra
 					)}
 				</div>
 			</div>
-			<div className="tl-track objmo">
-				<span className="tl-track-label">{ko("Travel", "이동")}</span>
-				<div className="tl-lane">
-					{span && (
-						<div
-							className={"objmo-travel" + (span.fills ? " fills" : "")}
-							style={{
-								left: `${(span.start / Math.max(1, frameCount - 1)) * 100}%`,
-								width: `${((span.end - span.start) / Math.max(1, frameCount - 1)) * 100}%`,
-							}}
-						>
-							{path.loop ? ko("loops", "반복") : path.extend ? ko("keeps going", "계속 감") : ko("travels", "이동")}
-						</div>
-					)}
-				</div>
-			</div>
 			{path && (
 				<div className="tl-track objmo">
-					<span className="tl-track-label" />
-					<div className="tl-lane objmo-tools">
-						<span className="tl-path-hint">
-							{ko(
-								`${metrics.length.toFixed(1)} m · ${path.points.length} points · double-click the line to add one · Delete removes the selected one`,
-								`${metrics.length.toFixed(1)} m · 점 ${path.points.length}개 · 선을 더블클릭하면 점 추가 · 점 선택 후 Delete로 삭제`,
-							)}
-						</span>
+					<span className="tl-track-label">{ko("Travel", "이동")}</span>
+					<div className="tl-lane">
+						{span && (
+							<div
+								className={"objmo-travel" + (span.fills ? " fills" : "")}
+								style={{
+									left: `${(span.start / Math.max(1, frameCount - 1)) * 100}%`,
+									width: `${((span.end - span.start) / Math.max(1, frameCount - 1)) * 100}%`,
+								}}
+							>
+								<span>{path.loop ? ko("loops", "반복") : path.extend ? ko("keeps going", "계속 감") : ko("travels", "이동")}</span>
+								<span className="objmo-travel-note">
+									{ko(`${seconds.toFixed(1)}s`, `${seconds.toFixed(1)}초`)}
+								</span>
+							</div>
+						)}
 					</div>
 				</div>
 			)}

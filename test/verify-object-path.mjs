@@ -203,5 +203,30 @@ ok(
 	travelTrackSource.includes("선을 더블클릭하면 점 추가") && travelTrackSource.includes("Delete로 삭제"),
 );
 
+/* --- the strip's own layout ----------------------------------------------- */
+
+const cssSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+
+// A range input on a dark lane draws nothing but its thumb unless the track is
+// styled, which reads as a broken control rather than a slider.
+ok(
+	"the speed slider paints a track and a thumb",
+	cssSource.includes("::-webkit-slider-runnable-track") && cssSource.includes("::-webkit-slider-thumb"),
+);
+ok("the slider has a real width", /\.objmo-speed input\[type="range"\][^}]*width: 96px/s.test(cssSource));
+ok(
+	"speed reads as one unit rather than drifting apart",
+	cssSource.includes(".objmo-speed {") && travelTrackSource.includes('className="objmo-speed"'),
+);
+ok("a long prop name is clipped, not spilled", cssSource.includes(".tl-track.objmo .tl-track-label .objmo-name") && cssSource.includes("text-overflow: ellipsis"));
+ok(
+	"the hint shares the controls row instead of owning an empty one",
+	travelTrackSource.includes('<span className="tl-path-hint">') &&
+	(travelTrackSource.match(/className="tl-track objmo"/g) ?? []).length === 2,
+);
+ok("the travel bar is inset, not a full-bleed fill", /\.objmo-travel \{[^}]*top: 4px[^}]*bottom: 4px/s.test(cssSource));
+ok("filling the take whispers instead of shouting", cssSource.includes(".objmo-travel.fills") && cssSource.includes("border-style: dashed"));
+ok("the travel bar states its duration", travelTrackSource.includes("seconds.toFixed(1)"));
+
 console.log(failures === 0 ? "all object-path checks PASS" : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

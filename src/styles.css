@@ -2840,29 +2840,99 @@ input[type=range]::-moz-range-thumb {
 
 /* A prop's travel loads into the strip in place of the performer's lanes, so
    it uses the same track grid and wears the route's green to say whose row
-   this is. */
-.tl-track.objmo .tl-track-label { color: #9fe0bb; }
+   this is. These rows carry controls rather than clips, so they set their own
+   sizing: the camera bar's input rules do not reach inside a lane. */
+.tl-track.objmo .tl-track-label {
+	color: #9fe0bb;
+	gap: 6px;
+	/* A pasted-image prop is named after its file and runs long; clip it with
+	   an ellipsis instead of letting it collide with the lane edge. */
+	min-width: 0;
+}
+
+.tl-track.objmo .tl-track-label .objmo-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 
 .tl-track.objmo .tl-lane {
 	background: #151d19;
-	border-color: rgba(111, 207, 151, .22);
+	border-bottom: 1px solid rgba(111, 207, 151, .16);
 }
 
 .objmo-tools {
 	display: flex;
 	align-items: center;
-	gap: 7px;
+	gap: 6px;
 	flex-wrap: wrap;
-	padding: 0 8px;
-	overflow-x: auto;
+	padding: 5px 8px;
 	color: #d3e7dc;
 	font-size: 10px;
 }
 
-.objmo-tools label {
-	display: flex;
+/* Speed reads as one unit: the word, the slider, the value — no drifting. */
+.objmo-speed {
+	display: inline-flex;
 	align-items: center;
-	gap: 5px;
+	gap: 6px;
+	padding: 0 8px 0 6px;
+	border: 1px solid rgba(111, 207, 151, .24);
+	border-radius: 4px;
+	background: #101714;
+	white-space: nowrap;
+}
+
+/* The track must be drawn, not inherited: a transparent range on a dark lane
+   renders as a lone floating thumb that reads as a broken control. */
+.objmo-speed input[type="range"] {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 96px;
+	height: 16px;
+	margin: 0;
+	background: transparent;
+	cursor: pointer;
+}
+
+.objmo-speed input[type="range"]::-webkit-slider-runnable-track {
+	height: 4px;
+	border-radius: 2px;
+	background: rgba(111, 207, 151, .28);
+}
+
+.objmo-speed input[type="range"]::-moz-range-track {
+	height: 4px;
+	border-radius: 2px;
+	background: rgba(111, 207, 151, .28);
+}
+
+.objmo-speed input[type="range"]::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 11px;
+	height: 11px;
+	margin-top: -3.5px;
+	border: 0;
+	border-radius: 50%;
+	background: #6fcf97;
+}
+
+.objmo-speed input[type="range"]::-moz-range-thumb {
+	width: 11px;
+	height: 11px;
+	border: 0;
+	border-radius: 50%;
+	background: #6fcf97;
+}
+
+.objmo-speed input[type="range"]:focus-visible { outline: 1px solid #6fcf97; outline-offset: 2px; }
+
+.objmo-speed .objmo-speed-value {
+	min-width: 46px;
+	color: #9fe0bb;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
 }
 
 .objmo-tools .tl-camera-tool.active {
@@ -2872,20 +2942,25 @@ input[type=range]::-moz-range-thumb {
 }
 
 .tl-path-hint {
+	margin-left: auto;
 	color: #7fae95;
 	font-size: 9px;
 	white-space: nowrap;
 }
 
+/* The travel bar is a duration, not a fill: it stays a slim band inside the
+   lane so the frame ruler above it remains the thing being read. */
 .objmo-travel {
 	position: absolute;
-	top: 3px;
-	bottom: 3px;
+	top: 4px;
+	bottom: 4px;
 	display: flex;
 	align-items: center;
-	padding-left: 6px;
+	gap: 6px;
+	padding: 0 8px;
+	border: 1px solid rgba(111, 207, 151, .5);
 	border-radius: 3px;
-	background: linear-gradient(90deg, rgba(111, 207, 151, .5), rgba(111, 207, 151, .26));
+	background: linear-gradient(180deg, rgba(111, 207, 151, .34), rgba(111, 207, 151, .16));
 	color: #eafff3;
 	font-size: 9px;
 	white-space: nowrap;
@@ -2893,7 +2968,13 @@ input[type=range]::-moz-range-thumb {
 	pointer-events: none;
 }
 
-.objmo-travel.fills { background: linear-gradient(90deg, rgba(111, 207, 151, .42), rgba(111, 207, 151, .2)); }
+/* Filling the take is the default, so it whispers rather than shouts. */
+.objmo-travel.fills {
+	border-style: dashed;
+	background: linear-gradient(180deg, rgba(111, 207, 151, .2), rgba(111, 207, 151, .08));
+}
+
+.objmo-travel-note { color: #a9d6bf; }
 
 .tl-subject-kind {
 	display: inline-block;
