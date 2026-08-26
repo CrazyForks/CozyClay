@@ -98,11 +98,26 @@ assert.throws(
 	() => runner.singleCommand({ prompt: "x", durationS: 1, basePath: "/base.npz", output: "/tmp/o.npz" }),
 	/does not implement base clips/
 );
-assert.throws(
-	() => runner.singleCommand({ prompt: "x", durationS: 1, poseFroms: [{ npz: "p" }], output: "/tmp/o.npz" }),
-	/does not implement pose pinning/
-);
 pass("ARDY-only features refuse by name rather than generating a wrong take");
+
+// ---- pinned poses are forwarded, not refused ------------------------------
+// They become Kimodo `fullbody` constraints downstream. Each pose reaches the
+// CLI as its npz path plus the clip frame to pin it at.
+const pinned = runner.singleCommand({
+	prompt: "A person kneels",
+	durationS: 4,
+	poseFroms: [
+		{ npz: "/tmp/pose-a.npz", srcFrame: 0, dstFrame: 40 },
+		{ npz: "/tmp/pose-b.npz", srcFrame: 0, dstFrame: 70 },
+	],
+	output: "/tmp/o.npz",
+});
+const poseAt = pinned.args.indexOf("--pose");
+assert.ok(poseAt >= 0, "pinned poses must reach the CLI as --pose");
+assert.deepEqual(pinned.args.slice(poseAt, poseAt + 3), ["--pose", "/tmp/pose-a.npz", "40"]);
+assert.equal(pinned.args.filter((a) => a === "--pose").length, 2, "every pinned pose must be forwarded");
+assert.ok(pinned.args.includes("/tmp/pose-b.npz") && pinned.args.includes("70"));
+pass("pinned poses are forwarded as --pose instead of refused");
 
 // ---- a single prompt is a one-segment sequence ----------------------------
 const single = runner.singleCommand({ prompt: "A person waves", durationS: 2, output: "/tmp/o.npz" });

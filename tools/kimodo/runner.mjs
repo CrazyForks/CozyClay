@@ -8,12 +8,10 @@
  * does for ARDY.
  *
  * WHAT THIS BACKEND DOES NOT DO. Kimodo is wired here for text-to-motion
- * sequencing and root 2D paths. Base clips, pose pinning and motion edit are
+ * sequencing, root 2D paths and pinned poses. Base clips and motion edit are
  * ARDY-specific machinery in this repo (they drive ardy.constraints directly
  * from cclay_*.py) and have no Kimodo equivalent yet, so they refuse by name
- * instead of silently producing a take that ignored its constraints. Kimodo's
- * `fullbody` constraint type could carry pose pinning later; until that is
- * built and proven, refusing is the honest answer.
+ * instead of silently producing a take that ignored its constraints.
  */
 
 import { fileURLToPath } from "node:url";
@@ -84,7 +82,7 @@ export function createKimodoRunner() {
 		return [];
 	}
 
-	function sequenceCommand({ segments, waypoints, seed, output }) {
+	function sequenceCommand({ segments, waypoints, poseFroms, seed, output }) {
 		const args = [RUN_SEQUENCE];
 		for (const segment of segments) {
 			args.push("--segment", segment.prompt, String(segment.durationS));
@@ -100,6 +98,9 @@ export function createKimodoRunner() {
 				String(waypoint.z),
 				waypoint.heading === null || waypoint.heading === undefined ? "none" : String(waypoint.heading)
 			);
+		}
+		for (const entry of poseFroms || []) {
+			args.push("--pose", entry.npz, String(entry.dstFrame));
 		}
 		if (Number.isInteger(seed)) args.push("--seed", String(seed));
 		args.push("--target-fps", String(TARGET_FPS), "--output", output);
@@ -121,8 +122,17 @@ export function createKimodoRunner() {
 	// carries none of the ARDY-only conditioning.
 	function singleCommand({ prompt, durationS, seed, output, basePath, poseFroms, waypoints }) {
 		if (basePath) throw new Error("the Kimodo backend does not implement base clips");
-		if (poseFroms?.length) throw new Error("the Kimodo backend does not implement pose pinning");
-		return sequenceCommand({ segments: [{ prompt, durationS }], waypoints, seed, output });
+		return sequenceCommand({
+			segments: [{ prompt, durationS }],
+			waypoints,
+			// Pinned poses become Kimodo `fullbody` constraints downstream. The
+			// bridge hands them over as npz paths plus the clip frame to pin them
+			// at; src-frame is an ARDY concept (which frame of a multi-frame npz to
+			// read) and a cclay pose npz always holds exactly one.
+			poseFroms,
+			seed,
+			output,
+		});
 	}
 
 	return {

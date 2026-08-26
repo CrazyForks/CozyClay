@@ -19,6 +19,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildRoot2dConstraints } from "./constraints.mjs";
+import { buildFullBodyConstraints } from "./pose-constraints.mjs";
 import { readKimodoMotion } from "./read-npz.mjs";
 import { soma77ToCskel27Motion } from "./soma77-to-cskel27.mjs";
 
@@ -120,6 +121,9 @@ export async function generateOnBox({
 	// metres. Translated to Kimodo's canonical constraint space by
 	// buildRoot2dConstraints before it is shipped.
 	waypoints,
+	// Authored poses to pin, as [{frame, pose:{local_rot_mats, posed_joints}}]
+	// with `frame` in the caller's app clip space.
+	poses,
 	appFps = Number(process.env.CCLAY_KIMODO_APP_FPS || 20),
 	model = process.env.CCLAY_KIMODO_MODEL || DEFAULT_MODEL,
 	transitionFrames = Number(process.env.CCLAY_KIMODO_TRANSITION_FRAMES || 5),
@@ -160,7 +164,18 @@ export async function generateOnBox({
 	// one is a worse deal than the seam it fixes, so both mitigations stay off
 	// until one is found that costs neither. Both remain implemented and pinned by
 	// test/verify-kimodo-waypoints.mjs so the findings are not lost.
-	const constraints = buildRoot2dConstraints(waypoints, { appFps, genFps, genFrames });
+	const root2d = buildRoot2dConstraints(waypoints, { appFps, genFps, genFrames });
+
+	// Pinned poses ride in the SAME constraints file as the path: Kimodo's loader
+	// reads a JSON array and dispatches per entry `type`, so one file can carry a
+	// root2d path and fullbody keyframes together.
+	const genScale = genFps / appFps;
+	const poseEntries = (poses || []).map((entry) => ({
+		...entry,
+		frame: Math.min(genFrames - 1, Math.max(0, Math.round(entry.frame * genScale))),
+	}));
+	const fullBody = buildFullBodyConstraints(poseEntries, { genFrames });
+	const constraints = [...root2d, ...fullBody];
 
 	const remoteStem = `/tmp/cclay-kimodo-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
 	// `repo` may hold an unexpanded $HOME for the REMOTE shell to expand, so it

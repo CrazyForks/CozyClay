@@ -17,6 +17,7 @@
  */
 
 import { statSync } from "node:fs";
+import { readNpz } from "./read-npz.mjs";
 import { writeNpz, motionArraysToNpzMembers } from "../ardy/npz.mjs";
 import { retimeMotion } from "../../src/ardy/retime.js";
 import { generateOnBox, continuityMetrics } from "./generate.mjs";
@@ -27,14 +28,44 @@ function usage(message) {
 	if (message) console.error(`run-kimodo-sequence: ${message}`);
 	console.error(
 		'usage: run-sequence-on-box.mjs --segment "<prompt>" <seconds> [--segment ...] ' +
-			"[--root-2d <frame> <x> <z> <heading|none> ...] [--seed N] [--target-fps N] --output <path>"
+			"[--root-2d <frame> <x> <z> <heading|none> ...] [--pose <npz> <dst-frame> ...] " +
+			"[--seed N] [--target-fps N] --output <path>"
 	);
 	process.exit(2);
+}
+
+/** A CozyClay pose npz -> the {local_rot_mats, posed_joints} the builder wants. */
+function loadPoseNpz(path) {
+	const members = readNpz(path);
+	for (const key of ["local_rot_mats", "posed_joints"]) {
+		if (!members[key]) throw new Error(`pose npz ${path} is missing ${key}`);
+	}
+	// Written as [1,27,3,3] and [1,27,3] by poseArraysToNpzMembers; the leading
+	// keyframe axis is dropped here so the builder always sees one pose.
+	const rot = members.local_rot_mats;
+	const pos = members.posed_joints;
+	const joints = rot.shape.at(-3);
+	if (joints !== 27) throw new Error(`pose npz ${path} has ${joints} joints, expected 27`);
+	const local_rot_mats = [];
+	for (let j = 0; j < 27; j += 1) {
+		const base = j * 9;
+		local_rot_mats.push([
+			[rot.data[base], rot.data[base + 1], rot.data[base + 2]],
+			[rot.data[base + 3], rot.data[base + 4], rot.data[base + 5]],
+			[rot.data[base + 6], rot.data[base + 7], rot.data[base + 8]],
+		]);
+	}
+	const posed_joints = [];
+	for (let j = 0; j < 27; j += 1) {
+		posed_joints.push([pos.data[j * 3], pos.data[j * 3 + 1], pos.data[j * 3 + 2]]);
+	}
+	return { local_rot_mats, posed_joints };
 }
 
 function parseArgs(argv) {
 	const segments = [];
 	const waypoints = [];
+	const poses = [];
 	let seed;
 	let output;
 	let targetFps = TARGET_FPS_DEFAULT;
@@ -54,6 +85,12 @@ function parseArgs(argv) {
 			if (heading !== null && !Number.isFinite(heading)) usage("--root-2d heading must be a number or 'none'");
 			waypoints.push({ frame, x, z, heading });
 			index += 4;
+		} else if (flag === "--pose") {
+			const npzPath = argv[index + 1];
+			const dstFrame = Number(argv[index + 2]);
+			if (!npzPath || !Number.isInteger(dstFrame) || dstFrame < 0) usage("--pose needs NPZ DST-FRAME");
+			poses.push({ frame: dstFrame, npz: npzPath });
+			index += 2;
 		} else if (flag === "--segment") {
 			const prompt = argv[index + 1];
 			const seconds = Number(argv[index + 2]);
@@ -77,16 +114,17 @@ function parseArgs(argv) {
 	}
 	if (segments.length === 0) usage("at least one --segment is required");
 	if (!output) usage("--output is required");
-	return { segments, waypoints, seed, output, targetFps };
+	return { segments, waypoints, poses, seed, output, targetFps };
 }
 
-const { segments, waypoints, seed, output, targetFps } = parseArgs(process.argv.slice(2));
+const { segments, waypoints, poses, seed, output, targetFps } = parseArgs(process.argv.slice(2));
 
 try {
 	const requestedS = segments.reduce((total, segment) => total + segment.duration, 0);
 	const { motion, raw, constraints } = await generateOnBox({
 		segments,
 		waypoints,
+		poses: poses.map((entry) => ({ frame: entry.frame, pose: loadPoseNpz(entry.npz) })),
 		// The authored path is in the SAME frame space this script retimes to,
 		// which is the app's clock — so target-fps is also the waypoint clock.
 		appFps: targetFps,
@@ -127,6 +165,7 @@ try {
 			segments: segments.map((segment) => ({ prompt: segment.prompt, requested_s: segment.duration })),
 			boundaries,
 			waypoints: waypoints.length,
+			poses: poses.length,
 			constraints: constraints.length,
 			continuity: continuityMetrics(retimed),
 		})
