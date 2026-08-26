@@ -49,12 +49,18 @@ function requireFinite(value, label) {
 
 /**
  * @param {Array<{frame:number,x:number,z:number,heading:number|null}>} waypoints
- * @param {{appFps:number, genFps:number, genFrames:number, segmentBoundaries?:number[]}} options
+ * @param {{appFps:number, genFps:number, genFrames:number, segmentBoundaries?:number[],
+ *          segmentStarts?:number[], transitionFrames?:number}} options
  *   `segmentBoundaries` are APP-space frames where a new prompt segment begins
  *   (excluding 0). Omit or pass [] for a single-segment take.
+ *   `segmentStarts` are the same boundaries already in GENERATION space, used
+ *   to keep constraints clear of each segment's transition window.
  * @returns {Array<object>} Kimodo constraint entries (empty when nothing is constrained)
  */
-export function buildRoot2dConstraints(waypoints, { appFps, genFps, genFrames, segmentBoundaries = [] } = {}) {
+export function buildRoot2dConstraints(
+	waypoints,
+	{ appFps, genFps, genFrames, segmentBoundaries = [], segmentStarts = [], transitionFrames = 5 } = {}
+) {
 	if (!waypoints || waypoints.length === 0) return [];
 	if (!Array.isArray(waypoints)) {
 		throw new Error("buildRoot2dConstraints: waypoints must be an array");
@@ -141,6 +147,33 @@ export function buildRoot2dConstraints(waypoints, { appFps, genFps, genFrames, s
 		if (!originCache.has(start)) originCache.set(start, start === 0 ? points[0] : sampleAt(start));
 		return originCache.get(start);
 	};
+
+	// Keep constraints out of each segment's TRANSITION WINDOW. For every segment
+	// after the first, Kimodo builds its own FullBody + EndEffector constraints
+	// over that segment's first `num_transition_frames` from the previous
+	// segment's tail. A root2d constraint in the same window disagrees with them
+	// and the root teleports at the seam: measured 2.353 m with the constraint on
+	// the boundary against 0.400 m ten frames later, same path and seed.
+	//
+	// Only the TIMING moves; the authored position is preserved exactly, because
+	// dropping the constraint would silently discard what the author asked for.
+	if (segmentStarts.length > 0 && points.length > 0) {
+		const windows = [...new Set(segmentStarts.map((frame) => Math.round(frame)))].sort((a, b) => a - b);
+		for (const point of points) {
+			for (const start of windows) {
+				if (point.genFrame >= start && point.genFrame < start + transitionFrames) {
+					point.genFrame = Math.min(lastFrame, start + transitionFrames);
+				}
+			}
+		}
+		// A nudge can land on a frame another waypoint already owns, and duplicate
+		// indices would constrain one frame twice; the later author wins, matching
+		// the dedupe above.
+		const deduped = new Map();
+		for (const point of points) deduped.set(point.genFrame, point);
+		points.length = 0;
+		points.push(...[...deduped.values()].sort((a, b) => a.genFrame - b.genFrame));
+	}
 
 	const anyHeading = points.some((point) => point.heading !== null);
 

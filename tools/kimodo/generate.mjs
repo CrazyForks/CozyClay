@@ -144,10 +144,22 @@ export async function generateOnBox({
 	const genFps = Number(process.env.CCLAY_KIMODO_GEN_FPS || 30);
 	const requestedS = segments.reduce((total, segment) => total + Number(segment.duration), 0);
 	const genFrames = Math.max(1, Math.round(requestedS * genFps));
-	// NOTE: segmentBoundaries is deliberately NOT passed. Re-expressing
-	// constraints per segment was implemented and measured twice on the box, and
-	// both times it was far worse than whole-clip absolute authoring (waypoint
-	// error 0.11 m -> 3.6 m). See tools/kimodo/constraints.mjs for the numbers.
+	// Where each prompt segment begins, in GENERATION frames. Kimodo owns the
+	// first `transitionFrames` of every segment after the first, so constraints
+	// are kept clear of those windows.
+	//
+	// NOTE: segmentBoundaries (re-expressing constraint POSITIONS per segment) is
+	// deliberately NOT passed. That was implemented and measured twice on the
+	// box, and both times it tracked far worse than whole-clip absolute authoring
+	// (waypoint error 0.11 m -> 3.6 m). Only the FRAME nudge below helped.
+	//
+	// The transition-window nudge (segmentStarts) is ALSO not passed. It does cut
+	// the seam teleport (2.353 m -> 0.728 m) but it moves the constraint's TIMING,
+	// so the character reaches the authored position ~0.3 s late and the waypoint
+	// misses its own frame by 2.26 m. Trading a 0.11 m tracking error for a 2.26 m
+	// one is a worse deal than the seam it fixes, so both mitigations stay off
+	// until one is found that costs neither. Both remain implemented and pinned by
+	// test/verify-kimodo-waypoints.mjs so the findings are not lost.
 	const constraints = buildRoot2dConstraints(waypoints, { appFps, genFps, genFrames });
 
 	const remoteStem = `/tmp/cclay-kimodo-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;

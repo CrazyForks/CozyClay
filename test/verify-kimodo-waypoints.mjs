@@ -250,4 +250,69 @@ const GEN_FPS = 30;
 	pass("a single-segment take keeps whole-clip anchoring");
 }
 
+// ---- constraints must clear a segment's transition window ----------------
+// For every segment after the first, Kimodo inserts its OWN transition
+// constraints over that segment's first `num_transition_frames`
+// (kimodo_model.py builds a FullBodyConstraintSet + EndEffectorConstraintSet
+// from the previous segment's tail). A root2d constraint landing in that same
+// window fights them, and the root teleports at the seam.
+//
+// MEASURED on the box, identical path and seed:
+//   waypoint ON the boundary (gen frame 90)      -> boundary jump 2.353 m
+//   same waypoint 10 gen frames later (frame 100) -> boundary jump 0.400 m
+// So a constraint inside the window is pushed just past it. The spatial target
+// is preserved exactly; only its timing shifts, which is the smallest change
+// that stops the two constraint sets from disagreeing.
+{
+	const waypoints = [
+		{ frame: 0, x: 0, z: 0, heading: null },
+		{ frame: 60, x: 2, z: 3, heading: null },
+		{ frame: 119, x: -1, z: 6, heading: null },
+	];
+	// 3 s + 3 s at 20 fps app / 30 fps generation: segment 2 starts at gen 90.
+	const out = buildRoot2dConstraints(waypoints, {
+		appFps: 20,
+		genFps: 30,
+		genFrames: 180,
+		segmentStarts: [90],
+		transitionFrames: 5,
+	});
+	const indices = out[0].frame_indices;
+	assert.equal(indices[0], 0, "frame 0 is the clip start, never nudged");
+	assert.ok(
+		indices[1] >= 95,
+		`a constraint on the segment boundary must clear the 5-frame transition window, got ${indices[1]}`
+	);
+	assert.ok(indices[1] < 105, `the nudge must stay small, got ${indices[1]}`);
+	// The authored POSITION must be untouched - only timing moves.
+	assert.deepEqual(out[0].smooth_root_2d[1], [2, 3], "nudging must not move the target position");
+	assert.equal(new Set(indices).size, indices.length, "nudging must not create duplicate frames");
+	assert.deepEqual([...indices].sort((a, b) => a - b), indices, "frame_indices must stay ascending");
+	pass("a constraint on a segment boundary is nudged clear of the transition window");
+}
+
+// ---- a constraint already clear of the window is untouched ---------------
+{
+	const out = buildRoot2dConstraints(
+		[
+			{ frame: 0, x: 0, z: 0, heading: null },
+			{ frame: 80, x: 2, z: 3, heading: null },
+		],
+		{ appFps: 20, genFps: 30, genFrames: 180, segmentStarts: [90], transitionFrames: 5 }
+	);
+	assert.deepEqual(out[0].frame_indices, [0, 120], "a frame outside the window must not move");
+	pass("a constraint outside the transition window keeps its authored frame");
+}
+
+// ---- no segment info behaves exactly as before ---------------------------
+{
+	const waypoints = [
+		{ frame: 0, x: 0, z: 0, heading: null },
+		{ frame: 60, x: 2, z: 3, heading: null },
+	];
+	const plain = buildRoot2dConstraints(waypoints, { appFps: 20, genFps: 30, genFrames: 180 });
+	assert.deepEqual(plain[0].frame_indices, [0, 90], "without segmentStarts nothing is nudged");
+	pass("a single-segment take is unaffected by the transition-window rule");
+}
+
 console.log("OK verify-kimodo-waypoints");
