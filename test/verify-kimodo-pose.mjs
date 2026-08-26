@@ -111,15 +111,34 @@ function pose(overrides = {}) {
 	pass("unauthored and unmapped joints emit zero axis-angle");
 }
 
-// ---- root position: Y absolute, XZ canonical ----------------------------
+// ---- root position: Y is height ABOVE THE GROUND, XZ carries through -----
+// Kimodo reads root_positions Y as the hip height above the floor. A CozyClay
+// pose is authored in its take's own space and is NOT floor-aligned: a real
+// pose off the app measured hips at 1.781 m with its lowest joint at 0.787 m,
+// i.e. the whole character 79 cm in the air. Passing that through told Kimodo to
+// generate a floating character, and because each motion edit re-authors a pose
+// from the previous take, the drift compounded every round.
 {
 	const p = pose();
+	// a pose standing on the floor: lowest joint at 0, hips at 0.94
+	p.posed_joints = CSKEL27_JOINTS.map(() => [0, 0.5, 0]);
 	p.posed_joints[CSKEL27_JOINTS.indexOf("Hips")] = [1.5, 0.94, -2.5];
-	const out = buildFullBodyConstraints([{ frame: 30, pose: p }], { genFrames: 120 });
-	const [x, y, z] = out[0].root_positions[0];
-	assert.ok(near(y, 0.94, 1e-6), `root Y must be the absolute hip height, got ${y}`);
+	p.posed_joints[CSKEL27_JOINTS.indexOf("LeftFoot")] = [0, 0, 0];
+	const grounded = buildFullBodyConstraints([{ frame: 30, pose: p }], { genFrames: 120 });
+	const [x, y, z] = grounded[0].root_positions[0];
+	assert.ok(near(y, 0.94, 1e-6), `a grounded pose keeps its hip height, got ${y}`);
 	assert.ok(near(x, 1.5, 1e-6) && near(z, -2.5, 1e-6), `root XZ must carry through, got ${x},${z}`);
-	pass("root_positions keeps absolute hip height and world XZ");
+
+	// the SAME pose lifted 0.787 m into the air must produce the SAME constraint
+	const floating = pose();
+	floating.posed_joints = p.posed_joints.map(([px, py, pz]) => [px, py + 0.787, pz]);
+	const lifted = buildFullBodyConstraints([{ frame: 30, pose: floating }], { genFrames: 120 });
+	assert.ok(
+		near(lifted[0].root_positions[0][1], 0.94, 1e-5),
+		`a floating pose must be grounded before it is constrained, got ${lifted[0].root_positions[0][1]}`
+	);
+	assert.ok(near(lifted[0].root_positions[0][0], 1.5, 1e-6), "grounding must not move XZ");
+	pass("a pose is grounded before it becomes a constraint, so float cannot compound");
 }
 
 // ---- several poses share one entry, ascending ---------------------------

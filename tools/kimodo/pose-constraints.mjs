@@ -215,9 +215,25 @@ export function buildFullBodyConstraints(poses, { genFrames } = {}) {
 		if (!Array.isArray(hips) || hips.length !== 3 || hips.some((v) => !Number.isFinite(v))) {
 			throw new Error(`buildFullBodyConstraints: poses[${entryIndex}] has a non-finite root position`);
 		}
-		// Y is the ABSOLUTE hip height above the ground; XZ rides through as
-		// authored, matching Kimodo's documented root_positions convention.
-		rootPositions.push([hips[0], hips[1], hips[2]]);
+		// Kimodo reads root_positions Y as the hip height ABOVE THE GROUND. A
+		// CozyClay pose is authored in its take's own space and is not floor
+		// aligned — a pose measured off the running app had its hips at 1.781 m
+		// with its lowest joint at 0.787 m, the whole character 79 cm in the air.
+		// Forwarding that raw told Kimodo to generate a floating character, and
+		// since a motion edit re-authors its pose from the previous take, the
+		// drift compounded on every round trip.
+		//
+		// So the pose is grounded on its own lowest joint first. Only the height
+		// changes: XZ is the author's placement and rides through untouched, and
+		// the pose's internal shape is carried by the rotations, not by this.
+		let lowest = Infinity;
+		for (const joint of posed) {
+			if (!Array.isArray(joint) || joint.length !== 3 || joint.some((v) => !Number.isFinite(v))) {
+				throw new Error(`buildFullBodyConstraints: poses[${entryIndex}] has a non-finite joint position`);
+			}
+			if (joint[1] < lowest) lowest = joint[1];
+		}
+		rootPositions.push([hips[0], hips[1] - lowest, hips[2]]);
 		frameIndices.push(frame);
 	}
 
