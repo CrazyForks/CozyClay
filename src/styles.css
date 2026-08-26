@@ -3103,29 +3103,34 @@ input[type=range]::-moz-range-thumb {
 }
 .sg-cam .sg-readout { background: #4a3d6e; }
 
-/* The dolly's curve sits INSIDE its shot card, under the Rail Follow ribbon:
-   compact, full-width within the card, same instrument in a tighter frame. */
-/* The band sits above the Rail Follow ribbon and the key strip; the card
-   carries the extra padding so nothing overlaps. */
-.tl-shot-block.has-dolly { padding-bottom: 124px; }
-
+/* The dolly's curve sits INSIDE its shot card, in the cell the card already
+   has: between the title row and the Rail Follow ribbon. The Shots lane keeps
+   its standard height — the graph never asks the gray panel for more room.
+   The full instrument (header, Cut/Reset buttons) lives on the prop strip;
+   the card carries the compact curve and its gestures (drag shapes,
+   double-click cuts, Delete removes — discoverable via the hover tooltip). */
 .sg-shot {
 	position: absolute;
 	left: 12px;
 	right: 12px;
+	top: 2px;
 	bottom: 28px;
-	height: 92px;
 	pointer-events: auto;
 }
 
-.sg-shot .sg-head {
-	padding: 1px 6px;
-	font-size: 9.5px;
+/* The title row rides over the curve's top edge; a slim scrim keeps the
+   words legible without giving the curve a header of its own. */
+.tl-shot-block.has-dolly .tl-shot-title,
+.tl-shot-block.has-dolly .tl-shot-meta {
+	position: relative;
+	z-index: 2;
+	text-shadow: 0 1px 2px rgba(0, 0, 0, .8);
 }
 
-.sg-shot .sg-head .tl-path-hint { display: none; }
+.sg-shot .sg-head { display: none; }
 
 .sg-shot .sg-body {
+	min-height: 0;
 	margin: 0 4px 2px;
 	border-color: rgba(154, 123, 212, .3);
 	background: #120f17;
@@ -3135,9 +3140,6 @@ input[type=range]::-moz-range-thumb {
 .sg-shot .sg-axis, .sg-shot .sg-average { stroke: rgba(185, 161, 232, .4); }
 .sg-shot .sg-readout { background: #4a3d6e; }
 .sg-shot .sg-scale-top, .sg-shot .sg-scale-avg, .sg-shot .sg-scale-zero { color: #7d6a9e; }
-
-/* A card carrying the curve needs the room for it: ribbon + keys + graph. */
-.tl-track.shots:has(.sg-shot) { min-height: 186px; }
 
 
 

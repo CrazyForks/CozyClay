@@ -1828,6 +1828,7 @@ export default function Timeline({
 											{!railOff && railRange && railLengthByShot.has(shot.id) && (
 												<div
 													className="sg-shot"
+													title={ko("Dolly speed: drag the curve, double-click to cut, Delete removes a cut", "돌리 속도: 드래그로 모양, 더블클릭으로 컷, Delete로 컷 삭제")}
 													onPointerDown={(event) => event.stopPropagation()}
 													onClick={(event) => event.stopPropagation()}
 												>
