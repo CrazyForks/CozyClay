@@ -164,6 +164,14 @@ function ObjectPathEditor({ object, pathDraw, onPathDrawToggle, onPathChange, on
 					>
 						{ko("Delete path", "경로 삭제")}
 					</button>
+					{/* The two gestures nobody guesses. Stated once, next to the
+					    controls, rather than left to be discovered. */}
+					<span className="tl-path-hint">
+						{ko(
+							`${path.points.length} points · double-click the line to add one · Delete removes the selected one`,
+							`점 ${path.points.length}개 · 선을 더블클릭하면 점 추가 · 점 선택 후 Delete로 삭제`,
+						)}
+					</span>
 				</>
 			)}
 		</section>

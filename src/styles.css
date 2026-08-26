@@ -2855,6 +2855,13 @@ input[type=range]::-moz-range-thumb {
 	color: #eafff3;
 }
 
+.tl-path-hint {
+	margin-left: 2px;
+	color: #7fae95;
+	font-size: 9px;
+	white-space: nowrap;
+}
+
 .tl-subject-kind {
 	display: inline-block;
 	margin-right: 6px;

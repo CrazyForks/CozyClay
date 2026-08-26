@@ -3661,6 +3661,7 @@ globalThis.playMode = centerTab === "play";
 	const [pathDraw, setPathDraw] = useState(false);
 	const [pathPointIndex, setPathPointIndex] = useState(null);
 	const pathDragTokenRef = useRef(null);
+	const planPathTokenRef = useRef(null);
 	// The frame props follow. Live playback keeps it at the playhead; the
 	// offscreen export drives it per captured frame without re-rendering.
 	const propFrameRef = useRef(0);
@@ -8308,6 +8309,40 @@ function resizePromptClip(id, edge, rawFrame) {
 								railDraw={railDraw}
 								pathDraw={pathDraw}
 								objectPathPoints={selectedSceneObject?.path?.points ?? null}
+								objectPathSelectedIndex={pathPointIndex}
+								onObjectPathPointSelect={setPathPointIndex}
+								onObjectPathPointMove={(index, floor) => {
+									const path = selectedSceneObject?.path;
+									if (!path) return;
+									// The board edits the floor route only; a point's height is
+									// the scene's business, so y rides through untouched.
+									const points = path.points.map((point, i) => (i === index ? { ...point, x: floor.x, z: floor.z } : point));
+									changeSceneObject(selectedSceneObject.id, { path: { ...path, points } }, planPathTokenRef.current);
+								}}
+								onObjectPathPointInsert={(index, t) => {
+									const path = selectedSceneObject?.path;
+									if (!path || path.points.length >= MAX_PATH_POINTS) return;
+									const a = path.points[index];
+									const b = path.points[index + 1];
+									const inserted = {
+										x: a.x + (b.x - a.x) * t,
+										y: (a.y ?? 0) + ((b.y ?? 0) - (a.y ?? 0)) * t,
+										z: a.z + (b.z - a.z) * t,
+									};
+									const points = [...path.points.slice(0, index + 1), inserted, ...path.points.slice(index + 1)];
+									const token = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
+									changeSceneObject(selectedSceneObject.id, { path: { ...path, points } }, token);
+									endSceneTransaction(token, { commit: true });
+									setPathPointIndex(index + 1);
+									setToast(ko("Point added — drag it here, or lift it in the scene", "점을 추가했어요 — 여기서 끌거나 씬에서 높이를 올리세요"));
+								}}
+								onObjectPathGestureStart={() => {
+									planPathTokenRef.current = beginSceneTransaction({ owner: "object-path", cancel: () => { planPathTokenRef.current = null; } });
+								}}
+								onObjectPathGestureEnd={(commit) => {
+									if (planPathTokenRef.current != null) endSceneTransaction(planPathTokenRef.current, { commit });
+									planPathTokenRef.current = null;
+								}}
 								subjectTrack={motion ? subjectTrack : null}
 								keyLight={keyLight}
 								onRailStroke={(stroke) => {

@@ -162,5 +162,23 @@ ok(
 	timelineSource.includes('ko("PROP", "소품")') && timelineSource.includes('ko("CAMERA", "카메라")'),
 );
 
+/* --- the same gesture on the board it was drawn on -------------------------- */
+
+const planSource = readFileSync(new URL("../src/planview.jsx", import.meta.url), "utf8");
+
+ok("the Top-View takes a mid-path point on double-click", planSource.includes('addEventListener("dblclick", onDouble)'));
+ok("the board draws every route point, not just the ends", planSource.includes("points.map((point, index) => ("));
+ok("route points outrank pucks when picking on the board", planSource.includes('mode: "pathPoint"'));
+ok("dragging a board point is one undo entry", planSource.includes("onObjectPathGestureStart") && planSource.includes("onObjectPathGestureEnd"));
+ok(
+	"the board edits the floor route and leaves height to the scene",
+	appSource.includes("{ ...point, x: floor.x, z: floor.z }"),
+);
+ok(
+	"the strip teaches both gestures instead of leaving them to be found",
+	timelineSource.includes("tl-path-hint") &&
+	timelineSource.includes("선을 더블클릭하면 점 추가"),
+);
+
 console.log(failures === 0 ? "all object-path checks PASS" : `${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);
