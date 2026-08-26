@@ -18,3 +18,4 @@ __pycache__/
 
 # MCP server local install
 mcp/node_modules/
+.omo/ulw-loop/
