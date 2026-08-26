@@ -6259,20 +6259,10 @@ input[type=range]::-moz-range-thumb {
 	display: none !important;
 }
 
-/* The saved splitter height describes the lane workspace. Selecting a camera
-   adds its toolbar above that workspace; opening Advanced adds one more row.
-   Grow the bottom window instead of borrowing pixels from the Shot lane. */
-@media (min-width: 1041px) {
-	.timeline:not(.collapsed):has(.tl-camera-editor) {
-		height: max(calc(var(--timeline-height) + 12px), 234px);
-		max-height: none;
-	}
-
-	.timeline:not(.collapsed):has(.tl-camera-advanced[open]) {
-		height: max(calc(var(--timeline-height) + 48px), 270px);
-	}
-
-}
+/* The bottom window never grows. Selecting a camera (or drawing a rail, or a
+   prop path) loads extra rows into the SAME fixed height — the lane workspace
+   scrolls internally instead of pushing the whole window taller and dropping
+   the transport out from under the hand. */
 
 .console-pane {
 	height: var(--timeline-height);

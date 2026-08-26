@@ -210,9 +210,10 @@ expect(
 	css.includes("minmax(68px, 1.7fr)"),
 );
 expect(
-	"advanced camera controls grow the bottom window instead of clipping Shots",
-	css.includes(".timeline:not(.collapsed):has(.tl-camera-advanced[open])") &&
-	css.includes("height: max(calc(var(--timeline-height) + 48px), 270px)") &&
+	"the bottom window never grows for camera, rail, or path content",
+	!css.includes("has(.tl-camera-advanced[open])") &&
+	!css.includes("has(.tl-camera-editor)") &&
+	!css.includes("has(.tl-track.sg-row)") &&
 	css.includes("min-height: 156px"),
 );
 expect(

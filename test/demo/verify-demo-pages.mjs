@@ -40,7 +40,7 @@ const methodGuard = worker.indexOf('if (request.method !== "GET") return;', fetc
 assert.ok(ticketGuard > fetchStart, "public/sw.js must bypass /d/ requests");
 assert.ok(demoGuard > fetchStart, "public/sw.js must bypass /demo/ requests");
 assert.ok(methodGuard < 0 || ticketGuard < methodGuard, "/d/ bypass must run before the GET guard");
-assert.match(worker, /const CACHE_NAME\s*=\s*`\$\{CACHE_PREFIX\}v6`/u);
+assert.match(worker, /const CACHE_NAME\s*=\s*`\$\{CACHE_PREFIX\}v7`/u);
 console.log("PASS service worker keeps /d/ and /demo/ network-only with cache v6");
 
 const ticketHtml = readFileSync(path("d/index.html"), "utf8");
