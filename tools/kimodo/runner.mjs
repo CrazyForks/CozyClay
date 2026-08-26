@@ -8,10 +8,10 @@
  * does for ARDY.
  *
  * WHAT THIS BACKEND DOES NOT DO. Kimodo is wired here for text-to-motion
- * sequencing, root 2D paths and pinned poses. Base clips and motion edit are
- * ARDY-specific machinery in this repo (they drive ardy.constraints directly
- * from cclay_*.py) and have no Kimodo equivalent yet, so they refuse by name
- * instead of silently producing a take that ignored its constraints.
+ * sequencing, root 2D paths, pinned poses and motion edit. Base clips remain
+ * ARDY-specific machinery in this repo (a base clip is autoregressive history,
+ * which Kimodo has no input for) and refuse by name instead of silently
+ * producing a take that ignored them.
  */
 
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,7 @@ import { spawn } from "node:child_process";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUN_SEQUENCE = join(HERE, "run-sequence-on-box.mjs");
+const RUN_EDIT = join(HERE, "run-edit-on-box.mjs");
 
 const SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"];
 
@@ -135,6 +136,35 @@ export function createKimodoRunner() {
 		});
 	}
 
+	// Regenerating a span is a whole-clip generation pinned to the source take on
+	// both sides of the edit, then spliced back — Kimodo has no history input, so
+	// the surrounding motion is expressed as constraints instead.
+	function editCommand({ source, manifest, prompt, contextBefore, contextAfter, seed, output }) {
+		const args = [
+			RUN_EDIT,
+			"--source", source,
+			"--manifest", manifest,
+			"--prompt", prompt,
+			"--context-before", String(contextBefore ?? 0),
+			"--context-after", String(contextAfter ?? 0),
+			"--target-fps", String(TARGET_FPS),
+		];
+		if (Number.isInteger(seed)) args.push("--seed", String(seed));
+		args.push("--output", output);
+		return {
+			command: process.execPath,
+			args,
+			env: {
+				...process.env,
+				CCLAY_KIMODO_HOST: HOST,
+				CCLAY_KIMODO_REPO: REPO,
+				CCLAY_KIMODO_MODEL: MODEL,
+			},
+			doneRe: /^run-kimodo-edit: done - (.+) \((\d+) bytes\)$/,
+			label: "run-kimodo-edit",
+		};
+	}
+
 	return {
 		mode: "kimodo",
 		describe: () => `box ${HOST} (repo ${REPO}, model ${MODEL}, retimed to ${TARGET_FPS} fps)`,
@@ -142,6 +172,6 @@ export function createKimodoRunner() {
 		listBases,
 		singleCommand,
 		sequenceCommand,
-		editCommand: unsupported("motion edit"),
+		editCommand,
 	};
 }

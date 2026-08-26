@@ -93,12 +93,34 @@ pass("root waypoints are forwarded as --root-2d instead of refused");
 // Silently generating a take that ignored a pinned pose would be worse than
 // refusing. This guards the waypoint work from unlocking constraint paths that
 // were never built.
-assert.throws(() => runner.editCommand({}), /does not implement motion edit/);
+// A base clip is autoregressive history, which Kimodo has no input for, so it
+// stays refused. This is the last unbuilt path and must not be unlocked by
+// accident when a neighbouring feature lands.
 assert.throws(
 	() => runner.singleCommand({ prompt: "x", durationS: 1, basePath: "/base.npz", output: "/tmp/o.npz" }),
 	/does not implement base clips/
 );
-pass("ARDY-only features refuse by name rather than generating a wrong take");
+pass("base clips still refuse by name rather than generating a wrong take");
+
+// ---- motion edit is implemented -------------------------------------------
+const edit = runner.editCommand({
+	source: "/tmp/src.npz",
+	manifest: "/tmp/edit-manifest.json",
+	prompt: "A person waves",
+	contextBefore: 8,
+	contextAfter: 8,
+	seed: 3,
+	output: "/tmp/edited.npz",
+});
+assert.ok(edit.args.includes("--source") && edit.args.includes("/tmp/src.npz"));
+assert.ok(edit.args.includes("--manifest") && edit.args.includes("/tmp/edit-manifest.json"));
+assert.ok(edit.args.includes("--context-before") && edit.args.includes("8"));
+assert.equal(edit.label, "run-kimodo-edit");
+const editDone = edit.doneRe.exec("run-kimodo-edit: done - /tmp/edited.npz (42 bytes)");
+assert.ok(editDone, "the bridge must be able to parse the edit done line");
+assert.equal(editDone[1], "/tmp/edited.npz");
+assert.equal(editDone[2], "42");
+pass("editCommand builds a spawnable command whose done line the bridge can parse");
 
 // ---- pinned poses are forwarded, not refused ------------------------------
 // They become Kimodo `fullbody` constraints downstream. Each pose reaches the
