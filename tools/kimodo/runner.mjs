@@ -51,7 +51,7 @@ export function createKimodoRunner() {
 	const HOST = process.env.CCLAY_KIMODO_HOST || process.env.CCLAY_ARDY_HOST || "";
 	const REPO = process.env.CCLAY_KIMODO_REPO || "$HOME/kimodo";
 	const MODEL = process.env.CCLAY_KIMODO_MODEL || "Kimodo-SOMA-RP-v1.1";
-	const TARGET_FPS = Number(process.env.CCLAY_KIMODO_TARGET_FPS || 20);
+	const TARGET_FPS = Number(process.env.CCLAY_KIMODO_TARGET_FPS || 24);
 
 	if (!HOST) {
 		throw new Error(

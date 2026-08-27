@@ -26,7 +26,7 @@ function usage(message) {
 }
 
 function parseArgs(argv) {
-	const out = { contextBefore: 0, contextAfter: 0, targetFps: 20 };
+	const out = { contextBefore: 0, contextAfter: 0, targetFps: 24 };
 	for (let i = 0; i < argv.length; i += 1) {
 		const flag = argv[i];
 		const next = () => argv[(i += 1)];

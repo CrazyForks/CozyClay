@@ -63,6 +63,7 @@ assert.ok(cmd.args.includes("--segment"));
 assert.ok(cmd.args.includes("A person runs forward"));
 assert.ok(cmd.args.includes("--output") && cmd.args.includes("/tmp/out.npz"));
 assert.ok(cmd.args.includes("--seed") && cmd.args.includes("7"));
+assert.ok(cmd.args.includes("--target-fps") && cmd.args.includes("24"));
 assert.match("run-kimodo-sequence: done - /tmp/out.npz (12 bytes)", cmd.doneRe);
 // The bridge parses the path and byte count out of that line.
 const parsed = cmd.doneRe.exec("run-kimodo-sequence: done - /tmp/out.npz (12 bytes)");

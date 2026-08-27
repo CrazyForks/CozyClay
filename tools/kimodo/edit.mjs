@@ -121,7 +121,7 @@ function poseFromNpz(path) {
  *
  * @returns {{constraints:Array<object>, poses:Array<object>, startFrame:number, endFrame:number, sourceFrames:number, fps:number}}
  */
-export function planEditConstraints({ sourcePath, manifestPath, contextBefore = 0, contextAfter = 0, genFps = 30, appFps = 20 }) {
+export function planEditConstraints({ sourcePath, manifestPath, contextBefore = 0, contextAfter = 0, genFps = 30, appFps = 24 }) {
 	const manifest = parseEditManifest(manifestPath);
 	const source = readNpz(sourcePath);
 	if (!source.local_rot_mats || !source.posed_joints) {

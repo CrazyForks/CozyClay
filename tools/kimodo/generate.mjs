@@ -124,7 +124,7 @@ export async function generateOnBox({
 	// Authored poses to pin, as [{frame, pose:{local_rot_mats, posed_joints}}]
 	// with `frame` in the caller's app clip space.
 	poses,
-	appFps = Number(process.env.CCLAY_KIMODO_APP_FPS || 20),
+	appFps = Number(process.env.CCLAY_KIMODO_APP_FPS || 24),
 	model = process.env.CCLAY_KIMODO_MODEL || DEFAULT_MODEL,
 	transitionFrames = Number(process.env.CCLAY_KIMODO_TRANSITION_FRAMES || 5),
 	diffusionSteps = Number(process.env.CCLAY_KIMODO_DIFFUSION_STEPS || 100),

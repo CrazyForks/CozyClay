@@ -6,10 +6,10 @@
  * cclay motion npz that is byte-compatible with the ARDY path, so the bridge and
  * the app consume it without knowing which backend produced it.
  *
- * FRAME RATE. Kimodo-SOMA generates at 30 fps and ARDY-Core at 20, and the app
- * converts timeline frames with a hardcoded ARDY_FPS of 20 (src/App.jsx). A raw
- * 30 fps take would therefore be read as 1.5x its real duration, so the take is
- * retimed onto the target rate before it is written. retimeMotion re-grows
+ * FRAME RATE. Kimodo-SOMA generates at 30 fps and the app timeline runs at
+ * 24 fps (src/App.jsx). A raw 30 fps take would therefore be read as 1.25x its
+ * real duration, so the take is retimed directly to the target rate before it
+ * is written. retimeMotion re-grows
  * positions with FK, so bone lengths survive the resample exactly.
  *
  * The final stdout line matches the shape bridge.mjs greps for:
@@ -22,7 +22,7 @@ import { writeNpz, motionArraysToNpzMembers } from "../ardy/npz.mjs";
 import { retimeMotion } from "../../src/ardy/retime.js";
 import { generateOnBox, continuityMetrics } from "./generate.mjs";
 
-const TARGET_FPS_DEFAULT = 20;
+const TARGET_FPS_DEFAULT = 24;
 
 function usage(message) {
 	if (message) console.error(`run-kimodo-sequence: ${message}`);
