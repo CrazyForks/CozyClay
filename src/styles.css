@@ -1578,6 +1578,65 @@ select {
 	align-items: center;
 }
 
+/* Disclosures that keep a once-in-a-while control out of the permanent
+   furniture: a summary you can read, a panel that opens where it stands. */
+.scene-actions-pop > summary,
+.object-colors-pop > summary {
+	cursor: pointer;
+	list-style: none;
+}
+
+.scene-actions-pop > summary::-webkit-details-marker,
+.object-colors-pop > summary::-webkit-details-marker { display: none; }
+
+.scene-actions-pop > summary {
+	padding: 3px 8px;
+	border: 1px solid rgba(126, 154, 255, .2);
+	border-radius: 6px;
+	color: #9fb0d8;
+	font-size: 11px;
+	width: max-content;
+}
+
+.scene-actions-pop[open] > summary { color: #d7e2ff; }
+.scene-actions-pop .scene-actions { margin-top: 5px; }
+
+/* A closed <details> hides its children by display alone, so any child that
+   sets its own display walks straight back out of the box. */
+.scene-actions-pop:not([open]) .scene-actions,
+.object-colors-pop:not([open]) .object-colors,
+.tl-camera-advanced:not([open]) > label,
+.tl-camera-advanced:not([open]) > button { display: none; }
+
+.object-colors-pop {
+	position: relative;
+	display: inline-block;
+}
+
+.object-colors-pop > summary {
+	display: block;
+	width: 22px;
+	height: 22px;
+	border: 1px solid rgba(255, 255, 255, .28);
+	border-radius: 6px;
+}
+
+.object-colors-pop[open] > summary { outline: 2px solid #7e9aff; outline-offset: 1px; }
+
+.object-colors-pop .object-colors {
+	position: absolute;
+	left: 0;
+	top: 26px;
+	z-index: 20;
+	display: flex;
+	gap: 4px;
+	padding: 5px;
+	border: 1px solid rgba(126, 154, 255, .28);
+	border-radius: 8px;
+	background: #161c2b;
+	box-shadow: 0 8px 18px rgba(0, 0, 0, .45);
+}
+
 .scene-switcher-heading {
 	justify-content: space-between;
 	gap: 8px;

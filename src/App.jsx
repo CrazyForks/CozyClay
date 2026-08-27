@@ -8698,37 +8698,6 @@ function resizePromptClip(id, edge, rawFrame) {
 						<div className="move-ab">
 							<button
 								type="button"
-								className="btn ghost"
-								title={ko("Key the current framing at the playhead frame", "현재 프레이밍을 재생 헤드 프레임에 키로 저장")}
-								onClick={() => addCameraKeyframe(tlFrame)}
-							>
-								{ko("+ Key here", "+ 여기 키 찍기")}
-							</button>
-							<button
-								type="button"
-								className="btn ghost"
-								disabled={!hasCameraKeys}
-								title={ko("Play the move. With Follow on it plays the timeline too, so character motion rides along; right-drag interrupts", "카메라 움직임을 재생합니다. 따라가기가 켜져 있으면 타임라인도 함께 재생되어 캐릭터 모션이 따라옵니다. 오른쪽 드래그로 중단됩니다")}
-								onClick={() => {
-									if (followPreviewArmed) {
-										if (tlPlaying) {
-											setTlPlaying(false);
-											return;
-										}
-										setTlFrame(0);
-										setTlPlaying(true);
-										return;
-									}
-									setMovePlaying((playing) => !playing);
-								}}
-							>
-								{previewActive ? ko("Stop", "정지") : ko("Preview", "미리보기")}
-							</button>
-							<button type="button" className="btn ghost" disabled={cameraKeys.length < 1} onClick={clearMove}>
-								{ko("Clear", "지우기")}
-							</button>
-							<button
-								type="button"
 								className={"btn ghost" + (recState === "recording" ? " rec-live" : "")}
 								disabled={!hasCameraKeys && !motion}
 								title={ko("Play the piece in PlayView and save it as a video file — camera move and character motion, no editor chrome", "재생 보기에서 장면을 재생하고 영상 파일로 저장합니다. 카메라 움직임과 캐릭터 모션만 담고 편집 UI는 제외됩니다")}
@@ -9426,17 +9395,6 @@ function resizePromptClip(id, edge, rawFrame) {
 								<p className="inspector-hint">
 								{ko("Type a value and press Enter, or drag an axis letter to scrub.", "값을 입력하고 Enter를 누르거나 축 글자를 드래그해 조절하세요.")}
 								</p>
-								<div className="presets gizmo-modes">
-									<button type="button" className={gizmoMode === "move" ? "active" : ""} onClick={() => setGizmoMode("move")}>
-									{ko("Move", "이동")} <kbd>W</kbd>
-									</button>
-									<button type="button" className={gizmoMode === "rotate" ? "active" : ""} onClick={() => setGizmoMode("rotate")}>
-									{ko("Rotate", "회전")} <kbd>E</kbd>
-									</button>
-									<button type="button" className={gizmoMode === "scale" ? "active" : ""} onClick={() => setGizmoMode("scale")}>
-									{ko("Scale", "크기")} <kbd>R</kbd>
-									</button>
-								</div>
 								<label className="check snap-toggle">
 									<input type="checkbox" checked={snapEnabled} onChange={(event) => setSnapEnabled(event.target.checked)} />
 								<span>
@@ -9796,19 +9754,32 @@ function resizePromptClip(id, edge, rawFrame) {
 									</>
 								)}
 								{selectedSceneObject.renderer !== CUTOUT_KIND && (
-						<div className="object-colors" role="group" aria-label={ko("Object colour", "오브젝트 색상")}>
-									{OBJECT_COLORS.map((color) => (
-										<button
-											type="button"
-											key={color}
-											className={"object-color" + (selectedSceneObject.color === color ? " active" : "")}
-											style={{ background: color }}
-									aria-label={isKo ? `색상 ${color}` : `Colour ${color}`}
-											aria-pressed={selectedSceneObject.color === color}
-											onClick={() => changeSceneObject(selectedSceneObject.id, { color })}
-										/>
-									))}
-								</div>
+									// One swatch shows the colour; the row opens only when you want
+									// to change it, instead of six chips sitting there all day.
+									<details className="object-colors-pop">
+										<summary
+										className="object-color current"
+										style={{ background: selectedSceneObject.color }}
+										aria-label={ko("Object colour", "오브젝트 색상")}
+										title={ko("Object colour", "오브젝트 색상")}
+									/>
+									<div className="object-colors" role="group" aria-label={ko("Object colour", "오브젝트 색상")}>
+										{OBJECT_COLORS.map((color) => (
+											<button
+												type="button"
+												key={color}
+												className={"object-color" + (selectedSceneObject.color === color ? " active" : "")}
+												style={{ background: color }}
+												aria-label={isKo ? `색상 ${color}` : `Colour ${color}`}
+												aria-pressed={selectedSceneObject.color === color}
+												onClick={(event) => {
+													changeSceneObject(selectedSceneObject.id, { color });
+													event.currentTarget.closest("details")?.removeAttribute("open");
+												}}
+											/>
+										))}
+										</div>
+									</details>
 								)}
 							</>
 						)}
@@ -9947,6 +9918,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				<Timeline
 					frame={tlFrame}
 					craneSelectedIndex={craneSelectedIndex}
+					cameraSelected={isCameraSelection}
 					onCranePointAdd={addActiveCranePoint}
 					onCranePointDelete={deleteSelectedCranePoint}
 					onCranePointSelect={setCraneSelectedIndex}

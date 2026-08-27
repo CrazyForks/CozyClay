@@ -221,6 +221,10 @@ function SceneSwitcher({
 					);
 				})}
 			</div>
+			{/* Scene housekeeping is a once-a-session errand, so it waits under one
+			    disclosure instead of holding three buttons open all day. */}
+			<details className="scene-actions-pop">
+				<summary title={ko("Scene actions", "장면 작업")}>{ko("Scene…", "장면…")}</summary>
 			<div className="scene-actions">
 				<button type="button" onClick={() => selectedScene && onSceneDuplicate?.(selectedScene.id)}>{ko("Duplicate", "복제")}</button>
 				<button type="button" onClick={() => selectedScene && setEditingId(selectedScene.id)}>{ko("Rename", "이름 바꾸기")}</button>
@@ -228,6 +232,7 @@ function SceneSwitcher({
 					{deleteArmed ? ko("Confirm delete", "삭제 확인") : ko("Delete", "삭제")}
 				</button>
 			</div>
+			</details>
 		</div>
 	);
 }

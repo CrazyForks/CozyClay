@@ -748,27 +748,9 @@ function CameraBlockEditor({
 						{previewing ? ko("Stop", "정지") : ko("Preview", "미리보기")}
 					</button>
 					<button type="button" className={"tl-camera-tool" + (railDraw ? " active" : "")} onClick={() => onRailDrawToggle?.()}>
-						{railDraw ? ko("Drawing…", "그리는 중…") : ko("Draw rail", "레일 그리기")}
+						{railDraw ? ko("Drawing…", "그리는 중…") : railLength != null ? ko("Redraw rail", "레일 다시 그리기") : ko("Draw rail", "레일 그리기")}
 					</button>
-					<button
-						type="button"
-						className={"tl-camera-tool" + (mode === "follow" ? " active" : "")}
-						aria-pressed={mode === "follow"}
-						title={ko("Keep the camera at the captured distance from the subject", "카메라와 피사체 사이의 현재 거리를 유지합니다")}
-						onClick={() => patchCamera({ mode: mode === "follow" ? "keys" : "follow" })}
-					>
-						{mode === "follow" ? ko("Follow On", "팔로우 켜짐") : ko("Follow Off", "팔로우 꺼짐")}
-					</button>
-					{railLength != null && (
-						<button
-							type="button"
-							className="tl-camera-tool danger"
-							title={ko("Delete this Shot's rail geometry and return to Follow", "이 샷의 레일 경로를 삭제하고 팔로우로 돌아갑니다")}
-							onClick={() => onRailDelete?.()}
-						>
-							{ko("Delete rail", "레일 삭제")}
-						</button>
-					)}
+
 					{curve && (
 						<span className="cam-mode-switch" role="group" aria-label={ko("Shot curve", "샷 곡선")}>
 							<button
@@ -792,37 +774,27 @@ function CameraBlockEditor({
 							</button>
 						</span>
 					)}
-					{curve && curve.mode === "speed" && (
+					{curve && curve.mode === "speed" && (curve.canCut || curve.canReset) && (
 						<>
-							<button
+							{curve.canCut && <button
 								type="button"
 								className="tl-camera-tool"
-								disabled={!curve.canCut}
 								title={ko("Pin the instant at the playhead: the spot being passed then never moves again", "재생 위치의 순간을 고정합니다 — 그때 지나는 자리는 다시 움직이지 않습니다")}
 								onClick={() => curve.onCut?.()}
 							>
 								{ko("Cut", "컷")}
-							</button>
-							<button
+							</button>}
+							{curve.canReset && <button
 								type="button"
 								className="tl-camera-tool danger"
-								disabled={!curve.canReset}
 								title={ko("Back to constant speed — clears the curve and every cut", "등속으로 되돌립니다 — 곡선과 컷을 모두 지웁니다")}
 								onClick={() => curve.onReset?.()}
 							>
 								{ko("Reset curve", "곡선 초기화")}
-							</button>
+							</button>}
 						</>
 					)}
-					<button
-						type="button"
-						className={"tl-camera-head" + (follow.railStartMode === "head" ? " active" : "")}
-						aria-pressed={follow.railStartMode === "head"}
-						title={ko("Choose whether the dolly starts at the rail head or the nearest useful point", "돌리가 레일 시작점 또는 가까운 지점에서 출발하도록 정합니다")}
-						onClick={() => patchFollow({ railStartMode: follow.railStartMode === "head" ? "nearest" : "head" })}
-					>
-						{follow.railStartMode === "head" ? ko("Head start", "시작점 출발") : ko("Nearest", "가까운 지점")}
-					</button>
+
 					<label title={ko("Read automatically from the camera position", "현재 카메라 위치에서 자동으로 읽습니다")}>
 						<span>{ko("Distance", "거리")}</span>
 						<output className="tl-camera-metric">{metric(follow.distance, 2)}</output>
@@ -860,20 +832,54 @@ function CameraBlockEditor({
 									<small>m</small>
 								</label>
 								<output className="tl-camera-count" title={ko("Crane points on this rail — click the Shot block's key strip to add one", "이 레일의 크레인 점 개수 — 샷 블록 키 줄을 클릭해 추가")}>{points.length}{ko(" pts", "점")}</output>
-								<button
-									type="button"
-									className="tl-camera-tool danger"
-									disabled={craneSelectedIndex == null || craneSelectedIndex <= 0 || craneSelectedIndex >= points.length - 1}
-									title={ko("Remove the selected interior crane point", "선택한 중간 크레인 점을 삭제합니다")}
-									onClick={() => onCranePointDelete?.()}
-								>
-									{ko("Remove point", "점 삭제")}
-								</button>
+								{/* Only while a removable point is actually held: a button that
+								    is greyed out nine times in ten is just furniture. */}
+								{curve?.mode === "height" && craneSelectedIndex != null && craneSelectedIndex > 0 && craneSelectedIndex < points.length - 1 && (
+									<button
+										type="button"
+										className="tl-camera-tool danger"
+										title={ko("Remove the selected interior crane point", "선택한 중간 크레인 점을 삭제합니다")}
+										onClick={() => onCranePointDelete?.()}
+									>
+										{ko("Remove point", "점 삭제")}
+									</button>
+								)}
 							</>
 						);
 					})()}
 					<details className="tl-camera-advanced">
 						<summary>{ko("Advanced", "고급")}</summary>
+						{/* Rig behaviour you set once per shot and forget: it belongs where
+						    the other set-once numbers already live, not in the row you
+						    reach across every time you shape a curve. */}
+						{railLength != null && (
+							<button
+								type="button"
+								className="tl-camera-tool danger"
+								title={ko("Delete this Shot's rail geometry and return to Follow", "이 샷의 레일 경로를 삭제하고 팔로우로 돌아갑니다")}
+								onClick={() => onRailDelete?.()}
+							>
+								{ko("Delete rail", "레일 삭제")}
+							</button>
+						)}
+						<button
+							type="button"
+							className={"tl-camera-tool" + (mode === "follow" ? " active" : "")}
+							aria-pressed={mode === "follow"}
+							title={ko("Keep the camera at the captured distance from the subject", "카메라와 피사체 사이의 현재 거리를 유지합니다")}
+							onClick={() => patchCamera({ mode: mode === "follow" ? "keys" : "follow" })}
+						>
+							{mode === "follow" ? ko("Follow On", "팔로우 켜짐") : ko("Follow Off", "팔로우 꺼짐")}
+						</button>
+						<button
+							type="button"
+							className={"tl-camera-head" + (follow.railStartMode === "head" ? " active" : "")}
+							aria-pressed={follow.railStartMode === "head"}
+							title={ko("Choose whether the dolly starts at the rail head or the nearest useful point", "돌리가 레일 시작점 또는 가까운 지점에서 출발하도록 정합니다")}
+							onClick={() => patchFollow({ railStartMode: follow.railStartMode === "head" ? "nearest" : "head" })}
+						>
+							{follow.railStartMode === "head" ? ko("Head start", "시작점 출발") : ko("Nearest", "가까운 지점")}
+						</button>
 						<label title={ko("Set how softly the rig catches up", "카메라가 얼마나 부드럽게 따라붙는지 정합니다")}>
 							<span>{ko("Damping", "댐핑")}</span>
 							<input type="number" min="0.1" max="3" step="0.05" value={follow.response} onChange={(event) => patchFollow({ response: numberValue(event) })} />
@@ -954,6 +960,9 @@ export default function Timeline({
 	pathDraw = false,
 	pathObject = null,
 	craneSelectedIndex = null,
+	// A camera bar over a prop or a character is ten controls for a thing you
+	// are not editing; the bar belongs to the camera's own selection.
+	cameraSelected = true,
 	onCranePointAdd,
 	onCranePointDelete,
 	onCranePointSelect,
@@ -1772,7 +1781,7 @@ export default function Timeline({
 							▾
 						</button>
 					</div>
-					{selectedCameraShot && (
+					{selectedCameraShot && cameraSelected && (
 						<CameraBlockEditor
 							shot={selectedCameraShot}
 							blocked={waypointMode}
