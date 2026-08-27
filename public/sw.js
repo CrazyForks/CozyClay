@@ -7,7 +7,9 @@ const CACHE_PREFIX = "cozyclay-pwa-";
 // v5: tab icons cut to a circle so they stop reading as a sticker.
 // v6: Google-sized frog set — 192 PNG first, ico frames 48/96/192.
 // v6 also: hosted demo and ticket pages are network-only; never freeze queue state.
-const CACHE_NAME = `${CACHE_PREFIX}v6`;
+// v7: force-refresh the asset cache — v6 clients were holding a stale app shell
+// (the html-flex crash-screen regression) and never re-fetching it.
+const CACHE_NAME = `${CACHE_PREFIX}v7`;
 // The installable app is the studio, not the landing page.
 const APP_SHELL = "/app/";
 const CORE_ASSETS = [

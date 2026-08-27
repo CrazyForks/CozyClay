@@ -3,6 +3,9 @@ import { frameFromClientX, motionTrimRange, promptMoveStartFrame, shotBlockGeome
 import { motionSegmentSpeedForFrames } from "./motion-edit.js";
 import { promptResizeFrame } from "./timeline-resize.js";
 import { ko, isKo } from "../locale.js";
+import { buildRail, craneHeightAt } from "../camera-follow.js";
+import { pathMetrics } from "../object-path.js";
+import { flatTiming, timingIsFlat, envelopeDrag, insertCut, removeCut, CUT_MIN_GAP } from "../speed-envelope.js";
 
 /**
  * ARDY Viser-style animation timeline — the live motion workspace.
@@ -93,6 +96,629 @@ function signedValue(value) {
 	return `${rounded >= 0 ? "+" : ""}${rounded}`;
 }
 
+/**
+ * The crane's path between its points, sampled from the model that flies the
+ * camera. craneHeightAt() runs a monotone cubic, so straight segments drew a
+ * motion the rig never performs — an eased rise read as a mechanical ramp, and
+ * a point dragged past its neighbours showed no overshoot where the real lens
+ * has none either. Sampling keeps the picture honest without a second
+ * implementation of the easing.
+ */
+function craneCurvePath(points, xFor, yFor) {
+	const crane = { points };
+	const steps = Math.max(24, points.length * 12);
+	let d = `M ${xFor(points[0].t)} ${yFor(points[0].height)}`;
+	for (let step = 1; step <= steps; step += 1) {
+		const t = points[0].t + (points[points.length - 1].t - points[0].t) * (step / steps);
+		d += ` L ${xFor(t)} ${yFor(craneHeightAt(crane, t))}`;
+	}
+	return d;
+}
+
+/**
+ * The crane's height curve, drawn as a real graph: time across the take's own
+ * window, metres up. It is the twin of the speed graph rather than a strip of
+ * dots — same zero line, same fill, same readout — because a height profile is
+ * read the same way a speed profile is, and two instruments that answer
+ * different questions should still be read with one pair of eyes.
+ *
+ * Every gesture lands on the graph itself: press near a point to take it,
+ * press anywhere else to add one there, drag to set the height. The points are
+ * generous circles, not pixel dots, so a lens height is aimed at with the
+ * wrist rather than with the fingertip.
+ */
+function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, onSelect, onAddPoint, onChangePoints }) {
+	const svgRef = useRef(null);
+	const dragRef = useRef(null);
+	const [draftPoints, setDraftPoints] = useState(null);
+	// The axis is frozen for the whole gesture. A scale that grew with the draft
+	// would re-map the pointer under itself on every move — one flick of the
+	// wrist and the value runs away by tens of metres.
+	const [heldScale, setHeldScale] = useState(null);
+	if (!crane?.points?.length || !railRange) return null;
+	const points = draftPoints ?? crane.points;
+	const origin = railRange.start / Math.max(1, durationFrames - 1);
+	const span = Math.max(0.001, (railRange.end - railRange.start) / Math.max(1, durationFrames - 1));
+	const maxHeight = heldScale ?? Math.max(4, Math.ceil(Math.max(...crane.points.map((point) => point.height), 1) * 1.25));
+	const xFor = (t) => origin + t * span;
+	const yFor = (height) => 0.9 - (Math.max(0.1, Math.min(maxHeight, height)) - 0.1) / Math.max(0.1, maxHeight - 0.1) * 0.78;
+	const locate = (event) => {
+		const rect = svgRef.current?.getBoundingClientRect();
+		if (!rect || rect.width < 2 || rect.height < 2) return null;
+		const takeX = (event.clientX - rect.left) / rect.width;
+		const graphY = (event.clientY - rect.top) / rect.height;
+		const t = Math.max(0, Math.min(1, (takeX - origin) / span));
+		const height = 0.1 + (0.9 - graphY) / 0.78 * (maxHeight - 0.1);
+		return { takeX, graphY, t, height: Math.max(0.1, Math.min(maxHeight, height)) };
+	};
+	const finishDrag = (event) => {
+		const drag = dragRef.current;
+		if (!drag) return;
+		event.preventDefault();
+		event.stopPropagation();
+		dragRef.current = null;
+		if (drag.points && drag.moved) onChangePoints?.(drag.points);
+		else if (!drag.moved && drag.addAt != null) onAddPoint?.(drag.addAt);
+		setDraftPoints(null);
+		setHeldScale(null);
+		event.currentTarget.releasePointerCapture?.(event.pointerId);
+	};
+	const onPointerDown = (event) => {
+		if (event.button !== 0) return;
+		const at = locate(event);
+		if (!at) return;
+		const nearest = points.reduce((best, point, index) => {
+			const distance = Math.abs(point.t - at.t);
+			return distance < best.distance ? { index, distance } : best;
+		}, { index: -1, distance: 0.12 });
+		event.preventDefault();
+		event.stopPropagation();
+		if (nearest.index >= 0 && nearest.distance <= 0.12) {
+			onSelect?.(nearest.index);
+			dragRef.current = {
+				index: nearest.index,
+				points,
+				moved: false,
+				start: { clientY: event.clientY, value: points[nearest.index].height },
+			};
+			setHeldScale(maxHeight);
+			svgRef.current?.setPointerCapture?.(event.pointerId);
+			return;
+		}
+		if (at.t > 0.01 && at.t < 0.99) dragRef.current = { index: -1, points: null, moved: false, addAt: at.t, start: { clientY: event.clientY, value: at.height } };
+	};
+	const onPointerMove = (event) => {
+		const drag = dragRef.current;
+		if (!drag) return;
+		event.preventDefault();
+		event.stopPropagation();
+		const at = locate(event);
+		if (!at) return;
+		if (drag.index < 0) {
+			// A press on empty time becomes an add, not a drag — but only once the
+			// hand has actually travelled, so a click is still a click.
+			if (Math.abs(event.clientY - (drag.start?.clientY ?? event.clientY)) > 3) dragRef.current = { ...drag, moved: true };
+			return;
+		}
+		// Metres per pixel, not "wherever the cursor is": the box is 39 px tall,
+		// so following the pointer made every twitch a metre.
+		const height = Math.max(0.1, Math.min(maxHeight, dragValue(drag.start, event, maxHeight / DRAG_TRAVEL_PX)));
+		const moved = drag.moved || Math.abs(height - drag.start.value) > 0.005;
+		const next = points.map((point, index) => index === drag.index ? { ...point, height } : point);
+		dragRef.current = { ...drag, points: next, moved };
+		setDraftPoints(next);
+	};
+	useEffect(() => {
+		const move = (event) => onPointerMove(event);
+		const up = (event) => finishDrag(event);
+		window.addEventListener("pointermove", move, true);
+		window.addEventListener("pointerup", up, true);
+		window.addEventListener("pointercancel", up, true);
+		return () => {
+			window.removeEventListener("pointermove", move, true);
+			window.removeEventListener("pointerup", up, true);
+			window.removeEventListener("pointercancel", up, true);
+		};
+	}, [points, origin, span, maxHeight]);
+	const topLabel = maxHeight.toFixed(1);
+	const midLabel = (maxHeight / 2).toFixed(1);
+	return (
+		<div className="tl-crane-editor" title={ko("Crane height: click to add, click a point to select, drag vertically to change height", "크레인 높이: 클릭해 추가하고, 점을 눌러 선택하고, 위아래로 끌어 높이를 바꿉니다")}>
+			<svg
+				ref={svgRef}
+				className="tl-crane-editor-svg"
+				viewBox="0 0 1 1"
+				preserveAspectRatio="none"
+				onPointerDown={onPointerDown}
+				onPointerMove={onPointerMove}
+				onPointerUp={finishDrag}
+				onPointerCancel={finishDrag}
+				onDoubleClick={(event) => event.stopPropagation()}
+			>
+				<rect className="tl-crane-editor-hit" x="0" y="0" width="1" height="1" />
+				{origin > 0.001 && <rect className="sg-outside" x="0" y="0" width={origin} height="1" />}
+				{origin + span < 0.999 && <rect className="sg-outside" x={origin + span} y="0" width={1 - origin - span} height="1" />}
+				<line className="tl-crane-grid" x1={origin} y1={yFor(maxHeight / 2)} x2={origin + span} y2={yFor(maxHeight / 2)} />
+				<line className="sg-axis" x1="0" y1=".9" x2="1" y2=".9" />
+				<path
+					className="tl-crane-fill"
+					d={`${craneCurvePath(points, xFor, yFor)} L ${xFor(1)} 0.9 L ${xFor(0)} 0.9 Z`}
+				/>
+				<path className="tl-crane-line" d={craneCurvePath(points, xFor, yFor)} />
+				{points.map((point, index) => (
+					<line
+						key={index}
+						className={"tl-crane-time-pick" + (index === selectedIndex ? " selected" : "")}
+						x1={xFor(point.t)}
+						y1={yFor(point.height)}
+						x2={xFor(point.t)}
+						y2=".9"
+					/>
+				))}
+			</svg>
+			{/* The dots are HTML, not SVG: the graph's viewBox is stretched to the
+			    lane, which would squash a circle into a sliver and take its hit
+			    area with it. */}
+			{points.map((point, index) => (
+				<button
+					key={index}
+					type="button"
+					className={"tl-crane-knob" + (index === selectedIndex ? " selected" : "")}
+					// an end point sits ON the window edge; clamp it inside so the knob stays a whole, grabbable circle
+					style={{ left: `clamp(9px, ${xFor(point.t) * 100}%, calc(100% - 9px))`, top: `clamp(9px, ${yFor(point.height) * 100}%, calc(100% - 9px))` }}
+					aria-label={ko(`Crane point ${index + 1}, ${point.height.toFixed(1)} metres`, `크레인 점 ${index + 1}, ${point.height.toFixed(1)}미터`)}
+					onPointerDown={(event) => {
+						event.preventDefault();
+						event.stopPropagation();
+						onSelect?.(index);
+						dragRef.current = { index, points, moved: false, start: { clientY: event.clientY, value: point.height } };
+						setHeldScale(maxHeight);
+						svgRef.current?.setPointerCapture?.(event.pointerId);
+					}}
+				/>
+			))}
+			<span className="sg-scale-top">{topLabel}</span>
+			<span className="sg-scale-avg" style={{ top: `${yFor(maxHeight / 2) * 100}%` }}>{midLabel}</span>
+			<span className="sg-scale-zero">0</span>
+			{draftPoints && dragRef.current?.index >= 0 && (
+				<span className="sg-readout" style={{ left: `${xFor(points[dragRef.current.index].t) * 100}%` }}>
+					{points[dragRef.current.index].height.toFixed(2)} m
+				</span>
+			)}
+		</div>
+	);
+}
+
+/** The y-axis follows the data — a display clamp would flatten a real curve
+ * into a ceiling plateau and break the visible area, which is the whole
+ * point of the editor. Floor at 2x average so a flat route keeps sane
+ * proportions; headroom 15% so the peak never kisses the frame. */
+const GRAPH_MIN_SCALE = 2;
+
+/**
+ * How far the hand travels to sweep a curve's whole range, in pixels.
+ *
+ * Mapping the pointer's position straight onto the value ties the sensitivity
+ * to the surface's height — and a curve drawn inside a Shot box is 39 px tall,
+ * so a two-pixel twitch swung the value across a quarter of its range. The
+ * drag is a RATE instead: a fixed number of pixels per full sweep, so the same
+ * wrist movement means the same change whether the curve is in a 39 px box or
+ * an 88 px strip. Hold Shift for a quarter-speed pass over fine detail.
+ */
+const DRAG_TRAVEL_PX = 220;
+const FINE_DRAG_FACTOR = 0.25;
+
+/** Value under the pointer for a rate-based vertical drag. */
+function dragValue(start, event, unitsPerPx) {
+	const gain = unitsPerPx * (event.shiftKey ? FINE_DRAG_FACTOR : 1);
+	return start.value + (start.clientY - event.clientY) * gain;
+}
+
+const sgY = (value, yMax) => 1 - Math.min(value, yMax) / yMax;
+
+/**
+ * The speed editor, designed as its own instrument rather than a lane
+ * decoration: a header carrying the facts (distance, time, average) and the
+ * actions (cut, reset), and a body that reads like a graph — a zero line, a
+ * dashed average line, an area-filled curve. Time across, speed up, and the
+ * area under the curve is the distance: dragging a stretch up visibly sinks
+ * the rest of its segment, because the arrival frame is not negotiable.
+ *
+ * Cuts are first-class: a header button pins the playhead's instant, a
+ * double-click pins the pointer's, and each pin draws an amber diamond the
+ * size of a handle — click to select, Delete to remove.
+ */
+function SpeedGraph({
+	facts = null,
+	// Inside a Shot box the curve is all there is: the box already carries the
+	// name, the frames and the actions live in the camera bar, so a header here
+	// would only steal the height the line needs.
+	bare = false,
+	timing,
+	windowStart = 0,
+	windowFrac = 1,
+	frame,
+	frameCount,
+	averageSpeed = 1,
+	speedUnit = "m/s",
+	conserve = true,
+	onChange,
+	onGestureStart,
+	onGestureEnd,
+}) {
+	const svgRef = useRef(null);
+	const dragRef = useRef(null);
+	const [selectedCut, setSelectedCut] = useState(null);
+	const [readout, setReadout] = useState(null);
+	const shown = timing ?? flatTiming();
+	const span = Math.max(1e-6, Math.min(1, windowFrac));
+	const origin = Math.max(0, Math.min(1, windowStart));
+	const hasCurve = !timingIsFlat(timing);
+	// While dragging, the axis may need to grow past the envelope's own peak;
+	// it never shrinks mid-gesture (that would move the curve out from under
+	// the pointer), and settles back to the data on release.
+	const [dragPeak, setDragPeak] = useState(0);
+	const envelopePeak = useMemo(() => Math.max(1, ...shown.envelopes.flat()), [shown]);
+	const yMax = Math.max(GRAPH_MIN_SCALE, Math.ceil(Math.max(envelopePeak, dragPeak) * 1.15 * 2) / 2);
+
+	const segments = useMemo(() => {
+		const bounds = [{ t: 0, d: 0 }, ...shown.cuts, { t: 1, d: 1 }];
+		return shown.envelopes.map((envelope, index) => {
+			const a = bounds[index].t;
+			const b = bounds[index + 1].t;
+			const points = envelope.map((value, i) => {
+				const x = origin + (a + (b - a) * (i / (envelope.length - 1))) * span;
+				return `${x.toFixed(4)},${sgY(value, yMax).toFixed(4)}`;
+			});
+			return { key: index, a, b, line: points.join(" ") };
+		});
+	}, [shown, span, origin, yMax]);
+
+	const locate = (event) => {
+		const rect = svgRef.current?.getBoundingClientRect();
+		if (!rect || rect.width < 2) return null;
+		const takeX = (event.clientX - rect.left) / rect.width;
+		const u = Math.min(1, Math.max(0, (takeX - origin) / span));
+		const value = Math.max(0, (1 - (event.clientY - rect.top) / rect.height) * yMax);
+		return { takeX, u, value };
+	};
+
+	/** The curve's own value at u, in multiples of the average. */
+	const envelopeValueHere = (u) => {
+		const bounds = [{ t: 0 }, ...shown.cuts, { t: 1 }];
+		let index = 0;
+		while (index < shown.cuts.length && u > shown.cuts[index].t) index += 1;
+		const a = bounds[index].t;
+		const b = bounds[index + 1].t;
+		const local = Math.max(0, Math.min(1, (u - a) / Math.max(1e-9, b - a)));
+		const envelope = shown.envelopes[index];
+		const position = local * (envelope.length - 1);
+		const i = Math.min(envelope.length - 2, Math.floor(position));
+		const fraction = position - i;
+		return envelope[i] * (1 - fraction) + envelope[i + 1] * fraction;
+	};
+
+	const segmentAt = (u) => {
+		let index = 0;
+		while (index < shown.cuts.length && u > shown.cuts[index].t) index += 1;
+		return index;
+	};
+
+	const commit = (next, { gesture }) => {
+		if (gesture) onGestureStart?.();
+		onChange?.(next, { dragging: gesture });
+		if (gesture) onGestureEnd?.();
+	};
+
+	const applyDrag = (at) => {
+		const bounds = [{ t: 0 }, ...shown.cuts, { t: 1 }];
+		const index = segmentAt(at.u);
+		const a = bounds[index].t;
+		const b = bounds[index + 1].t;
+		const local = (at.u - a) / Math.max(1e-9, b - a);
+		const radius = Math.min(0.45, 0.1 / Math.max(0.05, b - a));
+		const envelopes = shown.envelopes.map((envelope, i) => (i === index ? envelopeDrag(envelope, local, at.value, radius) : envelope));
+		onChange?.({ ...shown, envelopes }, { dragging: true });
+		setDragPeak((peak) => Math.max(peak, at.value));
+		setReadout({ x: at.takeX, value: at.value });
+	};
+
+	const onPointerDown = (event) => {
+		if (event.button !== 0) return;
+		const at = locate(event);
+		if (!at || at.takeX > origin + span + 0.02 || at.takeX < origin - 0.02) return;
+		event.preventDefault();
+		try {
+			event.currentTarget.setPointerCapture?.(event.pointerId);
+		} catch {
+			/* an unknown pointerId must not kill the press */
+		}
+		// The grab starts from the curve's OWN value here, so the first pixel of
+		// travel nudges the line instead of teleporting it to the cursor.
+		dragRef.current = { recorded: false, start: { clientY: event.clientY, value: envelopeValueHere(at.u) } };
+		setSelectedCut(null);
+	};
+	const onPointerMove = (event) => {
+		const drag = dragRef.current;
+		if (!drag) return;
+		const at = locate(event);
+		if (!at) return;
+		if (!drag.recorded) {
+			drag.recorded = true;
+			onGestureStart?.();
+		}
+		const value = Math.max(0, dragValue(drag.start, event, yMax / DRAG_TRAVEL_PX));
+		applyDrag({ ...at, value });
+	};
+	const onPointerUp = () => {
+		const drag = dragRef.current;
+		dragRef.current = null;
+		setReadout(null);
+		setDragPeak(0);
+		if (drag?.recorded) onGestureEnd?.();
+	};
+	const addCutAt = (u) => {
+		const next = insertCut(shown, u);
+		if (next === shown || next === timing) return false;
+		commit(next, { gesture: true });
+		setSelectedCut(next.cuts.findIndex((cut) => Math.abs(cut.t - u) < CUT_MIN_GAP));
+		return true;
+	};
+	const onDoubleClick = (event) => {
+		const at = locate(event);
+		if (!at) return;
+		event.preventDefault();
+		addCutAt(at.u);
+	};
+
+	// The playhead's position on the envelope's own clock — null when the
+	// playhead stands outside the window the envelope shapes.
+	const playheadTakeX = frameCount > 1 ? frame / (frameCount - 1) : 0;
+	const playheadU = (playheadTakeX - origin) / span;
+	const canCutAtPlayhead = playheadU > CUT_MIN_GAP && playheadU < 1 - CUT_MIN_GAP &&
+		!shown.cuts.some((cut) => Math.abs(cut.t - playheadU) < CUT_MIN_GAP);
+
+	useEffect(() => {
+		if (selectedCut == null) return undefined;
+		const onKey = (event) => {
+			if (event.key !== "Delete" && event.key !== "Backspace") return;
+			if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			const next = removeCut(shown, selectedCut);
+			setSelectedCut(null);
+			if (next !== shown) commit(next, { gesture: true });
+		};
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
+	});
+
+	const avgY = sgY(1, yMax);
+	return (
+		<div className={"sg" + (bare ? " sg-bare" : "")}>
+			{!bare && <header className="sg-head">
+				<span className="sg-facts">{facts ?? `${averageSpeed.toFixed(1)} ${speedUnit} ${ko("average", "평균")}`}</span>
+				<span className="tl-path-hint">
+					{ko("drag the curve · double-click or the button cuts · Delete removes a cut", "곡선을 끌어 조절 · 더블클릭이나 버튼으로 컷 · 컷 선택 후 Delete로 삭제")}
+				</span>
+				<button
+					type="button"
+					className="tl-camera-tool"
+					disabled={!canCutAtPlayhead}
+					title={ko("Pin the instant at the playhead: the spot being walked then never moves again", "재생 위치의 순간을 고정합니다 — 그때 지나는 자리는 다시 움직이지 않습니다")}
+					onClick={() => addCutAt(playheadU)}
+				>
+					{ko("Cut at playhead", "재생 위치에 컷")}
+				</button>
+				{hasCurve && (
+					<button
+						type="button"
+						className="tl-camera-tool danger"
+						title={ko("Back to constant speed — clears the curve and every cut", "등속으로 되돌립니다 — 곡선과 컷을 모두 지웁니다")}
+						onClick={() => {
+							setSelectedCut(null);
+							commit(flatTiming(), { gesture: true });
+						}}
+					>
+						{ko("Reset curve", "곡선 초기화")}
+					</button>
+				)}
+			</header>}
+			<div className="sg-body">
+				<svg
+					ref={svgRef}
+					viewBox="0 0 1 1"
+					preserveAspectRatio="none"
+					onPointerDown={onPointerDown}
+					onPointerMove={onPointerMove}
+					onPointerUp={onPointerUp}
+					onPointerCancel={onPointerUp}
+					onDoubleClick={onDoubleClick}
+				>
+					<defs>
+						<linearGradient id="sg-fade" x1="0" y1="0" x2="0" y2="1">
+							<stop offset="0%" stopOpacity="0.34" />
+							<stop offset="100%" stopOpacity="0.05" />
+						</linearGradient>
+					</defs>
+					{/* axes: the floor is zero speed, the dashed line is the average */}
+					<line className="sg-axis" x1="0" y1="1" x2="1" y2="1" />
+					<line className="sg-average" x1={origin} y1={avgY} x2={origin + span} y2={avgY} />
+					{origin > 0.001 && <rect className="sg-outside" x="0" y="0" width={origin} height="1" />}
+					{origin + span < 0.999 && <rect className="sg-outside" x={origin + span} y="0" width={1 - origin - span} height="1" />}
+					{segments.map((segment) => (
+						<g key={segment.key}>
+							<polygon
+								className="sg-fill"
+								fill="url(#sg-fade)"
+								points={`${origin + segment.a * span},1 ${segment.line} ${origin + segment.b * span},1`}
+							/>
+							<polyline className="sg-line" points={segment.line} />
+						</g>
+					))}
+					{shown.cuts.map((cut, index) => {
+						const x = origin + cut.t * span;
+						return (
+							<g key={index} className={"sg-pin" + (index === selectedCut ? " selected" : "")}>
+								<line className="sg-cut" x1={x} y1="0.06" x2={x} y2="1" />
+								<path className="sg-cut-diamond" d={`M ${x} 0.055 l 0.007 -0.045 l -0.014 0 l 0.007 0.045 z`} />
+								<line
+									className="sg-cut-pick"
+									x1={x}
+									y1="0"
+									x2={x}
+									y2="1"
+									onPointerDown={(event) => {
+										event.stopPropagation();
+										setSelectedCut(index === selectedCut ? null : index);
+									}}
+								/>
+							</g>
+						);
+					})}
+					<line className="sg-playhead" x1={playheadTakeX} y1="0" x2={playheadTakeX} y2="1" />
+				</svg>
+				<span className="sg-scale-top">{Math.round(yMax * averageSpeed * 10) / 10}</span>
+				<span className="sg-scale-avg" style={{ top: `${avgY * 100}%` }}>{averageSpeed.toFixed(1)}</span>
+				<span className="sg-scale-zero">0</span>
+				{readout && (
+					<span className="sg-readout" style={{ left: `${readout.x * 100}%` }}>
+						{(readout.value * averageSpeed).toFixed(1)} {speedUnit}
+					</span>
+				)}
+			</div>
+		</div>
+	);
+}
+
+/** Frames the prop is actually travelling for, given its speed. */
+function travelSpan(path, metrics, frameCount, fps) {
+	if (!path || !metrics || metrics.length <= 0) return null;
+	const last = Math.max(1, frameCount - 1);
+	// Speed 0 means "fill the take", which is the path's default timing.
+	if (!path.speed) return { start: 0, end: last, fills: true };
+	return { start: 0, end: Math.min(last, Math.round((metrics.length / path.speed) * fps)), fills: false };
+}
+
+/**
+ * The selected prop's travel, drawn in the timeline's own grid.
+ *
+ * This REPLACES the performer's lanes rather than joining them: a prop is a
+ * different subject on the same clock, and a strip that shows both makes every
+ * row ask "whose?". The frame ruler and the transport above stay put, because
+ * those belong to the take, not to any one subject.
+ */
+function ObjectTravelTrack({ object, frame, frameCount, fps, pathDraw, onPathDrawToggle, onPathChange, onPathClear, onTimingGestureStart, onTimingGestureEnd }) {
+	const path = object?.path ?? null;
+	const metrics = useMemo(() => (path ? pathMetrics(path) : null), [path]);
+	const span = useMemo(() => travelSpan(path, metrics, frameCount, fps), [path, metrics, frameCount, fps]);
+	const patch = (change) => onPathChange?.({ ...path, ...change });
+	const seconds = span ? (span.end - span.start) / Math.max(1, fps) : 0;
+	return (
+		<>
+			<div className="tl-track objmo">
+				<span className="tl-track-label">
+					<span className="tl-subject-kind">{ko("PROP", "소품")}</span>
+					<span className="objmo-name">{object.name}</span>
+				</span>
+				<div className="tl-lane objmo-tools">
+					<button
+						type="button"
+						className={"tl-camera-tool" + (pathDraw ? " active" : "")}
+						onClick={() => onPathDrawToggle?.()}
+					>
+						{pathDraw ? ko("Drawing…", "그리는 중…") : path ? ko("Redraw path", "경로 다시 그리기") : ko("Draw path", "경로 그리기")}
+					</button>
+					{path ? (
+						<>
+							<span className="objmo-speed" title={ko("Metres per second; 0 spreads the route across the whole take", "초당 미터; 0이면 전체 길이에 맞춰 이동합니다")}>
+								<span>{ko("Speed", "속도")}</span>
+								<input
+									type="range"
+									min={0}
+									max={20}
+									step={0.1}
+									aria-label={ko("Travel speed", "이동 속도")}
+									value={path.speed ?? 0}
+									onChange={(event) => patch({ speed: Number(event.currentTarget.value) })}
+								/>
+								<output className="objmo-speed-value">
+									{(path.speed ?? 0) === 0 ? ko("fills take", "전체") : `${Number(path.speed).toFixed(1)} m/s`}
+								</output>
+							</span>
+							<button
+								type="button"
+								className={"tl-camera-tool" + (path.faceTravel ? " active" : "")}
+								aria-pressed={!!path.faceTravel}
+								title={ko("Turn to face the direction of travel", "진행 방향을 바라보게 합니다")}
+								onClick={() => patch({ faceTravel: !path.faceTravel })}
+							>
+								{path.faceTravel ? ko("Faces travel", "진행 방향 봄") : ko("Fixed facing", "방향 고정")}
+							</button>
+							<button
+								type="button"
+								className={"tl-camera-tool" + (path.extend ? " active" : "")}
+								aria-pressed={!!path.extend}
+								title={ko("Keep going in the last direction after the route ends", "경로가 끝나도 마지막 방향으로 계속 갑니다")}
+								onClick={() => patch({ extend: !path.extend })}
+							>
+								{ko("Keep going", "계속 가기")}
+							</button>
+							<button
+								type="button"
+								className={"tl-camera-tool" + (path.loop ? " active" : "")}
+								aria-pressed={!!path.loop}
+								onClick={() => patch({ loop: !path.loop })}
+							>
+								{ko("Loop", "반복")}
+							</button>
+							<button
+								type="button"
+								className="tl-camera-tool danger"
+								title={ko("Delete this route; the object stands still again", "경로를 지웁니다. 오브젝트는 다시 제자리에 섭니다")}
+								onClick={() => onPathClear?.()}
+							>
+								{ko("Delete path", "경로 삭제")}
+							</button>
+							{/* The two gestures nobody guesses, on the same row rather than
+							    a lane of their own — an empty track reads as broken. */}
+							<span className="tl-path-hint">
+								{ko(
+									`${metrics.length.toFixed(1)} m · ${path.points.length} points · double-click the line to add a point · Delete removes it`,
+									`${metrics.length.toFixed(1)} m · 점 ${path.points.length}개 · 선을 더블클릭하면 점 추가 · Delete로 삭제`,
+								)}
+							</span>
+						</>
+					) : (
+						<span className="tl-path-hint">
+							{ko("Draw a route on the Top-View map to make this prop travel.", "위에서 본 지도에 경로를 그리면 이 소품이 이동합니다.")}
+						</span>
+					)}
+				</div>
+			</div>
+			{path && span && (
+				<div className="tl-track objmo sg-row">
+					<span className="tl-track-label">{ko("Speed", "속도 곡선")}</span>
+					<div className="tl-lane sg-lane">
+						<SpeedGraph
+							facts={metrics && span ? `${metrics.length.toFixed(1)} m · ${seconds.toFixed(1)}${isKo ? "초" : "s"}` : null}
+							timing={path.timing ?? null}
+							windowFrac={span.fills ? 1 : span.end / Math.max(1, frameCount - 1)}
+							frame={frame}
+							frameCount={frameCount}
+							averageSpeed={metrics && span ? metrics.length / Math.max(1 / fps, (span.end - span.start) / fps) : 1}
+							conserve
+							onChange={(timing) => onPathChange?.({ ...path, timing: timingIsFlat(timing) ? null : timing })}
+							onGestureStart={onTimingGestureStart}
+							onGestureEnd={onTimingGestureEnd}
+						/>
+					</div>
+				</div>
+			)}
+		</>
+	);
+}
+
 function CameraBlockEditor({
 	shot,
 	blocked,
@@ -100,62 +726,94 @@ function CameraBlockEditor({
 	railDraw,
 	railLength,
 	craneSelectedIndex = null,
+	// The Shot box draws the curve; this bar owns everything you DO to it.
+	curve = null,
 	onChange,
 	onPreview,
 	onRailDrawToggle,
 	onRailDelete,
-	onCranePointAdd,
 	onCranePointDelete,
+	onWaypointToggle,
 }) {
 	if (!shot) return null;
 	const mode = cameraBlockMode(shot);
 	const follow = cameraBlockFollow(shot);
-	const crane = shot?.camera?.craneHeight ?? null;
+	// The crane is always on for a rail (camera-block.js normalizes a stored
+	// null to the flat profile), so a missing value only means "not rail yet".
+	const crane = shot?.camera?.craneHeight
+		?? (mode === "rail" && shot?.camera?.cameraRail
+			? { points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] }
+			: null);
 	const patchCamera = (patch) => onChange?.(patch);
 	const patchFollow = (patch) => onChange?.({ followCam: { ...follow, ...patch } });
 	const numberValue = (event) => Number(event.currentTarget.value);
 	const metric = (value, places = 1) => Number(value).toFixed(places);
 	return (
 		<section className="tl-camera-editor" aria-label={ko(`Camera controls for ${shot.name}`, `${shot.name} 카메라 컨트롤`)}>
-			<strong className="tl-camera-editor-title">{shot.name}</strong>
+			<strong className="tl-camera-editor-title">
+				<span className="tl-subject-kind">{ko("CAMERA", "카메라")}</span>
+				{shot.name}
+			</strong>
 			{blocked ? (
-				<span className="tl-camera-blocked">{ko("Turn Waypoint off to edit or preview this camera.", "카메라를 편집하거나 미리 보려면 Waypoint를 꺼주세요.")}</span>
+				<span className="tl-camera-blocked">
+					{ko("Turn Waypoint off to edit or preview this camera.", "카메라를 편집하거나 미리 보려면 Waypoint를 꺼주세요.")}
+					<button type="button" className="tl-camera-tool" onClick={() => onWaypointToggle?.()}>
+						{ko("Turn Waypoint off", "Waypoint 끄기")}
+					</button>
+				</span>
 			) : (
 				<>
 					<button type="button" className={"tl-camera-tool" + (previewing ? " active" : "")} onClick={() => onPreview?.()}>
 						{previewing ? ko("Stop", "정지") : ko("Preview", "미리보기")}
 					</button>
 					<button type="button" className={"tl-camera-tool" + (railDraw ? " active" : "")} onClick={() => onRailDrawToggle?.()}>
-						{railDraw ? ko("Drawing…", "그리는 중…") : ko("Draw rail", "레일 그리기")}
+						{railDraw ? ko("Drawing…", "그리는 중…") : railLength != null ? ko("Redraw rail", "레일 다시 그리기") : ko("Draw rail", "레일 그리기")}
 					</button>
-					<button
-						type="button"
-						className={"tl-camera-tool" + (mode === "follow" ? " active" : "")}
-						aria-pressed={mode === "follow"}
-						title={ko("Keep the camera at the captured distance from the subject", "카메라와 피사체 사이의 현재 거리를 유지합니다")}
-						onClick={() => patchCamera({ mode: mode === "follow" ? "keys" : "follow" })}
-					>
-						{mode === "follow" ? ko("Follow On", "팔로우 켜짐") : ko("Follow Off", "팔로우 꺼짐")}
-					</button>
-					{railLength != null && (
-						<button
-							type="button"
-							className="tl-camera-tool danger"
-							title={ko("Delete this Shot's rail geometry and return to Follow", "이 샷의 레일 경로를 삭제하고 팔로우로 돌아갑니다")}
-							onClick={() => onRailDelete?.()}
-						>
-							{ko("Delete rail", "레일 삭제")}
-						</button>
+
+					{curve && (
+						<span className="cam-mode-switch" role="group" aria-label={ko("Shot curve", "샷 곡선")}>
+							<button
+								type="button"
+								className={"tl-camera-tool" + (curve.mode === "speed" ? " active" : "")}
+								aria-pressed={curve.mode === "speed"}
+								title={ko("Draw dolly speed in the Shot box", "샷 박스에 돌리 속도를 그립니다")}
+								onClick={() => curve.onModeChange?.("speed")}
+							>
+								{ko("Speed", "속도")}
+							</button>
+							<button
+								type="button"
+								className={"tl-camera-tool" + (curve.mode === "height" ? " active" : "")}
+								aria-pressed={curve.mode === "height"}
+								disabled={!curve.hasCrane}
+								title={ko("Draw crane height in the Shot box", "샷 박스에 크레인 높이를 그립니다")}
+								onClick={() => curve.onModeChange?.("height")}
+							>
+								{ko("Height", "높이")}
+							</button>
+						</span>
 					)}
-					<button
-						type="button"
-						className={"tl-camera-head" + (follow.railStartMode === "head" ? " active" : "")}
-						aria-pressed={follow.railStartMode === "head"}
-						title={ko("Choose whether the dolly starts at the rail head or the nearest useful point", "돌리가 레일 시작점 또는 가까운 지점에서 출발하도록 정합니다")}
-						onClick={() => patchFollow({ railStartMode: follow.railStartMode === "head" ? "nearest" : "head" })}
-					>
-						{follow.railStartMode === "head" ? ko("Head start", "시작점 출발") : ko("Nearest", "가까운 지점")}
-					</button>
+					{curve && curve.mode === "speed" && (curve.canCut || curve.canReset) && (
+						<>
+							{curve.canCut && <button
+								type="button"
+								className="tl-camera-tool"
+								title={ko("Pin the instant at the playhead: the spot being passed then never moves again", "재생 위치의 순간을 고정합니다 — 그때 지나는 자리는 다시 움직이지 않습니다")}
+								onClick={() => curve.onCut?.()}
+							>
+								{ko("Cut", "컷")}
+							</button>}
+							{curve.canReset && <button
+								type="button"
+								className="tl-camera-tool danger"
+								title={ko("Back to constant speed — clears the curve and every cut", "등속으로 되돌립니다 — 곡선과 컷을 모두 지웁니다")}
+								onClick={() => curve.onReset?.()}
+							>
+								{ko("Reset curve", "곡선 초기화")}
+							</button>}
+						</>
+					)}
+
 					<label title={ko("Read automatically from the camera position", "현재 카메라 위치에서 자동으로 읽습니다")}>
 						<span>{ko("Distance", "거리")}</span>
 						<output className="tl-camera-metric">{metric(follow.distance, 2)}</output>
@@ -178,17 +836,6 @@ function CameraBlockEditor({
 						<output className="tl-camera-metric">{signedValue(follow.pitchOffsetDeg)}</output>
 						<small>°</small>
 					</label>
-					{mode === "rail" && railLength != null && (
-						<button
-							type="button"
-							className={"tl-camera-tool" + (crane ? " active" : "")}
-							aria-pressed={!!crane}
-							title={ko("Crane the lens across authored height points along the rail", "레일을 따라 설정한 여러 높이 점으로 렌즈를 움직입니다")}
-							onClick={() => patchCamera({ craneHeight: crane ? null : { points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] } })}
-						>
-							{crane ? ko("Crane On", "크레인 켜짐") : ko("Crane Off", "크레인 꺼짐")}
-						</button>
-					)}
 					{mode === "rail" && crane && (() => {
 						const points = crane.points;
 						const index = craneSelectedIndex != null && craneSelectedIndex >= 0 && craneSelectedIndex < points.length ? craneSelectedIndex : points.length - 1;
@@ -198,35 +845,60 @@ function CameraBlockEditor({
 						};
 						return (
 							<>
-								<label title={ko("Lens height of the selected crane point — click a purple dot in the scene to pick one, double-click the lifted curve to add one", "선택한 크레인 점의 렌즈 높이 — 씨의 보라 점을 클릭해 선택, 커브 더블클릭으로 추가")}>
+								<label title={ko("Lens height of the selected crane point — click a purple dot in the scene to pick one, double-click the lifted curve to add one", "선택한 크레인 점의 렌즈 높이 — 씬의 보라 점을 클릭해 선택, 커브 더블클릭으로 추가")}>
 									<span>{ko("Point height", "점 높이")}</span>
 									<input type="number" min="0.1" max="12" step="0.1" value={points[index].height} onChange={(event) => patchPointHeight(numberValue(event))} />
 									<small>m</small>
 								</label>
-								<output className="tl-camera-count" title={ko("Crane points on this rail", "이 레일의 크레인 점 개수")}>{points.length}{ko(" pts", "점")}</output>
-								<button
-									type="button"
-									className="tl-camera-tool"
-									disabled={points.length >= 8}
-									title={ko("Add a crane point in the largest gap on this Shot's rail", "이 샷 레일의 가장 큰 빈 구간에 크레인 점을 추가합니다")}
-									onClick={() => onCranePointAdd?.()}
-								>
-									{ko("Add point", "점 추가")}
-								</button>
-								<button
-									type="button"
-									className="tl-camera-tool danger"
-									disabled={craneSelectedIndex == null || craneSelectedIndex <= 0 || craneSelectedIndex >= points.length - 1}
-									title={ko("Remove the selected interior crane point", "선택한 중간 크레인 점을 삭제합니다")}
-									onClick={() => onCranePointDelete?.()}
-								>
-									{ko("Remove point", "점 삭제")}
-								</button>
+								<output className="tl-camera-count" title={ko("Crane points on this rail — click the Shot block's key strip to add one", "이 레일의 크레인 점 개수 — 샷 블록 키 줄을 클릭해 추가")}>{points.length}{ko(" pts", "점")}</output>
+								{/* Only while a removable point is actually held: a button that
+								    is greyed out nine times in ten is just furniture. */}
+								{curve?.mode === "height" && craneSelectedIndex != null && craneSelectedIndex > 0 && craneSelectedIndex < points.length - 1 && (
+									<button
+										type="button"
+										className="tl-camera-tool danger"
+										title={ko("Remove the selected interior crane point", "선택한 중간 크레인 점을 삭제합니다")}
+										onClick={() => onCranePointDelete?.()}
+									>
+										{ko("Remove point", "점 삭제")}
+									</button>
+								)}
 							</>
 						);
 					})()}
 					<details className="tl-camera-advanced">
 						<summary>{ko("Advanced", "고급")}</summary>
+						{/* Rig behaviour you set once per shot and forget: it belongs where
+						    the other set-once numbers already live, not in the row you
+						    reach across every time you shape a curve. */}
+						{railLength != null && (
+							<button
+								type="button"
+								className="tl-camera-tool danger"
+								title={ko("Delete this Shot's rail geometry and return to Follow", "이 샷의 레일 경로를 삭제하고 팔로우로 돌아갑니다")}
+								onClick={() => onRailDelete?.()}
+							>
+								{ko("Delete rail", "레일 삭제")}
+							</button>
+						)}
+						<button
+							type="button"
+							className={"tl-camera-tool" + (mode === "follow" ? " active" : "")}
+							aria-pressed={mode === "follow"}
+							title={ko("Keep the camera at the captured distance from the subject", "카메라와 피사체 사이의 현재 거리를 유지합니다")}
+							onClick={() => patchCamera({ mode: mode === "follow" ? "keys" : "follow" })}
+						>
+							{mode === "follow" ? ko("Follow On", "팔로우 켜짐") : ko("Follow Off", "팔로우 꺼짐")}
+						</button>
+						<button
+							type="button"
+							className={"tl-camera-head" + (follow.railStartMode === "head" ? " active" : "")}
+							aria-pressed={follow.railStartMode === "head"}
+							title={ko("Choose whether the dolly starts at the rail head or the nearest useful point", "돌리가 레일 시작점 또는 가까운 지점에서 출발하도록 정합니다")}
+							onClick={() => patchFollow({ railStartMode: follow.railStartMode === "head" ? "nearest" : "head" })}
+						>
+							{follow.railStartMode === "head" ? ko("Head start", "시작점 출발") : ko("Nearest", "가까운 지점")}
+						</button>
 						<label title={ko("Set how softly the rig catches up", "카메라가 얼마나 부드럽게 따라붙는지 정합니다")}>
 							<span>{ko("Damping", "댐핑")}</span>
 							<input type="number" min="0.1" max="3" step="0.05" value={follow.response} onChange={(event) => patchFollow({ response: numberValue(event) })} />
@@ -304,17 +976,23 @@ export default function Timeline({
 	onCameraBlockChange,
 	onCameraPreview,
 	railDraw = false,
+	pathDraw = false,
+	pathObject = null,
 	craneSelectedIndex = null,
+	// A camera bar over a prop or a character is ten controls for a thing you
+	// are not editing; the bar belongs to the camera's own selection.
+	cameraSelected = true,
 	onCranePointAdd,
 	onCranePointDelete,
 	onCranePointSelect,
 	cameraRailLength = null,
 	onCameraRailDrawToggle,
+	onObjectPathDrawToggle,
+	onObjectPathChange,
+	onObjectPathClear,
+	onObjectTimingGestureStart,
+	onObjectTimingGestureEnd,
 	onCameraRailDelete,
-	onRailSelect,
-	onRailMove,
-	onRailRangeChange,
-	onRailRemove,
 	onShotSelect,
 	onShotBoundaryMove,
 	onShotRename,
@@ -353,7 +1031,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onRailSelect, onRailMove, onRailRangeChange, onRailRemove, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onObjectPathDrawToggle, onObjectPathChange, onObjectPathClear, onObjectTimingGestureStart, onObjectTimingGestureEnd, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -501,9 +1179,6 @@ export default function Timeline({
 	const shotBoundaryRef = useRef(null);
 	const shotMoveRef = useRef(null);
 	const shotSuppressClickRef = useRef(false);
-	const railDragRef = useRef(null);
-	const railResizeRef = useRef(null);
-	const railSuppressClickRef = useRef(false);
 
 	function beginPromptMove(e, clip) {
 		if (e.button !== 0 || e.target.closest(".tl-chip-handle")) return;
@@ -744,87 +1419,12 @@ export default function Timeline({
 		handlers.current.onScrub?.(key.frame);
 	}
 
-	function beginRailMove(e, shot, range, duration) {
-		if (e.button !== 0) return;
-		e.stopPropagation();
-		handlers.current.onEditGestureStart?.("rail");
-		handlers.current.onRailSelect?.(shot.id);
-		const lane = e.currentTarget.closest(".tl-lane");
-		const rect = lane?.getBoundingClientRect();
-		railDragRef.current = { shotId: shot.id, pointerId: e.pointerId, startClientX: e.clientX, startFrame: range.start, length: range.end - range.start + 1, duration, laneWidth: rect?.width ?? 1, moved: false };
-	}
 
-	function moveRail(e) {
-		const active = railDragRef.current;
-		if (!active || e.pointerId !== active.pointerId) return;
-		if (!active.moved && Math.abs(e.clientX - active.startClientX) < 4) return;
-		active.moved = true;
-		e.preventDefault();
-		e.stopPropagation();
-		e.currentTarget.setPointerCapture?.(e.pointerId);
-		const delta = Math.round((e.clientX - active.startClientX) * Math.max(0, displayFrameCount - 1) / Math.max(1, active.laneWidth));
-		const next = Math.max(0, Math.min(active.duration - active.length, active.startFrame + delta));
-		handlers.current.onRailMove?.(active.shotId, next);
-	}
 
-	function endRailMove(e) {
-		const active = railDragRef.current;
-		if (!active || e.pointerId !== active.pointerId) return;
-		if (active.moved) {
-			e.preventDefault();
-			e.stopPropagation();
-			railSuppressClickRef.current = true;
-			queueMicrotask(() => { railSuppressClickRef.current = false; });
-		}
-		railDragRef.current = null;
-		e.currentTarget.releasePointerCapture?.(e.pointerId);
-	}
 
-	function beginRailResize(e, shot, edge, range, duration) {
-		if (e.button !== 0) return;
-		e.preventDefault();
-		e.stopPropagation();
-		e.currentTarget.setPointerCapture?.(e.pointerId);
-		handlers.current.onEditGestureStart?.("rail");
-		handlers.current.onRailSelect?.(shot.id);
-		const lane = e.currentTarget.closest(".tl-lane");
-		const rect = lane?.getBoundingClientRect();
-		railResizeRef.current = { shotId: shot.id, edge, pointerId: e.pointerId, startClientX: e.clientX, startFrame: edge === "start" ? range.start : range.end, duration, laneWidth: rect?.width ?? 1 };
-	}
 
-	function moveRailResize(e) {
-		const active = railResizeRef.current;
-		if (!active || e.pointerId !== active.pointerId) return;
-		e.preventDefault();
-		e.stopPropagation();
-		const delta = Math.round((e.clientX - active.startClientX) * Math.max(0, displayFrameCount - 1) / Math.max(1, active.laneWidth));
-		const next = Math.max(0, Math.min(active.duration - 1, active.startFrame + delta));
-		handlers.current.onRailRangeChange?.(active.shotId, active.edge, next);
-	}
 
-	function endRailResize(e) {
-		if (!railResizeRef.current || e.pointerId !== railResizeRef.current.pointerId) return;
-		railResizeRef.current = null;
-		e.currentTarget.releasePointerCapture?.(e.pointerId);
-	}
 
-	function onRailKeyDown(e, shotId, range, duration) {
-		const edge = e.currentTarget.dataset.railEdge;
-		if (e.key === "Delete" || e.key === "Backspace") {
-			e.preventDefault();
-			e.stopPropagation();
-			handlers.current.onRailRemove?.(shotId);
-			return;
-		}
-		if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-		e.preventDefault();
-		e.stopPropagation();
-		const delta = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1);
-		// A nudge is a complete gesture on its own: one keydown, one entry.
-		handlers.current.onEditGestureStart?.("rail");
-		if (edge === "body") handlers.current.onRailMove?.(shotId, Math.max(0, Math.min(duration - (range.end - range.start + 1), range.start + delta)));
-		else handlers.current.onRailRangeChange?.(shotId, edge, Math.max(0, Math.min(duration - 1, (edge === "start" ? range.start : range.end) + delta)));
-	}
 
 	function beginShotBoundaryDrag(e, shotIndex, edge) {
 		if (e.button !== 0) return;
@@ -907,10 +1507,22 @@ export default function Timeline({
 		if (!keySurface) return;
 		selectUnifiedShotBlock(index);
 		if (shot.camera?.mode === "rail" && shot.camera?.craneHeight) {
-			const rail = keySurface.parentElement?.querySelector(".tl-rail");
-			const railRect = rail?.getBoundingClientRect();
-			if (!railRect || e.clientX < railRect.left || e.clientX > railRect.right) return;
-			const t = Math.max(0, Math.min(1, (e.clientX - railRect.left) / Math.max(1, railRect.width)));
+			// The ribbon is gone; map the click through the take's own clock:
+			// surface x -> frame inside the shot -> t inside the follow range.
+			const surfaceRect = keySurface.getBoundingClientRect();
+			const frac = (e.clientX - surfaceRect.left) / Math.max(1, surfaceRect.width);
+			const duration = Math.max(1, shot.endFrame - shot.startFrame);
+			const frameInShot = frac * duration;
+			const range = shot.camera?.railFollow?.mode === "range"
+				? { start: shot.camera.railFollow.startFrame, end: shot.camera.railFollow.endFrame }
+				: { start: 0, end: duration };
+			if (frameInShot < range.start || frameInShot > range.end) return;
+			const t = Math.max(0, Math.min(1, (frameInShot - range.start) / Math.max(1, range.end - range.start)));
+			// Show what the click just made. The box draws one curve at a time, so
+			// authoring a crane point while it is drawing SPEED put the new point
+			// somewhere the card cannot draw — the dot appeared in the scene and
+			// nowhere near the hand that placed it.
+			setCameraCurve("height");
 			onCranePointAdd?.(t, shot.id);
 			return;
 		}
@@ -959,6 +1571,68 @@ export default function Timeline({
 
 	const cameraBlockIdx = selectedCameraBlockIdx === undefined ? localCameraBlockIdx : selectedCameraBlockIdx;
 	const selectedCameraShot = cameraBlockIdx == null ? null : shots[cameraBlockIdx] ?? null;
+	// The dolly's speed curve edits as a DRAFT and commits once on release:
+	// every commit rebuilds the whole camera track and records an undo entry,
+	// so streaming per-pointer-move commits would jank and spam history.
+	const railLengthByShot = useMemo(() => {
+		const map = new Map();
+		for (const shot of shots) {
+			const rail = Array.isArray(shot.camera?.cameraRail) && shot.camera.cameraRail.length >= 2
+				? buildRail(shot.camera.cameraRail)
+				: null;
+			if (rail) map.set(shot.id, rail.length);
+		}
+		return map;
+	}, [shots]);
+	const [dollyDraft, setDollyDraft] = useState(null); // { shotId, timing }
+	const dollyDraftRef = useRef(null);
+	// Which reading the Shot box draws. The box IS the graph — it already spans
+	// exactly the shot's frames — so the curve needs no clock of its own, and
+	// every action (switch, cut, reset, remove) belongs to the camera bar above.
+	const [cameraCurve, setCameraCurve] = useState("speed");
+	useEffect(() => {
+		setDollyDraft(null);
+		dollyDraftRef.current = null;
+	}, [selectedCameraShot?.id]);
+	// A curve only exists for a Shot whose camera actually rides a rail: a keyed
+	// or follow camera has no dolly to time and no crane to lift.
+	const curveShot = selectedCameraShot && cameraBlockMode(selectedCameraShot) === "rail" && railLengthByShot.has(selectedCameraShot.id)
+		? selectedCameraShot
+		: null;
+	const curveRange = useMemo(() => {
+		if (!curveShot) return null;
+		const duration = curveShot.endFrame - curveShot.startFrame + 1;
+		const stored = curveShot.camera?.railFollow;
+		if (stored?.mode === "off") return null;
+		const range = stored?.mode === "range"
+			? { start: Math.max(0, Math.min(duration - 1, stored.startFrame)), end: Math.max(0, Math.min(duration - 1, stored.endFrame)) }
+			: { start: 0, end: duration - 1 };
+		return { range, duration };
+	}, [curveShot]);
+	// The bar's actions operate on the same pure timing model the box draws, so
+	// "cut here" means the same thing whichever surface asked for it.
+	const dollyTiming = curveShot ? (dollyDraft?.shotId === curveShot.id ? dollyDraft.timing : curveShot.camera?.dollyTiming ?? null) : null;
+	const curvePlayheadU = curveShot && curveRange
+		? (Math.min(Math.max(0, frame - curveShot.startFrame), curveRange.duration - 1) - curveRange.range.start) / Math.max(1, curveRange.range.end - curveRange.range.start)
+		: null;
+	const commitDolly = (timing) => {
+		if (!curveShot) return;
+		handlers.current.onCameraBlockChange?.({ dollyTiming: timingIsFlat(timing) ? null : timing }, curveShot.id);
+	};
+	const cameraCurveActions = curveShot && curveRange
+		? {
+			mode: cameraCurve,
+			onModeChange: setCameraCurve,
+			hasCrane: !!curveShot.camera?.craneHeight,
+			canCut: cameraCurve === "speed" && curvePlayheadU != null && curvePlayheadU > CUT_MIN_GAP && curvePlayheadU < 1 - CUT_MIN_GAP,
+			canReset: cameraCurve === "speed" ? !timingIsFlat(dollyTiming) : false,
+			onCut: () => {
+				const next = insertCut(dollyTiming ?? flatTiming(), curvePlayheadU);
+				if (next && next !== dollyTiming) commitDolly(next);
+			},
+			onReset: () => commitDolly(flatTiming()),
+		}
+		: null;
 	const motionSegments = motion?.segments ?? [];
 	const selectedMotionSegment = motionSegments.find((segment) => frame >= segment.timelineStart && frame <= segment.timelineEnd) ?? motionSegments[0] ?? null;
 	const visibleMotionSegments = trimPreview
@@ -1131,7 +1805,7 @@ export default function Timeline({
 							▾
 						</button>
 					</div>
-					{selectedCameraShot && (
+					{selectedCameraShot && cameraSelected && (
 						<CameraBlockEditor
 							shot={selectedCameraShot}
 							blocked={waypointMode}
@@ -1139,12 +1813,13 @@ export default function Timeline({
 							railDraw={railDraw}
 							railLength={cameraRailLength}
 							craneSelectedIndex={craneSelectedIndex}
+							curve={cameraCurveActions}
 							onChange={(patch) => handlers.current.onCameraBlockChange?.(patch)}
 							onPreview={() => handlers.current.onCameraPreview?.(selectedCameraShot.id)}
 							onRailDrawToggle={() => handlers.current.onCameraRailDrawToggle?.()}
 							onRailDelete={() => handlers.current.onCameraRailDelete?.()}
-							onCranePointAdd={onCranePointAdd}
 							onCranePointDelete={onCranePointDelete}
+							onWaypointToggle={() => handlers.current.onWaypointToggle?.()}
 						/>
 					)}
 
@@ -1187,7 +1862,24 @@ export default function Timeline({
 							</div>
 						</div>
 
-						{TRACKS.map((name) => (
+						{/* What the strip LOADS follows the selection. A prop's travel
+						    is a different subject on the same clock, so selecting one
+						    swaps the performer's lanes for the prop's instead of
+						    stacking both and making every row ambiguous. */}
+						{pathObject ? (
+							<ObjectTravelTrack
+								object={pathObject}
+								frame={frame}
+								frameCount={frameCount}
+								fps={fps}
+								pathDraw={pathDraw}
+								onPathDrawToggle={() => handlers.current.onObjectPathDrawToggle?.()}
+								onPathChange={(path) => handlers.current.onObjectPathChange?.(path)}
+								onPathClear={() => handlers.current.onObjectPathClear?.()}
+								onTimingGestureStart={() => handlers.current.onObjectTimingGestureStart?.()}
+								onTimingGestureEnd={() => handlers.current.onObjectTimingGestureEnd?.()}
+							/>
+						) : TRACKS.map((name) => (
 							<div className={"tl-track" + (name === "Prompts" ? " prompts" : "") + (name === IK_LANE ? " ik" : "") + (name === SHOTS_LANE ? " shots" : "")} key={name}>
 								<span className="tl-track-label">
 									{TRACK_LABELS_KO[name]}
@@ -1202,7 +1894,7 @@ export default function Timeline({
 												: `${pathSpeed.min.toFixed(1)}–${pathSpeed.max.toFixed(1)} m/s`}
 										</em>
 									)}
-									{name === "Prompts" && <button className="tl-track-add" type="button" title={ko("Add 2 second prompt clip", "2초 프롬프트 클립 추가")} onClick={() => handlers.current.onPromptAdd?.(frame)}>+</button>}
+									{name === "Prompts" && <button className="tl-track-add" type="button" title={ko("Add a 2–4 second prompt clip — one action per block", "2–4초 프롬프트 클립 추가 — 한 블록에 한 동작")} onClick={() => handlers.current.onPromptAdd?.(frame)}>+</button>}
 									{name === SHOTS_LANE && (
 										<button
 											type="button"
@@ -1278,13 +1970,10 @@ export default function Timeline({
 											: null;
 										const railOff = storedRail?.mode === "off" || mode !== "rail";
 										const localProgress = frame - shot.startFrame;
-										const railProgress = !railOff && railRange && localProgress >= railRange.start && localProgress <= railRange.end
-											? (localProgress - railRange.start) / Math.max(1, railRange.end - railRange.start)
-											: null;
 										return (
 											<div
 												key={shot.id}
-												className={"tl-shot-block" + (index === cameraBlockIdx ? " selected" : "") + (index === activeShotIdx ? " active" : "") + (movingShotId === shot.id ? " moving" : "")}
+												className={"tl-shot-block" + (index === cameraBlockIdx ? " selected" : "") + (index === activeShotIdx ? " active" : "") + (movingShotId === shot.id ? " moving" : "") + (!railOff && railRange && railLengthByShot.has(shot.id) ? " has-dolly" : "")}
 												style={{ "--tl-f-start": geometry.startPct, "--tl-f-end": geometry.endPct }}
 												title={isKo ? `${shot.name} · ${shot.startFrame}–${lastFrame}프레임 · 드래그해 순서 이동, 양끝으로 컷 조절, 아래 빈 줄을 클릭해 카메라 키 추가` : `${shot.name} · frames ${shot.startFrame}–${lastFrame} · drag to reorder, trim cuts at either edge, click the empty lower strip to add a camera key`}
 												onPointerDown={(e) => beginShotMove(e, shot, index)}
@@ -1344,60 +2033,59 @@ export default function Timeline({
 													<b>{modeLabel}</b>
 													{detailLabel && <small>{detailLabel}</small>}
 												</span>
-												{railRange && (
-													<div
-														role="group"
-														aria-label={ko(`Rail follow range for ${shot.name}`, `${shot.name} 레일 팔로우 구간`)}
-														className={"tl-rail" + (index === cameraBlockIdx ? " selected" : "") + (railOff ? " off" : "")}
-														style={{ "--tl-f-start": railRange.start / Math.max(1, durationFrames - 1), "--tl-f-end": railRange.end / Math.max(1, durationFrames - 1) }}
-														onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handlers.current.onRailRemove?.(shot.id); }}
-													>
-														<button type="button" tabIndex={0} data-rail-edge="start" className="tl-rail-handle start" aria-label={ko("Resize rail follow start", "레일 팔로우 시작점 조절")} onKeyDown={(e) => onRailKeyDown(e, shot.id, railRange, durationFrames)} onPointerDown={(e) => beginRailResize(e, shot, "start", railRange, durationFrames)} onPointerMove={moveRailResize} onPointerUp={endRailResize} onPointerCancel={endRailResize} />
-														<button
-															type="button"
-															tabIndex={0}
-															data-rail-edge="body"
-															className="tl-rail-body"
-															aria-label={ko("Rail follow — drag to move, right-click to remove", "레일 팔로우 — 드래그로 이동, 오른쪽 클릭으로 삭제")}
-															title={ko("Drag to move the Rail Follow range", "드래그해 레일 팔로우 구간 이동")}
-															onKeyDown={(e) => onRailKeyDown(e, shot.id, railRange, durationFrames)}
-															onPointerDown={(e) => beginRailMove(e, shot, railRange, durationFrames)}
-															onPointerMove={moveRail}
-															onPointerUp={endRailMove}
-															onPointerCancel={endRailMove}
-															onClick={(e) => {
-																e.stopPropagation();
-																if (railSuppressClickRef.current) return;
-																handlers.current.onRailSelect?.(shot.id);
-															}}
-														>
-															<span className="tl-rail-label">{ko("Rail Follow", "레일 팔로우")}</span>
-															{railOff && <span className="tl-rail-off">{ko("OFF", "꺼짐")}</span>}
-														</button>
-														<button type="button" tabIndex={0} data-rail-edge="end" className="tl-rail-handle end" aria-label={ko("Resize rail follow end", "레일 팔로우 끝점 조절")} onKeyDown={(e) => onRailKeyDown(e, shot.id, railRange, durationFrames)} onPointerDown={(e) => beginRailResize(e, shot, "end", railRange, durationFrames)} onPointerMove={moveRailResize} onPointerUp={endRailResize} onPointerCancel={endRailResize} />
-														{railProgress != null && <i className="tl-rail-progress" style={{ "--tl-rail-p": railProgress }} aria-hidden="true" />}
-														{!railOff && (shot.camera?.craneHeight?.points ?? []).map((point, pointIndex) => (
-															<button
-																key={`${shot.id}:crane:${pointIndex}`}
-																type="button"
-																className={"tl-crane-point" + (index === cameraBlockIdx && pointIndex === craneSelectedIndex ? " selected" : "")}
-																style={{ "--tl-crane-p": point.t }}
-																aria-label={ko(`Select crane point ${pointIndex + 1}`, `크레인 점 ${pointIndex + 1} 선택`)}
-																title={ko(`Crane point ${pointIndex + 1} · ${point.height.toFixed(2)} m`, `크레인 점 ${pointIndex + 1} · ${point.height.toFixed(2)} m`)}
-																onPointerDown={(event) => event.stopPropagation()}
-																onClick={(event) => {
-																	event.stopPropagation();
-																	selectUnifiedShotBlock(index);
-																	onCranePointSelect?.(pointIndex, shot.id);
-																}}
-																onDoubleClick={(event) => event.stopPropagation()}
-															/>
-														))}
-													</div>
+										{/* The card is a card again: it SHOWS the move, it does not host the
+										    editor. Three instruments stacked in 61 px of a 68 px lane drew on
+										    top of each other and under the shot's own name, so every gesture
+										    landed on the wrong one. Editing moved to the camera instrument in
+										    the strip; what stays here is one passive curve — the shape of the
+										    move, at a glance. */}
+										{!railOff && railRange && railLengthByShot.has(shot.id) && (
+											<div
+												className={"sg-shot" + (cameraCurve === "height" && shot.camera?.craneHeight ? " height" : "")}
+												title={cameraCurve === "height"
+													? ko("Crane height — drag a point, click empty time to add one", "크레인 높이 — 점을 끌어 조절, 빈 시간을 클릭해 추가")
+													: ko("Dolly speed — drag the line; cuts and reset live in the camera bar above", "돌리 속도 — 선을 끌어 조절, 컷·초기화는 위 카메라 바에서")}
+												onPointerDown={(event) => event.stopPropagation()}
+												onClick={(event) => event.stopPropagation()}
+												onDoubleClick={(event) => event.stopPropagation()}
+											>
+												{cameraCurve === "height" && shot.camera?.craneHeight ? (
+													<CraneHeightEditor
+														crane={shot.camera.craneHeight}
+														railRange={railRange}
+														durationFrames={durationFrames}
+														selectedIndex={index === cameraBlockIdx ? craneSelectedIndex : null}
+														onSelect={(pointIndex) => { selectUnifiedShotBlock(index); onCranePointSelect?.(pointIndex, shot.id); }}
+														onAddPoint={(t) => { selectUnifiedShotBlock(index); onCranePointAdd?.(t, shot.id); }}
+														onChangePoints={(points) => { selectUnifiedShotBlock(index); handlers.current.onCameraBlockChange?.({ craneHeight: { points } }, shot.id); }}
+													/>
+												) : (
+													<SpeedGraph
+														bare
+														timing={dollyDraft?.shotId === shot.id ? dollyDraft.timing : shot.camera?.dollyTiming ?? null}
+														windowStart={durationFrames > 1 ? railRange.start / (durationFrames - 1) : 0}
+														windowFrac={durationFrames > 1 ? Math.max(1, railRange.end - railRange.start) / (durationFrames - 1) : 1}
+														frame={Math.min(Math.max(0, localProgress), Math.max(0, durationFrames - 1))}
+														frameCount={durationFrames}
+														averageSpeed={railLengthByShot.get(shot.id) / Math.max(1 / fps, (railRange.end - railRange.start) / fps)}
+														conserve
+														onChange={(timing) => {
+															selectUnifiedShotBlock(index);
+															dollyDraftRef.current = { shotId: shot.id, timing };
+															setDollyDraft({ shotId: shot.id, timing });
+														}}
+														onGestureEnd={() => {
+															const draft = dollyDraftRef.current;
+															dollyDraftRef.current = null;
+															setDollyDraft(null);
+															if (draft) handlers.current.onCameraBlockChange?.({ dollyTiming: timingIsFlat(draft.timing) ? null : draft.timing }, draft.shotId);
+														}}
+													/>
 												)}
-												{/* The card body owns selection/reorder; this narrow empty strip
-												    owns keying. Keeping it a button excludes it from beginShotMove,
-												    so one gesture cannot both reorder a shot and author a key. */}
+											</div>
+										)}
+											{/* Camera-key authoring remains separate from the crane graph so
+												    one gesture cannot both reorder a shot and edit a curve. */}
 												<button
 													type="button"
 													className="tl-shot-key-surface"
@@ -1405,7 +2093,7 @@ export default function Timeline({
 														? ko(`Add crane point in ${shot.name}`, `${shot.name}에 크레인 점 추가`)
 														: ko(`Add camera key in ${shot.name}`, `${shot.name}에 카메라 키 추가`)}
 													title={shot.camera?.mode === "rail" && shot.camera?.craneHeight
-														? ko("Click below Rail Follow to add a crane point at that position", "레일 팔로우 아래를 클릭해 해당 위치에 크레인 점을 추가합니다")
+														? ko("Click the crane graph to add a point; click a point and drag it to change height", "크레인 그래프를 클릭해 점 추가 · 점을 눌러 끌어 높이 조절")
 														: ko("Click at a frame to store the current camera framing", "프레임 위치를 클릭해 현재 카메라 프레이밍을 저장합니다")}
 													onClick={(event) => addShotPointFromBlock(event, shot, index)}
 													onDoubleClick={(event) => event.stopPropagation()}

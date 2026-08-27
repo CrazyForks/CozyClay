@@ -24,7 +24,7 @@ expect("gridlines render from the ruler's framePct", timeline.includes('classNam
 expect("chips and markers share one frame scale", !timeline.includes("promptFramePct") && timeline.includes("clipPct(clip.startFrame)"));
 
 expect("camera keys render as dots, not a chip", timeline.includes('className="tl-marker cam"') && !timeline.includes("tl-chip camera"));
-expect("block key strip keys framing or authors crane progress for a Rail Shot", timeline.includes("handlers.current.onCameraKeyframeAdd?.(target, shot.id)") && timeline.includes("onCranePointAdd?.(t, shot.id)") && timeline.includes('className="tl-shot-key-surface"') && app.includes("onCameraKeyframeAdd={addCameraKeyframe}"));
+expect("block key strip keys framing while a dedicated crane graph authors Rail points", timeline.includes("handlers.current.onCameraKeyframeAdd?.(target, shot.id)") && timeline.includes("onCranePointAdd?.(t, shot.id)") && timeline.includes('className="tl-crane-editor"') && app.includes("onCameraKeyframeAdd={addCameraKeyframe}"));
 expect("key strip is a crosshair affordance", css.includes(".tl-shot-key-surface") && css.includes("cursor: crosshair"));
 expect("dot click jumps the playhead and selects the camera", timeline.includes("handlers.current.onScrub?.(key.frame)") && timeline.includes("handlers.current.onCameraMoveSelect?.();"));
 expect("dot right-click removes the key", timeline.includes("handlers.current.onCameraKeyframeRemove?.(shot.id, key.id)") && app.includes("removeCameraKey(shot.cameraKeys, keyId)"));
@@ -51,14 +51,44 @@ expect(
 	app.includes('if (patch.mode === "follow") syncActiveCameraFraming()'),
 );
 
-expect("surface lays out four tracks after removing duplicate Camera row", css.includes("grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr);"));
+expect("surface lays out four tracks, and the Shot row is never the one that falls off", css.includes("grid-template-rows: 28px repeat(3, minmax(18px, 1fr)) minmax(68px, 1.7fr)") && css.includes("height: 100%;"));
 expect("lane gridlines are frame-based, not width-based", css.includes(".tl-grid {") && !css.includes("100% / 23"));
 expect("camera dots have a distinct violet identity", css.includes(".tl-marker.cam {") && css.includes("#a78bfa"));
-expect("Rail Follow lives inside each unified Shot block", timeline.includes("shot.camera?.railFollow") && timeline.includes('className={"tl-rail"') && !timeline.includes("name === CAMERA_LANE"));
-expect("Rail Follow keeps move, resize, keyboard and remove editing", ["beginRailMove", "beginRailResize", "onRailKeyDown", "onRailRemove"].every((name) => timeline.includes(name)));
-expect("Rail Follow callbacks target the owning shot", timeline.includes("onRailMove?.(active.shotId, next)") && app.includes("editRailSchedule(shotId"));
+expect("the Rail Follow ribbon is gone; the crane height editor owns the card interaction", timeline.includes("shot.camera?.railFollow") && timeline.includes('className="tl-crane-editor"') && timeline.includes('className="tl-crane-editor-hit"') && !timeline.includes('className="tl-crane-strip"') && !timeline.includes('className={"tl-rail"') && !timeline.includes("name === CAMERA_LANE"));
+expect("no ribbon editing gestures survive in the timeline", !["beginRailMove", "beginRailResize", "onRailKeyDown", "railDragRef"].some((name) => timeline.includes(name)));
+expect("the rail schedule model still resolves per shot in the app", app.includes("resolveRailSchedule({ railFollow: camera.railFollow"));
 expect("Rail range playback is resolved per shot", app.includes("resolveRailSchedule({ railFollow: camera.railFollow") && app.includes("subjectSlice.slice(schedule.startFrame, schedule.endFrame + 1)"));
-expect("disabled Rail Follow stays visible as OFF", timeline.includes('ko("Rail Follow", "레일 팔로우")') && timeline.includes('ko("OFF", "꺼짐")') && timeline.includes('mode !== "rail"'));
+expect("the crane graph itself selects, adds, and vertically drags height points", timeline.includes("function CraneHeightEditor") && timeline.includes("onSelect?.(nearest.index)") && timeline.includes("onChangePoints?.(drag.points)") && timeline.includes("onAddPoint?.(drag.addAt)"));
+expect(
+	"authoring a crane point shows it: the box switches to the curve it just edited",
+	// the box draws one curve at a time, so adding a crane point while it drew
+	// SPEED put the new point where the card could not draw it — it appeared in
+	// the scene and nowhere near the hand that placed it
+	timeline.includes('setCameraCurve("height");') &&
+	timeline.indexOf('setCameraCurve("height");') < timeline.indexOf("onCranePointAdd?.(t, shot.id);"),
+);
+expect(
+	"the crane line is sampled from the model that flies the camera",
+	// craneHeightAt runs a monotone cubic; straight segments drew a motion the
+	// rig never performs
+	timeline.includes("function craneCurvePath(points, xFor, yFor)") &&
+	timeline.includes("craneHeightAt(crane, t)") &&
+	timeline.includes('import { buildRail, craneHeightAt } from "../camera-follow.js";') &&
+	!timeline.includes('<polyline className="tl-crane-line"'),
+);
+expect(
+	"curves drag at a fixed rate, not at the surface's height",
+	// a curve inside a 39px Shot box mapped its whole range onto 39px, so a
+	// twitch swung it a quarter of the way; the drag is units-per-pixel now,
+	// and the height axis is frozen for the gesture so the scale cannot feed back
+	timeline.includes("const DRAG_TRAVEL_PX = 220;") &&
+	timeline.includes("const FINE_DRAG_FACTOR = 0.25;") &&
+	timeline.includes("function dragValue(start, event, unitsPerPx)") &&
+	timeline.includes("event.shiftKey ? FINE_DRAG_FACTOR : 1") &&
+	timeline.includes("yMax / DRAG_TRAVEL_PX") &&
+	timeline.includes("maxHeight / DRAG_TRAVEL_PX") &&
+	timeline.includes("const maxHeight = heldScale ??"),
+);
 
 expect(
 	"unified lane renders exactly one block from each shot geometry",
@@ -112,15 +142,27 @@ expect(
 	timeline.includes('ko("Distance", "거리")') &&
 	timeline.includes('ko("Height", "높이")'),
 );
+// Scope the count to CameraBlockEditor: other editors in this file (the
+// object travel path) reuse the same readout class, so a file-wide count
+// would break every time the strip grows a neighbour.
+const cameraEditorSource = timeline.slice(
+	timeline.indexOf("function CameraBlockEditor("),
+	timeline.indexOf("function ", timeline.indexOf("function CameraBlockEditor(") + 1),
+);
+// The bar now carries a Speed/Height curve switch as well as the Height
+// READOUT, so measure from the last Height mention before Pitch: it is the
+// readout's own label the pin is about.
+const pitchAt = cameraEditorSource.indexOf('ko("Pitch", "피치")');
+const heightReadoutAt = cameraEditorSource.lastIndexOf('ko("Height", "높이")', pitchAt);
 expect(
 	"height and pitch are adjacent in the camera bar",
-	timeline.indexOf('ko("Height", "높이")') < timeline.indexOf('ko("Pitch", "피치")') &&
-	(timeline.slice(timeline.indexOf('ko("Height", "높이")'), timeline.indexOf('ko("Pitch", "피치")')).match(/<label/g) ?? []).length === 1,
+	heightReadoutAt > 0 && heightReadoutAt < pitchAt &&
+	(cameraEditorSource.slice(heightReadoutAt, pitchAt).match(/<label/g) ?? []).length === 1,
 );
 expect(
 	"distance, height and pitch are measured from viewport manipulation instead of typed",
-	timeline.includes('className="tl-camera-metric"') &&
-	(timeline.match(/className="tl-camera-metric"/g) ?? []).length === 3 &&
+	cameraEditorSource.includes('className="tl-camera-metric"') &&
+	(cameraEditorSource.match(/className="tl-camera-metric"/g) ?? []).length === 3 &&
 	app.includes("followFramingFromCamera(") &&
 	app.includes("cam.position,") &&
 	app.includes("look.current.pitch,") &&
@@ -135,29 +177,34 @@ expect(
 	app.includes("manualCameraOverrideRef.current = false"),
 );
 expect(
-	"the rail crane is an explicit toggle with start and end height inputs",
-	timeline.includes('ko("Crane On", "\ud06c\ub808\uc778 \ucf1c\uc9d0")') &&
-	timeline.includes('ko("Crane Off", "\ud06c\ub808\uc778 \uaebc\uc9d0")') &&
+	"the rail crane is always on, with a per-point height input",
+	// no toggle: a rail block is always craned (camera-block.js normalizes a
+	// stored null to the flat profile), so the on/off button is gone
+	!timeline.includes('ko("Crane On", "\ud06c\ub808\uc778 \ucf1c\uc9d0")') &&
+	!timeline.includes('ko("Crane Off", "\ud06c\ub808\uc778 \uaebc\uc9d0")') &&
 	timeline.includes('ko("Point height", "\uc810 \ub192\uc774")') &&
-	// turning the crane on seeds two endpoint POINTS from the measured follow
-	// height, and turning it off returns the block to the flat-rail null
-	timeline.includes("craneHeight: crane ? null : { points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] }") &&
+	// a missing stored value seeds the same flat two-mark profile inline
+	timeline.includes("{ points: [{ t: 0, height: follow.height }, { t: 1, height: follow.height }] }") &&
 	// the scene dots are the primary editor; the bar edits the SELECTED point
 	timeline.includes("craneSelectedIndex"),
 );
 expect(
-	"the crane editor makes adding and removing interior points explicit",
-	timeline.includes('ko("Add point", "점 추가")') &&
+	"crane points are added on the Shot key strip only, removed explicitly",
+	// no Add point button: the Shot block's key strip is the single authoring
+	// surface for new crane marks (plus double-clicking the lifted curve)
+	!timeline.includes('ko("Add point", "점 추가")') &&
 		timeline.includes('ko("Remove point", "점 삭제")') &&
 		timeline.includes("onCranePointAdd") &&
 		timeline.includes("onCranePointDelete"),
 );
 expect(
-	"rail crane points are authored and selected directly in the Shot key strip",
-	timeline.includes("addShotPointFromBlock") &&
-		timeline.includes("tl-crane-point") &&
-		timeline.includes("--tl-crane-p") &&
-		timeline.includes("onCranePointSelect"),
+	"rail crane points are authored and selected directly in the crane graph",
+	timeline.includes("function CraneHeightEditor") &&
+	timeline.includes("tl-crane-knob") &&
+	timeline.includes("tl-crane-editor") &&
+	timeline.includes("onAddPoint?.(drag.addAt)") &&
+	timeline.includes("onChangePoints?.(drag.points)") &&
+	timeline.includes("onCranePointSelect"),
 );
 expect(
 	"waypoint mode replaces camera controls with one clear message",
@@ -200,9 +247,10 @@ expect(
 	css.includes("minmax(68px, 1.7fr)"),
 );
 expect(
-	"advanced camera controls grow the bottom window instead of clipping Shots",
-	css.includes(".timeline:not(.collapsed):has(.tl-camera-advanced[open])") &&
-	css.includes("height: max(calc(var(--timeline-height) + 48px), 270px)") &&
+	"the bottom window never grows for camera, rail, or path content",
+	!css.includes("has(.tl-camera-advanced[open])") &&
+	!css.includes("has(.tl-camera-editor)") &&
+	!css.includes("has(.tl-track.sg-row)") &&
 	css.includes("min-height: 156px"),
 );
 expect(

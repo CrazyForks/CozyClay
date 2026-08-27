@@ -242,6 +242,56 @@ export function combineMask(auto, paint, { width, height, paintWidth = width, pa
  * the alpha. Split from the growth above so the editor can show a mask, let
  * someone paint on it, and only then pay for the pixels.
  */
+/**
+ * Edge-line cleanup: screenshot imports often carry a thin frame-line baked
+ * into the picture (a window border, a card edge) — a stroke the seed colours
+ * never claimed, so the mask grows around it and shrink only eats the rim
+ * beside it. Such a line is recognizable: it survives the mask, touches a
+ * picture edge, and is small next to the frame. Any kept component with all
+ * three marks is folded back into the background before the cut is written.
+ */
+function dropEdgeLines(data, width, height) {
+	const total = width * height;
+	const visited = new Uint8Array(total);
+	const stack = [];
+	let changed = 0;
+	for (let i = 0; i < total; i += 1) {
+		if (data[i * 4 + 3] < 8 || visited[i]) continue;
+		// flood this kept component
+		stack.length = 0;
+		stack.push(i);
+		visited[i] = 1;
+		const members = [];
+		let touchesEdge = false;
+		while (stack.length) {
+			const index = stack.pop();
+			members.push(index);
+			const x = index % width;
+			const y = (index / width) | 0;
+			if (x === 0 || y === 0 || x === width - 1 || y === height - 1) touchesEdge = true;
+			for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+				const nx = x + dx;
+				const ny = y + dy;
+				if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+				const ni = ny * width + nx;
+				if (!visited[ni] && data[ni * 4 + 3] >= 8) {
+					visited[ni] = 1;
+					stack.push(ni);
+				}
+			}
+		}
+		// a kept component that touches the frame edge and stays tiny relative
+		// to the picture is a baked-in border line, not a subject
+		if (touchesEdge && members.length < total * 0.05) {
+			for (const index of members) {
+				data[index * 4 + 3] = 0;
+				changed += 1;
+			}
+		}
+	}
+	return changed;
+}
+
 export function applyMask(pixels, mask, { shrink = 1, feather = 1 } = {}) {
 	const { width, height } = pixels;
 	const data = new Uint8ClampedArray(pixels.data);
@@ -313,6 +363,11 @@ export function applyMask(pixels, mask, { shrink = 1, feather = 1 } = {}) {
 		alpha.set(blurred);
 	}
 	for (let pixel = 0; pixel < total; pixel++) data[(pixel << 2) + 3] = Math.round(alpha[pixel]);
+
+	// A line baked into the picture (a screenshot's window border) survives
+	// both the growth and the rim trim: it is not the wall's colour, and it is
+	// not a blended rim. Fold any such edge-touching sliver into the cut.
+	removed += dropEdgeLines(data, width, height);
 
 	return { data, width, height, removed };
 }

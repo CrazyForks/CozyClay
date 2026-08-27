@@ -14,6 +14,8 @@ const EVENT_PROPERTIES = Object.freeze({
 	"motion:job_succeeded": ["latency_bucket", "input_mode"],
 	"motion:job_failed": ["latency_bucket", "input_mode", "error_code"],
 	"export:blocking_frame_succeeded": ["format"],
+	"export:video_succeeded": ["format"],
+	"sample:played": ["from"],
 	"activation:completed": ["activation_path"],
 });
 const DENIED_PROPERTY_KEYS = new Set(["prompt", "text", "name", "url", "path", "file"]);

@@ -64,3 +64,6 @@ technical, and close to the timeline state they change.
 - `.tl-motion-clip.selected`: segment currently under the playhead.
 - `.tl-motion-speed-editor`: fixed header slider + numeric stepper for the
   Full-Body segment under the playhead.
+- `.tl-crane-editor`: card-local time/height graph; the whole graph is a
+  click target for insertion, points have enlarged pointer targets, and
+  vertical drags edit height without moving the Shot block.

@@ -19,7 +19,15 @@
  */
 
 import { POSE_BONES, normalizeBoneName } from "../poses.js";
-import { forwardFrom } from "../controls.jsx";
+
+// yaw/pitch -> unit forward vector for a YXZ-ordered camera. Re-stated as
+// pure math (mirrors forwardFrom() in controls.jsx) so this module stays
+// importable from plain Node for the math test suite — a JSX import here
+// was the reason the exporter could not be tested (issue #61).
+function forwardFrom(yaw, pitch) {
+	const cp = Math.cos(pitch);
+	return { x: -Math.sin(yaw) * cp, y: Math.sin(pitch), z: -Math.cos(yaw) * cp };
+}
 
 /** Wire key for a POSE_BONES entry: the Mixamo name without the `mixamorig`
  * prefix, which is exactly the cskel27 joint name ("mixamorigLeftArm" ->

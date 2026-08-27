@@ -257,7 +257,20 @@ export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCa
 				// exactly, so plan/poser cameras keep their own layer sets.
 				const inkMask = camera.layers.mask;
 				camera.layers.disable(GIZMO_LAYER);
+				// Cutout cards take no ink either: the prepass renders the card's
+				// full rectangle regardless of the picture's alpha, so the outline
+				// used to trace an empty frame around every pasted image — the
+				// "border that will not go away". Hiding the card from the prepass
+				// leaves the wall behind it continuous, so no edge is drawn.
+				const cutouts = [];
+				scene.traverse((node) => {
+					if (node.userData?.cutoutTexture !== undefined && node.visible) {
+						cutouts.push(node);
+						node.visible = false;
+					}
+				});
 				gl.render(scene, camera);
+				for (const node of cutouts) node.visible = true;
 				camera.layers.mask = inkMask;
 				scene.overrideMaterial = null;
 			}

@@ -10,6 +10,7 @@ const NODE_FILES = [
 	"test/ardy/verify-fill.mjs",
 	"test/ardy/verify-fk.mjs",
 	"test/ardy/verify-playback-skinning.mjs",
+	"test/ardy/verify-pose-export.mjs",
 	"test/ardy/verify-pose-pin.mjs",
 	"test/ardy/verify-pose-shape.mjs",
 	"test/ardy/verify-prompt-move.mjs",
@@ -53,6 +54,7 @@ const NODE_FILES = [
 	"test/verify-camera-move.mjs",
 	"test/verify-camera-rail-schedule.mjs",
 	"test/verify-cuts.mjs",
+	"test/verify-error-boundary.mjs",
 	"test/verify-footage-bridge.mjs",
 	"test/verify-g006-css.mjs",
 	"test/verify-hierarchy.mjs",
@@ -107,6 +109,8 @@ const NODE_FILES = [
 	"mcp/verify-prompts.mjs",
 	"mcp/verify-protocol-version.mjs",
 	"mcp/verify-tool-annotations.mjs",
+	"test/verify-object-path.mjs",
+	"test/verify-speed-envelope.mjs",
 ];
 
 const BROWSER_FILES = [

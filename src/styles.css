@@ -42,7 +42,54 @@
 	box-sizing: border-box;
 }
 
-html,
+/* Crash screen for the last-ditch error boundary (issue #63). Scoping this
+   to .crash-screen matters: applying the flex-centering to <html> shrunk the
+   whole app to a 978px centered column on wide windows. */
+.crash-screen {
+	min-height: 100vh;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--bg);
+	font-family: var(--sans);
+	padding: 24px;
+}
+.crash-card {
+	max-width: 440px;
+	background: var(--panel);
+	border: 1px solid var(--line2);
+	border-radius: 10px;
+	padding: 28px;
+	color: var(--fg);
+	text-align: center;
+}
+.crash-card h1 { font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+.crash-card p { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 14px; }
+.crash-card code {
+	display: block;
+	background: var(--card);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	padding: 10px;
+	font-family: var(--mono);
+	font-size: 11px;
+	color: #e08a7a;
+	text-align: left;
+	word-break: break-all;
+	margin-bottom: 18px;
+}
+.crash-card button {
+	background: var(--accent);
+	color: #fff;
+	border: 0;
+	border-radius: 6px;
+	padding: 9px 22px;
+	font-size: 14px;
+	font-weight: 600;
+	cursor: pointer;
+}
+.crash-card button:hover { filter: brightness(1.12); }
+
 body,
 #root {
 	height: 100%;
@@ -1531,6 +1578,65 @@ select {
 	align-items: center;
 }
 
+/* Disclosures that keep a once-in-a-while control out of the permanent
+   furniture: a summary you can read, a panel that opens where it stands. */
+.scene-actions-pop > summary,
+.object-colors-pop > summary {
+	cursor: pointer;
+	list-style: none;
+}
+
+.scene-actions-pop > summary::-webkit-details-marker,
+.object-colors-pop > summary::-webkit-details-marker { display: none; }
+
+.scene-actions-pop > summary {
+	padding: 3px 8px;
+	border: 1px solid rgba(126, 154, 255, .2);
+	border-radius: 6px;
+	color: #9fb0d8;
+	font-size: 11px;
+	width: max-content;
+}
+
+.scene-actions-pop[open] > summary { color: #d7e2ff; }
+.scene-actions-pop .scene-actions { margin-top: 5px; }
+
+/* A closed <details> hides its children by display alone, so any child that
+   sets its own display walks straight back out of the box. */
+.scene-actions-pop:not([open]) .scene-actions,
+.object-colors-pop:not([open]) .object-colors,
+.tl-camera-advanced:not([open]) > label,
+.tl-camera-advanced:not([open]) > button { display: none; }
+
+.object-colors-pop {
+	position: relative;
+	display: inline-block;
+}
+
+.object-colors-pop > summary {
+	display: block;
+	width: 22px;
+	height: 22px;
+	border: 1px solid rgba(255, 255, 255, .28);
+	border-radius: 6px;
+}
+
+.object-colors-pop[open] > summary { outline: 2px solid #7e9aff; outline-offset: 1px; }
+
+.object-colors-pop .object-colors {
+	position: absolute;
+	left: 0;
+	top: 26px;
+	z-index: 20;
+	display: flex;
+	gap: 4px;
+	padding: 5px;
+	border: 1px solid rgba(126, 154, 255, .28);
+	border-radius: 8px;
+	background: #161c2b;
+	box-shadow: 0 8px 18px rgba(0, 0, 0, .45);
+}
+
 .scene-switcher-heading {
 	justify-content: space-between;
 	gap: 8px;
@@ -2780,20 +2886,536 @@ input[type=range]::-moz-range-thumb {
    frames wide. The block itself remains a compact status strip. */
 .tl-camera-editor {
 	flex: none;
-	min-height: 44px;
+	/* One row, always: the bar now owns the curve's actions too, and a bar
+	   that wrapped would take its extra height straight out of the lanes. */
+	min-height: 30px;
+	max-height: 34px;
+	flex-wrap: nowrap;
 	display: flex;
 	align-items: center;
 	gap: 7px;
-	padding: 4px 10px;
+	padding: 3px 10px;
 	overflow-x: auto;
+	overflow-y: hidden;
 	background: #201c28;
 	border-bottom: 1px solid rgba(154, 123, 212, .38);
 	color: #d9d2e7;
 	font-size: 10px;
 }
 
+/* A prop's travel loads into the strip in place of the performer's lanes, so
+   it uses the same track grid and wears the route's green to say whose row
+   this is. These rows carry controls rather than clips, so they set their own
+   sizing: the camera bar's input rules do not reach inside a lane. */
+.tl-track.objmo.sg-row .tl-track-label {
+	align-items: flex-start;
+	padding-top: 8px;
+}
+
+.tl-track.objmo .tl-track-label {
+	color: #9fe0bb;
+	gap: 6px;
+	/* A pasted-image prop is named after its file and runs long; clip it with
+	   an ellipsis instead of letting it collide with the lane edge. */
+	min-width: 0;
+}
+
+.tl-track.objmo .tl-track-label .objmo-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tl-track.objmo .tl-lane {
+	background: #151d19;
+	border-bottom: 1px solid rgba(111, 207, 151, .16);
+}
+
+.objmo-tools {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+	padding: 5px 8px;
+	color: #d3e7dc;
+	font-size: 10px;
+}
+
+/* Speed reads as one unit: the word, the slider, the value — no drifting. */
+.objmo-speed {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 0 8px 0 6px;
+	border: 1px solid rgba(111, 207, 151, .24);
+	border-radius: 4px;
+	background: #101714;
+	white-space: nowrap;
+}
+
+/* The track must be drawn, not inherited: a transparent range on a dark lane
+   renders as a lone floating thumb that reads as a broken control. */
+.objmo-speed input[type="range"] {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 96px;
+	height: 16px;
+	margin: 0;
+	background: transparent;
+	cursor: pointer;
+}
+
+.objmo-speed input[type="range"]::-webkit-slider-runnable-track {
+	height: 4px;
+	border-radius: 2px;
+	background: rgba(111, 207, 151, .28);
+}
+
+.objmo-speed input[type="range"]::-moz-range-track {
+	height: 4px;
+	border-radius: 2px;
+	background: rgba(111, 207, 151, .28);
+}
+
+.objmo-speed input[type="range"]::-webkit-slider-thumb {
+	-webkit-appearance: none;
+	appearance: none;
+	width: 11px;
+	height: 11px;
+	margin-top: -3.5px;
+	border: 0;
+	border-radius: 50%;
+	background: #6fcf97;
+}
+
+.objmo-speed input[type="range"]::-moz-range-thumb {
+	width: 11px;
+	height: 11px;
+	border: 0;
+	border-radius: 50%;
+	background: #6fcf97;
+}
+
+.objmo-speed input[type="range"]:focus-visible { outline: 1px solid #6fcf97; outline-offset: 2px; }
+
+.objmo-speed .objmo-speed-value {
+	min-width: 46px;
+	color: #9fe0bb;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+}
+
+.objmo-tools .tl-camera-tool.active {
+	background: #2f6b4d;
+	border-color: #6fcf97;
+	color: #eafff3;
+}
+
+.tl-path-hint {
+	margin-left: auto;
+	color: #7fae95;
+	font-size: 9px;
+	white-space: nowrap;
+}
+
+/* Filling the take is the default, so it whispers rather than shouts. */
+/* The speed editor: a real instrument — header with facts and actions above,
+   a graph with a zero line and an average line below. */
+.tl-track.sg-row .tl-lane { height: 118px; overflow: hidden; }
+
+.sg {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.sg-head {
+	flex: none;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 5px 10px 4px;
+	font-size: 11px;
+	color: #9fe0bb;
+}
+
+.sg-head .sg-facts { font-variant-numeric: tabular-nums; }
+
+.sg-head .tl-path-hint {
+	margin-left: 0;
+	opacity: .8;
+}
+
+.sg-head .tl-camera-tool {
+	margin-left: auto;
+	padding: 3px 10px;
+	font-size: 10px;
+}
+
+.sg-head .tl-camera-tool + .tl-camera-tool { margin-left: 0; }
+
+.sg-body {
+	position: relative;
+	flex: 1;
+	/* The header's height must never eat the graph: the panel row is a fixed
+	   lane, so the body carries its own floor and the header can wrap. */
+	min-height: 88px;
+	margin: 0 8px 6px;
+	border: 1px solid rgba(111, 207, 151, .22);
+	border-radius: 5px;
+	background: #0d1411;
+	overflow: hidden;
+}
+
+.sg-body svg {
+	width: 100%;
+	height: 100%;
+	display: block;
+	cursor: crosshair;
+	touch-action: none;
+}
+
+.sg-axis {
+	stroke: rgba(159, 224, 187, .35);
+	stroke-width: 1;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-average {
+	stroke: rgba(159, 224, 187, .38);
+	stroke-width: 1;
+	stroke-dasharray: 4 3;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-outside { fill: rgba(255, 255, 255, .05); }
+
+.sg-fill { fill: url(#sg-fade); }
+
+.sg .sg-line {
+	fill: none;
+	stroke: #6fcf97;
+	stroke-width: 2;
+	stroke-linejoin: round;
+	stroke-linecap: round;
+	vector-effect: non-scaling-stroke;
+}
+
+/* The camera's copy wears the rail's colour. */
+.sg-cam .sg-head { color: #cbb8ef; }
+.sg-cam .sg-body { border-color: rgba(154, 123, 212, .3); background: #120f17; }
+.sg-cam .sg-line { stroke: #b9a1e8; }
+.sg-cam .sg-axis, .sg-cam .sg-average { stroke: rgba(185, 161, 232, .4); }
+
+.sg-cut {
+	stroke: #ffb454;
+	stroke-width: 1;
+	stroke-dasharray: 3 3;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-cut-diamond { fill: #ffb454; }
+
+.sg-pin.selected .sg-cut-diamond { fill: #ffd08a; }
+.sg-pin.selected .sg-cut { stroke-width: 2; stroke-dasharray: none; }
+
+.sg-cut-pick {
+	stroke: transparent;
+	stroke-width: 10;
+	vector-effect: non-scaling-stroke;
+	cursor: pointer;
+	/* a transparent stroke is not "painted", so the default hit-test would
+	   never catch it — hit the stroke geometry instead */
+	pointer-events: stroke;
+}
+
+.sg-playhead {
+	stroke: #ffb454;
+	stroke-width: 1;
+	vector-effect: non-scaling-stroke;
+	opacity: .55;
+	pointer-events: none;
+}
+
+.sg-scale-top, .sg-scale-avg, .sg-scale-zero {
+	position: absolute;
+	right: 8px;
+	color: #5f7a6d;
+	font-size: 9px;
+	font-variant-numeric: tabular-nums;
+	pointer-events: none;
+}
+
+.sg-scale-top { top: 3px; }
+.sg-scale-avg { transform: translateY(-100%); padding-bottom: 2px; }
+.sg-scale-zero { bottom: 3px; }
+.sg-cam .sg-scale-top, .sg-cam .sg-scale-avg, .sg-cam .sg-scale-zero { color: #7d6a9e; }
+
+.sg-readout {
+	position: absolute;
+	top: 3px;
+	transform: translateX(-50%);
+	padding: 1px 6px;
+	border-radius: 3px;
+	background: #2f6b4d;
+	color: #eafff3;
+	font-size: 9px;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	pointer-events: none;
+}
+.sg-cam .sg-readout { background: #4a3d6e; }
+
+/* The dolly's curve sits INSIDE its shot card, in the cell the card already
+   has: between the title row and the Rail Follow ribbon. The Shots lane keeps
+   its standard height — the graph never asks the gray panel for more room.
+   The full instrument (header, Cut/Reset buttons) lives on the prop strip;
+   the card carries the compact curve and its gestures (drag shapes,
+   double-click cuts, Delete removes — discoverable via the hover tooltip). */
+/* The Shot box IS the graph. It already spans exactly the shot's frames, so
+   the curve needs no clock, no header and no labels of its own — the box's
+   own width is the time axis. Everything you DO to the curve (switch, cut,
+   reset, remove) lives in the camera bar above, which leaves the box holding
+   one line and its points. */
+.sg-shot {
+	position: absolute;
+	left: 4px;
+	right: 4px;
+	top: 18px;
+	bottom: 2px;
+	pointer-events: auto;
+	z-index: 1;
+}
+
+.sg-shot .sg-bare { position: absolute; inset: 0; }
+
+/* The title row rides over the curve's top edge; a slim scrim keeps the
+   words legible without giving the curve a header of its own. */
+/* Crane height is a full instrument in the strip, the twin of the speed
+   graph: time across, metres up, the same axis labels and readout. */
+.tl-crane-editor {
+	position: absolute;
+	inset: 0;
+	pointer-events: auto;
+}
+
+.cam-mode-switch {
+	flex: none;
+	display: flex;
+	gap: 2px;
+}
+
+
+.tl-crane-editor-svg {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	overflow: visible;
+	cursor: crosshair;
+	touch-action: none;
+}
+
+.tl-crane-editor-hit {
+	fill: transparent;
+	pointer-events: all;
+}
+
+.tl-crane-grid {
+	stroke: rgba(185, 161, 232, .28);
+	stroke-width: 1;
+	stroke-dasharray: 3 3;
+	vector-effect: non-scaling-stroke;
+	pointer-events: none;
+}
+
+.tl-crane-fill {
+	fill: rgba(154, 123, 212, .16);
+	pointer-events: none;
+}
+
+.tl-crane-line {
+	fill: none;
+	stroke: #b9a1e8;
+	stroke-width: 1.6;
+	vector-effect: non-scaling-stroke;
+	pointer-events: none;
+}
+
+.tl-crane-time-pick {
+	stroke: rgba(167, 139, 250, .38);
+	stroke-width: 1;
+	vector-effect: non-scaling-stroke;
+	pointer-events: none;
+}
+
+.tl-crane-time-pick.selected {
+	stroke: rgba(255, 180, 84, .85);
+}
+
+/* A lens height is aimed at with the wrist: the knob is a real target, and
+   the whole graph accepts the drag once it is taken. */
+.tl-crane-knob {
+	box-sizing: border-box;
+	position: absolute;
+	width: 15px;
+	height: 15px;
+	padding: 0;
+	transform: translate(-50%, -50%);
+	border: 2px solid #211b31;
+	border-radius: 50%;
+	background: #a78bfa;
+	box-shadow: 0 0 0 1px rgba(203, 183, 255, .5), 0 0 10px rgba(167, 139, 250, .55);
+	cursor: ns-resize;
+	z-index: 4;
+}
+
+.tl-crane-knob:hover,
+.tl-crane-knob:focus-visible {
+	outline: 2px solid #fff;
+	outline-offset: 1px;
+}
+
+.tl-crane-knob.selected {
+	background: #ffb454;
+	border-color: #40270f;
+	box-shadow: 0 0 0 1px #ffe0a8, 0 0 12px rgba(255, 180, 84, .9);
+}
+
+.tl-shot-block.has-dolly .tl-shot-title,
+.tl-shot-block.has-dolly .tl-shot-meta {
+	position: relative;
+	z-index: 2;
+	text-shadow: 0 1px 2px rgba(0, 0, 0, .8);
+}
+
+.sg-shot .sg-body {
+	min-height: 0;
+	margin: 0;
+	border: 0;
+	background: transparent;
+}
+
+/* A rail Shot reads as one violet instrument rather than a card with a
+   picture glued on: the box carries the curve's own colour. */
+.tl-shot-block.has-dolly .tl-shot-label {
+	z-index: 2;
+	position: relative;
+}
+
+.tl-shot-block.has-dolly .tl-shot-label b,
+.tl-shot-block.has-dolly .tl-shot-label small {
+	background: transparent;
+	text-shadow: 0 1px 3px rgba(12, 8, 22, .95);
+}
+
+.sg-shot .sg-line { stroke: #b9a1e8; }
+.sg-shot .sg-axis, .sg-shot .sg-average { stroke: rgba(185, 161, 232, .4); }
+.sg-shot .sg-readout { background: #4a3d6e; }
+.sg-shot .sg-scale-top, .sg-shot .sg-scale-avg, .sg-shot .sg-scale-zero { color: #7d6a9e; }
+
+
+
+/* Filling the take is the default, so it whispers rather than shouts. */
+/* The speed graph: a real editing surface, so it gets real height. */
+.sg-cam .sg-line { stroke: #b9a1e8; }
+.sg-cam .sg-fill { fill: rgba(154, 123, 212, .18); }
+.sg-cam .sg-average { stroke: rgba(185, 161, 232, .3); }
+.sg-cam .tl-track-label { color: #cbb8ef; }
+
+
+.sg-fill { fill: rgba(111, 207, 151, .18); }
+
+.sg-line {
+	fill: none;
+	stroke: #6fcf97;
+	stroke-width: 1.6;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-average {
+	stroke: rgba(159, 224, 187, .3);
+	stroke-width: 1;
+	stroke-dasharray: 3 3;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-outside { fill: rgba(255, 255, 255, .04); }
+
+.sg-cut {
+	stroke: #ffb454;
+	stroke-width: 1.2;
+	vector-effect: non-scaling-stroke;
+}
+
+.sg-cut.selected { stroke-width: 2.4; }
+
+.sg-cut-pick {
+	stroke: transparent;
+	stroke-width: 10;
+	vector-effect: non-scaling-stroke;
+	cursor: pointer;
+	/* a transparent stroke is not "painted", so the default visiblePainted
+	   hit-test would never catch it — hit the stroke geometry instead */
+	pointer-events: stroke;
+}
+
+.sg-playhead {
+	stroke: #ffb454;
+	stroke-width: 1;
+	vector-effect: non-scaling-stroke;
+	opacity: .7;
+	pointer-events: none;
+}
+
+.sg-scale-top,
+.sg-scale-avg {
+	position: absolute;
+	left: 4px;
+	color: #7fae95;
+	font-size: 8px;
+	pointer-events: none;
+}
+
+.sg-scale-top { top: 2px; }
+.sg-scale-avg { transform: translateY(-100%); }
+
+.sg-readout {
+	position: absolute;
+	top: 2px;
+	transform: translateX(-50%);
+	padding: 1px 5px;
+	border-radius: 3px;
+	background: #2f6b4d;
+	color: #eafff3;
+	font-size: 9px;
+	white-space: nowrap;
+	pointer-events: none;
+}
+
+.tl-subject-kind {
+	display: inline-block;
+	margin-right: 6px;
+	padding: 1px 5px;
+	border-radius: 3px;
+	background: rgba(154, 123, 212, .22);
+	color: #cbb8ef;
+	font-size: 8px;
+	font-weight: 700;
+	letter-spacing: .08em;
+	vertical-align: 1px;
+}
+
+.tl-object-editor .tl-subject-kind {
+	background: rgba(111, 207, 151, .2);
+	color: #9fe0bb;
+}
+
 .tl-camera-editor-title {
-	max-width: 92px;
+	display: flex;
+	align-items: center;
+	max-width: 148px;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -3078,6 +3700,7 @@ input[type=range]::-moz-range-thumb {
 }
 
 .tl-body {
+	overflow-y: auto;
 	position: relative;
 	flex: 1;
 	/* Ruler + three utility tracks + the unified Shot track. Camera controls
@@ -3085,10 +3708,10 @@ input[type=range]::-moz-range-thumb {
 	min-height: 156px;
 	--tl-label-w: 148px;
 	/* The zoomed time surface scrolls horizontally inside the timeline; the
-	   page itself never overflows. Vertical stays clipped so only the x axis
-	   ever scrolls. */
+	   page itself never overflows. Vertical scrolls too, because the speed
+	   graph is taller than a clip lane by design. */
 	overflow-x: auto;
-	overflow-y: hidden;
+	overflow-y: auto;
 }
 
 /* The zoomed time surface: every time-coordinate surface (ruler lane, lane
@@ -3097,13 +3720,16 @@ input[type=range]::-moz-range-thumb {
    --tl-label-w and never scales. */
 .tl-surface {
 	position: relative;
-	height: 100%;
 	width: calc(var(--tl-label-w) + (100% - var(--tl-label-w)) * var(--tl-zoom));
+	/* The surface takes the body's height instead of its own content's, so the
+	   performer rows give way and the Shot row — which carries the curve you
+	   are editing — is never the row that falls off the bottom. */
+	height: 100%;
+	min-height: 0;
 	display: grid;
-	/* The unified Shot row carries title, optional Rail ribbon and key strip.
-	   Give that one row real working height instead of squeezing all four
-	   tracks equally when the camera mini editor is open. */
-	grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr);
+	/* Performer rows share the room evenly; the Shot row carries the title,
+	   the curve and the key strip, so it gets real height and keeps it. */
+	grid-template-rows: 28px repeat(3, minmax(18px, 1fr)) minmax(68px, 1.7fr) auto;
 }
 
 .tl-ruler {
@@ -3491,6 +4117,14 @@ input[type=range]::-moz-range-thumb {
 	box-shadow: inset 0 0 0 1px rgba(201, 181, 244, .45), 0 0 8px rgba(154, 123, 212, .32);
 }
 
+/* A rail Shot IS its curve, so the whole box carries the curve's violet —
+   including while it is the active shot, whose amber belongs to the edges. */
+.tl-shot-block.has-dolly,
+.tl-shot-block.has-dolly.active {
+	background: linear-gradient(180deg, rgba(88, 66, 136, .96) 0%, rgba(52, 39, 84, .96) 100%);
+	border-color: #a78bfa;
+}
+
 .tl-shot-block.moving {
 	opacity: .72;
 	cursor: grabbing;
@@ -3675,53 +4309,6 @@ input[type=range]::-moz-range-thumb {
 .tl-lane.cam {
 	cursor: crosshair;
 }
-/* Rail Follow is a sub-clip inside its owning Shot block. It shares the same
-   lane and card as keys instead of rebuilding the removed Camera lane. */
-.tl-rail {
-	box-sizing: border-box;
-	position: absolute;
-	top: auto;
-	bottom: 13px;
-	height: 14px;
-	left: calc(var(--tl-f-start) * 100%);
-	width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);
-	/* Above the full-height shot trim handles only within this 12px band, so
-	   a full-range Rail clip can still grab its own start/end handles. */
-	z-index: 4;
-	/* The empty band falls through to the lane's key-on-click; only the three
-	   controls are hit targets. */
-	pointer-events: none;
-}
-.tl-rail-handle,
-.tl-rail-body {
-	pointer-events: auto;
-	touch-action: none;
-}
-.tl-rail-body {
-	position: absolute;
-	top: 0;
-	bottom: 0;
-	left: 8px;
-	right: 8px;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: 5px;
-	padding: 0 6px;
-	border: 0;
-	border-radius: 4px;
-	background: linear-gradient(103deg, #7c5cbf, #a78bfa);
-	color: #fff;
-	font-size: 9px;
-	font-weight: 700;
-	letter-spacing: .06em;
-	text-transform: uppercase;
-	white-space: nowrap;
-	overflow: hidden;
-	cursor: grab;
-	box-shadow: 0 0 8px rgba(167, 139, 250, .45);
-}
-
 @container (max-width: 320px) {
 	.tl-shot-camera-summary > small,
 	.tl-camera-block-state {
@@ -3734,62 +4321,18 @@ input[type=range]::-moz-range-thumb {
 		display: none;
 	}
 }
-.tl-rail-body:hover { filter: brightness(1.1); }
-.tl-rail-body:active { cursor: grabbing; }
-.tl-rail-handle {
-	position: absolute;
-	top: 0;
-	bottom: 0;
-	width: 8px;
-	padding: 0;
-	border: 0;
-	border-radius: 3px;
-	background: rgba(255, 255, 255, .28);
-	cursor: ew-resize;
-	z-index: 2;
-}
-.tl-rail-handle.start { left: 0; }
-.tl-rail-handle.end { right: 0; }
-.tl-rail.selected .tl-rail-body {
-	outline: 1px solid #cbb7ff;
-	box-shadow: 0 0 12px rgba(167, 139, 250, .7);
-}
-.tl-rail.off { opacity: .62; }
-.tl-rail.off .tl-rail-body {
-	background: linear-gradient(103deg, #3b3f4d, #4a4f5e);
-	box-shadow: none;
-}
-.tl-rail-body:focus-visible,
-.tl-rail-handle:focus-visible {
-	outline: 2px solid #fff;
-	outline-offset: 1px;
-}
-.tl-rail-progress {
-	position: absolute;
-	top: -2px;
-	bottom: -2px;
-	left: calc(var(--tl-rail-p) * 100%);
-	width: 2px;
-	background: #ffe9a8;
-	box-shadow: 0 0 6px rgba(255, 233, 168, .9);
-	pointer-events: none;
-	z-index: 3;
-}
-
 .tl-crane-point {
 	box-sizing: border-box;
 	position: absolute;
-	bottom: -13px;
-	left: clamp(7px, calc(var(--tl-crane-p) * 100%), calc(100% - 7px));
-	width: 12px;
-	height: 12px;
+	width: 18px;
+	height: 18px;
 	padding: 0;
 	transform: translate(-50%, -50%);
 	border: 2px solid #211b31;
 	border-radius: 50%;
 	background: #a78bfa;
 	box-shadow: 0 0 0 1px rgba(203, 183, 255, .65), 0 0 8px rgba(167, 139, 250, .9);
-	cursor: pointer;
+	cursor: ns-resize;
 	pointer-events: auto;
 	z-index: 5;
 }
@@ -5812,19 +6355,10 @@ input[type=range]::-moz-range-thumb {
 	display: none !important;
 }
 
-/* The saved splitter height describes the lane workspace. Selecting a camera
-   adds its toolbar above that workspace; opening Advanced adds one more row.
-   Grow the bottom window instead of borrowing pixels from the Shot lane. */
-@media (min-width: 1041px) {
-	.timeline:not(.collapsed):has(.tl-camera-editor) {
-		height: max(calc(var(--timeline-height) + 12px), 234px);
-		max-height: none;
-	}
-
-	.timeline:not(.collapsed):has(.tl-camera-advanced[open]) {
-		height: max(calc(var(--timeline-height) + 48px), 270px);
-	}
-}
+/* The bottom window never grows. Selecting a camera (or drawing a rail, or a
+   prop path) loads extra rows into the SAME fixed height — the lane workspace
+   scrolls internally instead of pushing the whole window taller and dropping
+   the transport out from under the hand. */
 
 .console-pane {
 	height: var(--timeline-height);
@@ -6225,6 +6759,21 @@ input[type=range]::-moz-range-thumb {
 .asset-card-skeleton {
 	animation: asset-skeleton 1.1s ease-in-out infinite alternate;
 }
+
+/* Inline button rows in the inspector (travel-path tools, mode toggles). */
+.inspector-row-buttons .btn {
+	flex: 1 1 auto;
+	min-width: 84px;
+}
+
+/* A card whose bytes failed to decode: visible so it can be deleted from
+   Manage storage, clearly marked so nobody drags a broken image on stage. */
+.asset-card-failed {
+	opacity: .72;
+	border-color: #8a4a3a !important;
+	cursor: not-allowed;
+}
+.asset-card-failed .asset-card-kind { color: #e08a7a; }
 
 .asset-card-skeleton {
 	min-width: 0;
@@ -8193,7 +8742,9 @@ input[type=range] {
 	   own ground, so the picture sits ON it and nothing outside the canvas can
 	   crop the picture once it is zoomed past fit. */
 	width: 100%;
-	height: 240px;
+	/* 240px was a letterbox; cutting a person out of a photo deserves more
+	   working room without leaving the inspector's flow. */
+	height: 340px;
 	background: #141819;
 	border: 1px solid var(--line);
 	border-radius: 3px;

@@ -1,3 +1,5 @@
+import { createTiming, timingIsFlat } from "./speed-envelope.js";
+
 // Pure Camera Block model. A shot owns one complete camera instruction, like
 // the camera card clipped to a single strip of film.
 
@@ -60,12 +62,26 @@ function cloneRailFollow(value) {
 /** Build a complete block from a partial or stored camera value. */
 export function createCameraBlock(input = {}) {
 	const value = input && typeof input === "object" ? input : {};
+	const mode = CAMERA_MODES.includes(value.mode) ? value.mode : "keys";
+	const followCam = { ...CAMERA_FOLLOW_DEFAULTS, ...(value.followCam ?? {}) };
+	const cameraRail = cloneRail(value.cameraRail);
+	// The crane is always on for a rail: a stored null (older projects, an
+	// explicit "off" patch) normalizes to the flat two-mark profile at the
+	// follow height, which is exactly what "no crane" rendered as.
+	const craneHeight = cloneCraneHeight(value.craneHeight)
+		?? (mode === "rail" && cameraRail
+			? { points: [{ t: 0, height: followCam.height }, { t: 1, height: followCam.height }] }
+			: null);
+	// The dolly's speed curve along the rail — same grammar as a prop path's
+	// timing. Flat heals to null so untouched shots stay byte-stable.
+	const dollyTiming = createTiming(value.dollyTiming);
 	return {
-		mode: CAMERA_MODES.includes(value.mode) ? value.mode : "keys",
-		followCam: { ...CAMERA_FOLLOW_DEFAULTS, ...(value.followCam ?? {}) },
-		cameraRail: cloneRail(value.cameraRail),
+		mode,
+		followCam,
+		cameraRail,
 		railFollow: cloneRailFollow(value.railFollow),
-		craneHeight: cloneCraneHeight(value.craneHeight),
+		craneHeight,
+		dollyTiming: timingIsFlat(dollyTiming) ? null : dollyTiming,
 	};
 }
 
@@ -87,6 +103,7 @@ export function updateCameraBlock(camera, patch = {}) {
 		cameraRail: Object.hasOwn(change, "cameraRail") ? change.cameraRail : current.cameraRail,
 		railFollow: Object.hasOwn(change, "railFollow") ? change.railFollow : current.railFollow,
 		craneHeight: Object.hasOwn(change, "craneHeight") ? change.craneHeight : current.craneHeight,
+		dollyTiming: Object.hasOwn(change, "dollyTiming") ? change.dollyTiming : current.dollyTiming,
 	});
 }
 

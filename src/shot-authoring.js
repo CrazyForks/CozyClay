@@ -4,6 +4,7 @@
  * future bytes are left in place for the newer app that understands them.
  */
 
+import { createTiming, timingIsFlat } from "./speed-envelope.js";
 import { createShot } from "./cuts.js";
 import { normalizeStableItems } from "./stable-items.js";
 
@@ -221,7 +222,15 @@ function repairCamera(value) {
 		railFollow: repairRailFollow(source.railFollow),
 		// A crane cannot outlive the rail it rides.
 		craneHeight: cameraRail ? repairCraneHeight(source.craneHeight) : null,
+		// The dolly's speed curve rides the rail the same way; the envelope
+		// module owns its repair (parse-don't-validate, flat heals to null).
+		dollyTiming: cameraRail ? repairDollyTiming(source.dollyTiming) : null,
 	};
+}
+
+function repairDollyTiming(value) {
+	const timing = createTiming(value);
+	return timingIsFlat(timing) ? null : timing;
 }
 
 function migratedCamera(followCam, cameraRail, railFollow = null) {

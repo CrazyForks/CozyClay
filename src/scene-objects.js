@@ -18,6 +18,7 @@
  */
 
 import { Euler, Quaternion } from "three";
+import { createObjectPath, translateObjectPath } from "./object-path.js";
 
 export const DEFAULT_SCENE_OBJECTS = [];
 /** The persistence contract (plan §8.1): the version lives in the key AND in
@@ -35,6 +36,7 @@ const DEG = Math.PI / 180;
  * open 500 m deck now, so the clamp is a guard against runaway coordinates,
  * not a wall — it stops just inside the floor's edge. */
 const ROOM_LIMIT = 240;
+
 // Headroom, not a ceiling: the walls (and the 6.2 m room they implied) are
 // gone, so this only stops a runaway coordinate. A rocket, a crane or a
 // skyline piece all have to fit under it.
@@ -180,6 +182,9 @@ export function createSceneObject(kind, existing = [], placement = {}) {
 		scaleX: 1,
 		scaleY: 1,
 		scaleZ: 1,
+		// A travel path, drawn on the Top-View floor and refined in the scene.
+		// null means the object stands where it was placed.
+		path: null,
 		color: entry.color,
 		parent: null,
 		footprint: { ...entry.footprint },
@@ -227,6 +232,7 @@ export function createCutoutObject({ assetId, aspect = 1, height = CUTOUT_DEFAUL
 		scaleX: 1,
 		scaleY: 1,
 		scaleZ: 1,
+		path: null,
 		color: CUTOUT_TINT,
 		parent: null,
 		// Key order matches what `normalizeSceneObject` writes, so a record
@@ -326,10 +332,18 @@ export function updateSceneObject(objects, id, patch) {
 		if (object.id !== id) {
 			if (!shifts || !moving.has(object.id)) return object;
 			const update = {};
+			const carriedDelta = { x: 0, y: 0, z: 0 };
 			for (const axis of ["x", "y", "z"]) {
 				if (!delta[axis]) continue;
 				const bounded = TRANSFORM_LIMITS[axis](object[axis] + delta[axis]);
-				if (bounded !== object[axis]) update[axis] = bounded;
+				if (bounded === object[axis]) continue;
+				update[axis] = bounded;
+				carriedDelta[axis] = bounded - object[axis];
+			}
+			// A carried child takes its route along too, or the group would move
+			// while the child stayed nailed to its old route.
+			if (object.path && (carriedDelta.x || carriedDelta.y || carriedDelta.z)) {
+				update.path = translateObjectPath(object.path, carriedDelta);
 			}
 			if (!Object.keys(update).length) return object;
 			changed = true;
@@ -347,6 +361,20 @@ export function updateSceneObject(objects, id, patch) {
 		for (const key of ["name", "color"]) {
 			if (typeof patch[key] !== "string" || !patch[key] || patch[key] === object[key]) continue;
 			update[key] = patch[key];
+		}
+		// The travel path is authored geometry, not a bounded transform: it is
+		// normalized by createObjectPath (which repairs or refuses it) and set
+		// wholesale, with null clearing it back to a standing object.
+		if (patch.path !== undefined) {
+			const next = patch.path === null ? null : createObjectPath(patch.path);
+			if (JSON.stringify(next ?? null) !== JSON.stringify(object.path ?? null)) update.path = next;
+		} else if (object.path && shifts) {
+			// Moving a prop that owns a route moves the route with it. Playback
+			// places a routed prop FROM its route, so without this the card sits
+			// exactly where it was while the inspector reports the new position —
+			// a drag that changes numbers and nothing on screen.
+			const moved = translateObjectPath(object.path, delta);
+			if (JSON.stringify(moved ?? null) !== JSON.stringify(object.path ?? null)) update.path = moved;
 		}
 		// A cutout is sized in metres — you measure something in the picture and
 		// type its height — so `height` and `aspect` are writable where every
@@ -472,6 +500,9 @@ export function normalizeSceneObject(record) {
 		scaleX: TRANSFORM_LIMITS.scaleX(pick(record.scaleX, scaleFallback)),
 		scaleY: TRANSFORM_LIMITS.scaleY(pick(record.scaleY, scaleFallback)),
 		scaleZ: TRANSFORM_LIMITS.scaleZ(pick(record.scaleZ, scaleFallback)),
+		// A stored travel path is repaired by its own schema; anything that
+		// cannot describe travel normalizes back to a standing object.
+		path: createObjectPath(record.path),
 		color: typeof record.color === "string" && record.color ? record.color : entry.color,
 		// Group membership. null is a top-level object; the id of another object
 		// makes this one ride along when that object moves.

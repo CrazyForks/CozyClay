@@ -9,7 +9,9 @@
  * the 1.8 m figure keeps honest scale.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useFrame } from "@react-three/fiber";
+import { objectTransformAt } from "./object-path.js";
 import * as THREE from "three";
 import { GIZMO_LAYER } from "./dualview.jsx";
 import { CUTOUT_KIND } from "./scene-objects.js";
@@ -341,9 +343,28 @@ function SelectionBox({ object }) {
 
 const DEG = Math.PI / 180;
 
-function SceneObject({ object, selected }) {
+function SceneObject({ object, selected, frameRef = null, take = null }) {
+	const groupRef = useRef(null);
+	// An object on a travel path is placed imperatively from the frame ref, not
+	// from React state: the offscreen export advances frames without a
+	// re-render, and a prop that only moved on re-render would freeze in the
+	// recording while the preview animated.
+	useFrame(() => {
+		const group = groupRef.current;
+		if (!group || !frameRef || !object.path) return;
+		const at = objectTransformAt(object, frameRef.current ?? 0, take ?? {});
+		if (!at) return;
+		group.position.set(at.x, at.y, at.z);
+		if (at.rot !== null) group.rotation.y = at.rot * DEG;
+		// QA hook: headless checks read the ANIMATED position here, because the
+		// store only knows the authored one. Harmless in normal use.
+		if (typeof window !== "undefined") {
+			(window.__cclayPropWorld ??= {})[object.id] = { x: at.x, y: at.y, z: at.z, frame: frameRef.current ?? 0 };
+		}
+	});
 	return (
 		<group
+			ref={groupRef}
 			position={[object.x, object.y ?? 0, object.z]}
 			rotation={[(object.rotX ?? 0) * DEG, object.rot * DEG, (object.rotZ ?? 0) * DEG]}
 			scale={[object.scaleX ?? 1, object.scaleY ?? 1, object.scaleZ ?? 1]}
@@ -357,11 +378,17 @@ function SceneObject({ object, selected }) {
 }
 
 /** User-added scene objects, all driven by the shared object registry. */
-export function SetProps({ objects = [], selectedId = null }) {
+export function SetProps({ objects = [], selectedId = null, frameRef = null, take = null }) {
 	return (
 		<group>
 			{objects.map((object) => (
-				<SceneObject key={object.id} object={object} selected={object.id === selectedId} />
+				<SceneObject
+					key={object.id}
+					object={object}
+					selected={object.id === selectedId}
+					frameRef={object.path ? frameRef : null}
+					take={take}
+				/>
 			))}
 		</group>
 	);

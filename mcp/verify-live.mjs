@@ -127,7 +127,7 @@ try {
 		if (!condition) throw new Error(message);
 	};
 
-	assert((await call("live_status")).includes("Live editor connected. Workspace handles:"), "live_status did not report the editor connection");
+	assert((await call("live_status")).includes("Live editor connected. Workspaces:"), "live_status did not report the editor connection");
 	await call("set_camera", { x: 3.25, y: 2, z: 6, focal_mm: 50 });
 	assert(commands.some(({ name, args }) => name === "set_camera" && args.x === 3.25 && args.focalMm === 50), "set_camera was not forwarded");
 	const added = await call("add_character", { subject: "an x-bot performer", model: "x-bot-tpose" });

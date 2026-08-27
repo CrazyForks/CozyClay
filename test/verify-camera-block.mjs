@@ -45,9 +45,15 @@ const ok = (name, cond, detail = "") => {
 	const base = createCameraBlock({ mode: "rail", cameraRail: [{ x: 0, z: 0 }, { x: 4, z: 0 }] });
 	const marks = { points: [{ t: 0, height: 3 }, { t: 1, height: 1.2 }] };
 	const craned = updateCameraBlock(base, { craneHeight: marks });
+	ok("a rail block is craned by default (flat at the follow height)", base.craneHeight?.points.length === 2 && base.craneHeight.points.every((point) => point.height === base.followCam.height));
 	ok("updateCameraBlock round-trips a crane patch", craned.craneHeight?.points[0].height === 3 && craned.craneHeight?.points[1].height === 1.2);
 	ok("unrelated patches keep the crane", updateCameraBlock(craned, { mode: "rail" }).craneHeight?.points[1].height === 1.2);
-	ok("an explicit null patch levels the crane", updateCameraBlock(craned, { craneHeight: null }).craneHeight === null);
+	ok("an explicit null patch levels the crane", (() => {
+		// The crane is always on for a rail: null normalizes back to the flat
+		// profile at the follow height, which is what "no crane" rendered as.
+		const leveled = updateCameraBlock(craned, { craneHeight: null }).craneHeight;
+		return leveled?.points.length === 2 && leveled.points.every((point) => point.height === craned.followCam.height);
+	})());
 	ok("deleting the rail deletes its crane", removeCameraRail(craned).craneHeight === null);
 	ok("blocks never share crane objects", (() => {
 		const clone = createCameraBlock(craned);

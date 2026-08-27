@@ -14,6 +14,7 @@ export const HIERARCHY_NODES = [
 		kind: "scene",
 		children: [
 			{ id: "camera", label: "Camera", kind: "camera" },
+			{ id: "light", label: "Light", kind: "light" },
 			{
 				id: "characters",
 				label: "Characters",

@@ -1,3 +1,5 @@
+import { timingProgress } from "./speed-envelope.js";
+
 /**
  * Follow camera: a real crew in three pieces of math.
  *
@@ -448,7 +450,12 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 	const aimOmega = omegaFor(p.aimResponse);
 	const step = Math.max(rail.length / Math.max(rail.points.length - 1, 1), 1e-3);
 	const authoredSpeed = subject.length > 1 ? rail.length / ((subject.length - 1) * dt) : 0;
-	const progressLead = (2 * authoredSpeed) / omega;
+	// A critically damped spring trails a constant-speed target by 2v/omega —
+	// which is exactly a 2/omega-second head start. Leading in TIME instead of
+	// metres keeps the compensation honest under a speed envelope: where the
+	// schedule runs fast the lead covers more rail, where it holds it covers
+	// none, and for the flat schedule it reduces to the old 2v/omega metres.
+	const leadFraction = subject.length > 1 ? (2 / omega) / ((subject.length - 1) * dt) : 0;
 
 	// The crane axis: lens height follows the dolly's own arc progress, so the
 	// height always matches where the camera physically is on the track — a
@@ -500,16 +507,19 @@ export function buildRailFollowTrack(subject, fps, rail, params = {}) {
 	for (let f = 0; f < subject.length; f += 1) {
 		if (f > 0) {
 			const progress = f / Math.max(subject.length - 1, 1);
-			const authoredS = rail.length * progress;
+			// The dolly's schedule is the same speed-envelope grammar the prop
+			// path uses: progress through time is shaped by the timing, the
+			// area is the rail length, and a cut pins "at this frame, be at
+			// this point of the rail". Null timing is the identity — the
+			// constant-speed schedule this line always was.
+			const authoredS = rail.length * timingProgress(p.dollyTiming ?? null, progress);
 			const distanceS = bestSNear(authoredS, subject[f], p.searchWindow, 0);
 			// Distance influence fades to zero at both authored endpoints, so
 			// it refines the middle of the move without shifting its marks.
 			const correctionEnvelope = Math.sin(Math.PI * progress) ** 2;
 			const correction = (distanceS - authoredS) * clamp(p.distanceInfluence, 0, 1) * correctionEnvelope;
-			// A critically damped spring trails a constant-speed target by
-			// 2v/omega. Lead the authored target by that exact amount so the
-			// dolly reaches the end mark instead of stopping one spring-lag shy.
-			const sTarget = Math.max(s, Math.min(rail.length, authoredS + progressLead + correction));
+			const ledS = rail.length * timingProgress(p.dollyTiming ?? null, Math.min(1, progress + leadFraction));
+			const sTarget = Math.max(s, Math.min(rail.length, ledS + correction));
 			[s, sVel] = cappedSpringStep(s, sVel, sTarget, omega, dt, p.maxDollySpeed);
 			s = Math.max(0, Math.min(s, rail.length));
 			[py, vy] = springStep(py, vy, craneTargetAt(s), omega, dt);

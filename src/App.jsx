@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrthographicCamera, PerspectiveCamera, Text, useFBX } from "@react-three/drei";
+import { Line, OrthographicCamera, PerspectiveCamera, Text, useFBX } from "@react-three/drei";
 import * as THREE from "three";
 import { SkeletonUtils } from "three/examples/jsm/Addons.js";
 import { buildArdyPose } from "./ardy/export.js";
@@ -47,9 +47,7 @@ import {
 	RAIL_SCHEDULE_RANGE,
 	clampRailRange,
 	defaultRailRange,
-	moveRailRange,
 	railFollowForNewGeometry,
-	resizeRailRange,
 	resolveRailSchedule,
 } from "./camera-rail-schedule.js";
 import { SetProps } from "./props.jsx";
@@ -100,6 +98,7 @@ import {
 	addScene,
 	createCharacterEntry,
 	createCharacterLayer,
+	createKeyLight,
 	createSceneStage,
 	createSceneDocument,
 	CHARACTER_MODEL_IDS,
@@ -139,6 +138,8 @@ import AssetPane from "./asset-pane.jsx";
 import AddObjectMenu from "./object-catalog.jsx";
 import ResultModal from "./result-modal.jsx";
 import AnalyticsToggle from "./analytics-toggle.jsx";
+import { PWA_UPDATE_EVENT } from "./pwa.js";
+import { createObjectPath, objectTransformAt, pathMetrics, strokeToPathPoints, MAX_PATH_POINTS } from "./object-path.js";
 import LocaleToggle from "./locale-toggle.jsx";
 import { bucketMs, track, trackActivation } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
@@ -247,6 +248,7 @@ const RIG_HIERARCHY_FOCUS = {
 const HIERARCHY_INSPECTOR_TITLES = {
 	shot: ko("Shot settings", "샷 설정"),
 	camera: ko("Camera", "카메라"),
+	light: ko("Light", "조명"),
 	characters: ko("Characters", "인물"),
 	characterA: ko("Character 1", "인물 1"),
 	"characterA.rig": ko("Rig", "리그"),
@@ -930,6 +932,65 @@ function ShotLookApplier({ camRef, look }) {
  * seed frames both the subject and the shot camera: the first editor frame
  * must read as "the set with the camera in it".
  */
+/**
+ * A short editor-camera glide: 260 ms ease toward a target orientation (and
+ * optionally a position), instead of the teleport that made "look at the
+ * light" and F-framing feel like a cut. Any user press cancels it — the
+ * operator always outranks the tour guide.
+ */
+function CameraGlide({ glide, camRef, lookRef, onDone }) {
+	const { gl } = useThree();
+	const invalidate = useThree((state) => state.invalidate);
+	const animRef = useRef(null);
+	useEffect(() => {
+		if (!glide) {
+			animRef.current = null;
+			return undefined;
+		}
+		const cam = camRef.current;
+		if (!cam) return undefined;
+		const fromPos = cam.position.clone();
+		const toPos = glide.position ? new THREE.Vector3(glide.position.x, glide.position.y, glide.position.z) : fromPos.clone();
+		const angles = aimAt(toPos, glide.target);
+		const from = { yaw: lookRef.current.yaw, pitch: lookRef.current.pitch };
+		let dYaw = angles.yaw - from.yaw;
+		while (dYaw > Math.PI) dYaw -= 2 * Math.PI;
+		while (dYaw < -Math.PI) dYaw += 2 * Math.PI;
+		// elapsed accumulates render-loop deltas: the glide needs no wall clock
+		animRef.current = { fromPos, toPos, from, dYaw, dPitch: angles.pitch - from.pitch, elapsed: 0 };
+		const cancel = () => {
+			animRef.current = null;
+			onDone?.();
+		};
+		gl.domElement.addEventListener("pointerdown", cancel, true);
+		invalidate();
+		return () => gl.domElement.removeEventListener("pointerdown", cancel, true);
+		// camRef/lookRef are stable refs; onDone identity is per-glide noise
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [glide, gl, invalidate]);
+	useFrame((_, delta) => {
+		const anim = animRef.current;
+		const cam = camRef.current;
+		if (!anim || !cam) return;
+		anim.elapsed += Math.min(delta, 0.1) * 1000;
+		const t = Math.min(1, anim.elapsed / 260);
+		const eased = 1 - (1 - t) ** 3;
+		cam.position.lerpVectors(anim.fromPos, anim.toPos, eased);
+		const yaw = anim.from.yaw + anim.dYaw * eased;
+		const pitch = anim.from.pitch + anim.dPitch * eased;
+		lookRef.current = { yaw, pitch };
+		cam.rotation.order = "YXZ";
+		cam.rotation.set(pitch, yaw, 0);
+		if (t >= 1) {
+			animRef.current = null;
+			onDone?.();
+		} else {
+			invalidate();
+		}
+	});
+	return null;
+}
+
 function EditorCamSeed({ camRef, lookRef, shotCamRef, subject }) {
 	const seeded = useRef(false);
 	const invalidate = useThree((state) => state.invalidate);
@@ -952,6 +1013,167 @@ function EditorCamSeed({ camRef, lookRef, shotCamRef, subject }) {
 		invalidate();
 	});
 	return null;
+}
+
+/**
+ * The key light drawn as a grabbable sun in the editor view: a warm core with
+ * rays, on GIZMO_LAYER so preview, capture and PlayView never see it. A line
+ * drops to the floor so its height reads against the stage, like the crane's.
+ * The sun's own body is the drag surface — a grab moves it freely on the
+ * camera-facing plane (the cursor and the sun stay glued), and the gizmo's
+ * arrows (via ObjectGizmo) stay available for single-axis precision. Its
+ * colour follows the dial, and while selected a ray points at the stage so
+ * the light's direction reads at a glance.
+ */
+function KeyLightPuck({ keyLight, selected, visible, paneRef, camRef, onSelect, onChange, onDragEnd }) {
+	const { gl } = useThree();
+	const groupRef = useRef(null);
+	const dragRef = useRef(null);
+	const stateRef = useRef(null);
+	const [dragKind, setDragKind] = useState(null);
+	const invalidate = useThree((state) => state.invalidate);
+	stateRef.current = { keyLight, visible, onSelect, onChange, onDragEnd };
+	useEffect(() => {
+		groupRef.current?.traverse((node) => node.layers?.set(GIZMO_LAYER));
+		invalidate();
+	}, [visible, selected, keyLight, dragKind, invalidate]);
+	useEffect(() => {
+		if (!visible) return undefined;
+		const raycaster = new THREE.Raycaster();
+		raycaster.layers.set(GIZMO_LAYER);
+		const rayFrom = (event) => {
+			const pane = paneRef.current;
+			const camera = camRef.current;
+			if (!pane || !camera) return null;
+			const bounds = pane.getBoundingClientRect();
+			if (bounds.width < 2 || bounds.height < 2) return null;
+			const ndc = new THREE.Vector2(
+				((event.clientX - bounds.left) / bounds.width) * 2 - 1,
+				-((event.clientY - bounds.top) / bounds.height) * 2 + 1,
+			);
+			if (Math.abs(ndc.x) > 1 || Math.abs(ndc.y) > 1) return null;
+			camera.updateMatrixWorld();
+			raycaster.setFromCamera(ndc, camera);
+			return raycaster;
+		};
+		const onDown = (event) => {
+			const s = stateRef.current;
+			if (event.button !== 0 || event.altKey) return;
+			if (!groupRef.current || !rayFrom(event)) return;
+			const hit = raycaster.intersectObjects(groupRef.current.children, true)
+				.find((entry) => {
+					for (let node = entry.object; node; node = node.parent) if (node.userData?.keyLightPick) return true;
+					return false;
+				});
+			if (!hit) return;
+			event.stopImmediatePropagation();
+			event.preventDefault();
+			s.onSelect?.();
+			const start = { ...s.keyLight };
+			const origin = new THREE.Vector3(start.x, start.y, start.z);
+			// free move on the camera-facing plane through the sun: the cursor
+			// and the sun stay glued from any viewing angle — no degenerate
+			// floor-plane geometry when the sun is viewed from below
+			const facing = new THREE.Vector3();
+			camRef.current.getWorldDirection(facing);
+			const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(facing, origin);
+			const hitStart = new THREE.Vector3();
+			if (!raycaster.ray.intersectPlane(plane, hitStart)) return;
+			dragRef.current = { start, plane, hitStart, moved: false };
+			setDragKind("move");
+			invalidate();
+		};
+		const onMove = (event) => {
+			const drag = dragRef.current;
+			if (!drag || !rayFrom(event)) return;
+			const world = new THREE.Vector3();
+			if (!raycaster.ray.intersectPlane(drag.plane, world)) return;
+			drag.moved = true;
+			stateRef.current.onChange?.({
+				x: drag.start.x + (world.x - drag.hitStart.x),
+				y: drag.start.y + (world.y - drag.hitStart.y),
+				z: drag.start.z + (world.z - drag.hitStart.z),
+			}, { dragging: true });
+			invalidate();
+		};
+		const onUp = () => {
+			const drag = dragRef.current;
+			if (!drag) return;
+			dragRef.current = null;
+			setDragKind(null);
+			if (drag.moved) stateRef.current.onDragEnd?.();
+			invalidate();
+		};
+		const el = gl.domElement;
+		el.addEventListener("pointerdown", onDown);
+		window.addEventListener("pointermove", onMove, true);
+		window.addEventListener("pointerup", onUp, true);
+		return () => {
+			el.removeEventListener("pointerdown", onDown);
+			window.removeEventListener("pointermove", onMove, true);
+			window.removeEventListener("pointerup", onUp, true);
+		};
+		// paneRef/camRef are stable refs; handlers read live state through stateRef
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [visible, gl, invalidate]);
+	const drop = useMemo(() => new Float32Array([0, 0, 0, 0, -keyLight.y, 0]), [keyLight.y]);
+	// the sun dims with its own dial, so the stage's mood reads off the puck
+	const glow = Math.max(0.18, Math.min(1, keyLight.intensity / 1.12));
+	const sunColor = useMemo(
+		() => new THREE.Color("#5c5040").lerp(new THREE.Color(selected ? "#ffcf5e" : "#f2b544"), glow).getStyle(),
+		[selected, glow],
+	);
+	if (!visible) return null;
+	return (
+		<group ref={groupRef} position={[keyLight.x, keyLight.y, keyLight.z]}>
+			<mesh userData={{ keyLightPick: true }}>
+				<sphereGeometry args={[0.16, 20, 16]} />
+				<meshBasicMaterial color={sunColor} toneMapped={false} />
+			</mesh>
+			{/* rays: eight short spokes so it reads as a sun, not a ball */}
+			{Array.from({ length: 8 }, (_, i) => {
+				const angle = (i / 8) * Math.PI * 2;
+				return (
+					<mesh key={i} userData={{ keyLightPick: true }} position={[Math.cos(angle) * 0.27, Math.sin(angle) * 0.27, 0]} rotation={[0, 0, angle + Math.PI / 2]}>
+						<cylinderGeometry args={[0.014, 0.014, 0.1, 6]} />
+						<meshBasicMaterial color={sunColor} toneMapped={false} />
+					</mesh>
+				);
+			})}
+			{/* the real grab surface: generous, invisible, around the whole sun */}
+			<mesh userData={{ keyLightPick: true }}>
+				<sphereGeometry args={[0.42, 12, 10]} />
+				<meshBasicMaterial visible={false} />
+			</mesh>
+			<lineSegments>
+				<bufferGeometry>
+					<bufferAttribute attach="attributes-position" array={drop} count={2} itemSize={3} />
+				</bufferGeometry>
+				<lineBasicMaterial color="#f2b544" transparent opacity={selected ? 0.6 : 0.25} />
+			</lineSegments>
+			{/* where the light points: a dashed ray toward the stage centre */}
+			{selected && (
+				<Line
+					points={[[0, 0, 0], [-keyLight.x * 0.86, -keyLight.y * 0.86, -keyLight.z * 0.86]]}
+					color="#ffb454"
+					lineWidth={1.6}
+					dashed
+					dashSize={0.32}
+					gapSize={0.22}
+					transparent
+					opacity={0.45}
+				/>
+			)}
+			{/* live readout while the sun is being dragged */}
+			{dragKind && (
+				<GizmoLabel
+					position={[0, 0.5, 0]}
+					text={`x ${keyLight.x.toFixed(1)}  y ${keyLight.y.toFixed(1)}  z ${keyLight.z.toFixed(1)}`}
+					camRef={camRef}
+				/>
+			)}
+		</group>
+	);
 }
 
 /**
@@ -1082,47 +1304,26 @@ function CameraRailScenePreview({ points, cumLen, length, crane }) {
 	const rootRef = useRef(null);
 	const lines = useMemo(() => {
 		if (!points || points.length < 2) return null;
-		const floor = new Float32Array(points.length * 3);
-		points.forEach((point, i) => {
-			floor[i * 3] = point.x;
-			floor[i * 3 + 1] = 0.03;
-			floor[i * 3 + 2] = point.z;
-		});
-		const floorGeometry = new THREE.BufferGeometry();
-		floorGeometry.setAttribute("position", new THREE.BufferAttribute(floor, 3));
+		const floor = points.map((point) => [point.x, 0.03, point.z]);
 		// A craned rail shows WHERE THE LENS RIDES: the same path lifted along
 		// the crane's start→end heights by arc progress, with the floor line
 		// kept as the track's ground projection.
-		let liftedGeometry = null;
-		if (crane && cumLen && length > 1e-9) {
-			const lifted = new Float32Array(points.length * 3);
-			points.forEach((point, i) => {
-				lifted[i * 3] = point.x;
-				lifted[i * 3 + 1] = craneHeightAt(crane, cumLen[i] / length);
-				lifted[i * 3 + 2] = point.z;
-			});
-			liftedGeometry = new THREE.BufferGeometry();
-			liftedGeometry.setAttribute("position", new THREE.BufferAttribute(lifted, 3));
-		}
-		return { floorGeometry, liftedGeometry };
+		const lifted = crane && cumLen && length > 1e-9
+			? points.map((point, i) => [point.x, craneHeightAt(crane, cumLen[i] / length), point.z])
+			: null;
+		return { floor, lifted };
 	}, [points, cumLen, length, crane]);
-	useEffect(() => () => {
-		lines?.floorGeometry.dispose();
-		lines?.liftedGeometry?.dispose();
-	}, [lines]);
 	useEffect(() => {
 		rootRef.current?.traverse((node) => node.layers.set(GIZMO_LAYER));
 	});
 	if (!lines) return null;
+	// drei's Line renders screen-space fat lines: a WebGL <line> is always
+	// 1px, which reads as a hairline on dense displays.
 	return (
 		<group ref={rootRef}>
-			<line geometry={lines.floorGeometry}>
-				<lineBasicMaterial color="#a78bfa" transparent opacity={lines.liftedGeometry ? 0.35 : 0.8} depthWrite={false} />
-			</line>
-			{lines.liftedGeometry && (
-				<line geometry={lines.liftedGeometry}>
-					<lineBasicMaterial color="#a78bfa" transparent opacity={0.9} depthWrite={false} />
-				</line>
+			<Line points={lines.floor} color="#a78bfa" lineWidth={2} transparent opacity={lines.lifted ? 0.35 : 0.8} depthWrite={false} />
+			{lines.lifted && (
+				<Line points={lines.lifted} color="#a78bfa" lineWidth={2.5} transparent opacity={0.9} depthWrite={false} />
 			)}
 		</group>
 	);
@@ -1131,19 +1332,406 @@ function CameraRailScenePreview({ points, cumLen, length, crane }) {
 
 /**
  * The crane's height marks as grabbable dots on the lifted curve. Click a
- * dot to select it, drag to set its height (the drag rides a camera-facing
- * vertical plane through the dot's rail point), Shift-drag to slide an
- * interior mark along the arc, double-click the curve to add a mark and
- * Delete to remove a non-endpoint. Dots live on GIZMO_LAYER, so the
+ * dot to select it; the selected dot grows a 3-axis gizmo — Y sets the
+ * mark's height, X/Z bend the camera path itself by moving the drawn rail
+ * control point nearest the mark. A free drag on the dot rides a
+ * camera-facing vertical plane (height, plus arc slide for interior marks),
+ * Shift-drag slides along the arc at a fixed height, double-click the curve
+ * adds a mark and Delete removes a non-endpoint. Dots live on GIZMO_LAYER, so the
  * recording never sees them.
  */
-function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, onSelect, onChangePoints, onDragStart, onDragEnd }) {
+const CRANE_AXES = [
+	{ axis: "x", dir: new THREE.Vector3(1, 0, 0), color: "#ff5340" },
+	{ axis: "y", dir: new THREE.Vector3(0, 1, 0), color: "#54e05c" },
+	{ axis: "z", dir: new THREE.Vector3(0, 0, 1), color: "#3d8bff" },
+];
+const CRANE_ARROW_LEN = 0.5;
+const CRANE_GIZMO_SCALE = 0.16; // metres of gizmo per metre of camera distance
+
+/**
+ * Prepare an x/z rail bend for one crane mark: a copy of the drawn control
+ * points (with one inserted at the mark's base when none is close enough to
+ * anchor the bend) plus a per-point weight — a cosine bump centred on the
+ * anchor that fades to zero by the neighbouring crane marks, so dragging one
+ * mark can never tow the marks beside it. For an interior mark both rail
+ * ends are pinned outright.
+ */
+function prepareRailBend(controlPoints, base, marks, markIndex) {
+	const controls = (controlPoints ?? []).map((entry) => ({ ...entry }));
+	if (controls.length < 2) return null;
+	// nearest control point / segment to the mark's base
+	let nearestIdx = 0;
+	let nearestD = Infinity;
+	for (let i = 0; i < controls.length; i += 1) {
+		const d = Math.hypot(controls[i].x - base.x, controls[i].z - base.z);
+		if (d < nearestD) {
+			nearestD = d;
+			nearestIdx = i;
+		}
+	}
+	const interior = markIndex > 0 && markIndex < marks.length - 1;
+	let anchorIdx = nearestIdx;
+	if (interior && nearestD > 0.25) {
+		// no control point near the mark: bend needs a vertex to pull, so one
+		// is seeded at the base, on the segment the base projects onto
+		let segmentIdx = 0;
+		let segmentD = Infinity;
+		for (let i = 0; i < controls.length - 1; i += 1) {
+			const ax = controls[i].x;
+			const az = controls[i].z;
+			const bx = controls[i + 1].x;
+			const bz = controls[i + 1].z;
+			const lenSq = Math.max((bx - ax) ** 2 + (bz - az) ** 2, 1e-9);
+			const u = Math.max(0, Math.min(1, ((base.x - ax) * (bx - ax) + (base.z - az) * (bz - az)) / lenSq));
+			const d = Math.hypot(ax + (bx - ax) * u - base.x, az + (bz - az) * u - base.z);
+			if (d < segmentD) {
+				segmentD = d;
+				segmentIdx = i;
+			}
+		}
+		controls.splice(segmentIdx + 1, 0, { x: base.x, z: base.z });
+		anchorIdx = segmentIdx + 1;
+	}
+	// normalized arc parameter of each control point along the control polygon
+	const ts = [0];
+	for (let i = 1; i < controls.length; i += 1) {
+		ts.push(ts[i - 1] + Math.hypot(controls[i].x - controls[i - 1].x, controls[i].z - controls[i - 1].z));
+	}
+	const total = Math.max(ts[ts.length - 1], 1e-9);
+	for (let i = 0; i < ts.length; i += 1) ts[i] /= total;
+	// the bump reaches exactly to the neighbouring crane marks
+	const t0 = ts[anchorIdx];
+	const previous = markIndex > 0 ? marks[markIndex - 1].t : null;
+	const next = markIndex < marks.length - 1 ? marks[markIndex + 1].t : null;
+	const radius = Math.max(0.15, Math.min(previous != null ? t0 - previous : 1, next != null ? next - t0 : 1));
+	const weights = ts.map((t, i) => {
+		if (interior && (i === 0 || i === ts.length - 1)) return 0;
+		const d = Math.abs(t - t0);
+		return d >= radius ? 0 : 0.5 * (1 + Math.cos((Math.PI * d) / radius));
+	});
+	return { startControls: controls, weights, t0, radius };
+}
+
+/**
+ * A floating readout beside a drag — billboarded, sized to the screen, on
+ * GIZMO_LAYER so it is editor furniture the recording never sees.
+ */
+function GizmoLabel({ position, text, camRef }) {
+	const ref = useRef(null);
+	useFrame(() => {
+		const cam = camRef?.current;
+		const node = ref.current;
+		if (!cam || !node) return;
+		node.quaternion.copy(cam.getWorldQuaternion(new THREE.Quaternion()));
+		const world = node.getWorldPosition(new THREE.Vector3());
+		node.scale.setScalar(Math.max(0.4, cam.getWorldPosition(new THREE.Vector3()).distanceTo(world) * 0.11));
+		node.traverse((child) => child.layers?.set(GIZMO_LAYER));
+	});
+	return (
+		<Text
+			ref={ref}
+			position={position}
+			fontSize={0.19}
+			color="#ffd27a"
+			outlineWidth={0.014}
+			outlineColor="#241a05"
+			anchorX="center"
+			anchorY="bottom"
+			renderOrder={1000}
+			material-depthTest={false}
+			material-transparent
+		>
+			{text}
+		</Text>
+	);
+}
+
+/**
+ * A scene object's travel path in the 3D view: the route as a line, its points
+ * as grabbable dots, and a 3-axis gizmo on the selected dot. The grammar is
+ * the crane's on purpose — Top-View draws the floor route, the scene lifts and
+ * nudges the individual points, so a plane can climb along its own path.
+ */
+function ObjectPathHandles({ path, selectedIndex, enabled, paneRef, camRef, onSelect, onChangePoints, onDragStart, onDragEnd }) {
 	const { gl } = useThree();
 	const invalidate = useThree((state) => state.invalidate);
 	const groupRef = useRef(null);
+	const gizmoRef = useRef(null);
 	const dragRef = useRef(null);
 	const stateRef = useRef(null);
-	stateRef.current = { rail, crane, selectedIndex, enabled, onSelect, onChangePoints, onDragStart, onDragEnd };
+	const [dragging, setDragging] = useState(false);
+	stateRef.current = { path, selectedIndex, enabled, onSelect, onChangePoints, onDragStart, onDragEnd };
+	useFrame(() => {
+		const gizmo = gizmoRef.current;
+		const camera = camRef.current;
+		if (!gizmo || !camera) return;
+		const world = gizmo.getWorldPosition(new THREE.Vector3());
+		gizmo.scale.setScalar(Math.max(0.35, camera.getWorldPosition(new THREE.Vector3()).distanceTo(world) * CRANE_GIZMO_SCALE));
+	});
+	useEffect(() => {
+		groupRef.current?.traverse((node) => node.layers?.set(GIZMO_LAYER));
+		invalidate();
+	}, [path, selectedIndex, enabled, dragging, invalidate]);
+	useEffect(() => {
+		if (!enabled) return undefined;
+		const raycaster = new THREE.Raycaster();
+		raycaster.layers.set(GIZMO_LAYER);
+		const rayFrom = (event) => {
+			const pane = paneRef.current;
+			const camera = camRef.current;
+			if (!pane || !camera) return null;
+			const bounds = pane.getBoundingClientRect();
+			if (bounds.width < 2 || bounds.height < 2) return null;
+			const ndc = new THREE.Vector2(
+				((event.clientX - bounds.left) / bounds.width) * 2 - 1,
+				-((event.clientY - bounds.top) / bounds.height) * 2 + 1,
+			);
+			if (Math.abs(ndc.x) > 1 || Math.abs(ndc.y) > 1) return null;
+			camera.updateMatrixWorld();
+			raycaster.setFromCamera(ndc, camera);
+			return raycaster;
+		};
+		const onDown = (event) => {
+			const s = stateRef.current;
+			if (!s.enabled || !s.path || event.button !== 0) return;
+			if (!groupRef.current || !rayFrom(event)) return;
+			const hits = raycaster.intersectObjects(groupRef.current.children, true);
+			// The axis gizmo outranks the dots, exactly like the crane's.
+			const axisHit = hits.find((entry) => entry.object.userData?.pathAxis);
+			if (axisHit && s.selectedIndex != null && s.path.points[s.selectedIndex]) {
+				const axis = axisHit.object.userData.pathAxis;
+				const point = s.path.points[s.selectedIndex];
+				const origin = new THREE.Vector3(point.x, point.y, point.z);
+				const dir = CRANE_AXES.find((entry) => entry.axis === axis).dir;
+				const eye = new THREE.Vector3();
+				camRef.current.getWorldDirection(eye);
+				const normal = dir.clone().cross(eye).cross(dir);
+				if (normal.lengthSq() < 1e-6) return;
+				normal.normalize();
+				const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
+				const hitStart = new THREE.Vector3();
+				if (!raycaster.ray.intersectPlane(plane, hitStart)) return;
+				event.stopImmediatePropagation();
+				event.preventDefault();
+				dragRef.current = { axis, index: s.selectedIndex, dir: dir.clone(), plane, hitStart, start: { ...point }, recorded: false };
+				setDragging(true);
+				invalidate();
+				return;
+			}
+			const hit = hits.find((entry) => entry.object.userData?.pathIndex !== undefined);
+			if (!hit) return;
+			event.stopImmediatePropagation();
+			event.preventDefault();
+			const index = hit.object.userData.pathIndex;
+			s.onSelect(index);
+			// A press on the dot itself moves it freely on the camera plane —
+			// the sun puck's grammar, so a point can be nudged without aiming.
+			const point = s.path.points[index];
+			const origin = new THREE.Vector3(point.x, point.y, point.z);
+			const facing = new THREE.Vector3();
+			camRef.current.getWorldDirection(facing);
+			const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(facing, origin);
+			const hitStart = new THREE.Vector3();
+			if (!raycaster.ray.intersectPlane(plane, hitStart)) return;
+			dragRef.current = { axis: null, index, plane, hitStart, start: { ...point }, recorded: false };
+			setDragging(true);
+			invalidate();
+		};
+		const onMove = (event) => {
+			const s = stateRef.current;
+			const drag = dragRef.current;
+			if (!drag || !s.enabled || !s.path) return;
+			if (!rayFrom(event)) return;
+			const world = new THREE.Vector3();
+			if (!raycaster.ray.intersectPlane(drag.plane, world)) return;
+			if (!drag.recorded) {
+				s.onDragStart?.();
+				drag.recorded = true;
+			}
+			const points = s.path.points.map((entry) => ({ ...entry }));
+			if (drag.axis) {
+				const travel = world.clone().sub(drag.hitStart).dot(drag.dir);
+				const axis = drag.axis;
+				points[drag.index][axis] = drag.start[axis] + travel;
+			} else {
+				points[drag.index] = {
+					x: drag.start.x + (world.x - drag.hitStart.x),
+					y: drag.start.y + (world.y - drag.hitStart.y),
+					z: drag.start.z + (world.z - drag.hitStart.z),
+				};
+			}
+			if (points[drag.index].y < 0) points[drag.index].y = 0;
+			s.onChangePoints(points, { dragging: true });
+			invalidate();
+		};
+		const onUp = () => {
+			const drag = dragRef.current;
+			dragRef.current = null;
+			setDragging(false);
+			if (drag?.recorded) stateRef.current.onDragEnd?.();
+			invalidate();
+		};
+		const paneScreen = (world) => {
+			const pane = paneRef.current?.getBoundingClientRect();
+			if (!pane) return null;
+			const projected = world.project(camRef.current);
+			return projected.z > 1 ? null : {
+				x: pane.left + ((projected.x + 1) / 2) * pane.width,
+				y: pane.top + ((1 - projected.y) / 2) * pane.height,
+			};
+		};
+		// Double-click the route to drop a point mid-path — the crane curve's
+		// gesture, so one habit covers both. The new point lands ON the line,
+		// so adding it never changes where the object goes; it only gives the
+		// next drag something to grab in the middle.
+		const onDouble = (event) => {
+			const s = stateRef.current;
+			if (!s.enabled || !s.path || !camRef.current) return;
+			const points = s.path.points;
+			if (points.length >= MAX_PATH_POINTS) return;
+			camRef.current.updateMatrixWorld();
+			let best = null;
+			for (let i = 0; i < points.length - 1; i += 1) {
+				const a = paneScreen(new THREE.Vector3(points[i].x, points[i].y ?? 0, points[i].z));
+				const b = paneScreen(new THREE.Vector3(points[i + 1].x, points[i + 1].y ?? 0, points[i + 1].z));
+				if (!a || !b) continue;
+				const dx = b.x - a.x;
+				const dy = b.y - a.y;
+				const lenSq = dx * dx + dy * dy;
+				const t = lenSq < 1e-6 ? 0 : Math.min(1, Math.max(0, ((event.clientX - a.x) * dx + (event.clientY - a.y) * dy) / lenSq));
+				const d = Math.hypot(a.x + dx * t - event.clientX, a.y + dy * t - event.clientY);
+				if (!best || d < best.d) best = { d, index: i, t };
+			}
+			if (!best || best.d > 14) return;
+			// Refuse a point that would sit on top of a neighbour: a zero-length
+			// segment is not a handle, it is a duplicate the schema would drop.
+			if (best.t < 0.02 || best.t > 0.98) return;
+			event.stopImmediatePropagation();
+			event.preventDefault();
+			const a = points[best.index];
+			const b = points[best.index + 1];
+			const inserted = {
+				x: a.x + (b.x - a.x) * best.t,
+				y: (a.y ?? 0) + ((b.y ?? 0) - (a.y ?? 0)) * best.t,
+				z: a.z + (b.z - a.z) * best.t,
+			};
+			const next = [...points.slice(0, best.index + 1), inserted, ...points.slice(best.index + 1)];
+			s.onDragStart?.();
+			s.onChangePoints(next);
+			s.onDragEnd?.();
+			s.onSelect(best.index + 1);
+			invalidate();
+		};
+		// Delete removes the selected point, never the object: while a point is
+		// selected this handler owns the key, and the scene-object delete
+		// handler stands down (it checks the same selection).
+		const onKey = (event) => {
+			const s = stateRef.current;
+			if (!s.enabled || !s.path || s.selectedIndex == null) return;
+			if (event.key !== "Delete" && event.key !== "Backspace") return;
+			if (document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			const remaining = s.path.points.filter((_, index) => index !== s.selectedIndex);
+			// Two points are the least a route can be; the last removal clears
+			// the whole path instead of leaving a stub that cannot be walked.
+			s.onDragStart?.();
+			s.onChangePoints(remaining.length >= 2 ? remaining : null);
+			s.onDragEnd?.();
+			s.onSelect(null);
+			invalidate();
+		};
+		const el = gl.domElement;
+		el.addEventListener("pointerdown", onDown);
+		window.addEventListener("pointermove", onMove, true);
+		window.addEventListener("pointerup", onUp, true);
+		el.addEventListener("dblclick", onDouble, true);
+		window.addEventListener("keydown", onKey, true);
+		return () => {
+			el.removeEventListener("pointerdown", onDown);
+			window.removeEventListener("pointermove", onMove, true);
+			window.removeEventListener("pointerup", onUp, true);
+			el.removeEventListener("dblclick", onDouble, true);
+			window.removeEventListener("keydown", onKey, true);
+		};
+		// paneRef/camRef are stable; handlers read live state through stateRef
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [enabled, gl, invalidate]);
+	const linePoints = useMemo(
+		() => (path?.points ?? []).map((point) => [point.x, point.y + 0.02, point.z]),
+		[path],
+	);
+	if (!enabled || !path || linePoints.length < 2) return null;
+	const selected = selectedIndex != null ? path.points[selectedIndex] : null;
+	return (
+		<group ref={groupRef}>
+			<Line points={linePoints} color="#6fcf97" lineWidth={2.5} transparent opacity={0.9} />
+			{selected && (
+				<group ref={gizmoRef} position={[selected.x, selected.y, selected.z]} renderOrder={999}>
+					{CRANE_AXES.map(({ axis, dir, color }) => {
+						const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+						return (
+							<group key={axis} quaternion={quat}>
+								<mesh position={[0, CRANE_ARROW_LEN / 2 + 0.08, 0]} renderOrder={999}>
+									<cylinderGeometry args={[0.016, 0.016, CRANE_ARROW_LEN, 8]} />
+									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.2} toneMapped={false} depthTest={false} depthWrite={false} transparent opacity={0.95} />
+								</mesh>
+								<mesh position={[0, CRANE_ARROW_LEN + 0.08 + 0.07, 0]} renderOrder={999}>
+									<coneGeometry args={[0.05, 0.14, 14]} />
+									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.2} toneMapped={false} depthTest={false} depthWrite={false} transparent opacity={0.95} />
+								</mesh>
+								<mesh position={[0, (CRANE_ARROW_LEN + 0.14) / 2 + 0.08, 0]} userData={{ pathAxis: axis }}>
+									<cylinderGeometry args={[0.09, 0.09, CRANE_ARROW_LEN + 0.14, 8]} />
+									<meshBasicMaterial visible={false} />
+								</mesh>
+							</group>
+						);
+					})}
+				</group>
+			)}
+			{path.points.map((point, index) => (
+				<group key={`${index}:${path.points.length}`} position={[point.x, point.y, point.z]}>
+					<mesh userData={{ pathIndex: index }} renderOrder={998}>
+						<sphereGeometry args={[0.075, 14, 10]} />
+						<meshBasicMaterial color={index === selectedIndex ? "#ffb454" : "#6fcf97"} depthTest={false} transparent opacity={0.95} />
+					</mesh>
+					<mesh userData={{ pathIndex: index }}>
+						<sphereGeometry args={[0.22, 10, 8]} />
+						<meshBasicMaterial visible={false} />
+					</mesh>
+				</group>
+			))}
+			{dragging && selected && (
+				<GizmoLabel
+					position={[selected.x, selected.y + 0.42, selected.z]}
+					text={`x ${selected.x.toFixed(1)}  y ${selected.y.toFixed(1)}  z ${selected.z.toFixed(1)}`}
+					camRef={camRef}
+				/>
+			)}
+		</group>
+	);
+}
+
+function CraneHandles({ rail, crane, controlPoints, selectedIndex, enabled, paneRef, camRef, onSelect, onChangePoints, onChangeRail, onDragStart, onDragEnd }) {
+	const { gl } = useThree();
+	const invalidate = useThree((state) => state.invalidate);
+	const groupRef = useRef(null);
+	const gizmoRef = useRef(null);
+	const dragRef = useRef(null);
+	const stateRef = useRef(null);
+	// What the pointer is doing right now, for the in-scene feedback layer:
+	// height-ish drags float a metre readout, a bend drag lights up the arc
+	// span the bump will actually deform.
+	const [dragInfo, setDragInfo] = useState(null);
+	stateRef.current = { rail, crane, controlPoints, selectedIndex, enabled, onSelect, onChangePoints, onChangeRail, onDragStart, onDragEnd };
+	// Constant on-screen size for the axis gizmo: it is UI, not set dressing.
+	useFrame(() => {
+		const gizmo = gizmoRef.current;
+		const camera = camRef.current;
+		if (!gizmo || !camera) return;
+		const world = gizmo.getWorldPosition(new THREE.Vector3());
+		gizmo.scale.setScalar(Math.max(0.35, camera.getWorldPosition(new THREE.Vector3()).distanceTo(world) * CRANE_GIZMO_SCALE));
+	});
 	useEffect(() => {
 		groupRef.current?.traverse((node) => node.layers?.set(GIZMO_LAYER));
 	});
@@ -1179,6 +1767,46 @@ function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, on
 			if (!s.enabled || !s.crane || event.button !== 0) return;
 			if (!groupRef.current || !rayFrom(event)) return;
 			const hits = raycaster.intersectObjects(groupRef.current.children, true);
+			// The axis gizmo outranks the dots: its arrows sit on the selected
+			// dot, and a press on an arrow is a directed move, not a reselect.
+			const axisHit = hits.find((entry) => entry.object.userData?.craneAxis);
+			if (axisHit && s.selectedIndex != null && s.crane.points[s.selectedIndex]) {
+				const axis = axisHit.object.userData.craneAxis;
+				const point = s.crane.points[s.selectedIndex];
+				const base = railPoint(s.rail, point.t * s.rail.length);
+				const origin = new THREE.Vector3(base.x, point.height, base.z);
+				const dir = CRANE_AXES.find((entry) => entry.axis === axis).dir;
+				const eye = new THREE.Vector3();
+				camRef.current.getWorldDirection(eye);
+				// slide plane: contains the axis and faces the camera as squarely
+				// as it can — the same construction the object gizmo uses
+				const normal = dir.clone().cross(eye).cross(dir);
+				if (normal.lengthSq() < 1e-6) return;
+				normal.normalize();
+				const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
+				const hitStart = new THREE.Vector3();
+				if (!raycaster.ray.intersectPlane(plane, hitStart)) return;
+				// x/z bend the rail: a weighted bump around the mark's base, so
+				// the path deforms locally and the marks beside it stay put.
+				const bend = axis === "y" ? null : prepareRailBend(s.controlPoints, base, s.crane.points, s.selectedIndex);
+				if (axis !== "y" && !bend) return;
+				event.stopImmediatePropagation();
+				event.preventDefault();
+				dragRef.current = {
+					axis,
+					index: s.selectedIndex,
+					dir: dir.clone(),
+					plane,
+					hitStart,
+					startHeight: point.height,
+					startControls: bend?.startControls ?? null,
+					bendWeights: bend?.weights ?? null,
+					recorded: false,
+				};
+				setDragInfo(axis === "y" ? { kind: "height" } : { kind: "bend", t0: bend.t0, radius: bend.radius });
+				invalidate();
+				return;
+			}
 			const hit = hits.find((entry) => entry.object.userData?.craneIndex !== undefined);
 			if (!hit) return;
 			event.stopImmediatePropagation();
@@ -1186,6 +1814,7 @@ function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, on
 			const index = hit.object.userData.craneIndex;
 			s.onSelect(index);
 			dragRef.current = { index, slide: event.shiftKey, recorded: false };
+			setDragInfo({ kind: event.shiftKey ? "slide" : "free" });
 			invalidate();
 		};
 		const onMove = (event) => {
@@ -1199,6 +1828,24 @@ function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, on
 			if (!drag.recorded) {
 				s.onDragStart?.();
 				drag.recorded = true;
+			}
+			if (drag.axis) {
+				const world = new THREE.Vector3();
+				if (!raycaster.ray.intersectPlane(drag.plane, world)) return;
+				const travel = world.sub(drag.hitStart).dot(drag.dir);
+				if (drag.axis === "y") {
+					const height = Math.max(0.1, Math.min(12, drag.startHeight + travel));
+					s.onChangePoints(points.map((entry, i) => (i === drag.index ? { ...entry, height } : entry)), { dragging: true });
+				} else if (drag.startControls && drag.bendWeights && s.onChangeRail) {
+					const dx = drag.axis === "x" ? travel : 0;
+					const dz = drag.axis === "z" ? travel : 0;
+					const moved = drag.startControls.map((entry, i) => (drag.bendWeights[i] > 0
+						? { ...entry, x: entry.x + dx * drag.bendWeights[i], z: entry.z + dz * drag.bendWeights[i] }
+						: entry));
+					s.onChangeRail(moved, { dragging: true });
+				}
+				invalidate();
+				return;
 			}
 			if (drag.slide && drag.index > 0 && drag.index < points.length - 1) {
 				// slide along the arc: ray onto the horizontal plane at the mark
@@ -1220,7 +1867,10 @@ function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, on
 				);
 				s.onChangePoints(points.map((entry, i) => (i === drag.index ? { ...entry, t } : entry)), { dragging: true });
 			} else {
-				// height: ray onto the camera-facing vertical plane at the base
+				// free move: ray onto the camera-facing vertical plane at the base.
+				// Its y sets the height; its x/z re-projects an interior mark onto
+				// the nearest rail arc position, so one drag steers both axes — the
+				// rail is the only x/z a crane mark can occupy.
 				const base = railPoint(s.rail, point.t * s.rail.length);
 				const camera = camRef.current;
 				const facing = new THREE.Vector3();
@@ -1232,13 +1882,30 @@ function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, on
 				const world = new THREE.Vector3();
 				if (!raycaster.ray.intersectPlane(plane, world)) return;
 				const height = Math.max(0.1, Math.min(12, world.y));
-				s.onChangePoints(points.map((entry, i) => (i === drag.index ? { ...entry, height } : entry)), { dragging: true });
+				let t = point.t;
+				if (drag.index > 0 && drag.index < points.length - 1) {
+					let bestI = 0;
+					let bestD = Infinity;
+					for (let i = 0; i < s.rail.points.length; i += 1) {
+						const d = Math.hypot(s.rail.points[i].x - world.x, s.rail.points[i].z - world.z);
+						if (d < bestD) {
+							bestD = d;
+							bestI = i;
+						}
+					}
+					t = Math.max(
+						points[drag.index - 1].t + 0.02,
+						Math.min(points[drag.index + 1].t - 0.02, s.rail.cumLen[bestI] / s.rail.length),
+					);
+				}
+				s.onChangePoints(points.map((entry, i) => (i === drag.index ? { ...entry, t, height } : entry)), { dragging: true });
 			}
 			invalidate();
 		};
 		const onUp = () => {
 			if (dragRef.current?.recorded) stateRef.current.onDragEnd?.();
 			dragRef.current = null;
+			setDragInfo(null);
 		};
 		const onDouble = (event) => {
 			const s = stateRef.current;
@@ -1291,22 +1958,70 @@ function CraneHandles({ rail, crane, selectedIndex, enabled, paneRef, camRef, on
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [enabled, gl, invalidate]);
 	if (!enabled || !crane || !rail) return null;
+	const selectedPoint = selectedIndex != null ? crane.points[selectedIndex] : null;
+	const selectedBase = selectedPoint ? railPoint(rail, selectedPoint.t * rail.length) : null;
 	return (
 		<group ref={groupRef}>
+			{selectedPoint && (
+				<group ref={gizmoRef} position={[selectedBase.x, selectedPoint.height, selectedBase.z]} renderOrder={999}>
+					{CRANE_AXES.map(({ axis, dir, color }) => {
+						const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+						return (
+							<group key={axis} quaternion={quat}>
+								<mesh position={[0, CRANE_ARROW_LEN / 2 + 0.08, 0]} renderOrder={999}>
+									<cylinderGeometry args={[0.016, 0.016, CRANE_ARROW_LEN, 8]} />
+									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.2} toneMapped={false} depthTest={false} depthWrite={false} transparent opacity={0.95} />
+								</mesh>
+								<mesh position={[0, CRANE_ARROW_LEN + 0.08 + 0.07, 0]} renderOrder={999}>
+									<coneGeometry args={[0.05, 0.14, 14]} />
+									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.2} toneMapped={false} depthTest={false} depthWrite={false} transparent opacity={0.95} />
+								</mesh>
+								<mesh position={[0, (CRANE_ARROW_LEN + 0.14) / 2 + 0.08, 0]} userData={{ craneAxis: axis }}>
+									<cylinderGeometry args={[0.09, 0.09, CRANE_ARROW_LEN + 0.14, 8]} />
+									<meshBasicMaterial visible={false} />
+								</mesh>
+							</group>
+						);
+					})}
+				</group>
+			)}
 			{crane.points.map((point, index) => {
 				const base = railPoint(rail, point.t * rail.length);
 				return (
-					<mesh
-						key={`${index}:${crane.points.length}`}
-						position={[base.x, point.height, base.z]}
-						userData={{ craneIndex: index }}
-						renderOrder={998}
-					>
-						<sphereGeometry args={[0.085, 16, 12]} />
-						<meshBasicMaterial color={index === selectedIndex ? "#ffb454" : "#a78bfa"} depthTest={false} transparent opacity={0.95} />
-					</mesh>
+					<group key={`${index}:${crane.points.length}`} position={[base.x, point.height, base.z]}>
+						<mesh userData={{ craneIndex: index }} renderOrder={998}>
+							<sphereGeometry args={[0.085, 16, 12]} />
+							<meshBasicMaterial color={index === selectedIndex ? "#ffb454" : "#a78bfa"} depthTest={false} transparent opacity={0.95} />
+						</mesh>
+						{/* the real click target: a dot is a dozen pixels from a few
+						    metres back, so an invisible halo carries the press */}
+						<mesh userData={{ craneIndex: index }}>
+							<sphereGeometry args={[0.24, 10, 8]} />
+							<meshBasicMaterial visible={false} />
+						</mesh>
+					</group>
 				);
 			})}
+			{/* live readout while a drag changes the mark's height */}
+			{dragInfo && dragInfo.kind !== "bend" && selectedPoint && (
+				<GizmoLabel
+					position={[selectedBase.x, selectedPoint.height + 0.28, selectedBase.z]}
+					text={dragInfo.kind === "slide" ? `${Math.round(selectedPoint.t * 100)}%` : `${selectedPoint.height.toFixed(1)} m`}
+					camRef={camRef}
+				/>
+			)}
+			{/* the span a bend drag will actually deform, lit on the floor path */}
+			{dragInfo?.kind === "bend" && (() => {
+				const span = [];
+				for (let i = 0; i < rail.points.length; i += 1) {
+					const t = rail.cumLen[i] / rail.length;
+					if (t >= dragInfo.t0 - dragInfo.radius && t <= dragInfo.t0 + dragInfo.radius) {
+						span.push([rail.points[i].x, 0.035, rail.points[i].z]);
+					}
+				}
+				if (span.length < 2) return null;
+				return <Line points={span} color="#ffb454" lineWidth={4} transparent opacity={0.9} />;
+			})()}
 		</group>
 	);
 }
@@ -1575,7 +2290,7 @@ async function captureMcpFrame({ capture, camera, characters, activeCharacterId,
  *
  * `dragover` must preventDefault, or the browser navigates away to the file.
  */
-function useImageDrop(onFiles) {
+function useImageDrop(onFiles, onRejected) {
 	const [over, setOver] = useState(false);
 	const depth = useRef(0);
 	const carriesFiles = (event) => !!event.dataTransfer?.types?.includes?.("Files");
@@ -1603,7 +2318,14 @@ function useImageDrop(onFiles) {
 				const files = imageFilesFrom(event.dataTransfer);
 				depth.current = 0;
 				setOver(false);
-				if (!files.length) return;
+				// Dropped files that are not supported images (HEIC from an iPhone
+				// is the mainline case) used to die here with zero feedback — the
+				// user concluded drag-and-drop was broken. Name the rejection.
+				if (!files.length) {
+					const dropped = event.dataTransfer?.files?.length ?? 0;
+					if (dropped > 0) onRejected?.(dropped);
+					return;
+				}
 				event.preventDefault();
 				event.stopPropagation();
 				onFiles(files);
@@ -1662,6 +2384,9 @@ function loadSceneStartup() {
 			document,
 			saveBlocked: false,
 			error: null,
+			// The startup scene is authored silently; without this flag the
+			// funnel's "scene created" step never fires for a brand-new room.
+			startupCreatedScene: result.status === "absent" || result.status === "corrupt",
 			toast: result.status === "corrupt"
 				? ko(`Saved scenes were unreadable — starting fresh; the old data is kept under ${SCENES_QUARANTINE_KEY}`, `저장된 장면을 읽을 수 없어 새로 시작합니다. 기존 데이터는 ${SCENES_QUARANTINE_KEY}에 보관했어요.`)
 				: result.dropped > 0
@@ -1671,7 +2396,7 @@ function loadSceneStartup() {
 	} catch {
 		const document = createSceneDocument();
 		document.scenes[0].objects = defaults();
-		return { document, saveBlocked: false, error: null, toast: null };
+		return { document, saveBlocked: false, error: null, startupCreatedScene: true, toast: null };
 	}
 }
 
@@ -1685,12 +2410,18 @@ export default function App() {
 	const [startup] = useState(loadSceneStartup);
 	const startupScene = startup.document.scenes[activeSceneIndex(startup.document.scenes, startup.document.activeSceneId)];
 	const startupStage = createSceneStage(startupScene.stage);
+	const startupCreatedScene = startup.startupCreatedScene === true;
 	const [workspaceLayout, setWorkspaceLayout] = useState(loadWorkspaceLayout);
 	const [preset, setPreset] = useState("medium");
 	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
 	const [shotAspectKey, setShotAspectKey] = useState(startupStage.shotAspect);
 	const shotOutput = SHOT_ASPECT_PRESETS[shotAspectKey] ?? SHOT_ASPECT_PRESETS["16:9"];
 	const [sensorId, setSensorFormat] = useState(startupStage.sensorId ?? DEFAULT_SENSOR_FORMAT);
+	// The stage's key light and the in-flight editor-camera glide. Declared
+	// this early because the keyboard effect lists them in its dependency
+	// array — a later declaration is a temporal-dead-zone crash at mount.
+	const [keyLight, setKeyLight] = useState(startupStage.keyLight);
+	const [camGlide, setCamGlide] = useState(null);
 	const filmback = useMemo(
 		() => ({ sensorId, aspectRatio: shotOutput.aspect }),
 		[sensorId, shotOutput.aspect],
@@ -1751,11 +2482,13 @@ globalThis.playMode = centerTab === "play";
 	const planHostRef = planIsMain ? mainPaneRef : insetPaneRef;
 
 	useEffect(() => {
+		// Quota-guarded like persistScenes: a full disk used to throw out of
+		// this effect and blank the studio mid-resize (issue #63).
 		try {
 			localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify(workspaceLayout));
-		} catch {
-			// Full or blocked storage must not crash a panel resize; the
-			// layout simply does not persist this session.
+		} catch (err) {
+			console.warn("[cozyclay] workspace layout not saved:", err?.name ?? err);
+		}
 		}
 	}, [workspaceLayout]);
 
@@ -2247,6 +2980,9 @@ globalThis.playMode = centerTab === "play";
 		// applied tick re-renders, every drag would die after exactly one tick.
 		store.settle();
 		setSelectedHierarchyId(id);
+		// Moving the focus anywhere but the camera releases the crane dot too:
+		// a press on the floor or the sky must not leave a mark selected.
+		if (id !== "camera") setCraneSelectedIndex(null);
 		const focus = RIG_HIERARCHY_FOCUS[id];
 		if (focus && ikMode) setIkFocus(focus);
 	}
@@ -2332,7 +3068,13 @@ globalThis.playMode = centerTab === "play";
 				if (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
 			}
 			const files = imageFilesFromClipboard(event.clipboardData);
-			if (!files.length) return;
+			if (!files.length) {
+				// A clipboard that carried a file but no supported image (HEIC is
+				// the mainline iPhone case) gets a named rejection, not silence.
+				const carriedFile = Array.from(event.clipboardData?.items ?? []).some((item) => item.kind === "file");
+				if (carriedFile) setToast(ko("That picture format is not supported — use PNG, JPG, WebP or GIF", "지원하지 않는 사진 형식이에요 — PNG, JPG, WebP, GIF만 가능해요"));
+				return;
+			}
 			event.preventDefault();
 			importCutouts(files);
 		};
@@ -2341,12 +3083,21 @@ globalThis.playMode = centerTab === "play";
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	const propsDrop = useImageDrop((files) => importCutouts(files));
-	const inspectorDrop = useImageDrop((files) => importCutouts(files));
+	const rejectImageDrop = (count) => setToast(ko(
+		`${count} file${count > 1 ? "s" : ""} not supported — use PNG, JPG, WebP or GIF (iPhone HEIC photos need converting first)`,
+		`지원하지 않는 파일 ${count}개 — PNG, JPG, WebP, GIF만 가능해요 (아이폰 HEIC 사진은 먼저 변환해 주세요)`,
+	));
+	const propsDrop = useImageDrop((files) => importCutouts(files), rejectImageDrop);
+	const inspectorDrop = useImageDrop((files) => importCutouts(files), rejectImageDrop);
 	const viewportDrop = useImageDrop((files) => importCutouts(files));
 	// How much of the wall counts as the wall, and how wide the brush that
 	// argues with the answer is.
 	const [matteTolerance, setMatteTolerance] = useState(0.18);
+	const [matteBrush, setMatteBrush] = useState(18);
+	// Edge cleanup for the cut: shrink eats the blended rim, feather softens
+	// what is left. Both ride into applyMask; the defaults match applyMask's.
+	const [matteShrink, setMatteShrink] = useState(1);
+	const [matteFeather, setMatteFeather] = useState(1);
 	const [matteMode, setMatteMode] = useState("paint");
 	const [matteStats, setMatteStats] = useState({ painted: 0, coverage: 0, zoom: 1, canUndo: false, canRedo: false });
 	const [matteBusy, setMatteBusy] = useState(false);
@@ -2470,6 +3221,7 @@ globalThis.playMode = centerTab === "play";
 	 * and name, mint the card, one atomic history entry.
 	 */
 	async function spawnCutoutAt(assetId, placement) {
+		markCraftAction("cutout");
 		const record = await assetRecord(assetId);
 		if (!record) {
 			setToast(ko("That image is no longer stored", "그 이미지는 더 이상 저장되어 있지 않아요"));
@@ -2515,7 +3267,7 @@ globalThis.playMode = centerTab === "play";
 			const source = await assetRecord(sourceId);
 			if (!source) throw new Error(ko("its picture is missing from the store", "저장소에 사진이 없습니다"));
 			const [cut, matte] = await Promise.all([
-				cutOutBackground(source, { mask: options.mask }),
+				cutOutBackground(source, { mask: options.mask, shrink: matteShrink, feather: matteFeather }),
 				maskAsset(options.mask, { width: options.maskWidth, height: options.maskHeight, name: `${source.name || "cutout"} matte` }),
 			]);
 			await Promise.all([
@@ -2568,26 +3320,39 @@ globalThis.playMode = centerTab === "play";
 	/** Frame the selection: fly the shot camera to a comfortable distance along
 	 * the current view direction, the way Unity's F key does. Defaults to the
 	 * selection; the hierarchy context menu passes a specific row's id. */
-	function frameSelection(id = selectedSceneObjectId) {
+	/** Dolly-and-aim onto a world point. The editor camera glides; the shot
+	 * camera (look-through) still cuts, because reframing the RECORDING lens
+	 * is a deliberate act, not a tour. */
+	function frameWorldTarget(target, reach) {
 		const camera = (lookThroughShot ? shotCamRef : editorCamRef).current;
 		const paneLook = lookThroughShot ? look : editorLook;
-		const object = sceneObjects.find((item) => item.id === id) ?? null;
-		if (!camera || !object) return;
-		const size = objectSize(object);
-		const target = {
-			x: object.x,
-			y: (object.y ?? 0) + size.height / 2,
-			z: object.z,
-		};
-		const reach = Math.max(size.width, size.height, size.depth, 0.5);
+		if (!camera) return;
 		const distance = reach * 2.4 + 0.6;
 		const back = forwardFrom(paneLook.current.yaw, paneLook.current.pitch).multiplyScalar(-distance);
-		camera.position.set(target.x + back.x, Math.max(target.y + back.y, 0.3), target.z + back.z);
+		const position = {
+			x: target.x + back.x,
+			y: Math.max(target.y + back.y, 0.3),
+			z: target.z + back.z,
+		};
+		if (!lookThroughShot) {
+			setCamGlide({ position, target });
+			return;
+		}
+		camera.position.set(position.x, position.y, position.z);
 		const angles = aimAt(camera.position, target);
 		paneLook.current.yaw = angles.yaw;
 		paneLook.current.pitch = angles.pitch;
 		camera.rotation.order = "YXZ";
 		camera.rotation.set(angles.pitch, angles.yaw, 0);
+	}
+	function frameSelection(id = selectedSceneObjectId) {
+		const object = sceneObjects.find((item) => item.id === id) ?? null;
+		if (!object) return;
+		const size = objectSize(object);
+		frameWorldTarget(
+			{ x: object.x, y: (object.y ?? 0) + size.height / 2, z: object.z },
+			Math.max(size.width, size.height, size.depth, 0.5),
+		);
 	}
 
 	/** In-place rename commit from the hierarchy (F2 / Return / rename on
@@ -2605,6 +3370,10 @@ globalThis.playMode = centerTab === "play";
 	 * full-cast snapshot with the editing buffer folded in, and undo/redo
 	 * picks the newer of the two stacks so one Ctrl+Z history covers both. */
 	const snapshotCast = (includeShots = false) => ({
+		// The key light rides the same undo stack as everything else — its
+		// absence used to make Ctrl+Z after a light edit undo an unrelated
+		// earlier action while the light stayed put (research claim C1).
+		keyLight: { ...keyLight },
 		characters: charactersRef.current.map((entry) => ({
 			...entry,
 			layer: entry.id === activeChar.id
@@ -2703,6 +3472,7 @@ globalThis.playMode = centerTab === "play";
 			setCommittedIkEdits(snapshot.committedIkEdits ?? []);
 			setIkTick((value) => value + 1);
 		}
+		if (snapshot.keyLight) setKeyLight(createKeyLight(snapshot.keyLight));
 	}
 
 	// props so the inspector cannot show a ghost.
@@ -2792,10 +3562,27 @@ globalThis.playMode = centerTab === "play";
 				setGizmoMode(GIZMO_HOTKEYS[event.code]);
 				return;
 			}
-			if (event.code === "KeyF" && selectedSceneObjectId) {
-				event.preventDefault();
-				frameSelection();
-				return;
+			if (event.code === "KeyF") {
+				// Frame whatever is selected — Unity's F, not just for props: the
+				// sun and the cast are selections the eye wants to travel to too.
+				if (selectedSceneObjectId) {
+					event.preventDefault();
+					frameSelection();
+					return;
+				}
+				if (selectedHierarchyId === "light") {
+					event.preventDefault();
+					frameWorldTarget({ x: keyLight.x, y: keyLight.y, z: keyLight.z }, 0.8);
+					return;
+				}
+				const framedChar = selectedHierarchyId.startsWith("characterB") ? (showB ? charB : null)
+					: selectedHierarchyId.startsWith("characterA") || selectedHierarchyId.startsWith("rig.") ? charA
+					: null;
+				if (framedChar) {
+					event.preventDefault();
+					frameWorldTarget({ x: framedChar.x, y: 1, z: framedChar.z }, 1.8);
+					return;
+				}
 			}
 			if (event.code === "KeyD" && (event.ctrlKey || event.metaKey) && selectedSceneObjectId) {
 				event.preventDefault();
@@ -2813,6 +3600,10 @@ globalThis.playMode = centerTab === "play";
 			}
 			if (!selectedSceneObjectId) return;
 			if (event.key !== "Delete" && event.key !== "Backspace") return;
+			// A selected path point owns Delete: the route's handles are the
+			// finer target, and deleting the whole prop out from under a point
+			// edit is never what the press meant.
+			if (pathPointIndex != null) return;
 			event.preventDefault();
 			deleteSelectedSceneObject();
 		};
@@ -2822,6 +3613,11 @@ globalThis.playMode = centerTab === "play";
 
 	useEffect(() => {
 		setInspectorActionsOpen(false);
+	}, [selectedSceneObjectId, selectedHierarchyId, keyLight, charA, charB, showB]);
+	// A point index belongs to one object's route; carrying it to the next
+	// selection would point the gizmo at a stale dot.
+	useEffect(() => {
+		setPathPointIndex(null);
 	}, [selectedSceneObjectId]);
 
 	useEffect(() => {
@@ -2887,6 +3683,20 @@ globalThis.playMode = centerTab === "play";
 	// motion share one time axis; off frees the camera while both stay set.
 	const [moveFollow, setMoveFollow] = useState(true);
 	const [railDraw, setRailDraw] = useState(false);
+	// Object travel-path drawing: the same Top-View stroke gesture as the rail,
+	// aimed at the selected object instead of the shot camera.
+	const [pathDraw, setPathDraw] = useState(false);
+	const [pathPointIndex, setPathPointIndex] = useState(null);
+	const pathDragTokenRef = useRef(null);
+	const planPathTokenRef = useRef(null);
+	const timingTokenRef = useRef(null);
+	// The frame props follow. Live playback keeps it at the playhead; the
+	// offscreen export drives it per captured frame without re-rendering.
+	const propFrameRef = useRef(0);
+	/* Objects with a travel path stand where their path puts them at the
+	 * playhead. Authoring still edits the RECORD (the path and its start
+	 * pose); this derived list is what the scene, the plan board and the
+	 * export all draw, so preview and recording can never disagree. */
 	// Which crane height mark the scene dots have selected; the timeline's
 	// Point height input edits this one. Reset lives after activeCamera below.
 	const [craneSelectedIndex, setCraneSelectedIndex] = useState(null);
@@ -2908,6 +3718,13 @@ globalThis.playMode = centerTab === "play";
 	const [copied, setCopied] = useState(false);
 	const [recordedVideoName, setRecordedVideoName] = useState(null);
 	const [toast, setToast] = useState(startup.toast ?? "");
+	// The PWA's "a newer studio is waiting" registration, once one arrives.
+	const [pwaUpdate, setPwaUpdate] = useState(null);
+	useEffect(() => {
+		const onUpdate = (event) => setPwaUpdate(event.detail ?? null);
+		window.addEventListener(PWA_UPDATE_EVENT, onUpdate);
+		return () => window.removeEventListener(PWA_UPDATE_EVENT, onUpdate);
+	}, []);
 	const [glContextLost, setGlContextLost] = useState(false);
 	const [bridge, setBridge] = useState(null);
 	const [ardyPrompt, setArdyPrompt] = useState("");
@@ -3153,6 +3970,20 @@ globalThis.playMode = centerTab === "play";
 	const renderActive = useRenderActivity(tlPlaying || movePlaying);
 	const [tlFrameCount, setTlFrameCount] = useState(startupShotState?.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS); // the clip length on the production clock
 	const [tlFps, setTlFps] = useState(TIMELINE_FPS);
+	// Keep the imperative frame in step with the playhead for live playback;
+	// the export overwrites it per captured frame and restores nothing, which
+	// is correct — the next render puts it back.
+	propFrameRef.current = tlFrame;
+	const animatedSceneObjects = useMemo(() => {
+		if (!sceneObjects.some((object) => object.path)) return sceneObjects;
+		const take = { frameCount: tlFrameCount, fps: tlFps };
+		return sceneObjects.map((object) => {
+			const at = objectTransformAt(object, tlFrame, take);
+			if (!at) return object;
+			return { ...object, x: at.x, y: at.y, z: at.z, rot: at.rot ?? object.rot };
+		});
+	}, [sceneObjects, tlFrame, tlFrameCount, tlFps]);
+
 	const activeShotIdx = shotIndexAtFrame(shots, tlFrame);
 	const activeShot = shots[activeShotIdx] ?? null;
 	const cameraKeys = activeShot?.cameraKeys ?? [];
@@ -3322,18 +4153,6 @@ globalThis.playMode = centerTab === "play";
 		setTlFrame(selected.startFrame);
 		setTlPlaying(true);
 	}
-	function editRailSchedule(shotId, edit) {
-		setShots((current) => updateStableItem(current, shotId, (shot) => {
-			const camera = createCameraBlock(shot.camera);
-			const duration = shot.endFrame - shot.startFrame + 1;
-			const resolved = resolveRailSchedule({ railFollow: camera.railFollow, cameraRail: camera.cameraRail, frameCount: duration });
-			const base = resolved.kind === RAIL_SCHEDULE_RANGE || resolved.kind === RAIL_SCHEDULE_LEGACY
-				? { startFrame: resolved.startFrame, endFrame: resolved.endFrame }
-				: defaultRailRange(duration);
-			const railFollow = base ? edit(base, duration) : null;
-			return railFollow ? { ...shot, camera: updateCameraBlock(camera, { railFollow: { mode: "range", ...railFollow } }) } : shot;
-		}, "shots"));
-	}
 	const frameCountRef = useRef(DEFAULT_DURATION_S * TIMELINE_FPS);
 	frameCountRef.current = tlFrameCount;
 	// Root waypoints {frame, x, z, heading: null}, kept sorted by frame —
@@ -3386,6 +4205,7 @@ globalThis.playMode = centerTab === "play";
 		hasCharSheet,
 		shotAspect: shotAspectKey,
 		sensorId,
+		keyLight,
 	};
 
 	function snapshotActiveScene(sourceScenes = scenesRef.current) {
@@ -3475,7 +4295,17 @@ globalThis.playMode = centerTab === "play";
 		const input = projectDocumentInput(name);
 		const db = await openAssetDb();
 		try {
-			const assets = await Promise.all([...referencedAssetIds(input.scenesDocument.scenes)].map((id) => getAsset(db, id)));
+			const ids = [...referencedAssetIds(input.scenesDocument.scenes)];
+			const assets = await Promise.all(ids.map((id) => getAsset(db, id)));
+			// A referenced asset whose record vanished (swept elsewhere, another
+			// tab) would drop out of the export in silence — the user would
+			// learn on the machine they open it on. Say it here, at save time.
+			const missing = ids.filter((id, index) => !assets[index]);
+			if (missing.length) {
+				setToast(isKo
+					? `참조된 사진 ${missing.length}개를 찾지 못해보내기에서 빠졌어요`
+					: `${missing.length} referenced image${missing.length > 1 ? "s" : ""} missing — left out of the export`);
+			}
 			return JSON.stringify(createProjectDocument({ ...input, assets }), null, 2);
 		} finally {
 			db.close();
@@ -3695,6 +4525,7 @@ globalThis.playMode = centerTab === "play";
 		setHasCharSheet(stage.hasCharSheet);
 		setShotAspectKey(stage.shotAspect);
 		setSensorFormat(stage.sensorId);
+		setKeyLight(stage.keyLight);
 		// The motion-layer buffer reloads from the scene's first character.
 		const firstLayer = stage.characters[0]?.layer;
 		setWaypoints(firstLayer?.waypoints ?? shotState.waypoints ?? []);
@@ -4011,6 +4842,12 @@ globalThis.playMode = centerTab === "play";
 					if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
 					patch.name = args.name;
 				}
+				// A travel path arrives whole (or null to clear it); the object
+				// schema repairs or refuses it, so a bad route cannot land.
+				if (args.path !== undefined) {
+					if (args.path !== null && createObjectPath(args.path) === null) throw new Error("Invalid path: needs two or more distinct points");
+					patch.path = args.path;
+				}
 				applyObjectMutation((objects) => updateSceneObject(objects, args.id, patch));
 				return { id: args.id };
 			},
@@ -4214,6 +5051,11 @@ globalThis.playMode = centerTab === "play";
 				liveControlRef.current = createLiveControl({
 					handlers: liveHandlersRef.current,
 					workspaceId: liveWorkspaceIdRef.current,
+					meta: {
+						project: projectName ?? "Untitled",
+						scene: scenes.find((entry) => entry.id === activeSceneId)?.name ?? "",
+						cast: charactersRef.current.length,
+					},
 					onWorkspace: setLiveWorkspaceHandle,
 					onEvent: (name, payload) => {
 						if (name !== "motion_job" || typeof payload.taskId !== "string") return;
@@ -4238,7 +5080,7 @@ globalThis.playMode = centerTab === "play";
 		dirtyRef.current = true;
 		const timer = setTimeout(flushScenes, 400);
 		return () => clearTimeout(timer);
-	}, [sceneObjects, shots, waypoints, tlFrameCount, charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2, shotAspectKey, sensorId, scenes, activeSceneId]);
+	}, [sceneObjects, shots, waypoints, tlFrameCount, charA, charB, showB, poseA, poseB, hasCharSheet, subject, subject2, shotAspectKey, sensorId, keyLight, scenes, activeSceneId]);
 	useEffect(() => {
 		const onPageHide = () => flushScenes();
 		const onVisibility = () => {
@@ -4263,7 +5105,7 @@ globalThis.playMode = centerTab === "play";
 		const serialized = collectProjectSnapshot(projectName);
 		setProjectDirty(serialized !== projectSnapshotRef.current);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [scenes, activeSceneId, workspaceLayout, customPoses, characters, shots, waypoints, promptClips, projectName]);
+	}, [scenes, activeSceneId, workspaceLayout, customPoses, characters, shots, waypoints, promptClips, projectName, keyLight, sceneObjects, shotAspectKey, sensorId, tlFrameCount]);
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
 	const [motion, setMotion] = useState(null);
@@ -4447,6 +5289,42 @@ globalThis.playMode = centerTab === "play";
 		commitManualCameraFraming();
 	}
 
+	/* The key light as a manipulable object: same proxy contract as the shot
+	 * camera — the sun puck mirrors the light, gizmo patches write straight
+	 * back to the stage's keyLight. Move only; brightness lives in the
+	 * Inspector. */
+	const keyLightSelected = selectedHierarchyId === "light";
+	const lightGizmoObject = useMemo(() => {
+		if (!keyLightSelected || ikMode) return null;
+		return {
+			id: "__keylight__",
+			x: keyLight.x,
+			y: keyLight.y - 0.2,
+			z: keyLight.z,
+			height: 0.4,
+			footprint: { width: 0.4, depth: 0.4 },
+			rotY: 0,
+			scaleX: 1,
+			scaleY: 1,
+			scaleZ: 1,
+		};
+	}, [keyLightSelected, ikMode, keyLight]);
+	/* Selecting the Light from the hierarchy must SHOW the light: the sun sits
+	 * high above the stage and the default view often does not contain it, so
+	 * the editor camera glides in place to face it (position untouched). */
+	function aimEditorAtKeyLight() {
+		if (!editorCamRef.current || lookThroughShot || ikMode) return;
+		setCamGlide({ target: { x: keyLight.x, y: keyLight.y, z: keyLight.z } });
+	}
+	function changeKeyLightFromGizmo(_id, patch) {
+		setKeyLight((current) => createKeyLight({
+			...current,
+			x: patch.x !== undefined ? patch.x : current.x,
+			y: patch.y !== undefined ? patch.y + 0.2 : current.y,
+			z: patch.z !== undefined ? patch.z : current.z,
+		}));
+	}
+
 
 	const shot = useMemo(
 		() => deriveShot(cameraPos, charA, (fovDeg * Math.PI) / 180, SUBJECT_HEIGHT_M, filmback),
@@ -4492,6 +5370,9 @@ globalThis.playMode = centerTab === "play";
 	tlFrameRef.current = tlFrame;
 
 	function applyExportFrame(frame) {
+		// Props on a travel path read this ref inside their own useFrame, so a
+		// recorded frame shows the same placement the preview would.
+		propFrameRef.current = frame;
 		for (const entry of characters) {
 			const clip = entry.id === activeChar.id ? motion : entry.sessionMotion;
 			const rig = rigs[entry.id];
@@ -4579,7 +5460,7 @@ globalThis.playMode = centerTab === "play";
 			stopShotRecording();
 			return;
 		}
-		runShotExport().catch((error) => {
+		runShotExport().then(() => track("export:video_succeeded", { format: "mp4" })).catch((error) => {
 			if (error?.name !== "AbortError") setToast(error?.message || String(error));
 		});
 	}
@@ -4750,7 +5631,7 @@ globalThis.playMode = centerTab === "play";
 		|| selectedHierarchyId.startsWith("character:");
 	const isRigSelection = selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig.");
 	const inspectorHasContent = isSceneSelection || isCameraSelection || isCharacterSelection || isRigSelection
-		|| selectedHierarchyId === "environment" || selectedHierarchyId === "props" || Boolean(selectedSceneObject);
+		|| selectedHierarchyId === "environment" || selectedHierarchyId === "props" || selectedHierarchyId === "light" || Boolean(selectedSceneObject);
 
 	const posedRig = () => rigs[posing] ?? null;
 	const setPosed = (pose) => {
@@ -5472,6 +6353,7 @@ globalThis.playMode = centerTab === "play";
 		// Parse the thumbnail rigs during startup idle so the first pose-studio
 		// open starts rendering immediately instead of paying a 100ms+ FBX parse.
 		warmPoseThumbnails();
+		if (startupCreatedScene) track("scene:created", { scene_source: "startup" });
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
@@ -5849,8 +6731,16 @@ globalThis.playMode = centerTab === "play";
 			setLookThrough: (value) => setLookThroughShot(!!value),
 			charA,
 			insetPane: insetPaneRef.current,
+			mainPane: mainPaneRef.current,
+			// the selected prop's route, so QA can aim a gesture at the line
+			objectPath: selectedSceneObject?.path ?? null,
+			pathPointIndex,
+			pathHandlesEnabled: centerTab === "scene" && !lookThroughShot && !ikMode && !posing && !playMode && !!selectedSceneObject?.path,
+			scrub: (frame) => setTlFrame(Math.max(0, Math.min(tlFrameCount - 1, Math.round(frame)))),
+			centerTab,
+			pathDraw,
 		};
-	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot]);
+	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, pathPointIndex, centerTab, posing, playMode, pathDraw]);
 	// QA hook (plan §6.5): exposes history depth and the present === objects
 	// invariant so the browser suite can assert undo entry counts directly.
 	// Reads live store state at call time; re-registered after every render.
@@ -5907,7 +6797,7 @@ globalThis.playMode = centerTab === "play";
 			const start = shot.startFrame;
 			const end = Math.min(subjectTrack.length, shot.endFrame + 1);
 			const subjectSlice = subjectTrack.slice(start, end);
-			const params = { ...camera.followCam, craneHeight: camera.craneHeight, initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) } };
+			const params = { ...camera.followCam, craneHeight: camera.craneHeight, dollyTiming: camera.dollyTiming, initialDir: { x: Math.sin(yaw), z: Math.cos(yaw) } };
 			const rail = camera.mode === "rail" ? buildRail(camera.cameraRail) : null;
 			if (rail) {
 				const schedule = resolveRailSchedule({ railFollow: camera.railFollow, cameraRail: camera.cameraRail, frameCount: subjectSlice.length });
@@ -6368,7 +7258,13 @@ globalThis.playMode = centerTab === "play";
 
 	function addPromptClip(frame) {
 		const snapped = Math.max(0, Math.round(frame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
-		const startFrame = Math.max(snapped, promptClips.reduce((max, clip) => Math.max(max, clip.endFrame), 0));
+		// Add at the playhead when the spot is free; only fall through to
+		// after-the-last-block when the playhead slot is taken. The old
+		// unconditional max() made the button's "at frame N" label a lie.
+		const blocked = promptClips.some((clip) => snapped < clip.endFrame && snapped + ARDY_PROMPT_HORIZON_FRAMES > clip.startFrame);
+		const startFrame = blocked
+			? Math.max(snapped, promptClips.reduce((max, clip) => Math.max(max, clip.endFrame), 0))
+			: snapped;
 		const clip = { id: createStableItemId("prompt-clip"), startFrame, endFrame: startFrame + ARDY_PROMPT_HORIZON_FRAMES, text: "" };
 		recordCharacterUndo();
 		setPromptClips((prev) => [...prev, clip]);
@@ -6400,16 +7296,23 @@ const PROMPT_BLOCK_MAX_FRAMES = 5 * TIMELINE_FPS;
 
 function resizePromptClip(id, edge, rawFrame) {
 		setPromptClips((prev) => {
-			const next = updateStableItem(prev, id, (clip) => {
+			const candidate = updateStableItem(prev, id, (clip) => {
 				const snapped = Math.max(0, Math.round(rawFrame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
 				return edge === "start"
 					? { ...clip, startFrame: Math.min(Math.max(snapped, clip.endFrame - PROMPT_BLOCK_MAX_FRAMES), clip.endFrame - ARDY_PROMPT_HORIZON_FRAMES) }
 					: { ...clip, endFrame: Math.min(Math.max(clip.startFrame + ARDY_PROMPT_HORIZON_FRAMES, snapped), clip.startFrame + PROMPT_BLOCK_MAX_FRAMES) };
 			}, "promptClips");
-			const end = next.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
+			// Same rule the move path enforces: one prompt per frame range.
+			// A resize that lands on a neighbour used to slip through and get
+			// silently truncated by the generator; reject it at the handle.
+			const resized = candidate.find((clip) => clip.id === id);
+			if (resized && candidate.some((clip) => clip.id !== id && resized.startFrame < clip.endFrame && resized.endFrame > clip.startFrame)) {
+				return prev;
+			}
+			const end = candidate.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
 			setTlFrameCount((count) => Math.max(count, end));
 			setArdyDuration(end / TIMELINE_FPS);
-			return next;
+			return candidate;
 		});
 	}
 
@@ -6905,7 +7808,15 @@ function resizePromptClip(id, edge, rawFrame) {
 					setTlFrameCount((count) => Math.max(count, decoded.frames));
 					setTlFps(decoded.fps);
 				}
-			}).catch(() => {});
+			}).catch(() => {
+				// A saved take that fails to refetch used to vanish silently — the
+				// user would find a merely posed character and assume their motion
+				// was lost. Name it and offer the reload path.
+				const subject = entry.subject || entry.id;
+				setToast(isKo
+					? `저장된 모션을 다시 불러오지 못했어요 (${subject}) — 새로고침하거나 모션을 다시 생성해 주세요`
+					: `Saved motion could not be restored for ${subject} — reload or generate it again`);
+			});
 		}
 	}
 
@@ -6972,7 +7883,10 @@ function resizePromptClip(id, edge, rawFrame) {
 				</div>
 				<HierarchyPanel
 					selectedId={selectedHierarchyId}
-					onSelect={selectHierarchy}
+					onSelect={(id) => {
+						selectHierarchy(id);
+						if (id === "light") aimEditorAtKeyLight();
+					}}
 					characters={characters}
 					showB={showB}
 					motionFrames={motion?.frames ?? 0}
@@ -7156,7 +8070,24 @@ function resizePromptClip(id, edge, rawFrame) {
 						    nothing on the open stage ever touched the floor. A contact
 						    shadow is the cue that says a subject stands ON the deck rather
 						    than floats above it — without walls it is the only one left. */}
-						<Canvas shadows frameloop={renderActive ? "always" : "demand"} dpr={[1, 2]} gl={{ preserveDrawingBuffer: true, antialias: true }}>
+						<Canvas
+							shadows
+							frameloop={renderActive ? "always" : "demand"}
+							dpr={[1, 2]}
+							gl={{ preserveDrawingBuffer: true, antialias: true }}
+							onCreated={({ gl }) => {
+								gl.domElement.addEventListener("webglcontextlost", (event) => {
+									event.preventDefault();
+									setToast(ko(
+										"The graphics context was lost — restoring the stage. If it stays black, reload the page; your work is autosaved.",
+										"그래픽 컨텍스트가 끊겼어요 — 무대를 복구합니다. 검게 남으면 새로고침하세요. 작업은 자동 저장돼 있습니다.",
+									));
+								});
+								gl.domElement.addEventListener("webglcontextrestored", () => {
+									setToast(ko("Graphics restored.", "그래픽이 복구됐어요."));
+								});
+							}}
+						>
 							<ContextLossGuard onLostChange={setGlContextLost} />
 							<RenderLoopController stageRef={stageRef} />
 							<ViewportLayoutInvalidator
@@ -7178,9 +8109,18 @@ function resizePromptClip(id, edge, rawFrame) {
 							    past ~120 m the deck simply ceases to exist with no horizon
 							    line, no clip edge and no tone break. */}
 							<fog attach="fog" args={["#eef4f3", 18, 54]} />
-							<StageLights />
+							<StageLights keyLight={keyLight} />
+							<KeyLightPuck
+								keyLight={keyLight}
+								selected={keyLightSelected}
+								visible={centerTab === "scene" && !lookThroughShot && !playMode}
+								paneRef={mainPaneRef}
+								camRef={editorCamRef}
+								onSelect={() => selectHierarchy("light")}
+								onChange={(patch) => setKeyLight((current) => createKeyLight({ ...current, ...patch }))}
+							/>
 							<Room />
-							<SetProps objects={sceneObjects} selectedId={selectedSceneObjectId} />
+							<SetProps objects={animatedSceneObjects} selectedId={selectedSceneObjectId} frameRef={propFrameRef} take={{ frameCount: tlFrameCount, fps: tlFps }} />
 
 							<PerspectiveCamera
 								ref={shotCamRef}
@@ -7379,14 +8319,51 @@ function resizePromptClip(id, edge, rawFrame) {
 									store.settle();
 									setSelectedHierarchyId(id.startsWith("object:") ? id : id === "cam" ? "camera" : charKeyToHierarchyId(id));
 								}}
-								sceneObjects={sceneObjects}
+								sceneObjects={animatedSceneObjects}
 								selectedSceneObjectId={selectedSceneObjectId}
 								onMoveSceneObject={changeSceneObject}
 								onObjectMoveStart={beginSceneTransaction}
 								onObjectMoveEnd={endSceneTransaction}
 								cameraRailPoints={railCurve ? railCurve.points : null}
 								railDraw={railDraw}
+								pathDraw={pathDraw}
+								objectPathPoints={selectedSceneObject?.path?.points ?? null}
+								objectPathSelectedIndex={pathPointIndex}
+								onObjectPathPointSelect={setPathPointIndex}
+								onObjectPathPointMove={(index, floor) => {
+									const path = selectedSceneObject?.path;
+									if (!path) return;
+									// The board edits the floor route only; a point's height is
+									// the scene's business, so y rides through untouched.
+									const points = path.points.map((point, i) => (i === index ? { ...point, x: floor.x, z: floor.z } : point));
+									changeSceneObject(selectedSceneObject.id, { path: { ...path, points } }, planPathTokenRef.current);
+								}}
+								onObjectPathPointInsert={(index, t) => {
+									const path = selectedSceneObject?.path;
+									if (!path || path.points.length >= MAX_PATH_POINTS) return;
+									const a = path.points[index];
+									const b = path.points[index + 1];
+									const inserted = {
+										x: a.x + (b.x - a.x) * t,
+										y: (a.y ?? 0) + ((b.y ?? 0) - (a.y ?? 0)) * t,
+										z: a.z + (b.z - a.z) * t,
+									};
+									const points = [...path.points.slice(0, index + 1), inserted, ...path.points.slice(index + 1)];
+									const token = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
+									changeSceneObject(selectedSceneObject.id, { path: { ...path, points } }, token);
+									endSceneTransaction(token, { commit: true });
+									setPathPointIndex(index + 1);
+									setToast(ko("Point added — drag it here, or lift it in the scene", "점을 추가했어요 — 여기서 끌거나 씬에서 높이를 올리세요"));
+								}}
+								onObjectPathGestureStart={() => {
+									planPathTokenRef.current = beginSceneTransaction({ owner: "object-path", cancel: () => { planPathTokenRef.current = null; } });
+								}}
+								onObjectPathGestureEnd={(commit) => {
+									if (planPathTokenRef.current != null) endSceneTransaction(planPathTokenRef.current, { commit });
+									planPathTokenRef.current = null;
+								}}
 								subjectTrack={motion ? subjectTrack : null}
+								keyLight={keyLight}
 								onRailStroke={(stroke) => {
 									const simplified = simplifyStroke(stroke, 0.12);
 									if (simplified.length < 2) return;
@@ -7395,15 +8372,32 @@ function resizePromptClip(id, edge, rawFrame) {
 									const curve = buildRail(simplified);
 									setToast(isKo ? `카메라 레일 완성 — ${curve ? curve.length.toFixed(1) : "?"} m, 제어점 ${simplified.length}개` : `Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
 								}}
+								onPathStroke={(stroke) => {
+									if (!selectedSceneObject) return;
+									// Few points on purpose: the stroke sets the shape, the
+									// operator adds the handles they actually want by
+									// double-clicking the line. Height comes later, from
+									// dragging a point in the scene.
+									const points = strokeToPathPoints(stroke, simplifyStroke);
+									if (points.length < 2) return;
+									const token = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
+									changeSceneObject(selectedSceneObject.id, { path: { ...(selectedSceneObject.path ?? {}), points } }, token);
+									endSceneTransaction(token, { commit: true });
+									setPathDraw(false);
+									const metrics = pathMetrics(createObjectPath({ points }));
+									setToast(isKo
+										? `이동 경로 완성 — ${metrics.length.toFixed(1)} m, 점 ${points.length}개`
+										: `Travel path drawn — ${metrics.length.toFixed(1)} m, ${points.length} points`);
+								}}
 								onCameraChange={commitManualCameraFraming}
 							/>
 							{/* Object gizmo: the shot pane's direct manipulation. Off while
 							    the plan owns the big pane (the pucks are the handles there)
 							    and while posing/IK owns the pointer. */}
 							<ObjectGizmo
-								object={cameraGizmoObject ?? selectedSceneObject}
+								object={cameraGizmoObject ?? lightGizmoObject ?? selectedSceneObject}
 								objects={sceneObjects}
-								mode={cameraGizmoObject ? (gizmoMode === "scale" ? "move" : gizmoMode) : gizmoMode}
+								mode={lightGizmoObject ? "move" : cameraGizmoObject ? (gizmoMode === "scale" ? "move" : gizmoMode) : gizmoMode}
 								snap={snapEnabled}
 								enabled={!planIsMain && !posing && !ikMode && !playMode}
 								paneRef={mainPaneRef}
@@ -7412,14 +8406,14 @@ function resizePromptClip(id, edge, rawFrame) {
 								// The token MUST round-trip: dropping it sends every drag tick
 								// through applyAtomic, whose settle cancels the open drag after
 								// its first move (the gizmo hands its teardown as the cancel).
-								onChange={(id, patch, token) => (id === "__shotcam__" ? changeShotCameraFromGizmo(id, patch) : changeSceneObject(id, patch, token))}
-								onDragStart={(...args) => (cameraGizmoObject ? undefined : beginSceneTransaction(...args))}
+								onChange={(id, patch, token) => (id === "__shotcam__" ? changeShotCameraFromGizmo(id, patch) : id === "__keylight__" ? changeKeyLightFromGizmo(id, patch) : changeSceneObject(id, patch, token))}
+								onDragStart={(...args) => (cameraGizmoObject || lightGizmoObject ? undefined : beginSceneTransaction(...args))}
 								onDragEnd={(...args) => {
-									if (!cameraGizmoObject) endSceneTransaction(...args);
+									if (!cameraGizmoObject && !lightGizmoObject) endSceneTransaction(...args);
 								}}
 								onSelect={(id) =>
 									selectHierarchy(
-										id === "__shotcam__" ? "camera" : id?.startsWith("char:") ? charKeyToHierarchyId(id) : id ? `object:${id}` : "props",
+										id === "__shotcam__" ? "camera" : id === "__keylight__" ? "light" : id?.startsWith("char:") ? charKeyToHierarchyId(id) : id ? `object:${id}` : "props",
 									)
 								}
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
@@ -7432,9 +8426,29 @@ function resizePromptClip(id, edge, rawFrame) {
 									crane={activeCamera.craneHeight}
 								/>
 							)}
+							<ObjectPathHandles
+								path={selectedSceneObject?.path ?? null}
+								selectedIndex={pathPointIndex}
+								enabled={centerTab === "scene" && !lookThroughShot && !ikMode && !posing && !playMode && !!selectedSceneObject?.path}
+								paneRef={mainPaneRef}
+								camRef={editorCamRef}
+								onSelect={setPathPointIndex}
+								onChangePoints={(points) => {
+									if (!selectedSceneObject) return;
+									changeSceneObject(selectedSceneObject.id, { path: points === null ? null : { ...selectedSceneObject.path, points } });
+								}}
+								onDragStart={() => {
+									pathDragTokenRef.current = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
+								}}
+								onDragEnd={() => {
+									if (pathDragTokenRef.current) endSceneTransaction(pathDragTokenRef.current, { commit: true });
+									pathDragTokenRef.current = null;
+								}}
+							/>
 							<CraneHandles
 								rail={railCurve}
 								crane={activeCamera.craneHeight}
+								controlPoints={activeCamera.cameraRail}
 								selectedIndex={craneSelectedIndex}
 								enabled={centerTab === "scene" && !lookThroughShot && !ikMode && !posing && !playMode && !!railCurve && !!activeCamera.craneHeight}
 								paneRef={mainPaneRef}
@@ -7454,9 +8468,24 @@ function resizePromptClip(id, edge, rawFrame) {
 										),
 									);
 								}}
+								onChangeRail={(points, options) => {
+									if (!options?.dragging) {
+										changeActiveCamera({ cameraRail: points });
+										return;
+									}
+									setShots((current) =>
+										updateStableItem(
+											current,
+											activeShot.id,
+											(shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { cameraRail: points }) }),
+											"shots",
+										),
+									);
+								}}
 								onDragStart={recordShotUndo}
 							/>
 							<EditorCamSeed camRef={editorCamRef} lookRef={editorLook} shotCamRef={shotCamRef} subject={charA} />
+							<CameraGlide glide={camGlide} camRef={editorCamRef} lookRef={editorLook} onDone={() => setCamGlide(null)} />
 							<ShotLookApplier camRef={shotCamRef} look={look} />
 							<ShotCameraGhost
 								camRef={shotCamRef}
@@ -7604,7 +8633,16 @@ function resizePromptClip(id, edge, rawFrame) {
 						{playMode && !motion && (
 							<div className="playview-empty" role="status">
 								<strong>{ko("No motion yet", "아직 모션이 없어요")}</strong>
-								<span>{ko("Generate motion in the Scene tab — PlayView plays the finished result.", "장면 탭에서 모션을 생성하세요. 재생 보기는 완성 결과를 보여줍니다.")}</span>
+								{bridge?.ok ? (
+									<span>{ko("Generate motion in the Scene tab — PlayView plays the finished result.", "장면 탭에서 모션을 생성하세요. 재생 보기는 완성 결과를 보여줍니다.")}</span>
+								) : (
+									<>
+										<span>{ko("This hosted demo loads a sample walk cycle for you — switch to the Scene tab and press play.", "이 데모는 샘플 걷기 모션을 불러왔어요 — 장면 탭에서 재생을 눌러보세요.")}</span>
+										<button type="button" className="btn ghost" onClick={() => { setCenterTab("scene"); track("sample:played", { from: "playview_empty" }); }}>
+											{ko("▶ Watch the sample", "▶ 샘플 구경하기")}
+										</button>
+									</>
+								)}
 							</div>
 						)}
 
@@ -7675,6 +8713,17 @@ function resizePromptClip(id, edge, rawFrame) {
 
 					{/* Camera animation is authored against the same playhead as motion,
 					    so keep its controls beside the Motion tools as well as Shot setup. */}
+					<Foldout hidden={!keyLightSelected} title={ko("Light", "조명")}>
+						<p className="hint">{ko("Drag the sun in the scene to move the light. Shadows and warmth follow it.", "씬의 해를 드래그해 조명을 옮깁니다. 그림자와 빛의 방향이 따라옵니다.")}</p>
+						<Slider label={ko("Brightness", "밝기")} min={0} max={4} step={0.05} value={keyLight.intensity} onChange={(value) => setKeyLight((current) => createKeyLight({ ...current, intensity: value }))} />
+						<Slider label={ko("Warm ↔ Cool", "따뜻함 ↔ 차가움")} min={0} max={1} step={0.05} value={keyLight.warmth ?? 0.5} onChange={(value) => setKeyLight((current) => createKeyLight({ ...current, warmth: value }))} />
+						<div className="readout">
+							<span title={ko("light position", "조명 위치")}>{`x ${keyLight.x.toFixed(1)}  y ${keyLight.y.toFixed(1)}  z ${keyLight.z.toFixed(1)}`}</span>
+						</div>
+						<button className="btn ghost" onClick={() => setKeyLight(createKeyLight(null))}>
+							{ko("Reset light", "조명 초기화")}
+						</button>
+					</Foldout>
 					<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>
 					<Slider label={ko("Lens (FOV)", "렌즈 (FOV)")} min={14} max={90} step={1} value={fovDeg} unit="°" onChange={setFovDeg} />
 						<div className="readout">
@@ -7688,37 +8737,6 @@ function resizePromptClip(id, edge, rawFrame) {
 
 						<h3 className="move-head">{ko("Move keys", "움직임 키")}</h3>
 						<div className="move-ab">
-							<button
-								type="button"
-								className="btn ghost"
-								title={ko("Key the current framing at the playhead frame", "현재 프레이밍을 재생 헤드 프레임에 키로 저장")}
-								onClick={() => addCameraKeyframe(tlFrame)}
-							>
-								{ko("+ Key here", "+ 여기 키 찍기")}
-							</button>
-							<button
-								type="button"
-								className="btn ghost"
-								disabled={!hasCameraKeys}
-								title={ko("Play the move. With Follow on it plays the timeline too, so character motion rides along; right-drag interrupts", "카메라 움직임을 재생합니다. 따라가기가 켜져 있으면 타임라인도 함께 재생되어 캐릭터 모션이 따라옵니다. 오른쪽 드래그로 중단됩니다")}
-								onClick={() => {
-									if (followPreviewArmed) {
-										if (tlPlaying) {
-											setTlPlaying(false);
-											return;
-										}
-										setTlFrame(0);
-										setTlPlaying(true);
-										return;
-									}
-									setMovePlaying((playing) => !playing);
-								}}
-							>
-								{previewActive ? ko("Stop", "정지") : ko("Preview", "미리보기")}
-							</button>
-							<button type="button" className="btn ghost" disabled={cameraKeys.length < 1} onClick={clearMove}>
-								{ko("Clear", "지우기")}
-							</button>
 							<button
 								type="button"
 								className={"btn ghost" + (recState === "recording" ? " rec-live" : "")}
@@ -7776,7 +8794,10 @@ function resizePromptClip(id, edge, rawFrame) {
 						)}
 					</Foldout>
 
-				<Foldout hidden={!isCharacterSelection} title={ko("Rig", "리그")}>
+				{/* Rig and Pose are chosen once when a character is cast and then left
+				    alone, so they open on demand — Subject and Prompt are the panels
+				    you actually work in. */}
+				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Rig", "리그")}>
 					{/* The rig is a property of the character, and swapping it is a
 					    look decision made while blocking — so it belongs beside the
 					    subject, not buried in the project file. */}
@@ -7802,7 +8823,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					</div>
 				</Foldout>
 
-				<Foldout hidden={!isCharacterSelection} title={ko("Pose", "포즈")}>
+				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Pose", "포즈")}>
 					{/* Tiles, not a dropdown: a pose read out of a photograph has no
 					    name worth reading — it is recognisable only as a shape. This
 					    is the same grid the studio shows, applied to whichever
@@ -8176,7 +9197,10 @@ function resizePromptClip(id, edge, rawFrame) {
 									</p>
 								</>
 							)}
-							{promptClips.length >= 2 && (
+							{/* The schedule rule counts only blocks that actually carry a
+							    prompt — an empty block cannot combine and must not lock
+							    the pose checkbox (it used to gate on raw length). */}
+							{promptClips.filter((clip) => clip.text.trim()).length >= 2 && (
 								<p className="ardy-hint">
 									{ko("Prompt blocks generate from history, so they cannot also pin a pose.", "프롬프트 블록은 이전 프레임을 이어서 생성하므로 포즈 고정과 함께 쓸 수 없어요.")}
 								</p>
@@ -8415,17 +9439,6 @@ function resizePromptClip(id, edge, rawFrame) {
 								<p className="inspector-hint">
 								{ko("Type a value and press Enter, or drag an axis letter to scrub.", "값을 입력하고 Enter를 누르거나 축 글자를 드래그해 조절하세요.")}
 								</p>
-								<div className="presets gizmo-modes">
-									<button type="button" className={gizmoMode === "move" ? "active" : ""} onClick={() => setGizmoMode("move")}>
-									{ko("Move", "이동")} <kbd>W</kbd>
-									</button>
-									<button type="button" className={gizmoMode === "rotate" ? "active" : ""} onClick={() => setGizmoMode("rotate")}>
-									{ko("Rotate", "회전")} <kbd>E</kbd>
-									</button>
-									<button type="button" className={gizmoMode === "scale" ? "active" : ""} onClick={() => setGizmoMode("scale")}>
-									{ko("Scale", "크기")} <kbd>R</kbd>
-									</button>
-								</div>
 								<label className="check snap-toggle">
 									<input type="checkbox" checked={snapEnabled} onChange={(event) => setSnapEnabled(event.target.checked)} />
 								<span>
@@ -8446,6 +9459,27 @@ function resizePromptClip(id, edge, rawFrame) {
 								value={sceneObjectNameDisplayKo(selectedSceneObject.name)}
 										onChange={(event) => changeSceneObject(selectedSceneObject.id, { name: event.target.value })}
 									/>
+								</Field>
+								<Field label={ko("Parent", "상위 그룹")}>
+									<select
+										value={selectedSceneObject.parent ?? ""}
+										onChange={(event) => {
+											const parent = event.target.value || null;
+											const next = setSceneObjectParent(sceneObjects, selectedSceneObject.id, parent);
+											if (next !== sceneObjects) {
+												const token = beginSceneTransaction({ owner: "reparent", cancel: () => {} });
+												setSceneObjects(next);
+												endSceneTransaction(token, { commit: true });
+											}
+										}}
+									>
+										<option value="">{ko("(none)", "(없음)")}</option>
+										{sceneObjects
+											.filter((object) => object.id !== selectedSceneObject.id)
+											.map((object) => (
+												<option key={object.id} value={object.id}>{sceneObjectNameDisplayKo(object.name)}</option>
+											))}
+									</select>
 								</Field>
 								<Vector3Row
 							label={ko("Position", "위치")}
@@ -8637,6 +9671,87 @@ function resizePromptClip(id, edge, rawFrame) {
 													matteEditorRef.current?.setTolerance(value);
 												}}
 											/>
+										<div className="matte-slider">
+											<label htmlFor="matte-brush">{ko("Brush", "붓 크기")}</label>
+											<input
+												id="matte-brush"
+												type="range"
+												min="2"
+												max="200"
+												step="1"
+												value={matteBrush}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													setMatteBrush(value);
+													matteEditorRef.current?.setBrush(value);
+												}}
+											/>
+											<input
+												type="number"
+												data-field="matte-brush"
+												min="2"
+												max="200"
+												step="1"
+												value={matteBrush}
+												aria-label={ko("Brush size", "붓 크기")}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													if (!Number.isFinite(value)) return;
+													setMatteBrush(value);
+													matteEditorRef.current?.setBrush(value);
+												}}
+											/>
+										</div>
+										<div className="matte-slider">
+											<label htmlFor="matte-shrink">{ko("Edge shrink", "가장자리 먹기")}</label>
+											<input
+												id="matte-shrink"
+												type="range"
+												min="0"
+												max="3"
+												step="0.5"
+												value={matteShrink}
+												onChange={(event) => setMatteShrink(Number(event.target.value))}
+											/>
+											<input
+												type="number"
+												data-field="matte-shrink"
+												min="0"
+												max="3"
+												step="0.5"
+												value={matteShrink}
+												aria-label={ko("Edge shrink", "가장자리 먹기")}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													if (Number.isFinite(value)) setMatteShrink(value);
+												}}
+											/>
+										</div>
+										<div className="matte-slider">
+											<label htmlFor="matte-feather">{ko("Edge feather", "가장자리 부드럽게")}</label>
+											<input
+												id="matte-feather"
+												type="range"
+												min="0"
+												max="3"
+												step="0.5"
+												value={matteFeather}
+												onChange={(event) => setMatteFeather(Number(event.target.value))}
+											/>
+											<input
+												type="number"
+												data-field="matte-feather"
+												min="0"
+												max="3"
+												step="0.5"
+												value={matteFeather}
+												aria-label={ko("Edge feather", "가장자리 부드럽게")}
+												onChange={(event) => {
+													const value = Number(event.target.value);
+													if (Number.isFinite(value)) setMatteFeather(value);
+												}}
+											/>
+										</div>
 										</div>
 										<p className="inspector-hint">
 											{ko(
@@ -8683,19 +9798,32 @@ function resizePromptClip(id, edge, rawFrame) {
 									</>
 								)}
 								{selectedSceneObject.renderer !== CUTOUT_KIND && (
-						<div className="object-colors" role="group" aria-label={ko("Object colour", "오브젝트 색상")}>
-									{OBJECT_COLORS.map((color) => (
-										<button
-											type="button"
-											key={color}
-											className={"object-color" + (selectedSceneObject.color === color ? " active" : "")}
-											style={{ background: color }}
-									aria-label={isKo ? `색상 ${color}` : `Colour ${color}`}
-											aria-pressed={selectedSceneObject.color === color}
-											onClick={() => changeSceneObject(selectedSceneObject.id, { color })}
-										/>
-									))}
-								</div>
+									// One swatch shows the colour; the row opens only when you want
+									// to change it, instead of six chips sitting there all day.
+									<details className="object-colors-pop">
+										<summary
+										className="object-color current"
+										style={{ background: selectedSceneObject.color }}
+										aria-label={ko("Object colour", "오브젝트 색상")}
+										title={ko("Object colour", "오브젝트 색상")}
+									/>
+									<div className="object-colors" role="group" aria-label={ko("Object colour", "오브젝트 색상")}>
+										{OBJECT_COLORS.map((color) => (
+											<button
+												type="button"
+												key={color}
+												className={"object-color" + (selectedSceneObject.color === color ? " active" : "")}
+												style={{ background: color }}
+												aria-label={isKo ? `색상 ${color}` : `Colour ${color}`}
+												aria-pressed={selectedSceneObject.color === color}
+												onClick={(event) => {
+													changeSceneObject(selectedSceneObject.id, { color });
+													event.currentTarget.closest("details")?.removeAttribute("open");
+												}}
+											/>
+										))}
+										</div>
+									</details>
 								)}
 							</>
 						)}
@@ -8834,6 +9962,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				<Timeline
 					frame={tlFrame}
 					craneSelectedIndex={craneSelectedIndex}
+					cameraSelected={isCameraSelection}
 					onCranePointAdd={addActiveCranePoint}
 					onCranePointDelete={deleteSelectedCranePoint}
 					onCranePointSelect={setCraneSelectedIndex}
@@ -8868,6 +9997,29 @@ function resizePromptClip(id, edge, rawFrame) {
 					shots={shots}
 					activeShotIdx={activeShotIdx}
 					railDraw={railDraw}
+					pathDraw={pathDraw}
+					pathObject={selectedSceneObject ? { id: selectedSceneObject.id, name: sceneObjectNameDisplayKo(selectedSceneObject.name), path: selectedSceneObject.path } : null}
+					onObjectPathDrawToggle={() => {
+						setPathDraw((current) => !current);
+						if (!pathDraw) setRailDraw(false);
+						setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
+					}}
+					onObjectPathChange={(path) => {
+						if (selectedSceneObject) changeSceneObject(selectedSceneObject.id, { path }, timingTokenRef.current ?? undefined);
+					}}
+					onObjectPathClear={() => {
+						if (!selectedSceneObject) return;
+						const token = beginSceneTransaction({ owner: "object-path", cancel: () => {} });
+						changeSceneObject(selectedSceneObject.id, { path: null }, token);
+						endSceneTransaction(token, { commit: true });
+					}}
+					onObjectTimingGestureStart={() => {
+						timingTokenRef.current = beginSceneTransaction({ owner: "object-timing", cancel: () => { timingTokenRef.current = null; } });
+					}}
+					onObjectTimingGestureEnd={() => {
+						if (timingTokenRef.current != null) endSceneTransaction(timingTokenRef.current, { commit: true });
+						timingTokenRef.current = null;
+					}}
 					cameraRailLength={railCurve?.length ?? null}
 				shotCutDisabled={!!posing || ikMode || waypointMode}
 				onIkToggle={toggleIkMode}
@@ -8926,12 +10078,20 @@ function resizePromptClip(id, edge, rawFrame) {
 						setTlFrame(selected.startFrame);
 						setSelectedHierarchyId("camera");
 					}}
-					onCameraBlockChange={(patch) => {
+					onCameraBlockChange={(patch, shotId) => {
 						if (patch.mode === "follow") syncActiveCameraFraming();
 						const nextPatch = patch.mode === "rail" && activeCamera.railFollow?.mode === "off"
 							? { ...patch, railFollow: defaultRailRange(activeShotDuration) }
 							: patch;
-						changeActiveCamera(nextPatch);
+						// The embedded dolly graph edits the shot it sits in; the
+						// camera bar above edits the selected one.
+						changeActiveCamera(nextPatch, shotId);
+						if (patch.mode === "follow" && !motion) {
+							setToast(ko(
+								"Follow rides the subject's motion — without a loaded motion the camera composes a static frame",
+								"팔로우 카메라는 인물 모션을 따라 움직입니다 — 모션이 없으면 카메라는 정지 구도를 유지합니다",
+							));
+						}
 						if (patch.mode === "rail" && !cameraRail) {
 							setRailDraw(true);
 							setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
@@ -8941,17 +10101,6 @@ function resizePromptClip(id, edge, rawFrame) {
 					onCameraPreview={previewCameraShot}
 					onCameraRailDrawToggle={toggleCameraRailDraw}
 					onCameraRailDelete={deleteCameraRail}
-					onRailSelect={(shotId) => {
-						selectTimelineShot(shotId);
-						setSelectedHierarchyId("camera");
-					}}
-					onRailMove={(shotId, startFrame) => editRailSchedule(shotId, (base, duration) => moveRailRange(base, startFrame - base.startFrame, duration))}
-					onRailRangeChange={(shotId, edge, frame) => editRailSchedule(shotId, (base, duration) => resizeRailRange(base, edge, frame, duration))}
-					onRailRemove={(shotId) => {
-						if (!shots.some((shot) => shot.id === shotId)) throw new Error(`Unknown shots ID: ${shotId}`);
-						recordShotUndo();
-						setShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "off" } }) }), "shots"));
-					}}
 				onShotSelect={selectTimelineShot}
 				onShotBoundaryMove={(shotId, edge, frame) => setShots((current) => resizeShot(current, shotId, edge, frame, tlFrameCount))}
 				onShotRename={(shotId, name) => {
@@ -9012,6 +10161,25 @@ function resizePromptClip(id, edge, rawFrame) {
 				/>
 			)}
 			<Toast message={toast} onDone={() => setToast("")} />
+			{pwaUpdate && (
+				<div className="scene-delete-toast" role="status">
+					<span>{ko("A new version of CozyClay is ready.", "CozyClay 새 버전이 준비됐어요.")}</span>
+					<button
+						type="button"
+						onClick={() => {
+							// The worker is waiting; tell it to take over, which the
+							// controllerchange listener turns into one reload.
+							pwaUpdate.waiting?.postMessage({ type: "SKIP_WAITING" });
+							setPwaUpdate(null);
+						}}
+					>
+						{ko("Reload to update", "새로고침해 업데이트")}
+					</button>
+					<button type="button" className="ghost" onClick={() => setPwaUpdate(null)}>
+						{ko("Later", "나중에")}
+					</button>
+				</div>
+			)}
 			{objectDeleteUndo && (
 				<div className="scene-delete-toast" role="status">
 					<span>{ko("Object deleted.", "오브젝트를 삭제했어요.")}</span>

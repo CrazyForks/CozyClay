@@ -160,13 +160,13 @@ try {
 
 	const inspector = await evaluate(`(() => {
 		const height = document.querySelector('.inspector-scroll input[data-field="cutout-height"]');
-		const hint = [...document.querySelectorAll('.inspector-hint')].find((node) => /wide, from the picture|가로 .* m —/.test(node.textContent));
-		return { height: height ? Number(height.value) : null, hint: hint?.textContent ?? null };
+		const width = document.querySelector('.inspector-scroll input[data-field="cutout-width"]');
+		return { height: height ? Number(height.value) : null, width: width ? Number(width.value) : null };
 	})()`);
 	expect("a fresh card stands at the figure's height", inspector.height === 1.8, JSON.stringify(inspector));
 	expect(
 		"the card's width is derived from the picture, not guessed",
-		/0\.90 m/.test(inspector.hint ?? ""),
+		inspector.width !== null && Math.abs(inspector.width - 0.9) < 0.01,
 		JSON.stringify(inspector),
 	);
 
@@ -199,9 +199,12 @@ try {
 	expect("the imported picture is on the card", card.hasTexture === true, JSON.stringify(card));
 	expect("the texture is the picture that was imported", card.textureWidth === 120 && card.textureHeight === 240, JSON.stringify(card));
 	expect("the picture is not hung upside down", card.flipY === false, JSON.stringify(card));
+	// 0.15, not 0.5: with alphaToCoverage spending the canvas's MSAA samples
+	// on the silhouette, the test only has to reject what is genuinely
+	// nothing — 0.5 would kill half-lit edge pixels the coverage pass resolves.
 	expect(
 		"the card is alpha-CUT, so it keeps writing depth",
-		card.alphaTest === 0.5 && card.transparent === false && card.depthWrite === true,
+		card.alphaTest === 0.15 && card.transparent === false && card.depthWrite === true,
 		JSON.stringify(card),
 	);
 	expect("the card is metric: 1.8 m tall, 0.9 m wide", Math.abs(card.geometryHeight - 1.8) < 1e-6 && Math.abs(card.geometryWidth - 0.9) < 1e-6, JSON.stringify(card));

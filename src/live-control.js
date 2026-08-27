@@ -53,6 +53,8 @@ export function createLiveControl({
 	onWorkspace = () => {},
 	onEvent = () => {},
 	workspaceId = "",
+	// Optional identity for the hub's live_status listing (scene/project names).
+	meta = null,
 	WebSocketImpl = globalThis.WebSocket,
 	url = LIVE_CONTROL_URL,
 	reconnectMs = LIVE_CONTROL_RECONNECT_MS,
@@ -93,7 +95,15 @@ export function createLiveControl({
 		const connected = socket;
 		connected.onopen = () => {
 			if (socket !== connected || stopped) return;
-			send({ type: "hello", role: "editor", version: 1, ...(workspaceId ? { workspaceId } : {}) });
+			send({
+				type: "hello",
+				role: "editor",
+				version: 1,
+				...(workspaceId ? { workspaceId } : {}),
+				// Identify the workspace to live_status: bare UUIDs alone left an
+				// agent unable to tell two editor tabs apart.
+				...(meta ? { meta } : {}),
+			});
 		};
 		connected.onmessage = async (event) => {
 			if (typeof event?.data === "string") {

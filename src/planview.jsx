@@ -277,6 +277,60 @@ function SubjectMovementGuide({ track }) {
  * line on the deck. Display only — authoring happens through the pointer
  * handlers, exactly like the pucks.
  */
+/**
+ * A scene object's travel path on the plan board. The camera's rail owns
+ * RAIL_COLOR; a prop's route gets its own green so the two never read as the
+ * same instruction at a glance.
+ */
+const OBJECT_PATH_COLOR = "#6fcf97";
+const OBJECT_PATH_SELECTED_COLOR = "#ffb454";
+// How near the floor pointer must be to grab a route point, in metres.
+const PATH_POINT_GRAB = 0.34;
+function ObjectPathLine({ points, selectedIndex = null }) {
+	if (!points || points.length < 2) return null;
+	const first = points[0];
+	const last = points[points.length - 1];
+	return (
+		<group>
+			<Line
+				points={points.map((point) => [point.x, 0.028, point.z])}
+				color={OBJECT_PATH_COLOR}
+				lineWidth={3}
+				transparent
+				opacity={0.92}
+				depthWrite={false}
+				depthTest={false}
+				renderOrder={9}
+			/>
+			{/* Every point is a handle here, not just the ends: the route is
+			    drawn on this board, so it should also be editable on it. */}
+			{points.map((point, index) => (
+				<mesh
+					key={index}
+					position={[point.x, 0.036, point.z]}
+					rotation={[-Math.PI / 2, 0, 0]}
+					renderOrder={10}
+				>
+					<circleGeometry args={[index === selectedIndex ? 0.13 : 0.1, 14]} />
+					<meshBasicMaterial
+						color={index === selectedIndex ? OBJECT_PATH_SELECTED_COLOR : OBJECT_PATH_COLOR}
+						depthWrite={false}
+						depthTest={false}
+					/>
+				</mesh>
+			))}
+			<mesh position={[first.x, 0.038, first.z]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={11}>
+				<circleGeometry args={[0.16, 18]} />
+				<meshBasicMaterial color={OBJECT_PATH_COLOR} depthWrite={false} depthTest={false} />
+			</mesh>
+			<mesh position={[last.x, 0.038, last.z]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={11}>
+				<ringGeometry args={[0.13, 0.19, 18]} />
+				<meshBasicMaterial color={OBJECT_PATH_COLOR} depthWrite={false} depthTest={false} />
+			</mesh>
+		</group>
+	);
+}
+
 function CameraRailLine({ points, live = false }) {
 	const directionGeometry = useMemo(() => {
 		if (live || !points || points.length < 2) return null;
@@ -405,7 +459,7 @@ function WaypointPath({ waypoints, start, activeWaypointId }) {
  * reports moves that still hit it, so a fast drag off the edge silently strands
  * the puck.
  */
-export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, characters = [], onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, pathStart = null, waypoints, activeWaypointId, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, subjectTrack = null, onCameraChange }) {
+export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, characters = [], onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, pathStart = null, waypoints, activeWaypointId, onSelectWaypoint, onMoveWaypoint, onSelectEntity, sceneObjects = [], selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, cameraRailPoints = null, railDraw = false, onRailStroke, pathDraw = false, onPathStroke, objectPathPoints = null, objectPathSelectedIndex = null, onObjectPathPointSelect, onObjectPathPointMove, onObjectPathPointInsert, onObjectPathGestureStart, onObjectPathGestureEnd, subjectTrack = null, onCameraChange, keyLight = null }) {
 	const [drag, setDrag] = useState(null); // { id, mode }
 	// live stroke while the rail is being drawn; world XZ, display only
 	const [railStroke, setRailStroke] = useState(null);
@@ -435,8 +489,8 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 	// clears dragRef, so a dep that changes while dragging (charA.x does, on the
 	// very first move) would kill the drag after one frame. Read live values
 	// through a ref and keep the effect's deps stable.
-	const latest = useRef({ characters, waypoints, onSelectWaypoint, onMoveWaypoint, onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange });
-	latest.current = { characters, waypoints, onSelectWaypoint, onMoveWaypoint, onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, onCameraChange };
+	const latest = useRef({ objectPathPoints, objectPathSelectedIndex, onObjectPathPointSelect, onObjectPathPointMove, onObjectPathPointInsert, onObjectPathGestureStart, onObjectPathGestureEnd, characters, waypoints, onSelectWaypoint, onMoveWaypoint, onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, pathDraw, onPathStroke, onCameraChange });
+	latest.current = { objectPathPoints, objectPathSelectedIndex, onObjectPathPointSelect, onObjectPathPointMove, onObjectPathPointInsert, onObjectPathGestureStart, onObjectPathGestureEnd, characters, waypoints, onSelectWaypoint, onMoveWaypoint, onMoveCharacter, onCharacterGestureStart, onWaypointGestureStart, onCameraGestureStart, onSelectEntity, sceneObjects, selectedSceneObjectId, onMoveSceneObject, onObjectMoveStart, onObjectMoveEnd, railDraw, onRailStroke, pathDraw, onPathStroke, onCameraChange };
 
 	const targets = () => {
 		const cast = latest.current.characters;
@@ -525,6 +579,17 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 			// setup): the FIRST list entry used to win, so grabbing S1 near the
 			// cam moved the camera instead and the character never budged —
 			// "the puck doesn't move". Pick the NEAREST target instead.
+			// A route's own points outrank pucks: they are smaller, they sit on
+			// top of the deck, and a press near one is always meant for it.
+			const pathPoints = latest.current.objectPathPoints;
+			if (pathPoints && pathPoints.length >= 2) {
+				let nearest = null;
+				for (let i = 0; i < pathPoints.length; i += 1) {
+					const d = (p.x - pathPoints[i].x) ** 2 + (p.z - pathPoints[i].z) ** 2;
+					if (d < PATH_POINT_GRAB * PATH_POINT_GRAB && (!nearest || d < nearest.d)) nearest = { d, index: i };
+				}
+				if (nearest) return { id: `path:${nearest.index}`, mode: "pathPoint", origin: { pathIndex: nearest.index } };
+			}
 			const list = targets();
 			let best = null;
 			for (const e of list) {
@@ -543,13 +608,17 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 			if (event.button !== 0) return;
 			// Rail drawing owns the pointer: a stroke starts anywhere on the
 			// deck, so puck picking would fight every stroke that crosses one.
-			if (latest.current.railDraw) {
+			// Rail drawing and object-path drawing share one stroke gesture:
+			// a stroke starts anywhere on the deck, so puck picking would
+			// fight every stroke that crosses one.
+			const strokeTool = latest.current.railDraw ? "rail" : latest.current.pathDraw ? "path" : null;
+			if (strokeTool) {
 				const start = toFloor(event);
 				if (!start) return;
 				event.preventDefault();
 				event.stopPropagation();
-				dragRef.current = { mode: "rail", stroke: [{ x: start.x, z: start.z }] };
-				setDrag({ id: "rail", mode: "rail" });
+				dragRef.current = { mode: strokeTool, stroke: [{ x: start.x, z: start.z }] };
+				setDrag({ id: strokeTool, mode: strokeTool });
 				setRailStroke([{ x: start.x, z: start.z }]);
 				host.style.cursor = "crosshair";
 				return;
@@ -561,14 +630,18 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 			event.stopPropagation();
 			dragRef.current = grip;
 			setDrag({ id: grip.id, mode: grip.mode });
-			if (grip.mode === "waypoint") latest.current.onSelectWaypoint?.(grip.origin.id);
+			if (grip.mode === "pathPoint") latest.current.onObjectPathPointSelect?.(grip.origin.pathIndex);
+			else if (grip.mode === "waypoint") latest.current.onSelectWaypoint?.(grip.origin.id);
 			else latest.current.onSelectEntity?.(grip.id);
 			// Scene-object grips only: select FIRST (the call above), then
 			// begin — App's select handler settles any open transaction, so
 			// beginning before the select would leak the freshly-issued token
 			// instantly (plan §6.4). Camera, character and waypoint grips
 			// write separate state and must never open a scene transaction.
-			if (grip.origin.objectId) {
+			if (grip.mode === "pathPoint") {
+				// One undo entry per point drag, like every other plan gesture.
+				latest.current.onObjectPathGestureStart?.();
+			} else if (grip.origin.objectId) {
 				dragRef.current.token = latest.current.onObjectMoveStart?.({
 					owner: "plan",
 					cancel: () => teardownDrag(grip),
@@ -592,7 +665,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 		// hover is the only cue that these are handles at all
 		const onHover = (event) => {
 			if (dragRef.current) return;
-			if (latest.current.railDraw) {
+			if (latest.current.railDraw || latest.current.pathDraw) {
 				host.style.cursor = "crosshair";
 				return;
 			}
@@ -611,13 +684,21 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 			const p = toFloor(event);
 			if (!p) return;
 
-			if (grip.mode === "rail") {
+			if (grip.mode === "rail" || grip.mode === "path") {
 				// sample sparsely; RDP simplifies the rest on commit
 				const tail = grip.stroke[grip.stroke.length - 1];
 				if (Math.hypot(p.x - tail.x, p.z - tail.z) > 0.06) {
 					grip.stroke.push({ x: p.x, z: p.z });
 					setRailStroke([...grip.stroke]);
 				}
+				return;
+			}
+
+			if (grip.mode === "pathPoint") {
+				latest.current.onObjectPathPointMove?.(grip.origin.pathIndex, {
+					x: snap(p.x, ROOM_LIMIT),
+					z: snap(p.z, ROOM_LIMIT),
+				});
 				return;
 			}
 
@@ -684,12 +765,21 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 		const closeDrag = (commit) => {
 			const grip = dragRef.current;
 			if (!grip) return;
-			if (grip.mode === "rail") {
+			if (grip.mode === "rail" || grip.mode === "path") {
 				// commit hands the raw stroke to the app (which simplifies and
 				// splines it); Escape throws the stroke away
+				const tool = grip.mode;
 				teardownDrag(grip);
 				setRailStroke(null);
-				if (commit && grip.stroke.length >= 2) latest.current.onRailStroke?.(grip.stroke);
+				if (commit && grip.stroke.length >= 2) {
+					if (tool === "rail") latest.current.onRailStroke?.(grip.stroke);
+					else latest.current.onPathStroke?.(grip.stroke);
+				}
+				return;
+			}
+			if (grip.mode === "pathPoint") {
+				teardownDrag(grip);
+				latest.current.onObjectPathGestureEnd?.(commit);
 				return;
 			}
 			const token = grip.token;
@@ -706,6 +796,33 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 
 		const onBlur = () => closeDrag(true);
 
+		// Double-click the route to drop a point mid-path — the same gesture the
+		// 3D scene uses, offered here because this is the board the route was
+		// drawn on, so this is where a hand goes looking for it.
+		const onDouble = (event) => {
+			const points = latest.current.objectPathPoints;
+			if (!points || points.length < 2) return;
+			if (latest.current.railDraw || latest.current.pathDraw) return;
+			const p = toFloor(event);
+			if (!p) return;
+			let best = null;
+			for (let i = 0; i < points.length - 1; i += 1) {
+				const a = points[i];
+				const b = points[i + 1];
+				const dx = b.x - a.x;
+				const dz = b.z - a.z;
+				const lenSq = dx * dx + dz * dz;
+				const t = lenSq < 1e-9 ? 0 : Math.min(1, Math.max(0, ((p.x - a.x) * dx + (p.z - a.z) * dz) / lenSq));
+				const d = Math.hypot(a.x + dx * t - p.x, a.z + dz * t - p.z);
+				if (!best || d < best.d) best = { d, index: i, t };
+			}
+			// Near the line, and not on top of a point that is already there.
+			if (!best || best.d > PATH_POINT_GRAB || best.t < 0.04 || best.t > 0.96) return;
+			event.preventDefault();
+			event.stopPropagation();
+			latest.current.onObjectPathPointInsert?.(best.index, best.t);
+		};
+
 		const onEscape = (event) => {
 			if (event.key !== "Escape") return;
 			if (!dragRef.current) return;
@@ -716,6 +833,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 		};
 
 		host.addEventListener("pointerdown", onDown);
+		host.addEventListener("dblclick", onDouble);
 		host.addEventListener("pointermove", onHover);
 		window.addEventListener("pointermove", onMove);
 		window.addEventListener("pointerup", onUp);
@@ -724,6 +842,7 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 		window.addEventListener("keydown", onEscape, true);
 		return () => {
 			host.removeEventListener("pointerdown", onDown);
+			host.removeEventListener("dblclick", onDouble);
 			host.removeEventListener("pointermove", onHover);
 			window.removeEventListener("pointermove", onMove);
 			window.removeEventListener("pointerup", onUp);
@@ -775,6 +894,35 @@ export function PlanBoard({ hostRef, planCamRef, shotCamRef, look, fovDeg, chara
 			{(railDraw || cameraRailPoints) && <SubjectMovementGuide track={subjectTrack} />}
 			{cameraRailPoints && cameraRailPoints.length > 1 && <CameraRailLine points={cameraRailPoints} />}
 			{railStroke && railStroke.length > 1 && <CameraRailLine points={railStroke} live />}
+			{/* The selected object's travel path, drawn in its own colour so a
+			    prop's route never reads as the camera's rail. */}
+			{objectPathPoints && objectPathPoints.length > 1 && <ObjectPathLine points={objectPathPoints} selectedIndex={objectPathSelectedIndex} />}
+			{/* The sun on the floor plan: a gold disc + a stem toward the stage
+			    centre, so blocking can read where the light comes from without
+			    switching to the 3D scene. Not draggable here — the 3D puck owns
+			    the gesture; this is a readout. */}
+			{keyLight && (
+				<group position={[keyLight.x, 0, keyLight.z]}>
+					<mesh position={[0, 0.05, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={10}>
+						<circleGeometry args={[PUCK_R * 0.7, 20]} />
+						<meshBasicMaterial color="#f2b544" transparent opacity={0.85} depthWrite={false} depthTest={false} />
+					</mesh>
+					{(() => {
+						// stem pointing at the stage centre, in the light's local frame
+						const angle = Math.atan2(-keyLight.x, -keyLight.z);
+						const dist = Math.hypot(keyLight.x, keyLight.z);
+						return (
+							<group rotation={[0, angle, 0]}>
+								<mesh position={[0, 0.045, dist / 2]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={9}>
+									<planeGeometry args={[0.05, dist]} />
+									<meshBasicMaterial color="#f2b544" transparent opacity={0.35} depthWrite={false} depthTest={false} />
+								</mesh>
+							</group>
+						);
+					})()}
+					<PlanLabel text={ko("LIGHT", "조명")} color="#f2b544" offset={-0.5} />
+				</group>
+			)}
 		</group>
 	);
 }
