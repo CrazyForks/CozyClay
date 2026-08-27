@@ -60,6 +60,23 @@ expect("the rail schedule model still resolves per shot in the app", app.include
 expect("Rail range playback is resolved per shot", app.includes("resolveRailSchedule({ railFollow: camera.railFollow") && app.includes("subjectSlice.slice(schedule.startFrame, schedule.endFrame + 1)"));
 expect("the crane graph itself selects, adds, and vertically drags height points", timeline.includes("function CraneHeightEditor") && timeline.includes("onSelect?.(nearest.index)") && timeline.includes("onChangePoints?.(drag.points)") && timeline.includes("onAddPoint?.(drag.addAt)"));
 expect(
+	"authoring a crane point shows it: the box switches to the curve it just edited",
+	// the box draws one curve at a time, so adding a crane point while it drew
+	// SPEED put the new point where the card could not draw it — it appeared in
+	// the scene and nowhere near the hand that placed it
+	timeline.includes('setCameraCurve("height");') &&
+	timeline.indexOf('setCameraCurve("height");') < timeline.indexOf("onCranePointAdd?.(t, shot.id);"),
+);
+expect(
+	"the crane line is sampled from the model that flies the camera",
+	// craneHeightAt runs a monotone cubic; straight segments drew a motion the
+	// rig never performs
+	timeline.includes("function craneCurvePath(points, xFor, yFor)") &&
+	timeline.includes("craneHeightAt(crane, t)") &&
+	timeline.includes('import { buildRail, craneHeightAt } from "../camera-follow.js";') &&
+	!timeline.includes('<polyline className="tl-crane-line"'),
+);
+expect(
 	"curves drag at a fixed rate, not at the surface's height",
 	// a curve inside a 39px Shot box mapped its whole range onto 39px, so a
 	// twitch swung it a quarter of the way; the drag is units-per-pixel now,

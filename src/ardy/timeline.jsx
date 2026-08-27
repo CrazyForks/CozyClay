@@ -3,7 +3,7 @@ import { frameFromClientX, motionTrimRange, promptMoveStartFrame, shotBlockGeome
 import { motionSegmentSpeedForFrames } from "./motion-edit.js";
 import { promptResizeFrame } from "./timeline-resize.js";
 import { ko, isKo } from "../locale.js";
-import { buildRail } from "../camera-follow.js";
+import { buildRail, craneHeightAt } from "../camera-follow.js";
 import { pathMetrics } from "../object-path.js";
 import { flatTiming, timingIsFlat, envelopeDrag, insertCut, removeCut, CUT_MIN_GAP } from "../speed-envelope.js";
 
@@ -94,6 +94,25 @@ function signedDegrees(value) {
 function signedValue(value) {
 	const rounded = Math.round((Number(value) || 0) * 10) / 10;
 	return `${rounded >= 0 ? "+" : ""}${rounded}`;
+}
+
+/**
+ * The crane's path between its points, sampled from the model that flies the
+ * camera. craneHeightAt() runs a monotone cubic, so straight segments drew a
+ * motion the rig never performs — an eased rise read as a mechanical ramp, and
+ * a point dragged past its neighbours showed no overshoot where the real lens
+ * has none either. Sampling keeps the picture honest without a second
+ * implementation of the easing.
+ */
+function craneCurvePath(points, xFor, yFor) {
+	const crane = { points };
+	const steps = Math.max(24, points.length * 12);
+	let d = `M ${xFor(points[0].t)} ${yFor(points[0].height)}`;
+	for (let step = 1; step <= steps; step += 1) {
+		const t = points[0].t + (points[points.length - 1].t - points[0].t) * (step / steps);
+		d += ` L ${xFor(t)} ${yFor(craneHeightAt(crane, t))}`;
+	}
+	return d;
 }
 
 /**
@@ -221,11 +240,11 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 				{origin + span < 0.999 && <rect className="sg-outside" x={origin + span} y="0" width={1 - origin - span} height="1" />}
 				<line className="tl-crane-grid" x1={origin} y1={yFor(maxHeight / 2)} x2={origin + span} y2={yFor(maxHeight / 2)} />
 				<line className="sg-axis" x1="0" y1=".9" x2="1" y2=".9" />
-				<polygon
+				<path
 					className="tl-crane-fill"
-					points={`${xFor(0)},0.9 ${points.map((point) => `${xFor(point.t)},${yFor(point.height)}`).join(" ")} ${xFor(1)},0.9`}
+					d={`${craneCurvePath(points, xFor, yFor)} L ${xFor(1)} 0.9 L ${xFor(0)} 0.9 Z`}
 				/>
-				<polyline className="tl-crane-line" points={points.map((point) => `${xFor(point.t)},${yFor(point.height)}`).join(" ")} />
+				<path className="tl-crane-line" d={craneCurvePath(points, xFor, yFor)} />
 				{points.map((point, index) => (
 					<line
 						key={index}
@@ -1499,6 +1518,11 @@ export default function Timeline({
 				: { start: 0, end: duration };
 			if (frameInShot < range.start || frameInShot > range.end) return;
 			const t = Math.max(0, Math.min(1, (frameInShot - range.start) / Math.max(1, range.end - range.start)));
+			// Show what the click just made. The box draws one curve at a time, so
+			// authoring a crane point while it is drawing SPEED put the new point
+			// somewhere the card cannot draw — the dot appeared in the scene and
+			// nowhere near the hand that placed it.
+			setCameraCurve("height");
 			onCranePointAdd?.(t, shot.id);
 			return;
 		}
