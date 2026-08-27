@@ -8753,7 +8753,10 @@ function resizePromptClip(id, edge, rawFrame) {
 						)}
 					</Foldout>
 
-				<Foldout hidden={!isCharacterSelection} title={ko("Rig", "리그")}>
+				{/* Rig and Pose are chosen once when a character is cast and then left
+				    alone, so they open on demand — Subject and Prompt are the panels
+				    you actually work in. */}
+				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Rig", "리그")}>
 					{/* The rig is a property of the character, and swapping it is a
 					    look decision made while blocking — so it belongs beside the
 					    subject, not buried in the project file. */}
@@ -8779,7 +8782,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					</div>
 				</Foldout>
 
-				<Foldout hidden={!isCharacterSelection} title={ko("Pose", "포즈")}>
+				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Pose", "포즈")}>
 					{/* Tiles, not a dropdown: a pose read out of a photograph has no
 					    name worth reading — it is recognisable only as a shape. This
 					    is the same grid the studio shows, applied to whichever
