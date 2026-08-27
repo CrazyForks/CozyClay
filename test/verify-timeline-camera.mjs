@@ -59,6 +59,19 @@ expect("no ribbon editing gestures survive in the timeline", !["beginRailMove", 
 expect("the rail schedule model still resolves per shot in the app", app.includes("resolveRailSchedule({ railFollow: camera.railFollow"));
 expect("Rail range playback is resolved per shot", app.includes("resolveRailSchedule({ railFollow: camera.railFollow") && app.includes("subjectSlice.slice(schedule.startFrame, schedule.endFrame + 1)"));
 expect("the crane graph itself selects, adds, and vertically drags height points", timeline.includes("function CraneHeightEditor") && timeline.includes("onSelect?.(nearest.index)") && timeline.includes("onChangePoints?.(drag.points)") && timeline.includes("onAddPoint?.(drag.addAt)"));
+expect(
+	"curves drag at a fixed rate, not at the surface's height",
+	// a curve inside a 39px Shot box mapped its whole range onto 39px, so a
+	// twitch swung it a quarter of the way; the drag is units-per-pixel now,
+	// and the height axis is frozen for the gesture so the scale cannot feed back
+	timeline.includes("const DRAG_TRAVEL_PX = 220;") &&
+	timeline.includes("const FINE_DRAG_FACTOR = 0.25;") &&
+	timeline.includes("function dragValue(start, event, unitsPerPx)") &&
+	timeline.includes("event.shiftKey ? FINE_DRAG_FACTOR : 1") &&
+	timeline.includes("yMax / DRAG_TRAVEL_PX") &&
+	timeline.includes("maxHeight / DRAG_TRAVEL_PX") &&
+	timeline.includes("const maxHeight = heldScale ??"),
+);
 
 expect(
 	"unified lane renders exactly one block from each shot geometry",

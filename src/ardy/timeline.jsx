@@ -156,12 +156,17 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 		event.stopPropagation();
 		if (nearest.index >= 0 && nearest.distance <= 0.12) {
 			onSelect?.(nearest.index);
-			dragRef.current = { index: nearest.index, points, moved: false };
+			dragRef.current = {
+				index: nearest.index,
+				points,
+				moved: false,
+				start: { clientY: event.clientY, value: points[nearest.index].height },
+			};
 			setHeldScale(maxHeight);
 			svgRef.current?.setPointerCapture?.(event.pointerId);
 			return;
 		}
-		if (at.t > 0.01 && at.t < 0.99) dragRef.current = { index: -1, points: null, moved: false, addAt: at.t };
+		if (at.t > 0.01 && at.t < 0.99) dragRef.current = { index: -1, points: null, moved: false, addAt: at.t, start: { clientY: event.clientY, value: at.height } };
 	};
 	const onPointerMove = (event) => {
 		const drag = dragRef.current;
@@ -170,12 +175,17 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 		event.stopPropagation();
 		const at = locate(event);
 		if (!at) return;
-		const moved = drag.moved || Math.abs(at.graphY - yFor(points[drag.index]?.height ?? 0)) > 0.01;
 		if (drag.index < 0) {
-			dragRef.current = { ...drag, moved: true };
+			// A press on empty time becomes an add, not a drag — but only once the
+			// hand has actually travelled, so a click is still a click.
+			if (Math.abs(event.clientY - (drag.start?.clientY ?? event.clientY)) > 3) dragRef.current = { ...drag, moved: true };
 			return;
 		}
-		const next = points.map((point, index) => index === drag.index ? { ...point, height: at.height } : point);
+		// Metres per pixel, not "wherever the cursor is": the box is 39 px tall,
+		// so following the pointer made every twitch a metre.
+		const height = Math.max(0.1, Math.min(maxHeight, dragValue(drag.start, event, maxHeight / DRAG_TRAVEL_PX)));
+		const moved = drag.moved || Math.abs(height - drag.start.value) > 0.005;
+		const next = points.map((point, index) => index === drag.index ? { ...point, height } : point);
 		dragRef.current = { ...drag, points: next, moved };
 		setDraftPoints(next);
 	};
@@ -242,7 +252,7 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 						event.preventDefault();
 						event.stopPropagation();
 						onSelect?.(index);
-						dragRef.current = { index, points, moved: false };
+						dragRef.current = { index, points, moved: false, start: { clientY: event.clientY, value: point.height } };
 						setHeldScale(maxHeight);
 						svgRef.current?.setPointerCapture?.(event.pointerId);
 					}}
@@ -265,6 +275,25 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
  * point of the editor. Floor at 2x average so a flat route keeps sane
  * proportions; headroom 15% so the peak never kisses the frame. */
 const GRAPH_MIN_SCALE = 2;
+
+/**
+ * How far the hand travels to sweep a curve's whole range, in pixels.
+ *
+ * Mapping the pointer's position straight onto the value ties the sensitivity
+ * to the surface's height — and a curve drawn inside a Shot box is 39 px tall,
+ * so a two-pixel twitch swung the value across a quarter of its range. The
+ * drag is a RATE instead: a fixed number of pixels per full sweep, so the same
+ * wrist movement means the same change whether the curve is in a 39 px box or
+ * an 88 px strip. Hold Shift for a quarter-speed pass over fine detail.
+ */
+const DRAG_TRAVEL_PX = 220;
+const FINE_DRAG_FACTOR = 0.25;
+
+/** Value under the pointer for a rate-based vertical drag. */
+function dragValue(start, event, unitsPerPx) {
+	const gain = unitsPerPx * (event.shiftKey ? FINE_DRAG_FACTOR : 1);
+	return start.value + (start.clientY - event.clientY) * gain;
+}
 
 const sgY = (value, yMax) => 1 - Math.min(value, yMax) / yMax;
 
@@ -335,6 +364,21 @@ function SpeedGraph({
 		return { takeX, u, value };
 	};
 
+	/** The curve's own value at u, in multiples of the average. */
+	const envelopeValueHere = (u) => {
+		const bounds = [{ t: 0 }, ...shown.cuts, { t: 1 }];
+		let index = 0;
+		while (index < shown.cuts.length && u > shown.cuts[index].t) index += 1;
+		const a = bounds[index].t;
+		const b = bounds[index + 1].t;
+		const local = Math.max(0, Math.min(1, (u - a) / Math.max(1e-9, b - a)));
+		const envelope = shown.envelopes[index];
+		const position = local * (envelope.length - 1);
+		const i = Math.min(envelope.length - 2, Math.floor(position));
+		const fraction = position - i;
+		return envelope[i] * (1 - fraction) + envelope[i + 1] * fraction;
+	};
+
 	const segmentAt = (u) => {
 		let index = 0;
 		while (index < shown.cuts.length && u > shown.cuts[index].t) index += 1;
@@ -370,18 +414,22 @@ function SpeedGraph({
 		} catch {
 			/* an unknown pointerId must not kill the press */
 		}
-		dragRef.current = { recorded: false };
+		// The grab starts from the curve's OWN value here, so the first pixel of
+		// travel nudges the line instead of teleporting it to the cursor.
+		dragRef.current = { recorded: false, start: { clientY: event.clientY, value: envelopeValueHere(at.u) } };
 		setSelectedCut(null);
 	};
 	const onPointerMove = (event) => {
-		if (!dragRef.current) return;
+		const drag = dragRef.current;
+		if (!drag) return;
 		const at = locate(event);
 		if (!at) return;
-		if (!dragRef.current.recorded) {
-			dragRef.current.recorded = true;
+		if (!drag.recorded) {
+			drag.recorded = true;
 			onGestureStart?.();
 		}
-		applyDrag(at);
+		const value = Math.max(0, dragValue(drag.start, event, yMax / DRAG_TRAVEL_PX));
+		applyDrag({ ...at, value });
 	};
 	const onPointerUp = () => {
 		const drag = dragRef.current;
