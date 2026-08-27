@@ -2911,7 +2911,7 @@ globalThis.playMode = centerTab === "play";
 	const [glContextLost, setGlContextLost] = useState(false);
 	const [bridge, setBridge] = useState(null);
 	const [ardyPrompt, setArdyPrompt] = useState("");
-	const [ardyDuration, setArdyDuration] = useState(4); // matches the 4 s generation cap
+	const [ardyDuration, setArdyDuration] = useState(4); // default clip length in seconds; aligned with the recommended 3-5 s block range
 	// Optional native-ARDY seed: empty string = omit from the request (the
 	// box picks a fresh random one each run); otherwise a plain integer in
 	// 0..2**31-1 to reproduce a result.
@@ -6390,10 +6390,13 @@ globalThis.playMode = centerTab === "play";
 		if (id === selectedPromptId) setArdyPrompt(text);
 	}
 
-	// Quality policy: one prompt block never spans more than 4 s. ARDY's
-// trained window is 10 s, but long single blocks drift — chained 4 s
-// blocks keep each call inside the model's sweet spot.
-const PROMPT_BLOCK_MAX_FRAMES = 4 * TIMELINE_FPS;
+	// Quality policy: one prompt block never spans more than 5 s. Kimodo
+	// walk-to-run sweeps (seeds 7/21/99; seam stall ratio, 1.0 = no stall)
+	// scored 0.79 for 5 s blocks (best of the sweep), close to a seam-free
+	// single take at 0.85; 8 s blocks collapsed to 0.32. <2 s blocks lose
+	// about a third of their frames to the transition window, so 3-5 s is the recommended
+	// authoring range.
+const PROMPT_BLOCK_MAX_FRAMES = 5 * TIMELINE_FPS;
 
 function resizePromptClip(id, edge, rawFrame) {
 		setPromptClips((prev) => {
@@ -6511,6 +6514,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		const sourcePromptClips = promptClipsOverride
 			.filter((clip) => clip.text.trim())
 			.sort((a, b) => a.startFrame - b.startFrame);
+		const hasAuthoredBlocks = sourcePromptClips.length > 0;
 		for (const clip of sourcePromptClips) {
 			const startFrame = Math.max(cursor, Math.min(clipFrames, clip.startFrame));
 			const endFrame = Math.max(startFrame, Math.min(clipFrames, clip.endFrame));
@@ -6550,7 +6554,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				setToast(isKo ? `생성하지 못했어요 — ${pathVerdict.errors[0]}` : `Not generated — ${pathVerdict.errors[0]}`);
 				return;
 			}
-			if (hasPromptSchedule) {
+			if (hasAuthoredBlocks) {
 				const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PROMPT_BLOCK_MAX_FRAMES);
 				if (longBlock) {
 					setToast(isKo
@@ -6566,9 +6570,9 @@ function resizePromptClip(id, edge, rawFrame) {
 		// is +Z (heading 0) and resampled with path-tangent headings — sparse
 		// heading-less pins that fight the forced facing corrupt the whole
 		// track (see the sign-convention notes in ardy/waypoints.js).
-		// The 4 s block policy binds the schedule path too, not just
+		// The 5 s block policy binds the schedule path too, not just
 		// root-constrained runs: chained blocks are the whole point of the cap.
-		if (!waypointMode && hasPromptSchedule) {
+		if (!waypointMode && hasAuthoredBlocks) {
 			const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PROMPT_BLOCK_MAX_FRAMES);
 			if (longBlock) {
 				setToast(isKo
