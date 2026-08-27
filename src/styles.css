@@ -2827,12 +2827,17 @@ input[type=range]::-moz-range-thumb {
    frames wide. The block itself remains a compact status strip. */
 .tl-camera-editor {
 	flex: none;
-	min-height: 44px;
+	/* One row, always: the bar now owns the curve's actions too, and a bar
+	   that wrapped would take its extra height straight out of the lanes. */
+	min-height: 30px;
+	max-height: 34px;
+	flex-wrap: nowrap;
 	display: flex;
 	align-items: center;
 	gap: 7px;
-	padding: 4px 10px;
+	padding: 3px 10px;
 	overflow-x: auto;
+	overflow-y: hidden;
 	background: #201c28;
 	border-bottom: 1px solid rgba(154, 123, 212, .38);
 	color: #d9d2e7;
@@ -3109,18 +3114,22 @@ input[type=range]::-moz-range-thumb {
    The full instrument (header, Cut/Reset buttons) lives on the prop strip;
    the card carries the compact curve and its gestures (drag shapes,
    double-click cuts, Delete removes — discoverable via the hover tooltip). */
-/* The card's curve is a READOUT, not an editor: the editing lives in the
-   camera instrument, so nothing here competes with selecting or dragging the
-   shot itself. It sits under the title row rather than behind it. */
+/* The Shot box IS the graph. It already spans exactly the shot's frames, so
+   the curve needs no clock, no header and no labels of its own — the box's
+   own width is the time axis. Everything you DO to the curve (switch, cut,
+   reset, remove) lives in the camera bar above, which leaves the box holding
+   one line and its points. */
 .sg-shot {
 	position: absolute;
-	left: 12px;
-	right: 12px;
-	top: 22px;
-	bottom: 13px;
-	opacity: .82;
-	pointer-events: none;
+	left: 4px;
+	right: 4px;
+	top: 18px;
+	bottom: 2px;
+	pointer-events: auto;
+	z-index: 1;
 }
+
+.sg-shot .sg-bare { position: absolute; inset: 0; }
 
 /* The title row rides over the curve's top edge; a slim scrim keeps the
    words legible without giving the curve a header of its own. */
@@ -3132,53 +3141,12 @@ input[type=range]::-moz-range-thumb {
 	pointer-events: auto;
 }
 
-/* The camera loads into the strip the way a prop's travel does. */
-.tl-track.cam-instrument .tl-track-label {
-	align-items: flex-start;
-	padding-top: 8px;
-	color: #cbb8ef;
-	gap: 6px;
-	min-width: 0;
-}
-
-.tl-track.cam-instrument .tl-track-label .objmo-name {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.tl-track.cam-instrument .tl-lane {
-	background: #16131f;
-	border-bottom: 1px solid rgba(167, 139, 250, .16);
-}
-
 .cam-mode-switch {
 	flex: none;
 	display: flex;
 	gap: 2px;
 }
 
-.tl-lane.sg-lane.cam .sg-line,
-.tl-lane.sg-lane.cam .tl-crane-line { stroke: #b9a1e8; }
-.tl-lane.sg-lane.cam .sg-fill { fill: rgba(154, 123, 212, .18); }
-.tl-lane.sg-lane.cam .sg-average { stroke: rgba(185, 161, 232, .32); }
-.tl-lane.sg-lane.cam .sg-readout { background: #4a3d6e; }
-.tl-lane.sg-lane.cam .sg-scale-top,
-.tl-lane.sg-lane.cam .sg-scale-avg,
-.tl-lane.sg-lane.cam .sg-scale-zero { color: #9c8bc4; }
-
-.tl-lane.sg-lane.cam .sg-body {
-	border-color: rgba(154, 123, 212, .3);
-	background: #120f17;
-}
-
-.tl-lane.sg-lane.cam .sg-axis { stroke: rgba(185, 161, 232, .45); }
-
-/* The camera lane keeps the Shots lane at its own height: the instrument
-   takes the room the three performer lanes had, not the shot card's. */
-.tl-surface:has(.tl-track.cam-instrument) {
-	grid-template-rows: 28px minmax(60px, 3fr) minmax(68px, 1.7fr) auto;
-}
 
 .tl-crane-editor-svg {
 	position: absolute;
@@ -3263,13 +3231,24 @@ input[type=range]::-moz-range-thumb {
 	text-shadow: 0 1px 2px rgba(0, 0, 0, .8);
 }
 
-.sg-shot .sg-head { display: none; }
-
 .sg-shot .sg-body {
 	min-height: 0;
-	margin: 0 4px 2px;
-	border-color: rgba(154, 123, 212, .3);
-	background: #120f17;
+	margin: 0;
+	border: 0;
+	background: transparent;
+}
+
+/* A rail Shot reads as one violet instrument rather than a card with a
+   picture glued on: the box carries the curve's own colour. */
+.tl-shot-block.has-dolly .tl-shot-label {
+	z-index: 2;
+	position: relative;
+}
+
+.tl-shot-block.has-dolly .tl-shot-label b,
+.tl-shot-block.has-dolly .tl-shot-label small {
+	background: transparent;
+	text-shadow: 0 1px 3px rgba(12, 8, 22, .95);
 }
 
 .sg-shot .sg-line { stroke: #b9a1e8; }
@@ -3683,12 +3662,15 @@ input[type=range]::-moz-range-thumb {
 .tl-surface {
 	position: relative;
 	width: calc(var(--tl-label-w) + (100% - var(--tl-label-w)) * var(--tl-zoom));
+	/* The surface takes the body's height instead of its own content's, so the
+	   performer rows give way and the Shot row — which carries the curve you
+	   are editing — is never the row that falls off the bottom. */
+	height: 100%;
+	min-height: 0;
 	display: grid;
-	/* Performer rows share the room evenly; the Shot row carries title, Rail
-	   ribbon and key strip so it gets real height; the prop/camera speed
-	   graph is a fixed instrument, and any overflow scrolls the surface —
-	   a squeezed graph reads as a broken one. */
-	grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr) auto;
+	/* Performer rows share the room evenly; the Shot row carries the title,
+	   the curve and the key strip, so it gets real height and keeps it. */
+	grid-template-rows: 28px repeat(3, minmax(18px, 1fr)) minmax(68px, 1.7fr) auto;
 }
 
 .tl-ruler {
@@ -4074,6 +4056,14 @@ input[type=range]::-moz-range-thumb {
 
 .tl-shot-block.selected {
 	box-shadow: inset 0 0 0 1px rgba(201, 181, 244, .45), 0 0 8px rgba(154, 123, 212, .32);
+}
+
+/* A rail Shot IS its curve, so the whole box carries the curve's violet —
+   including while it is the active shot, whose amber belongs to the edges. */
+.tl-shot-block.has-dolly,
+.tl-shot-block.has-dolly.active {
+	background: linear-gradient(180deg, rgba(88, 66, 136, .96) 0%, rgba(52, 39, 84, .96) 100%);
+	border-color: #a78bfa;
 }
 
 .tl-shot-block.moving {

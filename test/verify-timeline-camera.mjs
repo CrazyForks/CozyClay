@@ -51,7 +51,7 @@ expect(
 	app.includes('if (patch.mode === "follow") syncActiveCameraFraming()'),
 );
 
-expect("surface lays out four tracks after removing duplicate Camera row", css.includes("grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) minmax(68px, 1.7fr)"));
+expect("surface lays out four tracks, and the Shot row is never the one that falls off", css.includes("grid-template-rows: 28px repeat(3, minmax(18px, 1fr)) minmax(68px, 1.7fr)") && css.includes("height: 100%;"));
 expect("lane gridlines are frame-based, not width-based", css.includes(".tl-grid {") && !css.includes("100% / 23"));
 expect("camera dots have a distinct violet identity", css.includes(".tl-marker.cam {") && css.includes("#a78bfa"));
 expect("the Rail Follow ribbon is gone; the crane height editor owns the card interaction", timeline.includes("shot.camera?.railFollow") && timeline.includes('className="tl-crane-editor"') && timeline.includes('className="tl-crane-editor-hit"') && !timeline.includes('className="tl-crane-strip"') && !timeline.includes('className={"tl-rail"') && !timeline.includes("name === CAMERA_LANE"));
@@ -119,10 +119,15 @@ const cameraEditorSource = timeline.slice(
 	timeline.indexOf("function CameraBlockEditor("),
 	timeline.indexOf("function ", timeline.indexOf("function CameraBlockEditor(") + 1),
 );
+// The bar now carries a Speed/Height curve switch as well as the Height
+// READOUT, so measure from the last Height mention before Pitch: it is the
+// readout's own label the pin is about.
+const pitchAt = cameraEditorSource.indexOf('ko("Pitch", "피치")');
+const heightReadoutAt = cameraEditorSource.lastIndexOf('ko("Height", "높이")', pitchAt);
 expect(
 	"height and pitch are adjacent in the camera bar",
-	cameraEditorSource.indexOf('ko("Height", "높이")') < cameraEditorSource.indexOf('ko("Pitch", "피치")') &&
-	(cameraEditorSource.slice(cameraEditorSource.indexOf('ko("Height", "높이")'), cameraEditorSource.indexOf('ko("Pitch", "피치")')).match(/<label/g) ?? []).length === 1,
+	heightReadoutAt > 0 && heightReadoutAt < pitchAt &&
+	(cameraEditorSource.slice(heightReadoutAt, pitchAt).match(/<label/g) ?? []).length === 1,
 );
 expect(
 	"distance, height and pitch are measured from viewport manipulation instead of typed",

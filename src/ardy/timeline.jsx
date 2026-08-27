@@ -260,132 +260,6 @@ function CraneHeightEditor({ crane, railRange, durationFrames, selectedIndex, on
 	);
 }
 
-/**
- * The camera's move, given the same room the prop's travel already has.
- *
- * A shot card is 61 px of a 68 px lane, and the move needs a title, a speed
- * curve, a height curve and a key strip — 95 px of instrument in 61 px of
- * card, which is how the curves ended up drawn on top of each other and under
- * the shot's own name. So selecting a rail Shot loads the camera into the
- * strip the way selecting a prop loads its travel: the three performer lanes
- * (which nothing in a camera move reads) become one instrument, the Shots lane
- * stays exactly where it is so shots are still selectable, and the window's
- * height never changes.
- *
- * One instrument, two readings: Speed is metres per second along the rail,
- * Height is metres off the floor. They share a clock and a shape language, so
- * the switch is a switch rather than a second editor.
- */
-function CameraMotionTrack({
-	shot,
-	railLength,
-	railRange,
-	durationFrames,
-	localFrame,
-	fps,
-	mode,
-	onModeChange,
-	timing,
-	craneSelectedIndex,
-	onTimingChange,
-	onTimingGestureEnd,
-	onCraneChange,
-	onCranePointAdd,
-	onCranePointSelect,
-	onCranePointDelete,
-}) {
-	const windowFrames = Math.max(1, railRange.end - railRange.start);
-	const seconds = windowFrames / Math.max(1, fps);
-	const averageSpeed = railLength != null ? railLength / Math.max(1 / fps, seconds) : 1;
-	const crane = shot.camera?.craneHeight ?? null;
-	const heights = crane?.points?.map((point) => point.height) ?? [];
-	const facts = railLength != null
-		? `${railLength.toFixed(1)} m · ${seconds.toFixed(1)}${isKo ? "초" : "s"} · ${averageSpeed.toFixed(1)} m/s`
-		: `${seconds.toFixed(1)}${isKo ? "초" : "s"}`;
-	const heightFacts = heights.length
-		? `${Math.min(...heights).toFixed(1)}–${Math.max(...heights).toFixed(1)} m · ${heights.length}${ko(" pts", "점")}`
-		: null;
-	const interiorSelected = craneSelectedIndex != null && craneSelectedIndex > 0 && craneSelectedIndex < heights.length - 1;
-	const modeSwitch = (
-		<span className="cam-mode-switch" role="group" aria-label={ko("Camera curve", "카메라 곡선")}>
-			<button
-				type="button"
-				className={"tl-camera-tool" + (mode === "speed" ? " active" : "")}
-				aria-pressed={mode === "speed"}
-				title={ko("How fast the dolly runs the rail", "돌리가 레일을 달리는 속도")}
-				onClick={() => onModeChange?.("speed")}
-			>
-				{ko("Speed", "속도")}
-			</button>
-			<button
-				type="button"
-				className={"tl-camera-tool" + (mode === "height" ? " active" : "")}
-				aria-pressed={mode === "height"}
-				disabled={!crane}
-				title={ko("How high the lens rides", "렌즈가 떠가는 높이")}
-				onClick={() => onModeChange?.("height")}
-			>
-				{ko("Height", "높이")}
-			</button>
-		</span>
-	);
-	return (
-		<div className="tl-track cam-instrument sg-row">
-			<span className="tl-track-label">
-				<span className="tl-subject-kind">{ko("CAMERA", "카메라")}</span>
-				<span className="objmo-name">{shot.name}</span>
-			</span>
-			<div className="tl-lane sg-lane cam">
-				{mode === "height" && crane ? (
-					<div className="sg">
-						<header className="sg-head">
-							{modeSwitch}
-							<span className="sg-facts">{heightFacts ?? facts}</span>
-							<span className="tl-path-hint">
-								{ko("drag a point to set lens height · click empty time to add one", "점을 끌어 렌즈 높이 조절 · 빈 시간을 클릭해 점 추가")}
-							</span>
-							<button
-								type="button"
-								className="tl-camera-tool danger"
-								disabled={!interiorSelected}
-								title={ko("Remove the selected interior crane point", "선택한 중간 크레인 점을 삭제합니다")}
-								onClick={() => onCranePointDelete?.()}
-							>
-								{ko("Remove point", "점 삭제")}
-							</button>
-						</header>
-						<div className="sg-body">
-							<CraneHeightEditor
-								crane={crane}
-								railRange={railRange}
-								durationFrames={durationFrames}
-								selectedIndex={craneSelectedIndex}
-								onSelect={(index) => onCranePointSelect?.(index)}
-								onAddPoint={(t) => onCranePointAdd?.(t)}
-								onChangePoints={(points) => onCraneChange?.(points)}
-							/>
-						</div>
-					</div>
-				) : (
-					<SpeedGraph
-						leading={modeSwitch}
-						facts={facts}
-						timing={timing}
-						windowStart={durationFrames > 1 ? railRange.start / (durationFrames - 1) : 0}
-						windowFrac={durationFrames > 1 ? windowFrames / (durationFrames - 1) : 1}
-						frame={Math.min(Math.max(0, localFrame), Math.max(0, durationFrames - 1))}
-						frameCount={durationFrames}
-						averageSpeed={averageSpeed}
-						conserve
-						onChange={(next) => onTimingChange?.(next)}
-						onGestureEnd={() => onTimingGestureEnd?.()}
-					/>
-				)}
-			</div>
-		</div>
-	);
-}
-
 /** The y-axis follows the data — a display clamp would flatten a real curve
  * into a ceiling plateau and break the visible area, which is the whole
  * point of the editor. Floor at 2x average so a flat route keeps sane
@@ -408,7 +282,10 @@ const sgY = (value, yMax) => 1 - Math.min(value, yMax) / yMax;
  */
 function SpeedGraph({
 	facts = null,
-	leading = null, // controls that belong to the instrument, not to the curve
+	// Inside a Shot box the curve is all there is: the box already carries the
+	// name, the frames and the actions live in the camera bar, so a header here
+	// would only steal the height the line needs.
+	bare = false,
 	timing,
 	windowStart = 0,
 	windowFrac = 1,
@@ -551,9 +428,8 @@ function SpeedGraph({
 
 	const avgY = sgY(1, yMax);
 	return (
-		<div className="sg">
-			<header className="sg-head">
-				{leading}
+		<div className={"sg" + (bare ? " sg-bare" : "")}>
+			{!bare && <header className="sg-head">
 				<span className="sg-facts">{facts ?? `${averageSpeed.toFixed(1)} ${speedUnit} ${ko("average", "평균")}`}</span>
 				<span className="tl-path-hint">
 					{ko("drag the curve · double-click or the button cuts · Delete removes a cut", "곡선을 끌어 조절 · 더블클릭이나 버튼으로 컷 · 컷 선택 후 Delete로 삭제")}
@@ -580,7 +456,7 @@ function SpeedGraph({
 						{ko("Reset curve", "곡선 초기화")}
 					</button>
 				)}
-			</header>
+			</header>}
 			<div className="sg-body">
 				<svg
 					ref={svgRef}
@@ -783,6 +659,8 @@ function CameraBlockEditor({
 	railDraw,
 	railLength,
 	craneSelectedIndex = null,
+	// The Shot box draws the curve; this bar owns everything you DO to it.
+	curve = null,
 	onChange,
 	onPreview,
 	onRailDrawToggle,
@@ -842,6 +720,51 @@ function CameraBlockEditor({
 						>
 							{ko("Delete rail", "레일 삭제")}
 						</button>
+					)}
+					{curve && (
+						<span className="cam-mode-switch" role="group" aria-label={ko("Shot curve", "샷 곡선")}>
+							<button
+								type="button"
+								className={"tl-camera-tool" + (curve.mode === "speed" ? " active" : "")}
+								aria-pressed={curve.mode === "speed"}
+								title={ko("Draw dolly speed in the Shot box", "샷 박스에 돌리 속도를 그립니다")}
+								onClick={() => curve.onModeChange?.("speed")}
+							>
+								{ko("Speed", "속도")}
+							</button>
+							<button
+								type="button"
+								className={"tl-camera-tool" + (curve.mode === "height" ? " active" : "")}
+								aria-pressed={curve.mode === "height"}
+								disabled={!curve.hasCrane}
+								title={ko("Draw crane height in the Shot box", "샷 박스에 크레인 높이를 그립니다")}
+								onClick={() => curve.onModeChange?.("height")}
+							>
+								{ko("Height", "높이")}
+							</button>
+						</span>
+					)}
+					{curve && curve.mode === "speed" && (
+						<>
+							<button
+								type="button"
+								className="tl-camera-tool"
+								disabled={!curve.canCut}
+								title={ko("Pin the instant at the playhead: the spot being passed then never moves again", "재생 위치의 순간을 고정합니다 — 그때 지나는 자리는 다시 움직이지 않습니다")}
+								onClick={() => curve.onCut?.()}
+							>
+								{ko("Cut", "컷")}
+							</button>
+							<button
+								type="button"
+								className="tl-camera-tool danger"
+								disabled={!curve.canReset}
+								title={ko("Back to constant speed — clears the curve and every cut", "등속으로 되돌립니다 — 곡선과 컷을 모두 지웁니다")}
+								onClick={() => curve.onReset?.()}
+							>
+								{ko("Reset curve", "곡선 초기화")}
+							</button>
+						</>
 					)}
 					<button
 						type="button"
@@ -1582,30 +1505,53 @@ export default function Timeline({
 	}, [shots]);
 	const [dollyDraft, setDollyDraft] = useState(null); // { shotId, timing }
 	const dollyDraftRef = useRef(null);
-	const [cameraCurve, setCameraCurve] = useState("speed"); // which reading the camera instrument shows
+	// Which reading the Shot box draws. The box IS the graph — it already spans
+	// exactly the shot's frames — so the curve needs no clock of its own, and
+	// every action (switch, cut, reset, remove) belongs to the camera bar above.
+	const [cameraCurve, setCameraCurve] = useState("speed");
 	useEffect(() => {
 		setDollyDraft(null);
 		dollyDraftRef.current = null;
 	}, [selectedCameraShot?.id]);
-	// The camera instrument only exists for a Shot whose camera actually rides a
-	// rail: a keyed or follow camera has no dolly to time and no crane to lift.
-	const cameraTrackShot = selectedCameraShot && cameraBlockMode(selectedCameraShot) === "rail" && railLengthByShot.has(selectedCameraShot.id)
+	// A curve only exists for a Shot whose camera actually rides a rail: a keyed
+	// or follow camera has no dolly to time and no crane to lift.
+	const curveShot = selectedCameraShot && cameraBlockMode(selectedCameraShot) === "rail" && railLengthByShot.has(selectedCameraShot.id)
 		? selectedCameraShot
 		: null;
-	const cameraTrackRange = useMemo(() => {
-		if (!cameraTrackShot) return null;
-		const duration = cameraTrackShot.endFrame - cameraTrackShot.startFrame + 1;
-		const stored = cameraTrackShot.camera?.railFollow;
+	const curveRange = useMemo(() => {
+		if (!curveShot) return null;
+		const duration = curveShot.endFrame - curveShot.startFrame + 1;
+		const stored = curveShot.camera?.railFollow;
 		if (stored?.mode === "off") return null;
 		const range = stored?.mode === "range"
 			? { start: Math.max(0, Math.min(duration - 1, stored.startFrame)), end: Math.max(0, Math.min(duration - 1, stored.endFrame)) }
 			: { start: 0, end: duration - 1 };
 		return { range, duration };
-	}, [cameraTrackShot]);
-	// Editing a camera move reads nothing from the performer's lanes, so they
-	// stand aside for the instrument exactly as they do for a prop's travel.
-	// The Shots lane stays: it is how the next shot gets picked.
-	const visibleTracks = cameraTrackRange ? [SHOTS_LANE] : TRACKS;
+	}, [curveShot]);
+	// The bar's actions operate on the same pure timing model the box draws, so
+	// "cut here" means the same thing whichever surface asked for it.
+	const dollyTiming = curveShot ? (dollyDraft?.shotId === curveShot.id ? dollyDraft.timing : curveShot.camera?.dollyTiming ?? null) : null;
+	const curvePlayheadU = curveShot && curveRange
+		? (Math.min(Math.max(0, frame - curveShot.startFrame), curveRange.duration - 1) - curveRange.range.start) / Math.max(1, curveRange.range.end - curveRange.range.start)
+		: null;
+	const commitDolly = (timing) => {
+		if (!curveShot) return;
+		handlers.current.onCameraBlockChange?.({ dollyTiming: timingIsFlat(timing) ? null : timing }, curveShot.id);
+	};
+	const cameraCurveActions = curveShot && curveRange
+		? {
+			mode: cameraCurve,
+			onModeChange: setCameraCurve,
+			hasCrane: !!curveShot.camera?.craneHeight,
+			canCut: cameraCurve === "speed" && curvePlayheadU != null && curvePlayheadU > CUT_MIN_GAP && curvePlayheadU < 1 - CUT_MIN_GAP,
+			canReset: cameraCurve === "speed" ? !timingIsFlat(dollyTiming) : false,
+			onCut: () => {
+				const next = insertCut(dollyTiming ?? flatTiming(), curvePlayheadU);
+				if (next && next !== dollyTiming) commitDolly(next);
+			},
+			onReset: () => commitDolly(flatTiming()),
+		}
+		: null;
 	const motionSegments = motion?.segments ?? [];
 	const selectedMotionSegment = motionSegments.find((segment) => frame >= segment.timelineStart && frame <= segment.timelineEnd) ?? motionSegments[0] ?? null;
 	const visibleMotionSegments = trimPreview
@@ -1786,6 +1732,7 @@ export default function Timeline({
 							railDraw={railDraw}
 							railLength={cameraRailLength}
 							craneSelectedIndex={craneSelectedIndex}
+							curve={cameraCurveActions}
 							onChange={(patch) => handlers.current.onCameraBlockChange?.(patch)}
 							onPreview={() => handlers.current.onCameraPreview?.(selectedCameraShot.id)}
 							onRailDrawToggle={() => handlers.current.onCameraRailDrawToggle?.()}
@@ -1838,34 +1785,6 @@ export default function Timeline({
 						    is a different subject on the same clock, so selecting one
 						    swaps the performer's lanes for the prop's instead of
 						    stacking both and making every row ambiguous. */}
-						{!pathObject && cameraTrackRange && (
-							<CameraMotionTrack
-								shot={cameraTrackShot}
-								railLength={railLengthByShot.get(cameraTrackShot.id) ?? null}
-								railRange={cameraTrackRange.range}
-								durationFrames={cameraTrackRange.duration}
-								localFrame={frame - cameraTrackShot.startFrame}
-								fps={fps}
-								mode={cameraCurve}
-								onModeChange={setCameraCurve}
-								timing={dollyDraft?.shotId === cameraTrackShot.id ? dollyDraft.timing : cameraTrackShot.camera?.dollyTiming ?? null}
-								craneSelectedIndex={craneSelectedIndex}
-								onTimingChange={(next) => {
-									dollyDraftRef.current = { shotId: cameraTrackShot.id, timing: next };
-									setDollyDraft({ shotId: cameraTrackShot.id, timing: next });
-								}}
-								onTimingGestureEnd={() => {
-									const draft = dollyDraftRef.current;
-									dollyDraftRef.current = null;
-									setDollyDraft(null);
-									if (draft) handlers.current.onCameraBlockChange?.({ dollyTiming: timingIsFlat(draft.timing) ? null : draft.timing }, draft.shotId);
-								}}
-								onCraneChange={(points) => onCameraBlockChange?.({ craneHeight: { points } }, cameraTrackShot.id)}
-								onCranePointAdd={(t) => onCranePointAdd?.(t, cameraTrackShot.id)}
-								onCranePointSelect={(index) => onCranePointSelect?.(index, cameraTrackShot.id)}
-								onCranePointDelete={() => onCranePointDelete?.()}
-							/>
-						)}
 						{pathObject ? (
 							<ObjectTravelTrack
 								object={pathObject}
@@ -1879,7 +1798,7 @@ export default function Timeline({
 								onTimingGestureStart={() => handlers.current.onObjectTimingGestureStart?.()}
 								onTimingGestureEnd={() => handlers.current.onObjectTimingGestureEnd?.()}
 							/>
-						) : visibleTracks.map((name) => (
+						) : TRACKS.map((name) => (
 							<div className={"tl-track" + (name === "Prompts" ? " prompts" : "") + (name === IK_LANE ? " ik" : "") + (name === SHOTS_LANE ? " shots" : "")} key={name}>
 								<span className="tl-track-label">
 									{TRACK_LABELS_KO[name]}
@@ -2040,16 +1959,48 @@ export default function Timeline({
 										    the strip; what stays here is one passive curve — the shape of the
 										    move, at a glance. */}
 										{!railOff && railRange && railLengthByShot.has(shot.id) && (
-											<div className="sg-shot" aria-hidden="true">
-												<SpeedGraph
-													timing={dollyDraft?.shotId === shot.id ? dollyDraft.timing : shot.camera?.dollyTiming ?? null}
-													windowStart={durationFrames > 1 ? railRange.start / (durationFrames - 1) : 0}
-													windowFrac={durationFrames > 1 ? Math.max(1, railRange.end - railRange.start) / (durationFrames - 1) : 1}
-													frame={Math.min(Math.max(0, localProgress), Math.max(0, durationFrames - 1))}
-													frameCount={durationFrames}
-													averageSpeed={railLengthByShot.get(shot.id) / Math.max(1 / fps, (railRange.end - railRange.start) / fps)}
-													conserve
-												/>
+											<div
+												className={"sg-shot" + (cameraCurve === "height" && shot.camera?.craneHeight ? " height" : "")}
+												title={cameraCurve === "height"
+													? ko("Crane height — drag a point, click empty time to add one", "크레인 높이 — 점을 끌어 조절, 빈 시간을 클릭해 추가")
+													: ko("Dolly speed — drag the line; cuts and reset live in the camera bar above", "돌리 속도 — 선을 끌어 조절, 컷·초기화는 위 카메라 바에서")}
+												onPointerDown={(event) => event.stopPropagation()}
+												onClick={(event) => event.stopPropagation()}
+												onDoubleClick={(event) => event.stopPropagation()}
+											>
+												{cameraCurve === "height" && shot.camera?.craneHeight ? (
+													<CraneHeightEditor
+														crane={shot.camera.craneHeight}
+														railRange={railRange}
+														durationFrames={durationFrames}
+														selectedIndex={index === cameraBlockIdx ? craneSelectedIndex : null}
+														onSelect={(pointIndex) => { selectUnifiedShotBlock(index); onCranePointSelect?.(pointIndex, shot.id); }}
+														onAddPoint={(t) => { selectUnifiedShotBlock(index); onCranePointAdd?.(t, shot.id); }}
+														onChangePoints={(points) => { selectUnifiedShotBlock(index); handlers.current.onCameraBlockChange?.({ craneHeight: { points } }, shot.id); }}
+													/>
+												) : (
+													<SpeedGraph
+														bare
+														timing={dollyDraft?.shotId === shot.id ? dollyDraft.timing : shot.camera?.dollyTiming ?? null}
+														windowStart={durationFrames > 1 ? railRange.start / (durationFrames - 1) : 0}
+														windowFrac={durationFrames > 1 ? Math.max(1, railRange.end - railRange.start) / (durationFrames - 1) : 1}
+														frame={Math.min(Math.max(0, localProgress), Math.max(0, durationFrames - 1))}
+														frameCount={durationFrames}
+														averageSpeed={railLengthByShot.get(shot.id) / Math.max(1 / fps, (railRange.end - railRange.start) / fps)}
+														conserve
+														onChange={(timing) => {
+															selectUnifiedShotBlock(index);
+															dollyDraftRef.current = { shotId: shot.id, timing };
+															setDollyDraft({ shotId: shot.id, timing });
+														}}
+														onGestureEnd={() => {
+															const draft = dollyDraftRef.current;
+															dollyDraftRef.current = null;
+															setDollyDraft(null);
+															if (draft) handlers.current.onCameraBlockChange?.({ dollyTiming: timingIsFlat(draft.timing) ? null : draft.timing }, draft.shotId);
+														}}
+													/>
+												)}
 											</div>
 										)}
 											{/* Camera-key authoring remains separate from the crane graph so
