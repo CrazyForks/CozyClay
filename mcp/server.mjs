@@ -43,7 +43,7 @@ import { ErrorCode, InitializeRequestSchema, LATEST_PROTOCOL_VERSION, McpError }
 import { z } from "zod";
 
 import { LiveMutationUncertainError, MotionJobRegistry, startLiveHub } from "./live-hub.mjs";
-import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhases, splitLongBeat } from "./ardy-prompts.mjs";
+import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhases, splitLongBeat, tileClipFrames } from "./ardy-prompts.mjs";
 
 import {
 	CAMERA_MOVES,
@@ -1161,7 +1161,8 @@ registerTool(
 							.number()
 							.min(0.5)
 							.max(20)
-							.describe(`how long this beat holds; over ${BLOCK_MAX_SECONDS}s it becomes chained blocks`),
+							.optional()
+							.describe(`how long this beat holds; defaults to 3 s when omitted, and over ${BLOCK_MAX_SECONDS}s it becomes chained blocks`),
 					}),
 				)
 				.min(1)
@@ -1180,7 +1181,7 @@ registerTool(
 		let chained = 0;
 		const blocks = [];
 		for (const [i, textValue] of normalized.texts.entries()) {
-			const whole = beats[Math.min(normalized.sources[i], beats.length - 1)].seconds ?? 2;
+			const whole = beats[Math.min(normalized.sources[i], beats.length - 1)].seconds ?? 3;
 			const spans = splitLongBeat(whole);
 			if (spans.length > 1) chained += spans.length - 1;
 			for (const span of spans) {
@@ -1362,6 +1363,19 @@ registerTool(
 			}
 		}
 		const clipSeconds = clipFrames / ARDY_FPS;
+		// A single beat has no sequence to chain: send it as a plain prompt;
+		// composite physical wording remains intact in the normalized text.
+		// Long single prompts are the exception: split the actual clip length
+		// into equal Kimodo blocks so every wire segment stays within the cap.
+		const singlePromptNeedsChain = prompts.length === 1 && clipSeconds > BLOCK_MAX_SECONDS;
+		if (prompts.length === 1) {
+			if (singlePromptNeedsChain) {
+				segments = tileClipFrames(clipFrames, clipSeconds).map((b) => ({ ...b, prompt: prompts[0] }));
+				chained = segments.length - 1;
+			} else {
+				chained = 0;
+			}
+		}
 		const rewrites = kept
 			.map(({ text: prompt, notes }, i) => (notes.length ? `  ${i + 1}. ${prompt}  ← ${notes.join("; ")}` : null))
 			.filter(Boolean);
@@ -1391,10 +1405,8 @@ registerTool(
 		} catch (error) {
 			return liveError(error);
 		}
-		// A single beat has no sequence to chain: send it as a plain prompt;
-		// composite physical wording remains intact in the normalized text.
 		const body =
-			prompts.length === 1
+			prompts.length === 1 && !singlePromptNeedsChain
 				? { prompt: prompts[0], duration: clipSeconds, posePin: false }
 				: { prompt: prompts.join(" "), duration: clipSeconds, segments, posePin: false };
 		if (seed !== undefined) body.seed = seed;

@@ -196,11 +196,11 @@ generated motion.
 
 ## Operational notes
 
-- Prompt-block 4 s cap: this is a CozyClay local quality policy, not an
-  ARDY limit. Upstream's CLI defaults to 5 s (`--duration` in
-  scripts/generate.py), and
-  the model's trained window is 10 s — CozyClay caps at 4 s because blocks
-  beyond that drift visibly on this bridge.
+- Prompt-block 5 s cap: this is a CozyClay local quality policy, not an
+  ARDY limit. The upstream trained window is 10 s. Kimodo measurements found
+  5 s blocks had the best seam continuity (stall ratio 0.79, where 1.0 means
+  no stall, versus 0.85 for a seam-free single take), while 8 s collapsed to
+  0.32; author blocks in the recommended 3-5 s range.
 - Embedding-cache footgun (upstream nv-tlabs/ardy PR #8): cache keys hash
   only the prompt text. After changing the text encoder or adapters, clear
   the cache dir or stale embeddings are silently reused under the new

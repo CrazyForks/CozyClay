@@ -25,3 +25,8 @@ export const TURNSTILE_SITE_KEY = typeof configuredTurnstileSiteKey === "string"
   ? configuredTurnstileSiteKey.trim()
   : "";
 export const configuredPromptLimit = promptLimitFromBuild(injectedPromptMaxChars);
+
+// Preview lock: while true, the composer renders but every action (sign-in,
+// submit) only shows a "not available yet" notice and no API call is made.
+// Flip to false when the hosted demo goes public.
+export const DEMO_DISABLED = true;

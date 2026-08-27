@@ -1,43 +1,41 @@
 import { Component } from "react";
-import { isKo } from "./locale.js";
+import { ko } from "./locale.js";
 
 /**
- * The studio's last-ditch net: any render-time throw in the tree used to
- * blank the whole page (issue #63). This boundary keeps a named, recoverable
- * error screen instead — the autosaved scene survives in localStorage, so
- * "reload" is a real recovery path, not a shrug.
+ * Last line of defense for the whole tree. A render-time throw anywhere in
+ * App unmounts everything React manages, and over an autosaving document
+ * that reads as a silent white page, mid-edit, with no message and no way
+ * back. Catch it, say what broke, and offer the one recovery that always
+ * works: reload, which resumes from the last autosaved state.
+ *
+ * Deliberately dependency-free beyond ko(): the fallback must render when
+ * app state is exactly what just crashed.
  */
-export default class AppErrorBoundary extends Component {
+export default class ErrorBoundary extends Component {
 	constructor(props) {
 		super(props);
 		this.state = { error: null };
 	}
+
 	static getDerivedStateFromError(error) {
 		return { error };
 	}
+
 	componentDidCatch(error, info) {
-		console.error("[cozyclay] studio crash", error, info);
+		console.error("[cozyclay] render crash", error, info?.componentStack ?? "");
 	}
+
 	render() {
-		if (this.state.error) {
-			const message = String(this.state.error?.message ?? this.state.error ?? "unknown");
-			return (
-				<div className="crash-screen" role="alert">
-					<div className="crash-card">
-						<h1>{isKo ? "문제가 생겼어요" : "Something went wrong"}</h1>
-						<p>
-							{isKo
-								? "작업은 브라우저에 자동 저장돼 있습니다. 새로고침하면 이어서 할 수 있어요."
-								: "Your work is autosaved in the browser. Reloading picks it back up."}
-						</p>
-						<code>{message.slice(0, 300)}</code>
-						<button type="button" onClick={() => window.location.reload()}>
-							{isKo ? "새로고침" : "Reload"}
-						</button>
-					</div>
-				</div>
-			);
-		}
-		return this.props.children;
+		if (!this.state.error) return this.props.children;
+		return (
+			<div className="crash-screen" role="alert">
+				<h1>{ko("The studio hit a render error", "스튜디오에 렌더링 오류가 발생했어요")}</h1>
+				<p>{ko("Scenes autosave as you work, so reloading resumes from the last saved state.", "작업 중 장면은 자동 저장되므로, 새로고침하면 마지막 저장 상태에서 이어집니다.")}</p>
+				<pre className="crash-detail">{String((this.state.error && this.state.error.message) || this.state.error)}</pre>
+				<button type="button" onClick={() => window.location.reload()}>
+					{ko("Reload the studio", "스튜디오 새로고침")}
+				</button>
+			</div>
+		);
 	}
 }

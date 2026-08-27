@@ -57,8 +57,11 @@ assert.doesNotMatch(demoHtml, /data-provider="github"|star-card|priority lane|pr
 assert.doesNotMatch(demoHtml, /1x00000000000000000000AA/u);
 const robots = readFileSync(path("public/robots.txt"), "utf8");
 assert.match(robots, /^Disallow:\s*\/d\/\s*$/m);
+// Unlisted mode: the composer is reachable by URL only, never via search.
+assert.match(robots, /^Disallow:\s*\/demo\/\s*$/m);
+assert.match(demoHtml, /<meta\s+name="robots"\s+content="noindex, nofollow"\s*\/?>(?:\s*)/u);
 const sitemap = readFileSync(path("public/sitemap.xml"), "utf8");
-assert.match(sitemap, /<loc>https:\/\/cozyclay\.org\/demo\/<\/loc>/u);
+assert.doesNotMatch(sitemap, /<loc>[^<]*\/demo\//u);
 assert.doesNotMatch(sitemap, /<loc>[^<]*\/d\//u);
 console.log("PASS ticket bookmark notice, Google-only sign-in, robots rule, and sitemap visibility");
 
@@ -227,7 +230,7 @@ try {
   ]);
   demo.updateSessionUi({ signedIn: true, provider: "google", dailyRemaining: 2 });
   const sessionStatus = globalThis.document.elements.get("session-status");
-  assert.equal(sessionStatus.textContent, "Signed in as google · 2 left today");
+  assert.equal(sessionStatus.textContent, "Signed in with Google · 2 left today");
   assert.equal(globalThis.document.elements.get("sign-in-panel").classList.contains("is-hidden"), true);
 
   let replaced = "";

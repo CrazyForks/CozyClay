@@ -296,7 +296,7 @@ async function route(request, env, ctx) {
   if (pathname.startsWith("/auth/") && request.method === "GET") {
     const match = pathname.match(/^\/auth\/google\/(start|callback)$/u);
     if (!match) return errorResponse("not_found", 404, request, env);
-    const response = match[2] === "start"
+    const response = match[1] === "start"
       ? await startOAuth(request, "google", env, { nextPath: url.searchParams.get("next") ?? "/demo/" })
       : await handleCallback(request, "google", env);
     return withCors(response, request, env);

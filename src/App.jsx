@@ -1251,6 +1251,34 @@ function RenderLoopController({ stageRef }) {
 	return null;
 }
 
+/** GPU resets — sleep/wake, a driver restart, VRAM pressure from an export —
+ * kill the WebGL context, and without listeners the stage goes black and
+ * stays black with no message. preventDefault on webglcontextlost is the
+ * documented opt-in for browser-driven restoration; on restore, kick the
+ * demand loop so the first frame actually paints. */
+function ContextLossGuard({ onLostChange }) {
+	const gl = useThree((state) => state.gl);
+	const invalidate = useThree((state) => state.invalidate);
+	useEffect(() => {
+		const canvas = gl.domElement;
+		const onLost = (event) => {
+			event.preventDefault();
+			onLostChange(true);
+		};
+		const onRestored = () => {
+			onLostChange(false);
+			invalidate();
+		};
+		canvas.addEventListener("webglcontextlost", onLost);
+		canvas.addEventListener("webglcontextrestored", onRestored);
+		return () => {
+			canvas.removeEventListener("webglcontextlost", onLost);
+			canvas.removeEventListener("webglcontextrestored", onRestored);
+		};
+	}, [gl, invalidate, onLostChange]);
+	return null;
+}
+
 function ViewportLayoutInvalidator({ insetX, insetY, insetWidth, insetHeight, hierarchyWidth, sidebarWidth, timelineHeight, planZoom }) {
 	const invalidate = useThree((state) => state.invalidate);
 	useEffect(() => {
@@ -2460,6 +2488,7 @@ globalThis.playMode = centerTab === "play";
 			localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify(workspaceLayout));
 		} catch (err) {
 			console.warn("[cozyclay] workspace layout not saved:", err?.name ?? err);
+		}
 		}
 	}, [workspaceLayout]);
 
@@ -3696,9 +3725,10 @@ globalThis.playMode = centerTab === "play";
 		window.addEventListener(PWA_UPDATE_EVENT, onUpdate);
 		return () => window.removeEventListener(PWA_UPDATE_EVENT, onUpdate);
 	}, []);
+	const [glContextLost, setGlContextLost] = useState(false);
 	const [bridge, setBridge] = useState(null);
 	const [ardyPrompt, setArdyPrompt] = useState("");
-	const [ardyDuration, setArdyDuration] = useState(4); // matches the 4 s generation cap
+	const [ardyDuration, setArdyDuration] = useState(4); // default clip length in seconds; aligned with the recommended 3-5 s block range
 	// Optional native-ARDY seed: empty string = omit from the request (the
 	// box picks a fresh random one each run); otherwise a plain integer in
 	// 0..2**31-1 to reproduce a result.
@@ -7256,10 +7286,13 @@ globalThis.playMode = centerTab === "play";
 		if (id === selectedPromptId) setArdyPrompt(text);
 	}
 
-	// Quality policy: one prompt block never spans more than 4 s. ARDY's
-// trained window is 10 s, but long single blocks drift — chained 4 s
-// blocks keep each call inside the model's sweet spot.
-const PROMPT_BLOCK_MAX_FRAMES = 4 * TIMELINE_FPS;
+	// Quality policy: one prompt block never spans more than 5 s. Kimodo
+	// walk-to-run sweeps (seeds 7/21/99; seam stall ratio, 1.0 = no stall)
+	// scored 0.79 for 5 s blocks (best of the sweep), close to a seam-free
+	// single take at 0.85; 8 s blocks collapsed to 0.32. <2 s blocks lose
+	// about a third of their frames to the transition window, so 3-5 s is the recommended
+	// authoring range.
+const PROMPT_BLOCK_MAX_FRAMES = 5 * TIMELINE_FPS;
 
 function resizePromptClip(id, edge, rawFrame) {
 		setPromptClips((prev) => {
@@ -7384,6 +7417,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		const sourcePromptClips = promptClipsOverride
 			.filter((clip) => clip.text.trim())
 			.sort((a, b) => a.startFrame - b.startFrame);
+		const hasAuthoredBlocks = sourcePromptClips.length > 0;
 		for (const clip of sourcePromptClips) {
 			const startFrame = Math.max(cursor, Math.min(clipFrames, clip.startFrame));
 			const endFrame = Math.max(startFrame, Math.min(clipFrames, clip.endFrame));
@@ -7423,7 +7457,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				setToast(isKo ? `생성하지 못했어요 — ${pathVerdict.errors[0]}` : `Not generated — ${pathVerdict.errors[0]}`);
 				return;
 			}
-			if (hasPromptSchedule) {
+			if (hasAuthoredBlocks) {
 				const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PROMPT_BLOCK_MAX_FRAMES);
 				if (longBlock) {
 					setToast(isKo
@@ -7439,9 +7473,9 @@ function resizePromptClip(id, edge, rawFrame) {
 		// is +Z (heading 0) and resampled with path-tangent headings — sparse
 		// heading-less pins that fight the forced facing corrupt the whole
 		// track (see the sign-convention notes in ardy/waypoints.js).
-		// The 4 s block policy binds the schedule path too, not just
+		// The 5 s block policy binds the schedule path too, not just
 		// root-constrained runs: chained blocks are the whole point of the cap.
-		if (!waypointMode && hasPromptSchedule) {
+		if (!waypointMode && hasAuthoredBlocks) {
 			const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PROMPT_BLOCK_MAX_FRAMES);
 			if (longBlock) {
 				setToast(isKo
@@ -8042,10 +8076,6 @@ function resizePromptClip(id, edge, rawFrame) {
 							dpr={[1, 2]}
 							gl={{ preserveDrawingBuffer: true, antialias: true }}
 							onCreated={({ gl }) => {
-								// GPU context loss (sleep/wake, driver reset, VRAM
-								// pressure) used to leave a black stage with no path
-								// back. preventDefault opts into restoration; the
-								// toast tells the operator what just happened.
 								gl.domElement.addEventListener("webglcontextlost", (event) => {
 									event.preventDefault();
 									setToast(ko(
@@ -8058,6 +8088,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								});
 							}}
 						>
+							<ContextLossGuard onLostChange={setGlContextLost} />
 							<RenderLoopController stageRef={stageRef} />
 							<ViewportLayoutInvalidator
 								insetX={insetPos?.x ?? null}
@@ -8491,6 +8522,16 @@ function resizePromptClip(id, edge, rawFrame) {
 								shotAspect={shotOutput.aspect}
 							/>
 						</Canvas>
+
+						{glContextLost && (
+							<div className="gl-lost-overlay" role="alert">
+								<div className="gl-lost-card">
+									<strong>{ko("The 3D view lost its graphics context", "3D 뷰가 그래픽 컨텍스트를 잃었어요")}</strong>
+									<p>{ko("Waiting for the browser to restore it. If this stays, reload the studio — scenes autosave.", "브라우저가 복구하기를 기다리는 중이에요. 계속 멈춰 있으면 새로고침하세요 — 장면은 자동 저장됩니다.")}</p>
+									<button type="button" onClick={() => window.location.reload()}>{ko("Reload", "새로고침")}</button>
+								</div>
+							</div>
+						)}
 
 						<div ref={mainPaneRef} className={"vp-pane vp-main" + (planIsMain ? " plan" : "")} />
 						<div

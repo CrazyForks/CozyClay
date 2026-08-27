@@ -1,4 +1,6 @@
-import { API_BASE, TURNSTILE_SITE_KEY, configuredPromptLimit } from "./config.js";
+import { API_BASE, DEMO_DISABLED, TURNSTILE_SITE_KEY, configuredPromptLimit } from "./config.js";
+
+const DISABLED_MESSAGE = "아직 동작하지 않는 기능입니다. This feature is not available yet.";
 
 const PROMPT_STORAGE_KEY = "cozyclay.demo.prompt";
 
@@ -15,7 +17,11 @@ const ERROR_MESSAGES = Object.freeze({
 let sessionState = { signedIn: false, activeJobToken: null, sessionError: false, sessionChecked: false };
 let turnstileWidgetId = null;
 let turnstileToken = "";
+let turnstileLoadListenerAttached = false;
 let submitInFlight = false;
+
+const SUBMIT_LABEL = "Create motion";
+const SIGN_IN_SUBMIT_LABEL = "Continue with Google to create";
 
 function byId(id) {
   return typeof document === "undefined" ? null : document.getElementById(id);
@@ -112,6 +118,7 @@ function resetTurnstile() {
 }
 
 function mountTurnstile() {
+  if (!sessionState.sessionChecked || !sessionState.signedIn || sessionState.sessionError) return;
   const widget = byId("turnstile-widget");
   if (!widget || turnstileWidgetId !== null) return;
   if (!TURNSTILE_SITE_KEY) {
@@ -120,7 +127,13 @@ function mountTurnstile() {
   }
   widget.dataset.sitekey = TURNSTILE_SITE_KEY;
   const render = () => {
-    if (!globalThis.turnstile?.render || turnstileWidgetId !== null) return;
+    if (
+      !sessionState.sessionChecked
+      || !sessionState.signedIn
+      || sessionState.sessionError
+      || !globalThis.turnstile?.render
+      || turnstileWidgetId !== null
+    ) return;
     try {
       turnstileWidgetId = globalThis.turnstile.render(widget, {
         sitekey: TURNSTILE_SITE_KEY,
@@ -142,7 +155,24 @@ function mountTurnstile() {
     }
   };
   if (globalThis.turnstile?.render) render();
-  else byId("turnstile-script")?.addEventListener("load", render, { once: true });
+  else if (!turnstileLoadListenerAttached) {
+    const script = byId("turnstile-script");
+    if (script) {
+      turnstileLoadListenerAttached = true;
+      script.addEventListener("load", render, { once: true });
+    }
+  }
+}
+
+function updateSubmitButton() {
+  const button = byId("submit-job");
+  if (!button) return;
+  if (submitInFlight) {
+    button.textContent = "Creating…";
+    return;
+  }
+  const signInFirst = sessionState.sessionChecked && !sessionState.sessionError && !sessionState.signedIn;
+  button.textContent = signInFirst ? SIGN_IN_SUBMIT_LABEL : SUBMIT_LABEL;
 }
 
 function updateSessionUi(session, { sessionError = false, sessionChecked = true } = {}) {
@@ -158,16 +188,25 @@ function updateSessionUi(session, { sessionError = false, sessionChecked = true 
     } else if (sessionError) {
       status.textContent = "Sign-in status unavailable";
     } else if (sessionState.signedIn) {
-      const identity = sessionState.provider || "account";
+      const provider = typeof sessionState.provider === "string" ? sessionState.provider.toLowerCase() : "";
+      const identity = provider === "google" ? "Signed in with Google" : "Signed in";
       const remaining = Number.isFinite(Number(sessionState.dailyRemaining))
         ? ` · ${Math.max(0, Number(sessionState.dailyRemaining))} left today`
         : "";
-      status.textContent = `Signed in as ${identity}${remaining}`;
+      status.textContent = `${identity}${remaining}`;
     } else {
       status.textContent = "Not signed in";
     }
   }
   panel?.classList.toggle("is-hidden", Boolean(sessionState.signedIn));
+  const turnstileWrap = byId("turnstile-wrap")
+    || (typeof document !== "undefined" ? document.querySelector?.(".turnstile-wrap") : null);
+  turnstileWrap?.classList.toggle(
+    "is-hidden",
+    !(sessionState.sessionChecked && sessionState.signedIn && !sessionState.sessionError),
+  );
+  updateSubmitButton();
+  if (sessionState.sessionChecked && sessionState.signedIn && !sessionState.sessionError) mountTurnstile();
   renderSessionError(sessionError ? "We could not check your sign-in status. Please try again in a moment." : "");
 }
 
@@ -219,10 +258,11 @@ function returnPath() {
   return path && /^\/demo(?:\/|$)/u.test(path) ? `${path}${globalThis.location.search || ""}` : "/demo/";
 }
 
-function signIn(provider) {
+function signIn(provider, promptValue) {
   if (provider !== "google") return;
   const field = byId("prompt");
-  savePrompt(field?.value ?? "");
+  if (typeof promptValue === "string") savePrompt(promptValue);
+  else if (field) savePrompt(field.value ?? "");
   const next = encodeURIComponent(returnPath());
   location.href = `${API_BASE}/auth/${provider}/start?next=${next}`;
 }
@@ -232,7 +272,8 @@ function setSubmitBusy(busy) {
   const button = byId("submit-job");
   if (!button) return;
   button.disabled = busy;
-  button.textContent = busy ? "Creating…" : "Create motion";
+  if (busy) button.textContent = "Creating…";
+  else updateSubmitButton();
 }
 
 function turnstileResponse() {
@@ -275,9 +316,9 @@ async function submit({ prompt: suppliedPrompt, turnstileToken: suppliedToken } 
     return null;
   }
   if (!sessionState.signedIn) {
+    if (field && typeof suppliedPrompt === "string") field.value = prompt;
     savePrompt(prompt);
-    setMessage(ERROR_MESSAGES.signed_in_required);
-    byId("sign-in-panel")?.classList.remove("is-hidden");
+    signIn("google");
     return null;
   }
   if (!cleanPrompt || cleanPrompt.length > promptLimit(field)) {
@@ -334,14 +375,46 @@ function bindComposer() {
   document.querySelectorAll("[data-provider]").forEach((button) => {
     button.addEventListener("click", () => signIn(button.dataset.provider));
   });
+  document.querySelectorAll("[data-prompt]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const field = byId("prompt");
+      const value = button.dataset?.prompt;
+      if (!field || typeof value !== "string") return;
+      field.value = value;
+      updatePromptCount();
+      savePrompt(value);
+    });
+  });
+}
+
+/** Preview lock: every actionable control answers with the notice instead. */
+function bindDisabledComposer() {
+  byId("job-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    setMessage(DISABLED_MESSAGE);
+  });
+  document.querySelectorAll("[data-provider], [data-prompt]").forEach((button) => {
+    button.addEventListener("click", () => setMessage(DISABLED_MESSAGE));
+  });
+}
+
+function bootDisabled() {
+  const status = byId("session-status");
+  if (status) status.textContent = "Preview";
+  renderSessionError(DISABLED_MESSAGE);
+  byId("turnstile-widget")?.closest(".turnstile-wrap")?.classList.add("is-hidden");
+  bindDisabledComposer();
 }
 
 function boot() {
+  if (DEMO_DISABLED) {
+    bootDisabled();
+    return;
+  }
   const field = byId("prompt");
   if (field) field.maxLength = configuredPromptLimit;
   restorePrompt();
   bindComposer();
-  mountTurnstile();
   getSession();
 }
 

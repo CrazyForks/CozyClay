@@ -30,11 +30,14 @@
 
 /**
  * CozyClay studio policy, mirrored from App.jsx PROMPT_BLOCK_MAX_FRAMES: one
- * block never spans more than 4 s, and the UI rejects longer blocks. This is
- * not an upstream limit: ARDY's CLI defaults to 5 s and its trained window is
- * 10 s.
+ * block never spans more than 5 s, and the UI rejects longer blocks. The cap
+ * is measured on the Kimodo backend: walk-to-run sweeps (seeds 7/21/99;
+ * seam stall ratio, 1.0 = no stall) scored 0.79 for 5 s blocks (best of the
+ * sweep), close to a seam-free single take at 0.85; 8 s blocks collapsed to
+ * 0.32. <2 s blocks lose about a third of their frames to the transition
+ * window, making 3-5 s the recommended authoring range.
  */
-export const BLOCK_MAX_SECONDS = 4;
+export const BLOCK_MAX_SECONDS = 5;
 
 /**
  * Split a beat that runs longer than the cap into consecutive blocks that do
@@ -47,6 +50,28 @@ export function splitLongBeat(seconds, max = BLOCK_MAX_SECONDS) {
 	const count = Math.ceil(seconds / max);
 	const even = seconds / count;
 	return Array.from({ length: count }, () => even);
+}
+
+/**
+ * Wire tiling for a long SINGLE prompt, mirrored by generate_motion. The
+ * number of blocks mirrors splitLongBeat; boundaries are rounded cumulatively so the
+ * returned ranges are contiguous and the final range ends exactly at the
+ * requested clip length. Short clips return one whole block.
+ *
+ * @param {number} clipFrames total clip length on the ARDY frame clock
+ * @param {number} clipSeconds total clip length in seconds
+ * @param {number} max maximum block length in seconds
+ * @returns {Array<{startFrame:number,endFrame:number}>} contiguous wire ranges
+ */
+export function tileClipFrames(clipFrames, clipSeconds, max = BLOCK_MAX_SECONDS) {
+	const count = splitLongBeat(clipSeconds, max).length;
+	let startFrame = 0;
+	return Array.from({ length: count }, (_, i) => {
+		const endFrame = i === count - 1 ? clipFrames : Math.round(((i + 1) * clipFrames) / count);
+		const block = { startFrame, endFrame };
+		startFrame = endFrame;
+		return block;
+	});
 }
 
 /** Shown in the tool description so a caller writes good phases first time. */
@@ -64,8 +89,13 @@ export const PROMPT_GUIDE = [
 	"    Phases are taken as written: a comma or a 'then'/'while'/'as'/'before' clause is NOT split",
 	"    or trimmed for you, so split beats yourself when separate blocks are the safer choice.",
 	`  - [CozyClay studio policy] A block holds at most ${BLOCK_MAX_SECONDS} s; longer beats are chained into`,
-	"    consecutive blocks. This is not an upstream limit: the upstream CLI defaults to 5 s and the",
-	"    trained window is 10 s.",
+	"    consecutive blocks. Kimodo measurements found the best continuity at 3-5 s;",
+	"    8 s drifts off the prompt, while <2 s blocks lose about a third of their frames to the transition window.",
+	"  - [Kimodo measurement] The transition between blocks happens at the START of the following block (conditioned on the previous block's tail),",
+	"    so the block after a hard transition (direction reversal, stop-to-sprint) pays for it out of its own duration",
+	"    and needs extra time; similar-energy neighbours (walk to run) transition cleanly.",
+	"  - [Kimodo upstream guide] Each prompt in a multi-block sequence must be self-contained:",
+	"    'Then the person stops' gives the model nothing; 'A person walking comes to a stop' works.",
 	"  - [Upstream model cards] Use neutral physical action terms rather than demographic adjectives",
 	"    (a bias-mitigation rule). The model is strongest at locomotion, gestures, combat, dancing, and",
 	"    everyday activities. It is not aware of scene objects: describe the body action, not object",
