@@ -3170,10 +3170,6 @@ globalThis.playMode = centerTab === "play";
 	 * finished drag stays pending so "Regenerate from trail edit" can send the
 	 * auto-derived window through the existing motionEdit pipeline. */
 	const [trailFalloffS, setTrailFalloffS] = useState(0.5);
-	// IK handle editing and trajectory editing are separate tools. Trails stay
-	// visible as a guide, but never capture a click while the operator is
-	// making detailed joint corrections with the normal IK handles.
-	const [trailEditMode, setTrailEditMode] = useState(false);
 	const [showTrails, setShowTrails] = useState(true);
 	const [trailEdit, setTrailEdit] = useState(null); // {track, grabFrame, radiusFrames, clipDelta}
 	const trailBaseMotionRef = useRef(null);
@@ -8656,7 +8652,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								chains={ikChains}
 								fkJoints={ikFkJoints}
 								ikState={ikStateRef.current}
-								enabled={ikMode && !trailEditMode && !posing && !playMode}
+								enabled={ikMode && !posing && !playMode}
 								focus={ikFocus}
 								onFocus={focusIkHandle}
 								onSolve={ikSolve}
@@ -8881,7 +8877,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									ikFocus={ikFocus}
 									falloffFrames={trailFalloffFrames}
 									pendingEdit={trailEdit}
-									enabled={trailEditMode && !posing && !playMode}
+									enabled={!posing && !playMode}
 									visible={showTrails}
 									onDragStart={onTrailDragStart}
 									onDragPreview={onTrailDragPreview}
@@ -9765,19 +9761,10 @@ function resizePromptClip(id, edge, rawFrame) {
 							<>
 								<button
 									type="button"
-									className={"btn full" + (trailEditMode ? " primary" : "")}
-									aria-pressed={trailEditMode}
-									onClick={() => setTrailEditMode((value) => !value)}
-								>
-									{ko("궤적선 편집", "Edit motion trails")}
-								</button>
-								<button
-									type="button"
 									className={"btn full" + (!showTrails ? " muted" : "")}
 									aria-pressed={showTrails}
 									onClick={() => {
 										setShowTrails((value) => !value);
-										setTrailEditMode(false);
 									}}
 								>
 									{ko(`궤적선 ${showTrails ? "표시" : "숨김"}`, `Trails ${showTrails ? "on" : "off"}`)}
