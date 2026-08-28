@@ -22,7 +22,7 @@ import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl
 import { bakeExtractedTake, bakePoseFrame, collectLandmarkTrack, createPoseDetector, imageFrames, sampleTimes, videoFrames } from "./pose-extract/index.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { PIN_BLOCKED, planPosePin } from "./ardy/pose-pin.js";
-import { TRAIL_EFFECTOR_JOINTS, applyTrailFalloffDelta, jointTrailPoints, nearestTrailFrame, trailEditRange, worldDeltaToClip } from "./motion-trail.js";
+import { TRAIL_EFFECTOR_JOINTS, applyTrailFalloffDelta, jointTrailPoints, nearestFrameToRay, trailEditRange, worldDeltaToClip } from "./motion-trail.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
 import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint, toSceneRootOffset, PATH_LIMITS } from "./ardy/waypoints.js";
@@ -2439,48 +2439,99 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 		return out.length > 1 ? out : null;
 	}, [highlight, motion, rootFlat, effectorFlat, falloffFrames]);
 
-	const beginDrag = (track) => (event) => {
-		if (!enabled) return;
-		event.stopPropagation();
-		const flat = track === "effector" ? effectorFlat : rootFlat;
-		if (!flat) return;
-		const grabFrame = nearestTrailFrame(flat, event.point);
-		const normal = camera.getWorldDirection(new THREE.Vector3()).negate();
-		const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, event.point.clone());
-		const start = event.point.clone();
-		setDrag({ track, grabFrame });
-		onDragStart({ track, grabFrame });
+	// Manual capture-phase picking instead of r3f pointer handlers: handlers on
+	// a drei Line make react-three-fiber raycast the fat-line shader geometry on
+	// EVERY pointermove for hover bookkeeping, which is exactly the IK-mode lag.
+	// A single pointerdown listener that measures point-to-ray distance against
+	// the cached trail arrays costs nothing while the mouse merely moves.
+	const pickRef = useRef(null);
+	pickRef.current = { rootFlat, effectorFlat, enabled };
+	useEffect(() => {
+		const dom = gl.domElement;
 		const raycaster = new THREE.Raycaster();
 		const hit = new THREE.Vector3();
-		const move = (pointerEvent) => {
-			const rect = gl.domElement.getBoundingClientRect();
+		const down = (event) => {
+			const pick = pickRef.current;
+			if (!pick?.enabled || event.button !== 0) return;
+			const rect = dom.getBoundingClientRect();
 			const ndc = new THREE.Vector2(
-				((pointerEvent.clientX - rect.left) / rect.width) * 2 - 1,
-				-((pointerEvent.clientY - rect.top) / rect.height) * 2 + 1,
+				((event.clientX - rect.left) / rect.width) * 2 - 1,
+				-((event.clientY - rect.top) / rect.height) * 2 + 1,
 			);
 			raycaster.setFromCamera(ndc, camera);
-			if (!raycaster.ray.intersectPlane(plane, hit)) return;
-			onDragMove({ track, grabFrame, delta: { x: hit.x - start.x, y: hit.y - start.y, z: hit.z - start.z } });
+			const { origin, direction } = raycaster.ray;
+			// Effector first: it usually overlaps the root path and is the finer target.
+			const candidates = [
+				["effector", pick.effectorFlat],
+				["root", pick.rootFlat],
+			];
+			let track = null;
+			let grabFrame = 0;
+			for (const [name, flat] of candidates) {
+				const near = flat ? nearestFrameToRay(flat, origin, direction, 0.2) : null;
+				if (near) {
+					track = name;
+					grabFrame = near.frame;
+					break;
+				}
+			}
+			if (!track) return;
+			// The grab wins over the camera controls listening in the bubble phase.
+			event.stopPropagation();
+			event.preventDefault();
+			const flat = track === "effector" ? pick.effectorFlat : pick.rootFlat;
+			const start = new THREE.Vector3(flat[grabFrame * 3], flat[grabFrame * 3 + 1], flat[grabFrame * 3 + 2]);
+			const normal = camera.getWorldDirection(new THREE.Vector3()).negate();
+			const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, start);
+			setDrag({ track, grabFrame });
+			onDragStart({ track, grabFrame });
+			// Drag work is rAF-throttled: pointermove can fire far faster than the
+			// renderer, and each onDragMove re-derives the deformed take.
+			let queued = null;
+			let rafId = 0;
+			const flush = () => {
+				rafId = 0;
+				if (queued) onDragMove(queued);
+				queued = null;
+			};
+			const move = (pointerEvent) => {
+				const moveRect = dom.getBoundingClientRect();
+				const moveNdc = new THREE.Vector2(
+					((pointerEvent.clientX - moveRect.left) / moveRect.width) * 2 - 1,
+					-((pointerEvent.clientY - moveRect.top) / moveRect.height) * 2 + 1,
+				);
+				raycaster.setFromCamera(moveNdc, camera);
+				if (!raycaster.ray.intersectPlane(plane, hit)) return;
+				queued = { track, grabFrame, delta: { x: hit.x - start.x, y: hit.y - start.y, z: hit.z - start.z } };
+				if (!rafId) rafId = requestAnimationFrame(flush);
+			};
+			const up = () => {
+				window.removeEventListener("pointermove", move);
+				window.removeEventListener("pointerup", up);
+				if (rafId) cancelAnimationFrame(rafId);
+				if (queued) onDragMove(queued);
+				setDrag(null);
+				onDragEnd({ track, grabFrame });
+			};
+			window.addEventListener("pointermove", move);
+			window.addEventListener("pointerup", up);
 		};
-		const up = () => {
-			window.removeEventListener("pointermove", move);
-			window.removeEventListener("pointerup", up);
-			setDrag(null);
-			onDragEnd({ track, grabFrame });
-		};
-		window.addEventListener("pointermove", move);
-		window.addEventListener("pointerup", up);
-	};
+		dom.addEventListener("pointerdown", down, true);
+		return () => dom.removeEventListener("pointerdown", down, true);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [gl, camera]);
 
 	if (!rootPoints || rootPoints.length < 2) return null;
+	// depthTest off + high renderOrder: the trail reads through the character
+	// and the floor instead of vanishing into them (the faintness complaint).
 	return (
 		<group renderOrder={900}>
-			<Line points={rootPoints} color="#9adcff" transparent opacity={0.55} lineWidth={1.5} onPointerDown={beginDrag("root")} />
+			<Line points={rootPoints} color="#1fa8ff" lineWidth={3} depthTest={false} transparent opacity={0.9} />
 			{effectorPoints && effectorPoints.length > 1 && (
-				<Line points={effectorPoints} color="#ffd166" transparent opacity={0.6} lineWidth={1.5} onPointerDown={beginDrag("effector")} />
+				<Line points={effectorPoints} color="#ffb020" lineWidth={3} depthTest={false} transparent opacity={0.9} />
 			)}
 			{highlightPoints && (
-				<Line points={highlightPoints} color={drag ? "#4cd964" : "#ff8c42"} lineWidth={3.5} depthTest={false} />
+				<Line points={highlightPoints} color={drag ? "#3dff7a" : "#ff8c42"} lineWidth={5} depthTest={false} />
 			)}
 		</group>
 	);

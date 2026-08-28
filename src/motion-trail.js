@@ -142,6 +142,35 @@ export function applyTrailFalloffDelta(motion, { grabFrame, radiusFrames, clipDe
 	return { ...motion, rootPos, posedJoints };
 }
 
+/**
+ * Nearest trail frame to a pointer RAY (for grab picking without any
+ * per-pointermove scene raycasting). Returns { frame, distance } of the
+ * closest point, or null when nothing lies within `maxDistance` metres.
+ */
+export function nearestFrameToRay(points, origin, direction, maxDistance = 0.25) {
+	if (!points || points.length < 3) return null;
+	const len = Math.hypot(direction.x, direction.y, direction.z) || 1;
+	const dx = direction.x / len;
+	const dy = direction.y / len;
+	const dz = direction.z / len;
+	let best = null;
+	for (let f = 0; f * 3 < points.length; f += 1) {
+		const px = points[f * 3] - origin.x;
+		const py = points[f * 3 + 1] - origin.y;
+		const pz = points[f * 3 + 2] - origin.z;
+		const t = px * dx + py * dy + pz * dz;
+		if (t < 0) continue; // behind the camera
+		const ox = px - t * dx;
+		const oy = py - t * dy;
+		const oz = pz - t * dz;
+		const distance = Math.hypot(ox, oy, oz);
+		if (distance <= maxDistance && (!best || distance < best.distance)) {
+			best = { frame: f, distance };
+		}
+	}
+	return best;
+}
+
 /** Nearest trail frame to a world-space point (for grab picking). */
 export function nearestTrailFrame(points, world) {
 	if (!points || points.length < 3) return 0;

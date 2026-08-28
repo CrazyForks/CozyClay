@@ -6,6 +6,7 @@ import {
 	applyTrailFalloffDelta,
 	falloffWeight,
 	jointTrailPoints,
+	nearestFrameToRay,
 	nearestTrailFrame,
 	trailEditRange,
 	worldDeltaToClip,
@@ -126,6 +127,22 @@ function syntheticMotion({ frames = 10, rotationDeg = 0, anchorX = 0, anchorZ = 
 	const target = { x: points[12 * 3], y: points[12 * 3 + 1], z: points[12 * 3 + 2] };
 	assert.equal(nearestTrailFrame(points, target), 12);
 	assert.equal(nearestTrailFrame(points, { x: -999, y: 0, z: 0 }), 0);
+}
+
+// --- ray picking: the drag entry point raycasts nothing in the scene -------
+{
+	const motion = syntheticMotion({ frames: 30 });
+	const points = jointTrailPoints(motion, "Hips");
+	const target = { x: points[12 * 3], y: points[12 * 3 + 1], z: points[12 * 3 + 2] };
+	// A ray from above, straight down through frame 12.
+	const fromAbove = nearestFrameToRay(points, { x: target.x, y: target.y + 5, z: target.z }, { x: 0, y: -1, z: 0 }, 0.05);
+	assert.ok(fromAbove, "the descending ray hits the trail");
+	assert.equal(fromAbove.frame, 12);
+	assert.ok(fromAbove.distance < 1e-6, "the exact hit has ~zero distance");
+	// A ray missing every point by more than the threshold returns null.
+	assert.equal(nearestFrameToRay(points, { x: 50, y: 50, z: 50 }, { x: 0, y: -1, z: 0 }, 0.2), null);
+	// Points BEHIND the ray origin never grab (t < 0 is rejected).
+	assert.equal(nearestFrameToRay(points, { x: target.x, y: target.y + 5, z: target.z }, { x: 0, y: 1, z: 0 }, 0.5), null);
 }
 
 // --- effector map only names real cskel27 joints ---------------------------

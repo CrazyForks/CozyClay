@@ -1,45 +1,41 @@
 {
-  "schemaVersion": 1,
-  "kind": "gui-automation-transcript",
-  "tool": "chrome-devtools-protocol + mcp-live-control",
-  "surface": "web",
-  "url": "http://127.0.0.1:5400/app/",
-  "startedAt": "2026-08-28T07:58:34.814Z",
+  "startedAt": "2026-08-28T08:07:49.423Z",
   "steps": [
     {
-      "at": "2026-08-28T07:58:36.097Z",
+      "at": "2026-08-28T08:07:50.704Z",
       "step": "browser",
       "detail": {
         "url": "http://127.0.0.1:5400/app/"
       }
     },
     {
-      "at": "2026-08-28T07:58:36.677Z",
+      "at": "2026-08-28T08:07:51.291Z",
       "step": "live",
       "detail": {
         "status": "Live editor connected. Workspaces:"
       }
     },
     {
-      "at": "2026-08-28T07:58:36.764Z",
+      "at": "2026-08-28T08:07:51.379Z",
       "step": "workspace",
       "detail": {
         "handles": [
-          "63a00421-eb88-421b-bb56-5dfaa2408ad2",
-          "25bfaad8-2751-4521-a34b-d40f8337d02d"
+          "77c6255f-9c00-4efb-844f-37179c7808ba",
+          "238fbd9c-d584-437e-ab5f-657790be0f5d",
+          "d6ba27c9-aea2-48b2-bfc4-ac299b4ad85c"
         ],
-        "chosen": "25bfaad8-2751-4521-a34b-d40f8337d02d"
+        "chosen": "d6ba27c9-aea2-48b2-bfc4-ac299b4ad85c"
       }
     },
     {
-      "at": "2026-08-28T07:58:40.640Z",
+      "at": "2026-08-28T08:07:55.356Z",
       "step": "load_motion",
       "detail": {
         "reply": "Motion installed from /ardy/motions/1787899988840-c5299d."
       }
     },
     {
-      "at": "2026-08-28T07:58:42.384Z",
+      "at": "2026-08-28T08:07:57.138Z",
       "step": "ik",
       "detail": {
         "mode": true,
@@ -47,7 +43,7 @@
       }
     },
     {
-      "at": "2026-08-28T07:58:42.396Z",
+      "at": "2026-08-28T08:07:57.150Z",
       "step": "trail",
       "detail": {
         "points": 168,
@@ -55,7 +51,7 @@
       }
     },
     {
-      "at": "2026-08-28T07:58:42.964Z",
+      "at": "2026-08-28T08:07:57.720Z",
       "step": "deform",
       "detail": {
         "grab": 84,
@@ -67,18 +63,18 @@
       }
     },
     {
-      "at": "2026-08-28T07:58:43.828Z",
+      "at": "2026-08-28T08:07:58.598Z",
       "step": "screenshot",
       "detail": {
-        "bytes": 282443,
-        "distinctSampledBytes": 169
+        "bytes": 284433,
+        "distinctSampledBytes": 185
       }
     },
     {
-      "at": "2026-08-28T07:59:02.172Z",
+      "at": "2026-08-28T08:08:16.858Z",
       "step": "regenerated",
       "detail": {
-        "url": "/ardy/motions/1787903923899-04e8d9",
+        "url": "/ardy/motions/1787904478669-fdf17f",
         "committed": [
           {
             "frame": 84,
@@ -91,99 +87,5 @@
     }
   ],
   "status": "passed",
-  "finishedAt": "2026-08-28T07:59:02.172Z",
-  "actions": [
-    {
-      "detail": {
-        "url": "http://127.0.0.1:5400/app/"
-      },
-      "type": "browser",
-      "timestamp": "2026-08-28T07:58:36.097Z",
-      "selector": "page:http://127.0.0.1:5400/app/"
-    },
-    {
-      "detail": {
-        "status": "Live editor connected. Workspaces:"
-      },
-      "type": "live",
-      "timestamp": "2026-08-28T07:58:36.677Z",
-      "selector": "mcp:live_status"
-    },
-    {
-      "detail": {
-        "handles": [
-          "63a00421-eb88-421b-bb56-5dfaa2408ad2",
-          "25bfaad8-2751-4521-a34b-d40f8337d02d"
-        ],
-        "chosen": "25bfaad8-2751-4521-a34b-d40f8337d02d"
-      },
-      "type": "workspace",
-      "timestamp": "2026-08-28T07:58:36.764Z",
-      "selector": "mcp:live_status.workspaces"
-    },
-    {
-      "detail": {
-        "reply": "Motion installed from /ardy/motions/1787899988840-c5299d."
-      },
-      "type": "load_motion",
-      "timestamp": "2026-08-28T07:58:40.640Z",
-      "selector": "mcp:load_motion"
-    },
-    {
-      "detail": {
-        "mode": true,
-        "frames": 168
-      },
-      "type": "ik",
-      "timestamp": "2026-08-28T07:58:42.384Z",
-      "selector": "button:contains('IK로 리그 편집')"
-    },
-    {
-      "detail": {
-        "points": 168,
-        "falloffFrames": 12
-      },
-      "type": "trail",
-      "timestamp": "2026-08-28T07:58:42.396Z",
-      "selector": "window.__cozyclay.trailPoints()"
-    },
-    {
-      "detail": {
-        "grab": 84,
-        "moved": 0.35,
-        "edit": {
-          "grabFrame": 84,
-          "radiusFrames": 12
-        }
-      },
-      "type": "deform",
-      "timestamp": "2026-08-28T07:58:42.964Z",
-      "selector": "window.__cozyclay.trailEditApply"
-    },
-    {
-      "detail": {
-        "bytes": 282443,
-        "distinctSampledBytes": 169
-      },
-      "type": "screenshot",
-      "timestamp": "2026-08-28T07:58:43.828Z",
-      "selector": "Page.captureScreenshot"
-    },
-    {
-      "detail": {
-        "url": "/ardy/motions/1787903923899-04e8d9",
-        "committed": [
-          {
-            "frame": 84,
-            "tracks": [
-              "hips"
-            ]
-          }
-        ]
-      },
-      "type": "regenerated",
-      "timestamp": "2026-08-28T07:59:02.172Z",
-      "selector": "window.__cozyclay.trailRegenerate"
-    }
-  ]
+  "finishedAt": "2026-08-28T08:08:16.859Z"
 }
