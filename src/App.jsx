@@ -3165,6 +3165,10 @@ globalThis.playMode = centerTab === "play";
 	 * finished drag stays pending so "Regenerate from trail edit" can send the
 	 * auto-derived window through the existing motionEdit pipeline. */
 	const [trailFalloffS, setTrailFalloffS] = useState(0.5);
+	// IK handle editing and trajectory editing are separate tools. Trails stay
+	// visible as a guide, but never capture a click while the operator is
+	// making detailed joint corrections with the normal IK handles.
+	const [trailEditMode, setTrailEditMode] = useState(false);
 	const [trailEdit, setTrailEdit] = useState(null); // {track, grabFrame, radiusFrames, clipDelta}
 	const trailBaseMotionRef = useRef(null);
 	const trailPreviewMotionRef = useRef(null);
@@ -8867,7 +8871,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									ikFocus={ikFocus}
 									falloffFrames={trailFalloffFrames}
 									pendingEdit={trailEdit}
-									enabled={!posing && !playMode}
+									enabled={trailEditMode && !posing && !playMode}
 									onDragStart={onTrailDragStart}
 									onDragPreview={onTrailDragPreview}
 									onDragEnd={onTrailDragEnd}
@@ -9748,6 +9752,14 @@ function resizePromptClip(id, edge, rawFrame) {
 						    Only meaningful with IK mode on and a loaded take. */}
 						{ikMode && motion && (
 							<>
+								<button
+									type="button"
+									className={"btn full" + (trailEditMode ? " primary" : "")}
+									aria-pressed={trailEditMode}
+									onClick={() => setTrailEditMode((value) => !value)}
+								>
+									{ko("궤적선 편집", "Edit motion trails")}
+								</button>
 								<Field label={ko("Trail falloff", "궤적 영향 범위")}>
 									<div className="trail-falloff-row">
 										<input
