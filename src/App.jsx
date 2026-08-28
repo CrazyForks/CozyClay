@@ -7883,7 +7883,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		// same reason, so the wire and the UI cannot disagree. regenerateSegments
 		// is not authored by this app today; the guard is here so it stays true
 		// if it ever is.
-		if (motion?.url && preserveStrength > 0 && !waypointMode && body.regenerateSegments === undefined) {
+		// body.segments too: scheduled inpainting v1 is single-segment only, and
+		// the bridge refuses the pair. A chained rollout (2 s + 2 s prompt
+		// blocks) must still generate — preserve silently steps aside rather
+		// than turning every multi-block generation into a 400.
+		if (motion?.url && preserveStrength > 0 && !waypointMode && body.regenerateSegments === undefined && body.segments === undefined) {
 			body.preserve = {
 				sourceMotion: motion.url,
 				strength: preserveStrength,
