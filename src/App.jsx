@@ -22,7 +22,7 @@ import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl
 import { bakeExtractedTake, bakePoseFrame, collectLandmarkTrack, createPoseDetector, imageFrames, sampleTimes, videoFrames } from "./pose-extract/index.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { PIN_BLOCKED, planPosePin } from "./ardy/pose-pin.js";
-import { TRAIL_EFFECTOR_JOINTS, TRAIL_TRACKS, applyTrailFalloffDelta, jointTrailPoints, nearestFrameToRay, trailEditRange, worldDeltaToClip } from "./motion-trail.js";
+import { TRAIL_EFFECTOR_JOINTS, TRAIL_TRACKS, applyTrailFalloffDelta, falloffWeight, jointTrailPoints, nearestFrameToRay, trailEditRange, worldDeltaToClip } from "./motion-trail.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
 import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint, toSceneRootOffset, PATH_LIMITS } from "./ardy/waypoints.js";
@@ -2408,8 +2408,8 @@ function loadSceneStartup() {
  * re-drawn on top as a bright highlight. Grabbing any point of a line starts
  * a drag on a camera-facing plane through the grab point; the caller deforms
  * the take (motion-trail.js falloff math) so the preview updates live. */
-function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendingEdit, enabled, onDragStart, onDragMove, onDragEnd }) {
-	const { camera, gl } = useThree();
+function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendingEdit, enabled, onDragStart, onDragPreview, onDragEnd }) {
+	const { camera, gl, invalidate } = useThree();
 	const [drag, setDrag] = useState(null);
 	const toTriples = (flat) => {
 		if (!flat) return null;
@@ -2448,7 +2448,10 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 	// A single pointerdown listener that measures point-to-ray distance against
 	// the cached trail arrays costs nothing while the mouse merely moves.
 	const pickRef = useRef(null);
-	pickRef.current = { tracks, enabled };
+	pickRef.current = { tracks, enabled, falloffFrames };
+	// Line2 instances for in-place geometry rewrites during a drag.
+	const lineRefs = useRef({});
+	const highlightRef = useRef(null);
 	useEffect(() => {
 		const dom = gl.domElement;
 		const raycaster = new THREE.Raycaster();
@@ -2488,13 +2491,34 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 			const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, start);
 			setDrag({ track, grabFrame });
 			onDragStart({ track, grabFrame });
-			// Drag work is rAF-throttled: pointermove can fire far faster than the
-			// renderer, and each onDragMove re-derives the deformed take.
+			// The drag never touches React state: per rAF the grabbed line and the
+			// falloff highlight are rewritten in place on their Line2 geometries,
+			// and onDragPreview poses the rig imperatively. Re-rendering the whole
+			// app per pointermove is exactly the drag lag this avoids; the real
+			// commit (setMotion + pending edit) happens once, on pointerup.
+			const frames = flat.length / 3;
+			const { startFrame, endFrame } = trailEditRange(frames, grabFrame, pickRef.current.falloffFrames);
+			const deformedFlat = new Float32Array(flat);
+			const windowFlat = new Float32Array((endFrame - startFrame) * 3);
+			let lastDelta = null;
 			let queued = null;
 			let rafId = 0;
+			const applyPreview = (delta) => {
+				for (let frame = startFrame; frame < endFrame; frame += 1) {
+					const weight = falloffWeight(frame - grabFrame, pickRef.current.falloffFrames);
+					deformedFlat[frame * 3] = flat[frame * 3] + delta.x * weight;
+					deformedFlat[frame * 3 + 1] = flat[frame * 3 + 1] + delta.y * weight;
+					deformedFlat[frame * 3 + 2] = flat[frame * 3 + 2] + delta.z * weight;
+				}
+				windowFlat.set(deformedFlat.subarray(startFrame * 3, endFrame * 3));
+				lineRefs.current[track]?.geometry?.setPositions(deformedFlat);
+				highlightRef.current?.geometry?.setPositions(windowFlat);
+				onDragPreview({ track, grabFrame, delta });
+				invalidate();
+			};
 			const flush = () => {
 				rafId = 0;
-				if (queued) onDragMove(queued);
+				if (queued) applyPreview(queued);
 				queued = null;
 			};
 			const move = (pointerEvent) => {
@@ -2505,16 +2529,17 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 				);
 				raycaster.setFromCamera(moveNdc, camera);
 				if (!raycaster.ray.intersectPlane(plane, hit)) return;
-				queued = { track, grabFrame, delta: { x: hit.x - start.x, y: hit.y - start.y, z: hit.z - start.z } };
+				lastDelta = { x: hit.x - start.x, y: hit.y - start.y, z: hit.z - start.z };
+				queued = lastDelta;
 				if (!rafId) rafId = requestAnimationFrame(flush);
 			};
 			const up = () => {
 				window.removeEventListener("pointermove", move);
 				window.removeEventListener("pointerup", up);
 				if (rafId) cancelAnimationFrame(rafId);
-				if (queued) onDragMove(queued);
+				if (queued) applyPreview(queued);
 				setDrag(null);
-				onDragEnd({ track, grabFrame });
+				onDragEnd({ track, grabFrame, delta: lastDelta });
 			};
 			window.addEventListener("pointermove", move);
 			window.addEventListener("pointerup", up);
@@ -2534,6 +2559,10 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 			{tracks.map((track) => track.points.length > 1 && (
 				<Line
 					key={track.id}
+					ref={(line) => {
+						if (line) lineRefs.current[track.id] = line;
+						else delete lineRefs.current[track.id];
+					}}
 					points={track.points}
 					color={track.color}
 					lineWidth={track.id === focusTrack ? 4 : 2.5}
@@ -2543,7 +2572,7 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 				/>
 			))}
 			{highlightPoints && (
-				<Line points={highlightPoints} color={drag ? "#3dff7a" : "#ff8c42"} lineWidth={5} depthTest={false} />
+				<Line ref={highlightRef} points={highlightPoints} color={drag ? "#3dff7a" : "#ff8c42"} lineWidth={5} depthTest={false} />
 			)}
 		</group>
 	);
@@ -3128,6 +3157,7 @@ globalThis.playMode = centerTab === "play";
 	const [trailFalloffS, setTrailFalloffS] = useState(0.5);
 	const [trailEdit, setTrailEdit] = useState(null); // {track, grabFrame, radiusFrames, clipDelta}
 	const trailBaseMotionRef = useRef(null);
+	const trailPreviewMotionRef = useRef(null);
 	const trailFalloffFrames = Math.max(1, Math.round(trailFalloffS * TIMELINE_FPS));
 
 	function selectHierarchy(id) {
@@ -6902,8 +6932,8 @@ globalThis.playMode = centerTab === "play";
 			trailPoints: (jointName = "Hips") => jointTrailPoints(motion, jointName, { baseY: activeChar.y ?? 0, scale: activeChar.scale ?? 1 }),
 			trailEditApply: (grabFrame, delta) => {
 				onTrailDragStart({ grabFrame });
-				onTrailDragMove({ track: "root", grabFrame, delta });
-				onTrailDragEnd({ track: "root", grabFrame });
+				onTrailDragPreview({ track: "hips", grabFrame, delta });
+				onTrailDragEnd({ track: "hips", grabFrame, delta });
 			},
 			trailRegenerate: runTrailRegeneration,
 			centerTab,
@@ -7816,30 +7846,52 @@ function resizePromptClip(id, edge, rawFrame) {
 		trailBaseMotionRef.current = motion;
 		recordCharacterUndo();
 	}
-	function onTrailDragMove({ track, grabFrame, delta }) {
+	/** World drag delta -> clip delta, shedding the character's stature scale
+	 * (the trail is drawn scaled by it). */
+	function trailClipDelta(base, delta) {
+		const statureScale = activeChar.scale ?? 1;
+		return worldDeltaToClip(base, { x: delta.x / statureScale, y: delta.y / statureScale, z: delta.z / statureScale });
+	}
+	/** Per-rAF drag preview. Deliberately React-free: the deformed take lands in
+	 * a ref and on the rig directly, so a drag never re-renders the app. The
+	 * trail/highlight lines are rewritten in place by MotionTrails itself. */
+	function onTrailDragPreview({ grabFrame, delta }) {
 		const base = trailBaseMotionRef.current;
 		if (!base) return;
-		// The trail is drawn scaled by the character's stature; a world-space drag
-		// must shed that scale before it becomes a clip-space offset.
-		const statureScale = activeChar.scale ?? 1;
-		const scaled = { x: delta.x / statureScale, y: delta.y / statureScale, z: delta.z / statureScale };
-		const clipDelta = worldDeltaToClip(base, scaled);
-		setMotion(applyTrailFalloffDelta(base, { grabFrame, radiusFrames: trailFalloffFrames, clipDelta }));
-		setTrailEdit({ track, grabFrame, radiusFrames: trailFalloffFrames, clipDelta });
-	}
-	function onTrailDragEnd() {
-		const base = trailBaseMotionRef.current;
-		trailBaseMotionRef.current = null;
-		setTrailEdit((edit) => {
-			if (!edit) return null;
-			const size = Math.hypot(edit.clipDelta.x, edit.clipDelta.y, edit.clipDelta.z);
-			if (size < 0.01) {
-				// A sub-centimetre nudge is a mis-grab, not an authored edit.
-				if (base) setMotion(base);
-				return null;
-			}
-			return edit;
+		const deformed = applyTrailFalloffDelta(base, {
+			grabFrame,
+			radiusFrames: trailFalloffFrames,
+			clipDelta: trailClipDelta(base, delta),
 		});
+		trailPreviewMotionRef.current = deformed;
+		const rig = activeRig;
+		if (!rig) return;
+		applyMotionFrame(rig, deformed, tlFrame);
+		if (ikChains && ikStateRef.current.keys.size > 0) {
+			ikEvaluate(ikChains, ikStateRef.current, tlFrame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
+		}
+	}
+	function onTrailDragEnd({ track, grabFrame, delta }) {
+		const base = trailBaseMotionRef.current;
+		const deformed = trailPreviewMotionRef.current;
+		trailBaseMotionRef.current = null;
+		trailPreviewMotionRef.current = null;
+		const size = delta ? Math.hypot(delta.x, delta.y, delta.z) : 0;
+		if (!base || !deformed || size < 0.01) {
+			// A sub-centimetre nudge is a mis-grab, not an authored edit: the
+			// motion state never changed, so only the rig pose needs restoring.
+			if (base && activeRig) {
+				applyMotionFrame(activeRig, base, tlFrame);
+				if (ikChains && ikStateRef.current.keys.size > 0) {
+					ikEvaluate(ikChains, ikStateRef.current, tlFrame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
+				}
+			}
+			setTrailEdit(null);
+			return;
+		}
+		// The one and only React commit of the whole drag.
+		setMotion(deformed);
+		setTrailEdit({ track, grabFrame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta) });
 	}
 	/** Send the pending trail edit through the existing motionEdit pipeline:
 	 * the regen window is auto-derived from the grab + falloff, explicit IK
@@ -8793,7 +8845,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									pendingEdit={trailEdit}
 									enabled={!posing && !playMode}
 									onDragStart={onTrailDragStart}
-									onDragMove={onTrailDragMove}
+									onDragPreview={onTrailDragPreview}
 									onDragEnd={onTrailDragEnd}
 								/>
 							)}
