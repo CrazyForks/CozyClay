@@ -9012,3 +9012,40 @@ input[type=range] {
 	color: var(--muted, #9a9a9a);
 	font-size: 12px;
 }
+
+/* ------------------------------------------- preserve (inpainting) -------- */
+/* The "keep the current take" strength, in the Prompt Blocks panel. Same shape
+   as .trail-falloff-row — flat range plus a tabular readout — with one state
+   that row does not have: a root path owns the whole rollout, so the slider is
+   GRAYED rather than removed while waypoint mode is on. Removing it would take
+   the explanation away with it; the disabled control still carries its title.
+   Appended at the end on purpose: the global input[type=range] rules further up
+   the cascade (the Unity density and widget-material passes) would otherwise
+   win over anything written beside the trail row. */
+.preserve-strength-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.preserve-strength-row input[type="range"] {
+	flex: 1;
+	min-width: 0;
+}
+.preserve-strength-row input[type="range"]:disabled {
+	opacity: .35;
+	cursor: not-allowed;
+}
+.preserve-strength-value {
+	font-variant-numeric: tabular-nums;
+	opacity: .8;
+}
+.preserve-strength-row[data-disabled="true"] .preserve-strength-value {
+	opacity: .35;
+}
+/* Both poles on one line, each at the end it describes. */
+.preserve-strength-scale {
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+	margin-top: 3px;
+}

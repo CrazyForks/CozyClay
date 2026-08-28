@@ -530,6 +530,13 @@ const ARDY_PROMPT_MAX = 500; // bridge contract: prompt must be non-empty, cappe
 const ARDY_DURATION_MIN = 1; // the UI works in whole seconds; the bridge floor is 0.15 s
 const ARDY_DURATION_MAX = 1200; // bridge contract: duration capped at 1200 s
 const ARDY_SEED_MAX = 2 ** 31 - 1; // bridge contract: optional seed, integer in 0..2**31-1
+// Scheduled inpainting (contract C3): how hard a regeneration holds onto the
+// take that is already loaded. 0 turns preserving OFF entirely; 0.5 is the
+// paper's recommended setting. The app ships this RAW number and nothing else:
+// the strength -> denoising-schedule mapping (sigma_s = round(1000 * strength),
+// sigma_e = min(50, sigma_s), diffusion time 0..1000) lives on the box side, and
+// duplicating it here is exactly how the two would silently drift apart.
+const ARDY_PRESERVE_DEFAULT = 0.5;
 const DEFAULT_PROMPT_CLIPS = [];
 
 // Named ingest failures, in both locales. A reason the user cannot act on is
@@ -3946,6 +3953,12 @@ globalThis.playMode = centerTab === "play";
 	// box picks a fresh random one each run); otherwise a plain integer in
 	// 0..2**31-1 to reproduce a result.
 	const [ardySeed, setArdySeed] = useState("");
+	// How much of the loaded take a regeneration keeps (scheduled inpainting).
+	// 1 = hold the take everywhere the user did not edit, 0 = ignore it and
+	// generate fresh. Only ever consulted when the take still has a bridge
+	// source to preserve FROM, so the control renders with the take, not with
+	// the panel.
+	const [preserveStrength, setPreserveStrength] = useState(ARDY_PRESERVE_DEFAULT);
 	// Off by default on purpose: pinning runs the box's pose mode, which builds
 	// on a fixed reference base, so it is a choice the operator makes when they
 	// actually want the pose in the generated clip.
@@ -7859,6 +7872,33 @@ function resizePromptClip(id, edge, rawFrame) {
 				edits: editEntries.map(({ frame, tracks, pose }) => ({ frame, tracks, pose })),
 			};
 		} else if (hasPromptSchedule) body.segments = toArdySegments(segments);
+		// Scheduled inpainting (contract C3). The run reconstructs the take that
+		// is already loaded everywhere the user did NOT edit, so it addresses that
+		// take's bridge source npz — without one there is nothing to preserve and
+		// the field must not be sent. strength travels RAW; the box maps it to
+		// sigma_s/sigma_e (see ARDY_PRESERVE_DEFAULT).
+		// Never on a root-path run: waypoints re-plan the whole rollout from
+		// authored Root2D pins, and the contract forbids preserving across a
+		// regenerated block set. The slider is grayed in waypoint mode for the
+		// same reason, so the wire and the UI cannot disagree. regenerateSegments
+		// is not authored by this app today; the guard is here so it stays true
+		// if it ever is.
+		if (motion?.url && preserveStrength > 0 && !waypointMode && body.regenerateSegments === undefined) {
+			body.preserve = {
+				sourceMotion: motion.url,
+				strength: preserveStrength,
+				// Edited spans leave on the BRIDGE clock like every other frame
+				// number crossing this boundary (waypoints, motionEdit); the mask
+				// builder scales them on to the generation clock itself. Ranges are
+				// half-open, so one that collapses under the rounding is dropped —
+				// the mask builder refuses an empty range outright, and an empty
+				// LIST is the legitimate "nothing was edited" case (all-ones mask,
+				// pure reconstruction) rather than an error.
+				editRanges: editedSegments
+					.map((segment) => ({ startFrame: toArdyFrame(segment.startFrame), endFrame: toArdyFrame(segment.endFrame) }))
+					.filter((range) => range.endFrame > range.startFrame),
+			};
+		}
 		// The request is fully packaged HERE, against the active character's
 		// live layer — the queue only needs the frozen payload. Results are
 		// delivered to THIS character even if the selection moves on while
@@ -9710,6 +9750,53 @@ function resizePromptClip(id, edge, rawFrame) {
 								placeholder={ko("empty = random", "비우면 랜덤")}
 							/>
 						</Field>
+						{/* Scheduled inpainting, and it lives beside the button that
+						    consumes it for the same reason the seed does. There is
+						    nothing to preserve until a take with a bridge source is
+						    loaded, so the whole row is ABSENT before then rather than
+						    present and inert — unlike the waypoint case, no explanation
+						    would help; the user simply has to generate once first. */}
+						{motion?.url && (
+							<Field label={ko("Keep the current take", "현재 테이크 유지")}>
+								<div className="preserve-strength-row" data-disabled={waypointMode ? "true" : undefined}>
+									<input
+										type="range"
+										data-preserve-strength
+										min={0}
+										max={1}
+										step={0.05}
+										value={preserveStrength}
+										disabled={waypointMode}
+										title={waypointMode
+											? ko(
+												"A root path re-plans the whole take from its waypoints, so it cannot also keep the old one — leave waypoint mode to use this.",
+												"루트 경로는 웨이포인트로 테이크 전체를 다시 계획하므로 이전 테이크를 함께 유지할 수 없어요 — 사용하려면 웨이포인트 모드를 끄세요.",
+											)
+											: ko(
+												"How hard the regeneration holds the loaded take outside the frames you edited.",
+												"수정하지 않은 프레임에서 로드된 테이크를 얼마나 강하게 유지할지 정합니다.",
+											)}
+										onChange={(event) => setPreserveStrength(Number(event.target.value))}
+									/>
+									<span className="preserve-strength-value">{Math.round(preserveStrength * 100)}%</span>
+								</div>
+								{/* The two poles sit at the ends they actually mean: the
+								    slider value IS the preserve strength, so 0 (left) is a
+								    fresh take and 1 (right) holds the original hardest. */}
+								<p className="inspector-hint preserve-strength-scale">
+									<span>{ko("generate fresh", "새로 생성")}</span>
+									<span>{ko("keep original", "원본 유지")}</span>
+								</p>
+								{waypointMode && (
+									<p className="inspector-hint">
+										{ko(
+											"Off while a root path is active — waypoints regenerate the whole take.",
+											"루트 경로가 켜져 있는 동안은 꺼집니다 — 웨이포인트는 테이크 전체를 다시 생성해요.",
+										)}
+									</p>
+								)}
+							</Field>
+						)}
 						<button
 							type="button"
 							className="btn primary full generate prompt-block-generate"
