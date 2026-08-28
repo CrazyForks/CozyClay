@@ -3171,6 +3171,7 @@ globalThis.playMode = centerTab === "play";
 	 * auto-derived window through the existing motionEdit pipeline. */
 	const [trailFalloffS, setTrailFalloffS] = useState(0.5);
 	const [showTrails, setShowTrails] = useState(true);
+	const [ikEditTool, setIkEditTool] = useState("ik");
 	const [trailEdit, setTrailEdit] = useState(null); // {track, grabFrame, radiusFrames, clipDelta}
 	const trailBaseMotionRef = useRef(null);
 	const trailPreviewMotionRef = useRef(null);
@@ -6749,6 +6750,10 @@ globalThis.playMode = centerTab === "play";
 	function toggleIkMode() {
 		const next = !ikMode;
 		if (next) {
+			// Always enter on the safe, detailed IK tool. Trail editing is an
+			// explicit second tool and must never leave the regular handles
+			// locked when the user re-enters IK mode.
+			setIkEditTool("ik");
 			// With a motion loaded, IK edits ON TOP of it: the motion is the
 			// rough base layer, the IK keys the correction layer. Every frame
 			// applies the clip first and the keyed corrections after, so the
@@ -6949,7 +6954,7 @@ globalThis.playMode = centerTab === "play";
 			// Motion-trail QA surface: read the current trail policy and drive the
 			// same drag -> preview -> pending-edit path headless checks cannot reach
 			// through synthetic pointers reliably.
-			trail: { falloffFrames: trailFalloffFrames, falloffS: trailFalloffS, edit: trailEdit },
+			trail: { falloffFrames: trailFalloffFrames, falloffS: trailFalloffS, edit: trailEdit, tool: ikEditTool, visible: showTrails },
 			trailPoints: (jointName = "Hips") => jointTrailPoints(motion, jointName, { baseY: activeChar.y ?? 0, scale: activeChar.scale ?? 1 }),
 			trailEditApply: (grabFrame, delta) => {
 				onTrailDragStart({ grabFrame });
@@ -6961,7 +6966,7 @@ globalThis.playMode = centerTab === "play";
 			pathDraw,
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, pathPointIndex, centerTab, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS]);
+	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, pathPointIndex, centerTab, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS, ikEditTool, showTrails]);
 	// QA hook (plan §6.5): exposes history depth and the present === objects
 	// invariant so the browser suite can assert undo entry counts directly.
 	// Reads live store state at call time; re-registered after every render.
@@ -8652,7 +8657,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								chains={ikChains}
 								fkJoints={ikFkJoints}
 								ikState={ikStateRef.current}
-								enabled={ikMode && !posing && !playMode}
+								enabled={ikMode && ikEditTool === "ik" && !posing && !playMode}
 								focus={ikFocus}
 								onFocus={focusIkHandle}
 								onSolve={ikSolve}
@@ -8877,7 +8882,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									ikFocus={ikFocus}
 									falloffFrames={trailFalloffFrames}
 									pendingEdit={trailEdit}
-									enabled={!posing && !playMode}
+									enabled={ikMode && ikEditTool === "trail" && showTrails && !posing && !playMode}
 									visible={showTrails}
 									onDragStart={onTrailDragStart}
 									onDragPreview={onTrailDragPreview}
@@ -9759,12 +9764,37 @@ function resizePromptClip(id, edge, rawFrame) {
 						    Only meaningful with IK mode on and a loaded take. */}
 						{ikMode && motion && (
 							<>
+								<div className="segmented ik-edit-tools" data-active={ikEditTool}>
+									<button
+										type="button"
+										className={ikEditTool === "ik" ? "active" : ""}
+										aria-pressed={ikEditTool === "ik"}
+										onClick={() => setIkEditTool("ik")}
+									>
+										{ko("IK 파츠 편집", "IK parts")}
+									</button>
+									<button
+										type="button"
+										className={ikEditTool === "trail" ? "active" : ""}
+										aria-pressed={ikEditTool === "trail"}
+										disabled={!showTrails}
+										onClick={() => setIkEditTool("trail")}
+									>
+										{ko("궤적선 편집", "Motion trail")}
+									</button>
+								</div>
+								<p className="inspector-hint">
+									{ikEditTool === "ik"
+										? ko("파츠를 직접 잡아 손·발·팔꿈치·무릎을 세밀하게 수정합니다. 궤적선은 안내선으로만 표시됩니다.", "Grab a body part for detailed IK editing. Trails are guides only.")
+										: ko("궤적선을 잡아 여러 프레임의 이동을 함께 수정합니다. 파츠 핸들은 잠시 잠겨 겹침을 막습니다.", "Grab a trail to edit a range of frames. IK handles are locked to avoid overlapping picks.")}
+								</p>
 								<button
 									type="button"
 									className={"btn full" + (!showTrails ? " muted" : "")}
 									aria-pressed={showTrails}
 									onClick={() => {
 										setShowTrails((value) => !value);
+										setIkEditTool("ik");
 									}}
 								>
 									{ko(`궤적선 ${showTrails ? "표시" : "숨김"}`, `Trails ${showTrails ? "on" : "off"}`)}

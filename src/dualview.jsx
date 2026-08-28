@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 
@@ -115,6 +115,7 @@ export function fitAspect(rect, aspect) {
 
 export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCamRef, planCamRef, poserCamRef, editorCamRef, ikMode = false, planIsMain, playMode = false, lookThrough = false, insetCollapsed = false, planZoom = 1, shotAspect = SHOT_ASPECT }) {
 	const invalidate = useThree((state) => state.invalidate);
+	const lastPoserPose = useRef({ position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), valid: false });
 	// Demand mode draws nothing by itself: the first frame can land before the
 	// layout settles (the inset reads 0x0), and async scene content commits
 	// later. Force frames on mount and after the DOM has caught up.
@@ -228,7 +229,21 @@ export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCa
 		// During camera navigation the poser view is the only surface changing.
 		// Keep the frozen inset in the existing framebuffer and avoid its
 		// additional scene + outline passes until the gesture ends.
-		const navigatingCamera = typeof window !== "undefined" && window.__cozyclayCameraGesture === true;
+		const cameraGesture = typeof window !== "undefined" && window.__cozyclayCameraGesture === true;
+		const lastPose = lastPoserPose.current;
+		const cameraMoved = ikMode && poserCam && (
+			!lastPose.valid ||
+			lastPose.position.distanceToSquared(poserCam.position) > 1e-12 ||
+			1 - Math.abs(lastPose.quaternion.dot(poserCam.quaternion)) > 1e-10
+		);
+		if (ikMode && poserCam) {
+			lastPose.position.copy(poserCam.position);
+			lastPose.quaternion.copy(poserCam.quaternion);
+			lastPose.valid = true;
+		} else {
+			lastPose.valid = false;
+		}
+		const navigatingCamera = cameraGesture || cameraMoved;
 
 		// scissor bounds the clear, viewport bounds the image. The bars around a
 		// letterboxed frame are editor surface, not set: painting them with the

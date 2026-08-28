@@ -80,13 +80,13 @@ expect(
 		posestudio.includes("clickable"),
 );
 expect(
-	"occluded IK controls share one render and picking decision",
+	"occluded IK controls remain visible and pickable",
 	posestudio.includes("ikControlIsExposed") &&
 		posestudio.includes("visibilityRef.current.set(id, isExposed)") &&
 		posestudio.includes("mesh.userData.ikExposed = isExposed") &&
-		posestudio.includes("mesh.visible = isExposed") &&
+		posestudio.includes("mesh.visible = true") &&
 		posestudio.includes("handleRefs.current[p.track.id]?.visible") &&
-		posestudio.includes("handleRefs.current[p.track.id]?.userData.ikExposed === true"),
+		!posestudio.includes("handleRefs.current[p.track.id]?.userData.ikExposed === true"),
 );
 expect(
 	"IK occlusion caches sampled skin proxies instead of re-skinning every ray",

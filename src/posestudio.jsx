@@ -290,6 +290,7 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 	const exposureInputRef = useRef({ values: [], count: 0, valid: false });
 	const poseInputRef = useRef({ values: [], count: 0, valid: false });
 	const exposurePerfRef = useRef({ passes: 0, skippedFrames: 0, raycasts: 0, lastPassMs: 0 });
+	const exposureLastPassAt = useRef(0);
 	const blockerRefs = useRef([]);
 	const skinnedBlockerProxiesRef = useRef(new Map());
 	const occlusionRay = useRef(new THREE.Raycaster()).current;
@@ -577,7 +578,18 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 		poseInput.count = poseInputIndex;
 		poseInput.values.length = poseInputIndex;
 
-		if (exposureDirty) {
+		// Camera navigation changes the input signature every frame, but the
+		// character silhouette and all handle positions are unchanged. Running
+		// the full skinned-proxy exposure pass for every orbit sample walks
+		// thousands of proxy points per handle and makes right-drag hitch.
+		// Keep the last visibility result for a short interval during a gesture;
+		// this still follows a slow orbit without making every pointer sample
+		// pay the full proxy cost.
+		const cameraOnlyExposure = exposureDirty && !poseDirty;
+		const exposureThrottled = cameraOnlyExposure && performance.now() - exposureLastPassAt.current < 100;
+		if (exposureThrottled) {
+			exposurePerfRef.current.skippedFrames += 1;
+		} else if (exposureDirty) {
 			const passStartedAt = performance.now();
 			input.valid = true;
 			poseInput.valid = true;
@@ -663,14 +675,18 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 				});
 				visibilityRef.current.set(id, isExposed);
 				mesh.userData.ikExposed = isExposed;
-				mesh.visible = isExposed;
-				if (!isExposed) continue;
+				// Occlusion is a visual hint, not an interaction lock. A joint
+				// hidden behind the character is still a valid IK target (and
+				// becomes reachable as soon as the camera moves), so keep every
+				// registered handle renderable and pickable.
+				mesh.visible = true;
 				tmp.viewPoint.applyMatrix4(camera.matrixWorldInverse);
 				exposureDepthRef.current.set(id, -tmp.viewPoint.z);
 			}
 			exposurePerfRef.current.passes += 1;
 			exposurePerfRef.current.raycasts += Object.keys(handleRefs.current).length;
 			exposurePerfRef.current.lastPassMs = performance.now() - passStartedAt;
+			exposureLastPassAt.current = performance.now();
 		} else {
 			exposurePerfRef.current.skippedFrames += 1;
 		}
