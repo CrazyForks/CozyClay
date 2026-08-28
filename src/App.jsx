@@ -22,6 +22,7 @@ import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl
 import { bakeExtractedTake, bakePoseFrame, collectLandmarkTrack, createPoseDetector, imageFrames, sampleTimes, videoFrames } from "./pose-extract/index.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { PIN_BLOCKED, planPosePin } from "./ardy/pose-pin.js";
+import { TRAIL_EFFECTOR_JOINTS, applyTrailFalloffDelta, jointTrailPoints, nearestTrailFrame, trailEditRange, worldDeltaToClip } from "./motion-trail.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
 import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint, toSceneRootOffset, PATH_LIMITS } from "./ardy/waypoints.js";
@@ -2400,6 +2401,91 @@ function loadSceneStartup() {
 	}
 }
 
+/* ------------------------- IK-mode motion trails --------------------------
+ * World-space trajectory polylines of the loaded take: the root (hips) path
+ * always, plus the focused IK effector's end-point trail. The whole clip is
+ * drawn as a faint line; while a grab is active the falloff window is
+ * re-drawn on top as a bright highlight. Grabbing any point of a line starts
+ * a drag on a camera-facing plane through the grab point; the caller deforms
+ * the take (motion-trail.js falloff math) so the preview updates live. */
+function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendingEdit, enabled, onDragStart, onDragMove, onDragEnd }) {
+	const { camera, gl } = useThree();
+	const [drag, setDrag] = useState(null);
+	const toTriples = (flat) => {
+		if (!flat) return null;
+		const out = [];
+		for (let index = 0; index + 2 < flat.length; index += 3) out.push([flat[index], flat[index + 1], flat[index + 2]]);
+		return out;
+	};
+	const rootFlat = useMemo(() => jointTrailPoints(motion, "Hips", { baseY, scale: charScale }), [motion, baseY, charScale]);
+	const effectorJoint = TRAIL_EFFECTOR_JOINTS[ikFocus] ?? null;
+	const effectorFlat = useMemo(
+		() => (effectorJoint && effectorJoint !== "Hips" ? jointTrailPoints(motion, effectorJoint, { baseY, scale: charScale }) : null),
+		[motion, effectorJoint, baseY, charScale],
+	);
+	const rootPoints = useMemo(() => toTriples(rootFlat), [rootFlat]);
+	const effectorPoints = useMemo(() => toTriples(effectorFlat), [effectorFlat]);
+	// The falloff window rides whichever line is being (or was last) grabbed.
+	const highlight = drag ?? pendingEdit;
+	const highlightPoints = useMemo(() => {
+		if (!highlight || !motion?.frames) return null;
+		const flat = highlight.track === "effector" ? effectorFlat : rootFlat;
+		if (!flat) return null;
+		const { startFrame, endFrame } = trailEditRange(motion.frames, highlight.grabFrame, falloffFrames);
+		const out = [];
+		for (let frame = startFrame; frame < endFrame; frame += 1) {
+			out.push([flat[frame * 3], flat[frame * 3 + 1], flat[frame * 3 + 2]]);
+		}
+		return out.length > 1 ? out : null;
+	}, [highlight, motion, rootFlat, effectorFlat, falloffFrames]);
+
+	const beginDrag = (track) => (event) => {
+		if (!enabled) return;
+		event.stopPropagation();
+		const flat = track === "effector" ? effectorFlat : rootFlat;
+		if (!flat) return;
+		const grabFrame = nearestTrailFrame(flat, event.point);
+		const normal = camera.getWorldDirection(new THREE.Vector3()).negate();
+		const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, event.point.clone());
+		const start = event.point.clone();
+		setDrag({ track, grabFrame });
+		onDragStart({ track, grabFrame });
+		const raycaster = new THREE.Raycaster();
+		const hit = new THREE.Vector3();
+		const move = (pointerEvent) => {
+			const rect = gl.domElement.getBoundingClientRect();
+			const ndc = new THREE.Vector2(
+				((pointerEvent.clientX - rect.left) / rect.width) * 2 - 1,
+				-((pointerEvent.clientY - rect.top) / rect.height) * 2 + 1,
+			);
+			raycaster.setFromCamera(ndc, camera);
+			if (!raycaster.ray.intersectPlane(plane, hit)) return;
+			onDragMove({ track, grabFrame, delta: { x: hit.x - start.x, y: hit.y - start.y, z: hit.z - start.z } });
+		};
+		const up = () => {
+			window.removeEventListener("pointermove", move);
+			window.removeEventListener("pointerup", up);
+			setDrag(null);
+			onDragEnd({ track, grabFrame });
+		};
+		window.addEventListener("pointermove", move);
+		window.addEventListener("pointerup", up);
+	};
+
+	if (!rootPoints || rootPoints.length < 2) return null;
+	return (
+		<group renderOrder={900}>
+			<Line points={rootPoints} color="#9adcff" transparent opacity={0.55} lineWidth={1.5} onPointerDown={beginDrag("root")} />
+			{effectorPoints && effectorPoints.length > 1 && (
+				<Line points={effectorPoints} color="#ffd166" transparent opacity={0.6} lineWidth={1.5} onPointerDown={beginDrag("effector")} />
+			)}
+			{highlightPoints && (
+				<Line points={highlightPoints} color={drag ? "#4cd964" : "#ff8c42"} lineWidth={3.5} depthTest={false} />
+			)}
+		</group>
+	);
+}
+
 export default function App() {
 	const craftActionTrackedRef = useRef(false);
 	const markCraftAction = (actionKind) => {
@@ -2970,6 +3056,16 @@ globalThis.playMode = centerTab === "play";
 	const ikFrames = useMemo(() => ikKeyframes(ikStateRef.current),
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[ikTick]);
+
+	/* --------------------- IK-mode motion trail editing ---------------------
+	 * Grabbing the viewport trajectory line deforms the loaded take with a
+	 * smoothstep falloff around the grab frame (pure local preview). The last
+	 * finished drag stays pending so "Regenerate from trail edit" can send the
+	 * auto-derived window through the existing motionEdit pipeline. */
+	const [trailFalloffS, setTrailFalloffS] = useState(0.5);
+	const [trailEdit, setTrailEdit] = useState(null); // {track, grabFrame, radiusFrames, clipDelta}
+	const trailBaseMotionRef = useRef(null);
+	const trailFalloffFrames = Math.max(1, Math.round(trailFalloffS * TIMELINE_FPS));
 
 	function selectHierarchy(id) {
 		// A selection switch is the user starting something else: settle any open
@@ -6736,10 +6832,22 @@ globalThis.playMode = centerTab === "play";
 			pathPointIndex,
 			pathHandlesEnabled: centerTab === "scene" && !lookThroughShot && !ikMode && !posing && !playMode && !!selectedSceneObject?.path,
 			scrub: (frame) => setTlFrame(Math.max(0, Math.min(tlFrameCount - 1, Math.round(frame)))),
+			// Motion-trail QA surface: read the current trail policy and drive the
+			// same drag -> preview -> pending-edit path headless checks cannot reach
+			// through synthetic pointers reliably.
+			trail: { falloffFrames: trailFalloffFrames, falloffS: trailFalloffS, edit: trailEdit },
+			trailPoints: (jointName = "Hips") => jointTrailPoints(motion, jointName, { baseY: activeChar.y ?? 0, scale: activeChar.scale ?? 1 }),
+			trailEditApply: (grabFrame, delta) => {
+				onTrailDragStart({ grabFrame });
+				onTrailDragMove({ track: "root", grabFrame, delta });
+				onTrailDragEnd({ track: "root", grabFrame });
+			},
+			trailRegenerate: runTrailRegeneration,
 			centerTab,
 			pathDraw,
 		};
-	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, pathPointIndex, centerTab, posing, playMode, pathDraw]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, pathPointIndex, centerTab, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS]);
 	// QA hook (plan §6.5): exposes history depth and the present === objects
 	// invariant so the browser suite can assert undo entry counts directly.
 	// Reads live store state at call time; re-registered after every render.
@@ -7637,6 +7745,113 @@ function resizePromptClip(id, edge, rawFrame) {
 		});
 	}
 
+	/* --------------------- trail drag -> preview -> regen -------------------- */
+	function onTrailDragStart() {
+		if (!motion) return;
+		// The pre-drag take is both the deformation base (repeated moves re-derive
+		// from it, so deltas never accumulate) and the undo snapshot.
+		trailBaseMotionRef.current = motion;
+		recordCharacterUndo();
+	}
+	function onTrailDragMove({ track, grabFrame, delta }) {
+		const base = trailBaseMotionRef.current;
+		if (!base) return;
+		// The trail is drawn scaled by the character's stature; a world-space drag
+		// must shed that scale before it becomes a clip-space offset.
+		const statureScale = activeChar.scale ?? 1;
+		const scaled = { x: delta.x / statureScale, y: delta.y / statureScale, z: delta.z / statureScale };
+		const clipDelta = worldDeltaToClip(base, scaled);
+		setMotion(applyTrailFalloffDelta(base, { grabFrame, radiusFrames: trailFalloffFrames, clipDelta }));
+		setTrailEdit({ track, grabFrame, radiusFrames: trailFalloffFrames, clipDelta });
+	}
+	function onTrailDragEnd() {
+		const base = trailBaseMotionRef.current;
+		trailBaseMotionRef.current = null;
+		setTrailEdit((edit) => {
+			if (!edit) return null;
+			const size = Math.hypot(edit.clipDelta.x, edit.clipDelta.y, edit.clipDelta.z);
+			if (size < 0.01) {
+				// A sub-centimetre nudge is a mis-grab, not an authored edit.
+				if (base) setMotion(base);
+				return null;
+			}
+			return edit;
+		});
+	}
+	/** Send the pending trail edit through the existing motionEdit pipeline:
+	 * the regen window is auto-derived from the grab + falloff, explicit IK
+	 * keys inside the window ride as hard constraints (their tracks), and the
+	 * deformed line contributes the grab-frame pose as a root guide. */
+	function runTrailRegeneration() {
+		if (!trailEdit || ardyRunning) return;
+		if (!motion?.url) {
+			setToast(ko("The current motion has no bridge source; generate the prompt blocks once before regenerating a trail edit", "현재 모션에 브리지 원본이 없어요. 궤적 수정을 재생성하려면 프롬프트 블록을 먼저 한 번 생성하세요"));
+			return;
+		}
+		const rig = activeRig;
+		if (!rig) {
+			setToast(ko("Character not loaded yet", "캐릭터가 아직 로드되지 않았어요"));
+			return;
+		}
+		const { startFrame, endFrame } = trailEditRange(motion.frames, trailEdit.grabFrame, trailEdit.radiusFrames);
+		const frames = [...new Set([
+			trailEdit.grabFrame,
+			...ikFrames.filter((frame) => frame >= startFrame && frame < endFrame),
+		])].sort((a, b) => a - b);
+		const currentFrame = tlFrame;
+		const entries = [];
+		for (const frame of frames) {
+			applyMotionFrame(rig, motion, frame);
+			if (ikChains && ikStateRef.current.keys.size > 0) {
+				ikEvaluate(ikChains, ikStateRef.current, frame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
+			}
+			const pose = buildArdyPose({
+				rig,
+				camRef: shotCamRef,
+				look,
+				fovDeg,
+				slate: slateLine(shot),
+				rigName: activeChar.model,
+				root: captureArdyRoot(rig),
+			});
+			const wireFrame = toArdyFrame(frame);
+			if (entries.length && wireFrame <= entries[entries.length - 1].frame) continue;
+			const ikTracks = [...(ikStateRef.current.keys.get(frame)?.keys() || [])];
+			entries.push({ frame: wireFrame, timelineFrame: frame, tracks: ikTracks.length ? ikTracks : ["hips"], pose });
+		}
+		applyMotionFrame(rig, motion, currentFrame);
+		if (ikChains && ikStateRef.current.keys.size > 0) {
+			ikEvaluate(ikChains, ikStateRef.current, currentFrame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
+		}
+		const prompt = (motion.prompt || "").trim() || "A person continues the motion naturally.";
+		const body = {
+			prompt,
+			duration: motion.frames / TIMELINE_FPS,
+			posePin: true,
+			motionEdit: {
+				sourceMotion: motion.url,
+				startFrame: toArdyFrame(startFrame),
+				endFrame: toArdyFrame(endFrame),
+				contextBefore: 40,
+				contextAfter: 20,
+				edits: entries.map(({ frame, tracks, pose }) => ({ frame, tracks, pose })),
+			},
+		};
+		if (ardySeed !== "") body.seed = Number(ardySeed);
+		enqueueMotionJob({
+			charId: activeChar.id,
+			charIndex: activeCharIndex,
+			prompt,
+			body,
+			hasBlockEdits: true,
+			committedEditKeys: entries.map(({ timelineFrame, tracks }) => ({ frame: timelineFrame, tracks })),
+			rootRotationDeg: motion.rotationDeg ?? activeChar.rot,
+			anchor: { x: motion.anchorX ?? activeChar.x, z: motion.anchorZ ?? activeChar.z },
+			ikState: ikStateRef.current,
+		});
+		setTrailEdit(null);
+	}
+
 	/* ------------------------- motion job queue ---------------------------
 	 * One box, one job at a time: Generate never blocks, it enqueues. The
 	 * payload is frozen at enqueue time; completion delivers the clip to the
@@ -8503,6 +8718,22 @@ function resizePromptClip(id, edge, rawFrame) {
 								height={shotOutput.height}
 							/>
 							<CaptureRig apiRef={mcpCaptureRef} camRef={shotCamRef} width={MCP_CAPTURE_W} height={MCP_CAPTURE_H} />
+							{/* IK-mode motion trails: the root path plus the focused effector's
+							    trajectory, grabbable to deform the take with falloff. */}
+							{ikMode && motion && (
+								<MotionTrails
+									motion={motion}
+									baseY={activeChar.y ?? 0}
+									charScale={activeChar.scale ?? 1}
+									ikFocus={ikFocus}
+									falloffFrames={trailFalloffFrames}
+									pendingEdit={trailEdit}
+									enabled={!posing && !playMode}
+									onDragStart={onTrailDragStart}
+									onDragMove={onTrailDragMove}
+									onDragEnd={onTrailDragEnd}
+								/>
+							)}
 							<DualRender
 								stageRef={stageRef}
 								mainRef={mainPaneRef}
@@ -9374,6 +9605,44 @@ function resizePromptClip(id, edge, rawFrame) {
 						<button type="button" className={"btn full" + (ikMode ? " primary" : "")} onClick={toggleIkMode} disabled={!ikChains}>
 						{ikMode ? ko("Finish rig editing", "리그 편집 끝내기") : ko("Edit rig with IK", "IK로 리그 편집")}
 						</button>
+						{/* Motion trail editing: falloff radius + confirm-to-regenerate.
+						    Only meaningful with IK mode on and a loaded take. */}
+						{ikMode && motion && (
+							<>
+								<Field label={ko("Trail falloff", "궤적 영향 범위")}>
+									<div className="trail-falloff-row">
+										<input
+											type="range"
+											min={0.1}
+											max={2}
+											step={0.1}
+											value={trailFalloffS}
+											onChange={(event) => setTrailFalloffS(Number(event.target.value))}
+										/>
+										<span className="trail-falloff-value">{trailFalloffS.toFixed(1)}s</span>
+									</div>
+								</Field>
+								<button
+									type="button"
+									className="btn primary full trail-regenerate"
+									disabled={!trailEdit || !motion?.url || !bridge?.ok || ardyRunning}
+									title={!trailEdit
+										? ko("Drag the trajectory line in the viewport first", "먼저 뷰포트에서 궤적선을 끌어 수정하세요")
+										: !motion?.url
+											? ko("The take has no bridge source to regenerate from", "재생성할 브리지 원본이 없는 테이크예요")
+											: ""}
+									onClick={runTrailRegeneration}
+								>
+									{ko("Regenerate from trail edit", "궤적 수정으로 재생성")}
+								</button>
+								<p className="inspector-hint">
+									{ko(
+										"Grab any point of the trajectory line to bend the motion; nearby frames follow within the falloff range. Confirm to regenerate that span with Kimodo — explicit IK keys stay pinned exactly.",
+										"궤적선의 아무 지점이나 잡아 끌면 영향 범위 안의 주변 프레임이 함께 따라와요. 재생성을 누르면 그 구간을 Kimodo가 다시 생성하고, 명시적으로 잡은 IK 키는 정확히 고정됩니다.",
+									)}
+								</p>
+							</>
+						)}
 					</Foldout>
 
 				<Foldout hidden={selectedHierarchyId !== "environment"} title={ko("Environment", "환경")}>

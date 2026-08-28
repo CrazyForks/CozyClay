@@ -1849,6 +1849,20 @@ select {
 
 .inspector-scroll > [hidden] { display: none !important; }
 
+.trail-falloff-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.trail-falloff-row input[type="range"] {
+	flex: 1;
+	min-width: 0;
+}
+.trail-falloff-value {
+	font-variant-numeric: tabular-nums;
+	opacity: 0.8;
+}
+
 .inspector-hint {
 	margin: -1px 0 11px;
 	color: var(--muted);
