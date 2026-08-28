@@ -2555,7 +2555,14 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 	// and the floor instead of vanishing into them. Every part rides its own
 	// IK-handle colour; the focused part draws thicker.
 	return (
-		<group renderOrder={900}>
+		<group
+			renderOrder={900}
+			ref={(group) => {
+				// QA-only escape hatch (same spirit as window.__cozyclay): lets
+				// headless perf probes toggle the trails without a rebuild.
+				if (typeof window !== "undefined") window.__cozyclayTrails = group;
+			}}
+		>
 			{tracks.map((track) => track.points.length > 1 && (
 				<Line
 					key={track.id}
@@ -2579,6 +2586,9 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 }
 
 export default function App() {
+	// QA-only render counter (same spirit as window.__cozyclay): headless perf
+	// probes read renders/second to find re-render storms. Negligible cost.
+	if (typeof window !== "undefined") window.__cozyclayRenders = (window.__cozyclayRenders || 0) + 1;
 	const craftActionTrackedRef = useRef(false);
 	const markCraftAction = (actionKind) => {
 		if (craftActionTrackedRef.current) return;
@@ -7445,8 +7455,22 @@ globalThis.playMode = centerTab === "play";
 	// second; a one-shot failed probe left Generate disabled until reload.
 	useEffect(() => {
 		let alive = true;
+		// The poll answer is almost always identical to the last one; keeping the
+		// previous object identity skips a full App re-render per poll. Each of
+		// those renders costs ~80ms of main thread on this tree, which read as a
+		// periodic hitch while orbiting/flying the camera.
 		const refreshBridge = () => checkBridge().then((state) => {
-			if (alive) setBridge(state);
+			if (!alive) return;
+			setBridge((previous) => (
+				previous &&
+				previous.ok === state.ok &&
+				previous.host === state.host &&
+				previous.encoder === state.encoder &&
+				previous.device === state.device &&
+				previous.reason === state.reason
+					? previous
+					: state
+			));
 		});
 		refreshBridge();
 		const id = window.setInterval(refreshBridge, BRIDGE_RECHECK_MS);
