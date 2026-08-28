@@ -2489,7 +2489,6 @@ globalThis.playMode = centerTab === "play";
 		} catch (err) {
 			console.warn("[cozyclay] workspace layout not saved:", err?.name ?? err);
 		}
-		}
 	}, [workspaceLayout]);
 
 	// Wheel over the inset zooms the Top-View plan: scroll up closes in on
