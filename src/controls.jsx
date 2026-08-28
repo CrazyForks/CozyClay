@@ -54,6 +54,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 	const keys = useRef(new Set());
 	const gesture = useRef(null); // { kind: "fly" | "pan" | "orbit", pointerId, x, y, ... }
 	const speedScale = useRef(1);
+	const invalidateRaf = useRef(0);
 	const flyStateRef = useRef(onFlyStateChange);
 	flyStateRef.current = onFlyStateChange;
 	const cameraChangeRef = useRef(onCameraChange);
@@ -70,6 +71,24 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 		const isTyping = () => {
 			const el = document.activeElement;
 			return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT");
+		};
+		// Pointer events can arrive faster than the display refreshes. Camera
+		// refs are updated immediately for the latest input, but invalidate the
+		// demand renderer at most once per animation frame so a 120/240 Hz mouse
+		// cannot queue multiple full WebGL renders for the same visible frame.
+		const scheduleInvalidate = () => {
+			if (invalidateRaf.current) return;
+			invalidateRaf.current = requestAnimationFrame(() => {
+				invalidateRaf.current = 0;
+				invalidate();
+			});
+		};
+		const flushInvalidate = () => {
+			if (invalidateRaf.current) {
+				cancelAnimationFrame(invalidateRaf.current);
+				invalidateRaf.current = 0;
+			}
+			invalidate();
 		};
 
 		/* Physical key positions, not characters: `e.key` follows the OS input
@@ -101,12 +120,12 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 			}
 			gesture.current = null;
 			if (typeof window !== "undefined") window.__cozyclayCameraGesture = false;
-			invalidate();
+			flushInvalidate();
 			keys.current.clear();
 			// the fly speed set with the wheel persists between flights, as it does in Unity
 			element.style.cursor = "";
 			flyStateRef.current?.(false);
-			invalidate();
+			flushInvalidate();
 			if (active.changed) cameraChangeRef.current?.();
 		};
 
@@ -128,7 +147,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 			element.focus();
 			element.style.cursor = kind === "fly" ? "crosshair" : kind === "pan" ? "grabbing" : "move";
 			if (kind === "fly") flyStateRef.current?.(true);
-			invalidate();
+			scheduleInvalidate();
 		};
 
 		/** the point Alt-drag turns around: the caller's selection, or a point
@@ -159,7 +178,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 					// Camera gestures run in demand mode. One explicit
 					// invalidation per changed input is enough; keeping the
 					// entire scene loop on "always" rendered frozen panes too.
-					invalidate();
+					scheduleInvalidate();
 				}
 				return;
 			}
@@ -175,7 +194,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 				active.changed = active.changed || dx !== 0 || dy !== 0;
 				if (dx !== 0 || dy !== 0) {
 					cameraChangeRef.current?.();
-					invalidate();
+					scheduleInvalidate();
 				}
 				return;
 			}
@@ -196,7 +215,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 			active.changed = active.changed || dx !== 0 || dy !== 0;
 			if (dx !== 0 || dy !== 0) {
 				cameraChangeRef.current?.();
-				invalidate();
+				scheduleInvalidate();
 			}
 		};
 
@@ -228,6 +247,10 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 		// Alt-tabbing away mid-fly must not leave keys stuck down.
 		window.addEventListener("blur", endGesture);
 		return () => {
+			if (invalidateRaf.current) {
+				cancelAnimationFrame(invalidateRaf.current);
+				invalidateRaf.current = 0;
+			}
 			keys.current.clear();
 			gesture.current = null;
 			flyStateRef.current?.(false);

@@ -291,6 +291,7 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 	const poseInputRef = useRef({ values: [], count: 0, valid: false });
 	const exposurePerfRef = useRef({ passes: 0, skippedFrames: 0, raycasts: 0, lastPassMs: 0 });
 	const exposureLastPassAt = useRef(0);
+	const cameraGestureRef = useRef(false);
 	const blockerRefs = useRef([]);
 	const skinnedBlockerProxiesRef = useRef(new Map());
 	const occlusionRay = useRef(new THREE.Raycaster()).current;
@@ -510,73 +511,87 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 		// track's visibilityDepth describes its legitimate under-skin depth.
 		// Centreline torso/head controls get enough allowance to stay usable,
 		// while a far-side shoulder or limb remains hidden behind the body.
-		camera.updateMatrixWorld();
-		camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-		camera.getWorldPosition(tmp.cameraPos);
 		const blockers = blockerRefs.current;
-		blockers.length = 0;
 		const input = exposureInputRef.current;
 		const poseInput = poseInputRef.current;
-		let inputIndex = 0;
-		let poseInputIndex = 0;
-		let exposureDirty = !input.valid;
-		let poseDirty = !poseInput.valid;
-		const captureInput = (value) => {
-			if (Math.abs((input.values[inputIndex] ?? Infinity) - value) > 1e-6) exposureDirty = true;
-			input.values[inputIndex] = value;
-			inputIndex += 1;
-		};
-		const capturePoseInput = (value) => {
-			captureInput(value);
-			if (Math.abs((poseInput.values[poseInputIndex] ?? Infinity) - value) > 1e-6) poseDirty = true;
-			poseInput.values[poseInputIndex] = value;
-			poseInputIndex += 1;
-		};
-		for (const value of camera.matrixWorld.elements) captureInput(value);
-		for (const mesh of Object.values(handleRefs.current)) {
-			if (!mesh?.parent) continue;
-			capturePoseInput(mesh.position.x);
-			capturePoseInput(mesh.position.y);
-			capturePoseInput(mesh.position.z);
-		}
-		scene.traverse((object) => {
-			if (!object.isMesh || !object.visible || object.layers.isEnabled(POSER_LAYER)) return;
-			const materials = Array.isArray(object.material) ? object.material : null;
-			let opaque = false;
-			if (materials) {
-				for (const material of materials) {
-					if (material && material.visible !== false && material.opacity > 0.01 && material.depthWrite !== false) {
-						opaque = true;
-						break;
+		const cameraGesture = typeof window !== "undefined" && window.__cozyclayCameraGesture === true;
+		const cameraGestureEnded = cameraGestureRef.current && !cameraGesture;
+		cameraGestureRef.current = cameraGesture;
+		if (cameraGesture) {
+			// Camera-only movement cannot change the rig silhouette. Keep the last
+			// exposure result and defer the expensive scene/proxy scan until release.
+			exposurePerfRef.current.skippedFrames += 1;
+		} else {
+			camera.updateMatrixWorld();
+			camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+			camera.getWorldPosition(tmp.cameraPos);
+			blockers.length = 0;
+			// A release must refresh visibility once even if the gesture was shorter
+			// than the normal 100 ms exposure throttle window.
+			if (cameraGestureEnded) input.valid = false;
+			let inputIndex = 0;
+			let poseInputIndex = 0;
+			let exposureDirty = !input.valid;
+			let poseDirty = !poseInput.valid;
+			const captureInput = (value) => {
+				if (Math.abs((input.values[inputIndex] ?? Infinity) - value) > 1e-6) exposureDirty = true;
+				input.values[inputIndex] = value;
+				inputIndex += 1;
+			};
+			const capturePoseInput = (value) => {
+				captureInput(value);
+				if (Math.abs((poseInput.values[poseInputIndex] ?? Infinity) - value) > 1e-6) poseDirty = true;
+				poseInput.values[poseInputIndex] = value;
+				poseInputIndex += 1;
+			};
+			for (const value of camera.matrixWorld.elements) captureInput(value);
+			for (const mesh of Object.values(handleRefs.current)) {
+				if (!mesh?.parent) continue;
+				capturePoseInput(mesh.position.x);
+				capturePoseInput(mesh.position.y);
+				capturePoseInput(mesh.position.z);
+			}
+			scene.traverse((object) => {
+				// Lines are editor overlays, not opaque geometry. Treating drei's
+				// Line2/LineSegments2 as blockers invokes its screen-space raycast
+				// without a camera and throws on every exposure pass.
+				if (!object.isMesh || object.isLine || object.isLine2 || object.isLineSegments2 || !object.visible || object.layers.isEnabled(POSER_LAYER)) return;
+				const materials = Array.isArray(object.material) ? object.material : null;
+				let opaque = false;
+				if (materials) {
+					for (const material of materials) {
+						if (material && material.visible !== false && material.opacity > 0.01 && material.depthWrite !== false) {
+							opaque = true;
+							break;
+						}
+					}
+				} else {
+					const material = object.material;
+					opaque = !!material && material.visible !== false && material.opacity > 0.01 && material.depthWrite !== false;
+				}
+				if (!opaque) return;
+				blockers.push(object);
+				captureInput(object.id);
+				for (const value of object.matrixWorld.elements) {
+					if (object.isSkinnedMesh) capturePoseInput(value);
+					else captureInput(value);
+				}
+				for (const value of object.morphTargetInfluences ?? []) capturePoseInput(value);
+				if (object.isSkinnedMesh) {
+					// Handle centres do not reveal an in-place joint rotation
+					// (notably a head turn), so every skinning bone participates
+					// in the proxy-bake signature.
+					for (const bone of object.skeleton?.bones ?? []) {
+						for (const value of bone.matrixWorld.elements) capturePoseInput(value);
 					}
 				}
-			} else {
-				const material = object.material;
-				opaque = !!material && material.visible !== false && material.opacity > 0.01 && material.depthWrite !== false;
-			}
-			if (!opaque) return;
-			blockers.push(object);
-			captureInput(object.id);
-			for (const value of object.matrixWorld.elements) {
-				if (object.isSkinnedMesh) capturePoseInput(value);
-				else captureInput(value);
-			}
-			for (const value of object.morphTargetInfluences ?? []) capturePoseInput(value);
-			if (object.isSkinnedMesh) {
-				// Handle centres do not reveal an in-place joint rotation
-				// (notably a head turn), so every skinning bone participates
-				// in the proxy-bake signature.
-				for (const bone of object.skeleton?.bones ?? []) {
-					for (const value of bone.matrixWorld.elements) capturePoseInput(value);
-				}
-			}
-		});
-		if (input.count !== inputIndex) exposureDirty = true;
-		input.count = inputIndex;
-		input.values.length = inputIndex;
-		if (poseInput.count !== poseInputIndex) poseDirty = true;
-		poseInput.count = poseInputIndex;
-		poseInput.values.length = poseInputIndex;
+			});
+			if (input.count !== inputIndex) exposureDirty = true;
+			input.count = inputIndex;
+			input.values.length = inputIndex;
+			if (poseInput.count !== poseInputIndex) poseDirty = true;
+			poseInput.count = poseInputIndex;
+			poseInput.values.length = poseInputIndex;
 
 		// Camera navigation changes the input signature every frame, but the
 		// character silhouette and all handle positions are unchanged. Running
@@ -586,7 +601,7 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 		// this still follows a slow orbit without making every pointer sample
 		// pay the full proxy cost.
 		const cameraOnlyExposure = exposureDirty && !poseDirty;
-		const exposureThrottled = cameraOnlyExposure && performance.now() - exposureLastPassAt.current < 100;
+		const exposureThrottled = !cameraGestureEnded && cameraOnlyExposure && performance.now() - exposureLastPassAt.current < 100;
 		if (exposureThrottled) {
 			exposurePerfRef.current.skippedFrames += 1;
 		} else if (exposureDirty) {
@@ -687,8 +702,9 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 			exposurePerfRef.current.raycasts += Object.keys(handleRefs.current).length;
 			exposurePerfRef.current.lastPassMs = performance.now() - passStartedAt;
 			exposureLastPassAt.current = performance.now();
-		} else {
-			exposurePerfRef.current.skippedFrames += 1;
+			} else {
+				exposurePerfRef.current.skippedFrames += 1;
+			}
 		}
 
 		let near = Infinity;

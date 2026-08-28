@@ -116,6 +116,7 @@ export function fitAspect(rect, aspect) {
 export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCamRef, planCamRef, poserCamRef, editorCamRef, ikMode = false, planIsMain, playMode = false, lookThrough = false, insetCollapsed = false, planZoom = 1, shotAspect = SHOT_ASPECT }) {
 	const invalidate = useThree((state) => state.invalidate);
 	const lastPoserPose = useRef({ position: new THREE.Vector3(), quaternion: new THREE.Quaternion(), valid: false });
+	const interactivePixelRatio = useRef({ base: null, reduced: false, needsFrozenRedraw: false });
 	// Demand mode draws nothing by itself: the first frame can land before the
 	// layout settles (the inset reads 0x0), and async scene content commits
 	// later. Force frames on mount and after the DOM has caught up.
@@ -244,6 +245,26 @@ export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCa
 			lastPose.valid = false;
 		}
 		const navigatingCamera = cameraGesture || cameraMoved;
+		// Camera navigation is transient editor chrome: render it at one device
+		// pixel per CSS pixel, then restore the configured DPR before the first
+		// settled frame. At DPR 2 this cuts the moving viewport's fragment work to
+		// roughly a quarter without changing the authored or exported frame.
+		const pixelState = interactivePixelRatio.current;
+		if (navigatingCamera && !pixelState.reduced) {
+			pixelState.base = gl.getPixelRatio();
+			if (pixelState.base > 1) gl.setPixelRatio(1);
+			pixelState.reduced = true;
+			pixelState.needsFrozenRedraw = true;
+		} else if (!navigatingCamera && pixelState.reduced) {
+			gl.setPixelRatio(pixelState.base ?? 1);
+			pixelState.base = null;
+			pixelState.reduced = false;
+			pixelState.needsFrozenRedraw = false;
+		}
+		// setPixelRatio resizes the shared canvas and clears its old pixels. Paint
+		// frozen panes once, without ink, after that resize; later gesture frames
+		// can leave them untouched again.
+		const redrawFrozenPanes = navigatingCamera && pixelState.needsFrozenRedraw;
 		// Shadow maps are unchanged while only the camera moves. Three otherwise
 		// rebuilds every shadow map on every navigation frame, even though the
 		// poser scene is static, which is the largest hidden cost of right-drag.
@@ -322,6 +343,9 @@ export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCa
 				gl.autoClear = true;
 			}
 		};
+		const drawVisibleInset = (...args) => {
+			if (!insetCollapsed) draw(...args);
+		};
 
 		gl.autoClear = true;
 		shotCam.aspect = shotAspect;
@@ -359,10 +383,10 @@ export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCa
 			poserCam.aspect = mainRect.w / mainRect.h;
 			poserCam.updateProjectionMatrix();
 			draw(poserCam, mainRect, null, !navigatingCamera);
-			if (!navigatingCamera && !insetCollapsed) draw(shotCam, insetRect, fitAspect(insetRect, shotAspect));
+			if (!navigatingCamera || redrawFrozenPanes) drawVisibleInset(shotCam, insetRect, fitAspect(insetRect, shotAspect), !navigatingCamera);
 		} else if (planIsMain) {
 			draw(planCam, planPane, null, false);
-			if (!insetCollapsed) draw(shotCam, shotPane, fitAspect(shotPane, shotAspect));
+			if (!navigatingCamera || redrawFrozenPanes) drawVisibleInset(shotCam, shotPane, fitAspect(shotPane, shotAspect), !navigatingCamera);
 		} else if (editorCam && !lookThrough) {
 			// Split-camera editing: the main pane is the EDITOR camera — free
 			// navigation that never touches the recording. The shot camera only
@@ -370,22 +394,26 @@ export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCa
 			// stripped of editing chrome, exactly like an exported frame.
 			editorCam.aspect = mainRect.w / mainRect.h;
 			editorCam.updateProjectionMatrix();
-			draw(editorCam, mainRect);
-			if (!insetCollapsed) draw(planCam, planPane, null, false);
+			// A right-drag is a camera gesture even with IK off. Keep the main
+			// image readable while the camera is moving by deferring the expensive
+			// edge/ink pass until the gesture ends; the static panes stay frozen too.
+			draw(editorCam, mainRect, null, !navigatingCamera);
+			if (!navigatingCamera || redrawFrozenPanes) drawVisibleInset(planCam, planPane, null, false);
 			const previewEl = shotPreviewRef?.current;
-			if (previewEl && !previewEl.hidden) {
+			if (previewEl && !previewEl.hidden && (!navigatingCamera || redrawFrozenPanes)) {
 				const previewRect = rectOf(previewEl);
 				if (previewRect.w >= 2) {
 					const previewMask = shotCam.layers.mask;
 					shotCam.layers.disable(GIZMO_LAYER);
-					draw(shotCam, previewRect, fitAspect(previewRect, shotAspect));
+					draw(shotCam, previewRect, fitAspect(previewRect, shotAspect), !navigatingCamera);
 					shotCam.layers.mask = previewMask;
 				}
 			}
 		} else {
-			draw(shotCam, shotPane, fitAspect(shotPane, shotAspect));
-			if (!insetCollapsed) draw(planCam, planPane, null, false);
+			draw(shotCam, shotPane, fitAspect(shotPane, shotAspect), !navigatingCamera);
+			if (!navigatingCamera || redrawFrozenPanes) drawVisibleInset(planCam, planPane, null, false);
 		}
+		if (redrawFrozenPanes) pixelState.needsFrozenRedraw = false;
 
 		gl.setScissorTest(false);
 		gl.setViewport(0, 0, size.width, size.height);
