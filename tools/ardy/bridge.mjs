@@ -58,7 +58,9 @@ const HEALTH_TTL_MS = 5000; // the UI polls health; a cached answer avoids hamme
 const BASES_TTL_MS = 120000; // the box's motion list changes rarely
 const MAX_BODY_BYTES = 1024 * 1024;
 const SEED_MAX = 2 ** 31 - 1; // optional request seed: an integer in 0..2**31-1 (bridge contract)
-const FPS = 20; // ARDY Core is 20 fps; clip length is int(duration * 20)
+// ARDY Core uses 20 fps; Kimodo is retimed directly to the app's 24 fps clock.
+// The bridge validates and frames requests on the selected backend's clock.
+const FPS = (process.env.CCLAY_MOTION_BACKEND || "").trim().toLowerCase() === "kimodo" ? 24 : 20;
 const ROOT_2D_RANGE_M = 20; // |x| and |z| cap, meters (ARDY Y-up, X/Z horizontal)
 const HEADING_RANGE_RAD = 2 * Math.PI; // |heading| cap, radians
 const WAYPOINTS_MAX = 32; // sparse authored root keys including frame 0

@@ -1313,7 +1313,8 @@ registerTool(
 
 		// ARDY Core is 20 fps; segments must tile 0..clipFrames exactly, and each
 		// one needs at least 3 frames.
-		const ARDY_FPS = 20;
+		const ARDY_FPS =
+			(process.env.CCLAY_MOTION_BACKEND || "kimodo").trim().toLowerCase() === "kimodo" ? 24 : 20;
 		let segments;
 		let clipFrames;
 		let chained = 0;

@@ -70,6 +70,7 @@ const vite = spawnOwned(process.execPath, ["node_modules/vite/bin/vite.js", ...v
 		COZYCLAY_BRIDGE_PORT: String(bridgePort),
 		CCLAY_GENERATION_PORT: String(generationPort),
 		COZYCLAY_LIVE_PORT: livePort,
+		VITE_CCLAY_MOTION_BACKEND: process.env.CCLAY_MOTION_BACKEND || "kimodo",
 	},
 });
 children.push(vite);

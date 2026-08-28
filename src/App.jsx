@@ -481,7 +481,7 @@ const REST_BONES = Object.fromEntries(POSE_BONES.map((b) => [b.id, [0, 0, 0]]));
 // are CONVERTED outbound (app → bridge, toArdyFrame). Nothing between the
 // boundaries may mix the clocks.
 const TIMELINE_FPS = 24;
-const ARDY_FPS = 20;
+const ARDY_FPS = (import.meta.env?.VITE_CCLAY_MOTION_BACKEND || "kimodo").trim().toLowerCase() === "kimodo" ? 24 : 20;
 const toArdyFrame = (frame) => Math.round((frame * ARDY_FPS) / TIMELINE_FPS);
 
 // Outbound converters: timeline-frame entries → strictly-ascending bridge
@@ -2488,7 +2488,6 @@ globalThis.playMode = centerTab === "play";
 			localStorage.setItem(WORKSPACE_LAYOUT_KEY, JSON.stringify(workspaceLayout));
 		} catch (err) {
 			console.warn("[cozyclay] workspace layout not saved:", err?.name ?? err);
-		}
 		}
 	}, [workspaceLayout]);
 
@@ -5010,8 +5009,8 @@ globalThis.playMode = centerTab === "play";
 				const prompt = typeof args.prompt === "string" ? args.prompt : "";
 				if (args.drop != null && !normalizeRootDrop(args.drop)) throw new Error("Invalid drop");
 				// Optional per-phase blocks land on the Prompts lane the way hand-authored
-				// ones do. They arrive on ARDY's 20 fps clock; the lane runs on the 24 fps
-				// production clock, so each boundary is converted, not copied.
+				// ones do. The bridge clock is 20 fps for ARDY and 24 fps for Kimodo;
+				// convert only when the selected backend's clock differs from the lane.
 				let clips = null;
 				if (Array.isArray(args.blocks) && args.blocks.length) {
 					const toTimeline = (frame) => Math.round((frame * TIMELINE_FPS) / ARDY_FPS);
