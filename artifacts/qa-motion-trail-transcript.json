@@ -1,41 +1,41 @@
 {
-  "startedAt": "2026-08-28T08:07:49.423Z",
+  "startedAt": "2026-08-28T08:11:24.789Z",
   "steps": [
     {
-      "at": "2026-08-28T08:07:50.704Z",
+      "at": "2026-08-28T08:11:26.014Z",
       "step": "browser",
       "detail": {
         "url": "http://127.0.0.1:5400/app/"
       }
     },
     {
-      "at": "2026-08-28T08:07:51.291Z",
+      "at": "2026-08-28T08:11:27.597Z",
       "step": "live",
       "detail": {
         "status": "Live editor connected. Workspaces:"
       }
     },
     {
-      "at": "2026-08-28T08:07:51.379Z",
+      "at": "2026-08-28T08:11:28.986Z",
       "step": "workspace",
       "detail": {
         "handles": [
-          "77c6255f-9c00-4efb-844f-37179c7808ba",
-          "238fbd9c-d584-437e-ab5f-657790be0f5d",
-          "d6ba27c9-aea2-48b2-bfc4-ac299b4ad85c"
+          "8d623d15-1a25-4c5b-8408-92e6b115b30f",
+          "bd418925-6cd1-405d-bf5d-f7ada0606650",
+          "897db193-2cfa-4314-b7f1-e230c78e4241"
         ],
-        "chosen": "d6ba27c9-aea2-48b2-bfc4-ac299b4ad85c"
+        "chosen": "8d623d15-1a25-4c5b-8408-92e6b115b30f"
       }
     },
     {
-      "at": "2026-08-28T08:07:55.356Z",
+      "at": "2026-08-28T08:11:30.611Z",
       "step": "load_motion",
       "detail": {
         "reply": "Motion installed from /ardy/motions/1787899988840-c5299d."
       }
     },
     {
-      "at": "2026-08-28T08:07:57.138Z",
+      "at": "2026-08-28T08:11:32.341Z",
       "step": "ik",
       "detail": {
         "mode": true,
@@ -43,7 +43,7 @@
       }
     },
     {
-      "at": "2026-08-28T08:07:57.150Z",
+      "at": "2026-08-28T08:11:32.354Z",
       "step": "trail",
       "detail": {
         "points": 168,
@@ -51,7 +51,7 @@
       }
     },
     {
-      "at": "2026-08-28T08:07:57.720Z",
+      "at": "2026-08-28T08:11:32.930Z",
       "step": "deform",
       "detail": {
         "grab": 84,
@@ -63,18 +63,18 @@
       }
     },
     {
-      "at": "2026-08-28T08:07:58.598Z",
+      "at": "2026-08-28T08:11:33.808Z",
       "step": "screenshot",
       "detail": {
-        "bytes": 284433,
-        "distinctSampledBytes": 185
+        "bytes": 300984,
+        "distinctSampledBytes": 175
       }
     },
     {
-      "at": "2026-08-28T08:08:16.858Z",
+      "at": "2026-08-28T08:11:52.206Z",
       "step": "regenerated",
       "detail": {
-        "url": "/ardy/motions/1787904478669-fdf17f",
+        "url": "/ardy/motions/1787904693879-22d652",
         "committed": [
           {
             "frame": 84,
@@ -87,5 +87,5 @@
     }
   ],
   "status": "passed",
-  "finishedAt": "2026-08-28T08:08:16.859Z"
+  "finishedAt": "2026-08-28T08:11:52.206Z"
 }

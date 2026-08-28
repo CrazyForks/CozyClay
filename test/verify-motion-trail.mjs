@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import {
 	TRAIL_EFFECTOR_JOINTS,
+	TRAIL_TRACKS,
 	applyTrailFalloffDelta,
 	falloffWeight,
 	jointTrailPoints,
@@ -153,6 +154,32 @@ function syntheticMotion({ frames = 10, rotationDeg = 0, anchorX = 0, anchorZ = 
 	const motion = syntheticMotion();
 	const hand = jointTrailPoints(motion, TRAIL_EFFECTOR_JOINTS.leftHand);
 	assert.equal(hand.length, motion.frames * 3);
+}
+
+// --- trail tracks: valid joints, IK-handle colours, limbs before hips ------
+{
+	const HANDLE_COLORS = { arm: "#ff8a3d", leg: "#4dd2ff", torso: "#ffd23d", head: "#b98cff" };
+	const expected = {
+		leftHand: HANDLE_COLORS.arm,
+		rightHand: HANDLE_COLORS.arm,
+		leftFoot: HANDLE_COLORS.leg,
+		rightFoot: HANDLE_COLORS.leg,
+		head: HANDLE_COLORS.head,
+		hips: HANDLE_COLORS.torso,
+	};
+	assert.deepEqual(
+		Object.fromEntries(TRAIL_TRACKS.map((track) => [track.id, track.color])),
+		expected,
+		"every trail rides its viewport IK-handle colour",
+	);
+	for (const track of TRAIL_TRACKS) {
+		assert.ok(CSKEL27_JOINTS.includes(track.joint), `${track.joint} is a cskel27 joint`);
+	}
+	assert.equal(TRAIL_TRACKS[TRAIL_TRACKS.length - 1].id, "hips", "hips picks last so limb grabs win overlaps");
+	const motion = syntheticMotion();
+	for (const track of TRAIL_TRACKS) {
+		assert.equal(jointTrailPoints(motion, track.joint).length, motion.frames * 3);
+	}
 }
 
 console.log("all motion trail checks passed");

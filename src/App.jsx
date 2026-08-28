@@ -22,7 +22,7 @@ import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl
 import { bakeExtractedTake, bakePoseFrame, collectLandmarkTrack, createPoseDetector, imageFrames, sampleTimes, videoFrames } from "./pose-extract/index.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { PIN_BLOCKED, planPosePin } from "./ardy/pose-pin.js";
-import { TRAIL_EFFECTOR_JOINTS, applyTrailFalloffDelta, jointTrailPoints, nearestFrameToRay, trailEditRange, worldDeltaToClip } from "./motion-trail.js";
+import { TRAIL_EFFECTOR_JOINTS, TRAIL_TRACKS, applyTrailFalloffDelta, jointTrailPoints, nearestFrameToRay, trailEditRange, worldDeltaToClip } from "./motion-trail.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
 import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint, toSceneRootOffset, PATH_LIMITS } from "./ardy/waypoints.js";
@@ -2417,19 +2417,21 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 		for (let index = 0; index + 2 < flat.length; index += 3) out.push([flat[index], flat[index + 1], flat[index + 2]]);
 		return out;
 	};
-	const rootFlat = useMemo(() => jointTrailPoints(motion, "Hips", { baseY, scale: charScale }), [motion, baseY, charScale]);
-	const effectorJoint = TRAIL_EFFECTOR_JOINTS[ikFocus] ?? null;
-	const effectorFlat = useMemo(
-		() => (effectorJoint && effectorJoint !== "Hips" ? jointTrailPoints(motion, effectorJoint, { baseY, scale: charScale }) : null),
-		[motion, effectorJoint, baseY, charScale],
+	// Every trail track (root + IK endpoints + head) in its handle colour.
+	const tracks = useMemo(
+		() => TRAIL_TRACKS.map((track) => {
+			const flat = jointTrailPoints(motion, track.joint, { baseY, scale: charScale });
+			return flat ? { ...track, flat, points: toTriples(flat) } : null;
+		}).filter(Boolean),
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[motion, baseY, charScale],
 	);
-	const rootPoints = useMemo(() => toTriples(rootFlat), [rootFlat]);
-	const effectorPoints = useMemo(() => toTriples(effectorFlat), [effectorFlat]);
+	const trackById = (id) => tracks.find((track) => track.id === id) ?? null;
 	// The falloff window rides whichever line is being (or was last) grabbed.
 	const highlight = drag ?? pendingEdit;
 	const highlightPoints = useMemo(() => {
 		if (!highlight || !motion?.frames) return null;
-		const flat = highlight.track === "effector" ? effectorFlat : rootFlat;
+		const flat = trackById(highlight.track)?.flat ?? trackById("hips")?.flat;
 		if (!flat) return null;
 		const { startFrame, endFrame } = trailEditRange(motion.frames, highlight.grabFrame, falloffFrames);
 		const out = [];
@@ -2437,7 +2439,8 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 			out.push([flat[frame * 3], flat[frame * 3 + 1], flat[frame * 3 + 2]]);
 		}
 		return out.length > 1 ? out : null;
-	}, [highlight, motion, rootFlat, effectorFlat, falloffFrames]);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [highlight, motion, tracks, falloffFrames]);
 
 	// Manual capture-phase picking instead of r3f pointer handlers: handlers on
 	// a drei Line make react-three-fiber raycast the fat-line shader geometry on
@@ -2445,7 +2448,7 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 	// A single pointerdown listener that measures point-to-ray distance against
 	// the cached trail arrays costs nothing while the mouse merely moves.
 	const pickRef = useRef(null);
-	pickRef.current = { rootFlat, effectorFlat, enabled };
+	pickRef.current = { tracks, enabled };
 	useEffect(() => {
 		const dom = gl.domElement;
 		const raycaster = new THREE.Raycaster();
@@ -2460,26 +2463,26 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 			);
 			raycaster.setFromCamera(ndc, camera);
 			const { origin, direction } = raycaster.ray;
-			// Effector first: it usually overlaps the root path and is the finer target.
-			const candidates = [
-				["effector", pick.effectorFlat],
-				["root", pick.rootFlat],
-			];
+			// TRAIL_TRACKS order is limbs-first, hips last: an overlapping grab
+			// prefers the finer limb target, and among candidates within the
+			// threshold the closest line wins.
 			let track = null;
 			let grabFrame = 0;
-			for (const [name, flat] of candidates) {
-				const near = flat ? nearestFrameToRay(flat, origin, direction, 0.2) : null;
-				if (near) {
-					track = name;
+			let bestDistance = Infinity;
+			for (const candidate of pick.tracks) {
+				const near = nearestFrameToRay(candidate.flat, origin, direction, 0.2);
+				if (near && near.distance < bestDistance) {
+					track = candidate.id;
 					grabFrame = near.frame;
-					break;
+					bestDistance = near.distance;
 				}
 			}
 			if (!track) return;
 			// The grab wins over the camera controls listening in the bubble phase.
 			event.stopPropagation();
 			event.preventDefault();
-			const flat = track === "effector" ? pick.effectorFlat : pick.rootFlat;
+			const flat = pick.tracks.find((candidate) => candidate.id === track)?.flat;
+			if (!flat) return;
 			const start = new THREE.Vector3(flat[grabFrame * 3], flat[grabFrame * 3 + 1], flat[grabFrame * 3 + 2]);
 			const normal = camera.getWorldDirection(new THREE.Vector3()).negate();
 			const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, start);
@@ -2521,15 +2524,24 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [gl, camera]);
 
-	if (!rootPoints || rootPoints.length < 2) return null;
-	// depthTest off + high renderOrder: the trail reads through the character
-	// and the floor instead of vanishing into them (the faintness complaint).
+	if (!tracks.length) return null;
+	const focusTrack = TRAIL_EFFECTOR_JOINTS[ikFocus] ? tracks.find((track) => track.joint === TRAIL_EFFECTOR_JOINTS[ikFocus])?.id : null;
+	// depthTest off + high renderOrder: the trails read through the character
+	// and the floor instead of vanishing into them. Every part rides its own
+	// IK-handle colour; the focused part draws thicker.
 	return (
 		<group renderOrder={900}>
-			<Line points={rootPoints} color="#1fa8ff" lineWidth={3} depthTest={false} transparent opacity={0.9} />
-			{effectorPoints && effectorPoints.length > 1 && (
-				<Line points={effectorPoints} color="#ffb020" lineWidth={3} depthTest={false} transparent opacity={0.9} />
-			)}
+			{tracks.map((track) => track.points.length > 1 && (
+				<Line
+					key={track.id}
+					points={track.points}
+					color={track.color}
+					lineWidth={track.id === focusTrack ? 4 : 2.5}
+					depthTest={false}
+					transparent
+					opacity={track.id === focusTrack ? 1 : 0.85}
+				/>
+			))}
 			{highlightPoints && (
 				<Line points={highlightPoints} color={drag ? "#3dff7a" : "#ff8c42"} lineWidth={5} depthTest={false} />
 			)}

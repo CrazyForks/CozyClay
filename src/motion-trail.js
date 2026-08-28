@@ -13,6 +13,21 @@ import { CSKEL27_JOINTS } from "./ardy/cskel27.js";
 
 const JOINTS = CSKEL27_JOINTS.length;
 
+/**
+ * The always-drawn trail tracks: root plus every IK chain endpoint and the
+ * head, coloured exactly like their viewport IK/FK handles (posestudio.jsx
+ * coding: arms orange, legs blue, torso yellow, head purple). Pick order is
+ * limbs-first so an overlapping grab prefers the finer target; hips last.
+ */
+export const TRAIL_TRACKS = [
+	{ id: "leftHand", joint: "LeftHand", color: "#ff8a3d" },
+	{ id: "rightHand", joint: "RightHand", color: "#ff8a3d" },
+	{ id: "leftFoot", joint: "LeftFoot", color: "#4dd2ff" },
+	{ id: "rightFoot", joint: "RightFoot", color: "#4dd2ff" },
+	{ id: "head", joint: "Head", color: "#b98cff" },
+	{ id: "hips", joint: "Hips", color: "#ffd23d" },
+];
+
 /** ikFocus token -> cskel27 joint whose posed position draws the effector trail. */
 export const TRAIL_EFFECTOR_JOINTS = {
 	hips: "Hips",
