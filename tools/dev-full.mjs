@@ -30,9 +30,7 @@ const removeSignalCleanup = installSignalCleanup(() => children);
 const trackChild = (child) => children.push(child);
 const untrackChild = (child) => children.splice(children.indexOf(child), 1);
 let bridge;
-let generation;
 let bridgePort;
-let generationPort;
 try {
 	({ child: bridge, port: bridgePort } = await startBridge({
 		command: process.execPath,
@@ -40,19 +38,6 @@ try {
 		cwd: REPO,
 		env: process.env,
 		mainPort: mainPortFrom(viteArgs),
-		onSpawn: trackChild,
-		onFailure: untrackChild,
-	}));
-	({ child: generation, port: generationPort } = await startBridge({
-		command: process.execPath,
-		args: ["tools/generation/bridge.mjs"],
-		cwd: REPO,
-		env: process.env,
-		mainPort: bridgePort,
-		portEnv: "CCLAY_GENERATION_PORT",
-		name: "generation bridge",
-		readyType: "cozyclay-generation-ready",
-		listenErrorType: "cozyclay-generation-listen-error",
 		onSpawn: trackChild,
 		onFailure: untrackChild,
 	}));
@@ -65,13 +50,11 @@ try {
 
 const vite = spawnOwned(process.execPath, ["node_modules/vite/bin/vite.js", ...viteArgs], {
 	cwd: REPO,
-	env: {
-		...process.env,
-		COZYCLAY_BRIDGE_PORT: String(bridgePort),
-		CCLAY_GENERATION_PORT: String(generationPort),
-		COZYCLAY_LIVE_PORT: livePort,
-		VITE_CCLAY_MOTION_BACKEND: process.env.CCLAY_MOTION_BACKEND || "kimodo",
-	},
+		env: {
+			...process.env,
+			COZYCLAY_BRIDGE_PORT: String(bridgePort),
+			COZYCLAY_LIVE_PORT: livePort,
+		},
 });
 children.push(vite);
 

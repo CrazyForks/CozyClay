@@ -1,14 +1,12 @@
 import { defineConfig } from "vite";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { PROMPT_MAX_CHARS } from "./tools/ardy/prompt-limits.mjs";
 
-const ardyBridgeUrl = process.env.COZYCLAY_BRIDGE_PORT
+const motionBridgeUrl = process.env.COZYCLAY_BRIDGE_PORT
 	? `http://127.0.0.1:${process.env.COZYCLAY_BRIDGE_PORT}`
-	: process.env.CCLAY_ARDY_BRIDGE_URL || "http://127.0.0.1:5181";
-const generationBridgeUrl = process.env.CCLAY_GENERATION_PORT
-	? `http://127.0.0.1:${process.env.CCLAY_GENERATION_PORT}`
-	: "http://127.0.0.1:5182";
+	: process.env.COZYCLAY_BRIDGE_URL || "http://127.0.0.1:5181";
 const livePort = process.env.COZYCLAY_LIVE_PORT ?? "5184";
 
 export default defineConfig({
@@ -50,6 +48,16 @@ export default defineConfig({
 			apply: "serve",
 			configureServer(server) {
 				server.middlewares.use((req, res, next) => {
+					// The lying clip is a browser-regression fixture. Serve it only from
+					// the dev server so it can exercise the real UI without shipping a
+					// second motion archive in production output.
+					if ((req.url || "").split("?")[0] === "/demo/qa-lying.npz") {
+						res.statusCode = 200;
+						res.setHeader("content-type", "application/octet-stream");
+						res.setHeader("cache-control", "no-store");
+						res.end(readFileSync(resolve(import.meta.dirname, "test/fixtures/qa-lying.npz")));
+						return;
+					}
 					if ((req.url || "").split("?")[0] !== "/sw.js") return next();
 					res.setHeader("content-type", "text/javascript; charset=utf-8");
 					res.setHeader("cache-control", "no-store");
@@ -71,7 +79,7 @@ export default defineConfig({
 	],
 	server: {
 		port: 5180,
-		// Dev-only: the ARDY sidecar (tools/ardy/bridge.mjs) is an optional
+		// Dev-only: the motion sidecar (tools/ardy/bridge.mjs) is an optional
 		// companion on loopback. COZYCLAY_BRIDGE_PORT selects it for dev-full;
 		// direct Vite use falls back to 5181. The production build stays fully static
 		// (`base: "./"`, no build-time coupling), so this proxy must never be
@@ -81,14 +89,13 @@ export default defineConfig({
 			// asset directory (cskel27-rest.json), and a blanket proxy would
 			// hand those static files to the bridge, which 404s them.
 			"/ardy": {
-				target: ardyBridgeUrl,
+				target: motionBridgeUrl,
 				bypass(req) {
 					const path = (req.url || "").split("?")[0];
 					if (/^\/ardy\/(health|bases|generate|footage|extract|motions)(\/|$)/.test(path)) return undefined;
 					return req.url; // not a bridge route: serve the static asset
 				},
 			},
-			"/generation": generationBridgeUrl,
 		},
 	},
 });

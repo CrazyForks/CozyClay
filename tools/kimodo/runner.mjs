@@ -42,7 +42,7 @@ function run(argv, timeoutMs = 60_000) {
 function unsupported(feature) {
 	return () => {
 		throw new Error(
-			`the Kimodo backend does not implement ${feature}; run with CCLAY_MOTION_BACKEND=ardy for that path`
+			`the Kimodo backend does not implement ${feature}`
 		);
 	};
 }

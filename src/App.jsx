@@ -180,7 +180,6 @@ import {
 import { Dropdown, Field, Slider, Toast, Vector3Row } from "./ui.jsx";
 import { RENDER_ACTIVITY_EVENT, useRenderActivity } from "./use-render-activity.js";
 import SourceOffer from "./source-offer.jsx";
-import { useGeneration } from "./generation/use-generation.js";
 import {
 	CAMERA_MOVES,
 	CUSTOM_MOVE,
@@ -188,7 +187,6 @@ import {
 	IMAGE_MODELS,
 	SHOT_ASPECT_RATIOS,
 	SUBJECT_HEIGHT_M,
-	VIDEO_MODELS,
 	composePrompt,
 	deriveShot,
 	focalMmToFov,
@@ -485,7 +483,8 @@ const REST_BONES = Object.fromEntries(POSE_BONES.map((b) => [b.id, [0, 0, 0]]));
 // are CONVERTED outbound (app → bridge, toArdyFrame). Nothing between the
 // boundaries may mix the clocks.
 const TIMELINE_FPS = 24;
-const ARDY_FPS = (import.meta.env?.VITE_CCLAY_MOTION_BACKEND || "kimodo").trim().toLowerCase() === "kimodo" ? 24 : 20;
+// The motion bridge uses the Studio's fixed 24 fps production clock.
+const ARDY_FPS = 24;
 const toArdyFrame = (frame) => Math.round((frame * ARDY_FPS) / TIMELINE_FPS);
 
 // Outbound converters: timeline-frame entries → strictly-ascending bridge
@@ -574,7 +573,7 @@ const MULTIMODEL_REASONS = {
 	"footage-normalize-failed": ["The bridge could not convert that video for extraction", "브리지가 영상을 추출용으로 변환하지 못했어요"],
 	"footage-timeout": ["The bridge download took too long and was stopped", "브리지 다운로드가 너무 오래 걸려 중단됐어요"],
 	"bridge-extract-incomplete": ["The bridge stream ended without a take", "브리지 전송이 테이크 없이 끝났어요"],
-	"extract-host-missing": ["The bridge has no GPU box configured (CCLAY_ARDY_HOST)", "브리지에 GPU 박스가 설정돼 있지 않아요(CCLAY_ARDY_HOST)"],
+	"extract-host-missing": ["The bridge has no GPU box configured (CCLAY_EXTRACT_HOST)", "브리지에 GPU 박스가 설정돼 있지 않아요(CCLAY_EXTRACT_HOST)"],
 	"extract-upload-failed": ["The footage could not be copied to the GPU box", "영상을 GPU 박스로 복사하지 못했어요"],
 	"extract-upload-too-large": ["That clip is too large to upload for extraction (300 MB cap)", "추출 업로드 한도(300MB)를 넘는 영상이에요"],
 	"extract-upload-empty": ["No video bytes arrived at the bridge", "브리지에 영상 데이터가 도착하지 않았어요"],
@@ -3855,8 +3854,6 @@ globalThis.playMode = centerTab === "play";
 
 	const [mode, setMode] = useState("image");
 	const [imageModel, setImageModel] = useState("gpt_image_2");
-	const [videoModel, setVideoModel] = useState("seedance_2");
-	const generation = useGeneration();
 	const [cameraMove, setCameraMove] = useState(CAMERA_MOVES[1]);
 	const [customMove, setCustomMove] = useState("");
 	// Authored shot state (camera keys, waypoints, clip length) restored from
@@ -7329,10 +7326,8 @@ globalThis.playMode = centerTab === "play";
 			.catch(() => {});
 	}
 
-	async function generate() {
-		generation.reset();
-		const models = mode === "video" && generation.models.length ? generation.models : mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
-		const model = models.find((m) => m.id === (mode === "video" ? videoModel : imageModel));
+	function generate() {
+		const model = mode === "image" ? IMAGE_MODELS.find((m) => m.id === imageModel) : null;
 		// Generation follows the Camera Block owned by the Shot under the playhead.
 		// Keys use their authored endpoints; Follow/Rail use the deterministic
 		// track already used by playback, so prompt and conditioning describe the
@@ -7416,13 +7411,6 @@ globalThis.playMode = centerTab === "play";
 		setCopied(false);
 		setRecordedVideoName(null);
 		copyPrompt(prompt);
-		if (mode === "video" && generation.models.some((candidate) => candidate.id === model?.id && candidate.provider === model?.provider)) {
-			try {
-				await generation.startResult(nextResult, model);
-			} catch (error) {
-				setToast(error?.message || String(error));
-			}
-		}
 	}
 
 	function download() {
@@ -8202,13 +8190,6 @@ function resizePromptClip(id, edge, rawFrame) {
 	function cancelArdy() {
 		ardyAbortRef.current?.abort();
 	}
-
-	const models = mode === "video" && generation.models.length ? generation.models : mode === "video" ? VIDEO_MODELS : IMAGE_MODELS;
-	useEffect(() => {
-		if (mode === "video" && generation.models.length && !generation.models.some((model) => model.id === videoModel)) {
-			setVideoModel(generation.models[0].id);
-		}
-	}, [mode, videoModel, generation.models]);
 
 	return (
 		<div className={"app" + (renderActive ? "" : " render-idle")}>
@@ -9272,14 +9253,15 @@ function resizePromptClip(id, edge, rawFrame) {
 							{ko("Video", "영상")}
 							</button>
 						</div>
-					<Field label={ko("Model", "모델")}>
+					{mode === "image" && <Field label={ko("Model", "모델")}>
 							<Dropdown
 							ariaLabel={ko("Model", "모델")}
-								value={mode === "video" ? videoModel : imageModel}
-								options={models.map((m) => ({ value: m.id, label: m.label }))}
-								onChange={mode === "video" ? setVideoModel : setImageModel}
+								value={imageModel}
+								options={IMAGE_MODELS.map((m) => ({ value: m.id, label: m.label }))}
+								onChange={setImageModel}
 							/>
-						</Field>
+						</Field>}
+					{mode === "video" && <p className="inspector-hint">{ko("CozyClay prepares the prompt and blocking frames. Finish the video in your chosen AI video tool.", "CozyClay는 프롬프트와 블로킹 프레임을 준비합니다. 영상 완성은 원하는 AI 영상 도구에서 진행하세요.")}</p>}
 
 						<div className="sheet-checks">
 							<label className="check">
@@ -9344,7 +9326,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</Field>
 
 						<button className="btn primary full generate" onClick={generate}>
-							{mode === "video" ? ko("Generate video", "영상 만들기") : ko("Generate image", "이미지 만들기")}
+							{mode === "video" ? ko("Prepare video prompt", "영상 프롬프트 준비") : ko("Generate image", "이미지 만들기")}
 						</button>
 					</Foldout>
 				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Video capture", "영상 모캡")}>
@@ -10611,13 +10593,11 @@ function resizePromptClip(id, edge, rawFrame) {
 			{result && resultOpen && (
 				<ResultModal
 					result={result}
-					generation={generation.state}
 					copied={copied}
 					recordedVideoName={result.mode === "video" ? recordedVideoName : null}
 					onClose={() => setResultOpen(false)}
 					onCopy={() => copyPrompt(result.prompt)}
 					onDownload={download}
-					onCancelGeneration={generation.cancel}
 				/>
 			)}
 

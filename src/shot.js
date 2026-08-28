@@ -179,18 +179,17 @@ export const IMAGE_MODELS = [
 	{ id: "flux_2", label: "Flux 2", numericLens: true, flavor: "fine film grain, high micro-detail" },
 ];
 
+// Video model names are prompt vocabulary for MCP/render_prompt handoff only.
+// Provider credentials and in-app API generation were removed; keep this list
+// free of bridge/provider metadata so it cannot be mistaken for a live adapter.
 export const VIDEO_MODELS = [
-	{ id: "seedance_2", label: "Seedance 2.0", flavor: "one continuous shot", bridge: { provider: "runway", model: "seedance2" } },
-	{ id: "kling_3", label: "Kling 3.0", flavor: "one continuous shot", bridge: null },
-	{ id: "veo_3_1", label: "Veo 3.1", audio: true, bridge: { provider: "runway", model: "veo3.1" } },
+	{ id: "seedance_2", label: "Seedance 2.0", flavor: "one continuous shot" },
+	{ id: "kling_3", label: "Kling 3.0", flavor: "one continuous shot" },
+	{ id: "veo_3_1", label: "Veo 3.1", audio: true },
 	{ id: "wan_2_7", label: "Wan 2.7" },
 	{ id: "hailuo", label: "Minimax Hailuo", flavor: "natural physics and subtle facial emotion" },
 	{ id: "grok_1_5", label: "Grok Imagine 1.5" },
 ];
-
-export function bridgeModelForUiId(id) {
-	return VIDEO_MODELS.find((model) => model.id === id)?.bridge ?? null;
-}
 
 export const CUSTOM_MOVE = "Custom…";
 

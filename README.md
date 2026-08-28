@@ -34,7 +34,7 @@ CozyClay is a browser-based 3D staging studio built with Three.js and React Thre
 npx cozyclay
 ```
 
-That is the whole install. **[cozyclay.org](https://cozyclay.org/)** has the demo reel and a walkthrough of what the studio does; to use it, run it on your own machine. It ships seeded with a pre-generated motion clip, so you can scrub the timeline, drive the cameras and draw a dolly rail straight away — generating *new* motion needs a local ARDY machine, so that part stays off until you point it at one.
+That is the whole install. **[cozyclay.org](https://cozyclay.org/)** has the demo reel and a walkthrough of what the studio does; to use it, run it on your own machine. It ships seeded with a pre-generated motion clip, so you can scrub the timeline, drive the cameras and draw a dolly rail straight away — generating *new* motion is optional and uses the Kimodo bridge when configured.
 
 ## Demo
 
@@ -47,7 +47,7 @@ https://github.com/user-attachments/assets/1d0113e5-6922-443d-affc-1bdabc666247
 | **Stage a scene** | Create primitives and set pieces, then move, rotate and scale them with a W/E/R gizmo. Grid snapping is a preference, not a law — hold `Ctrl` mid-drag to invert it. A bird's-eye plan view drives 2D root waypoints for character paths. |
 | **Fly the camera** | Right-drag flies (WASD walks, Q/E cranes), middle-drag pans, Alt+drag orbits the selection, click selects, `F` frames — the muscle memory you already have from a 3D editor. |
 | **Undo anything** | Every scene mutation goes through one history store: a drag, a scrub, an inspector edit is exactly one undo entry. `Esc` cancels an in-flight drag and restores the pre-drag transform. |
-| **Generate motion** | Pose characters and export poses, sequence multi-phase motion as Prompt Blocks on a resizable timeline, send them to ARDY, then play the result back with sparse IK correction where the generated motion needs fixing. |
+| **Generate motion** | Pose characters and export poses, sequence multi-phase motion as Prompt Blocks on a resizable timeline, send them to Kimodo, then play the result back with sparse IK correction where the generated motion needs fixing. |
 | **Direct it with an AI** | Connect Claude — or any MCP client — and ask for a shot in plain language. It places the cast, frames “a low wide profile”, generates multi-phase motion, and the viewport moves in front of you. See [AI control](#ai-control-mcp). |
 
 ## Requirements
@@ -65,7 +65,7 @@ npx cozyclay
 bunx cozyclay
 ```
 
-That downloads the built studio and opens it at `http://127.0.0.1:5180`. Nothing to compile, no dependency tree to install. Useful flags: `--port 5200`, `--no-open`, `--no-ardy`.
+That downloads the built studio and opens it at `http://127.0.0.1:5180`. Nothing to compile, no dependency tree to install. Useful flags: `--port 5200`, `--no-open`, `--no-motion`.
 
 A global install gives you `cclay`, the same command with less typing. Once a day the launcher checks npm for a newer release and prints a one-line notice after the studio is up; it stays quiet when you're current or offline. `cclay update` installs the latest release, and `--no-update-check` skips the check entirely.
 
@@ -80,9 +80,6 @@ Install the remote worker once:
 ```bash
 CCLAY_KIMODO_HOST=user@your-gpu-box npm run kimodo:setup
 ```
-
-Use `CCLAY_MOTION_BACKEND=ardy` only when you deliberately need the legacy ARDY backend.
-Everything else — staging through camera work and playback — runs without it.
 
 ## AI control (MCP)
 
@@ -125,22 +122,9 @@ npm run dev
 
 Open `http://127.0.0.1:5180`. `npm run dev` starts the studio together with its local Kimodo bridge; `npm run dev:ui` starts the browser UI alone, without Block Generation. The bridge listens on loopback only; Kimodo host variables are documented in [`tools/kimodo/setup-on-box.sh`](tools/kimodo/setup-on-box.sh).
 
-<details>
-<summary><b>Legacy ARDY text encoder</b></summary>
-
-The default Kimodo installer downloads the Kimodo checkpoint and its LLM2Vec encoder assets on the configured GPU host. It uses the Hugging Face cache and does not print `HF_TOKEN`; if Hugging Face requests authentication, provide it in the remote environment. The following command is only for the explicit legacy ARDY backend:
-
-```bash
-CCLAY_MOTION_BACKEND=ardy CCLAY_ARDY_HOST=user@your-gpu-box tools/ardy/setup-text-encoder-on-box.sh
-```
-
-See [`tools/ardy/README.md`](tools/ardy/README.md) for details. This workflow is built with Meta Llama 3; the encoder's base weights are licensed under the Meta Llama 3 Community License.
-
-</details>
-
 ## Hosted demo
 
-Installing ARDY is the hard part, so `cozyclay.org` also runs a queued demo: a visitor writes one prompt, gets a ticket link, and a GPU box owned by the maintainer generates the motion and uploads it. The visitor never installs anything and never leaves the site — the result opens in the studio itself.
+Installing a GPU motion backend is the hard part, so `cozyclay.org` also runs a queued demo: a visitor writes one prompt, gets a ticket link, and a GPU box owned by the maintainer generates the motion and uploads it. The visitor never installs anything and never leaves the site — the result opens in the studio itself.
 
 The pieces live in this repository, under `AGPL-3.0-or-later` like everything else:
 
@@ -173,7 +157,7 @@ npm --prefix workers/api exec -- wrangler d1 migrations apply cozyclay-demo --lo
 npm run demo:api           # wrangler dev on 127.0.0.1:8787
 ```
 
-**Running the GPU-box worker.** The box needs a working local ARDY install (`npm run ardy:setup`) and nothing else; it reaches the API outbound only.
+**Running the GPU-box worker.** The hosted queue worker has its own isolated runtime and reaches the API outbound only. It is independent from the local Studio's Kimodo backend.
 
 ```bash
 CC_DEMO_API_BASE=https://api.cozyclay.org \
@@ -215,7 +199,7 @@ See [`workers/api/README.md`](workers/api/README.md) for the deployment, migrati
 | `npm run test:objects` | Gizmo interaction in a real browser — needs `npm run dev:ui` in another shell |
 | `npm run test:theme` / `test:appearance` / `test:layout` | UI theme, appearance, layout |
 | `npm run test:lifecycle` | Dev-server process lifecycle |
-| `npm run test:ardy` | ARDY conversion, playback, and IK pipeline |
+| `npm run test:ardy` | Motion conversion, playback, and IK pipeline |
 | `cd mcp && npm install && npm run verify` | MCP server over real stdio — all 420 framing combinations |
 | `cd mcp && npm run verify:live` | Live-control protocol against a fake editor (same `npm install` first) |
 | `npm run build` | Production build |
@@ -284,4 +268,4 @@ PostHog's free plan retains events for 1 year.
 
 GNU Affero General Public License v3.0 or later — see [`LICENSE`](LICENSE) and the transition details in [`LICENSING.md`](LICENSING.md). Modified network services must offer their users the corresponding source. Third-party projects retain their own licenses and copyright; see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
-CozyClay can connect to [NVIDIA ARDY](https://github.com/nv-tlabs/ardy) for motion generation. ARDY is a separate third-party project owned and maintained by NVIDIA; it is not included in this repository, and CozyClay is not affiliated with or endorsed by NVIDIA.
+The hosted demo worker may use an externally installed [NVIDIA ARDY](https://github.com/nv-tlabs/ardy) runtime. ARDY is a separate third-party project owned and maintained by NVIDIA; it is not included in this repository, and CozyClay is not affiliated with or endorsed by NVIDIA. The local Studio uses Kimodo instead.

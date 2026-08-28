@@ -88,7 +88,7 @@ function launch(port) {
 		"bin/cozyclay.mjs",
 		"--port", String(port),
 		"--no-open",
-		"--no-ardy",
+		"--no-motion",
 		"--no-star",
 		"--no-update-check",
 	], {

@@ -3,12 +3,12 @@
  * cozyclay - run the studio from a published package.
  *
  * `npx cozyclay` / `bunx cozyclay` should behave like `npm run dev` does in a
- * clone: the studio in a browser, with the optional ARDY sidecar wired up.
+ * clone: the studio in a browser, with the optional motion sidecar wired up.
  * The difference is that nothing is built here. The package ships the built
  * `dist/`, so this launcher only has to
  *
  *   - serve those files over loopback,
- *   - forward /ardy to its dynamically selected sidecar port (the job Vite's dev proxy does),
+ *   - forward /ardy to its dynamically selected sidecar port (the same job Vite's dev proxy does),
  *   - keep the sidecar's lifetime tied to this process.
  *
  * It has no dependencies on purpose. A launcher that needs an install step
@@ -70,14 +70,14 @@ const TYPES = {
 };
 
 function parseArgs(argv) {
-	const opts = { port: 5180, host: "127.0.0.1", ardy: true, open: true, star: true, updateCheck: true };
+	const opts = { port: 5180, host: "127.0.0.1", motion: true, open: true, star: true, updateCheck: true };
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		if (arg === "--port" || arg === "-p") opts.port = Number(argv[++i]);
 		else if (arg.startsWith("--port=")) opts.port = Number(arg.slice(7));
 		else if (arg === "--host") opts.host = String(argv[++i]);
 		else if (arg.startsWith("--host=")) opts.host = arg.slice(7);
-		else if (arg === "--no-ardy") opts.ardy = false;
+		else if (arg === "--no-motion") opts.motion = false;
 		else if (arg === "--no-open") opts.open = false;
 		else if (arg === "--no-star") opts.star = false;
 		else if (arg === "--no-update-check") opts.updateCheck = false;
@@ -115,7 +115,7 @@ const HELP = `cozyclay - browser-based 3D staging studio
   npx cozyclay mcp          run the MCP server (for Claude, Cursor, any MCP client)
   cclay update              install the latest cozyclay globally (npm install -g)
   npx cozyclay --port 5200  serve on another port
-  npx cozyclay --no-ardy    skip the optional motion-generation sidecar
+  npx cozyclay --no-motion  skip the optional motion-generation sidecar
   npx cozyclay --no-open    do not open a browser
   npx cozyclay --no-star    never ask about starring the repo
   npx cozyclay --no-update-check
@@ -126,8 +126,8 @@ const HELP = `cozyclay - browser-based 3D staging studio
 
 cclay is the same command, shorter: a global install gives you both.
 
-Motion generation needs an SSH-reachable NVIDIA machine running ARDY; point
-the sidecar at it with CCLAY_ARDY_HOST. Everything else - staging, posing,
+Motion generation needs an SSH-reachable NVIDIA machine running Kimodo; point
+the sidecar at it with CCLAY_KIMODO_HOST. Everything else - staging, posing,
 paths, cameras, timeline, playback - runs locally with no extra setup.`;
 
 function serveFile(res, path) {
@@ -156,7 +156,7 @@ function proxyToBridge(req, res) {
 		// An absent sidecar is an expected state, not a crash: the app treats a
 		// failed probe as "generation unavailable" and carries on.
 		res.writeHead(503, { "content-type": "application/json" });
-		res.end(JSON.stringify({ error: "ardy sidecar is not running" }));
+		res.end(JSON.stringify({ error: "motion sidecar is not running" }));
 	});
 	req.pipe(upstream);
 }
@@ -295,8 +295,8 @@ if (!existsSync(join(DIST, "app", "index.html"))) {
 
 // The sidecar exits immediately without a box to talk to, so starting it
 // unconditionally would greet a first-time `npx cozyclay` with an error it
-// cannot act on. An unset CCLAY_ARDY_HOST is the normal case, not a fault.
-const ardyHost = process.env.CCLAY_ARDY_HOST?.trim();
+// cannot act on. An unset CCLAY_KIMODO_HOST is the normal case, not a fault.
+const kimodoHost = process.env.CCLAY_KIMODO_HOST?.trim();
 let bridge = null;
 let server = null;
 const startedAt = Date.now();
@@ -316,7 +316,7 @@ async function shutdown(exitCode = 0) {
 process.on("SIGINT", () => shutdown(130));
 process.on("SIGTERM", () => shutdown(143));
 
-if (opts.ardy && ardyHost && existsSync(BRIDGE)) {
+if (opts.motion && kimodoHost && existsSync(BRIDGE)) {
 	try {
 		({ child: bridge, port: bridgePort } = await startBridge({
 			command: process.execPath,
@@ -342,7 +342,7 @@ if (opts.ardy && ardyHost && existsSync(BRIDGE)) {
 		}));
 	} catch (err) {
 		console.error(`cozyclay: motion generation sidecar failed: ${err.message}`);
-		console.error("cozyclay: studio did not start; set COZYCLAY_BRIDGE_PORT to an available port or use --no-ardy.");
+		console.error("cozyclay: studio did not start; set COZYCLAY_BRIDGE_PORT to an available port or use --no-motion.");
 		if (bridge) await terminateOwned(bridge);
 		process.exit(1);
 	}
@@ -464,12 +464,12 @@ server.listen({ port: opts.port, host: "127.0.0.1", ipv6Only: false }, () => {
 	const url = `http://127.0.0.1:${opts.port}/app/`;
 	console.log(`CozyClay is running at ${url}`);
 	console.log("Use a Chromium-based browser — Safari and Firefox are not supported.");
-	if (!opts.ardy) console.log("Motion generation: off (--no-ardy).");
-	else if (bridge) console.log(`Motion generation: sidecar running against ${ardyHost}.`);
+	if (!opts.motion) console.log("Motion generation: off (--no-motion).");
+	else if (bridge) console.log(`Motion generation: sidecar running against ${kimodoHost}.`);
 	else
 		console.log(
-			"Motion generation: off. It runs on an SSH-reachable NVIDIA machine with ARDY;\n" +
-				"set CCLAY_ARDY_HOST=user@host to turn it on. Everything else works without it.",
+			"Motion generation: off. It runs on an SSH-reachable NVIDIA machine with Kimodo;\n" +
+				"set CCLAY_KIMODO_HOST=user@host to turn it on. Everything else works without it.",
 		);
 	if (opts.open) openBrowser(url);
 	void updatePending?.then((latest) => {

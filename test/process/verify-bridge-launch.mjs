@@ -145,12 +145,12 @@ function launcherSpec(kind, port, env) {
 	if (kind === "dev") {
 		return {
 			args: ["tools/dev-full.mjs", "--host", "127.0.0.1", "--port", String(port)],
-			env: { CCLAY_MOTION_BACKEND: "ardy", CCLAY_ARDY_HOST: "test@ardy", ...env },
+			env: { CCLAY_MOTION_BACKEND: "kimodo", CCLAY_KIMODO_HOST: "test@kimodo", ...env },
 		};
 	}
 	return {
 		args: ["bin/cozyclay.mjs", "--host", "127.0.0.1", "--port", String(port), "--no-open", "--no-star"],
-		env: { CCLAY_MOTION_BACKEND: "ardy", ...env, CCLAY_ARDY_HOST: "test@ardy" },
+		env: { CCLAY_MOTION_BACKEND: "kimodo", ...env, CCLAY_KIMODO_HOST: "test@kimodo" },
 	};
 }
 
@@ -190,7 +190,7 @@ async function expectBridgeIpcReadiness() {
 	await close(reservation);
 	const child = fork(BRIDGE, [], {
 		cwd: REPO,
-		env: { ...process.env, CCLAY_MOTION_BACKEND: "ardy", CCLAY_ARDY_MODE: "remote", CCLAY_ARDY_HOST: "test@ardy", COZYCLAY_BRIDGE_PORT: String(port) },
+		env: { ...process.env, CCLAY_MOTION_BACKEND: "kimodo", CCLAY_KIMODO_HOST: "test@kimodo", COZYCLAY_BRIDGE_PORT: String(port) },
 		stdio: ["ignore", "ignore", "ignore", "ipc"],
 		detached: true,
 	});
@@ -207,7 +207,7 @@ async function expectForeignListenerDoesNotReportBridgeReady() {
 	const port = await listen(foreign);
 	const child = fork(BRIDGE, [], {
 		cwd: REPO,
-		env: { ...process.env, CCLAY_MOTION_BACKEND: "ardy", CCLAY_ARDY_MODE: "remote", CCLAY_ARDY_HOST: "test@ardy", COZYCLAY_BRIDGE_PORT: String(port) },
+		env: { ...process.env, CCLAY_MOTION_BACKEND: "kimodo", CCLAY_KIMODO_HOST: "test@kimodo", COZYCLAY_BRIDGE_PORT: String(port) },
 		stdio: ["ignore", "ignore", "ignore", "ipc"],
 		detached: true,
 	});
@@ -230,9 +230,9 @@ async function expectLifecycle(kind) {
 	const bridgeReservation = createServer();
 	const bridgePort = await listen(bridgeReservation, mainPort + 2);
 	await close(bridgeReservation);
-	const { child, output } = launch(kind, mainPort, { CCLAY_ARDY_MODE: "remote" });
+	const { child, output } = launch(kind, mainPort);
 	try {
-		const ready = await output.waitFor(/ARDY dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} bridge readiness`);
+		const ready = await output.waitFor(/motion dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} bridge readiness`);
 		assert.equal(Number(ready[1]), bridgePort, `${kind} skips occupied main + 1`);
 		assert.equal(await canConnect(bridgePort), true, `${kind} accepts TCP after readiness`);
 		const bridgePids = await listenerPidsAfterConnect(bridgePort);
@@ -254,9 +254,9 @@ async function expectLifecycle(kind) {
 	const cleanupReservation = createServer();
 	const cleanupPort = await listen(cleanupReservation, clean.mainPort + 2);
 	await close(cleanupReservation);
-	const next = launch(kind, clean.mainPort, { CCLAY_ARDY_MODE: "remote" });
+	const next = launch(kind, clean.mainPort);
 	try {
-		const ready = await next.output.waitFor(/ARDY dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} cleanup bridge readiness`);
+		const ready = await next.output.waitFor(/motion dev bridge listening on http:\/\/127\.0\.0\.1:(\d+)/, `${kind} cleanup bridge readiness`);
 		assert.equal(Number(ready[1]), cleanupPort, `${kind} uses the expected cleanup bridge port`);
 		await terminateOwned(next.child);
 		await assertPortReleased(cleanupPort, `${kind} parent termination releases its bridge port`);
@@ -279,11 +279,11 @@ await expectForeignListenerDoesNotReportBridgeReady();
 	assert.match(output.all(), /--port must be an integer in 1\.\.65534/, "package validates a main port that leaves room for its bridge");
 }
 for (const kind of ["dev", "package"]) {
-	await expectLaunchFailure(kind, { COZYCLAY_BRIDGE_PORT: "invalid", CCLAY_ARDY_MODE: "remote" }, /COZYCLAY_BRIDGE_PORT=.*not a valid port/);
+	await expectLaunchFailure(kind, { COZYCLAY_BRIDGE_PORT: "invalid" }, /COZYCLAY_BRIDGE_PORT=.*not a valid port/);
 	const occupied = createServer();
 	const port = await listen(occupied);
 	try {
-		await expectLaunchFailure(kind, { COZYCLAY_BRIDGE_PORT: String(port), CCLAY_ARDY_MODE: "remote" }, /COZYCLAY_BRIDGE_PORT=.*already in use/);
+		await expectLaunchFailure(kind, { COZYCLAY_BRIDGE_PORT: String(port) }, /COZYCLAY_BRIDGE_PORT=.*already in use/);
 	} finally {
 		await close(occupied);
 	}

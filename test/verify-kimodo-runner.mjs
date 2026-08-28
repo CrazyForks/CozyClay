@@ -6,43 +6,43 @@ function pass(label) { console.log(`PASS ${label}`); }
 
 const SAVED = { ...process.env };
 function withEnv(env, body) {
-	for (const key of ["CCLAY_MOTION_BACKEND", "CCLAY_ARDY_HOST", "CCLAY_ARDY_MODE", "CCLAY_KIMODO_HOST"]) {
+	for (const key of ["CCLAY_MOTION_BACKEND", "CCLAY_KIMODO_HOST"]) {
 		delete process.env[key];
 	}
 	Object.assign(process.env, env);
 	try {
 		return body();
 	} finally {
-		for (const key of ["CCLAY_MOTION_BACKEND", "CCLAY_ARDY_HOST", "CCLAY_ARDY_MODE", "CCLAY_KIMODO_HOST"]) {
+		for (const key of ["CCLAY_MOTION_BACKEND", "CCLAY_KIMODO_HOST"]) {
 			delete process.env[key];
 		}
 		Object.assign(process.env, SAVED);
 	}
 }
 
-const BOX = { CCLAY_ARDY_HOST: "user@box" };
 const KIMODO_BOX = { CCLAY_KIMODO_HOST: "user@kimodo-box" };
 
 // ---- Kimodo is the default -----------------------------------------------
 assert.equal(withEnv(KIMODO_BOX, () => createRunner().mode), "kimodo");
 pass("Kimodo is the default backend when a Kimodo host is configured");
 
-// ---- ARDY remains explicit legacy mode ------------------------------------
-assert.equal(withEnv({ CCLAY_MOTION_BACKEND: "ardy", CCLAY_ARDY_MODE: "local" }, () => createRunner().mode), "local");
-assert.equal(withEnv({ ...BOX, CCLAY_MOTION_BACKEND: "ardy" }, () => createRunner().mode), "remote");
-pass("explicit ARDY legacy mode and its local/remote choice are unchanged");
-
-// ---- opting in ------------------------------------------------------------
+// ---- explicit Kimodo selection --------------------------------------------
 assert.equal(withEnv({ ...KIMODO_BOX, CCLAY_MOTION_BACKEND: "kimodo" }, () => createRunner().mode), "kimodo");
 assert.equal(withEnv({ ...KIMODO_BOX, CCLAY_MOTION_BACKEND: "KIMODO" }, () => createRunner().mode), "kimodo");
 pass("CCLAY_MOTION_BACKEND=kimodo selects the Kimodo runner");
 
-// ---- a typo must not silently fall back to ARDY ---------------------------
+// ---- stale backend names are refused --------------------------------------
 assert.throws(
-	() => withEnv({ ...BOX, CCLAY_MOTION_BACKEND: "kimono" }, () => createRunner()),
+	() => withEnv({ ...KIMODO_BOX, CCLAY_MOTION_BACKEND: "ardy" }, () => createRunner()),
+	/unknown CCLAY_MOTION_BACKEND "ardy"/
+);
+pass("the removed ARDY backend name is refused");
+
+assert.throws(
+	() => withEnv({ ...KIMODO_BOX, CCLAY_MOTION_BACKEND: "kimono" }, () => createRunner()),
 	/unknown CCLAY_MOTION_BACKEND "kimono"/
 );
-pass("an unknown backend name is refused instead of silently using ARDY");
+pass("an unknown backend name is refused");
 
 // ---- the Kimodo runner satisfies the interface the bridge calls -----------
 const runner = withEnv({ ...KIMODO_BOX, CCLAY_MOTION_BACKEND: "kimodo" }, () => createRunner());
@@ -75,7 +75,7 @@ pass("sequenceCommand builds a spawnable command whose done line the bridge can 
 
 // ---- root waypoints are forwarded, not refused ----------------------------
 // They become a Kimodo root2d constraint downstream. The --root-2d tokens must
-// match the ARDY wrapper's shape so the bridge stays backend-agnostic, and a
+// match the historical bridge wire shape so the bridge stays stable, and a
 // null heading must serialise as the literal "none" rather than "null".
 const pathed = runner.sequenceCommand({
 	segments: [{ prompt: "A person walks", durationS: 3 }],

@@ -69,7 +69,7 @@ export async function startBridge({
 	env,
 	mainPort,
 	portEnv = "COZYCLAY_BRIDGE_PORT",
-	name = "ARDY bridge",
+	name = "motion bridge",
 	readyType = "cozyclay-bridge-ready",
 	listenErrorType = "cozyclay-bridge-listen-error",
 	onSpawn,

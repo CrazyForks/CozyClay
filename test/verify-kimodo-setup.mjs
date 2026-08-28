@@ -15,8 +15,10 @@ assert.match(setup, /McGill-NLP\/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervise
 assert.doesNotMatch(setup, /CCLAY_ARDY|\/ardy|ARDY/);
 assert.match(wrapper, /CCLAY_KIMODO_HOST/);
 assert.match(wrapper, /ssh/);
-assert.match(runner, /if \(!backend\) return createKimodoRunner\(\);/);
-assert.match(runner, /backend !== "ardy"/);
+assert.match(runner, /return createKimodoRunner\(\);/);
+assert.match(runner, /backend !== "kimodo"/);
+assert.match(runner, /unknown CCLAY_MOTION_BACKEND/);
+assert.doesNotMatch(runner, /createLocalRunner|createRemoteRunner|CCLAY_ARDY_MODE/);
 assert.match(edit, /committed_keys:/);
 assert.match(edit, /commit_verified: true/);
 // The bridge only forwards a motion-edit report shaped like ARDY's: it must

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * bridge.mjs - dev-only HTTP sidecar that drives the ARDY loop for the
- * CozyClay SPA.
+ * bridge.mjs - dev-only HTTP sidecar that drives the motion-generation loop
+ * for the CozyClay SPA.
  *
  * CozyClay stays a static SPA: `vite build` emits a dist/ that needs no
  * server. The box work (pose -> npz -> remote constrained generation) cannot
@@ -10,10 +10,9 @@
  * running the app behaves exactly as before, with the generate affordance
  * unavailable. The production build never depends on it.
  *
- * The heavy lifting is done by the existing, verified CLIs - pose-to-npz.mjs
- * and run-on-box.sh - never reimplemented here. The box host, repo, generator
- * venv and encoder URL come from the SAME env var names run-on-box.sh reads
- * (with the same defaults), so the bridge and the scripts cannot disagree.
+ * The heavy lifting is done by the Kimodo runner (tools/kimodo/runner.mjs),
+ * never reimplemented here. Pose conversion, validation, streaming and motion
+ * delivery remain backend-neutral so the browser contract stays stable.
  *
  * Security posture (detailed in BRIDGE.md):
  *  - binds 127.0.0.1 only;
@@ -58,13 +57,11 @@ const HEALTH_TTL_MS = 5000; // the UI polls health; a cached answer avoids hamme
 const BASES_TTL_MS = 120000; // the box's motion list changes rarely
 const MAX_BODY_BYTES = 1024 * 1024;
 const SEED_MAX = 2 ** 31 - 1; // optional request seed: an integer in 0..2**31-1 (bridge contract)
-// ARDY Core uses 20 fps; Kimodo is retimed directly to the app's 24 fps clock.
-// The bridge validates and frames requests on the selected backend's clock.
-const FPS = (process.env.CCLAY_MOTION_BACKEND || "").trim().toLowerCase() === "kimodo" ? 24 : 20;
-const ROOT_2D_RANGE_M = 20; // |x| and |z| cap, meters (ARDY Y-up, X/Z horizontal)
+// Kimodo is retimed directly to the app's 24 fps production clock.
+const FPS = 24;
+const ROOT_2D_RANGE_M = 20; // |x| and |z| cap, metres (Y-up, X/Z horizontal)
 const HEADING_RANGE_RAD = 2 * Math.PI; // |heading| cap, radians
 const WAYPOINTS_MAX = 32; // sparse authored root keys including frame 0
-const WAYPOINT_CLIP_MAX_S = 10; // ARDY trained window: one-shot constrained calls must fit it
 const WAYPOINT_SPEED_MIN_MPS = 0.3; // dense-sample gait floor (authored floor 0.5, arcs dip through corners)
 const WAYPOINT_SPEED_MAX_MPS = 3.6; // dense-sample ceiling (authored ceiling 3.0)
 const WAYPOINT_HOLD_EPS_M = 0.06; // pairs closer than this are a deliberate hold, any duration
@@ -75,10 +72,9 @@ const MOTION_ALLOWLIST_MAX = 64; // newest runs only; evicted ids become stale 4
 const MOTION_ID = /^[0-9]+-[0-9a-f]{6}$/;
 
 // The runner is the ONLY part of the bridge that knows where generation
-// actually happens. Selection (runners/index.mjs): CCLAY_ARDY_MODE=local or
-// remote when set; otherwise remote when CCLAY_ARDY_HOST is configured, local
-// otherwise. Everything below the runner boundary — validation, caching,
-// streaming, the motion allowlist — is backend-agnostic.
+// actually happens. Selection (runners/index.mjs) is Kimodo-only; everything
+// below that boundary — validation, caching, streaming and the motion
+// allowlist — is backend-agnostic.
 let runner; // assigned after CLI parsing, before the server starts
 
 // A base path is produced by the backend's own `ls outputs/*.npz` /
@@ -190,8 +186,7 @@ function validateGenerate(body) {
 	if (body.prompt.length > PROMPT_MAX_CHARS) return `field 'prompt' is ${body.prompt.length} chars; the cap is ${PROMPT_MAX_CHARS}`;
 	if (typeof body.duration !== "number" || !Number.isFinite(body.duration)) return `field 'duration' must be a finite number`;
 	if (body.duration < DURATION_MIN || body.duration > DURATION_MAX) return `field 'duration' must be in ${DURATION_MIN}..${DURATION_MAX} seconds`;
-	// Optional post-processing knobs, forwarded to the box generators
-	// (ARDY defaults: root margin 0.04 m, contact threshold 0.5).
+	// Optional post-processing knobs, forwarded to the box generator.
 	if (body.rootMargin !== undefined && (typeof body.rootMargin !== "number" || !Number.isFinite(body.rootMargin) || body.rootMargin < 0 || body.rootMargin > 1)) return `field 'rootMargin' must be a number in 0..1 (meters)`;
 	if (body.contactThreshold !== undefined && (typeof body.contactThreshold !== "number" || !Number.isFinite(body.contactThreshold) || body.contactThreshold < 0 || body.contactThreshold > 1)) return `field 'contactThreshold' must be a number in 0..1`;
 	// Optional history crop (per autoregressive step), forwarded to the box
@@ -231,14 +226,7 @@ function validateGenerate(body) {
 		// Root2D constraint set is built over the whole rollout and each
 		// chained call sees its own slice (the interactive demo's pattern).
 		// The trained window then binds each segment call, not the total.
-		if (body.waypoints !== undefined) {
-			for (let i = 0; i < body.segments.length; i += 1) {
-				const segment = body.segments[i];
-				if (segment.endFrame - segment.startFrame > WAYPOINT_CLIP_MAX_S * FPS) {
-					return `field 'segments[${i}]' must be <= ${WAYPOINT_CLIP_MAX_S} seconds when 'waypoints' are present (each chained call must fit ARDY's trained window)`;
-				}
-			}
-		}
+		// Kimodo owns the segment duration; no legacy trained-window cap applies.
 	}
 	if (body.regenerateSegments !== undefined) {
 		const error = validateRegenerateSegments(body.regenerateSegments, clipFrames);
@@ -286,14 +274,6 @@ function validateGenerate(body) {
 		}
 	}
 	if (body.waypoints !== undefined) {
-		// Without segments, a root path runs the ONE-SHOT constrained
-		// generator: a single model sampling call for the whole clip, so the
-		// clip itself must fit ARDY's 10 s trained window. With segments the
-		// sequence generator chains calls and the per-segment check above is
-		// the binding one instead.
-		if (body.segments === undefined && body.duration > WAYPOINT_CLIP_MAX_S) {
-			return `field 'duration' must be <= ${WAYPOINT_CLIP_MAX_S} seconds when 'waypoints' are present without 'segments' (one-shot constrained generation; ARDY's trained window)`;
-		}
 		const error = validateWaypoints(body.waypoints, clipFrames);
 		if (error) return error;
 	}
@@ -349,8 +329,8 @@ function validateRegenerateSegments(segments, clipFrames) {
 
 // Returns an error message naming the offending field, or null when valid.
 // The fixed contract: 2..32 sparse {frame,x,z,heading} keys, starting at
-// frame 0 with strictly ascending frames. ARDY generates every in-between
-// frame. x/z are finite meters in [-20,20], heading null or finite radians
+// frame 0 with strictly ascending frames. The backend generates every
+// in-between frame. x/z are finite metres in [-20,20], heading null or finite radians
 // in [-2π,2π].
 // Every rejection names 'waypoints' so the client can point at the offending
 // entry.
@@ -581,9 +561,9 @@ async function handleGenerate(req, res) {
 		return;
 	}
 	// A given base must be one of the ids the box actually reported, so a
-	// typo or a guessed id never reaches run-on-box. posePin:false requests
+	// typo or a guessed id never reaches the generator. posePin:false requests
 	// may omit base entirely - with waypoints that is the two-pass mode
-	// (run-on-box.sh free-generates the base clip first) and without
+	// waypoints and without
 	// waypoints it is free generation - so the listing is skipped there.
 	const posePinned = body.posePin !== false;
 	const requestedPoses = posePinned
@@ -681,8 +661,8 @@ async function handleGenerate(req, res) {
 	const outNpzPath = join(artifactDir, posePinned ? "constrained.npz" : "generated.npz");
 	try {
 
-		// --- pose -> ARDY motion npz (local, fast). Skipped when posePin is
-		// false: the pose constraint is dropped, so there is nothing to
+		// --- pose -> motion npz (local, fast). Skipped when posePin is
+			// false: the pose constraint is dropped, so there is nothing to
 		// convert, dump a reference for, or push.
 		if (posePinned) {
 			for (let index = 0; index < requestedPoses.length; index += 1) {
@@ -741,7 +721,7 @@ async function handleGenerate(req, res) {
 			});
 			sendStatus(
 				`[bridge] editing frames ${body.motionEdit.startFrame}..${body.motionEdit.endFrame - 1} ` +
-				"with ARDY history and sparse constraints"
+				"with history and sparse constraints"
 			);
 			const box = spawnTracked(cmd.command, cmd.args, { cwd: REPO, detached: true, env: cmd.env });
 			const last = { stderr: "", stdout: "" };
@@ -795,7 +775,7 @@ async function handleGenerate(req, res) {
 				output: outNpzPath,
 			});
 			sendStatus(
-				`[bridge] generating ${segments.length} blocks in one autoregressive ARDY session` +
+				`[bridge] generating ${segments.length} blocks in one autoregressive session` +
 				(body.waypoints?.length ? ` with a ${body.waypoints.length}-pin root path` : "")
 			);
 
@@ -991,25 +971,16 @@ async function handleGenerate(req, res) {
 function usage() {
 	console.log(`usage: node tools/ardy/bridge.mjs [--port <n>]
 
-Dev-only HTTP sidecar for the ARDY loop. See tools/ardy/BRIDGE.md.
+Dev-only HTTP sidecar for motion generation. See tools/ardy/BRIDGE.md.
 
   --port <n>            port to listen on (default 5181, loopback only)
 
 env:
   COZYCLAY_BRIDGE_PORT    same as --port (default 5181)
-  CCLAY_ARDY_MODE         "local" or "remote"; default: remote when
-                          CCLAY_ARDY_HOST is set, local otherwise
-
-remote mode (generation on an ssh box):
-  CCLAY_ARDY_HOST         ssh destination for the ARDY host
-  CCLAY_ARDY_REPO         ARDY checkout on the box       (default $HOME/ardy)
-  CCLAY_ARDY_VENV         generator venv python on the box (default ~/ardy/.venv-cuda/bin/python)
-  CCLAY_ARDY_ENCODER_URL  text encoder service           (default http://127.0.0.1:9550/)
-
-local mode (generation on this machine; run npm run ardy:setup once):
-  CCLAY_ARDY_LOCAL_DIR    local ARDY checkout            (default ~/.cozyclay/ardy)
-  CCLAY_ARDY_LOCAL_VENV   generator venv python          (default <local-dir>/.venv/bin/python)
-  CCLAY_ARDY_ENCODER_URL  text encoder service           (default http://127.0.0.1:9550/)
+  CCLAY_MOTION_BACKEND     only "kimodo" is supported (default)
+  CCLAY_KIMODO_HOST        ssh destination for the Kimodo host
+  CCLAY_KIMODO_REPO        Kimodo checkout on the host (default $HOME/kimodo)
+  CCLAY_KIMODO_MODEL       model id (default Kimodo-SOMA-RP-v1.1)
 `);
 }
 
@@ -1175,7 +1146,7 @@ server.listen(port, BIND_HOST, () => {
 	const address = server.address();
 	const boundPort = typeof address === "object" && address ? address.port : port;
 	process.send?.({ type: "cozyclay-bridge-ready", port: boundPort });
-	console.log(`[bridge] ARDY dev bridge listening on http://${BIND_HOST}:${boundPort}`);
+	console.log(`[bridge] motion dev bridge listening on http://${BIND_HOST}:${boundPort}`);
 	console.log("[bridge] dev-only sidecar: the static dist/ build does not need it; stop with Ctrl-C");
 	console.log(`[bridge] ${runner.mode} backend: ${runner.describe()}`);
 });

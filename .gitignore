@@ -3,13 +3,14 @@ dist/
 artifacts/
 .gjc/
 
-# ARDY working files: generated motion archives are large binaries produced by
-# the remote box, not source. Keep the JSON fixtures, drop the .npz.
+# Generated motion archives are large binaries produced by the remote box, not
+# source. Keep only the explicitly listed demo and test fixtures below.
 *.npz
 tools/ardy/out/
-# Exception: the clip the hosted demo seeds itself with. It ships with the
-# build so a bridge-less visitor still sees generated motion.
+# Exceptions: the hosted demo seed clip ships with the build; test-only clips
+# stay tracked as fixtures but are never copied into production output.
 !public/demo/*.npz
+!test/fixtures/qa-lying.npz
 
 .DS_Store
 *.log
