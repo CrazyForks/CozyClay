@@ -19,4 +19,11 @@ assert.match(runner, /if \(!backend\) return createKimodoRunner\(\);/);
 assert.match(runner, /backend !== "ardy"/);
 assert.match(edit, /committed_keys:/);
 assert.match(edit, /commit_verified: true/);
+// The bridge only forwards a motion-edit report shaped like ARDY's: it must
+// carry edit_range + history_range + future_range or tryParseReport drops it
+// and the App refuses to install the regenerated take.
+assert.match(edit, /edit_range: \[plan\.startFrame, plan\.endFrame\]/);
+assert.match(edit, /history_range:/);
+assert.match(edit, /future_range:/);
+assert.doesNotMatch(edit, /edited_range/);
 console.log("OK verify-kimodo-setup");

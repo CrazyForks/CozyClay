@@ -109,7 +109,13 @@ try {
 		JSON.stringify({
 			frames: edited.frames,
 			fps: edited.fps,
-			edited_range: [plan.startFrame, plan.endFrame],
+			// Field names match ARDY's cclay_motion_edit.py report: the bridge's
+			// tryParseReport recognizes a motion-edit report only by edit_range +
+			// history_range + future_range and silently drops anything else — which
+			// left the App without commit verification and the new take uninstalled.
+			edit_range: [plan.startFrame, plan.endFrame],
+			history_range: [Math.max(0, plan.startFrame - (args.contextBefore || 0)), plan.startFrame],
+			future_range: [plan.endFrame, Math.min(edited.frames, plan.endFrame + (args.contextAfter || 0))],
 			constraints: plan.constraints.length,
 			pinned_frames: plan.constraints[0]?.frame_indices?.length ?? 0,
 			// The bridge/App commit contract is backend-neutral. Kimodo's
