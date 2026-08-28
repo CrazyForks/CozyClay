@@ -948,10 +948,6 @@ const CLICK_PX = 4;
 				}}
 				renderOrder={999}
 				scale={focused ? 1.2 : 1}
-				onPointerOver={() => (gl.domElement.style.cursor = "grab")}
-				onPointerOut={() => {
-					if (!dragRef.current) gl.domElement.style.cursor = "";
-				}}
 			>
 				<sphereGeometry args={[radius, 16, 16]} />
 				<meshStandardMaterial
@@ -999,10 +995,6 @@ const CLICK_PX = 4;
 										if (m) m.layers.set(POSER_LAYER);
 										register(gizmoTrack, gizmoKind, dir, "shaft")(m);
 									}}
-									onPointerOver={() => (gl.domElement.style.cursor = "grab")}
-									onPointerOut={() => {
-										if (!dragRef.current) gl.domElement.style.cursor = "";
-									}}
 								>
 									<cylinderGeometry args={[GIZMO_SHAFT_R, GIZMO_SHAFT_R, GIZMO_LEN, 8]} />
 									<meshStandardMaterial color="#000000" emissive={color} emissiveIntensity={2.2} toneMapped={false} depthTest={false} depthWrite={false} transparent opacity={0.9} />
@@ -1012,10 +1004,6 @@ const CLICK_PX = 4;
 									ref={(m) => {
 										if (m) m.layers.set(POSER_LAYER);
 										register(gizmoTrack, gizmoKind, dir, "tip")(m);
-									}}
-									onPointerOver={() => (gl.domElement.style.cursor = "grab")}
-									onPointerOut={() => {
-										if (!dragRef.current) gl.domElement.style.cursor = "";
 									}}
 								>
 									<coneGeometry args={[GIZMO_TIP_R, 0.08, 12]} />
@@ -1058,10 +1046,6 @@ const CLICK_PX = 4;
 					<mesh
 						ref={(m) => {
 							if (m) m.layers.set(POSER_LAYER);
-						}}
-						onPointerOver={() => (gl.domElement.style.cursor = "grab")}
-						onPointerOut={() => {
-							if (!dragRef.current) gl.domElement.style.cursor = "";
 						}}
 					>
 						<torusGeometry args={[SWING_RING_R, SWING_RING_TUBE, 10, 48]} />

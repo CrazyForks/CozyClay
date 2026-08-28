@@ -12,6 +12,7 @@ const props = readFileSync(new URL("../src/props.jsx", import.meta.url), "utf8")
 const room = readFileSync(new URL("../src/room.jsx", import.meta.url), "utf8");
 const dualview = readFileSync(new URL("../src/dualview.jsx", import.meta.url), "utf8");
 const posestudio = readFileSync(new URL("../src/posestudio.jsx", import.meta.url), "utf8");
+const ikHandlesSource = posestudio.slice(posestudio.indexOf("export function IkHandles"));
 
 expect(
 	"legacy per-mesh outline modules are removed",
@@ -94,6 +95,11 @@ expect(
 		posestudio.includes("positions.count / 6000") &&
 		posestudio.includes("const staticBlockers = blockers.filter") &&
 		!posestudio.includes("intersectObjects(blockers, false)"),
+);
+expect(
+	"IK handles do not raycast on every camera pointer move",
+	!ikHandlesSource.includes("onPointerOver") &&
+		!ikHandlesSource.includes("onPointerOut"),
 );
 expect(
 	"replaced rigs cannot retain stale skin proxy clouds",
