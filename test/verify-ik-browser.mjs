@@ -86,9 +86,67 @@ const altDrag = async (from, to) => {
 
 await send("Runtime.enable");
 await send("Page.enable");
-await send("Page.navigate", { url: "http://127.0.0.1:5180/app/" });
-expect("app becomes ready", await waitFor("!!window.__cozyclay?.rigA && !window.__cozyclay?.ikMode", 10000));
+const baseUrl = process.env.QA_URL || "http://127.0.0.1:5180/app/";
+const contactButton = ` [...document.querySelectorAll("button")].find((item) => item.textContent.includes("Body contact"))`;
+const bodyY = async (name) => evaluate(`(() => { const rig=window.__cozyclay.rigA; rig.updateMatrixWorld(true); let bone=null; rig.traverse((node) => { if (node.isBone && node.name === ${JSON.stringify(name)} && !bone) bone=node; }); return bone?.matrixWorld.elements[13] ?? null; })()`);
+const boneSnapshot = async () => evaluate(`(() => { const rig=window.__cozyclay.rigA; rig.updateMatrixWorld(true); const out={}; rig.traverse((node) => { if (node.isBone) out[node.name]=node.matrixWorld.elements.slice(); }); return out; })()`);
+const snapshotEqual = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const meshMinY = async (frame) => {
+	await evaluate(`window.__cozyclay.scrub(${frame})`);
+	await waitFor(`window.__cozyclay.tlFrame === ${frame}`, 2000);
+	return evaluate(`(() => { const rig=window.__cozyclay.rigA; rig.updateMatrixWorld(true); let min=Infinity; rig.traverse((mesh) => { if (!mesh.isSkinnedMesh || !mesh.geometry?.attributes?.position) return; const p=mesh.geometry.attributes.position; const v=mesh.position.clone(); const step=Math.max(1, Math.ceil(p.count / 4000)); for (let i=0; i<p.count; i+=step) { v.fromBufferAttribute(p, i); mesh.getVertexPosition(i, v); mesh.localToWorld(v); min=Math.min(min, v.y); } }); return min; })()`);
+};
+const contactTable = async (label) => {
+	const values = {};
+	for (const frame of [10, 40, 70]) values[frame] = await meshMinY(frame);
+	console.log(`${label} skinned-mesh min Y`, JSON.stringify(values));
+	return values;
+};
+const toggleContact = async (on) => {
+	const pressed = await evaluate(`${contactButton}?.getAttribute("aria-pressed") === "true"`);
+	if (pressed !== on) await evaluate(`(${contactButton})?.click()`);
+	expect(`body contact is ${on ? "ON" : "OFF"}`, await waitFor(`${contactButton}?.getAttribute("aria-pressed") === ${JSON.stringify(String(on))}`, 2000));
+};
 
+await send("Page.navigate", { url: `${baseUrl}?motion=/demo/qa-lying.npz` });
+expect("app becomes ready", await waitFor("!!window.__cozyclay?.rigA && !window.__cozyclay?.ikMode", 10000));
+expect("lying QA motion becomes ready", await waitFor("!!window.__cozyclay?.motion", 10000));
+expect("body contact toggle exists", await evaluate(`!!(${contactButton})`));
+const radii = await evaluate("window.__cozyclay.contactRadii");
+console.log("measured contact radii", JSON.stringify(radii));
+expect("all required demo contact radii are measured", ["LeftHand", "RightHand", "LeftFoot", "RightFoot", "LeftForeArm", "RightForeArm", "LeftLeg", "RightLeg", "Hips", "Head"].every((name) => Number.isFinite(radii?.[name]) && radii[name] >= 0.01 && radii[name] <= 0.25), JSON.stringify(radii));
+// Playback is deliberately untouched by Body contact: the lying clip sinks
+// its mesh identically with the toggle in either state.
+const lyingOn = await contactTable("qa-lying ON");
+await toggleContact(false);
+const lyingOff = await contactTable("qa-lying OFF");
+expect("qa-lying playback penetration is identical with contact ON/OFF", [10, 40, 70].every((frame) => Math.abs(lyingOn[frame] - lyingOff[frame]) <= 0.005), JSON.stringify({ on: lyingOn, off: lyingOff }));
+expect("qa-lying mesh penetrates during playback (no playback correction)", [10, 40, 70].every((frame) => lyingOff[frame] < -0.02), JSON.stringify(lyingOff));
+await toggleContact(true);
+
+await send("Page.navigate", { url: `${baseUrl}?motion=/demo/walk-then-stop.npz` });
+expect("walk motion resets after contact regression", await waitFor("!!window.__cozyclay?.rigA && !!window.__cozyclay?.motion", 10000));
+const walkOn = await contactTable("walk-then-stop ON");
+await toggleContact(false);
+const walkOff = await contactTable("walk-then-stop OFF");
+expect("walk mesh remains visually unchanged by contact", [10, 40, 70].every((frame) => Math.abs(walkOn[frame] - walkOff[frame]) <= 0.005), JSON.stringify({ on: walkOn, off: walkOff }));
+await toggleContact(true);
+
+// Playback is intentionally independent of Body contact. Compare every bone's
+// world matrix at fixed frames with the toggle in both states.
+await send("Page.navigate", { url: `${baseUrl}?motion=/demo/qa-lying.npz` });
+expect("playback identity fixture loads", await waitFor("!!window.__cozyclay?.rigA && !!window.__cozyclay?.motion", 10000));
+await toggleContact(true);
+const playbackOn = {};
+for (const frame of [0, 23, 47, 71]) { await evaluate(`window.__cozyclay.scrub(${frame})`); await waitFor(`window.__cozyclay.tlFrame === ${frame}`, 2000); playbackOn[frame] = await boneSnapshot(); }
+await toggleContact(false);
+for (const frame of [0, 23, 47, 71]) { await evaluate(`window.__cozyclay.scrub(${frame})`); await waitFor(`window.__cozyclay.tlFrame === ${frame}`, 2000); expect(`playback frame ${frame} is identical with contact ON/OFF`, snapshotEqual(playbackOn[frame], await boneSnapshot())); }
+await toggleContact(true);
+
+await send("Page.navigate", { url: baseUrl });
+expect("app resets before IK manipulator checks", await waitFor("!!window.__cozyclay?.rigA && !window.__cozyclay?.ikMode", 10000));
+
+expect("IK rig resolves before manipulator checks", await waitFor("!!window.__cozyclay?.ikChains", 10000));
 expect("IK toggle exists", await evaluate(`(() => {
 	const button = [...document.querySelectorAll("button")].find((item) => item.textContent.trim() === "IK off");
 	if (!button) return false;
@@ -235,6 +293,32 @@ const quatDot = Math.abs(
 );
 const ringAngle = 2 * Math.acos(Math.min(1, quatDot));
 expect("swing-ring drag rotates the hand effector", ringAngle > 0.01, JSON.stringify({ ringAngle, lastRingPick }));
+
+// Body-contact regression: use the real hips Y-axis gizmo and drag far below
+// the floor. Contact must hold the skinned mesh and hand chains live, while
+// disabling it must expose the same downward body translation.
+await click((await evaluate("window.__ikControlScreenPositions()")).hips);
+expect("hips click mounts the body drag control", await waitFor("window.__ikPickScreenPositions().some((pick) => pick.trackId === 'hips')"));
+const hipsPicks = await evaluate("window.__ikPickScreenPositions().filter((pick) => pick.trackId === 'hips')");
+const hipsAxis = hipsPicks.find((pick) => pick.part === "tip" && pick.axis === "y") ?? hipsPicks.find((pick) => pick.part === "tip") ?? hipsPicks[0];
+expect("hips exposes a drag target", Number.isFinite(hipsAxis?.x) && Number.isFinite(hipsAxis?.y), JSON.stringify(hipsPicks));
+const meshBeforeDrag = await meshMinY(0);
+await toggleContact(true);
+await drag(hipsAxis, { x: hipsAxis.x, y: hipsAxis.y + 420 });
+const meshOnDrag = await meshMinY(0);
+const plantedOn = { left: await bodyY("mixamorigLeftFoot"), right: await bodyY("mixamorigRightFoot") };
+const handOn = { left: await bodyY("mixamorigLeftHand"), right: await bodyY("mixamorigRightHand") };
+expect("contact ON keeps dragged skinned mesh on the floor", meshOnDrag >= -0.03, JSON.stringify({ before: meshBeforeDrag, after: meshOnDrag }));
+expect("contact ON keeps planted feet at their plant height", plantedOn.left >= -0.03 && plantedOn.right >= -0.03, JSON.stringify(plantedOn));
+expect("contact ON keeps hands at or above contact height", handOn.left >= -0.03 && handOn.right >= -0.03, JSON.stringify(handOn));
+await click((await evaluate("window.__ikControlScreenPositions()")).hips);
+await toggleContact(false);
+await click((await evaluate("window.__ikControlScreenPositions()")).hips);
+const hipsPicksOff = await evaluate("window.__ikPickScreenPositions().filter((pick) => pick.trackId === 'hips')");
+const hipsAxisOff = hipsPicksOff.find((pick) => pick.part === "tip" && pick.axis === "y") ?? hipsPicksOff.find((pick) => pick.part === "tip") ?? hipsPicksOff[0];
+await drag(hipsAxisOff, { x: hipsAxisOff.x, y: hipsAxisOff.y + 420 });
+const meshOffDrag = await meshMinY(0);
+expect("contact OFF allows the dragged mesh to sink below the floor", meshOffDrag < -0.02, JSON.stringify({ after: meshOffDrag }));
 
 expect("final IK exit button exists", await evaluate(`(() => {
 	const button = [...document.querySelectorAll("button")].find((item) => item.textContent.trim() === "IK on");

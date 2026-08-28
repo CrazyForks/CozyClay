@@ -945,6 +945,7 @@ export default function Timeline({
 	motion = null, // { frames, label } | null
 	ikFrames = [], // sorted full-body key frames
 	footSnap = true, // feet stay planted while the body moves
+	bodyContact = true, // body markers stay above the floor
 	shots = [],
 	activeShotIdx = 0,
 	selectedCameraBlockIdx,
@@ -968,6 +969,7 @@ export default function Timeline({
 	onIkKeyframeAdd,
 	onIkKeyframeRemove,
 	onFootSnapToggle,
+	onBodyContactToggle,
 	onCameraMoveSelect,
 	onCameraKeyframeAdd,
 	onCameraKeyframeMove,
@@ -1031,7 +1033,7 @@ export default function Timeline({
 	// The window key/interval handlers register once; the latest callbacks
 	// are read through a ref so they never go stale mid-playback.
 	const handlers = useRef({});
-	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onObjectPathDrawToggle, onObjectPathChange, onObjectPathClear, onObjectTimingGestureStart, onObjectTimingGestureEnd, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
+	handlers.current = { onScrub, onAdvance, onStep, onPlayToggle, onWaypointToggle, onMarkerSelect, onMarkerRemove, onRootKeyframeAdd, onPromptAdd, onPromptSelect, onPromptChange, onPromptResize, onPromptMove, onPromptRemove, onIkToggle, onIkKeyframeAdd, onIkKeyframeRemove, onFootSnapToggle, onBodyContactToggle, onCameraMoveSelect, onCameraKeyframeAdd, onCameraKeyframeMove, onCameraKeyframeRemove, onCameraBlockSelect, onCameraBlockChange, onCameraPreview, onCameraRailDrawToggle, onCameraRailDelete, onObjectPathDrawToggle, onObjectPathChange, onObjectPathClear, onObjectTimingGestureStart, onObjectTimingGestureEnd, onShotSelect, onShotBoundaryMove, onShotRename, onShotRemove, onShotDuplicate, onShotCut, onShotSplit, onShotMove, onMotionTrim, onMotionTrimReset, onMotionCut, onMotionSpeedChange, onMotionSegmentRemove, onEditGestureStart };
 
 	// Trackpad/wheel zoom over the FRAME ruler lane only. React registers
 	// onWheel as passive, so a synthetic onWheel could never preventDefault —
@@ -1766,6 +1768,15 @@ export default function Timeline({
 						>
 							{isKo ? `스냅 ${footSnap ? "켜짐" : "꺼짐"}` : `Snap ${footSnap ? "on" : "off"}`}
 						</button>
+						<button
+							type="button"
+								className={"tl-btn ik contact" + (bodyContact ? " on" : "")}
+								aria-pressed={bodyContact}
+								title={ko("Body contact — keep hands, knees, feet, head, and hips above the floor", "바닥 접촉 — 손, 무릎, 발, 머리, 엉덩이가 바닥 아래로 내려가지 않게 합니다")}
+								onClick={() => handlers.current.onBodyContactToggle?.()}
+							>
+								{isKo ? `바닥 접촉 ${bodyContact ? "켜짐" : "꺼짐"}` : `Body contact ${bodyContact ? "on" : "off"}`}
+							</button>
 						{waypointMode && (
 							<span className={"tl-wp-hint" + (waypointFrames.length < 2 || pathSpeed?.warn ? " warn" : "")}>
 								{waypointFrames.length < 2
