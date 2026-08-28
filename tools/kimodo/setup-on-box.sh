@@ -59,6 +59,7 @@ fi
 
 PY="$VENV_DIR/bin/python"
 run "$PY" -m pip install --upgrade pip
+run "$PY" -m pip install torch
 run "$PY" -m pip install -e "$KIMODO_DIR" llm2vec
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -69,6 +70,7 @@ import sys
 from huggingface_hub import snapshot_download
 model = sys.argv[1]
 snapshot_download(repo_id=f"nvidia/{model}")
+snapshot_download(repo_id="meta-llama/Meta-Llama-3-8B-Instruct")
 snapshot_download(repo_id="McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp")
 snapshot_download(repo_id="McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised")
 print("model and encoder assets ready")
