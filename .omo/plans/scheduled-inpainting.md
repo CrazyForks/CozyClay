@@ -69,8 +69,13 @@ prepare_base_motion(npz_path, motion_rep, target_frames, target_fps=30)
 ```
 - App frames (20 fps clip space); scaling to gen space happens in the mask
   builder, same rule as root2d constraints.
-- strength s in [0,1]: s=0 => preserve off; else sigma_s = round(1000*s),
-  sigma_e = min(50, sigma_s). Default 0.5 (= paper's recommended 500/50).
+- strength s in [0,1]: s=0 => preserve off; else
+  sigma_s = max(50, round(1000*(1-s))), sigma_e = min(50, sigma_s).
+  Default 0.5 (= paper's recommended 500/50, unchanged by the inversion).
+  AMENDED after gate G3: alpha_time is 1 ABOVE sigma_s, so a smaller sigma_s
+  preserves MORE; the original round(1000*s) made the slider work backwards.
+  Measured (all-ones mask, seed 5678): sigma_s 200/500/800/1000 ->
+  L2P 0.00455/0.00467/0.00480/0.00487.
 - Mutually REQUIRES posePin rules to stay valid; cannot combine with
   `regenerateSegments`.
 
@@ -98,3 +103,23 @@ NO agent commits. Files only; main session commits after merge review.
 - G4 no side effects: foot sliding within +1mm/frame of baseline; 2-segment
   seam jump <= 0.4 m; all existing verify-* suites green.
 - G5 eyeball: before/after render side by side.
+
+## Gate results (2026-08-29, box run, Kimodo-SOMA-RP-v1.1, RTX 3070)
+
+Prompt "a person walks forward, then turns left and keeps walking", 5 s,
+150 gen frames @30 -> 120 @24. Take A seed 1234; everything else seed 5678.
+
+- no-preserve baseline: L2P 0.072930 m
+- G1 (500/50, all-ones): L2P 0.004670 -> 15.6x improvement. PASS
+- sigma_s=0 control: bit-identical to no-preserve run. Regression invariant PASS
+- G2 (edit [48,72) app frames): out-of-range 0.005104 (1.09x G1), in-range
+  0.037644 (7.4x out). PASS
+- G3: monotone but in the WRONG direction under the original mapping ->
+  mapping inverted (see C3 amendment). With the inversion the measured curve
+  is strictly tighter as strength rises. PASS after fix
+- G4: preserve runs slide LESS than the base (delta negative); suite 97 files
+  green. PASS
+- Known follow-ups: preserve_prep device fix landed (arange needed device=);
+  whole-clip-only base retention means edited takes have no base lineage yet
+  (bridge logs `preserve SKIPPED`); influenceRadius 10 ramp covers 86 frames
+  on a 120-frame clip — tune before shipping; every run 15-16 s wall.

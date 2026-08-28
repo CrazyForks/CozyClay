@@ -188,12 +188,20 @@ const OUTPUT = "/runs/generate-xyz/generated.npz";
 	const bridgeSource = readFileSync(new URL("tools/ardy/bridge.mjs", REPO), "utf8");
 	assert.match(bridgeSource, /const PRESERVE_SIGMA_MAX = 1000;/);
 	assert.match(bridgeSource, /const PRESERVE_SIGMA_END_CAP = 50;/);
-	assert.match(bridgeSource, /const sigmaS = Math\.round\(PRESERVE_SIGMA_MAX \* strength\);/);
+	// INVERTED mapping: a smaller sigma_s preserves MORE (alpha_time is 1 above
+	// sigma_s), measured on the box in gate G3. Full strength floors at the end
+	// cap instead of rounding sigma_s to 0, which would read as preserve-off.
+	assert.match(
+		bridgeSource,
+		/const sigmaS = Math\.max\(PRESERVE_SIGMA_END_CAP, Math\.round\(PRESERVE_SIGMA_MAX \* \(1 - strength\)\)\);/,
+	);
 	assert.match(bridgeSource, /sigmaE: Math\.min\(PRESERVE_SIGMA_END_CAP, sigmaS\)/);
-	// The contract's default: strength 0.5 -> 500/50.
-	assert.equal(Math.round(1000 * 0.5), 500);
-	assert.equal(Math.min(50, Math.round(1000 * 0.5)), 50);
-	pass("strength maps to sigma_s = round(1000*s) with sigma_e capped at 50");
+	// The contract's default is unchanged by the inversion: strength 0.5 -> 500/50.
+	assert.equal(Math.max(50, Math.round(1000 * (1 - 0.5))), 500);
+	assert.equal(Math.min(50, 500), 50);
+	// Full preserve is a step schedule, not preserve-off.
+	assert.equal(Math.max(50, Math.round(1000 * (1 - 1))), 50);
+	pass("strength maps to sigma_s = max(50, round(1000*(1-s))) with sigma_e capped at 50");
 }
 
 /* ------------------------------------------------------------------------- */

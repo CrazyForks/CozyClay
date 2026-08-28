@@ -414,12 +414,19 @@ function validatePreserve(body, clipFrames) {
 
 // strength -> the (sigma_s, sigma_e) pair the backend blends between. This
 // mapping is server-side by contract so a client never speaks in diffusion-time
-// units. sigma_e is capped rather than scaled: below it the model must always
-// be free to finish, or the take is frozen onto the base and the edit cannot
-// happen. A strength small enough to round sigma_s to 0 is preserve fully off,
-// which the contract names explicitly.
+// units. The mapping is INVERTED against sigma_s on purpose: alpha_time is 1
+// ABOVE sigma_s and fades to 0 at sigma_e, so a SMALLER sigma_s keeps the base
+// blended deeper into the low-noise steps and preserves more. Measured on the
+// box (gate G3, all-ones mask, seed 5678): sigma_s 200 -> L2P 0.00455,
+// 500 -> 0.00467, 800 -> 0.00480, 1000 -> 0.00487 — strictly looser as sigma_s
+// rises. The first draft mapped strength straight onto sigma_s and made the
+// slider work backwards. sigma_e is capped rather than scaled: below it the
+// model must always be free to finish, or the take is frozen onto the base and
+// the edit cannot happen. The floor at the cap keeps full strength a step
+// schedule (blend until sigma_e) instead of rounding sigma_s to 0, which the
+// backend reads as preserve fully off.
 function preserveSigmas(strength) {
-	const sigmaS = Math.round(PRESERVE_SIGMA_MAX * strength);
+	const sigmaS = Math.max(PRESERVE_SIGMA_END_CAP, Math.round(PRESERVE_SIGMA_MAX * (1 - strength)));
 	return { sigmaS, sigmaE: Math.min(PRESERVE_SIGMA_END_CAP, sigmaS) };
 }
 
