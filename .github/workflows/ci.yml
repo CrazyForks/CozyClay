@@ -53,11 +53,16 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Start dev server (vite + ardy bridge + generation)
+      # Vite only. `npm run dev` also starts the motion bridge, which since the
+      # Kimodo backend landed exits 2 without CCLAY_KIMODO_HOST — a GPU box CI
+      # does not have, so the whole job died before a single suite ran. Both
+      # suites below drive the studio at /app/ and load their motion from
+      # static /demo/*.npz fixtures, so they need no motion backend.
+      - name: Start dev server (vite)
         run: |
-          npm run dev &
+          npm run dev:ui -- --host 127.0.0.1 --port 5180 --strictPort &
           for _ in $(seq 1 120); do
-            curl -sf -o /dev/null http://127.0.0.1:5180/ && exit 0
+            curl -sf -o /dev/null http://127.0.0.1:5180/app/ && exit 0
             sleep 1
           done
           echo "dev server did not come up" >&2
