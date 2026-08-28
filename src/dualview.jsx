@@ -244,6 +244,18 @@ export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCa
 			lastPose.valid = false;
 		}
 		const navigatingCamera = cameraGesture || cameraMoved;
+		// Shadow maps are unchanged while only the camera moves. Three otherwise
+		// rebuilds every shadow map on every navigation frame, even though the
+		// poser scene is static, which is the largest hidden cost of right-drag.
+		const shadowMap = gl.shadowMap;
+		const shadowAutoUpdateBefore = shadowMap?.autoUpdate;
+		if (shadowMap) {
+			if (navigatingCamera) shadowMap.autoUpdate = false;
+			else if (shadowAutoUpdateBefore === false) {
+				shadowMap.autoUpdate = true;
+				shadowMap.needsUpdate = true;
+			}
+		}
 
 		// scissor bounds the clear, viewport bounds the image. The bars around a
 		// letterboxed frame are editor surface, not set: painting them with the
