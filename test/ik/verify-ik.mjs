@@ -15,8 +15,12 @@ import {
 	solveSwingAngle,
 	solveEffectorSwing,
 	solveHipsTranslate,
+	solveHipsTranslateToFloor,
 	ikPlantFeet,
 	ikSolvePlantedFeet,
+	applyBodyContact,
+	clampIkTargetToFloor,
+	measureContactRadii,
 	IK_TRACKS,
 	MID_TRACKS,
 	FK_TRACKS,
@@ -242,6 +246,76 @@ const clampedFar = solveMidJoint(arm, farMid);
 const elbowFar = arm.bones[1].getWorldPosition(v());
 check("far mid-joint drag clamps, no NaN", Number.isFinite(elbowFar.x) && elbowFar.distanceTo(clampedFar) < 1e-6);
 check("far mid-joint drag keeps lengths", Math.abs(arm.bones[0].getWorldPosition(v()).distanceTo(elbowFar) - 0.3) < 1e-6);
+
+/* --- measured mesh contact radii ----------------------------------------- */
+const radiusRig = new THREE.Object3D();
+const radiusHips = new THREE.Bone();
+radiusHips.name = "mixamorigHips";
+const radiusSpine = new THREE.Bone();
+radiusSpine.name = "mixamorigSpine";
+radiusSpine.position.y = 0.2;
+radiusHips.add(radiusSpine);
+radiusRig.add(radiusHips);
+const radiusGeometry = new THREE.BufferGeometry();
+radiusGeometry.setAttribute("position", new THREE.Float32BufferAttribute([
+	0, 0, 0,
+	0.03, 0, 0,
+], 3));
+radiusGeometry.setAttribute("skinIndex", new THREE.Uint16BufferAttribute([0, 0, 0, 0, 0, 0, 0, 0], 4));
+radiusGeometry.setAttribute("skinWeight", new THREE.Float32BufferAttribute([1, 0, 0, 0, 1, 0, 0, 0], 4));
+const radiusMesh = new THREE.SkinnedMesh(radiusGeometry, new THREE.MeshBasicMaterial());
+radiusMesh.name = "radiusMesh";
+radiusRig.add(radiusMesh);
+radiusMesh.bind(new THREE.Skeleton([radiusHips, radiusSpine]));
+radiusRig.updateMatrixWorld(true);
+const measured = measureContactRadii(radiusRig);
+check("mesh contact radii are measured and clamped to the sane range", measured.Hips >= 0.029 && measured.Hips <= 0.25, `hipsRadius=${measured.Hips}`);
+check("missing contact bones fall back to a small measured default", measured.LeftHand >= 0.01 && measured.LeftHand <= 0.03, `handRadius=${measured.LeftHand}`);
+
+/* --- floor-only body contact: deterministic, stateless geometric pass ---- */
+const contactRig = makeRig();
+const contactResolved = resolveIkRig(contactRig);
+const contactChains = contactResolved.chains;
+const contactFkJoints = contactResolved.fkJoints;
+const contactArm = contactChains.get("leftHand");
+const contactWrist = contactArm.bones[2].getWorldPosition(v());
+solveIk(contactArm, contactWrist.clone().setY(-0.18));
+applyBodyContact(contactChains, contactFkJoints);
+const contactHand = contactArm.bones[2].getWorldPosition(v());
+check(
+	"body contact lifts a hand below the floor to its marker radius",
+	contactHand.y >= contactResolved.contactRadii.LeftHand - 1e-5,
+	`handY=${contactHand.y.toFixed(4)}`,
+);
+
+const untouchedRig = makeRig();
+const untouchedResolved = resolveIkRig(untouchedRig);
+const untouchedHand = untouchedResolved.chains.get("leftHand").bones[2];
+const untouchedHips = untouchedResolved.fkJoints.get("hips").bone;
+const handBeforeContact = untouchedHand.getWorldPosition(v());
+const hipsBeforeContact = untouchedHips.position.clone();
+check("body contact is a zero-cost no-op above the floor", !applyBodyContact(untouchedResolved.chains, untouchedResolved.fkJoints));
+check("body contact leaves an above-floor hand untouched", untouchedHand.getWorldPosition(v()).distanceTo(handBeforeContact) < 1e-9);
+check("body contact leaves above-floor hips untouched", untouchedHips.position.distanceTo(hipsBeforeContact) < 1e-9);
+
+const hipsRig = makeRig();
+const hipsResolved = resolveIkRig(hipsRig);
+const hipsBone = hipsResolved.fkJoints.get("hips").bone;
+const hipsStart = hipsBone.position.clone();
+solveHipsTranslateToFloor(hipsResolved.fkJoints.get("hips"), new THREE.Vector3(0, -2, 0), hipsStart, 0, hipsResolved.contactHeights);
+check(
+	"hips drag clamps the pelvis contact height",
+	hipsBone.getWorldPosition(v()).y >= hipsResolved.contactHeights.Hips - 1e-5,
+	`hipsY=${hipsBone.getWorldPosition(v()).y.toFixed(4)}`,
+);
+const dragBelowFloor = clampIkTargetToFloor("leftHand", new THREE.Vector3(1, -2, 3), 0, contactResolved.contactHeights);
+check("drag targets clamp at the measured hand floor height", dragBelowFloor.y === contactResolved.contactHeights.LeftHand);
+const holdRig = makeRig();
+const holdResolved = resolveIkRig(holdRig);
+const holdArm = holdResolved.chains.get("leftHand");
+solveIk(holdArm, holdArm.bones[2].getWorldPosition(v()).setY(-1));
+applyBodyContact(holdResolved.chains, holdResolved.fkJoints, 0, { skipFeet: true });
+check("drag-time chain hold keeps a hand above its contact height", holdArm.bones[2].getWorldPosition(v()).y >= holdResolved.contactHeights.LeftHand - 1e-5);
 
 /* --- FK swing as trackball rotation: exact angle, exact axis -------------- */
 const neck = fkJoints.get("neck");

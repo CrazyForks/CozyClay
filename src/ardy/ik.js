@@ -17,8 +17,142 @@ import { normalizeBoneName } from "../poses.js";
  *   re-anchoring at all.
  */
 
-/** The four IK chain handles, mapped to the timeline lanes of the same
- * names. */
+/** Contact radii measured from the bind-pose skinned mesh. */
+const CONTACT_JOINTS = [
+	"LeftHand", "RightHand", "LeftFoot", "RightFoot",
+	"LeftForeArm", "RightForeArm", "LeftLeg", "RightLeg", "Hips", "Head",
+];
+const CONTACT_RADIUS_MIN = 0.01;
+const CONTACT_RADIUS_MAX = 0.25;
+const CONTACT_RADIUS_FALLBACK = 0.01;
+const CONTACT_HEIGHT_MAX = 0.25;
+const contactRadiusCache = new WeakMap();
+const contactHeightCache = new WeakMap();
+
+function pointSegmentDistance(point, start, end) {
+	const segment = end.clone().sub(start);
+	const lengthSq = segment.lengthSq();
+	if (lengthSq < 1e-12) return point.distanceTo(start);
+	const t = Math.max(0, Math.min(1, point.clone().sub(start).dot(segment) / lengthSq));
+	return point.distanceTo(start.clone().addScaledVector(segment, t));
+}
+
+/** Measure each contact joint's capsule radius from dominant (>0.4) bind-pose
+ * skin weights. The result is cached on the character object. */
+export function measureContactRadii(rig) {
+	if (!rig) return {};
+	const cached = contactRadiusCache.get(rig);
+	if (cached) return cached;
+	rig.updateMatrixWorld(true);
+	const bindWorld = new Map();
+	const walkBind = (node, parentWorld) => {
+		const saved = node.isBone ? rig.userData?.poseBind?.get(node) : null;
+		const position = saved?.position ? new THREE.Vector3(saved.position.x, saved.position.y, saved.position.z) : node.position;
+		const quaternion = saved ? new THREE.Quaternion(saved.x, saved.y, saved.z, saved.w) : node.quaternion;
+		const world = parentWorld.clone().multiply(new THREE.Matrix4().compose(position, quaternion, node.scale));
+		bindWorld.set(node, world);
+		for (const child of node.children) walkBind(child, world);
+	};
+	for (const child of rig.children) walkBind(child, rig.matrixWorld);
+	const segments = new Map();
+	for (const name of CONTACT_JOINTS) {
+		const bone = findBone(rig, `mixamorig${name}`);
+		if (!bone) continue;
+		const start = new THREE.Vector3().setFromMatrixPosition(bindWorld.get(bone));
+		const child = (name === "Hips" || name === "Head") ? null : bone.children.find((node) => node.isBone);
+		const end = child ? new THREE.Vector3().setFromMatrixPosition(bindWorld.get(child)) : start.clone();
+		segments.set(name, [start, end]);
+	}
+	const maxDistances = new Map(CONTACT_JOINTS.map((name) => [name, 0]));
+	rig.traverse((mesh) => {
+		if (!mesh.isSkinnedMesh || !mesh.skeleton || !mesh.geometry?.attributes?.position) return;
+		const indices = mesh.geometry.attributes.skinIndex;
+		const weights = mesh.geometry.attributes.skinWeight;
+		if (!indices || !weights) return;
+		const names = mesh.skeleton.bones.map((bone) => normalizeBoneName(bone.name));
+		const vertex = new THREE.Vector3();
+		for (let index = 0; index < indices.count; index += 1) {
+			let dominant = -1;
+			let dominantWeight = 0;
+			for (let slot = 0; slot < 4; slot += 1) {
+				const weight = weights.getComponent(index, slot);
+				if (weight > dominantWeight) {
+					dominantWeight = weight;
+					dominant = indices.getComponent(index, slot);
+				}
+			}
+			if (dominantWeight <= 0.4) continue;
+			const normalized = names[dominant];
+			const name = CONTACT_JOINTS.find((candidate) => {
+				const target = normalizeBoneName(`mixamorig${candidate}`);
+				return normalized === target || normalized.endsWith(target) || target.endsWith(normalized);
+			});
+			const segment = segments.get(name);
+			if (!segment) continue;
+			mesh.getVertexPosition(index, vertex);
+			mesh.localToWorld(vertex);
+			maxDistances.set(name, Math.max(maxDistances.get(name), pointSegmentDistance(vertex, segment[0], segment[1])));
+		}
+	});
+	const radii = {};
+	for (const name of CONTACT_JOINTS) {
+		radii[name] = Math.max(CONTACT_RADIUS_MIN, Math.min(CONTACT_RADIUS_MAX, maxDistances.get(name) || CONTACT_RADIUS_FALLBACK));
+	}
+	const result = Object.freeze(radii);
+	contactRadiusCache.set(rig, result);
+	return result;
+}
+
+/** Measure the vertical amount of mesh below each contact bone in the bind
+ * pose. Unlike a capsule radius this is the exact quantity needed when a
+ * handle is dragged straight down: the bone can reach floorY + height while
+ * the weighted mesh rests on the floor. */
+export function measureContactHeights(rig) {
+	if (!rig) return {};
+	const cached = contactHeightCache.get(rig);
+	if (cached) return cached;
+	rig.updateMatrixWorld(true);
+	const points = new Map();
+	for (const name of CONTACT_JOINTS) {
+		const bone = findBone(rig, `mixamorig${name}`);
+		if (bone) points.set(name, bone.getWorldPosition(new THREE.Vector3()));
+	}
+	const drops = new Map(CONTACT_JOINTS.map((name) => [name, 0]));
+	rig.traverse((mesh) => {
+		if (!mesh.isSkinnedMesh || !mesh.skeleton || !mesh.geometry?.attributes?.position) return;
+		const indices = mesh.geometry.attributes.skinIndex;
+		const weights = mesh.geometry.attributes.skinWeight;
+		if (!indices || !weights) return;
+		const names = mesh.skeleton.bones.map((bone) => normalizeBoneName(bone.name));
+		const vertex = new THREE.Vector3();
+		for (let index = 0; index < indices.count; index += 1) {
+			let dominant = -1;
+			let dominantWeight = 0;
+			for (let slot = 0; slot < 4; slot += 1) {
+				const weight = weights.getComponent(index, slot);
+				if (weight > dominantWeight) { dominantWeight = weight; dominant = indices.getComponent(index, slot); }
+			}
+			if (dominantWeight <= 0.4 || !names[dominant]) continue;
+			const name = CONTACT_JOINTS.find((candidate) => {
+				const target = normalizeBoneName(`mixamorig${candidate}`);
+				return names[dominant] === target || names[dominant].endsWith(target) || target.endsWith(names[dominant]);
+			});
+			const point = points.get(name);
+			if (!point) continue;
+			mesh.getVertexPosition(index, vertex);
+			mesh.localToWorld(vertex);
+			drops.set(name, Math.max(drops.get(name), point.y - vertex.y));
+		}
+	});
+	const heights = {};
+	for (const name of CONTACT_JOINTS) {
+		heights[name] = Math.max(CONTACT_RADIUS_MIN, Math.min(CONTACT_HEIGHT_MAX, drops.get(name) || CONTACT_RADIUS_FALLBACK));
+	}
+	const result = Object.freeze(heights);
+	contactHeightCache.set(rig, result);
+	return result;
+}
+
 export const IK_TRACKS = [
 	{ id: "leftHand", label: "Left Hand", kind: "arm", side: "Left", visibilityDepth: 0.14 },
 	{ id: "rightHand", label: "Right Hand", kind: "arm", side: "Right", visibilityDepth: 0.14 },
@@ -113,6 +247,7 @@ export function resolveIkRig(rig) {
 	const armPoleLocal = forward.clone().multiplyScalar(-1).add(new THREE.Vector3(0, -0.5, 0)).normalize().applyQuaternion(invCharQ);
 	const legPoleLocal = forward.clone().add(new THREE.Vector3(0, -0.2, 0)).normalize().applyQuaternion(invCharQ);
 
+	const contactRadii = measureContactRadii(rig);
 	const out = new Map();
 	const rootPos = new THREE.Vector3();
 	const childPos = new THREE.Vector3();
@@ -131,6 +266,8 @@ export function resolveIkRig(rig) {
 		out.set(track.id, {
 			track,
 			bones,
+			contactRadii,
+			contactHeights: measureContactHeights(rig),
 			bindPositions: bones.map((bone) => {
 				const saved = rig.userData?.poseBind?.get(bone)?.position;
 				return saved
@@ -163,7 +300,7 @@ export function resolveIkRig(rig) {
 			})(),
 		});
 	}
-	return { chains: out, fkJoints };
+	return { chains: out, fkJoints, contactRadii, contactHeights: measureContactHeights(rig) };
 }
 
 /** Back-compat wrapper for callers that only need the chains map. */
@@ -297,6 +434,43 @@ function aimChain(bones, points) {
  * models (and Maya's pole plane) have zero elbow freedom and read as
  * "the elbow doesn't move". Segment lengths are preserved exactly.
  */
+
+/** Clamp a dragged IK position to the floor marker for its effector or
+ * mid-joint. Kept pure so the editor and deterministic tests share the rule. */
+export function clampIkTargetToFloor(trackId, targetWorld, floorY = 0, contactHeights = null) {
+	if (!targetWorld || !Number.isFinite(targetWorld.y)) return targetWorld;
+	const key = trackId?.endsWith("Hand")
+		? trackId.replace(/^(left|right)/, (_, side) => side[0].toUpperCase() + side.slice(1))
+		: trackId?.endsWith("Foot")
+			? trackId.replace(/^(left|right)/, (_, side) => side[0].toUpperCase() + side.slice(1))
+			: trackId?.endsWith("Elbow")
+			? `${trackId.startsWith("left") ? "Left" : "Right"}ForeArm`
+			: trackId?.endsWith("Knee")
+				? `${trackId.startsWith("left") ? "Left" : "Right"}Leg`
+				: null;
+	const height = contactHeights?.[key];
+	if (!Number.isFinite(height)) return targetWorld;
+	return targetWorld.clone().setY(Math.max(targetWorld.y, floorY + height));
+}
+
+/** Translate hips to an absolute drag target and keep the measured pelvis
+ * extent on the safe side of the floor. The correction is applied in world Y
+ * after the normal parent-space translation, so it also works on yawed rigs. */
+export function solveHipsTranslateToFloor(joint, worldDelta, startLocalPos, floorY = 0, contactHeights = null) {
+	solveHipsTranslate(joint, worldDelta, startLocalPos);
+	const height = contactHeights?.Hips;
+	if (!Number.isFinite(height)) return;
+	const root = joint.bone;
+	const y = root.getWorldPosition(new THREE.Vector3()).y;
+	if (y >= floorY + height) return;
+	const parent = root.parent;
+	const localLift = new THREE.Vector3(0, floorY + height - y, 0)
+		.applyQuaternion(parent.getWorldQuaternion(new THREE.Quaternion()).invert())
+		.divideScalar(parent.getWorldScale(new THREE.Vector3()).x || 1);
+	root.position.add(localLift);
+	root.updateMatrixWorld(true);
+}
+
 export function solveMidJoint(chain, midTargetWorld) {
 	restoreChainPositions(chain);
 	const { bones, lengths } = chain;
@@ -502,6 +676,62 @@ export function ikSolvePlantedFeet(chains, ikState) {
 		if (!plant || !chain) continue;
 		solveIk(chain, plant);
 	}
+}
+
+function liftChainContact(chain, marker, markerName, floorY, heights) {
+	if (!chain || !marker) return false;
+	const markerPos = new THREE.Vector3();
+	const effector = new THREE.Vector3();
+	const height = heights[markerName] ?? CONTACT_RADIUS_FALLBACK;
+	if (!Number.isFinite(height)) return false;
+	let changed = false;
+	for (let pass = 0; pass < 3; pass += 1) {
+		marker.getWorldPosition(markerPos);
+		const penetration = floorY + height - markerPos.y;
+		if (penetration <= 1e-7) break;
+		chain.bones[2].getWorldPosition(effector);
+		effector.y += penetration;
+		solveIk(chain, effector);
+		changed = true;
+	}
+	return changed;
+}
+
+/** Apply the live chain portion of Body contact during a hips drag. Feet are
+ * omitted when requested because the separate planted-foot solve owns them. */
+export function applyBodyContact(chains, fkJoints, floorY = 0, { skipFeet = false } = {}) {
+	if (!chains || !fkJoints) return false;
+	const chain = [...chains.values()][0];
+	const rig = chain?.rig;
+	if (!rig) return false;
+	const heights = chain.contactHeights ?? measureContactHeights(rig);
+	let changed = false;
+	const contacts = skipFeet
+		? [["leftHand", "LeftHand"], ["rightHand", "RightHand"]]
+		: [["leftHand", "LeftHand"], ["rightHand", "RightHand"], ["leftFoot", "LeftFoot"], ["rightFoot", "RightFoot"]];
+	for (const [id, name] of contacts) {
+		const marker = chains.get(id)?.bones[2];
+		if (marker && liftChainContact(chains.get(id), marker, name, floorY, heights)) changed = true;
+	}
+	const mids = skipFeet
+		? [["leftHand", "LeftForeArm"], ["rightHand", "RightForeArm"]]
+		: [["leftHand", "LeftForeArm"], ["rightHand", "RightForeArm"], ["leftFoot", "LeftLeg"], ["rightFoot", "RightLeg"]];
+	for (const [id, name] of mids) {
+		const chainForMid = chains.get(id);
+		const current = chainForMid?.bones[1];
+		if (!current) continue;
+		const pos = current.getWorldPosition(new THREE.Vector3());
+		const height = heights[name] ?? CONTACT_RADIUS_FALLBACK;
+		if (pos.y < floorY + height - 1e-7) {
+			solveMidJoint(chainForMid, pos.clone().setY(floorY + height));
+			changed = true;
+		}
+	}
+	for (const [id, name] of contacts) {
+		const marker = chains.get(id)?.bones[2];
+		if (marker && liftChainContact(chains.get(id), marker, name, floorY, heights)) changed = true;
+	}
+	return changed;
 }
 
 /** Frames with an authored key, sorted — the timeline markers. */

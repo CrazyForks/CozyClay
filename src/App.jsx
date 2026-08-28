@@ -170,8 +170,11 @@ import {
 	solveSwingAngle,
 	solveEffectorSwing,
 	solveHipsTranslate,
+	solveHipsTranslateToFloor,
 	ikPlantFeet,
 	ikSolvePlantedFeet,
+	applyBodyContact,
+	clampIkTargetToFloor,
 } from "./ardy/ik.js";
 import { Dropdown, Field, Slider, Toast, Vector3Row } from "./ui.jsx";
 import { RENDER_ACTIVITY_EVENT, useRenderActivity } from "./use-render-activity.js";
@@ -2956,6 +2959,7 @@ globalThis.playMode = centerTab === "play";
 	// the positions captured when the drag started — the knees bend instead
 	// of the feet sinking through the floor. Toggleable in the timeline.
 	const [footSnap, setFootSnap] = useState(true);
+	const [bodyContact, setBodyContact] = useState(true);
 	const ikBodyDragRef = useRef(false); // true while a body drag is active
 	// How far (in frames) a correction eases back to the underlying motion
 	// outside its keyed range. 6 frames @ 24 fps = 0.25 s — long enough to
@@ -6593,8 +6597,9 @@ globalThis.playMode = centerTab === "play";
 			const chain = ikStateRef.current.chains?.get(trackId);
 			if (!chain) return;
 			ikTouch(ikStateRef.current, trackId);
-			ikStateRef.current.targets.set(trackId, targetWorld.clone());
-			solveIk(chain, targetWorld);
+			const clampedTarget = bodyContact ? clampIkTargetToFloor(trackId, targetWorld, 0, ikChains?.get(trackId)?.contactHeights ?? ikChains?.values().next().value?.contactHeights) : targetWorld;
+			ikStateRef.current.targets.set(trackId, clampedTarget.clone());
+			solveIk(chain, clampedTarget);
 			return;
 		}
 		if (kind === "mid") {
@@ -6603,7 +6608,7 @@ globalThis.playMode = centerTab === "play";
 			const chain = midDef ? ikStateRef.current.chains?.get(midDef.chain) : null;
 			if (!chain) return;
 			ikTouch(ikStateRef.current, chain.track.id);
-			solveMidJoint(chain, targetWorld);
+			solveMidJoint(chain, bodyContact ? clampIkTargetToFloor(trackId, targetWorld, 0, chain.contactHeights) : targetWorld);
 			return;
 		}
 		// Effector swing: the rotation ring on a focused hand/foot. Rotates
@@ -6630,14 +6635,17 @@ globalThis.playMode = centerTab === "play";
 				ikPlantFeet(ikChains, ikStateRef.current);
 				ikBodyDragRef.current = true;
 			}
-			if (targetWorld?.worldDelta && targetWorld?.startLocalPos) solveHipsTranslate(joint, targetWorld.worldDelta, targetWorld.startLocalPos);
-			else if (targetWorld?.axis) solveSwingAngle(joint, targetWorld.axis, targetWorld.angle, targetWorld.startQuat, targetWorld.startParentQuat);
+			if (targetWorld?.worldDelta && targetWorld?.startLocalPos) {
+				if (bodyContact) solveHipsTranslateToFloor(joint, targetWorld.worldDelta, targetWorld.startLocalPos, 0, ikChains?.get("leftHand")?.contactHeights);
+				else solveHipsTranslate(joint, targetWorld.worldDelta, targetWorld.startLocalPos);
+			} else if (targetWorld?.axis) solveSwingAngle(joint, targetWorld.axis, targetWorld.angle, targetWorld.startQuat, targetWorld.startParentQuat);
 			if (footSnap && ikChains) {
 				ikSolvePlantedFeet(ikChains, ikStateRef.current);
 				// the planted re-solve wrote the leg bones — key them too
 				ikTouch(ikStateRef.current, "leftFoot");
 				ikTouch(ikStateRef.current, "rightFoot");
 			}
+			if (bodyContact && ikChains) applyBodyContact(ikChains, ikFkJoints, 0, { skipFeet: footSnap });
 			return;
 		}
 		// FK swing: targetWorld is the trackball payload { axis, angle,
@@ -6694,8 +6702,9 @@ globalThis.playMode = centerTab === "play";
 	// untouched.
 	useEffect(() => {
 		if (!ikChains || !activeRig || posing) return;
-		if (!ikMode && ikStateRef.current.keys.size === 0) return;
-		ikEvaluate(ikChains, ikStateRef.current, tlFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
+		if (ikMode || ikStateRef.current.keys.size > 0) {
+			ikEvaluate(ikChains, ikStateRef.current, tlFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
+		}
 	}, [ikMode, ikChains, activeRig, motion, posing, tlFrame, ikTick, ikFkJoints]);
 
 	// Re-seat the handles on the keyed pose when the FRAME changes with IK
@@ -6717,7 +6726,7 @@ globalThis.playMode = centerTab === "play";
 	// (tools/ardy/visual-qa.mjs). Harmless in normal use.
 	useEffect(() => {
 	window.__cozyclay = {
-			rigA: activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ik: ikStateRef.current,
+			rigA: activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, contactRadii: ikChains?.values().next().value?.contactRadii ?? null, ik: ikStateRef.current,
 			committedIkEdits, waypoints,
 			// the camera the main view renders through (poser in IK mode) — QA
 			// projections must use this one, not the frozen shot camera
@@ -7547,7 +7556,6 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (ikChains && ikStateRef.current.keys.size > 0) {
 			ikEvaluate(ikChains, ikStateRef.current, currentFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
 		}
-
 		// ARDY generates in Subject 1's clip-local frame. Frame 0 is therefore
 		// always the origin; scene placement and the total scene->clip rotation
 		// (actor yaw plus the path-alignment fold) are restored only at
@@ -9993,6 +10001,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				onMotionSegmentRemove={removeMotionSegmentById}
 				ikFrames={ikFrames}
 				footSnap={footSnap}
+				bodyContact={bodyContact}
 					shots={shots}
 					activeShotIdx={activeShotIdx}
 					railDraw={railDraw}
@@ -10024,6 +10033,12 @@ function resizePromptClip(id, edge, rawFrame) {
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
+				onBodyContactToggle={() => {
+					setBodyContact((v) => {
+						setToast(v ? ko("Body contact off — floor constraints are disabled", "바닥 접촉 꺼짐 — 바닥 제약이 비활성화됩니다") : ko("Body contact on — body markers stay above the floor", "바닥 접촉 켜짐 — 신체 접촉점이 바닥 아래로 내려가지 않습니다"));
+						return !v;
+					});
+				}}
 				onFootSnapToggle={() => {
 					setFootSnap((v) => {
 				setToast(v ? ko("Foot snap off — the feet follow the body", "발 스냅 꺼짐 — 발이 몸을 따라갑니다") : ko("Foot snap on — the feet stay planted while the body moves", "발 스냅 켜짐 — 몸이 움직여도 발은 바닥에 고정됩니다"));
