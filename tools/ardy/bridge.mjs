@@ -22,6 +22,8 @@
  *  - every request field is validated before use: prompt length-capped,
  *    duration/dstFrame range-checked, base matched against the list the box
  *    actually reported, waypoints bounds/order-checked, body size-capped;
+ *    preserve object/range-checked against the clip and refused alongside the
+ *    modes it cannot mean anything with;
  *    posePin boolean-checked (default true = full-body pose constraint;
  *    false = path/prompt only, pose ignored, base optional - with waypoints
  *    and no base the box free-generates the base clip first, two-pass);
@@ -70,6 +72,18 @@ const MOTION_ALLOWLIST_MAX = 64; // newest runs only; evicted ids become stale 4
 // motions URL id to that shape keeps /ardy/motions/<run-id> predictable and
 // path-free (the id is a lookup key, never a path).
 const MOTION_ID = /^[0-9]+-[0-9a-f]{6}$/;
+// The same id embedded in the URL a client hands back to address a take it was
+// given. Every field that names an earlier take (motionEdit.sourceMotion,
+// regenerateSegments' sourceMotion, preserve.sourceMotion) matches THIS, so a
+// take that is addressable by one of them is addressable by all of them.
+const MOTION_URL = /^\/ardy\/motions\/[0-9]+-[0-9a-f]{6}$/;
+// Scheduled inpainting, contract C3: strength s in (0,1] maps to the diffusion
+// -time schedule the box blends over. sigma_s is where blending starts (high
+// noise, so the base's structure dominates) and sigma_e where the model is
+// left alone to finish; the end cap generalises the paper's recommended
+// 500/50 pair to any strength.
+const PRESERVE_SIGMA_MAX = 1000;
+const PRESERVE_SIGMA_END_CAP = 50;
 
 // The runner is the ONLY part of the bridge that knows where generation
 // actually happens. Selection (runners/index.mjs) is Kimodo-only; everything
@@ -235,7 +249,7 @@ function validateGenerate(body) {
 		if (body.segments !== undefined || body.waypoints !== undefined) {
 			return "field 'regenerateSegments' cannot be combined with segments or waypoints";
 		}
-		if (typeof body.sourceMotion !== "string" || !/^\/ardy\/motions\/[0-9]+-[0-9a-f]{6}$/.test(body.sourceMotion)) {
+		if (typeof body.sourceMotion !== "string" || !MOTION_URL.test(body.sourceMotion)) {
 			return "field 'sourceMotion' must be a generated /ardy/motions/<run-id> URL";
 		}
 	}
@@ -246,7 +260,7 @@ function validateGenerate(body) {
 		if (body.segments !== undefined || body.regenerateSegments !== undefined || body.waypoints !== undefined) {
 			return "field 'motionEdit' cannot be combined with segments, regenerateSegments, or waypoints";
 		}
-		if (typeof edit.sourceMotion !== "string" || !/^\/ardy\/motions\/[0-9]+-[0-9a-f]{6}$/.test(edit.sourceMotion)) {
+		if (typeof edit.sourceMotion !== "string" || !MOTION_URL.test(edit.sourceMotion)) {
 			return "field 'motionEdit.sourceMotion' must be a generated /ardy/motions/<run-id> URL";
 		}
 		if (
@@ -275,6 +289,10 @@ function validateGenerate(body) {
 	}
 	if (body.waypoints !== undefined) {
 		const error = validateWaypoints(body.waypoints, clipFrames);
+		if (error) return error;
+	}
+	if (body.preserve !== undefined) {
+		const error = validatePreserve(body, clipFrames);
 		if (error) return error;
 	}
 	if (body.seed !== undefined && (!Number.isInteger(body.seed) || body.seed < 0 || body.seed > SEED_MAX)) return `field 'seed' must be an integer in 0..${SEED_MAX}`;
@@ -325,6 +343,84 @@ function validateRegenerateSegments(segments, clipFrames) {
 		previousEnd = segment.endFrame;
 	}
 	return null;
+}
+
+// Scheduled inpainting (contract C3): reconstruct an existing take everywhere
+// the user did NOT edit, and regenerate only the edited spans.
+//
+// The bridge validates the request and maps `strength` onto the diffusion-time
+// schedule; it deliberately does NOT build the per-frame mask. That happens in
+// tools/kimodo/generate.mjs, the only layer that knows how many frames Kimodo
+// will actually produce (see preserveSigmas below and the note there).
+//
+// Returns an error message naming the offending field, or null when valid.
+function validatePreserve(body, clipFrames) {
+	const preserve = body.preserve;
+	if (!preserve || typeof preserve !== "object" || Array.isArray(preserve)) {
+		return "field 'preserve' must be an object";
+	}
+	if (typeof preserve.sourceMotion !== "string" || !MOTION_URL.test(preserve.sourceMotion)) {
+		return "field 'preserve.sourceMotion' must be a generated /ardy/motions/<run-id> URL";
+	}
+	// 0 is not "preserve nothing", it is "do not preserve": the field carries a
+	// base motion the backend would still load and blend at sigma_s 0. The
+	// caller drops the whole field instead, so the request says what it means.
+	if (
+		typeof preserve.strength !== "number" ||
+		!Number.isFinite(preserve.strength) ||
+		preserve.strength <= 0 ||
+		preserve.strength > 1
+	) {
+		return "field 'preserve.strength' must be a number greater than 0 and at most 1 (strength 0 is preserve off: omit 'preserve')";
+	}
+	if (!Array.isArray(preserve.editRanges)) {
+		return "field 'preserve.editRanges' must be an array (an EMPTY array means preserve the whole take)";
+	}
+	for (let i = 0; i < preserve.editRanges.length; i += 1) {
+		const range = preserve.editRanges[i];
+		if (!range || typeof range !== "object" || Array.isArray(range)) {
+			return `field 'preserve.editRanges[${i}]' must be an object`;
+		}
+		if (!Number.isInteger(range.startFrame) || !Number.isInteger(range.endFrame)) {
+			return `field 'preserve.editRanges[${i}]' startFrame and endFrame must be integers`;
+		}
+		// Half-open, non-empty and inside the clip. That last bound is also what
+		// makes every range intersect the clip: a range the take does not contain
+		// cannot be scaled onto the generation clock without freeing frames at one
+		// end that the user never edited, so the mask builder refuses it too.
+		// Overlaps between ranges are NOT refused — the mask combines them by
+		// minimum, so two overlapping edits mean the same thing as one.
+		if (range.startFrame < 0 || range.endFrame <= range.startFrame || range.endFrame > clipFrames) {
+			return `field 'preserve.editRanges[${i}]' must be a non-empty half-open range inside 0..${clipFrames}`;
+		}
+	}
+	// Exclusivity. `motionEdit` is deliberately absent from this list: an IK edit
+	// regenerates a span of the take preserve is reconstructing, which is exactly
+	// the combination scheduled inpainting exists for.
+	if (body.regenerateSegments !== undefined) {
+		return "field 'preserve' cannot be combined with regenerateSegments: a regenerated block set replaces the take preserve would reconstruct";
+	}
+	if (body.waypoints !== undefined) {
+		return "field 'preserve' cannot be combined with waypoints: an authored root path re-plans the whole rollout, leaving nothing to preserve";
+	}
+	// The box refuses this pairing too ("scheduled inpainting v1 supports a
+	// single segment"), after loading a model and a base motion. Failing here
+	// costs nothing and can name the version limit instead of a stack trace.
+	if (body.segments !== undefined) {
+		return "field 'preserve' cannot be combined with a prompt schedule: scheduled inpainting v1 supports a single segment";
+	}
+	return null;
+}
+
+// strength -> the (sigma_s, sigma_e) pair the backend blends between. This
+// mapping is server-side by contract so a client never speaks in diffusion-time
+// units. sigma_e is capped rather than scaled: below it the model must always
+// be free to finish, or the take is frozen onto the base and the edit cannot
+// happen. A strength small enough to round sigma_s to 0 is preserve fully off,
+// which the contract names explicitly.
+function preserveSigmas(strength) {
+	const sigmaS = Math.round(PRESERVE_SIGMA_MAX * strength);
+	return { sigmaS, sigmaE: Math.min(PRESERVE_SIGMA_END_CAP, sigmaS) };
 }
 
 // Returns an error message naming the offending field, or null when valid.
@@ -587,6 +683,43 @@ async function handleGenerate(req, res) {
 			return;
 		}
 	}
+	// Scheduled inpainting needs the BACKEND's own artifact of the take being
+	// preserved: Kimodo's --base_motion reads the npz its generator wrote, and
+	// the cskel27 file served at /ardy/motions/<id> is a lossy conversion of it,
+	// not that file. Which artifact that is stays a backend question, so the
+	// runner answers it and the bridge stays backend-neutral.
+	let preserveParams = null;
+	let preserveSkipped = null;
+	if (body.preserve) {
+		const preserveId = body.preserve.sourceMotion.slice("/ardy/motions/".length);
+		const takePath = motionAllowlist.get(preserveId) || null;
+		if (!takePath || !existsSync(takePath)) {
+			sendJson(res, 400, { ok: false, reason: `field 'preserve.sourceMotion': unknown or expired motion "${preserveId}"` });
+			finish(400);
+			return;
+		}
+		const basePath = runner.baseMotionFor ? runner.baseMotionFor(takePath) : null;
+		if (basePath) {
+			preserveParams = {
+				basePath,
+				...preserveSigmas(body.preserve.strength),
+				editRanges: body.preserve.editRanges,
+			};
+		} else {
+			// The take is real, but this backend kept no base motion for it:
+			// motion edits and regenerated block sets are SPLICED from two
+			// motions, so the backend's own artifact is not what the user is
+			// looking at, and takes generated before scheduled inpainting landed
+			// kept nothing at all. Preservation is a best-effort quality knob
+			// that is ON by default, so a missing base degrades to the plain
+			// generation this request would have been before the feature existed
+			// — loudly, on the status stream the App logs — instead of failing a
+			// run the operator did ask for.
+			preserveSkipped =
+				`[bridge] preserve SKIPPED: take "${preserveId}" has no ${runner.mode} base motion on disk ` +
+				"(edited and spliced takes keep none); generating WITHOUT scheduled inpainting";
+		}
+	}
 	if (body.base !== undefined) {
 		let bases;
 		try {
@@ -623,6 +756,10 @@ async function handleGenerate(req, res) {
 		send({ event: "error", message });
 		res.end();
 	};
+	if (preserveSkipped) {
+		console.error(preserveSkipped);
+		sendStatus(preserveSkipped);
+	}
 
 	// Children spawned for THIS request, killed on client disconnect or any
 	// terminal error. Detached groups, so killGroup takes down the whole tree
@@ -717,6 +854,12 @@ async function handleGenerate(req, res) {
 				contextAfter: body.motionEdit.contextAfter,
 				seed: body.seed,
 				poseNpzPaths,
+				// An edit run regenerates the whole clip and splices only the
+				// edited span back in, so its backend artifact is NOT the take the
+				// user ends up with — it keeps no base motion of its own. It can
+				// still PRESERVE one: reconstructing the source outside the edit is
+				// what makes the regenerated span line up with it.
+				preserve: preserveParams,
 				output: outNpzPath,
 			});
 			sendStatus(
@@ -772,6 +915,11 @@ async function handleGenerate(req, res) {
 				rootMargin: body.rootMargin,
 				contactThreshold: body.contactThreshold,
 				historyFrames: body.historyFrames,
+				// The written take IS this run's generation, retimed — so keep the
+				// backend's own npz beside it as a base a later preserve run can
+				// reconstruct. (A prompt schedule can never itself preserve: v1 is
+				// single-segment. Being preserved FROM is unrestricted.)
+				keepNative: true,
 				output: outNpzPath,
 			});
 			sendStatus(
@@ -841,6 +989,11 @@ async function handleGenerate(req, res) {
 				rootMargin: body.rootMargin,
 				contactThreshold: body.contactThreshold,
 				historyFrames: body.historyFrames,
+				preserve: preserveParams,
+				// regenerateSegments calls this once per block and splices the
+				// results into the source take, so no single block's backend npz is
+				// the delivered take; only a whole-clip run keeps a base motion.
+				keepNative: body.regenerateSegments === undefined,
 				output: outputPath,
 			});
 			sendStatus(`[bridge] generating frames ${segment.startFrame}..${segment.endFrame - 1}`);

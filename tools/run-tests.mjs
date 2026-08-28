@@ -69,6 +69,7 @@ const NODE_FILES = [
 	"test/verify-otio.mjs",
 	"test/verify-pose-extract.mjs",
 	"test/verify-pose-library.mjs",
+	"test/verify-preserve-bridge.mjs",
 	"test/verify-project.mjs",
 	"test/verify-pwa.mjs",
 	"test/verify-package-signature.mjs",

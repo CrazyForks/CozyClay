@@ -8,14 +8,27 @@
  * does for ARDY.
  *
  * WHAT THIS BACKEND DOES NOT DO. Kimodo is wired here for text-to-motion
- * sequencing, root 2D paths, pinned poses and motion edit. Base clips remain
- * ARDY-specific machinery in this repo (a base clip is autoregressive history,
- * which Kimodo has no input for) and refuse by name instead of silently
- * producing a take that ignored them.
+ * sequencing, root 2D paths, pinned poses, motion edit and scheduled
+ * inpainting. Base clips remain ARDY-specific machinery in this repo (a base
+ * clip is autoregressive history, which Kimodo has no input for) and refuse by
+ * name instead of silently producing a take that ignored them.
+ *
+ * HOW SCHEDULED INPAINTING TRAVELS. Between this runner and the code that
+ * actually builds the kimodo_gen command line (tools/kimodo/generate.mjs) sit
+ * the two wrapper scripts run-sequence-on-box.mjs and run-edit-on-box.mjs,
+ * whose argv is a stable contract shared with the ARDY wrappers. Preserve
+ * inputs therefore ride the ENVIRONMENT, which is the channel every other
+ * Kimodo tunable already uses (CCLAY_KIMODO_GEN_FPS, _DIFFUSION_STEPS,
+ * _TRANSITION_FRAMES ...):
+ *
+ *   CCLAY_KIMODO_PRESERVE     JSON {basePath, sigmaS, sigmaE, editRanges, maskPath}
+ *   CCLAY_KIMODO_NATIVE_OUT   where this run keeps Kimodo's own npz, so a LATER
+ *                             run can preserve from it
  */
 
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -37,6 +50,23 @@ function run(argv, timeoutMs = 60_000) {
 			resolve({ code, stdout, stderr });
 		});
 	});
+}
+
+/**
+ * Where a run whose bridge output is `outputPath` keeps Kimodo's OWN npz.
+ *
+ * `--base_motion` reads the format kimodo_gen writes (77-joint somaskel, no fps
+ * member); the file the bridge serves at /ardy/motions/<id> is the cskel27
+ * conversion of it and cannot be fed back in. One place decides this name:
+ * generate.mjs writes the file, baseMotionFor finds it again.
+ */
+export function nativeMotionPath(outputPath) {
+	return `${String(outputPath).replace(/\.npz$/i, "")}.kimodo.npz`;
+}
+
+/** The preserve mask this run ships, kept beside the take for inspection. */
+export function preserveMaskPath(outputPath) {
+	return join(dirname(outputPath), "preserve-mask.json");
 }
 
 function unsupported(feature) {
@@ -83,7 +113,39 @@ export function createKimodoRunner() {
 		return [];
 	}
 
-	function sequenceCommand({ segments, waypoints, poseFroms, seed, output }) {
+	// The environment every box wrapper inherits. Scheduled inpainting is
+	// carried here rather than on argv (see the header); both keys are DELETED
+	// when this run does not want them, because process.env is inherited from a
+	// long-lived sidecar and a leftover value would silently preserve the wrong
+	// take on the next request.
+	function boxEnv({ output, keepNative = false, preserve = null } = {}) {
+		const env = {
+			...process.env,
+			CCLAY_KIMODO_HOST: HOST,
+			CCLAY_KIMODO_REPO: REPO,
+			CCLAY_KIMODO_MODEL: MODEL,
+		};
+		delete env.CCLAY_KIMODO_NATIVE_OUT;
+		delete env.CCLAY_KIMODO_PRESERVE;
+		if (keepNative && output) env.CCLAY_KIMODO_NATIVE_OUT = nativeMotionPath(output);
+		if (preserve && output) {
+			// `preserve.basePath` is a take to reconstruct, NOT the ARDY `basePath`
+			// (autoregressive history) that singleCommand still refuses below.
+			env.CCLAY_KIMODO_PRESERVE = JSON.stringify({ ...preserve, maskPath: preserveMaskPath(output) });
+		}
+		return env;
+	}
+
+	// Which artifact of an earlier run can serve as this backend's preserve
+	// base, or null when that take has none — it was spliced together rather
+	// than generated whole, or it predates scheduled inpainting. The bridge
+	// degrades to a plain generation and says so on the status stream.
+	function baseMotionFor(motionPath) {
+		const native = nativeMotionPath(motionPath);
+		return existsSync(native) ? native : null;
+	}
+
+	function sequenceCommand({ segments, waypoints, poseFroms, seed, output, keepNative, preserve }) {
 		const args = [RUN_SEQUENCE];
 		for (const segment of segments) {
 			args.push("--segment", segment.prompt, String(segment.durationS));
@@ -108,12 +170,7 @@ export function createKimodoRunner() {
 		return {
 			command: process.execPath,
 			args,
-			env: {
-				...process.env,
-				CCLAY_KIMODO_HOST: HOST,
-				CCLAY_KIMODO_REPO: REPO,
-				CCLAY_KIMODO_MODEL: MODEL,
-			},
+			env: boxEnv({ output, keepNative, preserve }),
 			doneRe: /^run-kimodo-sequence: done - (.+) \((\d+) bytes\)$/,
 			label: "run-kimodo-sequence",
 		};
@@ -121,11 +178,13 @@ export function createKimodoRunner() {
 
 	// A single prompt is just a one-segment sequence, but only when the request
 	// carries none of the ARDY-only conditioning.
-	function singleCommand({ prompt, durationS, seed, output, basePath, poseFroms, waypoints }) {
+	function singleCommand({ prompt, durationS, seed, output, basePath, poseFroms, waypoints, keepNative, preserve }) {
 		if (basePath) throw new Error("the Kimodo backend does not implement base clips");
 		return sequenceCommand({
 			segments: [{ prompt, durationS }],
 			waypoints,
+			keepNative,
+			preserve,
 			// Pinned poses become Kimodo `fullbody` constraints downstream. The
 			// bridge hands them over as npz paths plus the clip frame to pin them
 			// at; src-frame is an ARDY concept (which frame of a multi-frame npz to
@@ -139,7 +198,7 @@ export function createKimodoRunner() {
 	// Regenerating a span is a whole-clip generation pinned to the source take on
 	// both sides of the edit, then spliced back — Kimodo has no history input, so
 	// the surrounding motion is expressed as constraints instead.
-	function editCommand({ source, manifest, prompt, contextBefore, contextAfter, seed, output }) {
+	function editCommand({ source, manifest, prompt, contextBefore, contextAfter, seed, output, preserve }) {
 		const args = [
 			RUN_EDIT,
 			"--source", source,
@@ -154,12 +213,11 @@ export function createKimodoRunner() {
 		return {
 			command: process.execPath,
 			args,
-			env: {
-				...process.env,
-				CCLAY_KIMODO_HOST: HOST,
-				CCLAY_KIMODO_REPO: REPO,
-				CCLAY_KIMODO_MODEL: MODEL,
-			},
+			// An edit SPLICES its regenerated span into the source take, so the
+			// npz Kimodo wrote is not the take that comes out and must never be
+			// kept as a base — keepNative stays off here. Preserving one is a
+			// different direction and fully supported.
+			env: boxEnv({ output, keepNative: false, preserve }),
 			doneRe: /^run-kimodo-edit: done - (.+) \((\d+) bytes\)$/,
 			label: "run-kimodo-edit",
 		};
@@ -170,6 +228,7 @@ export function createKimodoRunner() {
 		describe: () => `box ${HOST} (repo ${REPO}, model ${MODEL}, retimed to ${TARGET_FPS} fps)`,
 		probeHealth,
 		listBases,
+		baseMotionFor,
 		singleCommand,
 		sequenceCommand,
 		editCommand,
