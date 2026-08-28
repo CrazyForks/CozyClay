@@ -867,8 +867,7 @@ const CLICK_PX = 4;
 			const focused = focusIdRef.current;
 			let picks = pickRefs.current.filter((p) =>
 				p.mesh?.visible &&
-				handleRefs.current[p.track.id]?.visible &&
-				handleRefs.current[p.track.id]?.userData.ikExposed === true
+				handleRefs.current[p.track.id]?.visible
 			);
 			if (focused) picks = picks.filter((p) => p.track.id === focused);
 			else picks = picks.filter((p) => !p.axisDir); // spheres only
