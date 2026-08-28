@@ -129,7 +129,7 @@ export async function generateOnBox({
 	transitionFrames = Number(process.env.CCLAY_KIMODO_TRANSITION_FRAMES || 5),
 	diffusionSteps = Number(process.env.CCLAY_KIMODO_DIFFUSION_STEPS || 100),
 	seed,
-	host = process.env.CCLAY_KIMODO_HOST || process.env.CCLAY_ARDY_HOST || "",
+	host = process.env.CCLAY_KIMODO_HOST || "",
 	repo = process.env.CCLAY_KIMODO_REPO || "$HOME/kimodo",
 	// Kimodo wants ~17 GB of VRAM with the text encoder resident; on anything
 	// smaller the encoder has to run on the CPU, which the upstream docs give
@@ -138,7 +138,7 @@ export async function generateOnBox({
 	onLine,
 } = {}) {
 	if (!host) {
-		throw new Error("generateOnBox: CCLAY_KIMODO_HOST (or CCLAY_ARDY_HOST) is required");
+		throw new Error("generateOnBox: CCLAY_KIMODO_HOST is required");
 	}
 	const { prompt, duration } = joinPrompts(segments);
 

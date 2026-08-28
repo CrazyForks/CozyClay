@@ -125,7 +125,7 @@ check("blank beats do not become prompts", blank.texts.filter(Boolean).length ==
 
 /* --------------------------------- guide --------------------------------- */
 
-check("the guide labels CozyClay heuristics honestly", PROMPT_GUIDE.includes("CozyClay ARDY production heuristics:"));
+check("the guide labels CozyClay heuristics honestly", PROMPT_GUIDE.includes("CozyClay Kimodo production heuristics:"));
 check("the guide shows an upstream example without presenting it as a rule", PROMPT_GUIDE.includes("A person walks in a circle."));
 check("the guide warns that phases are taken as written", /NOT split\s+or trimmed for you/.test(PROMPT_GUIDE));
 check("the guide explains the pooled conditioning vector", /MNTP \+ supervised adapters mean-pools\s+every prompt into one pooled sentence vector/.test(PROMPT_GUIDE));

@@ -21,18 +21,20 @@ function withEnv(env, body) {
 }
 
 const BOX = { CCLAY_ARDY_HOST: "user@box" };
+const KIMODO_BOX = { CCLAY_KIMODO_HOST: "user@kimodo-box" };
 
-// ---- ARDY stays the default -----------------------------------------------
-// The whole point of the seam is that an existing install is untouched until
-// the operator opts in, so this is the assertion that must never regress.
-assert.equal(withEnv(BOX, () => createRunner().mode), "remote");
-assert.equal(withEnv({ CCLAY_ARDY_MODE: "local" }, () => createRunner().mode), "local");
+// ---- Kimodo is the default -----------------------------------------------
+assert.equal(withEnv(KIMODO_BOX, () => createRunner().mode), "kimodo");
+pass("Kimodo is the default backend when a Kimodo host is configured");
+
+// ---- ARDY remains explicit legacy mode ------------------------------------
+assert.equal(withEnv({ CCLAY_MOTION_BACKEND: "ardy", CCLAY_ARDY_MODE: "local" }, () => createRunner().mode), "local");
 assert.equal(withEnv({ ...BOX, CCLAY_MOTION_BACKEND: "ardy" }, () => createRunner().mode), "remote");
-pass("ARDY remains the default backend and its local/remote choice is unchanged");
+pass("explicit ARDY legacy mode and its local/remote choice are unchanged");
 
 // ---- opting in ------------------------------------------------------------
-assert.equal(withEnv({ ...BOX, CCLAY_MOTION_BACKEND: "kimodo" }, () => createRunner().mode), "kimodo");
-assert.equal(withEnv({ ...BOX, CCLAY_MOTION_BACKEND: "KIMODO" }, () => createRunner().mode), "kimodo");
+assert.equal(withEnv({ ...KIMODO_BOX, CCLAY_MOTION_BACKEND: "kimodo" }, () => createRunner().mode), "kimodo");
+assert.equal(withEnv({ ...KIMODO_BOX, CCLAY_MOTION_BACKEND: "KIMODO" }, () => createRunner().mode), "kimodo");
 pass("CCLAY_MOTION_BACKEND=kimodo selects the Kimodo runner");
 
 // ---- a typo must not silently fall back to ARDY ---------------------------
@@ -43,7 +45,7 @@ assert.throws(
 pass("an unknown backend name is refused instead of silently using ARDY");
 
 // ---- the Kimodo runner satisfies the interface the bridge calls -----------
-const runner = withEnv({ ...BOX, CCLAY_MOTION_BACKEND: "kimodo" }, () => createRunner());
+const runner = withEnv({ ...KIMODO_BOX, CCLAY_MOTION_BACKEND: "kimodo" }, () => createRunner());
 for (const method of ["probeHealth", "listBases", "singleCommand", "sequenceCommand", "editCommand"]) {
 	assert.equal(typeof runner[method], "function", `runner must expose ${method}`);
 }
@@ -151,7 +153,7 @@ pass("singleCommand degenerates to a one-segment sequence");
 // ---- the backend needs a host ---------------------------------------------
 assert.throws(
 	() => withEnv({ CCLAY_MOTION_BACKEND: "kimodo" }, () => createKimodoRunner()),
-	/CCLAY_KIMODO_HOST \(or CCLAY_ARDY_HOST\) is required/
+	/CCLAY_KIMODO_HOST is required/
 );
 pass("the Kimodo backend refuses to start without a configured box");
 

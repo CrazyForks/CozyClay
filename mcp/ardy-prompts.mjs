@@ -1,5 +1,5 @@
 /**
- * CozyClay production prompt heuristics for ARDY. They are informed by NVIDIA's
+ * CozyClay production prompt heuristics for Kimodo. They are informed by NVIDIA's
  * upstream examples, not by an upstream prompt-rules document; upstream facts
  * and CozyClay policy are labeled separately in PROMPT_GUIDE.
  *
@@ -76,8 +76,8 @@ export function tileClipFrames(clipFrames, clipSeconds, max = BLOCK_MAX_SECONDS)
 
 /** Shown in the tool description so a caller writes good phases first time. */
 export const PROMPT_GUIDE = [
-	"CozyClay ARDY production heuristics:",
-	"  These local workflow rules are informed by NVIDIA's upstream examples; no upstream ARDY",
+	"CozyClay Kimodo production heuristics:",
+	"  These local workflow rules are informed by NVIDIA's upstream examples; no upstream Kimodo",
 	"  prompt-rules document exists. Upstream facts and CozyClay policy are labeled below.",
 	'  - [Upstream examples] "A person walks in a circle." is a common example shape, not a required template.',
 	"  - [Upstream architecture] LLM2Vec on Llama-3-8B with MNTP + supervised adapters mean-pools",

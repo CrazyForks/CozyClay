@@ -38,6 +38,7 @@
     "demo:api:install": "npm --prefix workers/api ci",
     "demo:worker": "node tools/demo-worker/index.mjs",
     "ardy:setup": "node tools/ardy/setup-local.mjs",
+    "kimodo:setup": "node tools/kimodo/setup-local.mjs",
     "dev:full": "node tools/dev-full.mjs --host 127.0.0.1 --port 5180",
     "qa:browser": "node tools/qa-browser.mjs --",
     "test:shot-authoring": "node test/verify-shot-authoring.mjs",

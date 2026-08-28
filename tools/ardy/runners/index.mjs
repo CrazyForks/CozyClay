@@ -6,11 +6,11 @@
  * 1. WHICH MODEL generates:
  *
  *      CCLAY_MOTION_BACKEND=ardy | kimodo   explicit choice
- *      (unset)                              ardy
+ *      (unset)                              kimodo
  *
- *    ARDY stays the default so an existing install keeps today's behaviour;
- *    Kimodo is opt-in. Kimodo always runs on a box (it ships no local mode
- *    here), so CCLAY_ARDY_MODE does not apply to it.
+ *    Kimodo is the default. ARDY remains available as an explicit legacy
+ *    choice. Kimodo always runs on a box (it ships no local mode here), so
+ *    CCLAY_ARDY_MODE does not apply to it.
  *
  * 2. WHERE ARDY runs, unchanged:
  *
@@ -18,8 +18,8 @@
  *      (unset)                          remote when CCLAY_ARDY_HOST is set,
  *                                       local otherwise
  *
- * so an operator with a configured box keeps today's behavior untouched, and
- * everyone else gets local generation with zero configuration.
+ * ARDY operators must opt in explicitly; Kimodo operators configure
+ * CCLAY_KIMODO_HOST and use the Kimodo box installer.
  */
 
 import { createKimodoRunner } from "../../kimodo/runner.mjs";
@@ -28,10 +28,11 @@ import { createRemoteRunner } from "./remote.mjs";
 
 export function createRunner() {
 	const backend = (process.env.CCLAY_MOTION_BACKEND || "").trim().toLowerCase();
-	if (backend === "kimodo") return createKimodoRunner();
-	if (backend && backend !== "ardy") {
+	if (backend && backend !== "ardy" && backend !== "kimodo") {
 		throw new Error(`unknown CCLAY_MOTION_BACKEND "${backend}" (expected "ardy" or "kimodo")`);
 	}
+	if (!backend) return createKimodoRunner();
+	if (backend === "kimodo") return createKimodoRunner();
 
 	const mode = (process.env.CCLAY_ARDY_MODE || "").trim().toLowerCase();
 	if (mode === "remote") return createRemoteRunner();

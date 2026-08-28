@@ -48,14 +48,14 @@ function unsupported(feature) {
 }
 
 export function createKimodoRunner() {
-	const HOST = process.env.CCLAY_KIMODO_HOST || process.env.CCLAY_ARDY_HOST || "";
+	const HOST = process.env.CCLAY_KIMODO_HOST || "";
 	const REPO = process.env.CCLAY_KIMODO_REPO || "$HOME/kimodo";
 	const MODEL = process.env.CCLAY_KIMODO_MODEL || "Kimodo-SOMA-RP-v1.1";
 	const TARGET_FPS = Number(process.env.CCLAY_KIMODO_TARGET_FPS || 24);
 
 	if (!HOST) {
 		throw new Error(
-			"CCLAY_KIMODO_HOST (or CCLAY_ARDY_HOST) is required for the Kimodo backend (for example: user@gpu-box)"
+			"CCLAY_KIMODO_HOST is required for the Kimodo backend (for example: user@gpu-box)"
 		);
 	}
 

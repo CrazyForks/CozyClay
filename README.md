@@ -55,7 +55,7 @@ https://github.com/user-attachments/assets/1d0113e5-6922-443d-affc-1bdabc666247
 - Node.js 22 or newer
 - npm, or bun
 - A Chromium-based browser
-- *Optional:* an SSH-accessible NVIDIA machine running ARDY, for motion generation — first-time setup downloads a ~16.4 GB text-encoder stack onto that machine; see [`tools/ardy/README.md`](tools/ardy/README.md)
+* An SSH-accessible NVIDIA machine running Kimodo, for motion generation — run `npm run kimodo:setup` once; the first setup downloads the Kimodo checkpoint and text-encoder stack.
 
 ## Quick start
 
@@ -69,12 +69,19 @@ That downloads the built studio and opens it at `http://127.0.0.1:5180`. Nothing
 
 A global install gives you `cclay`, the same command with less typing. Once a day the launcher checks npm for a newer release and prints a one-line notice after the studio is up; it stays quiet when you're current or offline. `cclay update` installs the latest release, and `--no-update-check` skips the check entirely.
 
-Motion generation stays off until you point it at a machine that can run it:
+Motion generation uses Kimodo by default once you point it at an SSH-accessible NVIDIA machine:
 
 ```bash
-CCLAY_ARDY_HOST=user@your-gpu-box npx cozyclay
+CCLAY_KIMODO_HOST=user@your-gpu-box npx cozyclay
 ```
 
+Install the remote worker once:
+
+```bash
+CCLAY_KIMODO_HOST=user@your-gpu-box npm run kimodo:setup
+```
+
+Use `CCLAY_MOTION_BACKEND=ardy` only when you deliberately need the legacy ARDY backend.
 Everything else — staging through camera work and playback — runs without it.
 
 ## AI control (MCP)
@@ -116,15 +123,15 @@ npm install
 npm run dev
 ```
 
-Open `http://127.0.0.1:5180`. `npm run dev` starts the studio together with its local ARDY bridge; `npm run dev:ui` starts the browser UI alone, without Block Generation. The bridge listens on loopback only; the environment variables that point it at a remote ARDY machine are documented in [`tools/ardy/BRIDGE.md`](tools/ardy/BRIDGE.md).
+Open `http://127.0.0.1:5180`. `npm run dev` starts the studio together with its local Kimodo bridge; `npm run dev:ui` starts the browser UI alone, without Block Generation. The bridge listens on loopback only; Kimodo host variables are documented in [`tools/kimodo/setup-on-box.sh`](tools/kimodo/setup-on-box.sh).
 
 <details>
-<summary><b>Token-free ARDY text encoder</b> — skip the Hugging Face gate</summary>
+<summary><b>Legacy ARDY text encoder</b></summary>
 
-ARDY's text encoder normally requires a Hugging Face account, gated-model approval, and an access token on the ARDY machine. CozyClay ships a token-free alternative — one command provisions the same encoder stack from public repositories, pinned by commit and SHA-256:
+The default Kimodo installer downloads the Kimodo checkpoint and its LLM2Vec encoder assets on the configured GPU host. It uses the Hugging Face cache and does not print `HF_TOKEN`; if Hugging Face requests authentication, provide it in the remote environment. The following command is only for the explicit legacy ARDY backend:
 
 ```bash
-CCLAY_ARDY_HOST=user@your-gpu-box tools/ardy/setup-text-encoder-on-box.sh
+CCLAY_MOTION_BACKEND=ardy CCLAY_ARDY_HOST=user@your-gpu-box tools/ardy/setup-text-encoder-on-box.sh
 ```
 
 See [`tools/ardy/README.md`](tools/ardy/README.md) for details. This workflow is built with Meta Llama 3; the encoder's base weights are licensed under the Meta Llama 3 Community License.

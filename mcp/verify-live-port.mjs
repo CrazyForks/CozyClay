@@ -74,6 +74,7 @@ const child = spawn(process.execPath, ["tools/dev-full.mjs", "--host", "127.0.0.
 	detached: true,
 	env: {
 		...process.env,
+		CCLAY_MOTION_BACKEND: "ardy",
 		CCLAY_ARDY_MODE: "remote",
 		CCLAY_ARDY_HOST: "test@ardy",
 		COZYCLAY_LIVE_PORT: String(livePort),

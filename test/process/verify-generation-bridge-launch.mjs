@@ -120,7 +120,7 @@ function createOutputWatcher(child) {
 function forkGeneration(port) {
 	return fork(BRIDGE, [], {
 		cwd: REPO,
-		env: { ...withoutProviderKeys(), CCLAY_GENERATION_PORT: String(port) },
+		env: { ...withoutProviderKeys(), CCLAY_MOTION_BACKEND: "ardy", CCLAY_GENERATION_PORT: String(port) },
 		stdio: ["ignore", "ignore", "ignore", "ipc"],
 		detached: true,
 	});
@@ -168,7 +168,7 @@ async function expectSupervisedDevProxyAndCleanup() {
 	const { mainPort, adjacent } = await reserveMainAndAdjacentPort();
 	const child = spawnOwned(process.execPath, ["tools/dev-full.mjs", "--host", "127.0.0.1", "--port", String(mainPort)], {
 		cwd: REPO,
-		env: withoutProviderKeys(),
+		env: { ...withoutProviderKeys(), CCLAY_MOTION_BACKEND: "ardy" },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	const output = createOutputWatcher(child);

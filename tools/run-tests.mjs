@@ -64,6 +64,7 @@ const NODE_FILES = [
 	"test/verify-kimodo-edit.mjs",
 	"test/verify-kimodo-pose.mjs",
 	"test/verify-kimodo-runner.mjs",
+	"test/verify-kimodo-setup.mjs",
 	"test/verify-kimodo-waypoints.mjs",
 	"test/verify-korean-ui.mjs",
 	"test/verify-layout.mjs",

@@ -1238,9 +1238,9 @@ registerTool(
 registerTool(
 	"generate_motion",
 	{
-		title: "Generate character motion (ARDY)",
+		title: "Generate character motion (Kimodo)",
 		description:
-			"Start a multi-phase ARDY motion job for the connected live editor and return immediately with its " +
+			"Start a multi-phase Kimodo motion job for the connected live editor and return immediately with its " +
 			"task-shaped identity. Completion, failure, or cancellation arrives as the live socket's motion_job event; " +
 			"the MCP model does not poll task state. A completed event loads the active character's timeline.\n\n" +
 			PROMPT_GUIDE,
@@ -1258,7 +1258,7 @@ registerTool(
 				.min(1)
 				.max(8)
 				.describe(
-					"one beat per phase, in order. Follow the shared ARDY prompt guide in this tool's " +
+					"one beat per phase, in order. Follow the shared Kimodo prompt guide in this tool's " +
 						"description; it is the single source for prompt wording and phase guidance. Give a " +
 						"plain string to share the clip evenly, or { text, seconds } to hold a beat for a " +
 						"specific time.",

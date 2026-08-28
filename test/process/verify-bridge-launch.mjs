@@ -145,12 +145,12 @@ function launcherSpec(kind, port, env) {
 	if (kind === "dev") {
 		return {
 			args: ["tools/dev-full.mjs", "--host", "127.0.0.1", "--port", String(port)],
-			env: { CCLAY_ARDY_HOST: "test@ardy", ...env },
+			env: { CCLAY_MOTION_BACKEND: "ardy", CCLAY_ARDY_HOST: "test@ardy", ...env },
 		};
 	}
 	return {
 		args: ["bin/cozyclay.mjs", "--host", "127.0.0.1", "--port", String(port), "--no-open", "--no-star"],
-		env: { ...env, CCLAY_ARDY_HOST: "test@ardy" },
+		env: { CCLAY_MOTION_BACKEND: "ardy", ...env, CCLAY_ARDY_HOST: "test@ardy" },
 	};
 }
 
@@ -190,7 +190,7 @@ async function expectBridgeIpcReadiness() {
 	await close(reservation);
 	const child = fork(BRIDGE, [], {
 		cwd: REPO,
-		env: { ...process.env, CCLAY_ARDY_MODE: "remote", CCLAY_ARDY_HOST: "test@ardy", COZYCLAY_BRIDGE_PORT: String(port) },
+		env: { ...process.env, CCLAY_MOTION_BACKEND: "ardy", CCLAY_ARDY_MODE: "remote", CCLAY_ARDY_HOST: "test@ardy", COZYCLAY_BRIDGE_PORT: String(port) },
 		stdio: ["ignore", "ignore", "ignore", "ipc"],
 		detached: true,
 	});
@@ -207,7 +207,7 @@ async function expectForeignListenerDoesNotReportBridgeReady() {
 	const port = await listen(foreign);
 	const child = fork(BRIDGE, [], {
 		cwd: REPO,
-		env: { ...process.env, CCLAY_ARDY_MODE: "remote", CCLAY_ARDY_HOST: "test@ardy", COZYCLAY_BRIDGE_PORT: String(port) },
+		env: { ...process.env, CCLAY_MOTION_BACKEND: "ardy", CCLAY_ARDY_MODE: "remote", CCLAY_ARDY_HOST: "test@ardy", COZYCLAY_BRIDGE_PORT: String(port) },
 		stdio: ["ignore", "ignore", "ignore", "ipc"],
 		detached: true,
 	});
