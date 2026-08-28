@@ -225,6 +225,10 @@ export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCa
 
 		const planPane = planIsMain ? mainRect : insetRect;
 		const shotPane = planIsMain ? insetRect : mainRect;
+		// During camera navigation the poser view is the only surface changing.
+		// Keep the frozen inset in the existing framebuffer and avoid its
+		// additional scene + outline passes until the gesture ends.
+		const navigatingCamera = typeof window !== "undefined" && window.__cozyclayCameraGesture === true;
 
 		// scissor bounds the clear, viewport bounds the image. The bars around a
 		// letterboxed frame are editor surface, not set: painting them with the
@@ -327,8 +331,8 @@ export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCa
 			// separate camera-placement screen the framing lives on.
 			poserCam.aspect = mainRect.w / mainRect.h;
 			poserCam.updateProjectionMatrix();
-			draw(poserCam, mainRect);
-			if (!insetCollapsed) draw(shotCam, insetRect, fitAspect(insetRect, shotAspect));
+			draw(poserCam, mainRect, null, !navigatingCamera);
+			if (!navigatingCamera && !insetCollapsed) draw(shotCam, insetRect, fitAspect(insetRect, shotAspect));
 		} else if (planIsMain) {
 			draw(planCam, planPane, null, false);
 			if (!insetCollapsed) draw(shotCam, shotPane, fitAspect(shotPane, shotAspect));

@@ -50,7 +50,7 @@ export function aimAt(position, target) {
  * Alt-drag orbits a point straight ahead of the lens.
  */
 export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange, onCameraChange }) {
-	const { gl } = useThree();
+	const { gl, invalidate } = useThree();
 	const keys = useRef(new Set());
 	const gesture = useRef(null); // { kind: "fly" | "pan" | "orbit", pointerId, x, y, ... }
 	const speedScale = useRef(1);
@@ -100,6 +100,8 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 				element.releasePointerCapture(active.pointerId);
 			}
 			gesture.current = null;
+			if (typeof window !== "undefined") window.__cozyclayCameraGesture = false;
+			invalidate();
 			keys.current.clear();
 			// the fly speed set with the wheel persists between flights, as it does in Unity
 			element.style.cursor = "";
@@ -120,6 +122,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 			const cam = camRef.current;
 			const pivot = kind === "orbit" && cam ? resolvePivot(cam) : null;
 			gesture.current = { kind, pointerId: e.pointerId, x: e.clientX, y: e.clientY, pivot, changed: false };
+			if (typeof window !== "undefined") window.__cozyclayCameraGesture = true;
 			element.setPointerCapture(e.pointerId);
 			element.focus();
 			element.style.cursor = kind === "fly" ? "crosshair" : kind === "pan" ? "grabbing" : "move";
