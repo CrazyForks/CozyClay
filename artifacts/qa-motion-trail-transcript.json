@@ -1,40 +1,40 @@
 {
-  "startedAt": "2026-08-28T09:14:05.096Z",
+  "startedAt": "2026-08-28T09:29:55.413Z",
   "steps": [
     {
-      "at": "2026-08-28T09:14:06.274Z",
+      "at": "2026-08-28T09:29:56.628Z",
       "step": "browser",
       "detail": {
         "url": "http://127.0.0.1:5400/app/"
       }
     },
     {
-      "at": "2026-08-28T09:14:09.459Z",
+      "at": "2026-08-28T09:29:59.690Z",
       "step": "live",
       "detail": {
         "status": "Live editor connected. Workspaces:"
       }
     },
     {
-      "at": "2026-08-28T09:14:10.022Z",
+      "at": "2026-08-28T09:30:00.262Z",
       "step": "workspace",
       "detail": {
         "handles": [
-          "bf438260-f96b-4e96-81a3-e3f425e20a56",
-          "ac6a5dc0-7f66-41e8-9736-a8603256a786"
+          "2fdaf099-fe6f-4dc8-8c5c-8da1a3cfb8ad",
+          "9a8db5af-1ab1-42c1-a7b7-1d6d93870f90"
         ],
-        "chosen": "ac6a5dc0-7f66-41e8-9736-a8603256a786"
+        "chosen": "2fdaf099-fe6f-4dc8-8c5c-8da1a3cfb8ad"
       }
     },
     {
-      "at": "2026-08-28T09:14:12.939Z",
+      "at": "2026-08-28T09:30:03.184Z",
       "step": "load_motion",
       "detail": {
         "reply": "Motion installed from /ardy/motions/1787899988840-c5299d."
       }
     },
     {
-      "at": "2026-08-28T09:14:13.580Z",
+      "at": "2026-08-28T09:30:03.829Z",
       "step": "ik",
       "detail": {
         "mode": true,
@@ -42,7 +42,7 @@
       }
     },
     {
-      "at": "2026-08-28T09:14:14.690Z",
+      "at": "2026-08-28T09:30:04.921Z",
       "step": "ik-drag",
       "detail": {
         "control": {
@@ -60,21 +60,21 @@
       }
     },
     {
-      "at": "2026-08-28T09:14:14.827Z",
+      "at": "2026-08-28T09:30:05.057Z",
       "step": "tool",
       "detail": {
         "selected": "trail"
       }
     },
     {
-      "at": "2026-08-28T09:14:14.827Z",
+      "at": "2026-08-28T09:30:05.057Z",
       "step": "tool",
       "detail": {
         "selected": "trail"
       }
     },
     {
-      "at": "2026-08-28T09:14:14.831Z",
+      "at": "2026-08-28T09:30:05.060Z",
       "step": "trail",
       "detail": {
         "points": 168,
@@ -82,7 +82,7 @@
       }
     },
     {
-      "at": "2026-08-28T09:14:15.536Z",
+      "at": "2026-08-28T09:30:05.793Z",
       "step": "tool",
       "detail": {
         "selected": "ik",
@@ -90,7 +90,7 @@
       }
     },
     {
-      "at": "2026-08-28T09:14:15.536Z",
+      "at": "2026-08-28T09:30:05.793Z",
       "step": "deform",
       "detail": {
         "grab": 84,
@@ -102,18 +102,18 @@
       }
     },
     {
-      "at": "2026-08-28T09:14:16.242Z",
+      "at": "2026-08-28T09:30:06.517Z",
       "step": "screenshot",
       "detail": {
-        "bytes": 315540,
+        "bytes": 316171,
         "distinctSampledBytes": 179
       }
     },
     {
-      "at": "2026-08-28T09:14:34.360Z",
+      "at": "2026-08-28T09:30:24.613Z",
       "step": "regenerated",
       "detail": {
-        "url": "/ardy/motions/1787908456321-653b9f",
+        "url": "/ardy/motions/1787909406597-a6fc1e",
         "committed": [
           {
             "frame": 84,
@@ -126,5 +126,5 @@
     }
   ],
   "status": "passed",
-  "finishedAt": "2026-08-28T09:14:34.360Z"
+  "finishedAt": "2026-08-28T09:30:24.614Z"
 }
