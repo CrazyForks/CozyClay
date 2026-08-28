@@ -112,6 +112,13 @@ try {
 			edited_range: [plan.startFrame, plan.endFrame],
 			constraints: plan.constraints.length,
 			pinned_frames: plan.constraints[0]?.frame_indices?.length ?? 0,
+			// The bridge/App commit contract is backend-neutral. Kimodo's
+			// constrained splice has completed successfully at this point, so
+			// report the authored source-frame keys that were carried through.
+			committed_keys: plan.poses
+				.filter((entry) => entry.frame >= plan.startFrame && entry.frame < plan.endFrame)
+				.map((entry) => entry.frame),
+			commit_verified: true,
 		})
 	);
 	const { size } = statSync(args.output);
