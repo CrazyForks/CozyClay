@@ -2411,9 +2411,11 @@ function loadSceneStartup() {
  * re-drawn on top as a bright highlight. Grabbing any point of a line starts
  * a drag on a camera-facing plane through the grab point; the caller deforms
  * the take (motion-trail.js falloff math) so the preview updates live. */
-function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendingEdit, enabled, visible = true, onDragStart, onDragPreview, onDragEnd }) {
+const MotionTrails = memo(function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendingEdit, enabled, visible = true, onDragStart, onDragPreview, onDragEnd }) {
 	const { camera, gl, invalidate } = useThree();
 	const [drag, setDrag] = useState(null);
+	const callbacksRef = useRef({ onDragStart, onDragPreview, onDragEnd });
+	callbacksRef.current = { onDragStart, onDragPreview, onDragEnd };
 	const toTriples = (flat) => {
 		if (!flat) return null;
 		const out = [];
@@ -2493,7 +2495,7 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 			const normal = camera.getWorldDirection(new THREE.Vector3()).negate();
 			const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, start);
 			setDrag({ track, grabFrame });
-			onDragStart({ track, grabFrame });
+			callbacksRef.current.onDragStart?.({ track, grabFrame });
 			// The drag never touches React state: per rAF the grabbed line and the
 			// falloff highlight are rewritten in place on their Line2 geometries,
 			// and onDragPreview poses the rig imperatively. Re-rendering the whole
@@ -2516,7 +2518,7 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 				windowFlat.set(deformedFlat.subarray(startFrame * 3, endFrame * 3));
 				lineRefs.current[track]?.geometry?.setPositions(deformedFlat);
 				highlightRef.current?.geometry?.setPositions(windowFlat);
-				onDragPreview({ track, grabFrame, delta });
+				callbacksRef.current.onDragPreview?.({ track, grabFrame, delta });
 				invalidate();
 			};
 			const flush = () => {
@@ -2542,7 +2544,7 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 				if (rafId) cancelAnimationFrame(rafId);
 				if (queued) applyPreview(queued);
 				setDrag(null);
-				onDragEnd({ track, grabFrame, delta: lastDelta });
+				callbacksRef.current.onDragEnd?.({ track, grabFrame, delta: lastDelta });
 			};
 			window.addEventListener("pointermove", move);
 			window.addEventListener("pointerup", up);
@@ -2587,7 +2589,16 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 			)}
 		</group>
 	);
-}
+}, (previous, next) => (
+	previous.motion === next.motion &&
+	previous.baseY === next.baseY &&
+	previous.charScale === next.charScale &&
+	previous.ikFocus === next.ikFocus &&
+	previous.falloffFrames === next.falloffFrames &&
+	previous.pendingEdit === next.pendingEdit &&
+	previous.enabled === next.enabled &&
+	previous.visible === next.visible
+));
 
 export default function App() {
 	// QA-only render counter (same spirit as window.__cozyclay): headless perf
