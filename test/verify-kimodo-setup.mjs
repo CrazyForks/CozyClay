@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 const setup = readFileSync(new URL("../tools/kimodo/setup-on-box.sh", import.meta.url), "utf8");
 const wrapper = readFileSync(new URL("../tools/kimodo/setup-local.mjs", import.meta.url), "utf8");
 const runner = readFileSync(new URL("../tools/ardy/runners/index.mjs", import.meta.url), "utf8");
+const edit = readFileSync(new URL("../tools/kimodo/run-edit-on-box.mjs", import.meta.url), "utf8");
 
 assert.match(setup, /set -euo pipefail/);
 assert.match(setup, /--dry-run/);
@@ -16,4 +17,6 @@ assert.match(wrapper, /CCLAY_KIMODO_HOST/);
 assert.match(wrapper, /ssh/);
 assert.match(runner, /if \(!backend\) return createKimodoRunner\(\);/);
 assert.match(runner, /backend !== "ardy"/);
+assert.match(edit, /committed_keys:/);
+assert.match(edit, /commit_verified: true/);
 console.log("OK verify-kimodo-setup");
