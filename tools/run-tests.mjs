@@ -49,6 +49,7 @@ const NODE_FILES = [
 	"test/verify-image-pose.mjs",
 	"test/verify-kimodo-cskel27.mjs",
 	"test/verify-kimodo-edit.mjs",
+	"test/verify-kimodo-effector.mjs",
 	"test/verify-kimodo-pose.mjs",
 	"test/verify-kimodo-preserve.mjs",
 	"test/verify-kimodo-runner.mjs",

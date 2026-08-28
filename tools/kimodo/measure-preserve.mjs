@@ -33,9 +33,18 @@
  * its own timeline with its own floor, and only then are the two numbers
  * subtracted.
  *
+ * WHY THERE IS A PER-JOINT SPLIT (round 2). The grouped-mask gates are claims
+ * about WHICH PART of the body moved: "free the left arm over this range and the
+ * arm moves while the legs do not" (GA), "the edited hand lands on target and the
+ * other limbs stay put" (GC). A single whole-body mean cannot distinguish "the
+ * arm moved 10 cm" from "every joint drifted 1 cm", and those are a pass and a
+ * failure of the same gate. So the same root-relative L2P is also accumulated
+ * per cskel27 joint and aggregated into the seven C1v2 mask groups.
+ *
  * usage:
  *   measure-preserve.mjs <base.npz> <candidate.npz> [--ranges 40:80,120:150]
- *                        [--json] [--max-l2p M] [--max-l2r RAD] [--max-foot-delta M]
+ *                        [--json] [--per-joint] [--groups]
+ *                        [--max-l2p M] [--max-l2r RAD] [--max-foot-delta M]
  *
  * `--ranges` are APP frames, half-open [start,end), in the BASE clip's frame
  * space — the same space C3's `editRanges` are authored in. Frames inside any
@@ -85,6 +94,69 @@ const FOOT_INDICES = FOOT_JOINTS.map((name) => {
  * "does this clip skate" claim without checking the clip has real contacts.
  */
 const CONTACT_BAND_M = 0.05;
+
+/* ------------------------------------------------------- cskel27 -> C1v2 groups */
+
+/**
+ * The seven C1v2 mask groups expressed in cskel27 JOINT names.
+ *
+ * THIS IS A DIFFERENT NAMESPACE FROM THE MASK'S TRACK IDS and the two must not
+ * be confused. tools/kimodo/preserve-mask.mjs maps IK TRACK ids — the handles
+ * the user drags: `leftHand`, `leftElbow`, `chest`, `hips` — to these same seven
+ * group names. This table maps the 27 MEASURED joints to them. The names differ
+ * on both sides of the arrow: the `leftElbow` track is the joint cskel27 calls
+ * LeftForeArm, the `chest` track spans Spine1/Spine2, and joints the user has no
+ * handle for at all (LeftHandEnd, RightToeBase, Spine3) still have to land in a
+ * group here because they are measured. So this is a mirror of TRACK_GROUPS'
+ * SEMANTICS, deliberately re-derived rather than imported — importing would
+ * suggest a name correspondence that does not exist.
+ *
+ * Two consequences worth stating before someone reads a number wrong:
+ *
+ *  - `root` is Hips alone, and the root-relative L2P of Hips is IDENTICALLY
+ *    ZERO by construction (every joint is expressed against its own frame's
+ *    hips, so the hips are always the origin). The root group's meaningful
+ *    number is therefore its GLOBAL L2P, which is reported alongside. A root
+ *    l2p_m of 0.000000 is arithmetic, not a passing gate.
+ *  - Hips appears in BOTH `root` and `torso`, mirroring the mask's `hips` track
+ *    which frees both. The groups therefore overlap and their joint counts sum
+ *    to 28, not 27.
+ */
+export const CSKEL27_GROUPS = Object.freeze({
+	root: Object.freeze(["Hips"]),
+	// the shoulders are torso, not arm: a clavicle swings the whole shoulder
+	// mass, exactly as TRACK_GROUPS puts leftShoulder/rightShoulder in torso.
+	torso: Object.freeze(["Hips", "Spine", "Spine1", "Spine2", "Spine3", "LeftShoulder", "RightShoulder"]),
+	head: Object.freeze(["Neck", "Head"]),
+	leftArm: Object.freeze(["LeftArm", "LeftForeArm", "LeftHand", "LeftHandEnd", "LeftHandThumb1"]),
+	rightArm: Object.freeze(["RightArm", "RightForeArm", "RightHand", "RightHandEnd", "RightHandThumb1"]),
+	leftLeg: Object.freeze(["LeftUpLeg", "LeftLeg", "LeftFoot", "LeftToeBase"]),
+	rightLeg: Object.freeze(["RightUpLeg", "RightLeg", "RightFoot", "RightToeBase"]),
+});
+
+/** Group name -> joint indices, resolved once and checked for total coverage. */
+const GROUP_INDICES = Object.fromEntries(
+	Object.entries(CSKEL27_GROUPS).map(([group, joints]) => [
+		group,
+		joints.map((name) => {
+			const index = CSKEL27_JOINTS.indexOf(name);
+			if (index < 0) throw new Error(`measure-preserve: group ${group} names unknown cskel27 joint ${name}`);
+			return index;
+		}),
+	])
+);
+
+/** Joint index -> the groups it belongs to. A joint in NO group would be
+ * silently missing from every grouped number, so the partition is checked at
+ * load rather than trusted. */
+const JOINT_GROUPS = CSKEL27_JOINTS.map((_, index) =>
+	Object.keys(GROUP_INDICES).filter((group) => GROUP_INDICES[group].includes(index))
+);
+for (let joint = 0; joint < JOINTS; joint += 1) {
+	if (JOINT_GROUPS[joint].length === 0) {
+		throw new Error(`measure-preserve: cskel27 joint ${CSKEL27_JOINTS[joint]} belongs to no C1v2 group`);
+	}
+}
 
 /* ------------------------------------------------------------------ loading */
 
@@ -225,6 +297,23 @@ function mean(acc) {
 
 function summarize(acc) {
 	return { mean: mean(acc), max: acc.count > 0 ? acc.max : null, samples: acc.count, skipped: acc.skipped };
+}
+
+/**
+ * Merge accumulators into one, so a group's mean is the mean over ALL its
+ * joints' samples rather than the mean of their per-joint means. The two differ
+ * whenever a joint skipped a NaN sample, and the sample-weighted one is the
+ * honest reading of "how far apart are these joints".
+ */
+function combine(accs) {
+	const merged = accumulator();
+	for (const acc of accs) {
+		merged.sum += acc.sum;
+		merged.count += acc.count;
+		merged.skipped += acc.skipped;
+		if (acc.count > 0 && acc.max > merged.max) merged.max = acc.max;
+	}
+	return merged;
 }
 
 /**
@@ -440,6 +529,18 @@ export function measurePreserve(base, candidate, ranges = []) {
 	};
 	const perFrame = { l2p: new Float64Array(compared), l2r: new Float64Array(compared) };
 
+	// Per-joint buckets, the round-2 addition. Three per joint for the same
+	// reason the whole-body metric has three: GA and GC are claims about a joint
+	// INSIDE the edited range versus the same joint outside it.
+	const perJointBuckets = [];
+	for (let joint = 0; joint < JOINTS; joint += 1) {
+		perJointBuckets.push({
+			l2p: { all: accumulator(), inRange: accumulator(), outOfRange: accumulator() },
+			globalL2p: accumulator(),
+			l2r: accumulator(),
+		});
+	}
+
 	for (let frame = 0; frame < compared; frame += 1) {
 		const other = map[frame];
 		const baseFrameBase = frame * JOINTS * 3;
@@ -453,6 +554,7 @@ export function measurePreserve(base, candidate, ranges = []) {
 		for (let joint = 0; joint < JOINTS; joint += 1) {
 			const p = baseFrameBase + joint * 3;
 			const q = candFrameBase + joint * 3;
+			const jointBucket = perJointBuckets[joint];
 
 			// Root-relative: each side is expressed against its OWN hips, so a
 			// clip that is the same pose translated scores zero here.
@@ -462,6 +564,8 @@ export function measurePreserve(base, candidate, ranges = []) {
 			const local = Math.hypot(rdx, rdy, rdz);
 			add(buckets.l2p.all, local);
 			add(buckets.l2p[bucket], local);
+			add(jointBucket.l2p.all, local);
+			add(jointBucket.l2p[bucket], local);
 			frameL2p += Number.isFinite(local) ? local : 0;
 
 			const global = Math.hypot(
@@ -471,10 +575,12 @@ export function measurePreserve(base, candidate, ranges = []) {
 			);
 			add(buckets.globalL2p.all, global);
 			add(buckets.globalL2p[bucket], global);
+			add(jointBucket.globalL2p, global);
 
 			const angle = geodesicAngle(rot, (frame * JOINTS + joint) * 9, (other * JOINTS + joint) * 9);
 			add(buckets.l2r.all, angle);
 			add(buckets.l2r[bucket], angle);
+			add(jointBucket.l2r, angle);
 			frameL2r += Number.isFinite(angle) ? angle : 0;
 		}
 		perFrame.l2p[frame] = frameL2p / JOINTS;
@@ -501,6 +607,44 @@ export function measurePreserve(base, candidate, ranges = []) {
 		};
 	});
 
+	// Per-joint table, in cskel27 index order so it lines up with the npz arrays
+	// and with any other tool that indexes joints. Sorting it by error would read
+	// better and would make two runs impossible to diff, so it stays in order.
+	const perJoint = perJointBuckets.map((jointBucket, joint) => ({
+		index: joint,
+		joint: CSKEL27_JOINTS[joint],
+		groups: JOINT_GROUPS[joint],
+		l2p_m: mean(jointBucket.l2p.all),
+		l2pMax_m: jointBucket.l2p.all.count > 0 ? jointBucket.l2p.all.max : null,
+		globalL2p_m: mean(jointBucket.globalL2p),
+		l2r_rad: mean(jointBucket.l2r),
+		l2p_inRange_m: ranges.length ? mean(jointBucket.l2p.inRange) : null,
+		l2p_outOfRange_m: ranges.length ? mean(jointBucket.l2p.outOfRange) : null,
+	}));
+
+	// Group aggregation. Sample-weighted across the group's joints, and reported
+	// with globalL2p alongside because the `root` group's root-relative number is
+	// identically zero by construction (see CSKEL27_GROUPS).
+	const perGroup = Object.keys(CSKEL27_GROUPS).map((group) => {
+		const indices = GROUP_INDICES[group];
+		const l2pAll = combine(indices.map((joint) => perJointBuckets[joint].l2p.all));
+		return {
+			group,
+			joints: indices.map((joint) => CSKEL27_JOINTS[joint]),
+			jointCount: indices.length,
+			l2p_m: mean(l2pAll),
+			l2pMax_m: l2pAll.count > 0 ? l2pAll.max : null,
+			globalL2p_m: mean(combine(indices.map((joint) => perJointBuckets[joint].globalL2p))),
+			l2r_rad: mean(combine(indices.map((joint) => perJointBuckets[joint].l2r))),
+			l2p_inRange_m: ranges.length
+				? mean(combine(indices.map((joint) => perJointBuckets[joint].l2p.inRange)))
+				: null,
+			l2p_outOfRange_m: ranges.length
+				? mean(combine(indices.map((joint) => perJointBuckets[joint].l2p.outOfRange)))
+				: null,
+		};
+	});
+
 	const baseFeet = footSliding(base);
 	const candidateFeet = footSliding(candidate);
 
@@ -522,6 +666,8 @@ export function measurePreserve(base, candidate, ranges = []) {
 		l2r_inRange_rad: ranges.length ? summarize(buckets.l2r.inRange) : null,
 		l2r_outOfRange_rad: ranges.length ? summarize(buckets.l2r.outOfRange) : null,
 		perRange,
+		perJoint,
+		perGroup,
 		footSliding: {
 			base: baseFeet,
 			candidate: candidateFeet,
@@ -542,7 +688,58 @@ function formatRadians(value) {
 	return value === null ? "  n/a   " : `${value.toFixed(6)} (${((value * 180) / Math.PI).toFixed(3)}°)`;
 }
 
-function printReport(report) {
+/**
+ * The per-joint table. Printed only on request because 27 rows would bury the
+ * headline numbers in the common case, and the JSON carries it unconditionally
+ * for the gate harness.
+ */
+function printPerJoint(report) {
+	const showRanges = report.ranges.length > 0;
+	console.log("  per joint (root-relative L2P, metres — mean over the compared frames)");
+	console.log(
+		`    ${"joint".padEnd(16)}${"group".padEnd(10)}${"mean".padStart(10)}${"max".padStart(11)}` +
+			`${"global".padStart(11)}` +
+			(showRanges ? `${"inRange".padStart(11)}${"outRange".padStart(11)}` : "")
+	);
+	for (const row of report.perJoint) {
+		console.log(
+			`    ${row.joint.padEnd(16)}${row.groups.join("+").padEnd(10)}` +
+				`${formatMetres(row.l2p_m).padStart(10)}${formatMetres(row.l2pMax_m).padStart(11)}` +
+				`${formatMetres(row.globalL2p_m).padStart(11)}` +
+				(showRanges
+					? `${formatMetres(row.l2p_inRange_m).padStart(11)}${formatMetres(row.l2p_outOfRange_m).padStart(11)}`
+					: "")
+		);
+	}
+	// The one row that is always 0.000000 and always means nothing.
+	console.log("    (Hips root-relative L2P is 0 by construction; read its global column instead)");
+}
+
+/**
+ * The seven-group aggregation — the shape the round-2 gates are phrased in
+ * ("the arm moved, the legs did not").
+ */
+function printGroups(report) {
+	const showRanges = report.ranges.length > 0;
+	console.log("  per C1v2 mask group (root-relative L2P, metres; groups overlap — Hips is in root AND torso)");
+	console.log(
+		`    ${"group".padEnd(10)}${"joints".padStart(7)}${"mean".padStart(11)}${"max".padStart(11)}` +
+			`${"global".padStart(11)}` +
+			(showRanges ? `${"inRange".padStart(11)}${"outRange".padStart(11)}` : "")
+	);
+	for (const row of report.perGroup) {
+		console.log(
+			`    ${row.group.padEnd(10)}${String(row.jointCount).padStart(7)}` +
+				`${formatMetres(row.l2p_m).padStart(11)}${formatMetres(row.l2pMax_m).padStart(11)}` +
+				`${formatMetres(row.globalL2p_m).padStart(11)}` +
+				(showRanges
+					? `${formatMetres(row.l2p_inRange_m).padStart(11)}${formatMetres(row.l2p_outOfRange_m).padStart(11)}`
+					: "")
+		);
+	}
+}
+
+function printReport(report, { perJoint = false, groups = false } = {}) {
 	console.log(`base      : ${report.base.path}  ${report.base.frames} frames @ ${report.base.fps} fps`);
 	console.log(`candidate : ${report.candidate.path}  ${report.candidate.frames} frames @ ${report.candidate.fps} fps`);
 	console.log(
@@ -582,6 +779,9 @@ function printReport(report) {
 		}
 	}
 
+	if (perJoint) printPerJoint(report);
+	if (groups) printGroups(report);
+
 	const feet = report.footSliding;
 	console.log("  foot sliding (m per frame, contact = within 5 cm of that joint's own minimum)");
 	console.log(`    base        : ${feet.base.slide_m_per_frame.toFixed(6)}   (${feet.base.contactFrames} contact frames)`);
@@ -598,15 +798,35 @@ function printReport(report) {
 		console.log(`L2P_OUT_M=${report.l2p_outOfRange_m.mean === null ? "nan" : report.l2p_outOfRange_m.mean.toFixed(6)}`);
 		console.log(`L2P_IN_M=${report.l2p_inRange_m.mean === null ? "nan" : report.l2p_inRange_m.mean.toFixed(6)}`);
 	}
+	if (groups) {
+		// One flat key per group so a gate script can assert "arm moved, legs did
+		// not" without parsing the table. The all-frames key is always emitted and
+		// the range-scoped ones only when ranges were given, so a key never
+		// silently changes meaning between two invocations.
+		const number = (value) => (value === null ? "nan" : value.toFixed(6));
+		for (const row of report.perGroup) {
+			const name = row.group.toUpperCase();
+			console.log(`L2P_GROUP_${name}=${number(row.l2p_m)}`);
+			if (report.ranges.length) {
+				console.log(`L2P_GROUP_${name}_IN=${number(row.l2p_inRange_m)}`);
+				console.log(`L2P_GROUP_${name}_OUT=${number(row.l2p_outOfRange_m)}`);
+			}
+		}
+	}
 	console.log(`FOOT_SLIDE_DELTA_M=${feet.delta_m_per_frame.toFixed(6)}`);
 }
 
 function parseArgs(argv) {
 	const positional = [];
-	const options = { ranges: [], json: false, maxL2p: null, maxL2r: null, maxFootDelta: null };
+	const options = {
+		ranges: [], json: false, perJoint: false, groups: false,
+		maxL2p: null, maxL2r: null, maxFootDelta: null,
+	};
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
 		if (arg === "--json") options.json = true;
+		else if (arg === "--per-joint") options.perJoint = true;
+		else if (arg === "--groups") options.groups = true;
 		else if (arg === "--ranges") options.ranges = parseRanges(argv[++index] ?? "");
 		else if (arg.startsWith("--ranges=")) options.ranges = parseRanges(arg.slice("--ranges=".length));
 		else if (arg === "--max-l2p") options.maxL2p = Number(argv[++index]);
@@ -636,6 +856,7 @@ if (invokedDirectly) {
 	if (!basePath || !candidatePath) {
 		console.error(
 			"usage: measure-preserve.mjs <base.npz> <candidate.npz> [--ranges 40:80,120:150] [--json]\n" +
+				"                            [--per-joint] [--groups]\n" +
 				"                            [--max-l2p M] [--max-l2r RAD] [--max-foot-delta M]"
 		);
 		process.exit(2);
@@ -671,7 +892,7 @@ if (invokedDirectly) {
 	if (parsed.options.json) {
 		console.log(JSON.stringify({ ...report, failures }, null, 2));
 	} else {
-		printReport(report);
+		printReport(report, { perJoint: parsed.options.perJoint, groups: parsed.options.groups });
 		for (const failure of failures) console.error(`FAIL: ${failure}`);
 	}
 	process.exit(failures.length ? 1 : 0);
