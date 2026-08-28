@@ -709,6 +709,11 @@ async function handleGenerate(req, res) {
 		if (basePath) {
 			preserveParams = {
 				basePath,
+				// The raw slider value rides along beside the derived sigmas: the
+				// schedule alone is nearly binary in practice (gate G3 measured a
+				// 7% L2P spread across the whole sweep), so the generator also
+				// scales the blend AMPLITUDE by it to give the dial real range.
+				strength: body.preserve.strength,
 				...preserveSigmas(body.preserve.strength),
 				editRanges: body.preserve.editRanges,
 			};

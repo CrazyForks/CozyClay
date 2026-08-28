@@ -295,12 +295,28 @@ export async function generateOnBox({
 			genFrames: maskFrames,
 			...(preserve.influenceRadius === undefined ? {} : { influenceRadius: preserve.influenceRadius }),
 		});
+		// The sigma schedule alone is nearly binary: gate G3 measured L2P
+		// 0.00455..0.00487 across the WHOLE sigma sweep — once the base anchors
+		// the early steps the model reconstructs it regardless, so a 5% slider
+		// felt like 100%. The slider therefore also caps the blend AMPLITUDE
+		// (the paper's own alpha_mask=0.8 retiming pattern): weight 1 becomes
+		// `strength`, an edit's 0 stays 0, and the Gaussian shoulders scale in
+		// between. At 1.0 this is exactly the gate-measured behaviour.
+		const strength = preserve.strength === undefined ? 1 : Number(preserve.strength);
+		if (!Number.isFinite(strength) || strength <= 0 || strength > 1) {
+			throw new Error(`preserve.strength must be a number in (0,1], got ${JSON.stringify(preserve.strength)}`);
+		}
+		const scaled = strength === 1 ? mask : { ...mask, weights: mask.weights.map((weight) => weight * strength) };
 		preservePlan = {
 			basePath: preserve.basePath,
 			maskPath: preserve.maskPath || null,
 			sigmaS,
 			sigmaE,
-			mask,
+			strength,
+			mask: scaled,
+			// Structure stats come from the UNSCALED mask: after scaling nothing
+			// is exactly 1, which would report "0 preserved frames" for a
+			// whole-take reconstruction at 55%.
 			stats: preserveMaskStats(mask),
 		};
 	}
