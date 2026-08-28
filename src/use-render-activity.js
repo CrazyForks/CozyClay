@@ -41,10 +41,16 @@ export function useRenderActivity(alwaysActive) {
 			sync();
 		};
 		const onPointerDown = (event) => {
+			// Right-button fly navigation invalidates explicitly from
+			// FlyControls. It must not switch the whole canvas to an
+			// always-running loop, because the split renderer would repaint
+			// frozen panes on every RAF.
+			if (event.button === 2) return;
 			pointerIds.add(event.pointerId);
 			sync();
 		};
 		const onPointerEnd = (event) => {
+			if (event.button === 2) return;
 			pointerIds.delete(event.pointerId);
 			sync();
 		};

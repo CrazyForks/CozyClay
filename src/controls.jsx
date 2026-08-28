@@ -106,6 +106,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 			// the fly speed set with the wheel persists between flights, as it does in Unity
 			element.style.cursor = "";
 			flyStateRef.current?.(false);
+			invalidate();
 			if (active.changed) cameraChangeRef.current?.();
 		};
 
@@ -127,6 +128,7 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 			element.focus();
 			element.style.cursor = kind === "fly" ? "crosshair" : kind === "pan" ? "grabbing" : "move";
 			if (kind === "fly") flyStateRef.current?.(true);
+			invalidate();
 		};
 
 		/** the point Alt-drag turns around: the caller's selection, or a point
@@ -152,7 +154,13 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 				look.current.pitch -= dy * LOOK_SENS;
 				look.current.pitch = THREE.MathUtils.clamp(look.current.pitch, -PITCH_LIMIT, PITCH_LIMIT);
 				active.changed = active.changed || dx !== 0 || dy !== 0;
-				if (dx !== 0 || dy !== 0) cameraChangeRef.current?.();
+				if (dx !== 0 || dy !== 0) {
+					cameraChangeRef.current?.();
+					// Camera gestures run in demand mode. One explicit
+					// invalidation per changed input is enough; keeping the
+					// entire scene loop on "always" rendered frozen panes too.
+					invalidate();
+				}
 				return;
 			}
 			if (active.kind === "pan") {
@@ -165,7 +173,10 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 				cam.position.addScaledVector(up, dy * PAN_SENS * distance);
 				cam.position.y = Math.max(cam.position.y, 0.12);
 				active.changed = active.changed || dx !== 0 || dy !== 0;
-				if (dx !== 0 || dy !== 0) cameraChangeRef.current?.();
+				if (dx !== 0 || dy !== 0) {
+					cameraChangeRef.current?.();
+					invalidate();
+				}
 				return;
 			}
 			// orbit: swing the camera around the pivot, then re-aim at it so the
@@ -183,7 +194,10 @@ export function FlyControls({ enabled, camRef, look, getPivot, onFlyStateChange,
 			look.current.yaw = angles.yaw;
 			look.current.pitch = angles.pitch;
 			active.changed = active.changed || dx !== 0 || dy !== 0;
-			if (dx !== 0 || dy !== 0) cameraChangeRef.current?.();
+			if (dx !== 0 || dy !== 0) {
+				cameraChangeRef.current?.();
+				invalidate();
+			}
 		};
 
 		const onWheel = (e) => {
