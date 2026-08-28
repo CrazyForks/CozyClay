@@ -9015,10 +9015,10 @@ input[type=range] {
 
 /* ------------------------------------------- preserve (inpainting) -------- */
 /* The "keep the current take" strength, in the Prompt Blocks panel. Same shape
-   as .trail-falloff-row — flat range plus a tabular readout — with one state
-   that row does not have: a root path owns the whole rollout, so the slider is
-   GRAYED rather than removed while waypoint mode is on. Removing it would take
-   the explanation away with it; the disabled control still carries its title.
+   as .trail-falloff-row — flat range plus a tabular readout — and, since round 2
+   allows preserving across a drawn root path, it has no disabled state left:
+   every state the control can be in is now a WORKING one, explained by the hint
+   lines under it rather than by graying.
    Appended at the end on purpose: the global input[type=range] rules further up
    the cascade (the Unity density and widget-material passes) would otherwise
    win over anything written beside the trail row. */
@@ -9031,16 +9031,9 @@ input[type=range] {
 	flex: 1;
 	min-width: 0;
 }
-.preserve-strength-row input[type="range"]:disabled {
-	opacity: .35;
-	cursor: not-allowed;
-}
 .preserve-strength-value {
 	font-variant-numeric: tabular-nums;
 	opacity: .8;
-}
-.preserve-strength-row[data-disabled="true"] .preserve-strength-value {
-	opacity: .35;
 }
 /* Both poles on one line, each at the end it describes. */
 .preserve-strength-scale {
@@ -9048,4 +9041,11 @@ input[type=range] {
 	justify-content: space-between;
 	gap: 8px;
 	margin-top: 3px;
+}
+/* Which limbs the grouped mask will actually free. It reads as a continuation
+   of the slider, not as a new paragraph, so it sits tighter to the row above
+   and one step quieter than the hint it borrows its voice from. */
+.preserve-tracks-summary {
+	margin-top: 4px;
+	opacity: .85;
 }

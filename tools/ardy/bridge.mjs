@@ -48,6 +48,11 @@ import { DURATION_MAX, DURATION_MIN, PROMPT_MAX_CHARS } from "./prompt-limits.mj
 import { footagePath, handleFootage, serveFootage } from "./footage.mjs";
 import { handleExtract } from "./extract.mjs";
 import { createPrivateArtifactDir, evictPrivateArtifact, removePrivateArtifactDir } from "./artifacts.mjs";
+// The IK track ids a preserve edit range may scope itself to. Imported rather
+// than restated: tools/kimodo/preserve-mask.mjs is the single source of truth
+// for track -> mask-group, and a list copied here would drift the first time a
+// track is added. The module is pure (no side effects on import).
+import { TRACK_GROUPS } from "../kimodo/preserve-mask.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const OUT_DIR = join(HERE, "out");
@@ -84,6 +89,10 @@ const MOTION_URL = /^\/ardy\/motions\/[0-9]+-[0-9a-f]{6}$/;
 // 500/50 pair to any strength.
 const PRESERVE_SIGMA_MAX = 1000;
 const PRESERVE_SIGMA_END_CAP = 50;
+// Round 2 (C3v2): an edit range may name the IK tracks it touched, and only the
+// mask groups those tracks map to are freed there. The valid ids are exactly the
+// keys of the mask builder's own table.
+const PRESERVE_TRACK_IDS = Object.keys(TRACK_GROUPS);
 
 // The runner is the ONLY part of the bridge that knows where generation
 // actually happens. Selection (runners/index.mjs) is Kimodo-only; everything
@@ -393,15 +402,48 @@ function validatePreserve(body, clipFrames) {
 		if (range.startFrame < 0 || range.endFrame <= range.startFrame || range.endFrame > clipFrames) {
 			return `field 'preserve.editRanges[${i}]' must be a non-empty half-open range inside 0..${clipFrames}`;
 		}
+		// C3v2: an OPTIONAL `tracks` list scopes the range to the mask groups those
+		// IK tracks map to (a hand edit frees the arm, not the body). Omitting the
+		// key is the v1 whole-body edit.
+		if (range.tracks !== undefined) {
+			if (!Array.isArray(range.tracks)) {
+				return `field 'preserve.editRanges[${i}].tracks' must be an array of IK track ids`;
+			}
+			// An EMPTY list is refused rather than read as either "whole body" or
+			// "nothing": the two readings differ by the entire clip and the caller
+			// meant one of them. Same rule, same wording as buildPreserveMask — a
+			// request that got past here must never die inside the mask builder.
+			if (range.tracks.length === 0) {
+				return `field 'preserve.editRanges[${i}].tracks' is empty — omit the key entirely for a whole-body edit`;
+			}
+			for (let t = 0; t < range.tracks.length; t += 1) {
+				const trackId = range.tracks[t];
+				if (typeof trackId !== "string" || !Object.hasOwn(TRACK_GROUPS, trackId)) {
+					return (
+						`field 'preserve.editRanges[${i}].tracks[${t}]' ${JSON.stringify(trackId)} is not a known IK track id; ` +
+						`valid ids are ${PRESERVE_TRACK_IDS.join(", ")}`
+					);
+				}
+			}
+		}
 	}
-	// Exclusivity. `motionEdit` is deliberately absent from this list: an IK edit
-	// regenerates a span of the take preserve is reconstructing, which is exactly
-	// the combination scheduled inpainting exists for.
+	// Exclusivity. TWO fields are deliberately absent from this list:
+	//
+	//   `motionEdit` — an IK edit regenerates a span of the take preserve is
+	//   reconstructing, which is exactly the combination scheduled inpainting
+	//   exists for.
+	//
+	//   `waypoints` — ALLOWED since round 2 (contract C3v2, paper 4.4). Round 1
+	//   refused it on the reasoning that an authored root path "re-plans the whole
+	//   rollout, leaving nothing to preserve". That is true only of a mask that
+	//   preserves the root: with the grouped mask of C1v2 the bridge frees the
+	//   `root` group for the WHOLE clip (preserveParams.rootFree below) and keeps
+	//   everything else, so the drawn path owns the trajectory and heading while
+	//   the body still rides the preserved take — which is the feature. It stays
+	//   SINGLE-SEGMENT: `segments` is still refused just below, so a preserve +
+	//   waypoints run is always one prompt over one rollout.
 	if (body.regenerateSegments !== undefined) {
 		return "field 'preserve' cannot be combined with regenerateSegments: a regenerated block set replaces the take preserve would reconstruct";
-	}
-	if (body.waypoints !== undefined) {
-		return "field 'preserve' cannot be combined with waypoints: an authored root path re-plans the whole rollout, leaving nothing to preserve";
 	}
 	// The box refuses this pairing too ("scheduled inpainting v1 supports a
 	// single segment"), after loading a model and a base motion. Failing here
@@ -715,7 +757,17 @@ async function handleGenerate(req, res) {
 				// scales the blend AMPLITUDE by it to give the dial real range.
 				strength: body.preserve.strength,
 				...preserveSigmas(body.preserve.strength),
+				// `tracks` (C3v2) rides along INSIDE each range: the mask builder is
+				// the only layer that knows the generation clock, so ranges are
+				// forwarded verbatim and never resolved to groups here.
 				editRanges: body.preserve.editRanges,
+				// preserve + waypoints (C3v2, paper 4.4): the authored path owns the
+				// root for the WHOLE clip, so the mask's `root` group is zeroed end
+				// to end and the drawn trajectory is not fighting a preserved one.
+				// Everything else still rides the base take, including the groups the
+				// edit ranges free. A FLAG, not a mask: generate.mjs builds the mask
+				// in exactly one place and composes this onto it there.
+				rootFree: body.waypoints !== undefined,
 			};
 		} else {
 			// The take is real, but this backend kept no base motion for it:

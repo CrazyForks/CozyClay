@@ -18,10 +18,39 @@
  * The result is spliced back with replaceMotionSegment: everything outside the
  * edited range is copied from the source byte for byte, because the author
  * changed one span and expects the rest of their take untouched.
+ *
+ * ROUND 2 (contract C5) — THE AUTHOR'S KEYS MAY BE EFFECTOR-SCOPED
+ * ---------------------------------------------------------------
+ * A `fullbody` key freezes all 77 joints at that frame. For an ANCHOR that is the
+ * point: the frame is context we want held exactly. For the author's own key it is
+ * the bug C5 exists to remove — dragging one hand should move the arm, not weld
+ * the legs, the spine and the head to a pose the user never authored.
+ *
+ * So planEditConstraints splits the two kinds of frame:
+ *
+ *   anchors            -> ALWAYS fullbody, in every mode
+ *   author keyframes   -> end-effector constraints IFF every edited track in the
+ *                         manifest maps to a limb chain, else fullbody
+ *
+ * "EVERY track" is the condition, not "any": the manifest's tracks describe ONE
+ * authored pose per frame, and an edit that also moved the spine or the head has
+ * no effector to carry those bones — emitting hand constraints for it would
+ * silently drop half the user's edit. Mixed or non-effector track lists therefore
+ * keep round 1's behaviour wholesale, and the chosen mode is REPORTED
+ * (`constraintMode`) rather than inferred, so the wrapper can log which pinning a
+ * take actually got.
+ *
+ * A CAVEAT WORTH REPEATING AT THE SWITCH (effector-constraints.mjs states it in
+ * full): an EE constraint still pins root XZ, root height and heading at its
+ * frames — Kimodo's EndEffectorConstraintSet appends them unconditionally and has
+ * no flag to disable it. On an edit that is harmless by construction: every pose
+ * here is either read back out of the source take or authored on top of it, so
+ * the pinned root is the take's own root at that frame. It is NOT a free root.
  */
 
 import { readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { buildEffectorConstraints, effectorTypeForTrack } from "./effector-constraints.mjs";
 import { buildFullBodyConstraints } from "./pose-constraints.mjs";
 import { readNpz } from "./read-npz.mjs";
 
@@ -151,18 +180,41 @@ export function planEditConstraints({ sourcePath, manifestPath, contextBefore = 
 	}
 
 	// Author keyframes win over an anchor on the same frame: the whole point of
-	// the edit is that those frames changed.
+	// the edit is that those frames changed. `kind` rides along because round 2
+	// constrains the two differently — and this map is what GUARANTEES a frame can
+	// never carry both an anchor and an author key, i.e. never both a fullbody
+	// anchor and an EE edit.
 	const byFrame = new Map();
 	for (const frame of anchors) {
 		if (frame < 0 || frame >= sourceFrames) continue;
-		byFrame.set(frame, { frame, pose: frameAsPose(source, frame) });
+		byFrame.set(frame, { frame, kind: "anchor", pose: frameAsPose(source, frame) });
 	}
 	for (const edit of manifest.edits) {
-		byFrame.set(edit.frame, { frame: edit.frame, pose: poseFromNpz(edit.posePath) });
+		byFrame.set(edit.frame, { frame: edit.frame, kind: "edit", pose: poseFromNpz(edit.posePath) });
 	}
 	const poses = [...byFrame.values()].sort((a, b) => a.frame - b.frame);
 
+	// C5's switch, decided from the MANIFEST rather than from the surviving poses:
+	// an author key that lost its slot to app->gen frame rounding still describes
+	// what the user edited. EVERY edited track must map to a limb chain (see the
+	// header); an edit that names no tracks at all cannot claim one, so it is
+	// fullbody.
+	const editedTracks = [];
+	let allEffector = manifest.edits.length > 0;
+	for (const edit of manifest.edits) {
+		if (edit.tracks.length === 0) allEffector = false;
+		for (const track of edit.tracks) {
+			if (effectorTypeForTrack(track) === null) allEffector = false;
+			if (!editedTracks.includes(track)) editedTracks.push(track);
+		}
+	}
+	const constraintMode = allEffector ? "effector" : "fullbody";
+
 	// The clip Kimodo generates runs at genFps; the manifest speaks in app frames.
+	// ONE scaling pass over the merged, sorted list, so the gen-frame dedup stays
+	// SHARED: two source frames that round onto the same generation frame keep the
+	// earlier one whatever kind it is, and an anchor and an author key can never
+	// both survive onto one frame in two different constraint entries.
 	const scale = genFps / appFps;
 	const genFrames = Math.max(1, Math.round(sourceFrames * scale));
 	const scaled = [];
@@ -171,11 +223,32 @@ export function planEditConstraints({ sourcePath, manifestPath, contextBefore = 
 		const genFrame = Math.min(genFrames - 1, Math.max(0, Math.round(entry.frame * scale)));
 		if (seen.has(genFrame)) continue;
 		seen.add(genFrame);
-		scaled.push({ frame: genFrame, pose: entry.pose });
+		scaled.push({ frame: genFrame, kind: entry.kind, pose: entry.pose });
+	}
+
+	// fullbody mode is round 1 unchanged: ONE entry over every frame, anchors and
+	// author keys alike. Effector mode splits them — the anchors stay fullbody
+	// (they are context to hold exactly), the author's keys become one entry per
+	// distinct effector chain, over the edited frames only.
+	let constraints;
+	if (constraintMode === "effector") {
+		const anchorPoses = scaled.filter((entry) => entry.kind === "anchor");
+		const editPoses = scaled.filter((entry) => entry.kind === "edit");
+		constraints = [
+			...buildFullBodyConstraints(anchorPoses, { genFrames }),
+			...buildEffectorConstraints(editPoses, { genFrames, tracks: editedTracks }),
+		];
+	} else {
+		constraints = buildFullBodyConstraints(scaled, { genFrames });
 	}
 
 	return {
-		constraints: buildFullBodyConstraints(scaled, { genFrames }),
+		constraints,
+		// Which pinning the AUTHOR's keyframes got ("effector" | "fullbody"), and
+		// the tracks that decided it. Reported rather than re-derived downstream:
+		// run-edit-on-box logs it and the tests assert it.
+		constraintMode,
+		editedTracks,
 		poses,
 		startFrame: manifest.startFrame,
 		endFrame: manifest.endFrame,

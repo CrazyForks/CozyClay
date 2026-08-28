@@ -76,12 +76,28 @@ try {
 	const source = loadMotion(args.source);
 	const durationS = source.frames / source.fps;
 
+	// Which pinning the author's own keys got (contract C5). planEditConstraints
+	// owns the decision — every edited track maps to a limb chain, or nothing does
+	// — and it is announced BEFORE the GPU is booked, because it is the difference
+	// between "this edit moved an arm" and "this edit froze the body", and a take
+	// that came out over-pinned should be diagnosable from the run log alone.
+	console.log(
+		`run-kimodo-edit: constraints=${plan.constraintMode} for ${plan.poses.length} pinned frame(s)` +
+			`${plan.editedTracks.length > 0 ? ` (edited tracks: ${plan.editedTracks.join(", ")})` : ""}` +
+			`${plan.constraintMode === "effector" ? "; context anchors stay fullbody" : ""}`
+	);
+
 	// One prompt over the whole clip, constrained to the source on both sides of
 	// the edit. generateOnBox takes poses already in app frame space and rescales
-	// them itself, so the plan's constraints are handed over as poses.
+	// them itself, so the plan's poses — anchors and author keys, each tagged with
+	// its `kind` — are handed over rather than the plan's already-scaled
+	// constraints: the generator resolves the generation clock from the duration it
+	// is about to request, and scaling the same frames twice against two clocks is
+	// how the pins would drift off the take.
 	const { motion, raw } = await generateOnBox({
 		segments: [{ prompt: args.prompt, duration: durationS }],
 		poses: plan.poses,
+		effectorTracks: plan.constraintMode === "effector" ? plan.editedTracks : null,
 		appFps: args.targetFps,
 		seed: args.seed,
 		onLine: (line) => console.log(line),
@@ -118,6 +134,10 @@ try {
 			future_range: [plan.endFrame, Math.min(edited.frames, plan.endFrame + (args.contextAfter || 0))],
 			constraints: plan.constraints.length,
 			pinned_frames: plan.constraints[0]?.frame_indices?.length ?? 0,
+			// "effector" = the author's keys pinned only their limb chains (+ hips
+			// and the root, which Kimodo's EE sets pin unconditionally); "fullbody" =
+			// round 1's whole-body pin. Context anchors are fullbody either way.
+			constraint_mode: plan.constraintMode,
 			// The bridge/App commit contract is backend-neutral. Kimodo's
 			// constrained splice has completed successfully at this point, so
 			// report the authored source-frame keys that were carried through.

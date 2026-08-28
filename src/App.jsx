@@ -539,6 +539,98 @@ const ARDY_SEED_MAX = 2 ** 31 - 1; // bridge contract: optional seed, integer in
 const ARDY_PRESERVE_DEFAULT = 0.5;
 const DEFAULT_PROMPT_CLIPS = [];
 
+/** The prompt-block schedule: every authored block in frame order, with the gaps
+ * between them filled by the base prompt so the bridge always receives one
+ * contiguous 0..clipFrames sequence. Blocks shorter than 3 frames are dropped —
+ * they cannot carry a generation.
+ * Pure and shared on purpose: the request assembly decides which blocks count as
+ * "edited", and the preserve panel has to name the SAME blocks. Re-deriving them
+ * approximately beside the slider is how the UI starts promising a locality the
+ * wire does not carry. */
+function buildPromptSchedule(sourcePromptClips, clipFrames, prompt) {
+	const segments = [];
+	let cursor = 0;
+	for (const clip of sourcePromptClips) {
+		const startFrame = Math.max(cursor, Math.min(clipFrames, clip.startFrame));
+		const endFrame = Math.max(startFrame, Math.min(clipFrames, clip.endFrame));
+		if (startFrame > cursor) segments.push({ startFrame: cursor, endFrame: startFrame, prompt });
+		if (endFrame - startFrame >= 3) segments.push({ startFrame, endFrame, prompt: clip.text.trim() || prompt });
+		cursor = Math.max(cursor, endFrame);
+		if (cursor >= clipFrames) break;
+	}
+	if (cursor < clipFrames) segments.push({ startFrame: cursor, endFrame: clipFrames, prompt });
+	if (segments.length === 0) segments.push({ startFrame: 0, endFrame: clipFrames, prompt });
+	return segments;
+}
+
+/** The DISTINCT ik track ids keyed inside the half-open timeline span
+ * [startFrame, endFrame). `ikState.keys` is Map(frame -> Map(trackId -> pose)),
+ * so a frame with several dragged effectors contributes all of them. */
+function ikTracksInRange(ikState, ikFrames, startFrame, endFrame) {
+	const tracks = new Set();
+	for (const frame of ikFrames) {
+		if (frame < startFrame || frame >= endFrame) continue;
+		for (const trackId of ikState?.keys?.get(frame)?.keys() ?? []) tracks.add(trackId);
+	}
+	return [...tracks];
+}
+
+/* Which limb a keyed IK track frees once the preserve mask is grouped
+   (contract C3v2). The single source of truth for track -> mask group is
+   TRACK_GROUPS in tools/kimodo/preserve-mask.mjs; nothing under tools/ may be
+   imported into src/, so the rule is transcribed here — as USER-FACING LABELS
+   only, never as a second copy of the mapping the wire depends on:
+     leftHand,  leftElbow  -> leftArm     rightHand, rightElbow -> rightArm
+     leftFoot,  leftKnee   -> leftLeg     rightFoot, rightKnee  -> rightLeg
+     head,      neck       -> head        spine, chest, leftShoulder,
+     hips                  -> torso AND root      rightShoulder -> torso
+   The track ids are the same namespace on both sides (src/ardy/ik.js owns
+   them), so the app ships whatever ids it has and the mask builder maps them.
+   Torso and pelvis tracks are worded as the whole body: the pelvis carries the
+   global transform as well as a bone, and naming a limb beside it would promise
+   a locality the mask does not have. */
+const PRESERVE_TRACK_LIMBS = {
+	leftHand: "leftArm",
+	leftElbow: "leftArm",
+	rightHand: "rightArm",
+	rightElbow: "rightArm",
+	leftFoot: "leftLeg",
+	leftKnee: "leftLeg",
+	rightFoot: "rightLeg",
+	rightKnee: "rightLeg",
+	head: "head",
+	neck: "head",
+	spine: "body",
+	chest: "body",
+	leftShoulder: "body",
+	rightShoulder: "body",
+	hips: "body",
+};
+// A fixed reading order, so the same edit always reads back the same way.
+const PRESERVE_LIMB_ORDER = ["head", "leftArm", "rightArm", "leftLeg", "rightLeg"];
+const preserveLimbLabel = (limb) => ({
+	head: ko("head", "머리"),
+	leftArm: ko("left arm", "왼팔"),
+	rightArm: ko("right arm", "오른팔"),
+	leftLeg: ko("left leg", "왼발"),
+	rightLeg: ko("right leg", "오른발"),
+}[limb]);
+
+/** One muted line naming what a grouped preserve run will regenerate, or "" when
+ * no track can be attributed — then the request carries no `tracks` either and
+ * the panel's existing whole-take wording is already the truth. */
+function preserveTracksSummary(tracks) {
+	const limbs = new Set();
+	for (const trackId of tracks) {
+		const limb = PRESERVE_TRACK_LIMBS[trackId];
+		if (limb) limbs.add(limb);
+	}
+	if (limbs.size === 0) return "";
+	if (limbs.has("body")) return ko("regenerates the whole body", "몸 전체를 다시 생성");
+	const names = PRESERVE_LIMB_ORDER.filter((limb) => limbs.has(limb)).map(preserveLimbLabel);
+	return isKo ? `${names.join("·")}만 다시 생성` : `regenerates ${names.join(" · ")} only`;
+}
+
 // Named ingest failures, in both locales. A reason the user cannot act on is
 // not a message: each line says what was wrong with THIS source.
 const MULTIMODEL_REASONS = {
@@ -5342,6 +5434,27 @@ globalThis.playMode = centerTab === "play";
 	const motionFullRef = useRef(new Map()); // charId -> untrimmed take
 	const [motionBusy, setMotionBusy] = useState(false);
 	const [motionError, setMotionError] = useState("");
+	// Which ik tracks a preserve run would name in its editRanges, derived the
+	// same way runArdy derives them: the prompt-block schedule, the blocks that
+	// contain authored IK keys, the tracks keyed inside those blocks. The blocks
+	// TILE 0..clipFrames, so the union over the edited ones is just the union
+	// over the whole clip — blocks without keys contribute nothing either way.
+	// Empty means the request carries no `tracks` at all and the panel says
+	// nothing extra. Regenerating a take is the only clock that matters here, so
+	// clipFrames comes from the loaded take exactly as runArdy takes it.
+	const preserveEditedTracks = useMemo(() => {
+		if (!motion?.url || ikFrames.length === 0) return [];
+		const sourcePromptClips = promptClips
+			.filter((clip) => clip.text.trim())
+			.sort((a, b) => a.startFrame - b.startFrame);
+		if (sourcePromptClips.length === 0) return [];
+		const clipFrames = (motion.frames / motion.fps) * TIMELINE_FPS;
+		// A single block spanning the whole take is not a schedule, and without a
+		// schedule there are no edited blocks to attribute (runArdy's own rule).
+		if (buildPromptSchedule(sourcePromptClips, clipFrames, sourcePromptClips[0].text).length < 2) return [];
+		return ikTracksInRange(ikStateRef.current, ikFrames, 0, clipFrames);
+	}, [motion, promptClips, ikFrames]);
+	const preserveTracksLine = preserveTracksSummary(preserveEditedTracks);
 	/* ------------------------- video capture (ingest) ---------------------- */
 	const [multiModelUrl, setMultiModelUrl] = useState("");
 	const [multiModelSource, setMultiModelSource] = useState(null);
@@ -7664,22 +7777,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		// app counts in frames from here on is on the timeline clock; the
 		// bridge's own count is duration * ARDY_FPS, reached via toArdyFrame.
 		const clipFrames = duration * TIMELINE_FPS;
-		const segments = [];
-		let cursor = 0;
 		const sourcePromptClips = promptClipsOverride
 			.filter((clip) => clip.text.trim())
 			.sort((a, b) => a.startFrame - b.startFrame);
 		const hasAuthoredBlocks = sourcePromptClips.length > 0;
-		for (const clip of sourcePromptClips) {
-			const startFrame = Math.max(cursor, Math.min(clipFrames, clip.startFrame));
-			const endFrame = Math.max(startFrame, Math.min(clipFrames, clip.endFrame));
-			if (startFrame > cursor) segments.push({ startFrame: cursor, endFrame: startFrame, prompt });
-			if (endFrame - startFrame >= 3) segments.push({ startFrame, endFrame, prompt: clip.text.trim() || prompt });
-			cursor = Math.max(cursor, endFrame);
-			if (cursor >= clipFrames) break;
-		}
-		if (cursor < clipFrames) segments.push({ startFrame: cursor, endFrame: clipFrames, prompt });
-		if (segments.length === 0) segments.push({ startFrame: 0, endFrame: clipFrames, prompt });
+		const segments = buildPromptSchedule(sourcePromptClips, clipFrames, prompt);
 		const hasPromptSchedule = segments.length > 1;
 		const rootPath = waypointMode
 			? [{ frame: 0, x: activeChar.x, z: activeChar.z, heading: null }, ...waypoints]
@@ -7877,17 +7979,19 @@ function resizePromptClip(id, edge, rawFrame) {
 		// take's bridge source npz — without one there is nothing to preserve and
 		// the field must not be sent. strength travels RAW; the box maps it to
 		// sigma_s/sigma_e (see ARDY_PRESERVE_DEFAULT).
-		// Never on a root-path run: waypoints re-plan the whole rollout from
-		// authored Root2D pins, and the contract forbids preserving across a
-		// regenerated block set. The slider is grayed in waypoint mode for the
-		// same reason, so the wire and the UI cannot disagree. regenerateSegments
-		// is not authored by this app today; the guard is here so it stays true
-		// if it ever is.
-		// body.segments too: scheduled inpainting v1 is single-segment only, and
-		// the bridge refuses the pair. A chained rollout (2 s + 2 s prompt
-		// blocks) must still generate — preserve silently steps aside rather
-		// than turning every multi-block generation into a 400.
-		if (motion?.url && preserveStrength > 0 && !waypointMode && body.regenerateSegments === undefined && body.segments === undefined) {
+		// A ROOT PATH IS NOW ALLOWED alongside it (contract C3v2, paper 4.4):
+		// the bridge builds a mask whose `root` group is 0 for the whole clip, so
+		// the drawn waypoints own the trajectory while the body keeps riding the
+		// preserved take's style. That pair is the one thing round 1 refused; the
+		// slider now says the same thing in words whenever both are on, so the
+		// wire and the UI still cannot disagree.
+		// regenerateSegments is not authored by this app today; the guard is here
+		// so it stays true if it ever is.
+		// body.segments too: scheduled inpainting is single-segment only, and the
+		// bridge refuses the pair. A chained rollout (2 s + 2 s prompt blocks)
+		// must still generate — preserve silently steps aside rather than turning
+		// every multi-block generation into a 400.
+		if (motion?.url && preserveStrength > 0 && body.regenerateSegments === undefined && body.segments === undefined) {
 			body.preserve = {
 				sourceMotion: motion.url,
 				strength: preserveStrength,
@@ -7898,8 +8002,20 @@ function resizePromptClip(id, edge, rawFrame) {
 				// the mask builder refuses an empty range outright, and an empty
 				// LIST is the legitimate "nothing was edited" case (all-ones mask,
 				// pure reconstruction) rather than an error.
+				// Each range also names the ik tracks actually keyed inside IT
+				// (contract C3v2), so the mask frees only those tracks' groups
+				// there and a wrist correction stops pinning the legs. Attribution
+				// is per range, not per clip: two blocks edited on different limbs
+				// must not bleed into each other. The key is OMITTED when the union
+				// is empty — the bridge REFUSES `tracks: []`, and "no tracks" is
+				// spelled by absence, which is exactly the v1 whole-body range.
 				editRanges: editedSegments
-					.map((segment) => ({ startFrame: toArdyFrame(segment.startFrame), endFrame: toArdyFrame(segment.endFrame) }))
+					.map((segment) => {
+						const range = { startFrame: toArdyFrame(segment.startFrame), endFrame: toArdyFrame(segment.endFrame) };
+						const tracks = ikTracksInRange(ikStateRef.current, ikFrames, segment.startFrame, segment.endFrame);
+						if (tracks.length > 0) range.tracks = tracks;
+						return range;
+					})
 					.filter((range) => range.endFrame > range.startFrame),
 			};
 		}
@@ -9758,11 +9874,11 @@ function resizePromptClip(id, edge, rawFrame) {
 						    consumes it for the same reason the seed does. There is
 						    nothing to preserve until a take with a bridge source is
 						    loaded, so the whole row is ABSENT before then rather than
-						    present and inert — unlike the waypoint case, no explanation
-						    would help; the user simply has to generate once first. */}
+						    present and inert — no explanation would help there; the user
+						    simply has to generate once first. */}
 						{motion?.url && (
 							<Field label={ko("Keep the current take", "현재 테이크 유지")}>
-								<div className="preserve-strength-row" data-disabled={waypointMode ? "true" : undefined}>
+								<div className="preserve-strength-row">
 									<input
 										type="range"
 										data-preserve-strength
@@ -9770,16 +9886,10 @@ function resizePromptClip(id, edge, rawFrame) {
 										max={1}
 										step={0.05}
 										value={preserveStrength}
-										disabled={waypointMode}
-										title={waypointMode
-											? ko(
-												"A root path re-plans the whole take from its waypoints, so it cannot also keep the old one — leave waypoint mode to use this.",
-												"루트 경로는 웨이포인트로 테이크 전체를 다시 계획하므로 이전 테이크를 함께 유지할 수 없어요 — 사용하려면 웨이포인트 모드를 끄세요.",
-											)
-											: ko(
-												"How hard the regeneration holds the loaded take outside the frames you edited.",
-												"수정하지 않은 프레임에서 로드된 테이크를 얼마나 강하게 유지할지 정합니다.",
-											)}
+										title={ko(
+											"How hard the regeneration holds the loaded take outside the frames you edited.",
+											"수정하지 않은 프레임에서 로드된 테이크를 얼마나 강하게 유지할지 정합니다.",
+										)}
 										onChange={(event) => setPreserveStrength(Number(event.target.value))}
 									/>
 									<span className="preserve-strength-value">{Math.round(preserveStrength * 100)}%</span>
@@ -9791,13 +9901,23 @@ function resizePromptClip(id, edge, rawFrame) {
 									<span>{ko("generate fresh", "새로 생성")}</span>
 									<span>{ko("keep original", "원본 유지")}</span>
 								</p>
-								{waypointMode && (
+								{/* Round 2 allows the pair the round-1 slider refused (contract
+								    C3v2, paper 4.4), so this line no longer explains a disabled
+								    control — it says which half of the take each authored surface
+								    now owns. Only worth saying when preserving is actually on. */}
+								{waypointMode && preserveStrength > 0 && (
 									<p className="inspector-hint">
 										{ko(
-											"Off while a root path is active — waypoints regenerate the whole take.",
-											"루트 경로가 켜져 있는 동안은 꺼집니다 — 웨이포인트는 테이크 전체를 다시 생성해요.",
+											"the drawn path replaces the root; the body keeps the take's style",
+											"경로는 새로 그려지고, 동작 스타일은 원본을 유지해요",
 										)}
 									</p>
+								)}
+								{/* What the grouped mask will actually free. Empty whenever the
+								    request would carry no `tracks`, and then nothing is said: the
+								    whole-take wording above is already the truth. */}
+								{preserveStrength > 0 && preserveTracksLine && (
+									<p className="inspector-hint preserve-tracks-summary">{preserveTracksLine}</p>
 								)}
 							</Field>
 						)}

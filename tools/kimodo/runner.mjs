@@ -21,9 +21,19 @@
  * Kimodo tunable already uses (CCLAY_KIMODO_GEN_FPS, _DIFFUSION_STEPS,
  * _TRANSITION_FRAMES ...):
  *
- *   CCLAY_KIMODO_PRESERVE     JSON {basePath, sigmaS, sigmaE, editRanges, maskPath}
+ *   CCLAY_KIMODO_PRESERVE     JSON {basePath, sigmaS, sigmaE, strength,
+ *                             editRanges, maskPath, rootFree}
  *   CCLAY_KIMODO_NATIVE_OUT   where this run keeps Kimodo's own npz, so a LATER
  *                             run can preserve from it
+ *
+ * The round-2 additions ride the same channel untouched: `editRanges[i].tracks`
+ * scopes a range to its mask groups, and `rootFree` (set by the bridge when the
+ * request also carries waypoints) frees the mask's `root` group for the whole
+ * clip so the authored path owns the trajectory. Neither needs a flag here —
+ * boxEnv forwards the preserve object verbatim and generate.mjs is the only
+ * layer that interprets it. Waypoints themselves still travel on ARGV
+ * (`--root-2d`), so a preserve + waypoints run uses BOTH channels at once; that
+ * is why they compose without a merge step.
  */
 
 import { fileURLToPath } from "node:url";

@@ -123,3 +123,86 @@ Prompt "a person walks forward, then turns left and keeps walking", 5 s,
   whole-clip-only base retention means edited takes have no base lineage yet
   (bridge logs `preserve SKIPPED`); influenceRadius 10 ramp covers 86 frames
   on a 120-frame clip — tune before shipping; every run 15-16 s wall.
+
+# ROUND 2 — frozen contracts (2026-08-29)
+
+Three features, from the paper's remaining lessons:
+A. per-joint (grouped) mask — "recompose only the head/arm", the head answer
+B. preserve + waypoints — keep the take's style, change its path (paper 4.4)
+C. effector-scoped edits — a hand edit no longer pins the whole body, with
+   the paper's noise-scheduled kernel width (Appendix A)
+B and C both depend on A's grouped mask. Foot-contact UI is explicitly OUT.
+
+## C1v2 — mask JSON (backward compatible; version 1 still accepted)
+
+```json
+{
+  "version": 2, "genFps": 30, "genFrames": 150,
+  "weights": [ /* T floats — the NARROW (low-noise) per-frame mask, as v1 */ ],
+  "wideWeights": [ /* optional T floats — the WIDE (high-noise) variant */ ],
+  "groups": {
+    "leftArm": { "weights": [ /* T */ ], "wideWeights": [ /* optional T */ ] }
+  }
+}
+```
+- Group names (exactly these 7): root, torso, head, leftArm, rightArm,
+  leftLeg, rightLeg. A feature not covered by any listed group falls back to
+  the top-level weights.
+- Python maps groups -> somaskel30 joints -> motion-rep FEATURE indices
+  (rep dim 369; the blend happens on features, not joints — the mapping is
+  the crux and must be derived from the motion_rep source, not guessed).
+  Root-global channels (root velocity/heading/root y) belong to `root`.
+- Noise-scheduled width: alpha_mask(t) = lerp(weights, wideWeights, w(t))
+  where w(t) in [0,1] rises with noise (exact w from alpha-bar or t/1000 —
+  implementer decides and documents). Absent wideWeights => v1 behavior.
+
+## Track -> group map (JS side, single source of truth in preserve-mask.mjs)
+
+leftHand,leftElbow->leftArm · rightHand,rightElbow->rightArm ·
+leftFoot,leftKnee->leftLeg · rightFoot,rightKnee->rightLeg ·
+head,neck->head · spine,chest,leftShoulder,rightShoulder->torso ·
+hips->torso AND root.
+
+## C3v2 — bridge request
+
+- preserve.editRanges entries gain optional `tracks: [string]` (IK track ids).
+  With tracks, only the mapped groups are freed in that range; without, the
+  whole body (v1 behavior).
+- preserve + waypoints is now ALLOWED (single segment only): the bridge
+  builds a mask whose `root` group is 0 for the whole clip (the drawn path
+  owns the root; the body rides the preserved take — paper 4.4). preserve +
+  segments stays refused; preserve + regenerateSegments stays refused.
+
+## C5 — effector constraint builder (tools/kimodo/effector-constraints.mjs)
+
+buildEffectorConstraints(poses, { genFrames, tracks }) -> Kimodo entries
+[{ type: "left-hand"|"right-hand"|"left-foot"|"right-foot", frame_indices,
+   local_joints_rot, root_positions }] — same payload as fullbody (Kimodo
+docs: the shorthand types read identical fields but only apply the named
+effector + hips). Root position comes from the pose exactly as
+pose-constraints.mjs grounds it. planEditConstraints switches fullbody -> EE
+entries when EVERY edited track in the manifest maps to a limb group;
+anchors (context frames) stay fullbody.
+
+## File ownership — round 2 (NO agent edits tools/run-tests.mjs; report
+registrations, main registers)
+
+| Agent | Files |
+|---|---|
+| H | kimodo-custom: kimodo/preserve_mask.py (new), kimodo/model/kimodo_model.py, kimodo/scripts/generate.py, tests/test_preserve_mask.py (new) |
+| I | CozyClay: tools/kimodo/preserve-mask.mjs, test/verify-kimodo-preserve.mjs, tools/kimodo/measure-preserve.mjs (per-joint L2P split) |
+| J | CozyClay: tools/kimodo/effector-constraints.mjs (new), test/verify-kimodo-effector.mjs (new) |
+| K | CozyClay: tools/ardy/bridge.mjs, tools/kimodo/generate.mjs, tools/kimodo/runner.mjs, tools/kimodo/edit.mjs, tools/kimodo/run-edit-on-box.mjs, test/verify-preserve-bridge.mjs |
+| L | CozyClay: src/App.jsx, src/styles.css |
+
+## Round-2 gates (box, fixed seeds, main session runs them)
+
+- GA grouped mask: free leftArm only over a range => arm joints move
+  (>=3x the untouched level), torso/legs stay <= 2x G1's 0.0047 L2P.
+- GB preserve+waypoints: base walk + a different drawn path => per-waypoint
+  XZ error < 0.5 m AND root-relative pose L2P vs base MUCH lower than a
+  no-preserve control on the same path (style preserved).
+- GC effector edit: one hand IK key via EE constraint => hand lands near its
+  target, non-edited limbs stay <= 2x G1 level; compare against the fullbody
+  pin path, which freezes everything.
+- Regression: sigma_s=0 still bit-identical; v1 masks still work; suite green.

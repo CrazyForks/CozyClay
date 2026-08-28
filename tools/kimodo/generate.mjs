@@ -20,6 +20,14 @@
  * built from the same pair. Computing the frame count a second time upstream is
  * exactly how the two would drift, and a mask whose length disagrees with the
  * clip by one frame is a hard error on the box.
+ *
+ * PRESERVE AND WAYPOINTS SHARE ONE INVOCATION (round 2, contract C3v2). They
+ * travel by different channels and always have: the authored path becomes root2d
+ * entries in the constraints FILE, while the base motion, the sigmas and the mask
+ * are CLI flags. Nothing had to be merged for them to coexist — the only thing
+ * that stood between them was the bridge's refusal, and the mask's `root` group
+ * (freed end to end via `preserve.rootFree`) is what stops the two from arguing
+ * over the trajectory once they do meet.
  */
 
 import { spawn } from "node:child_process";
@@ -27,8 +35,9 @@ import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildRoot2dConstraints } from "./constraints.mjs";
+import { buildEffectorConstraints } from "./effector-constraints.mjs";
 import { buildFullBodyConstraints } from "./pose-constraints.mjs";
-import { buildPreserveMask, preserveMaskStats } from "./preserve-mask.mjs";
+import { buildPreserveMask, preserveMaskStats, rootFreeMask, PRESERVE_MASK_VERSION_V2 } from "./preserve-mask.mjs";
 import { readKimodoMotion } from "./read-npz.mjs";
 import { soma77ToCskel27Motion } from "./soma77-to-cskel27.mjs";
 
@@ -116,6 +125,89 @@ export function cliGenFrames(durationSeconds, genFps) {
 }
 
 /**
+ * Scale a preserve mask's blend AMPLITUDE by `strength`, at EVERY level it has.
+ *
+ * The sigma schedule alone is nearly binary: gate G3 measured L2P 0.00455..0.00487
+ * across the whole sigma sweep, because once the base anchors the early steps the
+ * model reconstructs it regardless — a 5% slider felt like 100%. The slider
+ * therefore also caps the amplitude (the paper's own alpha_mask = 0.8 retiming
+ * pattern): a preserved frame's 1 becomes `strength`, an edit's 0 stays 0 (0 * s
+ * is 0, so a freed frame or a freed group cannot be re-preserved by the dial),
+ * and the Gaussian shoulders scale in between.
+ *
+ * EVERY LEVEL is the load-bearing word. A v2 mask carries up to four kinds of
+ * array — top-level `weights`, top-level `wideWeights`, and the same pair inside
+ * each group — and Python reads a group's array INSTEAD of the top level for that
+ * group's features (kimodo/preserve_mask.py, load_preserve_mask_v2). Scaling only
+ * the top level would therefore leave every grouped feature pinned at full
+ * amplitude no matter where the slider sits: the dial would silently stop working
+ * for exactly the round-2 masks it was added for, and the high-noise pass would
+ * disagree with the low-noise one on how hard to hold the same frame.
+ *
+ * Nothing is multiplied by more than 1, so no weight can leave 0..1 — which
+ * matters because the Python loader RAISES on anything beyond 1 + 1e-6.
+ *
+ * @param {object} mask a mask from buildPreserveMask (mutated: never)
+ * @param {number} strength in (0, 1]
+ */
+export function scaleMaskAmplitude(mask, strength) {
+	if (!Number.isFinite(strength) || strength <= 0 || strength > 1) {
+		throw new Error(`scaleMaskAmplitude: strength must be a number in (0,1], got ${JSON.stringify(strength)}`);
+	}
+	if (!mask || typeof mask !== "object" || !Array.isArray(mask.weights)) {
+		throw new Error("scaleMaskAmplitude: mask must be a preserve mask with a weights array");
+	}
+	if (strength === 1) return mask;
+	const scale = (weights) => weights.map((weight) => weight * strength);
+	const scaleLevel = (level) => {
+		const out = { ...level, weights: scale(level.weights) };
+		if (Array.isArray(level.wideWeights)) out.wideWeights = scale(level.wideWeights);
+		return out;
+	};
+	const scaled = scaleLevel(mask);
+	if (mask.groups) {
+		scaled.groups = {};
+		// Object.keys, so group ORDER survives the scaling: the mask builder emits
+		// its groups in the canonical C1v2 order and two runs with the same edits
+		// must still produce byte-identical JSON.
+		for (const name of Object.keys(mask.groups)) scaled.groups[name] = scaleLevel(mask.groups[name]);
+	}
+	return scaled;
+}
+
+/**
+ * Free the `root` group of an already-built mask for the WHOLE clip.
+ *
+ * This is preserve + waypoints (contract C3v2, paper 4.4): the user keeps a
+ * take's style and redraws its path, so global translation and heading must come
+ * entirely from the root2d constraints while every other feature rides the
+ * preserved take. Composing it HERE, onto whatever buildPreserveMask produced,
+ * keeps a single mask-construction site: the edit ranges (and their per-track
+ * groups) still shape the body exactly as they would without waypoints, and the
+ * root is freed on top of that.
+ *
+ * Freeing the root end to end can only ever ADD freedom, so it is consistent with
+ * the builder's "any edit that wants this frame free wins" minimum rule — a hips
+ * edit that had already produced a partly-free `root` group is replaced by a fully
+ * free one, never the other way round.
+ *
+ * The zero array is taken from rootFreeMask so there is one spelling of "a freed
+ * root" in the repo. No `wideWeights` for the group: Python treats a group with
+ * `weights` and no `wideWeights` as noise-flat at its own weights, and 0 is 0 at
+ * every noise level.
+ */
+function withRootFreed(mask) {
+	const { groups } = rootFreeMask({ genFps: mask.genFps, genFrames: mask.genFrames });
+	return {
+		...mask,
+		// Groups make it a v2 document even when the edit list was empty (the
+		// preserve-the-whole-take-on-a-new-path case, gate GB).
+		version: PRESERVE_MASK_VERSION_V2,
+		groups: { ...(mask.groups || {}), root: groups.root },
+	};
+}
+
+/**
  * This run's scheduled-inpainting inputs, as tools/kimodo/runner.mjs passes
  * them. They arrive in the environment because the wrapper scripts between the
  * bridge and this module have a frozen argv shared with the ARDY wrappers, and
@@ -176,9 +268,22 @@ export async function generateOnBox({
 	// metres. Translated to Kimodo's canonical constraint space by
 	// buildRoot2dConstraints before it is shipped.
 	waypoints,
-	// Authored poses to pin, as [{frame, pose:{local_rot_mats, posed_joints}}]
-	// with `frame` in the caller's app clip space.
+	// Authored poses to pin, as [{frame, pose:{local_rot_mats, posed_joints},
+	// kind?}] with `frame` in the caller's app clip space. `kind: "edit"` marks an
+	// AUTHOR keyframe (as opposed to a context anchor) and only matters when
+	// `effectorTracks` is set.
 	poses,
+	// Contract C5: the IK tracks the author actually edited, when the caller has
+	// established that ALL of them map to a limb chain. Non-null switches the
+	// author's own keyframes (poses with `kind: "edit"`) from `fullbody` — which
+	// freezes all 77 joints — to the effector shorthands for those chains, so a
+	// hand edit stops welding the legs and the spine to the pose. null/empty keeps
+	// round 1's behaviour for every pose. NOTE (effector-constraints.mjs states it
+	// in full): an EE constraint still pins root XZ, height and heading at its
+	// frames; Kimodo has no flag to disable that. On an edited or preserved take
+	// the pinned root IS the take's own root there, so it agrees with what is
+	// already being held.
+	effectorTracks = null,
 	appFps = Number(process.env.CCLAY_KIMODO_APP_FPS || 24),
 	model = process.env.CCLAY_KIMODO_MODEL || DEFAULT_MODEL,
 	transitionFrames = Number(process.env.CCLAY_KIMODO_TRANSITION_FRAMES || 5),
@@ -190,9 +295,11 @@ export async function generateOnBox({
 	// smaller the encoder has to run on the CPU, which the upstream docs give
 	// as the supported way to fit under 3 GB.
 	textEncoderDevice = process.env.CCLAY_KIMODO_TEXT_ENCODER_DEVICE || "cpu",
-	// Scheduled inpainting for THIS run (contracts C1/C3):
-	// {basePath, sigmaS, sigmaE, editRanges, maskPath}. null = the CLI is invoked
-	// exactly as before, which is the contract's regression invariant.
+	// Scheduled inpainting for THIS run (contracts C1/C3, C1v2/C3v2):
+	// {basePath, sigmaS, sigmaE, strength, editRanges, maskPath, rootFree}. null =
+	// the CLI is invoked exactly as before, which is the contract's regression
+	// invariant. `editRanges[i].tracks` scopes a range to its mask groups;
+	// `rootFree` frees the root group for the whole clip (preserve + waypoints).
 	preserve = preserveFromEnv(),
 	// Where to keep Kimodo's own npz so a LATER run can preserve from this take.
 	nativeOut = process.env.CCLAY_KIMODO_NATIVE_OUT || "",
@@ -248,14 +355,30 @@ export async function generateOnBox({
 
 	// Pinned poses ride in the SAME constraints file as the path: Kimodo's loader
 	// reads a JSON array and dispatches per entry `type`, so one file can carry a
-	// root2d path and fullbody keyframes together.
+	// root2d path, fullbody keyframes and effector keyframes together.
 	const genScale = genFps / appFps;
 	const poseEntries = (poses || []).map((entry) => ({
 		...entry,
 		frame: Math.min(genFrames - 1, Math.max(0, Math.round(entry.frame * genScale))),
 	}));
-	const fullBody = buildFullBodyConstraints(poseEntries, { genFrames });
-	const constraints = [...root2d, ...fullBody];
+	// Contract C5. `effectorTracks` is the DECISION, already made by the caller
+	// (planEditConstraints, which is the only place that knows which frames are the
+	// author's own keys and which are context anchors) — this module only executes
+	// it, so the fullbody-vs-EE rule has exactly one home. Poses tagged
+	// `kind: "edit"` are the author's; everything else is context and stays
+	// fullbody, in every mode. The frame scaling above is shared by both, so an
+	// EE-scoped run pins the same generation frames a fullbody one would.
+	const scopedTracks = Array.isArray(effectorTracks) && effectorTracks.length > 0 ? effectorTracks : null;
+	const posePins = scopedTracks
+		? [
+			...buildFullBodyConstraints(poseEntries.filter((entry) => entry.kind !== "edit"), { genFrames }),
+			...buildEffectorConstraints(poseEntries.filter((entry) => entry.kind === "edit"), {
+				genFrames,
+				tracks: scopedTracks,
+			}),
+		]
+		: buildFullBodyConstraints(poseEntries, { genFrames });
+	const constraints = [...root2d, ...posePins];
 
 	// --- scheduled inpainting plan (contracts C1/C3) --------------------------
 	// Built here and nowhere else: see the file header. Everything that reaches a
@@ -289,30 +412,33 @@ export async function generateOnBox({
 		if (!Number.isInteger(maskFrames) || maskFrames < 1) {
 			throw new Error(`preserve: ${duration}s at ${genFps} fps generates ${maskFrames} frames, nothing to preserve`);
 		}
-		const mask = buildPreserveMask(preserve.editRanges || [], {
+		// THE mask-construction site. Edit ranges arrive verbatim from the bridge,
+		// each optionally carrying `tracks` (C1v2/C3v2): the builder resolves those
+		// IK track ids to mask groups itself — TRACK_GROUPS is its table, and
+		// re-deriving groups here would be a second source of truth.
+		const built = buildPreserveMask(preserve.editRanges || [], {
 			appFps,
 			genFps,
 			genFrames: maskFrames,
 			...(preserve.influenceRadius === undefined ? {} : { influenceRadius: preserve.influenceRadius }),
 		});
-		// The sigma schedule alone is nearly binary: gate G3 measured L2P
-		// 0.00455..0.00487 across the WHOLE sigma sweep — once the base anchors
-		// the early steps the model reconstructs it regardless, so a 5% slider
-		// felt like 100%. The slider therefore also caps the blend AMPLITUDE
-		// (the paper's own alpha_mask=0.8 retiming pattern): weight 1 becomes
-		// `strength`, an edit's 0 stays 0, and the Gaussian shoulders scale in
-		// between. At 1.0 this is exactly the gate-measured behaviour.
+		// preserve + waypoints: compose the freed root onto that same mask rather
+		// than building a second one somewhere else.
+		const mask = preserve.rootFree ? withRootFreed(built) : built;
 		const strength = preserve.strength === undefined ? 1 : Number(preserve.strength);
 		if (!Number.isFinite(strength) || strength <= 0 || strength > 1) {
 			throw new Error(`preserve.strength must be a number in (0,1], got ${JSON.stringify(preserve.strength)}`);
 		}
-		const scaled = strength === 1 ? mask : { ...mask, weights: mask.weights.map((weight) => weight * strength) };
+		// At 1.0 this returns the mask unchanged, which is exactly the
+		// gate-measured behaviour.
+		const scaled = scaleMaskAmplitude(mask, strength);
 		preservePlan = {
 			basePath: preserve.basePath,
 			maskPath: preserve.maskPath || null,
 			sigmaS,
 			sigmaE,
 			strength,
+			rootFree: preserve.rootFree === true,
 			mask: scaled,
 			// Structure stats come from the UNSCALED mask: after scaling nothing
 			// is exactly 1, which would report "0 preserved frames" for a
@@ -367,11 +493,22 @@ export async function generateOnBox({
 			await writeFile(localMask, `${JSON.stringify(preservePlan.mask)}\n`, { mode: 0o600 });
 			await push(preservePlan.basePath, remoteBase, "the preserved base motion");
 			await push(localMask, remoteMask, "the preserve mask");
-			const { freeFrames, rampFrames, preservedFrames } = preservePlan.stats;
+			const { freeFrames, rampFrames, preservedFrames, groups } = preservePlan.stats;
+			// A grouped mask's TOP-LEVEL counts read "0 free, everything preserved" —
+			// true, and completely misleading for a run that is about to regenerate an
+			// arm or hand its trajectory to a drawn path. So every group the mask
+			// carries is reported beside them, as free/ramp/preserved.
+			const groupSummary = groups
+				? ` groups[${Object.entries(groups)
+					.map(([name, g]) => `${name} ${g.freeFrames}/${g.rampFrames}/${g.preservedFrames}`)
+					.join(" ")}]`
+				: "";
 			console.log(
 				`kimodo-preserve: base=${preservePlan.basePath} sigma_s=${preservePlan.sigmaS} ` +
-					`sigma_e=${preservePlan.sigmaE} mask=${preservePlan.mask.genFrames} generation frames ` +
-					`(free ${freeFrames}, ramp ${rampFrames}, preserved ${preservedFrames})`
+					`sigma_e=${preservePlan.sigmaE} strength=${preservePlan.strength} ` +
+					`mask=v${preservePlan.mask.version} ${preservePlan.mask.genFrames} generation frames ` +
+					`(free ${freeFrames}, ramp ${rampFrames}, preserved ${preservedFrames})${groupSummary}` +
+					`${preservePlan.rootFree ? " root=FREE (the authored path owns the trajectory)" : ""}`
 			);
 		}
 
@@ -444,6 +581,8 @@ export async function generateOnBox({
 					maskPath: preservePlan.maskPath,
 					sigmaS: preservePlan.sigmaS,
 					sigmaE: preservePlan.sigmaE,
+					rootFree: preservePlan.rootFree,
+					maskVersion: preservePlan.mask.version,
 					genFrames: preservePlan.mask.genFrames,
 					...preservePlan.stats,
 				}
