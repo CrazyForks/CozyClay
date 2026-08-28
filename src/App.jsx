@@ -2411,7 +2411,7 @@ function loadSceneStartup() {
  * re-drawn on top as a bright highlight. Grabbing any point of a line starts
  * a drag on a camera-facing plane through the grab point; the caller deforms
  * the take (motion-trail.js falloff math) so the preview updates live. */
-function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendingEdit, enabled, onDragStart, onDragPreview, onDragEnd }) {
+function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendingEdit, enabled, visible = true, onDragStart, onDragPreview, onDragEnd }) {
 	const { camera, gl, invalidate } = useThree();
 	const [drag, setDrag] = useState(null);
 	const toTriples = (flat) => {
@@ -2559,6 +2559,7 @@ function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, pendin
 	// IK-handle colour; the focused part draws thicker.
 	return (
 		<group
+			visible={visible}
 			renderOrder={900}
 			ref={(group) => {
 				// QA-only escape hatch (same spirit as window.__cozyclay): lets
@@ -3173,6 +3174,7 @@ globalThis.playMode = centerTab === "play";
 	// visible as a guide, but never capture a click while the operator is
 	// making detailed joint corrections with the normal IK handles.
 	const [trailEditMode, setTrailEditMode] = useState(false);
+	const [showTrails, setShowTrails] = useState(true);
 	const [trailEdit, setTrailEdit] = useState(null); // {track, grabFrame, radiusFrames, clipDelta}
 	const trailBaseMotionRef = useRef(null);
 	const trailPreviewMotionRef = useRef(null);
@@ -8654,7 +8656,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								chains={ikChains}
 								fkJoints={ikFkJoints}
 								ikState={ikStateRef.current}
-								enabled={ikMode && !posing && !playMode}
+								enabled={ikMode && !trailEditMode && !posing && !playMode}
 								focus={ikFocus}
 								onFocus={focusIkHandle}
 								onSolve={ikSolve}
@@ -8880,6 +8882,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									falloffFrames={trailFalloffFrames}
 									pendingEdit={trailEdit}
 									enabled={trailEditMode && !posing && !playMode}
+									visible={showTrails}
 									onDragStart={onTrailDragStart}
 									onDragPreview={onTrailDragPreview}
 									onDragEnd={onTrailDragEnd}
@@ -9767,6 +9770,17 @@ function resizePromptClip(id, edge, rawFrame) {
 									onClick={() => setTrailEditMode((value) => !value)}
 								>
 									{ko("궤적선 편집", "Edit motion trails")}
+								</button>
+								<button
+									type="button"
+									className={"btn full" + (!showTrails ? " muted" : "")}
+									aria-pressed={showTrails}
+									onClick={() => {
+										setShowTrails((value) => !value);
+										setTrailEditMode(false);
+									}}
+								>
+									{ko(`궤적선 ${showTrails ? "표시" : "숨김"}`, `Trails ${showTrails ? "on" : "off"}`)}
 								</button>
 								<Field label={ko("Trail falloff", "궤적 영향 범위")}>
 									<div className="trail-falloff-row">
