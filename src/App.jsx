@@ -4733,9 +4733,11 @@ globalThis.playMode = centerTab === "play";
 	// return a fresh unrelated take instead of an edit.
 	const [lineEditBackend, setLineEditBackend] = useState(false);
 	/* ------------------ live preview of a pull (contracts C10/C11) ------------
-	 * Releasing the drag fires a 20-step draft of the same edit and swaps the
-	 * VIEWPORT to it, so the artist judges the correction by watching it move
-	 * instead of by reading a curve. Three rules make that honest:
+	 * Releasing the drag fires a FULL-QUALITY run of the same edit (same steps
+	 * and session seed as Generate, ~2 s on the warm resident, so the draft and
+	 * the confirmed take are bit-identical) and swaps the VIEWPORT to it, so
+	 * the artist judges the correction by watching it move instead of by
+	 * reading a curve. Three rules make that honest:
 	 *
 	 *   1. A PREVIEW IS A PICTURE, NOT A TAKE. It never pushes a version, never
 	 *      touches the recipe and never becomes anyone's sourceMotion. The take
@@ -9405,7 +9407,11 @@ function resizePromptClip(id, edge, rawFrame) {
 			}
 			: null);
 		if (!source) return;
-		const request = buildLineEditRequest(curve, { preview: true });
+		// Full quality on release, by request: the warm resident makes the 100-step
+		// run ~2 s, and since the draft shares the session seed the confirm below
+		// reproduces it bit for bit — so what the artist sees IS the final take,
+		// and Generate is a commit, not a second opinion.
+		const request = buildLineEditRequest(curve);
 		if (!request.ok) {
 			if (request.message) setLinePreviewError(request.message);
 			return;
@@ -12476,8 +12482,8 @@ function resizePromptClip(id, edge, rawFrame) {
 										{!linePreviewBusy && linePreviewUrl && (
 											<p className="inspector-hint line-preview-live">
 												{ko(
-													"The viewport is showing a 20-step draft of this pull — press Generate for the full-quality take.",
-													"뷰포트는 지금 이 편집의 20스텝 미리보기예요 — 아래 생성을 누르면 최종 품질로 만듭니다.",
+													"The viewport is showing this edit at full quality — press Generate to keep it as the take.",
+													"뷰포트가 지금 이 편집의 최종 품질 결과예요 — 아래 생성을 누르면 테이크로 확정됩니다.",
 												)}
 												{linePreviewMs > 0 && (
 													<span className="line-preview-time">
