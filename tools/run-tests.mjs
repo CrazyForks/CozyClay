@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 
 const NODE_FILES = [
@@ -180,6 +181,26 @@ function meetsMinimumNodeVersion([major, minor, patch], current = process.versio
 
 const hasNodeSqlite = meetsMinimumNodeVersion(NODE_SQLITE_MIN);
 
+// The MCP suites fork mcp/server.mjs, which imports the MCP SDK from
+// mcp/node_modules — a tree the root `npm install` does not create. On a
+// fresh clone those suites must degrade to an actionable EXCLUDE instead of
+// a startup timeout that swallows the real ERR_MODULE_NOT_FOUND (CI installs
+// them explicitly with `npm --prefix mcp ci`, so its coverage is unchanged).
+// Probes the same dependency set bin/mcp-runtime.mjs verifies before running.
+function hasMcpRuntimeDeps() {
+	try {
+		const requireFromMcp = createRequire(new URL("../mcp/package.json", import.meta.url));
+		for (const dependency of ["@modelcontextprotocol/sdk/server/mcp.js", "three", "ws", "zod"]) {
+			requireFromMcp.resolve(dependency);
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+const mcpDepsInstalled = hasMcpRuntimeDeps();
+
 const categories = new Map([
 	...NODE_FILES.map((file) => [file, { kind: "node", reason: "runs directly under Node" }]),
 	...BROWSER_FILES.map((file) => [file, { kind: "browser", reason: "requires the QA browser wrapper and a running Vite app" }]),
@@ -197,6 +218,16 @@ const categories = new Map([
 				},
 	]),
 ]);
+if (!mcpDepsInstalled) {
+	for (const [file, category] of categories) {
+		if (!file.startsWith("mcp/") || category.kind !== "node") continue;
+		categories.set(file, {
+			kind: "mcp-deps",
+			reason: "requires the MCP server dependencies; run `npm --prefix mcp ci` (or `cd mcp && npm install`) first",
+		});
+	}
+}
+
 const { listOnly, scope } = parseArguments(process.argv.slice(2));
 const inventory = [...verificationFiles("test"), ...verificationFiles("mcp")];
 const unclassified = inventory.filter((file) => !categories.has(file));

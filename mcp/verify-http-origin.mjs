@@ -54,7 +54,18 @@ let output = "";
 child.stdout.on("data", (chunk) => { output += chunk; });
 child.stderr.on("data", (chunk) => { output += chunk; });
 try {
-	const [ready] = await timeout(once(child, "message"), "HTTP MCP startup");
+	// Race startup against the child dying: a server that cannot even load
+	// (missing dependencies, syntax error) must surface its own stderr
+	// immediately, not hide behind a 10-second startup timeout.
+	const ready = await timeout(
+		Promise.race([
+			once(child, "message").then(([message]) => message),
+			once(child, "exit").then(([code, signal]) => {
+				throw new Error(`HTTP MCP server exited before ready (${signal ?? `code ${code}`})`);
+			}),
+		]),
+		"HTTP MCP startup",
+	);
 	assert.deepEqual(ready, { type: "cozyclay-mcp-http-ready", port });
 	const initialize = {
 		jsonrpc: "2.0",
@@ -84,6 +95,9 @@ try {
 	});
 	assert.equal(closed.statusCode, 200, `loopback session closes cleanly: ${closed.body}`);
 	console.log(`HTTP origin guard passed: forgedOrigin=${forgedOrigin.statusCode}, forgedHost=${forgedHost.statusCode}, loopback=${local.statusCode}`);
+} catch (error) {
+	error.message += output ? `\nchild output:\n${output}` : "\n(child produced no output)";
+	throw error;
 } finally {
 	if (child.exitCode === null) {
 		if (process.platform === "win32") {
