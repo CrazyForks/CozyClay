@@ -54,6 +54,17 @@ import {
 	projectTrailCurve,
 	validateLineEdit,
 } from "./line-edit.js";
+import {
+	TAKE_VERSIONS_MAX,
+	blocksFromRequest,
+	freshRecipe,
+	pushTakeVersion,
+	replayPayload,
+	replayTruncated,
+	resolveSeed,
+	stripSourceMotion,
+	withLineEdit,
+} from "./take-recipe.js";
 import { Room, StageLights } from "./room.jsx";
 import {
 	SHOT_AUTHORING_KEY,
@@ -669,6 +680,9 @@ const LINE_EDIT_TRACK_OPTIONS = LINE_EDIT_TRACK_IDS.map((id) => ({
 	value: id,
 	label: [...IK_TRACKS, ...MID_TRACKS, ...FK_TRACKS].find((track) => track.id === id)?.label ?? id,
 }));
+/** The same human label, by id — what a version-strip chip says a refinement
+ * touched ("Refine · Left Hand"). */
+const lineTrackLabel = (id) => LINE_EDIT_TRACK_OPTIONS.find((option) => option.value === id)?.label ?? id;
 /** The default edited track: a wrist is the joint the paper's own demo draws
  * with, and the one whose screen trajectory a user can actually see. */
 const LINE_EDIT_DEFAULT_TRACK = "leftHand";
@@ -681,6 +695,11 @@ const LINE_CURVE_MARKER_STRIDE = 4;
  * to the original trajectory, so a range needs more than 2 x PINNED_CURVE_ENDS
  * frames before the middle can move at all. */
 const MIN_CURVE_POINTS = PINNED_CURVE_ENDS * 2 + 1;
+/** How long a released drag has to sit still before it costs a preview. Long
+ * enough that pull-pull-pull is one request instead of three, short enough that
+ * the loop still feels like it answers the gesture — a preview round trip is
+ * ~1 s on the warm service, so 150 ms is noise against it. */
+const LINE_PREVIEW_DEBOUNCE_MS = 150;
 /** Why a validateLineEdit code refused, said once, in the user's language.
  * Keyed by the pure module's stable codes so the copy and the check can never
  * disagree about which field was wrong. */
@@ -4132,6 +4151,27 @@ globalThis.playMode = centerTab === "play";
 	// on screen — selecting or adding a block on the timeline.
 	const [promptBlocksReveal, setPromptBlocksReveal] = useState(0);
 	const revealPromptBlocks = () => setPromptBlocksReveal((n) => n + 1);
+	/* ------------------- take recipes and versions (C9/C12) -------------------
+	 * The recipe of the take that is loaded RIGHT NOW: seed + prompt blocks +
+	 * the line edits pulled on top of it. It is written in exactly one place
+	 * (commitTakeRecipe, on a successful run) and read in two: the request
+	 * assembly, which attaches it as C10 `replay`, and the version strip, which
+	 * stores a copy beside every motionUrl so clicking v1 restores v1's recipe
+	 * and not the one the artist has since edited into existence.
+	 * The ref shadows the state because the recipe is consulted from inside an
+	 * async job completion, where a stale closure would silently record the
+	 * previous take's edits against this take's url. */
+	const [takeRecipe, setTakeRecipe] = useState(null);
+	const takeRecipeRef = useRef(null);
+	const [takeVersions, setTakeVersions] = useState([]);
+	// Which C10 replay entries came back failed or boundary-warned. Non-blocking
+	// by contract: the take generated, one refinement may not have survived it,
+	// and that is worth a line next to the take rather than a toast that scrolls
+	// away before the artist has looked at the result.
+	const [replayNotices, setReplayNotices] = useState([]);
+	// Whether the Scene entry's action menu is open. The Refine entry needs no
+	// equivalent — it IS its action.
+	const [sceneMenuOpen, setSceneMenuOpen] = useState(false);
 	const [ardyRunning, setArdyRunning] = useState(false);
 	const [ardyStatus, setArdyStatus] = useState("");
 	const [consoleLines, setConsoleLines] = useState([]);
@@ -4599,6 +4639,46 @@ globalThis.playMode = centerTab === "play";
 	// today's bridge ignores unknown fields, so an ungated POST would quietly
 	// return a fresh unrelated take instead of an edit.
 	const [lineEditBackend, setLineEditBackend] = useState(false);
+	/* ------------------ live preview of a pull (contracts C10/C11) ------------
+	 * Releasing the drag fires a 20-step draft of the same edit and swaps the
+	 * VIEWPORT to it, so the artist judges the correction by watching it move
+	 * instead of by reading a curve. Three rules make that honest:
+	 *
+	 *   1. A PREVIEW IS A PICTURE, NOT A TAKE. It never pushes a version, never
+	 *      touches the recipe and never becomes anyone's sourceMotion. The take
+	 *      being edited is `takeSourceUrl` — remembered here the moment a
+	 *      preview starts — and `motion.url` is merely what is on screen.
+	 *   2. ONE SEED PER EDITING SESSION. A draft rendered with a different seed
+	 *      predicts nothing, so the seed is rolled once (first preview or the
+	 *      confirming run, whichever comes first), reused by every preview, SENT
+	 *      by the full-quality run, and only then re-rolled. A typed seed is
+	 *      already constant, so the rule costs nothing there.
+	 *   3. SUPERSEDE, NEVER STACK. At most one request is in flight; a drag
+	 *      that lands while one is out replaces the pending curve, and the older
+	 *      answer is dropped on arrival. Queueing them would make the viewport
+	 *      replay a history the artist has already moved past.
+	 *
+	 * Undo, reset, camera drift and leaving the mode all revert the viewport to
+	 * the source take and discard whatever is in flight. */
+	const [linePreviewSource, setLinePreviewSource] = useState(null);
+	const linePreviewSourceRef = useRef(null);
+	// The preview motionUrl currently ON SCREEN — null means the source take is.
+	const [linePreviewUrl, setLinePreviewUrl] = useState(null);
+	const [linePreviewBusy, setLinePreviewBusy] = useState(false);
+	const [linePreviewError, setLinePreviewError] = useState("");
+	// Round trip of the last preview, in ms. Surfaced because "is this loop
+	// actually live?" is the question the number answers in one glance.
+	const [linePreviewMs, setLinePreviewMs] = useState(0);
+	const linePreviewSeedRef = useRef(null);
+	// Monotonic: a result whose token is stale was superseded or cancelled, and
+	// is discarded without ever reaching the viewport.
+	const linePreviewTokenRef = useRef(0);
+	const linePreviewAbortRef = useRef(null);
+	const linePreviewPendingRef = useRef(null);
+	const linePreviewTimerRef = useRef(0);
+	// The draft that actually REACHED the viewport, so a cancel knows whether
+	// there is anything to put back.
+	const linePreviewShownRef = useRef(null);
 	useEffect(() => {
 		// Subject 1 is the sole frame-zero root start. Drop any legacy seeded
 		// waypoint so Top-View never renders two start markers.
@@ -6688,6 +6768,13 @@ globalThis.playMode = centerTab === "play";
 		drop = null,
 		targetCharacterId = activeChar.id,
 		targetPromptClips = null,
+		// `preview: true` means "put this clip on screen, do not treat it as a
+		// new take". The line-edit preview loop swaps the viewport several times
+		// a minute, and every announcement this function normally makes — the
+		// load toast, the auto-drop toast, clearing the IK keys, snapping the
+		// playhead back to 0 — is an announcement about a take CHANGING. A
+		// preview is the same take seen a second time, so it makes none of them.
+		{ preview = false } = {},
 	) {
 		setMotionBusy(true);
 		setMotionError("");
@@ -6717,7 +6804,7 @@ globalThis.playMode = centerTab === "play";
 				})),
 			);
 			const decoded = drop ? applyRootDrop(raw, staging) : applyAutoFall(raw, staging);
-			if (!drop && staging) {
+			if (!drop && staging && !preview) {
 				setToast(ko(
 					`Auto drop staged: the take leaves its support at ${staging.fromS.toFixed(1)}s and falls ${staging.meters.toFixed(1)}m`,
 					`자동 낙하 적용: ${staging.fromS.toFixed(1)}초에 지지면을 벗어나 ${staging.meters.toFixed(1)}m 낙하`,
@@ -6769,26 +6856,33 @@ globalThis.playMode = centerTab === "play";
 				if (targetPromptClips) setPromptClips(targetPromptClips);
 				setTlFrameCount(decoded.frames);
 				setTlFps(decoded.fps);
-				setTlFrame(0);
-				setTlPlaying(false);
+				// A preview keeps the playhead: the artist is watching one beat of
+				// the take and wants to see THAT beat change, not to be thrown
+				// back to frame 0 every time the box answers.
+				if (!preview) {
+					setTlFrame(0);
+					setTlPlaying(false);
+				}
 			}
 			// IK keys correct SPECIFIC frames of the take they were authored on, so
 			// a replacement take leaves them pointing at poses that no longer exist
 			// — the same reason a trim clears them. The Full-Body lane would
 			// otherwise keep showing corrections that belong to a discarded clip.
-			const hadIkKeys = bufferOwnsTarget && ikStateRef.current.keys.size > 0;
+			const hadIkKeys = !preview && bufferOwnsTarget && ikStateRef.current.keys.size > 0;
 			if (hadIkKeys) {
 				ikStateRef.current.keys.clear();
 				ikStateRef.current.tracked.clear();
 				ikStateRef.current.plants.clear();
 				setIkTick((value) => value + 1);
 			}
-			if (bufferOwnsTarget) setCommittedIkEdits([]);
-			setToast(
-				isKo
-					? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps${hadIkKeys ? " — 이전 테이크의 IK 키는 초기화됐어요" : ""}`
-					: `Motion loaded: ${decoded.frames} frames @ ${decoded.fps} fps${hadIkKeys ? " — IK keys from the previous take were cleared" : ""}`,
-			);
+			if (bufferOwnsTarget && !preview) setCommittedIkEdits([]);
+			if (!preview) {
+				setToast(
+					isKo
+						? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps${hadIkKeys ? " — 이전 테이크의 IK 키는 초기화됐어요" : ""}`
+						: `Motion loaded: ${decoded.frames} frames @ ${decoded.fps} fps${hadIkKeys ? " — IK keys from the previous take were cleared" : ""}`,
+				);
+			}
 			// The applied stature, so a caller does not have to re-derive it
 			// (and cannot derive a different one).
 			return scale;
@@ -7835,6 +7929,22 @@ function resizePromptClip(id, edge, rawFrame) {
 		setArdySeed(value.trim());
 	}
 
+	/** THE SEED RULE (contract C9), enforced in ONE place so no take-creating
+	 * call site can forget it: an empty field is rolled here, a typed one is
+	 * kept exactly as typed, and either way a concrete integer comes back to be
+	 * both SENT and RECORDED. A take whose seed was never written down cannot
+	 * be rebuilt from its recipe, which is the one promise the whole recipe
+	 * model rests on. Returns null after toasting when the typed value violates
+	 * the bridge contract — the caller must then abandon the request. */
+	function takeSeed() {
+		try {
+			return resolveSeed(ardySeed, ARDY_SEED_MAX);
+		} catch {
+			setToast(isKo ? `Seed는 0..${ARDY_SEED_MAX} 범위의 정수여야 해요. 비워 두면 자동으로 선택됩니다` : `Seed must be an integer in 0..${ARDY_SEED_MAX} — clear it to let the box pick one`);
+			return null;
+		}
+	}
+
 	/* ======================= line editing (contract C6) =======================
 	 * Grab the joint's own motion path on the viewport and pull it; the joint
 	 * then follows the pulled path exactly.
@@ -7865,6 +7975,13 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * app clip frames and, unlike waypoints or motionEdit, is never converted
 	 * to the bridge clock. */
 	const lineClipFrames = motion?.frames ?? 0;
+	/** THE TAKE, as opposed to what is on screen. While a line-edit preview is
+	 * showing, `motion` is the draft and this is still the take the draft was
+	 * drafted FROM — so an edit sources the take, the version strip keeps
+	 * highlighting the take's own chip, and a preview can never quietly become
+	 * the thing everything else is built on. With no preview the two are the
+	 * same url, which is why every call site can read this one unconditionally. */
+	const takeSourceUrl = linePreviewSource?.url ?? motion?.url ?? null;
 	/** The authored range, or the whole clip when the user has not narrowed it.
 	 * Re-derived rather than stored so loading a different take cannot leave a
 	 * range pointing past the end of the new one. */
@@ -8318,9 +8435,13 @@ function resizePromptClip(id, edge, rawFrame) {
 			// what it replaced, which is what Ctrl/Cmd+Z restores.
 			const changed = !curvesEqual(drag.live, drag.snapshot);
 			if (changed) lineUndoRef.current.push(drag.prev ?? null);
-			setLineCurve(changed
+			const committed = changed
 				? { camera: drag.camera, original: drag.snapshot, edited: drag.live }
-				: (drag.prev ?? null));
+				: (drag.prev ?? null);
+			setLineCurve(committed);
+			// RELEASE FIRES A DRAFT. A pull that changed nothing asks for nothing:
+			// the viewport already shows what it would show.
+			if (changed) scheduleLinePreview(committed);
 			paintLineOverlay();
 		};
 		window.addEventListener("pointermove", onMove);
@@ -8361,15 +8482,23 @@ function resizePromptClip(id, edge, rawFrame) {
 		// The button is itself undoable: resetting a curve you spent five pulls
 		// on should not be a cliff.
 		if (lineCurve) lineUndoRef.current.push(lineCurve);
+		// The draft on screen was a picture of the pull that is being thrown
+		// away, so it goes with it — but the SESSION does not end, and the seed
+		// survives, because the artist is still editing the same take.
+		cancelLinePreview();
 		setLineCurve(null);
 	}
 
 	/** Internal clear — mode entry/exit, enqueue and camera drift. Unlike the
 	 * reset BUTTON this also empties the undo stack: those transitions change
-	 * what the stack's entries were authored against. */
+	 * what the stack's entries were authored against. It is also where a
+	 * preview SESSION ends, which is what re-rolls the seed: every one of these
+	 * transitions means the next pull is a different piece of work. */
 	function clearLineEdit() {
 		lineDragRef.current = null;
 		lineUndoRef.current = [];
+		cancelLinePreview();
+		linePreviewSeedRef.current = null;
 		setLineCurve(null);
 	}
 
@@ -8377,8 +8506,221 @@ function resizePromptClip(id, edge, rawFrame) {
 		const previous = lineUndoRef.current.pop();
 		if (previous === undefined) return false;
 		lineDragRef.current = null;
+		cancelLinePreview();
 		setLineCurve(previous);
 		return true;
+	}
+
+	/* --------------------- the live preview loop (C10/C11) --------------------
+	 * Everything below is the machinery behind "release the drag, watch it move".
+	 * It is deliberately kept apart from enqueueMotionJob: that queue exists to
+	 * produce TAKES — it delivers to a character layer, commits a recipe and
+	 * pushes a version — and a preview must do none of those things. So a
+	 * preview is its own bare request, its own AbortController, and one
+	 * viewport swap that anything can undo. */
+
+	/** Pin (or release) the take a preview is drafted from. Mirrored into a ref
+	 * because the async completion below reads it after several awaits, where a
+	 * render-time closure would be pointing at the previous take. */
+	function setPreviewSource(next) {
+		linePreviewSourceRef.current = next;
+		setLinePreviewSource(next);
+	}
+
+	/** THE SESSION SEED (rule 2 above). Rolled at most once per editing session
+	 * and handed to every preview AND to the confirming full-quality run, so the
+	 * draft the artist accepted is the draft they get. Returns null when the
+	 * typed seed is invalid — takeSeed has already said so. */
+	function lineSessionSeed() {
+		if (Number.isInteger(linePreviewSeedRef.current)) return linePreviewSeedRef.current;
+		const seed = takeSeed();
+		if (seed === null) return null;
+		linePreviewSeedRef.current = seed;
+		return seed;
+	}
+
+	/** The C6 body for a curve — ONE builder for the preview and the confirm, so
+	 * the only difference between what the artist watched and what they get is
+	 * the step count. Returns `{ ok: false, message }` with copy already
+	 * localized, or `{ ok: true, body, lineEdit, seed }`. */
+	function buildLineEditRequest(curve, { preview = false } = {}) {
+		const refuse = (copy) => ({ ok: false, message: ko(copy[0], copy[1]) });
+		const sourceUrl = takeSourceUrl;
+		if (!sourceUrl) return refuse(LINE_EDIT_REFUSALS.sourceMotion);
+		if (!curve) {
+			return refuse(["Pull the path first — grab a dot on it and drag", "커브를 먼저 잡아당겨 주세요"]);
+		}
+		const built = curveToPoints2d(curve.edited);
+		if (built.error) return refuse(LINE_CURVE_REFUSALS[built.error] ?? LINE_EDIT_REFUSALS.shape);
+		// The take's own prompt is the text condition: a line edit changes WHERE
+		// a joint goes, not what the shot is about. The fallback keeps the
+		// bridge's non-empty-prompt contract satisfiable for takes imported
+		// without one.
+		const prompt = ((linePreviewSource?.prompt ?? motion?.prompt) || "").trim() || "A person continues the motion naturally.";
+		const lineEdit = {
+			sourceMotion: sourceUrl,
+			track: lineTrack,
+			frameRange: lineEditRange,
+			points2d: built.points2d,
+			camera: curve.camera,
+			prompt,
+		};
+		const refusal = validateLineEdit(lineEdit, { clipFrames: lineClipFrames });
+		if (refusal) return refuse(LINE_EDIT_REFUSALS[refusal.code] ?? LINE_EDIT_REFUSALS.shape);
+		// posePin:false is mandatory, not decorative: the bridge demands a
+		// `poses` array whenever posePin is not explicitly false, and a line
+		// edit authors no poses at all.
+		const body = { prompt, duration: lineClipFrames / TIMELINE_FPS, posePin: false, lineEdit };
+		// THE SEED RULE (C9). An edit creates a take, so it may not leave the
+		// seed to chance. The seed rides on the BODY, never inside `lineEdit` —
+		// C6 validates that object field by field and an unknown key there is a
+		// 400. `preview` is the one exception the bridge added for this loop.
+		const seed = lineSessionSeed();
+		if (seed === null) return { ok: false, message: "" };
+		body.seed = seed;
+		if (preview) lineEdit.preview = true;
+		return { ok: true, body, lineEdit, seed };
+	}
+
+	/** Put a draft on screen without letting it become the take. */
+	async function showLinePreview(url) {
+		const source = linePreviewSourceRef.current;
+		if (!source) return;
+		try {
+			await loadMotion(url, source.prompt, source.rotationDeg, null, source.charId, null, { preview: true });
+			linePreviewShownRef.current = url;
+			setLinePreviewUrl(url);
+		} catch {
+			setLinePreviewError(ko("The preview could not be read back", "미리보기를 읽지 못했어요"));
+			await revertLinePreview();
+		}
+	}
+
+	/** Back to the take itself. The source stays pinned until the reload lands,
+	 * so there is never an instant where `takeSourceUrl` points at the draft.
+	 * Nothing is reloaded when no draft ever reached the viewport — cancelling
+	 * an in-flight preview (Esc, undo with an empty stack, a joint switch) must
+	 * not cost a re-fetch and re-decode of a take that is already on screen. */
+	async function revertLinePreview() {
+		const source = linePreviewSourceRef.current;
+		const shown = linePreviewShownRef.current;
+		linePreviewShownRef.current = null;
+		setLinePreviewUrl(null);
+		if (!source || !shown) {
+			setPreviewSource(null);
+			return;
+		}
+		try {
+			await loadMotion(source.url, source.prompt, source.rotationDeg, null, source.charId, null, { preview: true });
+		} catch {
+			/* loadMotion already surfaced the decode failure in the panel */
+		}
+		if (linePreviewSourceRef.current === source) setPreviewSource(null);
+	}
+
+	/** Stop the loop. Bumping the token is what makes an in-flight answer
+	 * harmless: it arrives, finds itself stale, and is dropped without ever
+	 * reaching the viewport. `revert:false` is for the callers that are ALREADY
+	 * loading a different take (a version chip) and must not race a reload of
+	 * the take they are leaving. */
+	function cancelLinePreview({ revert = true } = {}) {
+		if (linePreviewTimerRef.current) {
+			window.clearTimeout(linePreviewTimerRef.current);
+			linePreviewTimerRef.current = 0;
+		}
+		linePreviewPendingRef.current = null;
+		linePreviewTokenRef.current += 1;
+		const controller = linePreviewAbortRef.current;
+		linePreviewAbortRef.current = null;
+		if (controller) controller.abort();
+		setLinePreviewBusy(false);
+		setLinePreviewError("");
+		setLinePreviewMs(0);
+		if (revert) {
+			revertLinePreview();
+		} else {
+			linePreviewShownRef.current = null;
+			setLinePreviewUrl(null);
+			setPreviewSource(null);
+		}
+	}
+
+	/** A released drag asks for a draft — after a beat, so drag-drag-drag costs
+	 * one request rather than three. */
+	function scheduleLinePreview(curve) {
+		if (linePreviewTimerRef.current) window.clearTimeout(linePreviewTimerRef.current);
+		linePreviewTimerRef.current = window.setTimeout(() => {
+			linePreviewTimerRef.current = 0;
+			runLinePreview(curve);
+		}, LINE_PREVIEW_DEBOUNCE_MS);
+	}
+
+	/** One preview round trip. Never more than one at a time (rule 3): a curve
+	 * that arrives while a request is out becomes THE pending curve, replacing
+	 * any earlier pending one, and is fired the moment the outstanding answer
+	 * lands — whose result is then thrown away, because it describes a pull the
+	 * artist has already moved past. */
+	async function runLinePreview(curve) {
+		if (!lineEditMode || !curve) return;
+		// A preview is a courtesy, never a blocker: no bridge, no route, or the
+		// box already busy with the real thing means the panel simply keeps the
+		// curve and waits for the artist to press 생성.
+		if (!bridge?.ok || !lineEditBackend || ardyRunning) return;
+		if (linePreviewAbortRef.current) {
+			linePreviewPendingRef.current = curve;
+			return;
+		}
+		const source = linePreviewSourceRef.current ?? (motion?.url
+			? {
+				url: motion.url,
+				prompt: motion.prompt ?? "",
+				rotationDeg: motion.rotationDeg ?? activeChar.rot,
+				charId: activeChar.id,
+			}
+			: null);
+		if (!source) return;
+		const request = buildLineEditRequest(curve, { preview: true });
+		if (!request.ok) {
+			if (request.message) setLinePreviewError(request.message);
+			return;
+		}
+		const token = ++linePreviewTokenRef.current;
+		const controller = new AbortController();
+		linePreviewAbortRef.current = controller;
+		linePreviewPendingRef.current = null;
+		setPreviewSource(source);
+		setLinePreviewBusy(true);
+		setLinePreviewError("");
+		const startedAt = Date.now();
+		let result = null;
+		let failure = "";
+		try {
+			// No onEvent work: a preview's status lines belong to nobody. The
+			// console stays the full-quality run's log.
+			result = await ardyGenerate(request.body, () => {}, { signal: controller.signal });
+		} catch (err) {
+			// An abort is this loop's own doing and says nothing to the artist.
+			failure = err?.name === "AbortError" ? "" : (err?.message || String(err));
+		}
+		// Stale: superseded by a newer drag or cancelled outright. Whoever bumped
+		// the token owns the state now.
+		if (linePreviewTokenRef.current !== token) return;
+		linePreviewAbortRef.current = null;
+		const pending = linePreviewPendingRef.current;
+		if (pending) {
+			linePreviewPendingRef.current = null;
+			runLinePreview(pending);
+			return;
+		}
+		setLinePreviewBusy(false);
+		if (failure) {
+			// Non-fatal by design: the curve survives, and 생성 still works.
+			setLinePreviewError(failure);
+			return;
+		}
+		if (!result?.motionUrl) return;
+		setLinePreviewMs(Date.now() - startedAt);
+		await showLinePreview(result.motionUrl);
 	}
 
 	function exitLineEditMode() {
@@ -8431,6 +8773,9 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * have no pinhole camera at all and are not worth nagging about. */
 	useEffect(() => {
 		if (!lineEditMode || !motion) return undefined;
+		// Whatever draft is on screen was drafted for the joint/range/take that
+		// just changed, so it goes back to the source take with the pull.
+		cancelLinePreview();
 		setLineCurve(null);
 		let attempts = 0;
 		let timer = 0;
@@ -8456,7 +8801,14 @@ function resizePromptClip(id, edge, rawFrame) {
 		// would fire this constantly. activeChar's ground offset and scale are in
 		// here because jointTrailPoints places the trail with them — move or
 		// resize the character and the path really is somewhere else.
-	}, [lineEditMode, lineTrack, motion, lineEditRange?.startFrame, lineEditRange?.endFrame, activeChar.y, activeChar.scale]);
+		//
+		// THE TAKE is depended on as takeSourceUrl, not as `motion`: a preview
+		// swaps `motion` for a draft of the same take several times a minute,
+		// and depending on the object would make every landing draft wipe the
+		// very curve it is a picture of. takeSourceUrl only moves when the take
+		// really does.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [lineEditMode, lineTrack, takeSourceUrl, lineEditRange?.startFrame, lineEditRange?.endFrame, activeChar.y, activeChar.scale]);
 
 	// Repaint on anything that changes what the overlay should show. The window
 	// resize listener is separate from React state because the pane rect can
@@ -8594,12 +8946,16 @@ function resizePromptClip(id, edge, rawFrame) {
 		};
 	}, [bridge?.ok]);
 
-	/** Assemble and enqueue a line edit. Its own run mode: the body carries
-	 * lineEdit and NOTHING else authored, because C6 makes it exclusive with
-	 * preserve, waypoints, segments, regenerateSegments and motionEdit. */
+	/** CONFIRM the pull: the full-quality run of exactly what the preview has
+	 * been showing. Its own run mode — the body carries lineEdit and NOTHING
+	 * else authored, because C6 makes it exclusive with preserve, waypoints,
+	 * segments, regenerateSegments and motionEdit — and it is the one path that
+	 * commits a recipe and a version. Same builder, same SESSION SEED and same
+	 * curve as the last preview; only `preview: true` is absent, which is what
+	 * buys the full step count. */
 	function runLineEdit() {
 		if (ardyRunning) return;
-		if (!motion?.url) {
+		if (!takeSourceUrl) {
 			setToast(ko("The current take has no bridge source — generate it once before editing a path", "현재 테이크에 브리지 원본이 없어요 — 궤적을 편집하기 전에 한 번 생성하세요"));
 			return;
 		}
@@ -8610,35 +8966,6 @@ function resizePromptClip(id, edge, rawFrame) {
 			setToast(ko("Pull the path first — grab a dot on it and drag", "커브를 먼저 잡아당겨 주세요"));
 			return;
 		}
-		// The deformed curve -> C6's points2d. This is the ONLY thing the
-		// interaction change touched on the wire: the payload is the same
-		// <=64-point viewport-normalized polyline it was when the user drew it
-		// by hand, so the bridge, the box driver and the splice are untouched.
-		const built = curveToPoints2d(lineCurve.edited);
-		if (built.error) {
-			const copy = LINE_CURVE_REFUSALS[built.error] ?? LINE_EDIT_REFUSALS.shape;
-			setToast(ko(copy[0], copy[1]));
-			return;
-		}
-		// The take's own prompt is the text condition: a line edit changes WHERE
-		// a joint goes, not what the shot is about. The fallback keeps the
-		// bridge's non-empty-prompt contract satisfiable for takes imported
-		// without one.
-		const prompt = (motion.prompt || "").trim() || "A person continues the motion naturally.";
-		const lineEdit = {
-			sourceMotion: motion.url,
-			track: lineTrack,
-			frameRange: lineEditRange,
-			points2d: built.points2d,
-			camera: lineCurve.camera,
-			prompt,
-		};
-		const refusal = validateLineEdit(lineEdit, { clipFrames: lineClipFrames });
-		if (refusal) {
-			const copy = LINE_EDIT_REFUSALS[refusal.code] ?? LINE_EDIT_REFUSALS.shape;
-			setToast(ko(copy[0], copy[1]));
-			return;
-		}
 		if (!lineEditBackend) {
 			setToast(ko(
 				"The line-editing backend is not connected yet",
@@ -8646,21 +8973,33 @@ function resizePromptClip(id, edge, rawFrame) {
 			));
 			return;
 		}
-		// posePin:false is mandatory, not decorative: the bridge demands a
-		// `poses` array whenever posePin is not explicitly false, and a line
-		// edit authors no poses at all.
-		const body = { prompt, duration: motion.frames / TIMELINE_FPS, posePin: false, lineEdit };
-		if (ardySeed !== "") body.seed = Number(ardySeed);
+		const request = buildLineEditRequest(lineCurve);
+		if (!request.ok) {
+			if (request.message) setToast(request.message);
+			return;
+		}
+		const { body, lineEdit, seed } = request;
+		// The take being edited, not the draft that may be on screen: a preview
+		// is a picture and must never become anyone's lineage.
+		const source = linePreviewSource;
 		enqueueMotionJob({
-			charId: activeChar.id,
+			charId: source?.charId ?? activeChar.id,
 			charIndex: activeCharIndex,
-			prompt,
+			prompt: body.prompt,
 			body,
 			hasBlockEdits: false,
 			committedEditKeys: [],
-			rootRotationDeg: motion.rotationDeg ?? activeChar.rot,
+			rootRotationDeg: source?.rotationDeg ?? motion.rotationDeg ?? activeChar.rot,
 			anchor: { x: motion.anchorX ?? activeChar.x, z: motion.anchorZ ?? activeChar.z },
 			ikState: null,
+			recipeIntent: "lineEdit",
+			recipeSeed: seed,
+			// sourceMotion is dropped on the way into the recipe: replay rebinds
+			// it to whatever take it is re-applied to.
+			// (stripSourceMotion keeps only C10's replay keys, so `preview` — when
+			// the object came back from a draft build — cannot leak into a recipe.)
+			recipeLineEdit: stripSourceMotion({ ...lineEdit, sourceMotion: undefined, seed }),
+			recipeLabel: isKo ? `다듬기 · ${lineTrackLabel(lineTrack)}` : `Refine · ${lineTrackLabel(lineTrack)}`,
 		});
 		// The pull has left the building. The curve stays (it is the reference
 		// the next edit starts from) but its deformation is released, so the
@@ -8668,6 +9007,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		// a second identical run while the first is still queued. The undo
 		// stack goes with it: restoring a pull that is already generating would
 		// invite the identical run this reset exists to prevent.
+		//
+		// This also ENDS THE PREVIEW SESSION: the draft comes off the viewport
+		// (the real result will land on it in a couple of seconds, and until it
+		// does the take on screen should be the take that exists) and the seed
+		// is released, so the next pull is a new piece of work with a new roll.
 		clearLineEdit();
 	}
 
@@ -8694,7 +9038,20 @@ function resizePromptClip(id, edge, rawFrame) {
 		promptOverride = ardyPrompt,
 		durationOverride = ardyDuration,
 		promptClipsOverride = [],
+		// Scene > Start over asks for a take that owes the loaded one nothing:
+		// no preserve, no replayed refinements, a clean recipe. Every other
+		// entry point (take it again, add a block, the Prompt Blocks button) stays in
+		// the current take's lineage and carries both.
+		fresh = false,
 	} = {}) {
+		// A line-edit draft is not a take, and every source this function reads
+		// (preserve, motionEdit, the recipe) is about THE take. Refusing here is
+		// the last line of defence behind sceneDisabledReason, which already
+		// greys the entries with this reason spelled out in place.
+		if (linePreviewUrl) {
+			setToast(previewBlockingReason());
+			return;
+		}
 		// Motion generation targets the ACTIVE character's layer; the pose
 		// studio only lends its rig when it is actually open.
 		const rig = posing ? posedRig() : activeRig;
@@ -8726,11 +9083,11 @@ function resizePromptClip(id, edge, rawFrame) {
 			setToast(isKo ? `길이는 ${ARDY_DURATION_MIN}초에서 ${ARDY_DURATION_MAX}초 사이여야 해요` : `Duration must be between ${ARDY_DURATION_MIN} and ${ARDY_DURATION_MAX} seconds`);
 			return;
 		}
-		const seed = ardySeed === "" ? null : Number(ardySeed);
-		if (seed !== null && (!Number.isInteger(seed) || seed < 0 || seed > ARDY_SEED_MAX)) {
-			setToast(isKo ? `Seed는 0..${ARDY_SEED_MAX} 범위의 정수여야 해요. 비워 두면 자동으로 선택됩니다` : `Seed must be an integer in 0..${ARDY_SEED_MAX} — clear it to let the box pick one`);
-			return;
-		}
+		// THE SEED RULE (C9): rolled when the field is empty, kept when it is
+		// typed, and concrete either way — this generation creates a take, so
+		// its seed is recorded on the take's recipe below.
+		const seed = takeSeed();
+		if (seed === null) return;
 		// Prompt clips are real generation blocks. Gaps inherit the current
 		// prompt so the bridge always receives one contiguous 0..N sequence.
 		// Built BEFORE the root-path judge: whether the rollout is chained
@@ -8876,7 +9233,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// the user actually authored.
 		let committedEditKeys = [];
 		if (shouldPin && !hasBlockEdits) body.poses = toArdyFrameEntries(poses);
-		if (ardySeed !== "") body.seed = Number(ardySeed);
+		body.seed = seed;
 		if (waypointMode) {
 			body.waypoints = ardyWaypoints;
 			// A root path and a prompt schedule now travel TOGETHER: the
@@ -8954,7 +9311,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// bridge refuses the pair. A chained rollout (2 s + 2 s prompt blocks)
 		// must still generate — preserve silently steps aside rather than turning
 		// every multi-block generation into a 400.
-		if (motion?.url && preserveStrength > 0 && body.regenerateSegments === undefined && body.segments === undefined) {
+		if (!fresh && motion?.url && preserveStrength > 0 && body.regenerateSegments === undefined && body.segments === undefined) {
 			body.preserve = {
 				sourceMotion: motion.url,
 				strength: preserveStrength,
@@ -8982,6 +9339,29 @@ function resizePromptClip(id, edge, rawFrame) {
 					.filter((range) => range.endFrame > range.startFrame),
 			};
 		}
+		// RECIPE REPLAY (contract C10). Regenerating or extending a take that
+		// carries line edits used to throw those edits away — the box built a
+		// fresh npz and the refinements lived only in the discarded one. The
+		// recipe makes them reconstructible, so they ride along as `replay` and
+		// the box re-applies them, in order, on top of the new take.
+		// C10 REJECTS replay beside motionEdit (hasBlockEdits) because the base
+		// would be ambiguous, so the edit path skips it; `fresh` skips it
+		// because starting over means exactly that.
+		// A SEEDLESS recipe never replays. An imported take (?motion=) is recorded
+		// with `seed: null` because nobody here knows the seed it was made with,
+		// and replaying its refinements onto a freshly rolled take would re-apply
+		// them to a motion they were never authored against — a worse answer than
+		// the honest empty one.
+		const replayable = Number.isInteger(takeRecipeRef.current?.seed);
+		const replay = fresh || hasBlockEdits || !replayable ? [] : replayPayload(takeRecipeRef.current);
+		if (replay.length > 0) {
+			body.replay = replay;
+			if (replayTruncated(takeRecipeRef.current)) {
+				setToast(isKo
+					? `다듬기는 한 번에 ${replay.length}개까지만 다시 적용돼요 — 먼저 한 ${replay.length}개만 이어집니다`
+					: `Only ${replay.length} refinements can be replayed at once — the first ${replay.length} carry over`);
+			}
+		}
 		// The request is fully packaged HERE, against the active character's
 		// live layer — the queue only needs the frozen payload. Results are
 		// delivered to THIS character even if the selection moves on while
@@ -8996,6 +9376,22 @@ function resizePromptClip(id, edge, rawFrame) {
 			rootRotationDeg,
 			anchor: { x: activeChar.x, z: activeChar.z },
 			ikState: hasBlockEdits ? ikStateRef.current : null,
+			// A block-edit run REWRITES a span of the loaded take rather than
+			// generating a new one from the prompt, so it keeps the take's
+			// recipe instead of minting a fresh one it could not honestly
+			// describe (motionEdit has no recipe expression, by C10's own
+			// exclusion). Everything else here creates a take from its blocks.
+			recipeIntent: hasBlockEdits ? "carry" : "fresh",
+			recipeSeed: seed,
+			recipeLabel: hasBlockEdits
+				? ko("Block fix", "블록 수정")
+				: hasPromptSchedule
+					? ko("Blocks", "블록 생성")
+					: fresh
+						? ko("New", "새로 만들기")
+						: motion?.url
+							? ko("Again", "다시 뽑기")
+							: ko("Generate", "생성"),
 		});
 	}
 
@@ -9060,6 +9456,12 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * deformed line contributes the grab-frame pose as a root guide. */
 	function runTrailRegeneration() {
 		if (!trailEdit || ardyRunning) return;
+		// Same rule as runArdy: motionEdit rewrites a span of THE take, and a
+		// draft on the viewport is not it.
+		if (linePreviewUrl) {
+			setToast(previewBlockingReason());
+			return;
+		}
 		if (!motion?.url) {
 			setToast(ko("The current motion has no bridge source; generate the prompt blocks once before regenerating a trail edit", "현재 모션에 브리지 원본이 없어요. 궤적 수정을 재생성하려면 프롬프트 블록을 먼저 한 번 생성하세요"));
 			return;
@@ -9113,7 +9515,11 @@ function resizePromptClip(id, edge, rawFrame) {
 				edits: entries.map(({ frame, tracks, pose }) => ({ frame, tracks, pose })),
 			},
 		};
-		if (ardySeed !== "") body.seed = Number(ardySeed);
+		// THE SEED RULE (C9) — a trail regeneration writes a new take too, so its
+		// seed is rolled, sent and recorded like every other take-creating run.
+		const seed = takeSeed();
+		if (seed === null) return;
+		body.seed = seed;
 		enqueueMotionJob({
 			charId: activeChar.id,
 			charIndex: activeCharIndex,
@@ -9124,6 +9530,12 @@ function resizePromptClip(id, edge, rawFrame) {
 			rootRotationDeg: motion.rotationDeg ?? activeChar.rot,
 			anchor: { x: motion.anchorX ?? activeChar.x, z: motion.anchorZ ?? activeChar.z },
 			ikState: ikStateRef.current,
+			// motionEdit rewrites a span of the loaded take; the recipe travels
+			// forward unchanged because there is no recipe field that could
+			// describe the splice (C10 excludes motionEdit from replay outright).
+			recipeIntent: "carry",
+			recipeSeed: seed,
+			recipeLabel: ko("Trail fix", "궤적 수정"),
 		});
 		setTrailEdit(null);
 	}
@@ -9166,6 +9578,8 @@ function resizePromptClip(id, edge, rawFrame) {
 		reportArdyStatus(ko("connecting…", "연결 중…"));
 		setArdyReport(null);
 		setArdyOutcome(null);
+		// Replay notices belong to ONE run; the next run re-earns them.
+		setReplayNotices([]);
 		const inputMode = job.hasBlockEdits ? "edit" : job.body.posePin ? "pose" : "prompt";
 		const startedAt = Date.now();
 		track("motion:job_started", { input_mode: inputMode });
@@ -9178,6 +9592,15 @@ function resizePromptClip(id, edge, rawFrame) {
 					else if (event.event === "report") {
 						setArdyReport(event.report);
 						if (job.hasBlockEdits) editCommitReport = event.report;
+						// C10's per-entry replay report. Only the entries worth
+						// acting on are kept: a refinement that failed outright,
+						// or one whose range straddles an internal block
+						// boundary (where block N+1 was conditioned on N's
+						// PRE-edit tail, so the replay is approximate rather
+						// than exact). Both are non-blocking — the take exists.
+						if (Array.isArray(event.report.replay)) {
+							setReplayNotices(event.report.replay.filter((entry) => entry?.ok === false || entry?.boundaryWarning === true));
+						}
 					}
 				},
 				{ signal: controller.signal },
@@ -9199,7 +9622,10 @@ function resizePromptClip(id, edge, rawFrame) {
 			// Fetch and decode the real npz right away; decode errors are shown
 			// in the card, playback is never faked. The clip lands on the
 			// REQUESTING character, not whoever is selected now.
-			if (done.motionUrl) await deliverMotion(job, done.motionUrl);
+			if (done.motionUrl) {
+				await deliverMotion(job, done.motionUrl);
+				commitTakeRecipe(job, done.motionUrl);
+			}
 			if (job.hasBlockEdits && job.ikState) {
 				// Timeline frames, not the wire frames in body.motionEdit.edits:
 				// these light up the IK markers on the production clock.
@@ -9237,6 +9663,214 @@ function resizePromptClip(id, edge, rawFrame) {
 			setArdyRunning(false);
 			ardyAbortRef.current = null;
 		}
+	}
+
+	/* ------------------- recipe + version bookkeeping (C9/C12) ----------------
+	 * ONE writer for both. Every take that reaches the app came out of a job,
+	 * so a job's completion is the only place where "what is this take made of"
+	 * can be answered honestly, and the answer is checkpointed next to the
+	 * motionUrl in the same breath. Nothing else may write takeRecipeRef except
+	 * loadTakeVersion, which restores a checkpoint rather than authoring one. */
+	function commitTakeRecipe(job, motionUrl) {
+		const base = takeRecipeRef.current;
+		let next = base;
+		if (job.recipeIntent === "fresh") {
+			// A regeneration that carried `replay` produced a take that ALREADY
+			// contains those edits, so they stay on the recipe. Resetting
+			// lineEdits to [] here would make the second regeneration lose what
+			// the first one preserved — the exact failure replay exists to fix.
+			next = freshRecipe({
+				seed: job.recipeSeed,
+				blocks: blocksFromRequest(job.body, ARDY_FPS),
+				lineEdits: job.body.replay ?? [],
+			});
+		} else if (job.recipeIntent === "lineEdit") {
+			// A take imported by url (?motion=, a reload) has no recipe of its own.
+			// The edit's body carries the take's prompt and length, so a
+			// best-effort single block is recorded rather than dropping the
+			// refinement on the floor; only the SEED is a guess, and it is the
+			// one this edit actually ran with. The seedless placeholder recipe an
+			// imported take is given (seedLoadedTake) counts as "no recipe" for
+			// the seed specifically: adopting this edit's seed is what turns it
+			// into something that can replay at all.
+			const seeded = Number.isInteger(base?.seed)
+				? base
+				: freshRecipe({
+					seed: job.recipeSeed,
+					blocks: base?.blocks?.length ? base.blocks : blocksFromRequest(job.body, ARDY_FPS),
+					lineEdits: base?.lineEdits ?? [],
+				});
+			next = withLineEdit(seeded, job.recipeLineEdit);
+		}
+		takeRecipeRef.current = next;
+		setTakeRecipe(next);
+		setTakeVersions((list) => pushTakeVersion(list, {
+			motionUrl,
+			recipe: next,
+			savedAt: Date.now(),
+			label: job.recipeLabel ?? "",
+		}, TAKE_VERSIONS_MAX));
+	}
+
+	/* A take can also arrive WITHOUT a job behind it — ?motion=<url>, the shipped
+	 * demo clip, a scene reload that re-fetches a stored motionRef. Those takes
+	 * used to leave the version strip empty, so the first refinement had nothing
+	 * to walk back to and the artist's only checkpoint was the thing they had
+	 * just overwritten. They get a v1 like everything else.
+	 *
+	 * WHAT IS HONESTLY KNOWN is the take's url, its prompt and its length —
+	 * NOT its seed, which was rolled on the box in a session nobody here
+	 * witnessed. So the placeholder recipe carries `seed: null` and every reader
+	 * treats that as "this take cannot be rebuilt": no request may attach it as
+	 * C10 `replay` (a replay whose base is a different random take re-applies
+	 * refinements to a stranger), and the first real edit adopts its own seed in
+	 * commitTakeRecipe. A checkpoint you can return to beats a recipe you can
+	 * replay, and this gets the first without pretending to the second. */
+	function seedLoadedTake(url, prompt, frames) {
+		if (!url || takeRecipeRef.current) return;
+		const recipe = Object.freeze({
+			seed: null,
+			blocks: Object.freeze([Object.freeze({
+				prompt: typeof prompt === "string" ? prompt : "",
+				duration: frames > 0 ? frames / TIMELINE_FPS : 0,
+			})]),
+			lineEdits: Object.freeze([]),
+		});
+		takeRecipeRef.current = recipe;
+		setTakeRecipe(recipe);
+		setTakeVersions((list) => pushTakeVersion(list, {
+			motionUrl: url,
+			recipe,
+			savedAt: Date.now(),
+			label: ko("Loaded", "불러옴"),
+		}, TAKE_VERSIONS_MAX));
+	}
+	useEffect(() => {
+		// Never for a draft: a preview is not a take and must not mint a chip.
+		if (!motion?.url || linePreviewUrl) return;
+		// Never for a generated take either — its own job is about to commit a
+		// real recipe with a real seed, and this placeholder would beat it to the
+		// strip and label it "불러옴".
+		if (takeRecipeRef.current || ardyRunning || genQueue.length > 0) return;
+		if (takeVersions.some((entry) => entry.motionUrl === motion.url)) return;
+		seedLoadedTake(motion.url, motion.prompt, motion.frames);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [motion?.url, motion?.frames, linePreviewUrl, ardyRunning, genQueue.length, takeVersions]);
+
+	/** Click a chip: that motionUrl becomes the active take through the SAME
+	 * delivery path a fresh generation result travels, and the recipe saved
+	 * beside it becomes the current one. Nothing is truncated — editing from an
+	 * old version pushes a NEW version on top, so no click can destroy work. */
+	async function loadTakeVersion(entry) {
+		if (!entry?.motionUrl || motionBusy) return;
+		if (entry.motionUrl === takeSourceUrl) return;
+		// A pull in hand was authored against the take that is leaving. The
+		// preview is dropped WITHOUT reverting: this call is already loading a
+		// different take, and a revert would race it with a reload of the one
+		// being left behind.
+		cancelLinePreview({ revert: false });
+		if (lineEditMode) clearLineEdit();
+		setReplayNotices([]);
+		takeRecipeRef.current = entry.recipe ?? null;
+		setTakeRecipe(entry.recipe ?? null);
+		try {
+			await deliverMotion({
+				charId: activeChar.id,
+				prompt: entry.recipe?.blocks?.[0]?.prompt ?? motion?.prompt ?? "",
+				rootRotationDeg: motion?.rotationDeg ?? activeChar.rot,
+				anchor: { x: motion?.anchorX ?? activeChar.x, z: motion?.anchorZ ?? activeChar.z },
+			}, entry.motionUrl);
+		} catch {
+			/* loadMotion already surfaced the decode failure in the panel */
+		}
+	}
+
+	/* ---------------------- the two edit entries (C12) ------------------------
+	 * Scene blocks the shot with Kimodo; Refine pulls one joint's path with
+	 * ProjFlow. Everything else the pipeline can do is one of those two said
+	 * more precisely, and both are reachable from the take itself instead of
+	 * from a foldout the artist has to remember to open.
+	 *
+	 * WHY THE REASONS ARE FUNCTIONS, not toasts. An action the artist cannot
+	 * take must say so BEFORE the click, in place, next to the button. A toast
+	 * fired after the click teaches nothing: it arrives once, scrolls away, and
+	 * leaves the button looking identical to the ones that work. Each reason
+	 * below is rendered as a line under its entry AND as data-disabled-reason,
+	 * which is also what the CDP surface gate reads. */
+	function refineDisabledReason() {
+		if (!motion) return ko("No take yet — block a scene first", "아직 테이크가 없어요 — 먼저 장면을 만들어 주세요");
+		if (!motion.url) return ko("This take has no bridge source — generate it once before refining", "이 테이크에는 브리지 원본이 없어요 — 한 번 생성해야 다듬을 수 있어요");
+		return "";
+	}
+	function sceneDisabledReason() {
+		if (bridge === null) return ko("Checking for the ARDY bridge…", "ARDY 브리지를 확인하는 중…");
+		if (!bridge.ok) return ko("The ARDY bridge is not connected — it reconnects on its own", "ARDY 브리지가 연결되지 않았어요 — 자동으로 다시 연결됩니다");
+		if (ardyRunning) return ko("A generation is already running", "이미 생성이 돌고 있어요");
+		// NOT a line-edit preview, deliberately. Every other reason here is a
+		// standing capability the entry should be greyed for; a draft on the
+		// viewport lasts a second and a half, and a reason line appearing and
+		// vanishing under the Scene button RESIZES THE TAKE BAR — which shortens
+		// the stage, which changes the camera aspect, which the drift watcher
+		// correctly reads as "the view moved" and answers by throwing the
+		// artist's pull away. Measured: it killed the pull ~400 ms after every
+		// draft landed. The refusal lives in runArdy/runTrailRegeneration
+		// instead, where it costs no layout.
+		return "";
+	}
+	/** The one sentence every take-consuming action says while a draft is up. */
+	function previewBlockingReason() {
+		return ko(
+			"A line-edit preview is on the viewport — press Generate to keep it, or undo (Ctrl/Cmd+Z) to drop it",
+			"라인 편집 미리보기가 떠 있어요 — 생성으로 확정하거나 Ctrl/Cmd+Z로 되돌린 뒤에 쓰세요",
+		);
+	}
+	function sceneGenerateDisabledReason() {
+		return sceneDisabledReason()
+			|| (ardyPrompt.trim() || promptClips.some((clip) => clip.text.trim())
+				? ""
+				: ko("Describe the motion first", "먼저 어떤 동작인지 적어 주세요"));
+	}
+	/** Taking it AGAIN needs no fresh wording: the loaded take already knows what
+	 * it was asked for, so its own prompt is the fallback (the same fallback
+	 * runLineEdit uses). What it does need is a take to re-take. */
+	function sceneAgainPrompt() {
+		return ardyPrompt.trim() || (motion?.prompt ?? "").trim();
+	}
+	function sceneAgainDisabledReason() {
+		return sceneDisabledReason()
+			|| (motion?.url ? "" : ko("Nothing to redo yet — make a take first", "다시 뽑을 테이크가 없어요 — 먼저 한 번 만들어 주세요"))
+			|| (sceneAgainPrompt() || promptClips.some((clip) => clip.text.trim())
+				? ""
+				: ko("This take carries no prompt — add a block and describe it", "이 테이크에는 프롬프트가 없어요 — 블록을 추가하고 동작을 적어 주세요"));
+	}
+
+	/** ONE CLICK from a loaded take into drag mode. The pull itself is authored
+	 * on the viewport, but its controls live under the character's Inspector, so
+	 * selecting that character and revealing the panel happen HERE rather than
+	 * being three clicks the artist has to find first. */
+	function enterRefineMode() {
+		const reason = refineDisabledReason();
+		if (reason) {
+			setToast(reason);
+			return;
+		}
+		setSceneMenuOpen(false);
+		selectActiveCharacterInHierarchy();
+		revealPromptBlocks();
+		toggleLineEditMode();
+	}
+	/** Take it again — same blocks, same lineage, refinements replayed. Authored
+	 * blocks go through the batch path so the schedule survives; a single-prompt
+	 * take goes straight through runArdy. */
+	function runSceneAgain() {
+		if (promptClips.some((clip) => clip.text.trim())) runAllPromptBlocks();
+		else runArdy({ promptOverride: sceneAgainPrompt() });
+	}
+	/** Add a block — the timeline's own add-block gesture, said as a button. */
+	function addSceneBlock() {
+		addPromptClip(tlFrame);
+		selectActiveCharacterInHierarchy();
+		revealPromptBlocks();
 	}
 
 	/** Hand a finished clip to the layer that asked for it: the buffer when
@@ -10865,57 +11499,10 @@ function resizePromptClip(id, edge, rawFrame) {
 								placeholder={ko("empty = random", "비우면 랜덤")}
 							/>
 						</Field>
-						{/* Scheduled inpainting, and it lives beside the button that
-						    consumes it for the same reason the seed does. There is
-						    nothing to preserve until a take with a bridge source is
-						    loaded, so the whole row is ABSENT before then rather than
-						    present and inert — no explanation would help there; the user
-						    simply has to generate once first. */}
-						{motion?.url && (
-							<Field label={ko("Keep the current take", "현재 테이크 유지")}>
-								<div className="preserve-strength-row">
-									<input
-										type="range"
-										data-preserve-strength
-										min={0}
-										max={1}
-										step={0.05}
-										value={preserveStrength}
-										title={ko(
-											"How hard the regeneration holds the loaded take outside the frames you edited.",
-											"수정하지 않은 프레임에서 로드된 테이크를 얼마나 강하게 유지할지 정합니다.",
-										)}
-										onChange={(event) => setPreserveStrength(Number(event.target.value))}
-									/>
-									<span className="preserve-strength-value">{Math.round(preserveStrength * 100)}%</span>
-								</div>
-								{/* The two poles sit at the ends they actually mean: the
-								    slider value IS the preserve strength, so 0 (left) is a
-								    fresh take and 1 (right) holds the original hardest. */}
-								<p className="inspector-hint preserve-strength-scale">
-									<span>{ko("generate fresh", "새로 생성")}</span>
-									<span>{ko("keep original", "원본 유지")}</span>
-								</p>
-								{/* Round 2 allows the pair the round-1 slider refused (contract
-								    C3v2, paper 4.4), so this line no longer explains a disabled
-								    control — it says which half of the take each authored surface
-								    now owns. Only worth saying when preserving is actually on. */}
-								{waypointMode && preserveStrength > 0 && (
-									<p className="inspector-hint">
-										{ko(
-											"the drawn path replaces the root; the body keeps the take's style",
-											"경로는 새로 그려지고, 동작 스타일은 원본을 유지해요",
-										)}
-									</p>
-								)}
-								{/* What the grouped mask will actually free. Empty whenever the
-								    request would carry no `tracks`, and then nothing is said: the
-								    whole-take wording above is already the truth. */}
-								{preserveStrength > 0 && preserveTracksLine && (
-									<p className="inspector-hint preserve-tracks-summary">{preserveTracksLine}</p>
-								)}
-							</Field>
-						)}
+						{/* Scheduled inpainting used to live here, beside the batch button.
+						    It now folds into Scene > Advanced above the timeline (contract
+						    C12): it is a dial on a regeneration, so it belongs with the
+						    regeneration entry rather than with the block list. */}
 						{/* Line editing (contract C6). It sits beside the preserve slider
 						    because it answers the same question from the other side —
 						    preserve says how much of the take to KEEP, a line says exactly
@@ -10936,7 +11523,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									{lineEditMode ? ko("Path editing on", "궤적 편집 켜짐") : ko("Drag the path", "궤적을 잡아 끌기")}
 								</button>
 								{lineEditMode && (
-									<div className="line-edit-panel">
+									<div className="line-edit-panel" data-line-preview={linePreviewUrl ? "true" : undefined}>
 										<Field label={ko("Joint", "관절")}>
 											<Dropdown
 												value={lineTrack}
@@ -11029,6 +11616,37 @@ function resizePromptClip(id, edge, rawFrame) {
 												{isKo
 													? `${lineCurveHidden}프레임이 화면 밖이라 잡을 수 없어요 — 구간 전체가 보이도록 카메라를 잡아 주세요`
 													: `${lineCurveHidden} frame(s) are outside the frame and cannot be grabbed — frame the whole range in view`}
+											</p>
+										)}
+										{/* ------------------------- the preview line -------------------
+										    One quiet row that says which of three things is true: a
+										    draft is being made, a draft is on screen (and how long it
+										    took), or the last one failed and the curve is still here.
+										    Deliberately not a spinner over the viewport — the artist
+										    is LOOKING at the viewport, and the answer arrives there. */}
+										{linePreviewBusy && (
+											<p className="inspector-hint line-preview-busy" aria-live="polite">
+												{ko("Previewing the pull…", "당긴 결과 미리보는 중…")}
+											</p>
+										)}
+										{!linePreviewBusy && linePreviewUrl && (
+											<p className="inspector-hint line-preview-live">
+												{ko(
+													"The viewport is showing a 20-step draft of this pull — press Generate for the full-quality take.",
+													"뷰포트는 지금 이 편집의 20스텝 미리보기예요 — 아래 생성을 누르면 최종 품질로 만듭니다.",
+												)}
+												{linePreviewMs > 0 && (
+													<span className="line-preview-time">
+														{isKo ? ` 미리보기 ${(linePreviewMs / 1000).toFixed(1)}s` : ` preview ${(linePreviewMs / 1000).toFixed(1)}s`}
+													</span>
+												)}
+											</p>
+										)}
+										{/* A failed draft is not a failed edit: the pull survives it and
+										    the button below still runs the real thing. */}
+										{linePreviewError && (
+											<p className="inspector-hint line-preview-error">
+												{isKo ? `미리보기 실패 — ${linePreviewError} (생성은 그대로 됩니다)` : `Preview failed — ${linePreviewError} (Generate still works)`}
 											</p>
 										)}
 										<button
@@ -11762,6 +12380,186 @@ function resizePromptClip(id, edge, rawFrame) {
 					)}
 				</div>
 				<div className="bottom-timeline" hidden={bottomTab !== "timeline"}>
+				{/* ==================== the take bar (contract C12) ====================
+				    Two primary edit entries, the take's version strip, and whatever the
+				    last replay had to say — all directly above the take they act on,
+				    because a feature the artist has to go hunting for in a collapsed
+				    foldout is a feature they do not have. */}
+				{/* The preview flag lives here TOO, on a node that exists whether or not
+			    the Inspector is scrolled to the line-edit panel — it is the stable
+			    handle for "the viewport is showing a draft, not the take". */}
+			<div
+				className="take-bar"
+				data-line-preview={linePreviewUrl ? "true" : undefined}
+				// The draft's url beside the take's own, so "the viewport swapped
+				// but the take did not" is one comparison rather than an inference.
+				data-line-preview-url={linePreviewUrl || undefined}
+				data-take-source={takeSourceUrl || undefined}
+			>
+					<div className="take-modes" role="group" aria-label={ko("Take editing", "테이크 편집")}>
+						{[
+							{
+								id: "scene",
+								label: ko("Scene", "장면"),
+								hint: ko("Kimodo — block it, redo it, extend it", "Kimodo — 새로 만들고, 다시 뽑고, 블록을 잇습니다"),
+								reason: sceneDisabledReason(),
+								active: sceneMenuOpen,
+								onClick: () => setSceneMenuOpen((open) => !open),
+							},
+							{
+								id: "refine",
+								label: ko("Refine", "다듬기"),
+								hint: ko("ProjFlow — grab the joint's path and pull", "ProjFlow — 관절 궤적을 잡아 끌어 다듬습니다"),
+								reason: refineDisabledReason(),
+								active: lineEditMode,
+								onClick: enterRefineMode,
+							},
+						].map((entry) => (
+							<div className="take-mode" key={entry.id}>
+								<button
+									type="button"
+									className={"take-mode-btn" + (entry.active ? " active" : "") + (entry.reason ? " disabled" : "")}
+									data-take-mode={entry.id}
+									data-disabled-reason={entry.reason || undefined}
+									aria-disabled={entry.reason ? "true" : undefined}
+									aria-expanded={entry.id === "scene" ? sceneMenuOpen : undefined}
+									title={entry.reason || entry.hint}
+									onClick={entry.onClick}
+								>
+									{entry.label}
+								</button>
+								{/* The refusal is SAID, in place, before the click — never
+								    only as a toast that arrives too late to teach anything. */}
+								{entry.reason
+									? <span className="take-mode-reason">{entry.reason}</span>
+									: <span className="take-mode-hint">{entry.hint}</span>}
+							</div>
+						))}
+					</div>
+					{sceneMenuOpen && (
+						<div className="take-scene-menu">
+							{[
+								{ id: "new", label: ko("Start over", "새로 만들기"), reason: sceneGenerateDisabledReason(), onClick: () => runArdy({ fresh: true }) },
+								{ id: "again", label: ko("Take it again", "다시 뽑기"), reason: sceneAgainDisabledReason(), onClick: runSceneAgain },
+								{ id: "block", label: isKo ? `프레임 ${tlFrame}에 블록 추가` : `Add a block at frame ${tlFrame}`, reason: "", onClick: addSceneBlock },
+							].map((action) => (
+								<div className="take-scene-action" key={action.id}>
+									<button
+										type="button"
+										className={"btn" + (action.reason ? " disabled" : "")}
+										data-scene-action={action.id}
+										data-disabled-reason={action.reason || undefined}
+										aria-disabled={action.reason ? "true" : undefined}
+										onClick={() => (action.reason ? setToast(action.reason) : action.onClick())}
+									>
+										{action.label}
+									</button>
+									{action.reason && <span className="take-mode-reason">{action.reason}</span>}
+								</div>
+							))}
+							{/* Advanced: the two dials that decide how much of the loaded take a
+							    regeneration keeps. Folded away because the default (half
+							    preserved, whole body free) is the right answer almost
+							    always, and a slider that is right by default should not be
+							    the first thing on screen. */}
+							{motion?.url && (
+								<details className="take-scene-advanced">
+									<summary>{ko("Advanced", "고급")}</summary>
+									<Field label={ko("Keep the current take", "현재 테이크 유지")}>
+										<div className="preserve-strength-row">
+											<input
+												type="range"
+												data-preserve-strength
+												min={0}
+												max={1}
+												step={0.05}
+												value={preserveStrength}
+												title={ko(
+													"How hard the regeneration holds the loaded take outside the frames you edited.",
+													"수정하지 않은 프레임에서 로드된 테이크를 얼마나 강하게 유지할지 정합니다.",
+												)}
+												onChange={(event) => setPreserveStrength(Number(event.target.value))}
+											/>
+											<span className="preserve-strength-value">{Math.round(preserveStrength * 100)}%</span>
+										</div>
+										{/* The two poles sit at the ends they actually mean: the
+										    slider value IS the preserve strength, so 0 (left) is a
+										    fresh take and 1 (right) holds the original hardest. */}
+										<p className="inspector-hint preserve-strength-scale">
+											<span>{ko("generate fresh", "새로 생성")}</span>
+											<span>{ko("keep original", "원본 유지")}</span>
+										</p>
+										{/* Round 2 allows the pair the round-1 slider refused (contract
+										    C3v2, paper 4.4), so this line no longer explains a disabled
+										    control — it says which half of the take each authored surface
+										    now owns. Only worth saying when preserving is actually on. */}
+										{waypointMode && preserveStrength > 0 && (
+											<p className="inspector-hint">
+												{ko(
+													"the drawn path replaces the root; the body keeps the take's style",
+													"경로는 새로 그려지고, 동작 스타일은 원본을 유지해요",
+												)}
+											</p>
+										)}
+										{/* What the grouped mask will actually free. Empty whenever the
+										    request would carry no `tracks`, and then nothing is said: the
+										    whole-take wording above is already the truth. */}
+										{preserveStrength > 0 && preserveTracksLine && (
+											<p className="inspector-hint preserve-tracks-summary">{preserveTracksLine}</p>
+										)}
+									</Field>
+									{takeRecipe && (
+										<p className="inspector-hint take-recipe-summary">
+											{/* A seedless recipe is an IMPORTED take: it checkpoints and reloads,
+											    but it cannot be rebuilt or replayed, so the line says so rather
+											    than printing "seed null". */}
+											{isKo
+												? `레시피 — 시드 ${Number.isInteger(takeRecipe.seed) ? takeRecipe.seed : "알 수 없음(불러온 테이크)"} · 블록 ${takeRecipe.blocks.length}개 · 다듬기 ${takeRecipe.lineEdits.length}개`
+												: `Recipe — seed ${Number.isInteger(takeRecipe.seed) ? takeRecipe.seed : "unknown (imported take)"} · ${takeRecipe.blocks.length} block(s) · ${takeRecipe.lineEdits.length} refinement(s)`}
+										</p>
+									)}
+								</details>
+							)}
+						</div>
+					)}
+					{/* Every successful run leaves a checkpoint here. Clicking one loads
+					    that take back AND restores the recipe it was saved with; nothing
+					    is ever dropped from the strip by loading, so an experiment can
+					    always be walked back. */}
+					{takeVersions.length > 0 && (
+						<div className="take-version-strip" role="group" aria-label={ko("Take versions", "테이크 버전")}>
+							{takeVersions.map((entry, index) => (
+								<button
+									type="button"
+									key={entry.motionUrl}
+									className={"take-version-chip" + (entry.motionUrl === takeSourceUrl ? " current" : "")}
+									data-version-url={entry.motionUrl}
+									data-version-current={entry.motionUrl === takeSourceUrl ? "true" : undefined}
+									aria-pressed={entry.motionUrl === takeSourceUrl}
+									title={`${entry.label} · ${new Date(entry.savedAt).toLocaleTimeString()}`}
+									onClick={() => loadTakeVersion(entry)}
+								>
+									<b>v{index + 1}</b>
+									<small>{entry.label}</small>
+								</button>
+							))}
+						</div>
+					)}
+					{/* C10's per-entry replay verdict. Non-blocking on purpose: the take
+					    exists and is loaded, one refinement just did not survive the trip
+					    onto it, and the artist decides whether that matters. */}
+					{replayNotices.map((entry) => (
+						<p className="replay-notice" key={`${entry.index}-${entry.track}`} data-replay-index={entry.index} data-replay-track={entry.track}>
+							{entry.ok === false
+								? (isKo
+									? `다듬기 ${entry.index + 1}(${lineTrackLabel(entry.track)})은 다시 적용되지 않았어요 — 나머지는 그대로 이어졌습니다${entry.error ? ` (${entry.error})` : ""}`
+									: `Refinement ${entry.index + 1} (${lineTrackLabel(entry.track)}) was not re-applied — the rest carried over${entry.error ? ` (${entry.error})` : ""}`)
+								: (isKo
+									? `다듬기 ${entry.index + 1}(${lineTrackLabel(entry.track)})은 블록 경계에 걸쳐 있어요 — 결과가 이전과 조금 다를 수 있습니다`
+									: `Refinement ${entry.index + 1} (${lineTrackLabel(entry.track)}) straddles a block boundary — the result may differ slightly from before`)}
+						</p>
+					))}
+				</div>
 				<Timeline
 					frame={tlFrame}
 					craneSelectedIndex={craneSelectedIndex}

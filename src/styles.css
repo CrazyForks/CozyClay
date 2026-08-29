@@ -9156,3 +9156,241 @@ input[type=range] {
 	margin-top: 2px;
 	opacity: .85;
 }
+
+/* ---- the live preview loop (contracts C10/C11) ----
+   Releasing a pull fires a 20-step draft and the VIEWPORT answers; these three
+   lines only say which state that loop is in. They are deliberately quiet —
+   the artist is watching the take move, and a status line that competed with
+   it for attention would be looking in the wrong place. */
+.line-preview-busy {
+	margin-top: 2px;
+	opacity: .8;
+}
+/* The pulse is the whole busy affordance: no spinner, no layout shift, and it
+   stops the instant the draft lands. Reduced-motion gets the text alone. */
+.line-preview-busy::before {
+	content: "";
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	margin-right: 6px;
+	border-radius: 50%;
+	background: var(--accent, #3a7cbf);
+	vertical-align: middle;
+	animation: line-preview-pulse 1s ease-in-out infinite;
+}
+@keyframes line-preview-pulse {
+	0%, 100% { opacity: .25; }
+	50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.line-preview-busy::before { animation: none; opacity: .8; }
+}
+/* A draft IS on screen. Tinted, because "what you are looking at is not the
+   take yet" is the one thing the artist must not have to remember. */
+.line-preview-live {
+	margin-top: 2px;
+	padding-left: 6px;
+	border-left: 2px solid var(--accent, #3a7cbf);
+	opacity: .9;
+}
+.line-preview-time {
+	font-variant-numeric: tabular-nums;
+	opacity: .7;
+	white-space: nowrap;
+}
+/* Non-fatal by contract: the pull is still here and Generate still runs. */
+.line-preview-error {
+	margin-top: 2px;
+	color: var(--warn, #ff9c6e);
+	opacity: .95;
+}
+
+/* ------------------------------------- the take bar (contracts C9/C12) ---- */
+/* Two edit entries, the version strip and the last run's replay verdict, in a
+   single strip directly above the timeline. It lives HERE rather than in the
+   Inspector because both entries act on the take that is playing, and a mode
+   the artist has to go find in a collapsed foldout is a mode they will not use.
+   Appended at the end for the same reason the preserve and line-edit blocks
+   above are: the global button/input rules further up the cascade would
+   otherwise win over anything written beside the panels these controls left. */
+.take-bar {
+	flex: none;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 14px;
+	padding: 5px 8px;
+	border-bottom: 1px solid var(--line);
+	background: var(--panel);
+}
+
+/* The two primaries. They sit first and they sit together, so the choice reads
+   as a pair — block the scene, or refine what is already blocked — rather than
+   as two unrelated buttons that happen to be nearby. */
+.take-modes {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+}
+
+.take-mode {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.take-mode-btn {
+	height: 26px;
+	padding: 0 14px;
+	border: 1px solid var(--line2);
+	border-radius: 3px;
+	background: var(--bg);
+	color: var(--fg);
+	font: inherit;
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: .02em;
+	cursor: pointer;
+}
+
+.take-mode-btn:hover {
+	background: var(--hover);
+}
+
+.take-mode-btn.active {
+	border-color: var(--accent);
+	box-shadow: inset 0 -2px var(--accent);
+}
+
+/* Unavailable, and SAYING so: greyed, still focusable, still hoverable, with
+   the reason spelled out on the line below. Never pointer-events:none — an
+   entry the pointer slides straight through cannot explain itself. */
+.take-mode-btn.disabled,
+.take-scene-action .btn.disabled {
+	opacity: .45;
+	cursor: not-allowed;
+}
+
+.take-mode-hint,
+.take-mode-reason {
+	font-size: 10px;
+	line-height: 1.3;
+	max-width: 26ch;
+	color: var(--muted);
+}
+
+.take-mode-reason {
+	color: var(--warn, #ff9c6e);
+	opacity: .9;
+}
+
+/* The Scene entry's actions, revealed inline instead of in a popup: the strip
+   is already the place the artist is looking. */
+.take-scene-menu {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	gap: 6px 10px;
+	padding-left: 10px;
+	border-left: 1px solid var(--line2);
+}
+
+.take-scene-action {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.take-scene-menu .btn {
+	height: 26px;
+	padding: 0 10px;
+	font-size: 11px;
+	white-space: nowrap;
+}
+
+.take-scene-advanced {
+	min-width: 220px;
+	font-size: 11px;
+}
+
+.take-scene-advanced > summary {
+	cursor: pointer;
+	color: var(--muted);
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: .03em;
+}
+
+.take-scene-advanced > summary:hover {
+	color: var(--fg);
+}
+
+.take-recipe-summary {
+	margin-top: 4px;
+	opacity: .8;
+	font-variant-numeric: tabular-nums;
+}
+
+/* The version strip. Numbered because the numbers are what the artist says out
+   loud ("go back to v2"); the label rides underneath so a chip explains what it
+   is without a hover, and the current take is the one with the accent under it. */
+.take-version-strip {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+	margin-left: auto;
+}
+
+.take-version-chip {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0;
+	min-width: 34px;
+	max-width: 120px;
+	padding: 2px 7px;
+	border: 1px solid var(--line2);
+	border-radius: 3px;
+	background: var(--bg);
+	color: var(--muted);
+	font: inherit;
+	cursor: pointer;
+}
+
+.take-version-chip:hover {
+	background: var(--hover);
+	color: var(--fg);
+}
+
+.take-version-chip b {
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+}
+
+.take-version-chip small {
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 9px;
+	opacity: .75;
+}
+
+.take-version-chip.current {
+	border-color: var(--accent);
+	color: var(--fg);
+	box-shadow: inset 0 -2px var(--accent);
+}
+
+/* A replayed refinement that failed or straddled a block boundary. Non-blocking
+   by contract (C10): the take is loaded and playing, so this is a line to read,
+   not an error to clear. Full width so it never squeezes the chips. */
+.replay-notice {
+	flex-basis: 100%;
+	margin: 0;
+	font-size: 10px;
+	line-height: 1.4;
+	color: var(--warn, #ff9c6e);
+}
