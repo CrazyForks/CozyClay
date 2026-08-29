@@ -9070,10 +9070,41 @@ input[type=range] {
 	position: absolute;
 	inset: 0;
 	z-index: 7;
-	/* Crosshair, not grab: this surface draws, it does not orbit. */
-	cursor: crosshair;
-	/* The stroke is a drag; without this, touch scrolls the page instead. */
-	touch-action: none;
+	/* THE OVERLAY IS INERT. It paints the joint's path and nothing else: every
+	   pointer goes straight through to the WebGL canvas underneath, so orbit,
+	   pan and click-to-select keep working while the mode is on. The grab is
+	   decided by a capture-phase listener on .stage, which consumes the event
+	   only when the pointer actually lands on the curve — see
+	   onLineStagePointerDown. A surface that swallowed pointers would have made
+	   the mode unusable, since judging a correction means looking at it from
+	   other angles.
+	   Both `cursor` and `touch-action` therefore belong to the canvas below,
+	   not here; `:active` stays in the selector only so the viewport section's
+	   more specific `.stage canvas:active` cannot reintroduce a cursor on an
+	   element that can never be hovered. */
+	pointer-events: none;
+	cursor: inherit;
+}
+/* Grab affordance while the mode is on, driven by a data attribute the stage
+   carries: "hover" whenever the pointer is within grab distance of the curve,
+   "drag" while one is held. Written on the DOM node rather than through React
+   because the hover test runs at pointer cadence and must not re-render an 11k
+   -line component; the same reason lineDragRef is a ref.
+   The scene's own cursor is ALREADY `grab`, so `hover` changes nothing visually
+   on its own — the visible affordance is the marker swelling under the pointer
+   (see paintLineOverlay). It is spelled out anyway so the three states are real
+   and one place decides them. `drag` is the one that does work: the grab
+   pointerdown calls preventDefault, which suppresses `:active` on the canvas,
+   so `grabbing` has to be asserted rather than inherited. Specificity beats
+   `.stage canvas:active` (0,2,1) by tying it and landing later in the cascade;
+   the `:active` twin removes even that doubt. */
+.stage[data-line-grab="hover"] canvas,
+.stage[data-line-grab="hover"] canvas:active {
+	cursor: grab;
+}
+.stage[data-line-grab="drag"] canvas,
+.stage[data-line-grab="drag"] canvas:active {
+	cursor: grabbing;
 }
 
 /* The mode's controls, folded under the toggle inside the preserve region. The
@@ -9101,6 +9132,23 @@ input[type=range] {
 }
 .line-edit-range-row span {
 	opacity: .6;
+}
+/* The falloff width, slider plus its value in frames. Same flat row as the
+   range above so the two read as one stack of settings. */
+.line-edit-radius-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.line-edit-radius-row input[type="range"] {
+	flex: 1;
+	min-width: 0;
+}
+.line-edit-radius-value {
+	flex: none;
+	opacity: .75;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
 }
 /* Wave 2 has not landed: the mode is fully usable, only the send is waiting.
    Stated in the panel's own quiet voice rather than by disabling the tool. */

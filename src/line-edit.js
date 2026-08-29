@@ -1,9 +1,12 @@
 /**
  * Line editing (ProjFlow, contract C6) — the pure half.
  *
- * The user draws a 2D polyline over the render viewport and one joint is made
- * to follow it EXACTLY. Everything in this file is the part of that feature
- * that has no DOM, no React and no three.js in it: pointer samples in, a wire
+ * The joint's EXISTING screen trajectory is drawn over the viewport and the
+ * user grabs a point on it and pulls; the curve deforms under a Gaussian
+ * falloff and the deformed curve is what the box is made to follow EXACTLY.
+ * (This is the Disney scheduled-inpainting figure-1 interaction: drag the dots
+ * on the motion curve.) Everything in this file is the part of that feature
+ * that has no DOM, no React and no three.js in it: a projected curve in, a wire
  * payload out. It is kept separate from App.jsx for two reasons —
  *
  *   1. the camera maths below is the one place where a sign error produces a
@@ -56,100 +59,54 @@ export const LINE_EDIT_TRACK_IDS = Object.freeze([
  * The box builds TWO affine rows per constrained sample and then factorises an
  * m x m system (Cholesky, per the C7 amendment). 64 points is 128 rows, which
  * is comfortably inside what the sampler solves per ODE step, and it is far
- * more resolution than a hand-drawn stroke on a ~1000 px viewport carries. A
- * raw pointer drag easily produces 300+ samples; sending them would cost solve
- * time for sub-pixel detail nobody drew on purpose. */
+ * more resolution than the deformed trajectory carries. A 200-frame range is
+ * 200 curve points; sending them all would cost solve time for detail the
+ * Gaussian falloff made smooth on purpose. */
 export const MAX_LINE_POINTS = 64;
 
 /** A polyline needs at least a start and an end (C6: `>= 2 points`). */
 export const MIN_LINE_POINTS = 2;
 
-/** Consecutive samples closer than this in normalized uv are the same point.
- * At 1e-3 of a 1000 px viewport that is one pixel — below it the stroke is
- * pointer jitter while the finger is still, not drawn intent. */
-export const MIN_POINT_GAP = 1e-3;
+/** How many curve points at EACH end are hard-pinned to the original
+ * trajectory — never moved by a drag, never grabbable.
+ *
+ * This is the seam fix, and it is the reason this interaction replaced
+ * freehand drawing. Gate GP2 measured it: an arbitrary drawn line pops the
+ * take 3.9x/8.0x its own median frame delta at the range edges (the joint
+ * teleports to wherever the stroke started), while a line whose ENDPOINTS sit
+ * on the joint's own trajectory collapses that to 1.67x/1.09x. A Gaussian
+ * never actually reaches zero — at 6 sigma it is still ~1e-8, and at the more
+ * realistic "grab three frames from the end with radius 40" it is a very
+ * visible fraction — so relying on the falloff alone would leave the endpoint
+ * OFF the original trajectory by an amount that depends on where the user
+ * happened to grab. Pinning makes the seam property structural instead of
+ * probabilistic: points [0, 1] and [n-2, n-1] are returned byte-identical by
+ * dragCurve, so the edit's first and last constrained frames are always
+ * exactly where the take already put the joint. Two rather than one because a
+ * single pinned frame still lets the SLOPE jump at the seam. */
+export const PINNED_CURVE_ENDS = 2;
 
-/** How far the camera may drift after a stroke was committed before the stroke
- * is thrown away. The captured extrinsics and the drawn uv are a MATCHED PAIR:
- * once the user orbits, the same uv names a different ray and the box would
- * solve for a line the user never drew. 1e-4 is tighter than any deliberate
- * nudge and looser than float noise from re-deriving the same matrix. */
+/** Influence-radius bounds, in FRAMES, for the panel's slider. 2 is a local
+ * nudge (one gesture beat); 40 at 20 fps is two seconds, past which a drag
+ * stops being an edit and becomes a different motion. */
+export const DRAG_RADIUS_MIN = 2;
+export const DRAG_RADIUS_MAX = 40;
+export const DRAG_RADIUS_DEFAULT = 8;
+
+/** Below this weight a point is "not really being dragged": used to draw the
+ * influenced span in the overlay so the number on the slider has a visible
+ * meaning. Not used to zero anything — dragCurve applies the true weight. */
+export const DRAG_WEIGHT_EPSILON = 0.05;
+
+/** Grab tolerance for the hit test, in CSS pixels. */
+export const CURVE_GRAB_RADIUS_PX = 14;
+
+/** How far the camera may drift under a pulled curve before the pull is thrown
+ * away. The captured extrinsics and the authored uv are a MATCHED PAIR: once
+ * the user orbits, the same uv names a different ray and the box would solve
+ * for a path the user never aimed at. 1e-4 is tighter than any deliberate nudge
+ * and looser than float noise from re-deriving the same matrix. */
 export const CAMERA_DRIFT_EPSILON = 1e-4;
-
-const clamp01 = (value) => (value < 0 ? 0 : value > 1 ? 1 : value);
-
-/**
- * Raw pointer samples -> the `points2d` C6 sends.
- *
- * Input is `[[u, v], ...]` already normalized into the RENDER viewport (0..1,
- * u left->right, v top->bottom — see cameraToC6 for why v points down). Output
- * is the same convention, deduped and resampled.
- *
- * Resampling is EVEN BY ARC LENGTH, not by sample index, and that choice is
- * semantic rather than cosmetic: the box distributes the points across
- * frameRange, so evenly-spaced-in-space points mean constant speed along the
- * drawn line. Index-even resampling would instead encode how fast the user's
- * hand happened to move, which is noise — a slow corner would become a
- * slow-motion beat in the take.
- *
- * Returns null when there is no line: fewer than two distinct points, or a
- * stroke of zero total length (a tap).
- */
-export function normalizePointerPoints(points, { maxPoints = MAX_LINE_POINTS, minGap = MIN_POINT_GAP } = {}) {
-	if (!Array.isArray(points)) return null;
-	// Pass 1: keep only finite pairs, clamp into the viewport, and drop any
-	// sample that has not moved away from the one before it. Pointer events
-	// repeat at the same coordinate whenever the finger pauses, and a run of
-	// identical points would make the arc-length walk below divide by zero.
-	const cleaned = [];
-	for (const point of points) {
-		if (!Array.isArray(point) || point.length < 2) continue;
-		const u = Number(point[0]);
-		const v = Number(point[1]);
-		if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
-		const next = [clamp01(u), clamp01(v)];
-		const previous = cleaned[cleaned.length - 1];
-		if (previous && Math.hypot(next[0] - previous[0], next[1] - previous[1]) < minGap) continue;
-		cleaned.push(next);
-	}
-	if (cleaned.length < MIN_LINE_POINTS) return null;
-
-	// Cumulative arc length. `total` is also the "was this a tap?" test: a
-	// stroke that never left its start has nothing to resample along.
-	const cumulative = [0];
-	for (let i = 1; i < cleaned.length; i += 1) {
-		const dx = cleaned[i][0] - cleaned[i - 1][0];
-		const dy = cleaned[i][1] - cleaned[i - 1][1];
-		cumulative.push(cumulative[i - 1] + Math.hypot(dx, dy));
-	}
-	const total = cumulative[cumulative.length - 1];
-	if (!(total > 0)) return null;
-
-	// Never UPSAMPLE: inventing points between two drawn samples would tell the
-	// box the user constrained frames they never touched. The cap is the only
-	// thing that ever reduces the count.
-	const count = Math.max(MIN_LINE_POINTS, Math.min(maxPoints, cleaned.length));
-	const out = [];
-	let cursor = 0;
-	for (let i = 0; i < count; i += 1) {
-		const target = (total * i) / (count - 1);
-		while (cursor < cumulative.length - 2 && cumulative[cursor + 1] < target) cursor += 1;
-		const spanStart = cumulative[cursor];
-		const spanEnd = cumulative[cursor + 1];
-		const span = spanEnd - spanStart;
-		// A zero-length span cannot happen after the dedupe above, but the guard
-		// keeps a NaN out of the wire if minGap is ever configured to 0.
-		const t = span > 0 ? (target - spanStart) / span : 0;
-		const a = cleaned[cursor];
-		const b = cleaned[cursor + 1];
-		out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
-	}
-	// The endpoints are what the user actually aimed at; floating-point walking
-	// can leave them a hair short. Pin them back exactly.
-	out[0] = cleaned[0].slice();
-	out[out.length - 1] = cleaned[cleaned.length - 1].slice();
-	return out;
-}
 
 /**
  * The rendering camera -> the C6 `camera` block: { fx, fy, cx, cy, R, t }.
@@ -170,7 +127,7 @@ export function normalizePointerPoints(points, { maxPoints = MAX_LINE_POINTS, mi
  * has to assume a centred principal point.
  *
  * AXES. u runs left->right and v runs TOP->BOTTOM, matching both the DOM
- * pointer coordinates the stroke was captured in and the OpenCV image
+ * pointer coordinates the curve is grabbed in and the OpenCV image
  * convention. three.js NDC has y running bottom->top, so v is the flipped one:
  *   u = (x_ndc + 1) / 2
  *   v = (1 - y_ndc) / 2
@@ -197,8 +154,8 @@ export function normalizePointerPoints(points, { maxPoints = MAX_LINE_POINTS, mi
  * @param {number[]} view.matrixWorldInverse  16 numbers, three's column-major
  *   `elements` order, world -> three-camera.
  * @param {number} view.width    render viewport width in CSS px — the exact
- * @param {number} view.height   rectangle the stroke's uv were normalized by.
- *   Only used to catch a caller that measured the stroke against a different
+ * @param {number} view.height   rectangle the curve's uv are normalized by.
+ *   Only used to catch a caller that measured the curve against a different
  *   rectangle than the one the camera actually drew into.
  */
 export function cameraToC6({ fovDeg, aspect, matrixWorldInverse, width, height }) {
@@ -223,7 +180,7 @@ export function cameraToC6({ fovDeg, aspect, matrixWorldInverse, width, height }
 	if (Math.abs(width / height - aspect) > 1e-3 * aspect) {
 		throw new Error(
 			`cameraToC6: viewport aspect ${(width / height).toFixed(4)} does not match camera aspect ${aspect.toFixed(4)} — ` +
-			"the stroke was measured against a rectangle the camera did not draw into",
+			"the curve was measured against a rectangle the camera did not draw into",
 		);
 	}
 
@@ -249,11 +206,11 @@ export function cameraToC6({ fovDeg, aspect, matrixWorldInverse, width, height }
 }
 
 /**
- * Project a world point through a C6 camera block into the same uv the stroke
- * lives in. Used for the drawing overlay's "here is where this joint goes
- * today" ghost line, and it is the direct inverse-check of cameraToC6: if a
- * projected joint does not land on the joint the user sees, the convention
- * above is wrong and the ghost makes that visible immediately.
+ * Project a world point through a C6 camera block into the uv the curve lives
+ * in. It is what builds the editable trajectory below, and it is the direct
+ * inverse-check of cameraToC6: if a projected joint does not land on the joint
+ * the user sees, the convention above is wrong and the curve makes that visible
+ * immediately.
  *
  * Returns null for points at or behind the lens (depth <= 0), which have no
  * image.
@@ -267,14 +224,215 @@ export function projectPointC6(camera, x, y, z) {
 	return [cx + (fx * xc) / zc, cy + (fy * yc) / zc];
 }
 
+/* ===================== the editable trajectory curve =======================
+ * A "curve" throughout this file is a DENSE, FRAME-INDEXED array: one entry per
+ * frame of the edit range, in order, either `{ frame, u, v }` or `null` for a
+ * frame whose joint is behind the lens and therefore has no image.
+ *
+ * Dense-and-frame-indexed is the load-bearing property. C6 spreads points2d
+ * across frameRange, so index i of the curve IS frame startFrame + i; that is
+ * what lets a drag mean "move the joint at THIS moment" instead of "move this
+ * point of a shape", and it is why the falloff below is measured in frames.
+ * Nothing in here compacts the array — nulls keep their slot.
+ * ========================================================================== */
+
+/** Is this curve point inside the drawable viewport?
+ *
+ * A point can leave 0..1 two ways: it was already offscreen when the trail was
+ * projected (the joint is out of frame at that moment), or a drag pushed it
+ * out. Both are the same fact for the UI — it cannot be grabbed and it cannot
+ * be sent, because the bridge refuses points2d outside 0..1. */
+export function isCurvePointOnScreen(point) {
+	return !!point && point.u >= 0 && point.u <= 1 && point.v >= 0 && point.v <= 1;
+}
+
+/** Is this index one of the hard-pinned ends? See PINNED_CURVE_ENDS. */
+export function isCurveEndPinned(index, length) {
+	return index < PINNED_CURVE_ENDS || index >= length - PINNED_CURVE_ENDS;
+}
+
 /**
- * Has the camera moved out from under a committed stroke?
+ * Gaussian falloff weight for a point `distanceFrames` away from the grab.
+ *
+ * sigma = radius/2, so `radiusFrames` reads as "the span I am pulling": the
+ * weight is 1 at the grab, 0.61 at radius/2, 0.135 at the radius itself and
+ * ~1e-4 at twice it. Exported (rather than inlined in dragCurve) because the
+ * overlay paints the influenced span with the SAME formula — two independent
+ * spellings of one falloff is how the drawn highlight drifts from the applied
+ * deformation.
+ *
+ * NOT the smoothstep in motion-trail.js: that one is compact (exactly 0 at the
+ * radius) because it edits 3D world positions where a hard boundary is fine.
+ * Here a C1 tail is what keeps the deformed trajectory from developing a crease
+ * the sampler would then have to follow exactly.
+ */
+export function dragWeight(distanceFrames, radiusFrames) {
+	const radius = Number(radiusFrames);
+	const distance = Number(distanceFrames);
+	if (!Number.isFinite(distance)) return 0;
+	if (!(radius > 0)) return distance === 0 ? 1 : 0;
+	const sigma = radius / 2;
+	return Math.exp(-(distance * distance) / (2 * sigma * sigma));
+}
+
+/**
+ * The joint's world-space trail -> the on-screen curve the user grabs.
+ *
+ * `trail` is the flat Float32Array from motion-trail's jointTrailPoints (3
+ * floats per frame of the WHOLE take); `frameRange` is C6's half-open app-clip
+ * range; `camera` is the C6 block the range will be sent with. Frames past the
+ * end of the trail and frames whose joint is behind the lens come back as
+ * null. Points OUTSIDE 0..1 are kept as they are — the joint really is over
+ * there, just not in shot, and the caller wants to say so rather than pretend
+ * the trajectory stops at the frame edge.
+ */
+export function projectTrailCurve({ trail, frameRange, camera }) {
+	if (!trail || !camera || !frameRange) return null;
+	const start = Math.max(0, Math.trunc(frameRange.startFrame));
+	const end = Math.trunc(frameRange.endFrame);
+	if (!(end > start)) return null;
+	const trailFrames = Math.floor(trail.length / 3);
+	const curve = [];
+	for (let frame = start; frame < end; frame += 1) {
+		if (frame >= trailFrames) {
+			curve.push(null);
+			continue;
+		}
+		const uv = projectPointC6(camera, trail[frame * 3], trail[frame * 3 + 1], trail[frame * 3 + 2]);
+		curve.push(uv ? { frame, u: uv[0], v: uv[1] } : null);
+	}
+	return curve;
+}
+
+/**
+ * Pull one point of the curve and let the neighbours follow — a new curve out,
+ * the input untouched.
+ *
+ * `du`/`dv` are the pointer's total travel since the grab, in normalized uv,
+ * and they are applied to the curve AS IT WAS AT GRAB TIME (the caller keeps
+ * that snapshot). That makes a single drag idempotent: moving the pointer back
+ * to where it started restores the curve exactly, and re-running the function
+ * with a different radius mid-drag re-derives the whole deformation instead of
+ * compounding it. Successive drags stack because each new grab snapshots the
+ * curve the previous one produced.
+ *
+ * Null points stay null (no image, nothing to move) and the outermost
+ * PINNED_CURVE_ENDS points on each side are returned by reference, unmoved —
+ * the seam guarantee, argued at that constant.
+ */
+export function dragCurve(curve, grabIndex, du, dv, radiusFrames) {
+	if (!Array.isArray(curve)) return curve;
+	const deltaU = Number(du);
+	const deltaV = Number(dv);
+	if (!Number.isFinite(deltaU) || !Number.isFinite(deltaV)) return curve;
+	const length = curve.length;
+	return curve.map((point, index) => {
+		if (!point) return null;
+		if (isCurveEndPinned(index, length)) return point;
+		const weight = dragWeight(index - grabIndex, radiusFrames);
+		// Not an approximation of zero — an untouched point must come back as
+		// the SAME object so an unedited stretch of curve compares equal to the
+		// original without a float epsilon.
+		if (weight === 0) return point;
+		return { frame: point.frame, u: point.u + deltaU * weight, v: point.v + deltaV * weight };
+	});
+}
+
+/**
+ * The edited curve -> the `points2d` C6 sends, or a refusal.
+ *
+ * Returns `{ points2d }` or `{ error }` where error is one of:
+ *   "empty"     — fewer than 2 points have an image at all
+ *   "offscreen" — some point sits outside 0..1, which the bridge refuses
+ *
+ * DOWNSAMPLING IS EVEN BY INDEX, i.e. even IN TIME, and that is the opposite
+ * of what the old freehand path did (even by arc length). The reason is that
+ * the two inputs mean different things. A freehand stroke carries no timing —
+ * the only sane reading is "constant speed along the shape", so arc-length
+ * spacing was right there. This curve is the joint's own trajectory: index i is
+ * frame startFrame + i, and the box spreads the points evenly across
+ * frameRange. Arc-length resampling would therefore RE-TIME the take — it
+ * would hand the slow parts of the motion fewer samples and the box would
+ * stretch them back out to equal duration, turning a pause into a glide. Even
+ * index sampling keeps every sent point on the frame it was projected from.
+ *
+ * The first and last kept points are always included, so the pinned endpoints
+ * from dragCurve survive into the payload rather than being resampled away.
+ */
+export function curveToPoints2d(curve) {
+	const visible = Array.isArray(curve) ? curve.filter(Boolean) : [];
+	if (visible.length < MIN_LINE_POINTS) return { error: "empty" };
+	for (const point of visible) {
+		if (!isCurvePointOnScreen(point)) return { error: "offscreen" };
+	}
+	const count = Math.min(MAX_LINE_POINTS, visible.length);
+	const last = visible.length - 1;
+	const points2d = [];
+	for (let i = 0; i < count; i += 1) {
+		// Rounded rather than floored so the sampling is symmetric about the
+		// middle; i = count-1 lands exactly on `last`, i = 0 exactly on 0.
+		const source = count === 1 ? 0 : Math.round((i * last) / (count - 1));
+		const point = visible[source];
+		points2d.push([point.u, point.v]);
+	}
+	return { points2d };
+}
+
+/**
+ * Which curve point is under the pointer? `{ index, dist }` or null.
+ *
+ * The hit test is in PIXELS, not uv, because uv distance is anisotropic: on a
+ * 16:9 pane one unit of u is nearly twice one unit of v, so a uv-radius grab
+ * zone is a visible ellipse and the curve is hardest to grab exactly where it
+ * runs vertically. paneW/paneH convert once, here.
+ *
+ * Points with no image, points outside the viewport and the pinned ends are
+ * all skipped — a marker the user can grab but that cannot move is worse than
+ * no marker, so the overlay does not draw those as draggable either.
+ */
+export function nearestCurvePoint(curve, u, v, maxDistPx, paneW, paneH) {
+	if (!Array.isArray(curve) || !(paneW > 0) || !(paneH > 0)) return null;
+	let best = null;
+	for (let index = 0; index < curve.length; index += 1) {
+		const point = curve[index];
+		if (!isCurvePointOnScreen(point)) continue;
+		if (isCurveEndPinned(index, curve.length)) continue;
+		const dx = (point.u - u) * paneW;
+		const dy = (point.v - v) * paneH;
+		const dist = Math.hypot(dx, dy);
+		if (dist > maxDistPx) continue;
+		if (!best || dist < best.dist) best = { index, dist };
+	}
+	return best;
+}
+
+/** Are these two curves the same curve? The "has the user actually pulled
+ * anything yet?" test, and the reason dragCurve returns untouched points by
+ * reference: an unmoved curve compares equal exactly, with no tolerance to
+ * choose. Compared on value anyway so a rebuilt-but-identical curve (a camera
+ * re-projection that landed in the same place) also reads as unedited. */
+export function curvesEqual(a, b) {
+	if (a === b) return true;
+	if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i += 1) {
+		const pa = a[i];
+		const pb = b[i];
+		if (pa === pb) continue;
+		if (!pa || !pb) return false;
+		if (pa.frame !== pb.frame || pa.u !== pb.u || pa.v !== pb.v) return false;
+	}
+	return true;
+}
+
+/**
+ * Has the camera moved out from under the curve?
  *
  * Compared on the C6 block itself rather than on three's camera object, so the
  * test is on exactly the numbers that were sent — a re-derived but identical
- * pose reads as "not moved" even after a matrix rebuild. A true means the
- * stroke must be discarded, never re-interpreted: there is no correct way to
- * re-project a 2D line drawn through a different lens.
+ * pose reads as "not moved" even after a matrix rebuild. A true means the curve
+ * must be re-projected from the new camera and any deformation on it dropped,
+ * never re-interpreted: there is no correct way to read 2D offsets authored
+ * through one lens as offsets through another.
  */
 export function cameraDrifted(a, b, epsilon = CAMERA_DRIFT_EPSILON) {
 	if (!a || !b) return true;

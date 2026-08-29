@@ -32,13 +32,26 @@ import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
 import { DualRender, GIZMO_LAYER, fitAspect } from "./dualview.jsx";
 import {
+	CURVE_GRAB_RADIUS_PX,
+	DRAG_RADIUS_DEFAULT,
+	DRAG_RADIUS_MAX,
+	DRAG_RADIUS_MIN,
+	DRAG_WEIGHT_EPSILON,
 	LINE_EDIT_TRACK_IDS,
 	MAX_LINE_POINTS,
+	MIN_LINE_POINTS,
+	PINNED_CURVE_ENDS,
 	cameraDrifted,
 	cameraToC6,
+	curveToPoints2d,
+	curvesEqual,
+	dragCurve,
+	dragWeight,
+	isCurveEndPinned,
+	isCurvePointOnScreen,
 	isLineEditUnsupported,
-	normalizePointerPoints,
-	projectPointC6,
+	nearestCurvePoint,
+	projectTrailCurve,
 	validateLineEdit,
 } from "./line-edit.js";
 import { Room, StageLights } from "./room.jsx";
@@ -644,31 +657,47 @@ function preserveTracksSummary(tracks) {
 }
 
 /* --------------------------- line editing (C6) ---------------------------
- * "Draw a line on screen and the joint follows it exactly" (ProjFlow). The
- * arithmetic lives in ./line-edit.js; what stays here is the panel's own
- * vocabulary and the one thing App owns that the pure module cannot — the
- * mapping from a track id to a HUMAN LABEL, which is read straight out of
- * ik.js's three tables so the picker can never drift from the pose studio's
- * own naming. An id in LINE_EDIT_TRACK_IDS with no entry in those tables is a
- * bug, and falling back to the raw id makes it visible instead of silent. */
+ * "Grab the joint's motion path and pull it; the joint follows the pulled path
+ * exactly" (ProjFlow). The arithmetic lives in ./line-edit.js; what stays here
+ * is the panel's own vocabulary and the one thing App owns that the pure module
+ * cannot — the mapping from a track id to a HUMAN LABEL, which is read straight
+ * out of ik.js's three tables so the picker can never drift from the pose
+ * studio's own naming. An id in LINE_EDIT_TRACK_IDS with no entry in those
+ * tables is a bug, and falling back to the raw id makes it visible instead of
+ * silent. */
 const LINE_EDIT_TRACK_OPTIONS = LINE_EDIT_TRACK_IDS.map((id) => ({
 	value: id,
 	label: [...IK_TRACKS, ...MID_TRACKS, ...FK_TRACKS].find((track) => track.id === id)?.label ?? id,
 }));
-/** The default drawing track: a wrist is the joint the paper's own demo draws
+/** The default edited track: a wrist is the joint the paper's own demo draws
  * with, and the one whose screen trajectory a user can actually see. */
 const LINE_EDIT_DEFAULT_TRACK = "leftHand";
+/** Draw a grab handle every Nth frame. Fewer would leave the curve looking
+ * un-grabbable in the gaps; more turns a 200-frame range into a solid bead of
+ * dots. The hit test tolerates CURVE_GRAB_RADIUS_PX regardless, so the handles
+ * are an affordance rather than the actual geometry. */
+const LINE_CURVE_MARKER_STRIDE = 4;
+/** The shortest curve with anything draggable in it: both ends are hard-pinned
+ * to the original trajectory, so a range needs more than 2 x PINNED_CURVE_ENDS
+ * frames before the middle can move at all. */
+const MIN_CURVE_POINTS = PINNED_CURVE_ENDS * 2 + 1;
 /** Why a validateLineEdit code refused, said once, in the user's language.
  * Keyed by the pure module's stable codes so the copy and the check can never
  * disagree about which field was wrong. */
 const LINE_EDIT_REFUSALS = {
-	sourceMotion: ["The current take has no bridge source — generate it once before drawing a line", "현재 테이크에 브리지 원본이 없어요 — 선을 그리기 전에 한 번 생성하세요"],
-	track: ["Pick a joint to draw with first", "먼저 선을 그릴 관절을 고르세요"],
+	sourceMotion: ["The current take has no bridge source — generate it once before editing a path", "현재 테이크에 브리지 원본이 없어요 — 궤적을 편집하기 전에 한 번 생성하세요"],
+	track: ["Pick a joint to edit first", "먼저 편집할 관절을 고르세요"],
 	frameRange: ["The frame range must sit inside the clip and span at least 2 frames", "프레임 구간은 클립 안에 있어야 하고 최소 2프레임이어야 해요"],
-	points: ["Draw a longer line — a tap is not a path", "선을 좀 더 길게 그려 주세요 — 점 하나는 경로가 아니에요"],
-	camera: ["The camera could not be captured — nudge the view and draw again", "카메라를 캡처하지 못했어요 — 뷰를 조금 움직인 뒤 다시 그려 주세요"],
+	points: ["Pull a longer stretch of the path — a single point is not a path", "궤적을 좀 더 길게 잡아당겨 주세요 — 점 하나는 경로가 아니에요"],
+	camera: ["The camera could not be captured — nudge the view and try again", "카메라를 캡처하지 못했어요 — 뷰를 조금 움직인 뒤 다시 시도하세요"],
 	prompt: ["The motion prompt is not usable for a line edit", "모션 프롬프트를 라인 편집에 쓸 수 없어요"],
 	shape: ["The line edit could not be assembled", "라인 편집을 구성하지 못했어요"],
+};
+/** Why curveToPoints2d refused. Same shape, different stage: these are about
+ * the CURVE, before there is a payload to validate. */
+const LINE_CURVE_REFUSALS = {
+	empty: ["This joint is not visible over the chosen frames — frame it in view first", "선택한 구간에서 이 관절이 보이지 않아요 — 먼저 화면 안에 들어오도록 잡아 주세요"],
+	offscreen: ["The pulled path leaves the frame — keep it inside the dashed border", "잡아당긴 궤적이 화면을 벗어났어요 — 점선 테두리 안에 두세요"],
 };
 
 // Named ingest failures, in both locales. A reason the user cannot act on is
@@ -4521,25 +4550,43 @@ globalThis.playMode = centerTab === "play";
 	const [pendingWaypointFrame, setPendingWaypointFrame] = useState(null);
 
 	/* ------------------------------ line editing ---------------------------
-	 * Contract C6. A modal drawing surface exactly like waypointMode above,
-	 * but the stroke is captured in SCREEN space on a 2D overlay canvas rather
-	 * than raycast onto the floor — depth is the model's problem, not the UI's.
+	 * Contract C6. A modal editing surface exactly like waypointMode above,
+	 * but it works in SCREEN space on a 2D overlay canvas rather than raycast
+	 * onto the floor — depth is the model's problem, not the UI's.
 	 *
-	 * `lineStroke` is the COMMITTED stroke and it holds the camera that was
-	 * live at pointerup, not a reference to the live camera. That pairing is
-	 * the whole safety story: normalized uv only mean something through the
-	 * lens they were drawn with, so the camera is frozen beside the points and
-	 * the pair is discarded together the moment the view moves (see the drift
-	 * watcher further down). `lineDraftRef` is the in-flight drag; it is a ref
-	 * because a pointermove must repaint the overlay without re-rendering an
-	 * 11k-line component 200 times a second. */
+	 * The interaction is TRAJECTORY DRAGGING, not freehand drawing: the joint's
+	 * existing path is projected onto the viewport and the user grabs a point
+	 * on it and pulls, with a Gaussian falloff carrying the neighbours along.
+	 * Freehand was measured to be the worse tool — an arbitrary line pops the
+	 * take 8x its own frame delta at the range edges, because the joint has to
+	 * teleport to wherever the stroke began (gate GP2). Here the range edges
+	 * are pinned to the original trajectory by construction.
+	 *
+	 * `lineCurve` is non-null EXACTLY WHEN THERE IS AN EDIT, and that invariant
+	 * is the whole camera policy in one sentence. Null means the curve is
+	 * re-projected from the LIVE camera on every repaint, so orbiting the view
+	 * carries the path along and navigation never fights the mode. Non-null is
+	 * `{ camera, original, edited }` — one object, because a pull is a 2D offset
+	 * that only means something through the lens it was authored with, so the
+	 * camera is frozen beside the points and moving the view discards the pull
+	 * and returns to following (see the drift watcher further down).
+	 *
+	 * The three refs never re-render: `lineDragRef` is the in-flight grab and
+	 * carries the live deformed curve, `lineLiveRef` caches the last projection
+	 * the painter made so the hit test does not redo it, and `lineHoverRef` is
+	 * the marker under the pointer. A pointermove must repaint the overlay
+	 * without re-rendering an 11k-line component 200 times a second, so the
+	 * painter reads the refs and only pointerup commits to state. */
 	const [lineEditMode, setLineEditMode] = useState(false);
 	const [lineTrack, setLineTrack] = useState(LINE_EDIT_DEFAULT_TRACK);
 	// null means "the whole clip" — resolved against the loaded take at use
 	// time so loading a different clip cannot leave a stale range behind.
 	const [lineRange, setLineRange] = useState(null);
-	const [lineStroke, setLineStroke] = useState(null);
-	const lineDraftRef = useRef(null);
+	const [lineCurve, setLineCurve] = useState(null);
+	const [lineRadius, setLineRadius] = useState(DRAG_RADIUS_DEFAULT);
+	const lineDragRef = useRef(null);
+	const lineLiveRef = useRef(null);
+	const lineHoverRef = useRef(null);
 	const lineOverlayRef = useRef(null);
 	// Wave-2 gate: the bridge only routes lineEdit once M4's routing lands.
 	// Until the /ardy/health payload says so, the request is never sent —
@@ -6954,7 +7001,7 @@ globalThis.playMode = centerTab === "play";
 	function toggleIkMode() {
 		const next = !ikMode;
 		// Authoring modes are mutually exclusive: IK mode swaps the main pane to
-		// the poser camera, which would silently invalidate any drawn line
+		// the poser camera, which would silently invalidate any pulled path
 		// anyway. Leaving the line mode explicitly says so instead.
 		if (next && lineEditMode) exitLineEditMode();
 		if (next) {
@@ -7783,20 +7830,30 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 
 	/* ======================= line editing (contract C6) =======================
-	 * Draw a 2D polyline over the viewport; one joint follows it exactly.
+	 * Grab the joint's own motion path on the viewport and pull it; the joint
+	 * then follows the pulled path exactly.
 	 *
-	 * Three invariants hold this together and every function below serves one
+	 * Four invariants hold this together and every function below serves one
 	 * of them:
-	 *   1. THE STROKE AND THE CAMERA ARE ONE OBJECT. uv only mean something
-	 *      through the lens they were drawn with, so the camera is captured at
-	 *      pointerup, stored next to the points, and both are dropped together
-	 *      when the view moves. Nothing re-projects an old stroke.
-	 *   2. THE OVERLAY NEVER TOUCHES THE SCENE GRAPH. It is a plain 2D canvas
-	 *      stacked on the stage, so a stroke cannot disturb playback, picking
+	 *   1. THE CURVE AND THE CAMERA ARE ONE OBJECT. uv only mean something
+	 *      through the lens they were projected with, so the camera is captured
+	 *      when the curve is built, stored next to it, and the pair is rebuilt
+	 *      together when the view moves. Nothing re-reads old uv through a new
+	 *      lens.
+	 *   2. THE EDIT IS A DEFORMATION OF THE TAKE, NOT A REPLACEMENT OF IT. The
+	 *      curve starts as the joint's current trajectory and the falloff pins
+	 *      its ends there, so the first and last constrained frames always
+	 *      agree with the take. That is the seam fix GP2 measured: 8.0x median
+	 *      frame delta for an arbitrary line, 1.09x when the ends sit on the
+	 *      joint's own path.
+	 *   3. THE OVERLAY NEVER TOUCHES THE SCENE GRAPH. It is a plain 2D canvas
+	 *      stacked on the stage, so an edit cannot disturb playback, picking
 	 *      or the render loop, and it works identically in every view mode.
-	 *   3. THE REQUEST IS ITS OWN RUN. C6 makes lineEdit exclusive with
+	 *   4. THE REQUEST IS ITS OWN RUN. C6 makes lineEdit exclusive with
 	 *      preserve/waypoints/segments/motionEdit, so runLineEdit builds a
-	 *      dedicated body instead of decorating runArdy's. */
+	 *      dedicated body instead of decorating runArdy's. The WIRE SHAPE is
+	 *      untouched by the interaction change: points2d is still a <=64-point
+	 *      viewport-normalized polyline. */
 
 	/** The loaded take's length on the TIMELINE clock — C6's frameRange is in
 	 * app clip frames and, unlike waypoints or motionEdit, is never converted
@@ -7812,12 +7869,47 @@ function resizePromptClip(id, edge, rawFrame) {
 		return { startFrame: start, endFrame: end };
 	}, [lineRange, lineClipFrames]);
 
+	/** Has the user pulled anything yet? The Generate gate, and the reason the
+	 * panel can say "pull first" instead of shipping a no-op edit. It is just
+	 * the state's existence: pointerup installs a curve only when the pull
+	 * actually moved something and clears it otherwise, so "there is a curve
+	 * object" and "there is an edit" are the same fact. */
+	const lineCurveDirty = !!lineCurve;
+	/** Frames of the range whose joint has no image (behind the lens or out of
+	 * frame). Those points cannot be grabbed and are dropped from the payload,
+	 * so the count is worth showing rather than leaving as a mystery gap. */
+	const lineCurveHidden = useMemo(
+		() => (lineCurve ? lineCurve.original.reduce((count, point) => count + (isCurvePointOnScreen(point) ? 0 : 1), 0) : 0),
+		[lineCurve],
+	);
+	/** How many points the box will actually receive — the curve is downsampled
+	 * to MAX_LINE_POINTS, and seeing the number keeps "64" from being a
+	 * surprise buried in the contract. */
+	const lineCurvePointCount = useMemo(
+		() => (lineCurve ? Math.min(MAX_LINE_POINTS, lineCurve.original.length - lineCurveHidden) : 0),
+		[lineCurve, lineCurveHidden],
+	);
+
+	/** Change the influence radius. A live drag is re-derived from its snapshot
+	 * rather than left showing the old falloff, which is what makes the slider
+	 * legible: drag, then widen, and the same pull spreads under the finger. */
+	function changeLineRadius(next) {
+		const radius = Math.max(DRAG_RADIUS_MIN, Math.min(DRAG_RADIUS_MAX, Math.round(Number(next) || 0)));
+		setLineRadius(radius);
+		const drag = lineDragRef.current;
+		if (!drag) return;
+		// The drag carries its own radius so the window-level pointermove (which
+		// closed over the value at grab time) keeps agreeing with what is drawn.
+		drag.radius = radius;
+		drag.live = dragCurve(drag.snapshot, drag.index, drag.du, drag.dv, radius);
+	}
+
 	/** Which camera actually draws the MAIN pane right now, and the exact
 	 * rectangle it draws into.
 	 *
 	 * This mirrors DualRender's own branch order on purpose: the pane holds
 	 * different cameras in different modes, and the letterboxed shot views draw
-	 * into a fitAspect sub-rect rather than the whole pane. Measuring a stroke
+	 * into a fitAspect sub-rect rather than the whole pane. Measuring the curve
 	 * against the pane instead of the IMAGE would shift every point by the
 	 * width of the black bars. Plan and IK views return null — the plan camera
 	 * is orthographic (no pinhole intrinsics to send) and IK mode is mutually
@@ -7863,11 +7955,43 @@ function resizePromptClip(id, edge, rawFrame) {
 		}
 	}
 
+	/** Project the joint's trail for the current track and range through the
+	 * pane's LIVE camera. `{ camera, curve }`, or null when the view cannot
+	 * supply a usable lens right now — a refusal means "no curve", never "a
+	 * curve through some other camera".
+	 *
+	 * Deliberately the same sampler and the same arguments the old ghost line
+	 * used (jointTrailPoints + TRAIL_EFFECTOR_JOINTS), so the curve the user
+	 * grabs is the trajectory they were previously told to trace by hand.
+	 *
+	 * Cheap ON PURPOSE: while nothing has been pulled this runs once per
+	 * animation frame, and that is exactly what lets the path FOLLOW the camera
+	 * instead of fighting it. A few hundred pinhole projections is nothing
+	 * beside the WebGL frame it is drawn over. */
+	function projectLineCurve(pane) {
+		if (!pane || !motion || !lineEditRange) return null;
+		const camera = captureLineCamera(pane);
+		const jointName = TRAIL_EFFECTOR_JOINTS[lineTrack];
+		if (!camera || !jointName) return null;
+		const trail = jointTrailPoints(motion, jointName, { baseY: activeChar.y ?? 0, scale: activeChar.scale ?? 1 });
+		if (!trail) return null;
+		const curve = projectTrailCurve({ trail, frameRange: lineEditRange, camera });
+		if (!curve || curve.length < MIN_LINE_POINTS) return null;
+		return { camera, curve };
+	}
+
 	/** Repaint the whole overlay from scratch: the drawable frame, the joint's
-	 * CURRENT screen trajectory as a ghost, and the stroke (draft or
-	 * committed). Cheap enough to run per pointermove — one clear and a few
-	 * dozen line segments — and stateless, so there is no partial-repaint bug
-	 * class to have. */
+	 * ORIGINAL trajectory as a faint reference once there is something to
+	 * compare it against, the EDITED (or live) curve as the hero with its
+	 * draggable markers, and — while a grab is live — the span the falloff is
+	 * actually moving. Cheap enough to run per pointermove and stateless, so
+	 * there is no partial-repaint bug class to have.
+	 *
+	 * This is also where the "follow the camera" half of the camera policy
+	 * lives: with no edit in hand the curve is re-projected from the CURRENT
+	 * lens every frame, so orbiting drags the path around with the render. The
+	 * projection is cached in lineLiveRef for the hit test, which therefore
+	 * never has to re-derive what was just drawn. */
 	function paintLineOverlay() {
 		const canvas = lineOverlayRef.current;
 		const stage = stageRef.current;
@@ -7885,16 +8009,18 @@ function resizePromptClip(id, edge, rawFrame) {
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		ctx.clearRect(0, 0, width, height);
 		const pane = lineEditPane();
-		if (!pane) return;
+		if (!pane) {
+			lineLiveRef.current = null;
+			return;
+		}
 		// Stage-relative, because the canvas is stretched over the stage while
 		// the pane rect is measured in client coordinates.
 		const ox = pane.rect.x - stageBox.left;
 		const oy = pane.rect.y - stageBox.top;
-		const toPixels = (point) => [ox + point[0] * pane.rect.w, oy + point[1] * pane.rect.h];
 
 		// The drawable frame: the letterboxed shot views draw into less than the
-		// full pane, and a stroke outside this box would be normalized outside
-		// 0..1. Saying so with a border beats clamping silently.
+		// full pane, and a curve point outside this box is outside 0..1 and
+		// cannot be sent. Saying so with a border beats clamping silently.
 		ctx.save();
 		ctx.setLineDash([6, 5]);
 		ctx.strokeStyle = "rgba(255, 255, 255, .35)";
@@ -7902,197 +8028,326 @@ function resizePromptClip(id, edge, rawFrame) {
 		ctx.strokeRect(ox + .5, oy + .5, pane.rect.w - 1, pane.rect.h - 1);
 		ctx.restore();
 
-		// Ghost: where this joint ALREADY travels, over the chosen range, seen
-		// through the live camera. It is the answer to "which line am I
-		// replacing?" and it doubles as a live check on cameraToC6 — a wrong
-		// sign convention would draw the ghost somewhere the joint visibly is
-		// not. Reuses the motion-trail sampler rather than re-deriving anything.
-		const ghostCamera = captureLineCamera(pane);
-		const ghostJoint = TRAIL_EFFECTOR_JOINTS[lineTrack];
-		const trail = ghostCamera && ghostJoint && motion
-			? jointTrailPoints(motion, ghostJoint, { baseY: activeChar.y ?? 0, scale: activeChar.scale ?? 1 })
-			: null;
-		if (trail && lineEditRange) {
-			// Collected first so the halo pass and the colour pass trace the
-			// SAME path; two beginPath loops that each re-project would be the
-			// slow way to draw one line twice.
-			const ghostPx = [];
-			let firstUv = null;
-			for (let frame = lineEditRange.startFrame; frame < lineEditRange.endFrame && frame < motion.frames; frame += 1) {
-				const uv = projectPointC6(ghostCamera, trail[frame * 3], trail[frame * 3 + 1], trail[frame * 3 + 2]);
-				// A joint behind the lens has no image; break the path rather
-				// than drawing a straight line across the screen through it.
-				ghostPx.push(uv ? toPixels(uv) : null);
-				if (uv && !firstUv) firstUv = toPixels(uv);
-			}
-			const traceGhost = () => {
-				ctx.beginPath();
-				let started = false;
-				for (const px of ghostPx) {
-					if (!px) { started = false; continue; }
-					if (started) ctx.lineTo(px[0], px[1]);
-					else ctx.moveTo(px[0], px[1]);
-					started = true;
-				}
-				ctx.stroke();
-			};
-			ctx.save();
-			// Halo pass: a dark, wider underlay so the ghost reads on bright
-			// floors and skin tones alike — a 1.5px pale dash was invisible
-			// against anything lighter than the void.
-			ctx.lineJoin = "round";
-			ctx.lineCap = "round";
-			ctx.setLineDash([7, 6]);
-			ctx.strokeStyle = "rgba(0, 20, 40, .75)";
-			ctx.lineWidth = 5;
-			traceGhost();
-			ctx.strokeStyle = "rgba(120, 205, 255, .95)";
-			ctx.lineWidth = 2.5;
-			traceGhost();
-			// Where to START drawing: the seam is authored, and a line that
-			// begins on the joint's current position lands 1.1x the take's own
-			// frame delta at the seam, against 8x for a line begun in the void
-			// (measured, gate GP2). The pulsing dot is that guidance.
-			if (firstUv) {
-				const pulse = 1 + 0.25 * Math.sin(Date.now() / 220);
-				ctx.setLineDash([]);
-				ctx.fillStyle = "rgba(0, 20, 40, .8)";
-				ctx.beginPath();
-				ctx.arc(firstUv[0], firstUv[1], 8 * pulse, 0, Math.PI * 2);
-				ctx.fill();
-				ctx.fillStyle = "#78cdff";
-				ctx.beginPath();
-				ctx.arc(firstUv[0], firstUv[1], 5 * pulse, 0, Math.PI * 2);
-				ctx.fill();
-			}
-			ctx.restore();
+		// Which curve is on screen right now, in priority order: the one under
+		// the finger, the committed edit, or a fresh projection through the live
+		// camera. The live deformation has to win over the committed one because
+		// a pointermove writes only lineDragRef — reading state here would
+		// freeze the curve under the finger until pointerup.
+		const drag = lineDragRef.current;
+		const edit = drag ? { camera: drag.camera, original: drag.snapshot, edited: drag.live } : lineCurve;
+		let original = null;
+		let edited = null;
+		if (edit) {
+			// An edit pins the curve to the lens it was authored through; the
+			// cached live projection would disagree with it, so it is dropped
+			// rather than left to go stale.
+			lineLiveRef.current = null;
+			original = edit.original;
+			edited = edit.edited;
+		} else {
+			const live = projectLineCurve(pane);
+			lineLiveRef.current = live;
+			if (!live) return;
+			edited = live.curve;
 		}
+		const pointPx = (point) => [ox + point.u * pane.rect.w, oy + point.v * pane.rect.h];
+		/** Trace a frame-indexed curve, breaking the path at every null — a
+		 * frame whose joint is behind the lens has no image, and joining across
+		 * it would draw a straight line through the middle of the screen. */
+		const traceCurve = (curve, from = 0, to = curve.length - 1) => {
+			ctx.beginPath();
+			let started = false;
+			for (let index = Math.max(0, from); index <= Math.min(curve.length - 1, to); index += 1) {
+				const point = curve[index];
+				if (!point) { started = false; continue; }
+				const [px, py] = pointPx(point);
+				if (started) ctx.lineTo(px, py);
+				else ctx.moveTo(px, py);
+				started = true;
+			}
+			ctx.stroke();
+		};
 
-		// The stroke itself. A draft is what the finger is doing right now; a
-		// committed stroke is the resampled polyline that will actually be sent,
-		// drawn with its points visible so the user can see the resolution the
-		// box receives.
-		const draft = lineDraftRef.current;
-		const points = lineStroke?.points2d ?? draft;
-		if (!points || points.length < 1) return;
 		ctx.save();
 		ctx.lineJoin = "round";
 		ctx.lineCap = "round";
-		const traceStroke = () => {
-			ctx.beginPath();
-			points.forEach((point, index) => {
-				const [px, py] = toPixels(point);
-				if (index === 0) ctx.moveTo(px, py);
-				else ctx.lineTo(px, py);
-			});
-			ctx.stroke();
-		};
-		// Same two-pass treatment as the ghost: a dark halo keeps the stroke
-		// legible over any render, and a glow makes the COMMITTED line (the one
-		// that will actually be sent) unmistakable against the draft.
-		ctx.strokeStyle = "rgba(40, 24, 0, .8)";
-		ctx.lineWidth = lineStroke ? 9 : 7;
-		traceStroke();
-		if (lineStroke) {
-			ctx.shadowColor = "rgba(255, 210, 61, .9)";
-			ctx.shadowBlur = 10;
+
+		// (1) The ORIGINAL trajectory, faint, and ONLY while there is an edit to
+		// compare it with. It used to be the instruction ("draw something like
+		// this"); now it is a reference — how far the pull has taken the joint
+		// from where the take put it. Unedited it would sit exactly under the
+		// hero and just fatten the line.
+		if (original) {
+			ctx.setLineDash([7, 6]);
+			ctx.strokeStyle = "rgba(0, 20, 40, .45)";
+			ctx.lineWidth = 3;
+			traceCurve(original);
+			ctx.strokeStyle = "rgba(120, 205, 255, .5)";
+			ctx.lineWidth = 1.5;
+			traceCurve(original);
+			ctx.setLineDash([]);
 		}
-		ctx.strokeStyle = lineStroke ? "#ffd23d" : "rgba(255, 214, 80, .95)";
-		ctx.lineWidth = lineStroke ? 4.5 : 3.5;
-		traceStroke();
+
+		// (2) The curve in hand — the hero, and literally what gets sent. Two
+		// passes: a dark halo so it reads on bright floors and skin tones alike,
+		// then the glowing yellow the eye follows.
+		ctx.strokeStyle = "rgba(40, 24, 0, .8)";
+		ctx.lineWidth = 9;
+		traceCurve(edited);
+		ctx.shadowColor = "rgba(255, 210, 61, .9)";
+		ctx.shadowBlur = 10;
+		ctx.strokeStyle = "#ffd23d";
+		ctx.lineWidth = 4.5;
+		traceCurve(edited);
 		ctx.shadowBlur = 0;
-		if (lineStroke) {
-			for (const point of points) {
-				const [px, py] = toPixels(point);
-				ctx.fillStyle = "rgba(40, 24, 0, .85)";
-				ctx.beginPath();
-				ctx.arc(px, py, 4.5, 0, Math.PI * 2);
-				ctx.fill();
-				ctx.fillStyle = "#ffe27a";
-				ctx.beginPath();
-				ctx.arc(px, py, 2.8, 0, Math.PI * 2);
-				ctx.fill();
-			}
+
+		// (4) The influenced span, while a grab is live: the stretch the falloff
+		// is actually moving, drawn thicker and hotter. It is the only honest
+		// picture of what the influence slider does, and it walks out with the
+		// SAME dragWeight the deformation used rather than a redrawn guess.
+		if (drag) {
+			let from = drag.index;
+			let to = drag.index;
+			while (from > 0 && dragWeight(from - 1 - drag.index, drag.radius) > DRAG_WEIGHT_EPSILON) from -= 1;
+			while (to < edited.length - 1 && dragWeight(to + 1 - drag.index, drag.radius) > DRAG_WEIGHT_EPSILON) to += 1;
+			ctx.strokeStyle = "rgba(255, 245, 200, .95)";
+			ctx.lineWidth = 6;
+			traceCurve(edited, from, to);
+		}
+
+		// (3) The grab handles. Every 4th frame keeps a 200-frame range from
+		// turning into a solid bead of dots while still leaving a target within
+		// a couple of frames of wherever the pointer lands (the hit test
+		// tolerates 14 px anyway, so the dots are an affordance, not the
+		// geometry). Pinned ends and offscreen frames are deliberately NOT drawn
+		// as handles: nearestCurvePoint refuses them, and a dot that cannot be
+		// grabbed is worse than no dot. The hovered one swells, because the
+		// scene's own cursor is already `grab` and a cursor alone cannot say
+		// "this pointer would pick up the path rather than orbit the view".
+		const hovered = drag ? drag.index : lineHoverRef.current;
+		for (let index = 0; index < edited.length; index += 1) {
+			const point = edited[index];
+			if (!isCurvePointOnScreen(point)) continue;
+			if (isCurveEndPinned(index, edited.length)) continue;
+			const active = hovered === index;
+			if (!active && index % LINE_CURVE_MARKER_STRIDE !== 0) continue;
+			const [px, py] = pointPx(point);
+			const radius = active ? (drag ? 7 : 5.5) : 3.2;
+			ctx.fillStyle = "rgba(40, 24, 0, .85)";
+			ctx.beginPath();
+			ctx.arc(px, py, radius + 1.6, 0, Math.PI * 2);
+			ctx.fill();
+			ctx.fillStyle = active ? "#fff6d0" : "#ffe27a";
+			ctx.beginPath();
+			ctx.arc(px, py, radius, 0, Math.PI * 2);
+			ctx.fill();
+		}
+
+		// The pinned ends, drawn in the REFERENCE colour rather than the edit
+		// colour, because that is exactly what they are: the frames at each edge
+		// that stay on the original trajectory no matter how hard the middle is
+		// pulled. Seeing them anchored is the whole explanation of why this edit
+		// does not pop at the seams.
+		for (const index of [0, edited.length - 1]) {
+			const point = edited[index];
+			if (!isCurvePointOnScreen(point)) continue;
+			const [px, py] = pointPx(point);
+			ctx.fillStyle = "rgba(0, 20, 40, .8)";
+			ctx.beginPath();
+			ctx.arc(px, py, 5.5, 0, Math.PI * 2);
+			ctx.fill();
+			ctx.fillStyle = "#78cdff";
+			ctx.beginPath();
+			ctx.arc(px, py, 3.2, 0, Math.PI * 2);
+			ctx.fill();
 		}
 		ctx.restore();
 	}
 
-	/** Client pointer -> viewport-normalized uv, or null when the pointer is
-	 * outside the drawn image. Out-of-frame samples are DROPPED, not clamped:
-	 * a clamped point is a point the user did not draw, and it would pin the
-	 * joint to the frame edge. */
+	/** Client pointer -> viewport-normalized uv. Unlike the old freehand path
+	 * this does NOT reject coordinates outside the image: a pull that leaves the
+	 * frame is a real gesture and the deformation it implies is real too. It is
+	 * refused later, at curveToPoints2d, with a message that says which problem
+	 * it is — the bridge rejects points2d outside 0..1. */
 	function lineUvFromPointer(pane, event) {
-		const u = (event.clientX - pane.rect.x) / pane.rect.w;
-		const v = (event.clientY - pane.rect.y) / pane.rect.h;
-		if (u < 0 || u > 1 || v < 0 || v > 1) return null;
-		return [u, v];
+		return [
+			(event.clientX - pane.rect.x) / pane.rect.w,
+			(event.clientY - pane.rect.y) / pane.rect.h,
+		];
 	}
 
-	function onLinePointerDown(event) {
-		if (event.button !== 0) return;
-		const pane = lineEditPane();
-		if (!pane) {
-			setToast(ko("This view cannot take a drawn line — switch back to the Scene or Shot view", "이 뷰에서는 선을 그릴 수 없어요 — 장면 또는 샷 뷰로 돌아가세요"));
-			return;
+	/** The curve a pointer could grab this instant, WITHOUT side effects — the
+	 * committed edit if there is one, otherwise whatever the last repaint
+	 * projected. Used by the hover cursor, which must never change state. */
+	function lineHoverCurve() {
+		return lineCurve ? lineCurve.edited : lineLiveRef.current?.curve ?? null;
+	}
+
+	/** What a grab picks up, `{ camera, curve }`, and the ONE place the camera
+	 * is snapshotted: the pair returned here is what the drag deforms and what
+	 * the eventual C6 request is built against, so the uv and the lens can never
+	 * come from different moments.
+	 *
+	 * It is also where a stale edit dies. The drift watcher runs at 4 Hz, which
+	 * leaves a window in which the user could orbit and grab before it notices;
+	 * checking here closes it, so it is never possible to pick up a curve that
+	 * is no longer where it is drawn. */
+	function lineGrabSource(pane) {
+		if (lineCurve) {
+			const live = captureLineCamera(pane);
+			if (!live || !cameraDrifted(live, lineCurve.camera)) {
+				return { camera: lineCurve.camera, curve: lineCurve.edited };
+			}
+			setLineCurve(null);
+			setToast(ko(
+				"The camera moved, so your pull was dropped and the path is following the view again",
+				"카메라가 움직여서 잡아당긴 편집을 버렸어요 — 궤적이 다시 시점을 따라갑니다",
+			));
 		}
-		const uv = lineUvFromPointer(pane, event);
-		if (!uv) return;
-		event.currentTarget.setPointerCapture(event.pointerId);
-		// A new stroke replaces the old one outright; there is no multi-stroke
-		// path in C6 and a second polyline would silently overwrite the first.
-		setLineStroke(null);
-		lineDraftRef.current = [uv];
-		paintLineOverlay();
+		const cached = lineLiveRef.current;
+		if (cached) return cached;
+		const fresh = projectLineCurve(pane);
+		lineLiveRef.current = fresh;
+		return fresh;
 	}
 
-	function onLinePointerMove(event) {
-		if (!lineDraftRef.current) return;
+	/** The stage's CAPTURE-phase pointerdown, and the whole pass-through rule.
+	 *
+	 * The overlay canvas is `pointer-events: none` and only paints; this listener
+	 * sits on the stage container instead, ahead of r3f and the fly controls,
+	 * and asks one question: did the pointer land within CURVE_GRAB_RADIUS_PX of
+	 * a draggable point? If NO it returns having done nothing at all, and the
+	 * event continues to the WebGL canvas, so orbit, pan and click-to-select keep
+	 * working while the mode is on — judging a correction means looking at it
+	 * from other angles, and the mode must not take the viewport hostage to be
+	 * used. If YES it consumes the event exclusively (preventDefault +
+	 * stopPropagation) so the same gesture cannot both pull the path and orbit.
+	 *
+	 * Capture phase rather than bubble because the decision has to be made before
+	 * the controls start an orbit; a bubble listener would arrive after they had
+	 * already latched on (FlyControls binds pointerdown on gl.domElement, which
+	 * is a descendant of the stage, so stopping here is enough — nothing binds
+	 * this gesture at the window). Nothing is re-dispatched: the miss path never
+	 * touches the event, which is why there is no synthetic-event fragility. */
+	function onLineStagePointerDown(event) {
+		if (event.button !== 0) return;
+		// Only the render surface itself. The stage also carries HUD chrome — the
+		// inset's drag chip, the plan pane, overlay buttons — and a control that
+		// happens to sit within 14 px of the curve must keep its own click. The
+		// overlay canvas cannot be the target (pointer-events: none), so a canvas
+		// target is always the WebGL one.
+		if (!(event.target instanceof HTMLCanvasElement)) return;
 		const pane = lineEditPane();
 		if (!pane) return;
-		const uv = lineUvFromPointer(pane, event);
-		if (!uv) return;
-		lineDraftRef.current.push(uv);
+		const source = lineGrabSource(pane);
+		if (!source) return;
+		const [u, v] = lineUvFromPointer(pane, event);
+		const hit = nearestCurvePoint(source.curve, u, v, CURVE_GRAB_RADIUS_PX, pane.rect.w, pane.rect.h);
+		if (!hit) return;
+		event.preventDefault();
+		event.stopPropagation();
+		const stage = stageRef.current;
+		if (stage) stage.dataset.lineGrab = "drag";
+		lineHoverRef.current = null;
+		// SNAPSHOT. Every pointermove re-derives the deformation from this exact
+		// curve, so one drag is idempotent (return the pointer to the grab point
+		// and the curve is restored) and changing the radius mid-drag re-deforms
+		// rather than compounding. Successive drags stack because each new grab
+		// snapshots what the previous one committed.
+		lineDragRef.current = {
+			index: hit.index,
+			u0: u,
+			v0: v,
+			du: 0,
+			dv: 0,
+			radius: lineRadius,
+			camera: source.camera,
+			snapshot: source.curve,
+			live: source.curve,
+		};
+		// Window-level move/up, the same idiom beginInsetDrag uses above: a pull
+		// that leaves the stage still tracks, and a pointerup anywhere ends it.
+		const onMove = (moveEvent) => {
+			const drag = lineDragRef.current;
+			const livePane = lineEditPane();
+			if (!drag || !livePane) return;
+			const [mu, mv] = lineUvFromPointer(livePane, moveEvent);
+			if (!Number.isFinite(mu) || !Number.isFinite(mv)) return;
+			drag.du = mu - drag.u0;
+			drag.dv = mv - drag.v0;
+			drag.live = dragCurve(drag.snapshot, drag.index, drag.du, drag.dv, drag.radius);
+			paintLineOverlay();
+		};
+		const onUp = () => {
+			window.removeEventListener("pointermove", onMove);
+			window.removeEventListener("pointerup", onUp);
+			window.removeEventListener("pointercancel", onUp);
+			const drag = lineDragRef.current;
+			lineDragRef.current = null;
+			const endStage = stageRef.current;
+			if (endStage) delete endStage.dataset.lineGrab;
+			if (!drag) return;
+			// A pull that went nowhere leaves NO edit behind: the curve returns
+			// to following the camera, which is the state the view can be
+			// navigated in freely. Anything else is committed with the lens it
+			// was authored through.
+			setLineCurve(curvesEqual(drag.live, drag.snapshot)
+				? null
+				: { camera: drag.camera, original: drag.snapshot, edited: drag.live });
+			paintLineOverlay();
+		};
+		window.addEventListener("pointermove", onMove);
+		window.addEventListener("pointerup", onUp);
+		window.addEventListener("pointercancel", onUp);
 		paintLineOverlay();
 	}
 
-	function onLinePointerUp(event) {
-		const draft = lineDraftRef.current;
-		lineDraftRef.current = null;
-		if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-			event.currentTarget.releasePointerCapture(event.pointerId);
+	/** Bubble-phase hover: the cursor and the swollen marker, nothing else. It
+	 * never stops the event and never writes state, so it cannot interfere with
+	 * the orbit the same pointermove is probably driving. */
+	function onLineStageHover(event) {
+		const stage = stageRef.current;
+		if (!stage || lineDragRef.current) return;
+		const pane = event.target instanceof HTMLCanvasElement ? lineEditPane() : null;
+		const curve = pane ? lineHoverCurve() : null;
+		let hit = null;
+		if (curve) {
+			const [u, v] = lineUvFromPointer(pane, event);
+			hit = nearestCurvePoint(curve, u, v, CURVE_GRAB_RADIUS_PX, pane.rect.w, pane.rect.h);
 		}
-		if (!draft) return;
-		const pane = lineEditPane();
-		const points2d = normalizePointerPoints(draft);
-		if (!pane || !points2d) {
-			paintLineOverlay();
-			setToast(ko("That was a tap, not a line — drag across the viewport to draw a path", "선이 아니라 점이에요 — 뷰포트를 가로질러 드래그해 경로를 그려 주세요"));
-			return;
-		}
-		// THE pairing moment: the lens the user was looking through is frozen
-		// here, beside the points it explains.
-		const camera = captureLineCamera(pane);
-		if (!camera) {
-			paintLineOverlay();
-			setToast(ko("The camera could not be captured — nudge the view and draw again", "카메라를 캡처하지 못했어요 — 뷰를 조금 움직인 뒤 다시 그려 주세요"));
-			return;
-		}
-		setLineStroke({ points2d, camera });
+		lineHoverRef.current = hit ? hit.index : null;
+		if (hit) stage.dataset.lineGrab = "hover";
+		else delete stage.dataset.lineGrab;
 	}
 
-	function clearLineStroke() {
-		lineDraftRef.current = null;
-		setLineStroke(null);
+	function onLineStageHoverEnd() {
+		const stage = stageRef.current;
+		if (lineDragRef.current) return;
+		lineHoverRef.current = null;
+		if (stage) delete stage.dataset.lineGrab;
+	}
+
+	/** Back to the take's own trajectory — and, because an unedited curve
+	 * follows the live camera, back to a path that tracks the view. */
+	function resetLineCurve() {
+		lineDragRef.current = null;
+		setLineCurve(null);
 	}
 
 	function exitLineEditMode() {
-		clearLineStroke();
+		lineDragRef.current = null;
+		lineHoverRef.current = null;
+		lineLiveRef.current = null;
+		const stage = stageRef.current;
+		if (stage) delete stage.dataset.lineGrab;
+		setLineCurve(null);
 		setLineEditMode(false);
 	}
 
-	/** Entering is mutually exclusive with every other authoring mode, the same
+	/** Entering is mutually exclusive with every other AUTHORING mode, the same
 	 * way waypoint/IK/pose already are with each other: they all claim the same
-	 * viewport pointer and the same playhead. */
+	 * viewport pointer and the same playhead. Camera navigation is deliberately
+	 * NOT in that list — the pointer is shared with it, not taken from it. */
 	function toggleLineEditMode() {
 		if (lineEditMode) {
 			exitLineEditMode();
@@ -8100,19 +8355,63 @@ function resizePromptClip(id, edge, rawFrame) {
 			return;
 		}
 		if (!motion?.url) {
-			setToast(ko("The current take has no bridge source — generate it once before drawing a line", "현재 테이크에 브리지 원본이 없어요 — 선을 그리기 전에 한 번 생성하세요"));
+			setToast(ko("The current take has no bridge source — generate it once before editing a path", "현재 테이크에 브리지 원본이 없어요 — 궤적을 편집하기 전에 한 번 생성하세요"));
 			return;
 		}
 		if (waypointMode) setWaypointMode(false);
 		if (ikMode) leaveIkMode();
 		if (posing) setPosing(null);
-		clearLineStroke();
+		lineDragRef.current = null;
+		setLineCurve(null);
 		setLineEditMode(true);
 		setToast(ko(
-			"Line editing on — drag across the viewport to draw the path the joint should follow",
-			"라인 편집 켜짐 — 뷰포트를 드래그해 관절이 따라갈 경로를 그리세요",
+			"Path editing on — grab a dot on the joint's path and pull it; the view still orbits normally",
+			"궤적 편집 켜짐 — 관절 궤적 위의 점을 잡아 끌어 보세요. 시점은 평소처럼 돌릴 수 있어요",
 		));
 	}
+
+	/* Switching joint, range, take or character drops any pull in hand: it was
+	 * authored against a trajectory that is no longer the one on screen. The
+	 * curve itself needs no rebuilding — with no edit it is re-projected every
+	 * repaint from the live camera.
+	 *
+	 * The one thing worth SAYING here is framing. Part of the range may be
+	 * behind the lens or out of shot; the visible part stays draggable and the
+	 * hit test ignores the rest, but a path that stops halfway looks like a bug,
+	 * and hidden frames cannot be constrained. The retry exists because mode
+	 * entry and a measurable pane are not the same instant — the overlay mounts
+	 * in the commit that turns the mode on and DualRender may not have settled
+	 * the pane's aspect yet, so the projection legitimately refuses for a frame
+	 * or two. Failing silently after that is deliberate: the plan and IK views
+	 * have no pinhole camera at all and are not worth nagging about. */
+	useEffect(() => {
+		if (!lineEditMode || !motion) return undefined;
+		setLineCurve(null);
+		let attempts = 0;
+		let timer = 0;
+		const check = () => {
+			const live = projectLineCurve(lineEditPane());
+			if (!live) {
+				if (attempts >= 12) return;
+				attempts += 1;
+				timer = window.setTimeout(check, 120);
+				return;
+			}
+			const hidden = live.curve.reduce((count, point) => count + (isCurvePointOnScreen(point) ? 0 : 1), 0);
+			if (hidden > 0) {
+				setToast(isKo
+					? `이 구간의 ${hidden}프레임이 화면 밖이에요 — 구간 전체가 보이도록 시점을 잡아 주세요`
+					: `${hidden} frame(s) of this range are outside the frame — orbit until the whole range is in view`);
+			}
+		};
+		check();
+		return () => window.clearTimeout(timer);
+		// The range is depended on by VALUE: lineEditRange is a fresh object on
+		// every render that touches lineRange, and depending on its identity
+		// would fire this constantly. activeChar's ground offset and scale are in
+		// here because jointTrailPoints places the trail with them — move or
+		// resize the character and the path really is somewhere else.
+	}, [lineEditMode, lineTrack, motion, lineEditRange?.startFrame, lineEditRange?.endFrame, activeChar.y, activeChar.scale]);
 
 	// Repaint on anything that changes what the overlay should show. The window
 	// resize listener is separate from React state because the pane rect can
@@ -8122,10 +8421,12 @@ function resizePromptClip(id, edge, rawFrame) {
 		paintLineOverlay();
 		const repaint = () => paintLineOverlay();
 		window.addEventListener("resize", repaint);
-		// A gentle rAF loop while the mode is on: the ghost's start-here dot
-		// pulses (its only job is to catch the eye), and the underlying render
-		// can move beneath the overlay. Tens of 2d-canvas points per frame is
-		// noise next to the WebGL scene already animating behind it.
+		// A gentle rAF loop while the mode is on, and it earns its keep three
+		// times over: the unedited curve is re-projected here so it follows the
+		// camera, a pointermove writes only lineDragRef so this is what shows the
+		// live pull without re-rendering App, and the render moves underneath
+		// regardless (playback, a follow camera). A few hundred 2d-canvas points
+		// per frame is noise next to the WebGL scene already animating behind it.
 		let raf = requestAnimationFrame(function tick() {
 			paintLineOverlay();
 			raf = requestAnimationFrame(tick);
@@ -8133,6 +8434,27 @@ function resizePromptClip(id, edge, rawFrame) {
 		return () => {
 			window.removeEventListener("resize", repaint);
 			cancelAnimationFrame(raf);
+		};
+	});
+
+	// Pointer plumbing. The overlay canvas is `pointer-events: none` — it only
+	// PAINTS — and the listeners live on the stage container instead, so a
+	// pointer that misses the curve reaches the WebGL canvas untouched. See
+	// onLineStagePointerDown for why the down listener is in the capture phase
+	// and what "untouched" buys. No dependency array on purpose: the handlers
+	// close over lineCurve, lineRadius and the live refs, and must always be
+	// this render's.
+	useEffect(() => {
+		if (!lineEditMode) return undefined;
+		const stage = stageRef.current;
+		if (!stage) return undefined;
+		stage.addEventListener("pointerdown", onLineStagePointerDown, true);
+		stage.addEventListener("pointermove", onLineStageHover);
+		stage.addEventListener("pointerleave", onLineStageHoverEnd);
+		return () => {
+			stage.removeEventListener("pointerdown", onLineStagePointerDown, true);
+			stage.removeEventListener("pointermove", onLineStageHover);
+			stage.removeEventListener("pointerleave", onLineStageHoverEnd);
 		};
 	});
 
@@ -8147,33 +8469,41 @@ function resizePromptClip(id, edge, rawFrame) {
 		return () => window.removeEventListener("keydown", onKey);
 	}, [lineEditMode]);
 
-	// Camera-drift watcher. The stroke and its camera are only valid together,
-	// so an orbit, a fly, a lens change or a look-through toggle INVALIDATES the
-	// line rather than silently re-interpreting it against a lens it was never
-	// drawn through. Polling beats hooking every camera mutation: the cameras
-	// are moved from a dozen places (fly controls, shot presets, live control,
-	// follow tracks) and none of them reports to React.
+	// Camera-drift watcher — and note what it does NOT do: it never blocks or
+	// freezes navigation, and it has no job at all while the curve is unedited,
+	// because an unedited curve is re-projected every repaint and simply follows
+	// the view.
+	//
+	// Once something HAS been pulled, that pull is a 2D offset authored through
+	// one specific lens, and there is no correct way to read it through another.
+	// So moving the view DISCARDS it, says so, and the curve goes back to
+	// following. Polling beats hooking every camera mutation: the cameras are
+	// moved from a dozen places (fly controls, shot presets, live control, follow
+	// tracks) and none of them reports to React. lineGrabSource repeats this
+	// check at pointerdown to close the 250 ms window between polls.
 	useEffect(() => {
-		if (!lineEditMode || !lineStroke) return undefined;
+		if (!lineEditMode || !lineCurve) return undefined;
 		const id = window.setInterval(() => {
+			// Never yank the curve out from under a finger that is holding it.
+			if (lineDragRef.current) return;
 			const live = captureLineCamera(lineEditPane());
 			// No readable camera is not drift — a transient unmeasurable pane
 			// must not throw away work the user did.
-			if (!live || !cameraDrifted(live, lineStroke.camera)) return;
-			clearLineStroke();
+			if (!live || !cameraDrifted(live, lineCurve.camera)) return;
+			setLineCurve(null);
 			setToast(ko(
-				"The camera moved, so the drawn line was cleared — draw it again from this view",
-				"카메라가 움직여서 그린 선을 지웠어요 — 이 시점에서 다시 그려 주세요",
+				"The camera moved, so your pull was dropped and the path is following the view again — pull it again from here",
+				"카메라가 움직여서 잡아당긴 편집을 버렸어요 — 궤적이 다시 시점을 따라갑니다. 이 시점에서 다시 잡아당겨 주세요",
 			));
 		}, 250);
 		return () => window.clearInterval(id);
 		// lookThroughShot / centerTab / ikMode are dependencies even though the
 		// body never reads them directly: they are what lineEditPane branches on,
 		// so a stale closure would keep measuring the camera the pane used to
-		// hold and a view SWITCH — the most obvious way to invalidate a stroke —
+		// hold and a view SWITCH — the most obvious way to invalidate a curve —
 		// would go undetected. Lens and aspect changes need no dependency: they
 		// move fx/fy, which the comparison sees on its own.
-	}, [lineEditMode, lineStroke, lookThroughShot, centerTab, ikMode]);
+	}, [lineEditMode, lineCurve, lookThroughShot, centerTab, ikMode]);
 
 	// Wave-2 capability preflight. `checkBridge` reports health only, so the
 	// line-edit route is probed here: today's bridge IGNORES unknown request
@@ -8208,11 +8538,24 @@ function resizePromptClip(id, edge, rawFrame) {
 	function runLineEdit() {
 		if (ardyRunning) return;
 		if (!motion?.url) {
-			setToast(ko("The current take has no bridge source — generate it once before drawing a line", "현재 테이크에 브리지 원본이 없어요 — 선을 그리기 전에 한 번 생성하세요"));
+			setToast(ko("The current take has no bridge source — generate it once before editing a path", "현재 테이크에 브리지 원본이 없어요 — 궤적을 편집하기 전에 한 번 생성하세요"));
 			return;
 		}
-		if (!lineStroke) {
-			setToast(ko("Draw a line on the viewport first", "먼저 뷰포트에 선을 그려 주세요"));
+		// No curve object means no edit — an untouched path is the take's own
+		// trajectory, and sending it would ask the box to spend eight seconds
+		// reproducing what is already there.
+		if (!lineCurve) {
+			setToast(ko("Pull the path first — grab a dot on it and drag", "커브를 먼저 잡아당겨 주세요"));
+			return;
+		}
+		// The deformed curve -> C6's points2d. This is the ONLY thing the
+		// interaction change touched on the wire: the payload is the same
+		// <=64-point viewport-normalized polyline it was when the user drew it
+		// by hand, so the bridge, the box driver and the splice are untouched.
+		const built = curveToPoints2d(lineCurve.edited);
+		if (built.error) {
+			const copy = LINE_CURVE_REFUSALS[built.error] ?? LINE_EDIT_REFUSALS.shape;
+			setToast(ko(copy[0], copy[1]));
 			return;
 		}
 		// The take's own prompt is the text condition: a line edit changes WHERE
@@ -8224,8 +8567,8 @@ function resizePromptClip(id, edge, rawFrame) {
 			sourceMotion: motion.url,
 			track: lineTrack,
 			frameRange: lineEditRange,
-			points2d: lineStroke.points2d,
-			camera: lineStroke.camera,
+			points2d: built.points2d,
+			camera: lineCurve.camera,
 			prompt,
 		};
 		const refusal = validateLineEdit(lineEdit, { clipFrames: lineClipFrames });
@@ -8257,9 +8600,11 @@ function resizePromptClip(id, edge, rawFrame) {
 			anchor: { x: motion.anchorX ?? activeChar.x, z: motion.anchorZ ?? activeChar.z },
 			ikState: null,
 		});
-		// The stroke has left the building; keeping it drawn would invite a
-		// second identical run while the first is still queued.
-		clearLineStroke();
+		// The pull has left the building. The curve stays (it is the reference
+		// the next edit starts from) but its deformation is released, so the
+		// Generate button goes back to needing a fresh pull instead of inviting
+		// a second identical run while the first is still queued.
+		resetLineCurve();
 	}
 
 	function runAllPromptBlocks() {
@@ -9626,21 +9971,21 @@ function resizePromptClip(id, edge, rawFrame) {
 							/>
 						</Canvas>
 
-						{/* Line editing (C6): the drawing surface. A plain 2D canvas
-						    stacked on the stage — it never enters the three.js scene
-						    graph, so a stroke cannot disturb picking, playback or the
-						    render loop, and it behaves the same in every view mode. It
-						    only exists while the mode is on, so nothing here can swallow
-						    a viewport pointer the rest of the time. */}
+						{/* Line editing (C6): the path overlay. A plain 2D canvas stacked
+						    on the stage — it never enters the three.js scene graph, so an
+						    edit cannot disturb picking, playback or the render loop, and it
+						    behaves the same in every view mode.
+						    It carries NO pointer handlers and is `pointer-events: none`:
+						    the mode must not take the viewport hostage, so the listeners
+						    live on the stage container (capture phase) and consume a
+						    pointer only when it actually grabs the curve. Everything else
+						    — orbit, pan, click-to-select — reaches the WebGL canvas
+						    untouched while the mode is on. */}
 						{lineEditMode && (
 							<canvas
 								ref={lineOverlayRef}
 								className="line-edit-overlay"
-								aria-label={ko("Line editing surface — drag to draw the joint's path", "라인 편집 화면 — 드래그해 관절 경로를 그리세요")}
-								onPointerDown={onLinePointerDown}
-								onPointerMove={onLinePointerMove}
-								onPointerUp={onLinePointerUp}
-								onPointerCancel={onLinePointerUp}
+								aria-hidden="true"
 							/>
 						)}
 
@@ -10517,12 +10862,12 @@ function resizePromptClip(id, edge, rawFrame) {
 									type="button"
 									className={"btn full" + (lineEditMode ? " primary" : "")}
 									title={ko(
-										"Draw a path on the viewport and one joint follows it exactly.",
-										"뷰포트에 경로를 그리면 관절 하나가 그 선을 정확히 따라갑니다.",
+										"The joint's own path is drawn on the viewport — grab a point on it and pull; the joint then follows the pulled path exactly. The view still orbits normally.",
+										"관절이 지나가는 궤적이 뷰포트에 그려집니다 — 궤적 위의 점을 잡아 끌면 관절이 그 궤적을 정확히 따라갑니다. 시점은 평소처럼 돌릴 수 있어요.",
 									)}
 									onClick={toggleLineEditMode}
 								>
-									{lineEditMode ? ko("Line editing on", "라인 편집 켜짐") : ko("Draw a line", "선 그리기")}
+									{lineEditMode ? ko("Path editing on", "궤적 편집 켜짐") : ko("Drag the path", "궤적을 잡아 끌기")}
 								</button>
 								{lineEditMode && (
 									<div className="line-edit-panel">
@@ -10531,7 +10876,7 @@ function resizePromptClip(id, edge, rawFrame) {
 												value={lineTrack}
 												options={LINE_EDIT_TRACK_OPTIONS}
 												onChange={setLineTrack}
-												ariaLabel={ko("Joint that follows the line", "선을 따라갈 관절")}
+												ariaLabel={ko("Joint whose path is edited", "궤적을 편집할 관절")}
 											/>
 										</Field>
 										{/* No range picker exists elsewhere in the app that a line
@@ -10563,31 +10908,78 @@ function resizePromptClip(id, edge, rawFrame) {
 												/>
 											</div>
 										</Field>
+										{/* How far a pull carries along the path, in FRAMES — the
+										    sigma of the Gaussian falloff, said in the unit the user
+										    is looking at. Narrow is a beat, wide is a whole gesture. */}
+										<Field label={ko("Influence", "영향 범위")}>
+											<div className="line-edit-radius-row">
+												<input
+													type="range"
+													min={DRAG_RADIUS_MIN}
+													max={DRAG_RADIUS_MAX}
+													step={1}
+													value={lineRadius}
+													aria-label={ko("How many frames a pull carries along the path", "잡아당길 때 궤적을 따라 함께 움직이는 프레임 수")}
+													onChange={(event) => changeLineRadius(event.target.value)}
+												/>
+												<span className="line-edit-radius-value">
+													{isKo ? `${lineRadius}프레임` : `${lineRadius} frames`}
+												</span>
+											</div>
+										</Field>
 										<p className="inspector-hint">
-											{lineStroke
+											{lineCurveDirty
 												? (isKo
-													? `선을 그렸어요 — ${lineStroke.points2d.length}개 점(최대 ${MAX_LINE_POINTS}개), 그릴 때의 카메라로 고정됨`
-													: `Line drawn — ${lineStroke.points2d.length} points (max ${MAX_LINE_POINTS}), locked to the camera you drew through`)
+													? `궤적을 당겼어요 — ${lineCurvePointCount}개 점(최대 ${MAX_LINE_POINTS}개)을 보내고, 양 끝 ${PINNED_CURVE_ENDS}프레임은 원래 궤적에 고정돼 이음매가 튀지 않아요`
+													: `Path pulled — ${lineCurvePointCount} points (max ${MAX_LINE_POINTS}); the outer ${PINNED_CURVE_ENDS} frames at each end stay on the original path, so the seams do not pop`)
 												: ko(
-													"Drag across the viewport to draw the path. The dashed line is where the joint travels today.",
-													"뷰포트를 드래그해 경로를 그리세요. 점선은 지금 관절이 지나가는 길입니다.",
+													"Grab a yellow dot on the joint's path and pull. The blue ends stay pinned to the original path.",
+													"관절 궤적 위의 노란 점을 잡아 끌어 보세요. 파란 양 끝은 원래 궤적에 고정됩니다.",
 												)}
 										</p>
+										{/* The one thing users assume a modal viewport tool takes away.
+										    Said out loud, because "can I still orbit?" is the first
+										    question and the answer decides whether the mode is usable. */}
+										<p className="inspector-hint">
+											{lineCurveDirty
+												? ko(
+													"You can still orbit and pan freely — but moving the view drops this pull, because it was aimed through this exact lens.",
+													"시점은 자유롭게 돌리고 옮길 수 있어요 — 다만 지금 잡아당긴 편집은 이 시점 기준이라 시점을 옮기면 사라집니다.",
+												)
+												: ko(
+													"You can still orbit and pan freely; the path follows the view until you pull it.",
+													"시점은 평소처럼 자유롭게 돌리고 옮길 수 있어요. 잡아당기기 전까지 궤적은 시점을 따라갑니다.",
+												)}
+										</p>
+										{lineEditRange && lineEditRange.endFrame - lineEditRange.startFrame < MIN_CURVE_POINTS && (
+											<p className="inspector-hint">
+												{isKo
+													? `구간이 너무 짧아요 — 양 끝 ${PINNED_CURVE_ENDS}프레임씩이 고정이라 ${MIN_CURVE_POINTS}프레임 이상이어야 잡을 점이 생겨요`
+													: `This range is too short — with ${PINNED_CURVE_ENDS} pinned frames at each end it needs at least ${MIN_CURVE_POINTS} frames before anything can be grabbed`}
+											</p>
+										)}
+										{lineCurveHidden > 0 && (
+											<p className="inspector-hint">
+												{isKo
+													? `${lineCurveHidden}프레임이 화면 밖이라 잡을 수 없어요 — 구간 전체가 보이도록 카메라를 잡아 주세요`
+													: `${lineCurveHidden} frame(s) are outside the frame and cannot be grabbed — frame the whole range in view`}
+											</p>
+										)}
 										<button
 											type="button"
 											className="btn primary full generate"
-											disabled={!bridge?.ok || !lineStroke || ardyRunning}
+											disabled={!bridge?.ok || !lineCurveDirty || ardyRunning}
 											title={!bridge?.ok
 												? ko("Waiting for the ARDY bridge — it reconnects automatically", "ARDY 브리지를 기다리는 중 — 자동으로 다시 연결됩니다")
-												: !lineStroke
-													? ko("Draw a line on the viewport first", "먼저 뷰포트에 선을 그려 주세요")
+												: !lineCurveDirty
+													? ko("Pull the path on the viewport first", "먼저 뷰포트에서 궤적을 잡아당겨 주세요")
 													: ""}
 											onClick={runLineEdit}
 										>
 											{ko("Generate the line edit", "라인 편집 생성")}
 										</button>
-										<button type="button" className="btn ghost full" disabled={!lineStroke} onClick={clearLineStroke}>
-											{ko("Redraw", "다시 그리기")}
+										<button type="button" className="btn ghost full" disabled={!lineCurveDirty} onClick={resetLineCurve}>
+											{ko("Reset the curve", "원래대로")}
 										</button>
 										<button type="button" className="btn ghost full" onClick={exitLineEditMode}>
 											{ko("Exit line editing (Esc)", "라인 편집 끝내기 (Esc)")}
