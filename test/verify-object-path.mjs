@@ -141,7 +141,9 @@ ok("stroke points come in floor form, height authored later", strokeToPathPoints
 /* --- the strip loads the selected subject -------------------------------- */
 
 const timelineSource = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
-const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+// The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
+const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8")
+	+ readFileSync(new URL("../src/app-stage.jsx", import.meta.url), "utf8");
 
 const travelTrackSource = timelineSource.slice(
 	timelineSource.indexOf("function ObjectTravelTrack("),

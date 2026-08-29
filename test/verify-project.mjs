@@ -7,7 +7,9 @@ import { createProjectDocument, readProjectDocument, verifyEmbeddedAsset, PROJEC
 import { createSceneDocument, createSceneStage, SCENES_VERSION } from "../src/scenes.js";
 import { ASSET_MAX_SOURCE_BYTES, assetIdForBytes, referencedAssetIds } from "../src/scene-assets.js";
 
-const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+// The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
+const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8")
+	+ readFileSync(new URL("../src/app-stage.jsx", import.meta.url), "utf8");
 
 // --- envelope round trip --------------------------------------------------
 const projectPose = { id: "custom_1", label: "My Pose", bones: { hips: [0.1, 0, 0] } };
@@ -159,7 +161,11 @@ assert.match(appSource, /createProjectDocument/, "App builds the project envelop
 assert.match(appSource, /readProjectDocument/, "App parses project files");
 assert.match(appSource, /pickProjectFileForSave/, "Save uses the FS Access picker");
 assert.match(appSource, /downloadProjectFallback/, "non-FS-Access browsers get a download fallback");
-assert.match(appSource, /storeProjectHandle/, "the last handle is remembered for auto-restore");
+// The store itself happens inside project.js (openProjectFile/pickProjectFileForSave
+// call storeProjectHandle); App's side of the contract is restoring it. The old pin
+// on appSource was satisfied by a dead import, not by a call.
+assert.match(readFileSync(new URL("../src/project.js", import.meta.url), "utf8"), /await storeProjectHandle\(/, "the last handle is remembered for auto-restore");
+assert.match(appSource, /loadStoredProjectHandle/, "App restores the remembered handle on boot");
 assert.match(appSource, /queryHandlePermission/, "auto-restore only with a granted handle");
 assert.match(appSource, /referencedAssetIds/, "export finds the complete referenced asset closure");
 assert.match(appSource, /getAsset/, "export reads referenced asset records from IndexedDB");

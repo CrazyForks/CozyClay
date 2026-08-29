@@ -143,7 +143,9 @@ expect("active scene clicks do not repeat selection callbacks", panelSource.incl
 expect("last scene deletion is protected", panelSource.includes("disabled={availableScenes.length <= 1}"));
 expect("entity tree root follows the active scene name", panelSource.includes('node.kind === "scene" ? { ...node, label: activeSceneName } : node'));
 
-const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+// The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
+const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8")
+	+ await readFile(new URL("../src/app-stage.jsx", import.meta.url), "utf8");
 for (const [nodeId, focusId] of [["rig.head", "head"], ["rig.chest", "chest"], ["rig.leftShoulder", "leftShoulder"], ["rig.rightShoulder", "rightShoulder"]]) {
 	expect(`${nodeId} routes to its exact IK control`, appSource.includes(`"${nodeId}": "${focusId}"`));
 }

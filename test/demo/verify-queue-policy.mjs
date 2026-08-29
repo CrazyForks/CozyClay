@@ -63,7 +63,10 @@ class QueueStubDb {
 
 const policySource = readFileSync(new URL("../../workers/api/src/policy.js", import.meta.url), "utf8");
 const queueSource = readFileSync(new URL("../../workers/api/src/queue.js", import.meta.url), "utf8");
-const appSource = readFileSync(new URL("../../src/App.jsx", import.meta.url), "utf8");
+// The studio-side bridge caps live in src/app-stage.jsx (module-level
+// constants extracted from App.jsx); this guard keeps them equal to the
+// shared prompt-limit contract.
+const appSource = readFileSync(new URL("../../src/app-stage.jsx", import.meta.url), "utf8");
 const promptLimitsSource = readFileSync(new URL("../../tools/ardy/prompt-limits.mjs", import.meta.url), "utf8");
 
 // The hosted v1 queue has one FIFO order and one account-wide daily cap.

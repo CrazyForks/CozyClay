@@ -20,7 +20,8 @@ assert.match(boundary, /window\.location\.reload/, "the crash screen must offer 
 assert.match(boundary, /role="alert"/, "the crash screen announces itself to assistive tech");
 
 // --- a lost GL context is handled, not ignored -----------------------------
-const app = await read("App.jsx");
+// The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
+const app = (await read("App.jsx")) + (await read("app-stage.jsx"));
 assert.match(app, /addEventListener\("webglcontextlost", onLost\)/, "the stage must listen for context loss");
 assert.match(app, /addEventListener\("webglcontextrestored", onRestored\)/, "…and for its restoration");
 assert.match(

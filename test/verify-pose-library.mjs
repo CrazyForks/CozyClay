@@ -18,7 +18,9 @@ const expect = (name, condition, detail = "") => {
 const boneIds = new Set(POSE_BONES.map((bone) => bone.id));
 const posesSource = readFileSync(new URL("../src/poses.js", import.meta.url), "utf8");
 const studioSource = readFileSync(new URL("../src/posestudio.jsx", import.meta.url), "utf8");
-const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+// The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
+const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8")
+	+ readFileSync(new URL("../src/app-stage.jsx", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 /* --- no presets ship ------------------------------------------------------- */

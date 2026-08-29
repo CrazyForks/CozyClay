@@ -7,7 +7,9 @@ function expect(name, condition, detail = "") {
 	if (!condition) failures += 1;
 }
 
-const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+// The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
+const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8")
+	+ readFileSync(new URL("../src/app-stage.jsx", import.meta.url), "utf8");
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const room = readFileSync(new URL("../src/room.jsx", import.meta.url), "utf8");

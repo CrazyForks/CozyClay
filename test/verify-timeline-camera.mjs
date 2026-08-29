@@ -12,7 +12,9 @@ function expect(name, condition) {
 	if (!condition) failures += 1;
 }
 
-const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+// The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
+const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8")
+	+ readFileSync(new URL("../src/app-stage.jsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const timeline = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
 const camMove = readFileSync(new URL("../src/camera-move.js", import.meta.url), "utf8");
