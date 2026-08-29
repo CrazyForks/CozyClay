@@ -93,9 +93,13 @@ export const DRAG_RADIUS_MIN = 2;
 export const DRAG_RADIUS_MAX = 40;
 export const DRAG_RADIUS_DEFAULT = 8;
 
-/** Below this weight a point is "not really being dragged": used to draw the
- * influenced span in the overlay so the number on the slider has a visible
- * meaning. Not used to zero anything — dragCurve applies the true weight. */
+/** Below this weight a point is not being dragged AT ALL: dragWeight returns
+ * exactly 0 there, so dragCurve hands the point back by reference and the
+ * overlay's influenced-span highlight, the identity-based curvesEqual test and
+ * changedFrameRange (which names the frames a pull actually touched) all agree
+ * on one boundary. Before the cutoff the Gaussian tail brushed every frame of
+ * the clip with sub-5% weights, which made "the frames the pull touched" the
+ * whole clip — and a whole-clip edit range leaves the box zero preserve rows. */
 export const DRAG_WEIGHT_EPSILON = 0.05;
 
 /** Grab tolerance for the hit test, in CSS pixels. */
@@ -316,7 +320,10 @@ export function dragWeight(distanceFrames, radiusFrames) {
 	if (!Number.isFinite(distance)) return 0;
 	if (!(radius > 0)) return distance === 0 ? 1 : 0;
 	const sigma = radius / 2;
-	return Math.exp(-(distance * distance) / (2 * sigma * sigma));
+	const weight = Math.exp(-(distance * distance) / (2 * sigma * sigma));
+	// Hard zero past the tail (see DRAG_WEIGHT_EPSILON): a pull must touch a
+	// bounded window of frames, not brush the whole clip with 1% ghosts.
+	return weight < DRAG_WEIGHT_EPSILON ? 0 : weight;
 }
 
 /**
@@ -380,6 +387,79 @@ export function dragCurve(curve, grabIndex, du, dv, radiusFrames) {
 		if (weight === 0) return point;
 		return { frame: point.frame, u: point.u + deltaU * weight, v: point.v + deltaV * weight };
 	});
+}
+
+/**
+ * The half-open app-frame window a pull actually touched.
+ *
+ * dragCurve returns UNTOUCHED points by reference (weight 0 and the pinned
+ * ends), so "touched" is object identity — no float epsilon, no threshold on a
+ * Gaussian tail. This exists because a pull used to inherit the panel's range,
+ * which defaults to the WHOLE CLIP: with no frames left outside the edit range
+ * there were no preserve rows, and the sampler re-rolled the entire body of the
+ * entire clip — a 25 px nudge moved frames four metres, eight seconds away. The
+ * frames the falloff touched are the only frames the artist asked about; the
+ * splice guards everything else.
+ *
+ * `pad` breathes a couple of frames so the seam ease has room; `minFrames`
+ * keeps a one-frame flick from asking the sampler for a sub-perceptual window.
+ * Returns null when nothing changed or the curve carries no frame numbers.
+ */
+export function changedFrameRange(before, after, { pad = 2, minFrames = 8, clipFrames } = {}) {
+	if (!Array.isArray(before) || !Array.isArray(after) || before.length !== after.length) return null;
+	let first = -1;
+	let last = -1;
+	for (let index = 0; index < after.length; index += 1) {
+		if (after[index] !== before[index]) {
+			if (first < 0) first = index;
+			last = index;
+		}
+	}
+	if (first < 0) return null;
+	const firstFrame = after[first]?.frame ?? before[first]?.frame;
+	const lastFrame = after[last]?.frame ?? before[last]?.frame;
+	if (!Number.isFinite(firstFrame) || !Number.isFinite(lastFrame)) return null;
+	let start = Math.trunc(firstFrame) - pad;
+	let end = Math.trunc(lastFrame) + 1 + pad;
+	const grow = minFrames - (end - start);
+	if (grow > 0) {
+		start -= Math.ceil(grow / 2);
+		end += Math.floor(grow / 2);
+	}
+	start = Math.max(0, start);
+	if (Number.isFinite(clipFrames)) {
+		end = Math.min(end, clipFrames);
+		start = Math.max(0, Math.min(start, end - minFrames));
+	}
+	if (end - start < 2) return null;
+	return { startFrame: start, endFrame: end };
+}
+
+/**
+ * The curve's points whose frame lies inside the half-open range.
+ *
+ * The wire pairing is positional: driver.py spreads points2d across frameRange
+ * by time, so the points MUST be exactly the range's own frames. A dragged
+ * curve spans whatever window it was projected over (the whole clip by
+ * default); once the committed range shrinks to the touched frames, sending the
+ * unsliced curve would compress eight seconds of trail into a half-second
+ * window. A curve that already spans the range comes back unchanged.
+ */
+export function sliceCurveToRange(curve, frameRange) {
+	if (!Array.isArray(curve) || !frameRange) return curve;
+	const { startFrame, endFrame } = frameRange;
+	if (!Number.isFinite(startFrame) || !Number.isFinite(endFrame)) return curve;
+	// Nulls (frames behind the lens) carry no frame number, but the curve is
+	// dense and index-aligned, so any named point anchors the index -> frame map
+	// and the nulls inherit their frame from position.
+	const anchor = curve.findIndex((point) => point && Number.isFinite(point.frame));
+	if (anchor < 0) return curve;
+	const base = curve[anchor].frame - anchor;
+	const sliced = curve.filter((point, index) => {
+		const frame = point && Number.isFinite(point.frame) ? point.frame : base + index;
+		return frame >= startFrame && frame < endFrame;
+	});
+	return sliced.length === curve.length ? curve : sliced;
 }
 
 /** How long a freehand stroke has to be before it is a STROKE rather than a

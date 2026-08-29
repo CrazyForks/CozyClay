@@ -45,8 +45,10 @@ import {
 	PINNED_CURVE_ENDS,
 	cameraDrifted,
 	cameraToC6,
+	changedFrameRange,
 	curveToPoints2d,
 	curvesEqual,
+	sliceCurveToRange,
 	dragCurve,
 	dragWeight,
 	isCurveEndPinned,
@@ -8869,9 +8871,32 @@ function resizePromptClip(id, edge, rawFrame) {
 			// ONE EDIT IS ONE GESTURE: a real pull makes this a path edit, so any
 			// pins in hand are dropped (with a toast, never silently).
 			if (changed) { clearLinePins(); lineUndoRef.current.push(drag.prev ?? null); }
+			// A FRESH PULL EDITS ONLY THE FRAMES THE FALLOFF TOUCHED. Inheriting
+			// the panel's whole-clip default meant zero preserve rows on the box,
+			// and the sampler re-rolled the entire body of the entire clip — a
+			// 25 px nudge measured 4.6 m of drift eight seconds away. A pull that
+			// refines an existing edit keeps that edit's window instead: shrinking
+			// it would drop the drawn reroute outside the newly touched frames.
+			const inherited = drag.prev?.frameRange ?? null;
+			const pulledRange = changed && !inherited
+				? changedFrameRange(drag.snapshot, drag.live, { clipFrames: lineClipFrames })
+				: null;
 			const committed = changed
-				? { camera: drag.camera, original: drag.snapshot, edited: drag.live }
+				? {
+					camera: drag.camera,
+					original: drag.snapshot,
+					edited: drag.live,
+					frameRange: inherited ?? pulledRange ?? lineEditRange,
+				}
 				: (drag.prev ?? null);
+			// Same panel feedback as a drawn stroke: the numbers the artist never
+			// typed show up filled in.
+			if (changed && pulledRange && (
+				pulledRange.startFrame !== lineEditRange?.startFrame || pulledRange.endFrame !== lineEditRange?.endFrame
+			)) {
+				lineAutoRangeRef.current = pulledRange;
+				setLineRange(pulledRange);
+			}
 			setLineCurve(committed);
 			// RELEASE FIRES A DRAFT. A pull that changed nothing asks for nothing:
 			// the viewport already shows what it would show.
@@ -9272,7 +9297,12 @@ function resizePromptClip(id, edge, rawFrame) {
 			if (preview) lineEdit.preview = true;
 			return { ok: true, body, lineEdit, seed };
 		}
-		const built = curveToPoints2d(curve.edited);
+		// The wire pairing is positional (driver.py spreads points2d across
+		// frameRange by time), so the points sent are exactly the range's own
+		// slice of the curve — a whole-clip dragged curve paired with a touched-
+		// frames range would compress the full trail into the window.
+		const requestRange = curve.frameRange ?? lineEditRange;
+		const built = curveToPoints2d(sliceCurveToRange(curve.edited, requestRange));
 		if (built.error) return refuse(LINE_CURVE_REFUSALS[built.error] ?? LINE_EDIT_REFUSALS.shape);
 		// The take's own prompt is the text condition: a line edit changes WHERE
 		// a joint goes, not what the shot is about. The fallback keeps the
@@ -9283,12 +9313,12 @@ function resizePromptClip(id, edge, rawFrame) {
 			sourceMotion: sourceUrl,
 			track: lineTrack,
 			// THE CURVE'S OWN RANGE FIRST. A drawn stroke picks its window from
-			// where it was drawn (drawStrokeEdit), and that window is stamped on
-			// the committed curve precisely so a request can never pair one
-			// gesture's points with another render's range — `lineEditRange` is
-			// re-derived from state that a just-committed draw has not landed in
-			// yet. A dragged curve carries no range and falls through to the panel.
-			frameRange: curve.frameRange ?? lineEditRange,
+			// where it was drawn (drawStrokeEdit) and a fresh pull from the frames
+			// its falloff touched; the window is stamped on the committed curve
+			// precisely so a request can never pair one gesture's points with
+			// another render's range — `lineEditRange` is re-derived from state a
+			// just-committed gesture has not landed in yet.
+			frameRange: requestRange,
 			points2d: built.points2d,
 			camera: curve.camera,
 			prompt,

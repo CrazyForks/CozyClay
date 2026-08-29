@@ -35,7 +35,9 @@ import {
 	SEAM_EASE_MAX,
 	SEAM_EASE_MIN,
 	baseArcFractions,
+	changedFrameRange,
 	curveToPoints2d,
+	sliceCurveToRange,
 	curveWindow,
 	curvesEqual,
 	dragCurve,
@@ -740,6 +742,45 @@ test("a drawn edit goes on the wire exactly like a dragged one", () => {
 	const dragged = dragCurve(edit.curve, 18, 0.05, 0.0, 8);
 	assert.ok(!curvesEqual(dragged, edit.curve));
 	assert.equal(dragged[0], edit.base[0], "the drag's own pins hold the eased seam in place");
+});
+
+test("a fresh pull's committed range is the frames the falloff touched, not the clip", () => {
+	const base = clipCurve();
+	const pulled = dragCurve(base, 60, 0.05, 0.02, 8);
+	const range = changedFrameRange(base, pulled, { clipFrames: base.length });
+	assert.ok(range, "a real pull must name a window");
+	// dragWeight cuts off at the radius, so the touched span is ~2*radius wide
+	// plus the pad — nowhere near the 120-frame clip that used to be re-rolled.
+	assert.ok(range.endFrame - range.startFrame <= 8 * 2 + 1 + 2 * 2 + 2, `window ${JSON.stringify(range)} should be falloff-sized`);
+	assert.ok(range.startFrame <= 60 && range.endFrame > 60, "and it must contain the grab");
+	// Identity is the test, so an untouched curve names no window at all.
+	assert.equal(changedFrameRange(base, base, { clipFrames: base.length }), null);
+});
+
+test("a tiny flick still asks for a workable window, clamped inside the clip", () => {
+	const base = clipCurve();
+	const flick = dragCurve(base, 3, 0.03, 0, 2);
+	const range = changedFrameRange(base, flick, { clipFrames: base.length });
+	assert.ok(range.endFrame - range.startFrame >= 8, "minFrames must hold");
+	assert.ok(range.startFrame >= 0 && range.endFrame <= base.length, "and stay inside the clip");
+});
+
+test("the wire slice pairs the touched window's own frames with the range", () => {
+	const base = clipCurve();
+	const pulled = dragCurve(base, 60, 0.05, 0.02, 8);
+	const range = changedFrameRange(base, pulled, { clipFrames: base.length });
+	const sliced = sliceCurveToRange(pulled, range);
+	assert.equal(sliced.length, range.endFrame - range.startFrame);
+	assert.equal(sliced[0].frame, range.startFrame);
+	assert.equal(sliced[sliced.length - 1].frame, range.endFrame - 1);
+	// A curve that already spans its range (a drawn window) is returned as-is.
+	assert.equal(sliceCurveToRange(sliced, range), sliced);
+	// Nulls inherit their frame from position, so a behind-the-lens gap inside
+	// the window survives the slice and one outside it is dropped.
+	const gappy = pulled.map((point, index) => (index === 61 || index === 5 ? null : point));
+	const slicedGaps = sliceCurveToRange(gappy, range);
+	assert.equal(slicedGaps.length, range.endFrame - range.startFrame);
+	assert.equal(slicedGaps[61 - range.startFrame], null);
 });
 
 console.log(`\n${passed} checks passed`);
