@@ -4642,8 +4642,10 @@ globalThis.playMode = centerTab === "play";
 	 * carries the path along and navigation never fights the mode. Non-null is
 	 * `{ camera, original, edited }` — one object, because a pull is a 2D offset
 	 * that only means something through the lens it was authored with, so the
-	 * camera is frozen beside the points and moving the view discards the pull
-	 * and returns to following (see the drift watcher further down).
+	 * camera is frozen beside the points and travels with them onto the wire.
+	 * Moving the view therefore does NOT drop the pull; it only stops the line
+	 * being drawable here (see lineDrifted just below, and the watcher further
+	 * down).
 	 *
 	 * The four refs never re-render: `lineDragRef` is the in-flight grab and
 	 * carries the live deformed curve, `lineDrawRef` is the in-flight freehand
@@ -4658,6 +4660,24 @@ globalThis.playMode = centerTab === "play";
 	// time so loading a different clip cannot leave a stale range behind.
 	const [lineRange, setLineRange] = useState(null);
 	const [lineCurve, setLineCurve] = useState(null);
+	/* THE VIEW HAS MOVED, AND THE EDIT IS STILL HERE.
+	 *
+	 * A committed curve carries its OWN camera (the `{ camera, original, edited }`
+	 * above), and buildLineEditRequest sends that snapshot — so a later orbit,
+	 * fly or shot switch cannot invalidate the pending edit, its preview or the
+	 * confirming run. What it invalidates is only the ALIGNMENT of the painted
+	 * overlay: the uv were authored through one lens, there is no depth to
+	 * reproject them with, and drawing them over a different view would put the
+	 * line somewhere the artist never aimed. So drift is a PRESENTATION state,
+	 * not a destruction trigger — the curve is painted detached (ghosted, no
+	 * grab handles), the panel says so, and a NEW gesture is refused because it
+	 * would mix two cameras into one curve. Come back toward the snapshot and the
+	 * line paints normally again.
+	 *
+	 * The ref is what the pointer handlers and the painter read (a poll is 250 ms
+	 * stale and a press must not be); the state is what re-renders the panel. */
+	const [lineDrifted, setLineDrifted] = useState(false);
+	const lineDriftRef = useRef(false);
 	/* ------------------------------ 3D pins --------------------------------
 	 * The THIRD gesture: scrub to a moment, grab the joint where it is, put it
 	 * where it should be. Entries are `{ frame, position: [x, y, z] }` in the
@@ -4701,9 +4721,10 @@ globalThis.playMode = centerTab === "play";
 	const lineHoverRef = useRef(null);
 	// Undo stack for committed pulls: each entry is the WHOLE lineCurve value
 	// that a commit replaced (null = "no edit yet"), so Ctrl/Cmd+Z is a plain
-	// pop-and-restore. Cleared whenever the camera moves under an edit — a
-	// restored curve authored through a stale lens would be discarded on the
-	// next drift poll anyway, as a confusing two-step.
+	// pop-and-restore. A camera move no longer touches it: an edit survives the
+	// view moving, so the pulls behind it are still meaningful too, and undo is
+	// one of the three things (with reset and Generate) that must keep working
+	// while the view has drifted away from the line.
 	const lineUndoRef = useRef([]);
 	const lineOverlayRef = useRef(null);
 	// Wave-2 gate: the bridge only routes lineEdit once M4's routing lands.
@@ -4730,8 +4751,10 @@ globalThis.playMode = centerTab === "play";
 	 *      answer is dropped on arrival. Queueing them would make the viewport
 	 *      replay a history the artist has already moved past.
 	 *
-	 * Undo, reset, camera drift and leaving the mode all revert the viewport to
-	 * the source take and discard whatever is in flight. */
+	 * Undo, reset and leaving the mode all revert the viewport to the source take
+	 * and discard whatever is in flight. A CAMERA MOVE does not: the draft is a
+	 * picture of an edit that survives the view moving, so it stays on screen and
+	 * stays confirmable. */
 	const [linePreviewSource, setLinePreviewSource] = useState(null);
 	const linePreviewSourceRef = useRef(null);
 	// The preview motionUrl currently ON SCREEN — null means the source take is.
@@ -8232,6 +8255,38 @@ function resizePromptClip(id, edge, rawFrame) {
 		}
 	}
 
+	/** Has the live view moved out from under a COMMITTED edit?
+	 *
+	 * The comparison is the same cameraDrifted the old watcher used; what changed
+	 * is what a `true` MEANS. It is not "this edit is invalid" — the edit carries
+	 * the lens it was authored through and goes on the wire with it, so it stays
+	 * exactly as applicable as it was. It is "the painted line can no longer be
+	 * drawn where it belongs", because reprojecting the edited uv through the new
+	 * camera would need a depth that a 2D edit does not have.
+	 *
+	 * Called both from the 4 Hz watcher (which owns the panel's state) and
+	 * synchronously at pointerdown (which cannot afford to be a quarter second
+	 * behind) — one spelling, so the paint, the hint and the refusal can never
+	 * disagree about which state the mode is in. */
+	function lineCurveDrifted(pane, edit = lineCurve) {
+		if (!edit) return false;
+		const live = captureLineCamera(pane);
+		// An unmeasurable pane is not a moved view — a frame drawn before
+		// DualRender settled must not flicker the line out or refuse a press.
+		if (!live) return lineDriftRef.current;
+		return cameraDrifted(live, edit.camera);
+	}
+
+	/** The one sentence the drifted state says — in the panel, and in the toast
+	 * that refuses a new gesture. ONE spelling, because a hint that disagreed
+	 * with the refusal would read as two different problems. */
+	function lineDriftHint() {
+		return ko(
+			"The view moved — the pending edit is kept and still applies; return toward the original view to see the line again, or Generate/undo from here.",
+			"시점이 움직였어요 — 편집한 궤적은 그대로 남아 있고 그대로 적용됩니다. 원래 시점 쪽으로 돌아오면 궤적이 다시 보이고, 지금 이 상태에서 생성하거나 되돌려도 됩니다.",
+		);
+	}
+
 	/** Project the joint's trail for the current track and range through the
 	 * pane's LIVE camera. `{ camera, curve }`, or null when the view cannot
 	 * supply a usable lens right now — a refusal means "no curve", never "a
@@ -8316,6 +8371,17 @@ function resizePromptClip(id, edge, rawFrame) {
 		const edit = drag ? { camera: drag.camera, original: drag.snapshot, edited: drag.live } : lineCurve;
 		let original = null;
 		let edited = null;
+		// DETACHED. The committed edit was authored through its own lens; once the
+		// live view has left that lens the same uv name different rays, so the
+		// line is painted as a ghost — dashed, dim, no halo and no grab handles —
+		// rather than drawn confidently in the wrong place or silently reprojected
+		// (there is no depth to reproject it with). Nothing is discarded: the edit,
+		// its preview and the Generate button all still run off the snapshot.
+		// Computed HERE, per frame, rather than read off the 4 Hz watcher's state,
+		// so the line detaches the instant the view moves instead of a quarter
+		// second later. Never while a gesture is live — a drag paints its own
+		// snapshot under the finger and mid-gesture drift is a different rule.
+		let ghost = false;
 		if (edit) {
 			// An edit pins the curve to the lens it was authored through; the
 			// cached live projection would disagree with it, so it is dropped
@@ -8323,12 +8389,19 @@ function resizePromptClip(id, edge, rawFrame) {
 			lineLiveRef.current = null;
 			original = edit.original;
 			edited = edit.edited;
+			ghost = !drag && lineCurveDrifted(pane, edit);
 		} else {
 			const live = projectLineCurve(pane);
 			lineLiveRef.current = live;
-			if (!live) return;
+			if (!live) { delete stage.dataset.lineDrift; return; }
 			edited = live.curve;
 		}
+		// The CDP/e2e-visible handle for "the line is detached from this view".
+		// On the stage rather than in React state because it has to be true on
+		// the frame it becomes true, and this painter is the only thing that runs
+		// on every frame.
+		if (ghost) stage.dataset.lineDrift = "true";
+		else delete stage.dataset.lineDrift;
 		const pointPx = (point) => [ox + point.u * pane.rect.w, oy + point.v * pane.rect.h];
 		/** Trace a frame-indexed curve, breaking the path at every null — a
 		 * frame whose joint is behind the lens has no image, and joining across
@@ -8350,6 +8423,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		ctx.save();
 		ctx.lineJoin = "round";
 		ctx.lineCap = "round";
+		// Everything from here down to the pins is the CURVE, and the curve is the
+		// one thing a moved view makes unplaceable, so the whole block fades
+		// together. The pins below deliberately do not: they are world-space and
+		// are re-projected through the live lens on every repaint.
+		if (ghost) ctx.globalAlpha = .3;
 
 		// (1) The ORIGINAL trajectory, faint, and ONLY while there is an edit to
 		// compare it with. It used to be the instruction ("draw something like
@@ -8369,16 +8447,23 @@ function resizePromptClip(id, edge, rawFrame) {
 
 		// (2) The curve in hand — the hero, and literally what gets sent. Two
 		// passes: a dark halo so it reads on bright floors and skin tones alike,
-		// then the glowing yellow the eye follows.
-		ctx.strokeStyle = "rgba(40, 24, 0, .8)";
-		ctx.lineWidth = 9;
-		traceCurve(edited);
-		ctx.shadowColor = "rgba(255, 210, 61, .9)";
-		ctx.shadowBlur = 10;
+		// then the glowing yellow the eye follows. GHOSTED the halo and the glow
+		// both go: a detached line must not look like something you can grab, and
+		// the dash says "this is where it was, not where it is".
+		if (!ghost) {
+			ctx.strokeStyle = "rgba(40, 24, 0, .8)";
+			ctx.lineWidth = 9;
+			traceCurve(edited);
+			ctx.shadowColor = "rgba(255, 210, 61, .9)";
+			ctx.shadowBlur = 10;
+		} else {
+			ctx.setLineDash([3, 7]);
+		}
 		ctx.strokeStyle = "#ffd23d";
-		ctx.lineWidth = 4.5;
+		ctx.lineWidth = ghost ? 2 : 4.5;
 		traceCurve(edited);
 		ctx.shadowBlur = 0;
+		ctx.setLineDash([]);
 
 		// (4) The influenced span, while a grab is live: the stretch the falloff
 		// is actually moving, drawn thicker and hotter. It is the only honest
@@ -8403,8 +8488,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		// grabbed is worse than no dot. The hovered one swells, because the
 		// scene's own cursor is already `grab` and a cursor alone cannot say
 		// "this pointer would pick up the path rather than orbit the view".
-		const hovered = drag ? drag.index : lineHoverRef.current;
-		for (let index = 0; index < edited.length; index += 1) {
+		// GHOSTED THERE ARE NO HANDLES AT ALL. A dot is a promise that pressing it
+		// picks the path up, and while the view has drifted that press is refused
+		// — and would be aiming at a place the point is not, anyway.
+		const hovered = ghost ? null : (drag ? drag.index : lineHoverRef.current);
+		for (let index = 0; !ghost && index < edited.length; index += 1) {
 			const point = edited[index];
 			if (!isCurvePointOnScreen(point)) continue;
 			if (isCurveEndPinned(index, edited.length)) continue;
@@ -8427,7 +8515,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// that stay on the original trajectory no matter how hard the middle is
 		// pulled. Seeing them anchored is the whole explanation of why this edit
 		// does not pop at the seams.
-		for (const index of [0, edited.length - 1]) {
+		for (const index of ghost ? [] : [0, edited.length - 1]) {
 			const point = edited[index];
 			if (!isCurvePointOnScreen(point)) continue;
 			const [px, py] = pointPx(point);
@@ -8440,6 +8528,9 @@ function resizePromptClip(id, edge, rawFrame) {
 			ctx.arc(px, py, 3.2, 0, Math.PI * 2);
 			ctx.fill();
 		}
+		// The curve's fade ends here; the pins below are world-space and paint at
+		// full strength through the live lens whatever the curve's lens is doing.
+		ctx.globalAlpha = 1;
 
 		// (4b) THE PINS, and — in pin mode — the joint's own handle at the
 		// playhead. Drawn in the pose-studio's effector green rather than the
@@ -8452,8 +8543,10 @@ function resizePromptClip(id, edge, rawFrame) {
 			const pinDrag = linePinDragRef.current;
 			// ONE capture for the whole block: pins are world-space, so unlike the
 			// curve they are re-projected through the LIVE lens on every repaint
-			// and an orbit carries them along instead of discarding them. That is
-			// the camera policy difference between the two gestures, in one line.
+			// and an orbit carries them along, at full strength. The curve above
+			// can only ghost — that is the camera-policy difference between the two
+			// gestures, and it is a difference in what can be DRAWN, not in what
+			// survives: both edits outlive the move.
 			const pinCam = pinDrag?.camera ?? captureLineCamera(pane);
 			const marks = [];
 			for (const pin of linePins) {
@@ -8572,7 +8665,13 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * committed edit if there is one, otherwise whatever the last repaint
 	 * projected. Used by the hover cursor, which must never change state. */
 	function lineHoverCurve() {
-		return lineCurve ? lineCurve.edited : lineLiveRef.current?.curve ?? null;
+		// A drifted curve is painted detached and has no handles, so it has no
+		// hover targets either — swelling a marker the press would refuse is the
+		// cursor telling a lie. The ref (rather than a fresh capture) because
+		// hover fires on every pointermove and 250 ms of staleness on a cursor
+		// shape is not worth a matrix inversion per move.
+		if (lineCurve) return lineDriftRef.current ? null : lineCurve.edited;
+		return lineLiveRef.current?.curve ?? null;
 	}
 
 	/** Side-effect-free "does this press belong to line editing?" — handed to
@@ -8604,7 +8703,14 @@ function resizePromptClip(id, edge, rawFrame) {
 		// No curve to grab AND nothing to draw onto: without a projected
 		// trajectory there is no base curve for a stroke to replace the interior
 		// of, so the press is not ours and the gizmo keeps it.
-		if (!lineHoverCurve()) return false;
+		//
+		// A COMMITTED EDIT CLAIMS THE PRESS EVEN WHILE THE VIEW HAS DRIFTED, which
+		// is why the test is on lineCurve rather than on lineHoverCurve alone
+		// (that one goes null under drift, deliberately — no handles to hover).
+		// The stage handler refuses that press with the drift hint; yielding it
+		// instead would hand it to the gizmo, which would quietly select a cast
+		// member and never say why the gesture did nothing.
+		if (!lineCurve && !lineHoverCurve()) return false;
 		const [u, v] = lineUvFromPointer(pane, event);
 		// Outside the drawable image (the letterbox bars of a shot view) a stroke
 		// could only author points the bridge refuses, so it is not a stroke.
@@ -8616,22 +8722,14 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * the eventual C6 request is built against, so the uv and the lens can never
 	 * come from different moments.
 	 *
-	 * It is also where a stale edit dies. The drift watcher runs at 4 Hz, which
-	 * leaves a window in which the user could orbit and grab before it notices;
-	 * checking here closes it, so it is never possible to pick up a curve that
-	 * is no longer where it is drawn. */
+	 * A committed edit is handed back with ITS OWN lens, and a drifted one is
+	 * never reached at all — onLineStagePointerDown refuses the press above,
+	 * synchronously, before this function is called. That refusal (rather than
+	 * the old discard) is the whole policy change: a second gesture through a
+	 * different lens would mix two cameras into one curve, which is a real
+	 * problem; the edit already in hand is not. */
 	function lineGrabSource(pane) {
-		if (lineCurve) {
-			const live = captureLineCamera(pane);
-			if (!live || !cameraDrifted(live, lineCurve.camera)) {
-				return { camera: lineCurve.camera, curve: lineCurve.edited };
-			}
-			clearLineEdit();
-			setToast(ko(
-				"The camera moved, so your pull was dropped and the path is following the view again",
-				"카메라가 움직여서 잡아당긴 편집을 버렸어요 — 궤적이 다시 시점을 따라갑니다",
-			));
-		}
+		if (lineCurve) return { camera: lineCurve.camera, curve: lineCurve.edited };
 		const cached = lineLiveRef.current;
 		if (cached) return cached;
 		const fresh = projectLineCurve(pane);
@@ -8680,6 +8778,22 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (!(event.target instanceof HTMLCanvasElement)) return;
 		const pane = lineEditPane();
 		if (!pane) return;
+		// THE VIEW HAS DRIFTED AWAY FROM THE EDIT IN HAND — refuse the gesture,
+		// keep the edit. A pull, a stroke or a pin started now would be authored
+		// through THIS lens and committed onto a curve authored through another
+		// one, and there is no honest way to merge two cameras into a single set
+		// of uv. So the press is consumed (so it cannot orbit or select behind the
+		// refusal) and answered with the same sentence the panel is showing. Undo,
+		// reset, Generate and Esc all still work — none of them authors anything.
+		//
+		// Checked synchronously rather than off the 4 Hz watcher's state: the
+		// window between polls is exactly where a fly-then-press lands.
+		if (lineCurve && lineCurveDrifted(pane)) {
+			event.preventDefault();
+			event.stopPropagation();
+			setToast(lineDriftHint());
+			return;
+		}
 		// PIN MODE takes the press before the curve does: in this mode the marker
 		// under the pointer is the joint AT THE PLAYHEAD, not a point of a path,
 		// and the two gestures start on the same pixels.
@@ -8789,9 +8903,9 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * The commit below is deliberately the SAME six lines the drag's pointerup
 	 * runs: compare against the snapshot, push the replaced curve on the undo
 	 * stack, install `{ camera, original, edited }`, schedule a preview. Every
-	 * downstream behaviour — Ctrl/Cmd+Z, the reset button, the camera-drift
-	 * discard, the wire payload — therefore treats a drawn curve as an ordinary
-	 * one, because it IS one. */
+	 * downstream behaviour — Ctrl/Cmd+Z, the reset button, the detached paint a
+	 * moved view puts it in, the wire payload — therefore treats a drawn curve as
+	 * an ordinary one, because it IS one. */
 	function beginLineDraw(event, pane, source, u, v) {
 		event.preventDefault();
 		event.stopPropagation();
@@ -9064,7 +9178,8 @@ function resizePromptClip(id, edge, rawFrame) {
 		setLineCurve(null);
 	}
 
-	/** Internal clear — mode entry/exit, enqueue and camera drift. Unlike the
+	/** Internal clear — mode entry/exit and enqueue. (A camera move used to come
+	 * through here too; it no longer clears anything.) Unlike the
 	 * reset BUTTON this also empties the undo stack: those transitions change
 	 * what the stack's entries were authored against. It is also where a
 	 * preview SESSION ends, which is what re-rolls the seed: every one of these
@@ -9505,34 +9620,53 @@ function resizePromptClip(id, edge, rawFrame) {
 		return () => window.removeEventListener("keydown", onKey, true);
 	}, [lineEditMode, lineCurve]);
 
-	// Camera-drift watcher — and note what it does NOT do: it never blocks or
-	// freezes navigation, and it has no job at all while the curve is unedited,
-	// because an unedited curve is re-projected every repaint and simply follows
-	// the view.
+	// Camera-drift watcher — and note what it does NOT do, which is now the
+	// interesting half: it never blocks navigation, and IT NEVER DESTROYS
+	// ANYTHING. It has no job at all while the curve is unedited, because an
+	// unedited curve is re-projected every repaint and simply follows the view.
 	//
-	// Once something HAS been pulled, that pull is a 2D offset authored through
-	// one specific lens, and there is no correct way to read it through another.
-	// So moving the view DISCARDS it, says so, and the curve goes back to
-	// following. Polling beats hooking every camera mutation: the cameras are
-	// moved from a dozen places (fly controls, shot presets, live control, follow
-	// tracks) and none of them reports to React. lineGrabSource repeats this
-	// check at pointerdown to close the 250 ms window between polls.
+	// Once something has been pulled, that pull is a 2D offset authored through
+	// one specific lens — and the committed curve KEEPS that lens beside the
+	// points, which is what buildLineEditRequest puts on the wire. So moving the
+	// view invalidates the drawing of the line and nothing else: the edit, its
+	// preview and the confirming run are all still exactly what the artist
+	// authored. This watcher therefore only reports, in both directions — come
+	// back toward the snapshot and the line re-attaches, with no state to restore
+	// because none was thrown away. (Before this, it called clearLineEdit(): a
+	// right-drag fly, the app's own navigation gesture, silently wiped a finished
+	// edit. That was the bug.)
+	//
+	// Polling beats hooking every camera mutation: the cameras are moved from a
+	// dozen places (fly controls, shot presets, live control, follow tracks) and
+	// none of them reports to React. The painter re-derives the same answer every
+	// frame for the ghost, and onLineStagePointerDown re-derives it synchronously
+	// to close the 250 ms window between polls; this poll exists to drive the
+	// PANEL, which only re-renders on state.
 	useEffect(() => {
-		if (!lineEditMode || !lineCurve) return undefined;
-		const id = window.setInterval(() => {
-			// Never yank the curve out from under a finger that is holding it —
-			// or drawing a new one.
-			if (lineDragRef.current || lineDrawRef.current) return;
-			const live = captureLineCamera(lineEditPane());
-			// No readable camera is not drift — a transient unmeasurable pane
-			// must not throw away work the user did.
-			if (!live || !cameraDrifted(live, lineCurve.camera)) return;
-			clearLineEdit();
-			setToast(ko(
-				"The camera moved, so your pull was dropped and the path is following the view again — pull it again from here",
-				"카메라가 움직여서 잡아당긴 편집을 버렸어요 — 궤적이 다시 시점을 따라갑니다. 이 시점에서 다시 잡아당겨 주세요",
-			));
-		}, 250);
+		if (!lineEditMode || !lineCurve) {
+			// No edit, no drift: whatever the last curve's lens was, the live one
+			// is now the baseline again and gestures are re-enabled. This is what
+			// makes undo/reset back to no-curve hand the mode straight back.
+			lineDriftRef.current = false;
+			setLineDrifted(false);
+			return undefined;
+		}
+		const poll = () => {
+			// Never re-classify under a finger that is holding the curve or drawing
+			// a new one: a live gesture owns its own snapshot, and mid-gesture
+			// drift is the one case that is still a corruption rather than a
+			// misalignment (see the gesture handlers — that path is unchanged).
+			if (lineDragRef.current || lineDrawRef.current || linePinDragRef.current) return;
+			const drifted = lineCurveDrifted(lineEditPane(), lineCurve);
+			if (drifted === lineDriftRef.current) return;
+			lineDriftRef.current = drifted;
+			setLineDrifted(drifted);
+		};
+		// Immediately, then at 4 Hz: a view switch or a fly that finishes just as
+		// this effect re-runs should not leave the panel a quarter second behind
+		// the line it is describing.
+		poll();
+		const id = window.setInterval(poll, 250);
 		return () => window.clearInterval(id);
 		// lookThroughShot / centerTab / ikMode are dependencies even though the
 		// body never reads them directly: they are what lineEditPane branches on,
@@ -10472,10 +10606,15 @@ function resizePromptClip(id, edge, rawFrame) {
 		// viewport lasts a second and a half, and a reason line appearing and
 		// vanishing under the Scene button RESIZES THE TAKE BAR — which shortens
 		// the stage, which changes the camera aspect, which the drift watcher
-		// correctly reads as "the view moved" and answers by throwing the
-		// artist's pull away. Measured: it killed the pull ~400 ms after every
-		// draft landed. The refusal lives in runArdy/runTrailRegeneration
-		// instead, where it costs no layout.
+		// reads as "the view moved".
+		//
+		// THE TEETH ARE OUT OF THAT TRAP: drift no longer discards anything, so a
+		// take-bar resize now costs at most a flicker of the ghosted paint and the
+		// hint while the aspect settles — it used to kill the pull ~400 ms after
+		// every draft landed. The refusal still lives in runArdy /
+		// runTrailRegeneration rather than here, because a reason line that
+		// appears and vanishes under the pointer is its own small nuisance and
+		// nothing is gained by moving it back.
 		return "";
 	}
 	/** The one sentence every take-consuming action says while a draft is up. */
@@ -12184,7 +12323,14 @@ function resizePromptClip(id, edge, rawFrame) {
 									{lineEditMode ? ko("Path editing on", "궤적 편집 켜짐") : ko("Drag the path", "궤적을 잡아 끌기")}
 								</button>
 								{lineEditMode && (
-									<div className="line-edit-panel" data-line-preview={linePreviewUrl ? "true" : undefined}>
+									<div
+										className="line-edit-panel"
+										data-line-preview={linePreviewUrl ? "true" : undefined}
+										// "The line is detached from this view" — the panel's own copy of
+										// what the stage already carries, so a test (or a screenshot) can
+										// read the state from whichever of the two it is looking at.
+										data-line-drift={lineCurve && lineDrifted ? "true" : undefined}
+									>
 										<Field label={ko("Joint", "관절")}>
 											<Dropdown
 												value={lineTrack}
@@ -12281,11 +12427,21 @@ function resizePromptClip(id, edge, rawFrame) {
 										{/* The one thing users assume a modal viewport tool takes away.
 										    Said out loud, because "can I still orbit?" is the first
 										    question and the answer decides whether the mode is usable. */}
+										{/* THE DETACHED STATE. Said inline, next to the edit it is about,
+										    and in the same words the refused gesture answers with. It is
+										    a status, not a warning: nothing was lost and nothing needs
+										    doing — the only thing that changed is that the line cannot be
+										    drawn in a view it was not aimed through. */}
+										{lineCurve && lineDrifted && (
+											<p className="inspector-hint line-edit-drift" aria-live="polite">
+												{lineDriftHint()}
+											</p>
+										)}
 										<p className="inspector-hint">
 											{lineCurveDirty
 												? ko(
-													"You can still orbit (Alt+drag), pan and fly freely — but moving the view drops this edit, because it was aimed through this exact lens.",
-													"시점은 자유롭게 돌리고(Alt+드래그) 옮길 수 있어요 — 다만 지금 편집한 궤적은 이 시점 기준이라 시점을 옮기면 사라집니다.",
+													"You can still orbit (Alt+drag), pan and fly freely — the edit survives it. It was aimed through one lens, so while the view is elsewhere the line is drawn ghosted and a new pull waits; Generate, undo and Reset work from anywhere.",
+													"시점은 자유롭게 돌리고(Alt+드래그) 옮길 수 있어요 — 편집은 그대로 남습니다. 다만 이 궤적은 처음 시점 기준이라, 시점을 옮기면 흐리게만 보이고 새로 끌기는 잠시 멈춰요. 생성·되돌리기·원래대로는 언제든 됩니다.",
 												)
 												: ko(
 													"You can still orbit (Alt+drag), pan and fly freely; the path follows the view until you pull or draw it.",

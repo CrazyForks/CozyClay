@@ -9164,6 +9164,18 @@ input[type=range] {
 	opacity: .85;
 }
 
+/* The view moved out from under a committed edit. A STATUS, not an error: the
+   edit is intact and still on its way to the box, so this reads like the
+   preview lines below (quiet, tinted, a rule down the side) rather than like
+   .line-preview-error. The overlay is already saying the same thing by drawing
+   the line ghosted; this is the sentence that explains it. */
+.line-edit-drift {
+	margin-top: 2px;
+	padding-left: 6px;
+	border-left: 2px solid var(--warn, #ff9c6e);
+	opacity: .9;
+}
+
 /* ---- the live preview loop (contracts C10/C11) ----
    Releasing a pull fires a 20-step draft and the VIEWPORT answers; these three
    lines only say which state that loop is in. They are deliberately quiet —

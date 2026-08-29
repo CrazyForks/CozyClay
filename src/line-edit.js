@@ -101,11 +101,17 @@ export const DRAG_WEIGHT_EPSILON = 0.05;
 /** Grab tolerance for the hit test, in CSS pixels. */
 export const CURVE_GRAB_RADIUS_PX = 14;
 
-/** How far the camera may drift under a pulled curve before the pull is thrown
- * away. The captured extrinsics and the authored uv are a MATCHED PAIR: once
- * the user orbits, the same uv names a different ray and the box would solve
- * for a path the user never aimed at. 1e-4 is tighter than any deliberate nudge
- * and looser than float noise from re-deriving the same matrix. */
+/** How far the camera may drift under a pulled curve before the curve stops
+ * being DRAWABLE in the live view. The captured extrinsics and the authored uv
+ * are a MATCHED PAIR: once the user orbits, the same uv names a different ray,
+ * so the line can no longer be painted where it belongs and a second gesture
+ * would author points through a lens the first ones never saw.
+ *
+ * What it does NOT invalidate is the edit: the committed curve carries its own
+ * camera and that snapshot is what goes on the wire, so a pending edit survives
+ * any amount of drift (App.jsx paints it detached and refuses new gestures
+ * until the view comes back). 1e-4 is tighter than any deliberate nudge and
+ * looser than float noise from re-deriving the same matrix. */
 export const CAMERA_DRIFT_EPSILON = 1e-4;
 
 /**
@@ -862,8 +868,10 @@ export function drawStrokeEdit(stroke, {
  * is the one the method was measured on. Everything a stroke needs and a pin
  * does not — a camera, a frame association, a timing rule, a seam ease — exists
  * because a 2D stroke is an impoverished signal. A pin carries its own frame, is
- * already in 3D, and needs no lens, which is also why a pinned edit SURVIVES a
- * camera move that discards a drawn one.
+ * already in 3D, and needs no lens — which is why a camera move leaves a pin
+ * fully drawable (it is re-projected through the new lens and lands where the
+ * artist put it) while a drawn curve can only be shown detached until the view
+ * comes back. Both edits survive the move; only one of them can still be drawn.
  *
  * The exchange: a pin says nothing about the frames between pins, and the model
  * answers for them. That is the deal the paper's numbers are about.
@@ -1050,10 +1058,15 @@ export function curvesEqual(a, b) {
  *
  * Compared on the C6 block itself rather than on three's camera object, so the
  * test is on exactly the numbers that were sent — a re-derived but identical
- * pose reads as "not moved" even after a matrix rebuild. A true means the curve
- * must be re-projected from the new camera and any deformation on it dropped,
- * never re-interpreted: there is no correct way to read 2D offsets authored
- * through one lens as offsets through another.
+ * pose reads as "not moved" even after a matrix rebuild.
+ *
+ * A true means the 2D offsets on this curve CANNOT BE RE-INTERPRETED through the
+ * new camera: there is no correct way to read offsets authored through one lens
+ * as offsets through another, and no depth to reproject them with. It does not
+ * mean the edit is void. An UNEDITED curve is simply re-projected from the new
+ * camera and follows the view; a COMMITTED one keeps the lens it was authored
+ * with (the caller stores `{ camera, original, edited }` and sends that camera),
+ * so drift makes it undrawable and un-extendable in the live view, not invalid.
  */
 export function cameraDrifted(a, b, epsilon = CAMERA_DRIFT_EPSILON) {
 	if (!a || !b) return true;

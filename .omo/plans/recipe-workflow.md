@@ -222,12 +222,16 @@ runLineEditJob options/meta, C6 lineEdit wire format (all as shipped).
 - Preview timing surfaced in-panel (.line-preview-time).
 - Browser verification 16/16 on the live box; full suite 104 files /
   1737 PASS; vite build clean.
-- KNOWN TRAP (documented at sceneDisabledReason in App.jsx): anything
-  that changes the take bar's height while a pull is up resizes the
-  stage, which the camera-drift watcher correctly reads as a moved view
-  and discards the edit. Draft-blocking reasons for scene actions are
-  therefore toast+runtime-guard, deviating from C12's inline rule for
-  this one case. Follow-up: reserve vertical space for reason lines.
+- KNOWN TRAP, DEFUSED (2026-08-29, post-fe87937): camera drift after a
+  COMMITTED edit no longer discards anything — the edit stores its own
+  camera snapshot and stays valid; the overlay just ghosts (alpha .3,
+  dashed, no handles) with an inline hint, and re-attaches when the view
+  returns. New gestures are refused while drifted (two lenses cannot
+  share one curve); Generate/undo/Reset work from anywhere. This also
+  defuses the take-bar-resize variant (verified: a 26 px stage resize
+  under a committed edit keeps edit + preview at 400 ms and 1.6 s).
+  Scene-action draft-blocking reasons stay toast+runtime-guard anyway
+  (inline lines are still a resize source mid-GESTURE).
 
 ## Kill criteria
 - Resident protocol flaky (>1 unexplained fallback per 10 edits): ship
