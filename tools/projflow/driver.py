@@ -62,18 +62,66 @@ order, plus `<out>.meta.json`. POSITIONS ONLY — ACMDM's "Raw" family generates
 absolute coordinates and has no rotation channel. Converting to cskel27 (which
 must LIFT rotations) is a separate module and deliberately not done here; see
 the seam comment in generate.mjs.
+
+TWO RUN MODES, ONE SAMPLER (contract C11). `--source/--line/--out` is the
+ONE-SHOT mode above: load the model, edit once, exit. It is the contract of
+record and nothing below changes a number it produces. `--serve` is the
+RESIDENT mode: load the model ONCE and then answer requests forever on
+stdin/stdout, because the measured cost of an edit is 3.9 s of model load
+against 1.3 s of sampling and paying the load per drag is what makes the detail
+loop feel like a batch job. Both modes call exactly the same `Engine` and
+`run_line_edit`, so a warm edit and a cold edit differ in nothing but when the
+weights were read (`sample_with_linear_constraints` calls
+`torch.manual_seed(seed)` itself, so a seeded request is bit-identical either
+way).
+
+THE SERVE PROTOCOL. NDJSON, one request object per stdin line, one response
+object per stdout line, arrays as base64 little-endian float32 blobs beside an
+explicit shape (a 196-frame source is ~52 KB raw / 69 KB encoded — small enough
+that a pipe is the whole transport and there is no port, no tunnel, no file):
+
+  ready (unsolicited, once, after the model is loaded):
+    {"type":"ready","protocol":1,"device":"cuda:0","loadSeconds":3.9}
+  request:
+    {"id":"7","type":"lineEdit","line":{...C6...},
+     "source":{"shape":[T,22,3],"data":"<base64 float32>"},
+     "steps":100,"ridge":1e-6,"preserveStride":2,"preserveMargin":20,
+     "seed":0,"cfg":3.0,"preview":false}
+    {"id":"8","type":"ping"}      {"id":"9","type":"shutdown"}
+  response:
+    {"id":"7","ok":true,"result":{"shape":[T,22,3],"data":"<base64>",
+                                  "meta":{...the one-shot meta, verbatim...}}}
+    {"id":"7","ok":false,"error":{"message":"...","type":"ValueError"}}
+
+STDOUT IS THE PROTOCOL AND NOTHING ELSE. torch, CLIP and the repo's own loaders
+all print to stdout, and one stray progress line would desynchronise the stream
+for the rest of the session. So `--serve` DUPLICATES fd 1 to a private handle
+and then points fd 1 at fd 2 before importing anything: every `print`, every
+tqdm bar, every C-level write from a native extension lands on stderr (where
+the wrapper forwards it as status), and the only writer to the real stdout is
+`_write_message`. A request whose JSON cannot even be parsed is answered with
+`"id": null`, which the wrapper reads as a protocol failure — it must, because
+an unparseable line means the two sides no longer agree about framing.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import numpy as np
+
+# Bumped when a request or response field changes meaning. The wrapper ships
+# THIS file to the box per session, so the two sides cannot drift by more than
+# one deploy — the number exists so that a stale resident left over from an
+# earlier build is refused loudly instead of answering with the old shape.
+PROTOCOL_VERSION = 1
 
 
 # --- the hml22 skeleton ------------------------------------------------------
@@ -388,64 +436,94 @@ def resolve_joint(line):
     return expected
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser("ProjFlow line-edit driver")
-    ap.add_argument("--source", required=True, help="source motion .npy, (T,22,3) float32 world metres")
-    ap.add_argument("--line", required=True, help="line-edit request .json (contract C6)")
-    ap.add_argument("--out", required=True, help="output .npy; metadata goes to <out stem>.meta.json")
-    ap.add_argument("--steps", type=int, default=100, help="ODE steps (S1: ~7.3 ms/step at 100 frames)")
-    ap.add_argument("--ridge", type=float, default=1e-6,
-                    help="ridge_lambda. S1: THIS is the exactness knob, not steps — 1e-3 lands at "
-                         "2.6e-5 while 1e-6 gives 2.4e-7 at half the steps")
-    ap.add_argument("--preview", action="store_true",
-                    help="20 steps instead of --steps (S1 measured 0.145 s for a 100-frame preview)")
-    ap.add_argument("--preserve-stride", type=int, default=2, help="pin every Nth frame outside the edit range")
-    ap.add_argument("--preserve-margin", type=int, default=20,
-                    help="frames either side of the edit range where the edited limb is left free (20 = 1 s)")
-    ap.add_argument("--seed", type=int, default=0, help="matches demo/run.py's default")
-    ap.add_argument("--cfg", type=float, default=3.0, help="classifier-free guidance scale")
-    ap.add_argument("--repo", default=os.environ.get("CCLAY_PROJFLOW_REPO", "/home/yun/projflow-scout/repo"))
-    ap.add_argument("--model-id", default="ACMDM-Raw-Flow-S-PatchSize22")
-    ap.add_argument("--model-name", default="ACMDM_Raw_Flow_S_PatchSize22")
-    ap.add_argument("--device", default="auto")
-    args = ap.parse_args()
+# --- the loaded model, and the one edit both run modes perform ---------------
 
-    # Resolve every caller-supplied path BEFORE the chdir below, or a relative
-    # --source silently resolves against the ProjFlow clone instead of the
-    # caller's cwd. generate.mjs always passes absolute paths; a human running
-    # this by hand should not have to.
-    args.source = str(Path(args.source).expanduser().resolve())
-    args.line = str(Path(args.line).expanduser().resolve())
-    args.out = str(Path(args.out).expanduser().absolute())
+def open_repo(repo_path):
+    """Put the ProjFlow clone on sys.path AND make it the cwd, then return it.
 
-    repo = Path(args.repo).expanduser().resolve()
+    Both are required and for different reasons: the repo's modules are imported
+    by package path (`demo.common.*`), and its model loader resolves checkpoint
+    paths relative to the process's cwd. Called once per process — the serve
+    loop must not chdir per request, or a relative path in a request would mean
+    something different depending on what ran before it.
+    """
+    repo = Path(repo_path).expanduser().resolve()
     if not (repo / "demo").is_dir():
         raise SystemExit(f"--repo {repo} does not look like a ProjFlow clone (no demo/)")
-    # The repo's own modules are imported by package path and its model loader
-    # resolves checkpoints relative to the repo root, so both the path and the
-    # cwd have to be the clone.
     sys.path.insert(0, str(repo))
     os.chdir(str(repo))
+    return repo
 
-    import torch  # after sys.path, so the venv's torch is the one that loads
-    from demo.common.model_loader import load_acmdm_from_config, resolve_device
-    from demo.common.motion_stats import load_22x3_stats, denormalize_world
-    from demo.common.normal_equations import precompute_normal_cholesky
-    from demo.common.sampling import sample_with_linear_constraints
-    from demo.lift.projection_operator import convert_linear_measurement_to_normalized_space
 
-    source = np.load(args.source).astype(np.float32)
+class Engine:
+    """The loaded checkpoint plus the handful of repo functions an edit needs.
+
+    THE WHOLE POINT of contract C11 is that this object outlives a request. S1
+    measured the load at 3.9 s against 1.3 s of sampling, so a resident Engine
+    is the difference between an 8 s round trip and a 2 s one. Nothing about a
+    request mutates it: the operator, the Cholesky and the sample are all built
+    per call in `run_line_edit`, and the sampler seeds torch itself, so request
+    N+1 cannot inherit anything from request N except the weights.
+
+    The repo imports happen HERE rather than at module scope because they are
+    only importable after `open_repo`, and because `import torch` is most of the
+    load time — a caller that only wants the argument parser should not pay it.
+    """
+
+    def __init__(self, repo, *, model_id, model_name, device):
+        import torch  # after open_repo, so the venv's torch is the one that loads
+        from demo.common.model_loader import load_acmdm_from_config, resolve_device
+        from demo.common.motion_stats import load_22x3_stats, denormalize_world
+        from demo.common.normal_equations import precompute_normal_cholesky
+        from demo.common.sampling import sample_with_linear_constraints
+        from demo.lift.projection_operator import convert_linear_measurement_to_normalized_space
+
+        started = time.time()
+        self.torch = torch
+        self.repo = repo
+        self.device = resolve_device(str(device))
+        self.loaded = load_acmdm_from_config(
+            {"id": model_id, "name": model_name, "dataset": "t2m"},
+            repo_root=repo,
+            device=self.device,
+        )
+        self.mean_np, self.std_np = load_22x3_stats("t2m", repo)
+        self.load_seconds = time.time() - started
+        self.to_normalized = convert_linear_measurement_to_normalized_space
+        self.precompute_normal_cholesky = precompute_normal_cholesky
+        self.sample = sample_with_linear_constraints
+        self.denormalize_world = denormalize_world
+
+
+def run_line_edit(
+    engine,
+    source,
+    line,
+    *,
+    steps,
+    ridge,
+    preserve_stride,
+    preserve_margin,
+    seed,
+    cfg,
+    preview=False,
+    reset_peak=False,
+):
+    """One line edit against a loaded Engine. Returns (out_world, meta).
+
+    Every number the one-shot mode ever wrote lives in the returned meta, and
+    the serve mode returns the same dict verbatim, so a warm result and a cold
+    result are indistinguishable to the wrapper.
+    """
+    torch = engine.torch
+    source = np.asarray(source, dtype=np.float32)
     if source.ndim != 3 or source.shape[1] != NUM_JOINTS or source.shape[2] != 3:
-        raise SystemExit(f"--source must be (T,22,3); got {source.shape}")
+        raise ValueError(f"source must be (T,22,3); got {source.shape}")
     frames = int(source.shape[0])
     _assert_column_layout(frames)
 
-    with open(args.line, "r", encoding="utf-8") as handle:
-        line = json.load(handle)
     joint_id = resolve_joint(line)
     prompt = str(line.get("prompt") or "")
-
-    steps = 20 if args.preview else int(args.steps)
 
     # --- fuse the operator ---------------------------------------------------
     line_rows, line_values, line_frames, uv = build_line_rows(line, frames=frames, joint_id=joint_id)
@@ -455,47 +533,47 @@ def main() -> int:
         edit_start=int(line["frameRange"]["start"]),
         edit_end=int(line["frameRange"]["end"]),
         chain=chain,
-        stride=int(args.preserve_stride),
-        margin=int(args.preserve_margin),
+        stride=int(preserve_stride),
+        margin=int(preserve_margin),
     )
     A_world_np, y_world_np = densify(line_rows + keep_rows, line_values + keep_values, frames=frames)
     m = int(A_world_np.shape[0])
 
-    device = resolve_device(str(args.device))
-    loaded = load_acmdm_from_config(
-        {"id": args.model_id, "name": args.model_name, "dataset": "t2m"},
-        repo_root=repo,
-        device=device,
-    )
-    mean_np, std_np = load_22x3_stats("t2m", repo)
-
+    device = engine.device
     A_world = torch.from_numpy(A_world_np).to(device=device)
     y_world = torch.from_numpy(y_world_np).to(device=device)
     # THE normalisation convention, taken from the repo so there is one spelling
     # of it: x_world = x_norm*std + mean  =>  A' = A diag(std), y' = y - A mean.
     # It is applied to the line rows and the preserve rows TOGETHER, which is the
     # whole point of fusing them into one operator.
-    A_norm, y_norm = convert_linear_measurement_to_normalized_space(
+    A_norm, y_norm = engine.to_normalized(
         operator_world=A_world,
         measurement_world=y_world,
-        mean=torch.from_numpy(np.asarray(mean_np, dtype=np.float32)).to(device=device),
-        std=torch.from_numpy(np.asarray(std_np, dtype=np.float32)).to(device=device),
+        mean=torch.from_numpy(np.asarray(engine.mean_np, dtype=np.float32)).to(device=device),
+        std=torch.from_numpy(np.asarray(engine.std_np, dtype=np.float32)).to(device=device),
         num_frames=frames,
         num_joints=NUM_JOINTS,
     )
 
-    factor = precompute_normal_cholesky(A_norm, ridge_lambda=float(args.ridge))
+    factor = engine.precompute_normal_cholesky(A_norm, ridge_lambda=float(ridge))
 
     # An empty prompt with cfg != 1 duplicates the batch to guide toward nothing;
     # on a line edit the constraints carry the intent, so guidance is switched off
     # rather than paid for. A prompt that IS given keeps the demos' cfg.
-    cfg_scale = float(args.cfg) if prompt else 1.0
+    cfg_scale = float(cfg) if prompt else 1.0
 
     if device.type == "cuda":
+        # Only the resident asks for this: it makes `vramPeakAllocMiB` the peak of
+        # THIS request (the weights stay resident, so they stay in the baseline)
+        # instead of a session high-water mark that only ever grows. The one-shot
+        # process is its own reset and must keep reporting the load peak it always
+        # has.
+        if reset_peak:
+            torch.cuda.reset_peak_memory_stats()
         torch.cuda.synchronize()
     started = time.time()
-    result = sample_with_linear_constraints(
-        loaded.model,
+    result = engine.sample(
+        engine.loaded.model,
         prompt=prompt,
         operator=A_norm,
         measurement=y_norm.view(1, -1),
@@ -503,8 +581,8 @@ def main() -> int:
         frames=frames,
         num_joints=NUM_JOINTS,
         num_samples=1,
-        seed=int(args.seed),
-        steps=steps,
+        seed=int(seed),
+        steps=int(steps),
         cfg=cfg_scale,
         device=device,
     )
@@ -513,14 +591,10 @@ def main() -> int:
     sampling_seconds = time.time() - started
 
     out_norm = result.samples_norm[0].permute(1, 2, 0).detach().cpu().numpy()  # (T,J,3)
-    out_world = denormalize_world(out_norm, mean_np, std_np).astype(np.float32)
-
-    out_path = Path(args.out).expanduser()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(str(out_path), out_world)
+    out_world = engine.denormalize_world(out_norm, engine.mean_np, engine.std_np).astype(np.float32)
 
     # --- self-check ----------------------------------------------------------
-    # Both numbers are computed from the SAVED motion, not from the sampler's
+    # Both numbers are computed from the RESULT, not from the sampler's
     # internals, and the reprojection uses `project()` rather than the rows, so a
     # sign error cannot hide inside its own operator.
     if pinned:
@@ -537,8 +611,8 @@ def main() -> int:
 
     meta = {
         "m": m,
-        "steps": steps,
-        "ridge": float(args.ridge),
+        "steps": int(steps),
+        "ridge": float(ridge),
         "sampling_seconds": round(sampling_seconds, 4),
         "frames": frames,
         "fps": 20,
@@ -547,16 +621,16 @@ def main() -> int:
         "jointId": joint_id,
         "prompt": prompt,
         "cfg": cfg_scale,
-        "seed": int(args.seed),
-        "preview": bool(args.preview),
+        "seed": int(seed),
+        "preview": bool(preview),
         "rows": {
             "line": len(line_rows),
             "preserve": len(keep_rows),
             "operatorCols": 3 * frames * NUM_JOINTS,
         },
         "preserve": {
-            "stride": int(args.preserve_stride),
-            "margin": int(args.preserve_margin),
+            "stride": int(preserve_stride),
+            "margin": int(preserve_margin),
             "frames": [int(f) for f in kept_frames],
             "pinnedJointFrames": len(pinned),
             "freeChain": sorted(int(j) for j in chain),
@@ -574,10 +648,225 @@ def main() -> int:
             "editedMaxAbsDiffM": float(edited.max()),
         },
         "device": str(device),
-        "checkpoint": str(loaded.checkpoint_path),
+        "checkpoint": str(engine.loaded.checkpoint_path),
     }
     if device.type == "cuda":
         meta["vramPeakAllocMiB"] = round(torch.cuda.max_memory_allocated() / 2 ** 20, 1)
+    return out_world, meta
+
+
+# --- the resident service ----------------------------------------------------
+
+def decode_array(blob):
+    """A {"shape": [...], "data": "<base64 little-endian float32>"} payload -> ndarray.
+
+    The shape is carried explicitly rather than inferred from the byte count
+    because a (T,22,3) and a (3,22,T) blob are the same length, and the sampler
+    would happily edit the transpose.
+    """
+    if not isinstance(blob, dict):
+        raise ValueError("source must be an object with `shape` and base64 `data`")
+    shape = [int(dim) for dim in blob.get("shape") or []]
+    if not shape or any(dim < 0 for dim in shape):
+        raise ValueError(f"source.shape must be positive integers, got {blob.get('shape')!r}")
+    raw = base64.b64decode(blob.get("data") or "", validate=True)
+    count = int(np.prod(shape))
+    if len(raw) != count * 4:
+        raise ValueError(f"source.data is {len(raw)} bytes; shape {shape} needs {count * 4}")
+    return np.frombuffer(raw, dtype="<f4").reshape(shape).astype(np.float32)
+
+
+def encode_array(array):
+    """The inverse. C order and float32 are stated in the payload, not assumed:
+    the JS side reads the shape back and refuses a result it did not expect."""
+    contiguous = np.ascontiguousarray(array, dtype="<f4")
+    return {
+        "shape": [int(dim) for dim in contiguous.shape],
+        "dtype": "float32",
+        "data": base64.b64encode(contiguous.tobytes(order="C")).decode("ascii"),
+    }
+
+
+def serve(args) -> int:
+    """Load the model once, then answer one NDJSON request per stdin line.
+
+    The loop is deliberately SEQUENTIAL — one request in flight, no threads. A
+    single 3070 samples one edit at a time anyway, and the wrapper queues on its
+    side, so concurrency here would buy nothing and cost the guarantee that a
+    response line always belongs to the request that preceded it.
+
+    EOF ON STDIN IS THE SHUTDOWN SIGNAL. When the wrapper's ssh child dies (or
+    is killed on process exit) sshd closes this end and `readline` returns "",
+    which ends the loop and drops the checkpoint. That is why the resident needs
+    no supervisor on the box and leaves nothing behind.
+    """
+    # Claim the real stdout BEFORE anything can print to it, and point fd 1 at
+    # stderr so that model loading, tqdm and any native extension write where the
+    # wrapper treats output as status. See the module docstring.
+    protocol_fd = os.dup(1)
+    os.dup2(2, 1)
+    protocol_out = os.fdopen(protocol_fd, "w", encoding="utf-8", newline="\n")
+
+    def emit(message):
+        protocol_out.write(json.dumps(message, separators=(",", ":")) + "\n")
+        protocol_out.flush()
+
+    repo = open_repo(args.repo)
+    engine = Engine(repo, model_id=args.model_id, model_name=args.model_name, device=args.device)
+    emit({
+        "type": "ready",
+        "protocol": PROTOCOL_VERSION,
+        "device": str(engine.device),
+        "loadSeconds": round(engine.load_seconds, 3),
+        "repo": str(repo),
+        "pid": os.getpid(),
+    })
+    print(f"projflow-serve: ready in {engine.load_seconds:.2f}s on {engine.device}", file=sys.stderr, flush=True)
+
+    served = 0
+    while True:
+        text = sys.stdin.readline()
+        if text == "":
+            break
+        text = text.strip()
+        if not text:
+            continue
+        try:
+            request = json.loads(text)
+            if not isinstance(request, dict):
+                raise ValueError("a request must be a JSON object")
+        except Exception as error:
+            # No id means no way to pair this with anything. Answering with a null
+            # id is the honest move: the wrapper reads it as a protocol failure,
+            # falls back to the cold path and restarts this process.
+            emit({"id": None, "ok": False, "error": {"type": type(error).__name__, "message": str(error)}})
+            continue
+
+        request_id = request.get("id")
+        kind = request.get("type") or "lineEdit"
+        try:
+            if kind == "ping":
+                result = {
+                    "pong": True,
+                    "protocol": PROTOCOL_VERSION,
+                    "device": str(engine.device),
+                    "served": served,
+                    "loadSeconds": round(engine.load_seconds, 3),
+                }
+            elif kind == "shutdown":
+                emit({"id": request_id, "ok": True, "result": {"bye": True}})
+                break
+            elif kind == "lineEdit":
+                source = decode_array(request.get("source"))
+                line = request.get("line")
+                if not isinstance(line, dict):
+                    raise ValueError("line must be a C6 line-edit object")
+                preview = bool(request.get("preview"))
+                steps = 20 if preview else int(request.get("steps", 100))
+                out_world, meta = run_line_edit(
+                    engine,
+                    source,
+                    line,
+                    steps=steps,
+                    ridge=float(request.get("ridge", 1e-6)),
+                    preserve_stride=int(request.get("preserveStride", 2)),
+                    preserve_margin=int(request.get("preserveMargin", 20)),
+                    seed=int(request.get("seed", 0)),
+                    cfg=float(request.get("cfg", 3.0)),
+                    preview=preview,
+                    reset_peak=True,
+                )
+                served += 1
+                result = dict(encode_array(out_world))
+                result["meta"] = meta
+            else:
+                raise ValueError(f"unknown request type {kind!r}")
+        except Exception as error:  # noqa: BLE001 — a bad request must not end the session
+            # The traceback goes to stderr (where the wrapper forwards it as
+            # status) and the message goes back on the wire. The loop survives:
+            # one malformed line edit is not a reason to pay another model load.
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
+            emit({"id": request_id, "ok": False, "error": {"type": type(error).__name__, "message": str(error)}})
+            continue
+        emit({"id": request_id, "ok": True, "result": result})
+
+    print(f"projflow-serve: stdin closed after {served} edits; exiting", file=sys.stderr, flush=True)
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser("ProjFlow line-edit driver")
+    ap.add_argument("--serve", action="store_true",
+                    help="resident mode: load the model once and answer NDJSON requests on stdin/stdout")
+    ap.add_argument("--source", help="source motion .npy, (T,22,3) float32 world metres")
+    ap.add_argument("--line", help="line-edit request .json (contract C6)")
+    ap.add_argument("--out", help="output .npy; metadata goes to <out stem>.meta.json")
+    ap.add_argument("--steps", type=int, default=100, help="ODE steps (S1: ~7.3 ms/step at 100 frames)")
+    ap.add_argument("--ridge", type=float, default=1e-6,
+                    help="ridge_lambda. S1: THIS is the exactness knob, not steps — 1e-3 lands at "
+                         "2.6e-5 while 1e-6 gives 2.4e-7 at half the steps")
+    ap.add_argument("--preview", action="store_true",
+                    help="20 steps instead of --steps (S1 measured 0.145 s for a 100-frame preview)")
+    ap.add_argument("--preserve-stride", type=int, default=2, help="pin every Nth frame outside the edit range")
+    ap.add_argument("--preserve-margin", type=int, default=20,
+                    help="frames either side of the edit range where the edited limb is left free (20 = 1 s)")
+    ap.add_argument("--seed", type=int, default=0, help="matches demo/run.py's default")
+    ap.add_argument("--cfg", type=float, default=3.0, help="classifier-free guidance scale")
+    ap.add_argument("--repo", default=os.environ.get("CCLAY_PROJFLOW_REPO", "/home/yun/projflow-scout/repo"))
+    ap.add_argument("--model-id", default="ACMDM-Raw-Flow-S-PatchSize22")
+    ap.add_argument("--model-name", default="ACMDM_Raw_Flow_S_PatchSize22")
+    ap.add_argument("--device", default="auto")
+    args = ap.parse_args()
+
+    if args.serve:
+        # The resident takes its whole request on the wire, so the one-shot file
+        # flags are meaningless here and passing them is a caller bug worth
+        # naming rather than ignoring.
+        for flag in ("source", "line", "out"):
+            if getattr(args, flag):
+                raise SystemExit(f"--serve takes its requests on stdin; --{flag} does not apply")
+        return serve(args)
+
+    for flag in ("source", "line", "out"):
+        if not getattr(args, flag):
+            raise SystemExit(f"--{flag} is required (or use --serve)")
+
+    # Resolve every caller-supplied path BEFORE the chdir below, or a relative
+    # --source silently resolves against the ProjFlow clone instead of the
+    # caller's cwd. generate.mjs always passes absolute paths; a human running
+    # this by hand should not have to.
+    args.source = str(Path(args.source).expanduser().resolve())
+    args.line = str(Path(args.line).expanduser().resolve())
+    args.out = str(Path(args.out).expanduser().absolute())
+
+    repo = open_repo(args.repo)
+
+    source = np.load(args.source).astype(np.float32)
+    if source.ndim != 3 or source.shape[1] != NUM_JOINTS or source.shape[2] != 3:
+        raise SystemExit(f"--source must be (T,22,3); got {source.shape}")
+
+    with open(args.line, "r", encoding="utf-8") as handle:
+        line = json.load(handle)
+
+    steps = 20 if args.preview else int(args.steps)
+    engine = Engine(repo, model_id=args.model_id, model_name=args.model_name, device=args.device)
+    out_world, meta = run_line_edit(
+        engine,
+        source,
+        line,
+        steps=steps,
+        ridge=float(args.ridge),
+        preserve_stride=int(args.preserve_stride),
+        preserve_margin=int(args.preserve_margin),
+        seed=int(args.seed),
+        cfg=float(args.cfg),
+        preview=bool(args.preview),
+    )
+
+    out_path = Path(args.out).expanduser()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(str(out_path), out_world)
 
     # `<stem>.meta.json` beside the motion: --out foo.npy => foo.meta.json. The
     # wrapper builds the same name on the JS side, so this spelling is a contract.
@@ -587,7 +876,10 @@ def main() -> int:
         json.dump(meta, handle, indent=2)
 
     # The wrapper greps this line, the same way bridge.mjs greps Kimodo's.
-    print(f"projflow-line-edit: done - {out_path} (m={m} steps={steps} sample={sampling_seconds:.3f}s)")
+    print(
+        f"projflow-line-edit: done - {out_path} "
+        f"(m={meta['m']} steps={meta['steps']} sample={meta['sampling_seconds']:.3f}s)"
+    )
     return 0
 
 

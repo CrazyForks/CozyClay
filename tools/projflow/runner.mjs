@@ -43,11 +43,16 @@
  *                           ViT-B/32 download stays inside the scout directory.
  *   CCLAY_PROJFLOW_STEPS / _RIDGE / _PRESERVE_STRIDE / _PRESERVE_MARGIN
  *                           tunables read by generate.mjs itself.
+ *   CCLAY_PROJFLOW_RESIDENT=0
+ *                           turn the warm service off (contract C11); every
+ *                           edit then takes the cold path it always had.
  */
 
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { peekResidentService, residentEnabled } from "./service.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** generate.mjs doubles as the box wrapper; see the CLI note at the bottom of
@@ -155,7 +160,39 @@ export function createProjflowRunner() {
 		// No encoder sidecar: CLIP loads in the generation process (S1 measured
 		// the whole model load at 3.9 s), so health has nothing to report for it
 		// and says so rather than faking a port.
-		return { ok: true, host: HOST, repo: REPO, encoder: "in-process", device, checkpoint: true };
+		return {
+			ok: true,
+			host: HOST,
+			repo: REPO,
+			encoder: "in-process",
+			device,
+			checkpoint: true,
+			resident: await residentUp(),
+		};
+	}
+
+	/**
+	 * Is a WARM child actually there right now (contract C11)?
+	 *
+	 * Deliberately three things it is not. It does not START a resident: a
+	 * health probe that loads 800 MiB of weights onto the GPU as a side effect
+	 * would be a surprising answer to "are you well". It does not trust
+	 * `state === "ready"`, which only says the child announced itself at some
+	 * point; it sends a ping and waits for the answer, because the interesting
+	 * failure is a child that died an hour ago. And it never throws — a
+	 * resident that cannot be reached is `false`, not a failed health check,
+	 * since every edit still works through the cold path.
+	 */
+	async function residentUp() {
+		if (!residentEnabled()) return false;
+		const service = peekResidentService({ host: HOST, python: PYTHON, repo: REPO, boxHome: BOX_HOME });
+		if (!service || !service.isReady()) return false;
+		try {
+			const pong = await service.ping();
+			return pong?.pong === true;
+		} catch {
+			return false;
+		}
 	}
 
 	// ProjFlow takes a source motion, not a base clip; there is nothing to list.

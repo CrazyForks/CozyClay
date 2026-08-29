@@ -62,8 +62,13 @@ import { TRACK_GROUPS } from "../kimodo/preserve-mask.mjs";
 // is imported the way handleExtract already is, and the only child process on
 // this path is the ssh inside lineEditOnBox.
 import { createProjflowRunner } from "../projflow/runner.mjs";
-import { TRACK_TO_HML22_JOINT, UNMAPPABLE_TRACKS } from "../projflow/generate.mjs";
 import { runLineEditJob } from "../projflow/line-edit-job.mjs";
+// Recipe replay (contract C10) and, with it, the per-field line-edit rules that
+// BOTH the C6 request and every C10 entry are checked against. They live in
+// tools/projflow/replay.mjs rather than here because a replay is pure
+// arithmetic over an injectable job runner, and the whole contract has to be
+// verifiable on a laptop with no GPU and no sidecar.
+import { blockBoundaries, runReplay, validateLineEditFields, validateReplay } from "../projflow/replay.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const OUT_DIR = join(HERE, "out");
@@ -104,14 +109,12 @@ const PRESERVE_SIGMA_END_CAP = 50;
 // mask groups those tracks map to are freed there. The valid ids are exactly the
 // keys of the mask builder's own table.
 const PRESERVE_TRACK_IDS = Object.keys(TRACK_GROUPS);
-// C6: the tracks a line edit may name. The list is the projflow wrapper's own
-// track -> hml22 joint table, imported rather than restated for the same reason
-// PRESERVE_TRACK_IDS is: a table copied here drifts the first time a joint
-// mapping changes. `chest` is in neither table — it is refused BY NAME below,
-// with the reason, because cskel27 Spine2 has no hml22 source joint at all.
-const LINE_EDIT_TRACK_IDS = Object.keys(TRACK_TO_HML22_JOINT);
-const LINE_EDIT_POINTS_MIN = 2;
-const LINE_EDIT_POINTS_MAX = 64; // matches src/line-edit.js MAX_LINE_POINTS
+// C6's per-field rules (track ids, points2d, camera, frameRange) now live in
+// tools/projflow/replay.mjs: contract C10 validates every replay entry with the
+// SAME rules, and two copies of them would drift on the first joint-mapping
+// change. Only the rules a line edit does not share with a replay entry —
+// exclusivity, posePin, sourceMotion, preview — are still spelled out below.
+//
 // Every field a line edit is exclusive with (contract C6: a line edit is its own
 // run mode). `poses`/`pose` are in the list because posePin defaults to true and
 // a line edit authors no poses at all.
@@ -385,6 +388,14 @@ function validateGenerate(body) {
 		const error = validatePreserve(body, clipFrames);
 		if (error) return error;
 	}
+	// Recipe replay (contract C10): the line edits to re-apply once this request's
+	// take exists. Validated LAST of the run-mode fields because it rides ON one —
+	// a replay never chooses the take, it only refines whatever plain generation,
+	// prompt schedule or preserved run produced.
+	if (body.replay !== undefined) {
+		const error = validateReplay(body, clipFrames, { seedMax: SEED_MAX });
+		if (error) return error;
+	}
 	if (body.seed !== undefined && (!Number.isInteger(body.seed) || body.seed < 0 || body.seed > SEED_MAX)) return `field 'seed' must be an integer in 0..${SEED_MAX}`;
 	if (body.cpu !== undefined && typeof body.cpu !== "boolean") return `field 'cpu' must be a boolean`;
 	return null;
@@ -426,91 +437,15 @@ function validateLineEdit(body, clipFrames) {
 	if (typeof lineEdit.sourceMotion !== "string" || !MOTION_URL.test(lineEdit.sourceMotion)) {
 		return "field 'lineEdit.sourceMotion' must be a generated /ardy/motions/<run-id> URL";
 	}
-	// `chest` is a real pose-studio track and a real refusal: cskel27 Spine2 is
-	// one of the five joints the hml22 skeleton has no source for (S2), so there
-	// is nothing to constrain. Refused by name, with the alternative, rather than
-	// silently retargeted onto a neighbouring spine joint — which would put the
-	// drawn line on a curve the artist did not draw.
-	if (typeof lineEdit.track === "string" && Object.hasOwn(UNMAPPABLE_TRACKS, lineEdit.track)) {
-		return (
-			`field 'lineEdit.track' "${lineEdit.track}" cannot be line-edited: ${UNMAPPABLE_TRACKS[lineEdit.track]}; ` +
-			"draw on spine or neck instead"
-		);
+	// The 20-step draft the interactive loop asks for (contract C10's preview
+	// flag). A BOOLEAN and nothing else: the step count itself is the job's, not
+	// the client's, or a request could ask the box for a 10000-step sample.
+	if (lineEdit.preview !== undefined && typeof lineEdit.preview !== "boolean") {
+		return "field 'lineEdit.preview' must be a boolean when present";
 	}
-	if (typeof lineEdit.track !== "string" || !Object.hasOwn(TRACK_TO_HML22_JOINT, lineEdit.track)) {
-		return (
-			`field 'lineEdit.track' ${JSON.stringify(lineEdit.track)} is not a line-editable IK track id; ` +
-			`valid ids are ${LINE_EDIT_TRACK_IDS.join(", ")}`
-		);
-	}
-	const range = lineEdit.frameRange;
-	if (!range || typeof range !== "object" || Array.isArray(range)) {
-		return "field 'lineEdit.frameRange' must be an object { startFrame, endFrame }";
-	}
-	if (!Number.isInteger(range.startFrame) || !Number.isInteger(range.endFrame)) {
-		return "field 'lineEdit.frameRange' startFrame and endFrame must be integers";
-	}
-	// Half-open and inside the clip, like every other range that crosses this
-	// boundary. The clip length comes from `duration`, which the app derives from
-	// the take's own frame count; the job re-checks against the npz itself, since
-	// only that file knows how long the take really is.
-	if (range.startFrame < 0 || range.endFrame <= range.startFrame || range.endFrame > clipFrames) {
-		return `field 'lineEdit.frameRange' must be a non-empty half-open range inside 0..${clipFrames}`;
-	}
-	// Two points need two frames: one constrained frame is a pin, not a line.
-	if (range.endFrame - range.startFrame < 2) {
-		return "field 'lineEdit.frameRange' must span at least 2 frames";
-	}
-	const points = lineEdit.points2d;
-	if (!Array.isArray(points) || points.length < LINE_EDIT_POINTS_MIN) {
-		return `field 'lineEdit.points2d' needs at least ${LINE_EDIT_POINTS_MIN} points`;
-	}
-	// The cap is the app's own, and it is a solver budget: the box builds two
-	// affine rows per point and factorises an m x m system every ODE step.
-	if (points.length > LINE_EDIT_POINTS_MAX) {
-		return `field 'lineEdit.points2d' is capped at ${LINE_EDIT_POINTS_MAX} points, got ${points.length}`;
-	}
-	for (let index = 0; index < points.length; index += 1) {
-		const point = points[index];
-		if (!Array.isArray(point) || point.length !== 2 || !point.every((value) => typeof value === "number" && Number.isFinite(value))) {
-			return `field 'lineEdit.points2d[${index}]' must be [u, v] finite numbers`;
-		}
-		// Viewport-NORMALISED, and enforced rather than clamped: a pixel
-		// coordinate here is the single most likely wire mistake and it produces a
-		// plausible-looking line through the wrong ray.
-		if (point[0] < 0 || point[0] > 1 || point[1] < 0 || point[1] > 1) {
-			return `field 'lineEdit.points2d[${index}]' must be viewport-normalized into 0..1, got ${JSON.stringify(point)}`;
-		}
-	}
-	const camera = lineEdit.camera;
-	if (!camera || typeof camera !== "object" || Array.isArray(camera)) {
-		return "field 'lineEdit.camera' must be an object { fx, fy, cx, cy, R, t }";
-	}
-	for (const key of ["fx", "fy", "cx", "cy"]) {
-		if (typeof camera[key] !== "number" || !Number.isFinite(camera[key])) {
-			return `field 'lineEdit.camera.${key}' must be a finite number`;
-		}
-	}
-	// A non-positive focal length means the uv/NDC flip was applied twice or not
-	// at all, and every solved position would be mirrored.
-	if (camera.fx <= 0 || camera.fy <= 0) {
-		return "field 'lineEdit.camera' has a non-positive focal length — the uv convention is inverted";
-	}
-	// The intrinsics live in the SAME units as points2d. A pixel focal length
-	// beside normalised points solves cleanly and lands nowhere near the stroke.
-	if (camera.fx > 50 || camera.fy > 50) {
-		return `field 'lineEdit.camera' has PIXEL focal lengths (${camera.fx}, ${camera.fy}); normalize them by the viewport size, like points2d`;
-	}
-	if (!Array.isArray(camera.R) || camera.R.length !== 9 || !camera.R.every((value) => typeof value === "number" && Number.isFinite(value))) {
-		return "field 'lineEdit.camera.R' must be 9 finite numbers (3x3 row-major, world-to-camera)";
-	}
-	if (!Array.isArray(camera.t) || camera.t.length !== 3 || !camera.t.every((value) => typeof value === "number" && Number.isFinite(value))) {
-		return "field 'lineEdit.camera.t' must be 3 finite numbers";
-	}
-	if (lineEdit.prompt !== undefined && typeof lineEdit.prompt !== "string") {
-		return "field 'lineEdit.prompt' must be a string when present";
-	}
-	return null;
+	// Everything else — track, frameRange, points2d, camera, prompt — is the
+	// shared rule set a C10 replay entry is held to as well.
+	return validateLineEditFields(lineEdit, clipFrames, "lineEdit");
 }
 
 function validateSegments(segments, clipFrames) {
@@ -1009,6 +944,19 @@ async function handleGenerate(req, res) {
 			return;
 		}
 	}
+	// A replay needs the same backend a line edit does, and it needs it BEFORE the
+	// stream opens: the generation itself would succeed, and refusing halfway
+	// through would leave the client holding a take whose refinements silently
+	// never ran. Checked here rather than in the validator because "is a box
+	// configured" is process state, not a request rule.
+	if (body.replay && body.replay.length > 0 && !projflowRunner) {
+		sendJson(res, 503, {
+			ok: false,
+			reason: "recipe replay needs the ProjFlow backend: set CCLAY_PROJFLOW_HOST (or CCLAY_KIMODO_HOST)",
+		});
+		finish(503);
+		return;
+	}
 	if (body.base !== undefined) {
 		let bases;
 		try {
@@ -1085,6 +1033,59 @@ async function handleGenerate(req, res) {
 	// posePin:false runs carry no pose, so the artifact name says what the
 	// run actually was: constrained (pose pinned) vs generated (no pose).
 	const outNpzPath = join(artifactDir, body.lineEdit ? "line-edit.npz" : posePinned ? "constrained.npz" : "generated.npz");
+
+	// --- recipe replay (contract C10) ---------------------------------------
+	// A take is a RECIPE: seed + prompt blocks + the line edits drawn on top.
+	// Regenerating or extending it therefore has to re-apply those edits, or
+	// every "add a block" throws away the refinement work. The chain, the
+	// per-entry failure policy and the boundary rule live in
+	// tools/projflow/replay.mjs; what belongs HERE is only which take the chain
+	// starts from, where its intermediates go, and what reaches the client.
+	//
+	// Called after the generated take is written and verified and BEFORE
+	// anything is registered, so the motionUrl the client receives always names
+	// the LAST good file in the chain — the take with the refinements in it.
+	const replayEntries = Array.isArray(body.replay) ? body.replay : [];
+	// The boundaries are a fact about how this take was GENERATED, so they come
+	// from the request's prompt schedule and nowhere else. No `segments` field
+	// means a single block, which has no internal boundary to warn about.
+	const replayBoundaries = blockBoundaries(body.segments, Math.floor(body.duration * FPS));
+	let replayReport = null;
+	const applyReplay = async (takePath) => {
+		if (replayEntries.length === 0) return takePath;
+		sendStatus(
+			`[bridge] replaying ${replayEntries.length} stored line edit(s) onto the new take` +
+			(replayBoundaries.length ? ` (block boundaries at ${replayBoundaries.join(", ")})` : "")
+		);
+		const result = await runReplay({
+			entries: replayEntries,
+			takePath,
+			artifactDir,
+			boundaries: replayBoundaries,
+			appFps: FPS,
+			runJob: runLineEditJob,
+			onStatus: (line) => sendStatus(line),
+		});
+		replayReport = result.entries;
+		const failed = result.entries.filter((entry) => !entry.ok).length;
+		const warned = result.entries.filter((entry) => entry.boundaryWarning).length;
+		sendStatus(
+			`[bridge] replay finished: ${result.entries.length - failed}/${result.entries.length} applied` +
+			(failed ? `, ${failed} FAILED (drawn refinements missing from this take)` : "") +
+			(warned ? `, ${warned} near a block boundary` : "")
+		);
+		return result.takePath;
+	};
+	// One report event, whatever produced it. The replay table rides on the
+	// generator's own report when there is one and stands alone when there is
+	// not, so a client never has to guess whether the replay ran.
+	const sendReport = (report) => {
+		if (!report && !replayReport) return;
+		send({
+			event: "report",
+			report: { ...(report || {}), ...(replayReport ? { replay: replayReport } : {}) },
+		});
+	};
 	try {
 
 		// --- line edit (contract C6) ----------------------------------------
@@ -1102,12 +1103,18 @@ async function handleGenerate(req, res) {
 		if (body.lineEdit) {
 			sendStatus(
 				`[bridge] line-editing ${body.lineEdit.track} over frames ` +
-				`${body.lineEdit.frameRange.startFrame}..${body.lineEdit.frameRange.endFrame - 1} on the projflow backend`
+				`${body.lineEdit.frameRange.startFrame}..${body.lineEdit.frameRange.endFrame - 1} on the projflow backend` +
+				(body.lineEdit.preview === true ? " (20-step preview)" : "")
 			);
 			const meta = await runLineEditJob({
 				lineEdit: body.lineEdit,
 				takePath: lineEditTakePath,
 				outputPath: outNpzPath,
+				// C10's preview flag, forwarded verbatim. The job owns what "preview"
+				// costs (20 ODE steps instead of 100); the bridge only relays that the
+				// client asked for a draft. A preview take is registered like any
+				// other — the APP decides whether to keep it.
+				preview: body.lineEdit.preview === true,
 				seed: body.seed,
 				appFps: FPS,
 				onStatus: (line) => sendStatus(line),
@@ -1298,11 +1305,15 @@ async function handleGenerate(req, res) {
 			if (finalSize === 0 || finalSize !== done.bytes) {
 				throw new Error(`${cmd.label} output size mismatch for ${outNpzPath}`);
 			}
-			if (finalReport) send({ event: "report", report: finalReport });
-			registerMotion(stamp, outNpzPath);
-			send({ event: "done", output: outNpzPath, bytes: finalSize, motionUrl: `/ardy/motions/${stamp}` });
+			// The take exists and is verified; NOW the recipe's line edits go back
+			// on, and the file they leave behind is the one that gets registered.
+			const deliveredPath = await applyReplay(outNpzPath);
+			sendReport(finalReport);
+			const deliveredSize = statSync(deliveredPath).size;
+			registerMotion(stamp, deliveredPath);
+			send({ event: "done", output: deliveredPath, bytes: deliveredSize, motionUrl: `/ardy/motions/${stamp}` });
 			res.end();
-			console.log(`[bridge] sequence generation finished: ${outNpzPath} (${segments.length} blocks)`);
+			console.log(`[bridge] sequence generation finished: ${deliveredPath} (${segments.length} blocks)`);
 			killChildren();
 			finish(200);
 			return;
@@ -1439,13 +1450,17 @@ async function handleGenerate(req, res) {
 			finalReport.base_root_error_m = worst("base_root_error_m");
 			finalReport.base_shape_mean_error_m = worst("base_shape_mean_error_m");
 			finalReport.base_shape_max_error_m = worst("base_shape_max_error_m");
-			send({ event: "report", report: finalReport });
 		}
-		const finalSize = statSync(outNpzPath).size;
-		registerMotion(stamp, outNpzPath);
-		send({ event: "done", output: outNpzPath, bytes: finalSize, motionUrl: `/ardy/motions/${stamp}` });
+		// Same order as every other branch: generate, verify, replay, report,
+		// register, done. runSingle already checked the npz's size against the
+		// generator's own "done" marker, so the file the replay reads is real.
+		const deliveredPath = await applyReplay(outNpzPath);
+		sendReport(finalReport);
+		const finalSize = statSync(deliveredPath).size;
+		registerMotion(stamp, deliveredPath);
+		send({ event: "done", output: deliveredPath, bytes: finalSize, motionUrl: `/ardy/motions/${stamp}` });
 		res.end();
-		console.log(`[bridge] generate finished: ${outNpzPath} (base ${baseLabel}, ${body.duration}s, dstFrame ${dstFrameLabel})`);
+		console.log(`[bridge] generate finished: ${deliveredPath} (base ${baseLabel}, ${body.duration}s, dstFrame ${dstFrameLabel})`);
 
 		killChildren();
 		finish(200);

@@ -37,6 +37,16 @@
  * generate.mjs owns the generation clock and the bridge owns the app clock.
  * There is no conversion in this file, on purpose: two places computing the same
  * frame index is exactly how they drift.
+ *
+ * TWO ROUTES, ONE FUNCTION (contract C11). `lineEditOnBox` first offers the
+ * request to the RESIDENT service (service.mjs): a warm `driver.py --serve`
+ * child that already holds the checkpoint, which removes the 3.9 s model load
+ * that gate GP3 measured as half of an 8 s round trip. If anything at all goes
+ * wrong with that child — it is not up, it dies, it answers late, it answers
+ * with the wrong id, it refuses the request — the request runs down the COLD
+ * path below, unchanged, which is the contract of record. The cold path does
+ * not know the resident exists and never will; that is what makes the fallback
+ * trustworthy rather than a second implementation to keep in sync.
  */
 
 import { spawn } from "node:child_process";
@@ -47,6 +57,8 @@ import { tmpdir } from "node:os";
 // `resolve`, and a path helper shadowed by a promise callback is a trap.
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { getResidentService, residentEnabled, residentLineEdit } from "./service.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DRIVER = join(HERE, "driver.py");
@@ -390,6 +402,79 @@ export function writeNpyFloat32(path, data, shape) {
 }
 
 /**
+ * The warm route: hand the request to the resident child and shape its answer
+ * like a cold run's.
+ *
+ * WHY IT MIRRORS THE COLD ARGV RATHER THAN IMPROVING ON IT. The cold path
+ * resolves `preview` into a step count and passes `--steps 20`, never
+ * `--preview`, so a cold preview's metadata says `preview: false`. This sends
+ * exactly the same thing, because two routes that produce different metadata
+ * for the same request would make every warm-vs-cold comparison (and gate GS1's
+ * fallback proof) an argument about which one is right.
+ *
+ * `nativeOut` is written HERE rather than scp'd back, since the motion arrived
+ * in memory. Same two files, same names, same contract: the raw hml22 .npy and
+ * its .meta.json sidecar, which is what a LATER edit sources from.
+ */
+async function warmLineEdit({
+	sourceMotionNpy,
+	request,
+	steps,
+	ridge,
+	preserveStride,
+	preserveMargin,
+	seed,
+	cfg,
+	host,
+	python,
+	repo,
+	boxHome,
+	nativeOut,
+	onLine,
+	service,
+}) {
+	const { shape, data } = readNpyFloat32(sourceMotionNpy);
+	if (shape.length !== 3 || shape[1] !== NUM_JOINTS || shape[2] !== 3) {
+		throw new Error(`lineEditOnBox: sourceMotionNpy must be (T,22,3), got (${shape.join(",")})`);
+	}
+	const resident = service || getResidentService({ host, python, repo, boxHome });
+	const warm = await residentLineEdit({
+		service: resident,
+		source: data,
+		sourceShape: shape,
+		line: request,
+		steps,
+		preview: false,
+		ridge,
+		preserveStride,
+		preserveMargin,
+		seed,
+		cfg,
+		onLine,
+	});
+	if (warm.shape.length !== 3 || warm.shape[1] !== NUM_JOINTS || warm.shape[2] !== 3) {
+		throw new Error(`lineEditOnBox: the resident returned a (${warm.shape.join(",")}) result, expected (T,22,3)`);
+	}
+	// The ONE key that is not in a cold run's metadata. It is worth the
+	// asymmetry: without it a report cannot say whether an edit was warm, and
+	// "how many edits fell back" is the number this contract is judged on.
+	const meta = { ...warm.meta, resident: true };
+	if (nativeOut) {
+		writeNpyFloat32(nativeOut, warm.positions, warm.shape);
+		writeFileSync(`${String(nativeOut).replace(/\.npy$/i, "")}.meta.json`, `${JSON.stringify(meta, null, 2)}\n`);
+	}
+	return {
+		positions: warm.positions,
+		frames: warm.shape[0],
+		joints: warm.shape[1],
+		fps: GEN_FPS,
+		meta,
+		line: request,
+		nativeNpy: nativeOut || null,
+	};
+}
+
+/**
  * Run one line edit on the box.
  *
  * @param {object} options
@@ -449,6 +534,36 @@ export async function lineEditOnBox({
 	}
 	if (!Number.isFinite(ridge) || ridge < 0) {
 		throw new Error(`lineEditOnBox: ridge must be a non-negative number, got ${JSON.stringify(ridge)}`);
+	}
+
+	// --- the warm route (contract C11) --------------------------------------
+	// Tried first, never retried, never allowed to fail an edit. Everything the
+	// cold argv below carries travels in the request, so the two routes ask the
+	// same driver for the same thing and the meta comes back identical.
+	if (residentEnabled()) {
+		try {
+			return await warmLineEdit({
+				sourceMotionNpy,
+				request,
+				steps: effectiveSteps,
+				ridge,
+				preserveStride: Number(preserveStride),
+				preserveMargin: Number(preserveMargin),
+				seed,
+				cfg,
+				host,
+				python,
+				repo,
+				boxHome,
+				nativeOut,
+				onLine,
+			});
+		} catch (error) {
+			// Loud on the status stream, because a session that silently pays the
+			// cold price every edit is the failure mode this contract exists to
+			// prevent — the kill criterion is stated in edits-per-fallback.
+			onLine?.(`run-projflow-line-edit: resident unavailable (${error.message}); running the cold path`);
+		}
 	}
 
 	const remoteDir = `/tmp/cclay-projflow-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
@@ -519,7 +634,10 @@ export async function lineEditOnBox({
 		if (shape.length !== 3 || shape[1] !== NUM_JOINTS || shape[2] !== 3) {
 			throw new Error(`lineEditOnBox: expected a (T,22,3) result, got (${shape.join(",")})`);
 		}
-		const meta = JSON.parse(await readFile(localMeta, "utf8"));
+		// `resident: false` is the counterpart of the warm route's `true`: every
+		// result says which route produced it, so a session that quietly stopped
+		// being warm is visible in the report instead of only in the clock.
+		const meta = { ...JSON.parse(await readFile(localMeta, "utf8")), resident: false };
 		if (nativeOut) {
 			// NOT best-effort, unlike Kimodo's equivalent: there the native npz is
 			// a bonus beside a take the caller already holds in memory, here it is
@@ -588,6 +706,13 @@ async function main(argv) {
 	for (const required of ["source", "line", "output"]) {
 		if (!args[required]) throw new Error(`--${required} is required`);
 	}
+	// THE CLI IS A ONE-SHOT PROCESS, so a resident it would have to start, use
+	// once and kill is pure overhead — the point of contract C11 is amortising a
+	// model load across a SESSION, and this process is not one. The bridge does
+	// not come through here (it imports line-edit-job.mjs in-process, where the
+	// child survives between edits). An operator who wants to exercise the warm
+	// route from the shell sets the variable explicitly.
+	if (process.env.CCLAY_PROJFLOW_RESIDENT === undefined) process.env.CCLAY_PROJFLOW_RESIDENT = "0";
 	const line = JSON.parse(await readFile(resolvePath(args.line), "utf8"));
 	const result = await lineEditOnBox({
 		sourceMotionNpy: resolvePath(args.source),
@@ -607,7 +732,8 @@ async function main(argv) {
 	// a regression without opening a file.
 	console.log(
 		`run-projflow-line-edit: rows=${m} steps=${steps} sample=${samplingSeconds}s ` +
-			`preserved=${checks.preservedMaxAbsDiffM} reproj=${checks.lineMaxReprojErr}`
+			`preserved=${checks.preservedMaxAbsDiffM} reproj=${checks.lineMaxReprojErr} ` +
+			`resident=${result.meta.resident === true}`
 	);
 	const { size } = await stat(resolvePath(args.output));
 	console.log(`run-projflow-line-edit: done - ${resolvePath(args.output)} (${size} bytes)`);
