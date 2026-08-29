@@ -147,7 +147,7 @@ const PICK_CORNER_R = 0.13;
 // dropped pin will live.
 const GROUND = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, pickOnly = false, paneRef, camRef, shotAspect = SHOT_ASPECT, onChange, onSelect, onGroundClick, onDragStart, onDragEnd }) {
+export default function ObjectGizmo({ object, objects = [], mode = "move", snap = true, enabled, pickOnly = false, paneRef, camRef, shotAspect = SHOT_ASPECT, onChange, onSelect, onGroundClick, onDragStart, onDragEnd, claimPointer }) {
 	const { gl, scene } = useThree();
 	// shotAspect null = the camera fills the pane (the editor working view):
 	// pointer mapping uses the pane rect itself instead of a letterboxed
@@ -173,7 +173,7 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 	const hoverRef = useRef(null); // last hovered key: pointer moves that keep it skip the re-render
 	const dragRef = useRef(null);
 	const stateRef = useRef(null);
-	stateRef.current = { object, objects, mode, snap, onChange, onSelect, onGroundClick, onDragStart, onDragEnd };
+	stateRef.current = { object, objects, mode, snap, onChange, onSelect, onGroundClick, onDragStart, onDragEnd, claimPointer };
 	const tools = useMemo(
 		() => ({
 			raycaster: new THREE.Raycaster(),
@@ -616,6 +616,13 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 			// Plain left only. Alt+left orbits, middle pans, right flies — those
 			// belong to the camera and must pass straight through.
 			if (event.button !== 0 || event.altKey || event.target !== gl.domElement) return;
+			// A mode that owns this press outranks selection entirely. This
+			// window-capture listener runs BEFORE any listener below the window
+			// (capture descends root-first), so without this yield the line-edit
+			// stage listener could never see a press this handler claims — the
+			// stopPropagation below killed the descent. The probe must be
+			// side-effect free: it only answers "would you grab here?".
+			if (stateRef.current.claimPointer?.(event)) return;
 			const grabbed = pickHandle(event);
 			// A press ON the key-light sun outranks any handle overlapping it:
 			// the puck's own body-drag is the primary interaction there, and the

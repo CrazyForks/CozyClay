@@ -8183,6 +8183,24 @@ function resizePromptClip(id, edge, rawFrame) {
 		return lineCurve ? lineCurve.edited : lineLiveRef.current?.curve ?? null;
 	}
 
+	/** Side-effect-free "would a grab land here?" — handed to ObjectGizmo as
+	 * `claimPointer` so its WINDOW-capture selection handler yields the press.
+	 * Without the yield the gizmo's stopPropagation kills the event above the
+	 * stage and the curve can never be grabbed; with it, priority is explicit:
+	 * a press on the curve belongs to the curve, everything else still selects,
+	 * ground-clicks and orbits exactly as before. Must never mutate state —
+	 * the real grab (onLineStagePointerDown) repeats the test with the full
+	 * drift-checked source. */
+	function lineGrabProbe(event) {
+		if (event.button !== 0) return false;
+		const pane = lineEditPane();
+		if (!pane) return false;
+		const curve = lineHoverCurve();
+		if (!curve) return false;
+		const [u, v] = lineUvFromPointer(pane, event);
+		return !!nearestCurvePoint(curve, u, v, CURVE_GRAB_RADIUS_PX, pane.rect.w, pane.rect.h);
+	}
+
 	/** What a grab picks up, `{ camera, curve }`, and the ONE place the camera
 	 * is snapshotted: the pair returned here is what the drag deforms and what
 	 * the eventual C6 request is built against, so the uv and the lens can never
@@ -9611,6 +9629,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							{gizmoView && !playMode && !posing && !ikMode && (
 								<ObjectGizmo
 									pickOnly
+									claimPointer={lineEditMode ? lineGrabProbe : undefined}
 									object={characterGizmoObject}
 									objects={characterGizmoObject ? [characterGizmoObject] : []}
 									mode={gizmoMode}
@@ -9848,6 +9867,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									)
 								}
 								onGroundClick={waypointMode && !planIsMain ? addFloorWaypoint : undefined}
+								claimPointer={lineEditMode ? lineGrabProbe : undefined}
 							/>
 							{centerTab === "scene" && railCurve && (
 								<CameraRailScenePreview
