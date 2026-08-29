@@ -56,11 +56,15 @@ const expect = (name, condition, detail = "") => {
 	if (!condition) failures += 1;
 };
 
-const rectCentre = (selector) =>
-	evaluate(
+const rectCentre = async (selector) => {
+	const centre = await evaluate(
 		`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return null;` +
 			` const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`,
 	);
+	// Fail by name: destructuring null a few frames later blames the wrong line.
+	if (!centre) throw new Error(`no element matches ${selector} — is the QA browser on the studio page (/app/)?`);
+	return centre;
+};
 const mouse = (type, x, y) =>
 	send("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1, buttons: type === "mousePressed" ? 1 : 0 });
 const clickAt = async ({ x, y }) => {

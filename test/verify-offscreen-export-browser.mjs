@@ -57,7 +57,7 @@ const expect = (name, condition, detail = "") => {
 
 await send("Runtime.enable");
 await send("Page.enable");
-await send("Page.navigate", { url: "http://127.0.0.1:5180/app/" });
+await send("Page.navigate", { url: process.env.QA_URL ?? "http://127.0.0.1:5180/app/" });
 await waitFor("location.href.startsWith('http')");
 await evaluate(`(() => {
 	const shot = {

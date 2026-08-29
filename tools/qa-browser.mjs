@@ -27,7 +27,9 @@ const chromePath = chromeCandidates.find(existsSync);
 if (!chromePath) throw new Error("Google Chrome/Chromium not found; set CHROME_PATH");
 
 const port = Number(process.env.CDP_PORT || 9222);
-const pageUrl = process.env.QA_URL || "http://127.0.0.1:5180/";
+// The studio lives at /app/; "/" is the static landing page, and a QA run
+// pointed there fails every selector before a single assertion is useful.
+const pageUrl = process.env.QA_URL || "http://127.0.0.1:5180/app/";
 const cdpUrl = `http://127.0.0.1:${port}/json/version`;
 try {
 	await fetch(cdpUrl);
