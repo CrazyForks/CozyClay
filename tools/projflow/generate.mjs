@@ -41,7 +41,7 @@
 
 import { spawn } from "node:child_process";
 import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 // `resolve` is aliased: the promise executor in `run` below binds its own
 // `resolve`, and a path helper shadowed by a promise callback is a trap.
@@ -336,6 +336,57 @@ export function readNpyFloat32(path) {
 	const data = new Float32Array(count);
 	for (let index = 0; index < count; index += 1) data[index] = body.readFloatLE(index * 4);
 	return { shape, data };
+}
+
+/**
+ * Write an hml22 (T,22,3) float32 .npy — the inverse of readNpyFloat32, and the
+ * ONLY way to produce this module's own `sourceMotionNpy` input.
+ *
+ * It lives here rather than in the wave-2 composition layer because the header
+ * grammar above is the contract with driver.py: a writer that padded or spelled
+ * the dict differently would be a second, drifting definition of the same file
+ * format, and the round trip readNpyFloat32(writeNpyFloat32(x)) is the cheapest
+ * possible test of both. (tools/ardy/npz.mjs has the same 10-byte prefix inside
+ * its ZIP builder, but it only ever emits ARCHIVES; a bare .npy is not one of
+ * its outputs.)
+ *
+ * @param {string} path
+ * @param {Float32Array} data C-order payload, shape.reduce(*) long
+ * @param {number[]} shape
+ */
+export function writeNpyFloat32(path, data, shape) {
+	if (!(data instanceof Float32Array)) {
+		throw new Error("writeNpyFloat32: data must be a Float32Array");
+	}
+	if (!Array.isArray(shape) || shape.length === 0 || shape.some((dim) => !Number.isInteger(dim) || dim < 0)) {
+		throw new Error(`writeNpyFloat32: shape must be non-negative integers, got ${JSON.stringify(shape)}`);
+	}
+	const count = shape.reduce((total, dim) => total * dim, 1);
+	if (count !== data.length) {
+		throw new Error(`writeNpyFloat32: shape (${shape.join(",")}) needs ${count} values, got ${data.length}`);
+	}
+	// A NaN reaching the box surfaces as a LAPACK failure inside the Cholesky,
+	// which names neither the frame nor the joint; refuse it here instead.
+	for (let index = 0; index < data.length; index += 1) {
+		if (!Number.isFinite(data[index])) {
+			throw new Error(`writeNpyFloat32: data[${index}] is ${data[index]}`);
+		}
+	}
+	const tuple = `(${shape.join(", ")}${shape.length === 1 ? "," : ""})`;
+	const dict = `{'descr': '<f4', 'fortran_order': False, 'shape': ${tuple}, }`;
+	// numpy pads so that magic(6) + version(2) + length(2) + header is a multiple
+	// of 64; the same convention tools/ardy/npz.mjs uses.
+	const header = `${dict}${" ".repeat((53 - (dict.length % 64) + 64) % 64)}\n`;
+	const prefix = Buffer.alloc(10);
+	prefix.writeUInt8(0x93, 0);
+	prefix.write("NUMPY", 1, "ascii");
+	prefix.writeUInt8(1, 6);
+	prefix.writeUInt8(0, 7);
+	prefix.writeUInt16LE(header.length, 8);
+	writeFileSync(
+		path,
+		Buffer.concat([prefix, Buffer.from(header, "ascii"), Buffer.from(data.buffer, data.byteOffset, data.byteLength)])
+	);
 }
 
 /**

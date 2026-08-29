@@ -72,6 +72,7 @@ const NODE_FILES = [
 	"test/verify-pose-library.mjs",
 	"test/verify-preserve-bridge.mjs",
 	"test/verify-project.mjs",
+	"test/verify-projflow-bridge.mjs",
 	"test/verify-projflow-cskel27.mjs",
 	"test/verify-projflow-runner.mjs",
 	"test/verify-pwa.mjs",

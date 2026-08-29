@@ -53,6 +53,17 @@ import { createPrivateArtifactDir, evictPrivateArtifact, removePrivateArtifactDi
 // for track -> mask-group, and a list copied here would drift the first time a
 // track is added. The module is pure (no side effects on import).
 import { TRACK_GROUPS } from "../kimodo/preserve-mask.mjs";
+// Line editing (contract C6). The projflow modules are imported DIRECTLY, not
+// spawned: the runner's lineEditCommand produces raw 22-joint positions, and a
+// take is only finished after the cskel27 lift, the 20 -> 24 retime and the
+// splice — all of which are pure functions over files this process already
+// holds. Running them in a child would mean a second argv contract and a second
+// copy of the frame arithmetic for no isolation gain, so the composition layer
+// is imported the way handleExtract already is, and the only child process on
+// this path is the ssh inside lineEditOnBox.
+import { createProjflowRunner } from "../projflow/runner.mjs";
+import { TRACK_TO_HML22_JOINT, UNMAPPABLE_TRACKS } from "../projflow/generate.mjs";
+import { runLineEditJob } from "../projflow/line-edit-job.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
 const OUT_DIR = join(HERE, "out");
@@ -93,12 +104,32 @@ const PRESERVE_SIGMA_END_CAP = 50;
 // mask groups those tracks map to are freed there. The valid ids are exactly the
 // keys of the mask builder's own table.
 const PRESERVE_TRACK_IDS = Object.keys(TRACK_GROUPS);
+// C6: the tracks a line edit may name. The list is the projflow wrapper's own
+// track -> hml22 joint table, imported rather than restated for the same reason
+// PRESERVE_TRACK_IDS is: a table copied here drifts the first time a joint
+// mapping changes. `chest` is in neither table — it is refused BY NAME below,
+// with the reason, because cskel27 Spine2 has no hml22 source joint at all.
+const LINE_EDIT_TRACK_IDS = Object.keys(TRACK_TO_HML22_JOINT);
+const LINE_EDIT_POINTS_MIN = 2;
+const LINE_EDIT_POINTS_MAX = 64; // matches src/line-edit.js MAX_LINE_POINTS
+// Every field a line edit is exclusive with (contract C6: a line edit is its own
+// run mode). `poses`/`pose` are in the list because posePin defaults to true and
+// a line edit authors no poses at all.
+const LINE_EDIT_EXCLUSIVE = ["preserve", "waypoints", "segments", "regenerateSegments", "motionEdit", "poses", "pose"];
 
 // The runner is the ONLY part of the bridge that knows where generation
 // actually happens. Selection (runners/index.mjs) is Kimodo-only; everything
 // below that boundary — validation, caching, streaming and the motion
 // allowlist — is backend-agnostic.
 let runner; // assigned after CLI parsing, before the server starts
+
+// ...with ONE exception, and it is deliberate: line editing is an
+// ENGINE-PER-TASK (contract C6). A lineEdit request always runs on ProjFlow
+// whatever CCLAY_MOTION_BACKEND says, so this second runner exists beside the
+// selected one instead of replacing it. Construction only reads env — the box
+// is not touched until something probes or runs — and a box with no ProjFlow
+// configuration leaves it null, which reads as "the capability is off".
+let projflowRunner = null; // assigned beside `runner`
 
 // A base path is produced by the backend's own `ls outputs/*.npz` /
 // `ls outputs/omb/*.npz` and is still whitelisted before it is embedded in a
@@ -169,6 +200,48 @@ async function getHealth() {
 	return healthInflight;
 }
 
+// Does this box actually have a ProjFlow line-edit backend?
+//
+// LAZY AND AWAITED, not probed at startup. The app gates the whole draw-a-line
+// affordance on `capabilities.lineEdit` in the health payload, so a startup
+// probe would have to finish before the first poll or the feature would be dark
+// on a perfectly good box until the next one — a race with a UI. Health already
+// awaits an ssh round trip for the selected backend; this one rides along beside
+// it under the same 5 s TTL, and the two probes run in parallel so a healthy box
+// costs no extra wall time.
+//
+// A FAILED probe is never an error here, only a false: the capability is an
+// advertisement, and a bridge whose ProjFlow env is missing must still serve
+// Kimodo health normally. That is also the "a box without the scout env must not
+// advertise" rule — no host, no repo, no checkpoint, or an ssh that cannot
+// connect all land in the same catch.
+let lineEditCapabilityCache = null;
+let lineEditCapabilityInflight = null;
+
+async function getLineEditCapability() {
+	if (!projflowRunner) return false;
+	const now = Date.now();
+	if (lineEditCapabilityCache && now - lineEditCapabilityCache.at < HEALTH_TTL_MS) {
+		return lineEditCapabilityCache.value;
+	}
+	if (!lineEditCapabilityInflight) {
+		lineEditCapabilityInflight = projflowRunner.probeHealth()
+			.then((probe) => Boolean(probe?.ok))
+			.catch((err) => {
+				console.error(`[bridge] line editing unavailable: ${err.message}`);
+				return false;
+			})
+			.then((value) => {
+				lineEditCapabilityCache = { at: Date.now(), value };
+				return value;
+			})
+			.finally(() => {
+				lineEditCapabilityInflight = null;
+			});
+	}
+	return lineEditCapabilityInflight;
+}
+
 let basesCache = null;
 let basesInflight = null;
 
@@ -217,6 +290,14 @@ function validateGenerate(body) {
 	if (body.historyFrames !== undefined && (!Number.isInteger(body.historyFrames) || body.historyFrames <= 0 || body.historyFrames > 400)) return `field 'historyFrames' must be an integer in 1..400`;
 	const clipFrames = Math.floor(body.duration * FPS);
 	if (clipFrames < 3) return `field 'duration' yields fewer than 3 frames`;
+
+	// Checked BEFORE the pose block: a line edit carries no poses on purpose, so
+	// the posePin rule below would refuse it with a message about a field the
+	// client never sent. C6's own refusals have to win.
+	if (body.lineEdit !== undefined) {
+		const error = validateLineEdit(body, clipFrames);
+		if (error) return error;
+	}
 
 	const posePinned = body.posePin !== false;
 	if (posePinned) {
@@ -306,6 +387,129 @@ function validateGenerate(body) {
 	}
 	if (body.seed !== undefined && (!Number.isInteger(body.seed) || body.seed < 0 || body.seed > SEED_MAX)) return `field 'seed' must be an integer in 0..${SEED_MAX}`;
 	if (body.cpu !== undefined && typeof body.cpu !== "boolean") return `field 'cpu' must be a boolean`;
+	return null;
+}
+
+// Line editing (contract C6): the artist draws a 2D polyline over the viewport
+// and ONE joint is made to follow it exactly.
+//
+// Style and posture match validatePreserve: one specific reason, the offending
+// field named first, first failure wins, and nothing here computes anything the
+// backend will compute again. In particular the 24 -> 20 fps conversion is NOT
+// done here — tools/projflow/line-edit-job.mjs owns that clock, because it is
+// also the layer that decides how long the resampled source is, and two places
+// rounding the same frame index is how they drift. This validator's frame
+// numbers are all on the app's 24 fps clip clock, exactly as sent.
+//
+// Returns an error message naming the offending field, or null when valid.
+function validateLineEdit(body, clipFrames) {
+	const lineEdit = body.lineEdit;
+	if (!lineEdit || typeof lineEdit !== "object" || Array.isArray(lineEdit)) {
+		return "field 'lineEdit' must be an object";
+	}
+	// Exclusivity first: a request that also carries a prompt schedule or a
+	// preserved take is not a line edit with an extra field, it is two run modes
+	// in one body, and guessing which one the artist meant is not the bridge's
+	// call. C6 is named so the refusal is traceable to the contract.
+	for (const field of LINE_EDIT_EXCLUSIVE) {
+		if (body[field] !== undefined) {
+			return `field 'lineEdit' cannot be combined with ${field}: contract C6 makes a line edit its own run mode`;
+		}
+	}
+	// posePin defaults to TRUE, which demands a pose array. A line edit authors
+	// no poses, so the client must say so explicitly rather than have the bridge
+	// infer it — the same request without lineEdit would then mean something
+	// completely different.
+	if (body.posePin !== false) {
+		return "field 'lineEdit' requires posePin:false (a line edit constrains one joint's path, not a pose)";
+	}
+	if (typeof lineEdit.sourceMotion !== "string" || !MOTION_URL.test(lineEdit.sourceMotion)) {
+		return "field 'lineEdit.sourceMotion' must be a generated /ardy/motions/<run-id> URL";
+	}
+	// `chest` is a real pose-studio track and a real refusal: cskel27 Spine2 is
+	// one of the five joints the hml22 skeleton has no source for (S2), so there
+	// is nothing to constrain. Refused by name, with the alternative, rather than
+	// silently retargeted onto a neighbouring spine joint — which would put the
+	// drawn line on a curve the artist did not draw.
+	if (typeof lineEdit.track === "string" && Object.hasOwn(UNMAPPABLE_TRACKS, lineEdit.track)) {
+		return (
+			`field 'lineEdit.track' "${lineEdit.track}" cannot be line-edited: ${UNMAPPABLE_TRACKS[lineEdit.track]}; ` +
+			"draw on spine or neck instead"
+		);
+	}
+	if (typeof lineEdit.track !== "string" || !Object.hasOwn(TRACK_TO_HML22_JOINT, lineEdit.track)) {
+		return (
+			`field 'lineEdit.track' ${JSON.stringify(lineEdit.track)} is not a line-editable IK track id; ` +
+			`valid ids are ${LINE_EDIT_TRACK_IDS.join(", ")}`
+		);
+	}
+	const range = lineEdit.frameRange;
+	if (!range || typeof range !== "object" || Array.isArray(range)) {
+		return "field 'lineEdit.frameRange' must be an object { startFrame, endFrame }";
+	}
+	if (!Number.isInteger(range.startFrame) || !Number.isInteger(range.endFrame)) {
+		return "field 'lineEdit.frameRange' startFrame and endFrame must be integers";
+	}
+	// Half-open and inside the clip, like every other range that crosses this
+	// boundary. The clip length comes from `duration`, which the app derives from
+	// the take's own frame count; the job re-checks against the npz itself, since
+	// only that file knows how long the take really is.
+	if (range.startFrame < 0 || range.endFrame <= range.startFrame || range.endFrame > clipFrames) {
+		return `field 'lineEdit.frameRange' must be a non-empty half-open range inside 0..${clipFrames}`;
+	}
+	// Two points need two frames: one constrained frame is a pin, not a line.
+	if (range.endFrame - range.startFrame < 2) {
+		return "field 'lineEdit.frameRange' must span at least 2 frames";
+	}
+	const points = lineEdit.points2d;
+	if (!Array.isArray(points) || points.length < LINE_EDIT_POINTS_MIN) {
+		return `field 'lineEdit.points2d' needs at least ${LINE_EDIT_POINTS_MIN} points`;
+	}
+	// The cap is the app's own, and it is a solver budget: the box builds two
+	// affine rows per point and factorises an m x m system every ODE step.
+	if (points.length > LINE_EDIT_POINTS_MAX) {
+		return `field 'lineEdit.points2d' is capped at ${LINE_EDIT_POINTS_MAX} points, got ${points.length}`;
+	}
+	for (let index = 0; index < points.length; index += 1) {
+		const point = points[index];
+		if (!Array.isArray(point) || point.length !== 2 || !point.every((value) => typeof value === "number" && Number.isFinite(value))) {
+			return `field 'lineEdit.points2d[${index}]' must be [u, v] finite numbers`;
+		}
+		// Viewport-NORMALISED, and enforced rather than clamped: a pixel
+		// coordinate here is the single most likely wire mistake and it produces a
+		// plausible-looking line through the wrong ray.
+		if (point[0] < 0 || point[0] > 1 || point[1] < 0 || point[1] > 1) {
+			return `field 'lineEdit.points2d[${index}]' must be viewport-normalized into 0..1, got ${JSON.stringify(point)}`;
+		}
+	}
+	const camera = lineEdit.camera;
+	if (!camera || typeof camera !== "object" || Array.isArray(camera)) {
+		return "field 'lineEdit.camera' must be an object { fx, fy, cx, cy, R, t }";
+	}
+	for (const key of ["fx", "fy", "cx", "cy"]) {
+		if (typeof camera[key] !== "number" || !Number.isFinite(camera[key])) {
+			return `field 'lineEdit.camera.${key}' must be a finite number`;
+		}
+	}
+	// A non-positive focal length means the uv/NDC flip was applied twice or not
+	// at all, and every solved position would be mirrored.
+	if (camera.fx <= 0 || camera.fy <= 0) {
+		return "field 'lineEdit.camera' has a non-positive focal length — the uv convention is inverted";
+	}
+	// The intrinsics live in the SAME units as points2d. A pixel focal length
+	// beside normalised points solves cleanly and lands nowhere near the stroke.
+	if (camera.fx > 50 || camera.fy > 50) {
+		return `field 'lineEdit.camera' has PIXEL focal lengths (${camera.fx}, ${camera.fy}); normalize them by the viewport size, like points2d`;
+	}
+	if (!Array.isArray(camera.R) || camera.R.length !== 9 || !camera.R.every((value) => typeof value === "number" && Number.isFinite(value))) {
+		return "field 'lineEdit.camera.R' must be 9 finite numbers (3x3 row-major, world-to-camera)";
+	}
+	if (!Array.isArray(camera.t) || camera.t.length !== 3 || !camera.t.every((value) => typeof value === "number" && Number.isFinite(value))) {
+		return "field 'lineEdit.camera.t' must be 3 finite numbers";
+	}
+	if (lineEdit.prompt !== undefined && typeof lineEdit.prompt !== "string") {
+		return "field 'lineEdit.prompt' must be a string when present";
+	}
 	return null;
 }
 
@@ -784,6 +988,27 @@ async function handleGenerate(req, res) {
 				"(edited and spliced takes keep none); generating WITHOUT scheduled inpainting";
 		}
 	}
+	// A line edit REWRITES an existing take, so the take it names is resolved the
+	// same way preserve's is — through the allowlist this process populated, never
+	// from a path in the request — and before anything opens a stream.
+	let lineEditTakePath = null;
+	if (body.lineEdit) {
+		if (!projflowRunner) {
+			sendJson(res, 503, {
+				ok: false,
+				reason: "line editing needs the ProjFlow backend: set CCLAY_PROJFLOW_HOST (or CCLAY_KIMODO_HOST)",
+			});
+			finish(503);
+			return;
+		}
+		const lineEditId = body.lineEdit.sourceMotion.slice("/ardy/motions/".length);
+		lineEditTakePath = motionAllowlist.get(lineEditId) || null;
+		if (!lineEditTakePath || !existsSync(lineEditTakePath)) {
+			sendJson(res, 400, { ok: false, reason: `field 'lineEdit.sourceMotion': unknown or expired motion "${lineEditId}"` });
+			finish(400);
+			return;
+		}
+	}
 	if (body.base !== undefined) {
 		let bases;
 		try {
@@ -859,8 +1084,60 @@ async function handleGenerate(req, res) {
 	const poseNpzPaths = requestedPoses.map((_, index) => join(artifactDir, `pose-${index}.npz`));
 	// posePin:false runs carry no pose, so the artifact name says what the
 	// run actually was: constrained (pose pinned) vs generated (no pose).
-	const outNpzPath = join(artifactDir, posePinned ? "constrained.npz" : "generated.npz");
+	const outNpzPath = join(artifactDir, body.lineEdit ? "line-edit.npz" : posePinned ? "constrained.npz" : "generated.npz");
 	try {
+
+		// --- line edit (contract C6) ----------------------------------------
+		// FIRST, and it returns: a line edit shares none of the machinery below.
+		// It is its own run mode (no poses, no base, no segments), it runs on the
+		// ProjFlow backend whatever CCLAY_MOTION_BACKEND says (engine-per-task),
+		// and it produces a take by SPLICING a converted edit into the source
+		// rather than by writing whatever the box returned.
+		//
+		// One honest limitation: the ssh this awaits belongs to lineEditOnBox, not
+		// to `children`, so a client that disconnects mid-run does not kill it —
+		// the sampling S1 measured is under a second, the wrapper removes its own
+		// run directory either way, and the alternative is a cancellation channel
+		// through three modules for a sub-second job.
+		if (body.lineEdit) {
+			sendStatus(
+				`[bridge] line-editing ${body.lineEdit.track} over frames ` +
+				`${body.lineEdit.frameRange.startFrame}..${body.lineEdit.frameRange.endFrame - 1} on the projflow backend`
+			);
+			const meta = await runLineEditJob({
+				lineEdit: body.lineEdit,
+				takePath: lineEditTakePath,
+				outputPath: outNpzPath,
+				seed: body.seed,
+				appFps: FPS,
+				onStatus: (line) => sendStatus(line),
+			});
+			// The seam numbers gate GP2 reads, on the status stream as well as in
+			// the report: a hard cut is what this pipeline ships, and an operator
+			// watching a run should see a pop without opening a file.
+			sendStatus(
+				`[bridge] line edit spliced: seams ${meta.seamStartDelta.toFixed(4)} / ${meta.seamEndDelta.toFixed(4)} m ` +
+				`vs the take's median ${meta.medianFrameDelta.toFixed(4)} m/frame`
+			);
+			send({
+				event: "report",
+				report: {
+					target_space: "skeleton_joint_center",
+					engine: "projflow",
+					...meta,
+				},
+			});
+			const finalSize = statSync(outNpzPath).size;
+			// Registered exactly like every other generated take, so the app can
+			// load it from /ardy/motions/<id> and edit it AGAIN.
+			registerMotion(stamp, outNpzPath);
+			send({ event: "done", output: outNpzPath, bytes: finalSize, motionUrl: `/ardy/motions/${stamp}` });
+			res.end();
+			console.log(`[bridge] line edit finished: ${outNpzPath} (${body.lineEdit.track})`);
+			killChildren();
+			finish(200);
+			return;
+		}
 
 		// --- pose -> motion npz (local, fast). Skipped when posePin is
 			// false: the pose constraint is dropped, so there is nothing to
@@ -1198,6 +1475,14 @@ env:
   CCLAY_KIMODO_HOST        ssh destination for the Kimodo host
   CCLAY_KIMODO_REPO        Kimodo checkout on the host (default $HOME/kimodo)
   CCLAY_KIMODO_MODEL       model id (default Kimodo-SOMA-RP-v1.1)
+
+line editing (contract C6) runs on the ProjFlow backend regardless of
+CCLAY_MOTION_BACKEND, and advertises itself in /ardy/health as
+capabilities.lineEdit once the box probes clean:
+  CCLAY_PROJFLOW_HOST      ssh destination (defaults to CCLAY_KIMODO_HOST)
+  CCLAY_PROJFLOW_REPO      ProjFlow checkout (default /home/yun/projflow-scout/repo)
+  CCLAY_PROJFLOW_PYTHON    the scout venv's python
+  CCLAY_PROJFLOW_HOME      HOME override for box runs
 `);
 }
 
@@ -1236,6 +1521,14 @@ try {
 } catch (err) {
 	die(err.message);
 }
+// Beside the selected backend, never instead of it. A missing ProjFlow
+// configuration is NOT fatal — the bridge's other run modes do not need it —
+// so the failure is reported once at startup and the capability stays off.
+try {
+	projflowRunner = createProjflowRunner();
+} catch (err) {
+	console.error(`[bridge] line editing is unavailable: ${err.message}`);
+}
 
 const server = createServer((req, res) => {
 	const started = Date.now();
@@ -1254,9 +1547,14 @@ const server = createServer((req, res) => {
 		return;
 	}
 	if (pathname === "/ardy/health" && req.method === "GET") {
-		getHealth()
-			.then((value) => {
-				sendJson(res, 200, value);
+		// `capabilities` is how the app learns that an OPTIONAL run mode is wired
+		// on this box. The draw-a-line affordance is gated on capabilities.lineEdit
+		// (App.jsx accepts the object or an array spelling), so a bridge whose
+		// ProjFlow env is missing keeps the feature dark instead of letting the
+		// artist draw a stroke that would 503. Probed, never assumed.
+		Promise.all([getHealth(), getLineEditCapability()])
+			.then(([value, lineEdit]) => {
+				sendJson(res, 200, { ...value, capabilities: { lineEdit } });
 				log(200);
 			})
 			.catch((err) => {
