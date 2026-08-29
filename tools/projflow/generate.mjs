@@ -209,6 +209,53 @@ export function buildLineRequest(line) {
 		throw new Error(`lineEdit: frameRange must span at least two frames, got ${start}..${end}`);
 	}
 
+	// PINS take the whole rest of this function's job away. A pins edit carries
+	// three identity rows per pin and no camera at all, so every check below —
+	// the normalised-uv range, the pixel-focal-length trap, the R/t shape — is
+	// about a field it does not have. Branching here rather than threading
+	// `if (pins)` through each check keeps both readings of the request
+	// self-contained, which is what makes the serialised request diffable.
+	if (line.pins3d !== undefined) {
+		if (line.points2d !== undefined || line.camera !== undefined) {
+			throw new Error("lineEdit: a pins edit carries pins3d alone — no points2d, no camera");
+		}
+		const pins = line.pins3d;
+		if (!Array.isArray(pins) || pins.length < 1) {
+			throw new Error(`lineEdit: pins3d needs at least 1 pin, got ${Array.isArray(pins) ? pins.length : typeof pins}`);
+		}
+		let previous = -1;
+		const pins3d = pins.map((pin, index) => {
+			if (!pin || typeof pin !== "object" || !Number.isInteger(pin.frame)) {
+				throw new Error(`lineEdit: pins3d[${index}] must be { frame: integer, position: [x, y, z] }`);
+			}
+			// GENERATION-clock frames by the time they reach here (line-edit-job
+			// scales them), so the range they must sit inside is this request's.
+			if (pin.frame < start || pin.frame > end) {
+				throw new Error(`lineEdit: pins3d[${index}].frame ${pin.frame} is outside frameRange ${start}..${end}`);
+			}
+			if (pin.frame <= previous) {
+				throw new Error(`lineEdit: pins3d frames must be strictly ascending, got ${pin.frame} after ${previous}`);
+			}
+			previous = pin.frame;
+			if (!Array.isArray(pin.position) || pin.position.length !== 3) {
+				throw new Error(`lineEdit: pins3d[${index}].position must be [x, y, z] world metres`);
+			}
+			const position = pin.position.map((value, axis) => {
+				const number = Number(value);
+				if (!Number.isFinite(number)) throw new Error(`lineEdit: pins3d[${index}].position[${axis}] must be finite`);
+				return number;
+			});
+			return { frame: pin.frame, position };
+		});
+		return {
+			track: line.track,
+			jointId,
+			frameRange: { start, end },
+			pins3d,
+			prompt: line.prompt === undefined || line.prompt === null ? "" : String(line.prompt),
+		};
+	}
+
 	const points = line.points2d;
 	if (!Array.isArray(points) || points.length < 2) {
 		throw new Error(`lineEdit: points2d needs at least 2 points, got ${Array.isArray(points) ? points.length : typeof points}`);
@@ -423,6 +470,7 @@ async function warmLineEdit({
 	ridge,
 	preserveStride,
 	preserveMargin,
+	seamPin,
 	seed,
 	cfg,
 	host,
@@ -448,6 +496,7 @@ async function warmLineEdit({
 		ridge,
 		preserveStride,
 		preserveMargin,
+		seamPin,
 		seed,
 		cfg,
 		onLine,
@@ -499,6 +548,11 @@ export async function lineEditOnBox({
 	// build_preserve_rows; these are the knobs, not the decision.
 	preserveStride = Number(process.env.CCLAY_PROJFLOW_PRESERVE_STRIDE || 2),
 	preserveMargin = Number(process.env.CCLAY_PROJFLOW_PRESERVE_MARGIN || 20),
+	// How many of the edit range's OWN outermost frames are pinned whole-body to
+	// the source. Licensed by the app's guarantee that the curve's first and last
+	// points already sit on the source trail; see build_preserve_rows rule 4 for
+	// the measurement. 0 restores the pre-seam-pin behaviour.
+	seamPin = Number(process.env.CCLAY_PROJFLOW_SEAM_PIN ?? 2),
 	seed,
 	cfg,
 	// CCLAY_PROJFLOW_HOST falls back to the Kimodo host: one GPU box serves both
@@ -549,6 +603,7 @@ export async function lineEditOnBox({
 				ridge,
 				preserveStride: Number(preserveStride),
 				preserveMargin: Number(preserveMargin),
+				seamPin: Number(seamPin),
 				seed,
 				cfg,
 				host,
@@ -606,6 +661,7 @@ export async function lineEditOnBox({
 			`--ridge ${ridge}`,
 			`--preserve-stride ${Number(preserveStride)}`,
 			`--preserve-margin ${Number(preserveMargin)}`,
+			`--seam-pin ${Number(seamPin)}`,
 			seed === undefined ? "" : `--seed ${Number(seed)}`,
 			cfg === undefined ? "" : `--cfg ${Number(cfg)}`,
 		].filter(Boolean).join(" ");
@@ -700,6 +756,7 @@ async function main(argv) {
 		else if (flag === "--ridge") args.ridge = Number(next());
 		else if (flag === "--preserve-stride") args.preserveStride = Number(next());
 		else if (flag === "--preserve-margin") args.preserveMargin = Number(next());
+		else if (flag === "--seam-pin") args.seamPin = Number(next());
 		else if (flag === "--seed") args.seed = Number(next());
 		else throw new Error(`unknown flag ${flag}`);
 	}
@@ -722,6 +779,7 @@ async function main(argv) {
 		...(args.ridge === undefined ? {} : { ridge: args.ridge }),
 		...(args.preserveStride === undefined ? {} : { preserveStride: args.preserveStride }),
 		...(args.preserveMargin === undefined ? {} : { preserveMargin: args.preserveMargin }),
+		...(args.seamPin === undefined ? {} : { seamPin: args.seamPin }),
 		...(args.seed === undefined ? {} : { seed: args.seed }),
 		preview: args.preview,
 		onLine: (text) => console.error(text),

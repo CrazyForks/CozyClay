@@ -26,13 +26,23 @@
  */
 import assert from "node:assert/strict";
 import {
+	DRAW_BUNCHED_WINDOW_FRAMES,
 	DRAW_MIN_STROKE_POINTS,
 	DRAW_MIN_STROKE_PX,
+	DRAW_MIN_WINDOW_FRAMES,
 	MIN_LINE_POINTS,
 	PINNED_CURVE_ENDS,
+	SEAM_EASE_MAX,
+	SEAM_EASE_MIN,
+	baseArcFractions,
 	curveToPoints2d,
+	curveWindow,
 	curvesEqual,
 	dragCurve,
+	drawStrokeEdit,
+	matchStrokeWindow,
+	seamEaseFrames,
+	seamEaseWeight,
 	strokeToCurve,
 } from "../src/line-edit.js";
 
@@ -326,6 +336,410 @@ test("a stroke drawn off the image is refused by the wire gate, not silently cla
 	const drawn = strokeToCurve([[0.5, 0.5], [1.4, 0.5]], base);
 	assert.ok(drawn, "the curve itself is real — the joint really is out there");
 	assert.equal(curveToPoints2d(drawn).error, "offscreen");
+});
+
+/* ===================== the redesign: draw = reroute THIS part ===============
+ * Everything above tests strokeToCurve's DEFAULTS, which are still exactly what
+ * a drag needs (uniform timing, hard pins) and are still what the pinned-end
+ * tests assert. Nothing below changes them — the draw path opts in, so no check
+ * above needed rewriting when the semantics changed.
+ *
+ * What the redesign fixes, and what each block below pins down:
+ *   A. the stroke's endpoints choose the FRAME RANGE (matchStrokeWindow), so a
+ *      short hook is no longer spread over an eight-second clip;
+ *   B. frame f sits at the BASE trail's arc-length fraction (baseArcFractions),
+ *      so the take's own velocity profile survives the reroute;
+ *   C. the ends EASE instead of teleporting from a 2-frame pin (seamEaseWeight).
+ * ========================================================================== */
+
+/** A whole-clip trail: 120 frames, a wide arc across the middle of the image.
+ * Frame f is at index f, which is what projectTrailCurve produces for a range
+ * starting at 0. */
+const clipCurve = (count = 120) =>
+	Array.from({ length: count }, (_, f) => ({
+		frame: f,
+		u: 0.1 + (0.8 * f) / (count - 1),
+		v: 0.5 - 0.25 * Math.sin((Math.PI * f) / (count - 1)),
+	}));
+
+const PANE = { paneW: 1600, paneH: 900 };
+
+console.log("matchStrokeWindow — the stroke picks its own frames");
+
+test("a stroke drawn over a stretch of the trail matches THAT stretch", () => {
+	const full = clipCurve();
+	// Drawn from just above frame 30 to just above frame 66 — a bulge over the
+	// path rather than along it, which is what "reroute this part" looks like.
+	const stroke = [];
+	for (let i = 0; i <= 20; i += 1) {
+		const f = 30 + (36 * i) / 20;
+		const point = full[Math.round(f)];
+		stroke.push([point.u, point.v - 0.08 * Math.sin((Math.PI * i) / 20)]);
+	}
+	const match = matchStrokeWindow(stroke, full, { ...PANE, clipFrames: full.length });
+	assert.ok(match, "a stroke over the visible path must match");
+	assert.equal(match.reversed, false);
+	assert.equal(match.startFrame, 30);
+	assert.equal(match.endFrame, 67, "endFrame is EXCLUSIVE — 30..66 inclusive is 30..67");
+	// The whole point: a sub-window, not the clip.
+	assert.ok(match.endFrame - match.startFrame < full.length / 2);
+});
+
+test("a stroke drawn end-to-start matches the SAME window, and reports reversed", () => {
+	const full = clipCurve();
+	const forward = [];
+	for (let i = 0; i <= 20; i += 1) {
+		const point = full[30 + Math.round((36 * i) / 20)];
+		forward.push([point.u, point.v - 0.08]);
+	}
+	const a = matchStrokeWindow(forward, full, { ...PANE, clipFrames: full.length });
+	const b = matchStrokeWindow([...forward].reverse(), full, { ...PANE, clipFrames: full.length });
+	assert.ok(a && b);
+	assert.equal(b.startFrame, a.startFrame, "drawing it backwards names the same frames");
+	assert.equal(b.endFrame, a.endFrame);
+	assert.equal(a.reversed, false);
+	assert.equal(b.reversed, true, "the DIRECTION is reported, not baked into the range");
+});
+
+test("a bunched trail falls back to a window of about a second, centred on the match", () => {
+	// The take that made drawing necessary in the first place: 120 frames of
+	// trail projecting into ~2 px. The trail is still strictly increasing, so a
+	// naive frame-span test would happily match frames 0 and 119 and hand the
+	// stroke the WHOLE CLIP again — the original complaint through the back
+	// door. The separation test is what catches it.
+	const bunched = Array.from({ length: 120 }, (_, f) => ({ frame: f, u: 0.5 + f * 1e-5, v: 0.5 + f * 1e-5 }));
+	const stroke = [[0.3, 0.2], [0.4, 0.35], [0.55, 0.6]];
+	const match = matchStrokeWindow(stroke, bunched, { ...PANE, clipFrames: 120 });
+	assert.ok(match);
+	assert.equal(match.endFrame - match.startFrame, DRAW_BUNCHED_WINDOW_FRAMES);
+	assert.ok(DRAW_BUNCHED_WINDOW_FRAMES >= DRAW_MIN_WINDOW_FRAMES, "the bunched window also satisfies the minimum");
+	assert.ok(match.startFrame >= 0 && match.endFrame <= 120, "and never leaves the clip");
+	assert.ok(match.endFrame - match.startFrame < 120 / 2, "and is nowhere near the whole clip");
+});
+
+test("the separation test is in PIXELS: the same trail on a huge pane IS matchable", () => {
+	// The rule is "could the user have aimed at one end rather than the other?",
+	// so it has to move with the pane. Scaled up 400x, that 2 px trail is 800 px
+	// of path and the two ends are genuinely different places.
+	const bunched = Array.from({ length: 120 }, (_, f) => ({ frame: f, u: 0.5 + f * 1e-5, v: 0.5 + f * 1e-5 }));
+	const stroke = [[0.5, 0.5], [0.5008, 0.5008], [0.50119, 0.50119]];
+	const tight = matchStrokeWindow(stroke, bunched, { ...PANE, clipFrames: 120 });
+	assert.equal(tight.endFrame - tight.startFrame, DRAW_BUNCHED_WINDOW_FRAMES, "28 px apart on this pane: bunched");
+	const wide = matchStrokeWindow(stroke, bunched, { paneW: 640000, paneH: 360000, clipFrames: 120 });
+	assert.ok(wide.endFrame - wide.startFrame > DRAW_BUNCHED_WINDOW_FRAMES, "far apart on that one: a real match");
+	assert.equal(wide.startFrame, 0);
+	assert.equal(wide.endFrame, 120);
+});
+
+test("a bunched match at the very start of the clip slides in rather than going negative", () => {
+	const bunched = Array.from({ length: 40 }, (_, f) => ({ frame: f, u: 0.5, v: 0.5 }));
+	const match = matchStrokeWindow([[0.5, 0.5], [0.6, 0.6]], bunched, { ...PANE, clipFrames: 40 });
+	assert.ok(match);
+	assert.ok(match.startFrame >= 0);
+	assert.equal(match.endFrame - match.startFrame, DRAW_BUNCHED_WINDOW_FRAMES);
+});
+
+test("a clip shorter than the bunched window is clipped, not overflowed", () => {
+	const tiny = Array.from({ length: 10 }, (_, f) => ({ frame: f, u: 0.5, v: 0.5 }));
+	const match = matchStrokeWindow([[0.5, 0.5], [0.6, 0.6]], tiny, { ...PANE, clipFrames: 10 });
+	assert.ok(match);
+	assert.equal(match.startFrame, 0);
+	assert.equal(match.endFrame, 10);
+});
+
+test("a trail with nothing on screen matches nothing — the caller keeps its range", () => {
+	const offscreen = Array.from({ length: 40 }, (_, f) => ({ frame: f, u: 1.8, v: -0.4 }));
+	assert.equal(matchStrokeWindow([[0.5, 0.5], [0.6, 0.6]], offscreen, { ...PANE, clipFrames: 40 }), null);
+	const allNull = Array.from({ length: 40 }, () => null);
+	assert.equal(matchStrokeWindow([[0.5, 0.5], [0.6, 0.6]], allNull, { ...PANE, clipFrames: 40 }), null);
+	// And the degenerate inputs, which must refuse rather than guess.
+	assert.equal(matchStrokeWindow([[0.5, 0.5]], clipCurve(), { ...PANE, clipFrames: 120 }), null);
+	assert.equal(matchStrokeWindow([[0.5, 0.5], [0.6, 0.6]], null, { ...PANE, clipFrames: 120 }), null);
+	assert.equal(matchStrokeWindow([[0.5, 0.5], [0.6, 0.6]], clipCurve(), { paneW: 0, paneH: 0 }), null);
+});
+
+test("matching is in PIXELS, so a 16:9 pane does not bias the match vertically", () => {
+	// Two candidate frames equidistant in uv but not on screen: the pixel metric
+	// must prefer the one that is actually closer to the eye.
+	const curve = [
+		{ frame: 0, u: 0.50, v: 0.40 }, // 0.1 of v = 90 px on a 900-tall pane
+		{ frame: 1, u: 0.50, v: 0.50 },
+		{ frame: 2, u: 0.60, v: 0.50 }, // 0.1 of u = 160 px on a 1600-wide pane
+	];
+	const match = matchStrokeWindow([[0.5, 0.5], [0.5, 0.5]], curve, { ...PANE, clipFrames: 3 });
+	assert.ok(match, "an exact hit on frame 1 still produces a window");
+	// A stroke starting at frame 0's point: the nearest OTHER point in pixels is
+	// frame 1 (90 px), not frame 2 (~187 px) — proven by the window it names.
+	const window = matchStrokeWindow([[0.5, 0.40], [0.5, 0.50]], curve, { ...PANE, clipFrames: 3, minWindowFrames: 2 });
+	assert.deepEqual({ s: window.startFrame, e: window.endFrame }, { s: 0, e: 2 });
+});
+
+console.log("curveWindow — slicing the clip curve by frames");
+
+test("the window is sliced by FRAME NUMBER, not by array index", () => {
+	// A curve that starts at frame 100, the way projectTrailCurve labels a range.
+	const curve = Array.from({ length: 50 }, (_, i) => ({ frame: 100 + i, u: i / 100, v: 0.5 }));
+	const window = curveWindow(curve, { startFrame: 110, endFrame: 120 });
+	assert.equal(window.length, 10);
+	assert.equal(window[0].frame, 110);
+	assert.equal(window[9].frame, 119);
+	// Nulls at the head must not shift the offset.
+	const gapped = [null, null, ...curve.slice(2)];
+	assert.equal(curveWindow(gapped, { startFrame: 110, endFrame: 120 })[0].frame, 110);
+});
+
+test("a window the curve does not fully cover is refused, never silently shortened", () => {
+	const curve = Array.from({ length: 20 }, (_, i) => ({ frame: i, u: 0.5, v: 0.5 }));
+	assert.equal(curveWindow(curve, { startFrame: 10, endFrame: 40 }), null);
+	assert.equal(curveWindow(curve, { startFrame: -5, endFrame: 10 }), null);
+	assert.equal(curveWindow(curve, { startFrame: 5, endFrame: 6 }), null, "a one-frame window is not a line");
+});
+
+console.log("seamEaseWeight / seamEaseFrames — the ease ramp");
+
+test("the ramp is 0 at both edges, 1 in the interior, and monotone in between", () => {
+	const n = 40;
+	const ease = seamEaseFrames(n);
+	assert.equal(seamEaseWeight(0, n, ease), 0, "the first frame is exactly on the original trail");
+	assert.equal(seamEaseWeight(n - 1, n, ease), 0, "and so is the last");
+	assert.equal(seamEaseWeight(ease, n, ease), 1, "the ramp is done by easeFrames in");
+	assert.equal(seamEaseWeight(n / 2, n, ease), 1, "the middle is fully the stroke");
+	// Monotone rising over the head, falling over the tail, and symmetric.
+	for (let i = 1; i <= ease; i += 1) {
+		assert.ok(seamEaseWeight(i, n, ease) > seamEaseWeight(i - 1, n, ease), `ramp not rising at ${i}`);
+		assert.ok(Math.abs(seamEaseWeight(i, n, ease) - seamEaseWeight(n - 1 - i, n, ease)) < 1e-12, "the two seams differ");
+	}
+	// Weights never leave 0..1, so a blend can never overshoot the stroke.
+	for (let i = 0; i < n; i += 1) {
+		const w = seamEaseWeight(i, n, ease);
+		assert.ok(w >= 0 && w <= 1, `weight ${w} out of range at ${i}`);
+	}
+});
+
+test("the ramp leaves the seam along the ORIGINAL slope — smoothstep, not linear", () => {
+	// The property that makes one eased edge stronger than two hard pins: the
+	// weight's own slope is zero at the seam, so the curve departs the trail
+	// tangentially instead of with a kink. Measured as a second difference.
+	const n = 60;
+	const ease = seamEaseFrames(n);
+	const w = (i) => seamEaseWeight(i, n, ease);
+	assert.ok(w(1) < 1 / ease, `smoothstep must start flatter than a linear ramp (${w(1)} vs ${1 / ease})`);
+	assert.ok(w(ease - 1) > 1 - 1 / ease, "and finish flatter too");
+});
+
+test("easeFrames is 15% of the window, floored at 2 and capped at 12", () => {
+	assert.equal(seamEaseFrames(40), 6);
+	assert.equal(seamEaseFrames(100), 12, `capped at ${SEAM_EASE_MAX}`);
+	assert.equal(seamEaseFrames(10), SEAM_EASE_MIN, "a short window still gets the pin-equivalent floor");
+	// Never wide enough for the two ramps to meet and leave no interior.
+	for (const n of [3, 4, 5, 8, 9]) {
+		const ease = seamEaseFrames(n);
+		assert.ok(ease >= 1 && ease <= Math.floor((n - 1) / 2), `ease ${ease} eats the whole window of ${n}`);
+		assert.equal(seamEaseWeight(Math.floor(n / 2), n, ease), 1, `no interior left in a window of ${n}`);
+	}
+	// A window with no interior at all cannot be eased and says so.
+	assert.equal(seamEaseFrames(2), 0);
+	assert.equal(seamEaseFrames(1), 0);
+});
+
+test("an eased stroke glides out of the trail instead of teleporting to it", () => {
+	// The GP2 failure mode, reproduced: a stroke drawn FAR from the trail. With
+	// the old 2-frame pin the joint crossed the whole gap in one frame; with the
+	// ramp it crosses it over easeFrames, and the first step is the smallest.
+	const base = baseCurve(40);
+	const far = [[0.85, 0.05], [0.95, 0.12]];
+	const pinned = strokeToCurve(far, base, { pinnedEnds: PINNED_CURVE_ENDS });
+	const ease = seamEaseFrames(base.length);
+	const eased = strokeToCurve(far, base, { easeFrames: ease });
+	const jump = (curve, i) => Math.hypot(curve[i].u - curve[i - 1].u, curve[i].v - curve[i - 1].v);
+	const worstPinned = Math.max(...Array.from({ length: base.length - 1 }, (_, i) => jump(pinned, i + 1)));
+	const worstEased = Math.max(...Array.from({ length: base.length - 1 }, (_, i) => jump(eased, i + 1)));
+	assert.ok(worstEased < worstPinned / 2, `the ease must halve the worst pop (${worstEased} vs ${worstPinned})`);
+	// The edge itself is still byte-identical to the trail — the pin's guarantee,
+	// kept BY REFERENCE so curvesEqual needs no epsilon.
+	assert.equal(eased[0], base[0]);
+	assert.equal(eased[base.length - 1], base[base.length - 1]);
+	// ...and the interior really is the stroke, not a watered-down version.
+	assert.ok(Math.abs(eased[20].u - 0.9) < 0.06, "the middle must reach the drawn line");
+});
+
+console.log("baseArcFractions — the take's own velocity profile");
+
+test("a fast-then-slow base maps the stroke unevenly, matching its arc-length profile", () => {
+	// 21 frames: the joint covers 90% of its screen distance in the first 5
+	// frames (a fall) and crawls through the rest (the recovery). Uniform timing
+	// would put the halfway point of the STROKE at frame 10; velocity timing
+	// puts it where the joint had actually gone halfway, which is frame 1-2.
+	const base = Array.from({ length: 21 }, (_, i) => ({
+		frame: i,
+		u: i <= 5 ? (0.9 * i) / 5 : 0.9 + (0.1 * (i - 5)) / 15,
+		v: 0.5,
+	}));
+	const fractions = baseArcFractions(base);
+	assert.ok(fractions);
+	assert.equal(fractions[0], 0);
+	assert.ok(Math.abs(fractions[20] - 1) < 1e-12);
+	assert.ok(Math.abs(fractions[5] - 0.9) < 1e-12, "90% of the distance is covered by frame 5");
+	// Monotone non-decreasing, which is what lets strokeToCurve keep one walk.
+	for (let i = 1; i < fractions.length; i += 1) assert.ok(fractions[i] >= fractions[i - 1], `not monotone at ${i}`);
+
+	// And the mapping the fractions produce: a straight stroke, so position along
+	// it IS the fraction, readable directly off u.
+	const stroke = [[0, 0.2], [1, 0.2]];
+	const drawn = strokeToCurve(stroke, base, { arcFractions: fractions, easeFrames: 1 });
+	assert.ok(Math.abs(drawn[5].u - 0.9) < 1e-9, "frame 5 sits 90% along the drawn line, as it did on the trail");
+	const uniform = strokeToCurve(stroke, base, { easeFrames: 1 });
+	assert.ok(Math.abs(uniform[5].u - 0.25) < 1e-9, "uniform timing would have put it a quarter along");
+	// The claim in one line: the fast part stays fast.
+	assert.ok(drawn[5].u - drawn[0].u > uniform[5].u - uniform[0].u);
+});
+
+test("a stationary joint has no profile to preserve and falls back to uniform", () => {
+	const still = Array.from({ length: 20 }, (_, i) => ({ frame: i, u: 0.5, v: 0.5 }));
+	assert.equal(baseArcFractions(still), null);
+	assert.equal(baseArcFractions([{ frame: 0, u: 0.1, v: 0.1 }]), null, "one point has no length");
+	assert.equal(baseArcFractions(null), null);
+	// Nulls contribute no length and inherit their neighbour's fraction, so a
+	// gap cannot make the sequence jump or go non-monotone.
+	const gapped = [{ frame: 0, u: 0, v: 0 }, null, null, { frame: 3, u: 1, v: 0 }];
+	const fractions = baseArcFractions(gapped);
+	assert.deepEqual(fractions, [0, 0, 0, 1]);
+});
+
+console.log("strokeToCurve — reversed strokes");
+
+test("a reversed stroke lands the same curve as the forward one drawn over the same path", () => {
+	const base = baseCurve(30);
+	const stroke = uniformStroke();
+	const forward = strokeToCurve(stroke, base, { easeFrames: 4 });
+	const backward = strokeToCurve([...stroke].reverse(), base, { easeFrames: 4, reversed: true });
+	assert.ok(curvesEqual(forward, backward), "reversed:true must undo a backwards-drawn stroke exactly");
+	// Sanity: without the flag it is a different curve, as the older check above
+	// already asserts for the default path.
+	assert.ok(!curvesEqual(strokeToCurve([...stroke].reverse(), base, { easeFrames: 4 }), forward));
+});
+
+console.log("drawStrokeEdit — the whole gesture");
+
+test("drawing over a stretch of path returns that window, its base and an eased curve", () => {
+	const full = clipCurve();
+	const stroke = [];
+	for (let i = 0; i <= 24; i += 1) {
+		const point = full[30 + Math.round((36 * i) / 24)];
+		// A bulge ALONG the path: the ends sit on the trail (which is what "draw
+		// along the path" means) and the middle lifts off it.
+		stroke.push([point.u, point.v - 0.10 * Math.sin((Math.PI * i) / 24)]);
+	}
+	const edit = drawStrokeEdit(stroke, { fullCurve: full, ...PANE, clipFrames: full.length });
+	assert.ok(edit);
+	assert.equal(edit.matched, true);
+	assert.deepEqual(edit.frameRange, { startFrame: 30, endFrame: 67 });
+	assert.equal(edit.base.length, 37, "the base is the window's slice of the ORIGINAL trail");
+	assert.equal(edit.base[0].frame, 30);
+	assert.equal(edit.curve.length, edit.base.length, "still dense and frame-indexed");
+	assert.equal(edit.curve[0], edit.base[0], "the seams are the original trail, by reference");
+	assert.equal(edit.curve[36], edit.base[36]);
+	assert.equal(edit.easeFrames, seamEaseFrames(37));
+	// The interior really moved to the drawn line...
+	assert.ok(Math.abs(edit.curve[18].v - (edit.base[18].v - 0.10)) < 0.02);
+	// ...and NOT the frames outside the window, which are not in the edit at all.
+	assert.ok(edit.frameRange.startFrame > 0 && edit.frameRange.endFrame < full.length);
+});
+
+test("the same stroke drawn backwards produces the same window and a forward-running curve", () => {
+	const full = clipCurve();
+	const stroke = [];
+	for (let i = 0; i <= 24; i += 1) {
+		const point = full[30 + Math.round((36 * i) / 24)];
+		// A bulge ALONG the path: the ends sit on the trail (which is what "draw
+		// along the path" means) and the middle lifts off it.
+		stroke.push([point.u, point.v - 0.10 * Math.sin((Math.PI * i) / 24)]);
+	}
+	const forward = drawStrokeEdit(stroke, { fullCurve: full, ...PANE, clipFrames: full.length });
+	const backward = drawStrokeEdit([...stroke].reverse(), { fullCurve: full, ...PANE, clipFrames: full.length });
+	assert.ok(forward && backward);
+	assert.deepEqual(backward.frameRange, forward.frameRange);
+	assert.equal(backward.reversed, true);
+	// u rises with the frame in both: drawing right-to-left must not run the
+	// joint backwards along its own timeline.
+	assert.ok(backward.curve[30].u > backward.curve[6].u, "the drawn curve runs forwards in time");
+	for (let i = 0; i < forward.curve.length; i += 1) {
+		if (!forward.curve[i] || !backward.curve[i]) continue;
+		assert.ok(Math.abs(forward.curve[i].u - backward.curve[i].u) < 1e-9, `direction leaked at ${i}`);
+	}
+});
+
+test("the timing comes from the BASE window, not from the stroke", () => {
+	// A trail that sprints through the first third of the window and crawls
+	// through the rest. Any two strokes of the same SHAPE must land the same
+	// curve (that is the old arc-length claim), but the frames must be spaced by
+	// the trail's profile, not evenly.
+	const full = Array.from({ length: 60 }, (_, f) => ({
+		frame: f,
+		u: f <= 20 ? 0.1 + (0.6 * f) / 20 : 0.7 + (0.1 * (f - 20)) / 39,
+		v: 0.5,
+	}));
+	const stroke = [[0.1, 0.3], [0.8, 0.3]];
+	const edit = drawStrokeEdit(stroke, { fullCurve: full, ...PANE, clipFrames: 60 });
+	assert.ok(edit && edit.matched);
+	const span = edit.curve[edit.curve.length - 1].u - edit.curve[0].u;
+	const covered = (i) => (edit.curve[i].u - edit.curve[0].u) / span;
+	// By the window's frame 20 the original had covered ~86% of its screen
+	// distance; the drawn curve must be roughly that far along too, and nowhere
+	// near the ~34% uniform spacing would give.
+	const at20 = covered(20 - edit.frameRange.startFrame);
+	assert.ok(at20 > 0.7, `velocity profile lost (${at20.toFixed(3)} covered by the sprint's end)`);
+	assert.ok(at20 > 2 * (20 / edit.curve.length), "this is not just uniform spacing in disguise");
+});
+
+test("no trail to match against falls back to the panel's range and still draws", () => {
+	const offscreen = Array.from({ length: 60 }, (_, f) => ({ frame: f, u: 1.9, v: 1.9 }));
+	const fallbackCurve = baseCurve(24);
+	const fallbackRange = { startFrame: 100, endFrame: 124 };
+	const edit = drawStrokeEdit(uniformStroke(), {
+		fullCurve: offscreen,
+		fallbackCurve,
+		fallbackRange,
+		...PANE,
+		clipFrames: 60,
+	});
+	assert.ok(edit, "the gesture must still do something");
+	assert.equal(edit.matched, false);
+	assert.deepEqual(edit.frameRange, fallbackRange);
+	assert.equal(edit.base, fallbackCurve);
+	assert.ok(!curvesEqual(edit.curve, fallbackCurve), "and it must actually have drawn");
+});
+
+test("a click through drawStrokeEdit is still a no-op, and refuses without a base", () => {
+	const full = clipCurve();
+	assert.equal(drawStrokeEdit([[0.5, 0.5]], { fullCurve: full, ...PANE, clipFrames: 120 }), null);
+	assert.equal(drawStrokeEdit([[0.5, 0.5], [0.5, 0.5]], { fullCurve: full, ...PANE, clipFrames: 120 }), null);
+	// No trail AND no fallback: nothing to draw into, so nothing happens — the
+	// existing edit in the caller's hand survives untouched.
+	assert.equal(drawStrokeEdit(uniformStroke(), { fullCurve: null, ...PANE, clipFrames: 120 }), null);
+});
+
+test("a drawn edit goes on the wire exactly like a dragged one", () => {
+	const full = clipCurve();
+	const stroke = [];
+	for (let i = 0; i <= 24; i += 1) {
+		const point = full[30 + Math.round((36 * i) / 24)];
+		// A bulge ALONG the path: the ends sit on the trail (which is what "draw
+		// along the path" means) and the middle lifts off it.
+		stroke.push([point.u, point.v - 0.10 * Math.sin((Math.PI * i) / 24)]);
+	}
+	const edit = drawStrokeEdit(stroke, { fullCurve: full, ...PANE, clipFrames: full.length });
+	const { points2d, error } = curveToPoints2d(edit.curve);
+	assert.equal(error, undefined);
+	assert.equal(points2d.length, 37);
+	// The window's endpoints are on the original trail, which is the whole seam
+	// argument stated in the units the box receives.
+	assert.deepEqual(points2d[0], [edit.base[0].u, edit.base[0].v]);
+	assert.deepEqual(points2d[36], [edit.base[36].u, edit.base[36].v]);
+	// A drag on top of a drawn curve still refines it, ends and all.
+	const dragged = dragCurve(edit.curve, 18, 0.05, 0.0, 8);
+	assert.ok(!curvesEqual(dragged, edit.curve));
+	assert.equal(dragged[0], edit.base[0], "the drag's own pins hold the eased seam in place");
 });
 
 console.log(`\n${passed} checks passed`);

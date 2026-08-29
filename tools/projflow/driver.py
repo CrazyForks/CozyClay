@@ -86,7 +86,7 @@ that a pipe is the whole transport and there is no port, no tunnel, no file):
     {"id":"7","type":"lineEdit","line":{...C6...},
      "source":{"shape":[T,22,3],"data":"<base64 float32>"},
      "steps":100,"ridge":1e-6,"preserveStride":2,"preserveMargin":20,
-     "seed":0,"cfg":3.0,"preview":false}
+     "seamPin":2,"seed":0,"cfg":3.0,"preview":false}
     {"id":"8","type":"ping"}      {"id":"9","type":"shutdown"}
   response:
     {"id":"7","ok":true,"result":{"shape":[T,22,3],"data":"<base64>",
@@ -331,7 +331,57 @@ def build_line_rows(line, *, frames, joint_id):
     return rows, values, frame_indices, uv
 
 
-def build_preserve_rows(source, *, edit_start, edit_end, chain, stride, margin):
+def build_pin_rows(line, *, frames, joint_id):
+    """Hard 3D keyframe rows for `pins3d` — the OTHER shape of a line edit.
+
+    A pin says "this joint is exactly HERE at this generation frame", so it is
+    three identity rows (x, y, z) with the pinned coordinates as the
+    measurement. That is the sparsest possible constraint and it is precisely
+    what the paper measures: ProjFlow's spatial-control table is 1, 2, 5, 49 and
+    196 keyframes, with 0.0000 trajectory/location/average error at every
+    density, and the flow prior — not any interpolation of ours — is what fills
+    the frames between. So there is deliberately NOTHING between the pins here:
+    no pseudo-observations, no interpolated guides. The paper's soft
+    machinery (Sec 4.3.1) exists to rescue the *inpainting* task where hard
+    observations are sparse across a whole clip; here the preserve rows outside
+    the range and the seam pin at its edges already bracket the gap, and the
+    free span between two pins is a couple of seconds at most.
+
+    Same row format as build_line_rows so the two are interchangeable to the
+    caller: (rows, values, frame_indices). A line's rows are TWO per frame and
+    depend on the camera; a pin's are THREE and depend on nothing, which is why
+    a pinned edit needs no lens and survives an orbit.
+
+    Frames arrive already on the generation clock (line-edit-job.mjs scales
+    them with the same rounding rule it uses for frameRange), so the only
+    checking here is that they are inside the clip.
+    """
+    pins = line["pins3d"]
+    if not isinstance(pins, list) or not pins:
+        raise ValueError("pins3d must be a non-empty list of {frame, position}")
+    rows = []
+    values = []
+    frame_indices = []
+    targets = []
+    for index, pin in enumerate(pins):
+        frame = int(pin["frame"])
+        if not (0 <= frame < frames):
+            raise ValueError(
+                f"pins3d[{index}].frame {frame} is outside the source motion's 0..{frames - 1}"
+            )
+        position = [float(v) for v in pin["position"]]
+        if len(position) != 3:
+            raise ValueError(f"pins3d[{index}].position must be [x, y, z], got {pin['position']}")
+        for axis in range(3):
+            col = column_index(axis, frame, joint_id, num_frames=frames, num_joints=NUM_JOINTS)
+            rows.append([(col, 1.0)])
+            values.append(position[axis])
+        frame_indices.append(frame)
+        targets.append(position)
+    return rows, values, frame_indices, np.asarray(targets, dtype=np.float64)
+
+
+def build_preserve_rows(source, *, edit_start, edit_end, chain, stride, margin, seam_pin=2, hold_body=False, owned=()):
     """Identity rows pinning the SOURCE take outside the edited range.
 
     SUBSAMPLING POLICY — stated in full because it is the one place this driver
@@ -356,6 +406,47 @@ def build_preserve_rows(source, *, edit_start, edit_end, chain, stride, margin):
        for an instantaneous jump and the sampler would split the difference,
        missing the line at its start. Outside the margin every joint is pinned.
 
+    4. SEAM PIN — the edit's OWN first and last `seam_pin` frames carry FULL
+       rows, chain included, even though they are inside the edited range.
+
+       This is the fix for a seam pop that rules 1-3 cannot reach, and it is
+       licensed by a property the APP now guarantees rather than by anything
+       here. src/line-edit.js hands over a curve whose first and last points are
+       the joint's own projected trajectory, byte-identical: a drag pins them
+       (PINNED_CURVE_ENDS) and a drawn stroke eases into them (seamEaseWeight is
+       exactly 0 at both window edges). So at those two frames the drawn line
+       and the source take ALREADY agree in 2D, and pinning the full 3D pose
+       there adds no contradiction — it removes the freedom in DEPTH and in the
+       other 21 joints that was producing the pop.
+
+       Without it those frames are unconstrained except for the line's two
+       affine rows, and the nearest hard evidence is a whole frame away on the
+       far side of the boundary: the paper's Plain Masking case (sparse hard
+       observations, no soft guides), which its own ablation reports as the
+       worst configuration.
+
+       MEASURED, backfall take, a 102-frame leftFoot reroute (app frames
+       20..122, 20-step preview, seed 4242, cold path). Seam figures are the
+       spliced take's frame-to-frame jump at the boundary as a multiple of the
+       SOURCE take's own worst frame delta (0.2153 m), so 1.0x means "no more
+       violent than the take already is":
+
+         seam_pin  head   tail   worst jump  in-window edit (max / mean)
+         0         2.46x  6.64x  6.64x       2.934 / 1.786 m
+         1         0.33x  1.70x  4.51x       2.740 / 1.684 m
+         2         0.24x  1.06x  3.96x       2.612 / 1.611 m   <- default
+         3         0.21x  1.04x  3.00x       2.491 / 1.548 m
+         4         0.20x  1.03x  3.03x       2.367 / 1.492 m
+
+       TWO is the default because it is where the seam stops being visible
+       (1.06x = the take's own worst frame already) while the edit keeps 89% of
+       its magnitude; past 2 the pin buys almost no seam and starts eating the
+       edit, since every pinned frame is a frame the drawn line does not own.
+       Two also matches the app's PINNED_CURVE_ENDS exactly: those are the
+       frames src/line-edit.js already holds on the source trail in 2D, so this
+       pins in 3D precisely what the app pinned in 2D. `seam_pin=0` restores the
+       pre-2026-08-29 behaviour byte for byte.
+
     Order of the emitted rows is (frame, joint, axis), ascending, so a run is
     reproducible and `preservedFrames` in the metadata reads in time order.
     """
@@ -369,13 +460,67 @@ def build_preserve_rows(source, *, edit_start, edit_end, chain, stride, margin):
             candidates.add(seam)
     kept_frames = sorted(f for f in candidates if f < int(edit_start) or f > int(edit_end))
 
+    # 5. HOLD THE BODY (pins only). Inside the range the non-edited joints keep
+    #    their subsampled rows; only the pinned limb's chain is freed.
+    #
+    #    WHY IT IS ONLY FOR PINS, and why it is not optional for them. A drawn
+    #    line replaces a passage of movement, so the body genuinely has to
+    #    re-time itself around the new path and freeing the range is the point.
+    #    A PIN says the opposite thing — "the take is right, this joint is
+    #    wrong at this instant" — and freeing 1.5 s of whole body to deliver it
+    #    was measured as exactly the wrong trade: on the backfall take a 5 cm
+    #    ask and a 40 cm ask both moved the head ~28 cm and both missed by
+    #    ~25 cm, because the pin was a small perturbation on a window the model
+    #    had otherwise re-imagined (in-window whole-body drift 1.19 m in every
+    #    case, identical to three decimal places).
+    #
+    #    This is also the paper's own shape for sparse observations. Its
+    #    inpainting formulation surrounds sparse hard keyframes with guidance
+    #    everywhere else rather than leaving the gap free, and its ablation
+    #    reports Plain Masking — hard keyframes alone — as the worst
+    #    configuration. Here the guidance is not interpolated pseudo-
+    #    observations with a fitted variance: it is the SOURCE TAKE, which is
+    #    both hard and correct, so it goes in at Sigma = 0 like every other
+    #    preserve row and needs none of the time-varying machinery.
+    hold = bool(hold_body)
+    if hold:
+        inside = sorted(
+            f for f in set(range(0, frames, max(1, int(stride))))
+            if int(edit_start) <= f <= int(edit_end)
+        )
+        kept_frames = sorted(set(kept_frames) | set(inside))
+
+    # The seam pin's own frames, taken from INSIDE the range. Capped at half the
+    # range so a two-frame edit cannot pin itself into a no-op.
+    pin_span = max(0, int(seam_pin))
+    span = int(edit_end) - int(edit_start) + 1
+    pin_span = min(pin_span, span // 2)
+    seam_frames = []
+    for offset in range(pin_span):
+        seam_frames.append(int(edit_start) + offset)
+        seam_frames.append(int(edit_end) - offset)
+    seam_frames = sorted(set(f for f in seam_frames if 0 <= f < frames))
+    kept_frames = sorted(set(kept_frames) | set(seam_frames))
+
+    # Cells the EDIT's own rows already own. A seam-pin frame that happens to
+    # carry a 3D pin would otherwise get an identity row to the source AND a pin
+    # row to the target for the same coordinate: two contradictory measurements
+    # that the ridge quietly averages into a third answer nobody asked for. The
+    # edit always wins — it is the thing the artist authored.
+    owned_cells = {(int(f), int(j)) for f, j in owned}
+
     rows = []
     values = []
     pinned = []  # (frame, joint) pairs, for the self-check below
     for frame in kept_frames:
         in_margin = lo <= frame <= hi
         for joint in range(NUM_JOINTS):
-            if in_margin and joint in chain:
+            if (frame, joint) in owned_cells:
+                continue
+            # A seam frame is pinned WHOLE — the chain exclusion is about giving
+            # the limb room to travel, and at the seam it has nowhere to travel
+            # to: the line already puts it where the source does.
+            if in_margin and joint in chain and frame not in seam_frames:
                 continue
             for axis in range(3):
                 col = column_index(axis, frame, joint, num_frames=frames, num_joints=NUM_JOINTS)
@@ -506,6 +651,7 @@ def run_line_edit(
     preserve_margin,
     seed,
     cfg,
+    seam_pin=2,
     preview=False,
     reset_peak=False,
 ):
@@ -526,7 +672,16 @@ def run_line_edit(
     prompt = str(line.get("prompt") or "")
 
     # --- fuse the operator ---------------------------------------------------
-    line_rows, line_values, line_frames, uv = build_line_rows(line, frames=frames, joint_id=joint_id)
+    # ONE EDIT IS ONE GESTURE (contract C6 v2): either a drawn line (two affine
+    # rows per frame, camera-dependent) or 3D pins (three identity rows per pin,
+    # camera-free). The wrapper validates the exclusivity; here the presence of
+    # pins3d simply selects the row builder, and everything downstream — the
+    # preserve rows, the seam pin, the solve, the splice — is identical.
+    pinned_edit = line.get("pins3d") is not None
+    if pinned_edit:
+        line_rows, line_values, line_frames, uv = build_pin_rows(line, frames=frames, joint_id=joint_id)
+    else:
+        line_rows, line_values, line_frames, uv = build_line_rows(line, frames=frames, joint_id=joint_id)
     chain = limb_chain(joint_id)
     keep_rows, keep_values, kept_frames, pinned = build_preserve_rows(
         source,
@@ -535,6 +690,12 @@ def run_line_edit(
         chain=chain,
         stride=int(preserve_stride),
         margin=int(preserve_margin),
+        seam_pin=int(seam_pin),
+        # A pins edit holds the rest of the body through the range; a drawn line
+        # frees it, because a stroke replaces a passage of movement and a pin
+        # corrects an instant of one. See build_preserve_rows rule 5.
+        hold_body=pinned_edit,
+        owned=[(f, joint_id) for f in line_frames],
     )
     A_world_np, y_world_np = densify(line_rows + keep_rows, line_values + keep_values, frames=frames)
     m = int(A_world_np.shape[0])
@@ -605,9 +766,20 @@ def run_line_edit(
         preserved_mean = float(preserved_err.mean())
     else:
         preserved_max = preserved_mean = 0.0
-    reproj = project(out_world[line_frames, joint_id], line["camera"])
-    line_err = np.abs(reproj - uv.astype(np.float64))
-    edited = np.abs(out_world[line_frames[0]:line_frames[-1] + 1] - source[line_frames[0]:line_frames[-1] + 1])
+    if pinned_edit:
+        # A pin's own self-check is in METRES, not viewport units: it was
+        # authored in world space and there is no lens to project it through.
+        # Reported under the same key so the wrapper and the gates read one
+        # number whichever gesture produced it; `lineErrUnits` says which.
+        line_err = np.abs(out_world[line_frames, joint_id] - uv)
+        err_units = "m"
+    else:
+        reproj = project(out_world[line_frames, joint_id], line["camera"])
+        line_err = np.abs(reproj - uv.astype(np.float64))
+        err_units = "uv"
+    edit_lo = int(line["frameRange"]["start"])
+    edit_hi = int(line["frameRange"]["end"])
+    edited = np.abs(out_world[edit_lo:edit_hi + 1] - source[edit_lo:edit_hi + 1])
 
     meta = {
         "m": m,
@@ -623,6 +795,8 @@ def run_line_edit(
         "cfg": cfg_scale,
         "seed": int(seed),
         "preview": bool(preview),
+        "gesture": "pins" if pinned_edit else "line",
+        "pins": [int(f) for f in line_frames] if pinned_edit else None,
         "rows": {
             "line": len(line_rows),
             "preserve": len(keep_rows),
@@ -631,6 +805,8 @@ def run_line_edit(
         "preserve": {
             "stride": int(preserve_stride),
             "margin": int(preserve_margin),
+            "seamPin": int(seam_pin),
+            "holdBody": bool(pinned_edit),
             "frames": [int(f) for f in kept_frames],
             "pinnedJointFrames": len(pinned),
             "freeChain": sorted(int(j) for j in chain),
@@ -644,6 +820,7 @@ def run_line_edit(
             # own 2D units.
             "lineMaxReprojErr": float(line_err.max()),
             "lineMeanReprojErr": float(line_err.mean()),
+            "lineErrUnits": err_units,
             # Proof the edit is not a no-op: the range genuinely moved.
             "editedMaxAbsDiffM": float(edited.max()),
         },
@@ -771,6 +948,7 @@ def serve(args) -> int:
                     ridge=float(request.get("ridge", 1e-6)),
                     preserve_stride=int(request.get("preserveStride", 2)),
                     preserve_margin=int(request.get("preserveMargin", 20)),
+                    seam_pin=int(request.get("seamPin", 2)),
                     seed=int(request.get("seed", 0)),
                     cfg=float(request.get("cfg", 3.0)),
                     preview=preview,
@@ -811,6 +989,9 @@ def main() -> int:
     ap.add_argument("--preserve-stride", type=int, default=2, help="pin every Nth frame outside the edit range")
     ap.add_argument("--preserve-margin", type=int, default=20,
                     help="frames either side of the edit range where the edited limb is left free (20 = 1 s)")
+    ap.add_argument("--seam-pin", type=int, default=2,
+                    help="pin the edit range's own outermost N frames to the source, whole body "
+                         "(0 = off; the app guarantees the curve's ends sit on the source trail)")
     ap.add_argument("--seed", type=int, default=0, help="matches demo/run.py's default")
     ap.add_argument("--cfg", type=float, default=3.0, help="classifier-free guidance scale")
     ap.add_argument("--repo", default=os.environ.get("CCLAY_PROJFLOW_REPO", "/home/yun/projflow-scout/repo"))
@@ -859,6 +1040,7 @@ def main() -> int:
         ridge=float(args.ridge),
         preserve_stride=int(args.preserve_stride),
         preserve_margin=int(args.preserve_margin),
+        seam_pin=int(args.seam_pin),
         seed=int(args.seed),
         cfg=float(args.cfg),
         preview=bool(args.preview),

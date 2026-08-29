@@ -22,7 +22,7 @@ import { fetchFootageBlob, footageSummary, isPlatformPageUrl, normalizeSourceUrl
 import { bakeExtractedTake, bakePoseFrame, collectLandmarkTrack, createPoseDetector, imageFrames, sampleTimes, videoFrames } from "./pose-extract/index.js";
 import { applyMotionFrame, captureArdyRoot, restorePlaybackBones, snapshotPlaybackBones } from "./ardy/playback.js";
 import { PIN_BLOCKED, planPosePin } from "./ardy/pose-pin.js";
-import { TRAIL_EFFECTOR_JOINTS, TRAIL_TRACKS, applyTrailFalloffDelta, falloffWeight, jointTrailPoints, nearestFrameToRay, trailEditRange, worldDeltaToClip } from "./motion-trail.js";
+import { TRAIL_EFFECTOR_JOINTS, TRAIL_TRACKS, applyTrailFalloffDelta, falloffWeight, jointTrailPoints, nearestFrameToRay, trailEditRange, worldDeltaToClip, worldPointToClip } from "./motion-trail.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
 import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint, toSceneRootOffset, PATH_LIMITS } from "./ardy/waypoints.js";
@@ -54,7 +54,12 @@ import {
 	isLineEditUnsupported,
 	nearestCurvePoint,
 	projectTrailCurve,
-	strokeToCurve,
+	projectPointC6,
+	drawStrokeEdit,
+	unprojectDeltaC6,
+	pinsFrameRange,
+	upsertPin,
+	LINE_EDIT_PINS_MAX,
 	validateLineEdit,
 } from "./line-edit.js";
 import {
@@ -726,6 +731,7 @@ const LINE_EDIT_REFUSALS = {
 	points: ["Pull a longer stretch of the path — a single point is not a path", "궤적을 좀 더 길게 잡아당겨 주세요 — 점 하나는 경로가 아니에요"],
 	camera: ["The camera could not be captured — nudge the view and try again", "카메라를 캡처하지 못했어요 — 뷰를 조금 움직인 뒤 다시 시도하세요"],
 	prompt: ["The motion prompt is not usable for a line edit", "모션 프롬프트를 라인 편집에 쓸 수 없어요"],
+	pins: ["The pinned moments could not be sent — try clearing them and pinning again", "찍은 순간을 보낼 수 없어요 — 지우고 다시 찍어 보세요"],
 	shape: ["The line edit could not be assembled", "라인 편집을 구성하지 못했어요"],
 };
 /** Why curveToPoints2d refused. Same shape, different stage: these are about
@@ -4614,16 +4620,21 @@ globalThis.playMode = centerTab === "play";
 	 * the joint's existing path is projected onto the viewport and the user
 	 * grabs a point on it and pulls, with a Gaussian falloff carrying the
 	 * neighbours along. A press that lands nowhere near the path instead DRAWS
-	 * one freehand (strokeToCurve), because a trail can project into a few
+	 * one freehand (drawStrokeEdit), because a trail can project into a few
 	 * screen pixels — a person backing up and falling barely moves the hand
 	 * across the image — and with nothing grabbable the whole mode reads as
 	 * dead. Drawing is not the old freehand tool coming back, though: that one
 	 * popped the take 8x its own frame delta at the range edges because the
-	 * joint teleported to wherever the stroke began (gate GP2). Both gestures
-	 * here leave the range's outer PINNED_CURVE_ENDS frames on the original
-	 * trajectory by construction, which is what collapses that to 1.1x, and both
-	 * produce the SAME dense frame-indexed curve, so everything downstream
-	 * (preview, undo, camera drift, the wire payload) cannot tell them apart.
+	 * joint teleported to wherever the stroke began (gate GP2). A stroke here is
+	 * MATCHED BACK ONTO THE TRAIL — its endpoints pick the frames it was drawn
+	 * over, and those frames become the edit's range — so it reroutes the stretch
+	 * of path it covers, replays it with that stretch's own velocity profile, and
+	 * eases out of the original trajectory at both seams. See the block comment
+	 * above matchStrokeWindow in line-edit.js for why all three are one decision.
+	 * A drag pins its ends instead (its Gaussian already eases), and both
+	 * gestures produce the SAME dense frame-indexed curve, so everything
+	 * downstream (preview, undo, camera drift, the wire payload) cannot tell them
+	 * apart — except that a drawn curve also carries the `frameRange` it chose.
 	 *
 	 * `lineCurve` is non-null EXACTLY WHEN THERE IS AN EDIT, and that invariant
 	 * is the whole camera policy in one sentence. Null means the curve is
@@ -4647,6 +4658,30 @@ globalThis.playMode = centerTab === "play";
 	// time so loading a different clip cannot leave a stale range behind.
 	const [lineRange, setLineRange] = useState(null);
 	const [lineCurve, setLineCurve] = useState(null);
+	/* ------------------------------ 3D pins --------------------------------
+	 * The THIRD gesture: scrub to a moment, grab the joint where it is, put it
+	 * where it should be. Entries are `{ frame, position: [x, y, z] }` in the
+	 * TAKE's own clip space (worldPointToClip converts on commit), ascending by
+	 * frame, capped at LINE_EDIT_PINS_MAX — exactly the C6 `pins3d` payload, so
+	 * the panel state and the wire object are the same value.
+	 *
+	 * ONE EDIT IS ONE GESTURE (v1). A pin clears the curve and a stroke or drag
+	 * clears the pins, because a 2D path and a set of 3D points are two answers
+	 * to "where does this joint go" and the box would be asked to average them.
+	 * Combining them is a real feature (pin the extremes, draw the arc between)
+	 * and it needs a story about which one owns a frame they both name — that
+	 * story is not written, so the modes are exclusive and say so.
+	 *
+	 * `linePinMode` is the stage's gesture selector rather than a modifier key:
+	 * pressing on the joint's own marker is ALSO how a curve drag starts, so the
+	 * two cannot share a press, and a modal toggle beside the joint picker is
+	 * discoverable in a way a chord is not. */
+	const [linePins, setLinePins] = useState([]);
+	const [linePinMode, setLinePinMode] = useState(false);
+	// The in-flight pin drag. Same no-re-render discipline as lineDragRef: a
+	// pointermove writes the ref and repaints the overlay, only pointerup
+	// commits to state.
+	const linePinDragRef = useRef(null);
 	const [lineRadius, setLineRadius] = useState(DRAG_RADIUS_DEFAULT);
 	const lineDragRef = useRef(null);
 	// The in-flight freehand STROKE, when the press missed the curve. Same
@@ -4654,6 +4689,14 @@ globalThis.playMode = centerTab === "play";
 	// repaints the overlay, and only pointerup turns the stroke into a curve (via
 	// strokeToCurve) and commits it through the drag's own pipeline.
 	const lineDrawRef = useRef(null);
+	// The range a DRAW just auto-matched into the panel. "Switching the range
+	// drops the pull in hand" is the right rule for a range the ARTIST typed —
+	// the pull was authored against a trajectory that is no longer on screen —
+	// but a drawn stroke authors its range and its curve in the same gesture,
+	// and letting that rule fire on the range the draw itself installed would
+	// wipe the drawing on commit and cancel its preview. One-shot: the effect
+	// consumes it.
+	const lineAutoRangeRef = useRef(null);
 	const lineLiveRef = useRef(null);
 	const lineHoverRef = useRef(null);
 	// Undo stack for committed pulls: each entry is the WHOLE lineCurve value
@@ -8021,12 +8064,86 @@ function resizePromptClip(id, edge, rawFrame) {
 		return { startFrame: start, endFrame: end };
 	}, [lineRange, lineClipFrames]);
 
+	/* ---------------------------- the pins edit -----------------------------
+	 * A pins edit is derived, not stored: the pins ARE the payload and the range
+	 * follows from them (pinsFrameRange), so there is no second copy of either
+	 * to keep in sync. `lineEditPayload` is what every downstream call site
+	 * takes — Generate, the preview, the request builder — and it is the one
+	 * place the two gestures meet. */
+	const linePinRange = useMemo(
+		() => (linePins.length ? pinsFrameRange(linePins, lineClipFrames) : null),
+		[linePins, lineClipFrames],
+	);
+	const linePinEdit = useMemo(
+		() => (linePins.length && linePinRange ? { pins: linePins, frameRange: linePinRange } : null),
+		[linePins, linePinRange],
+	);
+	/** The edit in hand, whichever gesture made it. Null means "nothing to
+	 * send", which is exactly what the Generate gate asks. */
+	const lineEditPayload = lineCurve ?? linePinEdit;
+
+	/** The joint's WORLD position at one frame, from the same trail sampler the
+	 * curve is projected from — so a pin and the curve can never disagree about
+	 * where the joint is. Null when there is no take, no trail or no such
+	 * frame. */
+	function lineJointWorldAt(frame) {
+		const jointName = TRAIL_EFFECTOR_JOINTS[lineTrack];
+		if (!motion || !jointName) return null;
+		const trail = jointTrailPoints(motion, jointName, { baseY: activeChar.y ?? 0, scale: activeChar.scale ?? 1 });
+		const index = Math.max(0, Math.min(Math.trunc(frame) || 0, motion.frames - 1));
+		if (!trail || index * 3 + 2 >= trail.length) return null;
+		return [trail[index * 3], trail[index * 3 + 1], trail[index * 3 + 2]];
+	}
+
+	/** Every pin as a WORLD point, for the overlay. Pins are stored in clip
+	 * space (that is what the wire wants); drawing them means undoing the
+	 * conversion, which is jointTrailPoints' own transform applied to one
+	 * point. Kept here rather than storing both spellings: two stored copies of
+	 * a coordinate is how a pin ends up drawn somewhere it was not placed. */
+	function linePinWorld(pin) {
+		if (!motion) return null;
+		const basis = { baseY: activeChar.y ?? 0, scale: activeChar.scale ?? 1 };
+		// Forward transform, mirroring motion-trail's jointTrailPoints.
+		const clipToWorld = (p) => {
+			const radians = ((Number.isFinite(motion.rotationDeg) ? motion.rotationDeg : 0) * Math.PI) / 180;
+			const cos = Math.cos(radians);
+			const sin = Math.sin(radians);
+			const anchorFrame = Math.max(0, Math.min(motion.anchorFrame || 0, Math.max(0, motion.frames - 1)));
+			const rootX = motion.posedJoints?.[anchorFrame * 27 * 3] ?? 0;
+			const rootZ = motion.posedJoints?.[anchorFrame * 27 * 3 + 2] ?? 0;
+			const anchorX = Number.isFinite(motion.anchorX) ? motion.anchorX : 0;
+			const anchorZ = Number.isFinite(motion.anchorZ) ? motion.anchorZ : 0;
+			const dx = p[0] - rootX;
+			const dz = p[2] - rootZ;
+			return [
+				anchorX + (dx * cos + dz * sin) * basis.scale,
+				basis.baseY + p[1] * basis.scale,
+				anchorZ + (-dx * sin + dz * cos) * basis.scale,
+			];
+		};
+		return clipToWorld(pin.position);
+	}
+
+	/** Drop the pins, and say so. Called when a stroke or a drag commits — the
+	 * two gestures are exclusive, and a silently discarded pin is worse than a
+	 * refused one. */
+	function clearLinePins({ toast = true } = {}) {
+		if (!linePins.length) return;
+		setLinePins([]);
+		if (toast) {
+			setToast(ko(
+				"Pins cleared — one edit is one gesture, and this one is now the path",
+				"찍은 순간을 지웠어요 — 한 번의 편집은 한 가지 방식이라, 지금은 궤적 편집이에요",
+			));
+		}
+	}
+
 	/** Has the user pulled anything yet? The Generate gate, and the reason the
 	 * panel can say "pull first" instead of shipping a no-op edit. It is just
 	 * the state's existence: pointerup installs a curve only when the pull
 	 * actually moved something and clears it otherwise, so "there is a curve
 	 * object" and "there is an edit" are the same fact. */
-	const lineCurveDirty = !!lineCurve;
+	const lineCurveDirty = !!lineEditPayload;
 	/** Frames of the range whose joint has no image (behind the lens or out of
 	 * frame). Those points cannot be grabbed and are dropped from the payload,
 	 * so the count is worth showing rather than leaving as a mystery gap. */
@@ -8041,6 +8158,14 @@ function resizePromptClip(id, edge, rawFrame) {
 		() => (lineCurve ? Math.min(MAX_LINE_POINTS, lineCurve.original.length - lineCurveHidden) : 0),
 		[lineCurve, lineCurveHidden],
 	);
+	/** The frames the edit in hand actually covers. A DRAWN curve carries the
+	 * window its stroke matched (which is also what goes on the wire); a dragged
+	 * one has always covered the panel's range. Shown rather than left implicit
+	 * because auto-ranging means the artist did not choose these numbers and
+	 * deserves to see what the stroke was read as. endFrame is exclusive on the
+	 * wire and inclusive to a human, hence the -1. */
+	const lineEditFrom = lineCurve?.frameRange?.startFrame ?? lineEditRange?.startFrame ?? 0;
+	const lineEditTo = (lineCurve?.frameRange?.endFrame ?? lineEditRange?.endFrame ?? 0) - 1;
 
 	/** Change the influence radius. A live drag is re-derived from its snapshot
 	 * rather than left showing the old falloff, which is what makes the slider
@@ -8120,14 +8245,16 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * animation frame, and that is exactly what lets the path FOLLOW the camera
 	 * instead of fighting it. A few hundred pinhole projections is nothing
 	 * beside the WebGL frame it is drawn over. */
-	function projectLineCurve(pane) {
-		if (!pane || !motion || !lineEditRange) return null;
-		const camera = captureLineCamera(pane);
+	function projectLineCurve(pane, { camera: reuseCamera = null, frameRange = null } = {}) {
+		if (!pane || !motion) return null;
+		const range = frameRange ?? lineEditRange;
+		if (!range) return null;
+		const camera = reuseCamera ?? captureLineCamera(pane);
 		const jointName = TRAIL_EFFECTOR_JOINTS[lineTrack];
 		if (!camera || !jointName) return null;
 		const trail = jointTrailPoints(motion, jointName, { baseY: activeChar.y ?? 0, scale: activeChar.scale ?? 1 });
 		if (!trail) return null;
-		const curve = projectTrailCurve({ trail, frameRange: lineEditRange, camera });
+		const curve = projectTrailCurve({ trail, frameRange: range, camera });
 		if (!curve || curve.length < MIN_LINE_POINTS) return null;
 		return { camera, curve };
 	}
@@ -8314,6 +8441,75 @@ function resizePromptClip(id, edge, rawFrame) {
 			ctx.fill();
 		}
 
+		// (4b) THE PINS, and — in pin mode — the joint's own handle at the
+		// playhead. Drawn in the pose-studio's effector green rather than the
+		// path's yellow, because a pin is a different KIND of statement: the path
+		// says "go this way", a pin says "be exactly here at this instant". Each
+		// pin carries a leader line back to where the take put the joint at that
+		// frame, which is the only honest picture of what was asked for; without
+		// it a pin is just a dot floating in space.
+		if (linePinMode || linePins.length) {
+			const pinDrag = linePinDragRef.current;
+			// ONE capture for the whole block: pins are world-space, so unlike the
+			// curve they are re-projected through the LIVE lens on every repaint
+			// and an orbit carries them along instead of discarding them. That is
+			// the camera policy difference between the two gestures, in one line.
+			const pinCam = pinDrag?.camera ?? captureLineCamera(pane);
+			const marks = [];
+			for (const pin of linePins) {
+				const world = pinDrag && pinDrag.frame === pin.frame ? pinDrag.world : linePinWorld(pin);
+				if (world) marks.push({ frame: pin.frame, world, placed: true });
+			}
+			if (pinDrag && !linePins.some((pin) => pin.frame === pinDrag.frame)) {
+				marks.push({ frame: pinDrag.frame, world: pinDrag.world, placed: false });
+			}
+			// The grabbable handle: the joint where the take currently puts it at
+			// the playhead. Only in pin mode, and only when that frame is not
+			// already pinned — otherwise the pin IS the handle.
+			const playhead = Math.max(0, Math.min(Math.trunc(tlFrame) || 0, Math.max(0, lineClipFrames - 1)));
+			if (linePinMode && !pinDrag && !linePins.some((pin) => pin.frame === playhead)) {
+				const here = lineJointWorldAt(playhead);
+				if (here) marks.push({ frame: playhead, world: here, placed: false, handle: true });
+			}
+			for (const mark of pinCam ? marks : []) {
+				const uv = projectPointC6(pinCam, mark.world[0], mark.world[1], mark.world[2]);
+				if (!uv) continue;
+				const px = ox + uv[0] * pane.rect.w;
+				const py = oy + uv[1] * pane.rect.h;
+				if (mark.placed) {
+					const origin = lineJointWorldAt(mark.frame);
+					const originUv = origin ? projectPointC6(pinCam, origin[0], origin[1], origin[2]) : null;
+					if (originUv) {
+						ctx.save();
+						ctx.setLineDash([4, 4]);
+						ctx.strokeStyle = "rgba(120, 255, 190, .55)";
+						ctx.lineWidth = 1.5;
+						ctx.beginPath();
+						ctx.moveTo(ox + originUv[0] * pane.rect.w, oy + originUv[1] * pane.rect.h);
+						ctx.lineTo(px, py);
+						ctx.stroke();
+						ctx.restore();
+					}
+				}
+				const radius = mark.handle ? 6 : 7;
+				ctx.fillStyle = "rgba(0, 30, 20, .85)";
+				ctx.beginPath();
+				ctx.arc(px, py, radius + 2, 0, Math.PI * 2);
+				ctx.fill();
+				ctx.fillStyle = mark.placed ? "#5cffb0" : "rgba(92, 255, 176, .5)";
+				ctx.beginPath();
+				ctx.arc(px, py, radius, 0, Math.PI * 2);
+				ctx.fill();
+				if (mark.placed) {
+					ctx.fillStyle = "rgba(0, 30, 20, .9)";
+					ctx.font = "600 10px system-ui, sans-serif";
+					ctx.textAlign = "center";
+					ctx.textBaseline = "middle";
+					ctx.fillText(String(mark.frame), px, py);
+				}
+			}
+		}
+
 		// (5) The stroke under the finger, while one is being drawn. Same family
 		// as the hero curve — dark halo, warm core — but PALE and dashed rather
 		// than the solid yellow, because it is not the curve yet: it is a shape
@@ -8452,8 +8648,9 @@ function resizePromptClip(id, edge, rawFrame) {
 	 *
 	 *   YES -> a PULL. The curve is snapshotted and deformed under the finger.
 	 *   NO  -> a DRAW. The press starts a freehand stroke on empty space, which
-	 *          on release becomes the interior of the same curve (strokeToCurve)
-	 *          and commits through the identical pipeline. This used to be the
+	 *          on release picks its own frame window and becomes the same kind of
+	 *          curve (drawStrokeEdit), committed through the identical pipeline.
+	 *          This used to be the
 	 *          do-nothing path, and on a take whose trail projects into a few
 	 *          pixels that made the mode feel broken: nothing to grab, nothing
 	 *          happens, no way in.
@@ -8483,6 +8680,17 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (!(event.target instanceof HTMLCanvasElement)) return;
 		const pane = lineEditPane();
 		if (!pane) return;
+		// PIN MODE takes the press before the curve does: in this mode the marker
+		// under the pointer is the joint AT THE PLAYHEAD, not a point of a path,
+		// and the two gestures start on the same pixels.
+		if (linePinMode) {
+			if (beginLinePinDrag(event, pane)) return;
+			// A press that missed the handle in pin mode does nothing rather than
+			// falling through to a stroke: the artist asked for pins, and a
+			// surprise reroute is exactly the "I did not mean that" the redesign
+			// is about.
+			return;
+		}
 		const source = lineGrabSource(pane);
 		if (!source) return;
 		const [u, v] = lineUvFromPointer(pane, event);
@@ -8542,7 +8750,9 @@ function resizePromptClip(id, edge, rawFrame) {
 			// pull commits with the lens it was authored through and records
 			// what it replaced, which is what Ctrl/Cmd+Z restores.
 			const changed = !curvesEqual(drag.live, drag.snapshot);
-			if (changed) lineUndoRef.current.push(drag.prev ?? null);
+			// ONE EDIT IS ONE GESTURE: a real pull makes this a path edit, so any
+			// pins in hand are dropped (with a toast, never silently).
+			if (changed) { clearLinePins(); lineUndoRef.current.push(drag.prev ?? null); }
 			const committed = changed
 				? { camera: drag.camera, original: drag.snapshot, edited: drag.live }
 				: (drag.prev ?? null);
@@ -8559,8 +8769,15 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 
 	/** The DRAW half: a press on empty space collects a freehand stroke and, on
-	 * release, maps it onto the range by arc length (strokeToCurve) as the new
-	 * interior of the curve.
+	 * release, hands it to drawStrokeEdit, which decides WHICH FRAMES the stroke
+	 * was drawn over, replays it with those frames' own timing, and eases it into
+	 * the original trajectory at both ends.
+	 *
+	 * The commit below therefore does one thing the drag's does not: it writes
+	 * the matched window back into the panel's range inputs, so "frames 30-66"
+	 * appears filled in without anyone having typed a number. That is the entire
+	 * fix for the complaint that a short hook became an eight-second crawl — the
+	 * range used to default to the whole clip and nobody ever narrowed it.
 	 *
 	 * Why drawing exists beside dragging at all: the grab is a hit test against
 	 * the joint's PROJECTED trail, and on a take where the joint barely moves
@@ -8585,6 +8802,17 @@ function resizePromptClip(id, edge, rawFrame) {
 			prev: lineCurve,
 			camera: source.camera,
 			snapshot: source.curve,
+			// THE WHOLE CLIP'S trail, through the SAME lens the stroke is being
+			// drawn with, captured once at press. This is what the stroke's
+			// endpoints are matched against on release (redesign A), and it has to
+			// be the ORIGINAL trail rather than whatever is currently edited so
+			// that redrawing re-matches against a fixed reference instead of
+			// walking away from it one stroke at a time. Capturing at press rather
+			// than at release means a camera that drifts mid-stroke cannot leave
+			// the match and the stroke measured through different lenses.
+			fullCurve: lineClipFrames > 1
+				? projectLineCurve(pane, { camera: source.camera, frameRange: { startFrame: 0, endFrame: lineClipFrames } })?.curve ?? null
+				: null,
 			// Pixel size of the pane the stroke is being drawn on, captured once:
 			// the "is this a stroke or a click?" threshold is in CSS pixels, where
 			// the hand drew it, and uv distance is anisotropic so it cannot be
@@ -8622,18 +8850,42 @@ function resizePromptClip(id, edge, rawFrame) {
 			// A CLICK IS NOT A STROKE, and a click must change nothing — including
 			// an edit that is already there. Same rule the drag's commit enforces
 			// with curvesEqual; here the test is the length of what was drawn.
-			const drawn = draw.points.length >= DRAW_MIN_STROKE_POINTS && draw.lengthPx >= DRAW_MIN_STROKE_PX
-				? strokeToCurve(draw.points, draw.snapshot)
+			const edit = draw.points.length >= DRAW_MIN_STROKE_POINTS && draw.lengthPx >= DRAW_MIN_STROKE_PX
+				? drawStrokeEdit(draw.points, {
+					fullCurve: draw.fullCurve,
+					fallbackCurve: draw.snapshot,
+					fallbackRange: lineEditRange,
+					paneW: draw.paneW,
+					paneH: draw.paneH,
+					clipFrames: lineClipFrames,
+				})
 				: null;
-			if (!drawn) {
+			if (!edit) {
 				paintLineOverlay();
 				return;
 			}
-			const changed = !curvesEqual(drawn, draw.snapshot);
-			if (changed) lineUndoRef.current.push(draw.prev ?? null);
+			const drawn = edit.curve;
+			const changed = !curvesEqual(drawn, edit.base);
+			if (changed) { clearLinePins(); lineUndoRef.current.push(draw.prev ?? null); }
+			// The matched window rides ON the committed curve, not only in
+			// `lineRange` state. setLineRange is asynchronous and the preview below
+			// fires from a timeout that closed over THIS render's lineEditRange, so
+			// a request built from state alone would ship the old range with the
+			// new curve — the exact mismatch that would splice a re-routed stretch
+			// into the wrong frames. buildLineEditRequest reads curve.frameRange.
 			const committed = changed
-				? { camera: draw.camera, original: draw.snapshot, edited: drawn }
+				? { camera: draw.camera, original: edit.base, edited: drawn, frameRange: edit.frameRange ?? lineEditRange }
 				: (draw.prev ?? null);
+			// PANEL FEEDBACK (redesign D): the numbers the artist never typed show
+			// up filled in, so "frames 30-66" is visible confirmation of what the
+			// stroke was read as. Only on a real match — a fallback draw is still
+			// in whatever range the panel already showed.
+			if (changed && edit.matched && edit.frameRange && (
+				edit.frameRange.startFrame !== lineEditRange?.startFrame || edit.frameRange.endFrame !== lineEditRange?.endFrame
+			)) {
+				lineAutoRangeRef.current = edit.frameRange;
+				setLineRange(edit.frameRange);
+			}
 			setLineCurve(committed);
 			if (changed) scheduleLinePreview(committed);
 			paintLineOverlay();
@@ -8644,12 +8896,138 @@ function resizePromptClip(id, edge, rawFrame) {
 		paintLineOverlay();
 	}
 
+	/** THE PIN GESTURE (순간 찍기): grab the joint at the playhead and put it
+	 * where it should be.
+	 *
+	 * Returns true when the press was taken. The handle is the joint's own
+	 * position at the CURRENT FRAME — the artist scrubbed there, so that is the
+	 * moment they are talking about — plus any pin already placed, which can be
+	 * re-grabbed to adjust it (grabbing one moves the playhead to its frame, so
+	 * the viewport shows the pose being pinned).
+	 *
+	 * The 2D-to-3D step is unprojectDeltaC6: the joint slides in the image plane
+	 * at its own depth, which is the effector-drag mechanic the pose studio's
+	 * gizmo uses and the only reading of a screen drag that does not invent a
+	 * depth the artist could not see. THE DEVIATION IS DELIBERATE and worth
+	 * naming: this is not posestudio's TransformControls gizmo, because that one
+	 * requires ikMode, which is mutually exclusive with this mode. What is
+	 * reused is the MECHANIC, not the widget.
+	 *
+	 * On release the world point is converted to the take's own clip space
+	 * (worldPointToClip) and stored — pins go on the wire in the space the npz
+	 * is written in, which is the only space a "within 2 cm of the target" claim
+	 * can be checked in. */
+	function beginLinePinDrag(event, pane) {
+		const camera = captureLineCamera(pane);
+		if (!camera) return false;
+		const frame = Math.max(0, Math.min(Math.trunc(tlFrame) || 0, Math.max(0, lineClipFrames - 1)));
+		const [u, v] = lineUvFromPointer(pane, event);
+		const reach = (candidate) => {
+			const uv = projectPointC6(camera, candidate.world[0], candidate.world[1], candidate.world[2]);
+			if (!uv) return null;
+			const dist = Math.hypot((uv[0] - u) * pane.rect.w, (uv[1] - v) * pane.rect.h);
+			return dist > CURVE_GRAB_RADIUS_PX * 2 ? null : { ...candidate, dist };
+		};
+		// THE PLAYHEAD WINS TIES, and not by accident. The obvious rule — nearest
+		// candidate in pixels — was measured wrong on the take this mode exists
+		// for: the head's whole trail is ~100 px, so a pin already placed at frame
+		// 90 sits within the grab radius of the joint at frame 112, and scrubbing
+		// forward to add a second pin instead re-grabbed the first one and dragged
+		// the playhead back to it. The artist scrubbed somewhere on purpose; that
+		// moment is what the press means. Existing pins are only considered when
+		// the playhead's own handle is out of reach.
+		const here = lineJointWorldAt(frame);
+		let best = here && !linePins.some((pin) => pin.frame === frame)
+			? reach({ frame, world: here })
+			: null;
+		if (!best) {
+			for (const pin of linePins) {
+				const world = linePinWorld(pin);
+				if (!world) continue;
+				const hit = reach({ frame: pin.frame, world });
+				if (hit && (!best || hit.dist < best.dist)) best = hit;
+			}
+		}
+		// A press on the joint at a frame that is ALREADY pinned re-places that
+		// pin, which is the same "the second gesture wins" rule upsertPin applies.
+		if (!best && here) best = reach({ frame, world: here });
+		if (!best) return false;
+		event.preventDefault();
+		event.stopPropagation();
+		const stage = stageRef.current;
+		if (stage) stage.dataset.lineGrab = "pin";
+		// Re-grabbing an existing pin moves the playhead to it, so the body on
+		// screen is the pose the pin belongs to rather than whatever frame the
+		// timeline happened to be parked on.
+		if (best.frame !== frame) setTlFrame(best.frame);
+		linePinDragRef.current = {
+			frame: best.frame,
+			camera,
+			origin: best.world,
+			world: best.world,
+			u0: u,
+			v0: v,
+			moved: false,
+		};
+		const onMove = (moveEvent) => {
+			const drag = linePinDragRef.current;
+			const livePane = lineEditPane();
+			if (!drag || !livePane) return;
+			const [mu, mv] = lineUvFromPointer(livePane, moveEvent);
+			if (!Number.isFinite(mu) || !Number.isFinite(mv)) return;
+			const delta = unprojectDeltaC6(drag.camera, drag.origin, mu - drag.u0, mv - drag.v0);
+			if (!delta) return;
+			drag.world = [drag.origin[0] + delta[0], drag.origin[1] + delta[1], drag.origin[2] + delta[2]];
+			// Sub-pixel tremor is not a placement, exactly as a few pixels of
+			// wobble is not a stroke (DRAW_MIN_STROKE_PX).
+			drag.moved = Math.hypot((mu - drag.u0) * livePane.rect.w, (mv - drag.v0) * livePane.rect.h) >= DRAW_MIN_STROKE_PX;
+			paintLineOverlay();
+		};
+		const onUp = () => {
+			window.removeEventListener("pointermove", onMove);
+			window.removeEventListener("pointerup", onUp);
+			window.removeEventListener("pointercancel", onUp);
+			const drag = linePinDragRef.current;
+			linePinDragRef.current = null;
+			const endStage = stageRef.current;
+			if (endStage) delete endStage.dataset.lineGrab;
+			if (!drag || !drag.moved) { paintLineOverlay(); return; }
+			const clip = worldPointToClip(motion, { x: drag.world[0], y: drag.world[1], z: drag.world[2] }, {
+				baseY: activeChar.y ?? 0,
+				scale: activeChar.scale ?? 1,
+			});
+			const next = upsertPin(linePins, { frame: drag.frame, position: [clip.x, clip.y, clip.z] });
+			if (next === linePins) { paintLineOverlay(); return; }
+			// A pin and a curve cannot coexist (see the linePins comment). The
+			// curve goes on the undo stack first, so Ctrl/Cmd+Z brings it back.
+			if (lineCurve) {
+				lineUndoRef.current.push(lineCurve);
+				setLineCurve(null);
+			}
+			const range = pinsFrameRange(next, lineClipFrames);
+			if (range) {
+				lineAutoRangeRef.current = range;
+				setLineRange(range);
+			}
+			setLinePins(next);
+			// Same debounce, same session seed, same supersede rule as a stroke:
+			// the preview loop does not care which gesture asked for it.
+			if (range) scheduleLinePreview({ pins: next, frameRange: range });
+			paintLineOverlay();
+		};
+		window.addEventListener("pointermove", onMove);
+		window.addEventListener("pointerup", onUp);
+		window.addEventListener("pointercancel", onUp);
+		paintLineOverlay();
+		return true;
+	}
+
 	/** Bubble-phase hover: the cursor and the swollen marker, nothing else. It
 	 * never stops the event and never writes state, so it cannot interfere with
 	 * the orbit the same pointermove is probably driving. */
 	function onLineStageHover(event) {
 		const stage = stageRef.current;
-		if (!stage || lineDragRef.current || lineDrawRef.current) return;
+		if (!stage || lineDragRef.current || lineDrawRef.current || linePinDragRef.current) return;
 		const pane = event.target instanceof HTMLCanvasElement ? lineEditPane() : null;
 		const curve = pane ? lineHoverCurve() : null;
 		let hit = null;
@@ -8664,7 +9042,7 @@ function resizePromptClip(id, edge, rawFrame) {
 
 	function onLineStageHoverEnd() {
 		const stage = stageRef.current;
-		if (lineDragRef.current || lineDrawRef.current) return;
+		if (lineDragRef.current || lineDrawRef.current || linePinDragRef.current) return;
 		lineHoverRef.current = null;
 		if (stage) delete stage.dataset.lineGrab;
 	}
@@ -8674,6 +9052,8 @@ function resizePromptClip(id, edge, rawFrame) {
 	function resetLineCurve() {
 		lineDragRef.current = null;
 		lineDrawRef.current = null;
+		linePinDragRef.current = null;
+		setLinePins([]);
 		// The button is itself undoable: resetting a curve you spent five pulls
 		// on should not be a cliff.
 		if (lineCurve) lineUndoRef.current.push(lineCurve);
@@ -8692,6 +9072,9 @@ function resizePromptClip(id, edge, rawFrame) {
 	function clearLineEdit() {
 		lineDragRef.current = null;
 		lineDrawRef.current = null;
+		linePinDragRef.current = null;
+		setLinePins([]);
+		setLinePinMode(false);
 		lineUndoRef.current = [];
 		cancelLinePreview();
 		linePreviewSeedRef.current = null;
@@ -8703,6 +9086,10 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (previous === undefined) return false;
 		lineDragRef.current = null;
 		lineDrawRef.current = null;
+		linePinDragRef.current = null;
+		// Undo restores a CURVE, so it also un-does whatever pins replaced it —
+		// the two are exclusive and the stack only ever stores curves.
+		setLinePins([]);
 		cancelLinePreview();
 		setLineCurve(previous);
 		return true;
@@ -8747,6 +9134,27 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (!curve) {
 			return refuse(["Pull the path first — grab a dot on it and drag", "커브를 먼저 잡아당겨 주세요"]);
 		}
+		// PINS take the other branch of C6 entirely: no points2d, no camera. The
+		// prompt and the seed rule below are shared, because those belong to the
+		// RUN, not to the gesture.
+		if (curve.pins) {
+			const prompt = ((linePreviewSource?.prompt ?? motion?.prompt) || "").trim() || "A person continues the motion naturally.";
+			const lineEdit = {
+				sourceMotion: sourceUrl,
+				track: lineTrack,
+				frameRange: curve.frameRange,
+				pins3d: curve.pins.map((pin) => ({ frame: pin.frame, position: [...pin.position] })),
+				prompt,
+			};
+			const refusal = validateLineEdit(lineEdit, { clipFrames: lineClipFrames });
+			if (refusal) return refuse(LINE_EDIT_REFUSALS[refusal.code] ?? LINE_EDIT_REFUSALS.shape);
+			const body = { prompt, duration: lineClipFrames / TIMELINE_FPS, posePin: false, lineEdit };
+			const seed = lineSessionSeed();
+			if (seed === null) return { ok: false, message: "" };
+			body.seed = seed;
+			if (preview) lineEdit.preview = true;
+			return { ok: true, body, lineEdit, seed };
+		}
 		const built = curveToPoints2d(curve.edited);
 		if (built.error) return refuse(LINE_CURVE_REFUSALS[built.error] ?? LINE_EDIT_REFUSALS.shape);
 		// The take's own prompt is the text condition: a line edit changes WHERE
@@ -8757,7 +9165,13 @@ function resizePromptClip(id, edge, rawFrame) {
 		const lineEdit = {
 			sourceMotion: sourceUrl,
 			track: lineTrack,
-			frameRange: lineEditRange,
+			// THE CURVE'S OWN RANGE FIRST. A drawn stroke picks its window from
+			// where it was drawn (drawStrokeEdit), and that window is stamped on
+			// the committed curve precisely so a request can never pair one
+			// gesture's points with another render's range — `lineEditRange` is
+			// re-derived from state that a just-committed draw has not landed in
+			// yet. A dragged curve carries no range and falls through to the panel.
+			frameRange: curve.frameRange ?? lineEditRange,
 			points2d: built.points2d,
 			camera: curve.camera,
 			prompt,
@@ -8949,8 +9363,8 @@ function resizePromptClip(id, edge, rawFrame) {
 		clearLineEdit();
 		setLineEditMode(true);
 		setToast(ko(
-			"Path editing on — grab a dot on the joint's path and pull it; the view still orbits normally",
-			"궤적 편집 켜짐 — 관절 궤적 위의 점을 잡아 끌어 보세요. 시점은 평소처럼 돌릴 수 있어요",
+			"Path editing on — draw along the path to reroute that section, or grab a dot and pull; the view still orbits normally",
+			"궤적 편집 켜짐 — 궤적을 따라 그리면 그 구간만 새로 지나가고, 점을 잡아 끌 수도 있어요. 시점은 평소처럼 돌릴 수 있어요",
 		));
 	}
 
@@ -8970,10 +9384,21 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * have no pinhole camera at all and are not worth nagging about. */
 	useEffect(() => {
 		if (!lineEditMode || !motion) return undefined;
+		// ...unless the RANGE CHANGED BECAUSE A STROKE SAID SO. A drawn stroke
+		// picks its own window (drawStrokeEdit) and commits the curve for that
+		// window in the same gesture, so this run is reacting to the draw's own
+		// bookkeeping rather than to the artist moving the goalposts. Consumed
+		// once, so a later hand-typed range still drops the edit as before.
+		const auto = lineAutoRangeRef.current;
+		lineAutoRangeRef.current = null;
+		if (auto && auto.startFrame === lineEditRange?.startFrame && auto.endFrame === lineEditRange?.endFrame) return undefined;
 		// Whatever draft is on screen was drafted for the joint/range/take that
-		// just changed, so it goes back to the source take with the pull.
+		// just changed, so it goes back to the source take with the pull. Pins go
+		// with it for the same reason and one more: a pin names a JOINT, and the
+		// joint just changed under it.
 		cancelLinePreview();
 		setLineCurve(null);
+		setLinePins([]);
 		let attempts = 0;
 		let timer = 0;
 		const check = () => {
@@ -9195,8 +9620,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		// No curve object means no edit — an untouched path is the take's own
 		// trajectory, and sending it would ask the box to spend eight seconds
 		// reproducing what is already there.
-		if (!lineCurve) {
-			setToast(ko("Pull the path first — grab a dot on it and drag", "커브를 먼저 잡아당겨 주세요"));
+		if (!lineEditPayload) {
+			setToast(ko(
+				"Draw along the path, pull a dot, or pin a moment first",
+				"먼저 궤적을 따라 그리거나, 점을 잡아당기거나, 순간을 찍어 주세요",
+			));
 			return;
 		}
 		if (!lineEditBackend) {
@@ -9206,7 +9634,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			));
 			return;
 		}
-		const request = buildLineEditRequest(lineCurve);
+		const request = buildLineEditRequest(lineEditPayload);
 		if (!request.ok) {
 			if (request.message) setToast(request.message);
 			return;
@@ -11765,6 +12193,33 @@ function resizePromptClip(id, edge, rawFrame) {
 												ariaLabel={ko("Joint whose path is edited", "궤적을 편집할 관절")}
 											/>
 										</Field>
+										{/* THE GESTURE SELECTOR. Pressing on the joint is how BOTH a
+										    curve drag and a pin start, so the two cannot share a
+										    press and a modal toggle is the honest way to say which
+										    one the next press means. Named for what it does at the
+										    moment it does it, not for the wire field. */}
+										<button
+											type="button"
+											className={"btn full" + (linePinMode ? " primary" : "")}
+											data-line-pin-mode={linePinMode ? "true" : "false"}
+											onClick={() => setLinePinMode((on) => !on)}
+										>
+											{linePinMode
+												? ko("Pinning moments", "순간 찍는 중")
+												: ko("Pin a moment", "순간 찍기")}
+										</button>
+										{linePinMode && (
+											<p className="inspector-hint">
+												{linePins.length
+													? (isKo
+														? `${linePins.length}개(최대 ${LINE_EDIT_PINS_MAX}개)를 찍었어요 — 프레임 ${linePins.map((pin) => pin.frame).join(", ")}. 사이 동작은 모델이 채웁니다`
+														: `${linePins.length} pinned (max ${LINE_EDIT_PINS_MAX}) — frames ${linePins.map((pin) => pin.frame).join(", ")}. The model fills the movement between them`)
+													: ko(
+														"Scrub to a moment, then drag the green handle to where the joint should be. The take keeps its own timing; only that instant is pinned.",
+														"원하는 순간으로 재생 위치를 옮긴 뒤, 초록 손잡이를 관절이 있어야 할 자리로 끌어 주세요. 그 순간만 고정되고 나머지 타이밍은 그대로예요.",
+													)}
+											</p>
+										)}
 										{/* No range picker exists elsewhere in the app that a line
 										    edit could borrow, so the whole clip is the default and
 										    these two numbers only ever NARROW it. endFrame is
@@ -11816,11 +12271,11 @@ function resizePromptClip(id, edge, rawFrame) {
 										<p className="inspector-hint">
 											{lineCurveDirty
 												? (isKo
-													? `궤적을 편집했어요 — ${lineCurvePointCount}개 점(최대 ${MAX_LINE_POINTS}개)을 보내고, 양 끝 ${PINNED_CURVE_ENDS}프레임은 원래 궤적에 고정돼 이음매가 튀지 않아요. 다시 끌거나 다시 그려서 다듬을 수 있어요`
-													: `Path edited — ${lineCurvePointCount} points (max ${MAX_LINE_POINTS}); the outer ${PINNED_CURVE_ENDS} frames at each end stay on the original path, so the seams do not pop. Pull it again, or draw over it, to refine`)
+													? `${lineEditFrom}–${lineEditTo} 프레임을 편집했어요 — ${lineCurvePointCount}개 점(최대 ${MAX_LINE_POINTS}개)을 보내고, 양 끝은 원래 궤적에서 부드럽게 이어져 이음매가 튀지 않아요. 다시 끌거나 다시 그려서 다듬을 수 있어요`
+													: `Frames ${lineEditFrom}–${lineEditTo} edited — ${lineCurvePointCount} points (max ${MAX_LINE_POINTS}); both ends ease out of the original path, so the seams do not pop. Pull it again, or draw over it, to refine`)
 												: ko(
-													"Grab a yellow dot to pull the path, or draw a new one on empty space — the blue ends stay pinned.",
-													"노란 점을 잡아 끌어 궤적을 바꾸거나, 빈 곳에 새 궤적을 그려 보세요 — 파란 양 끝은 원래 궤적에 고정됩니다.",
+													"Draw along the path to reroute that section — the frames you drew over become the range, and the take's own timing is kept. Or grab a yellow dot and pull.",
+													"궤적을 따라 그리면 그 구간만 새로 지나갑니다 — 그린 만큼이 편집 구간이 되고, 원래 속도감은 그대로 유지돼요. 노란 점을 잡아 끌어도 됩니다.",
 												)}
 										</p>
 										{/* The one thing users assume a modal viewport tool takes away.

@@ -95,6 +95,51 @@ export function jointTrailPoints(motion, jointName = "Hips", { baseY = 0, scale 
 	return out;
 }
 
+/**
+ * A world-space POINT -> the take's own clip space — the exact inverse of what
+ * jointTrailPoints does on the way out.
+ *
+ * WHY THIS EXISTS, and why it is not worldDeltaToClip. That one inverts the yaw
+ * only, which is all a DELTA needs: rebasing and the anchor offset cancel in a
+ * difference, and scale is applied by the caller. An absolute point has to undo
+ * the whole chain — scale about the anchor, the yaw, the anchor offset, the
+ * anchor frame's root rebase and baseY — because it is going to be compared
+ * against `posed_joints` in an npz, which knows nothing about where the
+ * character was placed on the stage.
+ *
+ * That is the pins3d contract in one sentence: a pin is authored where the
+ * artist can see it (the viewport) and shipped in the space the take is stored
+ * in, and THIS is the only conversion between the two. Read
+ * `jointTrailPoints` beside it — every line here undoes one line there, in
+ * reverse order.
+ *
+ * @param {object} motion  the loaded take (frames, posedJoints, rotationDeg,
+ *   anchorX/Z, anchorFrame) — the same object jointTrailPoints takes.
+ * @param {{x:number,y:number,z:number}} point  world metres.
+ * @param {{baseY?:number, scale?:number}} [placement]  the character entry's
+ *   stage height and scale, exactly as passed to jointTrailPoints.
+ * @returns {{x:number,y:number,z:number}} clip space, comparable to posedJoints.
+ */
+export function worldPointToClip(motion, point, { baseY = 0, scale = 1 } = {}) {
+	const basis = anchorBasis(motion);
+	// A zero or negative scale would make the mapping non-invertible; the
+	// character UI cannot produce one, and refusing to divide by it beats
+	// returning an infinity that lands in a wire payload.
+	const s = Number.isFinite(scale) && Math.abs(scale) > 1e-9 ? scale : 1;
+	// 1. undo the scale-about-the-anchor and the anchor offset -> rotated clip
+	const rx = (point.x - basis.anchorX) / s;
+	const rz = (point.z - basis.anchorZ) / s;
+	// 2. undo the yaw (toWorldXZ applies [cos, sin; -sin, cos])
+	const dx = rx * basis.cos - rz * basis.sin;
+	const dz = rx * basis.sin + rz * basis.cos;
+	// 3. undo the anchor-frame root rebase
+	return {
+		x: basis.rootX + dx,
+		y: (point.y - baseY) / s,
+		z: basis.rootZ + dz,
+	};
+}
+
 /** World-space drag delta -> clip-space delta (inverse of the trail yaw). */
 export function worldDeltaToClip(motion, delta) {
 	const basis = anchorBasis(motion);

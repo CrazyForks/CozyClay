@@ -36,8 +36,14 @@ export const TAKE_VERSIONS_MAX = 20;
  * sourceMotion (replay rebinds that to the freshly generated take). `seed` is
  * C10's optional per-entry seed and is the only field the app ADDS: it is the
  * seed that was actually sent with the edit, so a replay reproduces the edit
- * bit for bit instead of re-rolling it. */
-const REPLAY_KEYS = ["track", "frameRange", "points2d", "camera", "prompt", "seed"];
+ * bit for bit instead of re-rolling it.
+ *
+ * `pins3d` is the second gesture's payload and rides the SAME list: a replayed
+ * pin needs no camera and no polyline, and because the whitelist is a
+ * whitelist, omitting it would have made a pinned edit vanish from its own
+ * take's recipe silently — the take would regenerate without the refinement and
+ * nothing would say why. */
+const REPLAY_KEYS = ["track", "frameRange", "points2d", "pins3d", "camera", "prompt", "seed"];
 
 function deepFreeze(value) {
 	if (value === null || typeof value !== "object" || Object.isFrozen(value)) return value;

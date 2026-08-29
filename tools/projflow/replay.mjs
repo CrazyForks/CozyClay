@@ -30,6 +30,20 @@ import { TRACK_TO_HML22_JOINT, UNMAPPABLE_TRACKS } from "./generate.mjs";
 export const LINE_EDIT_TRACK_IDS = Object.keys(TRACK_TO_HML22_JOINT);
 export const LINE_EDIT_POINTS_MIN = 2;
 export const LINE_EDIT_POINTS_MAX = 64; // matches src/line-edit.js MAX_LINE_POINTS
+/** C6's OTHER gesture: 3D pins (`pins3d`), one per scrubbed moment.
+ *
+ * A pin is a keyframe — "the hand is HERE at frame 100" — and it is the shape
+ * ProjFlow is actually evaluated on: its whole spatial-control table is sparse
+ * keyframes (1, 2, 5, 49, 196 of them) with exact satisfaction and the flow
+ * prior filling the gaps. A drawn line is the dense end of the same mechanism.
+ *
+ * ONE is a legal edit, unlike points2d's two: a line needs two points to have a
+ * direction, a pin needs none. EIGHT is the cap, and it is a UX number rather
+ * than a solver one — 3 rows per pin is nothing next to 128 line rows — past
+ * eight pins in one edit the artist is keyframing by hand and wants the pose
+ * studio, not a reroute. */
+export const LINE_EDIT_PINS_MIN = 1;
+export const LINE_EDIT_PINS_MAX = 8;
 /** C10's cap. A recipe is an authoring history, not a render queue: 16 chained
  * box round trips is already a minute of wall time on top of the generation. */
 export const REPLAY_MAX = 16;
@@ -105,6 +119,66 @@ export function validateLineEditFields(lineEdit, clipFrames, label = "lineEdit")
 	if (range.endFrame - range.startFrame < 2) {
 		return `field '${label}.frameRange' must span at least 2 frames`;
 	}
+	/* ---------------------------- pins3d (C6 v2) ---------------------------
+	 * ONE EDIT IS ONE GESTURE. A stroke says "go along this shape" and pins say
+	 * "be exactly here at these moments"; combining them would ask the box to
+	 * satisfy a 2D path and a set of 3D points that were authored through
+	 * different mental models and are only accidentally compatible. So pins3d
+	 * REPLACES points2d and the camera — a pin is already in world metres and
+	 * needs no lens to be read through, which is also why a pinned edit survives
+	 * a camera move that would discard a drawn one.
+	 *
+	 * Checked BEFORE points2d so a pins payload never trips the "needs at least
+	 * 2 points" message about a field it deliberately omitted. */
+	if (lineEdit.pins3d !== undefined) {
+		const pins = lineEdit.pins3d;
+		if (lineEdit.points2d !== undefined) {
+			return `field '${label}' must carry either points2d (a drawn line) or pins3d (3D pins), not both`;
+		}
+		if (!Array.isArray(pins) || pins.length < LINE_EDIT_PINS_MIN) {
+			return `field '${label}.pins3d' needs at least ${LINE_EDIT_PINS_MIN} pin`;
+		}
+		if (pins.length > LINE_EDIT_PINS_MAX) {
+			return `field '${label}.pins3d' is capped at ${LINE_EDIT_PINS_MAX} pins, got ${pins.length}`;
+		}
+		let previousFrame = -1;
+		for (let index = 0; index < pins.length; index += 1) {
+			const pin = pins[index];
+			if (!pin || typeof pin !== "object" || Array.isArray(pin)) {
+				return `field '${label}.pins3d[${index}]' must be an object { frame, position }`;
+			}
+			if (!Number.isInteger(pin.frame)) {
+				return `field '${label}.pins3d[${index}].frame' must be an integer app-clip frame`;
+			}
+			// Inside the range and half-open with it: a pin on endFrame names a
+			// frame the edit does not own, and the splice would throw it away.
+			if (pin.frame < range.startFrame || pin.frame >= range.endFrame) {
+				return `field '${label}.pins3d[${index}].frame' ${pin.frame} is outside frameRange ${range.startFrame}..${range.endFrame}`;
+			}
+			// STRICTLY ascending: two pins on one frame are two answers to the
+			// same question, and out-of-order pins mean the caller lost track of
+			// which pin it was editing.
+			if (pin.frame <= previousFrame) {
+				return `field '${label}.pins3d' frames must be strictly ascending, got ${pin.frame} after ${previousFrame}`;
+			}
+			previousFrame = pin.frame;
+			const position = pin.position;
+			if (!Array.isArray(position) || position.length !== 3 || !position.every((value) => typeof value === "number" && Number.isFinite(value))) {
+				return `field '${label}.pins3d[${index}].position' must be [x, y, z] finite numbers in world metres`;
+			}
+		}
+		// The camera is a stroke's business. Refused rather than ignored, for the
+		// same reason a replay entry's sourceMotion is: silently dropping a field
+		// lets the caller believe it meant something.
+		if (lineEdit.camera !== undefined) {
+			return `field '${label}.camera' must be omitted for a pins3d edit — pins are world-space and need no lens`;
+		}
+		if (lineEdit.prompt !== undefined && typeof lineEdit.prompt !== "string") {
+			return `field '${label}.prompt' must be a string when present`;
+		}
+		return null;
+	}
+
 	const points = lineEdit.points2d;
 	if (!Array.isArray(points) || points.length < LINE_EDIT_POINTS_MIN) {
 		return `field '${label}.points2d' needs at least ${LINE_EDIT_POINTS_MIN} points`;

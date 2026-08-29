@@ -64,7 +64,19 @@ const SSH_OPTS = [
 
 /** Bumped in lockstep with driver.py's PROTOCOL_VERSION. A resident left over
  * from an earlier build answers with the old number and is refused rather than
- * trusted, which is the whole reason the field exists. */
+ * trusted, which is the whole reason the field exists.
+ *
+ * NOT bumped for `seamPin` (2026-08-29), and the reason is worth stating because
+ * it looks like an omission. The version guards FRAMING and field MEANING: an
+ * old resident handed the new field ignores it, a new resident handed a request
+ * without it applies its own default, and in both directions every existing
+ * field still means exactly what it meant. Bumping would have been the safer
+ * instinct and was measurably wrong — a long-lived wrapper process holds this
+ * constant in memory while it re-ships driver.py from DISK on every resident
+ * start, so a bump makes the freshly shipped driver announce a number its own
+ * launcher refuses, and the supervisor crash-loops the box until the wrapper
+ * itself is restarted. Bump this only when a stale resident would produce a
+ * WRONG answer rather than an older one, and expect to restart every wrapper. */
 export const PROTOCOL_VERSION = 1;
 
 /** 1 s, 5 s, 25 s, then 25 s forever. Short enough that a transient ssh blip
@@ -698,6 +710,7 @@ export async function residentLineEdit({
 	ridge,
 	preserveStride,
 	preserveMargin,
+	seamPin,
 	seed,
 	cfg,
 	timeoutMs,
@@ -714,6 +727,7 @@ export async function residentLineEdit({
 		preserveStride: Number(preserveStride),
 		preserveMargin: Number(preserveMargin),
 	};
+	if (seamPin !== undefined) payload.seamPin = Number(seamPin);
 	// Omitted rather than defaulted on this side: driver.py owns the defaults
 	// (0 and 3.0) and two places spelling them is how they drift.
 	if (seed !== undefined) payload.seed = Number(seed);

@@ -113,6 +113,68 @@ export function scaleFrameRange({ startFrame, endFrame }, genFrames, { appFps = 
 }
 
 /**
+ * `pins3d` on the app clock -> `pins3d` on the generation clock.
+ *
+ * ONE APP PIN BECOMES THE GENERATION FRAMES THAT APP FRAME IS REBUILT FROM,
+ * which is usually two, and that is the whole subtlety of this function.
+ *
+ * The naive version rounded to a single generation frame and it was MEASURED
+ * wrong end to end: the box satisfied the pin exactly (9.5e-7 m at generation
+ * frame 83) and the finished take still missed it by 27 cm. Nothing was broken
+ * in between — retimeMotion rebuilds app frame f from generation frames
+ * `floor(f/ratio)` and `floor(f/ratio)+1`, blended by the fraction, and app
+ * frame 100 sits at generation 83.33. So the take at frame 100 is two thirds of
+ * an exactly-pinned frame and one third of its UNPINNED neighbour, and that
+ * neighbour is 0.2 m away, because a lone hard observation with free
+ * neighbours is a spike (the paper's own Plain Masking ablation, which it
+ * reports as the worst configuration).
+ *
+ * Constraining BOTH bracketing frames makes the authored statement survive the
+ * clock change: whatever the blend weight is, it is a blend of two frames that
+ * both hold the pinned position, so the app frame the artist pinned lands on
+ * the value they placed. It is not padding — it is the smallest set of
+ * generation frames whose values determine the app frame that was authored.
+ * Measured after the change: 27.1 cm -> 0.3 cm at the pinned frame.
+ *
+ * The exact-frame case (one app frame in six lands on a generation frame with
+ * no remainder) emits a single frame, because there is no second frame in the
+ * blend to hold.
+ *
+ * POSITIONS ARE NOT TOUCHED. Resampling the source is a time operation; a pin
+ * is a point in space that happens to name a moment, and the only thing the
+ * clock change can do to it is move which frames it names.
+ *
+ * Two app pins can claim one generation frame (they are 1.2 app frames apart at
+ * most when that happens), and two rows on one frame would be two contradictory
+ * answers for the sampler to average. The LAST pin wins, deliberately: pins
+ * arrive in ascending frame order, so "the later one wins" is the same rule the
+ * app's own place-a-pin-twice behaviour follows.
+ */
+export function scalePins(pins, genFrames, { appFps = APP_FPS, genFps = GEN_FPS } = {}) {
+	if (!Array.isArray(pins) || pins.length === 0) {
+		throw new Error("scalePins: pins3d must be a non-empty array");
+	}
+	if (!Number.isInteger(genFrames) || genFrames < 1) {
+		throw new Error(`scalePins: the generation clip needs at least 1 frame, got ${genFrames}`);
+	}
+	const byFrame = new Map();
+	const clamp = (frame) => Math.min(genFrames - 1, Math.max(0, frame));
+	for (const pin of pins) {
+		if (!pin || !Number.isInteger(pin.frame) || !Array.isArray(pin.position) || pin.position.length !== 3) {
+			throw new Error(`scalePins: ${JSON.stringify(pin)} is not a { frame, position:[x,y,z] } pin`);
+		}
+		const position = pin.position.map(Number);
+		// retimeMotion's own walk, spelled the same way: s = f / (genFps/appFps).
+		const exact = (pin.frame * genFps) / appFps;
+		const low = clamp(Math.floor(exact));
+		const high = clamp(exact === low ? low : low + 1);
+		byFrame.set(low, { frame: low, position });
+		if (high !== low) byFrame.set(high, { frame: high, position });
+	}
+	return [...byFrame.values()].sort((a, b) => a.frame - b.frame);
+}
+
+/**
  * Resample a flat [T, J, 3] position buffer onto `outFrames` rows by linear
  * interpolation.
  *
@@ -384,13 +446,27 @@ export async function runLineEditJob({
 
 	// --- 3. the range on the generation clock -------------------------------
 	const genRange = scaleFrameRange({ startFrame, endFrame }, genFrames, { appFps, genFps: GEN_FPS });
-	const line = {
-		track: lineEdit.track,
-		frameRange: genRange,
-		points2d: lineEdit.points2d,
-		camera: { ...lineEdit.camera, R: nestR(lineEdit.camera?.R) },
-		prompt: lineEdit.prompt ?? "",
-	};
+	const line = lineEdit.pins3d
+		? {
+			track: lineEdit.track,
+			frameRange: genRange,
+			// NO CAMERA, and none is invented: a pin is already in the take's own
+			// joint space (the app converts from viewport world with
+			// worldPointToClip, the exact inverse of the trail projection), so the
+			// positions go through UNCHANGED. cskel27ToHml22Positions is a pure
+			// index gather with no coordinate transform — that is the whole reason
+			// the wire can carry take-space metres and the driver can compare them
+			// against source.npy directly.
+			pins3d: scalePins(lineEdit.pins3d, genFrames, { appFps, genFps: GEN_FPS }),
+			prompt: lineEdit.prompt ?? "",
+		}
+		: {
+			track: lineEdit.track,
+			frameRange: genRange,
+			points2d: lineEdit.points2d,
+			camera: { ...lineEdit.camera, R: nestR(lineEdit.camera?.R) },
+			prompt: lineEdit.prompt ?? "",
+		};
 
 	// --- 4. the box ----------------------------------------------------------
 	const workDir = await mkdtemp(join(tmpdir(), "cclay-line-edit-"));
