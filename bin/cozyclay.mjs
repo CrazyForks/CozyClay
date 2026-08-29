@@ -271,9 +271,9 @@ if (argv[0] === "mcp") {
 } else {
 
 const opts = parseArgs(argv);
-	if (opts.help) {
-		console.log(HELP);
-		process.exit(opts.invalid ? 1 : 0);
+if (opts.help) {
+	console.log(HELP);
+	process.exit(opts.invalid ? 1 : 0);
 }
 const version = readVersion();
 if (opts.version) {
