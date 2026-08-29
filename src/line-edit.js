@@ -338,6 +338,123 @@ export function dragCurve(curve, grabIndex, du, dv, radiusFrames) {
 	});
 }
 
+/** How long a freehand stroke has to be before it is a STROKE rather than a
+ * click, in CSS pixels. Measured by the caller, which is the only side that
+ * knows how big the pane is; a press-and-release with a few pixels of hand
+ * tremor is a click, and a click must never wipe an edit that is already there
+ * (that exact regression is why the drag commit compares curvesEqual). */
+export const DRAW_MIN_STROKE_PX = 8;
+
+/** Fewest samples a stroke needs before it names a shape at all. One point is a
+ * dot: it has no direction, no length and nothing to parameterize. */
+export const DRAW_MIN_STROKE_POINTS = 2;
+
+/**
+ * A freehand stroke -> the same dense frame-indexed curve a drag produces.
+ *
+ * This is the OTHER half of the interaction: on takes whose projected trail
+ * bunches into a handful of screen pixels there is nothing to grab, so a press
+ * on empty space draws a new path instead of doing nothing. The result has to
+ * be indistinguishable from a dragged curve — same shape, same nulls, same
+ * pinned ends — because everything downstream (preview, undo, curveToPoints2d,
+ * the drift watcher) is written against that one type.
+ *
+ * ARC LENGTH, NOT SAMPLE INDEX. Frame at position `index` of the range samples
+ * the stroke at the point `index / (length - 1)` of the way along its TOTAL
+ * LENGTH, walking the polyline and interpolating inside the segment it lands
+ * in. That is what makes drawing SPEED irrelevant: a stroke drawn slowly at the
+ * start and flicked at the end carries a crowd of samples near its beginning,
+ * and sampling by sample index would hand the crowded part most of the frames
+ * and re-time the take. Arc length reads the stroke as a SHAPE, which is the
+ * only thing a hand-drawn line honestly carries. (Note the deliberate contrast
+ * with curveToPoints2d, which downsamples by index precisely because the curve
+ * it is given DOES carry timing — index i is frame startFrame + i.)
+ *
+ * The parameterization is endpoint-inclusive: index 0 sits at the stroke's
+ * start and index length-1 at its end, so the whole drawn shape is used.
+ *
+ * PINNED ENDS ARE THE SEAM GUARANTEE. The first and last `pinnedEnds` entries
+ * come back BY REFERENCE from `baseCurve`, exactly as dragCurve returns them —
+ * see PINNED_CURVE_ENDS for the measurement (8.0x median frame delta at the
+ * range edge for a free-ended drawn line, 1.09x when the ends sit on the
+ * joint's own path). The interior is fully free; the ends are not negotiable.
+ *
+ * Nulls in `baseCurve` stay null, again like dragCurve: a frame whose joint is
+ * behind the lens has no image, and a stroke cannot invent one.
+ *
+ * @param {Array<[number, number]>} stroke  pointer samples in the SAME
+ *   viewport-normalized uv the curve lives in, in the order they were drawn.
+ * @param {Array<{frame:number,u:number,v:number}|null>} baseCurve  the dense
+ *   frame-indexed curve whose interior this stroke replaces (the curve as it is
+ *   right now, so drawing twice means the second drawing wins and a drag after
+ *   a draw refines the drawn curve).
+ * @param {object} [options]
+ * @param {number} [options.pinnedEnds]  how many entries at each end stay put.
+ * @param {number} [options.minLength]  refuse strokes shorter than this in uv
+ *   units. 0 (the default) still refuses a stroke of zero length — the callers
+ *   measure their own threshold in PIXELS, where the user drew it.
+ * @returns a new curve, or null when the stroke is a no-op click.
+ */
+export function strokeToCurve(stroke, baseCurve, { pinnedEnds = PINNED_CURVE_ENDS, minLength = 0 } = {}) {
+	if (!Array.isArray(baseCurve) || baseCurve.length < MIN_LINE_POINTS) return null;
+	if (!Array.isArray(stroke)) return null;
+	// Non-finite samples are dropped rather than poisoning the arc length: a
+	// pointer event outside a settled pane can produce one, and a single NaN
+	// would otherwise turn the whole curve into NaN and be refused much later
+	// with a message about the wire format.
+	const points = [];
+	for (const sample of stroke) {
+		if (!Array.isArray(sample) || sample.length < 2) continue;
+		const x = Number(sample[0]);
+		const y = Number(sample[1]);
+		if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+		points.push([x, y]);
+	}
+	if (points.length < DRAW_MIN_STROKE_POINTS) return null;
+	const cumulative = [0];
+	for (let i = 1; i < points.length; i += 1) {
+		cumulative.push(cumulative[i - 1] + Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]));
+	}
+	const total = cumulative[cumulative.length - 1];
+	// A stroke that never moved is a click, and a click changes nothing.
+	if (!(total > 0) || total < minLength) return null;
+
+	const length = baseCurve.length;
+	// Never pin away the whole curve: a range shorter than 2 x pinnedEnds would
+	// otherwise come back byte-identical and read as "the user drew nothing".
+	const pinned = Math.max(0, Math.min(Math.trunc(pinnedEnds) || 0, Math.floor(length / 2)));
+	// One monotone walk along the stroke for the whole curve: the targets only
+	// ever increase with index, so the cursor never rewinds and a 200-frame
+	// range costs one pass over the samples rather than 200 searches.
+	let cursor = 1;
+	const out = new Array(length);
+	for (let index = 0; index < length; index += 1) {
+		const base = baseCurve[index];
+		if (index < pinned || index >= length - pinned) {
+			// BY REFERENCE, like dragCurve — an untouched point must compare
+			// equal with no epsilon to choose.
+			out[index] = base;
+			continue;
+		}
+		if (!base) {
+			out[index] = null;
+			continue;
+		}
+		const target = (index / (length - 1)) * total;
+		while (cursor < cumulative.length - 1 && cumulative[cursor] < target) cursor += 1;
+		const span = cumulative[cursor] - cumulative[cursor - 1];
+		const fraction = span > 0 ? Math.min(1, Math.max(0, (target - cumulative[cursor - 1]) / span)) : 0;
+		const a = points[cursor - 1];
+		const b = points[cursor];
+		out[index] = {
+			frame: base.frame,
+			u: a[0] + (b[0] - a[0]) * fraction,
+			v: a[1] + (b[1] - a[1]) * fraction,
+		};
+	}
+	return out;
+}
+
 /**
  * The edited curve -> the `points2d` C6 sends, or a refusal.
  *

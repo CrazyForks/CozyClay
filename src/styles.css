@@ -9106,6 +9106,13 @@ input[type=range] {
 .stage[data-line-grab="drag"] canvas:active {
 	cursor: grabbing;
 }
+/* "draw" is the fourth state: a press that missed the curve is drawing a new
+   path on empty space, and a crosshair says that in the one place the eye is
+   already looking. Same preventDefault caveat as `drag`, hence the twin. */
+.stage[data-line-grab="draw"] canvas,
+.stage[data-line-grab="draw"] canvas:active {
+	cursor: crosshair;
+}
 
 /* The mode's controls, folded under the toggle inside the preserve region. The
    left rule reads as "these belong to the button above" without adding another

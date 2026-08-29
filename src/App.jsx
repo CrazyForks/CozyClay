@@ -37,6 +37,8 @@ import {
 	DRAG_RADIUS_MAX,
 	DRAG_RADIUS_MIN,
 	DRAG_WEIGHT_EPSILON,
+	DRAW_MIN_STROKE_POINTS,
+	DRAW_MIN_STROKE_PX,
 	LINE_EDIT_TRACK_IDS,
 	MAX_LINE_POINTS,
 	MIN_LINE_POINTS,
@@ -52,6 +54,7 @@ import {
 	isLineEditUnsupported,
 	nearestCurvePoint,
 	projectTrailCurve,
+	strokeToCurve,
 	validateLineEdit,
 } from "./line-edit.js";
 import {
@@ -700,6 +703,19 @@ const MIN_CURVE_POINTS = PINNED_CURVE_ENDS * 2 + 1;
  * the loop still feels like it answers the gesture — a preview round trip is
  * ~1 s on the warm service, so 150 ms is noise against it. */
 const LINE_PREVIEW_DEBOUNCE_MS = 150;
+/** How often the line-edit capability is re-probed while the bridge is up and
+ * the answer is still no.
+ *
+ * The bridge answers `capabilities.lineEdit` from a LAZY ssh probe of the
+ * ProjFlow box behind a 5 s cache, so the very first /ardy/health of a session
+ * can land on a cold cache and come back false — a box that is perfectly fine
+ * two seconds later. Asking once per bridge-up transition therefore made the
+ * whole mode dead until a reload (first boot broken, second boot fine, which is
+ * exactly how it was reported). A capability is an ADVERTISEMENT, so it is
+ * allowed to arrive late; what is not allowed is to assume it. 4 s sits just
+ * under the bridge's own 5 s TTL, so a retry can actually see a new answer
+ * rather than re-reading the same cached false. */
+const LINE_CAPABILITY_RETRY_MS = 4000;
 /** Why a validateLineEdit code refused, said once, in the user's language.
  * Keyed by the pure module's stable codes so the copy and the check can never
  * disagree about which field was wrong. */
@@ -4594,13 +4610,20 @@ globalThis.playMode = centerTab === "play";
 	 * but it works in SCREEN space on a 2D overlay canvas rather than raycast
 	 * onto the floor — depth is the model's problem, not the UI's.
 	 *
-	 * The interaction is TRAJECTORY DRAGGING, not freehand drawing: the joint's
-	 * existing path is projected onto the viewport and the user grabs a point
-	 * on it and pulls, with a Gaussian falloff carrying the neighbours along.
-	 * Freehand was measured to be the worse tool — an arbitrary line pops the
-	 * take 8x its own frame delta at the range edges, because the joint has to
-	 * teleport to wherever the stroke began (gate GP2). Here the range edges
-	 * are pinned to the original trajectory by construction.
+	 * TWO GESTURES, ONE CURVE. The primary interaction is TRAJECTORY DRAGGING:
+	 * the joint's existing path is projected onto the viewport and the user
+	 * grabs a point on it and pulls, with a Gaussian falloff carrying the
+	 * neighbours along. A press that lands nowhere near the path instead DRAWS
+	 * one freehand (strokeToCurve), because a trail can project into a few
+	 * screen pixels — a person backing up and falling barely moves the hand
+	 * across the image — and with nothing grabbable the whole mode reads as
+	 * dead. Drawing is not the old freehand tool coming back, though: that one
+	 * popped the take 8x its own frame delta at the range edges because the
+	 * joint teleported to wherever the stroke began (gate GP2). Both gestures
+	 * here leave the range's outer PINNED_CURVE_ENDS frames on the original
+	 * trajectory by construction, which is what collapses that to 1.1x, and both
+	 * produce the SAME dense frame-indexed curve, so everything downstream
+	 * (preview, undo, camera drift, the wire payload) cannot tell them apart.
 	 *
 	 * `lineCurve` is non-null EXACTLY WHEN THERE IS AN EDIT, and that invariant
 	 * is the whole camera policy in one sentence. Null means the curve is
@@ -4611,10 +4634,11 @@ globalThis.playMode = centerTab === "play";
 	 * camera is frozen beside the points and moving the view discards the pull
 	 * and returns to following (see the drift watcher further down).
 	 *
-	 * The three refs never re-render: `lineDragRef` is the in-flight grab and
-	 * carries the live deformed curve, `lineLiveRef` caches the last projection
-	 * the painter made so the hit test does not redo it, and `lineHoverRef` is
-	 * the marker under the pointer. A pointermove must repaint the overlay
+	 * The four refs never re-render: `lineDragRef` is the in-flight grab and
+	 * carries the live deformed curve, `lineDrawRef` is the in-flight freehand
+	 * stroke, `lineLiveRef` caches the last projection the painter made so the
+	 * hit test does not redo it, and `lineHoverRef` is the marker under the
+	 * pointer. A pointermove must repaint the overlay
 	 * without re-rendering an 11k-line component 200 times a second, so the
 	 * painter reads the refs and only pointerup commits to state. */
 	const [lineEditMode, setLineEditMode] = useState(false);
@@ -4625,6 +4649,11 @@ globalThis.playMode = centerTab === "play";
 	const [lineCurve, setLineCurve] = useState(null);
 	const [lineRadius, setLineRadius] = useState(DRAG_RADIUS_DEFAULT);
 	const lineDragRef = useRef(null);
+	// The in-flight freehand STROKE, when the press missed the curve. Same
+	// no-re-render discipline as lineDragRef: pointermove appends a uv sample and
+	// repaints the overlay, and only pointerup turns the stroke into a curve (via
+	// strokeToCurve) and commits it through the drag's own pipeline.
+	const lineDrawRef = useRef(null);
 	const lineLiveRef = useRef(null);
 	const lineHoverRef = useRef(null);
 	// Undo stack for committed pulls: each entry is the WHOLE lineCurve value
@@ -8284,6 +8313,50 @@ function resizePromptClip(id, edge, rawFrame) {
 			ctx.arc(px, py, 3.2, 0, Math.PI * 2);
 			ctx.fill();
 		}
+
+		// (5) The stroke under the finger, while one is being drawn. Same family
+		// as the hero curve — dark halo, warm core — but PALE and dashed rather
+		// than the solid yellow, because it is not the curve yet: it is a shape
+		// that becomes the curve's interior on release, and the two ends it will
+		// be pinned to are the blue dots already drawn above. Painted last so it
+		// sits over everything, with a dot at the head so a stroke that is only
+		// beginning is still visible.
+		const draw = lineDrawRef.current;
+		if (draw && draw.points.length) {
+			ctx.save();
+			ctx.lineJoin = "round";
+			ctx.lineCap = "round";
+			ctx.beginPath();
+			draw.points.forEach(([su, sv], index) => {
+				const px = ox + su * pane.rect.w;
+				const py = oy + sv * pane.rect.h;
+				if (index === 0) ctx.moveTo(px, py);
+				else ctx.lineTo(px, py);
+			});
+			ctx.strokeStyle = "rgba(40, 24, 0, .75)";
+			ctx.lineWidth = 8;
+			ctx.stroke();
+			ctx.setLineDash([9, 6]);
+			ctx.shadowColor = "rgba(255, 246, 208, .9)";
+			ctx.shadowBlur = 10;
+			ctx.strokeStyle = "#fff6d0";
+			ctx.lineWidth = 3.5;
+			ctx.stroke();
+			ctx.shadowBlur = 0;
+			ctx.setLineDash([]);
+			const head = draw.points[draw.points.length - 1];
+			const hx = ox + head[0] * pane.rect.w;
+			const hy = oy + head[1] * pane.rect.h;
+			ctx.fillStyle = "rgba(40, 24, 0, .85)";
+			ctx.beginPath();
+			ctx.arc(hx, hy, 6, 0, Math.PI * 2);
+			ctx.fill();
+			ctx.fillStyle = "#fff6d0";
+			ctx.beginPath();
+			ctx.arc(hx, hy, 4, 0, Math.PI * 2);
+			ctx.fill();
+			ctx.restore();
+		}
 		ctx.restore();
 	}
 
@@ -8306,22 +8379,40 @@ function resizePromptClip(id, edge, rawFrame) {
 		return lineCurve ? lineCurve.edited : lineLiveRef.current?.curve ?? null;
 	}
 
-	/** Side-effect-free "would a grab land here?" — handed to ObjectGizmo as
-	 * `claimPointer` so its WINDOW-capture selection handler yields the press.
-	 * Without the yield the gizmo's stopPropagation kills the event above the
-	 * stage and the curve can never be grabbed; with it, priority is explicit:
-	 * a press on the curve belongs to the curve, everything else still selects,
-	 * ground-clicks and orbits exactly as before. Must never mutate state —
-	 * the real grab (onLineStagePointerDown) repeats the test with the full
-	 * drift-checked source. */
+	/** Side-effect-free "does this press belong to line editing?" — handed to
+	 * ObjectGizmo as `claimPointer` so its WINDOW-capture selection handler
+	 * yields the press. Without the yield the gizmo's stopPropagation kills the
+	 * event above the stage and the gesture never reaches the stage listener at
+	 * all; that swallowing is the entire reason claimPointer exists.
+	 *
+	 * IT CLAIMS EVERY PLAIN-LEFT PRESS ON THE IMAGE, not only the ones that hit
+	 * the curve. It has to: a press on EMPTY space is now a freehand stroke, so
+	 * "missed the curve" is no longer "not ours" — it is the other half of the
+	 * mode, and a probe that answered false there would let the gizmo eat exactly
+	 * the presses drawing depends on. The cost is explicit and deliberate: while
+	 * the mode is ON, plain-left no longer picks a cast member on the deck. What
+	 * is NOT claimed is anything the camera owns — alt+left orbits, middle pans,
+	 * right flies (see controls.jsx), so navigation is untouched — nor a press
+	 * outside the drawn image, nor a press on the HUD chrome stacked over the
+	 * stage, nor anything at all outside line-edit mode: App only passes this
+	 * probe to the gizmos while lineEditMode is true.
+	 *
+	 * Must never mutate state, and must agree exactly with what
+	 * onLineStagePointerDown will do with the same event — the two conditions
+	 * below are the same ones that handler opens with. */
 	function lineGrabProbe(event) {
-		if (event.button !== 0) return false;
+		if (event.button !== 0 || event.altKey) return false;
+		if (!(event.target instanceof HTMLCanvasElement)) return false;
 		const pane = lineEditPane();
 		if (!pane) return false;
-		const curve = lineHoverCurve();
-		if (!curve) return false;
+		// No curve to grab AND nothing to draw onto: without a projected
+		// trajectory there is no base curve for a stroke to replace the interior
+		// of, so the press is not ours and the gizmo keeps it.
+		if (!lineHoverCurve()) return false;
 		const [u, v] = lineUvFromPointer(pane, event);
-		return !!nearestCurvePoint(curve, u, v, CURVE_GRAB_RADIUS_PX, pane.rect.w, pane.rect.h);
+		// Outside the drawable image (the letterbox bars of a shot view) a stroke
+		// could only author points the bridge refuses, so it is not a stroke.
+		return u >= 0 && u <= 1 && v >= 0 && v <= 1;
 	}
 
 	/** What a grab picks up, `{ camera, curve }`, and the ONE place the camera
@@ -8352,26 +8443,38 @@ function resizePromptClip(id, edge, rawFrame) {
 		return fresh;
 	}
 
-	/** The stage's CAPTURE-phase pointerdown, and the whole pass-through rule.
+	/** The stage's CAPTURE-phase pointerdown: which of the two gestures this is.
 	 *
 	 * The overlay canvas is `pointer-events: none` and only paints; this listener
-	 * sits on the stage container instead, ahead of r3f and the fly controls,
-	 * and asks one question: did the pointer land within CURVE_GRAB_RADIUS_PX of
-	 * a draggable point? If NO it returns having done nothing at all, and the
-	 * event continues to the WebGL canvas, so orbit, pan and click-to-select keep
-	 * working while the mode is on — judging a correction means looking at it
-	 * from other angles, and the mode must not take the viewport hostage to be
-	 * used. If YES it consumes the event exclusively (preventDefault +
-	 * stopPropagation) so the same gesture cannot both pull the path and orbit.
+	 * sits on the stage container instead, ahead of r3f and the fly controls, and
+	 * asks one question: did the pointer land within CURVE_GRAB_RADIUS_PX of a
+	 * draggable point?
+	 *
+	 *   YES -> a PULL. The curve is snapshotted and deformed under the finger.
+	 *   NO  -> a DRAW. The press starts a freehand stroke on empty space, which
+	 *          on release becomes the interior of the same curve (strokeToCurve)
+	 *          and commits through the identical pipeline. This used to be the
+	 *          do-nothing path, and on a take whose trail projects into a few
+	 *          pixels that made the mode feel broken: nothing to grab, nothing
+	 *          happens, no way in.
+	 *
+	 * Either way the event is consumed exclusively (preventDefault +
+	 * stopPropagation) so one gesture cannot also select or orbit. The presses
+	 * this handler deliberately never takes are the camera's — alt+left orbits,
+	 * middle pans, right flies — so judging a correction from another angle
+	 * still works and the mode never takes the viewport hostage. Plain-left
+	 * click-to-select IS given up for as long as the mode is on; that is the
+	 * price of an empty-space gesture, and the mode is modal and escapable.
 	 *
 	 * Capture phase rather than bubble because the decision has to be made before
 	 * the controls start an orbit; a bubble listener would arrive after they had
 	 * already latched on (FlyControls binds pointerdown on gl.domElement, which
 	 * is a descendant of the stage, so stopping here is enough — nothing binds
-	 * this gesture at the window). Nothing is re-dispatched: the miss path never
-	 * touches the event, which is why there is no synthetic-event fragility. */
+	 * this gesture at the window). Nothing is re-dispatched. */
 	function onLineStagePointerDown(event) {
-		if (event.button !== 0) return;
+		// Alt+left is the orbit gesture and belongs to the camera, never to a
+		// stroke — the one plain-left press this mode must still let through.
+		if (event.button !== 0 || event.altKey) return;
 		// Only the render surface itself. The stage also carries HUD chrome — the
 		// inset's drag chip, the plan pane, overlay buttons — and a control that
 		// happens to sit within 14 px of the curve must keep its own click. The
@@ -8384,7 +8487,12 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (!source) return;
 		const [u, v] = lineUvFromPointer(pane, event);
 		const hit = nearestCurvePoint(source.curve, u, v, CURVE_GRAB_RADIUS_PX, pane.rect.w, pane.rect.h);
-		if (!hit) return;
+		// MISSED THE CURVE — draw a new path instead of doing nothing.
+		if (!hit) {
+			if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) return;
+			beginLineDraw(event, pane, source, u, v);
+			return;
+		}
 		event.preventDefault();
 		event.stopPropagation();
 		const stage = stageRef.current;
@@ -8450,12 +8558,98 @@ function resizePromptClip(id, edge, rawFrame) {
 		paintLineOverlay();
 	}
 
+	/** The DRAW half: a press on empty space collects a freehand stroke and, on
+	 * release, maps it onto the range by arc length (strokeToCurve) as the new
+	 * interior of the curve.
+	 *
+	 * Why drawing exists beside dragging at all: the grab is a hit test against
+	 * the joint's PROJECTED trail, and on a take where the joint barely moves
+	 * across the image — the person who backs up and falls, whose hand travels a
+	 * few screen pixels over 192 frames — that trail is a dot. There is nothing
+	 * to grab, so the mode did nothing, so the mode was broken. Drawing needs no
+	 * target.
+	 *
+	 * The commit below is deliberately the SAME six lines the drag's pointerup
+	 * runs: compare against the snapshot, push the replaced curve on the undo
+	 * stack, install `{ camera, original, edited }`, schedule a preview. Every
+	 * downstream behaviour — Ctrl/Cmd+Z, the reset button, the camera-drift
+	 * discard, the wire payload — therefore treats a drawn curve as an ordinary
+	 * one, because it IS one. */
+	function beginLineDraw(event, pane, source, u, v) {
+		event.preventDefault();
+		event.stopPropagation();
+		const stage = stageRef.current;
+		if (stage) stage.dataset.lineGrab = "draw";
+		lineHoverRef.current = null;
+		lineDrawRef.current = {
+			prev: lineCurve,
+			camera: source.camera,
+			snapshot: source.curve,
+			// Pixel size of the pane the stroke is being drawn on, captured once:
+			// the "is this a stroke or a click?" threshold is in CSS pixels, where
+			// the hand drew it, and uv distance is anisotropic so it cannot be
+			// judged in uv without this pair.
+			paneW: pane.rect.w,
+			paneH: pane.rect.h,
+			points: [[u, v]],
+			// Running length in PIXELS, accumulated as the stroke is drawn rather
+			// than re-measured at release.
+			lengthPx: 0,
+		};
+		const onMove = (moveEvent) => {
+			const draw = lineDrawRef.current;
+			const livePane = lineEditPane();
+			if (!draw || !livePane) return;
+			const [mu, mv] = lineUvFromPointer(livePane, moveEvent);
+			if (!Number.isFinite(mu) || !Number.isFinite(mv)) return;
+			const last = draw.points[draw.points.length - 1];
+			const stepPx = Math.hypot((mu - last[0]) * draw.paneW, (mv - last[1]) * draw.paneH);
+			// Sub-pixel jitter carries no shape and only costs arc-length samples.
+			if (!(stepPx > 0.5)) return;
+			draw.points.push([mu, mv]);
+			draw.lengthPx += stepPx;
+			paintLineOverlay();
+		};
+		const onUp = () => {
+			window.removeEventListener("pointermove", onMove);
+			window.removeEventListener("pointerup", onUp);
+			window.removeEventListener("pointercancel", onUp);
+			const draw = lineDrawRef.current;
+			lineDrawRef.current = null;
+			const endStage = stageRef.current;
+			if (endStage) delete endStage.dataset.lineGrab;
+			if (!draw) return;
+			// A CLICK IS NOT A STROKE, and a click must change nothing — including
+			// an edit that is already there. Same rule the drag's commit enforces
+			// with curvesEqual; here the test is the length of what was drawn.
+			const drawn = draw.points.length >= DRAW_MIN_STROKE_POINTS && draw.lengthPx >= DRAW_MIN_STROKE_PX
+				? strokeToCurve(draw.points, draw.snapshot)
+				: null;
+			if (!drawn) {
+				paintLineOverlay();
+				return;
+			}
+			const changed = !curvesEqual(drawn, draw.snapshot);
+			if (changed) lineUndoRef.current.push(draw.prev ?? null);
+			const committed = changed
+				? { camera: draw.camera, original: draw.snapshot, edited: drawn }
+				: (draw.prev ?? null);
+			setLineCurve(committed);
+			if (changed) scheduleLinePreview(committed);
+			paintLineOverlay();
+		};
+		window.addEventListener("pointermove", onMove);
+		window.addEventListener("pointerup", onUp);
+		window.addEventListener("pointercancel", onUp);
+		paintLineOverlay();
+	}
+
 	/** Bubble-phase hover: the cursor and the swollen marker, nothing else. It
 	 * never stops the event and never writes state, so it cannot interfere with
 	 * the orbit the same pointermove is probably driving. */
 	function onLineStageHover(event) {
 		const stage = stageRef.current;
-		if (!stage || lineDragRef.current) return;
+		if (!stage || lineDragRef.current || lineDrawRef.current) return;
 		const pane = event.target instanceof HTMLCanvasElement ? lineEditPane() : null;
 		const curve = pane ? lineHoverCurve() : null;
 		let hit = null;
@@ -8470,7 +8664,7 @@ function resizePromptClip(id, edge, rawFrame) {
 
 	function onLineStageHoverEnd() {
 		const stage = stageRef.current;
-		if (lineDragRef.current) return;
+		if (lineDragRef.current || lineDrawRef.current) return;
 		lineHoverRef.current = null;
 		if (stage) delete stage.dataset.lineGrab;
 	}
@@ -8479,6 +8673,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * follows the live camera, back to a path that tracks the view. */
 	function resetLineCurve() {
 		lineDragRef.current = null;
+		lineDrawRef.current = null;
 		// The button is itself undoable: resetting a curve you spent five pulls
 		// on should not be a cliff.
 		if (lineCurve) lineUndoRef.current.push(lineCurve);
@@ -8496,6 +8691,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * transitions means the next pull is a different piece of work. */
 	function clearLineEdit() {
 		lineDragRef.current = null;
+		lineDrawRef.current = null;
 		lineUndoRef.current = [];
 		cancelLinePreview();
 		linePreviewSeedRef.current = null;
@@ -8506,6 +8702,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		const previous = lineUndoRef.current.pop();
 		if (previous === undefined) return false;
 		lineDragRef.current = null;
+		lineDrawRef.current = null;
 		cancelLinePreview();
 		setLineCurve(previous);
 		return true;
@@ -8898,8 +9095,9 @@ function resizePromptClip(id, edge, rawFrame) {
 	useEffect(() => {
 		if (!lineEditMode || !lineCurve) return undefined;
 		const id = window.setInterval(() => {
-			// Never yank the curve out from under a finger that is holding it.
-			if (lineDragRef.current) return;
+			// Never yank the curve out from under a finger that is holding it —
+			// or drawing a new one.
+			if (lineDragRef.current || lineDrawRef.current) return;
 			const live = captureLineCamera(lineEditPane());
 			// No readable camera is not drift — a transient unmeasurable pane
 			// must not throw away work the user did.
@@ -8925,26 +9123,61 @@ function resizePromptClip(id, edge, rawFrame) {
 	// completely unrelated fresh take. Absence of the capability is a refusal,
 	// never an attempt. Both the object and array spellings are accepted so
 	// M4's health payload can choose either.
+	//
+	// SELF-HEALING, because the answer is allowed to arrive late. The bridge
+	// derives the flag from a lazy ssh probe of the ProjFlow box (~3 s cold,
+	// cached for 5 s), so ONE fetch at the moment the bridge came up could catch
+	// a cold cache, a box still waking or a transient ssh failure and latch
+	// `false` for the whole session — the panel then says "not connected yet"
+	// forever and no pull ever previews, which is exactly the reported bug. So:
+	// while the bridge is up and the capability is still false, ask again every
+	// LINE_CAPABILITY_RETRY_MS, and ask IMMEDIATELY when the artist enters the
+	// mode (lineEditMode is a dependency for that reason — entering is the one
+	// moment the answer is about to matter). A confirmed capability stops the
+	// polling: the effect re-runs when the flag flips and returns early.
+	//
+	// What does NOT change is the gate itself. Retrying is a way to learn the
+	// truth sooner, never a reason to proceed without it — nothing here ever
+	// sets the flag on anything weaker than a health payload that positively
+	// says lineEdit.
 	useEffect(() => {
 		if (!bridge?.ok) {
 			setLineEditBackend(false);
 			return undefined;
 		}
+		// Already confirmed. The capability does not go away under a live bridge,
+		// and re-asking would be a request every 4 s for the rest of the session.
+		if (lineEditBackend) return undefined;
 		let alive = true;
-		fetch("/ardy/health")
-			.then((res) => (res.ok ? res.json() : null))
-			.then((payload) => {
-				if (!alive) return;
-				const caps = payload?.capabilities ?? payload?.features;
-				setLineEditBackend(Array.isArray(caps) ? caps.includes("lineEdit") : caps?.lineEdit === true);
-			})
-			.catch(() => {
-				if (alive) setLineEditBackend(false);
-			});
+		let timer = 0;
+		const again = () => {
+			if (!alive) return;
+			timer = window.setTimeout(probe, LINE_CAPABILITY_RETRY_MS);
+		};
+		const probe = () => {
+			timer = 0;
+			fetch("/ardy/health")
+				.then((res) => (res.ok ? res.json() : null))
+				.then((payload) => {
+					if (!alive) return;
+					const caps = payload?.capabilities ?? payload?.features;
+					const capable = Array.isArray(caps) ? caps.includes("lineEdit") : caps?.lineEdit === true;
+					setLineEditBackend(capable);
+					// A `false` is not an answer, it is "not yet" — keep asking.
+					if (!capable) again();
+				})
+				.catch(() => {
+					if (!alive) return;
+					setLineEditBackend(false);
+					again();
+				});
+		};
+		probe();
 		return () => {
 			alive = false;
+			if (timer) window.clearTimeout(timer);
 		};
-	}, [bridge?.ok]);
+	}, [bridge?.ok, lineEditBackend, lineEditMode]);
 
 	/** CONFIRM the pull: the full-quality run of exactly what the preview has
 	 * been showing. Its own run mode — the body carries lineEdit and NOTHING
@@ -11515,8 +11748,8 @@ function resizePromptClip(id, edge, rawFrame) {
 									type="button"
 									className={"btn full" + (lineEditMode ? " primary" : "")}
 									title={ko(
-										"The joint's own path is drawn on the viewport — grab a point on it and pull; the joint then follows the pulled path exactly. The view still orbits normally.",
-										"관절이 지나가는 궤적이 뷰포트에 그려집니다 — 궤적 위의 점을 잡아 끌면 관절이 그 궤적을 정확히 따라갑니다. 시점은 평소처럼 돌릴 수 있어요.",
+										"The joint's own path is drawn on the viewport — grab a point on it and pull, or draw a new path on empty space; the joint then follows it exactly. The view still orbits normally (Alt+drag).",
+										"관절이 지나가는 궤적이 뷰포트에 그려집니다 — 궤적 위의 점을 잡아 끌거나, 빈 곳에 새 궤적을 그리면 관절이 그 경로를 정확히 따라갑니다. 시점은 평소처럼 돌릴 수 있어요 (Alt+드래그).",
 									)}
 									onClick={toggleLineEditMode}
 								>
@@ -11583,11 +11816,11 @@ function resizePromptClip(id, edge, rawFrame) {
 										<p className="inspector-hint">
 											{lineCurveDirty
 												? (isKo
-													? `궤적을 당겼어요 — ${lineCurvePointCount}개 점(최대 ${MAX_LINE_POINTS}개)을 보내고, 양 끝 ${PINNED_CURVE_ENDS}프레임은 원래 궤적에 고정돼 이음매가 튀지 않아요`
-													: `Path pulled — ${lineCurvePointCount} points (max ${MAX_LINE_POINTS}); the outer ${PINNED_CURVE_ENDS} frames at each end stay on the original path, so the seams do not pop`)
+													? `궤적을 편집했어요 — ${lineCurvePointCount}개 점(최대 ${MAX_LINE_POINTS}개)을 보내고, 양 끝 ${PINNED_CURVE_ENDS}프레임은 원래 궤적에 고정돼 이음매가 튀지 않아요. 다시 끌거나 다시 그려서 다듬을 수 있어요`
+													: `Path edited — ${lineCurvePointCount} points (max ${MAX_LINE_POINTS}); the outer ${PINNED_CURVE_ENDS} frames at each end stay on the original path, so the seams do not pop. Pull it again, or draw over it, to refine`)
 												: ko(
-													"Grab a yellow dot on the joint's path and pull. The blue ends stay pinned to the original path.",
-													"관절 궤적 위의 노란 점을 잡아 끌어 보세요. 파란 양 끝은 원래 궤적에 고정됩니다.",
+													"Grab a yellow dot to pull the path, or draw a new one on empty space — the blue ends stay pinned.",
+													"노란 점을 잡아 끌어 궤적을 바꾸거나, 빈 곳에 새 궤적을 그려 보세요 — 파란 양 끝은 원래 궤적에 고정됩니다.",
 												)}
 										</p>
 										{/* The one thing users assume a modal viewport tool takes away.
@@ -11596,12 +11829,12 @@ function resizePromptClip(id, edge, rawFrame) {
 										<p className="inspector-hint">
 											{lineCurveDirty
 												? ko(
-													"You can still orbit and pan freely — but moving the view drops this pull, because it was aimed through this exact lens.",
-													"시점은 자유롭게 돌리고 옮길 수 있어요 — 다만 지금 잡아당긴 편집은 이 시점 기준이라 시점을 옮기면 사라집니다.",
+													"You can still orbit (Alt+drag), pan and fly freely — but moving the view drops this edit, because it was aimed through this exact lens.",
+													"시점은 자유롭게 돌리고(Alt+드래그) 옮길 수 있어요 — 다만 지금 편집한 궤적은 이 시점 기준이라 시점을 옮기면 사라집니다.",
 												)
 												: ko(
-													"You can still orbit and pan freely; the path follows the view until you pull it.",
-													"시점은 평소처럼 자유롭게 돌리고 옮길 수 있어요. 잡아당기기 전까지 궤적은 시점을 따라갑니다.",
+													"You can still orbit (Alt+drag), pan and fly freely; the path follows the view until you pull or draw it.",
+													"시점은 평소처럼 자유롭게 돌리고(Alt+드래그) 옮길 수 있어요. 끌거나 그리기 전까지 궤적은 시점을 따라갑니다.",
 												)}
 										</p>
 										{lineEditRange && lineEditRange.endFrame - lineEditRange.startFrame < MIN_CURVE_POINTS && (
@@ -11671,8 +11904,8 @@ function resizePromptClip(id, edge, rawFrame) {
 										{!lineEditBackend && (
 											<p className="inspector-hint line-edit-pending">
 												{ko(
-													"The line-editing backend is not connected yet — drawing works, generating waits for it.",
-													"라인 편집 백엔드가 아직 연결 전이에요 — 그리기는 되고 생성만 기다립니다.",
+													"The line-editing backend is not connected yet — pulling and drawing work, and this keeps retrying until it answers.",
+													"라인 편집 백엔드가 아직 연결 전이에요 — 끌기와 그리기는 되고, 연결될 때까지 계속 다시 확인합니다.",
 												)}
 											</p>
 										)}
