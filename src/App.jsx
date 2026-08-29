@@ -8788,8 +8788,12 @@ function resizePromptClip(id, edge, rawFrame) {
 						    nothing on the open stage ever touched the floor. A contact
 						    shadow is the cue that says a subject stands ON the deck rather
 						    than floats above it — without walls it is the only one left. */}
+						{/* "percentage" = THREE.PCFShadowMap. Bare `shadows` asks fiber for
+						    PCFSoftShadowMap, which three r185 deprecated — it already falls
+						    back to PCFShadowMap at runtime, minus one console.warn per
+						    frame burst. Same pixels, silent console. */}
 						<Canvas
-							shadows
+							shadows="percentage"
 							frameloop={renderActive ? "always" : "demand"}
 							dpr={[1, 2]}
 							gl={{ preserveDrawingBuffer: true, antialias: true }}
