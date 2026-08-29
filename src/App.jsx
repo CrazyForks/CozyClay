@@ -57,6 +57,7 @@ import {
 	nearestCurvePoint,
 	projectTrailCurve,
 	projectPointC6,
+	reprojectCurveWorld,
 	drawStrokeEdit,
 	unprojectDeltaC6,
 	pinsFrameRange,
@@ -8286,9 +8287,29 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * with the refusal would read as two different problems. */
 	function lineDriftHint() {
 		return ko(
-			"The view moved — the pending edit is kept and still applies; return toward the original view to see the line again, or Generate/undo from here.",
-			"시점이 움직였어요 — 편집한 궤적은 그대로 남아 있고 그대로 적용됩니다. 원래 시점 쪽으로 돌아오면 궤적이 다시 보이고, 지금 이 상태에서 생성하거나 되돌려도 됩니다.",
+			"The view moved — the pending edit still applies; the dashed line is that same edit seen from here. Return toward the original view to grab it again, or Generate/undo from here.",
+			"시점이 움직였어요 — 편집한 궤적은 그대로 적용되며, 점선은 같은 궤적을 지금 시점에서 본 모습입니다. 다시 잡으려면 원래 시점 쪽으로 돌아가고, 지금 이 상태에서 생성하거나 되돌려도 됩니다.",
 		);
+	}
+
+	/** The drifted ghost, RE-ANCHORED: lift the committed edit into world space
+	 * with the trail's own per-frame depth and see it through the LIVE lens, so
+	 * the dashed line hugs the trajectory instead of floating wherever the old
+	 * uv happen to land in the new view. Returns null when the trip cannot be
+	 * made (no live lens yet, no motion, a pins-only edit with no curves) — the
+	 * caller then paints the authored uv as before, which is at least honest
+	 * about being stale. Runs per frame like the rest of the painter; it is the
+	 * same few hundred pinhole projections projectLineCurve already pays. */
+	function reprojectDriftedEdit(pane, edit) {
+		const live = captureLineCamera(pane);
+		const jointName = TRAIL_EFFECTOR_JOINTS[lineTrack];
+		if (!live || !jointName || !motion) return null;
+		const trail = jointTrailPoints(motion, jointName, { baseY: activeChar.y ?? 0, scale: activeChar.scale ?? 1 });
+		if (!trail) return null;
+		const original = reprojectCurveWorld(edit.original, trail, edit.camera, live);
+		const edited = reprojectCurveWorld(edit.edited, trail, edit.camera, live);
+		if (!original || !edited) return null;
+		return { original, edited };
 	}
 
 	/** Project the joint's trail for the current track and range through the
@@ -8394,6 +8415,14 @@ function resizePromptClip(id, edge, rawFrame) {
 			original = edit.original;
 			edited = edit.edited;
 			ghost = !drag && lineCurveDrifted(pane, edit);
+			// A drifted line is still WORLD-anchored through the trail's depth, so
+			// draw it where the edit actually sits under the live lens rather than
+			// at its stale authored uv. Falls back to the authored uv when the
+			// re-anchoring cannot run (see reprojectDriftedEdit).
+			if (ghost) {
+				const anchored = reprojectDriftedEdit(pane, edit);
+				if (anchored) ({ original, edited } = anchored);
+			}
 		} else {
 			const live = projectLineCurve(pane);
 			lineLiveRef.current = live;
