@@ -214,6 +214,30 @@ escape hatch = retrain the small ACMDM-S prior on a licensed corpus
   joints (Spine2, hand ends, thumbs) are accepted losses. Twist error
   on arms is expected — measure and report, don't gate on it v1.
 
+## Phase 2 GATE RESULTS (2026-08-29, take A, real box runs via runLineEditJob)
+
+- GP1 exactness: line reprojection max 1.85e-7 normalized (0.0004 px at
+  1920) on a 24-pt diagonal; heart (48 pts, 85 frames) 8.6e-5 (0.17 px).
+  Preserved rows 2.4e-7 m. PASS — perspective affine rows, no ortho
+  approximation.
+- GP2 preservation: splice out-of-range L2P mean AND max exactly 0
+  (byte-identical), in-range 0.087 mean (the intended edit). Seams:
+  an ARBITRARY line pops 3.9x/8.0x the take's median frame delta —
+  by construction (the hand teleports to the line start). A line whose
+  ENDPOINTS sit on the joint's own trajectory (what the ghost trail
+  guides users to draw) collapses seams to 1.67x/1.09x. PASS with the
+  UX note: seam quality is authored, not automatic; a seam-ease knob
+  (free the first/last ~15% of line frames) is the documented follow-up.
+- GP3 speed: wall 7.6-8.6 s per edit including cold model load (3.9 s)
+  and ssh/scp; sampling 1.32 s full / 0.36 s preview. PASS (<= 10 s).
+  A resident model service would put the round trip at ~2-3 s.
+- GP4: foot sliding DELTA -0.021 m/frame (the edit slides LESS than the
+  source take). Converter round-trip <= 0.7 cm on all edit tracks.
+  Full suite 101 files green. PASS.
+- GP5: heart demo generated (pf-gates/GP5_heart.npz) — eyeball pending
+  user review in-app.
+- Commits: 01733dc (wave 1), 6a767ef (wave 2).
+
 ## Kill criteria (standing)
 - Phase 0 speed > 60 s / 5 s clip: stop, report, pivot to MotionLCM scout.
 - Inpaint demo cannot preserve: stop (NO-GO).
