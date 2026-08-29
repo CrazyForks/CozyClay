@@ -1016,8 +1016,10 @@ async function handleGenerate(req, res) {
 	const cleanupArtifacts = () => {
 		if (artifactDir) removePrivateArtifactDir(artifactDir);
 	};
+	let clientGone = false;
 	res.on("close", () => {
 		if (!res.writableEnded) {
+			clientGone = true;
 			console.error(
 				`[bridge] client disconnected mid-generate; killing ${children.size} child process group(s)`
 			);
@@ -1440,7 +1442,25 @@ async function handleGenerate(req, res) {
 			return;
 		}
 
-		const finalReport = await runSingle(segments[0]);
+		let finalReport;
+		try {
+			finalReport = await runSingle(segments[0]);
+		} catch (error) {
+			// The base take is a different length than this generation window —
+			// Kimodo's preserve prep refuses it outright (there is no principled
+			// resample). The app now avoids sending the pair, but any other client
+			// (MCP, replay, an older app) can still ask; degrade to a plain
+			// generation LOUDLY, the same policy as a missing base motion, instead
+			// of failing a run the operator did ask for.
+			if (!preserveParams || !/Base motion duration does not match/.test(String(error?.message ?? ""))) throw error;
+			const skipped =
+				"[bridge] preserve SKIPPED: the take being preserved is a different length than this " +
+				"generation window; generating WITHOUT scheduled inpainting";
+			console.error(skipped);
+			sendStatus(skipped);
+			preserveParams = null;
+			finalReport = await runSingle(segments[0]);
+		}
 		if (finalReport) {
 			const poseResults = finalReport.poses || [];
 			const worst = (key) => poseResults.length ? Math.max(...poseResults.map((pose) => pose[key] ?? 0)) : null;
@@ -1468,7 +1488,11 @@ async function handleGenerate(req, res) {
 		killChildren();
 		cleanupArtifacts();
 		if (!res.writableEnded) sendError(`generate failed: ${err.message}`);
-		console.error(`[bridge] generate error: ${err.stack || err}`);
+		// A run whose client already hung up dies of collateral damage — its
+		// artifact dir was just removed underneath it (see the close handler), so
+		// the ENOENT that follows is the abort working, not a generation failure.
+		if (clientGone) console.error(`[bridge] generate aborted by client disconnect (${err.message.split("\n")[0]})`);
+		else console.error(`[bridge] generate error: ${err.stack || err}`);
 		finish(200);
 	}
 }

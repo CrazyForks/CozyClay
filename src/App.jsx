@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Line, OrthographicCamera, PerspectiveCamera, Text, useFBX } from "@react-three/drei";
 import * as THREE from "three";
-import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
+import { SkeletonUtils } from "three/examples/jsm/Addons.js";
 import { buildArdyPose } from "./ardy/export.js";
 import { checkBridge, generate as ardyGenerate } from "./ardy/client.js";
 import { characterScaleFor, loadMotionFromUrl } from "./ardy/npz.js";
@@ -10171,7 +10171,15 @@ function resizePromptClip(id, edge, rawFrame) {
 		// bridge refuses the pair. A chained rollout (2 s + 2 s prompt blocks)
 		// must still generate — preserve silently steps aside rather than turning
 		// every multi-block generation into a 400.
-		if (!fresh && motion?.url && preserveStrength > 0 && body.regenerateSegments === undefined && body.segments === undefined) {
+		// The take being preserved must be the LENGTH of the window being
+		// generated: Kimodo's preserve prep refuses a base whose duration is off
+		// by more than a frame (there is no principled way to stretch a 8 s walk
+		// into 5 s of blend), so a duration change quietly steps aside exactly
+		// like a chained rollout does — the alternative is every "make it
+		// longer/shorter" regeneration failing outright.
+		const preserveDurationFits =
+			motion?.frames > 0 && Math.abs(motion.frames / TIMELINE_FPS - duration) <= 1 / ARDY_FPS + 1e-9;
+		if (!fresh && motion?.url && preserveStrength > 0 && preserveDurationFits && body.regenerateSegments === undefined && body.segments === undefined) {
 			body.preserve = {
 				sourceMotion: motion.url,
 				strength: preserveStrength,
