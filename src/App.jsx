@@ -10179,7 +10179,23 @@ function resizePromptClip(id, edge, rawFrame) {
 		// longer/shorter" regeneration failing outright.
 		const preserveDurationFits =
 			motion?.frames > 0 && Math.abs(motion.frames / TIMELINE_FPS - duration) <= 1 / ARDY_FPS + 1e-9;
-		if (!fresh && motion?.url && preserveStrength > 0 && preserveDurationFits && body.regenerateSegments === undefined && body.segments === undefined) {
+		// Preserve reconstructs the LOADED take wherever nothing was edited — with
+		// no edit ranges it reconstructs it nearly verbatim (G1 measured ~5 mm).
+		// So it must only ride along when this run asks for the SAME motion the
+		// take was generated from: if any prompt block changed, the user is asking
+		// for a different motion and preserve would hand them the old take back
+		// with the new prompt ignored. The take's recipe is the record of what it
+		// was generated from; no recipe (a pre-C9 take) means no way to check, and
+		// preserve steps aside rather than guessing. A motionEdit run is exempt —
+		// it rewrites a span of the take from poses, not from the prompt.
+		const requestBlocks = blocksFromRequest(body, ARDY_FPS);
+		const recipeBlocks = takeRecipeRef.current?.blocks ?? null;
+		const preservePromptMatches =
+			body.motionEdit !== undefined ||
+			(!!recipeBlocks &&
+				recipeBlocks.length === requestBlocks.length &&
+				recipeBlocks.every((block, index) => block.prompt.trim() === requestBlocks[index].prompt.trim()));
+		if (!fresh && motion?.url && preserveStrength > 0 && preserveDurationFits && preservePromptMatches && body.regenerateSegments === undefined && body.segments === undefined) {
 			body.preserve = {
 				sourceMotion: motion.url,
 				strength: preserveStrength,
