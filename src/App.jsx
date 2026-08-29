@@ -7913,26 +7913,58 @@ function resizePromptClip(id, edge, rawFrame) {
 			? jointTrailPoints(motion, ghostJoint, { baseY: activeChar.y ?? 0, scale: activeChar.scale ?? 1 })
 			: null;
 		if (trail && lineEditRange) {
-			ctx.save();
-			ctx.strokeStyle = "rgba(120, 200, 255, .55)";
-			ctx.lineWidth = 1.5;
-			ctx.setLineDash([3, 4]);
-			ctx.beginPath();
-			let started = false;
+			// Collected first so the halo pass and the colour pass trace the
+			// SAME path; two beginPath loops that each re-project would be the
+			// slow way to draw one line twice.
+			const ghostPx = [];
+			let firstUv = null;
 			for (let frame = lineEditRange.startFrame; frame < lineEditRange.endFrame && frame < motion.frames; frame += 1) {
 				const uv = projectPointC6(ghostCamera, trail[frame * 3], trail[frame * 3 + 1], trail[frame * 3 + 2]);
 				// A joint behind the lens has no image; break the path rather
 				// than drawing a straight line across the screen through it.
-				if (!uv) {
-					started = false;
-					continue;
-				}
-				const [px, py] = toPixels(uv);
-				if (started) ctx.lineTo(px, py);
-				else ctx.moveTo(px, py);
-				started = true;
+				ghostPx.push(uv ? toPixels(uv) : null);
+				if (uv && !firstUv) firstUv = toPixels(uv);
 			}
-			ctx.stroke();
+			const traceGhost = () => {
+				ctx.beginPath();
+				let started = false;
+				for (const px of ghostPx) {
+					if (!px) { started = false; continue; }
+					if (started) ctx.lineTo(px[0], px[1]);
+					else ctx.moveTo(px[0], px[1]);
+					started = true;
+				}
+				ctx.stroke();
+			};
+			ctx.save();
+			// Halo pass: a dark, wider underlay so the ghost reads on bright
+			// floors and skin tones alike — a 1.5px pale dash was invisible
+			// against anything lighter than the void.
+			ctx.lineJoin = "round";
+			ctx.lineCap = "round";
+			ctx.setLineDash([7, 6]);
+			ctx.strokeStyle = "rgba(0, 20, 40, .75)";
+			ctx.lineWidth = 5;
+			traceGhost();
+			ctx.strokeStyle = "rgba(120, 205, 255, .95)";
+			ctx.lineWidth = 2.5;
+			traceGhost();
+			// Where to START drawing: the seam is authored, and a line that
+			// begins on the joint's current position lands 1.1x the take's own
+			// frame delta at the seam, against 8x for a line begun in the void
+			// (measured, gate GP2). The pulsing dot is that guidance.
+			if (firstUv) {
+				const pulse = 1 + 0.25 * Math.sin(Date.now() / 220);
+				ctx.setLineDash([]);
+				ctx.fillStyle = "rgba(0, 20, 40, .8)";
+				ctx.beginPath();
+				ctx.arc(firstUv[0], firstUv[1], 8 * pulse, 0, Math.PI * 2);
+				ctx.fill();
+				ctx.fillStyle = "#78cdff";
+				ctx.beginPath();
+				ctx.arc(firstUv[0], firstUv[1], 5 * pulse, 0, Math.PI * 2);
+				ctx.fill();
+			}
 			ctx.restore();
 		}
 
@@ -7946,21 +7978,39 @@ function resizePromptClip(id, edge, rawFrame) {
 		ctx.save();
 		ctx.lineJoin = "round";
 		ctx.lineCap = "round";
-		ctx.strokeStyle = lineStroke ? "#ffd23d" : "rgba(255, 210, 61, .8)";
-		ctx.lineWidth = lineStroke ? 3 : 2;
-		ctx.beginPath();
-		points.forEach((point, index) => {
-			const [px, py] = toPixels(point);
-			if (index === 0) ctx.moveTo(px, py);
-			else ctx.lineTo(px, py);
-		});
-		ctx.stroke();
+		const traceStroke = () => {
+			ctx.beginPath();
+			points.forEach((point, index) => {
+				const [px, py] = toPixels(point);
+				if (index === 0) ctx.moveTo(px, py);
+				else ctx.lineTo(px, py);
+			});
+			ctx.stroke();
+		};
+		// Same two-pass treatment as the ghost: a dark halo keeps the stroke
+		// legible over any render, and a glow makes the COMMITTED line (the one
+		// that will actually be sent) unmistakable against the draft.
+		ctx.strokeStyle = "rgba(40, 24, 0, .8)";
+		ctx.lineWidth = lineStroke ? 9 : 7;
+		traceStroke();
 		if (lineStroke) {
-			ctx.fillStyle = "#ffd23d";
+			ctx.shadowColor = "rgba(255, 210, 61, .9)";
+			ctx.shadowBlur = 10;
+		}
+		ctx.strokeStyle = lineStroke ? "#ffd23d" : "rgba(255, 214, 80, .95)";
+		ctx.lineWidth = lineStroke ? 4.5 : 3.5;
+		traceStroke();
+		ctx.shadowBlur = 0;
+		if (lineStroke) {
 			for (const point of points) {
 				const [px, py] = toPixels(point);
+				ctx.fillStyle = "rgba(40, 24, 0, .85)";
 				ctx.beginPath();
-				ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+				ctx.arc(px, py, 4.5, 0, Math.PI * 2);
+				ctx.fill();
+				ctx.fillStyle = "#ffe27a";
+				ctx.beginPath();
+				ctx.arc(px, py, 2.8, 0, Math.PI * 2);
 				ctx.fill();
 			}
 		}
@@ -8072,7 +8122,18 @@ function resizePromptClip(id, edge, rawFrame) {
 		paintLineOverlay();
 		const repaint = () => paintLineOverlay();
 		window.addEventListener("resize", repaint);
-		return () => window.removeEventListener("resize", repaint);
+		// A gentle rAF loop while the mode is on: the ghost's start-here dot
+		// pulses (its only job is to catch the eye), and the underlying render
+		// can move beneath the overlay. Tens of 2d-canvas points per frame is
+		// noise next to the WebGL scene already animating behind it.
+		let raf = requestAnimationFrame(function tick() {
+			paintLineOverlay();
+			raf = requestAnimationFrame(tick);
+		});
+		return () => {
+			window.removeEventListener("resize", repaint);
+			cancelAnimationFrame(raf);
+		};
 	});
 
 	// ESC leaves the mode, matching the shot look-through and the scene-object
