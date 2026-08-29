@@ -4587,6 +4587,12 @@ globalThis.playMode = centerTab === "play";
 	const lineDragRef = useRef(null);
 	const lineLiveRef = useRef(null);
 	const lineHoverRef = useRef(null);
+	// Undo stack for committed pulls: each entry is the WHOLE lineCurve value
+	// that a commit replaced (null = "no edit yet"), so Ctrl/Cmd+Z is a plain
+	// pop-and-restore. Cleared whenever the camera moves under an edit — a
+	// restored curve authored through a stale lens would be discarded on the
+	// next drift poll anyway, as a confusing two-step.
+	const lineUndoRef = useRef([]);
 	const lineOverlayRef = useRef(null);
 	// Wave-2 gate: the bridge only routes lineEdit once M4's routing lands.
 	// Until the /ardy/health payload says so, the request is never sent —
@@ -8216,7 +8222,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			if (!live || !cameraDrifted(live, lineCurve.camera)) {
 				return { camera: lineCurve.camera, curve: lineCurve.edited };
 			}
-			setLineCurve(null);
+			clearLineEdit();
 			setToast(ko(
 				"The camera moved, so your pull was dropped and the path is following the view again",
 				"카메라가 움직여서 잡아당긴 편집을 버렸어요 — 궤적이 다시 시점을 따라갑니다",
@@ -8274,6 +8280,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// snapshots what the previous one committed.
 		lineDragRef.current = {
 			index: hit.index,
+			prev: lineCurve,
 			u0: u,
 			v0: v,
 			du: 0,
@@ -8305,13 +8312,15 @@ function resizePromptClip(id, edge, rawFrame) {
 			const endStage = stageRef.current;
 			if (endStage) delete endStage.dataset.lineGrab;
 			if (!drag) return;
-			// A pull that went nowhere leaves NO edit behind: the curve returns
-			// to following the camera, which is the state the view can be
-			// navigated in freely. Anything else is committed with the lens it
-			// was authored through.
-			setLineCurve(curvesEqual(drag.live, drag.snapshot)
-				? null
-				: { camera: drag.camera, original: drag.snapshot, edited: drag.live });
+			// A pull that went nowhere changes NOTHING — including an edit that
+			// was already there (wiping it on a stray click was a bug). A real
+			// pull commits with the lens it was authored through and records
+			// what it replaced, which is what Ctrl/Cmd+Z restores.
+			const changed = !curvesEqual(drag.live, drag.snapshot);
+			if (changed) lineUndoRef.current.push(drag.prev ?? null);
+			setLineCurve(changed
+				? { camera: drag.camera, original: drag.snapshot, edited: drag.live }
+				: (drag.prev ?? null));
 			paintLineOverlay();
 		};
 		window.addEventListener("pointermove", onMove);
@@ -8349,16 +8358,35 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * follows the live camera, back to a path that tracks the view. */
 	function resetLineCurve() {
 		lineDragRef.current = null;
+		// The button is itself undoable: resetting a curve you spent five pulls
+		// on should not be a cliff.
+		if (lineCurve) lineUndoRef.current.push(lineCurve);
 		setLineCurve(null);
 	}
 
-	function exitLineEditMode() {
+	/** Internal clear — mode entry/exit, enqueue and camera drift. Unlike the
+	 * reset BUTTON this also empties the undo stack: those transitions change
+	 * what the stack's entries were authored against. */
+	function clearLineEdit() {
 		lineDragRef.current = null;
+		lineUndoRef.current = [];
+		setLineCurve(null);
+	}
+
+	function undoLineCurve() {
+		const previous = lineUndoRef.current.pop();
+		if (previous === undefined) return false;
+		lineDragRef.current = null;
+		setLineCurve(previous);
+		return true;
+	}
+
+	function exitLineEditMode() {
+		clearLineEdit();
 		lineHoverRef.current = null;
 		lineLiveRef.current = null;
 		const stage = stageRef.current;
 		if (stage) delete stage.dataset.lineGrab;
-		setLineCurve(null);
 		setLineEditMode(false);
 	}
 
@@ -8379,8 +8407,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (waypointMode) setWaypointMode(false);
 		if (ikMode) leaveIkMode();
 		if (posing) setPosing(null);
-		lineDragRef.current = null;
-		setLineCurve(null);
+		clearLineEdit();
 		setLineEditMode(true);
 		setToast(ko(
 			"Path editing on — grab a dot on the joint's path and pull it; the view still orbits normally",
@@ -8481,11 +8508,28 @@ function resizePromptClip(id, edge, rawFrame) {
 	useEffect(() => {
 		if (!lineEditMode) return undefined;
 		const onKey = (event) => {
-			if (event.key === "Escape") exitLineEditMode();
+			if (event.key === "Escape") {
+				exitLineEditMode();
+				return;
+			}
+			// Ctrl/Cmd+Z inside the mode undoes the last PULL, not the scene.
+			// Capture phase, because the app's scene undo listens on the window
+			// bubble: consuming here keeps one keystroke from doing both. An
+			// empty stack still swallows the key — falling through to a scene
+			// undo the user cannot see happening behind the mode would be worse
+			// than a no-op. Text fields keep the browser's own undo. Shift+Z
+			// (redo) is left alone: there is no line-redo yet, and silently
+			// eating it would just feel broken in a different way.
+			if (event.code === "KeyZ" && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
+				if (/INPUT|TEXTAREA/.test(document.activeElement?.tagName ?? "")) return;
+				event.preventDefault();
+				event.stopPropagation();
+				undoLineCurve();
+			}
 		};
-		window.addEventListener("keydown", onKey);
-		return () => window.removeEventListener("keydown", onKey);
-	}, [lineEditMode]);
+		window.addEventListener("keydown", onKey, true);
+		return () => window.removeEventListener("keydown", onKey, true);
+	}, [lineEditMode, lineCurve]);
 
 	// Camera-drift watcher — and note what it does NOT do: it never blocks or
 	// freezes navigation, and it has no job at all while the curve is unedited,
@@ -8508,7 +8552,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			// No readable camera is not drift — a transient unmeasurable pane
 			// must not throw away work the user did.
 			if (!live || !cameraDrifted(live, lineCurve.camera)) return;
-			setLineCurve(null);
+			clearLineEdit();
 			setToast(ko(
 				"The camera moved, so your pull was dropped and the path is following the view again — pull it again from here",
 				"카메라가 움직여서 잡아당긴 편집을 버렸어요 — 궤적이 다시 시점을 따라갑니다. 이 시점에서 다시 잡아당겨 주세요",
@@ -8621,8 +8665,10 @@ function resizePromptClip(id, edge, rawFrame) {
 		// The pull has left the building. The curve stays (it is the reference
 		// the next edit starts from) but its deformation is released, so the
 		// Generate button goes back to needing a fresh pull instead of inviting
-		// a second identical run while the first is still queued.
-		resetLineCurve();
+		// a second identical run while the first is still queued. The undo
+		// stack goes with it: restoring a pull that is already generating would
+		// invite the identical run this reset exists to prevent.
+		clearLineEdit();
 	}
 
 	function runAllPromptBlocks() {
