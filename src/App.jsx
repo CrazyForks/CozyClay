@@ -102,6 +102,7 @@ import {
 	CUTOUT_KIND,
 	DEFAULT_SCENE_OBJECTS,
 	OBJECT_COLORS,
+	SCENE_ATTACH_BONES,
 	createCutoutObject,
 	createSceneObject,
 	duplicateCutoutOptions,
@@ -109,6 +110,7 @@ import {
 	objectSize,
 	placementInFront,
 	removeSceneObject,
+	setSceneObjectAttach,
 	setSceneObjectParent,
 	sceneObjectIdFromHierarchy,
 	updateSceneObject,
@@ -197,6 +199,7 @@ import {
 	capturePose,
 	deleteCustomPose,
 	loadCustomPoses,
+	normalizeBoneName,
 	saveCustomPoses,
 } from "./poses.js";
 import { IkHandles, PoseHandles, PoseStudioPanel, PoseThumbPreview, PoseTileGrid, warmPoseThumbnails } from "./posestudio.jsx";
@@ -325,6 +328,173 @@ const HIERARCHY_INSPECTOR_TITLES = {
 	"rig.rightKnee": ko("Right Knee", "오른쪽 무릎"),
 	"rig.rightFoot": ko("Right Foot", "오른발"),
 };
+
+/* ----------------------------------------- carried props (attachment) --- */
+
+/** The rig rows that ARE an attach frame: `rig.<track id>`, the same camel
+ * spellings SCENE_ATTACH_BONES uses. The group rows above them (rig.torso,
+ * rig.leftArm …) name a limb, not a frame, so they are deliberately absent. */
+const ATTACH_BONE_ROWS = new Map(SCENE_ATTACH_BONES.map((bone) => [`rig.${bone}`, bone]));
+
+/** Attach track id -> the Mixamo bone carrying that frame on the shipped rigs.
+ * TRAIL_EFFECTOR_JOINTS names the cskel27 joint, and cskel27 and Mixamo agree
+ * everywhere except the spine, which sits one bone up the Mixamo chain (the
+ * same shift ardy/playback.js SKINNING_MAP makes). */
+const ATTACH_BONE_NAMES = Object.fromEntries(SCENE_ATTACH_BONES.map((bone) => {
+	const joint = TRAIL_EFFECTOR_JOINTS[bone];
+	return [bone, joint === "Spine1" ? "Spine" : joint === "Spine2" ? "Spine1" : joint];
+}));
+
+// One scratch set for the whole module: resolving a frame runs per attached
+// prop per frame and must never allocate.
+const attachPos = new THREE.Vector3();
+const attachQuat = new THREE.Quaternion();
+const attachScale = new THREE.Vector3();
+const attachRootPos = new THREE.Vector3();
+const attachRootQuat = new THREE.Quaternion();
+const ATTACH_UNIT_SCALE = new THREE.Vector3(1, 1, 1);
+const attachWorldMatrix = new THREE.Matrix4();
+const attachLocalMatrix = new THREE.Matrix4();
+const attachToMatrix = new THREE.Matrix4();
+const attachInverseMatrix = new THREE.Matrix4();
+const placePos = new THREE.Vector3();
+const placeQuat = new THREE.Quaternion();
+const placeScale = new THREE.Vector3();
+const placeEuler = new THREE.Euler();
+
+/** The bone a rig offers under `mixamoName`, by the project's matching rule
+ * (normalised names equal, or one a suffix of the other; first depth-first
+ * match wins — poses.js and ardy/playback.js agree). Cached per rig: this is
+ * asked once per attached prop per rendered frame. */
+const attachBoneCache = new WeakMap();
+function attachBoneOf(rig, mixamoName) {
+	let byName = attachBoneCache.get(rig);
+	if (!byName) attachBoneCache.set(rig, (byName = new Map()));
+	if (byName.has(mixamoName)) return byName.get(mixamoName);
+	const target = normalizeBoneName(mixamoName);
+	let found = null;
+	rig.traverse((node) => {
+		if (found || !node.isBone) return;
+		const norm = normalizeBoneName(node.name);
+		if (norm === target || norm.endsWith(target)) found = node;
+	});
+	byName.set(mixamoName, found);
+	return found;
+}
+
+/**
+ * The LIVE world frame an attachment rides, or null when the rig (or that bone)
+ * is not there — a dangling attachment then renders where its numbers say,
+ * which is exactly what a detached prop does.
+ *
+ * The frame is deliberately UNSCALED. The shipped rigs are Mixamo centimetres
+ * scaled by 0.01 on the model, so a raw bone matrix would push a hundredfold
+ * into every carried prop's local numbers and leave the Inspector unreadable.
+ * A carried prop takes the bone's place and facing; its size stays its own.
+ *
+ * `bone === null` is the character's animated ROOT: the hips' travel (during
+ * playback the whole root trajectory lives in the bones — see
+ * ardy/playback.js) carried at the character's own yaw, so a prop dropped on
+ * the character walks with the body instead of rolling with the hips.
+ */
+function attachFrameMatrix(rig, bone, out = new THREE.Matrix4()) {
+	if (!rig) return null;
+	const name = ATTACH_BONE_NAMES[bone ?? "hips"];
+	if (!name) return null;
+	const node = attachBoneOf(rig, name);
+	if (!node) return null;
+	// Ancestors included: the bones are written imperatively by playback and by
+	// the export, either of which can land before the renderer's own pass.
+	node.updateWorldMatrix(true, false);
+	node.matrixWorld.decompose(attachPos, attachQuat, attachScale);
+	if (bone != null) return out.compose(attachPos, attachQuat, ATTACH_UNIT_SCALE);
+	// The Character group carries the scene placement and the clip-to-scene yaw;
+	// the rig model hangs off it, so its parent IS that group.
+	const group = rig.parent ?? rig;
+	group.updateWorldMatrix(true, false);
+	group.matrixWorld.decompose(attachRootPos, attachRootQuat, attachScale);
+	return out.compose(attachPos, attachRootQuat, ATTACH_UNIT_SCALE);
+}
+
+/** A prop's placement as a matrix — the same compose props.jsx renders from
+ * (position, XYZ euler in degrees, per-axis scale). */
+function sceneObjectMatrix(object, out = new THREE.Matrix4()) {
+	return out.compose(
+		placePos.set(object.x ?? 0, object.y ?? 0, object.z ?? 0),
+		placeQuat.setFromEuler(placeEuler.set(
+			(object.rotX ?? 0) * THREE.MathUtils.DEG2RAD,
+			(object.rot ?? 0) * THREE.MathUtils.DEG2RAD,
+			(object.rotZ ?? 0) * THREE.MathUtils.DEG2RAD,
+		)),
+		placeScale.set(object.scaleX ?? 1, object.scaleY ?? 1, object.scaleZ ?? 1),
+	);
+}
+
+/** …and back out into the nine authored channels, or null if the matrix could
+ * not be read as a placement at all (a singular frame inverts to zeros, and a
+ * zero matrix decomposes to NaN). Rounded, because a matrix round trip
+ * otherwise turns a typed 1.5 into 1.4999999999999998 in the Inspector the
+ * moment a prop is picked up and put down again. */
+function sceneObjectPlacement(matrix) {
+	matrix.decompose(placePos, placeQuat, placeScale);
+	placeEuler.setFromQuaternion(placeQuat);
+	const round = (value) => Math.round(value * 1e6) / 1e6;
+	const placement = {
+		x: round(placePos.x), y: round(placePos.y), z: round(placePos.z),
+		rotX: round(placeEuler.x * THREE.MathUtils.RAD2DEG),
+		rot: round(placeEuler.y * THREE.MathUtils.RAD2DEG),
+		rotZ: round(placeEuler.z * THREE.MathUtils.RAD2DEG),
+		scaleX: round(placeScale.x), scaleY: round(placeScale.y), scaleZ: round(placeScale.z),
+	};
+	return Object.values(placement).every((value) => Number.isFinite(value)) ? placement : null;
+}
+
+/**
+ * The nine channels rewritten so a prop does not MOVE when it changes frames.
+ *
+ * `world` is where the prop actually IS — read off the live group in the scene
+ * graph, NOT recomputed from its numbers. That distinction is the whole point:
+ * an attach->attach drop would otherwise have to reconstruct the world
+ * transform through the frame the prop is leaving, and any disagreement
+ * between that reconstruction and what the renderer last drew (a rig posed a
+ * beat later than the last drawn frame, a frame that no longer resolves) lands
+ * on screen as a jump. Reading the group makes every drop the same one-frame
+ * conversion the world->attach and attach->world cases already were.
+ *
+ * Returns null when the frame it needs is missing — converting against a rig
+ * that is not on stage would be precisely the jump this exists to prevent —
+ * and the caller then refuses the whole drop rather than re-labelling numbers
+ * it could not convert.
+ */
+function attachPlacementPatch(world, attach, frameOf) {
+	if (!world) return null;
+	if (!attach) return sceneObjectPlacement(attachLocalMatrix.copy(world));
+	const frame = frameOf(attach.characterId, attach.bone ?? null, attachToMatrix);
+	if (!frame) return null;
+	return sceneObjectPlacement(attachLocalMatrix.copy(world).premultiply(attachInverseMatrix.copy(frame).invert()));
+}
+
+/**
+ * Write a computed placement straight onto the record, around
+ * updateSceneObject. Deliberate, and the only call site allowed to: those
+ * limits are WORLD limits (y floors at the deck, x/z stay inside the room),
+ * and while a prop is attached its numbers are a LOCAL transform in a bone
+ * frame — a hand rides 1.3 m above the deck, so a carried prop's local y is
+ * routinely negative and clamping it to the floor IS the visual jump the
+ * conversion exists to prevent. Every value here comes out of a decomposed
+ * matrix, so the record shape is sound by construction.
+ */
+function placeSceneObject(objects, id, placement) {
+	if (!placement) return objects;
+	let changed = false;
+	const next = objects.map((object) => {
+		if (object.id !== id) return object;
+		if (Object.entries(placement).every(([key, value]) => object[key] === value)) return object;
+		changed = true;
+		return { ...object, ...placement };
+	});
+	return changed ? next : objects;
+}
 
 const CAMERA_MOVE_LABELS_KO = new Map([
 	["Static / locked-off", ko("Static / locked-off", "고정 샷")],
@@ -4436,6 +4606,122 @@ globalThis.playMode = centerTab === "play";
 		});
 	}, [sceneObjects, tlFrame, tlFrameCount, tlFps]);
 
+	/* ------------------------ carried props (attachment) ------------------- */
+	// A prop attached to a character rides a LIVE frame in the scene graph, so
+	// it tracks playback, scrubbing and the offscreen export — none of which
+	// re-render React. The renderer resolves the frame through this ref on every
+	// rendered frame; the App keeps it pointed at the mounted rigs. A ref, not a
+	// prop value, so a fresh rig map never re-renders the set.
+	const attachFrameRef = useRef(null);
+	attachFrameRef.current = (characterId, bone, out) => attachFrameMatrix(rigs[characterId] ?? null, bone, out);
+	// The recorder renders through gl.render() directly, which never runs the
+	// r3f frame loop — so it asks the set for one placement pass itself, right
+	// after it has written that frame's bones.
+	const propSyncRef = useRef(null);
+	// Where a prop actually IS, read off its live group: the one authority on
+	// the transform currently on screen, and so the only honest starting point
+	// for a no-jump conversion.
+	const propWorldRef = useRef(null);
+
+	/** The prop's live world matrix, falling back to its authored numbers while
+	 * it is unattached (those ARE world) and the set has not mounted it yet. */
+	function sceneObjectWorldMatrix(object) {
+		return propWorldRef.current?.(object.id, attachWorldMatrix)
+			?? ((object.attach ?? null) ? null : sceneObjectMatrix(object, attachWorldMatrix));
+	}
+
+	/** The attachment a hierarchy row offers, or null when the row is not a
+	 * frame. A character row means the whole body's animated root; a bone row
+	 * means that one frame. The rig subtree hangs off the FIRST character row
+	 * only (hierarchy-model.js), so a bone row can only ever mean characters[0]. */
+	function attachTargetForRow(rowId) {
+		const charId = charIdFromHierarchyId(rowId);
+		if (charId) return characters.some((entry) => entry.id === charId) ? { characterId: charId, bone: null } : null;
+		const bone = ATTACH_BONE_ROWS.get(rowId);
+		if (!bone || !characters[0]) return null;
+		return { characterId: characters[0].id, bone };
+	}
+
+	/** "Character 1 · Right Hand" — the same words the rows the user dropped on
+	 * carry, so the Inspector names the target the way the tree does. */
+	function attachTargetLabel(attach) {
+		const index = characters.findIndex((entry) => entry.id === attach.characterId);
+		const who = index < 0
+			? ko("Missing character", "없는 인물")
+			: index === 0
+				? ko("Character 1", "인물 1")
+				: index === 1
+					? ko("Character 2", "인물 2")
+					: isKo ? `인물 ${index + 1}` : `Character ${index + 1}`;
+		const bone = attach.bone
+			? HIERARCHY_INSPECTOR_TITLES[`rig.${attach.bone}`] ?? attach.bone
+			: ko("Root", "루트");
+		return `${who} · ${bone}`;
+	}
+
+	/**
+	 * Hierarchy row drag policy (the panel holds none). An object row dropped on
+	 * another object GROUPS; on a character or one of its bone rows it ATTACHES;
+	 * on Props it comes back to the world. Anything else is not a drop.
+	 */
+	const hierarchyReparent = {
+		canDrop(sourceRowId, targetRowId) {
+			const id = sceneObjectIdFromHierarchy(String(sourceRowId ?? ""));
+			if (!id || sourceRowId === targetRowId) return false;
+			const object = sceneObjects.find((entry) => entry.id === id);
+			if (!object) return false;
+			const targetObjectId = sceneObjectIdFromHierarchy(String(targetRowId ?? ""));
+			// Grouping keeps its own rules (self, cycles, unknown ids) — asking the
+			// store is the only way to stay honest about them.
+			if (targetObjectId) return setSceneObjectParent(sceneObjects, id, targetObjectId) !== sceneObjects;
+			if (targetRowId === "props") return (object.attach ?? null) !== null || (object.parent ?? null) !== null;
+			const attach = attachTargetForRow(targetRowId);
+			if (!attach) return false;
+			const current = object.attach ?? null;
+			return !current || current.characterId !== attach.characterId || (current.bone ?? null) !== attach.bone;
+		},
+		onDrop(sourceRowId, targetRowId) {
+			if (!hierarchyReparent.canDrop(sourceRowId, targetRowId)) return;
+			const id = sceneObjectIdFromHierarchy(String(sourceRowId));
+			const targetObjectId = sceneObjectIdFromHierarchy(String(targetRowId));
+			// Grouping moves nothing on screen — the set places every prop at its
+			// own absolute transform. Taking a parent DOES cancel an attachment
+			// (the store's exclusivity rule), so a carried prop dropped into a
+			// group comes back to world numbers on the way, exactly as the Props
+			// row would put it back.
+			if (targetObjectId) {
+				const carried = animatedSceneObjects.find((entry) => entry.id === id) ?? null;
+				const restored = carried?.attach
+					? attachPlacementPatch(sceneObjectWorldMatrix(carried), null, attachFrameRef.current)
+					: null;
+				store.applyAtomic((objects) => {
+					const next = setSceneObjectParent(objects, id, targetObjectId);
+					return next === objects ? objects : placeSceneObject(next, id, restored);
+				});
+				return;
+			}
+			const attach = targetRowId === "props" ? null : attachTargetForRow(targetRowId);
+			// Where the prop is on screen right now, expressed in the frame it is
+			// joining (or left as world when it joins none). ONE conversion, whether
+			// the prop is coming from the world or from another frame.
+			const shown = animatedSceneObjects.find((entry) => entry.id === id) ?? null;
+			const placement = shown ? attachPlacementPatch(sceneObjectWorldMatrix(shown), attach, attachFrameRef.current) : null;
+			// A placement that could not be computed refuses the DROP, not just the
+			// numbers: attaching without converting would silently reinterpret the
+			// old frame's numbers in the new frame, which is the jump itself.
+			if (!placement) return;
+			// ONE atomic: a single undo puts back both the field and the numbers.
+			store.applyAtomic((objects) => {
+				let next = setSceneObjectAttach(objects, id, attach);
+				// Dropping on Props means "world-anchored again", which drops the
+				// grouping parent too — attach and parent are the same slot.
+				if (attach === null) next = setSceneObjectParent(next, id, null);
+				if (next === objects) return objects;
+				return placeSceneObject(next, id, placement);
+			});
+		},
+	};
+
 	const activeShotIdx = shotIndexAtFrame(shots, tlFrame);
 	const activeShot = shots[activeShotIdx] ?? null;
 	const cameraKeys = activeShot?.cameraKeys ?? [];
@@ -6022,6 +6308,10 @@ globalThis.playMode = centerTab === "play";
 		if (activeRig && ikChains && ikStateRef.current.keys.size > 0) {
 			ikEvaluate(ikChains, ikStateRef.current, frame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
 		}
+		// The bones for this frame are now written, so a carried prop can take
+		// its place on them. gl.render() never runs the r3f frame loop, so this
+		// pass is the recorder's stand-in for the useFrame the preview gets.
+		propSyncRef.current?.();
 		const sampled = sampleAt(playbackScene, shotAtFrame(shots, frame), frame);
 		const cam = shotCamRef.current;
 		if (cam && sampled.camera) {
@@ -10925,6 +11215,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					onDeleteObject={deleteSceneObject}
 					onFrameObject={frameSelection}
 					propsDrop={propsDrop}
+					reparent={hierarchyReparent}
 				/>
 				</aside>
 				<div
@@ -11138,7 +11429,15 @@ function resizePromptClip(id, edge, rawFrame) {
 								onChange={(patch) => setKeyLight((current) => createKeyLight({ ...current, ...patch }))}
 							/>
 							<Room />
-							<SetProps objects={animatedSceneObjects} selectedId={selectedSceneObjectId} frameRef={propFrameRef} take={{ frameCount: tlFrameCount, fps: tlFps }} />
+							<SetProps
+								objects={animatedSceneObjects}
+								selectedId={selectedSceneObjectId}
+								frameRef={propFrameRef}
+								take={{ frameCount: tlFrameCount, fps: tlFps }}
+								attachFrameRef={attachFrameRef}
+								syncRef={propSyncRef}
+								worldRef={propWorldRef}
+							/>
 
 							<PerspectiveCamera
 								ref={shotCamRef}
@@ -12814,6 +13113,25 @@ function resizePromptClip(id, edge, rawFrame) {
 										onChange={(event) => changeSceneObject(selectedSceneObject.id, { name: event.target.value })}
 									/>
 								</Field>
+								{/* A carried prop has no grouping parent to pick — the character
+								    IS its parent — so the dropdown gives way to what it is
+								    riding and the way off it. Detaching here is the Props drop,
+								    numbers and all. */}
+								{selectedSceneObject.attach ? (
+									<Field label={ko("Attached to", "부착 대상")}>
+										<div className="attach-target">
+											<span>{attachTargetLabel(selectedSceneObject.attach)}</span>
+											<button
+												type="button"
+												className="btn ghost"
+												onClick={() => hierarchyReparent.onDrop(`object:${selectedSceneObject.id}`, "props")}
+												title={ko("Put it back in the set, where it is now", "지금 있는 자리에 그대로 세트로 되돌립니다")}
+											>
+												{ko("Detach", "분리")}
+											</button>
+										</div>
+									</Field>
+								) : (
 								<Field label={ko("Parent", "상위 그룹")}>
 									<select
 										value={selectedSceneObject.parent ?? ""}
@@ -12835,6 +13153,7 @@ function resizePromptClip(id, edge, rawFrame) {
 											))}
 									</select>
 								</Field>
+								)}
 								<Vector3Row
 							label={ko("Position", "위치")}
 									fields={[
