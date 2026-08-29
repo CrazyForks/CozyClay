@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createServer as createNetServer } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -25,6 +26,22 @@ function mainPortFrom(args) {
 }
 
 const livePort = process.env.COZYCLAY_LIVE_PORT ?? "5184";
+const mainPort = mainPortFrom(viteArgs);
+
+// Vite runs with --strictPort and reports a taken port as a raw stack trace —
+// after the bridge has already started and printed its own banner. Probe the
+// port first so the failure is one actionable line before anything spawns,
+// the same courtesy `npx cozyclay` already extends.
+await new Promise((resolvePromise, reject) => {
+	const probe = createNetServer();
+	probe.once("error", reject);
+	probe.listen({ port: mainPort, host: "127.0.0.1" }, () => probe.close(resolvePromise));
+}).catch((err) => {
+	if (err?.code !== "EADDRINUSE") throw err;
+	console.error(`[dev] port ${mainPort} is taken (another CozyClay dev server?). Try --port ${mainPort + 100}.`);
+	process.exit(1);
+});
+
 const children = [];
 const removeSignalCleanup = installSignalCleanup(() => children);
 const trackChild = (child) => children.push(child);
@@ -46,7 +63,7 @@ if (kimodoHost) {
 			args: ["tools/ardy/bridge.mjs"],
 			cwd: REPO,
 			env: process.env,
-			mainPort: mainPortFrom(viteArgs),
+			mainPort,
 			onSpawn: trackChild,
 			onFailure: untrackChild,
 		}));
