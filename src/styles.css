@@ -9049,3 +9049,62 @@ input[type=range] {
 	margin-top: 4px;
 	opacity: .85;
 }
+
+/* --------------------------------------------- line editing (C6) ---------- */
+/* The drawing surface for "draw a line, the joint follows it". A plain 2D
+   canvas stretched over the stage, ABOVE both .vp-pane rectangles (z-index 5)
+   and below the graphics-loss card (z-index 9) — a lost context has to be
+   readable even mid-stroke. It is the only element on the stage that
+   deliberately TAKES the pointer, and it only exists while the mode is on, so
+   nothing else has to opt out of it.
+   Appended at the end for the same reason the preserve block above is: the
+   Unity density and widget-material passes further up the cascade would
+   otherwise win over rules written beside the viewport section.
+   The selector is qualified with `.stage canvas` on purpose, and appending
+   alone would NOT have been enough: `.stage canvas` (0,1,1) and
+   `.stage canvas:active` (0,2,1) up in the viewport section out-specify a bare
+   class, so the overlay would have inherited the WebGL canvas's grab/grabbing
+   cursor no matter where these rules were written. */
+.stage canvas.line-edit-overlay,
+.stage canvas.line-edit-overlay:active {
+	position: absolute;
+	inset: 0;
+	z-index: 7;
+	/* Crosshair, not grab: this surface draws, it does not orbit. */
+	cursor: crosshair;
+	/* The stroke is a drag; without this, touch scrolls the page instead. */
+	touch-action: none;
+}
+
+/* The mode's controls, folded under the toggle inside the preserve region. The
+   left rule reads as "these belong to the button above" without adding another
+   card border inside an already-nested Field. */
+.line-edit-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 8px;
+	padding-left: 8px;
+	border-left: 2px solid var(--line2, #3c3c3c);
+}
+/* Two bounds on one line, reading as a single range rather than two fields —
+   same flat shape as .preserve-strength-row. */
+.line-edit-range-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+.line-edit-range-row input[type="number"] {
+	flex: 1;
+	min-width: 0;
+	font-variant-numeric: tabular-nums;
+}
+.line-edit-range-row span {
+	opacity: .6;
+}
+/* Wave 2 has not landed: the mode is fully usable, only the send is waiting.
+   Stated in the panel's own quiet voice rather than by disabling the tool. */
+.line-edit-pending {
+	margin-top: 2px;
+	opacity: .85;
+}

@@ -30,7 +30,17 @@ import { FlyControls, aimAt, forwardFrom } from "./controls.jsx";
 import { createLiveControl } from "./live-control.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
-import { DualRender, GIZMO_LAYER } from "./dualview.jsx";
+import { DualRender, GIZMO_LAYER, fitAspect } from "./dualview.jsx";
+import {
+	LINE_EDIT_TRACK_IDS,
+	MAX_LINE_POINTS,
+	cameraDrifted,
+	cameraToC6,
+	isLineEditUnsupported,
+	normalizePointerPoints,
+	projectPointC6,
+	validateLineEdit,
+} from "./line-edit.js";
 import { Room, StageLights } from "./room.jsx";
 import {
 	SHOT_AUTHORING_KEY,
@@ -157,6 +167,8 @@ import {
 import { IkHandles, PoseHandles, PoseStudioPanel, PoseThumbPreview, PoseTileGrid, warmPoseThumbnails } from "./posestudio.jsx";
 import { mergeProjectCustomPoses } from "./project-poses.js";
 import {
+	FK_TRACKS,
+	IK_TRACKS,
 	MID_TRACKS,
 	createIkState,
 	ikBakeKeyframe,
@@ -630,6 +642,34 @@ function preserveTracksSummary(tracks) {
 	const names = PRESERVE_LIMB_ORDER.filter((limb) => limbs.has(limb)).map(preserveLimbLabel);
 	return isKo ? `${names.join("·")}만 다시 생성` : `regenerates ${names.join(" · ")} only`;
 }
+
+/* --------------------------- line editing (C6) ---------------------------
+ * "Draw a line on screen and the joint follows it exactly" (ProjFlow). The
+ * arithmetic lives in ./line-edit.js; what stays here is the panel's own
+ * vocabulary and the one thing App owns that the pure module cannot — the
+ * mapping from a track id to a HUMAN LABEL, which is read straight out of
+ * ik.js's three tables so the picker can never drift from the pose studio's
+ * own naming. An id in LINE_EDIT_TRACK_IDS with no entry in those tables is a
+ * bug, and falling back to the raw id makes it visible instead of silent. */
+const LINE_EDIT_TRACK_OPTIONS = LINE_EDIT_TRACK_IDS.map((id) => ({
+	value: id,
+	label: [...IK_TRACKS, ...MID_TRACKS, ...FK_TRACKS].find((track) => track.id === id)?.label ?? id,
+}));
+/** The default drawing track: a wrist is the joint the paper's own demo draws
+ * with, and the one whose screen trajectory a user can actually see. */
+const LINE_EDIT_DEFAULT_TRACK = "leftHand";
+/** Why a validateLineEdit code refused, said once, in the user's language.
+ * Keyed by the pure module's stable codes so the copy and the check can never
+ * disagree about which field was wrong. */
+const LINE_EDIT_REFUSALS = {
+	sourceMotion: ["The current take has no bridge source — generate it once before drawing a line", "현재 테이크에 브리지 원본이 없어요 — 선을 그리기 전에 한 번 생성하세요"],
+	track: ["Pick a joint to draw with first", "먼저 선을 그릴 관절을 고르세요"],
+	frameRange: ["The frame range must sit inside the clip and span at least 2 frames", "프레임 구간은 클립 안에 있어야 하고 최소 2프레임이어야 해요"],
+	points: ["Draw a longer line — a tap is not a path", "선을 좀 더 길게 그려 주세요 — 점 하나는 경로가 아니에요"],
+	camera: ["The camera could not be captured — nudge the view and draw again", "카메라를 캡처하지 못했어요 — 뷰를 조금 움직인 뒤 다시 그려 주세요"],
+	prompt: ["The motion prompt is not usable for a line edit", "모션 프롬프트를 라인 편집에 쓸 수 없어요"],
+	shape: ["The line edit could not be assembled", "라인 편집을 구성하지 못했어요"],
+};
 
 // Named ingest failures, in both locales. A reason the user cannot act on is
 // not a message: each line says what was wrong with THIS source.
@@ -4479,6 +4519,33 @@ globalThis.playMode = centerTab === "play";
 	const [waypoints, setWaypoints] = useState(startupStage.characters?.[0]?.layer?.waypoints ?? startupShotState?.waypoints ?? []);
 	const [activeWaypointId, setActiveWaypointId] = useState(null);
 	const [pendingWaypointFrame, setPendingWaypointFrame] = useState(null);
+
+	/* ------------------------------ line editing ---------------------------
+	 * Contract C6. A modal drawing surface exactly like waypointMode above,
+	 * but the stroke is captured in SCREEN space on a 2D overlay canvas rather
+	 * than raycast onto the floor — depth is the model's problem, not the UI's.
+	 *
+	 * `lineStroke` is the COMMITTED stroke and it holds the camera that was
+	 * live at pointerup, not a reference to the live camera. That pairing is
+	 * the whole safety story: normalized uv only mean something through the
+	 * lens they were drawn with, so the camera is frozen beside the points and
+	 * the pair is discarded together the moment the view moves (see the drift
+	 * watcher further down). `lineDraftRef` is the in-flight drag; it is a ref
+	 * because a pointermove must repaint the overlay without re-rendering an
+	 * 11k-line component 200 times a second. */
+	const [lineEditMode, setLineEditMode] = useState(false);
+	const [lineTrack, setLineTrack] = useState(LINE_EDIT_DEFAULT_TRACK);
+	// null means "the whole clip" — resolved against the loaded take at use
+	// time so loading a different clip cannot leave a stale range behind.
+	const [lineRange, setLineRange] = useState(null);
+	const [lineStroke, setLineStroke] = useState(null);
+	const lineDraftRef = useRef(null);
+	const lineOverlayRef = useRef(null);
+	// Wave-2 gate: the bridge only routes lineEdit once M4's routing lands.
+	// Until the /ardy/health payload says so, the request is never sent —
+	// today's bridge ignores unknown fields, so an ungated POST would quietly
+	// return a fresh unrelated take instead of an edit.
+	const [lineEditBackend, setLineEditBackend] = useState(false);
 	useEffect(() => {
 		// Subject 1 is the sole frame-zero root start. Drop any legacy seeded
 		// waypoint so Top-View never renders two start markers.
@@ -6104,6 +6171,9 @@ globalThis.playMode = centerTab === "play";
 
 	function toggleWaypointMode() {
 		const next = !waypointMode;
+		// Both modes want the viewport pointer; the last one switched on wins,
+		// the other stands down rather than fighting for pointerdown.
+		if (next && lineEditMode) exitLineEditMode();
 		setWaypointMode(next);
 		if (!next) {
 			setPendingWaypointFrame(null);
@@ -6883,6 +6953,10 @@ globalThis.playMode = centerTab === "play";
 
 	function toggleIkMode() {
 		const next = !ikMode;
+		// Authoring modes are mutually exclusive: IK mode swaps the main pane to
+		// the poser camera, which would silently invalidate any drawn line
+		// anyway. Leaving the line mode explicitly says so instead.
+		if (next && lineEditMode) exitLineEditMode();
 		if (next) {
 			// Always enter on the safe, detailed IK tool. Trail editing is an
 			// explicit second tool and must never leave the regular handles
@@ -7708,6 +7782,425 @@ function resizePromptClip(id, edge, rawFrame) {
 		setArdySeed(value.trim());
 	}
 
+	/* ======================= line editing (contract C6) =======================
+	 * Draw a 2D polyline over the viewport; one joint follows it exactly.
+	 *
+	 * Three invariants hold this together and every function below serves one
+	 * of them:
+	 *   1. THE STROKE AND THE CAMERA ARE ONE OBJECT. uv only mean something
+	 *      through the lens they were drawn with, so the camera is captured at
+	 *      pointerup, stored next to the points, and both are dropped together
+	 *      when the view moves. Nothing re-projects an old stroke.
+	 *   2. THE OVERLAY NEVER TOUCHES THE SCENE GRAPH. It is a plain 2D canvas
+	 *      stacked on the stage, so a stroke cannot disturb playback, picking
+	 *      or the render loop, and it works identically in every view mode.
+	 *   3. THE REQUEST IS ITS OWN RUN. C6 makes lineEdit exclusive with
+	 *      preserve/waypoints/segments/motionEdit, so runLineEdit builds a
+	 *      dedicated body instead of decorating runArdy's. */
+
+	/** The loaded take's length on the TIMELINE clock — C6's frameRange is in
+	 * app clip frames and, unlike waypoints or motionEdit, is never converted
+	 * to the bridge clock. */
+	const lineClipFrames = motion?.frames ?? 0;
+	/** The authored range, or the whole clip when the user has not narrowed it.
+	 * Re-derived rather than stored so loading a different take cannot leave a
+	 * range pointing past the end of the new one. */
+	const lineEditRange = useMemo(() => {
+		if (!(lineClipFrames > 1)) return null;
+		const start = Math.max(0, Math.min(lineRange?.startFrame ?? 0, lineClipFrames - 2));
+		const end = Math.max(start + 2, Math.min(lineRange?.endFrame ?? lineClipFrames, lineClipFrames));
+		return { startFrame: start, endFrame: end };
+	}, [lineRange, lineClipFrames]);
+
+	/** Which camera actually draws the MAIN pane right now, and the exact
+	 * rectangle it draws into.
+	 *
+	 * This mirrors DualRender's own branch order on purpose: the pane holds
+	 * different cameras in different modes, and the letterboxed shot views draw
+	 * into a fitAspect sub-rect rather than the whole pane. Measuring a stroke
+	 * against the pane instead of the IMAGE would shift every point by the
+	 * width of the black bars. Plan and IK views return null — the plan camera
+	 * is orthographic (no pinhole intrinsics to send) and IK mode is mutually
+	 * exclusive with this one anyway. Rects are in CLIENT coordinates, which is
+	 * what pointer events speak. */
+	function lineEditPane() {
+		const pane = mainPaneRef.current;
+		if (!pane) return null;
+		const box = pane.getBoundingClientRect();
+		if (!(box.width >= 2 && box.height >= 2)) return null;
+		const rect = { x: box.left, y: box.top, w: box.width, h: box.height };
+		if (planIsMain || ikMode) return null;
+		if (playMode || lookThroughShot) {
+			const camera = shotCamRef.current;
+			return camera ? { camera, rect: fitAspect(rect, shotOutput.aspect) } : null;
+		}
+		const camera = editorCamRef.current;
+		return camera ? { camera, rect } : null;
+	}
+
+	/** Freeze the pane's camera into the C6 block. Returns null rather than
+	 * throwing when the camera is not a settled perspective camera — a refusal
+	 * here means "do not send", never "send something approximate". */
+	function captureLineCamera(pane) {
+		const camera = pane?.camera;
+		if (!camera?.isPerspectiveCamera) return null;
+		camera.updateMatrixWorld();
+		const inverse = new THREE.Matrix4().copy(camera.matrixWorld).invert();
+		try {
+			return cameraToC6({
+				fovDeg: camera.fov,
+				aspect: camera.aspect,
+				matrixWorldInverse: [...inverse.elements],
+				width: pane.rect.w,
+				height: pane.rect.h,
+			});
+		} catch (err) {
+			// The only way here is a pane whose aspect disagrees with the
+			// projection matrix, i.e. a frame drawn before DualRender settled.
+			// Refusing is correct; the next paint or pointerup retries.
+			console.warn("line edit: camera capture refused —", err.message);
+			return null;
+		}
+	}
+
+	/** Repaint the whole overlay from scratch: the drawable frame, the joint's
+	 * CURRENT screen trajectory as a ghost, and the stroke (draft or
+	 * committed). Cheap enough to run per pointermove — one clear and a few
+	 * dozen line segments — and stateless, so there is no partial-repaint bug
+	 * class to have. */
+	function paintLineOverlay() {
+		const canvas = lineOverlayRef.current;
+		const stage = stageRef.current;
+		if (!canvas || !stage) return;
+		const stageBox = stage.getBoundingClientRect();
+		const dpr = Math.min(2, window.devicePixelRatio || 1);
+		const width = Math.max(1, Math.round(stageBox.width));
+		const height = Math.max(1, Math.round(stageBox.height));
+		if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+			canvas.width = Math.round(width * dpr);
+			canvas.height = Math.round(height * dpr);
+		}
+		const ctx = canvas.getContext("2d");
+		if (!ctx) return;
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		ctx.clearRect(0, 0, width, height);
+		const pane = lineEditPane();
+		if (!pane) return;
+		// Stage-relative, because the canvas is stretched over the stage while
+		// the pane rect is measured in client coordinates.
+		const ox = pane.rect.x - stageBox.left;
+		const oy = pane.rect.y - stageBox.top;
+		const toPixels = (point) => [ox + point[0] * pane.rect.w, oy + point[1] * pane.rect.h];
+
+		// The drawable frame: the letterboxed shot views draw into less than the
+		// full pane, and a stroke outside this box would be normalized outside
+		// 0..1. Saying so with a border beats clamping silently.
+		ctx.save();
+		ctx.setLineDash([6, 5]);
+		ctx.strokeStyle = "rgba(255, 255, 255, .35)";
+		ctx.lineWidth = 1;
+		ctx.strokeRect(ox + .5, oy + .5, pane.rect.w - 1, pane.rect.h - 1);
+		ctx.restore();
+
+		// Ghost: where this joint ALREADY travels, over the chosen range, seen
+		// through the live camera. It is the answer to "which line am I
+		// replacing?" and it doubles as a live check on cameraToC6 — a wrong
+		// sign convention would draw the ghost somewhere the joint visibly is
+		// not. Reuses the motion-trail sampler rather than re-deriving anything.
+		const ghostCamera = captureLineCamera(pane);
+		const ghostJoint = TRAIL_EFFECTOR_JOINTS[lineTrack];
+		const trail = ghostCamera && ghostJoint && motion
+			? jointTrailPoints(motion, ghostJoint, { baseY: activeChar.y ?? 0, scale: activeChar.scale ?? 1 })
+			: null;
+		if (trail && lineEditRange) {
+			ctx.save();
+			ctx.strokeStyle = "rgba(120, 200, 255, .55)";
+			ctx.lineWidth = 1.5;
+			ctx.setLineDash([3, 4]);
+			ctx.beginPath();
+			let started = false;
+			for (let frame = lineEditRange.startFrame; frame < lineEditRange.endFrame && frame < motion.frames; frame += 1) {
+				const uv = projectPointC6(ghostCamera, trail[frame * 3], trail[frame * 3 + 1], trail[frame * 3 + 2]);
+				// A joint behind the lens has no image; break the path rather
+				// than drawing a straight line across the screen through it.
+				if (!uv) {
+					started = false;
+					continue;
+				}
+				const [px, py] = toPixels(uv);
+				if (started) ctx.lineTo(px, py);
+				else ctx.moveTo(px, py);
+				started = true;
+			}
+			ctx.stroke();
+			ctx.restore();
+		}
+
+		// The stroke itself. A draft is what the finger is doing right now; a
+		// committed stroke is the resampled polyline that will actually be sent,
+		// drawn with its points visible so the user can see the resolution the
+		// box receives.
+		const draft = lineDraftRef.current;
+		const points = lineStroke?.points2d ?? draft;
+		if (!points || points.length < 1) return;
+		ctx.save();
+		ctx.lineJoin = "round";
+		ctx.lineCap = "round";
+		ctx.strokeStyle = lineStroke ? "#ffd23d" : "rgba(255, 210, 61, .8)";
+		ctx.lineWidth = lineStroke ? 3 : 2;
+		ctx.beginPath();
+		points.forEach((point, index) => {
+			const [px, py] = toPixels(point);
+			if (index === 0) ctx.moveTo(px, py);
+			else ctx.lineTo(px, py);
+		});
+		ctx.stroke();
+		if (lineStroke) {
+			ctx.fillStyle = "#ffd23d";
+			for (const point of points) {
+				const [px, py] = toPixels(point);
+				ctx.beginPath();
+				ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+				ctx.fill();
+			}
+		}
+		ctx.restore();
+	}
+
+	/** Client pointer -> viewport-normalized uv, or null when the pointer is
+	 * outside the drawn image. Out-of-frame samples are DROPPED, not clamped:
+	 * a clamped point is a point the user did not draw, and it would pin the
+	 * joint to the frame edge. */
+	function lineUvFromPointer(pane, event) {
+		const u = (event.clientX - pane.rect.x) / pane.rect.w;
+		const v = (event.clientY - pane.rect.y) / pane.rect.h;
+		if (u < 0 || u > 1 || v < 0 || v > 1) return null;
+		return [u, v];
+	}
+
+	function onLinePointerDown(event) {
+		if (event.button !== 0) return;
+		const pane = lineEditPane();
+		if (!pane) {
+			setToast(ko("This view cannot take a drawn line — switch back to the Scene or Shot view", "이 뷰에서는 선을 그릴 수 없어요 — 장면 또는 샷 뷰로 돌아가세요"));
+			return;
+		}
+		const uv = lineUvFromPointer(pane, event);
+		if (!uv) return;
+		event.currentTarget.setPointerCapture(event.pointerId);
+		// A new stroke replaces the old one outright; there is no multi-stroke
+		// path in C6 and a second polyline would silently overwrite the first.
+		setLineStroke(null);
+		lineDraftRef.current = [uv];
+		paintLineOverlay();
+	}
+
+	function onLinePointerMove(event) {
+		if (!lineDraftRef.current) return;
+		const pane = lineEditPane();
+		if (!pane) return;
+		const uv = lineUvFromPointer(pane, event);
+		if (!uv) return;
+		lineDraftRef.current.push(uv);
+		paintLineOverlay();
+	}
+
+	function onLinePointerUp(event) {
+		const draft = lineDraftRef.current;
+		lineDraftRef.current = null;
+		if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+			event.currentTarget.releasePointerCapture(event.pointerId);
+		}
+		if (!draft) return;
+		const pane = lineEditPane();
+		const points2d = normalizePointerPoints(draft);
+		if (!pane || !points2d) {
+			paintLineOverlay();
+			setToast(ko("That was a tap, not a line — drag across the viewport to draw a path", "선이 아니라 점이에요 — 뷰포트를 가로질러 드래그해 경로를 그려 주세요"));
+			return;
+		}
+		// THE pairing moment: the lens the user was looking through is frozen
+		// here, beside the points it explains.
+		const camera = captureLineCamera(pane);
+		if (!camera) {
+			paintLineOverlay();
+			setToast(ko("The camera could not be captured — nudge the view and draw again", "카메라를 캡처하지 못했어요 — 뷰를 조금 움직인 뒤 다시 그려 주세요"));
+			return;
+		}
+		setLineStroke({ points2d, camera });
+	}
+
+	function clearLineStroke() {
+		lineDraftRef.current = null;
+		setLineStroke(null);
+	}
+
+	function exitLineEditMode() {
+		clearLineStroke();
+		setLineEditMode(false);
+	}
+
+	/** Entering is mutually exclusive with every other authoring mode, the same
+	 * way waypoint/IK/pose already are with each other: they all claim the same
+	 * viewport pointer and the same playhead. */
+	function toggleLineEditMode() {
+		if (lineEditMode) {
+			exitLineEditMode();
+			setToast(ko("Line editing off", "라인 편집 꺼짐"));
+			return;
+		}
+		if (!motion?.url) {
+			setToast(ko("The current take has no bridge source — generate it once before drawing a line", "현재 테이크에 브리지 원본이 없어요 — 선을 그리기 전에 한 번 생성하세요"));
+			return;
+		}
+		if (waypointMode) setWaypointMode(false);
+		if (ikMode) leaveIkMode();
+		if (posing) setPosing(null);
+		clearLineStroke();
+		setLineEditMode(true);
+		setToast(ko(
+			"Line editing on — drag across the viewport to draw the path the joint should follow",
+			"라인 편집 켜짐 — 뷰포트를 드래그해 관절이 따라갈 경로를 그리세요",
+		));
+	}
+
+	// Repaint on anything that changes what the overlay should show. The window
+	// resize listener is separate from React state because the pane rect can
+	// change without any of it changing.
+	useEffect(() => {
+		if (!lineEditMode) return undefined;
+		paintLineOverlay();
+		const repaint = () => paintLineOverlay();
+		window.addEventListener("resize", repaint);
+		return () => window.removeEventListener("resize", repaint);
+	});
+
+	// ESC leaves the mode, matching the shot look-through and the scene-object
+	// selection above.
+	useEffect(() => {
+		if (!lineEditMode) return undefined;
+		const onKey = (event) => {
+			if (event.key === "Escape") exitLineEditMode();
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [lineEditMode]);
+
+	// Camera-drift watcher. The stroke and its camera are only valid together,
+	// so an orbit, a fly, a lens change or a look-through toggle INVALIDATES the
+	// line rather than silently re-interpreting it against a lens it was never
+	// drawn through. Polling beats hooking every camera mutation: the cameras
+	// are moved from a dozen places (fly controls, shot presets, live control,
+	// follow tracks) and none of them reports to React.
+	useEffect(() => {
+		if (!lineEditMode || !lineStroke) return undefined;
+		const id = window.setInterval(() => {
+			const live = captureLineCamera(lineEditPane());
+			// No readable camera is not drift — a transient unmeasurable pane
+			// must not throw away work the user did.
+			if (!live || !cameraDrifted(live, lineStroke.camera)) return;
+			clearLineStroke();
+			setToast(ko(
+				"The camera moved, so the drawn line was cleared — draw it again from this view",
+				"카메라가 움직여서 그린 선을 지웠어요 — 이 시점에서 다시 그려 주세요",
+			));
+		}, 250);
+		return () => window.clearInterval(id);
+		// lookThroughShot / centerTab / ikMode are dependencies even though the
+		// body never reads them directly: they are what lineEditPane branches on,
+		// so a stale closure would keep measuring the camera the pane used to
+		// hold and a view SWITCH — the most obvious way to invalidate a stroke —
+		// would go undetected. Lens and aspect changes need no dependency: they
+		// move fx/fy, which the comparison sees on its own.
+	}, [lineEditMode, lineStroke, lookThroughShot, centerTab, ikMode]);
+
+	// Wave-2 capability preflight. `checkBridge` reports health only, so the
+	// line-edit route is probed here: today's bridge IGNORES unknown request
+	// fields, which means an ungated POST would come back as a plausible but
+	// completely unrelated fresh take. Absence of the capability is a refusal,
+	// never an attempt. Both the object and array spellings are accepted so
+	// M4's health payload can choose either.
+	useEffect(() => {
+		if (!bridge?.ok) {
+			setLineEditBackend(false);
+			return undefined;
+		}
+		let alive = true;
+		fetch("/ardy/health")
+			.then((res) => (res.ok ? res.json() : null))
+			.then((payload) => {
+				if (!alive) return;
+				const caps = payload?.capabilities ?? payload?.features;
+				setLineEditBackend(Array.isArray(caps) ? caps.includes("lineEdit") : caps?.lineEdit === true);
+			})
+			.catch(() => {
+				if (alive) setLineEditBackend(false);
+			});
+		return () => {
+			alive = false;
+		};
+	}, [bridge?.ok]);
+
+	/** Assemble and enqueue a line edit. Its own run mode: the body carries
+	 * lineEdit and NOTHING else authored, because C6 makes it exclusive with
+	 * preserve, waypoints, segments, regenerateSegments and motionEdit. */
+	function runLineEdit() {
+		if (ardyRunning) return;
+		if (!motion?.url) {
+			setToast(ko("The current take has no bridge source — generate it once before drawing a line", "현재 테이크에 브리지 원본이 없어요 — 선을 그리기 전에 한 번 생성하세요"));
+			return;
+		}
+		if (!lineStroke) {
+			setToast(ko("Draw a line on the viewport first", "먼저 뷰포트에 선을 그려 주세요"));
+			return;
+		}
+		// The take's own prompt is the text condition: a line edit changes WHERE
+		// a joint goes, not what the shot is about. The fallback keeps the
+		// bridge's non-empty-prompt contract satisfiable for takes imported
+		// without one.
+		const prompt = (motion.prompt || "").trim() || "A person continues the motion naturally.";
+		const lineEdit = {
+			sourceMotion: motion.url,
+			track: lineTrack,
+			frameRange: lineEditRange,
+			points2d: lineStroke.points2d,
+			camera: lineStroke.camera,
+			prompt,
+		};
+		const refusal = validateLineEdit(lineEdit, { clipFrames: lineClipFrames });
+		if (refusal) {
+			const copy = LINE_EDIT_REFUSALS[refusal.code] ?? LINE_EDIT_REFUSALS.shape;
+			setToast(ko(copy[0], copy[1]));
+			return;
+		}
+		if (!lineEditBackend) {
+			setToast(ko(
+				"The line-editing backend is not connected yet",
+				"라인 편집 백엔드가 아직 연결 전이에요",
+			));
+			return;
+		}
+		// posePin:false is mandatory, not decorative: the bridge demands a
+		// `poses` array whenever posePin is not explicitly false, and a line
+		// edit authors no poses at all.
+		const body = { prompt, duration: motion.frames / TIMELINE_FPS, posePin: false, lineEdit };
+		if (ardySeed !== "") body.seed = Number(ardySeed);
+		enqueueMotionJob({
+			charId: activeChar.id,
+			charIndex: activeCharIndex,
+			prompt,
+			body,
+			hasBlockEdits: false,
+			committedEditKeys: [],
+			rootRotationDeg: motion.rotationDeg ?? activeChar.rot,
+			anchor: { x: motion.anchorX ?? activeChar.x, z: motion.anchorZ ?? activeChar.z },
+			ikState: null,
+		});
+		// The stroke has left the building; keeping it drawn would invite a
+		// second identical run while the first is still queued.
+		clearLineStroke();
+	}
+
 	function runAllPromptBlocks() {
 		const clips = promptClips
 			.filter((clip) => clip.text.trim())
@@ -8248,6 +8741,18 @@ function resizePromptClip(id, edge, rawFrame) {
 			}
 			setToast(isKo ? `인물 ${job.charIndex + 1} ARDY 모션 생성됨` : `ARDY motion generated for Subject ${job.charIndex + 1}`);
 		} catch (err) {
+			// Wave-2 gate, second line of defence. The capability preflight
+			// normally stops a line edit before it is sent, but a bridge that
+			// advertises the route and then 400s on the field (a half-landed
+			// wave 2, an older sidecar behind the proxy) must read as "not
+			// connected yet", not as a red generation failure the user could
+			// act on.
+			if (job.body.lineEdit && isLineEditUnsupported(err?.message)) {
+				setToast(ko(
+					"The line-editing backend is not connected yet",
+					"라인 편집 백엔드가 아직 연결 전이에요",
+				));
+			}
 			setArdyOutcome({
 				ok: false,
 				message: err?.name === "AbortError" ? ko("Cancelled", "취소됨") : err?.message || String(err),
@@ -9059,6 +9564,24 @@ function resizePromptClip(id, edge, rawFrame) {
 								shotAspect={shotOutput.aspect}
 							/>
 						</Canvas>
+
+						{/* Line editing (C6): the drawing surface. A plain 2D canvas
+						    stacked on the stage — it never enters the three.js scene
+						    graph, so a stroke cannot disturb picking, playback or the
+						    render loop, and it behaves the same in every view mode. It
+						    only exists while the mode is on, so nothing here can swallow
+						    a viewport pointer the rest of the time. */}
+						{lineEditMode && (
+							<canvas
+								ref={lineOverlayRef}
+								className="line-edit-overlay"
+								aria-label={ko("Line editing surface — drag to draw the joint's path", "라인 편집 화면 — 드래그해 관절 경로를 그리세요")}
+								onPointerDown={onLinePointerDown}
+								onPointerMove={onLinePointerMove}
+								onPointerUp={onLinePointerUp}
+								onPointerCancel={onLinePointerUp}
+							/>
+						)}
 
 						{glContextLost && (
 							<div className="gl-lost-overlay" role="alert">
@@ -9918,6 +10441,105 @@ function resizePromptClip(id, edge, rawFrame) {
 								    whole-take wording above is already the truth. */}
 								{preserveStrength > 0 && preserveTracksLine && (
 									<p className="inspector-hint preserve-tracks-summary">{preserveTracksLine}</p>
+								)}
+							</Field>
+						)}
+						{/* Line editing (contract C6). It sits beside the preserve slider
+						    because it answers the same question from the other side —
+						    preserve says how much of the take to KEEP, a line says exactly
+						    where one joint must GO — and because both need a take with a
+						    bridge source, so the whole section is absent until there is one
+						    rather than present and inert. */}
+						{motion?.url && (
+							<Field label={ko("Line editing", "라인 편집")}>
+								<button
+									type="button"
+									className={"btn full" + (lineEditMode ? " primary" : "")}
+									title={ko(
+										"Draw a path on the viewport and one joint follows it exactly.",
+										"뷰포트에 경로를 그리면 관절 하나가 그 선을 정확히 따라갑니다.",
+									)}
+									onClick={toggleLineEditMode}
+								>
+									{lineEditMode ? ko("Line editing on", "라인 편집 켜짐") : ko("Draw a line", "선 그리기")}
+								</button>
+								{lineEditMode && (
+									<div className="line-edit-panel">
+										<Field label={ko("Joint", "관절")}>
+											<Dropdown
+												value={lineTrack}
+												options={LINE_EDIT_TRACK_OPTIONS}
+												onChange={setLineTrack}
+												ariaLabel={ko("Joint that follows the line", "선을 따라갈 관절")}
+											/>
+										</Field>
+										{/* No range picker exists elsewhere in the app that a line
+										    edit could borrow, so the whole clip is the default and
+										    these two numbers only ever NARROW it. endFrame is
+										    exclusive, like every other half-open range on this wire. */}
+										<Field label={ko("Frame range", "프레임 구간")}>
+											<div className="line-edit-range-row">
+												<input
+													type="number"
+													min={0}
+													max={Math.max(0, lineClipFrames - 2)}
+													value={lineEditRange?.startFrame ?? 0}
+													onChange={(event) => setLineRange((current) => ({
+														startFrame: Math.round(Number(event.target.value)) || 0,
+														endFrame: current?.endFrame ?? lineClipFrames,
+													}))}
+												/>
+												<span aria-hidden="true">–</span>
+												<input
+													type="number"
+													min={2}
+													max={lineClipFrames}
+													value={lineEditRange?.endFrame ?? lineClipFrames}
+													onChange={(event) => setLineRange((current) => ({
+														startFrame: current?.startFrame ?? 0,
+														endFrame: Math.round(Number(event.target.value)) || 0,
+													}))}
+												/>
+											</div>
+										</Field>
+										<p className="inspector-hint">
+											{lineStroke
+												? (isKo
+													? `선을 그렸어요 — ${lineStroke.points2d.length}개 점(최대 ${MAX_LINE_POINTS}개), 그릴 때의 카메라로 고정됨`
+													: `Line drawn — ${lineStroke.points2d.length} points (max ${MAX_LINE_POINTS}), locked to the camera you drew through`)
+												: ko(
+													"Drag across the viewport to draw the path. The dashed line is where the joint travels today.",
+													"뷰포트를 드래그해 경로를 그리세요. 점선은 지금 관절이 지나가는 길입니다.",
+												)}
+										</p>
+										<button
+											type="button"
+											className="btn primary full generate"
+											disabled={!bridge?.ok || !lineStroke || ardyRunning}
+											title={!bridge?.ok
+												? ko("Waiting for the ARDY bridge — it reconnects automatically", "ARDY 브리지를 기다리는 중 — 자동으로 다시 연결됩니다")
+												: !lineStroke
+													? ko("Draw a line on the viewport first", "먼저 뷰포트에 선을 그려 주세요")
+													: ""}
+											onClick={runLineEdit}
+										>
+											{ko("Generate the line edit", "라인 편집 생성")}
+										</button>
+										<button type="button" className="btn ghost full" disabled={!lineStroke} onClick={clearLineStroke}>
+											{ko("Redraw", "다시 그리기")}
+										</button>
+										<button type="button" className="btn ghost full" onClick={exitLineEditMode}>
+											{ko("Exit line editing (Esc)", "라인 편집 끝내기 (Esc)")}
+										</button>
+										{!lineEditBackend && (
+											<p className="inspector-hint line-edit-pending">
+												{ko(
+													"The line-editing backend is not connected yet — drawing works, generating waits for it.",
+													"라인 편집 백엔드가 아직 연결 전이에요 — 그리기는 되고 생성만 기다립니다.",
+												)}
+											</p>
+										)}
+									</div>
 								)}
 							</Field>
 						)}
