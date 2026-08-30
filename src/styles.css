@@ -922,6 +922,41 @@ select {
 	max-width: 320px;
 }
 
+/* Composition guides (Blender's camera display guides): chrome over the shot
+   frame, never over exported pixels. The SVG letterboxes itself via its
+   viewBox, so no JS measures the frame rect. */
+.shot-guides {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	z-index: 3;
+}
+.shot-guides svg {
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+.shot-guides line,
+.shot-guides rect {
+	stroke: rgba(255, 255, 255, .34);
+	stroke-width: 1px;
+	fill: none;
+}
+.shot-guides rect.guide-action { stroke: rgba(126, 231, 196, .4); }
+.shot-guides rect.guide-title { stroke: rgba(128, 176, 255, .46); }
+.vp-guide-cycle {
+	display: inline-flex;
+	align-items: center;
+	border: 0;
+	padding: 1px 2px;
+	background: none;
+	color: rgba(255, 255, 255, .5);
+	cursor: pointer;
+	border-radius: 3px;
+}
+.vp-guide-cycle:hover { color: #fff; }
+.vp-guide-cycle.on { color: #7ee7c4; }
+
 .film-frame {
 	position: absolute;
 	top: 16px;

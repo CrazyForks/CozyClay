@@ -26,6 +26,8 @@
     "test:theme": "node test/verify-theme.mjs",
     "test:appearance": "node test/verify-appearance.mjs",
     "test:auto-color": "node test/verify-auto-color.mjs",
+    "test:shot-guides": "node test/verify-shot-guides.mjs",
+    "test:burn-in": "node test/verify-burn-in.mjs",
     "test:layout": "node test/verify-layout.mjs",
     "test:timeline-camera": "node test/verify-timeline-camera.mjs",
     "test:timeline-shots": "node test/verify-timeline-shots.mjs",

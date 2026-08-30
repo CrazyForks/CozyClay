@@ -285,6 +285,14 @@ import {
 import { captureFraming, classifyMove, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
 import { sampleAt } from "./sample-at.js";
 import { exportOffscreenVideo } from "./offscreen-export.js";
+import { burnInCapture } from "./burn-in.js";
+import {
+	GUIDE_LABELS,
+	guideGeometry,
+	nextGuideMode,
+	readStoredGuideMode,
+	writeStoredGuideMode,
+} from "./shot-guides.js";
 import { serializeOtio } from "./otio.js";
 import {
 	addShotAtFrame,
@@ -391,6 +399,35 @@ import {
 	useImageDrop,
 } from "./app-stage.jsx";
 
+/**
+ * Composition guides stretched over whichever DOM rect currently shows the
+ * shot frame. The SVG uses a 0..100 space with preserveAspectRatio="none":
+ * proportional guides (thirds, golden, safe) stay correct under any aspect,
+ * and non-scaling strokes keep the ink one pixel wide. Overlay only — it
+ * never reaches the WebGL scene or exported pixels.
+ */
+function ShotGuideOverlay({ mode, aspect, className = "" }) {
+	const geometry = guideGeometry(mode);
+	if (geometry.lines.length === 0 && geometry.rects.length === 0) return null;
+	// The viewBox carries the shot aspect and "meet" centers it, so the SVG
+	// letterboxes itself exactly like the framed render underneath — the same
+	// fit rule, computed by the same engine, with no JS measurement.
+	const spanX = 100 * (aspect || 1);
+	const sx = (value) => (value / 100) * spanX;
+	return (
+		<div className={"shot-guides " + className} aria-hidden="true" data-guide-mode={mode}>
+			<svg viewBox={`0 0 ${spanX} 100`} preserveAspectRatio="xMidYMid meet">
+				{geometry.lines.map((l, index) => (
+					<line key={index} x1={sx(l.x1)} y1={l.y1} x2={sx(l.x2)} y2={l.y2} vectorEffect="non-scaling-stroke" />
+				))}
+				{geometry.rects.map((r) => (
+					<rect key={r.kind} x={sx(r.x)} y={r.y} width={sx(r.width)} height={r.height} className={"guide-" + r.kind} vectorEffect="non-scaling-stroke" />
+				))}
+			</svg>
+		</div>
+	);
+}
+
 export default function App() {
 	// QA-only render counter (same spirit as window.__cozyclay): headless perf
 	// probes read renders/second to find re-render storms. Negligible cost.
@@ -410,6 +447,13 @@ export default function App() {
 	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
 	const [shotAspectKey, setShotAspectKey] = useState(startupStage.shotAspect);
 	const shotOutput = SHOT_ASPECT_PRESETS[shotAspectKey] ?? SHOT_ASPECT_PRESETS["16:9"];
+	// Composition guides over the shot frame (Blender's camera display guides).
+	// A viewer preference, not scene data: it persists per browser, never in
+	// the scene document, and never touches exported pixels.
+	const [guideMode, setGuideMode] = useState(() => readStoredGuideMode(globalThis.localStorage));
+	useEffect(() => {
+		writeStoredGuideMode(globalThis.localStorage, guideMode);
+	}, [guideMode]);
 	const [sensorId, setSensorFormat] = useState(startupStage.sensorId ?? DEFAULT_SENSOR_FORMAT);
 	// The stage's key light and the in-flight editor-camera glide. Declared
 	// this early because the keyboard effect lists them in its dependency
@@ -3772,7 +3816,14 @@ globalThis.playMode = centerTab === "play";
 				fps: TIMELINE_FPS,
 				width: shotOutput.width,
 				height: shotOutput.height,
-				capture: applyExportFrame,
+				// Blender-style stamp: every exported frame names its slate and
+				// frame number, so a review note can point at an exact frame.
+				capture: burnInCapture(applyExportFrame, {
+					width: shotOutput.width,
+					height: shotOutput.height,
+					slate: moveSequence?.slate ?? "",
+					frameCount: tlFrameCount,
+				}),
 				signal: controller.signal,
 			});
 			if (download) {
@@ -9385,9 +9436,22 @@ function resizePromptClip(id, edge, rawFrame) {
 							className="vp-pane vp-shot-preview"
 							style={{ "--shot-aspect": shotOutput.aspect }}
 						>
+							<ShotGuideOverlay mode={guideMode} aspect={shotOutput.aspect} />
 							<span className="vp-inset-tag vp-shot-preview-tag">
 								<span className="vp-rec-dot" aria-hidden="true" />
 								{ko("Shot", "샷")}
+								<button
+									type="button"
+									className={"vp-guide-cycle" + (guideMode === "off" ? "" : " on")}
+									aria-label={ko("Cycle composition guides", "구도 가이드 전환")}
+									title={ko(GUIDE_LABELS[guideMode].en, GUIDE_LABELS[guideMode].ko) + ko(" · click to cycle", " · 클릭으로 전환")}
+									onClick={() => setGuideMode((mode) => nextGuideMode(mode))}
+								>
+									<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+										<path d="M3 3h18v18H3z" />
+										<path d="M9 3v18M15 3v18M3 9h18M3 15h18" />
+									</svg>
+								</button>
 								<button
 									type="button"
 									className="vp-look-through"
@@ -9417,6 +9481,9 @@ function resizePromptClip(id, edge, rawFrame) {
 							</button>
 						)}
 
+						{lookThroughShot && !playMode && !ikMode && (
+							<ShotGuideOverlay mode={guideMode} aspect={shotOutput.aspect} className="lookthrough" />
+						)}
 						<div className="film-frame" hidden={playMode || !lookThroughShot}>
 							<span />
 							<span />
