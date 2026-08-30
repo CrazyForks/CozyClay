@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+The viewport gains an Auto Color mode: every set object gets its own stable,
+automatically derived color, the way Blender's random viewport shading colors
+objects.
+
+- The topbar Auto Color toggle recolors primitives and set pieces per object
+  id — deterministic, so the same object is the same color across sessions and
+  machines; the bird's-eye plan board shows the same colors.
+- Display-only: authored object colors, saved projects, undo history, and the
+  MCP scene view are untouched; photo cutouts keep their image. Captures made
+  while the mode is on include the display colors.
+- The inspector shows the derived hex beside the authored color swatch, and
+  the preference persists per browser.
+
 ## 1.6.0
 
 The official npm package now records anonymous product usage so downloads can
