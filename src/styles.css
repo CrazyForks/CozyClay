@@ -453,6 +453,41 @@ select {
 	outline: none;
 }
 
+/* Auto color: same chrome as the locale toggle; pressed state carries the
+   accent so "the viewport is recolored right now" is visible at a glance. */
+.auto-color-toggle {
+	display: inline-flex;
+	align-items: center;
+	height: 28px;
+	padding: 0 10px;
+	border: 1px solid var(--line2);
+	border-radius: 2px;
+	background: #2c2c2c;
+	color: var(--fg);
+	font-size: 10px;
+	font-weight: 620;
+	cursor: pointer;
+}
+
+.auto-color-toggle:hover,
+.auto-color-toggle:focus-visible {
+	border-color: var(--accent);
+	background: var(--accent-soft);
+	outline: none;
+}
+
+.auto-color-toggle[aria-pressed="true"] {
+	border-color: var(--accent);
+	background: var(--accent-soft);
+}
+
+.auto-color-hex {
+	align-self: center;
+	font-size: 10px;
+	color: var(--fg-dim, #9a9a9a);
+	font-variant-numeric: tabular-nums;
+}
+
 .toolbar-balance {
 	min-width: 0;
 }

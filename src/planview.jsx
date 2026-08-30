@@ -178,8 +178,11 @@ function SceneObjectFootprint({ object, selected, dragging, turning }) {
 		<group position={[object.x, 0, object.z]} rotation={[0, rotation, 0]}>
 			<mesh position={[0, 0.032, 0]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={10}>
 				<planeGeometry args={[width, depth]} />
+				{/* Auto-color mode stamps `autoColor` on displayed objects; the board
+				    agrees with the viewport so "the teal box" means the same thing in
+				    both panes. Selection still wins. */}
 				<meshBasicMaterial
-					color={selected ? SELECTED_COLOR : OBJECT_COLOR}
+					color={selected ? SELECTED_COLOR : object.autoColor ?? OBJECT_COLOR}
 					transparent
 					opacity={selected ? 0.58 : 0.34}
 					depthWrite={false}
@@ -188,7 +191,7 @@ function SceneObjectFootprint({ object, selected, dragging, turning }) {
 			</mesh>
 			<mesh position={[0, 0.04, 0]} renderOrder={11}>
 				<boxGeometry args={[width, 0.02, depth]} />
-				<meshBasicMaterial color={selected ? SELECTED_COLOR : OBJECT_COLOR} wireframe depthTest={false} />
+				<meshBasicMaterial color={selected ? SELECTED_COLOR : object.autoColor ?? OBJECT_COLOR} wireframe depthTest={false} />
 			</mesh>
 			<group position={[0, 0, depth / 2 + 0.45]} rotation={[0, -rotation, 0]}>
 				<PlanLabel

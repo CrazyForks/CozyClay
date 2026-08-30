@@ -82,31 +82,35 @@ export function Car({ position = [0, 0, 0], rotY = 0, color = CLAY_CAR, topColor
 }
 
 /** Compact single-engine propeller plane, ~3.4 m wingspan and +Z forward. */
-export function SmallPlane({ position = [0, 0, 0], rotY = 0 }) {
+export function SmallPlane({ position = [0, 0, 0], rotY = 0, color = undefined }) {
+	// Auto-color mode tints the PRIMARY surfaces only (fuselage, wings, trim);
+	// glass, tires and rims keep their materials so the silhouette still reads.
+	const body = color ?? CLAY_PLANE;
+	const trim = color ?? CLAY_PLANE_TRIM;
 	return (
 		<group position={position} rotation={[0, rotY, 0]}>
 			{/* fuselage and tapered nose */}
 			<mesh position={[0, 0.76, 0]} rotation={[Math.PI / 2, 0, 0]}>
 				<cylinderGeometry args={[0.23, 0.31, 2.75, 16]} />
-				<meshStandardMaterial color={CLAY_PLANE} roughness={0.58} metalness={0.18} />
+				<meshStandardMaterial color={body} roughness={0.58} metalness={0.18} />
 			</mesh>
 			<mesh position={[0, 0.76, 1.55]} rotation={[Math.PI / 2, 0, 0]}>
 				<coneGeometry args={[0.23, 0.55, 16]} />
-				<meshStandardMaterial color={CLAY_PLANE_TRIM} roughness={0.52} metalness={0.2} />
+				<meshStandardMaterial color={trim} roughness={0.52} metalness={0.2} />
 			</mesh>
 
 			{/* main wing and tail plane */}
 			<mesh position={[0, 0.73, 0.15]}>
 				<boxGeometry args={[3.4, 0.09, 0.58]} />
-				<meshStandardMaterial color={CLAY_PLANE} roughness={0.62} metalness={0.14} />
+				<meshStandardMaterial color={body} roughness={0.62} metalness={0.14} />
 			</mesh>
 			<mesh position={[0, 0.84, -1.18]}>
 				<boxGeometry args={[1.45, 0.07, 0.38]} />
-				<meshStandardMaterial color={CLAY_PLANE_TRIM} roughness={0.62} metalness={0.12} />
+				<meshStandardMaterial color={trim} roughness={0.62} metalness={0.12} />
 			</mesh>
 			<mesh position={[0, 1.08, -1.2]} rotation={[0.22, 0, 0]}>
 				<boxGeometry args={[0.08, 0.62, 0.48]} />
-				<meshStandardMaterial color={CLAY_PLANE} roughness={0.62} metalness={0.12} />
+				<meshStandardMaterial color={body} roughness={0.62} metalness={0.12} />
 			</mesh>
 
 			{/* cockpit canopy */}
@@ -144,7 +148,11 @@ export function SmallPlane({ position = [0, 0, 0], rotY = 0 }) {
 	);
 }
 
-export function Chair({ position = [0, 0, 0], rotY = 0 }) {
+export function Chair({ position = [0, 0, 0], rotY = 0, color = undefined }) {
+	// Auto-color mode tints seat/back and frame together; undefined keeps the
+	// hand-picked clay pair exactly as it ships.
+	const seat = color ?? CLAY_CHAIR_LIGHT;
+	const frame = color ?? CLAY_CHAIR;
 	const legPositions = [
 		[-0.24, 0.23, -0.22],
 		[0.24, 0.23, -0.22],
@@ -155,25 +163,25 @@ export function Chair({ position = [0, 0, 0], rotY = 0 }) {
 		<group position={position} rotation={[0, rotY, 0]} scale={0.9}>
 			<mesh position={[0, 0.49, 0]} castShadow receiveShadow>
 				<boxGeometry args={[0.6, 0.12, 0.58]} />
-				<meshStandardMaterial color={CLAY_CHAIR_LIGHT} roughness={0.86} />
+				<meshStandardMaterial color={seat} roughness={0.86} />
 			</mesh>
 			{legPositions.map((leg, index) => (
 				<mesh key={index} position={leg} castShadow receiveShadow>
 					<boxGeometry args={[0.09, 0.46, 0.09]} />
-					<meshStandardMaterial color={CLAY_CHAIR} roughness={0.9} />
+					<meshStandardMaterial color={frame} roughness={0.9} />
 				</mesh>
 			))}
 			<mesh position={[-0.24, 0.92, -0.245]} castShadow receiveShadow>
 				<boxGeometry args={[0.09, 0.86, 0.09]} />
-				<meshStandardMaterial color={CLAY_CHAIR} roughness={0.9} />
+				<meshStandardMaterial color={frame} roughness={0.9} />
 			</mesh>
 			<mesh position={[0.24, 0.92, -0.245]} castShadow receiveShadow>
 				<boxGeometry args={[0.09, 0.86, 0.09]} />
-				<meshStandardMaterial color={CLAY_CHAIR} roughness={0.9} />
+				<meshStandardMaterial color={frame} roughness={0.9} />
 			</mesh>
 			<mesh position={[0, 1.08, -0.245]} castShadow receiveShadow>
 				<boxGeometry args={[0.52, 0.38, 0.1]} />
-				<meshStandardMaterial color={CLAY_CHAIR_LIGHT} roughness={0.86} />
+				<meshStandardMaterial color={seat} roughness={0.86} />
 			</mesh>
 		</group>
 	);
@@ -299,12 +307,16 @@ function Cutout({ object }) {
 const PRIMITIVE_KINDS = new Set(["cube", "sphere", "capsule", "cylinder", "cone", "plane"]);
 
 function SceneObjectContent({ object }) {
-	const { renderer, color } = object;
+	// `autoColor` is the viewport-only display color the auto-color mode stamps
+	// onto the DISPLAYED object (App's displaySceneObjects); the authored
+	// `color` is untouched underneath. Cutouts stay out: tinting a photo
+	// standee destroys the one thing it is for.
+	const { renderer, color, autoColor } = object;
 	if (renderer === CUTOUT_KIND) return <Cutout object={object} />;
-	if (renderer === "car") return <Car color={color} />;
-	if (renderer === "small-plane") return <SmallPlane />;
-	if (renderer === "chair") return <Chair />;
-	if (PRIMITIVE_KINDS.has(renderer)) return <Primitive kind={renderer} color={color} />;
+	if (renderer === "car") return <Car color={autoColor ?? color} topColor={autoColor} />;
+	if (renderer === "small-plane") return <SmallPlane color={autoColor} />;
+	if (renderer === "chair") return <Chair color={autoColor} />;
+	if (PRIMITIVE_KINDS.has(renderer)) return <Primitive kind={renderer} color={autoColor ?? color} />;
 	return null;
 }
 

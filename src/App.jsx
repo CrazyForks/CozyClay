@@ -59,6 +59,7 @@ import { FlyControls, aimAt, forwardFrom } from "./controls.jsx";
 import { createLiveControl } from "./live-control.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
+import { autoColorHex, loadAutoColor, saveAutoColor } from "./auto-color.js";
 import { DualRender, fitAspect } from "./dualview.jsx";
 import {
 	CURVE_GRAB_RADIUS_PX,
@@ -2014,6 +2015,18 @@ globalThis.playMode = centerTab === "play";
 			return { ...object, x: at.x, y: at.y, z: at.z, rot: at.rot ?? object.rot };
 		});
 	}, [sceneObjects, tlFrame, tlFrameCount, tlFps]);
+
+	// Auto color: Blender's viewport "Random" mode. A DISPLAY-ONLY marker rides
+	// each non-cutout object into the renderers; the authored `color`, the scene
+	// document, undo history and the MCP view never change — toggling OFF makes
+	// this list the animated list again, byte for byte.
+	const [autoColor, setAutoColor] = useState(loadAutoColor);
+	const displaySceneObjects = useMemo(() => {
+		if (!autoColor) return animatedSceneObjects;
+		return animatedSceneObjects.map((object) =>
+			object.renderer === CUTOUT_KIND ? object : { ...object, autoColor: autoColorHex(object.id) },
+		);
+	}, [animatedSceneObjects, autoColor]);
 
 	/* ------------------------ carried props (attachment) ------------------- */
 	// A prop attached to a character rides a LIVE frame in the scene graph, so
@@ -8577,6 +8590,23 @@ function resizePromptClip(id, edge, rawFrame) {
 					)}
 				</div>
 				<div className="topbar-actions">
+					<button
+						type="button"
+						className="auto-color-toggle"
+						aria-pressed={autoColor}
+						title={ko(
+							"Distinct display colors per object — captures include them while on",
+							"오브젝트별 구분 색 — 켜둔 동안 캡처에도 포함됩니다",
+						)}
+						onClick={() => {
+							setAutoColor((on) => {
+								saveAutoColor(!on);
+								return !on;
+							});
+						}}
+					>
+						{ko("Auto Color", "자동 색")}
+					</button>
 					{liveWorkspaceHandle && (
 						<span className="live-workspace-handle" data-live-workspace={liveWorkspaceHandle} title={liveWorkspaceHandle}>
 							Live workspace {liveWorkspaceHandle}
@@ -8843,7 +8873,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							/>
 							<Room />
 							<SetProps
-								objects={animatedSceneObjects}
+								objects={displaySceneObjects}
 								selectedId={selectedSceneObjectId}
 								frameRef={propFrameRef}
 								take={{ frameCount: tlFrameCount, fps: tlFps }}
@@ -9050,7 +9080,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									store.settle();
 									setSelectedHierarchyId(id.startsWith("object:") ? id : id === "cam" ? "camera" : charKeyToHierarchyId(id));
 								}}
-								sceneObjects={animatedSceneObjects}
+								sceneObjects={displaySceneObjects}
 								selectedSceneObjectId={selectedSceneObjectId}
 								onMoveSceneObject={changeSceneObject}
 								onObjectMoveStart={beginSceneTransaction}
@@ -10893,6 +10923,12 @@ function resizePromptClip(id, edge, rawFrame) {
 										aria-label={ko("Object colour", "오브젝트 색상")}
 										title={ko("Object colour", "오브젝트 색상")}
 									/>
+									{/* The displayed color while auto-color mode is on — the "hex"
+									    made visible. Computed inline off the RAW object; the swatch
+									    above keeps showing the authored color it returns to. */}
+									{autoColor && (
+										<span className="auto-color-hex">{ko("auto ", "자동 ")}{autoColorHex(selectedSceneObject.id)}</span>
+									)}
 									<div className="object-colors" role="group" aria-label={ko("Object colour", "오브젝트 색상")}>
 										{OBJECT_COLORS.map((color) => (
 											<button
