@@ -45,18 +45,24 @@ function Wheel({ position }) {
  * A generic 5-door-ish sedan silhouette, ~4.5 m long. Origin at the centre
  * of the footprint, +Z forward.
  */
-export function Car({ position = [0, 0, 0], rotY = 0, color = CLAY_CAR, topColor = CLAY_CAR_TOP }) {
+export function Car({ position = [0, 0, 0], rotY = 0, color = CLAY_CAR, topColor = CLAY_CAR_TOP, autoColor = undefined }) {
+	const bodyMaterial = autoColor
+		? { ...autoFlat(autoColor) }
+		: { color, roughness: 0.55, metalness: 0.25 };
+	const topMaterial = autoColor
+		? { ...autoFlat(autoColor) }
+		: { color: topColor, roughness: 0.5, metalness: 0.2 };
 	return (
 		<group position={position} rotation={[0, rotY, 0]}>
 			{/* lower body */}
 			<mesh position={[0, 0.62, 0]}>
 				<boxGeometry args={[1.78, 0.62, 4.45]} />
-				<meshStandardMaterial color={color} roughness={0.55} metalness={0.25} />
+				<meshStandardMaterial {...bodyMaterial} />
 			</mesh>
 			{/* cabin: centred over the wheelbase, not stacked on the tail */}
 			<mesh position={[0, 1.12, -0.15]}>
 				<boxGeometry args={[1.58, 0.5, 2.2]} />
-				<meshStandardMaterial color={topColor} roughness={0.5} metalness={0.2} />
+				<meshStandardMaterial {...topMaterial} />
 			</mesh>
 			{/* greenhouse glass band */}
 			<mesh position={[0, 1.14, -0.15]}>
@@ -82,35 +88,36 @@ export function Car({ position = [0, 0, 0], rotY = 0, color = CLAY_CAR, topColor
 }
 
 /** Compact single-engine propeller plane, ~3.4 m wingspan and +Z forward. */
-export function SmallPlane({ position = [0, 0, 0], rotY = 0, color = undefined }) {
+export function SmallPlane({ position = [0, 0, 0], rotY = 0, autoColor = undefined }) {
 	// Auto-color mode tints the PRIMARY surfaces only (fuselage, wings, trim);
 	// glass, tires and rims keep their materials so the silhouette still reads.
-	const body = color ?? CLAY_PLANE;
-	const trim = color ?? CLAY_PLANE_TRIM;
+	// Each mesh keeps its own hand-tuned roughness when the mode is off.
+	const mat = (color, roughness, metalness) =>
+		autoColor ? autoFlat(autoColor) : { color, roughness, metalness };
 	return (
 		<group position={position} rotation={[0, rotY, 0]}>
 			{/* fuselage and tapered nose */}
 			<mesh position={[0, 0.76, 0]} rotation={[Math.PI / 2, 0, 0]}>
 				<cylinderGeometry args={[0.23, 0.31, 2.75, 16]} />
-				<meshStandardMaterial color={body} roughness={0.58} metalness={0.18} />
+				<meshStandardMaterial {...mat(CLAY_PLANE, 0.58, 0.18)} />
 			</mesh>
 			<mesh position={[0, 0.76, 1.55]} rotation={[Math.PI / 2, 0, 0]}>
 				<coneGeometry args={[0.23, 0.55, 16]} />
-				<meshStandardMaterial color={trim} roughness={0.52} metalness={0.2} />
+				<meshStandardMaterial {...mat(CLAY_PLANE_TRIM, 0.52, 0.2)} />
 			</mesh>
 
 			{/* main wing and tail plane */}
 			<mesh position={[0, 0.73, 0.15]}>
 				<boxGeometry args={[3.4, 0.09, 0.58]} />
-				<meshStandardMaterial color={body} roughness={0.62} metalness={0.14} />
+				<meshStandardMaterial {...mat(CLAY_PLANE, 0.62, 0.14)} />
 			</mesh>
 			<mesh position={[0, 0.84, -1.18]}>
 				<boxGeometry args={[1.45, 0.07, 0.38]} />
-				<meshStandardMaterial color={trim} roughness={0.62} metalness={0.12} />
+				<meshStandardMaterial {...mat(CLAY_PLANE_TRIM, 0.62, 0.12)} />
 			</mesh>
 			<mesh position={[0, 1.08, -1.2]} rotation={[0.22, 0, 0]}>
 				<boxGeometry args={[0.08, 0.62, 0.48]} />
-				<meshStandardMaterial color={body} roughness={0.62} metalness={0.12} />
+				<meshStandardMaterial {...mat(CLAY_PLANE, 0.62, 0.12)} />
 			</mesh>
 
 			{/* cockpit canopy */}
@@ -148,11 +155,11 @@ export function SmallPlane({ position = [0, 0, 0], rotY = 0, color = undefined }
 	);
 }
 
-export function Chair({ position = [0, 0, 0], rotY = 0, color = undefined }) {
+export function Chair({ position = [0, 0, 0], rotY = 0, autoColor = undefined }) {
 	// Auto-color mode tints seat/back and frame together; undefined keeps the
 	// hand-picked clay pair exactly as it ships.
-	const seat = color ?? CLAY_CHAIR_LIGHT;
-	const frame = color ?? CLAY_CHAIR;
+	const seat = autoColor ? autoFlat(autoColor) : { color: CLAY_CHAIR_LIGHT, roughness: 0.86 };
+	const frame = autoColor ? autoFlat(autoColor) : { color: CLAY_CHAIR, roughness: 0.9 };
 	const legPositions = [
 		[-0.24, 0.23, -0.22],
 		[0.24, 0.23, -0.22],
@@ -163,25 +170,25 @@ export function Chair({ position = [0, 0, 0], rotY = 0, color = undefined }) {
 		<group position={position} rotation={[0, rotY, 0]} scale={0.9}>
 			<mesh position={[0, 0.49, 0]} castShadow receiveShadow>
 				<boxGeometry args={[0.6, 0.12, 0.58]} />
-				<meshStandardMaterial color={seat} roughness={0.86} />
+				<meshStandardMaterial {...seat} />
 			</mesh>
 			{legPositions.map((leg, index) => (
 				<mesh key={index} position={leg} castShadow receiveShadow>
 					<boxGeometry args={[0.09, 0.46, 0.09]} />
-					<meshStandardMaterial color={frame} roughness={0.9} />
+					<meshStandardMaterial {...frame} />
 				</mesh>
 			))}
 			<mesh position={[-0.24, 0.92, -0.245]} castShadow receiveShadow>
 				<boxGeometry args={[0.09, 0.86, 0.09]} />
-				<meshStandardMaterial color={frame} roughness={0.9} />
+				<meshStandardMaterial {...frame} />
 			</mesh>
 			<mesh position={[0.24, 0.92, -0.245]} castShadow receiveShadow>
 				<boxGeometry args={[0.09, 0.86, 0.09]} />
-				<meshStandardMaterial color={frame} roughness={0.9} />
+				<meshStandardMaterial {...frame} />
 			</mesh>
 			<mesh position={[0, 1.08, -0.245]} castShadow receiveShadow>
 				<boxGeometry args={[0.52, 0.38, 0.1]} />
-				<meshStandardMaterial color={seat} roughness={0.86} />
+				<meshStandardMaterial {...seat} />
 			</mesh>
 		</group>
 	);
@@ -192,8 +199,22 @@ export function Chair({ position = [0, 0, 0], rotY = 0, color = undefined }) {
  * with its base on the local floor (y = 0), so an object's `y` reads as height
  * above the deck rather than "half of me is underground".
  */
-function Primitive({ kind, color }) {
-	const material = <meshStandardMaterial color={color} roughness={0.82} side={kind === "plane" ? THREE.DoubleSide : THREE.FrontSide} />;
+// Blender's solid-view response for auto-colored surfaces. Workbench shades
+// with a neutral studio rig, so the derived hue reaches the eye unmultiplied;
+// under our warm key light a plain standard material turns every hue olive.
+// Full roughness kills the specular sheen and a self-light of the same hue
+// lifts the shadow side the way workbench's studio lighting does.
+function autoFlat(hex) {
+	return { color: hex, roughness: 1, metalness: 0, emissive: hex, emissiveIntensity: 0.4 };
+}
+
+function Primitive({ kind, color, autoColor }) {
+	const side = kind === "plane" ? THREE.DoubleSide : THREE.FrontSide;
+	const material = autoColor ? (
+		<meshStandardMaterial {...autoFlat(autoColor)} side={side} />
+	) : (
+		<meshStandardMaterial color={color} roughness={0.82} side={side} />
+	);
 	if (kind === "sphere") {
 		return (
 			<mesh position={[0, 0.5, 0]} castShadow receiveShadow>
@@ -313,10 +334,10 @@ function SceneObjectContent({ object }) {
 	// standee destroys the one thing it is for.
 	const { renderer, color, autoColor } = object;
 	if (renderer === CUTOUT_KIND) return <Cutout object={object} />;
-	if (renderer === "car") return <Car color={autoColor ?? color} topColor={autoColor} />;
-	if (renderer === "small-plane") return <SmallPlane color={autoColor} />;
-	if (renderer === "chair") return <Chair color={autoColor} />;
-	if (PRIMITIVE_KINDS.has(renderer)) return <Primitive kind={renderer} color={autoColor ?? color} />;
+	if (renderer === "car") return <Car color={autoColor ?? color} autoColor={autoColor} />;
+	if (renderer === "small-plane") return <SmallPlane autoColor={autoColor} />;
+	if (renderer === "chair") return <Chair autoColor={autoColor} />;
+	if (PRIMITIVE_KINDS.has(renderer)) return <Primitive kind={renderer} color={color} autoColor={autoColor} />;
 	return null;
 }
 

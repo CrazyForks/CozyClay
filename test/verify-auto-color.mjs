@@ -61,6 +61,10 @@ expect(
 	props.includes("autoColor ?? color"),
 );
 expect(
+	"auto-colored surfaces use the flat solid-view response, not the lit clay one",
+	props.includes("function autoFlat") && props.includes("emissive: hex") && props.includes("roughness: 1"),
+);
+expect(
 	"the plan board agrees with the viewport",
 	planview.includes("object.autoColor ?? OBJECT_COLOR"),
 );
