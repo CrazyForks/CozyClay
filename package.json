@@ -25,6 +25,7 @@
     "test:objects": "node tools/qa-browser.mjs -- node test/verify-object-gizmo.mjs",
     "test:theme": "node test/verify-theme.mjs",
     "test:appearance": "node test/verify-appearance.mjs",
+    "test:auto-color": "node test/verify-auto-color.mjs",
     "test:layout": "node test/verify-layout.mjs",
     "test:timeline-camera": "node test/verify-timeline-camera.mjs",
     "test:timeline-shots": "node test/verify-timeline-shots.mjs",

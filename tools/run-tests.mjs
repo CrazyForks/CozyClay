@@ -34,6 +34,7 @@ const NODE_FILES = [
 	"test/process/verify-package-telemetry.mjs",
 	"test/verify-analytics.mjs",
 	"test/verify-appearance.mjs",
+	"test/verify-auto-color.mjs",
 	"test/verify-asset-shelf.mjs",
 	"test/verify-blocking-depth.mjs",
 	"test/verify-bvh-cskel27.mjs",
