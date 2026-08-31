@@ -60,7 +60,9 @@ import { createLiveControl } from "./live-control.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
 import { autoColorHex, loadAutoColor, saveAutoColor } from "./auto-color.js";
-import { DualRender, fitAspect } from "./dualview.jsx";
+import { DualRender, fitAspect, GIZMO_LAYER } from "./dualview.jsx";
+import { GridFloor } from "./grid-floor.jsx";
+import { GRID_BACKGROUND, GRID_FOG, readStoredGridView, writeStoredGridView } from "./grid-view.js";
 import {
 	CURVE_GRAB_RADIUS_PX,
 	DRAG_RADIUS_DEFAULT,
@@ -454,6 +456,12 @@ export default function App() {
 	useEffect(() => {
 		writeStoredGuideMode(globalThis.localStorage, guideMode);
 	}, [guideMode]);
+	// Blender-style grid viewport: dark void + reference grid instead of the
+	// clay deck. A viewer preference like the guides — never scene data.
+	const [gridView, setGridView] = useState(() => readStoredGridView(globalThis.localStorage));
+	useEffect(() => {
+		writeStoredGridView(globalThis.localStorage, gridView);
+	}, [gridView]);
 	const [sensorId, setSensorFormat] = useState(startupStage.sensorId ?? DEFAULT_SENSOR_FORMAT);
 	// The stage's key light and the in-flight editor-camera glide. Declared
 	// this early because the keyboard effect lists them in its dependency
@@ -8779,6 +8787,15 @@ function resizePromptClip(id, edge, rawFrame) {
 						>
 							{ko("Snap", "스냅")}
 						</button>
+						<button
+							type="button"
+							className={"snap-switch grid-view-switch" + (gridView ? " active" : "")}
+							title={ko("Blender-style viewport — dark void with a reference grid instead of the deck", "Blender식 뷰포트 — 데크 대신 어두운 배경과 기준 그리드")}
+							aria-pressed={gridView}
+							onClick={() => setGridView((v) => !v)}
+						>
+							{ko("Grid", "그리드")}
+						</button>
 						<span className="viewport-toolbar-separator settings-separator" aria-hidden="true" />
 						<label className="viewport-toolbar-field shot-field">
 							<span>{ko("Shot", "샷")}</span>
@@ -8903,7 +8920,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								timelineHeight={workspaceLayout.timelineHeight}
 								planZoom={workspaceLayout.planZoom}
 							/>
-							<color attach="background" args={["#eef4f3"]} />
+							<color attach="background" args={[gridView ? GRID_BACKGROUND : "#eef4f3"]} />
 							{/* The open stage runs 500 m; without a falloff the whole deck
 							    reads at once and the horizon sits a kilometre away. Blender's
 							    viewport answer is a clip distance that lets the neutral void
@@ -8911,7 +8928,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							    same idea — it fades the floor INTO the background colour, so
 							    past ~120 m the deck simply ceases to exist with no horizon
 							    line, no clip edge and no tone break. */}
-							<fog attach="fog" args={["#eef4f3", 18, 54]} />
+							<fog attach="fog" args={gridView ? [GRID_FOG.color, GRID_FOG.near, GRID_FOG.far] : ["#eef4f3", 18, 54]} />
 							<StageLights keyLight={keyLight} />
 							<KeyLightPuck
 								keyLight={keyLight}
@@ -8922,7 +8939,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								onSelect={() => selectHierarchy("light")}
 								onChange={(patch) => setKeyLight((current) => createKeyLight({ ...current, ...patch }))}
 							/>
-							<Room />
+							{gridView ? <GridFloor layer={GIZMO_LAYER} /> : <Room />}
 							<SetProps
 								objects={displaySceneObjects}
 								selectedId={selectedSceneObjectId}

@@ -27,7 +27,8 @@ expect("chrome accent token matches Unity selection blue family", css.includes("
 expect("timeline lanes sit on a dark surface", css.includes("background-color: #282828"));
 expect("IK uses pencil red", css.includes(".tl-marker.ik") && css.includes("background: #d65f55"));
 expect("current frame uses lightbox amber", css.includes(".tl-frame-box") && css.includes("background: #e7b557"));
-expect("Canvas uses a bright neutral toon background", app.includes('<color attach="background" args={["#eef4f3"]} />'));
+// The bright stage stays the default; grid view may swap in the dark void.
+expect("Canvas uses a bright neutral toon background", app.includes('args={[gridView ? GRID_BACKGROUND : "#eef4f3"]}'));
 expect("Character uses bright ivory clay", app.includes('const CLAY = "#f2eee6"'));
 expect("Room uses a high-key floor", room.includes('const FLOOR = "#fffdf7"'));
 // The walls are gone on purpose: the set is an open deck, so a shot can stage a
