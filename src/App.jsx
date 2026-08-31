@@ -1532,9 +1532,20 @@ globalThis.playMode = centerTab === "play";
 		// so stepping through the same entry twice cannot alias what the rig is now
 		// mutating) and the tick bumps so markers and the keyed pose re-derive.
 		if (snapshot.ikKeys) {
-			const target = bufferChar?.id === loadedIk
-				? ikStateRef.current
-				: ikStatesRef.current.get(bufferChar?.id) ?? ikStateRef.current;
+			// The keys belong to the snapshot's buffer character. When that
+			// character has no stored layer state yet, it gets a fresh one —
+			// falling back to the live ref would hand the keys to whoever is
+			// active NOW, cross-wiring two characters' corrections (#77).
+			let target;
+			if (bufferChar?.id === loadedIk) {
+				target = ikStateRef.current;
+			} else {
+				target = ikStatesRef.current.get(bufferChar?.id);
+				if (!target) {
+					target = createIkState();
+					if (bufferChar?.id) ikStatesRef.current.set(bufferChar.id, target);
+				}
+			}
 			target.keys = snapshotIkKeys({ keys: snapshot.ikKeys });
 			setCommittedIkEdits(snapshot.committedIkEdits ?? []);
 			setIkTick((value) => value + 1);
@@ -3792,12 +3803,17 @@ globalThis.playMode = centerTab === "play";
 		for (const entry of characters) {
 			const clip = entry.id === activeChar.id ? motion : entry.sessionMotion;
 			const rig = rigs[entry.id];
-			if (!clip || !rig) continue;
-			const sampled = sampleAt({ frameCount: clip.frames, motion: clip }, null, frame);
-			applyMotionFrame(rig, clip, sampled.motionFrame);
-		}
-		if (activeRig && ikChains && ikStateRef.current.keys.size > 0) {
-			ikEvaluate(ikChains, ikStateRef.current, frame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
+			if (clip && rig) {
+				const sampled = sampleAt({ frameCount: clip.frames, motion: clip }, null, frame);
+				applyMotionFrame(rig, clip, sampled.motionFrame);
+			}
+			// Every cast member's OWN IK corrections ride its export frames (#77)
+			// — the active one from the live state, the rest from their stored
+			// layer states, exactly as the viewport applies them.
+			const state = entry.id === activeChar.id ? ikStateRef.current : ikStatesRef.current.get(entry.id);
+			if (rig && state && state.keys.size > 0 && state.chains && state.rig === rig) {
+				ikEvaluate(state.chains, state, frame, state.fkJoints, clip ? IK_CORRECTION_BLEND_FRAMES : 0);
+			}
 		}
 		// The bones for this frame are now written, so a carried prop can take
 		// its place on them. gl.render() never runs the r3f frame loop, so this
@@ -4951,6 +4967,11 @@ globalThis.playMode = centerTab === "play";
 	// Drive every cast member from ITS OWN clip on the shared playhead. The
 	// active character's buffer motion and the stored session motions of the
 	// others all advance together; characters without a clip keep their pose.
+	// Inactive members also re-apply their STORED IK corrections (#77): the
+	// keys live per character in ikStatesRef, and without this pass a focus
+	// switch silently reverted everyone else to their uncorrected take.
+	// (The active character's corrections are applied by the evaluate effect
+	// below, after its editing state settles.)
 	useEffect(() => {
 		for (const entry of characters) {
 			const clip = entry.id === activeChar.id ? motion : entry.sessionMotion;
@@ -4959,8 +4980,13 @@ globalThis.playMode = centerTab === "play";
 				const sampled = sampleAt({ frameCount: clip.frames, motion: clip }, null, tlFrame);
 				applyMotionFrame(rig, clip, sampled.motionFrame);
 			}
+			if (entry.id === activeChar.id || !rig) continue;
+			const stored = ikStatesRef.current.get(entry.id);
+			if (stored && stored.keys.size > 0 && stored.chains && stored.rig === rig) {
+				ikEvaluate(stored.chains, stored, tlFrame, stored.fkJoints, clip ? IK_CORRECTION_BLEND_FRAMES : 0);
+			}
 		}
-	}, [characters, activeChar.id, motion, rigs, tlFrame]);
+	}, [characters, activeChar.id, motion, rigs, tlFrame, ikTick]);
 
 	// The shared timeline spans the LONGEST clip in the cast — a 300-frame
 	// clip on Subject 2 must not clamp just because Subject 1's is 40.
@@ -4984,6 +5010,10 @@ globalThis.playMode = centerTab === "play";
 		setIkChains(chains);
 		setIkFkJoints(resolved ? resolved.fkJoints : null);
 		ikStateRef.current.chains = chains;
+		// Cached on the state so this character's corrections stay evaluable
+		// after a focus switch (#77) — the playback and export loops read them.
+		ikStateRef.current.fkJoints = resolved ? resolved.fkJoints : null;
+		ikStateRef.current.rig = chains ? activeRig : null;
 		if (!chains) leaveIkMode();
 	}, [activeRig]);
 
@@ -5008,6 +5038,8 @@ globalThis.playMode = centerTab === "play";
 			// a missing `tracked` set would throw on the first drag.
 			if (!ikStateRef.current.tracked) ikStateRef.current = createIkState();
 			ikStateRef.current.chains = ikChains;
+			ikStateRef.current.fkJoints = ikFkJoints;
+			ikStateRef.current.rig = activeRig;
 			// Handles open exactly on the effectors of the CURRENT pose —
 			// non-destructive entry. (The evaluate effect applies the keyed
 			// pose at this frame right after ikMode flips, so re-seating on

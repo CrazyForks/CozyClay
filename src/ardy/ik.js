@@ -558,7 +558,11 @@ export function solveHipsTranslate(joint, worldDelta, startLocalPos) {
  * chain bones (+ hips local position), stored only for parts the user has
  * dragged. `plants` holds the captured ankle positions for foot snapping. */
 export function createIkState() {
-	return { chains: null, targets: new Map(), keys: new Map(), tracked: new Set(), plants: new Map() };
+	// `chains`/`fkJoints` are cached from the owning rig's resolve so a stored
+	// state can be EVALUATED while its character is not the active one (#77);
+	// `rig` tags which rig instance they were built from, guarding against a
+	// reloaded rig being driven through stale bone references.
+	return { chains: null, fkJoints: null, rig: null, targets: new Map(), keys: new Map(), tracked: new Set(), plants: new Map() };
 }
 
 /** Mark a chain as user-dragged (focused). Only tracked chains are keyed or
