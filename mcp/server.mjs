@@ -1223,6 +1223,7 @@ registerTool(
 		inputSchema: {
 			url: z.string().describe("/ardy/motions/<id> or /ardy/assembled/<name>.npz"),
 			prompt: z.string().optional().describe("Label shown on the timeline block."),
+			character: z.string().optional().describe('which character receives the take — letter, slot number or id; defaults to the editor\u2019s active character'),
 		},
 	},
 	async (args) => {
@@ -1230,8 +1231,22 @@ registerTool(
 			throw new Error(`Unsupported motion url "${args.url}". Use /ardy/motions/<id> or /ardy/assembled/<name>.npz.`);
 		}
 		const workspaceHandle = liveWorkspace.getStore() ?? liveHub.resolveWorkspace("load_motion", args.workspace_handle);
-		await liveHub.command("load_motion", { url: args.url, prompt: args.prompt ?? "" }, workspaceHandle);
-		return text(`Motion installed from ${args.url}.`);
+		// Without an explicit target the editor installs onto ITS active character,
+		// which silently stacks multi-cast loads onto one rig — the generate path
+		// always names its target, so the load path must be able to as well.
+		let characterId;
+		if (args.character !== undefined) {
+			try {
+				await refreshLiveDescription();
+			} catch (error) {
+				return liveError(error);
+			}
+			const target = findCharacter(args.character);
+			if (!target) return text(`No character "${args.character}". ${castHint()}`);
+			characterId = target.id;
+		}
+		await liveHub.command("load_motion", { url: args.url, prompt: args.prompt ?? "", ...(characterId ? { characterId } : {}) }, workspaceHandle);
+		return text(`Motion installed from ${args.url}${characterId ? ` onto ${characterId}` : ""}.`);
 	},
 );
 
