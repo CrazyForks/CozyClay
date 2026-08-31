@@ -74,6 +74,7 @@ const initial = await evaluate(`(() => {
 expect("the initial segment is visibly 1x", initial.label?.includes("1×") && initial.speed === "1", JSON.stringify(initial));
 expect("speed editor lives outside the segment and is visible", initial.editorVisible === true, JSON.stringify(initial));
 expect("Cut is disabled at frame zero", initial.cutDisabled === true, JSON.stringify(initial));
+const initialRange = initial.readout?.match(/\/ \d+/)?.[0];
 
 expect("scrubbing enables Cut at frame 1", await evaluate(`(() => {
 	const slider = document.querySelector('.tl-ruler-lane');
@@ -139,9 +140,13 @@ expect("the wide segment offers a right-click target", !!clipSpot);
 await send("Input.dispatchMouseEvent", { type: "mousePressed", x: clipSpot.x, y: clipSpot.y, button: "right", buttons: 2, clickCount: 1 });
 await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: clipSpot.x, y: clipSpot.y, button: "right", buttons: 0, clickCount: 1 });
 expect("right-clicking a segment deletes it", await waitFor("document.querySelectorAll('.tl-motion-clip').length === 1"));
+const shrunkReadout = await waitFor("document.querySelector('.tl-readout')?.textContent.includes('/ 0')");
+expect("deleting the long segment shrinks the timeline range", shrunkReadout, await evaluate("document.querySelector('.tl-readout')?.textContent"));
 await send("Input.dispatchKeyEvent", { type: "keyDown", key: "z", code: "KeyZ", modifiers: 2, windowsVirtualKeyCode: 90 });
 await send("Input.dispatchKeyEvent", { type: "keyUp", key: "z", code: "KeyZ", modifiers: 2, windowsVirtualKeyCode: 90 });
 expect("Ctrl+Z restores the deleted segment", await waitFor("document.querySelectorAll('.tl-motion-clip').length === 2"));
+const restoredReadout = await waitFor(`document.querySelector('.tl-readout')?.textContent.includes(${JSON.stringify(initialRange)})`);
+expect("undo restores the original timeline range", restoredReadout, await evaluate("document.querySelector('.tl-readout')?.textContent"));
 expect("the restored segments keep their speeds", await waitFor("[...document.querySelectorAll('.tl-motion-clip-label')].some((l) => l.textContent.includes('0.8\u00d7'))"));
 
 expect("browser run has no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));

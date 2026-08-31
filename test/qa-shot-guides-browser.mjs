@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-// Browser QA for composition guides + burn-in, driven over CDP through the QA
-// browser wrapper: cycle the guide button and read the real overlay DOM, then
-// exercise the Canvas-2D stamp rasterizer inside the page. Evidence script;
-// not part of the manifest.
+// Browser QA for composition guides, driven over CDP through the QA browser
+// wrapper: cycle the guide button and read the real overlay DOM. Evidence
+// script; not part of the manifest.
 const port = Number(process.env.CDP_PORT || 9222);
 const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
 const page = targets.find((target) => target.type === "page" && target.webSocketDebuggerUrl);
@@ -94,42 +93,10 @@ expect("Esc leaves look-through and drops its overlay", await evaluate("!documen
 await evaluate(`${cycle}.click()`);
 expect("fifth click wraps back to off", await waitFor(`!${overlay}`, 8000));
 
-// --- burn-in rasterizer inside the real browser ---------------------------
-const stampProbe = await evaluate(`(async () => {
-	const m = await import("/src/burn-in.js");
-	const bitmap = m.renderStampBitmap("MEDIUM SHOT 35MM · F 0042");
-	let inked = 0;
-	for (let index = 3; index < bitmap.data.length; index += 4) if (bitmap.data[index] > 0) inked += 1;
-	// composite over an opaque black frame and count changed pixels
-	const width = 320, height = 180;
-	const frame = new Uint8Array(width * height * 4);
-	for (let index = 3; index < frame.length; index += 4) frame[index] = 255;
-	m.compositeStamp(frame, width, height, bitmap, { marginX: 8, marginY: 8 });
-	let changed = 0;
-	for (let index = 0; index < frame.length; index += 4) {
-		if (frame[index] || frame[index + 1] || frame[index + 2]) changed += 1;
-	}
-	const wrapped = m.burnInCapture(() => {
-		const raw = new Uint8Array(width * height * 4);
-		for (let index = 3; index < raw.length; index += 4) raw[index] = 255;
-		return raw;
-	}, { width, height, slate: "Wide 24mm", frameCount: 360 });
-	const stamped = wrapped(7);
-	let stampedChanged = 0;
-	for (let index = 0; index < stamped.length; index += 4) {
-		if (stamped[index] || stamped[index + 1] || stamped[index + 2]) stampedChanged += 1;
-	}
-	return { width: bitmap.width, height: bitmap.height, inked, changed, stampedChanged };
-})()`);
-expect("the stamp bitmap has body", stampProbe.width > 100 && stampProbe.height >= 20, JSON.stringify(stampProbe));
-expect("the rasterized text actually inked pixels", stampProbe.inked > stampProbe.width * stampProbe.height * 0.5, `inked=${stampProbe.inked}`);
-expect("compositing lights up frame pixels", stampProbe.changed > 500, `changed=${stampProbe.changed}`);
-expect("burnInCapture stamps a captured frame", stampProbe.stampedChanged > 500, `stamped=${stampProbe.stampedChanged}`);
-
 // --- export wiring pin ----------------------------------------------------
 const fs = await import("node:fs");
 const appSource = fs.readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
-expect("the exporter routes frames through the burn-in", appSource.includes("capture: burnInCapture(applyExportFrame"));
+expect("the exporter sends clean renders without the frame stamp", !appSource.includes("burnInCapture") && appSource.includes("capture: applyExportFrame"));
 
 if (failures > 0) { console.error(`${failures} FAILURES`); process.exit(1); }
 console.log("qa-shot-guides-browser: all checks passed");

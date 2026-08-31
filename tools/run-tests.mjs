@@ -74,6 +74,7 @@ const NODE_FILES = [
 	"test/verify-multimodel-ingest.mjs",
 	"test/verify-offscreen-export.mjs",
 	"test/verify-record-mp4-source.mjs",
+	"test/verify-timeline-extent.mjs",
 	"test/verify-otio.mjs",
 	"test/verify-pose-extract.mjs",
 	"test/verify-pose-library.mjs",

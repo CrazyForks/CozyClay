@@ -83,7 +83,18 @@ expect("the heavy motion pipeline starts collapsed", app.includes("function Fold
 expect("Prompt Block panel exposes one batch generation action", app.includes("prompt-block-generate") && app.includes("Generate all ${promptClips.length} blocks"));
 expect("new sessions start without prompt blocks", app.includes("const DEFAULT_PROMPT_CLIPS = [];") && app.includes("useState(null)"));
 expect("new sessions start with an empty motion prompt", app.includes('const [ardyPrompt, setArdyPrompt] = useState("");'));
-expect("recording addresses sampleAt frames into the offscreen renderer", app.includes("capture: burnInCapture(applyExportFrame") && app.includes("sampleAt(playbackScene, shotAtFrame(shots, frame), frame)"));
+expect(
+	"recording captures the clean render without a frame stamp",
+	app.includes("capture: applyExportFrame") &&
+		!app.includes("burnInCapture") &&
+		app.includes("sampleAt(playbackScene, shotAtFrame(shots, frame), frame)"),
+);
+expect(
+	"recording uses current motion content instead of a stale timeline tail",
+	app.includes("currentRecordFrameCount") &&
+		app.includes("timelineContentExtent(") &&
+		app.includes("endFrame: resolvedEndFrame"),
+);
 expect("recording uses WebCodecs with explicit timestamps and frame count", offscreenExport.includes("new VideoEncoderClass") && offscreenExport.includes("timestamp: Math.round(index * frameDurationUs)") && offscreenExport.includes("chunks.length !== range.frameCount"));
 expect("recording no longer uses MediaRecorder or a wall-clock capture loop", !app.includes("MediaRecorder") && !app.includes("performance.now()") && !app.includes("captureStream"));
 expect("pre-motion timeline initializes to 15 seconds", app.includes("const DEFAULT_DURATION_S = 15"));

@@ -290,7 +290,7 @@ import { captureFraming, classifyMove, moveSequenceSlate, moveSequencePhrase } f
 import { sampleAt } from "./sample-at.js";
 import { exportOffscreenVideo } from "./offscreen-export.js";
 import { parseRigNodeId } from "./hierarchy-model.js";
-import { burnInCapture } from "./burn-in.js";
+import { timelineContentExtent } from "./timeline-extent.js";
 import {
 	GUIDE_LABELS,
 	guideGeometry,
@@ -3835,9 +3835,24 @@ globalThis.playMode = centerTab === "play";
 		return captureRef.current?.render() ?? null;
 	}
 
-	async function runShotExport({ startFrame = 0, endFrame = tlFrameCount - 1, download = true } = {}) {
+	function currentRecordFrameCount() {
+		const contentExtent = timelineContentExtent(
+			characters,
+			activeChar.id,
+			motion,
+			promptClips,
+			multiModelFootage?.frames,
+		);
+		// Camera-only scenes still use their authored production duration. Once
+		// motion or prompt content exists, content is the authoritative record
+		// range even if an older timeline count was left behind.
+		return contentExtent > 0 ? contentExtent : tlFrameCount;
+	}
+
+	async function runShotExport({ startFrame = 0, endFrame, download = true } = {}) {
 		if (recRef.current) throw new Error(ko("An export is already running", "이미 내보내기 중입니다"));
 		if (!captureRef.current || !shotCamRef.current) throw new Error(ko("The shot renderer is not ready", "샷 렌더러가 아직 준비되지 않았어요"));
+		const resolvedEndFrame = endFrame ?? Math.max(0, currentRecordFrameCount() - 1);
 		const controller = new AbortController();
 		const rec = { controller };
 		recRef.current = rec;
@@ -3855,18 +3870,11 @@ globalThis.playMode = centerTab === "play";
 		try {
 			const result = await exportOffscreenVideo({
 				startFrame,
-				endFrame,
+				endFrame: resolvedEndFrame,
 				fps: TIMELINE_FPS,
 				width: shotOutput.width,
 				height: shotOutput.height,
-				// Blender-style stamp: every exported frame names its slate and
-				// frame number, so a review note can point at an exact frame.
-				capture: burnInCapture(applyExportFrame, {
-					width: shotOutput.width,
-					height: shotOutput.height,
-					slate: moveSequence?.slate ?? "",
-					frameCount: tlFrameCount,
-				}),
+				capture: applyExportFrame,
 				signal: controller.signal,
 			});
 			if (download) {
@@ -5011,16 +5019,23 @@ globalThis.playMode = centerTab === "play";
 		}
 	}, [characters, activeChar.id, motion, rigs, tlFrame, ikTick]);
 
-	// The shared timeline spans the LONGEST clip in the cast — a 300-frame
-	// clip on Subject 2 must not clamp just because Subject 1's is 40.
-	// Expansion only: shrinking stays owned by clearMotion and duration edits.
+	// The shared timeline spans the longest CURRENT content on the production
+	// clock. Recomputing both directions matters: deleting Subject 2 or
+	// shortening its take must pull the end back in instead of leaving the
+	// recorder with frozen tail frames (#80).
 	useEffect(() => {
-		const longest = characters.reduce((max, entry) => {
-			const clip = entry.id === activeChar.id ? motion : entry.sessionMotion;
-			return Math.max(max, clip?.frames ?? 0);
-		}, 0);
-		if (longest > 0) setTlFrameCount((count) => Math.max(count, longest));
-	}, [characters, activeChar.id, motion]);
+		const extent = timelineContentExtent(
+			characters,
+			activeChar.id,
+			motion,
+			promptClips,
+			multiModelFootage?.frames,
+		);
+		if (extent > 0) {
+			setTlFrameCount(extent);
+			setTlFrame((frame) => Math.min(frame, extent - 1));
+		}
+	}, [characters, activeChar.id, motion, promptClips, multiModelFootage?.frames]);
 
 	/* ------------------------------ IK logic ------------------------------ */
 
