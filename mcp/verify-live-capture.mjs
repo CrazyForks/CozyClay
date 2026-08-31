@@ -12,9 +12,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { WebSocket } from "ws";
 
+import { chromeArgs, resolveChromePath } from "./qa-chrome.mjs";
+
 const root = fileURLToPath(new URL("..", import.meta.url));
 const serverPath = fileURLToPath(new URL("./server.mjs", import.meta.url));
-const chromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const peerArtifactPath = join(tmpdir(), `cozyclay-capture-${randomUUID()}.png`);
 await writeFile(peerArtifactPath, "owned by another live MCP process", { mode: 0o600 });
 
@@ -34,7 +35,11 @@ const withTimeout = (promise, label, milliseconds = 30_000) => {
 const waitForOutput = (child, pattern, label) => withTimeout(new Promise((resolve, reject) => {
 	let output = "";
 	const inspect = (chunk) => {
-		output += chunk.toString();
+		// picocolors turns colour ON when CI is set even without a TTY, and
+		// the port lands inside bold escapes ("...127.0.0.1:\x1b[1m5599...")
+		// — strip ANSI before matching or the ready banner never matches
+		// on a GitHub runner while passing everywhere locally.
+		output += chunk.toString().replace(/\u001b\[[0-9;]*m/g, "");
 		if (pattern.test(output)) finish(resolve);
 	};
 	const onExit = (code, signal) => finish(reject, new Error(`${label} exited (${code ?? signal ?? "unknown"}): ${output}`));
@@ -115,7 +120,7 @@ const cdpPort = await reservePort();
 const vite = spawn(process.execPath, ["node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "--port", String(vitePort), "--strictPort"], {
 	cwd: root, env: { ...process.env, COZYCLAY_LIVE_PORT: String(livePort) }, stdio: ["ignore", "pipe", "pipe"],
 });
-const browser = spawn(chromePath, ["--headless=new", "--no-first-run", "--no-default-browser-check", `--remote-debugging-port=${cdpPort}`], {
+const browser = spawn(resolveChromePath(), chromeArgs(cdpPort), {
 	stdio: ["ignore", "pipe", "pipe"],
 });
 let cdp;
