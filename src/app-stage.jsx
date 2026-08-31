@@ -94,7 +94,7 @@ export const HIERARCHY_INSPECTOR_TITLES = {
 	light: ko("Light", "조명"),
 	characters: ko("Characters", "인물"),
 	characterA: ko("Character 1", "인물 1"),
-	"characterA.rig": ko("Rig", "리그"),
+	rig: ko("Rig", "리그"),
 	characterB: ko("Character 2", "인물 2"),
 	environment: ko("Environment", "환경"),
 	props: ko("Props", "소품"),
@@ -416,14 +416,17 @@ export function moveSequenceSlateKo(segments) {
 	return parts.join(" · ");
 }
 
-export function hierarchyIdForIkFocus(focus) {
+/** The hierarchy node id an IK focus lights up. Focus maps stay keyed by the
+ * BONE TOKEN; the row id namespaces the result so each cast member's tree
+ * highlights its own bone (#76). */
+export function hierarchyIdForIkFocus(focus, rowId = "characterA") {
 	if (!focus) return null;
 	const exact = Object.entries(RIG_HIERARCHY_FOCUS)
 		.find(([id, mappedFocus]) =>
 			!["rig.torso", "rig.leftArm", "rig.rightArm", "rig.leftLeg", "rig.rightLeg"].includes(id) &&
 			mappedFocus === focus
 		);
-	return exact?.[0] ?? "characterA.rig";
+	return `${rowId}.${exact?.[0] ?? "rig"}`;
 }
 
 export const CAPTURE_W = 1920;

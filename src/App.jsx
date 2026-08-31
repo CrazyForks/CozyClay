@@ -287,6 +287,7 @@ import {
 import { captureFraming, classifyMove, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
 import { sampleAt } from "./sample-at.js";
 import { exportOffscreenVideo } from "./offscreen-export.js";
+import { parseRigNodeId } from "./hierarchy-model.js";
 import { burnInCapture } from "./burn-in.js";
 import {
 	GUIDE_LABELS,
@@ -916,9 +917,16 @@ globalThis.playMode = centerTab === "play";
 	// the user just clicked.
 	const [activeCharacterId, setActiveCharacterId] = useState(characters[0]?.id ?? null);
 	useEffect(() => {
-		const id = charIdFromHierarchyId(selectedHierarchyId);
+		// A rig node id resolves through its row (#76): selecting any bone
+		// activates the body it belongs to, so IK and the timeline buffer
+		// follow the character the user is pointing at.
+		const id = charIdFromHierarchyId(selectedHierarchyId)
+			?? charIdFromHierarchyId(parseRigNodeId(selectedHierarchyId)?.rowId);
 		if (id && characters.some((entry) => entry.id === id)) setActiveCharacterId(id);
 	}, [selectedHierarchyId, characters]);
+	/** The hierarchy row id a cast LIST index owns — mirror of
+	 * hierarchy-model's characterRowId, for building namespaced rig ids. */
+	const rowIdForCharIndex = (index) => index === 0 ? "characterA" : index === 1 ? "characterB" : characters[index] ? `character:${characters[index].id}` : "characterA";
 	const activeChar = characters.find((entry) => entry.id === activeCharacterId) ?? characters[0] ?? charA;
 	// Root paths and prompt blocks are the active character's animation layer.
 	// With the Inspector driven by selection, showing those tools means putting
@@ -1042,7 +1050,7 @@ globalThis.playMode = centerTab === "play";
 		// Moving the focus anywhere but the camera releases the crane dot too:
 		// a press on the floor or the sky must not leave a mark selected.
 		if (id !== "camera") setCraneSelectedIndex(null);
-		const focus = RIG_HIERARCHY_FOCUS[id];
+		const focus = RIG_HIERARCHY_FOCUS[parseRigNodeId(id)?.token];
 		if (focus && ikMode) setIkFocus(focus);
 	}
 	// Producer drag lifecycle (plan §6.1): begin issues a token the producer
@@ -1058,7 +1066,7 @@ globalThis.playMode = centerTab === "play";
 
 	function focusIkHandle(focus) {
 		setIkFocus(focus);
-		const hierarchyId = hierarchyIdForIkFocus(focus);
+		const hierarchyId = hierarchyIdForIkFocus(focus, rowIdForCharIndex(activeCharIndex));
 		if (hierarchyId) {
 			setSelectedHierarchyId(hierarchyId);
 		}
@@ -1634,8 +1642,15 @@ globalThis.playMode = centerTab === "play";
 					frameWorldTarget({ x: keyLight.x, y: keyLight.y, z: keyLight.z }, 0.8);
 					return;
 				}
+				// Rig node ids carry their row (#76), so `characterB.rig.head`
+				// frames character B — startsWith on the row prefix covers both
+				// the character row and every rig node under it.
 				const framedChar = selectedHierarchyId.startsWith("characterB") ? (showB ? charB : null)
-					: selectedHierarchyId.startsWith("characterA") || selectedHierarchyId.startsWith("rig.") ? charA
+					: selectedHierarchyId.startsWith("characterA") ? charA
+					: selectedHierarchyId.startsWith("character:") ? (() => {
+						const rowId = parseRigNodeId(selectedHierarchyId)?.rowId ?? selectedHierarchyId;
+						return characters.find((entry) => `character:${entry.id}` === rowId) ?? null;
+					})()
 					: null;
 				if (framedChar) {
 					event.preventDefault();
@@ -2106,14 +2121,16 @@ globalThis.playMode = centerTab === "play";
 
 	/** The attachment a hierarchy row offers, or null when the row is not a
 	 * frame. A character row means the whole body's animated root; a bone row
-	 * means that one frame. The rig subtree hangs off the FIRST character row
-	 * only (hierarchy-model.js), so a bone row can only ever mean characters[0]. */
+	 * means that one frame. Bone rows are namespaced per character (#76), so
+	 * the row itself names whose frame it is. */
 	function attachTargetForRow(rowId) {
 		const charId = charIdFromHierarchyId(rowId);
 		if (charId) return characters.some((entry) => entry.id === charId) ? { characterId: charId, bone: null } : null;
-		const bone = ATTACH_BONE_ROWS.get(rowId);
-		if (!bone || !characters[0]) return null;
-		return { characterId: characters[0].id, bone };
+		const rig = parseRigNodeId(rowId);
+		const owner = rig ? charIdFromHierarchyId(rig.rowId) : null;
+		const bone = rig ? ATTACH_BONE_ROWS.get(rig.token) : null;
+		if (!bone || !owner || !characters.some((entry) => entry.id === owner)) return null;
+		return { characterId: owner, bone };
 	}
 
 	/** "Character 1 · Right Hand" — the same words the rows the user dropped on
@@ -4039,7 +4056,8 @@ globalThis.playMode = centerTab === "play";
 		|| selectedHierarchyId === "characterA"
 		|| selectedHierarchyId === "characterB"
 		|| selectedHierarchyId.startsWith("character:");
-	const isRigSelection = selectedHierarchyId === "characterA.rig" || selectedHierarchyId.startsWith("rig.");
+	const rigSelection = parseRigNodeId(selectedHierarchyId);
+	const isRigSelection = rigSelection !== null;
 	const inspectorHasContent = isSceneSelection || isCameraSelection || isCharacterSelection || isRigSelection
 		|| selectedHierarchyId === "environment" || selectedHierarchyId === "props" || selectedHierarchyId === "light" || Boolean(selectedSceneObject);
 
@@ -8698,6 +8716,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					motionFrames={motion?.frames ?? 0}
 					ikFrames={ikFrames.length}
 					ikMode={ikMode}
+					ikRowId={rowIdForCharIndex(activeCharIndex)}
 					waypointCount={waypoints.length}
 					sceneObjects={sceneObjects}
 					scenes={scenes}
@@ -9553,7 +9572,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					<section className="inspector-pane">
 					<div className="inspector-heading">
 						<strong>{ko("Inspector", "속성")}</strong>
-						<span className="inspector-heading-selection">{selectedSceneObject ? sceneObjectNameDisplayKo(selectedSceneObject.name) : HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId] ?? ko("Selection", "선택 항목")}</span>
+						<span className="inspector-heading-selection">{selectedSceneObject ? sceneObjectNameDisplayKo(selectedSceneObject.name) : HIERARCHY_INSPECTOR_TITLES[rigSelection?.token ?? selectedHierarchyId] ?? ko("Selection", "선택 항목")}</span>
 						{selectedSceneObject && (
 							<div className="inspector-actions-wrap">
 								<button
@@ -10470,8 +10489,8 @@ function resizePromptClip(id, edge, rawFrame) {
 
 				<Foldout hidden={!isRigSelection} title={ko("Rig Control", "리그 제어")}>
 						<p className="inspector-hint">
-							{selectedHierarchyId.startsWith("rig.")
-							? (isKo ? `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]}이 활성 제어 그룹입니다.` : `${HIERARCHY_INSPECTOR_TITLES[selectedHierarchyId]} is the active control group.`)
+							{rigSelection && rigSelection.token !== "rig"
+							? (isKo ? `${HIERARCHY_INSPECTOR_TITLES[rigSelection.token]}이 활성 제어 그룹입니다.` : `${HIERARCHY_INSPECTOR_TITLES[rigSelection.token]} is the active control group.`)
 							: ko("Choose a body group in the hierarchy, then manipulate its handle in the main view.", "계층에서 몸 그룹을 고른 뒤 메인 뷰의 핸들을 조작하세요.")}
 						</p>
 						<div className="inspector-status-grid">

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
-import { HIERARCHY_NODES, buildHierarchyNodes, attachBoneLabel } from "../src/hierarchy-model.js";
+import { HIERARCHY_NODES, buildHierarchyNodes, attachBoneLabel, parseRigNodeId, rigSubtree } from "../src/hierarchy-model.js";
 
 let failures = 0;
 function expect(name, condition, detail = "") {
@@ -30,16 +30,48 @@ expect(
 	),
 );
 expect("Rig belongs to Character 1", byId.get("characterA.rig")?.parent === "characterA");
+// #76: every rig node id is namespaced under its character row.
 expect(
 	"Rig exposes five human-readable body groups",
 	["rig.torso", "rig.leftArm", "rig.rightArm", "rig.leftLeg", "rig.rightLeg"].every(
-		(id) => byId.get(id)?.parent === "characterA.rig",
+		(token) => byId.get(`characterA.${token}`)?.parent === "characterA.rig",
 	),
 );
 expect(
 	"torso, head, shoulders, elbows, hands, knees, and feet are directly selectable",
 	["rig.hips", "rig.spine", "rig.chest", "rig.neck", "rig.head", "rig.leftShoulder", "rig.rightShoulder", "rig.leftElbow", "rig.rightElbow", "rig.leftHand", "rig.rightHand", "rig.leftKnee", "rig.rightKnee", "rig.leftFoot", "rig.rightFoot"]
-		.every((id) => byId.has(id)),
+		.every((token) => byId.has(`characterA.${token}`)),
+);
+
+/* ------------------------------------------- rig id namespace (#76) --- */
+
+expect(
+	"a rig node id parses into its row and bone token",
+	JSON.stringify(parseRigNodeId("characterB.rig.leftArm")) === JSON.stringify({ rowId: "characterB", token: "rig.leftArm" }),
+);
+expect(
+	"the rig ROOT parses with the bare rig token",
+	JSON.stringify(parseRigNodeId("characterA.rig")) === JSON.stringify({ rowId: "characterA", token: "rig" }),
+);
+expect(
+	"extra cast rows parse through their character id",
+	JSON.stringify(parseRigNodeId("character:cast-9.rig.head")) === JSON.stringify({ rowId: "character:cast-9", token: "rig.head" }),
+);
+expect(
+	"non-rig ids never parse",
+	["characterA", "camera", "rig.leftArm", "object:bat", null, undefined].every((id) => parseRigNodeId(id) === null),
+);
+expect(
+	"rigSubtree namespaces every node under the row",
+	flatten([rigSubtree("characterB")]).every((node) => node.id.startsWith("characterB.rig")),
+);
+expect(
+	"two rows' subtrees never collide",
+	(() => {
+		const a = flatten([rigSubtree("characterA")]).map((node) => node.id);
+		const b = new Set(flatten([rigSubtree("characterB")]).map((node) => node.id));
+		return a.every((id) => !b.has(id));
+	})(),
 );
 expect("Environment stays at the Scene level", byId.get("environment")?.parent === "shot");
 expect("Props stay at the Scene level", byId.get("props")?.parent === "shot");

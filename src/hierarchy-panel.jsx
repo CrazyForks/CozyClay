@@ -512,6 +512,9 @@ export default function HierarchyPanel({
 	characters = null,
 	motionFrames,
 	ikMode,
+	// The ACTIVE character's row id (#76): IK badges and the IK-mode
+	// auto-expand follow whichever cast member owns the session.
+	ikRowId = "characterA",
 	sceneObjects = [],
 	onAddObject,
 	onRenameObject,
@@ -560,12 +563,12 @@ export default function HierarchyPanel({
 				next.add(id);
 			}
 			if (ikMode) {
-				next.add("characterA");
-				next.add("characterA.rig");
+				next.add(ikRowId);
+				next.add(`${ikRowId}.rig`);
 			}
 			return next;
 		});
-	}, [ikMode, parents, selectedId]);
+	}, [ikMode, ikRowId, parents, selectedId]);
 
 	// Selection made outside the tree (viewport click, plan board, inspector)
 	// scrolls the row into view (docs/unity-reference.md §9.6). Tree-originated
@@ -606,7 +609,7 @@ export default function HierarchyPanel({
 		return null;
 	};
 	const statusFor = (id) => {
-		if (id === "characterA" && ikMode) return ko("IK ON", "IK 켜짐");
+		if (id === ikRowId && ikMode) return ko("IK ON", "IK 켜짐");
 		return null;
 	};
 

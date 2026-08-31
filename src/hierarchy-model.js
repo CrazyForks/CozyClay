@@ -5,6 +5,43 @@
 // filed under the node that owns them — the generation prompt under the
 // scene, the lens under the camera, and motion (capture, ARDY, prompt
 // blocks, root path) under the character it animates.
+/**
+ * One character row's rig subtree, every node id namespaced under the row id
+ * (#76): `characterA.rig`, `characterA.rig.leftArm`, `characterB.rig.torso`…
+ * The BONE TOKEN (`rig.leftArm`) stays the shared vocabulary: labels, IK
+ * focus routing and attachment naming key off the token, never the full id,
+ * so per-character trees can coexist without colliding selections.
+ */
+const RIG_TEMPLATE = [
+	["rig.torso", "Torso", [["rig.hips", "Root / Hips"], ["rig.spine", "Spine"], ["rig.chest", "Chest"], ["rig.neck", "Neck"], ["rig.head", "Head"]]],
+	["rig.leftArm", "Left Arm", [["rig.leftShoulder", "Left Shoulder"], ["rig.leftElbow", "Left Elbow"], ["rig.leftHand", "Left Hand"]]],
+	["rig.rightArm", "Right Arm", [["rig.rightShoulder", "Right Shoulder"], ["rig.rightElbow", "Right Elbow"], ["rig.rightHand", "Right Hand"]]],
+	["rig.leftLeg", "Left Leg", [["rig.leftKnee", "Left Knee"], ["rig.leftFoot", "Left Foot"]]],
+	["rig.rightLeg", "Right Leg", [["rig.rightKnee", "Right Knee"], ["rig.rightFoot", "Right Foot"]]],
+];
+
+export function rigSubtree(rowId) {
+	return {
+		id: `${rowId}.rig`,
+		label: "Rig",
+		kind: "rig",
+		children: RIG_TEMPLATE.map(([token, label, bones]) => ({
+			id: `${rowId}.${token}`,
+			label,
+			kind: "rig",
+			children: bones.map(([boneToken, boneLabel]) => ({ id: `${rowId}.${boneToken}`, label: boneLabel, kind: "bone" })),
+		})),
+	};
+}
+
+/** `characterB.rig.leftArm` → { rowId: "characterB", token: "rig.leftArm" };
+ * anything that is not a namespaced rig node id returns null. */
+export function parseRigNodeId(id) {
+	if (typeof id !== "string") return null;
+	const match = id.match(/^(characterA|characterB|character:[^.]+)\.(rig(?:\.[A-Za-z]+)?)$/);
+	return match ? { rowId: match[1], token: match[2] } : null;
+}
+
 export const HIERARCHY_NODES = [
 	{
 		// Keep the legacy selection id until App wiring moves to the document
@@ -24,65 +61,7 @@ export const HIERARCHY_NODES = [
 						id: "characterA",
 						label: "Character 1",
 						kind: "character",
-						children: [
-							{
-								id: "characterA.rig",
-								label: "Rig",
-								kind: "rig",
-								children: [
-									{
-										id: "rig.torso",
-										label: "Torso",
-										kind: "rig",
-										children: [
-											{ id: "rig.hips", label: "Root / Hips", kind: "bone" },
-											{ id: "rig.spine", label: "Spine", kind: "bone" },
-											{ id: "rig.chest", label: "Chest", kind: "bone" },
-											{ id: "rig.neck", label: "Neck", kind: "bone" },
-											{ id: "rig.head", label: "Head", kind: "bone" },
-										],
-									},
-									{
-										id: "rig.leftArm",
-										label: "Left Arm",
-										kind: "rig",
-										children: [
-											{ id: "rig.leftShoulder", label: "Left Shoulder", kind: "bone" },
-											{ id: "rig.leftElbow", label: "Left Elbow", kind: "bone" },
-											{ id: "rig.leftHand", label: "Left Hand", kind: "bone" },
-										],
-									},
-									{
-										id: "rig.rightArm",
-										label: "Right Arm",
-										kind: "rig",
-										children: [
-											{ id: "rig.rightShoulder", label: "Right Shoulder", kind: "bone" },
-											{ id: "rig.rightElbow", label: "Right Elbow", kind: "bone" },
-											{ id: "rig.rightHand", label: "Right Hand", kind: "bone" },
-										],
-									},
-									{
-										id: "rig.leftLeg",
-										label: "Left Leg",
-										kind: "rig",
-										children: [
-											{ id: "rig.leftKnee", label: "Left Knee", kind: "bone" },
-											{ id: "rig.leftFoot", label: "Left Foot", kind: "bone" },
-										],
-									},
-									{
-										id: "rig.rightLeg",
-										label: "Right Leg",
-										kind: "rig",
-										children: [
-											{ id: "rig.rightKnee", label: "Right Knee", kind: "bone" },
-											{ id: "rig.rightFoot", label: "Right Foot", kind: "bone" },
-										],
-									},
-								],
-							},
-						],
+						children: [rigSubtree("characterA")],
 					},
 					{
 						id: "characterB",
@@ -201,7 +180,6 @@ export function buildHierarchyNodes(sceneObjects = [], characters = null) {
 	if (Array.isArray(characters)) {
 		const group = nodes[0]?.children?.find((node) => node.id === "characters");
 		if (group) {
-			const rigChildren = group.children.find((node) => node.id === "characterA")?.children;
 			// Row ids follow the entry's LIST index so they match the viewport
 			// pickId (A/B/charId) stamped by the Character renderer in App.jsx.
 			group.children = characters.flatMap((entry, listIndex) => {
@@ -211,7 +189,7 @@ export function buildHierarchyNodes(sceneObjects = [], characters = null) {
 				// handles are scoped to it this phase. Carried props follow the rig
 				// so the body reads first and the luggage after it.
 				const children = [
-					...(listIndex === 0 && rigChildren ? rigChildren : []),
+					...(listIndex === 0 ? [rigSubtree(id)] : []),
 					...(attachedRows.get(id) ?? []),
 				];
 				return [{
