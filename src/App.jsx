@@ -17,6 +17,8 @@ import { applyAutoFall, applyRootDrop, autoRoofDrop, normalizeRootDrop } from ".
 import {
 	createMotionEdit,
 	motionEditLayout,
+	remapFrameKeyMap,
+	remapTimelineFrame,
 	removeMotionSegment,
 	renderMotionEdit,
 	setMotionSegmentSpeed,
@@ -4887,32 +4889,28 @@ globalThis.playMode = centerTab === "play";
 		// One Ctrl+Z entry per edit: the cast snapshot carries the pre-edit clip
 		// (snapshotCast → bufferMotion), so undo restores the take as it was.
 		recordCharacterUndo();
-		const segments = trimMotionEdit(motion.editSegments ?? createMotionEdit(full.frames), start, end);
+		const previous = motion.editSegments ?? createMotionEdit(full.frames);
+		const segments = trimMotionEdit(previous, start, end);
 		const sliced = renderMotionEdit(full, segments);
+		// Keys inside the kept range migrate to their new frame numbers (#79);
+		// keys on trimmed-away source frames drop out of the mapping naturally.
+		// This replaces the old clear-everything fallback.
+		migrateTimelinePins(previous, segments, sliced.frames);
 		setMotion({ ...sliced, url: null });
 		setTlFrameCount(sliced.frames);
 		setTlFrame((frame) => Math.min(frame, sliced.frames - 1));
 		setTlPlaying(false);
-		if (ikStateRef.current.keys.size > 0) {
-			// IK keys were authored on the pre-cut frame numbers.
-			ikStateRef.current.keys.clear();
-			ikStateRef.current.tracked.clear();
-			ikStateRef.current.plants.clear();
-			setIkTick((value) => value + 1);
-			setToast(isKo
-				? `테이크 잘라냄 — ${sliced.frames}프레임. 기존 프레임의 IK 키는 초기화됐어요`
-				: `Take cut to ${sliced.frames} frames; IK keys keyed to the old frames were cleared`);
-		} else {
-			setToast(isKo
-				? `테이크 잘라냄 — ${sliced.frames}프레임`
-				: `Take cut to ${sliced.frames} frames`);
-		}
+		setToast(isKo
+			? `테이크 잘라냄 — ${sliced.frames}프레임`
+			: `Take cut to ${sliced.frames} frames`);
 	}
 
 	function resetMotionTrim() {
 		const full = motionFullRef.current.get(activeChar.id);
 		if (!full || !motion || motion.frames === full.frames && motion.editSegments?.length === 1) return;
 		recordCharacterUndo();
+		// Surviving IK keys ride back to their full-take frame numbers (#79).
+		migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), createMotionEdit(full.frames), full.frames);
 		setMotion({ ...full, editSegments: createMotionEdit(full.frames) });
 		setTlFrameCount(full.frames);
 		setTlFrame((frame) => Math.min(frame, full.frames - 1));
@@ -4926,10 +4924,35 @@ globalThis.playMode = centerTab === "play";
 		// on the same Ctrl+Z history the cast uses (snapshotCast → bufferMotion).
 		recordCharacterUndo();
 		const rendered = renderMotionEdit(full, edit);
+		migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), edit, rendered.frames);
 		setMotion({ ...rendered, url: null });
 		setTlFrameCount(rendered.frames);
 		setTlFrame((frame) => Math.min(frame, rendered.frames - 1));
 		setTlPlaying(false);
+	}
+
+	/** Everything pinned to TIMELINE frames rides a segment edit's timing
+	 * change (#79): a retime moves the poses those frames address, so the IK
+	 * correction keys and the prompt clips migrate through the same
+	 * old→source→new piecewise mapping the clip itself was resampled with.
+	 * Undo needs no special case — recordCharacterUndo() already snapshotted
+	 * the keys and clips before this runs. */
+	function migrateTimelinePins(previousEdit, nextEdit, newFrameCount) {
+		if (ikStateRef.current.keys.size > 0) {
+			ikStateRef.current.keys = remapFrameKeyMap(ikStateRef.current.keys, previousEdit, nextEdit);
+			setIkTick((value) => value + 1);
+		}
+		setPromptClips((clips) => clips.map((clip) => {
+			const start = remapTimelineFrame(previousEdit, nextEdit, clip.startFrame);
+			const end = remapTimelineFrame(previousEdit, nextEdit, clip.endFrame);
+			// A clip whose whole source range was deleted drops out; one that
+			// partially survives clamps to the new take.
+			if (start === null && end === null) return null;
+			const clamp = (value, fallback) => Math.max(0, Math.min(value ?? fallback, newFrameCount - 1));
+			const nextStart = clamp(start, 0);
+			const nextEnd = clamp(end, newFrameCount - 1);
+			return nextStart <= nextEnd ? { ...clip, startFrame: nextStart, endFrame: nextEnd } : null;
+		}).filter(Boolean));
 	}
 
 	function cutMotionAtPlayhead() {

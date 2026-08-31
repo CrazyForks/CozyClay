@@ -313,7 +313,9 @@ expect(
 	"trim composes from the per-character full-take map",
 	app.includes("const motionFullRef = useRef(new Map());") &&
 	app.includes("const full = motionFullRef.current.get(activeChar.id);") &&
-	app.includes("trimMotionEdit(motion.editSegments ?? createMotionEdit(full.frames), start, end)") &&
+	// The trim reads its previous edit once so pin migration (#79) and the
+	// slice compose from the same segments.
+	app.includes("trimMotionEdit(previous, start, end)") &&
 	app.includes("const sliced = renderMotionEdit(full, segments);"),
 );
 expect(

@@ -47,6 +47,47 @@ export function timelineFrameToMotionFrame(edit, frame) {
 	return segment.sourceStart + progress * (segment.sourceEnd - segment.sourceStart);
 }
 
+/** The inverse of timelineFrameToMotionFrame: which timeline frame shows a
+ * SOURCE frame under this edit. Returns null when no segment covers it (the
+ * source range was deleted or trimmed away). When two segments cover the same
+ * source frame (a cut boundary), the first segment answers. */
+export function motionFrameToTimelineFrame(edit, sourceFrame) {
+	if (!Array.isArray(edit) || edit.length < 1 || !Number.isFinite(sourceFrame)) return null;
+	const layout = motionEditLayout(edit);
+	const segment = layout.find((item) => sourceFrame >= item.sourceStart && sourceFrame <= item.sourceEnd);
+	if (!segment) return null;
+	if (segment.sourceEnd === segment.sourceStart) return segment.timelineStart;
+	const progress = (sourceFrame - segment.sourceStart) / (segment.sourceEnd - segment.sourceStart);
+	return Math.round(segment.timelineStart + progress * (segment.timelineFrames - 1));
+}
+
+/**
+ * Where an OLD timeline frame lands after a segment edit (#79): old timeline
+ * → source → new timeline, each leg piecewise-linear per segment. Returns
+ * null when the frame's source content no longer exists in the new edit.
+ * Anything pinned to timeline frames (IK correction keys, prompt clips) must
+ * ride this mapping when segments change, or it stays glued to frame NUMBERS
+ * while the POSES those numbers address move away.
+ */
+export function remapTimelineFrame(previousEdit, nextEdit, frame) {
+	const source = timelineFrameToMotionFrame(previousEdit, frame);
+	return motionFrameToTimelineFrame(nextEdit, source);
+}
+
+/** Migrate a frame-keyed Map through a segment edit. Values move untouched;
+ * a speed-up can land two old frames on one new frame — the earlier old
+ * frame wins so an authored key is never silently replaced by a later one —
+ * and keys whose source frames were deleted drop out. */
+export function remapFrameKeyMap(keys, previousEdit, nextEdit) {
+	const out = new Map();
+	for (const frame of [...keys.keys()].sort((a, b) => a - b)) {
+		const mapped = remapTimelineFrame(previousEdit, nextEdit, frame);
+		if (mapped === null || out.has(mapped)) continue;
+		out.set(mapped, keys.get(frame));
+	}
+	return out;
+}
+
 export function splitMotionEdit(edit, timelineFrame) {
 	if (!Array.isArray(edit) || edit.length < 1) return edit;
 	const layout = motionEditLayout(edit);

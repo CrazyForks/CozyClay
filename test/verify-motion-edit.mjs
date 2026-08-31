@@ -3,6 +3,9 @@ import { CSKEL27_JOINTS } from "../src/ardy/cskel27.js";
 import {
 	createMotionEdit,
 	motionEditDuration,
+	motionFrameToTimelineFrame,
+	remapFrameKeyMap,
+	remapTimelineFrame,
 	motionSegmentSpeedForFrames,
 	removeMotionSegment,
 	renderMotionEdit,
@@ -151,6 +154,71 @@ function linearMotion(frames) {
 	const speed = motionSegmentSpeedForFrames(segment, 300);
 	assert.equal(speed, 0.8);
 	pass("stretch widths map onto the clamped 0.1x speed grid");
+}
+
+/* -------------------- timeline pin migration (#79) -------------------- */
+{
+	// 96-frame take, one segment slowed to 0.5x -> 192 timeline frames.
+	const identity = createMotionEdit(96);
+	const slowed = setMotionSegmentSpeed(identity, identity[0].id, 0.5);
+	assert.equal(motionEditDuration(slowed), 192);
+	assert.equal(remapTimelineFrame(identity, slowed, 0), 0);
+	assert.equal(remapTimelineFrame(identity, slowed, 95), 191, "the last frame maps to the last frame");
+	near(remapTimelineFrame(identity, slowed, 40), 80, 1.01);
+	pass("a slowdown moves pinned frames proportionally");
+
+	// keys after an edited segment shift by the length delta
+	const cutAt = splitMotionEdit(identity, 48);
+	assert.equal(cutAt.length, 2);
+	const slowFirst = setMotionSegmentSpeed(cutAt, cutAt[0].id, 0.5);
+	const shifted = remapTimelineFrame(cutAt, slowFirst, 80);
+	assert.equal(shifted, 80 + 48, "a key past the slowed segment shifts by the added frames");
+	assert.equal(remapTimelineFrame(cutAt, slowFirst, 20), 40, "a key inside the slowed segment scales");
+	pass("trailing pins shift by the segment's length delta");
+
+	// a cut with no timing change is an identity mapping
+	for (const frame of [0, 24, 47, 48, 60, 95]) {
+		assert.equal(remapTimelineFrame(identity, cutAt, frame), frame);
+	}
+	pass("a pure cut migrates nothing");
+
+	// deleting a segment drops the keys whose source is gone
+	const removed = removeMotionSegment(cutAt, cutAt[0].id);
+	assert.equal(remapTimelineFrame(cutAt, removed, 20), null, "keys in the deleted segment drop");
+	assert.equal(remapTimelineFrame(cutAt, removed, 70), 70 - 48, "keys after it slide left");
+	pass("segment deletion drops orphaned pins and slides the rest");
+
+	// map migration: values ride along; a speed-up collision keeps the FIRST key
+	const doubled = setMotionSegmentSpeed(identity, identity[0].id, 2);
+	const keys = new Map([[40, "a"], [41, "b"], [90, "c"]]);
+	const migrated = remapFrameKeyMap(keys, identity, doubled);
+	assert.equal(migrated.get(20), "a", "the earlier key wins the collision slot");
+	assert.equal(migrated.get(45), "c");
+	assert.equal(migrated.size, 2, "collided keys are not duplicated");
+	pass("remapFrameKeyMap migrates values and resolves collisions first-wins");
+
+	// round trip: slow then restore -> keys return to their original frames
+	const back = remapFrameKeyMap(remapFrameKeyMap(new Map([[13, 1], [64, 2], [95, 3]]), identity, slowed), slowed, identity);
+	assert.deepEqual([...back.keys()], [13, 64, 95]);
+	pass("a retime and its reset round-trip every key home");
+
+	// inverse sanity
+	assert.equal(motionFrameToTimelineFrame(slowed, 0), 0);
+	assert.equal(motionFrameToTimelineFrame(slowed, 95), 191);
+	assert.equal(motionFrameToTimelineFrame(removed, 10), null, "deleted source frames have no timeline home");
+	pass("motionFrameToTimelineFrame inverts the sampling map");
+}
+
+/* --------------------------- App wiring pins --------------------------- */
+{
+	const { readFileSync } = await import("node:fs");
+	const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+	assert.ok(app.includes("migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), edit, rendered.frames)"), "segment edits migrate timeline pins");
+	assert.ok(app.includes("migrateTimelinePins(previous, segments, sliced.frames)"), "trims migrate pins instead of clearing them");
+	assert.ok(app.includes("migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), createMotionEdit(full.frames), full.frames)"), "restoring the full take rides keys home");
+	assert.ok(app.includes("ikStateRef.current.keys = remapFrameKeyMap("), "IK keys migrate through the shared mapping");
+	assert.ok(!app.includes("IK keys keyed to the old frames were cleared"), "the clear-everything fallback is gone");
+	pass("App routes every segment-timing commit through migrateTimelinePins");
 }
 
 console.log("verify-motion-edit: all checks passed");
