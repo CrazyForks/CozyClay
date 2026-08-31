@@ -11,7 +11,7 @@ export const GRID_VIEW_STORAGE_KEY = "cozyclay.grid-view.v1";
 // plane stays below the capture rig's CAPTURE_FOG_NEAR (55) so pushing near
 // past far still disables fog for exported frames, exactly as in clay mode.
 export const GRID_BACKGROUND = "#2c2e33";
-export const GRID_FOG = Object.freeze({ color: GRID_BACKGROUND, near: 22, far: 54 });
+export const GRID_FOG = Object.freeze({ color: GRID_BACKGROUND, near: 30, far: 54 });
 
 // Line palette, tuned against the dark background the way Blender's theme
 // does it: minor metre lines whisper, ten-metre lines carry the scale read,

@@ -8929,7 +8929,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							    past ~120 m the deck simply ceases to exist with no horizon
 							    line, no clip edge and no tone break. */}
 							<fog attach="fog" args={gridView ? [GRID_FOG.color, GRID_FOG.near, GRID_FOG.far] : ["#eef4f3", 18, 54]} />
-							<StageLights keyLight={keyLight} />
+							<StageLights keyLight={keyLight} neutral={gridView} />
 							<KeyLightPuck
 								keyLight={keyLight}
 								selected={keyLightSelected}

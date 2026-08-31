@@ -97,12 +97,22 @@ export function keyLightColor(warmth = 0.5) {
 	return "#fff8e8";
 }
 
-export function StageLights({ keyLight = { x: 6, y: 9, z: 4, intensity: 1.12, warmth: 0.5 } }) {
+/**
+ * `neutral` is the grid-view rig (Blender's workbench studio light idea):
+ * the clay hemisphere fakes a warm bounce off the ivory deck, and with the
+ * deck gone that bounce reads as mud against the dark void. Neutral mode
+ * swaps it for a white sky over a void-dark ground and lifts the ambient so
+ * authored colours stay saturated without any pretend floor.
+ */
+export function StageLights({ keyLight = { x: 6, y: 9, z: 4, intensity: 1.12, warmth: 0.5 }, neutral = false }) {
 	const dim = keyLight.intensity / 1.12;
 	return (
 		<>
-			<hemisphereLight args={["#fffdf6", "#d8d0c3", 0.9]} intensity={0.9 * Math.min(1, 0.35 + 0.65 * dim)} />
-			<ambientLight intensity={0.18 * Math.min(1, 0.35 + 0.65 * dim)} />
+			<hemisphereLight
+				args={neutral ? ["#ffffff", "#3a3d42", 0.9] : ["#fffdf6", "#d8d0c3", 0.9]}
+				intensity={0.9 * Math.min(1, 0.35 + 0.65 * dim)}
+			/>
+			<ambientLight intensity={(neutral ? 0.34 : 0.18) * Math.min(1, 0.35 + 0.65 * dim)} />
 			{/* Only the key casts: one soft, unambiguous contact shadow reads as
 			    ground contact, while three overlapping shadows read as noise. The
 			    map covers the blocking area rather than the whole 500 m deck — a

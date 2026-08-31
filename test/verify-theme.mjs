@@ -41,8 +41,9 @@ expect(
 	"Studio uses directional high-key toon lighting",
 	// The key is user-movable now: the tuned rig survives as the keyLight
 	// DEFAULTS, so an untouched stage still renders the same high-key look.
-	room.includes('"#fffdf6", "#d8d0c3", 0.9') &&
-		room.includes("<ambientLight intensity={0.18 * ") &&
+	// grid view may swap in the neutral studio rig; the clay values stay the default arm
+	room.includes('["#fffdf6", "#d8d0c3", 0.9]') &&
+		room.includes("neutral ? 0.34 : 0.18") &&
 		// the key colour is now the user's warmth dial, defaulting to the
 		// tuned warm value — the default keyLight shape carries it
 		room.includes("{ x: 6, y: 9, z: 4, intensity: 1.12, warmth: 0.5 }"),
