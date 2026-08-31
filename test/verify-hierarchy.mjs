@@ -99,7 +99,16 @@ expect("attached rows keep the object row id and kind", findRow(attachedTree, "o
 expect("attached object leaves the Props list", rowIds(findRow(attachedTree, "props")).join() === "object:crate");
 expect("bone attach carries the bone in the label", findRow(attachedTree, "object:bat")?.label === "Bat · Right Hand");
 expect("root attach keeps the plain object name", findRow(attachedTree, "object:hat")?.label === "Hat");
-expect("the second character carries its own attachments", rowIds(findRow(attachedTree, "characterB")).join() === "object:ball");
+// #78: every cast member carries its own rig subtree ahead of its luggage.
+expect("the second character carries its own attachments", rowIds(findRow(attachedTree, "characterB")).join() === "characterB.rig,object:ball");
+expect("the second character's rig expands with its body groups", rowIds(findRow(attachedTree, "characterB.rig")).length === 5);
+expect(
+	"extra cast rows carry namespaced rigs too",
+	(() => {
+		const tree = buildHierarchyNodes([], [{ id: "c1" }, { id: "c2" }, { id: "c3" }]);
+		return Boolean(findRow(tree, "character:c3.rig")) && rowIds(findRow(tree, "character:c3")).join() === "character:c3.rig";
+	})(),
+);
 expect(
 	"attaching to Character 1 does not displace the rig subtree",
 	rowIds(findRow(attachedTree, "characterA")).join() === "characterA.rig,object:bat,object:hat",

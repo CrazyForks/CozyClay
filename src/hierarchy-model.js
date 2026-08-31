@@ -185,11 +185,12 @@ export function buildHierarchyNodes(sceneObjects = [], characters = null) {
 			group.children = characters.flatMap((entry, listIndex) => {
 				if (entry.hidden) return [];
 				const id = characterRowId(entry, listIndex);
-				// Only the primary carries the rig subtree: IK and viewport pose
-				// handles are scoped to it this phase. Carried props follow the rig
-				// so the body reads first and the luggage after it.
+				// Every cast member carries its own rig subtree (#78) — ids are
+				// namespaced per row (#76) and IK state is per character (#77), so
+				// the tree no longer needs the primary-only gate. Carried props
+				// follow the rig so the body reads first and the luggage after it.
 				const children = [
-					...(listIndex === 0 ? [rigSubtree(id)] : []),
+					rigSubtree(id),
 					...(attachedRows.get(id) ?? []),
 				];
 				return [{
