@@ -53,7 +53,11 @@ export const CSKEL27_PARENTS = CSKEL27_JOINTS.map(
 	(name) => (PARENT_BY_NAME[name] === null ? null : JOINT_INDEX[PARENT_BY_NAME[name]])
 );
 
-/** The 19 joints CozyClay edits (src/poses.js POSE_BONES), as cskel27 names. */
+/** The joints CozyClay edits (src/poses.js POSE_BONES), as cskel27 names.
+ * POSE_BONES' Mixamo Spine2 has no entry here: cskel27's "Spine2" is already
+ * fed by Mixamo Spine1 (COZYCLAY_TO_CSKEL27), so wiring it would need a
+ * Spine3 mapping — until then its rotation stays editor-side and does not
+ * reach the ARDY wire pose. */
 export const COZYCLAY_BONES = [
 	"Hips", "Spine", "Spine1", "Neck", "Head",
 	"LeftShoulder", "RightShoulder", "LeftArm", "RightArm",

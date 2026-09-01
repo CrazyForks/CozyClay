@@ -13,6 +13,7 @@ export const POSE_BONES = [
 	{ id: "hips", bone: "mixamorigHips", label: "Hips" },
 	{ id: "spine", bone: "mixamorigSpine", label: "Spine" },
 	{ id: "chest", bone: "mixamorigSpine1", label: "Chest" },
+	{ id: "upperChest", bone: "mixamorigSpine2", label: "Upper Chest" },
 	{ id: "neck", bone: "mixamorigNeck", label: "Neck" },
 	{ id: "head", bone: "mixamorigHead", label: "Head" },
 	{ id: "lShoulder", bone: "mixamorigLeftShoulder", label: "L Shoulder" },

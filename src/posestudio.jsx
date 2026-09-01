@@ -21,7 +21,7 @@ const HANDLE_RADIUS = 0.05;
  * colour coding. */
 function handleColor(entry) {
 	const id = entry.id;
-	if (id === "hips" || id.startsWith("spine") || id === "chest") return "#ffd23d";
+	if (id === "hips" || id.startsWith("spine") || id === "chest" || id === "upperChest") return "#ffd23d";
 	if (id === "neck" || id === "head") return "#b98cff";
 	if (id.includes("Arm") || id.includes("ForeArm") || id.includes("Hand") || id.includes("Shoulder")) return "#ff8a3d";
 	return "#4dd2ff";

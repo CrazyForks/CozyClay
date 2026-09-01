@@ -5,14 +5,18 @@
 //
 // Both the wasm engine and the .task weights are runtime downloads. The wasm
 // must match the npm bundle compiled into this build byte-for-byte, so its
-// URL is pinned to the same version; the weights are ~5 MB of Google binaries
+// URL is pinned to the same version; the weights are ~9 MB of Google binaries
 // that belong in neither this repo nor its npm package. Offline is therefore
 // a NAMED failure, never a hang or a silent fallback.
 
 export const TASKS_VISION_VERSION = "0.10.17"; // must equal the @mediapipe/tasks-vision entry in package.json — the JS bundle and the wasm ABI move together
 export const POSE_WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`;
+// "full", not "lite": every caller here is an offline pass over a still photo or
+// already-recorded footage, so the ~9 MB download and the slower per-frame cost
+// buy landmark accuracy that nothing downstream can recover once it is lost.
+// Only switch back if a realtime (camera-preview) caller ever appears.
 export const POSE_MODEL_URL =
-	"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+	"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
 
 /**
  * Create a `{ detect, close }` pair for collectLandmarkTrack. Every failure

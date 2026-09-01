@@ -15,6 +15,7 @@ function cross(a, b) {
 function norm(v) { return Math.hypot(v[0], v[1], v[2]); }
 function unit(v) { const n = norm(v); return n > 1e-8 ? scale(v, 1 / n) : null; }
 function lerp(a, b, t) { return add(a, scale(sub(b, a), t)); }
+function rotateY(v, cos, sin) { return [v[0] * cos + v[2] * sin, v[1], v[2] * cos - v[0] * sin]; }
 
 function averageLandmarks(landmarks, indices) {
 	const available = indices.map((index) => landmarks[index]).filter(Boolean);
@@ -99,6 +100,36 @@ function bodyAxes(points) {
 	return { lateral, up, forward };
 }
 
+/**
+ * Below this the forward axis is too close to vertical to carry a yaw: the
+ * subject is lying down or shot straight from above. Yaw comes out of
+ * atan2 over the leftover horizontal components, so its error scales as
+ * 1/horizontal — at 0.12 (about 7 deg off vertical) landmark jitter of 0.01
+ * already swings the angle ~5 deg, and it diverges below that.
+ */
+const YAW_HORIZONTAL_MIN = 0.12;
+
+/**
+ * Drop the photograph's horizontal facing: yaw belongs to the Character
+ * group's `rot`, not to the saved pose, so every target point is spun about Y
+ * until the subject's forward matches the neutral skeleton's forward. Returns
+ * the points unchanged when either forward is too vertical to yield a yaw.
+ */
+function yawAlignPoints(points, targetForward, neutralForward) {
+	if (!targetForward || !neutralForward) return points;
+	const targetHorizontal = Math.hypot(targetForward[0], targetForward[2]);
+	const neutralHorizontal = Math.hypot(neutralForward[0], neutralForward[2]);
+	if (targetHorizontal < YAW_HORIZONTAL_MIN || neutralHorizontal < YAW_HORIZONTAL_MIN) return points;
+	const angle = Math.atan2(neutralForward[0], neutralForward[2])
+		- Math.atan2(targetForward[0], targetForward[2]);
+	const cos = Math.cos(angle);
+	const sin = Math.sin(angle);
+	// _faceForward is a difference, not a position; rotation is linear, so the same spin applies.
+	return Object.fromEntries(
+		Object.entries(points).map(([name, value]) => [name, value ? rotateY(value, cos, sin) : value])
+	);
+}
+
 function frameFrom(primary, secondary) {
 	const x = unit(primary);
 	if (!x || !secondary) return null;
@@ -151,11 +182,13 @@ export function fitLandmarksToPose({ sample, rest, createdMs = 0 }) {
 	if (!sample?.valid || !Array.isArray(sample.landmarks)) {
 		throw new Error("fitLandmarksToPose: sample must be a valid normalized landmark sample");
 	}
-	const targetPoints = buildTargetPoints(sample.landmarks);
-	if (!targetPoints) throw new Error("fitLandmarksToPose: shoulders and hips must be visible");
+	const measuredPoints = buildTargetPoints(sample.landmarks);
+	if (!measuredPoints) throw new Error("fitLandmarksToPose: shoulders and hips must be visible");
 	const neutralPoints = buildNeutralPoints();
-	const targetAxes = bodyAxes(targetPoints);
 	const neutralAxes = bodyAxes(neutralPoints);
+	// Neutral owns the forward direction; reading it off CSKEL27_NEUTRAL keeps the axis unhardcoded.
+	const targetPoints = yawAlignPoints(measuredPoints, bodyAxes(measuredPoints).forward, neutralAxes.forward);
+	const targetAxes = bodyAxes(targetPoints);
 	const rests = restByName(rest);
 	const desiredGlobal = new Map();
 	const bones = {};

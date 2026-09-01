@@ -16,6 +16,13 @@ import { filterLandmarkTrack, normalizeLandmarkTrack } from "./landmarks.js";
  * backfills from the first fitted one: a previs take must never cut to
  * T-pose because one frame missed. `fitted`/`held` in the result say exactly
  * how much of the take was measured versus held.
+ *
+ * `releasedBones`/`confidence` carry the fit diagnostics out to the UI, which
+ * is the only place that can tell the user why part of a pose did not move.
+ * A bone is reported released only when EVERY fitted frame released it: a bone
+ * the footage found even once was measured, and warning about it would be a
+ * lie. `confidence` is the mean over fitted frames so one bad frame in a long
+ * take cannot alone push the take under a warning threshold.
  */
 export function bakeExtractedTake({ samples, rest, fps, durationS, ...options }) {
 	if (!Number.isFinite(fps) || fps <= 0) {
@@ -36,15 +43,25 @@ export function bakeExtractedTake({ samples, rest, fps, durationS, ...options })
 
 	const fitByFrame = new Map();
 	let fitted = 0;
+	// Held in fit order, then narrowed frame by frame, so the reported names keep
+	// the skeleton's own ordering instead of Set insertion order.
+	let releasedBones = null;
+	let confidenceSum = 0;
 	for (const sample of filtered) {
 		if (!sample.valid) continue;
 		const frame = Math.round(sample.timeS * fps);
 		if (frame < 0 || frame >= frames) continue;
-		const { pose } = fitLandmarksToPose({ sample, rest, createdMs: options.createdMs ?? 0 });
-		fitByFrame.set(frame, poseToCskel27({ pose, rest }));
+		const fit = fitLandmarksToPose({ sample, rest, createdMs: options.createdMs ?? 0 });
+		fitByFrame.set(frame, poseToCskel27({ pose: fit.pose, rest }));
+		const released = new Set(fit.releasedBones);
+		releasedBones = releasedBones === null
+			? [...fit.releasedBones]
+			: releasedBones.filter((name) => released.has(name));
+		confidenceSum += fit.confidence;
 		fitted += 1;
 	}
 	if (fitted === 0) throw new Error("no-usable-pose");
+	const confidence = confidenceSum / fitted;
 
 	const writeFrame = (frame, converted) => {
 		const rotBase = frame * joints * 9;
@@ -83,7 +100,7 @@ export function bakeExtractedTake({ samples, rest, fps, durationS, ...options })
 		for (const frame of leading) writeFrame(frame, first);
 		held += leading.length;
 	}
-	return { frames, fps, rotMats, rootPos, posedJoints, fitted, held };
+	return { frames, fps, rotMats, rootPos, posedJoints, fitted, held, releasedBones, confidence };
 }
 
 // A still has no duration to sample, so the take is one frame wide. Any
