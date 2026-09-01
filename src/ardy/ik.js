@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { normalizeBoneName } from "../poses.js";
+import { normalizeBoneName, POSE_BONES, DEFAULT_POSE } from "../poses.js";
 
 /**
  * Frame-based IK layer for direct character posing, following the DCC
@@ -17,10 +17,14 @@ import { normalizeBoneName } from "../poses.js";
  *   re-anchoring at all.
  */
 
-/** Contact radii measured from the bind-pose skinned mesh. */
+/** Contact radii measured from the bind-pose skinned mesh. The limb/head
+ * entries drive floor contact; the Arm/UpLeg/Spine/Neck entries exist so
+ * fix-collisions.js can build per-segment capsules from the same measured
+ * radii instead of guessing body thickness. */
 const CONTACT_JOINTS = [
 	"LeftHand", "RightHand", "LeftFoot", "RightFoot",
 	"LeftForeArm", "RightForeArm", "LeftLeg", "RightLeg", "Hips", "Head",
+	"LeftArm", "RightArm", "LeftUpLeg", "RightUpLeg", "Spine", "Neck",
 ];
 const CONTACT_RADIUS_MIN = 0.01;
 const CONTACT_RADIUS_MAX = 0.25;
@@ -37,38 +41,211 @@ function pointSegmentDistance(point, start, end) {
 	return point.distanceTo(start.clone().addScaledVector(segment, t));
 }
 
+/* --- bind-pose geometry ------------------------------------------------------
+ *
+ * `rig.userData.poseBind` (primed by primeBindPose at clone time) is the only
+ * record of the UNTOUCHED skeleton once a clip is playing: ARDY playback writes
+ * per-bone translations AND rotations every frame, so "where is this bone"
+ * answered off the live matrices is a question about frame 137, not about the
+ * rig. Anything that must be pose-INVARIANT — measured capsule radii, the
+ * bind-relative collision calibration in fix-collisions.js — reads its
+ * endpoints through here instead.
+ */
+
+const bindPosition = new THREE.Vector3();
+const bindQuaternion = new THREE.Quaternion();
+
+/** True when the rig carries a bind snapshot worth reading. */
+export function hasBindPose(rig) {
+	return Boolean(rig?.userData?.poseBind?.size);
+}
+
+/** One node's LOCAL matrix in the bind pose, optionally pre-multiplied by a
+ * pose delta (see restLocalMatrix). Falls back to the node's current local
+ * transform for anything the snapshot does not cover (the mesh nodes, and every
+ * bone on a rig that was never primed). */
+function bindLocalMatrix(rig, node, out, delta = null) {
+	const saved = node.isBone ? rig.userData?.poseBind?.get(node) : null;
+	if (saved) {
+		bindPosition.set(saved.position?.x ?? 0, saved.position?.y ?? 0, saved.position?.z ?? 0);
+		bindQuaternion.set(saved.x, saved.y, saved.z, saved.w);
+	} else {
+		bindPosition.copy(node.position);
+		bindQuaternion.copy(node.quaternion);
+	}
+	if (delta) bindQuaternion.premultiply(delta);
+	return out.compose(bindPosition, bindQuaternion, node.scale);
+}
+
+/* --- the REST pose -----------------------------------------------------------
+ *
+ * The bind pose is a T-pose; the pose a character actually STANDS in is
+ * DEFAULT_POSE — "arms hanging naturally at their sides" — which poses.js
+ * applies as Euler deltas PRE-multiplied onto each bind local rotation. The two
+ * are 25 cm apart at the forearm, so anything that reasons about "the pose this
+ * character is legitimately in, with nothing wrong" (fix-collisions' proxy
+ * calibration) must ask for the rest pose, not the bind pose.
+ *
+ * REST_BONES is not that pose: it is every joint at [0, 0, 0], i.e. the bind
+ * pose itself. It exists to RESET joints before a pose is layered on top, and
+ * calibrating against it would be calibrating against bind all over again.
+ */
+
+const restDeltaCache = new WeakMap();
+const restEuler = new THREE.Euler();
+
+/** Mirrors poses.js's boneMatches: normalised equality or either-direction
+ * suffix, so `mixamorig:LeftArm`, `mixamorigLeftArm` and `LeftArm` all match. */
+function boneMatchesJoint(normalized, target) {
+	return normalized === target || normalized.endsWith(target) || target.endsWith(normalized);
+}
+
+function isDescendantOfAny(bone, ancestors) {
+	for (let node = bone.parent; node; node = node.parent) if (ancestors.includes(node)) return true;
+	return false;
+}
+
+/**
+ * Bone → DEFAULT_POSE rotation delta, for the handful of joints the rest pose
+ * actually moves. Built once per rig.
+ *
+ * This reproduces applyPose's own selection rules rather than approximating
+ * them: the Euler triple is read XYZ, and where a Mixamo FBX nests an identity
+ * copy of a bone underneath its control bone, only the outermost match takes
+ * the delta — rotating both would double the arm angle.
+ */
+function restDeltas(rig) {
+	const cached = restDeltaCache.get(rig);
+	if (cached) return cached;
+	// No bind snapshot, no rest pose: the deltas are defined as a rotation FROM
+	// bind, and without one the current locals are the only thing to read — so
+	// composing on top of them would layer the rest pose onto whatever pose the
+	// rig is already in. Fall through to the current pose, as bindWorldPosition
+	// does for exactly the same reason.
+	if (!hasBindPose(rig)) {
+		const none = new Map();
+		restDeltaCache.set(rig, none);
+		return none;
+	}
+	const matchesByJoint = new Map();
+	rig.traverse((node) => {
+		if (!node.isBone) return;
+		const normalized = normalizeBoneName(node.name);
+		for (const entry of POSE_BONES) {
+			if (!boneMatchesJoint(normalized, normalizeBoneName(entry.bone))) continue;
+			let list = matchesByJoint.get(entry.id);
+			if (!list) matchesByJoint.set(entry.id, (list = []));
+			list.push(node);
+		}
+	});
+	const deltas = new Map();
+	for (const entry of POSE_BONES) {
+		const value = DEFAULT_POSE.bones?.[entry.id];
+		if (!Array.isArray(value) || value.length < 3) continue;
+		if (!value[0] && !value[1] && !value[2]) continue; // a zero delta IS bind
+		const list = matchesByJoint.get(entry.id);
+		if (!list) continue;
+		const rotated = [];
+		for (const bone of list) {
+			if (rotated.length && isDescendantOfAny(bone, rotated)) continue;
+			rotated.push(bone);
+			restEuler.set(value[0], value[1], value[2], "XYZ");
+			deltas.set(bone, new THREE.Quaternion().setFromEuler(restEuler));
+		}
+	}
+	restDeltaCache.set(rig, deltas);
+	return deltas;
+}
+
+function restLocalMatrix(rig, node, out) {
+	return bindLocalMatrix(rig, node, out, restDeltas(rig).get(node) ?? null);
+}
+
+/** Compose a node's world position from per-node LOCAL matrices, root-downward.
+ * Falls back to the node's current world position when it is not a descendant
+ * of `rig`. `rig.matrixWorld` must be current — every caller updates it first. */
+function composedWorldPosition(rig, node, localOf, out) {
+	if (!rig || !node) return null;
+	const path = [];
+	let cursor = node;
+	while (cursor && cursor !== rig) {
+		path.push(cursor);
+		cursor = cursor.parent;
+	}
+	if (cursor !== rig) return node.getWorldPosition(out);
+	const world = new THREE.Matrix4().copy(rig.matrixWorld);
+	const local = new THREE.Matrix4();
+	for (let index = path.length - 1; index >= 0; index -= 1) world.multiply(localOf(rig, path[index], local));
+	return out.setFromMatrixPosition(world);
+}
+
+/** World position a node would have in the rig's BIND (T-) pose. */
+export function bindWorldPosition(rig, node, out = new THREE.Vector3()) {
+	return composedWorldPosition(rig, node, bindLocalMatrix, out);
+}
+
+/** World position a node would have in the rig's REST pose — the bind pose with
+ * DEFAULT_POSE composed on, which is what a character actually stands in. */
+export function restWorldPosition(rig, node, out = new THREE.Vector3()) {
+	return composedWorldPosition(rig, node, restLocalMatrix, out);
+}
+
+/**
+ * Bind-pose world position of one vertex of a skinned mesh.
+ *
+ * `geometry.attributes.position` holds the vertices as authored — the bind
+ * pose, before any skinning — so the mesh's own world matrix is the whole
+ * transform (in the bind pose the skinning matrix is the identity by
+ * construction). This is deliberately NOT getVertexPosition, which applies the
+ * CURRENT skin matrices and therefore answers a question about the frame the
+ * rig happens to be posed at.
+ */
+function bindVertexPosition(mesh, index, out) {
+	out.fromBufferAttribute(mesh.geometry.attributes.position, index);
+	return mesh.localToWorld(out);
+}
+
 /** Measure each contact joint's capsule radius from dominant (>0.4) bind-pose
- * skin weights. The result is cached on the character object. */
+ * skin weights. The result is cached on the character object.
+ *
+ * Both sides of the measurement — segment endpoints and vertices — are read in
+ * the SAME pose, or the numbers are meaningless: a bind segment against a posed
+ * vertex inflates every rotated limb to the radius clamp. With a primed bind
+ * snapshot both come from the bind pose, so the answer no longer depends on
+ * which frame happened to be on screen when the first call landed (positional
+ * skinning rewrites child translations per frame; a mid-clip first call used to
+ * inflate a shortened child's radius by most of a factor). Without a snapshot
+ * both come from the current pose, which is what this did before and is still
+ * exact at rest. */
 export function measureContactRadii(rig) {
 	if (!rig) return {};
 	const cached = contactRadiusCache.get(rig);
 	if (cached) return cached;
 	rig.updateMatrixWorld(true);
-	const bindWorld = new Map();
-	const walkBind = (node, parentWorld) => {
-		const saved = node.isBone ? rig.userData?.poseBind?.get(node) : null;
-		const position = saved?.position ? new THREE.Vector3(saved.position.x, saved.position.y, saved.position.z) : node.position;
-		const quaternion = saved ? new THREE.Quaternion(saved.x, saved.y, saved.z, saved.w) : node.quaternion;
-		const world = parentWorld.clone().multiply(new THREE.Matrix4().compose(position, quaternion, node.scale));
-		bindWorld.set(node, world);
-		for (const child of node.children) walkBind(child, world);
-	};
-	for (const child of rig.children) walkBind(child, rig.matrixWorld);
+	const bindPose = hasBindPose(rig);
 	const segments = new Map();
 	for (const name of CONTACT_JOINTS) {
 		const bone = findBone(rig, `mixamorig${name}`);
 		if (!bone) continue;
-		const start = new THREE.Vector3().setFromMatrixPosition(bindWorld.get(bone));
+		const start = bindPose ? bindWorldPosition(rig, bone) : bone.getWorldPosition(new THREE.Vector3());
 		const child = (name === "Hips" || name === "Head") ? null : bone.children.find((node) => node.isBone);
-		const end = child ? new THREE.Vector3().setFromMatrixPosition(bindWorld.get(child)) : start.clone();
+		const end = child
+			? (bindPose ? bindWorldPosition(rig, child) : child.getWorldPosition(new THREE.Vector3()))
+			: start.clone();
 		segments.set(name, [start, end]);
 	}
-	const maxDistances = new Map(CONTACT_JOINTS.map((name) => [name, 0]));
+	// Distances are collected PER MESH: Mixamo-style exports often carry a
+	// body mesh plus a joint-sphere debug mesh (Alpha_Surface/Alpha_Joints),
+	// and the joint balls inflate every radius to the clamp. The final radius
+	// is the MIN of each mesh's 90th percentile — the tightest fit that every
+	// mesh agrees on, so fat debug geometry can never fatten the capsules.
+	const perMeshDistances = [];
 	rig.traverse((mesh) => {
 		if (!mesh.isSkinnedMesh || !mesh.skeleton || !mesh.geometry?.attributes?.position) return;
 		const indices = mesh.geometry.attributes.skinIndex;
 		const weights = mesh.geometry.attributes.skinWeight;
 		if (!indices || !weights) return;
+		const distances = new Map(CONTACT_JOINTS.map((name) => [name, []]));
 		const names = mesh.skeleton.bones.map((bone) => normalizeBoneName(bone.name));
 		const vertex = new THREE.Vector3();
 		for (let index = 0; index < indices.count; index += 1) {
@@ -89,14 +266,26 @@ export function measureContactRadii(rig) {
 			});
 			const segment = segments.get(name);
 			if (!segment) continue;
-			mesh.getVertexPosition(index, vertex);
-			mesh.localToWorld(vertex);
-			maxDistances.set(name, Math.max(maxDistances.get(name), pointSegmentDistance(vertex, segment[0], segment[1])));
+			if (bindPose) bindVertexPosition(mesh, index, vertex);
+			else { mesh.getVertexPosition(index, vertex); mesh.localToWorld(vertex); }
+			distances.get(name).push(pointSegmentDistance(vertex, segment[0], segment[1]));
 		}
+		perMeshDistances.push(distances);
 	});
+	// 90th-percentile per mesh, NOT the max: stray weights and props put a
+	// few vertices far outside the limb and a max clamps every joint to
+	// CONTACT_RADIUS_MAX, fat enough to flag permanent false contacts.
 	const radii = {};
 	for (const name of CONTACT_JOINTS) {
-		radii[name] = Math.max(CONTACT_RADIUS_MIN, Math.min(CONTACT_RADIUS_MAX, maxDistances.get(name) || CONTACT_RADIUS_FALLBACK));
+		let radius = CONTACT_RADIUS_FALLBACK;
+		for (const distances of perMeshDistances) {
+			const samples = distances.get(name);
+			if (!samples.length) continue;
+			samples.sort((a, b) => a - b);
+			const p90 = samples[Math.min(samples.length - 1, Math.floor(samples.length * 0.9))];
+			radius = radius === CONTACT_RADIUS_FALLBACK ? p90 : Math.min(radius, p90);
+		}
+		radii[name] = Math.max(CONTACT_RADIUS_MIN, Math.min(CONTACT_RADIUS_MAX, radius));
 	}
 	const result = Object.freeze(radii);
 	contactRadiusCache.set(rig, result);
@@ -106,16 +295,21 @@ export function measureContactRadii(rig) {
 /** Measure the vertical amount of mesh below each contact bone in the bind
  * pose. Unlike a capsule radius this is the exact quantity needed when a
  * handle is dragged straight down: the bone can reach floorY + height while
- * the weighted mesh rests on the floor. */
+ * the weighted mesh rests on the floor.
+ *
+ * Bone points and vertices are read in the same pose, for the same reason
+ * measureContactRadii does: this is cached forever off whichever frame called
+ * first, so it must not be able to depend on that frame. */
 export function measureContactHeights(rig) {
 	if (!rig) return {};
 	const cached = contactHeightCache.get(rig);
 	if (cached) return cached;
 	rig.updateMatrixWorld(true);
+	const bindPose = hasBindPose(rig);
 	const points = new Map();
 	for (const name of CONTACT_JOINTS) {
 		const bone = findBone(rig, `mixamorig${name}`);
-		if (bone) points.set(name, bone.getWorldPosition(new THREE.Vector3()));
+		if (bone) points.set(name, bindPose ? bindWorldPosition(rig, bone) : bone.getWorldPosition(new THREE.Vector3()));
 	}
 	const drops = new Map(CONTACT_JOINTS.map((name) => [name, 0]));
 	rig.traverse((mesh) => {
@@ -139,8 +333,8 @@ export function measureContactHeights(rig) {
 			});
 			const point = points.get(name);
 			if (!point) continue;
-			mesh.getVertexPosition(index, vertex);
-			mesh.localToWorld(vertex);
+			if (bindPose) bindVertexPosition(mesh, index, vertex);
+			else { mesh.getVertexPosition(index, vertex); mesh.localToWorld(vertex); }
 			drops.set(name, Math.max(drops.get(name), point.y - vertex.y));
 		}
 	});
@@ -204,7 +398,7 @@ const CHAINS = {
 	leg: (side) => [`mixamorig${side}UpLeg`, `mixamorig${side}Leg`, `mixamorig${side}Foot`],
 };
 
-function findBone(root, name) {
+export function findBone(root, name) {
 	const target = normalizeBoneName(name);
 	let found = null;
 	root.traverse((object) => {
@@ -622,26 +816,81 @@ export function ikRestore(rig, snapshot, fkJoints) {
 	}
 }
 
-/** Bake the CURRENT local rotations of every TRACKED part into the key at
- * `frame`: solved chain bones (b0, b1) for chains, the single bone for FK
- * joints — and the hips' LOCAL POSITION when the body root was moved.
- * Entries are uniform { q: [...quats], p: localPos | null }. Local values
- * are character-position independent, so keys need no re-anchoring ever. */
-export function ikBakeKeyframe(rig, ikState, frame, fkJoints) {
+/**
+ * Bake the CURRENT local rotations into the key at `frame`: solved chain bones
+ * (b0, b1, b2) for chains, the single bone for FK joints — and the hips' LOCAL
+ * POSITION when the body root was moved. Entries are uniform
+ * { q: [...quats], p: localPos | null, basePos? }. Local values are
+ * character-position independent, so keys need no re-anchoring ever.
+ *
+ * `onlyIds` (Set or array) bakes EXACTLY those ids instead of the whole tracked
+ * set, and touches them into `tracked` on the way. Without it a fix to a leg at
+ * frame 40 also re-keys the hand the user dragged at frame 2 — and, run twice,
+ * re-bakes the first run's own blend ramp as an authored pose, which is how a
+ * 10 cm correction ratcheted to 55 cm. Every automated driver (fix-collisions,
+ * auto-physics) therefore names what it actually moved; interactive bakes,
+ * where "everything the user has touched" IS the intent, pass nothing and keep
+ * the old behaviour exactly.
+ *
+ * `basePositions` (Map or object, id → Vector3-like) and `baseQuats` (Map or
+ * object, id → array of Quaternion-like, one per chain bone) record the pose
+ * the key was baked OVER — the CLIP's own local transform for that part at this
+ * frame, before any solver or layer touched it. ikEvaluate then applies the key
+ * as a DELTA on top of whatever the clip does (see its comment), instead of
+ * blending toward this frame's absolute values on the frames either side.
+ * Keys without them fall back to the absolute blend, so saved projects and
+ * no-motion authoring are unaffected.
+ *
+ * `baseQuats` MUST be the raw clip's rotations — the pose ikEvaluate will find
+ * on the bone before it writes, not the pose that happened to be on screen. The
+ * two differ whenever an earlier key is already blending into this frame, and
+ * only the raw one makes `clipCurrent ∘ (baseQ⁻¹ ∘ q)` collapse to `q` at the
+ * keyed frame.
+ */
+export function ikBakeKeyframe(rig, ikState, frame, fkJoints, onlyIds = null, basePositions = null, baseQuats = null) {
 	let entry = ikState.keys.get(frame);
-	for (const id of ikState.tracked) {
+	const ids = onlyIds ? [...onlyIds] : [...ikState.tracked];
+	const read = (source, id) => (typeof source?.get === "function" ? source.get(id) : source?.[id]);
+	const readBase = (id) => read(basePositions, id);
+	for (const id of ids) {
+		if (onlyIds) ikTouch(ikState, id);
 		const chain = rig.get(id);
 		const joint = fkJoints?.get(id);
 		let q = null;
 		let p = null;
-		if (chain) q = [chain.bones[0].quaternion.clone(), chain.bones[1].quaternion.clone(), chain.bones[2].quaternion.clone()];
-		else if (joint) {
+		let basePos = null;
+		let baseQ = null;
+		if (chain) {
+			q = [chain.bones[0].quaternion.clone(), chain.bones[1].quaternion.clone(), chain.bones[2].quaternion.clone()];
+			const bases = read(baseQuats, id);
+			if (Array.isArray(bases) && bases.length >= q.length && bases.every(Boolean)) {
+				baseQ = bases.slice(0, q.length).map((b) => new THREE.Quaternion(b.x, b.y, b.z, b.w));
+			}
+		} else if (joint) {
 			q = [joint.bone.quaternion.clone()];
-			if (joint.bindPos) p = joint.bone.position.clone();
+			if (joint.bindPos) {
+				p = joint.bone.position.clone();
+				const base = readBase(id);
+				if (base) {
+					basePos = new THREE.Vector3(base.x, base.y, base.z);
+					// A key with a base pose IS a translation delta over the clip, so
+					// it has no business also pinning an absolute rotation: the two
+					// claims contradict each other. Storing q here made every frame
+					// inside the blend window inherit a share of the keyed frame's
+					// hips ORIENTATION — grounded neighbours of a jump tilted by up
+					// to 1.2 cm of foot drop that no caller ever asked for. Dropping
+					// it makes the key say exactly what it means: move the root, leave
+					// the performance alone.
+					q = null;
+				}
+			}
 		}
-		if (!q) continue;
+		if (!q && !p) continue;
 		if (!entry) ikState.keys.set(frame, (entry = new Map()));
-		entry.set(id, { q, p });
+		const key = { q, p };
+		if (basePos) key.basePos = basePos;
+		if (baseQ && q) key.baseQ = baseQ;
+		entry.set(id, key);
 	}
 }
 
@@ -751,13 +1000,16 @@ export function ikKeyframes(ikState) {
  * tracked parts with no keys, are never written.
  *
  * `blendWindow` > 0 turns the layer into a LOCAL correction (used when a
- * generated motion plays underneath): the correction eases from full
- * strength at the edge keys down to zero over that many frames outside the
- * keyed range, blending against whatever pose is already on the bone (the
- * motion). Between keys the weight stays 1 — both endpoints are authored,
- * so the slerp is the design. With the default 0 the keys hold forever
- * (constant extrapolation), the no-motion behaviour.
+ * generated motion plays underneath): the correction holds full strength
+ * across each ISLAND of keys and eases to zero over that many frames outside
+ * it (see correctionWeight), blending against whatever pose is already on the
+ * bone (the motion). With the default 0 the keys hold forever (constant
+ * extrapolation), the no-motion authoring behaviour.
  */
+const deltaPos = new THREE.Vector3();
+const identityQuat = new THREE.Quaternion();
+const easedDelta = new THREE.Quaternion();
+
 export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 	if (!rig) return;
 	for (const id of ikState.tracked) {
@@ -768,26 +1020,68 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 		const w = blendWindow > 0 ? correctionWeight(ikState.keys, id, frame, blendWindow) : 1;
 		if (w <= 0) continue;
 		if (chain) {
-			restoreChainPositions(chain, w);
-			if (w >= 1) {
-				chain.bones[0].quaternion.copy(sampled.q[0]);
-				chain.bones[1].quaternion.copy(sampled.q[1]);
-				// The effector's authored rotation rides along when the key has it
-				// (pre-rotation keys hold only b0/b1 — apply whatever is stored).
-				if (sampled.q[2]) chain.bones[2].quaternion.copy(sampled.q[2]);
+			// DELTA blend for chain rotations, the mirror of basePos for the hips
+			// and for exactly the same reason. Easing a bone toward the key's
+			// ABSOLUTE rotation makes the smear proportional to how different the
+			// keyed pose is from this frame's clip pose — which, six frames from a
+			// walk's fix, is the whole stride. Measured: unkeyed blend-window
+			// frames moved up to 197.9 mm for a sub-2 cm correction, a swing-phase
+			// foot lift was flattened by 95.9 mm, and 14 unkeyed frames ended with
+			// feet under the floor purely from the ramp. Re-applying the SOLVER'S
+			// OWN rotation instead — applied = clipCurrent ∘ slerp(identity,
+			// baseQ⁻¹ ∘ q, w) — makes the smear proportional to the correction,
+			// which is the only thing the key ever claimed.
+			const deltas = blendWindow > 0 ? sampled.deltaQ : null;
+			if (deltas) {
+				// Translations stay on the CLIP until the correction has full
+				// authority. See restoreChainPositions for why this is a step and
+				// not a ramp.
+				if (w >= 1) restoreChainPositions(chain, 1);
+				for (let index = 0; index < chain.bones.length && index < deltas.length; index += 1) {
+					if (!deltas[index]) continue;
+					easedDelta.copy(deltas[index]);
+					if (w < 1) easedDelta.slerp(identityQuat, 1 - w);
+					chain.bones[index].quaternion.multiply(easedDelta);
+				}
 			} else {
-				// current quats are the base layer's (motion) — ease toward the key
-				chain.bones[0].quaternion.slerp(sampled.q[0], w);
-				chain.bones[1].quaternion.slerp(sampled.q[1], w);
-				if (sampled.q[2]) chain.bones[2].quaternion.slerp(sampled.q[2], w);
+				restoreChainPositions(chain, w);
+				if (w >= 1) {
+					chain.bones[0].quaternion.copy(sampled.q[0]);
+					chain.bones[1].quaternion.copy(sampled.q[1]);
+					// The effector's authored rotation rides along when the key has it
+					// (pre-rotation keys hold only b0/b1 — apply whatever is stored).
+					if (sampled.q[2]) chain.bones[2].quaternion.copy(sampled.q[2]);
+				} else {
+					// current quats are the base layer's (motion) — ease toward the key
+					chain.bones[0].quaternion.slerp(sampled.q[0], w);
+					chain.bones[1].quaternion.slerp(sampled.q[1], w);
+					if (sampled.q[2]) chain.bones[2].quaternion.slerp(sampled.q[2], w);
+				}
 			}
 			chain.bones[0].updateMatrixWorld(true);
 		} else if (joint) {
 			if (!sampled.p && joint.bindPos) joint.bone.position.lerp(joint.bindPos, w);
-			if (w >= 1) joint.bone.quaternion.copy(sampled.q[0]);
-			else joint.bone.quaternion.slerp(sampled.q[0], w);
+			// A translation-only key (see ikBakeKeyframe) stores no rotation at
+			// all, and must leave the clip's own orientation strictly alone.
+			if (sampled.q?.[0]) {
+				if (w >= 1) joint.bone.quaternion.copy(sampled.q[0]);
+				else joint.bone.quaternion.slerp(sampled.q[0], w);
+			}
 			if (sampled.p && joint.bindPos) {
-				if (w >= 1) joint.bone.position.copy(sampled.p);
+				// DELTA blend, the correction-mode default whenever the key knows
+				// the pose it was baked over: position = clipPosition + (p −
+				// basePos)·w. Lerping toward the key's ABSOLUTE p instead splices
+				// that key's height onto its neighbours — a planted toe rose 30 cm
+				// because the frame next to a jump key inherited a share of the
+				// jump's hips height. The delta form carries only what the
+				// correction actually changed, so a frame the clip already had
+				// right stays exactly where the clip put it. At w = 1 on the keyed
+				// frame itself the clip position IS basePos, so this reproduces the
+				// baked pose exactly (clipPos + (p − basePos)·1 = p) — the identity
+				// that lets it replace the absolute path rather than approximate it.
+				if (blendWindow > 0 && sampled.basePos) {
+					joint.bone.position.addScaledVector(deltaPos.subVectors(sampled.p, sampled.basePos), w);
+				} else if (w >= 1) joint.bone.position.copy(sampled.p);
 				else joint.bone.position.lerp(sampled.p, w);
 			}
 			joint.bone.updateMatrixWorld(true);
@@ -801,6 +1095,25 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
  * same FK pose and can visually separate the limb. Return the edited chain
  * to its Mixamo bind translations before applying IK rotations so parent
  * rotation and fixed segment lengths own all descendants.
+ *
+ * WHY THE DELTA PATH CALLS THIS ONLY AT FULL WEIGHT. The bind restore is not a
+ * small adjustment — on a generated clip the per-bone translations sit ~19 mm
+ * off bind — and, unlike a rotation, it cannot be expressed as a delta: the
+ * authored pose is defined AT bind translations (solveIk resets them before it
+ * aims, and the chain's segment lengths were measured there), so any partial
+ * value is a pose nobody authored. Ramping it by `weight` therefore injects up
+ * to 16 mm of segment-length change into frames whose only claim on the layer is
+ * a fractional rotation delta — several times the correction itself, and enough
+ * on its own to blow a 1 cm budget.
+ *
+ * So: a frame the correction fully owns (a key, or an unkeyed frame inside a key
+ * island) gets bind translations, because it must reproduce the authored pose. A
+ * frame on the ease ramp keeps the CLIP's translations untouched and receives
+ * only the eased rotation delta. The cost is a step of up to that ~19 mm at each
+ * island edge instead of a ramp spread over the whole window; the benefit is
+ * that every frame outside an island deviates from the clip by the correction
+ * and nothing else. Removing the step outright means solving in clip-translation
+ * space, which is a change to solveIk's contract and to every drag path with it.
  */
 function restoreChainPositions(chain, weight = 1) {
 	if (!chain?.bindPositions) return;
@@ -814,23 +1127,86 @@ function restoreChainPositions(chain, weight = 1) {
 }
 
 /**
- * Correction strength at `frame` for one track: 1 inside the keyed range
- * (both neighbours authored), easing 1 → 0 across `blendWindow` frames
- * outside it, so a single key at frame 39 stops stomping the whole earlier
- * motion and instead blends back to the clip.
+ * A track's key ISLANDS: runs of keys close enough together to be one
+ * correction, as [firstFrame, lastFrame] pairs in ascending order. Two
+ * consecutive keys belong to the same island while the gap between them is no
+ * wider than `blendWindow`; a wider gap starts a new island.
+ *
+ * The window is the right ruler because it is exactly how far a correction is
+ * allowed to reach: keys closer together than that overlap anyway, and keys
+ * further apart are, by the layer's own definition, separate local fixes with
+ * clip in between.
+ */
+function trackIslands(keys, trackId, blendWindow) {
+	const frames = [];
+	for (const [f, entry] of keys) if (entry.has(trackId)) frames.push(f);
+	if (!frames.length) return [];
+	frames.sort((a, b) => a - b);
+	const islands = [];
+	let first = frames[0];
+	let prev = frames[0];
+	for (let index = 1; index < frames.length; index += 1) {
+		const f = frames[index];
+		if (f - prev > blendWindow) {
+			islands.push([first, prev]);
+			first = f;
+		}
+		prev = f;
+	}
+	islands.push([first, prev]);
+	return islands;
+}
+
+/**
+ * Correction strength at `frame` for one track: 1 on a key and anywhere inside
+ * a key ISLAND, easing 1 → 0 across `blendWindow` frames outward from the
+ * nearest island edge, 0 beyond every island.
+ *
+ * This used to be "1 everywhere between the track's first and last key", which
+ * quietly made every sparse correction a whole-clip rewrite: two collision
+ * fixes at frames 2 and 18 replaced the entire arm swing in between (wrist
+ * 60 cm off the generated pose at frame 11), and on a real 432-frame walk two
+ * keys at 129 and 322 pinned a 193-frame slerp over the clip. Between islands
+ * the clip is authored motion nobody asked to change, so the layer eases out of
+ * one island, hands the frames back to the clip, and eases into the next.
+ *
+ * Single keys are unaffected (an island of one, easing both ways, exactly as
+ * before), and a contiguous run of keys — auto-physics' corrected span with its
+ * boundary pins, a fully baked pose — is one island, so full-strength playback
+ * of authored ranges is unchanged too.
  */
 function correctionWeight(keys, trackId, frame, blendWindow) {
-	let first = null;
-	let last = null;
-	for (const f of keys.keys()) {
-		if (!keys.get(f).has(trackId)) continue;
-		if (first == null || f < first) first = f;
-		if (last == null || f > last) last = f;
+	const islands = trackIslands(keys, trackId, blendWindow);
+	let best = 0;
+	for (const [first, last] of islands) {
+		if (frame >= first && frame <= last) return 1;
+		const distance = frame < first ? first - frame : frame - last;
+		const weight = 1 - distance / blendWindow;
+		if (weight > best) best = weight;
 	}
-	if (first == null) return 0;
-	if (frame >= first && frame <= last) return 1;
-	const d = frame < first ? first - frame : frame - last;
-	return Math.max(0, 1 - d / blendWindow);
+	return Math.max(0, best);
+}
+
+/**
+ * The rotation the correction actually applied, per bone: `baseQ⁻¹ ∘ q`, so
+ * that `baseQ ∘ delta === q`. Null unless the key carries a base for every
+ * rotation it stores — a half-based key would mix a delta with an absolute.
+ */
+function keyDeltas(entry) {
+	if (!entry?.q || !entry.baseQ) return null;
+	const out = [];
+	for (let index = 0; index < entry.q.length; index += 1) {
+		const target = entry.q[index];
+		const base = entry.baseQ[index];
+		if (!target || !base) return null;
+		out.push(base.clone().invert().multiply(target));
+	}
+	return out;
+}
+
+/** A key as ikEvaluate consumes it, with its rotation deltas resolved. */
+function withDeltas(entry) {
+	return entry?.baseQ ? { ...entry, deltaQ: keyDeltas(entry) } : entry;
 }
 
 function sampleChain(keys, trackId, frame) {
@@ -842,13 +1218,32 @@ function sampleChain(keys, trackId, frame) {
 		if (f >= frame && (nextFrame == null || f < nextFrame)) nextFrame = f;
 	}
 	if (prevFrame == null && nextFrame == null) return null;
-	if (prevFrame == null) return keys.get(nextFrame).get(trackId);
-	if (nextFrame == null || prevFrame === nextFrame) return keys.get(prevFrame).get(trackId);
+	if (prevFrame == null) return withDeltas(keys.get(nextFrame).get(trackId));
+	if (nextFrame == null || prevFrame === nextFrame) return withDeltas(keys.get(prevFrame).get(trackId));
 	const a = keys.get(prevFrame).get(trackId);
 	const b = keys.get(nextFrame).get(trackId);
 	const t = (frame - prevFrame) / (nextFrame - prevFrame);
+	const deltasA = keyDeltas(a);
+	const deltasB = keyDeltas(b);
 	return {
-		q: a.q.map((q, i) => q.clone().slerp(b.q[i], t)),
+		// Between two based keys the DELTAS interpolate, not the absolute
+		// rotations and their bases separately: each key's delta is a statement
+		// about its own frame's clip pose, and interpolating those statements is
+		// what "half of one fix easing into the next" means. A mixed pair has no
+		// common base to interpolate against and falls back to the absolute path.
+		deltaQ: deltasA && deltasB && deltasA.length === deltasB.length
+			? deltasA.map((d, i) => d.slerp(deltasB[i], t))
+			: null,
+		// Translation-only keys carry no q. Two of them interpolate to no
+		// rotation at all; a mixed pair falls back to whichever key does author
+		// one, which is the same constant-hold a lone key has always given.
+		q: a.q && b.q
+			? a.q.map((q, i) => q.clone().slerp(b.q[i], t))
+			: (a.q ?? b.q ?? null),
 		p: a.p && b.p ? a.p.clone().lerp(b.p, t) : (a.p || b.p || null),
+		// Mixed keys (one baked with a base pose, one without) fall back to the
+		// absolute blend rather than interpolating a delta against a base only
+		// half the pair agrees on.
+		basePos: a.basePos && b.basePos ? a.basePos.clone().lerp(b.basePos, t) : null,
 	};
 }

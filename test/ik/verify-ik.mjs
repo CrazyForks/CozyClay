@@ -21,11 +21,17 @@ import {
 	applyBodyContact,
 	clampIkTargetToFloor,
 	measureContactRadii,
+	bindWorldPosition,
+	restWorldPosition,
 	IK_TRACKS,
 	MID_TRACKS,
 	FK_TRACKS,
 	ikControlIsExposed,
 } from "../../src/ardy/ik.js";
+import { primeBindPose, applyPose, POSE_BONES, DEFAULT_POSE } from "../../src/poses.js";
+
+/** app-stage.jsx's REST_BONES: every joint at zero, i.e. the bind pose. */
+const REST_ZERO = Object.fromEntries(POSE_BONES.map((bone) => [bone.id, [0, 0, 0]]));
 
 let failures = 0;
 function check(name, cond, detail = "") {
@@ -494,6 +500,413 @@ check("no plants → planted solve does nothing", lLeg.bones[2].getWorldPosition
 	const q2 = handBone.quaternion.clone();
 	ikEvaluate(chains2, ik6, 7, null);
 	check("two-quat legacy keys leave the effector as-is", handBone.quaternion.angleTo(q2) < 1e-6);
+}
+
+/* --- REGRESSION (R1/R3): island-aware correction weighting ----------------- */
+/* The old rule was "weight 1 everywhere between a track's first and last key",
+ * which turned every sparse correction into a whole-clip rewrite: two keys
+ * 20 frames apart absolutely-slerped the 19 frames of authored motion between
+ * them (on the QA walk, two keys at 129 and 322 pinned a 193-frame slerp and
+ * threw an ankle 53.7 cm off the clip). Keys further apart than the blend
+ * window are now separate islands with clip in between. */
+{
+	const islandRig = makeRig();
+	const islandResolved = resolveIkRig(islandRig);
+	const islandChains = islandResolved.chains;
+	const islandJoints = islandResolved.fkJoints;
+	const joint = islandJoints.get("neck");
+	const BLEND = 6;
+	const qA = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), 0.6);
+	const qB = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -0.6);
+	const clipQ = new THREE.Quaternion(); // the "motion" under the correction
+	const bake = (state, frame, q) => {
+		joint.bone.quaternion.copy(q);
+		joint.bone.updateMatrixWorld(true);
+		ikBakeKeyframe(islandChains, state, frame, islandJoints);
+	};
+	const evaluateFrom = (state, frame, blend) => {
+		joint.bone.quaternion.copy(clipQ);
+		joint.bone.updateMatrixWorld(true);
+		ikEvaluate(islandChains, state, frame, islandJoints, blend);
+		return joint.bone.quaternion.clone();
+	};
+
+	const far = createIkState();
+	ikTouch(far, "neck");
+	bake(far, 0, qA);
+	bake(far, 20, qB);
+	check("a frame mid-gap between two key islands keeps the clip pose",
+		deg(evaluateFrom(far, 10, BLEND), clipQ) < 1e-6,
+		`err=${deg(evaluateFrom(far, 10, BLEND), clipQ).toExponential(2)}°`);
+	check("a frame one window past an island edge is fully back on the clip",
+		deg(evaluateFrom(far, 6, BLEND), clipQ) < 1e-6);
+	// Inside the window the ease is unchanged: weight 1 − d/blend from the edge.
+	const eased = evaluateFrom(far, 3, BLEND);
+	const sampledAt3 = qA.clone().slerp(qB, 3 / 20);
+	check("the ease into an island still ramps from its edge key",
+		deg(eased, clipQ.clone().slerp(sampledAt3, 1 - 3 / BLEND)) < 0.01,
+		`err=${deg(eased, clipQ.clone().slerp(sampledAt3, 1 - 3 / BLEND)).toFixed(4)}°`);
+	// Authoring mode (no motion underneath) must keep the old semantics EXACTLY.
+	check("authoring mode (blendFrames 0) still holds the whole keyed envelope",
+		deg(evaluateFrom(far, 10, 0), qA.clone().slerp(qB, 0.5)) < 0.01,
+		`err=${deg(evaluateFrom(far, 10, 0), qA.clone().slerp(qB, 0.5)).toFixed(4)}°`);
+
+	const near = createIkState();
+	ikTouch(near, "neck");
+	bake(near, 10, qA);
+	bake(near, 14, qB);
+	check("keys within one blend window are one island (full-weight interpolation)",
+		deg(evaluateFrom(near, 12, BLEND), qA.clone().slerp(qB, 0.5)) < 0.01,
+		`err=${deg(evaluateFrom(near, 12, BLEND), qA.clone().slerp(qB, 0.5)).toFixed(4)}°`);
+	check("a single key is an island of one, easing both ways", (() => {
+		const solo = createIkState();
+		ikTouch(solo, "neck");
+		bake(solo, 10, qA);
+		return deg(evaluateFrom(solo, 10, BLEND), qA) < 1e-6
+			&& deg(evaluateFrom(solo, 13, BLEND), clipQ.clone().slerp(qA, 0.5)) < 0.01
+			&& deg(evaluateFrom(solo, 16, BLEND), clipQ) < 1e-6;
+	})());
+}
+
+/* --- REGRESSION (R2): the hips blend is a DELTA, not an absolute splice ----- */
+/* Easing the hips toward a neighbouring key's ABSOLUTE local position splices
+ * that key's height onto the frames around it — a planted toe rose 30 cm
+ * because the frame next to a jump key inherited a share of the jump's hips
+ * height. A key baked with its clip pose (`basePos`) instead contributes only
+ * what the correction changed. */
+{
+	const deltaRig = makeRig();
+	const deltaResolved = resolveIkRig(deltaRig);
+	const deltaChains = deltaResolved.chains;
+	const deltaJoints = deltaResolved.fkJoints;
+	const deltaHips = deltaJoints.get("hips");
+	const BLEND = 6;
+	// Frame 10 of the clip has the hips here; the correction lifts them 12 cm.
+	const clipAt10 = deltaHips.bindPos.clone().add(new THREE.Vector3(0, 0, 0));
+	const lift = new THREE.Vector3(0, 12, 0); // bone-local cm (rig scale 0.01)
+	const state = createIkState();
+	ikTouch(state, "hips");
+	deltaHips.bone.position.copy(clipAt10).add(lift);
+	deltaHips.bone.updateMatrixWorld(true);
+	ikBakeKeyframe(deltaChains, state, 10, deltaJoints, ["hips"], new Map([["hips", clipAt10]]));
+	check("the bake records the pose the key was made over",
+		state.keys.get(10).get("hips").basePos?.distanceTo(clipAt10) < 1e-9);
+
+	// Frame 10 itself: clipPos + (p − basePos)·1 must be the baked pose exactly.
+	deltaHips.bone.position.copy(clipAt10);
+	ikEvaluate(deltaChains, state, 10, deltaJoints, BLEND);
+	check("the keyed frame reproduces the baked position exactly",
+		deltaHips.bone.position.distanceTo(clipAt10.clone().add(lift)) < 1e-9,
+		`err=${deltaHips.bone.position.distanceTo(clipAt10.clone().add(lift)).toExponential(2)}`);
+
+	// Frame 12 of the clip is somewhere else entirely (the character walked on).
+	const clipAt12 = clipAt10.clone().add(new THREE.Vector3(40, -25, 15));
+	const w = 1 - 2 / BLEND;
+	deltaHips.bone.position.copy(clipAt12);
+	ikEvaluate(deltaChains, state, 12, deltaJoints, BLEND);
+	const wantedDelta = clipAt12.clone().addScaledVector(lift, w);
+	const wantedAbsolute = clipAt12.clone().lerp(clipAt10.clone().add(lift), w);
+	check("an in-window frame gets clip + eased delta",
+		deltaHips.bone.position.distanceTo(wantedDelta) < 1e-9,
+		`err=${deltaHips.bone.position.distanceTo(wantedDelta).toExponential(2)}`);
+	check("an in-window frame is NOT lerped toward the key's absolute position",
+		deltaHips.bone.position.distanceTo(wantedAbsolute) > 1,
+		`splice=${deltaHips.bone.position.distanceTo(wantedAbsolute).toFixed(3)}`);
+
+	// Keys without a base pose (saved projects, authoring) keep the old blend.
+	const legacy = createIkState();
+	ikTouch(legacy, "hips");
+	deltaHips.bone.position.copy(clipAt10).add(lift);
+	ikBakeKeyframe(deltaChains, legacy, 10, deltaJoints);
+	deltaHips.bone.position.copy(clipAt12);
+	ikEvaluate(deltaChains, legacy, 12, deltaJoints, BLEND);
+	check("a key with no base pose still uses the absolute blend",
+		deltaHips.bone.position.distanceTo(wantedAbsolute) < 1e-9);
+}
+
+/* --- REGRESSION (R4): a bake can name exactly what it wrote ---------------- */
+{
+	const bakeRig = makeRig();
+	const bakeResolved = resolveIkRig(bakeRig);
+	const state = createIkState();
+	ikTouch(state, "leftHand");
+	ikTouch(state, "neck");
+	ikBakeKeyframe(bakeResolved.chains, state, 5, bakeResolved.fkJoints);
+	check("the default bake still writes the whole tracked set",
+		state.keys.get(5).has("leftHand") && state.keys.get(5).has("neck"));
+	ikBakeKeyframe(bakeResolved.chains, state, 40, bakeResolved.fkJoints, ["leftFoot"]);
+	check("onlyIds bakes exactly the named parts",
+		state.keys.get(40).has("leftFoot") && !state.keys.get(40).has("leftHand") && !state.keys.get(40).has("neck"),
+		`ids=${[...state.keys.get(40).keys()].join(",")}`);
+	check("onlyIds touches its parts into the tracked set", state.tracked.has("leftFoot"));
+}
+
+/* --- REGRESSION (R7): contact radii are measured in the BIND pose ---------- */
+/* measureContactRadii caches forever off whichever frame calls it first, and
+ * ARDY playback rewrites child bone translations per frame — so a first call
+ * mid-clip measured its segments against a shortened limb and inflated the
+ * radius (+79% at a 30%-shortened child on the probe). Bind-pose endpoints
+ * against bind-pose vertices make the answer frame-independent. */
+{
+	const makeArmRig = () => {
+		const rig = new THREE.Object3D();
+		const fore = new THREE.Bone();
+		fore.name = "mixamorigLeftForeArm";
+		const hand = new THREE.Bone();
+		hand.name = "mixamorigLeftHand";
+		hand.position.set(1, 0, 0);
+		fore.add(hand);
+		rig.add(fore);
+		const positions = [];
+		const weights = [];
+		for (let i = 0; i < 10; i += 1) {
+			positions.push(0.1 * i, 0.05, 0);
+			weights.push(1, 0, 0, 0);
+		}
+		const geometry = new THREE.BufferGeometry();
+		geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+		geometry.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(new Array(40).fill(0), 4));
+		geometry.setAttribute("skinWeight", new THREE.Float32BufferAttribute(weights, 4));
+		const mesh = new THREE.SkinnedMesh(geometry, new THREE.MeshBasicMaterial());
+		rig.add(mesh);
+		mesh.bind(new THREE.Skeleton([fore, hand]));
+		rig.updateMatrixWorld(true);
+		primeBindPose(rig); // this untouched pose is the bind, as at clone time
+		return { rig, hand };
+	};
+	const atBind = makeArmRig();
+	const bindRadius = measureContactRadii(atBind.rig).LeftForeArm;
+	check("the bind measurement finds the mesh's actual radius",
+		Math.abs(bindRadius - 0.05) < 1e-6, `r=${bindRadius}`);
+
+	const midClip = makeArmRig();
+	midClip.hand.position.set(0.1, 0, 0); // positional skinning, 90% shorter
+	midClip.rig.updateMatrixWorld(true);
+	const posedRadius = measureContactRadii(midClip.rig).LeftForeArm;
+	check("a first measurement taken mid-clip reports the bind-pose radius",
+		Math.abs(posedRadius - bindRadius) < 1e-6, `bind=${bindRadius} posed=${posedRadius}`);
+}
+
+/* --- REGRESSION (Defect B): chain keys blend as DELTAS, not absolutes ------ */
+/* The ±6-frame window used to ease each bone toward the key's ABSOLUTE
+ * rotation, so the smear on a clean neighbour was proportional to how far the
+ * clip had moved since the keyed frame — the whole stride, six frames into a
+ * walk. Browser QA on /demo/walk-then-stop.npz measured unkeyed frames moving
+ * up to 197.9 mm for a sub-2 cm fix, a swing-phase foot lift flattened by
+ * 95.9 mm, and 14 unkeyed frames finishing with feet under the floor. Storing
+ * the clip's own rotations on the key turns the blend into
+ * `clipCurrent ∘ slerp(identity, baseQ⁻¹ ∘ q, w)`, whose worst case is the
+ * correction itself. */
+{
+	const BLEND = 6;
+	const FIRST_KEY = 129;
+	const SECOND_KEY = 141; // 12 apart: two islands, with clip in between
+	const RANGE = [120, 150];
+
+	// A fast leg swing — the ankle covers ~30 cm in six frames, which is what
+	// makes an absolute blend so destructive — plus per-bone translation
+	// wobble, the positional playback ARDY actually writes.
+	const swingAt = (frame) => 1.1 * Math.sin((Math.PI * (frame - 120)) / 15);
+	const buildTake = () => {
+		const takeRig = makeRig();
+		const resolvedTake = resolveIkRig(takeRig);
+		const leg = resolvedTake.chains.get("leftFoot");
+		const poseClip = (frame) => {
+			const wobble = 1 + 0.005 * Math.sin(frame * 0.7);
+			leg.bones.forEach((bone, index) => {
+				bone.position.copy(leg.bindPositions[index]).multiplyScalar(wobble);
+				bone.quaternion.identity();
+			});
+			leg.bones[0].quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), swingAt(frame));
+			leg.bones[1].quaternion.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -0.5 * Math.abs(swingAt(frame)));
+			takeRig.updateMatrixWorld(true);
+		};
+		return { rig: takeRig, chains: resolvedTake.chains, fkJoints: resolvedTake.fkJoints, leg, poseClip };
+	};
+
+	// The pristine clip every unkeyed frame must still reproduce.
+	const reference = buildTake();
+	const rawAt = (frame) => {
+		reference.poseClip(frame);
+		return reference.leg.bones.map((b) => b.getWorldPosition(v()));
+	};
+
+	/** Bake a 1 cm ankle lift at `frame`, optionally recording the clip's own
+	 * rotations so the key becomes a delta.
+	 *
+	 * The bind-translation reset mirrors what fixCollisions now does at entry,
+	 * and it is load-bearing: solveIk's segment lengths were measured at bind, so
+	 * a target picked off the clip's own (slightly different) limb makes the
+	 * solve spend most of its rotation on length compensation rather than on the
+	 * push — and a partially-weighted blend of THAT wanders three times the
+	 * correction. Normalising first makes the delta the push. */
+	const bakeCorrection = (take, state, frame, withBase) => {
+		take.poseClip(frame);
+		take.leg.bones.forEach((bone, index) => bone.position.copy(take.leg.bindPositions[index]));
+		take.rig.updateMatrixWorld(true);
+		const baseQuats = new Map([["leftFoot", take.leg.bones.map((b) => b.quaternion.clone())]]);
+		const lifted = take.leg.bones[2].getWorldPosition(v()).add(new THREE.Vector3(0, 0.010, 0));
+		solveIk(take.leg, lifted);
+		ikBakeKeyframe(take.chains, state, frame, take.fkJoints, ["leftFoot"], null, withBase ? baseQuats : null);
+		return take.leg.bones.map((b) => b.getWorldPosition(v()));
+	};
+
+	const measure = (withBase) => {
+		const take = buildTake();
+		const state = createIkState();
+		const solvedAt = new Map();
+		solvedAt.set(FIRST_KEY, bakeCorrection(take, state, FIRST_KEY, withBase));
+		solvedAt.set(SECOND_KEY, bakeCorrection(take, state, SECOND_KEY, withBase));
+		// How far the correction itself moved each bone, against the raw clip —
+		// the yardstick every unkeyed frame has to stay under.
+		const correction = [...solvedAt].reduce((worst, [frame, solved]) => {
+			const raw = rawAt(frame);
+			return solved.map((point, index) => Math.max(worst[index], point.distanceTo(raw[index])));
+		}, [0, 0, 0]);
+		let worstEffector = 0;
+		let worstAnyBone = 0;
+		let worstFootDrop = 0;
+		let keyedError = 0;
+		for (let frame = RANGE[0]; frame <= RANGE[1]; frame += 1) {
+			const raw = rawAt(frame);
+			take.poseClip(frame);
+			ikEvaluate(take.chains, state, frame, take.fkJoints, BLEND);
+			const now = take.leg.bones.map((b) => b.getWorldPosition(v()));
+			if (solvedAt.has(frame)) {
+				keyedError = Math.max(keyedError, ...now.map((point, index) => point.distanceTo(solvedAt.get(frame)[index])));
+				continue;
+			}
+			worstEffector = Math.max(worstEffector, now[2].distanceTo(raw[2]));
+			worstAnyBone = Math.max(worstAnyBone, ...now.map((point, index) => point.distanceTo(raw[index]) - correction[index]));
+			worstFootDrop = Math.max(worstFootDrop, raw[2].y - now[2].y);
+		}
+		return { worstEffector, worstAnyBone, worstFootDrop, keyedError, correction };
+	};
+
+	const legacy = measure(false);
+	const delta = measure(true);
+	check("the correction under test is the small one the criterion names (< 2 cm)",
+		Math.max(...delta.correction) < 0.02,
+		`correction=${delta.correction.map((c) => (c * 1000).toFixed(1)).join("/")}mm`);
+	check("the fixture reproduces the absolute blend's smear (the test is not vacuous)",
+		legacy.worstEffector > 0.05,
+		`legacy worst unkeyed foot drift=${(legacy.worstEffector * 1000).toFixed(1)}mm`);
+	check("no unkeyed frame's foot moves more than 1 cm from the raw clip",
+		delta.worstEffector < 0.01,
+		`delta=${(delta.worstEffector * 1000).toFixed(1)}mm vs legacy=${(legacy.worstEffector * 1000).toFixed(1)}mm`);
+	check("every bone's smear is bounded by that bone's own correction",
+		delta.worstAnyBone <= 1e-9,
+		`excess=${(delta.worstAnyBone * 1000).toFixed(2)}mm (legacy ${(legacy.worstAnyBone * 1000).toFixed(1)}mm)`);
+	check("no unkeyed frame is dragged below its own clip foot height by 5 mm",
+		delta.worstFootDrop < 0.005,
+		`drop=${(delta.worstFootDrop * 1000).toFixed(1)}mm legacy=${(legacy.worstFootDrop * 1000).toFixed(1)}mm`);
+	check("the keyed frames still reproduce the solved pose exactly",
+		delta.keyedError < 1e-9, `err=${delta.keyedError.toExponential(2)}`);
+	check("legacy keys with no base rotation keep the old absolute blend",
+		legacy.keyedError < 1e-9 && legacy.worstEffector > delta.worstEffector * 5,
+		`legacy=${(legacy.worstEffector * 1000).toFixed(1)}mm delta=${(delta.worstEffector * 1000).toFixed(1)}mm`);
+}
+
+/* --- baseQ bookkeeping ---------------------------------------------------- */
+{
+	const baseRig = makeRig();
+	const baseResolved = resolveIkRig(baseRig);
+	const arm = baseResolved.chains.get("leftHand");
+	const state = createIkState();
+	const clipQuats = arm.bones.map((b) => b.quaternion.clone());
+	solveIk(arm, arm.bones[2].getWorldPosition(v()).add(new THREE.Vector3(0, 0.05, 0)));
+	ikBakeKeyframe(baseResolved.chains, state, 10, baseResolved.fkJoints, ["leftHand"], null,
+		new Map([["leftHand", clipQuats]]));
+	const entry = state.keys.get(10).get("leftHand");
+	check("a chain key stores the clip rotations it was solved from",
+		entry.baseQ?.length === entry.q.length
+			&& entry.baseQ.every((q, i) => q.angleTo(clipQuats[i]) < 1e-12));
+	// 1e-6 rad, not zero: quaternions are float32 and the invert/multiply
+	// round trip costs ~4e-8 rad. Anything visible is orders of magnitude above.
+	check("baseQ ∘ delta reconstructs the authored rotation",
+		entry.q.every((q, i) => entry.baseQ[i].clone().multiply(entry.baseQ[i].clone().invert().multiply(q)).angleTo(q) < 1e-6));
+
+	// A bake given no bases, or partial ones, must not fabricate a delta.
+	ikBakeKeyframe(baseResolved.chains, state, 20, baseResolved.fkJoints, ["leftHand"]);
+	check("a bake with no bases stores no baseQ", !state.keys.get(20).get("leftHand").baseQ);
+	ikBakeKeyframe(baseResolved.chains, state, 30, baseResolved.fkJoints, ["leftHand"], null,
+		new Map([["leftHand", [clipQuats[0], null, clipQuats[2]]]]));
+	check("a partial base array is refused rather than half-applied",
+		!state.keys.get(30).get("leftHand").baseQ);
+	// Authoring mode never takes the delta path, whatever the key carries.
+	arm.bones.forEach((b, i) => b.quaternion.copy(clipQuats[i]));
+	baseRig.updateMatrixWorld(true);
+	ikEvaluate(baseResolved.chains, state, 10, baseResolved.fkJoints, 0);
+	check("blendFrames 0 still applies the key absolutely",
+		arm.bones.every((b, i) => b.quaternion.angleTo(entry.q[i]) < 1e-6));
+}
+
+/* --- REGRESSION (Defect A): the REST pose, not the bind pose --------------- */
+/* poseBind is a T-POSE; the pose the app puts on screen is DEFAULT_POSE, arms
+ * hanging at the sides. Calibrating capsule proxies against bind alone left the
+ * arm-beside-torso pairs at zero allowance, which is exactly where the proxies
+ * overlap. restWorldPosition composes the rest pose virtually so the calibration
+ * can see it without touching the live rig. */
+{
+	const shoulderQ = (sign) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), sign * Math.PI / 2);
+	// Mixamo-like shoulder frames: the arm hangs from a rotated shoulder, so
+	// DEFAULT_POSE's X-axis delta swings it DOWN. On an identity-local rig the
+	// same delta spins the bone around its own axis and nothing moves.
+	const restRig = new THREE.Object3D();
+	restRig.scale.setScalar(0.01);
+	const mk = (name, parent, x, y, z, quat) => {
+		const b = new THREE.Bone();
+		b.name = name;
+		b.position.set(x, y, z);
+		if (quat) b.quaternion.copy(quat);
+		parent.add(b);
+		return b;
+	};
+	const rHips = mk("mixamorigHips", restRig, 0, 100, 0);
+	const rSpine = mk("mixamorigSpine", rHips, 0, 15, 0);
+	const rChest = mk("mixamorigSpine1", rSpine, 0, 15, 0);
+	mk("mixamorigSpine2", rChest, 0, 15, 0);
+	const rNeck = mk("mixamorigNeck", rChest, 0, 30, 0);
+	mk("mixamorigHead", rNeck, 0, 15, 0);
+	const lSh = mk("mixamorigLeftShoulder", rChest, 10, 25, 0, shoulderQ(1));
+	const lUpArm = mk("mixamorigLeftArm", lSh, 0, -10, 4);
+	const lFore = mk("mixamorigLeftForeArm", lUpArm, 0, 0, 30);
+	mk("mixamorigLeftHand", lFore, 0, 0, 30);
+	const rSh = mk("mixamorigRightShoulder", rChest, -10, 25, 0, shoulderQ(-1));
+	const rUpArm = mk("mixamorigRightArm", rSh, 0, -10, 4);
+	const rFore = mk("mixamorigRightForeArm", rUpArm, 0, 0, 30);
+	mk("mixamorigRightHand", rFore, 0, 0, 30);
+	restRig.updateMatrixWorld(true);
+	primeBindPose(restRig);
+
+	const bindFore = bindWorldPosition(restRig, lFore, v());
+	const restFore = restWorldPosition(restRig, lFore, v());
+	check("the bind pose is a T-pose (forearm out to the side)",
+		bindFore.x > 0.4 && Math.abs(bindFore.y - 1.45) < 1e-6,
+		`bind=(${bindFore.toArray().map((n) => n.toFixed(3)).join(",")})`);
+	check("the composed REST pose hangs the arm at the side",
+		restFore.x < 0.2 && restFore.y < 1.2,
+		`rest=(${restFore.toArray().map((n) => n.toFixed(3)).join(",")})`);
+	check("the two poses are far apart — bind cannot stand in for rest",
+		bindFore.distanceTo(restFore) > 0.25, `gap=${bindFore.distanceTo(restFore).toFixed(3)}`);
+
+	// The rest composition must reproduce what applyPose would actually do.
+	applyPose(restRig, { ...REST_ZERO, ...DEFAULT_POSE.bones });
+	restRig.updateMatrixWorld(true);
+	check("restWorldPosition matches the pose applyPose really writes",
+		lFore.getWorldPosition(v()).distanceTo(restFore) < 1e-9,
+		`err=${lFore.getWorldPosition(v()).distanceTo(restFore).toExponential(2)}`);
+	check("composing the rest pose never disturbed the live rig", (() => {
+		const before = lFore.getWorldPosition(v());
+		restWorldPosition(restRig, lFore, v());
+		bindWorldPosition(restRig, lFore, v());
+		return lFore.getWorldPosition(v()).distanceTo(before) < 1e-12;
+	})());
+	check("a rig with no bind snapshot composes nothing and reads current", (() => {
+		const bare = makeRig();
+		const bone = bare.getObjectByName("mixamorigLeftForeArm");
+		return restWorldPosition(bare, bone, v()).distanceTo(bone.getWorldPosition(v())) < 1e-12;
+	})());
 }
 
 if (failures) {

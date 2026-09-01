@@ -272,6 +272,8 @@ import {
 	applyBodyContact,
 	clampIkTargetToFloor,
 } from "./ardy/ik.js";
+import { buildCollisionCapsules, detectPenetrations, fixCollisions, fixCollisionsRange, supportsCollisionCleanup } from "./ardy/fix-collisions.js";
+import { autoPhysicsRange, computeCenterOfMass } from "./ardy/auto-physics.js";
 import {
 	Dropdown,
 	Field,
@@ -5182,6 +5184,15 @@ globalThis.playMode = centerTab === "play";
 		if (!chains) leaveIkMode();
 	}, [activeRig]);
 
+	// Whether the collision capsules can be built for this rig at all. Bone
+	// lookups only — no mesh measurement — so it is cheap enough to hang off
+	// the rig identity and read straight in the render. A rig that resolves
+	// for IK can still miss the toes/spine the capsule table needs, so this is
+	// a SEPARATE question from `ikChains`: the two collision buttons disable
+	// on it rather than offering a click whose only possible answer is "not
+	// supported".
+	const collisionCleanupSupported = useMemo(() => supportsCollisionCleanup(activeRig), [activeRig]);
+
 	function toggleIkMode() {
 		const next = !ikMode;
 		// Authoring modes are mutually exclusive: IK mode swaps the main pane to
@@ -5327,6 +5338,146 @@ globalThis.playMode = centerTab === "play";
 		setToast(isKo ? `${tlFrame}프레임에 전신 IK 키를 추가했어요` : `Full-body IK key at frame ${tlFrame}`);
 	}
 
+	// Self-collision cleanup: push interpenetrating body parts apart with the
+	// IK solver, then bake the fix as an ordinary IK correction key so it
+	// survives scrubs, undo, and blends back into the clip outside its range.
+	//
+	// The result has THREE outcomes, not two, and each gets its own sentence.
+	// "supported: false" means the rig has no capsule proxies to build at all
+	// — a non-Mixamo skeleton — and reporting that as "no collisions" would
+	// be a lie the user cannot act on: they would keep clicking a button that
+	// silently does nothing. The buttons below are disabled in that case, so
+	// this branch is the belt to that suspenders (a rig can be swapped under
+	// a stale render).
+	function runFixCollisions() {
+		if (!ikChains || !activeRig) return;
+		// A rig swap leaves one render where ikChains still describes the old
+		// skeleton; solving the new rig with them would push the wrong bones.
+		if (ikStateRef.current.rig !== activeRig) return;
+		const result = fixCollisions(activeRig, ikChains, { ikState: ikStateRef.current });
+		if (!result.supported) {
+			setToast(ko("This rig doesn't support collision cleanup", "이 리그는 신체 관통 정리를 지원하지 않아요"));
+			return;
+		}
+		if (!result.changed) {
+			setToast(ko("No body collisions at this frame", "이 프레임에는 신체 관통이 없어요"));
+			return;
+		}
+		if (ikStateRef.current.tracked.size > 0) recordCharacterUndo();
+		ikBakeKeyframe(ikChains, ikStateRef.current, tlFrame, ikFkJoints, result.touched, null, result.baseQuats);
+		setIkTick((n) => n + 1);
+		setToast(result.residual > 1e-4
+			? ko(`Collisions reduced (residual ${(result.residual * 100).toFixed(1)} cm)`, `관통을 줄였어요 (잔여 ${(result.residual * 100).toFixed(1)} cm)`)
+			: ko(`Collisions fixed at frame ${tlFrame}`, `프레임 ${tlFrame}의 관통을 정리했어요`));
+	}
+
+	// Whole-clip variant: walk the motion frame by frame, clean each pose and
+	// key ONLY the frames that changed, so a clean clip stays keyless.
+	function runFixCollisionsRange() {
+		if (!ikChains || !activeRig || !motion) return;
+		if (ikStateRef.current.rig !== activeRig) return;
+		// Screened before the undo entry: an unsupported rig would record an
+		// undo step for a walk that keys nothing, leaving a no-op in history.
+		if (!collisionCleanupSupported) {
+			setToast(ko("This rig doesn't support collision cleanup", "이 리그는 신체 관통 정리를 지원하지 않아요"));
+			return;
+		}
+		const currentFrame = tlFrame;
+		const applyFrame = (frame) => {
+			applyMotionFrame(activeRig, motion, frame);
+			ikEvaluate(ikChains, ikStateRef.current, frame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
+		};
+		// The undo entry is provisional: a clean clip keys nothing, and a
+		// snapshot identical to the present state would make Ctrl+Z a no-op
+		// press that also discards the redo stack for nothing.
+		const savedFuture = charHistoryRef.current.future;
+		recordCharacterUndo();
+		const keyed = fixCollisionsRange({
+			rig: activeRig,
+			chains: ikChains,
+			ikState: ikStateRef.current,
+			fkJoints: ikFkJoints,
+			startFrame: 0,
+			endFrame: motion.frames - 1,
+			applyFrame,
+		});
+		if (!keyed.length) {
+			charHistoryRef.current.past.pop();
+			charHistoryRef.current.future = savedFuture;
+		}
+		applyFrame(currentFrame);
+		setIkTick((n) => n + 1);
+		setToast(keyed.length
+			? ko(`Fixed collisions on ${keyed.length} frame(s)`, `${keyed.length}개 프레임의 관통을 정리했어요`)
+			: ko("No body collisions in the clip", "클립에 신체 관통이 없어요"));
+	}
+
+	// AutoPhysics: during airborne spans the centre of mass must follow a
+	// ballistic parabola. Fits one per flight phase and translates the root so
+	// each frame's CoM lands on it — grounded frames are never keyed.
+	function runAutoPhysics() {
+		if (!ikChains || !activeRig || !motion) return;
+		if (ikStateRef.current.rig !== activeRig) return;
+		const currentFrame = tlFrame;
+		const applyFrame = (frame) => {
+			applyMotionFrame(activeRig, motion, frame);
+			ikEvaluate(ikChains, ikStateRef.current, frame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
+		};
+		// Provisional undo entry, popped when the pass keys nothing (clean or
+		// unsupported clip) — see runFixCollisionsRange.
+		const savedFuture = charHistoryRef.current.future;
+		recordCharacterUndo();
+		const { supported, reason, spans, keyedFrames, maxCorrection, skippedSpans } = autoPhysicsRange({
+			rig: activeRig,
+			motion,
+			chains: ikChains,
+			fkJoints: ikFkJoints,
+			ikState: ikStateRef.current,
+			applyFrame,
+			startFrame: 0,
+			endFrame: motion.frames - 1,
+			fps: motion.fps ?? TIMELINE_FPS,
+			floorY: 0,
+		});
+		if (!keyedFrames.length) {
+			charHistoryRef.current.past.pop();
+			charHistoryRef.current.future = savedFuture;
+		}
+		applyFrame(currentFrame);
+		setIkTick((n) => n + 1);
+		if (!supported) {
+			setToast(reason === "range-too-short"
+				? ko("The clip is too short for AutoPhysics", "클립이 너무 짧아 오토피직스를 쓸 수 없어요")
+				: ko("This rig doesn't support AutoPhysics", "이 리그는 오토피직스를 지원하지 않아요"));
+			return;
+		}
+		// Skips are checked BEFORE the empty-spans branch: when every sub-arc
+		// of a detected span is refused (too short, unfittable), spans comes
+		// back empty but skippedSpans does not — "no airborne frames" would
+		// be a lie about a clip whose jump was seen and given up on.
+		if (!keyedFrames.length && skippedSpans.length) {
+			setToast(ko(
+				`AutoPhysics skipped ${skippedSpans.length} span(s) — the flight arc could not be fitted`,
+				`오토피직스가 공중 구간 ${skippedSpans.length}개를 건너뛰었어요 — 궤적을 신뢰할 수 없어요`));
+			return;
+		}
+		if (!spans.length) {
+			setToast(ko("No airborne frames in the clip", "클립에 공중 구간이 없어요"));
+			return;
+		}
+		// A refused span must never hide behind a success message — the user
+		// reads "worked" and the float they pressed the button for is still
+		// there. The skip count rides every toast that had one.
+		const skipNote = skippedSpans.length
+			? ko(` · ${skippedSpans.length} span(s) skipped (arc could not be fitted)`, ` · ${skippedSpans.length}개 구간은 궤적을 못 맞춰 건너뜀`)
+			: "";
+		setToast(keyedFrames.length
+			? ko(
+				`AutoPhysics: ${keyedFrames.length} frame(s) keyed (max ${(maxCorrection * 100).toFixed(1)} cm)${skipNote}`,
+				`오토피직스: ${keyedFrames.length}개 프레임 키 (최대 ${(maxCorrection * 100).toFixed(1)} cm)${skipNote}`)
+			: ko(`Airborne motion is already ballistic${skipNote}`, `공중 동작이 이미 물리적으로 자연스러워요${skipNote}`));
+	}
+
 	function ikDeleteKeyframe(frame) {
 		if (!ikStateRef.current.keys.has(frame)) return;
 		recordCharacterUndo();
@@ -5437,6 +5588,20 @@ globalThis.playMode = centerTab === "play";
 				onTrailDragEnd({ track: "hips", grabFrame, delta });
 			},
 			trailRegenerate: runTrailRegeneration,
+			// Fix-collisions QA surface: live penetration readout for headless
+			// checks; the fix itself runs through the buttons / runFixCollisions.
+			// null (not []) on an unsupported rig, so a check can tell "the tool
+			// cannot describe this skeleton" from "this pose is clean".
+			fcDetect: () => {
+				const capsules = activeRig ? buildCollisionCapsules(activeRig) : null;
+				return capsules ? detectPenetrations(capsules).map((p) => ({ pair: `${p.a.def.id}×${p.b.def.id}`, depth: p.depth })) : null;
+			},
+			// AutoPhysics QA surface: the centre of mass of the CURRENT pose, so
+			// a headless check can sample the arc before/after the button press.
+			apCom: () => {
+				const com = activeRig ? computeCenterOfMass(activeRig) : null;
+				return com ? { x: com.x, y: com.y, z: com.z } : null;
+			},
 			centerTab,
 			pathDraw,
 		};
@@ -10764,6 +10929,34 @@ function resizePromptClip(id, edge, rawFrame) {
 						<button type="button" className={"btn full" + (ikMode ? " primary" : "")} onClick={toggleIkMode} disabled={!ikChains}>
 						{ikMode ? ko("Finish rig editing", "리그 편집 끝내기") : ko("Edit rig with IK", "IK로 리그 편집")}
 						</button>
+						{/* Self-collision cleanup. Hidden outright on a rig whose capsule
+						    proxies cannot be built: a button whose only answer is "not
+						    supported" is worse than no button, and the hint below would
+						    be describing something that cannot happen. */}
+						{collisionCleanupSupported && (
+							<>
+								<button type="button" className="btn full" onClick={runFixCollisions} disabled={!ikChains}>
+								{ko("Fix body collisions (this frame)", "신체 관통 정리 (이 프레임)")}
+								</button>
+								<button type="button" className="btn full" onClick={runFixCollisionsRange} disabled={!ikChains || !motion}>
+								{ko("Fix body collisions (whole clip)", "신체 관통 정리 (클립 전체)")}
+								</button>
+								<p className="inspector-hint">
+								{ko("Pushes interpenetrating body parts apart with IK and keys the fix. Whole clip walks the loaded motion and keys only the frames that changed.", "겹쳐 들어간 신체 파츠를 IK로 밀어내고 그 결과를 키로 남깁니다. 클립 전체는 로드된 모션을 훑으며 실제로 고쳐진 프레임만 키를 찍습니다.")}
+								</p>
+							</>
+						)}
+						{/* AutoPhysics needs the hips FK joint and the mass-model bones,
+						    NOT the collision capsules — a rig without toe bases still
+						    qualifies, so this button is deliberately outside the
+						    collisionCleanupSupported gate. Unsupported rigs get an
+						    explanatory toast from the handler. */}
+						<button type="button" className="btn full" onClick={runAutoPhysics} disabled={!ikChains || !motion}>
+						{ko("AutoPhysics (whole clip)", "오토피직스 (클립 전체)")}
+						</button>
+						<p className="inspector-hint">
+						{ko("Finds airborne spans and forces the centre of mass onto a real gravity parabola, so jumps stop floating. Grounded frames are left untouched.", "공중에 뜬 구간을 찾아 무게중심을 실제 중력 포물선에 맞춥니다. 점프가 더 이상 떠 있지 않게 되고, 바닥에 닿은 프레임은 건드리지 않습니다.")}
+						</p>
 						{/* Motion trail editing: falloff radius + confirm-to-regenerate.
 						    Only meaningful with IK mode on and a loaded take. */}
 						{ikMode && motion && (
