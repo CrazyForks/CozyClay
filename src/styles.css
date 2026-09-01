@@ -9839,21 +9839,21 @@ input[type=range] {
    than leaving every control spread across the desk. */
 .app[data-workflow-mode="scene"] .timeline,
 .app[data-workflow-mode="camera"] .timeline {
-	height: 180px;
-	min-height: 180px;
-	max-height: 180px;
+	height: 96px;
+	min-height: 96px;
+	max-height: 96px;
 }
 
 .app[data-workflow-mode="camera"] .timeline {
-	height: 180px;
-	min-height: 180px;
-	max-height: 180px;
+	height: 132px;
+	min-height: 132px;
+	max-height: 132px;
 }
 
 .app[data-workflow-mode="scene"] .timeline .tl-body,
 .app[data-workflow-mode="camera"] .timeline .tl-body {
 	min-height: 0;
-	overflow: auto;
+	overflow: hidden;
 }
 
 /* Scene blocking keeps the root path and shot cut lanes.  Prompt and
