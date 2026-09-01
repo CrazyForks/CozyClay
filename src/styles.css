@@ -9529,3 +9529,127 @@ input[type=range] {
 	line-height: 1.4;
 	color: var(--warn, #ff9c6e);
 }
+
+/* ------------------------------------------------ desktop polish (16:9) --
+   The editor is normally used full-screen on a 16:9 monitor. Keep the scene
+   pane dominant while preserving every existing control and resize gesture. */
+@media (min-width: 1041px) {
+	/* The two auxiliary renders are references, not the work surface. Capping
+	   their footprint leaves the subject and gizmo unobscured at 1920x1080;
+	   the inline layout variables still allow a user to shrink them further. */
+	.vp-inset:not(.collapsed) {
+		width: min(var(--inset-width), 280px) !important;
+		height: min(var(--inset-height), 240px) !important;
+	}
+	.vp-shot-preview {
+		width: clamp(180px, 17vw, 270px);
+		max-width: 270px;
+		bottom: 12px;
+		right: 12px;
+	}
+
+	/* Make the title-bar hierarchy legible: manipulation tools, view toggles,
+	   and camera settings read as three groups instead of one long button row. */
+	.editor-toolbar.scene-tools .tool-switch {
+		margin: 2px 4px 2px 3px;
+		height: 23px;
+		border: 1px solid var(--line2);
+		border-radius: 3px;
+		background: rgba(0, 0, 0, .14);
+	}
+	.editor-toolbar.scene-tools .tool-switch button {
+		height: 21px;
+		border-right: 0;
+	}
+	.editor-toolbar.scene-tools .tool-switch button + button {
+		border-left: 1px solid var(--line);
+	}
+	.editor-toolbar.scene-tools > .snap-switch {
+		margin: 2px 0;
+		height: 23px;
+		border: 1px solid var(--line2);
+		border-radius: 3px;
+	}
+	.editor-toolbar.scene-tools > .grid-view-switch {
+		margin-left: 4px;
+	}
+	.editor-toolbar.scene-tools .viewport-toolbar-field,
+	.editor-toolbar.scene-tools .viewport-fov-control {
+		background: rgba(0, 0, 0, .08);
+	}
+	.editor-toolbar.scene-tools .settings-separator {
+		margin-left: 5px;
+	}
+
+	/* Splitters are deliberately wider than their 1px visual rule so the
+	   cursor can reliably find them; the accent appears on hover/focus. */
+	.workspace-splitter-vertical {
+		flex-basis: 8px;
+		margin-left: -4px;
+		margin-right: -4px;
+	}
+	.workspace-splitter-vertical:after {
+		inset: 0 3px;
+		width: 2px;
+		background: var(--line2);
+	}
+	.workspace-splitter-vertical:hover:after,
+	body.is-resizing .workspace-splitter-vertical:after {
+		background: var(--accent);
+		box-shadow: 0 0 0 1px var(--accent-ring);
+	}
+	.timeline-splitter {
+		flex-basis: 8px;
+		margin-top: -4px;
+		margin-bottom: -4px;
+	}
+	.timeline-splitter:after {
+		top: 3px;
+		height: 2px;
+		background: var(--line2);
+	}
+	.timeline-splitter:hover:after,
+	body.is-resizing .timeline-splitter:after {
+		background: var(--accent);
+		box-shadow: 0 0 0 1px var(--accent-ring);
+	}
+}
+
+/* Language control: short, stable geometry prevents the Korean label from
+   stretching the top bar while still leaving a comfortable click target. */
+.locale-toggle {
+		min-width: 34px;
+		height: 26px;
+		padding: 0 8px;
+		font-size: 10px;
+		font-weight: 600;
+		line-height: 1;
+		letter-spacing: -.02em;
+		white-space: nowrap;
+}
+
+/* Korean copy should not create oversized rows or split words mid-syllable.
+   These selectors cover labels and controls without changing the model-facing
+   prompt contract or the English-default typography. */
+.hierarchy-label,
+.hierarchy-project,
+.inspector-pane,
+.inspector-heading,
+.inspector-hint,
+.foldout-head,
+.right-panel-tabs,
+.bottom-window-tabs,
+.locale-toggle {
+	word-break: keep-all;
+	overflow-wrap: anywhere;
+}
+
+.hierarchy-project {
+	font-size: 12px;
+	line-height: 1.25;
+}
+
+.inspector-hint {
+	font-size: 11px;
+	line-height: 1.45;
+}
