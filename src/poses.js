@@ -287,6 +287,22 @@ export function captureHipsOffset(root) {
 	return bone.position.y - bind.position.y;
 }
 
+/** Return every bone's LOCAL TRANSLATION to its bind value. A positionally
+ * skinned motion frame writes per-bone positions the FK pose math never
+ * produced; capturing or keying a pose over those locals bakes the mismatch
+ * in — rotations from the pose, translations from the clip — and the body
+ * visibly comes apart. Rotations are left alone: callers pose them next. */
+export function restoreBindPositions(root) {
+	if (!root) return;
+	const binds = bindOf(root);
+	root.traverse((object) => {
+		if (!object.isBone) return;
+		const saved = binds.get(object)?.position;
+		if (saved) object.position.set(saved.x, saved.y, saved.z);
+	});
+	root.updateMatrixWorld(true);
+}
+
 /** Seat the hips `rootY` below (negative) or above their bind height. Always
  * write, even for 0: the previous pose may have been a crouch, and a stale
  * offset would leave the next standing pose buried in the floor. */

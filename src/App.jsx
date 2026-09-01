@@ -239,6 +239,7 @@ import {
 	capturePose,
 	deleteCustomPose,
 	loadCustomPoses,
+	restoreBindPositions,
 	saveCustomPoses,
 } from "./poses.js";
 import {
@@ -5342,6 +5343,11 @@ globalThis.playMode = centerTab === "play";
 	function ikApplyPoseAsKey(pose) {
 		if (!ikChains || !activeRig || !motion) return false;
 		recordCharacterUndo();
+		// The clip's positional skinning left per-bone translations the FK pose
+		// math never produced. The bake below stores every FK joint's position
+		// (p) as-is, so posing rotations over those clip translations would key
+		// a torn-apart body — bind translations first, ALWAYS.
+		restoreBindPositions(activeRig);
 		// Reset-then-pose, the same shape the Character effect applies: unlisted
 		// joints return to rest instead of keeping stale limbs from the clip.
 		applyPose(activeRig, { ...REST_BONES, ...pose.bones });
