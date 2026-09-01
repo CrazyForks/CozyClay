@@ -2765,7 +2765,9 @@ globalThis.playMode = centerTab === "play";
 	}
 
 	async function saveProject(saveAs = false) {
-		const name = projectName ?? "Untitled";
+		const requested = projectName ?? window.prompt(ko("Project name", "프로젝트 이름"), "My Project");
+		if (requested === null) return;
+		const name = (requested || "My Project").trim() || "My Project";
 		try {
 			const serialized = await collectProjectSerialized(name);
 			let handle = projectHandleRef.current;
