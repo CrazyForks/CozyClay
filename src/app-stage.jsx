@@ -482,6 +482,29 @@ export const CLAY_X = "#faf8f2";
 // over this at render time.
 export const defaultCharacterTint = (entry, index) => (entry.model === "x-bot-tpose" ? CLAY_X : index === 0 ? CLAY : CLAY_B);
 
+/**
+ * The first editor view should read like a blocking desk, not a security
+ * camera at the back of the stage. Keep the selected subject large enough to
+ * judge a pose while leaving a little floor around the feet. This is a pure
+ * framing helper so the seed and any future reset action share the same
+ * distance rule.
+ */
+export function editorFrameForSubject(subject) {
+	const scale = Number.isFinite(subject?.scale) && subject.scale > 0 ? subject.scale : 1;
+	const distance = THREE.MathUtils.clamp(3.5 / scale, 2.8, 4.8);
+	const x = subject?.x ?? 0;
+	const z = subject?.z ?? 0;
+	const target = { x, y: 1.05, z };
+	return {
+		target,
+		position: {
+			x: x + distance * 0.62,
+			y: target.y + distance * 0.34,
+			z: z + distance * 0.78,
+		},
+	};
+}
+
 export const DEFAULT_SUBJECT = DEFAULT_SUBJECT_ONE;
 export const DEFAULT_SUBJECT2 = DEFAULT_SUBJECT_TWO;
 export const DEFAULT_ENVIRONMENT = "a sunlit modern living room";
@@ -829,19 +852,27 @@ export const Character = memo(function Character({ url, position, rot, tint, pos
 		// The joint shells (Alpha_Joints / Beta_Joints — elbows, knees, the
 		// exoskeleton bands) render in a darkened shade of the body tint so
 		// the segments read as separate pieces.
-		const jointTint = new THREE.Color(tint).multiplyScalar(0.45);
+		// The shipped clay is intentionally pale, but the stage deck is pale too.
+		// Lift neither with emissive nor a second light; a small value drop keeps
+		// the same authored hue while restoring silhouette contrast in the editor.
+		const bodyTint = new THREE.Color(tint).multiplyScalar(0.9);
+		const jointTint = bodyTint.clone().multiplyScalar(0.62);
 		clone.traverse((child) => {
 			if (child.isMesh) {
 				// warm clay reads as a maquette; cold grey reads as a broken render
 				child.material = new THREE.MeshStandardMaterial({
-					color: /_Joints$/i.test(child.name) ? jointTint : tint,
-					roughness: 0.82,
+					color: /_Joints$/i.test(child.name) ? jointTint : bodyTint,
+					// A slightly tighter highlight gives the clay enough form to read
+					// at blocking distance without turning it into shiny plastic.
+					roughness: 0.66,
 					metalness: 0,
+					envMapIntensity: 0.35,
 				});
 				child.frustumCulled = false;
 				// The subject's own shadow is what plants it on the deck; a blocking
 				// frame without one leaves the figure floating over flat colour.
 				child.castShadow = true;
+				child.receiveShadow = true;
 			}
 		});
 		addFacingMarks(clone, jointTint);
@@ -1178,13 +1209,12 @@ export function EditorCamSeed({ camRef, lookRef, shotCamRef, subject }) {
 		const cam = camRef.current;
 		if (!cam) return;
 		seeded.current = true;
-		const shot = shotCamRef.current;
-		const target = {
-			x: ((subject?.x ?? 0) + (shot?.position.x ?? 1)) / 2,
-			y: 1.1,
-			z: ((subject?.z ?? 0) + (shot?.position.z ?? 2.4)) / 2,
-		};
-		cam.position.set(target.x + 3.2, 2.9, target.z + 4.2);
+		// The selected character owns the first read. The shot camera remains a
+		// useful reference in the inset; mixing its position into this seed pushed
+		// the editor eye several metres back and made the mannequin look tiny.
+		const frame = editorFrameForSubject(subject);
+		const { target, position } = frame;
+		cam.position.set(position.x, position.y, position.z);
 		const angles = aimAt(cam.position, target);
 		lookRef.current = { yaw: angles.yaw, pitch: angles.pitch };
 		cam.rotation.order = "YXZ";
@@ -2774,4 +2804,3 @@ export const MotionTrails = memo(function MotionTrails({ motion, baseY, charScal
 	previous.enabled === next.enabled &&
 	previous.visible === next.visible
 ));
-

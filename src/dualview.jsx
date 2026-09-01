@@ -137,6 +137,13 @@ export function DualRender({ stageRef, mainRef, insetRef, shotPreviewRef, shotCa
 			minFilter: THREE.NearestFilter,
 			magFilter: THREE.NearestFilter,
 		});
+		// The outline pre-pass used to be single-sample even when the visible
+		// canvas was antialiased. At 100% zoom that made the mannequin's silhouette
+		// look stair-stepped, which users read as low-poly/low-resolution. Keep the
+		// depth and normal lookups nearest (the edge kernel relies on that), but
+		// multisample the render target itself so the resolved edge has a clean
+		// contour. WebGL1 safely ignores this property; WebGL2 resolves it for us.
+		target.samples = 4;
 		target.depthTexture = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType);
 		target.depthTexture.minFilter = THREE.NearestFilter;
 		target.depthTexture.magFilter = THREE.NearestFilter;
