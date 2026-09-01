@@ -27,14 +27,25 @@ function waitForDecode(image, timeoutMs) {
 }
 
 /**
- * Async-iterate the one `{ image, timeS }` frame a still supplies. `image` is
- * the decoded element itself — what the IMAGE-mode landmarker accepts — so no
- * canvas copy sits between the decoder and the detector.
+ * Decode one still and hand back the element itself — what the IMAGE-mode
+ * landmarker accepts, so no canvas copy sits between the decoder and the
+ * detector. Split out of imageFrames because a caller that runs its own
+ * detection passes over the still (mirror.js) needs the decode without the
+ * frame-supply shape, and the load/timeout rules must not be written twice.
+ * Failures are named: `image-load-timeout`, `decode-failed`.
  */
-export async function* imageFrames(objectUrl, { createImage, timeoutMs = 8000 } = {}) {
+export async function decodeImage(objectUrl, { createImage, timeoutMs = 8000 } = {}) {
 	if (typeof createImage !== "function") throw new Error("imageFrames: createImage is required");
 	const image = createImage();
 	image.src = objectUrl;
 	await waitForDecode(image, timeoutMs);
-	yield { image, timeS: 0 };
+	return image;
+}
+
+/**
+ * Async-iterate the one `{ image, timeS }` frame a still supplies. Shaped like
+ * videoFrames so collectLandmarkTrack consumes a still and a clip alike.
+ */
+export async function* imageFrames(objectUrl, options = {}) {
+	yield { image: await decodeImage(objectUrl, options), timeS: 0 };
 }

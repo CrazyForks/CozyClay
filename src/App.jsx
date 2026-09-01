@@ -40,7 +40,8 @@ import {
 	bakePoseFrame,
 	collectLandmarkTrack,
 	createPoseDetector,
-	imageFrames,
+	decodeImage,
+	detectMirrorAveraged,
 	sampleTimes,
 	videoFrames,
 } from "./pose-extract/index.js";
@@ -5671,14 +5672,21 @@ globalThis.playMode = centerTab === "play";
 				});
 			}
 			if (!photoPoseDetectorRef.current) {
-				photoPoseDetectorRef.current = await createPoseDetector({ runningMode: "IMAGE" });
+				// "heavy", not the "full" the footage path uses: a photograph is one
+				// offline frame, so the ~25 MB one-time download and the several-times
+				// slower inference are paid once and buy accuracy no later step can
+				// recover. This ref only ever holds the photo detector, so caching it
+				// without a model key is safe.
+				photoPoseDetectorRef.current = await createPoseDetector({ runningMode: "IMAGE", model: "heavy" });
 			}
 			objectUrl = URL.createObjectURL(file);
-			const samples = await collectLandmarkTrack({
-				frames: imageFrames(objectUrl, { createImage: () => new Image() }),
-				detect: photoPoseDetectorRef.current.detect,
-			});
-			if (samples.length === 0) throw new Error("no-person-in-photo");
+			// One detection of one still is the least evidence this app ever works
+			// from, so the still is measured twice — as shot and mirrored — and
+			// averaged. Downstream sees one ordinary landmark sample at t=0.
+			const image = await decodeImage(objectUrl, { createImage: () => new Image() });
+			const landmarks = await detectMirrorAveraged(image, photoPoseDetectorRef.current.detect);
+			if (!landmarks) throw new Error("no-person-in-photo");
+			const samples = [{ timeS: 0, landmarks }];
 			const take = bakePoseFrame({ samples, rest: multiModelRestRef.current, createdMs: Date.now() });
 			// Pose the rig, read the pose back, then put the rig exactly as it was:
 			// the capture is the product, the posing is only how it is measured.

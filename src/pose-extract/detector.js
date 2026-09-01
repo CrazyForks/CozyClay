@@ -17,10 +17,23 @@ export const POSE_WASM_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vis
 // Only switch back if a realtime (camera-preview) caller ever appears.
 export const POSE_MODEL_URL =
 	"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
+// "heavy" is the same landmark contract at the top of the accuracy ladder, paid
+// for with a ~25 MB one-time download and several times the per-frame cost. That
+// price is per FRAME, so it is only affordable where there is one: a single
+// photograph. A clip of a few hundred frames stays on "full".
+export const POSE_MODEL_URL_HEAVY =
+	"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task";
+// The choice is a name at the call site, not a URL: callers say what they are
+// extracting from, and this table decides what that costs.
+export const POSE_MODELS = Object.freeze({
+	full: POSE_MODEL_URL,
+	heavy: POSE_MODEL_URL_HEAVY,
+});
 
 /**
  * Create a `{ detect, close }` pair for collectLandmarkTrack. Every failure
  * mode has its own name:
+ *   pose-model-unknown         — `model` is not a key of POSE_MODELS (caller bug)
  *   pose-runtime-unavailable   — the JS bundle did not load (broken build)
  *   pose-model-download-failed — the .task weights were unreachable
  *   pose-engine-download-failed— the wasm engine was unreachable
@@ -30,13 +43,16 @@ export const POSE_MODEL_URL =
  */
 export async function createPoseDetector({
 	wasmBase = POSE_WASM_BASE,
-	modelUrl = POSE_MODEL_URL,
+	model = "full", // "heavy" for a single still; see POSE_MODELS
+	modelUrl, // an explicit URL wins over `model` — pinning a revision stays possible
 	fetchImpl,
 	loadRuntime,
 	numPoses = 2, // the footage guidance allows two performers in frame; selectMostConfidentPerson picks one
 	runningMode = "VIDEO", // "IMAGE" for a still: MediaPipe rejects detectForVideo outside VIDEO mode
 } = {}) {
 	const doFetch = fetchImpl ?? globalThis.fetch;
+	const resolvedModelUrl = modelUrl ?? POSE_MODELS[model];
+	if (!resolvedModelUrl) throw new Error("pose-model-unknown");
 	let runtime;
 	try {
 		runtime = await (loadRuntime ?? (() => import("@mediapipe/tasks-vision")))();
@@ -45,7 +61,7 @@ export async function createPoseDetector({
 	}
 	let modelAssetBuffer;
 	try {
-		const response = await doFetch(modelUrl);
+		const response = await doFetch(resolvedModelUrl);
 		if (!response.ok) throw new Error(`http-${response.status}`);
 		modelAssetBuffer = new Uint8Array(await response.arrayBuffer());
 	} catch {
