@@ -13,6 +13,34 @@ import {
 	storeProjectsDirectory,
 } from "./project.js";
 
+export function ProjectNameDialog({ open, initialName = "My Project", onCancel, onSubmit }) {
+	const [value, setValue] = useState(initialName);
+	useEffect(() => {
+		if (open) setValue(initialName);
+	}, [open, initialName]);
+	if (!open) return null;
+	const submit = (event) => {
+		event.preventDefault();
+		const name = value.trim() || "My Project";
+		onSubmit(name);
+	};
+	return (
+		<div className="project-name-dialog-backdrop" role="presentation">
+			<form className="project-name-dialog" role="dialog" aria-modal="true" aria-labelledby="project-name-dialog-title" onSubmit={submit}>
+				<strong id="project-name-dialog-title">{ko("Project name", "프로젝트 이름")}</strong>
+				<label>
+					<span>{ko("Name", "이름")}</span>
+					<input autoFocus value={value} onChange={(event) => setValue(event.target.value)} aria-label={ko("Project name", "프로젝트 이름")} />
+				</label>
+				<div className="project-name-dialog-actions">
+					<button type="button" className="btn ghost" onClick={onCancel}>{ko("Cancel", "취소")}</button>
+					<button type="submit" className="btn primary">{ko("Create", "생성")}</button>
+				</div>
+			</form>
+		</div>
+	);
+}
+
 /**
  * Game-engine style project picker. Two sources of truth:
  *  - Recents: everything the operator opened or saved before (always works).
@@ -73,11 +101,11 @@ export default function ProjectBrowser({ currentName, onOpen, onOpenFile, onNew,
 	};
 
 	return (
-		<div className={`project-browser-backdrop${startup ? " startup" : ""}`} onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+		<div className={`project-browser-backdrop${startup ? " startup" : ""}`} onPointerDown={(e) => { if (!startup && e.target === e.currentTarget) onClose(); }}>
 			<div className={`project-browser${startup ? " startup" : ""}`} role="dialog" aria-label={ko("Choose project", "프로젝트 선택")}>
 				<div className="project-browser-head">
 					<strong>{startup ? ko("Choose a project to begin", "시작할 프로젝트를 선택하세요") : ko("Projects", "프로젝트")}</strong>
-					<button type="button" className="x" onClick={onClose} aria-label={ko("Close", "닫기")}>✕</button>
+					{!startup && <button type="button" className="x" onClick={onClose} aria-label={ko("Close", "닫기")}>✕</button>}
 				</div>
 				{startup && <p className="project-browser-intro">{ko(
 					"Your work is saved in the selected project. You can open a recent file, choose a project folder, or start a named local draft.",

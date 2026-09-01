@@ -334,6 +334,59 @@ select {
 	color: var(--muted);
 }
 
+.project-name-dialog-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 260;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(0, 0, 0, .62);
+}
+
+.project-name-dialog {
+	width: min(360px, 88vw);
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	padding: 18px;
+	background: var(--panel);
+	border: 1px solid var(--line2);
+	border-radius: 12px;
+	box-shadow: 0 20px 70px rgba(0, 0, 0, .7);
+}
+
+.project-name-dialog label {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	font-size: 11px;
+	color: var(--muted);
+}
+
+.project-name-dialog input {
+	width: 100%;
+	box-sizing: border-box;
+	padding: 9px 10px;
+	border: 1px solid var(--line2);
+	border-radius: 7px;
+	background: var(--card2);
+	color: var(--fg);
+	font: inherit;
+	font-size: 13px;
+}
+
+.project-name-dialog input:focus {
+	border-color: var(--accent);
+	outline: 2px solid var(--accent-soft);
+}
+
+.project-name-dialog-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+
 .project-browser-head {
 	display: flex;
 	align-items: center;

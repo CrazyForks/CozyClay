@@ -213,7 +213,7 @@ import {
 	writeProjectFile,
 	PROJECT_EXTENSION,
 } from "./project.js";
-import ProjectBrowser from "./project-browser.jsx";
+import ProjectBrowser, { ProjectNameDialog } from "./project-browser.jsx";
 import ObjectGizmo from "./object-gizmo.jsx";
 import AssetPane from "./asset-pane.jsx";
 import AddObjectMenu from "./object-catalog.jsx";
@@ -2663,6 +2663,7 @@ globalThis.playMode = centerTab === "play";
 	const [projectDirty, setProjectDirty] = useState(false);
 	const [projectMenuOpen, setProjectMenuOpen] = useState(false);
 	const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
+	const [projectNameDialog, setProjectNameDialog] = useState(null);
 	// A first-run author should choose a document (or explicitly start a named
 	// local draft). Keep this as a light startup sheet so the studio remains
 	// inspectable while the choice is pending; it never traps the topbar.
@@ -2764,10 +2765,12 @@ globalThis.playMode = centerTab === "play";
 		}
 	}
 
-	async function saveProject(saveAs = false) {
-		const requested = projectName ?? window.prompt(ko("Project name", "프로젝트 이름"), "My Project");
-		if (requested === null) return;
-		const name = (requested || "My Project").trim() || "My Project";
+	async function saveProject(saveAs = false, explicitName = null) {
+		if (projectName === null && explicitName === null) {
+			setProjectNameDialog({ kind: "save", initialName: "My Project" });
+			return;
+		}
+		const name = (explicitName ?? projectName ?? "My Project").trim() || "My Project";
 		try {
 			const serialized = await collectProjectSerialized(name);
 			let handle = projectHandleRef.current;
@@ -2872,11 +2875,14 @@ globalThis.playMode = centerTab === "play";
 		}
 	}
 
-	function newProject() {
+	function requestNewProject() {
 		if (projectDirty && !window.confirm(ko("Discard unsaved changes and start a new project?", "저장되지 않은 변경사항을 버리고 새 프로젝트를 시작할까요?"))) return;
-		const requested = window.prompt(ko("Project name", "프로젝트 이름"), projectName ?? "My Project");
-		if (requested === null) return;
-		const name = requested.trim() || "My Project";
+		setProjectNameDialog({ kind: "new", initialName: projectName ?? "My Project" });
+	}
+
+	function newProject(name) {
+		if (typeof name !== "string") return requestNewProject();
+		setProjectNameDialog(null);
 		const fresh = createSceneDocument(ko("SCENE 01", "씬 01"));
 		setScenes(fresh.scenes);
 		setActiveSceneId(fresh.activeSceneId);
@@ -8756,7 +8762,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					</button>
 					{projectMenuOpen && (
 						<div className="project-menu" role="menu" onClick={() => setProjectMenuOpen(false)}>
-							<button type="button" role="menuitem" onClick={newProject}>{ko("New Project", "새 프로젝트")}</button>
+							<button type="button" role="menuitem" onClick={requestNewProject}>{ko("New Project", "새 프로젝트")}</button>
 							<button type="button" role="menuitem" onClick={() => { setProjectStartupOpen(false); setProjectBrowserOpen(true); }}>{ko("Open Project…", "프로젝트 열기…")}</button>
 							<button type="button" role="menuitem" onClick={() => saveProject(false)}>{ko("Save Project", "프로젝트 저장")}</button>
 							<button type="button" role="menuitem" onClick={() => saveProject(true)}>{ko("Save Project As…", "다른 이름으로 저장…")}</button>
@@ -11557,7 +11563,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					}}
 					onNew={() => {
 						setProjectBrowserOpen(false);
-						newProject();
+						requestNewProject();
 					}}
 					onClose={() => {
 						setProjectBrowserOpen(false);
@@ -11565,6 +11571,16 @@ function resizePromptClip(id, edge, rawFrame) {
 					}}
 				/>
 			)}
+			<ProjectNameDialog
+				open={Boolean(projectNameDialog)}
+				initialName={projectNameDialog?.initialName}
+				onCancel={() => setProjectNameDialog(null)}
+				onSubmit={(name) => {
+					const kind = projectNameDialog?.kind;
+					if (kind === "save") void saveProject(false, name);
+					else newProject(name);
+				}}
+			/>
 			<Toast message={toast} onDone={() => setToast("")} />
 			{pwaUpdate && (
 				<div className="scene-delete-toast" role="status">
