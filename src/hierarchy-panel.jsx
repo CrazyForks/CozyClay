@@ -234,7 +234,7 @@ function SceneSwitcher({
 			{/* Scene housekeeping is a once-a-session errand, so it waits under one
 			    disclosure instead of holding three buttons open all day. */}
 			<details className="scene-actions-pop">
-				<summary title={ko("Scene actions", "장면 작업")}>{ko("Actions", "작업")}</summary>
+				<summary title={ko("Scene actions", "장면 작업")}>{ko("Scene…", "장면…")}</summary>
 			<div className="scene-actions">
 				<button type="button" onClick={() => selectedScene && onSceneDuplicate?.(selectedScene.id)}>{ko("Duplicate", "복제")}</button>
 				<button type="button" onClick={() => selectedScene && setEditingId(selectedScene.id)}>{ko("Rename", "이름 바꾸기")}</button>
@@ -259,17 +259,6 @@ function indexParents(nodes, parent = null, parents = new Map()) {
 		if (node.children) indexParents(node.children, node.id, parents);
 	}
 	return parents;
-}
-
-function findNode(nodes, id) {
-	for (const node of nodes) {
-		if (node.id === id) return node;
-		if (node.children) {
-			const match = findNode(node.children, id);
-			if (match) return match;
-		}
-	}
-	return null;
 }
 
 /** Fixed-position menu at the pointer: the object-row actions
@@ -563,8 +552,6 @@ export default function HierarchyPanel({
 		const nodes = buildHierarchyNodes(sceneObjects, characters);
 		return nodes.map((node) => node.kind === "scene" ? { ...node, label: activeSceneName } : node);
 	}, [activeSceneName, sceneObjects, characters]);
-	const selectedNode = useMemo(() => findNode(hierarchyNodes, selectedId), [hierarchyNodes, selectedId]);
-	const selectionLabel = selectedNode ? displayHierarchyLabel(selectedNode) : ko("Nothing selected", "선택 없음");
 	const parents = useMemo(() => indexParents(hierarchyNodes), [hierarchyNodes]);
 
 	useEffect(() => {
@@ -714,13 +701,10 @@ export default function HierarchyPanel({
 
 	return (
 		<section className="hierarchy-pane" aria-label={ko("Scene hierarchy", "장면 계층")}>
-			<div className="hierarchy-heading" title={ko("Scene structure", "장면 구조")}>
+			<div className="hierarchy-heading">
 				<div>
 					<span className="hierarchy-kicker">{ko("Hierarchy", "계층")}</span>
-					<strong>{ko("Scene tree", "장면 트리")}</strong>
-					<span className="hierarchy-selection" title={selectionLabel}>
-						{ko("Selected", "선택")} · {selectionLabel}
-					</span>
+					<strong>{ko("Scene structure", "장면 구조")}</strong>
 				</div>
 				<span className="hierarchy-frame-status">{motionFrames ? (isKo ? `${motionFrames}프레임` : `${motionFrames} frames`) : ko("Blocking", "블로킹")}</span>
 			</div>
@@ -736,6 +720,7 @@ export default function HierarchyPanel({
 			{onAddObject && (
 				<div className="hierarchy-toolbar">
 					<AddObjectMenu onAdd={onAddObject} />
+					<span className="hierarchy-frame-status">{motionFrames ? (isKo ? `${motionFrames}프레임` : `${motionFrames} frames`) : ko("Blocking", "블로킹")}</span>
 				</div>
 			)}
 			<div className="hierarchy-tree" role="tree" ref={treeRef} onKeyDown={onTreeKeyDown} onContextMenu={openCreateMenu}>
