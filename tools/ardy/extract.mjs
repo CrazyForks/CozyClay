@@ -53,6 +53,16 @@ const EXTRACT_CMD = process.env.CCLAY_EXTRACT_CMD?.trim() || "";
 const SSH_OPTS = EXTRACT_SSH_PORT ? [...SSH_BASE_OPTS, "-p", EXTRACT_SSH_PORT] : SSH_BASE_OPTS;
 const SCP_OPTS = EXTRACT_SSH_PORT ? [...SSH_BASE_OPTS, "-P", EXTRACT_SSH_PORT] : SSH_BASE_OPTS;
 
+/** Magic-byte sniff for the three photo formats browsers hand over. Returns
+ *  an extension or null for anything else (i.e. actual video bytes). */
+function imageExtOf(bytes) {
+	if (bytes.length < 12) return null;
+	if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "jpg";
+	if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return "png";
+	if (bytes.subarray(0, 4).toString("latin1") === "RIFF" && bytes.subarray(8, 12).toString("latin1") === "WEBP") return "webp";
+	return null;
+}
+
 /** Read a raw binary request body with a hard cap. The bridge's json readBody
  *  is utf-8 and would corrupt video bytes. */
 function readVideoBody(req, limitBytes) {
@@ -125,6 +135,8 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	let localVideo = null;
 	let uploadedTemp = null;
 	let cappedTemp = null;
+	let wrappedTemp = null;
+	let stillExt = null;
 	let artifactDir = null;
 
 	if (/^application\/json\b/.test(contentType)) {
@@ -157,7 +169,12 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 			return;
 		}
 		artifactDir = createPrivateArtifactDir(artifactRoot, "extract");
-		uploadedTemp = join(artifactDir, "upload.mp4");
+		// A still photograph rides the same route as footage: it is sniffed by
+		// magic bytes (the browser's photo-pose path posts the file untouched)
+		// and wrapped into a short constant clip below, so SAM's offline
+		// multi-pass pipeline sees ordinary frames instead of a JPEG named .mp4.
+		stillExt = imageExtOf(bytes);
+		uploadedTemp = join(artifactDir, stillExt ? `upload.${stillExt}` : "upload.mp4");
 		writeFileSync(uploadedTemp, bytes);
 		localVideo = uploadedTemp;
 	}
@@ -175,6 +192,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	const cleanupLocal = () => {
 		if (uploadedTemp) rmSync(uploadedTemp, { force: true });
 		if (cappedTemp) rmSync(cappedTemp, { force: true });
+		if (wrappedTemp) rmSync(wrappedTemp, { force: true });
 	};
 	const cleanupFailure = () => {
 		cleanupLocal();
@@ -197,6 +215,26 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	if (!host) {
 		fail("extract-host-missing");
 		return;
+	}
+
+	// A still becomes one second of itself at a modest rate: enough identical
+	// frames for the offline pipeline's smoothing passes to settle on, few
+	// enough that the GPU cost stays near a single frame. 1280 caps upload
+	// size; -2 keeps the height even for yuv420p.
+	if (stillExt) {
+		send({ event: "status", message: "normalizing" });
+		wrappedTemp = join(artifactDir, "still.mp4");
+		try {
+			await run("ffmpeg", [
+				"-y", "-loop", "1", "-i", localVideo, "-t", "1", "-r", "12",
+				"-vf", "scale='min(1280,iw)':-2,format=yuv420p", "-an", wrappedTemp,
+			], { children, timeoutMs: 120000 });
+		} catch (err) {
+			console.error(`[bridge] still wrap failed: ${err.message}`);
+			fail("footage-normalize-failed");
+			return;
+		}
+		localVideo = wrappedTemp;
 	}
 
 	const stamp = `${Date.now()}-${randomBytes(3).toString("hex")}`;

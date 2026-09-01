@@ -5671,32 +5671,60 @@ globalThis.playMode = centerTab === "play";
 					throw new Error("rest-unavailable");
 				});
 			}
-			if (!photoPoseDetectorRef.current) {
-				// "heavy", not the "full" the footage path uses: a photograph is one
-				// offline frame, so the ~25 MB one-time download and the several-times
-				// slower inference are paid once and buy accuracy no later step can
-				// recover. This ref only ever holds the photo detector, so caching it
-				// without a model key is safe.
-				photoPoseDetectorRef.current = await createPoseDetector({ runningMode: "IMAGE", model: "heavy" });
-			}
 			objectUrl = URL.createObjectURL(file);
-			// One detection of one still is the least evidence this app ever works
-			// from, so the still is measured twice — as shot and mirrored — and
-			// averaged. Downstream sees one ordinary landmark sample at t=0.
-			const image = await decodeImage(objectUrl, { createImage: () => new Image() });
-			const landmarks = await detectMirrorAveraged(image, photoPoseDetectorRef.current.detect);
-			if (!landmarks) throw new Error("no-person-in-photo");
-			const samples = [{ timeS: 0, landmarks }];
-			const take = bakePoseFrame({ samples, rest: multiModelRestRef.current, createdMs: Date.now() });
-			// Pose the rig, read the pose back, then put the rig exactly as it was:
-			// the capture is the product, the posing is only how it is measured.
-			const snapshot = snapshotPlaybackBones(rig);
-			let bones;
+			let bones = null;
+			let warning = "";
+			// GPU route first: SAM-3D-Body on the box MEASURES the body in 3D,
+			// which beats anything a browser landmarker can infer from one frame.
+			// The bridge wraps the still into a second of video and runs the exact
+			// footage pipeline; the in-browser landmark path below is the fallback
+			// for a missing bridge or a failed run, never the first choice.
 			try {
-				applyMotionFrame(rig, { ...take, anchorFrame: 0 }, 0);
-				bones = capturePose(rig);
-			} finally {
-				restorePlaybackBones(rig, snapshot);
+				const health = await fetch("/ardy/health", { signal: AbortSignal.timeout(2000) }).catch(() => null);
+				if (health?.ok) {
+					const done = await requestBridgeExtract(file, {});
+					const take = await loadMotionFromUrl(done.motionUrl);
+					// The middle frame: the wrap's smoothing passes have settled
+					// there, while frame 0 can still carry filter warm-up.
+					const frame = Math.floor((take.frames - 1) / 2);
+					const snapshot = snapshotPlaybackBones(rig);
+					try {
+						applyMotionFrame(rig, { ...take, anchorFrame: frame }, frame);
+						bones = capturePose(rig);
+					} finally {
+						restorePlaybackBones(rig, snapshot);
+					}
+				}
+			} catch (error) {
+				console.warn("photo pose: GPU extract failed, falling back to browser landmarks", error);
+			}
+			if (!bones) {
+				if (!photoPoseDetectorRef.current) {
+					// "heavy", not the "full" the footage path uses: a photograph is one
+					// offline frame, so the ~25 MB one-time download and the several-times
+					// slower inference are paid once and buy accuracy no later step can
+					// recover. This ref only ever holds the photo detector, so caching it
+					// without a model key is safe.
+					photoPoseDetectorRef.current = await createPoseDetector({ runningMode: "IMAGE", model: "heavy" });
+				}
+				// One detection of one still is the least evidence this app ever works
+				// from, so the still is measured twice — as shot and mirrored — and
+				// averaged. Downstream sees one ordinary landmark sample at t=0.
+				const image = await decodeImage(objectUrl, { createImage: () => new Image() });
+				const landmarks = await detectMirrorAveraged(image, photoPoseDetectorRef.current.detect);
+				if (!landmarks) throw new Error("no-person-in-photo");
+				const samples = [{ timeS: 0, landmarks }];
+				const take = bakePoseFrame({ samples, rest: multiModelRestRef.current, createdMs: Date.now() });
+				// Pose the rig, read the pose back, then put the rig exactly as it was:
+				// the capture is the product, the posing is only how it is measured.
+				const snapshot = snapshotPlaybackBones(rig);
+				try {
+					applyMotionFrame(rig, { ...take, anchorFrame: 0 }, 0);
+					bones = capturePose(rig);
+				} finally {
+					restorePlaybackBones(rig, snapshot);
+				}
+				warning = photoPoseWarning(take);
 			}
 			const pose = {
 				id: `photo_${Date.now()}`,
@@ -5727,8 +5755,8 @@ globalThis.playMode = centerTab === "play";
 			// The pose is already saved and written by this point, so the warning
 			// only changes what the user is told, never whether the read happened.
 			// It takes the success slot rather than queueing a second toast: two
-			// toasts in a row means the first one is never read.
-			const warning = photoPoseWarning(take);
+			// toasts in a row means the first one is never read. (The GPU route
+			// leaves it empty — SAM measures the whole body or fails outright.)
 			setToast(warning
 				? (hadMotion ? `${ko("Cleared the motion.", "모션을 지웠어요.")} ${warning}` : warning)
 				: hadMotion
