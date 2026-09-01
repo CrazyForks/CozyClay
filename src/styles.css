@@ -6383,7 +6383,7 @@ input[type=range]::-moz-range-thumb {
 
 /* ------------------------------------------- Unity editor window layout ---- */
 /* Three fixed windows around the scene: Hierarchy left, Inspector right,
-   a tabbed bottom window (Timeline / Console), and the view-mode toggle as
+   a tabbed bottom window (Timeline / Assets), and the view-mode toggle as
    a scene-view overlay — Unity's default editor arrangement
    (docs/unity-reference.md §8). Structure only: every colour rides the
    existing theme tokens so the Cozy Clay lightbox palette stays untouched. */
@@ -6493,17 +6493,6 @@ input[type=range]::-moz-range-thumb {
    prop path) loads extra rows into the SAME fixed height — the lane workspace
    scrolls internally instead of pushing the whole window taller and dropping
    the transport out from under the hand. */
-
-.console-pane {
-	height: var(--timeline-height);
-	min-height: 110px;
-	max-height: 58vh;
-	overflow-y: auto;
-	padding: 6px 10px;
-	background: var(--panel);
-	font-family: var(--mono);
-	font-size: 11px;
-}
 
 .assets-pane {
 	height: var(--timeline-height);
@@ -6996,27 +6985,6 @@ input[type=range]::-moz-range-thumb {
 	border-radius: 6px;
 	object-fit: contain;
 	background: var(--card2, #161618);
-}
-
-.console-empty {
-	margin: 8px 4px;
-	color: var(--muted2);
-	font-size: 11px;
-}
-
-.console-line {
-	display: flex;
-	gap: 10px;
-	margin: 0;
-	padding: 3px 4px;
-	border-bottom: 1px solid var(--line);
-	color: var(--fg);
-}
-
-.console-line time {
-	flex: none;
-	color: var(--muted2);
-	font-size: 10px;
 }
 
 @media (min-width: 1041px) {

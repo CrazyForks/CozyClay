@@ -59,19 +59,16 @@ expect("body double-click skips tag-started gestures", app.includes("Date.now() 
 expect("workspace has a dedicated left hierarchy window", app.includes('className="panel hierarchy-left"') && app.includes('beginWorkspaceResize("hierarchy"'));
 expect("inspector is always visible beside the scene", app.includes("inspector-sidebar") && !app.includes("rightPanelTab"));
 expect("legacy hierarchy/inspector splitter is removed", !app.includes("hierarchy-splitter"));
-expect("bottom window separates Timeline from the ARDY console", app.includes("bottom-window-tabs") && app.includes("console-pane") && app.includes('hidden={bottomTab !== "timeline"}'));
-expect("ARDY status lines accumulate in the console window", app.includes("reportArdyStatus") && app.includes("consoleLines"));
+expect("bottom window exposes only Animation and Assets tabs", app.includes("bottom-window-tabs") && app.includes('bottomTab === "assets"') && !app.includes("console-pane") && !app.includes('bottomTab === "console"'));
+expect("ARDY status stays inline without a console history surface", app.includes("reportArdyStatus") && !app.includes("consoleLines"));
 // The sidebar has no tabs: one Inspector, driven by the hierarchy selection,
 // so every panel is reached by selecting the thing that owns it.
 expect("the sidebar has no mode tabs left", !app.includes("sidebarTab") && !app.includes("inspector-tabs") && !css.includes(".inspector-tabs"));
-expect("a character owns the ARDY generation form", app.includes('<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("ARDY motion", "ARDY 모션")}>'));
+expect("the legacy ARDY motion inspector card is removed", !app.includes('title={ko("ARDY motion", "ARDY 모션")}'));
 expect("the camera owns the lens controls", app.includes('<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>'));
-// The scene still owns the prompt — it describes the whole render, not one
-// performer — but reselecting the scene just to press Generate was friction,
-// so it is reachable from the character being staged as well.
 expect(
-	"the generation prompt is reachable from the scene and the character",
-	app.includes('<Foldout hidden={!(isSceneSelection || isCharacterSelection)} title={ko("Prompt", "프롬프트")}>'),
+	"the legacy image/video generation prompt inspector is removed",
+	!app.includes('<Foldout hidden={!(isSceneSelection || isCharacterSelection)} title={ko("Prompt", "프롬프트")}>'),
 );
 expect(
 	"the prompt does not leak onto selections that do not own it",
@@ -270,9 +267,9 @@ expect("resize handles opt out on compact layouts", css.includes(".workspace-spl
 // extracted take play at the right size, on the right layer, at the right
 // place — each of them was a bug in the two-character prototype.
 expect(
-	"a character owns a Video capture foldout above ARDY motion",
+	"a character owns a Video capture foldout without a legacy ARDY card",
 	app.includes('<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Video capture", "영상 모캡")}>') &&
-	app.indexOf('title={ko("Video capture", "영상 모캡")}') < app.indexOf('title={ko("ARDY motion", "ARDY 모션")}'),
+	!app.includes('title={ko("ARDY motion", "ARDY 모션")}'),
 );
 expect(
 	"ingest and extraction reach the ported core modules",

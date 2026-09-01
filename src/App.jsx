@@ -1866,7 +1866,6 @@ globalThis.playMode = centerTab === "play";
 	const [sceneMenuOpen, setSceneMenuOpen] = useState(false);
 	const [ardyRunning, setArdyRunning] = useState(false);
 	const [ardyStatus, setArdyStatus] = useState("");
-	const [consoleLines, setConsoleLines] = useState([]);
 	const [bottomTab, setBottomTab] = useState("timeline");
 	// The imported-pictures region of the Assets shelf. null = the scan has
 	// never resolved (the pane shows skeletons, NEVER the empty message); an
@@ -2069,11 +2068,11 @@ globalThis.playMode = centerTab === "play";
 			setDeletingAssetId(null);
 		}
 	}
-	// ARDY status doubles as a Unity-style console line: the inspector keeps
-	// the current line, the bottom Console tab keeps the session history.
+	// Keep the latest ARDY status inline with the Prompt Blocks controls. The
+	// former bottom Console history was removed because it duplicated this state
+	// and exposed an editor surface that is not part of the production workflow.
 	function reportArdyStatus(line) {
 		setArdyStatus(line);
-		setConsoleLines((current) => [...current.slice(-99), { time: new Date(), line }]);
 	}
 	const [ardyReport, setArdyReport] = useState(null);
 	const [ardyOutcome, setArdyOutcome] = useState(null);
@@ -9858,96 +9857,6 @@ function resizePromptClip(id, edge, rawFrame) {
 					{photoPoseError && <p className="studio-hint error" data-pose-photo-error role="status">{photoPoseError}</p>}
 				</Foldout>
 
-				{/* Generating is the point of the whole panel, and the operator spends
-				    their time on a character — making them reselect the scene just to
-				    press Generate was friction for no gain. The scene still owns the
-				    prompt (it describes the whole render, not one performer), it is
-				    simply also reachable from the subject being staged. */}
-				<Foldout hidden={!(isSceneSelection || isCharacterSelection)} title={ko("Prompt", "프롬프트")}>
-						<div className="segmented" data-active={mode}>
-							<button className={mode === "image" ? "active" : ""} onClick={() => setMode("image")}>
-							{ko("Image", "이미지")}
-							</button>
-							<button className={mode === "video" ? "active" : ""} onClick={() => setMode("video")}>
-							{ko("Video", "영상")}
-							</button>
-						</div>
-					{mode === "image" && <Field label={ko("Model", "모델")}>
-							<Dropdown
-							ariaLabel={ko("Model", "모델")}
-								value={imageModel}
-								options={IMAGE_MODELS.map((m) => ({ value: m.id, label: m.label }))}
-								onChange={setImageModel}
-							/>
-						</Field>}
-					{mode === "video" && <p className="inspector-hint">{ko("CozyClay prepares the prompt and blocking frames. Finish the video in your chosen AI video tool.", "CozyClay는 프롬프트와 블로킹 프레임을 준비합니다. 영상 완성은 원하는 AI 영상 도구에서 진행하세요.")}</p>}
-
-						<div className="sheet-checks">
-							<label className="check">
-								<input type="checkbox" checked={hasCharSheet} onChange={(e) => setHasCharSheet(e.target.checked)} />
-								<span>{ko("I have a character sheet", "캐릭터 시트가 있어요")}</span>
-							</label>
-							<label className="check">
-								<input type="checkbox" checked={hasEnvSheet} onChange={(e) => setHasEnvSheet(e.target.checked)} />
-								<span>{ko("I have an environment sheet", "환경 시트가 있어요")}</span>
-							</label>
-						</div>
-
-						{!hasCharSheet && characters.map((entry, index) => entry.hidden ? null : (
-							<Field key={entry.id} label={characters.filter((c) => !c.hidden).length > 1 ? ko(`Subject ${index + 1}`, `인물 ${index + 1}`) : ko("Subject", "인물")}>
-								<input
-									type="text"
-									value={entry.subject ?? ""}
-									/* One entry per editing session, not per keystroke: the
-									   snapshot is taken when the field takes focus. */
-									onFocus={recordCharacterUndo}
-									onChange={(e) => updateCharacterAt(index, { subject: e.target.value })}
-								/>
-							</Field>
-						))}
-						{!hasEnvSheet && (
-						<Field label={ko("Environment", "환경")}>
-								<input type="text" value={environment} onChange={(e) => setEnvironment(e.target.value)} />
-							</Field>
-						)}
-						{mode === "video" && !moveSequence && (
-						<Field label={ko("Camera move", "카메라 움직임")}>
-								<Dropdown
-								ariaLabel={ko("Camera move", "카메라 움직임")}
-									value={cameraMove}
-								options={CAMERA_MOVES.map((m) => ({ value: m, label: cameraMoveLabelKo(m) }))}
-									onChange={setCameraMove}
-								/>
-							</Field>
-						)}
-						{mode === "video" && !moveSequence && cameraMove === CUSTOM_MOVE && (
-						<Field label={ko("Custom camera move", "직접 쓴 카메라 움직임")}>
-								<input
-									type="text"
-									value={customMove}
-									onChange={(e) => setCustomMove(e.target.value)}
-								placeholder={ko("describe the camera move", "카메라 움직임을 설명하세요")}
-								/>
-							</Field>
-						)}
-						{mode === "video" && moveSequence && (
-						<Field label={ko("Camera move", "카메라 움직임")}>
-								<div
-									className="move-slate inline"
-								title={ko("authored from the timeline keyframings — select Camera in the hierarchy to edit", "타임라인 키프레임으로 만든 움직임입니다. 편집하려면 계층에서 카메라를 선택하세요")}
-								>
-								{moveSequence.displaySlate} · {moveSequence.spanS}{ko("s", "초")}
-								</div>
-							</Field>
-						)}
-					<Field label={ko("Look / style", "룩 / 스타일")}>
-							<input type="text" value={style} onChange={(e) => setStyle(e.target.value)} />
-						</Field>
-
-						<button className="btn primary full generate" onClick={generate}>
-							{mode === "video" ? ko("Prepare video prompt", "영상 프롬프트 준비") : ko("Generate image", "이미지 만들기")}
-						</button>
-					</Foldout>
 				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Video capture", "영상 모캡")}>
 					<div className="multimodel-card">
 						<div className="multimodel-card-head">
@@ -10107,7 +10016,11 @@ function resizePromptClip(id, edge, rawFrame) {
 						</p>
 					</div>
 				</Foldout>
-				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("ARDY motion", "ARDY 모션")}>
+				{/* Motion generation is authored from Prompt Blocks. The legacy ARDY
+				    status/control card remains available to the generation pipeline but
+				    is intentionally not mounted in the inspector. Keeping this boundary
+				    avoids changing bridge behavior while removing an unused UI surface. */}
+				{false && <Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Motion generation (legacy)", "레거시 모션 생성")}>
 					{/* One compact status line: which layer is being edited and on
 					    which box — the long hint texts lived here before. */}
 					<p className="ardy-meta">
@@ -10285,7 +10198,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							{bridge.reason && <p className="ardy-hint">{bridge.reason}</p>}
 						</>
 					)}
-				</Foldout>
+				</Foldout>}
 				<Foldout hidden={!isCharacterSelection} defaultOpen={false} openSignal={promptBlocksReveal} title={ko("Prompt Blocks", "프롬프트 블록")}>
 					<p className="inspector-hint">{ko("Blocks define what ARDY generates over each frame range. Selecting one also moves editing context to that prompt.", "블록은 각 프레임 범위에서 ARDY가 생성할 내용을 정합니다. 블록을 선택하면 편집 기준도 해당 프롬프트로 이동합니다.")}</p>
 						<div className="inspector-list">
@@ -11236,14 +11149,6 @@ function resizePromptClip(id, edge, rawFrame) {
 					</button>
 					<button
 						type="button"
-						className={bottomTab === "console" ? "active" : ""}
-						aria-pressed={bottomTab === "console"}
-						onClick={() => setBottomTab("console")}
-					>
-						{ko("Console", "콘솔")}
-					</button>
-					<button
-						type="button"
 						className={bottomTab === "assets" ? "active" : ""}
 						aria-pressed={bottomTab === "assets"}
 						onClick={() => setBottomTab("assets")}
@@ -11266,18 +11171,6 @@ function resizePromptClip(id, edge, rawFrame) {
 						onUndoDelete={undoDeletedAsset}
 						deletingAssetId={deletingAssetId}
 					/>
-				</div>
-				<div className="console-pane" hidden={bottomTab !== "console"}>
-					{consoleLines.length === 0 ? (
-						<p className="console-empty">{ko("No messages yet — ARDY status lines appear here.", "아직 메시지가 없어요 — ARDY 상태 줄이 여기에 표시됩니다.")}</p>
-					) : (
-						consoleLines.map((entry, index) => (
-							<p className="console-line" key={index}>
-								<time>{entry.time.toLocaleTimeString()}</time>
-								<span>{entry.line}</span>
-							</p>
-						))
-					)}
 				</div>
 				<div className="bottom-timeline" hidden={bottomTab !== "timeline"}>
 				{/* ==================== the take bar (contract C12) ====================
