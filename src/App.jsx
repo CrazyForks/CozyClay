@@ -208,6 +208,8 @@ import {
 	readProjectDocument,
 	readProjectFile,
 	rememberRecentProject,
+	loadProjectSession,
+	storeProjectSession,
 	writeProjectFile,
 	PROJECT_EXTENSION,
 } from "./project.js";
@@ -2658,10 +2660,14 @@ globalThis.playMode = centerTab === "play";
 	 * workspace layout, custom poses) round-trips through a real
 	 * `.cclayproject` file. localStorage stays as the always-on session
 	 * cache; the file is the portable, user-owned document. */
-	const [projectName, setProjectName] = useState(null); // null = untitled session
+	const [projectName, setProjectName] = useState(() => loadProjectSession()?.name ?? null);
 	const [projectDirty, setProjectDirty] = useState(false);
 	const [projectMenuOpen, setProjectMenuOpen] = useState(false);
 	const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
+	// A first-run author should choose a document (or explicitly start a named
+	// local draft). Keep this as a light startup sheet so the studio remains
+	// inspectable while the choice is pending; it never traps the topbar.
+	const [projectStartupOpen, setProjectStartupOpen] = useState(() => !loadProjectSession()?.name);
 
 	// Dismissal mirrors the inspector-actions menu: only listen while open,
 	// ignore presses inside the wrap (the trigger's own click keeps toggling),
@@ -2729,6 +2735,7 @@ globalThis.playMode = centerTab === "play";
 		projectSnapshotRef.current = collectProjectSnapshot(name);
 		setProjectDirty(false);
 		setProjectName(name);
+		storeProjectSession(name);
 	}
 
 	async function rehydrateProjectAssets(project, warnings = []) {
@@ -2802,6 +2809,8 @@ globalThis.playMode = centerTab === "play";
 		projectSnapshotRef.current = collectProjectSnapshot(project.name);
 		setProjectDirty(false);
 		setProjectName(project.name);
+		storeProjectSession(project.name);
+		setProjectStartupOpen(false);
 	}
 
 	async function openProject() {
@@ -2824,6 +2833,7 @@ globalThis.playMode = centerTab === "play";
 			if (handle) await rememberRecentProject(handle, result.project.name);
 			await rehydrateProjectAssets(result.project, result.warnings);
 			applyProject(result.project);
+			setProjectStartupOpen(false);
 			setToast(isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`);
 		} catch (err) {
 			if (err?.name === "AbortError") return;
@@ -2852,8 +2862,9 @@ globalThis.playMode = centerTab === "play";
 			await rememberRecentProject(handle, result.project.name);
 			await rehydrateProjectAssets(result.project, result.warnings);
 			applyProject(result.project);
-			setProjectBrowserOpen(false);
-			setToast(isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`);
+		setProjectBrowserOpen(false);
+		setProjectStartupOpen(false);
+		setToast(isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`);
 		} catch (err) {
 			console.error("openProjectByHandle failed", err);
 			setToast(ko("Could not open the project", "프로젝트를 열지 못했어요"));
@@ -2862,6 +2873,9 @@ globalThis.playMode = centerTab === "play";
 
 	function newProject() {
 		if (projectDirty && !window.confirm(ko("Discard unsaved changes and start a new project?", "저장되지 않은 변경사항을 버리고 새 프로젝트를 시작할까요?"))) return;
+		const requested = window.prompt(ko("Project name", "프로젝트 이름"), projectName ?? "My Project");
+		if (requested === null) return;
+		const name = requested.trim() || "My Project";
 		const fresh = createSceneDocument(ko("SCENE 01", "씬 01"));
 		setScenes(fresh.scenes);
 		setActiveSceneId(fresh.activeSceneId);
@@ -2869,10 +2883,17 @@ globalThis.playMode = centerTab === "play";
 		openScene(fresh.scenes[0], fresh.scenes);
 		projectHandleRef.current = null;
 		clearStoredProjectHandle();
-		projectSnapshotRef.current = "";
+		projectSnapshotRef.current = JSON.stringify(createProjectDocument({
+			scenesDocument: fresh,
+			workspaceLayout: projectStateRef.current.workspaceLayout,
+			customPoses,
+			name,
+		}));
 		setProjectDirty(false);
-		setProjectName(null);
-		setToast(ko("New project", "새 프로젝트"));
+		setProjectName(name);
+		storeProjectSession(name);
+		setProjectStartupOpen(false);
+		setToast(ko(`New project: ${name}`, `새 프로젝트: ${name}`));
 	}
 
 	// Re-open the last project on launch when the browser still grants access.
@@ -8729,13 +8750,13 @@ function resizePromptClip(id, edge, rawFrame) {
 						onClick={() => setProjectMenuOpen((open) => !open)}
 					>
 						{projectDirty && <i className="project-dirty-dot" aria-label={ko("Unsaved changes", "저장되지 않은 변경사항")} />}
-						{projectName ?? ko("Untitled Project", "제목 없는 프로젝트")}
+						{projectName ?? (projectStartupOpen ? ko("Choose Project", "프로젝트 선택") : ko("Untitled Project", "제목 없는 프로젝트"))}
 						<span className="caret">▾</span>
 					</button>
 					{projectMenuOpen && (
 						<div className="project-menu" role="menu" onClick={() => setProjectMenuOpen(false)}>
 							<button type="button" role="menuitem" onClick={newProject}>{ko("New Project", "새 프로젝트")}</button>
-							<button type="button" role="menuitem" onClick={() => setProjectBrowserOpen(true)}>{ko("Open Project…", "프로젝트 열기…")}</button>
+							<button type="button" role="menuitem" onClick={() => { setProjectStartupOpen(false); setProjectBrowserOpen(true); }}>{ko("Open Project…", "프로젝트 열기…")}</button>
 							<button type="button" role="menuitem" onClick={() => saveProject(false)}>{ko("Save Project", "프로젝트 저장")}</button>
 							<button type="button" role="menuitem" onClick={() => saveProject(true)}>{ko("Save Project As…", "다른 이름으로 저장…")}</button>
 						</div>
@@ -8776,9 +8797,9 @@ function resizePromptClip(id, edge, rawFrame) {
 				    inside it — the picker sits at the top of the hierarchy column. */}
 				<div className="hierarchy-project" data-dirty={projectDirty || undefined}>
 					<span className="hierarchy-project-label">{ko("Project", "프로젝트")}</span>
-					<strong>{projectName ?? ko("Untitled", "제목 없음")}</strong>
+					<strong>{projectName ?? (projectStartupOpen ? ko("Choose Project", "프로젝트 선택") : ko("Untitled", "제목 없음"))}</strong>
 					{projectDirty && <i className="project-dirty-dot" aria-label={ko("Unsaved changes", "저장되지 않은 변경사항")} />}
-					<button type="button" onClick={() => setProjectBrowserOpen(true)}>{ko("Projects…", "프로젝트…")}</button>
+					<button type="button" onClick={() => { setProjectStartupOpen(false); setProjectBrowserOpen(true); }}>{ko("Projects…", "프로젝트…")}</button>
 				</div>
 				<HierarchyPanel
 					selectedId={selectedHierarchyId}
@@ -11630,8 +11651,9 @@ function resizePromptClip(id, edge, rawFrame) {
 				/>
 			)}
 
-			{projectBrowserOpen && (
+			{(projectBrowserOpen || projectStartupOpen) && (
 				<ProjectBrowser
+					startup={projectStartupOpen}
 					currentName={projectName}
 					onOpen={(entry) => openProjectByHandle(entry.handle)}
 					onOpenFile={() => {
@@ -11642,7 +11664,10 @@ function resizePromptClip(id, edge, rawFrame) {
 						setProjectBrowserOpen(false);
 						newProject();
 					}}
-					onClose={() => setProjectBrowserOpen(false)}
+					onClose={() => {
+						setProjectBrowserOpen(false);
+						setProjectStartupOpen(false);
+					}}
 				/>
 			)}
 			<Toast message={toast} onDone={() => setToast("")} />

@@ -277,6 +277,37 @@ export async function clearStoredProjectHandle() {
 const RECENTS_KEY = "recentProjects";
 const FOLDER_KEY = "projectsDirectory";
 const RECENTS_MAX = 8;
+// The portable .cclayproject file is the durable source of truth, while this
+// tiny browser-local record keeps an in-progress project identifiable between
+// launches before the user has chosen a file location. Scene data itself is
+// already autosaved by App through its scene document store.
+export const PROJECT_SESSION_KEY = "cozyclay.project-session.v1";
+
+export function loadProjectSession(storage = globalThis.localStorage) {
+	try {
+		const value = JSON.parse(storage?.getItem(PROJECT_SESSION_KEY) || "null");
+		if (!value || typeof value !== "object") return null;
+		const name = typeof value.name === "string" ? value.name.trim() : "";
+		return name ? { name, updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : 0 } : null;
+	} catch {
+		return null;
+	}
+}
+
+export function storeProjectSession(name, storage = globalThis.localStorage) {
+	const normalized = typeof name === "string" ? name.trim() : "";
+	if (!normalized) return false;
+	try {
+		storage?.setItem(PROJECT_SESSION_KEY, JSON.stringify({ name: normalized, updatedAt: Date.now() }));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function clearProjectSession(storage = globalThis.localStorage) {
+	try { storage?.removeItem(PROJECT_SESSION_KEY); } catch { /* private mode */ }
+}
 
 async function idbSet(key, value) {
 	try {

@@ -298,6 +298,15 @@ select {
 	background: rgba(0, 0, 0, .55);
 }
 
+/* First-run chooser is intentionally non-blocking around the studio: the
+ * author can inspect the scene while deciding, and the topbar remains usable
+ * for browser automation and keyboard users. The dialog itself remains fully
+ * interactive. */
+.project-browser-backdrop.startup {
+	pointer-events: none;
+	background: linear-gradient(180deg, rgba(10, 12, 16, .78), rgba(10, 12, 16, .38));
+}
+
 .project-browser {
 	width: min(560px, 92vw);
 	max-height: 80vh;
@@ -310,6 +319,19 @@ select {
 	border-radius: 14px;
 	box-shadow: 0 16px 60px rgba(0, 0, 0, .6);
 	overflow-y: auto;
+}
+
+.project-browser.startup {
+	pointer-events: auto;
+	width: min(620px, 92vw);
+	box-shadow: 0 22px 80px rgba(0, 0, 0, .7);
+}
+
+.project-browser-intro {
+	margin: -4px 0 2px;
+	font-size: 12px;
+	line-height: 1.55;
+	color: var(--muted);
 }
 
 .project-browser-head {

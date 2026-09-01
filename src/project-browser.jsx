@@ -21,7 +21,7 @@ import {
  * Fallback for browsers without the File System Access API: recents plus a
  * plain "open file" button (the folder section is hidden).
  */
-export default function ProjectBrowser({ currentName, onOpen, onOpenFile, onNew, onClose }) {
+export default function ProjectBrowser({ currentName, onOpen, onOpenFile, onNew, onClose, startup = false }) {
 	const [recents, setRecents] = useState([]);
 	const [folder, setFolder] = useState(null);
 	const [folderProjects, setFolderProjects] = useState([]);
@@ -73,12 +73,16 @@ export default function ProjectBrowser({ currentName, onOpen, onOpenFile, onNew,
 	};
 
 	return (
-		<div className="project-browser-backdrop" onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-			<div className="project-browser" role="dialog" aria-label={ko("Open project", "프로젝트 열기")}>
+		<div className={`project-browser-backdrop${startup ? " startup" : ""}`} onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+			<div className={`project-browser${startup ? " startup" : ""}`} role="dialog" aria-label={ko("Choose project", "프로젝트 선택")}>
 				<div className="project-browser-head">
-					<strong>{ko("Projects", "프로젝트")}</strong>
+					<strong>{startup ? ko("Choose a project to begin", "시작할 프로젝트를 선택하세요") : ko("Projects", "프로젝트")}</strong>
 					<button type="button" className="x" onClick={onClose} aria-label={ko("Close", "닫기")}>✕</button>
 				</div>
+				{startup && <p className="project-browser-intro">{ko(
+					"Your work is saved in the selected project. You can open a recent file, choose a project folder, or start a named local draft.",
+					"작업 내용은 선택한 프로젝트에 저장됩니다. 최근 파일을 열거나 프로젝트 폴더를 지정하거나, 이름을 정한 새 초안으로 시작하세요.",
+				)}</p>}
 
 				<section>
 					<div className="project-browser-section-head">
