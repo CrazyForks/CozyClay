@@ -232,6 +232,7 @@ import { bucketMs, track, trackActivation } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
 import {
 	DEFAULT_POSE,
+	applyPose,
 	capturePose,
 	deleteCustomPose,
 	loadCustomPoses,
@@ -377,6 +378,7 @@ import {
 	ShotRig,
 	TIMELINE_FPS,
 	ViewportLayoutInvalidator,
+	REST_BONES,
 	WORKSPACE_LAYOUT_KEY,
 	attachFrameMatrix,
 	attachPlacementPatch,
@@ -434,6 +436,78 @@ function ShotGuideOverlay({ mode, aspect, className = "" }) {
 			</svg>
 		</div>
 	);
+}
+
+// Below this the mean landmark visibility is too low to claim the fit measured
+// the photograph rather than guessed at it. Same number the fit diagnostics are
+// scaled on (0..1 visibility), so it reads as "less than half seen".
+const PHOTO_POSE_LOW_CONFIDENCE = 0.5;
+
+// cskel27 joint names are rig vocabulary — "RightForeArm" means nothing to
+// someone holding a photograph. Every joint collapses into one of six groups a
+// viewer can check against their own picture, ordered so the sentence always
+// reads limbs before body.
+const RELEASED_BONE_LABELS = [
+	["LeftArm", "left arm", "왼팔"],
+	["RightArm", "right arm", "오른팔"],
+	["LeftLeg", "left leg", "왼다리"],
+	["RightLeg", "right leg", "오른다리"],
+	["Torso", "torso", "몸통"],
+	["Head", "head", "머리"],
+];
+
+function releasedBoneGroup(name) {
+	const side = name.startsWith("Left") ? "Left" : name.startsWith("Right") ? "Right" : "";
+	const part = side ? name.slice(side.length) : name;
+	if (part === "UpLeg" || part === "Leg" || part === "Foot" || part === "ToeBase") return side + "Leg";
+	if (part === "Shoulder" || part === "Arm" || part === "ForeArm" || part === "Hand" || part === "HandEnd") return side + "Arm";
+	if (part === "Head" || part === "Neck") return "Head";
+	// Hips and the Spine chain are the only names left, and they are the torso.
+	return "Torso";
+}
+
+// 이/가 is fixed by the final syllable of the word it follows — 왼팔이 but
+// 왼다리가 — so it cannot be baked into the sentence template.
+function koSubjectParticle(word) {
+	const syllable = word.charCodeAt(word.length - 1) - 0xac00;
+	return syllable >= 0 && syllable < 11172 && syllable % 28 !== 0 ? "이" : "가";
+}
+
+/**
+ * A released bone silently keeps its neutral rotation and a low-confidence fit
+ * silently loosens every bone, so a photo pose can come out wrong with nothing
+ * on screen saying why. Returns "" when there is nothing to warn about — that
+ * is the case where the ordinary success toast must survive untouched.
+ */
+function photoPoseWarning({ releasedBones, confidence }) {
+	const groups = [];
+	for (const name of releasedBones ?? []) {
+		const group = releasedBoneGroup(name);
+		if (!groups.includes(group)) groups.push(group);
+	}
+	const labels = RELEASED_BONE_LABELS
+		.filter(([key]) => groups.includes(key))
+		.map(([, en, koText]) => (isKo ? koText : en));
+	const unsure = Number.isFinite(confidence) && confidence < PHOTO_POSE_LOW_CONFIDENCE;
+	if (labels.length === 0) {
+		if (!unsure) return "";
+		return ko(
+			"The photo is unclear, so the pose may be rough — refine it with the handles",
+			"사진이 흐릿해서 자세가 부정확할 수 있어요 — 핸들로 다듬어 보세요"
+		);
+	}
+	if (isKo) {
+		const list = labels.join("·");
+		const blur = unsure ? " — 사진도 흐릿해서 나머지가 부정확할 수 있어요" : "";
+		return `사진에서 ${list}${koSubjectParticle(list)} 안 보여서 기본 자세로 남았어요${blur}`;
+	}
+	const list = labels.length > 1
+		? `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`
+		: labels[0];
+	const blur = unsure ? ", and the photo is unclear so the rest may be rough" : "";
+	return labels.length > 1
+		? `The ${list} weren't visible in the photo — they stayed in the default pose${blur}`
+		: `The ${list} wasn't visible in the photo — it stayed in the default pose${blur}`;
 }
 
 export default function App() {
@@ -5256,6 +5330,32 @@ globalThis.playMode = centerTab === "play";
 		setIkTick((n) => n + 1);
 	}
 
+	/** With IK mode on over a loaded take, a pose pick is a CORRECTION, not a
+	 * replacement: write the saved pose onto the rig and bake every IK part
+	 * into a full-body key at the current frame. The take survives, and the
+	 * key blends back into the clip outside its window exactly like a dragged
+	 * key would. Returns false when there is nothing to key against so the
+	 * caller can fall through to the plain pose-apply path. */
+	function ikApplyPoseAsKey(pose) {
+		if (!ikChains || !activeRig || !motion) return false;
+		recordCharacterUndo();
+		// Reset-then-pose, the same shape the Character effect applies: unlisted
+		// joints return to rest instead of keeping stale limbs from the clip.
+		applyPose(activeRig, { ...REST_BONES, ...pose.bones });
+		// The pose authors the whole body, so every part is tracked — an
+		// untracked chain would silently keep the clip's limb.
+		for (const id of ikChains.keys()) ikTouch(ikStateRef.current, id);
+		if (ikFkJoints) for (const id of ikFkJoints.keys()) ikTouch(ikStateRef.current, id);
+		ikBakeKeyframe(ikChains, ikStateRef.current, tlFrame, ikFkJoints);
+		// Handles re-seat on the posed effectors, ready to drag into a refinement.
+		ikSeedTargets(ikChains, ikStateRef.current);
+		setIkTick((n) => n + 1);
+		setToast(isKo
+			? `${tlFrame}프레임에 포즈를 전신 IK 보정 키로 추가했어요 — 모션은 그대로예요`
+			: `Pose keyed as a full-body IK correction at frame ${tlFrame} — the take stays`);
+		return true;
+	}
+
 	// Keyed-pose playback: the IK layer's keyed bone rotations apply at the
 	// current frame whether or not IK edit mode is on — IK-authored keys are
 	// the source of truth (the user designs first/end keys and ARDY in-
@@ -5594,9 +5694,16 @@ globalThis.playMode = centerTab === "play";
 			else recordCharacterUndo();
 			updateCharacterAt(poseTargetIndex, { pose });
 			setPhotoPoseState("done");
-			setToast(hadMotion
-				? ko("Cleared the motion and posed from the photo — refine it with the handles", "모션을 지우고 사진으로 자세를 잡았어요 — 핸들로 다듬어 보세요")
-				: ko("Pose read from the photo — refine it with the handles", "사진에서 자세를 읽었어요 — 핸들로 다듬어 보세요"));
+			// The pose is already saved and written by this point, so the warning
+			// only changes what the user is told, never whether the read happened.
+			// It takes the success slot rather than queueing a second toast: two
+			// toasts in a row means the first one is never read.
+			const warning = photoPoseWarning(take);
+			setToast(warning
+				? (hadMotion ? `${ko("Cleared the motion.", "모션을 지웠어요.")} ${warning}` : warning)
+				: hadMotion
+					? ko("Cleared the motion and posed from the photo — refine it with the handles", "모션을 지우고 사진으로 자세를 잡았어요 — 핸들로 다듬어 보세요")
+					: ko("Pose read from the photo — refine it with the handles", "사진에서 자세를 읽었어요 — 핸들로 다듬어 보세요"));
 		} catch (error) {
 			const code = error?.message ?? String(error);
 			// fitLandmarksToPose refuses a sample whose torso is not visible; that is
@@ -9883,6 +9990,9 @@ function resizePromptClip(id, edge, rawFrame) {
 						onSelect={(id) => {
 							const pose = selectablePoses.find((entry) => entry.id === id);
 							if (!pose) return;
+							// IK mode over a take: the pick is a mid-clip correction, so it
+							// keys onto the Full-Body lane instead of erasing the motion.
+							if (ikMode && ikApplyPoseAsKey(pose)) return;
 							// A running take drives the same bones a pose writes, so the
 							// pick would otherwise land invisibly underneath it.
 							const hadMotion = Boolean(motion);
@@ -11148,6 +11258,12 @@ function resizePromptClip(id, edge, rawFrame) {
 							onApply={(selectedPoseId) => {
 								const pose = selectablePoses.find((p) => p.id === selectedPoseId);
 								if (pose) {
+									// IK mode over a take, on the active character: key the
+									// pose as a correction instead of erasing the motion.
+									if (ikMode && posingChar?.id === activeChar.id && ikApplyPoseAsKey(pose)) {
+										closeStudio();
+										return;
+									}
 									const hadMotion = Boolean(motion);
 									// Apply is one gesture: the clear's snapshot covers the pose
 									// write that follows it.
