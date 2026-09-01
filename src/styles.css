@@ -9839,9 +9839,9 @@ input[type=range] {
    than leaving every control spread across the desk. */
 .app[data-workflow-mode="scene"] .timeline,
 .app[data-workflow-mode="camera"] .timeline {
-	height: 180px;
-	min-height: 180px;
-	max-height: 180px;
+	height: 220px;
+	min-height: 220px;
+	max-height: 220px;
 }
 
 .app[data-workflow-mode="camera"] .timeline {
@@ -9856,9 +9856,9 @@ input[type=range] {
 	overflow: auto;
 }
 
-/* Scene blocking keeps the root path and shot cut lanes.  Prompt and
-   full-body motion lanes belong to Motion and otherwise read as stale state. */
-.app[data-workflow-mode="scene"] .timeline .tl-track.prompts,
+/* Scene blocking still exposes the prompt lane because Animation is the
+   shared authoring surface.  Only pose-correction controls stay behind the
+   Motion workflow; hiding Prompts here made the lane look deleted. */
 .app[data-workflow-mode="scene"] .timeline .tl-track.ik {
 	display: none;
 }
@@ -9871,7 +9871,7 @@ input[type=range] {
 }
 
 .app[data-workflow-mode="scene"] .timeline .tl-surface {
-	grid-template-rows: 28px repeat(2, minmax(20px, 1fr)) auto;
+	grid-template-rows: 28px repeat(3, minmax(20px, 1fr)) auto;
 }
 
 .app[data-workflow-mode="camera"] .timeline .tl-surface,
