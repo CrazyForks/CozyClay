@@ -7263,7 +7263,7 @@ input[type=range]::-moz-range-thumb {
 .app[data-workflow-mode="scene"] .take-bar,
 .app[data-workflow-mode="camera"] .tl-pose-tools,
 .app[data-workflow-mode="camera"] .tl-motion-tools,
-.app[data-workflow-mode="camera"] .take-bar { display: none; }
+.app[data-workflow-mode="camera"] .take-bar { display: none !important; }
 
 .pane-tabs {
 	position: static;
