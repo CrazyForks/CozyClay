@@ -27,8 +27,28 @@ const clips = [
 	{ id: "b", startFrame: 80, endFrame: 120, text: "stop" },
 ];
 const collision = movePromptClipFrames(clips, "a", 80);
-expect("move into another block is rejected", collision === clips);
+expect("move onto another block clamps to abut it", collision[0].startFrame === 40 && collision[0].endFrame === 80, JSON.stringify(collision));
 const gap = movePromptClipFrames(clips, "a", 40);
 expect("move into a free adjacent slot succeeds", gap[0].startFrame === 40 && gap[0].endFrame === 80);
+// Generated takes place clips off the block grid (phase seconds are free-form).
+// Dragging the walk clip left toward an off-grid neighbor must land flush
+// against it, not silently refuse because every snap position overlaps.
+const offGrid = [
+	{ id: "crouch", startFrame: 0, endFrame: 72, text: "crouch" },
+	{ id: "walk", startFrame: 96, endFrame: 204, text: "walk" },
+];
+const flush = movePromptClipFrames(offGrid, "walk", 70, 48);
+expect("off-grid drag clamps flush against the neighbor", flush[1].startFrame === 72 && flush[1].endFrame === 180, JSON.stringify(flush));
+const noRoom = movePromptClipFrames(
+	[
+		{ id: "a", startFrame: 0, endFrame: 72, text: "a" },
+		{ id: "b", startFrame: 72, endFrame: 132, text: "b" },
+		{ id: "c", startFrame: 132, endFrame: 240, text: "c" },
+	],
+	"c",
+	100,
+	48
+);
+expect("drag with no free room keeps the layout", noRoom[2].startFrame === 132, JSON.stringify(noRoom));
 if (failures) process.exit(1);
 console.log("all prompt move checks PASS");
