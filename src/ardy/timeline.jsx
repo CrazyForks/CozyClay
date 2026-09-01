@@ -69,6 +69,19 @@ const framePct = (f, count) => (count > 1 ? f / (count - 1) : 0);
 // displayed total duration, as it is in an actual frame sequence).
 const formatTimelineSeconds = (seconds) => `${Math.max(0, Number(seconds) || 0).toFixed(2)}s`;
 
+// Keep related timeline controls visually together without another stylesheet
+// dependency. The head is a single flex row, so each group reads like one
+// instrument instead of a string of unrelated buttons.
+const TL_HEAD_GROUP_STYLE = {
+	display: "inline-flex",
+	alignItems: "center",
+	gap: 5,
+	padding: "2px 4px",
+	border: "1px solid var(--line)",
+	borderRadius: 6,
+	background: "rgba(0, 0, 0, .12)",
+};
+
 const CAMERA_BLOCK_DEFAULTS = {
 	distance: 3,
 	height: 1.6,
@@ -1714,75 +1727,99 @@ export default function Timeline({
 								<b>{frame}</b> / {Math.max(0, frameCount - 1)} · {formatTimelineSeconds(frame / Math.max(1, fps))} / {formatTimelineSeconds(frameCount / Math.max(1, fps))} · {fps} fps · {playbackSpeed.toFixed(2)}×
 							</span>
 						</div>
-						{selectedMotionSegment && (
-							<label className="tl-motion-speed-editor">
-								<span>{ko(`Segment ${motionSegments.indexOf(selectedMotionSegment) + 1} speed`, `구간 ${motionSegments.indexOf(selectedMotionSegment) + 1} 배율`)}</span>
-								<input
-									type="range"
-									min="0.1"
-									max="4"
-									step="0.1"
-									value={selectedMotionSegment.speed}
-									aria-label={ko("Selected Full-Body segment speed", "선택한 전신 구간 배율")}
-									onChange={(event) => changeSelectedMotionSpeed(event.currentTarget.valueAsNumber)}
-								/>
-								<input
-									type="number"
-									min="0.1"
-									max="4"
-									step="0.1"
-									value={selectedMotionSegment.speed}
-									aria-label={ko("Selected Full-Body segment speed value", "선택한 전신 구간 배율 값")}
-									onChange={(event) => changeSelectedMotionSpeed(event.currentTarget.valueAsNumber)}
-								/>
-								<small>×</small>
-							</label>
-						)}
-						<button
-							type="button"
-							className={"tl-btn zoom" + (zoom !== ZOOM_DEFAULT ? " on" : "")}
-							title={ko("Two-finger up/down over FRAME ruler to zoom — click to reset to 1×", "프레임 눈금 위에서 두 손가락으로 위아래 스크롤해 확대/축소 · 클릭하면 1×로 초기화")}
-							onClick={resetZoom}
-						>
-							{zoom.toFixed(2)}×
-						</button>
-						<button
-							type="button"
-							className={"tl-btn wp" + (waypointMode ? " on" : "")}
-							aria-pressed={waypointMode}
-							title={ko("Enable or disable 2D Root path constraints (P)", "2D 루트 경로 제약 켜기/끄기 (P)")}
-							onClick={() => handlers.current.onWaypointToggle?.()}
-						>
-							{isKo ? `웨이포인트 ${waypointMode ? "켜짐" : "꺼짐"}` : `Waypoint ${waypointMode ? "on" : "off"}`}
-						</button>
-						<button
-							type="button"
-							className={"tl-btn ik" + (ikMode ? " on" : "")}
-							aria-pressed={ikMode}
-							disabled={ikDisabled && !ikMode}
-							title={ikDisabled && !ikMode ? ko("IK needs Subject 1's rig loaded", "IK를 사용하려면 인물 1의 리그를 먼저 불러와야 해요") : ko("IK mode — drag a wrist / ankle handle; keys land on the Full-Body lane. With a motion loaded, keys correct it layer-style", "IK 모드 — 손목이나 발목 핸들을 드래그하세요. 키는 전신 레인에 찍히며, 모션을 불러온 뒤에는 레이어 방식으로 보정합니다")}
-							onClick={() => handlers.current.onIkToggle?.()}
-						>
-							{isKo ? `IK ${ikMode ? "켜짐" : "꺼짐"}` : `IK ${ikMode ? "on" : "off"}`}
-						</button>
-						<button
-							type="button"
-							className={"tl-btn ik snap" + (footSnap ? " on" : "")}
-							aria-pressed={footSnap}
-							title={ko("Foot snap — keep the feet planted while you move the body (hips); the knees bend instead of the feet sinking through the floor", "발 스냅 — 몸(엉덩이)을 움직여도 발을 바닥에 고정합니다. 발이 바닥으로 가라앉는 대신 무릎이 구부러집니다")}
-							onClick={() => handlers.current.onFootSnapToggle?.()}
-						>
-							{isKo ? `스냅 ${footSnap ? "켜짐" : "꺼짐"}` : `Snap ${footSnap ? "on" : "off"}`}
-						</button>
-						<button
-							type="button"
+						<div className="tl-head-group tl-view-tools" role="group" aria-label={ko("Timeline view tools", "타임라인 보기 도구")} style={TL_HEAD_GROUP_STYLE}>
+							<button
+								type="button"
+								className={"tl-btn zoom" + (zoom !== ZOOM_DEFAULT ? " on" : "")}
+								aria-label={ko("Timeline zoom", "타임라인 확대 비율")}
+								title={ko("Two-finger up/down over FRAME ruler to zoom — click to reset to 1×", "프레임 눈금 위에서 두 손가락으로 위아래 스크롤해 확대/축소 · 클릭하면 1×로 초기화")}
+								onClick={resetZoom}
+							>
+								{zoom.toFixed(2)}×
+							</button>
+							<button
+								type="button"
+								className={"tl-btn wp" + (waypointMode ? " on" : "")}
+								aria-pressed={waypointMode}
+								aria-label={ko("Root path mode", "루트 경로 모드")}
+								title={ko("Enable or disable 2D Root path constraints (P)", "2D 루트 경로 제약 켜기/끄기 (P)")}
+								onClick={() => handlers.current.onWaypointToggle?.()}
+							>
+								{isKo ? `웨이포인트 ${waypointMode ? "켜짐" : "꺼짐"}` : `Waypoint ${waypointMode ? "on" : "off"}`}
+							</button>
+						</div>
+						<div className="tl-head-group tl-pose-tools" role="group" aria-label={ko("Pose correction tools", "포즈 보정 도구")} style={TL_HEAD_GROUP_STYLE}>
+							<button
+								type="button"
+								className={"tl-btn ik" + (ikMode ? " on" : "")}
+								aria-pressed={ikMode}
+								disabled={ikDisabled && !ikMode}
+								aria-label={ko("Inverse kinematics", "역운동학")}
+								title={ikDisabled && !ikMode ? ko("IK needs Subject 1's rig loaded", "IK를 사용하려면 인물 1의 리그를 먼저 불러와야 해요") : ko("IK mode — drag a wrist / ankle handle; keys land on the Full-Body lane. With a motion loaded, keys correct it layer-style", "IK 모드 — 손목이나 발목 핸들을 드래그하세요. 키는 전신 레인에 찍히며, 모션을 불러온 뒤에는 레이어 방식으로 보정합니다")}
+								onClick={() => handlers.current.onIkToggle?.()}
+							>
+								{isKo ? `IK ${ikMode ? "켜짐" : "꺼짐"}` : `IK ${ikMode ? "on" : "off"}`}
+							</button>
+							<button
+								type="button"
+								className={"tl-btn ik snap" + (footSnap ? " on" : "")}
+								aria-pressed={footSnap}
+								aria-label={ko("Foot snap", "발 스냅")}
+								title={ko("Foot snap — keep the feet planted while you move the body (hips); the knees bend instead of the feet sinking through the floor", "발 스냅 — 몸(엉덩이)을 움직여도 발을 바닥에 고정합니다. 발이 바닥으로 가라앉는 대신 무릎이 구부러집니다")}
+								onClick={() => handlers.current.onFootSnapToggle?.()}
+							>
+								{isKo ? `스냅 ${footSnap ? "켜짐" : "꺼짐"}` : `Snap ${footSnap ? "on" : "off"}`}
+							</button>
+							<button
+								type="button"
 								className={"tl-btn ik contact" + (bodyContact ? " on" : "")}
 								aria-pressed={bodyContact}
+								aria-label={ko("Body contact", "바닥 접촉")}
 								title={ko("Body contact — keep hands, knees, feet, head, and hips above the floor", "바닥 접촉 — 손, 무릎, 발, 머리, 엉덩이가 바닥 아래로 내려가지 않게 합니다")}
 								onClick={() => handlers.current.onBodyContactToggle?.()}
 							>
 								{isKo ? `바닥 접촉 ${bodyContact ? "켜짐" : "꺼짐"}` : `Body contact ${bodyContact ? "on" : "off"}`}
 							</button>
+						</div>
+						{(selectedMotionSegment || onClearMotion) && (
+							<div className="tl-head-group tl-motion-tools" role="group" aria-label={ko("Motion controls", "모션 컨트롤")} style={TL_HEAD_GROUP_STYLE}>
+								{selectedMotionSegment && (
+									<label className="tl-motion-speed-editor">
+										<span>{ko(`Segment ${motionSegments.indexOf(selectedMotionSegment) + 1} speed`, `구간 ${motionSegments.indexOf(selectedMotionSegment) + 1} 배율`)}</span>
+										<input
+											type="range"
+											min="0.1"
+											max="4"
+											step="0.1"
+											value={selectedMotionSegment.speed}
+											aria-label={ko("Selected Full-Body segment speed", "선택한 전신 구간 배율")}
+											onChange={(event) => changeSelectedMotionSpeed(event.currentTarget.valueAsNumber)}
+										/>
+										<input
+											type="number"
+											min="0.1"
+											max="4"
+											step="0.1"
+											value={selectedMotionSegment.speed}
+											aria-label={ko("Selected Full-Body segment speed value", "선택한 전신 구간 배율 값")}
+											onChange={(event) => changeSelectedMotionSpeed(event.currentTarget.valueAsNumber)}
+										/>
+										<small>×</small>
+									</label>
+								)}
+								{onClearMotion && (
+									<button
+										type="button"
+										className="tl-btn clear"
+										aria-label={ko("Clear loaded motion", "불러온 모션 지우기")}
+										title={ko("Clear motion and restore the blocking pose", "모션을 지우고 블로킹 포즈로 되돌리기")}
+										onClick={onClearMotion}
+									>
+										✕ {ko("Clear motion", "모션 지우기")}
+									</button>
+								)}
+							</div>
+						)}
 						{waypointMode && (
 							<span className={"tl-wp-hint" + (waypointFrames.length < 2 || pathSpeed?.warn ? " warn" : "")}>
 								{waypointFrames.length < 2
@@ -1801,16 +1838,6 @@ export default function Timeline({
 							</span>
 						)}
 						{badge && <span className={"tl-badge " + badge.kind}>{badge.label}</span>}
-						{onClearMotion && (
-							<button
-								type="button"
-								className="tl-btn clear"
-								title={ko("Clear motion and restore the blocking pose", "모션을 지우고 블로킹 포즈로 되돌리기")}
-								onClick={onClearMotion}
-							>
-								✕ {ko("Motion", "모션")}
-							</button>
-						)}
 						<button
 							type="button"
 							className="tl-toggle"
@@ -1961,17 +1988,7 @@ export default function Timeline({
 									))}
 									{name === SHOTS_LANE && shots.length === 0 && (
 										<div className="tl-shot-empty">
-											<span>{ko("No shots yet — the free camera owns this range.", "아직 샷이 없습니다 — 이 구간은 자유 카메라가 담당합니다.")}</span>
-											<button
-												type="button"
-												className="tl-shot-empty-add"
-												onClick={(event) => {
-													event.stopPropagation();
-													handlers.current.onShotCut?.();
-												}}
-											>
-												{ko("+ Add shot", "+ 샷 추가")}
-											</button>
+											<span>{ko("No shots yet — use + Add shot in the lane header to create one.", "아직 샷이 없습니다 — 레인 헤더의 + 샷 추가로 만들어 보세요.")}</span>
 										</div>
 									)}
 									{name === SHOTS_LANE && shots.map((shot, index) => {
