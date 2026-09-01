@@ -233,7 +233,9 @@ import { bucketMs, track, trackActivation } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
 import {
 	DEFAULT_POSE,
+	applyHipsOffset,
 	applyPose,
+	captureHipsOffset,
 	capturePose,
 	deleteCustomPose,
 	loadCustomPoses,
@@ -5343,6 +5345,9 @@ globalThis.playMode = centerTab === "play";
 		// Reset-then-pose, the same shape the Character effect applies: unlisted
 		// joints return to rest instead of keeping stale limbs from the clip.
 		applyPose(activeRig, { ...REST_BONES, ...pose.bones });
+		// The hips' measured height rides into the bake: the hips FK joint keys
+		// its local position (p), so a crouched pose keys a crouched body.
+		applyHipsOffset(activeRig, pose.rootY ?? 0);
 		// The pose authors the whole body, so every part is tracked — an
 		// untracked chain would silently keep the clip's limb.
 		for (const id of ikChains.keys()) ikTouch(ikStateRef.current, id);
@@ -5608,6 +5613,9 @@ globalThis.playMode = centerTab === "play";
 			label: isKo ? `내 포즈 ${customPoses.length + 1}` : `My Pose ${customPoses.length + 1}`,
 			prompt: "in the exact body pose shown in the blocking frame",
 			bones: capturePose(activeRig),
+			// A take frame carries its measured hips height; bottling the frame
+			// without it would save every crouch as a float.
+			rootY: captureHipsOffset(activeRig),
 			custom: true,
 		};
 		const next = [...customPoses, pose];
@@ -5673,6 +5681,7 @@ globalThis.playMode = centerTab === "play";
 			}
 			objectUrl = URL.createObjectURL(file);
 			let bones = null;
+			let rootY = 0;
 			let warning = "";
 			// GPU route first: SAM-3D-Body on the box MEASURES the body in 3D,
 			// which beats anything a browser landmarker can infer from one frame.
@@ -5691,6 +5700,9 @@ globalThis.playMode = centerTab === "play";
 					try {
 						applyMotionFrame(rig, { ...take, anchorFrame: frame }, frame);
 						bones = capturePose(rig);
+						// SAM measured the hips' true height — a crouch is a crouch
+						// because the hips came DOWN, not just because the knees bent.
+						rootY = captureHipsOffset(rig);
 					} finally {
 						restorePlaybackBones(rig, snapshot);
 					}
@@ -5721,6 +5733,7 @@ globalThis.playMode = centerTab === "play";
 				try {
 					applyMotionFrame(rig, { ...take, anchorFrame: 0 }, 0);
 					bones = capturePose(rig);
+					rootY = captureHipsOffset(rig);
 				} finally {
 					restorePlaybackBones(rig, snapshot);
 				}
@@ -5731,6 +5744,7 @@ globalThis.playMode = centerTab === "play";
 				label: isKo ? `사진 포즈 ${customPoses.length + 1}` : `Photo Pose ${customPoses.length + 1}`,
 				prompt: "in the exact body pose shown in the reference photograph",
 				bones,
+				rootY,
 				custom: true,
 			};
 			const next = [...customPoses, pose];

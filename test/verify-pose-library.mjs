@@ -155,7 +155,9 @@ expect("Pose Studio explains an empty library", studioSource.includes("data-pose
 expect("Pose Studio applies its synchronous draft selection", studioSource.includes("onApply(selectedIdRef.current)"));
 expect(
 	"Pose Studio explains motion ownership",
-	studioSource.includes("data-pose-motion-warning") && studioSource.includes('motionActive ? ko("Clear motion and apply pose"'),
+	studioSource.includes("data-pose-motion-warning")
+		&& studioSource.includes('ko("Clear motion and apply pose"')
+		&& studioSource.includes('ikCorrection ? ko("Key pose as IK correction"'),
 );
 expect(
 	"App clears loaded motion before applying a blocking pose",

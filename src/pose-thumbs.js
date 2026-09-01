@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
-import { applyPose, primeBindPose, POSE_BONES } from "./poses.js";
+import { applyHipsOffset, applyPose, primeBindPose, POSE_BONES } from "./poses.js";
 
 /**
  * Pose Studio thumbnails, rendered on demand. The studio's pose entries are
@@ -138,6 +138,7 @@ export function poseThumbnail(model, pose) {
 			// bind pose, so a rest stamp per tile resets the previous pose.
 			applyPose(rig, Object.fromEntries(POSE_BONES.map((bone) => [bone.id, [0, 0, 0]])));
 			applyPose(rig, pose.bones);
+			applyHipsOffset(rig, pose.rootY ?? 0);
 			const scene = thumbScene();
 			scene.add(rig);
 			const camera = frameCamera(rig);

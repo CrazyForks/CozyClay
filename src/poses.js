@@ -262,6 +262,44 @@ export function capturePose(root) {
 	return pose;
 }
 
+function hipsBoneOf(root) {
+	const entry = POSE_BONES.find((item) => item.id === "hips");
+	let found = null;
+	root.traverse((object) => {
+		if (!found && object.isBone && boneMatches(object.name, entry)) found = object;
+	});
+	return found;
+}
+
+/**
+ * The vertical distance the hips have moved off their bind height, in the
+ * rig's own units. Rotations alone cannot say "crouched": with the hips left
+ * at standing height, bent legs lift the feet off the floor. A measured take
+ * (SAM, motion playback) writes the true hips position onto the bone, and
+ * this reads it back so a pose can carry it as `rootY`.
+ */
+export function captureHipsOffset(root) {
+	if (!root) return 0;
+	const bone = hipsBoneOf(root);
+	if (!bone) return 0;
+	const bind = bindOf(root).get(bone);
+	if (!bind?.position) return 0;
+	return bone.position.y - bind.position.y;
+}
+
+/** Seat the hips `rootY` below (negative) or above their bind height. Always
+ * write, even for 0: the previous pose may have been a crouch, and a stale
+ * offset would leave the next standing pose buried in the floor. */
+export function applyHipsOffset(root, rootY = 0) {
+	if (!root) return;
+	const bone = hipsBoneOf(root);
+	if (!bone) return;
+	const bind = bindOf(root).get(bone);
+	if (!bind?.position) return;
+	bone.position.y = bind.position.y + (Number.isFinite(rootY) ? rootY : 0);
+	bone.updateMatrixWorld(true);
+}
+
 export function loadCustomPoses() {
 	try {
 		const raw = localStorage.getItem(STORAGE_KEY);

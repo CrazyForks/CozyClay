@@ -47,7 +47,7 @@ import ObjectGizmo from "./object-gizmo.jsx";
 import { MAX_PATH_POINTS } from "./object-path.js";
 import { track } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
-import { POSE_BONES, applyPose, primeBindPose, normalizeBoneName } from "./poses.js";
+import { POSE_BONES, applyHipsOffset, applyPose, primeBindPose, normalizeBoneName } from "./poses.js";
 import { FK_TRACKS, IK_TRACKS, MID_TRACKS } from "./ardy/ik.js";
 import { RENDER_ACTIVITY_EVENT } from "./use-render-activity.js";
 import { CUSTOM_MOVE, SHOT_ASPECT_RATIOS, SUBJECT_HEIGHT_M } from "./shot.js";
@@ -898,6 +898,9 @@ export const Character = memo(function Character({ url, position, rot, tint, pos
 		if (!pose) return;
 		// every joint is reset first, otherwise switching presets leaves stale limbs
 		applyPose(model, { ...REST_BONES, ...pose.bones });
+		// A measured pose (photo, bottled take frame) carries its hips height;
+		// rotations alone would leave a crouch floating at standing height.
+		applyHipsOffset(model, pose.rootY ?? 0);
 	}, [model, pose]);
 
 	const onRigRef = useRef(onRig);
