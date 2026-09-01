@@ -905,6 +905,22 @@ globalThis.playMode = centerTab === "play";
 	const [ikFkJoints, setIkFkJoints] = useState(null);
 	const [ikFocus, setIkFocus] = useState(null);
 	const [selectedHierarchyId, setSelectedHierarchyId] = useState("characterA");
+	// The studio is easier to read when the operator chooses a department first.
+	// Keep the underlying selection model intact, but use this small workflow
+	// state to surface only the tools that belong to the current job.
+	const [workflowMode, setWorkflowMode] = useState("scene");
+	function selectWorkflowMode(next) {
+		setWorkflowMode(next);
+		setCenterTab("scene");
+		if (next === "camera") setSelectedHierarchyId("camera");
+		else if (next === "motion") {
+			setSelectedHierarchyId("characters");
+			// Selecting Motion should land on its first useful control rather than
+			// leaving the operator to hunt through a long inspector column.
+			setPromptBlocksReveal((signal) => signal + 1);
+		}
+		else setSelectedHierarchyId("shot");
+	}
 
 	/* ------------------- active character (motion layer) ------------------- */
 
@@ -8742,7 +8758,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 
 	return (
-		<div className={"app" + (renderActive ? "" : " render-idle")}>
+		<div className={"app" + (renderActive ? "" : " render-idle")} data-workflow-mode={workflowMode}>
 			<header className="topbar">
 				<div className="logo">
 					<span className="wordmark">
@@ -8846,6 +8862,25 @@ function resizePromptClip(id, edge, rawFrame) {
 				/>
 				<div className="viewport" data-drop={viewportDrop.over ? "over" : undefined} {...viewportDrop.handlers}>
 				<div className="viewport-titlebar">
+				<div className="workflow-mode-switch" role="tablist" aria-label={ko("Workflow", "작업 모드")}>
+					{[
+						["scene", ko("Scene", "장면"), ko("Place subjects and props", "인물과 소품 배치")],
+						["camera", ko("Camera", "카메라"), ko("Frame the shot", "샷 구도 설정")],
+						["motion", ko("Motion", "모션"), ko("Edit timing and movement", "타이밍과 움직임 편집")],
+					].map(([id, label, hint]) => (
+						<button
+							type="button"
+							role="tab"
+							key={id}
+							className={workflowMode === id ? "active" : ""}
+							aria-selected={workflowMode === id}
+							title={hint}
+							onClick={() => selectWorkflowMode(id)}
+						>
+							{label}
+						</button>
+					))}
+				</div>
 				<div className="pane-tabs" role="tablist" aria-label={ko("Center view", "가운데 보기")}>
 					<button
 						type="button"
@@ -8868,7 +8903,12 @@ function resizePromptClip(id, edge, rawFrame) {
 				</div>
 				{centerTab === "scene" ? (
 				<div className="editor-toolbar scene-tools" aria-label={ko("Scene tools", "장면 도구")}>
-						<div className="tool-switch" role="group" aria-label={ko("Gizmo tool", "기즈모 도구")}>
+					{workflowMode === "motion" && (
+						<span className="workflow-toolbar-hint" role="status">
+							{ko("Motion mode · edit the timeline below", "모션 모드 · 아래 타임라인에서 편집하세요")}
+						</span>
+					)}
+						<div className="tool-switch workflow-scene-context" role="group" aria-label={ko("Gizmo tool", "기즈모 도구")}>
 							<button
 								type="button"
 								className={gizmoMode === "move" ? "active" : ""}
@@ -8902,7 +8942,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</div>
 						<button
 							type="button"
-							className={"snap-switch" + (snapEnabled ? " active" : "")}
+							className={"snap-switch workflow-scene-context" + (snapEnabled ? " active" : "")}
 							title={ko("Grid snapping — hold Ctrl during a drag to invert", "그리드 스냅 — 드래그 중 Ctrl을 누르면 반대로 작동")}
 							aria-pressed={snapEnabled}
 							onClick={() => setSnapEnabled((v) => !v)}
@@ -8911,15 +8951,15 @@ function resizePromptClip(id, edge, rawFrame) {
 						</button>
 						<button
 							type="button"
-							className={"snap-switch grid-view-switch" + (gridView ? " active" : "")}
+							className={"snap-switch grid-view-switch workflow-scene-context" + (gridView ? " active" : "")}
 							title={ko("Blender-style viewport — dark void with a reference grid instead of the deck", "Blender식 뷰포트 — 데크 대신 어두운 배경과 기준 그리드")}
 							aria-pressed={gridView}
 							onClick={() => setGridView((v) => !v)}
 						>
 							{ko("Grid", "그리드")}
 						</button>
-						<span className="viewport-toolbar-separator settings-separator" aria-hidden="true" />
-						<label className="viewport-toolbar-field shot-field">
+						<span className="viewport-toolbar-separator settings-separator workflow-camera-context" aria-hidden="true" />
+						<label className="viewport-toolbar-field shot-field workflow-camera-context">
 							<span>{ko("Shot", "샷")}</span>
 							<select
 								aria-label={ko("Shot preset", "샷 프리셋")}
@@ -8931,7 +8971,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								))}
 							</select>
 						</label>
-						<label className="viewport-toolbar-field ratio-field">
+						<label className="viewport-toolbar-field ratio-field workflow-camera-context">
 							<span>{ko("Ratio", "비율")}</span>
 							<select
 								aria-label={ko("Output aspect ratio", "출력 화면 비율")}
@@ -8943,7 +8983,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								))}
 							</select>
 						</label>
-						<label className="viewport-fov-control">
+						<label className="viewport-fov-control workflow-camera-context">
 							<span>FOV</span>
 							<input
 								type="range"
@@ -8956,11 +8996,12 @@ function resizePromptClip(id, edge, rawFrame) {
 							<output>{Math.round(fovDeg)}°</output>
 							<small>{shot.focalMm}mm</small>
 						</label>
-						<span className="viewport-toolbar-spacer" />
+						<span className="viewport-toolbar-spacer workflow-camera-context" />
 						<button
 							type="button"
 							title={ko("Recenter on subject", "피사체 다시 맞추기")}
 							aria-label={ko("Recenter on subject", "피사체 다시 맞추기")}
+							className="workflow-camera-context"
 							onClick={() => setNonce((n) => n + 1)}
 						>
 							◎
@@ -8968,6 +9009,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						<button
 							type="button"
 							aria-pressed={!workspaceLayout.insetCollapsed}
+							className="workflow-scene-context workflow-camera-context"
 							onClick={() => {
 								if (workspaceLayout.insetCollapsed) expandInset();
 								else setWorkspaceLayout((current) => ({ ...current, insetCollapsed: true }));
@@ -9486,7 +9528,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								planIsMain={planIsMain}
 								playMode={playMode}
 								lookThrough={lookThroughShot}
-								insetCollapsed={workspaceLayout.insetCollapsed}
+								insetCollapsed={workspaceLayout.insetCollapsed || workflowMode === "motion"}
 								planZoom={workspaceLayout.planZoom}
 								shotAspect={shotOutput.aspect}
 							/>
@@ -9571,7 +9613,7 @@ function resizePromptClip(id, edge, rawFrame) {
 
 						<div
 							ref={shotPreviewRef}
-							hidden={playMode || ikMode || lookThroughShot}
+							hidden={playMode || ikMode || lookThroughShot || workflowMode === "motion"}
 							className="vp-pane vp-shot-preview"
 							style={{ "--shot-aspect": shotOutput.aspect }}
 						>

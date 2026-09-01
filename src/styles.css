@@ -7204,6 +7204,56 @@ input[type=range]::-moz-range-thumb {
 	border-bottom: 1px solid var(--line);
 }
 
+/* Workflow-first navigation: operators choose the department before the
+   toolbar reveals its controls. This keeps the existing tools available while
+   removing the cockpit effect of showing every control at once. */
+.workflow-mode-switch {
+	flex: none;
+	display: flex;
+	align-items: stretch;
+	gap: 2px;
+	padding: 3px 4px;
+	border-right: 1px solid var(--line);
+	background: var(--panel);
+}
+.workflow-mode-switch button {
+	height: 21px;
+	min-width: 54px;
+	padding: 0 8px;
+	border: 1px solid transparent;
+	border-radius: 3px;
+	background: transparent;
+	color: var(--muted);
+	font: inherit;
+	font-size: 10px;
+	font-weight: 700;
+	cursor: pointer;
+}
+.workflow-mode-switch button:hover { color: var(--fg); background: var(--hover); }
+.workflow-mode-switch button.active {
+	color: #fff;
+	background: #2d5c8a;
+	border-color: #4b8bc4;
+	box-shadow: 0 0 0 1px rgba(75,139,196,.24);
+}
+.workflow-toolbar-hint {
+	align-self: center;
+	padding: 0 10px;
+	color: #9fb7cc;
+	font-size: 10px;
+	font-weight: 600;
+	white-space: nowrap;
+}
+/* Scene mode owns transform/grid tools; Camera mode owns framing controls.
+   Motion mode intentionally leaves only its short instruction in the bar. */
+.app[data-workflow-mode="scene"] .workflow-camera-context { display: none; }
+.app[data-workflow-mode="camera"] .workflow-scene-context { display: none; }
+.app[data-workflow-mode="motion"] .workflow-scene-context,
+.app[data-workflow-mode="motion"] .workflow-camera-context { display: none; }
+.app[data-workflow-mode="motion"] .workflow-toolbar-hint { display: inline-flex; }
+.app[data-workflow-mode="motion"] .vp-inset,
+.app[data-workflow-mode="motion"] .vp-shot-preview { display: none !important; }
+
 .pane-tabs {
 	position: static;
 	flex: none;
