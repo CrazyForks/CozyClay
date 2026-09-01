@@ -1,19 +1,155 @@
 # Changelog
 
-## Unreleased
+## 1.7.0
 
-The viewport gains an Auto Color mode: every set object gets its own stable,
-automatically derived color, the way Blender's random viewport shading colors
-objects.
+Kimodo becomes the default motion-generation backend, and a full edit-and-refine
+loop lands on top of it: draw over a trail to reshape it, keep most of a take
+and regenerate only a window, and step back through 20 checkpoints of a
+take's history. Multi-character rigs, prop motion, and camera work all get
+real editing surfaces, and three failure modes that used to blank the whole
+studio now degrade with a way back instead.
 
-- The topbar Auto Color toggle recolors primitives and set pieces per object
-  id — deterministic, so the same object is the same color across sessions and
-  machines; the bird's-eye plan board shows the same colors.
-- Display-only: authored object colors, saved projects, undo history, and the
-  MCP scene view are untouched; photo cutouts keep their image. Captures made
-  while the mode is on include the display colors.
-- The inspector shows the derived hex beside the authored color swatch, and
-  the preference persists per browser.
+### Kimodo motion backend, now default
+
+- Kimodo, introduced behind `CCLAY_MOTION_BACKEND=kimodo`, is now the default
+  motion-generation backend.
+- Root 2D path constraints, pose pinning (via Kimodo's fullbody constraints),
+  and motion-edit-by-regeneration (IK-adjust a span, then regenerate) now all
+  work on Kimodo — base clips still refuse, since Kimodo has no autoregressive
+  history input for them.
+- The prompt-block cap is raised from 4s to 5s after measuring seam quality
+  across block lengths — 5s scored best short of a single seamless take, while
+  8s blocks collapsed and sub-2s blocks lost a third of their frames to the
+  transition window.
+
+### Draw to edit a take (line editing)
+
+- A new line-edit mode: drag a joint's motion trail to reshape it, or draw a
+  fresh stroke across empty space when the trail doesn't reach where you want.
+  Stroke endpoints snap to the take's own nearby frames so edits land where
+  you meant, and a smoothstep seam keeps the join from popping.
+- Pin exact moments in 3D: scrub the playhead, drag a joint into place, and
+  pin up to 8 moments across a take.
+- Runs on a new ProjFlow-based backend on the Kimodo box; edits are
+  seed-deterministic, so a release-quality regenerate reproduces the preview
+  bit for bit.
+- Ctrl/Cmd+Z undoes the last pull; releasing a drag previews at reduced
+  quality first (~1s), then a full-quality generate confirms with the same
+  seed.
+
+### Keep most of a take (preserve mode)
+
+- A preserve slider and grouped per-limb masks let you regenerate only part of
+  a take — free one limb, or a masked region — instead of the whole clip.
+- Effector constraints keep specific joints anchored through a regeneration.
+
+### Take recipes and version history
+
+- Every generate or edit now records its own recipe (seed, prompt blocks, and
+  edits in order), and extending a take re-sends its edits so refining before
+  extending no longer throws work away.
+- A version strip above the timeline checkpoints every generate/edit up to 20
+  deep — click any entry to restore that take and its recipe.
+- The edit surface collapses to two modes: 장면 (Kimodo blocking — new, again,
+  add-block) and 다듬기 (line-edit refinement, one click from a loaded take).
+
+### Multi-character rigs and IK
+
+- Every cast member now gets its own namespaced rig subtree in the Hierarchy
+  panel, not just the first — bones, IK badges, and focus all follow the
+  active character correctly (#76, #77, #78).
+- IK corrections on an inactive character now survive a focus switch instead
+  of silently reverting to the uncorrected take (#77).
+- Timeline pins (IK correction keys, prompt-clip ranges) migrate through
+  segment retimes instead of firing on the wrong frame after a slow-mo (#79).
+- Body Contact: dragging a character down during IK editing now stops the
+  pelvis at the floor and holds any planted foot or reaching hand there,
+  measured per character from the actual skinned mesh — no more clay figures
+  hovering above the ground.
+- Motion trails now render per body part in IK handle colors, with trail
+  editing and IK editing split into separate tools instead of one ambiguous
+  shared gizmo.
+- A One-Euro filter now smooths SAM-extracted wrist tremor by speed —
+  quieting rest-state jitter while leaving fast strikes untouched (#84).
+
+### Prop motion: travel paths and speed
+
+- Scene objects (props) can now be given a travel path, authored the same way
+  as a camera rail: draw it in Top-View, refine it in the 3D scene, with a
+  mid-route point insertable by double-click.
+- A speed graph — shared by props and the camera dolly — lets you drag a
+  stretch of the timeline faster or slower; the area under the curve is the
+  distance, so the rest of the segment compensates automatically, and a cut
+  pins the take at an exact time/distance point.
+- Drag a prop onto a character or a specific rig bone in the Hierarchy to
+  attach it — it now rides that character's motion (a carried bat stays in a
+  walking character's hand instead of staying world-anchored).
+
+### Viewport and lighting
+
+- Auto Color mode: a topbar toggle stamps a stable, automatically derived
+  color onto every set object, the way Blender's random viewport shading
+  colors objects — display-only, so authored colors, saved projects, undo
+  history, and the MCP scene view are untouched.
+- A new Grid view swaps the clay stage for a dark, Blender-style reference
+  grid for blocking work — overlay-only, so exports and the plan board never
+  see it.
+- The key light is now a grabbable sun: move it like any other object, and
+  dial its warmth between cool daylight and warm sunset amber.
+- Blender-style composition guides (thirds, golden ratio, center+diagonals,
+  safe areas) on the shot preview, and exported frames can burn in a slate +
+  zero-padded frame counter.
+
+### Camera
+
+- Crane marks get a 3-axis gizmo; a rail now always carries a crane profile,
+  and the old on/off toggle is gone (a flat profile at the follow height reads
+  as "off").
+
+### Project workflow
+
+- A startup chooser and local project session replace the always-on implicit
+  scene.
+- New workflow-focused camera motion modes, plus several passes cleaning up
+  timeline control grouping, control visibility, and removing legacy
+  console/generation panels.
+
+### AI control (MCP)
+
+- `describe_scene` now reports the key light and the shot list; `update_object`
+  can set a prop's travel path; `load_motion` can target a specific character
+  by letter/slot/id and re-install an assembled take without a full
+  regeneration.
+- Editors now identify themselves (project, scene, cast size) in
+  `live_status`, so multi-tab routing no longer depends on an opaque UUID.
+
+### Hosted demo v1
+
+- cozyclay.org's install-free demo got a real backend: a Cloudflare Worker
+  queue (Google OAuth + Turnstile, single-FIFO D1 queue, private R2 result
+  proxy) and an outbound-polling GPU box worker with zero inbound sockets.
+
+### Reliability
+
+- Three failure modes that used to blank the whole studio now degrade
+  instead: a render error anywhere in the app shows a message with a
+  reload-and-resume, a lost WebGL context (sleep/wake, driver restart) shows
+  an overlay and repaints on restore, and layout-save writes are guarded like
+  every other write in the app (#64).
+- A selected object's own gizmo cage no longer blocks clicks meant for a
+  different object (#81).
+- Recording no longer exports frozen tail frames after a cast member or
+  motion segment shrinks (#80).
+
+### Also in this release
+
+- Onboarding: a hosted-demo visitor now gets a "watch the sample" path instead
+  of landing on an empty stage, and three funnel-measurement gaps (startup
+  scene creation, video export, cutout import) are closed.
+- The studio's PWA update banner finally has a listener, so a waiting version
+  reloads on request instead of running stale indefinitely.
+- Objects can now be parented from the Inspector's own Parent picker, not
+  only through MCP.
 
 ## 1.6.0
 
