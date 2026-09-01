@@ -8899,15 +8899,21 @@ function resizePromptClip(id, edge, rawFrame) {
 					<button
 						type="button"
 						role="tab"
+						aria-label={ko("Scene", "장면")}
+						title={ko("Scene view", "장면 보기")}
+						data-pane-tab="scene"
 						aria-selected={centerTab === "scene"}
 						className={centerTab === "scene" ? "active" : ""}
 						onClick={() => setCenterTab("scene")}
 					>
-						{ko("Scene", "장면")}
+						{ko("Viewport", "장면 보기")}
 					</button>
 					<button
 						type="button"
 						role="tab"
+						aria-label={ko("PlayView", "재생 보기")}
+						title={ko("PlayView", "재생 보기")}
+						data-pane-tab="play"
 						aria-selected={centerTab === "play"}
 						className={centerTab === "play" ? "active" : ""}
 						onClick={() => setCenterTab("play")}
