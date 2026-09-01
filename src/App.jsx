@@ -2684,6 +2684,11 @@ globalThis.playMode = centerTab === "play";
 	// local draft). Keep this as a light startup sheet so the studio remains
 	// inspectable while the choice is pending; it never traps the topbar.
 	const [projectStartupOpen, setProjectStartupOpen] = useState(() => !loadProjectSession()?.name);
+	const projectStatus = projectName === null
+		? ko("Select project", "프로젝트 선택")
+		: projectDirty
+			? ko("Unsaved", "미저장")
+			: ko("Saved", "저장됨");
 
 	// Dismissal mirrors the inspector-actions menu: only listen while open,
 	// ignore presses inside the wrap (the trigger's own click keeps toggling),
@@ -8772,8 +8777,12 @@ function resizePromptClip(id, edge, rawFrame) {
 						aria-expanded={projectMenuOpen}
 						onClick={() => setProjectMenuOpen((open) => !open)}
 					>
-						{projectDirty && <i className="project-dirty-dot" aria-label={ko("Unsaved changes", "저장되지 않은 변경사항")} />}
-						{projectName ?? (projectStartupOpen ? ko("Choose Project", "프로젝트 선택") : ko("Untitled Project", "제목 없는 프로젝트"))}
+						<span className="project-menu-name">
+							{projectName ?? (projectStartupOpen ? ko("Choose Project", "프로젝트 선택") : ko("Untitled Project", "제목 없는 프로젝트"))}
+						</span>
+						<span className={`project-save-state${projectDirty ? " dirty" : projectName === null ? " pending" : ""}`}>
+							{projectStatus}
+						</span>
 						<span className="caret">▾</span>
 					</button>
 					{projectMenuOpen && (
@@ -8816,13 +8825,18 @@ function resizePromptClip(id, edge, rawFrame) {
 			<div className="main" style={workspaceStyle}>
 			<div className="workspace">
 				<aside className="panel hierarchy-left" aria-label={ko("Hierarchy", "계층")}>
-				{/* Project > Scene: the project is the document root, scenes live
-				    inside it — the picker sits at the top of the hierarchy column. */}
+				{/* The topbar owns project open/save. This row is scene context only,
+				    so the hierarchy does not present a second project entry point. */}
 				<div className="hierarchy-project" data-dirty={projectDirty || undefined}>
-					<span className="hierarchy-project-label">{ko("Project", "프로젝트")}</span>
-					<strong>{projectName ?? (projectStartupOpen ? ko("Choose Project", "프로젝트 선택") : ko("Untitled", "제목 없음"))}</strong>
-					{projectDirty && <i className="project-dirty-dot" aria-label={ko("Unsaved changes", "저장되지 않은 변경사항")} />}
-					<button type="button" onClick={() => { setProjectStartupOpen(false); setProjectBrowserOpen(true); }}>{ko("Projects…", "프로젝트…")}</button>
+					<span className="hierarchy-project-label">{ko("Scene", "장면")}</span>
+					<strong>{scenes.find((scene) => scene.id === activeSceneId)?.name ?? ko("No scene", "장면 없음")}</strong>
+					<span className={`hierarchy-save-state${projectDirty ? " dirty" : projectName === null ? " pending" : ""}`}>
+						{projectName === null
+							? ko("Select project", "프로젝트 선택")
+							: projectDirty
+								? ko("Unsaved changes", "저장되지 않은 변경사항")
+								: ko("Saved", "저장됨")}
+					</span>
 				</div>
 				<HierarchyPanel
 					selectedId={selectedHierarchyId}
