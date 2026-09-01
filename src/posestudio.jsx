@@ -1134,7 +1134,7 @@ export function warmPoseThumbnails() {
 	warmThumbnailModels(["y-bot-tpose", "x-bot-tpose"]);
 }
 
-export function PoseStudioPanel({ subject, model, poses, selectedId, onSelect, onApply, onReset, onSave, onDelete, onClose, closing, motionActive = false, docked = false, onPhoto, photoState = "idle", photoError = "" }) {
+export function PoseStudioPanel({ subject, model, poses, selectedId, onSelect, onApply, onReset, onSave, onDelete, onClose, closing, motionActive = false, ikCorrection = false, docked = false, onPhoto, photoState = "idle", photoError = "" }) {
 	const poseLabelsKo = {
 		"T-pose": ko("T-pose", "T 포즈"),
 		Relaxed: ko("Relaxed", "편안한 자세"),
@@ -1184,12 +1184,16 @@ export function PoseStudioPanel({ subject, model, poses, selectedId, onSelect, o
 			</div>
 			{motionActive && (
 				<p className="studio-hint" data-pose-motion-warning role="status">
-					{ko("A sample motion is moving the character — applying a pose clears it and returns to the blocking pose.", "현재 샘플 모션이 캐릭터를 움직이고 있어요. 포즈를 눈앞에 적용하려면 샘플 모션을 지우고 블로킹 포즈로 전환합니다.")}
+					{ikCorrection
+						? ko("IK mode is on — applying keys the pose as a full-body correction at the current frame; the motion stays.", "IK 모드가 켜져 있어요 — 적용하면 현재 프레임에 전신 보정 키로 들어가고, 모션은 그대로 유지됩니다.")
+						: ko("A sample motion is moving the character — applying a pose clears it and returns to the blocking pose.", "현재 샘플 모션이 캐릭터를 움직이고 있어요. 포즈를 눈앞에 적용하려면 샘플 모션을 지우고 블로킹 포즈로 전환합니다.")}
 				</p>
 			)}
 			<div className="studio-actions">
 				<button type="button" className="btn primary full" data-pose-apply onClick={() => onApply(selectedIdRef.current)}>
-					{motionActive ? ko("Clear motion and apply pose", "모션 지우고 포즈 적용") : ko("Apply pose", "포즈 적용")}
+					{motionActive
+						? (ikCorrection ? ko("Key pose as IK correction", "포즈를 IK 보정 키로 적용") : ko("Clear motion and apply pose", "모션 지우고 포즈 적용"))
+						: ko("Apply pose", "포즈 적용")}
 				</button>
 				<button type="button" className="btn ghost full" onClick={onReset}>
 					{ko("Reset pose", "포즈 초기화")}

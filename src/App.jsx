@@ -11300,6 +11300,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							selectedId={studioPick}
 							closing={posingClosing}
 							motionActive={Boolean(motion)}
+							ikCorrection={ikMode && Boolean(motion) && posingChar?.id === activeChar.id}
 							onSelect={setStudioPick}
 							onApply={(selectedPoseId) => {
 								const pose = selectablePoses.find((p) => p.id === selectedPoseId);
