@@ -63,6 +63,12 @@ const MAX_LABELS = 30;
 
 const framePct = (f, count) => (count > 1 ? f / (count - 1) : 0);
 
+// Timeline frames are addressed from zero, while the clip duration is the
+// number of frames divided by its clock. Keeping this conversion local makes
+// the readout honest at any loaded fps (the final frame is just shy of the
+// displayed total duration, as it is in an actual frame sequence).
+const formatTimelineSeconds = (seconds) => `${Math.max(0, Number(seconds) || 0).toFixed(2)}s`;
+
 const CAMERA_BLOCK_DEFAULTS = {
 	distance: 3,
 	height: 1.6,
@@ -1672,7 +1678,7 @@ export default function Timeline({
 	};
 
 	return (
-		<section className={"timeline" + (expanded ? "" : " collapsed")} aria-label={ko("Animation timeline", "애니메이션 타임라인")}>
+		<section className={"timeline" + (expanded ? "" : " collapsed") + (!shots.length ? " empty-shots" : "")} aria-label={ko("Animation timeline", "애니메이션 타임라인")}>
 			{expanded ? (
 				<>
 					<div className="tl-head">
@@ -1705,7 +1711,7 @@ export default function Timeline({
 								›
 							</button>
 							<span className="tl-readout" aria-live="polite">
-								<b>{frame}</b> / {frameCount - 1} · {fps} fps · {playbackSpeed.toFixed(2)}×
+								<b>{frame}</b> / {Math.max(0, frameCount - 1)} · {formatTimelineSeconds(frame / Math.max(1, fps))} / {formatTimelineSeconds(frameCount / Math.max(1, fps))} · {fps} fps · {playbackSpeed.toFixed(2)}×
 							</span>
 						</div>
 						{selectedMotionSegment && (
@@ -1835,7 +1841,7 @@ export default function Timeline({
 					)}
 
 					<div className="tl-body" ref={bodyRef}>
-						<div className="tl-surface" style={{ "--tl-zoom": surfaceZoom }}>
+						<div className={"tl-surface" + (!shots.length ? " empty-shots" : "")} style={{ "--tl-zoom": surfaceZoom }}>
 						<div className="tl-ruler">
 							<span className="tl-ruler-label">{ko("Frame", "프레임")}</span>
 							<div
@@ -1954,7 +1960,19 @@ export default function Timeline({
 										<i key={f} className="tl-grid" style={{ "--tl-f": framePct(f, displayFrameCount) }} aria-hidden="true" />
 									))}
 									{name === SHOTS_LANE && shots.length === 0 && (
-										<p className="tl-shot-empty">{ko("No shots — free camera owns the timeline. Add one at the playhead.", "샷 없음 — 자유 카메라 구간입니다. 재생 헤드에 샷을 추가하세요.")}</p>
+										<div className="tl-shot-empty">
+											<span>{ko("No shots yet — the free camera owns this range.", "아직 샷이 없습니다 — 이 구간은 자유 카메라가 담당합니다.")}</span>
+											<button
+												type="button"
+												className="tl-shot-empty-add"
+												onClick={(event) => {
+													event.stopPropagation();
+													handlers.current.onShotCut?.();
+												}}
+											>
+												{ko("+ Add shot", "+ 샷 추가")}
+											</button>
+										</div>
 									)}
 									{name === SHOTS_LANE && shots.map((shot, index) => {
 										const geometry = shotBlockGeometry(shots, index, frameCount, displayFrameCount);

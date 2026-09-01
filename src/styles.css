@@ -3866,6 +3866,13 @@ input[type=range]::-moz-range-thumb {
 	grid-template-rows: 28px repeat(3, minmax(18px, 1fr)) minmax(68px, 1.7fr) auto;
 }
 
+/* An un-authored Shot lane does not need the camera card's larger editing
+   footprint. Keep the other performer lanes usable, but give the empty lane
+   a compact call-to-action so the timeline itself does not feel vacant. */
+.tl-surface.empty-shots {
+	grid-template-rows: 28px repeat(3, minmax(18px, 1fr)) minmax(42px, 1fr) auto;
+}
+
 .tl-ruler {
 	display: grid;
 	grid-template-columns: var(--tl-label-w) 1fr;
@@ -4230,12 +4237,33 @@ input[type=range]::-moz-range-thumb {
 	inset: 0;
 	display: flex;
 	align-items: center;
+	justify-content: center;
+	gap: 10px;
 	padding: 0 14px;
 	margin: 0;
 	color: #8e93a3;
 	font-size: 9px;
 	font-style: italic;
-	pointer-events: none;
+	text-align: center;
+}
+
+.tl-shot-empty-add {
+	flex: none;
+	padding: 4px 8px;
+	border: 1px solid #735ba0;
+	border-radius: 4px;
+	background: rgba(80, 63, 109, .72);
+	color: #e7d9ff;
+	font: inherit;
+	font-style: normal;
+	cursor: pointer;
+}
+
+.tl-shot-empty-add:hover,
+.tl-shot-empty-add:focus-visible {
+	background: #5b467b;
+	border-color: #b79be8;
+	color: #fff;
 }
 
 .tl-shot-block.active {
