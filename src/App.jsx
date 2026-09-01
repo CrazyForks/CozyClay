@@ -5596,6 +5596,28 @@ globalThis.playMode = centerTab === "play";
 		}, 190);
 	}
 
+	/** Save the ACTIVE character's rig exactly as it stands — the motion frame
+	 * with any IK corrections already composited — into the pose library.
+	 * Unlike savePose (the studio's FK author), this never writes back onto the
+	 * character: a running take must survive having its best frame bottled. */
+	function saveCurrentPose() {
+		if (!activeRig) return;
+		const pose = {
+			id: `custom_${Date.now()}`,
+			label: isKo ? `내 포즈 ${customPoses.length + 1}` : `My Pose ${customPoses.length + 1}`,
+			prompt: "in the exact body pose shown in the blocking frame",
+			bones: capturePose(activeRig),
+			custom: true,
+		};
+		const next = [...customPoses, pose];
+		setCustomPoses(next);
+		saveCustomPoses(next);
+		setStudioPick(pose.id);
+		setToast(motion
+			? ko(`Saved this frame's pose to the library as “${pose.label}”`, `지금 프레임의 자세를 “${pose.label}”로 라이브러리에 저장했어요`)
+			: ko(`Saved the current pose to the library as “${pose.label}”`, `지금 자세를 “${pose.label}”로 라이브러리에 저장했어요`));
+	}
+
 	function savePose() {
 		const rig = posedRig();
 		if (!rig) return;
@@ -10015,6 +10037,22 @@ function resizePromptClip(id, edge, rawFrame) {
 						labelOf={poseLabelKo}
 					/>
 					{photoPoseError && <p className="studio-hint error" data-pose-photo-error role="status">{photoPoseError}</p>}
+					{/* Bottles whatever the viewport shows right now — a take frame,
+					    IK corrections included — without touching the character, so a
+					    good mid-clip moment becomes a reusable library pose. */}
+					<button
+						type="button"
+						className="btn full"
+						data-save-current-pose
+						disabled={!activeRig}
+						title={ko(
+							"Save the pose the character is in right now — with a motion loaded, that is the current frame plus IK corrections",
+							"캐릭터의 지금 자세를 저장해요 — 모션이 실려 있으면 현재 프레임에 IK 보정까지 합친 자세예요",
+						)}
+						onClick={saveCurrentPose}
+					>
+						{ko("Save current pose", "지금 자세 저장")}
+					</button>
 				</Foldout>
 
 				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Video capture", "영상 모캡")}>
