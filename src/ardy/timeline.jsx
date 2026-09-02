@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { frameFromClientX, motionTrimRange, promptMoveStartFrame, shotBlockGeometry } from "./timeline-coordinates.js";
+import { frameFromClientX, groupKeyRuns, KEY_RUN_MIN, motionTrimRange, promptMoveStartFrame, shotBlockGeometry } from "./timeline-coordinates.js";
 import { motionSegmentSpeedForFrames } from "./motion-edit.js";
 import { promptResizeFrame } from "./timeline-resize.js";
 import { ko, isKo } from "../locale.js";
@@ -1192,6 +1192,10 @@ export default function Timeline({
 	// for everything — the old /count chip scale drifted off the gridlines.
 	const clipPct = (value) => Math.max(0, Math.min(1, framePct(value, displayFrameCount)));
 	const waypointFrames = waypoints.map((waypoint) => waypoint.frame);
+	// Fix Collisions and AutoPhysics key EVERY frame of a corrected span, so
+	// the raw list draws a wall of diamonds. Collapse consecutive frames into
+	// runs first; only runs shorter than KEY_RUN_MIN stay diamonds.
+	const ikRuns = useMemo(() => groupKeyRuns(ikFrames), [ikFrames]);
 	const moveRef = useRef(null);
 	const suppressPromptClickRef = useRef(false);
 	const resizeRef = useRef(null);
@@ -1570,6 +1574,16 @@ export default function Timeline({
 	function rootFrameFromEvent(e) {
 		const rect = e.currentTarget.getBoundingClientRect();
 		return frameFromClientX(e.clientX, rect.left, rect.width, displayFrameCount, frameCount);
+	}
+
+	// A run bar stands in for one diamond per frame, so every gesture on it has
+	// to resolve WHICH frame the hand is over. Same lane pixel→frame transform
+	// as the ruler, then clamped into the run the bar draws.
+	function ikRunFrameFromEvent(e, run) {
+		const rect = e.currentTarget.closest(".tl-lane")?.getBoundingClientRect();
+		if (!rect || rect.width < 2) return run.start;
+		const pointerFrame = frameFromClientX(e.clientX, rect.left, rect.width, displayFrameCount, frameCount);
+		return Math.max(run.start, Math.min(run.end, pointerFrame));
 	}
 
 	function onRulerDown(e) {
@@ -2223,24 +2237,59 @@ export default function Timeline({
 									))}
 
 									{name === IK_LANE &&
-										ikFrames.map((f) => (
-											<span
-												key={f}
-												className="tl-marker ik"
-												style={{ "--tl-f": framePct(f, displayFrameCount) }}
-												title={isKo ? `${f}프레임의 전신 IK 키 — 클릭해 이동, 오른쪽 클릭으로 삭제` : `Full-body IK key at frame ${f} — click to jump, right-click to remove`}
-												onPointerDown={(e) => {
-													if (e.button !== 0) return;
-													e.stopPropagation();
-													handlers.current.onScrub?.(f);
-												}}
-												onContextMenu={(e) => {
-													e.preventDefault();
-													e.stopPropagation();
-													handlers.current.onIkKeyframeRemove?.(f);
-												}}
-											/>
-										))}
+										ikRuns.flatMap((run) => (run.length < KEY_RUN_MIN
+											// One or two keys still read as keys — draw them as before.
+											? Array.from({ length: run.length }, (_, i) => run.start + i).map((f) => (
+												<span
+													key={f}
+													className={"tl-marker ik" + (f === frame ? " current" : "")}
+													style={{ "--tl-f": framePct(f, displayFrameCount) }}
+													title={isKo ? `${f}프레임의 전신 IK 키 — 클릭해 이동, 오른쪽 클릭으로 삭제` : `Full-body IK key at frame ${f} — click to jump, right-click to remove`}
+													onPointerDown={(e) => {
+														if (e.button !== 0) return;
+														e.stopPropagation();
+														handlers.current.onScrub?.(f);
+													}}
+													onContextMenu={(e) => {
+														e.preventDefault();
+														e.stopPropagation();
+														handlers.current.onIkKeyframeRemove?.(f);
+													}}
+												/>
+											))
+											// A baked span is ONE bar. Both gestures still address a single
+											// frame — the one under the pointer — so nothing a diamond could
+											// do is lost, it just stops shouting.
+											: [(
+												<span
+													key={`run:${run.start}`}
+													className={"tl-ik-run" + (frame >= run.start && frame <= run.end ? " current" : "")}
+													style={{ "--tl-f": framePct(run.start, displayFrameCount), "--tl-f2": framePct(run.end, displayFrameCount) }}
+													title={isKo
+														? `${run.start}–${run.end} 전신 IK 키 (${run.length}개) — 클릭해 그 프레임으로 이동, 오른쪽 클릭으로 그 프레임 키 삭제`
+														: `IK keys ${run.start}–${run.end} (${run.length}) — click to jump to that frame, right-click to remove that frame's key`}
+													onPointerDown={(e) => {
+														if (e.button !== 0) return;
+														e.stopPropagation();
+														handlers.current.onScrub?.(ikRunFrameFromEvent(e, run));
+													}}
+													onContextMenu={(e) => {
+														e.preventDefault();
+														e.stopPropagation();
+														handlers.current.onIkKeyframeRemove?.(ikRunFrameFromEvent(e, run));
+													}}
+												>
+													<i className="tl-ik-run-cap start" aria-hidden="true" />
+													<i className="tl-ik-run-cap end" aria-hidden="true" />
+													{frame >= run.start && frame <= run.end && (
+														<i
+															className="tl-ik-run-at"
+															style={{ "--tl-f": run.end > run.start ? (frame - run.start) / (run.end - run.start) : 0 }}
+															aria-hidden="true"
+														/>
+													)}
+												</span>
+											)]))}
 									{name === "2D Root" && ghostLayers.map((layer) => layer.waypointFrames.map((f) => (
 										<span
 											key={`${layer.owner}:${f}`}

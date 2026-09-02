@@ -4611,6 +4611,79 @@ input[type=range]::-moz-range-thumb {
 	box-shadow: 0 0 10px rgba(255, 160, 90, 1), 0 0 0 2px rgba(255, 160, 90, .35);
 }
 
+/* A baked correction span — Fix Collisions or AutoPhysics keying every frame
+   of 44–86 — is one BAR, not 43 diamonds. Same lane, same accent family; the
+   end caps carry the diamond shape so the run still reads as keys. */
+.tl-ik-run {
+	position: absolute;
+	top: 50%;
+	left: calc(var(--tl-f) * 100%);
+	width: calc((var(--tl-f2) - var(--tl-f)) * 100%);
+	min-width: 6px;
+	height: 5px;
+	transform: translateY(-50%);
+	border-radius: 3px;
+	background: rgba(255, 138, 61, .55);
+	border: 1px solid #2e1a0d;
+	box-shadow: 0 0 7px rgba(255, 160, 90, .5);
+	pointer-events: auto;
+	cursor: pointer;
+	z-index: 2;
+}
+
+.tl-ik-run:hover {
+	background: rgba(255, 138, 61, .8);
+	box-shadow: 0 0 10px rgba(255, 160, 90, .9);
+}
+
+.tl-ik-run-cap {
+	position: absolute;
+	top: 50%;
+	width: 7px;
+	height: 7px;
+	border-radius: 2px;
+	background: #ff8a3d;
+	border: 1px solid #2e1a0d;
+	pointer-events: none;
+}
+
+/* Caps sit INSIDE the bar so a run that starts on frame 0 is never clipped
+   by the lane edge; the bar's own ends still mark the exact frames. */
+.tl-ik-run-cap.start {
+	left: -1px;
+	transform: translateY(-50%) rotate(45deg);
+}
+
+.tl-ik-run-cap.end {
+	right: -1px;
+	transform: translateY(-50%) rotate(45deg);
+}
+
+/* The playhead inside a run gets the same emphasis a diamond under the
+   playhead gets, so "which frame am I on" survives the collapse. */
+.tl-ik-run.current {
+	background: rgba(255, 138, 61, .85);
+	box-shadow: 0 0 10px rgba(255, 160, 90, 1), 0 0 0 2px rgba(255, 160, 90, .35);
+}
+
+.tl-ik-run-at {
+	position: absolute;
+	top: 50%;
+	left: clamp(3px, calc(var(--tl-f) * 100%), calc(100% - 3px));
+	width: 9px;
+	height: 9px;
+	border-radius: 2px;
+	transform: translate(-50%, -50%) rotate(45deg);
+	background: #ffd0a8;
+	border: 1px solid #2e1a0d;
+	box-shadow: 0 0 8px rgba(255, 200, 150, .9);
+	pointer-events: none;
+}
+
+.tl-marker.ik.current {
+	box-shadow: 0 0 10px rgba(255, 160, 90, 1), 0 0 0 2px rgba(255, 160, 90, .35);
+}
+
 .tl-track-add.ik {
 	color: #ffc79a;
 	border-color: #4a382a;
@@ -5717,6 +5790,37 @@ input[type=range]::-moz-range-thumb {
 
 .tl-marker.ik:hover {
 	box-shadow: 0 0 0 3px rgba(214, 95, 85, .2);
+}
+
+.tl-ik-run {
+	background: rgba(214, 95, 85, .42);
+	border-color: #2c2c2c;
+	box-shadow: 0 0 0 1px rgba(181, 72, 64, .5);
+}
+
+.tl-ik-run:hover {
+	background: rgba(214, 95, 85, .68);
+	box-shadow: 0 0 0 3px rgba(214, 95, 85, .2);
+}
+
+.tl-ik-run.current {
+	background: rgba(214, 95, 85, .72);
+	box-shadow: 0 0 0 3px rgba(214, 95, 85, .28);
+}
+
+.tl-ik-run-cap {
+	background: #d65f55;
+	border-color: #2c2c2c;
+}
+
+.tl-ik-run-at {
+	background: #f0a89f;
+	border-color: #2c2c2c;
+	box-shadow: 0 0 0 1px #b54840;
+}
+
+.tl-marker.ik.current {
+	box-shadow: 0 0 0 3px rgba(214, 95, 85, .28);
 }
 
 .tl-marker.cam {

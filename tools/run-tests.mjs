@@ -10,6 +10,7 @@ const NODE_FILES = [
 	"test/ardy/verify-compare-npz.mjs",
 	"test/ardy/verify-fill.mjs",
 	"test/ardy/verify-fk.mjs",
+	"test/ardy/verify-key-runs.mjs",
 	"test/ardy/verify-playback-skinning.mjs",
 	"test/ardy/verify-pose-export.mjs",
 	"test/ardy/verify-pose-pin.mjs",

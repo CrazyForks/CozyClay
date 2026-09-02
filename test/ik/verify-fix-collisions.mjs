@@ -6,6 +6,8 @@ import {
 	ikEvaluate,
 	ikKeyframes,
 	bindWorldPosition,
+	restWorldPosition,
+	solveMidJoint,
 } from "../../src/ardy/ik.js";
 import { primeBindPose, applyPose, POSE_BONES, DEFAULT_POSE } from "../../src/poses.js";
 import {
@@ -17,6 +19,8 @@ import {
 	supportsCollisionCleanup,
 	PAIR_TOLERANCE,
 	PUSH_FLOOR_CLEARANCE,
+	HOME_BIAS,
+	MIN_ALIGN,
 } from "../../src/ardy/fix-collisions.js";
 
 /** app-stage.jsx's REST_BONES: every joint at zero, i.e. the bind pose. */
@@ -802,6 +806,181 @@ function pairIds(pen) {
 		Boolean(deep), hits.map(pairIds).join(", ") || "none");
 	check("the calibration moved the zero point, it did not disable the pair",
 		deep.depth > 0.05, `depth=${(deep.depth * 1000).toFixed(1)}mm`);
+}
+
+/* --- REGRESSION (escape direction): a limb escapes toward where it BELONGS -- */
+/* The push used to follow the segment-to-segment separation normal, i.e. the
+ * SHORTEST way out, which on a deep hit is regularly the wrong side of the
+ * blocker: QA's forearm-in-the-chest exited ACROSS the chest and parked the
+ * hand at the opposite shoulder, and a hand 10.8 cm inside the head exited
+ * forward, turning "hand to face" into "hand held out in front of the face".
+ * The escape is now the normal blended with a HOME direction — contact point →
+ * the driven joint's REST-pose position — with the push length divided by the
+ * alignment so the separation ALONG THE NORMAL is unchanged.
+ *
+ * Every fixture here primes a bind pose: with no bind snapshot there is no rest
+ * pose to bias toward (restWorldPosition would compose the penetrating pose
+ * itself), and the fixer deliberately keeps the old unbiased normal — which is
+ * why every fixture above still measures exactly what it always did. */
+{
+	check("the bias constants are the documented ones",
+		HOME_BIAS === 0.6 && MIN_ALIGN === 0.35, `HOME_BIAS=${HOME_BIAS} MIN_ALIGN=${MIN_ALIGN}`);
+
+	/** The synthetic rig with a bind pose primed, so a rest pose exists. */
+	const primed = () => {
+		const rig = makeRig(true);
+		primeBindPose(rig);
+		return rig;
+	};
+
+	/**
+	 * The same rig with the shoulders turned so the arms are authored pointing
+	 * FORWARD (+Z). DEFAULT_POSE's delta then rotates each arm about its own
+	 * axis, so the REST pose keeps the hands out in front of the chest — a rig
+	 * where "where the limb belongs" is unambiguous, and where an escape out of
+	 * the BACK of the chest is unmistakably the wrong answer.
+	 */
+	const reachRig = () => {
+		const rig = makeRig(true);
+		rig.getObjectByName("mixamorigLeftShoulder").quaternion
+			.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -Math.PI / 2);
+		rig.getObjectByName("mixamorigRightShoulder").quaternion
+			.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
+		rig.updateMatrixWorld(true);
+		primeBindPose(rig);
+		return rig;
+	};
+
+	const wristOf = (chains) => chains.get("leftHand").bones[2].getWorldPosition(new THREE.Vector3());
+	/** Signed side of the sagittal plane; the synthetic hips sit at x = 0 with
+	 * no rotation, so this is simply the wrist's x. Positive = the rig's LEFT. */
+	const side = (point) => point.x;
+	const CHEST_SURFACE = 0.13; // the Spine radius the capsule table uses here
+
+	{
+		const rig = reachRig();
+		check("the reach rig's rest pose holds the wrist out in FRONT of the chest",
+			restWorldPosition(rig, rig.getObjectByName("mixamorigLeftHand"), new THREE.Vector3()).z > 0.6,
+			`restZ=${restWorldPosition(rig, rig.getObjectByName("mixamorigLeftHand"), new THREE.Vector3()).z.toFixed(3)}`);
+	}
+
+	/* (a) forearm driven into the chest FROM THE FRONT. The old rule slid the
+	 * hand sideways along the shortest normal and left it buried at the side of
+	 * the chest (z = 0.053, well inside the 0.13 chest surface); the rest-biased
+	 * escape brings it back out the way it came in. */
+	{
+		const rig = reachRig();
+		const { chains } = resolveIkRig(rig);
+		solveIk(chains.get("leftHand"), new THREE.Vector3(0.06, 1.46, 0));
+		rig.updateMatrixWorld(true);
+		const before = wristOf(chains);
+		const hits = detectPenetrations(buildCollisionCapsules(rig, RADII));
+		check("the fixture buries the forearm in the chest from the front",
+			hits.some((p) => /chest/.test(pairIds(p)) && /left(ForeArm|Hand)/.test(pairIds(p)))
+				&& side(before) > 0 && Math.abs(before.z) < CHEST_SURFACE,
+			`${hits.map(pairIds).join(", ")} wrist=${before.toArray().map((n) => n.toFixed(3)).join(",")}`);
+
+		const result = fixCollisions(rig, chains, { radii: RADII });
+		const after = wristOf(chains);
+		check("the chest fix leaves nothing penetrating",
+			result.changed && result.residual === 0 && penetrations(rig).length === 0,
+			`residual=${(result.residual * 1000).toFixed(2)}mm passes=${result.passes}`);
+		check("the wrist keeps its OWN side of the sagittal plane",
+			side(after) > 0, `x=${after.x.toFixed(3)} (was ${before.x.toFixed(3)})`);
+		check("and comes out IN FRONT of the chest, not sideways through it",
+			after.z >= CHEST_SURFACE, `z=${after.z.toFixed(3)} (chest surface ${CHEST_SURFACE})`);
+		check("the chest fix preserves the arm's bone lengths", (() => {
+			const c = chains.get("leftHand").bones.map((b) => b.getWorldPosition(new THREE.Vector3()));
+			return Math.abs(c[0].distanceTo(c[1]) - 0.3) < 1e-6 && Math.abs(c[1].distanceTo(c[2]) - 0.3) < 1e-6;
+		})());
+		const again = fixCollisions(rig, chains, { radii: RADII });
+		check("a second run over the fixed pose changes nothing",
+			again.changed === false && wristOf(chains).distanceTo(after) < 1e-9,
+			`drift=${wristOf(chains).distanceTo(after).toFixed(6)}`);
+	}
+
+	/* (a, side clause) the same defect measured as QA saw it: a deep forearm hit
+	 * walking the hand across the body a couple of centimetres per pass until it
+	 * ends at the opposite shoulder. Every one of these targets crossed the
+	 * midline under the unbiased normal (one ended at x = -0.224). */
+	{
+		const crossers = [
+			[0.12, 1.42, 0.14], [0.15, 1.44, 0.10], [0.16, 1.44, 0.10],
+			[0.04, 1.50, 0.12], [0.05, 1.52, 0.14],
+		];
+		const ended = crossers.map((target) => {
+			const rig = primed();
+			const { chains } = resolveIkRig(rig);
+			solveIk(chains.get("leftHand"), new THREE.Vector3(...target));
+			rig.updateMatrixWorld(true);
+			const result = fixCollisions(rig, chains, { radii: RADII });
+			return { x: side(wristOf(chains)), residual: result.residual };
+		});
+		check("no deep chest hit walks the left hand over to the right side",
+			ended.every((e) => e.x > 0), ended.map((e) => e.x.toFixed(3)).join(" "));
+		check("and those deep hits still come out clean",
+			ended.every((e) => e.residual === 0),
+			ended.map((e) => (e.residual * 1000).toFixed(2) + "mm").join(" "));
+	}
+
+	/* (b) THE CROUCH CLIP: a hand 12.9 cm inside the head. The separation normal
+	 * there points away from the hand's rest position, so the unbiased escape
+	 * shoved the hand further from where it belongs (−27 mm along home) and the
+	 * "hand to face" gesture became "hand held out in front of the face". */
+	{
+		const rig = primed();
+		const { chains } = resolveIkRig(rig);
+		solveIk(chains.get("leftHand"), new THREE.Vector3(0, 1.75, -0.02));
+		rig.updateMatrixWorld(true);
+		const before = wristOf(chains);
+		const home = restWorldPosition(rig, chains.get("leftHand").bones[2], new THREE.Vector3())
+			.sub(before).normalize();
+		const hit = detectPenetrations(buildCollisionCapsules(rig, RADII))
+			.find((p) => pairIds(p) === "head×leftHand");
+		check("the fixture sinks the hand deep into the head",
+			Boolean(hit) && hit.depth > 0.1, hit ? `${(hit.depth * 1000).toFixed(1)}mm` : "no head×hand hit");
+		// `normal` points b → a = hand → head, so the hand escapes along −normal.
+		check("and the head's own escape normal points AWAY from the rest pose",
+			hit.normal.clone().negate().dot(home) < 0,
+			`dot=${hit.normal.clone().negate().dot(home).toFixed(3)}`);
+
+		const result = fixCollisions(rig, chains, { radii: RADII });
+		const move = wristOf(chains).sub(before);
+		check("the head fix still separates completely",
+			result.changed && result.residual === 0 && penetrations(rig).length === 0,
+			`residual=${(result.residual * 1000).toFixed(2)}mm`);
+		check("the hand leaves the head TOWARD its rest position, not along the head normal",
+			move.dot(home) > 0.05, `alongHome=${(move.dot(home) * 1000).toFixed(1)}mm`);
+		check("the hand also stays on its own side coming out of the head",
+			side(wristOf(chains)) > 0, `x=${wristOf(chains).x.toFixed(3)}`);
+	}
+
+	/* (c) a case the bias has no opinion about — a thigh driven up into the
+	 * chest, movable × static, escaping straight out the front. It converged in
+	 * 4 passes with the unbiased normal and must still do so: the bias chooses a
+	 * side, it must never cost convergence. */
+	{
+		const rig = primed();
+		const { chains } = resolveIkRig(rig);
+		solveMidJoint(chains.get("leftFoot"), new THREE.Vector3(0.10, 1.35, 0.10));
+		rig.updateMatrixWorld(true);
+		const hits = detectPenetrations(buildCollisionCapsules(rig, RADII));
+		const thigh = hits.find((p) => pairIds(p) === "chest×leftThigh");
+		check("the thigh fixture is a movable × static hit",
+			Boolean(thigh) && thigh.depth > 0.04
+				&& Boolean(thigh.b.def.movable) && !thigh.a.def.movable,
+			hits.map(pairIds).join(", ") || "none");
+		const result = fixCollisions(rig, chains, { radii: RADII });
+		check("the thigh case still converges to zero residual",
+			result.changed && result.residual === 0 && penetrations(rig).length === 0,
+			`residual=${(result.residual * 1000).toFixed(3)}mm`);
+		check("in the same 4 passes the unbiased rule needed",
+			result.passes <= 4, `passes=${result.passes}`);
+		check("with the leg's bone lengths intact", (() => {
+			const c = chains.get("leftFoot").bones.map((b) => b.getWorldPosition(new THREE.Vector3()));
+			return Math.abs(c[0].distanceTo(c[1]) - 0.45) < 1e-6 && Math.abs(c[1].distanceTo(c[2]) - 0.45) < 1e-6;
+		})());
+	}
 }
 
 console.log(failures ? `\n${failures} FAIL` : "\nall pass");

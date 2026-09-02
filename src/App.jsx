@@ -10936,13 +10936,13 @@ function resizePromptClip(id, edge, rawFrame) {
 						{collisionCleanupSupported && (
 							<>
 								<button type="button" className="btn full" onClick={runFixCollisions} disabled={!ikChains}>
-								{ko("Fix body collisions (this frame)", "신체 관통 정리 (이 프레임)")}
+								{ko("Fix body collisions (this frame)", "콜리전 수정 (이 프레임)")}
 								</button>
 								<button type="button" className="btn full" onClick={runFixCollisionsRange} disabled={!ikChains || !motion}>
-								{ko("Fix body collisions (whole clip)", "신체 관통 정리 (클립 전체)")}
+								{ko("Fix body collisions (whole clip)", "콜리전 수정 (클립 전체)")}
 								</button>
 								<p className="inspector-hint">
-								{ko("Pushes interpenetrating body parts apart with IK and keys the fix. Whole clip walks the loaded motion and keys only the frames that changed.", "겹쳐 들어간 신체 파츠를 IK로 밀어내고 그 결과를 키로 남깁니다. 클립 전체는 로드된 모션을 훑으며 실제로 고쳐진 프레임만 키를 찍습니다.")}
+								{ko("Pushes interpenetrating body parts apart with IK and keys the fix. Whole clip walks the loaded motion and keys only the frames that changed.", "콜리전 수정은 겹쳐 들어간 신체 파츠를 IK로 밀어내고 그 결과를 키로 남깁니다. 클립 전체는 로드된 모션을 훑으며 실제로 고쳐진 프레임만 키를 찍습니다.")}
 								</p>
 							</>
 						)}

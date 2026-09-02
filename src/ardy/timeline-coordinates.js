@@ -39,3 +39,27 @@ export function shotBlockGeometry(shots, index, frameCount, displayFrameCount = 
 	const endFrame = Math.max(startFrame, Math.min(frameCount - 1, shot.endFrame ?? startFrame));
 	return { startFrame, endFrame, startPct: startFrame / denominator, endPct: endFrame / denominator };
 }
+
+/** A run of consecutive keyed frames only earns the bar treatment once the
+ * diamonds would crowd; one or two keys still read as individual keys. */
+export const KEY_RUN_MIN = 3;
+
+/** Group keyed frames into runs of CONSECUTIVE frames (gap 0 → same run).
+ * The automated passes bake an IK correction key on every frame of a
+ * corrected span, so the lane can draw one bar per run instead of 43
+ * diamonds. Input may be unsorted or hold duplicates; output is ascending
+ * and each run is inclusive of both ends. */
+export function groupKeyRuns(frames) {
+	const sorted = [...new Set(frames ?? [])].filter((f) => Number.isFinite(f)).sort((a, b) => a - b);
+	const runs = [];
+	for (const f of sorted) {
+		const last = runs[runs.length - 1];
+		if (last && f === last.end + 1) {
+			last.end = f;
+			last.length += 1;
+			continue;
+		}
+		runs.push({ start: f, end: f, length: 1 });
+	}
+	return runs;
+}
