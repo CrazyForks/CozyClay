@@ -985,6 +985,37 @@ export function detectPenetrations(capsules, {
 	return out;
 }
 
+/**
+ * The penetrations a fixer is allowed to ACT on, out of everything detection
+ * reports: no static × static (two immovable things touching, which no pass can
+ * separate), no same-chain hinge fold (see isHingeFold), and, with a filter,
+ * only pairs naming a permitted chain. Shared so a caller — the range walker's
+ * continuity pass — can read a frame with exactly the eyes fixCollisions uses,
+ * rather than a second, subtly different filter.
+ */
+function fixablePenetrations(capsules, { offset, slackFactor, blockers, onlyChains } = {}) {
+	if (!capsules) return [];
+	return detectPenetrations(capsules, { offset, slackFactor, blockers }).filter((pen) => {
+		if (!pen.a.def.movable && !pen.b.def.movable) return false;
+		if (isHingeFold(pen)) return false;
+		if (!onlyChains) return true;
+		const chainsOf = [pen.a, pen.b].map((c) => c.def.movable?.chain).filter(Boolean);
+		return chainsOf.some((id) => onlyChains.has(id));
+	});
+}
+
+/** Every chain named by a penetration list — the cast a frame's own pose puts
+ * in play, which is what the provenance gate is allowed to move. */
+function chainsInPlay(pens) {
+	const ids = new Set();
+	for (const pen of pens) {
+		for (const side of [pen.a, pen.b]) {
+			if (side.def?.movable?.chain) ids.add(side.def.movable.chain);
+		}
+	}
+	return ids;
+}
+
 /* --- escape direction ------------------------------------------------------- */
 
 /**
@@ -1029,6 +1060,48 @@ export const HOME_BIAS = 0.6;
  * 0.35 ≈ 70°, and caps the push at 1/0.35 ≈ 2.9 × the unbiased distance. */
 export const MIN_ALIGN = 0.35;
 
+/**
+ * ESCAPE CONSISTENCY. A deep hit usually has more than one honest way out — a
+ * hand buried in the head can leave up, forward or across — and which one a
+ * frame picks turns on millimetres of contact geometry. Solved frame by frame
+ * that is a coin toss per frame, and QA measured the result on the crouch clip:
+ * frame 115 escaped with the arm straight up, 116 with the hands in front of the
+ * face, 117 with the arm down across the body, on source poses that barely move
+ * (22 mm of hand travel a frame became 520 mm).
+ *
+ * So a chain corrected on the PREVIOUS frame carries its push direction into
+ * this one, as a third term in the same blend the rest bias uses: the normal
+ * still owns the amount of clearance (see the alignment division above), the
+ * biases only choose the side. Weighted like HOME_BIAS, because it is the same
+ * kind of hint and answers the same question — where does this limb belong.
+ */
+export const CONTINUITY_BIAS = 0.6;
+
+/** The weight the STEP CAP's retry uses when the plain one produced a jump: the
+ * previous frame's direction outvotes the rest pose rather than tying with it. */
+export const CONTINUITY_BIAS_STRONG = 1.6;
+
+/**
+ * THE STEP CAP, as a multiple of the clip's own worst adjacent step for the
+ * effector being judged. The clip is the only honest ruler: 8 cm in a frame is
+ * a flail on a crouch and unremarkable in a sprint, and a fixed millimetre
+ * budget would have to be re-tuned per take. 2.5× leaves room for a correction
+ * to lead or lag the clip's own motion by a good margin while a 20× jump — the
+ * flail QA measured — cannot fit inside it.
+ */
+export const STEP_CAP_FACTOR = 2.5;
+
+/** Ceiling on that cap, in metres. A clip whose hand already crosses the frame
+ * in one step must not thereby license a half-metre correction jump; ~24 frames
+ * a second, so 0.25 m is 6 m/s of hand — past any human hand speed a viewer
+ * would read as continuous. */
+export const STEP_CAP_ABS = 0.25;
+
+/** Floor on that cap, in metres. A perfectly static clip has a zero worst step,
+ * and a cap of zero would refuse every frame that follows a corrected one. 5 mm
+ * is the millimetre noise of the proxies themselves. */
+export const STEP_CAP_FLOOR = 0.005;
+
 /** The bone a capsule's push actually drives: mid joint (elbow/knee) for an
  * upper segment, effector (wrist/ankle) for a lower segment or an end sphere. */
 function drivenBone(capsule, chains) {
@@ -1058,13 +1131,23 @@ function homeDirection(rig, capsule, chains, contactPoint) {
  * The world push for one side of one penetration: `normal` already points the
  * way THIS capsule must go, `distance` is the separation it owes along that
  * normal, and `weight` scales the home bias (0 disables it).
+ *
+ * `continuity` is the ESCAPE CONSISTENCY hint — { dirs: Map(chainId → unit
+ * Vector3), weight } — and rides in the same blend: a chain the previous frame
+ * pushed somewhere leans that way again. Both hints are optional and either can
+ * be absent; with neither, this is the plain separation normal it always was.
  */
-function escapeVector(rig, capsule, chains, normal, contactPoint, distance, weight) {
+function escapeVector(rig, capsule, chains, normal, contactPoint, distance, weight, continuity = null) {
 	const straight = normal.clone().multiplyScalar(distance);
-	if (!(weight > 0)) return straight;
-	const home = homeDirection(rig, capsule, chains, contactPoint);
-	if (!home) return straight;
-	const biased = normal.clone().addScaledVector(home, weight);
+	const carry = continuity?.weight > 0
+		? continuity.dirs?.get(capsule.def.movable?.chain) ?? null
+		: null;
+	if (!(weight > 0) && !carry) return straight;
+	const home = weight > 0 ? homeDirection(rig, capsule, chains, contactPoint) : null;
+	if (!home && !carry) return straight;
+	const biased = normal.clone();
+	if (home) biased.addScaledVector(home, weight);
+	if (carry) biased.addScaledVector(carry, continuity.weight);
 	if (biased.lengthSq() < 1e-12) return straight;
 	biased.normalize();
 	const align = biased.dot(normal);
@@ -1175,6 +1258,12 @@ function pushCapsule(capsule, chains, push, ikState, { onlyChains = null, floorY
  * of the torso. `fkJoints` enables the capped TORSO/HEAD YIELD — without it the
  * blockers stay perfectly rigid, which is what every existing caller gets.
  *
+ * `continuity` ({ dirs: Map(chainId → unit Vector3), weight }) is the ESCAPE
+ * CONSISTENCY hint — the way each chain left its collision on the frame before
+ * — and `provenanceChains` overrides the cast the provenance gate reads off the
+ * entry pose. Both exist for the range walker's temporal pass and are null for
+ * every single-frame caller, which therefore behaves exactly as it did.
+ *
  * Returns { supported, changed, passes, residual, touched } — residual is the
  * deepest remaining penetration in metres, 0 when fully clean, and `touched` is
  * the chain ids THIS run actually drove, plus any FK joint id a yield leaned on
@@ -1230,6 +1319,8 @@ export function fixCollisions(rig, chains, {
 	baseQuats = null,
 	blockers = null,
 	fkJoints = null,
+	continuity = null,
+	provenanceChains = null,
 } = {}) {
 	if (!rig || !chains) {
 		return { supported: false, changed: false, passes: 0, residual: 0, touched: [], baseQuats: new Map() };
@@ -1311,8 +1402,8 @@ export function fixCollisions(rig, chains, {
 			// `normal` points b → a: a escapes along +normal, b along −normal.
 			const away = pen.normal;
 			const back = pen.normal.clone().negate();
-			const pushA = (share) => escapeVector(rig, pen.a, chains, away, pen.pointA, distance * share, weight);
-			const pushB = (share) => escapeVector(rig, pen.b, chains, back, pen.pointB, distance * share, weight);
+			const pushA = (share) => escapeVector(rig, pen.a, chains, away, pen.pointA, distance * share, weight, continuity);
+			const pushB = (share) => escapeVector(rig, pen.b, chains, back, pen.pointB, distance * share, weight, continuity);
 			if (ma && !mb) passChanged = drive(pen.a, pushA(1)) || passChanged;
 			else if (mb && !ma) passChanged = drive(pen.b, pushB(1)) || passChanged;
 			else if (ma && mb) {
@@ -1386,24 +1477,11 @@ export function fixCollisions(rig, chains, {
 	});
 	const entrySides = bias > 0 ? wristSides() : null;
 
-	/** The penetrations THIS run is allowed to act on. */
-	const fixablePens = (capsules) => detectPenetrations(capsules, { offset, slackFactor, blockers }).filter((pen) => {
-		// Two static blockers (e.g. head near torso in a crouch) can touch
-		// but no limb chain can fix them — reporting them just burns passes.
-		if (!pen.a.def.movable && !pen.b.def.movable) return false;
-		// SAME-CHAIN HINGE. Upper arm × forearm is the elbow folded shut; thigh ×
-		// shin is the knee. Both capsules ride the SAME two-bone chain, so every
-		// push moves them together and the gap never opens: the solver spends its
-		// passes rearranging the limb and the pair survives. Worse, it survives
-		// as a NEW pair the fix itself created — QA's 45° box: press 1 cleared the
-		// box and left leftUpperArm × leftForeArm at 8.30 mm, press 2 chased that
-		// 8.30 mm and drove the hand 574 mm, 55 mm INTO the box. A fold is a pose,
-		// not a collision. It is reported by detectPenetrations and never acted on.
-		if (isHingeFold(pen)) return false;
-		if (!onlyChains) return true;
-		const chainsOf = [pen.a, pen.b].map((c) => c.def.movable?.chain).filter(Boolean);
-		return chainsOf.some((id) => onlyChains.has(id));
-	});
+	/** The penetrations THIS run is allowed to act on: no static × static (two
+	 * immovable things touching, which no pass can fix), no SAME-CHAIN HINGE (a
+	 * fold is a pose, not a collision — see isHingeFold), and only pairs naming a
+	 * permitted chain when a filter is in force. */
+	const fixablePens = (capsules) => fixablePenetrations(capsules, { offset, slackFactor, blockers, onlyChains });
 
 	/* --- what this frame started as, so a bad fix can be refused whole ------ */
 	/** Every bone a fix or a yield can write, with its full local transform. */
@@ -1455,12 +1533,14 @@ export function fixCollisions(rig, chains, {
 		entryWorst = pens.length ? pens[0].depth : 0;
 		// The cast, closed at the door. A chain that is not named by a pair on the
 		// pose as handed over cannot be recruited by a contact the fix invents.
-		allowedChains = new Set();
-		for (const pen of pens) {
-			for (const side of [pen.a, pen.b]) {
-				if (side.def?.movable?.chain) allowedChains.add(side.def.movable.chain);
-			}
-		}
+		//
+		// `provenanceChains` lets a caller name that cast itself, and exists for
+		// exactly one caller: the range walker's WARM START hands over a pose it
+		// has already nudged with the previous frame's correction, so the pose at
+		// the door is no longer the frame's own. The list it passes is read off
+		// the frame's UNTOUCHED pose, which keeps the gate saying what it always
+		// said — only limbs this frame's own clip pose put in play may move.
+		allowedChains = provenanceChains ? new Set(provenanceChains) : chainsInPlay(pens);
 	}
 
 	let changed = false;
@@ -1835,9 +1915,16 @@ export function fixCollisionsRange({
 	const bones = layerBones(chains, fkJoints);
 	const chainIds = [...chains.keys()];
 	const readChainQuats = () => new Map(chainIds.map((id) => [id, chains.get(id).bones.map((b) => b.quaternion.clone())]));
+	/** Every chain's EFFECTOR (wrist / ankle) in world space — the one point per
+	 * limb whose frame-to-frame travel a viewer reads as speed, and the thing the
+	 * step cap below is written in terms of. */
+	const readEffectors = () => new Map(chainIds.map(
+		(id) => [id, chains.get(id).bones[2].getWorldPosition(new THREE.Vector3())],
+	));
 	const layerActive = ikState.tracked.size > 0;
 	const basePose = [];
 	const clipQuats = [];
+	const sourceEffectors = [];
 	for (let frame = start; frame <= end; frame += 1) {
 		if (layerActive) {
 			// Silence the layer for one sample: ikEvaluate walks `tracked`, so an
@@ -1855,7 +1942,39 @@ export function fixCollisionsRange({
 		}
 		applyFrame(frame);
 		basePose.push(snapshotBones(bones));
+		sourceEffectors.push(readEffectors());
 		if (!layerActive) clipQuats.push(readChainQuats());
+	}
+
+	/* --- what a frame-to-frame step is allowed to be ------------------------ */
+	/**
+	 * THE STEP CAP, per chain, measured on the clip the pass was handed. A
+	 * correction is allowed to move a limb; what it is not allowed to do is move
+	 * it FASTER THAN THE CLIP EVER DOES between two frames it both corrects. So
+	 * the cap is the effector's own worst adjacent step over the range, times
+	 * STEP_CAP_FACTOR — a limb that already travels 8 cm a frame gets a roomier
+	 * allowance than one that barely moves, which is the only ruler that means
+	 * the same thing on a crouch and on a sprint.
+	 *
+	 * Clamped at both ends. STEP_CAP_ABS is the ceiling: a fast clip must not
+	 * license a half-metre teleport just because its own hand is quick. The floor
+	 * is what keeps a perfectly static clip from setting a cap of zero and
+	 * refusing every correction that follows another one.
+	 *
+	 * The cap governs the step between two CONSECUTIVE CORRECTED frames only.
+	 * The first corrected frame of a run has no corrected predecessor and is
+	 * uncapped — the correction itself is as big as the collision demands, and
+	 * easing that in is the blend window's job, not this one's.
+	 */
+	const stepCap = new Map();
+	for (const id of chainIds) {
+		let worst = 0;
+		for (let index = 1; index < sourceEffectors.length; index += 1) {
+			const previous = sourceEffectors[index - 1].get(id);
+			const current = sourceEffectors[index].get(id);
+			if (previous && current) worst = Math.max(worst, current.distanceTo(previous));
+		}
+		stepCap.set(id, Math.min(STEP_CAP_ABS, Math.max(STEP_CAP_FLOOR, STEP_CAP_FACTOR * worst)));
 	}
 
 	/* --- sweep 2: fix each frame against that recorded pose ---------------- */
@@ -1872,36 +1991,261 @@ export function fixCollisionsRange({
 		if (residual > 0) residuals.set(frame, residual);
 		else residuals.delete(frame);
 	};
+	/* --- temporal continuity ------------------------------------------------ */
+	/**
+	 * WHY THIS EXISTS. Every frame above is solved on its own, from the clip,
+	 * which is what makes each one honest — and what made a RUN of them garbage.
+	 * A deep hit has several ways out, the choice between them turns on
+	 * millimetres, and QA measured the consequence on the crouch clip: frames
+	 * 104..120 each had a 112 mm head × hand hit, each frame found its own escape,
+	 * and the hand stepped 22 → 160 mm, 23 → 520 mm, 25 → 519 mm frame to frame
+	 * on source poses that barely moved. Arm up, hands to face, arm down across
+	 * the body: three frames of flail, every one of them collision-free.
+	 *
+	 * The cure is to make a run of corrected frames one correction rather than N
+	 * unrelated ones, in three pieces that all keep the per-frame guarantees:
+	 *
+	 *  1. WARM START. When the frame before was corrected, this frame's solve
+	 *     starts from the pose it would have if it inherited that correction —
+	 *     the previous frame's delta (baseQ⁻¹ ∘ q, its correction relative to its
+	 *     OWN clip pose) applied to this frame's pose. If that already reads
+	 *     clean, it is accepted as it stands: the collision is gone and the
+	 *     continuity comes for free. If not, the solve carries on from there, so
+	 *     it starts in the neighbourhood of the answer its neighbour found.
+	 *  2. ESCAPE CONSISTENCY. Whatever is solved gets the previous frame's push
+	 *     direction as a bias (see CONTINUITY_BIAS), so two frames that must both
+	 *     escape leave the same way.
+	 *  3. THE STEP CAP. If the result still moves an effector further from its
+	 *     previous corrected position than the clip's own motion justifies, the
+	 *     frame is re-solved with the continuity bias turned up; failing that the
+	 *     closest collision-free candidate is kept, and failing THAT the frame is
+	 *     left alone and reported unresolved. A flail is never the answer.
+	 *
+	 * Everything is keyed exactly as before — this frame's own raw baseQuats,
+	 * only the chains that moved — so the blend window, the pins and the delta
+	 * bake are untouched.
+	 */
+	/** The frame before this one, when it was corrected: what it did, where it
+	 * left each effector, and which way it pushed. Null the moment a frame is
+	 * not keyed, so continuity never reaches across a gap. */
+	let carried = null;
+	/** `baseQ⁻¹ ∘ q` per bone — the correction a frame applied to its own clip
+	 * pose, which is exactly the delta ikEvaluate replays for its key. */
+	const correctionDeltas = (touched, baseQuats) => {
+		const deltas = new Map();
+		for (const id of touched) {
+			const chain = chains.get(id);
+			const bases = baseQuats?.get(id);
+			if (!chain || !bases) continue;
+			deltas.set(id, chain.bones.map((bone, index) => (bases[index]
+				? bases[index].clone().invert().multiply(bone.quaternion)
+				: new THREE.Quaternion())));
+		}
+		return deltas;
+	};
+	/** Seed `ids` with the previous frame's correction: bind translations (the
+	 * pose a keyed chain is evaluated at, so it is the pose worth measuring) and
+	 * this frame's rotations composed with that frame's delta. */
+	const applyWarmStart = (ids, deltas) => {
+		for (const id of ids) {
+			const chain = chains.get(id);
+			const delta = deltas.get(id);
+			if (!chain || !delta) continue;
+			chain.bones.forEach((bone, index) => {
+				if (chain.bindPositions) bone.position.copy(chain.bindPositions[index]);
+				if (delta[index]) bone.quaternion.multiply(delta[index]);
+			});
+		}
+		rig.updateMatrixWorld(true);
+	};
+	const lowestFootMarker = () => {
+		let lowest = Infinity;
+		for (const name of FLOOR_MARKERS) {
+			const bone = findBone(rig, name);
+			if (bone) lowest = Math.min(lowest, bone.getWorldPosition(new THREE.Vector3()).y);
+		}
+		return lowest;
+	};
+	const epsilonOf = options.epsilon ?? 1e-4;
+	const floorOf = options.floorY ?? 0;
+
 	for (let frame = start; frame <= end; frame += 1) {
+		const index = frame - start;
+		const blockers = blockersFor(frame);
+		const detectOptions = { offset: options.offset, slackFactor: options.slackFactor, blockers, onlyChains: options.onlyChains };
 		// applyFrame still runs: it poses the bones outside the IK layer (fingers,
 		// toes, spine tips) that the capsules also measure. The restore then
 		// overwrites exactly the bones this pass could have moved.
-		applyFrame(frame);
-		restoreBones(rig, bones, basePose[frame - start]);
+		//
 		// Blockers are WORLD-SPACE and posed for this frame: a static array is
 		// the same set at every frame, while `blockersAt(frame)` is asked for
 		// them AFTER applyFrame, so a caller animating a prop reports where it
 		// is on the frame being solved rather than where it started.
-		const result = fixCollisions(rig, chains, {
-			...options,
-			blockers: blockersFor(frame),
-			fkJoints,
-			ikState,
-			baseQuats: clipQuats[frame - start],
-		});
+		const restoreFrame = () => {
+			applyFrame(frame);
+			restoreBones(rig, bones, basePose[index]);
+		};
+		restoreFrame();
+
+		// The frame's OWN reading, before anything is seeded into it: the cast the
+		// provenance gate may move, the depth any candidate has to beat, and the
+		// floor no candidate may go under.
+		let warmChains = null;
+		let provenance = null;
+		let baseWorst = 0;
+		const baseEffectors = readEffectors();
+		const baseFoot = lowestFootMarker();
+		if (carried?.frame === frame - 1) {
+			const capsules = buildCollisionCapsules(rig, options.radii ?? null);
+			const pens = fixablePenetrations(capsules, detectOptions);
+			baseWorst = pens.length ? pens[0].depth : 0;
+			provenance = chainsInPlay(pens);
+			// Only a chain THIS frame's own pose puts in play may be warm started:
+			// inheriting a correction onto a limb with nothing wrong with it would
+			// smear the fix across frames that never needed one.
+			warmChains = [...provenance].filter((id) => carried.deltas.has(id));
+		}
+
+		/** One attempt at this frame, from the pose as recorded, optionally warm
+		 * started and with the continuity bias at `weight`. Returns everything the
+		 * chooser needs and leaves nothing behind: the pose is snapshotted, and
+		 * the next attempt restores the frame before it starts. */
+		const attempt = ({ warm, weight }) => {
+			restoreFrame();
+			if (warm?.length) applyWarmStart(warm, carried.deltas);
+			const continuity = weight > 0 && carried ? { dirs: carried.dirs, weight } : null;
+			// A warm start that lands clean IS the answer: the collision is gone
+			// and the pose is the neighbour's, which is the whole point. It still
+			// has to clear the floor, the one guarantee a solve would have checked
+			// and a straight inheritance would not.
+			if (warm?.length) {
+				const capsules = buildCollisionCapsules(rig, options.radii ?? null);
+				if (!capsules) return { supported: false };
+				if (fixablePenetrations(capsules, detectOptions).length === 0) {
+					const foot = lowestFootMarker();
+					if (!(Number.isFinite(foot) && foot < Math.min(baseFoot, floorOf + PUSH_FLOOR_CLEARANCE) - 1e-6)) {
+						return {
+							supported: true, keyed: true, warm: true,
+							touched: [...warm], residual: 0,
+							pose: snapshotBones(bones), effectors: readEffectors(),
+						};
+					}
+				}
+			}
+			const result = fixCollisions(rig, chains, {
+				...options,
+				blockers,
+				fkJoints,
+				// The chains a DISCARDED attempt drove must not be left tracked, so
+				// the bake below — which touches every id it keys — is what marks
+				// the layer, not the attempts.
+				ikState: null,
+				baseQuats: clipQuats[index],
+				continuity,
+				provenanceChains: warm?.length ? provenance : null,
+			});
+			if (!result.supported) return { supported: false };
+			// A warm attempt keys every chain it seeded, whether the solve moved it
+			// again or not: the pose being measured is the seeded one, and a chain
+			// left out of the key would be evaluated back on the clip.
+			const touched = new Set(result.touched);
+			if (result.changed && warm?.length) for (const id of warm) touched.add(id);
+			return {
+				supported: true,
+				keyed: result.changed && touched.size > 0,
+				warm: Boolean(warm?.length),
+				touched: [...touched],
+				residual: result.residual,
+				pose: snapshotBones(bones),
+				effectors: readEffectors(),
+			};
+		};
+
+		/** How far this attempt moves an effector away from where the previous
+		 * corrected frame left it, as a FRACTION of that chain's cap — counted
+		 * only on chains BOTH frames correct, because a chain the previous frame
+		 * corrected and this one does not is the blend window's business, not the
+		 * cap's. Over 1 is a jump; below it the frames read as one motion. The
+		 * ratio (not the raw millimetres) is also what ranks two candidates, so a
+		 * hand and a foot are compared on the same scale. */
+		const stepRatio = (candidate) => {
+			let worst = 0;
+			if (!carried) return worst;
+			for (const id of candidate.touched) {
+				const before = carried.effectors.get(id);
+				const after = candidate.effectors?.get(id);
+				if (!before || !after) continue;
+				worst = Math.max(worst, after.distanceTo(before) / (stepCap.get(id) ?? STEP_CAP_ABS));
+			}
+			return worst;
+		};
+		const overCap = (candidate) => stepRatio(candidate) > 1;
+		// A warm attempt may not come out WORSE than the frame's own pose: the
+		// seeded pose is not this frame's, so fixCollisions's accept gate — which
+		// judges against the pose it was handed — cannot see that comparison.
+		const usable = (candidate) => candidate?.keyed
+			&& (!candidate.warm || candidate.residual <= baseWorst + 1e-9);
+
+		const tries = [];
+		if (warmChains?.length) tries.push(attempt({ warm: warmChains, weight: CONTINUITY_BIAS }));
+		if (tries[0]?.supported === false) { keyed.unresolved = unresolvedList(); return keyed; }
+		const plain = attempt({ warm: null, weight: carried ? CONTINUITY_BIAS : 0 });
 		// An unsupported rig is unsupported at every frame: bail on the first
 		// one instead of re-posing the whole clip to learn the same thing.
-		if (!result.supported) {
-			keyed.unresolved = unresolvedList();
-			return keyed;
+		if (!plain.supported) { keyed.unresolved = unresolvedList(); return keyed; }
+		tries.push(plain);
+
+		// Warm first, then plain: the inherited answer wins ties, which is what
+		// makes a run of frames one correction.
+		let chosen = tries.find((candidate) => usable(candidate) && !overCap(candidate)) ?? null;
+		if (!chosen && tries.some(usable)) {
+			// Every candidate jumped. One more go with the previous frame's
+			// direction outvoting the rest bias...
+			const stronger = attempt({ warm: warmChains?.length ? warmChains : null, weight: CONTINUITY_BIAS_STRONG });
+			if (stronger.supported === false) { keyed.unresolved = unresolvedList(); return keyed; }
+			if (usable(stronger) && !overCap(stronger)) chosen = stronger;
+			else {
+				// ...and failing that, the closest of the candidates that actually
+				// clears the collision. A frame with no collision-free candidate is
+				// left as the clip had it and reported, because a flail that happens
+				// to be collision-free is not a fix.
+				const free = [...tries, stronger]
+					.filter((candidate) => usable(candidate) && candidate.residual <= epsilonOf)
+					.sort((a, b) => stepRatio(a) - stepRatio(b));
+				chosen = free[0] ?? null;
+			}
 		}
-		noteResidual(frame, result.residual);
-		if (!result.changed || !result.touched.length) continue;
+
+		if (!chosen) {
+			// Nothing to key: either the frame was clean (residual 0, and every
+			// candidate reports it) or every candidate was refused. Report whichever
+			// depth is left standing on the pose the viewer will see.
+			restoreFrame();
+			noteResidual(frame, Math.max(baseWorst, plain.keyed ? 0 : plain.residual));
+			carried = null;
+			continue;
+		}
+		restoreBones(rig, bones, chosen.pose);
+		noteResidual(frame, chosen.residual);
 		// Only the chains THIS frame moved — the pass must not re-key an
 		// unrelated limb at the blended value it happens to be showing here —
 		// and each one as a delta from the clip's own rotations at this frame.
-		ikBakeKeyframe(chains, ikState, frame, fkJoints, result.touched, null, result.baseQuats);
+		ikBakeKeyframe(chains, ikState, frame, fkJoints, chosen.touched, null, clipQuats[index]);
 		keyed.push(frame);
+		const dirs = new Map();
+		for (const id of chosen.touched) {
+			const before = baseEffectors.get(id);
+			const after = chosen.effectors.get(id);
+			if (!before || !after) continue;
+			const dir = after.clone().sub(before);
+			if (dir.lengthSq() > 1e-8) dirs.set(id, dir.normalize());
+		}
+		carried = {
+			frame,
+			deltas: correctionDeltas(chosen.touched, clipQuats[index]),
+			effectors: new Map([...chosen.effectors].filter(([id]) => chosen.touched.includes(id))),
+			dirs,
+		};
 	}
 
 	/* --- sweep 3: the blend window's own frames, ONCE ----------------------- */

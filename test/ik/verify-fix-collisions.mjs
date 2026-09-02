@@ -2013,13 +2013,30 @@ function identicalPose(rig, snapshot) {
 	const ik = createIkState();
 	ik.chains = take.chains;
 	const pose = take.rig.getObjectByName("mixamorigLeftArm").quaternion.clone();
+	// applyFrame POSES THE RIG, every bone the pass can write, exactly as the
+	// App's does (motion apply + ikEvaluate). Setting one quaternion and leaving
+	// the rest of the skeleton wherever the last solve left it made the pass's
+	// own final read-only sweep measure a pose no frame actually has — it read
+	// frame 2's solved arm three times over, so "still penetrating" was true by
+	// accident of leftover state rather than by measurement.
+	const applyFrame = (frame) => {
+		for (const chain of take.chains.values()) {
+			chain.bones.forEach((bone, index) => {
+				bone.position.copy(chain.bindPositions[index]);
+				bone.quaternion.identity();
+			});
+		}
+		// Rotations only for the FK joints: this fixture's geometry IS a moved
+		// shoulder bone, and "restoring" its translation would pull the arm back
+		// out of the head the fixture just put it in.
+		for (const joint of take.fkJoints.values()) joint.bone.quaternion.identity();
+		take.rig.getObjectByName("mixamorigLeftArm").quaternion.copy(pose);
+		take.rig.updateMatrixWorld(true);
+		ikEvaluate(take.chains, ik, frame, take.fkJoints, 6);
+	};
 	const keyed = fixCollisionsRange({
 		rig: take.rig, chains: take.chains, ikState: ik, fkJoints: take.fkJoints,
-		startFrame: 0, endFrame: 2, radii: RADII,
-		applyFrame: () => {
-			take.rig.getObjectByName("mixamorigLeftArm").quaternion.copy(pose);
-			take.rig.updateMatrixWorld(true);
-		},
+		startFrame: 0, endFrame: 2, radii: RADII, applyFrame,
 	});
 	check("the keyed list is still an array the caller can count",
 		Array.isArray(keyed) && keyed.length > 0);
@@ -2044,6 +2061,173 @@ function identicalPose(rig, snapshot) {
 		});
 		check("a clip with nothing left over reports an empty unresolved list",
 			Array.isArray(clean.unresolved) && clean.unresolved.length === 0 && clean.length === 0);
+	}
+}
+
+/* --- QA S4: a RUN of corrected frames is one correction, not N ------------- */
+/* Every frame above is solved on its own, from the clip. That is what makes
+ * each one honest and what made a run of them garbage: a deep hit has several
+ * ways out, the choice turns on millimetres, and on QA's crouch frames 104..120
+ * each found their own. The hand stepped 22 → 160 mm, 23 → 520 mm, 25 → 519 mm
+ * between frames whose SOURCE poses barely moved — arm up, hands to the face,
+ * arm down across the body. Every frame collision-free; the sequence garbage.
+ *
+ * The fixture is that defect in miniature: a hand that drifts onto the head's
+ * own axis and sits there for six frames, which is the geometry that makes the
+ * escape direction a coin toss (the separation normal flips with a couple of
+ * millimetres of drift). */
+{
+	const BLEND = 6;
+	const FRAMES = 12;
+	const HEAD_Y = 1.665;
+	const DIR = new THREE.Vector3(Math.cos(0.7), 0, Math.sin(0.7));
+	const START = DIR.clone().multiplyScalar(0.22).setY(HEAD_Y);
+	const END = DIR.clone().multiplyScalar(0.11).setY(HEAD_Y);
+	/** The wrist ON the head axis, with a couple of millimetres of drift a frame
+	 * — "nearly static", and enough to flip the shortest way out. */
+	const inside = (frame) => new THREE.Vector3(
+		0.003 * Math.sin(frame * 1.7),
+		HEAD_Y + 0.002 * Math.cos(frame * 1.1),
+		0.003 * Math.cos(frame * 2.3),
+	);
+	const targetAt = (frame) => {
+		if (frame <= 4) return START.clone().lerp(inside(4), frame / 4);
+		if (frame <= 9) return inside(frame);
+		return inside(9).lerp(END, (frame - 9) / 2);
+	};
+	const makeTake = () => {
+		const rig = makeRig(true);
+		primeBindPose(rig);
+		const resolved = resolveIkRig(rig);
+		const poseClip = (frame) => {
+			for (const chain of resolved.chains.values()) {
+				chain.bones.forEach((bone, index) => {
+					bone.position.copy(chain.bindPositions[index]);
+					bone.quaternion.identity();
+				});
+			}
+			rig.updateMatrixWorld(true);
+			solveIk(resolved.chains.get("leftHand"), targetAt(frame));
+			rig.updateMatrixWorld(true);
+		};
+		return { rig, ...resolved, poseClip };
+	};
+	const wristOf = (take) => take.chains.get("leftHand").bones[2].getWorldPosition(new THREE.Vector3());
+	const dirtyOf = (take) => detectPenetrations(buildCollisionCapsules(take.rig, RADII)).filter((pen) => !isHingeFold(pen));
+
+	// The source: what the clip does on its own, and how fast.
+	const reference = makeTake();
+	const source = [];
+	const deep = [];
+	for (let frame = 0; frame < FRAMES; frame += 1) {
+		reference.poseClip(frame);
+		source.push({ wrist: wristOf(reference), knee: reference.chains.get("leftFoot").bones[1].getWorldPosition(new THREE.Vector3()) });
+		const pens = dirtyOf(reference);
+		if (pens.length && pens[0].depth > 0.1) deep.push(`${frame}:${pairIds(pens[0])}`);
+	}
+	let sourceStep = 0;
+	for (let frame = 1; frame < FRAMES; frame += 1) {
+		sourceStep = Math.max(sourceStep, source[frame].wrist.distanceTo(source[frame - 1].wrist));
+	}
+	check("the fixture buries the hand in the head on frames 4..9",
+		deep.map((entry) => entry.split(":")[0]).join(",") === "4,5,6,7,8,9"
+			&& deep.every((entry) => /head×leftHand/.test(entry)),
+		deep.join(" "));
+	check("and its own hand never moves more than a few centimetres a frame",
+		sourceStep < 0.06, `${(sourceStep * 1000).toFixed(1)}mm`);
+
+	const take = makeTake();
+	const ik = createIkState();
+	ik.chains = take.chains;
+	const applyFrame = (frame) => {
+		take.poseClip(frame);
+		ikEvaluate(take.chains, ik, frame, take.fkJoints, BLEND);
+	};
+	const keyed = fixCollisionsRange({
+		rig: take.rig, chains: take.chains, ikState: ik, fkJoints: take.fkJoints,
+		startFrame: 0, endFrame: FRAMES - 1, applyFrame, radii: RADII, blendWindow: BLEND,
+	});
+	const after = [];
+	const stillDirty = [];
+	for (let frame = 0; frame < FRAMES; frame += 1) {
+		applyFrame(frame);
+		after.push({ wrist: wristOf(take), knee: take.chains.get("leftFoot").bones[1].getWorldPosition(new THREE.Vector3()) });
+		const pens = dirtyOf(take);
+		if (pens.length) stillDirty.push(`${frame}:${pairIds(pens[0])}@${(pens[0].depth * 1000).toFixed(0)}mm`);
+	}
+	let afterStep = 0;
+	const steps = [];
+	for (let frame = 1; frame < FRAMES; frame += 1) {
+		const step = after[frame].wrist.distanceTo(after[frame - 1].wrist);
+		steps.push(`${frame - 1}→${frame}:${(step * 1000).toFixed(0)}`);
+		afterStep = Math.max(afterStep, step);
+	}
+	check("the pass cleans every frame of the run", stillDirty.length === 0, stillDirty.join(" "));
+	// The bound is the CLIP'S OWN worst step, not a millimetre count: a
+	// correction may lead or lag the motion, but a run of them must not move the
+	// hand faster than the take ever does. Frame-by-frame solving measured 507 mm
+	// against this fixture's 55 mm source — nine times the source, three times
+	// this bound.
+	check("no frame steps further than 3× the clip's own worst step",
+		afterStep <= 3 * sourceStep,
+		`worst=${(afterStep * 1000).toFixed(1)}mm bound=${(3 * sourceStep * 1000).toFixed(1)}mm steps=${steps.join(" ")}`);
+	// ... and inside the buried run itself, where the source is nearly static,
+	// the correction is nearly static too: consecutive frames inherit one
+	// another's escape rather than each picking their own.
+	let insideStep = 0;
+	for (let frame = 5; frame <= 9; frame += 1) {
+		insideStep = Math.max(insideStep, after[frame].wrist.distanceTo(after[frame - 1].wrist));
+	}
+	check("the frames of one buried run inherit one another's escape",
+		insideStep < 0.02, `${(insideStep * 1000).toFixed(1)}mm`);
+	check("an arm-only run never moves a leg",
+		after.every((sample, frame) => sample.knee.distanceTo(source[frame].knee) < 1e-9)
+			&& keyed.every((frame) => ![...ik.keys.get(frame).keys()].some((id) => /Foot/.test(id))),
+		keyed.map((frame) => `${frame}:${[...ik.keys.get(frame).keys()].join("+")}`).join(" "));
+	check("a second pass over the coherent result keys nothing", (() => {
+		const before = ikKeyframes(ik).join(",");
+		const again = fixCollisionsRange({
+			rig: take.rig, chains: take.chains, ikState: ik, fkJoints: take.fkJoints,
+			startFrame: 0, endFrame: FRAMES - 1, applyFrame, radii: RADII, blendWindow: BLEND,
+		});
+		return again.length === 0 && ikKeyframes(ik).join(",") === before;
+	})());
+
+	/* --- and an UNRELATED single-frame hit is untouched by any of it -------- */
+	/* Continuity only ever reaches back one frame, and only to a frame that was
+	 * corrected: a lone dirty frame in a clean clip must still be solved exactly
+	 * as a stand-alone fixCollisions of that frame solves it. */
+	{
+		const lone = makeTake();
+		const loneClip = (frame) => {
+			lone.poseClip(0);
+			if (frame === 6) solveIk(lone.chains.get("leftHand"), inside(6));
+			lone.rig.updateMatrixWorld(true);
+		};
+		const solo = makeTake();
+		loneClip.call(null, 6);
+		solo.poseClip(0);
+		solveIk(solo.chains.get("leftHand"), inside(6));
+		solo.rig.updateMatrixWorld(true);
+		const outcome = fixCollisions(solo.rig, solo.chains, { radii: RADII, ikState: createIkState() });
+		const soloQuats = solo.chains.get("leftHand").bones.map((bone) => bone.quaternion.clone());
+		const state = createIkState();
+		state.chains = lone.chains;
+		const loneKeys = fixCollisionsRange({
+			rig: lone.rig, chains: lone.chains, ikState: state, fkJoints: lone.fkJoints,
+			startFrame: 0, endFrame: FRAMES - 1, radii: RADII, blendWindow: BLEND,
+			applyFrame: (frame) => {
+				loneClip(frame);
+				ikEvaluate(lone.chains, state, frame, lone.fkJoints, BLEND);
+			},
+		});
+		check("a lone dirty frame is the only one keyed",
+			outcome.changed && loneKeys.join(",") === "6", `keyed=${loneKeys.join(",")}`);
+		const baked = state.keys.get(6)?.get("leftHand")?.q ?? [];
+		check("and it is solved exactly as a stand-alone fix solves it",
+			baked.length === soloQuats.length
+				&& baked.every((q, index) => q.angleTo(soloQuats[index]) < 1e-5),
+			baked.map((q, index) => ((q.angleTo(soloQuats[index]) * 180) / Math.PI).toFixed(4) + "°").join(" "));
 	}
 }
 
