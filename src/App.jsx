@@ -142,6 +142,7 @@ import {
 	CUTOUT_DEFAULT_HEIGHT,
 	CUTOUT_KIND,
 	OBJECT_COLORS,
+	OBJECT_LIBRARY,
 	createCutoutObject,
 	createSceneObject,
 	duplicateCutoutOptions,
@@ -273,6 +274,7 @@ import {
 	clampIkTargetToFloor,
 } from "./ardy/ik.js";
 import { buildCollisionCapsules, detectPenetrations, fixCollisions, fixCollisionsRange, supportsCollisionCleanup } from "./ardy/fix-collisions.js";
+import { collisionBlockers, blockerSummary } from "./ardy/collision-blockers.js";
 import { autoPhysicsRange, computeCenterOfMass } from "./ardy/auto-physics.js";
 import {
 	Dropdown,
@@ -514,6 +516,32 @@ function photoPoseWarning({ releasedBones, confidence }) {
 	return labels.length > 1
 		? `The ${list} weren't visible in the photo — they stayed in the default pose${blur}`
 		: `The ${list} wasn't visible in the photo — it stayed in the default pose${blur}`;
+}
+
+/**
+ * Pose ONE cast member's rig at an absolute timeline frame: its own clip first,
+ * then its own IK correction layer on top. This is the single description of
+ * "where is this character at frame N" — the viewport effect, the offscreen
+ * recorder and the whole-clip collision pass all go through it, so a body used
+ * as a collision blocker stands exactly where the render would draw it.
+ *
+ * Pure in the sense that matters here: it takes the rig, the clip and the layer
+ * state and writes bones. No React, no refs, no knowledge of who is active — a
+ * caller that wants the active character's LIVE editing state passes it, and
+ * one that wants a stored layer passes that.
+ *
+ * A missing rig, a member with no clip and a layer with no keys are all
+ * no-ops rather than errors: characters without a take keep their pose.
+ */
+function poseMemberAtFrame(rig, clip, ikState, frame, blendFrames = 0) {
+	if (!rig) return;
+	if (clip) {
+		const sampled = sampleAt({ frameCount: clip.frames, motion: clip }, null, frame);
+		applyMotionFrame(rig, clip, sampled.motionFrame);
+	}
+	if (ikState && ikState.keys.size > 0 && ikState.chains && ikState.rig === rig) {
+		ikEvaluate(ikState.chains, ikState, frame, ikState.fkJoints, clip ? blendFrames : 0);
+	}
 }
 
 export default function App() {
@@ -3933,18 +3961,11 @@ globalThis.playMode = centerTab === "play";
 		propFrameRef.current = frame;
 		for (const entry of characters) {
 			const clip = entry.id === activeChar.id ? motion : entry.sessionMotion;
-			const rig = rigs[entry.id];
-			if (clip && rig) {
-				const sampled = sampleAt({ frameCount: clip.frames, motion: clip }, null, frame);
-				applyMotionFrame(rig, clip, sampled.motionFrame);
-			}
 			// Every cast member's OWN IK corrections ride its export frames (#77)
 			// — the active one from the live state, the rest from their stored
 			// layer states, exactly as the viewport applies them.
 			const state = entry.id === activeChar.id ? ikStateRef.current : ikStatesRef.current.get(entry.id);
-			if (rig && state && state.keys.size > 0 && state.chains && state.rig === rig) {
-				ikEvaluate(state.chains, state, frame, state.fkJoints, clip ? IK_CORRECTION_BLEND_FRAMES : 0);
-			}
+			poseMemberAtFrame(rigs[entry.id], clip, state, frame, IK_CORRECTION_BLEND_FRAMES);
 		}
 		// The bones for this frame are now written, so a carried prop can take
 		// its place on them. gl.render() never runs the r3f frame loop, so this
@@ -5124,28 +5145,29 @@ globalThis.playMode = centerTab === "play";
 		setToast(ko("Segment removed — right-click a trim handle to restore the full take", "구간을 지웠어요 — 핸들 우클릭으로 전체 테이크 복원"));
 	}
 
+	// Everyone EXCEPT the active character, posed at an absolute frame from
+	// their own session clips and their STORED IK corrections (#77). Factored
+	// out of the effect below because the whole-clip Fix Collisions pass needs
+	// the same thing: the other bodies are static blockers, and a blocker
+	// sampled from a rig still standing at the playhead would block the wrong
+	// volume on every other frame of the walk.
+	const poseOtherCastMembers = (frame) => {
+		for (const entry of characters) {
+			if (entry.id === activeChar.id) continue;
+			poseMemberAtFrame(rigs[entry.id], entry.sessionMotion, ikStatesRef.current.get(entry.id), frame, IK_CORRECTION_BLEND_FRAMES);
+		}
+	};
 	// Drive every cast member from ITS OWN clip on the shared playhead. The
 	// active character's buffer motion and the stored session motions of the
 	// others all advance together; characters without a clip keep their pose.
-	// Inactive members also re-apply their STORED IK corrections (#77): the
-	// keys live per character in ikStatesRef, and without this pass a focus
-	// switch silently reverted everyone else to their uncorrected take.
-	// (The active character's corrections are applied by the evaluate effect
-	// below, after its editing state settles.)
+	// Without the inactive pass a focus switch silently reverted everyone else
+	// to their uncorrected take.
 	useEffect(() => {
-		for (const entry of characters) {
-			const clip = entry.id === activeChar.id ? motion : entry.sessionMotion;
-			const rig = rigs[entry.id];
-			if (clip && rig) {
-				const sampled = sampleAt({ frameCount: clip.frames, motion: clip }, null, tlFrame);
-				applyMotionFrame(rig, clip, sampled.motionFrame);
-			}
-			if (entry.id === activeChar.id || !rig) continue;
-			const stored = ikStatesRef.current.get(entry.id);
-			if (stored && stored.keys.size > 0 && stored.chains && stored.rig === rig) {
-				ikEvaluate(stored.chains, stored, tlFrame, stored.fkJoints, clip ? IK_CORRECTION_BLEND_FRAMES : 0);
-			}
-		}
+		// The ACTIVE member's clip only: its own corrections are applied by the
+		// evaluate effect below, after its editing state settles.
+		poseMemberAtFrame(rigs[activeChar.id], motion, null, tlFrame);
+		poseOtherCastMembers(tlFrame);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [characters, activeChar.id, motion, rigs, tlFrame, ikTick]);
 
 	// The shared timeline spans the longest CURRENT content on the production
@@ -5349,12 +5371,40 @@ globalThis.playMode = centerTab === "play";
 	// silently does nothing. The buttons below are disabled in that case, so
 	// this branch is the belt to that suspenders (a rig can be swapped under
 	// a stale render).
+	/**
+	 * Everything OUTSIDE the active character that a limb has to stay out of:
+	 * the other cast members' bodies (capsules, built from the rigs AS THEY ARE
+	 * POSED at the moment of the call) and every scene object (an upright box
+	 * on its footprint). Ids are namespaced `char:<id>:<capsule>` / `obj:<id>`,
+	 * so a penetration label names the thing that was hit.
+	 *
+	 * `frame` re-samples travel paths — a prop walking a route stands somewhere
+	 * else on every frame — but the CAST is read live from the scene graph, so
+	 * a caller walking a clip must pose the others at that frame first (see
+	 * runFixCollisionsRange's blockersAt).
+	 */
+	const externalBlockers = (frame = tlFrame) => collisionBlockers({
+		rigs,
+		activeId: activeChar.id,
+		// The CAST is the authority on who is on stage, not the rig map: undo can
+		// put the cast list back to one subject while the rig mounted for the
+		// removed one is still in `rigs`, and a ghost body would go on blocking
+		// limbs that pass through empty space.
+		characterIds: characters,
+		sceneObjects,
+		library: OBJECT_LIBRARY,
+		frame,
+		take: { frameCount: tlFrameCount, fps: tlFps },
+	});
+
 	function runFixCollisions() {
 		if (!ikChains || !activeRig) return;
 		// A rig swap leaves one render where ikChains still describes the old
 		// skeleton; solving the new rig with them would push the wrong bones.
 		if (ikStateRef.current.rig !== activeRig) return;
-		const result = fixCollisions(activeRig, ikChains, { ikState: ikStateRef.current });
+		// The set as it stands right now: the other bodies at this frame's pose
+		// and the props at this frame's placement.
+		const result = fixCollisions(activeRig, ikChains, { ikState: ikStateRef.current, fkJoints: ikFkJoints, blockers: externalBlockers(tlFrame) });
 		if (!result.supported) {
 			setToast(ko("This rig doesn't support collision cleanup", "이 리그는 신체 관통 정리를 지원하지 않아요"));
 			return;
@@ -5387,29 +5437,66 @@ globalThis.playMode = centerTab === "play";
 			applyMotionFrame(activeRig, motion, frame);
 			ikEvaluate(ikChains, ikStateRef.current, frame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
 		};
+		// The other bodies move too. blockersAt runs AFTER applyFrame(frame), so
+		// it poses the rest of the cast at that same frame — their own clips and
+		// their own stored IK layers, the very pass the viewport renders with —
+		// and only then samples their capsules. Without this the blockers would
+		// describe everyone frozen at the playhead, which is a wrong obstacle on
+		// every frame but one.
+		const blockersAt = (frame) => {
+			poseOtherCastMembers(frame);
+			return externalBlockers(frame);
+		};
 		// The undo entry is provisional: a clean clip keys nothing, and a
 		// snapshot identical to the present state would make Ctrl+Z a no-op
 		// press that also discards the redo stack for nothing.
 		const savedFuture = charHistoryRef.current.future;
 		recordCharacterUndo();
-		const keyed = fixCollisionsRange({
-			rig: activeRig,
-			chains: ikChains,
-			ikState: ikStateRef.current,
-			fkJoints: ikFkJoints,
-			startFrame: 0,
-			endFrame: motion.frames - 1,
-			applyFrame,
-		});
+		let keyed = [];
+		let unresolved = [];
+		try {
+			const walked = fixCollisionsRange({
+				rig: activeRig,
+				chains: ikChains,
+				ikState: ikStateRef.current,
+				fkJoints: ikFkJoints,
+				startFrame: 0,
+				endFrame: motion.frames - 1,
+				applyFrame,
+				blockersAt,
+			});
+			// The frames the walk keyed. `unresolved` — the frames whose residual
+			// survived every pass — is ADDITIVE: read it defensively off either
+			// shape so this keeps working before and after the driver grows it.
+			keyed = Array.isArray(walked) ? walked : walked?.keyed ?? [];
+			unresolved = (Array.isArray(walked) ? walked.unresolved : walked?.unresolved) ?? [];
+		} finally {
+			// The restore is the pass's CLEANUP, not its epilogue: a throw mid-walk
+			// would otherwise leave the active rig and the rest of the cast frozen
+			// at whatever frame it died on, which is a wrong-looking set the user
+			// cannot scrub out of without touching the playhead.
+			applyFrame(currentFrame);
+			poseOtherCastMembers(currentFrame);
+			setIkTick((n) => n + 1);
+		}
 		if (!keyed.length) {
 			charHistoryRef.current.past.pop();
 			charHistoryRef.current.future = savedFuture;
 		}
-		applyFrame(currentFrame);
-		setIkTick((n) => n + 1);
-		setToast(keyed.length
+		// Residual is worth saying out loud: a limb pinned between two blockers
+		// (another body and a prop, say) can come out of the walk still touching,
+		// and silence would read as "all clean".
+		const stillPenetrating = unresolved.length
+			? ko(` · ${unresolved.length} frame(s) still penetrate`, ` · ${unresolved.length}개 프레임은 남아 있어요`)
+			: "";
+		// "No body collisions" must never share a sentence with "still
+		// penetrate": a converged pass over an unfixable clip has nothing more
+		// to do, which is a different statement from the clip being clean.
+		setToast((keyed.length
 			? ko(`Fixed collisions on ${keyed.length} frame(s)`, `${keyed.length}개 프레임의 관통을 정리했어요`)
-			: ko("No body collisions in the clip", "클립에 신체 관통이 없어요"));
+			: unresolved.length
+				? ko("Nothing more to fix", "더 고칠 수 있는 게 없어요")
+				: ko("No body collisions in the clip", "클립에 신체 관통이 없어요")) + stillPenetrating);
 	}
 
 	// AutoPhysics: during airborne spans the centre of mass must follow a
@@ -5592,10 +5679,21 @@ globalThis.playMode = centerTab === "play";
 			// checks; the fix itself runs through the buttons / runFixCollisions.
 			// null (not []) on an unsupported rig, so a check can tell "the tool
 			// cannot describe this skeleton" from "this pose is clean".
+			// EXTERNAL blockers ride this readout too, so a headless check can see
+			// `leftHand×obj:chair` / `leftHand×char:subject-2:torso` and not just
+			// self-collisions. A blocker hit has no `def` on its side of the pair
+			// — it is not a capsule of THIS rig — so the label falls back to the
+			// blocker's own namespaced id.
 			fcDetect: () => {
 				const capsules = activeRig ? buildCollisionCapsules(activeRig) : null;
-				return capsules ? detectPenetrations(capsules).map((p) => ({ pair: `${p.a.def.id}×${p.b.def.id}`, depth: p.depth })) : null;
+				if (!capsules) return null;
+				const label = (side) => side?.def?.id ?? side?.id ?? "?";
+				return detectPenetrations(capsules, { blockers: externalBlockers(tlFrame) })
+					.map((p) => ({ pair: `${label(p.a)}×${label(p.b)}`, depth: p.depth }));
 			},
+			// What those `obj:` / `char:` names stand for, as plain numbers: the
+			// boxes and capsules the fixer is being asked to keep the body out of.
+			fcBlockers: () => blockerSummary(externalBlockers(tlFrame)),
 			// AutoPhysics QA surface: the centre of mass of the CURRENT pose, so
 			// a headless check can sample the arc before/after the button press.
 			apCom: () => {
@@ -5606,7 +5704,11 @@ globalThis.playMode = centerTab === "play";
 			pathDraw,
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, pathPointIndex, centerTab, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS, ikEditTool, showTrails]);
+		// sceneObjects/rigs/characters ride the deps because fcDetect/fcBlockers
+		// close over them: a stale closure would report the set as it was two
+		// edits ago — and, after an undo that removes a subject, would keep
+		// reporting the ghost's capsules.
+	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, sceneObjects, rigs, characters, pathPointIndex, centerTab, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS, ikEditTool, showTrails]);
 	// QA hook (plan §6.5): exposes history depth and the present === objects
 	// invariant so the browser suite can assert undo entry counts directly.
 	// Reads live store state at call time; re-registered after every render.

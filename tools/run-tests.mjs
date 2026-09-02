@@ -7,6 +7,7 @@ import { join, relative } from "node:path";
 const NODE_FILES = [
 	"test/ardy/verify-base-free.mjs",
 	"test/ardy/verify-browser-motion.mjs",
+	"test/ardy/verify-collision-blockers.mjs",
 	"test/ardy/verify-compare-npz.mjs",
 	"test/ardy/verify-fill.mjs",
 	"test/ardy/verify-fk.mjs",
