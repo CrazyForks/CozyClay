@@ -587,6 +587,15 @@ export default function App() {
 		[sensorId, shotOutput.aspect],
 	);
 	const [nonce, setNonce] = useState(0);
+	// Which `preset:nonce` ShotRig last seeded the shot camera from. Held here
+	// rather than inside ShotRig because a suspending cast model remounts the
+	// Canvas children, and a remount must not re-seed over a camera move.
+	const shotPresetAppliedRef = useRef(null);
+	// The shot camera's last position, kept outside the Canvas so a remount can
+	// put the camera back where it was. ShotRig's metrics tick keeps it fresh;
+	// the live set_camera handler writes it directly because that command can
+	// land while the camera is unmounted.
+	const shotCameraPosRef = useRef(null);
 	// The Top-View is always the inset: the old double-click swap that let the
 	// plan own the big pane is gone, so there is no view mode to toggle.
 	const planIsMain = false;
@@ -3314,18 +3323,27 @@ globalThis.playMode = centerTab === "play";
 				const aim = finitePatch(args, ["lookAtX", "lookAtY", "lookAtZ"]);
 				const aimed = Object.keys(aim).length === 3;
 				const camera = shotCamRef.current;
+				const angles = aimed ? aimAt(next, { x: aim.lookAtX, y: aim.lookAtY, z: aim.lookAtZ }) : null;
+				if (angles) {
+					look.current.yaw = angles.yaw;
+					look.current.pitch = angles.pitch;
+				}
 				if (camera) {
 					camera.position.set(next.x, next.y, next.z);
 					camera.fov = nextFov;
-					if (aimed) {
-						const angles = aimAt(camera.position, { x: aim.lookAtX, y: aim.lookAtY, z: aim.lookAtZ });
-						look.current.yaw = angles.yaw;
-						look.current.pitch = angles.pitch;
+					if (angles) {
 						camera.rotation.order = "YXZ";
 						camera.rotation.set(angles.pitch, angles.yaw, 0);
 					}
 					camera.updateProjectionMatrix();
 				}
+				// While a cast model's FBX is still downloading, the Canvas subtree is
+				// suspended and the shot camera is unmounted, so `camera` is null and
+				// the write above is skipped. The pose still has to survive: ShotRig
+				// restores it from this ref (and look.current) when the camera
+				// remounts, instead of re-seeding the preset over it (#86 on slow
+				// runners — the position and aim were being dropped here).
+				shotCameraPosRef.current = { x: next.x, y: next.y, z: next.z };
 				live.camera = next;
 				live.fovDeg = nextFov;
 				setCameraPos(next);
@@ -9676,6 +9694,8 @@ function resizePromptClip(id, edge, rawFrame) {
 							<ShotRig
 								preset={preset}
 								nonce={nonce}
+								appliedPresetRef={shotPresetAppliedRef}
+								lastPosRef={shotCameraPosRef}
 								fovDeg={fovDeg}
 								charA={charA}
 								charB={charB}
@@ -9685,6 +9705,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								camRef={shotCamRef}
 								look={look}
 								onMetrics={(p, visible) => {
+									shotCameraPosRef.current = { x: p.x, y: p.y, z: p.z };
 									setCameraPos((prev) =>
 										Math.abs(prev.x - p.x) + Math.abs(prev.y - p.y) + Math.abs(prev.z - p.z) > 1e-4
 											? { x: p.x, y: p.y, z: p.z }

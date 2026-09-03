@@ -140,12 +140,41 @@ try {
 		return response.result.value;
 	};
 	await send("Network.enable");
+	// Requests paused by the Fetch domain (enabled further down, only for the
+	// x-bot mesh) collect here until the suite releases them.
+	const heldModelRequests = [];
+	socket.addEventListener("message", (event) => {
+		const frame = JSON.parse(event.data);
+		if (frame.method === "Fetch.requestPaused") heldModelRequests.push(frame.params.requestId);
+	});
 	await send("Page.enable");
 	await send("Page.navigate", { url: `http://127.0.0.1:${vitePort}/app/` });
 
 	client = new Client({ name: "cozyclay-live-editor-model-verify", version: "1.0.0" });
 	await client.connect(new StdioClientTransport({ command: process.execPath, args: [serverPath, "--live-port", String(livePort)] }));
 	await withTimeout(editorHello, "editor live hello");
+
+	// The shot camera mounts with the R3F canvas, a few frames after the live
+	// socket says hello. Wait for the renderer the editor itself announces, then
+	// for the QA snapshot that publishes the camera object the assertions read.
+	await evaluate(
+		`window.__cozyclayMcpCaptureReady ? true : new Promise((resolve) => window.addEventListener('cozyclay:mcp-capture-ready', () => resolve(true), { once: true }))`,
+		"shot renderer readiness",
+	);
+	await evaluate(
+		`new Promise((resolve) => {
+			const wait = () => (window.__cozyclay?.shotCam ? resolve(true) : requestAnimationFrame(wait));
+			wait();
+		})`,
+		"shot camera mount",
+	);
+
+	// From here the x-bot mesh is held at the network layer until this suite
+	// releases it. A cast model that is still downloading suspends the R3F
+	// scene graph and remounts every sibling rig when it resolves; that order is
+	// exactly what a slow runner produces by accident, so it is produced here
+	// on purpose to prove a shot framed in the meantime survives it (#86).
+	await send("Fetch.enable", { patterns: [{ urlPattern: "*/models/x-bot-tpose.fbx*", requestStage: "Request" }] });
 
 	// Given the actual browser editor is connected over its live WebSocket
 	// When MCP adds an explicit non-default mannequin
@@ -174,17 +203,6 @@ try {
 	// socket says hello, and a set_camera that lands first only updates React
 	// state. Wait for the renderer the editor itself announces, then for the QA
 	// snapshot that publishes the camera object this assertion reads.
-	await evaluate(
-		`window.__cozyclayMcpCaptureReady ? true : new Promise((resolve) => window.addEventListener('cozyclay:mcp-capture-ready', () => resolve(true), { once: true }))`,
-		"shot renderer readiness",
-	);
-	await evaluate(
-		`new Promise((resolve) => {
-			const wait = () => (window.__cozyclay?.shotCam ? resolve(true) : requestAnimationFrame(wait));
-			wait();
-		})`,
-		"shot camera mount",
-	);
 	const placed = await client.callTool({ name: "place_character", arguments: { character: "A", x: subject.x, z: subject.z, facing: 25 } });
 	assert.equal(placed.isError, undefined, JSON.stringify(placed));
 	// The x-bot added above left the editor selecting it, and the shot is framed
@@ -193,6 +211,21 @@ try {
 	assert.equal(focused.isError, undefined, JSON.stringify(focused));
 	const framed = await client.callTool({ name: "frame_shot", arguments: { size: "medium shot", view: "profile", level: "eye", side: "right", focal_mm: 35 } });
 	assert.equal(framed.isError, undefined, JSON.stringify(framed));
+	// The x-bot mesh is still in flight, so the Canvas is suspended and the
+	// frame_shot above landed while the shot camera object was unmounted.
+	// Release the download and wait for the scene to remount around the new rig
+	// before reading anything: the suite must see what a user sees next.
+	assert.ok(heldModelRequests.length > 0, "the x-bot mesh request was not intercepted, so the suspended-canvas case did not run");
+	const lateRigReady = evaluate(
+		`(window.__cozyclayMcpRigReady ?? []).length >= 2 ? true : new Promise((resolve) => window.addEventListener('cozyclay:mcp-rig-ready', () => resolve(true), { once: true }))`,
+		"late rig ready",
+	);
+	for (const requestId of heldModelRequests) await send("Fetch.continueRequest", { requestId });
+	await send("Fetch.disable");
+	await withTimeout(lateRigReady, "x-bot rig mount", 20_000);
+	// Two more frames so every effect the remount scheduled has run, and the QA
+	// snapshot publishes the remounted camera object.
+	await evaluate(`new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))`, "post-remount frame");
 	const aim = await evaluate(
 		`(() => {
 			const cam = window.__cozyclay.shotCam;
@@ -222,6 +255,7 @@ try {
 		editorDescribeReportedModel: true,
 		mcpDescribeReportedModel: /\[x-bot-tpose\]/.test(described.content[0].text),
 		frameShotProfileOffAxisDeg: Number(offAxisDeg.toFixed(3)),
+		framedWhileCanvasSuspended: true,
 	}));
 } finally {
 	socket?.close();
