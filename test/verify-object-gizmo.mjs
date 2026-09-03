@@ -786,8 +786,11 @@ expect(
 // Isolation: only now reset the store for anything that follows. The app
 // itself persists the whole stage under cozyclay.scenes.v4 — clearing just
 // the legacy pair leaves every object the cases above created to reload
-// into the drop-to-surface section. Sweep all cozyclay keys but the locale.
-await evaluate("Object.keys(localStorage).filter(k => k.startsWith('cozyclay.') && k !== 'cozyclay.locale').forEach(k => localStorage.removeItem(k))");
+// into the drop-to-surface section. Sweep all cozyclay keys but the editor
+// preferences: the locale, and the project session — without it the studio
+// reopens on the first-run project chooser, whose dialog sits over the
+// viewport and takes every canvas press the lifecycle section dispatches.
+await evaluate("Object.keys(localStorage).filter(k => k.startsWith('cozyclay.') && k !== 'cozyclay.locale' && k !== 'cozyclay.project-session.v1').forEach(k => localStorage.removeItem(k))");
 await reloadPage();
 
 /* -------------------------------------------------- drop-to-surface ---- */
