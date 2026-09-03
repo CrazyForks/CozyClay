@@ -131,6 +131,7 @@ const BROWSER_FILES = [
 	"test/verify-cutout-browser.mjs",
 	"test/verify-ik-browser.mjs",
 	"test/verify-motion-edit-browser.mjs",
+	"test/verify-object-colour-browser.mjs",
 	"test/verify-object-gizmo.mjs",
 	"test/verify-offscreen-export-browser.mjs",
 	"test/verify-project-menu-browser.mjs",

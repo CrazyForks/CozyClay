@@ -147,13 +147,17 @@ import {
 	createSceneObject,
 	duplicateCutoutOptions,
 	dropToSurfacePatch,
+	normalizeObjectColor,
 	objectSize,
 	placementInFront,
+	readStoredObjectColors,
+	rememberObjectColor,
 	removeSceneObject,
 	setSceneObjectAttach,
 	setSceneObjectParent,
 	sceneObjectIdFromHierarchy,
 	updateSceneObject,
+	writeStoredObjectColors,
 } from "./scene-objects.js";
 import { createSceneHistoryStore } from "./scene-history.js";
 import {
@@ -1094,6 +1098,24 @@ globalThis.playMode = centerTab === "play";
 	// ARDY workflow in pipeline order. Selecting anything in the scene routes
 	// to the inspector tab; the root SHOT row routes to the shot tab.
 	const [inspectorActionsOpen, setInspectorActionsOpen] = useState(false);
+	// Hand-mixed object tints, newest first. An editor preference like the
+	// guides above — it belongs to this browser, never to the scene, so it is
+	// kept out of the scene document and written straight back to storage.
+	const [recentObjectColors, setRecentObjectColors] = useState(() => readStoredObjectColors(globalThis.localStorage));
+	// What is being typed into the hex field right now, or null when nobody is
+	// typing. Held apart from the record so a half-written "#ff3" survives on
+	// screen without ever repainting the prop, and so the field snaps back to
+	// the object's real colour the moment the edit ends.
+	const [objectColorDraft, setObjectColorDraft] = useState(null);
+	function rememberSceneObjectColor(hex) {
+		setRecentObjectColors((previous) => {
+			const next = rememberObjectColor(previous, hex);
+			// rememberObjectColor returns the same array when nothing changed, so a
+			// re-pick of the same tint neither writes storage nor re-renders.
+			if (next !== previous) writeStoredObjectColors(globalThis.localStorage, next);
+			return next;
+		});
+	}
 	const [objectDeleteUndo, setObjectDeleteUndo] = useState(null);
 	// An undo offer is an offer, not a banner: without a window it sits on the
 	// screen for the rest of the session. Long enough to notice and reach, then
@@ -11608,6 +11630,65 @@ function resizePromptClip(id, edge, rawFrame) {
 												}}
 											/>
 										))}
+										{/* Recently mixed tints, fenced off from the presets by a
+										    rule: they are this browser's memory, not the palette,
+										    and MCP's update_object can put any hex on a prop — an
+										    author has to be able to reach the same colour back. */}
+										{recentObjectColors.length > 0 && <span className="object-colors-split" aria-hidden="true" />}
+										{recentObjectColors.map((color) => (
+											<button
+												type="button"
+												key={color}
+												className={"object-color" + (selectedSceneObject.color === color ? " active" : "")}
+												style={{ background: color }}
+												aria-label={isKo ? `최근 색상 ${color}` : `Recent colour ${color}`}
+												aria-pressed={selectedSceneObject.color === color}
+												onClick={(event) => {
+													changeSceneObject(selectedSceneObject.id, { color });
+													rememberSceneObjectColor(color);
+													event.currentTarget.closest("details")?.removeAttribute("open");
+												}}
+											/>
+										))}
+										{/* The free colour: the native picker for choosing one, the
+										    hex field for typing or reading back an exact value. Neither
+										    closes the popover the way a preset does — a picker drag and
+										    a half-typed hex both fire change after change, and a row
+										    that vanished mid-edit would be unusable. */}
+										<input
+											type="color"
+											className="object-color object-color-free"
+											value={normalizeObjectColor(selectedSceneObject.color) ?? "#ffffff"}
+											title={ko("Custom colour", "직접 고른 색상")}
+											aria-label={ko("Custom colour", "직접 고른 색상")}
+											onChange={(event) => {
+												const color = normalizeObjectColor(event.target.value);
+												if (!color) return;
+												changeSceneObject(selectedSceneObject.id, { color });
+												rememberSceneObjectColor(color);
+											}}
+										/>
+										<input
+											type="text"
+											className="object-color-hex"
+											// Idle, the field IS the object's colour — including one an
+											// agent set through MCP's update_object, which the palette
+											// alone could never show. Mid-edit the draft takes over.
+											value={objectColorDraft ?? selectedSceneObject.color}
+											spellCheck={false}
+											maxLength={7}
+											placeholder="#rrggbb"
+											title={ko("Colour hex", "색상 hex")}
+											aria-label={ko("Colour hex", "색상 hex")}
+											onChange={(event) => {
+												setObjectColorDraft(event.target.value);
+												const color = normalizeObjectColor(event.target.value);
+												if (!color) return; // a typo is a keystroke, not a repaint
+												changeSceneObject(selectedSceneObject.id, { color });
+												rememberSceneObjectColor(color);
+											}}
+											onBlur={() => setObjectColorDraft(null)}
+										/>
 										</div>
 									</details>
 								)}

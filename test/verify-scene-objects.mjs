@@ -9,7 +9,10 @@ import {
 	normalizeSceneObject,
 	serializeScene,
 	DEFAULT_SCENE_OBJECTS,
+	OBJECT_COLORS,
 	OBJECT_LIBRARY,
+	normalizeObjectColor,
+	rememberObjectColor,
 	createSceneObject,
 	createCutoutObject,
 	duplicateCutoutOptions,
@@ -890,6 +893,80 @@ expect(
 		const { attach, ...old } = aProp;
 		return normalizeSceneObject(old).attach === null;
 	})(),
+);
+
+/* ------------------------------------------------- object colours ---- */
+// Issue #88: the palette was six neutrals, so a blockout could not even say
+// "the red ball". The chromatics are part of the contract now.
+expect(
+	"the palette keeps its six neutrals first",
+	OBJECT_COLORS.slice(0, 6).join() === ["#e2e5e6", "#c2c6c8", "#9aa1a5", "#767d81", "#d9b18c", "#8fae9b"].join(),
+	JSON.stringify(OBJECT_COLORS),
+);
+expect(
+	"the palette offers red, blue, yellow and green for blocking",
+	["#d94a4a", "#4a7bd9", "#e2c04a", "#4fa86a"].every((color) => OBJECT_COLORS.includes(color)),
+	JSON.stringify(OBJECT_COLORS),
+);
+expect(
+	"every palette entry is a normalized lowercase #rrggbb",
+	OBJECT_COLORS.every((color) => normalizeObjectColor(color) === color),
+	JSON.stringify(OBJECT_COLORS),
+);
+
+// The hex field takes what a human types — shorthand, no hash, upper case —
+// and everything else is a typo, not a colour: it must not reach the record.
+expect(
+	"a hex field accepts #rgb, #rrggbb and bare digits, folded to lowercase #rrggbb",
+	normalizeObjectColor("#F36") === "#ff3366" &&
+		normalizeObjectColor("#FF3366") === "#ff3366" &&
+		normalizeObjectColor("ff3366") === "#ff3366" &&
+		normalizeObjectColor("  f36 ") === "#ff3366",
+	JSON.stringify([normalizeObjectColor("#F36"), normalizeObjectColor("#FF3366"), normalizeObjectColor("ff3366"), normalizeObjectColor("  f36 ")]),
+);
+expect(
+	"malformed hex reads as no colour at all",
+	["zzz", "#12345", "#gggggg", "", "#", "red", null, undefined, 255, {}].every((bad) => normalizeObjectColor(bad) === null),
+	JSON.stringify(["zzz", "#12345", "#gggggg", "", "red"].map(normalizeObjectColor)),
+);
+
+// Recent colours are a memory of what the author mixed, not a second palette:
+// presets stay out of it, the newest is first, and the list never grows.
+expect(
+	"a remembered colour moves to the front and never duplicates",
+	(() => {
+		const once = rememberObjectColor([], "#ff3366");
+		const twice = rememberObjectColor(rememberObjectColor(once, "#123456"), "#FF3366");
+		return once.join() === "#ff3366" && twice.join() === ["#ff3366", "#123456"].join();
+	})(),
+	JSON.stringify(rememberObjectColor(rememberObjectColor(rememberObjectColor([], "#ff3366"), "#123456"), "#FF3366")),
+);
+expect(
+	"the recent list caps at six, dropping the oldest",
+	(() => {
+		const hexes = ["#111111", "#222222", "#333333", "#444444", "#555555", "#666666", "#777777"];
+		const list = hexes.reduce((acc, hex) => rememberObjectColor(acc, hex), []);
+		return list.length === 6 && list[0] === "#777777" && !list.includes("#111111");
+	})(),
+	JSON.stringify(["#111111", "#222222", "#333333", "#444444", "#555555", "#666666", "#777777"].reduce((acc, hex) => rememberObjectColor(acc, hex), [])),
+);
+expect(
+	"a preset is already on the palette, so it is never remembered twice",
+	rememberObjectColor(["#ff3366"], OBJECT_COLORS[0]).join() === "#ff3366" &&
+		rememberObjectColor(["#ff3366"], "#D94A4A").join() === "#ff3366",
+	JSON.stringify(rememberObjectColor(["#ff3366"], OBJECT_COLORS[0])),
+);
+expect(
+	"malformed input leaves the recent list untouched, by identity",
+	(() => {
+		const list = ["#ff3366"];
+		return rememberObjectColor(list, "zzz") === list && rememberObjectColor(list, null) === list;
+	})(),
+);
+expect(
+	"a stored recent list is sanitised, so junk in storage cannot paint a swatch",
+	rememberObjectColor(["nope", "#ABCDEF", 7, "#ff3366"], "#010203").join() === ["#010203", "#abcdef", "#ff3366"].join(),
+	JSON.stringify(rememberObjectColor(["nope", "#ABCDEF", 7, "#ff3366"], "#010203")),
 );
 
 // The grouping and attachment sections run after the first gate above, so they
