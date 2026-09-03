@@ -11257,7 +11257,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						{selectedSceneObject && (
 							<>
 								<p className="inspector-hint">
-								{ko("Type a value and press Enter, or drag an axis letter to scrub.", "값을 입력하고 Enter를 누르거나 축 글자를 드래그해 조절하세요.")}
+								{ko("Type a value and press Enter, or drag a number sideways to scrub (Shift for fine).", "값을 입력하고 Enter를 누르거나 숫자를 좌우로 끌어 조절하세요(Shift는 미세 조정).")}
 								</p>
 								<label className="check snap-toggle">
 									<input type="checkbox" checked={snapEnabled} onChange={(event) => setSnapEnabled(event.target.checked)} />
@@ -11324,25 +11324,25 @@ function resizePromptClip(id, edge, rawFrame) {
 								<Vector3Row
 							label={ko("Position", "위치")}
 									fields={[
-										{ axis: "X", value: selectedSceneObject.x, step: 0.05, precision: 2, onChange: (x) => changeSceneObject(selectedSceneObject.id, { x }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Y", value: selectedSceneObject.y ?? 0, step: 0.05, precision: 2, onChange: (y) => changeSceneObject(selectedSceneObject.id, { y }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Z", value: selectedSceneObject.z, step: 0.05, precision: 2, onChange: (z) => changeSceneObject(selectedSceneObject.id, { z }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "X", value: selectedSceneObject.x, step: 0.05, precision: 2, scrubRange: 5, onChange: (x, token) => changeSceneObject(selectedSceneObject.id, { x }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Y", value: selectedSceneObject.y ?? 0, step: 0.05, precision: 2, scrubRange: 5, onChange: (y, token) => changeSceneObject(selectedSceneObject.id, { y }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Z", value: selectedSceneObject.z, step: 0.05, precision: 2, scrubRange: 5, onChange: (z, token) => changeSceneObject(selectedSceneObject.id, { z }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
 								<Vector3Row
 							label={ko("Rotation", "회전")}
 									fields={[
-										{ axis: "X", value: selectedSceneObject.rotX ?? 0, step: 1, precision: 1, onChange: (rotX) => changeSceneObject(selectedSceneObject.id, { rotX }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Y", value: selectedSceneObject.rot, step: 1, precision: 1, onChange: (rot) => changeSceneObject(selectedSceneObject.id, { rot }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Z", value: selectedSceneObject.rotZ ?? 0, step: 1, precision: 1, onChange: (rotZ) => changeSceneObject(selectedSceneObject.id, { rotZ }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "X", value: selectedSceneObject.rotX ?? 0, step: 1, precision: 1, scrubRange: 180, onChange: (rotX, token) => changeSceneObject(selectedSceneObject.id, { rotX }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Y", value: selectedSceneObject.rot, step: 1, precision: 1, scrubRange: 180, onChange: (rot, token) => changeSceneObject(selectedSceneObject.id, { rot }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Z", value: selectedSceneObject.rotZ ?? 0, step: 1, precision: 1, scrubRange: 180, onChange: (rotZ, token) => changeSceneObject(selectedSceneObject.id, { rotZ }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
 								<Vector3Row
 							label={ko("Scale", "크기")}
 									fields={[
-										{ axis: "X", value: selectedSceneObject.scaleX ?? 1, step: 0.05, precision: 2, onChange: (scaleX) => changeSceneObject(selectedSceneObject.id, { scaleX }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Y", value: selectedSceneObject.scaleY ?? 1, step: 0.05, precision: 2, onChange: (scaleY) => changeSceneObject(selectedSceneObject.id, { scaleY }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Z", value: selectedSceneObject.scaleZ ?? 1, step: 0.05, precision: 2, onChange: (scaleZ) => changeSceneObject(selectedSceneObject.id, { scaleZ }), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "X", value: selectedSceneObject.scaleX ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleX, token) => changeSceneObject(selectedSceneObject.id, { scaleX }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Y", value: selectedSceneObject.scaleY ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleY, token) => changeSceneObject(selectedSceneObject.id, { scaleY }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Z", value: selectedSceneObject.scaleZ ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleZ, token) => changeSceneObject(selectedSceneObject.id, { scaleZ }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
 								{selectedSceneObject.renderer === CUTOUT_KIND && (
