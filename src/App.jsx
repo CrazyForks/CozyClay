@@ -1174,7 +1174,10 @@ globalThis.playMode = centerTab === "play";
 		// This MUST stay inside the handler, never in the render body: a settle
 		// during render runs the producer's cancel teardown, and since the first
 		// applied tick re-renders, every drag would die after exactly one tick.
-		store.settle();
+		// Resolve the live store at event time: opening a scene replaces the
+		// coordinator in storeRef before the next hierarchy click, while a
+		// render-captured store can still settle the scene that was left.
+		storeRef.current.settle();
 		setSelectedHierarchyId(id);
 		// Moving the focus anywhere but the camera releases the crane dot too:
 		// a press on the floor or the sky must not leave a mark selected.

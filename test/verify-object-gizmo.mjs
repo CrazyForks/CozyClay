@@ -1066,7 +1066,7 @@ await click("[...document.querySelectorAll('.hierarchy-row')].find(b => b.textCo
 await waitFor(`window.__sceneHistory().past === ${pastBeforeSwitch + 1}`);
 expect(
 	"a selection change mid-drag commits the travel as exactly one entry",
-	await evaluate("window.__sceneHistory().past") === pastBeforeSwitch + 1,
+	await evaluate(`(() => { const history = window.__sceneHistory(); return history.past === ${pastBeforeSwitch + 1} && history.future === 0; })()`),
 	JSON.stringify(await evaluate("window.__sceneHistory()")),
 );
 // keep moving with the button still down: the producer was torn down, so
