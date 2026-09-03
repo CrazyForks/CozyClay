@@ -1774,12 +1774,61 @@ select {
 	top: 26px;
 	z-index: 20;
 	display: flex;
+	/* Ten presets, the author's recent tints and the two free-colour inputs no
+	   longer fit one line of a narrow inspector (#88): wrap into rows of six
+	   swatches so the popover stays inside the panel instead of running off it. */
+	flex-wrap: wrap;
+	align-items: center;
+	width: max-content;
+	max-width: 176px;
 	gap: 4px;
 	padding: 5px;
 	border: 1px solid rgba(126, 154, 255, .28);
 	border-radius: 8px;
 	background: #161c2b;
 	box-shadow: 0 8px 18px rgba(0, 0, 0, .45);
+}
+
+/* The author's own colours are a different kind of thing from the palette, so
+   a full-width rule separates them rather than a gap nobody would read. */
+.object-colors-split {
+	flex: 1 0 100%;
+	height: 1px;
+	margin: 1px 0;
+	background: rgba(126, 154, 255, .28);
+}
+
+/* The native picker, dressed as one more swatch: same box as .object-color so
+   the row reads as one palette (the character picker's .sb-color does the
+   same trick for the subject box). */
+.object-color-free {
+	padding: 1px;
+	background: #ffffff05;
+	appearance: none;
+	-webkit-appearance: none;
+}
+
+.object-color-free::-webkit-color-swatch-wrapper { padding: 0; }
+.object-color-free::-webkit-color-swatch { border: 0; border-radius: 4px; }
+
+/* The exact value, typed or read back — an agent's update_object hex has to be
+   both visible and re-typable here. Monospace: it is a machine value. */
+.object-color-hex {
+	flex: 1 0 100%;
+	width: 100%;
+	padding: 2px 5px;
+	border: 1px solid var(--line2);
+	border-radius: 6px;
+	background: rgba(0, 0, 0, .28);
+	color: var(--fg);
+	font-family: var(--mono);
+	font-size: 10px;
+	text-transform: lowercase;
+}
+
+.object-color-hex:focus-visible {
+	outline: 1px solid var(--accent);
+	outline-offset: 0;
 }
 
 .scene-switcher-heading {
