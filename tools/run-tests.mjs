@@ -124,6 +124,7 @@ const NODE_FILES = [
 	"mcp/verify-protocol-version.mjs",
 	"mcp/verify-tool-annotations.mjs",
 	"test/verify-object-path.mjs",
+	"test/verify-number-field-scrub.mjs",
 	"test/verify-speed-envelope.mjs",
 ];
 
@@ -132,6 +133,7 @@ const BROWSER_FILES = [
 	"test/verify-cutout-browser.mjs",
 	"test/verify-ik-browser.mjs",
 	"test/verify-motion-edit-browser.mjs",
+	"test/verify-number-field-scrub-browser.mjs",
 	"test/verify-object-colour-browser.mjs",
 	"test/verify-object-gizmo.mjs",
 	"test/verify-offscreen-export-browser.mjs",

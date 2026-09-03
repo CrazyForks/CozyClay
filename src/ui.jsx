@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { createScrubGesture } from "./ui-scrub.js";
 
 // Custom dropdown, structurally matched to the reference (`.dropdown`,
 // `dd-caret`, `dropdown-menu`, `dropdown-item`, `dd-check`) with the keyboard
@@ -278,7 +279,7 @@ export function Field({ label, children }) {
 		</div>
 	);
 }
-export function NumberField({ label, value, step, precision = 2, onChange, onScrubStart, onScrubEnd, title }) {
+export function NumberField({ label, value, step, precision = 2, scrubRange, onChange, onScrubStart, onScrubEnd, title }) {
 	const [focused, setFocused] = useState(false);
 	const [draft, setDraft] = useState(null);
 	// The draft must be readable synchronously: blur() fires the commit
@@ -293,9 +294,10 @@ export function NumberField({ label, value, step, precision = 2, onChange, onScr
 	// blur), so the freshest end callback is mirrored like `valueRef`.
 	const scrubEndRef = useRef(onScrubEnd);
 	scrubEndRef.current = onScrubEnd;
-	// `{ x, value, element, pointerId, token }` of the scrub start, null while
-	// not scrubbing. `element`/`pointerId` let the teardown release capture;
-	// `token` is the open store transaction, null when no scrub props exist.
+	// `{ gesture, scrubbing, token }` of the press, null while no button is
+	// down. `scrubbing` marks the press that has travelled far enough to be a
+	// drag; `token` is the open store transaction, null until then (a plain
+	// click must not open one) or when no scrub props exist.
 	const dragRef = useRef(null);
 
 	valueRef.current = value;
@@ -348,53 +350,74 @@ export function NumberField({ label, value, step, precision = 2, onChange, onScr
 		}
 	};
 
-	// Unity-style scrubbing: drag the axis label to change the value. Pointer
-	// capture keeps the drag alive when the cursor leaves the window; Shift
-	// moves 10x per pixel, Alt 0.1x.
-	const onAxisPointerDown = (e) => {
-		e.preventDefault();
-		const base = commitDraft();
-		const drag = {
-			x: e.clientX,
-			value: base ?? valueRef.current,
-			element: e.currentTarget,
-			pointerId: e.pointerId,
+	// Blender/Unity scrubbing: press anywhere on the field — badge OR number —
+	// and drag left/right to change the value. The press does not commit to
+	// anything yet: under the travel threshold it is still a click that focuses
+	// the input for typing (issue #87 — users aim at the number, and the badge
+	// alone was a 15 px hotspot nobody found). Sensitivity is a fixed-travel
+	// rate (src/ui-scrub.js), not pixels * step, so every field feels the same.
+	const onFieldPointerDown = (e) => {
+		if (e.button !== 0) return;
+		// A press inside an already-focused input is text editing (caret
+		// placement, drag-select), not a scrub — leave it alone.
+		if (focused && e.target === inputRef.current) return;
+		// A press on the badge while the number is being typed still commits what
+		// was typed, so the drag baselines from what the user just wrote.
+		const base = draftRef.current !== null ? commitDraft() : null;
+		dragRef.current = {
+			gesture: createScrubGesture({ x: e.clientX, value: base ?? valueRef.current, step, precision, scrubRange }),
+			scrubbing: false,
+			token: null,
 		};
-		// A scrub is one store transaction: begin before any apply so the
-		// whole drag lands as a single undo entry. The teardown is registered
-		// as the store's cancel so a settle leaves the scrub inert without
-		// this component closing the token itself.
-		dragRef.current = drag;
-		drag.token = onScrubStart?.({ owner: "field", cancel: () => teardownScrub(drag) });
-		e.currentTarget.setPointerCapture(e.pointerId);
 	};
 
-	const onAxisPointerMove = (e) => {
+	const onFieldPointerMove = (e) => {
 		const drag = dragRef.current;
 		if (!drag) return;
-		const multiplier = e.shiftKey ? 10 : e.altKey ? 0.1 : 1;
-		onChange(drag.value + (e.clientX - drag.x) * step * multiplier, drag.token);
+		const next = drag.gesture.move(e.clientX, { shiftKey: e.shiftKey, altKey: e.altKey });
+		if (next === null) return;
+		if (!drag.scrubbing) {
+			// First armed move: the press has become a drag. Take the focus back
+			// from the input (the press already focused it) so the drag is not
+			// typing into a selected number — with the draft dropped first, so the
+			// blur commits nothing outside the transaction.
+			e.preventDefault();
+			drag.scrubbing = true;
+			if (document.activeElement === inputRef.current) {
+				setDraftValue(null);
+				inputRef.current.blur();
+			}
+			// A scrub is one store transaction: begin before any apply so the whole
+			// drag lands as a single undo entry. The teardown is registered as the
+			// store's cancel so a settle leaves the scrub inert without this
+			// component closing the token itself.
+			drag.token = onScrubStart?.({ owner: "field", cancel: () => teardownScrub(drag) }) ?? null;
+		}
+		onChange(next, drag.token);
 	};
+	// The window listeners below are registered once, so they read the freshest
+	// move handler the same way `scrubEndRef` mirrors the end callback.
+	const scrubMoveRef = useRef(onFieldPointerMove);
+	scrubMoveRef.current = onFieldPointerMove;
 
-	// Drop the scrub ref and release the capture held on the axis label.
-	// Shared by every close path AND the store's cancel; never closes the
-	// transaction itself — the caller decides the commit value.
+	// Drop the scrub ref. Shared by every close path AND the store's cancel;
+	// never closes the transaction itself — the caller decides the commit value.
 	const teardownScrub = (drag) => {
 		if (!drag || dragRef.current !== drag) return;
 		dragRef.current = null;
-		if (drag.element.hasPointerCapture(drag.pointerId)) {
-			drag.element.releasePointerCapture(drag.pointerId);
-		}
 	};
 
+	// A press that never armed is a plain click: drop it without touching the
+	// store, so no empty transaction and no history entry for a focus.
 	const closeScrub = (commit) => {
 		const drag = dragRef.current;
 		if (!drag) return;
 		teardownScrub(drag);
+		if (!drag.scrubbing) return;
 		scrubEndRef.current?.(drag.token, { commit });
 	};
 
-	const endAxisDrag = () => closeScrub(true);
+	const endFieldDrag = () => closeScrub(true);
 
 	useEffect(() => {
 		// While a scrub is live, Escape cancels the whole drag. It must run in
@@ -404,16 +427,31 @@ export function NumberField({ label, value, step, precision = 2, onChange, onScr
 		// work, not intent to discard (plan §6.3).
 		const onEscape = (event) => {
 			if (event.key !== "Escape") return;
-			if (!dragRef.current) return;
+			if (!dragRef.current?.scrubbing) return;
 			event.stopPropagation();
 			closeScrub(false);
 		};
 		const onBlur = () => closeScrub(true);
+		// The drag lives on the window, not on the field: a 40 px wide number is
+		// left behind within a few pixels of travel, and pointer capture cannot
+		// be claimed mid-gesture reliably — the same window-listener shape the
+		// timeline's curve drags use.
+		const onMove = (event) => {
+			if (!dragRef.current) return;
+			scrubMoveRef.current(event);
+		};
+		const onUp = () => closeScrub(true);
 		window.addEventListener("keydown", onEscape, true);
 		window.addEventListener("blur", onBlur);
+		window.addEventListener("pointermove", onMove, true);
+		window.addEventListener("pointerup", onUp, true);
+		window.addEventListener("pointercancel", onUp, true);
 		return () => {
 			window.removeEventListener("keydown", onEscape, true);
 			window.removeEventListener("blur", onBlur);
+			window.removeEventListener("pointermove", onMove, true);
+			window.removeEventListener("pointerup", onUp, true);
+			window.removeEventListener("pointercancel", onUp, true);
 			closeScrub(true);
 		};
 	}, []);
@@ -421,16 +459,14 @@ export function NumberField({ label, value, step, precision = 2, onChange, onScr
 	const display = focused && draft !== null ? draft : formatValue(value);
 
 	return (
-		<span className="number-field" title={title}>
-			<span
-				className="axis"
-				onPointerDown={onAxisPointerDown}
-				onPointerMove={onAxisPointerMove}
-				onPointerUp={endAxisDrag}
-				onPointerCancel={endAxisDrag}
-			>
-				{label}
-			</span>
+		<span
+			className={`number-field${focused ? " editing" : ""}`}
+			title={title}
+			onPointerDown={onFieldPointerDown}
+			onPointerUp={endFieldDrag}
+			onPointerCancel={endFieldDrag}
+		>
+			<span className="axis">{label}</span>
 			<input
 				ref={inputRef}
 				type="text"
@@ -458,6 +494,7 @@ export function Vector3Row({ label, fields }) {
 					value={field.value}
 					step={field.step}
 					precision={field.precision}
+					scrubRange={field.scrubRange}
 					onChange={field.onChange}
 					onScrubStart={field.onScrubStart}
 					onScrubEnd={field.onScrubEnd}

@@ -6390,8 +6390,10 @@ input[type=range]::-moz-range-thumb {
 }
 /* ---- Object Transform: Unity-style numeric fields ---- */
 /* Three labelled rows (Position / Rotation / Scale) of three scrubbable
-   number fields. The axis letters are drag handles: ew-resize cursor and
-   touch-action off so pointer capture owns the whole gesture. */
+   number fields. The WHOLE field is the drag handle — badge and number alike
+   (issue #87: the badge alone was a 15 px hotspot users never found, and they
+   aim at the number). ew-resize advertises it, touch-action off so pointer
+   capture owns the whole gesture. */
 
 .vec3-row {
 	display: flex;
@@ -6413,6 +6415,7 @@ input[type=range]::-moz-range-thumb {
 	align-items: stretch;
 	flex: 1;
 	min-width: 0;
+	touch-action: none;
 }
 
 .number-field .axis {
@@ -6448,6 +6451,13 @@ input[type=range]::-moz-range-thumb {
 	font-weight: 480;
 	font-variant-numeric: tabular-nums;
 	text-align: right;
+	/* Draggable until it is being typed in: the caret only appears once the
+	   click has actually opened the field for editing. */
+	cursor: ew-resize;
+}
+
+.number-field.editing input {
+	cursor: text;
 }
 
 .number-field:hover input {
@@ -6465,6 +6475,7 @@ input[type=range]::-moz-range-thumb {
 	border-color: var(--accent);
 	background: var(--card2);
 	box-shadow: 0 0 0 2px var(--accent-ring);
+	cursor: text;
 }
 /* ---- Hierarchy row context menu & in-place rename ---- */
 /* The row menu (Rename/Duplicate/Delete/Frame) and the create catalogue
