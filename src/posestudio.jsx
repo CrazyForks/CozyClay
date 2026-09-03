@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { POSE_BONES, normalizeBoneName, primeBindPose } from "./poses.js";
 import { poseThumbnail, warmThumbnailModels } from "./pose-thumbs.js";
 import { IK_TRACKS, MID_TRACKS, ikControlIsExposed } from "./ardy/ik.js";
+import { shouldRefreshIkExposure } from "./use-render-activity.js";
 import { POSER_LAYER } from "./dualview.jsx";
 import { ko, isKo } from "./locale.js";
 
@@ -600,11 +601,18 @@ export function IkHandles({ chains, fkJoints, ikState, enabled, focus, onFocus, 
 		// Keep the last visibility result for a short interval during a gesture;
 		// this still follows a slow orbit without making every pointer sample
 		// pay the full proxy cost.
-		const cameraOnlyExposure = exposureDirty && !poseDirty;
-		const exposureThrottled = !cameraGestureEnded && cameraOnlyExposure && performance.now() - exposureLastPassAt.current < 100;
-		if (exposureThrottled) {
+		const refreshExposure = shouldRefreshIkExposure({
+			cameraGesture,
+			cameraGestureEnded,
+			exposureDirty,
+			poseDirty,
+			elapsedMs: performance.now() - exposureLastPassAt.current,
+		});
+		// No work is scheduled when `if (exposureDirty)` is false; camera-only
+		// changes use the pure decision above to keep this expensive pass cached.
+		if (!refreshExposure && exposureDirty) {
 			exposurePerfRef.current.skippedFrames += 1;
-		} else if (exposureDirty) {
+		} else if (refreshExposure) {
 			const passStartedAt = performance.now();
 			input.valid = true;
 			poseInput.valid = true;
@@ -899,7 +907,8 @@ const CLICK_PX = 4;
 			const focused = focusIdRef.current;
 			let picks = pickRefs.current.filter((p) =>
 				p.mesh?.visible &&
-				handleRefs.current[p.track.id]?.visible
+				handleRefs.current[p.track.id]?.visible &&
+				handleRefs.current[p.track.id]?.userData.ikExposed !== false
 			);
 			if (focused) picks = picks.filter((p) => p.track.id === focused);
 			else picks = picks.filter((p) => !p.axisDir); // spheres only
