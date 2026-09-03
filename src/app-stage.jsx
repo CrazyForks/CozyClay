@@ -924,10 +924,28 @@ export const Character = memo(function Character({ url, position, rot, tint, pos
 /** Selection marker for the picked cast member: a Unity-style XYZ tripod
  * plus a ground ring at the feet. X/Z arrows also drag the character on the
  * floor (Y is display-only — characters stand on the deck). */
-export function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probeX, probeZ, camRef, look, onMetrics }) {
+export function ShotRig({ preset, nonce, fovDeg, charA, charB, showB, probeX, probeZ, camRef, look, onMetrics, appliedPresetRef, lastPosRef }) {
 	useEffect(() => {
 		const cam = camRef.current;
 		if (!cam) return;
+		// A preset is applied once per (preset, nonce), not once per mount. The
+		// Canvas has no Suspense boundary of its own, so a cast member whose FBX
+		// is still downloading suspends the whole scene graph; when it resolves,
+		// React remounts the siblings — this rig included, on a fresh camera
+		// object — and a per-mount seed would snap the shot back to the preset,
+		// discarding a frame_shot or a manual move that landed in the meantime
+		// (#86 on slow CI runners). Both refs live in App so they survive the
+		// remount: the stamp says whether this preset was already applied, the
+		// position ref (with look.current) says where the camera last was.
+		const stamp = `${preset}:${nonce}`;
+		if (appliedPresetRef && appliedPresetRef.current === stamp && lastPosRef?.current) {
+			const last = lastPosRef.current;
+			cam.position.set(last.x, last.y, last.z);
+			cam.rotation.order = "YXZ";
+			cam.rotation.set(look.current.pitch, look.current.yaw, 0);
+			return;
+		}
+		if (appliedPresetRef) appliedPresetRef.current = stamp;
 		const p = PRESETS[preset];
 		const az = (p.azimuth * Math.PI) / 180;
 		const el = (p.elevation * Math.PI) / 180;

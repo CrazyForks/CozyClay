@@ -193,6 +193,24 @@ try {
 	assert.equal(happy.body.stateHashBefore, happy.body.stateHashAfter);
 	assert.equal(happy.result.content[1]?.type, "image");
 
+	// Given frame_shot orbits the real editor's shot camera around the subject
+	// When each view is framed and the frame captured
+	// Then the subject is actually in front of the lens and visible, because
+	// frame_shot aims the camera it places. A position-only move left every view
+	// except `front` pointing wherever the previous orientation looked: zero
+	// visible pixels, and the subject behind the camera plane from profile round
+	// to back, while describe_shot kept reporting "98% of frame height".
+	const framed = {};
+	for (const view of ["front", "front three-quarter", "profile", "rear three-quarter", "back"]) {
+		const shot = await call("frame_shot", { size: "medium shot", view, level: "eye", side: "right", focal_mm: 35 });
+		assert.equal(shot.isError, undefined, JSON.stringify(shot));
+		const { body } = await decoded("capture_frame");
+		const subject = body.assertions.characters[0];
+		framed[view] = { visiblePixelCount: subject.visiblePixelCount, behindCameraPlane: subject.behindCameraPlane };
+		assert.equal(subject.behindCameraPlane, false, `frame_shot ${view} put the subject behind the lens: ${JSON.stringify(framed[view])}`);
+		assert.ok(subject.visiblePixelCount > 0, `frame_shot ${view} framed nothing: ${JSON.stringify(framed[view])}`);
+	}
+
 	// Given a tall cube placed physically between the shot camera and character A
 	// When the frame is captured
 	// Then raycasts from engine geometry identify the occluder and count only exposed samples.
@@ -232,6 +250,7 @@ try {
 	console.log(JSON.stringify({
 		vitePort, livePort,
 		happy: { width: happy.body.width, height: happy.body.height, byteSize: happy.body.byteSize, nonBlackPixels: happy.body.assertions.nonBlackPixels, stateHash: happy.body.stateHashBefore },
+		framed,
 		occlusion: { objectId, occluded: occluded.body.assertions, clear: clear.body.assertions },
 		artifact: artifact.body.artifact,
 	}));
