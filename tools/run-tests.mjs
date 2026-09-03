@@ -32,6 +32,7 @@ const NODE_FILES = [
 	"test/ik/verify-fix-collisions.mjs",
 	"test/ik/verify-auto-physics.mjs",
 	"test/ik/verify-ik.mjs",
+	"test/verify-ik-camera-performance.mjs",
 	"test/process/verify-bridge-launch.mjs",
 	"test/process/verify-lifecycle.mjs",
 	"test/process/verify-mcp-package-isolation.mjs",

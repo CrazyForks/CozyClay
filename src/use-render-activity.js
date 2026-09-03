@@ -15,6 +15,17 @@ export function hasContinuousRenderActivity(pointerIds, keyCodes, transient) {
 }
 
 /**
+ * Camera navigation cannot change the rig silhouette, so its exposure result
+ * can stay cached until the gesture settles. Pose changes remain immediate.
+ */
+export function shouldRefreshIkExposure({ cameraGesture, cameraGestureEnded, exposureDirty, poseDirty, elapsedMs, throttleMs = 100 }) {
+	if (!exposureDirty) return false;
+	if (cameraGesture) return false;
+	if (cameraGestureEnded || poseDirty) return true;
+	return elapsedMs >= throttleMs;
+}
+
+/**
  * Keep the WebGL loop hot only while the user is actively manipulating the
  * scene. React/R3F still invalidates demand frames for ordinary state changes;
  * this hook covers direct ref mutations such as IK drags, camera look/dolly,
