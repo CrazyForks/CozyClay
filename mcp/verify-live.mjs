@@ -149,6 +149,28 @@ try {
 	const scene = await call("describe_scene");
 	assert(scene.includes("LIVE TEST") && scene.includes("Chair") && scene.includes("x 3.25"), "describe_scene did not render the live description");
 
+	// frame_shot must AIM the lens, not only place it. Every view except `front`
+	// orbits the camera off the subject's facing axis, and a position-only command
+	// leaves a live editor pointing wherever the last human gesture left it: the
+	// subject drops out of frame — behind the lens for profile/rear/back — while
+	// the slate still reports it filling the frame. Runs after the assertions
+	// above because it moves the camera they pin at x 3.25.
+	for (const view of ["front", "front three-quarter", "profile", "rear three-quarter", "back"]) {
+		commands.length = 0;
+		await call("frame_shot", { size: "medium shot", view, level: "eye", side: "right", focal_mm: 35 });
+		const moved = commands.find(({ name }) => name === "set_camera");
+		assert(moved, `frame_shot (${view}) did not forward set_camera`);
+		const { x, y, z, lookAtX, lookAtY, lookAtZ } = moved.args;
+		assert([lookAtX, lookAtY, lookAtZ].every(Number.isFinite), `frame_shot (${view}) placed the camera without an aim target`);
+		// The aim target is the framing pivot the shot vocabulary is measured
+		// against: the framed character's floor position at pivot height.
+		const framed = editor.characters.find((character) => character.id === editor.activeCharacterId) ?? editor.characters[0];
+		const off = Math.hypot(lookAtX - framed.x, lookAtZ - framed.z);
+		assert(off < 1e-6 && Math.abs(lookAtY - 1.3) < 1e-6, `frame_shot (${view}) aimed at (${lookAtX}, ${lookAtY}, ${lookAtZ}), not the framing pivot`);
+		assert(Math.hypot(x - lookAtX, y - lookAtY, z - lookAtZ) > 0.01, `frame_shot (${view}) put the camera on top of its own aim target`);
+	}
+	commands.length = 0;
+
 	const closed = once(socket, "close");
 	socket.close();
 	await closed;

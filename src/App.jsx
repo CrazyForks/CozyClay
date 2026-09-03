@@ -3303,10 +3303,27 @@ globalThis.playMode = centerTab === "play";
 					if (nextFov < 14 || nextFov > 90) throw new Error("focalMm is outside the editor lens range");
 				}
 				const next = { ...live.camera, ...patch };
+				// Optional aim target (live protocol v1, additive): all three or none.
+				// frame_shot always sends it, because a camera that is placed but not
+				// aimed keeps whatever the last gesture was pointing at and drops the
+				// subject out of frame for every view except `front`. The yaw/pitch go
+				// into look.current as well as the camera: that ref is the orientation
+				// of record here — FlyControls writes rotation from it, and the framing
+				// commit below measures the shot from look.current.pitch, so a bare
+				// camera.lookAt would be both overwritten and mismeasured.
+				const aim = finitePatch(args, ["lookAtX", "lookAtY", "lookAtZ"]);
+				const aimed = Object.keys(aim).length === 3;
 				const camera = shotCamRef.current;
 				if (camera) {
 					camera.position.set(next.x, next.y, next.z);
 					camera.fov = nextFov;
+					if (aimed) {
+						const angles = aimAt(camera.position, { x: aim.lookAtX, y: aim.lookAtY, z: aim.lookAtZ });
+						look.current.yaw = angles.yaw;
+						look.current.pitch = angles.pitch;
+						camera.rotation.order = "YXZ";
+						camera.rotation.set(angles.pitch, angles.yaw, 0);
+					}
 					camera.updateProjectionMatrix();
 				}
 				live.camera = next;

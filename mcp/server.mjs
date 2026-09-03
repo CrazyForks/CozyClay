@@ -245,12 +245,16 @@ const subject = () => {
 	return a ? { x: a.x, z: a.z, rot: a.rot } : { x: 0, z: 0, rot: 0 };
 };
 
+/** The height every shot is measured to: the framed subject's chest.
+ * Mirrors src/shot.js FRAMING_PIVOT_Y. */
+const FRAMING_PIVOT_Y = 1.3;
+
 /** Yaw/pitch that aim the camera at the framing pivot — what captureFraming wants. */
 const aimAtSubject = () => {
 	const s = subject();
 	const dx = state.camera.x - s.x;
 	const dz = state.camera.z - s.z;
-	const dy = state.camera.y - 1.3; // FRAMING_PIVOT_Y
+	const dy = state.camera.y - FRAMING_PIVOT_Y;
 	const horizontal = Math.hypot(dx, dz);
 	return {
 		yaw: (Math.atan2(dx, dz) * 180) / Math.PI,
@@ -750,7 +754,8 @@ registerTool(
 		title: "Set the camera",
 		description:
 			"Unlike frame_shot, set_camera applies explicit camera coordinates or focal length rather than deriving a shot. " +
-			"Every field is optional — omitted fields keep their current value. The camera always aims at the subject. Use focal_mm to change " +
+			"Every field is optional — omitted fields keep their current value. The shot is measured as if the camera aims at the subject; " +
+			"pass look_at_x/look_at_y/look_at_z together to actually point a connected editor's lens at a world point. Use focal_mm to change " +
 			"framing without moving (longer = tighter), or move x/y/z to change the angle.",
 		inputSchema: {
 			x: z.number().optional().describe("world x in metres (right)"),
@@ -762,12 +767,21 @@ registerTool(
 				.max(300)
 				.optional()
 				.describe("focal length on the scene's cropped filmback, e.g. 24, 35, 50, 85"),
+			look_at_x: z.number().optional().describe("world x of an explicit aim point; give all three to aim the lens"),
+			look_at_y: z.number().optional().describe("world y of an explicit aim point; give all three to aim the lens"),
+			look_at_z: z.number().optional().describe("world z of an explicit aim point; give all three to aim the lens"),
 		},
 	},
-	async ({ x, y, z: zPos, focal_mm }) => {
+	async ({ x, y, z: zPos, focal_mm, look_at_x, look_at_y, look_at_z }) => {
 		if (liveHub?.connected) {
 			try {
-				await appliedLiveMutation("set_camera", { x, y, z: zPos, focalMm: focal_mm });
+				// The aim is only forwarded when the caller gave a whole point: a
+				// partial target has no direction, and an omitted one deliberately
+				// leaves the live editor's orientation exactly where it was.
+				const aim = [look_at_x, look_at_y, look_at_z].every((value) => value !== undefined)
+					? { lookAtX: look_at_x, lookAtY: look_at_y, lookAtZ: look_at_z }
+					: {};
+				await appliedLiveMutation("set_camera", { x, y, z: zPos, focalMm: focal_mm, ...aim });
 				return text(`Camera set.\n\n${shotReport()}`);
 			} catch (error) {
 				return liveError(error);
@@ -850,7 +864,7 @@ registerTool(
 		// satisfy. Size is the stronger request (it is the shot), so the lens is
 		// lengthened until the requested level fits, exactly as a crew would swap
 		// glass rather than abandon the close-up.
-		const neededDy = Math.abs(HEIGHT[level] - 1.3);
+		const neededDy = Math.abs(HEIGHT[level] - FRAMING_PIVOT_Y);
 		const MIN_HORIZONTAL = 0.25;
 		const needed = Math.hypot(neededDy, MIN_HORIZONTAL);
 		if (distanceFor(lensMm) < needed) {
@@ -867,11 +881,11 @@ registerTool(
 		// a very high or low lens can ask for more vertical offset than the whole
 		// distance allows; when that happens the size is what was actually asked
 		// for, so the lens is pulled toward the pivot rather than the shot widened.
-		let dy = camY - 1.3;
+		let dy = camY - FRAMING_PIVOT_Y;
 		const maxDy = Math.sqrt(Math.max(distance * distance - MIN_HORIZONTAL * MIN_HORIZONTAL, 0));
 		if (Math.abs(dy) > maxDy) {
 			dy = Math.sign(dy) * maxDy;
-			camY = 1.3 + dy;
+			camY = FRAMING_PIVOT_Y + dy;
 		}
 		const horizontal = Math.sqrt(Math.max(distance * distance - dy * dy, MIN_HORIZONTAL * MIN_HORIZONTAL));
 
@@ -888,7 +902,19 @@ registerTool(
 		};
 		if (liveHub?.connected) {
 			try {
-				await appliedLiveMutation("set_camera", nextCamera);
+				// Placing the lens is only half the shot. deriveShot and captureFraming
+				// both measure as if the lens points at the framing pivot (see
+				// aimAtSubject), which the in-memory path gets for free because it has
+				// no orientation at all. A live editor has one and keeps it, so a
+				// position-only move orbited every view except `front` off the subject
+				// while the slate still read "98% of frame height". Send the same pivot
+				// the vocabulary is measured against, with the position.
+				await appliedLiveMutation("set_camera", {
+					...nextCamera,
+					lookAtX: s.x,
+					lookAtY: FRAMING_PIVOT_Y,
+					lookAtZ: s.z,
+				});
 			} catch (error) {
 				return liveError(error);
 			}
