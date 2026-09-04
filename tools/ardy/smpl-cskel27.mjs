@@ -28,19 +28,20 @@ const MAP = {
 	RightUpLeg: 2, RightLeg: 5, RightFoot: 8, RightToeBase: 11,
 	LeftUpLeg: 1, LeftLeg: 4, LeftFoot: 7, LeftToeBase: 10,
 };
-// A target's correction is for its outgoing bone. This is what carries source
-// twist instead of trying to recover twist from positions, which cannot see it.
+// Limb rest directions are meaningful (SMPL's A-pose versus cskel27's
+// T-pose), so a constant swing aligns those chains without losing source
+// twist. Torso, pelvis, neck and head are deliberately absent: SMPL's joint
+// regressor forms an anatomical S inside the mesh and its head joint sits
+// forward inside the skull. Those are not visible-pose corrections and must
+// not deform the target character's bind shape.
 const CHILD = {
-	Hips: 3, Spine: 6, Spine1: 9, Spine2: 12,
 	RightShoulder: 17, RightArm: 19, RightForeArm: 21, RightHand: 23,
 	LeftShoulder: 16, LeftArm: 18, LeftForeArm: 20, LeftHand: 22,
 	RightUpLeg: 5, RightLeg: 8, RightFoot: 11,
 	LeftUpLeg: 4, LeftLeg: 7, LeftFoot: 10,
 };
 const BORROW = { RightHandEnd: "RightHand", RightHandThumb1: "RightHand", LeftHandEnd: "LeftHand", LeftHandThumb1: "LeftHand" };
-// Spine3 is aimed at the neck (see below); Neck and Head inherit it. Their
-// SOURCE rotations still apply on top, so a real nod or turn survives.
-const CORRECTION_BORROW = { Neck: "Spine3", Head: "Spine3", RightToeBase: "RightFoot", LeftToeBase: "LeftFoot" };
+const CORRECTION_BORROW = { RightToeBase: "RightFoot", LeftToeBase: "LeftFoot" };
 // Bone lengths measured on the performer, keyed by the cskel27 joint the bone
 // ENDS at, as [SMPL from, SMPL to] against [cskel27 from, cskel27 to]. Where
 // the two skeletons segment a limb differently the measurement spans the
@@ -88,9 +89,6 @@ function axisAngle(axis, angle) {
 function axisAngleMat(v) {
 	const angle = Math.hypot(...v); return angle < 1e-12 ? IDENTITY.map((r) => r.slice()) : axisAngle(v.map((x) => x / angle), angle);
 }
-// Minimal swing maps a canonical rest bone onto the corresponding SMPL rest
-// bone. Applying it after each source global removes SMPL's non-T zero pose
-// without discarding the source joint's axial rotation.
 function swing(from, to) {
 	const a = vec(from), b = vec(to), c = Math.max(-1, Math.min(1, dot(a, b)));
 	if (c > 1 - 1e-10) return IDENTITY.map((r) => r.slice());
@@ -140,25 +138,15 @@ export function smplToCskel27Motion(members) {
 		if (source > 1e-6 && target > 1e-6) boneScale[j] = source / target;
 	}
 	const offsets = deriveBoneOffsets(cpos, skeleton.local_rot_mats).map((o, j) => [o[0] * boneScale[j], o[1] * boneScale[j], o[2] * boneScale[j]]);
-	const targetRest = (j) => cpos[j];
 	const corrections = {};
-	for (const name of Object.keys(MAP)) {
-		const c = CSKEL27_JOINTS.indexOf(name), targetChild = c < 0 ? -1 : CSKEL27_PARENTS.findIndex((p) => p === c);
-		if (!(name in CHILD) || targetChild < 0) continue;
-		const source = MAP[name], sourceChild = CHILD[name];
-		const a = [targetRest(targetChild)[0] - targetRest(c)[0], targetRest(targetChild)[1] - targetRest(c)[1], targetRest(targetChild)[2] - targetRest(c)[2]];
+	for (const [name, sourceChild] of Object.entries(CHILD)) {
+		const c = CSKEL27_JOINTS.indexOf(name);
+		const targetChild = CSKEL27_PARENTS.findIndex((parent) => parent === c);
+		if (c < 0 || targetChild < 0) continue;
+		const source = MAP[name];
+		const a = [cpos[targetChild][0] - cpos[c][0], cpos[targetChild][1] - cpos[c][1], cpos[targetChild][2] - cpos[c][2]];
 		const b = [rest[sourceChild * 3] - rest[source * 3], rest[sourceChild * 3 + 1] - rest[source * 3 + 1], rest[sourceChild * 3 + 2] - rest[source * 3 + 2]];
 		corrections[name] = swing(a, b);
-	}
-	// Spine3 (which places the Neck joint) is aimed by spine3 -> neck on both
-	// skeletons. SMPL's head joint sits inside the skull ~45 deg ahead of the
-	// neck, so the generic rule — aim a joint at its child — pitched every
-	// neck 47 deg forward. The neck bone (which places the Head) inherits it.
-	{
-		const c = CSKEL27_JOINTS.indexOf("Spine3"), n = CSKEL27_JOINTS.indexOf("Neck");
-		const a = [targetRest(n)[0] - targetRest(c)[0], targetRest(n)[1] - targetRest(c)[1], targetRest(n)[2] - targetRest(c)[2]];
-		const b = [rest[12 * 3] - rest[9 * 3], rest[12 * 3 + 1] - rest[9 * 3 + 1], rest[12 * 3 + 2] - rest[9 * 3 + 2]];
-		corrections.Spine3 = swing(a, b);
 	}
 	for (const [name, ancestor] of Object.entries(CORRECTION_BORROW)) corrections[name] = corrections[ancestor] ?? IDENTITY;
 	const worlds = sourceGlobals(go, pose, frames), rotMats = new Float32Array(frames * 27 * 9), rootPos = new Float32Array(frames * 3), posedJoints = new Float32Array(frames * 27 * 3);
@@ -169,6 +157,9 @@ export function smplToCskel27Motion(members) {
 		const globals = new Array(27);
 		for (let j = 0; j < 27; j += 1) {
 			const name = CSKEL27_JOINTS[j], ancestor = BORROW[name];
+			// body_pose is already a rotation FROM SMPL's zero pose. Torso/head
+			// therefore keep cskel27's bind shape; only visible limb rest-pose
+			// differences use the constant correction built above.
 			globals[j] = ancestor ? globals[CSKEL27_JOINTS.indexOf(ancestor)] : matMul(worlds[f][MAP[name]], corrections[name] ?? IDENTITY);
 		}
 		for (let j = 0; j < 27; j += 1) {
