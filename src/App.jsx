@@ -6016,6 +6016,10 @@ globalThis.playMode = centerTab === "play";
 			let bones = null;
 			let rootY = 0;
 			let warning = "";
+			// Which measurement produced the pose. The GPU route and the browser
+			// landmarker differ by a class in depth accuracy, so a silent fallback
+			// left the user judging one while believing they saw the other.
+			let route = "gpu";
 			// GPU route first: SAM-3D-Body on the box MEASURES the body in 3D,
 			// which beats anything a browser landmarker can infer from one frame.
 			// The bridge wraps the still into a second of video and runs the exact
@@ -6044,6 +6048,7 @@ globalThis.playMode = centerTab === "play";
 				console.warn("photo pose: GPU extract failed, falling back to browser landmarks", error);
 			}
 			if (!bones) {
+				route = "browser";
 				if (!photoPoseDetectorRef.current) {
 					// "heavy", not the "full" the footage path uses: a photograph is one
 					// offline frame, so the ~25 MB one-time download and the several-times
@@ -6071,7 +6076,16 @@ globalThis.playMode = centerTab === "play";
 					restorePlaybackBones(rig, snapshot);
 				}
 				warning = photoPoseWarning(take);
+				// Name the fallback in the same slot the fit warning uses: the
+				// landmark route is the reduced-accuracy path, and that is worth
+				// one sentence more than a partly-occluded limb.
+				const fallbackNote = ko(
+					"GPU pose extraction failed, so this pose came from the browser landmarker (less accurate in depth).",
+					"GPU 자세 추출이 실패해서 브라우저 추정으로 잡았어요 (깊이 정확도가 낮아요)."
+				);
+				warning = warning ? `${fallbackNote} ${warning}` : fallbackNote;
 			}
+			console.info(`photo pose: route=${route}`);
 			const pose = {
 				id: `photo_${Date.now()}`,
 				label: isKo ? `사진 포즈 ${customPoses.length + 1}` : `Photo Pose ${customPoses.length + 1}`,
