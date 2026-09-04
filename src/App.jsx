@@ -5714,6 +5714,26 @@ globalThis.playMode = centerTab === "play";
 			poserCam: poserCamRef.current,
 			planCam: planCamRef.current,
 			editorCam: editorCamRef.current,
+			// QA-only: swap the active character's body ("x-bot-tpose" / "y-bot-tpose")
+			// or stature, so a browser QA run can check every shipped rig.
+			setCharacterModel: (id) => updateCharacterAt(activeCharIndex, { model: id }),
+			setCharacterScale: (scale) => updateCharacterAt(activeCharIndex, { scale }),
+			characterScale: activeChar?.scale ?? 1,
+			// QA-only framing: FlyControls rewrites the editor camera's rotation
+			// from editorLook every frame, so a bare camera.lookAt is overwritten
+			// before the next paint. Set both, the way the live frame_shot does.
+			frameEditorCam: (position, target) => {
+				const camera = editorCamRef.current;
+				if (!camera) return false;
+				const angles = aimAt(position, target);
+				editorLook.current.yaw = angles.yaw;
+				editorLook.current.pitch = angles.pitch;
+				camera.position.set(position.x, position.y, position.z);
+				camera.rotation.order = "YXZ";
+				camera.rotation.set(angles.pitch, angles.yaw, 0);
+				camera.updateProjectionMatrix();
+				return true;
+			},
 			lookThroughShot,
 			setLookThrough: (value) => setLookThroughShot(!!value),
 			charA,
