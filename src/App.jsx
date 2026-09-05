@@ -34,6 +34,7 @@ import {
 	requestBridgeExtract,
 	requestBridgeFootage,
 	sourceLabel,
+	trajectoryReceipt,
 } from "./multimodel-ingest.js";
 import {
 	bakeExtractedTake,
@@ -279,7 +280,9 @@ import {
 } from "./ardy/ik.js";
 import { buildCollisionCapsules, detectPenetrations, fixCollisions, fixCollisionsRange, supportsCollisionCleanup } from "./ardy/fix-collisions.js";
 import { collisionBlockers, blockerSummary } from "./ardy/collision-blockers.js";
-import { autoPhysicsRange, computeCenterOfMass } from "./ardy/auto-physics.js";
+import { computeCenterOfMass, markerPositions } from "./ardy/auto-physics.js";
+import { reviewAutoPhysics, copyPhysicsKeys, physicsKeyStamp } from "./ardy/physics-review.js";
+import { PhysicsPanel, createPhysicsProgress } from "./ardy/physics-panel.jsx";
 import {
 	Dropdown,
 	Field,
@@ -1178,6 +1181,15 @@ globalThis.playMode = centerTab === "play";
 	const IK_CORRECTION_BLEND_FRAMES = 6;
 
 	const ikStateRef = useRef(createIkState());
+	const autoPhysicsRunRef = useRef(null);
+	const [autoPhysicsRunning, setAutoPhysicsRunning] = useState(false);
+	const [physicsPreview, setPhysicsPreview] = useState(null);
+	const [physicsShow, setPhysicsShow] = useState(true);
+	const [physicsProgress] = useState(createPhysicsProgress);
+	const setPhysicsProgress = physicsProgress.set;
+	const [physicsOptions, setPhysicsOptions] = useState({ overrides: [], protectedFrames: [], strength: 1 });
+	const physicsJobRef = useRef(0);
+	const physicsSourceCacheRef = useRef({ value: null });
 	const [ikTick, setIkTick] = useState(0);
 	const [committedIkEdits, setCommittedIkEdits] = useState([]);
 	// Sorted full-body key frames for the timeline markers. Derived from the
@@ -1626,18 +1638,7 @@ globalThis.playMode = centerTab === "play";
 	 * every quaternion/position cloned so a snapshot never shares references
 	 * with the live rig state (a later bake would otherwise rewrite history). */
 	function snapshotIkKeys(ikState) {
-		const out = new Map();
-		for (const [frame, entry] of ikState?.keys ?? []) {
-			const copy = new Map();
-			for (const [trackId, value] of entry) {
-				copy.set(trackId, {
-					q: value.q ? value.q.map((quat) => quat.clone()) : null,
-					p: value.p ? value.p.clone() : null,
-				});
-			}
-			out.set(frame, copy);
-		}
-		return out;
+		return copyPhysicsKeys(ikState?.keys ?? new Map());
 	}
 	function recordCharacterUndo() {
 		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast() });
@@ -1710,6 +1711,7 @@ globalThis.playMode = centerTab === "play";
 				}
 			}
 			target.keys = snapshotIkKeys({ keys: snapshot.ikKeys });
+			target.tracked = new Set([...target.keys.values()].flatMap((entry) => [...entry.keys()]));
 			setCommittedIkEdits(snapshot.committedIkEdits ?? []);
 			setIkTick((value) => value + 1);
 		}
@@ -4442,15 +4444,16 @@ globalThis.playMode = centerTab === "play";
 		setToast(ko("2D Root path on — click the set floor in the Shot view to drop waypoints; Subject 1 is the frame 0 start", "2D 루트 경로 켜짐 — 샷 뷰의 세트 바닥을 클릭해 웨이포인트를 놓으세요. 인물 1이 0프레임 시작점입니다"));
 	}
 
-	function advanceFrame() {
+	function advanceFrame(steps = 1) {
+		const count = Math.max(1, Math.floor(steps));
 		const previewEnd = cameraPreviewEndRef.current;
-		if (previewEnd != null && tlFrameRef.current >= previewEnd - 1) {
+		if (previewEnd != null && tlFrameRef.current + count >= previewEnd) {
 			cameraPreviewEndRef.current = null;
 			setTlFrame(previewEnd);
 			setTlPlaying(false);
 			return;
 		}
-		setTlFrame((f) => (f >= frameCountRef.current - 1 ? 0 : f + 1));
+		setTlFrame((f) => (f + count) % frameCountRef.current);
 	}
 
 	function stepFrame(delta) {
@@ -4696,7 +4699,7 @@ globalThis.playMode = centerTab === "play";
 			const placed = await deliverExtraTakes(takes.slice(1), active, label);
 			if (!live()) return;
 			const persons = 1 + placed;
-			setMultiModelTake({ frames: done.frames, fps: done.fps, gpu: true, personScale, persons });
+			setMultiModelTake({ frames: done.frames, fps: done.fps, gpu: true, personScale, persons, trajectory: done.performance?.trajectory });
 			setMultiModelExtract("done");
 			setToast(isKo
 				? `GPU 모션 추출됨 — ${done.frames}프레임 @ ${done.fps} fps${persons > 1 ? ` · ${persons}명` : ""} · 인물 스케일 ×${personScale.toFixed(2)}`
@@ -5559,70 +5562,80 @@ globalThis.playMode = centerTab === "play";
 				: ko("No body collisions in the clip", "클립에 신체 관통이 없어요")) + stillPenetrating);
 	}
 
-	// AutoPhysics: during airborne spans the centre of mass must follow a
-	// ballistic parabola. Fits one per flight phase and translates the root so
-	// each frame's CoM lands on it — grounded frames are never keyed.
-	function runAutoPhysics() {
-		if (!ikChains || !activeRig || !motion) return;
-		if (ikStateRef.current.rig !== activeRig) return;
-		const currentFrame = tlFrame;
-		const applyFrame = (frame) => {
-			applyMotionFrame(activeRig, motion, frame);
-			ikEvaluate(ikChains, ikStateRef.current, frame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
-		};
-		// Provisional undo entry, popped when the pass keys nothing (clean or
-		// unsupported clip) — see runFixCollisionsRange.
-		const savedFuture = charHistoryRef.current.future;
+
+	useEffect(() => {
+		physicsJobRef.current += 1;
+		physicsSourceCacheRef.current.value = null;
+		setPhysicsPreview(null);
+		setPhysicsOptions({ overrides: [], protectedFrames: [], strength: 1 });
+		setAutoPhysicsRunning(false);
+		autoPhysicsRunRef.current = null;
+		return () => { physicsJobRef.current += 1; };
+	}, [activeRig, motion, activeChar.x, activeChar.y, activeChar.z, activeChar.rot, activeChar.scale]);
+	useEffect(() => {
+		if (physicsPreview && physicsPreview.sourceStamp !== physicsKeyStamp(ikStateRef.current.keys)) {
+			setPhysicsPreview(null);
+		}
+	}, [ikTick, physicsPreview]);
+	function changePhysicsOptions(next) {
+		setPhysicsOptions(next); setPhysicsPreview(null); setIkTick((n) => n + 1);
+	}
+	function showPhysicsPreview(show) { setPhysicsShow(show); setIkTick((n) => n + 1); }
+	function cancelPhysicsPreview() { setPhysicsPreview(null); setIkTick((n) => n + 1); }
+	function applyPhysicsPreview() {
+		if (!physicsPreview || physicsPreview.sourceStamp !== physicsKeyStamp(ikStateRef.current.keys)) return;
 		recordCharacterUndo();
-		const { supported, reason, spans, keyedFrames, maxCorrection, skippedSpans } = autoPhysicsRange({
-			rig: activeRig,
-			motion,
-			chains: ikChains,
-			fkJoints: ikFkJoints,
-			ikState: ikStateRef.current,
-			applyFrame,
-			startFrame: 0,
-			endFrame: motion.frames - 1,
-			fps: motion.fps ?? TIMELINE_FPS,
-			floorY: 0,
-		});
-		if (!keyedFrames.length) {
-			charHistoryRef.current.past.pop();
-			charHistoryRef.current.future = savedFuture;
+		ikStateRef.current.keys = copyPhysicsKeys(physicsPreview.candidate.keys);
+		ikStateRef.current.tracked = new Set(physicsPreview.candidate.tracked);
+		autoPhysicsRunRef.current = { motion, rig: activeRig, stamp: physicsKeyStamp(ikStateRef.current.keys) };
+		setPhysicsPreview(null); setIkTick((n) => n + 1);
+		setToast(ko("AutoPhysics applied · Undo restores the original", "오토피직스를 적용했어요 · 실행 취소로 원본 복구"));
+	}
+	async function runAutoPhysics() {
+		if (autoPhysicsRunning || !ikChains || !activeRig || !motion || ikStateRef.current.rig !== activeRig) return null;
+		const previous = autoPhysicsRunRef.current;
+		if (previous?.motion === motion && previous.rig === activeRig && previous.stamp === physicsKeyStamp(ikStateRef.current.keys)) {
+			setToast(ko("Already applied. Undo to review this correction again.", "이미 적용했어요. 실행 취소 후 다시 비교할 수 있어요.")); return null;
 		}
-		applyFrame(currentFrame);
-		setIkTick((n) => n + 1);
-		if (!supported) {
-			setToast(reason === "range-too-short"
-				? ko("The clip is too short for AutoPhysics", "클립이 너무 짧아 오토피직스를 쓸 수 없어요")
-				: ko("This rig doesn't support AutoPhysics", "이 리그는 오토피직스를 지원하지 않아요"));
-			return;
+		const job = ++physicsJobRef.current, frame = tlFrame;
+		const sourceKeys = copyPhysicsKeys(ikStateRef.current.keys), stamp = physicsKeyStamp(sourceKeys);
+		let lastYieldAt = Date.now(), yieldWaitMs = 0, yieldCount = 0;
+		const restore = () => { poseMemberAtFrame(activeRig, motion, ikStateRef.current, frame, IK_CORRECTION_BLEND_FRAMES); };
+		setTlPlaying(false); setAutoPhysicsRunning(true); setPhysicsProgress(0); setPhysicsPreview(null);
+		try {
+			const result = await reviewAutoPhysics({ rig: activeRig, motion, chains: ikChains, fkJoints: ikFkJoints, sourceKeys,
+				applyRaw: (f) => poseMemberAtFrame(activeRig, motion, null, f), ...physicsOptions,
+				cache: physicsSourceCacheRef.current,
+				onProgress: setPhysicsProgress,
+				yieldFrame: async () => {
+					if (physicsJobRef.current !== job) throw new Error("Analysis cancelled after changing the character or motion");
+					// A batch is a cancellation checkpoint, not necessarily a paint/
+					// event-loop boundary. Yield on a time budget, not every 12 frames.
+					if (Date.now() - lastYieldAt < 16) return;
+					restore();
+					const queuedAt = Date.now();
+					// Yield CPU work without waiting for a paint. requestAnimationFrame
+					// can be throttled/paused in an occluded tab, stretching a seconds-
+					// long solve into minutes. MessageChannel also lets input run.
+					await new Promise((resolve) => {
+						const channel = new MessageChannel();
+						channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); };
+						channel.port2.postMessage(0);
+					});
+					lastYieldAt = Date.now(); yieldWaitMs += lastYieldAt - queuedAt; yieldCount += 1;
+					if (physicsJobRef.current !== job) throw new Error("Analysis cancelled after changing the character or motion");
+				},
+			});
+			Object.assign(result.performance, { yieldWaitMs, yieldCount });
+			if (physicsJobRef.current !== job || physicsKeyStamp(ikStateRef.current.keys) !== stamp) return null;
+			setPhysicsPreview(result); setPhysicsShow(true);
+			return { before: result.before, after: result.after, warnings: result.warnings, unresolved: result.unresolved, contacts: result.contacts.spans };
+		} catch (error) {
+			if (physicsJobRef.current === job) setToast(ko(`AutoPhysics: ${error.message}`, `오토피직스: ${error.message}`));
+			return null;
+		} finally {
+			if (physicsJobRef.current === job) { restore(); setAutoPhysicsRunning(false); setIkTick((n) => n + 1); }
 		}
-		// Skips are checked BEFORE the empty-spans branch: when every sub-arc
-		// of a detected span is refused (too short, unfittable), spans comes
-		// back empty but skippedSpans does not — "no airborne frames" would
-		// be a lie about a clip whose jump was seen and given up on.
-		if (!keyedFrames.length && skippedSpans.length) {
-			setToast(ko(
-				`AutoPhysics skipped ${skippedSpans.length} span(s) — the flight arc could not be fitted`,
-				`오토피직스가 공중 구간 ${skippedSpans.length}개를 건너뛰었어요 — 궤적을 신뢰할 수 없어요`));
-			return;
-		}
-		if (!spans.length) {
-			setToast(ko("No airborne frames in the clip", "클립에 공중 구간이 없어요"));
-			return;
-		}
-		// A refused span must never hide behind a success message — the user
-		// reads "worked" and the float they pressed the button for is still
-		// there. The skip count rides every toast that had one.
-		const skipNote = skippedSpans.length
-			? ko(` · ${skippedSpans.length} span(s) skipped (arc could not be fitted)`, ` · ${skippedSpans.length}개 구간은 궤적을 못 맞춰 건너뜀`)
-			: "";
-		setToast(keyedFrames.length
-			? ko(
-				`AutoPhysics: ${keyedFrames.length} frame(s) keyed (max ${(maxCorrection * 100).toFixed(1)} cm)${skipNote}`,
-				`오토피직스: ${keyedFrames.length}개 프레임 키 (최대 ${(maxCorrection * 100).toFixed(1)} cm)${skipNote}`)
-			: ko(`Airborne motion is already ballistic${skipNote}`, `공중 동작이 이미 물리적으로 자연스러워요${skipNote}`));
 	}
 
 	function ikDeleteKeyframe(frame) {
@@ -5681,10 +5694,14 @@ globalThis.playMode = centerTab === "play";
 	// untouched.
 	useEffect(() => {
 		if (!ikChains || !activeRig || posing) return;
-		if (ikMode || ikStateRef.current.keys.size > 0) {
-			ikEvaluate(ikChains, ikStateRef.current, tlFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
+		// Preview changes may re-run this effect without a playhead change.
+		// Always re-establish the motion base before adding a correction.
+		if (motion) poseMemberAtFrame(activeRig, motion, null, tlFrame);
+		const layer = physicsPreview && physicsShow ? physicsPreview.candidate : ikStateRef.current;
+		if (ikMode || layer.keys.size > 0) {
+			ikEvaluate(ikChains, layer, tlFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
 		}
-	}, [ikMode, ikChains, activeRig, motion, posing, tlFrame, ikTick, ikFkJoints]);
+	}, [ikMode, ikChains, activeRig, motion, posing, tlFrame, ikTick, ikFkJoints, physicsPreview, physicsShow]);
 
 	// Re-seat the handles on the keyed pose when the FRAME changes with IK
 	// on — scrubbing to frame 39 shows that frame's interpolated pose AND
@@ -5705,7 +5722,7 @@ globalThis.playMode = centerTab === "play";
 	// (tools/ardy/visual-qa.mjs). Harmless in normal use.
 	useEffect(() => {
 	window.__cozyclay = {
-			rigA: activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, contactRadii: ikChains?.values().next().value?.contactRadii ?? null, ik: ikStateRef.current,
+			rigA: activeRig, motion, tlFrame, frameCount: tlFrameCount, playing: tlPlaying, ikMode, ikChains, ikFocus, contactRadii: ikChains?.values().next().value?.contactRadii ?? null, ik: ikStateRef.current,
 			committedIkEdits, waypoints,
 			// the camera the main view renders through (poser in IK mode) — QA
 			// projections must use this one, not the frozen shot camera
@@ -5719,6 +5736,7 @@ globalThis.playMode = centerTab === "play";
 			setCharacterModel: (id) => updateCharacterAt(activeCharIndex, { model: id }),
 			setCharacterScale: (scale) => updateCharacterAt(activeCharIndex, { scale }),
 			characterScale: activeChar?.scale ?? 1,
+			characterModel: activeChar?.model ?? null,
 			// QA-only framing: FlyControls rewrites the editor camera's rotation
 			// from editorLook every frame, so a bare camera.lookAt is overwritten
 			// before the next paint. Set both, the way the live frame_shot does.
@@ -5744,6 +5762,7 @@ globalThis.playMode = centerTab === "play";
 			pathPointIndex,
 			pathHandlesEnabled: centerTab === "scene" && !lookThroughShot && !ikMode && !posing && !playMode && !!selectedSceneObject?.path,
 			scrub: (frame) => setTlFrame(Math.max(0, Math.min(tlFrameCount - 1, Math.round(frame)))),
+			pause: () => setTlPlaying(false),
 			// Motion-trail QA surface: read the current trail policy and drive the
 			// same drag -> preview -> pending-edit path headless checks cannot reach
 			// through synthetic pointers reliably.
@@ -5780,6 +5799,13 @@ globalThis.playMode = centerTab === "play";
 				const com = activeRig ? computeCenterOfMass(activeRig) : null;
 				return com ? { x: com.x, y: com.y, z: com.z } : null;
 			},
+			apFeet: () => {
+				const points = activeRig ? markerPositions(activeRig) : null;
+				return points ? Object.fromEntries(Object.entries(points).map(([name, point]) => [name, { x: point.x, y: point.y, z: point.z }])) : null;
+			},
+			apRun: runAutoPhysics,
+			physics: { preview: physicsPreview, show: physicsShow, running: autoPhysicsRunning, options: physicsOptions },
+			apOptions: changePhysicsOptions,
 			centerTab,
 			pathDraw,
 		};
@@ -5788,7 +5814,7 @@ globalThis.playMode = centerTab === "play";
 		// close over them: a stale closure would report the set as it was two
 		// edits ago — and, after an undo that removes a subject, would keep
 		// reporting the ghost's capsules.
-	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, sceneObjects, rigs, characters, pathPointIndex, centerTab, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS, ikEditTool, showTrails]);
+	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, sceneObjects, rigs, characters, pathPointIndex, centerTab, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS, ikEditTool, showTrails, physicsPreview, physicsShow, physicsOptions, autoPhysicsRunning]);
 	// QA hook (plan §6.5): exposes history depth and the present === objects
 	// invariant so the browser suite can assert undo entry counts directly.
 	// Reads live store state at call time; re-registered after every render.
@@ -10605,6 +10631,8 @@ function resizePromptClip(id, edge, rawFrame) {
 												: `Baked a ${multiModelTake.frames}-frame take (${multiModelTake.fitted} measured · ${multiModelTake.held} held) — press play on the timeline`)}
 									</p>
 								)}
+								{multiModelTake?.trajectory && <p className="multimodel-note" data-testid="trajectory-receipt">{trajectoryReceipt(multiModelTake.trajectory, isKo)}</p>}
+								{multiModelTake?.gpu && Math.abs(activeChar.y ?? 0) > .001 && <p className="multimodel-note" data-testid="trajectory-stage-offset">{isKo ? `씬 높이 ${(activeChar.y * 100).toFixed(1)}cm가 모션에 추가돼요 (Subject → Y)` : `Scene height ${(activeChar.y * 100).toFixed(1)}cm is added to the motion (Subject → Y)`}</p>}
 								{multiModelTake?.persons > 1 && (
 									<p className="multimodel-extract-receipt">
 										{isKo
@@ -11150,12 +11178,10 @@ function resizePromptClip(id, edge, rawFrame) {
 						    qualifies, so this button is deliberately outside the
 						    collisionCleanupSupported gate. Unsupported rigs get an
 						    explanatory toast from the handler. */}
-						<button type="button" className="btn full" onClick={runAutoPhysics} disabled={!ikChains || !motion}>
-						{ko("AutoPhysics (whole clip)", "오토피직스 (클립 전체)")}
-						</button>
-						<p className="inspector-hint">
-						{ko("Finds airborne spans and forces the centre of mass onto a real gravity parabola, so jumps stop floating. Grounded frames are left untouched.", "공중에 뜬 구간을 찾아 무게중심을 실제 중력 포물선에 맞춥니다. 점프가 더 이상 떠 있지 않게 되고, 바닥에 닿은 프레임은 건드리지 않습니다.")}
-						</p>
+						<PhysicsPanel ko={ko} disabled={!ikChains || !motion} running={autoPhysicsRunning} progress={physicsProgress}
+							preview={physicsPreview} show={physicsShow} options={physicsOptions} frame={tlFrame} frames={motion?.frames ?? 1}
+							onOptions={changePhysicsOptions} onRun={runAutoPhysics} onShow={showPhysicsPreview}
+							onApply={applyPhysicsPreview} onCancel={cancelPhysicsPreview} onFrame={setTlFrame} />
 						{/* Motion trail editing: falloff radius + confirm-to-regenerate.
 						    Only meaningful with IK mode on and a loaded take. */}
 						{ikMode && motion && (

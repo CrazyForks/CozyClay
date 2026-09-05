@@ -1020,6 +1020,7 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 		const w = blendWindow > 0 ? correctionWeight(ikState.keys, id, frame, blendWindow) : 1;
 		if (w <= 0) continue;
 		if (chain) {
+			if (sampled.chainP) chain.bones.forEach((bone, i) => { if (sampled.chainP[i]) bone.position.lerp(sampled.chainP[i], w); });
 			// DELTA blend for chain rotations, the mirror of basePos for the hips
 			// and for exactly the same reason. Easing a bone toward the key's
 			// ABSOLUTE rotation makes the smear proportional to how different the
@@ -1036,7 +1037,7 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 				// Translations stay on the CLIP until the correction has full
 				// authority. See restoreChainPositions for why this is a step and
 				// not a ramp.
-				if (w >= 1) restoreChainPositions(chain, 1);
+				if (w >= 1 && !sampled.keepTranslations) restoreChainPositions(chain, 1);
 				for (let index = 0; index < chain.bones.length && index < deltas.length; index += 1) {
 					if (!deltas[index]) continue;
 					easedDelta.copy(deltas[index]);
@@ -1044,7 +1045,7 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 					chain.bones[index].quaternion.multiply(easedDelta);
 				}
 			} else {
-				restoreChainPositions(chain, w);
+				if (!sampled.keepTranslations) restoreChainPositions(chain, w);
 				if (w >= 1) {
 					chain.bones[0].quaternion.copy(sampled.q[0]);
 					chain.bones[1].quaternion.copy(sampled.q[1]);
@@ -1064,7 +1065,10 @@ export function ikEvaluate(rig, ikState, frame, fkJoints, blendWindow = 0) {
 			// A translation-only key (see ikBakeKeyframe) stores no rotation at
 			// all, and must leave the clip's own orientation strictly alone.
 			if (sampled.q?.[0]) {
-				if (w >= 1) joint.bone.quaternion.copy(sampled.q[0]);
+				if (blendWindow > 0 && sampled.deltaQ?.[0]) {
+					easedDelta.copy(sampled.deltaQ[0]).slerp(identityQuat, 1 - w);
+					joint.bone.quaternion.multiply(easedDelta);
+				} else if (w >= 1) joint.bone.quaternion.copy(sampled.q[0]);
 				else joint.bone.quaternion.slerp(sampled.q[0], w);
 			}
 			if (sampled.p && joint.bindPos) {
@@ -1226,6 +1230,8 @@ function sampleChain(keys, trackId, frame) {
 	const deltasA = keyDeltas(a);
 	const deltasB = keyDeltas(b);
 	return {
+		keepTranslations: a.keepTranslations === true && b.keepTranslations === true,
+		chainP: a.chainP && b.chainP ? a.chainP.map((p, i) => p.clone().lerp(b.chainP[i], t)) : null,
 		// Between two based keys the DELTAS interpolate, not the absolute
 		// rotations and their bases separately: each key's delta is a statement
 		// about its own frame's clip pose, and interpolating those statements is

@@ -24,6 +24,8 @@ import { bvhToCskel27Motion, parseBvh } from "./bvh-cskel27.mjs";
 import { createPrivateArtifactDir, removePrivateArtifactDir } from "./artifacts.mjs";
 import { readNpz } from "../kimodo/read-npz.mjs";
 import { smplToCskel27Motion } from "./smpl-cskel27.mjs";
+import { gvhmrWorker } from "./runners/gvhmr-worker.mjs";
+import { guardTrajectoryFloor } from "./gvhmr-floor.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = join(HERE, "out");
@@ -48,6 +50,10 @@ const SAM_ENV = 'LD_LIBRARY_PATH="$(echo $HOME/cclay-ingest/.venv/lib/python3.12
 const EXTRACT_BACKEND = (process.env.CCLAY_EXTRACT_BACKEND?.trim() || "sam").toLowerCase();
 const GVHMR_DIR = "~/cclay-ingest/GVHMR";
 const GVHMR_STATIC_CAM = (process.env.CCLAY_EXTRACT_STATIC_CAM?.trim() || "1") !== "0";
+// Rollback keeps the original one-shot command completely unchanged.
+const GVHMR_WORKER = process.env.CCLAY_GVHMR_WORKER?.trim() !== "0";
+// Independent of preparation acceleration; disable to recover exact legacy output.
+const GVHMR_TRAJECTORY = process.env.CCLAY_GVHMR_TRAJECTORY?.trim() !== "0";
 const MAX_UPLOAD_BYTES = 300 * 1024 * 1024;
 const EXTRACT_TIMEOUT_MS = 30 * 60 * 1000;
 const SSH_BASE_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
@@ -148,6 +154,7 @@ function run(command, args, { children, timeoutMs, onLine }) {
  *   {event:"error", message}                   a NAMED reason
  */
 export async function handleExtract(req, res, { readBody, footagePath, registerMotion, artifactRoot = OUT_DIR }) {
+	const started = performance.now();
 	const host = sshHost();
 	const contentType = req.headers["content-type"] ?? "";
 	let localVideo = null;
@@ -207,6 +214,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 		}
 	};
 	const children = new Set();
+	const abort = new AbortController();
 	const cleanupLocal = () => {
 		if (uploadedTemp) rmSync(uploadedTemp, { force: true });
 		if (cappedTemp) rmSync(cappedTemp, { force: true });
@@ -223,6 +231,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	};
 	res.on("close", () => {
 		if (!res.writableEnded) {
+			abort.abort();
 			console.error(`[bridge] client disconnected mid-extract; killing ${children.size} child group(s)`);
 			for (const child of children) killGroup(child);
 			children.clear();
@@ -319,6 +328,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	send({ event: "status", message: "extracting" });
 	const gvhmr = EXTRACT_BACKEND === "gvhmr" && !EXTRACT_CMD;
 	const remoteNpz = remoteBvh.replace(/\.bvh$/, ".npz");
+	let extractionPerformance = null;
 	try {
 		const remoteCommand = EXTRACT_CMD
 			? `${EXTRACT_CMD} ${remoteVideo} ${remoteBvh}`
@@ -329,10 +339,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 				`--onnx-dir ./onnx --gguf ./onnx/pipeline.gguf --yolo ./onnx/yolo.onnx ` +
 				`--from ${remoteVideo} --bvh ${remoteBvh} --bvh-template ./mixamo.bvh --max-persons 2 ` +
 				`--smoothing zero-phase --bw-cutoff 6 --interpolate-jitter --foot-contact`;
-		await run(
-			"ssh",
-			[...SSH_OPTS, host, remoteCommand],
-			{
+		const runOptions = {
 				children,
 				timeoutMs: EXTRACT_TIMEOUT_MS,
 				onLine: (line) => {
@@ -351,12 +358,20 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 						if (at >= 0) send({ event: "progress", stage: "extract", ratio: at / order.length });
 					}
 				},
-			}
-		);
+		};
+		if (gvhmr && GVHMR_WORKER) {
+			extractionPerformance = await gvhmrWorker({ host, sshOptions: SSH_OPTS, scpOptions: SCP_OPTS }).run({
+				video: remoteVideo, output: remoteNpz, outRoot: `/tmp/cclay-gvhmr-${stamp}`, staticCam: GVHMR_STATIC_CAM,
+				trajectory: GVHMR_TRAJECTORY,
+			}, { signal: abort.signal, timeoutMs: EXTRACT_TIMEOUT_MS, onLine: runOptions.onLine });
+			console.error(`[bridge] GVHMR performance ${JSON.stringify(extractionPerformance)}`);
+		} else {
+			await run("ssh", [...SSH_OPTS, host, remoteCommand], runOptions);
+		}
 	} catch (err) {
 		console.error(`[bridge] extract run failed: ${err.message}`);
 		cleanupRemote();
-		fail("extract-run-failed");
+		fail(err.message === "extract-worker-busy" ? err.message : "extract-run-failed");
 		return;
 	}
 
@@ -376,7 +391,10 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 			return;
 		}
 		try {
-			motions.push(smplToCskel27Motion(readNpz(localNpz)));
+			const converted = smplToCskel27Motion(readNpz(localNpz));
+			const guarded = guardTrajectoryFloor(converted, extractionPerformance?.trajectory?.events ?? []);
+			motions.push(guarded.motion);
+			if (extractionPerformance?.trajectory?.events?.length) extractionPerformance.trajectory.floor = guarded.diagnostics;
 		} catch (err) {
 			console.error(`[bridge] extract convert failed (gvhmr): ${err.message}`);
 			cleanupRemote();
@@ -458,6 +476,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 		fps: takes[0].fps,
 		personScale: takes[0].personScale,
 		takes,
+		...(extractionPerformance ? { performance: { ...extractionPerformance, totalSeconds: (performance.now() - started) / 1000 } } : {}),
 	});
 	res.end();
 }

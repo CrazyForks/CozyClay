@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { frameFromClientX, groupKeyRuns, KEY_RUN_MIN, motionTrimRange, promptMoveStartFrame, shotBlockGeometry } from "./timeline-coordinates.js";
 import { motionSegmentSpeedForFrames } from "./motion-edit.js";
+import { createPlaybackClock } from "./playback-clock.js";
 import { promptResizeFrame } from "./timeline-resize.js";
 import { ko, isKo } from "../locale.js";
 import { buildRail, craneHeightAt } from "../camera-follow.js";
@@ -1123,12 +1124,16 @@ export default function Timeline({
 		pendingScrollRef.current = 0; // at 1× the surface fits exactly: no scroll
 	}
 
-	// Playhead advance at the loaded clip's fps multiplied by preview speed;
-	// wraps at the end without resampling the underlying motion.
+	// Rendering can delay timers. Advance by elapsed presentation time rather
+	// than one frame per callback, otherwise a 24fps take becomes slow motion.
 	useEffect(() => {
 		if (!playing) return;
+		const elapsedFrames = createPlaybackClock(fps, playbackSpeed, performance.now());
 		const id = window.setInterval(
-			() => handlers.current.onAdvance?.(),
+			() => {
+				const steps = elapsedFrames(performance.now());
+				if (steps) handlers.current.onAdvance?.(steps);
+			},
 			1000 / Math.max(1, fps * playbackSpeed),
 		);
 		return () => window.clearInterval(id);

@@ -259,11 +259,17 @@ function prepOf(rig) {
 	// local translation IS the forearm's length, so a mocap take's forearm
 	// factor has to be written there or the hand stays at the canonical
 	// distance while posedJoints say otherwise. Kept separately so the
-	// rotation path never touches them.
+	// mocap supplies no wrist rotation. Explicitly restore their bind rotation
+	// before the IK layer: otherwise a based wrist correction is multiplied
+	// onto yesterday's correction on every seek, accumulating a hand flip.
 	const stretchedLeaves = [];
 	for (const name of ["LeftHand", "RightHand"]) {
 		const bone = findBone(rig, name);
-		if (bone) stretchedLeaves.push({ bone, joint: CSKEL27_JOINTS.indexOf(name), bindLocalPos: bindPositionOf(bone).clone() });
+		if (bone) {
+			const bind = binds.get(bone);
+			stretchedLeaves.push({ bone, joint: CSKEL27_JOINTS.indexOf(name), bindLocalPos: bindPositionOf(bone).clone(),
+				bindLocalQuat: bind ? new THREE.Quaternion(bind.x, bind.y, bind.z, bind.w) : bone.quaternion.clone() });
+		}
 	}
 
 	// Bone lengths in rig units for the re-basing above: the canonical cskel27
@@ -534,6 +540,7 @@ export function applyMotionFrame(rig, motion, frame) {
 	}
 	for (const leaf of prep.stretchedLeaves) {
 		leaf.bone.position.copy(leaf.bindLocalPos).multiplyScalar(boneStretch(prep, motion, leaf.joint));
+		leaf.bone.quaternion.copy(leaf.bindLocalQuat);
 	}
 	rig.updateMatrixWorld(true);
 }
