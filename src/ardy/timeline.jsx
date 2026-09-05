@@ -1944,7 +1944,7 @@ export default function Timeline({
 								onTimingGestureEnd={() => handlers.current.onObjectTimingGestureEnd?.()}
 							/>
 						) : TRACKS.map((name) => (
-							<div style={!advancedMode && name !== IK_LANE ? { display: "none" } : undefined} className={"tl-track" + (name === "Prompts" ? " prompts" : "") + (name === IK_LANE ? " ik" : "") + (name === SHOTS_LANE ? " shots" : "")} key={name}>
+							<div className={"tl-track" + (name === "Prompts" ? " prompts" : "") + (name === IK_LANE ? " ik" : "") + (name === SHOTS_LANE ? " shots" : "")} key={name}>
 								<span className="tl-track-label">
 									{TRACK_LABELS_KO[name]}
 									{trackOwner && (name === "Prompts" || name === "2D Root") && <em className="tl-track-owner">{trackOwner}</em>}

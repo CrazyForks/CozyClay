@@ -17,7 +17,10 @@ try {
  const expert = [...sections, ...lanes, page.getByRole('button', { name: 'Root path mode', exact: true }), page.getByRole('button', { name: '+ Add shot', exact: true })];
  async function verify(on) {
   assert.equal(await toggle.getAttribute('aria-pressed'), String(on));
-  for (const locator of expert) assert.equal(await locator.isVisible(), on, `${await locator.count()} expert elements: expected visibility ${on}`);
+  for (const locator of sections) assert.equal(await locator.isVisible(), on, 'expert inspector section visibility');
+  for (const locator of lanes) assert.equal(await locator.isVisible(), true, 'Animation lanes remain visible');
+  assert.equal(await page.getByRole('button', { name: 'Root path mode', exact: true }).isVisible(), on);
+  assert.equal(await page.getByRole('button', { name: '+ Add shot', exact: true }).isVisible(), on);
   assert.equal(await page.locator('.tl-ruler').isVisible(), true);
  }
  await verify(false);
