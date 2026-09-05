@@ -1959,7 +1959,7 @@ export default function Timeline({
 										</em>
 									)}
 									{name === "Prompts" && <button className="tl-track-add" type="button" title={ko("Add a 2–4 second prompt clip — one action per block", "2–4초 프롬프트 클립 추가 — 한 블록에 한 동작")} onClick={() => handlers.current.onPromptAdd?.(frame)}>+</button>}
-									{advancedMode && name === SHOTS_LANE && (
+									{name === SHOTS_LANE && (
 										<button
 											type="button"
 											className="tl-track-add cut"

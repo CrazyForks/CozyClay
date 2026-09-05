@@ -20,7 +20,7 @@ try {
   for (const locator of sections) assert.equal(await locator.isVisible(), on, 'expert inspector section visibility');
   for (const locator of lanes) assert.equal(await locator.isVisible(), true, 'Animation lanes remain visible');
   assert.equal(await page.getByRole('button', { name: 'Root path mode', exact: true }).isVisible(), on);
-  assert.equal(await page.getByRole('button', { name: '+ Add shot', exact: true }).isVisible(), on);
+  assert.equal(await page.getByRole('button', { name: '+ Add shot', exact: true }).isVisible(), true);
   assert.equal(await page.locator('.tl-ruler').isVisible(), true);
  }
  await verify(false);
