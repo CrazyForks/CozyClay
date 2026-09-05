@@ -22,6 +22,10 @@ import { EXTRACT_FPS_MAX, conformToExtractFps } from "./footage.mjs";
 import { motionArraysToNpzMembers, writeNpz } from "./npz.mjs";
 import { bvhToCskel27Motion, parseBvh } from "./bvh-cskel27.mjs";
 import { createPrivateArtifactDir, removePrivateArtifactDir } from "./artifacts.mjs";
+import { readNpz } from "../kimodo/read-npz.mjs";
+import { smplToCskel27Motion } from "./smpl-cskel27.mjs";
+import { gvhmrWorker } from "./runners/gvhmr-worker.mjs";
+import { guardTrajectoryFloor } from "./gvhmr-floor.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = join(HERE, "out");
@@ -30,6 +34,26 @@ const SAM_DIR = "~/cclay-ingest/SAM3DBody-cpp"; // the box-side checkout the old
 // the cudnn that lives inside the ingest workspace's venv — without it the
 // pipeline silently falls back to CPU and then refuses to load at all.
 const SAM_ENV = 'LD_LIBRARY_PATH="$(echo $HOME/cclay-ingest/.venv/lib/python3.12/site-packages/nvidia/*/lib | tr \' \' :)"';
+// GVHMR (SIGGRAPH Asia 24) — a VIDEO model, unlike SAM-3D-Body which solves
+// every frame on its own with no floor and a monocular root. GVHMR predicts
+// in a gravity-aligned world frame with temporal context and per-foot contact
+// logits; on a locomotion clip SAM's support foot measured 250 cm/s of skate
+// where a planted foot should read 0. The box-side runner
+// (cclay_gvhmr_extract.py, kept in the GVHMR checkout) writes GVHMR's SMPL
+// joint ROTATIONS (contract: GVHMR-NPZ.md) which smplToCskel27Motion
+// retargets directly — lifting positions back to rotations, as the first
+// cut did through the ProjFlow converter, discarded wrist orientation and
+// limb twist and added 50 % hand jitter on the same clip. Select with
+//   CCLAY_EXTRACT_BACKEND=gvhmr   (default: sam)
+//   CCLAY_EXTRACT_STATIC_CAM=0    to run visual odometry for a moving camera
+//                                 (default 1: tripod footage, skips the VO)
+const EXTRACT_BACKEND = (process.env.CCLAY_EXTRACT_BACKEND?.trim() || "sam").toLowerCase();
+const GVHMR_DIR = "~/cclay-ingest/GVHMR";
+const GVHMR_STATIC_CAM = (process.env.CCLAY_EXTRACT_STATIC_CAM?.trim() || "1") !== "0";
+// Rollback keeps the original one-shot command completely unchanged.
+const GVHMR_WORKER = process.env.CCLAY_GVHMR_WORKER?.trim() !== "0";
+// Independent of preparation acceleration; disable to recover exact legacy output.
+const GVHMR_TRAJECTORY = process.env.CCLAY_GVHMR_TRAJECTORY?.trim() !== "0";
 const MAX_UPLOAD_BYTES = 300 * 1024 * 1024;
 const EXTRACT_TIMEOUT_MS = 30 * 60 * 1000;
 const SSH_BASE_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
@@ -130,6 +154,7 @@ function run(command, args, { children, timeoutMs, onLine }) {
  *   {event:"error", message}                   a NAMED reason
  */
 export async function handleExtract(req, res, { readBody, footagePath, registerMotion, artifactRoot = OUT_DIR }) {
+	const started = performance.now();
 	const host = sshHost();
 	const contentType = req.headers["content-type"] ?? "";
 	let localVideo = null;
@@ -189,6 +214,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 		}
 	};
 	const children = new Set();
+	const abort = new AbortController();
 	const cleanupLocal = () => {
 		if (uploadedTemp) rmSync(uploadedTemp, { force: true });
 		if (cappedTemp) rmSync(cappedTemp, { force: true });
@@ -205,6 +231,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	};
 	res.on("close", () => {
 		if (!res.writableEnded) {
+			abort.abort();
 			console.error(`[bridge] client disconnected mid-extract; killing ${children.size} child group(s)`);
 			for (const child of children) killGroup(child);
 			children.clear();
@@ -241,7 +268,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	const remoteVideo = `${EXTRACT_TMP}/cclay-extract-${stamp}.mp4`;
 	const remoteBvh = `${EXTRACT_TMP}/cclay-extract-${stamp}.bvh`;
 	const cleanupRemote = () => {
-		run("ssh", [...SSH_OPTS, host, `rm -f ${remoteVideo} ${remoteBvh} ${remoteBvh.replace(/\.bvh$/, "")}_*.bvh`], {
+		run("ssh", [...SSH_OPTS, host, `rm -rf ${remoteVideo} ${remoteBvh} ${remoteBvh.replace(/\.bvh$/, "")}_*.bvh ${remoteBvh.replace(/\.bvh$/, ".npz")} /tmp/cclay-gvhmr-${stamp}`], {
 			children: new Set(),
 			timeoutMs: 30000,
 		}).catch(() => {});
@@ -299,17 +326,20 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	// confident performers come back (one BVH each) and a single-person clip
 	// simply yields one file.
 	send({ event: "status", message: "extracting" });
+	const gvhmr = EXTRACT_BACKEND === "gvhmr" && !EXTRACT_CMD;
+	const remoteNpz = remoteBvh.replace(/\.bvh$/, ".npz");
+	let extractionPerformance = null;
 	try {
 		const remoteCommand = EXTRACT_CMD
 			? `${EXTRACT_CMD} ${remoteVideo} ${remoteBvh}`
+			: gvhmr
+			? `cd ${GVHMR_DIR} && .venv/bin/python cclay_gvhmr_extract.py ${remoteVideo} ${remoteNpz}` +
+				`${GVHMR_STATIC_CAM ? " --static-cam" : ""} --out-root /tmp/cclay-gvhmr-${stamp}`
 			: `cd ${SAM_DIR} && ${SAM_ENV} ./build/offline_sam_3dbody_render ` +
 				`--onnx-dir ./onnx --gguf ./onnx/pipeline.gguf --yolo ./onnx/yolo.onnx ` +
 				`--from ${remoteVideo} --bvh ${remoteBvh} --bvh-template ./mixamo.bvh --max-persons 2 ` +
 				`--smoothing zero-phase --bw-cutoff 6 --interpolate-jitter --foot-contact`;
-		await run(
-			"ssh",
-			[...SSH_OPTS, host, remoteCommand],
-			{
+		const runOptions = {
 				children,
 				timeoutMs: EXTRACT_TIMEOUT_MS,
 				onLine: (line) => {
@@ -319,13 +349,29 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 					if (progress && Number(progress[2]) > 0) {
 						send({ event: "progress", stage: "extract", ratio: Math.min(1, Number(progress[1]) / Number(progress[2])) });
 					}
+					// GVHMR's runner logs "[cclay] stage <name>" — four preprocess
+					// stages then the model; a coarse ratio is better than none.
+					const stage = /\[cclay\] stage (\w+)/.exec(line);
+					if (stage) {
+						const order = ["track", "vitpose", "features", "camera", "gvhmr", "joints"];
+						const at = order.indexOf(stage[1]);
+						if (at >= 0) send({ event: "progress", stage: "extract", ratio: at / order.length });
+					}
 				},
-			}
-		);
+		};
+		if (gvhmr && GVHMR_WORKER) {
+			extractionPerformance = await gvhmrWorker({ host, sshOptions: SSH_OPTS, scpOptions: SCP_OPTS }).run({
+				video: remoteVideo, output: remoteNpz, outRoot: `/tmp/cclay-gvhmr-${stamp}`, staticCam: GVHMR_STATIC_CAM,
+				trajectory: GVHMR_TRAJECTORY,
+			}, { signal: abort.signal, timeoutMs: EXTRACT_TIMEOUT_MS, onLine: runOptions.onLine });
+			console.error(`[bridge] GVHMR performance ${JSON.stringify(extractionPerformance)}`);
+		} else {
+			await run("ssh", [...SSH_OPTS, host, remoteCommand], runOptions);
+		}
 	} catch (err) {
 		console.error(`[bridge] extract run failed: ${err.message}`);
 		cleanupRemote();
-		fail("extract-run-failed");
+		fail(err.message === "extract-worker-busy" ? err.message : "extract-run-failed");
 		return;
 	}
 
@@ -333,7 +379,32 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 	// One BVH per tracked person. Person 0 must exist; person 1 is optional
 	// (a single-person clip yields one file, and that is not an error).
 	const motions = [];
-	for (let person = 0; person < 2; person += 1) {
+	if (gvhmr) {
+		// GVHMR's demo tracker follows ONE person, so exactly one npz comes back.
+		const localNpz = join(artifactDir, "gvhmr.npz");
+		try {
+			await run("scp", [...SCP_OPTS, `${host}:${remoteNpz}`, localNpz], { children, timeoutMs: 120000 });
+		} catch (err) {
+			console.error(`[bridge] extract fetch failed: ${err.message}`);
+			cleanupRemote();
+			fail("extract-no-person");
+			return;
+		}
+		try {
+			const converted = smplToCskel27Motion(readNpz(localNpz));
+			const guarded = guardTrajectoryFloor(converted, extractionPerformance?.trajectory?.events ?? []);
+			motions.push(guarded.motion);
+			if (extractionPerformance?.trajectory?.events?.length) extractionPerformance.trajectory.floor = guarded.diagnostics;
+		} catch (err) {
+			console.error(`[bridge] extract convert failed (gvhmr): ${err.message}`);
+			cleanupRemote();
+			fail("extract-convert-failed");
+			return;
+		} finally {
+			rmSync(localNpz, { force: true });
+		}
+	}
+	for (let person = 0; person < (gvhmr ? 0 : 2); person += 1) {
 		const localBvh = join(artifactDir, `person-${person}.bvh`);
 		try {
 			await run("scp", [...SCP_OPTS, `${host}:${remoteBvh.replace(/\.bvh$/, "")}_${person}.bvh`, localBvh], {
@@ -405,6 +476,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 		fps: takes[0].fps,
 		personScale: takes[0].personScale,
 		takes,
+		...(extractionPerformance ? { performance: { ...extractionPerformance, totalSeconds: (performance.now() - started) / 1000 } } : {}),
 	});
 	res.end();
 }

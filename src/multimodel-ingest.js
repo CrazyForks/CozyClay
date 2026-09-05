@@ -10,6 +10,31 @@
 
 export const INGEST_STAGES = Object.freeze(["idle", "fetching", "probing", "ready", "error"]);
 
+/** A successful extraction is not proof that vertical recovery was applied. */
+export function trajectoryReceipt(report, korean = false) {
+	if (!report) return "";
+	if (report.status === "disabled") return korean ? "낙하 보정 꺼짐" : "Descent recovery off";
+	if (report.status === "corrected") {
+		const rejected = report.rejected?.length ?? 0;
+		return korean
+			? `낙하 보정 ${report.changedFrames}프레임 적용${rejected ? ` · ${rejected}구간 미해결` : ""}`
+			: `Descent recovery: ${report.changedFrames} frames corrected${rejected ? ` · ${rejected} unresolved spans` : ""}`;
+	}
+	const reason = report.rejected?.[0]?.reason ?? report.reason ?? "unknown";
+	const labels = {
+		"world-endpoint-unsettled": ["3D endpoint never settles", "3D 끝점이 안정되지 않음"],
+		"no-confident-delayed-descent": ["no confident delayed descent detected", "확실한 낙하 지연이 검출되지 않음"],
+		"moving-camera-not-supported": ["moving-camera recovery unsupported", "이동 카메라 보정 미지원"],
+		"uncertain-keypoints": ["body tracking uncertain", "관절 추적 불확실"],
+		"uncertain-depth": ["depth change too large", "깊이 변화가 큼"],
+		"moving-landing": ["landing does not stay still", "착지 후 이동이 계속됨"],
+		"no-observed-landing": ["landing not observed", "착지를 확인할 수 없음"],
+		"landing-observation-too-short": ["not enough footage after landing", "착지 이후 영상이 너무 짧음"],
+		"excessive-correction": ["recovery exceeds its safety bound", "보정량이 안전 범위를 초과함"],
+	};
+	return `${korean ? "낙하 보정 미적용" : "Descent recovery not applied"}: ${labels[reason]?.[korean ? 1 : 0] ?? reason}`;
+}
+
 // Addresses we accept: absolute http(s), or a root-relative path served by this
 // origin. Protocol-relative "//host" is refused because it silently inherits
 // the page scheme, and blob:/data:/javascript: are refused from the text field

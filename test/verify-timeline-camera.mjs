@@ -239,7 +239,7 @@ expect(
 	app.includes("function previewCameraShot(shotId)") &&
 	app.includes("cameraPreviewEndRef.current = selected.endFrame") &&
 	app.includes("setTlFrame(selected.startFrame)") &&
-	app.includes("tlFrameRef.current >= previewEnd - 1") &&
+	app.includes("tlFrameRef.current + count >= previewEnd") &&
 	app.includes("setTlFrame(previewEnd)"),
 );
 expect(
