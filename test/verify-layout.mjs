@@ -268,8 +268,13 @@ expect("resize handles opt out on compact layouts", css.includes(".workspace-spl
 // place — each of them was a bug in the two-character prototype.
 expect(
 	"a character owns a Video capture foldout without a legacy ARDY card",
-	app.includes('advancedMode && <Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Video capture", "영상 모캡")}>') &&
+	app.includes('hidden={!advancedMode || !isCharacterSelection}') &&
+	app.includes('title={ko("Video capture", "영상 모캡")}') &&
 	!app.includes('title={ko("ARDY motion", "ARDY 모션")}'),
+);
+expect(
+	"Advanced OFF hides the Video capture foldout",
+	app.includes('localStorage?.getItem("cozyclay.advanced") === "true"'),
 );
 expect(
 	"Advanced OFF hides the Video capture foldout",
