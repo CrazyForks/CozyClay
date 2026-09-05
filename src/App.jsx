@@ -1033,6 +1033,12 @@ globalThis.playMode = centerTab === "play";
 	// Keep the underlying selection model intact, but use this small workflow
 	// state to surface only the tools that belong to the current job.
 	const [workflowMode, setWorkflowMode] = useState("scene");
+	const [advancedMode, setAdvancedMode] = useState(() => { try { return globalThis.localStorage?.getItem("cozyclay.advanced") === "true"; } catch { return false; } });
+	function toggleAdvancedMode() {
+		const next = !advancedMode;
+		try { globalThis.localStorage?.setItem("cozyclay.advanced", String(next)); } catch {}
+		setAdvancedMode(next);
+	}
 	function selectWorkflowMode(next) {
 		setWorkflowMode(next);
 		setCenterTab("scene");
@@ -9381,6 +9387,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</span>
 					)}
 					<LocaleToggle />
+					<button type="button" className="auto-color-toggle advanced-toggle" aria-pressed={advancedMode} onClick={toggleAdvancedMode}>{ko("Advanced", "고급")}</button>
 					<AnalyticsToggle />
 				</div>
 			</header>
@@ -10417,7 +10424,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				{/* Rig and Pose are chosen once when a character is cast and then left
 				    alone, so they open on demand — Subject and Prompt are the panels
 				    you actually work in. */}
-				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Rig", "리그")}>
+				<Foldout hidden={!advancedMode || !isCharacterSelection} defaultOpen={false} title={ko("Rig", "리그")}>
 					{/* The rig is a property of the character, and swapping it is a
 					    look decision made while blocking — so it belongs beside the
 					    subject, not buried in the project file. */}
@@ -10443,7 +10450,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					</div>
 				</Foldout>
 
-				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Pose", "포즈")}>
+				<Foldout hidden={!advancedMode || !isCharacterSelection} defaultOpen={false} title={ko("Pose", "포즈")}>
 					{/* Tiles, not a dropdown: a pose read out of a photograph has no
 					    name worth reading — it is recognisable only as a shape. This
 					    is the same grid the studio shows, applied to whichever
@@ -10501,7 +10508,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					</button>
 				</Foldout>
 
-				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Video capture", "영상 모캡")}>
+				<Foldout hidden={!advancedMode || !isCharacterSelection} defaultOpen={false} title={ko("Video capture", "영상 모캡")}>
 					<div className="multimodel-card">
 						<div className="multimodel-card-head">
 							<div>
@@ -10845,7 +10852,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</>
 					)}
 				</Foldout>}
-				<Foldout hidden={!isCharacterSelection} defaultOpen={false} openSignal={promptBlocksReveal} title={ko("Prompt Blocks", "프롬프트 블록")}>
+				<Foldout hidden={!advancedMode || !isCharacterSelection} defaultOpen={false} openSignal={promptBlocksReveal} title={ko("Prompt Blocks", "프롬프트 블록")}>
 					<p className="inspector-hint">{ko("Blocks define what ARDY generates over each frame range. Selecting one also moves editing context to that prompt.", "블록은 각 프레임 범위에서 ARDY가 생성할 내용을 정합니다. 블록을 선택하면 편집 기준도 해당 프롬프트로 이동합니다.")}</p>
 						<div className="inspector-list">
 							{promptClips.map((clip) => (
@@ -12101,6 +12108,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					frameCount={tlFrameCount}
 					fps={tlFps}
 					playbackSpeed={DEFAULT_PLAYBACK_SPEED}
+					advancedMode={advancedMode}
 				trackOwner={characters.length > 1 ? `S${activeCharIndex + 1}` : null}
 				ghostLayers={ghostLayers}
 				pathSpeed={pathSpeed}
