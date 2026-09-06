@@ -54,3 +54,27 @@ await new Promise((resolve) => rateServer.close(resolve));
 await new Promise((resolve) => authServer.close(resolve));
 server.close();
 console.log("agent routes verified");
+
+// #135: the embedded Studio preview is a live editor too; the agent must
+// pick the authoring tab, not throw on "several workspaces connected".
+{
+	const { pickWorkspace } = await import("../bin/agent/agent-tools.mjs");
+	const hub = (details) => ({
+		workspaceHandleDetails: () => details,
+		resolveWorkspace: () => { throw new Error("requires workspace_handle"); },
+	});
+	const agentCommands = ["capture_framing_png", "import_asset"];
+	assert.equal(pickWorkspace(hub([{ handle: "a", meta: { embed: true, commands: agentCommands } }, { handle: "b", meta: { project: "P", commands: agentCommands } }])), "b", "skips the embedded preview");
+	assert.equal(pickWorkspace(hub([{ handle: "a", meta: { commands: agentCommands } }, { handle: "b", meta: { project: "P", commands: agentCommands } }])), "b", "prefers the most recent authoring tab");
+	assert.throws(() => pickWorkspace(hub([{ handle: "a", meta: { embed: true, commands: agentCommands } }])), /requires workspace_handle/, "falls back to the hub rule when only previews are connected");
+	assert.throws(() => pickWorkspace(hub([{ handle: "old", meta: { project: "P" } }])), /requires workspace_handle/, "an editor that does not advertise commands is not a candidate");
+	console.log("PASS pickWorkspace skips embedded previews");
+}
+
+{
+	const { pickWorkspace } = await import("../bin/agent/agent-tools.mjs");
+	const hub = (details) => ({ workspaceHandleDetails: () => details, resolveWorkspace: () => { throw new Error("requires workspace_handle"); } });
+	// A stale tab (or another app on the live port) that lacks the agent commands is skipped.
+	assert.equal(pickWorkspace(hub([{ handle: "old", meta: { commands: ["describe"] } }, { handle: "new", meta: { commands: ["capture_framing_png", "import_asset"] } }])), "new", "skips workspaces without the agent commands");
+	console.log("PASS pickWorkspace skips workspaces lacking agent commands");
+}
