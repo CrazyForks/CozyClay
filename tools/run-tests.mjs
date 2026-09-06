@@ -125,6 +125,7 @@ const NODE_FILES = [
 	"test/verify-telemetry-state.mjs",
 	"test/verify-timeline-camera.mjs",
 	"test/verify-timeline-shots.mjs",
+	"test/verify-tool-handlers.mjs",
 	"test/verify-trim.mjs",
 	"test/verify-update-check.mjs",
 	"test/verify-usd-camera.mjs",
