@@ -47,6 +47,7 @@ import ObjectGizmo from "./object-gizmo.jsx";
 import { MAX_PATH_POINTS } from "./object-path.js";
 import { track } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
+import { applyPartColours } from "./part-colours.js";
 import { POSE_BONES, applyHipsOffset, applyPose, primeBindPose, normalizeBoneName } from "./poses.js";
 import { FK_TRACKS, IK_TRACKS, MID_TRACKS } from "./ardy/ik.js";
 import { RENDER_ACTIVITY_EVENT } from "./use-render-activity.js";
@@ -837,7 +838,7 @@ export function addFacingMarks(clone, markTint) {
 	mark(new THREE.ConeGeometry(1.7, 3.6, 4), [0, 2.8, 6.4], [Math.PI / 2, Math.PI / 4, 0]);
 }
 
-export const Character = memo(function Character({ url, position, rot, tint, pose, scale = 1, onRig, pickId }) {
+export const Character = memo(function Character({ url, position, rot, tint, pose, scale = 1, onRig, pickId, partColoursEnabled = false, partColoursMode = "shaded" }) {
 	const fbx = useFBX(url);
 	const model = useMemo(() => {
 		const clone = SkeletonUtils.clone(fbx);
@@ -875,12 +876,13 @@ export const Character = memo(function Character({ url, position, rot, tint, pos
 				child.receiveShadow = true;
 			}
 		});
+		if (partColoursEnabled) applyPartColours(clone, partColoursMode);
 		addFacingMarks(clone, jointTint);
 		// Stamp the bind pose while the rig is still untouched: the pose effect
 		// below runs immediately after and would otherwise be baked into "rest".
 		primeBindPose(clone);
 		return clone;
-	}, [fbx, tint]);
+	}, [fbx, tint, partColoursEnabled, partColoursMode]);
 
 	// A new stature (a fresh extraction on this character) must not rebuild the
 	// clone — that would drop the rig the playback effects hold. Only the world
@@ -2406,7 +2408,7 @@ export function CaptureRig({ apiRef, camRef, width = CAPTURE_W, height = CAPTURE
 	return null;
 }
 
-export async function captureMcpFrame({ capture, camera, characters, activeCharacterId, objects, rigs, readAuthoredState }) {
+export async function captureMcpFrame({ capture, camera, characters, activeCharacterId, objects, rigs, readAuthoredState, partColours = null }) {
 	if (!capture || !camera) throw new Error("No renderable shot camera is available for capture_frame.");
 	const authoredStateBefore = JSON.stringify(readAuthoredState());
 	const buffer = capture.render();
@@ -2496,6 +2498,7 @@ export async function captureMcpFrame({ capture, camera, characters, activeChara
 		encoding: "base64",
 		byteSize: bytes.length,
 		data: btoa(binary),
+		partColours,
 		authoredStateBefore,
 		authoredStateAfter,
 		assertions: {
