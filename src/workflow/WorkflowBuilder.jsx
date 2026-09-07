@@ -340,17 +340,23 @@ export default function WorkflowBuilder() {
 		toast.success("Workflow saved locally");
 	}, [graph]);
 
-	const runWorkflow = useCallback(async (nodeId = null) => {
-		if (!graph.nodes.length) {
+	const runWorkflowRef = useRef(null);
+	const runWorkflow = useCallback(async (nodeId = null, input = graph) => {
+		if (!input.nodes.length) {
 			setRunState("complete");
 			toast.success("Local CozyClay scene is ready");
-			return;
+			return { graph: input, outputs: [] };
 		}
 		setRunState("running");
+		const graph = input;
 		const result = executeLocalWorkflowGraph(graph, { runId: `local-${Date.now()}` });
 		setNodes(result.nodes);
 		const runId = `local-${Date.now()}`;
 		const values = new Map();
+		// Everything runWorkflow writes to a node also lands in the graph it
+		// returns, so a caller that republishes that graph keeps the results.
+		const patches = new Map();
+		const patchNode = (id, patch) => { patches.set(id, { ...(patches.get(id) || {}), ...patch }); updateNode(id, patch); };
 		for (const id of result.order) {
 			const current = result.nodes.find((node) => node.id === id);
 			if (!current) continue;
@@ -358,17 +364,17 @@ export default function WorkflowBuilder() {
 				try {
 					const frame = await captureSceneFrame(id);
 					values.set(id, frame.dataUrl);
-					updateNode(id, { status: "complete", statusMessage: "Captured framing PNG", preview: "render", lastOutput: { renderUrl: frame.dataUrl, sceneUrl: "/app/", jobId: null }, outputs: [{ value: frame.dataUrl }], resultUrl: frame.dataUrl });
-				} catch (error) { updateNode(id, { status: "error", errorMsg: error.message, statusMessage: error.message }); }
+					patchNode(id, { status: "complete", statusMessage: "Captured framing PNG", preview: "render", lastOutput: { renderUrl: frame.dataUrl, sceneUrl: "/app/", jobId: null }, outputs: [{ value: frame.dataUrl }], resultUrl: frame.dataUrl });
+				} catch (error) { patchNode(id, { status: "error", errorMsg: error.message, statusMessage: error.message }); }
 			} else if (current.type === "image" && current.data?.model === "image-generation") {
 				const incoming = (graph.edges || []).filter((edge) => edge.target === id).map((edge) => ({ edge, value: values.get(edge.source), node: result.nodes.find((node) => node.id === edge.source) }));
 				const frame = incoming.find((entry) => entry.node?.type === "scene" && entry.value)?.value;
 				const reference = incoming.find((entry) => entry.node?.type !== "scene" && typeof entry.value === "string" && entry.value.startsWith("data:image/"))?.value;
 				const source = frame || incoming.map((entry) => entry.value).find(Boolean) || current.data.image_url;
-				if (!source) { updateNode(id, { status: "error", errorMsg: "Connect a Scene frame before generating." }); continue; }
-				updateNode(id, { isLoading: true, errorMsg: null });
-				try { const output = await createHttpTransport().image({ prompt: current.data.prompt || "", imageDataUrl: source, referenceDataUrl: reference || (typeof current.data.image_url === "string" && current.data.image_url.startsWith("data:image/") ? current.data.image_url : undefined), quality: "auto" }); values.set(id, output.dataUrl); updateNode(id, { isLoading: false, status: "complete", resultUrl: output.dataUrl, outputs: [{ value: output.dataUrl }], errorMsg: null }); }
-				catch (error) { updateNode(id, { isLoading: false, status: "error", errorMsg: error.message }); }
+				if (!source) { patchNode(id, { status: "error", errorMsg: "Connect a Scene frame before generating." }); continue; }
+				patchNode(id, { isLoading: true, errorMsg: null });
+				try { const output = await createHttpTransport().image({ prompt: current.data.prompt || "", imageDataUrl: source, referenceDataUrl: reference || (typeof current.data.image_url === "string" && current.data.image_url.startsWith("data:image/") ? current.data.image_url : undefined), quality: "auto" }); values.set(id, output.dataUrl); patchNode(id, { isLoading: false, status: "complete", resultUrl: output.dataUrl, outputs: [{ value: output.dataUrl }], errorMsg: null }); }
+				catch (error) { patchNode(id, { isLoading: false, status: "error", errorMsg: error.message }); }
 			} else values.set(id, current.data?.outputs?.[0]?.value);
 		}
 		const resultById = new Map(result.nodes.map((node) => [node.id, node]));
@@ -382,13 +388,18 @@ export default function WorkflowBuilder() {
 		}
 		setRunState("complete");
 		toast.success(nodeId ? "Node evaluated locally" : "Workflow evaluated locally");
+		const outputs = result.nodes.map((node) => ({ id: node.id, outputs: values.has(node.id) && values.get(node.id) !== undefined ? [{ value: values.get(node.id) }] : node.data?.outputs || [] }));
+		return { graph: serializableGraph(result.nodes.map((node) => ({ ...node, data: { ...node.data, ...(patches.get(node.id) || {}), outputs: outputs.find((entry) => entry.id === node.id).outputs } })), graph.edges), outputs };
 	}, [graph, setNodes]);
 
+	useEffect(() => { runWorkflowRef.current = runWorkflow; }, [runWorkflow]);
 	useEffect(() => {
 		const store = {
 			getGraph: () => graphRef.current,
 			setGraph: (next) => { setNodes(next.nodes || []); setEdges(next.edges || []); },
-			run: async (input = graphRef.current) => { const result = executeLocalWorkflowGraph(input, { runId: `agent-${Date.now()}` }); setNodes(result.nodes); return { graph: serializableGraph(result.nodes, input.edges), outputs: result.nodes.map((node) => ({ id: node.id, outputs: node.data?.outputs || [] })) }; },
+			// The agent's run_workflow is the same run as the Run button: Scene
+			// capture and Image generation included, not just the local evaluator.
+			run: (input = graphRef.current) => runWorkflowRef.current(null, input),
 			focus: (id) => { document.querySelector(`.react-flow__node[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "center", inline: "center" }); },
 		};
 		commandsRef.current = createCanvasCommands({ store, makeNode, nodeSchemas });

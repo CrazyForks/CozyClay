@@ -45,6 +45,8 @@ function errorInfo(error, quota) {
 	if (error?.status === 401 || error?.code === "unauthorized") return { code: "auth", message: "Authentication required. Sign in again." };
 	if (error?.status === 429) return { code: "rate_limit", message: "Rate limit exceeded.", resetAt: quota?.primary.resetAt ?? null };
 	if (error?.code === "entitlement") return { code: "entitlement", message: "This account cannot generate images." };
+	if (error?.code === "overloaded") return { code: "overloaded", message: "The model service is overloaded right now. Try again in a moment." };
+	if (error?.code === "server_error") return { code: "overloaded", message: "The model service hit an internal error. Try again in a moment." };
 	// Backend errors may echo credentials or image inputs. Never forward their bodies.
 	return { code: "upstream", message: "The model or live editor could not complete this turn." };
 }
@@ -85,7 +87,7 @@ function liveToolsRuntime() {
 	}).catch((error) => ({ error }));
 }
 
-export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHub, port } = {}) {
+export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHub, port, retryDelayMs = 2000 } = {}) {
 	const requestContext = new AsyncLocalStorage();
 	codex ||= defaultClient(auth, requestContext);
 	const runtime = handlers !== undefined || liveHub !== undefined ? Promise.resolve({ handlers: handlers ?? [], liveHub }) : liveToolsRuntime();
@@ -179,6 +181,16 @@ export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHu
 			quota = next;
 		};
 		let refreshed = false;
+		// A stream that fails with server_is_overloaded usually succeeds on the
+		// next attempt; retry twice before reporting it.
+		const retryOverloaded = async (operation, attempts = 2) => {
+			for (let attempt = 0; ; attempt += 1) {
+				try { return await operation(); } catch (error) {
+					if (!["overloaded", "server_error"].includes(error.code) || attempt >= attempts || signal.aborted) throw error;
+					await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
+				}
+			}
+		};
 		const retryAuth = async (operation) => {
 			try { signal.throwIfAborted(); return await operation(); }
 			catch (error) {
@@ -194,9 +206,9 @@ export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHu
 			const dependencies = await runtime;
 			session.codex = { editImage: (args) => retryAuth(() => codex.editImage(args)) };
 			const tools = createAgentTools({ ...dependencies, session, emit: send });
-			const executeTool = async (item) => {
+			const executeTool = async (item, override) => {
 				signal.throwIfAborted();
-				const tool = tools.find((entry) => entry.name === item.name);
+				const tool = override ?? tools.find((entry) => entry.name === item.name);
 				if (!tool) throw new Error("Unknown tool.");
 				const args = typeof item.arguments === "string" ? JSON.parse(item.arguments) : item.arguments;
 				send({ type: "tool.start", callId: item.call_id, name: item.name, label: item.name.replaceAll("_", " "), args });
@@ -208,13 +220,14 @@ export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHu
 					send({ type: "tool.done", callId: item.call_id, ok: true, elapsedMs: Math.round(performance.now() - started), result });
 					return result;
 				} catch (error) {
+					if (process.env.COZYCLAY_AGENT_DEBUG) console.error("[agent] tool", item.name, "failed:", error?.message);
 					send({ type: "tool.done", callId: item.call_id, ok: false, elapsedMs: Math.round(performance.now() - started), error: errorInfo(error).message });
 					throw error;
 				}
 			};
 			let text = value.text;
 			if (value.attachFrame) {
-				const captured = await executeTool({ call_id: "attached-frame", name: "capture_blocking_frame", arguments: {} });
+				const captured = await executeTool({ call_id: "attached-frame", name: "capture_blocking_frame", arguments: {} }, tools.internal.capture);
 				text += `\nAttached frame imageId: ${captured.imageId}`;
 			}
 			const history = [...session.history, { role: "user", content: [{ type: "input_text", text }] }];
@@ -222,7 +235,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHu
 			// that same serial loop here so quotas are observable, and retry only
 			// the failed request rather than replaying already-executed scene tools.
 			while (true) {
-				const output = await retryAuth(async () => {
+				const output = await retryOverloaded(() => retryAuth(async () => {
 					const stream = codex.streamResponses({ input: history, tools: agentToolSchemas(tools), instructions: SYSTEM_PROMPT, model: value.model, effort: value.effort, signal });
 					const headers = stream.headers.then(observeHeaders, () => {});
 					const items = [];
@@ -231,12 +244,16 @@ export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHu
 							signal.throwIfAborted();
 							if (event.type === "response.output_text.delta") send({ type: "text.delta", text: event.delta });
 							if (event.type === "response.output_item.done") items.push(event.item);
-							if (event.type === "error" || event.type === "response.failed") throw new Error("Model response failed.");
+							if (event.type === "error" || event.type === "response.failed") {
+								if (process.env.COZYCLAY_AGENT_DEBUG) console.error("[agent] model event:", JSON.stringify(event).slice(0, 600));
+								const code = event.error?.code ?? event.response?.error?.code;
+								throw Object.assign(new Error("Model response failed."), code === "server_is_overloaded" ? { code: "overloaded" } : code === "server_error" ? { code: "server_error" } : {});
+							}
 						}
 						await headers;
 						return items;
 					} finally { await headers; }
-				});
+				}));
 				for (const item of output) {
 					history.push(item); // Preserve reasoning items verbatim.
 					if (item.type === "function_call") {
@@ -252,6 +269,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHu
 		catch (error) {
 			if (!signal.aborted) {
 				if (error.headers) observeHeaders(error.headers);
+				if (process.env.COZYCLAY_AGENT_DEBUG) console.error("[agent] turn failed:", error?.status, error?.message, String(error?.body ?? "").slice(0, 300));
 				send({ type: "error", ...errorInfo(error, quota) });
 			}
 		} finally {

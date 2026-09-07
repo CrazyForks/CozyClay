@@ -13,10 +13,12 @@ const fakeCodex = {
   streamResponses: ({ input }) => {
     calls.push(input);
     const items = calls.length === 1
-      ? [{ type: "message", role: "assistant" }, { type: "function_call", call_id: "c1", name: "capture_blocking_frame", arguments: "{}" }]
+      ? [{ type: "message", role: "assistant" }, { type: "function_call", call_id: "c1", name: "describe_workflow", arguments: "{}" }]
       : calls.length === 2
-        ? [{ type: "function_call", call_id: "c2", name: "render_from_frame", arguments: JSON.stringify({ prompt: "render" }) }]
-        : [{ type: "message", role: "assistant" }];
+        ? [{ type: "function_call", call_id: "c2", name: "add_workflow_node", arguments: JSON.stringify({ type: "image", model: "image-generation", data: { prompt: "render" } }) }]
+        : calls.length === 3
+          ? [{ type: "function_call", call_id: "c3", name: "run_workflow", arguments: "{}" }]
+          : [{ type: "message", role: "assistant" }];
     return { headers: Promise.resolve(new Headers()), async *[Symbol.asyncIterator]() {
       if (calls.length !== 2) yield { type: "response.output_text.delta", delta: calls.length === 1 ? "hello" : " done" };
       for (const item of items) yield { type: "response.output_item.done", item };
@@ -32,7 +34,11 @@ const { port } = server.address();
 const response = await fetch(`http://127.0.0.1:${port}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${port}` }, body: JSON.stringify({ sessionId: "s", text: "hi", attachFrame: false }) });
 const text = await response.text();
 const events = [...text.matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
-assert.deepEqual(events.map((event) => event.type), ["quota", "text.delta", "tool.start", "tool.done", "tool.start", "image", "tool.done", "text.delta", "done"]);
+assert.deepEqual(events.map((event) => event.type), ["quota", "text.delta", "tool.start", "tool.done", "tool.start", "tool.done", "text.delta", "tool.start", "tool.done", "text.delta", "done"]);
+const toolEvents = events.filter((event) => event.type === "tool.start" || event.type === "tool.done");
+assert.deepEqual(toolEvents.map((event) => event.callId), ["c1", "c1", "c2", "c2", "c3", "c3"], "every tool.start is paired with its tool.done");
+assert.ok(toolEvents.every((event) => event.type !== "tool.done" || event.ok), "every scripted tool call succeeds");
+assert.equal(events.some((event) => event.type === "image"), false, "the canvas turn builds nodes instead of emitting images");
 assert.equal(calls[0][0].content[0].text.includes(png), false);
 {
 	const post = (body, p = port) => fetch(`http://127.0.0.1:${p}/agent/image`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${p}` }, body: JSON.stringify(body) });
@@ -61,6 +67,44 @@ assert.equal(calls[0][0].content[0].text.includes(png), false);
 	assert.equal(guided[0], "golden hour\n[image] medium shot, 24mm, subject faces camera (golden hour)", "scene guidance is appended to the node prompt like render_from_frame does");
 	guideServer.close();
 	console.log("PASS /agent/image: full-size frame accepted, validation, reference forwarded");
+}
+{
+	// Attaching the frame captures through the sidecar's internal tool even though
+	// the model-facing list no longer offers capture_blocking_frame.
+	const seenInputs = [];
+	const attachHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: { ...fakeCodex, streamResponses: ({ input }) => { seenInputs.push(input); return { headers: Promise.resolve(new Headers()), async *[Symbol.asyncIterator]() { yield { type: "response.output_item.done", item: { type: "message", role: "assistant" } }; } }; } }, liveHub: fakeLive, port: () => attachServer.address().port });
+	const attachServer = createServer((req, res) => attachHandler(req, res).catch(() => {})); attachServer.listen(0, "127.0.0.1"); await once(attachServer, "listening");
+	const attachPort = attachServer.address().port;
+	const attachText = await fetch(`http://127.0.0.1:${attachPort}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${attachPort}` }, body: JSON.stringify({ sessionId: "att", text: "hi", attachFrame: true }) }).then((r) => r.text());
+	const attachEvents = [...attachText.matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
+	assert.deepEqual(attachEvents.filter((event) => event.type === "tool.start").map((event) => event.name), ["capture_blocking_frame"], "the attached frame is captured and shown as a tool card");
+	assert.ok(attachEvents.every((event) => event.type !== "error"), "attaching a frame does not fail the turn");
+	assert.match(seenInputs[0].find((item) => item.role === "user").content[0].text, /Attached frame imageId: /, "the model is told which image was attached");
+	attachServer.close();
+	console.log("PASS attachFrame captures through the internal tool");
+}
+{
+	// The backend sometimes answers a whole stream with server_is_overloaded.
+	// One retry usually clears it; a persistent overload is reported as such.
+	const overloaded = { type: "error", error: { type: "service_unavailable_error", code: "server_is_overloaded", message: "Our servers are currently overloaded." } };
+	const make = (failures) => { let n = 0; return { ...fakeCodex, streamResponses: () => ({ headers: Promise.resolve(new Headers()), async *[Symbol.asyncIterator]() { if (n++ < failures) { yield overloaded; return; } yield { type: "response.output_item.done", item: { type: "message", role: "assistant" } }; } }) }; };
+	const turn = async (codex) => { const h = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex, liveHub: fakeLive, port: () => s.address().port, retryDelayMs: 1 }); const s = createServer((req, res) => h(req, res).catch(() => {})); s.listen(0, "127.0.0.1"); await once(s, "listening"); const p = s.address().port; const text = await fetch(`http://127.0.0.1:${p}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${p}` }, body: JSON.stringify({ sessionId: "ov" + Math.random(), text: "hi" }) }).then((r) => r.text()); s.close(); return [...text.matchAll(/^data: (.+)$/gm)].map((m) => JSON.parse(m[1])); };
+	const once1 = await turn(make(1));
+	assert.ok(once1.every((event) => event.type !== "error"), "one overloaded stream is retried and the turn completes");
+	const always = await turn(make(10));
+	const err = always.find((event) => event.type === "error");
+	assert.equal(err?.code, "overloaded", "a persistent overload is reported with its own code");
+	const serverError = { type: "error", error: { type: "server_error", code: "server_error", message: "An error occurred while processing your request." } };
+	let se = 0;
+	const flaky = { ...fakeCodex, streamResponses: () => ({ headers: Promise.resolve(new Headers()), async *[Symbol.asyncIterator]() { if (se++ < 1) { yield serverError; return; } yield { type: "response.output_item.done", item: { type: "message", role: "assistant" } }; } }) };
+	assert.ok((await turn(flaky)).every((event) => event.type !== "error"), "a transient server_error stream is retried too");
+	console.log("PASS overloaded model streams are retried, then reported");
+}
+{
+	const { LiveHub, RUN_WORKFLOW_TIMEOUT_MS, DEFAULT_COMMAND_TIMEOUT_MS } = await import("../mcp/live-hub.mjs");
+	assert.equal(LiveHub.commandTimeoutMs("run_workflow"), RUN_WORKFLOW_TIMEOUT_MS, "run_workflow waits for capture + generation");
+	assert.equal(LiveHub.commandTimeoutMs("add_node"), DEFAULT_COMMAND_TIMEOUT_MS);
+	console.log("PASS run_workflow gets a long live command timeout");
 }
 const forbidden = await fetch(`http://127.0.0.1:${port}/agent/models`, { headers: { origin: "http://evil.example" } });
 assert.equal(forbidden.status, 403);
@@ -108,7 +152,8 @@ console.log("agent routes verified");
 	const agentCommands = ["capture_framing_png", "import_asset"];
 	assert.equal(pickWorkspace(hub([{ handle: "a", meta: { embed: true, commands: agentCommands } }, { handle: "b", meta: { project: "P", commands: agentCommands } }])), "b", "skips the embedded preview");
 	assert.equal(pickWorkspace(hub([{ handle: "a", meta: { commands: agentCommands } }, { handle: "b", meta: { project: "P", commands: agentCommands } }])), "b", "prefers the most recent authoring tab");
-	assert.throws(() => pickWorkspace(hub([{ handle: "a", meta: { embed: true, commands: agentCommands } }])), /requires workspace_handle/, "falls back to the hub rule when only previews are connected");
+	assert.equal(pickWorkspace(hub([{ handle: "a", meta: { embed: true, commands: agentCommands } }])), "a", "the embedded Studio is the scene when no standalone editor is open");
+	assert.equal(pickWorkspace(hub([{ handle: "a", meta: { embed: true, commands: agentCommands } }, { handle: "w", meta: { kind: "workflow", commands: ["get_graph"] } }])), "a", "the workflow canvas never counts as a scene editor");
 	assert.throws(() => pickWorkspace(hub([{ handle: "old", meta: { project: "P" } }])), /requires workspace_handle/, "an editor that does not advertise commands is not a candidate");
 	console.log("PASS pickWorkspace skips embedded previews");
 }
@@ -122,7 +167,7 @@ console.log("agent routes verified");
 }
 
 {
-	const { pickWorkspace, createAgentTools, agentToolSchemas } = await import("../bin/agent/agent-tools.mjs");
+	const { pickWorkspace, createAgentTools, agentToolSchemas, SYSTEM_PROMPT } = await import("../bin/agent/agent-tools.mjs");
 	const mapping = { describe_workflow: "get_graph", add_workflow_node: "add_node", update_workflow_node: "update_node", remove_workflow_node: "remove_node", connect_workflow_nodes: "connect", disconnect_workflow_nodes: "disconnect", run_workflow: "run_workflow", set_workflow_node_output: "set_node_output", focus_workflow_node: "focus_node" };
 	const details = [
 		{ handle: "studio", meta: { commands: ["capture_framing_png", "import_asset"] } },
@@ -142,8 +187,56 @@ console.log("agent routes verified");
 	const session = { signal: new AbortController().signal, images: new Map(), codex: fakeCodex };
 	const tools = createAgentTools({ liveHub: hub, session, emit: () => {} });
 	const schemas = agentToolSchemas(tools);
-	assert.deepEqual(schemas.map((tool) => tool.name).sort(), ["capture_blocking_frame", "render_from_frame", "place_image_in_scene", "describe_scene", "describe_shot", ...Object.keys(mapping)].sort());
-	assert.equal(schemas.find((tool) => tool.name === "render_from_frame").parameters.properties.addAsNode.type, "boolean");
+	const names = schemas.map((tool) => tool.name);
+	for (const removed of ["capture_blocking_frame", "render_from_frame", "place_image_in_scene"]) assert.equal(names.includes(removed), false, `${removed} is removed from the tool list`);
+	assert.ok(names.includes("describe_workflow") && names.includes("add_reference_node"), "describe_workflow and add_reference_node are exposed");
+	assert.match(SYSTEM_PROMPT, /run_workflow/);
+	{
+		// Canvas results echo the whole graph and any data URLs; the model must get a
+		// bounded summary, otherwise a reference image blows the request.
+		const big = "data:image/png;base64," + "A".repeat(200_000);
+		const echoHub = { ...hub, command: async (name) => name === "add_node" ? { node: { id: "upload-1", type: "upload", data: { image_url: big, outputs: [{ value: big }] } }, graph: { nodes: [{ id: "x", data: { image_url: big } }], edges: [] } } : name === "get_graph" ? { nodes: [{ id: "u", type: "upload", model: null, data: { image_url: big }, position: { x: 0, y: 0 } }], edges: [], outputs: { u: [{ value: big }] } } : {} };
+		const echoTools = createAgentTools({ liveHub: echoHub, session: { ...session, images: new Map([["img", big]]), latestCaptureId: "img" }, emit: () => {} });
+		for (const name of ["add_workflow_node", "add_reference_node", "describe_workflow"]) {
+			const out = JSON.stringify(await echoTools.find((tool) => tool.name === name).handler({ type: "upload" }));
+			assert.ok(out.length < 2000, `${name} result stays small (${out.length} chars)`);
+			assert.ok(!out.includes("AAAAAAAA"), `${name} result carries no image bytes`);
+		}
+		console.log("PASS canvas tool results are summarised for the model");
+	}
+	{
+		// A panel session outlives page reloads; its cached handles must not point
+		// at an editor that is gone, or at the canvas when a scene command is due.
+		const stale = { ...session, workspaceHandle: "canvas", workflowHandle: "gone" };
+		const staleTools = createAgentTools({ liveHub: hub, session: stale, emit: () => {} });
+		routed.length = 0;
+		await staleTools.internal.capture.handler({});
+		assert.equal(routed.at(-1).handle, "studio", "a scene command re-picks a scene editor instead of the canvas");
+		await staleTools.find((tool) => tool.name === "describe_workflow").handler({});
+		assert.equal(routed.at(-1).handle, "canvas", "a canvas command re-picks the canvas when its cached handle vanished");
+		console.log("PASS stale session handles are re-picked");
+	}
+	{
+		// The canvas connects before the embedded Studio finishes booting. A scene
+		// command must never land on the canvas, and capture waits for the editor.
+		const canvasOnly = [{ handle: "canvas", meta: { kind: "workflow", commands: ["get_graph"] } }];
+		const late = { workspaceHandleDetails: () => canvasOnly, resolveWorkspace: () => "canvas", command: async (name, args, handle) => ({ handle, dataUrl: png, width: 1, height: 1 }) };
+		assert.throws(() => pickWorkspace(late), /scene editor/i, "a scene command is refused rather than sent to the canvas");
+		const waited = createAgentTools({ liveHub: late, session: { ...session, images: new Map() }, emit: () => {} });
+		const pending = waited.internal.capture.handler({});
+		canvasOnly.push({ handle: "preview", meta: { embed: true, commands: ["capture_framing_png", "import_asset"] } });
+		const result = await pending;
+		assert.ok(result.imageId, "capture waits for the editor to say hello, then proceeds");
+		console.log("PASS scene commands wait for a scene editor and never hit the canvas");
+		// The embedded Studio answers hello before its shot renderer exists.
+		let attempts = 0;
+		const warming = { workspaceHandleDetails: () => canvasOnly, resolveWorkspace: () => "preview", command: async () => { attempts += 1; if (attempts < 3) throw new Error("The shot renderer is not ready"); return { dataUrl: png, width: 1, height: 1 }; } };
+		const warmTools = createAgentTools({ liveHub: warming, session: { ...session, images: new Map() }, emit: () => {} });
+		assert.ok((await warmTools.internal.capture.handler({})).imageId, "capture retries while the renderer warms up");
+		assert.equal(attempts, 3);
+		console.log("PASS capture retries until the shot renderer is ready");
+	}
+	assert.match(SYSTEM_PROMPT, /describe_workflow/);
 	for (const [name, command] of Object.entries(mapping)) {
 		const tool = tools.find((entry) => entry.name === name);
 		const args = command === "add_node" ? { type: "image" } : {};
@@ -153,11 +246,21 @@ console.log("agent routes verified");
 	assert.deepEqual(schemas.find((tool) => tool.name === "add_workflow_node").parameters.required, ["type"]);
 	assert.equal(schemas.find((tool) => tool.name === "update_workflow_node").parameters.properties.data.type, "object");
 	assert.deepEqual(schemas.find((tool) => tool.name === "connect_workflow_nodes").parameters.required, ["source", "target"]);
-	await tools.find((tool) => tool.name === "capture_blocking_frame").handler();
-	assert.equal(routed.at(-1).handle, "studio");
-	await tools.find((tool) => tool.name === "render_from_frame").handler({ prompt: "render", addAsNode: true });
+	assert.deepEqual(schemas.find((tool) => tool.name === "add_reference_node").parameters.required, [], "imageId is optional on add_reference_node");
+	await tools.find((tool) => tool.name === "describe_workflow").handler();
+	assert.equal(routed.at(-1).handle, "canvas");
+	await assert.rejects(tools.find((tool) => tool.name === "add_reference_node").handler({}), /image/i, "no reference image, no node");
+	session.images.set("ref", png);
+	session.latestCaptureId = "ref";
+	await tools.find((tool) => tool.name === "add_reference_node").handler({});
 	assert.equal(routed.at(-1).name, "add_node"); assert.equal(routed.at(-1).handle, "canvas");
-	assert.equal(routed.at(-1).args.model, "image-passthrough"); assert.equal(routed.at(-1).args.data.image_url, png);
-	assert.equal(session.workspaceHandle, "studio"); assert.equal(session.workflowHandle, "canvas");
-	console.log("PASS canvas agent tools: kind isolation, schemas, one-to-one routing, independent handles, render addAsNode");
+	assert.equal(routed.at(-1).args.type, "upload");
+	assert.equal(routed.at(-1).args.data.image_url, png);
+	assert.equal(routed.at(-1).args.data.fileName, "reference.png");
+	assert.equal(routed.at(-1).args.data.mimeType, "image/png");
+	assert.deepEqual(routed.at(-1).args.data.outputs, [{ value: png }]);
+	await tools.find((tool) => tool.name === "add_reference_node").handler({ imageId: "ref" });
+	assert.equal(routed.at(-1).args.data.image_url, png);
+	assert.equal(session.workflowHandle, "canvas");
+	console.log("PASS canvas agent tools: kind isolation, schemas, one-to-one routing, add_reference_node, independent handles");
 }
