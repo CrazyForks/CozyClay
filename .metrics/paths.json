@@ -184,5 +184,67 @@
       "count": 23,
       "uniques": 18
     }
+  ],
+  "2026-09-08": [
+    {
+      "path": "/NomaDamas/CozyClay",
+      "title": "Overview",
+      "count": 7537,
+      "uniques": 4768
+    },
+    {
+      "path": "/NomaDamas/CozyClay/issues",
+      "title": "/issues",
+      "count": 114,
+      "uniques": 68
+    },
+    {
+      "path": "/NomaDamas/CozyClay/pulls",
+      "title": "/pulls",
+      "count": 90,
+      "uniques": 28
+    },
+    {
+      "path": "/NomaDamas/CozyClay/fork",
+      "title": "/fork",
+      "count": 43,
+      "uniques": 35
+    },
+    {
+      "path": "/NomaDamas/CozyClay/tree/main/ai-camera-control",
+      "title": "/tree/main/ai-camera-control",
+      "count": 30,
+      "uniques": 26
+    },
+    {
+      "path": "/NomaDamas/CozyClay/commits/main",
+      "title": "/commits/main",
+      "count": 29,
+      "uniques": 11
+    },
+    {
+      "path": "/NomaDamas/CozyClay/releases/tag/v1.6.0",
+      "title": "/releases/tag/v1.6.0",
+      "count": 28,
+      "uniques": 25
+    },
+    {
+      "path": "/NomaDamas/CozyClay/tree/feat/gvhmr-mocap",
+      "title": "/tree/feat/gvhmr-mocap",
+      "count": 28,
+      "uniques": 21
+    },
+    {
+      "path": "/NomaDamas/CozyClay/commits",
+      "title": "/commits",
+      "count": 24,
+      "uniques": 19
+    },
+    {
+      "path": "/NomaDamas/CozyClay/tree/main/.github/workflows",
+      "title": "/tree/main/.github/workflows",
+      "count": 23,
+      "uniques": 18
+    }
   ]
 }
