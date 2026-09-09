@@ -47,6 +47,7 @@ import ObjectGizmo from "./object-gizmo.jsx";
 import { MAX_PATH_POINTS } from "./object-path.js";
 import { track } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
+import { isPlaygroundEmbed, takePlaygroundProject } from "./playground.js";
 import { applyPartColours } from "./part-colours.js";
 import { POSE_BONES, applyHipsOffset, applyPose, primeBindPose, normalizeBoneName } from "./poses.js";
 import { FK_TRACKS, IK_TRACKS, MID_TRACKS } from "./ardy/ik.js";
@@ -2586,6 +2587,9 @@ export const DEFAULT_WORKSPACE_LAYOUT = Object.freeze({
 });
 
 export function loadWorkspaceLayout() {
+	// The landing-page playground is a fixed, chrome-less layout: the plan
+	// inset starts folded and nothing the visitor drags is written back.
+	if (isPlaygroundEmbed(globalThis.location?.search)) return { ...DEFAULT_WORKSPACE_LAYOUT, insetCollapsed: true };
 	try {
 		const saved = JSON.parse(localStorage.getItem(WORKSPACE_LAYOUT_KEY) || "null");
 		return saved ? { ...DEFAULT_WORKSPACE_LAYOUT, ...saved } : { ...DEFAULT_WORKSPACE_LAYOUT };
@@ -2598,6 +2602,15 @@ export function loadWorkspaceLayout() {
  * scenes.js; App only supplies the familiar starter set for a truly new room. */
 export function loadSceneStartup() {
 	const defaults = () => DEFAULT_SCENE_OBJECTS.map((object) => ({ ...object, footprint: { ...object.footprint } }));
+	// The landing-page playground never reads or writes the visitor's saved
+	// scenes: it opens the preset the page fetched (or an empty room if that
+	// fetch failed) and saving stays off for the whole session.
+	if (isPlaygroundEmbed(globalThis.location?.search)) {
+		const preset = takePlaygroundProject();
+		const document = preset?.document ?? createSceneDocument();
+		if (!preset?.document) document.scenes[0].objects = defaults();
+		return { document, saveBlocked: true, error: null, startupCreatedScene: false, toast: null };
+	}
 	try {
 		const result = loadSceneDocumentFromStorage(localStorage);
 		if (result.status === "future") {

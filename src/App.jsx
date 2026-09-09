@@ -246,6 +246,7 @@ import {
 } from "./object-path.js";
 import { bucketCount, bucketMs, bucketProjectAge, motionBackendState, track, trackActivation, trackFeature } from "./analytics.js";
 import { ko, isKo } from "./locale.js";
+import { isPlaygroundEmbed } from "./playground.js";
 import { PART_COLOURS } from "./part-colours.js";
 import {
 	DEFAULT_POSE,
@@ -633,6 +634,10 @@ export async function readReferenceImage(file, { maxDimension = REFERENCE_IMAGE_
 
 export default function App() {
 	const embedMode = ["scene", "playview"].includes(new URLSearchParams(globalThis.location?.search || "").get("embed"));
+	// The landing page's try-it iframe: full studio interaction on a preset
+	// scene with the project chrome hidden and saving off (see playground.js).
+	const playgroundMode = isPlaygroundEmbed(globalThis.location?.search);
+	const [playgroundHint, setPlaygroundHint] = useState(null);
 	useEffect(() => {
 		if (!embedMode) return undefined;
 		// The Workflow page's Scene node embeds the studio as its preview, so the
@@ -687,8 +692,27 @@ export default function App() {
 	const markCraftAction = (actionKind) => {
 		if (craftActionTrackedRef.current) return;
 		craftActionTrackedRef.current = true;
-		track("craft:first_action", { action_kind: actionKind });
+		// Playground pokes are funnel data for the landing page, not for the
+		// install -> first craft funnel the studio reports.
+		track(playgroundMode ? "playground:first_action" : "craft:first_action", { action_kind: actionKind });
 	};
+	useEffect(() => {
+		if (!playgroundMode) return undefined;
+		track("playground:opened");
+		// The landing page keeps a loading veil over the iframe until the
+		// studio has actually mounted; a bare `load` fires far too early.
+		window.parent?.postMessage({ type: "cozyclay:playground-ready" }, "*");
+		// Camera gestures feed the landing page's tutorial checklist, and the
+		// checklist points back at one control (the shot look-through) by hint.
+		const onNav = (event) => window.parent?.postMessage({ type: "cozyclay:playground-nav", kind: event.detail?.kind, key: event.detail?.key ?? null }, "*");
+		const onSignal = (event) => window.parent?.postMessage({ type: "cozyclay:playground-nav", kind: event.detail?.kind }, "*");
+		window.addEventListener("cozyclay:playground-signal", onSignal);
+		const onHint = (event) => { if (event.data?.type === "cozyclay:playground-hint") setPlaygroundHint(typeof event.data.kind === "string" ? event.data.kind : null); };
+		window.addEventListener("cozyclay:nav", onNav);
+		window.addEventListener("message", onHint);
+		return () => { window.removeEventListener("cozyclay:nav", onNav); window.removeEventListener("cozyclay:playground-signal", onSignal); window.removeEventListener("message", onHint); };
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
 	const [startup] = useState(loadSceneStartup);
 	const startupScene = startup.document.scenes[activeSceneIndex(startup.document.scenes, startup.document.activeSceneId)];
 	const startupStage = createSceneStage(startupScene.stage);
@@ -754,6 +778,9 @@ export default function App() {
 	// Preview is the player for the finished motion: entering starts playback,
 	// leaving pauses it. The editor view stays the manipulation surface.
 	const [tlPlaying, setTlPlaying] = useState(false);
+	useEffect(() => {
+		if (playgroundMode && tlPlaying) window.parent?.postMessage({ type: "cozyclay:playground-nav", kind: "play" }, "*");
+	}, [playgroundMode, tlPlaying]);
 	const cameraPreviewEndRef = useRef(null);
 	// Once the operator touches the viewport, the physical camera stays in
 	// their hands. Follow/Rail only take it back through an explicit Preview or
@@ -766,6 +793,9 @@ export default function App() {
 	// The Workflow page embeds this Studio as the Scene node's preview; that
 	// preview must show what the node captures on Run: the shot camera's view.
 	const [lookThroughShot, setLookThroughShot] = useState(embedMode);
+	useEffect(() => {
+		if (playgroundMode && lookThroughShot) window.parent?.postMessage({ type: "cozyclay:playground-nav", kind: "shot" }, "*");
+	}, [playgroundMode, lookThroughShot]);
 	useEffect(() => {
 		if (!lookThroughShot || embedMode) return undefined;
 		const onKey = (event) => {
@@ -811,6 +841,10 @@ export default function App() {
 	const planHostRef = planIsMain ? mainPaneRef : insetPaneRef;
 
 	useEffect(() => {
+		// The landing-page playground runs a fixed, throwaway layout: whatever a
+		// visitor drags in the iframe must never overwrite the layout they use in
+		// the real studio (same origin, same key).
+		if (playgroundMode) return;
 		// Quota-guarded like persistScenes: a full disk used to throw out of
 		// this effect and blank the studio mid-resize (issue #63).
 		try {
@@ -818,7 +852,7 @@ export default function App() {
 		} catch (err) {
 			console.warn("[cozyclay] workspace layout not saved:", err?.name ?? err);
 		}
-	}, [workspaceLayout]);
+	}, [playgroundMode, workspaceLayout]);
 
 	// Wheel over the inset zooms the Top-View plan: scroll up closes in on
 	// the pucks (camera lower), scroll down widens out (camera higher) — the
@@ -2097,6 +2131,10 @@ export default function App() {
 	// active strip; there is no shared key list that could blend through a cut.
 	const [shots, setShots] = useState(() => startupShotState?.shots ?? initialShots(startupShotState?.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS));
 	const [movePlaying, setMovePlaying] = useState(false);
+	useEffect(() => {
+		if (playgroundMode && movePlaying) window.parent?.postMessage({ type: "cozyclay:playground-nav", kind: "play" }, "*");
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [playgroundMode, movePlaying]);
 	// Follow slaves the move to the timeline playhead so camera and character
 	// motion share one time axis; off frees the camera while both stay set.
 	const [moveFollow, setMoveFollow] = useState(true);
@@ -2692,6 +2730,7 @@ export default function App() {
 		if (kind === "prompt-text") recordSessionUndo(promptTextSessionRef, `prompt-text:${id}`);
 	}
 	function changeCameraRail(points) {
+		if (Array.isArray(points) && points.length >= 2) window.dispatchEvent(new CustomEvent("cozyclay:playground-signal", { detail: { kind: "rail" } }));
 		changeActiveCamera({
 			cameraRail: points,
 			railFollow: points ? railFollowForNewGeometry(activeCamera.railFollow, activeShotDuration) : null,
@@ -3009,7 +3048,7 @@ export default function App() {
 	// A first-run author should choose a document (or explicitly start a named
 	// local draft). Keep this as a light startup sheet so the studio remains
 	// inspectable while the choice is pending; it never traps the topbar.
-	const [projectStartupOpen, setProjectStartupOpen] = useState(() => !loadProjectSession()?.name);
+	const [projectStartupOpen, setProjectStartupOpen] = useState(() => !playgroundMode && !loadProjectSession()?.name);
 
 	// Dismissal mirrors the inspector-actions menu: only listen while open,
 	// ignore presses inside the wrap (the trigger's own click keeps toggling),
@@ -4987,6 +5026,7 @@ export default function App() {
 		recordShotUndo();
 		setShots(next);
 		trackFeature("shot_add");
+		window.dispatchEvent(new CustomEvent("cozyclay:playground-signal", { detail: { kind: "shot" } }));
 	}
 
 	function splitTimelineShot(shotId) {
@@ -10180,7 +10220,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					: ko("Saved", "저장됨");
 
 	return (
-		<div className={"app" + (renderActive ? "" : " render-idle")} data-workflow-mode={workflowMode} data-embed-mode={embedMode ? "playview" : undefined}>
+		<div className={"app" + (renderActive ? "" : " render-idle")} data-workflow-mode={workflowMode} data-embed-mode={embedMode ? "playview" : playgroundMode ? "playground" : undefined} data-playground-hint={playgroundMode ? playgroundHint ?? undefined : undefined} data-rail-draw={railDraw ? 1 : undefined}>
 			<header className="topbar">
 				<div className="logo">
 					<span className="wordmark">
@@ -10908,6 +10948,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								onDragEnd={ikDragEnd}
 							/>
 							<PlanBoard
+								minimal={playgroundMode}
 								hostRef={planHostRef}
 								planCamRef={planCamRef}
 								shotCamRef={shotCamRef}
@@ -10982,6 +11023,20 @@ function resizePromptClip(id, edge, rawFrame) {
 									changeCameraRail(simplified);
 									setRailDraw(false);
 									const curve = buildRail(simplified);
+									if (playgroundMode && activeShot && curve) {
+										// Playground: a first-timer drew a dolly and wants to see the
+										// whole ride. Stretch the cut to the rail's travel time at the
+										// dolly's speed cap and put them behind the shot camera, so ▶
+										// plays the move full-screen instead of in the corner monitor.
+										const speed = Math.max(0.2, activeCamera.followCam?.maxDollySpeed ?? 4);
+										const travel = Math.ceil((curve.length / speed) * tlFps) + Math.round(tlFps * 0.5);
+										const endFrame = Math.min(tlFrameCount - 1, activeShot.startFrame + Math.max(travel, activeShot.endFrame - activeShot.startFrame));
+										setShots((current) => resizeShot(current, activeShot.id, "end", endFrame, tlFrameCount));
+										enterPreview();
+										setTlFrame(activeShot.startFrame);
+										setToast(isKo ? "레일 완성 — 샷 카메라 시점으로 전환했습니다. ▶ 로 재생, Esc 로 복귀" : "Rail drawn — you are looking through the shot camera. Press ▶ to ride it; Esc goes back to flying.");
+										return;
+									}
 									setToast(isKo ? `카메라 레일 완성 — ${curve ? curve.length.toFixed(1) : "?"} m, 제어점 ${simplified.length}개` : `Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
 								}}
 								onPathStroke={(stroke) => {
