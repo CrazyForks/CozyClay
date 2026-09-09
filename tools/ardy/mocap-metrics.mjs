@@ -13,9 +13,9 @@
  *                   heights AND whose horizontal speed is below the side's
  *                   median — that is the stance phase, without needing the
  *                   contact logits (a converted take has dropped them).
- *   jitter          mean |second difference| of posed_joints in mm/frame^2.
- *                   Frame-independent noise in the keypoints shows up here
- *                   and nowhere else; real motion is smooth at this scale.
+ *   jitter          mean |second difference| of posed_joints.  The raw
+ *                   mm/frame^2 value is retained for diagnostics and the
+ *                   fps-normalised mm/s^2 value is used for cross-rate gates.
  *   below floor     frames whose lowest foot joint sits under Y=0. The
  *                   converter grounds the clip on its 10th percentile, so a
  *                   few frames are expected; many mean the legs are wrong.
@@ -24,6 +24,7 @@
  */
 import { readNpz } from "../kimodo/read-npz.mjs";
 import { CSKEL27_JOINTS } from "../../src/ardy/cskel27.js";
+import { pathToFileURL } from "node:url";
 
 const JOINT = Object.fromEntries(CSKEL27_JOINTS.map((name, index) => [name, index]));
 const JOINTS = CSKEL27_JOINTS.length;
@@ -63,6 +64,42 @@ function read(path) {
 	const frames = joints.shape[0];
 	const root = members.root_positions?.data ?? null;
 	return { path, frames, fps, joints: joints.data, root };
+}
+
+/** Build metrics from a converted motion already held in memory. */
+export function mocapMetricsFromMotion(motion, { path = "<memory>" } = {}) {
+	if (!motion || !Number.isInteger(motion.frames) || motion.frames < 1) {
+		throw new Error(`${path}: motion.frames must be a positive integer`);
+	}
+	const fps = Number(motion.fps);
+	if (!(fps > 0)) throw new Error(`${path}: invalid fps ${motion.fps}`);
+	const joints = motion.posedJoints ?? motion.joints;
+	const expectedJoints = motion.frames * JOINTS * 3;
+	if (!joints || joints.length !== expectedJoints) {
+		throw new Error(`${path}: posedJoints must contain ${expectedJoints} values`);
+	}
+	const root = motion.rootPos ?? motion.root ?? null;
+	if (root !== null && root.length !== motion.frames * 3) {
+		throw new Error(`${path}: rootPos must contain ${motion.frames * 3} values`);
+	}
+	const take = { path, frames: motion.frames, fps, joints, root };
+	const floor = belowFloor(take);
+	const jitterMmPerFrame2 = jitter(take);
+	return {
+		path,
+		frames: take.frames,
+		fps: take.fps,
+		footSlideCmPerS: footSlide(take),
+		// Keep the raw frame-space value for backwards-compatible diagnostics,
+		// but also expose a time-normalised acceleration.  A second difference
+		// scales with dt², so the raw value alone would make the same physical
+		// shake look 4x smaller when a 30fps take is sampled at 60fps.
+		jitterMmPerFrame2,
+		jitterMmPerS2: jitterMmPerFrame2 * take.fps * take.fps,
+		framesBelowFloor: floor.count,
+		deepestBelowFloorCm: floor.deepestCm,
+		rootTravelM: travel(take),
+	};
 }
 
 /** Median horizontal speed (cm/s) of each ankle over its own stance frames. */
@@ -130,37 +167,34 @@ function travel({ frames, joints, root }) {
 	return Math.hypot(source[last] - source[0], source[last + 2] - source[2]);
 }
 
-export function mocapMetrics(path) {
-	const take = read(path);
-	const floor = belowFloor(take);
-	return {
-		path,
-		frames: take.frames,
-		fps: take.fps,
-		footSlideCmPerS: footSlide(take),
-		jitterMmPerFrame2: jitter(take),
-		framesBelowFloor: floor.count,
-		deepestBelowFloorCm: floor.deepestCm,
-		rootTravelM: travel(take),
-	};
+/** Accept an NPZ path (legacy CLI/API) or a converted motion object. */
+export function mocapMetrics(input) {
+	if (typeof input === "string") {
+		const take = read(input);
+		return mocapMetricsFromMotion(take, { path: input });
+	}
+	return mocapMetricsFromMotion(input);
 }
 
-const paths = process.argv.slice(2);
-if (!paths.length) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+	const paths = process.argv.slice(2);
+	if (!paths.length) {
 	console.error("usage: node tools/ardy/mocap-metrics.mjs <a.npz> [<b.npz> ...]");
-	process.exit(2);
+		process.exit(2);
+	}
+	const rows = paths.map(mocapMetrics);
+	const columns = [
+		["take", (row) => row.path.replace(/^.*\//, ""), 26],
+		["frames", (row) => String(row.frames), 6],
+		["fps", (row) => String(row.fps), 3],
+		["foot slide cm/s", (row) => row.footSlideCmPerS.toFixed(2), 15],
+		["jitter mm/f^2", (row) => row.jitterMmPerFrame2.toFixed(3), 13],
+		["jitter mm/s^2", (row) => row.jitterMmPerS2.toFixed(1), 13],
+		["below floor", (row) => `${row.framesBelowFloor} (${row.deepestBelowFloorCm.toFixed(1)} cm)`, 16],
+		["root travel m", (row) => row.rootTravelM.toFixed(2), 13],
+	];
+	const line = (cells) => cells.map((cell, index) => cell.padEnd(columns[index][2])).join("  ").trimEnd();
+	console.log(line(columns.map(([title]) => title)));
+	console.log(line(columns.map(([, , width]) => "-".repeat(width))));
+	for (const row of rows) console.log(line(columns.map(([, value]) => value(row))));
 }
-const rows = paths.map(mocapMetrics);
-const columns = [
-	["take", (row) => row.path.replace(/^.*\//, ""), 26],
-	["frames", (row) => String(row.frames), 6],
-	["fps", (row) => String(row.fps), 3],
-	["foot slide cm/s", (row) => row.footSlideCmPerS.toFixed(2), 15],
-	["jitter mm/f^2", (row) => row.jitterMmPerFrame2.toFixed(3), 13],
-	["below floor", (row) => `${row.framesBelowFloor} (${row.deepestBelowFloorCm.toFixed(1)} cm)`, 16],
-	["root travel m", (row) => row.rootTravelM.toFixed(2), 13],
-];
-const line = (cells) => cells.map((cell, index) => cell.padEnd(columns[index][2])).join("  ").trimEnd();
-console.log(line(columns.map(([title]) => title)));
-console.log(line(columns.map(([, , width]) => "-".repeat(width))));
-for (const row of rows) console.log(line(columns.map(([, value]) => value(row))));

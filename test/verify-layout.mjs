@@ -10,14 +10,23 @@ function expect(name, condition) {
 // The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
 const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8")
 	+ readFileSync(new URL("../src/app-stage.jsx", import.meta.url), "utf8");
+const extract = readFileSync(new URL("../tools/ardy/extract.mjs", import.meta.url), "utf8");
+const bridge = readFileSync(new URL("../tools/ardy/bridge.mjs", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const planview = readFileSync(new URL("../src/planview.jsx", import.meta.url), "utf8");
 const timeline = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
 const dualview = readFileSync(new URL("../src/dualview.jsx", import.meta.url), "utf8");
 const offscreenExport = readFileSync(new URL("../src/offscreen-export.js", import.meta.url), "utf8");
 const ui = readFileSync(new URL("../src/ui.jsx", import.meta.url), "utf8");
+const workflowBuilder = readFileSync(new URL("../src/workflow/WorkflowBuilder.jsx", import.meta.url), "utf8");
+const agentClient = readFileSync(new URL("../src/workflow/agent-client.js", import.meta.url), "utf8");
 
 expect("workspace layout persists across reloads", app.includes("WORKSPACE_LAYOUT_KEY") && app.includes("localStorage.setItem"));
+expect("H3 lock evidence is visible on successful video takes", workflowBuilder.includes('data-testid="h3-preservation-receipt"') && workflowBuilder.includes("H3 scene/camera lock verified"));
+expect("H3 drift evidence is visible when a take is rejected", workflowBuilder.includes('data-testid="h3-preservation-failed"') && workflowBuilder.includes("H3 output rejected: background/camera drift"));
+expect("failed H3 takes cannot leave a stale video preview visible", workflowBuilder.includes("videoUrl: null, resultUrl: null, outputs: [], preservation: error?.preservation || null"));
+expect("failed H3 outputs stay cleared in the returned workflow graph", workflowBuilder.includes('hasPatchedOutputs') && workflowBuilder.includes('Object.prototype.hasOwnProperty.call(patch, "outputs")'));
+expect("video requests preserve structured H3 rejection metrics", agentClient.includes("error.preservation = detail.preservation") && agentClient.includes("error.status = response.status"));
 expect("sidebar width has a pointer resize path", app.includes('beginWorkspaceResize("sidebar"'));
 expect("frame monitor height has a pointer resize path", app.includes('beginWorkspaceResize("timeline"'));
 expect("inset view has a diagonal resize path", app.includes("beginInsetResize") && app.includes("vp-inset-resize"));
@@ -238,7 +247,7 @@ expect(
 	app.includes('ko("Waiting for the ARDY bridge — it reconnects automatically"') &&
 	app.includes('ko("Add a prompt block and describe its motion first"'),
 );
-expect("generated motion anchors frame zero at the active character", app.includes("anchorX: activeChar.x") && app.includes("anchorZ: activeChar.z") && app.includes("anchorFrame: 0"));
+expect("generated motion anchors frame zero at the target character", app.includes("anchorX: targetCharacter.x") && app.includes("anchorZ: targetCharacter.z") && app.includes("anchorFrame: 0"));
 expect("returned playback has no CozyClay root coordinate warp", !app.includes("warpMotionRootToPath"));
 expect("Top-View root path draws from Subject 1 without a duplicate marker", planview.includes("[{ x: start.x, z: start.z }, ...waypoints]") && planview.includes("waypoints.map((w, i)"));
 expect(
@@ -337,18 +346,26 @@ expect(
 	app.includes('hidden={!isCharacterSelection}'),
 );
 expect(
-	"ingest and extraction reach the ported core modules",
+	"ingest and extraction reach the ported ingest module",
 	app.includes('from "./multimodel-ingest.js"') &&
-	app.includes('from "./pose-extract/index.js"') &&
 	app.includes("probeFootage(objectUrl") &&
 	app.includes("knownFps: Number.isFinite(source.fps) ? source.fps : null"),
 );
 expect(
-	"extraction routes to the GPU box when the bridge is up and the browser otherwise",
-	app.includes("if (bridge?.ok) return extractMultiModelMotionGpu();") &&
-	app.includes("return extractMultiModelMotionBrowser();") &&
-	app.includes("requestBridgeExtract(") &&
-	app.includes("createPoseDetector()"),
+	"extraction requires a GVHMR bridge and rejects every other route",
+	app.includes('MULTIMODEL_REASONS["extract-bridge-required"]') &&
+	app.includes('bridge.extractionBackend !== "gvhmr"') &&
+	app.includes('MULTIMODEL_REASONS["extract-backend-unsupported"]') &&
+	app.includes("return extractMultiModelMotionGpu();") &&
+	!app.includes("return extractMultiModelMotionBrowser();") &&
+	app.includes("requestBridgeExtract("),
+);
+expect(
+	"the bridge advertises GVHMR as the only extraction backend",
+	extract.includes('|| "gvhmr").toLowerCase()') &&
+	extract.includes('EXTRACT_BACKEND_SUPPORTED = EXTRACT_BACKEND === "gvhmr" && !EXTRACT_CMD') &&
+	extract.includes('reason: "extract-backend-unsupported"') &&
+	/extractionBackend:\s*EXTRACT_BACKEND_SUPPORTED\s*\?\s*EXTRACT_BACKEND\s*:\s*"unsupported"/.test(bridge),
 );
 expect("every named ingest failure is a message in both locales", app.includes("const MULTIMODEL_REASONS = {") && app.includes('MULTIMODEL_REASONS[code]?.[isKo ? 1 : 0] ?? code'));
 // THE INVARIANT: extraction divided root travel by the filmed person's
@@ -397,9 +414,9 @@ expect(
 	app.includes("ikStateRef.current.keys.clear();"),
 );
 expect(
-	"a browser-baked take is trimmable too",
-	app.indexOf("motionFullRef.current.set(activeChar.id, loaded);") > 0 &&
-	(app.match(/motionFullRef\.current\.set\(/g) ?? []).length >= 4,
+	"an extracted take is trimmable too",
+	app.indexOf("motionFullRef.current.set(targetCharacter.id, loaded);") > 0 &&
+	(app.match(/motionFullRef\.current\.set\(/g) ?? []).length >= 3,
 );
 expect(
 	"the timeline receives the active take, both trim handlers, and the department it draws for",
