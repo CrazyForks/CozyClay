@@ -432,5 +432,67 @@
       "count": 15,
       "uniques": 7
     }
+  ],
+  "2026-09-13": [
+    {
+      "path": "/NomaDamas/CozyClay",
+      "title": "Overview",
+      "count": 3668,
+      "uniques": 2078
+    },
+    {
+      "path": "/NomaDamas/CozyClay/pulls",
+      "title": "/pulls",
+      "count": 58,
+      "uniques": 24
+    },
+    {
+      "path": "/NomaDamas/CozyClay/issues",
+      "title": "/issues",
+      "count": 55,
+      "uniques": 30
+    },
+    {
+      "path": "/NomaDamas/CozyClay/tree/feat/gvhmr-mocap",
+      "title": "/tree/feat/gvhmr-mocap",
+      "count": 38,
+      "uniques": 26
+    },
+    {
+      "path": "/nomadamas/cozyclay",
+      "title": "Overview",
+      "count": 18,
+      "uniques": 5
+    },
+    {
+      "path": "/NomaDamas/CozyClay/blob/main/tools/kimodo/setup-on-box.sh",
+      "title": "/blob/main/tools/kimodo/setup-on-box.sh",
+      "count": 17,
+      "uniques": 7
+    },
+    {
+      "path": "/NomaDamas/CozyClay/fork",
+      "title": "/fork",
+      "count": 16,
+      "uniques": 15
+    },
+    {
+      "path": "/NomaDamas/CozyClay/releases",
+      "title": "/releases",
+      "count": 15,
+      "uniques": 13
+    },
+    {
+      "path": "/NomaDamas/CozyClay/commits",
+      "title": "/commits",
+      "count": 15,
+      "uniques": 9
+    },
+    {
+      "path": "/NomaDamas/CozyClay/commits/main",
+      "title": "/commits/main",
+      "count": 15,
+      "uniques": 7
+    }
   ]
 }
