@@ -215,8 +215,10 @@ install_kimodo_mlx() {
 
   if [ "$DRY_RUN" -eq 1 ]; then
     log "would run: $PY -m kimodo_mlx diagnose (expect mlx-metal)"
+    log "would verify: $PY -m kimodo_mlx --help"
   else
     "$PY" -m kimodo_mlx diagnose || die "kimodo-mlx diagnose failed; see $MLX_DIR/README.md"
+    "$PY" -m kimodo_mlx --help >/dev/null || die "kimodo-mlx CLI verification failed; see $MLX_DIR/README.md"
   fi
 
   log "kimodo-mlx ready: $PY -m kimodo_mlx generate --prompt \"walk forward\" --frames 30 --steps 10"
@@ -276,6 +278,14 @@ install_kimodo_cpp() {
   fi
   run cmake --build "$build_dir" --parallel
 
+  local binary="$build_dir/kmd-generate"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "would verify executable $binary"
+  else
+    [ -x "$binary" ] || die "kimodo.cpp build did not produce executable: $binary"
+    log "verified kimodo.cpp executable: $binary"
+  fi
+
   if [ "$accel" = "metal" ] && [ "$DRY_RUN" -ne 1 ]; then
     local metal_enabled=0
     if [ -f "$build_dir/CMakeCache.txt" ] && grep -Eq '^KIMODO_ENABLE_METAL(:BOOL)?=ON$' "$build_dir/CMakeCache.txt"; then
@@ -318,6 +328,12 @@ if [ "$DRY_RUN" -eq 1 ]; then
   log "would write $HOME/.cozyclay/kimodo-backend.json"
 else
   mkdir -p "$HOME/.cozyclay"
-  printf '{"backend":"%s","model":"%s"}\n' "$BACKEND" "$MODEL" > "$HOME/.cozyclay/kimodo-backend.json"
+  if [ "$BACKEND" = "kimodo-mlx" ]; then
+    printf '{"backend":"%s","model":"%s","motion":"%s/models/nvidia-soma-rp-v1.1","text":"%s/models/llm2vec-text-bundle"}\n' "$BACKEND" "$MODEL" "$MLX_DIR" "$MLX_DIR" > "$HOME/.cozyclay/kimodo-backend.json"
+  elif [ "$BACKEND" = "kimodo.cpp-metal" ] || [ "$BACKEND" = "kimodo.cpp-cpu" ]; then
+    printf '{"backend":"%s","model":"%s","motion":"%s/models/kimodo-%s-f32.gguf","text":"%s/generated/llm2vec-text-bundle"}\n' "$BACKEND" "$MODEL" "$CPP_DIR" "$(printf '%s' "$MODEL" | sed 's/^Kimodo-//' | tr 'A-Z' 'a-z')" "$CPP_DIR" > "$HOME/.cozyclay/kimodo-backend.json"
+  else
+    printf '{"backend":"%s","model":"%s"}\n' "$BACKEND" "$MODEL" > "$HOME/.cozyclay/kimodo-backend.json"
+  fi
 fi
 log "ready"

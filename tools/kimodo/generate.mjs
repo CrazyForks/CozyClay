@@ -51,22 +51,23 @@ const SSH_OPTS = [
 export const DEFAULT_MODEL = "Kimodo-SOMA-RP-v1.1";
 export const KIMODO_BACKENDS = {
   "nvidia-cuda": { repo: "$HOME/.cozyclay/kimodo", entry: ".venv/bin/kimodo_gen", mode: "cuda", promptFlag: null, durationFlag: "--duration", stepsFlag: "--diffusion_steps", outputFlag: "--output" },
-  "kimodo-mlx": { repo: "$HOME/.cozyclay/kimodo-mlx", entry: "$HOME/.cozyclay/kimodo-mlx-venv/bin/python", mode: "mlx", promptFlag: "--prompt", framesFlag: "--frames", stepsFlag: "--steps", outputFlag: "--output" },
-  "kimodo.cpp-metal": { repo: "$HOME/.cozyclay/kimodo.cpp", entry: "build-metal/kimodo-cli", mode: "cpp", promptFlag: "--prompt", framesFlag: "--frames", stepsFlag: "--steps", outputFlag: "--output" },
-  "kimodo.cpp-cpu": { repo: "$HOME/.cozyclay/kimodo.cpp", entry: "build-cpu/kimodo-cli", mode: "cpp", promptFlag: "--prompt", framesFlag: "--frames", stepsFlag: "--steps", outputFlag: "--output" },
+  "kimodo-mlx": { repo: "$HOME/.cozyclay/kimodo-mlx", entry: "$HOME/.cozyclay/kimodo-mlx-venv/bin/python", mode: "mlx", promptFlag: "--prompt", framesFlag: "--frames", stepsFlag: "--steps", outputFlag: null },
+  "kimodo.cpp-metal": { repo: "$HOME/.cozyclay/kimodo.cpp", entry: "build-metal/kmd-generate", mode: "cpp", outputFlag: null },
+  "kimodo.cpp-cpu": { repo: "$HOME/.cozyclay/kimodo.cpp", entry: "build-cpu/kmd-generate", mode: "cpp", outputFlag: null },
 };
 
 /** Build argv for an installed Kimodo route without spawning it. */
-export function buildBackendCommand({ backend = "nvidia-cuda", repo, model, prompt, duration, frames, steps, seed, output }) {
+export function buildBackendCommand({ backend = "nvidia-cuda", repo, model, prompt, duration, frames, steps, seed, output, promptFile, motionWeights, textBundle, outputDir }) {
   const spec = KIMODO_BACKENDS[backend];
   if (!spec) throw new Error(`unknown Kimodo backend: ${backend}`);
   const root = repo || spec.repo;
   const entry = spec.entry.startsWith("$HOME/") ? spec.entry : `${root}/${spec.entry}`;
   const args = [];
-  if (spec.mode === "mlx" || spec.mode === "cpp") args.push(spec.promptFlag, prompt, spec.framesFlag, String(frames), spec.stepsFlag, String(steps));
+  if (spec.mode === "mlx") args.push(spec.promptFlag, prompt, "--motion", motionWeights || process.env.CCLAY_KIMODO_MLX_MOTION || "$HOME/.cozyclay/kimodo-mlx/models/nvidia-soma-rp-v1.1", "--text", textBundle || process.env.CCLAY_KIMODO_MLX_TEXT || "$HOME/.cozyclay/kimodo-mlx/models/llm2vec-text-bundle", spec.framesFlag, String(frames), spec.stepsFlag, String(steps));
+  else if (spec.mode === "cpp") args.push(motionWeights || process.env.CCLAY_KIMODO_CPP_MOTION_GGUF || "$HOME/.cozyclay/kimodo.cpp/models/kimodo-soma-rp-v1.1-f32.gguf", textBundle || process.env.CCLAY_KIMODO_CPP_TEXT_BUNDLE || "$HOME/.cozyclay/kimodo.cpp/generated/llm2vec-text-bundle", promptFile || "$HOME/.cozyclay/kimodo.cpp/prompt.txt", String(frames), String(steps), String(Number.isInteger(seed) ? seed : 42), outputDir || output);
   else args.push(prompt, spec.durationFlag, duration, "--diffusion_steps", String(steps), "--model", model);
   if (Number.isInteger(seed)) args.push("--seed", String(seed));
-  args.push(spec.outputFlag, output);
+  if (spec.outputFlag) args.push(spec.outputFlag, output);
   if (spec.mode === "mlx") return { command: entry, args: ["-m", "kimodo_mlx", "generate", ...args], cwd: root, backend };
   return { command: entry, args, cwd: root, backend };
 }
@@ -326,11 +327,10 @@ export async function generateOnBox({
 	preserve = preserveFromEnv(),
 	// Where to keep Kimodo's own npz so a LATER run can preserve from this take.
 	nativeOut = process.env.CCLAY_KIMODO_NATIVE_OUT || "",
+	spawnImpl = spawn,
 	onLine,
 } = {}) {
-	if (!host) {
-		throw new Error("generateOnBox: CCLAY_KIMODO_HOST is required");
-	}
+	if (!host && backend === "nvidia-cuda") throw new Error("generateOnBox: CCLAY_KIMODO_HOST is required for nvidia-cuda");
 	const { prompt, duration } = joinPrompts(segments);
 
 	// Kimodo's own generation rate decides the constraint frame indices, and the
@@ -470,11 +470,11 @@ export async function generateOnBox({
 		};
 	}
 
-	const remoteStem = `/tmp/cclay-kimodo-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+	const localDir = await mkdtemp(join(tmpdir(), "cclay-kimodo-"));
+	const remoteStem = host ? `/tmp/cclay-kimodo-${Date.now()}-${Math.floor(Math.random() * 1e6)}` : localDir;
 	// `repo` may hold an unexpanded $HOME for the REMOTE shell to expand, so it
 	// is quoted rather than escaped: unquoted it word-splits and `cd` sees two
 	// arguments the moment the path contains a space.
-	const localDir = await mkdtemp(join(tmpdir(), "cclay-kimodo-"));
 	try {
 		// Everything the CLI reads as a FILE has to exist on the BOX, so it is
 		// written locally and copied up before generation rather than passed on
@@ -482,6 +482,7 @@ export async function generateOnBox({
 		let remoteDirReady = false;
 		const ensureRemoteDir = async () => {
 			if (remoteDirReady) return;
+			if (!host) { remoteDirReady = true; return; }
 			const madeDir = await run(["ssh", ...SSH_OPTS, host, `mkdir -p ${remoteStem}`]);
 			if (madeDir.code !== 0) {
 				throw new Error(`could not create ${remoteStem} on ${host}: ${madeDir.stderr.trim()}`);
@@ -492,6 +493,7 @@ export async function generateOnBox({
 		// the remote side of each pair is built from remoteStem, which this
 		// process generated.
 		const push = async (localPath, remotePath, label) => {
+			if (!host) { if (localPath !== remotePath) await copyFile(localPath, remotePath); return; }
 			await ensureRemoteDir();
 			const pushed = await run(["scp", ...SSH_OPTS, localPath, `${host}:${remotePath}`]);
 			if (pushed.code !== 0) {
@@ -538,7 +540,13 @@ export async function generateOnBox({
 		// One `kimodo_gen` invocation: the env assignment and every flag are one
 		// shell WORD list for that single command, so they join with spaces, while
 		// `cd` is a separate command and must be chained with `&&`.
-		const built = buildBackendCommand({ backend, repo, model, prompt, duration, frames: genFrames, steps: diffusionSteps, seed, output: `${remoteStem}/take` });
+		if (!host && backend === "kimodo-mlx") throw new Error("kimodo-mlx CLI has no output flag yet; local NPZ output is tracked in https://github.com/NomaDamas/CozyClay/issues/267");
+		if (!host && backend.startsWith("kimodo.cpp")) throw new Error("kimodo.cpp local .f32 output conversion is not implemented yet; tracked in https://github.com/NomaDamas/CozyClay/issues/267");
+		const promptFile = `${remoteStem}/prompt.txt`;
+		const localPrompt = join(localDir, "prompt.txt");
+		await writeFile(localPrompt, `${prompt}\n`);
+		await push(localPrompt, promptFile, "prompt");
+		const built = buildBackendCommand({ backend, repo, model, prompt, promptFile, motionWeights: backend === "kimodo-mlx" ? process.env.CCLAY_KIMODO_MLX_MOTION : process.env.CCLAY_KIMODO_CPP_MOTION_GGUF, textBundle: backend === "kimodo-mlx" ? process.env.CCLAY_KIMODO_MLX_TEXT : process.env.CCLAY_KIMODO_CPP_TEXT_BUNDLE, duration, frames: genFrames, steps: diffusionSteps, seed, output: `${remoteStem}/take`, outputDir: remoteStem });
 		let commandWords = [built.command, ...built.args];
 		if (backend === "nvidia-cuda") {
 			commandWords = [
@@ -551,7 +559,21 @@ export async function generateOnBox({
 		const generateWords = [`cd "${repo}"`, commandWords.map((word, i) => i === 0 && backend === "nvidia-cuda" ? word : JSON.stringify(word)).join(" ")].join(" && ");
 		const remoteCmd = [`mkdir -p ${remoteStem}`, generateWords].join(" && ");
 
-		const generated = await run(["ssh", ...SSH_OPTS, host, remoteCmd], { onLine });
+		let generated;
+		if (host) {
+			generated = await run(["ssh", ...SSH_OPTS, host, remoteCmd], { onLine });
+		} else {
+			const expandHome = (value) => String(value).replace(/^\$HOME(?=\/|$)/, process.env.HOME || "");
+			const localCommand = expandHome(built.command);
+			const localArgs = built.args.map(expandHome);
+			const child = spawnImpl(localCommand, localArgs, { cwd: expandHome(built.cwd), env: { ...process.env } });
+			generated = await new Promise((resolve) => {
+				let stdout = ""; let stderr = "";
+				child.stdout?.on("data", (chunk) => { stdout += chunk; if (onLine) for (const line of String(chunk).split("\n")) if (line.trim()) onLine(line); });
+				child.stderr?.on("data", (chunk) => { stderr += chunk; if (onLine) for (const line of String(chunk).split("\n")) if (line.trim()) onLine(line); });
+				child.on("close", (code) => resolve({ code, stdout, stderr }));
+			});
+		}
 		if (generated.code !== 0) {
 			throw new Error(
 				`kimodo_gen on ${host} failed (exit ${generated.code}):\n${generated.stderr.split("\n").slice(-25).join("\n")}`
@@ -559,10 +581,10 @@ export async function generateOnBox({
 		}
 
 		const localNpz = join(localDir, "take.npz");
-		const copied = await run(["scp", ...SSH_OPTS, `${host}:${remoteStem}/take.npz`, localNpz]);
-		if (copied.code !== 0) {
-			throw new Error(`scp of the generated npz failed (exit ${copied.code}): ${copied.stderr.trim()}`);
-		}
+		if (host) {
+			const copied = await run(["scp", ...SSH_OPTS, `${host}:${remoteStem}/take.npz`, localNpz]);
+			if (copied.code !== 0) throw new Error(`scp of the generated npz failed (exit ${copied.code}): ${copied.stderr.trim()}`);
+		} else if (localNpz !== `${remoteStem}/take.npz`) await copyFile(`${remoteStem}/take.npz`, localNpz);
 		// A later run can only preserve THIS take if Kimodo's own npz survives:
 		// --base_motion reads that format and the cskel27 file the caller writes
 		// is a lossy conversion of it. Best-effort on purpose — a failed local
@@ -606,6 +628,6 @@ export async function generateOnBox({
 		};
 	} finally {
 		await rm(localDir, { recursive: true, force: true });
-		await run(["ssh", ...SSH_OPTS, host, `rm -rf ${remoteStem}`]);
+		if (host) await run(["ssh", ...SSH_OPTS, host, `rm -rf ${remoteStem}`]);
 	}
 }
