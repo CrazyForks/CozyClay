@@ -152,7 +152,7 @@ function liveToolsRuntime() {
 	}).catch((error) => ({ error }));
 }
 
-export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHub, port, retryDelayMs = 2000 } = {}) {
+export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHub, port, retryDelayMs = 2000, studioRuntime } = {}) {
 	const requestContext = new AsyncLocalStorage();
 	codex ||= defaultClient(auth, requestContext);
 	const runtime = handlers !== undefined || liveHub !== undefined ? Promise.resolve({ handlers: handlers ?? [], liveHub }) : liveToolsRuntime();
@@ -241,12 +241,42 @@ export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHu
 		let value;
 		try {
 			value = await readBody(req);
-			if (!value || typeof value.sessionId !== "string" || !value.sessionId
+			if (value?.surface === "studio") {
+				// Lazy only for the minimal legacy-sidecar fixture, which omits src/.
+				// Actual npm packages include src; there is exactly one validator.
+				const protocol = await import("../../src/studio-agent-protocol.js");
+				value = path === "/agent/stop" ? protocol.validateStudioStopEnvelope(value) : protocol.validateStudioTurnEnvelope(value);
+			} else if (!value || (value.surface !== undefined && value.surface !== "workflow")
+				|| value.context !== undefined || value.turnId !== undefined || typeof value.sessionId !== "string" || !value.sessionId
 				|| (path === "/agent/turn" && (typeof value.text !== "string"
 					|| (value.attachFrame !== undefined && typeof value.attachFrame !== "boolean")
 					|| (value.model !== undefined && typeof value.model !== "string")
 					|| (value.effort !== undefined && !REASONING_EFFORTS.includes(value.effort))))) throw new Error("Invalid request.");
-		} catch { json(res, 400, { error: "invalid request" }); return true; }
+		} catch (error) {
+			json(res, 400, { error: error?.name === "StudioProtocolError" ? error.toJSON() : "invalid request" }); return true;
+		}
+		if (value.surface === "studio") {
+			// Task 6 supplies the Studio executor. Never leak a validated Studio
+			// request into the legacy Workflow profile while it is unavailable.
+			const { StudioProtocolError, validateStudioContextFreshness } = await import("../../src/studio-agent-protocol.js");
+			try {
+				if (!await auth.getAccessToken()) { json(res, 401, { error: { code: "AUTH_REQUIRED", message: "Sign in with ChatGPT." } }); return true; }
+				if (path === "/agent/turn" && !value.context.host.workspaceHandle) throw new StudioProtocolError("LIVE_HUB_UNAVAILABLE", "A connected editor handle is required.");
+				if (!studioRuntime) throw new StudioProtocolError("CAPABILITY_MISSING", "Studio execution is not installed.");
+				if (path === "/agent/stop") {
+					if (!studioRuntime.handleStop) throw new StudioProtocolError("CAPABILITY_MISSING", "Studio cancellation is not installed.");
+					await studioRuntime.handleStop(value, req, res);
+				} else {
+					const current = await studioRuntime.readContext(value.context.host);
+					validateStudioContextFreshness(value.context, current);
+					await studioRuntime.handleTurn(value, req, res);
+				}
+			} catch (error) {
+				if (!(error instanceof StudioProtocolError)) throw error;
+				json(res, 409, { error: error.toJSON() });
+			}
+			return true;
+		}
 		if (path === "/agent/stop") {
 			sessions.get(value.sessionId)?.controller?.abort();
 			json(res, 200, { ok: true }); return true;
