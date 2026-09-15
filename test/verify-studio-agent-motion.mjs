@@ -81,6 +81,22 @@ if (evidence) writeFileSync(`${evidence}/motion-fixture-metrics.json`, JSON.stri
 console.log('Studio motion: all cases PASS');
 
 async function candidateTests(mod) {
+  {
+    const host = { workspaceId: 'cancel-workspace', documentEpoch: 'cancel-document', sceneId: 'cancel-scene', sceneEpoch: 'cancel-epoch' };
+    const journal = createStudioCommandJournal({ host });
+    const binding = { host, characterId: 'cancel-character', targetToken: 'cancel-token' };
+    const api = mod.createStudioMotionCandidates({ journal,
+      readTarget: () => ({ guard: binding }),
+      readEnvironment: () => ({ host, physicsRevision: 0, floor: { model: 'flat', y: 0 }, objects: [], cast: [], frameCount: 48 }),
+    });
+    const first = api.cancel_motion_install({ commandId: 'cancel-before-prepare', binding });
+    assert.equal(first.status, 'not_applied');
+    assert.equal(first.evidence?.ok, false);
+    assert.equal(first.evidence?.code, 'CANCELLED');
+    assert.equal(journal.reconcile({ commandId: 'cancel-before-prepare', host }).status, 'not_applied');
+    assert.deepEqual(api.cancel_motion_install({ commandId: 'cancel-before-prepare', binding }), first);
+    console.log('PASS pre-prepare cancellation reserves journal and returns structured not_applied evidence');
+  }
   mkdirSync('.omo/ulw-execute/task-7', { recursive: true });
   const scratch = mkdtempSync('.omo/ulw-execute/task-7/fixture-');
   const archives = new Map(); let generated = 0;
@@ -101,7 +117,7 @@ async function candidateTests(mod) {
     rig.position.set(character.x, character.y, character.z); rig.rotation.y = character.rot * Math.PI / 180; rig.scale.setScalar(.01 * character.scale); rig.updateMatrixWorld(true);
     // The visible preimage includes authored IK, prompts and a prior take.
     ikState.keys.set(7, new Map([['hips', { p: new THREE.Vector3(1, 100, 0), q: [new THREE.Quaternion()] }]])); ikState.tracked.add('hips');
-    const state = { host: { ...host }, token: 'target-original', physicsRevision: 1, floor: { model: 'flat', y: 0 }, objects: [], cast: [], frameCount: 48, playing: true, playhead: 17, activeId: 'char-a', busy: false };
+    const state = { host: { ...host }, token: 'target-original', physicsRevision: 1, floor: { model: 'flat', y: options.floorY ?? 0 }, objects: [], cast: [], frameCount: 48, playing: true, playhead: 17, activeId: 'char-a', busy: false };
     const domain = { take: oldMotion, full: oldMotion, schedule: structuredClone(character.layer), ikState, history: [], committed: [{ frame: 7 }], bufferOwner: 'char-a' };
     const preimage = () => ({ bones: boneSnapshot(rig), character: structuredClone(character), oldMotion: structuredClone(oldMotion), keys: physicsKeyStamp(ikState.keys), domain: { take: structuredClone(domain.take), full: structuredClone(domain.full), schedule: structuredClone(domain.schedule), history: structuredClone(domain.history), committed: structuredClone(domain.committed), bufferOwner: domain.bufferOwner }, playing: state.playing, playhead: state.playhead, activeId: state.activeId });
     const initial = preimage(), calls = [], journal = createStudioCommandJournal({ host });
@@ -220,13 +236,16 @@ async function candidateTests(mod) {
       console.log('PASS private repair throw releases candidate without partial authored mutation');
     }
     {
-      const f = fixture({ clip: { hover: .08 }, protectedFrames: [24], ports: { reviewAutoPhysics: async options => {
+      const f = fixture({ clip: { hover: .08 }, floorY: .05, protectedFrames: [24], ports: { reviewAutoPhysics: async options => {
         // The protected frame's key remains absent, but a neighbouring key's
         // REAL ikEvaluate blend changes its evaluated pose.
         const keys = new Map([[23, new Map([['hips', { p: new THREE.Vector3(0, 160, 0), q: [new THREE.Quaternion()] }]])]]);
         assert(!keys.has(24)); return { candidate: { keys, tracked: new Set(['hips']) } };
-      } } }); const c = await f.prepare(); await f.verify(c); const result = await f.repair(c, 'auto_physics');
-      assert.equal(result.code, 'REPAIR_REGRESSED'); assert.equal(f.api.size, 0); f.preserved(); console.log('PASS evaluated protected pose/blend regression rejected, not key-map equality');
+      } } }); const c = await f.prepare(); const initial = await f.verify(c);
+      assert.equal(initial.status, 'unverified', `protected-regression fixture must remain repairable before repair: ${JSON.stringify({ status: initial.status, repairable: initial.repairable, metrics: initial.metrics })}`);
+      assert.equal(initial.repairable, true, `protected-regression fixture lost repair permission during verification: ${JSON.stringify(initial)}`);
+      const result = await f.repair(c, 'auto_physics');
+      assert.equal(result.code, 'REPAIR_REGRESSED', JSON.stringify(result)); assert.equal(f.api.size, 0); f.preserved(); console.log('PASS evaluated protected pose/blend regression rejected, not key-map equality');
     }
     for (const kind of ['target', 'document', 'gesture', 'physics', 'cancel']) {
       const f = fixture(), c = await f.prepare(), v = await f.verify(c); ok(v);
