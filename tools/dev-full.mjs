@@ -90,7 +90,10 @@ if (kimodoHost) {
 	);
 }
 
-const agentHandler = createAgentHandler({ port: mainPort });
+// Resolved once per Studio admission by task 6, not from the historical port.
+const getBridgeOrigin = () => bridge && bridgePort !== undefined && bridge.exitCode === null && bridge.signalCode === null
+	? `http://127.0.0.1:${bridgePort}` : null;
+const agentHandler = createAgentHandler({ port: mainPort, getBridgeOrigin });
 const oauthServer = createServer((req, res) => {
 	const path = (req.url || "").split("?")[0];
 	const hosts = new Set([`127.0.0.1:${mainPort}`, `localhost:${mainPort}`]);
@@ -113,7 +116,7 @@ const vite = spawnOwned(process.execPath, ["node_modules/vite/bin/vite.js", ...v
 			// Left as it came in when no bridge runs: Vite's /ardy proxy then
 			// falls back the same way `dev:ui` does, and the probe fails
 			// gracefully instead of pointing at a port nothing owns.
-			...(bridgePort === undefined ? {} : { COZYCLAY_BRIDGE_PORT: String(bridgePort) }),
+			...(bridgePort === undefined ? {} : { COZYCLAY_BRIDGE_PORT: String(bridgePort), COZYCLAY_BRIDGE_ORIGIN: `http://127.0.0.1:${bridgePort}` }),
 			COZYCLAY_LIVE_PORT: livePort,
 			COZYCLAY_OAUTH_PORT: String(actualOAuthPort),
 		},
