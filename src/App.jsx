@@ -179,6 +179,7 @@ import {
 	importImageFile,
 	isImageAssetId,
 	isMeshAssetId,
+	isSupportedMeshType,
 	listAssetIds,
 	openAssetDb,
 	putAsset,
@@ -188,7 +189,7 @@ import {
 import { derivedAssetIds, sourceAssetIds } from "./asset-shelf.js";
 import { assetRecord, evictAssetTexture, rememberAsset } from "./scene-asset-cache.js";
 import { evictMeshScene } from "./scene-mesh-cache.js";
-import { compressedGlbReason, fitMeshBounds, importMeshFile, MESH_HEIGHT_MIN, parseGlbBounds } from "./scene-mesh.js";
+import { compressedGlbReason, fitMeshBounds, importMeshFile, MESH_HEIGHT_MIN, meshBoundsFromAsset } from "./scene-mesh.js";
 import { subscribeToSceneDocuments, subscribeToScenePlayback } from "./workflow/scene-asset-sync.js";
 import { cutOutBackground, decodeMask, maskAsset } from "./matte.js";
 import { createMatteEditor } from "./matte-editor.js";
@@ -1927,8 +1928,8 @@ export default function App() {
 	}, []);
 
 	const rejectUnsupportedDrop = (count) => setToast(ko(
-		`${count} file${count > 1 ? "s" : ""} not supported — use PNG, JPG, WebP, GIF or a .glb (iPhone HEIC photos need converting first)`,
-		`지원하지 않는 파일 ${count}개 — PNG, JPG, WebP, GIF 또는 .glb만 가능해요 (아이폰 HEIC 사진은 먼저 변환해 주세요)`,
+		`${count} file${count > 1 ? "s" : ""} not supported — use PNG, JPG, WebP, GIF or a .glb / .obj (iPhone HEIC photos need converting first)`,
+		`지원하지 않는 파일 ${count}개 — PNG, JPG, WebP, GIF 또는 .glb / .obj만 가능해요 (아이폰 HEIC 사진은 먼저 변환해 주세요)`,
 	));
 	const stageDrop = {
 		onImages: (files) => importCutouts(files),
@@ -2162,7 +2163,7 @@ export default function App() {
 			setToast(isKo ? `모델을 가져오지 못했어요 — ${compressed}` : `Could not import that model — ${compressed}`);
 			return;
 		}
-		const bounds = parseGlbBounds(record.bytes);
+		const bounds = meshBoundsFromAsset(record);
 		const fitted = bounds ? fitMeshBounds(bounds) : null;
 		if (!fitted) {
 			setToast(ko("That model has no measurable geometry", "그 모델은 측정할 수 있는 형태가 없어요"));
@@ -2952,7 +2953,7 @@ export default function App() {
 		setDeletingAssetId(record.id);
 		let restored = false;
 		try {
-			if (isMeshAssetId(record.id) || String(record.type ?? "").toLowerCase() === "model/gltf-binary") {
+			if (isMeshAssetId(record.id) || isSupportedMeshType(record.type)) {
 				await persistMeshAsset(record);
 			} else {
 				await rememberAsset(record);
@@ -4649,15 +4650,23 @@ export default function App() {
 				if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
 				if (args.placeAs === "mesh") {
 					const dataUrl = args.dataUrl;
-					if (typeof dataUrl !== "string") throw new Error("dataUrl must be a GLB data URL");
+					if (typeof dataUrl !== "string") throw new Error("dataUrl must be a 3D model data URL");
+					const nameLower = String(args.name).toLowerCase();
+					const headerMime = dataUrl.slice(5, dataUrl.search(/[;,]/)).toLowerCase();
 					const mime = (typeof args.mimeType === "string" && args.mimeType
 						? args.mimeType
-						: dataUrl.slice(5, dataUrl.search(/[;,]/))).toLowerCase();
-					const headerOk = dataUrl.startsWith("data:model/gltf-binary") || dataUrl.startsWith("data:application/octet-stream");
-					const mimeOk = mime === "model/gltf-binary" || mime === "application/octet-stream";
-					if (!headerOk && !mimeOk) throw new Error("dataUrl must be a GLB data URL");
+						: headerMime).toLowerCase();
+					const objPlain = mime === "text/plain" && nameLower.endsWith(".obj");
+					const headerOk = dataUrl.startsWith("data:model/gltf-binary")
+						|| dataUrl.startsWith("data:application/octet-stream")
+						|| dataUrl.startsWith("data:model/obj")
+						|| (dataUrl.startsWith("data:text/plain") && nameLower.endsWith(".obj"));
+					const mimeOk = mime === "model/gltf-binary" || mime === "application/octet-stream"
+						|| mime === "model/obj" || objPlain;
+					if (!headerOk && !mimeOk) throw new Error("dataUrl must be a 3D model data URL");
 					const bytes = await (await fetch(dataUrl)).arrayBuffer();
-					const file = new File([bytes], args.name, { type: mimeOk ? mime : "model/gltf-binary" });
+					const fileType = mime || headerMime || "application/octet-stream";
+					const file = new File([bytes], args.name, { type: fileType });
 					const { asset, height, footprint } = await importMeshFile(file);
 					const db = await openAssetDb();
 					try {
@@ -13852,7 +13861,7 @@ function resizePromptClip(id, edge, rawFrame) {
 
 				<Foldout hidden={selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
 					<div className="props-drop" data-drop={inspectorDrop.over ? "over" : "target"} {...inspectorDrop.handlers}>
-					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view. Drop a picture anywhere here — or on the shot view — to stand it up as a cutout. You can also drop a .glb to import a 3D object.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요. 사진을 이 영역이나 샷 뷰에 끌어다 놓으면 컷아웃으로 세워집니다. .glb 파일을 놓으면 3D 오브젝트로 가져옵니다.")}</p>
+					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view. Drop a picture anywhere here — or on the shot view — to stand it up as a cutout. You can also drop a .glb or .obj to import a 3D object.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요. 사진을 이 영역이나 샷 뷰에 끌어다 놓으면 컷아웃으로 세워집니다. .glb 또는 .obj 파일을 놓으면 3D 오브젝트로 가져옵니다.")}</p>
 					<AddObjectMenu onAdd={addSceneObject} label={ko("Add object to the set", "세트에 오브젝트 추가")} />
 					<button
 						type="button"
@@ -13866,7 +13875,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						type="button"
 						className="btn ghost full"
 						onClick={() => meshInputRef.current?.click()}
-						title={ko("A GLB model standing in the set", "GLB 모델을 세트에 배치합니다")}
+						title={ko("A GLB or OBJ model standing in the set", "GLB 또는 OBJ 모델을 세트에 배치합니다")}
 					>
 						{ko("Import 3D object", "3D 오브젝트 가져오기")}
 					</button>
@@ -13888,7 +13897,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						ref={meshInputRef}
 						type="file"
 						hidden
-						accept=".glb,model/gltf-binary"
+						accept=".glb,.obj,model/gltf-binary,model/obj"
 						onChange={(event) => {
 							const [file] = event.target.files ?? [];
 							event.target.value = "";

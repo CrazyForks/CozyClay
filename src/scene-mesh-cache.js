@@ -14,12 +14,15 @@
  */
 
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { getAsset, isMeshAssetId, openAssetDb } from "./scene-assets.js";
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import { getAsset, isMeshAssetId, isSupportedMeshType, openAssetDb } from "./scene-assets.js";
+import { decodeObjText } from "./scene-mesh.js";
 
 /** Build a cache with injectable seams for deterministic tests. */
 export function createMeshSceneCache({
 	getRecord = async (id) => getAsset(await db(), id),
 	parseGlb = (bytes) => new GLTFLoader().parseAsync(bytes, ""),
+	parseObj = (text) => new OBJLoader().parse(text),
 } = {}) {
 	/** id → { scene, promise, listeners, generation, evicted, failed } */
 	const entries = new Map();
@@ -51,13 +54,21 @@ export function createMeshSceneCache({
 				const asset = entry.record ?? (await getRecord(id));
 				if (!asset || entry.evicted || entry.generation !== generation) return null;
 				// A picture id that wandered in here has nothing to parse; skip
-				// rather than handing PNG bytes to GLTFLoader.
-				if (!isMeshAssetId(asset.id) && String(asset.type ?? "").toLowerCase() !== "model/gltf-binary") {
+				// rather than handing PNG bytes to a mesh loader.
+				const type = String(asset.type ?? "").toLowerCase();
+				if (!isMeshAssetId(asset.id) && !isSupportedMeshType(asset.type)) {
 					return null;
 				}
 				entry.record = asset;
-				const gltf = await parseGlb(asset.bytes);
-				const scene = gltf?.scene ?? null;
+				let scene = null;
+				if (type === "model/obj") {
+					scene = await parseObj(decodeObjText(asset.bytes));
+				} else if (type === "model/gltf-binary") {
+					const gltf = await parseGlb(asset.bytes);
+					scene = gltf?.scene ?? null;
+				} else {
+					return null;
+				}
 				if (!scene || entry.evicted || entry.generation !== generation) return null;
 				entry.scene = scene;
 				entry.failed = false;

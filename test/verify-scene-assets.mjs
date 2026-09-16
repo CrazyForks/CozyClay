@@ -70,8 +70,8 @@ await assetIdForBytes(bytes, { digest: null }).then(
 expect("the image types an import accepts", isSupportedImageType("image/png") && isSupportedImageType("IMAGE/WEBP") && isSupportedImageType("image/jpeg"));
 expect("svg and non-images are refused", !isSupportedImageType("image/svg+xml") && !isSupportedImageType("application/pdf") && !isSupportedImageType(""));
 expect(
-	"the mesh MIME is glTF binary — octet-stream is a drop-fallback, not a type the helper accepts",
-	isSupportedMeshType("model/gltf-binary") && isSupportedMeshType("MODEL/GLTF-BINARY") && !isSupportedMeshType("application/octet-stream") && ASSET_MESH_TYPES.includes("model/gltf-binary"),
+	"stored mesh MIMEs are glTF binary and Wavefront OBJ — octet-stream is a drop-fallback, not a stored type",
+	isSupportedMeshType("model/gltf-binary") && isSupportedMeshType("MODEL/GLTF-BINARY") && isSupportedMeshType("model/obj") && !isSupportedMeshType("application/octet-stream") && !isSupportedMeshType("text/plain") && ASSET_MESH_TYPES.includes("model/obj"),
 );
 
 /* -------------------------------------------------------- downscale ---- */
@@ -122,6 +122,17 @@ expect(
 expect(
 	"a mesh id wearing an image type is dropped — the prefix and the MIME have to agree",
 	normalizeAsset({ ...record, id: meshId }) === null && normalizeAsset({ id, type: "model/gltf-binary", bytes: bytes.buffer, name: "stove.glb" }) === null,
+);
+
+const objMeshAsset = normalizeAsset({ id: meshId, type: "model/obj", bytes: bytes.buffer, name: "stove.obj" });
+expect(
+	"a mesh record with model/obj survives without pixel size",
+	objMeshAsset !== null && objMeshAsset.type === "model/obj" && objMeshAsset.id === meshId,
+	JSON.stringify(objMeshAsset && { ...objMeshAsset, bytes: objMeshAsset.bytes?.byteLength }),
+);
+expect(
+	"a mesh id wearing text/plain is dropped — only stored mesh MIMEs are kept",
+	normalizeAsset({ id: meshId, type: "text/plain", bytes: bytes.buffer, name: "stove.obj" }) === null,
 );
 
 /* ------------------------------------------------------ reachability ---- */

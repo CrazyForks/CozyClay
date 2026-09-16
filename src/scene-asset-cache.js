@@ -12,7 +12,7 @@
  */
 
 import * as THREE from "three";
-import { getAsset, isMeshAssetId, openAssetDb, putAsset } from "./scene-assets.js";
+import { getAsset, isMeshAssetId, isSupportedMeshType, openAssetDb, putAsset } from "./scene-assets.js";
 
 /** Mesh blobs live in the same store as pictures. They must never reach
  * `createImageBitmap`: a GLB is not an image, and decoding one would throw
@@ -20,7 +20,7 @@ import { getAsset, isMeshAssetId, openAssetDb, putAsset } from "./scene-assets.j
 function isMeshRecord(asset) {
 	if (!asset) return false;
 	if (typeof asset.id === "string" && isMeshAssetId(asset.id)) return true;
-	return String(asset.type ?? "").toLowerCase() === "model/gltf-binary";
+	return isSupportedMeshType(asset.type);
 }
 
 /** Build a cache with injectable browser seams for deterministic race tests. */

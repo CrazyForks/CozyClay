@@ -40,6 +40,11 @@ const UNIT_CUBE_BYTES = readFileSync(new URL("./fixtures/unit-cube.glb", import.
 const UNIT_CUBE_B64 = Buffer.from(UNIT_CUBE_BYTES).toString("base64");
 const CANNED_GLB_DATA_URL = `data:model/gltf-binary;base64,${UNIT_CUBE_B64}`;
 const CANNED_OCTET_GLB_DATA_URL = `data:application/octet-stream;base64,${UNIT_CUBE_B64}`;
+const UNIT_OBJ_BYTES = readFileSync(new URL("./fixtures/unit-cube.obj", import.meta.url));
+const UNIT_OBJ_B64 = Buffer.from(UNIT_OBJ_BYTES).toString("base64");
+const CANNED_OBJ_DATA_URL = `data:model/obj;base64,${UNIT_OBJ_B64}`;
+const CANNED_PLAIN_OBJ_DATA_URL = `data:text/plain;base64,${UNIT_OBJ_B64}`;
+const CANNED_OCTET_OBJ_DATA_URL = `data:application/octet-stream;base64,${UNIT_OBJ_B64}`;
 
 const port = await reservePort();
 const hub = await startLiveHub(port);
@@ -165,10 +170,36 @@ const octetPlaced = await withTimeout(hub.command("import_asset", octetImportArg
 assert.deepEqual(received[5].args, octetImportArgs, "octet-stream GLB dataUrls round-trip as mesh imports");
 assert.deepEqual(Object.keys(octetPlaced).sort(), ["assetId", "objectId"]);
 
+const objImportArgs = {
+	name: "unit-cube.obj",
+	mimeType: "model/obj",
+	dataUrl: CANNED_OBJ_DATA_URL,
+	placeAs: "mesh",
+};
+const objPlaced = await withTimeout(hub.command("import_asset", objImportArgs, handle));
+assert.deepEqual(received[6].args, objImportArgs, "model/obj dataUrls round-trip as mesh imports");
+assert.equal(objPlaced.assetId, `mesh-${"a".repeat(32)}`);
+
+const plainObjImportArgs = {
+	name: "unit-cube.obj",
+	mimeType: "text/plain",
+	dataUrl: CANNED_PLAIN_OBJ_DATA_URL,
+	placeAs: "mesh",
+};
+assert.deepEqual((await withTimeout(hub.command("import_asset", plainObjImportArgs, handle))) && received[7].args, plainObjImportArgs, "text/plain OBJ dataUrls round-trip as mesh imports");
+
+const octetObjImportArgs = {
+	name: "unit-cube.obj",
+	mimeType: "application/octet-stream",
+	dataUrl: CANNED_OCTET_OBJ_DATA_URL,
+	placeAs: "mesh",
+};
+assert.deepEqual((await withTimeout(hub.command("import_asset", octetObjImportArgs, handle))) && received[8].args, octetObjImportArgs, "octet-stream OBJ dataUrls round-trip as mesh imports");
+
 const updateArgs = { id: "mesh", height: 0.5, clay: true };
 const updated = await withTimeout(hub.command("update_object", updateArgs, handle));
-assert.equal(received[6].name, "update_object");
-assert.deepEqual(received[6].args, updateArgs, "update_object height and clay must round-trip unchanged");
+assert.equal(received[9].name, "update_object");
+assert.deepEqual(received[9].args, updateArgs, "update_object height and clay must round-trip unchanged");
 assert.deepEqual(updated, { id: "mesh" });
 
 // 6. The editor half of the same contract: dispatchLiveFrame must answer both
@@ -229,6 +260,19 @@ const okOctet = await dispatchLiveFrame(
 );
 assert.deepEqual(okOctet, {
 	type: "result", id: "c5", ok: true,
+	value: { assetId: `mesh-${"b".repeat(32)}`, objectId: "mesh" },
+});
+const okObj = await dispatchLiveFrame(
+	JSON.stringify({
+		type: "cmd",
+		id: "c5b",
+		name: "import_asset",
+		args: { name: "unit-cube.obj", mimeType: "model/obj", dataUrl: CANNED_OBJ_DATA_URL, placeAs: "mesh" },
+	}),
+	editorHandlers,
+);
+assert.deepEqual(okObj, {
+	type: "result", id: "c5b", ok: true,
 	value: { assetId: `mesh-${"b".repeat(32)}`, objectId: "mesh" },
 });
 const okUpdate = await dispatchLiveFrame(

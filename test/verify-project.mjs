@@ -170,6 +170,15 @@ const meshAssetRecord = {
 	bytes: meshSourceBytes,
 };
 assert.equal(await verifyEmbeddedAsset(meshAssetRecord, webcrypto.subtle), true, "matching embedded mesh bytes verify against their mesh- content address");
+const objSourceBytes = new Uint8Array(readFileSync(new URL("./fixtures/unit-cube.obj", import.meta.url)));
+const objAssetId = await meshIdForBytes(objSourceBytes, webcrypto.subtle);
+const objAssetRecord = {
+	id: objAssetId,
+	type: "model/obj",
+	name: "unit-cube.obj",
+	bytes: objSourceBytes,
+};
+assert.equal(await verifyEmbeddedAsset(objAssetRecord, webcrypto.subtle), true, "matching embedded OBJ bytes verify against their mesh- content address");
 assert.ok(assetDocument.resources.assets.every((asset) => asset.id.startsWith("img-")), "a picture-only project still embeds only image ids");
 
 const meshScenesDocument = createSceneDocument("MESH");
@@ -408,6 +417,8 @@ assert.match(appSource, /referencedAssetIds/, "export finds the complete referen
 assert.match(appSource, /getAsset/, "export reads referenced asset records from IndexedDB");
 assert.match(appSource, /putAsset/, "open restores embedded asset records to IndexedDB");
 assert.match(appSource, /verifyEmbeddedAsset\(asset\)/, "project open verifies mesh blobs with mesh- ids, not as img-");
+assert.match(appSource, /meshBoundsFromAsset\(/, "shelf spawn measures OBJ and GLB through one helper, not parseGlbBounds alone");
+assert.doesNotMatch(appSource, /type:\s*mimeOk\s*\?\s*mime\s*:\s*"model\/gltf-binary"/, "MCP mesh File type is not coerced onto glTF-binary");
 assert.match(appSource, /encodeMotionResource\(/, "project save encodes the loaded NPZ bytes");
 assert.match(appSource, /motionEncodingCacheRef = useRef\(new WeakMap\(\)\)/, "project save keeps an identity cache for encoded motion resources");
 assert.match(appSource, /motionEncodingCacheRef\.current\.get\(clip\.sourceBytes\)/, "project save checks the clip identity before encoding");

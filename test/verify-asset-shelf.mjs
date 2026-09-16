@@ -102,6 +102,8 @@ expect("a mesh object's assetId is a source, shown on the shelf", meshShown.incl
 expect("a mesh id is never derived from cutout lineage", !derivedAssetIds(meshScenes).has(MESH));
 expect("cutout mattes stay hidden next to a mesh", !meshShown.includes(MATTE) && !meshShown.includes(RENDERED), meshShown.join(", "));
 expect("mesh records expose their kind", assetKind({ id: MESH, type: "model/gltf-binary", name: "stove.glb" }) === "mesh");
+expect("OBJ mesh records expose their kind too", assetKind({ id: MESH, type: "model/obj", name: "stove.obj" }) === "mesh");
+expect("a type-only OBJ record without a mesh- prefix is still a mesh", assetKind({ type: "model/obj", name: "stove.obj" }) === "mesh");
 expect("ordinary records still expose image kind", assetKind({ name: "sofa.png" }) === "image");
 expect("matte records still expose their derivable kind next to meshes", assetKind({ name: "sofa matte" }) === "matte");
 

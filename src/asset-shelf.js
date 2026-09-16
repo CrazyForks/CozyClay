@@ -19,7 +19,7 @@
  * (test/verify-asset-shelf.mjs) can pin the rule without a browser.
  */
 
-import { isAssetId, isMeshAssetId } from "./scene-assets.js";
+import { isAssetId, isMeshAssetId, isSupportedMeshType } from "./scene-assets.js";
 import { CUTOUT_KIND, MESH_KIND } from "./scene-objects.js";
 
 /** A compact, locale-neutral byte label for the storage manager. */
@@ -36,7 +36,7 @@ export function formatAssetBytes(value) {
  * Meshes are identified by id or MIME so a GLB never appears as a picture in
  * the storage manager, even when its filename looks like a matte. */
 export function assetKind(asset) {
-	if (isMeshAssetId(asset?.id) || String(asset?.type ?? "").toLowerCase() === "model/gltf-binary") return "mesh";
+	if (isMeshAssetId(asset?.id) || isSupportedMeshType(asset?.type)) return "mesh";
 	return /\bmatte$/i.test(String(asset?.name ?? "").trim()) ? "matte" : "image";
 }
 

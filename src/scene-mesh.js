@@ -140,6 +140,65 @@ export function compressedGlbReason(bytes) {
 	return null;
 }
 
+function bytesAsUint8(bytes) {
+	if (bytes instanceof ArrayBuffer) return new Uint8Array(bytes);
+	if (ArrayBuffer.isView(bytes)) return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	return null;
+}
+
+function decodeObjText(bytes) {
+	const view = bytesAsUint8(bytes);
+	if (!view || !view.byteLength) return "";
+	let text = new TextDecoder("utf-8").decode(view);
+	if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+	return text;
+}
+
+/**
+ * Union the `v x y z` rows of a Wavefront OBJ.
+ *
+ * `vn` / `vt` / `vp` are not vertices. Vertex colours after xyz are ignored.
+ * Node tests measure here without three.js, the same way `parseGlbBounds`
+ * reads accessor min/max.
+ */
+export function parseObjBounds(bytes) {
+	const text = decodeObjText(bytes);
+	if (!text) return null;
+	let bounds = null;
+	for (const raw of text.split(/\r?\n/)) {
+		const line = raw.trim();
+		if (!/^v(?:\s|$)/.test(line)) continue;
+		const parts = line.split(/\s+/);
+		if (parts[0] !== "v") continue;
+		const x = Number(parts[1]);
+		const y = Number(parts[2]);
+		const z = Number(parts[3]);
+		if (![x, y, z].every(Number.isFinite)) continue;
+		if (!bounds) {
+			bounds = { min: { x, y, z }, max: { x, y, z } };
+			continue;
+		}
+		bounds.min.x = Math.min(bounds.min.x, x);
+		bounds.min.y = Math.min(bounds.min.y, y);
+		bounds.min.z = Math.min(bounds.min.z, z);
+		bounds.max.x = Math.max(bounds.max.x, x);
+		bounds.max.y = Math.max(bounds.max.y, y);
+		bounds.max.z = Math.max(bounds.max.z, z);
+	}
+	return bounds;
+}
+
+/** Measure stored mesh bytes by the record's MIME. Shelf spawn uses this
+ * instead of assuming every blob is a GLB JSON chunk. */
+export function meshBoundsFromAsset(record) {
+	const type = String(record?.type ?? "").toLowerCase();
+	if (type === "model/obj") return parseObjBounds(record?.bytes);
+	if (type === "model/gltf-binary") return parseGlbBounds(record?.bytes);
+	return null;
+}
+
+export { decodeObjText };
+
 /**
  * Map a measured box into metres the set can stand next to a 1.8 m figure.
  *
@@ -182,10 +241,20 @@ function isGlbFile(file) {
 	return false;
 }
 
-/** The GLB files in a drop, in the order they were dropped. Same shape as
- * `imageFilesFrom`: a DataTransfer-like `{ files }`. */
+function isObjFile(file) {
+	if (!file) return false;
+	const type = typeof file.type === "string" ? file.type.toLowerCase() : "";
+	if (type === "model/obj") return true;
+	const name = String(file.name ?? "").toLowerCase();
+	if (!name.endsWith(".obj")) return false;
+	return type === "" || type === "text/plain" || type === "application/octet-stream"
+		|| type === "text/x-obj" || type === "application/object";
+}
+
+/** The GLB and OBJ files in a drop, in the order they were dropped. Same
+ * shape as `imageFilesFrom`: a DataTransfer-like `{ files }`. */
 export function meshFilesFrom(transfer) {
-	return Array.from(transfer?.files ?? []).filter(isGlbFile);
+	return Array.from(transfer?.files ?? []).filter((file) => isGlbFile(file) || isObjFile(file));
 }
 
 function listedFiles(filesOrTransfer) {
@@ -219,10 +288,12 @@ export function splitDroppedFiles(filesOrTransfer) {
 }
 
 /**
- * One imported GLB as a storable asset plus the fitted standing size.
+ * One imported GLB or OBJ as a storable asset plus the fitted standing size.
  *
  * Failures throw a sentence fit to show in a toast — the caller has no way
- * to explain a missing magic number or a JSON chunk with no POSITION box.
+ * to explain a missing magic number, empty vertices, or a JSON chunk with
+ * no POSITION box. glTF magic wins over the filename so a renamed GLB is
+ * still a GLB; a `.glb` without magic never falls through to OBJ.
  */
 export async function importMeshFile(file, subtle = globalThis.crypto?.subtle) {
 	if (!file || typeof file.arrayBuffer !== "function") throw new Error("importMeshFile needs a File or Blob");
@@ -230,17 +301,40 @@ export async function importMeshFile(file, subtle = globalThis.crypto?.subtle) {
 		throw new Error(`That model is too large to import — larger than ${Math.round(ASSET_MAX_SOURCE_BYTES / (1024 * 1024))} MB`);
 	}
 	const bytes = await file.arrayBuffer();
-	if (!isGlbMagic(bytes)) throw new Error("That file is not a GLB model");
-	const compressed = compressedGlbReason(bytes);
-	if (compressed) throw new Error(compressed);
-	const bounds = parseGlbBounds(bytes);
-	const fitted = bounds ? fitMeshBounds(bounds) : null;
+	const name = typeof file.name === "string" ? file.name : "";
+	const namedGlb = isGlbFile(file) || name.toLowerCase().endsWith(".glb");
+	const namedObj = isObjFile(file) || name.toLowerCase().endsWith(".obj");
+
+	if (isGlbMagic(bytes)) {
+		const compressed = compressedGlbReason(bytes);
+		if (compressed) throw new Error(compressed);
+		const bounds = parseGlbBounds(bytes);
+		const fitted = bounds ? fitMeshBounds(bounds) : null;
+		if (!fitted) throw new Error("That model has no measurable geometry");
+		const asset = normalizeAsset({
+			id: await meshIdForBytes(bytes, subtle),
+			type: "model/gltf-binary",
+			bytes,
+			name,
+		});
+		if (!asset) throw new Error("That model could not be prepared for the set");
+		return { asset, height: fitted.height, footprint: fitted.footprint };
+	}
+
+	if (namedGlb) throw new Error("That file is not a GLB model");
+
+	const objBounds = parseObjBounds(bytes);
+	if (!objBounds) {
+		if (namedObj) throw new Error("That file is not an OBJ model");
+		throw new Error("That file is not a 3D model");
+	}
+	const fitted = fitMeshBounds(objBounds);
 	if (!fitted) throw new Error("That model has no measurable geometry");
 	const asset = normalizeAsset({
 		id: await meshIdForBytes(bytes, subtle),
-		type: "model/gltf-binary",
+		type: "model/obj",
 		bytes,
-		name: file.name || "",
+		name,
 	});
 	if (!asset) throw new Error("That model could not be prepared for the set");
 	return { asset, height: fitted.height, footprint: fitted.footprint };

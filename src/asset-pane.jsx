@@ -3,7 +3,7 @@ import { ko } from "./locale.js";
 import { CHARACTER_MODEL_IDS } from "./scenes.js";
 import { OBJECT_LIBRARY } from "./scene-objects.js";
 import { displayObjectGroupName, displayObjectLabel } from "./object-catalog.jsx";
-import { assetAspect, isMeshAssetId } from "./scene-assets.js";
+import { assetAspect, isMeshAssetId, isSupportedMeshType } from "./scene-assets.js";
 import { assetKind, formatAssetBytes } from "./asset-shelf.js";
 import { assetRecord } from "./scene-asset-cache.js";
 import ResourceStatus from "./resource-status.jsx";
@@ -128,7 +128,7 @@ function loadThumb(id) {
 			// card hides. A present record whose bytes fail below resolves null
 			// instead, and the card stays visible so it can be deleted.
 			if (!record) return undefined;
-			if (isMeshAssetId(record.id) || String(record.type ?? "").toLowerCase() === "model/gltf-binary") {
+			if (isMeshAssetId(record.id) || isSupportedMeshType(record.type)) {
 				// A GLB is not a picture. Decoding it as one would mark every
 				// model "unreadable" in Manage storage — show a generic cube
 				// instead, using the same card preview the catalogue already has.

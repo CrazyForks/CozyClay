@@ -26,9 +26,12 @@ import {
 	isGlbMagic,
 	meshFilesFrom,
 	parseGlbBounds,
+	parseObjBounds,
+	meshBoundsFromAsset,
 	compressedGlbReason,
 	splitDroppedFiles,
 } from "../src/scene-mesh.js";
+import { createMeshSceneCache } from "../src/scene-mesh-cache.js";
 
 let failures = 0;
 function expect(name, condition, detail = "") {
@@ -53,6 +56,9 @@ const fixtureBytes = (name) => new Uint8Array(readFileSync(new URL(`./fixtures/$
 const unitBytes = fixtureBytes("unit-cube.glb");
 const giantBytes = fixtureBytes("giant-cube.glb");
 const tinyBytes = fixtureBytes("tiny-cube.glb");
+const unitObjBytes = fixtureBytes("unit-cube.obj");
+const giantObjBytes = fixtureBytes("giant-cube.obj");
+const tinyObjBytes = fixtureBytes("tiny-cube.obj");
 const glbFile = (bytes, name, type) => new File([bytes], name, { type });
 
 const named = (name, type) => ({ name, type });
@@ -204,7 +210,7 @@ const refuses = async (name, file, pattern) => {
 	}
 };
 const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-await refuses("PNG bytes are refused as not a GLB", glbFile(pngBytes, "photo.png", "image/png"), /not a GLB/i);
+await refuses("PNG bytes are refused as not a 3D model", glbFile(pngBytes, "photo.png", "image/png"), /not a 3D model/i);
 await refuses("plain text named .glb is refused as not a GLB", glbFile(new TextEncoder().encode("hello"), "hello.glb", "model/gltf-binary"), /not a GLB/i);
 await refuses("a non-file is refused with a readable reason", null, /file/i);
 await refuses(
@@ -241,16 +247,20 @@ await refuses(
 	/compress/i,
 );
 expect("an ordinary cube is not compressed", compressedGlbReason(unitBytes) === null);
+expect("OBJ bytes are not a compressed GLB", compressedGlbReason(unitObjBytes) === null);
 
 /* -------------------------------------------------------------- drop -- */
 
 expect(
-	"model/gltf-binary is the mesh MIME — octet-stream is not enough on its own",
+	"stored mesh MIMEs are glTF binary and Wavefront OBJ — octet-stream is a drop-fallback, not a stored type",
 	isSupportedMeshType("model/gltf-binary") &&
 		isSupportedMeshType("MODEL/GLTF-BINARY") &&
+		isSupportedMeshType("model/obj") &&
 		!isSupportedMeshType("application/octet-stream") &&
+		!isSupportedMeshType("text/plain") &&
 		!isSupportedMeshType("image/png") &&
-		ASSET_MESH_TYPES.includes("model/gltf-binary"),
+		ASSET_MESH_TYPES.includes("model/gltf-binary") &&
+		ASSET_MESH_TYPES.includes("model/obj"),
 );
 expect(
 	"meshFilesFrom keeps a .glb and leaves pictures and documents behind",
@@ -307,6 +317,151 @@ expect(
 		!isImageAssetId(null) &&
 		!isAssetId("mesh-nope"),
 );
+
+/* --------------------------------------------------------------- obj ---- */
+
+expect("the unit OBJ fixture is not a GLB", isGlbMagic(unitObjBytes) === false);
+expect("the unit OBJ fixture contains vertex rows", /\bv\s/.test(new TextDecoder().decode(unitObjBytes)));
+
+const unitObjBounds = parseObjBounds(unitObjBytes);
+expect(
+	"the unit OBJ box is 1 m tall, sitting on y = 0, 1 m across XZ",
+	Boolean(unitObjBounds) &&
+		approx(unitObjBounds.max.y - unitObjBounds.min.y, 1) &&
+		approx(unitObjBounds.min.y, 0) &&
+		approx(unitObjBounds.max.x - unitObjBounds.min.x, 1) &&
+		approx(unitObjBounds.max.z - unitObjBounds.min.z, 1),
+	JSON.stringify(unitObjBounds),
+);
+expect(
+	"OBJ fitting is import-only — giant stays 50 m, tiny stays 0.01 m at parse",
+	approx(parseObjBounds(giantObjBytes).max.y - parseObjBounds(giantObjBytes).min.y, 50) &&
+		approx(parseObjBounds(tinyObjBytes).max.y - parseObjBounds(tinyObjBytes).min.y, 0.01),
+);
+
+const bomText = `\uFEFFv 0 0 0\nv 1 1 1\n`;
+const bomBounds = parseObjBounds(new TextEncoder().encode(bomText));
+expect(
+	"a UTF-8 BOM in front of the first vertex still measures",
+	Boolean(bomBounds) && approx(bomBounds.max.y - bomBounds.min.y, 1) && approx(bomBounds.max.x - bomBounds.min.x, 1),
+	JSON.stringify(bomBounds),
+);
+const tabBounds = parseObjBounds(new TextEncoder().encode("v\t0\t0\t0\nv\t1\t1\t1\n"));
+expect(
+	"tabs between v and numbers count as Wavefront whitespace",
+	Boolean(tabBounds) && approx(tabBounds.max.y - tabBounds.min.y, 1),
+	JSON.stringify(tabBounds),
+);
+const colored = parseObjBounds(new TextEncoder().encode("v 0 0 0 1 0 0\nv 1 1 1 0 1 0\n"));
+expect(
+	"vertex colours after xyz are ignored for the box",
+	Boolean(colored) && approx(colored.max.x - colored.min.x, 1) && approx(colored.max.y - colored.min.y, 1),
+	JSON.stringify(colored),
+);
+expect(
+	"mtllib, normals and faces without vertices are not a box",
+	parseObjBounds(new TextEncoder().encode("mtllib cube.mtl\nvn 0 1 0\nf 1 2 3\n")) === null,
+);
+expect("empty OBJ text has no box", parseObjBounds(new TextEncoder().encode("")) === null);
+
+const unitObjImport = await importMeshFile(glbFile(unitObjBytes, "unit-cube.obj", "text/plain"), webcrypto.subtle);
+expect(
+	"a unit OBJ imports as model/obj, 1 m tall, mesh- id",
+	isMeshAssetId(unitObjImport.asset.id) &&
+		unitObjImport.asset.type === "model/obj" &&
+		approx(unitObjImport.height, 1) &&
+		approx(unitObjImport.footprint.width, 1) &&
+		approx(unitObjImport.footprint.depth, 1),
+	JSON.stringify({ id: unitObjImport.asset?.id, type: unitObjImport.asset?.type, height: unitObjImport.height, footprint: unitObjImport.footprint }),
+);
+expect(
+	"the imported OBJ record is normalizeAsset-ready without pixel size",
+	normalizeAsset(unitObjImport.asset)?.id === unitObjImport.asset.id && unitObjImport.asset.type === "model/obj",
+);
+
+const giantObjImport = await importMeshFile(glbFile(giantObjBytes, "giant-cube.obj", ""), webcrypto.subtle);
+const tinyObjImport = await importMeshFile(glbFile(tinyObjBytes, "tiny-cube.obj", "application/octet-stream"), webcrypto.subtle);
+expect("a 50 m OBJ is fitted to 1 m on import", approx(giantObjImport.height, 1), String(giantObjImport.height));
+expect("a 0.01 m OBJ is fitted to 1 m on import", approx(tinyObjImport.height, 1), String(tinyObjImport.height));
+
+const objAgain = await importMeshFile(glbFile(unitObjBytes, "copy.obj", "model/obj"), webcrypto.subtle);
+expect("the same OBJ bytes always get the same mesh id", unitObjImport.asset.id === objAgain.asset.id);
+
+const glbNamedObj = await importMeshFile(glbFile(unitBytes, "trick.obj", "text/plain"), webcrypto.subtle);
+expect(
+	"glTF magic under an .obj name is stored as GLB, not OBJ",
+	glbNamedObj.asset.type === "model/gltf-binary" && approx(glbNamedObj.height, 1),
+	glbNamedObj.asset?.type,
+);
+
+await refuses("PNG bytes named .obj are refused as not an OBJ", glbFile(pngBytes, "photo.obj", ""), /not an OBJ/i);
+await refuses("plain text named .obj is refused as not an OBJ", glbFile(new TextEncoder().encode("hello"), "hello.obj", "text/plain"), /not an OBJ/i);
+await refuses("plain text named .glb is still refused as not a GLB, not as OBJ", glbFile(new TextEncoder().encode("hello"), "hello.glb", "model/gltf-binary"), /not a GLB/i);
+await refuses(
+	"octet-stream with no extension and no geometry is not a 3D model",
+	glbFile(new TextEncoder().encode("????"), "blob.bin", "application/octet-stream"),
+	/not a 3D model/i,
+);
+
+expect(
+	"meshFilesFrom keeps stove.obj with empty type, text/plain, octet-stream, text/x-obj and application/object",
+	meshFilesFrom({ files: [
+		named("stove.obj", ""),
+		named("pan.obj", "text/plain"),
+		named("pot.obj", "application/octet-stream"),
+		named("lid.obj", "text/x-obj"),
+		named("knob.obj", "application/object"),
+	] }).length === 5,
+);
+expect(
+	"a .glb is not classified as OBJ just because both are meshes",
+	JSON.stringify(meshFilesFrom({ files: [named("stove.glb", "model/gltf-binary"), named("stove.obj", "text/plain")] }).map((file) => file.name)) === '["stove.glb","stove.obj"]',
+);
+
+const objSplit = splitDroppedFiles([png, glb, named("d.obj", "text/plain"), pdf]);
+expect(
+	"PNG / GLB / OBJ / PDF split into images, two meshes, one reject",
+	objSplit.images.length === 1 && objSplit.meshes.length === 2 && objSplit.rejected.length === 1 &&
+		objSplit.meshes.some((file) => file.name === "d.obj") &&
+		objSplit.meshes.some((file) => file.name === "b.glb") &&
+		!objSplit.images.some((file) => /\.obj$/i.test(file.name)),
+	JSON.stringify(objSplit),
+);
+
+const objMeasured = meshBoundsFromAsset({ type: "model/obj", bytes: unitObjBytes.buffer });
+const glbMeasured = meshBoundsFromAsset({ type: "model/gltf-binary", bytes: unitBytes.buffer });
+expect(
+	"meshBoundsFromAsset dispatches OBJ vs GLB",
+	Boolean(objMeasured) && approx(objMeasured.max.y - objMeasured.min.y, 1) &&
+		Boolean(glbMeasured) && approx(glbMeasured.max.y - glbMeasured.min.y, 1),
+	JSON.stringify({ objMeasured, glbMeasured }),
+);
+expect("meshBoundsFromAsset ignores a picture MIME", meshBoundsFromAsset({ type: "image/png", bytes: unitObjBytes.buffer }) === null);
+
+{
+	let parseGlbCalls = 0;
+	let parseObjCalls = 0;
+	const objRecord = { id: unitObjImport.asset.id, type: "model/obj", bytes: unitObjBytes.buffer, name: "unit-cube.obj" };
+	const glbRecord = { id: unitImport.asset.id, type: "model/gltf-binary", bytes: unitBytes.buffer, name: "unit-cube.glb" };
+	const records = { [objRecord.id]: objRecord, [glbRecord.id]: glbRecord };
+	const cache = createMeshSceneCache({
+		getRecord: async (id) => records[id],
+		parseGlb: async () => {
+			parseGlbCalls += 1;
+			return { scene: { name: "from-glb" } };
+		},
+		parseObj: () => {
+			parseObjCalls += 1;
+			return { name: "from-obj" };
+		},
+	});
+	const objScene = await cache.loadMeshScene(objRecord.id);
+	expect("OBJ type calls parseObj, never parseGlb", parseObjCalls === 1 && parseGlbCalls === 0, `${parseObjCalls} obj / ${parseGlbCalls} glb`);
+	expect("cached OBJ scene is the Group itself, not group.scene", objScene?.name === "from-obj");
+	const glbScene = await cache.loadMeshScene(glbRecord.id);
+	expect("GLB type still calls parseGlb, never a second parseObj", parseGlbCalls === 1 && parseObjCalls === 1, `${parseGlbCalls} glb / ${parseObjCalls} obj`);
+	expect("cached GLB scene is gltf.scene", glbScene?.name === "from-glb");
+}
 
 if (failures) process.exit(1);
 console.log("all scene mesh checks PASS");

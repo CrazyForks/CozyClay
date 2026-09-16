@@ -67,4 +67,22 @@ unsubscribe();
 	assert.equal(meshBitmapStarts, 0, "rememberAsset stores a GLB without createImageBitmap");
 }
 
+{
+	const objId = `mesh-${"c".repeat(32)}`;
+	const objRecord = { id: objId, type: "model/obj", bytes: new Uint8Array([1, 2, 3]).buffer, name: "stove.obj" };
+	let objBitmapStarts = 0;
+	const objCache = createAssetTextureCache({
+		getRecord: async () => objRecord,
+		putRecord: async (asset) => asset,
+		createBitmap: async () => {
+			objBitmapStarts += 1;
+			return { close() {} };
+		},
+		makeTexture: () => ({ dispose() {}, userData: {} }),
+	});
+	assert.equal(await objCache.loadAssetTexture(objId), null, "an OBJ mesh id is never decoded as a bitmap");
+	await objCache.rememberAsset(objRecord);
+	assert.equal(objBitmapStarts, 0, "rememberAsset stores an OBJ without createImageBitmap");
+}
+
 console.log("scene asset cache generation race checks PASS");

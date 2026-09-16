@@ -13,6 +13,7 @@
 import { fileURLToPath } from "node:url";
 
 const glbPath = fileURLToPath(new URL("./fixtures/unit-cube.glb", import.meta.url));
+const objPath = fileURLToPath(new URL("./fixtures/unit-cube.obj", import.meta.url));
 
 const port = Number(process.env.CDP_PORT || 9222);
 const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
@@ -75,6 +76,7 @@ const sceneProbe = `(() => {
 		if (!object.isMesh || !object.material) return;
 		const material = Array.isArray(object.material) ? object.material[0] : object.material;
 		const color = material?.color;
+		const hex = material?.color?.getHexString?.() ?? "";
 		meshes.push({
 			name: object.name || "",
 			materialName: material?.name || "",
@@ -84,11 +86,13 @@ const sceneProbe = `(() => {
 			g: color?.g ?? null,
 			b: color?.b ?? null,
 			castShadow: object.castShadow === true,
+			placeholderGrey: hex === "c2c6c8",
 		});
 	});
 	const imported = meshes.find((mesh) => mesh.materialName === "Cube" || (mesh.r !== null && Math.abs(mesh.r - 0.8) < 0.08 && mesh.g < 0.4));
+	const objFile = meshes.find((mesh) => !mesh.clayOwned && !mesh.placeholderGrey && mesh.r !== null && mesh.r > 0.9 && mesh.g > 0.9);
 	const clay = meshes.find((mesh) => mesh.clayOwned);
-	return { count: meshes.length, imported: imported || null, clay: clay || null };
+	return { count: meshes.length, imported: imported || null, objFile: objFile || null, clay: clay || null };
 })()`;
 
 await send("Page.enable");
@@ -177,6 +181,58 @@ try {
 		{ timeoutMs: 15000 },
 	);
 	expect("the mesh object comes back after a reload", survived);
+
+	const { nodeId: objInput } = await send("DOM.querySelector", { nodeId: (await send("DOM.getDocument")).root.nodeId, selector: 'input[type=file][accept*=".obj"]' });
+	expect("the set offers an OBJ import on the same control", Boolean(objInput));
+	await send("DOM.setFileInputFiles", { nodeId: objInput, files: [objPath] });
+	const objArrived = await waitFor(
+		"[...document.querySelectorAll('.hierarchy-row')].filter((row) => /unit-cube/.test(row.textContent)).length >= 2",
+		{ timeoutMs: 10000 },
+	);
+	expect("a picked OBJ becomes a second object in the set", objArrived);
+	const objInspector = await evaluate(`(() => {
+		const height = document.querySelector('.inspector-scroll input[data-field="mesh-height"]');
+		const clay = document.querySelector('.inspector-scroll input[data-field="mesh-clay"]');
+		return { height: height ? Number(height.value) : null, clay: clay ? clay.checked : null };
+	})()`);
+	expect("a fresh OBJ stands 1 m tall", objInspector.height !== null && Math.abs(objInspector.height - 1) < 0.02, JSON.stringify(objInspector));
+	expect("a fresh OBJ has clay off", objInspector.clay === false, JSON.stringify(objInspector));
+	const objDrawn = await waitFor(`(() => { const probe = ${sceneProbe}; return !!(probe && probe.objFile); })()`, { timeoutMs: 12000 });
+	const objGraph = await evaluate(sceneProbe);
+	expect("the OBJ file mesh is on stage, not the grey placeholder", objDrawn && objGraph.objFile, JSON.stringify(objGraph));
+
+	await evaluate(`(() => {
+		const input = document.querySelector('.inspector-scroll input[data-field="mesh-clay"]');
+		if (!input) return;
+		input.click();
+	})()`);
+	const objClayOn = await waitFor(`(() => { const probe = ${sceneProbe}; return !!(probe && probe.clay); })()`, { timeoutMs: 4000 });
+	expect("turning clay on an OBJ replaces the default material", objClayOn);
+
+	await sleep(600);
+	await send("Page.reload");
+	for (let i = 0; i < 150; i++) {
+		await sleep(200);
+		if (await evaluate("!!document.querySelector('canvas')").catch(() => false)) break;
+	}
+	for (let i = 0; i < 60 && !(await evaluate("!!window.__sceneHistory && document.querySelectorAll('.hierarchy-row').length > 0").catch(() => false)); i++) {
+		await sleep(200);
+	}
+	// A reload lands with Props folded. Clicking the row selects the group
+	// without opening it, so the two unit-cube names stay out of the DOM.
+	const objSurvived = await waitFor(
+		`(() => {
+			const props = document.querySelector('.hierarchy-row-wrap[data-node-id="props"]');
+			if (props?.getAttribute("aria-expanded") === "false") props.querySelector(".hierarchy-toggle")?.click();
+			return [...document.querySelectorAll(".hierarchy-row")].filter((row) => /unit-cube/.test(row.textContent)).length >= 2;
+		})()`,
+		{ timeoutMs: 15000 },
+	);
+	expect("the OBJ object comes back after a reload next to the GLB", objSurvived, await evaluate(`(() => {
+		const named = [...document.querySelectorAll(".hierarchy-row")].filter((row) => /unit-cube/.test(row.textContent)).map((row) => row.textContent.trim());
+		const probe = ${sceneProbe};
+		return JSON.stringify({ named, probe });
+	})()`));
 
 	expect("no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));
 } finally {
