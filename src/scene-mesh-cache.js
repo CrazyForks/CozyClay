@@ -15,14 +15,17 @@
 
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { getAsset, isMeshAssetId, isSupportedMeshType, openAssetDb } from "./scene-assets.js";
 import { decodeObjText } from "./scene-mesh.js";
+import { arrayBufferOf } from "./scene-fbx.js";
 
 /** Build a cache with injectable seams for deterministic tests. */
 export function createMeshSceneCache({
 	getRecord = async (id) => getAsset(await db(), id),
 	parseGlb = (bytes) => new GLTFLoader().parseAsync(bytes, ""),
 	parseObj = (text) => new OBJLoader().parse(text),
+	parseFbx = (bytes) => new FBXLoader().parse(arrayBufferOf(bytes), ""),
 } = {}) {
 	/** id → { scene, promise, listeners, generation, evicted, failed } */
 	const entries = new Map();
@@ -63,6 +66,8 @@ export function createMeshSceneCache({
 				let scene = null;
 				if (type === "model/obj") {
 					scene = await parseObj(decodeObjText(asset.bytes));
+				} else if (type === "model/fbx") {
+					scene = await parseFbx(asset.bytes);
 				} else if (type === "model/gltf-binary") {
 					const gltf = await parseGlb(asset.bytes);
 					scene = gltf?.scene ?? null;

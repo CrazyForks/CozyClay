@@ -148,6 +148,7 @@ const NODE_FILES = [
 	"test/verify-scene-asset-cache.mjs",
 	"test/verify-scene-assets.mjs",
 	"test/verify-scene-mesh.mjs",
+	"test/verify-mesh-graph-clone.mjs",
 	"test/verify-scene-objects.mjs",
 	"test/verify-studio-agent-geometry.mjs",
 	"test/verify-studio-agent-motion.mjs",

@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const glbPath = fileURLToPath(new URL("./fixtures/unit-cube.glb", import.meta.url));
 const objPath = fileURLToPath(new URL("./fixtures/unit-cube.obj", import.meta.url));
+const fbxPath = fileURLToPath(new URL("./fixtures/unit-cube.fbx", import.meta.url));
 
 const port = Number(process.env.CDP_PORT || 9222);
 const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
@@ -80,6 +81,7 @@ const sceneProbe = `(() => {
 		meshes.push({
 			name: object.name || "",
 			materialName: material?.name || "",
+			materialType: material?.type || "",
 			clayOwned: object.userData?.clayOwned === true,
 			roughness: material?.roughness ?? null,
 			r: color?.r ?? null,
@@ -91,8 +93,9 @@ const sceneProbe = `(() => {
 	});
 	const imported = meshes.find((mesh) => mesh.materialName === "Cube" || (mesh.r !== null && Math.abs(mesh.r - 0.8) < 0.08 && mesh.g < 0.4));
 	const objFile = meshes.find((mesh) => !mesh.clayOwned && !mesh.placeholderGrey && mesh.r !== null && mesh.r > 0.9 && mesh.g > 0.9);
+	const fbxFile = meshes.find((mesh) => !mesh.clayOwned && !mesh.placeholderGrey && mesh.castShadow && mesh.name === "Cube" && mesh.materialType === "MeshPhongMaterial");
 	const clay = meshes.find((mesh) => mesh.clayOwned);
-	return { count: meshes.length, imported: imported || null, objFile: objFile || null, clay: clay || null };
+	return { count: meshes.length, imported: imported || null, objFile: objFile || null, fbxFile: fbxFile || null, clay: clay || null };
 })()`;
 
 await send("Page.enable");
@@ -229,6 +232,60 @@ try {
 		{ timeoutMs: 15000 },
 	);
 	expect("the OBJ object comes back after a reload next to the GLB", objSurvived, await evaluate(`(() => {
+		const named = [...document.querySelectorAll(".hierarchy-row")].filter((row) => /unit-cube/.test(row.textContent)).map((row) => row.textContent.trim());
+		const probe = ${sceneProbe};
+		return JSON.stringify({ named, probe });
+	})()`));
+
+	const { nodeId: fbxInput } = await send("DOM.querySelector", { nodeId: (await send("DOM.getDocument")).root.nodeId, selector: 'input[type=file][accept*=".fbx"]' });
+	expect("the set offers an FBX import on the same control", Boolean(fbxInput));
+	await send("DOM.setFileInputFiles", { nodeId: fbxInput, files: [fbxPath] });
+	const fbxArrived = await waitFor(
+		`(() => {
+			const props = document.querySelector('.hierarchy-row-wrap[data-node-id="props"]');
+			if (props?.getAttribute("aria-expanded") === "false") props.querySelector(".hierarchy-toggle")?.click();
+			return [...document.querySelectorAll(".hierarchy-row")].filter((row) => /unit-cube/.test(row.textContent)).length >= 3;
+		})()`,
+		{ timeoutMs: 10000 },
+	);
+	expect("a picked FBX becomes a third object in the set", fbxArrived);
+	const fbxInspector = await evaluate(`(() => {
+		const height = document.querySelector('.inspector-scroll input[data-field="mesh-height"]');
+		const clay = document.querySelector('.inspector-scroll input[data-field="mesh-clay"]');
+		return { height: height ? Number(height.value) : null, clay: clay ? clay.checked : null };
+	})()`);
+	expect("a fresh FBX stands 1 m tall", fbxInspector.height !== null && Math.abs(fbxInspector.height - 1) < 0.02, JSON.stringify(fbxInspector));
+	expect("a fresh FBX has clay off", fbxInspector.clay === false, JSON.stringify(fbxInspector));
+	const fbxDrawn = await waitFor(`(() => { const probe = ${sceneProbe}; return !!(probe && probe.fbxFile); })()`, { timeoutMs: 12000 });
+	const fbxGraph = await evaluate(sceneProbe);
+	expect("the FBX file mesh is on stage, not the grey placeholder", fbxDrawn && Boolean(fbxGraph.fbxFile) && fbxGraph.fbxFile.castShadow === true, JSON.stringify(fbxGraph.fbxFile));
+
+	await evaluate(`(() => {
+		const input = document.querySelector('.inspector-scroll input[data-field="mesh-clay"]');
+		if (!input) return;
+		input.click();
+	})()`);
+	const fbxClayOn = await waitFor(`(() => { const probe = ${sceneProbe}; return !!(probe && probe.clay) && !probe.fbxFile; })()`, { timeoutMs: 4000 });
+	expect("turning clay on an FBX replaces the file material", fbxClayOn);
+
+	await sleep(600);
+	await send("Page.reload");
+	for (let i = 0; i < 150; i++) {
+		await sleep(200);
+		if (await evaluate("!!document.querySelector('canvas')").catch(() => false)) break;
+	}
+	for (let i = 0; i < 60 && !(await evaluate("!!window.__sceneHistory && document.querySelectorAll('.hierarchy-row').length > 0").catch(() => false)); i++) {
+		await sleep(200);
+	}
+	const fbxSurvived = await waitFor(
+		`(() => {
+			const props = document.querySelector('.hierarchy-row-wrap[data-node-id="props"]');
+			if (props?.getAttribute("aria-expanded") === "false") props.querySelector(".hierarchy-toggle")?.click();
+			return [...document.querySelectorAll(".hierarchy-row")].filter((row) => /unit-cube/.test(row.textContent)).length >= 3;
+		})()`,
+		{ timeoutMs: 15000 },
+	);
+	expect("the FBX object comes back after a reload next to the GLB and OBJ", fbxSurvived, await evaluate(`(() => {
 		const named = [...document.querySelectorAll(".hierarchy-row")].filter((row) => /unit-cube/.test(row.textContent)).map((row) => row.textContent.trim());
 		const probe = ${sceneProbe};
 		return JSON.stringify({ named, probe });

@@ -1928,8 +1928,8 @@ export default function App() {
 	}, []);
 
 	const rejectUnsupportedDrop = (count) => setToast(ko(
-		`${count} file${count > 1 ? "s" : ""} not supported — use PNG, JPG, WebP, GIF or a .glb / .obj (iPhone HEIC photos need converting first)`,
-		`지원하지 않는 파일 ${count}개 — PNG, JPG, WebP, GIF 또는 .glb / .obj만 가능해요 (아이폰 HEIC 사진은 먼저 변환해 주세요)`,
+		`${count} file${count > 1 ? "s" : ""} not supported — use PNG, JPG, WebP, GIF or a .glb / .obj / .fbx (iPhone HEIC photos need converting first)`,
+		`지원하지 않는 파일 ${count}개 — PNG, JPG, WebP, GIF 또는 .glb / .obj / .fbx만 가능해요 (아이폰 HEIC 사진은 먼저 변환해 주세요)`,
 	));
 	const stageDrop = {
 		onImages: (files) => importCutouts(files),
@@ -4657,12 +4657,14 @@ export default function App() {
 						? args.mimeType
 						: headerMime).toLowerCase();
 					const objPlain = mime === "text/plain" && nameLower.endsWith(".obj");
+					const fbxPlain = mime === "text/plain" && nameLower.endsWith(".fbx");
 					const headerOk = dataUrl.startsWith("data:model/gltf-binary")
 						|| dataUrl.startsWith("data:application/octet-stream")
 						|| dataUrl.startsWith("data:model/obj")
-						|| (dataUrl.startsWith("data:text/plain") && nameLower.endsWith(".obj"));
+						|| dataUrl.startsWith("data:model/fbx")
+						|| (dataUrl.startsWith("data:text/plain") && (nameLower.endsWith(".obj") || nameLower.endsWith(".fbx")));
 					const mimeOk = mime === "model/gltf-binary" || mime === "application/octet-stream"
-						|| mime === "model/obj" || objPlain;
+						|| mime === "model/obj" || mime === "model/fbx" || objPlain || fbxPlain;
 					if (!headerOk && !mimeOk) throw new Error("dataUrl must be a 3D model data URL");
 					const bytes = await (await fetch(dataUrl)).arrayBuffer();
 					const fileType = mime || headerMime || "application/octet-stream";
@@ -13861,7 +13863,7 @@ function resizePromptClip(id, edge, rawFrame) {
 
 				<Foldout hidden={selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
 					<div className="props-drop" data-drop={inspectorDrop.over ? "over" : "target"} {...inspectorDrop.handlers}>
-					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view. Drop a picture anywhere here — or on the shot view — to stand it up as a cutout. You can also drop a .glb or .obj to import a 3D object.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요. 사진을 이 영역이나 샷 뷰에 끌어다 놓으면 컷아웃으로 세워집니다. .glb 또는 .obj 파일을 놓으면 3D 오브젝트로 가져옵니다.")}</p>
+					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view. Drop a picture anywhere here — or on the shot view — to stand it up as a cutout. You can also drop a .glb, .obj or .fbx to import a 3D object.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요. 사진을 이 영역이나 샷 뷰에 끌어다 놓으면 컷아웃으로 세워집니다. .glb, .obj 또는 .fbx 파일을 놓으면 3D 오브젝트로 가져옵니다.")}</p>
 					<AddObjectMenu onAdd={addSceneObject} label={ko("Add object to the set", "세트에 오브젝트 추가")} />
 					<button
 						type="button"
@@ -13875,7 +13877,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						type="button"
 						className="btn ghost full"
 						onClick={() => meshInputRef.current?.click()}
-						title={ko("A GLB or OBJ model standing in the set", "GLB 또는 OBJ 모델을 세트에 배치합니다")}
+						title={ko("A GLB, OBJ or FBX model standing in the set", "GLB, OBJ 또는 FBX 모델을 세트에 배치합니다")}
 					>
 						{ko("Import 3D object", "3D 오브젝트 가져오기")}
 					</button>
@@ -13897,7 +13899,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						ref={meshInputRef}
 						type="file"
 						hidden
-						accept=".glb,.obj,model/gltf-binary,model/obj"
+						accept=".glb,.obj,.fbx,model/gltf-binary,model/obj,model/fbx"
 						onChange={(event) => {
 							const [file] = event.target.files ?? [];
 							event.target.value = "";

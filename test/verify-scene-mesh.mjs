@@ -30,6 +30,9 @@ import {
 	meshBoundsFromAsset,
 	compressedGlbReason,
 	splitDroppedFiles,
+	parseFbxBounds,
+	isFbxBinaryMagic,
+	readFbxVersion,
 } from "../src/scene-mesh.js";
 import { createMeshSceneCache } from "../src/scene-mesh-cache.js";
 
@@ -59,6 +62,9 @@ const tinyBytes = fixtureBytes("tiny-cube.glb");
 const unitObjBytes = fixtureBytes("unit-cube.obj");
 const giantObjBytes = fixtureBytes("giant-cube.obj");
 const tinyObjBytes = fixtureBytes("tiny-cube.obj");
+const unitFbxBytes = fixtureBytes("unit-cube.fbx");
+const giantFbxBytes = fixtureBytes("giant-cube.fbx");
+const tinyFbxBytes = fixtureBytes("tiny-cube.fbx");
 const glbFile = (bytes, name, type) => new File([bytes], name, { type });
 
 const named = (name, type) => ({ name, type });
@@ -252,15 +258,18 @@ expect("OBJ bytes are not a compressed GLB", compressedGlbReason(unitObjBytes) =
 /* -------------------------------------------------------------- drop -- */
 
 expect(
-	"stored mesh MIMEs are glTF binary and Wavefront OBJ — octet-stream is a drop-fallback, not a stored type",
+	"stored mesh MIMEs are glTF binary, Wavefront OBJ and FBX — octet-stream is a drop-fallback, not a stored type",
 	isSupportedMeshType("model/gltf-binary") &&
 		isSupportedMeshType("MODEL/GLTF-BINARY") &&
 		isSupportedMeshType("model/obj") &&
+		isSupportedMeshType("model/fbx") &&
+		isSupportedMeshType("MODEL/FBX") &&
 		!isSupportedMeshType("application/octet-stream") &&
 		!isSupportedMeshType("text/plain") &&
 		!isSupportedMeshType("image/png") &&
 		ASSET_MESH_TYPES.includes("model/gltf-binary") &&
-		ASSET_MESH_TYPES.includes("model/obj"),
+		ASSET_MESH_TYPES.includes("model/obj") &&
+		ASSET_MESH_TYPES.includes("model/fbx"),
 );
 expect(
 	"meshFilesFrom keeps a .glb and leaves pictures and documents behind",
@@ -461,6 +470,165 @@ expect("meshBoundsFromAsset ignores a picture MIME", meshBoundsFromAsset({ type:
 	const glbScene = await cache.loadMeshScene(glbRecord.id);
 	expect("GLB type still calls parseGlb, never a second parseObj", parseGlbCalls === 1 && parseObjCalls === 1, `${parseGlbCalls} glb / ${parseObjCalls} obj`);
 	expect("cached GLB scene is gltf.scene", glbScene?.name === "from-glb");
+}
+
+/* --------------------------------------------------------------- fbx ---- */
+
+const FBX_BINARY_MAGIC = "Kaydara FBX Binary  \0";
+const fakeFbxBinary = new Uint8Array(FBX_BINARY_MAGIC.length + 8);
+for (let i = 0; i < FBX_BINARY_MAGIC.length; i++) fakeFbxBinary[i] = FBX_BINARY_MAGIC.charCodeAt(i);
+
+expect("the unit FBX fixture is not a GLB", isGlbMagic(unitFbxBytes) === false);
+expect("ASCII unit FBX is not binary-magic", isFbxBinaryMagic(unitFbxBytes) === false);
+expect("Kaydara FBX Binary magic is recognised", isFbxBinaryMagic(fakeFbxBinary) === true);
+expect("GLB bytes are not FBX binary", isFbxBinaryMagic(unitBytes) === false);
+expect("the unit ASCII FBX declares version 7400", readFbxVersion(unitFbxBytes) === 7400);
+expect("OBJ bytes do not declare an FBX version", readFbxVersion(unitObjBytes) == null);
+
+const unitFbxBounds = parseFbxBounds(unitFbxBytes);
+expect(
+	"the unit FBX box is 1 m tall, sitting on y = 0, 1 m across XZ",
+	Boolean(unitFbxBounds) &&
+		approx(unitFbxBounds.max.y - unitFbxBounds.min.y, 1) &&
+		approx(unitFbxBounds.min.y, 0) &&
+		approx(unitFbxBounds.max.x - unitFbxBounds.min.x, 1) &&
+		approx(unitFbxBounds.max.z - unitFbxBounds.min.z, 1),
+	JSON.stringify(unitFbxBounds),
+);
+expect("unreadable bytes do not throw from parseFbxBounds", parseFbxBounds(pngBytes) === null);
+expect("a junk model/fbx record has no shelf box", meshBoundsFromAsset({ type: "model/fbx", bytes: pngBytes.buffer }) === null);
+expect(
+	"FBX fitting is import-only — giant stays 50 m, tiny stays 0.01 m at parse",
+	approx(parseFbxBounds(giantFbxBytes).max.y - parseFbxBounds(giantFbxBytes).min.y, 50) &&
+		approx(parseFbxBounds(tinyFbxBytes).max.y - parseFbxBounds(tinyFbxBytes).min.y, 0.01),
+);
+
+const { cubeFbx } = await import("./fixtures/write-cube-fbx.mjs");
+const flatFbxBytes = new TextEncoder().encode(cubeFbx(0));
+expect("a zero-height FBX has no measurable box", parseFbxBounds(flatFbxBytes) === null);
+
+const unitFbxImport = await importMeshFile(glbFile(unitFbxBytes, "unit-cube.fbx", "text/plain"), webcrypto.subtle);
+expect(
+	"a unit FBX imports as model/fbx, 1 m tall, mesh- id",
+	isMeshAssetId(unitFbxImport.asset.id) &&
+		unitFbxImport.asset.type === "model/fbx" &&
+		approx(unitFbxImport.height, 1) &&
+		approx(unitFbxImport.footprint.width, 1) &&
+		approx(unitFbxImport.footprint.depth, 1),
+	JSON.stringify({ id: unitFbxImport.asset?.id, type: unitFbxImport.asset?.type, height: unitFbxImport.height, footprint: unitFbxImport.footprint }),
+);
+expect(
+	"the imported FBX record is normalizeAsset-ready without pixel size",
+	normalizeAsset(unitFbxImport.asset)?.id === unitFbxImport.asset.id && unitFbxImport.asset.type === "model/fbx",
+);
+
+const giantFbxImport = await importMeshFile(glbFile(giantFbxBytes, "giant-cube.fbx", ""), webcrypto.subtle);
+const tinyFbxImport = await importMeshFile(glbFile(tinyFbxBytes, "tiny-cube.fbx", "application/octet-stream"), webcrypto.subtle);
+expect("a 50 m FBX is fitted to 1 m on import", approx(giantFbxImport.height, 1), String(giantFbxImport.height));
+expect("a 0.01 m FBX is fitted to 1 m on import", approx(tinyFbxImport.height, 1), String(tinyFbxImport.height));
+
+const fbxAgain = await importMeshFile(glbFile(unitFbxBytes, "copy.fbx", "model/fbx"), webcrypto.subtle);
+expect("the same FBX bytes always get the same mesh id", unitFbxImport.asset.id === fbxAgain.asset.id);
+
+const unnamedFbx = await importMeshFile(glbFile(unitFbxBytes, "blob.bin", "application/octet-stream"), webcrypto.subtle);
+expect(
+	"octet-stream FBX without a .fbx name still stores model/fbx — sniff, not the filename",
+	unnamedFbx.asset.type === "model/fbx" && approx(unnamedFbx.height, 1),
+	unnamedFbx.asset?.type,
+);
+
+const glbNamedFbx = await importMeshFile(glbFile(unitBytes, "trick.fbx", "text/plain"), webcrypto.subtle);
+expect(
+	"glTF magic under an .fbx name is stored as GLB, not FBX",
+	glbNamedFbx.asset.type === "model/gltf-binary" && approx(glbNamedFbx.height, 1),
+	glbNamedFbx.asset?.type,
+);
+
+await refuses("PNG bytes named .fbx are refused as not an FBX", glbFile(pngBytes, "photo.fbx", ""), /not an FBX/i);
+await refuses("plain text named .fbx is refused as not an FBX", glbFile(new TextEncoder().encode("hello"), "hello.fbx", "text/plain"), /not an FBX/i);
+await refuses("an OBJ fixture named .fbx is refused as not an FBX, not stored as OBJ", glbFile(unitObjBytes, "stove.fbx", "text/plain"), /not an FBX/i);
+await refuses(
+	"ASCII FBX older than 7.0 is refused as too old, not as OBJ",
+	glbFile(new TextEncoder().encode("FBXHeaderExtension:  {\n\tFBXVersion: 6100\n}\nv 0 0 0\nv 1 1 1\n"), "old.fbx", "text/plain"),
+	/too old/i,
+);
+await refuses(
+	"a flat FBX has no measurable geometry",
+	glbFile(flatFbxBytes, "flat.fbx", "model/fbx"),
+	/no measurable geometry/i,
+);
+await refuses("plain text named .glb is still refused as not a GLB, not as FBX", glbFile(new TextEncoder().encode("hello"), "hello.glb", "model/gltf-binary"), /not a GLB/i);
+
+expect("OBJ bytes are not a compressed GLB", compressedGlbReason(unitObjBytes) === null);
+expect("FBX bytes are not a compressed GLB", compressedGlbReason(unitFbxBytes) === null);
+expect("binary-looking FBX bytes are not a compressed GLB", compressedGlbReason(fakeFbxBinary) === null);
+
+expect(
+	"meshFilesFrom keeps stove.fbx with empty type, text/plain, octet-stream and model/fbx",
+	meshFilesFrom({ files: [
+		named("stove.fbx", ""),
+		named("pan.fbx", "text/plain"),
+		named("pot.fbx", "application/octet-stream"),
+		named("lid.FBX", "model/fbx"),
+	] }).length === 4,
+);
+expect(
+	"a .glb and .obj are not classified as FBX just because all three are meshes",
+	JSON.stringify(meshFilesFrom({ files: [
+		named("stove.glb", "model/gltf-binary"),
+		named("stove.obj", "text/plain"),
+		named("stove.fbx", "text/plain"),
+	] }).map((file) => file.name)) === '["stove.glb","stove.obj","stove.fbx"]',
+);
+
+const fbxSplit = splitDroppedFiles([png, glb, named("d.obj", "text/plain"), named("e.fbx", "text/plain"), pdf]);
+expect(
+	"PNG / GLB / OBJ / FBX / PDF split into images, three meshes, one reject",
+	fbxSplit.images.length === 1 && fbxSplit.meshes.length === 3 && fbxSplit.rejected.length === 1 &&
+		fbxSplit.meshes.some((file) => file.name === "e.fbx") &&
+		fbxSplit.meshes.some((file) => file.name === "d.obj") &&
+		fbxSplit.meshes.some((file) => file.name === "b.glb") &&
+		!fbxSplit.images.some((file) => /\.fbx$/i.test(file.name)),
+	JSON.stringify(fbxSplit),
+);
+
+const fbxMeasured = meshBoundsFromAsset({ type: "model/fbx", bytes: unitFbxBytes.buffer });
+expect(
+	"meshBoundsFromAsset dispatches FBX through parseFbxBounds",
+	Boolean(fbxMeasured) && approx(fbxMeasured.max.y - fbxMeasured.min.y, 1) &&
+		approx(fbxMeasured.min.y, 0),
+	JSON.stringify(fbxMeasured),
+);
+expect("meshBoundsFromAsset ignores a picture MIME even when the bytes are FBX", meshBoundsFromAsset({ type: "image/png", bytes: unitFbxBytes.buffer }) === null);
+
+{
+	let parseGlbCalls = 0;
+	let parseObjCalls = 0;
+	let parseFbxCalls = 0;
+	const fbxRecord = { id: unitFbxImport.asset.id, type: "model/fbx", bytes: unitFbxBytes.buffer, name: "unit-cube.fbx" };
+	const objRecord = { id: unitObjImport.asset.id, type: "model/obj", bytes: unitObjBytes.buffer, name: "unit-cube.obj" };
+	const records = { [fbxRecord.id]: fbxRecord, [objRecord.id]: objRecord };
+	const cache = createMeshSceneCache({
+		getRecord: async (id) => records[id],
+		parseGlb: async () => {
+			parseGlbCalls += 1;
+			return { scene: { name: "from-glb" } };
+		},
+		parseObj: () => {
+			parseObjCalls += 1;
+			return { name: "from-obj" };
+		},
+		parseFbx: () => {
+			parseFbxCalls += 1;
+			return { name: "from-fbx" };
+		},
+	});
+	const fbxScene = await cache.loadMeshScene(fbxRecord.id);
+	expect("FBX type calls parseFbx, never parseGlb or parseObj", parseFbxCalls === 1 && parseGlbCalls === 0 && parseObjCalls === 0, `${parseFbxCalls} fbx / ${parseGlbCalls} glb / ${parseObjCalls} obj`);
+	expect("cached FBX scene is the Group itself, not group.scene", fbxScene?.name === "from-fbx");
+	const objScene = await cache.loadMeshScene(objRecord.id);
+	expect("OBJ type still calls parseObj, never parseFbx", parseObjCalls === 1 && parseFbxCalls === 1, `${parseObjCalls} obj / ${parseFbxCalls} fbx`);
+	expect("cached OBJ scene is still the Group itself", objScene?.name === "from-obj");
 }
 
 if (failures) process.exit(1);

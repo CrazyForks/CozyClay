@@ -37,9 +37,9 @@ export const ASSET_STORE_NAME = "images";
  * that can carry script, and a set piece is not worth that. */
 export const ASSET_IMAGE_TYPES = Object.freeze(["image/png", "image/webp", "image/jpeg", "image/gif"]);
 /** Stored mesh MIME. Drag-and-drop also accepts `application/gltf-binary` and
- * `text/plain` for an `.obj`; once the bytes are in the store they are one of
- * these two types, so a reader never has drop-fallbacks to branch on. */
-export const ASSET_MESH_TYPES = Object.freeze(["model/gltf-binary", "model/obj"]);
+ * `text/plain` for an `.obj` or `.fbx`; once the bytes are in the store they are
+ * one of these types, so a reader never has drop-fallbacks to branch on. */
+export const ASSET_MESH_TYPES = Object.freeze(["model/gltf-binary", "model/obj", "model/fbx"]);
 /** Source-file ceiling. A 40 MP phone photo is fine as an INPUT — it gets
  * decoded and downscaled before anything is stored — but the file itself has
  * to be readable in one bite first. */

@@ -438,8 +438,8 @@ export default function AssetPane({ onAssetGrab, imageAssetIds, meshAssetIds = n
 					) : meshAssetIds.length === 0 ? (
 						<p className="assets-empty">
 							{ko(
-								"No imported models yet. Use \u201cImport 3D object\u201d in the Props inspector, or drop a .glb into the studio.",
-								"아직 가져온 모델이 없어요. 소품 인스펙터의 \u201c3D 오브젝트 가져오기\u201d를 사용하거나, .glb 파일을 스튜디오에 끌어다 놓으세요.",
+								"No imported models yet. Use \u201cImport 3D object\u201d in the Props inspector, or drop a .glb, .obj or .fbx into the studio.",
+								"아직 가져온 모델이 없어요. 소품 인스펙터의 \u201c3D 오브젝트 가져오기\u201d를 사용하거나, .glb, .obj 또는 .fbx 파일을 스튜디오에 끌어다 놓으세요.",
 							)}
 						</p>
 					) : (

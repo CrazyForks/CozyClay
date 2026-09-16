@@ -70,8 +70,8 @@ await assetIdForBytes(bytes, { digest: null }).then(
 expect("the image types an import accepts", isSupportedImageType("image/png") && isSupportedImageType("IMAGE/WEBP") && isSupportedImageType("image/jpeg"));
 expect("svg and non-images are refused", !isSupportedImageType("image/svg+xml") && !isSupportedImageType("application/pdf") && !isSupportedImageType(""));
 expect(
-	"stored mesh MIMEs are glTF binary and Wavefront OBJ — octet-stream is a drop-fallback, not a stored type",
-	isSupportedMeshType("model/gltf-binary") && isSupportedMeshType("MODEL/GLTF-BINARY") && isSupportedMeshType("model/obj") && !isSupportedMeshType("application/octet-stream") && !isSupportedMeshType("text/plain") && ASSET_MESH_TYPES.includes("model/obj"),
+	"stored mesh MIMEs are glTF binary, Wavefront OBJ and FBX — octet-stream is a drop-fallback, not a stored type",
+	isSupportedMeshType("model/gltf-binary") && isSupportedMeshType("MODEL/GLTF-BINARY") && isSupportedMeshType("model/obj") && isSupportedMeshType("model/fbx") && isSupportedMeshType("MODEL/FBX") && !isSupportedMeshType("application/octet-stream") && !isSupportedMeshType("text/plain") && ASSET_MESH_TYPES.includes("model/obj") && ASSET_MESH_TYPES.includes("model/fbx"),
 );
 
 /* -------------------------------------------------------- downscale ---- */
@@ -133,6 +133,16 @@ expect(
 expect(
 	"a mesh id wearing text/plain is dropped — only stored mesh MIMEs are kept",
 	normalizeAsset({ id: meshId, type: "text/plain", bytes: bytes.buffer, name: "stove.obj" }) === null,
+);
+const fbxMeshAsset = normalizeAsset({ id: meshId, type: "model/fbx", bytes: bytes.buffer, name: "stove.fbx" });
+expect(
+	"a mesh record with model/fbx survives without pixel size",
+	fbxMeshAsset !== null && fbxMeshAsset.type === "model/fbx" && fbxMeshAsset.id === meshId,
+	JSON.stringify(fbxMeshAsset && { ...fbxMeshAsset, bytes: fbxMeshAsset.bytes?.byteLength }),
+);
+expect(
+	"a mesh id wearing octet-stream is dropped even with an .fbx name",
+	normalizeAsset({ id: meshId, type: "application/octet-stream", bytes: bytes.buffer, name: "stove.fbx" }) === null,
 );
 
 /* ------------------------------------------------------ reachability ---- */

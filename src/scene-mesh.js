@@ -1,12 +1,11 @@
 /**
- * GLB mesh props: measure and import a model without drawing it.
+ * Mesh props: measure and import a model without drawing it.
  *
  * A mesh prop is the 3D analogue of a cutout — bytes in the asset store, a
  * scene record that points at them. The catch is scale: downloads are rarely
- * in metres, and three.js is not available in the Node tests that have to
- * prove the box. glTF already stores POSITION min/max on every accessor, so
- * the JSON chunk is enough to measure, fit, and refuse a file that has
- * nothing drawable.
+ * in metres. glTF already stores POSITION min/max on every accessor, and OBJ
+ * boxes come from `v` rows, so those two stay three-free. FBX bounds go
+ * through `scene-fbx.js` because they need `FBXLoader.parse`.
  */
 
 import {
@@ -15,6 +14,9 @@ import {
 	meshIdForBytes,
 	normalizeAsset,
 } from "./scene-assets.js";
+import { isFbxBinaryMagic, parseFbxBounds, readFbxVersion } from "./scene-fbx.js";
+
+export { isFbxBinaryMagic, parseFbxBounds, readFbxVersion } from "./scene-fbx.js";
 
 export const MESH_HEIGHT_MIN = 0.05;
 export const MESH_HEIGHT_MAX = 10;
@@ -193,6 +195,7 @@ export function parseObjBounds(bytes) {
 export function meshBoundsFromAsset(record) {
 	const type = String(record?.type ?? "").toLowerCase();
 	if (type === "model/obj") return parseObjBounds(record?.bytes);
+	if (type === "model/fbx") return parseFbxBounds(record?.bytes);
 	if (type === "model/gltf-binary") return parseGlbBounds(record?.bytes);
 	return null;
 }
@@ -251,10 +254,19 @@ function isObjFile(file) {
 		|| type === "text/x-obj" || type === "application/object";
 }
 
-/** The GLB and OBJ files in a drop, in the order they were dropped. Same
+function isFbxFile(file) {
+	if (!file) return false;
+	const type = typeof file.type === "string" ? file.type.toLowerCase() : "";
+	if (type === "model/fbx") return true;
+	const name = String(file.name ?? "").toLowerCase();
+	if (!name.endsWith(".fbx")) return false;
+	return type === "" || type === "text/plain" || type === "application/octet-stream";
+}
+
+/** The GLB, OBJ and FBX files in a drop, in the order they were dropped. Same
  * shape as `imageFilesFrom`: a DataTransfer-like `{ files }`. */
 export function meshFilesFrom(transfer) {
-	return Array.from(transfer?.files ?? []).filter((file) => isGlbFile(file) || isObjFile(file));
+	return Array.from(transfer?.files ?? []).filter((file) => isGlbFile(file) || isObjFile(file) || isFbxFile(file));
 }
 
 function listedFiles(filesOrTransfer) {
@@ -288,12 +300,12 @@ export function splitDroppedFiles(filesOrTransfer) {
 }
 
 /**
- * One imported GLB or OBJ as a storable asset plus the fitted standing size.
+ * One imported GLB, OBJ or FBX as a storable asset plus the fitted standing size.
  *
  * Failures throw a sentence fit to show in a toast — the caller has no way
  * to explain a missing magic number, empty vertices, or a JSON chunk with
  * no POSITION box. glTF magic wins over the filename so a renamed GLB is
- * still a GLB; a `.glb` without magic never falls through to OBJ.
+ * still a GLB; a `.glb` without magic never falls through to FBX or OBJ.
  */
 export async function importMeshFile(file, subtle = globalThis.crypto?.subtle) {
 	if (!file || typeof file.arrayBuffer !== "function") throw new Error("importMeshFile needs a File or Blob");
@@ -303,6 +315,7 @@ export async function importMeshFile(file, subtle = globalThis.crypto?.subtle) {
 	const bytes = await file.arrayBuffer();
 	const name = typeof file.name === "string" ? file.name : "";
 	const namedGlb = isGlbFile(file) || name.toLowerCase().endsWith(".glb");
+	const namedFbx = isFbxFile(file) || name.toLowerCase().endsWith(".fbx");
 	const namedObj = isObjFile(file) || name.toLowerCase().endsWith(".obj");
 
 	if (isGlbMagic(bytes)) {
@@ -323,6 +336,31 @@ export async function importMeshFile(file, subtle = globalThis.crypto?.subtle) {
 
 	if (namedGlb) throw new Error("That file is not a GLB model");
 
+	const fbxVersion = readFbxVersion(bytes);
+	if (isFbxBinaryMagic(bytes) || (fbxVersion ?? 0) >= 7000) {
+		try {
+			const bounds = parseFbxBounds(bytes);
+			const fitted = bounds ? fitMeshBounds(bounds) : null;
+			if (!fitted) throw new Error("That model has no measurable geometry");
+			const asset = normalizeAsset({
+				id: await meshIdForBytes(bytes, subtle),
+				type: "model/fbx",
+				bytes,
+				name,
+			});
+			if (!asset) throw new Error("That model could not be prepared for the set");
+			return { asset, height: fitted.height, footprint: fitted.footprint };
+		} catch (error) {
+			throw fbxImportError(error);
+		}
+	}
+
+	if (fbxVersion != null && fbxVersion < 7000) {
+		throw new Error("That FBX file is too old to import");
+	}
+
+	if (namedFbx) throw new Error("That file is not an FBX model");
+
 	const objBounds = parseObjBounds(bytes);
 	if (!objBounds) {
 		if (namedObj) throw new Error("That file is not an OBJ model");
@@ -338,4 +376,15 @@ export async function importMeshFile(file, subtle = globalThis.crypto?.subtle) {
 	});
 	if (!asset) throw new Error("That model could not be prepared for the set");
 	return { asset, height: fitted.height, footprint: fitted.footprint };
+}
+
+function fbxImportError(error) {
+	const message = String(error?.message ?? error);
+	if (/too old to import/i.test(message) || /no measurable geometry/i.test(message) || /not an FBX/i.test(message)) {
+		return error instanceof Error ? error : new Error(message);
+	}
+	if (/version not supported|FileVersion/i.test(message)) {
+		return new Error("That FBX file is too old to import");
+	}
+	return new Error("That file is not an FBX model");
 }

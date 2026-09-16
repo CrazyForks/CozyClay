@@ -179,6 +179,15 @@ const objAssetRecord = {
 	bytes: objSourceBytes,
 };
 assert.equal(await verifyEmbeddedAsset(objAssetRecord, webcrypto.subtle), true, "matching embedded OBJ bytes verify against their mesh- content address");
+const fbxSourceBytes = new Uint8Array(readFileSync(new URL("./fixtures/unit-cube.fbx", import.meta.url)));
+const fbxAssetId = await meshIdForBytes(fbxSourceBytes, webcrypto.subtle);
+const fbxAssetRecord = {
+	id: fbxAssetId,
+	type: "model/fbx",
+	name: "unit-cube.fbx",
+	bytes: fbxSourceBytes,
+};
+assert.equal(await verifyEmbeddedAsset(fbxAssetRecord, webcrypto.subtle), true, "matching embedded FBX bytes verify against their mesh- content address");
 assert.ok(assetDocument.resources.assets.every((asset) => asset.id.startsWith("img-")), "a picture-only project still embeds only image ids");
 
 const meshScenesDocument = createSceneDocument("MESH");
@@ -417,8 +426,15 @@ assert.match(appSource, /referencedAssetIds/, "export finds the complete referen
 assert.match(appSource, /getAsset/, "export reads referenced asset records from IndexedDB");
 assert.match(appSource, /putAsset/, "open restores embedded asset records to IndexedDB");
 assert.match(appSource, /verifyEmbeddedAsset\(asset\)/, "project open verifies mesh blobs with mesh- ids, not as img-");
-assert.match(appSource, /meshBoundsFromAsset\(/, "shelf spawn measures OBJ and GLB through one helper, not parseGlbBounds alone");
+assert.match(appSource, /meshBoundsFromAsset\(/, "shelf spawn measures OBJ, FBX and GLB through one helper, not parseGlbBounds alone");
 assert.doesNotMatch(appSource, /type:\s*mimeOk\s*\?\s*mime\s*:\s*"model\/gltf-binary"/, "MCP mesh File type is not coerced onto glTF-binary");
+assert.match(appSource, /data:model\/fbx/, "MCP mesh import accepts a model/fbx data URL");
+assert.match(appSource, /nameLower\.endsWith\("\.fbx"\)/, "MCP mesh import accepts text/plain ASCII FBX by filename");
+assert.doesNotMatch(
+	appSource,
+	/placeAs === "mesh"[\s\S]{0,400}add_character|placeAs === "mesh"[\s\S]{0,400}createCharacterEntry/,
+	"MCP mesh import does not stand the file up as a character",
+);
 assert.match(appSource, /encodeMotionResource\(/, "project save encodes the loaded NPZ bytes");
 assert.match(appSource, /motionEncodingCacheRef = useRef\(new WeakMap\(\)\)/, "project save keeps an identity cache for encoded motion resources");
 assert.match(appSource, /motionEncodingCacheRef\.current\.get\(clip\.sourceBytes\)/, "project save checks the clip identity before encoding");

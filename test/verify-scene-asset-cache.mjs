@@ -85,4 +85,22 @@ unsubscribe();
 	assert.equal(objBitmapStarts, 0, "rememberAsset stores an OBJ without createImageBitmap");
 }
 
+{
+	const fbxId = `mesh-${"d".repeat(32)}`;
+	const fbxRecord = { id: fbxId, type: "model/fbx", bytes: new Uint8Array([1, 2, 3]).buffer, name: "stove.fbx" };
+	let fbxBitmapStarts = 0;
+	const fbxCache = createAssetTextureCache({
+		getRecord: async () => fbxRecord,
+		putRecord: async (asset) => asset,
+		createBitmap: async () => {
+			fbxBitmapStarts += 1;
+			return { close() {} };
+		},
+		makeTexture: () => ({ dispose() {}, userData: {} }),
+	});
+	assert.equal(await fbxCache.loadAssetTexture(fbxId), null, "an FBX mesh id is never decoded as a bitmap");
+	await fbxCache.rememberAsset(fbxRecord);
+	assert.equal(fbxBitmapStarts, 0, "rememberAsset stores an FBX without createImageBitmap");
+}
+
 console.log("scene asset cache generation race checks PASS");

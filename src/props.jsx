@@ -17,6 +17,7 @@ import { GIZMO_LAYER } from "./dualview.jsx";
 import { CUTOUT_KIND, MESH_KIND } from "./scene-objects.js";
 import { subscribeToAssetTexture } from "./scene-asset-cache.js";
 import { subscribeToMeshScene } from "./scene-mesh-cache.js";
+import { cloneMeshGraph } from "./mesh-graph-clone.js";
 
 const CLAY_CAR = "#d98770";
 const CLAY_CAR_TOP = "#e49a84";
@@ -304,16 +305,17 @@ function disposeOwnedMaterials(root) {
 }
 
 /**
- * Clone the cached GLB, scale so its bbox height equals the stored
+ * Clone the cached graph, scale so its bbox height equals the stored
  * `object.height`, and sit the underside on y = 0. The import heuristic
  * already wrote that height — this pass must not re-guess it.
  *
- * Clay replaces materials on THIS clone only, so a second instance of the
- * same file can keep the textures from the disk. Auto-color also clones:
- * the cached graph is shared, and a viewport tint must not leak.
+ * Skinned graphs go through `cloneMeshGraph` so a Mixamo-as-statue keeps
+ * its bind pose. Clay replaces materials on THIS clone only, so a second
+ * instance of the same file can keep the textures from the disk. Auto-color
+ * also clones: the cached graph is shared, and a viewport tint must not leak.
  */
 function instantiateMesh(source, object) {
-	const root = source.clone(true);
+	const root = cloneMeshGraph(source);
 	root.updateMatrixWorld(true);
 	const box = new THREE.Box3().setFromObject(root);
 	const size = box.getSize(new THREE.Vector3());
