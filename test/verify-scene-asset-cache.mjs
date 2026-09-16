@@ -49,4 +49,22 @@ assert.equal(updates.length, 2, "undo reannounces to the still-mounted subscribe
 assert.equal(updates.at(-1), textures[1], "undo announces the newly decoded texture, never deleted bytes");
 unsubscribe();
 
+{
+	const meshId = `mesh-${"b".repeat(32)}`;
+	const meshRecord = { id: meshId, type: "model/gltf-binary", bytes: new Uint8Array([1, 2, 3]).buffer, name: "cooker.glb" };
+	let meshBitmapStarts = 0;
+	const meshCache = createAssetTextureCache({
+		getRecord: async () => meshRecord,
+		putRecord: async (asset) => asset,
+		createBitmap: async () => {
+			meshBitmapStarts += 1;
+			return { close() {} };
+		},
+		makeTexture: () => ({ dispose() {}, userData: {} }),
+	});
+	assert.equal(await meshCache.loadAssetTexture(meshId), null, "a mesh id is never decoded as a bitmap");
+	await meshCache.rememberAsset(meshRecord);
+	assert.equal(meshBitmapStarts, 0, "rememberAsset stores a GLB without createImageBitmap");
+}
+
 console.log("scene asset cache generation race checks PASS");

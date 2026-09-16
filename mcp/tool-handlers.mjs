@@ -1469,9 +1469,11 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 						.nullable()
 						.optional()
 						.describe("travel path; null clears it and the object stands still again"),
+					height: z.number().positive().optional().describe("cutout or mesh height in metres"),
+					clay: z.boolean().optional().describe("mesh only: replace file materials with matte clay"),
 				},
 			},
-			async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color, name, path }) => {
+			async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color, name, path, height, clay }) => {
 				const travelPath = path === null
 					? null
 					: path
@@ -1483,6 +1485,8 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 							id, x, y, z: zPos, rot: facing, rotX: tilt, rotZ: roll,
 							scale, scaleX: scale_x, scaleY: scale_y, scaleZ: scale_z, color, name,
 							...(travelPath !== undefined ? { path: travelPath } : {}),
+							...(height !== undefined ? { height } : {}),
+							...(clay !== undefined ? { clay } : {}),
 						});
 						return text(`Updated ${id}.\n\n${sceneReport()}`);
 					} catch (error) {
@@ -1510,6 +1514,8 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				if (scale_z !== undefined) patch.scaleZ = scale_z;
 				if (color !== undefined) patch.color = color;
 				if (name !== undefined) patch.name = name;
+				if (height !== undefined) patch.height = height;
+				if (clay !== undefined) patch.clay = clay;
 				sc.objects = updateSceneObject(sc.objects, id, patch);
 				return text(`Updated ${id}.\n\n${sceneReport()}`);
 			},

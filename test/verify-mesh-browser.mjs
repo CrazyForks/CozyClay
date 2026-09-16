@@ -1,0 +1,187 @@
+#!/usr/bin/env node
+/**
+ * GLB mesh props, end to end in a real browser.
+ *
+ * Node suites prove magic, the fit heuristic and the scene record. This
+ * drives Chrome over CDP with the unit-cube fixture on a real file input:
+ * the model must land in the hierarchy, sit at 1 m, draw as the file's
+ * mesh (not the grey placeholder), survive clay, and come back after reload.
+ *
+ * Run: `npm run dev:ui -- --port 5191` then
+ * `QA_URL=http://127.0.0.1:5191/app/ CDP_PORT=9322 npm run qa:browser -- node test/verify-mesh-browser.mjs`.
+ */
+import { fileURLToPath } from "node:url";
+
+const glbPath = fileURLToPath(new URL("./fixtures/unit-cube.glb", import.meta.url));
+
+const port = Number(process.env.CDP_PORT || 9222);
+const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
+const page = targets.find((target) => target.type === "page" && target.webSocketDebuggerUrl);
+if (!page) throw new Error("no page target on the QA browser");
+
+const ws = new WebSocket(page.webSocketDebuggerUrl);
+await new Promise((resolve, reject) => {
+	ws.onopen = resolve;
+	ws.onerror = reject;
+});
+let nextId = 1;
+const pending = new Map();
+const pageErrors = [];
+ws.onmessage = (event) => {
+	const message = JSON.parse(event.data);
+	if (message.method === "Runtime.exceptionThrown") {
+		pageErrors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
+		return;
+	}
+	if (!message.id || !pending.has(message.id)) return;
+	const { resolve, reject } = pending.get(message.id);
+	pending.delete(message.id);
+	if (message.error) reject(new Error(JSON.stringify(message.error)));
+	else resolve(message.result);
+};
+const send = (method, params = {}) =>
+	new Promise((resolve, reject) => {
+		const id = nextId++;
+		pending.set(id, { resolve, reject });
+		ws.send(JSON.stringify({ id, method, params }));
+	});
+const evaluate = async (expression) => {
+	const result = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+	if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || "evaluate failed");
+	return result.result.value;
+};
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const waitFor = async (expression, { timeoutMs = 8000, intervalMs = 120 } = {}) => {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (await evaluate(expression).catch(() => false)) return true;
+		await sleep(intervalMs);
+	}
+	return false;
+};
+
+let failures = 0;
+const expect = (name, condition, detail = "") => {
+	console.log(`${condition ? "PASS" : "FAIL"} ${name}${condition ? "" : ` — ${detail}`}`);
+	if (!condition) failures += 1;
+};
+
+const sceneProbe = `(() => {
+	let node = window.__cozyclay?.shotCam;
+	while (node && !node.isScene) node = node.parent;
+	if (!node) return { error: "no scene" };
+	const meshes = [];
+	node.traverse((object) => {
+		if (!object.isMesh || !object.material) return;
+		const material = Array.isArray(object.material) ? object.material[0] : object.material;
+		const color = material?.color;
+		meshes.push({
+			name: object.name || "",
+			materialName: material?.name || "",
+			clayOwned: object.userData?.clayOwned === true,
+			roughness: material?.roughness ?? null,
+			r: color?.r ?? null,
+			g: color?.g ?? null,
+			b: color?.b ?? null,
+			castShadow: object.castShadow === true,
+		});
+	});
+	const imported = meshes.find((mesh) => mesh.materialName === "Cube" || (mesh.r !== null && Math.abs(mesh.r - 0.8) < 0.08 && mesh.g < 0.4));
+	const clay = meshes.find((mesh) => mesh.clayOwned);
+	return { count: meshes.length, imported: imported || null, clay: clay || null };
+})()`;
+
+await send("Page.enable");
+await send("Runtime.enable");
+await send("DOM.enable");
+for (let i = 0; i < 60 && !(await evaluate("!!window.__sceneHistory && document.querySelectorAll('.hierarchy-row').length > 0").catch(() => false)); i++) {
+	await sleep(200);
+}
+
+try {
+	await evaluate("[...document.querySelectorAll('.hierarchy-row')].find((row) => /Props|소품/.test(row.textContent))?.click()");
+	await sleep(300);
+	const hasButton = await waitFor("!!document.querySelector('input[type=file][accept*=\".glb\"]')");
+	expect("the set offers a GLB import", hasButton);
+
+	const { root } = await send("DOM.getDocument");
+	const { nodeId } = await send("DOM.querySelector", { nodeId: root.nodeId, selector: 'input[type=file][accept*=".glb"]' });
+	await send("DOM.setFileInputFiles", { nodeId, files: [glbPath] });
+
+	const arrived = await waitFor(
+		"[...document.querySelectorAll('.hierarchy-row')].some((row) => /unit-cube/.test(row.textContent))",
+		{ timeoutMs: 10000 },
+	);
+	expect("a picked GLB becomes an object in the set", arrived);
+
+	const inspector = await evaluate(`(() => {
+		const height = document.querySelector('.inspector-scroll input[data-field="mesh-height"]');
+		const clay = document.querySelector('.inspector-scroll input[data-field="mesh-clay"]');
+		return { height: height ? Number(height.value) : null, clay: clay ? clay.checked : null };
+	})()`);
+	expect("a fresh model stands 1 m tall (unit cube, in-range)", inspector.height !== null && Math.abs(inspector.height - 1) < 0.02, JSON.stringify(inspector));
+	expect("clay is off until asked for", inspector.clay === false, JSON.stringify(inspector));
+
+	const drawn = await waitFor(`(() => { const probe = ${sceneProbe}; return !!(probe && probe.imported); })()`, { timeoutMs: 12000 });
+	const graph = await evaluate(sceneProbe);
+	expect("the file mesh is on stage, not the grey placeholder", drawn && graph.imported, JSON.stringify(graph));
+	expect("the imported mesh casts a shadow", graph.imported?.castShadow === true, JSON.stringify(graph.imported));
+
+	await evaluate(`(() => {
+		const input = document.querySelector('.inspector-scroll input[data-field="mesh-clay"]');
+		if (!input) return;
+		input.click();
+	})()`);
+	const clayOn = await waitFor(`(() => { const probe = ${sceneProbe}; return !!(probe && probe.clay); })()`, { timeoutMs: 4000 });
+	const afterClay = await evaluate(sceneProbe);
+	expect("turning clay on replaces the file material", clayOn && Boolean(afterClay.clay), JSON.stringify(afterClay));
+
+	await evaluate(`(() => {
+		const input = document.querySelector('.inspector-scroll input[data-field="mesh-height"]');
+		const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+		setter.call(input, "0.5");
+		input.dispatchEvent(new Event("input", { bubbles: true }));
+		input.dispatchEvent(new Event("change", { bubbles: true }));
+	})()`);
+	await sleep(300);
+	const resized = await evaluate(`(() => {
+		const height = document.querySelector('.inspector-scroll input[data-field="mesh-height"]');
+		return height ? Number(height.value) : null;
+	})()`);
+	expect("the inspector can set height to 0.5 m", resized !== null && Math.abs(resized - 0.5) < 0.02, JSON.stringify(resized));
+
+	await evaluate("[...document.querySelectorAll('button')].find((button) => /^(Assets|에셋)$/.test(button.textContent.trim()))?.click()");
+	const onShelf = await waitFor(
+		"[...document.querySelectorAll('.assets-section-title, .asset-card-label')].some((node) => /My models|내 모델|unit-cube/.test(node.textContent))",
+		{ timeoutMs: 8000 },
+	);
+	expect("the Assets tab lists the imported model under My models", onShelf);
+
+	await sleep(600);
+	await send("Page.reload");
+	for (let i = 0; i < 150; i++) {
+		await sleep(200);
+		if (await evaluate("!!document.querySelector('canvas')").catch(() => false)) break;
+	}
+	for (let i = 0; i < 60 && !(await evaluate("!!window.__sceneHistory && document.querySelectorAll('.hierarchy-row').length > 0").catch(() => false)); i++) {
+		await sleep(200);
+	}
+	await evaluate("[...document.querySelectorAll('.hierarchy-row')].find((row) => /Props|소품/.test(row.textContent))?.click()");
+	const survived = await waitFor(
+		`(() => {
+			const named = [...document.querySelectorAll('.hierarchy-row')].some((row) => /unit-cube/.test(row.textContent));
+			if (named) return true;
+			const probe = ${sceneProbe};
+			return !!(probe && (probe.imported || probe.clay));
+		})()`,
+		{ timeoutMs: 15000 },
+	);
+	expect("the mesh object comes back after a reload", survived);
+
+	expect("no uncaught page errors", pageErrors.length === 0, pageErrors.join(" | "));
+} finally {
+	ws.close();
+}
+
+if (failures) process.exit(1);
+console.log("all mesh browser checks PASS");
