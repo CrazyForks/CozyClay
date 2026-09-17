@@ -225,10 +225,23 @@ const plainFbxImportArgs = {
 };
 assert.deepEqual((await withTimeout(hub.command("import_asset", plainFbxImportArgs, handle))) && received[11].args, plainFbxImportArgs, "text/plain FBX dataUrls round-trip as mesh imports");
 
+const posedMeshArgs = {
+	name: "unit-cube.glb",
+	mimeType: "model/gltf-binary",
+	dataUrl: CANNED_GLB_DATA_URL,
+	placeAs: "mesh",
+	x: 2,
+	z: -1,
+	y: 0.1,
+	rot: 30,
+	height: 0.5,
+};
+assert.deepEqual((await withTimeout(hub.command("import_asset", posedMeshArgs, handle))) && received[12].args, posedMeshArgs, "optional mesh pose fields round-trip on import_asset");
+
 const updateArgs = { id: "mesh", height: 0.5, clay: true };
 const updated = await withTimeout(hub.command("update_object", updateArgs, handle));
-assert.equal(received[12].name, "update_object");
-assert.deepEqual(received[12].args, updateArgs, "update_object height and clay must round-trip unchanged");
+assert.equal(received[13].name, "update_object");
+assert.deepEqual(received[13].args, updateArgs, "update_object height and clay must round-trip unchanged");
 assert.deepEqual(updated, { id: "mesh" });
 
 // 6. The editor half of the same contract: dispatchLiveFrame must answer both
@@ -335,5 +348,7 @@ await withTimeout(new Promise((resolve) => hub.server.close(() => resolve())), "
 const protocol = readFileSync(new URL("../mcp/LIVE-PROTOCOL.md", import.meta.url), "utf8");
 assert.match(protocol, /data:model\/fbx/, "LIVE-PROTOCOL documents FBX mesh data URLs");
 assert.match(protocol, /glTF magic first, then FBX/, "LIVE-PROTOCOL documents sniff order glTF then FBX then OBJ");
+assert.match(protocol, /x\?, y\?, z\?, rot\?, height\?/, "LIVE-PROTOCOL documents optional mesh pose on import_asset");
+assert.match(protocol, /missing axis is 0/, "LIVE-PROTOCOL documents partial floor pose");
 
 console.log("PASS verify-live-agent-commands: capture_framing_png + import_asset (cutout/backdrop/mesh) round-trip, shapes, rejection path, editor dispatch");

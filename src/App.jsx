@@ -4678,10 +4678,17 @@ export default function App() {
 					}
 					const live = liveStateRef.current;
 					const camera = shotCamRef.current;
-					const placement = camera
-						? placementInFront({ x: camera.position.x, z: camera.position.z }, look.current.yaw)
-						: {};
-					const object = createMeshObject(
+					const hasFloor = Number.isFinite(args.x) || Number.isFinite(args.z);
+					const placement = hasFloor
+						? {
+							x: Number.isFinite(args.x) ? args.x : 0,
+							z: Number.isFinite(args.z) ? args.z : 0,
+						}
+						: camera
+							? placementInFront({ x: camera.position.x, z: camera.position.z }, look.current.yaw)
+							: {};
+					if (Number.isFinite(args.rot)) placement.rot = args.rot;
+					let object = createMeshObject(
 						{
 							assetId: asset.id,
 							height,
@@ -4693,6 +4700,12 @@ export default function App() {
 						placement,
 					);
 					if (!object) throw new Error("Could not create the mesh object");
+					// Inspector height edits scale the stored footprint. Do the same
+					// here so a 50 cm import is a smaller cube, not a squat 1×1×0.5 box.
+					if (Number.isFinite(args.height) && args.height > 0) {
+						object = updateSceneObject([object], object.id, { height: args.height })[0];
+					}
+					if (Number.isFinite(args.y)) object.y = args.y;
 					applyObjectMutation((objects) => [...objects, object]);
 					return { assetId: asset.id, objectId: object.id };
 				}
@@ -7618,6 +7631,7 @@ export default function App() {
 				return true;
 			},
 			captureWithReferences: () => liveHandlersRef.current.capture_framing_png({}),
+			importAsset: (args) => liveHandlersRef.current.import_asset(args),
 			// QA-only reference exports (#165): the production builders without the
 			// download, so a headless run can unzip a real pack and diff the passes
 			// instead of driving a file dialog. Same liveStateRef reasoning as

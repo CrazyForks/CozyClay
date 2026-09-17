@@ -751,6 +751,12 @@ expect(
 	grownMesh.height === 2 && grownMesh.footprint.width === 2 && grownMesh.footprint.depth === 1,
 	JSON.stringify(grownMesh),
 );
+const shrunkMesh = updateSceneObject([cooker], cooker.id, { height: 0.5 })[0];
+expect(
+	"lowering a mesh's height scales its footprint uniformly",
+	shrunkMesh.height === 0.5 && Math.abs(shrunkMesh.footprint.width - 0.5) < 1e-9 && Math.abs(shrunkMesh.footprint.depth - 0.25) < 1e-9,
+	JSON.stringify(shrunkMesh.footprint),
+);
 const clayed = updateSceneObject([grownMesh], cooker.id, { clay: true })[0];
 expect("clay true sticks on a mesh", clayed.clay === true);
 expect("clay false is writable too", updateSceneObject([clayed], cooker.id, { clay: false })[0].clay === false);
