@@ -40,6 +40,8 @@ assert.equal((await post({ provider: "comfy", prompt: "x", imageDataUrl: "https:
 assert.equal((await post({ provider: "comfy", prompt: "x", imageDataUrl: png, durationSeconds: 0, aspect: "16:9" })).status, 400, "duration below 1 is rejected");
 assert.equal((await post({ provider: "comfy", prompt: "x", imageDataUrl: png, durationSeconds: 16, aspect: "16:9" })).status, 400, "duration above 15 is rejected");
 assert.equal((await post({ provider: "fal", prompt: "x", imageDataUrl: png, durationSeconds: 5, aspect: "16:9" })).status, 409, "unconfigured provider is 409");
+assert.equal((await post({ provider: "fal", prompt: "x", imageDataUrl: png, durationSeconds: 1, aspect: "16:9" })).status, 422, "Seedance duration below 2 is rejected before provider dispatch");
+assert.equal((await post({ provider: "fal", prompt: "x", imageDataUrl: png, durationSeconds: 5, aspect: "12:7" })).status, 422, "Fal does not accept the H3-only 12:7 ratio");
 assert.equal((await post({ provider: "bogus", prompt: "x", imageDataUrl: png, durationSeconds: 5, aspect: "16:9" })).status, 409, "unknown provider is 409");
 console.log("PASS /agent/video: 400 validation and 409 unconfigured provider");
 

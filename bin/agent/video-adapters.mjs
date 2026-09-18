@@ -1,8 +1,53 @@
 import { inspectH3Output } from "./h3-preservation.mjs";
+import { execFile as execFileCallback } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execFile = promisify(execFileCallback);
 
 const COMFY_DEFAULT_WIDTH = 1024;
 const COMFY_DEFAULT_HEIGHT = 576;
 const MAX_INLINE_VIDEO = 24 * 1024 * 1024;
+
+const FAL_SEEDANCE_ASPECTS = Object.freeze(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]);
+
+export function falVideoContract(model = "fal-ai/bytedance/seedance/v1/pro/image-to-video") {
+	const id = String(model || "").toLowerCase();
+	if (id.includes("seedance/v1/pro")) return { aspects: FAL_SEEDANCE_ASPECTS, minDuration: 2, maxDuration: 12, resolution: ["480p", "720p", "1080p"] };
+	if (id.includes("kling-video/o3")) return { aspects: ["16:9", "9:16", "1:1"], minDuration: 3, maxDuration: 15, resolution: [] };
+	// Unknown Fal models stay on the common safe framing set. H3/CozyClay's
+	// 12:7 canvas is intentionally excluded because Fal models do not share it.
+	return { aspects: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], minDuration: 2, maxDuration: 15, resolution: [] };
+}
+
+export function validateFalVideoRequest({ model, durationSeconds, aspect }) {
+	const contract = falVideoContract(model);
+	if (!contract.aspects.includes(aspect)) throw Object.assign(new Error(`Fal model ${model} does not support aspect ratio ${aspect}.`), { code: "fal-invalid-request" });
+	if (!Number.isFinite(Number(durationSeconds)) || Number(durationSeconds) < contract.minDuration || Number(durationSeconds) > contract.maxDuration) {
+		throw Object.assign(new Error(`Fal model ${model} supports ${contract.minDuration}-${contract.maxDuration} second videos.`), { code: "fal-invalid-request" });
+	}
+	return contract;
+}
+
+async function probeVideoBytes(bytes) {
+	const directory = await mkdtemp(join(tmpdir(), "cozyclay-fal-video-"));
+	const filename = join(directory, "output.mp4");
+	try {
+		await writeFile(filename, bytes);
+		const { stdout } = await execFile("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,r_frame_rate,duration:format=duration", "-of", "json", filename]);
+		const report = JSON.parse(stdout);
+		const stream = report.streams?.[0] || {};
+		const [numerator, denominator] = String(stream.r_frame_rate || "0/1").split("/").map(Number);
+		const fps = denominator > 0 ? numerator / denominator : NaN;
+		const seconds = Number(stream.duration ?? report.format?.duration);
+		if (!Number.isFinite(Number(stream.width)) || !Number.isFinite(Number(stream.height)) || !Number.isFinite(fps) || !Number.isFinite(seconds)) throw new Error("Fal video metadata is incomplete.");
+		return { width: Number(stream.width), height: Number(stream.height), fps, seconds, metadataMeasured: true };
+	} finally {
+		await rm(directory, { recursive: true, force: true }).catch(() => {});
+	}
+}
 
 export function comfyDimensionsForAspect(aspect) {
 	if (aspect === "9:16") return { width: 576, height: 1024 };
@@ -313,7 +358,10 @@ function createFal(env, fetchImpl) {
 		id: "fal", name: "Fal.ai",
 		configured: () => Boolean(env.FAL_KEY),
 		async generate({ prompt, imageDataUrl, durationSeconds, aspect, signal }) {
-			const queued = await fetchImpl(`https://queue.fal.run/${model}`, { method: "POST", headers: { authorization: `Key ${env.FAL_KEY}`, "content-type": "application/json" }, body: JSON.stringify({ prompt, image_url: imageDataUrl, duration: String(durationSeconds), aspect_ratio: aspect }), signal }).then(jsonResponse);
+			const contract = validateFalVideoRequest({ model, durationSeconds, aspect });
+			const resolution = env.FAL_RESOLUTION || (contract.resolution.includes("1080p") ? "1080p" : undefined);
+			const body = { prompt, image_url: imageDataUrl, duration: String(durationSeconds), aspect_ratio: aspect, camera_fixed: env.FAL_CAMERA_FIXED !== "0", ...(resolution ? { resolution } : {}) };
+			const queued = await fetchImpl(`https://queue.fal.run/${model}`, { method: "POST", headers: { authorization: `Key ${env.FAL_KEY}`, "content-type": "application/json" }, body: JSON.stringify(body), signal }).then(jsonResponse);
 			let status = queued;
 			const deadline = Date.now() + 15 * 60 * 1000;
 			while (Date.now() < deadline) {
@@ -329,7 +377,8 @@ function createFal(env, fetchImpl) {
 			const response = await fetchImpl(url, { signal });
 			if (!response.ok) throw new Error(`Fal.ai video fetch failed (${response.status}).`);
 			const bytes = Buffer.from(await response.arrayBuffer());
-			return { mp4Base64: bytes.length <= MAX_INLINE_VIDEO ? bytes.toString("base64") : undefined, url: bytes.length > MAX_INLINE_VIDEO ? url : undefined, width: 1024, height: aspect === "9:16" ? 1792 : 576, seconds: durationSeconds };
+			const metadata = await probeVideoBytes(bytes);
+			return { mp4Base64: bytes.length <= MAX_INLINE_VIDEO ? bytes.toString("base64") : undefined, url: bytes.length > MAX_INLINE_VIDEO ? url : undefined, ...metadata };
 		},
 	};
 }
