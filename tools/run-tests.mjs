@@ -62,10 +62,14 @@ const NODE_FILES = [
 	"test/process/verify-lifecycle.mjs",
 	"test/process/verify-mcp-package-isolation.mjs",
 	"test/process/verify-package-telemetry.mjs",
+	"test/process/verify-agent-deps.mjs",
 	"test/verify-agent-image-references.mjs",
 	"test/verify-agent-panel.mjs",
 	"test/verify-agent-host.mjs",
 	"test/verify-agent-routes.mjs",
+	"test/verify-agent-providers.mjs",
+	"test/verify-schema-to-typebox.mjs",
+	"test/verify-agent-sse-golden.mjs",
 	"test/verify-studio-agent-protocol.mjs",
 	"test/verify-studio-agent-jobs.mjs",
 	"test/verify-agent-execution.mjs",
@@ -296,7 +300,7 @@ function run(file) {
 }
 
 // node:sqlite's DatabaseSync only ships unflagged from Node 22.13.0 (it lived
-// behind --experimental-sqlite before that). package.json requires >=22.13,
+// behind --experimental-sqlite before that). package.json requires >=22.19,
 // but older 22.x installs are still common enough that the manifest should
 // degrade gracefully instead of aborting the whole run.
 const NODE_SQLITE_MIN = [22, 13, 0];
