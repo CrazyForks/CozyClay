@@ -7,6 +7,7 @@ assert.ok(comfy.aspects.includes("12:7"));
 assert.equal(comfy.minDuration, 1);
 const fal = videoFormContract("fal");
 assert.equal(fal.aspectFromImage, true);
+assert.equal(fal.cameraLocked, true, "H3 mocap generation keeps the camera locked");
 assert.deepEqual(fal.aspects, []);
 assert.equal(fal.defaultResolution, "480P", "mocap uses native 480P by default");
 assert.equal(fal.minDuration, 5);
