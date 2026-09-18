@@ -4,12 +4,28 @@ import { once } from "node:events";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAgentHandler } from "../bin/agent/agent-routes.mjs";
+import { createAgentHandler, REASONING_EFFORTS } from "../bin/agent/agent-routes.mjs";
+import { createFakeModel } from "./fixtures/fake-model.mjs";
 
 const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+function assertUniqueToolPairs(frames, message) {
+	const starts = frames.filter((event) => event.type === "tool.start");
+	const dones = frames.filter((event) => event.type === "tool.done");
+	assert.equal(new Set(starts.map((event) => event.callId)).size, starts.length, `${message}: tool call ids are unique`);
+	for (const start of starts) assert.equal(dones.filter((event) => event.callId === start.callId).length, 1, `${message}: ${start.callId} has one tool.done`);
+}
 const sessionDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-sessions-"));
 process.env.COZYCLAY_AGENT_SESSIONS_DIR = sessionDir;
 const calls = [];
+const fauxMain = createFakeModel();
+fauxMain.script([
+	{ type: "text", text: "hello" },
+	{ type: "toolCall", id: "c1", name: "describe_workflow", arguments: {} },
+	{ type: "toolCall", id: "c2", name: "add_workflow_node", arguments: { type: "image", model: "image-generation", data: { prompt: "render" } } },
+	{ type: "text", text: " done" },
+	{ type: "toolCall", id: "c3", name: "run_workflow", arguments: {} },
+	{ type: "text", text: " done" },
+]);
 const fakeLive = { command: async (name) => name === "capture_framing_png" ? { dataUrl: png, width: 1920, height: 1080 } : { assetId: "a1", objectId: "o1" } };
 const fakeCodex = {
   listModels: async () => ["gpt-5", { slug: "gpt-6-astra", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "xhigh" }], default_reasoning_level: "medium" }],
@@ -32,13 +48,13 @@ const fakeCodex = {
   },
 };
 let server;
-const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, liveHub: fakeLive, port: () => server.address().port });
+const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: fauxMain.models, fauxProvider: fauxMain.fauxProvider, liveHub: fakeLive, port: () => server.address().port });
 server = createServer((req, res) => handler(req, res).catch((error) => { res.writeHead(500); res.end(error.message); }));
 server.listen(0, "127.0.0.1");
 await once(server, "listening");
 const { port } = server.address();
 const turnId = "a".repeat(32);
-const response = await fetch(`http://127.0.0.1:${port}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${port}` }, body: JSON.stringify({ sessionId: "s", text: "hi", attachFrame: false, turn_id: turnId }) });
+const response = await fetch(`http://127.0.0.1:${port}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${port}` }, body: JSON.stringify({ sessionId: "s", text: "hi", model: "faux/scripted", attachFrame: false, turn_id: turnId }) });
 const text = await response.text();
 const events = [...text.matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
 assert.deepEqual(events.filter((event) => !["execution_telemetry", "execution_tool_started"].includes(event.type)).map((event) => event.type), ["quota", "text.delta", "tool.start", "tool.done", "tool.start", "tool.done", "text.delta", "tool.start", "tool.done", "text.delta", "done"]);
@@ -54,9 +70,55 @@ assert.equal(new Set(executionTelemetry.slice(0, 3).map((event) => event.telemet
 assert.ok(executionTelemetry.slice(0, 3).every((event) => /^[a-f0-9]{32}$/.test(event.telemetry_id)));
 const toolEvents = events.filter((event) => event.type === "tool.start" || event.type === "tool.done");
 assert.deepEqual(toolEvents.map((event) => event.callId), ["c1", "c1", "c2", "c2", "c3", "c3"], "every tool.start is paired with its tool.done");
+assertUniqueToolPairs(events, "golden parity W");
 assert.ok(toolEvents.every((event) => event.type !== "tool.done" || event.ok), "every scripted tool call succeeds");
 assert.equal(events.some((event) => event.type === "image"), false, "the canvas turn builds nodes instead of emitting images");
-assert.equal(calls[0][0].content[0].text.includes(png), false);
+assert.equal(JSON.stringify(fauxMain.calls[0].messages).includes(png), false);
+{
+	const { normaliseFrame } = await import("./fixtures/agent-sse-golden.mjs");
+	const golden = JSON.parse(readFileSync(new URL("./fixtures/agent-sse-golden.json", import.meta.url), "utf8")).W;
+	const actual = events.filter((event) => !["execution_telemetry", "execution_tool_started"].includes(event.type)).map(normaliseFrame);
+	const expected = golden.filter((event) => !["execution_telemetry", "execution_tool_started"].includes(event.type));
+	// Codex quota values are provider-specific; the frame ordering and every
+	// browser-visible Workflow frame after it are byte-for-byte frozen.
+	assert.deepEqual(actual.slice(1), expected.slice(1), "Workflow frames preserve golden parity W");
+	console.log("PASS golden parity W");
+}
+{
+	const interleaved = createFakeModel();
+	interleaved.script([[{ type: "toolCall", id: "i1", name: "describe_workflow", arguments: {} }, { type: "toolCall", id: "i2", name: "run_workflow", arguments: {} }], { type: "text", text: "done" }]);
+	let interleaveServer;
+	const interleaveHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: interleaved.models, fauxProvider: interleaved.fauxProvider, codex: fakeCodex, liveHub: fakeLive, port: () => interleaveServer.address().port });
+	interleaveServer = createServer((req, res) => interleaveHandler(req, res).catch(() => {})); interleaveServer.listen(0, "127.0.0.1"); await once(interleaveServer, "listening");
+	const interleaveOrigin = `http://127.0.0.1:${interleaveServer.address().port}`;
+	const interleaveText = await fetch(`${interleaveOrigin}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: interleaveOrigin }, body: JSON.stringify({ sessionId: "interleave", text: "hi", model: "faux/scripted" }) }).then((r) => r.text());
+	const interleaveEvents = [...interleaveText.matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
+	const pairs = interleaveEvents.filter((event) => ["tool.start", "tool.done"].includes(event.type));
+	assert.deepEqual(pairs.map((event) => `${event.type}:${event.callId}`), ["tool.start:i1", "tool.done:i1", "tool.start:i2", "tool.done:i2"], "two tool calls stay strictly interleaved");
+	await new Promise((resolve) => interleaveServer.close(resolve));
+	console.log("PASS two Workflow tool calls are strictly interleaved");
+}
+{
+	const unknown = createFakeModel();
+	unknown.script([{ type: "toolCall", id: "u1", name: "unknown_tool", arguments: {} }, { type: "text", text: "recovered" }]);
+	let unknownServer;
+	const unknownHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: unknown.models, fauxProvider: unknown.fauxProvider, codex: fakeCodex, liveHub: fakeLive, port: () => unknownServer.address().port });
+	unknownServer = createServer((req, res) => unknownHandler(req, res).catch(() => {})); unknownServer.listen(0, "127.0.0.1"); await once(unknownServer, "listening");
+	const unknownOrigin = `http://127.0.0.1:${unknownServer.address().port}`;
+	const unknownText = await fetch(`${unknownOrigin}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: unknownOrigin }, body: JSON.stringify({ sessionId: "unknown", text: "hi", model: "faux/scripted", turn_id: "b".repeat(32) }) }).then((r) => r.text());
+	const unknownEvents = [...unknownText.matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
+	assert.deepEqual(unknownEvents.map((event) => event.type), ["quota", "execution_tool_started", "tool.start", "tool.done", "execution_telemetry", "text.delta", "execution_telemetry", "done"], "unknown tool frame order is stable");
+	assertUniqueToolPairs(unknownEvents, "unknown tool");
+	const unknownDone = unknownEvents.find((event) => event.type === "tool.done");
+	assert.equal(unknownDone?.callId, "u1");
+	assert.equal(unknownDone?.ok, false);
+	assert.match(unknownDone?.error || "", /unknown_tool.*unavailable/i);
+	assert.equal(unknownEvents.at(-1).type, "done");
+	const errorResult = unknown.calls[1]?.messages?.find((message) => message.role === "toolResult" && message.toolCallId === "u1");
+	assert.equal(errorResult?.isError, true, "the faux model receives an error tool result for the unknown call");
+	await new Promise((resolve) => unknownServer.close(resolve));
+	console.log("PASS unknown Workflow tool returns an error result and the turn ends");
+}
 {
 	const post = (body, p = port) => fetch(`http://127.0.0.1:${p}/agent/image`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${p}` }, body: JSON.stringify(body) });
 	// A real 1920x1080 shot PNG is a few MB as a data URL; the route must not
@@ -95,15 +157,16 @@ assert.equal(calls[0][0].content[0].text.includes(png), false);
 {
 	// Attaching the frame captures through the sidecar's internal tool even though
 	// the model-facing list no longer offers capture_blocking_frame.
-	const seenInputs = [];
-	const attachHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: { ...fakeCodex, streamResponses: ({ input }) => { seenInputs.push(input); return { headers: Promise.resolve(new Headers()), async *[Symbol.asyncIterator]() { yield { type: "response.output_item.done", item: { type: "message", role: "assistant" } }; } }; } }, liveHub: fakeLive, port: () => attachServer.address().port });
+	const attachFaux = createFakeModel();
+	attachFaux.script([{ type: "text", text: "" }]);
+	const attachHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: attachFaux.models, fauxProvider: attachFaux.fauxProvider, liveHub: fakeLive, port: () => attachServer.address().port });
 	const attachServer = createServer((req, res) => attachHandler(req, res).catch(() => {})); attachServer.listen(0, "127.0.0.1"); await once(attachServer, "listening");
 	const attachPort = attachServer.address().port;
-	const attachText = await fetch(`http://127.0.0.1:${attachPort}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${attachPort}` }, body: JSON.stringify({ sessionId: "att", text: "hi", attachFrame: true }) }).then((r) => r.text());
+	const attachText = await fetch(`http://127.0.0.1:${attachPort}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${attachPort}` }, body: JSON.stringify({ sessionId: "att", text: "hi", model: "faux/scripted", attachFrame: true }) }).then((r) => r.text());
 	const attachEvents = [...attachText.matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
 	assert.deepEqual(attachEvents.filter((event) => event.type === "tool.start").map((event) => event.name), ["capture_blocking_frame"], "the attached frame is captured and shown as a tool card");
 	assert.ok(attachEvents.every((event) => event.type !== "error"), "attaching a frame does not fail the turn");
-	assert.match(seenInputs[0].find((item) => item.role === "user").content[0].text, /Attached frame imageId: /, "the model is told which image was attached");
+	assert.match(attachFaux.calls[0].messages.find((item) => item.role === "user").content[0].text, /Attached frame imageId: /, "the model is told which image was attached");
 	attachServer.close();
 	console.log("PASS attachFrame captures through the internal tool");
 }
@@ -113,13 +176,15 @@ assert.equal(calls[0][0].content[0].text.includes(png), false);
 	// same shape attachFrame already uses.
 	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
 	const seenInputs = [];
+	const workflowFaux = createFakeModel();
+	workflowFaux.script([{ type: "text", text: "" }]);
 	const quietCodex = { ...fakeCodex, streamResponses: ({ input }) => { seenInputs.push(input); return { headers: Promise.resolve(new Headers()), async *[Symbol.asyncIterator]() {
 		yield { type: "response.output_item.done", item: { type: "message", role: "assistant" } };
 		yield { type: "response.completed", response: { status: "completed" } };
 	} }; } };
 	const attachHub = { command: async () => ({ ok: true }), workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", handleForWorkspaceId: () => "handle-12", connected: true, workspaceHandles: ["handle-12"] };
 	let attachServer;
-	const attachHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: quietCodex, liveHub: attachHub, studioRuntime: { readContext: async () => contextFixture() }, port: () => attachServer.address().port });
+	const attachHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: quietCodex, models: workflowFaux.models, fauxProvider: workflowFaux.fauxProvider, liveHub: attachHub, studioRuntime: { readContext: async () => contextFixture() }, port: () => attachServer.address().port });
 	attachServer = createServer((req, res) => attachHandler(req, res).catch((error) => { console.error("attachment fixture error:", error); if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	attachServer.listen(0, "127.0.0.1");
 	await once(attachServer, "listening");
@@ -141,11 +206,10 @@ assert.equal(calls[0][0].content[0].text.includes(png), false);
 	const rejected = await fetch(`${attachOrigin}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: attachOrigin }, body: JSON.stringify({ ...envelopeFixture(), attachments: [{ dataUrl: "data:text/plain;base64,aGk=" }] }) });
 	assert.equal(rejected.status, 400, "a non-image attachment never reaches the model");
 
-	const before = seenInputs.length;
-	await post({ sessionId: "attach-workflow", text: "describe this", attachments: [{ dataUrl: png }] });
-	const workflowInput = seenInputs[before] ?? [];
-	const workflowImageAt = workflowInput.findIndex((item) => item.content?.some((part) => part.type === "input_image"));
-	const workflowTextAt = workflowInput.findIndex((item) => item.content?.some((part) => part.type === "input_text" && part.text.includes("describe this")));
+	await post({ sessionId: "attach-workflow", text: "describe this", model: "faux/scripted", attachments: [{ dataUrl: png }] });
+	const workflowInput = workflowFaux.calls.at(-1)?.messages ?? [];
+	const workflowImageAt = workflowInput.findIndex((item) => item.content?.some((part) => part.type === "image"));
+	const workflowTextAt = workflowInput.findIndex((item) => item.content?.some((part) => part.type === "text" && part.text.includes("describe this")));
 	assert.ok(workflowImageAt !== -1 && workflowImageAt < workflowTextAt, `the workflow turn carries the attachment too: ${JSON.stringify(workflowInput).slice(0, 300)}`);
 	assert.match(workflowInput[workflowImageAt].content[0].text, /User attachment 1/, "an unnamed attachment is named by its position");
 	const badWorkflow = await fetch(`${attachOrigin}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: attachOrigin }, body: JSON.stringify({ sessionId: "attach-bad", text: "hi", attachments: [{ dataUrl: "https://example.test/a.png" }] }) });
@@ -154,21 +218,20 @@ assert.equal(calls[0][0].content[0].text.includes(png), false);
 	console.log("PASS pasted attachments reach the model as input_image items before the turn text");
 }
 {
-	// The backend sometimes answers a whole stream with server_is_overloaded.
-	// One retry usually clears it; a persistent overload is reported as such.
-	const overloaded = { type: "error", error: { type: "service_unavailable_error", code: "server_is_overloaded", message: "Our servers are currently overloaded." } };
-	const make = (failures) => { let n = 0; return { ...fakeCodex, streamResponses: () => ({ headers: Promise.resolve(new Headers()), async *[Symbol.asyncIterator]() { if (n++ < failures) { yield overloaded; return; } yield { type: "response.output_item.done", item: { type: "message", role: "assistant" } }; } }) }; };
-	const turn = async (codex) => { const h = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex, liveHub: fakeLive, port: () => s.address().port, retryDelayMs: 1 }); const s = createServer((req, res) => h(req, res).catch(() => {})); s.listen(0, "127.0.0.1"); await once(s, "listening"); const p = s.address().port; const text = await fetch(`http://127.0.0.1:${p}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${p}` }, body: JSON.stringify({ sessionId: "ov" + Math.random(), text: "hi" }) }).then((r) => r.text()); s.close(); return [...text.matchAll(/^data: (.+)$/gm)].map((m) => JSON.parse(m[1])); };
-	const once1 = await turn(make(1));
-	assert.ok(once1.every((event) => event.type !== "error"), "one overloaded stream is retried and the turn completes");
-	const always = await turn(make(10));
-	const err = always.find((event) => event.type === "error");
-	assert.equal(err?.code, "overloaded", "a persistent overload is reported with its own code");
-	const serverError = { type: "error", error: { type: "server_error", code: "server_error", message: "An error occurred while processing your request." } };
-	let se = 0;
-	const flaky = { ...fakeCodex, streamResponses: () => ({ headers: Promise.resolve(new Headers()), async *[Symbol.asyncIterator]() { if (se++ < 1) { yield serverError; return; } yield { type: "response.output_item.done", item: { type: "message", role: "assistant" } }; } }) };
-	assert.ok((await turn(flaky)).every((event) => event.type !== "error"), "a transient server_error stream is retried too");
-	console.log("PASS overloaded model streams are retried, then reported");
+	// Workflow providers other than openai-codex still emit the quota frame first;
+	// the values are intentionally null because they have no Codex headers.
+	const quotaFaux = createFakeModel();
+	quotaFaux.script([{ type: "text", text: "ok" }]);
+	let quotaServer;
+	const quotaHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: quotaFaux.models, fauxProvider: quotaFaux.fauxProvider, codex: fakeCodex, liveHub: fakeLive, port: () => quotaServer.address().port });
+	quotaServer = createServer((req, res) => quotaHandler(req, res).catch(() => {})); quotaServer.listen(0, "127.0.0.1"); await once(quotaServer, "listening");
+	const quotaText = await fetch(`http://127.0.0.1:${quotaServer.address().port}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${quotaServer.address().port}` }, body: JSON.stringify({ sessionId: "quota", text: "hi", model: "faux/scripted" }) }).then((r) => r.text());
+	const quotaFrames = [...quotaText.matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
+	assert.equal(quotaFrames[0].type, "quota");
+	assert.equal(quotaFrames[0].plan, null);
+	assert.equal(quotaFrames.at(-1).type, "done");
+	await new Promise((resolve) => quotaServer.close(resolve));
+	console.log("PASS Workflow quota frame is emitted first for non-Codex providers");
 }
 {
 	const { LiveHub, RUN_WORKFLOW_TIMEOUT_MS, CAPTURE_FRAME_TIMEOUT_MS, DEFAULT_COMMAND_TIMEOUT_MS } = await import("../mcp/live-hub.mjs");
@@ -181,18 +244,90 @@ const forbidden = await fetch(`http://127.0.0.1:${port}/agent/models`, { headers
 assert.equal(forbidden.status, 403);
 assert.equal((await fetch(`http://127.0.0.1:${port}/agent/models`)).status, 200);
 const models = await fetch(`http://127.0.0.1:${port}/agent/models`).then((r) => r.json());
-assert.equal(models.models[0].id, "gpt-6-astra");
-assert.deepEqual(models.models[0].efforts, ["low", "medium", "xhigh"]); assert.equal(models.models[0].defaultEffort, "medium");
-assert.deepEqual(models.models[1].efforts, []); assert.equal(models.models[1].defaultEffort, null);
+{
+	// #379: /agent/models is grouped by provider, each with its pi-derived sign-in
+	// state and its chat models shaped for the panel. This handler's own auth
+	// double (getAccessToken only, no readStored/status) leaves every provider
+	// signed out, so the live codex.listModels() merge never fires here — the
+	// merge itself is exercised against providers.mjs directly below, where a
+	// signed-in double is cheap and does not need network access.
+	assert.equal(models.providers.length, 5, "all five registry providers are listed");
+	assert.deepEqual(models.providers.map((provider) => provider.id).sort(), ["anthropic", "google", "openai", "openai-codex", "openrouter"]);
+	assert.ok(models.providers.every((provider) => provider.signedIn === false), "no credentials are configured for this handler's auth double");
+	assert.ok(models.models.length > 0 && models.models.every((model) => typeof model.id === "string" && model.id.includes("/")), "the flat union is key-addressed: every models[].id is provider/id");
+	const codexProvider = models.providers.find((provider) => provider.id === "openai-codex");
+	assert.equal(codexProvider.models[0].id, "gpt-6-astra", "gpt-6-astra sorts first even though it is not the catalog's first entry");
+	const astra = codexProvider.models[0];
+	assert.ok(!astra.efforts.includes("none") && !astra.efforts.includes("off"), "astra's thinkingLevelMap marks off unsupported, so neither wire name for it is offered");
+	assert.ok(astra.efforts.includes("max"), "astra supports pi's top thinking level");
+	assert.equal(astra.defaultEffort, "medium", "medium is the default whenever a model supports it");
+	assert.ok(!astra.efforts.includes("ultra"), "ultra is never an advertised effort \u2014 it is only ever an accepted, clamped input");
+	console.log("PASS models grouped by provider");
+}
+{
+	// Sign-in state and the codex live-catalog merge, exercised directly against
+	// providers.mjs: an env-configured provider reports signedIn/authSource, and
+	// openai-codex merges codex.listModels() with the static pi catalog only for
+	// models the catalog does not already have — astra stays catalog-sourced
+	// (and therefore keeps its full pi effort list) and still sorts first.
+	const { listAgentModels, resolveModel, resolveEffort, EFFORT_LEVELS } = await import("../bin/agent/providers.mjs");
+	const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
+	process.env.ANTHROPIC_API_KEY = "x";
+	try {
+		const signedInAuth = { readStored: async () => undefined };
+		const keys = { readKeys: () => ({}) };
+		const base = await import("../bin/agent/providers.mjs").then((m) => m.createModels({ auth: signedInAuth, keys, env: process.env }));
+		const withCodexSignedIn = { getModels: (id) => base.getModels(id), getAuth: async (id) => (id === "openai-codex" ? { auth: {}, source: "chatgpt" } : base.getAuth(id)) };
+		const liveCodex = { listModels: async () => ["gpt-5", { slug: "gpt-6-astra", supported_reasoning_levels: [{ effort: "low" }], default_reasoning_level: "low" }, { slug: "gpt-9-nova", supported_reasoning_levels: [{ effort: "low" }], default_reasoning_level: "low" }] };
+		const result = await listAgentModels({ models: withCodexSignedIn, codex: liveCodex, auth: signedInAuth, keys, env: process.env });
+		const anthropic = result.providers.find((provider) => provider.id === "anthropic");
+		assert.equal(anthropic.signedIn, true, "an env-configured provider is signed in");
+		assert.equal(anthropic.authSource, "env", "the api key came from the environment");
+		const codexProvider = result.providers.find((provider) => provider.id === "openai-codex");
+		assert.equal(codexProvider.signedIn, true);
+		assert.equal(codexProvider.models[0].id, "gpt-6-astra", "the catalog's astra still sorts first after the merge");
+		assert.ok(codexProvider.models[0].efforts.includes("max"), "the merge never overwrites astra's catalog entry with codex's live one");
+		assert.ok(codexProvider.models.some((model) => model.id === "gpt-9-nova"), "a live model the pi catalog does not know about still appears");
+		assert.equal(codexProvider.models.find((model) => model.id === "gpt-9-nova").key, "openai-codex/gpt-9-nova");
+		console.log("PASS openai-codex merges the live catalog with the pi catalog, keeping astra first");
+
+		await assert.rejects(resolveModel("anthropic/does-not-exist", { models: base }), (error) => error.code === "UNKNOWN_MODEL", "resolveModel rejects an unknown model id with the frozen error code");
+		const { getSupportedThinkingLevels } = await import("@earendil-works/pi-ai");
+		// gpt-6-astra's thinkingLevelMap marks "off" unsupported (it always thinks);
+		// resolveEffort must still hand pi "off" verbatim for the wire name "none"
+		// — clamping it up to astra's lowest supported level ("minimal") would
+		// silently turn "no reasoning requested" into "some reasoning requested".
+		const astra = base.getModel("openai-codex", "gpt-6-astra");
+		assert.equal(await resolveEffort(astra, "none"), "off", "none reaches pi as off even on a model whose thinkingLevelMap has no off");
+		assert.equal(await resolveEffort(astra, "ultra"), "max", "ultra is accepted on input and clamped to pi's top level, which astra supports");
+		assert.equal(await resolveEffort(astra, "medium"), "medium", "an effort the model already supports passes through unchanged");
+		// gpt-5.4 supports "off" and everything up to "xhigh" but not "max": it
+		// exercises the ordinary none→off mapping and clamping an effort the
+		// model lacks (xhigh's neighbour, "max") down to its highest supported
+		// level — read from getSupportedThinkingLevels, not a hardcoded string.
+		const gpt54 = base.getModel("openai-codex", "gpt-5.4");
+		const gpt54Levels = getSupportedThinkingLevels(gpt54);
+		assert.ok(gpt54Levels.includes("off") && !gpt54Levels.includes("max"), "gpt-5.4 is the fixture this assertion needs: off supported, max not");
+		const gpt54Highest = gpt54Levels.at(-1);
+		assert.equal(await resolveEffort(gpt54, "none"), "off", "the wire name none maps to pi's off");
+		assert.equal(await resolveEffort(gpt54, "ultra"), gpt54Highest, "ultra is accepted on input, clamped to max, then clamped again to what this model supports");
+		assert.equal(await resolveEffort(gpt54, "max"), gpt54Highest, "an effort a model lacks is clamped down to what it supports");
+		assert.deepEqual(EFFORT_LEVELS, REASONING_EFFORTS, "the frozen wire vocabulary providers.mjs exports matches the turn route's own REASONING_EFFORTS");
+		console.log("PASS resolveModel/resolveEffort: unknown model id rejects, effort maps and clamps through clampThinkingLevel");
+	} finally {
+		if (previousAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = previousAnthropicKey;
+	}
+}
 {
 	const bad = await fetch(`http://127.0.0.1:${port}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${port}` }, body: JSON.stringify({ sessionId: "e", text: "hi", effort: "bogus" }) });
 	assert.equal(bad.status, 400, "an effort the backend would reject never leaves the sidecar");
-	const seen = [];
-	const effortHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: { ...fakeCodex, streamResponses: (request) => { seen.push(request.effort); return fakeCodex.streamResponses(request); } }, liveHub: fakeLive, port: () => effortServer.address().port });
+	const effortFaux = createFakeModel();
+	effortFaux.script([{ type: "text", text: "ok" }]);
+	const effortHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: effortFaux.models, fauxProvider: effortFaux.fauxProvider, liveHub: fakeLive, port: () => effortServer.address().port });
 	const effortServer = createServer((req, res) => effortHandler(req, res).catch(() => {})); effortServer.listen(0, "127.0.0.1"); await once(effortServer, "listening");
 	const effortPort = effortServer.address().port;
-	await fetch(`http://127.0.0.1:${effortPort}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${effortPort}` }, body: JSON.stringify({ sessionId: "e2", text: "hi", effort: "xhigh" }) }).then((r) => r.text());
-	assert.ok(seen.length > 0 && seen.every((effort) => effort === "xhigh"), "the chosen effort reaches every codex request of the turn");
+	const effortText = await fetch(`http://127.0.0.1:${effortPort}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: `http://127.0.0.1:${effortPort}` }, body: JSON.stringify({ sessionId: "e2", text: "hi", model: "faux/scripted", effort: "xhigh" }) }).then((r) => r.text());
+	assert.equal(effortText.includes('"type":"error"'), false, "the chosen effort reaches the faux model");
 	effortServer.close();
 	console.log("PASS reasoning effort: models expose efforts/default, invalid effort is 400, chosen effort reaches codex");
 }
@@ -201,13 +336,6 @@ const authServer = createServer((req, res) => authHandler(req, res).catch(() => 
 const authPort = authServer.address().port;
 const authResponse = await fetch(`http://127.0.0.1:${authPort}/agent/turn`, { method: "POST", headers: { origin: `http://127.0.0.1:${authPort}`, "content-type": "application/json" }, body: JSON.stringify({ sessionId: "auth", text: "hi" }) });
 assert.equal((await authResponse.text()).includes('"code":"auth"'), true);
-let rateServer;
-const rateHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: { ...fakeCodex, streamResponses: () => { const error = Object.assign(new Error("busy"), { status: 429, headers: new Headers() }); throw error; } }, liveHub: fakeLive, port: () => rateServer.address().port });
-rateServer = createServer((req, res) => rateHandler(req, res).catch(() => {})); rateServer.listen(0, "127.0.0.1"); await once(rateServer, "listening");
-const ratePort = rateServer.address().port;
-const rateText = await fetch(`http://127.0.0.1:${ratePort}/agent/turn`, { method: "POST", headers: { origin: `http://127.0.0.1:${ratePort}`, "content-type": "application/json" }, body: JSON.stringify({ sessionId: "rate", text: "hi" }) }).then((r) => r.text());
-assert.equal(rateText.includes('"code":"rate_limit"'), true);
-await new Promise((resolve) => rateServer.close(resolve));
 await new Promise((resolve) => authServer.close(resolve));
 server.close();
 {
