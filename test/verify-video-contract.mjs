@@ -1,18 +1,24 @@
 import assert from "node:assert/strict";
-import { normalizeVideoForm, videoFormContract } from "../src/workflow/video-contract.js";
+import { DEFAULT_FAL_VIDEO_MODEL, normalizeVideoForm, videoFormContract } from "../src/workflow/video-contract.js";
 
+assert.equal(DEFAULT_FAL_VIDEO_MODEL, "minimax/h3-max-turbo/image-to-video");
 const comfy = videoFormContract("comfy");
-assert.ok(comfy.aspects.includes("12:7"), "Comfy H3 keeps its 12:7 canvas");
+assert.ok(comfy.aspects.includes("12:7"));
 assert.equal(comfy.minDuration, 1);
-
 const fal = videoFormContract("fal");
-assert.ok(fal.aspects.includes("3:4"), "Fal exposes its supported portrait ratio");
-assert.equal(fal.aspects.includes("12:7"), false, "Fal does not expose the H3-only 12:7 canvas");
-assert.equal(fal.minDuration, 2);
-assert.equal(fal.maxDuration, 12);
-
+assert.equal(fal.aspectFromImage, true);
+assert.deepEqual(fal.aspects, []);
+assert.equal(fal.defaultResolution, "480P", "mocap uses native 480P by default");
+assert.equal(fal.minDuration, 5);
+assert.equal(fal.maxDuration, 15);
 const normalized = normalizeVideoForm("fal", { aspect: "12:7", duration_seconds: 15, extract_mocap: true });
-assert.equal(normalized.aspect, "16:9", "switching to Fal repairs an incompatible saved aspect");
-assert.equal(normalized.duration_seconds, 12, "switching to Fal clamps a saved duration");
+assert.equal(normalized.aspect, "source", "H3 follows the input image instead of coercing 12:7 to 16:9");
+assert.equal(normalized.duration_seconds, 15);
 assert.equal(normalized.extract_mocap, true);
-console.log("PASS video form contract: provider-specific Fal framing and duration are normalized");
+assert.equal(normalizeVideoForm("fal", { duration_seconds: 2 }).duration_seconds, 5);
+assert.equal(normalizeVideoForm("fal", { duration_seconds: 5.6 }).duration_seconds, 6);
+const explicitSeedance = "fal-ai/bytedance/seedance/v1/pro/image-to-video";
+assert.equal(videoFormContract("fal", explicitSeedance).minDuration, 2);
+assert.equal(normalizeVideoForm("fal", { aspect: "source", duration_seconds: 15 }, explicitSeedance).duration_seconds, 12);
+assert.throws(() => videoFormContract("fal", "unknown-model"), /Unsupported Fal/);
+console.log("PASS H3 Max Turbo form: source framing, 5–15 integer seconds, 480P mocap default; explicit legacy override stays separate");

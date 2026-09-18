@@ -201,17 +201,19 @@ function VideoNode({ id, data }) {
 	const [providers, setProviders] = useState([]);
 	useEffect(() => { if (generated) createHttpTransport().videoProviders().then((result) => setProviders(result.providers || [])).catch(() => {}); }, [generated]);
 	const provider = data.formValues?.provider || data.provider || "comfy";
-	const contract = videoFormContract(provider);
-	const form = normalizeVideoForm(provider, data.formValues || {});
-	const update = (key, value) => data.onChange?.(id, { [key]: value, formValues: normalizeVideoForm(provider, { ...form, [key]: value }) });
-	const changeProvider = (next) => data.onChange?.(id, { provider: next, formValues: normalizeVideoForm(next, { ...form, provider: next }) });
+	const falModel = providers.find((entry) => entry.id === "fal")?.model;
+	const contract = videoFormContract(provider, falModel);
+	const form = normalizeVideoForm(provider, { prompt: data.prompt, duration_seconds: data.duration_seconds, aspect: data.aspect, ...data.formValues }, falModel);
+	const update = (key, value) => data.onChange?.(id, { [key]: value, formValues: normalizeVideoForm(provider, { ...form, [key]: value }, falModel) });
+	const changeProvider = (next) => data.onChange?.(id, { provider: next, formValues: normalizeVideoForm(next, { ...form, provider: next }, falModel) });
 	return <NodeShell id={id} type="video" title="Video" icon={FiVideo}>
 		<label>Model</label><ModelSelect id={id} data={data} category="video" fallback={["video-passthrough", "video-generation"]} />
 		{generated && <>
 			<label>Provider</label><select value={provider} onChange={(event) => changeProvider(event.target.value)}>{(providers.length ? providers : [{ id: "comfy", name: "ComfyUI", configured: false }, { id: "fal", name: "Fal.ai", configured: false }]).map((entry) => <option key={entry.id} value={entry.id} disabled={!entry.configured}>{entry.name} {!entry.configured ? `(set ${entry.id === "comfy" ? "COZYCLAY_COMFY_URL" : "FAL_KEY"})` : ""}</option>)}</select>
+			{provider === "fal" && <div className="workflow-hint">{contract.name} · {providers.find((entry) => entry.id === "fal")?.resolution || contract.defaultResolution}</div>}
 			<label>Motion prompt</label><textarea className="workflow-textarea" value={form.prompt ?? data.prompt ?? ""} onChange={(event) => update("prompt", event.target.value)} placeholder="Motion prompt" />
 			<label>Duration (seconds)</label><input type="number" min={contract.minDuration} max={contract.maxDuration} value={form.duration_seconds} onChange={(event) => update("duration_seconds", Number(event.target.value))} />
-			<label>Aspect</label><select value={form.aspect} onChange={(event) => update("aspect", event.target.value)}>{contract.aspects.map((aspect) => <option key={aspect}>{aspect}</option>)}</select>
+			<label>Aspect</label>{contract.aspectFromImage ? <div className="workflow-hint" data-testid="video-source-aspect">Matches input image · frame the full body in the source image</div> : <select value={form.aspect} onChange={(event) => update("aspect", event.target.value)}>{contract.aspects.map((aspect) => <option key={aspect}>{aspect}</option>)}</select>}
 			<label className="workflow-schema-check"><input type="checkbox" checked={Boolean(form.extract_mocap)} onChange={(event) => update("extract_mocap", event.target.checked)} />Extract GVHMR motion into connected Motion Input</label>
 		</>}
 		{data.videoUrl && <video controls className="workflow-video-preview" src={data.videoUrl} />}
@@ -530,8 +532,9 @@ export default function WorkflowBuilder() {
 					patchNode(id, { isLoading: true, status: "running", errorMsg: null, videoUrl: null, resultUrl: null, outputs: [], preservation: null });
 					try {
 						const provider = form.provider || current.data.provider || "comfy";
-						const videoForm = normalizeVideoForm(provider, { ...form, duration_seconds: form.duration_seconds ?? current.data.duration_seconds, aspect: form.aspect || current.data.aspect });
-						const output = await createHttpTransport().video({ provider, prompt: motionPrompt, imageDataUrl: frame, ...(lastFrameDataUrl ? { lastFrameDataUrl } : {}), durationSeconds: videoForm.duration_seconds, aspect: videoForm.aspect, ...(current.data.model ? { model: current.data.model } : {}) });
+						const falModel = provider === "fal" ? (await createHttpTransport().videoProviders()).providers?.find((entry) => entry.id === "fal")?.model : undefined;
+						const videoForm = normalizeVideoForm(provider, { ...form, duration_seconds: form.duration_seconds ?? current.data.duration_seconds, aspect: form.aspect || current.data.aspect }, falModel);
+						const output = await createHttpTransport().video({ provider, prompt: motionPrompt, imageDataUrl: frame, ...(lastFrameDataUrl ? { lastFrameDataUrl } : {}), durationSeconds: videoForm.duration_seconds, aspect: videoForm.aspect });
 						const videoUrl = output.dataUrl || output.url;
 						let motionExtraction = null;
 						const motionTargets = graph.edges.filter((edge) => edge.source === id).map((edge) => result.nodes.find((node) => node.id === edge.target)).filter((node) => node?.type === "motion-input");

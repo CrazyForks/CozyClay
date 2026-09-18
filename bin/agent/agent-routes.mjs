@@ -557,7 +557,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHu
 			return true;
 		}
 		if (path === "/agent/video/providers" && req.method === "GET") {
-			json(res, 200, { providers: createVideoAdapters().map((adapter) => ({ id: adapter.id, name: adapter.name, configured: adapter.configured() })) });
+			json(res, 200, { providers: createVideoAdapters().map((adapter) => ({ id: adapter.id, name: adapter.name, configured: adapter.configured(), ...(adapter.model ? { model: adapter.model, resolution: adapter.resolution } : {}) })) });
 			return true;
 		}
 		if (path === "/agent/video" && req.method === "POST") {
@@ -565,7 +565,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHu
 			try {
 				value = await readBody(req, IMAGE_BODY_LIMIT);
 				if (!value || typeof value.provider !== "string" || typeof value.prompt !== "string" || !value.prompt.trim() || typeof value.imageDataUrl !== "string" || !value.imageDataUrl.startsWith("data:image/") || (value.lastFrameDataUrl !== undefined && (typeof value.lastFrameDataUrl !== "string" || !value.lastFrameDataUrl.startsWith("data:image/"))) || !Number.isFinite(Number(value.durationSeconds)) || Number(value.durationSeconds) < 1 || Number(value.durationSeconds) > 15 || typeof value.aspect !== "string" || (value.model !== undefined && typeof value.model !== "string")) throw new Error("Invalid request.");
-				if (value.provider === "fal") validateFalVideoRequest({ model: value.model || process.env.FAL_MODEL || "fal-ai/bytedance/seedance/v1/pro/image-to-video", durationSeconds: Number(value.durationSeconds), aspect: value.aspect });
+				if (value.provider === "fal") validateFalVideoRequest({ model: process.env.FAL_MODEL || undefined, durationSeconds: Number(value.durationSeconds), aspect: value.aspect });
 			} catch (error) { json(res, error?.code === "fal-invalid-request" ? 422 : 400, { error: error?.message || "invalid request" }); return true; }
 			const adapter = createVideoAdapters().find((entry) => entry.id === value.provider);
 			if (!adapter || !adapter.configured()) { json(res, 409, { error: "video provider is not configured" }); return true; }
@@ -576,7 +576,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, handlers, liveHu
 				// A generated H3 take that fails the plate check is unsafe to show as
 				// a locked shot. Keep the distinction visible to the client so it can
 				// ask for a retry instead of silently accepting a drifting set.
-				const status = error?.code === "h3-preservation-failed" ? 422 : 502;
+				const status = ["h3-preservation-failed", "fal-invalid-request"].includes(error?.code) ? 422 : 502;
 				json(res, status, { error: error?.message || "video provider failed", ...(error?.preservation ? { preservation: error.preservation } : {}) });
 			}
 			return true;

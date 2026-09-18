@@ -11,22 +11,14 @@ const COMFY_DEFAULT_WIDTH = 1024;
 const COMFY_DEFAULT_HEIGHT = 576;
 const MAX_INLINE_VIDEO = 24 * 1024 * 1024;
 
-const FAL_SEEDANCE_ASPECTS = Object.freeze(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"]);
-
-export function falVideoContract(model = "fal-ai/bytedance/seedance/v1/pro/image-to-video") {
-	const id = String(model || "").toLowerCase();
-	if (id.includes("seedance/v1/pro")) return { aspects: FAL_SEEDANCE_ASPECTS, minDuration: 2, maxDuration: 12, resolution: ["480p", "720p", "1080p"] };
-	if (id.includes("kling-video/o3")) return { aspects: ["16:9", "9:16", "1:1"], minDuration: 3, maxDuration: 15, resolution: [] };
-	// Unknown Fal models stay on the common safe framing set. H3/CozyClay's
-	// 12:7 canvas is intentionally excluded because Fal models do not share it.
-	return { aspects: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"], minDuration: 2, maxDuration: 15, resolution: [] };
-}
+import { DEFAULT_FAL_VIDEO_MODEL, falVideoContract } from "./fal-contract.mjs";
+export { falVideoContract } from "./fal-contract.mjs";
 
 export function validateFalVideoRequest({ model, durationSeconds, aspect }) {
 	const contract = falVideoContract(model);
-	if (!contract.aspects.includes(aspect)) throw Object.assign(new Error(`Fal model ${model} does not support aspect ratio ${aspect}.`), { code: "fal-invalid-request" });
-	if (!Number.isFinite(Number(durationSeconds)) || Number(durationSeconds) < contract.minDuration || Number(durationSeconds) > contract.maxDuration) {
-		throw Object.assign(new Error(`Fal model ${model} supports ${contract.minDuration}-${contract.maxDuration} second videos.`), { code: "fal-invalid-request" });
+	if (!contract.aspectFromImage && !contract.aspects.includes(aspect)) throw Object.assign(new Error(`Fal model ${model} does not support aspect ratio ${aspect}.`), { code: "fal-invalid-request" });
+	if (!Number.isFinite(Number(durationSeconds)) || Number(durationSeconds) < contract.minDuration || Number(durationSeconds) > contract.maxDuration || (contract.integerDuration && !Number.isInteger(Number(durationSeconds)))) {
+		throw Object.assign(new Error(`Fal model ${model} supports ${contract.minDuration}-${contract.maxDuration} second${contract.integerDuration ? " integer-duration" : ""} videos.`), { code: "fal-invalid-request" });
 	}
 	return contract;
 }
@@ -353,24 +345,34 @@ function createComfy(env, fetchImpl) {
 }
 
 function createFal(env, fetchImpl) {
-	const model = env.FAL_MODEL || "fal-ai/bytedance/seedance/v1/pro/image-to-video";
+	const model = env.FAL_MODEL || DEFAULT_FAL_VIDEO_MODEL;
 	return {
-		id: "fal", name: "Fal.ai",
+		id: "fal", name: "Fal.ai", model,
+		get resolution() { return env.FAL_RESOLUTION || falVideoContract(model).defaultResolution; },
 		configured: () => Boolean(env.FAL_KEY),
-		async generate({ prompt, imageDataUrl, durationSeconds, aspect, signal }) {
+		async generate({ prompt, imageDataUrl, lastFrameDataUrl, durationSeconds, aspect, signal }) {
 			const contract = validateFalVideoRequest({ model, durationSeconds, aspect });
-			const resolution = env.FAL_RESOLUTION || (contract.resolution.includes("1080p") ? "1080p" : undefined);
-			const body = { prompt, image_url: imageDataUrl, duration: String(durationSeconds), aspect_ratio: aspect, camera_fixed: env.FAL_CAMERA_FIXED !== "0", ...(resolution ? { resolution } : {}) };
+			const resolution = this.resolution;
+			if (!contract.resolution.includes(resolution)) throw Object.assign(new Error(`Fal model ${model} resolution must be one of ${contract.resolution.join(", ")}.`), { code: "fal-invalid-request" });
+			const body = contract.aspectFromImage
+				? { prompt: buildH3LockedPrompt(prompt), image_url: imageDataUrl, ...(lastFrameDataUrl ? { end_image_url: lastFrameDataUrl } : {}), duration: Number(durationSeconds), resolution, prompt_expansion_mode: "disabled" }
+				: { prompt, image_url: imageDataUrl, duration: String(durationSeconds), aspect_ratio: aspect, camera_fixed: env.FAL_CAMERA_FIXED !== "0", resolution };
 			const queued = await fetchImpl(`https://queue.fal.run/${model}`, { method: "POST", headers: { authorization: `Key ${env.FAL_KEY}`, "content-type": "application/json" }, body: JSON.stringify(body), signal }).then(jsonResponse);
 			let status = queued;
 			const deadline = Date.now() + 15 * 60 * 1000;
 			while (Date.now() < deadline) {
 				if (status.video?.url || status.output?.video?.url) break;
-				if (status.status_url) status = await fetchImpl(status.status_url, { headers: { authorization: `Key ${env.FAL_KEY}` }, signal }).then(jsonResponse);
-				else if (status.response_url) status = await fetchImpl(status.response_url, { headers: { authorization: `Key ${env.FAL_KEY}` }, signal }).then(jsonResponse);
-				else if (status.status === "COMPLETED") break;
 				if (status.status === "FAILED") throw new Error(status.error || "Fal.ai video generation failed.");
-				if (!(status.video?.url || status.output?.video?.url)) await sleep(2000, signal);
+				if (status.status === "COMPLETED") {
+					const resultUrl = status.response_url || queued.response_url;
+					if (!resultUrl) throw new Error("Fal.ai did not return a result URL.");
+					status = await fetchImpl(resultUrl, { headers: { authorization: `Key ${env.FAL_KEY}` }, signal }).then(jsonResponse);
+					break;
+				}
+				const statusUrl = status.status_url || queued.status_url;
+				if (!statusUrl) throw new Error("Fal.ai did not return a status URL.");
+				status = await fetchImpl(statusUrl, { headers: { authorization: `Key ${env.FAL_KEY}` }, signal }).then(jsonResponse);
+				if (status.status !== "COMPLETED" && status.status !== "FAILED" && !status.video?.url && !status.output?.video?.url) await sleep(2000, signal);
 			}
 			const url = status.video?.url || status.output?.video?.url || status.video_url;
 			if (!url) throw new Error("Fal.ai did not return a video URL.");
