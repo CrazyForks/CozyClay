@@ -221,11 +221,23 @@ assert.equal(JSON.stringify(fauxMain.calls[0].messages).includes(png), false);
 	assert.equal(LiveHub.commandTimeoutMs("add_node"), DEFAULT_COMMAND_TIMEOUT_MS);
 	console.log("PASS run_workflow and capture_frame get long live command timeouts");
 }
-const forbidden = await fetch(`http://127.0.0.1:${port}/agent/models`, { headers: { origin: "http://evil.example" } });
+// #379 / 16p: /agent/models must answer from the handler's OWN injected
+// `models` registry (proven separately below); `handler`/`port` above inject
+// `models: fauxMain.models` for turn execution, which is a bare pi registry
+// with only the faux provider set up (no real provider catalogs), so the
+// real-catalog assertions in this block need a handler with NO `models`
+// option, exercising the real-registry fallback in `listAgentModels`
+// (`models ?? await createModels(...)`) exactly as the live sidecar runs it.
+const realCatalogHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, liveHub: fakeLive, port: () => realCatalogServer.address().port });
+const realCatalogServer = createServer((req, res) => realCatalogHandler(req, res).catch((error) => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+realCatalogServer.listen(0, "127.0.0.1");
+await once(realCatalogServer, "listening");
+const realCatalogPort = realCatalogServer.address().port;
+const forbidden = await fetch(`http://127.0.0.1:${realCatalogPort}/agent/models`, { headers: { origin: "http://evil.example" } });
 assert.equal(forbidden.status, 403);
-assert.equal((await fetch(`http://127.0.0.1:${port}/agent/models`)).status, 200);
-const models = await fetch(`http://127.0.0.1:${port}/agent/models`).then((r) => r.json());
-{
+assert.equal((await fetch(`http://127.0.0.1:${realCatalogPort}/agent/models`)).status, 200);
+const models = await fetch(`http://127.0.0.1:${realCatalogPort}/agent/models`).then((r) => r.json());
+try {
 	// #379: /agent/models is grouped by provider, each with its pi-derived sign-in
 	// state and its chat models shaped for the panel. This handler's own auth
 	// double (getAccessToken only, no readStored/status) leaves every provider
@@ -244,6 +256,9 @@ const models = await fetch(`http://127.0.0.1:${port}/agent/models`).then((r) => 
 	assert.equal(astra.defaultEffort, "medium", "medium is the default whenever a model supports it");
 	assert.ok(!astra.efforts.includes("ultra"), "ultra is never an advertised effort \u2014 it is only ever an accepted, clamped input");
 	console.log("PASS models grouped by provider");
+} finally {
+	await realCatalogHandler.close();
+	await new Promise((resolve) => realCatalogServer.close(resolve));
 }
 {
 	// Sign-in state and the codex live-catalog merge, exercised directly against
@@ -1088,4 +1103,287 @@ server.close();
 	assert.equal(studioAttachBubble?.attachments?.[0]?.name, "reference.png", "the restored Studio bubble keeps the attachment name");
 	studioAttachServer.close();
 	console.log("PASS 16i: a Studio turn with an attachment and no frameObservation restores its prompt text and attachment name");
+}
+
+// #379 / 16m (F2 pass 6 finding 2): signed_out/replaced must retire the
+// cached workflowRunner, not just abort the route session, because the
+// runner's tools (e.g. the attach-frame capture) close over the FIRST
+// turn's session/signal. A later turn reusing the same sessionId must build
+// a fresh runner instead of running tools bound to the retired session.
+for (const kind of ["replaced", "signed_out", "rotated"]) {
+	const scratch16m = mkdtempSync(join(tmpdir(), `cozyclay-agent-16m-${kind}-`));
+	const previousAuthFile16m = process.env.COZYCLAY_CODEX_AUTH_FILE;
+	process.env.COZYCLAY_CODEX_AUTH_FILE = join(scratch16m, "codex-auth.json");
+	let realAuth16m;
+	try {
+		realAuth16m = await import(`../bin/codex-auth.mjs?16m=${kind}`);
+	} finally {
+		if (previousAuthFile16m === undefined) delete process.env.COZYCLAY_CODEX_AUTH_FILE;
+		else process.env.COZYCLAY_CODEX_AUTH_FILE = previousAuthFile16m;
+	}
+	const tokenFor16m = accountId => `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } })).toString("base64url")}.e30`;
+	realAuth16m.writeStored({ access_token: "16m-old-access", refresh_token: "16m-refresh", expires_at: Date.now() + 3600000, id_token: tokenFor16m("16m-account-a") });
+	const { createSessionStore: createSessionStore16m } = await import("../bin/agent/session-store.mjs");
+	const faux16m = createFakeModel();
+	faux16m.script(["first turn ok"]);
+	let captures16m = 0;
+	const sessions16m = createSessionStore16m(join(scratch16m, "sessions"));
+	const handler16m = createAgentHandler({
+		auth: realAuth16m, models: faux16m.models, fauxProvider: faux16m.fauxProvider, sessionStore: sessions16m,
+		liveHub: { command: async name => { assert.equal(name, "capture_framing_png"); captures16m++; return { dataUrl: png, width: 1, height: 1 }; } },
+		port: () => server16m.address().port,
+	});
+	const server16m = createServer((req, res) => handler16m(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	const listening16m = once(server16m, "listening", { signal: AbortSignal.timeout(5000) });
+	server16m.listen(0, "127.0.0.1");
+	await listening16m;
+	const origin16m = `http://127.0.0.1:${server16m.address().port}`;
+	const sessionId16m = `16m-${kind}`;
+	const turn16m = async (attachFrame, text) => {
+		const response = await fetch(`${origin16m}/agent/turn`, { method: "POST", headers: { origin: origin16m, "content-type": "application/json" }, body: JSON.stringify({ sessionId: sessionId16m, text, model: "faux/scripted", attachFrame }), signal: AbortSignal.timeout(10000) });
+		assert.equal(response.status, 200);
+		return [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
+	};
+	try {
+		const first16m = await turn16m(false, "before identity change");
+		assert.equal(first16m.some(frame => frame.type === "error"), false, `${kind}: first turn has no error`);
+		if (kind === "rotated") realAuth16m.writeStored({ access_token: "16m-new-access", refresh_token: "16m-refresh", expires_at: Date.now() + 3600000, id_token: tokenFor16m("16m-account-a") });
+		else if (kind === "replaced") realAuth16m.writeStored({ access_token: "16m-new-access", refresh_token: "16m-refresh", expires_at: Date.now() + 3600000, id_token: tokenFor16m("16m-account-b") });
+		else realAuth16m.logout();
+		faux16m.script(["second turn ok"]);
+		const second16m = await turn16m(true, "after identity change");
+		if (kind === "rotated") {
+			assert.equal(captures16m, 1, `${kind}: rotation reuses the runner, so the capture tool still runs`);
+			assert.equal(second16m.some(frame => frame.type === "error"), false, `${kind}: rotation must not invalidate the runner`);
+			assert.equal(second16m.filter(frame => frame.type === "text.delta").map(frame => frame.text).join(""), "second turn ok", `${kind}: the reused runner ran the second script`);
+		} else if (kind === "replaced") {
+			assert.equal(captures16m, 1, `${kind}: the fresh runner's capture tool still ran exactly once`);
+			assert.equal(second16m.some(frame => frame.type === "error"), false, `${kind}: a fresh post-identity-change turn must not retain the retired runner's aborted capture tool`);
+			assert.equal(second16m.filter(frame => frame.type === "text.delta").map(frame => frame.text).join(""), "second turn ok", `${kind}: the fresh runner ran the second script instead of failing on the stale session`);
+			assert.equal(second16m.some(frame => frame.type === "tool.done" && frame.ok === false), false, `${kind}: no tool.done{ok:false} from a stale capture`);
+		} else {
+			// signed_out with no other credential correctly refuses the second turn
+			// with 401 before any tool runs; the fix under test is that this 401
+			// comes from hasAnyCredential(), never from a tool.done{ok:false} on a
+			// runner whose tools still close over the retired signed-out session.
+			assert.equal(captures16m, 0, `${kind}: no credential means the turn never reaches the capture tool`);
+			assert.equal(second16m.some(frame => frame.type === "tool.done" && frame.ok === false), false, `${kind}: no stale tool.done{ok:false} from a retired runner`);
+			assert.equal(second16m.some(frame => frame.type === "error" && frame.status === 401), true, `${kind}: the second turn is refused for lack of credential, not a stale-session abort`);
+		}
+		console.log(`PASS 16m ${kind}: ${kind === "rotated" ? "the runner is reused with no invalidation" : "the cached runner is retired so the next turn builds a fresh one"}`);
+	} finally {
+		await handler16m.close();
+		await new Promise(resolve => server16m.close(resolve));
+		rmSync(scratch16m, { recursive: true, force: true });
+	}
+}
+
+// #379 / 16p (discovered by 16o): GET /agent/models must answer from the
+// handler's own injected `models` registry, exactly like the turn routes
+// (:509/:773) already do, instead of always building a fresh real registry.
+// A test double whose `anthropic` catalog carries one deliberately
+// unmistakable model id proves which registry answered: the real registry
+// (built with no credentials configured here) never has this id under any
+// provider, so its presence in the response can only come from the injected
+// double.
+{
+	const injected16p = {
+		getModels: (providerId) => (providerId === "anthropic" ? [{ id: "16p-test-double-model", name: "16p Test Double", input: ["text", "image"] }] : []),
+		getAuth: async (providerId) => (providerId === "anthropic" ? { auth: {}, source: "16p-double" } : undefined),
+	};
+	const handler16p = createAgentHandler({ auth: { getAccessToken: async () => null }, codex: { listModels: async () => [] }, models: injected16p, liveHub: fakeLive, port: () => server16p.address().port });
+	const server16p = createServer((req, res) => handler16p(req, res).catch((error) => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	const listening16p = once(server16p, "listening", { signal: AbortSignal.timeout(5000) });
+	server16p.listen(0, "127.0.0.1");
+	await listening16p;
+	const origin16p = `http://127.0.0.1:${server16p.address().port}`;
+	try {
+		const result16p = await fetch(`${origin16p}/agent/models`, { headers: { origin: origin16p } }).then((r) => r.json());
+		assert.ok(result16p.models.some((model) => model.id === "anthropic/16p-test-double-model"), "GET /agent/models must answer from the handler's own injected `models` registry (createAgentHandler :264), the same one the turn routes already use (:509/:773), not always build a fresh real registry from credentials this handler was never given");
+		const anthropicProvider16p = result16p.providers.find((provider) => provider.id === "anthropic");
+		assert.equal(anthropicProvider16p?.signedIn, true, "the injected registry's getAuth result decides signedIn, not a freshly built registry with no credentials");
+		console.log("PASS 16p: /agent/models serves the handler's injected model registry");
+	} finally {
+		await handler16p.close();
+		await new Promise((resolve) => server16p.close(resolve));
+	}
+}
+
+// The no-`models` path (the real sidecar's shape) must be unaffected: with no
+// injected registry, listAgentModels still builds a real one from credentials
+// (already covered above by the `port`/`models` server's provider assertions);
+// this just pins that omitting `models` from createAgentHandler still reaches
+// GET /agent/models successfully rather than throwing on an undefined registry.
+{
+	const noModelsHandler16p = createAgentHandler({ auth: { getAccessToken: async () => null }, codex: { listModels: async () => [] }, liveHub: fakeLive, port: () => noModelsServer16p.address().port });
+	const noModelsServer16p = createServer((req, res) => noModelsHandler16p(req, res).catch((error) => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	const listeningNoModels16p = once(noModelsServer16p, "listening", { signal: AbortSignal.timeout(5000) });
+	noModelsServer16p.listen(0, "127.0.0.1");
+	await listeningNoModels16p;
+	const originNoModels16p = `http://127.0.0.1:${noModelsServer16p.address().port}`;
+	try {
+		const responseNoModels16p = await fetch(`${originNoModels16p}/agent/models`, { headers: { origin: originNoModels16p } });
+		assert.equal(responseNoModels16p.status, 200, "omitting `models` from createAgentHandler still builds a real registry and answers 200");
+		const resultNoModels16p = await responseNoModels16p.json();
+		assert.equal(resultNoModels16p.providers.length, 5, "the real-registry path (no injected `models`) is unchanged: all five providers are still listed");
+		console.log("PASS 16p: the real-registry path (no injected `models`) is unchanged");
+	} finally {
+		await noModelsHandler16p.close();
+		await new Promise((resolve) => noModelsServer16p.close(resolve));
+	}
+}
+
+// #379 / 16q (discovered by 16p's browser run): an acknowledged Stop mid-generation
+// must settle the held generate_motion tool call with the runtime's structured
+// outcome (tool.done{ok:true,result:{code:"CANCELLED",mutated:false,...}}, the
+// tool CALL itself having succeeded exactly like the sibling STALE_TARGET/
+// VERIFICATION_FAILED resilience scenarios) then
+// done — never a synthesized error{code:'aborted'} that hides whether the scene
+// was touched. Real motion runtime (bin/agent/motion-runtime.mjs, no studioRuntime
+// override), a real bridge HTTP server whose /ardy/generate is held open exactly
+// like the browser fixture's controls.hold, and a real /agent/turn + /agent/stop
+// round trip — no sleeps: the held generation is released only after the SSE
+// stream itself has already delivered the job.state{generating} frame carrying
+// the jobId.
+async function run16qStopScenario() {
+	const hub16q = {
+		connected: true, workspaceHandles: ["handle-12"],
+		workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", handleForWorkspaceId: () => "handle-12",
+		command: async (name, args) => {
+			if (name === "read_studio_context") return { context: (await import("./verify-studio-agent-protocol.mjs")).contextFixture() };
+			if (name === "cancel_motion_install") return { status: "not_applied", evidence: true };
+			if (name === "discard_motion_candidate") return { discarded: true };
+			return { ok: true };
+		},
+	};
+	const held16q = Promise.withResolvers();
+	const bridge16q = createServer((req, res) => {
+		if (req.url === "/ardy/health") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, backend: "local_kimodo", host: "fixture", device: "cpu" })); return; }
+		(async () => {
+			res.writeHead(200, { "content-type": "application/x-ndjson" });
+			res.write(`${JSON.stringify({ event: "progress", progress: 0.25 })}\n`);
+			await Promise.race([held16q.promise, once(res, "close")]);
+			if (!res.destroyed) res.end(`${JSON.stringify({ event: "done", motionUrl: "/ardy/motions/123456-abcdef" })}\n`);
+		})();
+	});
+	bridge16q.listen(0, "127.0.0.1"); await once(bridge16q, "listening");
+	const bridgeOrigin16q = `http://127.0.0.1:${bridge16q.address().port}`;
+	const faux16q = createFakeModel();
+	faux16q.script([
+		{ type: "toolCall", id: "m16q", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk forward" }], durationSeconds: 2 } } },
+		{ type: "text", text: "done" },
+	]);
+	let server16q;
+	const handler16q = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: faux16q.models, fauxProvider: faux16q.fauxProvider, liveHub: hub16q, getBridgeOrigin: () => bridgeOrigin16q, port: () => server16q.address().port });
+	server16q = createServer((req, res) => handler16q(req, res).catch((error) => { console.error("16q fixture error:", error); if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	server16q.listen(0, "127.0.0.1"); await once(server16q, "listening");
+	const origin16q = `http://127.0.0.1:${server16q.address().port}`;
+	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
+	const turnEnvelope16q = { ...envelopeFixture(), model: "faux/scripted" };
+	try {
+		const turnResponse16q = await fetch(`${origin16q}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: origin16q }, body: JSON.stringify(turnEnvelope16q) });
+		assert.equal(turnResponse16q.status, 200);
+		const cookie16q = (turnResponse16q.headers.getSetCookie?.() ?? [turnResponse16q.headers.get("set-cookie")]).filter(Boolean).map((entry) => entry.split(";")[0]).join("; ");
+		assert.match(cookie16q, /studio_owner=/);
+		const reader16q = turnResponse16q.body.getReader();
+		const decoder16q = new TextDecoder();
+		const frames16q = [];
+		let carry16q = "";
+		let jobId16q = null;
+		const pump16q = async () => {
+			const { value, done } = await bounded16q(reader16q.read(), "16q SSE read");
+			if (done) return false;
+			carry16q += decoder16q.decode(value, { stream: true });
+			const lines = carry16q.split("\n"); carry16q = lines.pop();
+			for (const line of lines) if (line.startsWith("data: ")) {
+				const frame = JSON.parse(line.slice(6)); frames16q.push(frame);
+				if (frame.type === "job.state" && frame.state === "generating" && !jobId16q) jobId16q = frame.jobId;
+			}
+			return true;
+		};
+		while (!jobId16q) { if (!(await pump16q())) throw new Error("16q: stream ended before job.state{generating}"); }
+		const stopResponse16q = await fetch(`${origin16q}/agent/stop`, { method: "POST", headers: { "content-type": "application/json", origin: origin16q, cookie: cookie16q }, body: JSON.stringify({ surface: "studio", sessionId: turnEnvelope16q.sessionId, turnId: turnEnvelope16q.turnId, jobId: jobId16q }) });
+		assert.equal(stopResponse16q.status, 200);
+		held16q.resolve();
+		while (await pump16q()) { /* drain until the SSE stream itself closes */ }
+		return frames16q;
+	} finally {
+		await handler16q.close();
+		await new Promise((resolve) => server16q.close(resolve));
+		await new Promise((resolve) => bridge16q.close(resolve));
+	}
+}
+async function bounded16q(promise, label, ms = 10000) {
+	let timer;
+	return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Deadline: ${label}`)), ms); })]).finally(() => clearTimeout(timer));
+}
+{
+	const frames16q = await run16qStopScenario();
+	const types16q = frames16q.map((frame) => frame.type);
+	const toolDone16q = frames16q.find((frame) => frame.type === "tool.done");
+	const failures16q = [];
+	if (types16q.includes("error")) failures16q.push(`no error{aborted} frame is allowed for an acknowledged stop with a resolvable outcome; got types ${JSON.stringify(types16q)}`);
+	if (!toolDone16q) failures16q.push(`a tool.done frame settling the held generate_motion call is required; got types ${JSON.stringify(types16q)}`);
+	else {
+		// The tool CALL itself succeeded (pi's own isError/ok wire flag) exactly
+		// like the already-passing STALE_TARGET/VERIFICATION_FAILED sibling
+		// scenarios in this same resilience case (test/qa-studio-agent-browser.mjs
+		// checks `result.code`/`result.mutated`, never top-level tool.done.ok, for
+		// those); the BUSINESS-level failure lives in the nested `result`.
+		if (toolDone16q.ok !== true) failures16q.push(`tool.done.ok (the wire-level call outcome) must be true, matching the STALE_TARGET/VERIFICATION_FAILED sibling scenarios; got ${JSON.stringify(toolDone16q)}`);
+		if (toolDone16q.result?.code !== "CANCELLED") failures16q.push(`tool.done.result.code must be CANCELLED; got ${JSON.stringify(toolDone16q)}`);
+		if (toolDone16q.result?.mutated !== false) failures16q.push(`tool.done.result.mutated must be false; got ${JSON.stringify(toolDone16q)}`);
+	}
+	if (types16q.at(-1) !== "done") failures16q.push(`the stream must still end with done; got types ${JSON.stringify(types16q)}`);
+	console.log("16q frame types:", JSON.stringify(types16q));
+	assert.deepEqual(failures16q, [], `an acknowledged Stop with a resolvable outcome must settle tool.done{ok:true,result:{code:'CANCELLED',mutated:false}} then done, never error{aborted}: ${JSON.stringify(failures16q)}`);
+	console.log("PASS 16q: an acknowledged Stop settles the held generate_motion tool card with the runtime outcome, no error{aborted}");
+}
+
+{
+	// 16q: a stop with NO active job (no jobId, session detaches) stays a plain
+	// abort — error{aborted} + done — unchanged.
+	// Held exactly the way the harness's own canonical abort test holds a slow
+	// tool (verify-agent-runner-errors.mjs's `slowTool`): the held step listens
+	// for its OWN abort signal and rejects itself — pi does not forcibly race or
+	// kill an in-flight model/tool call that never checks its signal, so a mock
+	// that just hangs forever (never checking `options.signal`) would hang this
+	// test exactly as it would hang the real harness. This is the cooperative
+	// contract every real provider and Studio tool already follows.
+	const startedDetached = Promise.withResolvers();
+	const { fauxAssistantMessage: detachedFauxMessage, fauxText: detachedFauxText } = await import("@earendil-works/pi-ai/providers/faux");
+	const detachedFaux = createFakeModel();
+	detachedFaux.fauxProvider.setResponses([(context, options) => new Promise((resolve, reject) => {
+		const signal = options?.signal;
+		startedDetached.resolve(signal);
+		signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+	})]);
+	const detachedHub = { command: async () => ({ ok: true }), workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", handleForWorkspaceId: () => "handle-12", connected: true, workspaceHandles: ["handle-12"] };
+	let detachedServer;
+	const detachedHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: detachedFaux.models, fauxProvider: detachedFaux.fauxProvider, liveHub: detachedHub, studioRuntime: { readContext: async () => (await import("./verify-studio-agent-protocol.mjs")).contextFixture() }, port: () => detachedServer.address().port });
+	detachedServer = createServer((req, res) => detachedHandler(req, res).catch((error) => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	detachedServer.listen(0, "127.0.0.1"); await once(detachedServer, "listening");
+	const detachedOrigin = `http://127.0.0.1:${detachedServer.address().port}`;
+	const { envelopeFixture: detachedEnvelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
+	const detachedEnvelope = { ...detachedEnvelopeFixture(), model: "faux/scripted" };
+	try {
+		const detachedTurnResponse = await bounded16q(fetch(`${detachedOrigin}/agent/turn`, { method: "POST", headers: { "content-type": "application/json", origin: detachedOrigin }, body: JSON.stringify(detachedEnvelope) }), "16q detached turn POST");
+		const detachedCookie = (detachedTurnResponse.headers.getSetCookie?.() ?? [detachedTurnResponse.headers.get("set-cookie")]).filter(Boolean).map((entry) => entry.split(";")[0]).join("; ");
+		// The turn must still be genuinely in flight (the model response held) when
+		// Stop is clicked, or this proves nothing about the abort path at all.
+		await bounded16q(startedDetached.promise, "16q detached model call start");
+		const detachedStopResponse = await bounded16q(fetch(`${detachedOrigin}/agent/stop`, { method: "POST", headers: { "content-type": "application/json", origin: detachedOrigin, cookie: detachedCookie }, body: JSON.stringify({ surface: "studio", sessionId: detachedEnvelope.sessionId, turnId: detachedEnvelope.turnId }) }), "16q detached stop POST");
+		assert.equal(detachedStopResponse.status, 200);
+		const detachedStopBody = await detachedStopResponse.json();
+		assert.equal(detachedStopBody.status, "detached", "a stop with no jobId reports status:detached");
+		const detachedText = await bounded16q(detachedTurnResponse.text(), "16q detached SSE");
+		const detachedFrames = [...detachedText.matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
+		const detachedTypes = detachedFrames.map((frame) => frame.type);
+		assert.ok(detachedFrames.some((frame) => frame.type === "error" && frame.code === "aborted"), `a stop with no active job must still abort the turn: ${JSON.stringify(detachedTypes)}`);
+		assert.equal(detachedTypes.at(-1), "done");
+		console.log("PASS 16q: a stop with no active job (status:detached) is still a plain abort—error{aborted}+done");
+	} finally {
+		await detachedHandler.close();
+		await new Promise((resolve) => detachedServer.close(resolve));
+	}
 }
