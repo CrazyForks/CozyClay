@@ -161,14 +161,59 @@ for (const token of ["AIza-secret-0123456789abcdefghijk", "sk-or-secret", "sk-an
 	const imageCounts = calls.map((context) => context.messages.filter((message) => message.role === "user" && message.content?.some((part) => part.type === "image")).length);
 	expect("401 retry resumes the same transcript with one attachment (message counts [2,2])", JSON.stringify(counts) === "[2,2]", JSON.stringify(counts));
 	expect("401 retry preserves exactly one image-bearing user message", JSON.stringify(imageCounts) === "[1,1]", JSON.stringify(imageCounts));
-	// pi stamps each delivery with its own `timestamp`; the turn's own content
-	// (roles, text and image bytes) is what must survive the retry unchanged.
+	// The original roles, text and image bytes survive the in-place retry.
 	const content = (context) => JSON.stringify(context.messages.map(({ role, content: parts }) => ({ role, content: parts })));
 	expect("401 retry keeps the original user messages and image bytes unchanged", content(calls[0]) === content(calls[1]), JSON.stringify(calls.map(content)));
 	expect("401 attachment retry still completes without an error frame", frames.every((frame) => frame.type !== "error") && frames.at(-1)?.type === "done", JSON.stringify(frames));
 }
 
-// --- auth retry persistence mirrors the final rewound branch ---
+// --- auth retry after a completed tool must not execute that tool again ---
+{
+	const sessionsDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-runner-errors-post-tool-auth-"));
+	const sessionStore = createSessionStore(sessionsDir);
+	const models = createModels();
+	const faux = fauxProvider({ provider: "openai-codex", models: [{ id: "gpt-6-astra", name: "Astra", input: ["text", "image"] }] });
+	models.setProvider(faux.provider);
+	let mutations = 0, refreshes = 0;
+	const originalGetAuth = models.getAuth.bind(models);
+	models.getAuth = async (...args) => {
+		if (args[1]?.minOAuthValidityMs !== undefined) refreshes++;
+		return originalGetAuth(...args);
+	};
+	const calls = [];
+	const mutate = (id) => fauxAssistantMessage([fauxToolCall("mutate", {}, { id })], { stopReason: "toolUse" });
+	faux.setResponses([
+		() => mutate("first-mutation"),
+		() => errorMessage("401 Unauthorized"),
+		(context) => context.messages.some((message) => message.role === "toolResult")
+			? fauxAssistantMessage([fauxText("already applied")]) : mutate("replayed-mutation"),
+		() => fauxAssistantMessage([fauxText("done")]),
+	].map((respond) => (context) => { calls.push(structuredClone(context)); return respond(context); }));
+	const runner = createAgentRunner({ models, sessionStore, tools: [{ name: "mutate", parameters: { type: "object", properties: {}, additionalProperties: false }, handler: async () => ({ applied: ++mutations }) }] });
+	let frames;
+	try {
+		const session = await runner.openSession("errors-post-tool-auth", { surface: "workflow" });
+		frames = await collect(session, { text: "apply this change once" });
+	} finally { await runner.close(); }
+	const history = sessionStore.read("errors-post-tool-auth")?.history || [];
+	console.log("post-tool-auth", JSON.stringify({ mutations, refreshes, contexts: calls.map((context) => context.messages.map((message) => message.role)), roles: history.map((message) => message.role), frames }));
+	assert.equal(mutations, 1, "auth recovery must not execute an already completed mutation again");
+	assert.equal(refreshes, 1);
+	assert.deepEqual(calls.map((context) => context.messages.map((message) => message.role)), [["user"], ["user", "assistant", "toolResult"], ["user", "assistant", "toolResult"]]);
+	assert.deepEqual(calls[2].messages, calls[1].messages, "the pending model call retries with the exact completed transcript");
+	assert.deepEqual(history.map((message) => message.role), ["user", "assistant", "toolResult", "assistant"]);
+	assert.equal(history[2].toolCallId, "first-mutation");
+	assert.equal(history[2].details.applied, 1);
+	assert.equal(history.at(-1).content[0].text, "already applied");
+	assert.deepEqual(frames.filter((frame) => frame.type === "tool.start" || frame.type === "tool.done").map((frame) => [frame.type, frame.callId]), [["tool.start", "first-mutation"], ["tool.done", "first-mutation"]]);
+	assert.equal(frames.find((frame) => frame.type === "tool.done").ok, true);
+	assert.equal(frames.some((frame) => frame.type === "error"), false);
+	assert.equal(frames.filter((frame) => frame.type === "done").length, 1);
+	assert.equal(frames.at(-1).type, "done");
+	console.log("PASS post-tool auth retry preserves the completed mutation, transcript, persistence and tool frames");
+}
+
+// --- auth retry persistence stores the completed transcript once ---
 {
 	const sessionsDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-runner-errors-retry-store-"));
 	const sessionStore = createSessionStore(sessionsDir);
@@ -215,7 +260,13 @@ for (const token of ["AIza-secret-0123456789abcdefghijk", "sk-or-secret", "sk-an
 	const models = createModels();
 	const faux = fauxProvider({ provider: "openai-codex", models: [{ id: "gpt-6-astra", name: "Astra", input: ["text", "image"] }] });
 	models.setProvider(faux.provider);
-	installScripts(faux, [errorMessage("401 Unauthorized"), errorMessage("401 Unauthorized")]);
+	const calls = installScripts(faux, [errorMessage("401 Unauthorized"), errorMessage("401 Unauthorized")]);
+	let refreshes = 0;
+	const originalGetAuth = models.getAuth.bind(models);
+	models.getAuth = async (...args) => {
+		if (args[1]?.minOAuthValidityMs !== undefined) refreshes++;
+		return originalGetAuth(...args);
+	};
 	const runner = createAgentRunner({ models, tools: [], sessionStore });
 	const session = await runner.openSession("errors-401-retry-failed", { surface: "workflow" });
 	const frames = await collect(session, { text: "describe this image", attachments: [{ dataUrl: "data:image/png;base64,AA==", name: "probe.png" }] });
@@ -224,10 +275,39 @@ for (const token of ["AIza-secret-0123456789abcdefghijk", "sk-or-secret", "sk-an
 	assert.deepEqual(history.map((message) => message.role), ["user", "user"]);
 	assert.equal(history.some((message) => message.role === "assistant"), false);
 	assert.equal(frames.filter((frame) => frame.type === "error").length, 1);
+	assert.equal(frames.find((frame) => frame.type === "error").code, "unauthorized");
+	assert.equal(frames.filter((frame) => frame.type === "done").length, 1);
 	assert.equal(frames.at(-1)?.type, "done");
+	assert.equal(calls.length, 2, "a second 401 is terminal, not retried again");
+	assert.equal(refreshes, 1);
 	console.log("retry-failed-store-roles", JSON.stringify(history.map((message) => message.role)));
 	console.log("retry-failed-frames", JSON.stringify(frames));
 	console.log("PASS failed auth retry persists user messages only with one error and done");
+}
+
+// --- a non-Codex 401 never refreshes Codex credentials or retries ---
+{
+	const models = createModels();
+	const faux = fauxProvider({ provider: "faux", models: [{ id: "scripted", name: "Scripted", input: ["text", "image"] }] });
+	models.setProvider(faux.provider);
+	const calls = installScripts(faux, [errorMessage("401 Unauthorized"), fauxAssistantMessage([fauxText("must not retry")])]);
+	let refreshes = 0;
+	const originalGetAuth = models.getAuth.bind(models);
+	models.getAuth = async (...args) => {
+		if (args[1]?.minOAuthValidityMs !== undefined) refreshes++;
+		return originalGetAuth(...args);
+	};
+	const runner = createAgentRunner({ models });
+	const session = await runner.openSession("errors-non-codex-auth");
+	const frames = await collect(session, { text: "hi", model: "faux/scripted" });
+	await runner.close();
+	assert.equal(refreshes, 0);
+	assert.equal(calls.length, 1);
+	assert.equal(frames.filter((frame) => frame.type === "error").length, 1);
+	assert.equal(frames.find((frame) => frame.type === "error").code, "unauthorized");
+	assert.equal(frames.filter((frame) => frame.type === "done").length, 1);
+	assert.equal(frames.at(-1)?.type, "done");
+	console.log("PASS a non-Codex unauthorized response is terminal without a credential refresh");
 }
 
 // --- abort mid-stream: no further model calls, an error{code:'aborted'} frame, then done ---
@@ -270,55 +350,51 @@ for (const token of ["AIza-secret-0123456789abcdefghijk", "sk-or-secret", "sk-an
 // because `signal` is actually the harness's `onUpdate` callback (a
 // function), so `ctx.signal.aborted` throws / never becomes true.
 {
-	let toolObservedAbort = null;
-	const slowTool = {
+	const observed = [];
+	let started;
+	const slowTool = (turn) => ({
 		name: "slow_tool",
 		description: "A slow tool used to prove the harness abort signal reaches tool handlers.",
-		// A realistic cancellable handler: it waits on its own work and, when the
-		// real harness abort signal fires, records that and rejects (mirroring
-		// how a genuine fetch/subprocess-backed tool would unwind on abort)
-		// instead of hanging forever.
+		// Subscribe inside the handler before telling the test it may abort.
+		// Each turn supplies a new closure with the same name and schema.
 		handler: (params, ctx) => new Promise((resolve, reject) => {
 			ctx.signal.addEventListener("abort", () => {
-				toolObservedAbort = ctx.signal.aborted === true;
+				observed.push({ turn, aborted: ctx.signal.aborted });
 				reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-			});
+			}, { once: true });
+			started.resolve(ctx.signal);
 		}),
+	});
+	const bounded = async (promise) => {
+		let timer;
+		try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("tool abort event deadline")), 5000); })]); }
+		finally { clearTimeout(timer); }
 	};
 	const models = createModels();
 	const faux = fauxProvider({ provider: "faux", models: [{ id: "scripted", name: "Scripted", input: ["text", "image"] }] });
 	models.setProvider(faux.provider);
-	installScripts(faux, [fauxAssistantMessage([fauxToolCall("slow_tool", {})], { stopReason: "toolUse" })]);
-	// `clock` defaults to the unbound `performance.now` in agent-runner.mjs
-	// (a pre-existing bug outside this task's scope, only reachable once a
-	// tool actually executes); supply a bound clock so the tool_start/tool_end
-	// telemetry this test depends on does not silently throw inside pi's event
-	// bus (which swallows listener errors) and drop the frame.
-	const runner = createAgentRunner({ models, tools: [slowTool], clock: () => Date.now() });
+	installScripts(faux, [1, 2].map((turn) => fauxAssistantMessage([fauxToolCall("slow_tool", {}, { id: `slow-${turn}` })], { stopReason: "toolUse" })));
+	const runner = createAgentRunner({ models });
 	const session = await runner.openSession("errors-tool-abort", { surface: "workflow" });
-	const frames = [];
-	let aborted = false;
-	const iterator = session.start({ text: "run the slow tool", model: "faux/scripted" })[Symbol.asyncIterator]();
-	const TIMEOUT_MS = 5000;
-	for (;;) {
-		const signal = AbortSignal.timeout(TIMEOUT_MS);
-		const timedOut = await new Promise((resolve) => {
-			const onTimeout = () => resolve(true);
-			signal.addEventListener("abort", onTimeout, { once: true });
-			iterator.next().then(({ value, done }) => {
-				signal.removeEventListener("abort", onTimeout);
-				if (done) { resolve(false); return; }
-				frames.push(value);
-				if (value.type === "tool.start" && !aborted) { aborted = true; session.abort("test").then(() => resolve(false)); }
-				else resolve(false);
-			});
-		});
-		if (timedOut) { expect("the runner stream did not hang waiting for the next frame", false, `no frame within ${TIMEOUT_MS}ms; frames so far=${JSON.stringify(frames)}`); break; }
-		if (frames.at(-1)?.type === "done") break;
-	}
-	await runner.close();
-	expect("the tool handler received pi's real harness abort signal (ctx.signal.aborted became true, not a function positionally treated as a signal)", toolObservedAbort === true, `toolObservedAbort=${toolObservedAbort}`);
-	expect("a done frame is the last frame", frames.at(-1)?.type === "done", JSON.stringify(frames));
+	let previousSignal;
+	try {
+		for (const turn of [1, 2]) {
+			started = Promise.withResolvers();
+			const completed = bounded(collect(session, { text: "run the slow tool", model: "faux/scripted", tools: [slowTool(turn)] }));
+			const signal = await bounded(started.promise);
+			assert.equal(signal.aborted, false, `turn ${turn} starts with a live signal`);
+			assert.notEqual(signal, previousSignal, "each turn receives its own harness abort signal");
+			await bounded(session.abort(`test turn ${turn}`));
+			const frames = await completed;
+			assert.equal(signal.aborted, true);
+			assert.equal(frames.at(-1)?.type, "done", JSON.stringify(frames));
+			assert.ok(frames.some((frame) => frame.type === "error" && frame.code === "aborted"), JSON.stringify(frames));
+			previousSignal = signal;
+		}
+	} finally { await runner.close(); }
+	console.log("two-turn tool abort bindings", JSON.stringify(observed));
+	assert.deepEqual(observed, [{ turn: 1, aborted: true }, { turn: 2, aborted: true }], "each turn's slow-tool closure observes that turn's abort");
+	console.log("PASS both turns' tool handlers receive pi's real harness abort signal and complete with done");
 }
 
 // --- abort persistence: the real session store never gets the cancelled
@@ -365,7 +441,7 @@ for (const token of ["AIza-secret-0123456789abcdefghijk", "sk-or-secret", "sk-an
 // --- a tool error containing a status-shaped substring in its own text must
 // NOT be reclassified as a provider error: it stays a tool failure with the
 // CODE: message format, because classifyError/classifyProviderError are only
-// ever invoked on the run's own operation error (run_end), never on a tool
+// ever invoked at provider response/run failure boundaries, never on a tool
 // result's text (verified structurally: tool_end never calls classifyError) ---
 {
 	const models = createModels();
