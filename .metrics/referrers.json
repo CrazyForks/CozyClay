@@ -674,5 +674,57 @@
       "count": 6,
       "uniques": 5
     }
+  ],
+  "2026-09-19": [
+    {
+      "referrer": "t.co",
+      "count": 777,
+      "uniques": 544
+    },
+    {
+      "referrer": "github.com",
+      "count": 445,
+      "uniques": 193
+    },
+    {
+      "referrer": "Google",
+      "count": 262,
+      "uniques": 105
+    },
+    {
+      "referrer": "cozyclay.org",
+      "count": 235,
+      "uniques": 120
+    },
+    {
+      "referrer": "l.threads.com",
+      "count": 130,
+      "uniques": 89
+    },
+    {
+      "referrer": "ruanyifeng.com",
+      "count": 99,
+      "uniques": 62
+    },
+    {
+      "referrer": "chatgpt.com",
+      "count": 48,
+      "uniques": 32
+    },
+    {
+      "referrer": "linkedin.com",
+      "count": 11,
+      "uniques": 3
+    },
+    {
+      "referrer": "com.linkedin.android",
+      "count": 5,
+      "uniques": 4
+    },
+    {
+      "referrer": "doubao.com",
+      "count": 4,
+      "uniques": 4
+    }
   ]
 }
