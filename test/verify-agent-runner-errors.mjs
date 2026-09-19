@@ -57,21 +57,71 @@ function errorMessage(text) {
 	expect("the surviving text reached the panel", frames.some((f) => f.type === "text.delta" && f.text) || frames.some((f) => f.type === "text.delta"), JSON.stringify(frames));
 }
 
-// --- 529 three times: retries exhausted (maxRetries:2 = 3 attempts total) -> error{code:'overloaded'} ---
-{
+// --- provider-shaped key material in an upstream error is never exposed ---
+for (const token of ["AIza-secret-0123456789abcdefghijk", "sk-or-secret", "sk-ant-secret", "sk-secret", "Bearer secret", "eyJsecret"]) {
 	const models = createModels();
 	const faux = fauxProvider({ provider: "faux", models: [{ id: "scripted", name: "Scripted", input: ["text", "image"] }] });
 	models.setProvider(faux.provider);
-	const calls = installScripts(faux, [errorMessage("529 Overloaded"), errorMessage("529 Overloaded"), errorMessage("529 Overloaded")]);
+	installScripts(faux, [() => { throw new Error(`provider key ${token}`); }]);
 	const runner = createAgentRunner({ models, tools: [] });
-	const session = await runner.openSession("errors-529", { surface: "workflow" });
+	const session = await runner.openSession("errors-sanitized-key", { surface: "workflow" });
 	const frames = await collect(session, { text: "hi", model: "faux/scripted" });
 	await runner.close();
+	const error = frames.find((frame) => frame.type === "error");
+	expect(`provider key material (${token.split("secret")[0]}) is redacted from the runner error frame`, !!error && !error.message.includes("AIza") && !error.message.includes("secret"), JSON.stringify(error));
+}
+
+// --- 529 three times: retries exhausted (maxRetries:2 = 3 attempts total) -> error{code:'overloaded'} ---
+{
+	const sessionsDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-runner-errors-overloaded-store-"));
+	const sessionStore = createSessionStore(sessionsDir);
+	const models = createModels();
+	const faux = fauxProvider({ provider: "faux", models: [{ id: "scripted", name: "Scripted", input: ["text", "image"] }] });
+	models.setProvider(faux.provider);
+	const calls = installScripts(faux, [errorMessage("500 overloaded"), errorMessage("500 overloaded"), errorMessage("500 overloaded"), fauxAssistantMessage([fauxText("recovered after overload")])]);
+	const runner = createAgentRunner({ models, tools: [], sessionStore });
+	const session = await runner.openSession("errors-529", { surface: "workflow" });
+	const frames = await collect(session, { text: "hi", model: "faux/scripted" });
+	const firstHistory = sessionStore.read("errors-529")?.history || [];
+	console.log("16a-overloaded-store-roles", JSON.stringify(firstHistory.map((message) => message.role)));
 	const error = frames.find((f) => f.type === "error");
 	expect("529 three times exhausts retries with one error frame", !!error, JSON.stringify(frames));
 	expect("the error frame carries code:'overloaded'", error?.code === "overloaded", JSON.stringify(error));
 	expect("a done frame follows the error frame", frames.at(-1)?.type === "done", JSON.stringify(frames));
 	expect("the model was called exactly 3 times", calls.length === 3, `calls.length=${calls.length}`);
+	expect("overloaded failures persist only the user message", JSON.stringify(firstHistory.map((message) => message.role)) === "[\"user\"]", JSON.stringify(firstHistory));
+	await collect(session, { text: "recover", model: "faux/scripted" });
+	const finalHistory = sessionStore.read("errors-529")?.history || [];
+	expect("a successful turn after overload persists [user,user,assistant]", JSON.stringify(finalHistory.map((message) => message.role)) === "[\"user\",\"user\",\"assistant\"]", JSON.stringify(finalHistory));
+	expect("the successful post-overload assistant is recovered", finalHistory.at(-1)?.content?.[0]?.text === "recovered after overload", JSON.stringify(finalHistory.at(-1)));
+	await runner.close();
+	console.log("16a-overloaded-final-roles", JSON.stringify(finalHistory.map((message) => message.role)));
+}
+
+// --- truncated provider stream: failed assistant entries never reach JSONL ---
+{
+	const sessionsDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-runner-errors-truncated-store-"));
+	const sessionStore = createSessionStore(sessionsDir);
+	const models = createModels();
+	const faux = fauxProvider({ provider: "faux", models: [{ id: "scripted", name: "Scripted", input: ["text", "image"] }] });
+	models.setProvider(faux.provider);
+	const calls = installScripts(faux, [errorMessage("response ended before a terminal response event"), fauxAssistantMessage([fauxText("recovered after truncation")])]);
+	const runner = createAgentRunner({ models, tools: [], sessionStore });
+	const session = await runner.openSession("errors-truncated", { surface: "workflow" });
+	const frames = await collect(session, { text: "truncated", model: "faux/scripted" });
+	const firstHistory = sessionStore.read("errors-truncated")?.history || [];
+	console.log("16a-truncated-store-roles", JSON.stringify(firstHistory.map((message) => message.role)));
+	const error = frames.find((f) => f.type === "error");
+	assert.equal(error?.code, "truncated");
+	assert.equal(frames.at(-1)?.type, "done");
+	expect("truncated failures persist only the user message", JSON.stringify(firstHistory.map((message) => message.role)) === "[\"user\"]", JSON.stringify(firstHistory));
+	await collect(session, { text: "recover truncation", model: "faux/scripted" });
+	const finalHistory = sessionStore.read("errors-truncated")?.history || [];
+	expect("a successful turn after truncation persists [user,user,assistant]", JSON.stringify(finalHistory.map((message) => message.role)) === "[\"user\",\"user\",\"assistant\"]", JSON.stringify(finalHistory));
+	expect("the successful post-truncation assistant is recovered", finalHistory.at(-1)?.content?.[0]?.text === "recovered after truncation", JSON.stringify(finalHistory.at(-1)));
+	expect("truncated scenario uses one initial and one successful provider call", calls.length === 2, `calls.length=${calls.length}`);
+	await runner.close();
+	console.log("16a-truncated-final-roles", JSON.stringify(finalHistory.map((message) => message.role)));
 }
 
 // --- 401 on openai-codex: the credential-store refresh path runs once, then one retry ---
@@ -92,6 +142,92 @@ function errorMessage(text) {
 	await runner.close();
 	expect("the credential-store refresh path (Models.getAuth forced-expiry) runs exactly once", authCalls.length === 1, `authCalls.length=${authCalls.length}`);
 	expect("the turn is retried exactly once and recovers", calls.length === 2 && frames.every((f) => f.type !== "error") && frames.at(-1)?.type === "done", JSON.stringify(frames));
+}
+
+// --- 401 retry continues the existing transcript, preserving one attachment ---
+{
+	const models = createModels();
+	const faux = fauxProvider({ provider: "openai-codex", models: [{ id: "gpt-6-astra", name: "Astra", input: ["text", "image"] }] });
+	models.setProvider(faux.provider);
+	const calls = installScripts(faux, [errorMessage("401 Unauthorized"), fauxAssistantMessage([fauxText("recovered with the original image")])]);
+	const runner = createAgentRunner({ models, tools: [] });
+	const session = await runner.openSession("errors-401-attachment", { surface: "workflow" });
+	const frames = await collect(session, {
+		text: "describe this image",
+		attachments: [{ dataUrl: "data:image/png;base64,AA==", name: "probe.png" }],
+	});
+	await runner.close();
+	const counts = calls.map((context) => context.messages.length);
+	const imageCounts = calls.map((context) => context.messages.filter((message) => message.role === "user" && message.content?.some((part) => part.type === "image")).length);
+	expect("401 retry resumes the same transcript with one attachment (message counts [2,2])", JSON.stringify(counts) === "[2,2]", JSON.stringify(counts));
+	expect("401 retry preserves exactly one image-bearing user message", JSON.stringify(imageCounts) === "[1,1]", JSON.stringify(imageCounts));
+	// pi stamps each delivery with its own `timestamp`; the turn's own content
+	// (roles, text and image bytes) is what must survive the retry unchanged.
+	const content = (context) => JSON.stringify(context.messages.map(({ role, content: parts }) => ({ role, content: parts })));
+	expect("401 retry keeps the original user messages and image bytes unchanged", content(calls[0]) === content(calls[1]), JSON.stringify(calls.map(content)));
+	expect("401 attachment retry still completes without an error frame", frames.every((frame) => frame.type !== "error") && frames.at(-1)?.type === "done", JSON.stringify(frames));
+}
+
+// --- auth retry persistence mirrors the final rewound branch ---
+{
+	const sessionsDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-runner-errors-retry-store-"));
+	const sessionStore = createSessionStore(sessionsDir);
+	const models = createModels();
+	const faux = fauxProvider({ provider: "openai-codex", models: [{ id: "gpt-6-astra", name: "Astra", input: ["text", "image"] }] });
+	models.setProvider(faux.provider);
+	installScripts(faux, [errorMessage("401 Unauthorized"), fauxAssistantMessage([fauxText("recovered")])]);
+	const runner = createAgentRunner({ models, tools: [], sessionStore });
+	const session = await runner.openSession("errors-401-persist", { surface: "workflow" });
+	await collect(session, { text: "describe this image", attachments: [{ dataUrl: "data:image/png;base64,AA==", name: "probe.png" }] });
+	await runner.close();
+	const history = sessionStore.read("errors-401-persist")?.history || [];
+	assert.deepEqual(history.map((message) => message.role), ["user", "user", "assistant"]);
+	assert.equal(history.at(-1).content?.[0]?.text, "recovered");
+	assert.equal(history.some((message) => message.errorMessage === "401 Unauthorized"), false);
+	console.log("retry-store-roles", JSON.stringify(history.map((message) => message.role)));
+	console.log("retry-store-history", JSON.stringify(history));
+	console.log("PASS auth retry persistence stores the final branch once, including the recovered assistant");
+}
+
+// --- ordinary two-turn persistence remains user/assistant per turn ---
+{
+	const sessionsDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-runner-errors-two-turn-store-"));
+	const sessionStore = createSessionStore(sessionsDir);
+	const models = createModels();
+	const faux = fauxProvider({ provider: "faux", models: [{ id: "scripted", name: "Scripted", input: ["text", "image"] }] });
+	models.setProvider(faux.provider);
+	installScripts(faux, [fauxAssistantMessage([fauxText("first")]), fauxAssistantMessage([fauxText("second")])]);
+	const runner = createAgentRunner({ models, tools: [], sessionStore });
+	const session = await runner.openSession("errors-two-turn-persist", { surface: "workflow" });
+	await collect(session, { text: "one", model: "faux/scripted" });
+	await collect(session, { text: "two", model: "faux/scripted" });
+	await runner.close();
+	const history = sessionStore.read("errors-two-turn-persist")?.history || [];
+	assert.deepEqual(history.map((message) => message.role), ["user", "assistant", "user", "assistant"]);
+	console.log("two-turn-store-roles", JSON.stringify(history.map((message) => message.role)));
+	console.log("PASS ordinary two-turn persistence remains user/assistant/user/assistant");
+}
+
+// --- a second auth failure persists user messages only and emits one error ---
+{
+	const sessionsDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-runner-errors-retry-fail-store-"));
+	const sessionStore = createSessionStore(sessionsDir);
+	const models = createModels();
+	const faux = fauxProvider({ provider: "openai-codex", models: [{ id: "gpt-6-astra", name: "Astra", input: ["text", "image"] }] });
+	models.setProvider(faux.provider);
+	installScripts(faux, [errorMessage("401 Unauthorized"), errorMessage("401 Unauthorized")]);
+	const runner = createAgentRunner({ models, tools: [], sessionStore });
+	const session = await runner.openSession("errors-401-retry-failed", { surface: "workflow" });
+	const frames = await collect(session, { text: "describe this image", attachments: [{ dataUrl: "data:image/png;base64,AA==", name: "probe.png" }] });
+	await runner.close();
+	const history = sessionStore.read("errors-401-retry-failed")?.history || [];
+	assert.deepEqual(history.map((message) => message.role), ["user", "user"]);
+	assert.equal(history.some((message) => message.role === "assistant"), false);
+	assert.equal(frames.filter((frame) => frame.type === "error").length, 1);
+	assert.equal(frames.at(-1)?.type, "done");
+	console.log("retry-failed-store-roles", JSON.stringify(history.map((message) => message.role)));
+	console.log("retry-failed-frames", JSON.stringify(frames));
+	console.log("PASS failed auth retry persists user messages only with one error and done");
 }
 
 // --- abort mid-stream: no further model calls, an error{code:'aborted'} frame, then done ---
