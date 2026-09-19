@@ -353,6 +353,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		void ownedStudioRuntime?.dispose?.(); ownedStudioRuntime = studioRuntime || null;
 		for (const runner of [...workflowRunners.values(), ...studioRunners.values()]) void runner.close?.();
 		workflowRunners.clear(); studioRunners.clear();
+		workflowModels = models;
 		sessions.clear(); studioSessions.clear(); studioEvents.clear(); studioOwnerTokens.clear();
 	});
 
@@ -539,7 +540,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		};
 		let runner = studioRunners.get(value.sessionId);
 		if (!runner) {
-			runner = createAgentRunner({ models, fauxProvider, sessionStore, clock, codexBaseUrl, auth });
+			runner = createAgentRunner({ models: await ensureWorkflowModels(), fauxProvider, sessionStore, clock, codexBaseUrl, auth });
 			studioRunners.set(value.sessionId, runner);
 		}
 		try {
@@ -643,7 +644,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		if (path === "/agent/models" && req.method === "GET") {
 			try {
 				const { listAgentModels } = await import("./providers.mjs");
-				json(res, 200, await listAgentModels({ auth, codex, models }));
+				json(res, 200, await listAgentModels({ auth, codex, models: await ensureWorkflowModels() }));
 			} catch (error) { json(res, error.status === 401 ? 401 : 502, { error: errorInfo(error) }); }
 			return true;
 		}
