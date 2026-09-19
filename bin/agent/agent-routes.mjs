@@ -281,12 +281,15 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 	const workflowRunners = new Map();
 	const studioRunners = new Map();
 	let workflowModels = models;
+	let workflowModelsPromise = models ? Promise.resolve(models) : null;
 	const ensureWorkflowModels = async () => {
-		if (!workflowModels) {
-			const { createModels } = await import("./providers.mjs");
-			workflowModels = await createModels({ auth, codexBaseUrl });
+		const pending = workflowModelsPromise ??= import("./providers.mjs").then(({ createModels }) => createModels({ auth, codexBaseUrl }));
+		try { return await pending; }
+		catch (error) {
+			// A retired build must not clear a newer identity's initialization.
+			if (workflowModelsPromise === pending) workflowModelsPromise = null;
+			throw error;
 		}
-		return workflowModels;
 	};
 	const hasAnyCredential = async () => {
 		try { if (await auth.getAccessToken()) return true; } catch { /* an unavailable ChatGPT token is not a credential */ }
@@ -354,6 +357,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		for (const runner of [...workflowRunners.values(), ...studioRunners.values()]) void runner.close?.();
 		workflowRunners.clear(); studioRunners.clear();
 		workflowModels = models;
+		workflowModelsPromise = models ? Promise.resolve(models) : null;
 		sessions.clear(); studioSessions.clear(); studioEvents.clear(); studioOwnerTokens.clear();
 	});
 
@@ -394,6 +398,9 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			// Retired ids remain in the set so a repeat Stop is idempotent, while an id
 			// admitted by another session is stale even when this session is idle.
 			if (value.jobId && !session.motionJobIds.has(value.jobId)) throw new StudioProtocolError("STALE_TARGET", "Stop does not own that motion job.");
+			// An owned retired id is still stale while another motion job is active:
+			// this Stop cannot acknowledge the current turn's different job.
+			if (value.jobId && session.activeJobId && value.jobId !== session.activeJobId) throw new StudioProtocolError("STALE_TARGET", "Stop does not target the active motion job.");
 			// #379 / 16r: a job's id is only "acknowledged" by THIS turn's held motion
 			// tool — session.activeJobId now stays set only while that job is genuinely
 			// still in flight (or pending an explicit accept), and activeJobTurnId ties
