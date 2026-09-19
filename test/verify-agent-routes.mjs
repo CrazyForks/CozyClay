@@ -16,7 +16,6 @@ function assertUniqueToolPairs(frames, message) {
 }
 const sessionDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-sessions-"));
 process.env.COZYCLAY_AGENT_SESSIONS_DIR = sessionDir;
-const calls = [];
 const fauxMain = createFakeModel();
 fauxMain.script([
 	{ type: "text", text: "hello" },
@@ -31,21 +30,6 @@ const fakeCodex = {
   listModels: async () => ["gpt-5", { slug: "gpt-6-astra", supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "xhigh" }], default_reasoning_level: "medium" }],
   parseQuotaHeaders: () => ({ planType: "Plus", primary: {}, credits: { hasCredits: true } }),
   editImage: async () => ({ pngBase64: png.split(",")[1], width: 1, height: 1 }),
-  streamResponses: ({ input }) => {
-    calls.push(input);
-    const items = calls.length === 1
-      ? [{ type: "message", role: "assistant" }, { type: "function_call", call_id: "c1", name: "describe_workflow", arguments: "{}" }]
-      : calls.length === 2
-        ? [{ type: "function_call", call_id: "c2", name: "add_workflow_node", arguments: JSON.stringify({ type: "image", model: "image-generation", data: { prompt: "render" } }) }]
-        : calls.length === 3
-          ? [{ type: "function_call", call_id: "c3", name: "run_workflow", arguments: "{}" }]
-          : [{ type: "message", role: "assistant" }];
-    return { headers: Promise.resolve(new Headers()), async *[Symbol.asyncIterator]() {
-      if (calls.length !== 2) yield { type: "response.output_text.delta", delta: calls.length === 1 ? "hello" : " done" };
-      for (const item of items) yield { type: "response.output_item.done", item };
-      yield { type: "response.completed", response: { status: "completed" } };
-    } };
-  },
 };
 let server;
 const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: fauxMain.models, fauxProvider: fauxMain.fauxProvider, liveHub: fakeLive, port: () => server.address().port });
@@ -680,7 +664,7 @@ console.log("agent routes verified");
 	failFaux.fauxProvider.setResponses([async () => { failTurns += 1; throw Object.assign(new Error("Model response failed."), { code: "server_error" }); }]);
 	let failServer;
 	const failHub = { command: async () => ({ ok: true }), workspaceId: () => "tab-8", resolveWorkspace: () => "handle-13", handleForWorkspaceId: () => "handle-13", connected: true, workspaceHandles: ["handle-13"] };
-	const failHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: failFaux.models, fauxProvider: failFaux.fauxProvider, liveHub: failHub, studioRuntime: failRuntime, retryDelayMs: 1, port: () => failServer.address().port });
+	const failHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: failFaux.models, fauxProvider: failFaux.fauxProvider, liveHub: failHub, studioRuntime: failRuntime, port: () => failServer.address().port });
 	failServer = createServer((req, res) => failHandler(req, res).catch((error) => { console.error("studio-stream-error fixture error:", error); if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	failServer.listen(0, "127.0.0.1");
 	await once(failServer, "listening");

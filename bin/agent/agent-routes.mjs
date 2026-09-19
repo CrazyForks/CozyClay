@@ -4,7 +4,7 @@ import { basename } from "node:path";
 import * as defaultAuth from "../codex-auth.mjs";
 import { publishLiveEndpoint, removeLiveEndpoint } from "../live-endpoint.mjs";
 import { createCodexClient } from "./codex-client.mjs";
-import { createAgentTools, agentToolSchemas, SYSTEM_PROMPT, pickWorkspace, summariseCanvasResult } from "./agent-tools.mjs";
+import { createAgentTools, SYSTEM_PROMPT, pickWorkspace } from "./agent-tools.mjs";
 
 import { createVideoAdapters } from "./video-adapters.mjs";
 import { createSessionStore, transcriptFromHistory } from "./session-store.mjs";
@@ -50,18 +50,6 @@ function validAttachments(attachments) {
 		&& (entry.name === undefined || (typeof entry.name === "string" && entry.name.length <= 120)));
 }
 
-/** One user item per attached picture: what it is, then the picture itself.
- * They are pushed BEFORE the turn text so the model reads the question with
- * the images already in view — the same shape attachFrame uses. */
-export function attachmentInputItems(attachments) {
-	return (Array.isArray(attachments) ? attachments : []).map((attachment, index) => ({
-		role: "user",
-		content: [
-			{ type: "input_text", text: `User attachment ${attachment.name || index + 1}` },
-			{ type: "input_image", image_url: attachment.dataUrl },
-		],
-	}));
-}
 // Keep this local relay self-contained: minimal sidecar installs omit src/.
 const advisory = (read, fallback) => { try { return read(); } catch { return fallback; } };
 const telemetryId = () => advisory(() => randomBytes(16).toString("hex"), null);
@@ -273,7 +261,7 @@ function liveToolsRuntime() {
 	}).catch((error) => ({ error }));
 }
 
-export function createAgentHandler({ auth = defaultAuth, codex, models, codexBaseUrl, fauxProvider, handlers, liveHub, port, getBridgeOrigin, retryDelayMs = 2000, studioRuntime, clock = Date.now, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, sessionStore: injectedSessionStore } = {}) {
+export function createAgentHandler({ auth = defaultAuth, codex, models, codexBaseUrl, fauxProvider, handlers, liveHub, port, getBridgeOrigin, studioRuntime, clock = Date.now, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, sessionStore: injectedSessionStore } = {}) {
 	const requestContext = new AsyncLocalStorage();
 	codex ||= defaultClient(auth, requestContext);
 	const runtime = handlers !== undefined || liveHub !== undefined ? Promise.resolve({ handlers: handlers ?? [], liveHub }) : liveToolsRuntime();
