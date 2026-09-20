@@ -58,6 +58,7 @@ import { useSemanticState } from "./use-semantic-state.js";
 import AgentPanel from "./workflow/AgentPanel.jsx";
 import { buildStudioContext, physicsFingerprintInput, studioEntityCursor, validateStudioCursor } from "./studio-agent-context.js";
 import { STUDIO_TOOL_FAMILIES, StudioProtocolError, validateStudioCommand, validateStudioIdentity, validateTargetGuard, validateReceipt } from "./studio-agent-protocol.js";
+import { elementByPath } from "./studio-elements.js";
 import { createStudioCommands, createStudioCommandJournal, studioObjectCatalogue } from "./studio-agent-commands.js";
 import { createStudioMotionCandidates } from "./studio-agent-motion.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
@@ -483,6 +484,8 @@ function ShotGuideOverlay({ mode, aspect, className = "" }) {
 // the photograph rather than guessed at it. Same number the fit diagnostics are
 // scaled on (0..1 visibility), so it reads as "less than half seen".
 const PHOTO_POSE_LOW_CONFIDENCE = 0.5;
+const CHARACTER_POSITION_BOUNDS = elementByPath("character.position").gizmo;
+const CHARACTER_SCALE_BOUNDS = elementByPath("character.scale");
 
 // How long an agent receipt keeps its targets lit in the hierarchy. Long
 // enough to find the row after reading the chat line, short enough that it is
@@ -652,11 +655,24 @@ export function createStudioAppBinding(ports) {
 	const fail = (code, message) => { throw new StudioProtocolError(code, message); };
 	const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 	const identities = new WeakMap(); let identitySequence = 0, tokenSequence = 0;
+	const motionStamps = new Map(), calibrationStamps = new Map();
 	const identityOf = value => {
 		if (!value || typeof value !== "object") return 0;
 		if (!identities.has(value)) identities.set(value, ++identitySequence);
 		return identities.get(value);
 	};
+	const stableStamp = (stamps, key) => {
+		if (key === null) return 0;
+		if (!stamps.has(key)) stamps.set(key, stamps.size + 1);
+		return stamps.get(key);
+	};
+	const motionContentKey = value => {
+		if (!value || typeof value !== "object") return null;
+		if (typeof value.studioTakeId === "string" && value.studioTakeId) return value.studioTakeId;
+		if (typeof value.motionRef?.motionId === "string" && value.motionRef.motionId) return value.motionRef.motionId;
+		return `${value.frames ?? 0}:${value.fps ?? 0}:${value.rotMats?.length ?? 0}:${value.rootPos?.length ?? 0}:${value.posedJoints?.length ?? 0}`;
+	};
+	const calibrationContentKey = value => value && typeof value === "object" ? JSON.stringify(value) : null;
 	const tokens = new Map(), receipts = new Map(), jobs = new Map(), images = new Map();
 	let owner = null, commands = null, motion = null, journal = null;
 	let authoredKey, physicsKey, viewKey, observedSceneRevision = ports.revision.current;
@@ -677,9 +693,13 @@ export function createStudioAppBinding(ports) {
 			return { ...character, sessionMotion: identityOf(target?.motion),
 				ik: physicsKeyStamp(target?.ikState?.keys ?? new Map()), rig: target?.rig?.uuid ?? null };
 		});
+		// Runtime motion, IK and rig fields are derived from the active editor
+		// buffers, not authored document state. A fresh equivalent buffer object
+		// must not advance the scene clock on a read.
+		const authoredCharacters = raw.characters.map(({ sessionMotion, ik, rig, ...character }) => character);
 		// The stage is authored state too: a key-light or environment edit from any
 		// surface bumps the scene revision exactly like a cast or object edit.
-		const authored = JSON.stringify([raw.objects, characters, raw.shots, raw.frameCount, raw.stage]);
+		const authored = JSON.stringify([raw.objects, authoredCharacters, raw.shots, raw.frameCount, raw.stage]);
 		if (authoredKey !== undefined && authoredKey !== authored && observedSceneRevision === ports.revision.current) ports.revision.current++;
 		authoredKey = authored; observedSceneRevision = ports.revision.current;
 		const liveIds = new Set([...raw.objects, ...raw.characters, ...raw.shots].map(row => row.id));
@@ -697,11 +717,12 @@ export function createStudioAppBinding(ports) {
 				supportY: supportHeightForObject(o), parentId: o.parent ?? null, attachment: o.attach ?? null, path: o.path ?? null })),
 			characters: raw.characters.map(c => {
 				const t = raw.targets.get(c.id), summary = characters.find(row => row.id === c.id);
+				const motionKey = motionContentKey(t?.motion), calibrationKey = calibrationContentKey(t?.motion?.sceneCalibration);
 				return { id: c.id, incarnation: tokens.get(c.id).incarnation, modelId: c.model ?? null,
 					rigId: t?.rig?.uuid ?? null, rigReady: Boolean(t?.rig), hidden: Boolean(c.hidden),
 					position: { x: c.x, y: c.y ?? 0, z: c.z }, yawDeg: c.rot ?? 0, scale: c.scale ?? 1,
-					takeId: t?.motion?.studioTakeId ?? null, sessionMotionId: t?.motion ? `motion-${identityOf(t.motion)}` : null,
-					motionRevision: identityOf(t?.motion), calibrationRevision: identityOf(t?.motion?.sceneCalibration),
+					takeId: t?.motion?.studioTakeId ?? null, sessionMotionId: motionKey ? `motion-${motionKey}` : null,
+					motionRevision: stableStamp(motionStamps, motionKey), calibrationRevision: stableStamp(calibrationStamps, calibrationKey),
 					ikRevision: ports.ikRevision(c.id, summary.ik),
 					waypoints: (c.layer?.waypoints ?? []).map(p => ({ frame: p.frame, position: { x: p.x, y: p.y ?? 0, z: p.z } })) };
 			}) });
@@ -1574,7 +1595,9 @@ export default function App() {
 			// objects and cutouts take the same ROOM_LIMIT clamp their creators
 			// already apply.
 			if (payload.kind === "character") {
-				spawnCharacter(payload.id, THREE.MathUtils.clamp(hit.x, -4, 4), THREE.MathUtils.clamp(hit.z, -4, 4));
+				spawnCharacter(payload.id,
+					THREE.MathUtils.clamp(hit.x, CHARACTER_POSITION_BOUNDS.min.x, CHARACTER_POSITION_BOUNDS.max.x),
+					THREE.MathUtils.clamp(hit.z, CHARACTER_POSITION_BOUNDS.min.z, CHARACTER_POSITION_BOUNDS.max.z));
 			} else if (payload.kind === "object") {
 				addSceneObject(payload.objectKind, { x: hit.x, z: hit.z });
 			} else if (payload.kind === "image") {
@@ -12144,18 +12167,18 @@ function resizePromptClip(id, edge, rawFrame) {
 									shotAspect={lookThroughShot ? shotOutput.aspect : null}
 									onChange={(id, patch) => moveCharacter(activeChar.id, () => {
 										const next = {};
-										if (patch.x !== undefined) next.x = THREE.MathUtils.clamp(patch.x, -4, 4);
+										if (patch.x !== undefined) next.x = THREE.MathUtils.clamp(patch.x, CHARACTER_POSITION_BOUNDS.min.x, CHARACTER_POSITION_BOUNDS.max.x);
 										// Lift floors at the deck but has no ceiling — a crane
 										// shot may hoist the body as high as the move needs
 										// (the inspector's Height scrub agrees).
-										if (patch.y !== undefined) next.y = Math.max(0, patch.y);
-										if (patch.z !== undefined) next.z = THREE.MathUtils.clamp(patch.z, -4, 4);
+										if (patch.y !== undefined) next.y = Math.max(CHARACTER_POSITION_BOUNDS.min.y, patch.y);
+										if (patch.z !== undefined) next.z = THREE.MathUtils.clamp(patch.z, CHARACTER_POSITION_BOUNDS.min.z, CHARACTER_POSITION_BOUNDS.max.z);
 										// a body only yaws — the X/Z rings and the screen ring's
 										// other channels have nowhere to go on a character
 										if (patch.rotY !== undefined) next.rot = patch.rotY;
 										// one stature knob: any scale axis reads as uniform
 										const s = patch.scaleX ?? patch.scaleY ?? patch.scaleZ;
-										if (s !== undefined) next.scale = THREE.MathUtils.clamp(s, 0.2, 3);
+										if (s !== undefined) next.scale = THREE.MathUtils.clamp(s, CHARACTER_SCALE_BOUNDS.min, CHARACTER_SCALE_BOUNDS.max);
 										return next;
 									})}
 									onDragStart={recordCharacterUndo}

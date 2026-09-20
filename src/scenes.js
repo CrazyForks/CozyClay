@@ -5,6 +5,13 @@
 import { DEFAULT_SENSOR_FORMAT, SENSOR_FORMATS } from "./shot.js";
 import { normalizeStableItems } from "./stable-items.js";
 import { normalizeMotionCalibration } from "./ardy/motion-calibration.js";
+import { elementByPath } from "./studio-elements.js";
+import { wrapAngle } from "./scene-objects.js";
+
+const CHARACTER_POSITION_LIMITS = elementByPath("character.position");
+const CHARACTER_ROTATION_LIMITS = elementByPath("character.rot");
+const CHARACTER_SCALE_LIMITS = elementByPath("character.scale");
+const KEY_LIGHT_LIMITS = Object.fromEntries(["x", "y", "z", "intensity", "warmth"].map((axis) => [axis, elementByPath(`stage.keyLight.${axis}`)]));
 
 export const SCENES_VERSION = 4;
 export const SCENES_STORAGE_KEY = "cozyclay.scenes.v4";
@@ -67,14 +74,16 @@ export const DEFAULT_SCENE_STAGE = Object.freeze({
 export function createKeyLight(value) {
 	const source = plainObject(value) ? value : {};
 	const fallback = DEFAULT_SCENE_STAGE.keyLight;
-	const finite = (entry, base) => (typeof entry === "number" && Number.isFinite(entry) ? entry : base);
+	const finite = (entry, base, bounds) => (typeof entry === "number" && Number.isFinite(entry)
+		? Math.max(bounds.min, Math.min(bounds.max, entry))
+		: base);
 	return {
-		x: Math.max(-30, Math.min(30, finite(source.x, fallback.x))),
-		y: Math.max(0.5, Math.min(30, finite(source.y, fallback.y))),
-		z: Math.max(-30, Math.min(30, finite(source.z, fallback.z))),
-		intensity: Math.max(0, Math.min(4, finite(source.intensity, fallback.intensity))),
+		x: finite(source.x, fallback.x, KEY_LIGHT_LIMITS.x),
+		y: finite(source.y, fallback.y, KEY_LIGHT_LIMITS.y),
+		z: finite(source.z, fallback.z, KEY_LIGHT_LIMITS.z),
+		intensity: finite(source.intensity, fallback.intensity, KEY_LIGHT_LIMITS.intensity),
 		// 0 = cool daylight, 0.5 = the tuned warm default, 1 = sunset amber
-		warmth: Math.max(0, Math.min(1, finite(source.warmth, fallback.warmth))),
+		warmth: finite(source.warmth, fallback.warmth, KEY_LIGHT_LIMITS.warmth),
 	};
 }
 
@@ -121,10 +130,10 @@ export function normalizeReferenceImage(value) {
 /** Stature band for a cast member. Wider than ardy/npz.js's mocap band
  * (0.6-1.5, a sanity clamp on ESTIMATED statures): the gizmo's scale handles
  * are a deliberate artistic ask, and a previs giant or child is legitimate. */
-export const CHARACTER_SCALE_MIN = 0.2;
-export const CHARACTER_SCALE_MAX = 3;
+export const CHARACTER_SCALE_MIN = CHARACTER_SCALE_LIMITS.min;
+export const CHARACTER_SCALE_MAX = CHARACTER_SCALE_LIMITS.max;
 const clampScale = (value) => (Number.isFinite(value) && value > 0
-	? Math.max(CHARACTER_SCALE_MIN, Math.min(CHARACTER_SCALE_MAX, value))
+	? Math.max(CHARACTER_SCALE_LIMITS.min, Math.min(CHARACTER_SCALE_LIMITS.max, value))
 	: 1);
 
 /** Where an extra extraction take's performer stands: the filmed offset from
@@ -148,12 +157,12 @@ export function createCharacterEntry(source = null, index = 0) {
 	return {
 		id: typeof s.id === "string" && s.id ? s.id : `char-${index + 1}`,
 		model: CHARACTER_MODEL_IDS.includes(s.model) ? s.model : DEFAULT_CHARACTER_MODEL,
-		x: finiteOr(s.x, 0),
-		// Lift floors at the deck; there is deliberately no ceiling, so every
-		// writer (inspector field, viewport gizmo, load path) shares max(0, y).
-		y: Math.max(0, finiteOr(s.y, 0)),
-		z: finiteOr(s.z, 0),
-		rot: finiteOr(s.rot, 0),
+		x: Math.max(CHARACTER_POSITION_LIMITS.min.x, Math.min(CHARACTER_POSITION_LIMITS.max.x, finiteOr(s.x, 0))),
+		// Lift is bounded by the deck and the shared room headroom, so every
+		// writer (inspector field, viewport gizmo, load path) shares one envelope.
+		y: Math.max(CHARACTER_POSITION_LIMITS.min.y, Math.min(CHARACTER_POSITION_LIMITS.max.y, finiteOr(s.y, 0))),
+		z: Math.max(CHARACTER_POSITION_LIMITS.min.z, Math.min(CHARACTER_POSITION_LIMITS.max.z, finiteOr(s.z, 0))),
+		rot: wrapAngle(finiteOr(s.rot, 0)),
 		hidden: s.hidden === true,
 		// User-picked body tint; null means "model default" (y-bot clay, x-bot
 		// whiter clay) so the entry survives future default tweaks.

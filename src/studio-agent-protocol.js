@@ -128,10 +128,29 @@ export function patchValueSchema(element) {
 	if (element.type === "id") return id;
 	if (element.type === "color") return { ...text(32), pattern: "^#[0-9a-fA-F]{6}$" };
 	if (element.type === "image") return nullable(dataImage);
-	if (element.type === "vec3") return vec3;
+	if (element.type === "vec3") {
+		const bounds = element.gizmo ?? element;
+		if (bounds.min && typeof bounds.min === "object" && bounds.max && typeof bounds.max === "object") {
+			return object({ x: number(bounds.min.x, bounds.max.x), y: number(bounds.min.y, bounds.max.y), z: number(bounds.min.z, bounds.max.z) });
+		}
+		return vec3;
+	}
 	if (element.type === "string") return text(240);
 	return null;
 }
+/** One descriptor per patch-exposed element: the wire-facing range vocabulary
+ * a caller reads instead of guessing bounds from a rejection. Pure, and
+ * derived from the same declaration table as `patchValueSchema` so the two
+ * can never drift apart. */
+export function buildPatchDescriptors(elements) {
+	return elements.filter(element => element.agentExposure === "patch").map(({ path, type, min, max, enum: enumValues, gizmo }) => ({
+		path, type,
+		...(gizmo?.min !== undefined ? { min: { ...gizmo.min } } : min !== undefined ? { min: min && typeof min === "object" ? { ...min } : min } : {}),
+		...(gizmo?.max !== undefined ? { max: { ...gizmo.max } } : max !== undefined ? { max: max && typeof max === "object" ? { ...max } : max } : {}),
+		...(enumValues ? { enum: [...enumValues] } : {}),
+	}));
+}
+export const STUDIO_PATCH_DESCRIPTORS = freezeStudioData(buildPatchDescriptors(STUDIO_ELEMENTS));
 /** Pure: feed it any element table and read back the `set` schema per kind. */
 export function buildPatchSchema(elements) {
 	const kinds = {};
@@ -256,9 +275,20 @@ export const StudioSchemas = freezeStudioData({ catalogue: STUDIO_CATALOGUE, var
 export function validateStudioSchema(schema, value, code = "INVALID_ARGUMENT", path = "$") {
 	if (schema.oneOf) {
 		const matches = [];
+		const failures = [];
 		for (const branch of schema.oneOf) {
 			try { matches.push(validateStudioSchema(branch, value, code, path)); }
-			catch (error) { if (!(error instanceof StudioProtocolError)) throw error; }
+			catch (error) { if (!(error instanceof StudioProtocolError)) throw error; failures.push({ branch, error }); }
+		}
+		// No variant matched: the generic "one of N" message hides which path and
+		// bound actually offended. Surface the failure from the variant the input
+		// discriminates to (matching target.kind), or else the deepest failing
+		// path, instead of the union's own shallow message.
+		if (matches.length === 0 && failures.length) {
+			const kind = record(value) && record(value.target) ? value.target.kind : undefined;
+			const discriminated = kind !== undefined && failures.find(({ branch }) => branch.properties?.target?.properties?.kind?.const === kind);
+			const chosen = discriminated || failures.reduce((best, next) => next.error.details.path.length > best.error.details.path.length ? next : best);
+			throw chosen.error;
 		}
 		if (matches.length !== 1) fail(code, "Expected exactly one supported variant.", path);
 		return matches[0];
@@ -290,7 +320,11 @@ export function validateStudioSchema(schema, value, code = "INVALID_ARGUMENT", p
 	}
 	if (schema.type === "boolean") { if (typeof value !== "boolean") fail(code, "Expected boolean.", path); return value; }
 	if (schema.type === "number" || schema.type === "integer") {
-		if (typeof value !== "number" || !Number.isFinite(value) || (schema.type === "integer" && !Number.isSafeInteger(value)) || (schema.minimum !== undefined && value < schema.minimum) || (schema.maximum !== undefined && value > schema.maximum) || (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum)) fail(code, "Number outside supported bounds.", path);
+		if (typeof value !== "number" || !Number.isFinite(value) || (schema.type === "integer" && !Number.isSafeInteger(value)) || (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum)) fail(code, "Number outside supported bounds.", path);
+		if ((schema.minimum !== undefined && value < schema.minimum) || (schema.maximum !== undefined && value > schema.maximum)) {
+			const bounds = [schema.minimum, schema.maximum].filter(bound => bound !== undefined);
+			fail(code, `${path}: Expected a number within [${bounds.join(", ")}].`, path);
+		}
 		return value;
 	}
 	throw new Error("Unsupported internal Studio schema.");
