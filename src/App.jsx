@@ -345,7 +345,7 @@ import { buildZip } from "./zip-store.js";
 import { composeStoryboard } from "./storyboard.js";
 import { DEPTH_RANGE_M, depthRangeFromFrames, passFileName, renderPass } from "./render-passes.js";
 import { VIDEO_MODEL_PRESETS } from "./model-presets.js";
-import { buildH3MotionPrompt, motionApiOrigin, submitFalMotion, waitForFalMotionJob, FAL_MOTION_MIN_DURATION, FAL_MOTION_STILL_OUTPUT } from "./fal-motion-client.js";
+import { buildH3MotionPrompt, motionApiOrigin, submitFalMotion, waitForFalMotionJob, FAL_MOTION_MIN_DURATION, FAL_MOTION_SHOT_ASPECT, FAL_MOTION_STILL_OUTPUT } from "./fal-motion-client.js";
 import { serializeOtio } from "./otio.js";
 import {
 	addShotAtFrame,
@@ -5919,13 +5919,14 @@ export default function App() {
 	}
 
 	function captureFalStill() {
-		// H3 480P follows the reference canvas. Keep this capture independent of
-		// the Studio's current shot ratio (2.39:1, 9:16, etc.) so the submitted
-		// still and the generated 832x480 clip have the same 16:9 canvas.
+		// H3 480P renders 832x480. The still is captured at exactly that canvas
+		// (x2) regardless of the Studio's shot ratio; markFalPose also switches
+		// the viewport to the matching ratio so what the user framed is what
+		// gets sent.
 		const captured = liveHandlersRef.current?.capture_framing_png?.({ output: FAL_MOTION_STILL_OUTPUT });
 		if (!captured?.dataUrl?.startsWith("data:image/")) throw new Error(ko("렌더러가 준비되지 않았어요.", "The shot renderer is not ready."));
 		if (captured.width !== FAL_MOTION_STILL_OUTPUT.width || captured.height !== FAL_MOTION_STILL_OUTPUT.height) {
-			throw new Error(ko("H3 480P 참조 캡처는 16:9(1920×1080)이어야 해요.", "The H3 480P reference must be captured at 16:9 (1920×1080)."));
+			throw new Error(ko(`H3 480P 참조 캡처는 ${FAL_MOTION_STILL_OUTPUT.width}×${FAL_MOTION_STILL_OUTPUT.height}이어야 해요.`, `The H3 480P reference must be captured at ${FAL_MOTION_STILL_OUTPUT.width}×${FAL_MOTION_STILL_OUTPUT.height}.`));
 		}
 		// H3 must see the same complete subject in both endpoints. A clipped
 		// foot or head makes the model invent the missing geometry during the
@@ -5952,8 +5953,8 @@ export default function App() {
 		);
 		if (clipped) {
 			throw new Error(ko(
-				"A/B 참조에 캐릭터 전신이 다 안 들어왔어요. 머리와 양발이 화면 안에 들어오도록 카메라를 뒤로 빼고 다시 캡처하세요.",
-				"The full character is not inside the A/B reference. Pull the camera back until the head and both feet are visible, then capture again."
+				"A/B 참조에 캐릭터 전신이 다 안 들어왔어요. 샷 시점에서 머리와 양발이 화면 안에 들어오도록 카메라를 뒤로 빼고 다시 캡처하세요.",
+				"The full character is not inside the A/B reference. In the shot view, pull the camera back until the head and both feet are visible, then capture again."
 			));
 		}
 		if (!falMotionSegmentationReady || !Array.isArray(captured.partColours) || captured.partColours.length === 0) {
@@ -5962,12 +5963,23 @@ export default function App() {
 		return { ...captured, framing: captureCurrentFraming() };
 	}
 
+	/** Put the viewport on the Fal canvas and hand the fly controls to the
+	 * shot camera, so the user composes the A/B reference on exactly the
+	 * 832x480 frame the clip will have. Idempotent; capture does not need it. */
+	function enterFalFraming() {
+		setShotAspectKey(FAL_MOTION_SHOT_ASPECT);
+		if (!lookThroughShot) enterShotLook();
+	}
+
 	function markFalPose(slot) {
 		try {
 			if (slot === "b" && falMotion.a && framingDistance(falMotion.a.framing, captureCurrentFraming()) > 0.001) {
 				throw new Error(ko("A와 B 사이에서 카메라가 이동했어요. 같은 카메라 프레이밍으로 다시 캡처하세요.", "The camera moved between A and B. Capture both refs with the same camera framing."));
 			}
 			const still = captureFalStill();
+			// The capture is already on the Fal canvas; make the viewport agree so
+			// the user sees the frame that was just sent.
+			setShotAspectKey(FAL_MOTION_SHOT_ASPECT);
 			setFalMotion((current) => ({ ...current, [slot]: still, status: "idle", error: "" }));
 			if (slot === "a") setFalMotionCameraUnlocked(false);
 			setToast(isKo ? `포즈 ${slot.toUpperCase()} 캡처됨 · ${still.width}×${still.height}` : `Pose ${slot.toUpperCase()} captured · ${still.width}×${still.height}`);
@@ -13162,7 +13174,10 @@ function resizePromptClip(id, edge, rawFrame) {
 								[4, ko("생성", "Generate")],
 							].map(([step, label]) => <span key={step} className={falMotionStep === step ? "active" : falMotionStep > step ? "done" : ""}><b>{step}</b>{label}</span>)}
 						</div>
-						<p className="inspector-hint fal-motion-ratio">{ko("참조 캡처 16:9 · 1920×1080 → H3 480P 832×480 · 현재 샷 비율과 무관하게 이 규격으로 캡처합니다.", "Reference capture 16:9 · 1920×1080 → H3 480P 832×480 · this capture size is fixed for the motion request.")}</p>
+						<div className="fal-motion-segmentation-row">
+							<p className="inspector-hint fal-motion-ratio">{ko("참조 캡처 1664×960 → H3 480P 832×480 · 샷 시점에서 이 비율로 구도를 잡고 캡처하세요.", "Reference capture 1664×960 → H3 480P 832×480 · frame the shot through this ratio, then capture.")}</p>
+							<button type="button" className="btn fal-motion-flat-cta" data-testid="fal-motion-frame-shot" onClick={enterFalFraming} disabled={lookThroughShot && shotAspectKey === FAL_MOTION_SHOT_ASPECT}>{ko("fal 비율로 샷 시점", "Fal-ratio shot view")}</button>
+						</div>
 						<div className={"fal-motion-segmentation-row" + (falMotionSegmentationReady ? " ready" : "")}>
 							<p className="inspector-hint fal-motion-segmentation">{falMotionSegmentationReady ? ko("색 세그멘테이션 음영 모드 ON · A/B 캡처 가능", "Shaded body-part segmentation ON · A/B capture ready") : ko("A/B 참조에는 부위 색상 음영 모드가 필요합니다.", "Shaded body-part colours are required for A/B refs.")}</p>
 							{!falMotionSegmentationReady && <button type="button" className="btn fal-motion-flat-cta" onClick={() => { setPartColoursEnabled(true); setPartColoursMode("shaded"); }}>{ko("음영 모드 켜기", "Enable Shaded")}</button>}

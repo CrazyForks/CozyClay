@@ -2,9 +2,12 @@ export const FAL_MOTION_MODEL = "minimax/h3-max-turbo/image-to-video";
 export const FAL_MOTION_RESOLUTION = "480P";
 export const FAL_MOTION_MIN_DURATION = 5;
 export const FAL_MOTION_MAX_DURATION = 15;
-// H3's 480P output is 832x480. Capture a 16:9 still so the model does not
-// inherit the Studio's currently selected cinematic or portrait aspect.
-export const FAL_MOTION_STILL_OUTPUT = Object.freeze({ width: 1920, height: 1080 });
+// H3's 480P output is 832x480. The reference still is captured at exactly
+// twice that canvas, and the Studio switches its viewport to the matching
+// "fal 480P" ratio when A is captured, so the user composes the shot on the
+// canvas the clip will have.
+export const FAL_MOTION_STILL_OUTPUT = Object.freeze({ width: 1664, height: 960 });
+export const FAL_MOTION_SHOT_ASPECT = "fal 480P";
 
 export function motionApiOrigin(location = globalThis.location) {
   const configured = globalThis.__COZYCLAY_MOTION_API__;

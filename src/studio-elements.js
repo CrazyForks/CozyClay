@@ -43,7 +43,7 @@ const entries = [
 	{ path: "stage.environment", type: "string", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", note: "location description every shot prompt is built from" },
 	{ path: "stage.style", type: "string", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", note: "look / style line for shot prompts" },
 	{ path: "stage.hasEnvSheet", type: "boolean", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", note: "author supplies an environment sheet instead of a description" },
-	{ path: "stage.camera", type: "enum", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", enum: ["16:9", "2.39:1", "9:16", "1:1", "4:3", "12:7"], note: "shotAspect/cameraPresetId/sensorId" },
+	{ path: "stage.camera", type: "enum", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", enum: ["16:9", "2.39:1", "9:16", "1:1", "4:3", "12:7", "fal 480P"], note: "shotAspect/cameraPresetId/sensorId" },
 	{ path: "shot.crud", type: "array", persisted: true, undoDomain: "shot", agentExposure: "todo", normalizer: null, note: "create/split/duplicate/reorder/remove/range; agent exposure gap" },
 	{ path: "shot.cameraKeys", type: "array", persisted: true, undoDomain: "shot", agentExposure: "patch", normalizer: null },
 	{ path: "shot.cameraRail", type: "array", persisted: true, undoDomain: "shot", agentExposure: "todo", normalizer: "repairCamera", note: "rail/crane/dolly timing; agent exposure gap" },

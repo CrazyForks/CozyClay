@@ -443,6 +443,7 @@ export const SHOT_ASPECT_PRESETS = Object.freeze({
 	"1:1": Object.freeze({ label: "1:1", aspect: SHOT_ASPECT_RATIOS["1:1"], width: 1080, height: 1080 }),
 	"4:3": Object.freeze({ label: "4:3", aspect: SHOT_ASPECT_RATIOS["4:3"], width: 1440, height: 1080 }),
 	"12:7": Object.freeze({ label: "12:7", aspect: SHOT_ASPECT_RATIOS["12:7"], width: 1536, height: 896, title: "12:7 video-inbetweener ratio" }),
+	"fal 480P": Object.freeze({ label: "fal 480P", aspect: SHOT_ASPECT_RATIOS["fal 480P"], width: 1664, height: 960, title: "Fal H3 480P canvas (832x480)" }),
 });
 // Pre-generated clip shipped with the build so a bridge-less session (a hosted
 // static demo, or `npm run dev:ui`) still shows real generated motion.
@@ -816,13 +817,20 @@ export const MULTIMODEL_SAMPLE_FPS = TIMELINE_FPS;
  * the bone, which is 6 units here. Deliberately small — the maquette should
  * keep reading as a mannequin rather than a robot.
  */
-export function addFacingMarks(clone, markTint) {
+export function addFacingMarks(clone) {
 	let head = null;
 	clone.traverse((node) => {
 		if (!head && node.isBone && /head$/i.test(node.name)) head = node;
 	});
 	if (!head) return;
-	const material = new THREE.MeshStandardMaterial({ color: markTint, roughness: 0.7, metalness: 0 });
+	// Fixed near-black, NOT the body tint: the tint is user-picked and pale
+	// tints washed the old marks into the grey skull (#407). A video generator
+	// keeps a face that reads as a face, and the 2D pose estimator downstream
+	// (COCO-17: nose/eyes/ears) finally has dark features where its training
+	// data says they live. The extractor's neutral head mask needs the limbs'
+	// NEUTRAL_TOUCH_PIXELS adjacency anyway, so dark marks inside the skull
+	// silhouette ride along with the head instead of splitting the mask.
+	const material = new THREE.MeshStandardMaterial({ color: "#1C1C1C", roughness: 0.7, metalness: 0 });
 	const mark = (geometry, position, rotation) => {
 		const mesh = new THREE.Mesh(geometry, material);
 		mesh.position.set(...position);
@@ -833,13 +841,19 @@ export function addFacingMarks(clone, markTint) {
 		head.add(mesh);
 		return mesh;
 	};
-	// The skull surface sits ~6 units forward of the bone, so both marks are
-	// placed to break that plane rather than rest on it — flush is invisible.
-	// Visor: a wide, shallow band across the eyeline.
-	mark(new THREE.BoxGeometry(8.5, 2.4, 1.8), [0, 5.5, 6.6], [-0.2, 0, 0]);
-	// Brow ridge: a short wedge that breaks the skull's outline from the side,
-	// so facing survives silhouette and backlight where the visor does not.
-	mark(new THREE.ConeGeometry(1.7, 3.6, 4), [0, 2.8, 6.4], [Math.PI / 2, Math.PI / 4, 0]);
+	// Measured on both rigs (#407): the skull's face surface is 15 units
+	// forward of the bone (z −13…+15) and the crown is 20 up, so the old
+	// marks at z 6.4–6.6 sat INSIDE the skull and only bled shading. The
+	// marks sit ON the face now, sized to read at the Fal reference distance
+	// where the head is ~35 px: the eye band spans the face's full width and
+	// the nose wedge centres the face, both near-black. The extractor's
+	// neutral head mask swallows dark pixels inside the silhouette (verified:
+	// 0 dark pixels escape the head mask), so this cannot split segmentation.
+	// Eyes: a wide, shallow band across the eyeline.
+	mark(new THREE.BoxGeometry(11, 3.2, 2.2), [0, 8, 14.2], [-0.2, 0, 0]);
+	// Nose: a wedge on the centreline below the eyes — the COCO nose keypoint
+	// is the one the estimator keys facing on.
+	mark(new THREE.ConeGeometry(2.4, 4.6, 4), [0, 4.5, 14.6], [Math.PI / 2, Math.PI / 4, 0]);
 }
 
 export const Character = memo(function Character({ url, position, rot, tint, pose, scale = 1, onRig, pickId, partColoursEnabled = false, partColoursMode = "shaded" }) {
@@ -881,7 +895,7 @@ export const Character = memo(function Character({ url, position, rot, tint, pos
 			}
 		});
 		if (partColoursEnabled) applyPartColours(clone, partColoursMode);
-		addFacingMarks(clone, jointTint);
+		addFacingMarks(clone);
 		// Stamp the bind pose while the rig is still untouched: the pose effect
 		// below runs immediately after and would otherwise be baked into "rest".
 		primeBindPose(clone);

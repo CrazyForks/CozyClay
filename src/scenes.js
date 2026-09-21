@@ -323,7 +323,7 @@ export function createSceneStage(stage = null) {
 		environment: typeof source.environment === "string" ? source.environment : DEFAULT_SCENE_STAGE.environment,
 		style: typeof source.style === "string" ? source.style : DEFAULT_SCENE_STAGE.style,
 		hasEnvSheet: source.hasEnvSheet === true,
-		shotAspect: ["16:9", "2.39:1", "9:16", "1:1", "4:3", "12:7"].includes(source.shotAspect)
+		shotAspect: ["16:9", "2.39:1", "9:16", "1:1", "4:3", "12:7", "fal 480P"].includes(source.shotAspect)
 			? source.shotAspect
 			: DEFAULT_SCENE_STAGE.shotAspect,
 		// A label recording which named framing the shot camera was placed by.
