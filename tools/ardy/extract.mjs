@@ -23,7 +23,7 @@ import { createPrivateArtifactDir, removePrivateArtifactDir } from "./artifacts.
 import { readNpz } from "../kimodo/read-npz.mjs";
 import { smplToCskel27Motion } from "./smpl-cskel27.mjs";
 import { stabilizeMotion } from "./motion-stabilize.mjs";
-import { gvhmrDetectorFromEnv, gvhmrKeypointsFromEnv, gvhmrRunnerArgs, gvhmrWorker } from "./runners/gvhmr-worker.mjs";
+import { GVHMR_SMOOTH_SIGMA, gvhmrDetectorFromEnv, gvhmrKeypointsFromEnv, gvhmrRunnerArgs, gvhmrWorker } from "./runners/gvhmr-worker.mjs";
 import { guardTrajectoryFloor } from "./gvhmr-floor.mjs";
 import { mocapMetricsFromMotion } from "./mocap-metrics.mjs";
 import { evaluateQuality } from "./mocap-quality-gate.mjs";
@@ -368,7 +368,7 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 		if (gvhmr && GVHMR_WORKER) {
 			extractionPerformance = await gvhmrWorker({ host, sshOptions: SSH_OPTS, scpOptions: SCP_OPTS }).run({
 				video: remoteVideo, output: remoteNpz, outRoot: `/tmp/cclay-gvhmr-${stamp}`, staticCam: GVHMR_STATIC_CAM,
-				detector: GVHMR_DETECTOR, keypoints: GVHMR_KEYPOINTS, trajectory: GVHMR_TRAJECTORY,
+				detector: GVHMR_DETECTOR, keypoints: GVHMR_KEYPOINTS, trajectory: GVHMR_TRAJECTORY, smoothSigma: GVHMR_SMOOTH_SIGMA,
 			}, { signal: abort.signal, timeoutMs: EXTRACT_TIMEOUT_MS, onLine: runOptions.onLine });
 			console.error(`[bridge] GVHMR performance ${JSON.stringify(extractionPerformance)}`);
 		} else {
@@ -401,9 +401,13 @@ export async function handleExtract(req, res, { readBody, footagePath, registerM
 			// GVHMR's temporal model supplies the pose, while this small centred
 			// pass removes one-frame segmentation spikes before the browser sees
 			// the take. Fast motion is retained by reducing the blend at speed.
+			// anchorFeet re-integrates the root so the stance foot stays put:
+			// GVHMR under-scales the stride on rendered clips (measured on the
+			// v13c walk: 30 cm/s of stance slide → 8 with the anchor, #380).
 			const converted = stabilizeMotion(smplToCskel27Motion(readNpz(localNpz)), {
 				enabled: process.env.CCLAY_GVHMR_SMOOTHING?.trim() !== "0",
 				smoothRotations: process.env.CCLAY_GVHMR_ROTATION_SMOOTHING?.trim() !== "0",
+				anchorFeet: process.env.CCLAY_GVHMR_ANCHOR_FEET?.trim() !== "0",
 			});
 			const guarded = guardTrajectoryFloor(converted, extractionPerformance?.trajectory?.events ?? []);
 			motions.push(guarded.motion);

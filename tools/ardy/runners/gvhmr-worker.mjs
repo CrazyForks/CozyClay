@@ -136,6 +136,11 @@ function setup(command, args, signal) {
 // take through YOLO or the auto detector.
 const DETECTORS = ["palette"];
 const KEYPOINTS = ["vitpose", "palette", "auto"];
+// The runner's temporal smoother (quaternion gaussian over the SMPL params),
+// in frames. GVHMR has no output filter; its runner default of 1.2 measured
+// 4.61 mm/f² jitter on a 24 fps walk against 3.39 at 3.0 with the stride
+// intact (#380). Sent on both extraction paths so they extract the same take.
+export const GVHMR_SMOOTH_SIGMA = 3;
 
 /** Runner CLI flags shared by the one-shot ssh command and the worker.
  *  Pure so the flag wiring is testable without a box: the part-coloured
@@ -151,7 +156,7 @@ const KEYPOINTS = ["vitpose", "palette", "auto"];
  *  the detector: palette keypoints for a palette-detected clip, ViTPose for
  *  real footage, which is the only place ViTPose is the better estimate.
  */
-export function gvhmrRunnerArgs({ staticCam = true, fMm = null, detector = "palette", keypoints = "auto" } = {}) {
+export function gvhmrRunnerArgs({ staticCam = true, fMm = null, detector = "palette", keypoints = "auto", smoothSigma = GVHMR_SMOOTH_SIGMA } = {}) {
 	const args = [];
 	if (staticCam) args.push("--static-cam");
 	if (fMm != null) args.push("--f-mm", String(Math.trunc(fMm)));
@@ -159,6 +164,7 @@ export function gvhmrRunnerArgs({ staticCam = true, fMm = null, detector = "pale
 	// default (`auto`) bypass the palette contract.
 	args.push("--detector", "palette");
 	args.push("--keypoints", KEYPOINTS.includes(keypoints) ? keypoints : "auto");
+	args.push("--smooth-sigma", String(Number.isFinite(smoothSigma) && smoothSigma > 0 ? smoothSigma : GVHMR_SMOOTH_SIGMA));
 	return args;
 }
 

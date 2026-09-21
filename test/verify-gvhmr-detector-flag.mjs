@@ -17,13 +17,13 @@ for (const detector of ["yolo", "palette", "auto", "sam", undefined]) {
 	assert.equal(detectorOf(gvhmrRunnerArgs({ detector })), "palette");
 }
 assert.deepEqual(gvhmrRunnerArgs({ staticCam: true, detector: "palette" }),
-	["--static-cam", "--detector", "palette", "--keypoints", "auto"]);
+	["--static-cam", "--detector", "palette", "--keypoints", "auto", "--smooth-sigma", "3"]);
 
 // The flag is additive: the existing camera flags keep their meaning.
 assert.deepEqual(gvhmrRunnerArgs({ staticCam: false, fMm: 24, detector: "yolo" }),
-	["--f-mm", "24", "--detector", "palette", "--keypoints", "auto"]);
+	["--f-mm", "24", "--detector", "palette", "--keypoints", "auto", "--smooth-sigma", "3"]);
 assert.deepEqual(gvhmrRunnerArgs({ staticCam: true, fMm: 35.9, detector: "palette" }),
-	["--static-cam", "--f-mm", "35", "--detector", "palette", "--keypoints", "auto"]);
+	["--static-cam", "--f-mm", "35", "--detector", "palette", "--keypoints", "auto", "--smooth-sigma", "3"]);
 
 console.log("PASS GVHMR detector flag: palette is fixed for defaults, env, and overrides");
 
@@ -55,9 +55,9 @@ for (const bogus of ["", "VITPOSE ", "yolo", "palette; rm -rf /", null, undefine
 // The two selections are independent: palette boxes with ViTPose joints is a
 // legitimate A/B, and it is how the #180 baseline was measured.
 assert.deepEqual(gvhmrRunnerArgs({ staticCam: true, detector: "palette", keypoints: "vitpose" }),
-	["--static-cam", "--detector", "palette", "--keypoints", "vitpose"]);
+	["--static-cam", "--detector", "palette", "--keypoints", "vitpose", "--smooth-sigma", "3"]);
 assert.deepEqual(gvhmrRunnerArgs({ staticCam: true, detector: "palette", keypoints: "palette" }),
-	["--static-cam", "--detector", "palette", "--keypoints", "palette"]);
+	["--static-cam", "--detector", "palette", "--keypoints", "palette", "--smooth-sigma", "3"]);
 
 console.log("PASS GVHMR keypoints flag: default auto, explicit palette/vitpose, invalid values rejected");
 
@@ -71,7 +71,7 @@ const py = spawnSync("python3", ["-c", `
 import ast, json, sys
 src = open(sys.argv[1]).read(); tree = ast.parse(src)
 fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "runner_argv")
-consts = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", None) in ("DETECTORS", "KEYPOINTS") for t in n.targets)]
+consts = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", None) in ("DETECTORS", "KEYPOINTS", "SMOOTH_SIGMA") for t in n.targets)]
 ns = {}; exec(ast.unparse(ast.Module(body=consts + [fn], type_ignores=[])), ns)
 base = {"video": "/v.mp4", "output": "/o.npz", "outRoot": "/r"}
 print(json.dumps(ns["runner_argv"]({**base, "staticCam": True, "detector": "palette"}, "/runner.py")))
@@ -81,15 +81,42 @@ print(json.dumps(ns["runner_argv"]({**base, "keypoints": "nonsense"}, "/runner.p
 `, workerPy], { encoding: "utf8" });
 assert.equal(py.status, 0, `python helper missing or broken: ${py.stderr.slice(0, 300)}`);
 const [withDetector, defaults, withKeypoints, bogusKeypoints] = py.stdout.trim().split("\n").map((line) => JSON.parse(line));
-assert.deepEqual(withDetector.slice(-2), ["--detector", "palette"], "worker request detector reaches the runner argv");
-assert.deepEqual(defaults.slice(-2), ["--detector", "palette"], "worker always sends the palette detector");
+const beforeSigma = (argv) => argv.slice(0, argv.indexOf("--smooth-sigma"));
+assert.deepEqual(beforeSigma(withDetector).slice(-2), ["--detector", "palette"], "worker request detector reaches the runner argv");
+assert.deepEqual(beforeSigma(defaults).slice(-2), ["--detector", "palette"], "worker always sends the palette detector");
 console.log("PASS GVHMR worker request: detector key becomes --detector on the runner argv");
 
 // Same for the keypoints selection, so CCLAY_EXTRACT_KEYPOINTS is honoured on
 // the persistent-worker path and not only in the one-shot ssh command.
-assert.deepEqual(withKeypoints.slice(-4), ["--detector", "palette", "--keypoints", "palette"],
+assert.deepEqual(beforeSigma(withKeypoints).slice(-4), ["--detector", "palette", "--keypoints", "palette"],
 	"worker request keypoints reaches the runner argv");
 assert.equal(defaults.includes("--keypoints"), false, "no keypoints key → runner default (auto)");
 assert.equal(bogusKeypoints.includes("--keypoints"), false,
 	"an unknown keypoints value must not reach the runner's argparse choices");
 console.log("PASS GVHMR worker request: keypoints key becomes --keypoints on the runner argv");
+
+// The runner's temporal smoother (#380): GVHMR predicts per frame with no
+// output filter, and its runner default of sigma 1.2 frames was measured on
+// the v13c bat-swagger clip at 4.61 mm/f² jitter against 3.39 at sigma 3.0
+// (a walk spans seconds; 3 frames of blur at 24 fps is 125 ms and leaves the
+// stride intact). Both extraction paths must send the same sigma, so the
+// persistent worker and the one-shot ssh command extract identical takes.
+export const GVHMR_SMOOTH_SIGMA = 3;
+const sigmaOf = (args) => Number(args[args.indexOf("--smooth-sigma") + 1]);
+assert.equal(sigmaOf(gvhmrRunnerArgs()), GVHMR_SMOOTH_SIGMA, "one-shot argv carries the smoother sigma");
+assert.equal(sigmaOf(gvhmrRunnerArgs({ smoothSigma: 2 })), 2, "an explicit sigma is honoured");
+const pySigma = spawnSync("python3", ["-c", `
+import ast, json, sys
+src = open(sys.argv[1]).read(); tree = ast.parse(src)
+fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "runner_argv")
+consts = [n for n in tree.body if isinstance(n, ast.Assign) and any(getattr(t, "id", None) in ("DETECTORS", "KEYPOINTS", "SMOOTH_SIGMA") for t in n.targets)]
+ns = {}; exec(ast.unparse(ast.Module(body=consts + [fn], type_ignores=[])), ns)
+base = {"video": "/v.mp4", "output": "/o.npz", "outRoot": "/r"}
+print(json.dumps(ns["runner_argv"](base, "/runner.py")))
+print(json.dumps(ns["runner_argv"]({**base, "smoothSigma": 2}, "/runner.py")))
+`, workerPy], { encoding: "utf8" });
+assert.equal(pySigma.status, 0, `python helper: ${pySigma.stderr.slice(0, 300)}`);
+const [pyDefault, pyExplicit] = pySigma.stdout.trim().split("\n").map((line) => JSON.parse(line));
+assert.equal(sigmaOf(pyDefault), GVHMR_SMOOTH_SIGMA, "worker argv carries the same default sigma");
+assert.equal(sigmaOf(pyExplicit), 2, "worker request smoothSigma reaches the runner argv");
+console.log("PASS GVHMR smoother sigma: both extraction paths send --smooth-sigma");
