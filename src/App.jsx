@@ -345,7 +345,7 @@ import { buildZip } from "./zip-store.js";
 import { composeStoryboard } from "./storyboard.js";
 import { DEPTH_RANGE_M, depthRangeFromFrames, passFileName, renderPass } from "./render-passes.js";
 import { VIDEO_MODEL_PRESETS } from "./model-presets.js";
-import { buildH3MotionPrompt, motionApiOrigin, submitFalMotion, waitForFalMotionJob, FAL_MOTION_MIN_DURATION, FAL_MOTION_SHOT_ASPECT, FAL_MOTION_STILL_OUTPUT } from "./fal-motion-client.js";
+import { buildH3MotionPrompt, motionApiOrigin, submitFalMotion, waitForFalMotionJob, FAL_MOTION_DURATIONS, FAL_MOTION_MIN_DURATION, FAL_MOTION_SHOT_ASPECT, FAL_MOTION_STILL_OUTPUT } from "./fal-motion-client.js";
 import { serializeOtio } from "./otio.js";
 import {
 	addShotAtFrame,
@@ -5994,7 +5994,7 @@ export default function App() {
 	}
 
 	function clearFalMotion() {
-		setFalMotion({ a: null, b: null, job: null, status: "idle", error: "", instruction: "", dailyRemaining: null });
+		setFalMotion({ a: null, b: null, job: null, status: "idle", error: "", instruction: "", promptOverride: "", duration: FAL_MOTION_MIN_DURATION, dailyRemaining: null });
 		setFalMotionCameraUnlocked(false);
 	}
 
@@ -6047,9 +6047,13 @@ export default function App() {
 			setFalMotion((current) => ({ ...current, error: ko("A와 B 사이에서 카메라가 바뀌었어요. 같은 카메라로 다시 캡처하세요.", "The camera changed between A and B. Capture both poses with the same camera."), status: "error" }));
 			return;
 		}
-		const prompt = kind === "interpolate"
-			? buildH3MotionPrompt("", { interpolate: true })
-			: buildH3MotionPrompt(instructionOverride || source.instruction || "Make the character perform the requested action.");
+		// A hand-edited prompt wins verbatim; otherwise build from the description.
+		// Interpolate now honours the description too (#380): the bare pose
+		// difference lets the model invent the transition and produces junk.
+		const description = instructionOverride || source.instruction || "";
+		const prompt = source.promptOverride?.trim()
+			? source.promptOverride.trim()
+			: buildH3MotionPrompt(description || (kind === "interpolate" ? "" : "Make the character perform the requested action."), { interpolate: kind === "interpolate" });
 		setFalMotion((current) => ({ ...current, status: "submitting", error: "", job: null }));
 		try {
 			const submitted = await submitFalMotion({
@@ -6058,7 +6062,7 @@ export default function App() {
 				stillB: source.b?.dataUrl,
 				still: source.a?.dataUrl,
 				prompt,
-				duration: FAL_MOTION_MIN_DURATION,
+				duration: source.duration ?? FAL_MOTION_MIN_DURATION,
 			});
 			const id = submitted?.job?.id;
 			if (!id) throw new Error(ko("생성 작업 ID를 받지 못했어요.", "The server did not return a motion job ID."));
@@ -13215,13 +13219,30 @@ function resizePromptClip(id, edge, rawFrame) {
 							{falMotion.a && <figure><img src={falMotion.a.dataUrl} alt="Pose A" /><figcaption>A · {falMotion.a.width}×{falMotion.a.height}</figcaption></figure>}
 							{falMotion.b && <figure><img src={falMotion.b.dataUrl} alt="Pose B" /><figcaption>B · {falMotion.b.width}×{falMotion.b.height}</figcaption></figure>}
 						</div>
-						{falMotionMode === "act" && <textarea
+						<textarea
 							className="fal-motion-instruction"
 							value={falMotion.instruction}
-							placeholder={ko("A만 캡처한 뒤 동작을 적으세요. 예: 검을 머리 위로 휘두르고 한 걸음 전진", "With A only, describe the action. Example: swing the sword overhead and step forward")}
+							placeholder={falMotionMode === "interpolate"
+								? ko("A에서 B로 어떻게 움직이는지 적으세요. 예: 벤치로 걸어가 돌아서 앉는다", "Describe the motion from A to B. Example: walk to the bench, turn, and sit") 
+								: ko("A만 캡처한 뒤 동작을 적으세요. 예: 검을 머리 위로 휘두르고 한 걸음 전진", "With A only, describe the action. Example: swing the sword overhead and step forward")}
 							onChange={(event) => setFalMotion((current) => ({ ...current, instruction: event.target.value }))}
-						/>}
-						{falMotionMode === "interpolate" && <p className="inspector-hint fal-motion-prompt-note">{ko("이 모드에서는 A/B 포즈 차이만 사용합니다.", "This mode uses the A/B pose difference only.")}</p>}
+						/>
+						<div className="fal-motion-duration-row">
+							<span className="inspector-hint">{ko("길이", "Length")}</span>
+							{FAL_MOTION_DURATIONS.map((seconds) => (
+								<button key={seconds} type="button" className={"btn small" + ((falMotion.duration ?? FAL_MOTION_MIN_DURATION) === seconds ? " active" : "")} onClick={() => setFalMotion((current) => ({ ...current, duration: seconds }))}>{seconds}{ko("초", "s")}</button>
+							))}
+						</div>
+						<details className="fal-motion-prompt-edit">
+							<summary>{ko("보낼 프롬프트", "Prompt to send")}</summary>
+							<textarea
+								className="fal-motion-instruction fal-motion-prompt-override"
+								value={falMotion.promptOverride ?? ""}
+								placeholder={buildH3MotionPrompt(falMotion.instruction, { interpolate: falMotionMode === "interpolate" })}
+								onChange={(event) => setFalMotion((current) => ({ ...current, promptOverride: event.target.value }))}
+							/>
+							<p className="inspector-hint">{ko("비워 두면 위 설명으로 자동 생성됩니다. 직접 고치면 그대로 전송됩니다.", "Left blank, this is built from the description above. Edit it and your text is sent verbatim.")}</p>
+						</details>
 						{falMotion.status === "error" && <p className="studio-hint error fal-motion-inline-error" role="alert">{falMotion.error}</p>}
 						<div className="fal-motion-actions">
 							{falMotionMode === "interpolate" ? <button type="button" className="btn primary" title={!falMotionEnabled ? ko("소유자 테스트가 끝날 때까지 잠겨 있습니다.", "Locked until owner testing is complete.") : !falMotionHasB ? ko("B 포즈를 먼저 캡처하세요.", "Capture B before generating.") : ""} disabled={!falMotionEnabled || falMotion.status === "submitting" || falMotion.status === "queued" || !falMotion.a || !falMotion.b} onClick={() => void generateFalMotion("interpolate")}>{falMotion.status === "submitting" || falMotion.status === "queued" ? ko("생성 중…", "Generating…") : ko("A→B 보간", "Interpolate A→B")}</button>

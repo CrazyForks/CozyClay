@@ -2,6 +2,9 @@ export const FAL_MOTION_MODEL = "minimax/h3-max-turbo/image-to-video";
 export const FAL_MOTION_RESOLUTION = "480P";
 export const FAL_MOTION_MIN_DURATION = 5;
 export const FAL_MOTION_MAX_DURATION = 15;
+// The durations the Fal card offers. 15 s (362 frames) is the measured upper
+// end the H3 endpoint accepts and the extractor handles (#380 sit-to-bench).
+export const FAL_MOTION_DURATIONS = Object.freeze([5, 10, 15]);
 // H3's 480P output is 832x480. The reference still is captured at exactly
 // twice that canvas, and the Studio switches its viewport to the matching
 // "fal 480P" ratio when A is captured, so the user composes the shot on the
@@ -18,8 +21,11 @@ export function motionApiOrigin(location = globalThis.location) {
 
 export function buildH3MotionPrompt(action, { interpolate = false } = {}) {
   const text = String(action ?? "").trim();
+  // An interpolate call WITH a description leads with the action: measured on
+  // #380, "walk to the bench and sit" between the poses produces the motion,
+  // while the bare pose-difference lead lets the model invent the transition.
   const lead = interpolate
-    ? "Move the character naturally from the first reference pose to the final reference pose."
+    ? (text || "Move the character naturally from the first reference pose to the final reference pose.")
     : text || "Perform the requested character action.";
   return `${lead}\nKeep the camera fixed and preserve the full-body character framing. Animate only the character; keep the character's body heading and facing direction unchanged with no yaw turn, spin, or final rotation. Keep the scene, lighting, floor, and every object unchanged. Use one continuous shot with no cuts, zooms, pan, tilt, orbit, crop, reframing, or time jump.`;
 }
