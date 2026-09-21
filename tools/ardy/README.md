@@ -44,14 +44,17 @@ CozyClay's coloured mannequin. `CCLAY_EXTRACT_DETECTOR` is retained for
 deployment compatibility but cannot switch the detector to YOLO or auto.
 
 `CCLAY_EXTRACT_KEYPOINTS` picks the 2D joint source: `vitpose`, `palette`,
-`hybrid`, or `auto` (default, which is `hybrid` on a palette clip). Hybrid keeps
-ViTPose wherever the render contains both parts a joint connects and re-derives
-the joint from the surviving part's axis where the video model repainted or
-occluded the other: measured on a bat-in-hand clip where the right upper arm
-and hand were absent from 99 % of frames, ViTPose folded the arm across the
-torso; hybrid put the wrist above the shoulder on 85 % of frames (#380). The
-runner side lives in `~/cclay-ingest/GVHMR/cclay_gvhmr_extract.py` on the box
-(`hybrid_kp2d`).
+`hybrid`, or `auto` (default, which is `hybrid` on a palette clip). Hybrid is
+palette joints for the body and ViTPose for the five face points, measured on
+the v15 bat-swagger clip (#380): ViTPose body joints jitter 29 px/f² frame to
+frame on the flat-shaded mannequin (ankle confidence 0.30) where the palette's
+overlap/axis joints jitter 8; but the palette pins every face point to the
+head centroid and GVHMR then reads a head that never turns (root travel 6.3 →
+2.9 m), so the face stays ViTPose (travel 6.1 m, arm swing 0.84 m). Shoulders
+from ViTPose wreck the arms (wrist-above-shoulder 93 % → 12 %). Where the
+render lost a limb part (a prop repainting the hand) the joint comes from the
+surviving part's axis end. The runner side lives in
+`~/cclay-ingest/GVHMR/cclay_gvhmr_extract.py` on the box (`hybrid_kp2d`).
 
 With GVHMR enabled, extraction uses one serial SSH worker.
 It deploys the repo-owned worker, preparation and trajectory Python modules into a content-addressed
