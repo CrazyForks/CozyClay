@@ -19,7 +19,7 @@ import { spawnOwned, terminateOwned } from "../tools/process-supervisor.mjs";
 import { createSceneStage } from "../src/scenes.js";
 import { normalizeSceneObject } from "../src/scene-objects.js";
 import { createShotAuthoringDocument } from "../src/shot-authoring.js";
-import { studioToolSchemas } from "../bin/agent/studio-tools.mjs";
+import { createStudioTools, studioToolSchemas } from "../bin/agent/studio-tools.mjs";
 
 const legacy = process.argv.includes("--legacy");
 assert(process.argv.slice(2).every(arg => arg === "--legacy"), "only --legacy is supported");
@@ -164,7 +164,7 @@ async function issue398(handle) {
 		}
 	});
 
-	await assertion(2, "exact failed-session 13-op patch rejects without authoring or silent clamp", async () => {
+	await assertion(2, "13-op patch rejects without authoring or silent clamp", async () => {
 		const rows = (await readFile(process.env.QA_FAILED_SESSION || new URL("failed-session-91f3774c.jsonl", evidenceDirectory), "utf8")).trim().split("\n").map(JSON.parse);
 		const patch = rows.flatMap(row => row.message?.content ?? []).find(item => item.type === "toolCall" && item.name === "patch_elements").arguments;
 		assert.equal(patch.ops.length, 13);
@@ -207,7 +207,34 @@ async function issue398(handle) {
 		assert.equal(after.revision.scene, next.revision.after); assert.equal(actual.x, original.x + 0.2);
 	});
 
-	await assertion(4, "applied receipt stays truthful through 60 seconds of real editor idle", async () => {
+	await assertion(4, "#405 inspect re-admits after an editor-side change and entity inspect returns transforms", async () => {
+		const before = await inspect(handle), original = object(await describe(handle), "cube-27"), initialDepth = await history();
+		const args = { ops: [{ op: "update", id: original.id, position: { world: { x: original.x + 0.1, y: original.y, z: original.z } } }] };
+		const admission = { host: identity(before), revision: before.revision.scene, commandId: () => randomUUID(),
+			async refresh() { this.revision = (await inspect(handle)).revision.scene; } };
+		const sent = [];
+		const tools = createStudioTools({ workspaceHandle: handle, session: { admission },
+			liveHub: { command(name, payload, workspace) { sent.push({ name, payload }); return command(name, payload, workspace); } } });
+		const invoke = tools.internal.invoke;
+		let first;
+		await b.change(`window.__sceneHistory().past === ${initialDepth.past + 1}`, async () => { first = await invoke("arrange_objects", args); });
+		admitted(first, before);
+		await b.change(`window.__sceneHistory().past === ${initialDepth.past} && window.__sceneHistory().future === 1`, nativeUndo);
+		assert.equal(admission.revision, first.revision.after, "native Undo is outside the agent turn");
+		const fresh = (await invoke("inspect_studio", { scope: "scene" })).context;
+		assert.equal(fresh.revision.scene, first.revision.after + 1);
+		let second;
+		await b.change(`window.__sceneHistory().past === ${initialDepth.past + 1}`, async () => { second = await invoke("arrange_objects", args); });
+		admitted(second, fresh);
+		assert.equal(sent.at(-1).payload.expectedRevision, fresh.revision.scene);
+		assert.deepEqual(sent.at(-1).payload.args.ops, args.ops);
+		const entity = await invoke("inspect_studio", { scope: "entities", ids: [original.id] });
+		const row = entity.entities.find(item => item.id === original.id);
+		log("ISSUE_405_RE_ADMIT", { first, freshRevision: fresh.revision, second, entity: row });
+		assert.deepEqual(row.position, { x: original.x + 0.1, y: original.y, z: original.z });
+	});
+
+	await assertion(5, "applied receipt stays truthful through 60 seconds of real editor idle", async () => {
 		const before = await inspect(handle), original = object(await describe(handle), "cube-27"), depth = await history();
 		assert.equal(before.view.playing, false);
 		let receipt;
@@ -305,7 +332,7 @@ try {
 } catch (error) {
 	console.error("PROBE_SETUP_OR_RUN_FAILURE", error.stack);
 	process.exitCode = 1;
-	if (!legacy) for (let number = 1; number <= 4; number++) if (!results.some(row => row.number === number)) {
+	if (!legacy) for (let number = 1; number <= 5; number++) if (!results.some(row => row.number === number)) {
 		results.push({ number, status: "FAIL", error: `Blocked by setup/run failure: ${error.message}` });
 		console.error(`FAIL ${number}: blocked by setup/run failure`);
 	}
@@ -315,7 +342,7 @@ try {
 	if (profile) { await rm(profile, { recursive: true, force: true }); log("PROFILE_REMOVED", profile); }
 	if (!legacy) {
 		log("ASSERTIONS", results);
-		console.log(`qa-agent-commands-browser issue-398: ${results.filter(row => row.status === "PASS").length}/4 PASS`);
+		console.log(`qa-agent-commands-browser issue-405: ${results.filter(row => row.status === "PASS").length}/5 PASS`);
 		if (results.some(row => row.status !== "PASS")) process.exitCode = 1;
 	}
 }
