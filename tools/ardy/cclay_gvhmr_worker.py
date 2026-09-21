@@ -23,7 +23,7 @@ import traceback
 
 
 DETECTORS = ("palette",)
-KEYPOINTS = ("vitpose", "palette", "auto")
+KEYPOINTS = ("vitpose", "palette", "hybrid", "auto")
 # Runner smoother sigma in frames; mirrors GVHMR_SMOOTH_SIGMA in
 # tools/ardy/runners/gvhmr-worker.mjs so both extraction paths agree (#380).
 SMOOTH_SIGMA = 3

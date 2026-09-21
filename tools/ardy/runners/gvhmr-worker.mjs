@@ -135,7 +135,10 @@ function setup(command, args, signal) {
 // list to one value prevents an environment override from silently routing a
 // take through YOLO or the auto detector.
 const DETECTORS = ["palette"];
-const KEYPOINTS = ["vitpose", "palette", "auto"];
+// hybrid (#380): ViTPose where the render kept the limb part, palette-derived
+// where it lost one (a prop repainting the hand). The runner's `auto` on a
+// palette clip is hybrid.
+const KEYPOINTS = ["vitpose", "palette", "hybrid", "auto"];
 // The runner's temporal smoother (quaternion gaussian over the SMPL params),
 // in frames. GVHMR has no output filter; its runner default of 1.2 measured
 // 4.61 mm/f² jitter on a 24 fps walk against 3.39 at 3.0 with the stride

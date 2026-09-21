@@ -43,6 +43,16 @@ GVHMR's subject detector is fixed to the `palette` segmentation path for
 CozyClay's coloured mannequin. `CCLAY_EXTRACT_DETECTOR` is retained for
 deployment compatibility but cannot switch the detector to YOLO or auto.
 
+`CCLAY_EXTRACT_KEYPOINTS` picks the 2D joint source: `vitpose`, `palette`,
+`hybrid`, or `auto` (default, which is `hybrid` on a palette clip). Hybrid keeps
+ViTPose wherever the render contains both parts a joint connects and re-derives
+the joint from the surviving part's axis where the video model repainted or
+occluded the other: measured on a bat-in-hand clip where the right upper arm
+and hand were absent from 99 % of frames, ViTPose folded the arm across the
+torso; hybrid put the wrist above the shoulder on 85 % of frames (#380). The
+runner side lives in `~/cclay-ingest/GVHMR/cclay_gvhmr_extract.py` on the box
+(`hybrid_kp2d`).
+
 With GVHMR enabled, extraction uses one serial SSH worker.
 It deploys the repo-owned worker, preparation and trajectory Python modules into a content-addressed
 remote `/tmp/cozyclay-gvhmr-worker-*` directory and imports the existing

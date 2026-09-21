@@ -46,7 +46,7 @@ assert.equal(keypointsFromEnv("nonsense"), "auto", "an unknown env value must de
 // opt-in: measured worse on shifted render hues, issue #180); palette keypoints only
 // where the palette detector claimed the clip, ViTPose on real footage.
 assert.equal(keypointsOf(gvhmrRunnerArgs()), "auto");
-for (const keypoints of ["vitpose", "palette", "auto"]) {
+for (const keypoints of ["vitpose", "palette", "hybrid", "auto"]) {
 	assert.equal(keypointsOf(gvhmrRunnerArgs({ keypoints })), keypoints);
 }
 for (const bogus of ["", "VITPOSE ", "yolo", "palette; rm -rf /", null, undefined]) {
