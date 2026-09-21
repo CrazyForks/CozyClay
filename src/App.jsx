@@ -239,6 +239,7 @@ import AssetPane from "./asset-pane.jsx";
 import ResourceStatus, { SaveBlockedDialog } from "./resource-status.jsx";
 import AddObjectMenu from "./object-catalog.jsx";
 import ResultModal from "./result-modal.jsx";
+import { FalMotionCaptureCard, FalMotionModal } from "./fal-motion-studio.jsx";
 import SettingsMenu from "./settings-menu.jsx";
 import { hasLineEditCapability, motionReadiness } from "./motion-readiness.js";
 import { MotionReadiness, MotionSetup, motionReadinessMessage } from "./motion-readiness-ui.jsx";
@@ -2659,6 +2660,7 @@ export default function App() {
 	const liveWorkspaceIdRef = useRef("");
 	if (!liveWorkspaceIdRef.current) liveWorkspaceIdRef.current = loadLiveWorkspaceId();
 	const [result, setResult] = useState(null);
+	const [falMotionStudioOpen, setFalMotionStudioOpen] = useState(false);
 	const [resultOpen, setResultOpen] = useState(false);
 	const [copied, setCopied] = useState(false);
 	const [recordedVideoName, setRecordedVideoName] = useState(null);
@@ -6097,6 +6099,8 @@ export default function App() {
 					},
 				});
 				setResultOpen(true);
+				// The result modal and the studio modal are both z-30; never stack them.
+				setFalMotionStudioOpen(false);
 				setToast(isKo ? "Fal 영상이 준비됐어요 · 추출 패널에서 GVHMR을 실행하세요" : "Fal video is ready · run GVHMR from the extraction panel");
 			}
 		} catch (error) {
@@ -6280,6 +6284,34 @@ export default function App() {
 	const falMotionCameraLocked = falMotionHasA && !falMotionCameraUnlocked;
 	const falMotionCurrentCameraMatch = !falMotionHasA || framingDistance(falMotion.a.framing, captureCurrentFraming()) <= 0.001;
 	const falMotionStep = !falMotionSegmentationReady ? 1 : !falMotionHasA ? 2 : falMotionMode === "interpolate" && !falMotionHasB ? 3 : 4;
+	// The Fal workflow is split into a viewport-side capture card and a wide
+	// authoring modal (fal-motion-studio.jsx); both render from this one model
+	// and action set so they cannot drift.
+	const falMotionModel = {
+		falMotion,
+		mode: falMotionMode,
+		enabled: falMotionEnabled,
+		segmentationReady: falMotionSegmentationReady,
+		step: falMotionStep,
+		hasA: falMotionHasA,
+		hasB: falMotionHasB,
+		cameraMatch: falMotionCameraMatch,
+		cameraUnlocked: falMotionCameraUnlocked,
+		currentCameraMatch: falMotionCurrentCameraMatch,
+		framingActive: lookThroughShot && shotAspectKey === FAL_MOTION_SHOT_ASPECT,
+	};
+	const falMotionActions = {
+		setFalMotion,
+		setMode: setFalMotionMode,
+		enterFraming: enterFalFraming,
+		markPose: markFalPose,
+		clearPose: clearFalPose,
+		clear: clearFalMotion,
+		toggleCameraLock: () => setFalMotionCameraUnlocked((value) => !value),
+		restoreCamera: restoreFalCamera,
+		generate: (kind) => void generateFalMotion(kind),
+		enableShaded: () => { setPartColoursEnabled(true); setPartColoursMode("shaded"); },
+	};
 	const viewLooksActive = gridView || autoColor || partColoursEnabled;
 	const rigSelection = parseRigNodeId(selectedHierarchyId);
 	const isRigSelection = rigSelection !== null;
@@ -13156,102 +13188,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					<p className="inspector-hint">
 						{isKo ? `인물 ${activeCharIndex + 1}의 자세입니다.` : `The pose on Subject ${activeCharIndex + 1}.`}
 					</p>
-					<section className="fal-motion-card" data-testid="fal-motion-studio" data-motion-enabled={falMotionEnabled ? "true" : "false"}>
-						<div className="fal-motion-head">
-							<strong>{ko("Fal 모션 생성", "Fal motion")}</strong>
-							<span>{!falMotionEnabled ? ko("QA 잠금", "QA lock") : falMotion.job?.status === "done" ? ko("완료", "Done") : falMotion.status === "error" ? ko("확인 필요", "Needs attention") : "H3 Max Turbo · 480P"}</span>
-						</div>
-						<div className="fal-motion-mode-tabs" role="tablist" aria-label={ko("Fal 모션 방식", "Fal motion mode")}>
-							<button type="button" role="tab" aria-selected={falMotionMode === "interpolate"} className={falMotionMode === "interpolate" ? "active" : ""} onClick={() => setFalMotionMode("interpolate")}>{ko("A→B 보간", "A→B interpolate")}</button>
-							<button type="button" role="tab" aria-selected={falMotionMode === "act"} className={falMotionMode === "act" ? "active" : ""} onClick={() => setFalMotionMode("act")}>{ko("A만 동작", "A-only action")}</button>
-						</div>
-						<p className="inspector-hint fal-motion-mode-hint">
-							{falMotionMode === "interpolate"
-								? ko("A와 B의 포즈 차이를 따라 움직임을 만듭니다.", "Creates motion from the pose difference between A and B.")
-								: ko("A 포즈 하나와 동작 설명으로 움직임을 만듭니다.", "Creates motion from one A pose and an action description.")}
-						</p>
-						<div className="fal-motion-stepper" aria-label={ko("Fal 모션 진행 단계", "Fal motion steps")}>
-							{[
-							[1, ko("음영", "Shaded")],
-								[2, "A"],
-								[3, "B"],
-								[4, ko("생성", "Generate")],
-							].map(([step, label]) => <span key={step} className={falMotionStep === step ? "active" : falMotionStep > step ? "done" : ""}><b>{step}</b>{label}</span>)}
-						</div>
-						<div className="fal-motion-segmentation-row">
-							<p className="inspector-hint fal-motion-ratio">{ko("참조 캡처 1664×960 → H3 480P 832×480 · 샷 시점에서 이 비율로 구도를 잡고 캡처하세요.", "Reference capture 1664×960 → H3 480P 832×480 · frame the shot through this ratio, then capture.")}</p>
-							<button type="button" className="btn fal-motion-flat-cta" data-testid="fal-motion-frame-shot" onClick={enterFalFraming} disabled={lookThroughShot && shotAspectKey === FAL_MOTION_SHOT_ASPECT}>{ko("fal 비율로 샷 시점", "Fal-ratio shot view")}</button>
-						</div>
-						<div className={"fal-motion-segmentation-row" + (falMotionSegmentationReady ? " ready" : "")}>
-							<p className="inspector-hint fal-motion-segmentation">{falMotionSegmentationReady ? ko("색 세그멘테이션 음영 모드 ON · A/B 캡처 가능", "Shaded body-part segmentation ON · A/B capture ready") : ko("A/B 참조에는 부위 색상 음영 모드가 필요합니다.", "Shaded body-part colours are required for A/B refs.")}</p>
-							{!falMotionSegmentationReady && <button type="button" className="btn fal-motion-flat-cta" onClick={() => { setPartColoursEnabled(true); setPartColoursMode("shaded"); }}>{ko("음영 모드 켜기", "Enable Shaded")}</button>}
-						</div>
-						<div className="fal-motion-capture-status" aria-live="polite" data-testid="fal-motion-capture-status">
-							<div className={"fal-motion-capture-slot" + (falMotionHasA ? " captured" : "")} data-testid="fal-motion-ref-a-status">
-								<strong>A · {falMotionHasA ? ko("캡처 완료", "Captured") : ko("미캡처", "Not captured")}</strong>
-								<span>{falMotionHasA ? `${falMotion.a.width}×${falMotion.a.height} · Shaded ${falMotion.a.partColours.length}개` : ko("현재 프레임에서 A 캡처를 누르세요", "Press Capture A on the current frame")}</span>
-							</div>
-							<div className={"fal-motion-capture-slot" + (falMotionHasB ? " captured" : "")} data-testid="fal-motion-ref-b-status">
-								<strong>B · {falMotionHasB ? ko("캡처 완료", "Captured") : ko("미캡처", "Not captured")}</strong>
-								<span>{falMotionHasB ? `${falMotion.b.width}×${falMotion.b.height} · Shaded ${falMotion.b.partColours.length}개` : ko("B 포즈를 만든 뒤 카메라를 움직이지 말고 B 캡처를 누르세요", "Set the B pose, keep the camera still, then press Capture B")}</span>
-								{falMotionHasB && <button type="button" className="fal-motion-slot-action" onClick={() => clearFalPose("b")}>{ko("B 제거", "Remove B")}</button>}
-							</div>
-						</div>
-						<p className={"fal-motion-camera-status" + (falMotionCameraMatch ? " ready" : "")} data-testid="fal-motion-camera-status">
-							{falMotionHasA
-								? falMotionCameraUnlocked
-									? ko("카메라 잠금 해제됨 · A를 다시 캡처하면 새 기준을 저장합니다.", "Camera unlocked · recapture A to save a new reference.")
-									: falMotionCurrentCameraMatch
-										? falMotionCameraMatch ? ko("✓ A/B 카메라 프레이밍 일치 확인 · 카메라 잠금", "✓ A/B camera framing matched · camera locked") : ko("✓ A 카메라 기준 저장 · 카메라 잠금", "✓ A camera saved · camera locked")
-										: ko("A 이후 카메라가 바뀌었어요. A 카메라로 복원하세요.", "The camera changed after A. Restore the A camera.")
-								: ko("A를 먼저 캡처하면 카메라 기준을 저장합니다.", "Capture A first to save the camera reference.")}
-						</p>
-						{falMotionHasA && <div className="fal-motion-camera-actions">
-							<button type="button" className="btn ghost" onClick={() => setFalMotionCameraUnlocked((value) => !value)}>{falMotionCameraUnlocked ? ko("카메라 잠그기", "Lock camera") : ko("카메라 잠금 해제", "Unlock camera")}</button>
-							{!falMotionCurrentCameraMatch && <button type="button" className="btn ghost" onClick={restoreFalCamera}>{ko("A 카메라로 복원", "Restore A camera")}</button>}
-						</div>}
-						<div className="fal-motion-pose-row">
-							<button type="button" className={falMotion.a ? "btn active" : "btn"} disabled={!falMotionSegmentationReady} onClick={() => markFalPose("a")}>{falMotion.a ? ko("A 재캡처", "Recapture A") : ko("A 캡처", "Capture A")}</button>
-							{falMotionMode === "interpolate" && <button type="button" className={falMotion.b ? "btn active" : "btn"} disabled={!falMotionSegmentationReady || falMotionCameraUnlocked} onClick={() => markFalPose("b")}>{falMotion.b ? ko("B 재캡처", "Recapture B") : ko("B 캡처", "Capture B")}</button>}
-							{(falMotion.a || falMotion.b) && <button type="button" className="btn ghost" onClick={clearFalMotion}>{ko("초기화", "Clear")}</button>}
-						</div>
-						<div className="fal-motion-thumbs" aria-label={ko("Fal motion reference poses", "Fal motion reference poses")}>
-							{falMotion.a && <figure><img src={falMotion.a.dataUrl} alt="Pose A" /><figcaption>A · {falMotion.a.width}×{falMotion.a.height}</figcaption></figure>}
-							{falMotion.b && <figure><img src={falMotion.b.dataUrl} alt="Pose B" /><figcaption>B · {falMotion.b.width}×{falMotion.b.height}</figcaption></figure>}
-						</div>
-						<textarea
-							className="fal-motion-instruction"
-							value={falMotion.instruction}
-							placeholder={falMotionMode === "interpolate"
-								? ko("A에서 B로 어떻게 움직이는지 적으세요. 예: 벤치로 걸어가 돌아서 앉는다", "Describe the motion from A to B. Example: walk to the bench, turn, and sit") 
-								: ko("A만 캡처한 뒤 동작을 적으세요. 예: 검을 머리 위로 휘두르고 한 걸음 전진", "With A only, describe the action. Example: swing the sword overhead and step forward")}
-							onChange={(event) => setFalMotion((current) => ({ ...current, instruction: event.target.value }))}
-						/>
-						<div className="fal-motion-duration-row">
-							<span className="inspector-hint">{ko("길이", "Length")}</span>
-							{FAL_MOTION_DURATIONS.map((seconds) => (
-								<button key={seconds} type="button" className={"btn small" + ((falMotion.duration ?? FAL_MOTION_MIN_DURATION) === seconds ? " active" : "")} onClick={() => setFalMotion((current) => ({ ...current, duration: seconds }))}>{seconds}{ko("초", "s")}</button>
-							))}
-						</div>
-						<details className="fal-motion-prompt-edit">
-							<summary>{ko("보낼 프롬프트", "Prompt to send")}</summary>
-							<textarea
-								className="fal-motion-instruction fal-motion-prompt-override"
-								value={falMotion.promptOverride ?? ""}
-								placeholder={buildH3MotionPrompt(falMotion.instruction, { interpolate: falMotionMode === "interpolate" })}
-								onChange={(event) => setFalMotion((current) => ({ ...current, promptOverride: event.target.value }))}
-							/>
-							<p className="inspector-hint">{ko("비워 두면 위 설명으로 자동 생성됩니다. 직접 고치면 그대로 전송됩니다.", "Left blank, this is built from the description above. Edit it and your text is sent verbatim.")}</p>
-						</details>
-						{falMotion.status === "error" && <p className="studio-hint error fal-motion-inline-error" role="alert">{falMotion.error}</p>}
-						<div className="fal-motion-actions">
-							{falMotionMode === "interpolate" ? <button type="button" className="btn primary" title={!falMotionEnabled ? ko("소유자 테스트가 끝날 때까지 잠겨 있습니다.", "Locked until owner testing is complete.") : !falMotionHasB ? ko("B 포즈를 먼저 캡처하세요.", "Capture B before generating.") : ""} disabled={!falMotionEnabled || falMotion.status === "submitting" || falMotion.status === "queued" || !falMotion.a || !falMotion.b} onClick={() => void generateFalMotion("interpolate")}>{falMotion.status === "submitting" || falMotion.status === "queued" ? ko("생성 중…", "Generating…") : ko("A→B 보간", "Interpolate A→B")}</button>
-								: <button type="button" className="btn primary" title={!falMotionEnabled ? ko("소유자 테스트가 끝날 때까지 잠겨 있습니다.", "Locked until owner testing is complete.") : !!falMotion.b ? ko("A만 동작 모드에서는 B를 제거하세요.", "Remove B for A-only action mode.") : !falMotion.instruction.trim() ? ko("동작 설명을 입력하세요.", "Enter an action description.") : ""} disabled={!falMotionEnabled || falMotion.status === "submitting" || falMotion.status === "queued" || !falMotion.a || !!falMotion.b || !falMotion.instruction.trim()} onClick={() => void generateFalMotion("act")}>{falMotion.status === "submitting" || falMotion.status === "queued" ? ko("생성 중…", "Generating…") : ko("동작 생성", "Generate action")}</button>}
-						</div>
-						{!falMotionEnabled && <p className="inspector-hint">{ko("소유자 테스트가 끝날 때까지 생성 요청은 서버에서 차단됩니다.", "Generation requests stay blocked on the server until owner testing is complete.")}</p>}
-						{falMotion.job?.status === "done" && falMotion.job.video?.url && <video className="fal-motion-video" src={falMotion.job.video.url} controls playsInline preload="metadata" />}
-						{falMotion.dailyRemaining !== null && <p className="inspector-hint">{ko(`오늘 남은 생성 ${falMotion.dailyRemaining}회`, `${falMotion.dailyRemaining} motion generations left today`)}</p>}
-					</section>
+					<FalMotionCaptureCard model={falMotionModel} actions={falMotionActions} onOpen={() => setFalMotionStudioOpen(true)} />
 					<PoseTileGrid
 						poses={selectablePoses}
 						model={activeChar.model}
@@ -14935,6 +14872,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				<SourceOffer />
 			</footer>
 
+			{falMotionStudioOpen && <FalMotionModal model={falMotionModel} actions={falMotionActions} onClose={() => setFalMotionStudioOpen(false)} />}
 			{result && resultOpen && (
 				<ResultModal
 					result={result}
