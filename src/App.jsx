@@ -7118,8 +7118,10 @@ export default function App() {
 		}
 		setCommittedIkEdits([]);
 		// A cleared clip leaves the body canonical: the stature belonged to the
-		// take, not to the character.
-		setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? { ...entry, scale: 1 } : entry));
+		// take, not to the character. The persisted motionRef must drop too —
+		// restoreMotionRefs re-fetches it on every reload/rejoin, and a cleared
+		// take that resurrects on the next session is exactly the bug this fixes.
+		setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? { ...entry, scale: 1, motionRef: null } : entry));
 		// Back to the pre-generation timeline: the current duration on the production clock.
 		setTlFrameCount(maxDst + 1);
 		setTlFps(TIMELINE_FPS);
