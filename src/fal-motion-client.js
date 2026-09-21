@@ -27,7 +27,10 @@ export function buildH3MotionPrompt(action, { interpolate = false } = {}) {
   const lead = interpolate
     ? (text || "Move the character naturally from the first reference pose to the final reference pose.")
     : text || "Perform the requested character action.";
-  return `${lead}\nKeep the camera fixed and preserve the full-body character framing. Animate only the character; keep the character's body heading and facing direction unchanged with no yaw turn, spin, or final rotation. Keep the scene, lighting, floor, and every object unchanged. Use one continuous shot with no cuts, zooms, pan, tilt, orbit, crop, reframing, or time jump.`;
+  // Camera and scene stay locked — the extractor reads a locked-off plate and
+  // the studio keeps its set. Only the motion-level heading/rotation lock is
+  // dropped (#380): it fought any action that turns and made the motion stiff.
+  return `${lead}\nKeep the camera fixed and preserve the full-body character framing. Keep the scene, lighting, floor, and every object unchanged. Use one continuous shot with no cuts, zooms, pan, tilt, orbit, crop, reframing, or time jump.`;
 }
 
 async function request(path, body, fetchImpl = fetch) {
