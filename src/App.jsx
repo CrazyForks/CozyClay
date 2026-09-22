@@ -240,6 +240,7 @@ import AssetPane from "./asset-pane.jsx";
 import ResourceStatus, { SaveBlockedDialog } from "./resource-status.jsx";
 import AddObjectMenu from "./object-catalog.jsx";
 import ResultModal from "./result-modal.jsx";
+import { FalMotionCaptureCard, FalMotionModal } from "./fal-motion-studio.jsx";
 import SettingsMenu from "./settings-menu.jsx";
 import { hasLineEditCapability, motionReadiness } from "./motion-readiness.js";
 import { MotionReadiness, MotionSetup, motionReadinessMessage } from "./motion-readiness-ui.jsx";
@@ -346,6 +347,7 @@ import { buildZip } from "./zip-store.js";
 import { composeStoryboard } from "./storyboard.js";
 import { DEPTH_RANGE_M, depthRangeFromFrames, passFileName, renderPass } from "./render-passes.js";
 import { VIDEO_MODEL_PRESETS } from "./model-presets.js";
+import { buildH3MotionPrompt, motionApiOrigin, submitFalMotion, waitForFalMotionJob, FAL_MOTION_DURATIONS, FAL_MOTION_MIN_DURATION, FAL_MOTION_SHOT_ASPECT, FAL_MOTION_STILL_OUTPUT } from "./fal-motion-client.js";
 import { serializeOtio } from "./otio.js";
 import {
 	addShotAtFrame,
@@ -1467,6 +1469,23 @@ export default function App() {
 	const [rigs, setRigs] = useState({});
 	const [rigMountEpoch, setRigMountEpoch] = useState(0);
 	const [poseRevision, setPoseTick] = useState(0);
+	const [falMotion, setFalMotion] = useState({ a: null, b: null, job: null, status: "idle", error: "", instruction: "", dailyRemaining: null });
+	const [falMotionEnabled, setFalMotionEnabled] = useState(false);
+	const [falMotionMode, setFalMotionMode] = useState("interpolate");
+	const [falMotionCameraUnlocked, setFalMotionCameraUnlocked] = useState(false);
+
+	useEffect(() => {
+		let cancelled = false;
+		fetch(`${motionApiOrigin()}/v1/motion/me`, { credentials: "include" })
+			.then((response) => response.ok ? response.json() : null)
+			.then((payload) => {
+				if (cancelled || !payload) return;
+				setFalMotionEnabled(payload.enabled === true);
+				if (Number.isFinite(payload.dailyRemaining)) setFalMotion((current) => ({ ...current, dailyRemaining: payload.dailyRemaining }));
+			})
+			.catch(() => { if (!cancelled) setFalMotionEnabled(false); });
+		return () => { cancelled = true; };
+	}, []);
 
 	/* --------------------- derived cast view + shims ---------------------- */
 
@@ -2665,6 +2684,7 @@ export default function App() {
 	const liveWorkspaceIdRef = useRef("");
 	if (!liveWorkspaceIdRef.current) liveWorkspaceIdRef.current = loadLiveWorkspaceId();
 	const [result, setResult] = useState(null);
+	const [falMotionStudioOpen, setFalMotionStudioOpen] = useState(false);
 	const [resultOpen, setResultOpen] = useState(false);
 	const [copied, setCopied] = useState(false);
 	const [recordedVideoName, setRecordedVideoName] = useState(null);
@@ -4868,11 +4888,14 @@ export default function App() {
 			},
 			// The full-resolution shot-camera pull the editor's own exports use —
 		// not capture_frame's 640x360 preview, which stays exactly as it is.
-			capture_framing_png: () => {
+			capture_framing_png: (args = {}) => {
 				const live = liveStateRef.current;
-				const dataUrl = live.captureFramingPng(live.captureCurrentFraming());
+				const requested = args?.output;
+				const output = Number.isFinite(requested?.width) && Number.isFinite(requested?.height)
+					? { width: Math.round(requested.width), height: Math.round(requested.height) }
+					: SHOT_ASPECT_PRESETS[live.stage.shotAspect] ?? SHOT_ASPECT_PRESETS["16:9"];
+				const dataUrl = live.captureFramingPng(live.captureCurrentFraming(), output);
 				if (!dataUrl) throw new Error("The shot renderer is not ready");
-				const output = SHOT_ASPECT_PRESETS[live.stage.shotAspect] ?? SHOT_ASPECT_PRESETS["16:9"];
 				return {
 					dataUrl,
 					width: output.width,
@@ -5921,6 +5944,194 @@ export default function App() {
 		return captureFraming({ pos: { x: pos.x, y: pos.y, z: pos.z }, yaw: look.current.yaw, pitch: look.current.pitch, fovDeg });
 	}
 
+	function captureFalStill() {
+		// H3 480P renders 832x480. The still is captured at exactly that canvas
+		// (x2) regardless of the Studio's shot ratio; markFalPose also switches
+		// the viewport to the matching ratio so what the user framed is what
+		// gets sent.
+		const captured = liveHandlersRef.current?.capture_framing_png?.({ output: FAL_MOTION_STILL_OUTPUT });
+		if (!captured?.dataUrl?.startsWith("data:image/")) throw new Error(ko("렌더러가 준비되지 않았어요.", "The shot renderer is not ready."));
+		if (captured.width !== FAL_MOTION_STILL_OUTPUT.width || captured.height !== FAL_MOTION_STILL_OUTPUT.height) {
+			throw new Error(ko(`H3 480P 참조 캡처는 ${FAL_MOTION_STILL_OUTPUT.width}×${FAL_MOTION_STILL_OUTPUT.height}이어야 해요.`, `The H3 480P reference must be captured at ${FAL_MOTION_STILL_OUTPUT.width}×${FAL_MOTION_STILL_OUTPUT.height}.`));
+		}
+		// H3 must see the same complete subject in both endpoints. A clipped
+		// foot or head makes the model invent the missing geometry during the
+		// transition, which is exactly the bad motion this flow is meant to avoid.
+		const rig = liveStateRef.current.rigs?.[activeChar.id];
+		const cam = shotCamRef.current;
+		if (!rig || !cam) throw new Error(ko("전신 프레임을 확인할 수 없어 참조를 캡처할 수 없어요. 잠시 후 다시 시도하세요.", "The full-body frame is not ready yet. Wait a moment and try the reference capture again."));
+		rig.updateWorldMatrix(true, true);
+		cam.updateMatrixWorld(true);
+		const bounds = new THREE.Box3().setFromObject(rig);
+		const corners = [
+			new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.min.z),
+			new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.max.z),
+			new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.min.z),
+			new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+			new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.min.z),
+			new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
+			new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.min.z),
+			new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
+		].map((corner) => corner.project(cam));
+		const margin = 0.94;
+		const clipped = corners.some((corner) =>
+			corner.z < -1 || corner.z > 1 || Math.abs(corner.x) > margin || Math.abs(corner.y) > margin
+		);
+		if (clipped) {
+			throw new Error(ko(
+				"A/B 참조에 캐릭터 전신이 다 안 들어왔어요. 샷 시점에서 머리와 양발이 화면 안에 들어오도록 카메라를 뒤로 빼고 다시 캡처하세요.",
+				"The full character is not inside the A/B reference. In the shot view, pull the camera back until the head and both feet are visible, then capture again."
+			));
+		}
+		if (!falMotionSegmentationReady || !Array.isArray(captured.partColours) || captured.partColours.length === 0) {
+			throw new Error(ko("A/B 참조는 View에서 부위 색상 → 음영을 켜야 캡처할 수 있어요.", "Enable View → Body part colours → Shaded before capturing an A/B reference."));
+		}
+		return { ...captured, framing: captureCurrentFraming() };
+	}
+
+	/** Put the viewport on the Fal canvas and hand the fly controls to the
+	 * shot camera, so the user composes the A/B reference on exactly the
+	 * 832x480 frame the clip will have. Idempotent; capture does not need it. */
+	function enterFalFraming() {
+		setShotAspectKey(FAL_MOTION_SHOT_ASPECT);
+		if (!lookThroughShot) enterShotLook();
+	}
+
+	function markFalPose(slot) {
+		try {
+			if (slot === "b" && falMotion.a && framingDistance(falMotion.a.framing, captureCurrentFraming()) > 0.001) {
+				throw new Error(ko("A와 B 사이에서 카메라가 이동했어요. 같은 카메라 프레이밍으로 다시 캡처하세요.", "The camera moved between A and B. Capture both refs with the same camera framing."));
+			}
+			const still = captureFalStill();
+			// The capture is already on the Fal canvas; make the viewport agree so
+			// the user sees the frame that was just sent.
+			setShotAspectKey(FAL_MOTION_SHOT_ASPECT);
+			setFalMotion((current) => ({ ...current, [slot]: still, status: "idle", error: "" }));
+			if (slot === "a") setFalMotionCameraUnlocked(false);
+			setToast(isKo ? `포즈 ${slot.toUpperCase()} 캡처됨 · ${still.width}×${still.height}` : `Pose ${slot.toUpperCase()} captured · ${still.width}×${still.height}`);
+		} catch (error) {
+			setFalMotion((current) => ({ ...current, error: error.message, status: "error" }));
+		}
+	}
+
+	function clearFalPose(slot) {
+		setFalMotion((current) => ({ ...current, [slot]: null, status: "idle", error: "", job: null }));
+		if (slot === "a") setFalMotionCameraUnlocked(false);
+	}
+
+	function clearFalMotion() {
+		setFalMotion({ a: null, b: null, job: null, status: "idle", error: "", instruction: "", promptOverride: "", duration: FAL_MOTION_MIN_DURATION, dailyRemaining: null });
+		setFalMotionCameraUnlocked(false);
+	}
+
+	function restoreFalCamera() {
+		const framing = falMotion.a?.framing;
+		const camera = shotCamRef.current;
+		if (!framing || !camera) return;
+		camera.position.set(framing.pos.x, framing.pos.y, framing.pos.z);
+		camera.rotation.order = "YXZ";
+		camera.rotation.set(framing.pitch, framing.yaw, 0);
+		camera.fov = framing.fovDeg;
+		camera.updateProjectionMatrix();
+		look.current.yaw = framing.yaw;
+		look.current.pitch = framing.pitch;
+		shotCameraPosRef.current = { ...framing.pos };
+		setCameraPos({ ...framing.pos });
+		setFovDeg(framing.fovDeg);
+		setFalMotionCameraUnlocked(false);
+		setFalMotion((current) => ({ ...current, error: "", status: "idle" }));
+		setToast(isKo ? "A 캡처 카메라로 복원했어요." : "Restored the camera used for A.");
+	}
+
+	function framingDistance(a, b) {
+		if (!a || !b) return Infinity;
+		return Math.max(
+			Math.abs(a.pos.x - b.pos.x), Math.abs(a.pos.y - b.pos.y), Math.abs(a.pos.z - b.pos.z),
+			Math.abs(a.yaw - b.yaw), Math.abs(a.pitch - b.pitch), Math.abs(a.fovDeg - b.fovDeg),
+		);
+	}
+
+	async function generateFalMotion(kind = "interpolate", instructionOverride = null) {
+		if (!falMotionEnabled) {
+			setFalMotion((current) => ({ ...current, error: ko("Fal 모션 생성은 QA 중 잠겨 있어요.", "Fal motion generation is locked during QA."), status: "error" }));
+			return;
+		}
+		let source = falMotion;
+		if (kind === "act" && !source.a) {
+			try { source = { ...source, a: captureFalStill() }; setFalMotion((current) => ({ ...current, a: source.a })); }
+			catch (error) { setFalMotion((current) => ({ ...current, error: error.message, status: "error" })); return; }
+		}
+		if (kind === "interpolate" && (!source.a || !source.b)) {
+			setFalMotion((current) => ({ ...current, error: ko("A와 B 포즈를 먼저 캡처하세요.", "Capture both A and B poses first."), status: "error" }));
+			return;
+		}
+		if (!source.a?.partColours || (kind === "interpolate" && !source.b?.partColours)) {
+			setFalMotion((current) => ({ ...current, error: ko("색 세그멘테이션이 포함된 음영 A/B 참조를 다시 캡처하세요.", "Recapture A/B refs with shaded body-part segmentation enabled."), status: "error" }));
+			return;
+		}
+		if (kind === "interpolate" && framingDistance(source.a.framing, source.b.framing) > 0.001) {
+			setFalMotion((current) => ({ ...current, error: ko("A와 B 사이에서 카메라가 바뀌었어요. 같은 카메라로 다시 캡처하세요.", "The camera changed between A and B. Capture both poses with the same camera."), status: "error" }));
+			return;
+		}
+		// A hand-edited prompt wins verbatim; otherwise build from the description.
+		// Interpolate now honours the description too (#380): the bare pose
+		// difference lets the model invent the transition and produces junk.
+		const description = instructionOverride || source.instruction || "";
+		const prompt = source.promptOverride?.trim()
+			? source.promptOverride.trim()
+			: buildH3MotionPrompt(description || (kind === "interpolate" ? "" : "Make the character perform the requested action."), { interpolate: kind === "interpolate" });
+		setFalMotion((current) => ({ ...current, status: "submitting", error: "", job: null }));
+		try {
+			const submitted = await submitFalMotion({
+				kind,
+				stillA: source.a?.dataUrl,
+				stillB: source.b?.dataUrl,
+				still: source.a?.dataUrl,
+				prompt,
+				duration: source.duration ?? FAL_MOTION_MIN_DURATION,
+			});
+			const id = submitted?.job?.id;
+			if (!id) throw new Error(ko("생성 작업 ID를 받지 못했어요.", "The server did not return a motion job ID."));
+			setFalMotion((current) => ({ ...current, status: "queued", job: submitted.job, dailyRemaining: submitted.dailyRemaining }));
+			const finished = await waitForFalMotionJob(id, {
+				onUpdate: (job) => setFalMotion((current) => ({ ...current, job, status: job?.status ?? current.status })),
+			});
+			const job = finished?.job;
+			if (job?.status !== "done") throw new Error(job?.error || ko("Fal 생성에 실패했어요.", "Fal motion generation failed."));
+			setFalMotion((current) => ({ ...current, job, status: "done", dailyRemaining: finished.dailyRemaining }));
+			if (job.video?.url) {
+				const motionSource = { kind: "url", url: job.video.url, name: `Fal H3 Max Turbo · ${job.resolution}` };
+				setMultiModelSource(motionSource);
+				// Put the completed clip through the same probe/ingest path as a
+				// manually supplied URL so GVHMR sees measured fps, duration and
+				// a ready extraction card without another generation request.
+				await ingestFootage(motionSource);
+				setResult({
+					mode: "video",
+					modelLabel: "Fal H3 Max Turbo",
+					prompt,
+					frame: source.a?.dataUrl ?? null,
+					videoUrl: job.video.url,
+					motion: {
+						videoUrl: job.video.url,
+						resolution: job.resolution,
+						width: job.width,
+						height: job.height,
+						fps: job.fps,
+						duration: job.resultDuration ?? job.duration,
+						cost: job.cost,
+					},
+				});
+				setResultOpen(true);
+				// The result modal and the studio modal are both z-30; never stack them.
+				setFalMotionStudioOpen(false);
+				setToast(isKo ? "Fal 영상이 준비됐어요 · 추출 패널에서 GVHMR을 실행하세요" : "Fal video is ready · run GVHMR from the extraction panel");
+			}
+		} catch (error) {
+			setFalMotion((current) => ({ ...current, status: "error", error: error.message || String(error) }));
+		}
+	}
+
 	// What a framing capture says about the shot it came from: lens, delivery
 	// aspect, cast, cut range and the video model the shot is aimed at. Both
 	// capture paths (the live command and the embed message) attach this, so a
@@ -6088,6 +6299,43 @@ export default function App() {
 	// for the part colours, and a dot on the trigger whenever the viewport is
 	// showing something other than the plain stage.
 	const partColoursChoice = partColoursEnabled ? partColoursMode : "off";
+	// Shaded part colours keep the stable per-part hues while preserving the
+	// surface lighting H3 uses to infer the character's volume and pose.
+	const falMotionSegmentationReady = partColoursEnabled && partColoursMode === "shaded";
+	const falMotionHasA = Boolean(falMotion.a);
+	const falMotionHasB = Boolean(falMotion.b);
+	const falMotionCameraMatch = falMotionHasA && falMotionHasB && framingDistance(falMotion.a.framing, falMotion.b.framing) <= 0.001;
+	const falMotionCameraLocked = falMotionHasA && !falMotionCameraUnlocked;
+	const falMotionCurrentCameraMatch = !falMotionHasA || framingDistance(falMotion.a.framing, captureCurrentFraming()) <= 0.001;
+	const falMotionStep = !falMotionSegmentationReady ? 1 : !falMotionHasA ? 2 : falMotionMode === "interpolate" && !falMotionHasB ? 3 : 4;
+	// The Fal workflow is split into a viewport-side capture card and a wide
+	// authoring modal (fal-motion-studio.jsx); both render from this one model
+	// and action set so they cannot drift.
+	const falMotionModel = {
+		falMotion,
+		mode: falMotionMode,
+		enabled: falMotionEnabled,
+		segmentationReady: falMotionSegmentationReady,
+		step: falMotionStep,
+		hasA: falMotionHasA,
+		hasB: falMotionHasB,
+		cameraMatch: falMotionCameraMatch,
+		cameraUnlocked: falMotionCameraUnlocked,
+		currentCameraMatch: falMotionCurrentCameraMatch,
+		framingActive: lookThroughShot && shotAspectKey === FAL_MOTION_SHOT_ASPECT,
+	};
+	const falMotionActions = {
+		setFalMotion,
+		setMode: setFalMotionMode,
+		enterFraming: enterFalFraming,
+		markPose: markFalPose,
+		clearPose: clearFalPose,
+		clear: clearFalMotion,
+		toggleCameraLock: () => setFalMotionCameraUnlocked((value) => !value),
+		restoreCamera: restoreFalCamera,
+		generate: (kind) => void generateFalMotion(kind),
+		enableShaded: () => { setPartColoursEnabled(true); setPartColoursMode("shaded"); },
+	};
 	const viewLooksActive = gridView || autoColor || partColoursEnabled;
 	const rigSelection = parseRigNodeId(selectedHierarchyId);
 	const isRigSelection = rigSelection !== null;
@@ -6894,8 +7142,10 @@ export default function App() {
 		}
 		setCommittedIkEdits([]);
 		// A cleared clip leaves the body canonical: the stature belonged to the
-		// take, not to the character.
-		setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? { ...entry, scale: 1 } : entry));
+		// take, not to the character. The persisted motionRef must drop too —
+		// restoreMotionRefs re-fetches it on every reload/rejoin, and a cleared
+		// take that resurrects on the next session is exactly the bug this fixes.
+		setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? { ...entry, scale: 1, motionRef: null } : entry));
 		// Back to the pre-generation timeline: the current duration on the production clock.
 		setTlFrameCount(maxDst + 1);
 		setTlFps(TIMELINE_FPS);
@@ -8033,27 +8283,32 @@ export default function App() {
 		setNonce((n) => n + 1);
 	}
 
-	function bufferToPng(buffer) {
+	function bufferToPng(buffer, output = shotOutput) {
 		const canvas = document.createElement("canvas");
-		canvas.width = shotOutput.width;
-		canvas.height = shotOutput.height;
+		if (output === shotOutput) {
+			canvas.width = shotOutput.width;
+			canvas.height = shotOutput.height;
+		} else {
+			canvas.width = output.width;
+			canvas.height = output.height;
+		}
 		const ctx = canvas.getContext("2d");
-		const image = ctx.createImageData(shotOutput.width, shotOutput.height);
+		const image = ctx.createImageData(output.width, output.height);
 		// WebGL reads bottom-up; flip into canvas order.
-		for (let row = 0; row < shotOutput.height; row += 1) {
-			const from = (shotOutput.height - 1 - row) * shotOutput.width * 4;
+		for (let row = 0; row < output.height; row += 1) {
+			const from = (output.height - 1 - row) * output.width * 4;
 			image.data.set(
-				buffer.subarray(from, from + shotOutput.width * 4),
-				row * shotOutput.width * 4
+				buffer.subarray(from, from + output.width * 4),
+				row * output.width * 4
 			);
 		}
 		ctx.putImageData(image, 0, 0);
 		return canvas.toDataURL("image/png");
 	}
 
-	/** Park the shot camera on a framing, read back a 1920x1080 PNG, and put
+	/** Park the shot camera on a framing, read back an offscreen PNG, and put
 	    everything back before the next paint — the viewport never sees it. */
-	function captureFramingPng(framing) {
+	function captureFramingPng(framing, output = shotOutput) {
 		const cam = shotCamRef.current;
 		if (!cam || !captureRef.current) return null;
 		const prev = { x: cam.position.x, y: cam.position.y, z: cam.position.z, yaw: look.current.yaw, pitch: look.current.pitch, fov: cam.fov };
@@ -8062,14 +8317,22 @@ export default function App() {
 		cam.rotation.set(framing.pitch, framing.yaw, 0);
 		cam.fov = framing.fovDeg;
 		cam.updateProjectionMatrix();
-		const buffer = captureRef.current.render();
-		cam.position.set(prev.x, prev.y, prev.z);
-		cam.rotation.set(prev.pitch, prev.yaw, 0);
-		look.current.yaw = prev.yaw;
-		look.current.pitch = prev.pitch;
-		cam.fov = prev.fov;
-		cam.updateProjectionMatrix();
-		return buffer ? bufferToPng(buffer) : null;
+		const needsOwnTarget = output.width !== shotOutput.width || output.height !== shotOutput.height;
+		const capture = needsOwnTarget && typeof captureRef.current.createExportCapture === "function"
+			? captureRef.current.createExportCapture(output)
+			: captureRef.current;
+		try {
+			const buffer = capture.render();
+			return buffer ? bufferToPng(buffer, output) : null;
+		} finally {
+			if (needsOwnTarget) capture.dispose?.();
+			cam.position.set(prev.x, prev.y, prev.z);
+			cam.rotation.set(prev.pitch, prev.yaw, 0);
+			look.current.yaw = prev.yaw;
+			look.current.pitch = prev.pitch;
+			cam.fov = prev.fov;
+			cam.updateProjectionMatrix();
+		}
 	}
 
 	function copyPrompt(prompt) {
@@ -11825,6 +12088,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							<select
 								aria-label={ko("Camera preset", "카메라 프리셋")}
 								value={cameraPresetId ?? ""}
+								disabled={falMotionCameraLocked}
 								onChange={(event) => {
 									const id = event.target.value;
 									if (!id) { setCameraPresetId(null); return; }
@@ -11857,6 +12121,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								max="90"
 								step="1"
 								value={fovDeg}
+								disabled={falMotionCameraLocked}
 								onChange={(event) => setFovDeg(Number(event.target.value))}
 							/>
 							<output>{Math.round(fovDeg)}°</output>
@@ -12249,6 +12514,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							    and the wheel dollies without wrecking the framing. */}
 							<FlyControls
 								enabled={!posing && !playMode}
+								cameraLocked={lookThroughShot && falMotionCameraLocked}
 								camRef={ikMode ? poserCamRef : lookThroughShot ? shotCamRef : editorCamRef}
 								look={ikMode ? poserLook : lookThroughShot ? look : editorLook}
 								getPivot={() => {
@@ -12726,7 +12992,8 @@ function resizePromptClip(id, edge, rawFrame) {
 						<div className="inspector-heading"><strong>{ko("Agent", "에이전트")}</strong><button type="button" className="inspector-agent-switch" onClick={() => setStudioAgentMode(false)}>{ko("Inspector", "속성")}</button></div>
 						<AgentPanel embedded hidden={!studioAgentMode} surface="studio" defaultCollapsed onCollapsedChange={setAgentCollapsed}
 							sceneName={scenes.find((entry) => entry.id === activeSceneId)?.name ?? ko("Untitled Scene", "제목 없는 씬")}
-							buildContext={buildStudioAgentContext} onReceipt={highlightAgentTargets} />
+							buildContext={buildStudioAgentContext} onReceipt={highlightAgentTargets}
+							onFalAction={(instruction) => void generateFalMotion("act", instruction)} />
 					</div>}
 					<section className="inspector-pane" hidden={studioAgentMode}>
 					<div className="inspector-heading">
@@ -12947,6 +13214,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					<p className="inspector-hint">
 						{isKo ? `인물 ${activeCharIndex + 1}의 자세입니다.` : `The pose on Subject ${activeCharIndex + 1}.`}
 					</p>
+					<FalMotionCaptureCard model={falMotionModel} actions={falMotionActions} onOpen={() => setFalMotionStudioOpen(true)} />
 					<PoseTileGrid
 						poses={selectablePoses}
 						model={activeChar.model}
@@ -14630,6 +14898,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				<SourceOffer />
 			</footer>
 
+			{falMotionStudioOpen && <FalMotionModal model={falMotionModel} actions={falMotionActions} onClose={() => setFalMotionStudioOpen(false)} />}
 			{result && resultOpen && (
 				<ResultModal
 					result={result}

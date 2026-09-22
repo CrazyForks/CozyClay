@@ -2,24 +2,32 @@ import * as THREE from "three";
 
 // One table travels with the captured frame: the video inbetweener and a
 // downstream colour segmenter must agree on which colour names each limb.
-// Keep these hex values stable; they are the original palette's sRGB colours.
 // The segmenter treats neutral grey as uncoloured and locates the head by its
 // adjacency to the torso, so the head intentionally has no hue.
+//
+// Hue layout (#407): 28 degrees apart on a wheel starting at 44 degrees, so
+// the extractor's ±12 degree HSV window around each centre cannot overlap a
+// neighbour even after the AI pass shifts hues (p95 11 degrees measured),
+// every left/right pair sits 168 degrees apart, and both ends keep clear of
+// the 8-36 degree wood/skin band the extractor excludes. The previous table
+// failed this: rightUpperArm 202 vs rightShin 175 and rightForeArm 256 vs
+// rightHand 283 were 27 degrees apart, the windows bled into each other, and
+// palette keypoints placed the right shoulder on the right shin (#380).
 export const PART_COLOURS = Object.freeze([
 	{ part: "torso", bones: ["Hips", "Spine", "Spine1", "Spine2", "Neck", "LeftShoulder", "RightShoulder"], hex: "#FFFFFF", hue: null },
 	{ part: "head", bones: ["Head", "HeadTop_End"], hex: "#8C8C8C", hue: null },
-	{ part: "leftUpperArm", bones: ["LeftArm"], hex: "#FFD500", hue: 40 },
-	{ part: "rightUpperArm", bones: ["RightArm"], hex: "#00D0FF", hue: 202 },
-	{ part: "leftForeArm", bones: ["LeftForeArm"], hex: "#F1FF00", hue: 67 },
-	{ part: "rightForeArm", bones: ["RightForeArm"], hex: "#8D00FF", hue: 256 },
-	{ part: "leftHand", bones: ["LeftHand"], hex: "#B0FF00", hue: 94 },
-	{ part: "rightHand", bones: ["RightHand"], hex: "#DC00FF", hue: 283 },
-	{ part: "leftThigh", bones: ["LeftUpLeg"], hex: "#00FF23", hue: 121 },
-	{ part: "rightThigh", bones: ["RightUpLeg"], hex: "#FF00EB", hue: 310 },
-	{ part: "leftShin", bones: ["LeftLeg"], hex: "#FF00A6", hue: 337 },
-	{ part: "rightShin", bones: ["RightLeg"], hex: "#00FFF5", hue: 175 },
-	{ part: "leftFoot", bones: ["LeftFoot", "LeftToeBase", "LeftToe_End"], hex: "#00FFB6", hue: 148 },
-	{ part: "rightFoot", bones: ["RightFoot", "RightToeBase", "RightToe_End"], hex: "#0077FF", hue: 229 },
+	{ part: "leftUpperArm", bones: ["LeftArm"], hex: "#FFBB00", hue: 44 },
+	{ part: "rightUpperArm", bones: ["RightArm"], hex: "#0077FF", hue: 212 },
+	{ part: "leftForeArm", bones: ["LeftForeArm"], hex: "#CCFF00", hue: 72 },
+	{ part: "rightForeArm", bones: ["RightForeArm"], hex: "#0000FF", hue: 240 },
+	{ part: "leftHand", bones: ["LeftHand"], hex: "#55FF00", hue: 100 },
+	{ part: "rightHand", bones: ["RightHand"], hex: "#7700FF", hue: 268 },
+	{ part: "leftThigh", bones: ["LeftUpLeg"], hex: "#00FF22", hue: 128 },
+	{ part: "rightThigh", bones: ["RightUpLeg"], hex: "#EE00FF", hue: 296 },
+	{ part: "leftShin", bones: ["LeftLeg"], hex: "#00FF99", hue: 156 },
+	{ part: "rightShin", bones: ["RightLeg"], hex: "#FF0099", hue: 324 },
+	{ part: "leftFoot", bones: ["LeftFoot", "LeftToeBase", "LeftToe_End"], hex: "#00EEFF", hue: 184 },
+	{ part: "rightFoot", bones: ["RightFoot", "RightToeBase", "RightToe_End"], hex: "#FF0022", hue: 352 },
 ]);
 
 function hueDistance(a, b) {
@@ -37,8 +45,10 @@ export function paletteViolations(palette) {
 			violations.push(`${limb.part}: hue is inside 10-35 degrees`);
 		}
 		for (const other of limbs.slice(index + 1)) {
-			if (hueDistance(limb.hue, other.hue) < 25) {
-				violations.push(`${limb.part}/${other.part}: hues are less than 25 degrees apart`);
+			// The extractor windows each hue by ±12 degrees and the AI pass drifts
+			// hues ~11 degrees, so a gap below 28 lets two parts claim one pixel.
+			if (hueDistance(limb.hue, other.hue) < 28) {
+				violations.push(`${limb.part}/${other.part}: hues are less than 28 degrees apart`);
 			}
 		}
 		if (!limb.part.startsWith("left")) continue;

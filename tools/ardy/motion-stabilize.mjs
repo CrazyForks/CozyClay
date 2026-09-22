@@ -224,8 +224,112 @@ function stabilizeContacts(root, posed, frames, fps, { contactHeight, groundY } 
 	return { root: outRoot, posed: outPosed, corrected };
 }
 
-export function stabilizeMotion(motion, { enabled = true, smoothRotations: smoothRotationSeries = true, contactHeight, groundY } = {}) {
-	if (!enabled || !motion || motion.frames < 3) return { ...motion, stabilization: { enabled: false, correctedPositions: 0, correctedRotations: 0 } };
+/**
+ * Foot-anchored root re-integration (#380).
+ *
+ * GVHMR integrates the root from per-frame velocity and, on rendered clips,
+ * under-scales the stride: measured on v13c the stance ankle moonwalked at
+ * 45 cm/s in world while the hips advanced 49 cm/s — the legs walk faster
+ * than the body moves. Its contact logits did not correlate with planted
+ * frames (r <= 0.09) so the anchor is read off the take itself: per frame the
+ * foot that is BOTH lowest and slowest is the support, and the whole body is
+ * shifted rigidly (root + every joint by one vector) so that foot holds the
+ * world XZ it had when its stance run began. A rigid shift keeps every pose
+ * exactly as authored; only the trajectory changes. Y is never touched (a
+ * step, stair or chair is a real height change).
+ *
+ * Stance is a run: the anchor is only trusted once a foot has been low+slow
+ * for MIN_STANCE frames, and it releases as soon as the foot lifts or
+ * accelerates. Low and slow are both read off the INPUT arrays (the shift is
+ * written to copies), so the correction cannot feed back into its own
+ * trigger. Between runs the accumulated offset is held, never reset, so the
+ * take stays continuous.
+ */
+function anchorFeetToFloor(root, posed, frames, fps, reference = posed) {
+	const outRoot = new Float32Array(root); const outPosed = new Float32Array(posed);
+	const FEET = [21, 22, 25, 26];
+	const MIN_STANCE = Math.max(2, Math.round(fps * 0.08));
+	// Stance is read off `reference` — the AUTHORED joints, before the spike
+	// filter above: that filter's reversal branch moves the last stance frame
+	// (a velocity reversal by definition) by up to 2 cm, which would shorten
+	// every run by one frame and leave that frame sliding.
+	const at = (f, j, a) => reference[(f * JOINTS + j) * 3 + a];
+	const heights = FEET.map((j) => Array.from({ length: frames }, (_, f) => at(f, j, 1)));
+	const low = FEET.map((_, i) => { const s = [...heights[i]].sort((a, b) => a - b); return s[Math.floor((s.length - 1) * 0.35)]; });
+	// World horizontal speed of the authored foot. Stance is low AND slow;
+	// "slow" is half the foot's upper-quartile speed (its swing), which
+	// separates the two phases without depending on the walk's duty cycle —
+	// a median gate sits ON the stance speed of a 50/50 gait and then admits
+	// or rejects stance frames on float noise.
+	const speed = FEET.map((j) => Array.from({ length: frames }, (_, f) => f === 0 ? 0 : Math.hypot(at(f, j, 0) - at(f - 1, j, 0), at(f, j, 2) - at(f - 1, j, 2)) * fps));
+	const quantile = (v, q) => { const s = [...v].sort((a, b) => a - b); return s[Math.floor((s.length - 1) * q)]; };
+	const slow = speed.map((v) => quantile(v, 0.75) * 0.5);
+	const planted = (i, f) => heights[i][f] <= low[i] + 0.01 && speed[i][f] <= slow[i];
+	// Pass 1: stance runs. A run is one foot planted for >= MIN_STANCE
+	// consecutive frames; the lowest such foot carries the frame. Runs of the
+	// same foot that touch are one run.
+	const support = new Int8Array(frames).fill(-1);
+	for (let f = 0; f < frames; f += 1) {
+		let best = -1;
+		for (let i = 0; i < FEET.length; i += 1) {
+			let run = 0; for (let t = f; t >= 0 && planted(i, t); t -= 1) run += 1;
+			for (let t = f + 1; t < frames && run < MIN_STANCE && planted(i, t); t += 1) run += 1;
+			if (run >= MIN_STANCE && (best < 0 || heights[i][f] < heights[best][f])) best = i;
+		}
+		support[f] = best;
+	}
+	// Pass 2: the offset that holds each run's foot at its landing position.
+	// Inside a run only the foot's DRIFT is cancelled — the straight line from
+	// where it landed to where it lifted, which is the under-scaled stride —
+	// never its frame-to-frame wobble: mirroring that wobble into the root
+	// would move the whole body by the foot's estimation noise (measured:
+	// +4.4 mm/f² of root jitter for -25 cm/s of slide). Across the gap between
+	// two runs the offset ramps linearly so the swap is spread over the swing.
+	// Every pose is shifted rigidly per frame.
+	const offsets = new Array(frames).fill(null);
+	let anchoredFrames = 0; let carry = [0, 0]; let f = 0;
+	while (f < frames) {
+		const i = support[f];
+		if (i < 0) { f += 1; continue; }
+		let g = f; while (g + 1 < frames && support[g + 1] === i) g += 1;
+		const j = FEET[i];
+		// Land where the previous run left the body: the foot's own position
+		// at the run's first frame plus the offset carried in.
+		const driftX = at(g, j, 0) - at(f, j, 0), driftZ = at(g, j, 2) - at(f, j, 2), len = Math.max(1, g - f);
+		for (let t = f; t <= g; t += 1) { const w = (t - f) / len; offsets[t] = [carry[0] - driftX * w, carry[1] - driftZ * w]; anchoredFrames += 1; }
+		carry = offsets[g];
+		f = g + 1;
+	}
+	// Fill the gaps: lead-in holds the first run's offset, gaps ramp, tail holds.
+	let prev = -1;
+	for (let t = 0; t < frames; t += 1) {
+		if (offsets[t]) { prev = t; continue; }
+		let nextAt = t; while (nextAt < frames && !offsets[nextAt]) nextAt += 1;
+		const a = prev >= 0 ? offsets[prev] : (nextAt < frames ? offsets[nextAt] : [0, 0]);
+		const b = nextAt < frames ? offsets[nextAt] : a;
+		const span = nextAt - (prev >= 0 ? prev : t - 1);
+		for (let u = t; u < nextAt; u += 1) { const w = prev >= 0 && nextAt < frames ? (u - prev) / span : 0; offsets[u] = [a[0] + (b[0] - a[0]) * w, a[1] + (b[1] - a[1]) * w]; }
+		t = nextAt - 1;
+	}
+	// The offset series is piecewise linear with a slope change at every run
+	// and gap boundary (the stride correction differs per step). Blur it over
+	// ~120 ms so the body's velocity, not just its position, is continuous:
+	// the slope changes become ramps and add no second-difference of their own.
+	// A blur this short leaves the stance foot within a few mm of still.
+	const radius = Math.max(1, Math.round(fps * 0.08));
+	const kernel = []; let norm = 0;
+	for (let k = -radius; k <= radius; k += 1) { const w = Math.exp(-0.5 * (k / (radius / 2)) ** 2); kernel.push(w); norm += w; }
+	for (let t = 0; t < frames; t += 1) {
+		let ox = 0, oz = 0;
+		for (let k = -radius; k <= radius; k += 1) { const u = Math.min(frames - 1, Math.max(0, t + k)); const w = kernel[k + radius] / norm; ox += offsets[u][0] * w; oz += offsets[u][1] * w; }
+		for (let j = 0; j < JOINTS; j += 1) { const o = (t * JOINTS + j) * 3; outPosed[o] = posed[o] + ox; outPosed[o + 2] = posed[o + 2] + oz; }
+		outRoot[t * 3] = root[t * 3] + ox; outRoot[t * 3 + 2] = root[t * 3 + 2] + oz;
+	}
+	return { root: outRoot, posed: outPosed, anchoredFrames };
+}
+
+export function stabilizeMotion(motion, { enabled = true, smoothRotations: smoothRotationSeries = true, contactHeight, groundY, anchorFeet = false } = {}) {
+	if (!enabled || !motion || motion.frames < 3) return { ...motion, stabilization: { enabled: false, correctedPositions: 0, correctedRotations: 0, anchoredFrames: 0 } };
 	const frames = motion.frames; const fps = Number(motion.fps) || 30;
 	const root = smoothPositions(motion.rootPos, frames, 1, fps);
 	const posed = smoothPositions(motion.posedJoints, frames, JOINTS, fps);
@@ -237,7 +341,8 @@ export function stabilizeMotion(motion, { enabled = true, smoothRotations: smoot
 		root.values[f * 3 + 2] = posed.values[(f * JOINTS) * 3 + 2];
 	}
 	const contacts = stabilizeContacts(root.values, posed.values, frames, fps, { contactHeight, groundY });
-	return { ...motion, rootPos: contacts.root, posedJoints: contacts.posed, rotMats: rotations.values,
+	const anchored = anchorFeet ? anchorFeetToFloor(contacts.root, contacts.posed, frames, fps, motion.posedJoints) : { root: contacts.root, posed: contacts.posed, anchoredFrames: 0 };
+	return { ...motion, rootPos: anchored.root, posedJoints: anchored.posed, rotMats: rotations.values,
 		stabilization: { enabled: true, correctedPositions: posed.corrected + root.corrected, correctedRotations: rotations.corrected,
-			correctedContacts: contacts.corrected, contactHeight: Number.isFinite(contactHeight) ? contactHeight : (Number.isFinite(groundY) ? groundY : null), fps } };
+			correctedContacts: contacts.corrected, anchoredFrames: anchored.anchoredFrames, contactHeight: Number.isFinite(contactHeight) ? contactHeight : (Number.isFinite(groundY) ? groundY : null), fps } };
 }

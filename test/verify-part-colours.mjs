@@ -25,7 +25,7 @@ for (const entry of PART_COLOURS.filter((part) => part.hue !== null)) {
 }
 // Exercise circular distance and each rejection, so an empty stub cannot pass.
 assert.ok(paletteViolations([{ part: "leftHand", hue: 359 }, { part: "rightHand", hue: 1 }]).some((message) => message.includes("60 degrees")));
-assert.ok(paletteViolations([{ part: "leftHand", hue: 359 }, { part: "leftFoot", hue: 1 }]).some((message) => message.includes("25 degrees")));
+assert.ok(paletteViolations([{ part: "leftHand", hue: 359 }, { part: "leftFoot", hue: 1 }]).some((message) => message.includes("28 degrees")));
 assert.ok(paletteViolations([{ part: "leftHand", hue: 20 }]).some((message) => message.includes("10-35")));
 console.log("PASS palette constraints and fully saturated, full-value limb hexes");
 

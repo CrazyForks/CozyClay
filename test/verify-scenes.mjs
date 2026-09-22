@@ -88,6 +88,7 @@ assert.equal(scenes[0].stage.characters[0].x, 4, "moving the duplicate's actor c
 assert.equal(scenes[0].stage.characters[0].pose.bones.hips[0], 1, "posing the duplicate's actor cannot contaminate the source scene");
 assert.equal(createSceneStage({ shotAspect: "invalid" }).shotAspect, "16:9", "invalid shot aspects repair to the default");
 assert.equal(createSceneStage({ shotAspect: "2.39:1" }).shotAspect, "2.39:1", "scope aspect survives stage normalization");
+assert.equal(createSceneStage({ shotAspect: "fal 480P" }).shotAspect, "fal 480P", "the Fal H3 480P canvas ratio survives stage normalization");
 assert.equal(createSceneStage({}).sensorId, "fullFrame", "fullFrame is the default filmback");
 assert.equal(createSceneStage({ sensorId: "super16" }).sensorId, "super16", "a named filmback survives stage normalization");
 assert.equal(createSceneStage({ sensorId: "unknown" }).sensorId, "fullFrame", "an unknown filmback repairs to fullFrame");

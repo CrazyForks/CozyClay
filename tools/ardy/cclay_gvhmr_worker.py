@@ -23,7 +23,10 @@ import traceback
 
 
 DETECTORS = ("palette",)
-KEYPOINTS = ("vitpose", "palette", "auto")
+KEYPOINTS = ("vitpose", "palette", "hybrid", "auto")
+# Runner smoother sigma in frames; mirrors GVHMR_SMOOTH_SIGMA in
+# tools/ardy/runners/gvhmr-worker.mjs so both extraction paths agree (#380).
+SMOOTH_SIGMA = 3
 
 
 def install_palette_metrics(runner):
@@ -169,6 +172,9 @@ def runner_argv(request, runner_path):
     keypoints = request.get("keypoints")
     if keypoints in KEYPOINTS:
         argv.extend(["--keypoints", keypoints])
+    sigma = request.get("smoothSigma", SMOOTH_SIGMA)
+    sigma = sigma if isinstance(sigma, (int, float)) and sigma > 0 else SMOOTH_SIGMA
+    argv.extend(["--smooth-sigma", str(sigma)])
     return argv
 
 def emit(value):

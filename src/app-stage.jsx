@@ -14,6 +14,7 @@ import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Line, Text, useFBX } from "@react-three/drei";
 import * as THREE from "three";
 import { SkeletonUtils } from "three/examples/jsm/Addons.js";
+import { addFacingMarks } from "./facing-marks.js";
 import { retimeMotion } from "./ardy/retime.js";
 import {
 	TRAIL_EFFECTOR_JOINTS,
@@ -443,6 +444,7 @@ export const SHOT_ASPECT_PRESETS = Object.freeze({
 	"1:1": Object.freeze({ label: "1:1", aspect: SHOT_ASPECT_RATIOS["1:1"], width: 1080, height: 1080 }),
 	"4:3": Object.freeze({ label: "4:3", aspect: SHOT_ASPECT_RATIOS["4:3"], width: 1440, height: 1080 }),
 	"12:7": Object.freeze({ label: "12:7", aspect: SHOT_ASPECT_RATIOS["12:7"], width: 1536, height: 896, title: "12:7 video-inbetweener ratio" }),
+	"fal 480P": Object.freeze({ label: "fal 480P", aspect: SHOT_ASPECT_RATIOS["fal 480P"], width: 1664, height: 960, title: "Fal H3 480P canvas (832x480)" }),
 });
 // Pre-generated clip shipped with the build so a bridge-less session (a hosted
 // static demo, or `npm run dev:ui`) still shows real generated motion.
@@ -795,53 +797,6 @@ export const MULTIMODEL_SAMPLE_FPS = TIMELINE_FPS;
 /* ------------------------------------------------------------------ 3D --- */
 
 // Memoized: unchanged cast members skip re-rendering on every playhead tick.
-/**
- * Give the head a front.
- *
- * Both shipped rigs are smooth helmets with no facial geometry and no texture
- * of any kind — the FBX materials carry a flat colour and nothing else — and
- * the app then replaces every material with one clay tone. The result reads as
- * an ovoid with no direction, which matters most in an exported blocking
- * frame: the prompt claims a three-quarter front view and the picture has to
- * back it up.
- *
- * Two marks, because they fail in different conditions. The visor is a value
- * cue and disappears in silhouette or backlight; the brow ridge is a shape cue
- * and survives both. Both hang off the head bone, so posing, playback and
- * pose extraction are untouched — nothing here is skinned or animated.
- *
- * Sizes are in the head bone's own units. The rig is authored in Mixamo
- * centimetres and the whole clone is scaled by 0.01 afterwards, so a child of
- * the bone is written in centimetres too: the skull reaches ~6 cm forward of
- * the bone, which is 6 units here. Deliberately small — the maquette should
- * keep reading as a mannequin rather than a robot.
- */
-export function addFacingMarks(clone, markTint) {
-	let head = null;
-	clone.traverse((node) => {
-		if (!head && node.isBone && /head$/i.test(node.name)) head = node;
-	});
-	if (!head) return;
-	const material = new THREE.MeshStandardMaterial({ color: markTint, roughness: 0.7, metalness: 0 });
-	const mark = (geometry, position, rotation) => {
-		const mesh = new THREE.Mesh(geometry, material);
-		mesh.position.set(...position);
-		if (rotation) mesh.rotation.set(...rotation);
-		mesh.castShadow = true;
-		mesh.frustumCulled = false;
-		// The head bone's local +Z is the face direction on both rigs.
-		head.add(mesh);
-		return mesh;
-	};
-	// The skull surface sits ~6 units forward of the bone, so both marks are
-	// placed to break that plane rather than rest on it — flush is invisible.
-	// Visor: a wide, shallow band across the eyeline.
-	mark(new THREE.BoxGeometry(8.5, 2.4, 1.8), [0, 5.5, 6.6], [-0.2, 0, 0]);
-	// Brow ridge: a short wedge that breaks the skull's outline from the side,
-	// so facing survives silhouette and backlight where the visor does not.
-	mark(new THREE.ConeGeometry(1.7, 3.6, 4), [0, 2.8, 6.4], [Math.PI / 2, Math.PI / 4, 0]);
-}
-
 export const Character = memo(function Character({ url, position, rot, tint, pose, scale = 1, onRig, pickId, partColoursEnabled = false, partColoursMode = "shaded" }) {
 	const fbx = useFBX(url);
 	const model = useMemo(() => {
@@ -881,7 +836,7 @@ export const Character = memo(function Character({ url, position, rot, tint, pos
 			}
 		});
 		if (partColoursEnabled) applyPartColours(clone, partColoursMode);
-		addFacingMarks(clone, jointTint);
+		addFacingMarks(clone);
 		// Stamp the bind pose while the rig is still untouched: the pose effect
 		// below runs immediately after and would otherwise be baked into "rest".
 		primeBindPose(clone);

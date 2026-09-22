@@ -66,3 +66,60 @@ test("optional contact height is explicit and bounded", () => {
 		assert.ok(Math.abs(a * a + b * b + c * c - 1) < 1e-4 && Math.abs(d * d + e * e + g * g - 1) < 1e-4 && Math.abs(h * h + i * i + k * k - 1) < 1e-4, "rotation rows remain unit length");
 	}
 });
+
+// Foot-anchored root re-integration (#380). GVHMR's integrated root velocity
+// under-scales the stride on rendered clips (measured on v13c: the stance
+// ankle moonwalked at 45 cm/s while the hips advanced 49 cm/s), and its
+// contact logits do not correlate with planted frames (r <= 0.09), so the
+// anchor is derived from the take itself: whichever foot is lowest and
+// slowest carries the body, and the root is re-integrated so that foot holds
+// its world position over its stance run.
+test("anchored feet stop skating while swing feet and stride keep their shape", () => {
+	const frames = 48, fps = 24;
+	const input = motion(frames);
+	// A walk along +X: the hips advance 2 cm/frame; each foot alternates
+	// 12-frame stance / 12-frame swing. In stance the ankle SHOULD be still,
+	// but the authored take slides it backward 1 cm/frame (root under-scaled).
+	const RF = 21, RT = 22, LF = 25, LT = 26;
+	for (let f = 0; f < frames; f += 1) {
+		const hip = f * 0.02;
+		for (let j = 0; j < 27; j += 1) { const o = (f * 27 + j) * 3; input.posedJoints[o] = hip; input.posedJoints[o + 1] = j === 0 ? 0.95 : 0.9 - j * 0.01; input.posedJoints[o + 2] = 0; }
+		input.rootPos[f * 3] = hip;
+		// One foot: 12 frames of stance that slides BACK 1 cm/frame (the
+		// defect), then 12 frames of swing that lands exactly where the next
+		// stance starts, one stride (S) further on. The left foot is the same
+		// gait half a cycle later.
+		const S = 0.48;
+		const foot = (phase, shift) => {
+			const t = f + phase, cycle = Math.floor(t / 24), k = t % 24;
+			if (k < 12) return { x: cycle * S - k * 0.01 + shift, y: 0.05 };
+			const kk = k - 12, from = cycle * S - 0.11, to = (cycle + 1) * S;
+			return { x: from + (kk + 1) * (to - from) / 12 + shift, y: 0.05 + 0.12 * Math.sin(Math.PI * (kk + 0.5) / 12) };
+		};
+		const r = foot(0, 0), l = foot(12, 0.2);
+		for (const [j, p] of [[RF, r], [RT, r], [LF, l], [LT, l]]) { const o = (f * 27 + j) * 3; input.posedJoints[o] = p.x; input.posedJoints[o + 1] = p.y; }
+	}
+	const output = stabilizeMotion(input, { anchorFeet: true });
+	const at = (arr, f, j, a) => arr[(f * 27 + j) * 3 + a];
+	// Second right-foot stance run f=24..35: the anchored foot holds its x.
+	// The authored slide is 1 cm/frame; the pass leaves a residual only where
+	// its ~150 ms velocity ramp overlaps the run's edges, so the middle of the
+	// run is what stance means here (the first run starts at f=0 with no
+	// lead-in and is the ramp's worst case, not the typical stance).
+	let slide = 0;
+	for (let f = 28; f < 33; f += 1) slide = Math.max(slide, Math.abs(at(output.posedJoints, f, RF, 0) - at(output.posedJoints, f - 1, RF, 0)));
+	assert.ok(slide < 0.002, `stance foot still slides ${(slide * 100).toFixed(2)} cm/frame`);
+	// And the run as a whole moved far less than authored (1 cm/frame × 11).
+	const runDrift = Math.abs(at(output.posedJoints, 35, RF, 0) - at(output.posedJoints, 24, RF, 0));
+	assert.ok(runDrift < 0.03, `stance run drifted ${(runDrift * 100).toFixed(1)} cm (authored 11)`);
+	// The body still travels forward over the whole take (not frozen).
+	assert.ok(output.rootPos[(frames - 1) * 3] - output.rootPos[0] > 0.5, "root travel was flattened");
+	// Every joint moved by the same per-frame offset as the root (rigid shift).
+	for (let f = 0; f < frames; f += 1) {
+		const dx = output.rootPos[f * 3] - input.rootPos[f * 3];
+		assert.ok(Math.abs((at(output.posedJoints, f, 6, 0) - at(input.posedJoints, f, 6, 0)) - dx) < 1e-5, "head offset equals root offset");
+	}
+	assert.ok(output.stabilization.anchoredFrames > 0);
+	assert.equal(stabilizeMotion(input).stabilization.anchoredFrames, 0, "anchoring is opt-in");
+});
+
