@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 // Whatever a suite drives through the agent sidecar lands in a scratch
@@ -280,9 +280,13 @@ function verificationFiles(directory) {
 		.sort();
 }
 
+// Every suite reserves its own ports and writes under a temp dir, so files
+// are independent of each other; running them serially cost CI five minutes
+// (#413). `--jobs 1` restores the old interleaved live output for debugging.
 function parseArguments(arguments_) {
 	let listOnly = false;
 	let scope = "all";
+	let jobs = Number(process.env.COZYCLAY_TEST_JOBS) || availableParallelism();
 	for (let index = 0; index < arguments_.length; index += 1) {
 		const argument = arguments_[index];
 		if (argument === "--list") {
@@ -294,21 +298,79 @@ function parseArguments(arguments_) {
 			index += 1;
 			continue;
 		}
+		if (argument === "--jobs") {
+			jobs = Number(arguments_[index + 1]);
+			index += 1;
+			continue;
+		}
 		throw new Error(`unknown argument: ${argument}`);
 	}
 	if (scope !== "all" && scope !== "ardy") throw new Error(`unknown test scope: ${scope}`);
-	return { listOnly, scope };
+	if (!Number.isInteger(jobs) || jobs < 1) throw new Error(`--jobs must be a positive integer, got ${jobs}`);
+	return { listOnly, scope, jobs };
 }
 
-function run(file) {
+// One file per child. With more than one job the output is buffered per file
+// and replayed as a block when the file finishes, so PASS/FAIL lines of
+// different suites never interleave.
+function run(file, { buffered }) {
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [file], { stdio: "inherit" });
+		const chunks = [];
+		const child = spawn(process.execPath, [file], { stdio: buffered ? ["ignore", "pipe", "pipe"] : "inherit" });
+		if (buffered) {
+			child.stdout.on("data", (chunk) => chunks.push(chunk));
+			child.stderr.on("data", (chunk) => chunks.push(chunk));
+		}
 		child.once("error", reject);
 		child.once("exit", (code, signal) => {
+			if (buffered) process.stdout.write(`\nRUNNING ${file}\n${Buffer.concat(chunks)}`);
 			if (code === 0) resolve();
 			else reject(new Error(`${file} failed${signal ? ` with ${signal}` : ` with exit code ${code}`}`));
 		});
 	});
+}
+
+// These suites reserve a port by binding :0, release it, and hand the number
+// to a child that binds it again (or an adjacent one). Any concurrent suite
+// can take it in between, so they run one at a time after the parallel wave
+// instead of by luck. Everything else picks its port inside the process that
+// keeps it.
+const SERIAL_ONLY = new Set([
+	"test/process/verify-bridge-launch.mjs",
+	"mcp/verify-http-origin.mjs",
+	"mcp/verify-live-controller.mjs",
+	"mcp/verify-live-motion-job.mjs",
+	"mcp/verify-live-p0.mjs",
+	"mcp/verify-live-port.mjs",
+	"mcp/verify-live-routing.mjs",
+]);
+
+// Longest files first so the tail of the run is not one slow suite on its own.
+const SLOW_FIRST = [
+	"test/verify-studio-agent-motion.mjs",
+	"test/verify-studio-agent-binding.mjs",
+	"test/ardy/verify-gvhmr-floor.mjs",
+	"test/verify-part-colours.mjs",
+	"test/verify-agent-runner-errors.mjs",
+];
+
+async function runAll(files, jobs) {
+	const parallel = files.filter((file) => !SERIAL_ONLY.has(file));
+	const queue = [...SLOW_FIRST.filter((file) => parallel.includes(file)), ...parallel.filter((file) => !SLOW_FIRST.includes(file))];
+	let failure = null;
+	const worker = async () => {
+		while (queue.length > 0 && !failure) {
+			const file = queue.shift();
+			try {
+				await run(file, { buffered: jobs > 1 });
+			} catch (error) {
+				failure ??= error;
+			}
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(jobs, queue.length) }, worker));
+	if (failure) throw failure;
+	for (const file of files.filter((file) => SERIAL_ONLY.has(file))) await run(file, { buffered: true });
 }
 
 // node:sqlite's DatabaseSync only ships unflagged from Node 22.13.0 (it lived
@@ -375,7 +437,7 @@ if (!mcpDepsInstalled) {
 	}
 }
 
-const { listOnly, scope } = parseArguments(process.argv.slice(2));
+const { listOnly, scope, jobs } = parseArguments(process.argv.slice(2));
 const inventory = [...verificationFiles("test"), ...verificationFiles("mcp"), ...EXTRA_INVENTORY].sort();
 const unclassified = inventory.filter((file) => !categories.has(file));
 const stale = [...categories.keys()].filter((file) => !inventory.includes(file));
@@ -388,16 +450,20 @@ if (unclassified.length > 0 || stale.length > 0) {
 
 const scoped = inventory.filter((file) => scope === "all" || file.startsWith("test/ardy/") || file.startsWith("test/ik/"));
 const runnable = scoped.filter((file) => categories.get(file).kind === "node");
-console.log(`TEST MANIFEST scope=${scope} runnable=${runnable.length} total=${scoped.length}`);
+console.log(`TEST MANIFEST scope=${scope} runnable=${runnable.length} total=${scoped.length} jobs=${jobs}`);
 for (const file of scoped) {
 	const { kind, reason } = categories.get(file);
 	console.log(`${kind === "node" ? "RUN" : "EXCLUDE"} ${kind} ${file} - ${reason}`);
 }
 
 if (!listOnly) {
-	for (const file of runnable) {
-		console.log(`\nRUNNING ${file}`);
-		await run(file);
+	if (jobs === 1) {
+		for (const file of runnable) {
+			console.log(`\nRUNNING ${file}`);
+			await run(file, { buffered: false });
+		}
+	} else {
+		await runAll(runnable, jobs);
 	}
 	console.log(`\nPASS ${runnable.length} Node verification files`);
 }

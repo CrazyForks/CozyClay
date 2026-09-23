@@ -125,6 +125,12 @@ async function candidateTests(mod, selectedCase) {
     else if (archives.has(req.url)) { res.setHeader('content-length', archives.get(req.url).length); res.end(archives.get(req.url)); }
     else { res.writeHead(404); res.end(); }
   });
+  // The client is Node's pooled fetch; with the server's default 5 s
+  // keep-alive, a slow (loaded) runner let the server drop the idle socket
+  // between two candidates and the next fetch died on the reused one with
+  // 'fetch failed' (#413). Fresh sockets per request are what a bridge does
+  // anyway.
+  server.keepAliveTimeout = 0;
   const listening = once(server, 'listening'); server.listen(0, '127.0.0.1'); await listening;
   const origin = `http://127.0.0.1:${server.address().port}`;
   let sequence = 0;
@@ -143,7 +149,11 @@ async function candidateTests(mod, selectedCase) {
     const preimage = () => ({ bones: boneSnapshot(rig), character: structuredClone(character), oldMotion: structuredClone(oldMotion), keys: physicsKeyStamp(ikState.keys), domain: { take: structuredClone(domain.take), full: structuredClone(domain.full), schedule: structuredClone(domain.schedule), history: structuredClone(domain.history), committed: structuredClone(domain.committed), bufferOwner: domain.bufferOwner }, playing: state.playing, playhead: state.playhead, activeId: state.activeId });
     const initial = preimage(), calls = [], journal = createStudioCommandJournal({ host });
     let clock = 0, committedPayload = null;
-    const ports = { journal, now: () => clock, yieldTask: () => Promise.resolve(),
+    // Budgets are wall-clock (AbortSignal.timeout) even with the injected
+    // clock; on a loaded CI runner preparing a rig-heavy candidate can exceed
+    // the 30 s default, which turned a fence test into a budget test (#413).
+    const ports = { journal, now: () => clock, yieldTask: () => Promise.resolve(), preparationMs: 300000, verificationMs: 300000,
+      onRejection: r => console.log('REJECTION', JSON.stringify(r)),
       readTarget: () => ({ guard: { ...state.host, targetId: character.id, token: state.token }, character, rig, ikState, protectedFrames: options.protectedFrames ?? [], busy: state.busy, calibration: options.calibration, preserveAuthoredMotion: options.preserveAuthoredMotion }),
       readEnvironment: () => ({ host: state.host, physicsRevision: state.physicsRevision, floor: state.floor, objects: state.objects, cast: state.cast, frameCount: state.frameCount }),
       commit(payload) {
@@ -296,7 +306,7 @@ async function candidateTests(mod, selectedCase) {
     }
     if (selected('commit-fences')) {
       for (const kind of ['target', 'document', 'gesture', 'physics', 'cancel']) {
-        const f = fixture(), c = await f.prepare(), v = await f.verify(c); ok(v);
+        const f = fixture(), c = await f.prepare(); ok(c); const v = await f.verify(c); ok(v);
         if (kind === 'target') f.state.token = 'edited-target';
         if (kind === 'document') f.state.host.documentEpoch = 'replacement';
         if (kind === 'gesture') f.state.busy = true;
