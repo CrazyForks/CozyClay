@@ -43,7 +43,7 @@ const entries = [
 	{ path: "object.attach", type: "id", persisted: true, undoDomain: "objects", agentExposure: "action", normalizer: "normalizeSceneObject", actions: ["object.attach", "object.detach"], note: "carried by a character's root or bone; channels convert so the prop stays put" },
 	{ path: "object.path", type: "array", persisted: true, undoDomain: "objects", agentExposure: "patch", normalizer: "normalizeSceneObject" },
 	{ path: "object.remove", type: "boolean", persisted: true, undoDomain: "objects", agentExposure: "patch", normalizer: null, note: "lifecycle operation, not a document field" },
-	{ path: "object.cutout", type: "image", persisted: true, undoDomain: "objects", agentExposure: "composite", normalizer: "normalizeSceneObject", note: "assetId-backed cutout record" },
+	{ path: "object.cutout", type: "image", persisted: true, undoDomain: "objects", agentExposure: "action", normalizer: "normalizeSceneObject", actions: ["asset.import"], note: "assetId-backed cutout record; imported pictures and models are placed by asset.import" },
 	{ path: "stage.keyLight.x", type: "number", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", min: -30, max: 30 },
 	{ path: "stage.keyLight.y", type: "number", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", min: 0.5, max: 30 },
 	{ path: "stage.keyLight.z", type: "number", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", min: -30, max: 30 },

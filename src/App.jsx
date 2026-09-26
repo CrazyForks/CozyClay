@@ -624,6 +624,19 @@ async function readReferenceImage(file, { maxDimension = REFERENCE_IMAGE_MAX_DIM
 	}
 }
 
+/** An http(s) asset source as the data URL the import path takes. */
+async function fetchImportSource(url) {
+	const response = await fetch(url);
+	if (!response.ok) throw new Error(`HTTP ${response.status}`);
+	const blob = await response.blob();
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onerror = () => reject(reader.error ?? new Error("could not read the download"));
+		reader.onload = () => resolve(String(reader.result));
+		reader.readAsDataURL(blob);
+	});
+}
+
 /** The editor's Studio actions: ONE registry whose entries call the same
  * handlers the UI controls call, so a timeline button and the agent's
  * run_action share one code path. `handlersRef.current` is refreshed on every
@@ -785,6 +798,20 @@ export function createStudioAppActions(handlersRef) {
 			if (!result?.fileName) fail("TARGET_NOT_READY", "The video export did not finish; the editor's export panel shows why and offers Retry.");
 			return { affectedIds: shot ? [shot.id] : [], output: { fileName: result.fileName, frameCount: result.frameCount },
 				summary: `Recorded ${shot ? shotLabel(shot) : "the shot"} to ${result.fileName} (${result.frameCount} frames); the browser was asked to download it.` };
+		} });
+	// The live import_asset path (validate, store the bytes, ONE atomic store
+	// entry), fed a data URL; an http(s) source is fetched into one first.
+	registry.register({ ...studioActionDeclaration("asset.import"), available: () => true,
+		run: async ({ source, name, placeAs }) => {
+			let dataUrl = source;
+			if (!source.startsWith("data:")) {
+				try { dataUrl = await h().fetchImportSource(source); }
+				catch (error) { fail("TARGET_NOT_READY", `Could not fetch the source (${error?.message || error}); its server must allow cross-origin reads.`); }
+			}
+			let imported;
+			try { imported = await h().importAsset({ name, placeAs, dataUrl }); }
+			catch (error) { fail("INVALID_ARGUMENT", `Not imported: ${error?.message || error}`); }
+			return { affectedIds: [imported.objectId], summary: `Imported ${name} as a ${placeAs} (object ${imported.objectId}, asset ${imported.assetId}).` };
 		} });
 	// Scenes: the scene pill's and the Hierarchy scene menu's own handlers. When
 	// the open scene moves, the action answers once React has rendered the new
@@ -1124,7 +1151,13 @@ export function createStudioAppBinding(ports) {
 				delta: [{ id: s.host.sceneId, after: { selection: after.selection, activeCharacterId: after.activeCharacterId, shotId: after.selectedShotId, view: after.view } }], undo: null }));
 		}
 		// A motion-domain entry restores one character's layer: the one it names.
-		const { result, historyEntryId } = ports.recordAction(entry.undoDomain, () => registry.run(entry.id, args.args), args.args?.characterId ?? null);
+		const recorded = ports.recordAction(entry.undoDomain, () => registry.run(entry.id, args.args), args.args?.characterId ?? null);
+		// An asynchronous mutation (an import) is bound once it has landed.
+		return typeof recorded?.then === "function" ? recorded.then(landed => mutationReceipt(landed, entry, base, request, s)) : mutationReceipt(recorded, entry, base, request, s);
+	}
+	/** The journal receipt of one registered mutation, from the one history
+	 * entry it pushed and the state it left. */
+	function mutationReceipt({ result, historyEntryId }, entry, base, request, s) {
 		const after = refresh(), ids = result.affectedIds;
 		if (after.revision === s.revision) {
 			return remember(journal.record(validateReceipt({ ...base, ok: true, status: "noop", authored: false, mutated: false, summary: result.summary,
@@ -12384,11 +12417,17 @@ function resizePromptClip(id, edge, rawFrame) {
 	function recordStudioAction(domain, run, targetId = null) {
 		const historyEntryId = crypto.randomUUID();
 		if (domain === "objects") {
-			const tick = lastObjectOpRef.current, result = run();
-			if (lastObjectOpRef.current === tick) return { result, historyEntryId: null };
-			liveStateRef.current.objects = storeRef.current.objects;
-			studioHistoryRef.current.set(historyEntryId, { domain: "objects", tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
-			return { result, historyEntryId };
+			const tick = lastObjectOpRef.current;
+			const bind = result => {
+				if (lastObjectOpRef.current === tick) return { result, historyEntryId: null };
+				liveStateRef.current.objects = storeRef.current.objects;
+				studioHistoryRef.current.set(historyEntryId, { domain: "objects", tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
+				return { result, historyEntryId };
+			};
+			// An import stores its bytes first and places its object when it settles;
+			// the binding refuses the receipt if anything else landed meanwhile.
+			const result = run();
+			return typeof result?.then === "function" ? result.then(bind) : bind(result);
 		}
 		const tick = opClockRef.current, objects = storeRef.current.objects, state = snapshotStudioDomain(domain, targetId);
 		const result = run(), top = charHistoryRef.current.past.at(-1);
@@ -12622,6 +12661,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument,
 		afterRender: () => new Promise(resolve => renderWaitersRef.current.push(resolve)),
 		saveProject, projectFileGranted: async () => (await queryHandlePermission(projectHandleRef.current)) === "granted",
+		importAsset: args => liveHandlersRef.current.import_asset(args), fetchImportSource,
 	};
 	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionHandlersRef);
 	/** UI door into the shared registry. Refusal messages are written for the

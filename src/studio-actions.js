@@ -104,6 +104,10 @@ export const STUDIO_ACTIONS = freezeStudioData([
 		description: `Open another scene of the project, like the scene pill's menu; the scene being left keeps its state. ${SCENE_MOVES}` },
 	{ id: "project.save", label: "Save project", kind: "document", input: input(),
 		description: "Save the whole project to its current file, like the Project menu's Save Project, and answer status \"completed\" with output.fileName. A browser file picker opens only from the user's own click, so it is refused, with the reason, when the project has no file yet this session or the browser must re-grant access to it; ask the user to press Save Project once. An unnamed project opens the Save dialog for the user to name it. Browsers without file access download the project file instead." },
+	{ id: "asset.import", label: "Import asset", kind: "mutation", undoDomain: "objects",
+		input: input({ source: { type: "string", minLength: 1, maxLength: 8_000_000, pattern: "^(data:|https?://)" }, name: { type: "string", minLength: 1, maxLength: 120 },
+			placeAs: { type: "string", enum: ["cutout", "backdrop", "mesh"] } }),
+		description: "Import a picture or a 3D model into the scene through the editor's own import path and place it: \"cutout\" stands a picture up as a 1.8 m card in front of the camera, \"backdrop\" as a 5 m plate 12 m down the shot camera's view, facing it, and \"mesh\" stands a GLB, OBJ or FBX model on the floor in front of the camera. source is a data: URL (up to 8 MB of text) or an http(s) URL the editor fetches (its server must allow cross-origin reads); name is the file name with its extension (poster.png, chair.glb). One undo entry; the new object is in affectedIds and its asset id in the summary. A file on the user's disk needs their own click: ask them to drop it on the Assets shelf." },
 	{ id: "object.duplicate", label: "Duplicate object", kind: "mutation", undoDomain: "objects", input: input({}, { objectId: idSchema }),
 		description: "Copy a scene object (the selected one when objectId is omitted) and place the copy half a metre beside it." },
 ]);
