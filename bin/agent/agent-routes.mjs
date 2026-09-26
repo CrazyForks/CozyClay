@@ -468,7 +468,10 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		const admission = {
 			commandId: () => randomUUID(), host: studioIdentity(value.context.host), revision: value.context.revision.scene,
 			refresh: async () => {
-				const refreshed = studioRuntime?.readContext ? await studioRuntime.readContext(value.context.host) : await authoritativeStudioContext(value, hub);
+				// Read at the admitted host: a scene action may have opened another
+				// scene of this workspace during the turn (studio-tools adopts it).
+				const host = { ...value.context.host, ...admission.host };
+				const refreshed = studioRuntime?.readContext ? await studioRuntime.readContext(host) : await authoritativeStudioContext({ ...value, context: { ...value.context, host } }, hub);
 				admission.revision = refreshed.revision.scene;
 			},
 		};
