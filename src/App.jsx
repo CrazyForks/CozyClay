@@ -836,6 +836,24 @@ export function createStudioAppActions(handlersRef) {
 			catch (error) { fail("INVALID_ARGUMENT", `Not imported: ${error?.message || error}`); }
 			return { affectedIds: [imported.objectId], summary: `Imported ${name} as a ${placeAs} (object ${imported.objectId}, asset ${imported.assetId}).` };
 		} });
+	// AI-video motion: the agent panel's Generate motion (generateFalMotion
+	// "act"), awaited to its clip. The Fal card shows every failure it meets, so
+	// a refusal is silent in the UI and tells the model the reason in English.
+	registry.register({ ...studioActionDeclaration("motion.generateFromVideo"),
+		available: ({ falMotion }) => !falMotion.enabled ? "AI video motion (Fal) is not enabled for this account."
+			: !["idle", "done", "error", "failed"].includes(falMotion.status) ? "An AI video motion generation is already running; wait for it to finish."
+				: falMotion.dailyRemaining === 0 ? "The account's daily AI video generations are used up." : true,
+		run: async ({ instruction }) => {
+			const outcome = await h().generateFalMotion("act", instruction);
+			if (outcome.failed) fail("TARGET_NOT_READY", outcome.failed);
+			const { job, footage, dailyRemaining } = outcome;
+			if (!job.video?.url) fail("TARGET_NOT_READY", "The AI video model finished without returning a video.");
+			return { affectedIds: [], output: { videoUrl: job.video.url, resolution: job.resolution ?? null, durationSeconds: job.resultDuration ?? job.duration ?? null,
+				ingested: Boolean(footage), frames: footage?.frames ?? null, fps: footage?.fps ?? null, dailyRemaining },
+			summary: footage
+				? `The AI video (${job.resolution}, ${footage.frames} frames at ${footage.fps} fps) is ingested as Video capture footage and the timeline now spans it; its motion becomes a take once GVHMR extraction runs in the Video capture panel.`
+				: `The AI video is ready at ${job.video.url}, but ingesting it as footage failed; the Video capture panel shows why.` };
+		} });
 	// Scenes: the scene pill's and the Hierarchy scene menu's own handlers. When
 	// the open scene moves, the action answers once React has rendered the new
 	// room, so the next command reads that scene's state.
@@ -6806,27 +6824,39 @@ export default function App() {
 		);
 	}
 
+	/** The Fal card's lock line: AI video motion is not enabled for this account. */
+	function showFalMotionLock() {
+		setFalMotion((current) => ({ ...current, error: ko("Fal 모션 생성은 QA 중 잠겨 있어요.", "Fal motion generation is locked during QA."), status: "error" }));
+	}
+
+	/** The Fal card shows every failure itself. For motion.generateFromVideo the
+	 * answer says what happened: `{ failed }` with the reason in English, or the
+	 * finished job, the footage it was ingested as (null when ingest failed) and
+	 * the account's daily generations left. */
 	async function generateFalMotion(kind = "interpolate", instructionOverride = null) {
 		if (!falMotionEnabled) {
-			setFalMotion((current) => ({ ...current, error: ko("Fal 모션 생성은 QA 중 잠겨 있어요.", "Fal motion generation is locked during QA."), status: "error" }));
-			return;
+			showFalMotionLock();
+			return { failed: "AI video motion (Fal) is not enabled for this account." };
 		}
 		let source = falMotion;
 		if (kind === "act" && !source.a) {
 			try { source = { ...source, a: captureFalStill() }; setFalMotion((current) => ({ ...current, a: source.a })); }
-			catch (error) { setFalMotion((current) => ({ ...current, error: error.message, status: "error" })); return; }
+			catch (error) {
+				setFalMotion((current) => ({ ...current, error: error.message, status: "error" }));
+				return { failed: "Could not capture the character's pose frame: the full body must be inside the shot frame, shaded part colours must be on (view.setPartColours { mode: \"shaded\" }), and the renderer and rig must be ready." };
+			}
 		}
 		if (kind === "interpolate" && (!source.a || !source.b)) {
 			setFalMotion((current) => ({ ...current, error: ko("A와 B 포즈를 먼저 캡처하세요.", "Capture both A and B poses first."), status: "error" }));
-			return;
+			return { failed: "Capture both A and B poses first." };
 		}
 		if (!source.a?.partColours || (kind === "interpolate" && !source.b?.partColours)) {
 			setFalMotion((current) => ({ ...current, error: ko("색 세그멘테이션이 포함된 음영 A/B 참조를 다시 캡처하세요.", "Recapture A/B refs with shaded body-part segmentation enabled."), status: "error" }));
-			return;
+			return { failed: "The captured pose frame has no shaded body-part segmentation; the user must recapture it in the Fal card with shaded part colours on." };
 		}
 		if (kind === "interpolate" && framingDistance(source.a.framing, source.b.framing) > 0.001) {
 			setFalMotion((current) => ({ ...current, error: ko("A와 B 사이에서 카메라가 바뀌었어요. 같은 카메라로 다시 캡처하세요.", "The camera changed between A and B. Capture both poses with the same camera."), status: "error" }));
-			return;
+			return { failed: "The camera changed between poses A and B; capture both with the same camera." };
 		}
 		// A hand-edited prompt wins verbatim; otherwise build from the description.
 		// Interpolate now honours the description too (#380): the bare pose
@@ -6846,21 +6876,22 @@ export default function App() {
 				duration: source.duration ?? FAL_MOTION_MIN_DURATION,
 			});
 			const id = submitted?.job?.id;
-			if (!id) throw new Error(ko("생성 작업 ID를 받지 못했어요.", "The server did not return a motion job ID."));
+			if (!id) throw Object.assign(new Error(ko("생성 작업 ID를 받지 못했어요.", "The server did not return a motion job ID.")), { reason: "The motion server did not return a job id." });
 			setFalMotion((current) => ({ ...current, status: "queued", job: submitted.job, dailyRemaining: submitted.dailyRemaining }));
 			const finished = await waitForFalMotionJob(id, {
 				onUpdate: (job) => setFalMotion((current) => ({ ...current, job, status: job?.status ?? current.status })),
 			});
 			const job = finished?.job;
-			if (job?.status !== "done") throw new Error(job?.error || ko("Fal 생성에 실패했어요.", "Fal motion generation failed."));
+			if (job?.status !== "done") throw Object.assign(new Error(job?.error || ko("Fal 생성에 실패했어요.", "Fal motion generation failed.")), job?.error ? {} : { reason: "The AI video generation failed." });
 			setFalMotion((current) => ({ ...current, job, status: "done", dailyRemaining: finished.dailyRemaining }));
+			let footage = null;
 			if (job.video?.url) {
 				const motionSource = { kind: "url", url: job.video.url, name: `Fal H3 Max Turbo · ${job.resolution}` };
 				setMultiModelSource(motionSource);
 				// Put the completed clip through the same probe/ingest path as a
 				// manually supplied URL so GVHMR sees measured fps, duration and
 				// a ready extraction card without another generation request.
-				await ingestFootage(motionSource);
+				footage = (await ingestFootage(motionSource)) ?? null;
 				setResult({
 					mode: "video",
 					modelLabel: "Fal H3 Max Turbo",
@@ -6882,9 +6913,19 @@ export default function App() {
 				setFalMotionStudioOpen(false);
 				setToast(isKo ? "Fal 영상이 준비됐어요 · 추출 패널에서 GVHMR을 실행하세요" : "Fal video is ready · run GVHMR from the extraction panel");
 			}
+			return { job, footage, dailyRemaining: finished.dailyRemaining ?? null };
 		} catch (error) {
 			setFalMotion((current) => ({ ...current, status: "error", error: error.message || String(error) }));
+			return { failed: error.reason ?? `The AI video generation failed: ${error.message || error}` };
 		}
+	}
+
+	/** The agent panel's Generate motion chip: the motion.generateFromVideo
+	 * action. Locked, the action is unavailable and never runs, so the chip shows
+	 * the Fal card's lock line itself, as it always did. */
+	function generateFalMotionFromUi(instruction) {
+		if (!falMotionEnabled) showFalMotionLock();
+		return runStudioAction("motion.generateFromVideo", { instruction });
 	}
 
 	// What a framing capture says about the shot it came from: lens, delivery
@@ -7497,6 +7538,7 @@ export default function App() {
 			setToast(isKo
 				? `${source.name} 인제스트됨 — ${footage.frames}프레임 @ ${footage.fps} fps`
 				: `Ingested ${source.name} — ${footage.frames} frames @ ${footage.fps} fps`);
+			return footage;
 		} catch (error) {
 			if (!live()) return;
 			const code = error?.message ?? String(error);
@@ -12678,6 +12720,9 @@ function resizePromptClip(id, edge, rawFrame) {
 				gesture: globalThis.navigator?.userActivation?.isActive === true },
 			// What generate() reads for the Send-to-AI package, as this render has it.
 			aiShot: { mode, imageModel },
+			// AI-video motion: the account's Fal access, the card's job state and
+			// the daily generations left (null until the server says).
+			falMotion: { enabled: falMotionEnabled, status: falMotion.status, dailyRemaining: falMotion.dailyRemaining ?? null },
 		}),
 		addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, setTimelineShotRange, moveTimelineShot,
 		runAllPromptBlocks, duplicateSelectedSceneObject,
@@ -12688,7 +12733,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		afterRender: () => new Promise(resolve => renderWaitersRef.current.push(resolve)),
 		saveProject, projectFileGranted: async () => (await queryHandlePermission(projectHandleRef.current)) === "granted",
 		importAsset: args => liveHandlersRef.current.import_asset(args), fetchImportSource,
-		setAiShotMode: setMode, setAiImageModel: setImageModel, generate,
+		setAiShotMode: setMode, setAiImageModel: setImageModel, generate, generateFalMotion,
 	};
 	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionHandlersRef);
 	/** UI door into the shared registry. Refusal messages are written for the
@@ -13957,7 +14002,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						<AgentPanel embedded hidden={!studioAgentMode} surface="studio" defaultCollapsed onCollapsedChange={setAgentCollapsed}
 							sceneName={scenes.find((entry) => entry.id === activeSceneId)?.name ?? ko("Untitled Scene", "제목 없는 씬")}
 							buildContext={buildStudioAgentContext} onReceipt={highlightAgentTargets}
-							onFalAction={(instruction) => void generateFalMotion("act", instruction)} />
+							onFalAction={(instruction) => void generateFalMotionFromUi(instruction)} />
 					</div>}
 					<section className="inspector-pane" hidden={studioAgentMode}>
 					<div className="inspector-heading">
