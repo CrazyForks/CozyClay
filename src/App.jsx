@@ -832,6 +832,27 @@ export function createStudioAppActions(handlersRef) {
 		h().switchSceneDocument(sceneId);
 		return () => `Opened scene ${sceneName(target)}.`;
 	});
+	// The Project menu's Save Project. Only a user's click opens the browser's
+	// file picker or re-grants a stored file, so without one (the agent) a save
+	// that would need either is refused before anything is attempted. The save
+	// path itself shows its own dialog and failures, so refusals stay silent.
+	registry.register({ ...studioActionDeclaration("project.save"), available: () => true,
+		run: async () => {
+			const { project } = h().state();
+			if (!project.gesture && project.name !== null && project.fileAccess) {
+				if (!project.hasFile) fail("TARGET_NOT_READY", "Not saved: this project has no file this session, and only the user's click can open the file picker to choose one.");
+				if (!(await h().projectFileGranted())) fail("TARGET_NOT_READY", "Not saved: the browser needs the user's click to re-grant access to the project file. Ask them to press Save Project.");
+			}
+			const saved = await h().saveProject(false);
+			if (saved?.naming) fail("TARGET_NOT_READY", "Not saved: the project has no name yet. The Save dialog is open for the user to name it and pick its file.");
+			if (saved?.cancelled) fail("TARGET_NOT_READY", "Not saved: the user closed the file picker.");
+			if (!saved?.saved) fail("TARGET_NOT_READY", saved?.failure === "missing-resources" ? "Not saved: some of the project's assets or motions are missing; the editor's save panel lists them."
+				: saved?.failure === "resources-too-large" ? "Not saved: the project's embedded resources are too large; the editor's save panel explains."
+					: "Not saved: writing the project file failed; the editor showed the error.");
+			return { affectedIds: [], output: { fileName: saved.fileName }, summary: saved.downloaded
+				? `This browser has no file access, so the project ${saved.name} was downloaded as ${saved.fileName}.`
+				: `Saved the project ${saved.name} to ${saved.fileName}.` };
+		} });
 	return registry;
 }
 
@@ -4454,13 +4475,17 @@ export default function App() {
 		}
 	}
 
+	/** Save the project; the answer says what happened, for project.save:
+	 * { saved, name, fileName, downloaded } or { saved: false, naming |
+	 * cancelled | failure }. Every outcome is also shown to the user here. */
 	async function saveProject(saveAs = false, explicitName = null) {
 		if (projectName === null && explicitName === null) {
 			setProjectNameDialog({ kind: "save", initialName: "My Project" });
-			return;
+			return { saved: false, naming: true };
 		}
 		setProjectSaveState("saving");
 		const name = (explicitName ?? projectName ?? "My Project").trim() || "My Project";
+		let downloaded = false;
 		try {
 			const serialized = await collectProjectSerialized(name);
 			let handle = projectHandleRef.current;
@@ -4472,6 +4497,7 @@ export default function App() {
 					await rememberRecentProject(handle, name);
 				} else {
 					downloadProjectFallback(serialized, name);
+					downloaded = true;
 				}
 			} else {
 				await writeProjectFile(handle, serialized);
@@ -4484,15 +4510,17 @@ export default function App() {
 				shot_count_bucket: bucketCount(shots.length),
 			});
 			setToast(isKo ? `프로젝트 저장됨: ${name}${PROJECT_EXTENSION}` : `Project saved: ${name}${PROJECT_EXTENSION}`);
+			return { saved: true, name, fileName: downloaded ? `${name}${PROJECT_EXTENSION}` : projectHandleRef.current?.name ?? `${name}${PROJECT_EXTENSION}`, downloaded };
 		} catch (err) {
 			if (err?.name === "AbortError") {
 				setProjectSaveState(projectDirty ? "dirty" : "saved");
-				return; // user closed the picker
+				return { saved: false, cancelled: true }; // user closed the picker
 			}
 			setProjectSaveState("error");
 			if (err?.code === "missing-resources") setSaveBlockedReasons([{ code: err.code, items: err.items }]);
 			else if (err?.code === "resources-too-large") setSaveBlockedReasons([err]);
 			else setToast(ko("Could not save the project", "프로젝트를 저장하지 못했어요"));
+			return { saved: false, failure: err?.code ?? err?.name ?? "error" };
 		}
 	}
 
@@ -12581,6 +12609,10 @@ function resizePromptClip(id, edge, rawFrame) {
 			exporting: Boolean(recRef.current), canExportVideo: shots.length > 0 || hasCameraKeys || Boolean(motion),
 			// The scene refs move synchronously with every scene handler.
 			scenes: scenesRef.current.map(({ id, name }) => ({ id, name })), activeSceneId: activeSceneIdRef.current,
+			// What a save needs: a name, a file this session, and (to pick or
+			// re-grant a file) the user's click still active.
+			project: { name: projectName, hasFile: Boolean(projectHandleRef.current), fileAccess: hasFileSystemAccess(),
+				gesture: globalThis.navigator?.userActivation?.isActive === true },
 		}),
 		addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, setTimelineShotRange, moveTimelineShot,
 		runAllPromptBlocks, duplicateSelectedSceneObject,
@@ -12589,6 +12621,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		choosePartColours, setGuideMode, setInsetCollapsed, exportShotVideo,
 		switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument,
 		afterRender: () => new Promise(resolve => renderWaitersRef.current.push(resolve)),
+		saveProject, projectFileGranted: async () => (await queryHandlePermission(projectHandleRef.current)) === "granted",
 	};
 	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionHandlersRef);
 	/** UI door into the shared registry. Refusal messages are written for the
@@ -12658,7 +12691,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						<div className="project-menu" role="menu" onClick={() => setProjectMenuOpen(false)}>
 							<button type="button" role="menuitem" onClick={requestNewProject}>{ko("New Project", "새 프로젝트")}</button>
 							<button type="button" role="menuitem" onClick={() => { setProjectStartupOpen(false); setProjectBrowserOpen(true); }}>{ko("Open Project…", "프로젝트 열기…")}</button>
-							<button type="button" role="menuitem" onClick={() => saveProject(false)}>{ko("Save Project", "프로젝트 저장")}</button>
+							<button type="button" role="menuitem" onClick={() => runStudioAction("project.save")}>{ko("Save Project", "프로젝트 저장")}</button>
 							<button type="button" role="menuitem" onClick={() => saveProject(true)}>{ko("Save Project As…", "다른 이름으로 저장…")}</button>
 							<ResourceStatus manifest={projectManifest} compact />
 						</div>
@@ -12672,7 +12705,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							className="topbar-action project-save-action"
 							data-testid="topbar-save"
 							disabled={projectSaveState === "saving"}
-							onClick={() => void saveProject(false)}
+							onClick={() => void runStudioAction("project.save")}
 						>
 							{projectSaveState === "saving" ? ko("Saving…", "저장 중…") : ko("Save", "저장")}
 						</button>
