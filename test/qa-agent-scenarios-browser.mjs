@@ -262,6 +262,21 @@ await scenario("S8", "arrange after attach", async () => {
   return { created: { id: created.id, name: created.name, x: created.x, z: created.z } };
 });
 
+await scenario("S9", "new scene", async () => {
+  // One message that changes the open scene and then edits inside it: the edit
+  // is admitted against the scene the agent just opened, not the one it left.
+  const beforeScenes = live(["describe"]).document.scenes.map((row) => row.id);
+  const name = `QA scene ${carrySuffix}`;
+  await turn(`Create a new scene named "${name}", open it, and put one cube in it.`);
+  const description = live(["describe"]);
+  const active = description.document.scenes.find((row) => row.id === description.document.activeSceneId);
+  if (!active || beforeScenes.includes(active.id)) throw new Error(`The open scene is not a new one: ${JSON.stringify({ active: active?.id ?? null, beforeScenes })}`);
+  if (active.name !== name) throw new Error(`The new scene is named ${JSON.stringify(active.name)}, not ${JSON.stringify(name)}`);
+  const objects = (description.objects ?? []).map(({ id, name: objectName, renderer }) => ({ id, name: objectName, renderer }));
+  if (!objects.some((row) => row.renderer === "cube")) throw new Error(`${name} has no cube after the request: ${JSON.stringify(objects)}`);
+  return { beforeSceneCount: beforeScenes.length, afterSceneCount: description.document.scenes.length, active: { id: active.id, name: active.name }, objects };
+});
+
 writeFileSync(reportPath, `${JSON.stringify({ model, url: baseUrl, generatedAt: new Date().toISOString(), scenarios: results }, null, 2)}\n`);
 console.log(`REPORT ${reportPath}`);
 await send("Runtime.disable").catch(() => {});
