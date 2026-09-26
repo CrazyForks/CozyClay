@@ -243,11 +243,14 @@ await scenario("S7", "attach", async () => {
   live(["arrange-objects", "--op", JSON.stringify({ op: "create", source: { kind: "cube" }, name: carryName, position: { relativeTo: "char-a", basis: "subject", side: "right", gapM: 1.5, support: "floor" }, scale: { x: 0.15, y: 0.15, z: 0.15 } })]);
   const before = objectNamed(carryName);
   if (!before) throw new Error(`Setup could not create ${carryName}`);
+  // Read before the turn, so the evidence shows the transition the agent made.
+  const beforeAttachment = attachmentOf(before.id);
+  if (beforeAttachment) throw new Error(`Setup left ${carryName} already attached: ${JSON.stringify(beforeAttachment)}`);
   await turn(`Attach the object named ${carryName} to char-a's right hand.`);
   const after = objectNamed(carryName);
   const attachment = after ? attachmentOf(after.id) : null;
   if (attachment?.characterId !== "char-a") throw new Error(`${carryName} is not attached to char-a: ${JSON.stringify(attachment)}`);
-  return { before: { id: before.id, attachment: attachmentOf(before.id) }, after: { id: after.id, attachment } };
+  return { before: { id: before.id, attachment: beforeAttachment }, after: { id: after.id, attachment } };
 });
 
 await scenario("S8", "arrange after attach", async () => {
