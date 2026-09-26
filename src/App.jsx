@@ -786,6 +786,52 @@ export function createStudioAppActions(handlersRef) {
 			return { affectedIds: shot ? [shot.id] : [], output: { fileName: result.fileName, frameCount: result.frameCount },
 				summary: `Recorded ${shot ? shotLabel(shot) : "the shot"} to ${result.fileName} (${result.frameCount} frames); the browser was asked to download it.` };
 		} });
+	// Scenes: the scene pill's and the Hierarchy scene menu's own handlers. When
+	// the open scene moves, the action answers once React has rendered the new
+	// room, so the next command reads that scene's state.
+	const sceneOf = sceneId => h().state().scenes.find(scene => scene.id === sceneId) ?? fail("STALE_TARGET", `Scene ${sceneId} is not in this project.`);
+	const sceneName = scene => `${scene.name} (${scene.id})`;
+	const sceneAction = (id, available, run) => registry.register({ ...studioActionDeclaration(id), available,
+		run: async args => {
+			const before = h().state(), describe = run(args, before), after = h().state();
+			const moved = after.activeSceneId !== before.activeSceneId, opened = after.scenes.find(scene => scene.id === after.activeSceneId);
+			const affectedIds = [...new Set([
+				...after.scenes.filter(scene => !before.scenes.some(row => row.id === scene.id && row.name === scene.name)).map(scene => scene.id),
+				...before.scenes.filter(scene => !after.scenes.some(row => row.id === scene.id)).map(scene => scene.id),
+				...(moved ? [after.activeSceneId] : []),
+			])];
+			if (moved) await h().afterRender();
+			return { affectedIds, summary: describe(after, opened, moved) };
+		} });
+	const manyScenes = state => state.scenes.length > 1;
+	sceneAction("scene.create", () => true, () => {
+		h().addSceneDocument();
+		return (after, opened) => `Created and opened scene ${sceneName(opened)}.`;
+	});
+	sceneAction("scene.duplicate", () => true, ({ sceneId }) => {
+		const source = sceneOf(sceneId);
+		h().duplicateSceneDocument(sceneId);
+		return (after, opened) => `Duplicated ${sceneName(source)} as ${sceneName(opened)} and opened the copy.`;
+	});
+	sceneAction("scene.rename", () => true, ({ sceneId, name }) => {
+		const source = sceneOf(sceneId);
+		h().renameSceneDocument(sceneId, name);
+		return after => {
+			const renamed = after.scenes.find(scene => scene.id === sceneId);
+			return renamed.name === source.name ? `${sceneName(source)} already has that name; nothing changed.` : `Renamed scene ${sceneId} from ${source.name} to ${renamed.name}.`;
+		};
+	});
+	sceneAction("scene.delete", state => manyScenes(state) || "The project's last scene cannot be deleted.", ({ sceneId }) => {
+		const source = sceneOf(sceneId);
+		h().deleteSceneDocument(sceneId);
+		return (after, opened, moved) => `Deleted scene ${sceneName(source)}${moved ? `; opened ${sceneName(opened)}` : ""}.`;
+	});
+	sceneAction("scene.switch", state => manyScenes(state) || "This project has one scene; add one with scene.create.", ({ sceneId }, before) => {
+		const target = sceneOf(sceneId);
+		if (sceneId === before.activeSceneId) return () => `${sceneName(target)} is already open; nothing changed.`;
+		h().switchSceneDocument(sceneId);
+		return () => `Opened scene ${sceneName(target)}.`;
+	});
 	return registry;
 }
 
@@ -1037,13 +1083,18 @@ export function createStudioAppBinding(ports) {
 		if (!registry) fail("CAPABILITY_MISSING", "This editor registers no Studio actions.");
 		const entry = registry.get(args.action);
 		const base = { commandId: request.commandId, receiptId: crypto.randomUUID(), host: s.host, action: entry.id, checks: { coverage: `studio-action:${entry.id}` }, warnings: [] };
-		if (entry.kind === "job") {
-			// A job that runs to its end (an export) answers when it settles, with
-			// its output; one that only starts (a generation) answers at once.
-			const answer = (result, status) => ({ ok: true, commandId: request.commandId, action: entry.id, kind: "job", status,
-				affectedIds: result.affectedIds, summary: result.summary, ...(result.output === undefined ? {} : { output: result.output }) });
+		if (entry.kind === "job" || entry.kind === "document") {
+			// Outside the undo history. A job that runs to its end (an export) and
+			// document work answer when they settle, with any output; a job that
+			// only starts (a generation) answers at once. When the open scene moved,
+			// the answer names the new host later commands are admitted at.
+			const answer = (result, status) => {
+				const { host } = refresh();
+				return { ok: true, commandId: request.commandId, action: entry.id, kind: entry.kind, status, affectedIds: result.affectedIds, summary: result.summary,
+					...(result.output === undefined ? {} : { output: result.output }), ...(same(host, s.host) ? {} : { host }) };
+			};
 			const result = registry.run(entry.id, args.args);
-			return typeof result?.then === "function" ? result.then(settled => answer(settled, "completed")) : answer(result, "started");
+			return typeof result?.then === "function" ? result.then(settled => answer(settled, "completed")) : answer(result, entry.kind === "job" ? "started" : "completed");
 		}
 		if (entry.kind === "transient") {
 			const result = registry.run(entry.id, args.args), after = refresh();
@@ -4206,6 +4257,7 @@ export default function App() {
 	// render's handlers behind it; the UI controls and run_action share both.
 	const studioActionsRef = useRef(null);
 	const studioActionHandlersRef = useRef(null);
+	const renderWaitersRef = useRef([]);
 	const studioHistoryRef = useRef(new Map());
 	const studioIkStampsRef = useRef(new Map());
 	const [studioAgentError, setStudioAgentError] = useState(null);
@@ -4792,7 +4844,15 @@ export default function App() {
 		track("scene:loaded", { scene_source: "local" });
 	}
 
-	function selectSceneDocument(sceneId) {
+	/** The scene controls' doors (the scene pill, the Hierarchy scene menu)
+	 * into the shared registry; run_action reaches the same scene actions. */
+	function selectSceneDocument(sceneId) { return runStudioAction("scene.switch", { sceneId }); }
+	function createSceneDocumentFromUi() { return runStudioAction("scene.create"); }
+	function duplicateSceneDocumentFromUi(sceneId) { return runStudioAction("scene.duplicate", { sceneId }); }
+	function renameSceneDocumentFromUi(sceneId, name) { return runStudioAction("scene.rename", { sceneId, name }); }
+	function deleteSceneDocumentFromUi(sceneId) { return runStudioAction("scene.delete", { sceneId }); }
+
+	function switchSceneDocument(sceneId) {
 		if (sceneId === activeSceneIdRef.current) return;
 		const savedScenes = snapshotActiveScene();
 		const target = savedScenes.find((scene) => scene.id === sceneId);
@@ -4801,7 +4861,7 @@ export default function App() {
 		openScene(target, savedScenes);
 	}
 
-	function createSceneDocumentFromUi() {
+	function addSceneDocument() {
 		const savedScenes = snapshotActiveScene();
 		const nextScenes = addScene(savedScenes);
 		const target = nextScenes[nextScenes.length - 1];
@@ -4810,7 +4870,7 @@ export default function App() {
 		track("scene:created", { scene_source: "ui" });
 	}
 
-	function duplicateSceneDocumentFromUi(sceneId) {
+	function duplicateSceneDocument(sceneId) {
 		const savedScenes = snapshotActiveScene();
 		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
 		if (index < 0) return;
@@ -4820,7 +4880,7 @@ export default function App() {
 		openScene(target, nextScenes);
 	}
 
-	function renameSceneDocumentFromUi(sceneId, name) {
+	function renameSceneDocument(sceneId, name) {
 		const savedScenes = snapshotActiveScene();
 		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
 		if (index < 0) return;
@@ -4830,7 +4890,7 @@ export default function App() {
 		persistScenes(nextScenes, activeSceneIdRef.current);
 	}
 
-	function deleteSceneDocumentFromUi(sceneId) {
+	function deleteSceneDocument(sceneId) {
 		const savedScenes = snapshotActiveScene();
 		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
 		if (index < 0 || savedScenes.length <= 1) return;
@@ -12519,12 +12579,16 @@ function resizePromptClip(id, edge, rawFrame) {
 			motionReady: bridge !== null && !bridgeChecking,
 			// The Export menu offers Video (mp4) on exactly these conditions.
 			exporting: Boolean(recRef.current), canExportVideo: shots.length > 0 || hasCameraKeys || Boolean(motion),
+			// The scene refs move synchronously with every scene handler.
+			scenes: scenesRef.current.map(({ id, name }) => ({ id, name })), activeSceneId: activeSceneIdRef.current,
 		}),
 		addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, setTimelineShotRange, moveTimelineShot,
 		runAllPromptBlocks, duplicateSelectedSceneObject,
 		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, attachSceneObject, setShotCameraRail, clearShotCameraRail,
 		choosePartColours, setGuideMode, setInsetCollapsed, exportShotVideo,
+		switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument,
+		afterRender: () => new Promise(resolve => renderWaitersRef.current.push(resolve)),
 	};
 	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionHandlersRef);
 	/** UI door into the shared registry. Refusal messages are written for the
@@ -12557,6 +12621,9 @@ function resizePromptClip(id, edge, rawFrame) {
 		Object.assign(liveHandlersRef.current, studioBindingRef.current.handlers);
 	}
 	useEffect(() => () => studioBindingRef.current?.dispose(), []);
+	// Every commit releases the actions waiting for React to render their edit
+	// (a scene switch answers once the new room is on stage).
+	useEffect(() => { for (const resolve of renderWaitersRef.current.splice(0)) resolve(); });
 
 	const projectStatus = projectSaveState === "saving"
 		? ko("Saving…", "저장 중…")

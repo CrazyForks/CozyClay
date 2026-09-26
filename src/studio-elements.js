@@ -59,7 +59,7 @@ const entries = [
 	{ path: "shot.cameraRail", type: "array", persisted: true, undoDomain: "shot", agentExposure: "action", normalizer: "repairCamera", actions: ["shot.setCameraRail", "shot.clearCameraRail"], note: "rail points; crane/dolly timing follow the shot's camera block" },
 	{ path: "shot.targetModel", type: "id", persisted: true, undoDomain: "shot", agentExposure: "patch", normalizer: "repairCamera" },
 	{ path: "shot.freeCamera", type: "vec3", persisted: false, undoDomain: "shot", agentExposure: "readonly", normalizer: null, note: "transient until keyed" },
-	{ path: "scenes", type: "array", persisted: true, undoDomain: null, agentExposure: "composite", normalizer: null },
+	{ path: "scenes", type: "array", persisted: true, undoDomain: null, agentExposure: "action", normalizer: null, actions: ["scene.create", "scene.duplicate", "scene.rename", "scene.delete", "scene.switch"], note: "the project's scene list and the open scene; outside the undo history" },
 	{ path: "project", type: "string", persisted: true, undoDomain: null, agentExposure: "composite", normalizer: null, note: "save/open project file" },
 	{ path: "selection", type: "id", persisted: false, undoDomain: null, agentExposure: "readonly", normalizer: null },
 	{ path: "timeline", type: "number", persisted: false, undoDomain: null, agentExposure: "readonly", normalizer: null },

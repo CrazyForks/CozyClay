@@ -10,13 +10,18 @@ import { StudioProtocolError, StudioSchemas, freezeStudioData, validateStudioSch
  * export); it answers "started", or "completed" with its output when it runs
  * to its end. A job that needs longer than the hub's 30 s default declares
  * `timeoutMs` (at most the hub's 300 s ceiling); one that starts a motion
- * generation declares `generation: "motion"`, the agent's one per message. */
-export const STUDIO_ACTION_KINDS = freezeStudioData(["mutation", "transient", "job"]);
+ * generation declares `generation: "motion"`, the agent's one per message.
+ * document: project-level work outside the undo history (scenes, the project
+ * file); it answers "completed", with the new host when the open scene moved. */
+export const STUDIO_ACTION_KINDS = freezeStudioData(["mutation", "transient", "job", "document"]);
 
 const idSchema = StudioSchemas.TargetGuard.properties.targetId;
 const frame = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const input = (required = {}, optional = {}) => ({ type: "object", properties: { ...required, ...optional }, required: Object.keys(required), additionalProperties: false });
 const shotId = { shotId: idSchema };
+const sceneId = { sceneId: idSchema };
+const NOT_UNDOABLE = "Scenes are outside the undo history: undo_edit and Ctrl+Z cannot revert this.";
+const SCENE_MOVES = "The open scene changes, so later commands in this message are admitted in it; the receipt's host names it.";
 const characterId = { characterId: idSchema };
 /** A world floor point in metres; y is the floor. */
 const floorPoint = input({ x: { type: "number" }, z: { type: "number" } });
@@ -87,6 +92,16 @@ export const STUDIO_ACTIONS = freezeStudioData([
 		description: "Fold (collapsed: true) or unfold the Top-View inset pane over the viewport. A viewer setting that is never undone." },
 	{ id: "export.shotVideo", label: "Export video (mp4)", kind: "job", timeoutMs: 300_000, input: input({}, shotId),
 		description: "Record a shot to an MP4 (camera move and character motion, no editor chrome), like the Export menu's Video (mp4), and ask the browser to download it. With shotId it records that shot's own range; without it, what the menu records: the whole take when there is motion, else the shot under the playhead (else the first shot), keyed from the current camera if it has no keys. Waits until the file is encoded (up to 5 minutes) and answers status \"completed\" with output.fileName and output.frameCount. One export at a time; not a motion generation." },
+	{ id: "scene.create", label: "New scene", kind: "document", input: input(),
+		description: `Add an empty scene (named SCENE 01, SCENE 02, ...) after the others and open it, like the scene menu's New scene. ${SCENE_MOVES} ${NOT_UNDOABLE}` },
+	{ id: "scene.duplicate", label: "Duplicate scene", kind: "document", input: input(sceneId),
+		description: `Copy a scene (objects, shots, cast and stage) right after it and open the copy, like the Hierarchy scene menu's Duplicate. ${SCENE_MOVES} ${NOT_UNDOABLE}` },
+	{ id: "scene.rename", label: "Rename scene", kind: "document", input: input({ ...sceneId, name: { type: "string", minLength: 1, maxLength: 240 } }),
+		description: `Rename a scene; a name another scene already has gets a number. ${NOT_UNDOABLE}` },
+	{ id: "scene.delete", label: "Delete scene", kind: "document", input: input(sceneId),
+		description: `Delete a scene and everything in it, like the Hierarchy scene menu's Delete; delete only a scene the user asked to delete. The last scene cannot be deleted. Deleting the open scene opens its neighbour. ${SCENE_MOVES} ${NOT_UNDOABLE}` },
+	{ id: "scene.switch", label: "Open scene", kind: "document", input: input(sceneId),
+		description: `Open another scene of the project, like the scene pill's menu; the scene being left keeps its state. ${SCENE_MOVES}` },
 	{ id: "object.duplicate", label: "Duplicate object", kind: "mutation", undoDomain: "objects", input: input({}, { objectId: idSchema }),
 		description: "Copy a scene object (the selected one when objectId is omitted) and place the copy half a metre beside it." },
 ]);
