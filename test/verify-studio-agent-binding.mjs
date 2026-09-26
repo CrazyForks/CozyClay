@@ -161,12 +161,12 @@ function fixture(options={}) {
   'recordCharacterUndo','validateWaypointAt','castMemberOf','readCharacterWaypoints','writeCharacterWaypoints','addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints',
   'switchSceneDocument','addSceneDocument','duplicateSceneDocument','renameSceneDocument','deleteSceneDocument',
   'selectSceneDocument','createSceneDocumentFromUi','duplicateSceneDocumentFromUi','renameSceneDocumentFromUi','deleteSceneDocumentFromUi',
-  'generate','copyPrompt','framingDistance','showFalMotionLock','generateFalMotion','generateFalMotionFromUi'];
+  'generate','copyPrompt','framingDistance','showFalMotionLock','generateFalMotion','generateFalMotionFromUi','falMotionUnavailable'];
  const code=names.map(n=>{assert(declarations.has(n),`actual App function ${n}`);return declarations.get(n);}).join('\n');
  const actual=new Function(...Object.keys(scope),code+`\nreturn {${names.join(',')}};`)(...Object.values(scope));
  // React re-renders App with the state it committed: these functions close
  // over render-time state, so every commit is a fresh evaluation of them.
- const renderNames=['generate','copyPrompt','framingDistance','showFalMotionLock','generateFalMotion','generateFalMotionFromUi'];
+ const renderNames=['generate','copyPrompt','framingDistance','showFalMotionLock','generateFalMotion','generateFalMotionFromUi','falMotionUnavailable'];
  const renderState={mode:scope.mode,imageModel:scope.imageModel,falMotionEnabled:scope.falMotionEnabled,falMotion:scope.falMotion},committed={...renderState};
  const renderApp=()=>{const s={...scope,...committed,runStudioAction:actual.runStudioAction};return new Function(...Object.keys(s),renderNames.map(n=>declarations.get(n)).join('\n')+`\nreturn {${renderNames.join(',')}};`)(...Object.values(s));};
  let rendered=renderApp();
@@ -950,8 +950,18 @@ const implementations={
   // Busy, or out of today's quota: unavailable with the reason.
   f.render({falMotion:{...f.renderState.falMotion,status:'queued'}});
   assert.match((await listed())['motion.generateFromVideo'].reason,/already running/);
+  // The chip clears the typed instruction when clicked, so a refusal says why.
+  const submitsBusy=f.stand.falSubmits.length;f.values.setToast=undefined;
+  assert.equal(f.rendered().generateFalMotionFromUi('wave again'),null);
+  assert.equal(f.values.setToast,'A generation is already running','a busy chip click says a generation is running');
+  assert.equal(f.renderState.falMotion.status,'queued','the running job keeps its status');
+  assert.equal(f.stand.falSubmits.length,submitsBusy,'a busy chip click sends nothing');
   f.render({falMotion:{...f.renderState.falMotion,status:'done',dailyRemaining:0}});
   assert.match((await listed())['motion.generateFromVideo'].reason,/daily/);
+  f.values.setToast=undefined;
+  assert.equal(f.rendered().generateFalMotionFromUi('wave again'),null);
+  assert.equal(f.values.setToast,'No AI video motion generations left today','an out-of-quota chip click says so');
+  assert.equal(f.stand.falSubmits.length,submitsBusy,'an out-of-quota chip click sends nothing');
   // Failures reach the model in English; the Fal card keeps the line it showed.
   f.render({falMotion:{...f.renderState.falMotion,a:null,status:'idle',dailyRemaining:2}});
   f.stand.captureError='캡처할 수 없어요';
