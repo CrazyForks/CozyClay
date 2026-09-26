@@ -6,7 +6,10 @@
 import { StudioProtocolError, StudioSchemas, freezeStudioData, validateStudioSchema } from "./studio-agent-protocol.js";
 
 /** mutation: authored, undoable, answered with a journal receipt.
- * transient: view state only. job: starts long-running work (a generation). */
+ * transient: view state only. job: long-running work (a generation, an
+ * export); it answers "started", or "completed" with its output when it runs
+ * to its end. A job that needs longer than the hub's 30 s default declares
+ * `timeoutMs` (at most the hub's 300 s ceiling). */
 export const STUDIO_ACTION_KINDS = freezeStudioData(["mutation", "transient", "job"]);
 
 const idSchema = StudioSchemas.TargetGuard.properties.targetId;
@@ -81,6 +84,8 @@ export const STUDIO_ACTIONS = freezeStudioData([
 		description: "Show a composition guide over the shot frame: rule of thirds, golden ratio, center cross, safe areas, or off. Overlay only, never in exported pixels; a viewer setting that is never undone." },
 	{ id: "view.setInset", label: "Top-View inset", kind: "transient", input: input({ collapsed: { type: "boolean" } }),
 		description: "Fold (collapsed: true) or unfold the Top-View inset pane over the viewport. A viewer setting that is never undone." },
+	{ id: "export.shotVideo", label: "Export video (mp4)", kind: "job", timeoutMs: 300_000, input: input({}, shotId),
+		description: "Record a shot to an MP4 (camera move and character motion, no editor chrome), like the Export menu's Video (mp4), and ask the browser to download it. With shotId it records that shot's own range; without it, what the menu records: the whole take when there is motion, else the shot under the playhead (else the first shot), keyed from the current camera if it has no keys. Waits until the file is encoded (up to 5 minutes) and answers status \"completed\" with output.fileName and output.frameCount. One export at a time; not a motion generation." },
 	{ id: "object.duplicate", label: "Duplicate object", kind: "mutation", undoDomain: "objects", input: input({}, { objectId: idSchema }),
 		description: "Copy a scene object (the selected one when objectId is omitted) and place the copy half a metre beside it." },
 ]);
@@ -108,6 +113,12 @@ export function createStudioActionRegistry({ readState } = {}) {
 		const verdict = entry.available(state);
 		if (verdict !== true && (typeof verdict !== "string" || !verdict.trim())) throw new Error(`Studio action ${entry.id} must answer availability with true or a reason.`);
 		return verdict;
+	};
+	const settled = (id, result) => {
+		if (!Array.isArray(result?.affectedIds) || result.affectedIds.some(value => typeof value !== "string") || typeof result.summary !== "string") {
+			throw new Error(`Studio action ${id} must return { affectedIds, summary }.`);
+		}
+		return { affectedIds: [...result.affectedIds], summary: result.summary, ...(result.output === undefined ? {} : { output: structuredClone(result.output) }) };
 	};
 	const registry = {
 		register(entry) {
@@ -139,10 +150,8 @@ export function createStudioActionRegistry({ readState } = {}) {
 				if (verdict !== true) fail("TARGET_NOT_READY", verdict);
 			}
 			const result = entry.run(validated);
-			if (!Array.isArray(result?.affectedIds) || result.affectedIds.some(value => typeof value !== "string") || typeof result.summary !== "string") {
-				throw new Error(`Studio action ${id} must return { affectedIds, summary }.`);
-			}
-			return { affectedIds: [...result.affectedIds], summary: result.summary };
+			// Long-running work answers with a promise, checked once it settles.
+			return typeof result?.then === "function" ? result.then(value => settled(id, value)) : settled(id, result);
 		},
 	};
 	return registry;

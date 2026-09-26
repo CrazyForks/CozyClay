@@ -774,6 +774,18 @@ export function createStudioAppActions(handlersRef) {
 			const copy = after.find(object => affectedIds.includes(object.id));
 			return { affectedIds, summary: copy ? `Duplicated ${source.name || source.id} as ${copy.name || copy.id}.` : "Duplicate object: nothing changed." };
 		} });
+	// The Export menu's Video (mp4): the same export, awaited to its file. A
+	// failure was already shown in the export panel, so it refuses silently.
+	registry.register({ ...studioActionDeclaration("export.shotVideo"),
+		available: state => state.exporting ? "An export is already running; wait for it to finish."
+			: state.canExportVideo || "There is nothing to record yet: add a shot (shot.create), camera keys or a motion take first.",
+		run: async ({ shotId }) => {
+			const shot = shotId ? shotOf(shotId) : null;
+			const result = await h().exportShotVideo({ shotId: shotId ?? null });
+			if (!result?.fileName) fail("TARGET_NOT_READY", "The video export did not finish; the editor's export panel shows why and offers Retry.");
+			return { affectedIds: shot ? [shot.id] : [], output: { fileName: result.fileName, frameCount: result.frameCount },
+				summary: `Recorded ${shot ? shotLabel(shot) : "the shot"} to ${result.fileName} (${result.frameCount} frames); the browser was asked to download it.` };
+		} });
 	return registry;
 }
 
@@ -993,9 +1005,13 @@ export function createStudioAppBinding(ports) {
 		return remember(journal.record(validateReceipt(actual)));
 	}
 	function rejection(request, error, phase = "admission") {
+		// The refusal's own words are what the model acts on; the receipt keeps
+		// the first 120 characters the protocol carries.
+		const words = [...String(error?.message ?? "").trim()];
 		return validateReceipt({ ok: false, commandId: request.commandId, host: request.host ?? request.binding?.host,
 			code: error.code ?? "INVALID_ARGUMENT", phase, affectedIds: [], expectedTargets: [], currentTargets: [], mutated: false,
-			preserved: { authoredState: "unchanged" }, recovery: { action: "inspect", retryAllowed: false } });
+			preserved: { authoredState: "unchanged" }, recovery: { action: "inspect", retryAllowed: false },
+			...(words.length ? { message: words.length > 120 ? `${words.slice(0, 119).join("")}…` : words.join("") } : {}) });
 	}
 	function admit(request) {
 		const s = refresh();
@@ -1022,8 +1038,12 @@ export function createStudioAppBinding(ports) {
 		const entry = registry.get(args.action);
 		const base = { commandId: request.commandId, receiptId: crypto.randomUUID(), host: s.host, action: entry.id, checks: { coverage: `studio-action:${entry.id}` }, warnings: [] };
 		if (entry.kind === "job") {
+			// A job that runs to its end (an export) answers when it settles, with
+			// its output; one that only starts (a generation) answers at once.
+			const answer = (result, status) => ({ ok: true, commandId: request.commandId, action: entry.id, kind: "job", status,
+				affectedIds: result.affectedIds, summary: result.summary, ...(result.output === undefined ? {} : { output: result.output }) });
 			const result = registry.run(entry.id, args.args);
-			return { ok: true, commandId: request.commandId, action: entry.id, kind: "job", status: "started", affectedIds: result.affectedIds, summary: result.summary };
+			return typeof result?.then === "function" ? result.then(settled => answer(settled, "completed")) : answer(result, "started");
 		}
 		if (entry.kind === "transient") {
 			const result = registry.run(entry.id, args.args), after = refresh();
@@ -1065,7 +1085,16 @@ export function createStudioAppBinding(ports) {
 			// Verification only observes: the document identity (checked above) is
 			// its whole fence, so a later edit never refuses it.
 			const { args } = validateStudioCommand({ name: request.name, args: request.args }), s = request.name === "verify_result" ? refresh() : admit(request);
-			if (request.name === "run_action") return runAction(request, args, s);
+			if (request.name === "run_action") {
+				const outcome = runAction(request, args, s);
+				if (typeof outcome?.then !== "function") return outcome;
+				// A long-running action refuses after this frame: answer the same
+				// rejection receipt, journaled while the document is still this one.
+				return outcome.catch(error => {
+					const receipt = rejection(request, error);
+					return same(receipt.host, journal.host) ? journal.record(receipt) : receipt;
+				});
+			}
 			if (request.name === "operate_studio") {
 				ports.operate(args, s); const after = refresh();
 				return journal.record(validateReceipt({ ok: true, status: "transient", authored: false, commandId: request.commandId,
@@ -6129,6 +6158,7 @@ export default function App() {
 			finally { setTimeout(() => URL.revokeObjectURL(url), 10_000); }
 			setRecordedVideoName(name);
 			setToast(isKo ? `${name} 다운로드 요청 · ${result.frameCount}프레임` : `Download requested: ${name} · ${result.frameCount} frames`);
+			return { ...result, fileName: name };
 		}
 		return result;
 	}
@@ -12487,12 +12517,14 @@ function resizePromptClip(id, edge, rawFrame) {
 			promptBlockCount: promptClips.filter((clip) => clip.text.trim()).length,
 			generating: Boolean(generationPendingRef.current || genRunningRef.current || generationBusy),
 			motionReady: bridge !== null && !bridgeChecking,
+			// The Export menu offers Video (mp4) on exactly these conditions.
+			exporting: Boolean(recRef.current), canExportVideo: shots.length > 0 || hasCameraKeys || Boolean(motion),
 		}),
 		addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, setTimelineShotRange, moveTimelineShot,
 		runAllPromptBlocks, duplicateSelectedSceneObject,
 		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, attachSceneObject, setShotCameraRail, clearShotCameraRail,
-		choosePartColours, setGuideMode, setInsetCollapsed,
+		choosePartColours, setGuideMode, setInsetCollapsed, exportShotVideo,
 	};
 	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionHandlersRef);
 	/** UI door into the shared registry. Refusal messages are written for the
@@ -12500,12 +12532,17 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * attached (studioActionRefusal); any other refusal stays silent, as the
 	 * controls always were. */
 	function runStudioAction(id, args = {}) {
-		try {
-			return studioActionsRef.current.run(id, args);
-		} catch (error) {
+		const refused = error => {
 			if (!(error instanceof StudioProtocolError)) throw error;
 			if (error.uiMessage) setToast(error.uiMessage);
 			return null;
+		};
+		try {
+			// A long-running action answers with a promise that refuses the same way.
+			const result = studioActionsRef.current.run(id, args);
+			return typeof result?.then === "function" ? result.catch(refused) : result;
+		} catch (error) {
+			return refused(error);
 		}
 	}
 	if (!studioBindingRef.current) {
@@ -12637,7 +12674,7 @@ function resizePromptClip(id, edge, rawFrame) {
 											data-testid="export-video"
 											disabled={recState === "recording"}
 											title={ko("Render the shot to an MP4 — camera move and character motion, no editor chrome", "샷을 MP4로 렌더링합니다 — 카메라 움직임과 캐릭터 모션만, 편집 UI는 제외")}
-											onClick={() => void exportShotVideo({ shotId: exportShotIdRef.current })}
+											onClick={() => void runStudioAction("export.shotVideo", exportShotIdRef.current ? { shotId: exportShotIdRef.current } : {})}
 										>
 											{ko("Video (mp4)", "영상 (mp4)")}
 										</button>
