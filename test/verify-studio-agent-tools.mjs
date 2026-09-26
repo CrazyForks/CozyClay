@@ -21,7 +21,7 @@ const sessionDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-sessions-"));
 process.env.COZYCLAY_AGENT_SESSIONS_DIR = sessionDir;
 process.on("exit", () => rmSync(sessionDir, { recursive: true, force: true }));
 
-const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision", "run-action-admission-and-generation-limit", "stale-scene-readmits-any-family", "run-action-job-timeout", "non-generation-job-skips-generation-gate", "scene-change-readmits-host"]);
+const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision", "run-action-admission-and-generation-limit", "stale-scene-readmits-any-family", "run-action-job-timeout", "non-generation-job-skips-generation-gate", "scene-change-readmits-host", "ai-video-motion-shares-generation-gate"]);
 const index = process.argv.indexOf("--case");
 const selected = index >= 0 ? process.argv[index + 1] : null;
 if (selected && !CASES.has(selected)) { console.error(`unknown --case ${selected}`); process.exit(2); }
@@ -275,8 +275,45 @@ if (shouldRun("non-generation-job-skips-generation-gate")) {
   assert.equal((await first.handler({ action: "motion.generateAllBlocks" })).status, "started");
   assert.deepEqual(sent, ["motion.generateAllBlocks", "export.shotVideo", "export.shotVideo", "motion.generateAllBlocks"]);
   // The gate reads the declaration's flag, carried by exactly one action.
-  assert.deepEqual(STUDIO_ACTIONS.filter(action => action.generation === "motion").map(action => action.id), ["motion.generateAllBlocks"]);
+  assert.deepEqual(STUDIO_ACTIONS.filter(action => action.generation === "motion").map(action => action.id), ["motion.generateAllBlocks", "motion.generateFromVideo"]);
   console.log("PASS a job that is not a motion generation neither takes nor is blocked by the generation gate");
+}
+
+if (shouldRun("ai-video-motion-shares-generation-gate")) {
+  const { createStudioTools } = await import("../bin/agent/studio-tools.mjs");
+  // AI-video motion spends the account's quota and is a motion generation: it
+  // shares the message's one generation with the prompt-block generation (and
+  // generate_motion, through the route's gate), and waits for its clip under
+  // its declared hub timeout. The Send-to-AI package calls no service and
+  // neither takes nor meets that gate.
+  const sent = []; let commandNumber = 0;
+  const admission = { commandId: () => `cmd-${++commandNumber}`, host: { workspaceId: "tab-7", documentEpoch: "doc-3", sceneId: "scene-main", sceneEpoch: "scene-open-4" }, revision: 4, refresh: async () => {} };
+  const answers = {
+    "motion.generateFromVideo": { kind: "job", status: "completed", affectedIds: [], summary: "Ingested.", output: { videoUrl: "https://cdn.example.test/fal-act.mp4" } },
+    "motion.generateAllBlocks": { kind: "job", status: "started", affectedIds: ["char-alex"], summary: "Started." },
+    "ai.prepareShot": { kind: "job", status: "completed", affectedIds: [], summary: "Prepared.", output: { prompt: "A still.", mode: "image" } },
+  };
+  const liveHub = { command: async (name, payload, handle, ...options) => {
+    sent.push({ action: payload.args.action, options });
+    return { ok: true, commandId: payload.commandId, action: payload.args.action, ...answers[payload.args.action] };
+  } };
+  const run = gate => createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission, generation: gate } }).find(tool => tool.name === "run_action");
+  const video = { action: "motion.generateFromVideo", args: { instruction: "wave both hands" } };
+  const first = { used: false }, turn = run(first);
+  assert.equal((await turn.handler(video)).status, "completed");
+  assert.equal(first.used, true, "AI-video motion takes the message's generation");
+  await assert.rejects(turn.handler({ action: "motion.generateAllBlocks" }), { code: "GENERATION_LIMIT" });
+  await assert.rejects(turn.handler(video), { code: "GENERATION_LIMIT" });
+  assert.equal((await turn.handler({ action: "ai.prepareShot", args: { mode: "image" } })).status, "completed", "the Send-to-AI package still runs");
+  const second = { used: false }, next = run(second);
+  assert.equal((await next.handler({ action: "ai.prepareShot" })).status, "completed");
+  assert.equal(second.used, false, "the Send-to-AI package is not a generation");
+  assert.equal((await next.handler({ action: "motion.generateAllBlocks" })).status, "started");
+  await assert.rejects(next.handler(video), { code: "GENERATION_LIMIT" });
+  assert.deepEqual(sent.map(call => call.action), ["motion.generateFromVideo", "ai.prepareShot", "ai.prepareShot", "motion.generateAllBlocks"], "a refused generation never reaches the editor");
+  assert.deepEqual(sent[0].options, [{ timeoutMs: 300_000 }], "AI-video motion waits under its declared hub timeout");
+  assert.deepEqual(sent[1].options, [], "the Send-to-AI package keeps the default timeout");
+  console.log("PASS AI-video motion shares the message's one motion generation and carries its hub timeout");
 }
 
 if (shouldRun("scene-change-readmits-host")) {

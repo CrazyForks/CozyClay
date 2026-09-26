@@ -29,6 +29,7 @@ import { createShot, shotAtFrame, addShotAtFrame } from '../src/cuts.js';
 import * as studioActions from '../src/studio-actions.js';
 import { focalMmToFov, fovToFocalMm, IMAGE_MODELS, CUSTOM_MOVE, SUBJECT_HEIGHT_M, composePrompt, deriveShot } from '../src/shot.js';
 import { PART_COLOURS } from '../src/part-colours.js';
+import { buildH3MotionPrompt } from '../src/fal-motion-client.js';
 import { objectTransformAt } from '../src/object-path.js';
 import { dispatchLiveFrame } from '../src/live-control.js';
 import { CSKEL27_NEUTRAL } from '../src/ardy/cskel27-neutral.js';
@@ -39,7 +40,7 @@ import { applyMotionCalibration, normalizeMotionCalibration } from '../src/ardy/
 import { decodeMotionResource, encodeMotionResource, resolveMotionSource, sha256Hex } from '../src/motion-resources.js';
 import { motionArraysToNpzMembers, writeNpz } from '../tools/ardy/npz.mjs';
 
-const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes', 'run-action-project-save', 'run-action-asset-import-and-undo', 'run-action-ai-prepare-shot'];
+const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes', 'run-action-project-save', 'run-action-asset-import-and-undo', 'run-action-ai-prepare-shot', 'run-action-motion-generate-from-video'];
 const argv = process.argv.slice(2);
 assert(!argv.length || (argv.length === 2 && argv[0] === '--case' && cases.includes(argv[1])), 'Unknown test arguments');
 const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
@@ -119,6 +120,13 @@ function fixture(options={}) {
   cameraMove:'Static / locked-off',customMove:'',hasCharSheet:false,hasEnvSheet:false,partColoursEnabled:false,shotOutput:{label:'16:9',width:1920,height:1080},characters:chars,
   captureFramingPng:framing=>{captures.push(framing);return `data:image/png;base64,${btoa(JSON.stringify(framing.pos))}`;},captureRef:ref(null),bufferToPng:()=>null,
   navigator:{clipboard:{writeText:async text=>{clipboard.push(text);}}}};
+ // The hosted AI-video (Fal) service and the footage ingest behind it, as
+ // stand-ins; the pose capture answers the 480P still the Fal canvas renders.
+ const falScope={buildH3MotionPrompt,FAL_MOTION_MIN_DURATION:5,
+  captureFalStill:()=>{if(stand.captureError)throw new Error(stand.captureError);return {dataUrl:'data:image/png;base64,QQ==',width:1664,height:960,partColours:[{part:'head'}],framing:keyA};},
+  submitFalMotion:async request=>{stand.falSubmits.push(request);if(stand.falSubmitError)throw new Error(stand.falSubmitError);return {job:{id:'fal-job-1',status:'queued'},dailyRemaining:3};},
+  waitForFalMotionJob:async(id,{onUpdate})=>{onUpdate({id,status:'running'});return structuredClone(stand.falFinished);},
+  ingestFootage:async source=>{stand.ingested.push(source);return stand.ingestResult;}};
  const scope={THREE,cloneSkeleton,...protocol,...context,...commands,...objects,...ik,...playback,createStudioMotionCandidates,copyPhysicsKeys,physicsKeyStamp,sampleAt,shotAtFrame,focalMmToFov,fovToFocalMm,objectTransformAt,aimAt,forwardFrom,
  liveStateRef:live,sceneRevisionRef:revision,charactersRef:characterRef,loadedLayerCharRef:ref(a.id),bufferRef:buffer,ikStateRef:state,ikStatesRef:layers,storeRef:store,
  charHistoryRef:history,opClockRef:clock,lastObjectOpRef:lastObject,studioHistoryRef:studioHistory,motionFullRef:ref(new Map()),
@@ -141,6 +149,10 @@ function fixture(options={}) {
  for(const name of ['setTlFps','setProjectManifest','setCameraPos','setFovDeg','setCameraPresetId','setWaypoints','setPromptClips','setMotion','setCommittedIkEdits','setIkTick','setTlFrameCount','setToast','setActiveCharacterId','setSelectedHierarchyId','setTlFrame','setWorkflowMode','setLookThroughShot','setGridView','setAutoColor','setTlPlaying','setIkMode','setIkFocus','setKeyLight','setEnvironmentImage','setEnvironment','setStyle','setHasEnvSheet','setShotAspectKey','setSensorFormat','setMovePlaying','setPartColoursEnabled','setPartColoursMode','setGuideMode','setWorkspaceLayout','setInsetPos','setResult','setResultOpen','setCopied','setRecordedVideoName'])scope[name]=noPublish(name);
  // App's render-time choice for the Send-to-AI package (its mode/imageModel state).
  Object.assign(scope,aiScope,{mode:'image',imageModel:'gpt_image_2'});
+ // App's Fal state: locked for this account until a test enables it.
+ Object.assign(scope,falScope,{falMotionEnabled:false,falMotion:{a:null,b:null,job:null,status:'idle',error:'',instruction:'',dailyRemaining:null}});
+ for(const name of ['setMultiModelSource','setFalMotionStudioOpen'])scope[name]=noPublish(name);
+ scope.setFalMotion=value=>{renderState.falMotion=typeof value==='function'?value(renderState.falMotion):value;};
  scope.setMotion=value=>{noPublish('setMotion')(value);for(const done of motionSet.splice(0))done(value);};
  scope.setScenes=noPublish('setScenes');
  scope.openScene=(scene,nextScenes)=>{scope.scenesRef.current=nextScenes;live.current.scenes=nextScenes;scope.activeSceneIdRef.current=scene.id;scope.studioSceneEpochRef.current=crypto.randomUUID();};
@@ -149,14 +161,14 @@ function fixture(options={}) {
   'recordCharacterUndo','validateWaypointAt','castMemberOf','readCharacterWaypoints','writeCharacterWaypoints','addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints',
   'switchSceneDocument','addSceneDocument','duplicateSceneDocument','renameSceneDocument','deleteSceneDocument',
   'selectSceneDocument','createSceneDocumentFromUi','duplicateSceneDocumentFromUi','renameSceneDocumentFromUi','deleteSceneDocumentFromUi',
-  'generate','copyPrompt'];
+  'generate','copyPrompt','framingDistance','showFalMotionLock','generateFalMotion','generateFalMotionFromUi'];
  const code=names.map(n=>{assert(declarations.has(n),`actual App function ${n}`);return declarations.get(n);}).join('\n');
  const actual=new Function(...Object.keys(scope),code+`\nreturn {${names.join(',')}};`)(...Object.values(scope));
  // React re-renders App with the state it committed: these functions close
  // over render-time state, so every commit is a fresh evaluation of them.
- const renderNames=['generate','copyPrompt'];
- const renderState={mode:scope.mode,imageModel:scope.imageModel},committed={...renderState};
- const renderApp=()=>{const s={...scope,...committed};return new Function(...Object.keys(s),renderNames.map(n=>declarations.get(n)).join('\n')+`\nreturn {${renderNames.join(',')}};`)(...Object.values(s));};
+ const renderNames=['generate','copyPrompt','framingDistance','showFalMotionLock','generateFalMotion','generateFalMotionFromUi'];
+ const renderState={mode:scope.mode,imageModel:scope.imageModel,falMotionEnabled:scope.falMotionEnabled,falMotion:scope.falMotion},committed={...renderState};
+ const renderApp=()=>{const s={...scope,...committed,runStudioAction:actual.runStudioAction};return new Function(...Object.keys(s),renderNames.map(n=>declarations.get(n)).join('\n')+`\nreturn {${renderNames.join(',')}};`)(...Object.values(s));};
  let rendered=renderApp();
  let binding; let artifactLoader=async()=>clip(); const stamps=new Map();
  // The editor's own handlers stand behind the registry. Shot creation is the
@@ -166,12 +178,16 @@ function fixture(options={}) {
  // pipeline): each records what it was asked and answers what `stand` says.
  const stand={exporting:false,exportResult:{fileName:'cozyclay-hero.mp4',frameCount:24},exports:[],renders:0,
   project:{name:'Heist',hasFile:true,fileAccess:true,gesture:false},granted:true,saveOutcome:{saved:true,name:'Heist',fileName:'Heist.cclayproject'},saves:[],
-  imports:[],fetched:[],importError:null,staleCommits:0,captures,clipboard};
+  imports:[],fetched:[],importError:null,staleCommits:0,captures,clipboard,
+  captureError:null,falSubmits:[],falSubmitError:null,ingested:[],ingestResult:{frames:120,fps:24,duration:5},
+  falFinished:{job:{id:'fal-job-1',status:'done',video:{url:'https://cdn.example.test/fal-act.mp4'},resolution:'480P',width:832,height:480,fps:24,duration:5,resultDuration:5,cost:0.1},dailyRemaining:2}};
  const actionHandlers=ref({
   state:()=>({shots:live.current.shots,objects:store.current.objects,characters:characterRef.current,frame:0,frameCount:48,selectedObjectId:null,activeCharacterId:'actor-a',promptBlockCount:0,generating:false,motionReady:true,
    exporting:stand.exporting,canExportVideo:live.current.shots.length>0,
    scenes:scope.scenesRef.current.map(({id,name})=>({id,name})),activeSceneId:scope.activeSceneIdRef.current,project:{...stand.project},
-   aiShot:{mode:committed.mode,imageModel:committed.imageModel}}),
+   aiShot:{mode:committed.mode,imageModel:committed.imageModel},
+   falMotion:{enabled:committed.falMotionEnabled,status:committed.falMotion.status,dailyRemaining:committed.falMotion.dailyRemaining}}),
+  generateFalMotion:(...args)=>rendered.generateFalMotion(...args),
   setAiShotMode:value=>{renderState.mode=value;},setAiImageModel:value=>{renderState.imageModel=value;},generate:()=>rendered.generate(),
   saveProject:async saveAs=>{stand.saves.push(saveAs);return stand.saveOutcome;},
   projectFileGranted:async()=>stand.granted,
@@ -202,7 +218,9 @@ function fixture(options={}) {
  const request=(name,args)=>({name,args,host:host(),commandId:crypto.randomUUID(),expectedRevision:binding.refresh().revision,expectedTargets:[...store.current.objects,...characterRef.current].map(c=>binding.guard(c.id))});
  const call=async(name,args)=>{const response=await dispatchLiveFrame(JSON.stringify({type:'cmd',id:crypto.randomUUID(),name,args}),binding.handlers);assert(response.ok, response.error);return response.value;};
  const motionRequest=()=>{const g=binding.guard(a.id);return {commandId:crypto.randomUUID(),binding:{host:host(),characterId:a.id,targetToken:g.token},jobId:crypto.randomUUID(),artifactId:'artifact',artifact:{artifactId:'artifact',url:'http://127.0.0.1:12345/ardy/motions/123456-abcdef'},schedule:protocol.compileStudioBeats({kind:'generate',durationSeconds:2,beats:[{text:'Stand'}]}),stagingPolicy:'preserve-target-anchor'};};
- return {stand,setArtifactLoader:loader=>{artifactLoader=loader;},setUrlLoader:loader=>{urlLoader=loader;},nextStored:()=>new Promise(r=>stored.push(r)),nextMotion:()=>new Promise(r=>motionSet.push(r)),motionStore,values,binding,actual,scope,ports,registry,request,call,motionRequest,revision,semantic,live,store,history,characterRef,buffer,rigs,host,poses,dispose:()=>binding.dispose()};
+ // A React commit of the state the test sets (and the App's own setters left).
+ const render=(patch={})=>{Object.assign(renderState,patch);Object.assign(committed,renderState);rendered=renderApp();};
+ return {render,rendered:()=>rendered,renderState,stand,setArtifactLoader:loader=>{artifactLoader=loader;},setUrlLoader:loader=>{urlLoader=loader;},nextStored:()=>new Promise(r=>stored.push(r)),nextMotion:()=>new Promise(r=>motionSet.push(r)),motionStore,values,binding,actual,scope,ports,registry,request,call,motionRequest,revision,semantic,live,store,history,characterRef,buffer,rigs,host,poses,dispose:()=>binding.dispose()};
 }
 const createArgs={ops:[{op:'create',source:{kind:'cube'},position:{world:{x:2,y:0,z:0}}}]};
 async function candidate(f) {const req=f.motionRequest();const prepared=await f.call('prepare_motion_install',req);assert(prepared.candidateId,JSON.stringify(prepared));const next={...req,...prepared,profile:'studio-motion-v1'};const verified=await f.call('verify_motion_candidate',next);assert(verified.verificationId,JSON.stringify(verified));return {req,next,verified};}
@@ -890,6 +908,70 @@ const implementations={
   await refused({model:'flux_2'},'INVALID_ARGUMENT',/image/);
   await refused({model:'midjourney'},'INVALID_ARGUMENT',/.+/);
   assert.strictEqual(shown(),last);
+ },
+ async 'run-action-motion-generate-from-video'(f){
+  const run=args=>f.call('run_action',f.request('run_action',{action:'motion.generateFromVideo',args}));
+  const listed=async()=>Object.fromEntries((await f.call('inspect_studio',{scope:'actions'})).actions.map(a=>[a.id,a]));
+  const refused=async(args,code,pattern)=>{const r=await run(args);assert.equal(r.ok,false,JSON.stringify(r));assert.equal(r.code,code,JSON.stringify(r));assert.equal(r.mutated,false);assert.match(r.message??'',pattern,JSON.stringify(r));assert(!/[\uac00-\ud7a3]/.test(r.message),`the model reads English: ${r.message}`);return r;};
+  const hangul=/[\uac00-\ud7a3]/;
+  // Locked for this account (as on the development host): unavailable with the
+  // reason, and nothing reaches the hosted model.
+  const locked=(await listed())['motion.generateFromVideo'];
+  assert.equal(locked?.available,false,JSON.stringify(locked));assert.match(locked.reason,/not enabled/);
+  await refused({instruction:'wave'},'TARGET_NOT_READY',/not enabled/);
+  // The agent panel's Generate motion chip dispatches the same action. Locked,
+  // it shows no toast, and the Fal card shows the lock generateFalMotion shows.
+  f.values.setToast=undefined;
+  assert.equal(f.rendered().generateFalMotionFromUi('wave'),null);
+  assert.equal(f.values.setToast,undefined,'the chip stays toast-silent');
+  const shownLock={error:f.renderState.falMotion.error,status:f.renderState.falMotion.status};
+  f.render({falMotion:{...f.renderState.falMotion,error:'',status:'idle'}});
+  await f.rendered().generateFalMotion('act','wave');
+  assert.deepEqual(shownLock,{error:f.renderState.falMotion.error,status:'error'},'the chip shows the same lock line as the Fal card path');
+  assert.deepEqual(f.stand.falSubmits,[]);
+  // Enabled: the act path captures pose A itself, sends it with the
+  // instruction, waits for the clip and ingests it.
+  f.render({falMotionEnabled:true,falMotion:{...f.renderState.falMotion,error:'',status:'idle',dailyRemaining:3}});
+  assert.equal((await listed())['motion.generateFromVideo']?.available,true);
+  const before=f.binding.refresh().revision;
+  const done=await run({instruction:'wave both hands'});
+  assert.deepEqual({ok:done.ok,kind:done.kind,status:done.status,affectedIds:done.affectedIds},{ok:true,kind:'job',status:'completed',affectedIds:[]},JSON.stringify(done));
+  assert.deepEqual(done.output,{videoUrl:'https://cdn.example.test/fal-act.mp4',resolution:'480P',durationSeconds:5,ingested:true,frames:120,fps:24,dailyRemaining:2},JSON.stringify(done.output));
+  assert(!JSON.stringify(done).includes('data:image'),'the pose still stays in the Studio');
+  assert.equal(f.stand.falSubmits.length,1);
+  const sent=f.stand.falSubmits[0];
+  assert.deepEqual({kind:sent.kind,still:sent.still,duration:sent.duration},{kind:'act',still:'data:image/png;base64,QQ==',duration:5});
+  assert.equal(sent.prompt,buildH3MotionPrompt('wave both hands'));
+  assert.deepEqual(f.stand.ingested,[{kind:'url',url:'https://cdn.example.test/fal-act.mp4',name:'Fal H3 Max Turbo · 480P'}]);
+  assert.equal(f.values.setResultOpen,true);assert.equal(f.values.setResult.videoUrl,'https://cdn.example.test/fal-act.mp4');
+  assert.equal(f.renderState.falMotion.status,'done');assert.equal(f.renderState.falMotion.a?.dataUrl,'data:image/png;base64,QQ==');
+  assert.match(f.values.setToast,/Fal video is ready/,'the success toast is the Fal card\'s');
+  assert.equal(f.binding.refresh().revision,before,'nothing is authored');assert.equal(f.history.current.past.length,0);
+  // Busy, or out of today's quota: unavailable with the reason.
+  f.render({falMotion:{...f.renderState.falMotion,status:'queued'}});
+  assert.match((await listed())['motion.generateFromVideo'].reason,/already running/);
+  f.render({falMotion:{...f.renderState.falMotion,status:'done',dailyRemaining:0}});
+  assert.match((await listed())['motion.generateFromVideo'].reason,/daily/);
+  // Failures reach the model in English; the Fal card keeps the line it showed.
+  f.render({falMotion:{...f.renderState.falMotion,a:null,status:'idle',dailyRemaining:2}});
+  f.stand.captureError='캡처할 수 없어요';
+  await refused({instruction:'jump'},'TARGET_NOT_READY',/pose frame/);
+  assert.deepEqual({error:f.renderState.falMotion.error,status:f.renderState.falMotion.status},{error:'캡처할 수 없어요',status:'error'});
+  f.stand.captureError=null;f.render();f.stand.falSubmitError='Daily motion limit reached.';
+  await refused({instruction:'jump'},'TARGET_NOT_READY',/Daily motion limit reached/);
+  assert.equal(f.renderState.falMotion.status,'error');
+  f.stand.falSubmitError=null;f.render({falMotion:{...f.renderState.falMotion,status:'idle'}});
+  f.stand.falFinished={job:{id:'fal-job-1',status:'failed',error:'content policy'},dailyRemaining:2};
+  await refused({instruction:'jump'},'TARGET_NOT_READY',/content policy/);
+  assert(!f.stand.falSubmits.slice(1).some(request=>hangul.test(request.prompt)));
+  await refused({instruction:''},'INVALID_ARGUMENT',/.+/);
+  // The chip, enabled, runs the action to its end like the agent.
+  f.stand.falFinished={job:{id:'fal-job-2',status:'done',video:{url:'https://cdn.example.test/fal-spin.mp4'},resolution:'480P',duration:5},dailyRemaining:1};
+  f.render({falMotion:{...f.renderState.falMotion,status:'idle'}});
+  const ui=f.rendered().generateFalMotionFromUi('spin around');
+  assert.equal(typeof ui?.then,'function');
+  assert.equal((await ui).output.videoUrl,'https://cdn.example.test/fal-spin.mp4');
+  assert.equal(f.stand.falSubmits.at(-1).prompt,buildH3MotionPrompt('spin around'));
  },
  async 'stale-receipt-undo'(f){const first=await f.call('arrange_objects',f.request('arrange_objects',createArgs));await f.call('arrange_objects',f.request('arrange_objects',createArgs));const before=f.store.current.objects;const r=await f.call('undo_edit',f.request('undo_edit',{receiptId:first.receiptId}));assert.equal(r.code,'UNDO_CONFLICT');assert.strictEqual(f.store.current.objects,before);},
  async 'unverified-default-refusal'(f){const {req,next,verified}=await candidate(f);const result=await f.call('commit_motion_candidate',{...next,verificationId:verified.verificationId,expectedTargetToken:req.binding.targetToken,expectedPhysicsRevision:verified.physicsRevision});assert.equal(result.code,'VERIFICATION_FAILED');assert.equal(f.history.current.past.length,0);assert.equal(f.buffer.current.motion,null);},
