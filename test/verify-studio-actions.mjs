@@ -20,7 +20,8 @@ const railActions = ["shot.setCameraRail", "shot.clearCameraRail"];
 const viewActions = ["view.setPartColours", "view.setGuideMode", "view.setInset"];
 const exportActions = ["export.shotVideo"];
 const sceneActions = ["scene.create", "scene.duplicate", "scene.rename", "scene.delete", "scene.switch"];
-assert.deepEqual([...STUDIO_ACTION_IDS].sort(), [...firstBatch, ...waypointActions, ...ikKeyActions, ...attachActions, ...railActions, ...viewActions, ...exportActions, ...sceneActions].sort());
+const projectActions = ["project.save"];
+assert.deepEqual([...STUDIO_ACTION_IDS].sort(), [...firstBatch, ...waypointActions, ...ikKeyActions, ...attachActions, ...railActions, ...viewActions, ...exportActions, ...sceneActions, ...projectActions].sort());
 assert.deepEqual([...STUDIO_ACTION_KINDS], ["mutation", "transient", "job", "document"]);
 assert.ok(Object.isFrozen(STUDIO_ACTIONS));
 for (const action of STUDIO_ACTIONS) {
@@ -128,6 +129,10 @@ assert.deepEqual(studioActionDeclaration("scene.create").input.required, []);
 for (const id of ["scene.duplicate", "scene.delete", "scene.switch"]) assert.deepEqual(studioActionDeclaration(id).input.required, ["sceneId"], id);
 assert.deepEqual(validateStudioSchema(studioActionDeclaration("scene.rename").input, { sceneId: "scene-a", name: "Rooftop" }), { sceneId: "scene-a", name: "Rooftop" });
 assert.throws(() => validateStudioSchema(studioActionDeclaration("scene.rename").input, { sceneId: "scene-a", name: "  " }), code("INVALID_ARGUMENT"));
+// Saving writes the project's current file: document work with no arguments.
+assert.equal(studioActionDeclaration("project.save").kind, "document");
+assert.deepEqual(studioActionDeclaration("project.save").input.required, []);
+assert.deepEqual(Object.keys(studioActionDeclaration("project.save").input.properties), []);
 // Frame ranges are half-open, like every other Studio range.
 assert.deepEqual(Object.keys(studioActionDeclaration("shot.setRange").input.properties).sort(), ["range", "shotId"]);
 assert.throws(() => validateStudioSchema(studioActionDeclaration("shot.setRange").input, { shotId: "shot-1", range: { startFrame: 10, endFrameExclusive: 10 } }), code("INVALID_ARGUMENT"));

@@ -38,7 +38,7 @@ import { applyMotionCalibration, normalizeMotionCalibration } from '../src/ardy/
 import { decodeMotionResource, encodeMotionResource, resolveMotionSource, sha256Hex } from '../src/motion-resources.js';
 import { motionArraysToNpzMembers, writeNpz } from '../tools/ardy/npz.mjs';
 
-const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes'];
+const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes', 'run-action-project-save'];
 const argv = process.argv.slice(2);
 assert(!argv.length || (argv.length === 2 && argv[0] === '--case' && cases.includes(argv[1])), 'Unknown test arguments');
 const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
@@ -141,11 +141,14 @@ function fixture(options={}) {
  const unwired = name => () => { throw new Error(`${name} is not wired in this fixture`); };
  // Stand-ins for the editor's renderer-bound project work (the export
  // pipeline): each records what it was asked and answers what `stand` says.
- const stand={exporting:false,exportResult:{fileName:'cozyclay-hero.mp4',frameCount:24},exports:[],renders:0};
+ const stand={exporting:false,exportResult:{fileName:'cozyclay-hero.mp4',frameCount:24},exports:[],renders:0,
+  project:{name:'Heist',hasFile:true,fileAccess:true,gesture:false},granted:true,saveOutcome:{saved:true,name:'Heist',fileName:'Heist.cclayproject'},saves:[]};
  const actionHandlers=ref({
   state:()=>({shots:live.current.shots,objects:store.current.objects,characters:characterRef.current,frame:0,frameCount:48,selectedObjectId:null,activeCharacterId:'actor-a',promptBlockCount:0,generating:false,motionReady:true,
    exporting:stand.exporting,canExportVideo:live.current.shots.length>0,
-   scenes:scope.scenesRef.current.map(({id,name})=>({id,name})),activeSceneId:scope.activeSceneIdRef.current}),
+   scenes:scope.scenesRef.current.map(({id,name})=>({id,name})),activeSceneId:scope.activeSceneIdRef.current,project:{...stand.project}}),
+  saveProject:async saveAs=>{stand.saves.push(saveAs);return stand.saveOutcome;},
+  projectFileGranted:async()=>stand.granted,
   exportShotVideo:async options=>{stand.exports.push(options);return stand.exportResult;},
   // The editor answers a scene change once React has rendered the new room.
   afterRender:()=>{stand.renders++;return Promise.resolve();},
@@ -754,6 +757,36 @@ const implementations={
   await f.actual.duplicateSceneDocumentFromUi(second.id);assert.deepEqual(names(),['Rooftop','Rooftop 2','Alley']);
   await f.actual.deleteSceneDocumentFromUi(f.host().sceneId);assert.deepEqual(names(),['Rooftop','Alley']);
   f.values.setToast=undefined;assert.equal(await f.actual.selectSceneDocument('scene-ghost'),null);assert.equal(f.values.setToast,undefined);
+ },
+ async 'run-action-project-save'(f){
+  const run=()=>f.call('run_action',f.request('run_action',{action:'project.save',args:{}}));
+  // A refusal carries its whole reason, in English, within the receipt's message.
+  const refused=async(code,pattern)=>{const r=await run();assert.equal(r.ok,false,JSON.stringify(r));assert.equal(r.code,code,JSON.stringify(r));assert.equal(r.mutated,false);
+   assert.match(r.message??'',pattern,JSON.stringify(r));assert.ok(!r.message.endsWith('\u2026'),`the reason fits the receipt: ${r.message}`);};
+  // A named project with its file this session: saved there, like Save Project.
+  const saved=await run();
+  assert.deepEqual({ok:saved.ok,kind:saved.kind,status:saved.status,output:saved.output},{ok:true,kind:'document',status:'completed',output:{fileName:'Heist.cclayproject'}},JSON.stringify(saved));
+  assert.match(saved.summary,/Heist\.cclayproject/);assert.deepEqual(f.stand.saves,[false],'the menu save, never Save As');
+  // Choosing a file or re-granting one needs the user's click: refused before
+  // any picker is attempted.
+  f.stand.project.hasFile=false;await refused('TARGET_NOT_READY',/click/);
+  f.stand.project.hasFile=true;f.stand.granted=false;await refused('TARGET_NOT_READY',/access/);
+  assert.equal(f.stand.saves.length,1,'no save was attempted without a gesture');
+  // An unnamed project: the editor opens its Save dialog for the user.
+  f.stand.project={...f.stand.project,name:null};f.stand.saveOutcome={saved:false,naming:true};await refused('TARGET_NOT_READY',/name/);
+  assert.equal(f.stand.saves.length,2,'the first save still opens the naming dialog');
+  f.stand.project.name='Heist';f.stand.granted=true;
+  f.stand.saveOutcome={saved:false,failure:'missing-resources'};await refused('TARGET_NOT_READY',/missing/);
+  f.stand.saveOutcome={saved:false,cancelled:true};await refused('TARGET_NOT_READY',/closed/);
+  // A browser without file access downloads the project instead.
+  f.stand.project={name:'Heist',hasFile:false,fileAccess:false,gesture:false};f.stand.saveOutcome={saved:true,name:'Heist',fileName:'Heist.cclayproject',downloaded:true};
+  const downloaded=await run();assert.equal(downloaded.status,'completed',JSON.stringify(downloaded));assert.match(downloaded.summary,/download/);
+  // The UI door carries the user's click: it may choose the file itself.
+  f.stand.project={name:'Heist',hasFile:false,fileAccess:true,gesture:true};f.stand.saveOutcome={saved:true,name:'Heist',fileName:'Heist 2.cclayproject'};
+  assert.deepEqual((await f.actual.runStudioAction('project.save')).output,{fileName:'Heist 2.cclayproject'});
+  f.stand.saveOutcome={saved:false,failure:'error'};f.values.setToast=undefined;
+  assert.equal(await f.actual.runStudioAction('project.save'),null);assert.equal(f.values.setToast,undefined,'the save path already reported its failure');
+  assert.equal(f.history.current.past.length,0,'saving authors nothing');
  },
  async 'stale-receipt-undo'(f){const first=await f.call('arrange_objects',f.request('arrange_objects',createArgs));await f.call('arrange_objects',f.request('arrange_objects',createArgs));const before=f.store.current.objects;const r=await f.call('undo_edit',f.request('undo_edit',{receiptId:first.receiptId}));assert.equal(r.code,'UNDO_CONFLICT');assert.strictEqual(f.store.current.objects,before);},
  async 'unverified-default-refusal'(f){const {req,next,verified}=await candidate(f);const result=await f.call('commit_motion_candidate',{...next,verificationId:verified.verificationId,expectedTargetToken:req.binding.targetToken,expectedPhysicsRevision:verified.physicsRevision});assert.equal(result.code,'VERIFICATION_FAILED');assert.equal(f.history.current.past.length,0);assert.equal(f.buffer.current.motion,null);},
