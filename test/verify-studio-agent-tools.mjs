@@ -21,7 +21,7 @@ const sessionDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-sessions-"));
 process.env.COZYCLAY_AGENT_SESSIONS_DIR = sessionDir;
 process.on("exit", () => rmSync(sessionDir, { recursive: true, force: true }));
 
-const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision", "run-action-admission-and-generation-limit", "stale-scene-readmits-any-family", "run-action-job-timeout"]);
+const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision", "run-action-admission-and-generation-limit", "stale-scene-readmits-any-family", "run-action-job-timeout", "non-generation-job-skips-generation-gate"]);
 const index = process.argv.indexOf("--case");
 const selected = index >= 0 ? process.argv[index + 1] : null;
 if (selected && !CASES.has(selected)) { console.error(`unknown --case ${selected}`); process.exit(2); }
@@ -248,6 +248,35 @@ if (shouldRun("run-action-job-timeout")) {
   await run.handler({ action: "shot.create" });
   assert.deepEqual(calls, [{ action: "export.shotVideo", options: [{ timeoutMs: 300_000 }] }, { action: "shot.create", options: [] }]);
   console.log("PASS a long-running run_action carries its declared hub timeout");
+}
+
+if (shouldRun("non-generation-job-skips-generation-gate")) {
+  const { createStudioTools } = await import("../bin/agent/studio-tools.mjs");
+  const { STUDIO_ACTIONS } = await import("../src/studio-actions.js");
+  // Only a declared motion generation takes the message's one generation: an
+  // export is a job too, but neither consumes nor is blocked by that gate.
+  const sent = []; let commandNumber = 0;
+  const admission = { commandId: () => `cmd-${++commandNumber}`, host: { workspaceId: "tab-7", documentEpoch: "doc-3", sceneId: "scene-main", sceneEpoch: "scene-open-4" }, revision: 4, refresh: async () => {} };
+  const liveHub = { command: async (name, payload) => {
+    sent.push(payload.args.action);
+    return payload.args.action === "motion.generateAllBlocks"
+      ? { ok: true, commandId: payload.commandId, action: "motion.generateAllBlocks", kind: "job", status: "started", affectedIds: ["char-alex"], summary: "Started." }
+      : { ok: true, commandId: payload.commandId, action: payload.args.action, kind: "job", status: "completed", affectedIds: [], summary: "Exported.", output: { fileName: "cozyclay-shot.mp4", frameCount: 24 } };
+  } };
+  const tools = generation => createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission, generation } }).find(tool => tool.name === "run_action");
+  const after = { used: false }, run = tools(after);
+  assert.equal((await run.handler({ action: "motion.generateAllBlocks" })).status, "started");
+  const exported = await run.handler({ action: "export.shotVideo" }).catch(error => error);
+  assert.equal(exported.status, "completed", `an export still runs after the generation: ${exported.code ?? ""} ${exported.message ?? ""}`);
+  await assert.rejects(run.handler({ action: "motion.generateAllBlocks" }), { code: "GENERATION_LIMIT" });
+  const before = { used: false }, first = tools(before);
+  assert.equal((await first.handler({ action: "export.shotVideo" })).status, "completed");
+  assert.equal(before.used, false, "an export does not take the message's generation");
+  assert.equal((await first.handler({ action: "motion.generateAllBlocks" })).status, "started");
+  assert.deepEqual(sent, ["motion.generateAllBlocks", "export.shotVideo", "export.shotVideo", "motion.generateAllBlocks"]);
+  // The gate reads the declaration's flag, carried by exactly one action.
+  assert.deepEqual(STUDIO_ACTIONS.filter(action => action.generation === "motion").map(action => action.id), ["motion.generateAllBlocks"]);
+  console.log("PASS a job that is not a motion generation neither takes nor is blocked by the generation gate");
 }
 
 if (shouldRun("surface-context-and-images")) {
