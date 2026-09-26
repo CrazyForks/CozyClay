@@ -131,6 +131,7 @@ function fixture(options={}) {
  const names=['restoreMotionRefs','createStudioAppBinding','readStudioCamera','readStudioState','publishStudioCamera','publishStudioStage','snapshotStudioDomain','publishStudioCharacters','syncStudioLayerBuffer','recordStudioHistory','publishStudioMotion','stepStudioHistory','undoScene','redoScene','commitStudioDraft','commitStudioMotion','studioBounds','operateStudio','snapshotExportRig','restoreExportRig','poseMemberAtFrame','beginPlaybackOn','leaveIkMode','sceneObjectWorldMatrix','createStudioAppActions','recordStudioAction','addTimelineShot','recordShotUndo','runStudioAction',
   'choosePartColours','setInsetCollapsed','expandInset','setShotCameraRail','clearShotCameraRail','changeActiveCamera','framingSessionOpen','attachSceneObject','setCharacterIkKey','removeCharacterIkKey','clearCharacterIkKeys','ikStateFor','editCharacterIkKeys','snapshotIkKeys',
   'recordCharacterUndo','validateWaypointAt','castMemberOf','readCharacterWaypoints','writeCharacterWaypoints','addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints',
+  'switchSceneDocument','addSceneDocument','duplicateSceneDocument','renameSceneDocument','deleteSceneDocument',
   'selectSceneDocument','createSceneDocumentFromUi','duplicateSceneDocumentFromUi','renameSceneDocumentFromUi','deleteSceneDocumentFromUi'];
  const code=names.map(n=>{assert(declarations.has(n),`actual App function ${n}`);return declarations.get(n);}).join('\n');
  const actual=new Function(...Object.keys(scope),code+`\nreturn {${names.join(',')}};`)(...Object.values(scope));
@@ -148,7 +149,7 @@ function fixture(options={}) {
   exportShotVideo:async options=>{stand.exports.push(options);return stand.exportResult;},
   // The editor answers a scene change once React has rendered the new room.
   afterRender:()=>{stand.renders++;return Promise.resolve();},
-  ...Object.fromEntries(['selectSceneDocument','createSceneDocumentFromUi','duplicateSceneDocumentFromUi','renameSceneDocumentFromUi','deleteSceneDocumentFromUi'].map(name=>[name,(...args)=>actual[name](...args)])),
+  ...Object.fromEntries(['switchSceneDocument','addSceneDocument','duplicateSceneDocument','renameSceneDocument','deleteSceneDocument'].map(name=>[name,(...args)=>actual[name](...args)])),
   addTimelineShot:()=>actual.addTimelineShot(),
   ...Object.fromEntries(['addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints','setCharacterIkKey','removeCharacterIkKey','clearCharacterIkKeys','attachSceneObject','setShotCameraRail','clearShotCameraRail','choosePartColours','setInsetCollapsed'].map(name=>[name,actual[name]])),
   setGuideMode:mode=>scope.setGuideMode(mode),
@@ -744,11 +745,15 @@ const implementations={
   await refused('scene.switch',{sceneId:second.id},'TARGET_NOT_READY',/one scene/);
   await refused('scene.rename',{sceneId:'scene-ghost',name:'X'},'STALE_TARGET',/not in this project/);
   assert.deepEqual(names(),['Rooftop']);
-  // The UI door: the scene pill and the Hierarchy's scene menu dispatch the
-  // same actions, and a refusal there stays silent as it always was.
-  await f.actual.runStudioAction('scene.create');assert.deepEqual(names(),['Rooftop','SCENE 01']);
-  await f.actual.runStudioAction('scene.switch',{sceneId:second.id});assert.equal(f.host().sceneId,second.id);
-  f.values.setToast=undefined;assert.equal(await f.actual.runStudioAction('scene.switch',{sceneId:'scene-ghost'}),null);assert.equal(f.values.setToast,undefined);
+  // The UI doors: the scene pill's and the Hierarchy scene menu's callbacks
+  // dispatch the same actions, and a refusal there stays silent as it always was.
+  await f.actual.createSceneDocumentFromUi();assert.deepEqual(names(),['Rooftop','SCENE 01']);
+  const added=f.scope.scenesRef.current[1].id;
+  await f.actual.renameSceneDocumentFromUi(added,'Alley');assert.deepEqual(names(),['Rooftop','Alley']);
+  await f.actual.selectSceneDocument(second.id);assert.equal(f.host().sceneId,second.id);
+  await f.actual.duplicateSceneDocumentFromUi(second.id);assert.deepEqual(names(),['Rooftop','Rooftop 2','Alley']);
+  await f.actual.deleteSceneDocumentFromUi(f.host().sceneId);assert.deepEqual(names(),['Rooftop','Alley']);
+  f.values.setToast=undefined;assert.equal(await f.actual.selectSceneDocument('scene-ghost'),null);assert.equal(f.values.setToast,undefined);
  },
  async 'stale-receipt-undo'(f){const first=await f.call('arrange_objects',f.request('arrange_objects',createArgs));await f.call('arrange_objects',f.request('arrange_objects',createArgs));const before=f.store.current.objects;const r=await f.call('undo_edit',f.request('undo_edit',{receiptId:first.receiptId}));assert.equal(r.code,'UNDO_CONFLICT');assert.strictEqual(f.store.current.objects,before);},
  async 'unverified-default-refusal'(f){const {req,next,verified}=await candidate(f);const result=await f.call('commit_motion_candidate',{...next,verificationId:verified.verificationId,expectedTargetToken:req.binding.targetToken,expectedPhysicsRevision:verified.physicsRevision});assert.equal(result.code,'VERIFICATION_FAILED');assert.equal(f.history.current.past.length,0);assert.equal(f.buffer.current.motion,null);},
