@@ -18,7 +18,8 @@ const ikKeyActions = ["character.setIkKey", "character.removeIkKey", "character.
 const attachActions = ["object.attach", "object.detach"];
 const railActions = ["shot.setCameraRail", "shot.clearCameraRail"];
 const viewActions = ["view.setPartColours", "view.setGuideMode", "view.setInset"];
-assert.deepEqual([...STUDIO_ACTION_IDS].sort(), [...firstBatch, ...waypointActions, ...ikKeyActions, ...attachActions, ...railActions, ...viewActions].sort());
+const exportActions = ["export.shotVideo"];
+assert.deepEqual([...STUDIO_ACTION_IDS].sort(), [...firstBatch, ...waypointActions, ...ikKeyActions, ...attachActions, ...railActions, ...viewActions, ...exportActions].sort());
 assert.deepEqual([...STUDIO_ACTION_KINDS], ["mutation", "transient", "job"]);
 assert.ok(Object.isFrozen(STUDIO_ACTIONS));
 for (const action of STUDIO_ACTIONS) {
@@ -29,6 +30,9 @@ for (const action of STUDIO_ACTIONS) {
 	assert.equal(action.input.type, "object", action.id);
 	assert.equal(action.input.additionalProperties, false, `${action.id} input is closed`);
 	if (action.kind === "mutation") assert.ok(["shot", "objects", "cast", "motion"].includes(action.undoDomain), `${action.id} names its undo domain`);
+	// A long-running action declares the hub timeout it needs: longer than the
+	// 30 s Studio default, never past the hub's 300 s ceiling.
+	if (action.timeoutMs !== undefined) assert.ok(Number.isSafeInteger(action.timeoutMs) && action.timeoutMs > 30_000 && action.timeoutMs <= 300_000, `${action.id} timeoutMs`);
 	assert.equal(studioActionDeclaration(action.id), action);
 	// The declared input is usable by the protocol's own validator.
 	if (action.input.required.length === 0) validateStudioSchema(action.input, {});
@@ -106,6 +110,13 @@ assert.deepEqual(studioActionDeclaration("view.setPartColours").input.properties
 assert.deepEqual([...studioActionDeclaration("view.setGuideMode").input.properties.mode.enum], [...GUIDE_MODES]);
 assert.deepEqual(validateStudioSchema(studioActionDeclaration("view.setInset").input, { collapsed: true }), { collapsed: true });
 assert.throws(() => validateStudioSchema(studioActionDeclaration("view.setGuideMode").input, { mode: "fibonacci" }), code("INVALID_ARGUMENT"));
+// Exporting a shot video is a long-running job that authors nothing.
+const exportVideo = studioActionDeclaration("export.shotVideo");
+assert.equal(exportVideo.kind, "job");
+assert.equal(exportVideo.undoDomain, undefined);
+assert.equal(exportVideo.timeoutMs, 300_000);
+assert.deepEqual(exportVideo.input.required, []);
+assert.deepEqual(validateStudioSchema(exportVideo.input, { shotId: "shot-1" }), { shotId: "shot-1" });
 // Frame ranges are half-open, like every other Studio range.
 assert.deepEqual(Object.keys(studioActionDeclaration("shot.setRange").input.properties).sort(), ["range", "shotId"]);
 assert.throws(() => validateStudioSchema(studioActionDeclaration("shot.setRange").input, { shotId: "shot-1", range: { startFrame: 10, endFrameExclusive: 10 } }), code("INVALID_ARGUMENT"));
@@ -172,6 +183,17 @@ assert.throws(() => sloppy.run("shot.create", {}), /affectedIds/);
 const vague = createStudioActionRegistry();
 vague.register({ ...studioActionDeclaration("shot.create"), available: () => false, run: () => ({ affectedIds: [], summary: "" }) });
 assert.throws(() => vague.list({}), /reason/);
+
+/* A job that runs to its end answers asynchronously, with its output. */
+const jobs = createStudioActionRegistry({ readState: () => ({}) });
+jobs.register({ ...studioActionDeclaration("export.shotVideo"), available: () => true,
+	run: async ({ shotId }) => ({ affectedIds: [shotId], summary: "Exported.", output: { fileName: "cozyclay-shot.mp4", frameCount: 24 } }) });
+const pending = jobs.run("export.shotVideo", { shotId: "shot-1" });
+assert.equal(typeof pending?.then, "function", "an async action answers with a promise");
+assert.deepEqual(await pending, { affectedIds: ["shot-1"], summary: "Exported.", output: { fileName: "cozyclay-shot.mp4", frameCount: 24 } });
+const brokenJob = createStudioActionRegistry();
+brokenJob.register({ ...studioActionDeclaration("export.shotVideo"), available: () => true, run: async () => ({ summary: "no ids" }) });
+await assert.rejects(brokenJob.run("export.shotVideo", {}), /affectedIds/, "a settled result is checked like a synchronous one");
 
 /* The protocol carries the new family and discovery scope. */
 assert.deepEqual(validateStudioCommand({ name: "run_action", args: { action: "shot.split", args: { shotId: "shot-1" } } }).args, { action: "shot.split", args: { shotId: "shot-1" } });

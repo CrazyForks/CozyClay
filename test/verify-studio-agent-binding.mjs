@@ -38,7 +38,7 @@ import { applyMotionCalibration, normalizeMotionCalibration } from '../src/ardy/
 import { decodeMotionResource, encodeMotionResource, resolveMotionSource, sha256Hex } from '../src/motion-resources.js';
 import { motionArraysToNpzMembers, writeNpz } from '../tools/ardy/npz.mjs';
 
-const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'late-apply-inspect-patch', 'arrange-with-attached-prop'];
+const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video'];
 const argv = process.argv.slice(2);
 assert(!argv.length || (argv.length === 2 && argv[0] === '--case' && cases.includes(argv[1])), 'Unknown test arguments');
 const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
@@ -132,8 +132,13 @@ function fixture(options={}) {
  // The editor's own handlers stand behind the registry. Shot creation is the
  // real App handler; object duplication is a stand-in with the same store write.
  const unwired = name => () => { throw new Error(`${name} is not wired in this fixture`); };
+ // Stand-ins for the editor's renderer-bound project work (the export
+ // pipeline): each records what it was asked and answers what `stand` says.
+ const stand={exporting:false,exportResult:{fileName:'cozyclay-hero.mp4',frameCount:24},exports:[]};
  const actionHandlers=ref({
-  state:()=>({shots:live.current.shots,objects:store.current.objects,characters:characterRef.current,frame:0,frameCount:48,selectedObjectId:null,activeCharacterId:'actor-a',promptBlockCount:0,generating:false,motionReady:true}),
+  state:()=>({shots:live.current.shots,objects:store.current.objects,characters:characterRef.current,frame:0,frameCount:48,selectedObjectId:null,activeCharacterId:'actor-a',promptBlockCount:0,generating:false,motionReady:true,
+   exporting:stand.exporting,canExportVideo:live.current.shots.length>0}),
+  exportShotVideo:async options=>{stand.exports.push(options);return stand.exportResult;},
   addTimelineShot:()=>actual.addTimelineShot(),
   ...Object.fromEntries(['addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints','setCharacterIkKey','removeCharacterIkKey','clearCharacterIkKeys','attachSceneObject','setShotCameraRail','clearShotCameraRail','choosePartColours','setInsetCollapsed'].map(name=>[name,actual[name]])),
   setGuideMode:mode=>scope.setGuideMode(mode),
@@ -152,7 +157,7 @@ function fixture(options={}) {
  const request=(name,args)=>({name,args,host:host(),commandId:crypto.randomUUID(),expectedRevision:binding.refresh().revision,expectedTargets:[...store.current.objects,...characterRef.current].map(c=>binding.guard(c.id))});
  const call=async(name,args)=>{const response=await dispatchLiveFrame(JSON.stringify({type:'cmd',id:crypto.randomUUID(),name,args}),binding.handlers);assert(response.ok, response.error);return response.value;};
  const motionRequest=()=>{const g=binding.guard(a.id);return {commandId:crypto.randomUUID(),binding:{host:host(),characterId:a.id,targetToken:g.token},jobId:crypto.randomUUID(),artifactId:'artifact',artifact:{artifactId:'artifact',url:'http://127.0.0.1:12345/ardy/motions/123456-abcdef'},schedule:protocol.compileStudioBeats({kind:'generate',durationSeconds:2,beats:[{text:'Stand'}]}),stagingPolicy:'preserve-target-anchor'};};
- return {setArtifactLoader:loader=>{artifactLoader=loader;},setUrlLoader:loader=>{urlLoader=loader;},nextStored:()=>new Promise(r=>stored.push(r)),nextMotion:()=>new Promise(r=>motionSet.push(r)),motionStore,values,binding,actual,scope,ports,registry,request,call,motionRequest,revision,semantic,live,store,history,characterRef,buffer,rigs,host,poses,dispose:()=>binding.dispose()};
+ return {stand,setArtifactLoader:loader=>{artifactLoader=loader;},setUrlLoader:loader=>{urlLoader=loader;},nextStored:()=>new Promise(r=>stored.push(r)),nextMotion:()=>new Promise(r=>motionSet.push(r)),motionStore,values,binding,actual,scope,ports,registry,request,call,motionRequest,revision,semantic,live,store,history,characterRef,buffer,rigs,host,poses,dispose:()=>binding.dispose()};
 }
 const createArgs={ops:[{op:'create',source:{kind:'cube'},position:{world:{x:2,y:0,z:0}}}]};
 async function candidate(f) {const req=f.motionRequest();const prepared=await f.call('prepare_motion_install',req);assert(prepared.candidateId,JSON.stringify(prepared));const next={...req,...prepared,profile:'studio-motion-v1'};const verified=await f.call('verify_motion_candidate',next);assert(verified.verificationId,JSON.stringify(verified));return {req,next,verified};}
@@ -664,6 +669,34 @@ const implementations={
   assert.equal((await run('view.setInset',{collapsed:false})).status,'transient');assert.equal(f.values.setWorkspaceLayout.insetCollapsed,false);
   assert.equal(f.history.current.past.length,0,'no undo entry');
   const refused=await run('view.setGuideMode',{mode:'fibonacci'});assert.equal(refused.code,'INVALID_ARGUMENT',JSON.stringify(refused));
+ },
+ async 'run-action-export-shot-video'(f){
+  const run=(action,args)=>f.call('run_action',f.request('run_action',{action,args}));
+  const listed=async()=>Object.fromEntries((await f.call('inspect_studio',{scope:'actions'})).actions.map(a=>[a.id,a]));
+  assert.equal((await listed())['export.shotVideo']?.available,false,'nothing to record yet');
+  const shot=createShot('Hero',0,23,[]);f.scope.setShots([shot]);f.live.current.shots=[shot];
+  assert.equal((await listed())['export.shotVideo']?.available,true);
+  const before=f.binding.refresh().revision;
+  // The job runs to its end and answers with the file it produced.
+  const done=await run('export.shotVideo',{shotId:shot.id});
+  assert.deepEqual({ok:done.ok,kind:done.kind,status:done.status,affectedIds:done.affectedIds,output:done.output},
+   {ok:true,kind:'job',status:'completed',affectedIds:[shot.id],output:{fileName:'cozyclay-hero.mp4',frameCount:24}},JSON.stringify(done));
+  assert.match(done.summary,/cozyclay-hero\.mp4/);
+  assert.deepEqual(f.stand.exports,[{shotId:shot.id}],'the menu export ran for that shot');
+  assert.equal(f.binding.refresh().revision,before,'an export authors nothing');assert.equal(f.history.current.past.length,0);
+  // Refusals reach the model in English and change nothing.
+  const refused=async(args,code,pattern)=>{const r=await run('export.shotVideo',args);assert.equal(r.ok,false,JSON.stringify(r));assert.equal(r.code,code,JSON.stringify(r));assert.equal(r.mutated,false);assert.match(r.message??'',pattern,JSON.stringify(r));};
+  await refused({shotId:'shot-ghost'},'STALE_TARGET',/not in this scene/);
+  f.stand.exportResult=null;await refused({},'TARGET_NOT_READY',/did not finish/);
+  f.stand.exporting=true;await refused({},'TARGET_NOT_READY',/already running/);
+  assert.equal(f.stand.exports.length,2,'a busy export never starts a second one');
+  // The UI door (the Export menu's Video item) awaits the same action; its
+  // refusals stay silent, as the menu always was.
+  f.stand.exporting=false;f.stand.exportResult={fileName:'cozyclay-shot.mp4',frameCount:3};
+  const ui=f.actual.runStudioAction('export.shotVideo',{});assert.equal(typeof ui?.then,'function');
+  assert.deepEqual((await ui).output,{fileName:'cozyclay-shot.mp4',frameCount:3});
+  f.stand.exportResult=null;f.values.setToast=undefined;
+  assert.equal(await f.actual.runStudioAction('export.shotVideo',{}),null);assert.equal(f.values.setToast,undefined,'a failed export was already reported by the export panel');
  },
  async 'stale-receipt-undo'(f){const first=await f.call('arrange_objects',f.request('arrange_objects',createArgs));await f.call('arrange_objects',f.request('arrange_objects',createArgs));const before=f.store.current.objects;const r=await f.call('undo_edit',f.request('undo_edit',{receiptId:first.receiptId}));assert.equal(r.code,'UNDO_CONFLICT');assert.strictEqual(f.store.current.objects,before);},
  async 'unverified-default-refusal'(f){const {req,next,verified}=await candidate(f);const result=await f.call('commit_motion_candidate',{...next,verificationId:verified.verificationId,expectedTargetToken:req.binding.targetToken,expectedPhysicsRevision:verified.physicsRevision});assert.equal(result.code,'VERIFICATION_FAILED');assert.equal(f.history.current.past.length,0);assert.equal(f.buffer.current.motion,null);},

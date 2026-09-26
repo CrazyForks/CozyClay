@@ -21,7 +21,7 @@ const sessionDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-sessions-"));
 process.env.COZYCLAY_AGENT_SESSIONS_DIR = sessionDir;
 process.on("exit", () => rmSync(sessionDir, { recursive: true, force: true }));
 
-const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision", "run-action-admission-and-generation-limit", "stale-scene-readmits-any-family"]);
+const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision", "run-action-admission-and-generation-limit", "stale-scene-readmits-any-family", "run-action-job-timeout"]);
 const index = process.argv.indexOf("--case");
 const selected = index >= 0 ? process.argv[index + 1] : null;
 if (selected && !CASES.has(selected)) { console.error(`unknown --case ${selected}`); process.exit(2); }
@@ -225,6 +225,29 @@ if (shouldRun("run-action-admission-and-generation-limit")) {
   const nextTurn = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission } });
   assert.equal((await nextTurn.find(tool => tool.name === "run_action").handler({ action: "motion.generateAllBlocks" })).status, "started");
   console.log("PASS run_action is admitted as a mutation and a job action counts as the turn's generation");
+}
+
+if (shouldRun("run-action-job-timeout")) {
+  const { createStudioTools } = await import("../bin/agent/studio-tools.mjs");
+  const { MAX_COMMAND_TIMEOUT_MS } = await import("../mcp/live-hub.mjs");
+  const { STUDIO_ACTIONS } = await import("../src/studio-actions.js");
+  // A long-running action carries its declared timeout through the hub, which
+  // bounds it by MAX_COMMAND_TIMEOUT_MS; every other command keeps the default.
+  const declared = STUDIO_ACTIONS.filter(action => action.timeoutMs !== undefined);
+  assert.ok(declared.some(action => action.id === "export.shotVideo"), "the shot video export declares its timeout");
+  for (const action of declared) assert.ok(action.timeoutMs <= MAX_COMMAND_TIMEOUT_MS, `${action.id} fits the hub ceiling`);
+  const calls = []; let commandNumber = 0;
+  const admission = { commandId: () => `cmd-${++commandNumber}`, host: { workspaceId: "tab-7", documentEpoch: "doc-3", sceneId: "scene-main", sceneEpoch: "scene-open-4" }, revision: 4, refresh: async () => {} };
+  const liveHub = { command: async (name, payload, handle, ...options) => {
+    calls.push({ action: payload.args.action, options });
+    if (payload.args.action === "export.shotVideo") return { ok: true, commandId: payload.commandId, action: "export.shotVideo", kind: "job", status: "completed", affectedIds: [], summary: "Exported.", output: { fileName: "cozyclay-shot.mp4", frameCount: 24 } };
+    return { ok: true, commandId: payload.commandId, receiptId: "receipt-1", status: "applied", action: payload.args.action, revision: { before: admission.revision, after: admission.revision + 1 } };
+  } };
+  const run = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission } }).find(tool => tool.name === "run_action");
+  assert.deepEqual((await run.handler({ action: "export.shotVideo" })).output, { fileName: "cozyclay-shot.mp4", frameCount: 24 });
+  await run.handler({ action: "shot.create" });
+  assert.deepEqual(calls, [{ action: "export.shotVideo", options: [{ timeoutMs: 300_000 }] }, { action: "shot.create", options: [] }]);
+  console.log("PASS a long-running run_action carries its declared hub timeout");
 }
 
 if (shouldRun("surface-context-and-images")) {
