@@ -6923,8 +6923,20 @@ export default function App() {
 	/** The agent panel's Generate motion chip: the motion.generateFromVideo
 	 * action. Locked, the action is unavailable and never runs, so the chip shows
 	 * the Fal card's lock line itself, as it always did. */
+	/** Why the chip cannot start an AI video motion now, as the user reads it:
+	 * one already running, or none left today. The lock has its own Fal card line. */
+	function falMotionUnavailable() {
+		if (!["idle", "done", "error", "failed"].includes(falMotion.status)) return ko("A generation is already running", "이미 생성이 돌고 있어요");
+		if (falMotion.dailyRemaining === 0) return ko("No AI video motion generations left today", "오늘 남은 AI 영상 모션 생성이 없어요");
+		return null;
+	}
 	function generateFalMotionFromUi(instruction) {
 		if (!falMotionEnabled) showFalMotionLock();
+		else {
+			// The chip clears the typed instruction when clicked, so a refusal says why.
+			const reason = falMotionUnavailable();
+			if (reason) { setToast(reason); return null; }
+		}
 		return runStudioAction("motion.generateFromVideo", { instruction });
 	}
 
