@@ -27,7 +27,8 @@ import { TRAIL_EFFECTOR_JOINTS } from '../src/motion-trail.js';
 import { sampleAt } from '../src/sample-at.js';
 import { createShot, shotAtFrame, addShotAtFrame } from '../src/cuts.js';
 import * as studioActions from '../src/studio-actions.js';
-import { focalMmToFov, fovToFocalMm } from '../src/shot.js';
+import { focalMmToFov, fovToFocalMm, IMAGE_MODELS, CUSTOM_MOVE, SUBJECT_HEIGHT_M, composePrompt, deriveShot } from '../src/shot.js';
+import { PART_COLOURS } from '../src/part-colours.js';
 import { objectTransformAt } from '../src/object-path.js';
 import { dispatchLiveFrame } from '../src/live-control.js';
 import { CSKEL27_NEUTRAL } from '../src/ardy/cskel27-neutral.js';
@@ -38,7 +39,7 @@ import { applyMotionCalibration, normalizeMotionCalibration } from '../src/ardy/
 import { decodeMotionResource, encodeMotionResource, resolveMotionSource, sha256Hex } from '../src/motion-resources.js';
 import { motionArraysToNpzMembers, writeNpz } from '../tools/ardy/npz.mjs';
 
-const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes', 'run-action-project-save', 'run-action-asset-import-and-undo'];
+const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes', 'run-action-project-save', 'run-action-asset-import-and-undo', 'run-action-ai-prepare-shot'];
 const argv = process.argv.slice(2);
 assert(!argv.length || (argv.length === 2 && argv[0] === '--case' && cases.includes(argv[1])), 'Unknown test arguments');
 const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
@@ -105,6 +106,19 @@ function fixture(options={}) {
  const suppressObjectClock=ref(false);
  const store=ref(createSceneHistoryStore([], {onObjects(next){if(!suppressObjectClock.current)lastObject.current=++clock.current;values.objects=next;},onCommit(before,after){markSemanticEdit('objects',before,after);}}));
  const noPublish = name => value => {values[name]=typeof value==='function'?value(values[name]??0):value;};
+ // The shot the Send-to-AI package describes: two camera keys (A and B) on the
+ // shot under the playhead, and the render's reference-frame capture.
+ const keyA={pos:{x:0,y:1.6,z:5},yaw:0,pitch:0,fovDeg:40},keyB={pos:{x:0.5,y:1.6,z:3},yaw:0,pitch:0,fovDeg:40};
+ const heroShot=createShot('Hero',0,23,[{frame:0,framing:keyA},{frame:23,framing:keyB}]);
+ const filmback={sensorId:'fullFrame',aspectRatio:16/9},fromShot=deriveShot(keyA.pos,{x:0,z:0,rot:0},40*Math.PI/180,SUBJECT_HEIGHT_M,filmback);
+ const captures=[],clipboard=[];
+ const aiScope={IMAGE_MODELS,CUSTOM_MOVE,SUBJECT_HEIGHT_M,composePrompt,deriveShot,PART_COLOURS,filmback,shot:fromShot,
+  activeShot:heroShot,activeCamera:{mode:'keys',followCam:null,cameraRail:null,railFollow:null},cameraKeys:heroShot.cameraKeys,
+  moveSequence:{fromShot,phrase:'a slow push-in toward the subject'},followTrack:null,subjectTrack:null,fovDeg:40,charA:{x:0,z:0,rot:0},
+  subject:'a woman in a red coat',showB:false,subject2:null,poseA:{prompt:'arms crossed'},poseB:null,environment:stage.environment,style:stage.style,
+  cameraMove:'Static / locked-off',customMove:'',hasCharSheet:false,hasEnvSheet:false,partColoursEnabled:false,shotOutput:{label:'16:9',width:1920,height:1080},characters:chars,
+  captureFramingPng:framing=>{captures.push(framing);return `data:image/png;base64,${btoa(JSON.stringify(framing.pos))}`;},captureRef:ref(null),bufferToPng:()=>null,
+  navigator:{clipboard:{writeText:async text=>{clipboard.push(text);}}}};
  const scope={THREE,cloneSkeleton,...protocol,...context,...commands,...objects,...ik,...playback,createStudioMotionCandidates,copyPhysicsKeys,physicsKeyStamp,sampleAt,shotAtFrame,focalMmToFov,fovToFocalMm,objectTransformAt,aimAt,forwardFrom,
  liveStateRef:live,sceneRevisionRef:revision,charactersRef:characterRef,loadedLayerCharRef:ref(a.id),bufferRef:buffer,ikStateRef:state,ikStatesRef:layers,storeRef:store,
  charHistoryRef:history,opClockRef:clock,lastObjectOpRef:lastObject,studioHistoryRef:studioHistory,motionFullRef:ref(new Map()),
@@ -124,7 +138,9 @@ function fixture(options={}) {
  scenesRef:ref(live.current.scenes),addScene,duplicateScene,renameScene,removeScene,track:()=>{},persistScenes:()=>{},snapshotActiveScene:()=>scope.scenesRef.current,
  openMotionDb:async()=>({close(){}}),getMotion:async(db,id)=>motionStore.get(id.toLowerCase())??null,
  putMotion:async(db,record)=>{motionStore.set(record.motionId.toLowerCase(),record);for(const done of stored.splice(0))done(record);return record;}};
- for(const name of ['setTlFps','setProjectManifest','setCameraPos','setFovDeg','setCameraPresetId','setWaypoints','setPromptClips','setMotion','setCommittedIkEdits','setIkTick','setTlFrameCount','setToast','setActiveCharacterId','setSelectedHierarchyId','setTlFrame','setWorkflowMode','setLookThroughShot','setGridView','setAutoColor','setTlPlaying','setIkMode','setIkFocus','setKeyLight','setEnvironmentImage','setEnvironment','setStyle','setHasEnvSheet','setShotAspectKey','setSensorFormat','setMovePlaying','setPartColoursEnabled','setPartColoursMode','setGuideMode','setWorkspaceLayout','setInsetPos'])scope[name]=noPublish(name);
+ for(const name of ['setTlFps','setProjectManifest','setCameraPos','setFovDeg','setCameraPresetId','setWaypoints','setPromptClips','setMotion','setCommittedIkEdits','setIkTick','setTlFrameCount','setToast','setActiveCharacterId','setSelectedHierarchyId','setTlFrame','setWorkflowMode','setLookThroughShot','setGridView','setAutoColor','setTlPlaying','setIkMode','setIkFocus','setKeyLight','setEnvironmentImage','setEnvironment','setStyle','setHasEnvSheet','setShotAspectKey','setSensorFormat','setMovePlaying','setPartColoursEnabled','setPartColoursMode','setGuideMode','setWorkspaceLayout','setInsetPos','setResult','setResultOpen','setCopied','setRecordedVideoName'])scope[name]=noPublish(name);
+ // App's render-time choice for the Send-to-AI package (its mode/imageModel state).
+ Object.assign(scope,aiScope,{mode:'image',imageModel:'gpt_image_2'});
  scope.setMotion=value=>{noPublish('setMotion')(value);for(const done of motionSet.splice(0))done(value);};
  scope.setScenes=noPublish('setScenes');
  scope.openScene=(scene,nextScenes)=>{scope.scenesRef.current=nextScenes;live.current.scenes=nextScenes;scope.activeSceneIdRef.current=scene.id;scope.studioSceneEpochRef.current=crypto.randomUUID();};
@@ -132,9 +148,16 @@ function fixture(options={}) {
   'choosePartColours','setInsetCollapsed','expandInset','setShotCameraRail','clearShotCameraRail','changeActiveCamera','framingSessionOpen','attachSceneObject','setCharacterIkKey','removeCharacterIkKey','clearCharacterIkKeys','ikStateFor','editCharacterIkKeys','snapshotIkKeys',
   'recordCharacterUndo','validateWaypointAt','castMemberOf','readCharacterWaypoints','writeCharacterWaypoints','addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints',
   'switchSceneDocument','addSceneDocument','duplicateSceneDocument','renameSceneDocument','deleteSceneDocument',
-  'selectSceneDocument','createSceneDocumentFromUi','duplicateSceneDocumentFromUi','renameSceneDocumentFromUi','deleteSceneDocumentFromUi'];
+  'selectSceneDocument','createSceneDocumentFromUi','duplicateSceneDocumentFromUi','renameSceneDocumentFromUi','deleteSceneDocumentFromUi',
+  'generate','copyPrompt'];
  const code=names.map(n=>{assert(declarations.has(n),`actual App function ${n}`);return declarations.get(n);}).join('\n');
  const actual=new Function(...Object.keys(scope),code+`\nreturn {${names.join(',')}};`)(...Object.values(scope));
+ // React re-renders App with the state it committed: these functions close
+ // over render-time state, so every commit is a fresh evaluation of them.
+ const renderNames=['generate','copyPrompt'];
+ const renderState={mode:scope.mode,imageModel:scope.imageModel},committed={...renderState};
+ const renderApp=()=>{const s={...scope,...committed};return new Function(...Object.keys(s),renderNames.map(n=>declarations.get(n)).join('\n')+`\nreturn {${renderNames.join(',')}};`)(...Object.values(s));};
+ let rendered=renderApp();
  let binding; let artifactLoader=async()=>clip(); const stamps=new Map();
  // The editor's own handlers stand behind the registry. Shot creation is the
  // real App handler; object duplication is a stand-in with the same store write.
@@ -143,11 +166,13 @@ function fixture(options={}) {
  // pipeline): each records what it was asked and answers what `stand` says.
  const stand={exporting:false,exportResult:{fileName:'cozyclay-hero.mp4',frameCount:24},exports:[],renders:0,
   project:{name:'Heist',hasFile:true,fileAccess:true,gesture:false},granted:true,saveOutcome:{saved:true,name:'Heist',fileName:'Heist.cclayproject'},saves:[],
-  imports:[],fetched:[],importError:null};
+  imports:[],fetched:[],importError:null,staleCommits:0,captures,clipboard};
  const actionHandlers=ref({
   state:()=>({shots:live.current.shots,objects:store.current.objects,characters:characterRef.current,frame:0,frameCount:48,selectedObjectId:null,activeCharacterId:'actor-a',promptBlockCount:0,generating:false,motionReady:true,
    exporting:stand.exporting,canExportVideo:live.current.shots.length>0,
-   scenes:scope.scenesRef.current.map(({id,name})=>({id,name})),activeSceneId:scope.activeSceneIdRef.current,project:{...stand.project}}),
+   scenes:scope.scenesRef.current.map(({id,name})=>({id,name})),activeSceneId:scope.activeSceneIdRef.current,project:{...stand.project},
+   aiShot:{mode:committed.mode,imageModel:committed.imageModel}}),
+  setAiShotMode:value=>{renderState.mode=value;},setAiImageModel:value=>{renderState.imageModel=value;},generate:()=>rendered.generate(),
   saveProject:async saveAs=>{stand.saves.push(saveAs);return stand.saveOutcome;},
   projectFileGranted:async()=>stand.granted,
   // The live import_asset path: bytes stored, then ONE atomic store entry.
@@ -155,7 +180,9 @@ function fixture(options={}) {
   fetchImportSource:async url=>{stand.fetched.push(url);if(url.includes('missing'))throw new Error('HTTP 404');return 'data:model/gltf-binary;base64,Z2xURg==';},
   exportShotVideo:async options=>{stand.exports.push(options);return stand.exportResult;},
   // The editor answers a scene change once React has rendered the new room.
-  afterRender:()=>{stand.renders++;return Promise.resolve();},
+  // A commit already under way when the action set its state (staleCommits)
+  // releases the waiters before that state is rendered.
+  afterRender:()=>{stand.renders++;if(stand.staleCommits>0)stand.staleCommits--;else{Object.assign(committed,renderState);rendered=renderApp();}return Promise.resolve();},
   ...Object.fromEntries(['switchSceneDocument','addSceneDocument','duplicateSceneDocument','renameSceneDocument','deleteSceneDocument'].map(name=>[name,(...args)=>actual[name](...args)])),
   addTimelineShot:()=>actual.addTimelineShot(),
   ...Object.fromEntries(['addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints','setCharacterIkKey','removeCharacterIkKey','clearCharacterIkKeys','attachSceneObject','setShotCameraRail','clearShotCameraRail','choosePartColours','setInsetCollapsed'].map(name=>[name,actual[name]])),
@@ -822,6 +849,47 @@ const implementations={
   await refused({source:'data:text/plain;base64,AAAA',name:'notes.txt',placeAs:'cutout'},'INVALID_ARGUMENT',/image data URL/);
   await refused({source:'/Users/me/poster.png',name:'poster.png',placeAs:'cutout'},'INVALID_ARGUMENT',/.+/);
   assert.equal(f.store.current.depths().past,depth);assert.deepEqual(f.store.current.objects,[]);
+ },
+ async 'run-action-ai-prepare-shot'(f){
+  const run=args=>f.call('run_action',f.request('run_action',{action:'ai.prepareShot',args}));
+  const listed=Object.fromEntries((await f.call('inspect_studio',{scope:'actions'})).actions.map(a=>[a.id,a]));
+  assert.equal(listed['ai.prepareShot']?.available,true,JSON.stringify(listed['ai.prepareShot']));
+  const before=f.binding.refresh().revision;
+  const shown=()=>f.values.setResult;
+  const frames=result=>(result.frame?1:0)+(result.frameB?1:0);
+  const hero={id:f.scope.activeShot.id,name:'Hero',range:{startFrame:0,endFrameExclusive:24}};
+  // The Studio's current choice (an image prompt for GPT Image 2), built and
+  // shown by the editor's own generate().
+  const image=await run({});
+  assert.deepEqual({ok:image.ok,kind:image.kind,status:image.status},{ok:true,kind:'job',status:'completed'},JSON.stringify(image));
+  assert.equal(f.values.setResultOpen,true,'the result panel opens');
+  assert.equal(shown().mode,'image');assert.equal(shown().modelLabel,'GPT Image 2');assert.match(shown().frame,/^data:image\/png;base64,/);
+  assert.deepEqual(image.output,{prompt:shown().prompt,mode:'image',modelLabel:'GPT Image 2',shot:hero,aspectRatio:'16:9',cameraMode:'keys',referenceFrames:frames(shown())},JSON.stringify(image.output));
+  assert.match(image.output.prompt,/a woman in a red coat, arms crossed/);
+  assert(!JSON.stringify(image).includes('data:image'),'the frames stay in the Studio');
+  assert.deepEqual(f.stand.captures,[f.scope.cameraKeys[0].framing,f.scope.cameraKeys[1].framing],'the frames are rendered from the shot\'s camera keys');
+  assert.deepEqual(f.stand.clipboard,[image.output.prompt],'the prompt goes to the clipboard like the button\'s');
+  assert.equal(f.stand.renders,0,'an unchanged choice needs no render');
+  // A model changes what generate() reads, so it runs once React has rendered it.
+  const flux=await run({model:'flux_2'});
+  assert.equal(flux.status,'completed',JSON.stringify(flux));
+  assert.equal(shown().modelLabel,'Flux 2');assert.equal(flux.output.modelLabel,'Flux 2');assert.match(flux.output.prompt,/f\/2\.2/);
+  assert.equal(f.stand.renders,1);
+  // A commit that predates the new mode is waited past.
+  f.stand.staleCommits=1;
+  const video=await run({mode:'video'});
+  assert.equal(video.status,'completed',JSON.stringify(video));
+  assert.deepEqual({mode:video.output.mode,modelLabel:video.output.modelLabel,shownMode:shown().mode},{mode:'video',modelLabel:null,shownMode:'video'});
+  assert.match(video.output.prompt,/Camera move: a slow push-in toward the subject\./);
+  assert.equal(video.output.referenceFrames,2);assert.equal(f.stand.renders,3);
+  assert.equal(f.binding.refresh().revision,before,'nothing is authored');assert.equal(f.history.current.past.length,0);
+  // Refusals reach the model in English and show nothing new.
+  const last=shown();
+  const refused=async(args,code,pattern)=>{const r=await run(args);assert.equal(r.ok,false,JSON.stringify(r));assert.equal(r.code,code,JSON.stringify(r));assert.equal(r.mutated,false);assert.match(r.message??'',pattern,JSON.stringify(r));};
+  await refused({mode:'video',model:'flux_2'},'INVALID_ARGUMENT',/image/);
+  await refused({model:'flux_2'},'INVALID_ARGUMENT',/image/);
+  await refused({model:'midjourney'},'INVALID_ARGUMENT',/.+/);
+  assert.strictEqual(shown(),last);
  },
  async 'stale-receipt-undo'(f){const first=await f.call('arrange_objects',f.request('arrange_objects',createArgs));await f.call('arrange_objects',f.request('arrange_objects',createArgs));const before=f.store.current.objects;const r=await f.call('undo_edit',f.request('undo_edit',{receiptId:first.receiptId}));assert.equal(r.code,'UNDO_CONFLICT');assert.strictEqual(f.store.current.objects,before);},
  async 'unverified-default-refusal'(f){const {req,next,verified}=await candidate(f);const result=await f.call('commit_motion_candidate',{...next,verificationId:verified.verificationId,expectedTargetToken:req.binding.targetToken,expectedPhysicsRevision:verified.physicsRevision});assert.equal(result.code,'VERIFICATION_FAILED');assert.equal(f.history.current.past.length,0);assert.equal(f.buffer.current.motion,null);},

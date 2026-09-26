@@ -8,6 +8,7 @@ import * as studioActions from "../src/studio-actions.js";
 import { FK_TRACKS, IK_TRACKS } from "../src/ardy/ik.js";
 import { SCENE_ATTACH_BONES } from "../src/scene-objects.js";
 import { GUIDE_MODES } from "../src/shot-guides.js";
+import { IMAGE_MODELS } from "../src/shot.js";
 
 const code = expected => error => error?.code === expected;
 
@@ -22,7 +23,8 @@ const exportActions = ["export.shotVideo"];
 const sceneActions = ["scene.create", "scene.duplicate", "scene.rename", "scene.delete", "scene.switch"];
 const projectActions = ["project.save"];
 const assetActions = ["asset.import"];
-assert.deepEqual([...STUDIO_ACTION_IDS].sort(), [...firstBatch, ...waypointActions, ...ikKeyActions, ...attachActions, ...railActions, ...viewActions, ...exportActions, ...sceneActions, ...projectActions, ...assetActions].sort());
+const aiActions = ["ai.prepareShot"];
+assert.deepEqual([...STUDIO_ACTION_IDS].sort(), [...firstBatch, ...waypointActions, ...ikKeyActions, ...attachActions, ...railActions, ...viewActions, ...exportActions, ...sceneActions, ...projectActions, ...assetActions, ...aiActions].sort());
 assert.deepEqual([...STUDIO_ACTION_KINDS], ["mutation", "transient", "job", "document"]);
 assert.ok(Object.isFrozen(STUDIO_ACTIONS));
 for (const action of STUDIO_ACTIONS) {
@@ -143,6 +145,19 @@ assert.deepEqual([...importAsset.input.required].sort(), ["name", "placeAs", "so
 assert.deepEqual([...importAsset.input.properties.placeAs.enum], ["cutout", "backdrop", "mesh"]);
 for (const source of ["data:image/png;base64,AAAA", "https://example.test/poster.png", "http://127.0.0.1:5180/chair.glb"]) validateStudioSchema(importAsset.input, { source, name: "poster.png", placeAs: "cutout" });
 for (const source of ["/Users/me/poster.png", "file:///tmp/poster.png", "ftp://example.test/poster.png"]) assert.throws(() => validateStudioSchema(importAsset.input, { source, name: "poster.png", placeAs: "cutout" }), code("INVALID_ARGUMENT"), source);
+// The Send-to-AI package is a job that answers with its prompt: no external
+// call, no motion generation, nothing authored. Its model is one the Studio
+// writes image prompts for.
+const prepareShot = studioActionDeclaration("ai.prepareShot");
+assert.equal(prepareShot.kind, "job");
+assert.equal(prepareShot.generation, undefined);
+assert.equal(prepareShot.undoDomain, undefined);
+assert.deepEqual(prepareShot.input.required, []);
+assert.deepEqual([...prepareShot.input.properties.mode.enum], ["image", "video"]);
+assert.deepEqual([...prepareShot.input.properties.model.enum], IMAGE_MODELS.map(model => model.id));
+assert.deepEqual(validateStudioSchema(prepareShot.input, { mode: "image", model: "flux_2" }), { mode: "image", model: "flux_2" });
+assert.throws(() => validateStudioSchema(prepareShot.input, { model: "midjourney" }), code("INVALID_ARGUMENT"));
+assert.throws(() => validateStudioSchema(prepareShot.input, { mode: "storyboard" }), code("INVALID_ARGUMENT"));
 // Frame ranges are half-open, like every other Studio range.
 assert.deepEqual(Object.keys(studioActionDeclaration("shot.setRange").input.properties).sort(), ["range", "shotId"]);
 assert.throws(() => validateStudioSchema(studioActionDeclaration("shot.setRange").input, { shotId: "shot-1", range: { startFrame: 10, endFrameExclusive: 10 } }), code("INVALID_ARGUMENT"));
