@@ -21,7 +21,7 @@ const sessionDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-sessions-"));
 process.env.COZYCLAY_AGENT_SESSIONS_DIR = sessionDir;
 process.on("exit", () => rmSync(sessionDir, { recursive: true, force: true }));
 
-const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision", "run-action-admission-and-generation-limit", "stale-scene-readmits-any-family", "run-action-job-timeout", "non-generation-job-skips-generation-gate"]);
+const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision", "run-action-admission-and-generation-limit", "stale-scene-readmits-any-family", "run-action-job-timeout", "non-generation-job-skips-generation-gate", "scene-change-readmits-host"]);
 const index = process.argv.indexOf("--case");
 const selected = index >= 0 ? process.argv[index + 1] : null;
 if (selected && !CASES.has(selected)) { console.error(`unknown --case ${selected}`); process.exit(2); }
@@ -277,6 +277,40 @@ if (shouldRun("non-generation-job-skips-generation-gate")) {
   // The gate reads the declaration's flag, carried by exactly one action.
   assert.deepEqual(STUDIO_ACTIONS.filter(action => action.generation === "motion").map(action => action.id), ["motion.generateAllBlocks"]);
   console.log("PASS a job that is not a motion generation neither takes nor is blocked by the generation gate");
+}
+
+if (shouldRun("scene-change-readmits-host")) {
+  const { createStudioTools } = await import("../bin/agent/studio-tools.mjs");
+  // The editor admits a command only at its open scene. A scene action that
+  // moves it answers the new host; the turn adopts it (same workspace only),
+  // so the next edit in the same message is admitted instead of STALE_SCENE.
+  const identity = (sceneId, sceneEpoch, workspaceId = "tab-7") => ({ workspaceId, documentEpoch: "doc-3", sceneId, sceneEpoch });
+  let open = identity("scene-main", "scene-open-4"), revision = 4; const sent = [];
+  const liveHub = { async command(name, payload) {
+    if (JSON.stringify(payload.host) !== JSON.stringify(open)) return name === "read_studio_context" ? Promise.reject(Object.assign(new Error("This is not the requested document."), { code: "STALE_SCENE" })) : { ok: false, code: "STALE_SCENE", message: "The live document changed." };
+    if (name === "read_studio_context") return { revision: { scene: revision } };
+    sent.push({ name, host: payload.host, expectedRevision: payload.expectedRevision });
+    if (payload.expectedRevision !== revision) return { ok: false, code: "STALE_SCENE", message: "Authored state changed." };
+    if (name === "run_action") {
+      const moved = payload.args.args.sceneId === "scene-foreign" ? identity("scene-b", "scene-open-5", "tab-9") : identity(payload.args.args.sceneId, "scene-open-5");
+      open = identity(moved.sceneId, moved.sceneEpoch); revision = 11;
+      return { ok: true, commandId: payload.commandId, action: "scene.switch", kind: "document", status: "completed", affectedIds: [moved.sceneId], summary: "Opened.", host: moved };
+    }
+    return { ok: true, commandId: payload.commandId, receiptId: `receipt-${sent.length}`, status: "applied", revision: { before: revision, after: ++revision } };
+  } };
+  const admission = { commandId: uuid, host: identity("scene-main", "scene-open-4"), revision: 4,
+    async refresh() { const read = await liveHub.command("read_studio_context", { host: admission.host }, "handle-12"); admission.revision = read.revision.scene; } };
+  const invoke = createStudioTools({ liveHub, workspaceHandle: "handle-12", session: { admission } }).internal.invoke;
+  const edit = { ops: [{ op: "update", id: "cube", position: { world: { x: 1, y: 0, z: 0 } } }] };
+  assert.equal((await invoke("run_action", { action: "scene.switch", args: { sceneId: "scene-b" } })).status, "completed");
+  const moved = await invoke("arrange_objects", edit).catch(error => error);
+  assert.equal(moved.status, "applied", `an edit after a scene switch in the same turn is admitted: ${moved.code ?? ""} ${moved.message ?? ""}`);
+  assert.deepEqual(sent.at(-1), { name: "arrange_objects", host: identity("scene-b", "scene-open-5"), expectedRevision: 11 });
+  assert.deepEqual(admission.host, identity("scene-b", "scene-open-5"));
+  // A host from another workspace is never adopted.
+  await invoke("run_action", { action: "scene.switch", args: { sceneId: "scene-foreign" } });
+  assert.deepEqual(admission.host, identity("scene-b", "scene-open-5"), "a foreign workspace's host is not adopted");
+  console.log("PASS a scene change in a turn re-admits later commands at the new open scene");
 }
 
 if (shouldRun("surface-context-and-images")) {

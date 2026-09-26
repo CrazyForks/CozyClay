@@ -911,6 +911,59 @@ console.log("agent routes verified");
 }
 
 {
+	// A scene action that opens another scene moves the editor's document
+	// identity. Every later mutation in the same turn must be admitted at the new
+	// open scene, not fail STALE_SCENE on the host the turn started with.
+	const { contextFixture, envelopeFixture, receiptFixture } = await import("./verify-studio-agent-protocol.mjs");
+	const identity = sceneId => ({ workspaceId: "tab-7", documentEpoch: "doc-3", sceneId, sceneEpoch: sceneId === "scene-main" ? "scene-open-4" : "scene-open-5" });
+	let open = identity("scene-main"), revision = 41;
+	const seen = [], reads = [];
+	const sameScene = host => host?.sceneId === open.sceneId && host?.sceneEpoch === open.sceneEpoch && host?.workspaceId === open.workspaceId;
+	const current = () => { const context = contextFixture(); Object.assign(context.host, open); context.revision.scene = revision; return context; };
+	const sceneFaux = createFakeModel();
+	const sceneHub = { command: async (name, args) => {
+		seen.push({ name, host: args.host, expectedRevision: args.expectedRevision });
+		if (!sameScene(args.host) || args.expectedRevision !== revision) return { ok: false, code: "STALE_SCENE", message: "The live document changed." };
+		if (name === "run_action") {
+			open = identity(args.args.args.sceneId); revision = 7;
+			return { ok: true, commandId: args.commandId, action: "scene.switch", kind: "document", status: "completed", affectedIds: [open.sceneId], summary: "Opened scene Rooftop.", host: open };
+		}
+		return { ...receiptFixture(), host: open, revision: { before: revision, after: ++revision } };
+	} };
+	const readContext = async host => {
+		reads.push(host.sceneId);
+		if (!sameScene(host)) throw Object.assign(new Error("This is not the requested document."), { code: "STALE_SCENE" });
+		return current();
+	};
+	let sceneServer;
+	const sceneHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: sceneFaux.models, fauxProvider: sceneFaux.fauxProvider, handlers: [], liveHub: sceneHub, studioRuntime: { readContext }, port: () => sceneServer.address().port });
+	sceneServer = createServer((req, res) => sceneHandler(req, res).catch((error) => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	const listening = once(sceneServer, "listening", { signal: AbortSignal.timeout(5000) });
+	sceneServer.listen(0, "127.0.0.1");
+	await listening;
+	const origin = `http://127.0.0.1:${sceneServer.address().port}`;
+	try {
+		sceneFaux.script([
+			{ type: "toolCall", id: "switch", name: "run_action", arguments: { action: "scene.switch", args: { sceneId: "scene-rooftop" } } },
+			{ type: "toolCall", id: "warm", name: "patch_elements", arguments: { ops: [{ target: { kind: "stage" }, set: { "keyLight.warmth": 0.3 } }] } },
+			{ type: "text", text: "done" },
+		]);
+		const response = await fetch(`${origin}/agent/turn`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ ...envelopeFixture(), sessionId: "00000000-0000-4000-8000-00000000e390", turnId: "00000000-0000-4000-8000-00000000e391", text: "open the rooftop scene and warm the key light", context: current(), model: "faux/scripted" }), signal: AbortSignal.timeout(5000) });
+		assert.equal(response.status, 200);
+		const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
+		const done = frames.filter((frame) => frame.type === "tool.done");
+		assert.equal(done.find((frame) => frame.callId === "switch")?.ok, true, JSON.stringify(done));
+		assert.equal(done.find((frame) => frame.callId === "warm")?.ok, true, `the edit after the scene switch is admitted in the new scene: ${JSON.stringify({ seen, reads, done })}`);
+		assert.deepEqual(seen.at(-1), { name: "patch_elements", host: identity("scene-rooftop"), expectedRevision: 7 });
+		assert.equal(seen.filter((entry) => entry.name === "patch_elements").length, 1, "admitted first time, not after a STALE_SCENE retry");
+	} finally {
+		await sceneHandler.close();
+		await new Promise((resolve) => sceneServer.close(resolve));
+	}
+	console.log("PASS a Studio turn re-admits its later edits at the scene a scene action opened");
+}
+
+{
 	// Regression for #342: a Studio rejection receipt carries code/message at the
 	// top level, never under `error`. The tool.done event and the model's
 	// function_call_output must show that code, message and recovery hint — never
