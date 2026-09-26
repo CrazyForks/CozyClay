@@ -43,6 +43,8 @@ export const STUDIO_ATTACH_BONES = freezeStudioData(["hips", "spine", "chest", "
 	"rightShoulder", "rightElbow", "rightHand", "leftKnee", "leftFoot", "rightKnee", "rightFoot"]);
 /** The shot frame's composition guides (src/shot-guides.js GUIDE_MODES). */
 const GUIDE_MODES = freezeStudioData(["off", "thirds", "golden", "center", "safe"]);
+/** The image models the Studio writes Send-to-AI prompts for (src/shot.js IMAGE_MODELS). */
+const AI_IMAGE_MODELS = freezeStudioData(["nano_banana_pro", "nano_banana_2", "gpt_image_2", "seedream_5", "flux_2"]);
 const WAYPOINT_RULES = "Pins sit at least 8 frames apart, the walk between two pins must stay within 0.5-3 m/s, and x/z are clamped to +/-11 m; a pin that breaks a rule is refused with the frame or distance that would work.";
 
 export const STUDIO_ACTIONS = freezeStudioData([
@@ -110,6 +112,8 @@ export const STUDIO_ACTIONS = freezeStudioData([
 		description: "Import a picture or a 3D model into the scene through the editor's own import path and place it: \"cutout\" stands a picture up as a 1.8 m card in front of the camera, \"backdrop\" as a 5 m plate 12 m down the shot camera's view, facing it, and \"mesh\" stands a GLB, OBJ or FBX model on the floor in front of the camera. source is a data: URL (up to 8 MB of text) or an http(s) URL the editor fetches (its server must allow cross-origin reads); name is the file name with its extension (poster.png, chair.glb). One undo entry; the new object is in affectedIds and its asset id in the summary. A file on the user's disk needs their own click: ask them to drop it on the Assets shelf." },
 	{ id: "object.duplicate", label: "Duplicate object", kind: "mutation", undoDomain: "objects", input: input({}, { objectId: idSchema }),
 		description: "Copy a scene object (the selected one when objectId is omitted) and place the copy half a metre beside it." },
+	{ id: "ai.prepareShot", label: "Send to AI", kind: "job", input: input({}, { mode: { type: "string", enum: ["image", "video"] }, model: { type: "string", enum: AI_IMAGE_MODELS } }),
+		description: "Prepare the Studio's Send-to-AI package for the shot under the playhead (else the current camera): the prompt for an external image or video model, written from the shot's camera, cast, poses, environment and style, plus reference frames rendered from the shot camera (its first and last camera key when it has keys). No AI service is called. mode \"image\" is a still, \"video\" a shot with its camera move; model is the image model the prompt is written for (image mode only). Each omitted choice keeps the Studio's current one; a given one becomes it. The Studio opens its result panel, where the user copies the prompt and downloads the frames; the frame images stay there and are not in the answer. Answers status \"completed\" with output.prompt, mode, modelLabel, shot (id, name, range), aspectRatio, cameraMode and referenceFrames (how many frames the panel shows). Changes nothing in the scene; not a motion generation." },
 ]);
 export const STUDIO_ACTION_IDS = freezeStudioData(STUDIO_ACTIONS.map(action => action.id));
 

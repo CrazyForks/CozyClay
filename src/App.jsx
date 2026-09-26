@@ -799,6 +799,29 @@ export function createStudioAppActions(handlersRef) {
 			return { affectedIds: shot ? [shot.id] : [], output: { fileName: result.fileName, frameCount: result.frameCount },
 				summary: `Recorded ${shot ? shotLabel(shot) : "the shot"} to ${result.fileName} (${result.frameCount} frames); the browser was asked to download it.` };
 		} });
+	// The Send-to-AI package: the editor's own generate(), which reads the mode
+	// and image model from the render. A changed choice is set first and
+	// generate() runs once React has rendered it; a commit already under way can
+	// predate it, so the wait repeats until the render shows the choice.
+	registry.register({ ...studioActionDeclaration("ai.prepareShot"), available: () => true,
+		run: async ({ mode, model }) => {
+			const current = h().state().aiShot, wanted = { mode: mode ?? current.mode, imageModel: model ?? current.imageModel };
+			if (model && wanted.mode !== "image") fail("INVALID_ARGUMENT", `model picks an image model, but this would be a ${wanted.mode} prompt; omit model or pass mode "image".`);
+			const rendered = () => { const { aiShot } = h().state(); return aiShot.mode === wanted.mode && aiShot.imageModel === wanted.imageModel; };
+			if (!rendered()) {
+				h().setAiShotMode(wanted.mode);
+				h().setAiImageModel(wanted.imageModel);
+				for (let commits = 0; !rendered(); commits++) {
+					if (commits === 3) fail("TARGET_NOT_READY", "The Studio did not render the new mode and model; run the action again.");
+					await h().afterRender();
+				}
+			}
+			const result = h().generate();
+			const shot = result.shot && { id: result.shot.id, name: result.shot.name, range: { startFrame: result.shot.startFrame, endFrameExclusive: result.shot.endFrame + 1 } };
+			const referenceFrames = (result.frame ? 1 : 0) + (result.frameB ? 1 : 0);
+			return { affectedIds: [], output: { prompt: result.prompt, mode: result.mode, modelLabel: result.modelLabel ?? null, shot, aspectRatio: result.aspectRatio, cameraMode: result.camera?.mode ?? null, referenceFrames },
+				summary: `Prepared the ${result.mode} prompt${result.modelLabel ? ` for ${result.modelLabel}` : ""} for ${shot ? `${shot.name} [${shot.range.startFrame}, ${shot.range.endFrameExclusive})` : "the current camera"}; the Studio's result panel shows it with ${referenceFrames} reference frame${referenceFrames === 1 ? "" : "s"} for the user to copy and download.` };
+		} });
 	// The live import_asset path (validate, store the bytes, ONE atomic store
 	// entry), fed a data URL; an http(s) source is fetched into one first.
 	registry.register({ ...studioActionDeclaration("asset.import"), available: () => true,
@@ -8668,7 +8691,7 @@ export default function App() {
 			// shot yields 40 frames. Same liveStateRef reasoning as captureMeta.
 			exportShotVideo: (options = {}) => liveStateRef.current.exportShotVideo(options),
 			// Open the production result modal so QA clicks its real download.
-			prepareFrameExport: () => liveStateRef.current.generate(),
+			prepareFrameExport: () => { liveStateRef.current.generate(); },
 			// The RGB plate the passes are compared against — same rig, same
 			// framing, no material override.
 			capturePlate: () => liveStateRef.current.captureFramingPng(liveStateRef.current.captureCurrentFraming()),
@@ -9259,6 +9282,7 @@ export default function App() {
 		setCopied(false);
 		setRecordedVideoName(null);
 		copyPrompt(prompt);
+		return nextResult;
 	}
 
 	function download() {
@@ -12652,6 +12676,8 @@ function resizePromptClip(id, edge, rawFrame) {
 			// re-grant a file) the user's click still active.
 			project: { name: projectName, hasFile: Boolean(projectHandleRef.current), fileAccess: hasFileSystemAccess(),
 				gesture: globalThis.navigator?.userActivation?.isActive === true },
+			// What generate() reads for the Send-to-AI package, as this render has it.
+			aiShot: { mode, imageModel },
 		}),
 		addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, setTimelineShotRange, moveTimelineShot,
 		runAllPromptBlocks, duplicateSelectedSceneObject,
@@ -12662,6 +12688,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		afterRender: () => new Promise(resolve => renderWaitersRef.current.push(resolve)),
 		saveProject, projectFileGranted: async () => (await queryHandlePermission(projectHandleRef.current)) === "granted",
 		importAsset: args => liveHandlersRef.current.import_asset(args), fetchImportSource,
+		setAiShotMode: setMode, setAiImageModel: setImageModel, generate,
 	};
 	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionHandlersRef);
 	/** UI door into the shared registry. Refusal messages are written for the
