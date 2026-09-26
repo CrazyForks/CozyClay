@@ -19,8 +19,9 @@ const attachActions = ["object.attach", "object.detach"];
 const railActions = ["shot.setCameraRail", "shot.clearCameraRail"];
 const viewActions = ["view.setPartColours", "view.setGuideMode", "view.setInset"];
 const exportActions = ["export.shotVideo"];
-assert.deepEqual([...STUDIO_ACTION_IDS].sort(), [...firstBatch, ...waypointActions, ...ikKeyActions, ...attachActions, ...railActions, ...viewActions, ...exportActions].sort());
-assert.deepEqual([...STUDIO_ACTION_KINDS], ["mutation", "transient", "job"]);
+const sceneActions = ["scene.create", "scene.duplicate", "scene.rename", "scene.delete", "scene.switch"];
+assert.deepEqual([...STUDIO_ACTION_IDS].sort(), [...firstBatch, ...waypointActions, ...ikKeyActions, ...attachActions, ...railActions, ...viewActions, ...exportActions, ...sceneActions].sort());
+assert.deepEqual([...STUDIO_ACTION_KINDS], ["mutation", "transient", "job", "document"]);
 assert.ok(Object.isFrozen(STUDIO_ACTIONS));
 for (const action of STUDIO_ACTIONS) {
 	assert.match(action.id, /^[a-z]+\.[A-Za-z]+$/, action.id);
@@ -117,6 +118,16 @@ assert.equal(exportVideo.undoDomain, undefined);
 assert.equal(exportVideo.timeoutMs, 300_000);
 assert.deepEqual(exportVideo.input.required, []);
 assert.deepEqual(validateStudioSchema(exportVideo.input, { shotId: "shot-1" }), { shotId: "shot-1" });
+// Scenes are project-level document work: outside the undo history, each
+// addressed by the scene id the context's host carries.
+for (const id of sceneActions) {
+	assert.equal(studioActionDeclaration(id).kind, "document", id);
+	assert.equal(studioActionDeclaration(id).undoDomain, undefined, id);
+}
+assert.deepEqual(studioActionDeclaration("scene.create").input.required, []);
+for (const id of ["scene.duplicate", "scene.delete", "scene.switch"]) assert.deepEqual(studioActionDeclaration(id).input.required, ["sceneId"], id);
+assert.deepEqual(validateStudioSchema(studioActionDeclaration("scene.rename").input, { sceneId: "scene-a", name: "Rooftop" }), { sceneId: "scene-a", name: "Rooftop" });
+assert.throws(() => validateStudioSchema(studioActionDeclaration("scene.rename").input, { sceneId: "scene-a", name: "  " }), code("INVALID_ARGUMENT"));
 // Frame ranges are half-open, like every other Studio range.
 assert.deepEqual(Object.keys(studioActionDeclaration("shot.setRange").input.properties).sort(), ["range", "shotId"]);
 assert.throws(() => validateStudioSchema(studioActionDeclaration("shot.setRange").input, { shotId: "shot-1", range: { startFrame: 10, endFrameExclusive: 10 } }), code("INVALID_ARGUMENT"));
