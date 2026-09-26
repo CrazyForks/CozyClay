@@ -222,6 +222,40 @@ await scenario("S5", "persistence", async () => {
   return { before, after, character };
 });
 
+// The registry actions the agent used to have no door to, driven through the
+// same real model: a root waypoint, an attachment, and an arrange after it.
+const waypointsOf = (id) => live(["inspect", "--scope", "motion", "--ids", id]).characters?.find((row) => row.id === id)?.waypoints ?? [];
+const objectNamed = (name) => (live(["describe"]).objects ?? []).find((row) => row.name === name) ?? null;
+
+await scenario("S6", "waypoint", async () => {
+  const before = waypointsOf("char-a");
+  await turn("Add one root waypoint to char-a's path, 2 metres in front of where char-a stands now.");
+  const after = waypointsOf("char-a");
+  if (after.length <= before.length) throw new Error(`char-a waypoint count did not increase (${before.length} -> ${after.length})`);
+  return { before, after };
+});
+
+const carrySuffix = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+const carryName = `QA carry ${carrySuffix}`;
+await scenario("S7", "attach", async () => {
+  live(["arrange-objects", "--op", JSON.stringify({ op: "create", source: { kind: "cube" }, name: carryName, position: { relativeTo: "char-a", basis: "subject", side: "right", gapM: 1.5, support: "floor" }, scale: { x: 0.15, y: 0.15, z: 0.15 } })]);
+  const before = objectNamed(carryName);
+  if (!before) throw new Error(`Setup could not create ${carryName}`);
+  await turn(`Attach the object named ${carryName} to char-a's right hand.`);
+  const after = objectNamed(carryName);
+  if (after?.attach?.characterId !== "char-a") throw new Error(`${carryName} is not attached to char-a: ${JSON.stringify(after?.attach ?? null)}`);
+  return { before: { id: before.id, attach: before.attach ?? null }, after: { id: after.id, attach: after.attach } };
+});
+
+await scenario("S8", "arrange after attach", async () => {
+  // A carried prop must not stop the agent from placing anything else.
+  const name = `QA after attach ${carrySuffix}`;
+  await turn(`Create a new cube named ${name} on the floor 2 metres to the left of char-a.`);
+  const created = objectNamed(name);
+  if (!created) throw new Error(`${name} was not created while ${carryName} rides char-a`);
+  return { created: { id: created.id, name: created.name, x: created.x, z: created.z } };
+});
+
 writeFileSync(reportPath, `${JSON.stringify({ model, url: baseUrl, generatedAt: new Date().toISOString(), scenarios: results }, null, 2)}\n`);
 console.log(`REPORT ${reportPath}`);
 await send("Runtime.disable").catch(() => {});
