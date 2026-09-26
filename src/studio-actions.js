@@ -9,7 +9,8 @@ import { StudioProtocolError, StudioSchemas, freezeStudioData, validateStudioSch
  * transient: view state only. job: long-running work (a generation, an
  * export); it answers "started", or "completed" with its output when it runs
  * to its end. A job that needs longer than the hub's 30 s default declares
- * `timeoutMs` (at most the hub's 300 s ceiling). */
+ * `timeoutMs` (at most the hub's 300 s ceiling); one that starts a motion
+ * generation declares `generation: "motion"`, the agent's one per message. */
 export const STUDIO_ACTION_KINDS = freezeStudioData(["mutation", "transient", "job"]);
 
 const idSchema = StudioSchemas.TargetGuard.properties.targetId;
@@ -52,7 +53,7 @@ export const STUDIO_ACTIONS = freezeStudioData([
 		description: "Move a shot's start and end to a half-open frame range. Edges are clamped to the timeline and refused where they would overlap another shot; the receipt's delta shows the range that landed." },
 	{ id: "shot.reorder", label: "Move shot", kind: "mutation", undoDomain: "shot", input: input({ ...shotId, startFrame: frame }),
 		description: "Move a shot in time to start at startFrame, keeping its length and camera keys. Refused (a noop) where it would overlap another shot." },
-	{ id: "motion.generateAllBlocks", label: "Generate all blocks", kind: "job", input: input(),
+	{ id: "motion.generateAllBlocks", label: "Generate all blocks", kind: "job", generation: "motion", input: input(),
 		description: "Generate the active character's motion from all of its prompt blocks, like the timeline's Generate all blocks button. It starts a job and returns status \"started\"; the take lands in the editor when the job finishes. Counts as the one motion generation of this message." },
 	{ id: "character.addWaypoint", label: "Add root waypoint", kind: "mutation", undoDomain: "cast", input: input({ ...characterId, position: floorPoint }, { frame: waypointFrame }),
 		description: `Pin a character's root path: at frame, the character's root stands at position (world x/z metres). Frame 0 is the character's own spot, so pins start at frame 1 and each frame holds one pin. Omit frame to pace the pin at a walk (1.4 m/s) from the previous one. ${WAYPOINT_RULES} Read paths with inspect_studio { scope: "motion" }.` },
