@@ -12367,7 +12367,14 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 	function studioBounds({ entity, frame, state }) {
 		if (entity.renderer) {
-			if (entity.attach) throw new StudioProtocolError("TARGET_NOT_READY", "Attached bounds require an evaluated attachment frame.");
+			if (entity.attach) {
+				// A carried prop's numbers are local to the frame it rides; measure it
+				// where it is drawn, the frame the arrange is evaluated at.
+				const world = sceneObjectWorldMatrix(entity);
+				if (!world) throw new StudioProtocolError("TARGET_NOT_READY", "Attached bounds require an evaluated attachment frame.");
+				const carried = new THREE.Box3(new THREE.Vector3(-entity.footprint.width / 2, 0, -entity.footprint.depth / 2), new THREE.Vector3(entity.footprint.width / 2, entity.height, entity.footprint.depth / 2));
+				carried.applyMatrix4(world); return { min: { ...carried.min }, max: { ...carried.max } };
+			}
 			const at = objectTransformAt(entity, frame, { frameCount: state.frameCount, fps: 24 });
 			const object = at ? { ...entity, ...at } : entity;
 			const matrix = new THREE.Matrix4().compose(new THREE.Vector3(object.x, object.y ?? 0, object.z),
