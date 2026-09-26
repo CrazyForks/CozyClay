@@ -21,7 +21,8 @@ const viewActions = ["view.setPartColours", "view.setGuideMode", "view.setInset"
 const exportActions = ["export.shotVideo"];
 const sceneActions = ["scene.create", "scene.duplicate", "scene.rename", "scene.delete", "scene.switch"];
 const projectActions = ["project.save"];
-assert.deepEqual([...STUDIO_ACTION_IDS].sort(), [...firstBatch, ...waypointActions, ...ikKeyActions, ...attachActions, ...railActions, ...viewActions, ...exportActions, ...sceneActions, ...projectActions].sort());
+const assetActions = ["asset.import"];
+assert.deepEqual([...STUDIO_ACTION_IDS].sort(), [...firstBatch, ...waypointActions, ...ikKeyActions, ...attachActions, ...railActions, ...viewActions, ...exportActions, ...sceneActions, ...projectActions, ...assetActions].sort());
 assert.deepEqual([...STUDIO_ACTION_KINDS], ["mutation", "transient", "job", "document"]);
 assert.ok(Object.isFrozen(STUDIO_ACTIONS));
 for (const action of STUDIO_ACTIONS) {
@@ -133,6 +134,15 @@ assert.throws(() => validateStudioSchema(studioActionDeclaration("scene.rename")
 assert.equal(studioActionDeclaration("project.save").kind, "document");
 assert.deepEqual(studioActionDeclaration("project.save").input.required, []);
 assert.deepEqual(Object.keys(studioActionDeclaration("project.save").input.properties), []);
+// Importing an asset places one object: an undoable objects edit whose source
+// is a data URL or an http(s) URL, never a local path.
+const importAsset = studioActionDeclaration("asset.import");
+assert.equal(importAsset.kind, "mutation");
+assert.equal(importAsset.undoDomain, "objects");
+assert.deepEqual([...importAsset.input.required].sort(), ["name", "placeAs", "source"]);
+assert.deepEqual([...importAsset.input.properties.placeAs.enum], ["cutout", "backdrop", "mesh"]);
+for (const source of ["data:image/png;base64,AAAA", "https://example.test/poster.png", "http://127.0.0.1:5180/chair.glb"]) validateStudioSchema(importAsset.input, { source, name: "poster.png", placeAs: "cutout" });
+for (const source of ["/Users/me/poster.png", "file:///tmp/poster.png", "ftp://example.test/poster.png"]) assert.throws(() => validateStudioSchema(importAsset.input, { source, name: "poster.png", placeAs: "cutout" }), code("INVALID_ARGUMENT"), source);
 // Frame ranges are half-open, like every other Studio range.
 assert.deepEqual(Object.keys(studioActionDeclaration("shot.setRange").input.properties).sort(), ["range", "shotId"]);
 assert.throws(() => validateStudioSchema(studioActionDeclaration("shot.setRange").input, { shotId: "shot-1", range: { startFrame: 10, endFrameExclusive: 10 } }), code("INVALID_ARGUMENT"));

@@ -67,6 +67,7 @@ const exposedThroughActions = {
 	"view.partColoursGuideModeInset": ["view.setGuideMode", "view.setInset", "view.setPartColours"],
 	scenes: ["scene.create", "scene.delete", "scene.duplicate", "scene.rename", "scene.switch"],
 	project: ["project.save"],
+	"object.cutout": ["asset.import"],
 };
 for (const [path, actions] of Object.entries(exposedThroughActions)) {
 	assert.equal(elementByPath(path).agentExposure, "action", `${path} is exposed through actions`);
