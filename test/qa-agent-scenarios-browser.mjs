@@ -226,6 +226,8 @@ await scenario("S5", "persistence", async () => {
 // same real model: a root waypoint, an attachment, and an arrange after it.
 const waypointsOf = (id) => live(["inspect", "--scope", "motion", "--ids", id]).characters?.find((row) => row.id === id)?.waypoints ?? [];
 const objectNamed = (name) => (live(["describe"]).objects ?? []).find((row) => row.name === name) ?? null;
+// `describe` rows carry no attachment; the agent-facing inspect row does.
+const attachmentOf = (id) => live(["inspect", "--scope", "entities", "--ids", id]).entities?.find((row) => row.id === id)?.attachment ?? null;
 
 await scenario("S6", "waypoint", async () => {
   const before = waypointsOf("char-a");
@@ -243,8 +245,9 @@ await scenario("S7", "attach", async () => {
   if (!before) throw new Error(`Setup could not create ${carryName}`);
   await turn(`Attach the object named ${carryName} to char-a's right hand.`);
   const after = objectNamed(carryName);
-  if (after?.attach?.characterId !== "char-a") throw new Error(`${carryName} is not attached to char-a: ${JSON.stringify(after?.attach ?? null)}`);
-  return { before: { id: before.id, attach: before.attach ?? null }, after: { id: after.id, attach: after.attach } };
+  const attachment = after ? attachmentOf(after.id) : null;
+  if (attachment?.characterId !== "char-a") throw new Error(`${carryName} is not attached to char-a: ${JSON.stringify(attachment)}`);
+  return { before: { id: before.id, attachment: attachmentOf(before.id) }, after: { id: after.id, attachment } };
 });
 
 await scenario("S8", "arrange after attach", async () => {
