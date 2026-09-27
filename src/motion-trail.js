@@ -208,14 +208,6 @@ const matVec = (m, v) => [
 	m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
 	m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
 ];
-/** Rotation taking orthonormal frame (u, n, u x n) onto (u2, n2, u2 x n2). */
-function frameRotation(u, n, u2, n2) {
-	const w = cross(u, n);
-	const w2 = cross(u2, n2);
-	const from = [u[0], n[0], w[0], u[1], n[1], w[1], u[2], n[2], w[2]];
-	const to = [u2[0], n2[0], w2[0], u2[1], n2[1], w2[1], u2[2], n2[2], w2[2]];
-	return matMul(to, matT(from));
-}
 /** Shortest-arc rotation taking unit `a` onto unit `b` (Rodrigues). */
 function arcRotation(a, b) {
 	const c = dot(a, b);
@@ -266,48 +258,71 @@ function frameAccess(posedJoints, rotMats, f) {
 	};
 }
 
+/** One bend-side guide from the source window, never from the dragged target. */
+function limbWindowNormal(motion, [a, b, c], startFrame, endFrame, grabFrame, radiusFrames) {
+	let sum = [0, 0, 0];
+	for (let f = startFrame; f < endFrame; f += 1) {
+		const access = frameAccess(motion.posedJoints, null, f);
+		const normal = cross(sub(access.pos(b), access.pos(a)), sub(access.pos(c), access.pos(a)));
+		// Area weighting gives nearly straight (ill-conditioned) frames no vote.
+		sum = add(sum, scale3(normal, falloffWeight(f - grabFrame, radiusFrames)));
+	}
+	return unit(sum);
+}
+
+/** Clamp a unit normal's swing, without choosing the opposite bend side. */
+function limitNormal(from, to, radians) {
+	const angle = Math.acos(Math.max(-1, Math.min(1, dot(from, to))));
+	if (angle <= radians) return to;
+	const tangent = unit(sub(to, scale3(from, dot(from, to))));
+	return tangent ? add(scale3(from, Math.cos(radians)), scale3(tangent, Math.sin(radians))) : from;
+}
+
 /**
- * Two-bone limb solve for one frame: the effector moves by `offset` (clamped to
- * the chain's reach), the root joint stays put, the mid joint is re-placed on
- * the old elbow/knee side with both segment lengths kept, and the effector's
- * descendants translate with it. rotMats (when present) are rewritten so the
- * root and mid globals swing onto the new segments and the effector keeps its
- * global orientation: FK over the new locals reproduces the new positions,
- * which matters because playback drives the arm chain from rotations only.
+ * Two-bone solve: fixed window guide, swing-only segments, fixed effector
+ * orientation. Reach AND bend-plane limits can constrain the target: an
+ * arbitrary sideways target cannot keep its original elbow/knee plane.
  */
-function bendLimbFrame(access, [a, b, c], descendants, offset) {
+function bendLimbFrame(access, [a, b, c], descendants, offset, guide, weight) {
 	const A = access.pos(a);
 	const B = access.pos(b);
 	const C = access.pos(c);
 	const l1 = len(sub(B, A));
 	const l2 = len(sub(C, B));
-	const toTarget = sub(add(C, offset), A);
-	const dir = unit(toTarget) ?? unit(sub(C, A));
+	if (len(offset) < 1e-9) return;
+	const AB = sub(B, A);
+	const AC = sub(C, A);
+	const oldNormal = unit(cross(AB, AC));
+	let toTarget = sub(add(C, offset), A);
+	let dir = unit(toTarget) ?? unit(AC);
 	if (!dir) return;
-	const d = Math.min(l1 + l2, Math.max(Math.abs(l1 - l2), len(toTarget)));
+	const reference = guide ?? oldNormal ?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+	let normal = unit(sub(reference, scale3(dir, dot(reference, dir))))
+		?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+	if (oldNormal) {
+		if (dot(normal, oldNormal) < 0) normal = scale3(normal, -1);
+		// Ten degrees at the grab, easing to zero at the window boundary.
+		// The delta bound also makes an arbitrarily small drag a small change.
+		const limit = Math.min(Math.PI / 18 * weight, len(offset) / Math.max(len(AC), 1e-9));
+		normal = limitNormal(oldNormal, normal, limit);
+		toTarget = sub(toTarget, scale3(normal, dot(toTarget, normal)));
+		dir = unit(toTarget) ?? unit(AC);
+	}
+	// Leave a sub-millimetre bend at full reach so its side stays defined.
+	const d = Math.min(l1 + l2 - 1e-6, Math.max(Math.abs(l1 - l2) + 1e-6, len(toTarget)));
 	if (!(d > 1e-9)) return;
 	const along = (l1 * l1 - l2 * l2 + d * d) / (2 * d);
 	const h = Math.sqrt(Math.max(0, l1 * l1 - along * along));
-	// Pole = the old mid joint off the new reach line, so the bend keeps its side.
-	const AB = sub(B, A);
-	const oldNormal = unit(cross(AB, sub(C, A)));
-	const pole = unit(sub(AB, scale3(dir, dot(AB, dir))))
-		?? (oldNormal && unit(cross(oldNormal, dir)))
-		?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+	const pole = unit(cross(dir, normal));
 	const B2 = add(A, add(scale3(dir, along), scale3(pole, h)));
 	const C2 = add(A, scale3(dir, d));
 	const move = sub(C2, C);
 	for (const j of descendants) access.setPos(j, add(access.pos(j), move));
 	access.setPos(b, B2);
 	if (!access.rotMats) return;
-	// Both segments swing with the bend plane (normal -> pole x dir), so the
-	// mid joint's local change is a pure hinge about the plane normal.
-	const newNormal = unit(cross(pole, dir));
-	const swing = (from, to) => {
-		const u = unit(from);
-		const u2 = unit(to);
-		return oldNormal ? frameRotation(u, oldNormal, u2, newNormal) : arcRotation(u, u2);
-	};
+	// Transport each segment by its shortest arc, not by the bend frame:
+	// rotating the frame added axial twist even when the elbow hardly moved.
+	const swing = (from, to) => arcRotation(unit(from), unit(to));
 	const ga = matMul(swing(AB, sub(B2, A)), access.global(a));
 	const gb = matMul(swing(sub(C, B), sub(C2, B2)), access.global(b));
 	const gc = access.global(c);
@@ -350,15 +365,24 @@ export function applyTrailFalloffDelta(motion, { track = "hips", grabFrame, radi
 		const neck = jointIndex("Neck");
 		const head = jointIndex("Head");
 		const moved = subtreeOf(chain ? chain[2] : head).filter((j) => !chain || j !== chain[2]);
+		const guide = chain ? limbWindowNormal(motion, chain, startFrame, endFrame, grabFrame, radiusFrames) : null;
 		for (let f = startFrame; f < endFrame; f += 1) {
 			const w = falloffWeight(f - grabFrame, radiusFrames);
 			if (w <= 0) continue;
 			const access = { ...frameAccess(posedJoints, rotMats, f), rotMats };
 			const offset = [clipDelta.x * w, clipDelta.y * w, clipDelta.z * w];
-			if (chain) bendLimbFrame(access, chain, [chain[2], ...moved], offset);
+			if (chain) bendLimbFrame(access, chain, [chain[2], ...moved], offset, guide, w);
 			else swingHeadFrame(access, neck, head, moved, offset);
 		}
-		return rotMats ? { ...motion, rootPos, posedJoints, rotMats } : { ...motion, rootPos, posedJoints };
+		const edited = rotMats ? { ...motion, rootPos, posedJoints, rotMats } : { ...motion, rootPos, posedJoints };
+		if (chain && rotMats) {
+			// One immutable reference, not a chain of preview/drag snapshots.
+			edited.trailRetarget = {
+				base: motion.trailRetarget?.base ?? motion,
+				chains: [...new Set([...(motion.trailRetarget?.chains ?? []), track])],
+			};
+		}
+		return edited;
 	}
 	for (let f = startFrame; f < endFrame; f += 1) {
 		const w = falloffWeight(f - grabFrame, radiusFrames);

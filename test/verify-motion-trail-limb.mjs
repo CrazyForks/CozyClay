@@ -2,6 +2,7 @@
 /** Joint-relative trail drags (src/motion-trail.js applyTrailFalloffDelta):
  * hips moves the body, a limb trail bends only that limb, head swings on the neck. */
 import assert from "node:assert/strict";
+import { Vector3 } from "three";
 import { applyTrailFalloffDelta } from "../src/motion-trail.js";
 import { CSKEL27_JOINTS } from "../src/ardy/cskel27.js";
 import { CSKEL27_NEUTRAL } from "../src/ardy/cskel27-neutral.js";
@@ -107,7 +108,16 @@ const WINDOW = Array.from({ length: 2 * RADIUS + 1 }, (_, i) => GRAB - RADIUS + 
 
 	const hand0 = pos(motion, GRAB, "LeftHand");
 	const hand1 = pos(edited, GRAB, "LeftHand");
-	assert.ok(dist(hand1, [hand0[0] + 0.08, hand0[1] + 0.1, hand0[2] - 0.06]) < 1e-5, "LeftHand lands on hand + delta");
+	// This target needs 15 degrees of plane change. Path fix now limits it
+	// to ten, just as an out-of-reach target is limited by the bone lengths.
+	const A = new Vector3(...pos(motion, GRAB, "LeftArm"));
+	const plane = (m) => new Vector3(...pos(m, GRAB, "LeftForeArm")).sub(A)
+		.cross(new Vector3(...pos(m, GRAB, "LeftHand")).sub(A)).normalize();
+	const normal = plane(edited);
+	assert.ok(Math.abs(plane(motion).angleTo(normal) - Math.PI / 18) < 1e-5, "hand target clamps at the bend-plane limit");
+	const target = new Vector3(hand0[0] + 0.08, hand0[1] + 0.1, hand0[2] - 0.06).sub(A);
+	target.addScaledVector(normal, -target.dot(normal)).add(A);
+	assert.ok(dist(hand1, target.toArray()) < 1e-5, "LeftHand lands on the target projected into the bounded plane");
 
 	const bent = new Set(["LeftForeArm", "LeftHand", "LeftHandEnd", "LeftHandThumb1"]);
 	for (let f = 0; f < motion.frames; f += 1) {
@@ -126,7 +136,7 @@ const WINDOW = Array.from({ length: 2 * RADIUS + 1 }, (_, i) => GRAB - RADIUS + 
 	// Hand descendants translate rigidly with the hand.
 	const end0 = pos(motion, GRAB, "LeftHandEnd");
 	const end1 = pos(edited, GRAB, "LeftHandEnd");
-	assert.ok(dist([end1[0] - end0[0], end1[1] - end0[1], end1[2] - end0[2]], [0.08, 0.1, -0.06]) < 1e-5, "LeftHandEnd follows the hand");
+	assert.ok(dist([end1[0] - end0[0], end1[1] - end0[1], end1[2] - end0[2]], hand1.map((v, i) => v - hand0[i])) < 1e-5, "LeftHandEnd follows the constrained hand");
 	// The elbow keeps its side of the shoulder->hand line.
 	const side = (m) => {
 		const a = pos(m, GRAB, "LeftArm");

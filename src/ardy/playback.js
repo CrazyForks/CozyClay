@@ -37,6 +37,8 @@
  * their parents). Bones the map does not touch keep their bind transforms.
  * Shoulder and arm chains keep their Mixamo bind translations and consume
  * ARDY rotations only, avoiding clavicle shear between incongruent rigs.
+ * Path-fix takes opt into a reference-pose correction: edited wrists retain
+ * their rendered orientation and edited legs retain their rendered lengths.
  */
 
 import * as THREE from "three";
@@ -440,6 +442,25 @@ export function applyMotionFrame(rig, motion, frame) {
 	const prep = prepOf(rig);
 	const joints = CSKEL27_JOINTS.length;
 	const base = f * joints * 9;
+	const trailPositions = new Map();
+	const trailWrists = new Map();
+	if (motion.trailRetarget) {
+		// Opt-in only. Raw takes keep the relaxed bind wrist and positional
+		// leg skinning exactly as before. The reference never has this flag.
+		applyMotionFrame(rig, motion.trailRetarget.base, f);
+		for (const track of motion.trailRetarget.chains) {
+			const side = track.startsWith("left") ? "Left" : "Right";
+			if (track.endsWith("Hand")) {
+				const leaf = prep.stretchedLeaves.find((item) => CSKEL27_JOINTS[item.joint] === `${side}Hand`);
+				if (leaf) trailWrists.set(leaf.bone, leaf.bone.getWorldQuaternion(new THREE.Quaternion()));
+			} else {
+				for (const suffix of ["UpLeg", "Leg", "Foot", "ToeBase"]) {
+					const bone = prep.bones[CSKEL27_JOINTS.indexOf(side + suffix)];
+					if (bone) trailPositions.set(bone, bone.position.clone());
+				}
+			}
+		}
+	}
 
 	// Global (world) rotations of every cskel27 joint at this frame: FK over
 	// the npz local rotations down the parent chain.
@@ -513,7 +534,11 @@ export function applyMotionFrame(rig, motion, frame) {
 			mParentInv.copy(prep.parentBindWorld[j]);
 		}
 
-		if (HIERARCHY_PRESERVED_JOINTS.has(CSKEL27_JOINTS[j])) {
+		if (trailPositions.has(bone)) {
+			// Swing the original rendered segment, rather than re-placing its
+			// endpoints with different rotated bind offsets (which stretches it).
+			vWorld.copy(trailPositions.get(bone)).applyMatrix4(mParentInv);
+		} else if (HIERARCHY_PRESERVED_JOINTS.has(CSKEL27_JOINTS[j])) {
 			// A mocap take carries the performer's bone lengths (boneScale, see
 			// npz.js). Positionally skinned bones already sit where the scaled
 			// posedJoints put them; the arm chain rides its own bind
@@ -535,6 +560,12 @@ export function applyMotionFrame(rig, motion, frame) {
 		leaf.bone.quaternion.copy(leaf.bindLocalQuat);
 	}
 	rig.updateMatrixWorld(true);
+	for (const [bone, orientation] of trailWrists) {
+		// Compensate forearm swing at the wrist, not with an impossible
+		// forearm roll: roll cannot undo a change in the segment direction.
+		bone.quaternion.copy(bone.parent.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(orientation));
+	}
+	if (trailWrists.size) rig.updateMatrixWorld(true);
 }
 
 /* --- snapshot / restore ----------------------------------------------------- */
