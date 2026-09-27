@@ -1865,6 +1865,86 @@ await run16rTwoTurnScenario();
 	}
 }
 
+// A failed motion attempt that leaves the scene unchanged does not consume the
+// turn's generation, so the model can try the other generation path.
+{
+	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
+	let admissions = 0; const hubCalls = [];
+	const runtime = {
+		readContext: async () => contextFixture(),
+		admit: () => ({ jobId: `failed-job-${++admissions}`, commandId: `failed-command-${admissions}`, state: "queued" }),
+		subscribe: () => () => {},
+		start: async () => ({ ok: false, code: "CAPABILITY_MISSING", mutated: false }),
+		stop: async () => ({ status: "already_applied" }),
+	};
+	const faux = createFakeModel();
+	faux.script([
+		{ type: "toolCall", id: "failed-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } },
+		{ type: "toolCall", id: "fallback-action", name: "run_action", arguments: { action: "motion.generateAllBlocks" } },
+		[{ type: "text", text: "reported" }],
+	]);
+	let server;
+	const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux.models, fauxProvider: faux.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name, payload) => { hubCalls.push({ name, payload }); return { ok: true, action: payload.args?.action, kind: "job", status: "started" }; } }, studioRuntime: runtime, port: () => server.address().port });
+	server = createServer((req, res) => handler(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	server.listen(0, "127.0.0.1"); await once(server, "listening");
+	const origin = `http://127.0.0.1:${server.address().port}`;
+	try {
+		const turn = { ...envelopeFixture(), sessionId: "00000000-0000-4000-8000-000000000201", turnId: "00000000-0000-4000-8000-000000000202", text: "make Alex walk" };
+		const response = await fetch(`${origin}/agent/turn`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify(turn), signal: AbortSignal.timeout(10000) });
+		assert.equal(response.status, 200);
+		const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
+		const done = frames.filter(frame => frame.type === "tool.done");
+		assert.equal(done.length, 2);
+		assert.equal(done[0].ok, true);
+		assert.equal(done[1].ok, true, `the fallback generation reaches the hub after a no-mutation failure: ${done[1].error ?? ""}`);
+		assert.deepEqual(hubCalls.map(call => call.payload.args?.action), ["motion.generateAllBlocks"]);
+		console.log("PASS a no-mutation motion failure leaves generation available for run_action");
+	} finally {
+		await handler.close();
+		server.closeAllConnections();
+		await new Promise(resolve => server.close(resolve));
+	}
+}
+
+// Two failed attempts exhaust the retry budget; a third is refused with the
+// specific message explaining both failures.
+{
+	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
+	let admissions = 0;
+	const runtime = {
+		readContext: async () => contextFixture(),
+		admit: () => ({ jobId: `two-fail-job-${++admissions}`, commandId: `two-fail-command-${admissions}`, state: "queued" }),
+		subscribe: () => () => {},
+		start: async () => ({ ok: false, code: "CAPABILITY_MISSING", mutated: false }),
+		stop: async () => ({ status: "already_applied" }),
+	};
+	const motion = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } });
+	const faux = createFakeModel();
+	faux.script([motion("two-fail-first"), motion("two-fail-second"), motion("two-fail-third"), [{ type: "text", text: "reported" }]]);
+	let server;
+	const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux.models, fauxProvider: faux.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async () => ({ ok: true }) }, studioRuntime: runtime, port: () => server.address().port });
+	server = createServer((req, res) => handler(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	server.listen(0, "127.0.0.1"); await once(server, "listening");
+	const origin = `http://127.0.0.1:${server.address().port}`;
+	try {
+		const turn = { ...envelopeFixture(), sessionId: "00000000-0000-4000-8000-000000000203", turnId: "00000000-0000-4000-8000-000000000204", text: "make Alex walk" };
+		const response = await fetch(`${origin}/agent/turn`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify(turn), signal: AbortSignal.timeout(10000) });
+		assert.equal(response.status, 200);
+		const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
+		const done = frames.filter(frame => frame.type === "tool.done");
+		assert.equal(done.length, 3);
+		assert.equal(admissions, 2, "the third generation is refused before admission");
+		assert.equal(done[2].ok, false);
+		assert.match(done[2].error, /GENERATION_LIMIT/);
+		assert.match(done[2].error, /Two motion generation attempts already failed/);
+		console.log("PASS two failed motion attempts refuse a third generation in the same message");
+	} finally {
+		await handler.close();
+		server.closeAllConnections();
+		await new Promise(resolve => server.close(resolve));
+	}
+}
+
 // The one-generation rule holds across both generation paths: generate_motion
 // and a run_action job action (motion.generateAllBlocks) share one limit per
 // user message, in either order.
