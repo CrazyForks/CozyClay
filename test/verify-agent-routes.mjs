@@ -2096,3 +2096,42 @@ for (const [index, [label, first, second]] of [
 		await new Promise(resolve => serverFresh.close(resolve));
 	}
 }
+
+// A character with root waypoints is refused before any generation: the
+// editor will not install a text-only take over an authored path, so
+// generate_motion names the route that follows the waypoints instead.
+{
+	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
+	let admissionsPath = 0;
+	const runtimePath = {
+		readContext: async () => contextFixture(),
+		admit: () => ({ jobId: `path-job-${++admissionsPath}`, commandId: `path-command-${admissionsPath}`, state: "queued" }),
+		subscribe: () => () => {},
+		start: async () => ({ ok: true, status: "installed", mutated: true, receiptId: "path-receipt" }),
+		stop: async () => ({ status: "already_applied" }),
+	};
+	const waypointsPath = [{ frame: 24, position: { x: 1.4, y: 0, z: 0 } }, { frame: 48, position: { x: 2.8, y: 0, z: 0 } }];
+	const fauxPath = createFakeModel();
+	fauxPath.script([{ type: "toolCall", id: "path-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } }, [{ type: "text", text: "reported" }]]);
+	let serverPath;
+	const handlerPath = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxPath.models, fauxProvider: fauxPath.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture(), waypointsPath) : { ok: true } }, studioRuntime: runtimePath, port: () => serverPath.address().port });
+	serverPath = createServer((req, res) => handlerPath(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	serverPath.listen(0, "127.0.0.1"); await once(serverPath, "listening");
+	const originPath = `http://127.0.0.1:${serverPath.address().port}`;
+	try {
+		const turn = { ...envelopeFixture(), sessionId: "00000000-0000-4000-8000-000000000213", turnId: "00000000-0000-4000-8000-000000000214", text: "regenerate Alex" };
+		const response = await fetch(`${originPath}/agent/turn`, { method: "POST", headers: { origin: originPath, "content-type": "application/json" }, body: JSON.stringify(turn), signal: AbortSignal.timeout(10000) });
+		assert.equal(response.status, 200);
+		const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
+		const done = frames.filter(frame => frame.type === "tool.done");
+		assert.equal(done[0]?.ok, false, "a character with root waypoints is refused");
+		assert.match(done[0].error, /CAPABILITY_MISSING/, `the model sees the refusal code: ${done[0].error}`);
+		assert.ok(done[0].error.includes("run_action motion.generateAllBlocks"), `the refusal names the route that follows waypoints: ${done[0].error}`);
+		assert.equal(admissionsPath, 0, "the refusal comes before admission, so nothing is generated");
+		console.log("PASS generate_motion refuses a character with root waypoints before admission and names motion.generateAllBlocks");
+	} finally {
+		await handlerPath.close();
+		serverPath.closeAllConnections();
+		await new Promise(resolve => serverPath.close(resolve));
+	}
+}

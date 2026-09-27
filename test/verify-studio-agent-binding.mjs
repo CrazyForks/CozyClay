@@ -179,7 +179,7 @@ function fixture(options={}) {
  const stand={exporting:false,exportResult:{fileName:'cozyclay-hero.mp4',frameCount:24},exports:[],renders:0,
   project:{name:'Heist',hasFile:true,fileAccess:true,gesture:false},granted:true,saveOutcome:{saved:true,name:'Heist',fileName:'Heist.cclayproject'},saves:[],
   imports:[],fetched:[],importError:null,staleCommits:0,captures,clipboard,
-  captureError:null,falSubmits:[],falSubmitError:null,ingested:[],ingestResult:{frames:120,fps:24,duration:5},
+  captureError:null,falSubmits:[],falSubmitError:null,ingested:[],ingestResult:{frames:120,fps:24,duration:5},waypointMode:false,
   falFinished:{job:{id:'fal-job-1',status:'done',video:{url:'https://cdn.example.test/fal-act.mp4'},resolution:'480P',width:832,height:480,fps:24,duration:5,resultDuration:5,cost:0.1},dailyRemaining:2}};
  const actionHandlers=ref({
   state:()=>({shots:live.current.shots,objects:store.current.objects,characters:characterRef.current,frame:0,frameCount:48,selectedObjectId:null,activeCharacterId:'actor-a',promptBlockCount:0,generating:false,motionReady:true,
@@ -203,6 +203,7 @@ function fixture(options={}) {
   addTimelineShot:()=>actual.addTimelineShot(),
   ...Object.fromEntries(['addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints','setCharacterIkKey','removeCharacterIkKey','clearCharacterIkKeys','attachSceneObject','setShotCameraRail','clearShotCameraRail','choosePartColours','setInsetCollapsed'].map(name=>[name,actual[name]])),
   setGuideMode:mode=>scope.setGuideMode(mode),
+  setWaypointMode:value=>{stand.waypointMode=value;},
   duplicateSelectedSceneObject:id=>{const source=store.current.objects.find(o=>o.id===id);store.current.applyAtomic(list=>[...list,{...source,id:'copy-1',name:'Copy',x:source.x+0.5}]);},
   ...Object.fromEntries(['splitTimelineShot','duplicateTimelineShot','removeTimelineShot','setTimelineShotRange','moveTimelineShot','runAllPromptBlocks'].map(name=>[name,unwired(name)])),
  });
@@ -542,6 +543,7 @@ const implementations={
   assert.equal(added.status,'applied',JSON.stringify(added));assert.equal(added.action,'character.addWaypoint');
   assert.deepEqual(added.affectedIds,['actor-b']);assert.deepEqual(added.revision,{before,after:before+1});assert.match(added.summary,/frame 24/);
   assert.deepEqual(await path('actor-b'),[{frame:24,position:{x:5,y:0,z:0}}]);
+  assert.equal(f.stand.waypointMode,true,'an agent-added waypoint turns Waypoint mode on, so motion.generateAllBlocks follows the path');
   assert.deepEqual(f.buffer.current.waypoints,[],'the active character keeps its own path');
   // Without a frame the pin is paced at a walk: 1.4 m from actor-a's spot is one second.
   const paced=await run('character.addWaypoint',{characterId:'actor-a',position:{x:1.4,z:0}});
@@ -549,8 +551,10 @@ const implementations={
   assert.deepEqual(await path('actor-a'),[{frame:24,position:{x:1.4,y:0,z:0}}]);
   assert.equal(f.buffer.current.waypoints.length,1,'the loaded layer is written through its editing buffer');
   assert.equal((await run('character.addWaypoint',{characterId:'actor-a',position:{x:2.4,z:0},frame:40})).status,'applied');
+  f.stand.waypointMode=false;
   const moved=await run('character.moveWaypoint',{characterId:'actor-a',frame:24,position:{x:1,z:0.5}});
   assert.equal(moved.status,'applied',JSON.stringify(moved));
+  assert.equal(f.stand.waypointMode,true,'an agent-moved waypoint turns Waypoint mode on');
   assert.deepEqual((await path('actor-a')).map(w=>w.position),[{x:1,y:0,z:0.5},{x:2.4,y:0,z:0}]);
   const removed=await run('character.removeWaypoint',{characterId:'actor-b',frame:24});
   assert.equal(removed.status,'applied',JSON.stringify(removed));assert.deepEqual(await path('actor-b'),[]);
