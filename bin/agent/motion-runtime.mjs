@@ -5,6 +5,7 @@ import { normalizePhases } from "../../mcp/ardy-prompts.mjs";
 import { compileStudioBeats, validateStudioCommand, validateStudioIdentity, validateTargetGuard, validateReceipt, freezeStudioData, StudioProtocolError } from "../../src/studio-agent-protocol.js";
 import { motionPreflightReason } from "../../src/analytics.js";
 import { PHYSICS_LIMITS } from "../../src/ardy/physics-review.js";
+import { PROMPT_MAX_CHARS } from "../../tools/ardy/prompt-limits.mjs";
 
 const precommit = ["queued", "generating", "preparing", "verifying", "repairing"];
 const rejected = ["failed", "cancelled", "stale_target", "stale_environment"];
@@ -278,8 +279,10 @@ export function createStudioMotionRuntime({ liveHub, getBridgeOrigin, clock = Da
 			if (validated.source.kind === "generate") {
 				const normalized = normalizePhases(validated.source.beats.map(b => b.text));
 				if (normalized.dropped || normalized.texts.length !== validated.source.beats.length || normalized.texts.some(t => !t.trim())) throw error("INVALID_ARGUMENT", "Motion beats cannot be dropped by normalization");
+				for (const [i, text] of normalized.texts.entries()) if (text.length > PROMPT_MAX_CHARS) throw error("INVALID_ARGUMENT", `Beat ${i + 1} is ${text.length} characters; each beat's text is capped at ${PROMPT_MAX_CHARS}.`);
 				schedule = compileStudioBeats({ ...validated.source, beats: validated.source.beats.map((b, i) => ({ ...b, text: normalized.texts[i] })) });
-				body = { prompt: schedule.blocks.map(b => b.text).join(" "), duration: schedule.durationSeconds, posePin: false, ...(validated.source.seed === undefined ? {} : { seed: validated.source.seed }) };
+				const prompt = schedule.blocks.map(b => b.text).join(" ");
+				body = { prompt: prompt.length <= PROMPT_MAX_CHARS ? prompt : schedule.blocks[0].text, duration: schedule.durationSeconds, posePin: false, ...(validated.source.seed === undefined ? {} : { seed: validated.source.seed }) };
 				if (schedule.blocks.length > 1) body.segments = schedule.blocks.map(b => ({ prompt: b.text, startFrame: b.startFrame, endFrame: b.endFrameExclusive }));
 			} else {
 				artifact = artifacts.get(validated.source.artifactId);

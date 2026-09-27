@@ -147,13 +147,15 @@ check("multi-beat generation bounds the top-level prompt and preserves segments"
 	const long = begin(runtime, f.input({ source: { kind: "generate", beats: longBeats } }));
 	await bounded(long.result);
 	const longBody = f.generationBodies[0];
-	assert.equal(longBody.prompt, longBeats[0].text);
+	assert.equal(longBody.prompt, longBody.segments[0].prompt);
 	assert.ok(longBody.prompt.length <= 500);
 	assert.equal(longBody.segments.length, 8);
-	const shortBeats = [{ text: "A person walks.", seconds: 2 }, { text: "They turn around.", seconds: 2 }, { text: "They stop.", seconds: 2 }];
-	const short = begin(runtime, f.input({ source: { kind: "generate", beats: shortBeats } }));
-	await bounded(short.result);
-	assert.equal(f.generationBodies[1].prompt, shortBeats.map(beat => beat.text).join(" "));
+}));
+check("short multi-beat generation keeps the joined top-level prompt", () => fixture(async f => {
+	const runtime = runtimeFor(f), beats = [{ text: "A person walks.", seconds: 2 }, { text: "They turn around.", seconds: 2 }, { text: "They stop.", seconds: 2 }];
+	const { result } = begin(runtime, f.input({ source: { kind: "generate", beats } }));
+	await bounded(result);
+	assert.equal(f.generationBodies[0].prompt, f.generationBodies[0].segments.map(segment => segment.prompt).join(" "));
 }));
 check("a beat over the prompt cap is rejected before admission", () => fixture(async f => {
 	const runtime = runtimeFor(f), input = f.input({ source: { kind: "generate", beats: [{ text: "x".repeat(501), seconds: 2 }] } });
