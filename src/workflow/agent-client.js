@@ -1350,13 +1350,21 @@ export function createAgentChatStore({
 	const restore = (transcript, sessionId = state.sessionId) => {
 		seenReceipts.clear();
 		settledActions.clear();
+		const restoredReceiptIds = new Set();
 		const restored = (Array.isArray(transcript) ? transcript : []).flatMap((item) => {
 			if (item?.kind === "user" || item?.kind === "assistant") {
 				const attachments = Array.isArray(item.attachments) ? item.attachments.filter((entry) => typeof entry?.dataUrl === "string") : [];
 				return [{ kind: item.kind, id: newId(), text: String(item.text ?? ""), ...(attachments.length ? { attachments } : {}) }];
 			}
 			if (item?.kind === "tool") return [{ kind: "tool", id: newId(), callId: newId(), name: item.name || "tool", label: item.label, ok: item.ok, elapsedMs: item.elapsedMs, status: item.ok === false ? "failed" : "done" }];
-			if (item?.kind === "receipt") return [{ kind: "receipt", id: `receipt:${item.receiptId || newId()}`, receiptId: item.receiptId, summary: item.summary || "Receipt", receipt: { status: "applied", warnings: [], verification: { status: "verified" } } }];
+			if (item?.kind === "receipt") {
+				if (item.receiptId && restoredReceiptIds.has(item.receiptId)) return [];
+				if (item.receiptId) {
+					restoredReceiptIds.add(item.receiptId);
+					seenReceipts.add(item.receiptId);
+				}
+				return [{ kind: "receipt", id: `receipt:${item.receiptId || newId()}`, receiptId: item.receiptId, summary: item.summary || "Receipt", receipt: { status: "applied", warnings: [], verification: { status: "verified" } } }];
+			}
 			if (item?.kind === "failure") return [{ kind: "failure", id: newId(), failure: { code: item.code || "upstream", message: String(item.message || "The turn failed."), recovery: { action: "retry", retryAllowed: true } } }];
 			return [];
 		});

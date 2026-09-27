@@ -249,6 +249,7 @@ function isLegacyItem(item) {
  * consumed by the panel. */
 export function transcriptFromHistory(history = []) {
 	const transcript = [];
+	const seenReceiptIds = new Set();
 	const turnErrors = Array.isArray(history?.turnErrors) ? history.turnErrors : [];
 	const expandedHistory = [];
 	for (let index = 0; index < history.length; index += 1) {
@@ -316,7 +317,10 @@ export function transcriptFromHistory(history = []) {
 				if (Number.isFinite(output?.elapsedMs)) tool.elapsedMs = output.elapsedMs;
 			}
 			const receipt = output?.receiptId ? output : output?.receipt;
-			if (receipt?.receiptId) transcript.push({ kind: "receipt", receiptId: receipt.receiptId, summary: receiptSummary(receipt) });
+			if (receipt?.receiptId && !seenReceiptIds.has(receipt.receiptId)) {
+				seenReceiptIds.add(receipt.receiptId);
+				transcript.push({ kind: "receipt", receiptId: receipt.receiptId, summary: receiptSummary(receipt) });
+			}
 			continue;
 		}
 
@@ -345,7 +349,10 @@ export function transcriptFromHistory(history = []) {
 			const tool = piCalls.get(item.toolCallId);
 			if (tool) tool.ok = !item.isError;
 			const receiptId = item.details?.receiptId;
-			if (receiptId) transcript.push({ kind: "receipt", receiptId, summary: receiptSummary(item.details) });
+			if (receiptId && !seenReceiptIds.has(receiptId)) {
+				seenReceiptIds.add(receiptId);
+				transcript.push({ kind: "receipt", receiptId, summary: receiptSummary(item.details) });
+			}
 			continue;
 		}
 	}
