@@ -49,6 +49,7 @@ import {
 	worldDeltaToClip,
 	worldPointToClip,
 } from "./motion-trail.js";
+import { findAbsoluteIkKeyConflicts } from "./trail-key-conflicts.js";
 import { chooseIkEntryPose } from "./ik-camera.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
@@ -11831,8 +11832,10 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 
 	/* --------------------- trail drag -> preview -> regen -------------------- */
-	function onTrailDragStart() {
+	function onTrailDragStart({ grabFrame } = {}) {
 		if (!motion) return;
+		const frame = Math.round(grabFrame);
+		setTlFrame(frame);
 		// The pre-drag take is both the deformation base (repeated moves re-derive
 		// from it, so deltas never accumulate) and the undo snapshot.
 		trailBaseMotionRef.current = motion;
@@ -11859,24 +11862,26 @@ function resizePromptClip(id, edge, rawFrame) {
 		trailPreviewMotionRef.current = deformed;
 		const rig = activeRig;
 		if (!rig) return;
-		applyMotionFrame(rig, deformed, tlFrame);
+		applyMotionFrame(rig, deformed, Math.round(grabFrame));
 		if (ikChains && ikStateRef.current.keys.size > 0) {
-			ikEvaluate(ikChains, ikStateRef.current, tlFrame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
+			ikEvaluate(ikChains, ikStateRef.current, Math.round(grabFrame), ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
 		}
 	}
 	function onTrailDragEnd({ track, grabFrame, delta }) {
+		const frame = Math.round(grabFrame);
 		const base = trailBaseMotionRef.current;
 		const deformed = trailPreviewMotionRef.current;
 		trailBaseMotionRef.current = null;
 		trailPreviewMotionRef.current = null;
 		const size = delta ? Math.hypot(delta.x, delta.y, delta.z) : 0;
+		setTlFrame(frame);
 		if (!base || !deformed || size < 0.01) {
 			// A sub-centimetre nudge is a mis-grab, not an authored edit: the
 			// motion state never changed, so only the rig pose needs restoring.
 			if (base && activeRig) {
-				applyMotionFrame(activeRig, base, tlFrame);
+				applyMotionFrame(activeRig, base, frame);
 				if (ikChains && ikStateRef.current.keys.size > 0) {
-					ikEvaluate(ikChains, ikStateRef.current, tlFrame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
+					ikEvaluate(ikChains, ikStateRef.current, frame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
 				}
 			}
 			setTrailEdit(null);
@@ -11885,7 +11890,20 @@ function resizePromptClip(id, edge, rawFrame) {
 		// The one and only React commit of the whole drag.
 		setMotion(deformed);
 		markSemanticEdit("pose", base.rootPos, deformed.rootPos);
-		setTrailEdit({ track, grabFrame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta) });
+		setTrailEdit({ track, grabFrame: frame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta) });
+		const { startFrame, endFrame } = trailEditRange(base.frames, frame, trailFalloffFrames);
+		const conflictFrames = findAbsoluteIkKeyConflicts({
+			keys: ikStateRef.current.keys,
+			track,
+			startFrame,
+			endFrame,
+		});
+		if (conflictFrames.length > 0) {
+			setToast(`${ko(
+				"이 구간의 절대 IK 키가 궤적 수정을 덮어써요 — 해당 키를 지우거나 다시 찍어주세요",
+				"Absolute IK keys in this range override the path edit — remove or re-key them",
+			)} ${isKo ? `프레임 ${conflictFrames.join(", ")}` : `frames ${conflictFrames.join(", ")}`}`);
+		}
 	}
 	/** Send the pending trail edit through the existing motionEdit pipeline:
 	 * the regen window is auto-derived from the grab + falloff, explicit IK
