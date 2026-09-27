@@ -10,6 +10,10 @@
  */
 
 import { CSKEL27_JOINTS, CSKEL27_PARENTS } from "./ardy/cskel27.js";
+import { motionJointPositions, motionJointPositionsAt } from "./ardy/playback.js";
+
+/** Metres per rig unit: Character scales the Mixamo centimetre rig by 0.01 * stature. */
+const RIG_UNIT_METRES = 0.01;
 
 const JOINTS = CSKEL27_JOINTS.length;
 const jointIndex = (name) => CSKEL27_JOINTS.indexOf(name);
@@ -83,17 +87,42 @@ function toWorldXZ(basis, x, z) {
 	];
 }
 
+/** Rendered rig-space samples of one joint, or null when the rig drives no bone for it. */
+function renderedSamples(motion, joint, rig) {
+	if (!rig) return null;
+	const samples = motionJointPositions(rig, motion);
+	return samples && Number.isFinite(samples.positions[joint * 3]) ? samples : null;
+}
+
 /**
- * World-space polyline of one cskel27 joint's posed position across the take.
+ * World-space polyline of one cskel27 joint across the take.
  * Returns a flat [x0,y0,z0, x1,y1,z1, ...] array of length frames*3.
  * `baseY` is the character entry's stage height (roof scenes ride above 0).
+ * With `rig`, the points are where playback RENDERS that joint's bone on this
+ * rig (rig proportions, prep scale, bind offsets); without it, the clip's
+ * own posedJoints (the space pins and the wire use).
  */
-export function jointTrailPoints(motion, jointName = "Hips", { baseY = 0, scale = 1 } = {}) {
+export function jointTrailPoints(motion, jointName = "Hips", { baseY = 0, scale = 1, rig = null } = {}) {
 	if (!motion?.posedJoints || !(motion.frames > 0)) return null;
 	const joint = CSKEL27_JOINTS.indexOf(jointName);
 	if (joint < 0) return null;
 	const basis = anchorBasis(motion);
 	const out = new Float32Array(motion.frames * 3);
+	const rendered = renderedSamples(motion, joint, rig);
+	if (rendered) {
+		// The Character group: anchor position, clip yaw, 0.01 * stature scale.
+		// Rig space is already anchor-relative (applyMotionFrame rebases).
+		const unit = RIG_UNIT_METRES * scale;
+		for (let f = 0; f < motion.frames; f += 1) {
+			const po = (f * JOINTS + joint) * 3;
+			const x = rendered.positions[po] * unit;
+			const z = rendered.positions[po + 2] * unit;
+			out[f * 3] = basis.anchorX + x * basis.cos + z * basis.sin;
+			out[f * 3 + 1] = baseY + rendered.positions[po + 1] * unit;
+			out[f * 3 + 2] = basis.anchorZ - x * basis.sin + z * basis.cos;
+		}
+		return out;
+	}
 	for (let f = 0; f < motion.frames; f += 1) {
 		const po = (f * JOINTS + joint) * 3;
 		const [wx, wz] = toWorldXZ(basis, motion.posedJoints[po], motion.posedJoints[po + 2]);
@@ -161,6 +190,63 @@ export function worldDeltaToClip(motion, delta) {
 	};
 }
 
+/**
+ * World drag delta on a drawn (rendered) trail -> the clip delta
+ * applyTrailFalloffDelta takes, so the RENDERED effector follows the pointer.
+ *
+ * Playback turns the rig's own bones by the clip's rotations and adds rotated
+ * bind offsets, so a clip move is not a rendered move (the y-bot forearm is
+ * 27.6 cm against the clip's 23.3; the Mixamo head bone sits near the neck
+ * pivot). Rather than model that, keep the clip delta along the pointer (as
+ * before) and solve its LENGTH through real playback: the gain that brings
+ * the rendered effector closest to the pointer (least squares, so it never
+ * overshoots). A full 3D inverse was rejected: the bend-plane budget makes
+ * some directions unreachable and chasing them sends the clip delta far off.
+ * The gain is capped at 1.5: rig/clip limb ratios sit well inside it, and a
+ * bone that needs more (the Mixamo head bone rides ~11 cm from the neck
+ * pivot, 17 degrees per rendered cm) is a lever the edit cannot drive 1:1
+ * without spinning the part. Without a rig: yaw + stature only.
+ */
+export function worldDeltaToTrailClip(motion, delta, { track = "hips", grabFrame = 0, radiusFrames = 0, rig = null, scale = 1 } = {}) {
+	const stature = Number.isFinite(scale) && scale > 1e-9 ? scale : 1;
+	const plain = worldDeltaToClip(motion, { x: delta.x / stature, y: delta.y / stature, z: delta.z / stature });
+	const distance = Math.hypot(delta.x, delta.y, delta.z);
+	const joint = jointIndex(TRAIL_TRACKS.find((item) => item.id === track)?.joint ?? "");
+	const samples = rig && joint >= 0 && motion?.rotMats && distance > 1e-6 ? motionJointPositions(rig, motion) : null;
+	const frame = Math.max(0, Math.min((motion?.frames ?? 1) - 1, Math.round(grabFrame) || 0));
+	const base = samples?.positions.subarray((frame * JOINTS + joint) * 3, (frame * JOINTS + joint) * 3 + 3);
+	if (!base || !Number.isFinite(base[0])) return plain;
+	const basis = anchorBasis(motion);
+	const unit = RIG_UNIT_METRES * stature;
+	const target = [delta.x, delta.y, delta.z];
+	const scaled = (gain) => ({ x: plain.x * gain, y: plain.y * gain, z: plain.z * gain });
+	// Rendered world displacement of the effector at the grab for a gain.
+	const reached = (gain) => {
+		const edited = applyTrailFalloffDelta(motion, { track, grabFrame: frame, radiusFrames, clipDelta: scaled(gain) });
+		const p = motionJointPositionsAt(rig, edited, frame).subarray(joint * 3, joint * 3 + 3);
+		const x = (p[0] - base[0]) * unit;
+		const z = (p[2] - base[2]) * unit;
+		return [x * basis.cos + z * basis.sin, (p[1] - base[1]) * unit, -x * basis.sin + z * basis.cos];
+	};
+	const MIN_GAIN = 0.1;
+	const MAX_GAIN = 1.5;
+	// Locally reached ~ gain * v, so the best gain is gain * (D.r)/(r.r);
+	// iterate that (the bend budget bends the curve) and keep the closest.
+	let gain = 1;
+	let best = { gain: 1, miss: Infinity };
+	for (let i = 0; i < 4; i += 1) {
+		const r = reached(gain);
+		const miss = len(sub(target, r));
+		if (miss < best.miss) best = { gain, miss };
+		const rr = dot(r, r);
+		if (!(rr > 1e-12) || miss < 1e-4) break;
+		const next = Math.max(MIN_GAIN, Math.min(MAX_GAIN, (gain * dot(target, r)) / rr));
+		if (Math.abs(next - gain) < 1e-4) break;
+		gain = next;
+	}
+	return scaled(best.gain);
+}
+
 /** Smoothstep falloff: 1 at the grab frame, 0 at/beyond the radius. */
 export function falloffWeight(distanceFrames, radiusFrames) {
 	if (!(radiusFrames > 0)) return distanceFrames === 0 ? 1 : 0;
@@ -208,6 +294,13 @@ const matVec = (m, v) => [
 	m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
 	m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
 ];
+/** Inverse of a row-major 3x3 (callers keep it well conditioned). */
+function inverse3(m) {
+	const [a, b, c, d, e, f, g, h, i] = m;
+	const A = e * i - f * h, B = f * g - d * i, C = d * h - e * g;
+	const det = a * A + b * B + c * C;
+	return [A, c * h - b * i, b * f - c * e, B, a * i - c * g, c * d - a * f, C, b * g - a * h, a * e - b * d].map((v) => v / det);
+}
 /** Shortest-arc rotation taking unit `a` onto unit `b` (Rodrigues). */
 function arcRotation(a, b) {
 	const c = dot(a, b);

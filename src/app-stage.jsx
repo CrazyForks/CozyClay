@@ -2671,7 +2671,7 @@ export function loadSceneStartup() {
  * re-drawn on top as a bright highlight. Grabbing any point of a line starts
  * a drag on a camera-facing plane through the grab point; the caller deforms
  * the take (motion-trail.js falloff math) so the preview updates live. */
-export const MotionTrails = memo(function MotionTrails({ motion, baseY, charScale, ikFocus, falloffFrames, playheadFrame, pendingEdit, enabled, visible = true, onDragStart, onDragPreview, onDragEnd }) {
+export const MotionTrails = memo(function MotionTrails({ motion, rig = null, baseY, charScale, ikFocus, falloffFrames, playheadFrame, pendingEdit, enabled, visible = true, onDragStart, onDragPreview, onDragEnd }) {
 	const { camera, gl, invalidate } = useThree();
 	const [drag, setDrag] = useState(null);
 	const callbacksRef = useRef({ onDragStart, onDragPreview, onDragEnd });
@@ -2682,14 +2682,16 @@ export const MotionTrails = memo(function MotionTrails({ motion, baseY, charScal
 		for (let index = 0; index + 2 < flat.length; index += 3) out.push([flat[index], flat[index + 1], flat[index + 2]]);
 		return out;
 	};
-	// Every trail track (root + IK endpoints + head) in its handle colour.
+	// Every trail track (root + IK endpoints + head) in its handle colour,
+	// sampled where playback renders each bone on this rig (not the clip's
+	// own joints, which sit 4-15 cm off the body), so draw and pick agree.
 	const tracks = useMemo(
 		() => TRAIL_TRACKS.map((track) => {
-			const flat = jointTrailPoints(motion, track.joint, { baseY, scale: charScale });
+			const flat = jointTrailPoints(motion, track.joint, { baseY, scale: charScale, rig });
 			return flat ? { ...track, flat, points: toTriples(flat) } : null;
 		}).filter(Boolean),
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[motion, baseY, charScale],
+		[motion, rig, baseY, charScale],
 	);
 	const trackById = (id) => tracks.find((track) => track.id === id) ?? null;
 	// The falloff window rides whichever line is being (or was last) grabbed.
@@ -2846,6 +2848,7 @@ export const MotionTrails = memo(function MotionTrails({ motion, baseY, charScal
 	);
 }, (previous, next) => (
 	previous.motion === next.motion &&
+	previous.rig === next.rig &&
 	previous.baseY === next.baseY &&
 	previous.charScale === next.charScale &&
 	previous.ikFocus === next.ikFocus &&

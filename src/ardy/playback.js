@@ -568,6 +568,99 @@ export function applyMotionFrame(rig, motion, frame) {
 	if (trailWrists.size) rig.updateMatrixWorld(true);
 }
 
+/* --- read-only sampling ---------------------------------------------------- */
+
+/** Bones-only copy of a rig for off-screen sampling, keyed to the live rig.
+ *  It carries the live rig's bind snapshot, so its prep is the live prep. */
+const samplerCopies = new WeakMap();
+
+function samplerCopyOf(rig) {
+	let copy = samplerCopies.get(rig);
+	if (copy) return copy;
+	// Never create the live rig's fallback here: that would freeze its bind
+	// at whatever pose it holds now. Unprimed rigs read the current rotations.
+	const binds = rig.userData?.poseBind ?? bindFallback.get(rig) ?? new Map();
+	const copyBinds = new Map();
+	const hasBone = (node) => node.isBone || node.children.some(hasBone);
+	const clone = (node) => {
+		const out = node.isBone ? new THREE.Bone() : new THREE.Object3D();
+		out.name = node.name;
+		out.position.copy(node.position);
+		out.quaternion.copy(node.quaternion);
+		out.scale.copy(node.scale);
+		const bind = node.isBone ? binds.get(node) : null;
+		const q = node.quaternion;
+		// Without a recorded bind position the copied live position stands in,
+		// exactly as bindPositionOf does for the live rig.
+		if (node.isBone) copyBinds.set(out, bind ?? { x: q.x, y: q.y, z: q.z, w: q.w });
+		for (const child of node.children) if (hasBone(child)) out.add(clone(child));
+		return out;
+	};
+	// The root stays identity: samples are in rig space, below the root.
+	copy = new THREE.Object3D();
+	for (const child of rig.children) if (hasBone(child)) copy.add(clone(child));
+	copy.userData.poseBind = copyBinds;
+	samplerCopies.set(rig, copy);
+	return copy;
+}
+
+/** Per (rig, motion) cache of rendered joint positions. */
+const jointSamples = new WeakMap();
+
+/** Pose the sampler copy at frame f and write every driven bone's rig-space
+ *  position into out[offset..offset+81] (NaN where no bone is driven). */
+function sampleFrame(rig, motion, f, out, offset) {
+	const copy = samplerCopyOf(rig);
+	const prep = prepOf(copy);
+	if (!prep.driven) {
+		prep.driven = CSKEL27_JOINTS.map((_, j) => prep.bones[j] ?? prep.stretchedLeaves.find((leaf) => leaf.joint === j)?.bone ?? null);
+	}
+	applyMotionFrame(copy, motion, f);
+	for (let j = 0; j < prep.driven.length; j += 1) {
+		const bone = prep.driven[j];
+		const o = offset + j * 3;
+		if (!bone) {
+			out[o] = out[o + 1] = out[o + 2] = NaN;
+			continue;
+		}
+		const e = bone.matrixWorld.elements;
+		out[o] = e[12];
+		out[o + 1] = e[13];
+		out[o + 2] = e[14];
+	}
+}
+
+/** One frame of motionJointPositions (uncached): Float32Array(27*3), rig space. */
+export function motionJointPositionsAt(rig, motion, frame) {
+	if (!rig || !motion?.rotMats || !(motion.frames > 0)) return null;
+	const out = new Float32Array(CSKEL27_JOINTS.length * 3);
+	sampleFrame(rig, motion, Math.max(0, Math.min(Math.round(frame) || 0, motion.frames - 1)), out, 0);
+	return out;
+}
+
+/**
+ * Rig-space position of every driven cskel27 joint's bone at every frame,
+ * exactly as applyMotionFrame places it, without touching the live rig.
+ * Returns { positions: Float32Array(frames*27*3) } (NaN where no bone is
+ * driven). Cached per rig + motion; treat as read-only.
+ */
+export function motionJointPositions(rig, motion) {
+	if (!rig || !motion?.rotMats || !(motion.frames > 0)) return null;
+	let byRig = jointSamples.get(motion);
+	if (!byRig) {
+		byRig = new WeakMap();
+		jointSamples.set(motion, byRig);
+	}
+	const cached = byRig.get(rig);
+	if (cached) return cached;
+	const joints = CSKEL27_JOINTS.length;
+	const positions = new Float32Array(motion.frames * joints * 3);
+	for (let f = 0; f < motion.frames; f += 1) sampleFrame(rig, motion, f, positions, f * joints * 3);
+	const result = { positions };
+	byRig.set(rig, result);
+	return result;
+}
+
 /* --- snapshot / restore ----------------------------------------------------- */
 
 /**

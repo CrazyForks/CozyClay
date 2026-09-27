@@ -46,7 +46,7 @@ import {
 	applyTrailFalloffDelta,
 	jointTrailPoints,
 	trailEditRange,
-	worldDeltaToClip,
+	worldDeltaToTrailClip,
 	worldPointToClip,
 } from "./motion-trail.js";
 import { chooseIkEntryPose } from "./ik-camera.js";
@@ -11838,11 +11838,10 @@ function resizePromptClip(id, edge, rawFrame) {
 		trailBaseMotionRef.current = motion;
 		recordCharacterUndo();
 	}
-	/** World drag delta -> clip delta, shedding the character's stature scale
-	 * (the trail is drawn scaled by it). */
-	function trailClipDelta(base, delta) {
-		const statureScale = activeChar.scale ?? 1;
-		return worldDeltaToClip(base, { x: delta.x / statureScale, y: delta.y / statureScale, z: delta.z / statureScale });
+	/** World drag delta on the drawn (rendered) trail -> clip delta, solved so
+	 * the rendered effector travels the pointer distance (stature included). */
+	function trailClipDelta(base, delta, track, grabFrame) {
+		return worldDeltaToTrailClip(base, delta, { track, grabFrame, radiusFrames: trailFalloffFrames, rig: activeRig, scale: activeChar.scale ?? 1 });
 	}
 	/** Per-rAF drag preview. Deliberately React-free: the deformed take lands in
 	 * a ref and on the rig directly, so a drag never re-renders the app. The
@@ -11854,7 +11853,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			track,
 			grabFrame,
 			radiusFrames: trailFalloffFrames,
-			clipDelta: trailClipDelta(base, delta),
+			clipDelta: trailClipDelta(base, delta, track, grabFrame),
 		});
 		trailPreviewMotionRef.current = deformed;
 		const rig = activeRig;
@@ -11885,7 +11884,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// The one and only React commit of the whole drag.
 		setMotion(deformed);
 		markSemanticEdit("pose", base.rootPos, deformed.rootPos);
-		setTrailEdit({ track, grabFrame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta) });
+		setTrailEdit({ track, grabFrame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta, track, grabFrame) });
 	}
 	/** Send the pending trail edit through the existing motionEdit pipeline:
 	 * the regen window is auto-derived from the grab + falloff, explicit IK
@@ -13910,6 +13909,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							{ikMode && motion && (
 								<MotionTrails
 									motion={motion}
+									rig={activeRig}
 									baseY={activeChar.y ?? 0}
 									charScale={activeChar.scale ?? 1}
 									ikFocus={ikFocus}
