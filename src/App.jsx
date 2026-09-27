@@ -11829,10 +11829,11 @@ function resizePromptClip(id, edge, rawFrame) {
 	/** Per-rAF drag preview. Deliberately React-free: the deformed take lands in
 	 * a ref and on the rig directly, so a drag never re-renders the app. The
 	 * trail/highlight lines are rewritten in place by MotionTrails itself. */
-	function onTrailDragPreview({ grabFrame, delta }) {
+	function onTrailDragPreview({ track, grabFrame, delta }) {
 		const base = trailBaseMotionRef.current;
 		if (!base) return;
 		const deformed = applyTrailFalloffDelta(base, {
+			track,
 			grabFrame,
 			radiusFrames: trailFalloffFrames,
 			clipDelta: trailClipDelta(base, delta),
@@ -11871,7 +11872,8 @@ function resizePromptClip(id, edge, rawFrame) {
 	/** Send the pending trail edit through the existing motionEdit pipeline:
 	 * the regen window is auto-derived from the grab + falloff, explicit IK
 	 * keys inside the window ride as hard constraints (their tracks), and the
-	 * deformed line contributes the grab-frame pose as a root guide. */
+	 * deformed line contributes the grab-frame pose on the dragged track (hips =
+	 * root guide, limb/head = that effector). */
 	function runTrailRegeneration() {
 		if (generationPendingRef.current || genRunningRef.current || ardyRunning) return;
 		const request = requestMotionGeneration("trail", "edit", { motionEdit: true });
@@ -11915,6 +11917,9 @@ function resizePromptClip(id, edge, rawFrame) {
 			const wireFrame = toArdyFrame(frame);
 			if (entries.length && wireFrame <= entries[entries.length - 1].frame) continue;
 			const ikTracks = [...(ikStateRef.current.keys.get(frame)?.keys() || [])];
+			if (frame === trailEdit.grabFrame && trailEdit.track && trailEdit.track !== "hips" && !ikTracks.includes(trailEdit.track)) {
+				ikTracks.push(trailEdit.track);
+			}
 			entries.push({ frame: wireFrame, timelineFrame: frame, tracks: ikTracks.length ? ikTracks : ["hips"], pose });
 		}
 		applyMotionFrame(rig, motion, currentFrame);
