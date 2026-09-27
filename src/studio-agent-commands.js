@@ -122,6 +122,14 @@ function overlapsFor(entity, state, ports) {
   const own = aabb(geometry(entity, state, ports));
   return [...state.objects, ...state.characters].filter(e => e.id !== entity.id && !isEffectivelyHidden(e, state.objects, state.characters)).map(other => ({ id: other.id, bounds: aabb(geometry(other, state, ports)) })).map(other => ({ ...other, depth: overlap(own, other.bounds) })).filter(o => o.depth > EPS);
 }
+function overlapsOf(ids, state, ports) {
+  const entities = [...state.objects, ...state.characters];
+  return ids.flatMap(id => { const e = entities.find(row => row.id === id); return e ? overlapsFor(e, state, ports) : []; });
+}
+const overlapEvidence = overlaps => ({ coverage: 'same-frame-world-AABB-proxies', overlapIds: [...new Set(overlaps.map(o => o.id))].slice(0, 100), maximumFootprintOverlapM: Math.max(0, ...overlaps.map(o => o.depth)) });
+/** Placement evidence for entity ids in the given scene: the same-frame AABB
+ * overlap an arrangement receipt reports for the entities it moved. */
+export const placementChecks = (ids, state, ports) => overlapEvidence(overlapsOf(ids, state, ports));
 function avoid(entity, relation, state, ports) {
   const blocked = overlapsFor(entity, state, ports);
   if (!blocked.length) return entity;
@@ -188,7 +196,7 @@ function arrangement(command, before, ports) {
   }
   const after = { ...before, [key]: rows };
   const affectedIds = [...new Set([...before[key], ...rows].map(e => e.id))].filter(id => !equal(before[key].find(e => e.id === id), rows.find(e => e.id === id)));
-  const overlaps = affectedIds.flatMap(id => { const e = rows.find(e => e.id === id); return e ? overlapsFor(e, after, ports) : []; });
+  const overlaps = overlapsOf(affectedIds, after, ports);
   for (const relation of relations) {
     if (!relation.spec.relativeTo) continue;
     const subject = rows.find(e => e.id === relation.id), reference = entityById(after, relation.spec.relativeTo);
@@ -203,7 +211,7 @@ function arrangement(command, before, ports) {
   if (relations.some(r => r.adjustmentM)) warnings.push({ code: 'OUTWARD_ADJUSTMENT', count: relations.filter(r => r.adjustmentM).length });
   const relation = relations.length === 1 ? relations[0] : null;
   return { domain: isObject ? 'objects' : 'cast', draft: equal(rows, before[key]) ? before[key] : rows, affectedIds,
-    checks: { coverage: 'same-frame-world-AABB-proxies', overlapIds: [...new Set(overlaps.map(o => o.id))].slice(0, 100), maximumFootprintOverlapM: Math.max(0, ...overlaps.map(o => o.depth)),
+    checks: { ...overlapEvidence(overlaps),
       ...(relation ? { support: relation.support, baseY: relation.baseY, relationSatisfied: true, ...(relation.axis ? { basis: relation.basis, requestedGapM: relation.requestedGapM, actualGapM: relation.actualGapM } : {}) } : {}) },
     warnings, details: relations.map(({ axis, ...rest }) => rest) };
 }
@@ -211,6 +219,28 @@ function arrangement(command, before, ports) {
 const FRACTIONS = { 'extreme close-up': 3.4, 'close-up': 2.2, 'medium close-up': 1.375, 'medium shot': 0.975, 'medium-wide shot': 0.66, 'wide shot': 0.41, 'extreme wide shot': 0.2 };
 const LEVELS = { ground: 0.3 / 1.8, low: 0.7 / 1.8, hip: 1.1 / 1.8, eye: 1.65 / 1.8, high: 2.1 / 1.8, overhead: 2.8 / 1.8 };
 const ANGLES = { front: 0, 'front three-quarter': 40, profile: 90, 'rear three-quarter': 140, back: 180 };
+/** Where subject bound points land through one camera: the evidence a
+ * frame_shot receipt reports, plus the screen box its details keep. */
+function projectSubject(points, camera, fov, aspectRatio) {
+  const direction = vector(camera.lookAt).sub(vector(camera.position));
+  const projection = new PerspectiveCamera(fov / DEG, aspectRatio, 0.01, 10000);
+  projection.position.copy(vector(camera.position)); projection.lookAt(vector(camera.lookAt)); projection.updateMatrixWorld(true);
+  const screen = points.map(p => p.clone().project(projection));
+  const screenBounds = aabb(screen);
+  const behindCamera = points.some(p => p.clone().sub(projection.position).dot(direction) <= 0);
+  // Measured projection, not distance to an arbitrary aim point. Moving lookAt
+  // along the same ray cannot change the subject's observed screen coverage.
+  const screenFraction = (screenBounds.y.max - screenBounds.y.min) / 2;
+  const derivedSize = [['extreme close-up', 2.8], ['close-up', 1.6], ['medium close-up', 1.15], ['medium shot', 0.8], ['medium-wide shot', 0.52], ['wide shot', 0.3], ['extreme wide shot', 0]].find(([, threshold]) => screenFraction >= threshold)[0];
+  return { screenBounds, checks: { coverage: 'same-frame-subject-bounds-projection', screenFraction, derivedSize, behindCamera, clipped: behindCamera || screen.some(p => Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || p.z < -1 || p.z > 1) } };
+}
+/** Framing evidence for entity ids through the current shot camera at the
+ * current frame: the same subject-bounds projection frame_shot reports. */
+export function framingChecks(ids, state, ports) {
+  if (!state.camera || !SENSOR_FORMATS[state.filmback?.sensorId] || !(state.filmback.aspectRatio > 0)) fail('TARGET_NOT_READY', 'The shot camera and filmback must be available.');
+  const points = ids.flatMap(id => geometry(entityById(state, id), state, ports));
+  return projectSubject(points, state.camera, focalMmToFov(state.camera.focalMm, state.filmback.sensorId, state.filmback.aspectRatio), state.filmback.aspectRatio).checks;
+}
 function frameDraft(command, state, ports) {
   if (state.frameCount <= 0) fail('TARGET_NOT_READY', 'A nonempty timeline is required.');
   const subject = state.characters.find(e => e.id === command.args.subjectIds[0]);
@@ -248,19 +278,11 @@ function frameDraft(command, state, ports) {
   }
   const nextShot = { ...shot, cameraKeys: keys, camera: { ...shot.camera, mode: 'keys' } };
   const shots = created ? [nextShot] : state.shotDocument.shots.map(s => s.id === shot.id ? nextShot : s);
-  const projection = new PerspectiveCamera(fov / DEG, state.filmback.aspectRatio, 0.01, 10000);
-  projection.position.copy(vector(camera.position)); projection.lookAt(vector(camera.lookAt)); projection.updateMatrixWorld(true);
-  const screen = points.map(p => p.clone().project(projection));
-  const screenBounds = aabb(screen);
-  const behindCamera = points.some(p => p.clone().sub(projection.position).dot(direction) <= 0);
-  // Measured projection, not distance to an arbitrary aim point. Moving lookAt
-  // along the same ray cannot change the subject's observed screen coverage.
-  const screenFraction = (screenBounds.y.max - screenBounds.y.min) / 2;
-  const derivedSize = [['extreme close-up', 2.8], ['close-up', 1.6], ['medium close-up', 1.15], ['medium shot', 0.8], ['medium-wide shot', 0.52], ['wide shot', 0.3], ['extreme wide shot', 0]].find(([, threshold]) => screenFraction >= threshold)[0];
+  const { screenBounds, checks } = projectSubject(points, camera, fov, state.filmback.aspectRatio), derivedSize = checks.derivedSize;
   const resolvedCamera = { ...camera, sensorId: state.filmback.sensorId, slate: derivedSize };
   const draft = { shotDocument: { ...state.shotDocument, shots }, camera: resolvedCamera, manual: true };
   return { domain: 'shot', draft, affectedIds: [shot.id, ...(keyId ? [keyId] : [])],
-    checks: { coverage: 'same-frame-subject-bounds-projection', screenFraction, derivedSize, behindCamera, clipped: behindCamera || screen.some(p => Math.abs(p.x) > 1 || Math.abs(p.y) > 1 || p.z < -1 || p.z > 1) },
+    checks,
     warnings: [{ code: 'OCCLUSION_UNMEASURED' }], details: { created, shotId: shot.id, keyId, frame, framing, screenBounds, subjectIds: [subject.id] } };
 }
 

@@ -59,9 +59,9 @@ import AgentPanel from "./workflow/AgentPanel.jsx";
 import { buildStudioContext, physicsFingerprintInput, studioEntityCursor, validateStudioCursor } from "./studio-agent-context.js";
 import { STUDIO_TOOL_FAMILIES, StudioProtocolError, validateStudioCommand, validateStudioIdentity, validateReceipt } from "./studio-agent-protocol.js";
 import { elementByPath } from "./studio-elements.js";
-import { createStudioCommands, createStudioCommandJournal, studioObjectCatalogue } from "./studio-agent-commands.js";
+import { createStudioCommands, createStudioCommandJournal, studioObjectCatalogue, placementChecks, framingChecks } from "./studio-agent-commands.js";
 import { STUDIO_IK_CHAIN_TRACKS, createStudioActionRegistry, studioActionDeclaration, studioActionRefusal } from "./studio-actions.js";
-import { createStudioMotionCandidates } from "./studio-agent-motion.js";
+import { createStudioMotionCandidates, verifyInstalledTake } from "./studio-agent-motion.js";
 import { CONTACT_SHEET_LAYOUT, buildContactSheet, sampleContactSheetFrames } from "./studio-contact-sheet.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
@@ -1274,9 +1274,32 @@ export function createStudioAppBinding(ports) {
 				// A receipt edited over since is still evidence of what it did: return it
 				// marked stale with the revision it describes beside the current one.
 				const evidenceRevision = receipt ? receipt.revision.after : s.revision;
-				const result = { receiptId: receipt?.receiptId ?? null, revision: s.revision, evidenceRevision, stale: evidenceRevision !== s.revision, checks: receipt?.checks ?? { coverage: "unavailable" },
-					verification: receipt?.verification ?? null, semanticStatus: "unavailable", visualRefs: [],
-					unsupportedChecks: args.checks.filter(check => check === "motion" ? !receipt?.verification : !receipt?.checks) };
+				// Targets, and a receipt without evidence of its own, are measured now with
+				// the helpers the arrange/frame_shot receipts and the motion candidate use.
+				// Only a check nothing could compute is unsupported, and says why; a motion
+				// check computed for some characters still names the ones it skipped.
+				const scene = readCommand(), entityIds = ids => ids.filter(id => scene.objects.some(o => o.id === id) || scene.characters.some(c => c.id === id));
+				const measured = args.targets ? entityIds(args.targets) : receipt.checks ? null : entityIds(receipt.affectedIds);
+				const result = { receiptId: receipt?.receiptId ?? null, revision: s.revision, evidenceRevision, stale: evidenceRevision !== s.revision, checks: measured ? { coverage: "current-scene-targets" } : receipt.checks,
+					verification: receipt?.verification ?? null, semanticStatus: "unavailable", visualRefs: [], unsupportedChecks: [], unsupportedReasons: {} };
+				const reasons = result.unsupportedReasons, verified = [], skipped = [], pending = [];
+				for (const check of args.checks.filter(check => check !== "motion" && measured)) {
+					if (!measured.length) { reasons[check] = "No target is an object or character in the current scene."; continue; }
+					try { result.checks[check] = check === "placement" ? placementChecks(measured, scene, { bounds: ports.bounds }) : framingChecks(measured, scene, { bounds: ports.bounds }); }
+					catch (error) { if (!(error instanceof StudioProtocolError)) throw error; reasons[check] = error.message; }
+				}
+				if (args.checks.includes("motion") && !receipt?.verification) {
+					const subjects = args.targets ?? receipt.affectedIds.filter(id => s.characters.some(c => c.id === id));
+					if (!subjects.length) skipped.push("The receipt affected no character.");
+					subjects.forEach((id, index) => {
+						const character = s.characters.find(c => c.id === id), target = s.targets.get(id), name = character?.subject || id;
+						if (!character) return skipped.push(`${id} is not a character; motion checks a character's take.`);
+						if (!target?.motion) return skipped.push(`${name} has no motion take to check.`);
+						if (!target.rig) return skipped.push(`${name}'s rig is not loaded yet.`);
+						pending.push(verifyInstalledTake({ target: { ...target, character }, environment: readEnvironment(), range: args.range === "whole_clip" ? undefined : args.range, poseCast: ports.poseCast })
+							.then(verification => { verified[index] = verification; }, error => { if (!(error instanceof StudioProtocolError)) throw error; skipped.push(`${name}: ${error.message}`); }));
+					});
+				}
 				if (args.visual !== "none") {
 					if (args.visual === "contact_sheet") {
 						// One image of frames across the range, each rendered through the export
@@ -1286,7 +1309,20 @@ export function createStudioAppBinding(ports) {
 						result.visualRefs.push({ imageId, frames, layout: CONTACT_SHEET_LAYOUT });
 					} else { const capture = ports.capture(); const imageId = crypto.randomUUID(); images.set(imageId, { ...capture, revision: s.revision, receiptId: result.receiptId }); result.visualRefs.push({ imageId }); }
 				}
-				return result;
+				const finish = () => {
+					const computed = verified.filter(Boolean);
+					if (computed.length) result.verification = computed.length === 1 ? computed[0] : computed;
+					if (skipped.length) reasons.motion = skipped.join(" ");
+					result.unsupportedChecks = args.checks.filter(check => reasons[check] && (check !== "motion" || !computed.length));
+					return result;
+				};
+				if (!pending.length) return finish();
+				// Motion evaluation yields between frames: answer when it settles, with the
+				// same rejection receipt a synchronous failure would journal.
+				return Promise.all(pending).then(finish).catch(error => {
+					const rejected = rejection(request, error);
+					return same(rejected.host, journal.host) ? journal.record(rejected) : rejected;
+				});
 			}
 			fail("CAPABILITY_MISSING", "Generation is owned by the server runtime.");
 		} catch (error) { const receipt = rejection(request, error); return journal.record(receipt); }

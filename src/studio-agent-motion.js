@@ -92,6 +92,134 @@ function scheduleOf(value) {
   if (end !== value.frameCount) fail('INVALID_ARGUMENT', 'Schedule does not span the whole clip.');
   return freezeStudioData(structuredClone(value));
 }
+const nextTask = () => new Promise(resolve => {
+  const channel = new MessageChannel(); channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); }; channel.port2.postMessage(0);
+});
+const verificationBudget = (frames, ms) => (ms ?? 60000) * Math.max(1, frames / 48) * 2;
+function checkEnvironment(env) {
+  if (!Number.isSafeInteger(env.physicsRevision) || env.physicsRevision < 0 || !Number.isFinite(env.floor?.y)) fail('TARGET_NOT_READY', 'Authoritative physics revision and floor are required.');
+  return env;
+}
+const copyEnvironment = env => ({ ...env, host: structuredClone(env.host), floor: structuredClone(env.floor), objects: structuredClone(env.objects), cast: undefined });
+/** Private evaluators for the other visible cast, pushed one by one so a
+ * refused rig leaves every evaluator made before it disposable. */
+function stageCast(env, characterId, cast) {
+  for (const member of env.cast) {
+    if (member.character.id === characterId || member.character.hidden) continue;
+    // Unsupported bystanders remain explicit missing coverage, never vanish
+    // into characterBlockers' otherwise legitimate best-effort skip path.
+    const entry = { character: structuredClone(member.character), motion: member.motion ? structuredClone(member.motion) : null, layer: copyLayer(member.ikState), evaluator: null };
+    cast.push(entry);
+    if (member.rig && hasBindPose(member.rig) && supportsCollisionCleanup(member.rig)) entry.evaluator = isolatedRig(member.rig);
+  }
+}
+
+/* One take under evaluation, `t`: {evaluator, motion, env, cast, characterId,
+ * character, protectedFrames, range, poseCast?, yieldTask, checkpoint}. The
+ * private candidate and an installed take share this sampler and verdict, so
+ * both are judged by the same thresholds. */
+function blockersAt(t, frame) {
+  t.checkpoint();
+  const rigs = {};
+  for (const member of t.cast) {
+    if (!member.evaluator) continue;
+    poseFrame(member.evaluator, member.motion, member.layer, frame);
+    t.poseCast?.(member.evaluator, member, frame);
+    member.evaluator.parent.updateMatrixWorld(true);
+    rigs[member.character.id] = member.evaluator.rig;
+  }
+  const cast = t.cast.map((member) => member.character).filter(Boolean);
+  return collisionBlockers({ rigs, activeId: t.characterId, characterIds: cast, sceneObjects: t.env.objects, library: OBJECT_LIBRARY, frame, take: { frameCount: t.env.frameCount, fps: 24 } });
+}
+async function samples(t, layer) {
+  const rows = [], poses = [], collisions = [], blockers = [];
+  const cast = t.cast.map((member) => member.character).filter(Boolean);
+  for (let frame = t.range.startFrame; frame < t.range.endFrameExclusive; frame++) {
+    t.checkpoint(); poseFrame(t.evaluator, t.motion, layer, frame);
+    const shapes = blockersAt(t, frame);
+    const objects = t.env.objects.map(object => {
+      const at = objectTransformAt(object, frame, { frameCount: t.env.frameCount, fps: 24 });
+      return at ? { ...object, x: at.x, y: at.y, z: at.z, rot: at.rot ?? object.rot } : object;
+    });
+    rows.push(readSample(t.evaluator, createGroundSampler(objects, { floorY: t.env.floor.y, characters: cast })));
+    poses.push(poseValues(t.evaluator.rest));
+    const capsules = buildCollisionCapsules(t.evaluator.rig);
+    collisions.push(detectPenetrations(capsules, { blockers: shapes }).map(p => ({ a: p.a.def.id, b: p.b.def?.id ?? p.b.id, depth: p.depth })));
+    blockers.push(blockerSummary(shapes));
+    if (frame % 12 === 11) { await t.yieldTask(); t.checkpoint(); }
+  }
+  const contacts = supportIntervals(rows, 24, [], t.env.floor.y);
+  return { rows, poses, collisions, blockers, contacts, metrics: physicsMetrics(rows, contacts.masks, 24, t.env.floor.y), support: supportDiagnostics(rows, 24, t.env.floor.y) };
+}
+/** The verdict on one layer's samples (`after`) against the bare take's
+ * (`before`): status inputs, coverage, metrics and limitations. */
+function judge(t, before, after) {
+  const m = after.metrics;
+  const continuityRegressed = m.kneeStep > Math.max(before.metrics.kneeStep + 2, 12)
+    || m.kneeAcceleration > Math.max(1e-6, before.metrics.kneeAcceleration * 1.1)
+    || m.rootAcceleration > Math.max(1e-6, before.metrics.rootAcceleration * 1.1);
+  let protectedPoseError = 0;
+  for (const frame of t.protectedFrames) {
+    const f = frame - t.range.startFrame;
+    if (f < 0 || f >= before.poses.length) continue;
+    for (let b = 0; b < before.poses[f].length; b++) for (let i = 0; i < before.poses[f][b].length; i++) protectedPoseError = Math.max(protectedPoseError, Math.abs(before.poses[f][b][i] - after.poses[f][b][i]));
+  }
+  const supportedCollisionFrames = after.collisions.filter(p => p.length).length;
+  const elevatedFrames = after.rows.flatMap((row, f) => Object.values(row.ground).some(y => y !== t.env.floor.y) ? [t.range.startFrame + f] : []);
+  const unsupportedObjects = t.env.objects.filter(o => o.attach || o.rotX || o.rotZ);
+  const missingCast = t.cast.filter(m => !m.evaluator || ((m.character.layer?.waypoints?.length ?? 0) > 0 && !t.poseCast));
+  const measuredSupportFrames = after.support.frames.filter(f => f.measured).length;
+  const flat = t.env.floor.model === 'flat' && elevatedFrames.length === 0 && Math.abs(t.character.y ?? 0) < 1e-8;
+  const contactDefects = m.penetration > PHYSICS_LIMITS.floor || m.slide > PHYSICS_LIMITS.slide || m.float > PHYSICS_LIMITS.float || after.support.unsupportedFrames > 0;
+  const coverageComplete = m.surfaceMeasured && measuredSupportFrames === after.rows.length && after.contacts.spans.length > 0 && !missingCast.length && !unsupportedObjects.length;
+  const verified = coverageComplete && flat && !contactDefects && !after.support.unresolved.length && !supportedCollisionFrames && !continuityRegressed && protectedPoseError <= 1e-8;
+  const limitations = [...BASE_LIMITATIONS];
+  if (!m.surfaceMeasured || measuredSupportFrames !== after.rows.length) limitations.push('skin-or-dynamics-coverage-unavailable');
+  if (!after.contacts.spans.length) limitations.push('no-reliable-inferred-contact-spans');
+  if (!flat) limitations.push('elevated-moving-or-nonflat-support-unsupported');
+  if (missingCast.length) limitations.push('other-cast-evaluation-incomplete');
+  if (unsupportedObjects.length) limitations.push('attached-or-tilted-object-proxies-unsupported');
+  return { verified, flat, contactDefects, missingCast, unsupportedObjects, supportedCollisionFrames, limitations,
+    range: { ...t.range }, evaluatedFrames: after.rows.length,
+    coverage: { sourceFrames: before.rows.length, candidateFrames: after.rows.length, measuredSupportFrames, contactSpans: after.contacts.spans.length,
+      collisionFrames: after.collisions.length, otherCastIds: t.cast.map(m => m.character.id), pathObjectIds: t.env.objects.filter(o => o.path).map(o => o.id), elevatedFrames },
+    metrics: { surfaceMeasured: m.surfaceMeasured, maxFloorPenetrationM: m.penetration, maxContactSlipM: m.slide, maxContactFloatM: m.float,
+      unsupportedFrames: after.support.unsupportedFrames, supportedCollisionFrames, continuityRegressed, protectedPoseError,
+      kneeAcceleration: m.kneeAcceleration, rootAcceleration: m.rootAcceleration, supportForceResidual: after.support.forceResidual, supportMomentResidual: after.support.momentResidual } };
+}
+/** The verification a receipt carries, from a full verification result. */
+function receiptVerification(v) {
+  const m = v.metrics;
+  return { id: v.verificationId, status: v.status, profile: PROFILE, range: v.range, evaluatedFrames: v.evaluatedFrames, physicsRevision: v.physicsRevision,
+    limitations: v.limitations, surfaceMeasured: m.surfaceMeasured, maxFloorPenetrationM: m.maxFloorPenetrationM, maxContactSlipM: m.maxContactSlipM, maxContactFloatM: m.maxContactFloatM,
+    unsupportedFrames: m.unsupportedFrames, supportedCollisionFrames: m.supportedCollisionFrames, continuityRegressed: m.continuityRegressed, semanticStatus: 'unavailable' };
+}
+/** Motion verification of a take already installed without evidence (a UI
+ * generation, or a receipt that carries none): the candidate sampler, verdict
+ * and thresholds, run on a private clone of the character's rig over `range`
+ * (default and upper bound: the whole take). target: {character, rig, motion,
+ * ikState?, protectedFrames?}; environment has readEnvironment()'s shape.
+ * Returns the receipt verification shape tagged with the character id. */
+export async function verifyInstalledTake({ target, environment, range, poseCast, yieldTask = nextTask, now = Date.now, verificationMs, newId = () => crypto.randomUUID() }) {
+  const motion = target?.motion;
+  if (!motion?.frames) fail('TARGET_NOT_READY', 'The character has no installed take.');
+  const env = copyEnvironment(checkEnvironment(environment));
+  const startFrame = range?.startFrame ?? 0, endFrameExclusive = Math.min(range?.endFrameExclusive ?? motion.frames, motion.frames);
+  if (startFrame >= endFrameExclusive) fail('INVALID_RANGE', 'The range lies outside the installed take.');
+  const deadline = now() + verificationBudget(endFrameExclusive - startFrame, verificationMs);
+  const t = { evaluator: isolatedRig(target.rig), motion, env, cast: [], characterId: target.character.id, character: target.character,
+    protectedFrames: target.protectedFrames ?? [], range: { startFrame, endFrameExclusive }, poseCast, yieldTask,
+    checkpoint: () => { if (now() > deadline) fail('VERIFICATION_FAILED', 'Private verification budget exceeded.'); } };
+  try {
+    stageCast(environment, t.characterId, t.cast);
+    const before = await samples(t, copyLayer()), after = await samples(t, copyLayer(target.ikState)), j = judge(t, before, after);
+    return freezeStudioData({ characterId: t.characterId, ...receiptVerification({ verificationId: newId(), status: j.verified ? 'verified' : 'unverified',
+      range: j.range, evaluatedFrames: j.evaluatedFrames, physicsRevision: env.physicsRevision, limitations: j.limitations, metrics: j.metrics }) });
+  } finally {
+    disposeRig(t.evaluator);
+    for (const member of t.cast) if (member.evaluator) disposeRig(member.evaluator);
+  }
+}
 
 /** Required ports (all reads synchronous):
  * readTarget(binding) -> {guard, character, rig, ikState, calibration?,
@@ -107,9 +235,7 @@ function scheduleOf(value) {
 export function createStudioMotionCandidates(ports) {
   const candidates = new Map(), admissions = new Map();
   const now = ports.now ?? Date.now, newId = ports.newId ?? (() => crypto.randomUUID());
-  const yieldTask = ports.yieldTask ?? (() => new Promise(resolve => {
-    const channel = new MessageChannel(); channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); }; channel.port2.postMessage(0);
-  }));
+  const yieldTask = ports.yieldTask ?? nextTask;
   const ttlMs = ports.ttlMs ?? 600000;
   let disposed = false;
   function checkBinding(request) {
@@ -165,10 +291,11 @@ export function createStudioMotionCandidates(ports) {
       return receipt;
     } finally { if (candidate) candidate.busy = false; }
   }
+  const takeOf = c => ({ evaluator: c.evaluator, motion: c.motion, env: c.env, cast: c.cast, characterId: c.request.binding.characterId, character: c.character,
+    protectedFrames: c.protectedFrames, range: { startFrame: 0, endFrameExclusive: c.motion.frames }, poseCast: ports.poseCast, yieldTask, checkpoint: () => checkpoint(c) });
   const summary = c => ({ candidateId: c.candidateId, candidateRevision: c.revision, targetToken: c.request.binding.targetToken, physicsRevision: c.env.physicsRevision, structurallyValid: true });
   function captureEnvironment(c) {
-    const env = ports.readEnvironment();
-    if (!Number.isSafeInteger(env.physicsRevision) || env.physicsRevision < 0 || !Number.isFinite(env.floor?.y)) fail('TARGET_NOT_READY', 'Authoritative physics revision and floor are required.');
+    const env = checkEnvironment(ports.readEnvironment());
     const key = environmentKey(env);
     if (c.envKey === key) return;
     if (c.envKey) {
@@ -177,103 +304,33 @@ export function createStudioMotionCandidates(ports) {
     }
     for (const member of c.cast) if (member.evaluator) disposeRig(member.evaluator);
     c.cast = [];
-    c.env = { ...env, host: structuredClone(env.host), floor: structuredClone(env.floor), objects: structuredClone(env.objects), cast: undefined };
+    c.env = copyEnvironment(env);
     c.envKey = key; c.cache = null; c.autoCache.value = null;
-    for (const member of env.cast) {
-      if (member.character.id === c.request.binding.characterId || member.character.hidden) continue;
-      // Unsupported bystanders remain explicit missing coverage, never vanish
-      // into characterBlockers' otherwise legitimate best-effort skip path.
-      const entry = { character: structuredClone(member.character), motion: member.motion ? structuredClone(member.motion) : null, layer: copyLayer(member.ikState), evaluator: null };
-      c.cast.push(entry);
-      if (member.rig && hasBindPose(member.rig) && supportsCollisionCleanup(member.rig)) entry.evaluator = isolatedRig(member.rig);
-    }
+    stageCast(env, c.request.binding.characterId, c.cast);
   }
   function checkpoint(c) {
     fence(c);
     if (environmentKey(ports.readEnvironment()) !== c.envKey) fail('STALE_ENVIRONMENT', 'Physical inputs changed during evaluation.');
     if (now() > c.deadline) fail('VERIFICATION_FAILED', 'Private verification/repair budget exceeded.');
   }
-  function blockersAt(c, frame) {
-    checkpoint(c);
-    const rigs = {};
-    for (const member of c.cast) {
-      if (!member.evaluator) continue;
-      poseFrame(member.evaluator, member.motion, member.layer, frame);
-      ports.poseCast?.(member.evaluator, member, frame);
-      member.evaluator.parent.updateMatrixWorld(true);
-      rigs[member.character.id] = member.evaluator.rig;
-    }
-    const cast = c.cast.map((member) => member.character).filter(Boolean);
-    return collisionBlockers({ rigs, activeId: c.request.binding.characterId, characterIds: cast, sceneObjects: c.env.objects, library: OBJECT_LIBRARY, frame, take: { frameCount: c.env.frameCount, fps: 24 } });
-  }
-  async function samples(c, layer) {
-    const rows = [], poses = [], collisions = [], blockers = [];
-    const cast = c.cast.map((member) => member.character).filter(Boolean);
-    for (let frame = 0; frame < c.motion.frames; frame++) {
-      checkpoint(c); poseFrame(c.evaluator, c.motion, layer, frame);
-      const shapes = blockersAt(c, frame);
-      const objects = c.env.objects.map(object => {
-        const at = objectTransformAt(object, frame, { frameCount: c.env.frameCount, fps: 24 });
-        return at ? { ...object, x: at.x, y: at.y, z: at.z, rot: at.rot ?? object.rot } : object;
-      });
-      rows.push(readSample(c.evaluator, createGroundSampler(objects, { floorY: c.env.floor.y, characters: cast })));
-      poses.push(poseValues(c.evaluator.rest));
-      const capsules = buildCollisionCapsules(c.evaluator.rig);
-      collisions.push(detectPenetrations(capsules, { blockers: shapes }).map(p => ({ a: p.a.def.id, b: p.b.def?.id ?? p.b.id, depth: p.depth })));
-      blockers.push(blockerSummary(shapes));
-      if (frame % 12 === 11) { await yieldTask(); checkpoint(c); }
-    }
-    const contacts = supportIntervals(rows, 24, [], c.env.floor.y);
-    return { rows, poses, collisions, blockers, contacts, metrics: physicsMetrics(rows, contacts.masks, 24, c.env.floor.y), support: supportDiagnostics(rows, 24, c.env.floor.y) };
-  }
   async function evaluate(c) {
     captureEnvironment(c);
-    c.deadline = now() + (ports.verificationMs ?? 60000) * Math.max(1, c.motion.frames / 48) * 2;
-    if (!c.cache) c.cache = await samples(c, copyLayer());
-    const before = c.cache, after = await samples(c, c.layer), m = after.metrics;
-    const continuityRegressed = m.kneeStep > Math.max(before.metrics.kneeStep + 2, 12)
-      || m.kneeAcceleration > Math.max(1e-6, before.metrics.kneeAcceleration * 1.1)
-      || m.rootAcceleration > Math.max(1e-6, before.metrics.rootAcceleration * 1.1);
-    let protectedPoseError = 0;
-    for (const f of c.protectedFrames) for (let b = 0; b < before.poses[f].length; b++) for (let i = 0; i < before.poses[f][b].length; i++) protectedPoseError = Math.max(protectedPoseError, Math.abs(before.poses[f][b][i] - after.poses[f][b][i]));
-    const supportedCollisionFrames = after.collisions.filter(p => p.length).length;
-    const elevatedFrames = after.rows.flatMap((row, frame) => Object.values(row.ground).some(y => y !== c.env.floor.y) ? [frame] : []);
-    const unsupportedObjects = c.env.objects.filter(o => o.attach || o.rotX || o.rotZ);
-    const missingCast = c.cast.filter(m => !m.evaluator || ((m.character.layer?.waypoints?.length ?? 0) > 0 && !ports.poseCast));
-    const measuredSupportFrames = after.support.frames.filter(f => f.measured).length;
-    const flat = c.env.floor.model === 'flat' && elevatedFrames.length === 0 && Math.abs(c.character.y ?? 0) < 1e-8;
-    const contactDefects = m.penetration > PHYSICS_LIMITS.floor || m.slide > PHYSICS_LIMITS.slide || m.float > PHYSICS_LIMITS.float || after.support.unsupportedFrames > 0;
-    const coverageComplete = m.surfaceMeasured && measuredSupportFrames === c.motion.frames && after.contacts.spans.length > 0 && !missingCast.length && !unsupportedObjects.length;
-    const verified = coverageComplete && flat && !contactDefects && !after.support.unresolved.length && !supportedCollisionFrames && !continuityRegressed && protectedPoseError <= 1e-8;
-    const limitations = [...BASE_LIMITATIONS];
-    if (!m.surfaceMeasured || measuredSupportFrames !== c.motion.frames) limitations.push('skin-or-dynamics-coverage-unavailable');
-    if (!after.contacts.spans.length) limitations.push('no-reliable-inferred-contact-spans');
-    if (!flat) limitations.push('elevated-moving-or-nonflat-support-unsupported');
-    if (missingCast.length) limitations.push('other-cast-evaluation-incomplete');
-    if (unsupportedObjects.length) limitations.push('attached-or-tilted-object-proxies-unsupported');
-    if (c.rejectedRepairs.length) limitations.push('bounded-repair-rejected-regression');
-    const repairable = !c.sealed && !c.revalidatedEnvironment && flat && m.surfaceMeasured && !missingCast.length && !unsupportedObjects.length
-      && ((!c.autoAttempted && contactDefects) || (!c.collisionAttempted && supportedCollisionFrames > 0));
-    const result = { ...summary(c), verificationId: newId(), profile: PROFILE, status: verified ? 'verified' : 'unverified', repairable,
-      range: { startFrame: 0, endFrameExclusive: c.motion.frames }, evaluatedFrames: after.rows.length,
-      coverage: { sourceFrames: before.rows.length, candidateFrames: after.rows.length, measuredSupportFrames, contactSpans: after.contacts.spans.length,
-        collisionFrames: after.collisions.length, otherCastIds: c.cast.map(m => m.character.id), pathObjectIds: c.env.objects.filter(o => o.path).map(o => o.id), elevatedFrames },
-      metrics: { surfaceMeasured: m.surfaceMeasured, maxFloorPenetrationM: m.penetration, maxContactSlipM: m.slide, maxContactFloatM: m.float,
-        unsupportedFrames: after.support.unsupportedFrames, supportedCollisionFrames, continuityRegressed, protectedPoseError,
-        kneeAcceleration: m.kneeAcceleration, rootAcceleration: m.rootAcceleration, supportForceResidual: after.support.forceResidual, supportMomentResidual: after.support.momentResidual },
-      limitations, visualRefs: [], semanticStatus: 'unavailable', repairs: repairCounts(c) };
-    if (verified || !repairable || c.collisionAttempted) c.sealed = true;
+    c.deadline = now() + verificationBudget(c.motion.frames, ports.verificationMs);
+    const t = takeOf(c);
+    if (!c.cache) c.cache = await samples(t, copyLayer());
+    const before = c.cache, after = await samples(t, c.layer), j = judge(t, before, after);
+    if (c.rejectedRepairs.length) j.limitations.push('bounded-repair-rejected-regression');
+    const repairable = !c.sealed && !c.revalidatedEnvironment && j.flat && after.metrics.surfaceMeasured && !j.missingCast.length && !j.unsupportedObjects.length
+      && ((!c.autoAttempted && j.contactDefects) || (!c.collisionAttempted && j.supportedCollisionFrames > 0));
+    const result = { ...summary(c), verificationId: newId(), profile: PROFILE, status: j.verified ? 'verified' : 'unverified', repairable,
+      range: j.range, evaluatedFrames: j.evaluatedFrames, coverage: j.coverage, metrics: j.metrics,
+      limitations: j.limitations, visualRefs: [], semanticStatus: 'unavailable', repairs: repairCounts(c) };
+    if (j.verified || !repairable || c.collisionAttempted) c.sealed = true;
     c.evidence = { before, after }; c.verification = freezeStudioData(result); c.verifiedStamp = physicsKeyStamp(c.layer.keys);
     checkpoint(c);
     return c.verification;
   }
   const repairCounts = c => ({ autoPhysicsInvocations: c.autoInvocations, fixCollisionsInvocations: c.collisionInvocations, remaining: c.sealed ? 0 : Number(!c.autoAttempted) + Number(!c.collisionAttempted) });
-  function receiptVerification(c) {
-    const v = c.verification, m = v.metrics;
-    return { id: v.verificationId, status: v.status, profile: PROFILE, range: v.range, evaluatedFrames: v.evaluatedFrames, physicsRevision: v.physicsRevision,
-      limitations: v.limitations, surfaceMeasured: m.surfaceMeasured, maxFloorPenetrationM: m.maxFloorPenetrationM, maxContactSlipM: m.maxContactSlipM, maxContactFloatM: m.maxContactFloatM,
-      unsupportedFrames: m.unsupportedFrames, supportedCollisionFrames: m.supportedCollisionFrames, continuityRegressed: m.continuityRegressed, semanticStatus: 'unavailable' };
-  }
   const api = {
     prepare_motion_install(request) {
       // Identical preparation replay shares one promise and one private rig.
@@ -338,7 +395,7 @@ export function createStudioMotionCandidates(ports) {
         if (request.method === 'auto_physics' ? c.autoAttempted || c.collisionAttempted : c.collisionAttempted || !c.autoAttempted) fail('VERIFICATION_FAILED', 'Repair invocation budget or order exceeded.');
         const before = c.verification, draft = copyLayer(c.layer);
         const preimage = { layer: c.layer, evidence: c.evidence, verifiedStamp: c.verifiedStamp, sealed: c.sealed };
-        c.deadline = now() + (ports.verificationMs ?? 60000) * Math.max(1, c.motion.frames / 48) * 2;
+        c.deadline = now() + verificationBudget(c.motion.frames, ports.verificationMs);
         if (request.method === 'auto_physics') {
           c.autoAttempted = true;
           if (before.metrics.maxFloorPenetrationM > PHYSICS_LIMITS.floor || before.metrics.maxContactSlipM > PHYSICS_LIMITS.slide || before.metrics.maxContactFloatM > PHYSICS_LIMITS.float || before.metrics.unsupportedFrames > 0) {
@@ -353,7 +410,7 @@ export function createStudioMotionCandidates(ports) {
           if (before.metrics.supportedCollisionFrames) {
             c.collisionInvocations++;
             (ports.fixCollisionsRange ?? fixCollisionsRange)({ rig: c.evaluator.rig, chains: c.evaluator.chains, fkJoints: c.evaluator.fkJoints, ikState: draft, startFrame: 0, endFrame: c.motion.frames - 1, floorY: c.env.floor.y, onlyChains: REPAIR_CHAINS,
-              applyFrame: f => { checkpoint(c); poseFrame(c.evaluator, c.motion, draft, f); }, blockersAt: f => blockersAt(c, f), blendWindow: BLEND });
+              applyFrame: f => { checkpoint(c); poseFrame(c.evaluator, c.motion, draft, f); }, blockersAt: f => blockersAt(takeOf(c), f), blendWindow: BLEND });
           }
         }
         checkpoint(c); c.layer = draft; c.revision++;
@@ -394,7 +451,7 @@ export function createStudioMotionCandidates(ports) {
         c.sealed = true;
         if (!ports.commit) fail('CAPABILITY_MISSING', 'The editor atomic motion owner is not bound.');
         const payload = { ...request, motion: c.motion, sourceMotion: c.motion, schedule: c.schedule, ikState: c.layer, scale: c.character.scale, calibration: c.calibration,
-          verification: receiptVerification(c), repairs: repairCounts(c) };
+          verification: receiptVerification(c.verification), repairs: repairCounts(c) };
         committing = true;
         const receipt = ports.commit(payload);
         if (receipt?.then) fail('UNCERTAIN_APPLY', 'Motion publication must be synchronous.');
