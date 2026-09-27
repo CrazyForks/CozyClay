@@ -13914,6 +13914,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									charScale={activeChar.scale ?? 1}
 									ikFocus={ikFocus}
 									falloffFrames={trailFalloffFrames}
+									playheadFrame={tlFrame}
 									pendingEdit={trailEdit}
 									enabled={ikMode && ikEditTool === "trail" && showTrails && !posing && !playMode}
 									visible={showTrails}
