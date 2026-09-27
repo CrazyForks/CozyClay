@@ -7451,7 +7451,7 @@ export default function App() {
 	/* --------------------------- motion playback ---------------------------- */
 
 	function leaveIkMode() {
-		if (typeof ikMode !== "undefined" && ikMode && typeof poserCamRef !== "undefined" && typeof ikCameraMemoryRef !== "undefined" && poserCamRef.current) {
+		if (ikMode && poserCamRef.current) {
 			const poserCam = poserCamRef.current;
 			ikCameraMemoryRef.current.set(activeChar.id, {
 				position: poserCam.position.clone(),
