@@ -94,6 +94,33 @@ async function run() {
   console.log('PASS relative-basis-and-batch: camera-left -1.05m, actual receipt/state and one Undo');
   await measuredCharacterFloor(mod);
   await boundaries(mod);
+  targetChecks(mod);
+}
+
+// verify_result on targets measures the current scene with the very evidence
+// an arrangement or framing receipt carries.
+function targetChecks(mod) {
+  assert.equal(typeof mod.placementChecks, 'function', 'placementChecks is exported for verify_result targets');
+  assert.equal(typeof mod.framingChecks, 'function', 'framingChecks is exported for verify_result targets');
+  {
+    const f = fixture(), commands = mod.createStudioCommands(f.ports);
+    f.stores.objects.applyAtomic(rows => [...rows, updateSceneObject([createSceneObject('cube')], 'cube', { x: -0.685, scaleX: 0.37, scaleZ: 0.4 })[0]]);
+    const receipt = commands.execute(f.envelope('arrange_objects', { ops: [chair('shot_camera')] }));
+    assert.equal(receipt.ok, true, JSON.stringify(receipt));
+    const { coverage, overlapIds, maximumFootprintOverlapM } = receipt.checks;
+    assert.deepEqual(mod.placementChecks(['chair'], f.state, f.ports), { coverage, overlapIds, maximumFootprintOverlapM });
+    const alone = mod.placementChecks(['alex'], f.state, f.ports);
+    assert.deepEqual(alone.overlapIds, []); assert.equal(alone.maximumFootprintOverlapM, 0);
+  }
+  {
+    const f = fixture(), commands = mod.createStudioCommands(f.ports);
+    const receipt = commands.execute(f.envelope('frame_shot', { subjectIds: ['alex'], framing: { intent: { size: 'medium shot', view: 'front', level: 'eye', side: 'right', focalMm: 35 } } }));
+    assert.equal(receipt.ok, true, JSON.stringify(receipt));
+    assert.deepEqual(mod.framingChecks(['alex'], f.state, f.ports), receipt.checks);
+    f.state.camera = null;
+    assert.throws(() => mod.framingChecks(['alex'], f.state, f.ports), error => error.code === 'TARGET_NOT_READY');
+  }
+  console.log('PASS target checks: placement and framing evidence for target ids equals the arrange and frame_shot receipt evidence');
 }
 
 async function measuredCharacterFloor(mod) {

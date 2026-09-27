@@ -1,5 +1,6 @@
 import {
 	memo,
+	useCallback,
 	useEffect,
 	useMemo,
 	useRef,
@@ -59,9 +60,10 @@ import AgentPanel from "./workflow/AgentPanel.jsx";
 import { buildStudioContext, physicsFingerprintInput, studioEntityCursor, validateStudioCursor } from "./studio-agent-context.js";
 import { STUDIO_TOOL_FAMILIES, StudioProtocolError, validateStudioCommand, validateStudioIdentity, validateReceipt } from "./studio-agent-protocol.js";
 import { elementByPath } from "./studio-elements.js";
-import { createStudioCommands, createStudioCommandJournal, studioObjectCatalogue } from "./studio-agent-commands.js";
+import { createStudioCommands, createStudioCommandJournal, studioObjectCatalogue, placementChecks, framingChecks } from "./studio-agent-commands.js";
 import { STUDIO_IK_CHAIN_TRACKS, createStudioActionRegistry, studioActionDeclaration, studioActionRefusal } from "./studio-actions.js";
-import { createStudioMotionCandidates } from "./studio-agent-motion.js";
+import { createStudioMotionCandidates, verifyInstalledTake } from "./studio-agent-motion.js";
+import { CONTACT_SHEET_LAYOUT, buildContactSheet, sampleContactSheetFrames } from "./studio-contact-sheet.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
@@ -689,10 +691,11 @@ export function createStudioAppActions(handlersRef) {
 				: state.promptBlockCount === 0 ? "The active character has no prompt block with text; write them with patch_elements character.promptBlocks." : true,
 		run: () => {
 			const { activeCharacterId, promptBlockCount } = h().state();
-			h().runAllPromptBlocks();
-			// The generation queues synchronously or not at all; the editor's toast
-			// names the refusal (rig not loaded, over-long block, line-edit draft).
-			if (!h().state().generating) fail("TARGET_NOT_READY", "The editor did not start the generation; check the active character's rig and prompt blocks.");
+			const shown = h().runAllPromptBlocks() ?? [];
+			// The generation queues synchronously or not at all; when it does not,
+			// the editor's last toast names the refusal (rig not loaded, a root
+			// waypoint outside the clip, an over-long block, a line-edit draft).
+			if (!h().state().generating) fail("TARGET_NOT_READY", shown.length ? `Generation not started: ${shown.at(-1)}` : "The editor did not start the generation; check the active character's rig and prompt blocks.");
 			return { affectedIds: activeCharacterId ? [activeCharacterId] : [], summary: `Started generating the active character's motion from ${promptBlockCount} prompt block${promptBlockCount === 1 ? "" : "s"}.` };
 		} });
 	// Cast actions name their character explicitly, so they run the same way
@@ -709,10 +712,12 @@ export function createStudioAppActions(handlersRef) {
 	const warned = warnings => warnings.length ? `; warning: ${warnings[0]}` : "";
 	castAction("character.addWaypoint", ({ characterId, position, frame }, name) => {
 		const { waypoint, index, warnings } = h().addCharacterWaypoint(characterId, position, frame ?? null);
+		h().setWaypointMode(true);
 		return `Added ${name}'s root waypoint ${index + 1} at ${pin(waypoint)}${warned(warnings)}.`;
 	});
 	castAction("character.moveWaypoint", ({ characterId, frame, position }, name) => {
 		const { waypoint, warnings } = h().moveCharacterWaypoint(characterId, frame, position);
+		h().setWaypointMode(true);
 		return `Moved ${name}'s root waypoint to ${pin(waypoint)}${warned(warnings)}.`;
 	});
 	castAction("character.removeWaypoint", ({ characterId, frame }, name) => {
@@ -1271,14 +1276,55 @@ export function createStudioAppBinding(ports) {
 				// A receipt edited over since is still evidence of what it did: return it
 				// marked stale with the revision it describes beside the current one.
 				const evidenceRevision = receipt ? receipt.revision.after : s.revision;
-				const result = { receiptId: receipt?.receiptId ?? null, revision: s.revision, evidenceRevision, stale: evidenceRevision !== s.revision, checks: receipt?.checks ?? { coverage: "unavailable" },
-					verification: receipt?.verification ?? null, semanticStatus: "unavailable", visualRefs: [],
-					unsupportedChecks: args.checks.filter(check => check === "motion" ? !receipt?.verification : !receipt?.checks) };
-				if (args.visual !== "none") {
-					if (args.visual === "contact_sheet") result.unsupportedChecks.push("contact_sheet");
-					else { const capture = ports.capture(); const imageId = crypto.randomUUID(); images.set(imageId, { ...capture, revision: s.revision, receiptId: result.receiptId }); result.visualRefs.push({ imageId }); }
+				// Targets, and a receipt without evidence of its own, are measured now with
+				// the helpers the arrange/frame_shot receipts and the motion candidate use.
+				// Only a check nothing could compute is unsupported, and says why; a motion
+				// check computed for some characters still names the ones it skipped.
+				const scene = readCommand(), entityIds = ids => ids.filter(id => scene.objects.some(o => o.id === id) || scene.characters.some(c => c.id === id));
+				const measured = args.targets ? entityIds(args.targets) : receipt.checks ? null : entityIds(receipt.affectedIds);
+				const result = { receiptId: receipt?.receiptId ?? null, revision: s.revision, evidenceRevision, stale: evidenceRevision !== s.revision, checks: measured ? { coverage: "current-scene-targets" } : receipt.checks,
+					verification: receipt?.verification ?? null, semanticStatus: "unavailable", visualRefs: [], unsupportedChecks: [], unsupportedReasons: {} };
+				const reasons = result.unsupportedReasons, verified = [], skipped = [], pending = [];
+				for (const check of args.checks.filter(check => check !== "motion" && measured)) {
+					if (!measured.length) { reasons[check] = "No target is an object or character in the current scene."; continue; }
+					try { result.checks[check] = check === "placement" ? placementChecks(measured, scene, { bounds: ports.bounds }) : framingChecks(measured, scene, { bounds: ports.bounds }); }
+					catch (error) { if (!(error instanceof StudioProtocolError)) throw error; reasons[check] = error.message; }
 				}
-				return result;
+				if (args.checks.includes("motion") && !receipt?.verification) {
+					const subjects = args.targets ?? receipt.affectedIds.filter(id => s.characters.some(c => c.id === id));
+					if (!subjects.length) skipped.push("The receipt affected no character.");
+					subjects.forEach((id, index) => {
+						const character = s.characters.find(c => c.id === id), target = s.targets.get(id), name = character?.subject || id;
+						if (!character) return skipped.push(`${id} is not a character; motion checks a character's take.`);
+						if (!target?.motion) return skipped.push(`${name} has no motion take to check.`);
+						if (!target.rig) return skipped.push(`${name}'s rig is not loaded yet.`);
+						pending.push(verifyInstalledTake({ target: { ...target, character }, environment: readEnvironment(), range: args.range === "whole_clip" ? undefined : args.range, poseCast: ports.poseCast })
+							.then(verification => { verified[index] = verification; }, error => { if (!(error instanceof StudioProtocolError)) throw error; skipped.push(`${name}: ${error.message}`); }));
+					});
+				}
+				if (args.visual !== "none") {
+					if (args.visual === "contact_sheet") {
+						// One image of frames across the range, each rendered through the export
+						// path, which puts the playhead pose, shot camera and props back.
+						const frames = sampleContactSheetFrames(args.range, s.frameCount), sheet = buildContactSheet(frames, ports.renderFrameBuffer), imageId = crypto.randomUUID();
+						images.set(imageId, { dataUrl: ports.encodePng(sheet.data, sheet), width: sheet.width, height: sheet.height, frames, layout: CONTACT_SHEET_LAYOUT, revision: s.revision, receiptId: result.receiptId });
+						result.visualRefs.push({ imageId, frames, layout: CONTACT_SHEET_LAYOUT });
+					} else { const capture = ports.capture(); const imageId = crypto.randomUUID(); images.set(imageId, { ...capture, revision: s.revision, receiptId: result.receiptId }); result.visualRefs.push({ imageId }); }
+				}
+				const finish = () => {
+					const computed = verified.filter(Boolean);
+					if (computed.length) result.verification = computed.length === 1 ? computed[0] : computed;
+					if (skipped.length) reasons.motion = skipped.join(" ");
+					result.unsupportedChecks = args.checks.filter(check => reasons[check] && (check !== "motion" || !computed.length));
+					return result;
+				};
+				if (!pending.length) return finish();
+				// Motion evaluation yields between frames: answer when it settles, with the
+				// same rejection receipt a synchronous failure would journal.
+				return Promise.all(pending).then(finish).catch(error => {
+					const rejected = rejection(request, error);
+					return same(rejected.host, journal.host) ? journal.record(rejected) : rejected;
+				});
 			}
 			fail("CAPABILITY_MISSING", "Generation is owned by the server runtime.");
 		} catch (error) { const receipt = rejection(request, error); return journal.record(receipt); }
@@ -3322,7 +3368,14 @@ export default function App() {
 	const [resultOpen, setResultOpen] = useState(false);
 	const [copied, setCopied] = useState(false);
 	const [recordedVideoName, setRecordedVideoName] = useState(null);
-	const [toast, setToast] = useState(startup.toast ?? "");
+	const [toast, showToast] = useState(startup.toast ?? "");
+	// While a Studio action runs editor work, the toasts it shows are collected
+	// so run_action can give the agent the reason the user was shown.
+	const toastSinkRef = useRef(null);
+	const setToast = useCallback((value) => {
+		if (typeof value === "string" && value) toastSinkRef.current?.push(value);
+		showToast(value);
+	}, []);
 	// The PWA's "a newer studio is waiting" registration, once one arrives.
 	const [pwaUpdate, setPwaUpdate] = useState(null);
 	useEffect(() => {
@@ -12690,6 +12743,14 @@ function resizePromptClip(id, edge, rawFrame) {
 	studioPortsRef.current = {
 		read: readStudioState, revision: sceneRevisionRef, bounds: studioBounds, commit: commitStudioDraft, commitMotion: commitStudioMotion,
 		operate: operateStudio, undo: undoScene, stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
+		// One shot frame as raw read-back pixels (rows bottom-up), from the export
+		// path captureShotFramePng uses; an export in flight renders at its output.
+		renderFrameBuffer: frame => {
+			const output = recRef.current?.capture ? recRef.current.request.context.output : shotOutput, data = withExportFrame(frame);
+			if (!data) throw new Error("The shot renderer is not ready");
+			return { data, width: output.width, height: output.height };
+		},
+		encodePng: (buffer, output) => bufferToPng(buffer, output),
 		// The pose library a character.pose patch resolves its id against.
 		poses: () => [DEFAULT_POSE, ...customPoses],
 		loadArtifact: (artifact, options) => {
@@ -12737,8 +12798,15 @@ function resizePromptClip(id, edge, rawFrame) {
 			falMotion: { enabled: falMotionEnabled, status: falMotion.status, dailyRemaining: falMotion.dailyRemaining ?? null },
 		}),
 		addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, setTimelineShotRange, moveTimelineShot,
-		runAllPromptBlocks, duplicateSelectedSceneObject,
-		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints,
+		// Answers the toasts the editor showed while (not) starting the generation.
+		runAllPromptBlocks: () => {
+			const shown = [];
+			toastSinkRef.current = shown;
+			try { runAllPromptBlocks(); } finally { toastSinkRef.current = null; }
+			return shown;
+		},
+		duplicateSelectedSceneObject,
+		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, setWaypointMode,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, attachSceneObject, setShotCameraRail, clearShotCameraRail,
 		choosePartColours, setGuideMode, setInsetCollapsed, exportShotVideo,
 		switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument,

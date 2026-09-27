@@ -14,7 +14,7 @@ import { createModels, createAssistantMessageEventStream } from "@earendil-works
 import { fauxProvider, fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai/providers/faux";
 import { fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createAgentRunner, classifyError } from "../bin/agent/agent-runner.mjs";
-import { createSessionStore } from "../bin/agent/session-store.mjs";
+import { createSessionStore, transcriptFromHistory } from "../bin/agent/session-store.mjs";
 import { createModels as createAgentModels } from "../bin/agent/providers.mjs";
 
 process.env.COZYCLAY_AGENT_SESSIONS_DIR = mkdtempSync(join(tmpdir(), "cozyclay-agent-runner-errors-"));
@@ -29,6 +29,17 @@ async function collect(session, input) {
 	const frames = [];
 	for await (const frame of session.start(input)) frames.push(frame);
 	return frames;
+}
+
+// A verification result echoes the receipt id already emitted by the arrange
+// tool result; restoration must keep one row for that receipt.
+{
+	const history = [
+		{ role: "toolResult", toolCallId: "arrange", details: { receiptId: "R1", status: "applied" } },
+		{ role: "toolResult", toolCallId: "verify", details: { receiptId: "R1", status: "verified" } },
+	];
+	const receipts = transcriptFromHistory(history).filter((item) => item.kind === "receipt" && item.receiptId === "R1");
+	expect("restored pi history keeps one receipt row per receiptId", receipts.length === 1, JSON.stringify(receipts));
 }
 
 /** Queues `steps` (each either an assistant message or a factory) on `faux`

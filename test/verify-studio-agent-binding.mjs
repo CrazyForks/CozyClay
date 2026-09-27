@@ -11,6 +11,7 @@ import * as protocol from '../src/studio-agent-protocol.js';
 import * as context from '../src/studio-agent-context.js';
 import * as commands from '../src/studio-agent-commands.js';
 import { createStudioMotionCandidates } from '../src/studio-agent-motion.js';
+import * as studioMotion from '../src/studio-agent-motion.js';
 import { createSceneHistoryStore } from '../src/scene-history.js';
 import { createCharacterEntry, createCharacterLayer, addScene, duplicateScene, renameScene, removeScene } from '../src/scenes.js';
 import { judgeNextWaypoint } from '../src/ardy/waypoints.js';
@@ -40,7 +41,7 @@ import { applyMotionCalibration, normalizeMotionCalibration } from '../src/ardy/
 import { decodeMotionResource, encodeMotionResource, resolveMotionSource, sha256Hex } from '../src/motion-resources.js';
 import { motionArraysToNpzMembers, writeNpz } from '../tools/ardy/npz.mjs';
 
-const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes', 'run-action-project-save', 'run-action-asset-import-and-undo', 'run-action-ai-prepare-shot', 'run-action-motion-generate-from-video'];
+const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'generate-all-blocks-refusal-reason', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'verify-result-targets', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes', 'run-action-project-save', 'run-action-asset-import-and-undo', 'run-action-ai-prepare-shot', 'run-action-motion-generate-from-video'];
 const argv = process.argv.slice(2);
 assert(!argv.length || (argv.length === 2 && argv[0] === '--case' && cases.includes(argv[1])), 'Unknown test arguments');
 const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
@@ -127,7 +128,7 @@ function fixture(options={}) {
   submitFalMotion:async request=>{stand.falSubmits.push(request);if(stand.falSubmitError)throw new Error(stand.falSubmitError);return {job:{id:'fal-job-1',status:'queued'},dailyRemaining:3};},
   waitForFalMotionJob:async(id,{onUpdate})=>{onUpdate({id,status:'running'});return structuredClone(stand.falFinished);},
   ingestFootage:async source=>{stand.ingested.push(source);return stand.ingestResult;}};
- const scope={THREE,cloneSkeleton,...protocol,...context,...commands,...objects,...ik,...playback,createStudioMotionCandidates,copyPhysicsKeys,physicsKeyStamp,sampleAt,shotAtFrame,focalMmToFov,fovToFocalMm,objectTransformAt,aimAt,forwardFrom,
+ const scope={THREE,cloneSkeleton,...protocol,...context,...commands,...objects,...ik,...playback,createStudioMotionCandidates,verifyInstalledTake:studioMotion.verifyInstalledTake,copyPhysicsKeys,physicsKeyStamp,sampleAt,shotAtFrame,focalMmToFov,fovToFocalMm,objectTransformAt,aimAt,forwardFrom,
  liveStateRef:live,sceneRevisionRef:revision,charactersRef:characterRef,loadedLayerCharRef:ref(a.id),bufferRef:buffer,ikStateRef:state,ikStatesRef:layers,storeRef:store,
  charHistoryRef:history,opClockRef:clock,lastObjectOpRef:lastObject,studioHistoryRef:studioHistory,motionFullRef:ref(new Map()),
  store:store.current,suppressObjectClockRef:suppressObjectClock,studioBindingRef:ref(null),objectDeleteUndo:null,selectedSceneObjectId:null,
@@ -179,10 +180,13 @@ function fixture(options={}) {
  const stand={exporting:false,exportResult:{fileName:'cozyclay-hero.mp4',frameCount:24},exports:[],renders:0,
   project:{name:'Heist',hasFile:true,fileAccess:true,gesture:false},granted:true,saveOutcome:{saved:true,name:'Heist',fileName:'Heist.cclayproject'},saves:[],
   imports:[],fetched:[],importError:null,staleCommits:0,captures,clipboard,
-  captureError:null,falSubmits:[],falSubmitError:null,ingested:[],ingestResult:{frames:120,fps:24,duration:5},
+  captureError:null,falSubmits:[],falSubmitError:null,ingested:[],ingestResult:{frames:120,fps:24,duration:5},waypointMode:false,
+  // The editor's prompt-block run: how many blocks it has, and the toasts it
+  // shows when it does not start the generation.
+  promptBlockCount:0,generationRuns:0,generationToasts:[],
   falFinished:{job:{id:'fal-job-1',status:'done',video:{url:'https://cdn.example.test/fal-act.mp4'},resolution:'480P',width:832,height:480,fps:24,duration:5,resultDuration:5,cost:0.1},dailyRemaining:2}};
  const actionHandlers=ref({
-  state:()=>({shots:live.current.shots,objects:store.current.objects,characters:characterRef.current,frame:0,frameCount:48,selectedObjectId:null,activeCharacterId:'actor-a',promptBlockCount:0,generating:false,motionReady:true,
+  state:()=>({shots:live.current.shots,objects:store.current.objects,characters:characterRef.current,frame:0,frameCount:48,selectedObjectId:null,activeCharacterId:'actor-a',promptBlockCount:stand.promptBlockCount,generating:false,motionReady:true,
    exporting:stand.exporting,canExportVideo:live.current.shots.length>0,
    scenes:scope.scenesRef.current.map(({id,name})=>({id,name})),activeSceneId:scope.activeSceneIdRef.current,project:{...stand.project},
    aiShot:{mode:committed.mode,imageModel:committed.imageModel},
@@ -203,8 +207,10 @@ function fixture(options={}) {
   addTimelineShot:()=>actual.addTimelineShot(),
   ...Object.fromEntries(['addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints','setCharacterIkKey','removeCharacterIkKey','clearCharacterIkKeys','attachSceneObject','setShotCameraRail','clearShotCameraRail','choosePartColours','setInsetCollapsed'].map(name=>[name,actual[name]])),
   setGuideMode:mode=>scope.setGuideMode(mode),
+  setWaypointMode:value=>{stand.waypointMode=value;},
   duplicateSelectedSceneObject:id=>{const source=store.current.objects.find(o=>o.id===id);store.current.applyAtomic(list=>[...list,{...source,id:'copy-1',name:'Copy',x:source.x+0.5}]);},
-  ...Object.fromEntries(['splitTimelineShot','duplicateTimelineShot','removeTimelineShot','setTimelineShotRange','moveTimelineShot','runAllPromptBlocks'].map(name=>[name,unwired(name)])),
+  ...Object.fromEntries(['splitTimelineShot','duplicateTimelineShot','removeTimelineShot','setTimelineShotRange','moveTimelineShot'].map(name=>[name,unwired(name)])),
+  runAllPromptBlocks:()=>{stand.generationRuns++;return [...stand.generationToasts];},
  });
  const registry=actual.createStudioAppActions(actionHandlers);actionsRef.current=registry;
  const poses=[{id:'pose-rest',label:'Rest',bones:{}},{id:'pose-wave',label:'Wave',bones:{}}];
@@ -305,6 +311,34 @@ const implementations={
   assert.notEqual(after.ok,false,`a later edit must not fail verification: ${JSON.stringify(after)}`);
   assert.deepEqual({stale:after.stale,evidenceRevision:after.evidenceRevision,revision:after.revision},{stale:true,evidenceRevision:second.revision.after,revision:f.binding.refresh().revision});
   assert(after.revision>second.revision.after);
+ },
+ async 'verify-result-targets'(f){
+  // Targets are measured now, with the helpers the arrange/frame_shot receipts
+  // and the motion candidate use; only what truly cannot be computed is
+  // unsupported, and each such check says why.
+  const branch=app.slice(app.indexOf('if (request.name === "verify_result") {'),app.indexOf('fail("CAPABILITY_MISSING", "Generation is owned by the server runtime.");'));
+  for(const helper of ['placementChecks(','framingChecks(','verifyInstalledTake('])assert(branch.includes(helper),`verify_result computes target checks through ${helper}`);
+  const verify=args=>f.call('verify_result',f.request('verify_result',{visual:'none',...args}));
+  const first=await verify({targets:['actor-a'],checks:['placement','framing','motion']});
+  assert.notEqual(first.ok,false,JSON.stringify(first));
+  assert.deepEqual(first.unsupportedChecks,['motion'],JSON.stringify(first));
+  assert.match(first.unsupportedReasons.motion,/take/);
+  assert.deepEqual(Object.keys(first.unsupportedReasons),['motion']);
+  assert.equal(first.checks.placement.coverage,'same-frame-world-AABB-proxies');assert.deepEqual(first.checks.placement.overlapIds,[]);
+  assert.equal(first.checks.framing.coverage,'same-frame-subject-bounds-projection');assert(first.checks.framing.screenFraction>0,JSON.stringify(first.checks.framing));
+  const made=await f.call('arrange_objects',f.request('arrange_objects',{ops:[{op:'create',source:{kind:'cube'},position:{world:{x:0,y:0,z:0}}}]}));
+  assert.equal(made.ok,true,JSON.stringify(made));const cube=made.affectedIds[0];
+  const overlapped=await verify({targets:['actor-a'],checks:['placement']});
+  assert.deepEqual(overlapped.checks.placement.overlapIds,[cube]);assert(overlapped.checks.placement.maximumFootprintOverlapM>0);assert.deepEqual(overlapped.unsupportedChecks,[]);
+  const prop=await verify({targets:[cube],checks:['motion']});
+  assert.deepEqual(prop.unsupportedChecks,['motion']);assert.match(prop.unsupportedReasons.motion,/not a character/);
+  // A take the UI installed carries no verification: verify_result measures it.
+  f.buffer.current.motion=clip();
+  const take=await verify({targets:['actor-a'],checks:['motion']});
+  assert.deepEqual(take.unsupportedChecks,[],JSON.stringify(take));assert.deepEqual(take.unsupportedReasons,{});
+  assert.equal(take.verification.characterId,'actor-a');assert.equal(take.verification.profile,'studio-motion-v1');
+  assert.equal(take.verification.evaluatedFrames,48);assert.deepEqual(take.verification.range,{startFrame:0,endFrameExclusive:48});
+  assert(['verified','unverified'].includes(take.verification.status),JSON.stringify(take.verification));
  },
  async 'motion-job-states'(f){
   // The context job list is what the model reads to learn what the editor is
@@ -518,6 +552,16 @@ const implementations={
   const undo=await f.call('undo_edit',f.request('undo_edit',{receiptId:r.receiptId}));
   assert.equal(undo.status,'undone',JSON.stringify(undo));assert.deepEqual(f.store.current.objects.map(o=>o.id),[id]);
  },
+ async 'generate-all-blocks-refusal-reason'(f){
+  // The editor starts the generation synchronously or refuses it with a toast
+  // (here: a root waypoint on the clip's last frame). The agent gets that
+  // reason, not only that nothing started.
+  f.stand.promptBlockCount=1;f.stand.generationToasts=['Root waypoint frames must stay inside 1..71'];
+  const r=await f.call('run_action',f.request('run_action',{action:'motion.generateAllBlocks'}));
+  assert.equal(r.ok,false,JSON.stringify(r));assert.equal(r.code,'TARGET_NOT_READY',JSON.stringify(r));assert.equal(r.mutated,false);
+  assert.match(r.message,/Root waypoint frames must stay inside 1\.\.71/,JSON.stringify(r));
+  assert.equal(f.stand.generationRuns,1,'the editor was asked once');
+ },
  async 'run-action-refusals'(f){
   const refused=async(args,code)=>{const r=await f.call('run_action',f.request('run_action',args));assert.equal(r.ok,false,JSON.stringify(r));assert.equal(r.code,code,JSON.stringify(r));assert.equal(r.mutated,false);};
   await refused({action:'shot.teleport'},'INVALID_ARGUMENT');
@@ -542,6 +586,7 @@ const implementations={
   assert.equal(added.status,'applied',JSON.stringify(added));assert.equal(added.action,'character.addWaypoint');
   assert.deepEqual(added.affectedIds,['actor-b']);assert.deepEqual(added.revision,{before,after:before+1});assert.match(added.summary,/frame 24/);
   assert.deepEqual(await path('actor-b'),[{frame:24,position:{x:5,y:0,z:0}}]);
+  assert.equal(f.stand.waypointMode,true,'an agent-added waypoint turns Waypoint mode on, so motion.generateAllBlocks follows the path');
   assert.deepEqual(f.buffer.current.waypoints,[],'the active character keeps its own path');
   // Without a frame the pin is paced at a walk: 1.4 m from actor-a's spot is one second.
   const paced=await run('character.addWaypoint',{characterId:'actor-a',position:{x:1.4,z:0}});
@@ -549,8 +594,10 @@ const implementations={
   assert.deepEqual(await path('actor-a'),[{frame:24,position:{x:1.4,y:0,z:0}}]);
   assert.equal(f.buffer.current.waypoints.length,1,'the loaded layer is written through its editing buffer');
   assert.equal((await run('character.addWaypoint',{characterId:'actor-a',position:{x:2.4,z:0},frame:40})).status,'applied');
+  f.stand.waypointMode=false;
   const moved=await run('character.moveWaypoint',{characterId:'actor-a',frame:24,position:{x:1,z:0.5}});
   assert.equal(moved.status,'applied',JSON.stringify(moved));
+  assert.equal(f.stand.waypointMode,true,'an agent-moved waypoint turns Waypoint mode on');
   assert.deepEqual((await path('actor-a')).map(w=>w.position),[{x:1,y:0,z:0.5},{x:2.4,y:0,z:0}]);
   const removed=await run('character.removeWaypoint',{characterId:'actor-b',frame:24});
   assert.equal(removed.status,'applied',JSON.stringify(removed));assert.deepEqual(await path('actor-b'),[]);

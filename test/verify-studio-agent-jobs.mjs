@@ -22,14 +22,16 @@ const check = (name, work, group = null) => { if (args[1] !== "precommit-stop-jo
 
 async function fixture(work) {
 	let mode = "ok", gate = null, generationCount = 0;
-	const requests = [], commands = [], frames = [], commandGates = [], fixtureErrors = [], journal = new Map(), sockets = new Set();
-	const state = { take: "old-take", undo: 0, token: "token-1", physics: 1, verify: "verified", structurallyValid: true, metrics: null, repairVerifies: true, repairs: [], commit: "ok", disconnect: null };
+	const requests = [], generationBodies = [], commands = [], frames = [], commandGates = [], fixtureErrors = [], journal = new Map(), sockets = new Set();
+	const state = { take: "old-take", undo: 0, token: "token-1", physics: 1, verify: "verified", structurallyValid: true, metrics: null, repairVerifies: true, repairs: [], commit: "ok", disconnect: null, prepareFailure: null, discard: "ok" };
 	const bridge = createServer(async (req, res) => {
 		requests.push(req.url);
 		if (req.url === "/ardy/health") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, host: "fixture", device: "cuda" })); return; }
 		if (req.url === "/ardy/motions/123456-abcdef") { res.end("fixture-artifact-bytes"); return; }
 		assert.equal(req.url, "/ardy/generate"); generationCount++;
+		if (mode === "bridge-refused") { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, reason: "field 'prompt' is 823 chars; the cap is 500" })); return; }
 		let body = ""; for await (const chunk of req) body += chunk;
+		generationBodies.push(JSON.parse(body));
 		assert.equal(JSON.parse(body).posePin, false);
 		if (gate) { gate.arrived.resolve(); await gate.release.promise; }
 		if (res.destroyed) return;
@@ -72,7 +74,7 @@ async function fixture(work) {
 			assert.equal(a.binding.characterId, "char-a"); assert.deepEqual(a.binding.host, host);
 			assert.equal(new URL(a.artifact.url).origin, origin);
 			assert.equal(await (await fetch(a.artifact.url)).text(), "fixture-artifact-bytes");
-			value = { candidateId: "candidate-1", candidateRevision: 1, targetToken: state.token, physicsRevision: state.physics, structurallyValid: true };
+			value = state.prepareFailure ?? { candidateId: "candidate-1", candidateRevision: 1, targetToken: state.token, physicsRevision: state.physics, structurallyValid: true };
 		} else if (frame.name === "verify_motion_candidate") {
 			value = { verificationId: randomUUID(), candidateId: a.candidateId, candidateRevision: a.candidateRevision, targetToken: state.token, physicsRevision: state.physics, status: state.verify, structurallyValid: state.structurallyValid, repairable: state.verify !== "verified", profile: "studio-motion-v1", evaluatedFrames: 48, ...(state.metrics ? { metrics: state.metrics } : {}) };
 		} else if (frame.name === "repair_motion_candidate") {
@@ -102,7 +104,11 @@ async function fixture(work) {
 			else if (known && frame.name === "reconcile_studio_command") value = known;
 			else { const response = await dispatchLiveFrame(JSON.stringify(frame), editorFor(a.binding.host)); assert.equal(response.ok, true, response.error); value = response.value; }
 		}
-		else if (frame.name === "discard_motion_candidate") value = { discarded: true };
+		else if (frame.name === "discard_motion_candidate") {
+			// A release the editor cannot answer in time (a busy main thread).
+			if (state.discard === "error") { socket.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: "Live editor timed out running discard_motion_candidate." })); return; }
+			value = { discarded: true };
+		}
 		else throw new Error("unexpected command " + frame.name);
 		await waitCommand(frame, "after", value);
 		if (socket.readyState === WebSocket.OPEN) { const raw = JSON.stringify({ type: "result", id: frame.id, ok: true, value }); socket.send(raw); socket.send(raw); }
@@ -117,7 +123,7 @@ async function fixture(work) {
 	try {
 		await connect();
 		const input = (overrides = {}) => ({ hostBinding: { ...host, workspaceHandle: handle }, characterId: "char-a", targetToken: "token-1", turnId: randomUUID(), commandId: randomUUID(), authorization: { id: randomUUID(), generations: 1 }, source: { kind: "generate", beats: [{ text: "A person walks.", seconds: 2 }] }, repair: "none", ...overrides });
-		await work({ hub, origin, state, requests, commands, frames, connect, input,
+		await work({ hub, origin, state, requests, generationBodies, commands, frames, connect, input,
 			editorJournal, editor,
 			holdCommand(name, phase = "before") { const hold = { name, phase, arrived: deferred(), release: deferred() }; commandGates.push(hold); return hold; },
 			async disconnect() { const closed = [...hub.server.clients].map(socket => once(socket, "close")); for (const socket of sockets) socket.terminate(); await bounded(Promise.all(closed)); },
@@ -125,7 +131,10 @@ async function fixture(work) {
 	} finally {
 		if (gate) gate.release.resolve();
 		for (const hold of commandGates) hold.release.resolve();
-		await runtime?.dispose(); for (const owner of editors.values()) owner.dispose();
+		// A runtime that fails to dispose still lets the servers close: the check
+		// fails on fixtureErrors instead of leaving the whole file hanging.
+		try { await runtime?.dispose(); } catch (error) { fixtureErrors.push(error); }
+		for (const owner of editors.values()) owner.dispose();
 		for (const socket of sockets) if (socket.readyState !== WebSocket.CLOSED) { const closed = once(socket, "close"); socket.terminate(); await closed; }
 		for (const socket of hub.server.clients) socket.terminate();
 		await new Promise(r => hub.server.close(r)); bridge.closeAllConnections(); await new Promise(r => bridge.close(r));
@@ -139,6 +148,29 @@ function runtimeFor(f, options = {}) {
 }
 function begin(runtime, input, listener = () => {}) { const job = runtime.admit(input); runtime.subscribe(job.jobId, listener); return { job, result: runtime.start(job.jobId) }; }
 
+check("multi-beat generation bounds the top-level prompt and preserves segments", () => fixture(async f => {
+	const runtime = runtimeFor(f);
+	const longBeats = Array.from({ length: 8 }, (_, i) => ({ text: `${i}: ${"a".repeat(96)}`, seconds: 2 }));
+	const long = begin(runtime, f.input({ source: { kind: "generate", beats: longBeats } }));
+	await bounded(long.result);
+	const longBody = f.generationBodies[0];
+	assert.equal(longBody.prompt, longBody.segments[0].prompt);
+	assert.ok(longBody.prompt.length <= 500);
+	assert.equal(longBody.segments.length, 8);
+}));
+check("short multi-beat generation keeps the joined top-level prompt", () => fixture(async f => {
+	const runtime = runtimeFor(f), beats = [{ text: "A person walks.", seconds: 2 }, { text: "They turn around.", seconds: 2 }, { text: "They stop.", seconds: 2 }];
+	const { result } = begin(runtime, f.input({ source: { kind: "generate", beats } }));
+	await bounded(result);
+	assert.equal(f.generationBodies[0].prompt, f.generationBodies[0].segments.map(segment => segment.prompt).join(" "));
+}));
+check("a beat over the prompt cap is rejected before admission", () => fixture(async f => {
+	const runtime = runtimeFor(f), input = f.input({ source: { kind: "generate", beats: [{ text: "x".repeat(501), seconds: 2 }] } });
+	assert.throws(() => runtime.admit(input), error => error.code === "INVALID_ARGUMENT" && error.message.includes("capped at 500"));
+	assert.equal(runtime.getReceipt(input.commandId), null);
+	assert.equal(f.generations, 0);
+	assert.doesNotThrow(() => runtime.admit({ ...input, source: { kind: "generate", beats: [{ text: "Valid beat.", seconds: 2 }] } }));
+}));
 check("legal transition table rejects false proof and terminal revival", async () => {
 	assert.equal(typeof motion.assertMotionTransition, "function");
 	for (const [from, to] of [["queued","generating"],["generating","preparing"],["preparing","verifying"],["verifying","repairing"],["repairing","verifying"],["verifying","committing"],["committing","installed"],["verifying","review_required"],["committing","reconciling"],["reconciling","proved-not-applied"]]) motion.assertMotionTransition(from, to);
@@ -150,7 +182,17 @@ check("shared parser consumes EOF, requires done, rejects malformed tails", asyn
 	const read = text => motion.readMotionStream(new Response(text));
 	assert.equal(await read('{"event":"done","motionUrl":"/ardy/motions/123456-abcdef"}'), "/ardy/motions/123456-abcdef");
 	for (const text of ['{"event":', '{"event":"progress"}\n', '{"event":"done","motionUrl":"/ardy/motions/123456-abcdef"}\n{bad', '{"event":"done","motionUrl":"http://other/take"}']) await assert.rejects(read(text));
+	await assert.rejects(motion.readMotionStream(new Response(JSON.stringify({ ok: false, reason: "box offline" }), { status: 503 })), error => error.code === "BACKEND_UNAVAILABLE" && /box offline/.test(error.message));
 });
+check("bridge refusal preserves its reason in the job outcome", () => fixture(async f => {
+	const runtime = runtimeFor(f); f.setMode("bridge-refused"); const { result } = begin(runtime, f.input()); const outcome = await bounded(result);
+	assert.equal(outcome.code, "INVALID_ARGUMENT"); assert.match(outcome.message, /the cap is 500/);
+}));
+check("editor refusal preserves its reason in the job outcome", () => fixture(async f => {
+	const runtime = runtimeFor(f); f.state.prepareFailure = { ok: false, mutated: false, code: "CAPABILITY_MISSING", message: "Unconstrained generation cannot preserve authored motion constraints." };
+	const { result } = begin(runtime, f.input()); const outcome = await bounded(result);
+	assert.equal(outcome.code, "CAPABILITY_MISSING"); assert.match(outcome.message, /Unconstrained generation cannot preserve authored motion constraints\./);
+}));
 check("MCP current handler final non-newline artifact and immediate acknowledgement", () => fixture(async f => {
 	const old = process.env.COZYCLAY_BRIDGE_ORIGIN; process.env.COZYCLAY_BRIDGE_ORIGIN = f.origin;
 	setLiveHub(f.hub); const published = deferred(); const registry = new MotionJobRegistry(); const gate = f.setGate();
@@ -225,6 +267,15 @@ check("bounded repair / soft review / exact stale target and environment", () =>
 	f.state.verify = "unverified"; let next = begin(runtime, f.input()); assert.equal((await bounded(next.result)).status, "review_required"); assert.equal(f.state.undo, 1);
 	assert.equal((await runtime.stop(next.job.jobId)).status, "cancelled");
 	f.state.token = "edited-token"; f.state.verify = "verified"; next = begin(runtime, f.input()); assert.equal((await bounded(next.result)).code, "STALE_TARGET"); assert.equal(f.state.undo, 1);
+}));
+check("a failed candidate release after install keeps the installed outcome", () => fixture(async f => {
+	const runtime = runtimeFor(f); f.state.discard = "error";
+	try {
+		const { job, result } = begin(runtime, f.input()); const receipt = await bounded(result);
+		assert.equal(receipt.status, "installed", JSON.stringify(receipt)); assert.equal(f.state.undo, 1);
+		assert.equal(f.commands.filter(name => name === "discard_motion_candidate").length, 1);
+		assert.equal(runtime.get(job.jobId).state, "installed");
+	} finally { f.state.discard = "ok"; } // the fixture's dispose then releases normally
 }));
 check("advisory policy installs a structurally valid unverified candidate at once with its failed checks", () => fixture(async f => {
 	const runtime = runtimeFor(f); f.state.verify = "unverified";

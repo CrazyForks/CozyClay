@@ -198,6 +198,10 @@ expect("receipts and structured failures have their own cards", panel.includes("
 const restoredStore = createAgentChatStore({ transport: {}, newId: (() => { let id = 0; return () => `restored-${++id}`; })() });
 restoredStore.restore([{ kind: "user", text: "hello" }, { kind: "failure", code: "upstream", message: "Provider unavailable." }], "restored-session");
 expect("restored turn errors become existing failure items", restoredStore.getState().items.some((item) => item.kind === "failure" && item.failure.code === "upstream" && item.failure.message === "Provider unavailable."));
+const receiptIdsForRestore = [{ kind: "receipt", receiptId: "R1" }, { kind: "receipt", receiptId: "R1" }];
+const receiptStore = createAgentChatStore({ transport: {}, newId: (() => { let id = 0; return () => `receipt-test-${++id}`; })() });
+const restoredReceipts = receiptStore.restore(receiptIdsForRestore, "receipt-session");
+expect("restoring duplicate receipts keeps one row with a unique id", restoredReceipts.filter((item) => item.kind === "receipt" && item.receiptId === "R1").length === 1 && new Set(restoredReceipts.map((item) => item.id)).size === restoredReceipts.length, JSON.stringify(restoredReceipts));
 expect("restored errors render through the existing FailureCard", /item\.kind === "failure"\) return <div className="agent-row"[^]*?<FailureCard failure=\{item\.failure\}/.test(panel));
 expect("receipts are validated before they are rendered as success", client.includes("validateReceipt") && client.includes('kind: "failure", id: newId()'));
 expect("image actions are acknowledged by the host, never assumed", client.includes("export function requestHostImageAction") && client.includes("cozyclay:agent-image-result") && panel.includes("store.applyImage(image.id)"));
@@ -321,6 +325,13 @@ const mockReceipt = studioMock.find((event) => event.type === "receipt")?.receip
 expect("the Studio mock ends in a valid receipt that names what it touched", (() => {
 	try { return module_.receiptSummary(validateReceipt(mockReceipt)).length > 0 && mockReceipt.affectedIds.length > 0; } catch { return false; }
 })(), JSON.stringify(mockReceipt?.affectedIds));
+const receiptStoreForReplay = createAgentChatStore({
+	transport: { async turn(_request, onEvent) { onEvent({ type: "receipt", receipt: { ...mockReceipt, receiptId: "R1" } }); } },
+	newId: (() => { let id = 0; return () => `receipt-replay-${++id}`; })(),
+});
+receiptStoreForReplay.restore([{ kind: "receipt", receiptId: "R1" }], "receipt-replay-session");
+await receiptStoreForReplay.send("replay receipt");
+expect("a live receipt replayed after restore adds no row", receiptStoreForReplay.getState().items.filter((item) => item.kind === "receipt" && item.receiptId === "R1").length === 1, JSON.stringify(receiptStoreForReplay.getState().items));
 
 const limited = [];
 await module_.createMockTransport({ state: "rate-limited" }).turn({}, (event) => limited.push(event));
