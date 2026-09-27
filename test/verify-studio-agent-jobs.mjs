@@ -23,12 +23,13 @@ const check = (name, work, group = null) => { if (args[1] !== "precommit-stop-jo
 async function fixture(work) {
 	let mode = "ok", gate = null, generationCount = 0;
 	const requests = [], commands = [], frames = [], commandGates = [], fixtureErrors = [], journal = new Map(), sockets = new Set();
-	const state = { take: "old-take", undo: 0, token: "token-1", physics: 1, verify: "verified", structurallyValid: true, metrics: null, repairVerifies: true, repairs: [], commit: "ok", disconnect: null };
+	const state = { take: "old-take", undo: 0, token: "token-1", physics: 1, verify: "verified", structurallyValid: true, metrics: null, repairVerifies: true, repairs: [], commit: "ok", disconnect: null, prepareFailure: null };
 	const bridge = createServer(async (req, res) => {
 		requests.push(req.url);
 		if (req.url === "/ardy/health") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, host: "fixture", device: "cuda" })); return; }
 		if (req.url === "/ardy/motions/123456-abcdef") { res.end("fixture-artifact-bytes"); return; }
 		assert.equal(req.url, "/ardy/generate"); generationCount++;
+		if (mode === "bridge-refused") { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, reason: "field 'prompt' is 823 chars; the cap is 500" })); return; }
 		let body = ""; for await (const chunk of req) body += chunk;
 		assert.equal(JSON.parse(body).posePin, false);
 		if (gate) { gate.arrived.resolve(); await gate.release.promise; }
@@ -72,7 +73,7 @@ async function fixture(work) {
 			assert.equal(a.binding.characterId, "char-a"); assert.deepEqual(a.binding.host, host);
 			assert.equal(new URL(a.artifact.url).origin, origin);
 			assert.equal(await (await fetch(a.artifact.url)).text(), "fixture-artifact-bytes");
-			value = { candidateId: "candidate-1", candidateRevision: 1, targetToken: state.token, physicsRevision: state.physics, structurallyValid: true };
+			value = state.prepareFailure ?? { candidateId: "candidate-1", candidateRevision: 1, targetToken: state.token, physicsRevision: state.physics, structurallyValid: true };
 		} else if (frame.name === "verify_motion_candidate") {
 			value = { verificationId: randomUUID(), candidateId: a.candidateId, candidateRevision: a.candidateRevision, targetToken: state.token, physicsRevision: state.physics, status: state.verify, structurallyValid: state.structurallyValid, repairable: state.verify !== "verified", profile: "studio-motion-v1", evaluatedFrames: 48, ...(state.metrics ? { metrics: state.metrics } : {}) };
 		} else if (frame.name === "repair_motion_candidate") {
@@ -150,7 +151,17 @@ check("shared parser consumes EOF, requires done, rejects malformed tails", asyn
 	const read = text => motion.readMotionStream(new Response(text));
 	assert.equal(await read('{"event":"done","motionUrl":"/ardy/motions/123456-abcdef"}'), "/ardy/motions/123456-abcdef");
 	for (const text of ['{"event":', '{"event":"progress"}\n', '{"event":"done","motionUrl":"/ardy/motions/123456-abcdef"}\n{bad', '{"event":"done","motionUrl":"http://other/take"}']) await assert.rejects(read(text));
+	await assert.rejects(motion.readMotionStream(new Response(JSON.stringify({ ok: false, reason: "box offline" }), { status: 503 })), error => error.code === "BACKEND_UNAVAILABLE" && /box offline/.test(error.message));
 });
+check("bridge refusal preserves its reason in the job outcome", () => fixture(async f => {
+	const runtime = runtimeFor(f); f.setMode("bridge-refused"); const { result } = begin(runtime, f.input()); const outcome = await bounded(result);
+	assert.equal(outcome.code, "INVALID_ARGUMENT"); assert.match(outcome.message, /the cap is 500/);
+}));
+check("editor refusal preserves its reason in the job outcome", () => fixture(async f => {
+	const runtime = runtimeFor(f); f.state.prepareFailure = { ok: false, mutated: false, code: "CAPABILITY_MISSING", message: "Unconstrained generation cannot preserve authored motion constraints." };
+	const { result } = begin(runtime, f.input()); const outcome = await bounded(result);
+	assert.equal(outcome.code, "CAPABILITY_MISSING"); assert.match(outcome.message, /Unconstrained generation cannot preserve authored motion constraints\./);
+}));
 check("MCP current handler final non-newline artifact and immediate acknowledgement", () => fixture(async f => {
 	const old = process.env.COZYCLAY_BRIDGE_ORIGIN; process.env.COZYCLAY_BRIDGE_ORIGIN = f.origin;
 	setLiveHub(f.hub); const published = deferred(); const registry = new MotionJobRegistry(); const gate = f.setGate();
