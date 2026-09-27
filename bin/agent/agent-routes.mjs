@@ -492,6 +492,14 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			const character = inspected?.context?.entities?.find(entity => entity.id === args.characterId && entity.kind === "character");
 			if (!character) throw new StudioProtocolError("TARGET_NOT_READY", "The admitted character is unavailable.");
 			admission.revision = inspected.context.revision.scene;
+			// The editor will not install a text-only take over an authored root path;
+			// refuse before admission so no generation is spent on it.
+			const motionRead = inspected.characters?.find(entry => entry.id === args.characterId);
+			const n = motionRead?.waypoints?.length ?? 0;
+			if (n > 0) {
+				const name = motionRead.name || args.characterId;
+				throw new StudioProtocolError("CAPABILITY_MISSING", `${name} has ${n} root waypoint${n === 1 ? "" : "s"}. generate_motion generates from text alone and cannot follow them. To generate along the path, write the beats as ${name}'s prompt blocks with patch_elements (set promptBlocks), then call run_action motion.generateAllBlocks, which follows the root waypoints. To ignore the path instead, run run_action character.clearWaypoints first.`);
+			}
 			const commandId = randomUUID(); const host = { ...admission.host, workspaceHandle: value.context.host.workspaceHandle };
 			const admissionResult = runtimeForJob.admit({ hostBinding: host, characterId: args.characterId, targetToken: character.token, turnId: value.turnId, commandId, authorization: { id: randomUUID(), generations: 1 }, source: args.source, repair: args.repair ?? "bounded" });
 			session.motionJobIds.add(admissionResult.jobId); persistenceMeta.motionJobIds = [...session.motionJobIds]; session.activeJobId = admissionResult.jobId; session.activeJobTurnId = value.turnId;

@@ -709,10 +709,12 @@ export function createStudioAppActions(handlersRef) {
 	const warned = warnings => warnings.length ? `; warning: ${warnings[0]}` : "";
 	castAction("character.addWaypoint", ({ characterId, position, frame }, name) => {
 		const { waypoint, index, warnings } = h().addCharacterWaypoint(characterId, position, frame ?? null);
+		h().setWaypointMode(true);
 		return `Added ${name}'s root waypoint ${index + 1} at ${pin(waypoint)}${warned(warnings)}.`;
 	});
 	castAction("character.moveWaypoint", ({ characterId, frame, position }, name) => {
 		const { waypoint, warnings } = h().moveCharacterWaypoint(characterId, frame, position);
+		h().setWaypointMode(true);
 		return `Moved ${name}'s root waypoint to ${pin(waypoint)}${warned(warnings)}.`;
 	});
 	castAction("character.removeWaypoint", ({ characterId, frame }, name) => {
@@ -12738,7 +12740,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		}),
 		addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, setTimelineShotRange, moveTimelineShot,
 		runAllPromptBlocks, duplicateSelectedSceneObject,
-		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints,
+		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, setWaypointMode,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, attachSceneObject, setShotCameraRail, clearShotCameraRail,
 		choosePartColours, setGuideMode, setInsetCollapsed, exportShotVideo,
 		switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument,
