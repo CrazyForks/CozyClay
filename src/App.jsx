@@ -11900,8 +11900,8 @@ function resizePromptClip(id, edge, rawFrame) {
 		});
 		if (conflictFrames.length > 0) {
 			setToast(`${ko(
-				"이 구간의 절대 IK 키가 궤적 수정을 덮어써요 — 해당 키를 지우거나 다시 찍어주세요",
 				"Absolute IK keys in this range override the path edit — remove or re-key them",
+				"이 구간의 절대 IK 키가 궤적 수정을 덮어써요 — 해당 키를 지우거나 다시 찍어주세요",
 			)} ${isKo ? `프레임 ${conflictFrames.join(", ")}` : `frames ${conflictFrames.join(", ")}`}`);
 		}
 	}
