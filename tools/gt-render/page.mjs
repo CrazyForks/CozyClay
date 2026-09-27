@@ -28,7 +28,7 @@ export const RIG_JOINTS = [
 	["LeftUpLeg", "LeftUpLeg"], ["LeftLeg", "LeftLeg"], ["LeftFoot", "LeftFoot"], ["LeftToeBase", "LeftToeBase"],
 ].map(([bone, cskel27]) => ({ bone: `mixamorig${bone}`, cskel27 }));
 
-export function installPageHelpers(supportValues, rigJoints, maskRgb) {
+export function installPageHelpers(supportValues, rigJoints, maskRgb, boxContactValues) {
 	const raf = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
 	const hook = () => window.__cozyclay;
 	let orientation = null;
@@ -159,6 +159,9 @@ export function installPageHelpers(supportValues, rigJoints, maskRgb) {
 				characterModel: c?.characterModel ?? null,
 				characterScale: c?.characterScale ?? null,
 				rigUuid: rig?.uuid ?? null,
+				// Where playback put frame 0 of the take (scene metres) and the
+				// Character group's yaw: the pivot of a scene-calibration yaw.
+				motionAnchor: c?.motion ? { x: c.motion.anchorX ?? null, z: c.motion.anchorZ ?? null, rotationDeg: c.motion.rotationDeg ?? null } : null,
 				vertexColors,
 				shotCam: cam ? { zoom: cam.zoom, filmOffset: cam.filmOffset, view: cam.view, near: cam.near, far: cam.far } : null,
 			};
@@ -167,25 +170,30 @@ export function installPageHelpers(supportValues, rigJoints, maskRgb) {
 			orientation = { R, kx, ky };
 		},
 		/** Pre-pass sample: joints plus the five support values of every
-		 * drawable vertex and joint of the frame. */
-		sample: async (frame) => {
+		 * drawable vertex and joint of the frame, and with `box` the signed
+		 * distance of the closest skinned vertex to that box. `vertices: false`
+		 * skips the CPU skinning (joints only). */
+		sample: async (frame, { vertices: withVertices = true, box = null } = {}) => {
 			if (!orientation) throw new Error("setOrientation first");
 			const rig = await settle(frame);
 			const joints = readJoints(rig);
+			if (!withVertices && !box) return { joints, support: null, vertexCount: 0, contact: null };
 			const vertices = rigVertices(rig);
+			const contact = box ? boxContactValues(vertices, box) : null;
 			const all = new Float64Array(vertices.length + joints.length);
 			all.set(vertices, 0);
 			all.set(joints, vertices.length);
 			const support = supportValues(all, orientation.R, orientation.kx, orientation.ky);
-			return { joints, support, vertexCount: vertices.length / 3 };
+			return { joints, support, vertexCount: vertices.length / 3, contact };
 		},
 		/** Render one timeline frame through the real export path and read the
-		 * joints of the exact pose it drew. */
-		capture: async (frame, framing, output, withMask) => {
+		 * joints of the exact pose it drew. `withColour: false` skips the
+		 * colour capture (mask-only renders). */
+		capture: async (frame, framing, output, withMask, withColour = true) => {
 			const rig = await settle(frame);
 			const joints = readJoints(rig);
-			const png = hook().captureFraming(framing, output);
-			if (typeof png !== "string" || !png.startsWith("data:image/png;base64,")) throw new Error(`captureFraming returned no PNG for frame ${frame}`);
+			const png = withColour ? hook().captureFraming(framing, output) : null;
+			if (withColour && (typeof png !== "string" || !png.startsWith("data:image/png;base64,"))) throw new Error(`captureFraming returned no PNG for frame ${frame}`);
 			let mask = null;
 			if (withMask) {
 				// Same pose, same camera, character drawn unlit in one colour no
@@ -215,7 +223,7 @@ export function installPageHelpers(supportValues, rigJoints, maskRgb) {
 				v.set(joints[i], joints[i + 1], joints[i + 2]).project(cam);
 				threeUv.push(((v.x + 1) / 2) * output.width, ((1 - v.y) / 2) * output.height);
 			}
-			return { png: png.slice("data:image/png;base64,".length), mask, joints, threeUv };
+			return { png: png ? png.slice("data:image/png;base64,".length) : null, mask, joints, threeUv };
 		},
 		/** The same framing with the character hidden: the background plate. */
 		plate: (framing, output) => {

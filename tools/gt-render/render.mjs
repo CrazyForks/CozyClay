@@ -29,6 +29,13 @@
  *   <out>/<motion>/mask/NNNNNN.png     exact per-frame silhouette (gray, 255 = character),
  *                                      the character re-drawn unlit in one colour
  *   <out>/<motion>/<variant>/{video.mp4,camera.json,joints.json,meta.json}
+ *
+ * Scoring renders (#431): `--camera <camera.json>` renders through that exact
+ * camera instead of solving one; `--no-video` captures only the silhouette
+ * masks and writes <out>/<motion>/{camera.json,joints.json,meta.json,mask/};
+ * `--transform` places the take in the scene first (take-transform.mjs, the
+ * Studio's sceneCalibration semantics); `--box` also writes contact.json, the
+ * per-frame signed distance of the closest skinned vertex to a scene box.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -37,8 +44,12 @@ import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { installSignalCleanup } from "../process-supervisor.mjs";
 import { openStudioClean, startChrome, startVite, terminateAll, waitFor } from "./browser.mjs";
-import { buildCamera, mergeSupports, projectPoint, supportArgs, supportValues } from "./camera-math.mjs";
+import { decodeMotionNpz } from "../../src/ardy/npz.js";
+import { writeNpz } from "../ardy/npz.mjs";
+import { boxContactValues, contactFromSigned, parseBox } from "../bench/metrics.mjs";
+import { buildCamera, cameraFromRecord, marginSlopes, mergeSupports, projectPoint, supportArgs, supportValues, translateCamera } from "./camera-math.mjs";
 import { installPageHelpers, MASK_RGB, RIG_JOINTS } from "./page.mjs";
+import { isIdentityTransform, parseTransform, takeToNpzMembers, transformTake } from "./take-transform.mjs";
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "../..");
 const WIDTH = 832;
@@ -59,6 +70,15 @@ const USAGE = `usage: node tools/gt-render/render.mjs --out <dir> [options] <mot
   --url <origin>       reuse a running Vite dev server of THIS checkout (default: start one)
   --port <n>           Vite port when starting one (default 5191)
   --cdp-port <n>       headless Chrome DevTools port (default 9231)
+  --camera <file>      render through this camera.json (from an earlier render) instead of
+                       solving one; --f-mm/--azimuth/--elevation/--margin are then unused
+                       and a joint near or past the edge is reported, not fatal
+  --no-video           masks + joints only: <dir>/<motion>/{camera.json,joints.json,meta.json,mask/}
+  --transform <json>   place the take first, Studio sceneCalibration semantics:
+                       '{"yawDeg":0,"offsetX":0,"offsetY":0,"offsetZ":0,"scale":1}'
+                       (yaw about the frame-0 anchor, offsets in scene metres)
+  --box <json>         '{"min":[x,y,z],"max":[x,y,z]}' scene box; writes <dir>/<motion>/contact.json
+                       (closest skinned vertex per frame: distance / penetration)
 
 writes <dir>/<motion>/{plate.png,mask/NNNNNN.png} and
 <dir>/<motion>/<variant>/{video.mp4,camera.json,joints.json,meta.json}`;
@@ -79,6 +99,10 @@ function parseOptions(argv) {
 			url: { type: "string" },
 			port: { type: "string", default: "5191" },
 			"cdp-port": { type: "string", default: "9231" },
+			camera: { type: "string" },
+			"no-video": { type: "boolean", default: false },
+			transform: { type: "string" },
+			box: { type: "string" },
 			help: { type: "boolean", short: "h", default: false },
 		},
 	});
@@ -108,7 +132,39 @@ function parseOptions(argv) {
 	for (const file of motions) if (!existsSync(file)) fail(`no such motion: ${file}`);
 	const names = motions.map((file) => basename(file, ".npz"));
 	if (new Set(names).size !== names.length) fail(`two motions share an output name: ${names.join(", ")}`);
+	let camera = null;
+	if (values.camera) {
+		const file = resolve(values.camera);
+		if (!existsSync(file)) fail(`no such camera: ${file}`);
+		try {
+			camera = cameraFromRecord(JSON.parse(readFileSync(file, "utf8")));
+		} catch (error) {
+			fail(`--camera ${file}: ${error.message}`);
+		}
+		if (camera.width !== WIDTH || camera.height !== HEIGHT) fail(`--camera is ${camera.width}x${camera.height}; the renderer draws ${WIDTH}x${HEIGHT}`);
+		camera.source = file;
+	}
+	let transform = null;
+	if (values.transform) {
+		try {
+			transform = parseTransform(values.transform);
+		} catch (error) {
+			fail(`--transform: ${error.message}`);
+		}
+	}
+	let box = null;
+	if (values.box) {
+		try {
+			box = parseBox(values.box);
+		} catch (error) {
+			fail(`--box: ${error.message}`);
+		}
+	}
 	return {
+		camera,
+		noVideo: values["no-video"],
+		transform,
+		box,
 		out: resolve(values.out),
 		variants,
 		fMm: number("f-mm", true),
@@ -229,62 +285,98 @@ async function main() {
 	}
 }
 
+/** The npz the Studio loads: the file itself, or the file with --transform's
+ * scale/offsetY/yaw baked in (take-transform.mjs). Either way it is put in
+ * the (gitignored) node_modules cache, where Vite can serve it to ?motion=. */
+async function stageTake(file, bytes, transform) {
+	if (isIdentityTransform(transform)) {
+		const sha256 = createHash("sha256").update(bytes).digest("hex");
+		const cached = join(CACHE_DIR, `${sha256.slice(0, 16)}.npz`);
+		if (!existsSync(cached)) copyFileSync(file, cached);
+		return { sha256, cacheName: `${sha256.slice(0, 16)}.npz`, sceneOffset: { x: 0, y: 0, z: 0 } };
+	}
+	const decoded = await decodeMotionNpz(new Uint8Array(bytes));
+	const { motion, sceneOffset } = transformTake(decoded, transform);
+	const staging = join(CACHE_DIR, `.staging-${process.pid}.npz`);
+	writeNpz(staging, takeToNpzMembers(motion));
+	const sha256 = createHash("sha256").update(readFileSync(staging)).digest("hex");
+	const cacheName = `${sha256.slice(0, 16)}.npz`;
+	copyFileSync(staging, join(CACHE_DIR, cacheName));
+	rmSync(staging, { force: true });
+	return { sha256, cacheName, sceneOffset };
+}
+
 async function renderMotion({ cdp, base, file, options, version }) {
 	const started = Date.now();
 	const bytes = readFileSync(file);
 	const sha256 = createHash("sha256").update(bytes).digest("hex");
 	const motionName = basename(file, ".npz");
-	// Vite serves the checkout's files by path; an npz outside the repo is
-	// copied into the (gitignored) node_modules cache so ?motion= can reach it.
-	const cached = join(CACHE_DIR, `${sha256.slice(0, 16)}.npz`);
-	if (!existsSync(cached)) copyFileSync(file, cached);
-	const motionUrl = `/node_modules/.cache/gt-render/${sha256.slice(0, 16)}.npz`;
+	const staged = await stageTake(file, bytes, options.transform);
+	// The page renders the take where playback anchors it; a scene offset is
+	// the camera moved the opposite way, and every reported point is shifted
+	// back into the scene by `offset`.
+	const offset = staged.sceneOffset;
+	const negOffset = { x: -offset.x, y: -offset.y, z: -offset.z };
+	const pageBox = options.box ? { min: options.box.min.map((v, i) => v - [offset.x, offset.y, offset.z][i]), max: options.box.max.map((v, i) => v - [offset.x, offset.y, offset.z][i]) } : null;
+	const motionUrl = `/node_modules/.cache/gt-render/${staged.cacheName}`;
 	const studioUrl = `${base}/app/?motion=${encodeURIComponent(motionUrl)}`;
 	const log = (message) => console.log(`[${motionName}] ${message}`);
 
 	await openStudioClean(cdp, studioUrl);
 	await waitFor("studio motion load", () => cdp.evaluate("!!(window.__cozyclay && window.__cozyclay.motion && window.__cozyclay.rigA && typeof window.__cozyclay.captureFraming === 'function')"), { timeoutMs: 180000, intervalMs: 250 });
-	await cdp.evaluate(`(${installPageHelpers.toString()})(${supportValues.toString()}, ${JSON.stringify(RIG_JOINTS)}, ${JSON.stringify(MASK_RGB)})`);
+	await cdp.evaluate(`(${installPageHelpers.toString()})(${supportValues.toString()}, ${JSON.stringify(RIG_JOINTS)}, ${JSON.stringify(MASK_RGB)}, ${boxContactValues.toString()})`);
 	const state = await cdp.evaluate("window.__gtRender.state()");
 	if (state.motionUrl !== motionUrl) throw new Error(`Studio loaded ${state.motionUrl} instead of ${motionUrl}`);
 	if (state.fps !== FPS) throw new Error(`timeline runs at ${state.fps} fps, expected ${FPS}`);
 	const frames = state.frameCount;
 	log(`loaded ${frames} frames @ ${state.fps} fps, model ${state.characterModel}`);
 
-	// Pre-pass: the camera must see every vertex of every frame.
+	// Pre-pass: the camera must see every vertex of every frame (solved
+	// camera), and --box needs every vertex anyway.
 	const geometry = { width: WIDTH, height: HEIGHT, fMm: options.fMm, azimuthDeg: options.azimuthDeg, elevationDeg: options.elevationDeg, margin: options.margin };
-	const { R, kx, ky } = supportArgs(geometry);
+	const givenMargin = options.camera ? (options.camera.margin ?? options.margin) : options.margin;
+	const { R, kx, ky } = options.camera
+		? { R: options.camera.cameraToWorldRotation, ...marginSlopes(options.camera, givenMargin) }
+		: supportArgs(geometry);
 	await cdp.evaluate(`window.__gtRender.setOrientation(${JSON.stringify(R)}, ${kx}, ${ky})`);
+	const sampleOptions = { vertices: !options.camera, box: pageBox };
 	const supports = [];
 	const prepassJoints = [];
+	const contacts = [];
 	let vertexCount = 0;
 	for (let frame = 0; frame < frames; frame += 1) {
-		const sample = await cdp.evaluate(`window.__gtRender.sample(${frame})`);
-		supports.push(sample.support);
+		const sample = await cdp.evaluate(`window.__gtRender.sample(${frame}, ${JSON.stringify(sampleOptions)})`);
+		if (sample.support) supports.push(sample.support);
 		prepassJoints.push(sample.joints);
+		if (sample.contact) contacts.push(sample.contact);
 		vertexCount = sample.vertexCount;
 	}
-	const camera = buildCamera({ ...geometry, support: mergeSupports(supports) });
-	const framing = { pos: camera.position, yaw: camera.yaw, pitch: camera.pitch, fovDeg: camera.fovDeg };
+	// pageCamera renders the anchored take; camera (scene) is what is reported.
+	const pageCamera = options.camera ? translateCamera(options.camera, negOffset) : buildCamera({ ...geometry, support: mergeSupports(supports) });
+	const camera = options.camera ?? translateCamera(pageCamera, offset);
+	const framing = { pos: pageCamera.position, yaw: pageCamera.yaw, pitch: pageCamera.pitch, fovDeg: pageCamera.fovDeg };
 	const output = { width: WIDTH, height: HEIGHT };
-	log(`camera at (${camera.position.x.toFixed(3)}, ${camera.position.y.toFixed(3)}, ${camera.position.z.toFixed(3)}), fov ${camera.fovDeg.toFixed(4)} deg, f ${camera.fy.toFixed(3)} px, ${camera.bindingAxis}-bound, ${vertexCount} vertices/frame`);
+	log(`camera at (${camera.position.x.toFixed(3)}, ${camera.position.y.toFixed(3)}, ${camera.position.z.toFixed(3)}), fov ${camera.fovDeg.toFixed(4)} deg, f ${camera.fy.toFixed(3)} px, ${options.camera ? `given (${options.camera.source})` : `${camera.bindingAxis}-bound`}, ${vertexCount} vertices/frame`);
 
-	// Joints projected with camera.json; the placement guarantees the margin box.
-	const uv = prepassJoints.map((joints) => triples(joints).map((point) => projectPoint(point, camera)));
+	// Scene joints (page + offset) projected with camera.json. A solved
+	// camera guarantees the margin box; a given one only reports it.
+	const sceneJoints = prepassJoints.map((joints) => triples(joints, 12).map(([x, y, z]) => [x + offset.x, y + offset.y, z + offset.z]));
+	const uv = sceneJoints.map((joints) => joints.map((point) => projectPoint(point, camera)));
 	let minMarginPx = Infinity;
 	for (const frameUv of uv) {
-		for (const [u, v] of frameUv) minMarginPx = Math.min(minMarginPx, u, v, WIDTH - u, HEIGHT - v);
+		for (const [u, v, depth] of frameUv) minMarginPx = Math.min(minMarginPx, depth > 0 ? Math.min(u, v, WIDTH - u, HEIGHT - v) : -Infinity);
 	}
-	const marginPx = options.margin * Math.min(WIDTH, HEIGHT);
-	if (minMarginPx < marginPx - 1e-6) throw new Error(`a joint projects ${minMarginPx.toFixed(2)} px from the edge, inside the ${marginPx} px margin`);
+	const marginPx = givenMargin * Math.min(WIDTH, HEIGHT);
+	if (!options.camera && minMarginPx < marginPx - 1e-6) throw new Error(`a joint projects ${minMarginPx.toFixed(2)} px from the edge, inside the ${marginPx} px margin`);
+	if (options.camera && minMarginPx < marginPx - 1e-6) log(`warning: a joint projects ${minMarginPx.toFixed(2)} px from the edge (margin ${marginPx} px); negative = outside the image or behind the camera`);
 
 	const motionDir = join(options.out, motionName);
 	mkdirSync(motionDir, { recursive: true });
-	writeFileSync(join(motionDir, "plate.png"), Buffer.from(await cdp.evaluate(`window.__gtRender.plate(${JSON.stringify(framing)}, ${JSON.stringify(output)})`), "base64"));
+	if (!options.noVideo) writeFileSync(join(motionDir, "plate.png"), Buffer.from(await cdp.evaluate(`window.__gtRender.plate(${JSON.stringify(framing)}, ${JSON.stringify(output)})`), "base64"));
 
-	const wanted = new Set(options.variants.map((variant) => variant.name));
-	const needsShadedFrames = options.variants.some((variant) => variant.kind === "hue");
-	const browserPasses = [
+	const wanted = new Set(options.noVideo ? [] : options.variants.map((variant) => variant.name));
+	const needsShadedFrames = !options.noVideo && options.variants.some((variant) => variant.kind === "hue");
+	const browserPasses = options.noVideo ? [{ name: "mask", partColours: null }] : [
 		...(wanted.has("shaded") || needsShadedFrames ? [{ name: "shaded", partColours: true }] : []),
 		...(wanted.has("skin") ? [{ name: "skin", partColours: false }] : []),
 	];
@@ -296,20 +388,23 @@ async function renderMotion({ cdp, base, file, options, version }) {
 	mkdirSync(maskRawDir, { recursive: true });
 	for (const [passIndex, pass] of browserPasses.entries()) {
 		const withMask = passIndex === 0;
-		passState[pass.name] = await cdp.evaluate(`window.__gtRender.setPartColours(${pass.partColours})`);
+		const withColour = pass.partColours !== null;
+		if (withColour) passState[pass.name] = await cdp.evaluate(`window.__gtRender.setPartColours(${pass.partColours})`);
 		const framesDir = wanted.has(pass.name) ? join(motionDir, pass.name, "frames") : join(motionDir, `.${pass.name}-frames`);
-		rmSync(framesDir, { recursive: true, force: true });
-		mkdirSync(framesDir, { recursive: true });
-		framesDirs[pass.name] = framesDir;
+		if (withColour) {
+			rmSync(framesDir, { recursive: true, force: true });
+			mkdirSync(framesDir, { recursive: true });
+			framesDirs[pass.name] = framesDir;
+		}
 		for (let frame = 0; frame < frames; frame += 1) {
-			const captured = await cdp.evaluate(`window.__gtRender.capture(${frame}, ${JSON.stringify(framing)}, ${JSON.stringify(output)}, ${withMask})`);
-			writeFileSync(join(framesDir, `${String(frame).padStart(6, "0")}.png`), Buffer.from(captured.png, "base64"));
+			const captured = await cdp.evaluate(`window.__gtRender.capture(${frame}, ${JSON.stringify(framing)}, ${JSON.stringify(output)}, ${withMask}, ${withColour})`);
+			if (withColour) writeFileSync(join(framesDir, `${String(frame).padStart(6, "0")}.png`), Buffer.from(captured.png, "base64"));
 			if (withMask) writeFileSync(join(maskRawDir, `${String(frame).padStart(6, "0")}.png`), Buffer.from(captured.mask, "base64"));
 			for (let i = 0; i < captured.joints.length; i += 1) {
 				checks.prepassVsRenderJointMaxM = Math.max(checks.prepassVsRenderJointMaxM, Math.abs(captured.joints[i] - prepassJoints[frame][i]));
 			}
 			triples(captured.joints, 12).forEach((point, j) => {
-				const [u, v] = projectPoint(point, camera);
+				const [u, v] = projectPoint(point, pageCamera);
 				checks.threeVsCameraJsonMaxPx = Math.max(checks.threeVsCameraJsonMaxPx, Math.abs(u - captured.threeUv[j * 2]), Math.abs(v - captured.threeUv[j * 2 + 1]));
 			});
 		}
@@ -322,13 +417,29 @@ async function renderMotion({ cdp, base, file, options, version }) {
 	if (checks.threeVsCameraJsonMaxPx > 1e-3) throw new Error(`camera.json projection differs from the Three capture camera by ${checks.threeVsCameraJsonMaxPx} px`);
 
 	const cameraJson = cameraRecord(camera, passState[browserPasses[0].name]?.shotCam ?? state.shotCam);
+	if (options.camera) cameraJson.source = options.camera.source;
+	const placement = {
+		transform: options.transform ?? null,
+		sceneOffset: offset,
+		anchor: state.motionAnchor,
+		note: "Studio placement: playback anchors the take's frame-0 root XZ on the subject (anchor) with the Character group's yaw. --transform: scale/offsetY/yaw baked into the loaded npz (yaw about the anchor), offsetX/offsetZ applied as the opposite camera move; joints, uv and contact are in the scene frame with the offset included.",
+		renderedNpzSha256: staged.sha256,
+	};
+	const contactJson = options.box ? {
+		box: options.box,
+		basis: "skinned-vertices",
+		vertexCount,
+		convention: "signedDistanceM: closest skinned vertex to the box, positive outside, negative inside (depth to the nearest face). minDistanceM = max(0, signed), maxPenetrationM = max(0, -signed). Scene metres, the placement's offset included.",
+		frames: contacts.map((contact) => ({ signedDistanceM: round(contact.minSignedDistance, 6), ...Object.fromEntries(Object.entries(contactFromSigned(contact.minSignedDistance)).map(([key, value]) => [key, round(value, 6)])), verticesInside: contact.insideCount })),
+	} : null;
+	if (contactJson) writeFileSync(join(motionDir, "contact.json"), `${JSON.stringify(contactJson)}\n`);
 	const jointsJson = {
 		convention: "world: metres in the camera.json world frame; uv: pixels in the camera.json image convention (origin top-left, v down), projected with camera.json; depth: camera-space Z in metres.",
 		fps: FPS,
 		frames,
 		joints: RIG_JOINTS.map(({ bone, cskel27 }) => ({ name: bone.replace(/^mixamorig/, ""), bone, cskel27 })),
 		note: "Rig bones of the rendered character (the pose actually drawn). Mixamo Spine/Spine1/Spine2 correspond to cskel27 Spine1/Spine2/Spine3 (src/ardy/playback.js); the Mixamo body is not congruent with cskel27 and playback scales the take's root travel to the rig's leg length, so these are NOT the npz's posed_joints: they differ by centimetres, growing with distance travelled (about 1% of it on walk-then-stop). They are the truth for what the video shows.",
-		world: prepassJoints.map((joints) => triples(joints)),
+		world: sceneJoints.map((joints) => joints.map((point) => point.map((value) => round(value, 6)))),
 		uv: uv.map((frameUv) => frameUv.map(([u, v]) => [round(u, 4), round(v, 4)])),
 		depth: uv.map((frameUv) => frameUv.map(([, , z]) => round(z, 6))),
 	};
@@ -340,6 +451,8 @@ async function renderMotion({ cdp, base, file, options, version }) {
 		motionName,
 		frames,
 		fps: FPS,
+		placement,
+		camera: options.camera ? { source: options.camera.source, given: true } : { given: false },
 		video: { file: "video.mp4", width: WIDTH, height: HEIGHT, codec: "h264 (libx264)", pixFmt: "yuv420p", colorspace: "smpte170m, tv range", crf: options.crf },
 		characterModel: state.characterModel,
 		characterScale: state.characterScale,
@@ -352,7 +465,14 @@ async function renderMotion({ cdp, base, file, options, version }) {
 			framingVerticesPerFrame: vertexCount,
 		},
 	};
-	for (const variant of options.variants) {
+	if (options.noVideo) {
+		const { video, plate, ...rest } = shared;
+		writeFileSync(join(motionDir, "camera.json"), `${JSON.stringify(cameraJson, null, "\t")}\n`);
+		writeFileSync(join(motionDir, "joints.json"), `${JSON.stringify(jointsJson)}\n`);
+		writeFileSync(join(motionDir, "meta.json"), `${JSON.stringify({ ...rest, mask: "mask/%06d.png (8-bit gray, 255 = character: the frame re-rendered with the character unlit in one colour, >= 50% pixel coverage)", variant: null, noVideo: true, contact: contactJson ? "contact.json" : null }, null, "\t")}\n`);
+		log(`wrote joints + masks (no video)`);
+	}
+	for (const variant of options.noVideo ? [] : options.variants) {
 		const dir = join(motionDir, variant.name);
 		mkdirSync(dir, { recursive: true });
 		const filter = variant.kind === "hue" ? `hue=h=${variant.degrees}` : null;
