@@ -130,6 +130,7 @@ const NODE_FILES = [
 	"test/verify-motion-trail.mjs",
 	"test/verify-motion-trail-limb.mjs",
 	"test/verify-motion-trail-orientation.mjs",
+	"test/verify-motion-trail-overreach.mjs",
 	"test/verify-motion-trail-persistence.mjs",
 	"test/verify-kimodo-waypoints.mjs",
 	"test/verify-keyframe-pack.mjs",
