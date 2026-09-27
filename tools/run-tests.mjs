@@ -33,6 +33,7 @@ const NODE_FILES = [
 	"test/ardy/verify-gvhmr-floor.mjs",
 	"test/verify-gvhmr-detector-flag.mjs",
 	"test/verify-gvhmr-only.mjs",
+	"test/verify-extract-bench.mjs",
 	"test/ardy/verify-key-runs.mjs",
 	"test/ardy/verify-playback-skinning.mjs",
 	"test/ardy/verify-playback-clock.mjs",
