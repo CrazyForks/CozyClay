@@ -126,6 +126,7 @@ const NODE_FILES = [
 	"test/verify-kimodo-runner.mjs",
 	"test/verify-kimodo-setup.mjs",
 	"test/verify-motion-trail.mjs",
+	"test/verify-motion-trail-limb.mjs",
 	"test/verify-kimodo-waypoints.mjs",
 	"test/verify-keyframe-pack.mjs",
 	"test/verify-keyframe-pack-request.mjs",
