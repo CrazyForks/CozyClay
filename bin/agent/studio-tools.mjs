@@ -20,11 +20,12 @@ export function createStudioTools({ liveHub, workspaceHandle, session, resolveIm
   const mutationNames = STUDIO_MUTATION_TOOLS;
   // One motion generation per user message, shared with generate_motion when
   // the route passes the turn's gate; a bare tools instance keeps its own.
-  const generationGate = session?.generation ?? { used: false };
+  const generationGate = session?.generation ?? { used: false, failures: 0 };
   const invoke = async (name, args) => {
     const command = validateStudioCommand({ name, args });
     const generation = name === "run_action" && STUDIO_GENERATION_ACTIONS.has(command.args.action);
     if (generation && generationGate.used) throw new StudioProtocolError("GENERATION_LIMIT", "One motion generation per user message. Report this result and ask the user before generating again.");
+    if (generation && (generationGate.failures ?? 0) >= 2) throw new StudioProtocolError("GENERATION_LIMIT", "Two motion generation attempts already failed in this user message. Report both failures to the user and ask before generating again.");
     const payload = mutationNames.has(name) && session?.admission
       ? { name, args: command.args, commandId: session.admission.commandId(), host: session.admission.host, expectedRevision: session.admission.revision }
       : command.args;
@@ -35,6 +36,7 @@ export function createStudioTools({ liveHub, workspaceHandle, session, resolveIm
     } catch (error) {
       // A STALE_SCENE re-admits whichever family met it, so the retry the
       // model is told to make is admitted at the live revision.
+      if (generation) generationGate.failures = (generationGate.failures ?? 0) + 1;
       if (session?.admission && (error?.code === "STALE_SCENE" || (mutationNames.has(name) && error?.code === "UNCERTAIN_APPLY"))) await session.admission.refresh();
       throw error;
     }
@@ -43,6 +45,7 @@ export function createStudioTools({ liveHub, workspaceHandle, session, resolveIm
       // the receipt itself holds phase, recovery and target evidence the model needs.
       const code = result.code ?? result.error?.code;
       const message = result.message ?? result.error?.message ?? "Studio command failed";
+      if (generation) generationGate.failures = (generationGate.failures ?? 0) + 1;
       if (session?.admission && code === "STALE_SCENE") await session.admission.refresh();
       throw Object.assign(new Error(message), { code, receipt: result });
     }
