@@ -316,6 +316,7 @@ import {
 	applyBodyContact,
 	clampIkTargetToFloor,
 } from "./ardy/ik.js";
+import { bakeIkDragKey, chainsChangedBy, ikDragRecord, ikDragTouch } from "./ardy/ik-drag.js";
 import { buildCollisionCapsules, detectPenetrations, fixCollisions, fixCollisionsRange, supportsCollisionCleanup } from "./ardy/fix-collisions.js";
 import { collisionBlockers, blockerSummary } from "./ardy/collision-blockers.js";
 import { computeCenterOfMass, markerPositions } from "./ardy/auto-physics.js";
@@ -2307,6 +2308,8 @@ export default function App() {
 	const [footSnap, setFootSnap] = useState(true);
 	const [bodyContact, setBodyContact] = useState(true);
 	const ikBodyDragRef = useRef(false); // true while a body drag is active
+	// { frame, ids }: the parts the drag in progress has written (see ik-drag.js).
+	const ikDragRef = useRef(null);
 	// How far (in frames) a correction eases back to the underlying motion
 	// outside its keyed range. 6 frames @ 24 fps = 0.25 s — long enough to
 	// hide the seam, short enough that a mid-clip fix stays visibly local.
@@ -8361,10 +8364,12 @@ export default function App() {
 	// ends pinned (the handle snaps to the clamped position); FK joints swing
 	// toward the pointer. Keys are baked on drag END — see ikDragEnd.
 	function ikSolve(kind, trackId, targetWorld) {
+		ikDragRef.current = ikDragRecord(ikDragRef.current, tlFrame);
+		const touch = (id) => ikDragTouch(ikStateRef.current, ikDragRef.current, id);
 		if (kind === "chain") {
 			const chain = ikStateRef.current.chains?.get(trackId);
 			if (!chain) return;
-			ikTouch(ikStateRef.current, trackId);
+			touch(trackId);
 			const clampedTarget = bodyContact ? clampIkTargetToFloor(trackId, targetWorld, 0, ikChains?.get(trackId)?.contactHeights ?? ikChains?.values().next().value?.contactHeights) : targetWorld;
 			ikStateRef.current.targets.set(trackId, clampedTarget.clone());
 			solveIk(chain, clampedTarget);
@@ -8375,7 +8380,7 @@ export default function App() {
 			const midDef = MID_TRACKS.find((t) => t.id === trackId);
 			const chain = midDef ? ikStateRef.current.chains?.get(midDef.chain) : null;
 			if (!chain) return;
-			ikTouch(ikStateRef.current, chain.track.id);
+			touch(chain.track.id);
 			solveMidJoint(chain, bodyContact ? clampIkTargetToFloor(trackId, targetWorld, 0, chain.contactHeights) : targetWorld);
 			return;
 		}
@@ -8385,7 +8390,7 @@ export default function App() {
 		if (kind === "swing") {
 			const chain = ikStateRef.current.chains?.get(trackId);
 			if (!chain || !targetWorld?.axis) return;
-			ikTouch(ikStateRef.current, trackId);
+			touch(trackId);
 			solveEffectorSwing(chain, targetWorld.axis, targetWorld.angle, targetWorld.startQuat, targetWorld.startParentQuat);
 			return;
 		}
@@ -8397,7 +8402,7 @@ export default function App() {
 		if (kind === "body") {
 			const joint = ikFkJoints?.get(trackId);
 			if (!joint) return;
-			ikTouch(ikStateRef.current, trackId);
+			touch(trackId);
 			if (footSnap && !ikBodyDragRef.current && ikChains) {
 				// Capture the plant points once, BEFORE the first hips move.
 				ikPlantFeet(ikChains, ikStateRef.current);
@@ -8410,17 +8415,20 @@ export default function App() {
 			if (footSnap && ikChains) {
 				ikSolvePlantedFeet(ikChains, ikStateRef.current);
 				// the planted re-solve wrote the leg bones — key them too
-				ikTouch(ikStateRef.current, "leftFoot");
-				ikTouch(ikStateRef.current, "rightFoot");
+				touch("leftFoot");
+				touch("rightFoot");
 			}
-			if (bodyContact && ikChains) applyBodyContact(ikChains, ikFkJoints, 0, { skipFeet: footSnap });
+			// Contact can lift any limb; key the ones it actually moved.
+			if (bodyContact && ikChains) {
+				for (const id of chainsChangedBy(ikChains, () => applyBodyContact(ikChains, ikFkJoints, 0, { skipFeet: footSnap }))) touch(id);
+			}
 			return;
 		}
 		// FK swing: targetWorld is the trackball payload { axis, angle,
 		// startQuat, startParentQuat } from the drag layer.
 		const joint = ikFkJoints?.get(trackId);
 		if (!joint || !targetWorld?.axis) return;
-		ikTouch(ikStateRef.current, trackId);
+		touch(trackId);
 		solveSwingAngle(joint, targetWorld.axis, targetWorld.angle, targetWorld.startQuat, targetWorld.startParentQuat);
 	}
 
@@ -8428,20 +8436,30 @@ export default function App() {
 	// scrub away and back restores the dragged pose exactly (slerp).
 	function ikDragEnd() {
 		ikBodyDragRef.current = false;
+		const drag = ikDragRef.current;
+		ikDragRef.current = null;
 		// One entry per drag: the pointermoves only moved bones, the keys map is
 		// untouched until this bake — the key it sets records the pre-drag keys.
-		if (ikChains) keyIkPoseAtPlayhead();
+		// Over a motion only this drag's parts are keyed, as deltas over the raw
+		// clip; without one the whole tracked pose is keyed as before.
+		if (ikChains) keyIkPoseAtPlayhead(motion ? drag?.ids ?? new Set() : null);
 		setIkTick((n) => n + 1);
 	}
 
 	/** Bake the current tracked rotations at the playhead into a scratch layer
 	 * and set them as a key through the shared registry. A bake only writes
 	 * TRACKED parts: with nothing dragged yet there is no key, nothing is
-	 * dispatched and Ctrl+Z never goes dead. */
-	function keyIkPoseAtPlayhead() {
-		const scratch = { ...createIkState(), tracked: new Set(ikStateRef.current.tracked) };
-		ikBakeKeyframe(ikChains, scratch, tlFrame, ikFkJoints);
-		const baked = scratch.keys.get(tlFrame);
+	 * dispatched and Ctrl+Z never goes dead. `dragIds` (a motion is loaded)
+	 * narrows the key to those parts and bases it on the raw clip pose. */
+	function keyIkPoseAtPlayhead(dragIds = null) {
+		let baked;
+		if (dragIds) {
+			baked = bakeIkDragKey(ikChains, ikFkJoints, tlFrame, dragIds, (rig) => poseMemberAtFrame(rig, motion, null, tlFrame));
+		} else {
+			const scratch = { ...createIkState(), tracked: new Set(ikStateRef.current.tracked) };
+			ikBakeKeyframe(ikChains, scratch, tlFrame, ikFkJoints);
+			baked = scratch.keys.get(tlFrame);
+		}
 		return baked ? runStudioAction("character.setIkKey", { characterId: activeChar.id, frame: tlFrame, tracks: ikKeyJson(baked) }) : null;
 	}
 
