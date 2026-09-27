@@ -21,7 +21,7 @@ const sessionDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-sessions-"));
 process.env.COZYCLAY_AGENT_SESSIONS_DIR = sessionDir;
 process.on("exit", () => rmSync(sessionDir, { recursive: true, force: true }));
 
-const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision", "run-action-admission-and-generation-limit", "stale-scene-readmits-any-family", "run-action-job-timeout", "non-generation-job-skips-generation-gate", "scene-change-readmits-host", "ai-video-motion-shares-generation-gate"]);
+const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision", "run-action-admission-and-generation-limit", "stale-scene-readmits-any-family", "run-action-job-timeout", "verify-motion-timeout", "non-generation-job-skips-generation-gate", "scene-change-readmits-host", "ai-video-motion-shares-generation-gate"]);
 const index = process.argv.indexOf("--case");
 const selected = index >= 0 ? process.argv[index + 1] : null;
 if (selected && !CASES.has(selected)) { console.error(`unknown --case ${selected}`); process.exit(2); }
@@ -248,6 +248,25 @@ if (shouldRun("run-action-job-timeout")) {
   await run.handler({ action: "shot.create" });
   assert.deepEqual(calls, [{ action: "export.shotVideo", options: [{ timeoutMs: 300_000 }] }, { action: "shot.create", options: [] }]);
   console.log("PASS a long-running run_action carries its declared hub timeout");
+}
+
+if (shouldRun("verify-motion-timeout")) {
+  const { createStudioTools } = await import("../bin/agent/studio-tools.mjs");
+  const { MAX_COMMAND_TIMEOUT_MS } = await import("../mcp/live-hub.mjs");
+  // A motion check samples the whole take in the editor, which runs for
+  // minutes on a long take: it waits under the hub ceiling. Placement and
+  // framing are one-frame checks and keep the Studio default.
+  const calls = []; let commandNumber = 0;
+  const admission = { commandId: () => `cmd-${++commandNumber}`, host: { workspaceId: "tab-7", documentEpoch: "doc-3", sceneId: "scene-main", sceneEpoch: "scene-open-4" }, revision: 4, refresh: async () => {} };
+  const liveHub = { command: async (name, payload, handle, ...options) => {
+    calls.push({ checks: payload.args.checks, options });
+    return { receiptId: null, revision: admission.revision, evidenceRevision: admission.revision, stale: false, checks: { coverage: "current-scene-targets" }, verification: null, semanticStatus: "unavailable", visualRefs: [], unsupportedChecks: [], unsupportedReasons: {} };
+  } };
+  const verify = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission } }).find(tool => tool.name === "verify_result");
+  await verify.handler({ targets: ["char-a"], checks: ["motion"] });
+  await verify.handler({ targets: ["char-a"], checks: ["placement", "framing"] });
+  assert.deepEqual(calls, [{ checks: ["motion"], options: [{ timeoutMs: MAX_COMMAND_TIMEOUT_MS }] }, { checks: ["placement", "framing"], options: [] }]);
+  console.log("PASS a verify_result motion check waits under the hub ceiling");
 }
 
 if (shouldRun("non-generation-job-skips-generation-gate")) {
