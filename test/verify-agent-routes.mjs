@@ -15,6 +15,12 @@ function assertUniqueToolPairs(frames, message) {
 	assert.equal(new Set(starts.map((event) => event.callId)).size, starts.length, `${message}: tool call ids are unique`);
 	for (const start of starts) assert.equal(dones.filter((event) => event.callId === start.callId).length, 1, `${message}: ${start.callId} has one tool.done`);
 }
+// inspect_studio { scope: "motion" } as the editor answers it (App.jsx
+// inspectScopes.motion): the current context plus each character's motion.
+function motionInspection(context, waypoints = []) {
+	const characters = context.entities.filter((entity) => entity.kind === "character").map((entity) => ({ id: entity.id, name: entity.name, takeId: null, frames: 0, promptBlocks: [], waypoints, ikKeyFrames: [] }));
+	return { context, scope: "motion", characters, total: characters.length };
+}
 const sessionDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-sessions-"));
 process.env.COZYCLAY_AGENT_SESSIONS_DIR = sessionDir;
 delete process.env.CLIPROXY_API_KEY;
@@ -361,7 +367,7 @@ await new Promise((resolve) => authServer.close(resolve));
 	};
 	const providerAuth = { getAccessToken: async () => null, onAuthChange: () => () => {} };
 	let providerServer;
-	const providerHandler = createAgentHandler({ auth: providerAuth, codex: fakeCodex, models: providerModels, fauxProvider: providerFaux.fauxProvider, liveHub: fakeLive, studioRuntime: motionRuntime, port: () => providerServer.address().port });
+	const providerHandler = createAgentHandler({ auth: providerAuth, codex: fakeCodex, models: providerModels, fauxProvider: providerFaux.fauxProvider, liveHub: { ...fakeLive, command: async (name, ...rest) => name === "inspect_studio" ? motionInspection(contextFixture()) : fakeLive.command(name, ...rest) }, studioRuntime: motionRuntime, port: () => providerServer.address().port });
 	providerFaux.script([
 		{ type: "toolCall", id: "provider-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } },
 		{ type: "text", text: "provider-only" },
@@ -747,7 +753,7 @@ console.log("agent routes verified");
 		{ type: "text", text: "done" },
 	]);
 	let stopServer;
-	const stopHub = { command: async () => ({ ok: true }), workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", handleForWorkspaceId: () => "handle-12", connected: true, workspaceHandles: ["handle-12"] };
+	const stopHub = { command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true }, workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", handleForWorkspaceId: () => "handle-12", connected: true, workspaceHandles: ["handle-12"] };
 	const stopHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: stopFaux.models, fauxProvider: stopFaux.fauxProvider, liveHub: stopHub, studioRuntime: stopRuntime, port: () => stopServer.address().port });
 	stopServer = createServer((req, res) => stopHandler(req, res).catch((error) => { console.error("stop-route fixture error:", error); if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	stopServer.listen(0, "127.0.0.1");
@@ -1314,6 +1320,7 @@ async function run16qStopScenario() {
 		workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", handleForWorkspaceId: () => "handle-12",
 		command: async (name, args) => {
 			if (name === "read_studio_context") return { context: (await import("./verify-studio-agent-protocol.mjs")).contextFixture() };
+			if (name === "inspect_studio") return motionInspection((await import("./verify-studio-agent-protocol.mjs")).contextFixture());
 			if (name === "cancel_motion_install") return { status: "not_applied", evidence: true };
 			if (name === "discard_motion_candidate") return { discarded: true };
 			return { ok: true };
@@ -1468,6 +1475,7 @@ async function run16rTwoTurnScenario() {
 		workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", handleForWorkspaceId: () => "handle-12",
 		command: async (name) => {
 			if (name === "read_studio_context") return { context: (await import("./verify-studio-agent-protocol.mjs")).contextFixture() };
+			if (name === "inspect_studio") return motionInspection((await import("./verify-studio-agent-protocol.mjs")).contextFixture());
 			if (name === "cancel_motion_install") return { status: "not_applied", evidence: true };
 			if (name === "discard_motion_candidate") return { discarded: true };
 			return { ok: true };
@@ -1642,7 +1650,7 @@ await run16rTwoTurnScenario();
 		[{ type: "text", text: "A completed" }],
 	]);
 	let server16u;
-	const handler16u = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux16u.models, fauxProvider: faux16u.fauxProvider, liveHub: { connected: true, workspaceHandles: ["handle-12"], workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", handleForWorkspaceId: () => "handle-12", command: async () => ({ ok: true }) }, studioRuntime: motionRuntime, port: () => server16u.address().port });
+	const handler16u = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux16u.models, fauxProvider: faux16u.fauxProvider, liveHub: { connected: true, workspaceHandles: ["handle-12"], workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", handleForWorkspaceId: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } }, studioRuntime: motionRuntime, port: () => server16u.address().port });
 	server16u = createServer((req, res) => handler16u(req, res).catch((error) => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	server16u.listen(0, "127.0.0.1"); await once(server16u, "listening");
 	const origin16u = `http://127.0.0.1:${server16u.address().port}`;
@@ -1695,7 +1703,7 @@ await run16rTwoTurnScenario();
 		stop: async jobId => { stopCalls16uRestore.push(jobId); return { status: "installed", code: "ALREADY_INSTALLED", mutated: true }; },
 	};
 	const faux16uRestore = createFakeModel();
-	const hub16uRestore = { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async () => ({ ok: true }) };
+	const hub16uRestore = { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } };
 	const sessionId16uRestore = "00000000-0000-4000-8000-000000000171";
 	const initialTurn16uRestore = { ...envelopeFixture(), sessionId: sessionId16uRestore, turnId: "00000000-0000-4000-8000-000000000172", text: "generate motion" };
 	let handler16uRestore, server16uRestore;
@@ -1786,7 +1794,7 @@ await run16rTwoTurnScenario();
 	const motion16y = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } });
 	faux16y.script([motion16y("first-16y"), [{ type: "text", text: "first complete" }], motion16y("second-16y"), [{ type: "text", text: "second complete" }]]);
 	let server16y;
-	const handler16y = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux16y.models, fauxProvider: faux16y.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async () => ({ ok: true }) }, studioRuntime: runtime16y, port: () => server16y.address().port });
+	const handler16y = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux16y.models, fauxProvider: faux16y.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } }, studioRuntime: runtime16y, port: () => server16y.address().port });
 	server16y = createServer((req, res) => handler16y(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	server16y.listen(0, "127.0.0.1"); await once(server16y, "listening");
 	const origin16y = `http://127.0.0.1:${server16y.address().port}`;
@@ -1841,7 +1849,7 @@ await run16rTwoTurnScenario();
 	const motionLimit = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } });
 	fauxLimit.script([motionLimit("limit-first"), motionLimit("limit-second"), [{ type: "text", text: "reported" }]]);
 	let serverLimit;
-	const handlerLimit = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxLimit.models, fauxProvider: fauxLimit.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async () => ({ ok: true }) }, studioRuntime: runtimeLimit, port: () => serverLimit.address().port });
+	const handlerLimit = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxLimit.models, fauxProvider: fauxLimit.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } }, studioRuntime: runtimeLimit, port: () => serverLimit.address().port });
 	serverLimit = createServer((req, res) => handlerLimit(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	serverLimit.listen(0, "127.0.0.1"); await once(serverLimit, "listening");
 	const originLimit = `http://127.0.0.1:${serverLimit.address().port}`;
@@ -1884,7 +1892,7 @@ await run16rTwoTurnScenario();
 		[{ type: "text", text: "reported" }],
 	]);
 	let server;
-	const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux.models, fauxProvider: faux.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name, payload) => { hubCalls.push({ name, payload }); return { ok: true, action: payload.args?.action, kind: "job", status: "started" }; } }, studioRuntime: runtime, port: () => server.address().port });
+	const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux.models, fauxProvider: faux.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name, payload) => { if (name === "inspect_studio") return motionInspection(contextFixture()); hubCalls.push({ name, payload }); return { ok: true, action: payload.args?.action, kind: "job", status: "started" }; } }, studioRuntime: runtime, port: () => server.address().port });
 	server = createServer((req, res) => handler(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	server.listen(0, "127.0.0.1"); await once(server, "listening");
 	const origin = `http://127.0.0.1:${server.address().port}`;
@@ -1922,7 +1930,7 @@ await run16rTwoTurnScenario();
 	const faux = createFakeModel();
 	faux.script([motion("two-fail-first"), motion("two-fail-second"), motion("two-fail-third"), [{ type: "text", text: "reported" }]]);
 	let server;
-	const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux.models, fauxProvider: faux.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async () => ({ ok: true }) }, studioRuntime: runtime, port: () => server.address().port });
+	const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux.models, fauxProvider: faux.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } }, studioRuntime: runtime, port: () => server.address().port });
 	server = createServer((req, res) => handler(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	server.listen(0, "127.0.0.1"); await once(server, "listening");
 	const origin = `http://127.0.0.1:${server.address().port}`;
@@ -1971,6 +1979,7 @@ for (const [index, [label, first, second]] of [
 		command: async (name, payload) => {
 			hubMixed.push(name);
 			if (name === "run_action") return { ok: true, commandId: payload.commandId, action: payload.args.action, kind: "job", status: "started", affectedIds: ["char-alex"], summary: "Started generating every prompt block." };
+			if (name === "inspect_studio") return motionInspection(contextFixture());
 			return { ok: true };
 		},
 	};
@@ -2014,7 +2023,7 @@ for (const [index, [label, first, second]] of [
 	const motionAgain = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } });
 	fauxAgain.script([motionAgain("again-first"), [{ type: "text", text: "first" }], motionAgain("again-second"), [{ type: "text", text: "second" }]]);
 	let serverAgain;
-	const handlerAgain = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxAgain.models, fauxProvider: fauxAgain.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async () => ({ ok: true }) }, studioRuntime: runtimeAgain, port: () => serverAgain.address().port });
+	const handlerAgain = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxAgain.models, fauxProvider: fauxAgain.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } }, studioRuntime: runtimeAgain, port: () => serverAgain.address().port });
 	serverAgain = createServer((req, res) => handlerAgain(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	serverAgain.listen(0, "127.0.0.1"); await once(serverAgain, "listening");
 	const originAgain = `http://127.0.0.1:${serverAgain.address().port}`;
@@ -2038,5 +2047,52 @@ for (const [index, [label, first, second]] of [
 		await handlerAgain.close();
 		serverAgain.closeAllConnections();
 		await new Promise(resolve => serverAgain.close(resolve));
+	}
+}
+
+// generate_motion admits against the character's token as the editor holds it
+// now: an edit earlier in the turn (arrange, a waypoint) retired the token the
+// turn started with, and the runtime would refuse that install as stale.
+{
+	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
+	const tokenContext = (token, scene) => { const context = contextFixture(); context.entities[0].token = token; context.revision.scene = scene; return context; };
+	const admittedFresh = [], inspectedFresh = [];
+	const runtimeFresh = {
+		readContext: async () => tokenContext("t1", 41),
+		admit: (input) => { admittedFresh.push(input); return { jobId: "fresh-job", commandId: "fresh-command", state: "queued" }; },
+		subscribe: () => () => {},
+		start: async () => ({ ok: true, status: "installed", mutated: true, receiptId: "fresh-receipt" }),
+		stop: async () => ({ status: "already_applied" }),
+	};
+	const fauxFresh = createFakeModel();
+	fauxFresh.script([{ type: "toolCall", id: "fresh-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } }, [{ type: "text", text: "reported" }]]);
+	const liveHubFresh = {
+		workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12",
+		command: async (name, args, handle) => {
+			if (name !== "inspect_studio") return { ok: true };
+			inspectedFresh.push({ args, handle });
+			return motionInspection(tokenContext("t2", 42));
+		},
+	};
+	let serverFresh;
+	const handlerFresh = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxFresh.models, fauxProvider: fauxFresh.fauxProvider, liveHub: liveHubFresh, studioRuntime: runtimeFresh, port: () => serverFresh.address().port });
+	serverFresh = createServer((req, res) => handlerFresh(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	serverFresh.listen(0, "127.0.0.1"); await once(serverFresh, "listening");
+	const originFresh = `http://127.0.0.1:${serverFresh.address().port}`;
+	try {
+		const turn = { ...envelopeFixture(), context: tokenContext("t1", 41), sessionId: "00000000-0000-4000-8000-000000000211", turnId: "00000000-0000-4000-8000-000000000212", text: "make Alex walk" };
+		const response = await fetch(`${originFresh}/agent/turn`, { method: "POST", headers: { origin: originFresh, "content-type": "application/json" }, body: JSON.stringify(turn), signal: AbortSignal.timeout(10000) });
+		assert.equal(response.status, 200);
+		const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
+		const done = frames.filter(frame => frame.type === "tool.done");
+		assert.equal(done[0]?.ok, true, `the motion is admitted: ${done[0]?.error ?? ""}`);
+		assert.deepEqual(inspectedFresh, [{ args: { scope: "motion", ids: ["char-alex"] }, handle: "handle-12" }], "generate_motion reads the character's motion state before admission");
+		assert.equal(admittedFresh.length, 1);
+		assert.equal(admittedFresh[0].targetToken, "t2", "admission carries the fresh token, not the turn-start one");
+		console.log("PASS generate_motion admits against the character's fresh target token");
+	} finally {
+		await handlerFresh.close();
+		serverFresh.closeAllConnections();
+		await new Promise(resolve => serverFresh.close(resolve));
 	}
 }
