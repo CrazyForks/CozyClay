@@ -62,6 +62,7 @@ import { elementByPath } from "./studio-elements.js";
 import { createStudioCommands, createStudioCommandJournal, studioObjectCatalogue } from "./studio-agent-commands.js";
 import { STUDIO_IK_CHAIN_TRACKS, createStudioActionRegistry, studioActionDeclaration, studioActionRefusal } from "./studio-actions.js";
 import { createStudioMotionCandidates } from "./studio-agent-motion.js";
+import { CONTACT_SHEET_LAYOUT, buildContactSheet, sampleContactSheetFrames } from "./studio-contact-sheet.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
@@ -1277,8 +1278,13 @@ export function createStudioAppBinding(ports) {
 					verification: receipt?.verification ?? null, semanticStatus: "unavailable", visualRefs: [],
 					unsupportedChecks: args.checks.filter(check => check === "motion" ? !receipt?.verification : !receipt?.checks) };
 				if (args.visual !== "none") {
-					if (args.visual === "contact_sheet") result.unsupportedChecks.push("contact_sheet");
-					else { const capture = ports.capture(); const imageId = crypto.randomUUID(); images.set(imageId, { ...capture, revision: s.revision, receiptId: result.receiptId }); result.visualRefs.push({ imageId }); }
+					if (args.visual === "contact_sheet") {
+						// One image of frames across the range, each rendered through the export
+						// path, which puts the playhead pose, shot camera and props back.
+						const frames = sampleContactSheetFrames(args.range, s.frameCount), sheet = buildContactSheet(frames, ports.renderFrameBuffer), imageId = crypto.randomUUID();
+						images.set(imageId, { dataUrl: ports.encodePng(sheet.data, sheet), width: sheet.width, height: sheet.height, frames, layout: CONTACT_SHEET_LAYOUT, revision: s.revision, receiptId: result.receiptId });
+						result.visualRefs.push({ imageId, frames, layout: CONTACT_SHEET_LAYOUT });
+					} else { const capture = ports.capture(); const imageId = crypto.randomUUID(); images.set(imageId, { ...capture, revision: s.revision, receiptId: result.receiptId }); result.visualRefs.push({ imageId }); }
 				}
 				return result;
 			}
@@ -12692,6 +12698,14 @@ function resizePromptClip(id, edge, rawFrame) {
 	studioPortsRef.current = {
 		read: readStudioState, revision: sceneRevisionRef, bounds: studioBounds, commit: commitStudioDraft, commitMotion: commitStudioMotion,
 		operate: operateStudio, undo: undoScene, stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
+		// One shot frame as raw read-back pixels (rows bottom-up), from the export
+		// path captureShotFramePng uses; an export in flight renders at its output.
+		renderFrameBuffer: frame => {
+			const output = recRef.current?.capture ? recRef.current.request.context.output : shotOutput, data = withExportFrame(frame);
+			if (!data) throw new Error("The shot renderer is not ready");
+			return { data, width: output.width, height: output.height };
+		},
+		encodePng: (buffer, output) => bufferToPng(buffer, output),
 		// The pose library a character.pose patch resolves its id against.
 		poses: () => [DEFAULT_POSE, ...customPoses],
 		loadArtifact: (artifact, options) => {
