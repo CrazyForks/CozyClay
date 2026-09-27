@@ -142,6 +142,7 @@ const NODE_FILES = [
 	"test/verify-matte.mjs",
 	"test/verify-model-presets.mjs",
 	"test/verify-mp4-duration.mjs",
+	"test/verify-gt-render-camera.mjs",
 	"test/verify-mcp-invariants.mjs",
 	"test/verify-motion-edit.mjs",
 	"test/verify-motion-readiness.mjs",

@@ -8802,6 +8802,7 @@ export default function App() {
 			// The RGB plate the passes are compared against — same rig, same
 			// framing, no material override.
 			capturePlate: () => liveStateRef.current.captureFramingPng(liveStateRef.current.captureCurrentFraming()),
+			captureFraming: (framing, output) => liveStateRef.current.captureFramingPng(framing, output),
 			characterScale: activeChar?.scale ?? 1,
 			characterModel: activeChar?.model ?? null,
 			// QA-only framing: FlyControls rewrites the editor camera's rotation
