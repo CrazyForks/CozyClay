@@ -24,7 +24,7 @@ import * as ik from '../src/ardy/ik.js';
 import { copyPhysicsKeys, physicsKeyStamp } from '../src/ardy/physics-review.js';
 import * as playback from '../src/ardy/playback.js';
 import { primeBindPose, normalizeBoneName } from '../src/poses.js';
-import { TRAIL_EFFECTOR_JOINTS } from '../src/motion-trail.js';
+import { TRAIL_EFFECTOR_JOINTS, restoreTrailEdits } from '../src/motion-trail.js';
 import { sampleAt } from '../src/sample-at.js';
 import { createShot, shotAtFrame, addShotAtFrame } from '../src/cuts.js';
 import * as studioActions from '../src/studio-actions.js';
@@ -140,7 +140,7 @@ function fixture(options={}) {
  // Stands in for the mounted prop groups: where each prop is drawn right now.
  propWorldRef:ref((id,out)=>{const o=store.current.objects.find(row=>row.id===id);if(!o)return null;const local=carried.sceneObjectMatrix(o,new THREE.Matrix4());if(!o.attach)return out.copy(local);const frame=carried.attachFrameMatrix(rigs[o.attach.characterId]??null,o.attach.bone??null,new THREE.Matrix4());return frame?out.copy(frame.multiply(local)):null;}),snapshotCast:()=>({}),markSemanticEdit,setCharacters:castOwner.set,editCharacters:castOwner.edit,setShots:shotsOwner.set,editShots:shotsOwner.edit,
  ...studioActions,addShotAtFrame,shots:[],tlFrame:0,tlFrameCount:48,captureCurrentFraming:()=>({pos:{x:0,y:1.6,z:5},yaw:0,pitch:0,fovDeg:40}),trackFeature:()=>{},window:{dispatchEvent:()=>true},
- ko:options.korean?(en,kr)=>kr:en=>en,isKo:Boolean(options.korean),studioActionsRef:actionsRef,loadMotionFromUrl:(...args)=>urlLoader(...args),sha256Hex,encodeMotionResource,decodeMotionResource,resolveMotionSource,retimeMotion,TIMELINE_FPS:24,createMotionEdit,applyMotionCalibration,normalizeMotionCalibration,characterScaleFor,
+ ko:options.korean?(en,kr)=>kr:en=>en,isKo:Boolean(options.korean),studioActionsRef:actionsRef,restoreTrailEdits,loadMotionFromUrl:(...args)=>urlLoader(...args),sha256Hex,encodeMotionResource,decodeMotionResource,resolveMotionSource,retimeMotion,TIMELINE_FPS:24,createMotionEdit,applyMotionCalibration,normalizeMotionCalibration,characterScaleFor,
  projectMotionsRef:ref(new Map()),motionEncodingCacheRef:ref(new WeakMap()),restoreEpochRef:ref(0),
  // The scene document: App's own scene handlers over the real scenes.js
  // edits; persistence is a no-op and openScene stands in for the React room swap.

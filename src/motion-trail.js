@@ -11,6 +11,7 @@
 
 import { CSKEL27_JOINTS, CSKEL27_PARENTS } from "./ardy/cskel27.js";
 import { motionJointPositions, motionJointPositionsAt } from "./ardy/playback.js";
+import { renderMotionEdit } from "./ardy/motion-edit.js";
 
 /** Metres per rig unit: Character scales the Mixamo centimetre rig by 0.01 * stature. */
 const RIG_UNIT_METRES = 0.01;
@@ -200,8 +201,8 @@ export function worldDeltaToClip(motion, delta) {
  * pivot). Rather than model that, keep the clip delta along the pointer (as
  * before) and solve its LENGTH through real playback: the gain that brings
  * the rendered effector closest to the pointer (least squares, so it never
- * overshoots). A full 3D inverse was rejected: the bend-plane budget makes
- * some directions unreachable and chasing them sends the clip delta far off.
+ * overshoots). A full 3D inverse was rejected: limb reach makes some
+ * directions unreachable and chasing them sends the clip delta far off.
  * The gain is capped at 1.5: rig/clip limb ratios sit well inside it, and a
  * bone that needs more (the Mixamo head bone rides ~11 cm from the neck
  * pivot, 17 degrees per rendered cm) is a lever the edit cannot drive 1:1
@@ -231,7 +232,7 @@ export function worldDeltaToTrailClip(motion, delta, { track = "hips", grabFrame
 	const MIN_GAIN = 0.1;
 	const MAX_GAIN = 1.5;
 	// Locally reached ~ gain * v, so the best gain is gain * (D.r)/(r.r);
-	// iterate that (the bend budget bends the curve) and keep the closest.
+	// iterate that (the reach limit bends the curve) and keep the closest.
 	let gain = 1;
 	let best = { gain: 1, miss: Infinity };
 	for (let i = 0; i < 4; i += 1) {
@@ -363,20 +364,8 @@ function limbWindowNormal(motion, [a, b, c], startFrame, endFrame, grabFrame, ra
 	return unit(sum);
 }
 
-/** Clamp a unit normal's swing, without choosing the opposite bend side. */
-function limitNormal(from, to, radians) {
-	const angle = Math.acos(Math.max(-1, Math.min(1, dot(from, to))));
-	if (angle <= radians) return to;
-	const tangent = unit(sub(to, scale3(from, dot(from, to))));
-	return tangent ? add(scale3(from, Math.cos(radians)), scale3(tangent, Math.sin(radians))) : from;
-}
-
-/**
- * Two-bone solve: fixed window guide, swing-only segments, fixed effector
- * orientation. Reach AND bend-plane limits can constrain the target: an
- * arbitrary sideways target cannot keep its original elbow/knee plane.
- */
-function bendLimbFrame(access, [a, b, c], descendants, offset, guide, weight) {
+/** Two-bone solve: follow the target up to reach, using one window guide. */
+function bendLimbFrame(access, [a, b, c], descendants, offset, guide) {
 	const A = access.pos(a);
 	const B = access.pos(b);
 	const C = access.pos(c);
@@ -386,21 +375,12 @@ function bendLimbFrame(access, [a, b, c], descendants, offset, guide, weight) {
 	const AB = sub(B, A);
 	const AC = sub(C, A);
 	const oldNormal = unit(cross(AB, AC));
-	let toTarget = sub(add(C, offset), A);
-	let dir = unit(toTarget) ?? unit(AC);
+	const toTarget = sub(add(C, offset), A);
+	const dir = unit(toTarget) ?? unit(AC);
 	if (!dir) return;
 	const reference = guide ?? oldNormal ?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
-	let normal = unit(sub(reference, scale3(dir, dot(reference, dir))))
+	const normal = unit(sub(reference, scale3(dir, dot(reference, dir))))
 		?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
-	if (oldNormal) {
-		if (dot(normal, oldNormal) < 0) normal = scale3(normal, -1);
-		// Ten degrees at the grab, easing to zero at the window boundary.
-		// The delta bound also makes an arbitrarily small drag a small change.
-		const limit = Math.min(Math.PI / 18 * weight, len(offset) / Math.max(len(AC), 1e-9));
-		normal = limitNormal(oldNormal, normal, limit);
-		toTarget = sub(toTarget, scale3(normal, dot(toTarget, normal)));
-		dir = unit(toTarget) ?? unit(AC);
-	}
 	// Leave a sub-millimetre bend at full reach so its side stays defined.
 	const d = Math.min(l1 + l2 - 1e-6, Math.max(Math.abs(l1 - l2) + 1e-6, len(toTarget)));
 	if (!(d > 1e-9)) return;
@@ -436,6 +416,58 @@ function swingHeadFrame(access, neck, head, subtree, offset) {
 	if (access.rotMats) access.setGlobal(neck, matMul(q, access.global(neck)));
 }
 
+/** Validate and own the small JSON recipe stored beside the source motion ID. */
+export function normalizeTrailEdits(value) {
+	if (value == null) return null;
+	const fail = () => { throw new TypeError("Invalid motion trail edit recipe"); };
+	if (value.version !== 1 || !Number.isInteger(value.frames) || value.frames < 1
+		|| !(value.fps > 0) || !Number.isFinite(value.fps)
+		|| !Array.isArray(value.edits) || value.edits.length > 4096) fail();
+	const edits = value.edits.map((edit) => {
+		if (!TRAIL_TRACKS.some(({ id }) => id === edit?.track)
+			|| !Number.isInteger(edit.grabFrame) || edit.grabFrame < 0 || edit.grabFrame >= value.frames
+			|| !Number.isInteger(edit.radiusFrames) || edit.radiusFrames < 0
+			|| !["x", "y", "z"].every((axis) => Number.isFinite(edit.clipDelta?.[axis]))) fail();
+		return { track: edit.track, grabFrame: edit.grabFrame, radiusFrames: edit.radiusFrames,
+			clipDelta: { x: edit.clipDelta.x, y: edit.clipDelta.y, z: edit.clipDelta.z } };
+	});
+	let segments = null;
+	if (value.segments != null) {
+		if (!Array.isArray(value.segments) || !value.segments.length || value.segments.length > 4096) fail();
+		segments = value.segments.map((segment) => {
+			if (typeof segment?.id !== "string" || !Number.isInteger(segment.sourceStart) || segment.sourceStart < 0
+				|| !Number.isInteger(segment.sourceEnd) || segment.sourceEnd < segment.sourceStart
+				|| !Number.isFinite(segment.speed) || segment.speed < 0.1 || segment.speed > 4) fail();
+			return { id: segment.id, sourceStart: segment.sourceStart, sourceEnd: segment.sourceEnd, speed: segment.speed };
+		});
+	}
+	return { version: 1, frames: value.frames, fps: value.fps, segments, edits };
+}
+
+function rememberTrailEdit(source, edited, edit) {
+	const previous = source.trailEdits;
+	return { ...edited, trailEdits: {
+		version: 1, frames: source.frames, fps: source.fps,
+		segments: previous?.segments ?? source.editSegments?.map((segment) => ({ ...segment })) ?? null,
+		edits: [...(previous?.edits ?? []), { ...edit, clipDelta: { ...edit.clipDelta } }],
+	} };
+}
+
+/** Rebuild the arrays AND the retarget reference after project/cache decoding. */
+export function restoreTrailEdits(motion, stored) {
+	const recipe = normalizeTrailEdits(stored);
+	if (!recipe) return motion;
+	if (recipe.segments?.some((segment) => segment.sourceEnd >= motion.frames)) {
+		throw new RangeError("Motion trail source segment exceeds the take");
+	}
+	let restored = recipe.segments ? renderMotionEdit(motion, recipe.segments) : motion;
+	if (restored.frames !== recipe.frames || restored.fps !== recipe.fps) {
+		throw new RangeError("Motion trail recipe does not match the take clock");
+	}
+	for (const edit of recipe.edits) restored = applyTrailFalloffDelta(restored, edit);
+	return restored;
+}
+
 /**
  * Deform a take by a clip-space delta centred on `grabFrame`, weighted per
  * frame by the smoothstep falloff. `track` is the dragged TRAIL_TRACKS id:
@@ -464,7 +496,7 @@ export function applyTrailFalloffDelta(motion, { track = "hips", grabFrame, radi
 			if (w <= 0) continue;
 			const access = { ...frameAccess(posedJoints, rotMats, f), rotMats };
 			const offset = [clipDelta.x * w, clipDelta.y * w, clipDelta.z * w];
-			if (chain) bendLimbFrame(access, chain, [chain[2], ...moved], offset, guide, w);
+			if (chain) bendLimbFrame(access, chain, [chain[2], ...moved], offset, guide);
 			else swingHeadFrame(access, neck, head, moved, offset);
 		}
 		const edited = rotMats ? { ...motion, rootPos, posedJoints, rotMats } : { ...motion, rootPos, posedJoints };
@@ -475,7 +507,7 @@ export function applyTrailFalloffDelta(motion, { track = "hips", grabFrame, radi
 				chains: [...new Set([...(motion.trailRetarget?.chains ?? []), track])],
 			};
 		}
-		return edited;
+		return rememberTrailEdit(motion, edited, { track, grabFrame, radiusFrames, clipDelta });
 	}
 	for (let f = startFrame; f < endFrame; f += 1) {
 		const w = falloffWeight(f - grabFrame, radiusFrames);
@@ -493,7 +525,7 @@ export function applyTrailFalloffDelta(motion, { track = "hips", grabFrame, radi
 			posedJoints[po + 2] += dz;
 		}
 	}
-	return { ...motion, rootPos, posedJoints };
+	return rememberTrailEdit(motion, { ...motion, rootPos, posedJoints }, { track, grabFrame, radiusFrames, clipDelta });
 }
 
 /**
