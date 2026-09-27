@@ -10,6 +10,11 @@
  */
 
 import { CSKEL27_JOINTS, CSKEL27_PARENTS } from "./ardy/cskel27.js";
+import { motionJointPositions, motionJointPositionsAt } from "./ardy/playback.js";
+import { renderMotionEdit } from "./ardy/motion-edit.js";
+
+/** Metres per rig unit: Character scales the Mixamo centimetre rig by 0.01 * stature. */
+const RIG_UNIT_METRES = 0.01;
 
 const JOINTS = CSKEL27_JOINTS.length;
 const jointIndex = (name) => CSKEL27_JOINTS.indexOf(name);
@@ -83,17 +88,42 @@ function toWorldXZ(basis, x, z) {
 	];
 }
 
+/** Rendered rig-space samples of one joint, or null when the rig drives no bone for it. */
+function renderedSamples(motion, joint, rig) {
+	if (!rig) return null;
+	const samples = motionJointPositions(rig, motion);
+	return samples && Number.isFinite(samples.positions[joint * 3]) ? samples : null;
+}
+
 /**
- * World-space polyline of one cskel27 joint's posed position across the take.
+ * World-space polyline of one cskel27 joint across the take.
  * Returns a flat [x0,y0,z0, x1,y1,z1, ...] array of length frames*3.
  * `baseY` is the character entry's stage height (roof scenes ride above 0).
+ * With `rig`, the points are where playback RENDERS that joint's bone on this
+ * rig (rig proportions, prep scale, bind offsets); without it, the clip's
+ * own posedJoints (the space pins and the wire use).
  */
-export function jointTrailPoints(motion, jointName = "Hips", { baseY = 0, scale = 1 } = {}) {
+export function jointTrailPoints(motion, jointName = "Hips", { baseY = 0, scale = 1, rig = null } = {}) {
 	if (!motion?.posedJoints || !(motion.frames > 0)) return null;
 	const joint = CSKEL27_JOINTS.indexOf(jointName);
 	if (joint < 0) return null;
 	const basis = anchorBasis(motion);
 	const out = new Float32Array(motion.frames * 3);
+	const rendered = renderedSamples(motion, joint, rig);
+	if (rendered) {
+		// The Character group: anchor position, clip yaw, 0.01 * stature scale.
+		// Rig space is already anchor-relative (applyMotionFrame rebases).
+		const unit = RIG_UNIT_METRES * scale;
+		for (let f = 0; f < motion.frames; f += 1) {
+			const po = (f * JOINTS + joint) * 3;
+			const x = rendered.positions[po] * unit;
+			const z = rendered.positions[po + 2] * unit;
+			out[f * 3] = basis.anchorX + x * basis.cos + z * basis.sin;
+			out[f * 3 + 1] = baseY + rendered.positions[po + 1] * unit;
+			out[f * 3 + 2] = basis.anchorZ - x * basis.sin + z * basis.cos;
+		}
+		return out;
+	}
 	for (let f = 0; f < motion.frames; f += 1) {
 		const po = (f * JOINTS + joint) * 3;
 		const [wx, wz] = toWorldXZ(basis, motion.posedJoints[po], motion.posedJoints[po + 2]);
@@ -161,6 +191,63 @@ export function worldDeltaToClip(motion, delta) {
 	};
 }
 
+/**
+ * World drag delta on a drawn (rendered) trail -> the clip delta
+ * applyTrailFalloffDelta takes, so the RENDERED effector follows the pointer.
+ *
+ * Playback turns the rig's own bones by the clip's rotations and adds rotated
+ * bind offsets, so a clip move is not a rendered move (the y-bot forearm is
+ * 27.6 cm against the clip's 23.3; the Mixamo head bone sits near the neck
+ * pivot). Rather than model that, keep the clip delta along the pointer (as
+ * before) and solve its LENGTH through real playback: the gain that brings
+ * the rendered effector closest to the pointer (least squares, so it never
+ * overshoots). A full 3D inverse was rejected: limb reach makes some
+ * directions unreachable and chasing them sends the clip delta far off.
+ * The gain is capped at 1.5: rig/clip limb ratios sit well inside it, and a
+ * bone that needs more (the Mixamo head bone rides ~11 cm from the neck
+ * pivot, 17 degrees per rendered cm) is a lever the edit cannot drive 1:1
+ * without spinning the part. Without a rig: yaw + stature only.
+ */
+export function worldDeltaToTrailClip(motion, delta, { track = "hips", grabFrame = 0, radiusFrames = 0, rig = null, scale = 1 } = {}) {
+	const stature = Number.isFinite(scale) && scale > 1e-9 ? scale : 1;
+	const plain = worldDeltaToClip(motion, { x: delta.x / stature, y: delta.y / stature, z: delta.z / stature });
+	const distance = Math.hypot(delta.x, delta.y, delta.z);
+	const joint = jointIndex(TRAIL_TRACKS.find((item) => item.id === track)?.joint ?? "");
+	const samples = rig && joint >= 0 && motion?.rotMats && distance > 1e-6 ? motionJointPositions(rig, motion) : null;
+	const frame = Math.max(0, Math.min((motion?.frames ?? 1) - 1, Math.round(grabFrame) || 0));
+	const base = samples?.positions.subarray((frame * JOINTS + joint) * 3, (frame * JOINTS + joint) * 3 + 3);
+	if (!base || !Number.isFinite(base[0])) return plain;
+	const basis = anchorBasis(motion);
+	const unit = RIG_UNIT_METRES * stature;
+	const target = [delta.x, delta.y, delta.z];
+	const scaled = (gain) => ({ x: plain.x * gain, y: plain.y * gain, z: plain.z * gain });
+	// Rendered world displacement of the effector at the grab for a gain.
+	const reached = (gain) => {
+		const edited = applyTrailFalloffDelta(motion, { track, grabFrame: frame, radiusFrames, clipDelta: scaled(gain) });
+		const p = motionJointPositionsAt(rig, edited, frame).subarray(joint * 3, joint * 3 + 3);
+		const x = (p[0] - base[0]) * unit;
+		const z = (p[2] - base[2]) * unit;
+		return [x * basis.cos + z * basis.sin, (p[1] - base[1]) * unit, -x * basis.sin + z * basis.cos];
+	};
+	const MIN_GAIN = 0.1;
+	const MAX_GAIN = 1.5;
+	// Locally reached ~ gain * v, so the best gain is gain * (D.r)/(r.r);
+	// iterate that (the reach limit bends the curve) and keep the closest.
+	let gain = 1;
+	let best = { gain: 1, miss: Infinity };
+	for (let i = 0; i < 4; i += 1) {
+		const r = reached(gain);
+		const miss = len(sub(target, r));
+		if (miss < best.miss) best = { gain, miss };
+		const rr = dot(r, r);
+		if (!(rr > 1e-12) || miss < 1e-4) break;
+		const next = Math.max(MIN_GAIN, Math.min(MAX_GAIN, (gain * dot(target, r)) / rr));
+		if (Math.abs(next - gain) < 1e-4) break;
+		gain = next;
+	}
+	return scaled(best.gain);
+}
+
 /** Smoothstep falloff: 1 at the grab frame, 0 at/beyond the radius. */
 export function falloffWeight(distanceFrames, radiusFrames) {
 	if (!(radiusFrames > 0)) return distanceFrames === 0 ? 1 : 0;
@@ -208,13 +295,12 @@ const matVec = (m, v) => [
 	m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
 	m[6] * v[0] + m[7] * v[1] + m[8] * v[2],
 ];
-/** Rotation taking orthonormal frame (u, n, u x n) onto (u2, n2, u2 x n2). */
-function frameRotation(u, n, u2, n2) {
-	const w = cross(u, n);
-	const w2 = cross(u2, n2);
-	const from = [u[0], n[0], w[0], u[1], n[1], w[1], u[2], n[2], w[2]];
-	const to = [u2[0], n2[0], w2[0], u2[1], n2[1], w2[1], u2[2], n2[2], w2[2]];
-	return matMul(to, matT(from));
+/** Inverse of a row-major 3x3 (callers keep it well conditioned). */
+function inverse3(m) {
+	const [a, b, c, d, e, f, g, h, i] = m;
+	const A = e * i - f * h, B = f * g - d * i, C = d * h - e * g;
+	const det = a * A + b * B + c * C;
+	return [A, c * h - b * i, b * f - c * e, B, a * i - c * g, c * d - a * f, C, b * g - a * h, a * e - b * d].map((v) => v / det);
 }
 /** Shortest-arc rotation taking unit `a` onto unit `b` (Rodrigues). */
 function arcRotation(a, b) {
@@ -266,48 +352,50 @@ function frameAccess(posedJoints, rotMats, f) {
 	};
 }
 
-/**
- * Two-bone limb solve for one frame: the effector moves by `offset` (clamped to
- * the chain's reach), the root joint stays put, the mid joint is re-placed on
- * the old elbow/knee side with both segment lengths kept, and the effector's
- * descendants translate with it. rotMats (when present) are rewritten so the
- * root and mid globals swing onto the new segments and the effector keeps its
- * global orientation: FK over the new locals reproduces the new positions,
- * which matters because playback drives the arm chain from rotations only.
- */
-function bendLimbFrame(access, [a, b, c], descendants, offset) {
+/** One bend-side guide from the source window, never from the dragged target. */
+function limbWindowNormal(motion, [a, b, c], startFrame, endFrame, grabFrame, radiusFrames) {
+	let sum = [0, 0, 0];
+	for (let f = startFrame; f < endFrame; f += 1) {
+		const access = frameAccess(motion.posedJoints, null, f);
+		const normal = cross(sub(access.pos(b), access.pos(a)), sub(access.pos(c), access.pos(a)));
+		// Area weighting gives nearly straight (ill-conditioned) frames no vote.
+		sum = add(sum, scale3(normal, falloffWeight(f - grabFrame, radiusFrames)));
+	}
+	return unit(sum);
+}
+
+/** Two-bone solve: follow the target up to reach, using one window guide. */
+function bendLimbFrame(access, [a, b, c], descendants, offset, guide) {
 	const A = access.pos(a);
 	const B = access.pos(b);
 	const C = access.pos(c);
 	const l1 = len(sub(B, A));
 	const l2 = len(sub(C, B));
+	if (len(offset) < 1e-9) return;
+	const AB = sub(B, A);
+	const AC = sub(C, A);
+	const oldNormal = unit(cross(AB, AC));
 	const toTarget = sub(add(C, offset), A);
-	const dir = unit(toTarget) ?? unit(sub(C, A));
+	const dir = unit(toTarget) ?? unit(AC);
 	if (!dir) return;
-	const d = Math.min(l1 + l2, Math.max(Math.abs(l1 - l2), len(toTarget)));
+	const reference = guide ?? oldNormal ?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+	const normal = unit(sub(reference, scale3(dir, dot(reference, dir))))
+		?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+	// Leave a sub-millimetre bend at full reach so its side stays defined.
+	const d = Math.min(l1 + l2 - 1e-6, Math.max(Math.abs(l1 - l2) + 1e-6, len(toTarget)));
 	if (!(d > 1e-9)) return;
 	const along = (l1 * l1 - l2 * l2 + d * d) / (2 * d);
 	const h = Math.sqrt(Math.max(0, l1 * l1 - along * along));
-	// Pole = the old mid joint off the new reach line, so the bend keeps its side.
-	const AB = sub(B, A);
-	const oldNormal = unit(cross(AB, sub(C, A)));
-	const pole = unit(sub(AB, scale3(dir, dot(AB, dir))))
-		?? (oldNormal && unit(cross(oldNormal, dir)))
-		?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+	const pole = unit(cross(dir, normal));
 	const B2 = add(A, add(scale3(dir, along), scale3(pole, h)));
 	const C2 = add(A, scale3(dir, d));
 	const move = sub(C2, C);
 	for (const j of descendants) access.setPos(j, add(access.pos(j), move));
 	access.setPos(b, B2);
 	if (!access.rotMats) return;
-	// Both segments swing with the bend plane (normal -> pole x dir), so the
-	// mid joint's local change is a pure hinge about the plane normal.
-	const newNormal = unit(cross(pole, dir));
-	const swing = (from, to) => {
-		const u = unit(from);
-		const u2 = unit(to);
-		return oldNormal ? frameRotation(u, oldNormal, u2, newNormal) : arcRotation(u, u2);
-	};
+	// Transport each segment by its shortest arc, not by the bend frame:
+	// rotating the frame added axial twist even when the elbow hardly moved.
+	const swing = (from, to) => arcRotation(unit(from), unit(to));
 	const ga = matMul(swing(AB, sub(B2, A)), access.global(a));
 	const gb = matMul(swing(sub(C, B), sub(C2, B2)), access.global(b));
 	const gc = access.global(c);
@@ -326,6 +414,58 @@ function swingHeadFrame(access, neck, head, subtree, offset) {
 	const q = arcRotation(from, to);
 	for (const j of subtree) access.setPos(j, add(N, matVec(q, sub(access.pos(j), N))));
 	if (access.rotMats) access.setGlobal(neck, matMul(q, access.global(neck)));
+}
+
+/** Validate and own the small JSON recipe stored beside the source motion ID. */
+export function normalizeTrailEdits(value) {
+	if (value == null) return null;
+	const fail = () => { throw new TypeError("Invalid motion trail edit recipe"); };
+	if (value.version !== 1 || !Number.isInteger(value.frames) || value.frames < 1
+		|| !(value.fps > 0) || !Number.isFinite(value.fps)
+		|| !Array.isArray(value.edits) || value.edits.length > 4096) fail();
+	const edits = value.edits.map((edit) => {
+		if (!TRAIL_TRACKS.some(({ id }) => id === edit?.track)
+			|| !Number.isInteger(edit.grabFrame) || edit.grabFrame < 0 || edit.grabFrame >= value.frames
+			|| !Number.isInteger(edit.radiusFrames) || edit.radiusFrames < 0
+			|| !["x", "y", "z"].every((axis) => Number.isFinite(edit.clipDelta?.[axis]))) fail();
+		return { track: edit.track, grabFrame: edit.grabFrame, radiusFrames: edit.radiusFrames,
+			clipDelta: { x: edit.clipDelta.x, y: edit.clipDelta.y, z: edit.clipDelta.z } };
+	});
+	let segments = null;
+	if (value.segments != null) {
+		if (!Array.isArray(value.segments) || !value.segments.length || value.segments.length > 4096) fail();
+		segments = value.segments.map((segment) => {
+			if (typeof segment?.id !== "string" || !Number.isInteger(segment.sourceStart) || segment.sourceStart < 0
+				|| !Number.isInteger(segment.sourceEnd) || segment.sourceEnd < segment.sourceStart
+				|| !Number.isFinite(segment.speed) || segment.speed < 0.1 || segment.speed > 4) fail();
+			return { id: segment.id, sourceStart: segment.sourceStart, sourceEnd: segment.sourceEnd, speed: segment.speed };
+		});
+	}
+	return { version: 1, frames: value.frames, fps: value.fps, segments, edits };
+}
+
+function rememberTrailEdit(source, edited, edit) {
+	const previous = source.trailEdits;
+	return { ...edited, trailEdits: {
+		version: 1, frames: source.frames, fps: source.fps,
+		segments: previous?.segments ?? source.editSegments?.map((segment) => ({ ...segment })) ?? null,
+		edits: [...(previous?.edits ?? []), { ...edit, clipDelta: { ...edit.clipDelta } }],
+	} };
+}
+
+/** Rebuild the arrays AND the retarget reference after project/cache decoding. */
+export function restoreTrailEdits(motion, stored) {
+	const recipe = normalizeTrailEdits(stored);
+	if (!recipe) return motion;
+	if (recipe.segments?.some((segment) => segment.sourceEnd >= motion.frames)) {
+		throw new RangeError("Motion trail source segment exceeds the take");
+	}
+	let restored = recipe.segments ? renderMotionEdit(motion, recipe.segments) : motion;
+	if (restored.frames !== recipe.frames || restored.fps !== recipe.fps) {
+		throw new RangeError("Motion trail recipe does not match the take clock");
+	}
+	for (const edit of recipe.edits) restored = applyTrailFalloffDelta(restored, edit);
+	return restored;
 }
 
 /**
@@ -350,15 +490,24 @@ export function applyTrailFalloffDelta(motion, { track = "hips", grabFrame, radi
 		const neck = jointIndex("Neck");
 		const head = jointIndex("Head");
 		const moved = subtreeOf(chain ? chain[2] : head).filter((j) => !chain || j !== chain[2]);
+		const guide = chain ? limbWindowNormal(motion, chain, startFrame, endFrame, grabFrame, radiusFrames) : null;
 		for (let f = startFrame; f < endFrame; f += 1) {
 			const w = falloffWeight(f - grabFrame, radiusFrames);
 			if (w <= 0) continue;
 			const access = { ...frameAccess(posedJoints, rotMats, f), rotMats };
 			const offset = [clipDelta.x * w, clipDelta.y * w, clipDelta.z * w];
-			if (chain) bendLimbFrame(access, chain, [chain[2], ...moved], offset);
+			if (chain) bendLimbFrame(access, chain, [chain[2], ...moved], offset, guide);
 			else swingHeadFrame(access, neck, head, moved, offset);
 		}
-		return rotMats ? { ...motion, rootPos, posedJoints, rotMats } : { ...motion, rootPos, posedJoints };
+		const edited = rotMats ? { ...motion, rootPos, posedJoints, rotMats } : { ...motion, rootPos, posedJoints };
+		if (chain && rotMats) {
+			// One immutable reference, not a chain of preview/drag snapshots.
+			edited.trailRetarget = {
+				base: motion.trailRetarget?.base ?? motion,
+				chains: [...new Set([...(motion.trailRetarget?.chains ?? []), track])],
+			};
+		}
+		return rememberTrailEdit(motion, edited, { track, grabFrame, radiusFrames, clipDelta });
 	}
 	for (let f = startFrame; f < endFrame; f += 1) {
 		const w = falloffWeight(f - grabFrame, radiusFrames);
@@ -376,7 +525,7 @@ export function applyTrailFalloffDelta(motion, { track = "hips", grabFrame, radi
 			posedJoints[po + 2] += dz;
 		}
 	}
-	return { ...motion, rootPos, posedJoints };
+	return rememberTrailEdit(motion, { ...motion, rootPos, posedJoints }, { track, grabFrame, radiusFrames, clipDelta });
 }
 
 /**

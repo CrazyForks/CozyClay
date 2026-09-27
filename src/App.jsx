@@ -45,8 +45,9 @@ import {
 	TRAIL_EFFECTOR_JOINTS,
 	applyTrailFalloffDelta,
 	jointTrailPoints,
+	restoreTrailEdits,
 	trailEditRange,
-	worldDeltaToClip,
+	worldDeltaToTrailClip,
 	worldPointToClip,
 } from "./motion-trail.js";
 import { findAbsoluteIkKeyConflicts } from "./trail-key-conflicts.js";
@@ -5876,6 +5877,7 @@ export default function App() {
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
 	const [motion, setMotion] = useState(null);
+	useEffect(() => { setTrailEdit(motion?.trailEdits?.edits.at(-1) ?? null); }, [motion]);
 	// The untrimmed take per CHARACTER. Trims are non-destructive views of the
 	// full take, so re-trimming and "restore full" always cut from the
 	// original — and because each cast member owns its own layer, one shared
@@ -11841,11 +11843,10 @@ function resizePromptClip(id, edge, rawFrame) {
 		trailBaseMotionRef.current = motion;
 		recordCharacterUndo();
 	}
-	/** World drag delta -> clip delta, shedding the character's stature scale
-	 * (the trail is drawn scaled by it). */
-	function trailClipDelta(base, delta) {
-		const statureScale = activeChar.scale ?? 1;
-		return worldDeltaToClip(base, { x: delta.x / statureScale, y: delta.y / statureScale, z: delta.z / statureScale });
+	/** World drag delta on the drawn (rendered) trail -> clip delta, solved so
+	 * the rendered effector travels the pointer distance (stature included). */
+	function trailClipDelta(base, delta, track, grabFrame) {
+		return worldDeltaToTrailClip(base, delta, { track, grabFrame, radiusFrames: trailFalloffFrames, rig: activeRig, scale: activeChar.scale ?? 1 });
 	}
 	/** Per-rAF drag preview. Deliberately React-free: the deformed take lands in
 	 * a ref and on the rig directly, so a drag never re-renders the app. The
@@ -11857,7 +11858,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			track,
 			grabFrame,
 			radiusFrames: trailFalloffFrames,
-			clipDelta: trailClipDelta(base, delta),
+			clipDelta: trailClipDelta(base, delta, track, grabFrame),
 		});
 		trailPreviewMotionRef.current = deformed;
 		const rig = activeRig;
@@ -11887,10 +11888,17 @@ function resizePromptClip(id, edge, rawFrame) {
 			setTrailEdit(null);
 			return;
 		}
-		// The one and only React commit of the whole drag.
+		// Persist the recipe, not the large runtime arrays/reference pose.
+		// snapshotCast owns the old ref, so undo restores this together with motion.
+		setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? {
+			...entry,
+			motionRef: { ...entry.motionRef, url: deformed.url, prompt: deformed.prompt ?? "",
+				anchorX: deformed.anchorX, anchorZ: deformed.anchorZ, rotationDeg: deformed.rotationDeg,
+				calibration: deformed.sceneCalibration, trailEdits: deformed.trailEdits },
+		} : entry));
 		setMotion(deformed);
 		markSemanticEdit("pose", base.rootPos, deformed.rootPos);
-		setTrailEdit({ track, grabFrame: frame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta) });
+		setTrailEdit({ track, grabFrame: frame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta, track, grabFrame) });
 		const { startFrame, endFrame } = trailEditRange(base.frames, frame, trailFalloffFrames);
 		const conflictFrames = findAbsoluteIkKeyConflicts({
 			keys: ikStateRef.current.keys,
@@ -12456,7 +12464,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				const retimed = retimeMotion(raw, TIMELINE_FPS);
 				const normalizedCalibration = normalizeMotionCalibration(entry.motionRef.calibration);
 				const decoded = applyMotionCalibration(retimed, { ...normalizedCalibration, yawDeg: 0, offsetX: 0, offsetZ: 0 }).motion;
-				const clip = {
+				const full = {
 					...decoded,
 					url: sourceUrl,
 					sourceBytes: raw.sourceBytes,
@@ -12468,9 +12476,10 @@ function resizePromptClip(id, edge, rawFrame) {
 					sceneCalibration: normalizedCalibration,
 					editSegments: createMotionEdit(decoded.frames),
 				};
-				if (entry.motionRef.calibration) clip.sceneCalibration = entry.motionRef.calibration;
-				if (entry.motionRef.studioTakeId) clip.studioTakeId = entry.motionRef.studioTakeId;
-				motionFullRef.current.set(entry.id, clip);
+				if (entry.motionRef.calibration) full.sceneCalibration = entry.motionRef.calibration;
+				if (entry.motionRef.studioTakeId) full.studioTakeId = entry.motionRef.studioTakeId;
+				const clip = restoreTrailEdits(full, entry.motionRef.trailEdits);
+				motionFullRef.current.set(entry.id, full);
 				setCharacters((current) => current.map((item) => item.id === entry.id
 					// The stature rides inside the npz, so a restored take
 					// re-applies it; the saved entry scale is only the fallback
@@ -12481,8 +12490,8 @@ function resizePromptClip(id, edge, rawFrame) {
 				// buffer too, so its motion survives the reload seamlessly.
 				if (entry.id === loadedLayerCharRef.current) {
 					setMotion(clip);
-					setTlFrameCount((count) => Math.max(count, decoded.frames));
-					setTlFps(decoded.fps);
+					setTlFrameCount((count) => Math.max(count, clip.frames));
+					setTlFps(clip.fps);
 				}
 			}).catch((error) => {
 				if (epoch !== restoreEpochRef.current) return;
@@ -13928,10 +13937,12 @@ function resizePromptClip(id, edge, rawFrame) {
 							{ikMode && motion && (
 								<MotionTrails
 									motion={motion}
+									rig={activeRig}
 									baseY={activeChar.y ?? 0}
 									charScale={activeChar.scale ?? 1}
 									ikFocus={ikFocus}
 									falloffFrames={trailFalloffFrames}
+									playheadFrame={tlFrame}
 									pendingEdit={trailEdit}
 									enabled={ikMode && ikEditTool === "trail" && showTrails && !posing && !playMode}
 									visible={showTrails}
