@@ -270,20 +270,8 @@ function limbWindowNormal(motion, [a, b, c], startFrame, endFrame, grabFrame, ra
 	return unit(sum);
 }
 
-/** Clamp a unit normal's swing, without choosing the opposite bend side. */
-function limitNormal(from, to, radians) {
-	const angle = Math.acos(Math.max(-1, Math.min(1, dot(from, to))));
-	if (angle <= radians) return to;
-	const tangent = unit(sub(to, scale3(from, dot(from, to))));
-	return tangent ? add(scale3(from, Math.cos(radians)), scale3(tangent, Math.sin(radians))) : from;
-}
-
-/**
- * Two-bone solve: fixed window guide, swing-only segments, fixed effector
- * orientation. Reach AND bend-plane limits can constrain the target: an
- * arbitrary sideways target cannot keep its original elbow/knee plane.
- */
-function bendLimbFrame(access, [a, b, c], descendants, offset, guide, weight) {
+/** Two-bone solve: follow the target up to reach, using one window guide. */
+function bendLimbFrame(access, [a, b, c], descendants, offset, guide) {
 	const A = access.pos(a);
 	const B = access.pos(b);
 	const C = access.pos(c);
@@ -293,21 +281,12 @@ function bendLimbFrame(access, [a, b, c], descendants, offset, guide, weight) {
 	const AB = sub(B, A);
 	const AC = sub(C, A);
 	const oldNormal = unit(cross(AB, AC));
-	let toTarget = sub(add(C, offset), A);
-	let dir = unit(toTarget) ?? unit(AC);
+	const toTarget = sub(add(C, offset), A);
+	const dir = unit(toTarget) ?? unit(AC);
 	if (!dir) return;
 	const reference = guide ?? oldNormal ?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
-	let normal = unit(sub(reference, scale3(dir, dot(reference, dir))))
+	const normal = unit(sub(reference, scale3(dir, dot(reference, dir))))
 		?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
-	if (oldNormal) {
-		if (dot(normal, oldNormal) < 0) normal = scale3(normal, -1);
-		// Ten degrees at the grab, easing to zero at the window boundary.
-		// The delta bound also makes an arbitrarily small drag a small change.
-		const limit = Math.min(Math.PI / 18 * weight, len(offset) / Math.max(len(AC), 1e-9));
-		normal = limitNormal(oldNormal, normal, limit);
-		toTarget = sub(toTarget, scale3(normal, dot(toTarget, normal)));
-		dir = unit(toTarget) ?? unit(AC);
-	}
 	// Leave a sub-millimetre bend at full reach so its side stays defined.
 	const d = Math.min(l1 + l2 - 1e-6, Math.max(Math.abs(l1 - l2) + 1e-6, len(toTarget)));
 	if (!(d > 1e-9)) return;
@@ -371,7 +350,7 @@ export function applyTrailFalloffDelta(motion, { track = "hips", grabFrame, radi
 			if (w <= 0) continue;
 			const access = { ...frameAccess(posedJoints, rotMats, f), rotMats };
 			const offset = [clipDelta.x * w, clipDelta.y * w, clipDelta.z * w];
-			if (chain) bendLimbFrame(access, chain, [chain[2], ...moved], offset, guide, w);
+			if (chain) bendLimbFrame(access, chain, [chain[2], ...moved], offset, guide);
 			else swingHeadFrame(access, neck, head, moved, offset);
 		}
 		const edited = rotMats ? { ...motion, rootPos, posedJoints, rotMats } : { ...motion, rootPos, posedJoints };

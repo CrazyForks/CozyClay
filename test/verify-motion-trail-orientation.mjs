@@ -55,7 +55,22 @@ for (const [track, delta] of [
 	}
 	console.log(`${track} delta=${delta}: hand/foot=${maxRotation.toFixed(3)} deg, plane=${maxPlane.toFixed(3)} deg, twist=${maxTwist.toFixed(3)} deg, length=${(maxLength * 100).toFixed(4)}%`);
 	check(maxRotation < 15, `${track}: rendered effector orientation ${maxRotation}`);
-	check(maxPlane < (Math.hypot(...delta) > 1 ? 30 : 15), `${track}: bend plane ${maxPlane}`);
+	const beforeGrab = pose(motion, GRAB, names), afterGrab = pose(edited, GRAB, names);
+	const clipMove = clipPos(edited, GRAB, names[2]).distanceTo(clipPos(motion, GRAB, names[2]));
+	check(afterGrab[2].p.distanceTo(beforeGrab[2].p) >= 0.9 * clipMove, `${track}: rendered effector follows at least 90% of trail travel`);
+	if (Math.hypot(...delta) < 0.5) {
+		const target = clipPos(motion, GRAB, names[2]).add(new THREE.Vector3(...delta));
+		check(clipPos(edited, GRAB, names[2]).distanceTo(target) < 1e-5, `${track}: reachable target is not projected or capped`);
+	}
+	let previous = plane(beforeGrab), maxStep = 0;
+	for (let step = 1; step <= 50; step += 1) {
+		const t = step / 50;
+		const partial = applyTrailFalloffDelta(motion, { track, grabFrame: GRAB, radiusFrames: RADIUS, clipDelta: { x: delta[0] * t, y: delta[1] * t, z: delta[2] * t } });
+		const next = plane(pose(partial, GRAB, names));
+		maxStep = Math.max(maxStep, degrees(previous.angleTo(next)));
+		previous = next;
+	}
+	check(maxStep < 15, `${track}: continuous bend plane, maximum drag step ${maxStep}`);
 	check(maxTwist < 2, `${track}: upper-segment twist ${maxTwist}`);
 	check(maxLength < 0.01, `${track}: rendered length ${maxLength}`);
 	for (const f of [0, GRAB - RADIUS, GRAB + RADIUS, motion.frames - 1]) {
