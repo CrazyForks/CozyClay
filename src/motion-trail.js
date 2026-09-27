@@ -364,7 +364,25 @@ function limbWindowNormal(motion, [a, b, c], startFrame, endFrame, grabFrame, ra
 	return unit(sum);
 }
 
-/** Two-bone solve: follow the target up to reach, using one window guide. */
+/** Beyond reach, the bend plane turns at most this far from the source frame's plane. */
+const OVERREACH_PLANE_LIMIT = Math.PI / 6;
+/** Excess distance, as a fraction of reach, over which that limit eases in. */
+const OVERREACH_EASE = 0.25;
+
+/** Rotate unit `from` toward unit `to` by at most `radians`. */
+function limitNormal(from, to, radians) {
+	const angle = Math.acos(Math.max(-1, Math.min(1, dot(from, to))));
+	if (angle <= radians) return to;
+	const tangent = unit(sub(to, scale3(from, dot(from, to))));
+	return tangent ? add(scale3(from, Math.cos(radians)), scale3(tangent, Math.sin(radians))) : from;
+}
+
+/**
+ * Two-bone solve: follow a reachable target exactly, using one window guide.
+ * An unreachable target cannot be met anyway, so there the bend plane is
+ * held within OVERREACH_PLANE_LIMIT of its pre-drag plane, easing in from the
+ * reach boundary so crossing it does not pop.
+ */
 function bendLimbFrame(access, [a, b, c], descendants, offset, guide) {
 	const A = access.pos(a);
 	const B = access.pos(b);
@@ -375,12 +393,25 @@ function bendLimbFrame(access, [a, b, c], descendants, offset, guide) {
 	const AB = sub(B, A);
 	const AC = sub(C, A);
 	const oldNormal = unit(cross(AB, AC));
-	const toTarget = sub(add(C, offset), A);
-	const dir = unit(toTarget) ?? unit(AC);
+	let toTarget = sub(add(C, offset), A);
+	let dir = unit(toTarget) ?? unit(AC);
 	if (!dir) return;
 	const reference = guide ?? oldNormal ?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
-	const normal = unit(sub(reference, scale3(dir, dot(reference, dir))))
+	let normal = unit(sub(reference, scale3(dir, dot(reference, dir))))
 		?? unit(cross(dir, Math.abs(dir[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0]));
+	const excess = (len(toTarget) - (l1 + l2)) / ((l1 + l2) * OVERREACH_EASE);
+	const turn = oldNormal ? Math.acos(Math.max(-1, Math.min(1, dot(oldNormal, normal)))) : 0;
+	if (excess > 0 && turn > OVERREACH_PLANE_LIMIT) {
+		const t = Math.min(1, excess);
+		const capped = limitNormal(oldNormal, normal, turn - (turn - OVERREACH_PLANE_LIMIT) * t * t * (3 - 2 * t));
+		// Aim the straightened limb at the target's projection into that plane.
+		const projected = sub(toTarget, scale3(capped, dot(toTarget, capped)));
+		if (unit(projected)) {
+			normal = capped;
+			toTarget = projected;
+			dir = unit(projected);
+		}
+	}
 	// Leave a sub-millimetre bend at full reach so its side stays defined.
 	const d = Math.min(l1 + l2 - 1e-6, Math.max(Math.abs(l1 - l2) + 1e-6, len(toTarget)));
 	if (!(d > 1e-9)) return;
