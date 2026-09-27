@@ -120,17 +120,25 @@ check("seeding changes no bone", arm.bones[0].quaternion.angleTo(quatBefore) < 1
 
 /* --- generated positional playback → authored FK chain ------------------- */
 // ARDY playback can write each mapped bone's local translation independently.
-// Once IK owns the rotations, the edited chain must return to its captured
-// Mixamo bind translations or the arm segments no longer describe one FK pose.
+// IK must use those lengths without resetting the clip to a different body.
 arm.bones[0].position.add(new THREE.Vector3(0.04, -0.02, 0.03));
 arm.bones[1].position.multiplyScalar(1.35);
 arm.bones[2].position.multiplyScalar(0.7);
 rig.updateMatrixWorld(true);
-solveIk(arm, wristStart.clone().add(new THREE.Vector3(-0.25, 0.3, 0.1)));
+const clipLocals = arm.bones.map((bone) => bone.position.clone());
+const clipTarget = wristStart.clone().add(new THREE.Vector3(-0.25, 0.3, 0.1));
+solveIk(arm, clipTarget);
 check(
-	"IK solve restores positional-playback chain translations to bind",
-	arm.bones.every((bone, index) => bone.position.distanceTo(arm.bindPositions[index]) < 1e-9)
+	"IK solve preserves positional-playback chain translations",
+	arm.bones.every((bone, index) => bone.position.equals(clipLocals[index]))
 );
+check("IK reaches the target using the clip's segment lengths", arm.bones[2].getWorldPosition(v()).distanceTo(clipTarget) < 1e-6);
+// The following bind-rig checks still exercise the original 30 cm segments.
+arm.bones.forEach((bone, index) => {
+	bone.position.copy(arm.bindPositions[index]);
+	bone.quaternion.identity();
+});
+rig.updateMatrixWorld(true);
 
 /* --- direct solve: pull the left wrist up/back, reachable ---------------- */
 const target = wristStart.clone().add(new THREE.Vector3(-0.25, 0.3, 0.1));
@@ -790,18 +798,10 @@ check("no plants → planted solve does nothing", lLeg.bones[2].getWorldPosition
 	};
 
 	/** Bake a 1 cm ankle lift at `frame`, optionally recording the clip's own
-	 * rotations so the key becomes a delta.
-	 *
-	 * The bind-translation reset mirrors what fixCollisions now does at entry,
-	 * and it is load-bearing: solveIk's segment lengths were measured at bind, so
-	 * a target picked off the clip's own (slightly different) limb makes the
-	 * solve spend most of its rotation on length compensation rather than on the
-	 * push — and a partially-weighted blend of THAT wanders three times the
-	 * correction. Normalising first makes the delta the push. */
+	 * rotations so the key becomes a delta. Read the target on the same clip
+	 * translations the solver preserves, as the collision driver does. */
 	const bakeCorrection = (take, state, frame, withBase) => {
 		take.poseClip(frame);
-		take.leg.bones.forEach((bone, index) => bone.position.copy(take.leg.bindPositions[index]));
-		take.rig.updateMatrixWorld(true);
 		const baseQuats = new Map([["leftFoot", take.leg.bones.map((b) => b.quaternion.clone())]]);
 		const lifted = take.leg.bones[2].getWorldPosition(v()).add(new THREE.Vector3(0, 0.010, 0));
 		solveIk(take.leg, lifted);
@@ -966,6 +966,9 @@ check("no plants → planted solve does nothing", lLeg.bones[2].getWorldPosition
 		return restWorldPosition(bare, bone, v()).distanceTo(bone.getWorldPosition(v())) < 1e-12;
 	})());
 }
+
+// Keep the measured translation-step regression in the registered IK suite.
+await import("./translation-step.mjs");
 
 if (failures) {
 	console.log(`${failures} FAIL`);
