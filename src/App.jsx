@@ -45,6 +45,7 @@ import {
 	TRAIL_EFFECTOR_JOINTS,
 	applyTrailFalloffDelta,
 	jointTrailPoints,
+	restoreTrailEdits,
 	trailEditRange,
 	worldDeltaToClip,
 	worldPointToClip,
@@ -5875,6 +5876,7 @@ export default function App() {
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
 	const [motion, setMotion] = useState(null);
+	useEffect(() => { setTrailEdit(motion?.trailEdits?.edits.at(-1) ?? null); }, [motion]);
 	// The untrimmed take per CHARACTER. Trims are non-destructive views of the
 	// full take, so re-trimming and "restore full" always cut from the
 	// original — and because each cast member owns its own layer, one shared
@@ -11882,7 +11884,14 @@ function resizePromptClip(id, edge, rawFrame) {
 			setTrailEdit(null);
 			return;
 		}
-		// The one and only React commit of the whole drag.
+		// Persist the recipe, not the large runtime arrays/reference pose.
+		// snapshotCast owns the old ref, so undo restores this together with motion.
+		setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? {
+			...entry,
+			motionRef: { ...entry.motionRef, url: deformed.url, prompt: deformed.prompt ?? "",
+				anchorX: deformed.anchorX, anchorZ: deformed.anchorZ, rotationDeg: deformed.rotationDeg,
+				calibration: deformed.sceneCalibration, trailEdits: deformed.trailEdits },
+		} : entry));
 		setMotion(deformed);
 		markSemanticEdit("pose", base.rootPos, deformed.rootPos);
 		setTrailEdit({ track, grabFrame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta) });
@@ -12438,7 +12447,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				const retimed = retimeMotion(raw, TIMELINE_FPS);
 				const normalizedCalibration = normalizeMotionCalibration(entry.motionRef.calibration);
 				const decoded = applyMotionCalibration(retimed, { ...normalizedCalibration, yawDeg: 0, offsetX: 0, offsetZ: 0 }).motion;
-				const clip = {
+				const full = {
 					...decoded,
 					url: sourceUrl,
 					sourceBytes: raw.sourceBytes,
@@ -12450,9 +12459,10 @@ function resizePromptClip(id, edge, rawFrame) {
 					sceneCalibration: normalizedCalibration,
 					editSegments: createMotionEdit(decoded.frames),
 				};
-				if (entry.motionRef.calibration) clip.sceneCalibration = entry.motionRef.calibration;
-				if (entry.motionRef.studioTakeId) clip.studioTakeId = entry.motionRef.studioTakeId;
-				motionFullRef.current.set(entry.id, clip);
+				if (entry.motionRef.calibration) full.sceneCalibration = entry.motionRef.calibration;
+				if (entry.motionRef.studioTakeId) full.studioTakeId = entry.motionRef.studioTakeId;
+				const clip = restoreTrailEdits(full, entry.motionRef.trailEdits);
+				motionFullRef.current.set(entry.id, full);
 				setCharacters((current) => current.map((item) => item.id === entry.id
 					// The stature rides inside the npz, so a restored take
 					// re-applies it; the saved entry scale is only the fallback
@@ -12463,8 +12473,8 @@ function resizePromptClip(id, edge, rawFrame) {
 				// buffer too, so its motion survives the reload seamlessly.
 				if (entry.id === loadedLayerCharRef.current) {
 					setMotion(clip);
-					setTlFrameCount((count) => Math.max(count, decoded.frames));
-					setTlFps(decoded.fps);
+					setTlFrameCount((count) => Math.max(count, clip.frames));
+					setTlFps(clip.fps);
 				}
 			}).catch((error) => {
 				if (epoch !== restoreEpochRef.current) return;

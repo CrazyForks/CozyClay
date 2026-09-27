@@ -10,6 +10,7 @@
  */
 
 import { CSKEL27_JOINTS, CSKEL27_PARENTS } from "./ardy/cskel27.js";
+import { renderMotionEdit } from "./ardy/motion-edit.js";
 
 const JOINTS = CSKEL27_JOINTS.length;
 const jointIndex = (name) => CSKEL27_JOINTS.indexOf(name);
@@ -322,6 +323,58 @@ function swingHeadFrame(access, neck, head, subtree, offset) {
 	if (access.rotMats) access.setGlobal(neck, matMul(q, access.global(neck)));
 }
 
+/** Validate and own the small JSON recipe stored beside the source motion ID. */
+export function normalizeTrailEdits(value) {
+	if (value == null) return null;
+	const fail = () => { throw new TypeError("Invalid motion trail edit recipe"); };
+	if (value.version !== 1 || !Number.isInteger(value.frames) || value.frames < 1
+		|| !(value.fps > 0) || !Number.isFinite(value.fps)
+		|| !Array.isArray(value.edits) || value.edits.length > 4096) fail();
+	const edits = value.edits.map((edit) => {
+		if (!TRAIL_TRACKS.some(({ id }) => id === edit?.track)
+			|| !Number.isInteger(edit.grabFrame) || edit.grabFrame < 0 || edit.grabFrame >= value.frames
+			|| !Number.isInteger(edit.radiusFrames) || edit.radiusFrames < 0
+			|| !["x", "y", "z"].every((axis) => Number.isFinite(edit.clipDelta?.[axis]))) fail();
+		return { track: edit.track, grabFrame: edit.grabFrame, radiusFrames: edit.radiusFrames,
+			clipDelta: { x: edit.clipDelta.x, y: edit.clipDelta.y, z: edit.clipDelta.z } };
+	});
+	let segments = null;
+	if (value.segments != null) {
+		if (!Array.isArray(value.segments) || !value.segments.length || value.segments.length > 4096) fail();
+		segments = value.segments.map((segment) => {
+			if (typeof segment?.id !== "string" || !Number.isInteger(segment.sourceStart) || segment.sourceStart < 0
+				|| !Number.isInteger(segment.sourceEnd) || segment.sourceEnd < segment.sourceStart
+				|| !Number.isFinite(segment.speed) || segment.speed < 0.1 || segment.speed > 4) fail();
+			return { id: segment.id, sourceStart: segment.sourceStart, sourceEnd: segment.sourceEnd, speed: segment.speed };
+		});
+	}
+	return { version: 1, frames: value.frames, fps: value.fps, segments, edits };
+}
+
+function rememberTrailEdit(source, edited, edit) {
+	const previous = source.trailEdits;
+	return { ...edited, trailEdits: {
+		version: 1, frames: source.frames, fps: source.fps,
+		segments: previous?.segments ?? source.editSegments?.map((segment) => ({ ...segment })) ?? null,
+		edits: [...(previous?.edits ?? []), { ...edit, clipDelta: { ...edit.clipDelta } }],
+	} };
+}
+
+/** Rebuild the arrays AND the retarget reference after project/cache decoding. */
+export function restoreTrailEdits(motion, stored) {
+	const recipe = normalizeTrailEdits(stored);
+	if (!recipe) return motion;
+	if (recipe.segments?.some((segment) => segment.sourceEnd >= motion.frames)) {
+		throw new RangeError("Motion trail source segment exceeds the take");
+	}
+	let restored = recipe.segments ? renderMotionEdit(motion, recipe.segments) : motion;
+	if (restored.frames !== recipe.frames || restored.fps !== recipe.fps) {
+		throw new RangeError("Motion trail recipe does not match the take clock");
+	}
+	for (const edit of recipe.edits) restored = applyTrailFalloffDelta(restored, edit);
+	return restored;
+}
+
 /**
  * Deform a take by a clip-space delta centred on `grabFrame`, weighted per
  * frame by the smoothstep falloff. `track` is the dragged TRAIL_TRACKS id:
@@ -361,7 +414,7 @@ export function applyTrailFalloffDelta(motion, { track = "hips", grabFrame, radi
 				chains: [...new Set([...(motion.trailRetarget?.chains ?? []), track])],
 			};
 		}
-		return edited;
+		return rememberTrailEdit(motion, edited, { track, grabFrame, radiusFrames, clipDelta });
 	}
 	for (let f = startFrame; f < endFrame; f += 1) {
 		const w = falloffWeight(f - grabFrame, radiusFrames);
@@ -379,7 +432,7 @@ export function applyTrailFalloffDelta(motion, { track = "hips", grabFrame, radi
 			posedJoints[po + 2] += dz;
 		}
 	}
-	return { ...motion, rootPos, posedJoints };
+	return rememberTrailEdit(motion, { ...motion, rootPos, posedJoints }, { track, grabFrame, radiusFrames, clipDelta });
 }
 
 /**
