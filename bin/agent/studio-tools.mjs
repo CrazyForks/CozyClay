@@ -1,5 +1,6 @@
 import { validateStudioCommand, validateStudioIdentity, STUDIO_TOOL_SCHEMAS, STUDIO_TOOL_FAMILIES, StudioProtocolError } from "../../src/studio-agent-protocol.js";
 import { STUDIO_ACTIONS } from "../../src/studio-actions.js";
+import { MAX_COMMAND_TIMEOUT_MS } from "../../mcp/live-hub.mjs";
 
 const STUDIO_TOOL_RECEIPT_NOTE = " The result may be a receipt with status \"partial\": ops[].droppedPaths names exactly which authored path each op refused, and delta[].after carries the value actually landed for that target -- quote both the requested and the landed value when you report this, never say only that some paths were not applied. A STALE_SCENE error means inspect_studio once for the fresh revision, then resubmit the identical operation with that revision; it is not a permanent failure.";
 const STUDIO_INSPECT_NOTE = " The per-turn <studio-context> already lists every entity in entityIndex (id, kind, name, position; up to 400), full detail for up to 24 of them (selected and active first), and the placeable assets (catalogue kinds and imported scene assets). Use a scope for what it only summarizes: selection = full detail of the selected entity (color, tint, modelId, parentId, attachment, path); scene = stage settings (environment, style, key light, camera preset/aspect/sensor) and counts; entities = paged entity detail in stable id order, filtered by ids or query; shot = every shot's range, camera mode, camera keys (frame plus framing) and rail points; motion = per character take id and frames, prompt blocks (startFrame, endFrame, text), waypoints and IK key frames; catalogue = placeable kinds and patchable paths. Pass nextCursor back as cursor to read the next page; it stays valid across edits. On STALE_CURSOR, re-run the same inspect without a cursor.";
@@ -31,7 +32,10 @@ export function createStudioTools({ liveHub, workspaceHandle, session, resolveIm
       : command.args;
     let result;
     try {
-      const timeoutMs = name === "run_action" ? STUDIO_ACTION_TIMEOUTS.get(command.args.action) : undefined;
+      // A motion check samples the whole take in the editor, minutes on a long
+      // take, so it waits under the hub ceiling rather than the Studio default.
+      const timeoutMs = name === "run_action" ? STUDIO_ACTION_TIMEOUTS.get(command.args.action)
+        : name === "verify_result" && command.args.checks.includes("motion") ? MAX_COMMAND_TIMEOUT_MS : undefined;
       result = await (timeoutMs === undefined ? liveHub.command(name, payload, workspaceHandle) : liveHub.command(name, payload, workspaceHandle, { timeoutMs }));
     } catch (error) {
       // A STALE_SCENE re-admits whichever family met it, so the retry the
