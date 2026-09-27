@@ -1,5 +1,6 @@
 import {
 	memo,
+	useCallback,
 	useEffect,
 	useMemo,
 	useRef,
@@ -690,10 +691,11 @@ export function createStudioAppActions(handlersRef) {
 				: state.promptBlockCount === 0 ? "The active character has no prompt block with text; write them with patch_elements character.promptBlocks." : true,
 		run: () => {
 			const { activeCharacterId, promptBlockCount } = h().state();
-			h().runAllPromptBlocks();
-			// The generation queues synchronously or not at all; the editor's toast
-			// names the refusal (rig not loaded, over-long block, line-edit draft).
-			if (!h().state().generating) fail("TARGET_NOT_READY", "The editor did not start the generation; check the active character's rig and prompt blocks.");
+			const shown = h().runAllPromptBlocks() ?? [];
+			// The generation queues synchronously or not at all; when it does not,
+			// the editor's last toast names the refusal (rig not loaded, a root
+			// waypoint outside the clip, an over-long block, a line-edit draft).
+			if (!h().state().generating) fail("TARGET_NOT_READY", shown.length ? `Generation not started: ${shown.at(-1)}` : "The editor did not start the generation; check the active character's rig and prompt blocks.");
 			return { affectedIds: activeCharacterId ? [activeCharacterId] : [], summary: `Started generating the active character's motion from ${promptBlockCount} prompt block${promptBlockCount === 1 ? "" : "s"}.` };
 		} });
 	// Cast actions name their character explicitly, so they run the same way
@@ -3366,7 +3368,14 @@ export default function App() {
 	const [resultOpen, setResultOpen] = useState(false);
 	const [copied, setCopied] = useState(false);
 	const [recordedVideoName, setRecordedVideoName] = useState(null);
-	const [toast, setToast] = useState(startup.toast ?? "");
+	const [toast, showToast] = useState(startup.toast ?? "");
+	// While a Studio action runs editor work, the toasts it shows are collected
+	// so run_action can give the agent the reason the user was shown.
+	const toastSinkRef = useRef(null);
+	const setToast = useCallback((value) => {
+		if (typeof value === "string" && value) toastSinkRef.current?.push(value);
+		showToast(value);
+	}, []);
 	// The PWA's "a newer studio is waiting" registration, once one arrives.
 	const [pwaUpdate, setPwaUpdate] = useState(null);
 	useEffect(() => {
@@ -12789,7 +12798,14 @@ function resizePromptClip(id, edge, rawFrame) {
 			falMotion: { enabled: falMotionEnabled, status: falMotion.status, dailyRemaining: falMotion.dailyRemaining ?? null },
 		}),
 		addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, setTimelineShotRange, moveTimelineShot,
-		runAllPromptBlocks, duplicateSelectedSceneObject,
+		// Answers the toasts the editor showed while (not) starting the generation.
+		runAllPromptBlocks: () => {
+			const shown = [];
+			toastSinkRef.current = shown;
+			try { runAllPromptBlocks(); } finally { toastSinkRef.current = null; }
+			return shown;
+		},
+		duplicateSelectedSceneObject,
 		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, setWaypointMode,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, attachSceneObject, setShotCameraRail, clearShotCameraRail,
 		choosePartColours, setGuideMode, setInsetCollapsed, exportShotVideo,
