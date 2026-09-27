@@ -49,6 +49,7 @@ import {
 	worldDeltaToClip,
 	worldPointToClip,
 } from "./motion-trail.js";
+import { chooseIkEntryPose } from "./ik-camera.js";
 import { movePromptClipFrames } from "./ardy/prompt-clips.js";
 import Timeline from "./ardy/timeline.jsx";
 import { alignArdyPath, judgeAuthoredPath, judgeNextWaypoint } from "./ardy/waypoints.js";
@@ -6031,6 +6032,7 @@ export default function App() {
 	// the framing and shows in the inset. Two separate screens by design.
 	const poserCamRef = useRef(null);
 	const poserLook = useRef({ yaw: 0, pitch: 0 });
+	const ikCameraMemoryRef = useRef(new Map()); // charId -> last poser view in this session
 	// The editor camera: the free working view the operator flies. Playback,
 	// follow, rail and capture never touch it — that is the whole split.
 	const editorCamRef = useRef(null);
@@ -7449,6 +7451,15 @@ export default function App() {
 	/* --------------------------- motion playback ---------------------------- */
 
 	function leaveIkMode() {
+		if (typeof ikMode !== "undefined" && ikMode && typeof poserCamRef !== "undefined" && typeof ikCameraMemoryRef !== "undefined" && poserCamRef.current) {
+			const poserCam = poserCamRef.current;
+			ikCameraMemoryRef.current.set(activeChar.id, {
+				position: poserCam.position.clone(),
+				quaternion: poserCam.quaternion.clone(),
+				yaw: poserLook.current.yaw,
+				pitch: poserLook.current.pitch,
+			});
+		}
 		setIkMode(false);
 		setIkFocus(null);
 	}
@@ -8314,16 +8325,22 @@ export default function App() {
 			// pose at this frame right after ikMode flips, so re-seating on
 			// frame changes is handled there.)
 			if (ikChains) ikSeedTargets(ikChains, ikStateRef.current);
-			// The main view switches to the poser camera: start it exactly on
-			// the shot camera's pose so nothing jumps, then navigation moves
-			// the POSER only — the shot camera (inset) stays frozen.
+			// The main view switches to the poser camera. Preserve its current
+			// view for this character, otherwise seed from the view being shown.
 			const shotCam = shotCamRef.current;
+			const editorCam = editorCamRef.current;
 			const poserCam = poserCamRef.current;
-			if (shotCam && poserCam) {
-				poserCam.position.copy(shotCam.position);
-				poserCam.quaternion.copy(shotCam.quaternion);
+			const pose = chooseIkEntryPose({
+				rememberedPose: ikCameraMemoryRef.current.get(activeChar.id) ?? null,
+				editorPose: editorCam ? { position: editorCam.position, quaternion: editorCam.quaternion, yaw: editorLook.current.yaw, pitch: editorLook.current.pitch } : null,
+				shotPose: shotCam ? { position: shotCam.position, quaternion: shotCam.quaternion, yaw: look.current.yaw, pitch: look.current.pitch } : null,
+				lookThroughShot,
+			});
+			if (pose && poserCam) {
+				poserCam.position.copy(pose.position);
+				poserCam.quaternion.copy(pose.quaternion);
 				poserCam.rotation.order = "YXZ";
-				poserLook.current = { yaw: shotCam.rotation.y, pitch: shotCam.rotation.x };
+				poserLook.current = { yaw: pose.yaw, pitch: pose.pitch };
 			}
 			setIkMode(true);
 			setToast(motion
@@ -14886,7 +14903,7 @@ function resizePromptClip(id, edge, rawFrame) {
 										aria-pressed={ikEditTool === "ik"}
 										onClick={() => setIkEditTool("ik")}
 									>
-										{ko("IK 파츠 편집", "IK parts")}
+										{ko("포즈 수정", "Pose fix")}
 									</button>
 									<button
 										type="button"
@@ -14895,7 +14912,7 @@ function resizePromptClip(id, edge, rawFrame) {
 										disabled={!showTrails}
 										onClick={() => setIkEditTool("trail")}
 									>
-										{ko("궤적선 편집", "Motion trail")}
+										{ko("궤적 수정", "Path fix")}
 									</button>
 								</div>
 								<p className="inspector-hint">
