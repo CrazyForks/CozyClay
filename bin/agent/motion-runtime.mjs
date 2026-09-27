@@ -43,8 +43,31 @@ export function extractNdjsonRecords(buffer, { final = false } = {}) {
 	if (Buffer.byteLength(remainder) > MAX_RECORD_BYTES) throw error("BACKEND_UNAVAILABLE", "Bridge record exceeds limit");
 	return { records, remainder };
 }
+async function refusalReason(response) {
+	if (!response.body) return null;
+	let body = "";
+	try {
+		const reader = response.body.getReader(); const decoder = new TextDecoder(); let bytes = 0;
+		try {
+			while (bytes < 64 * 1024) {
+				const chunk = await reader.read(); if (chunk.done) break;
+				const part = chunk.value.subarray(0, 64 * 1024 - bytes); bytes += part.byteLength; body += decoder.decode(part, { stream: bytes < 64 * 1024 });
+				if (part.byteLength < chunk.value.byteLength) break;
+			}
+		} finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+	} catch { return null; }
+	try {
+		const value = JSON.parse(body);
+		for (const key of ["reason", "error", "message"]) if (typeof value?.[key] === "string" && value[key].trim()) return value[key].trim();
+	} catch {}
+	return null;
+}
 export async function readMotionStream(response, { onProgress = () => {} } = {}) {
-	if (!response.ok || !response.body) throw error("BACKEND_UNAVAILABLE", `Generation refused (HTTP ${response.status})`);
+	if (!response.ok || !response.body) {
+		const reason = response.ok ? null : await refusalReason(response);
+		if (response.status === 400) throw error("INVALID_ARGUMENT", `Bridge refused the request${reason ? `: ${reason}` : ""}`);
+		throw error("BACKEND_UNAVAILABLE", `Generation refused (HTTP ${response.status})${reason ? `: ${reason}` : ""}`);
+	}
 	const reader = response.body.getReader(); const decoder = new TextDecoder("utf-8", { fatal: true });
 	let buffer = "", motionUrl = null, finished = false;
 	try {
@@ -54,7 +77,10 @@ export async function readMotionStream(response, { onProgress = () => {} } = {})
 			const parsed = extractNdjsonRecords(buffer, { final: chunk.done }); buffer = parsed.remainder;
 			for (const record of parsed.records) {
 				if (!record || typeof record !== "object" || typeof record.event !== "string") throw error("BACKEND_UNAVAILABLE", "Invalid bridge record");
-				if (record.event === "error") throw error("BACKEND_UNAVAILABLE", "Generator reported an error");
+				if (record.event === "error") {
+					const detail = [record.message, record.reason, record.error].find(value => typeof value === "string" && value.trim());
+					throw error("BACKEND_UNAVAILABLE", `Generator reported an error${detail ? `: ${detail.trim()}` : ""}`);
+				}
 				if (record.event === "done") {
 					if (typeof record.motionUrl !== "string" || !motionUrlPattern.test(record.motionUrl)) throw error("BACKEND_UNAVAILABLE", "Generator returned an invalid motion URL");
 					if (motionUrl && motionUrl !== record.motionUrl) throw error("BACKEND_UNAVAILABLE", "Conflicting final artifacts");
@@ -118,12 +144,12 @@ export function createStudioMotionRuntime({ liveHub, getBridgeOrigin, clock = Da
 	};
 	const transition = (job, state) => { assertMotionTransition(job.state, state); job.state = state; job.updatedAt = clock(); emit(job, "job.state"); };
 	const remember = (job, outcome) => { job.outcome = freezeStudioData(structuredClone(outcome)); records.get(job.input.commandId).outcome = job.outcome; return job.outcome; };
-	const failure = (job, code, mutated = false) => ({ ok: false, commandId: job.input.commandId, host: job.host, code, phase: job.state === "reconciling" ? "reconcile" : "execution", affectedIds: [job.input.characterId], expectedTargets: [job.guard], currentTargets: [], mutated, preserved: { authoredState: mutated === "unknown" ? "unknown" : "unchanged" }, recovery: { action: mutated === "unknown" ? "reconcile" : "new_intent", retryAllowed: false } });
+	const failure = (job, code, message, mutated = false) => ({ ok: false, commandId: job.input.commandId, host: job.host, code, message: (typeof message === "string" && message.trim() ? message.trim() : String(message ?? "Motion job failed")).slice(0, 500), phase: job.state === "reconciling" ? "reconcile" : "execution", affectedIds: [job.input.characterId], expectedTargets: [job.guard], currentTargets: [], mutated, preserved: { authoredState: mutated === "unknown" ? "unknown" : "unchanged" }, recovery: { action: mutated === "unknown" ? "reconcile" : "new_intent", retryAllowed: false } });
 	const command = async (job, name, args = {}) => {
 		const options = name === "verify_motion_candidate" || name === "repair_motion_candidate" ? { timeoutMs: MOTION_COMMAND_TIMEOUT_MS } : null;
 		const request = { commandId: job.input.commandId, binding: job.binding, ...args };
 		const value = options ? await liveHub.command(name, request, handle(job), options) : await liveHub.command(name, request, handle(job));
-		if (value?.ok === false && value.mutated === false) throw error(value.code ?? "VERIFICATION_FAILED", "Editor rejected motion command");
+		if (value?.ok === false && value.mutated === false) throw error(value.code ?? "VERIFICATION_FAILED", typeof value.message === "string" && value.message.trim() ? value.message : "Editor rejected motion command");
 		return value;
 	};
 	const fence = job => { if (job.cancelRequested) throw error("CANCELLED", "Installation permission revoked"); job.controller.signal.throwIfAborted(); };
@@ -152,20 +178,20 @@ export function createStudioMotionRuntime({ liveHub, getBridgeOrigin, clock = Da
 		if (job.state !== "reconciling") return job.outcome;
 		let value;
 		try { value = await command(job, "reconcile_studio_command"); }
-		catch (e) { job.reconcileError = e.message; return remember(job, failure(job, "UNCERTAIN_APPLY", "unknown")); }
+		catch (e) { job.reconcileError = e.message; return remember(job, failure(job, "UNCERTAIN_APPLY", e.message, "unknown")); }
 		if (value?.status === "applied" && value.receipt) {
 			try { return installed(job, value.receipt); } catch (e) { job.reconcileError = e.message; }
 		} else if (value?.status === "not_applied" && value.evidence) {
-			transition(job, "proved-not-applied"); return remember(job, failure(job, "CANCELLED"));
+			transition(job, "proved-not-applied"); return remember(job, failure(job, "CANCELLED", "Editor confirmed the motion was not applied."));
 		}
-		return remember(job, failure(job, "UNCERTAIN_APPLY", "unknown"));
+		return remember(job, failure(job, "UNCERTAIN_APPLY", "Editor could not confirm whether the motion was applied.", "unknown"));
 	};
 	const settleCancellation = async job => {
 		const value = await job.cancellation;
 		if (rejected.includes(job.state) || job.state === "proved-not-applied") return job.outcome;
 		if (job.state === "reconciling") return reconcile(job);
 		if (value?.status === "not_applied" && value.evidence) {
-			transition(job, "cancelled"); return remember(job, failure(job, "CANCELLED"));
+			transition(job, "cancelled"); return remember(job, failure(job, "CANCELLED", "Editor confirmed the motion was not applied."));
 		}
 		// Aborting generation is not editor-side proof. Lost cancellation acks
 		// retain ownership/uncertainty until the same command can be reconciled.
@@ -180,7 +206,7 @@ export function createStudioMotionRuntime({ liveHub, getBridgeOrigin, clock = Da
 		} catch (e) {
 			if (["STALE_TARGET", "STALE_ENVIRONMENT", "STALE_SCENE", "VERIFICATION_FAILED", "CANCELLED"].includes(e.code)) {
 				transition(job, e.code === "STALE_TARGET" ? "stale_target" : ["STALE_ENVIRONMENT", "STALE_SCENE"].includes(e.code) ? "stale_environment" : "failed");
-				return remember(job, failure(job, e.code));
+				return remember(job, failure(job, e.code, e.message));
 			}
 			transition(job, "reconciling"); return reconcile(job);
 		}
@@ -189,9 +215,10 @@ export function createStudioMotionRuntime({ liveHub, getBridgeOrigin, clock = Da
 		const signal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(generationMs)]);
 		let health;
 		try { const res = await fetch(`${job.origin}/ardy/health`, { signal }); health = { ...await res.json(), ok: res.ok }; }
-		catch (e) { if (job.cancelRequested) throw e; throw error("BACKEND_UNAVAILABLE", "Owned motion bridge is unreachable"); }
+		catch (e) { if (job.cancelRequested) throw e; throw error("BACKEND_UNAVAILABLE", `Owned motion bridge is unreachable${e?.message ? `: ${e.message}` : ""}`); }
 		job.motionRequest?.preflight(health, { body: job.body });
-		if (motionPreflightReason(health, { body: job.body })) throw error("BACKEND_UNAVAILABLE", "Bridge preflight rejected motion generation");
+		const preflightReason = motionPreflightReason(health, { body: job.body });
+		if (preflightReason) throw error("BACKEND_UNAVAILABLE", `Bridge preflight rejected motion generation (${preflightReason})`);
 		fence(job); job.motionRequest?.start();
 		const res = await fetch(`${job.origin}/ardy/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(job.body), signal });
 		const url = await readMotionStream(res, { onProgress: progress => { if (!job.cancelRequested) emit(job, "job.progress", progress); } });
@@ -227,7 +254,7 @@ export function createStudioMotionRuntime({ liveHub, getBridgeOrigin, clock = Da
 			const code = e.code ?? "BACKEND_UNAVAILABLE";
 			if (!rejected.includes(job.state)) transition(job, code === "CANCELLED" ? "cancelled" : code === "STALE_TARGET" ? "stale_target" : ["STALE_ENVIRONMENT", "STALE_SCENE"].includes(code) ? "stale_environment" : "failed");
 			job.motionRequest?.fail(e);
-			return remember(job, failure(job, code));
+			return remember(job, failure(job, code, e?.message ?? String(e)));
 		} finally { clearTimeout(timer); if (job.state !== "review_required") await discard(job); }
 	}
 	const getJob = id => { const job = jobs.get(id); if (!job) throw error("STALE_TARGET", "Motion job unavailable or expired"); return job; };
@@ -311,7 +338,7 @@ export function createStudioMotionRuntime({ liveHub, getBridgeOrigin, clock = Da
 			try { await verify(job); return await commit(job, "user"); }
 			catch (e) {
 				transition(job, e.code === "STALE_TARGET" ? "stale_target" : e.code === "STALE_ENVIRONMENT" ? "stale_environment" : "failed");
-				remember(job, failure(job, e.code ?? "VERIFICATION_FAILED"));
+				remember(job, failure(job, e.code ?? "VERIFICATION_FAILED", e.message));
 				throw e;
 			} finally { job.accepting = false; await discard(job); }
 		},

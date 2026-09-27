@@ -279,7 +279,7 @@ const receiptSchema = union(...Object.values(receiptVariants));
 const failureSchema = object({ ok: literal(false), commandId: id, host: identity, code: choices(STUDIO_ERROR_CODES), phase: choices(["admission", "execution", "prepare", "verify", "repair", "commit", "reconcile", "undo"]),
 	affectedIds: ids(100, 0), expectedTargets: array(guardSchema, 24), currentTargets: array(guardSchema, 24), mutated: union(bool, literal("unknown")),
 	preserved: object({ authoredState: choices(["unchanged", "changed", "unknown"]) }), recovery: object({ action: choices(["none", "inspect", "retry", "new_intent", "reconcile", "sign_in"]) }, { retryAllowed: bool }),
-}, { message: name, candidates: array(object({ id, kind: choices(["object", "character", "rig"]), position: nullable(vec3) }), 5) });
+}, { message: text(500), candidates: array(object({ id, kind: choices(["object", "character", "rig"]), position: nullable(vec3) }), 5) });
 
 // These are JSON Schema data, not validators with hidden browser dependencies.
 // x-studio-range is the sole relational schema annotation: end > start.
