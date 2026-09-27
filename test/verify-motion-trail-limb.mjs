@@ -104,7 +104,6 @@ const WINDOW = Array.from({ length: 2 * RADIUS + 1 }, (_, i) => GRAB - RADIUS + 
 	const edited = applyTrailFalloffDelta(motion, { track: "leftHand", grabFrame: GRAB, radiusFrames: RADIUS, clipDelta });
 	assert.deepEqual([...motion.posedJoints], [...beforePosed], "source posedJoints untouched");
 	assert.deepEqual([...motion.rotMats], [...beforeRot], "source rotMats untouched");
-	assert.notEqual(edited.rotMats, motion.rotMats, "rotations are rewritten on a new array");
 
 	const hand0 = pos(motion, GRAB, "LeftHand");
 	const hand1 = pos(edited, GRAB, "LeftHand");
@@ -122,6 +121,7 @@ const WINDOW = Array.from({ length: 2 * RADIUS + 1 }, (_, i) => GRAB - RADIUS + 
 		assert.ok(Math.abs(dist(pos(edited, f, "LeftForeArm"), pos(edited, f, "LeftHand")) - fore0) < 1e-4, `frame ${f} forearm length kept`);
 	}
 	assert.deepEqual([...edited.rootPos], [...motion.rootPos], "rootPos unchanged by a hand drag");
+	assert.notEqual(edited.rotMats, motion.rotMats, "rotations are rewritten on a new array");
 	assert.ok(dist(pos(edited, GRAB, "LeftForeArm"), pos(motion, GRAB, "LeftForeArm")) > 1e-2, "the elbow is re-placed, not left behind");
 	// Hand descendants translate rigidly with the hand.
 	const end0 = pos(motion, GRAB, "LeftHandEnd");
