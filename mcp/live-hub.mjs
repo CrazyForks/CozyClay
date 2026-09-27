@@ -7,20 +7,27 @@ import { mcpToolCategory } from "../src/execution-telemetry.js";
 import { WebSocket, WebSocketServer } from "ws";
 
 export const DEFAULT_COMMAND_TIMEOUT_MS = 5_000;
-/** A per-call override may extend a command, never past this ceiling: a hub
- * that waits longer than this can no longer tell a slow editor from a dead one. */
+/** Motion candidate verification and repair can evaluate a whole clip. */
+export const MOTION_COMMAND_TIMEOUT_MS = 600_000;
+/** A per-call override may extend a non-motion command, never past this ceiling. */
 export const MAX_COMMAND_TIMEOUT_MS = 300_000;
 export const DEFAULT_HEARTBEAT_MS = 15_000;
 export const RUN_WORKFLOW_TIMEOUT_MS = 180_000;
 export const LOAD_MOTION_TIMEOUT_MS = 30_000;
 export const IMPORT_ASSET_TIMEOUT_MS = 30_000;
 export const CAPTURE_FRAME_TIMEOUT_MS = 30_000;
+export const STUDIO_COMMAND_TIMEOUT_MS = 30_000;
 export const MOTION_JOB_TTL_MS = 10 * 60_000;
 export const MOTION_JOB_POLL_INTERVAL_MS = 0;
 export const MAX_ACTIVE_MOTION_JOBS = 2;
 export const MAX_ACTIVE_MOTION_JOBS_PER_WORKSPACE = 1;
 
 const terminalMotionStatuses = new Set(["completed", "failed", "cancelled", "expired"]);
+const studioCommands = new Set([
+	"inspect_studio", "operate_studio", "arrange_objects", "arrange_characters", "patch_elements",
+	"frame_shot", "verify_result", "undo_edit", "read_studio_context", "resolve_studio_image",
+	"capture_framing_png", "reconcile_studio_command", "run_action",
+]);
 
 /** MCP-internal job retention for push-only motion work. Its clock is injected
  * so expiry is deterministic without a polling loop or timing-based test. */
@@ -100,6 +107,8 @@ export class MotionJobRegistry {
 	}
 }
 
+const motionCandidateCommands = new Set(["verify_motion_candidate", "repair_motion_candidate"]);
+
 const mutationCommands = new Set([
 	"set_camera",
 	"add_character",
@@ -114,7 +123,7 @@ const mutationCommands = new Set([
 	"set_prompt_blocks",
 	"load_motion",
 	"load_scenes",
-	"operate_studio", "arrange_objects", "arrange_characters", "patch_elements", "frame_shot", "undo_edit",
+	"operate_studio", "arrange_objects", "arrange_characters", "patch_elements", "frame_shot", "undo_edit", "run_action",
 	"commit_motion_candidate", "import_asset",
 ]);
 
@@ -218,7 +227,7 @@ export class LiveHub {
 
 	static commandTimeoutMs(name) {
 		if (name === "load_motion" || name === "prepare_motion_install") return LOAD_MOTION_TIMEOUT_MS;
-		if (name === "verify_motion_candidate" || name === "repair_motion_candidate") return 60_000;
+		if (motionCandidateCommands.has(name)) return MOTION_COMMAND_TIMEOUT_MS;
 		// A 32 MiB mesh as a data URL will not decode, store and stand in 5 s.
 		if (name === "import_asset") return IMPORT_ASSET_TIMEOUT_MS;
 		// Close two-person shots (OTS) raycast two skinned rigs over a full-frame
@@ -226,6 +235,7 @@ export class LiveHub {
 		if (name === "capture_frame") return CAPTURE_FRAME_TIMEOUT_MS;
 		// A workflow run captures a frame and may generate an image upstream.
 		if (name === "run_workflow") return RUN_WORKFLOW_TIMEOUT_MS;
+		if (studioCommands.has(name)) return STUDIO_COMMAND_TIMEOUT_MS;
 		return DEFAULT_COMMAND_TIMEOUT_MS;
 	}
 
@@ -390,7 +400,7 @@ export class LiveHub {
 
 		const id = randomUUID();
 		const bound = Number.isFinite(timeoutMs) && timeoutMs > 0
-			? Math.min(timeoutMs, MAX_COMMAND_TIMEOUT_MS)
+			? Math.min(timeoutMs, motionCandidateCommands.has(name) ? MOTION_COMMAND_TIMEOUT_MS : MAX_COMMAND_TIMEOUT_MS)
 			: LiveHub.commandTimeoutMs(name);
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {

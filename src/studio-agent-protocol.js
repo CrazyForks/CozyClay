@@ -2,9 +2,11 @@
 import { STUDIO_ELEMENTS } from "./studio-elements.js";
 
 export const STUDIO_PROTOCOL_VERSION = "studio-agent-v1";
-export const STUDIO_CONTEXT_MAX_BYTES = 16 * 1024;
-export const STUDIO_CONTEXT_LIMITS = Object.freeze({ entities: 24, shots: 8, assets: 6, recentReceipts: 3, jobs: 8 });
-export const STUDIO_TOOL_FAMILIES = Object.freeze(["inspect_studio", "operate_studio", "arrange_objects", "arrange_characters", "patch_elements", "frame_shot", "generate_motion", "verify_result", "undo_edit"]);
+// Sized for the compact index of up to 400 entities (~100 bytes each) beside
+// 24 detailed rows; a small scene stays far below it.
+export const STUDIO_CONTEXT_MAX_BYTES = 64 * 1024;
+export const STUDIO_CONTEXT_LIMITS = Object.freeze({ entities: 24, entityIndex: 400, shots: 8, assets: 48, recentReceipts: 3, jobs: 8 });
+export const STUDIO_TOOL_FAMILIES = Object.freeze(["inspect_studio", "operate_studio", "arrange_objects", "arrange_characters", "patch_elements", "frame_shot", "generate_motion", "verify_result", "undo_edit", "run_action"]);
 export const STUDIO_TOOL_LABELS = Object.freeze({
 	inspect_studio: "Read the scene",
 	operate_studio: "Selection and view",
@@ -15,6 +17,7 @@ export const STUDIO_TOOL_LABELS = Object.freeze({
 	generate_motion: "Generate motion",
 	verify_result: "Verify the result",
 	undo_edit: "Undo an edit",
+	run_action: "Run an editor action",
 });
 /** One patch target kind per authored commit domain: character→cast,
  * object→objects, shot→shot, stage→stage. */
@@ -23,7 +26,7 @@ export const STUDIO_PATCH_DOMAINS = Object.freeze({ character: "cast", object: "
 export const STUDIO_ERROR_CODES = Object.freeze([
 	"INVALID_ARGUMENT", "INVALID_CONTEXT", "INVALID_IDENTITY", "INVALID_TURN_ID", "INVALID_SESSION_ID", "INVALID_RECEIPT", "INVALID_RANGE", "INVALID_REQUEST",
 	"UNKNOWN_TOOL", "UNKNOWN_VARIANT", "DUPLICATE_NAME", "CONTEXT_LIMIT", "CONTEXT_TOO_LARGE", "AMBIGUOUS_TARGET", "AMBIGUOUS_BASIS", "TARGET_NOT_READY", "TARGET_BUSY",
-	"STALE_TARGET", "STALE_SCENE", "STALE_ENVIRONMENT", "STALE_CURSOR", "CAPABILITY_MISSING", "LIVE_HUB_UNAVAILABLE", "AUTH_REQUIRED", "RATE_LIMITED", "BACKEND_UNAVAILABLE",
+	"STALE_TARGET", "STALE_SCENE", "STALE_ENVIRONMENT", "STALE_CURSOR", "CAPABILITY_MISSING", "LIVE_HUB_UNAVAILABLE", "AUTH_REQUIRED", "GENERATION_LIMIT", "RATE_LIMITED", "BACKEND_UNAVAILABLE",
 	"VERIFICATION_FAILED", "REPAIR_REGRESSED", "CANCELLED", "UNCERTAIN_APPLY", "UNDO_CONFLICT",
 ]);
 export const STUDIO_VARIANTS = freezeStudioData({
@@ -32,7 +35,7 @@ export const STUDIO_VARIANTS = freezeStudioData({
 	framingViews: ["front", "front three-quarter", "profile", "rear three-quarter", "back"], framingLevels: ["ground", "low", "hip", "eye", "high", "overhead"],
 	framingSides: ["left", "right"], positionSides: ["left", "right", "front", "behind"], positionBases: ["world", "subject", "shot_camera"], collisionPolicies: ["report", "avoid"],
 	objectOps: ["create", "update", "remove", "group", "ungroup"], characterOps: ["create", "update", "remove"],
-	inspectScopes: ["selection", "scene", "entities", "shot", "motion", "catalogue"], receiptStatuses: ["applied", "partial", "noop", "transient", "installed", "undone"],
+	inspectScopes: ["selection", "scene", "entities", "shot", "motion", "catalogue", "actions"], receiptStatuses: ["applied", "partial", "noop", "transient", "installed", "undone"],
 	opStatuses: ["applied", "partial", "noop"],
 	jobStates: ["queued", "generating", "preparing", "verifying", "repairing", "committing", "reconciling", "installed", "review_required", "failed", "cancelled", "stale_target", "stale_environment"],
 });
@@ -59,6 +62,9 @@ const nullable = schema => ({ oneOf: [schema, { type: "null" }] });
 const array = (items, maxItems, minItems = 0, uniqueItems = false) => ({ type: "array", items, minItems, maxItems, ...(uniqueItems ? { uniqueItems } : {}) });
 const object = (required, optional = {}) => ({ type: "object", properties: { ...required, ...optional }, required: Object.keys(required), additionalProperties: false });
 const union = (...oneOf) => ({ oneOf });
+// Arguments whose schema lives elsewhere (a registered Studio action declares
+// its own input and validates it where it runs): any JSON object, detached.
+const openObject = { type: "object", properties: {}, required: [], additionalProperties: true };
 const id = { ...text(), pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$" };
 const uuidSchema = { ...text(36), pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$" };
 export const isUuid = value => typeof value === "string" && new RegExp(uuidSchema.pattern).test(value);
@@ -185,6 +191,7 @@ const toolSchemas = {
 	generate_motion: object({ characterId: id, source }, { repair: { ...choices(["bounded", "none"]), default: "bounded" } }),
 	verify_result: object({ checks: array(choices(["placement", "framing", "motion"]), 3, 1, true) }, { receiptId: id, targets: ids(), range: union(literal("whole_clip"), range), visual: { ...choices(["none", "frame", "contact_sheet"]), default: "none" } }),
 	undo_edit: object({ receiptId: id }),
+	run_action: object({ action: id }, { args: openObject }),
 };
 export const STUDIO_TOOL_SCHEMAS = freezeStudioData(toolSchemas);
 export const STUDIO_CATALOGUE = freezeStudioData(STUDIO_TOOL_FAMILIES.map(name => ({ name, slice: 1, parameters: toolSchemas[name] })));
@@ -194,14 +201,19 @@ export const STUDIO_CATALOGUE = freezeStudioData(STUDIO_TOOL_FAMILIES.map(name =
 const bounds = object({ min: vec3, max: vec3 });
 const entity = object({ id, kind: choices(["object", "character", "rig"]), token: id }, {
 	name, detailsOmitted: bool, position: vec3, yawDeg: number(), rotationDeg: vec3, scale: union(positive, positiveVec3), bounds: nullable(bounds),
-	libraryKind: id, renderer: id, parentId: nullable(id), attachment: nullable(object({ characterId: id, bone: nullable(id) })), pathPointCount: integer(0, 64),
+	libraryKind: id, renderer: id, color: nullable(text(32)), tint: nullable(text(32)), modelId: nullable(text(120)), assetId: id, parentId: nullable(id), attachment: nullable(object({ characterId: id, bone: nullable(id) })), pathPointCount: integer(0, 64),
 	motion: object({ takeId: nullable(id), frames: integer(), ikKeyCount: integer(), promptBlockCount: integer() }, { poseId: nullable(id), keyIds: ids(8, 0) }),
 	capabilities: object({ rigReady: bool, ik: bool, measuredFeet: bool }),
 });
+// One compact row per entity, so the model sees the whole scene even when
+// only 24 rows carry full detail.
+const indexRow = object({ id, kind: choices(["object", "character", "rig"]) }, { name, position: vec3 });
 const shotSummary = object({ id, name, range, keyCount: integer() }, { subjectIds: ids(24, 0) });
 const currentShot = object({ id, name, range, mode: choices(STUDIO_VARIANTS.shotModes) }, { subjectIds: ids(24, 0) });
 const camera = object({ position: vec3, lookAt: vec3, focalMm: positive, sensorId: id, slate: name });
-const assetSummary = object({ imageId: id, origin: choices(["user_attachment", "scene_asset", "capture"]) }, { name });
+// What the agent can place: a catalogue kind, or an asset imported into the scene.
+const assetTypes = choices(["primitive", "set-piece", "image", "mesh"]);
+const assetSummary = union(object({ kind: id, name, type: assetTypes }), object({ id, name, type: assetTypes }));
 const jobSummary = object({ id, characterId: id, state: choices(STUDIO_VARIANTS.jobStates) }, { targetIds: ids(24, 0), progress: nullable(number(0, 1)), phase: name });
 const contextSchema = object({
 	schema: literal("studio-context-v1"), host, revision,
@@ -209,10 +221,10 @@ const contextSchema = object({
 	scene: object({ name, aspect: text(40), floorY: number(), frameCount: integer(), objectCount: integer(), characterCount: integer() }),
 	selection, activeCharacterId: nullable(id), view, shot: nullable(currentShot), camera: nullable(camera),
 	entities: array(entity, 24), entityPage: object({ returned: integer(0, 24), total: integer(), truncated: bool, nextCursor: nullable(text(512)) }),
-	shots: array(shotSummary, 8), shotsTruncated: bool, assets: array(assetSummary, 6),
+	shots: array(shotSummary, 8), shotsTruncated: bool, assets: array(assetSummary, STUDIO_CONTEXT_LIMITS.assets),
 	recentReceipts: array(object({ id, summary: name, canUndoDirect: bool }), 3), jobs: array(jobSummary, 8),
-	capabilities: object({ profile: literal("studio-slice-1"), tools: array(choices(STUDIO_TOOL_FAMILIES), 9, 0, true) }, { rigReady: bool, cameraReady: bool, bridgeReady: bool }),
-});
+	capabilities: object({ profile: literal("studio-slice-1"), tools: array(choices(STUDIO_TOOL_FAMILIES), STUDIO_TOOL_FAMILIES.length, 0, true) }, { rigReady: bool, cameraReady: bool, bridgeReady: bool }),
+}, { entityIndex: array(indexRow, STUDIO_CONTEXT_LIMITS.entityIndex) });
 const guardSchema = object({ ...identityFields, targetId: id, token: id });
 const efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 // Pictures the author pasted or dropped into the composer (#367). Inline bytes
@@ -248,13 +260,17 @@ const batchDetails = { counts: object({ created: integer(), updated: integer(), 
 // which lost a field to a domain normalizer, and exactly which paths were lost.
 const opResults = array(object({ index: integer(), status: choices(STUDIO_VARIANTS.opStatuses) }, { droppedPaths: array(text(120), 32, 1) }), 32, 1);
 const authoredReceipt = { ...receiptBase, authored: literal(true), undo };
+// A run_action receipt names the registered action and what it did.
+const actionFields = { action: id, summary: text(240) };
 const receiptVariants = {
-	applied: object({ ...authoredReceipt, status: literal("applied") }, { mutated: literal(true), ops: opResults, ...batchDetails }),
+	applied: object({ ...authoredReceipt, status: literal("applied") }, { mutated: literal(true), ops: opResults, ...batchDetails, ...actionFields }),
 	partial: object({ ...authoredReceipt, status: literal("partial"), ops: opResults }, { mutated: literal(true), ...batchDetails }),
-	noop: object({ ...receiptBase, status: literal("noop"), authored: literal(false), mutated: literal(false), undo: literal(null) }, { ops: opResults }),
-	transient: object({ ...receiptBase, status: literal("transient"), authored: literal(false), view: revisions, undo: literal(null) }, { mutated: bool }),
+	noop: object({ ...receiptBase, status: literal("noop"), authored: literal(false), mutated: literal(false), undo: literal(null) }, { ops: opResults, ...actionFields }),
+	transient: object({ ...receiptBase, status: literal("transient"), authored: literal(false), view: revisions, undo: literal(null) }, { mutated: bool, ...actionFields }),
 	installed: object({ ...authoredReceipt, status: literal("installed"), jobId: id, artifactId: id, installed, verification }, {
-		mutated: literal(true), explicitUnverifiedAcceptance: bool,
+		// Who accepted an unverified take: the user's explicit button, or the
+		// runtime's advisory install policy. Exactly these two may admit one.
+		mutated: literal(true), explicitUnverifiedAcceptance: bool, acceptance: literal("advisory-policy"),
 		repairs: object({ autoPhysicsInvocations: integer(0, 1), fixCollisionsInvocations: integer(0, 1), remaining: integer(0, 2) }), ...batchDetails,
 	}),
 	undone: object({ ...authoredReceipt, status: literal("undone"), undoneReceiptId: id, restoredTargets: array(guardSchema, 100, 1) }, { mutated: literal(true), ...batchDetails }),
@@ -298,8 +314,10 @@ export function validateStudioSchema(schema, value, code = "INVALID_ARGUMENT", p
 	if (schema.type === "null") { if (value !== null) fail(code, "Expected null.", path); return null; }
 	if (schema.type === "object") {
 		if (!record(value)) fail(code, "Expected object.", path);
-		for (const key of Object.keys(value)) if (!Object.hasOwn(schema.properties, key)) fail(code, "Unexpected field.", path);
+		const open = schema.additionalProperties === true;
+		for (const key of Object.keys(value)) if (!Object.hasOwn(schema.properties, key) && !open) fail(code, "Unexpected field.", path);
 		const result = {};
+		if (open) for (const key of Object.keys(value)) if (!Object.hasOwn(schema.properties, key)) result[key] = structuredClone(value[key]);
 		for (const [key, child] of Object.entries(schema.properties)) {
 			if (Object.hasOwn(value, key)) result[key] = validateStudioSchema(child, value[key], code, `${path}.${key}`);
 			else if (schema.required.includes(key)) fail(code, "Required field missing.", `${path}.${key}`);
@@ -344,7 +362,7 @@ export function validateStudioContext(value) {
 	// Budget check before inspecting strings/arrays; still reject nonfinite values
 	// structurally below (JSON itself would otherwise turn them into null).
 	const bytes = utf8ByteLength(JSON.stringify(value) ?? "");
-	if (bytes > STUDIO_CONTEXT_MAX_BYTES) fail("CONTEXT_TOO_LARGE", "Studio context exceeds 16 KiB.", "$", { bytes, maxBytes: STUDIO_CONTEXT_MAX_BYTES });
+	if (bytes > STUDIO_CONTEXT_MAX_BYTES) fail("CONTEXT_TOO_LARGE", `Studio context exceeds ${STUDIO_CONTEXT_MAX_BYTES / 1024} KiB.`, "$", { bytes, maxBytes: STUDIO_CONTEXT_MAX_BYTES });
 	const c = validateStudioSchema(contextSchema, value, "INVALID_CONTEXT");
 	const unique = new Set(c.entities.map(e => e.id));
 	if (unique.size !== c.entities.length) fail("INVALID_CONTEXT", "Duplicate entity ID.");
@@ -359,6 +377,11 @@ export function validateStudioContext(value) {
 	}
 	const p = c.entityPage;
 	if (p.returned !== c.entities.length || p.total < p.returned || p.truncated !== (p.total > p.returned) || (p.truncated ? p.nextCursor === null : p.nextCursor !== null)) fail("INVALID_CONTEXT", "Entity pagination is inconsistent.");
+	if (c.entityIndex) {
+		const indexed = new Set(c.entityIndex.map(e => e.id));
+		if (indexed.size !== c.entityIndex.length) fail("INVALID_CONTEXT", "Duplicate entity index ID.");
+		if (c.entityIndex.length > p.total || c.entities.some(e => !indexed.has(e.id))) fail("INVALID_CONTEXT", "Entity index must cover every detailed entity and no more than the total.");
+	}
 	if (c.view.frame >= Math.max(1, c.scene.frameCount)) fail("INVALID_CONTEXT", "Playhead is outside the scene.");
 	if (new Set(c.shots.map(s => s.id)).size !== c.shots.length) fail("INVALID_CONTEXT", "Duplicate shot ID.");
 	for (const shot of [...c.shots, ...(c.shot ? [c.shot] : [])]) if (shot.range.endFrameExclusive > c.scene.frameCount) fail("INVALID_CONTEXT", "Shot is outside the scene.");
@@ -502,7 +525,7 @@ export function validateReceipt(value) {
 		for (const block of blocks) { if (block.startFrame !== previous || block.endFrameExclusive <= previous || block.endFrameExclusive - previous > 120) fail("INVALID_RECEIPT", "Installed schedule is not contiguous or bounded."); previous = block.endFrameExclusive; }
 		if (previous !== frameCount || r.installed.durationSeconds !== frameCount / 24 || r.verification.range.startFrame !== 0 || r.verification.range.endFrameExclusive !== frameCount || r.verification.evaluatedFrames > frameCount) fail("INVALID_RECEIPT", "Installed schedule and verification coverage disagree.");
 		if (r.verification.status === "verified" && r.verification.evaluatedFrames !== frameCount) fail("INVALID_RECEIPT", "Verified motion requires whole-clip coverage.");
-		if (r.verification.status === "unverified" && r.explicitUnverifiedAcceptance !== true) fail("INVALID_RECEIPT", "Unverified installation requires explicit user acceptance.");
+		if (r.verification.status === "unverified" && r.explicitUnverifiedAcceptance !== true && r.acceptance !== "advisory-policy") fail("INVALID_RECEIPT", "Unverified installation requires explicit user or advisory-policy acceptance.");
 	} else if (r.installed || r.verification || r.jobId || r.artifactId || r.repairs || r.explicitUnverifiedAcceptance !== undefined) fail("INVALID_RECEIPT", "Installation evidence is exclusive to installed receipts.");
 	return freezeStudioData(r);
 }

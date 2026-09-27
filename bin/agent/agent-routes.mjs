@@ -440,7 +440,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			studioOwner(req, value.sessionId, true);
 			let persisted = null;
 			try { persisted = sessionStore.read(value.sessionId); } catch { persisted = null; }
-			session = { owner: studioOwnerTokens.get(value.sessionId), history: persisted?.history ?? [], persistedItems: persisted?.history?.length ?? 0, meta: persisted?.meta ?? null, turns: new Map(), controller: null, activeJobId: null, activeJobTurnId: null, motionJobIds: new Set(Array.isArray(persisted?.meta?.motionJobIds) ? persisted.meta.motionJobIds.filter(id => typeof id === "string") : []), generationPrompt: null, host: null, updatedAt: clock() };
+			session = { owner: studioOwnerTokens.get(value.sessionId), history: persisted?.history ?? [], persistedItems: persisted?.history?.length ?? 0, meta: persisted?.meta ?? null, turns: new Map(), controller: null, activeJobId: null, activeJobTurnId: null, motionJobIds: new Set(Array.isArray(persisted?.meta?.motionJobIds) ? persisted.meta.motionJobIds.filter(id => typeof id === "string") : []), host: null, updatedAt: clock() };
 			studioSessions.set(value.sessionId, session);
 		}
 		session.updatedAt = clock();
@@ -468,25 +468,38 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		const admission = {
 			commandId: () => randomUUID(), host: studioIdentity(value.context.host), revision: value.context.revision.scene,
 			refresh: async () => {
-				const refreshed = studioRuntime?.readContext ? await studioRuntime.readContext(value.context.host) : await authoritativeStudioContext(value, hub);
+				// Read at the admitted host: a scene action may have opened another
+				// scene of this workspace during the turn (studio-tools adopts it).
+				const host = { ...value.context.host, ...admission.host };
+				const refreshed = studioRuntime?.readContext ? await studioRuntime.readContext(host) : await authoritativeStudioContext({ ...value, context: { ...value.context, host } }, hub);
 				admission.revision = refreshed.revision.scene;
 			},
 		};
 		const runtimeForJob = await studioRuntimeFor(hub);
-		const tools = createStudioTools({ liveHub: hub, workspaceHandle: value.context.host.workspaceHandle, session: { signal: controller.signal, admission }, resolveImage: async (id, correlation) => hub.command("resolve_studio_image", { imageId: id, ...correlation }, value.context.host.workspaceHandle) });
+		// One motion generation per user message, whichever path starts it:
+		// generate_motion below and a run_action job action share this gate.
+		const generation = { used: false, failures: 0 };
+		const tools = createStudioTools({ liveHub: hub, workspaceHandle: value.context.host.workspaceHandle, session: { signal: controller.signal, admission, generation }, resolveImage: async (id, correlation) => hub.command("resolve_studio_image", { imageId: id, ...correlation }, value.context.host.workspaceHandle) });
 		const motion = async args => {
-			if (session.generationPrompt === value.text) throw new StudioProtocolError("AUTH_REQUIRED", "This generation request already has a retained result; start a new explicit request.");
+			if (generation.used) throw new StudioProtocolError("GENERATION_LIMIT", "One motion generation per user message. Report this result and ask the user before generating again.");
+			if ((generation.failures ?? 0) >= 2) throw new StudioProtocolError("GENERATION_LIMIT", "Two motion generation attempts already failed in this user message. Report both failures to the user and ask before generating again.");
 			if (!runtimeForJob) throw new StudioProtocolError("CAPABILITY_MISSING", "Studio motion runtime is unavailable.");
 			const character = value.context.entities.find(entity => entity.id === args.characterId && entity.kind === "character");
 			if (!character) throw new StudioProtocolError("TARGET_NOT_READY", "The admitted character is unavailable.");
 			const commandId = randomUUID(); const host = { ...value.context.host, workspaceHandle: value.context.host.workspaceHandle };
 			const admissionResult = runtimeForJob.admit({ hostBinding: host, characterId: args.characterId, targetToken: character.token, turnId: value.turnId, commandId, authorization: { id: randomUUID(), generations: 1 }, source: args.source, repair: args.repair ?? "bounded" });
-			session.motionJobIds.add(admissionResult.jobId); persistenceMeta.motionJobIds = [...session.motionJobIds]; session.activeJobId = admissionResult.jobId; session.activeJobTurnId = value.turnId; session.generationPrompt = value.text;
+			session.motionJobIds.add(admissionResult.jobId); persistenceMeta.motionJobIds = [...session.motionJobIds]; session.activeJobId = admissionResult.jobId; session.activeJobTurnId = value.turnId;
 			const unsubscribe = runtimeForJob.subscribe(admissionResult.jobId, event => send({ ...event, sourceEventSeq: event.eventSeq }));
 			// Subscription precedes start, including replay of the queued admission event.
 			let outcome;
-			try { outcome = await runtimeForJob.start(admissionResult.jobId); if (outcome?.ok && outcome.status === "installed") send({ type: "receipt", receipt: outcome }); return outcome; }
-			finally {
+			try {
+				try { outcome = await runtimeForJob.start(admissionResult.jobId); }
+				catch (error) { generation.failures = (generation.failures ?? 0) + 1; throw error; }
+				if (outcome?.ok === true || outcome?.status === "review_required") generation.used = true;
+				else if (outcome?.ok === false && outcome.status !== "review_required") generation.failures = (generation.failures ?? 0) + 1;
+				if (outcome?.ok && outcome.status === "installed") send({ type: "receipt", receipt: outcome });
+				return outcome;
+			} finally {
 				unsubscribe();
 				// A job still awaiting an explicit accept (review_required) stays "active"
 				// for the accept route's ownership check (:678); every other outcome —

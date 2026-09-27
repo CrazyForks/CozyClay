@@ -1,6 +1,8 @@
 // The authored Studio surface, declared once for future patch, schema and
 // history layers. This module is intentionally data-only: it does not import
-// React or any persistence implementation.
+// React or any persistence implementation. agentExposure "action" means the
+// agent edits the element through the registered Studio actions it names in
+// `actions` (src/studio-actions.js), the same code path as the UI controls.
 
 const freezeBounds = (bounds) => bounds && typeof bounds === "object"
 	? Object.freeze({ ...bounds })
@@ -9,6 +11,7 @@ const freezeBounds = (bounds) => bounds && typeof bounds === "object"
 const freezeEntry = (entry) => Object.freeze({
 	...entry,
 	...(entry.enum ? { enum: Object.freeze([...entry.enum]) } : {}),
+	...(entry.actions ? { actions: Object.freeze([...entry.actions]) } : {}),
 	...(entry.min && typeof entry.min === "object" ? { min: freezeBounds(entry.min) } : {}),
 	...(entry.max && typeof entry.max === "object" ? { max: freezeBounds(entry.max) } : {}),
 	...(entry.gizmo ? { gizmo: Object.freeze({ min: freezeBounds(entry.gizmo.min), max: freezeBounds(entry.gizmo.max) }) } : {}),
@@ -24,12 +27,12 @@ const entries = [
 	{ path: "character.tint", type: "color", persisted: true, undoDomain: "cast", agentExposure: "patch", normalizer: "createCharacterEntry" },
 	{ path: "character.identityImage", type: "image", persisted: true, undoDomain: "cast", agentExposure: "patch", normalizer: "createCharacterEntry", note: "data:image only" },
 	{ path: "character.pose", type: "id", persisted: true, undoDomain: "cast", agentExposure: "patch", normalizer: "createCharacterEntry" },
-	{ path: "character.waypoints", type: "array", persisted: true, undoDomain: "cast", agentExposure: "todo", normalizer: "createCharacterEntry", note: "agent exposure gap" },
+	{ path: "character.waypoints", type: "array", persisted: true, undoDomain: "cast", agentExposure: "action", normalizer: "createCharacterEntry", actions: ["character.addWaypoint", "character.moveWaypoint", "character.removeWaypoint", "character.clearWaypoints"], note: "root path pins, addressed by frame" },
 	{ path: "character.promptBlocks", type: "array", persisted: true, undoDomain: "cast", agentExposure: "patch", normalizer: "createCharacterEntry", note: "stored at layer.promptClips" },
 	{ path: "character.motionRef.url", type: "string", persisted: true, undoDomain: "cast", agentExposure: "patch", normalizer: "createCharacterEntry" },
 	{ path: "character.motionRef.motionId", type: "id", persisted: true, undoDomain: "cast", agentExposure: "patch", normalizer: "createCharacterEntry" },
 	{ path: "character.sessionMotion", type: "array", persisted: false, undoDomain: "cast", agentExposure: "readonly", normalizer: "createCharacterEntry", note: "dropped by createCharacterEntry" },
-	{ path: "character.ikKeys", type: "array", persisted: false, undoDomain: "cast", agentExposure: "todo", normalizer: "createCharacterEntry", note: "dropped by createCharacterEntry" },
+	{ path: "character.ikKeys", type: "array", persisted: false, undoDomain: "cast", agentExposure: "action", normalizer: "createCharacterEntry", actions: ["character.setIkKey", "character.removeIkKey", "character.clearIkKeys"], note: "dropped by createCharacterEntry; keys travel as JSON quaternions/positions" },
 	{ path: "object.renderer", type: "enum", persisted: true, undoDomain: "objects", agentExposure: "patch", normalizer: "normalizeSceneObject", enum: ["cube", "sphere", "capsule", "cylinder", "cone", "plane", "chair", "car", "small-plane"] },
 	{ path: "object.position", type: "vec3", persisted: true, undoDomain: "objects", agentExposure: "patch", normalizer: "normalizeSceneObject", min: { x: -240, y: 0, z: -240 }, max: { x: 240, y: 240, z: 240 }, note: "y is the object's base: y=0 rests on the floor; height/supportY rise from it" },
 	{ path: "object.rotation", type: "vec3", persisted: true, undoDomain: "objects", agentExposure: "patch", normalizer: "normalizeSceneObject", min: { x: -180, y: -180, z: -180 }, max: { x: 180, y: 180, z: 180 }, note: "rot/rotX/rotZ degrees, wrapped at the upper bound" },
@@ -37,10 +40,10 @@ const entries = [
 	{ path: "object.name", type: "string", persisted: true, undoDomain: "objects", agentExposure: "patch", normalizer: "normalizeSceneObject" },
 	{ path: "object.color", type: "color", persisted: true, undoDomain: "objects", agentExposure: "patch", normalizer: "normalizeSceneObject" },
 	{ path: "object.parent", type: "id", persisted: true, undoDomain: "objects", agentExposure: "patch", normalizer: "normalizeSceneObject" },
-	{ path: "object.attach", type: "id", persisted: true, undoDomain: "objects", agentExposure: "todo", normalizer: "normalizeSceneObject", note: "agent exposure gap" },
+	{ path: "object.attach", type: "id", persisted: true, undoDomain: "objects", agentExposure: "action", normalizer: "normalizeSceneObject", actions: ["object.attach", "object.detach"], note: "carried by a character's root or bone; channels convert so the prop stays put" },
 	{ path: "object.path", type: "array", persisted: true, undoDomain: "objects", agentExposure: "patch", normalizer: "normalizeSceneObject" },
 	{ path: "object.remove", type: "boolean", persisted: true, undoDomain: "objects", agentExposure: "patch", normalizer: null, note: "lifecycle operation, not a document field" },
-	{ path: "object.cutout", type: "image", persisted: true, undoDomain: "objects", agentExposure: "composite", normalizer: "normalizeSceneObject", note: "assetId-backed cutout record" },
+	{ path: "object.cutout", type: "image", persisted: true, undoDomain: "objects", agentExposure: "action", normalizer: "normalizeSceneObject", actions: ["asset.import"], note: "assetId-backed cutout record; imported pictures and models are placed by asset.import" },
 	{ path: "stage.keyLight.x", type: "number", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", min: -30, max: 30 },
 	{ path: "stage.keyLight.y", type: "number", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", min: 0.5, max: 30 },
 	{ path: "stage.keyLight.z", type: "number", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", min: -30, max: 30 },
@@ -51,17 +54,17 @@ const entries = [
 	{ path: "stage.style", type: "string", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", note: "look / style line for shot prompts" },
 	{ path: "stage.hasEnvSheet", type: "boolean", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", note: "author supplies an environment sheet instead of a description" },
 	{ path: "stage.camera", type: "enum", persisted: true, undoDomain: "stage", agentExposure: "patch", normalizer: "createSceneStage", enum: ["16:9", "2.39:1", "9:16", "1:1", "4:3", "12:7", "fal 480P"], note: "shotAspect/cameraPresetId/sensorId" },
-	{ path: "shot.crud", type: "array", persisted: true, undoDomain: "shot", agentExposure: "todo", normalizer: null, note: "create/split/duplicate/reorder/remove/range; agent exposure gap" },
+	{ path: "shot.crud", type: "array", persisted: true, undoDomain: "shot", agentExposure: "action", normalizer: null, actions: ["shot.create", "shot.split", "shot.duplicate", "shot.remove", "shot.setRange", "shot.reorder"], note: "create/split/duplicate/reorder/remove/range through the shared action registry" },
 	{ path: "shot.cameraKeys", type: "array", persisted: true, undoDomain: "shot", agentExposure: "patch", normalizer: null, frameMin: 0 },
-	{ path: "shot.cameraRail", type: "array", persisted: true, undoDomain: "shot", agentExposure: "todo", normalizer: "repairCamera", note: "rail/crane/dolly timing; agent exposure gap" },
+	{ path: "shot.cameraRail", type: "array", persisted: true, undoDomain: "shot", agentExposure: "action", normalizer: "repairCamera", actions: ["shot.setCameraRail", "shot.clearCameraRail"], note: "rail points; crane/dolly timing follow the shot's camera block" },
 	{ path: "shot.targetModel", type: "id", persisted: true, undoDomain: "shot", agentExposure: "patch", normalizer: "repairCamera" },
 	{ path: "shot.freeCamera", type: "vec3", persisted: false, undoDomain: "shot", agentExposure: "readonly", normalizer: null, note: "transient until keyed" },
-	{ path: "scenes", type: "array", persisted: true, undoDomain: null, agentExposure: "composite", normalizer: null },
-	{ path: "project", type: "string", persisted: true, undoDomain: null, agentExposure: "composite", normalizer: null, note: "save/open project file" },
+	{ path: "scenes", type: "array", persisted: true, undoDomain: null, agentExposure: "action", normalizer: null, actions: ["scene.create", "scene.duplicate", "scene.rename", "scene.delete", "scene.switch"], note: "the project's scene list and the open scene; outside the undo history" },
+	{ path: "project", type: "string", persisted: true, undoDomain: null, agentExposure: "action", normalizer: null, actions: ["project.save"], note: "save to the current project file; opening one needs the user's file picker" },
 	{ path: "selection", type: "id", persisted: false, undoDomain: null, agentExposure: "readonly", normalizer: null },
 	{ path: "timeline", type: "number", persisted: false, undoDomain: null, agentExposure: "readonly", normalizer: null },
 	{ path: "view.mode", type: "enum", persisted: false, undoDomain: null, agentExposure: "readonly", normalizer: null, enum: ["scene", "camera", "motion"] },
-	{ path: "view.partColoursGuideModeInset", type: "array", persisted: false, undoDomain: null, agentExposure: "todo", normalizer: null, note: "partColours/guideMode/inset; not a document field" },
+	{ path: "view.partColoursGuideModeInset", type: "array", persisted: false, undoDomain: null, agentExposure: "action", normalizer: null, actions: ["view.setPartColours", "view.setGuideMode", "view.setInset"], note: "partColours/guideMode/inset; viewer settings, not document fields" },
 	{ path: "read.sceneDescription", type: "string", persisted: false, undoDomain: null, agentExposure: "readonly", normalizer: null },
 	{ path: "read.captureFrame", type: "image", persisted: false, undoDomain: null, agentExposure: "readonly", normalizer: null },
 	{ path: "undo", type: "boolean", persisted: false, undoDomain: null, agentExposure: "readonly", normalizer: null },

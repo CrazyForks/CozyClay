@@ -60,6 +60,7 @@ import { buildStudioContext, physicsFingerprintInput, studioEntityCursor, valida
 import { STUDIO_TOOL_FAMILIES, StudioProtocolError, validateStudioCommand, validateStudioIdentity, validateReceipt } from "./studio-agent-protocol.js";
 import { elementByPath } from "./studio-elements.js";
 import { createStudioCommands, createStudioCommandJournal, studioObjectCatalogue } from "./studio-agent-commands.js";
+import { STUDIO_IK_CHAIN_TRACKS, createStudioActionRegistry, studioActionDeclaration, studioActionRefusal } from "./studio-actions.js";
 import { createStudioMotionCandidates } from "./studio-agent-motion.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
@@ -251,7 +252,7 @@ import AddObjectMenu from "./object-catalog.jsx";
 import ResultModal from "./result-modal.jsx";
 import { FalMotionCaptureCard, FalMotionModal } from "./fal-motion-studio.jsx";
 import SettingsMenu from "./settings-menu.jsx";
-import { hasLineEditCapability, motionReadiness } from "./motion-readiness.js";
+import { demoSeedGate, hasLineEditCapability, motionReadiness } from "./motion-readiness.js";
 import { MotionReadiness, MotionSetup, motionReadinessMessage } from "./motion-readiness-ui.jsx";
 import { PWA_UPDATE_EVENT } from "./pwa.js";
 import {
@@ -286,7 +287,7 @@ import {
 	warmPoseThumbnails,
 } from "./posestudio.jsx";
 import { mergeProjectCustomPoses } from "./project-poses.js";
-import { encodeMotionResource, decodeMotionResource, resolveMotionSource } from "./motion-resources.js";
+import { encodeMotionResource, decodeMotionResource, resolveMotionSource, sha256Hex } from "./motion-resources.js";
 import { openMotionDb, putMotion, getMotion, sweepMotions } from "./motion-store.js";
 import { resourceManifest } from "./project-resources.js";
 import { internWorkflowOutputs, resolveWorkflowOutputs, workflowOutputRefs } from "./workflow/workflow-resources.js";
@@ -342,7 +343,7 @@ import { CAMERA_PRESETS, cameraPresetFraming, captureFraming, classifyMove, move
 import { sampleAt } from "./sample-at.js";
 import { exportOffscreenVideo } from "./offscreen-export.js";
 import { parseRigNodeId } from "./hierarchy-model.js";
-import { timelineContentExtent } from "./timeline-extent.js";
+import { timelineContentExtent, timelineSpan } from "./timeline-extent.js";
 import {
 	GUIDE_LABELS,
 	guideGeometry,
@@ -623,6 +624,306 @@ async function readReferenceImage(file, { maxDimension = REFERENCE_IMAGE_MAX_DIM
 	}
 }
 
+/** An http(s) asset source as the data URL the import path takes. */
+async function fetchImportSource(url) {
+	const response = await fetch(url);
+	if (!response.ok) throw new Error(`HTTP ${response.status}`);
+	const blob = await response.blob();
+	return new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onerror = () => reject(reader.error ?? new Error("could not read the download"));
+		reader.onload = () => resolve(String(reader.result));
+		reader.readAsDataURL(blob);
+	});
+}
+
+/** The editor's Studio actions: ONE registry whose entries call the same
+ * handlers the UI controls call, so a timeline button and the agent's
+ * run_action share one code path. `handlersRef.current` is refreshed on every
+ * render, so a run always reaches the latest handlers; `state()` reads the
+ * synchronously published document, so the diff below sees the edit at once. */
+export function createStudioAppActions(handlersRef) {
+	const h = () => handlersRef.current;
+	const registry = createStudioActionRegistry({ readState: () => h().state() });
+	const fail = (code, message) => { throw new StudioProtocolError(code, message); };
+	const changedIds = (before, after) => [...new Set([
+		...after.filter(row => !before.includes(row)).map(row => row.id),
+		...before.filter(row => !after.some(next => next.id === row.id)).map(row => row.id),
+	])];
+	const shotLabel = shot => `${shot.name} [${shot.startFrame}, ${shot.endFrame + 1})`;
+	const hasShots = state => state.shots.length > 0 || "There are no shots yet; add one with shot.create.";
+	const shotOf = shotId => h().state().shots.find(shot => shot.id === shotId) ?? fail("STALE_TARGET", `Shot ${shotId} is not in this scene.`);
+	const shotAction = (id, available, run) => {
+		const { label } = studioActionDeclaration(id);
+		registry.register({ ...studioActionDeclaration(id), available, run: args => {
+			const before = h().state().shots;
+			run(args);
+			const after = h().state().shots, affectedIds = changedIds(before, after);
+			const described = affectedIds.map(shotId => {
+				const shot = after.find(row => row.id === shotId);
+				return shot ? shotLabel(shot) : `${before.find(row => row.id === shotId)?.name ?? shotId} removed`;
+			});
+			return { affectedIds, summary: affectedIds.length ? `${label}: ${described.join("; ")}.` : `${label}: nothing changed.` };
+		} });
+	};
+	shotAction("shot.create", state => addShotAtFrame(state.shots, state.frame, state.frameCount, null) !== state.shots
+		|| `There is no free room for a new shot at the playhead (frame ${state.frame}); move it with operate_studio { frame } or shorten a shot.`,
+	() => h().addTimelineShot());
+	shotAction("shot.split", state => state.shots.some(shot => state.frame > shot.startFrame && state.frame <= shot.endFrame)
+		|| `The playhead (frame ${state.frame}) is not inside a shot after its first frame; move it with operate_studio { frame }.`,
+	({ shotId }) => {
+		const shot = shotOf(shotId), { frame } = h().state();
+		if (frame <= shot.startFrame || frame > shot.endFrame) fail("TARGET_NOT_READY", `The playhead (frame ${frame}) is not inside ${shot.name} after its first frame.`);
+		h().splitTimelineShot(shotId);
+	});
+	shotAction("shot.duplicate", hasShots, ({ shotId }) => { shotOf(shotId); h().duplicateTimelineShot(shotId); });
+	shotAction("shot.remove", hasShots, ({ shotId }) => { shotOf(shotId); h().removeTimelineShot(shotId); });
+	shotAction("shot.setRange", hasShots, ({ shotId, range }) => { shotOf(shotId); h().setTimelineShotRange(shotId, range.startFrame, range.endFrameExclusive - 1); });
+	shotAction("shot.setCameraRail", hasShots, ({ shotId, points }) => { shotOf(shotId); h().setShotCameraRail(shotId, points); });
+	shotAction("shot.clearCameraRail", state => state.shots.some(shot => createCameraBlock(shot.camera).cameraRail) || "No shot has a camera rail; lay one with shot.setCameraRail.",
+		({ shotId }) => { shotOf(shotId); h().clearShotCameraRail(shotId); });
+	shotAction("shot.reorder", hasShots, ({ shotId, startFrame }) => { shotOf(shotId); h().moveTimelineShot(shotId, startFrame); });
+	registry.register({ ...studioActionDeclaration("motion.generateAllBlocks"),
+		available: state => state.generating ? "A motion generation is already running."
+			: !state.motionReady ? "The motion backend is not ready."
+				: state.promptBlockCount === 0 ? "The active character has no prompt block with text; write them with patch_elements character.promptBlocks." : true,
+		run: () => {
+			const { activeCharacterId, promptBlockCount } = h().state();
+			h().runAllPromptBlocks();
+			// The generation queues synchronously or not at all; the editor's toast
+			// names the refusal (rig not loaded, over-long block, line-edit draft).
+			if (!h().state().generating) fail("TARGET_NOT_READY", "The editor did not start the generation; check the active character's rig and prompt blocks.");
+			return { affectedIds: activeCharacterId ? [activeCharacterId] : [], summary: `Started generating the active character's motion from ${promptBlockCount} prompt block${promptBlockCount === 1 ? "" : "s"}.` };
+		} });
+	// Cast actions name their character explicitly, so they run the same way
+	// whichever character is active and whatever mode the editor is in.
+	const characterOf = characterId => h().state().characters.find(entry => entry.id === characterId)
+		?? fail("STALE_TARGET", `Character ${characterId} is not in this scene.`);
+	const castAction = (id, run) => registry.register({ ...studioActionDeclaration(id),
+		available: state => state.characters.length > 0 || "There are no characters in this scene; add one with arrange_characters.",
+		run: args => {
+			const character = characterOf(args.characterId);
+			return { affectedIds: [character.id], summary: run(args, character.subject || character.id) };
+		} });
+	const pin = waypoint => `frame ${waypoint.frame} (x ${waypoint.x}, z ${waypoint.z})`;
+	const warned = warnings => warnings.length ? `; warning: ${warnings[0]}` : "";
+	castAction("character.addWaypoint", ({ characterId, position, frame }, name) => {
+		const { waypoint, index, warnings } = h().addCharacterWaypoint(characterId, position, frame ?? null);
+		return `Added ${name}'s root waypoint ${index + 1} at ${pin(waypoint)}${warned(warnings)}.`;
+	});
+	castAction("character.moveWaypoint", ({ characterId, frame, position }, name) => {
+		const { waypoint, warnings } = h().moveCharacterWaypoint(characterId, frame, position);
+		return `Moved ${name}'s root waypoint to ${pin(waypoint)}${warned(warnings)}.`;
+	});
+	castAction("character.removeWaypoint", ({ characterId, frame }, name) => {
+		h().removeCharacterWaypoint(characterId, frame);
+		return `Removed ${name}'s root waypoint at frame ${frame}.`;
+	});
+	castAction("character.clearWaypoints", ({ characterId }, name) => {
+		const count = h().clearCharacterWaypoints(characterId);
+		return count ? `Cleared ${name}'s root path (${count} waypoint${count === 1 ? "" : "s"}).` : `${name} has no root waypoints; nothing changed.`;
+	});
+	// The declared schema carries the key's shape; the per-track counts and the
+	// timeline bound are checked here, before anything is recorded.
+	castAction("character.setIkKey", ({ characterId, frame, tracks }, name) => {
+		const { frameCount } = h().state(), named = Object.keys(tracks);
+		if (frame >= frameCount) fail("INVALID_RANGE", `Frame ${frame} is outside the timeline (0-${frameCount - 1}).`);
+		if (!named.length) fail("INVALID_ARGUMENT", "Name at least one track in tracks.");
+		for (const track of named) {
+			const key = tracks[track], chain = STUDIO_IK_CHAIN_TRACKS.includes(track), bones = chain ? 3 : 1;
+			if (!key.q && !key.p) fail("INVALID_ARGUMENT", `tracks.${track} needs q (bone rotations) or p (a local position).`);
+			if (key.chainP && !chain) fail("INVALID_ARGUMENT", `tracks.${track}.chainP is for chain tracks only.`);
+			for (const field of ["q", "baseQ", "chainP"]) {
+				if (key[field] && key[field].length !== bones) fail("INVALID_ARGUMENT", `tracks.${track}.${field} needs ${bones} entr${bones === 1 ? "y" : "ies"}, one per bone.`);
+			}
+			if ([...(key.q ?? []), ...(key.baseQ ?? [])].some(q => Math.hypot(q.x, q.y, q.z, q.w) < 1e-6)) fail("INVALID_ARGUMENT", `tracks.${track} has a zero-length quaternion.`);
+		}
+		h().setCharacterIkKey(characterId, frame, tracks);
+		return `Keyed ${name}'s IK layer at frame ${frame}: ${named.join(", ")}.`;
+	});
+	castAction("character.removeIkKey", ({ characterId, frame }, name) => {
+		h().removeCharacterIkKey(characterId, frame);
+		return `Deleted ${name}'s IK key at frame ${frame}.`;
+	});
+	castAction("character.clearIkKeys", ({ characterId }, name) => {
+		const count = h().clearCharacterIkKeys(characterId);
+		return count ? `Cleared ${name}'s IK layer (${count} key${count === 1 ? "" : "s"}).` : `${name} has no IK keys; nothing changed.`;
+	});
+	const objectOf = objectId => h().state().objects.find(object => object.id === objectId)
+		?? fail("STALE_TARGET", `Object ${objectId} is not in this scene.`);
+	registry.register({ ...studioActionDeclaration("object.attach"),
+		available: state => state.objects.length === 0 ? "There are no scene objects to attach."
+			: state.characters.length === 0 ? "There are no characters to attach an object to." : true,
+		run: ({ objectId, characterId, bone }) => {
+			const object = objectOf(objectId), character = characterOf(characterId), before = h().state().objects;
+			h().attachSceneObject(objectId, { characterId, bone: bone ?? null });
+			const frameName = `${character.subject || character.id}'s ${bone ?? "root"}`;
+			return { affectedIds: [objectId], summary: h().state().objects === before
+				? `${object.name || objectId} already rides ${frameName}; nothing changed.`
+				: `Attached ${object.name || objectId} to ${frameName}, keeping its place on screen.` };
+		} });
+	registry.register({ ...studioActionDeclaration("object.detach"),
+		available: state => state.objects.some(object => object.attach || object.parent) || "No scene object is attached to a character or grouped.",
+		run: ({ objectId }) => {
+			const object = objectOf(objectId);
+			if (!object.attach && !object.parent) fail("TARGET_NOT_READY", `${object.name || objectId} is not attached to a character or in a group.`);
+			h().attachSceneObject(objectId, null);
+			return { affectedIds: [objectId], summary: `Put ${object.name || objectId} back in the world where it is now.` };
+		} });
+	// Viewer preferences: transient, like the View menu they mirror.
+	const viewAction = (id, run) => registry.register({ ...studioActionDeclaration(id), available: () => true,
+		run: args => ({ affectedIds: [], summary: run(args) }) });
+	viewAction("view.setPartColours", ({ mode }) => { h().choosePartColours(mode); return `Part colours: ${mode}.`; });
+	viewAction("view.setGuideMode", ({ mode }) => { h().setGuideMode(mode); return `Composition guide: ${mode}.`; });
+	viewAction("view.setInset", ({ collapsed }) => { h().setInsetCollapsed(collapsed); return `Top-View inset ${collapsed ? "folded" : "unfolded"}.`; });
+	registry.register({ ...studioActionDeclaration("object.duplicate"),
+		available: state => state.objects.length > 0 || "There are no scene objects to duplicate.",
+		run: ({ objectId }) => {
+			const state = h().state(), id = objectId ?? state.selectedObjectId;
+			if (!id) fail("TARGET_NOT_READY", "Name objectId or select an object first.");
+			const source = state.objects.find(object => object.id === id) ?? fail("STALE_TARGET", `Object ${id} is not in this scene.`);
+			h().duplicateSelectedSceneObject(id);
+			const after = h().state().objects, affectedIds = changedIds(state.objects, after);
+			const copy = after.find(object => affectedIds.includes(object.id));
+			return { affectedIds, summary: copy ? `Duplicated ${source.name || source.id} as ${copy.name || copy.id}.` : "Duplicate object: nothing changed." };
+		} });
+	// The Export menu's Video (mp4): the same export, awaited to its file. A
+	// failure was already shown in the export panel, so it refuses silently.
+	registry.register({ ...studioActionDeclaration("export.shotVideo"),
+		available: state => state.exporting ? "An export is already running; wait for it to finish."
+			: state.canExportVideo || "There is nothing to record yet: add a shot (shot.create), camera keys or a motion take first.",
+		run: async ({ shotId }) => {
+			const shot = shotId ? shotOf(shotId) : null;
+			const result = await h().exportShotVideo({ shotId: shotId ?? null });
+			if (!result?.fileName) fail("TARGET_NOT_READY", "The video export did not finish; the editor's export panel shows why and offers Retry.");
+			return { affectedIds: shot ? [shot.id] : [], output: { fileName: result.fileName, frameCount: result.frameCount },
+				summary: `Recorded ${shot ? shotLabel(shot) : "the shot"} to ${result.fileName} (${result.frameCount} frames); the browser was asked to download it.` };
+		} });
+	// The Send-to-AI package: the editor's own generate(), which reads the mode
+	// and image model from the render. A changed choice is set first and
+	// generate() runs once React has rendered it; a commit already under way can
+	// predate it, so the wait repeats until the render shows the choice.
+	registry.register({ ...studioActionDeclaration("ai.prepareShot"), available: () => true,
+		run: async ({ mode, model }) => {
+			const current = h().state().aiShot, wanted = { mode: mode ?? current.mode, imageModel: model ?? current.imageModel };
+			if (model && wanted.mode !== "image") fail("INVALID_ARGUMENT", `model picks an image model, but this would be a ${wanted.mode} prompt; omit model or pass mode "image".`);
+			const rendered = () => { const { aiShot } = h().state(); return aiShot.mode === wanted.mode && aiShot.imageModel === wanted.imageModel; };
+			if (!rendered()) {
+				h().setAiShotMode(wanted.mode);
+				h().setAiImageModel(wanted.imageModel);
+				for (let commits = 0; !rendered(); commits++) {
+					if (commits === 3) fail("TARGET_NOT_READY", "The Studio did not render the new mode and model; run the action again.");
+					await h().afterRender();
+				}
+			}
+			const result = h().generate();
+			const shot = result.shot && { id: result.shot.id, name: result.shot.name, range: { startFrame: result.shot.startFrame, endFrameExclusive: result.shot.endFrame + 1 } };
+			const referenceFrames = (result.frame ? 1 : 0) + (result.frameB ? 1 : 0);
+			return { affectedIds: [], output: { prompt: result.prompt, mode: result.mode, modelLabel: result.modelLabel ?? null, shot, aspectRatio: result.aspectRatio, cameraMode: result.camera?.mode ?? null, referenceFrames },
+				summary: `Prepared the ${result.mode} prompt${result.modelLabel ? ` for ${result.modelLabel}` : ""} for ${shot ? `${shot.name} [${shot.range.startFrame}, ${shot.range.endFrameExclusive})` : "the current camera"}; the Studio's result panel shows it with ${referenceFrames} reference frame${referenceFrames === 1 ? "" : "s"} for the user to copy and download.` };
+		} });
+	// The live import_asset path (validate, store the bytes, ONE atomic store
+	// entry), fed a data URL; an http(s) source is fetched into one first.
+	registry.register({ ...studioActionDeclaration("asset.import"), available: () => true,
+		run: async ({ source, name, placeAs }) => {
+			let dataUrl = source;
+			if (!source.startsWith("data:")) {
+				try { dataUrl = await h().fetchImportSource(source); }
+				catch (error) { fail("TARGET_NOT_READY", `Could not fetch the source (${error?.message || error}); its server must allow cross-origin reads.`); }
+			}
+			let imported;
+			try { imported = await h().importAsset({ name, placeAs, dataUrl }); }
+			catch (error) { fail("INVALID_ARGUMENT", `Not imported: ${error?.message || error}`); }
+			return { affectedIds: [imported.objectId], summary: `Imported ${name} as a ${placeAs} (object ${imported.objectId}, asset ${imported.assetId}).` };
+		} });
+	// AI-video motion: the agent panel's Generate motion (generateFalMotion
+	// "act"), awaited to its clip. The Fal card shows every failure it meets, so
+	// a refusal is silent in the UI and tells the model the reason in English.
+	registry.register({ ...studioActionDeclaration("motion.generateFromVideo"),
+		available: ({ falMotion }) => !falMotion.enabled ? "AI video motion (Fal) is not enabled for this account."
+			: !["idle", "done", "error", "failed"].includes(falMotion.status) ? "An AI video motion generation is already running; wait for it to finish."
+				: falMotion.dailyRemaining === 0 ? "The account's daily AI video generations are used up." : true,
+		run: async ({ instruction }) => {
+			const outcome = await h().generateFalMotion("act", instruction);
+			if (outcome.failed) fail("TARGET_NOT_READY", outcome.failed);
+			const { job, footage, dailyRemaining } = outcome;
+			if (!job.video?.url) fail("TARGET_NOT_READY", "The AI video model finished without returning a video.");
+			return { affectedIds: [], output: { videoUrl: job.video.url, resolution: job.resolution ?? null, durationSeconds: job.resultDuration ?? job.duration ?? null,
+				ingested: Boolean(footage), frames: footage?.frames ?? null, fps: footage?.fps ?? null, dailyRemaining },
+			summary: footage
+				? `The AI video (${job.resolution}, ${footage.frames} frames at ${footage.fps} fps) is ingested as Video capture footage and the timeline now spans it; its motion becomes a take once GVHMR extraction runs in the Video capture panel.`
+				: `The AI video is ready at ${job.video.url}, but ingesting it as footage failed; the Video capture panel shows why.` };
+		} });
+	// Scenes: the scene pill's and the Hierarchy scene menu's own handlers. When
+	// the open scene moves, the action answers once React has rendered the new
+	// room, so the next command reads that scene's state.
+	const sceneOf = sceneId => h().state().scenes.find(scene => scene.id === sceneId) ?? fail("STALE_TARGET", `Scene ${sceneId} is not in this project.`);
+	const sceneName = scene => `${scene.name} (${scene.id})`;
+	const sceneAction = (id, available, run) => registry.register({ ...studioActionDeclaration(id), available,
+		run: async args => {
+			const before = h().state(), describe = run(args, before), after = h().state();
+			const moved = after.activeSceneId !== before.activeSceneId, opened = after.scenes.find(scene => scene.id === after.activeSceneId);
+			const affectedIds = [...new Set([
+				...after.scenes.filter(scene => !before.scenes.some(row => row.id === scene.id && row.name === scene.name)).map(scene => scene.id),
+				...before.scenes.filter(scene => !after.scenes.some(row => row.id === scene.id)).map(scene => scene.id),
+				...(moved ? [after.activeSceneId] : []),
+			])];
+			if (moved) await h().afterRender();
+			return { affectedIds, summary: describe(after, opened, moved) };
+		} });
+	const manyScenes = state => state.scenes.length > 1;
+	sceneAction("scene.create", () => true, () => {
+		h().addSceneDocument();
+		return (after, opened) => `Created and opened scene ${sceneName(opened)}.`;
+	});
+	sceneAction("scene.duplicate", () => true, ({ sceneId }) => {
+		const source = sceneOf(sceneId);
+		h().duplicateSceneDocument(sceneId);
+		return (after, opened) => `Duplicated ${sceneName(source)} as ${sceneName(opened)} and opened the copy.`;
+	});
+	sceneAction("scene.rename", () => true, ({ sceneId, name }) => {
+		const source = sceneOf(sceneId);
+		h().renameSceneDocument(sceneId, name);
+		return after => {
+			const renamed = after.scenes.find(scene => scene.id === sceneId);
+			return renamed.name === source.name ? `${sceneName(source)} already has that name; nothing changed.` : `Renamed scene ${sceneId} from ${source.name} to ${renamed.name}.`;
+		};
+	});
+	sceneAction("scene.delete", state => manyScenes(state) || "The project's last scene cannot be deleted.", ({ sceneId }) => {
+		const source = sceneOf(sceneId);
+		h().deleteSceneDocument(sceneId);
+		return (after, opened, moved) => `Deleted scene ${sceneName(source)}${moved ? `; opened ${sceneName(opened)}` : ""}.`;
+	});
+	sceneAction("scene.switch", state => manyScenes(state) || "This project has one scene; add one with scene.create.", ({ sceneId }, before) => {
+		const target = sceneOf(sceneId);
+		if (sceneId === before.activeSceneId) return () => `${sceneName(target)} is already open; nothing changed.`;
+		h().switchSceneDocument(sceneId);
+		return () => `Opened scene ${sceneName(target)}.`;
+	});
+	// The Project menu's Save Project. Only a user's click opens the browser's
+	// file picker or re-grants a stored file, so without one (the agent) a save
+	// that would need either is refused before anything is attempted. The save
+	// path itself shows its own dialog and failures, so refusals stay silent.
+	registry.register({ ...studioActionDeclaration("project.save"), available: () => true,
+		run: async () => {
+			const { project } = h().state();
+			if (!project.gesture && project.name !== null && project.fileAccess) {
+				if (!project.hasFile) fail("TARGET_NOT_READY", "Not saved: this project has no file this session, and only the user's click can open the file picker to choose one.");
+				if (!(await h().projectFileGranted())) fail("TARGET_NOT_READY", "Not saved: the browser needs the user's click to re-grant access to the project file. Ask them to press Save Project.");
+			}
+			const saved = await h().saveProject(false);
+			if (saved?.naming) fail("TARGET_NOT_READY", "Not saved: the project has no name yet. The Save dialog is open for the user to name it and pick its file.");
+			if (saved?.cancelled) fail("TARGET_NOT_READY", "Not saved: the user closed the file picker.");
+			if (!saved?.saved) fail("TARGET_NOT_READY", saved?.failure === "missing-resources" ? "Not saved: some of the project's assets or motions are missing; the editor's save panel lists them."
+				: saved?.failure === "resources-too-large" ? "Not saved: the project's embedded resources are too large; the editor's save panel explains."
+					: "Not saved: writing the project file failed; the editor showed the error.");
+			return { affectedIds: [], output: { fileName: saved.fileName }, summary: saved.downloaded
+				? `This browser has no file access, so the project ${saved.name} was downloaded as ${saved.fileName}.`
+				: `Saved the project ${saved.name} to ${saved.fileName}.` };
+		} });
+	return registry;
+}
+
 // App-owned adapter: the merged command/candidate modules remain the only
 // planners and validators. Ports below publish through the native editor stores.
 export function createStudioAppBinding(ports) {
@@ -660,7 +961,7 @@ export function createStudioAppBinding(ports) {
 			journal = createStudioCommandJournal({ host, isRetained: receipt => ports.isRetained(receipt) });
 			commands = createStudioCommands({ read: readCommand, guard, bounds: ports.bounds, commit: ports.commit, poses: ports.poses, journal });
 			motion = createStudioMotionCandidates({ readTarget, readEnvironment, journal,
-				commit: commitMotion, loadArtifact: ports.loadArtifact, poseCast: ports.poseCast });
+				commit: commitMotion, loadArtifact, poseCast: ports.poseCast });
 		}
 		const characters = raw.characters.map(character => {
 			const target = raw.targets.get(character.id);
@@ -724,28 +1025,77 @@ export function createStudioAppBinding(ports) {
 		return [...s.characters.map(c => {
 			const t = s.targets.get(c.id);
 			return { id: c.id, kind: "character", token: tokens.get(c.id).token, name: c.subject || c.id,
-				position: { x: c.x, y: c.y ?? 0, z: c.z }, yawDeg: c.rot ?? 0, scale: c.scale ?? 1,
+				position: { x: c.x, y: c.y ?? 0, z: c.z }, yawDeg: c.rot ?? 0, scale: c.scale ?? 1, tint: c.tint ?? null, modelId: c.model ?? null,
 				motion: { takeId: t?.motion?.studioTakeId ?? null, frames: t?.motion?.frames ?? 0,
 					ikKeyCount: t?.ikState?.keys.size ?? 0, promptBlockCount: c.layer?.promptClips?.length ?? 0 },
 				capabilities: { rigReady: Boolean(t?.rig), ik: Boolean(t?.rig?.userData?.poseBind), measuredFeet: false } };
 		}), ...s.objects.map(o => ({ id: o.id, kind: "object", token: tokens.get(o.id).token, name: o.name || o.id,
 			position: { x: o.x, y: o.y ?? 0, z: o.z }, yawDeg: o.rot ?? 0,
 			rotationDeg: { x: o.rotX ?? 0, y: o.rot ?? 0, z: o.rotZ ?? 0 }, scale: { x: o.scaleX, y: o.scaleY, z: o.scaleZ },
-			renderer: o.renderer, parentId: o.parent ?? null, attachment: o.attach ?? null, pathPointCount: o.path?.points.length ?? 0 }))];
+			renderer: o.renderer, color: o.color ?? null, ...(o.assetId ? { assetId: o.assetId } : {}),
+			parentId: o.parent ?? null, attachment: o.attach ?? null, pathPointCount: o.path?.points.length ?? 0 }))];
+	}
+	const frameRange = row => ({ startFrame: row.startFrame, endFrameExclusive: row.endFrame + 1 });
+	// Scope-specific inspection: each scope answers with the authored detail the
+	// compact context only counts, in the shapes patch_elements writes back.
+	const inspectScopes = {
+		scene: s => ({
+			stage: { environment: s.stage.environment ?? null, style: s.stage.style ?? null, hasEnvironmentImage: Boolean(s.stage.environmentImage),
+				hasEnvSheet: s.stage.hasEnvSheet === true, keyLight: { ...s.stage.keyLight },
+				camera: { presetId: s.stage.cameraPresetId ?? null, aspect: s.stage.shotAspect, sensorId: s.stage.sensorId } },
+			counts: { characters: s.characters.length, objects: s.objects.length, shots: s.shots.length, frames: s.frameCount, assets: assetList(s).length },
+		}),
+		shot: (s, wanted) => {
+			const shots = s.shots.filter(wanted).map(row => ({ id: row.id, name: row.name, range: frameRange(row), mode: row.camera?.mode ?? "keys",
+				cameraKeys: row.cameraKeys.map(({ frame, framing }) => ({ frame, framing: { pos: { ...framing.pos }, yaw: framing.yaw, pitch: framing.pitch, fovDeg: framing.fovDeg } })),
+				rail: row.camera?.cameraRail?.map(({ x, z }) => ({ x, z })) ?? null }));
+			return { shots, total: shots.length };
+		},
+		motion: (s, wanted) => {
+			const characters = s.characters.map(c => ({ ...c, name: c.subject || c.id })).filter(wanted).map(c => {
+				const t = s.targets.get(c.id);
+				return { id: c.id, name: c.name, takeId: t?.motion?.studioTakeId ?? null, frames: t?.motion?.frames ?? 0,
+					promptBlocks: (c.layer?.promptClips ?? []).map(({ startFrame, endFrame, text }) => ({ startFrame, endFrame, text })),
+					waypoints: (c.layer?.waypoints ?? []).map(p => ({ frame: p.frame, position: { x: p.x, y: p.y ?? 0, z: p.z } })),
+					ikKeyFrames: [...(t?.ikState?.keys?.keys() ?? [])].sort((a, b) => a - b) };
+			});
+			return { characters, total: characters.length };
+		},
+		selection: s => {
+			const id = ["object", "character", "rig"].includes(s.selection?.kind) ? s.selection.id : null;
+			const row = id ? entityProjection(s).find(entry => entry.id === id) : null;
+			const o = row?.kind === "object" ? s.objects.find(entry => entry.id === id) : null, c = row?.kind === "character" ? s.characters.find(entry => entry.id === id) : null;
+			const entity = !row ? null : o ? { ...row, hidden: o.hidden === true, path: o.path ? structuredClone(o.path) : null }
+				: { ...row, hidden: c.hidden === true, poseId: c.pose?.id ?? null };
+			return { selection: s.selection ?? null, entity };
+		},
+	};
+	function assetList(s) {
+		const catalogue = studioObjectCatalogue().objects.map(({ kind }) => {
+			const entry = OBJECT_LIBRARY.find(row => row.kind === kind);
+			return { kind, name: entry?.label ?? kind, type: entry?.group === "Primitives" ? "primitive" : "set-piece" };
+		});
+		const imported = new Map();
+		for (const o of s.objects) {
+			const assetId = o.renderer === CUTOUT_KIND ? o.sourceAssetId || o.assetId : o.renderer === MESH_KIND ? o.assetId : null;
+			if (assetId && !imported.has(assetId)) imported.set(assetId, { id: assetId, name: o.name || assetId, type: o.renderer === CUTOUT_KIND ? "image" : "mesh" });
+		}
+		return [...catalogue, ...imported.values()];
 	}
 	function context() {
 		const s = refresh(), entities = entityProjection(s);
 		const shot = s.shots.find(row => row.id === s.selectedShotId) ?? shotAtFrame(s.shots, s.view.frame);
-		const range = row => ({ startFrame: row.startFrame, endFrameExclusive: row.endFrame + 1 });
+		const range = frameRange;
 		return buildStudioContext({ schema: "studio-context-v1", host: { surface: "studio", ...s.host, workspaceHandle: s.workspaceHandle },
 			revision: { scene: s.revision, physics: s.physicsRevision, view: s.viewRevision },
 			units: { distance: "m", angle: "deg", up: "+Y", yawZero: "+Z", yawPositiveToward: "+X", pivot: "base", fps: 24, rangeEnd: "exclusive" },
 			scene: { name: s.sceneName, aspect: s.aspect, floorY: 0, frameCount: s.frameCount, objectCount: s.objects.length, characterCount: s.characters.length },
 			selection: s.selection, activeCharacterId: s.activeCharacterId, view: s.view,
 			shot: shot ? { id: shot.id, name: shot.name, range: range(shot), mode: shot.camera?.mode ?? "keys" } : null, camera: s.camera,
-			entities, entityPage: { returned: Math.min(24, entities.length), total: entities.length, truncated: entities.length > 24, nextCursor: entities.length > 24 ? "pending" : null },
+			// buildStudioContext selects the detailed rows and writes the real page.
+			entities, entityPage: { returned: 0, total: 0, truncated: false, nextCursor: null },
 			shots: s.shots.map(row => ({ id: row.id, name: row.name, range: range(row), keyCount: row.cameraKeys.length })), shotsTruncated: false,
-			assets: [], recentReceipts: [...receipts.values()].filter(r => r.ok).reverse().slice(0, 3).map(r => ({ id: r.receiptId, summary: r.status, canUndoDirect: ports.canUndo(r) })),
+			assets: assetList(s), recentReceipts: [...receipts.values()].filter(r => r.ok).reverse().slice(0, 3).map(r => ({ id: r.receiptId, summary: r.status, canUndoDirect: ports.canUndo(r) })),
 			jobs: [...jobs.values()].slice(-8), capabilities: { profile: "studio-slice-1", tools: STUDIO_TOOL_FAMILIES,
 				rigReady: Boolean(s.targets.get(s.activeCharacterId)?.rig), cameraReady: Boolean(s.camera), bridgeReady: s.bridgeReady } });
 	}
@@ -760,6 +1110,18 @@ export function createStudioAppBinding(ports) {
 			cast: s.characters.map(character => ({ character, ...s.targets.get(character.id) })) };
 	}
 	function remember(receipt) { if (receipt?.receiptId) receipts.set(receipt.receiptId, receipt); return receipt; }
+	// A candidate keeps the URL its artifact came from and the content id of its
+	// bytes: the install persists both in the motionRef, so a reload restores the
+	// take from the motion store even after the bridge has forgotten the run.
+	// The bytes come from the pinned absolute URL, but the take stores the bridge
+	// path a UI take stores: refine requests send it back as sourceMotion, and the
+	// bridge accepts only /ardy/motions/<id> there.
+	async function loadArtifact(artifact, options) {
+		const loaded = await ports.loadArtifact(artifact, options);
+		const path = new URL(artifact.url, "http://localhost").pathname;
+		const url = /^\/ardy\/(motions\/[0-9]+-[0-9a-f]{6}|assembled\/[A-Za-z0-9._-]+\.npz)$/.test(path) ? path : artifact.url;
+		return { ...loaded, url, ...(loaded.sourceBytes ? { motionId: await sha256Hex(loaded.sourceBytes) } : {}) };
+	}
 	function commitMotion(payload) {
 		const s = refresh(), beforeTake = s.targets.get(payload.binding.characterId)?.motion;
 		const takeId = crypto.randomUUID(), historyEntryId = crypto.randomUUID();
@@ -778,9 +1140,13 @@ export function createStudioAppBinding(ports) {
 		return remember(journal.record(validateReceipt(actual)));
 	}
 	function rejection(request, error, phase = "admission") {
+		// The refusal's own words are what the model acts on; the receipt keeps
+		// the first 120 characters the protocol carries.
+		const words = [...String(error?.message ?? "").trim()];
 		return validateReceipt({ ok: false, commandId: request.commandId, host: request.host ?? request.binding?.host,
 			code: error.code ?? "INVALID_ARGUMENT", phase, affectedIds: [], expectedTargets: [], currentTargets: [], mutated: false,
-			preserved: { authoredState: "unchanged" }, recovery: { action: "inspect", retryAllowed: false } });
+			preserved: { authoredState: "unchanged" }, recovery: { action: "inspect", retryAllowed: false },
+			...(words.length ? { message: words.length > 120 ? `${words.slice(0, 119).join("")}…` : words.join("") } : {}) });
 	}
 	function admit(request) {
 		const s = refresh();
@@ -788,6 +1154,67 @@ export function createStudioAppBinding(ports) {
 		if (request.expectedRevision !== s.revision) fail("STALE_SCENE", "Authored state changed; obtain fresh intent.");
 		if (s.busy) fail("TARGET_BUSY", "Finish the current editor gesture first.");
 		return s;
+	}
+	/** Actual state of one action target after it ran. */
+	function actionReadback(id, s) {
+		const shot = s.shots.find(row => row.id === id);
+		if (shot) return { name: shot.name || shot.id, range: { startFrame: shot.startFrame, endFrameExclusive: shot.endFrame + 1 } };
+		const entity = s.objects.find(row => row.id === id) ?? s.characters.find(row => row.id === id);
+		if (entity) return { name: entity.name || entity.subject || entity.id, position: { x: entity.x, y: entity.y ?? 0, z: entity.z } };
+		return { removed: true };
+	}
+	/** One registered Studio action, run for the agent through the same
+	 * registry the UI controls call. A mutation is bound to the native history
+	 * entry it pushed, so its receipt is an ordinary journal receipt that
+	 * undo_edit reverts; a job answers "started" and lands later. */
+	function runAction(request, args, s) {
+		const registry = ports.actions?.();
+		if (!registry) fail("CAPABILITY_MISSING", "This editor registers no Studio actions.");
+		const entry = registry.get(args.action);
+		const base = { commandId: request.commandId, receiptId: crypto.randomUUID(), host: s.host, action: entry.id, checks: { coverage: `studio-action:${entry.id}` }, warnings: [] };
+		if (entry.kind === "job" || entry.kind === "document") {
+			// Outside the undo history. A job that runs to its end (an export) and
+			// document work answer when they settle, with any output; a job that
+			// only starts (a generation) answers at once. When the open scene moved,
+			// the answer names the new host later commands are admitted at.
+			const answer = (result, status) => {
+				const { host } = refresh();
+				return { ok: true, commandId: request.commandId, action: entry.id, kind: entry.kind, status, affectedIds: result.affectedIds, summary: result.summary,
+					...(result.output === undefined ? {} : { output: result.output }), ...(same(host, s.host) ? {} : { host }) };
+			};
+			const result = registry.run(entry.id, args.args);
+			return typeof result?.then === "function" ? result.then(settled => answer(settled, "completed")) : answer(result, entry.kind === "job" ? "started" : "completed");
+		}
+		if (entry.kind === "transient") {
+			const result = registry.run(entry.id, args.args), after = refresh();
+			return journal.record(validateReceipt({ ...base, ok: true, status: "transient", authored: false, summary: result.summary,
+				revision: { before: s.revision, after: s.revision }, view: { before: s.viewRevision, after: after.viewRevision }, affectedIds: [s.host.sceneId],
+				delta: [{ id: s.host.sceneId, after: { selection: after.selection, activeCharacterId: after.activeCharacterId, shotId: after.selectedShotId, view: after.view } }], undo: null }));
+		}
+		// A motion-domain entry restores one character's layer: the one it names.
+		const recorded = ports.recordAction(entry.undoDomain, () => registry.run(entry.id, args.args), args.args?.characterId ?? null);
+		// An asynchronous mutation (an import) is bound once it has landed.
+		return typeof recorded?.then === "function" ? recorded.then(landed => mutationReceipt(landed, entry, base, request, s)) : mutationReceipt(recorded, entry, base, request, s);
+	}
+	/** The journal receipt of one registered mutation, from the one history
+	 * entry it pushed and the state it left. */
+	function mutationReceipt({ result, historyEntryId }, entry, base, request, s) {
+		const after = refresh(), ids = result.affectedIds;
+		if (after.revision === s.revision) {
+			return remember(journal.record(validateReceipt({ ...base, ok: true, status: "noop", authored: false, mutated: false, summary: result.summary,
+				revision: { before: s.revision, after: s.revision }, affectedIds: [], delta: [], undo: null })));
+		}
+		if (!historyEntryId || !ids.length || after.revision !== s.revision + 1) {
+			// The document changed without one attributable history entry: say so
+			// instead of pretending nothing happened.
+			return journal.record(validateReceipt({ ok: false, commandId: request.commandId, host: s.host, code: "UNCERTAIN_APPLY", phase: "commit",
+				affectedIds: ids.slice(0, 100), expectedTargets: [], currentTargets: [], mutated: true, preserved: { authoredState: "changed" },
+				recovery: { action: "inspect", retryAllowed: false }, message: `${entry.id} changed the scene without one undoable entry.` }));
+		}
+		return remember(journal.record(validateReceipt({ ...base, ok: true, status: "applied", authored: true, mutated: true, summary: result.summary,
+			revision: { before: s.revision, after: after.revision }, affectedIds: ids,
+			delta: ids.slice(0, 8).map(id => ({ id, after: actionReadback(id, after) })),
+			undo: { historyEntryId, entries: 1, canUndoDirect: true }, ...(ids.length > 8 ? { detailCursor: request.commandId } : {}) })));
 	}
 	function execute(request) {
 		refresh();
@@ -801,7 +1228,19 @@ export function createStudioAppBinding(ports) {
 		if (!same(request.host, owner)) return rejection(request, new StudioProtocolError("STALE_SCENE", "Document changed."));
 		try {
 			if (!journal.begin(request.commandId, signature)) return journal.get(request.commandId);
-			const { args } = validateStudioCommand({ name: request.name, args: request.args }), s = admit(request);
+			// Verification only observes: the document identity (checked above) is
+			// its whole fence, so a later edit never refuses it.
+			const { args } = validateStudioCommand({ name: request.name, args: request.args }), s = request.name === "verify_result" ? refresh() : admit(request);
+			if (request.name === "run_action") {
+				const outcome = runAction(request, args, s);
+				if (typeof outcome?.then !== "function") return outcome;
+				// A long-running action refuses after this frame: answer the same
+				// rejection receipt, journaled while the document is still this one.
+				return outcome.catch(error => {
+					const receipt = rejection(request, error);
+					return same(receipt.host, journal.host) ? journal.record(receipt) : receipt;
+				});
+			}
 			if (request.name === "operate_studio") {
 				ports.operate(args, s); const after = refresh();
 				return journal.record(validateReceipt({ ok: true, status: "transient", authored: false, commandId: request.commandId,
@@ -828,9 +1267,11 @@ export function createStudioAppBinding(ports) {
 			if (request.name === "verify_result") {
 				const receipt = args.receiptId ? receipts.get(args.receiptId) : null;
 				if (args.receiptId && !receipt) fail("STALE_TARGET", "Receipt is not retained in this document.");
-				if (receipt && receipt.revision.after !== s.revision) fail("STALE_SCENE", "Receipt evidence is no longer current.");
 				for (const id of args.targets ?? []) guard(id);
-				const result = { receiptId: receipt?.receiptId ?? null, revision: s.revision, checks: receipt?.checks ?? { coverage: "unavailable" },
+				// A receipt edited over since is still evidence of what it did: return it
+				// marked stale with the revision it describes beside the current one.
+				const evidenceRevision = receipt ? receipt.revision.after : s.revision;
+				const result = { receiptId: receipt?.receiptId ?? null, revision: s.revision, evidenceRevision, stale: evidenceRevision !== s.revision, checks: receipt?.checks ?? { coverage: "unavailable" },
 					verification: receipt?.verification ?? null, semanticStatus: "unavailable", visualRefs: [],
 					unsupportedChecks: args.checks.filter(check => check === "motion" ? !receipt?.verification : !receipt?.checks) };
 				if (args.visual !== "none") {
@@ -846,11 +1287,19 @@ export function createStudioAppBinding(ports) {
 		read_studio_context(request) { const c = context(); if (!same(validateStudioIdentity(request.host), owner)) fail("STALE_SCENE", "This is not the requested document."); return c; },
 		inspect_studio(args) {
 			const command = validateStudioCommand({ name: "inspect_studio", args }); const c = context();
-			if (command.args.scope === "catalogue") return studioObjectCatalogue();
+			// Every scope carries the context: its revision is what the agent's next
+			// command is admitted at, so a scope without it leaves that admission stale.
+			if (command.args.scope === "catalogue") return { context: c, ...studioObjectCatalogue() };
+			// Discovery for run_action: every registered action, available ones with
+			// their description and input schema, unavailable ones with the reason.
+			if (command.args.scope === "actions") return { context: c, actions: ports.actions?.()?.list() ?? [] };
+			const s = refresh();
+			const wanted = row => (!args.ids || args.ids.includes(row.id)) && (!args.query || Boolean(row.name?.includes(args.query)));
+			if (inspectScopes[command.args.scope]) return { context: c, scope: command.args.scope, ...inspectScopes[command.args.scope](s, wanted) };
 			// Build each page from the same complete authoritative projection; never
 			// page by slicing an already-truncated Send context.
-			const s = refresh(), all = entityProjection(s);
-			const filtered = all.filter(row => (!args.ids || args.ids.includes(row.id)) && (!args.query || row.name?.includes(args.query)));
+			// Stable id order, so an offset cursor survives unrelated edits.
+			const filtered = entityProjection(s).filter(wanted).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 			const offset = args.cursor ? validateStudioCursor(args.cursor, c) : 0, limit = command.args.limit;
 			return { context: c, entities: filtered.slice(offset, offset + limit), total: filtered.length,
 				nextCursor: offset + limit < filtered.length ? studioEntityCursor(c, offset + limit) : null };
@@ -863,6 +1312,7 @@ export function createStudioAppBinding(ports) {
 		generate_motion: () => fail("CAPABILITY_MISSING", "Use the server-owned Studio generation route."),
 		verify_result: request => execute({ ...request, name: "verify_result" }),
 		undo_edit: request => execute({ ...request, name: "undo_edit" }),
+		run_action: request => execute({ ...request, name: "run_action" }),
 		resolve_studio_image(request) {
 			refresh(); const image = images.get(request.imageId);
 			if (!image || (request.receiptId && request.receiptId !== image.receiptId) || (request.revision !== undefined && request.revision !== image.revision)) fail("STALE_TARGET", "Image observation does not belong to this receipt.");
@@ -874,8 +1324,16 @@ export function createStudioAppBinding(ports) {
 		handlers[name] = request => {
 			refresh(); const currentMotion = motion, currentJournal = journal;
 			const run = () => currentMotion[name](request);
+			// The job list is the model's view of each candidate, so it names the
+			// step in flight now. A verified candidate goes straight to commit; an
+			// unverified one waits on repair, the install policy or the user's accept
+			// (review_required until that next command arrives).
+			const job = jobs.get(request.commandId);
+			if (job && name === "verify_motion_candidate") jobs.set(request.commandId, { ...job, state: "verifying" });
+			if (job && name === "repair_motion_candidate") jobs.set(request.commandId, { ...job, state: "repairing" });
 			const finish = result => {
 				if (name === "prepare_motion_install" && result?.candidateId) jobs.set(request.commandId, { id: request.jobId, characterId: request.binding.characterId, state: "preparing" });
+				if (name === "verify_motion_candidate" && result?.verificationId && jobs.has(request.commandId)) jobs.set(request.commandId, { ...jobs.get(request.commandId), state: result.status === "verified" ? "committing" : "review_required" });
 				if (result?.ok === false || ["commit_motion_candidate", "discard_motion_candidate", "cancel_motion_install"].includes(name)) jobs.delete(request.commandId);
 				return remember(result);
 			};
@@ -1365,8 +1823,7 @@ export default function App() {
 			// flicker-toggles the inset.
 			if (!moved && ev.detail <= 1) {
 				insetToggledAtRef.current = Date.now();
-				if (workspaceLayout.insetCollapsed) expandInset();
-				else setWorkspaceLayout((current) => ({ ...current, insetCollapsed: true }));
+				runStudioAction("view.setInset", { collapsed: !workspaceLayout.insetCollapsed });
 			}
 		};
 		window.addEventListener("pointermove", onMove);
@@ -1386,6 +1843,17 @@ export default function App() {
 			setInsetPos((pos) => (pos ? { x: Math.min(pos.x, maxX), y: Math.min(pos.y, maxY) } : pos));
 		}
 		setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
+	}
+	/** Fold or unfold the Top-View inset: the Top button, the inset's own
+	 * toggle, its tag click and run_action view.setInset. */
+	function setInsetCollapsed(collapsed) {
+		if (collapsed) setWorkspaceLayout((current) => ({ ...current, insetCollapsed: true }));
+		else expandInset();
+	}
+	/** The View menu's part colours: "off", "flat" or "shaded". */
+	function choosePartColours(mode) {
+		setPartColoursEnabled(mode !== "off");
+		if (mode !== "off") setPartColoursMode(mode);
 	}
 
 	function beginInsetResize(e) {
@@ -2379,6 +2847,79 @@ export default function App() {
 		markSemanticEdit("pose", before, ikStateRef.current.keys);
 		return result;
 	}
+	/* One IK-key core for every cast member, shared by the Key button, a pose
+	 * drag's bake, the Full-Body lane's delete and run_action. The loaded
+	 * layer's keys live on the live IK state, every other character's on its
+	 * stored one (created on its first key). */
+	function ikStateFor(characterId) {
+		if (characterId === loadedLayerCharRef.current) return ikStateRef.current;
+		let state = ikStatesRef.current.get(characterId);
+		if (!state) ikStatesRef.current.set(characterId, (state = createIkState()));
+		return state;
+	}
+	function editCharacterIkKeys(characterId, mutate) {
+		const state = ikStateFor(characterId);
+		const before = snapshotIkKeys(state);
+		recordCharacterUndo();
+		mutate(state);
+		markSemanticEdit("pose", before, state.keys);
+		setIkTick((value) => value + 1);
+	}
+	/** Write one key from its JSON form (studio-actions.js character.setIkKey):
+	 * each named track replaces its key at `frame` and joins the tracked set. */
+	function setCharacterIkKey(characterId, frame, tracks) {
+		castMemberOf(characterId);
+		const quaternion = (q) => new THREE.Quaternion(q.x, q.y, q.z, q.w).normalize();
+		const vector = (p) => new THREE.Vector3(p.x, p.y, p.z);
+		editCharacterIkKeys(characterId, (state) => {
+			let entry = state.keys.get(frame);
+			if (!entry) state.keys.set(frame, (entry = new Map()));
+			for (const [track, key] of Object.entries(tracks)) {
+				entry.set(track, {
+					q: key.q?.map(quaternion) ?? null,
+					p: key.p ? vector(key.p) : null,
+					...(key.baseQ ? { baseQ: key.baseQ.map(quaternion) } : {}),
+					...(key.basePos ? { basePos: vector(key.basePos) } : {}),
+					...(key.chainP ? { chainP: key.chainP.map(vector) } : {}),
+					...(key.keepTranslations ? { keepTranslations: true } : {}),
+				});
+				ikTouch(state, track);
+			}
+		});
+	}
+	function removeCharacterIkKey(characterId, frame) {
+		const character = castMemberOf(characterId);
+		const state = ikStateFor(characterId);
+		if (!state.keys.has(frame)) {
+			const keyed = ikKeyframes(state);
+			throw new StudioProtocolError("STALE_TARGET", `${character.subject || character.id} has no IK key at frame ${frame}${keyed.length ? `; keyed frames: ${keyed.join(", ")}` : ""}.`);
+		}
+		editCharacterIkKeys(characterId, (target) => ikRemoveKeyframe(target, frame));
+	}
+	function clearCharacterIkKeys(characterId) {
+		castMemberOf(characterId);
+		const count = ikStateFor(characterId).keys.size;
+		if (!count) return 0;
+		editCharacterIkKeys(characterId, (target) => {
+			target.keys.clear();
+			target.tracked.clear();
+			target.plants.clear();
+		});
+		return count;
+	}
+	/** A baked key entry in the JSON form character.setIkKey takes. */
+	function ikKeyJson(entry) {
+		const quaternion = (q) => ({ x: q.x, y: q.y, z: q.z, w: q.w });
+		const vector = (p) => ({ x: p.x, y: p.y, z: p.z });
+		return Object.fromEntries([...entry].map(([track, key]) => [track, {
+			...(key.q ? { q: key.q.map(quaternion) } : {}),
+			...(key.p ? { p: vector(key.p) } : {}),
+			...(key.baseQ ? { baseQ: key.baseQ.map(quaternion) } : {}),
+			...(key.basePos ? { basePos: vector(key.basePos) } : {}),
+			...(key.chainP ? { chainP: key.chainP.map(vector) } : {}),
+			...(key.keepTranslations ? { keepTranslations: true } : {}),
+		}]));
+	}
 	function recordCharacterUndo() {
 		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast() });
 		charHistoryRef.current.future = [];
@@ -2639,7 +3180,7 @@ export default function App() {
 			}
 			if (event.code === "KeyD" && (event.ctrlKey || event.metaKey) && selectedSceneObjectId) {
 				event.preventDefault();
-				duplicateSelectedSceneObject();
+				runStudioAction("object.duplicate");
 				return;
 			}
 			if (event.key === "Escape" && selectedSceneObjectId) {
@@ -3207,26 +3748,43 @@ export default function App() {
 				return;
 			}
 			const attach = targetRowId === "props" ? null : attachTargetForRow(targetRowId);
-			// Where the prop is on screen right now, expressed in the frame it is
-			// joining (or left as world when it joins none). ONE conversion, whether
-			// the prop is coming from the world or from another frame.
-			const shown = animatedSceneObjects.find((entry) => entry.id === id) ?? null;
-			const placement = shown ? attachPlacementPatch(sceneObjectWorldMatrix(shown), attach, attachFrameRef.current) : null;
-			// A placement that could not be computed refuses the DROP, not just the
-			// numbers: attaching without converting would silently reinterpret the
-			// old frame's numbers in the new frame, which is the jump itself.
-			if (!placement) return;
-			// ONE atomic: a single undo puts back both the field and the numbers.
-			store.applyAtomic((objects) => {
-				let next = setSceneObjectAttach(objects, id, attach);
-				// Dropping on Props means "world-anchored again", which drops the
-				// grouping parent too — attach and parent are the same slot.
-				if (attach === null) next = setSceneObjectParent(next, id, null);
-				if (next === objects) return objects;
-				return placeSceneObject(next, id, placement);
-			});
+			runStudioAction(attach ? "object.attach" : "object.detach", attach
+				? { objectId: id, characterId: attach.characterId, ...(attach.bone ? { bone: attach.bone } : {}) }
+				: { objectId: id });
 		},
 	};
+
+	/** Carry a prop on a character's root (`bone` null) or one of its bones, or
+	 * put it back in the world with `attach` null — the Hierarchy's character,
+	 * bone and Props drops, the Inspector's Detach and run_action
+	 * object.attach/detach. */
+	function attachSceneObject(id, attach) {
+		const object = storeRef.current.objects.find((entry) => entry.id === id);
+		if (!object) throw new StudioProtocolError("STALE_TARGET", `Object ${id} is not in this scene.`);
+		if (attach) castMemberOf(attach.characterId);
+		// Where the prop is on screen right now, expressed in the frame it is
+		// joining (or left as world when it joins none). ONE conversion, whether
+		// the prop is coming from the world or from another frame.
+		const shown = animatedSceneObjects.find((entry) => entry.id === id) ?? object;
+		const placement = attachPlacementPatch(sceneObjectWorldMatrix(shown), attach, attachFrameRef.current);
+		// A placement that could not be computed refuses the attachment, not just
+		// the numbers: attaching without converting would silently reinterpret the
+		// old frame's numbers in the new frame, which is the jump itself.
+		if (!placement) {
+			throw new StudioProtocolError("TARGET_NOT_READY", attach
+				? `The ${attach.bone ?? "root"} frame of character ${attach.characterId} is not on stage (its rig has not loaded).`
+				: `${object.name || id} is not on stage, so where it is now cannot be read.`);
+		}
+		// ONE atomic: a single undo puts back both the field and the numbers.
+		storeRef.current.applyAtomic((objects) => {
+			let next = setSceneObjectAttach(objects, id, attach);
+			// Back to the world means "world-anchored again", which drops the
+			// grouping parent too — attach and parent are the same slot.
+			if (attach === null) next = setSceneObjectParent(next, id, null);
+			if (next === objects) return objects;
+			return placeSceneObject(next, id, placement);
+		});
+	}
 
 	const activeShotIdx = shotIndexAtFrame(shots, tlFrame);
 	const activeShot = shots[activeShotIdx] ?? null;
@@ -3245,7 +3803,8 @@ export default function App() {
 		// Every camera-block commit (mode switch, rail draw, rail delete, lens
 		// patch) funnels through here, so this is where the shot snapshot goes.
 		// No shot resolved means the setShots below is a no-op — record nothing.
-		if (!shots.some((shot) => shot.id === shotId)) return;
+		// The live read model, so a run_action edit sees the shots of the same tick.
+		if (!liveStateRef.current.shots.some((shot) => shot.id === shotId)) return;
 		// A framing capture in the same gesture (rail draw toggle, Follow switch
 		// re-measure) already snapshotted the pre-gesture shots, so this commit
 		// joins that entry instead of pushing a second one for one click.
@@ -3363,13 +3922,29 @@ export default function App() {
 		// a second entry for one edit.
 		if (kind === "prompt-text") recordSessionUndo(promptTextSessionRef, `prompt-text:${id}`);
 	}
-	function changeCameraRail(points) {
-		if (Array.isArray(points) && points.length >= 2) window.dispatchEvent(new CustomEvent("cozyclay:playground-signal", { detail: { kind: "rail" } }));
+	/* One camera-rail core for every shot, shared by the Top-View rail stroke,
+	 * the Delete rail button and run_action. */
+	function setShotCameraRail(shotId, points) {
+		const shot = liveStateRef.current.shots.find((entry) => entry.id === shotId);
+		if (!shot) throw new StudioProtocolError("STALE_TARGET", `Shot ${shotId} is not in this scene.`);
+		const camera = createCameraBlock(shot.camera);
+		window.dispatchEvent(new CustomEvent("cozyclay:playground-signal", { detail: { kind: "rail" } }));
 		changeActiveCamera({
-			cameraRail: points,
-			railFollow: points ? railFollowForNewGeometry(activeCamera.railFollow, activeShotDuration) : null,
-			mode: points ? "rail" : activeCamera.mode === "rail" ? "follow" : activeCamera.mode,
-		});
+			cameraRail: points.map(({ x, z }) => ({ x, z })),
+			railFollow: railFollowForNewGeometry(camera.railFollow, shot.endFrame - shot.startFrame + 1),
+			mode: "rail",
+		}, shotId);
+	}
+	function clearShotCameraRail(shotId) {
+		const shot = liveStateRef.current.shots.find((entry) => entry.id === shotId);
+		if (!shot) throw new StudioProtocolError("STALE_TARGET", `Shot ${shotId} is not in this scene.`);
+		// The camera block being edited: this shot's, whichever shot is active.
+		const activeCamera = createCameraBlock(shot.camera);
+		if (!activeCamera.cameraRail) throw new StudioProtocolError("TARGET_NOT_READY", `${shot.name || shotId} has no camera rail.`);
+		changeActiveCamera(removeCameraRail(activeCamera), shotId);
+	}
+	function changeCameraRail(points) {
+		if (activeShot) runStudioAction("shot.setCameraRail", { shotId: activeShot.id, points: points.map(({ x, z }) => ({ x, z })) });
 	}
 	function toggleCameraRailDraw() {
 		if (!activeShot || waypointMode) return;
@@ -3392,9 +3967,9 @@ export default function App() {
 		}
 	}
 	function deleteCameraRail() {
-		if (!cameraRail) return;
+		if (!cameraRail || !activeShot) return;
 		setRailDraw(false);
-		changeActiveCamera(removeCameraRail(activeCamera));
+		if (!runStudioAction("shot.clearCameraRail", { shotId: activeShot.id })) return;
 		setToast(ko("Camera rail deleted — Follow keeps the current distance", "카메라 레일 삭제됨 — 팔로우가 현재 거리를 유지합니다"));
 	}
 	function previewCameraShot(shotId) {
@@ -3773,6 +4348,11 @@ export default function App() {
 	const studioDocumentEpochRef = useRef(crypto.randomUUID());
 	const studioSceneEpochRef = useRef(crypto.randomUUID());
 	const studioPortsRef = useRef(null);
+	// The one Studio action registry (src/studio-actions.js) and the latest
+	// render's handlers behind it; the UI controls and run_action share both.
+	const studioActionsRef = useRef(null);
+	const studioActionHandlersRef = useRef(null);
+	const renderWaitersRef = useRef([]);
 	const studioHistoryRef = useRef(new Map());
 	const studioIkStampsRef = useRef(new Map());
 	const [studioAgentError, setStudioAgentError] = useState(null);
@@ -3969,13 +4549,17 @@ export default function App() {
 		}
 	}
 
+	/** Save the project; the answer says what happened, for project.save:
+	 * { saved, name, fileName, downloaded } or { saved: false, naming |
+	 * cancelled | failure }. Every outcome is also shown to the user here. */
 	async function saveProject(saveAs = false, explicitName = null) {
 		if (projectName === null && explicitName === null) {
 			setProjectNameDialog({ kind: "save", initialName: "My Project" });
-			return;
+			return { saved: false, naming: true };
 		}
 		setProjectSaveState("saving");
 		const name = (explicitName ?? projectName ?? "My Project").trim() || "My Project";
+		let downloaded = false;
 		try {
 			const serialized = await collectProjectSerialized(name);
 			let handle = projectHandleRef.current;
@@ -3987,6 +4571,7 @@ export default function App() {
 					await rememberRecentProject(handle, name);
 				} else {
 					downloadProjectFallback(serialized, name);
+					downloaded = true;
 				}
 			} else {
 				await writeProjectFile(handle, serialized);
@@ -3999,15 +4584,17 @@ export default function App() {
 				shot_count_bucket: bucketCount(shots.length),
 			});
 			setToast(isKo ? `프로젝트 저장됨: ${name}${PROJECT_EXTENSION}` : `Project saved: ${name}${PROJECT_EXTENSION}`);
+			return { saved: true, name, fileName: downloaded ? `${name}${PROJECT_EXTENSION}` : projectHandleRef.current?.name ?? `${name}${PROJECT_EXTENSION}`, downloaded };
 		} catch (err) {
 			if (err?.name === "AbortError") {
 				setProjectSaveState(projectDirty ? "dirty" : "saved");
-				return; // user closed the picker
+				return { saved: false, cancelled: true }; // user closed the picker
 			}
 			setProjectSaveState("error");
 			if (err?.code === "missing-resources") setSaveBlockedReasons([{ code: err.code, items: err.items }]);
 			else if (err?.code === "resources-too-large") setSaveBlockedReasons([err]);
 			else setToast(ko("Could not save the project", "프로젝트를 저장하지 못했어요"));
+			return { saved: false, failure: err?.code ?? err?.name ?? "error" };
 		}
 	}
 
@@ -4359,7 +4946,15 @@ export default function App() {
 		track("scene:loaded", { scene_source: "local" });
 	}
 
-	function selectSceneDocument(sceneId) {
+	/** The scene controls' doors (the scene pill, the Hierarchy scene menu)
+	 * into the shared registry; run_action reaches the same scene actions. */
+	function selectSceneDocument(sceneId) { return runStudioAction("scene.switch", { sceneId }); }
+	function createSceneDocumentFromUi() { return runStudioAction("scene.create"); }
+	function duplicateSceneDocumentFromUi(sceneId) { return runStudioAction("scene.duplicate", { sceneId }); }
+	function renameSceneDocumentFromUi(sceneId, name) { return runStudioAction("scene.rename", { sceneId, name }); }
+	function deleteSceneDocumentFromUi(sceneId) { return runStudioAction("scene.delete", { sceneId }); }
+
+	function switchSceneDocument(sceneId) {
 		if (sceneId === activeSceneIdRef.current) return;
 		const savedScenes = snapshotActiveScene();
 		const target = savedScenes.find((scene) => scene.id === sceneId);
@@ -4368,7 +4963,7 @@ export default function App() {
 		openScene(target, savedScenes);
 	}
 
-	function createSceneDocumentFromUi() {
+	function addSceneDocument() {
 		const savedScenes = snapshotActiveScene();
 		const nextScenes = addScene(savedScenes);
 		const target = nextScenes[nextScenes.length - 1];
@@ -4377,7 +4972,7 @@ export default function App() {
 		track("scene:created", { scene_source: "ui" });
 	}
 
-	function duplicateSceneDocumentFromUi(sceneId) {
+	function duplicateSceneDocument(sceneId) {
 		const savedScenes = snapshotActiveScene();
 		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
 		if (index < 0) return;
@@ -4387,7 +4982,7 @@ export default function App() {
 		openScene(target, nextScenes);
 	}
 
-	function renameSceneDocumentFromUi(sceneId, name) {
+	function renameSceneDocument(sceneId, name) {
 		const savedScenes = snapshotActiveScene();
 		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
 		if (index < 0) return;
@@ -4397,7 +4992,7 @@ export default function App() {
 		persistScenes(nextScenes, activeSceneIdRef.current);
 	}
 
-	function deleteSceneDocumentFromUi(sceneId) {
+	function deleteSceneDocument(sceneId) {
 		const savedScenes = snapshotActiveScene();
 		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
 		if (index < 0 || savedScenes.length <= 1) return;
@@ -5725,6 +6320,7 @@ export default function App() {
 			finally { setTimeout(() => URL.revokeObjectURL(url), 10_000); }
 			setRecordedVideoName(name);
 			setToast(isKo ? `${name} 다운로드 요청 · ${result.frameCount}프레임` : `Download requested: ${name} · ${result.frameCount} frames`);
+			return { ...result, fileName: name };
 		}
 		return result;
 	}
@@ -6228,27 +6824,39 @@ export default function App() {
 		);
 	}
 
+	/** The Fal card's lock line: AI video motion is not enabled for this account. */
+	function showFalMotionLock() {
+		setFalMotion((current) => ({ ...current, error: ko("Fal 모션 생성은 QA 중 잠겨 있어요.", "Fal motion generation is locked during QA."), status: "error" }));
+	}
+
+	/** The Fal card shows every failure itself. For motion.generateFromVideo the
+	 * answer says what happened: `{ failed }` with the reason in English, or the
+	 * finished job, the footage it was ingested as (null when ingest failed) and
+	 * the account's daily generations left. */
 	async function generateFalMotion(kind = "interpolate", instructionOverride = null) {
 		if (!falMotionEnabled) {
-			setFalMotion((current) => ({ ...current, error: ko("Fal 모션 생성은 QA 중 잠겨 있어요.", "Fal motion generation is locked during QA."), status: "error" }));
-			return;
+			showFalMotionLock();
+			return { failed: "AI video motion (Fal) is not enabled for this account." };
 		}
 		let source = falMotion;
 		if (kind === "act" && !source.a) {
 			try { source = { ...source, a: captureFalStill() }; setFalMotion((current) => ({ ...current, a: source.a })); }
-			catch (error) { setFalMotion((current) => ({ ...current, error: error.message, status: "error" })); return; }
+			catch (error) {
+				setFalMotion((current) => ({ ...current, error: error.message, status: "error" }));
+				return { failed: "Could not capture the character's pose frame: the full body must be inside the shot frame, shaded part colours must be on (view.setPartColours { mode: \"shaded\" }), and the renderer and rig must be ready." };
+			}
 		}
 		if (kind === "interpolate" && (!source.a || !source.b)) {
 			setFalMotion((current) => ({ ...current, error: ko("A와 B 포즈를 먼저 캡처하세요.", "Capture both A and B poses first."), status: "error" }));
-			return;
+			return { failed: "Capture both A and B poses first." };
 		}
 		if (!source.a?.partColours || (kind === "interpolate" && !source.b?.partColours)) {
 			setFalMotion((current) => ({ ...current, error: ko("색 세그멘테이션이 포함된 음영 A/B 참조를 다시 캡처하세요.", "Recapture A/B refs with shaded body-part segmentation enabled."), status: "error" }));
-			return;
+			return { failed: "The captured pose frame has no shaded body-part segmentation; the user must recapture it in the Fal card with shaded part colours on." };
 		}
 		if (kind === "interpolate" && framingDistance(source.a.framing, source.b.framing) > 0.001) {
 			setFalMotion((current) => ({ ...current, error: ko("A와 B 사이에서 카메라가 바뀌었어요. 같은 카메라로 다시 캡처하세요.", "The camera changed between A and B. Capture both poses with the same camera."), status: "error" }));
-			return;
+			return { failed: "The camera changed between poses A and B; capture both with the same camera." };
 		}
 		// A hand-edited prompt wins verbatim; otherwise build from the description.
 		// Interpolate now honours the description too (#380): the bare pose
@@ -6268,21 +6876,22 @@ export default function App() {
 				duration: source.duration ?? FAL_MOTION_MIN_DURATION,
 			});
 			const id = submitted?.job?.id;
-			if (!id) throw new Error(ko("생성 작업 ID를 받지 못했어요.", "The server did not return a motion job ID."));
+			if (!id) throw Object.assign(new Error(ko("생성 작업 ID를 받지 못했어요.", "The server did not return a motion job ID.")), { reason: "The motion server did not return a job id." });
 			setFalMotion((current) => ({ ...current, status: "queued", job: submitted.job, dailyRemaining: submitted.dailyRemaining }));
 			const finished = await waitForFalMotionJob(id, {
 				onUpdate: (job) => setFalMotion((current) => ({ ...current, job, status: job?.status ?? current.status })),
 			});
 			const job = finished?.job;
-			if (job?.status !== "done") throw new Error(job?.error || ko("Fal 생성에 실패했어요.", "Fal motion generation failed."));
+			if (job?.status !== "done") throw Object.assign(new Error(job?.error || ko("Fal 생성에 실패했어요.", "Fal motion generation failed.")), job?.error ? {} : { reason: "The AI video generation failed." });
 			setFalMotion((current) => ({ ...current, job, status: "done", dailyRemaining: finished.dailyRemaining }));
+			let footage = null;
 			if (job.video?.url) {
 				const motionSource = { kind: "url", url: job.video.url, name: `Fal H3 Max Turbo · ${job.resolution}` };
 				setMultiModelSource(motionSource);
 				// Put the completed clip through the same probe/ingest path as a
 				// manually supplied URL so GVHMR sees measured fps, duration and
 				// a ready extraction card without another generation request.
-				await ingestFootage(motionSource);
+				footage = (await ingestFootage(motionSource)) ?? null;
 				setResult({
 					mode: "video",
 					modelLabel: "Fal H3 Max Turbo",
@@ -6304,9 +6913,31 @@ export default function App() {
 				setFalMotionStudioOpen(false);
 				setToast(isKo ? "Fal 영상이 준비됐어요 · 추출 패널에서 GVHMR을 실행하세요" : "Fal video is ready · run GVHMR from the extraction panel");
 			}
+			return { job, footage, dailyRemaining: finished.dailyRemaining ?? null };
 		} catch (error) {
 			setFalMotion((current) => ({ ...current, status: "error", error: error.message || String(error) }));
+			return { failed: error.reason ?? `The AI video generation failed: ${error.message || error}` };
 		}
+	}
+
+	/** The agent panel's Generate motion chip: the motion.generateFromVideo
+	 * action. Locked, the action is unavailable and never runs, so the chip shows
+	 * the Fal card's lock line itself, as it always did. */
+	/** Why the chip cannot start an AI video motion now, as the user reads it:
+	 * one already running, or none left today. The lock has its own Fal card line. */
+	function falMotionUnavailable() {
+		if (!["idle", "done", "error", "failed"].includes(falMotion.status)) return ko("A generation is already running", "이미 생성이 돌고 있어요");
+		if (falMotion.dailyRemaining === 0) return ko("No AI video motion generations left today", "오늘 남은 AI 영상 모션 생성이 없어요");
+		return null;
+	}
+	function generateFalMotionFromUi(instruction) {
+		if (!falMotionEnabled) showFalMotionLock();
+		else {
+			// The chip clears the typed instruction when clicked, so a refusal says why.
+			const reason = falMotionUnavailable();
+			if (reason) { setToast(reason); return null; }
+		}
+		return runStudioAction("motion.generateFromVideo", { instruction });
 	}
 
 	// What a framing capture says about the shot it came from: lens, delivery
@@ -6442,6 +7073,19 @@ export default function App() {
 		editShots(next);
 	}
 
+	/** Both edges in one Ctrl+Z entry, through the same resize the boundary
+	 * drag uses. The edge moving away from the other goes first, so a range
+	 * that jumps past the old one never inverts on the way. */
+	function setTimelineShotRange(shotId, startFrame, endFrame) {
+		const shot = shots.find((entry) => entry.id === shotId);
+		if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
+		const edges = startFrame > shot.endFrame ? [["end", endFrame], ["start", startFrame]] : [["start", startFrame], ["end", endFrame]];
+		const next = edges.reduce((current, [edge, frame]) => resizeShot(current, shotId, edge, frame, tlFrameCount), shots);
+		if (next === shots) return;
+		recordShotUndo();
+		editShots(next);
+	}
+
 	function removeTimelineShot(shotId) {
 		const next = removeShot(shots, shotId);
 		if (next === shots) return;
@@ -6511,7 +7155,7 @@ export default function App() {
 		toggleCameraLock: () => setFalMotionCameraUnlocked((value) => !value),
 		restoreCamera: restoreFalCamera,
 		generate: (kind) => void generateFalMotion(kind),
-		enableShaded: () => { setPartColoursEnabled(true); setPartColoursMode("shaded"); },
+		enableShaded: () => runStudioAction("view.setPartColours", { mode: "shaded" }),
 	};
 	const viewLooksActive = gridView || autoColor || partColoursEnabled;
 	const rigSelection = parseRigNodeId(selectedHierarchyId);
@@ -6535,8 +7179,8 @@ export default function App() {
 	// path starts from its own cast member.
 	const rootStart = () => ({ frame: 0, x: activeChar.x, z: activeChar.z });
 
-	function validateWaypointAt(ordered, index, candidate) {
-		const previous = index > 0 ? ordered[index - 1] : rootStart();
+	function validateWaypointAt(ordered, index, candidate, start = rootStart()) {
+		const previous = index > 0 ? ordered[index - 1] : start;
 		const beforePrevious = index > 1 ? ordered[index - 2] : null;
 		const inbound = judgeNextWaypoint(previous, candidate, tlFps, beforePrevious);
 		if (!inbound.ok) return inbound;
@@ -6566,85 +7210,154 @@ export default function App() {
 		selectActiveCharacterInHierarchy();
 		setToast(isKo ? `프레임 ${target}이 예약됐어요. 샷 뷰 바닥을 클릭하면 그 위치에 루트 웨이포인트가 생성됩니다.` : `Frame ${target} is reserved — click the Shot-view floor to drop the root waypoint there.`);
 	}
+	/* One root-path core for every cast member, shared by the Shot-view floor
+	 * click, the plan-board drag, the timeline marker and run_action. It takes
+	 * the character explicitly: the loaded layer's path lives in the editing
+	 * buffer, every other character's on its cast entry. Refusals throw a
+	 * StudioProtocolError naming the fix; the UI door shows it as a toast. */
+	function castMemberOf(characterId) {
+		const character = charactersRef.current.find((entry) => entry.id === characterId);
+		if (!character) throw new StudioProtocolError("STALE_TARGET", `Character ${characterId} is not in this scene.`);
+		return character;
+	}
+	function readCharacterWaypoints(characterId) {
+		if (characterId === loadedLayerCharRef.current) return bufferRef.current.waypoints;
+		return charactersRef.current.find((entry) => entry.id === characterId)?.layer?.waypoints ?? [];
+	}
+	function writeCharacterWaypoints(characterId, next) {
+		if (characterId === loadedLayerCharRef.current) {
+			bufferRef.current = { ...bufferRef.current, waypoints: next };
+			setWaypoints(next);
+			return;
+		}
+		publishStudioCharacters(charactersRef.current.map((entry) => entry.id === characterId
+			? { ...entry, layer: { ...(entry.layer ?? createCharacterLayer()), waypoints: next } }
+			: entry), true);
+	}
+	/** Pin the character's root at `point` ({x, z}) on `frame`, or — frame null —
+	 * at walking-distance pacing from the previous pin. Returns the placed
+	 * waypoint, its index on the path and the judge's warnings. */
+	function addCharacterWaypoint(characterId, point, frame = null) {
+		const character = castMemberOf(characterId);
+		const ordered = [...readCharacterWaypoints(characterId)].sort((a, b) => a.frame - b.frame);
+		if (ordered.length + 1 > MAX_WAYPOINTS) {
+			throw studioActionRefusal("TARGET_NOT_READY", `The root path is capped at ${MAX_WAYPOINTS} waypoints; remove one first.`,
+				isKo ? `루트 경로는 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요` : `The root path is capped at ${MAX_WAYPOINTS} waypoints`);
+		}
+		const x = clampRootPosition(point.x);
+		const z = clampRootPosition(point.z);
+		const start = { frame: 0, x: character.x, z: character.z };
+		const last = ordered[ordered.length - 1] ?? start;
+		const lastFrame = frameCountRef.current - 1;
+		if (frame !== null && (frame < 1 || frame > lastFrame)) throw new StudioProtocolError("INVALID_RANGE", `Frame ${frame} is outside the root path's frames 1-${lastFrame}.`);
+		const at = frame ?? last.frame + Math.max(8, Math.round((Math.hypot(x - last.x, z - last.z) / WALK_SPEED_MPS) * tlFps));
+		if (at > lastFrame) {
+			throw studioActionRefusal("INVALID_RANGE", "The path already fills the clip — extend the duration or clear a waypoint.",
+				ko("The path already fills the clip — extend the duration or clear a waypoint", "경로가 이미 클립 길이를 채웠어요. 시간을 늘리거나 웨이포인트를 지워 주세요"));
+		}
+		if (ordered.some((waypoint) => waypoint.frame === at)) {
+			throw studioActionRefusal("INVALID_ARGUMENT", `Frame ${at} already has a root waypoint — pick an empty frame or move that one.`,
+				isKo ? `프레임 ${at}에는 이미 루트 웨이포인트가 있어요. 타임라인에서 빈 프레임을 선택하세요.` : `Frame ${at} already has a root waypoint — pick an empty frame on the timeline.`);
+		}
+		// The generator cannot refuse an impossible pin, so placement is the
+		// last moment to: block out-of-band legs with the fix named.
+		const insertAt = ordered.findIndex((waypoint) => waypoint.frame > at);
+		const index = insertAt === -1 ? ordered.length : insertAt;
+		const waypoint = { id: createStableItemId("waypoint"), frame: at, x, z, heading: null };
+		const next = [...ordered.slice(0, index), waypoint, ...ordered.slice(index)];
+		const verdict = validateWaypointAt(next, index, waypoint, start);
+		if (!verdict.ok) throw studioActionRefusal("INVALID_ARGUMENT", `Not placed — ${verdict.error}`, isKo ? `배치하지 못했어요 — ${verdict.error}` : `Not placed — ${verdict.error}`);
+		// Past every refusal: the pre-drop path is worth one Ctrl+Z entry.
+		recordCharacterUndo();
+		writeCharacterWaypoints(characterId, next);
+		return { waypoint, index, warnings: verdict.warnings };
+	}
+	function moveCharacterWaypoint(characterId, frame, point) {
+		const character = castMemberOf(characterId);
+		const ordered = [...readCharacterWaypoints(characterId)].sort((a, b) => a.frame - b.frame);
+		const index = ordered.findIndex((waypoint) => waypoint.frame === frame);
+		if (index === -1) throw new StudioProtocolError("STALE_TARGET", `${character.subject || character.id} has no root waypoint at frame ${frame}.`);
+		const moved = { ...ordered[index], x: clampRootPosition(point.x), z: clampRootPosition(point.z) };
+		if (moved.x === ordered[index].x && moved.z === ordered[index].z) return { waypoint: ordered[index], index, warnings: [] };
+		const next = ordered.map((waypoint, i) => (i === index ? moved : waypoint));
+		const verdict = validateWaypointAt(next, index, moved, { frame: 0, x: character.x, z: character.z });
+		if (!verdict.ok) {
+			throw studioActionRefusal("INVALID_ARGUMENT", `This position doesn't fit the root path: ${verdict.error}`,
+				isKo ? `이 위치는 루트 경로에 맞지 않아요: ${verdict.error}` : `This position doesn't fit the root path: ${verdict.error}`);
+		}
+		// A plan-board drag recorded its one entry when the gesture began; every
+		// other move is its own entry.
+		const past = charHistoryRef.current.past;
+		if (!(gestureUndoRef.current?.key === "waypoint-drag" && past[past.length - 1]?.tick === gestureUndoRef.current.tick)) recordCharacterUndo();
+		writeCharacterWaypoints(characterId, next);
+		return { waypoint: moved, index, warnings: verdict.warnings };
+	}
+	function removeCharacterWaypoint(characterId, frame) {
+		const character = castMemberOf(characterId);
+		const current = readCharacterWaypoints(characterId);
+		const waypoint = current.find((entry) => entry.frame === frame);
+		if (!waypoint) throw new StudioProtocolError("STALE_TARGET", `${character.subject || character.id} has no root waypoint at frame ${frame}.`);
+		recordCharacterUndo();
+		writeCharacterWaypoints(characterId, removeStableItem(current, waypoint.id, "waypoints"));
+		return waypoint;
+	}
+	function clearCharacterWaypoints(characterId) {
+		castMemberOf(characterId);
+		const current = readCharacterWaypoints(characterId);
+		if (!current.length) return 0;
+		recordCharacterUndo();
+		writeCharacterWaypoints(characterId, []);
+		return current.length;
+	}
+
 	/** ARDY-demo style authoring: each empty-floor press in the Shot view drops
 	    the next waypoint where it was clicked; the frame gap comes from walking
 	    distance. The bird's-eye board selects and drags existing waypoints. */
 	function addFloorWaypoint(point) {
-		const x = clampRootPosition(point.x);
-		const z = clampRootPosition(point.z);
 		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);
 		const last = ordered[ordered.length - 1] ?? rootStart();
-		if (waypoints.length + 1 > MAX_WAYPOINTS) {
-			setToast(isKo ? `루트 경로는 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요` : `The root path is capped at ${MAX_WAYPOINTS} waypoints`);
-			return;
-		}
 		const pendingFrame = pendingWaypointFrame == null ? null : Math.max(1, Math.min(Math.round(pendingWaypointFrame), tlFrameCount - 1));
-		if (pendingFrame != null && ordered.some((waypoint) => waypoint.frame === pendingFrame)) {
-			setToast(isKo ? `프레임 ${pendingFrame}에는 이미 루트 웨이포인트가 있어요. 타임라인에서 빈 프레임을 선택하세요.` : `Frame ${pendingFrame} already has a root waypoint — pick an empty frame on the timeline.`);
-			setPendingWaypointFrame(null);
-			return;
-		}
 		// A scrubbed playhead is an explicit statement of time: a click lands on
 		// that exact frame. An untouched playhead (it snaps to the last pin
 		// after every placement) falls back to walking-distance pacing.
 		const playhead = Math.round(tlFrame);
 		const pinned = pendingFrame != null || playhead > last.frame;
-		const walkGap = Math.max(8, Math.round((Math.hypot(x - last.x, z - last.z) / WALK_SPEED_MPS) * tlFps));
-		const frame = pendingFrame ?? (pinned ? Math.min(playhead, tlFrameCount - 1) : last.frame + walkGap);
-		if (frame > tlFrameCount - 1) {
-			setToast(ko("The path already fills the clip — extend the duration or clear a waypoint", "경로가 이미 클립 길이를 채웠어요. 시간을 늘리거나 웨이포인트를 지워 주세요"));
+		const frame = pendingFrame ?? (pinned ? Math.min(playhead, tlFrameCount - 1) : null);
+		const before = readCharacterWaypoints(activeChar.id);
+		const placedAction = runStudioAction("character.addWaypoint", { characterId: activeChar.id, position: { x: point.x, z: point.z }, ...(frame == null ? {} : { frame }) });
+		if (!placedAction) {
+			if (pendingFrame != null && ordered.some((waypoint) => waypoint.frame === pendingFrame)) setPendingWaypointFrame(null);
 			return;
 		}
-		// The generator cannot refuse an impossible pin, so the click is the
-		// last moment a human can: block out-of-band legs with the fix named.
-		const insertAt = ordered.findIndex((waypoint) => waypoint.frame > frame);
-		const index = insertAt === -1 ? ordered.length : insertAt;
-		const waypoint = { id: createStableItemId("waypoint"), frame, x, z, heading: null };
-		const nextWaypoints = [...ordered.slice(0, index), waypoint, ...ordered.slice(index)];
-		const verdict = validateWaypointAt(nextWaypoints, index, waypoint);
-		if (!verdict.ok) {
-			setToast(isKo ? `배치하지 못했어요 — ${verdict.error}` : `Not placed — ${verdict.error}`);
-			return;
-		}
-		// Past every refusal: the waypoint is going down, so the pre-drop path is
-		// worth one Ctrl+Z entry.
-		recordCharacterUndo();
-		setWaypoints(nextWaypoints);
-		setTlFrame(frame);
+		const path = readCharacterWaypoints(activeChar.id);
+		const index = path.findIndex((waypoint) => !before.includes(waypoint));
+		const waypoint = path[index];
+		setTlFrame(waypoint.frame);
 		setActiveWaypointId(waypoint.id);
 		setPendingWaypointFrame(null);
+		const { warnings } = validateWaypointAt(path, index, waypoint);
 		const placed = isKo
-			? `루트 웨이포인트 ${index + 1} 추가: 프레임 ${frame}${pendingFrame != null ? " (타임라인 예약 프레임)" : pinned ? " (재생 헤드 위치)" : ` (~${(frame / tlFps).toFixed(1)}초 걷기 기준)`}`
-			: `Waypoint ${ordered.length + 1} — frame ${frame} ${pendingFrame != null ? "(at the reserved frame)" : pinned ? "(at the playhead)" : `(~${(frame / tlFps).toFixed(1)}s at a walk)`}`;
-		setToast(verdict.warnings.length ? `${placed} · ⚠ ${verdict.warnings[0]}` : placed);
+			? `루트 웨이포인트 ${index + 1} 추가: 프레임 ${waypoint.frame}${pendingFrame != null ? " (타임라인 예약 프레임)" : pinned ? " (재생 헤드 위치)" : ` (~${(waypoint.frame / tlFps).toFixed(1)}초 걷기 기준)`}`
+			: `Waypoint ${index + 1} — frame ${waypoint.frame} ${pendingFrame != null ? "(at the reserved frame)" : pinned ? "(at the playhead)" : `(~${(waypoint.frame / tlFps).toFixed(1)}s at a walk)`}`;
+		setToast(warnings.length ? `${placed} · ⚠ ${warnings[0]}` : placed);
 	}
 
 	function moveWaypoint(id, x, z) {
-		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);
-		const index = ordered.findIndex((waypoint) => waypoint.id === id);
-		if (index === -1) throw new Error(`Unknown waypoints ID: ${id}`);
-		const nextWaypoint = {
-			...ordered[index],
-			x: clampRootPosition(x),
-			z: clampRootPosition(z),
-		};
-		const nextOrdered = ordered.map((waypoint) => waypoint.id === id ? nextWaypoint : waypoint);
-		const verdict = validateWaypointAt(nextOrdered, index, nextWaypoint);
-		if (!verdict.ok) {
-			setToast(isKo ? `이 위치는 루트 경로에 맞지 않아요: ${verdict.error}` : `This position doesn't fit the root path: ${verdict.error}`);
-			return;
-		}
-		setWaypoints(nextOrdered);
+		const waypoint = waypoints.find((entry) => entry.id === id);
+		if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`);
+		if (!runStudioAction("character.moveWaypoint", { characterId: activeChar.id, frame: waypoint.frame, position: { x, z } })) return;
 		setActiveWaypointId(id);
-		setPendingWaypointFrame((current) => (current === nextWaypoint.frame ? null : current));
-		if (verdict.warnings.length) setToast(isKo ? `루트 웨이포인트 이동됨: ${verdict.warnings[0]}` : `Root waypoint moved: ${verdict.warnings[0]}`);
+		setPendingWaypointFrame((current) => (current === waypoint.frame ? null : current));
+		const path = readCharacterWaypoints(activeChar.id);
+		const index = path.findIndex((entry) => entry.id === id);
+		const { warnings } = index === -1 ? { warnings: [] } : validateWaypointAt(path, index, path[index]);
+		if (warnings.length) setToast(isKo ? `루트 웨이포인트 이동됨: ${warnings[0]}` : `Root waypoint moved: ${warnings[0]}`);
 	}
 
 	function removeWaypoint(id) {
 		const waypoint = waypoints.find((entry) => entry.id === id);
 		if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`);
-		recordCharacterUndo();
-		setWaypoints((prev) => removeStableItem(prev, id, "waypoints"));
+		if (!runStudioAction("character.removeWaypoint", { characterId: activeChar.id, frame: waypoint.frame })) return;
 		setActiveWaypointId((current) => (current === id ? null : current));
 		setPendingWaypointFrame((current) => (current === waypoint.frame ? null : current));
 	}
@@ -6837,6 +7550,7 @@ export default function App() {
 			setToast(isKo
 				? `${source.name} 인제스트됨 — ${footage.frames}프레임 @ ${footage.fps} fps`
 				: `Ingested ${source.name} — ${footage.frames} frames @ ${footage.fps} fps`);
+			return footage;
 		} catch (error) {
 			if (!live()) return;
 			const code = error?.message ?? String(error);
@@ -7248,7 +7962,12 @@ export default function App() {
 	}, []);
 
 	const demoSeeded = useRef(false);
+	// Latched on the first healthy probe: a session that has seen the sidecar is
+	// not the hosted demo, and a later failed probe is a blip, not "no bridge".
+	const bridgeSeenOk = useRef(false);
 	useEffect(() => {
+		const demoSeed = demoSeedGate(bridge, bridgeSeenOk.current);
+		bridgeSeenOk.current = demoSeed.bridgeSeenOk;
 		if (demoSeeded.current) return;
 		if (!activeRig || motion || motionBusy) return;
 		// A hosted-demo result link opens the app with ?motion=<url>. The value
@@ -7263,7 +7982,7 @@ export default function App() {
 			});
 			return;
 		}
-		if (!bridge || bridge.ok) return;
+		if (!demoSeed.seed) return;
 		demoSeeded.current = true;
 		// Loaded, not played: the clip walks the subject out of the default
 		// framing, so autoplay would greet a first-time visitor with an empty
@@ -7476,11 +8195,16 @@ export default function App() {
 			promptClips,
 			multiModelFootage?.frames,
 		);
+		// Never leave the end under an authored shot: a shot outside the
+		// timeline is an invalid scene for the Studio agent (and for playback).
 		if (extent > 0) {
-			setTlFrameCount(extent);
-			setTlFrame((frame) => Math.min(frame, extent - 1));
+			const span = timelineSpan(extent, shots);
+			setTlFrameCount(span);
+			setTlFrame((frame) => Math.min(frame, span - 1));
+		} else {
+			setTlFrameCount((count) => timelineSpan(0, shots, count));
 		}
-	}, [characters, activeChar.id, motion, promptClips, multiModelFootage?.frames]);
+	}, [characters, activeChar.id, motion, promptClips, multiModelFootage?.frames, shots]);
 
 	/* ------------------------------ IK logic ------------------------------ */
 
@@ -7634,23 +8358,27 @@ export default function App() {
 	// scrub away and back restores the dragged pose exactly (slerp).
 	function ikDragEnd() {
 		ikBodyDragRef.current = false;
-		if (ikChains) {
-			// One entry per drag: the pointermoves only moved bones, the keys map is
-			// untouched until this bake — recording here captures the pre-drag keys.
-			if (ikStateRef.current.tracked.size > 0) recordCharacterUndo();
-			editIkKeys(() => ikBakeKeyframe(ikChains, ikStateRef.current, tlFrame, ikFkJoints));
-		}
+		// One entry per drag: the pointermoves only moved bones, the keys map is
+		// untouched until this bake — the key it sets records the pre-drag keys.
+		if (ikChains) keyIkPoseAtPlayhead();
 		setIkTick((n) => n + 1);
+	}
+
+	/** Bake the current tracked rotations at the playhead into a scratch layer
+	 * and set them as a key through the shared registry. A bake only writes
+	 * TRACKED parts: with nothing dragged yet there is no key, nothing is
+	 * dispatched and Ctrl+Z never goes dead. */
+	function keyIkPoseAtPlayhead() {
+		const scratch = { ...createIkState(), tracked: new Set(ikStateRef.current.tracked) };
+		ikBakeKeyframe(ikChains, scratch, tlFrame, ikFkJoints);
+		const baked = scratch.keys.get(tlFrame);
+		return baked ? runStudioAction("character.setIkKey", { characterId: activeChar.id, frame: tlFrame, tracks: ikKeyJson(baked) }) : null;
 	}
 
 	// Manual key: bake the current tracked rotations at the playhead.
 	function ikAddKeyframe() {
 		if (!ikChains) return;
-		// A bake only writes TRACKED parts: with nothing dragged yet there is no
-		// key to undo, so no entry is pushed and Ctrl+Z never goes dead.
-		if (ikStateRef.current.tracked.size > 0) recordCharacterUndo();
-		editIkKeys(() => ikBakeKeyframe(ikChains, ikStateRef.current, tlFrame, ikFkJoints));
-		setIkTick((n) => n + 1);
+		if (!keyIkPoseAtPlayhead()) return;
 		setToast(isKo ? `${tlFrame}프레임에 전신 IK 키를 추가했어요` : `Full-body IK key at frame ${tlFrame}`);
 	}
 
@@ -7871,9 +8599,7 @@ export default function App() {
 
 	function ikDeleteKeyframe(frame) {
 		if (!ikStateRef.current.keys.has(frame)) return;
-		recordCharacterUndo();
-		editIkKeys(() => ikRemoveKeyframe(ikStateRef.current, frame));
-		setIkTick((n) => n + 1);
+		runStudioAction("character.removeIkKey", { characterId: activeChar.id, frame });
 	}
 
 	/** With IK mode on over a loaded take, a pose pick is a CORRECTION, not a
@@ -8019,7 +8745,7 @@ export default function App() {
 			// shot yields 40 frames. Same liveStateRef reasoning as captureMeta.
 			exportShotVideo: (options = {}) => liveStateRef.current.exportShotVideo(options),
 			// Open the production result modal so QA clicks its real download.
-			prepareFrameExport: () => liveStateRef.current.generate(),
+			prepareFrameExport: () => { liveStateRef.current.generate(); },
 			// The RGB plate the passes are compared against — same rig, same
 			// framing, no material override.
 			capturePlate: () => liveStateRef.current.captureFramingPng(liveStateRef.current.captureCurrentFraming()),
@@ -8610,6 +9336,7 @@ export default function App() {
 		setCopied(false);
 		setRecordedVideoName(null);
 		copyPrompt(prompt);
+		return nextResult;
 	}
 
 	function download() {
@@ -11631,6 +12358,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					editSegments: createMotionEdit(decoded.frames),
 				};
 				if (entry.motionRef.calibration) clip.sceneCalibration = entry.motionRef.calibration;
+				if (entry.motionRef.studioTakeId) clip.studioTakeId = entry.motionRef.studioTakeId;
 				motionFullRef.current.set(entry.id, clip);
 				setCharacters((current) => current.map((item) => item.id === entry.id
 					// The stature rides inside the npz, so a restored take
@@ -11741,12 +12469,16 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 	/** The active character's layer lives in the editing buffer, and the read
 	 * model folds that buffer back over the cast. A published or restored prompt
-	 * schedule has to reach it in the same tick, or the next read would revert it. */
+	 * schedule or root path has to reach it in the same tick, or the next read
+	 * would revert it. */
 	function syncStudioLayerBuffer(rows) {
-		const clips = rows.find(entry => entry.id === loadedLayerCharRef.current)?.layer?.promptClips;
-		if (!clips || JSON.stringify(clips) === JSON.stringify(bufferRef.current.promptClips)) return;
-		bufferRef.current = { ...bufferRef.current, promptClips: clips };
-		setPromptClips(clips);
+		const layer = rows.find(entry => entry.id === loadedLayerCharRef.current)?.layer;
+		const changed = key => Array.isArray(layer?.[key]) && JSON.stringify(layer[key]) !== JSON.stringify(bufferRef.current[key]);
+		const clips = changed("promptClips"), path = changed("waypoints");
+		if (!clips && !path) return;
+		bufferRef.current = { ...bufferRef.current, ...(clips ? { promptClips: layer.promptClips } : {}), ...(path ? { waypoints: layer.waypoints } : {}) };
+		if (clips) setPromptClips(layer.promptClips);
+		if (path) setWaypoints(layer.waypoints);
 	}
 	function recordStudioHistory(domain, targetId, historyEntryId) {
 		const tick = ++opClockRef.current;
@@ -11754,6 +12486,33 @@ function resizePromptClip(id, edge, rawFrame) {
 			studio: { domain, targetId, historyEntryId, objects: storeRef.current.objects, state: snapshotStudioDomain(domain, targetId) } });
 		charHistoryRef.current.future = [];
 		studioHistoryRef.current.set(historyEntryId, { tick, domain });
+	}
+	/** Run one registry action for the agent and bind the native history entry
+	 * it pushed to a journal id, so undo_edit (and Ctrl+Z) can revert it. Shot,
+	 * cast and motion entries gain the Studio restore state (a motion entry the
+	 * one character `targetId` names), which republishes the live read model
+	 * synchronously; object entries are the store's own. */
+	function recordStudioAction(domain, run, targetId = null) {
+		const historyEntryId = crypto.randomUUID();
+		if (domain === "objects") {
+			const tick = lastObjectOpRef.current;
+			const bind = result => {
+				if (lastObjectOpRef.current === tick) return { result, historyEntryId: null };
+				liveStateRef.current.objects = storeRef.current.objects;
+				studioHistoryRef.current.set(historyEntryId, { domain: "objects", tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
+				return { result, historyEntryId };
+			};
+			// An import stores its bytes first and places its object when it settles;
+			// the binding refuses the receipt if anything else landed meanwhile.
+			const result = run();
+			return typeof result?.then === "function" ? result.then(bind) : bind(result);
+		}
+		const tick = opClockRef.current, objects = storeRef.current.objects, state = snapshotStudioDomain(domain, targetId);
+		const result = run(), top = charHistoryRef.current.past.at(-1);
+		if (!top || top.tick <= tick || top.studio) return { result, historyEntryId: null };
+		top.studio = { domain, targetId, historyEntryId, objects, state };
+		studioHistoryRef.current.set(historyEntryId, { tick: top.tick, domain });
+		return { result, historyEntryId };
 	}
 	function publishStudioMotion(targetId, state) {
 		const current = readStudioState();
@@ -11806,7 +12565,12 @@ function resizePromptClip(id, edge, rawFrame) {
 		const character = before.characters.find(c => c.id === id);
 		const clips = payload.schedule.blocks.map((block, index) => ({ id: `${payload.takeId}-beat-${index}`, startFrame: block.startFrame, endFrame: block.endFrameExclusive, text: block.text }));
 		const take = { ...payload.motion, studioTakeId: payload.takeId, prompt: "", sceneCalibration: payload.calibration };
-		const next = { ...character, scale: payload.scale, sessionMotion: take, motionRef: null, layer: { ...character.layer, promptClips: clips } };
+		// The same persistable ref deliverMotion saves for a UI take, placed where
+		// this take was placed, so restoreMotionRefs rebuilds it after a reload.
+		const motionRef = { url: take.url, prompt: payload.schedule.blocks.map(block => block.text).join(" "),
+			rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ, calibration: payload.calibration, studioTakeId: payload.takeId };
+		if (take.motionId) motionRef.motionId = take.motionId;
+		const next = { ...character, scale: payload.scale, sessionMotion: take, motionRef, layer: { ...character.layer, promptClips: clips } };
 		recordStudioHistory("motion", id, payload.historyEntryId);
 		const renderer = target?.rig ? snapshotExportRig(target.rig) : null;
 		publishStudioMotion(id, { character: next, fullMotion: payload.sourceMotion, ikState: payload.ikState,
@@ -11822,10 +12586,30 @@ function resizePromptClip(id, edge, rawFrame) {
 		// Preimage bones live on the native entry, not on the installed candidate.
 		charHistoryRef.current.past.at(-1).studio.state.renderer = renderer;
 		markSemanticEdit("characters", before.characters, charactersRef.current);
+		// Store the take's bytes the way a project save embeds a take
+		// (collectProjectSerialized): the same record, caches and motion store, so
+		// the ref's motionId resolves after a reload without the bridge.
+		if (take.sourceBytes) (async () => {
+			let record = motionEncodingCacheRef.current.get(take.sourceBytes);
+			if (!record) {
+				record = await encodeMotionResource(take.sourceBytes, { prompt: motionRef.prompt, sourceUrl: motionRef.url });
+				motionEncodingCacheRef.current.set(take.sourceBytes, record);
+			}
+			projectMotionsRef.current.set(record.motionId.toLowerCase(), record);
+			const db = await openMotionDb();
+			try { await putMotion(db, record); } finally { db.close(); }
+		})().catch((error) => console.warn("[cozyclay] could not cache motions", error));
 	}
 	function studioBounds({ entity, frame, state }) {
 		if (entity.renderer) {
-			if (entity.attach) throw new StudioProtocolError("TARGET_NOT_READY", "Attached bounds require an evaluated attachment frame.");
+			if (entity.attach) {
+				// A carried prop's numbers are local to the frame it rides; measure it
+				// where it is drawn, the frame the arrange is evaluated at.
+				const world = sceneObjectWorldMatrix(entity);
+				if (!world) throw new StudioProtocolError("TARGET_NOT_READY", "Attached bounds require an evaluated attachment frame.");
+				const carried = new THREE.Box3(new THREE.Vector3(-entity.footprint.width / 2, 0, -entity.footprint.depth / 2), new THREE.Vector3(entity.footprint.width / 2, entity.height, entity.footprint.depth / 2));
+				carried.applyMatrix4(world); return { min: { ...carried.min }, max: { ...carried.max } };
+			}
 			const at = objectTransformAt(entity, frame, { frameCount: state.frameCount, fps: 24 });
 			const object = at ? { ...entity, ...at } : entity;
 			const matrix = new THREE.Matrix4().compose(new THREE.Vector3(object.x, object.y ?? 0, object.z),
@@ -11926,7 +12710,62 @@ function resizePromptClip(id, edge, rawFrame) {
 			return entry.domain === "objects" ? entry.tick === lastObjectOpRef.current && entry.tick >= (charHistoryRef.current.past.at(-1)?.tick ?? 0) && entry.depth === storeRef.current.depths().past :
 				entry.tick === charHistoryRef.current.past.at(-1)?.tick && entry.tick > lastObjectOpRef.current;
 		},
+		actions: () => studioActionsRef.current,
+		recordAction: recordStudioAction,
 	};
+	studioActionHandlersRef.current = {
+		// Shots and objects come from the synchronously published read model, so
+		// an action sees its own edit before React renders it.
+		state: () => ({
+			shots: liveStateRef.current.shots, objects: storeRef.current.objects, characters: charactersRef.current, frame: tlFrame, frameCount: tlFrameCount,
+			selectedObjectId: selectedSceneObjectId, activeCharacterId: activeChar?.id ?? null,
+			promptBlockCount: promptClips.filter((clip) => clip.text.trim()).length,
+			generating: Boolean(generationPendingRef.current || genRunningRef.current || generationBusy),
+			motionReady: bridge !== null && !bridgeChecking,
+			// The Export menu offers Video (mp4) on exactly these conditions.
+			exporting: Boolean(recRef.current), canExportVideo: shots.length > 0 || hasCameraKeys || Boolean(motion),
+			// The scene refs move synchronously with every scene handler.
+			scenes: scenesRef.current.map(({ id, name }) => ({ id, name })), activeSceneId: activeSceneIdRef.current,
+			// What a save needs: a name, a file this session, and (to pick or
+			// re-grant a file) the user's click still active.
+			project: { name: projectName, hasFile: Boolean(projectHandleRef.current), fileAccess: hasFileSystemAccess(),
+				gesture: globalThis.navigator?.userActivation?.isActive === true },
+			// What generate() reads for the Send-to-AI package, as this render has it.
+			aiShot: { mode, imageModel },
+			// AI-video motion: the account's Fal access, the card's job state and
+			// the daily generations left (null until the server says).
+			falMotion: { enabled: falMotionEnabled, status: falMotion.status, dailyRemaining: falMotion.dailyRemaining ?? null },
+		}),
+		addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, setTimelineShotRange, moveTimelineShot,
+		runAllPromptBlocks, duplicateSelectedSceneObject,
+		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints,
+		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, attachSceneObject, setShotCameraRail, clearShotCameraRail,
+		choosePartColours, setGuideMode, setInsetCollapsed, exportShotVideo,
+		switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument,
+		afterRender: () => new Promise(resolve => renderWaitersRef.current.push(resolve)),
+		saveProject, projectFileGranted: async () => (await queryHandlePermission(projectHandleRef.current)) === "granted",
+		importAsset: args => liveHandlersRef.current.import_asset(args), fetchImportSource,
+		setAiShotMode: setMode, setAiImageModel: setImageModel, generate, generateFalMotion,
+	};
+	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionHandlersRef);
+	/** UI door into the shared registry. Refusal messages are written for the
+	 * model, so a person only ever sees the localized `uiMessage` a thrower
+	 * attached (studioActionRefusal); any other refusal stays silent, as the
+	 * controls always were. */
+	function runStudioAction(id, args = {}) {
+		const refused = error => {
+			if (!(error instanceof StudioProtocolError)) throw error;
+			if (error.uiMessage) setToast(error.uiMessage);
+			return null;
+		};
+		try {
+			// A long-running action answers with a promise that refuses the same way.
+			const result = studioActionsRef.current.run(id, args);
+			return typeof result?.then === "function" ? result.catch(refused) : result;
+		} catch (error) {
+			return refused(error);
+		}
+	}
 	if (!studioBindingRef.current) {
 		const delegates = Object.fromEntries(Object.keys(studioPortsRef.current).filter(key => key !== "revision").map(key => [key, (...args) => studioPortsRef.current[key](...args)]));
 		studioBindingRef.current = createStudioAppBinding({ ...delegates, revision: sceneRevisionRef });
@@ -11939,6 +12778,9 @@ function resizePromptClip(id, edge, rawFrame) {
 		Object.assign(liveHandlersRef.current, studioBindingRef.current.handlers);
 	}
 	useEffect(() => () => studioBindingRef.current?.dispose(), []);
+	// Every commit releases the actions waiting for React to render their edit
+	// (a scene switch answers once the new room is on stage).
+	useEffect(() => { for (const resolve of renderWaitersRef.current.splice(0)) resolve(); });
 
 	const projectStatus = projectSaveState === "saving"
 		? ko("Saving…", "저장 중…")
@@ -11973,7 +12815,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						<div className="project-menu" role="menu" onClick={() => setProjectMenuOpen(false)}>
 							<button type="button" role="menuitem" onClick={requestNewProject}>{ko("New Project", "새 프로젝트")}</button>
 							<button type="button" role="menuitem" onClick={() => { setProjectStartupOpen(false); setProjectBrowserOpen(true); }}>{ko("Open Project…", "프로젝트 열기…")}</button>
-							<button type="button" role="menuitem" onClick={() => saveProject(false)}>{ko("Save Project", "프로젝트 저장")}</button>
+							<button type="button" role="menuitem" onClick={() => runStudioAction("project.save")}>{ko("Save Project", "프로젝트 저장")}</button>
 							<button type="button" role="menuitem" onClick={() => saveProject(true)}>{ko("Save Project As…", "다른 이름으로 저장…")}</button>
 							<ResourceStatus manifest={projectManifest} compact />
 						</div>
@@ -11987,7 +12829,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							className="topbar-action project-save-action"
 							data-testid="topbar-save"
 							disabled={projectSaveState === "saving"}
-							onClick={() => void saveProject(false)}
+							onClick={() => void runStudioAction("project.save")}
 						>
 							{projectSaveState === "saving" ? ko("Saving…", "저장 중…") : ko("Save", "저장")}
 						</button>
@@ -12056,7 +12898,7 @@ function resizePromptClip(id, edge, rawFrame) {
 											data-testid="export-video"
 											disabled={recState === "recording"}
 											title={ko("Render the shot to an MP4 — camera move and character motion, no editor chrome", "샷을 MP4로 렌더링합니다 — 카메라 움직임과 캐릭터 모션만, 편집 UI는 제외")}
-											onClick={() => void exportShotVideo({ shotId: exportShotIdRef.current })}
+											onClick={() => void runStudioAction("export.shotVideo", exportShotIdRef.current ? { shotId: exportShotIdRef.current } : {})}
 										>
 											{ko("Video (mp4)", "영상 (mp4)")}
 										</button>
@@ -12170,7 +13012,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					onSceneDelete={deleteSceneDocumentFromUi}
 					onAddObject={addSceneObject}
 					onRenameObject={renameSceneObject}
-					onDuplicateObject={duplicateSelectedSceneObject}
+					onDuplicateObject={(objectId) => runStudioAction("object.duplicate", objectId ? { objectId } : {})}
 					onDeleteObject={deleteSceneObject}
 					onFrameObject={frameSelection}
 					onToggleHidden={toggleHierarchyHidden}
@@ -12326,8 +13168,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							aria-pressed={!workspaceLayout.insetCollapsed}
 							className="workflow-scene-context workflow-camera-context"
 							onClick={() => {
-								if (workspaceLayout.insetCollapsed) expandInset();
-								else setWorkspaceLayout((current) => ({ ...current, insetCollapsed: true }));
+								runStudioAction("view.setInset", { collapsed: !workspaceLayout.insetCollapsed });
 							}}
 						>
 							{ko("Top", "탑")} {workspaceLayout.insetCollapsed ? "▸" : "▾"}
@@ -12419,10 +13260,7 @@ function resizePromptClip(id, edge, rawFrame) {
 														className={"view-menu-item part-colour-option" + (checked ? " active" : "")}
 														data-part-colours={option.value}
 														aria-checked={checked}
-														onClick={() => {
-															setPartColoursEnabled(option.value !== "off");
-															if (option.value !== "off") setPartColoursMode(option.value);
-														}}
+														onClick={() => runStudioAction("view.setPartColours", { mode: option.value })}
 													>
 														<span className="view-menu-mark" aria-hidden="true">{checked ? "✓" : ""}</span>
 														{option.label}
@@ -12743,7 +13581,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								characters={characters}
 								onMoveCharacter={moveCharacter}
 								onCharacterGestureStart={recordCharacterUndo}
-								onWaypointGestureStart={recordCharacterUndo}
+								onWaypointGestureStart={() => beginGestureUndo("waypoint-drag")}
 								onCameraGestureStart={beginCameraFramingGesture}
 								pathStart={activeChar}
 								waypoints={waypoints}
@@ -13055,8 +13893,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									onClick={(e) => {
 										if (e.detail > 1) return;
 										insetToggledAtRef.current = Date.now();
-										if (workspaceLayout.insetCollapsed) expandInset();
-										else setWorkspaceLayout((current) => ({ ...current, insetCollapsed: true }));
+										runStudioAction("view.setInset", { collapsed: !workspaceLayout.insetCollapsed });
 									}}
 								>
 									{workspaceLayout.insetCollapsed ? "▸" : "▾"}
@@ -13091,7 +13928,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									className={"vp-guide-cycle" + (guideMode === "off" ? "" : " on")}
 									aria-label={ko("Cycle composition guides", "구도 가이드 전환")}
 									title={ko(GUIDE_LABELS[guideMode].en, GUIDE_LABELS[guideMode].ko) + ko(" · click to cycle", " · 클릭으로 전환")}
-									onClick={() => setGuideMode((mode) => nextGuideMode(mode))}
+									onClick={() => runStudioAction("view.setGuideMode", { mode: nextGuideMode(guideMode) })}
 								>
 									<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
 										<path d="M3 3h18v18H3z" />
@@ -13177,7 +14014,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						<AgentPanel embedded hidden={!studioAgentMode} surface="studio" defaultCollapsed onCollapsedChange={setAgentCollapsed}
 							sceneName={scenes.find((entry) => entry.id === activeSceneId)?.name ?? ko("Untitled Scene", "제목 없는 씬")}
 							buildContext={buildStudioAgentContext} onReceipt={highlightAgentTargets}
-							onFalAction={(instruction) => void generateFalMotion("act", instruction)} />
+							onFalAction={(instruction) => void generateFalMotionFromUi(instruction)} />
 					</div>}
 					<section className="inspector-pane" hidden={studioAgentMode}>
 					<div className="inspector-heading">
@@ -13197,7 +14034,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								</button>
 								{inspectorActionsOpen && (
 									<div className="inspector-actions-menu" role="menu">
-										<button type="button" role="menuitem" onClick={() => { duplicateSelectedSceneObject(); setInspectorActionsOpen(false); }}>
+										<button type="button" role="menuitem" onClick={() => { runStudioAction("object.duplicate"); setInspectorActionsOpen(false); }}>
 											{ko("Duplicate", "복제")}
 										</button>
 										<button type="button" role="menuitem" onClick={() => { deleteSelectedSceneObject(); setInspectorActionsOpen(false); }}>
@@ -13907,7 +14744,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								: !promptClips.some((clip) => clip.text.trim())
 									? ko("Add a prompt block and describe its motion first", "프롬프트 블록을 추가하고 동작을 먼저 적어 주세요")
 									: motionReadinessMessage(readinessState)}
-							onClick={runAllPromptBlocks}
+							onClick={() => runStudioAction("motion.generateAllBlocks")}
 						>
 							{generationBusy
 								? ko("Generating motion…", "모션 생성 중…")
@@ -15104,11 +15941,11 @@ function resizePromptClip(id, edge, rawFrame) {
 					recordShotUndo();
 					editShots((current) => renameShot(current, shotId, name));
 				}}
-				onShotRemove={removeTimelineShot}
-				onShotDuplicate={duplicateTimelineShot}
-				onShotCut={addTimelineShot}
-				onShotSplit={splitTimelineShot}
-				onShotMove={moveTimelineShot}
+				onShotRemove={(shotId) => runStudioAction("shot.remove", { shotId })}
+				onShotDuplicate={(shotId) => runStudioAction("shot.duplicate", { shotId })}
+				onShotCut={() => runStudioAction("shot.create")}
+				onShotSplit={(shotId) => runStudioAction("shot.split", { shotId })}
+				onShotMove={(shotId, targetFrame) => runStudioAction("shot.reorder", { shotId, startFrame: Math.max(0, Math.round(targetFrame)) })}
 				onEditGestureStart={beginTimelineEditGesture}
 				onClearMotion={motion ? clearMotion : null}
 			/>

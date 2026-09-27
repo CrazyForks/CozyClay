@@ -25,7 +25,7 @@ import { dispatchLiveFrame } from '../src/live-control.js';
 const args = process.argv.slice(2);
 const CASES = ['characterization', 'pre-prepare-cancellation', 'grounded-full-range', 'floor-key-order', 'hovering-no-contact', 'no-measured-skin', 'platform-unsupported',
   'inactive-target-yaw-and-retime', 'off-playhead-path-prop', 'same-frame-other-cast', 'ground-cache-invalidation', 'decode-failure', 'bounded-real-auto-physics',
-  'repair-throw', 'protected-regression', 'commit-fences', 'cancellation-checkpoint', 'expiry', 'explicit-unverified-acceptance', 'runtime-http'];
+  'repair-throw', 'repair-deadline-scales-with-clip-length', 'protected-regression', 'collision-repair-arm-chains', 'commit-fences', 'cancellation-checkpoint', 'expiry', 'explicit-unverified-acceptance', 'runtime-http'];
 assert(!args.length || (args.length === 2 && args[0] === '--case' && CASES.includes(args[1])), 'Unknown test arguments');
 const selectedCase = args[1] ?? null;
 const evidence = process.env.MOTION_EVIDENCE_DIR;
@@ -262,6 +262,18 @@ async function candidateTests(mod, selectedCase) {
       assert.equal(trace.collisions[0].length, 0); assert(trace.collisions.slice(15, 33).some(p => p.some(hit => hit.b.startsWith('char:char-c:'))));
       assert.notEqual(trace.blockers[0][0].az, trace.blockers[47][0].az); assert.deepEqual(boneSnapshot(other), before); f.preserved();
     }
+    if (selected('collision-repair-arm-chains')) {
+      let collisionOptions = null;
+      const f = fixture({ ports: { fixCollisionsRange: options => { collisionOptions = options; } } });
+      const prop = { ...createSceneObject('cube'), scaleX: .2, scaleY: .3, scaleZ: .2, y: 1.45,
+        path: { points: [{ x: -.8, y: 1.45, z: -2 }, { x: -.8, y: 1.45, z: 2 }], speed: 0, faceTravel: false, loop: false, extend: false, timing: null } };
+      f.state.objects = [prop]; const c = await f.prepare(), v = await f.verify(c); ok(v);
+      assert.equal(v.repairable, true); const auto = await f.repair(c, 'auto_physics'); ok(auto);
+      const repaired = await f.repair(auto, 'fix_collisions'); ok(repaired);
+      assert(collisionOptions?.onlyChains instanceof Set);
+      assert.deepEqual([...collisionOptions.onlyChains].sort(), ['leftHand', 'rightHand']);
+      console.log('PASS collision repair limits solver to leftHand and rightHand chains');
+    }
     if (selected('ground-cache-invalidation')) {
       const f = fixture(), c = await f.prepare(), first = await f.verify(c); ok(first);
       f.state.floor.y = .3; f.state.physicsRevision++;
@@ -289,20 +301,57 @@ async function candidateTests(mod, selectedCase) {
       const result = await f.repair(c, 'auto_physics'); assert.equal(result.code, 'VERIFICATION_FAILED'); assert.equal(f.api.size, 0); f.preserved();
       console.log('PASS private repair throw releases candidate without partial authored mutation');
     }
+    if (selected('repair-deadline-scales-with-clip-length')) {
+      let f;
+      f = fixture({ clip: { frames: 240, hover: .4 }, ports: { verificationMs: 1000, reviewAutoPhysics: async options => {
+        f.setClock(5000);
+        return { candidate: { keys: options.sourceKeys, tracked: new Set() } };
+      } } });
+      f.request.schedule = compileStudioBeats({ kind: 'generate', beats: [{ text: 'Fixture motion.', seconds: 10 }] });
+      const c = await f.prepare(), v = await f.verify(c); ok(v); assert.equal(v.repairable, true);
+      const repaired = await f.repair(c, 'auto_physics'); ok(repaired);
+      console.log('PASS repair deadline scales with 240-frame clip beyond the base verification budget');
+    }
     if (selected('protected-regression')) {
-      const f = fixture({ clip: { hover: .08 }, floorY: .05, protectedFrames: [24], ports: { reviewAutoPhysics: async options => {
-        // The protected frame's key remains absent, but a neighbouring key's
-        // REAL ikEvaluate blend changes its evaluated pose.
-        const keys = new Map([[23, new Map([['hips', { p: new THREE.Vector3(0, 160, 0), q: [new THREE.Quaternion()] }]])]]);
-        assert(!keys.has(24)); return { candidate: { keys, tracked: new Set(['hips']) } };
-      } } }); const c = await f.prepare(); ok(c); const initial = await f.verify(c);
-      // A rejection receipt carries no `status`, so assert the whole object
-      // first: otherwise the failure prints as `{}` and hides its real code.
-      ok(initial);
-      assert.equal(initial.status, 'unverified', `protected-regression fixture must remain repairable before repair: ${JSON.stringify(initial)}`);
-      assert.equal(initial.repairable, true, `protected-regression fixture lost repair permission during verification: ${JSON.stringify(initial)}`);
-      const result = await f.repair(c, 'auto_physics');
-      assert.equal(result.code, 'REPAIR_REGRESSED', JSON.stringify(result)); assert.equal(f.api.size, 0); f.preserved(); console.log('PASS evaluated protected pose/blend regression rejected, not key-map equality');
+      // One regressing repair, three endings: the reverted candidate refuses
+      // its stale revision, refuses the spent method, and re-verifies/commits
+      // only its pre-repair layer.
+      for (const ending of ['stale-commit', 'repeat-repair', 'accepted-commit']) {
+        const f = fixture({ clip: { hover: .08 }, floorY: .05, protectedFrames: [24], ports: { reviewAutoPhysics: async options => {
+          // The protected frame's key remains absent, but a neighbouring key's
+          // REAL ikEvaluate blend changes its evaluated pose.
+          const keys = new Map([[23, new Map([['hips', { p: new THREE.Vector3(0, 160, 0), q: [new THREE.Quaternion()] }]])]]);
+          assert(!keys.has(24)); return { candidate: { keys, tracked: new Set(['hips']) } };
+        } } }); const c = await f.prepare(); ok(c); const initial = await f.verify(c);
+        // A rejection receipt carries no `status`, so assert the whole object
+        // first: otherwise the failure prints as `{}` and hides its real code.
+        ok(initial);
+        assert.equal(initial.status, 'unverified', `protected-regression fixture must remain repairable before repair: ${JSON.stringify(initial)}`);
+        assert.equal(initial.repairable, true, `protected-regression fixture lost repair permission during verification: ${JSON.stringify(initial)}`);
+        const preEvidence = f.api.readEvidence(c.candidateId);
+        const result = await f.repair(c, 'auto_physics'); ok(result);
+        assert.deepEqual(result.repairRejected, { method: 'auto_physics', code: 'REPAIR_REGRESSED' });
+        assert.equal(result.candidateId, c.candidateId); assert(result.candidateRevision > c.candidateRevision, JSON.stringify(result));
+        assert.deepEqual(result.before, initial); assert.deepEqual(result.after, initial);
+        assert.equal(f.api.size, 1); f.preserved();
+        const restored = f.api.readEvidence(c.candidateId);
+        assert.deepEqual(restored.verification, initial); assert.deepEqual(restored.after.poses, preEvidence.after.poses); assert.deepEqual(restored.after.metrics, preEvidence.after.metrics);
+        if (ending === 'stale-commit') {
+          const stale = await f.commit(c, initial, { explicitUnverifiedAcceptance: true });
+          assert.equal(stale.ok, false); assert.equal(stale.code, 'STALE_TARGET'); assert.equal(f.domain.history.length, 0); assert.equal(f.api.size, 0); f.preserved();
+        } else if (ending === 'repeat-repair') {
+          const again = await f.repair(result, 'auto_physics'); assert.equal(again.ok, false, JSON.stringify(again)); assert.equal(f.api.size, 0); f.preserved();
+        } else {
+          // Re-verifying the reverted revision measures the pre-repair layer.
+          const final = await f.verify(result); ok(final);
+          assert.equal(final.candidateRevision, result.candidateRevision); assert.deepEqual(final.metrics, initial.metrics);
+          assert.equal(final.repairs.autoPhysicsInvocations, 1); assert(final.limitations.includes('bounded-repair-rejected-regression'));
+          const receipt = await f.commit(result, final, { explicitUnverifiedAcceptance: true }); ok(receipt); validateReceipt(receipt);
+          assert.equal(f.payload.ikState.keys.has(23), false); assert.equal(physicsKeyStamp(f.payload.ikState.keys), physicsKeyStamp(new Map()));
+          assert(receipt.verification.limitations.includes('bounded-repair-rejected-regression'));
+        }
+      }
+      console.log('PASS evaluated protected pose/blend regression discards the repair and keeps the pre-repair candidate');
     }
     if (selected('commit-fences')) {
       for (const kind of ['target', 'document', 'gesture', 'physics', 'cancel']) {

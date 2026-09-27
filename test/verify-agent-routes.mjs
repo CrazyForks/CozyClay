@@ -911,6 +911,59 @@ console.log("agent routes verified");
 }
 
 {
+	// A scene action that opens another scene moves the editor's document
+	// identity. Every later mutation in the same turn must be admitted at the new
+	// open scene, not fail STALE_SCENE on the host the turn started with.
+	const { contextFixture, envelopeFixture, receiptFixture } = await import("./verify-studio-agent-protocol.mjs");
+	const identity = sceneId => ({ workspaceId: "tab-7", documentEpoch: "doc-3", sceneId, sceneEpoch: sceneId === "scene-main" ? "scene-open-4" : "scene-open-5" });
+	let open = identity("scene-main"), revision = 41;
+	const seen = [], reads = [];
+	const sameScene = host => host?.sceneId === open.sceneId && host?.sceneEpoch === open.sceneEpoch && host?.workspaceId === open.workspaceId;
+	const current = () => { const context = contextFixture(); Object.assign(context.host, open); context.revision.scene = revision; return context; };
+	const sceneFaux = createFakeModel();
+	const sceneHub = { command: async (name, args) => {
+		seen.push({ name, host: args.host, expectedRevision: args.expectedRevision });
+		if (!sameScene(args.host) || args.expectedRevision !== revision) return { ok: false, code: "STALE_SCENE", message: "The live document changed." };
+		if (name === "run_action") {
+			open = identity(args.args.args.sceneId); revision = 7;
+			return { ok: true, commandId: args.commandId, action: "scene.switch", kind: "document", status: "completed", affectedIds: [open.sceneId], summary: "Opened scene Rooftop.", host: open };
+		}
+		return { ...receiptFixture(), host: open, revision: { before: revision, after: ++revision } };
+	} };
+	const readContext = async host => {
+		reads.push(host.sceneId);
+		if (!sameScene(host)) throw Object.assign(new Error("This is not the requested document."), { code: "STALE_SCENE" });
+		return current();
+	};
+	let sceneServer;
+	const sceneHandler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: sceneFaux.models, fauxProvider: sceneFaux.fauxProvider, handlers: [], liveHub: sceneHub, studioRuntime: { readContext }, port: () => sceneServer.address().port });
+	sceneServer = createServer((req, res) => sceneHandler(req, res).catch((error) => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	const listening = once(sceneServer, "listening", { signal: AbortSignal.timeout(5000) });
+	sceneServer.listen(0, "127.0.0.1");
+	await listening;
+	const origin = `http://127.0.0.1:${sceneServer.address().port}`;
+	try {
+		sceneFaux.script([
+			{ type: "toolCall", id: "switch", name: "run_action", arguments: { action: "scene.switch", args: { sceneId: "scene-rooftop" } } },
+			{ type: "toolCall", id: "warm", name: "patch_elements", arguments: { ops: [{ target: { kind: "stage" }, set: { "keyLight.warmth": 0.3 } }] } },
+			{ type: "text", text: "done" },
+		]);
+		const response = await fetch(`${origin}/agent/turn`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ ...envelopeFixture(), sessionId: "00000000-0000-4000-8000-00000000e390", turnId: "00000000-0000-4000-8000-00000000e391", text: "open the rooftop scene and warm the key light", context: current(), model: "faux/scripted" }), signal: AbortSignal.timeout(5000) });
+		assert.equal(response.status, 200);
+		const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map((match) => JSON.parse(match[1]));
+		const done = frames.filter((frame) => frame.type === "tool.done");
+		assert.equal(done.find((frame) => frame.callId === "switch")?.ok, true, JSON.stringify(done));
+		assert.equal(done.find((frame) => frame.callId === "warm")?.ok, true, `the edit after the scene switch is admitted in the new scene: ${JSON.stringify({ seen, reads, done })}`);
+		assert.deepEqual(seen.at(-1), { name: "patch_elements", host: identity("scene-rooftop"), expectedRevision: 7 });
+		assert.equal(seen.filter((entry) => entry.name === "patch_elements").length, 1, "admitted first time, not after a STALE_SCENE retry");
+	} finally {
+		await sceneHandler.close();
+		await new Promise((resolve) => sceneServer.close(resolve));
+	}
+	console.log("PASS a Studio turn re-admits its later edits at the scene a scene action opened");
+}
+
+{
 	// Regression for #342: a Studio rejection receipt carries code/message at the
 	// top level, never under `error`. The tool.done event and the model's
 	// function_call_output must show that code, message and recovery hint — never
@@ -1769,5 +1822,221 @@ await run16rTwoTurnScenario();
 		await handler16y.close();
 		server16y.closeAllConnections();
 		await new Promise(resolve => server16y.close(resolve));
+	}
+}
+
+// A second generate_motion inside one user message is a generation limit, not
+// a sign-in failure: the model must report the first result and ask the user.
+{
+	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
+	let admissionsLimit = 0;
+	const runtimeLimit = {
+		readContext: async () => contextFixture(),
+		admit: () => ({ jobId: `limit-job-${++admissionsLimit}`, commandId: `limit-command-${admissionsLimit}`, state: "queued" }),
+		subscribe: () => () => {},
+		start: async () => ({ ok: true, status: "installed", mutated: true, receiptId: "limit-receipt" }),
+		stop: async () => ({ status: "already_applied" }),
+	};
+	const fauxLimit = createFakeModel();
+	const motionLimit = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } });
+	fauxLimit.script([motionLimit("limit-first"), motionLimit("limit-second"), [{ type: "text", text: "reported" }]]);
+	let serverLimit;
+	const handlerLimit = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxLimit.models, fauxProvider: fauxLimit.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async () => ({ ok: true }) }, studioRuntime: runtimeLimit, port: () => serverLimit.address().port });
+	serverLimit = createServer((req, res) => handlerLimit(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	serverLimit.listen(0, "127.0.0.1"); await once(serverLimit, "listening");
+	const originLimit = `http://127.0.0.1:${serverLimit.address().port}`;
+	try {
+		const turnLimit = { ...envelopeFixture(), sessionId: "00000000-0000-4000-8000-000000000191", turnId: "00000000-0000-4000-8000-000000000192", text: "make Alex walk" };
+		const response = await fetch(`${originLimit}/agent/turn`, { method: "POST", headers: { origin: originLimit, "content-type": "application/json" }, body: JSON.stringify(turnLimit), signal: AbortSignal.timeout(10000) });
+		assert.equal(response.status, 200);
+		const framesLimit = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
+		const done = framesLimit.filter(frame => frame.type === "tool.done");
+		assert.equal(admissionsLimit, 1, "the second generation in one user message is never admitted");
+		assert.equal(done.length, 2); assert.equal(done[0].ok, true);
+		assert.equal(done[1].ok, false);
+		assert.match(done[1].error, /GENERATION_LIMIT/, `the model sees the generation-limit code: ${done[1].error}`);
+		assert.match(done[1].error, /One motion generation per user message\. Report this result and ask the user before generating again\./);
+		assert.doesNotMatch(done[1].error, /AUTH_REQUIRED|sign in/i);
+		console.log("PASS a second generation in one user message fails with GENERATION_LIMIT, not AUTH_REQUIRED");
+	} finally {
+		await handlerLimit.close();
+		serverLimit.closeAllConnections();
+		await new Promise(resolve => serverLimit.close(resolve));
+	}
+}
+
+// A failed motion attempt that leaves the scene unchanged does not consume the
+// turn's generation, so the model can try the other generation path.
+{
+	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
+	let admissions = 0; const hubCalls = [];
+	const runtime = {
+		readContext: async () => contextFixture(),
+		admit: () => ({ jobId: `failed-job-${++admissions}`, commandId: `failed-command-${admissions}`, state: "queued" }),
+		subscribe: () => () => {},
+		start: async () => ({ ok: false, code: "CAPABILITY_MISSING", mutated: false }),
+		stop: async () => ({ status: "already_applied" }),
+	};
+	const faux = createFakeModel();
+	faux.script([
+		{ type: "toolCall", id: "failed-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } },
+		{ type: "toolCall", id: "fallback-action", name: "run_action", arguments: { action: "motion.generateAllBlocks" } },
+		[{ type: "text", text: "reported" }],
+	]);
+	let server;
+	const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux.models, fauxProvider: faux.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name, payload) => { hubCalls.push({ name, payload }); return { ok: true, action: payload.args?.action, kind: "job", status: "started" }; } }, studioRuntime: runtime, port: () => server.address().port });
+	server = createServer((req, res) => handler(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	server.listen(0, "127.0.0.1"); await once(server, "listening");
+	const origin = `http://127.0.0.1:${server.address().port}`;
+	try {
+		const turn = { ...envelopeFixture(), sessionId: "00000000-0000-4000-8000-000000000201", turnId: "00000000-0000-4000-8000-000000000202", text: "make Alex walk" };
+		const response = await fetch(`${origin}/agent/turn`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify(turn), signal: AbortSignal.timeout(10000) });
+		assert.equal(response.status, 200);
+		const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
+		const done = frames.filter(frame => frame.type === "tool.done");
+		assert.equal(done.length, 2);
+		assert.equal(done[0].ok, true);
+		assert.equal(done[1].ok, true, `the fallback generation reaches the hub after a no-mutation failure: ${done[1].error ?? ""}`);
+		assert.deepEqual(hubCalls.map(call => call.payload.args?.action), ["motion.generateAllBlocks"]);
+		console.log("PASS a no-mutation motion failure leaves generation available for run_action");
+	} finally {
+		await handler.close();
+		server.closeAllConnections();
+		await new Promise(resolve => server.close(resolve));
+	}
+}
+
+// Two failed attempts exhaust the retry budget; a third is refused with the
+// specific message explaining both failures.
+{
+	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
+	let admissions = 0;
+	const runtime = {
+		readContext: async () => contextFixture(),
+		admit: () => ({ jobId: `two-fail-job-${++admissions}`, commandId: `two-fail-command-${admissions}`, state: "queued" }),
+		subscribe: () => () => {},
+		start: async () => ({ ok: false, code: "CAPABILITY_MISSING", mutated: false }),
+		stop: async () => ({ status: "already_applied" }),
+	};
+	const motion = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } });
+	const faux = createFakeModel();
+	faux.script([motion("two-fail-first"), motion("two-fail-second"), motion("two-fail-third"), [{ type: "text", text: "reported" }]]);
+	let server;
+	const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux.models, fauxProvider: faux.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async () => ({ ok: true }) }, studioRuntime: runtime, port: () => server.address().port });
+	server = createServer((req, res) => handler(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	server.listen(0, "127.0.0.1"); await once(server, "listening");
+	const origin = `http://127.0.0.1:${server.address().port}`;
+	try {
+		const turn = { ...envelopeFixture(), sessionId: "00000000-0000-4000-8000-000000000203", turnId: "00000000-0000-4000-8000-000000000204", text: "make Alex walk" };
+		const response = await fetch(`${origin}/agent/turn`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify(turn), signal: AbortSignal.timeout(10000) });
+		assert.equal(response.status, 200);
+		const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
+		const done = frames.filter(frame => frame.type === "tool.done");
+		assert.equal(done.length, 3);
+		assert.equal(admissions, 2, "the third generation is refused before admission");
+		assert.equal(done[2].ok, false);
+		assert.match(done[2].error, /GENERATION_LIMIT/);
+		assert.match(done[2].error, /Two motion generation attempts already failed/);
+		console.log("PASS two failed motion attempts refuse a third generation in the same message");
+	} finally {
+		await handler.close();
+		server.closeAllConnections();
+		await new Promise(resolve => server.close(resolve));
+	}
+}
+
+// The one-generation rule holds across both generation paths: generate_motion
+// and a run_action job action (motion.generateAllBlocks) share one limit per
+// user message, in either order.
+for (const [index, [label, first, second]] of [
+	["generate_motion then generateAllBlocks", "generate_motion", "run_action"],
+	["generateAllBlocks then generate_motion", "run_action", "generate_motion"],
+].entries()) {
+	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
+	let admissionsMixed = 0; const hubMixed = [];
+	const runtimeMixed = {
+		readContext: async () => contextFixture(),
+		admit: () => ({ jobId: `mixed-job-${++admissionsMixed}`, commandId: `mixed-command-${admissionsMixed}`, state: "queued" }),
+		subscribe: () => () => {},
+		start: async () => ({ ok: true, status: "installed", mutated: true, receiptId: "mixed-receipt" }),
+		stop: async () => ({ status: "already_applied" }),
+	};
+	const call = (name, id) => name === "generate_motion"
+		? { type: "toolCall", id, name, arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } }
+		: { type: "toolCall", id, name, arguments: { action: "motion.generateAllBlocks" } };
+	const fauxMixed = createFakeModel();
+	fauxMixed.script([call(first, "mixed-first"), call(second, "mixed-second"), [{ type: "text", text: "reported" }]]);
+	const liveHubMixed = {
+		workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12",
+		command: async (name, payload) => {
+			hubMixed.push(name);
+			if (name === "run_action") return { ok: true, commandId: payload.commandId, action: payload.args.action, kind: "job", status: "started", affectedIds: ["char-alex"], summary: "Started generating every prompt block." };
+			return { ok: true };
+		},
+	};
+	let serverMixed;
+	const handlerMixed = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxMixed.models, fauxProvider: fauxMixed.fauxProvider, liveHub: liveHubMixed, studioRuntime: runtimeMixed, port: () => serverMixed.address().port });
+	serverMixed = createServer((req, res) => handlerMixed(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	serverMixed.listen(0, "127.0.0.1"); await once(serverMixed, "listening");
+	const originMixed = `http://127.0.0.1:${serverMixed.address().port}`;
+	try {
+		const turnMixed = { ...envelopeFixture(), sessionId: `00000000-0000-4000-8000-00000000019${3 + index * 2}`, turnId: `00000000-0000-4000-8000-00000000019${4 + index * 2}`, text: "make Alex walk" };
+		const response = await fetch(`${originMixed}/agent/turn`, { method: "POST", headers: { origin: originMixed, "content-type": "application/json" }, body: JSON.stringify(turnMixed), signal: AbortSignal.timeout(10000) });
+		assert.equal(response.status, 200);
+		const framesMixed = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
+		const done = framesMixed.filter(frame => frame.type === "tool.done");
+		assert.equal(done.length, 2, `${label}: both tool calls finish`);
+		assert.equal(done[0].ok, true, `${label}: the first generation starts: ${done[0].error ?? ""}`);
+		assert.equal(admissionsMixed + hubMixed.filter(name => name === "run_action").length, 1, `${label}: exactly one generation starts in one user message`);
+		assert.equal(done[1].ok, false, `${label}: the second generation is refused`);
+		assert.match(done[1].error, /GENERATION_LIMIT/, `${label}: the model sees the generation-limit code: ${done[1].error}`);
+		console.log(`PASS one generation per user message across both paths: ${label}`);
+	} finally {
+		await handlerMixed.close();
+		serverMixed.closeAllConnections();
+		await new Promise(resolve => serverMixed.close(resolve));
+	}
+}
+
+// The limit is per user message, not per wording: a user who says "다시해" in two
+// messages asked twice, so the second message generates again.
+{
+	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
+	let admissionsAgain = 0;
+	const runtimeAgain = {
+		readContext: async () => contextFixture(),
+		admit: () => ({ jobId: `again-job-${++admissionsAgain}`, commandId: `again-command-${admissionsAgain}`, state: "queued" }),
+		subscribe: () => () => {},
+		start: async () => ({ ok: true, status: "installed", mutated: true, receiptId: `again-receipt-${admissionsAgain}` }),
+		stop: async () => ({ status: "already_applied" }),
+	};
+	const fauxAgain = createFakeModel();
+	const motionAgain = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } });
+	fauxAgain.script([motionAgain("again-first"), [{ type: "text", text: "first" }], motionAgain("again-second"), [{ type: "text", text: "second" }]]);
+	let serverAgain;
+	const handlerAgain = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxAgain.models, fauxProvider: fauxAgain.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async () => ({ ok: true }) }, studioRuntime: runtimeAgain, port: () => serverAgain.address().port });
+	serverAgain = createServer((req, res) => handlerAgain(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+	serverAgain.listen(0, "127.0.0.1"); await once(serverAgain, "listening");
+	const originAgain = `http://127.0.0.1:${serverAgain.address().port}`;
+	try {
+		const sessionAgain = "00000000-0000-4000-8000-000000000197";
+		const turn = async (turnId, cookie) => {
+			const body = { ...envelopeFixture(), sessionId: sessionAgain, turnId, text: "다시해" };
+			const response = await fetch(`${originAgain}/agent/turn`, { method: "POST", headers: { origin: originAgain, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000) });
+			assert.equal(response.status, 200);
+			const ownerCookie = (response.headers.getSetCookie?.() ?? [response.headers.get("set-cookie")]).filter(Boolean).map((entry) => entry.split(";")[0]).join("; ");
+			const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
+			return { ownerCookie, done: frames.filter(frame => frame.type === "tool.done") };
+		};
+		const first = await turn("00000000-0000-4000-8000-000000000198");
+		assert.equal(first.done[0]?.ok, true, `the first message generates: ${first.done[0]?.error ?? ""}`);
+		const second = await turn("00000000-0000-4000-8000-000000000199", first.ownerCookie);
+		assert.equal(second.done[0]?.ok, true, `the same words in a later message generate again: ${second.done[0]?.error ?? ""}`);
+		assert.equal(admissionsAgain, 2, "each user message admits its own generation");
+		console.log("PASS the same words in a later user message may generate again");
+	} finally {
+		await handlerAgain.close();
+		serverAgain.closeAllConnections();
+		await new Promise(resolve => serverAgain.close(resolve));
 	}
 }

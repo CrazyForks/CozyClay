@@ -14,6 +14,7 @@ const builder = readFileSync(new URL("../src/workflow/WorkflowBuilder.jsx", impo
 const studio = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 const studioCss = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const { STUDIO_TOOL_FAMILIES, validateReceipt } = await import("../src/studio-agent-protocol.js");
+const { createAgentChatStore } = await import("../src/workflow/agent-client.js");
 
 let failures = 0;
 function expect(name, condition, detail = "") {
@@ -194,6 +195,10 @@ expect("progress is shown only when the runtime reported one", client.includes("
 expect("an unverified candidate needs an explicit acceptance", panel.includes("agent-job-accept") && panel.includes("Apply with warnings") && client.includes("explicitUnverifiedAcceptance: true"));
 expect("an unverified installation keeps its label", panel.includes('<span className="agent-job-badge">Unverified</span>'));
 expect("receipts and structured failures have their own cards", panel.includes("function ReceiptCard") && panel.includes("function FailureCard") && panel.includes("RECOVERY_COPY"));
+const restoredStore = createAgentChatStore({ transport: {}, newId: (() => { let id = 0; return () => `restored-${++id}`; })() });
+restoredStore.restore([{ kind: "user", text: "hello" }, { kind: "failure", code: "upstream", message: "Provider unavailable." }], "restored-session");
+expect("restored turn errors become existing failure items", restoredStore.getState().items.some((item) => item.kind === "failure" && item.failure.code === "upstream" && item.failure.message === "Provider unavailable."));
+expect("restored errors render through the existing FailureCard", /item\.kind === "failure"\) return <div className="agent-row"[^]*?<FailureCard failure=\{item\.failure\}/.test(panel));
 expect("receipts are validated before they are rendered as success", client.includes("validateReceipt") && client.includes('kind: "failure", id: newId()'));
 expect("image actions are acknowledged by the host, never assumed", client.includes("export function requestHostImageAction") && client.includes("cozyclay:agent-image-result") && panel.includes("store.applyImage(image.id)"));
 expect("an unclaimed image action fails instead of claiming a placement", client.includes("No editor accepted the image."));
@@ -891,6 +896,42 @@ expect("no timer drives the auth transition", !/set(Interval|Timeout)\([^)]*(sig
 		if (original) Object.defineProperty(globalThis, "localStorage", original);
 		else delete globalThis.localStorage;
 	}
+}
+
+// --- an installed-with-warnings motion, rendered --------------------------
+// The job and receipt cards are rendered from the panel's own source: the
+// function declarations are cut out, run through Vite's oxc JSX transform and
+// fed the same icons and client helpers the panel imports.
+{
+	const { parseSync } = await import("rolldown/experimental");
+	const { transformWithOxc } = await import("vite");
+	const React = await import("react");
+	const { renderToStaticMarkup } = await import("react-dom/server");
+	const scope = { React, ...(await import("react-icons/fi")), ...(await import("../src/workflow/agent-client.js")) };
+	const names = Object.keys(scope).filter((name) => /^[A-Za-z_$][\w$]*$/.test(name) && name !== "default");
+	const cards = parseSync("AgentPanel.jsx", panel).program.body
+		.filter((node) => node.type === "FunctionDeclaration" && ["StatusDot", "JobCard", "ReceiptCard"].includes(node.id.name))
+		.map((node) => panel.slice(node.start, node.end)).join("\n");
+	const { code } = await transformWithOxc(`function cards() {\n${cards}\nreturn { JobCard, ReceiptCard };\n}`, "cards.jsx", { lang: "jsx", jsx: { runtime: "classic" } });
+	const { JobCard, ReceiptCard } = new Function(...names, `${code}\nreturn cards();`)(...names.map((name) => scope[name]));
+	const render = (component, props) => renderToStaticMarkup(React.createElement(component, props));
+	const warnings = [
+		{ code: "FLOOR_PENETRATION", message: "Feet sink 3.1 cm into the floor (limit 2.0 cm)." },
+		{ code: "COLLISION_FRAMES", count: 4, message: "4 frames collide with the body, cast or scene." },
+	];
+	const receipt = (status) => ({ ok: true, status: "installed", receiptId: "receipt-1", warnings: status === "unverified" ? warnings : [], acceptance: status === "unverified" ? "advisory-policy" : undefined,
+		verification: { status, limitations: [] }, installed: { characterId: "actor-a", durationSeconds: 2 } });
+	const warned = render(ReceiptCard, { item: { receiptId: "receipt-1", receipt: receipt("unverified"), summary: "Installed 2s of motion on actor-a — installed unverified" } });
+	expect("an unverified install reads Installed with warnings", warned.includes("Installed with warnings"), warned);
+	expect("an unverified install lists every warning", warnings.every((warning) => warned.includes(warning.message)), warned);
+	// The pane has no direct Undo path into the Studio editor, so it names the
+	// two that exist instead of drawing a button.
+	expect("an unverified install says how to undo it", warned.includes("Undo with Cmd+Z or ask the agent") && !warned.includes("<button"), warned);
+	const clean = render(ReceiptCard, { item: { receiptId: "receipt-2", receipt: receipt("verified"), summary: "Installed 2s of motion on actor-a — verified over 48 frames" } });
+	expect("a verified install carries no warning copy", !clean.includes("Installed with warnings") && !clean.includes("Undo with Cmd+Z"), clean);
+	const job = (status) => render(JobCard, { job: { jobId: "job-1", state: "installed", verification: { status, limitations: [] }, acceptance: null }, onStop() {}, onAccept() {} });
+	expect("an unverified installed job reads Installed with warnings", job("unverified").includes("Installed with warnings"), job("unverified"));
+	expect("a verified installed job reads Installed", job("verified").includes(">Installed<") && !job("verified").includes("with warnings"), job("verified"));
 }
 
 if (failures) {

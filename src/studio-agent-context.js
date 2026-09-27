@@ -7,7 +7,7 @@ const escapeContext = context => JSON.stringify(context).replaceAll("<", "\\u003
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
 export function encodeStudioContext(context) {
 	const encoded = escapeContext(validateStudioContext(context));
-	if (utf8ByteLength(encoded) > STUDIO_CONTEXT_MAX_BYTES) fail("CONTEXT_TOO_LARGE", "Escaped Studio context exceeds 16 KiB.");
+	if (utf8ByteLength(encoded) > STUDIO_CONTEXT_MAX_BYTES) fail("CONTEXT_TOO_LARGE", `Escaped Studio context exceeds ${STUDIO_CONTEXT_MAX_BYTES / 1024} KiB.`);
 	return encoded;
 }
 export function buildStudioHistoryItem(context, userText) {
@@ -19,15 +19,20 @@ export function studioCacheKey(context, projectionKind = "scene") {
 	if (typeof projectionKind !== "string" || !projectionKind || projectionKind.length > 120) fail("INVALID_ARGUMENT", "Projection kind must be a bounded string.");
 	return JSON.stringify([c.host.workspaceId, c.host.documentEpoch, c.host.sceneEpoch, c.revision.scene, projectionKind]);
 }
+// An offset into the id-ordered entity listing of one open scene. It names no
+// revision, so an unrelated edit leaves it usable; reopening the scene or
+// document retires it.
 export function studioEntityCursor(context, offset) {
 	if (!Number.isSafeInteger(offset) || offset < 0) fail("INVALID_ARGUMENT", "Cursor offset must be nonnegative.");
-	return JSON.stringify([context.host.workspaceId, context.host.documentEpoch, context.host.sceneEpoch, context.revision.scene, offset]);
+	return JSON.stringify([context.host.workspaceId, context.host.documentEpoch, context.host.sceneEpoch, offset]);
 }
+const RESTART_PAGING = "re-run inspect_studio with the same scope and filter but WITHOUT a cursor to start from the first page";
 export function validateStudioCursor(cursor, context) {
 	let parts;
-	try { parts = JSON.parse(cursor); } catch { fail("STALE_CURSOR", "Malformed projection cursor."); }
-	if (!Array.isArray(parts) || parts.length !== 5 || !Number.isSafeInteger(parts[4]) || parts[4] < 0 || studioEntityCursor(context, parts[4]) !== cursor) fail("STALE_CURSOR", "Cursor belongs to an earlier projection.");
-	return parts[4];
+	try { parts = JSON.parse(cursor); } catch { fail("STALE_CURSOR", `Unreadable cursor; ${RESTART_PAGING}.`); }
+	if (!Array.isArray(parts) || parts.length !== 4 || !Number.isSafeInteger(parts[3]) || parts[3] < 0) fail("STALE_CURSOR", `Unreadable cursor; ${RESTART_PAGING}.`);
+	if (studioEntityCursor(context, parts[3]) !== cursor) fail("STALE_CURSOR", `The cursor belongs to another document or scene opening; ${RESTART_PAGING}.`);
+	return parts[3];
 }
 
 // Caller supplies a projection of authoritative refs, not the project document.
@@ -56,14 +61,24 @@ export function buildStudioContext(input) {
 	const distance = e => anchor && e.position ? (e.position.x - anchor.x) ** 2 + (e.position.y - anchor.y) ** 2 + (e.position.z - anchor.z) ** 2 : 0;
 	const compareIds = (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 	raw.entities.sort((a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity) || distance(a) - distance(b) || compareIds(a, b));
-	const total = raw.entities.length;
+	const total = raw.entities.length, everyEntity = raw.entities;
 	raw.entities = raw.entities.slice(0, STUDIO_CONTEXT_LIMITS.entities);
+	// The compact index names every entity (capped), detailed rows first so the
+	// cap never drops one, then listed in stable id order.
+	const detailed = new Set(raw.entities.map(e => e.id));
+	const cm = value => { const rounded = Math.round(value * 100) / 100; return rounded === 0 ? 0 : rounded; };
+	const indexRow = e => ({ id: e.id, kind: e.kind, ...(e.name ? { name: [...e.name].slice(0, 60).join("") } : {}),
+		...(e.position ? { position: { x: cm(e.position.x), y: cm(e.position.y), z: cm(e.position.z) } } : {}) });
+	raw.entityIndex = [...raw.entities, ...everyEntity.filter(e => !detailed.has(e.id)).sort(compareIds)]
+		.slice(0, STUDIO_CONTEXT_LIMITS.entityIndex).sort(compareIds).map(indexRow);
 	raw.shots.sort((a, b) => Number(b.id === raw.shot?.id) - Number(a.id === raw.shot?.id) || compareIds(a, b));
 	raw.shotsTruncated = raw.shots.length > STUDIO_CONTEXT_LIMITS.shots;
 	raw.shots = raw.shots.slice(0, STUDIO_CONTEXT_LIMITS.shots);
 	raw.assets = raw.assets.slice(0, STUDIO_CONTEXT_LIMITS.assets);
 	raw.recentReceipts = raw.recentReceipts.slice(0, STUDIO_CONTEXT_LIMITS.recentReceipts);
-	const page = () => { raw.entityPage = { returned: raw.entities.length, total, truncated: raw.entities.length < total, nextCursor: raw.entities.length < total ? studioEntityCursor(raw, raw.entities.length) : null }; };
+	// Detailed rows are chosen by relevance, not id order, so the continuation
+	// is the first page of the full id-ordered listing.
+	const page = () => { raw.entityPage = { returned: raw.entities.length, total, truncated: raw.entities.length < total, nextCursor: raw.entities.length < total ? studioEntityCursor(raw, 0) : null }; };
 	page();
 	if (utf8ByteLength(escapeContext(raw)) > STUDIO_CONTEXT_MAX_BYTES) {
 		// Compact every mandatory target before dropping any detail or bystander.
@@ -72,6 +87,9 @@ export function buildStudioContext(input) {
 		while (raw.shots.length && raw.shots.at(-1).id !== raw.shot?.id && utf8ByteLength(escapeContext(raw)) > STUDIO_CONTEXT_MAX_BYTES) { raw.shots.pop(); raw.shotsTruncated = true; }
 		while (raw.assets.length && utf8ByteLength(escapeContext(raw)) > STUDIO_CONTEXT_MAX_BYTES) raw.assets.pop();
 		while (raw.recentReceipts.length && utf8ByteLength(escapeContext(raw)) > STUDIO_CONTEXT_MAX_BYTES) raw.recentReceipts.pop();
+		// Index rows go last, and never one for a detailed entity.
+		const kept = new Set(raw.entities.map(e => e.id));
+		for (let i = raw.entityIndex.length - 1; i >= 0 && utf8ByteLength(escapeContext(raw)) > STUDIO_CONTEXT_MAX_BYTES; i--) if (!kept.has(raw.entityIndex[i].id)) raw.entityIndex.splice(i, 1);
 	}
 	encodeStudioContext(raw); // Never slice JSON bytes or silently lose a target.
 	return freezeStudioData(raw);

@@ -5,6 +5,7 @@ import { buildPatchSchema, patchValueSchema, STUDIO_PATCHABLE_PATHS, STUDIO_PATC
 import { createCharacterEntry, createSceneStage } from "../src/scenes.js";
 import { normalizeSceneObject, updateSceneObject } from "../src/scene-objects.js";
 import { createShotAuthoringDocument } from "../src/shot-authoring.js";
+import { STUDIO_ACTION_IDS } from "../src/studio-actions.js";
 
 const normalizers = {
 	createCharacterEntry,
@@ -13,7 +14,7 @@ const normalizers = {
 	repairCamera: (camera) => createShotAuthoringDocument({ frameCount: 96, shots: [{ id: "shot-test", startFrame: 0, endFrame: 95, camera }] }).shots[0].camera,
 };
 const allowedTypes = new Set(["number", "string", "boolean", "vec3", "color", "enum", "id", "image", "array"]);
-const allowedExposure = new Set(["patch", "composite", "readonly", "todo"]);
+const allowedExposure = new Set(["patch", "action", "composite", "readonly", "todo"]);
 const allowedDomains = new Set(["cast", "objects", "shot", "stage", null]);
 const allowedNormalizers = new Set([...Object.keys(normalizers), null]);
 
@@ -29,6 +30,12 @@ function validate(entries) {
 		assert.ok(allowedDomains.has(entry.undoDomain), `unknown undo domain: ${entry.path}`);
 		assert.ok(allowedNormalizers.has(entry.normalizer), `unknown normalizer: ${entry.normalizer}`);
 		if (entry.type === "enum") assert.ok(Array.isArray(entry.enum) && entry.enum.length > 0, entry.path);
+		// An element the agent reaches through the action registry names the
+		// registered action ids that edit it; no other exposure lists actions.
+		if (entry.agentExposure === "action") {
+			assert.ok(Array.isArray(entry.actions) && entry.actions.length > 0, `action element without actions: ${entry.path}`);
+			for (const id of entry.actions) assert.ok(STUDIO_ACTION_IDS.includes(id), `unregistered action ${id} on ${entry.path}`);
+		} else assert.equal(entry.actions, undefined, `actions on a non-action element: ${entry.path}`);
 		if (entry.type === "vec3") {
 			for (const axis of ["x", "y", "z"]) {
 				if (entry.min !== undefined) assert.ok(Number.isFinite(entry.min[axis]), `${entry.path}.${axis}`);
@@ -47,10 +54,30 @@ validate(STUDIO_ELEMENTS);
 assert.throws(() => validate([STUDIO_ELEMENTS[0], STUDIO_ELEMENTS[0]]), /duplicate path/);
 assert.throws(() => validate([{ ...STUDIO_ELEMENTS[0], normalizer: "unknown" }]), /unknown normalizer/);
 assert.throws(() => validate([{ ...STUDIO_ELEMENTS[0], undoDomain: "unknown" }]), /unknown undo domain/);
+assert.throws(() => validate([{ ...elementByPath("shot.crud"), actions: ["shot.teleport"] }]), /unregistered action/);
+assert.throws(() => validate([{ ...elementByPath("shot.crud"), actions: [] }]), /without actions/);
+assert.equal(elementByPath("shot.crud").agentExposure, "action");
+assert.deepEqual([...elementByPath("shot.crud").actions].sort(), ["shot.create", "shot.duplicate", "shot.remove", "shot.reorder", "shot.setRange", "shot.split"]);
+// The capabilities that were agent exposure gaps now run through registered actions.
+const exposedThroughActions = {
+	"character.waypoints": ["character.addWaypoint", "character.clearWaypoints", "character.moveWaypoint", "character.removeWaypoint"],
+	"character.ikKeys": ["character.clearIkKeys", "character.removeIkKey", "character.setIkKey"],
+	"object.attach": ["object.attach", "object.detach"],
+	"shot.cameraRail": ["shot.clearCameraRail", "shot.setCameraRail"],
+	"view.partColoursGuideModeInset": ["view.setGuideMode", "view.setInset", "view.setPartColours"],
+	scenes: ["scene.create", "scene.delete", "scene.duplicate", "scene.rename", "scene.switch"],
+	project: ["project.save"],
+	"object.cutout": ["asset.import"],
+};
+for (const [path, actions] of Object.entries(exposedThroughActions)) {
+	assert.equal(elementByPath(path).agentExposure, "action", `${path} is exposed through actions`);
+	assert.deepEqual([...elementByPath(path).actions].sort(), actions, `${path} actions`);
+}
 assert.ok(Object.isFrozen(STUDIO_ELEMENTS));
 for (const entry of STUDIO_ELEMENTS) {
 	assert.ok(Object.isFrozen(entry), entry.path);
 	if (entry.enum) assert.ok(Object.isFrozen(entry.enum), entry.path);
+	if (entry.actions) assert.ok(Object.isFrozen(entry.actions), entry.path);
 	assert.equal(elementByPath(entry.path), entry);
 }
 assert.equal(elementByPath("missing.path"), undefined);
@@ -84,9 +111,10 @@ function makeCase(entry) {
 		if (field === "hidden") input.hidden = true;
 		if (field === "model") input.model = "x-bot-tpose";
 		if (field === "promptBlocks") input.layer.promptClips = [{ id: "prompt-authored", startFrame: 12, endFrame: 36, prompt: "Walk forward" }];
+		if (field === "waypoints") input.layer.waypoints = [{ id: "waypoint-authored", frame: 24, x: 1, z: 2, heading: null }];
 		if (field === "motionRef.url") input.motionRef.url = "https://example.test/authored.npz";
 		if (field === "motionRef.motionId") input.motionRef = { motionId: "a".repeat(64), url: "https://example.test/authored.npz" };
-		return { input, output: createCharacterEntry(input), read: (output) => field === "position" ? [output.x, output.y, output.z] : field === "promptBlocks" ? output.layer.promptClips : field === "pose" ? output.pose?.id ?? null : get(output, field) };
+		return { input, output: createCharacterEntry(input), read: (output) => field === "position" ? [output.x, output.y, output.z] : field === "promptBlocks" ? output.layer.promptClips : field === "waypoints" ? output.layer.waypoints : field === "pose" ? output.pose?.id ?? null : get(output, field) };
 	}
 	if (entry.normalizer === "createSceneStage") {
 		const input = { characters: [], shotAspect: "16:9", keyLight: { x: 6, y: 9, z: 4, intensity: 1.12, warmth: 0.5 } };
@@ -109,6 +137,7 @@ function makeCase(entry) {
 		if (field === "name") input.name = "Authored prop";
 		if (field === "color") input.color = "#a1b2c3";
 		if (field === "parent") input.parent = "parent-object";
+		if (field === "attach") input.attach = { characterId: "char-test", bone: "rightHand" };
 		if (field === "path") input.path = { points: [{ x: 1, y: 0, z: 2 }, { x: 4, y: 1, z: 5 }] };
 		if (field === "cutout") Object.assign(input, { renderer: "cutout", assetId: "image-authored", aspect: 1.5, height: 2 });
 		return {
@@ -135,6 +164,7 @@ const expected = new Map([
 	["character.hidden", true],
 	["character.model", "x-bot-tpose"],
 	["character.promptBlocks", [{ id: "prompt-authored", startFrame: 12, endFrame: 36, prompt: "Walk forward" }]],
+	["character.waypoints", [{ id: "waypoint-authored", frame: 24, x: 1, z: 2, heading: null }]],
 	["character.motionRef.url", "https://example.test/authored.npz"],
 	["character.motionRef.motionId", "a".repeat(64)],
 	["character.tint", "#a1b2c3"],
@@ -151,6 +181,7 @@ const expected = new Map([
 	["stage.style", "handheld 16mm, sodium streetlight"],
 	["stage.hasEnvSheet", true],
 	["shot.targetModel", "seedance-2.5"],
+	["shot.cameraRail", rail],
 	["object.renderer", "sphere"],
 	["object.position", [1.25, 2.5, -3.75]],
 	["object.rotation", [15, 25, -35]],
@@ -158,6 +189,7 @@ const expected = new Map([
 	["object.name", "Authored prop"],
 	["object.color", "#a1b2c3"],
 	["object.parent", "parent-object"],
+	["object.attach", { characterId: "char-test", bone: "rightHand" }],
 	["object.path", { points: [{ x: 1, y: 0, z: 2 }, { x: 4, y: 1, z: 5 }], timing: null, speed: 0, faceTravel: true, loop: false, extend: false }],
 	["object.cutout", "image-authored"],
 ]);
@@ -343,3 +375,5 @@ assert.equal(cameraKeyFrame(7), 7, "camera key frame midpoint survives exactly")
 assert.equal(cameraKeyFrame(11), 10, "camera key frame above shot range clamps to shot end");
 
 console.log(`elements=${STUDIO_ELEMENTS.length} persisted-verified=${verified} patchable=${patchable} todo=${todo}`);
+// Every authored capability reaches the agent: no exposure gap is left.
+assert.equal(todo, 0, "no element is left agentExposure todo");

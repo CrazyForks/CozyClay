@@ -21,7 +21,7 @@ const sessionDir = mkdtempSync(join(tmpdir(), "cozyclay-agent-sessions-"));
 process.env.COZYCLAY_AGENT_SESSIONS_DIR = sessionDir;
 process.on("exit", () => rmSync(sessionDir, { recursive: true, force: true }));
 
-const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision"]);
+const CASES = new Set(["studio-tool-catalogue", "surface-context-and-images", "stale-host-and-post-install-rate-limit", "sse-disconnect-reconnect", "sequential-mutations-revision-chain", "external-revision-bump-refuses", "sequential-same-target-token-rotation", "rejection-receipt-surfaces-reason", "inspect-readmits-revision", "stale-scene-readmits-revision", "uncertain-apply-readmits-revision", "run-action-admission-and-generation-limit", "stale-scene-readmits-any-family", "run-action-job-timeout", "non-generation-job-skips-generation-gate", "scene-change-readmits-host", "ai-video-motion-shares-generation-gate"]);
 const index = process.argv.indexOf("--case");
 const selected = index >= 0 ? process.argv[index + 1] : null;
 if (selected && !CASES.has(selected)) { console.error(`unknown --case ${selected}`); process.exit(2); }
@@ -130,10 +130,31 @@ for (const scenario of ["inspect-readmits-revision", "stale-scene-readmits-revis
   console.log(`PASS ${scenario}`);
 }
 
+if (shouldRun("stale-scene-readmits-any-family")) {
+  const { createStudioTools } = await import("../bin/agent/studio-tools.mjs");
+  // A STALE_SCENE re-admits whichever family reported it and however it
+  // arrived: as a rejection receipt or as a thrown error.
+  const calls = [["verify_result", { receiptId: "receipt-1", checks: ["placement"] }], ["operate_studio", { frame: 3 }], ["inspect_studio", { scope: "scene" }]];
+  for (const shape of ["receipt", "thrown"]) {
+    for (const [name, args] of calls) {
+      let live = 7, refreshes = 0;
+      const admission = { host: host(), revision: 5, commandId: uuid, refresh: async () => { refreshes++; admission.revision = live; } };
+      const liveHub = { async command() {
+        if (shape === "thrown") throw Object.assign(new Error("Authored state changed; obtain fresh intent."), { code: "STALE_SCENE" });
+        return { ok: false, code: "STALE_SCENE", phase: "admission", mutated: false, recovery: { action: "inspect", retryAllowed: false } };
+      } };
+      const invoke = createStudioTools({ liveHub, workspaceHandle: "handle-12", session: { admission } }).internal.invoke;
+      await assert.rejects(invoke(name, args), { code: "STALE_SCENE" });
+      assert.deepEqual({ refreshes, revision: admission.revision }, { refreshes: 1, revision: live }, `a ${shape} STALE_SCENE from ${name} re-admits at the live revision`);
+    }
+  }
+  console.log("PASS a STALE_SCENE from any Studio family, receipt or thrown, re-admits the live revision");
+}
+
 if (shouldRun("studio-tool-catalogue")) {
   const { createStudioTools, studioToolSchemas } = await import("../bin/agent/studio-tools.mjs");
-  const families = ["inspect_studio", "operate_studio", "arrange_objects", "arrange_characters", "patch_elements", "frame_shot", "generate_motion", "verify_result", "undo_edit"];
-  assert.deepEqual([...STUDIO_TOOL_FAMILIES], families, "the Studio panel sees exactly these nine families");
+  const families = ["inspect_studio", "operate_studio", "arrange_objects", "arrange_characters", "patch_elements", "frame_shot", "generate_motion", "verify_result", "undo_edit", "run_action"];
+  assert.deepEqual([...STUDIO_TOOL_FAMILIES], families, "the Studio panel sees exactly these ten families");
   assert.deepEqual(studioToolSchemas().map(tool => tool.name), families);
   const sent = [];
   const tools = createStudioTools({ liveHub: { command: async (name, payload) => { sent.push({ name, payload }); return { ok: true, commandId: payload.commandId, receiptId: "receipt-1", status: "applied", revision: { before: 1, after: 2 } }; } }, workspaceHandle: "handle-1",
@@ -149,7 +170,7 @@ if (shouldRun("studio-tool-catalogue")) {
   assert.equal(sent[0].payload.expectedRevision, 1);
   // Mutation tool descriptions must teach receipt semantics: dropped paths,
   // landed delta values, and STALE_SCENE inspect-then-resubmit recovery.
-  const mutations = ["operate_studio", "arrange_objects", "arrange_characters", "patch_elements", "frame_shot", "verify_result", "undo_edit"];
+  const mutations = ["operate_studio", "arrange_objects", "arrange_characters", "patch_elements", "frame_shot", "verify_result", "undo_edit", "run_action"];
   for (const tool of studioToolSchemas()) {
     if (!mutations.includes(tool.name)) continue;
     assert.ok(tool.description.includes("droppedPaths"), `${tool.name} description names ops[].droppedPaths`);
@@ -167,7 +188,166 @@ if (shouldRun("studio-tool-catalogue")) {
   assert.deepEqual(parsed.ops[0].droppedPaths, ["object.scale"]);
   assert.equal(parsed.delta[0].after.patched.find(p => p.path === "object.scale").vec.y, 0.1);
   assert.ok(rendered.length < 8000, "sanity: this fixture is far under the 8000-byte receipt cap");
-  console.log("PASS the Studio tool list is exactly the nine families and patch_elements is admitted");
+  console.log("PASS the Studio tool list is exactly the ten families and patch_elements is admitted");
+}
+
+if (shouldRun("run-action-admission-and-generation-limit")) {
+  const { createStudioTools } = await import("../bin/agent/studio-tools.mjs");
+  const { LiveHub } = await import("../mcp/live-hub.mjs");
+  // The hub treats a lost run_action acknowledgement as a possibly applied mutation.
+  assert.equal(LiveHub.commandMayMutate("run_action"), true);
+  assert.equal(LiveHub.commandTimeoutMs("run_action"), 30_000);
+  const sent = []; let commandNumber = 0;
+  const admission = { commandId: () => `cmd-${++commandNumber}`, host: { workspaceId: "tab-7", documentEpoch: "doc-3", sceneId: "scene-main", sceneEpoch: "scene-open-4" }, revision: 4, refresh: async () => {} };
+  const liveHub = { command: async (name, payload) => {
+    sent.push({ name, payload });
+    if (payload.args?.action === "motion.generateAllBlocks") return { ok: true, commandId: payload.commandId, action: "motion.generateAllBlocks", kind: "job", status: "started", affectedIds: ["char-alex"], summary: "Started generating from 2 prompt blocks." };
+    return { ok: true, commandId: payload.commandId, receiptId: `receipt-${commandNumber}`, status: "applied", action: payload.args.action, revision: { before: admission.revision, after: admission.revision + 1 } };
+  } };
+  const tools = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission } });
+  const run = tools.find(tool => tool.name === "run_action");
+  assert.ok(run, "run_action is an agent tool");
+  const applied = await run.handler({ action: "shot.create", args: {} });
+  assert.equal(applied.status, "applied");
+  // run_action is admitted like every other mutation family.
+  assert.deepEqual(sent[0], { name: "run_action", payload: { name: "run_action", args: { action: "shot.create", args: {} }, commandId: "cmd-1", host: admission.host, expectedRevision: 4 } });
+  assert.equal(admission.revision, 5, "the receipt's revision admits the next command");
+  await assert.rejects(run.handler({ action: "shot create" }), { code: "INVALID_ARGUMENT" });
+  assert.equal(sent.length, 1, "a malformed action never reaches the editor");
+  // A job action is a generation: one per user message, like generate_motion.
+  const started = await run.handler({ action: "motion.generateAllBlocks" });
+  assert.equal(started.status, "started");
+  await assert.rejects(run.handler({ action: "motion.generateAllBlocks" }), { code: "GENERATION_LIMIT" });
+  assert.equal(sent.length, 2, "the second generation never reaches the editor");
+  await run.handler({ action: "shot.create" });
+  assert.equal(sent.length, 3, "other actions still run after a generation");
+  // A new turn builds new tools and may generate again.
+  const nextTurn = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission } });
+  assert.equal((await nextTurn.find(tool => tool.name === "run_action").handler({ action: "motion.generateAllBlocks" })).status, "started");
+  console.log("PASS run_action is admitted as a mutation and a job action counts as the turn's generation");
+}
+
+if (shouldRun("run-action-job-timeout")) {
+  const { createStudioTools } = await import("../bin/agent/studio-tools.mjs");
+  const { MAX_COMMAND_TIMEOUT_MS } = await import("../mcp/live-hub.mjs");
+  const { STUDIO_ACTIONS } = await import("../src/studio-actions.js");
+  // A long-running action carries its declared timeout through the hub, which
+  // bounds it by MAX_COMMAND_TIMEOUT_MS; every other command keeps the default.
+  const declared = STUDIO_ACTIONS.filter(action => action.timeoutMs !== undefined);
+  assert.ok(declared.some(action => action.id === "export.shotVideo"), "the shot video export declares its timeout");
+  for (const action of declared) assert.ok(action.timeoutMs <= MAX_COMMAND_TIMEOUT_MS, `${action.id} fits the hub ceiling`);
+  const calls = []; let commandNumber = 0;
+  const admission = { commandId: () => `cmd-${++commandNumber}`, host: { workspaceId: "tab-7", documentEpoch: "doc-3", sceneId: "scene-main", sceneEpoch: "scene-open-4" }, revision: 4, refresh: async () => {} };
+  const liveHub = { command: async (name, payload, handle, ...options) => {
+    calls.push({ action: payload.args.action, options });
+    if (payload.args.action === "export.shotVideo") return { ok: true, commandId: payload.commandId, action: "export.shotVideo", kind: "job", status: "completed", affectedIds: [], summary: "Exported.", output: { fileName: "cozyclay-shot.mp4", frameCount: 24 } };
+    return { ok: true, commandId: payload.commandId, receiptId: "receipt-1", status: "applied", action: payload.args.action, revision: { before: admission.revision, after: admission.revision + 1 } };
+  } };
+  const run = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission } }).find(tool => tool.name === "run_action");
+  assert.deepEqual((await run.handler({ action: "export.shotVideo" })).output, { fileName: "cozyclay-shot.mp4", frameCount: 24 });
+  await run.handler({ action: "shot.create" });
+  assert.deepEqual(calls, [{ action: "export.shotVideo", options: [{ timeoutMs: 300_000 }] }, { action: "shot.create", options: [] }]);
+  console.log("PASS a long-running run_action carries its declared hub timeout");
+}
+
+if (shouldRun("non-generation-job-skips-generation-gate")) {
+  const { createStudioTools } = await import("../bin/agent/studio-tools.mjs");
+  const { STUDIO_ACTIONS } = await import("../src/studio-actions.js");
+  // Only a declared motion generation takes the message's one generation: an
+  // export is a job too, but neither consumes nor is blocked by that gate.
+  const sent = []; let commandNumber = 0;
+  const admission = { commandId: () => `cmd-${++commandNumber}`, host: { workspaceId: "tab-7", documentEpoch: "doc-3", sceneId: "scene-main", sceneEpoch: "scene-open-4" }, revision: 4, refresh: async () => {} };
+  const liveHub = { command: async (name, payload) => {
+    sent.push(payload.args.action);
+    return payload.args.action === "motion.generateAllBlocks"
+      ? { ok: true, commandId: payload.commandId, action: "motion.generateAllBlocks", kind: "job", status: "started", affectedIds: ["char-alex"], summary: "Started." }
+      : { ok: true, commandId: payload.commandId, action: payload.args.action, kind: "job", status: "completed", affectedIds: [], summary: "Exported.", output: { fileName: "cozyclay-shot.mp4", frameCount: 24 } };
+  } };
+  const tools = generation => createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission, generation } }).find(tool => tool.name === "run_action");
+  const after = { used: false }, run = tools(after);
+  assert.equal((await run.handler({ action: "motion.generateAllBlocks" })).status, "started");
+  const exported = await run.handler({ action: "export.shotVideo" }).catch(error => error);
+  assert.equal(exported.status, "completed", `an export still runs after the generation: ${exported.code ?? ""} ${exported.message ?? ""}`);
+  await assert.rejects(run.handler({ action: "motion.generateAllBlocks" }), { code: "GENERATION_LIMIT" });
+  const before = { used: false }, first = tools(before);
+  assert.equal((await first.handler({ action: "export.shotVideo" })).status, "completed");
+  assert.equal(before.used, false, "an export does not take the message's generation");
+  assert.equal((await first.handler({ action: "motion.generateAllBlocks" })).status, "started");
+  assert.deepEqual(sent, ["motion.generateAllBlocks", "export.shotVideo", "export.shotVideo", "motion.generateAllBlocks"]);
+  // The gate reads the declaration's flag, carried by exactly one action.
+  assert.deepEqual(STUDIO_ACTIONS.filter(action => action.generation === "motion").map(action => action.id), ["motion.generateAllBlocks", "motion.generateFromVideo"]);
+  console.log("PASS a job that is not a motion generation neither takes nor is blocked by the generation gate");
+}
+
+if (shouldRun("ai-video-motion-shares-generation-gate")) {
+  const { createStudioTools } = await import("../bin/agent/studio-tools.mjs");
+  // AI-video motion spends the account's quota and is a motion generation: it
+  // shares the message's one generation with the prompt-block generation (and
+  // generate_motion, through the route's gate), and waits for its clip under
+  // its declared hub timeout. The Send-to-AI package calls no service and
+  // neither takes nor meets that gate.
+  const sent = []; let commandNumber = 0;
+  const admission = { commandId: () => `cmd-${++commandNumber}`, host: { workspaceId: "tab-7", documentEpoch: "doc-3", sceneId: "scene-main", sceneEpoch: "scene-open-4" }, revision: 4, refresh: async () => {} };
+  const answers = {
+    "motion.generateFromVideo": { kind: "job", status: "completed", affectedIds: [], summary: "Ingested.", output: { videoUrl: "https://cdn.example.test/fal-act.mp4" } },
+    "motion.generateAllBlocks": { kind: "job", status: "started", affectedIds: ["char-alex"], summary: "Started." },
+    "ai.prepareShot": { kind: "job", status: "completed", affectedIds: [], summary: "Prepared.", output: { prompt: "A still.", mode: "image" } },
+  };
+  const liveHub = { command: async (name, payload, handle, ...options) => {
+    sent.push({ action: payload.args.action, options });
+    return { ok: true, commandId: payload.commandId, action: payload.args.action, ...answers[payload.args.action] };
+  } };
+  const run = gate => createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission, generation: gate } }).find(tool => tool.name === "run_action");
+  const video = { action: "motion.generateFromVideo", args: { instruction: "wave both hands" } };
+  const first = { used: false }, turn = run(first);
+  assert.equal((await turn.handler(video)).status, "completed");
+  assert.equal(first.used, true, "AI-video motion takes the message's generation");
+  await assert.rejects(turn.handler({ action: "motion.generateAllBlocks" }), { code: "GENERATION_LIMIT" });
+  await assert.rejects(turn.handler(video), { code: "GENERATION_LIMIT" });
+  assert.equal((await turn.handler({ action: "ai.prepareShot", args: { mode: "image" } })).status, "completed", "the Send-to-AI package still runs");
+  const second = { used: false }, next = run(second);
+  assert.equal((await next.handler({ action: "ai.prepareShot" })).status, "completed");
+  assert.equal(second.used, false, "the Send-to-AI package is not a generation");
+  assert.equal((await next.handler({ action: "motion.generateAllBlocks" })).status, "started");
+  await assert.rejects(next.handler(video), { code: "GENERATION_LIMIT" });
+  assert.deepEqual(sent.map(call => call.action), ["motion.generateFromVideo", "ai.prepareShot", "ai.prepareShot", "motion.generateAllBlocks"], "a refused generation never reaches the editor");
+  assert.deepEqual(sent[0].options, [{ timeoutMs: 300_000 }], "AI-video motion waits under its declared hub timeout");
+  assert.deepEqual(sent[1].options, [], "the Send-to-AI package keeps the default timeout");
+  console.log("PASS AI-video motion shares the message's one motion generation and carries its hub timeout");
+}
+
+if (shouldRun("scene-change-readmits-host")) {
+  const { createStudioTools } = await import("../bin/agent/studio-tools.mjs");
+  // The editor admits a command only at its open scene. A scene action that
+  // moves it answers the new host; the turn adopts it (same workspace only),
+  // so the next edit in the same message is admitted instead of STALE_SCENE.
+  const identity = (sceneId, sceneEpoch, workspaceId = "tab-7") => ({ workspaceId, documentEpoch: "doc-3", sceneId, sceneEpoch });
+  let open = identity("scene-main", "scene-open-4"), revision = 4; const sent = [];
+  const liveHub = { async command(name, payload) {
+    if (JSON.stringify(payload.host) !== JSON.stringify(open)) return name === "read_studio_context" ? Promise.reject(Object.assign(new Error("This is not the requested document."), { code: "STALE_SCENE" })) : { ok: false, code: "STALE_SCENE", message: "The live document changed." };
+    if (name === "read_studio_context") return { revision: { scene: revision } };
+    sent.push({ name, host: payload.host, expectedRevision: payload.expectedRevision });
+    if (payload.expectedRevision !== revision) return { ok: false, code: "STALE_SCENE", message: "Authored state changed." };
+    if (name === "run_action") {
+      const moved = payload.args.args.sceneId === "scene-foreign" ? identity("scene-b", "scene-open-5", "tab-9") : identity(payload.args.args.sceneId, "scene-open-5");
+      open = identity(moved.sceneId, moved.sceneEpoch); revision = 11;
+      return { ok: true, commandId: payload.commandId, action: "scene.switch", kind: "document", status: "completed", affectedIds: [moved.sceneId], summary: "Opened.", host: moved };
+    }
+    return { ok: true, commandId: payload.commandId, receiptId: `receipt-${sent.length}`, status: "applied", revision: { before: revision, after: ++revision } };
+  } };
+  const admission = { commandId: uuid, host: identity("scene-main", "scene-open-4"), revision: 4,
+    async refresh() { const read = await liveHub.command("read_studio_context", { host: admission.host }, "handle-12"); admission.revision = read.revision.scene; } };
+  const invoke = createStudioTools({ liveHub, workspaceHandle: "handle-12", session: { admission } }).internal.invoke;
+  const edit = { ops: [{ op: "update", id: "cube", position: { world: { x: 1, y: 0, z: 0 } } }] };
+  assert.equal((await invoke("run_action", { action: "scene.switch", args: { sceneId: "scene-b" } })).status, "completed");
+  const moved = await invoke("arrange_objects", edit).catch(error => error);
+  assert.equal(moved.status, "applied", `an edit after a scene switch in the same turn is admitted: ${moved.code ?? ""} ${moved.message ?? ""}`);
+  assert.deepEqual(sent.at(-1), { name: "arrange_objects", host: identity("scene-b", "scene-open-5"), expectedRevision: 11 });
+  assert.deepEqual(admission.host, identity("scene-b", "scene-open-5"));
+  // A host from another workspace is never adopted.
+  await invoke("run_action", { action: "scene.switch", args: { sceneId: "scene-foreign" } });
+  assert.deepEqual(admission.host, identity("scene-b", "scene-open-5"), "a foreign workspace's host is not adopted");
+  console.log("PASS a scene change in a turn re-admits later commands at the new open scene");
 }
 
 if (shouldRun("surface-context-and-images")) {

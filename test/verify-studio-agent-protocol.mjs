@@ -135,7 +135,7 @@ function registerTests() {
 		];
 		for (const command of invalid) rejects(() => protocol.validateStudioCommand(command));
 	});
-	test("D3 all nine families have executable happy paths and stable defaults", () => {
+	test("D3 all ten families have executable happy paths and stable defaults", () => {
 		const commands = [
 			{ name: "inspect_studio", args: { scope: "entities" } },
 			{ name: "operate_studio", args: { selection: null, frame: 0, playing: false, view: { grid: true } } },
@@ -146,6 +146,7 @@ function registerTests() {
 			{ name: "generate_motion", args: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }, { text: "wave" }], durationSeconds: 6 } } },
 			{ name: "verify_result", args: { targets: ["char-alex"], checks: ["motion"] } },
 			{ name: "undo_edit", args: { receiptId: "r-1" } },
+			{ name: "run_action", args: { action: "shot.create" } },
 		];
 		assert.deepEqual(commands.map(command => command.name), [...protocol.STUDIO_TOOL_FAMILIES]);
 		const normalized = commands.map(command => protocol.validateStudioCommand(command));
@@ -154,10 +155,10 @@ function registerTests() {
 		rejects(() => protocol.validateStudioCommand({ name: "arrange_objects", args: { ops: [createOp("Same"), createOp("Same")] } }), "DUPLICATE_NAME");
 	});
 	test("D3 patch_elements schema is derived from the element declaration table", () => {
-		assert.equal(protocol.STUDIO_TOOL_FAMILIES.length, 9);
+		assert.equal(protocol.STUDIO_TOOL_FAMILIES.length, 10);
 		assert.ok(protocol.STUDIO_TOOL_FAMILIES.includes("patch_elements"));
 		assert.ok(protocol.STUDIO_CATALOGUE.some(tool => tool.name === "patch_elements"));
-		// Nine families must fit the context capability list.
+		// Every family must fit the context capability list.
 		const c = contextFixture(); c.capabilities.tools = [...protocol.STUDIO_TOOL_FAMILIES]; protocol.validateStudioContext(c);
 		// Derived, not hand-written: an element added to the table appears in the
 		// schema with its declared bounds, and a removed one disappears.
@@ -273,10 +274,42 @@ function registerTests() {
 		const source = structuredClone(c); const result = contextTools.buildStudioContext(c);
 		assert.deepEqual(c, source); assert.equal(result.entities.length,24); assert.equal(result.entityPage.total,81); assert.equal(result.entityPage.truncated,true);
 		for (const id of ["object-079","char-alex","object-078"]) assert.ok(result.entities.some(e=>e.id===id));
-		assert.ok(new TextEncoder().encode(contextTools.encodeStudioContext(result)).length <= 16384);
+		assert.ok(new TextEncoder().encode(contextTools.encodeStudioContext(result)).length <= protocol.STUDIO_CONTEXT_MAX_BYTES);
 		assert.ok(result.entities.every(e=>!e.name || [...e.name].length <= 120)); protocol.validateStudioContext(result);
 		const stale = structuredClone(result); stale.entities = stale.entities.filter(e=>e.id!=="char-alex"); stale.entityPage.returned--;
 		rejects(()=>protocol.validateStudioContext(stale));
+	});
+	test("D4 context indexes every entity (cap 400) beside at most 24 detailed ones", () => {
+		const c = contextFixture();
+		c.entities = Array.from({length: 62}, (_,i) => ({ id: `object-${String(i).padStart(3,"0")}`, kind: "object", name: `Prop ${i}`, token: `t-${i}`, position: {x:i+0.123456,y:0,z:-2}, scale: { x: 1, y: 1, z: 1 } }));
+		c.entities.push(contextFixture().entities[0]); c.scene.objectCount = 62; c.selection = {kind:"object",id:"object-061"};
+		const result = contextTools.buildStudioContext(c);
+		assert.equal(result.entities.length, 24); assert.equal(result.entityPage.total, 63);
+		assert.deepEqual(result.entities.slice(0,2).map(e=>e.id), ["object-061","char-alex"], "selected, then active, lead the detail");
+		assert.deepEqual(result.entityIndex.map(e=>e.id), c.entities.map(e=>e.id).sort(), "every entity is indexed in stable id order");
+		assert.deepEqual(result.entityIndex.find(e=>e.id==="object-007"), { id: "object-007", kind: "object", name: "Prop 7", position: { x: 7.12, y: 0, z: -2 } });
+		assert.deepEqual(result.entityIndex.find(e=>e.id==="char-alex"), { id: "char-alex", kind: "character", name: "Alex", position: { x: 0, y: 0, z: 0 } });
+		protocol.validateStudioContext(result);
+		const duplicate = structuredClone(result); duplicate.entityIndex.push(duplicate.entityIndex[0]); rejects(()=>protocol.validateStudioContext(duplicate), "INVALID_CONTEXT");
+		const missing = structuredClone(result); missing.entityIndex = missing.entityIndex.filter(e=>e.id!=="object-061"); rejects(()=>protocol.validateStudioContext(missing), "INVALID_CONTEXT");
+		const big = contextFixture();
+		big.entities = Array.from({length: 450}, (_,i) => ({ id: `workshop-prop-${String(i).padStart(4,"0")}`, kind: "object", name: `Workshop prop number ${i}`, token: `t-${i}`, position: {x:i/7,y:0.25,z:-i/9}, scale: { x: 1, y: 1, z: 1 } }));
+		big.entities.push(contextFixture().entities[0]); big.scene.objectCount = 450; big.selection = {kind:"object",id:"workshop-prop-0449"};
+		const capped = contextTools.buildStudioContext(big);
+		assert.equal(capped.entityIndex.length, 400); assert.equal(capped.entityPage.total, 451);
+		for (const id of ["workshop-prop-0449","char-alex"]) assert.ok(capped.entityIndex.some(e=>e.id===id), `${id} survives the index cap`);
+		assert.ok(new TextEncoder().encode(contextTools.encodeStudioContext(capped)).length <= protocol.STUDIO_CONTEXT_MAX_BYTES);
+		protocol.validateStudioContext(capped);
+	});
+	test("D4 context assets list placeable catalogue kinds and imported scene assets", () => {
+		const c = contextFixture();
+		c.assets = [...["cube","sphere","capsule","cylinder","cone","plane"].map(kind => ({ kind, name: kind, type: "primitive" })), ...["chair","car","small-plane"].map(kind => ({ kind, name: kind, type: "set-piece" })),
+			{ id: "img-0a1b2c", name: "Poster", type: "image" }, { id: "mesh-3d4e5f", name: "Robot", type: "mesh" }];
+		assert.deepEqual(contextTools.buildStudioContext(c).assets, c.assets, "no placeable asset is cut");
+		protocol.validateStudioContext(c);
+		for (const bad of [{ kind: "cube", id: "img-1", name: "Both", type: "primitive" }, { kind: "cube", name: "Cube", type: "bogus" }, { name: "Neither", type: "mesh" }, { imageId: "x", origin: "scene_asset" }]) {
+			const invalid = contextFixture(); invalid.assets = [bad]; rejects(() => protocol.validateStudioContext(invalid), "INVALID_CONTEXT");
+		}
 	});
 	test("D5 missing identity and each workspace/scene/epoch/token mismatch fail closed", () => {
 		rejects(()=>protocol.validateTargetGuard({},{}));
@@ -328,10 +361,16 @@ function registerTests() {
 	});
 	test("D4 compact fallback preserves every mandatory ID and validates stale cursors", () => {
 		const c = contextFixture(); c.entities = Array.from({length:24},(_,i)=>({id:`char-${i}`,kind:"character",token:`t-${i}`,name:"<".repeat(120),position:point(),yawDeg:0,scale:1,motion:{takeId:null,frames:144,ikKeyCount:0,promptBlockCount:0,keyIds:Array.from({length:8},(_,j)=>`key-${j}-${"x".repeat(100)}`)}}));
-		c.selection={kind:"character",id:"char-23"};c.activeCharacterId="char-22";c.scene.characterCount=24;
+		// Filler whose escaped names overflow the budget through the index alone.
+		c.entities.push(...Array.from({length:376},(_,i)=>({id:`prop-${i}`,kind:"object",token:`p-${i}`,name:"<".repeat(120),position:point(),scale:{x:1,y:1,z:1}})));
+		c.selection={kind:"character",id:"char-23"};c.activeCharacterId="char-22";c.scene.characterCount=24;c.scene.objectCount=376;
 		const result=contextTools.buildStudioContext(c);assert.ok(result.entities.every(e=>e.detailsOmitted));assert.ok(result.entities.some(e=>e.id==="char-23"));assert.ok(result.entities.some(e=>e.id==="char-22"));
+		assert.ok(result.entityIndex.length < 400 && result.entityIndex.some(e=>e.id==="char-23"),"the index sheds bystanders, never a detailed row");protocol.validateStudioContext(result);
 		const cursor=contextTools.studioEntityCursor(result,10);assert.equal(contextTools.validateStudioCursor(cursor,result),10);
-		const stale=structuredClone(result);stale.revision.scene++;rejects(()=>contextTools.validateStudioCursor(cursor,stale),"STALE_CURSOR");
+		const edited=structuredClone(result);edited.revision.scene++;edited.revision.physics++;edited.revision.view++;
+		assert.equal(contextTools.validateStudioCursor(cursor,edited),10,"an unrelated edit keeps the cursor");
+		for(const key of ["workspaceId","documentEpoch","sceneEpoch"]){const reopened=structuredClone(result);reopened.host[key]="other";rejects(()=>contextTools.validateStudioCursor(cursor,reopened),"STALE_CURSOR");}
+		rejects(()=>contextTools.validateStudioCursor("pending",result),"STALE_CURSOR");
 	});
 	test("D3 every supported nested position/facing/object variant is executable", () => {
 		for(const position of [{world:point()},{relativeTo:"ref",basis:"subject",side:"left",gapM:0.3,support:"floor"},{relativeTo:"ref",basis:"shot_camera",side:"behind",gapM:0,support:{objectId:"table"}},{between:["a","b"],fraction:0.5,support:"floor"},{onObject:"table",offsetXZ:{x:0,z:1}}]) {
@@ -349,6 +388,38 @@ function registerTests() {
 		protocol.validateReceipt(failure);const unsafe=structuredClone(failure);unsafe.preserved.authoredState="unchanged";rejects(()=>protocol.validateReceipt(unsafe));
 		const unverified=receiptFixture("installed");unverified.verification.status="unverified";unverified.verification.evaluatedFrames=0;
 		rejects(()=>protocol.validateReceipt(unverified));unverified.explicitUnverifiedAcceptance=true;protocol.validateReceipt(unverified);
+		// The install policy is the other recorded acceptor; nothing else admits an unverified take.
+		const advisory=receiptFixture("installed");advisory.verification.status="unverified";advisory.explicitUnverifiedAcceptance=false;
+		rejects(()=>protocol.validateReceipt(advisory));advisory.acceptance="advisory-policy";assert.equal(protocol.validateReceipt(advisory).acceptance,"advisory-policy");
+		for(const acceptance of ["model","",true]){const forged=structuredClone(advisory);forged.acceptance=acceptance;rejects(()=>protocol.validateReceipt(forged));}
+		const applied=receiptFixture("applied");applied.acceptance="advisory-policy";rejects(()=>protocol.validateReceipt(applied));
+	});
+	test("run_action names one registered action; inspect_studio scope actions discovers them", () => {
+		assert.ok(protocol.STUDIO_TOOL_FAMILIES.includes("run_action"));
+		assert.equal(typeof protocol.STUDIO_TOOL_LABELS.run_action, "string");
+		assert.ok(protocol.STUDIO_VARIANTS.inspectScopes.includes("actions"));
+		assert.deepEqual(protocol.validateStudioCommand({ name: "inspect_studio", args: { scope: "actions" } }).args, { scope: "actions", limit: 12 });
+		// The action's own schema validates its arguments in the editor; the
+		// family carries them as one JSON object, detached from the caller's.
+		const args = { shotId: "shot-1", range: { startFrame: 0, endFrameExclusive: 24 } };
+		const command = protocol.validateStudioCommand({ name: "run_action", args: { action: "shot.setRange", args } });
+		assert.deepEqual(command.args, { action: "shot.setRange", args });
+		assert.notStrictEqual(command.args.args, args);
+		assert.deepEqual(protocol.validateStudioCommand({ name: "run_action", args: { action: "shot.create" } }).args, { action: "shot.create" });
+		for (const bad of [{}, { action: "" }, { action: "shot create" }, { action: "shot.create", args: [] }, { action: "shot.create", args: "x" }, { action: "shot.create", extra: 1 }]) {
+			rejects(() => protocol.validateStudioCommand({ name: "run_action", args: bad }), "INVALID_ARGUMENT");
+		}
+		// A mutating action's receipt is an ordinary journal receipt that names
+		// the action and what it did.
+		const applied = { ...receiptFixture("applied"), action: "shot.create", summary: "Added Shot 2 at frames [48, 96)." };
+		assert.equal(protocol.validateReceipt(applied).action, "shot.create");
+		const noop = { ...receiptFixture("noop"), action: "shot.create", summary: "No room for a new shot." };
+		assert.equal(protocol.validateReceipt(noop).summary, "No room for a new shot.");
+		rejects(() => protocol.validateReceipt({ ...receiptFixture("applied"), action: "not an id" }), "INVALID_RECEIPT");
+	});
+	test("GENERATION_LIMIT is a failure code of its own, distinct from AUTH_REQUIRED", () => {
+		const failure={ok:false,commandId:"cmd-1",host:receiptFixture().host,code:"GENERATION_LIMIT",phase:"admission",affectedIds:[],expectedTargets:[],currentTargets:[],mutated:false,preserved:{authoredState:"unchanged"},recovery:{action:"none"}};
+		assert.equal(protocol.validateReceipt(failure).code,"GENERATION_LIMIT");assert.ok(protocol.STUDIO_ERROR_CODES.includes("AUTH_REQUIRED"));
 	});
 	test("HTTP stale epoch/token fences use authoritative injected state before execution", async()=>{
 		let executed=0;const runtime={readContext:async()=>contextFixture(),handleTurn:async(v,req,res)=>{executed++;res.writeHead(200,{"content-type":"application/json"});res.end(JSON.stringify({turnId:v.turnId}));}};
