@@ -155,9 +155,15 @@ export function createStudioMotionRuntime({ liveHub, getBridgeOrigin, clock = Da
 	};
 	const fence = job => { if (job.cancelRequested) throw error("CANCELLED", "Installation permission revoked"); job.controller.signal.throwIfAborted(); };
 	const checkTarget = (job, targetToken) => validateTargetGuard(job.guard, { ...job.guard, token: targetToken });
+	// Releasing the editor's private candidate is housekeeping once the job's
+	// outcome is decided (the editor already releases a committed candidate and
+	// drops the rest with its document). A release the editor cannot answer in
+	// time is kept on the job and logged, never raised in place of that outcome;
+	// a later stop or dispose asks again.
 	const discard = async job => {
 		if (!job.candidate || job.discarded || job.state === "reconciling" || job.state === "committing") return;
-		await command(job, "discard_motion_candidate", { candidateId: job.candidate.candidateId }); job.discarded = true;
+		try { await command(job, "discard_motion_candidate", { candidateId: job.candidate.candidateId }); job.discarded = true; }
+		catch (e) { job.discardError = e?.message ?? String(e); console.warn(`[agent] motion job ${job.jobId}: releasing its editor candidate failed (the job's outcome stands): ${job.discardError}`); }
 	};
 	const verify = async job => {
 		transition(job, "verifying"); fence(job);
