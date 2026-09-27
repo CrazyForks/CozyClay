@@ -41,7 +41,7 @@ import { applyMotionCalibration, normalizeMotionCalibration } from '../src/ardy/
 import { decodeMotionResource, encodeMotionResource, resolveMotionSource, sha256Hex } from '../src/motion-resources.js';
 import { motionArraysToNpzMembers, writeNpz } from '../tools/ardy/npz.mjs';
 
-const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'verify-result-targets', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes', 'run-action-project-save', 'run-action-asset-import-and-undo', 'run-action-ai-prepare-shot', 'run-action-motion-generate-from-video'];
+const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'generate-all-blocks-refusal-reason', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'verify-result-targets', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes', 'run-action-project-save', 'run-action-asset-import-and-undo', 'run-action-ai-prepare-shot', 'run-action-motion-generate-from-video'];
 const argv = process.argv.slice(2);
 assert(!argv.length || (argv.length === 2 && argv[0] === '--case' && cases.includes(argv[1])), 'Unknown test arguments');
 const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
@@ -181,9 +181,12 @@ function fixture(options={}) {
   project:{name:'Heist',hasFile:true,fileAccess:true,gesture:false},granted:true,saveOutcome:{saved:true,name:'Heist',fileName:'Heist.cclayproject'},saves:[],
   imports:[],fetched:[],importError:null,staleCommits:0,captures,clipboard,
   captureError:null,falSubmits:[],falSubmitError:null,ingested:[],ingestResult:{frames:120,fps:24,duration:5},waypointMode:false,
+  // The editor's prompt-block run: how many blocks it has, and the toasts it
+  // shows when it does not start the generation.
+  promptBlockCount:0,generationRuns:0,generationToasts:[],
   falFinished:{job:{id:'fal-job-1',status:'done',video:{url:'https://cdn.example.test/fal-act.mp4'},resolution:'480P',width:832,height:480,fps:24,duration:5,resultDuration:5,cost:0.1},dailyRemaining:2}};
  const actionHandlers=ref({
-  state:()=>({shots:live.current.shots,objects:store.current.objects,characters:characterRef.current,frame:0,frameCount:48,selectedObjectId:null,activeCharacterId:'actor-a',promptBlockCount:0,generating:false,motionReady:true,
+  state:()=>({shots:live.current.shots,objects:store.current.objects,characters:characterRef.current,frame:0,frameCount:48,selectedObjectId:null,activeCharacterId:'actor-a',promptBlockCount:stand.promptBlockCount,generating:false,motionReady:true,
    exporting:stand.exporting,canExportVideo:live.current.shots.length>0,
    scenes:scope.scenesRef.current.map(({id,name})=>({id,name})),activeSceneId:scope.activeSceneIdRef.current,project:{...stand.project},
    aiShot:{mode:committed.mode,imageModel:committed.imageModel},
@@ -206,7 +209,8 @@ function fixture(options={}) {
   setGuideMode:mode=>scope.setGuideMode(mode),
   setWaypointMode:value=>{stand.waypointMode=value;},
   duplicateSelectedSceneObject:id=>{const source=store.current.objects.find(o=>o.id===id);store.current.applyAtomic(list=>[...list,{...source,id:'copy-1',name:'Copy',x:source.x+0.5}]);},
-  ...Object.fromEntries(['splitTimelineShot','duplicateTimelineShot','removeTimelineShot','setTimelineShotRange','moveTimelineShot','runAllPromptBlocks'].map(name=>[name,unwired(name)])),
+  ...Object.fromEntries(['splitTimelineShot','duplicateTimelineShot','removeTimelineShot','setTimelineShotRange','moveTimelineShot'].map(name=>[name,unwired(name)])),
+  runAllPromptBlocks:()=>{stand.generationRuns++;return [...stand.generationToasts];},
  });
  const registry=actual.createStudioAppActions(actionHandlers);actionsRef.current=registry;
  const poses=[{id:'pose-rest',label:'Rest',bones:{}},{id:'pose-wave',label:'Wave',bones:{}}];
@@ -547,6 +551,16 @@ const implementations={
   assert.equal(f.store.current.objects.length,2);
   const undo=await f.call('undo_edit',f.request('undo_edit',{receiptId:r.receiptId}));
   assert.equal(undo.status,'undone',JSON.stringify(undo));assert.deepEqual(f.store.current.objects.map(o=>o.id),[id]);
+ },
+ async 'generate-all-blocks-refusal-reason'(f){
+  // The editor starts the generation synchronously or refuses it with a toast
+  // (here: a root waypoint on the clip's last frame). The agent gets that
+  // reason, not only that nothing started.
+  f.stand.promptBlockCount=1;f.stand.generationToasts=['Root waypoint frames must stay inside 1..71'];
+  const r=await f.call('run_action',f.request('run_action',{action:'motion.generateAllBlocks'}));
+  assert.equal(r.ok,false,JSON.stringify(r));assert.equal(r.code,'TARGET_NOT_READY',JSON.stringify(r));assert.equal(r.mutated,false);
+  assert.match(r.message,/Root waypoint frames must stay inside 1\.\.71/,JSON.stringify(r));
+  assert.equal(f.stand.generationRuns,1,'the editor was asked once');
  },
  async 'run-action-refusals'(f){
   const refused=async(args,code)=>{const r=await f.call('run_action',f.request('run_action',args));assert.equal(r.ok,false,JSON.stringify(r));assert.equal(r.code,code,JSON.stringify(r));assert.equal(r.mutated,false);};
