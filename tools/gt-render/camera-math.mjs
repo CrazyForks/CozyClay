@@ -225,6 +225,49 @@ export function buildCamera({ width, height, fMm, azimuthDeg, elevationDeg, marg
 	};
 }
 
+/**
+ * Rebuild the camera record from a camera.json written by render.mjs, so a
+ * later render uses that exact camera (--camera). The pose is taken from
+ * position/yaw/pitch/fovDeg and checked against the stored intrinsics and
+ * worldToCamera, so a file in another convention is refused, not reinterpreted.
+ */
+export function cameraFromRecord(record) {
+	const { width, height, fovDeg, position, yaw, pitch } = record ?? {};
+	const finite = [width, height, fovDeg, yaw, pitch, position?.x, position?.y, position?.z].every(Number.isFinite);
+	if (!finite) throw new Error("camera.json needs width, height, fovDeg, yaw, pitch and position {x, y, z}");
+	const intrinsics = intrinsicsFromFov({ width, height, fovDeg });
+	for (const key of ["fx", "fy", "cx", "cy"]) {
+		if (record[key] !== undefined && Math.abs(record[key] - intrinsics[key]) > 1e-6) throw new Error(`camera.json ${key} ${record[key]} does not match fovDeg (${intrinsics[key]})`);
+	}
+	const R = rotationYXZ(yaw, pitch);
+	const camera = {
+		...intrinsics,
+		gvhmrFMm: record.gvhmrFMm ?? null,
+		azimuthDeg: record.azimuthDeg ?? null,
+		elevationDeg: record.elevationDeg ?? null,
+		margin: record.margin ?? null,
+		position: { x: position.x, y: position.y, z: position.z },
+		yaw,
+		pitch,
+		bindingAxis: record.bindingAxis ?? "given",
+		cameraToWorldRotation: R,
+		worldToCameraCv: worldToCameraCv(R, position),
+		worldToCameraGl: worldToCameraGl(R, position),
+	};
+	if (record.worldToCamera) {
+		const gap = Math.max(...record.worldToCamera.flatMap((row, r) => row.map((value, c) => Math.abs(value - camera.worldToCameraCv[r][c]))));
+		if (!(gap <= 1e-9)) throw new Error(`camera.json worldToCamera differs from its position/yaw/pitch by ${gap}`);
+	}
+	return camera;
+}
+
+/** The same camera moved by `offset` (world metres); orientation unchanged. */
+export function translateCamera(camera, offset) {
+	const position = { x: camera.position.x + offset.x, y: camera.position.y + offset.y, z: camera.position.z + offset.z };
+	const R = camera.cameraToWorldRotation;
+	return { ...camera, position, worldToCameraCv: worldToCameraCv(R, position), worldToCameraGl: worldToCameraGl(R, position) };
+}
+
 /** The minimal support-value arguments a caller needs for a camera orientation. */
 export function supportArgs({ width, height, fMm, azimuthDeg, elevationDeg, margin }) {
 	const intrinsics = intrinsicsFromFov({ width, height, fovDeg: fovDegFromFMm(fMm, width, height) });
