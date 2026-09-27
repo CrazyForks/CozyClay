@@ -22,7 +22,7 @@ const check = (name, work, group = null) => { if (args[1] !== "precommit-stop-jo
 
 async function fixture(work) {
 	let mode = "ok", gate = null, generationCount = 0;
-	const requests = [], commands = [], frames = [], commandGates = [], fixtureErrors = [], journal = new Map(), sockets = new Set();
+	const requests = [], generationBodies = [], commands = [], frames = [], commandGates = [], fixtureErrors = [], journal = new Map(), sockets = new Set();
 	const state = { take: "old-take", undo: 0, token: "token-1", physics: 1, verify: "verified", structurallyValid: true, metrics: null, repairVerifies: true, repairs: [], commit: "ok", disconnect: null, prepareFailure: null };
 	const bridge = createServer(async (req, res) => {
 		requests.push(req.url);
@@ -31,6 +31,7 @@ async function fixture(work) {
 		assert.equal(req.url, "/ardy/generate"); generationCount++;
 		if (mode === "bridge-refused") { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, reason: "field 'prompt' is 823 chars; the cap is 500" })); return; }
 		let body = ""; for await (const chunk of req) body += chunk;
+		generationBodies.push(JSON.parse(body));
 		assert.equal(JSON.parse(body).posePin, false);
 		if (gate) { gate.arrived.resolve(); await gate.release.promise; }
 		if (res.destroyed) return;
@@ -118,7 +119,7 @@ async function fixture(work) {
 	try {
 		await connect();
 		const input = (overrides = {}) => ({ hostBinding: { ...host, workspaceHandle: handle }, characterId: "char-a", targetToken: "token-1", turnId: randomUUID(), commandId: randomUUID(), authorization: { id: randomUUID(), generations: 1 }, source: { kind: "generate", beats: [{ text: "A person walks.", seconds: 2 }] }, repair: "none", ...overrides });
-		await work({ hub, origin, state, requests, commands, frames, connect, input,
+		await work({ hub, origin, state, requests, generationBodies, commands, frames, connect, input,
 			editorJournal, editor,
 			holdCommand(name, phase = "before") { const hold = { name, phase, arrived: deferred(), release: deferred() }; commandGates.push(hold); return hold; },
 			async disconnect() { const closed = [...hub.server.clients].map(socket => once(socket, "close")); for (const socket of sockets) socket.terminate(); await bounded(Promise.all(closed)); },
@@ -140,6 +141,27 @@ function runtimeFor(f, options = {}) {
 }
 function begin(runtime, input, listener = () => {}) { const job = runtime.admit(input); runtime.subscribe(job.jobId, listener); return { job, result: runtime.start(job.jobId) }; }
 
+check("multi-beat generation bounds the top-level prompt and preserves segments", () => fixture(async f => {
+	const runtime = runtimeFor(f);
+	const longBeats = Array.from({ length: 8 }, (_, i) => ({ text: `${i}: ${"a".repeat(96)}`, seconds: 2 }));
+	const long = begin(runtime, f.input({ source: { kind: "generate", beats: longBeats } }));
+	await bounded(long.result);
+	const longBody = f.generationBodies[0];
+	assert.equal(longBody.prompt, longBeats[0].text);
+	assert.ok(longBody.prompt.length <= 500);
+	assert.equal(longBody.segments.length, 8);
+	const shortBeats = [{ text: "A person walks.", seconds: 2 }, { text: "They turn around.", seconds: 2 }, { text: "They stop.", seconds: 2 }];
+	const short = begin(runtime, f.input({ source: { kind: "generate", beats: shortBeats } }));
+	await bounded(short.result);
+	assert.equal(f.generationBodies[1].prompt, shortBeats.map(beat => beat.text).join(" "));
+}));
+check("a beat over the prompt cap is rejected before admission", () => fixture(async f => {
+	const runtime = runtimeFor(f), input = f.input({ source: { kind: "generate", beats: [{ text: "x".repeat(501), seconds: 2 }] } });
+	assert.throws(() => runtime.admit(input), error => error.code === "INVALID_ARGUMENT" && error.message.includes("capped at 500"));
+	assert.equal(runtime.getReceipt(input.commandId), null);
+	assert.equal(f.generations, 0);
+	assert.doesNotThrow(() => runtime.admit({ ...input, source: { kind: "generate", beats: [{ text: "Valid beat.", seconds: 2 }] } }));
+}));
 check("legal transition table rejects false proof and terminal revival", async () => {
 	assert.equal(typeof motion.assertMotionTransition, "function");
 	for (const [from, to] of [["queued","generating"],["generating","preparing"],["preparing","verifying"],["verifying","repairing"],["repairing","verifying"],["verifying","committing"],["committing","installed"],["verifying","review_required"],["committing","reconciling"],["reconciling","proved-not-applied"]]) motion.assertMotionTransition(from, to);
