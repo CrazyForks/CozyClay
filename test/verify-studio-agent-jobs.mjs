@@ -23,7 +23,7 @@ const check = (name, work, group = null) => { if (args[1] !== "precommit-stop-jo
 async function fixture(work) {
 	let mode = "ok", gate = null, generationCount = 0;
 	const requests = [], generationBodies = [], commands = [], frames = [], commandGates = [], fixtureErrors = [], journal = new Map(), sockets = new Set();
-	const state = { take: "old-take", undo: 0, token: "token-1", physics: 1, verify: "verified", structurallyValid: true, metrics: null, repairVerifies: true, repairs: [], commit: "ok", disconnect: null, prepareFailure: null };
+	const state = { take: "old-take", undo: 0, token: "token-1", physics: 1, verify: "verified", structurallyValid: true, metrics: null, repairVerifies: true, repairs: [], commit: "ok", disconnect: null, prepareFailure: null, discard: "ok" };
 	const bridge = createServer(async (req, res) => {
 		requests.push(req.url);
 		if (req.url === "/ardy/health") { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, host: "fixture", device: "cuda" })); return; }
@@ -104,7 +104,11 @@ async function fixture(work) {
 			else if (known && frame.name === "reconcile_studio_command") value = known;
 			else { const response = await dispatchLiveFrame(JSON.stringify(frame), editorFor(a.binding.host)); assert.equal(response.ok, true, response.error); value = response.value; }
 		}
-		else if (frame.name === "discard_motion_candidate") value = { discarded: true };
+		else if (frame.name === "discard_motion_candidate") {
+			// A release the editor cannot answer in time (a busy main thread).
+			if (state.discard === "error") { socket.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: "Live editor timed out running discard_motion_candidate." })); return; }
+			value = { discarded: true };
+		}
 		else throw new Error("unexpected command " + frame.name);
 		await waitCommand(frame, "after", value);
 		if (socket.readyState === WebSocket.OPEN) { const raw = JSON.stringify({ type: "result", id: frame.id, ok: true, value }); socket.send(raw); socket.send(raw); }
@@ -127,7 +131,10 @@ async function fixture(work) {
 	} finally {
 		if (gate) gate.release.resolve();
 		for (const hold of commandGates) hold.release.resolve();
-		await runtime?.dispose(); for (const owner of editors.values()) owner.dispose();
+		// A runtime that fails to dispose still lets the servers close: the check
+		// fails on fixtureErrors instead of leaving the whole file hanging.
+		try { await runtime?.dispose(); } catch (error) { fixtureErrors.push(error); }
+		for (const owner of editors.values()) owner.dispose();
 		for (const socket of sockets) if (socket.readyState !== WebSocket.CLOSED) { const closed = once(socket, "close"); socket.terminate(); await closed; }
 		for (const socket of hub.server.clients) socket.terminate();
 		await new Promise(r => hub.server.close(r)); bridge.closeAllConnections(); await new Promise(r => bridge.close(r));
@@ -260,6 +267,15 @@ check("bounded repair / soft review / exact stale target and environment", () =>
 	f.state.verify = "unverified"; let next = begin(runtime, f.input()); assert.equal((await bounded(next.result)).status, "review_required"); assert.equal(f.state.undo, 1);
 	assert.equal((await runtime.stop(next.job.jobId)).status, "cancelled");
 	f.state.token = "edited-token"; f.state.verify = "verified"; next = begin(runtime, f.input()); assert.equal((await bounded(next.result)).code, "STALE_TARGET"); assert.equal(f.state.undo, 1);
+}));
+check("a failed candidate release after install keeps the installed outcome", () => fixture(async f => {
+	const runtime = runtimeFor(f); f.state.discard = "error";
+	try {
+		const { job, result } = begin(runtime, f.input()); const receipt = await bounded(result);
+		assert.equal(receipt.status, "installed", JSON.stringify(receipt)); assert.equal(f.state.undo, 1);
+		assert.equal(f.commands.filter(name => name === "discard_motion_candidate").length, 1);
+		assert.equal(runtime.get(job.jobId).state, "installed");
+	} finally { f.state.discard = "ok"; } // the fixture's dispose then releases normally
 }));
 check("advisory policy installs a structurally valid unverified candidate at once with its failed checks", () => fixture(async f => {
 	const runtime = runtimeFor(f); f.state.verify = "unverified";
