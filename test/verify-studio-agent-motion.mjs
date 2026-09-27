@@ -25,7 +25,7 @@ import { dispatchLiveFrame } from '../src/live-control.js';
 const args = process.argv.slice(2);
 const CASES = ['characterization', 'pre-prepare-cancellation', 'grounded-full-range', 'floor-key-order', 'hovering-no-contact', 'no-measured-skin', 'platform-unsupported',
   'inactive-target-yaw-and-retime', 'off-playhead-path-prop', 'same-frame-other-cast', 'ground-cache-invalidation', 'decode-failure', 'bounded-real-auto-physics',
-  'repair-throw', 'repair-deadline-scales-with-clip-length', 'protected-regression', 'collision-repair-arm-chains', 'commit-fences', 'cancellation-checkpoint', 'expiry', 'explicit-unverified-acceptance', 'runtime-http'];
+  'repair-throw', 'repair-deadline-scales-with-clip-length', 'protected-regression', 'collision-repair-arm-chains', 'commit-fences', 'cancellation-checkpoint', 'expiry', 'explicit-unverified-acceptance', 'installed-take-verification', 'runtime-http'];
 assert(!args.length || (args.length === 2 && args[0] === '--case' && CASES.includes(args[1])), 'Unknown test arguments');
 const selectedCase = args[1] ?? null;
 const evidence = process.env.MOTION_EVIDENCE_DIR;
@@ -383,6 +383,29 @@ async function candidateTests(mod, selectedCase) {
       const f = fixture({ clip: { hover: .4 } }), c = await f.prepare(), v = await f.verify(c); ok(v);
       const receipt = await f.commit(c, v, { explicitUnverifiedAcceptance: true }); ok(receipt); assert.equal(receipt.verification.status, 'unverified'); assert.equal(receipt.explicitUnverifiedAcceptance, true); assert.equal(f.domain.history.length, 1);
       console.log('PASS explicit warning acceptance retains unverified coverage in one receipt');
+    }
+    if (selected('installed-take-verification')) {
+      // A take installed without its own evidence is checked by the candidate
+      // evaluator itself: same private rig, same thresholds, same verdict.
+      assert.equal(typeof mod.verifyInstalledTake, 'function', 'verifyInstalledTake is exported for verify_result motion checks');
+      for (const hover of [0, .4]) {
+        const f = fixture({ clip: { hover } }), c = await f.prepare(), v = await f.verify(c); ok(v);
+        const receipt = await f.commit(c, v, { explicitUnverifiedAcceptance: true }); ok(receipt);
+        const target = { character: f.character, rig: f.rig, motion: f.domain.take, ikState: f.domain.ikState, protectedFrames: [] };
+        const bones = boneSnapshot(f.rig);
+        const whole = await mod.verifyInstalledTake({ target, environment: f.ports.readEnvironment(), yieldTask: () => Promise.resolve() });
+        const { id: wholeId, characterId, ...measured } = whole, { id: receiptId, ...expected } = receipt.verification;
+        assert.equal(characterId, f.character.id); assert.notEqual(wholeId, receiptId);
+        assert.deepEqual(measured, expected, `hover ${hover}: the installed take gets the candidate's verdict and metrics`);
+        assert.equal(whole.status, hover ? 'unverified' : 'verified');
+        const part = await mod.verifyInstalledTake({ target, environment: f.ports.readEnvironment(), range: { startFrame: 12, endFrameExclusive: 36 }, yieldTask: () => Promise.resolve() });
+        assert.deepEqual(part.range, { startFrame: 12, endFrameExclusive: 36 }); assert.equal(part.evaluatedFrames, 24);
+        assert.equal(part.unsupportedFrames, hover ? 24 : 0);
+        assert.deepEqual(boneSnapshot(f.rig), bones, 'the visible rig is never posed');
+      }
+      await assert.rejects(mod.verifyInstalledTake({ target: { character: { id: 'char-b' }, rig: rigFixture(), motion: null }, environment: { host, physicsRevision: 0, floor: { model: 'flat', y: 0 }, objects: [], cast: [], frameCount: 48 } }),
+        error => error.code === 'TARGET_NOT_READY');
+      console.log('PASS installed take verification reuses the candidate evaluator over the whole clip and a range');
     }
     if (selected('runtime-http')) {
       const f = fixture(); archives.set('/ardy/motions/123456-abcdef', archives.get(new URL(f.request.artifact.url).pathname));

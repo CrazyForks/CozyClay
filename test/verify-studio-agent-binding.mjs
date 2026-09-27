@@ -11,6 +11,7 @@ import * as protocol from '../src/studio-agent-protocol.js';
 import * as context from '../src/studio-agent-context.js';
 import * as commands from '../src/studio-agent-commands.js';
 import { createStudioMotionCandidates } from '../src/studio-agent-motion.js';
+import * as studioMotion from '../src/studio-agent-motion.js';
 import { createSceneHistoryStore } from '../src/scene-history.js';
 import { createCharacterEntry, createCharacterLayer, addScene, duplicateScene, renameScene, removeScene } from '../src/scenes.js';
 import { judgeNextWaypoint } from '../src/ardy/waypoints.js';
@@ -40,7 +41,7 @@ import { applyMotionCalibration, normalizeMotionCalibration } from '../src/ardy/
 import { decodeMotionResource, encodeMotionResource, resolveMotionSource, sha256Hex } from '../src/motion-resources.js';
 import { motionArraysToNpzMembers, writeNpz } from '../tools/ardy/npz.mjs';
 
-const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes', 'run-action-project-save', 'run-action-asset-import-and-undo', 'run-action-ai-prepare-shot', 'run-action-motion-generate-from-video'];
+const cases = ['inspect-entity-transforms', 'targeted-commit-and-undo', 'stale-target-and-epoch', 'selected-B-while-A-generates', 'edit-during-generation', 'invalid-prepare', 'mid-gesture-target', 'lost-acknowledgement', 'camera-undo', 'rail-camera-undo', 'rail-camera-undo-after-object-undo', 'stop-before-commit', 'explicit-unverified-acceptance', 'context-revisions', 'recreated-motion-read-and-verify', 'stale-receipt-undo', 'unverified-default-refusal', 'reverted-edit-invalidates-target', 'motion-preserves-playhead', 'patch-character-tint-and-undo', 'patch-stage-key-light-and-undo', 'patch-partial-drop', 'patch-during-gesture', 'patch-shot-and-prompt-blocks', 'patch-stage-environment-text-and-undo', 'run-action-shot-create-and-undo', 'run-action-object-duplicate-and-undo', 'run-action-refusals', 'run-action-character-waypoints-and-undo', 'run-action-character-ik-keys-and-undo', 'run-action-object-attach-and-undo', 'ui-refusals-localized-or-silent', 'run-action-shot-camera-rail-and-undo', 'run-action-view-toggles', 'context-entity-index', 'context-assets', 'inspect-scopes', 'cursor-survives-edit', 'agent-motion-survives-reload', 'motion-job-states', 'verify-stale-receipt', 'verify-result-targets', 'late-apply-inspect-patch', 'arrange-with-attached-prop', 'run-action-export-shot-video', 'run-action-scenes', 'run-action-project-save', 'run-action-asset-import-and-undo', 'run-action-ai-prepare-shot', 'run-action-motion-generate-from-video'];
 const argv = process.argv.slice(2);
 assert(!argv.length || (argv.length === 2 && argv[0] === '--case' && cases.includes(argv[1])), 'Unknown test arguments');
 const app = readFileSync(new URL('../src/App.jsx', import.meta.url), 'utf8');
@@ -127,7 +128,7 @@ function fixture(options={}) {
   submitFalMotion:async request=>{stand.falSubmits.push(request);if(stand.falSubmitError)throw new Error(stand.falSubmitError);return {job:{id:'fal-job-1',status:'queued'},dailyRemaining:3};},
   waitForFalMotionJob:async(id,{onUpdate})=>{onUpdate({id,status:'running'});return structuredClone(stand.falFinished);},
   ingestFootage:async source=>{stand.ingested.push(source);return stand.ingestResult;}};
- const scope={THREE,cloneSkeleton,...protocol,...context,...commands,...objects,...ik,...playback,createStudioMotionCandidates,copyPhysicsKeys,physicsKeyStamp,sampleAt,shotAtFrame,focalMmToFov,fovToFocalMm,objectTransformAt,aimAt,forwardFrom,
+ const scope={THREE,cloneSkeleton,...protocol,...context,...commands,...objects,...ik,...playback,createStudioMotionCandidates,verifyInstalledTake:studioMotion.verifyInstalledTake,copyPhysicsKeys,physicsKeyStamp,sampleAt,shotAtFrame,focalMmToFov,fovToFocalMm,objectTransformAt,aimAt,forwardFrom,
  liveStateRef:live,sceneRevisionRef:revision,charactersRef:characterRef,loadedLayerCharRef:ref(a.id),bufferRef:buffer,ikStateRef:state,ikStatesRef:layers,storeRef:store,
  charHistoryRef:history,opClockRef:clock,lastObjectOpRef:lastObject,studioHistoryRef:studioHistory,motionFullRef:ref(new Map()),
  store:store.current,suppressObjectClockRef:suppressObjectClock,studioBindingRef:ref(null),objectDeleteUndo:null,selectedSceneObjectId:null,
@@ -306,6 +307,34 @@ const implementations={
   assert.notEqual(after.ok,false,`a later edit must not fail verification: ${JSON.stringify(after)}`);
   assert.deepEqual({stale:after.stale,evidenceRevision:after.evidenceRevision,revision:after.revision},{stale:true,evidenceRevision:second.revision.after,revision:f.binding.refresh().revision});
   assert(after.revision>second.revision.after);
+ },
+ async 'verify-result-targets'(f){
+  // Targets are measured now, with the helpers the arrange/frame_shot receipts
+  // and the motion candidate use; only what truly cannot be computed is
+  // unsupported, and each such check says why.
+  const branch=app.slice(app.indexOf('if (request.name === "verify_result") {'),app.indexOf('fail("CAPABILITY_MISSING", "Generation is owned by the server runtime.");'));
+  for(const helper of ['placementChecks(','framingChecks(','verifyInstalledTake('])assert(branch.includes(helper),`verify_result computes target checks through ${helper}`);
+  const verify=args=>f.call('verify_result',f.request('verify_result',{visual:'none',...args}));
+  const first=await verify({targets:['actor-a'],checks:['placement','framing','motion']});
+  assert.notEqual(first.ok,false,JSON.stringify(first));
+  assert.deepEqual(first.unsupportedChecks,['motion'],JSON.stringify(first));
+  assert.match(first.unsupportedReasons.motion,/take/);
+  assert.deepEqual(Object.keys(first.unsupportedReasons),['motion']);
+  assert.equal(first.checks.placement.coverage,'same-frame-world-AABB-proxies');assert.deepEqual(first.checks.placement.overlapIds,[]);
+  assert.equal(first.checks.framing.coverage,'same-frame-subject-bounds-projection');assert(first.checks.framing.screenFraction>0,JSON.stringify(first.checks.framing));
+  const made=await f.call('arrange_objects',f.request('arrange_objects',{ops:[{op:'create',source:{kind:'cube'},position:{world:{x:0,y:0,z:0}}}]}));
+  assert.equal(made.ok,true,JSON.stringify(made));const cube=made.affectedIds[0];
+  const overlapped=await verify({targets:['actor-a'],checks:['placement']});
+  assert.deepEqual(overlapped.checks.placement.overlapIds,[cube]);assert(overlapped.checks.placement.maximumFootprintOverlapM>0);assert.deepEqual(overlapped.unsupportedChecks,[]);
+  const prop=await verify({targets:[cube],checks:['motion']});
+  assert.deepEqual(prop.unsupportedChecks,['motion']);assert.match(prop.unsupportedReasons.motion,/not a character/);
+  // A take the UI installed carries no verification: verify_result measures it.
+  f.buffer.current.motion=clip();
+  const take=await verify({targets:['actor-a'],checks:['motion']});
+  assert.deepEqual(take.unsupportedChecks,[],JSON.stringify(take));assert.deepEqual(take.unsupportedReasons,{});
+  assert.equal(take.verification.characterId,'actor-a');assert.equal(take.verification.profile,'studio-motion-v1');
+  assert.equal(take.verification.evaluatedFrames,48);assert.deepEqual(take.verification.range,{startFrame:0,endFrameExclusive:48});
+  assert(['verified','unverified'].includes(take.verification.status),JSON.stringify(take.verification));
  },
  async 'motion-job-states'(f){
   // The context job list is what the model reads to learn what the editor is
