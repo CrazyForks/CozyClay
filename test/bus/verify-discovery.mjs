@@ -193,6 +193,36 @@ cases['commands'] = async () => {
   console.log('PASS #438 acceptance 3: studio_commands and `cclay live commands` list the editor-only command with its label; ids fetch its schema');
 };
 
+cases['context'] = async () => {
+  const { buildStudioContext, encodeStudioContext } = await import('../../src/studio-agent-context.js');
+  const { STUDIO_CONTEXT_MAX_BYTES, utf8ByteLength } = await import('../../src/studio-agent-protocol.js');
+  const f = appFixture();
+  try {
+    f.registry.register({ ...STAMP, available: () => true, run: stamped });
+    // The agent's turn context: an id/label row for every registered command.
+    const context = f.binding.context();
+    assert.ok(Array.isArray(context.actionIndex), 'the turn context carries the command index');
+    assert.deepEqual(context.actionIndex.map(row => row.id), f.registry.ids());
+    const row = context.actionIndex.find(entry => entry.id === STAMP.id);
+    assert.deepEqual({ id: row.id, label: row.label }, { id: STAMP.id, label: STAMP.label });
+    const allowed = new Set(['id', 'label', 'generation', 'timeoutMs']);
+    assert.ok(context.actionIndex.every(row => Object.keys(row).every(key => allowed.has(key))), 'index rows carry no schema, description or availability');
+    const encoded = encodeStudioContext(context);
+    assert.ok(!encoded.includes(STAMP.description), 'no description is inlined');
+    assert.ok(!encoded.includes('"additionalProperties"'), 'no input schema is inlined');
+    // The budget still holds with a crowded scene: the index is kept whole
+    // while entity detail is compacted to fit.
+    const { actionIndex, entityIndex, ...input } = structuredClone(context);
+    const crowd = Array.from({ length: 400 }, (_, n) => ({ id: `prop-${String(n).padStart(3, '0')}`, kind: 'object', token: `token-${n}`,
+      name: `A long descriptive name for set piece number ${n} `.repeat(3).slice(0, 120), position: { x: n / 10, y: 0, z: -n / 10 } }));
+    const crowded = buildStudioContext({ ...input, entities: [...input.entities, ...crowd], actions: f.registry.list() });
+    assert.ok(utf8ByteLength(encodeStudioContext(crowded)) <= STUDIO_CONTEXT_MAX_BYTES, 'the crowded context fits the budget');
+    assert.deepEqual(crowded.actionIndex, context.actionIndex, 'the command index survives the budget');
+    assert.ok(crowded.entityPage.truncated, 'entity detail made room, not the index');
+  } finally { f.dispose(); }
+  console.log('PASS #438 acceptance 4: the agent turn context holds the id/label command index and no schema, within the context budget');
+};
+
 cases['confirm'] = async () => {
   const s = await studio();
   try {
