@@ -63,6 +63,7 @@ import { studioActionRefusal, resolveStudioToast } from "./studio-actions.js";
 import { createStudioAppActions } from "./commands/index.js";
 import { withCommandHistory } from "./command-bus.js";
 import { createStudioAppBinding } from "./studio-app-binding.js";
+import { createAppContext } from "./app-context.js";
 import { HISTORY_LIMIT } from "./history.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
@@ -640,6 +641,9 @@ async function fetchImportSource(url) {
 }
 
 export default function App() {
+	// App retains the lifetime and ownership of these cells; the facade only
+	// centralizes access for current and long-lived callbacks.
+	const [appContext] = useState(() => createAppContext());
 	const embedMode = ["scene", "playview"].includes(new URLSearchParams(globalThis.location?.search || "").get("embed"));
 	// The landing page's try-it iframe: full studio interaction on a preset
 	// scene with the project chrome hidden and saving off (see playground.js).
@@ -1170,8 +1174,6 @@ export default function App() {
 	charactersRef.current = characters;
 	// Character undo stack lives next to the cast: the store creation below
 	// and the undo handlers further down both read these refs.
-	const charHistoryRef = useRef({ past: [], future: [] });
-	const opClockRef = useRef(0);
 	const lastObjectOpRef = useRef(0);
 	const suppressObjectClockRef = useRef(false);
 	const [customPoses, setCustomPoses] = useState(() => loadCustomPoses());
@@ -1518,7 +1520,7 @@ export default function App() {
 		onObjects: (objects) => {
 			// Object-side ops join the shared undo clock here; undo/redo of the
 			// object store bumps the clock explicitly in undoScene/redoScene.
-			if (!suppressObjectClockRef.current) lastObjectOpRef.current = ++opClockRef.current;
+			if (!suppressObjectClockRef.current) lastObjectOpRef.current = appContext.nextTick();
 			setSceneObjects(objects);
 		},
 	}));
@@ -2193,16 +2195,12 @@ export default function App() {
 		}]));
 	}
 	function recordCharacterUndo() {
-		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast() });
-		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
-		charHistoryRef.current.future = [];
+		appContext.recordCharacterUndo(snapshotCast());
 	}
 	/** One Ctrl+Z entry for a structural shot edit (delete, split, duplicate,
 	 * add, reorder): the same history as the cast, with the shot list aboard. */
 	function recordShotUndo() {
-		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast(true) });
-		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
-		charHistoryRef.current.future = [];
+		appContext.recordShotUndo(snapshotCast(true));
 	}
 	/** One Ctrl+Z entry per EDITING SESSION rather than per event, for the
 	 * streams that fire continuously: per-keystroke text and per-pointermove
@@ -2212,7 +2210,7 @@ export default function App() {
 	 * keystroke or drag opens a fresh entry. `sessionRef` is a plain ref of
 	 * `{ key, tick }`. */
 	function recordSessionUndo(sessionRef, key, record = recordCharacterUndo) {
-		const past = charHistoryRef.current.past;
+		const past = appContext.castHistory.past;
 		const open = sessionRef.current
 			&& sessionRef.current.key === key
 			&& past[past.length - 1]?.tick === sessionRef.current.tick;
@@ -2287,7 +2285,7 @@ export default function App() {
 	}
 	/** True while a framing capture for `shotId` is the newest history entry. */
 	function framingSessionOpen(shotId) {
-		const past = charHistoryRef.current.past;
+		const past = appContext.castHistory.past;
 		return Boolean(framingSessionRef.current)
 			&& framingSessionRef.current.key === `framing:${shotId}`
 			&& past[past.length - 1]?.tick === framingSessionRef.current.tick;
@@ -2337,10 +2335,10 @@ export default function App() {
 	// props so the inspector cannot show a ghost.
 	function undoScene() {
 		if (studioBindingRef.current?.stepHistory(false)) return;
-		const charTop = charHistoryRef.current.past[charHistoryRef.current.past.length - 1];
+		const charTop = appContext.castHistory.past[appContext.castHistory.past.length - 1];
 		if (charTop && charTop.tick > lastObjectOpRef.current) {
-			charHistoryRef.current.future.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
-			charHistoryRef.current.past.pop();
+			appContext.castHistory.future.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
+			appContext.castHistory.past.pop();
 			restoreCast(charTop.snapshot);
 			setToast(ko("Undone", "실행 취소됨"));
 			return;
@@ -2352,7 +2350,7 @@ export default function App() {
 			setToast(ko("Nothing to undo", "실행 취소할 작업이 없어요"));
 			return;
 		}
-		lastObjectOpRef.current = ++opClockRef.current;
+		lastObjectOpRef.current = appContext.nextTick();
 		if (objectDeleteUndo?.id && restored.some((object) => object.id === objectDeleteUndo.id)) {
 			setSelectedHierarchyId(`object:${objectDeleteUndo.id}`);
 			setObjectDeleteUndo(null);
@@ -2374,10 +2372,10 @@ export default function App() {
 
 	function redoScene() {
 		if (studioBindingRef.current?.stepHistory(true)) return;
-		const charTop = charHistoryRef.current.future[charHistoryRef.current.future.length - 1];
+		const charTop = appContext.castHistory.future[appContext.castHistory.future.length - 1];
 		if (charTop && charTop.tick > lastObjectOpRef.current) {
-			charHistoryRef.current.past.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
-			charHistoryRef.current.future.pop();
+			appContext.castHistory.past.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
+			appContext.castHistory.future.pop();
 			restoreCast(charTop.snapshot);
 			setToast(ko("Redone", "다시 실행됨"));
 			return;
@@ -2389,7 +2387,7 @@ export default function App() {
 			setToast(ko("Nothing to redo", "다시 실행할 작업이 없어요"));
 			return;
 		}
-		lastObjectOpRef.current = ++opClockRef.current;
+		lastObjectOpRef.current = appContext.nextTick();
 		if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
 			setSelectedHierarchyId("props");
 		}
@@ -4185,7 +4183,7 @@ export default function App() {
 		storeRef.current = withCommandHistory(createSceneHistoryStore(objects, {
 			onCommit: (before, after) => markSemanticEdit("objects", before, after),
 			onObjects: (next) => {
-				if (!suppressObjectClockRef.current) lastObjectOpRef.current = ++opClockRef.current;
+				if (!suppressObjectClockRef.current) lastObjectOpRef.current = appContext.nextTick();
 				setSceneObjects(next);
 			},
 		}));
@@ -4216,7 +4214,7 @@ export default function App() {
 		ikStateRef.current = createIkState();
 		loadedLayerCharRef.current = stage.characters[0]?.id ?? null;
 		setActiveCharacterId(stage.characters[0]?.id ?? null);
-		charHistoryRef.current = { past: [], future: [] };
+		appContext.resetCastHistory();
 		restoreMotionRefs(stage.characters);
 		setTlFrame(0);
 		setMovePlaying(false);
@@ -4893,7 +4891,7 @@ export default function App() {
 					suppressObjectClockRef.current = priorSuppressObjectClock;
 					storeRef.current.end(token, { commit });
 				}
-				if (!rolledBack && storeRef.current.depths().past > depthBefore) lastObjectOpRef.current = ++opClockRef.current;
+				if (!rolledBack && storeRef.current.depths().past > depthBefore) lastObjectOpRef.current = appContext.nextTick();
 				syncObjects();
 				return { label: args.label?.trim() || "MCP batch", applied, failed, rolledBack };
 			},
@@ -6584,7 +6582,7 @@ export default function App() {
 		}
 		// A plan-board drag recorded its one entry when the gesture began; every
 		// other move is its own entry.
-		const past = charHistoryRef.current.past;
+		const past = appContext.castHistory.past;
 		if (!(gestureUndoRef.current?.key === "waypoint-drag" && past[past.length - 1]?.tick === gestureUndoRef.current.tick)) recordCharacterUndo();
 		writeCharacterWaypoints(characterId, next);
 		return { waypoint: moved, index, warnings: verdict.warnings };
@@ -7777,7 +7775,7 @@ export default function App() {
 		// The undo entry is provisional: a clean clip keys nothing, and a
 		// snapshot identical to the present state would make Ctrl+Z a no-op
 		// press that also discards the redo stack for nothing.
-		const savedFuture = charHistoryRef.current.future;
+		const savedFuture = appContext.castHistory.future;
 		recordCharacterUndo();
 		let keyed = [];
 		let unresolved = [];
@@ -7807,8 +7805,8 @@ export default function App() {
 			setIkTick((n) => n + 1);
 		}
 		if (!keyed.length) {
-			charHistoryRef.current.past.pop();
-			charHistoryRef.current.future = savedFuture;
+			appContext.castHistory.past.pop();
+			appContext.castHistory.future = savedFuture;
 		}
 		// Residual is worth saying out loud: a limb pinned between two blockers
 		// (another body and a prop, say) can come out of the walk still touching,
@@ -11802,11 +11800,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (path) setWaypoints(layer.waypoints);
 	}
 	function recordStudioHistory(domain, targetId, historyEntryId) {
-		const tick = ++opClockRef.current;
-		charHistoryRef.current.past.push({ tick, snapshot: snapshotCast(domain === "shot"),
+		const tick = appContext.nextTick();
+		appContext.castHistory.past.push({ tick, snapshot: snapshotCast(domain === "shot"),
 			studio: { domain, targetId, historyEntryId, objects: storeRef.current.objects, state: snapshotStudioDomain(domain, targetId) } });
-		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
-		charHistoryRef.current.future = [];
+		appContext.castHistory.past = appContext.castHistory.past.slice(-HISTORY_LIMIT);
+		appContext.castHistory.future = [];
 		studioHistoryRef.current.set(historyEntryId, { tick, domain });
 	}
 	/** Run one registry action for the agent and bind the native history entry
@@ -11817,7 +11815,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	function beginStudioAction(domain, targetId = null) {
 		if (studioActionGroupRef.current) throw new StudioProtocolError("TARGET_BUSY", "A command owns native history.");
 		const historyEntryId = crypto.randomUUID(), objects = storeRef.current.objects;
-		const history = charHistoryRef.current, past = [...history.past], future = [...history.future], states = [];
+		const history = appContext.castHistory, past = [...history.past], future = [...history.future], states = [];
 		let objectSession, changed = false, firstEntry;
 		const session = {
 			touch(domain, targetId) {
@@ -11839,7 +11837,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				liveStateRef.current.objects = storeRef.current.objects;
 				const compound = states.length > 1 || (states.length > 0 && objectsChanged);
 				if (changed || (compound && objectsChanged)) {
-					const tick = ++opClockRef.current, saved = states[0];
+					const tick = appContext.nextTick(), saved = states[0];
 					const studio = compound ? { domain: "compound", state: states, objectsChanged } : saved;
 					history.past.push({ tick, snapshot: firstEntry?.snapshot ?? snapshotCast(true), studio: { ...studio, historyEntryId, objects: storeRef.current.objects } });
 					history.past = history.past.slice(-HISTORY_LIMIT); history.future = [];
@@ -11883,7 +11881,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		const id = receipt?.undo?.historyEntryId, entry = studioHistoryRef.current.get(id);
 		if (!entry) return false;
 		const retained = (!entry.before || storeRef.current.hasHistoryState(entry.before)) && (entry.domain === "objects"
-			|| [...charHistoryRef.current.past, ...charHistoryRef.current.future].some(row => row.studio?.historyEntryId === id));
+			|| [...appContext.castHistory.past, ...appContext.castHistory.future].some(row => row.studio?.historyEntryId === id));
 		if (!retained) studioHistoryRef.current.delete(id);
 		return retained;
 	}
@@ -11903,7 +11901,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (state.renderer) restoreExportRig(state.renderer);
 	}
 	function stepStudioHistory(redo) {
-		const history = charHistoryRef.current, from = redo ? history.future : history.past, to = redo ? history.past : history.future;
+		const history = appContext.castHistory, from = redo ? history.future : history.past, to = redo ? history.past : history.future;
 		const top = from.at(-1);
 		// Object undo/redo advances the global clock, even when it returns to the
 		// exact object state captured by this Studio entry. Use that boundary
@@ -11919,7 +11917,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		} else if (entry.domain === "stage") publishStudioStage(entry.state.stage);
 		else if (entry.domain === "cast") { publishStudioCharacters(entry.state.characters); syncStudioLayerBuffer(entry.state.characters); }
 		else publishStudioMotion(entry.targetId, entry.state);
-		sceneRevisionRef.current++; ++opClockRef.current;
+		sceneRevisionRef.current++; appContext.nextTick();
 		setToast(redo ? ko("Redone", "다시 실행됨") : ko("Undone", "실행 취소됨")); return true;
 	}
 	function commitStudioDraft(payload) {
@@ -11961,7 +11959,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			target.rig.updateMatrixWorld(true);
 		}
 		// Preimage bones live on the native entry, not on the installed candidate.
-		charHistoryRef.current.past.at(-1).studio.state.renderer = renderer;
+		appContext.castHistory.past.at(-1).studio.state.renderer = renderer;
 		markSemanticEdit("characters", before.characters, charactersRef.current);
 		// Store the take's bytes the way a project save embeds a take
 		// (collectProjectSerialized): the same record, caches and motion store, so
@@ -12092,8 +12090,8 @@ function resizePromptClip(id, edge, rawFrame) {
 		canUndo: receipt => {
 			const entry = receipt?.undo && studioHistoryRef.current.get(receipt.undo.historyEntryId);
 			if (!entry || receipt.revision.after !== sceneRevisionRef.current) return false;
-			return entry.domain === "objects" ? entry.tick === lastObjectOpRef.current && entry.tick >= (charHistoryRef.current.past.at(-1)?.tick ?? 0) && entry.depth === storeRef.current.depths().past :
-				entry.tick === charHistoryRef.current.past.at(-1)?.tick && entry.tick > lastObjectOpRef.current;
+			return entry.domain === "objects" ? entry.tick === lastObjectOpRef.current && entry.tick >= (appContext.castHistory.past.at(-1)?.tick ?? 0) && entry.depth === storeRef.current.depths().past :
+				entry.tick === appContext.castHistory.past.at(-1)?.tick && entry.tick > lastObjectOpRef.current;
 		},
 		actions: () => studioActionsRef.current,
 		recordAction: recordStudioAction, beginAction: beginStudioAction,
