@@ -177,7 +177,7 @@ export function createStudioAppBinding(ports) {
 		return [...catalogue, ...imported.values()];
 	}
 	function context() {
-		const s = refresh(), entities = entityProjection(s);
+		const s = refresh(), entities = entityProjection(s), registry = ports.actions?.();
 		const shot = s.shots.find(row => row.id === s.selectedShotId) ?? shotAtFrame(s.shots, s.view.frame);
 		const range = frameRange;
 		return buildStudioContext({ schema: "studio-context-v1", host: { surface: "studio", ...s.host, workspaceHandle: s.workspaceHandle },
@@ -191,7 +191,9 @@ export function createStudioAppBinding(ports) {
 			shots: s.shots.map(row => ({ id: row.id, name: row.name, range: range(row), keyCount: row.cameraKeys.length })), shotsTruncated: false,
 			assets: assetList(s), recentReceipts: [...receipts.values()].filter(r => r.ok).reverse().slice(0, 3).map(r => ({ id: r.receiptId, summary: r.status, canUndoDirect: ports.canUndo(r) })),
 			jobs: [...jobs.values()].slice(-8), capabilities: { profile: "studio-slice-1", tools: STUDIO_TOOL_FAMILIES,
-				rigReady: Boolean(s.targets.get(s.activeCharacterId)?.rig), cameraReady: Boolean(s.camera), bridgeReady: s.bridgeReady } });
+				rigReady: Boolean(s.targets.get(s.activeCharacterId)?.rig), cameraReady: Boolean(s.camera), bridgeReady: s.bridgeReady },
+			// Every registered command; buildStudioContext keeps only its id/label index.
+			...(registry ? { actions: registry.list() } : {}) });
 	}
 	function readTarget(binding) {
 		const s = refresh(), target = s.targets.get(binding.characterId);
