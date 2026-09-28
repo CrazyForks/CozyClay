@@ -289,6 +289,63 @@ cases['confirm'] = async () => {
   console.log('PASS #438 acceptance 6: scene.delete without a confirmation token answers CONFIRMATION_REQUIRED through MCP and the CLI exactly as through the agent');
 };
 
+// The milestone: one command registered only in the editor, listed and called
+// through the agent's real turn route, MCP and the CLI.
+cases['milestone'] = async () => {
+  const { createServer } = await import('node:http');
+  const { once } = await import('node:events');
+  const { createAgentHandler } = await import('../../bin/agent/agent-routes.mjs');
+  const { createFakeModel } = await import('../fixtures/fake-model.mjs');
+  let entered = null, release = null;
+  const s = await studio([{ ...STAMP, run: async args => { entered?.resolve(); if (release) await release.promise; return stamped(args); } }]);
+  const faux = createFakeModel();
+  faux.script([
+    { type: 'toolCall', id: 'schema-1', name: 'inspect_studio', arguments: { scope: 'actions', ids: [STAMP.id] } },
+    { type: 'toolCall', id: 'run-1', name: 'run_action', arguments: { action: STAMP.id, args: { note: 'agent' } } },
+    [{ type: 'text', text: 'Stamped.' }],
+  ]);
+  let server;
+  const handler = createAgentHandler({ auth: { getAccessToken: async () => 'token' }, models: faux.models, fauxProvider: faux.fauxProvider, liveHub: s.hub, port: () => server.address().port });
+  server = createServer((req, res) => handler(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    // Agent: the turn context names the command, the model reads its schema
+    // on request and runs it; the frame waits the declared 120 s.
+    entered = signal(); release = signal();
+    const turn = { surface: 'studio', sessionId: crypto.randomUUID(), turnId: crypto.randomUUID(), text: 'Stamp the fixture.', context: s.f.binding.context() };
+    const posted = fetch(`${origin}/agent/turn`, { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify(turn), signal: AbortSignal.timeout(20_000) })
+      .then(async response => ({ status: response.status, text: await response.text() }));
+    await within(Promise.race([entered.promise, posted.then(ended => { throw new Error(`The turn ended before the command ran: ${ended.text}`); })]), 'the agent turn running the command');
+    assert.deepEqual(s.pending('run_action'), [STAMP.timeoutMs], 'the agent route runs it under its declared timeout');
+    release.resolve();
+    const answered = await within(posted, 'the agent turn');
+    assert.equal(answered.status, 200, answered.text);
+    const done = [...answered.text.matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1])).filter(frame => frame.type === 'tool.done');
+    assert.deepEqual(done.map(frame => [frame.callId, frame.ok]), [['schema-1', true], ['run-1', true]], answered.text);
+    assert.deepEqual(done[0].result.actions.map(row => row.input), [STAMP.input], 'the schema arrives on request');
+    assert.deepEqual({ action: done[1].result.action, status: done[1].result.status, output: done[1].result.output }, { action: STAMP.id, status: 'completed', output: { note: 'agent' } });
+    const seen = faux.calls[0].messages.flatMap(message => Array.isArray(message.content) ? message.content : []).map(part => part.text ?? '').join('\n');
+    const encoded = JSON.parse(/<studio-context>\n(.*)\n<\/studio-context>/.exec(seen)[1]);
+    assert.deepEqual(encoded.actionIndex.find(row => row.id === STAMP.id), { id: STAMP.id, label: STAMP.label, timeoutMs: STAMP.timeoutMs }, 'the model sees the command in its index');
+    assert.ok(!seen.includes(STAMP.description), 'and not its description or schema');
+    // MCP and the CLI: the same command, listed and run.
+    const listed = await callTool('studio_commands', {}, s.handle);
+    assert.deepEqual(listed.value.actions.filter(row => row.id === STAMP.id).map(row => row.label), [STAMP.label]);
+    const viaMcp = await callTool('studio_run', { action: STAMP.id, args: { note: 'mcp' } }, s.handle);
+    assert.deepEqual(viaMcp.value.output, { note: 'mcp' });
+    const commands = await cli(['commands'], s);
+    assert.deepEqual(commands.json.actions.filter(row => row.id === STAMP.id).map(row => row.label), [STAMP.label]);
+    const viaCli = await cli(['run', STAMP.id, '--args', JSON.stringify({ note: 'cli' })], s);
+    assert.deepEqual(viaCli.json?.output, { note: 'cli' }, viaCli.stdout);
+  } finally {
+    await handler.close(); server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    await s.close();
+  }
+  console.log('PASS #438 milestone: a command registered only in the editor is listed by and runs through the agent route, MCP and the CLI');
+};
+
 const selected = process.env.COZYCLAY_DISCOVERY_CASE || null;
 if (selected && !cases[selected]) { console.error(`unknown case ${selected}; known: ${Object.keys(cases).join(', ')}`); process.exit(2); }
 for (const [name, run] of Object.entries(cases)) if (!selected || selected === name) await run();
