@@ -56,7 +56,8 @@ function coverageMetrics() {
   const text = sources.map(file => readFileSync(file, "utf8"));
   const handlerTotal = text.reduce((total, source) => total + [...source.matchAll(/on[A-Z][A-Za-z]+\s*=\s*\{/g)].length, 0);
   const handlerSites = text.reduce((total, source) => total + [...source.matchAll(/on[A-Z][A-Za-z]+[\s\S]{0,240}?\brun\s*\(/g)].length, 0);
-  const metrics = { writerReferences: scanTree(fileURLToPath(new URL("../../src", import.meta.url))).length, handlerSites, handlerTotal, registeredCommands: STUDIO_ACTIONS.filter(action => action.exposure !== "ui-only").length };
+  const registeredCommands = STUDIO_ACTIONS.filter(action => action.exposure !== "ui-only").length;
+  const metrics = { writerReferences: scanTree(fileURLToPath(new URL("../../src", import.meta.url))).length, handlerSites, handlerTotal, registeredCommands, commandOriginRows: registeredCommands * ORIGINS.length };
   console.log(`BUS COVERAGE (a) document-writer references outside commands: ${metrics.writerReferences}`);
   console.log(`BUS COVERAGE (b) document-mutating UI handler sites that reach run: ${metrics.handlerSites} of ${metrics.handlerTotal}`);
   console.log(`BUS COVERAGE (c) registered commands exposed to agents: ${metrics.registeredCommands} of ${metrics.registeredCommands}`);
