@@ -27,6 +27,7 @@ import { createProjectDocument, readProjectDocument } from "../src/project.js";
 import { createSceneHistoryStore } from "../src/scene-history.js";
 import { copyPhysicsKeys } from "../src/ardy/physics-review.js";
 import { HISTORY_LIMIT } from "../src/history.js";
+import { createAppContext } from "../src/app-context.js";
 import { createCommandBus } from "../src/command-bus.js";
 import { createShot } from "../src/cuts.js";
 import { createStudioCommandJournal } from "../src/studio-agent-commands.js";
@@ -98,6 +99,7 @@ function fixture() {
 		copyPhysicsKeys,
 		ko: (english) => english,
 	};
+	scope.appContext = createAppContext({ clock: scope.opClockRef, history: scope.charHistoryRef, objectClock: scope.lastObjectOpRef, suppressObjectClock: scope.suppressObjectClockRef, characters: scope.charactersRef });
 	Object.defineProperty(scope, "activeChar", { get: () => scope.characters[0] });
 	const assign = (key) => (value) => {
 		scope[key] = typeof value === "function" ? value(scope[key]) : value;

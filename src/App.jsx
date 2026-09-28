@@ -63,6 +63,7 @@ import { studioActionRefusal, resolveStudioToast } from "./studio-actions.js";
 import { createStudioAppActions } from "./commands/index.js";
 import { withCommandHistory } from "./command-bus.js";
 import { createStudioAppBinding } from "./studio-app-binding.js";
+import { AppContext, createAppContext } from "./app-context.js";
 import { HISTORY_LIMIT } from "./history.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
@@ -640,6 +641,14 @@ async function fetchImportSource(url) {
 }
 
 export default function App() {
+	// App retains the lifetime and ownership of these cells; the facade only
+	// centralizes access for current and long-lived callbacks.
+	const [appContext] = useState(() => createAppContext({
+		// These cells initialize later in this render. Readers run only after
+		// initialization and follow the same refs across subsequent renders.
+		motion: { get current() { return bufferRef.current.motion; } },
+		getBus: () => studioBindingRef.current.bus,
+	}));
 	const embedMode = ["scene", "playview"].includes(new URLSearchParams(globalThis.location?.search || "").get("embed"));
 	// The landing page's try-it iframe: full studio interaction on a preset
 	// scene with the project chrome hidden and saving off (see playground.js).
@@ -713,7 +722,7 @@ export default function App() {
 		enterPreview();
 		const capture = () => {
 			try {
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				const dataUrl = live.captureFramingPng(live.captureCurrentFraming());
 				if (!dataUrl) throw new Error("The shot renderer is not ready");
 				const output = SHOT_ASPECT_PRESETS[live.stage.shotAspect] ?? SHOT_ASPECT_PRESETS["16:9"];
@@ -732,7 +741,7 @@ export default function App() {
 		const exportPack = async (shotId, ownedByWorkflow) => {
 			const attempt = ownedByWorkflow ? null : startExportAttempt({ export_kind: "keyframe_pack", format: "zip", surface: "embed" });
 			try {
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				const index = live.shotIndexForPack(shotId ?? null);
 				const pack = await live.buildShotKeyframePack(live.shots[index], index);
 				const bytes = pack.bytes.buffer.slice(pack.bytes.byteOffset, pack.bytes.byteOffset + pack.bytes.byteLength);
@@ -1166,14 +1175,7 @@ export default function App() {
 	// The cast as of this render, for async handlers: an extraction that
 	// started three renders ago must place its takes against the CURRENT cast,
 	// not the one its closure captured.
-	const charactersRef = useRef(characters);
-	charactersRef.current = characters;
-	// Character undo stack lives next to the cast: the store creation below
-	// and the undo handlers further down both read these refs.
-	const charHistoryRef = useRef({ past: [], future: [] });
-	const opClockRef = useRef(0);
-	const lastObjectOpRef = useRef(0);
-	const suppressObjectClockRef = useRef(false);
+	appContext.publishCharacters(characters);
 	const [customPoses, setCustomPoses] = useState(() => loadCustomPoses());
 	const [posing, setPosing] = useState(null);
 	const [posingClosing, setPosingClosing] = useState(false);
@@ -1250,11 +1252,11 @@ export default function App() {
 		}));
 	}
 	function removeCharacter(charId) {
-		const list = charactersRef.current;
+		const list = appContext.live.characters;
 		if (list.length <= 1) return;
 		recordCharacterUndo();
 		const nextCharacters = list.filter((entry) => entry.id !== charId);
-		charactersRef.current = nextCharacters;
+		appContext.publishCharacters(nextCharacters);
 		editCharacters(nextCharacters);
 		// The deleted layer's untrimmed take goes with it: a recycled id must
 		// never inherit a stranger's take, and its stature left with the entry.
@@ -1518,7 +1520,7 @@ export default function App() {
 		onObjects: (objects) => {
 			// Object-side ops join the shared undo clock here; undo/redo of the
 			// object store bumps the clock explicitly in undoScene/redoScene.
-			if (!suppressObjectClockRef.current) lastObjectOpRef.current = ++opClockRef.current;
+			appContext.objectChanged();
 			setSceneObjects(objects);
 		},
 	}));
@@ -2089,7 +2091,7 @@ export default function App() {
 		environment,
 		style,
 		hasEnvSheet,
-		characters: charactersRef.current.map((entry) => ({
+		characters: appContext.live.characters.map((entry) => ({
 			...entry,
 			layer: entry.id === activeChar.id
 				? { waypoints: bufferRef.current.waypoints, promptClips: bufferRef.current.promptClips }
@@ -2193,16 +2195,12 @@ export default function App() {
 		}]));
 	}
 	function recordCharacterUndo() {
-		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast() });
-		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
-		charHistoryRef.current.future = [];
+		appContext.recordCharacterUndo(snapshotCast());
 	}
 	/** One Ctrl+Z entry for a structural shot edit (delete, split, duplicate,
 	 * add, reorder): the same history as the cast, with the shot list aboard. */
 	function recordShotUndo() {
-		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast(true) });
-		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
-		charHistoryRef.current.future = [];
+		appContext.recordShotUndo(snapshotCast(true));
 	}
 	/** One Ctrl+Z entry per EDITING SESSION rather than per event, for the
 	 * streams that fire continuously: per-keystroke text and per-pointermove
@@ -2212,7 +2210,7 @@ export default function App() {
 	 * keystroke or drag opens a fresh entry. `sessionRef` is a plain ref of
 	 * `{ key, tick }`. */
 	function recordSessionUndo(sessionRef, key, record = recordCharacterUndo) {
-		const past = charHistoryRef.current.past;
+		const past = appContext.castHistory.past;
 		const open = sessionRef.current
 			&& sessionRef.current.key === key
 			&& past[past.length - 1]?.tick === sessionRef.current.tick;
@@ -2287,7 +2285,7 @@ export default function App() {
 	}
 	/** True while a framing capture for `shotId` is the newest history entry. */
 	function framingSessionOpen(shotId) {
-		const past = charHistoryRef.current.past;
+		const past = appContext.castHistory.past;
 		return Boolean(framingSessionRef.current)
 			&& framingSessionRef.current.key === `framing:${shotId}`
 			&& past[past.length - 1]?.tick === framingSessionRef.current.tick;
@@ -2337,22 +2335,22 @@ export default function App() {
 	// props so the inspector cannot show a ghost.
 	function undoScene() {
 		if (studioBindingRef.current?.stepHistory(false)) return;
-		const charTop = charHistoryRef.current.past[charHistoryRef.current.past.length - 1];
-		if (charTop && charTop.tick > lastObjectOpRef.current) {
-			charHistoryRef.current.future.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
-			charHistoryRef.current.past.pop();
+		const charTop = appContext.castHistory.past[appContext.castHistory.past.length - 1];
+		if (charTop && charTop.tick > appContext.objectClock) {
+			appContext.castHistory.future.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
+			appContext.castHistory.past.pop();
 			restoreCast(charTop.snapshot);
 			setToast(ko("Undone", "실행 취소됨"));
 			return;
 		}
-		suppressObjectClockRef.current = true;
+		appContext.suppressObjectClock = true;
 		const restored = store.undo();
-		suppressObjectClockRef.current = false;
+		appContext.suppressObjectClock = false;
 		if (restored === null) {
 			setToast(ko("Nothing to undo", "실행 취소할 작업이 없어요"));
 			return;
 		}
-		lastObjectOpRef.current = ++opClockRef.current;
+		appContext.advanceObjectClock();
 		if (objectDeleteUndo?.id && restored.some((object) => object.id === objectDeleteUndo.id)) {
 			setSelectedHierarchyId(`object:${objectDeleteUndo.id}`);
 			setObjectDeleteUndo(null);
@@ -2374,22 +2372,22 @@ export default function App() {
 
 	function redoScene() {
 		if (studioBindingRef.current?.stepHistory(true)) return;
-		const charTop = charHistoryRef.current.future[charHistoryRef.current.future.length - 1];
-		if (charTop && charTop.tick > lastObjectOpRef.current) {
-			charHistoryRef.current.past.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
-			charHistoryRef.current.future.pop();
+		const charTop = appContext.castHistory.future[appContext.castHistory.future.length - 1];
+		if (charTop && charTop.tick > appContext.objectClock) {
+			appContext.castHistory.past.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
+			appContext.castHistory.future.pop();
 			restoreCast(charTop.snapshot);
 			setToast(ko("Redone", "다시 실행됨"));
 			return;
 		}
-		suppressObjectClockRef.current = true;
+		appContext.suppressObjectClock = true;
 		const restored = store.redo();
-		suppressObjectClockRef.current = false;
+		appContext.suppressObjectClock = false;
 		if (restored === null) {
 			setToast(ko("Nothing to redo", "다시 실행할 작업이 없어요"));
 			return;
 		}
-		lastObjectOpRef.current = ++opClockRef.current;
+		appContext.advanceObjectClock();
 		if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
 			setSelectedHierarchyId("props");
 		}
@@ -2583,7 +2581,6 @@ export default function App() {
 	const [subjectVisible, setSubjectVisible] = useState(true);
 	const mcpCaptureRef = useRef(null);
 	const liveControlRef = useRef(null);
-	const liveStateRef = useRef(null);
 	const liveHandlersRef = useRef(null);
 	const [liveWorkspaceHandle, setLiveWorkspaceHandle] = useState(null);
 	const liveWorkspaceHandleRef = useRef(null);
@@ -3087,7 +3084,7 @@ export default function App() {
 		// patch) funnels through here, so this is where the shot snapshot goes.
 		// No shot resolved means the setShots below is a no-op — record nothing.
 		// The live read model, so a run_action edit sees the shots of the same tick.
-		if (!liveStateRef.current.shots.some((shot) => shot.id === shotId)) return;
+		if (!appContext.live.state.shots.some((shot) => shot.id === shotId)) return;
 		// A framing capture in the same gesture (rail draw toggle, Follow switch
 		// re-measure) already snapshotted the pre-gesture shots, so this commit
 		// joins that entry instead of pushing a second one for one click.
@@ -3208,7 +3205,7 @@ export default function App() {
 	/* One camera-rail core for every shot, shared by the Top-View rail stroke,
 	 * the Delete rail button and run_action. */
 	function setShotCameraRail(shotId, points) {
-		const shot = liveStateRef.current.shots.find((entry) => entry.id === shotId);
+		const shot = appContext.live.state.shots.find((entry) => entry.id === shotId);
 		if (!shot) throw new StudioProtocolError("STALE_TARGET", `Shot ${shotId} is not in this scene.`);
 		const camera = createCameraBlock(shot.camera);
 		window.dispatchEvent(new CustomEvent("cozyclay:playground-signal", { detail: { kind: "rail" } }));
@@ -3219,7 +3216,7 @@ export default function App() {
 		}, shotId);
 	}
 	function clearShotCameraRail(shotId) {
-		const shot = liveStateRef.current.shots.find((entry) => entry.id === shotId);
+		const shot = appContext.live.state.shots.find((entry) => entry.id === shotId);
 		if (!shot) throw new StudioProtocolError("STALE_TARGET", `Shot ${shotId} is not in this scene.`);
 		// The camera block being edited: this shot's, whichever shot is active.
 		const activeCamera = createCameraBlock(shot.camera);
@@ -3474,11 +3471,10 @@ export default function App() {
 	// Refs make a Scene switch synchronous: the outgoing room is sealed with
 	// its latest objects and camera department envelope before React opens the
 	// destination room.
-	const scenesRef = useRef(scenes);
 	const activeSceneIdRef = useRef(activeSceneId);
 	const shotDocumentRef = useRef(null);
 	const actorStageRef = useRef(null);
-	scenesRef.current = scenes;
+	appContext.publishScenes(scenes);
 	activeSceneIdRef.current = activeSceneId;
 	shotDocumentRef.current = createShotAuthoringDocument({ shots, waypoints, frameCount: tlFrameCount });
 	actorStageRef.current = {
@@ -3498,7 +3494,7 @@ export default function App() {
 		hasEnvSheet,
 	};
 
-	function snapshotActiveScene(sourceScenes = scenesRef.current) {
+	function snapshotActiveScene(sourceScenes = appContext.live.scenes) {
 		return sourceScenes.map((scene) => scene.id === activeSceneIdRef.current
 			? { ...scene, objects: storeRef.current.objects, shotDocument: shotDocumentRef.current, stage: actorStageRef.current }
 			: scene);
@@ -3630,13 +3626,11 @@ export default function App() {
 	const setStudioAgentMode = (enabled) => setAgentCollapsed(!enabled);
 	const studioDocumentEpochRef = useRef(crypto.randomUUID());
 	const studioSceneEpochRef = useRef(crypto.randomUUID());
-	const studioPortsRef = useRef(null);
 	// The one Studio action registry, built from the command modules
 	// (src/commands), and the one generic port object they register over. Every
 	// render refreshes the port members in place, so a run always reaches the
 	// latest handlers; the UI controls and run_action share both.
 	const studioActionsRef = useRef(null);
-	const studioActionPortsRef = useRef({});
 	const renderWaitersRef = useRef([]);
 	const studioHistoryRef = useRef(new Map());
 	const studioActionGroupRef = useRef(null);
@@ -3651,7 +3645,7 @@ export default function App() {
 	const agentTouchTimerRef = useRef(null);
 	useEffect(() => () => clearTimeout(agentTouchTimerRef.current), []);
 	const hierarchyRowsForAgentTarget = (targetId) => {
-		const castIndex = charactersRef.current.findIndex((entry) => entry.id === targetId);
+		const castIndex = appContext.live.characters.findIndex((entry) => entry.id === targetId);
 		if (castIndex !== -1) return [rowIdForCharIndex(castIndex)];
 		if (storeRef.current.objects.some((object) => object.id === targetId)) return [`object:${targetId}`];
 		// A stage edit is addressed by the scene itself; the rows it can change
@@ -4185,7 +4179,7 @@ export default function App() {
 		storeRef.current = withCommandHistory(createSceneHistoryStore(objects, {
 			onCommit: (before, after) => markSemanticEdit("objects", before, after),
 			onObjects: (next) => {
-				if (!suppressObjectClockRef.current) lastObjectOpRef.current = ++opClockRef.current;
+				appContext.objectChanged();
 				setSceneObjects(next);
 			},
 		}));
@@ -4216,7 +4210,7 @@ export default function App() {
 		ikStateRef.current = createIkState();
 		loadedLayerCharRef.current = stage.characters[0]?.id ?? null;
 		setActiveCharacterId(stage.characters[0]?.id ?? null);
-		charHistoryRef.current = { past: [], future: [] };
+		appContext.resetCastHistory();
 		restoreMotionRefs(stage.characters);
 		setTlFrame(0);
 		setMovePlaying(false);
@@ -4225,7 +4219,7 @@ export default function App() {
 		setActiveWaypointId(null);
 		setPendingWaypointFrame(null);
 		setSelectedHierarchyId("shot");
-		scenesRef.current = nextScenes;
+		appContext.publishScenes(nextScenes);
 		activeSceneIdRef.current = scene.id;
 		setScenes(nextScenes);
 		setActiveSceneId(scene.id);
@@ -4273,7 +4267,7 @@ export default function App() {
 		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
 		if (index < 0) return;
 		const nextScenes = renameScene(savedScenes, index, name);
-		scenesRef.current = nextScenes;
+		appContext.publishScenes(nextScenes);
 		setScenes(nextScenes);
 		persistScenes(nextScenes, activeSceneIdRef.current);
 	}
@@ -4284,7 +4278,7 @@ export default function App() {
 		if (index < 0 || savedScenes.length <= 1) return;
 		const nextScenes = removeScene(savedScenes, index);
 		if (sceneId !== activeSceneIdRef.current) {
-			scenesRef.current = nextScenes;
+			appContext.publishScenes(nextScenes);
 			setScenes(nextScenes);
 			persistScenes(nextScenes, activeSceneIdRef.current);
 			return;
@@ -4325,14 +4319,14 @@ export default function App() {
 		const currentStage = currentScene?.stage;
 		if (JSON.stringify(currentStage ?? null) !== JSON.stringify(incomingStage)) {
 			const mergedCharacters = incomingStage.characters.map((entry) => {
-				const current = charactersRef.current.find((item) => item.id === entry.id);
+				const current = appContext.live.characters.find((item) => item.id === entry.id);
 				return current?.sessionMotion ? { ...entry, sessionMotion: current.sessionMotion } : entry;
 			});
-			charactersRef.current = mergedCharacters;
+			appContext.publishCharacters(mergedCharacters);
 			setCharacters(mergedCharacters);
 			restoreMotionRefs(mergedCharacters);
 		}
-		scenesRef.current = nextScenes;
+		appContext.publishScenes(nextScenes);
 		setScenes(nextScenes);
 	};
 	useEffect(() => subscribeToSceneDocuments((document) => externalSceneApplyRef.current?.(document)), []);
@@ -4359,7 +4353,7 @@ export default function App() {
 	// Commands are a sequential transport boundary, while React commits on a
 	// later turn. Keep its read model current synchronously so the next frame
 	// observes the mutation that the previous frame just acknowledged.
-	liveStateRef.current = {
+	appContext.publishLive({
 		scenes,
 		activeSceneId,
 		camera: cameraPos,
@@ -4400,7 +4394,7 @@ export default function App() {
 		exportShotVideo,
 		generate,
 		shots,
-	};
+	});
 	if (!liveHandlersRef.current) {
 		const finitePatch = (args, fields) => {
 			const patch = {};
@@ -4420,7 +4414,7 @@ export default function App() {
 			return characters.find((entry) => entry.id === ref) ?? null;
 		};
 		const describe = () => {
-			const live = liveStateRef.current;
+			const live = appContext.live.state;
 			return {
 				document: {
 					version: SCENES_VERSION,
@@ -4473,12 +4467,12 @@ export default function App() {
 			};
 		};
 		const replaceCharacters = (next) => {
-			charactersRef.current = next;
-			liveStateRef.current.characters = next;
+			appContext.publishCharacters(next);
+			appContext.patchLive({ characters: next });
 			editCharacters(next);
 		};
 		const syncObjects = () => {
-			liveStateRef.current.objects = storeRef.current.objects;
+			appContext.patchLive({ objects: storeRef.current.objects });
 		};
 		let batchToken = null;
 		const applyObjectMutation = (mutation) => {
@@ -4498,7 +4492,7 @@ export default function App() {
 			// Camera moves are not undoable in the UI. This is the free-camera and
 			// Top-View path: drive the shot camera, lens state, then manual ownership.
 			set_camera: (rawArgs) => {
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				// A named preset is shorthand for a full framing: it is resolved
 				// against the ACTIVE subject and the CURRENT filmback, so the same
 				// preset re-frames correctly after the subject moves or the output
@@ -4570,8 +4564,8 @@ export default function App() {
 				// remounts, instead of re-seeding the preset over it (#86 on slow
 				// runners — the position and aim were being dropped here).
 				shotCameraPosRef.current = { x: next.x, y: next.y, z: next.z };
-				live.camera = next;
-				live.fovDeg = nextFov;
+				appContext.patchLive({ camera: next });
+				appContext.patchLive({ fovDeg: nextFov });
 				setCameraPos(next);
 				setFovDeg(nextFov);
 				live.commitManualCameraFraming();
@@ -4588,7 +4582,7 @@ export default function App() {
 			},
 			add_character: (args) => {
 				if (typeof args.subject !== "string") throw new Error("Invalid subject");
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				const patch = finitePatch(args, ["x", "z", "rot"]);
 				live.recordCharacterUndo();
 				const id = nextCharacterId(live.characters);
@@ -4596,7 +4590,7 @@ export default function App() {
 				return { id };
 			},
 			update_character: (args) => {
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				const character = characterForRef(live.characters, args.ref);
 				if (!character) throw new Error("Character not found");
 				const patch = finitePatch(args, ["x", "y", "z", "rot"]);
@@ -4614,17 +4608,17 @@ export default function App() {
 				return { id: character.id };
 			},
 			remove_character: (args) => {
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				const character = characterForRef(live.characters, args.ref);
 				if (!character) throw new Error("Character not found");
 				if (live.characters.length <= 1) throw new Error("Cannot remove the final character");
 				live.removeCharacter(character.id);
-				live.characters = charactersRef.current;
+				appContext.patchLive({ characters: appContext.live.characters });
 				return { id: character.id };
 			},
 			place_object: (args) => {
 				if (typeof args.kind !== "string") throw new Error("Invalid kind");
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				// The parent is checked before anything is created: a bad id must
 				// not leave a half-made part lying around unattached.
 				if (args.parent !== undefined) {
@@ -4685,7 +4679,7 @@ export default function App() {
 					} finally {
 						db.close?.();
 					}
-					const live = liveStateRef.current;
+					const live = appContext.live.state;
 					const camera = shotCamRef.current;
 					const hasFloor = Number.isFinite(args.x) || Number.isFinite(args.z);
 					const placement = hasFloor
@@ -4726,7 +4720,7 @@ export default function App() {
 					: args.dataUrl.slice(5, args.dataUrl.search(/[;,]/));
 				const bytes = await (await fetch(args.dataUrl)).arrayBuffer();
 				const file = new File([bytes], args.name, { type: mime });
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				const asset = await rememberAsset(await importImageFile(file));
 				const backdrop = args.placeAs === "backdrop";
 				const camera = shotCamRef.current;
@@ -4758,7 +4752,7 @@ export default function App() {
 				return { assetId: asset.id, objectId: object.id };
 			},
 			update_object: (args) => {
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
 				const patch = finitePatch(args, ["x", "y", "z", "rot", "rotX", "rotZ"]);
 				// A uniform `scale` is the common case; per-axis values are what a
@@ -4792,7 +4786,7 @@ export default function App() {
 				return { id: args.id };
 			},
 			remove_object: (args) => {
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
 				applyObjectMutation((objects) => removeSceneObject(objects, args.id));
 				return { id: args.id };
@@ -4805,14 +4799,14 @@ export default function App() {
 				if (loaded.status !== "valid" && loaded.status !== "migrated") throw new Error("Invalid scene document");
 				const document = loaded.document;
 				const target = document.scenes[activeSceneIndex(document.scenes, document.activeSceneId)];
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				live.persistScenes(document.scenes, document.activeSceneId);
 				live.openScene(target, document.scenes);
-				live.scenes = document.scenes;
-				live.activeSceneId = document.activeSceneId;
-				live.objects = storeRef.current.objects;
-				live.characters = createSceneStage(target.stage).characters;
-				charactersRef.current = live.characters;
+				appContext.patchLive({ scenes: document.scenes });
+				appContext.patchLive({ activeSceneId: document.activeSceneId });
+				appContext.patchLive({ objects: storeRef.current.objects });
+				appContext.patchLive({ characters: createSceneStage(target.stage).characters });
+				appContext.publishCharacters(live.characters);
 				return {
 					sceneName: target.name,
 					activeSceneId: document.activeSceneId,
@@ -4825,7 +4819,7 @@ export default function App() {
 			// Grouping is an editing convenience: the parent carries its children
 			// when it moves, so a set piece built from primitives is dragged once.
 			group_objects: (args) => {
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				if (typeof args.parent !== "string" || !live.objects.some((o) => o.id === args.parent)) {
 					throw new Error("Parent object not found");
 				}
@@ -4839,7 +4833,7 @@ export default function App() {
 				return { parent: args.parent, children: args.children.length };
 			},
 			ungroup_objects: (args) => {
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				if (!Array.isArray(args.children) || !args.children.length) throw new Error("No children given");
 				for (const child of args.children) {
 					if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
@@ -4869,8 +4863,8 @@ export default function App() {
 				const stopOnError = args.stopOnError !== false;
 				const depthBefore = storeRef.current.depths().past;
 				const token = storeRef.current.begin(args.label?.trim() || "MCP batch", () => {});
-				const priorSuppressObjectClock = suppressObjectClockRef.current;
-				suppressObjectClockRef.current = true;
+				const priorSuppressObjectClock = appContext.suppressObjectClock;
+				appContext.suppressObjectClock = true;
 				const applied = [];
 				const failed = [];
 				batchToken = token;
@@ -4890,10 +4884,10 @@ export default function App() {
 					commit = !rolledBack;
 				} finally {
 					batchToken = null;
-					suppressObjectClockRef.current = priorSuppressObjectClock;
+					appContext.suppressObjectClock = priorSuppressObjectClock;
 					storeRef.current.end(token, { commit });
 				}
-				if (!rolledBack && storeRef.current.depths().past > depthBefore) lastObjectOpRef.current = ++opClockRef.current;
+				if (!rolledBack && storeRef.current.depths().past > depthBefore) appContext.advanceObjectClock();
 				syncObjects();
 				return { label: args.label?.trim() || "MCP batch", applied, failed, rolledBack };
 			},
@@ -4912,9 +4906,9 @@ export default function App() {
 					if (typeof block.text !== "string" || !block.text.trim()) throw new Error(`Block ${i + 1} needs text`);
 					return { id: `prompt-${stamp}-${i}`, startFrame, endFrame, text: block.text.trim() };
 				});
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				live.recordCharacterUndo();
-				live.promptClips = clips;
+				appContext.patchLive({ promptClips: clips });
 				live.editPromptClips(clips);
 				if (clips.length) {
 					live.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
@@ -4922,7 +4916,7 @@ export default function App() {
 				return { blocks: clips.length };
 			},
 			capture_frame: async () => {
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				return captureMcpFrame({
 					partColours: live.partColours,
 					capture: mcpCaptureRef.current,
@@ -4932,24 +4926,24 @@ export default function App() {
 					objects: live.objects,
 					rigs: live.rigs,
 					readAuthoredState: () => ({
-						scenes: liveStateRef.current.scenes,
-						activeSceneId: liveStateRef.current.activeSceneId,
-						camera: liveStateRef.current.camera,
-						fovDeg: liveStateRef.current.fovDeg,
-						filmback: liveStateRef.current.filmback,
-						stage: liveStateRef.current.stage,
-						timeline: liveStateRef.current.timeline,
-						activeCharacterId: liveStateRef.current.activeCharacterId,
-						waypoints: liveStateRef.current.waypoints,
-						characters: liveStateRef.current.characters,
-						objects: liveStateRef.current.objects,
+						scenes: appContext.live.state.scenes,
+						activeSceneId: appContext.live.state.activeSceneId,
+						camera: appContext.live.state.camera,
+						fovDeg: appContext.live.state.fovDeg,
+						filmback: appContext.live.state.filmback,
+						stage: appContext.live.state.stage,
+						timeline: appContext.live.state.timeline,
+						activeCharacterId: appContext.live.state.activeCharacterId,
+						waypoints: appContext.live.state.waypoints,
+						characters: appContext.live.state.characters,
+						objects: appContext.live.state.objects,
 					}),
 				});
 			},
 			// The full-resolution shot-camera pull the editor's own exports use —
 		// not capture_frame's 640x360 preview, which stays exactly as it is.
 			capture_framing_png: (args = {}) => {
-				const live = liveStateRef.current;
+				const live = appContext.live.state;
 				const requested = args?.output;
 				const output = Number.isFinite(requested?.width) && Number.isFinite(requested?.height)
 					? { width: Math.round(requested.width), height: Math.round(requested.height) }
@@ -4988,9 +4982,9 @@ export default function App() {
 						text: typeof block.prompt === "string" ? block.prompt : "",
 					}));
 				}
-				const targetCharacterId = args.characterId ?? liveStateRef.current.activeCharacterId;
+				const targetCharacterId = args.characterId ?? appContext.live.state.activeCharacterId;
 				const targetPromptClips = clips;
-				await liveStateRef.current.loadMotion(
+				await appContext.live.state.loadMotion(
 					args.url,
 					prompt,
 					undefined,
@@ -4999,7 +4993,7 @@ export default function App() {
 					targetPromptClips,
 				);
 				if (clips) {
-					liveStateRef.current.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
+					appContext.live.state.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
 				}
 				return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
 			},
@@ -5019,7 +5013,7 @@ export default function App() {
 					meta: {
 						project: projectName ?? "Untitled",
 						scene: scenes.find((entry) => entry.id === activeSceneId)?.name ?? "",
-						cast: charactersRef.current.length,
+						cast: appContext.live.characters.length,
 						// The Workflow page embeds this same Studio as a preview. It is a
 						// live editor too, so an agent choosing a workspace must be able to
 						// tell the preview apart from the tab the user is authoring in.
@@ -5092,7 +5086,7 @@ export default function App() {
 	const [promptClips, setPromptClips, editPromptClips] = useSemanticState(() => (startupStage.characters?.[0]?.layer?.promptClips ?? DEFAULT_PROMPT_CLIPS).map((clip) => ({ ...clip })), markSemanticEdit, "promptClips");
 	// These hooks are declared after the liveStateRef assignment above runs, so
 	// they join the live read model here — same render, no TDZ.
-	Object.assign(liveStateRef.current, { promptClips, setPromptClips, editPromptClips, setTlFrameCount });
+	appContext.patchLive({ promptClips, setPromptClips, editPromptClips, setTlFrameCount });
 
 	// Dirty tracking: any divergence from the last saved file lights the dot.
 	useEffect(() => {
@@ -6023,7 +6017,7 @@ export default function App() {
 		// H3 must see the same complete subject in both endpoints. A clipped
 		// foot or head makes the model invent the missing geometry during the
 		// transition, which is exactly the bad motion this flow is meant to avoid.
-		const rig = liveStateRef.current.rigs?.[activeChar.id];
+		const rig = appContext.live.state.rigs?.[activeChar.id];
 		const cam = shotCamRef.current;
 		if (!rig || !cam) throw new Error(ko("전신 프레임을 확인할 수 없어 참조를 캡처할 수 없어요. 잠시 후 다시 시도하세요.", "The full-body frame is not ready yet. Wait a moment and try the reference capture again."));
 		rig.updateWorldMatrix(true, true);
@@ -6513,13 +6507,13 @@ export default function App() {
 	 * buffer, every other character's on its cast entry. Refusals throw a
 	 * StudioProtocolError naming the fix; the UI door shows it as a toast. */
 	function castMemberOf(characterId) {
-		const character = charactersRef.current.find((entry) => entry.id === characterId);
+		const character = appContext.live.characters.find((entry) => entry.id === characterId);
 		if (!character) throw new StudioProtocolError("STALE_TARGET", `Character ${characterId} is not in this scene.`);
 		return character;
 	}
 	function readCharacterWaypoints(characterId) {
 		if (characterId === loadedLayerCharRef.current) return bufferRef.current.waypoints;
-		return charactersRef.current.find((entry) => entry.id === characterId)?.layer?.waypoints ?? [];
+		return appContext.live.characters.find((entry) => entry.id === characterId)?.layer?.waypoints ?? [];
 	}
 	function writeCharacterWaypoints(characterId, next) {
 		if (characterId === loadedLayerCharRef.current) {
@@ -6527,7 +6521,7 @@ export default function App() {
 			setWaypoints(next);
 			return;
 		}
-		publishStudioCharacters(charactersRef.current.map((entry) => entry.id === characterId
+		publishStudioCharacters(appContext.live.characters.map((entry) => entry.id === characterId
 			? { ...entry, layer: { ...(entry.layer ?? createCharacterLayer()), waypoints: next } }
 			: entry), true);
 	}
@@ -6584,7 +6578,7 @@ export default function App() {
 		}
 		// A plan-board drag recorded its one entry when the gesture began; every
 		// other move is its own entry.
-		const past = charHistoryRef.current.past;
+		const past = appContext.castHistory.past;
 		if (!(gestureUndoRef.current?.key === "waypoint-drag" && past[past.length - 1]?.tick === gestureUndoRef.current.tick)) recordCharacterUndo();
 		writeCharacterWaypoints(characterId, next);
 		return { waypoint: moved, index, warnings: verdict.warnings };
@@ -6913,7 +6907,7 @@ export default function App() {
 			const label = multiModelSource?.name ?? "extracted take";
 			// The cast can change while the GPU works, so the destination is read
 			// now, once, and every take is placed against THIS character.
-			const active = charactersRef.current.find((entry) => entry.id === activeChar.id) ?? activeChar;
+			const active = appContext.live.characters.find((entry) => entry.id === activeChar.id) ?? activeChar;
 			// Take 0 arrives as an ordinary motion npz; loadMotion decodes,
 			// retimes to the 24 fps timeline, snapshots the rig baseline and
 			// applies the stature stored in the take itself — the body matches
@@ -7020,7 +7014,7 @@ export default function App() {
 		recordCharacterUndo();
 		// Plan against the cast as it stands, so ids are decided once and the
 		// full-take map can be seeded with them.
-		const list = charactersRef.current;
+		const list = appContext.live.characters;
 		const taken = new Set([active.id]);
 		let idPool = list;
 		const assignments = usable.map((take) => {
@@ -7119,7 +7113,7 @@ export default function App() {
 			// support or fall math so a 0.8x/1.2x performer still lands exactly on
 			// the same authored surface after playback multiplies the clip.
 			const motionScale = characterScaleFor(raw);
-			const targetCharacter = charactersRef.current.find((entry) => entry.id === targetCharacterId);
+			const targetCharacter = appContext.live.characters.find((entry) => entry.id === targetCharacterId);
 			if (!targetCharacter) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
 			const sceneAnchorX = targetCharacter.x + normalizedCalibration.offsetX;
 			const sceneAnchorZ = targetCharacter.z + normalizedCalibration.offsetZ;
@@ -7153,7 +7147,7 @@ export default function App() {
 					`자동 낙하 적용: ${staging.fromS.toFixed(1)}초에 지지면을 벗어나 ${staging.meters.toFixed(1)}m 낙하`,
 				));
 			}
-			const targetStillExists = charactersRef.current.some((entry) => entry.id === targetCharacter.id);
+			const targetStillExists = appContext.live.characters.some((entry) => entry.id === targetCharacter.id);
 			if (!targetStillExists) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
 			const apply = () => {
 			if (commandContext) recordCharacterUndo();
@@ -7194,11 +7188,11 @@ export default function App() {
 							: entry.layer,
 					}
 					: entry);
-				liveStateRef.current.characters = next;
-				if (commandContext) charactersRef.current = next;
+				appContext.patchLive({ characters: next });
+				if (commandContext) appContext.publishCharacters(next);
 				return next;
 			});
-			if (commandContext && bufferOwnsTarget) { bufferRef.current = { ...bufferRef.current, motion: loaded }; liveStateRef.current.timeline.frameCount = decoded.frames; }
+			if (commandContext && bufferOwnsTarget) { bufferRef.current = { ...bufferRef.current, motion: loaded }; appContext.patchTimeline({ frameCount: decoded.frames }); }
 			// The take as loaded is what every future trim cuts from.
 			motionFullRef.current.set(targetCharacter.id, loaded);
 			if (bufferOwnsTarget) {
@@ -7777,7 +7771,7 @@ export default function App() {
 		// The undo entry is provisional: a clean clip keys nothing, and a
 		// snapshot identical to the present state would make Ctrl+Z a no-op
 		// press that also discards the redo stack for nothing.
-		const savedFuture = charHistoryRef.current.future;
+		const savedFuture = appContext.castHistory.future;
 		recordCharacterUndo();
 		let keyed = [];
 		let unresolved = [];
@@ -7807,8 +7801,8 @@ export default function App() {
 			setIkTick((n) => n + 1);
 		}
 		if (!keyed.length) {
-			charHistoryRef.current.past.pop();
-			charHistoryRef.current.future = savedFuture;
+			appContext.castHistory.past.pop();
+			appContext.castHistory.future = savedFuture;
 		}
 		// Residual is worth saying out loud: a limb pinned between two blockers
 		// (another body and a prop, say) can come out of the walk still touching,
@@ -7984,7 +7978,7 @@ export default function App() {
 	// (tools/ardy/visual-qa.mjs). Harmless in normal use.
 	useEffect(() => {
 	window.__cozyclay = {
-			runArdy: (options) => liveStateRef.current.runArdy(options),
+			runArdy: (options) => appContext.live.state.runArdy(options),
 			rigA: activeRig, motion, tlFrame, frameCount: tlFrameCount, playing: tlPlaying, ikMode, ikChains, ikFocus, contactRadii: ikChains?.values().next().value?.contactRadii ?? null, ik: ikStateRef.current,
 			committedIkEdits, waypoints,
 			// the camera the main view renders through (poser in IK mode) — QA
@@ -8008,7 +8002,7 @@ export default function App() {
 			// Read through liveStateRef, which every render refreshes: this hook's
 			// effect does not depend on the shot list, so a closure over it would
 			// answer with the cut as it stood when the effect last ran.
-			captureMeta: (frame) => liveStateRef.current.captureShotMeta(frame ?? liveStateRef.current.timeline.currentFrame),
+			captureMeta: (frame) => appContext.live.state.captureShotMeta(frame ?? appContext.live.state.timeline.currentFrame),
 			// QA-only reference slots (#167): set the pictures a headless run cannot
 			// reach through a file dialog, then take the capture the live
 			// capture_framing_png command returns — references included.
@@ -8030,7 +8024,7 @@ export default function App() {
 			exportKeyframePack: async (shotId) => {
 				const attempt = startExportAttempt({ export_kind: "keyframe_pack", format: "zip", surface: embedMode ? "embed" : "studio" });
 				try {
-					const live = liveStateRef.current;
+					const live = appContext.live.state;
 					const index = live.shotIndexForPack(shotId ?? null);
 					const pack = await live.buildShotKeyframePack(live.shots[index], index);
 					// base64: a pack holds an MP4, and a megabyte-scale JS number array
@@ -8045,17 +8039,17 @@ export default function App() {
 					throw error;
 				}
 			},
-			renderPass: (kind) => liveStateRef.current.renderPassDataUrls([kind])[kind],
+			renderPass: (kind) => appContext.live.state.renderPassDataUrls([kind])[kind],
 			// QA-only video export (#193): the Export menu's Video item without the
 			// download, so a headless run can assert that a keyless 40-frame static
 			// shot yields 40 frames. Same liveStateRef reasoning as captureMeta.
-			exportShotVideo: (options = {}) => liveStateRef.current.exportShotVideo(options),
+			exportShotVideo: (options = {}) => appContext.live.state.exportShotVideo(options),
 			// Open the production result modal so QA clicks its real download.
-			prepareFrameExport: () => { liveStateRef.current.generate(); },
+			prepareFrameExport: () => { appContext.live.state.generate(); },
 			// The RGB plate the passes are compared against — same rig, same
 			// framing, no material override.
-			capturePlate: () => liveStateRef.current.captureFramingPng(liveStateRef.current.captureCurrentFraming()),
-			captureFraming: (framing, output) => liveStateRef.current.captureFramingPng(framing, output),
+			capturePlate: () => appContext.live.state.captureFramingPng(appContext.live.state.captureCurrentFraming()),
+			captureFraming: (framing, output) => appContext.live.state.captureFramingPng(framing, output),
 			characterScale: activeChar?.scale ?? 1,
 			characterModel: activeChar?.model ?? null,
 			// QA-only framing: FlyControls rewrites the editor camera's rotation
@@ -8744,7 +8738,7 @@ export default function App() {
 	}
 
 	// QA/programmatic requests must use the current render's same generation path.
-	liveStateRef.current.runArdy = runArdy;
+	appContext.patchLive({ runArdy: runArdy });
 	function requestMotionGeneration(surface, inputMode, body = {}) {
 		const request = startMotionRequest({ surface, input_mode: inputMode });
 		const options = { body, lineEditSupported: lineEditBackend };
@@ -11299,7 +11293,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			// REQUESTING character, not whoever is selected now.
 			if (done.motionUrl) {
 				await deliverMotion(job, done.motionUrl);
-				if (!controller.signal.aborted && charactersRef.current.some((entry) => entry.id === job.charId)) request.apply();
+				if (!controller.signal.aborted && appContext.live.characters.some((entry) => entry.id === job.charId)) request.apply();
 				commitTakeRecipe(job, done.motionUrl);
 			}
 			if (job.hasBlockEdits && job.ikState) {
@@ -11615,7 +11609,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (!job.commandContext) setCharacters((list) => list.map((entry) => entry.id === job.charId ? { ...entry, motionRef } : entry));
 		if (job.charId === loadedLayerCharRef.current) {
 			await loadMotion(motionUrl, job.prompt, job.rootRotationDeg, null, job.charId, null, { calibration, commandContext: job.commandContext });
-			if (job.commandContext) publishStudioCharacters(charactersRef.current.map(entry => entry.id === job.charId ? { ...entry, motionRef } : entry));
+			if (job.commandContext) publishStudioCharacters(appContext.live.characters.map(entry => entry.id === job.charId ? { ...entry, motionRef } : entry));
 			return;
 		}
 		// Inbound boundary for a clip delivered to a non-active layer.
@@ -11638,7 +11632,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		const apply = () => {
 			if (job.commandContext) recordCharacterUndo();
 			motionFullRef.current.set(job.charId, clip);
-			const next = charactersRef.current.map(entry => entry.id === job.charId ? { ...entry, scale, sessionMotion: clip, motionRef } : entry);
+			const next = appContext.live.characters.map(entry => entry.id === job.charId ? { ...entry, scale, sessionMotion: clip, motionRef } : entry);
 			if (job.commandContext) publishStudioCharacters(next); else setCharacters(next);
 		};
 		if (job.commandContext) job.commandContext.commit(apply); else apply();
@@ -11727,7 +11721,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	// Studio native ports. Kept together so the binding test executes these exact
 	// publication/history functions, not a substitute editor or parallel journal.
 	function readStudioCamera() {
-		const live = liveStateRef.current, camera = shotCamRef.current;
+		const live = appContext.live.state, camera = shotCamRef.current;
 		if (!camera) return null;
 		const position = { x: camera.position.x, y: camera.position.y, z: camera.position.z };
 		const direction = forwardFrom(look.current.yaw, look.current.pitch);
@@ -11736,8 +11730,8 @@ function resizePromptClip(id, edge, rawFrame) {
 			sensorId: live.filmback.sensorId, slate: "Shot camera" };
 	}
 	function readStudioState() {
-		const live = liveStateRef.current;
-		const list = charactersRef.current.map(c => c.id === loadedLayerCharRef.current ? {
+		const live = appContext.live.state;
+		const list = appContext.live.characters.map(c => c.id === loadedLayerCharRef.current ? {
 			...c, layer: { ...c.layer, waypoints: bufferRef.current.waypoints, promptClips: bufferRef.current.promptClips }, sessionMotion: bufferRef.current.motion,
 		} : c);
 		const targets = new Map(list.map(c => [c.id, { rig: live.rigs[c.id], motion: c.sessionMotion ?? null,
@@ -11754,21 +11748,21 @@ function resizePromptClip(id, edge, rawFrame) {
 				ikBodyDragRef.current || lineDragRef.current || lineDrawRef.current || linePinDragRef.current || live.studioPhysicsRunning || recRef.current) };
 	}
 	function publishStudioCamera(camera, manual) {
-		const angles = aimAt(camera.position, camera.lookAt), live = liveStateRef.current;
+		const angles = aimAt(camera.position, camera.lookAt), live = appContext.live.state;
 		const fov = focalMmToFov(camera.focalMm, live.filmback.sensorId, live.filmback.aspectRatio) * 180 / Math.PI;
 		Object.assign(look.current, angles); shotCameraPosRef.current = { ...camera.position };
 		if (shotCamRef.current) {
 			shotCamRef.current.position.copy(camera.position); shotCamRef.current.rotation.order = "YXZ";
 			shotCamRef.current.rotation.set(angles.pitch, angles.yaw, 0); shotCamRef.current.fov = fov; shotCamRef.current.updateProjectionMatrix();
 		}
-		manualCameraOverrideRef.current = manual; live.camera = camera.position; live.fovDeg = fov; live.studioCamera = camera;
+		manualCameraOverrideRef.current = manual; appContext.patchLive({ camera: camera.position }); appContext.patchLive({ fovDeg: fov }); appContext.patchLive({ studioCamera: camera });
 		setCameraPos(camera.position); setFovDeg(fov); setCameraPresetId(null);
 	}
 	/** The authored stage envelope (key light, environment, filmback) published
 	 * as one body: the live read model first, so the next synchronous read sees
 	 * it, then the React state the foldouts and the save path own. */
 	function publishStudioStage(stage) {
-		liveStateRef.current.stage = stage;
+		appContext.patchLive({ stage: stage });
 		setKeyLight(stage.keyLight); setEnvironmentImage(stage.environmentImage ?? null);
 		setEnvironment(stage.environment); setStyle(stage.style); setHasEnvSheet(stage.hasEnvSheet === true);
 		setShotAspectKey(stage.shotAspect); setCameraPresetId(stage.cameraPresetId ?? null); setSensorFormat(stage.sensorId);
@@ -11785,7 +11779,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			renderer: target?.rig ? snapshotExportRig(target.rig) : null };
 	}
 	function publishStudioCharacters(next, authored = false) {
-		charactersRef.current = next; liveStateRef.current.characters = next;
+		appContext.publishCharacters(next); appContext.patchLive({ characters: next });
 		(authored ? editCharacters : setCharacters)(next);
 	}
 	/** The active character's layer lives in the editing buffer, and the read
@@ -11802,11 +11796,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (path) setWaypoints(layer.waypoints);
 	}
 	function recordStudioHistory(domain, targetId, historyEntryId) {
-		const tick = ++opClockRef.current;
-		charHistoryRef.current.past.push({ tick, snapshot: snapshotCast(domain === "shot"),
+		const tick = appContext.nextTick();
+		appContext.castHistory.past.push({ tick, snapshot: snapshotCast(domain === "shot"),
 			studio: { domain, targetId, historyEntryId, objects: storeRef.current.objects, state: snapshotStudioDomain(domain, targetId) } });
-		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
-		charHistoryRef.current.future = [];
+		appContext.castHistory.past = appContext.castHistory.past.slice(-HISTORY_LIMIT);
+		appContext.castHistory.future = [];
 		studioHistoryRef.current.set(historyEntryId, { tick, domain });
 	}
 	/** Run one registry action for the agent and bind the native history entry
@@ -11817,7 +11811,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	function beginStudioAction(domain, targetId = null) {
 		if (studioActionGroupRef.current) throw new StudioProtocolError("TARGET_BUSY", "A command owns native history.");
 		const historyEntryId = crypto.randomUUID(), objects = storeRef.current.objects;
-		const history = charHistoryRef.current, past = [...history.past], future = [...history.future], states = [];
+		const history = appContext.castHistory, past = [...history.past], future = [...history.future], states = [];
 		let objectSession, changed = false, firstEntry;
 		const session = {
 			touch(domain, targetId) {
@@ -11836,15 +11830,15 @@ function resizePromptClip(id, edge, rawFrame) {
 			},
 			commit() {
 				const objectsChanged = objectSession?.commit() ?? false;
-				liveStateRef.current.objects = storeRef.current.objects;
+				appContext.patchLive({ objects: storeRef.current.objects });
 				const compound = states.length > 1 || (states.length > 0 && objectsChanged);
 				if (changed || (compound && objectsChanged)) {
-					const tick = ++opClockRef.current, saved = states[0];
+					const tick = appContext.nextTick(), saved = states[0];
 					const studio = compound ? { domain: "compound", state: states, objectsChanged } : saved;
 					history.past.push({ tick, snapshot: firstEntry?.snapshot ?? snapshotCast(true), studio: { ...studio, historyEntryId, objects: storeRef.current.objects } });
 					history.past = history.past.slice(-HISTORY_LIMIT); history.future = [];
 					studioHistoryRef.current.set(historyEntryId, { tick, domain: studio.domain, ...(objectsChanged ? { before: objects } : {}) });
-				} else if (objectsChanged) studioHistoryRef.current.set(historyEntryId, { domain: "objects", before: objects, tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
+				} else if (objectsChanged) studioHistoryRef.current.set(historyEntryId, { domain: "objects", before: objects, tick: appContext.objectClock, depth: storeRef.current.depths().past });
 				changed ||= objectsChanged;
 				studioActionGroupRef.current = null;
 				return { historyEntryId: changed ? historyEntryId : null };
@@ -11874,7 +11868,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		catch (error) { return failed(error); }
 	}
 	function publishStudioDomain(domain, targetId, state) {
-		if (domain === "shot") { liveStateRef.current.shots = state.shots; setShots(state.shots); publishStudioCamera(state.camera, state.manual); }
+		if (domain === "shot") { appContext.patchLive({ shots: state.shots }); setShots(state.shots); publishStudioCamera(state.camera, state.manual); }
 		else if (domain === "stage") publishStudioStage(state.stage);
 		else if (domain === "cast") { publishStudioCharacters(state.characters); syncStudioLayerBuffer(state.characters); }
 		else publishStudioMotion(targetId, state);
@@ -11883,7 +11877,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		const id = receipt?.undo?.historyEntryId, entry = studioHistoryRef.current.get(id);
 		if (!entry) return false;
 		const retained = (!entry.before || storeRef.current.hasHistoryState(entry.before)) && (entry.domain === "objects"
-			|| [...charHistoryRef.current.past, ...charHistoryRef.current.future].some(row => row.studio?.historyEntryId === id));
+			|| [...appContext.castHistory.past, ...appContext.castHistory.future].some(row => row.studio?.historyEntryId === id));
 		if (!retained) studioHistoryRef.current.delete(id);
 		return retained;
 	}
@@ -11899,11 +11893,11 @@ function resizePromptClip(id, edge, rawFrame) {
 			setWaypoints(bufferRef.current.waypoints); setPromptClips(bufferRef.current.promptClips); setMotion(bufferRef.current.motion);
 			setCommittedIkEdits(state.committedIkEdits); setIkTick(n => n + 1);
 		}
-		liveStateRef.current.timeline.frameCount = state.frameCount; frameCountRef.current = state.frameCount; setTlFrameCount(state.frameCount);
+		appContext.patchTimeline({ frameCount: state.frameCount }); frameCountRef.current = state.frameCount; setTlFrameCount(state.frameCount);
 		if (state.renderer) restoreExportRig(state.renderer);
 	}
 	function stepStudioHistory(redo) {
-		const history = charHistoryRef.current, from = redo ? history.future : history.past, to = redo ? history.past : history.future;
+		const history = appContext.castHistory, from = redo ? history.future : history.past, to = redo ? history.past : history.future;
 		const top = from.at(-1);
 		// Object undo/redo advances the global clock, even when it returns to the
 		// exact object state captured by this Studio entry. Use that boundary
@@ -11915,11 +11909,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		to.push({ ...top, studio: { ...entry, objects: storeRef.current.objects, state } }); from.pop();
 		if (entry.domain === "compound") { for (const row of [...entry.state].reverse()) publishStudioDomain(row.domain, row.targetId, row.state); }
 		else if (entry.domain === "shot") {
-			liveStateRef.current.shots = entry.state.shots; setShots(entry.state.shots); publishStudioCamera(entry.state.camera, entry.state.manual);
+			appContext.patchLive({ shots: entry.state.shots }); setShots(entry.state.shots); publishStudioCamera(entry.state.camera, entry.state.manual);
 		} else if (entry.domain === "stage") publishStudioStage(entry.state.stage);
 		else if (entry.domain === "cast") { publishStudioCharacters(entry.state.characters); syncStudioLayerBuffer(entry.state.characters); }
 		else publishStudioMotion(entry.targetId, entry.state);
-		sceneRevisionRef.current++; ++opClockRef.current;
+		sceneRevisionRef.current++; appContext.nextTick();
 		setToast(redo ? ko("Redone", "다시 실행됨") : ko("Undone", "실행 취소됨")); return true;
 	}
 	function commitStudioDraft(payload) {
@@ -11927,13 +11921,13 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (payload.domain === "objects") {
 			const before = storeRef.current.objects;
 			storeRef.current.applyAtomic(() => payload.draft);
-			liveStateRef.current.objects = storeRef.current.objects;
-			studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
+			appContext.patchLive({ objects: storeRef.current.objects });
+			studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: appContext.objectClock, depth: storeRef.current.depths().past });
 		} else {
 			recordStudioHistory(payload.domain, null, historyEntryId);
 			if (payload.domain === "stage") publishStudioStage(payload.draft);
 			else if (payload.domain === "cast") { publishStudioCharacters(payload.draft, true); syncStudioLayerBuffer(payload.draft); }
-			else { liveStateRef.current.shots = payload.draft.shotDocument.shots; editShots(payload.draft.shotDocument.shots); publishStudioCamera(payload.draft.camera, payload.draft.manual); }
+			else { appContext.patchLive({ shots: payload.draft.shotDocument.shots }); editShots(payload.draft.shotDocument.shots); publishStudioCamera(payload.draft.camera, payload.draft.manual); }
 		}
 		return { historyEntryId };
 	}
@@ -11961,8 +11955,8 @@ function resizePromptClip(id, edge, rawFrame) {
 			target.rig.updateMatrixWorld(true);
 		}
 		// Preimage bones live on the native entry, not on the installed candidate.
-		charHistoryRef.current.past.at(-1).studio.state.renderer = renderer;
-		markSemanticEdit("characters", before.characters, charactersRef.current);
+		appContext.castHistory.past.at(-1).studio.state.renderer = renderer;
+		markSemanticEdit("characters", before.characters, appContext.live.characters);
 		// Store the take's bytes the way a project save embeds a take
 		// (collectProjectSerialized): the same record, caches and motion store, so
 		// the ref's motionId resolves after a reload without the bridge.
@@ -12038,10 +12032,10 @@ function resizePromptClip(id, edge, rawFrame) {
 		const frame = args.frame ?? shot?.startFrame ?? state.view.frame;
 		if (frame >= state.frameCount) throw new StudioProtocolError("INVALID_RANGE", "Frame is outside the timeline.");
 		const view = { ...state.view, ...args.view, frame, mode: args.mode ?? state.view.mode, playing: args.playing ?? state.view.playing };
-		const live = liveStateRef.current; live.studioSelection = selection; live.studioView = view;
-		live.studioShotId = args.shotId ?? shotAtFrame(state.shots, frame)?.id ?? null;
-		live.timeline.currentFrame = frame; tlFrameRef.current = frame;
-		if (selection && ["character", "rig"].includes(selection.kind)) { live.activeCharacterId = selection.id; setActiveCharacterId(selection.id); }
+		const live = appContext.live.state; appContext.patchLive({ studioSelection: selection }); appContext.patchLive({ studioView: view });
+		appContext.patchLive({ studioShotId: args.shotId ?? shotAtFrame(state.shots, frame)?.id ?? null });
+		appContext.patchTimeline({ currentFrame: frame }); tlFrameRef.current = frame;
+		if (selection && ["character", "rig"].includes(selection.kind)) { appContext.patchLive({ activeCharacterId: selection.id }); setActiveCharacterId(selection.id); }
 		setSelectedHierarchyId(selection ? selection.kind === "object" ? `object:${selection.id}` : ["character", "rig"].includes(selection.kind) ? `character:${selection.id}` : selection.kind === "camera" ? "camera" : "shot" : "");
 		setTlFrame(frame); setWorkflowMode(view.mode); setLookThroughShot(view.lookThrough); setGridView(view.grid); setAutoColor(view.autoColor); setTlPlaying(view.playing);
 	}
@@ -12057,14 +12051,14 @@ function resizePromptClip(id, edge, rawFrame) {
 		return () => { window.removeEventListener("pointerdown", down, true); window.removeEventListener("pointerup", up, true); window.removeEventListener("pointercancel", up, true); };
 	}, [embedMode]);
 	const selectedStudioChar = charIdFromHierarchyId(parseRigNodeId(selectedHierarchyId)?.rowId ?? selectedHierarchyId);
-	Object.assign(liveStateRef.current, {
+	appContext.patchLive({
 		studioSelection: selectedSceneObjectId ? { kind: "object", id: selectedSceneObjectId, hierarchyId: selectedHierarchyId } :
 			selectedStudioChar ? { kind: "character", id: selectedStudioChar, hierarchyId: selectedHierarchyId } : selectedHierarchyId === "camera" ? { kind: "camera", id: "camera" } : { kind: "scene", id: activeSceneId },
 		studioShotId: activeShot?.id ?? null,
 		studioPhysicsRunning: autoPhysicsRunning,
 		studioView: { mode: workflowMode, frame: tlFrame, playing: tlPlaying, lookThrough: lookThroughShot, grid: gridView, autoColor },
 	});
-	studioPortsRef.current = {
+	appContext.updatePorts({
 		read: readStudioState, revision: sceneRevisionRef, bounds: studioBounds, commit: commitStudioDraft, commitMotion: commitStudioMotion,
 		operate: operateStudio, undo: undoScene, stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
 		// One shot frame as raw read-back pixels (rows bottom-up), from the export
@@ -12092,20 +12086,20 @@ function resizePromptClip(id, edge, rawFrame) {
 		canUndo: receipt => {
 			const entry = receipt?.undo && studioHistoryRef.current.get(receipt.undo.historyEntryId);
 			if (!entry || receipt.revision.after !== sceneRevisionRef.current) return false;
-			return entry.domain === "objects" ? entry.tick === lastObjectOpRef.current && entry.tick >= (charHistoryRef.current.past.at(-1)?.tick ?? 0) && entry.depth === storeRef.current.depths().past :
-				entry.tick === charHistoryRef.current.past.at(-1)?.tick && entry.tick > lastObjectOpRef.current;
+			return entry.domain === "objects" ? entry.tick === appContext.objectClock && entry.tick >= (appContext.castHistory.past.at(-1)?.tick ?? 0) && entry.depth === storeRef.current.depths().past :
+				entry.tick === appContext.castHistory.past.at(-1)?.tick && entry.tick > appContext.objectClock;
 		},
 		actions: () => studioActionsRef.current,
 		recordAction: recordStudioAction, beginAction: beginStudioAction,
 		captureToasts: listener => { toastSinkRef.current.add(listener); return () => toastSinkRef.current.delete(listener); },
 		showRefusal: setToast,
 		emitCommandEvent: detail => window.dispatchEvent(new CustomEvent("cozyclay:command", { detail })),
-	};
-	Object.assign(studioActionPortsRef.current, {
+	});
+	appContext.updateActionPorts({
 		// Shots and objects come from the synchronously published read model, so
 		// an action sees its own edit before React renders it.
 		state: () => ({
-			shots: liveStateRef.current.shots, objects: storeRef.current.objects, characters: charactersRef.current, frame: tlFrame, frameCount: tlFrameCount,
+			shots: appContext.live.state.shots, objects: storeRef.current.objects, characters: appContext.live.characters, frame: tlFrame, frameCount: tlFrameCount,
 			selectedObjectId: selectedSceneObjectId, activeCharacterId: activeChar?.id ?? null,
 			promptBlockCount: promptClips.filter((clip) => clip.text.trim()).length,
 			generating: Boolean(generationPendingRef.current || genRunningRef.current || generationBusy),
@@ -12113,7 +12107,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			// The Export menu offers Video (mp4) on exactly these conditions.
 			exporting: Boolean(recRef.current), canExportVideo: shots.length > 0 || hasCameraKeys || Boolean(motion),
 			// The scene refs move synchronously with every scene handler.
-			scenes: scenesRef.current.map(({ id, name }) => ({ id, name })), activeSceneId: activeSceneIdRef.current,
+			scenes: appContext.live.scenes.map(({ id, name }) => ({ id, name })), activeSceneId: activeSceneIdRef.current,
 			// What a save needs: a name, a file this session, and (to pick or
 			// re-grant a file) the user's click still active.
 			project: { name: projectName, hasFile: Boolean(projectHandleRef.current), fileAccess: hasFileSystemAccess(),
@@ -12136,7 +12130,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		importAsset: (args, context) => liveHandlersRef.current.import_asset(args, context), fetchImportSource,
 		setAiShotMode: setMode, setAiImageModel: setImageModel, generate, generateFalMotion,
 	});
-	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionPortsRef.current);
+	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(appContext.actionPorts);
 	/** UI door into the shared registry. Refusal messages are written for the
 	 * model, so a person only ever sees the localized `uiMessage` a thrower
 	 * attached (studioActionRefusal); any other refusal stays silent, as the
@@ -12149,7 +12143,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		};
 		try {
 			// A long-running action answers with a promise that refuses the same way.
-			const result = studioBindingRef.current.bus.run(id, args, { origin: "ui" });
+			const result = appContext.bus.run(id, args, { origin: "ui" });
 			const answer = receipt => receipt.ok ? receipt : null;
 			return typeof result?.then === "function" ? result.then(answer, refused) : answer(result);
 		} catch (error) {
@@ -12157,12 +12151,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		}
 	}
 	if (!studioBindingRef.current) {
-		const delegates = Object.fromEntries(Object.keys(studioPortsRef.current).filter(key => key !== "revision").map(key => [key, (...args) => studioPortsRef.current[key](...args)]));
-		studioBindingRef.current = createStudioAppBinding({ ...delegates, revision: sceneRevisionRef });
-		studioBindingRef.current.stepHistory = redo => studioPortsRef.current.stepHistory(redo);
+		studioBindingRef.current = createStudioAppBinding(appContext.ports);
+		studioBindingRef.current.stepHistory = redo => appContext.ports.stepHistory(redo);
 		studioBindingRef.current.publishSemantic = (domain, after) => {
-			if (domain === "characters" && Array.isArray(after)) { charactersRef.current = after; liveStateRef.current.characters = after; }
-			if (domain === "shots") liveStateRef.current.shots = after;
+			if (domain === "characters" && Array.isArray(after)) { appContext.publishCharacters(after); appContext.patchLive({ characters: after }); }
+			if (domain === "shots") appContext.patchLive({ shots: after });
 			if (domain === "promptClips") bufferRef.current.promptClips = after;
 		};
 		Object.assign(liveHandlersRef.current, studioBindingRef.current.handlers);
@@ -12183,6 +12176,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					: ko("Saved", "저장됨");
 
 	return (
+		<AppContext.Provider value={appContext}>
 		<div className={"app" + (renderActive ? "" : " render-idle")} data-workflow-mode={workflowMode} data-embed-mode={embedMode ? "playview" : playgroundMode ? "playground" : undefined} data-playground-hint={playgroundMode ? playgroundHint ?? undefined : undefined} data-tutorial-step={cameraTutorial ? cameraTutorialStep ?? undefined : undefined} data-rail-draw={railDraw ? 1 : undefined}>
 			<header className="topbar">
 				<div className="logo">
@@ -15469,6 +15463,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				</div>
 			)}
 		</div>
+		</AppContext.Provider>
 	);
 }
 /** Mid-clip frame of a base motion, the sensible default for the destination. */

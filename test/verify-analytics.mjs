@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import * as analytics from "../src/analytics.js";
+import { createAppContext } from "../src/app-context.js";
 import { readFileSync } from "node:fs";
 import {
 	bucketMs,
@@ -217,7 +218,7 @@ function motionJobFixture({ generate, deliver = async () => {}, capture } = {}) 
 	const ardyAbortRef = { current: null };
 	const charactersRef = { current: [{ id: "requesting-character" }] };
 	const context = {
-		ardyAbortRef, charactersRef, setArdyRunning() {}, reportArdyStatus() {}, setArdyReport() {}, setArdyOutcome() {}, setReplayNotices() {},
+		ardyAbortRef, appContext: createAppContext({ characters: charactersRef }), setArdyRunning() {}, reportArdyStatus() {}, setArdyReport() {}, setArdyOutcome() {}, setReplayNotices() {},
 		ko: (en) => en, isKo: false, setToast() {}, trackActivation() {}, isLineEditUnsupported: () => false,
 		ardyGenerate: generate ?? (async (_body, onEvent) => {
 			onEvent({ event: "done" }); onEvent({ event: "done" });
