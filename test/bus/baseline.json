@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "coverage": { "writerReferences": 436, "handlerSites": 3, "handlerTotal": 775, "registeredCommands": 32 },
   "writers": {
     "App.jsx::<anonymous>": 128,
     "App.jsx::App": 28,
