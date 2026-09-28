@@ -14944,7 +14944,7 @@ function resizePromptClip(id, edge, rawFrame) {
 										aria-pressed={ikEditTool === "ik"}
 										onClick={() => setIkEditTool("ik")}
 									>
-										{ko("포즈 수정", "Pose fix")}
+										{ko("Pose fix", "포즈 수정")}
 									</button>
 									<button
 										type="button"
@@ -14953,13 +14953,13 @@ function resizePromptClip(id, edge, rawFrame) {
 										disabled={!showTrails}
 										onClick={() => setIkEditTool("trail")}
 									>
-										{ko("궤적 수정", "Path fix")}
+										{ko("Path fix", "궤적 수정")}
 									</button>
 								</div>
 								<p className="inspector-hint">
 									{ikEditTool === "ik"
-										? ko("파츠를 직접 잡아 손·발·팔꿈치·무릎을 세밀하게 수정합니다. 궤적선은 안내선으로만 표시됩니다.", "Grab a body part for detailed IK editing. Trails are guides only.")
-										: ko("궤적선을 잡아 여러 프레임의 이동을 함께 수정합니다. 파츠 핸들은 잠시 잠겨 겹침을 막습니다.", "Grab a trail to edit a range of frames. IK handles are locked to avoid overlapping picks.")}
+										? ko("Grab a body part for detailed IK editing. Trails are guides only.", "파츠를 직접 잡아 손·발·팔꿈치·무릎을 세밀하게 수정합니다. 궤적선은 안내선으로만 표시됩니다.")
+										: ko("Grab a trail to edit a range of frames. IK handles are locked to avoid overlapping picks.", "궤적선을 잡아 여러 프레임의 이동을 함께 수정합니다. 파츠 핸들은 잠시 잠겨 겹침을 막습니다.")}
 								</p>
 								{ikEditTool === "ik" && (
 									<Field label={ko("Correction range", "보정 영향 범위")}>
