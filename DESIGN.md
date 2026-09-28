@@ -19,6 +19,7 @@ technical, and close to the timeline state they change.
 - Editor surface: existing `#201c28` and `#2b2731`.
 - Camera/rail identity: existing violet family (`#7258a0`, `#a78bfa`).
 - Destructive action: existing product red `#e5484d`, used only for removal.
+- Range-pin identity: `--range-pin-hand: #ff8a3d` for hand bands and markers, `--range-pin-foot: #4dd2ff` for foot bands and markers. Their ramp uses the same ink at reduced alpha for blend edges and selected washes; no accent border marks selection.
 
 ## 3. Type and Spacing
 
@@ -88,3 +89,39 @@ technical, and close to the timeline state they change.
   focus, and immediate state changes without decorative animation.
 - `.camera-tutorial-handoff`: contextual action row inside the existing
   tutorial. It wraps at narrow widths and has visible keyboard focus.
+- `.range-pin-panel`: compact IK Inspector section composed from `.field`,
+  `.btn`, and `.inspector-hint`; owns the pin draft, validation, target choice,
+  and per-character pin list. It is the scroll child of `.inspector-pane`,
+  supports keyboard I/O frame shortcuts while active, and uses tonal selected
+  washes rather than accent borders.
+- `.tl-pin-band`: a Full-Body lane range band with inclusive frame geometry,
+  faded blend ramps, hand/foot color tokens, and a click target that selects the
+  corresponding `.range-pin-panel` draft. The timeline lane remains the scroll
+  owner; bands never create a second scroll region.
+- `.range-pin-target-marker`: a poser-only world marker and effector-to-target
+  guide line. It is visible only for the active pin tool/selection, follows an
+  object target at the playhead, and is hidden from delivery captures.
+
+## 6. Motion and Interaction
+
+- Range-pin edits are one committed action: Apply/Delete records one character
+  undo snapshot containing both `pins` and their baked tagged keys. Rebuilding an
+  object-target pin is debounced at 150ms after object transforms settle and does
+  not create a second undo entry. `I` and `O` set the draft's inclusive In/Out
+  frames to the playhead only while the Pin tool is active; reduced motion keeps
+  the same immediate state changes without transitions.
+
+## 7. Depth and Surface
+
+- Use the existing dark tonal-shift editor surfaces, `--panel`, `--card2`,
+  `--line`, and `--line2`. Pin state is expressed with washes, glyphs, and
+  color-coded bands; no new shadow or border language is introduced.
+
+## 8. Accessibility Constraints and Accepted Debt
+
+- WCAG 2.2 AA intent: every pin control is keyboard reachable, labels are
+  English-first through `ko()`, validation is inline and announced in the
+  panel, focus remains visible, disabled object-target controls explain why,
+  and `prefers-reduced-motion` removes decorative transitions.
+- Accepted debt: edge dragging on pin bands is deferred; selecting the band and
+  editing In/Out fields remains the shipped route.
