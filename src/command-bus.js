@@ -1,14 +1,64 @@
 // The Studio command runner. The registry owns declarations/implementations;
 // the editor ports own native state/history, and the existing journal owns
 // idempotency. Synchronous UI actions stay synchronous (including user gestures).
-import { StudioProtocolError, validateReceipt, validateStudioIdentity } from './studio-agent-protocol.js';
+import { StudioProtocolError, StudioSchemas, validateStudioSchema, validateReceipt, validateStudioIdentity } from './studio-agent-protocol.js';
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
 const mapResult = (value, success, failure) => value?.then ? value.then(success, failure) : success(value);
 
 export function createCommandBus({ registry, ports }) {
-  const pending = new Map();
+  const pending = new Map(), transactions = new Map(), listeners = new Set();
+  const emit = event => { for (const listener of listeners) listener(event); ports.emit?.(event); };
+  const identifier = StudioSchemas.TargetGuard.properties.targetId;
+  const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
+  const argsSchema = { type: 'object', properties: {}, required: [], additionalProperties: true };
+  const controls = {
+    'run.begin': object({ id: identifier, args: argsSchema }),
+    'run.update': object({ txId: identifier, args: argsSchema }),
+    'run.commit': object({ txId: identifier }),
+    'run.cancel': object({ txId: identifier }),
+  };
+  const clear = timer => (ports.clearTimeout ?? clearTimeout)(timer);
+  function cancelTransaction(tx, expired = false) {
+    transactions.delete(tx.txId); clear(tx.timer); tx.session.cancel();
+    emit({ type: 'transaction.cancelled', txId: tx.txId, expired });
+  }
+  function renew(tx) {
+    if (tx.timer !== undefined) clear(tx.timer);
+    tx.timer = (ports.setTimeout ?? setTimeout)(() => cancelTransaction(tx, true), ports.transactionIdleMs ?? 30_000);
+  }
+  function control(id, args, request, before) {
+    let tx;
+    if (id === 'run.begin') {
+      if (transactions.size) fail('TARGET_BUSY', 'Finish or cancel the open command transaction first.');
+      const prepared = registry.prepare(args.id, args.args);
+      if (prepared.entry.kind !== 'mutation') fail('INVALID_ARGUMENT', 'Only mutations can open a transaction.');
+      tx = { txId: crypto.randomUUID(), entry: prepared.entry, before, origin: request.origin,
+        session: ports.beginAction(prepared.entry.undoDomain, prepared.args.characterId ?? null), affectedIds: new Set() };
+      transactions.set(tx.txId, tx); renew(tx);
+    } else {
+      tx = transactions.get(args.txId);
+      if (!tx || !same(tx.before.host, before.host)) fail('STALE_TARGET', 'Transaction is no longer open in this document.');
+      if (request.origin !== tx.origin) fail('TARGET_BUSY', 'This transaction belongs to another origin.');
+      if (id === 'run.update') {
+        const prepared = registry.prepare(tx.entry.id, args.args);
+        const updated = tx.session.run(() => registry.invoke(tx.entry, prepared.args, { origin: request.origin }));
+        const finish = result => { for (const target of result.affectedIds) tx.affectedIds.add(target); renew(tx); return transactionReceipt(id, tx, request, before); };
+        return updated?.then ? updated.then(finish, error => { cancelTransaction(tx); throw error; }) : finish(updated);
+      }
+      if (id === 'run.cancel') cancelTransaction(tx);
+      if (id === 'run.commit') { transactions.delete(tx.txId); clear(tx.timer); tx.historyEntryId = tx.session.commit().historyEntryId; }
+    }
+    return transactionReceipt(id, tx, request, id === 'run.commit' ? tx.before : before);
+  }
+  function transactionReceipt(id, tx, request, before) {
+    const after = ports.read();
+    return validateReceipt({ ok: true, status: 'completed', kind: 'transaction', commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
+      action: id, txId: tx.txId, authored: Boolean(tx.historyEntryId), revision: { before: before.revision, after: after.revision },
+      affectedIds: [...tx.affectedIds], delta: [], checks: { coverage: 'wire-transaction' }, warnings: [],
+      undo: tx.historyEntryId ? { historyEntryId: tx.historyEntryId, entries: 1, canUndoDirect: true } : null });
+  }
   function refusal(request, before, error) {
     const changed = ports.read().revision !== before.revision;
     return validateReceipt({ ok: false, commandId: request.commandId, host: before.host,
@@ -51,11 +101,14 @@ export function createCommandBus({ registry, ports }) {
       const signature = JSON.stringify({ id, args, ...request });
       if (!journal.begin(request.commandId, signature)) return journal.get(request.commandId) ?? pending.get(request.commandId) ?? refusal(request, before, new StudioProtocolError('UNCERTAIN_APPLY', 'Command is still executing.'));
       begun = true;
-      const { entry, args: validated } = registry.prepare(id, args);
+      const prepared = controls[id] ? { args: validateStudioSchema(controls[id], args) } : registry.prepare(id, args);
+      const { entry, args: validated } = prepared;
       if (request.origin !== 'ui') {
         if (request.expectedRevision !== before.revision) fail('STALE_SCENE', 'Authored state changed; obtain fresh intent.');
         if (before.busy) fail('TARGET_BUSY', 'Finish the current editor gesture first.');
       }
+      if (controls[id]) return mapResult(control(id, validated, request, before), remember, rejected);
+      if (transactions.size) fail('TARGET_BUSY', 'Finish or cancel the open command transaction first.');
       releaseToasts = ports.captureToasts?.(toast => toasts.push(typeof toast === 'string' ? { message: toast } : toast));
       const context = { origin: request.origin, signal: controller.signal };
       let timeout;
@@ -80,5 +133,6 @@ export function createCommandBus({ registry, ports }) {
       return answer;
     } catch (error) { return rejected(error); }
   }
-  return { run };
+  return { run, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+    dispose() { for (const tx of transactions.values()) cancelTransaction(tx); listeners.clear(); } };
 }
