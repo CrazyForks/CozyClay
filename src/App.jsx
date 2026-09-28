@@ -726,9 +726,7 @@ export default function App() {
 	const [workspaceLayout, setWorkspaceLayout] = useState(loadWorkspaceLayout);
 	const stageDomain = useStage(appContext.forRender({
 		startupStage,
-		get beginGestureUndo() { return beginGestureUndo; },
-		get endGestureUndo() { return endGestureUndo; },
-		get recordCharacterUndo() { return castDomain.recordCharacterUndo; },
+		get actorStageRef() { return actorStageRef; },
 	}));
 	const {
 		preset, shotAspectKey, environmentImage, cameraPresetId, sensorId, keyLight, changeKeyLight,
@@ -7397,6 +7395,7 @@ export default function App() {
 	 * one character `targetId` names), which republishes the live read model
 	 * synchronously; object entries are the store's own. */
 	function beginStudioAction(domain, targetId = null) {
+		if (domain === "stage" && stageDomain.documentStore) return stageDomain.beginAction();
 		if (studioActionGroupRef.current) throw new StudioProtocolError("TARGET_BUSY", "A command owns native history.");
 		const historyEntryId = crypto.randomUUID(), objects = storeRef.current.objects;
 		const history = appContext.castHistory, past = [...history.past], future = [...history.future], states = [];
@@ -7462,6 +7461,7 @@ export default function App() {
 		else publishStudioMotion(targetId, state);
 	}
 	function isStudioHistoryRetained(receipt) {
+		if (stageDomain.documentStore?.isRetained(receipt?.undo?.historyEntryId)) return true;
 		const id = receipt?.undo?.historyEntryId, entry = studioHistoryRef.current.get(id);
 		if (!entry) return false;
 		const retained = (!entry.before || storeRef.current.hasHistoryState(entry.before)) && (entry.domain === "objects"
@@ -7485,6 +7485,7 @@ export default function App() {
 		if (state.renderer) restoreExportRig(state.renderer);
 	}
 	function stepStudioHistory(redo) {
+		if (stageDomain.documentStore && stageDomain.stepHistory(redo)) return true;
 		const history = appContext.castHistory, from = redo ? history.future : history.past, to = redo ? history.past : history.future;
 		const top = from.at(-1);
 		// Object undo/redo advances the global clock, even when it returns to the
@@ -7647,6 +7648,7 @@ export default function App() {
 		studioView: { mode: workflowMode, frame: tlFrame, playing: tlPlaying, lookThrough: lookThroughShot, grid: gridView, autoColor },
 	});
 	appContext.updatePorts({
+		stage: () => stageDomain,
 		read: readStudioState, revision: sceneRevisionRef, bounds: studioBounds, commit: commitStudioDraft, commitMotion: commitStudioMotion,
 		operate: operateStudio, undo: undoScene, stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
 		// One shot frame as raw read-back pixels (rows bottom-up), from the export
@@ -7672,6 +7674,7 @@ export default function App() {
 		},
 		isRetained: isStudioHistoryRetained,
 		canUndo: receipt => {
+			if (stageDomain.documentStore.isRetained(receipt?.undo?.historyEntryId)) return stageDomain.canUndo(receipt.undo.historyEntryId);
 			const entry = receipt?.undo && studioHistoryRef.current.get(receipt.undo.historyEntryId);
 			if (!entry || receipt.revision.after !== sceneRevisionRef.current) return false;
 			return entry.domain === "objects" ? entry.tick === appContext.objectClock && entry.tick >= (appContext.castHistory.past.at(-1)?.tick ?? 0) && entry.depth === storeRef.current.depths().past :
@@ -7684,6 +7687,7 @@ export default function App() {
 		emitCommandEvent: detail => window.dispatchEvent(new CustomEvent("cozyclay:command", { detail })),
 	});
 	appContext.updateActionPorts({
+		stage: () => stageDomain,
 		// Shots and objects come from the synchronously published read model, so
 		// an action sees its own edit before React renders it.
 		state: () => ({
