@@ -10,9 +10,10 @@ try {
  const started = await f.actual.runStudioAction('motion.generateAllBlocks');
  assert.equal(started?.status, 'started', JSON.stringify(started));
  assert.ok(context.signal instanceof AbortSignal);
- const event = new Promise(resolve => f.binding.bus.subscribe(e => { if (e.jobId === started.jobId) resolve(e); }));
+ const event = deferred();
+ f.binding.bus.subscribe(e => { if (e.jobId === started.jobId) event.resolve(e); });
  completion.resolve();
- assert.equal((await event).receipt.status, 'completed');
+ assert.equal((await event.promise).receipt.status, 'completed');
  const inputs = { type: 'object', properties: {}, required: [], additionalProperties: false };
  f.registry.register({ id: 'shot.nested', kind: 'mutation', undoDomain: 'shot', input: inputs, available: () => true,
   run: (_args, ctx) => { const created = ctx.run('shot.create'); ctx.run('shot.setCameraRail', { shotId: created.affectedIds[0], points: [{ x: -2, z: 4 }, { x: 2, z: 4 }] }); return { affectedIds: f.live.current.shots.map(s => s.id), summary: 'Two nested edits.' }; } });

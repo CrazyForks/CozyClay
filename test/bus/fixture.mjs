@@ -4,7 +4,15 @@ import { createHistory, pushHistory, undoHistory } from '../../src/history.js';
 import { createCommandBus } from '../../src/command-bus.js';
 
 export const host = { workspaceId: 'workspace', documentEpoch: 'document', sceneId: 'scene', sceneEpoch: 'epoch' };
-export const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+export const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => {
+    const timer = setTimeout(() => no(new Error('Expected bus test signal did not arrive.')), 5000);
+    resolve = value => { clearTimeout(timer); yes(value); };
+    reject = error => { clearTimeout(timer); no(error); };
+  });
+  return { promise, resolve, reject };
+};
 export function fixture(entries = []) {
   let state = { host, revision: 0, domainRevisions: { shot: 0, cast: 0, objects: 0, motion: 0 }, tokens: { target: 'target-1' }, busy: false, value: 0 };
   let history = createHistory({ value: 0, id: null });

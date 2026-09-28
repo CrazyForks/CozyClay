@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { fixture, result } from './fixture.mjs';
+import { fixture, result, deferred } from './fixture.mjs';
 const f = fixture();
 // The history owner retains a pre-image; the bus must use its session rather
 // than calling recordAction (which would push on every update).
@@ -32,9 +32,10 @@ assert.equal(f.state.value, 8);
 assert.equal(cancelled, 1);
 const expiring = await run('run.begin', { id: 'shot.reorder', args: { shotId: 'target', startFrame: 8 } });
 await run('run.update', { txId: expiring.txId, args: { shotId: 'target', startFrame: 16 } });
-const expired = new Promise(resolve => f.bus.subscribe(event => { if (event.type === 'transaction.cancelled') resolve(event); }));
+const expired = deferred();
+f.bus.subscribe(event => { if (event.type === 'transaction.cancelled') expired.resolve(event); });
 timer();
-assert.equal((await expired).txId, expiring.txId);
+assert.equal((await expired.promise).txId, expiring.txId);
 assert.equal(f.state.value, 8);
 assert.equal(cancelled, 2);
 console.log('PASS bus acceptance 4: wire previews, one commit, pre-image cancellation and idle expiry');
