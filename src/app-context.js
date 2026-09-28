@@ -6,6 +6,7 @@ const ref = current => ({ current });
 // an owner supply its existing cells; the facade never owns React setters.
 export function createAppContext({
   clock: opClockRef = ref(0), history: charHistoryRef = ref({ past: [], future: [] }),
+  objectClock: lastObjectOpRef = ref(0), suppressObjectClock: suppressObjectClockRef = ref(false),
   characters: charactersRef = ref(null), scenes: scenesRef = ref(null),
   motion: motionRef = ref(null), state: liveStateRef = ref(null),
 } = {}) {
@@ -20,6 +21,13 @@ export function createAppContext({
   return {
     get undoClock() { return opClockRef.current; },
     nextTick,
+    get objectClock() { return lastObjectOpRef.current; },
+    get suppressObjectClock() { return suppressObjectClockRef.current; },
+    set suppressObjectClock(value) { suppressObjectClockRef.current = value; },
+    objectChanged() {
+      if (!suppressObjectClockRef.current) lastObjectOpRef.current = nextTick();
+    },
+    advanceObjectClock() { lastObjectOpRef.current = nextTick(); },
     get castHistory() { return charHistoryRef.current; },
     resetCastHistory() { charHistoryRef.current = { past: [], future: [] }; },
     recordCharacterUndo: record,

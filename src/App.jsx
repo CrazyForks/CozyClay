@@ -1171,10 +1171,6 @@ export default function App() {
 	// started three renders ago must place its takes against the CURRENT cast,
 	// not the one its closure captured.
 	appContext.publishCharacters(characters);
-	// Character undo stack lives next to the cast: the store creation below
-	// and the undo handlers further down both read these refs.
-	const lastObjectOpRef = useRef(0);
-	const suppressObjectClockRef = useRef(false);
 	const [customPoses, setCustomPoses] = useState(() => loadCustomPoses());
 	const [posing, setPosing] = useState(null);
 	const [posingClosing, setPosingClosing] = useState(false);
@@ -1519,7 +1515,7 @@ export default function App() {
 		onObjects: (objects) => {
 			// Object-side ops join the shared undo clock here; undo/redo of the
 			// object store bumps the clock explicitly in undoScene/redoScene.
-			if (!suppressObjectClockRef.current) lastObjectOpRef.current = appContext.nextTick();
+			appContext.objectChanged();
 			setSceneObjects(objects);
 		},
 	}));
@@ -2335,21 +2331,21 @@ export default function App() {
 	function undoScene() {
 		if (studioBindingRef.current?.stepHistory(false)) return;
 		const charTop = appContext.castHistory.past[appContext.castHistory.past.length - 1];
-		if (charTop && charTop.tick > lastObjectOpRef.current) {
+		if (charTop && charTop.tick > appContext.objectClock) {
 			appContext.castHistory.future.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
 			appContext.castHistory.past.pop();
 			restoreCast(charTop.snapshot);
 			setToast(ko("Undone", "실행 취소됨"));
 			return;
 		}
-		suppressObjectClockRef.current = true;
+		appContext.suppressObjectClock = true;
 		const restored = store.undo();
-		suppressObjectClockRef.current = false;
+		appContext.suppressObjectClock = false;
 		if (restored === null) {
 			setToast(ko("Nothing to undo", "실행 취소할 작업이 없어요"));
 			return;
 		}
-		lastObjectOpRef.current = appContext.nextTick();
+		appContext.advanceObjectClock();
 		if (objectDeleteUndo?.id && restored.some((object) => object.id === objectDeleteUndo.id)) {
 			setSelectedHierarchyId(`object:${objectDeleteUndo.id}`);
 			setObjectDeleteUndo(null);
@@ -2372,21 +2368,21 @@ export default function App() {
 	function redoScene() {
 		if (studioBindingRef.current?.stepHistory(true)) return;
 		const charTop = appContext.castHistory.future[appContext.castHistory.future.length - 1];
-		if (charTop && charTop.tick > lastObjectOpRef.current) {
+		if (charTop && charTop.tick > appContext.objectClock) {
 			appContext.castHistory.past.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
 			appContext.castHistory.future.pop();
 			restoreCast(charTop.snapshot);
 			setToast(ko("Redone", "다시 실행됨"));
 			return;
 		}
-		suppressObjectClockRef.current = true;
+		appContext.suppressObjectClock = true;
 		const restored = store.redo();
-		suppressObjectClockRef.current = false;
+		appContext.suppressObjectClock = false;
 		if (restored === null) {
 			setToast(ko("Nothing to redo", "다시 실행할 작업이 없어요"));
 			return;
 		}
-		lastObjectOpRef.current = appContext.nextTick();
+		appContext.advanceObjectClock();
 		if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
 			setSelectedHierarchyId("props");
 		}
@@ -4180,7 +4176,7 @@ export default function App() {
 		storeRef.current = withCommandHistory(createSceneHistoryStore(objects, {
 			onCommit: (before, after) => markSemanticEdit("objects", before, after),
 			onObjects: (next) => {
-				if (!suppressObjectClockRef.current) lastObjectOpRef.current = appContext.nextTick();
+				appContext.objectChanged();
 				setSceneObjects(next);
 			},
 		}));
@@ -4864,8 +4860,8 @@ export default function App() {
 				const stopOnError = args.stopOnError !== false;
 				const depthBefore = storeRef.current.depths().past;
 				const token = storeRef.current.begin(args.label?.trim() || "MCP batch", () => {});
-				const priorSuppressObjectClock = suppressObjectClockRef.current;
-				suppressObjectClockRef.current = true;
+				const priorSuppressObjectClock = appContext.suppressObjectClock;
+				appContext.suppressObjectClock = true;
 				const applied = [];
 				const failed = [];
 				batchToken = token;
@@ -4885,10 +4881,10 @@ export default function App() {
 					commit = !rolledBack;
 				} finally {
 					batchToken = null;
-					suppressObjectClockRef.current = priorSuppressObjectClock;
+					appContext.suppressObjectClock = priorSuppressObjectClock;
 					storeRef.current.end(token, { commit });
 				}
-				if (!rolledBack && storeRef.current.depths().past > depthBefore) lastObjectOpRef.current = appContext.nextTick();
+				if (!rolledBack && storeRef.current.depths().past > depthBefore) appContext.advanceObjectClock();
 				syncObjects();
 				return { label: args.label?.trim() || "MCP batch", applied, failed, rolledBack };
 			},
@@ -11839,7 +11835,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					history.past.push({ tick, snapshot: firstEntry?.snapshot ?? snapshotCast(true), studio: { ...studio, historyEntryId, objects: storeRef.current.objects } });
 					history.past = history.past.slice(-HISTORY_LIMIT); history.future = [];
 					studioHistoryRef.current.set(historyEntryId, { tick, domain: studio.domain, ...(objectsChanged ? { before: objects } : {}) });
-				} else if (objectsChanged) studioHistoryRef.current.set(historyEntryId, { domain: "objects", before: objects, tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
+				} else if (objectsChanged) studioHistoryRef.current.set(historyEntryId, { domain: "objects", before: objects, tick: appContext.objectClock, depth: storeRef.current.depths().past });
 				changed ||= objectsChanged;
 				studioActionGroupRef.current = null;
 				return { historyEntryId: changed ? historyEntryId : null };
@@ -11923,7 +11919,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			const before = storeRef.current.objects;
 			storeRef.current.applyAtomic(() => payload.draft);
 			appContext.patchLive({ objects: storeRef.current.objects });
-			studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
+			studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: appContext.objectClock, depth: storeRef.current.depths().past });
 		} else {
 			recordStudioHistory(payload.domain, null, historyEntryId);
 			if (payload.domain === "stage") publishStudioStage(payload.draft);
@@ -12087,8 +12083,8 @@ function resizePromptClip(id, edge, rawFrame) {
 		canUndo: receipt => {
 			const entry = receipt?.undo && studioHistoryRef.current.get(receipt.undo.historyEntryId);
 			if (!entry || receipt.revision.after !== sceneRevisionRef.current) return false;
-			return entry.domain === "objects" ? entry.tick === lastObjectOpRef.current && entry.tick >= (appContext.castHistory.past.at(-1)?.tick ?? 0) && entry.depth === storeRef.current.depths().past :
-				entry.tick === appContext.castHistory.past.at(-1)?.tick && entry.tick > lastObjectOpRef.current;
+			return entry.domain === "objects" ? entry.tick === appContext.objectClock && entry.tick >= (appContext.castHistory.past.at(-1)?.tick ?? 0) && entry.depth === storeRef.current.depths().past :
+				entry.tick === appContext.castHistory.past.at(-1)?.tick && entry.tick > appContext.objectClock;
 		},
 		actions: () => studioActionsRef.current,
 		recordAction: recordStudioAction, beginAction: beginStudioAction,

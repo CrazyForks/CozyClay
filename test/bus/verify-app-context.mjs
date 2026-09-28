@@ -130,7 +130,10 @@ test('acceptance 4: both App object-store callbacks join the facade clock', () =
 test('acceptance 4: real App undo and redo traverse interleaved object and cast edits in reverse order', () => {
   const f = appFixture();
   try {
-    const state = () => ({ objects: f.store.current.objects, characters: f.characterRef.current });
+    const state = () => {
+      const { objects, characters } = f.actual.readStudioState();
+      return { objects, characters };
+    };
     const snapshots = [state()];
     for (let index = 1; index <= 3; index++) {
       f.actual.commitStudioDraft({ domain: 'objects', draft: [{ id: `object-${index}`, x: index }] });

@@ -99,7 +99,7 @@ function fixture() {
 		copyPhysicsKeys,
 		ko: (english) => english,
 	};
-	scope.appContext = createAppContext({ clock: scope.opClockRef, history: scope.charHistoryRef, characters: scope.charactersRef });
+	scope.appContext = createAppContext({ clock: scope.opClockRef, history: scope.charHistoryRef, objectClock: scope.lastObjectOpRef, suppressObjectClock: scope.suppressObjectClockRef, characters: scope.charactersRef });
 	Object.defineProperty(scope, "activeChar", { get: () => scope.characters[0] });
 	const assign = (key) => (value) => {
 		scope[key] = typeof value === "function" ? value(scope[key]) : value;
