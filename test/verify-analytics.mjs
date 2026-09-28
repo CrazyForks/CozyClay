@@ -194,6 +194,7 @@ for (const [health, body] of [
 		setGenQueue(update) { queued.push(...update([])); },
 		setToast() {}, isKo: false,
 	};
+	context.appContext = createAppContext({ notify: (...args) => context.setToast(...args) }).forRender(context);
 	const enqueue = new Function(...Object.keys(context), `return ${appFunction("enqueueMotionJob")};`)(...Object.values(context));
 	enqueue({ request, body, charIndex: 0 });
 	assert.equal(queued.length, health === remoteHealth ? 1 : 0, "preflight refusal does not enqueue an unmeasured job");
@@ -219,7 +220,7 @@ function motionJobFixture({ generate, deliver = async () => {}, capture } = {}) 
 	const ardyAbortRef = { current: null };
 	const charactersRef = { current: [{ id: "requesting-character" }] };
 	const context = {
-		ardyAbortRef, appContext: createAppContext({ characters: charactersRef }), setArdyRunning() {}, reportArdyStatus() {}, setArdyReport() {}, setArdyOutcome() {}, setReplayNotices() {},
+		ardyAbortRef, appContext: createAppContext({ characters: charactersRef, notify: (...args) => context.setToast(...args) }), setArdyRunning() {}, reportArdyStatus() {}, setArdyReport() {}, setArdyOutcome() {}, setReplayNotices() {},
 		ko: (en) => en, isKo: false, setToast() {}, trackActivation() {}, isLineEditUnsupported: () => false,
 		ardyGenerate: generate ?? (async (_body, onEvent) => {
 			onEvent({ event: "done" }); onEvent({ event: "done" });
@@ -227,6 +228,7 @@ function motionJobFixture({ generate, deliver = async () => {}, capture } = {}) 
 		}),
 		deliverMotion: deliver, commitTakeRecipe() {},
 	};
+	context.appContext = context.appContext.forRender(context);
 	const execute = new Function(...Object.keys(context), `return async ${appFunction("executeMotionJob")};`)(...Object.values(context));
 	return { events, ardyAbortRef, charactersRef, run: () => boundedMotionSignal(execute({ request, body: {}, hasBlockEdits: false, charIndex: 0, charId: "requesting-character" })) };
 }

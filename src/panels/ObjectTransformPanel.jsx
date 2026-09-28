@@ -6,7 +6,13 @@ import { setSceneObjectParent, MESH_KIND, CUTOUT_KIND, CUTOUT_DEFAULT_HEIGHT, OB
 import { MESH_HEIGHT_MIN } from "../scene-mesh.js";
 import { autoColorHex } from "../auto-color.js";
 
-export default function ObjectTransformPanel({ selectedSceneObject, snapEnabled, setSnapEnabled, changeSceneObject, attachTargetLabel, hierarchyReparent, store, sceneObjects, beginSceneTransaction, endSceneTransaction, matteCanvasRef, matteStats, matteMode, setMatteMode, matteEditorRef, matteTolerance, setMatteTolerance, matteBrush, setMatteBrush, matteShrink, setMatteShrink, matteFeather, setMatteFeather, setToast, matteBusy, applyMatte, autoColor, recentObjectColors, rememberSceneObjectColor, objectColorDraft, setObjectColorDraft }) {
+export default function ObjectTransformPanel({
+	selectedSceneObject, snapEnabled, setSnapEnabled, changeSceneObject, attachTargetLabel, hierarchyReparent,
+	store, sceneObjects, beginSceneTransaction, endSceneTransaction, matteCanvasRef, matteStats, matteMode,
+	setMatteMode, matteEditorRef, matteTolerance, setMatteTolerance, matteBrush, setMatteBrush, matteShrink,
+	setMatteShrink, matteFeather, setMatteFeather, setToast, matteBusy, applyMatte, autoColor,
+	recentObjectColors, rememberSceneObjectColor, objectColorDraft, setObjectColorDraft,
+}) {
 	return (
 <Foldout hidden={!selectedSceneObject} title={ko("Transform", "변환")}>
 						{selectedSceneObject && (

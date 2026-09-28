@@ -125,7 +125,7 @@ expect("it opens the city-block starter", start.includes('await openStarterScene
 expect(
 	"a scene it could not fetch still opens the tutorial (openStarterScene toasts)",
 	/const opened = await openStarterScene\("city-block", "tutorial"\);[\s\S]*?setCameraTutorial\(true\)/.test(start)
-		&& app.includes('setToast(ko("That starter scene is not in this build", "이 빌드에는 그 시작 장면이 없어요"))'),
+		&& app.includes('appContext.notify(ko("That starter scene is not in this build", "이 빌드에는 그 시작 장면이 없어요"))'),
 );
 // #275 strengthens replacement confirmation into preservation: existing work
 // runs the same steps in place and never enters the sample-loading path.

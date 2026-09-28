@@ -100,9 +100,10 @@ function fixture() {
 		copyPhysicsKeys,
 		ko: (english) => english,
 	};
-	scope.appContext = createAppContext({ clock: scope.opClockRef, history: scope.charHistoryRef, objectClock: scope.lastObjectOpRef, suppressObjectClock: scope.suppressObjectClockRef, characters: scope.charactersRef }).forRender(scope);
+	scope.appContext = createAppContext({ clock: scope.opClockRef, history: scope.charHistoryRef, objectClock: scope.lastObjectOpRef, suppressObjectClock: scope.suppressObjectClockRef, characters: scope.charactersRef, notify: (...args) => scope.setToast(...args) }).forRender(scope);
 	scope.stageDomain = scope;
 	scope.castDomain = scope;
+	scope.motionDomain = scope;
 	Object.defineProperty(scope, "activeChar", { get: () => scope.characters[0] });
 	const assign = (key) => (value) => {
 		scope[key] = typeof value === "function" ? value(scope[key]) : value;

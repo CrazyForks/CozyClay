@@ -4,7 +4,10 @@ import AddObjectMenu from "../object-catalog.jsx";
 import { ASSET_IMAGE_TYPES } from "../scene-assets.js";
 import { sceneObjectNameDisplayKo, sceneRendererLabelKo } from "../app-stage.jsx";
 
-export default function PropsPanel({ selectedHierarchyId, inspectorDrop, addSceneObject, cutoutInputRef, meshInputRef, importCutout, importMesh, sceneObjects, selectHierarchy }) {
+export default function PropsPanel({
+	selectedHierarchyId, inspectorDrop, addSceneObject, cutoutInputRef, meshInputRef, importCutout,
+	importMesh, sceneObjects, selectHierarchy,
+}) {
 	return (
 <Foldout hidden={selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
 					<div className="props-drop" data-drop={inspectorDrop.over ? "over" : "target"} {...inspectorDrop.handlers}>

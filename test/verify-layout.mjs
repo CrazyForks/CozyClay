@@ -165,7 +165,7 @@ expect(
 );
 expect(
 	"the pinned pose can be placed anywhere in the clip",
-	app.includes("poseFrame: posePlacementFrame(ardyPosePlacement, clipFrames, tlFrame)"),
+	app.includes("poseFrame: posePlacementFrame(ardyPosePlacement, clipFrames, appContext.shared.tlFrame)"),
 );
 // Prompt Blocks starts collapsed and can sit below the fold, so selecting a
 // block on the timeline has to open it AND bring it on screen — otherwise the
@@ -185,7 +185,7 @@ expect(
 	app.includes("pinPlan.blockedBy === PIN_BLOCKED.SCHEDULE"),
 );
 expect("IK-edited blocks use the motion edit session", app.includes("const editedSegments") && app.includes("body.motionEdit = {") && app.includes("sourceMotion: motion.url"));
-expect("IK regeneration inherits loaded clip duration", app.includes("motion && ikFrames.length > 0") && app.includes("motion.frames / motion.fps"));
+expect("IK regeneration inherits loaded clip duration", app.includes("motion && appContext.shared.ikFrames.length > 0") && app.includes("motion.frames / motion.fps"));
 expect("motion edits send only tracked pending joints", app.includes("ikStateRef.current.keys.get(timelineFrame)?.keys()") && app.includes("tracks:"));
 expect("successful motion edits commit and clear pending IK", app.includes("setCommittedIkEdits") && app.includes("job.ikState.keys.clear()") && app.includes("job.ikState.tracked.clear()"));
 expect("pending IK clears only after exact commit verification", app.includes("editCommitReport?.commit_verified !== true") && app.includes("ARDY returned motion without verified authored IK keys"));
@@ -198,21 +198,21 @@ expect(
 );
 expect(
 	"a deleted inactive motion target cannot clear the active editing motion",
-	app.includes("if (targetCharacterId === loadedLayerCharRef.current && !commandContext) setMotion(null);"),
+	app.includes("if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext) setMotion(null);"),
 );
 // Given B owns a completed motion while A becomes the editing buffer during
 // decode or the B-rig wait, when completion resumes, then B keeps both its
 // take and prompt schedule without installing either into A.
 expect(
 	"a B completion after selection changes retains B ownership through decode and rig waits",
-	app.includes("const targetCharacter = appContext.live.characters.find((entry) => entry.id === targetCharacterId);") && app.includes("const targetStillExists = appContext.live.characters.some((entry) => entry.id === targetCharacter.id);") && app.includes("const bufferOwnsTarget = targetCharacter.id === loadedLayerCharRef.current;") && app.includes("if (bufferOwnsTarget) {") && app.includes("setPromptClips(targetPromptClips);"),
+	app.includes("const targetCharacter = appContext.live.characters.find((entry) => entry.id === targetCharacterId);") && app.includes("const targetStillExists = appContext.live.characters.some((entry) => entry.id === targetCharacter.id);") && app.includes("const bufferOwnsTarget = targetCharacter.id === appContext.shared.loadedLayerCharRef.current;") && app.includes("if (bufferOwnsTarget) {") && app.includes("setPromptClips(targetPromptClips);"),
 );
 // Given A starts a completion and B becomes active before it settles, when
 // the target-owned completion resumes, then B's editing buffer receives B's
 // clip and prompts and an A failure cannot clear B's motion.
 expect(
 	"an active B receives its own completion after an A to B selection interleaving",
-	app.includes("const targetCharacterId = args.characterId ?? appContext.live.state.activeCharacterId;") && app.includes("const targetPromptClips = clips;") && app.includes("targetCharacterId,") && app.includes("if (targetCharacterId === loadedLayerCharRef.current && !commandContext) setMotion(null);"),
+	app.includes("const targetCharacterId = args.characterId ?? appContext.live.state.activeCharacterId;") && app.includes("const targetPromptClips = clips;") && app.includes("targetCharacterId,") && app.includes("if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext) setMotion(null);"),
 );
 expect("individual block generation action is removed", !app.includes("Generate selected block"));
 expect("Prompt Block edits stay synced with ARDY input", app.includes("changePromptClip(selectedPromptId") && app.includes("setArdyPrompt(event.target.value)"));
@@ -223,8 +223,8 @@ expect("timeline IK text controls size to their labels", css.includes(".tl-btn.i
 // Floor-click authoring: waypoints are placed by clicking the set floor, so
 // frame 0 is owned implicitly — the request prepends Subject 1's position and
 // authored pins can never claim frame 0 or earlier.
-expect("the active character exclusively owns the frame zero root start", app.includes("{ frame: 0, x: activeChar.x, z: activeChar.z, heading: null }") && app.includes("waypoint.frame <= 0") && !app.includes("Frame 0 is the start of the root path — it can't be removed"));
-expect("root guidance sends the aligned, densified path to ARDY", app.includes("alignArdyPath(rootPath, activeChar.rot") && app.includes("body.waypoints = ardyWaypoints"));
+expect("the active character exclusively owns the frame zero root start", app.includes("{ frame: 0, x: appContext.shared.activeChar.x, z: appContext.shared.activeChar.z, heading: null }") && app.includes("waypoint.frame <= 0") && !app.includes("Frame 0 is the start of the root path — it can't be removed"));
+expect("root guidance sends the aligned, densified path to ARDY", app.includes("alignArdyPath(rootPath, appContext.shared.activeChar.rot") && app.includes("body.waypoints = ardyWaypoints"));
 expect(
 	"a root path and a prompt schedule are sent together, judged per block",
 	app.includes("if (hasPromptSchedule && !hasBlockEdits) body.segments = toArdySegments(segments);") &&
@@ -350,7 +350,7 @@ expect(
 );
 expect(
 	"ingest and extraction reach the ported ingest module",
-	app.includes('from "./multimodel-ingest.js"') &&
+	app.includes('from "../multimodel-ingest.js"') &&
 	app.includes("probeFootage(objectUrl") &&
 	app.includes("knownFps: Number.isFinite(source.fps) ? source.fps : null"),
 );
@@ -405,7 +405,7 @@ expect(
 expect(
 	"trim composes from the per-character full-take map",
 	app.includes("const motionFullRef = useRef(new Map());") &&
-	app.includes("const full = motionFullRef.current.get(activeChar.id);") &&
+	app.includes("const full = appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id);") &&
 	// The trim reads its previous edit once so pin migration (#79) and the
 	// slice compose from the same segments.
 	app.includes("trimMotionEdit(previous, start, end)") &&

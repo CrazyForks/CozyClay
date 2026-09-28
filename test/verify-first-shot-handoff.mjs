@@ -97,7 +97,7 @@ for (const change of ["none", "edit", "project"]) {
 		setToast() {}, ko: (en) => en, applyProject: (value) => applied.push(value),
 		projectHandleRef: { current: null }, track() {},
 	};
-	runtime.appContext = createAppContext().forRender(runtime);
+	runtime.appContext = createAppContext({ notify: (...args) => runtime.setToast(...args) }).forRender(runtime);
 	const opening = runInNewContext(`(${starterEntry})("city-block", "tutorial")`, runtime);
 	if (change === "edit") snapshot = "authored";
 	if (change === "project") runtime.tutorialProjectEpochRef.current += 1;
@@ -113,7 +113,7 @@ const startEntry = app.slice(app.indexOf("async function startCameraTutorial("),
 const markEntry = app.slice(app.indexOf("const markSemanticEdit ="), app.indexOf("const craftActionTrackedRef"));
 const seedEnd = "}, [tutorialSeedPending, activeRig, motionBusy]);";
 const seedEntry = app.slice(app.indexOf("\tuseEffect(() => {", app.indexOf("// The camera tutorial's seed (#209)")), app.indexOf(seedEnd) + seedEnd.length);
-const motionEntry = app.slice(app.indexOf("async function loadMotion("), app.indexOf("// Hosted-demo seed."));
+const motionEntry = readStudioFunction('loadMotion');
 for (const timing of ["before-rig", "during-load", "unchanged"]) {
 	let effect, loading, release;
 	const calls = [];
@@ -149,7 +149,7 @@ for (const timing of ["before-rig", "during-load", "unchanged"]) {
 		setTlFrame(value) { context.frame = value; }, setTlFps() {}, setTlPlaying() {},
 		setCommittedIkEdits() {}, setToast() {}, ko: (en) => en,
 	};
-	context.appContext = createAppContext({ characters: context.charactersRef, state: context.liveStateRef });
+	context.appContext = createAppContext({ characters: context.charactersRef, state: context.liveStateRef, notify: (...args) => context.setToast(...args) }).forRender(context);
 	context.castDomain = context;
 	await runInNewContext(`(${startEntry})()`, context);
 	const actualLoad = runInNewContext(`(${motionEntry})`, context);

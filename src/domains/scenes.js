@@ -1,67 +1,61 @@
 import { useState } from "react";
-import { SCENES_STORAGE_KEY } from "../scenes.js";
-import { serializeSceneDocument } from "../scenes.js";
-import { SCENES_VERSION } from "../scenes.js";
-import { loadProjectSession } from "../project.js";
-import { playgroundSceneUrl } from "../playground.js";
-import { loadWorkflowGraph } from "../project.js";
-import { createProjectDocument } from "../project.js";
-import { openAssetDb } from "../scene-assets.js";
-import { referencedAssetIds } from "../scene-assets.js";
-import { getAsset } from "../scene-assets.js";
-import { internWorkflowOutputs } from "../workflow/workflow-resources.js";
+import {
+	SCENES_STORAGE_KEY,
+	serializeSceneDocument,
+	SCENES_VERSION,
+	migrateStageFrames,
+	activeSceneIndex,
+	createSceneDocument,
+	createSceneStage,
+	addScene,
+	duplicateScene,
+	renameScene,
+	removeScene,
+} from "../scenes.js";
+import {
+	loadProjectSession,
+	loadWorkflowGraph,
+	createProjectDocument,
+	storeProjectSession,
+	verifyEmbeddedAsset,
+	hasFileSystemAccess,
+	pickProjectFileForSave,
+	writeProjectFile,
+	rememberRecentProject,
+	downloadProjectFallback,
+	PROJECT_EXTENSION,
+	normalizeWorkflowGraph,
+	storeWorkflowGraph,
+	pickProjectFileForOpen,
+	readProjectFile,
+	openProjectFallback,
+	readProjectDocument,
+	requestHandlePermission,
+	createWorkflowGraph,
+	clearStoredProjectHandle,
+} from "../project.js";
+import { playgroundSceneUrl, fetchSceneProject } from "../playground.js";
+import { openAssetDb, referencedAssetIds, getAsset, putAsset } from "../scene-assets.js";
+import { internWorkflowOutputs, workflowOutputRefs, resolveWorkflowOutputs } from "../workflow/workflow-resources.js";
 import { encodeMotionResource } from "../motion-resources.js";
-import { openMotionDb } from "../motion-store.js";
-import { putMotion } from "../motion-store.js";
+import { openMotionDb, putMotion, sweepMotions } from "../motion-store.js";
 import { resourceManifest } from "../project-resources.js";
-import { workflowOutputRefs } from "../workflow/workflow-resources.js";
-import { storeProjectSession } from "../project.js";
-import { isKo } from "../locale.js";
-import { verifyEmbeddedAsset } from "../project.js";
-import { putAsset } from "../scene-assets.js";
-import { hasFileSystemAccess } from "../project.js";
-import { pickProjectFileForSave } from "../project.js";
-import { writeProjectFile } from "../project.js";
-import { rememberRecentProject } from "../project.js";
-import { downloadProjectFallback } from "../project.js";
-import { track } from "../analytics.js";
-import { bucketCount } from "../analytics.js";
-import { PROJECT_EXTENSION } from "../project.js";
-import { ko } from "../locale.js";
-import { sweepMotions } from "../motion-store.js";
-import { migrateStageFrames } from "../scenes.js";
+import { isKo, ko } from "../locale.js";
+import { track, bucketCount, bucketProjectAge } from "../analytics.js";
 import { mergeProjectCustomPoses } from "../project-poses.js";
-import { DEFAULT_WORKSPACE_LAYOUT } from "../app-stage.jsx";
-import { resolveWorkflowOutputs } from "../workflow/workflow-resources.js";
-import { normalizeWorkflowGraph } from "../project.js";
-import { storeWorkflowGraph } from "../project.js";
+import { DEFAULT_WORKSPACE_LAYOUT, DEFAULT_DURATION_S, TIMELINE_FPS, DEFAULT_ENVIRONMENT } from "../app-stage.jsx";
 import { saveCustomPoses } from "../poses.js";
-import { activeSceneIndex } from "../scenes.js";
-import { bucketProjectAge } from "../analytics.js";
-import { fetchSceneProject } from "../playground.js";
-import { pickProjectFileForOpen } from "../project.js";
-import { readProjectFile } from "../project.js";
-import { openProjectFallback } from "../project.js";
-import { readProjectDocument } from "../project.js";
-import { requestHandlePermission } from "../project.js";
-import { createSceneDocument } from "../scenes.js";
-import { createWorkflowGraph } from "../project.js";
-import { clearStoredProjectHandle } from "../project.js";
 import { readShotAuthoringDocument } from "../shot-authoring.js";
-import { DEFAULT_DURATION_S } from "../app-stage.jsx";
-import { TIMELINE_FPS } from "../app-stage.jsx";
 import { initialShots } from "../cuts.js";
-import { createSceneStage } from "../scenes.js";
 import { withCommandHistory } from "../command-bus.js";
 import { createSceneHistoryStore } from "../scene-history.js";
-import { DEFAULT_ENVIRONMENT } from "../app-stage.jsx";
 import { createIkState } from "../ardy/ik.js";
-import { addScene } from "../scenes.js";
-import { duplicateScene } from "../scenes.js";
-import { renameScene } from "../scenes.js";
-import { removeScene } from "../scenes.js";
 
 export function useScenes(appContext) {
+	// Scene persistence (plan §8): the startup load runs once in a lazy
+	// initializer so the store below can seed from the restored scene; the
+	// quarantine write and the save-block decision happen before the first
+	// render, and the toast/error they produce ride along as initial UI state.
 	const [scenes, setScenes] = useState(appContext.shared.startup.document.scenes);
 
 	const [activeSceneId, setActiveSceneId] = useState(appContext.shared.startup.document.activeSceneId);
@@ -86,7 +80,7 @@ export function useScenes(appContext) {
 			setSceneSaveError(null);
 			if (appContext.shared.saveFailureToastRef.current) {
 				appContext.shared.saveFailureToastRef.current = false;
-				appContext.shared.setToast("");
+				appContext.notify("");
 			}
 			return true;
 		} catch (err) {
@@ -94,12 +88,17 @@ export function useScenes(appContext) {
 			setSceneSaveError(message);
 			if (!appContext.shared.saveFailureToastRef.current) {
 				appContext.shared.saveFailureToastRef.current = true;
-				appContext.shared.setToast(message);
+				appContext.notify(message);
 			}
 			return false;
 		}
 	}
 
+	/* ============================ project files ============================
+	 * Game-engine workflow: the authoring state (scenes + cast + layers,
+	 * workspace layout, custom poses) round-trips through a real
+	 * `.cclayproject` file. localStorage stays as the always-on session
+	 * cache; the file is the portable, user-owned document. */
 	const [projectName, setProjectName] = useState(() => loadProjectSession()?.name ?? null);
 
 	const [projectDirty, setProjectDirty] = useState(false);
@@ -112,6 +111,11 @@ export function useScenes(appContext) {
 
 	const [projectNameDialog, setProjectNameDialog] = useState(null);
 
+	// A first-run author should choose a document (or explicitly start a named
+	// local draft). Keep this as a light startup sheet so the studio remains
+	// inspectable while the choice is pending; it never traps the topbar.
+	// ?tutorial=camera opens the starter scene itself (#209), so the chooser is
+	// suppressed the same way a ?scene= launch suppresses it.
 	const [projectStartupOpen, setProjectStartupOpen] = useState(() => !appContext.shared.playgroundMode && !appContext.shared.cameraTutorialQuery && !playgroundSceneUrl(globalThis.location?.search) && !loadProjectSession()?.name);
 
 	const [projectManifest, setProjectManifest] = useState({ items: [], totals: { embedded: 0, external: 0, missing: 0, bytes: 0 }, missing: [] });
@@ -243,6 +247,9 @@ export function useScenes(appContext) {
 		}
 	}
 
+	/** Save the project; the answer says what happened, for project.save:
+	 * { saved, name, fileName, downloaded } or { saved: false, naming |
+	 * cancelled | failure }. Every outcome is also shown to the user here. */
 	async function saveProject(saveAs = false, explicitName = null) {
 		if (projectName === null && explicitName === null) {
 			setProjectNameDialog({ kind: "save", initialName: "My Project" });
@@ -274,7 +281,7 @@ export function useScenes(appContext) {
 				object_count_bucket: bucketCount(appContext.shared.projectStateRef.current.sceneObjects?.length ?? 0),
 				shot_count_bucket: bucketCount(appContext.shared.shots.length),
 			});
-			appContext.shared.setToast((isKo, ko) => isKo ? `프로젝트 저장됨: ${name}${PROJECT_EXTENSION}` : `Project saved: ${name}${PROJECT_EXTENSION}`);
+			appContext.notify((isKo, ko) => isKo ? `프로젝트 저장됨: ${name}${PROJECT_EXTENSION}` : `Project saved: ${name}${PROJECT_EXTENSION}`);
 			return { saved: true, name, fileName: downloaded ? `${name}${PROJECT_EXTENSION}` : appContext.shared.projectHandleRef.current?.name ?? `${name}${PROJECT_EXTENSION}`, downloaded };
 		} catch (err) {
 			if (err?.name === "AbortError") {
@@ -284,7 +291,7 @@ export function useScenes(appContext) {
 			setProjectSaveState("error");
 			if (err?.code === "missing-resources") setSaveBlockedReasons([{ code: err.code, items: err.items }]);
 			else if (err?.code === "resources-too-large") setSaveBlockedReasons([err]);
-			else appContext.shared.setToast(ko("Could not save the project", "프로젝트를 저장하지 못했어요"));
+			else appContext.notify(ko("Could not save the project", "프로젝트를 저장하지 못했어요"));
 			return { saved: false, failure: err?.code ?? err?.name ?? "error" };
 		}
 	}
@@ -327,6 +334,9 @@ export function useScenes(appContext) {
 		track("project:opened", { age_bucket: bucketProjectAge(Date.now() - (project.savedAt ?? Date.now())) });
 	}
 
+	/** Open a bundled starter scene as a fresh, saveable project. Used by the
+	 * first-run dialog and by `npx cozyclay --scene <id>` (`?scene=`), which is
+	 * how the landing-page tutorial hands people into the local studio. */
 	async function openStarterScene(id, source = "starter") {
 		const before = source === "tutorial" ? collectProjectSnapshot("Tutorial") : null;
 		const epoch = appContext.shared.tutorialProjectEpochRef.current;
@@ -336,7 +346,7 @@ export function useScenes(appContext) {
 		// while it was loading, including an unnamed project.
 		if (source === "tutorial" && (epoch !== appContext.shared.tutorialProjectEpochRef.current || before !== collectProjectSnapshot("Tutorial"))) return false;
 		if (!project) {
-			appContext.shared.setToast(ko("That starter scene is not in this build", "이 빌드에는 그 시작 장면이 없어요"));
+			appContext.notify(ko("That starter scene is not in this build", "이 빌드에는 그 시작 장면이 없어요"));
 			return false;
 		}
 		applyProject({ ...project, savedAt: null });
@@ -358,7 +368,7 @@ export function useScenes(appContext) {
 			if (!file) return;
 			const result = readProjectDocument(file.text);
 			if (!result.ok) {
-				appContext.shared.setToast(isKo ? `프로젝트를 열 수 없어요: ${result.reason}` : `Cannot open project: ${result.reason}`);
+				appContext.notify(isKo ? `프로젝트를 열 수 없어요: ${result.reason}` : `Cannot open project: ${result.reason}`);
 				return;
 			}
 			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
@@ -367,26 +377,28 @@ export function useScenes(appContext) {
 			await rehydrateProjectAssets(result.project, result.warnings);
 			applyProject(result.project);
 			setProjectStartupOpen(false);
-			appContext.shared.setToast(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
+			appContext.notify(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
 		} catch (err) {
 			if (err?.name === "AbortError") return;
 			console.error("openProject failed", err);
-			appContext.shared.setToast(ko("Could not open the project", "프로젝트를 열지 못했어요"));
+			appContext.notify(ko("Could not open the project", "프로젝트를 열지 못했어요"));
 		}
 	}
 
+	/** Open a project from the browser dialog: a stored handle from the
+	 * recents list or a file enumerated in the projects folder. */
 	async function openProjectByHandle(handle) {
 		try {
 			// A stored handle may have been demoted to "prompt" since the last
 			// session (#51); this click is the user gesture that can re-grant it.
 			if ((await requestHandlePermission(handle)) !== "granted") {
-				appContext.shared.setToast(ko("Project access was not granted — allow access and try again.", "프로젝트 접근이 허용되지 않았어요. 접근을 허용하고 다시 시도해 주세요."));
+				appContext.notify(ko("Project access was not granted — allow access and try again.", "프로젝트 접근이 허용되지 않았어요. 접근을 허용하고 다시 시도해 주세요."));
 				return;
 			}
 			const file = await readProjectFile(handle);
 			const result = readProjectDocument(file.text);
 			if (!result.ok) {
-				appContext.shared.setToast(isKo ? `프로젝트를 열 수 없어요: ${result.reason}` : `Cannot open project: ${result.reason}`);
+				appContext.notify(isKo ? `프로젝트를 열 수 없어요: ${result.reason}` : `Cannot open project: ${result.reason}`);
 				return;
 			}
 			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
@@ -396,10 +408,10 @@ export function useScenes(appContext) {
 			applyProject(result.project);
 		setProjectBrowserOpen(false);
 		setProjectStartupOpen(false);
-		appContext.shared.setToast(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
+		appContext.notify(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
 		} catch (err) {
 			console.error("openProjectByHandle failed", err);
-			appContext.shared.setToast(ko("Could not open the project", "프로젝트를 열지 못했어요"));
+			appContext.notify(ko("Could not open the project", "프로젝트를 열지 못했어요"));
 		}
 	}
 
@@ -431,7 +443,7 @@ export function useScenes(appContext) {
 		storeProjectSession(name);
 		setProjectStartupOpen(false);
 		appContext.shared.setFirstSuccessGuideOpen(true);
-		appContext.shared.setToast(ko(`New project: ${name}`, `새 프로젝트: ${name}`));
+		appContext.notify(ko(`New project: ${name}`, `새 프로젝트: ${name}`));
 	}
 
 	const [restoreOffer, setRestoreOffer] = useState(null);
@@ -445,7 +457,7 @@ export function useScenes(appContext) {
 			appContext.shared.projectHandleRef.current = record.handle;
 			await rehydrateProjectAssets(result.project, result.warnings);
 			applyProject(result.project);
-			appContext.shared.setToast(`${isKo ? `프로젝트 복원됨: ${result.project.name}` : `Project restored: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
+			appContext.notify(`${isKo ? `프로젝트 복원됨: ${result.project.name}` : `Project restored: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
 		} catch {
 			/* missing or unreadable file: fall back to the session cache */
 		}
@@ -525,6 +537,8 @@ export function useScenes(appContext) {
 		track("scene:loaded", { scene_source: "local" });
 	}
 
+	/** The scene controls' doors (the scene pill, the Hierarchy scene menu)
+	 * into the shared registry; run_action reaches the same scene actions. */
 	function selectSceneDocument(sceneId) { return appContext.shared.runStudioAction("scene.switch", { sceneId }); }
 
 	function createSceneDocumentFromUi() { return appContext.shared.runStudioAction("scene.create"); }
@@ -588,5 +602,17 @@ export function useScenes(appContext) {
 		persistScenes(nextScenes, target.id);
 		openScene(target, nextScenes);
 	}
-	return { scenes, setScenes, activeSceneId, setActiveSceneId, sceneSaveError, setSceneSaveError, snapshotActiveScene, persistScenes, projectName, setProjectName, projectDirty, setProjectDirty, projectSaveState, setProjectSaveState, projectMenuOpen, setProjectMenuOpen, projectBrowserOpen, setProjectBrowserOpen, projectNameDialog, setProjectNameDialog, projectStartupOpen, setProjectStartupOpen, projectManifest, setProjectManifest, saveBlockedReasons, setSaveBlockedReasons, workflowRevision, setWorkflowRevision, projectDocumentInput, collectProjectSnapshot, collectProjectSerialized, markProjectClean, projectProblemsNotice, rehydrateProjectAssets, saveProject, applyProject, openStarterScene, openProject, openProjectByHandle, requestNewProject, newProject, restoreOffer, setRestoreOffer, restoreStoredProject, flushScenes, restoredShotState, openScene, selectSceneDocument, createSceneDocumentFromUi, duplicateSceneDocumentFromUi, renameSceneDocumentFromUi, deleteSceneDocumentFromUi, switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument };
+	return {
+		scenes, setScenes, activeSceneId, sceneSaveError, snapshotActiveScene, persistScenes, projectName,
+		projectDirty, setProjectDirty, projectSaveState, setProjectSaveState, projectMenuOpen,
+		setProjectMenuOpen, projectBrowserOpen, setProjectBrowserOpen, projectNameDialog, setProjectNameDialog,
+		projectStartupOpen, setProjectStartupOpen, projectManifest, setProjectManifest, saveBlockedReasons,
+		setSaveBlockedReasons, workflowRevision, setWorkflowRevision, collectProjectSnapshot,
+		collectProjectSerialized, projectProblemsNotice, rehydrateProjectAssets, saveProject, applyProject,
+		openStarterScene, openProject, openProjectByHandle, requestNewProject, newProject, restoreOffer,
+		setRestoreOffer, restoreStoredProject, flushScenes, openScene, selectSceneDocument,
+		createSceneDocumentFromUi, duplicateSceneDocumentFromUi, renameSceneDocumentFromUi,
+		deleteSceneDocumentFromUi, switchSceneDocument, addSceneDocument, duplicateSceneDocument,
+		renameSceneDocument, deleteSceneDocument,
+	};
 }

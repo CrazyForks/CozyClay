@@ -3,7 +3,10 @@ import { ko } from "../locale.js";
 import { defaultCharacterTint } from "../app-stage.jsx";
 import SubjectBox from "./SubjectBox.jsx";
 
-export default function SubjectsPanel({ isCharacterSelection, showB, characters, updateCharacterAt, openStudio, posing, removeCharacter, recordSessionUndo, tintSessionRef, setShowB }) {
+export default function SubjectsPanel({
+	isCharacterSelection, showB, characters, updateCharacterAt, openStudio, posing, removeCharacter,
+	recordSessionUndo, tintSessionRef, setShowB,
+}) {
 	return (
 <Foldout hidden={!isCharacterSelection} title={showB ? ko("Subjects", "인물들") : ko("Subject", "인물")}>
 						<div className={"subjects-row" + (showB ? "" : " single")}>

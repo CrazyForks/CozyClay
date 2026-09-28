@@ -1,7 +1,10 @@
 import { ko } from "../locale.js";
 import ResourceStatus from "../resource-status.jsx";
 
-export default function ProjectPanel({ projectMenuOpen, setProjectMenuOpen, projectDirty, projectName, projectStartupOpen, requestNewProject, setProjectStartupOpen, setProjectBrowserOpen, runStudioAction, saveProject, projectManifest }) {
+export default function ProjectPanel({
+	projectMenuOpen, setProjectMenuOpen, projectDirty, projectName, projectStartupOpen, requestNewProject,
+	setProjectStartupOpen, setProjectBrowserOpen, runStudioAction, saveProject, projectManifest,
+}) {
 	return (
 <div className="project-menu-wrap">
 					<button

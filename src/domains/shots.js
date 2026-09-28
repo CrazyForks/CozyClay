@@ -1,9 +1,27 @@
 import { useState } from "react";
 import { PRESETS, DEFAULT_DURATION_S, TIMELINE_FPS } from "../app-stage.jsx";
 import { CAMERA_MOVES } from "../shot.js";
-import { SHOT_AUTHORING_KEY, readShotAuthoring, SHOT_AUTHORING_LEGACY_KEYS, SHOT_AUTHORING_LEGACY_KEY, SHOT_AUTHORING_QUARANTINE_KEY, readShotAuthoringDocument } from "../shot-authoring.js";
+import {
+	SHOT_AUTHORING_KEY,
+	readShotAuthoring,
+	SHOT_AUTHORING_LEGACY_KEYS,
+	SHOT_AUTHORING_LEGACY_KEY,
+	SHOT_AUTHORING_QUARANTINE_KEY,
+	readShotAuthoringDocument,
+} from "../shot-authoring.js";
 import { useSemanticState } from "../use-semantic-state.js";
-import { initialShots, shotIndexAtFrame, moveCameraKey, removeCameraKey, addShotAtFrame, cutAtFrame, duplicateShot, reorderShot, resizeShot, removeShot } from "../cuts.js";
+import {
+	initialShots,
+	shotIndexAtFrame,
+	moveCameraKey,
+	removeCameraKey,
+	addShotAtFrame,
+	cutAtFrame,
+	duplicateShot,
+	reorderShot,
+	resizeShot,
+	removeShot,
+} from "../cuts.js";
 import { createCameraBlock, updateCameraBlock, removeCameraRail } from "../camera-block.js";
 import { updateStableItem, createStableItemId } from "../stable-items.js";
 import { craneHeightAt, followFramingFromCamera } from "../camera-follow.js";
@@ -15,6 +33,8 @@ import { ko } from "../locale.js";
 export function useShots(appContext) {
 	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
 
+	/** One Ctrl+Z entry for a structural shot edit (delete, split, duplicate,
+	 * add, reorder): the same history as the cast, with the shot list aboard. */
 	function recordShotUndo() {
 		appContext.recordShotUndo(appContext.shared.snapshotCast(true));
 	}
@@ -23,6 +43,8 @@ export function useShots(appContext) {
 
 	const [customMove, setCustomMove] = useState("");
 
+	// Authored shot state (camera keys, waypoints, clip length) restored from
+	// the last session — camera moves must survive a reload like the scene does.
 	const [shotStartup] = useState(() => {
 		try {
 			const currentRaw = localStorage.getItem(SHOT_AUTHORING_KEY);
@@ -52,18 +74,33 @@ export function useShots(appContext) {
 
 	const nestedShotStartup = readShotAuthoringDocument(appContext.shared.startupScene.shotDocument ?? undefined);
 
+	// The nested Scene document wins. The root v3 key remains a migration
+	// fallback for users arriving from the single-scene build.
 	const startupShotState = nestedShotStartup.state ?? shotStartup.state;
 
+	// Each editorial strip owns its camera keys. The playhead chooses the
+	// active strip; there is no shared key list that could blend through a cut.
 	const [shots, setShots, editShots] = useSemanticState(() => startupShotState?.shots ?? initialShots(startupShotState?.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS), appContext.shared.markSemanticEdit, "shots");
 
 	const [movePlaying, setMovePlaying] = useState(false);
 
+	// Follow slaves the move to the timeline playhead so camera and character
+	// motion share one time axis; off frees the camera while both stay set.
 	const [moveFollow, setMoveFollow] = useState(true);
 
 	const [railDraw, setRailDraw] = useState(false);
 
+	/* Objects with a travel path stand where their path puts them at the
+	 * playhead. Authoring still edits the RECORD (the path and its start
+	 * pose); this derived list is what the scene, the plan board and the
+	 * export all draw, so preview and recording can never disagree. */
+	// Which crane height mark the scene dots have selected; the timeline's
+	// Point height input edits this one. Reset lives after activeCamera below.
 	const [craneSelectedIndex, setCraneSelectedIndex] = useState(null);
 
+	/* --------------------------- motion workspace --------------------------- */
+	// The timeline playhead and the root waypoints are App-owned so the scene
+	// (character rig, plan path, ARDY card) reacts to every scrub/play tick.
 	const [tlFrame, setTlFrame] = useState(0);
 
 	const [tlFrameCount, setTlFrameCount] = useState(startupShotState?.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS);
@@ -78,6 +115,7 @@ export function useShots(appContext) {
 
 	const activeCamera = createCameraBlock(activeShot?.camera);
 
+	// A crane/shot switch invalidates the scene-dot selection.
 	const craneActive = !!activeCamera.craneHeight;
 
 	const followCam = activeCamera.followCam;
@@ -102,6 +140,10 @@ export function useShots(appContext) {
 		(authored ? editShots : setShots)((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, patch) }), "shots"));
 	}
 
+	/** Which video model this shot is being cut FOR. A label, never a
+	 * constraint: nothing re-times or re-crops the shot, the timeline simply
+	 * says when the cut breaks the target's limits. One Ctrl+Z entry per pick,
+	 * exactly like a camera-block commit. */
 	function changeShotTargetModel(targetModel, shotId = activeShot?.id) {
 		if (!shots.some((entry) => entry.id === shotId)) return;
 		recordShotUndo();
@@ -148,6 +190,8 @@ export function useShots(appContext) {
 		setCraneSelectedIndex(null);
 	}
 
+	// Navigation (including look-through / MCP set_camera) can persist framing,
+	// but is not a semantic edit. Keep this on the passive shot setter.
 	function syncActiveCameraFraming() {
 		const cam = appContext.shared.shotCamRef.current;
 		if (!cam || !activeShot || appContext.shared.ikMode || appContext.shared.playMode) return;
@@ -187,11 +231,17 @@ export function useShots(appContext) {
 		syncActiveCameraFraming();
 	}
 
+	/** Camera-puck / viewport framing gesture start. Opens the SAME framing
+	 * session syncActiveCameraFraming writes into, so the whole drag is one
+	 * Ctrl+Z entry snapshotted before the first tick moves the lens. */
 	function beginCameraFramingGesture() {
 		if (appContext.shared.ikMode || appContext.shared.playMode || !activeShot) return;
 		appContext.shared.recordSessionUndo(appContext.shared.framingSessionRef, `framing:${activeShot.id}`, recordShotUndo);
 	}
 
+	/** One Ctrl+Z entry per timeline editing gesture. The timeline fires this
+	 * once when a drag (or an arrow nudge, or a text session) begins, before
+	 * any mutation lands; the per-tick handlers then write on top of it. */
 	function beginTimelineEditGesture(kind, id) {
 		if (kind === "camera-key" || kind === "rail" || kind === "shot-boundary") {
 			recordShotUndo();
@@ -207,6 +257,8 @@ export function useShots(appContext) {
 		if (kind === "prompt-text") appContext.shared.recordSessionUndo(appContext.shared.promptTextSessionRef, `prompt-text:${id}`);
 	}
 
+	/* One camera-rail core for every shot, shared by the Top-View rail stroke,
+	 * the Delete rail button and run_action. */
 	function setShotCameraRail(shotId, points) {
 		const shot = appContext.live.state.shots.find((entry) => entry.id === shotId);
 		if (!shot) throw new StudioProtocolError("STALE_TARGET", `Shot ${shotId} is not in this scene.`);
@@ -249,7 +301,7 @@ export function useShots(appContext) {
 		setRailDraw(next);
 		if (next) {
 			appContext.shared.setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
-			appContext.shared.setToast(ko("Draw the selected Shot's rail in the Top-View", "탑뷰에서 선택한 샷의 레일을 그리세요"));
+			appContext.notify(ko("Draw the selected Shot's rail in the Top-View", "탑뷰에서 선택한 샷의 레일을 그리세요"));
 		}
 	}
 
@@ -257,7 +309,7 @@ export function useShots(appContext) {
 		if (!cameraRail || !activeShot) return;
 		setRailDraw(false);
 		if (!appContext.shared.runStudioAction("shot.clearCameraRail", { shotId: activeShot.id })) return;
-		appContext.shared.setToast(ko("Camera rail deleted — Follow keeps the current distance", "카메라 레일 삭제됨 — 팔로우가 현재 거리를 유지합니다"));
+		appContext.notify(ko("Camera rail deleted — Follow keeps the current distance", "카메라 레일 삭제됨 — 팔로우가 현재 거리를 유지합니다"));
 	}
 
 	function previewCameraShot(shotId) {
@@ -276,6 +328,8 @@ export function useShots(appContext) {
 		appContext.shared.setTlPlaying(true);
 	}
 
+	// Key authoring lives in each unified Shot block's lower key strip: clicking
+	// an empty point stores the CURRENT framing there. Re-keying overwrites it.
 	function addCameraKeyframe(frame, shotId = activeShot?.id) {
 		const framing = appContext.shared.captureCurrentFraming();
 		const target = Math.max(0, Math.min(Math.round(frame), tlFrameCount - 1));
@@ -295,6 +349,8 @@ export function useShots(appContext) {
 		appContext.shared.setSelectedHierarchyId("camera");
 	}
 
+	// Re-time a key by dragging its dot along the lane. Landing on another
+	// key's frame is rejected — keys stay frame-unique.
 	function moveCameraKeyframe(shotId, keyId, from, to) {
 		const shot = shots.find((entry) => entry.id === shotId);
 		if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
@@ -366,6 +422,9 @@ export function useShots(appContext) {
 		editShots(next);
 	}
 
+	/** Both edges in one Ctrl+Z entry, through the same resize the boundary
+	 * drag uses. The edge moving away from the other goes first, so a range
+	 * that jumps past the old one never inverts on the way. */
 	function setTimelineShotRange(shotId, startFrame, endFrame) {
 		const shot = shots.find((entry) => entry.id === shotId);
 		if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
@@ -382,5 +441,16 @@ export function useShots(appContext) {
 		recordShotUndo();
 		editShots(next);
 	}
-	return { fovDeg, setFovDeg, recordShotUndo, cameraMove, setCameraMove, customMove, setCustomMove, shotStartup, nestedShotStartup, startupShotState, shots, setShots, editShots, movePlaying, setMovePlaying, moveFollow, setMoveFollow, railDraw, setRailDraw, craneSelectedIndex, setCraneSelectedIndex, tlFrame, setTlFrame, tlFrameCount, setTlFrameCount, tlFps, setTlFps, activeShotIdx, activeShot, cameraKeys, activeCamera, craneActive, followCam, cameraRail, activeShotDuration, hasCameraKeys, changeActiveCamera, changeShotTargetModel, addActiveCranePoint, deleteSelectedCranePoint, syncActiveCameraFraming, commitManualCameraFraming, beginCameraFramingGesture, beginTimelineEditGesture, setShotCameraRail, clearShotCameraRail, changeCameraRail, toggleCameraRailDraw, deleteCameraRail, previewCameraShot, addCameraKeyframe, moveCameraKeyframe, removeCameraKeyframe, clearMove, addTimelineShot, splitTimelineShot, selectTimelineShot, duplicateTimelineShot, moveTimelineShot, setTimelineShotRange, removeTimelineShot };
+	return {
+		fovDeg, setFovDeg, recordShotUndo, cameraMove, customMove, startupShotState, shots, setShots, editShots,
+		movePlaying, setMovePlaying, moveFollow, railDraw, setRailDraw, craneSelectedIndex,
+		setCraneSelectedIndex, tlFrame, setTlFrame, tlFrameCount, setTlFrameCount, tlFps, setTlFps,
+		activeShotIdx, activeShot, cameraKeys, activeCamera, craneActive, cameraRail, activeShotDuration,
+		hasCameraKeys, changeActiveCamera, changeShotTargetModel, addActiveCranePoint, deleteSelectedCranePoint,
+		syncActiveCameraFraming, commitManualCameraFraming, beginCameraFramingGesture, beginTimelineEditGesture,
+		setShotCameraRail, clearShotCameraRail, changeCameraRail, toggleCameraRailDraw, deleteCameraRail,
+		previewCameraShot, addCameraKeyframe, moveCameraKeyframe, removeCameraKeyframe, addTimelineShot,
+		splitTimelineShot, selectTimelineShot, duplicateTimelineShot, moveTimelineShot, setTimelineShotRange,
+		removeTimelineShot,
+	};
 }

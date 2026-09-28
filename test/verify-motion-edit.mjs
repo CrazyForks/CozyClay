@@ -212,7 +212,7 @@ function linearMotion(frames) {
 /* --------------------------- App wiring pins --------------------------- */
 {
 	const { readFileSync } = await import("node:fs");
-	const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+	const app = readFileSync(new URL("../src/domains/motion.js", import.meta.url), "utf8");
 	assert.ok(app.includes("migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), edit, rendered.frames)"), "segment edits migrate timeline pins");
 	assert.ok(app.includes("migrateTimelinePins(previous, segments, sliced.frames)"), "trims migrate pins instead of clearing them");
 	assert.ok(app.includes("migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), createMotionEdit(full.frames), full.frames)"), "restoring the full take rides keys home");

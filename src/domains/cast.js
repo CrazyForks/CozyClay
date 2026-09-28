@@ -1,8 +1,25 @@
 import { useSemanticState } from "../use-semantic-state.js";
 import { useState, useMemo } from "react";
-import { loadCustomPoses, DEFAULT_POSE, capturePose, captureHipsOffset, saveCustomPoses, deleteCustomPose } from "../poses.js";
+import {
+	loadCustomPoses,
+	DEFAULT_POSE,
+	capturePose,
+	captureHipsOffset,
+	saveCustomPoses,
+	deleteCustomPose,
+} from "../poses.js";
 import { createCharacterEntry, createKeyLight, createCharacterLayer } from "../scenes.js";
-import { DEFAULT_SUBJECT, DEFAULT_SUBJECT2, nextCharacterId, DEFAULT_PROMPT_CLIPS, MAX_WAYPOINTS, MULTIMODEL_REASONS, ARDY_PROMPT_HORIZON_FRAMES, ARDY_DURATION_MIN, TIMELINE_FPS } from "../app-stage.jsx";
+import {
+	DEFAULT_SUBJECT,
+	DEFAULT_SUBJECT2,
+	nextCharacterId,
+	DEFAULT_PROMPT_CLIPS,
+	MAX_WAYPOINTS,
+	MULTIMODEL_REASONS,
+	ARDY_PROMPT_HORIZON_FRAMES,
+	ARDY_DURATION_MIN,
+	TIMELINE_FPS,
+} from "../app-stage.jsx";
 import { ko, isKo } from "../locale.js";
 import { createIkState } from "../ardy/ik.js";
 import { judgeNextWaypoint } from "../ardy/waypoints.js";
@@ -16,6 +33,10 @@ import { snapshotPlaybackBones, applyMotionFrame, restorePlaybackBones } from ".
 import { movePromptClipFrames } from "../ardy/prompt-clips.js";
 
 export function useCast(appContext) {
+	// The cast is ONE list now: every character (position, rig model, pose,
+	// subject line) lives in `characters`, and the legacy A/B view of the
+	// world is derived below so the rest of the studio keeps working while
+	// spawned extras ride the same rails.
 	const [characters, setCharacters, editCharacters] = useSemanticState(appContext.shared.startupStage.characters, appContext.shared.markSemanticEdit, "characters");
 
 	const [customPoses, setCustomPoses] = useState(() => loadCustomPoses());
@@ -32,6 +53,9 @@ export function useCast(appContext) {
 
 	const [poseRevision, setPoseTick] = useState(0);
 
+	/* --------------------- derived cast view + shims ---------------------- */
+	// Fallback second slot mirrors the old charB defaults so preset math and
+	// the two-subject inspector never see a hole before B exists.
 	const charA = characters[0] ?? createCharacterEntry(null, 0);
 
 	const charB = characters[1] ?? { ...createCharacterEntry(null, 1), x: 1.15, z: 0.1, rot: -14 };
@@ -58,6 +82,8 @@ export function useCast(appContext) {
 		}));
 	}
 
+	// The shims keep the legacy call sites (inspector sliders, presets, pose
+	// studio, prompts) untouched while the list stays the source of truth.
 	const setCharA = (next) => updateCharacterAt(0, next);
 
 	const setCharB = (next) => updateCharacterAt(1, next);
@@ -132,15 +158,21 @@ export function useCast(appContext) {
 		const id = nextCharacterId(characters);
 		editCharacters((list) => [...list, createCharacterEntry({ id, model, x, z, pose: DEFAULT_POSE, subject: "a person" }, list.length)]);
 		appContext.shared.setSelectedHierarchyId(`character:${id}`);
-		appContext.shared.setToast(ko("Character added to the scene", "인물을 씬에 추가했어요"));
+		appContext.notify(ko("Character added to the scene", "인물을 씬에 추가했어요"));
 	};
 
+	// Viewport picks tag bodies with "A"/"B"/charId and surfaces route the
+	// result to a hierarchy row: the first two keep their legacy row ids.
 	const charKeyToHierarchyId = (key) => {
 		if (key === "A" || key === "a" || key === "char:A") return "characterA";
 		if (key === "B" || key === "b" || key === "char:B") return "characterB";
 		return `character:${key.startsWith("char:") ? key.slice(5) : key}`;
 	};
 
+	/* ------------------- active character (motion layer) ------------------- */
+	// Every character owns an animation layer (root path, prompt blocks,
+	// generated clip, IK keys). The studio's motion machinery edits ONE layer
+	// at a time — the ACTIVE character's — and selection decides who that is.
 	const charIdFromHierarchyId = (hierarchyId) => {
 		if (hierarchyId === "characterA") return characters[0]?.id ?? null;
 		if (hierarchyId === "characterB") return characters[1]?.id ?? null;
@@ -148,12 +180,20 @@ export function useCast(appContext) {
 		return null;
 	};
 
+	// State, not a ref: a ref written inside an effect never re-renders, so
+	// with an idle app the active character silently stayed behind the row
+	// the user just clicked.
 	const [activeCharacterId, setActiveCharacterId] = useState(characters[0]?.id ?? null);
 
+	/** The hierarchy row id a cast LIST index owns — mirror of
+	 * hierarchy-model's characterRowId, for building namespaced rig ids. */
 	const rowIdForCharIndex = (index) => index === 0 ? "characterA" : index === 1 ? "characterB" : characters[index] ? `character:${characters[index].id}` : "characterA";
 
 	const activeChar = characters.find((entry) => entry.id === activeCharacterId) ?? characters[0] ?? charA;
 
+	// Root paths and prompt blocks are the active character's animation layer.
+	// With the Inspector driven by selection, showing those tools means putting
+	// that character in the hierarchy selection.
 	const selectActiveCharacterInHierarchy = () => {
 		const id = activeCharacterId ?? characters[0]?.id;
 		if (id) appContext.shared.setSelectedHierarchyId(`character:${id}`);
@@ -178,12 +218,23 @@ export function useCast(appContext) {
 		});
 	};
 
+	// Read-only previews of the other cast members' layers for the timeline,
+	// memoized: a fresh array every render would re-render every lane on
+	// every playhead tick.
 	const ghostLayers = useMemo(() => characters.flatMap((entry, index) => entry.id === activeChar.id || entry.hidden ? [] : [{
 		owner: `S${index + 1}`,
 		promptClips: entry.layer?.promptClips ?? [],
 		waypointFrames: (entry.layer?.waypoints ?? []).map((waypoint) => waypoint.frame),
 	}]), [characters, activeChar.id]);
 
+	// Undo/redo (plan §6.5). The store settles any open drag first, so a
+	// mid-drag press commits that drag as one entry and then steps past it.
+	// After a step the selection can point at a deleted object — drop it to
+	/* ---------------------- character undo stack ---------------------------
+	 * The scene history store owns scene OBJECTS; the cast lives outside it.
+	 * Character gestures (spawn, remove, show/hide, plan-board drags) push a
+	 * full-cast snapshot with the editing buffer folded in, and undo/redo
+	 * picks the newer of the two stacks so one Ctrl+Z history covers both. */
 	const snapshotCast = (includeShots = false) => ({
 		// The key light rides the same undo stack as everything else — its
 		// absence used to make Ctrl+Z after a light edit undo an unrelated
@@ -216,6 +267,9 @@ export function useCast(appContext) {
 		appContext.recordCharacterUndo(snapshotCast());
 	}
 
+	/** The Inspector's character Transform rows. The viewport gizmo already
+	 * records on drag start; these numeric rows are the same edit through
+	 * another door, so they record once per scrub / typed commit. */
 	function changeInspectorCharacter(gesture, patch) {
 		appContext.shared.beginGestureUndo(`character:${activeChar.id}:${gesture}`);
 		updateCharacterAt(activeCharIndex, patch);
@@ -265,10 +319,14 @@ export function useCast(appContext) {
 
 	const [hasCharSheet, setHasCharSheet] = useState(appContext.shared.startupStage.hasCharSheet);
 
+	// Bumped when something outside the Inspector needs the Prompt Blocks panel
+	// on screen — selecting or adding a block on the timeline.
 	const [promptBlocksReveal, setPromptBlocksReveal] = useState(0);
 
 	const revealPromptBlocks = () => setPromptBlocksReveal((n) => n + 1);
 
+	// Root waypoints {frame, x, z, heading: null}, kept sorted by frame —
+	// the fixed bridge contract rejects out-of-order or duplicate frames.
 	const [waypointMode, setWaypointMode] = useState(false);
 
 	const [waypoints, setWaypoints] = useState(appContext.shared.startupStage.characters?.[0]?.layer?.waypoints ?? appContext.shared.startupShotState?.waypoints ?? []);
@@ -285,10 +343,19 @@ export function useCast(appContext) {
 
 	const [photoPoseError, setPhotoPoseError] = useState("");
 
+	// The library is the user's own material: poses read from photographs and
+	// poses saved off the rig, accumulating across sessions and projects. No
+	// presets ship in it — DEFAULT_POSE is the character's spawn state, not a
+	// library entry.
 	const allPoses = customPoses;
 
+	// The dropdowns must be able to show and re-select the pose a character is
+	// actually in, and a fresh character is in the default — which is not a
+	// library entry. An empty library would otherwise render a blank select.
 	const selectablePoses = useMemo(() => [DEFAULT_POSE, ...customPoses], [customPoses]);
 
+	// The pose studio follows the character it was opened for: `posing` is a
+	// charId, so every cast member gets the same studio, not just the first two.
 	const posingIndex = characters.findIndex((entry) => entry.id === posing);
 
 	const posingChar = posingIndex >= 0 ? characters[posingIndex] : null;
@@ -299,12 +366,17 @@ export function useCast(appContext) {
 		if (posingIndex >= 0) updateCharacterAt(posingIndex, { pose: typeof pose === "function" ? pose(posingChar?.pose ?? DEFAULT_POSE) : pose });
 	};
 
+	/* ------------------------- waypoint workspace --------------------------- */
+	// A walking pace turns clicked distance into clip time, so pins land at
+	// frames the character can actually reach without ice-skating.
 	const WALK_SPEED_MPS = 1.4;
 
 	const ROOT_ROOM_LIMIT = 11;
 
 	const clampRootPosition = (value) => Math.max(-ROOT_ROOM_LIMIT, Math.min(ROOT_ROOM_LIMIT, value));
 
+	// Frame 0 of a root path is the ACTIVE character's spot — each layer's
+	// path starts from its own cast member.
 	const rootStart = () => ({ frame: 0, x: activeChar.x, z: activeChar.z });
 
 	function validateWaypointAt(ordered, index, candidate, start = rootStart()) {
@@ -328,7 +400,7 @@ export function useCast(appContext) {
 			appContext.shared.setTlFrame(target);
 			setWaypointMode(true);
 			selectActiveCharacterInHierarchy();
-			appContext.shared.setToast(isKo ? `프레임 ${target}의 루트 웨이포인트를 선택했어요. 탑뷰에서 점을 드래그해 위치를 조정하세요.` : `Root waypoint at frame ${target} selected — drag the pin in the Top-View to reposition.`);
+			appContext.notify(isKo ? `프레임 ${target}의 루트 웨이포인트를 선택했어요. 탑뷰에서 점을 드래그해 위치를 조정하세요.` : `Root waypoint at frame ${target} selected — drag the pin in the Top-View to reposition.`);
 			return;
 		}
 		setPendingWaypointFrame(target);
@@ -336,9 +408,14 @@ export function useCast(appContext) {
 		appContext.shared.setTlFrame(target);
 		setWaypointMode(true);
 		selectActiveCharacterInHierarchy();
-		appContext.shared.setToast(isKo ? `프레임 ${target}이 예약됐어요. 샷 뷰 바닥을 클릭하면 그 위치에 루트 웨이포인트가 생성됩니다.` : `Frame ${target} is reserved — click the Shot-view floor to drop the root waypoint there.`);
+		appContext.notify(isKo ? `프레임 ${target}이 예약됐어요. 샷 뷰 바닥을 클릭하면 그 위치에 루트 웨이포인트가 생성됩니다.` : `Frame ${target} is reserved — click the Shot-view floor to drop the root waypoint there.`);
 	}
 
+	/* One root-path core for every cast member, shared by the Shot-view floor
+	 * click, the plan-board drag, the timeline marker and run_action. It takes
+	 * the character explicitly: the loaded layer's path lives in the editing
+	 * buffer, every other character's on its cast entry. Refusals throw a
+	 * StudioProtocolError naming the fix; the UI door shows it as a toast. */
 	function castMemberOf(characterId) {
 		const character = appContext.live.characters.find((entry) => entry.id === characterId);
 		if (!character) throw new StudioProtocolError("STALE_TARGET", `Character ${characterId} is not in this scene.`);
@@ -361,6 +438,9 @@ export function useCast(appContext) {
 			: entry), true);
 	}
 
+	/** Pin the character's root at `point` ({x, z}) on `frame`, or — frame null —
+	 * at walking-distance pacing from the previous pin. Returns the placed
+	 * waypoint, its index on the path and the judge's warnings. */
 	function addCharacterWaypoint(characterId, point, frame = null) {
 		const character = castMemberOf(characterId);
 		const ordered = [...readCharacterWaypoints(characterId)].sort((a, b) => a.frame - b.frame);
@@ -437,6 +517,9 @@ export function useCast(appContext) {
 		return current.length;
 	}
 
+	/** ARDY-demo style authoring: each empty-floor press in the Shot view drops
+	    the next waypoint where it was clicked; the frame gap comes from walking
+	    distance. The bird's-eye board selects and drags existing waypoints. */
 	function addFloorWaypoint(point) {
 		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);
 		const last = ordered[ordered.length - 1] ?? rootStart();
@@ -463,7 +546,7 @@ export function useCast(appContext) {
 		const placed = isKo
 			? `루트 웨이포인트 ${index + 1} 추가: 프레임 ${waypoint.frame}${pendingFrame != null ? " (타임라인 예약 프레임)" : pinned ? " (재생 헤드 위치)" : ` (~${(waypoint.frame / appContext.shared.tlFps).toFixed(1)}초 걷기 기준)`}`
 			: `Waypoint ${index + 1} — frame ${waypoint.frame} ${pendingFrame != null ? "(at the reserved frame)" : pinned ? "(at the playhead)" : `(~${(waypoint.frame / appContext.shared.tlFps).toFixed(1)}s at a walk)`}`;
-		appContext.shared.setToast(warnings.length ? `${placed} · ⚠ ${warnings[0]}` : placed);
+		appContext.notify(warnings.length ? `${placed} · ⚠ ${warnings[0]}` : placed);
 	}
 
 	function moveWaypoint(id, x, z) {
@@ -475,7 +558,7 @@ export function useCast(appContext) {
 		const path = readCharacterWaypoints(activeChar.id);
 		const index = path.findIndex((entry) => entry.id === id);
 		const { warnings } = index === -1 ? { warnings: [] } : validateWaypointAt(path, index, path[index]);
-		if (warnings.length) appContext.shared.setToast(isKo ? `루트 웨이포인트 이동됨: ${warnings[0]}` : `Root waypoint moved: ${warnings[0]}`);
+		if (warnings.length) appContext.notify(isKo ? `루트 웨이포인트 이동됨: ${warnings[0]}` : `Root waypoint moved: ${warnings[0]}`);
 	}
 
 	function removeWaypoint(id) {
@@ -494,11 +577,11 @@ export function useCast(appContext) {
 		setWaypointMode(next);
 		if (!next) {
 			setPendingWaypointFrame(null);
-			appContext.shared.setToast(ko("2D Root path constraints off", "2D 루트 경로 제약 꺼짐"));
+			appContext.notify(ko("2D Root path constraints off", "2D 루트 경로 제약 꺼짐"));
 			return;
 		}
 
-		appContext.shared.setToast(ko("2D Root path on — click the set floor in the Shot view to drop waypoints; Subject 1 is the frame 0 start", "2D 루트 경로 켜짐 — 샷 뷰의 세트 바닥을 클릭해 웨이포인트를 놓으세요. 인물 1이 0프레임 시작점입니다"));
+		appContext.notify(ko("2D Root path on — click the set floor in the Shot view to drop waypoints; Subject 1 is the frame 0 start", "2D 루트 경로 켜짐 — 샷 뷰의 세트 바닥을 클릭해 웨이포인트를 놓으세요. 인물 1이 0프레임 시작점입니다"));
 	}
 
 	function openStudio(charId) {
@@ -517,6 +600,10 @@ export function useCast(appContext) {
 		}, 190);
 	}
 
+	/** Save the ACTIVE character's rig exactly as it stands — the motion frame
+	 * with any IK corrections already composited — into the pose library.
+	 * Unlike savePose (the studio's FK author), this never writes back onto the
+	 * character: a running take must survive having its best frame bottled. */
 	function saveCurrentPose() {
 		if (!activeRig) return;
 		trackFeature("pose_edit");
@@ -534,7 +621,7 @@ export function useCast(appContext) {
 		setCustomPoses(next);
 		saveCustomPoses(next);
 		setStudioPick(pose.id);
-		appContext.shared.setToast(appContext.shared.motion
+		appContext.notify(appContext.shared.motion
 			? ko(`Saved this frame's pose to the library as “${pose.label}”`, `지금 프레임의 자세를 “${pose.label}”로 라이브러리에 저장했어요`)
 			: ko(`Saved the current pose to the library as “${pose.label}”`, `지금 자세를 “${pose.label}”로 라이브러리에 저장했어요`));
 	}
@@ -558,9 +645,22 @@ export function useCast(appContext) {
 		// posed character is, and setPosed only writes when one is being posed.
 		if (posingIndex >= 0) recordCharacterUndo();
 		setPosed(pose);
-		appContext.shared.setToast(ko("Pose saved", "포즈 저장됨"));
+		appContext.notify(ko("Pose saved", "포즈 저장됨"));
 	}
 
+	/**
+	 * Read a body pose out of one photograph.
+	 *
+	 * A still is the degenerate footage case, so it walks the same proven path:
+	 * landmarks -> one-frame take -> applyMotionFrame -> capturePose. Posing the
+	 * rig and reading it back is what makes the result an ordinary editable pose
+	 * rather than a motion layer — the IK handles keep working on it, and the
+	 * playback bones are restored so nothing about the take survives the read.
+	 *
+	 * Depth in a single frame is inferred, not measured, so this is a starting
+	 * pose to refine, which is why it lands in the studio instead of on the
+	 * character directly.
+	 */
 	async function posePhotoFile(file) {
 		if (!file || photoPoseState === "running") return;
 		// Reachable from the Inspector as well as the studio panel, and posedRig()
@@ -634,7 +734,7 @@ export function useCast(appContext) {
 			setPhotoPoseState("done");
 			// The pose is already saved and written by this point. GVHMR either
 			// returns a measured pose or the named error above reaches the user.
-			appContext.shared.setToast(hadMotion
+			appContext.notify(hadMotion
 					? ko("Cleared the motion and posed from the photo — refine it with the handles", "모션을 지우고 사진으로 자세를 잡았어요 — 핸들로 다듬어 보세요")
 					: ko("Pose read from the photo — refine it with the handles", "사진에서 자세를 읽었어요 — 핸들로 다듬어 보세요"));
 		} catch (error) {
@@ -693,6 +793,12 @@ export function useCast(appContext) {
 		if (id === selectedPromptId) appContext.shared.setArdyPrompt(text);
 	}
 
+	// Quality policy: one prompt block never spans more than 5 s. Kimodo
+	// walk-to-run sweeps (seeds 7/21/99; seam stall ratio, 1.0 = no stall)
+	// scored 0.79 for 5 s blocks (best of the sweep), close to a seam-free
+	// single take at 0.85; 8 s blocks collapsed to 0.32. <2 s blocks lose
+	// about a third of their frames to the transition window, so 3-5 s is the recommended
+	// authoring range.
 	const PROMPT_BLOCK_MAX_FRAMES = 5 * TIMELINE_FPS;
 
 	function resizePromptClip(id, edge, rawFrame) {
@@ -735,5 +841,21 @@ export function useCast(appContext) {
 		editPromptClips((prev) => removeStableItem(prev, id, "promptClips"));
 		if (selectedPromptId === id) setSelectedPromptId(null);
 	}
-	return { characters, setCharacters, editCharacters, customPoses, setCustomPoses, posing, setPosing, posingClosing, setPosingClosing, studioPick, setStudioPick, rigs, setRigs, rigMountEpoch, setRigMountEpoch, poseRevision, setPoseTick, charA, charB, showB, poseA, poseB, subject, subject2, rigA, rigB, updateCharacterAt, setCharA, setCharB, setPoseA, setPoseB, setSubject, setSubject2, setShowB, moveCharacter, removeCharacter, reportRig, spawnCharacter, charKeyToHierarchyId, charIdFromHierarchyId, activeCharacterId, setActiveCharacterId, rowIdForCharIndex, activeChar, selectActiveCharacterInHierarchy, activeCharIndex, activeRig, waitForRig, ghostLayers, snapshotCast, recordCharacterUndo, changeInspectorCharacter, restoreCast, hasCharSheet, setHasCharSheet, promptBlocksReveal, setPromptBlocksReveal, revealPromptBlocks, waypointMode, setWaypointMode, waypoints, setWaypoints, activeWaypointId, setActiveWaypointId, pendingWaypointFrame, setPendingWaypointFrame, promptClips, setPromptClips, editPromptClips, selectedPromptId, setSelectedPromptId, photoPoseState, setPhotoPoseState, photoPoseError, setPhotoPoseError, allPoses, selectablePoses, posingIndex, posingChar, posedRig, setPosed, WALK_SPEED_MPS, ROOT_ROOM_LIMIT, clampRootPosition, rootStart, validateWaypointAt, queueRootWaypointFrame, castMemberOf, readCharacterWaypoints, writeCharacterWaypoints, addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, addFloorWaypoint, moveWaypoint, removeWaypoint, toggleWaypointMode, openStudio, closeStudio, saveCurrentPose, savePose, posePhotoFile, removePose, addPromptClip, changePromptClip, PROMPT_BLOCK_MAX_FRAMES, resizePromptClip, movePromptClip, removePromptClip };
+	return {
+		characters, setCharacters, editCharacters, customPoses, setCustomPoses, posing, setPosing, posingClosing,
+		studioPick, setStudioPick, rigs, rigMountEpoch, setRigMountEpoch, setPoseTick, charA, charB, showB,
+		poseA, poseB, subject, subject2, updateCharacterAt, setShowB, moveCharacter, removeCharacter, reportRig,
+		spawnCharacter, charKeyToHierarchyId, charIdFromHierarchyId, activeCharacterId, setActiveCharacterId,
+		rowIdForCharIndex, activeChar, selectActiveCharacterInHierarchy, activeCharIndex, activeRig, waitForRig,
+		ghostLayers, snapshotCast, recordCharacterUndo, changeInspectorCharacter, restoreCast, hasCharSheet,
+		setHasCharSheet, promptBlocksReveal, setPromptBlocksReveal, revealPromptBlocks, waypointMode,
+		setWaypointMode, waypoints, setWaypoints, activeWaypointId, setActiveWaypointId, pendingWaypointFrame,
+		setPendingWaypointFrame, promptClips, setPromptClips, editPromptClips, selectedPromptId,
+		setSelectedPromptId, photoPoseState, photoPoseError, setPhotoPoseError, allPoses, selectablePoses,
+		posingIndex, posingChar, posedRig, setPosed, rootStart, queueRootWaypointFrame, castMemberOf,
+		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints,
+		addFloorWaypoint, moveWaypoint, removeWaypoint, toggleWaypointMode, openStudio, closeStudio,
+		saveCurrentPose, savePose, posePhotoFile, removePose, addPromptClip, changePromptClip,
+		PROMPT_BLOCK_MAX_FRAMES, resizePromptClip, movePromptClip, removePromptClip,
+	};
 }

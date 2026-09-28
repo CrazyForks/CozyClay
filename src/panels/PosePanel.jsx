@@ -6,7 +6,12 @@ import { DEFAULT_POSE } from "../poses.js";
 import { poseLabelKo } from "../app-stage.jsx";
 import ReferenceImageField from "./ReferenceImageField.jsx";
 
-export default function PosePanel({ isCharacterSelection, activeCharIndex, falMotionModel, falMotionActions, setFalMotionStudioOpen, selectablePoses, activeChar, ikMode, ikApplyPoseAsKey, motion, clearMotion, recordCharacterUndo, updateCharacterAt, setStudioPick, setToast, removePose, setPhotoPoseError, photoPoseFileRef, photoPoseState, photoPoseError, activeRig, saveCurrentPose }) {
+export default function PosePanel({
+	isCharacterSelection, activeCharIndex, falMotionModel, falMotionActions, setFalMotionStudioOpen,
+	selectablePoses, activeChar, ikMode, ikApplyPoseAsKey, motion, clearMotion, recordCharacterUndo,
+	updateCharacterAt, setStudioPick, setToast, removePose, setPhotoPoseError, photoPoseFileRef,
+	photoPoseState, photoPoseError, activeRig, saveCurrentPose,
+}) {
 	return (
 <Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Pose", "포즈")}>
 					{/* Tiles, not a dropdown: a pose read out of a photograph has no
