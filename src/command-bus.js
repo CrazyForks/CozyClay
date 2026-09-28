@@ -9,6 +9,15 @@ const mapResult = (value, success, failure) => value?.then ? value.then(success,
 
 export function createCommandBus({ registry, ports }) {
   const pending = new Map(), transactions = new Map(), jobs = new Map(), listeners = new Set();
+  const confirmations = new Map();
+  function exposure(entry, args, request) {
+    if (request.origin === 'ui') return;
+    if (entry.exposure === 'ui-only') fail('CAPABILITY_MISSING', 'This command is available only from the Studio UI.');
+    if (entry.exposure !== 'confirm' || entry.requiresConfirmation?.(registry.state(), args) === false) return;
+    const token = confirmations.get(request.confirmationToken);
+    if (!token || token.id !== entry.id || !same(token.args, args) || !same(token.host, ports.read().host) || token.expires < (ports.now ?? Date.now)()) fail('CONFIRMATION_REQUIRED', entry.confirmationReason ?? 'This command needs user confirmation.');
+    confirmations.delete(request.confirmationToken);
+  }
   const emit = event => { for (const listener of listeners) listener(event); ports.emit?.(event); };
   const identifier = StudioSchemas.TargetGuard.properties.targetId;
   const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
@@ -60,6 +69,7 @@ export function createCommandBus({ registry, ports }) {
     if (id === 'run.begin') {
       if (transactions.size) fail('TARGET_BUSY', 'Finish or cancel the open command transaction first.');
       const prepared = registry.prepare(args.id, args.args);
+      exposure(prepared.entry, prepared.args, request);
       if (prepared.entry.kind !== 'mutation') fail('INVALID_ARGUMENT', 'Only mutations can open a transaction.');
       tx = { txId: crypto.randomUUID(), entry: prepared.entry, before, origin: request.origin,
         session: ports.beginAction(prepared.entry.undoDomain, prepared.args.characterId ?? null), affectedIds: new Set() };
@@ -143,6 +153,7 @@ export function createCommandBus({ registry, ports }) {
       }
       if (controls[id]) return mapResult(control(id, validated, request, before), remember, rejected);
       if (transactions.size) fail('TARGET_BUSY', 'Finish or cancel the open command transaction first.');
+      exposure(entry, validated, request);
       releaseToasts = ports.captureToasts?.(toast => toasts.push(typeof toast === 'string' ? { message: toast } : toast));
       const domain = entry.domain ?? entry.undoDomain;
       const targetId = entry.target?.(validated, before) ?? validated.characterId ?? validated.shotId ?? validated.objectId;
@@ -192,6 +203,9 @@ export function createCommandBus({ registry, ports }) {
       return answer;
     } catch (error) { return rejected(error); }
   }
-  return { run, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+  return { run,
+    // Trusted UI adapter only: wire callers can consume, never mint a token.
+    confirm(id, args = {}) { const prepared = registry.prepare(id, args), token = crypto.randomUUID(); confirmations.set(token, { id, args: prepared.args, host: ports.read().host, expires: (ports.now ?? Date.now)() + 300_000 }); return token; },
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     dispose() { for (const tx of transactions.values()) cancelTransaction(tx); for (const job of jobs.values()) if (!job.outcome) job.controller.abort(new StudioProtocolError('CANCELLED', 'Studio closed.')); listeners.clear(); } };
 }

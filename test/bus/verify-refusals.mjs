@@ -5,7 +5,9 @@ for (const declaration of STUDIO_ACTIONS) {
   const f = fixture();
   const text = `Refusal from ${declaration.id}`;
   f.register(declaration.id, () => { f.toast(text, '한국어 알림'); });
-  const r = await f.bus.run(declaration.id, sample(declaration.input), f.request());
+  const args = sample(declaration.input);
+  const confirmationToken = f.bus.confirm(declaration.id, args);
+  const r = await f.bus.run(declaration.id, args, f.request('agent', { confirmationToken }));
   assert.equal(r.ok, false, declaration.id);
   assert.equal(r.code, 'TARGET_NOT_READY', declaration.id);
   assert.equal(r.message, text, declaration.id);
