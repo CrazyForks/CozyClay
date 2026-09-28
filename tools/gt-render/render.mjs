@@ -39,7 +39,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { installSignalCleanup } from "../process-supervisor.mjs";
@@ -49,6 +49,7 @@ import { writeNpz } from "../ardy/npz.mjs";
 import { boxContactValues, contactFromSigned, parseBox } from "../bench/metrics.mjs";
 import { buildCamera, cameraFromRecord, marginSlopes, mergeSupports, projectPoint, supportArgs, supportValues, translateCamera } from "./camera-math.mjs";
 import { installPageHelpers, MASK_RGB, RIG_JOINTS } from "./page.mjs";
+import { boxCorners, parseSceneBox, sceneBoxRecord } from "./scene-box.mjs";
 import { isIdentityTransform, parseTransform, takeToNpzMembers, transformTake } from "./take-transform.mjs";
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "../..");
@@ -77,6 +78,8 @@ const USAGE = `usage: node tools/gt-render/render.mjs --out <dir> [options] <mot
   --transform <json>   place the take first, Studio sceneCalibration semantics:
                        '{"yawDeg":0,"offsetX":0,"offsetY":0,"offsetZ":0,"scale":1}'
                        (yaw about the frame-0 anchor, offsets in scene metres)
+  --scene-box <json>   visible Studio cube: {x,z,rot,sx,sy,sz}; base at floor, sizes in metres
+  --export-vertices   write vertices.f32 (frame/vertex/xyz, little-endian float32) + vertices.json
   --box <json>         '{"min":[x,y,z],"max":[x,y,z]}' scene box; writes <dir>/<motion>/contact.json
                        (closest skinned vertex per frame: distance / penetration)
 
@@ -103,6 +106,8 @@ function parseOptions(argv) {
 			"no-video": { type: "boolean", default: false },
 			transform: { type: "string" },
 			box: { type: "string" },
+			"scene-box": { type: "string" },
+			"export-vertices": { type: "boolean", default: false },
 			help: { type: "boolean", short: "h", default: false },
 		},
 	});
@@ -162,6 +167,8 @@ function parseOptions(argv) {
 	}
 	return {
 		camera,
+		sceneBox: values["scene-box"] ? parseSceneBox(values["scene-box"]) : null,
+		exportVertices: values["export-vertices"],
 		noVideo: values["no-video"],
 		transform,
 		box,
@@ -330,6 +337,10 @@ async function renderMotion({ cdp, base, file, options, version }) {
 	if (state.fps !== FPS) throw new Error(`timeline runs at ${state.fps} fps, expected ${FPS}`);
 	const frames = state.frameCount;
 	log(`loaded ${frames} frames @ ${state.fps} fps, model ${state.characterModel}`);
+	const motionDir = join(options.out, motionName);
+	mkdirSync(motionDir, { recursive: true });
+	if (options.exportVertices) writeFileSync(join(motionDir, "vertices.f32"), "");
+	const sceneRecord = options.sceneBox ? { ...sceneBoxRecord(options.sceneBox), studio: await cdp.evaluate(`window.__gtRender.placeBox(${JSON.stringify(options.sceneBox)}, ${JSON.stringify(offset)})`) } : null;
 
 	// Pre-pass: the camera must see every vertex of every frame (solved
 	// camera), and --box needs every vertex anyway.
@@ -339,7 +350,7 @@ async function renderMotion({ cdp, base, file, options, version }) {
 		? { R: options.camera.cameraToWorldRotation, ...marginSlopes(options.camera, givenMargin) }
 		: supportArgs(geometry);
 	await cdp.evaluate(`window.__gtRender.setOrientation(${JSON.stringify(R)}, ${kx}, ${ky})`);
-	const sampleOptions = { vertices: !options.camera, box: pageBox };
+	const sampleOptions = { vertices: !options.camera, box: pageBox, exportVertices: options.exportVertices };
 	const supports = [];
 	const prepassJoints = [];
 	const contacts = [];
@@ -347,10 +358,17 @@ async function renderMotion({ cdp, base, file, options, version }) {
 	for (let frame = 0; frame < frames; frame += 1) {
 		const sample = await cdp.evaluate(`window.__gtRender.sample(${frame}, ${JSON.stringify(sampleOptions)})`);
 		if (sample.support) supports.push(sample.support);
+		if (sample.vertices) {
+			const points = Buffer.allocUnsafe(sample.vertices.length * 4);
+			sample.vertices.forEach((v, i) => points.writeFloatLE(v + [offset.x, offset.y, offset.z][i % 3], i * 4));
+			appendFileSync(join(motionDir, "vertices.f32"), points);
+		}
 		prepassJoints.push(sample.joints);
 		if (sample.contact) contacts.push(sample.contact);
 		vertexCount = sample.vertexCount;
 	}
+	if (options.exportVertices) writeFileSync(join(motionDir, "vertices.json"), JSON.stringify({ frames, fps: FPS, vertexCount, file: "vertices.f32", layout: "frame,vertex,xyz; float32 LE; world metres" }));
+	if (options.sceneBox && !options.camera) supports.push(supportValues(boxCorners(options.sceneBox).flatMap(p => p.map((v, i) => v - [offset.x, offset.y, offset.z][i])), R, kx, ky));
 	// pageCamera renders the anchored take; camera (scene) is what is reported.
 	const pageCamera = options.camera ? translateCamera(options.camera, negOffset) : buildCamera({ ...geometry, support: mergeSupports(supports) });
 	const camera = options.camera ?? translateCamera(pageCamera, offset);
@@ -370,8 +388,6 @@ async function renderMotion({ cdp, base, file, options, version }) {
 	if (!options.camera && minMarginPx < marginPx - 1e-6) throw new Error(`a joint projects ${minMarginPx.toFixed(2)} px from the edge, inside the ${marginPx} px margin`);
 	if (options.camera && minMarginPx < marginPx - 1e-6) log(`warning: a joint projects ${minMarginPx.toFixed(2)} px from the edge (margin ${marginPx} px); negative = outside the image or behind the camera`);
 
-	const motionDir = join(options.out, motionName);
-	mkdirSync(motionDir, { recursive: true });
 	if (!options.noVideo) writeFileSync(join(motionDir, "plate.png"), Buffer.from(await cdp.evaluate(`window.__gtRender.plate(${JSON.stringify(framing)}, ${JSON.stringify(output)})`), "base64"));
 
 	const wanted = new Set(options.noVideo ? [] : options.variants.map((variant) => variant.name));
@@ -465,6 +481,7 @@ async function renderMotion({ cdp, base, file, options, version }) {
 			framingVerticesPerFrame: vertexCount,
 		},
 	};
+	if (sceneRecord) writeFileSync(join(motionDir, "scene.json"), `${JSON.stringify(sceneRecord, null, 2)}\n`);
 	if (options.noVideo) {
 		const { video, plate, ...rest } = shared;
 		writeFileSync(join(motionDir, "camera.json"), `${JSON.stringify(cameraJson, null, "\t")}\n`);
@@ -475,6 +492,7 @@ async function renderMotion({ cdp, base, file, options, version }) {
 	for (const variant of options.noVideo ? [] : options.variants) {
 		const dir = join(motionDir, variant.name);
 		mkdirSync(dir, { recursive: true });
+		if (sceneRecord) writeFileSync(join(dir, "scene.json"), `${JSON.stringify(sceneRecord, null, 2)}\n`);
 		const filter = variant.kind === "hue" ? `hue=h=${variant.degrees}` : null;
 		encode(variant.kind === "hue" ? framesDirs.shaded : framesDirs[variant.name], join(dir, "video.mp4"), { crf: options.crf, filter });
 		writeFileSync(join(dir, "camera.json"), `${JSON.stringify(cameraJson, null, "\t")}\n`);

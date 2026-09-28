@@ -9,6 +9,13 @@ node tools/bench/fit-bench.mjs \
   --variant shaded --host yun@ubuntu-baremetal \
   --motions walk,run,turn,sit,standup,jump,pickup,stepup
 
+# Native YOLO/ViTPose on the grey mannequin. F0 exists in T2; if F1
+# yolo-vitpose+fmm is absent, fit-bench extracts it serially with --host.
+node tools/bench/fit-bench.mjs \
+  --input /path/to/evidence/gt --extract /path/to/evidence/exp1/extract \
+  --poses /path/to/evidence/prep/gt-motions --out /path/to/evidence/exp2/fit-skin \
+  --variant skin --base-condition yolo-vitpose --host yun@ubuntu-baremetal
+
 # Evaluation ONLY. This program's output is never consumed by fitting.
 node tools/bench/fit-sanity.mjs /path/to/evidence/exp2/fit /path/to/evidence/prep/gt-motions
 ```
@@ -18,8 +25,13 @@ Each `<out>/<motion>/F0..F5/motion.npz` is a normal cskel27 archive:
 optional `bone_scale` / `person_scale`. `result.json` records provenance,
 registration, configuration, contact diagnostics and deviations. Camera evidence
 is saved to `<out>/<motion>/incam.npz`, with its run log and cache manifest.
-A different variant needs a different output root. Existing different-variant
-results are rejected, not silently overwritten.
+A different variant or base condition needs a different output root. Existing
+mismatched results are rejected, not silently overwritten. `--base-condition`
+defaults to `prod` (the existing F0/F1 motion bytes are unchanged); it accepts a
+T2 base condition without `+fmm`. F0 is copied from that condition and F1 from
+the same condition with `+fmm`. T2 already supports `yolo-vitpose+fmm` for direct
+runs. If only F1 is missing, the CLI invokes T2 for that one motion/variant/
+condition after the idle-GPU check. It never substitutes F0 for missing F1.
 
 ## Information boundary
 
@@ -34,8 +46,8 @@ that consumes the complete reference trajectory.
 
 | Stage | New information | Operation |
 |---|---|---|
-| F0 | None | Byte-identical T2 `prod/motion.npz`. |
-| F1 | Known focal | Byte-identical T2 `prod+fmm/motion.npz`. |
+| F0 | None | Byte-identical T2 `<base-condition>/motion.npz` (default `prod`). |
+| F1 | Known focal | Byte-identical T2 `<base-condition>+fmm/motion.npz`. |
 | F2 | Known static OpenCV camera extrinsics | Register the first F1 pelvis/orientation to the predicted camera-space pelvis/orientation, then apply the same rigid transform to every frame. |
 | F3 | Known character bone factors | Regenerate FK from F2 rotations with canonical offsets times the character's factors. Defaults to all ones, equivalent to `boneScale:1`. |
 | F4 | User's A and B poses only | Slerp local rotations toward A/B; smoothstep endpoint root-offset ramps. Default 0.5 s, capped at half the clip. |
@@ -48,7 +60,12 @@ The new `cclay_bench_extract_incam.py` imports the box's **unchanged**
 `FastRuntime` and `trajectory_job` wrappers as the production worker. It passes
 `--static-cam`, known `--f-mm`, production detector/keypoint flags, and
 production smoothing sigma. It does not copy the model or preprocessing
-pipeline and does not edit anything in the GVHMR checkout.
+pipeline and does not edit anything in the GVHMR checkout. For a direct T2
+condition such as `yolo-vitpose`, the camera launcher uses the same YOLO and
+ViTPose flags and **does not** enable `FastRuntime` or `trajectory_job`. The
+bench-only `--bench-direct` switch is removed before calling the runner. This
+keeps camera evidence matched to F1 rather than quietly using palette evidence
+for a YOLO fit. The condition is included in cache signatures and result metadata.
 
 The launcher adds the raw in-camera SMPL-X parameters and recomputes the
 camera pelvis with the same SMPL-X -> SMPL mesh regressor as the runner.

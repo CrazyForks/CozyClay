@@ -8770,6 +8770,7 @@ export default function App() {
 			},
 			captureWithReferences: () => liveHandlersRef.current.capture_framing_png({}),
 			importAsset: (args) => liveHandlersRef.current.import_asset(args),
+			sceneObject: { place: (args) => liveHandlersRef.current.place_object(args), update: (args) => liveHandlersRef.current.update_object(args) },
 			// QA-only reference exports (#165): the production builders without the
 			// download, so a headless run can unzip a real pack and diff the passes
 			// instead of driving a file dialog. Same liveStateRef reasoning as
