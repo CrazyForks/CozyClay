@@ -1,0 +1,459 @@
+// The Studio's agent binding: inspection, admission and the agent's commands
+// over the editor's native state. App.jsx supplies the ports (reads, commits,
+// history, the action registry); this module owns no React or renderer state.
+import { createCommandBus } from "./command-bus.js";
+import { physicsKeyStamp } from "./ardy/physics-review.js";
+import { shotAtFrame } from "./cuts.js";
+import { sha256Hex } from "./motion-resources.js";
+import { CUTOUT_KIND, MESH_KIND, OBJECT_LIBRARY, supportHeightForObject } from "./scene-objects.js";
+import { buildStudioContext, physicsFingerprintInput, studioEntityCursor, validateStudioCursor } from "./studio-agent-context.js";
+import { createStudioCommands, createStudioCommandJournal, framingChecks, placementChecks, studioObjectCatalogue } from "./studio-agent-commands.js";
+import { createStudioMotionCandidates, verifyInstalledTake } from "./studio-agent-motion.js";
+import { STUDIO_TOOL_FAMILIES, StudioProtocolError, validateReceipt, validateStudioCommand, validateStudioIdentity } from "./studio-agent-protocol.js";
+import { CONTACT_SHEET_LAYOUT, buildContactSheet, sampleContactSheetFrames } from "./studio-contact-sheet.js";
+
+// App-owned adapter: the merged command/candidate modules remain the only
+// planners and validators. Ports below publish through the native editor stores.
+export function createStudioAppBinding(ports) {
+	const fail = (code, message) => { throw new StudioProtocolError(code, message); };
+	const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+	const identities = new WeakMap(); let identitySequence = 0, tokenSequence = 0;
+	const motionStamps = new Map(), calibrationStamps = new Map();
+	const identityOf = value => {
+		if (!value || typeof value !== "object") return 0;
+		if (!identities.has(value)) identities.set(value, ++identitySequence);
+		return identities.get(value);
+	};
+	const stableStamp = (stamps, key) => {
+		if (key === null) return 0;
+		if (!stamps.has(key)) stamps.set(key, stamps.size + 1);
+		return stamps.get(key);
+	};
+	const motionContentKey = value => {
+		if (!value || typeof value !== "object") return null;
+		if (typeof value.studioTakeId === "string" && value.studioTakeId) return value.studioTakeId;
+		if (typeof value.motionRef?.motionId === "string" && value.motionRef.motionId) return value.motionRef.motionId;
+		return `${value.frames ?? 0}:${value.fps ?? 0}:${value.rotMats?.length ?? 0}:${value.rootPos?.length ?? 0}:${value.posedJoints?.length ?? 0}`;
+	};
+	const calibrationContentKey = value => value && typeof value === "object" ? JSON.stringify(value) : null;
+	const tokens = new Map(), receipts = new Map(), jobs = new Map(), images = new Map();
+	let owner = null, commands = null, motion = null, journal = null, actionBus = null;
+	const domainKeys = new Map(), domainRevisions = {};
+	let authoredKey, physicsKey, viewKey, observedSceneRevision = ports.revision.current;
+	let physicsRevision = 0, viewRevision = 0;
+	function refresh() {
+		const raw = ports.read();
+		const host = validateStudioIdentity(raw.host);
+		if (!same(owner, host)) {
+			motion?.dispose(); owner = host; tokens.clear(); receipts.clear(); jobs.clear(); images.clear();
+			authoredKey = physicsKey = viewKey = undefined;
+			journal = createStudioCommandJournal({ host, isRetained: receipt => ports.isRetained(receipt) });
+			commands = createStudioCommands({ read: readCommand, guard, bounds: ports.bounds, commit: ports.commit, poses: ports.poses, journal });
+			motion = createStudioMotionCandidates({ readTarget, readEnvironment, journal,
+				commit: commitMotion, loadArtifact, poseCast: ports.poseCast });
+		}
+		const characters = raw.characters.map(character => {
+			const target = raw.targets.get(character.id);
+			return { ...character, sessionMotion: identityOf(target?.motion),
+				ik: physicsKeyStamp(target?.ikState?.keys ?? new Map()), rig: target?.rig?.uuid ?? null };
+		});
+		// Runtime motion, IK and rig fields are derived from the active editor
+		// buffers, not authored document state. A fresh equivalent buffer object
+		// must not advance the scene clock on a read.
+		const authoredCharacters = raw.characters.map(({ sessionMotion, ik, rig, ...character }) => character);
+		// The stage is authored state too: a key-light or environment edit from any
+		// surface bumps the scene revision exactly like a cast or object edit.
+		const authored = JSON.stringify([raw.objects, authoredCharacters, raw.shots, raw.frameCount, raw.stage]);
+		if (authoredKey !== undefined && authoredKey !== authored && observedSceneRevision === ports.revision.current) ports.revision.current++;
+		authoredKey = authored; observedSceneRevision = ports.revision.current;
+		const liveIds = new Set([...raw.objects, ...raw.characters, ...raw.shots].map(row => row.id));
+		for (const id of tokens.keys()) if (!liveIds.has(id)) tokens.delete(id);
+		for (const entry of [...raw.objects, ...characters, ...raw.shots]) {
+			// Display-only name/tint changes never revoke a motion target.
+			const { name, subject, tint, identityImage, ...content } = entry;
+			const key = JSON.stringify(content), previous = tokens.get(entry.id);
+			if (!previous || previous.key !== key) tokens.set(entry.id, { key, token: `target-${++tokenSequence}`, incarnation: previous?.incarnation ?? crypto.randomUUID() });
+		}
+		const physical = physicsFingerprintInput({ floor: { model: "flat", y: 0 }, frameCount: raw.frameCount,
+			objects: raw.objects.map(o => ({ id: o.id, renderer: o.renderer,
+				position: { x: o.x, y: o.y ?? 0, z: o.z }, rotationDeg: { x: o.rotX ?? 0, y: o.rot ?? 0, z: o.rotZ ?? 0 },
+				scale: { x: o.scaleX, y: o.scaleY, z: o.scaleZ }, footprint: o.footprint, height: o.height,
+				supportY: supportHeightForObject(o), parentId: o.parent ?? null, attachment: o.attach ?? null, path: o.path ?? null, hidden: o.hidden === true })),
+			characters: raw.characters.map(c => {
+				const t = raw.targets.get(c.id), summary = characters.find(row => row.id === c.id);
+				const motionKey = motionContentKey(t?.motion), calibrationKey = calibrationContentKey(t?.motion?.sceneCalibration);
+				return { id: c.id, incarnation: tokens.get(c.id).incarnation, modelId: c.model ?? null,
+					rigId: t?.rig?.uuid ?? null, rigReady: Boolean(t?.rig), hidden: Boolean(c.hidden),
+					position: { x: c.x, y: c.y ?? 0, z: c.z }, yawDeg: c.rot ?? 0, scale: c.scale ?? 1,
+					takeId: t?.motion?.studioTakeId ?? null, sessionMotionId: motionKey ? `motion-${motionKey}` : null,
+					motionRevision: stableStamp(motionStamps, motionKey), calibrationRevision: stableStamp(calibrationStamps, calibrationKey),
+					ikRevision: ports.ikRevision(c.id, summary.ik),
+					waypoints: (c.layer?.waypoints ?? []).map(p => ({ frame: p.frame, position: { x: p.x, y: p.y ?? 0, z: p.z } })) };
+			}) });
+		const physicalKey = JSON.stringify(physical);
+		if (physicsKey !== undefined && physicsKey !== physicalKey) physicsRevision++;
+		physicsKey = physicalKey;
+		const nextViewKey = JSON.stringify([raw.selection, raw.activeCharacterId, raw.selectedShotId, raw.view, raw.camera]);
+		if (viewKey !== undefined && viewKey !== nextViewKey) viewRevision++;
+		viewKey = nextViewKey;
+		for (const [domain, value] of Object.entries({ objects: raw.objects, shot: raw.shots, stage: raw.stage, cast: authoredCharacters, motion: characters })) {
+			const key = JSON.stringify(value);
+			if (domainKeys.get(domain) !== key) domainRevisions[domain] = (domainRevisions[domain] ?? 0) + 1;
+			domainKeys.set(domain, key);
+		}
+		return { ...raw, host, revision: ports.revision.current, physicsRevision, viewRevision, domainRevisions: { ...domainRevisions } };
+	}
+	function guard(id) {
+		const raw = refresh(), token = tokens.get(id)?.token;
+		if (!token) fail("STALE_TARGET", "The exact target no longer exists.");
+		return { ...raw.host, targetId: id, token };
+	}
+	function readCommand() {
+		const s = refresh();
+		return { host: s.host, revision: s.revision, frame: s.view.frame, frameCount: s.frameCount,
+			objects: s.objects, characters: s.characters, activeCharacterId: s.activeCharacterId,
+			selectedShotId: s.selectedShotId, shotDocument: { shots: s.shots }, camera: s.camera, stage: s.stage,
+			filmback: s.filmback, manual: s.manual, floorY: 0, busy: s.busy };
+	}
+	function entityProjection(s) {
+		return [...s.characters.map(c => {
+			const t = s.targets.get(c.id);
+			return { id: c.id, kind: "character", token: tokens.get(c.id).token, name: c.subject || c.id,
+				position: { x: c.x, y: c.y ?? 0, z: c.z }, yawDeg: c.rot ?? 0, scale: c.scale ?? 1, tint: c.tint ?? null, modelId: c.model ?? null,
+				motion: { takeId: t?.motion?.studioTakeId ?? null, frames: t?.motion?.frames ?? 0,
+					ikKeyCount: t?.ikState?.keys.size ?? 0, promptBlockCount: c.layer?.promptClips?.length ?? 0 },
+				capabilities: { rigReady: Boolean(t?.rig), ik: Boolean(t?.rig?.userData?.poseBind), measuredFeet: false } };
+		}), ...s.objects.map(o => ({ id: o.id, kind: "object", token: tokens.get(o.id).token, name: o.name || o.id,
+			position: { x: o.x, y: o.y ?? 0, z: o.z }, yawDeg: o.rot ?? 0,
+			rotationDeg: { x: o.rotX ?? 0, y: o.rot ?? 0, z: o.rotZ ?? 0 }, scale: { x: o.scaleX, y: o.scaleY, z: o.scaleZ },
+			renderer: o.renderer, color: o.color ?? null, ...(o.assetId ? { assetId: o.assetId } : {}),
+			parentId: o.parent ?? null, attachment: o.attach ?? null, pathPointCount: o.path?.points.length ?? 0 }))];
+	}
+	const frameRange = row => ({ startFrame: row.startFrame, endFrameExclusive: row.endFrame + 1 });
+	// Scope-specific inspection: each scope answers with the authored detail the
+	// compact context only counts, in the shapes patch_elements writes back.
+	const inspectScopes = {
+		scene: s => ({
+			stage: { environment: s.stage.environment ?? null, style: s.stage.style ?? null, hasEnvironmentImage: Boolean(s.stage.environmentImage),
+				hasEnvSheet: s.stage.hasEnvSheet === true, keyLight: { ...s.stage.keyLight },
+				camera: { presetId: s.stage.cameraPresetId ?? null, aspect: s.stage.shotAspect, sensorId: s.stage.sensorId } },
+			counts: { characters: s.characters.length, objects: s.objects.length, shots: s.shots.length, frames: s.frameCount, assets: assetList(s).length },
+		}),
+		shot: (s, wanted) => {
+			const shots = s.shots.filter(wanted).map(row => ({ id: row.id, name: row.name, range: frameRange(row), mode: row.camera?.mode ?? "keys",
+				cameraKeys: row.cameraKeys.map(({ frame, framing }) => ({ frame, framing: { pos: { ...framing.pos }, yaw: framing.yaw, pitch: framing.pitch, fovDeg: framing.fovDeg } })),
+				rail: row.camera?.cameraRail?.map(({ x, z }) => ({ x, z })) ?? null }));
+			return { shots, total: shots.length };
+		},
+		motion: (s, wanted) => {
+			const characters = s.characters.map(c => ({ ...c, name: c.subject || c.id })).filter(wanted).map(c => {
+				const t = s.targets.get(c.id);
+				return { id: c.id, name: c.name, takeId: t?.motion?.studioTakeId ?? null, frames: t?.motion?.frames ?? 0,
+					promptBlocks: (c.layer?.promptClips ?? []).map(({ startFrame, endFrame, text }) => ({ startFrame, endFrame, text })),
+					waypoints: (c.layer?.waypoints ?? []).map(p => ({ frame: p.frame, position: { x: p.x, y: p.y ?? 0, z: p.z } })),
+					ikKeyFrames: [...(t?.ikState?.keys?.keys() ?? [])].sort((a, b) => a - b) };
+			});
+			return { characters, total: characters.length };
+		},
+		selection: s => {
+			const id = ["object", "character", "rig"].includes(s.selection?.kind) ? s.selection.id : null;
+			const row = id ? entityProjection(s).find(entry => entry.id === id) : null;
+			const o = row?.kind === "object" ? s.objects.find(entry => entry.id === id) : null, c = row?.kind === "character" ? s.characters.find(entry => entry.id === id) : null;
+			const entity = !row ? null : o ? { ...row, hidden: o.hidden === true, path: o.path ? structuredClone(o.path) : null }
+				: { ...row, hidden: c.hidden === true, poseId: c.pose?.id ?? null };
+			return { selection: s.selection ?? null, entity };
+		},
+	};
+	function assetList(s) {
+		const catalogue = studioObjectCatalogue().objects.map(({ kind }) => {
+			const entry = OBJECT_LIBRARY.find(row => row.kind === kind);
+			return { kind, name: entry?.label ?? kind, type: entry?.group === "Primitives" ? "primitive" : "set-piece" };
+		});
+		const imported = new Map();
+		for (const o of s.objects) {
+			const assetId = o.renderer === CUTOUT_KIND ? o.sourceAssetId || o.assetId : o.renderer === MESH_KIND ? o.assetId : null;
+			if (assetId && !imported.has(assetId)) imported.set(assetId, { id: assetId, name: o.name || assetId, type: o.renderer === CUTOUT_KIND ? "image" : "mesh" });
+		}
+		return [...catalogue, ...imported.values()];
+	}
+	function context() {
+		const s = refresh(), entities = entityProjection(s);
+		const shot = s.shots.find(row => row.id === s.selectedShotId) ?? shotAtFrame(s.shots, s.view.frame);
+		const range = frameRange;
+		return buildStudioContext({ schema: "studio-context-v1", host: { surface: "studio", ...s.host, workspaceHandle: s.workspaceHandle },
+			revision: { scene: s.revision, physics: s.physicsRevision, view: s.viewRevision },
+			units: { distance: "m", angle: "deg", up: "+Y", yawZero: "+Z", yawPositiveToward: "+X", pivot: "base", fps: 24, rangeEnd: "exclusive" },
+			scene: { name: s.sceneName, aspect: s.aspect, floorY: 0, frameCount: s.frameCount, objectCount: s.objects.length, characterCount: s.characters.length },
+			selection: s.selection, activeCharacterId: s.activeCharacterId, view: s.view,
+			shot: shot ? { id: shot.id, name: shot.name, range: range(shot), mode: shot.camera?.mode ?? "keys" } : null, camera: s.camera,
+			// buildStudioContext selects the detailed rows and writes the real page.
+			entities, entityPage: { returned: 0, total: 0, truncated: false, nextCursor: null },
+			shots: s.shots.map(row => ({ id: row.id, name: row.name, range: range(row), keyCount: row.cameraKeys.length })), shotsTruncated: false,
+			assets: assetList(s), recentReceipts: [...receipts.values()].filter(r => r.ok).reverse().slice(0, 3).map(r => ({ id: r.receiptId, summary: r.status, canUndoDirect: ports.canUndo(r) })),
+			jobs: [...jobs.values()].slice(-8), capabilities: { profile: "studio-slice-1", tools: STUDIO_TOOL_FAMILIES,
+				rigReady: Boolean(s.targets.get(s.activeCharacterId)?.rig), cameraReady: Boolean(s.camera), bridgeReady: s.bridgeReady } });
+	}
+	function readTarget(binding) {
+		const s = refresh(), target = s.targets.get(binding.characterId);
+		return target ? { ...target, character: s.characters.find(c => c.id === binding.characterId), guard: guard(binding.characterId), busy: s.busy,
+			preserveAuthoredMotion: Boolean(target.preserveAuthoredMotion), protectedFrames: target.protectedFrames ?? [] } : null;
+	}
+	function readEnvironment() {
+		const s = refresh();
+		return { host: s.host, physicsRevision: s.physicsRevision, floor: { model: "flat", y: 0 }, objects: s.objects, frameCount: s.frameCount,
+			cast: s.characters.map(character => ({ character, ...s.targets.get(character.id) })) };
+	}
+	function remember(receipt) { if (receipt?.receiptId) receipts.set(receipt.receiptId, receipt); return receipt; }
+	// A candidate keeps the URL its artifact came from and the content id of its
+	// bytes: the install persists both in the motionRef, so a reload restores the
+	// take from the motion store even after the bridge has forgotten the run.
+	// The bytes come from the pinned absolute URL, but the take stores the bridge
+	// path a UI take stores: refine requests send it back as sourceMotion, and the
+	// bridge accepts only /ardy/motions/<id> there.
+	async function loadArtifact(artifact, options) {
+		const loaded = await ports.loadArtifact(artifact, options);
+		const path = new URL(artifact.url, "http://localhost").pathname;
+		const url = /^\/ardy\/(motions\/[0-9]+-[0-9a-f]{6}|assembled\/[A-Za-z0-9._-]+\.npz)$/.test(path) ? path : artifact.url;
+		return { ...loaded, url, ...(loaded.sourceBytes ? { motionId: await sha256Hex(loaded.sourceBytes) } : {}) };
+	}
+	function commitMotion(payload) {
+		const s = refresh(), beforeTake = s.targets.get(payload.binding.characterId)?.motion;
+		const takeId = crypto.randomUUID(), historyEntryId = crypto.randomUUID();
+		// Validate the complete correlated receipt BEFORE the one synchronous publish.
+		const receipt = validateReceipt({ ok: true, status: "installed", authored: true,
+			commandId: payload.commandId, receiptId: crypto.randomUUID(), host: s.host, jobId: payload.jobId, artifactId: payload.artifactId,
+			revision: { before: s.revision, after: s.revision + 1 }, affectedIds: [payload.binding.characterId],
+			delta: [{ id: payload.binding.characterId, after: { takeId } }], checks: { coverage: "studio-motion-v1" },
+			undo: { historyEntryId, entries: 1, canUndoDirect: true }, warnings: payload.verification.status === "unverified" ? [{ code: "UNVERIFIED_MOTION" }] : [],
+			installed: { characterId: payload.binding.characterId, beforeTakeId: beforeTake?.studioTakeId ?? null, takeId,
+				targetToken: `target-${tokenSequence + 1}`, frameCount: payload.schedule.frameCount, fps: 24, durationSeconds: payload.schedule.durationSeconds,
+				blocks: payload.schedule.blocks.map(({ sourceBeat, startFrame, endFrameExclusive }) => ({ sourceBeat, startFrame, endFrameExclusive })), selectionChanged: false },
+			verification: payload.verification, repairs: payload.repairs, explicitUnverifiedAcceptance: payload.explicitUnverifiedAcceptance === true });
+		ports.commitMotion({ ...payload, takeId, historyEntryId });
+		const actual = { ...receipt, installed: { ...receipt.installed, targetToken: guard(payload.binding.characterId).token } };
+		return remember(journal.record(validateReceipt(actual)));
+	}
+	function rejection(request, error, phase = "admission") {
+		// The refusal's own words are what the model acts on; the receipt keeps
+		// the first 120 characters the protocol carries.
+		const words = [...String(error?.message ?? "").trim()];
+		return validateReceipt({ ok: false, commandId: request.commandId, host: request.host ?? request.binding?.host,
+			code: error.code ?? "INVALID_ARGUMENT", phase, affectedIds: [], expectedTargets: [], currentTargets: [], mutated: false,
+			preserved: { authoredState: "unchanged" }, recovery: { action: "inspect", retryAllowed: false },
+			...(words.length ? { message: words.length > 120 ? `${words.slice(0, 119).join("")}…` : words.join("") } : {}) });
+	}
+	function admit(request) {
+		const s = refresh();
+		if (!same(validateStudioIdentity(request.host), s.host)) fail("STALE_SCENE", "The live document changed.");
+		if (request.expectedRevision !== s.revision) fail("STALE_SCENE", "Authored state changed; obtain fresh intent.");
+		if (s.busy) fail("TARGET_BUSY", "Finish the current editor gesture first.");
+		return s;
+	}
+	/** Actual state of one action target after it ran. */
+	function actionReadback(id, s) {
+		const shot = s.shots.find(row => row.id === id);
+		if (shot) return { name: shot.name || shot.id, range: { startFrame: shot.startFrame, endFrameExclusive: shot.endFrame + 1 } };
+		const entity = s.objects.find(row => row.id === id) ?? s.characters.find(row => row.id === id);
+		if (entity) return { name: entity.name || entity.subject || entity.id, position: { x: entity.x, y: entity.y ?? 0, z: entity.z } };
+		return { removed: true };
+	}
+	/** One registered Studio action, run for the agent through the same
+	 * registry the UI controls call. A mutation is bound to the native history
+	 * entry it pushed, so its receipt is an ordinary journal receipt that
+	 * undo_edit reverts; a job answers "started" and lands later. */
+	function commandBus() {
+		if (!actionBus) actionBus = createCommandBus({ registry: ports.actions(), ports: {
+			read: refresh, journal: () => journal, recordAction: (...args) => ports.recordAction(...args), beginAction: (...args) => ports.beginAction(...args),
+			readback: actionReadback, remember, receipt: id => receipts.get(id), isRetained: receipt => ports.isRetained(receipt),
+			canUndo: receipt => ports.canUndo(receipt), undo: () => ports.undo(), readTarget: id => { refresh(); return tokens.get(id)?.token; },
+			captureToasts: listener => ports.captureToasts?.(listener), showRefusal: message => ports.showRefusal?.(message), emit: event => ports.emitCommandEvent?.(event),
+		} });
+		return actionBus;
+	}
+	function runAction(request, args) {
+		const result = commandBus().run(args.action, args.args, { ...request, origin: "agent", confirmationToken: args.confirmationToken ?? request.confirmationToken });
+		const answer = receipt => receipt.nextHost ? { ...receipt, host: receipt.nextHost } : receipt;
+		return result?.then ? result.then(answer) : answer(result);
+	}
+	function execute(request) {
+		refresh();
+		if (request.name === "run_action") return runAction(request, validateStudioCommand({ name: request.name, args: request.args }).args);
+		if (["arrange_objects", "arrange_characters", "frame_shot", "patch_elements"].includes(request.name)) {
+			// Arrangements and framing are fenced by the exact scene revision, the
+			// gesture flag and the document identity inside the command module; they
+			// carry no per-entity tokens, so a turn may edit one entity twice.
+			return remember(commands.execute(request));
+		}
+		const signature = JSON.stringify(request);
+		if (!same(request.host, owner)) return rejection(request, new StudioProtocolError("STALE_SCENE", "Document changed."));
+		try {
+			if (!journal.begin(request.commandId, signature)) return journal.get(request.commandId);
+			// Verification only observes: the document identity (checked above) is
+			// its whole fence, so a later edit never refuses it.
+			const { args } = validateStudioCommand({ name: request.name, args: request.args }), s = request.name === "verify_result" ? refresh() : admit(request);
+			if (request.name === "operate_studio") {
+				ports.operate(args, s); const after = refresh();
+				return journal.record(validateReceipt({ ok: true, status: "transient", authored: false, commandId: request.commandId,
+					receiptId: crypto.randomUUID(), host: s.host, revision: { before: s.revision, after: s.revision },
+					view: { before: s.viewRevision, after: after.viewRevision }, affectedIds: [s.host.sceneId],
+					delta: [{ id: s.host.sceneId, after: { selection: after.selection, activeCharacterId: after.activeCharacterId, shotId: after.selectedShotId, view: after.view } }],
+					checks: { coverage: "editor-view-state" }, undo: null, warnings: [] }));
+			}
+			if (request.name === "undo_edit") {
+				const previous = receipts.get(args.receiptId);
+				if (!previous || !ports.canUndo(previous)) fail("UNDO_CONFLICT", "A newer edit owns native Undo.");
+				ports.undo(); const after = refresh();
+				const ids = previous.affectedIds;
+				// Removed creations have no live guard; their retired incarnation is
+				// still identified by a fresh restoration token in the undo receipt.
+				const restoredTargets = ids.map(id => ({ ...s.host, targetId: id, token: tokens.get(id)?.token ?? `removed-${++tokenSequence}` }));
+				const result = validateReceipt({ ok: true, status: "undone", authored: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: s.host,
+					revision: { before: s.revision, after: after.revision }, affectedIds: ids,
+					delta: ids.slice(0, 8).map(id => ({ id, after: { token: restoredTargets.find(t => t.targetId === id).token } })),
+					checks: { coverage: "native-history-restoration" }, undo: { historyEntryId: previous.undo.historyEntryId, entries: 1, canUndoDirect: false },
+					warnings: [], undoneReceiptId: previous.receiptId, restoredTargets, ...(ids.length > 8 ? { detailCursor: request.commandId } : {}) });
+				return remember(journal.record(result));
+			}
+			if (request.name === "verify_result") {
+				const receipt = args.receiptId ? receipts.get(args.receiptId) : null;
+				if (args.receiptId && !receipt) fail("STALE_TARGET", "Receipt is not retained in this document.");
+				for (const id of args.targets ?? []) guard(id);
+				// A receipt edited over since is still evidence of what it did: return it
+				// marked stale with the revision it describes beside the current one.
+				const evidenceRevision = receipt ? receipt.revision.after : s.revision;
+				// Targets, and a receipt without evidence of its own, are measured now with
+				// the helpers the arrange/frame_shot receipts and the motion candidate use.
+				// Only a check nothing could compute is unsupported, and says why; a motion
+				// check computed for some characters still names the ones it skipped.
+				const scene = readCommand(), entityIds = ids => ids.filter(id => scene.objects.some(o => o.id === id) || scene.characters.some(c => c.id === id));
+				const measured = args.targets ? entityIds(args.targets) : receipt.checks ? null : entityIds(receipt.affectedIds);
+				const result = { receiptId: receipt?.receiptId ?? null, revision: s.revision, evidenceRevision, stale: evidenceRevision !== s.revision, checks: measured ? { coverage: "current-scene-targets" } : receipt.checks,
+					verification: receipt?.verification ?? null, semanticStatus: "unavailable", visualRefs: [], unsupportedChecks: [], unsupportedReasons: {} };
+				const reasons = result.unsupportedReasons, verified = [], skipped = [], pending = [];
+				for (const check of args.checks.filter(check => check !== "motion" && measured)) {
+					if (!measured.length) { reasons[check] = "No target is an object or character in the current scene."; continue; }
+					try { result.checks[check] = check === "placement" ? placementChecks(measured, scene, { bounds: ports.bounds }) : framingChecks(measured, scene, { bounds: ports.bounds }); }
+					catch (error) { if (!(error instanceof StudioProtocolError)) throw error; reasons[check] = error.message; }
+				}
+				if (args.checks.includes("motion") && !receipt?.verification) {
+					const subjects = args.targets ?? receipt.affectedIds.filter(id => s.characters.some(c => c.id === id));
+					if (!subjects.length) skipped.push("The receipt affected no character.");
+					subjects.forEach((id, index) => {
+						const character = s.characters.find(c => c.id === id), target = s.targets.get(id), name = character?.subject || id;
+						if (!character) return skipped.push(`${id} is not a character; motion checks a character's take.`);
+						if (!target?.motion) return skipped.push(`${name} has no motion take to check.`);
+						if (!target.rig) return skipped.push(`${name}'s rig is not loaded yet.`);
+						pending.push(verifyInstalledTake({ target: { ...target, character }, environment: readEnvironment(), range: args.range === "whole_clip" ? undefined : args.range, poseCast: ports.poseCast })
+							.then(verification => { verified[index] = verification; }, error => { if (!(error instanceof StudioProtocolError)) throw error; skipped.push(`${name}: ${error.message}`); }));
+					});
+				}
+				if (args.visual !== "none") {
+					if (args.visual === "contact_sheet") {
+						// One image of frames across the range, each rendered through the export
+						// path, which puts the playhead pose, shot camera and props back.
+						const frames = sampleContactSheetFrames(args.range, s.frameCount), sheet = buildContactSheet(frames, ports.renderFrameBuffer), imageId = crypto.randomUUID();
+						images.set(imageId, { dataUrl: ports.encodePng(sheet.data, sheet), width: sheet.width, height: sheet.height, frames, layout: CONTACT_SHEET_LAYOUT, revision: s.revision, receiptId: result.receiptId });
+						result.visualRefs.push({ imageId, frames, layout: CONTACT_SHEET_LAYOUT });
+					} else { const capture = ports.capture(); const imageId = crypto.randomUUID(); images.set(imageId, { ...capture, revision: s.revision, receiptId: result.receiptId }); result.visualRefs.push({ imageId }); }
+				}
+				const finish = () => {
+					const computed = verified.filter(Boolean);
+					if (computed.length) result.verification = computed.length === 1 ? computed[0] : computed;
+					if (skipped.length) reasons.motion = skipped.join(" ");
+					result.unsupportedChecks = args.checks.filter(check => reasons[check] && (check !== "motion" || !computed.length));
+					return result;
+				};
+				if (!pending.length) return finish();
+				// Motion evaluation yields between frames: answer when it settles, with the
+				// same rejection receipt a synchronous failure would journal.
+				return Promise.all(pending).then(finish).catch(error => {
+					const rejected = rejection(request, error);
+					return same(rejected.host, journal.host) ? journal.record(rejected) : rejected;
+				});
+			}
+			fail("CAPABILITY_MISSING", "Generation is owned by the server runtime.");
+		} catch (error) { const receipt = rejection(request, error); return journal.record(receipt); }
+	}
+	const handlers = {
+		read_studio_context(request) { const c = context(); if (!same(validateStudioIdentity(request.host), owner)) fail("STALE_SCENE", "This is not the requested document."); return c; },
+		inspect_studio(args) {
+			const command = validateStudioCommand({ name: "inspect_studio", args }); const c = context();
+			// Every scope carries the context: its revision is what the agent's next
+			// command is admitted at, so a scope without it leaves that admission stale.
+			if (command.args.scope === "catalogue") return { context: c, ...studioObjectCatalogue() };
+			// Discovery for run_action: every registered action, available ones with
+			// their description and input schema, unavailable ones with the reason.
+			if (command.args.scope === "actions") return { context: c, actions: ports.actions?.()?.list() ?? [] };
+			const s = refresh();
+			const wanted = row => (!args.ids || args.ids.includes(row.id)) && (!args.query || Boolean(row.name?.includes(args.query)));
+			if (inspectScopes[command.args.scope]) return { context: c, scope: command.args.scope, ...inspectScopes[command.args.scope](s, wanted) };
+			// Build each page from the same complete authoritative projection; never
+			// page by slicing an already-truncated Send context.
+			// Stable id order, so an offset cursor survives unrelated edits.
+			const filtered = entityProjection(s).filter(wanted).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+			const offset = args.cursor ? validateStudioCursor(args.cursor, c) : 0, limit = command.args.limit;
+			return { context: c, entities: filtered.slice(offset, offset + limit), total: filtered.length,
+				nextCursor: offset + limit < filtered.length ? studioEntityCursor(c, offset + limit) : null };
+		},
+		operate_studio: request => execute({ ...request, name: "operate_studio" }),
+		arrange_objects: request => execute({ ...request, name: "arrange_objects" }),
+		arrange_characters: request => execute({ ...request, name: "arrange_characters" }),
+		patch_elements: request => execute({ ...request, name: "patch_elements" }),
+		frame_shot: request => execute({ ...request, name: "frame_shot" }),
+		generate_motion: () => fail("CAPABILITY_MISSING", "Use the server-owned Studio generation route."),
+		verify_result: request => execute({ ...request, name: "verify_result" }),
+		undo_edit: request => execute({ ...request, name: "undo_edit" }),
+		run_action: request => execute({ ...request, name: "run_action" }),
+		resolve_studio_image(request) {
+			refresh(); const image = images.get(request.imageId);
+			if (!image || (request.receiptId && request.receiptId !== image.receiptId) || (request.revision !== undefined && request.revision !== image.revision)) fail("STALE_TARGET", "Image observation does not belong to this receipt.");
+			return image;
+		},
+		reconcile_studio_command(request) { refresh(); const value = journal.reconcile({ commandId: request.commandId, host: request.host ?? request.binding?.host }); return value.status === "not_applied" ? { ...value, evidence: value.receipt } : value; },
+	};
+	for (const name of ["prepare_motion_install", "verify_motion_candidate", "repair_motion_candidate", "commit_motion_candidate", "discard_motion_candidate", "cancel_motion_install"]) {
+		handlers[name] = request => {
+			refresh(); const currentMotion = motion, currentJournal = journal;
+			const run = () => currentMotion[name](request);
+			// The job list is the model's view of each candidate, so it names the
+			// step in flight now. A verified candidate goes straight to commit; an
+			// unverified one waits on repair, the install policy or the user's accept
+			// (review_required until that next command arrives).
+			const job = jobs.get(request.commandId);
+			if (job && name === "verify_motion_candidate") jobs.set(request.commandId, { ...job, state: "verifying" });
+			if (job && name === "repair_motion_candidate") jobs.set(request.commandId, { ...job, state: "repairing" });
+			const finish = result => {
+				if (name === "prepare_motion_install" && result?.candidateId) jobs.set(request.commandId, { id: request.jobId, characterId: request.binding.characterId, state: "preparing" });
+				if (name === "verify_motion_candidate" && result?.verificationId && jobs.has(request.commandId)) jobs.set(request.commandId, { ...jobs.get(request.commandId), state: result.status === "verified" ? "committing" : "review_required" });
+				if (result?.ok === false || ["commit_motion_candidate", "discard_motion_candidate", "cancel_motion_install"].includes(name)) jobs.delete(request.commandId);
+				return remember(result);
+			};
+			const reject = error => {
+				const receipt = rejection(request, error, "prepare");
+				if (!currentJournal.get(request.commandId)) { currentJournal.begin(request.commandId, JSON.stringify(request)); currentJournal.record(receipt); }
+				return finish(receipt);
+			};
+			try { const result = run(); return result?.then ? result.then(finish, reject) : finish(result); } catch (error) { return reject(error); }
+		};
+	}
+	function invalidate(domain, before, after) {
+		if (before === after) return;
+		if (domain === "pose") {
+			const id = ports.read().activeCharacterId, previous = tokens.get(id);
+			if (previous) tokens.set(id, { ...previous, key: null });
+			return;
+		}
+		if (!["characters", "objects"].includes(domain) || !Array.isArray(before) || !Array.isArray(after)) return;
+		const content = row => {
+			if (!row) return null;
+			const { subject, name, tint, identityImage, sessionMotion, ...rest } = row;
+			return { ...rest, motionIdentity: identityOf(sessionMotion) };
+		};
+		for (const row of before) {
+			const next = after.find(c => c.id === row.id), previous = tokens.get(row.id);
+			if (!next) tokens.delete(row.id);
+			else if (previous && !same(content(row), content(next))) tokens.set(row.id, { ...previous, key: null });
+		}
+	}
+	return { handlers, context, guard, refresh, invalidate, get bus() { refresh(); return commandBus(); }, dispose: () => { actionBus?.dispose(); motion?.dispose(); } };
+}

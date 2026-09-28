@@ -29,6 +29,8 @@ import { sampleAt } from '../src/sample-at.js';
 import { createShot, shotAtFrame, addShotAtFrame } from '../src/cuts.js';
 import * as studioActions from '../src/studio-actions.js';
 import { createCommandBus, withCommandHistory } from '../src/command-bus.js';
+import { createStudioAppBinding } from '../src/studio-app-binding.js';
+import { createStudioAppActions } from '../src/commands/index.js';
 import { HISTORY_LIMIT } from '../src/history.js';
 import { focalMmToFov, fovToFocalMm, IMAGE_MODELS, CUSTOM_MOVE, SUBJECT_HEIGHT_M, composePrompt, deriveShot } from '../src/shot.js';
 import { PART_COLOURS } from '../src/part-colours.js';
@@ -56,15 +58,6 @@ function visit(value) {
  for (const [key, child] of Object.entries(value)) if (key !== 'parent') Array.isArray(child) ? child.forEach(visit) : visit(child);
 }
 visit(parsed.program);
-// The RED path executes the pre-binding App registry through the real dispatcher.
-if (!declarations.has('createStudioAppBinding')) {
- const start = app.indexOf('\tif (!liveHandlersRef.current) {'), end = app.indexOf('\n\n\tuseEffect(() => {', start);
- const liveHandlersRef = { current: null };
- new Function('liveHandlersRef', app.slice(start, end))(liveHandlersRef);
- const result = await dispatchLiveFrame(JSON.stringify({ type: 'cmd', id: 'binding-red', name: 'arrange_objects', args: {} }), liveHandlersRef.current);
- assert.equal(result.ok, true, `App must bind Studio arrangements: ${result.error}`);
- throw new Error('Missing integrated binding');
-}
 const ref = current => ({ current });
 // The carried-prop maths App.jsx imports from app-stage.jsx (a React module
 // Node cannot load), evaluated from its own source.
@@ -160,7 +153,7 @@ function fixture(options={}) {
  scope.setMotion=value=>{noPublish('setMotion')(value);for(const done of motionSet.splice(0))done(value);};
  scope.setScenes=noPublish('setScenes');
  scope.openScene=(scene,nextScenes)=>{scope.scenesRef.current=nextScenes;live.current.scenes=nextScenes;scope.activeSceneIdRef.current=scene.id;scope.studioSceneEpochRef.current=crypto.randomUUID();};
- const names=['restoreMotionRefs','createStudioAppBinding','readStudioCamera','readStudioState','publishStudioCamera','publishStudioStage','snapshotStudioDomain','publishStudioCharacters','syncStudioLayerBuffer','recordStudioHistory','publishStudioMotion','stepStudioHistory','undoScene','redoScene','commitStudioDraft','commitStudioMotion','studioBounds','operateStudio','snapshotExportRig','restoreExportRig','poseMemberAtFrame','beginPlaybackOn','leaveIkMode','sceneObjectWorldMatrix','createStudioAppActions','recordStudioAction','beginStudioAction','publishStudioDomain','isStudioHistoryRetained','addTimelineShot','recordShotUndo','runStudioAction',
+ const names=['restoreMotionRefs','readStudioCamera','readStudioState','publishStudioCamera','publishStudioStage','snapshotStudioDomain','publishStudioCharacters','syncStudioLayerBuffer','recordStudioHistory','publishStudioMotion','stepStudioHistory','undoScene','redoScene','commitStudioDraft','commitStudioMotion','studioBounds','operateStudio','snapshotExportRig','restoreExportRig','poseMemberAtFrame','beginPlaybackOn','leaveIkMode','sceneObjectWorldMatrix','recordStudioAction','beginStudioAction','publishStudioDomain','isStudioHistoryRetained','addTimelineShot','recordShotUndo','runStudioAction',
   'choosePartColours','setInsetCollapsed','expandInset','setShotCameraRail','clearShotCameraRail','changeActiveCamera','framingSessionOpen','attachSceneObject','setCharacterIkKey','removeCharacterIkKey','clearCharacterIkKeys','ikStateFor','editCharacterIkKeys','snapshotIkKeys',
   'recordCharacterUndo','validateWaypointAt','castMemberOf','readCharacterWaypoints','writeCharacterWaypoints','addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints',
   'switchSceneDocument','addSceneDocument','duplicateSceneDocument','renameSceneDocument','deleteSceneDocument',
@@ -215,14 +208,14 @@ function fixture(options={}) {
   ...Object.fromEntries(['splitTimelineShot','duplicateTimelineShot','removeTimelineShot','setTimelineShotRange','moveTimelineShot'].map(name=>[name,unwired(name)])),
   runAllPromptBlocks:()=>{stand.generationRuns++;return [...stand.generationToasts];},
  });
- const registry=actual.createStudioAppActions(actionHandlers);actionsRef.current=registry;
+ const registry=createStudioAppActions(actionHandlers.current);actionsRef.current=registry;
  const poses=[{id:'pose-rest',label:'Rest',bones:{}},{id:'pose-wave',label:'Wave',bones:{}}];
  const ports={revision,read:actual.readStudioState,bounds:actual.studioBounds,commit:actual.commitStudioDraft,commitMotion:actual.commitStudioMotion,operate:actual.operateStudio,loadArtifact:(...args)=>artifactLoader(...args),poses:()=>poses,
  ikRevision(id,stamp){const old=stamps.get(id);if(!old||old.stamp!==stamp)stamps.set(id,{stamp,revision:(old?.revision??0)+1});return stamps.get(id).revision;},
  isRetained:actual.isStudioHistoryRetained,
  canUndo(r){const entry=r?.undo&&studioHistory.current.get(r.undo.historyEntryId);if(!entry||r.revision.after!==revision.current)return false;return entry.domain==='objects'?entry.tick===lastObject.current&&entry.tick>=(history.current.past.at(-1)?.tick??0)&&entry.depth===store.current.depths().past:entry.tick===history.current.past.at(-1)?.tick&&entry.tick>lastObject.current;},
  undo:actual.undoScene,capture(){throw new Error('renderer capture requires browser');},actions:()=>registry,recordAction:actual.recordStudioAction,beginAction:actual.beginStudioAction,showRefusal:scope.setToast};
- binding=actual.createStudioAppBinding(ports);currentBinding=binding;scope.studioBindingRef.current={stepHistory:actual.stepStudioHistory,get bus(){return binding.bus;}};binding.refresh();
+ binding=createStudioAppBinding(ports);currentBinding=binding;scope.studioBindingRef.current={stepHistory:actual.stepStudioHistory,get bus(){return binding.bus;}};binding.refresh();
  const host=()=>binding.refresh().host;
  const confirmation=(name,args)=>{
   if(name!=='run_action'||!registry.list().some(a=>a.id===args.action&&a.exposure==='confirm'&&a.available))return {};
@@ -323,7 +316,8 @@ const implementations={
   // Targets are measured now, with the helpers the arrange/frame_shot receipts
   // and the motion candidate use; only what truly cannot be computed is
   // unsupported, and each such check says why.
-  const branch=app.slice(app.indexOf('if (request.name === "verify_result") {'),app.indexOf('fail("CAPABILITY_MISSING", "Generation is owned by the server runtime.");'));
+  const bindingSource=readFileSync(new URL('../src/studio-app-binding.js',import.meta.url),'utf8');
+  const branch=bindingSource.slice(bindingSource.indexOf('if (request.name === "verify_result") {'),bindingSource.indexOf('fail("CAPABILITY_MISSING", "Generation is owned by the server runtime.");'));
   for(const helper of ['placementChecks(','framingChecks(','verifyInstalledTake('])assert(branch.includes(helper),`verify_result computes target checks through ${helper}`);
   const verify=args=>f.call('verify_result',f.request('verify_result',{visual:'none',...args}));
   const first=await verify({targets:['actor-a'],checks:['placement','framing','motion']});
