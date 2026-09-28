@@ -59,7 +59,8 @@ import { useSemanticState } from "./use-semantic-state.js";
 import AgentPanel from "./workflow/AgentPanel.jsx";
 import { StudioProtocolError } from "./studio-agent-protocol.js";
 import { elementByPath } from "./studio-elements.js";
-import { STUDIO_IK_CHAIN_TRACKS, createStudioActionRegistry, studioActionDeclaration, studioActionRefusal, resolveStudioToast } from "./studio-actions.js";
+import { studioActionRefusal, resolveStudioToast } from "./studio-actions.js";
+import { createStudioAppActions } from "./commands/index.js";
 import { withCommandHistory } from "./command-bus.js";
 import { createStudioAppBinding } from "./studio-app-binding.js";
 import { HISTORY_LIMIT } from "./history.js";
@@ -636,299 +637,6 @@ async function fetchImportSource(url) {
 		reader.onload = () => resolve(String(reader.result));
 		reader.readAsDataURL(blob);
 	});
-}
-
-/** The editor's Studio actions: ONE registry whose entries call the same
- * handlers the UI controls call, so a timeline button and the agent's
- * run_action share one code path. `handlersRef.current` is refreshed on every
- * render, so a run always reaches the latest handlers; `state()` reads the
- * synchronously published document, so the diff below sees the edit at once. */
-export function createStudioAppActions(handlersRef) {
-	const h = () => handlersRef.current;
-	const registry = createStudioActionRegistry({ readState: () => h().state() });
-	const fail = (code, message) => { throw new StudioProtocolError(code, message); };
-	const changedIds = (before, after) => [...new Set([
-		...after.filter(row => !before.includes(row)).map(row => row.id),
-		...before.filter(row => !after.some(next => next.id === row.id)).map(row => row.id),
-	])];
-	const shotLabel = shot => `${shot.name} [${shot.startFrame}, ${shot.endFrame + 1})`;
-	const hasShots = state => state.shots.length > 0 || "There are no shots yet; add one with shot.create.";
-	const shotOf = shotId => h().state().shots.find(shot => shot.id === shotId) ?? fail("STALE_TARGET", `Shot ${shotId} is not in this scene.`);
-	const shotAction = (id, available, run) => {
-		const { label } = studioActionDeclaration(id);
-		registry.register({ ...studioActionDeclaration(id), available, run: args => {
-			const before = h().state().shots;
-			run(args);
-			const after = h().state().shots, affectedIds = changedIds(before, after);
-			const described = affectedIds.map(shotId => {
-				const shot = after.find(row => row.id === shotId);
-				return shot ? shotLabel(shot) : `${before.find(row => row.id === shotId)?.name ?? shotId} removed`;
-			});
-			return { affectedIds, summary: affectedIds.length ? `${label}: ${described.join("; ")}.` : `${label}: nothing changed.` };
-		} });
-	};
-	shotAction("shot.create", state => addShotAtFrame(state.shots, state.frame, state.frameCount, null) !== state.shots
-		|| `There is no free room for a new shot at the playhead (frame ${state.frame}); move it with operate_studio { frame } or shorten a shot.`,
-	() => h().addTimelineShot());
-	shotAction("shot.split", state => state.shots.some(shot => state.frame > shot.startFrame && state.frame <= shot.endFrame)
-		|| `The playhead (frame ${state.frame}) is not inside a shot after its first frame; move it with operate_studio { frame }.`,
-	({ shotId }) => {
-		const shot = shotOf(shotId), { frame } = h().state();
-		if (frame <= shot.startFrame || frame > shot.endFrame) fail("TARGET_NOT_READY", `The playhead (frame ${frame}) is not inside ${shot.name} after its first frame.`);
-		h().splitTimelineShot(shotId);
-	});
-	shotAction("shot.duplicate", hasShots, ({ shotId }) => { shotOf(shotId); h().duplicateTimelineShot(shotId); });
-	shotAction("shot.remove", hasShots, ({ shotId }) => { shotOf(shotId); h().removeTimelineShot(shotId); });
-	shotAction("shot.setRange", hasShots, ({ shotId, range }) => { shotOf(shotId); h().setTimelineShotRange(shotId, range.startFrame, range.endFrameExclusive - 1); });
-	shotAction("shot.setCameraRail", hasShots, ({ shotId, points }) => { shotOf(shotId); h().setShotCameraRail(shotId, points); });
-	shotAction("shot.clearCameraRail", state => state.shots.some(shot => createCameraBlock(shot.camera).cameraRail) || "No shot has a camera rail; lay one with shot.setCameraRail.",
-		({ shotId }) => { shotOf(shotId); h().clearShotCameraRail(shotId); });
-	shotAction("shot.reorder", hasShots, ({ shotId, startFrame }) => { shotOf(shotId); h().moveTimelineShot(shotId, startFrame); });
-	registry.register({ ...studioActionDeclaration("motion.generateAllBlocks"), target: () => h().state().activeCharacterId,
-		available: state => state.generating ? "A motion generation is already running."
-			: !state.motionReady ? "The motion backend is not ready."
-				: state.promptBlockCount === 0 ? "The active character has no prompt block with text; write them with patch_elements character.promptBlocks." : true,
-		run: (_args, context) => {
-			const { activeCharacterId, promptBlockCount } = h().state();
-			const shown = h().runAllPromptBlocks(context) ?? [];
-			if (shown?.then) return shown.then(() => ({ affectedIds: activeCharacterId ? [activeCharacterId] : [], summary: `Generated motion from ${promptBlockCount} prompt blocks.` }));
-			// The generation queues synchronously or not at all; when it does not,
-			// the editor's last toast names the refusal (rig not loaded, a root
-			// waypoint outside the clip, an over-long block, a line-edit draft).
-			if (!h().state().generating) fail("TARGET_NOT_READY", shown.length ? `Generation not started: ${shown.at(-1)}` : "The editor did not start the generation; check the active character's rig and prompt blocks.");
-			return { affectedIds: activeCharacterId ? [activeCharacterId] : [], summary: `Started generating the active character's motion from ${promptBlockCount} prompt block${promptBlockCount === 1 ? "" : "s"}.` };
-		} });
-	// Cast actions name their character explicitly, so they run the same way
-	// whichever character is active and whatever mode the editor is in.
-	const characterOf = characterId => h().state().characters.find(entry => entry.id === characterId)
-		?? fail("STALE_TARGET", `Character ${characterId} is not in this scene.`);
-	const castAction = (id, run) => registry.register({ ...studioActionDeclaration(id),
-		available: state => state.characters.length > 0 || "There are no characters in this scene; add one with arrange_characters.",
-		run: args => {
-			const character = characterOf(args.characterId);
-			return { affectedIds: [character.id], summary: run(args, character.subject || character.id) };
-		} });
-	const pin = waypoint => `frame ${waypoint.frame} (x ${waypoint.x}, z ${waypoint.z})`;
-	const warned = warnings => warnings.length ? `; warning: ${warnings[0]}` : "";
-	castAction("character.addWaypoint", ({ characterId, position, frame }, name) => {
-		const { waypoint, index, warnings } = h().addCharacterWaypoint(characterId, position, frame ?? null);
-		h().setWaypointMode(true);
-		return `Added ${name}'s root waypoint ${index + 1} at ${pin(waypoint)}${warned(warnings)}.`;
-	});
-	castAction("character.moveWaypoint", ({ characterId, frame, position }, name) => {
-		const { waypoint, warnings } = h().moveCharacterWaypoint(characterId, frame, position);
-		h().setWaypointMode(true);
-		return `Moved ${name}'s root waypoint to ${pin(waypoint)}${warned(warnings)}.`;
-	});
-	castAction("character.removeWaypoint", ({ characterId, frame }, name) => {
-		h().removeCharacterWaypoint(characterId, frame);
-		return `Removed ${name}'s root waypoint at frame ${frame}.`;
-	});
-	castAction("character.clearWaypoints", ({ characterId }, name) => {
-		const count = h().clearCharacterWaypoints(characterId);
-		return count ? `Cleared ${name}'s root path (${count} waypoint${count === 1 ? "" : "s"}).` : `${name} has no root waypoints; nothing changed.`;
-	});
-	// The declared schema carries the key's shape; the per-track counts and the
-	// timeline bound are checked here, before anything is recorded.
-	castAction("character.setIkKey", ({ characterId, frame, tracks }, name) => {
-		const { frameCount } = h().state(), named = Object.keys(tracks);
-		if (frame >= frameCount) fail("INVALID_RANGE", `Frame ${frame} is outside the timeline (0-${frameCount - 1}).`);
-		if (!named.length) fail("INVALID_ARGUMENT", "Name at least one track in tracks.");
-		for (const track of named) {
-			const key = tracks[track], chain = STUDIO_IK_CHAIN_TRACKS.includes(track), bones = chain ? 3 : 1;
-			if (!key.q && !key.p) fail("INVALID_ARGUMENT", `tracks.${track} needs q (bone rotations) or p (a local position).`);
-			if (key.chainP && !chain) fail("INVALID_ARGUMENT", `tracks.${track}.chainP is for chain tracks only.`);
-			for (const field of ["q", "baseQ", "chainP"]) {
-				if (key[field] && key[field].length !== bones) fail("INVALID_ARGUMENT", `tracks.${track}.${field} needs ${bones} entr${bones === 1 ? "y" : "ies"}, one per bone.`);
-			}
-			if ([...(key.q ?? []), ...(key.baseQ ?? [])].some(q => Math.hypot(q.x, q.y, q.z, q.w) < 1e-6)) fail("INVALID_ARGUMENT", `tracks.${track} has a zero-length quaternion.`);
-		}
-		h().setCharacterIkKey(characterId, frame, tracks);
-		return `Keyed ${name}'s IK layer at frame ${frame}: ${named.join(", ")}.`;
-	});
-	castAction("character.removeIkKey", ({ characterId, frame }, name) => {
-		h().removeCharacterIkKey(characterId, frame);
-		return `Deleted ${name}'s IK key at frame ${frame}.`;
-	});
-	castAction("character.clearIkKeys", ({ characterId }, name) => {
-		const count = h().clearCharacterIkKeys(characterId);
-		return count ? `Cleared ${name}'s IK layer (${count} key${count === 1 ? "" : "s"}).` : `${name} has no IK keys; nothing changed.`;
-	});
-	const objectOf = objectId => h().state().objects.find(object => object.id === objectId)
-		?? fail("STALE_TARGET", `Object ${objectId} is not in this scene.`);
-	registry.register({ ...studioActionDeclaration("object.attach"),
-		available: state => state.objects.length === 0 ? "There are no scene objects to attach."
-			: state.characters.length === 0 ? "There are no characters to attach an object to." : true,
-		run: ({ objectId, characterId, bone }) => {
-			const object = objectOf(objectId), character = characterOf(characterId), before = h().state().objects;
-			h().attachSceneObject(objectId, { characterId, bone: bone ?? null });
-			const frameName = `${character.subject || character.id}'s ${bone ?? "root"}`;
-			return { affectedIds: [objectId], summary: h().state().objects === before
-				? `${object.name || objectId} already rides ${frameName}; nothing changed.`
-				: `Attached ${object.name || objectId} to ${frameName}, keeping its place on screen.` };
-		} });
-	registry.register({ ...studioActionDeclaration("object.detach"),
-		available: state => state.objects.some(object => object.attach || object.parent) || "No scene object is attached to a character or grouped.",
-		run: ({ objectId }) => {
-			const object = objectOf(objectId);
-			if (!object.attach && !object.parent) fail("TARGET_NOT_READY", `${object.name || objectId} is not attached to a character or in a group.`);
-			h().attachSceneObject(objectId, null);
-			return { affectedIds: [objectId], summary: `Put ${object.name || objectId} back in the world where it is now.` };
-		} });
-	// Viewer preferences: transient, like the View menu they mirror.
-	const viewAction = (id, run) => registry.register({ ...studioActionDeclaration(id), available: () => true,
-		run: args => ({ affectedIds: [], summary: run(args) }) });
-	viewAction("view.setPartColours", ({ mode }) => { h().choosePartColours(mode); return `Part colours: ${mode}.`; });
-	viewAction("view.setGuideMode", ({ mode }) => { h().setGuideMode(mode); return `Composition guide: ${mode}.`; });
-	viewAction("view.setInset", ({ collapsed }) => { h().setInsetCollapsed(collapsed); return `Top-View inset ${collapsed ? "folded" : "unfolded"}.`; });
-	registry.register({ ...studioActionDeclaration("object.duplicate"),
-		available: state => state.objects.length > 0 || "There are no scene objects to duplicate.",
-		run: ({ objectId }) => {
-			const state = h().state(), id = objectId ?? state.selectedObjectId;
-			if (!id) fail("TARGET_NOT_READY", "Name objectId or select an object first.");
-			const source = state.objects.find(object => object.id === id) ?? fail("STALE_TARGET", `Object ${id} is not in this scene.`);
-			h().duplicateSelectedSceneObject(id);
-			const after = h().state().objects, affectedIds = changedIds(state.objects, after);
-			const copy = after.find(object => affectedIds.includes(object.id));
-			return { affectedIds, summary: copy ? `Duplicated ${source.name || source.id} as ${copy.name || copy.id}.` : "Duplicate object: nothing changed." };
-		} });
-	// The Export menu's Video (mp4): the same export, awaited to its file. A
-	// failure was already shown in the export panel, so it refuses silently.
-	registry.register({ ...studioActionDeclaration("export.shotVideo"),
-		available: state => state.exporting ? "An export is already running; wait for it to finish."
-			: state.canExportVideo || "There is nothing to record yet: add a shot (shot.create), camera keys or a motion take first.",
-		run: async ({ shotId }, context) => {
-			const shot = shotId ? shotOf(shotId) : null;
-			const result = await h().exportShotVideo({ shotId: shotId ?? null }, context);
-			if (!result?.fileName) fail("TARGET_NOT_READY", "The video export did not finish; the editor's export panel shows why and offers Retry.");
-			return { affectedIds: shot ? [shot.id] : [], output: { fileName: result.fileName, frameCount: result.frameCount },
-				summary: `Recorded ${shot ? shotLabel(shot) : "the shot"} to ${result.fileName} (${result.frameCount} frames); the browser was asked to download it.` };
-		} });
-	// The Send-to-AI package: the editor's own generate(), which reads the mode
-	// and image model from the render. A changed choice is set first and
-	// generate() runs once React has rendered it; a commit already under way can
-	// predate it, so the wait repeats until the render shows the choice.
-	registry.register({ ...studioActionDeclaration("ai.prepareShot"), available: () => true,
-		run: async ({ mode, model }, context) => {
-			const current = h().state().aiShot, wanted = { mode: mode ?? current.mode, imageModel: model ?? current.imageModel };
-			if (model && wanted.mode !== "image") fail("INVALID_ARGUMENT", `model picks an image model, but this would be a ${wanted.mode} prompt; omit model or pass mode "image".`);
-			const rendered = () => { const { aiShot } = h().state(); return aiShot.mode === wanted.mode && aiShot.imageModel === wanted.imageModel; };
-			if (!rendered()) {
-				h().setAiShotMode(wanted.mode);
-				h().setAiImageModel(wanted.imageModel);
-				for (let commits = 0; !rendered(); commits++) {
-					if (commits === 3) fail("TARGET_NOT_READY", "The Studio did not render the new mode and model; run the action again.");
-					await h().afterRender();
-				}
-			}
-			context?.check();
-			const result = h().generate();
-			const shot = result.shot && { id: result.shot.id, name: result.shot.name, range: { startFrame: result.shot.startFrame, endFrameExclusive: result.shot.endFrame + 1 } };
-			const referenceFrames = (result.frame ? 1 : 0) + (result.frameB ? 1 : 0);
-			return { affectedIds: [], output: { prompt: result.prompt, mode: result.mode, modelLabel: result.modelLabel ?? null, shot, aspectRatio: result.aspectRatio, cameraMode: result.camera?.mode ?? null, referenceFrames },
-				summary: `Prepared the ${result.mode} prompt${result.modelLabel ? ` for ${result.modelLabel}` : ""} for ${shot ? `${shot.name} [${shot.range.startFrame}, ${shot.range.endFrameExclusive})` : "the current camera"}; the Studio's result panel shows it with ${referenceFrames} reference frame${referenceFrames === 1 ? "" : "s"} for the user to copy and download.` };
-		} });
-	// The live import_asset path (validate, store the bytes, ONE atomic store
-	// entry), fed a data URL; an http(s) source is fetched into one first.
-	registry.register({ ...studioActionDeclaration("asset.import"), available: () => true,
-		run: async ({ source, name, placeAs }, context) => {
-			let dataUrl = source;
-			if (!source.startsWith("data:")) {
-				try { dataUrl = await h().fetchImportSource(source); }
-				catch (error) { fail("TARGET_NOT_READY", `Could not fetch the source (${error?.message || error}); its server must allow cross-origin reads.`); }
-			}
-			let imported;
-			try { imported = await h().importAsset({ name, placeAs, dataUrl }, context); }
-			catch (error) { fail("INVALID_ARGUMENT", `Not imported: ${error?.message || error}`); }
-			return { affectedIds: [imported.objectId], summary: `Imported ${name} as a ${placeAs} (object ${imported.objectId}, asset ${imported.assetId}).` };
-		} });
-	// AI-video motion: the agent panel's Generate motion (generateFalMotion
-	// "act"), awaited to its clip. The Fal card shows every failure it meets, so
-	// a refusal is silent in the UI and tells the model the reason in English.
-	registry.register({ ...studioActionDeclaration("motion.generateFromVideo"), domain: "motion", target: () => h().state().activeCharacterId,
-		available: ({ falMotion }) => !falMotion.enabled ? "AI video motion (Fal) is not enabled for this account."
-			: !["idle", "done", "error", "failed"].includes(falMotion.status) ? "An AI video motion generation is already running; wait for it to finish."
-				: falMotion.dailyRemaining === 0 ? "The account's daily AI video generations are used up." : true,
-		run: async ({ instruction }, context) => {
-			const outcome = await h().generateFalMotion("act", instruction, context);
-			if (outcome.failed) fail("TARGET_NOT_READY", outcome.failed);
-			const { job, footage, dailyRemaining } = outcome;
-			if (!job.video?.url) fail("TARGET_NOT_READY", "The AI video model finished without returning a video.");
-			return { affectedIds: [], output: { videoUrl: job.video.url, resolution: job.resolution ?? null, durationSeconds: job.resultDuration ?? job.duration ?? null,
-				ingested: Boolean(footage), frames: footage?.frames ?? null, fps: footage?.fps ?? null, dailyRemaining },
-			summary: footage
-				? `The AI video (${job.resolution}, ${footage.frames} frames at ${footage.fps} fps) is ingested as Video capture footage and the timeline now spans it; its motion becomes a take once GVHMR extraction runs in the Video capture panel.`
-				: `The AI video is ready at ${job.video.url}, but ingesting it as footage failed; the Video capture panel shows why.` };
-		} });
-	// Scenes: the scene pill's and the Hierarchy scene menu's own handlers. When
-	// the open scene moves, the action answers once React has rendered the new
-	// room, so the next command reads that scene's state.
-	const sceneOf = sceneId => h().state().scenes.find(scene => scene.id === sceneId) ?? fail("STALE_TARGET", `Scene ${sceneId} is not in this project.`);
-	const sceneName = scene => `${scene.name} (${scene.id})`;
-	const sceneAction = (id, available, run) => registry.register({ ...studioActionDeclaration(id), available,
-		run: async args => {
-			const before = h().state(), describe = run(args, before), after = h().state();
-			const moved = after.activeSceneId !== before.activeSceneId, opened = after.scenes.find(scene => scene.id === after.activeSceneId);
-			const affectedIds = [...new Set([
-				...after.scenes.filter(scene => !before.scenes.some(row => row.id === scene.id && row.name === scene.name)).map(scene => scene.id),
-				...before.scenes.filter(scene => !after.scenes.some(row => row.id === scene.id)).map(scene => scene.id),
-				...(moved ? [after.activeSceneId] : []),
-			])];
-			if (moved) await h().afterRender();
-			return { affectedIds, summary: describe(after, opened, moved) };
-		} });
-	const manyScenes = state => state.scenes.length > 1;
-	sceneAction("scene.create", () => true, () => {
-		h().addSceneDocument();
-		return (after, opened) => `Created and opened scene ${sceneName(opened)}.`;
-	});
-	sceneAction("scene.duplicate", () => true, ({ sceneId }) => {
-		const source = sceneOf(sceneId);
-		h().duplicateSceneDocument(sceneId);
-		return (after, opened) => `Duplicated ${sceneName(source)} as ${sceneName(opened)} and opened the copy.`;
-	});
-	sceneAction("scene.rename", () => true, ({ sceneId, name }) => {
-		const source = sceneOf(sceneId);
-		h().renameSceneDocument(sceneId, name);
-		return after => {
-			const renamed = after.scenes.find(scene => scene.id === sceneId);
-			return renamed.name === source.name ? `${sceneName(source)} already has that name; nothing changed.` : `Renamed scene ${sceneId} from ${source.name} to ${renamed.name}.`;
-		};
-	});
-	sceneAction("scene.delete", state => manyScenes(state) || "The project's last scene cannot be deleted.", ({ sceneId }) => {
-		const source = sceneOf(sceneId);
-		h().deleteSceneDocument(sceneId);
-		return (after, opened, moved) => `Deleted scene ${sceneName(source)}${moved ? `; opened ${sceneName(opened)}` : ""}.`;
-	});
-	sceneAction("scene.switch", state => manyScenes(state) || "This project has one scene; add one with scene.create.", ({ sceneId }, before) => {
-		const target = sceneOf(sceneId);
-		if (sceneId === before.activeSceneId) return () => `${sceneName(target)} is already open; nothing changed.`;
-		h().switchSceneDocument(sceneId);
-		return () => `Opened scene ${sceneName(target)}.`;
-	});
-	// The Project menu's Save Project. Only a user's click opens the browser's
-	// file picker or re-grants a stored file, so without one (the agent) a save
-	// that would need either is refused before anything is attempted. The save
-	// path itself shows its own dialog and failures, so refusals stay silent.
-	registry.register({ ...studioActionDeclaration("project.save"), available: () => true,
-		requiresConfirmation: state => state.project.hasFile || state.project.fileAccess,
-		run: async () => {
-			const { project } = h().state();
-			if (!project.gesture && project.name !== null && project.fileAccess) {
-				if (!project.hasFile) fail("TARGET_NOT_READY", "Not saved: this project has no file this session, and only the user's click can open the file picker to choose one.");
-				if (!(await h().projectFileGranted())) fail("TARGET_NOT_READY", "Not saved: the browser needs the user's click to re-grant access to the project file. Ask them to press Save Project.");
-			}
-			const saved = await h().saveProject(false);
-			if (saved?.naming) fail("TARGET_NOT_READY", "Not saved: the project has no name yet. The Save dialog is open for the user to name it and pick its file.");
-			if (saved?.cancelled) fail("TARGET_NOT_READY", "Not saved: the user closed the file picker.");
-			if (!saved?.saved) fail("TARGET_NOT_READY", saved?.failure === "missing-resources" ? "Not saved: some of the project's assets or motions are missing; the editor's save panel lists them."
-				: saved?.failure === "resources-too-large" ? "Not saved: the project's embedded resources are too large; the editor's save panel explains."
-					: "Not saved: writing the project file failed; the editor showed the error.");
-			return { affectedIds: [], output: { fileName: saved.fileName }, summary: saved.downloaded
-				? `This browser has no file access, so the project ${saved.name} was downloaded as ${saved.fileName}.`
-				: `Saved the project ${saved.name} to ${saved.fileName}.` };
-		} });
-	return registry;
 }
 
 export default function App() {
@@ -3923,10 +3631,12 @@ export default function App() {
 	const studioDocumentEpochRef = useRef(crypto.randomUUID());
 	const studioSceneEpochRef = useRef(crypto.randomUUID());
 	const studioPortsRef = useRef(null);
-	// The one Studio action registry (src/studio-actions.js) and the latest
-	// render's handlers behind it; the UI controls and run_action share both.
+	// The one Studio action registry, built from the command modules
+	// (src/commands), and the one generic port object they register over. Every
+	// render refreshes the port members in place, so a run always reaches the
+	// latest handlers; the UI controls and run_action share both.
 	const studioActionsRef = useRef(null);
-	const studioActionHandlersRef = useRef(null);
+	const studioActionPortsRef = useRef({});
 	const renderWaitersRef = useRef([]);
 	const studioHistoryRef = useRef(new Map());
 	const studioActionGroupRef = useRef(null);
@@ -12391,7 +12101,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		showRefusal: setToast,
 		emitCommandEvent: detail => window.dispatchEvent(new CustomEvent("cozyclay:command", { detail })),
 	};
-	studioActionHandlersRef.current = {
+	Object.assign(studioActionPortsRef.current, {
 		// Shots and objects come from the synchronously published read model, so
 		// an action sees its own edit before React renders it.
 		state: () => ({
@@ -12425,8 +12135,8 @@ function resizePromptClip(id, edge, rawFrame) {
 		saveProject, projectFileGranted: async () => (await queryHandlePermission(projectHandleRef.current)) === "granted",
 		importAsset: (args, context) => liveHandlersRef.current.import_asset(args, context), fetchImportSource,
 		setAiShotMode: setMode, setAiImageModel: setImageModel, generate, generateFalMotion,
-	};
-	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionHandlersRef);
+	});
+	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionPortsRef.current);
 	/** UI door into the shared registry. Refusal messages are written for the
 	 * model, so a person only ever sees the localized `uiMessage` a thrower
 	 * attached (studioActionRefusal); any other refusal stays silent, as the
