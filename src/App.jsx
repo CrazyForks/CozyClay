@@ -320,7 +320,7 @@ import {
 	clampIkTargetToFloor,
 } from "./ardy/ik.js";
 import { bakeIkDragKey, chainsChangedBy, ikDragRecord, ikDragTouch } from "./ardy/ik-drag.js";
-import { applyRangePin, captureRangePinTarget, normalizeRangePin, rangePinTargetWorld, removeRangePinKeys } from "./ardy/range-pin.js";
+import { applyRangePin, captureRangePinTarget, normalizeRangePin, rangePinTargetWorld, rangePinTracks, removeRangePinKeys } from "./ardy/range-pin.js";
 import { ikKeyJson, ikTrackKeyFromJson } from "./ardy/ik-key-json.js";
 import { buildCollisionCapsules, detectPenetrations, fixCollisions, fixCollisionsRange, supportsCollisionCleanup } from "./ardy/fix-collisions.js";
 import { collisionBlockers, blockerSummary } from "./ardy/collision-blockers.js";
@@ -2899,7 +2899,7 @@ export default function App() {
 	}
 	function snapshotRangePinResiduals(state) {
 		ensureRangePinState(state);
-		return new Map([...state.pinResiduals].map(([id, values]) => [id, (values ?? []).map((entry) => ({ frame: entry.frame, errorM: entry.errorM }))]));
+		return new Map([...state.pinResiduals].map(([id, values]) => [id, (values ?? []).map((entry) => ({ ...entry }))]));
 	}
 	/* ---------------------- character undo stack ---------------------------
 	 * The scene history store owns scene OBJECTS; the cast lives outside it.
@@ -3141,7 +3141,7 @@ export default function App() {
 			if (!(target.pins instanceof Map)) target.pins = new Map();
 			if (!(target.pinResiduals instanceof Map)) target.pinResiduals = new Map();
 			target.pins = new Map([...(snapshot.ikPins ?? new Map())].map(([id, pin]) => [id, cloneRangePin(pin)]));
-			target.pinResiduals = new Map([...(snapshot.ikPinResiduals ?? new Map())].map(([id, values]) => [id, (values ?? []).map((entry) => ({ frame: entry.frame, errorM: entry.errorM }))]));
+			target.pinResiduals = new Map([...(snapshot.ikPinResiduals ?? new Map())].map(([id, values]) => [id, (values ?? []).map((entry) => ({ ...entry }))]));
 			if (typeof setRangePinSelection === "function") setRangePinSelection(null);
 			if (typeof setRangePinPreview === "function") setRangePinPreview(null);
 			setCommittedIkEdits(snapshot.committedIkEdits ?? []);
@@ -8561,8 +8561,10 @@ export default function App() {
 		const conflicts = [];
 		if (!Number.isInteger(draft.startFrame) || !Number.isInteger(draft.endFrame) || draft.endFrame < draft.startFrame) return conflicts;
 		for (let frame = draft.startFrame; frame <= draft.endFrame; frame += 1) {
-			const key = state.keys.get(frame)?.get(draft.track);
-			if (key && key.pin !== draft.id) conflicts.push(frame);
+			if (rangePinTracks(draft).some((track) => {
+				const key = state.keys.get(frame)?.get(track);
+				return key && key.pin !== draft.id;
+			})) conflicts.push(frame);
 		}
 		return conflicts;
 	}
@@ -8570,12 +8572,12 @@ export default function App() {
 	function overlappingRangePin(draft, state = ikStateRef.current) {
 		if (!Number.isInteger(draft.startFrame) || !Number.isInteger(draft.endFrame) || draft.endFrame < draft.startFrame) return null;
 		return [...ensureRangePinState(state).pins.values()].find((pin) =>
-			pin.id !== draft.id && pin.track === draft.track && Math.max(pin.startFrame, draft.startFrame) <= Math.min(pin.endFrame, draft.endFrame));
+			pin.id !== draft.id && rangePinTracks(pin).some((track) => rangePinTracks(draft).includes(track)) && Math.max(pin.startFrame, draft.startFrame) <= Math.min(pin.endFrame, draft.endFrame));
 	}
 
 	function rangePinOverlapMessage(pin) {
 		return pin
-			? ko(`This track already has an overlapping pin (${pin.startFrame}–${pin.endFrame}).`, `이 파츠에는 겹치는 고정이 있어요 (${pin.startFrame}–${pin.endFrame}).`)
+			? ko(`A required body or limb track already has an overlapping pin (${pin.startFrame}–${pin.endFrame}).`, `필요한 몸통 또는 팔다리 파츠에 겹치는 고정이 있어요 (${pin.startFrame}–${pin.endFrame}).`)
 			: "";
 	}
 
@@ -8599,6 +8601,7 @@ export default function App() {
 			startFrame: draft.startFrame,
 			endFrame: draft.endFrame,
 			blend: draft.blend,
+			reach: draft.reach ?? "body",
 			target,
 		}, { clipFrames: motion.frames });
 		return { pin, targetWorld: rangePinTargetWorld(pin, tlFrame, { objectWorldMatrix }) };
@@ -8635,7 +8638,7 @@ export default function App() {
 		for (const frame of replaceFrames) {
 			const entry = state.keys.get(frame);
 			if (!entry) continue;
-			entry.delete(pin.track);
+			for (const track of rangePinTracks(pin)) entry.delete(track);
 			if (!entry.size) state.keys.delete(frame);
 		}
 		let result;
@@ -8657,18 +8660,20 @@ export default function App() {
 		for (const frame of replaceFrames) {
 			const entry = state.keys.get(frame);
 			if (!entry) continue;
-			entry.delete(pin.track);
+			for (const track of rangePinTracks(pin)) entry.delete(track);
 			if (!entry.size) state.keys.delete(frame);
 		}
 		removeRangePinKeys(state, pin.id);
 		for (const [frame, entry] of result.entries) {
 			let frameEntry = state.keys.get(frame);
 			if (!frameEntry) state.keys.set(frame, (frameEntry = new Map()));
-			for (const [track, key] of entry) frameEntry.set(track, key);
+			for (const [track, key] of entry) {
+				frameEntry.set(track, key);
+				state.tracked.add(track);
+			}
 		}
 		state.pins.set(pin.id, cloneRangePin(pin));
-		state.pinResiduals.set(pin.id, result.residuals.map((entry) => ({ frame: entry.frame, errorM: entry.errorM })));
-		state.tracked.add(pin.track);
+		state.pinResiduals.set(pin.id, result.residuals.map((entry) => ({ ...entry })));
 		markSemanticEdit("pose", before, state.keys);
 		if (recordUndo) setIkTick((value) => value + 1);
 		return result;

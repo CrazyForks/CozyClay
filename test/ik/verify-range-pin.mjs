@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { createHash } from "node:crypto";
 import { resolveIkRig, createIkState, ikEvaluate, ikTouch, solveIk, correctionWeight } from "../../src/ardy/ik.js";
 import { bakeIkDragKey } from "../../src/ardy/ik-drag.js";
 import { ikKeyJson, ikTrackKeyFromJson } from "../../src/ardy/ik-key-json.js";
@@ -74,7 +75,7 @@ function makeRig() {
 /** A 60-frame take: arms swinging, chain translations 3-7 % off bind (ARDY
  * writes per-bone translations), hips bobbing and walking forward. A pure
  * function of the frame. */
-function buildTake() {
+function buildTake({ walkCm = 0.5 } = {}) {
 	const rig = makeRig();
 	const { chains, fkJoints } = resolveIkRig(rig);
 	const hips = fkJoints.get("hips");
@@ -94,7 +95,7 @@ function buildTake() {
 				chain.bones[1].quaternion.setFromAxisAngle(Y, sign * (0.9 + 0.3 * Math.sin(frame * 0.15)));
 			}
 		}
-		hips.bone.position.copy(hips.bindPos).add(new THREE.Vector3(0, 3 * Math.sin(frame * 0.4), frame * 0.5));
+		hips.bone.position.copy(hips.bindPos).add(new THREE.Vector3(0, 3 * Math.sin(frame * 0.4), frame * walkCm));
 		hips.bone.quaternion.identity();
 		for (const [id, joint] of fkJoints) {
 			if (id === "hips") continue;
@@ -401,6 +402,159 @@ const pinned = (() => {
 	check("(7) end past the clip is refused", codeOf(good, { clipFrames: 3 }) === "OUT_OF_RANGE" && codeOf({ ...good, startFrame: -1 }) === "OUT_OF_RANGE");
 	check("(7) bad targets are refused", ["world", "object", "screen"].every((space) => codeOf({ ...good, target: { space, position: [0, NaN, 0], objectId: "", local: [1, 2] } }) === "BAD_TARGET"));
 	check("(7) bad blend / id are refused", codeOf({ ...good, blend: 0 }) === "BAD_PIN" && codeOf({ ...good, blend: 2.5 }) === "BAD_PIN" && codeOf({ ...good, id: "" }) === "BAD_PIN");
+}
+
+/* --- (8) a walking root needs anticipatory body reach, not a longer arm --- */
+{
+	const take = buildTake({ walkCm: 5 });
+	const target = captureRangePinTarget({ chains: take.chains, track: "rightHand", frame: 21, applyFrame: take.viewAt });
+	const legacy = { id: "walking", track: "rightHand", startFrame: 21, endFrame: 29, blend: 6, target };
+	const json = (result) => JSON.stringify([...result.entries].map(([f, entry]) => [f, ikKeyJson(entry)]));
+	const old = take.apply(legacy);
+	const limb = take.apply(normalizeRangePin({ ...legacy, reach: "limb" }));
+	check("(8) explicit limb reach is bit-identical to an absent reach field", json(old) === json(limb));
+	// Captured from 457e0c7 before changing the solver: compare all serialized
+	// machine-consumed key values, not just two paths through the new code.
+	const legacyHash = createHash("sha256").update(json(old)).digest("hex");
+	check("(8) legacy walking keys are bit-identical to 457e0c7", legacyHash === "34aa59724d9c81975b87870d79e78f24a20adbf4ff6ae010420ab8fb28163849", legacyHash);
+	check("(8) fixture: limb-only walk leaves the target by > 1 cm", Math.max(...old.residuals.map((r) => r.errorM)) > 0.01);
+	const pin = normalizeRangePin({ ...legacy, reach: "body" });
+	check("(8) normalization preserves body reach", pin.reach === "body");
+	let badReach = false;
+	try { normalizeRangePin({ ...legacy, reach: "stretch" }); } catch (e) { badReach = e.code === "BAD_PIN"; }
+	check("(8) normalization refuses unknown reach modes", badReach);
+	const held = rigSnapshot(take.rig);
+	const result = take.apply(pin);
+	check("(8) body bake restores the rig and leaves the layer alone", rigUnchanged(held) && take.state.keys.size === 0);
+	take.setEntries(result.entries);
+	check("(8) body bake includes hips and both leg delta keys on every frame", [...result.entries].every(([f, entry]) => {
+		const hips = entry.get("hips");
+		return hips?.p && hips.basePos && hips.q === null && ["leftFoot", "rightFoot", "rightHand"].every((id) => entry.get(id)?.baseQ?.length === 3)
+			&& [...entry.values()].every((k) => k.pin === pin.id && k.blend === pin.blend);
+	}));
+	let maxHand = 0, maxFeet = 0, maxOffsetStep = 0, lastOffset = null;
+	for (let f = 21; f <= 29; f++) {
+		take.poseClip(f);
+		const feet = [handAt(take, "leftFoot"), handAt(take, "rightFoot")];
+		const hips = take.fkJoints.get("hips").bone.getWorldPosition(v());
+		take.viewAt(f);
+		maxHand = Math.max(maxHand, handAt(take).distanceTo(v().fromArray(target.position)));
+		maxFeet = Math.max(maxFeet, handAt(take, "leftFoot").distanceTo(feet[0]), handAt(take, "rightFoot").distanceTo(feet[1]));
+		const offset = take.fkJoints.get("hips").bone.getWorldPosition(v()).sub(hips);
+		if (lastOffset) maxOffsetStep = Math.max(maxOffsetStep, offset.distanceTo(lastOffset));
+		lastOffset = offset;
+	}
+	console.log(`walking body maxima: hand=${mm(maxHand)} feet=${mm(maxFeet)} extra hips step=${mm(maxOffsetStep)}`);
+	check("(8) walking hand stays within 1 cm on every frame", maxHand < 0.01, mm(maxHand));
+	check("(8) both feet stay within 1 cm of clip positions", maxFeet < 0.01, mm(maxFeet));
+	check("(8) hips correction changes by at most 1 cm per frame", maxOffsetStep <= 0.010001, mm(maxOffsetStep));
+	check("(8) residuals report post-compensation hand and feet errors", result.residuals.every((r) => r.errorM < 0.01 && r.feetErrorM < 0.01));
+	check("(8) body re-apply is bit-identical", json(result) === json(take.apply(pin)));
+	check("(8) all body keys survive the setIkKey JSON/schema round trip", [...result.entries].every(([f, entry]) => {
+		const tracks = ikKeyJson(entry);
+		validateStudioSchema(studioActionDeclaration("character.setIkKey").input, { characterId: "char-a", frame: f, tracks });
+		return [...entry].every(([id, key]) => {
+			const back = ikTrackKeyFromJson(tracks[id]);
+			return back.pin === key.pin && back.blend === key.blend
+				&& (id === "hips" ? back.q === null && back.p.equals(key.p) && back.basePos.equals(key.basePos)
+					: back.keepTranslations === true && back.q.every((q, i) => q.angleTo(key.q[i]) < 1e-6) && back.baseQ.every((q, i) => q.angleTo(key.baseQ[i]) < 1e-6));
+		});
+	}));
+	let edgeError = 0, outsideError = 0;
+	for (const f of [15, 18, 20, 30, 32, 35]) {
+		take.poseClip(f);
+		const hips = take.fkJoints.get("hips").bone;
+		const raw = hips.position.clone(), rawQ = hips.quaternion.clone();
+		const edge = result.entries.get(f < 21 ? 21 : 29).get("hips");
+		const weight = correctionWeight(take.state.keys, "hips", f, BLEND);
+		const expected = raw.clone().addScaledVector(edge.p.clone().sub(edge.basePos), weight);
+		const before = rigSnapshot(take.rig);
+		take.viewAt(f);
+		edgeError = Math.max(edgeError, hips.position.distanceTo(expected), hips.quaternion.angleTo(rawQ));
+		if (weight === 0) outsideError = Math.max(outsideError, ...before.map(([node, p, q]) => node.position.distanceTo(p) + node.quaternion.angleTo(q)));
+	}
+	check("(8) hips edges ease only the translation delta", edgeError < 1e-6, String(edgeError));
+	check("(8) outside the body pin blend the whole clip is unchanged", outsideError < 1e-6, String(outsideError));
+	const removed = removeRangePinKeys(take.state, pin.id);
+	check("(8) removing body pin removes hips and legs too", removed === 36 && take.state.keys.size === 0, `removed=${removed}`);
+}
+
+/* --- (9) world/local conversion, object rebuild, foot pins, infeasibility --- */
+{
+	const take = buildTake({ walkCm: 5 });
+	take.rig.rotation.y = 0.8;
+	take.rig.position.set(1.2, 0, -0.7);
+	let objectX = 0;
+	const objectWorldMatrix = () => new THREE.Matrix4().makeTranslation(objectX, 0, 0);
+	const target = captureRangePinTarget({ chains: take.chains, track: "leftHand", frame: 21, applyFrame: take.viewAt, space: "object", objectId: "box", objectWorldMatrix });
+	const pin = normalizeRangePin({ id: "yawed-body", track: "leftHand", startFrame: 21, endFrame: 29, blend: 6, reach: "body", target });
+	for (const x of [0, 0.2]) {
+		objectX = x;
+		const result = take.apply(pin, objectWorldMatrix);
+		take.setEntries(result.entries);
+		let maxHand = 0, maxFeet = 0, reportError = 0;
+		for (let f = 21; f <= 29; f++) {
+			take.poseClip(f);
+			const feet = [handAt(take, "leftFoot"), handAt(take, "rightFoot")];
+			take.viewAt(f);
+			const handError = handAt(take, "leftHand").distanceTo(rangePinTargetWorld(pin, f, { objectWorldMatrix }));
+			const footError = Math.max(handAt(take, "leftFoot").distanceTo(feet[0]), handAt(take, "rightFoot").distanceTo(feet[1]));
+			maxHand = Math.max(maxHand, handError); maxFeet = Math.max(maxFeet, footError);
+			const r = result.residuals.find((r) => r.frame === f);
+			reportError = Math.max(reportError, Math.abs(handError - r.errorM), Math.abs(footError - r.feetErrorM));
+		}
+		check(`(9) yawed/scaled body object pin at x=${x}: hand and feet within 1 cm`, maxHand < 0.01 && maxFeet < 0.01, `hand=${mm(maxHand)} feet=${mm(maxFeet)}`);
+		check(`(9) object rebuild residuals match evaluated keys at x=${x}`, reportError < 1e-7, String(reportError));
+	}
+}
+{
+	const take = buildTake({ walkCm: 5 });
+	const target = captureRangePinTarget({ chains: take.chains, track: "rightFoot", frame: 21, applyFrame: take.viewAt });
+	const pin = normalizeRangePin({ id: "foot-body", track: "rightFoot", startFrame: 21, endFrame: 29, blend: 6, reach: "body", target });
+	const result = take.apply(pin);
+	take.setEntries(result.entries);
+	let maxFoot = 0, maxSupport = 0;
+	for (let f = 21; f <= 29; f++) {
+		take.poseClip(f);
+		const support = handAt(take, "leftFoot");
+		take.viewAt(f);
+		maxFoot = Math.max(maxFoot, handAt(take, "rightFoot").distanceTo(v().fromArray(target.position)));
+		maxSupport = Math.max(maxSupport, handAt(take, "leftFoot").distanceTo(support));
+	}
+	check("(9) foot pin follows its target while the other foot keeps its clip plant", maxFoot < 0.01 && maxSupport < 0.01, `pin=${mm(maxFoot)} support=${mm(maxSupport)}`);
+	check("(9) pinned-foot displacement is not a failed supporting plant", result.residuals.every((r) => r.feetErrorM < 0.01));
+}
+{
+	const take = buildTake({ walkCm: 5 });
+	// An already sunk clip makes floor safety and planting incompatible:
+	// lifting its pelvis necessarily overextends the straight hanging legs.
+	// The assist must honor the measured floor and report the lost plants.
+	const poseRaw = (f) => {
+		take.poseClip(f);
+		take.fkJoints.get("hips").bone.position.y -= 103;
+		take.rig.updateMatrixWorld(true);
+	};
+	const poseLayer = (f) => { poseRaw(f); ikEvaluate(take.chains, take.state, f, take.fkJoints, BLEND); };
+	poseRaw(21);
+	const pin = { id: "impossible-body", track: "rightHand", startFrame: 21, endFrame: 29, blend: 6, reach: "body", target: { space: "world", position: handAt(take).add(new THREE.Vector3(-3, -3, 2)).toArray() } };
+	const result = applyRangePin({ chains: take.chains, fkJoints: take.fkJoints, ikState: take.state, pin, applyRaw: poseRaw, applyLayer: poseLayer });
+	take.setEntries(result.entries);
+	let maxStep = 0, last = null, maxVertical = 0, minHeight = Infinity, reportError = 0;
+	for (let f = 21; f <= 29; f++) {
+		poseRaw(f);
+		const hips = take.fkJoints.get("hips").bone;
+		const raw = hips.getWorldPosition(v());
+		const feet = [handAt(take, "leftFoot"), handAt(take, "rightFoot")];
+		poseLayer(f);
+		const pos = hips.getWorldPosition(v()), offset = pos.clone().sub(raw);
+		if (last) maxStep = Math.max(maxStep, offset.distanceTo(last));
+		last = offset; maxVertical = Math.max(maxVertical, Math.abs(offset.y)); minHeight = Math.min(minHeight, pos.y);
+		const error = Math.max(handAt(take, "leftFoot").distanceTo(feet[0]), handAt(take, "rightFoot").distanceTo(feet[1]));
+		reportError = Math.max(reportError, Math.abs(error - result.residuals[f - 21].feetErrorM));
+	}
+	check("(9) impossible body pin stays finite, floor-safe, vertically limited and smooth", result.residuals.every((r) => Number.isFinite(r.errorM) && Number.isFinite(r.feetErrorM)) && minHeight >= 0.01 && maxVertical <= 0.100001 && maxStep <= 0.010001);
+	check("(9) impossible reach is not hidden after compensation", result.residuals.some((r) => r.errorM > 0.01));
+	check("(9) impossible planting is reported as measured", result.residuals.some((r) => r.feetErrorM > 0.01) && reportError < 1e-7, `feet residual max=${mm(Math.max(...result.residuals.map((r) => r.feetErrorM)))} discrepancy=${reportError}`);
 }
 
 if (failures) {
