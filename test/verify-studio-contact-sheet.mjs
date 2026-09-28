@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // verify_result visual "contact_sheet": one image of 6 frames sampled across
 // the range, each shot frame box-downscaled and tiled 3x2 row-major. The pure
-// pieces live in src/studio-contact-sheet.js; App.jsx only wires the export
-// render and the PNG encoder, so its branch is pinned against the source.
+// pieces live in src/studio-contact-sheet.js; the agent binding
+// (src/studio-app-binding.js) only wires the export render and the PNG
+// encoder, so its branch is pinned against the source.
 import { readFileSync } from "node:fs";
 
 let failures = 0;
@@ -68,8 +69,8 @@ check("contact sheet", () => {
 	expect("each tile shows its own frame, row-major from the top", JSON.stringify(placed) === JSON.stringify(frames), JSON.stringify(placed));
 });
 
-check("App verify_result branch", () => {
-	const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+check("binding verify_result branch", () => {
+	const app = readFileSync(new URL("../src/studio-app-binding.js", import.meta.url), "utf8");
 	const start = app.indexOf('if (request.name === "verify_result") {');
 	const branch = app.slice(start, app.indexOf("return result;", start));
 	expect("verify_result branch is found", start > 0 && branch.length > 0);
