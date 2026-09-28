@@ -5,24 +5,24 @@ import { StudioProtocolError } from './studio-agent-protocol.js';
 
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
 
-export function createDocumentStore({ owned = {} } = {}) {
+export function createDocumentStore({ owned = {}, legacy } = {}) {
   let slices = structuredClone(owned);
   let snapshot = { revision: 0, domainRevisions: Object.fromEntries(Object.keys(owned).map(domain => [domain, 0])), slices };
   let history = createHistory({ historyEntryId: null, snapshot: slices });
   let active = null;
   const listeners = new Set();
   const owns = domain => Object.hasOwn(slices, domain);
-  function publish(next) {
-    const changed = Object.keys(slices).filter(domain => slices[domain] !== next[domain]);
+  const releaseLegacy = legacy?.subscribe(domain => { if (!owns(domain)) publish(slices, [domain]); });
+  function publish(next, changed = Object.keys(slices).filter(domain => slices[domain] !== next[domain])) {
     if (!changed.length) return;
     const domainRevisions = { ...snapshot.domainRevisions };
-    for (const domain of changed) domainRevisions[domain]++;
+    for (const domain of changed) domainRevisions[domain] = (domainRevisions[domain] ?? 0) + 1;
     slices = next;
     snapshot = { revision: snapshot.revision + 1, domainRevisions, slices };
     for (const listener of listeners) listener();
   }
-  function beginAction(domain) {
-    if (!owns(domain)) fail('INVALID_ARGUMENT', `Unknown document domain: ${domain}`);
+  function beginAction(domain, targetId) {
+    if (!owns(domain)) return legacy.beginAction(domain, targetId);
     if (active) fail('TARGET_BUSY', 'A document transaction is already open.');
     const before = slices;
     const check = () => { if (active !== session) fail('STALE_TARGET', 'Document transaction is no longer current.'); };
@@ -51,6 +51,7 @@ export function createDocumentStore({ owned = {} } = {}) {
       const result = active.run(fn);
       return result?.then ? result.then(result => ({ result, historyEntryId: null })) : { result, historyEntryId: null };
     }
+    if (!owns(domain)) return legacy.recordAction(domain, fn, targetId);
     const session = beginAction(domain, targetId);
     const done = result => ({ result, ...session.commit() });
     const failed = error => { session.cancel(); throw error; };
@@ -60,7 +61,7 @@ export function createDocumentStore({ owned = {} } = {}) {
     } catch (error) { return failed(error); }
   }
   function write(domain, update) {
-    if (!owns(domain)) fail('INVALID_ARGUMENT', `Unknown document domain: ${domain}`);
+    if (!owns(domain)) return legacy.write(domain, update);
     if (!active) return recordAction(domain, () => write(domain, update)).result;
     const next = typeof update === 'function' ? update(slices[domain]) : update;
     if (next !== slices[domain]) publish({ ...slices, [domain]: structuredClone(next) });
@@ -79,7 +80,8 @@ export function createDocumentStore({ owned = {} } = {}) {
     return entry;
   }
   return {
-    owns, read: domain => slices[domain], write, beginAction, recordAction,
+    owns, read: domain => owns(domain) ? slices[domain] : legacy.read(domain), write, beginAction, recordAction,
+    dispose() { active?.cancel(); releaseLegacy?.(); listeners.clear(); },
     undo: () => step(false), redo: () => step(true),
     canUndo: id => !active && history.past.length > 0 && (id === undefined || history.present.historyEntryId === id),
     canRedo: () => !active && history.future.length > 0,
