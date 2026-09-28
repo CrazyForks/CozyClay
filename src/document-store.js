@@ -28,6 +28,13 @@ export function createDocumentStore({ owned = {} } = {}) {
     const check = () => { if (active !== session) fail('STALE_TARGET', 'Document transaction is no longer current.'); };
     const session = {
       run(fn) { check(); return fn(); },
+      update(domain, update) { return session.run(() => write(domain, update)); },
+      cancel({ restore = true } = {}) {
+        if (active !== session) return false;
+        active = null;
+        if (restore) publish(before);
+        return true;
+      },
       commit() {
         check(); active = null;
         if (Object.keys(slices).every(key => slices[key] === before[key])) return { historyEntryId: null };
@@ -46,8 +53,11 @@ export function createDocumentStore({ owned = {} } = {}) {
     }
     const session = beginAction(domain, targetId);
     const done = result => ({ result, ...session.commit() });
-    const result = session.run(fn);
-    return result?.then ? result.then(done) : done(result);
+    const failed = error => { session.cancel(); throw error; };
+    try {
+      const result = session.run(fn);
+      return result?.then ? result.then(done, failed) : done(result);
+    } catch (error) { return failed(error); }
   }
   function write(domain, update) {
     if (!owns(domain)) fail('INVALID_ARGUMENT', `Unknown document domain: ${domain}`);
