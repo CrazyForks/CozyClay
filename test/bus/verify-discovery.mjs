@@ -166,6 +166,33 @@ cases['cli-run'] = async () => {
   console.log('PASS #438 acceptance 2: a command registered only in the editor runs through `cclay live run` and prints its bus receipt');
 };
 
+cases['commands'] = async () => {
+  const s = await studio();
+  try {
+    const registered = s.f.registry.ids();
+    // The index: every registered command by id and label, no schemas.
+    const index = await callTool('studio_commands', {}, s.handle);
+    assert.equal(index.isError, false);
+    assert.deepEqual(index.value.actions.map(row => row.id), registered, 'every command the editor registers, in its order');
+    const row = index.value.actions.find(entry => entry.id === STAMP.id);
+    assert.deepEqual({ id: row.id, label: row.label, available: row.available }, { id: STAMP.id, label: STAMP.label, available: true });
+    assert.ok(index.value.actions.every(entry => !('input' in entry) && !('description' in entry)), 'the index carries no schema or description');
+    // Schemas on request: the named commands' full declarations.
+    const schema = await callTool('studio_commands', { ids: [STAMP.id] }, s.handle);
+    assert.deepEqual(schema.value.actions.map(entry => entry.id), [STAMP.id]);
+    assert.deepEqual(schema.value.actions[0].input, STAMP.input);
+    assert.equal(schema.value.actions[0].description, STAMP.description);
+    // The CLI reads the same index and the same schemas.
+    const listed = await cli(['commands'], s);
+    assert.equal(listed.code, 0, listed.stdout + listed.stderr);
+    assert.deepEqual(listed.json.actions, index.value.actions);
+    const described = await cli(['commands', '--ids', STAMP.id], s);
+    assert.equal(described.code, 0, described.stdout + described.stderr);
+    assert.deepEqual(described.json.actions, schema.value.actions);
+  } finally { await s.close(); }
+  console.log('PASS #438 acceptance 3: studio_commands and `cclay live commands` list the editor-only command with its label; ids fetch its schema');
+};
+
 cases['confirm'] = async () => {
   const s = await studio();
   try {
