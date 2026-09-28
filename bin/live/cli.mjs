@@ -32,6 +32,8 @@ const USAGE = `cclay live - drive a running CozyClay studio from a terminal
   cclay live verify --receipt <id> --checks placement,framing
                                          [--visual frame --out check.png]
   cclay live undo --receipt <id>
+  cclay live run <id> [--args '<json>']  any command the editor registers, admitted like
+                                         the agent's run_action; waits its declared timeout
   cclay live cmd <name> --args '<json>'   any live-protocol command
   cclay live tool <name> --args '<json>'  any registry tool, e.g. describe_shot
 
@@ -60,6 +62,7 @@ const VERBS = new Map([
 	["operate", { flags: ["--select", "--frame", "--mode", "--play", "--pause"] }],
 	["verify", { flags: ["--receipt", "--checks", "--visual", "--out"] }],
 	["undo", { flags: ["--receipt"] }],
+	["run", { flags: ["--args"], argument: "command id" }],
 	["cmd", { flags: ["--args"], argument: "command name" }],
 	["tool", { flags: ["--args"], argument: "tool name" }],
 ]);
@@ -314,10 +317,10 @@ async function runVerb({ client, verb, spec, name, flags }) {
 			return { status: "unknown", reason: error.message };
 		}
 	};
-	const admitted = async (commandName, args) => {
-		const envelope = admissionEnvelope(commandName, args, (await command("inspect_studio", { scope: "selection" }))?.context);
+	const admitted = async (commandName, args, { context, options = forwarded } = {}) => {
+		const envelope = admissionEnvelope(commandName, args, context ?? (await command("inspect_studio", { scope: "selection" }))?.context);
 		try {
-			const value = await command(commandName, envelope);
+			const value = await command(commandName, envelope, options);
 			if (value?.ok === false) throw receiptFailure(value);
 			return value;
 		} catch (error) {
@@ -429,6 +432,15 @@ async function runVerb({ client, verb, spec, name, flags }) {
 	}
 
 	if (verb === "undo") return admitted("undo_edit", { receiptId: required(flags, "--receipt", verb) });
+
+	if (verb === "run") {
+		const args = flags.has("--args") ? jsonFlag(flags, "--args") : {};
+		// The editor declares the command: one read gives the context to admit
+		// at and the deadline it needs, which --timeout overrides.
+		const inspected = await command("inspect_studio", { scope: "actions", ids: [name] });
+		const deadline = timeoutMs ?? inspected?.actions?.find((row) => row.id === name)?.timeoutMs;
+		return admitted("run_action", { action: name, args }, { context: inspected?.context, options: deadline === undefined ? {} : { timeoutMs: deadline } });
+	}
 
 	if (verb === "cmd") return raw(() => command(name, flags.has("--args") ? jsonFlag(flags, "--args") : {}));
 
