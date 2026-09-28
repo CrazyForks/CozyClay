@@ -142,6 +142,30 @@ cases['mcp-run'] = async () => {
   console.log('PASS #438 acceptance 1: a command registered only in the editor runs through MCP studio_run and answers its bus receipt');
 };
 
+cases['cli-run'] = async () => {
+  const s = await studio();
+  try {
+    const before = s.f.binding.context();
+    const run = await cli(['run', STAMP.id, '--args', JSON.stringify({ note: 'cli' })], s);
+    assert.equal(run.code, 0, run.stdout + run.stderr);
+    const receipt = run.json;
+    validateReceipt(receipt);
+    assert.deepEqual({ action: receipt.action, status: receipt.status, output: receipt.output }, { action: STAMP.id, status: 'completed', output: { note: 'cli' } });
+    assert.deepEqual(receipt.host, identity(before.host), 'admitted in the open document');
+    // Arguments are the command's own schema, checked by the editor: a
+    // refusal is its receipt, with its code and exit status 1.
+    const refused = await cli(['run', STAMP.id, '--args', JSON.stringify({ note: '' })], s);
+    assert.equal(refused.code, 1, refused.stdout + refused.stderr);
+    assert.equal(refused.json?.error?.code, 'INVALID_ARGUMENT', refused.stdout);
+    assert.equal(refused.json.error.details.receipt.ok, false);
+    // Without --args the command runs with none.
+    const bare = await cli(['run', STAMP.id], s);
+    assert.equal(bare.code, 0, bare.stdout + bare.stderr);
+    assert.deepEqual(bare.json.output, { note: null });
+  } finally { await s.close(); }
+  console.log('PASS #438 acceptance 2: a command registered only in the editor runs through `cclay live run` and prints its bus receipt');
+};
+
 cases['confirm'] = async () => {
   const s = await studio();
   try {
