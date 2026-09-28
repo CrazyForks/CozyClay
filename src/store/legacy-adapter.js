@@ -30,7 +30,7 @@ function stateSession(port) {
 }
 
 export function createLegacyAdapter(domains) {
-  const sessions = new Map(), listeners = new Set(), historyListeners = new Set();
+  const sessions = new Map(), listeners = new Set(), historyListeners = new Set(), guards = new Set();
   const portFor = domain => {
     if (!Object.hasOwn(domains, domain)) fail('INVALID_ARGUMENT', `Unknown legacy domain: ${domain}`);
     return domains[domain];
@@ -74,6 +74,7 @@ export function createLegacyAdapter(domains) {
     catch (error) { return failed(error); }
   }
   function write(domain, update) {
+    for (const guard of guards) guard(domain);
     const port = portFor(domain), before = port.read();
     const next = typeof update === 'function' ? update(before) : update;
     if (next === before) return before;
@@ -84,6 +85,7 @@ export function createLegacyAdapter(domains) {
   }
   return {
     read: domain => portFor(domain).read(), write, beginAction, recordAction,
+    guardWrites(guard) { guards.add(guard); return () => guards.delete(guard); },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     subscribeHistory(listener) { historyListeners.add(listener); return () => historyListeners.delete(listener); },
     dispose() { for (const session of sessions.values()) session.cancel(); for (const release of subscriptions) release?.(); listeners.clear(); historyListeners.clear(); },

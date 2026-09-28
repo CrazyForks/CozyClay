@@ -2,23 +2,29 @@
 // here. Bus ports bind beginAction/recordAction; no Studio domain opts in here.
 import { createHistory, pushHistory, undoHistory, redoHistory } from './history.js';
 import { StudioProtocolError } from './studio-agent-protocol.js';
+import { copyAuthoredIntent, deepFreeze } from './store/authored-intent.js';
 
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
 
-export function createDocumentStore({ owned = {}, legacy } = {}) {
-  let slices = structuredClone(owned);
-  let snapshot = { revision: 0, domainRevisions: Object.fromEntries(Object.keys(owned).map(domain => [domain, 0])), slices };
+export function createDocumentStore({ owned = {}, legacy, dev = import.meta.env?.DEV ?? true } = {}) {
+  const freeze = value => dev ? deepFreeze(value) : value;
+  const copy = value => freeze(copyAuthoredIntent(value));
+  let slices = copy(owned);
+  let snapshot = freeze({ revision: 0, domainRevisions: Object.fromEntries(Object.keys(owned).map(domain => [domain, 0])), slices });
   let history = createHistory({ historyEntryId: null, snapshot: slices });
-  let active = null;
+  let active = null, running = 0;
   const listeners = new Set();
   const owns = domain => Object.hasOwn(slices, domain);
   const releaseLegacy = legacy?.subscribe(domain => { if (!owns(domain)) publish(slices, [domain]); });
+  const releaseGuard = legacy?.guardWrites(domain => {
+    if (owns(domain)) throw new TypeError(`Domain ${domain} is store-owned; write through the document store inside a bus run.`);
+  });
   function publish(next, changed = Object.keys(slices).filter(domain => slices[domain] !== next[domain])) {
     if (!changed.length) return;
     const domainRevisions = { ...snapshot.domainRevisions };
     for (const domain of changed) domainRevisions[domain] = (domainRevisions[domain] ?? 0) + 1;
-    slices = next;
-    snapshot = { revision: snapshot.revision + 1, domainRevisions, slices };
+    slices = freeze(next);
+    snapshot = freeze({ revision: snapshot.revision + 1, domainRevisions, slices });
     for (const listener of listeners) listener();
   }
   function beginAction(domain, targetId) {
@@ -27,7 +33,10 @@ export function createDocumentStore({ owned = {}, legacy } = {}) {
     const before = slices;
     const check = () => { if (active !== session) fail('STALE_TARGET', 'Document transaction is no longer current.'); };
     const session = {
-      run(fn) { check(); return fn(); },
+      // Permission ends at the synchronous publication boundary, not when an
+      // async preparation finishes. Jobs publish through context.commit; a
+      // retained session can explicitly re-enter with update after an await.
+      run(fn) { check(); running++; try { return fn(); } finally { running--; } },
       update(domain, update) { return session.run(() => write(domain, update)); },
       cancel({ restore = true } = {}) {
         if (active !== session) return false;
@@ -62,9 +71,11 @@ export function createDocumentStore({ owned = {}, legacy } = {}) {
   }
   function write(domain, update) {
     if (!owns(domain)) return legacy.write(domain, update);
+    if (dev && !running) throw new TypeError(`A store-owned ${domain} write requires a bus run.`);
     if (!active) return recordAction(domain, () => write(domain, update)).result;
+    if (!running) fail('TARGET_BUSY', 'A document transaction owns this write.');
     const next = typeof update === 'function' ? update(slices[domain]) : update;
-    if (next !== slices[domain]) publish({ ...slices, [domain]: structuredClone(next) });
+    if (next !== slices[domain]) publish({ ...slices, [domain]: copy(next) });
     return slices[domain];
   }
   // An id labels a transition INTO a snapshot. The oldest snapshot has no
@@ -81,14 +92,14 @@ export function createDocumentStore({ owned = {}, legacy } = {}) {
   }
   return {
     owns, read: domain => owns(domain) ? slices[domain] : legacy.read(domain), write, beginAction, recordAction,
-    dispose() { active?.cancel(); releaseLegacy?.(); listeners.clear(); },
+    dispose() { active?.cancel(); releaseLegacy?.(); releaseGuard?.(); listeners.clear(); },
     undo: () => step(false), redo: () => step(true),
     canUndo: id => !active && history.past.length > 0 && (id === undefined || history.present.historyEntryId === id),
     canRedo: () => !active && history.future.length > 0,
     getSnapshot: () => snapshot,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     isRetained: id => Boolean(id && retainedEntries().some(entry => entry.historyEntryId === id)),
-    history: () => history,
+    history: () => freeze(history),
     depths: () => ({ past: history.past.length, future: history.future.length }),
   };
 }
