@@ -28,7 +28,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
-import { LiveMutationUncertainError } from "./live-hub.mjs";
+import { LiveMutationUncertainError, MAX_COMMAND_TIMEOUT_MS } from "./live-hub.mjs";
 import { readMeshFromPath } from "./mesh-file.mjs";
 import { readMotionStream } from "../bin/agent/motion-runtime.mjs";
 import { motionPreflightReason, startMotionRequest } from "../src/analytics.js";
@@ -99,6 +99,7 @@ const liveWorkspaceTools = new Set([
 	"set_camera", "frame_shot", "add_character", "place_character", "remove_character",
 	"focus_character", "place_object", "import_mesh", "group_objects", "set_prompt_blocks", "generate_motion", "update_object",
 	"remove_object", "apply_batch", "add_scene", "switch_scene", "open_project", "capture_frame", "load_motion",
+	"studio_run",
 ]);
 const MAX_CAPTURE_BYTES = 1_000_000;
 const CAPTURE_ARTIFACT_TTL_MS = 10 * 60_000;
@@ -166,7 +167,34 @@ const TOOL_ANNOTATIONS = Object.freeze({
 	switch_scene: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	open_project: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
 	save_project: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+	// Whatever the editor registers: some commands delete, export or spend a
+	// paid generation, and those answer CONFIRMATION_REQUIRED instead of running.
+	studio_run: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
 });
+
+/** The document identity a Studio command is admitted in. */
+const STUDIO_IDENTITY_KEYS = ["workspaceId", "documentEpoch", "sceneId", "sceneEpoch"];
+
+/** One registered editor command through the editor's own bus, admitted at
+ * the open document and its current revision like the agent's run_action. Its
+ * declaration (read from the editor, never from this server) sets the hub
+ * deadline unless the caller gives one. */
+const runStudioCommand = async ({ action, args, expectedRevision, commandId, timeoutMs }) => {
+	const workspaceHandle = liveWorkspace.getStore();
+	const inspected = await liveHub.command("inspect_studio", { scope: "actions", ids: [action] }, workspaceHandle);
+	const context = inspected?.context;
+	if (!context?.host || !Number.isSafeInteger(context.revision?.scene)) throw new Error("The editor did not return a Studio context to admit this command against.");
+	const declared = inspected.actions?.find((row) => row.id === action);
+	const receipt = await liveHub.command("run_action", {
+		name: "run_action",
+		args: { action, args: args ?? {} },
+		commandId: commandId ?? randomUUID(),
+		host: Object.fromEntries(STUDIO_IDENTITY_KEYS.map((key) => [key, context.host[key]])),
+		expectedRevision: expectedRevision ?? context.revision.scene,
+	}, workspaceHandle, { timeoutMs: timeoutMs ?? declared?.timeoutMs });
+	// A refusal is the editor's receipt: its code and recovery are the answer.
+	return { content: [{ type: "text", text: JSON.stringify(receipt) }], ...(receipt?.ok === false ? { isError: true } : {}) };
+};
 
 const scene = () => activeScene(state.doc.scenes, state.doc.activeSceneId);
 const stage = () => scene().stage;
@@ -1970,6 +1998,35 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					return text(`Could not write ${full}: ${error.message}`);
 				}
 				return text(`Saved "${state.name}" to ${full} (${state.doc.scenes.length} scene(s)).`);
+			},
+		),
+
+		tool(
+			"studio_run",
+			{
+				title: "Run a Studio command",
+				description:
+					"Run one command the connected editor registers, by id, through the editor's command bus: the same door its UI and agent use. " +
+					"args must match the command's input schema (read it with studio_commands and ids). The command is admitted at the open " +
+					"document and its current revision unless expectedRevision is given, and answers the editor's JSON receipt: status, summary, " +
+					"affectedIds, undo, and output for a job. A refusal is a receipt with ok false and its code: STALE_SCENE means read again and " +
+					"re-issue; CONFIRMATION_REQUIRED means only the user can run it from the Studio. Reusing a commandId returns the receipt of " +
+					"that earlier call instead of running again.",
+				inputSchema: {
+					action: z.string().min(1).max(120).describe("command id, as studio_commands lists it"),
+					args: z.record(z.string(), z.unknown()).default({}).describe("the command's arguments, matching its input schema"),
+					expectedRevision: z.number().int().min(0).optional().describe("the scene revision the command is admitted at; defaults to the current one"),
+					commandId: z.string().min(1).max(120).optional().describe("idempotency key; a repeated id answers the first call's receipt"),
+					timeoutMs: z.number().int().min(1).max(MAX_COMMAND_TIMEOUT_MS).optional().describe("how long the hub waits; defaults to the command's declared timeout"),
+				},
+			},
+			async (args) => {
+				if (!liveHub?.connected) return liveError(new Error(noLiveEditor("studio_run requires a connected CozyClay editor.")));
+				try {
+					return await runStudioCommand(args);
+				} catch (error) {
+					return liveError(error);
+				}
 			},
 		),
 	];
