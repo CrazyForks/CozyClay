@@ -197,7 +197,7 @@ expect(
 );
 expect(
 	"a deleted inactive motion target cannot clear the active editing motion",
-	app.includes("if (targetCharacterId === loadedLayerCharRef.current) setMotion(null);"),
+	app.includes("if (targetCharacterId === loadedLayerCharRef.current && !commandContext) setMotion(null);"),
 );
 // Given B owns a completed motion while A becomes the editing buffer during
 // decode or the B-rig wait, when completion resumes, then B keeps both its
@@ -211,7 +211,7 @@ expect(
 // clip and prompts and an A failure cannot clear B's motion.
 expect(
 	"an active B receives its own completion after an A to B selection interleaving",
-	app.includes("const targetCharacterId = args.characterId ?? liveStateRef.current.activeCharacterId;") && app.includes("const targetPromptClips = clips;") && app.includes("targetCharacterId,") && app.includes("if (targetCharacterId === loadedLayerCharRef.current) setMotion(null);"),
+	app.includes("const targetCharacterId = args.characterId ?? liveStateRef.current.activeCharacterId;") && app.includes("const targetPromptClips = clips;") && app.includes("targetCharacterId,") && app.includes("if (targetCharacterId === loadedLayerCharRef.current && !commandContext) setMotion(null);"),
 );
 expect("individual block generation action is removed", !app.includes("Generate selected block"));
 expect("Prompt Block edits stay synced with ARDY input", app.includes("changePromptClip(selectedPromptId") && app.includes("setArdyPrompt(event.target.value)"));

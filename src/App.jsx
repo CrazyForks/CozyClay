@@ -960,7 +960,7 @@ export function createStudioAppBinding(ports) {
 	const calibrationContentKey = value => value && typeof value === "object" ? JSON.stringify(value) : null;
 	const tokens = new Map(), receipts = new Map(), jobs = new Map(), images = new Map();
 	let owner = null, commands = null, motion = null, journal = null, actionBus = null;
-	const domainKeys = new Map(), domainRevisions = {}; 
+	const domainKeys = new Map(), domainRevisions = {};
 	let authoredKey, physicsKey, viewKey, observedSceneRevision = ports.revision.current;
 	let physicsRevision = 0, viewRevision = 0;
 	function refresh() {
