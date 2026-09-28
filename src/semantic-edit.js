@@ -90,6 +90,7 @@ export function createSemanticState(initial, publish, observe, domain) {
 		const before = current;
 		const after = typeof update === "function" ? update(before) : update;
 		current = after;
+		if (authored && globalThis.__COZYCLAY_BUS_RUN_DEPTH !== true) console.warn(`[bus] semantic edit for ${domain} called outside a bus run`);
 		publish(after);
 		if (authored) observe(domain, before, after);
 		return after;
