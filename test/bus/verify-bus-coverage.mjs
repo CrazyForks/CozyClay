@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
 import { parseSync } from "rolldown/experimental";
+import { createSemanticState } from "../../src/semantic-edit.js";
 
 const WRITER_NAMES = new Set([
   "setStyle", "setKeyLight", "setEnvironmentImage", "setShotAspectKey", "setSensorFormat",
@@ -102,6 +103,15 @@ test("aliases and computed live references count", () => {
 
 test("ratchet baseline is non-increasing", () => {
   assert.deepEqual(applyRatchet({ Panel: 2 }, { Panel: 1 }), ["Panel: 2 exceeds baseline 1"]);
+});
+
+test("semantic edit warns when called outside a bus run", () => {
+  const warnings = [];
+  const previous = console.warn;
+  console.warn = message => warnings.push(String(message));
+  try { createSemanticState(0, () => {}, () => {}, "stage").edit(1); }
+  finally { console.warn = previous; }
+  assert.equal(warnings.some(message => message.includes("outside a bus run")), true);
 });
 
 export { scanSource, scanTree, applyRatchet };
