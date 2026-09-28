@@ -177,7 +177,7 @@ export function createStudioAppBinding(ports) {
 		return [...catalogue, ...imported.values()];
 	}
 	function context() {
-		const s = refresh(), entities = entityProjection(s);
+		const s = refresh(), entities = entityProjection(s), registry = ports.actions?.();
 		const shot = s.shots.find(row => row.id === s.selectedShotId) ?? shotAtFrame(s.shots, s.view.frame);
 		const range = frameRange;
 		return buildStudioContext({ schema: "studio-context-v1", host: { surface: "studio", ...s.host, workspaceHandle: s.workspaceHandle },
@@ -191,7 +191,9 @@ export function createStudioAppBinding(ports) {
 			shots: s.shots.map(row => ({ id: row.id, name: row.name, range: range(row), keyCount: row.cameraKeys.length })), shotsTruncated: false,
 			assets: assetList(s), recentReceipts: [...receipts.values()].filter(r => r.ok).reverse().slice(0, 3).map(r => ({ id: r.receiptId, summary: r.status, canUndoDirect: ports.canUndo(r) })),
 			jobs: [...jobs.values()].slice(-8), capabilities: { profile: "studio-slice-1", tools: STUDIO_TOOL_FAMILIES,
-				rigReady: Boolean(s.targets.get(s.activeCharacterId)?.rig), cameraReady: Boolean(s.camera), bridgeReady: s.bridgeReady } });
+				rigReady: Boolean(s.targets.get(s.activeCharacterId)?.rig), cameraReady: Boolean(s.camera), bridgeReady: s.bridgeReady },
+			// Every registered command; buildStudioContext keeps only its id/label index.
+			...(registry ? { actions: registry.list() } : {}) });
 	}
 	function readTarget(binding) {
 		const s = refresh(), target = s.targets.get(binding.characterId);
@@ -381,9 +383,13 @@ export function createStudioAppBinding(ports) {
 			// Every scope carries the context: its revision is what the agent's next
 			// command is admitted at, so a scope without it leaves that admission stale.
 			if (command.args.scope === "catalogue") return { context: c, ...studioObjectCatalogue() };
-			// Discovery for run_action: every registered action, available ones with
-			// their description and input schema, unavailable ones with the reason.
-			if (command.args.scope === "actions") return { context: c, actions: ports.actions?.()?.list() ?? [] };
+			// Discovery for run_action: every registered action with its label, kind,
+			// exposure and availability (the reason when unavailable). Schemas are on
+			// request: ids answer those actions' full declarations, input included.
+			if (command.args.scope === "actions") {
+				const actions = ports.actions?.()?.list() ?? [];
+				return { context: c, actions: command.args.ids ? actions.filter(row => command.args.ids.includes(row.id)) : actions.map(({ input, description, ...row }) => row) };
+			}
 			const s = refresh();
 			const wanted = row => (!args.ids || args.ids.includes(row.id)) && (!args.query || Boolean(row.name?.includes(args.query)));
 			if (inspectScopes[command.args.scope]) return { context: c, scope: command.args.scope, ...inspectScopes[command.args.scope](s, wanted) };

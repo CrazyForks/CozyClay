@@ -208,6 +208,10 @@ const entity = object({ id, kind: choices(["object", "character", "rig"]), token
 // One compact row per entity, so the model sees the whole scene even when
 // only 24 rows carry full detail.
 const indexRow = object({ id, kind: choices(["object", "character", "rig"]) }, { name, position: vec3 });
+// One compact row per registered Studio command: what run_action can call.
+// Its schema is on request (inspect_studio scope "actions" with ids); the
+// declared generation and hub timeout ride along for the sidecar's gate.
+const actionIndexRow = object({ id }, { label: name, generation: literal("motion"), timeoutMs: integer(1, 300_000) });
 const shotSummary = object({ id, name, range, keyCount: integer() }, { subjectIds: ids(24, 0) });
 const currentShot = object({ id, name, range, mode: choices(STUDIO_VARIANTS.shotModes) }, { subjectIds: ids(24, 0) });
 const camera = object({ position: vec3, lookAt: vec3, focalMm: positive, sensorId: id, slate: name });
@@ -224,7 +228,7 @@ const contextSchema = object({
 	shots: array(shotSummary, 8), shotsTruncated: bool, assets: array(assetSummary, STUDIO_CONTEXT_LIMITS.assets),
 	recentReceipts: array(object({ id, summary: name, canUndoDirect: bool }), 3), jobs: array(jobSummary, 8),
 	capabilities: object({ profile: literal("studio-slice-1"), tools: array(choices(STUDIO_TOOL_FAMILIES), STUDIO_TOOL_FAMILIES.length, 0, true) }, { rigReady: bool, cameraReady: bool, bridgeReady: bool }),
-}, { entityIndex: array(indexRow, STUDIO_CONTEXT_LIMITS.entityIndex) });
+}, { entityIndex: array(indexRow, STUDIO_CONTEXT_LIMITS.entityIndex), actionIndex: array(actionIndexRow, 512) });
 const guardSchema = object({ ...identityFields, targetId: id, token: id });
 const efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 // Pictures the author pasted or dropped into the composer (#367). Inline bytes

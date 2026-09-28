@@ -399,6 +399,8 @@ export class LiveHub {
 		if (!socket || socket.readyState !== WebSocket.OPEN) throw hubError("STALE_HANDLE", `Unknown or stale live workspace handle "${handle}".`);
 
 		const id = randomUUID();
+		// The caller's per-call deadline (a controller frame's timeoutMs, or a
+		// command's declared one), capped at the ceiling; else the name's default.
 		const bound = Number.isFinite(timeoutMs) && timeoutMs > 0
 			? Math.min(timeoutMs, motionCandidateCommands.has(name) ? MOTION_COMMAND_TIMEOUT_MS : MAX_COMMAND_TIMEOUT_MS)
 			: LiveHub.commandTimeoutMs(name);
@@ -411,7 +413,8 @@ export class LiveHub {
 					: hubError("TIMEOUT", message);
 				reject(error);
 			}, bound);
-			this.pending.set(id, { name, socket, resolve, reject, timer });
+			// Each waiting frame keeps the deadline it runs under.
+			this.pending.set(id, { name, socket, resolve, reject, timer, timeoutMs: bound });
 			try {
 				socket.send(JSON.stringify({ type: "cmd", id, name, args }));
 			} catch (error) {

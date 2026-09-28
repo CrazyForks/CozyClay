@@ -529,7 +529,9 @@ const implementations={
   assert.deepEqual(listed.actions.map(a=>a.id).sort(),[...studioActions.STUDIO_ACTION_IDS].sort(),'the App registers every declared action');
   const byId=Object.fromEntries(listed.actions.map(a=>[a.id,a]));
   assert.equal(byId['shot.create'].available,true,JSON.stringify(byId['shot.create']));
-  assert.deepEqual(byId['shot.create'].input,studioActions.studioActionDeclaration('shot.create').input);
+  assert.equal(byId['shot.create'].input,undefined,'the listing carries no schema');
+  const [described]=(await f.call('inspect_studio',{scope:'actions',ids:['shot.create']})).actions;
+  assert.deepEqual(described.input,studioActions.studioActionDeclaration('shot.create').input,'ids answer the schema');
   assert.equal(byId['shot.remove'].available,false);assert.equal(typeof byId['shot.remove'].reason,'string');
   assert.equal(byId['motion.generateAllBlocks'].available,false,'there are no prompt blocks to generate');
   const before=f.binding.refresh().revision;

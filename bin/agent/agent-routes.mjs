@@ -479,7 +479,9 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		// One motion generation per user message, whichever path starts it:
 		// generate_motion below and a run_action job action share this gate.
 		const generation = { used: false, failures: 0 };
-		const tools = createStudioTools({ liveHub: hub, workspaceHandle: value.context.host.workspaceHandle, session: { signal: controller.signal, admission, generation }, resolveImage: async (id, correlation) => hub.command("resolve_studio_image", { imageId: id, ...correlation }, value.context.host.workspaceHandle) });
+		// The editor's command index (authoritative context) declares each action's
+		// generation and hub timeout; no sidecar list of actions exists.
+		const tools = createStudioTools({ liveHub: hub, workspaceHandle: value.context.host.workspaceHandle, session: { signal: controller.signal, admission, generation, actionIndex: current?.actionIndex ?? [] }, resolveImage: async (id, correlation) => hub.command("resolve_studio_image", { imageId: id, ...correlation }, value.context.host.workspaceHandle) });
 		const motion = async args => {
 			if (generation.used) throw new StudioProtocolError("GENERATION_LIMIT", "One motion generation per user message. Report this result and ask the user before generating again.");
 			if ((generation.failures ?? 0) >= 2) throw new StudioProtocolError("GENERATION_LIMIT", "Two motion generation attempts already failed in this user message. Report both failures to the user and ask before generating again.");

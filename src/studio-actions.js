@@ -173,11 +173,14 @@ export function createStudioActionRegistry({ readState } = {}) {
 		ids() { return [...entries.keys()]; },
 		state() { return readState?.(); },
 		/** Available actions carry their description and input schema;
-		 * unavailable ones carry the reason instead of arguments. */
+		 * unavailable ones carry the reason instead of arguments. The declared
+		 * hub timeout and generation travel with each, so no caller keeps its
+		 * own copy of them. */
 		list(state = readState?.()) {
 			return [...entries.values()].map(entry => {
 				const verdict = availability(entry, state);
-				const row = { id: entry.id, label: entry.label, kind: entry.kind, description: entry.description, exposure: entry.exposure };
+				const row = { id: entry.id, label: entry.label, kind: entry.kind, description: entry.description, exposure: entry.exposure,
+					...(entry.timeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs }), ...(entry.generation ? { generation: entry.generation } : {}) };
 				return verdict === true ? { ...row, available: true, input: entry.input } : { ...row, available: false, reason: verdict };
 			});
 		},

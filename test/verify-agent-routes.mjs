@@ -1962,8 +1962,11 @@ for (const [index, [label, first, second]] of [
 ].entries()) {
 	const { contextFixture, envelopeFixture } = await import("./verify-studio-agent-protocol.mjs");
 	let admissionsMixed = 0; const hubMixed = [];
+	// The editor's context declares which actions are motion generations.
+	const { studioActionIndex } = await import("../src/studio-agent-context.js");
+	const { STUDIO_ACTIONS } = await import("../src/studio-actions.js");
 	const runtimeMixed = {
-		readContext: async () => contextFixture(),
+		readContext: async () => ({ ...contextFixture(), actionIndex: studioActionIndex(STUDIO_ACTIONS) }),
 		admit: () => ({ jobId: `mixed-job-${++admissionsMixed}`, commandId: `mixed-command-${admissionsMixed}`, state: "queued" }),
 		subscribe: () => () => {},
 		start: async () => ({ ok: true, status: "installed", mutated: true, receiptId: "mixed-receipt" }),

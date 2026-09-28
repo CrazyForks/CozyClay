@@ -33,6 +33,8 @@ const EXPECTED_ANNOTATIONS = Object.freeze({
 	switch_scene: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	open_project: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
 	save_project: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+	studio_commands: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+	studio_run: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
 });
 const SIBLING_PAIRS = [
 	["place_character", "add_character"],

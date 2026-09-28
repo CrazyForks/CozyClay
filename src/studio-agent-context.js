@@ -35,11 +35,21 @@ export function validateStudioCursor(cursor, context) {
 	return parts[3];
 }
 
-// Caller supplies a projection of authoritative refs, not the project document.
+/** The compact command index the turn carries: id and label for every
+ * registered command, plus the declared generation and hub timeout. The
+ * description and input schema stay out; the agent reads them on request. */
+export function studioActionIndex(actions) {
+	return actions.map(({ id, label, generation, timeoutMs }) => ({ id, ...(label ? { label: [...label].slice(0, 120).join("") } : {}),
+		...(generation ? { generation } : {}), ...(timeoutMs === undefined ? {} : { timeoutMs }) }));
+}
+
+// Caller supplies a projection of authoritative refs, not the project document,
+// and optionally `actions`, the registry's list(), which becomes actionIndex.
 // The expanded arrays are validated against the same closed row schemas BEFORE
 // truncation so forbidden data cannot hide in an omitted row.
-export function buildStudioContext(input) {
+export function buildStudioContext({ actions, ...input }) {
 	const c = structuredClone(input);
+	if (actions) c.actionIndex = studioActionIndex(actions);
 	const boundDisplay = value => {
 		if (!value || typeof value !== "object") return;
 		for (const [key, child] of Object.entries(value)) {
@@ -87,7 +97,8 @@ export function buildStudioContext(input) {
 		while (raw.shots.length && raw.shots.at(-1).id !== raw.shot?.id && utf8ByteLength(escapeContext(raw)) > STUDIO_CONTEXT_MAX_BYTES) { raw.shots.pop(); raw.shotsTruncated = true; }
 		while (raw.assets.length && utf8ByteLength(escapeContext(raw)) > STUDIO_CONTEXT_MAX_BYTES) raw.assets.pop();
 		while (raw.recentReceipts.length && utf8ByteLength(escapeContext(raw)) > STUDIO_CONTEXT_MAX_BYTES) raw.recentReceipts.pop();
-		// Index rows go last, and never one for a detailed entity.
+		// Entity index rows go last, and never one for a detailed entity. The
+		// command index is never trimmed: a command it omits could not be found.
 		const kept = new Set(raw.entities.map(e => e.id));
 		for (let i = raw.entityIndex.length - 1; i >= 0 && utf8ByteLength(escapeContext(raw)) > STUDIO_CONTEXT_MAX_BYTES; i--) if (!kept.has(raw.entityIndex[i].id)) raw.entityIndex.splice(i, 1);
 	}
