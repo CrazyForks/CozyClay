@@ -218,7 +218,7 @@ export function createCommandBus({ registry, ports }) {
       const invoke = () => {
         const value = registry.invoke(entry, validated, context);
         if (!value?.then) return value;
-        if (job) job.background = request.wait === false;
+        if (job) job.background = request.wait === false || (entry.background === true && request.wait !== true);
         const deadline = new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true }));
         return Promise.race([value, deadline]);
       };

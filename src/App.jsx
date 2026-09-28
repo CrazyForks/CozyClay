@@ -687,13 +687,14 @@ export function createStudioAppActions(handlersRef) {
 	shotAction("shot.clearCameraRail", state => state.shots.some(shot => createCameraBlock(shot.camera).cameraRail) || "No shot has a camera rail; lay one with shot.setCameraRail.",
 		({ shotId }) => { shotOf(shotId); h().clearShotCameraRail(shotId); });
 	shotAction("shot.reorder", hasShots, ({ shotId, startFrame }) => { shotOf(shotId); h().moveTimelineShot(shotId, startFrame); });
-	registry.register({ ...studioActionDeclaration("motion.generateAllBlocks"),
+	registry.register({ ...studioActionDeclaration("motion.generateAllBlocks"), target: () => h().state().activeCharacterId,
 		available: state => state.generating ? "A motion generation is already running."
 			: !state.motionReady ? "The motion backend is not ready."
 				: state.promptBlockCount === 0 ? "The active character has no prompt block with text; write them with patch_elements character.promptBlocks." : true,
-		run: () => {
+		run: (_args, context) => {
 			const { activeCharacterId, promptBlockCount } = h().state();
-			const shown = h().runAllPromptBlocks() ?? [];
+			const shown = h().runAllPromptBlocks(context) ?? [];
+			if (shown?.then) return shown.then(() => ({ affectedIds: activeCharacterId ? [activeCharacterId] : [], summary: `Generated motion from ${promptBlockCount} prompt blocks.` }));
 			// The generation queues synchronously or not at all; when it does not,
 			// the editor's last toast names the refusal (rig not loaded, a root
 			// waypoint outside the clip, an over-long block, a line-edit draft).
@@ -799,9 +800,9 @@ export function createStudioAppActions(handlersRef) {
 	registry.register({ ...studioActionDeclaration("export.shotVideo"),
 		available: state => state.exporting ? "An export is already running; wait for it to finish."
 			: state.canExportVideo || "There is nothing to record yet: add a shot (shot.create), camera keys or a motion take first.",
-		run: async ({ shotId }) => {
+		run: async ({ shotId }, context) => {
 			const shot = shotId ? shotOf(shotId) : null;
-			const result = await h().exportShotVideo({ shotId: shotId ?? null });
+			const result = await h().exportShotVideo({ shotId: shotId ?? null }, context);
 			if (!result?.fileName) fail("TARGET_NOT_READY", "The video export did not finish; the editor's export panel shows why and offers Retry.");
 			return { affectedIds: shot ? [shot.id] : [], output: { fileName: result.fileName, frameCount: result.frameCount },
 				summary: `Recorded ${shot ? shotLabel(shot) : "the shot"} to ${result.fileName} (${result.frameCount} frames); the browser was asked to download it.` };
@@ -811,7 +812,7 @@ export function createStudioAppActions(handlersRef) {
 	// generate() runs once React has rendered it; a commit already under way can
 	// predate it, so the wait repeats until the render shows the choice.
 	registry.register({ ...studioActionDeclaration("ai.prepareShot"), available: () => true,
-		run: async ({ mode, model }) => {
+		run: async ({ mode, model }, context) => {
 			const current = h().state().aiShot, wanted = { mode: mode ?? current.mode, imageModel: model ?? current.imageModel };
 			if (model && wanted.mode !== "image") fail("INVALID_ARGUMENT", `model picks an image model, but this would be a ${wanted.mode} prompt; omit model or pass mode "image".`);
 			const rendered = () => { const { aiShot } = h().state(); return aiShot.mode === wanted.mode && aiShot.imageModel === wanted.imageModel; };
@@ -823,6 +824,7 @@ export function createStudioAppActions(handlersRef) {
 					await h().afterRender();
 				}
 			}
+			context?.check();
 			const result = h().generate();
 			const shot = result.shot && { id: result.shot.id, name: result.shot.name, range: { startFrame: result.shot.startFrame, endFrameExclusive: result.shot.endFrame + 1 } };
 			const referenceFrames = (result.frame ? 1 : 0) + (result.frameB ? 1 : 0);
@@ -832,26 +834,26 @@ export function createStudioAppActions(handlersRef) {
 	// The live import_asset path (validate, store the bytes, ONE atomic store
 	// entry), fed a data URL; an http(s) source is fetched into one first.
 	registry.register({ ...studioActionDeclaration("asset.import"), available: () => true,
-		run: async ({ source, name, placeAs }) => {
+		run: async ({ source, name, placeAs }, context) => {
 			let dataUrl = source;
 			if (!source.startsWith("data:")) {
 				try { dataUrl = await h().fetchImportSource(source); }
 				catch (error) { fail("TARGET_NOT_READY", `Could not fetch the source (${error?.message || error}); its server must allow cross-origin reads.`); }
 			}
 			let imported;
-			try { imported = await h().importAsset({ name, placeAs, dataUrl }); }
+			try { imported = await h().importAsset({ name, placeAs, dataUrl }, context); }
 			catch (error) { fail("INVALID_ARGUMENT", `Not imported: ${error?.message || error}`); }
 			return { affectedIds: [imported.objectId], summary: `Imported ${name} as a ${placeAs} (object ${imported.objectId}, asset ${imported.assetId}).` };
 		} });
 	// AI-video motion: the agent panel's Generate motion (generateFalMotion
 	// "act"), awaited to its clip. The Fal card shows every failure it meets, so
 	// a refusal is silent in the UI and tells the model the reason in English.
-	registry.register({ ...studioActionDeclaration("motion.generateFromVideo"),
+	registry.register({ ...studioActionDeclaration("motion.generateFromVideo"), domain: "motion", target: () => h().state().activeCharacterId,
 		available: ({ falMotion }) => !falMotion.enabled ? "AI video motion (Fal) is not enabled for this account."
 			: !["idle", "done", "error", "failed"].includes(falMotion.status) ? "An AI video motion generation is already running; wait for it to finish."
 				: falMotion.dailyRemaining === 0 ? "The account's daily AI video generations are used up." : true,
-		run: async ({ instruction }) => {
-			const outcome = await h().generateFalMotion("act", instruction);
+		run: async ({ instruction }, context) => {
+			const outcome = await h().generateFalMotion("act", instruction, context);
 			if (outcome.failed) fail("TARGET_NOT_READY", outcome.failed);
 			const { job, footage, dailyRemaining } = outcome;
 			if (!job.video?.url) fail("TARGET_NOT_READY", "The AI video model finished without returning a video.");
@@ -912,6 +914,7 @@ export function createStudioAppActions(handlersRef) {
 	// that would need either is refused before anything is attempted. The save
 	// path itself shows its own dialog and failures, so refusals stay silent.
 	registry.register({ ...studioActionDeclaration("project.save"), available: () => true,
+		requiresConfirmation: state => state.project.hasFile || state.project.fileAccess,
 		run: async () => {
 			const { project } = h().state();
 			if (!project.gesture && project.name !== null && project.fileAccess) {
@@ -5388,7 +5391,7 @@ export default function App() {
 			// object history store — ONE applyAtomic is the whole gesture, so one
 			// Ctrl+Z removes it. That is the point: the Workflow-tab sync writes
 			// the document without touching undo; this must not repeat that.
-			import_asset: async (args) => {
+			import_asset: async (args, commandContext) => {
 				if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
 				if (args.placeAs === "mesh") {
 					const dataUrl = args.dataUrl;
@@ -5448,6 +5451,7 @@ export default function App() {
 						object = updateSceneObject([object], object.id, { height: args.height })[0];
 					}
 					if (Number.isFinite(args.y)) object.y = args.y;
+					commandContext?.check();
 					applyObjectMutation((objects) => [...objects, object]);
 					return { assetId: asset.id, objectId: object.id };
 				}
@@ -5485,6 +5489,7 @@ export default function App() {
 					placement,
 				);
 				if (!object) throw new Error("Could not create the cutout object");
+				commandContext?.check();
 				applyObjectMutation((objects) => [...objects, object]);
 				return { assetId: asset.id, objectId: object.id };
 			},
@@ -6362,7 +6367,7 @@ export default function App() {
 	 *  motion the timeline extent ignores shots and falls back to the whole
 	 *  production duration, so a 40-frame static shot must record its own
 	 *  [startFrame, endFrame] range instead of 360 frames of held pose. */
-	async function exportShotVideo({ download = true, shotId = null } = {}) {
+	async function exportShotVideo({ download = true, shotId = null } = {}, commandContext = null) {
 		if (recRef.current) return null;
 		const atPlayhead = shotIndexAtFrame(shots, tlFrame);
 		const target = shotId ? shots.find((entry) => entry.id === shotId) : shots[atPlayhead >= 0 ? atPlayhead : 0] ?? null;
@@ -6380,7 +6385,12 @@ export default function App() {
 		const range = target && (shotId || !motion)
 			? { startFrame: target.startFrame, endFrame: target.endFrame }
 			: { startFrame: 0, endFrame: Math.max(0, currentRecordFrameCount() - 1) };
-		return executeExportRequest(exportRequest("video", (job) => runShotExport({ ...range, download }, job), { exportShots, download }));
+		return executeExportRequest(exportRequest("video", async (job) => {
+			const abort = () => job.controller.abort(commandContext.signal.reason);
+			commandContext?.signal.addEventListener("abort", abort, { once: true });
+			try { commandContext?.signal.throwIfAborted(); return await runShotExport({ ...range, download }, job); }
+			finally { commandContext?.signal.removeEventListener("abort", abort); }
+		}, { exportShots, download }));
 	}
 
 	async function exportDepthVideo(shotId = null) {
@@ -6852,7 +6862,7 @@ export default function App() {
 	 * answer says what happened: `{ failed }` with the reason in English, or the
 	 * finished job, the footage it was ingested as (null when ingest failed) and
 	 * the account's daily generations left. */
-	async function generateFalMotion(kind = "interpolate", instructionOverride = null) {
+	async function generateFalMotion(kind = "interpolate", instructionOverride = null, commandContext = null) {
 		if (!falMotionEnabled) {
 			showFalMotionLock();
 			return { failed: "AI video motion (Fal) is not enabled for this account." };
@@ -6886,6 +6896,7 @@ export default function App() {
 			: buildH3MotionPrompt(description || (kind === "interpolate" ? "" : "Make the character perform the requested action."), { interpolate: kind === "interpolate" });
 		setFalMotion((current) => ({ ...current, status: "submitting", error: "", job: null }));
 		try {
+			const fetchImpl = commandContext ? (url, options) => fetch(url, { ...options, signal: commandContext.signal }) : undefined;
 			const submitted = await submitFalMotion({
 				kind,
 				stillA: source.a?.dataUrl,
@@ -6893,13 +6904,15 @@ export default function App() {
 				still: source.a?.dataUrl,
 				prompt,
 				duration: source.duration ?? FAL_MOTION_MIN_DURATION,
-			});
+			}, fetchImpl);
 			const id = submitted?.job?.id;
 			if (!id) throw Object.assign(new Error(ko("생성 작업 ID를 받지 못했어요.", "The server did not return a motion job ID.")), { reason: "The motion server did not return a job id." });
 			setFalMotion((current) => ({ ...current, status: "queued", job: submitted.job, dailyRemaining: submitted.dailyRemaining }));
 			const finished = await waitForFalMotionJob(id, {
+				fetchImpl,
 				onUpdate: (job) => setFalMotion((current) => ({ ...current, job, status: job?.status ?? current.status })),
 			});
+			commandContext?.check();
 			const job = finished?.job;
 			if (job?.status !== "done") throw Object.assign(new Error(job?.error || ko("Fal 생성에 실패했어요.", "Fal motion generation failed.")), job?.error ? {} : { reason: "The AI video generation failed." });
 			setFalMotion((current) => ({ ...current, job, status: "done", dailyRemaining: finished.dailyRemaining }));
@@ -6910,7 +6923,7 @@ export default function App() {
 				// Put the completed clip through the same probe/ingest path as a
 				// manually supplied URL so GVHMR sees measured fps, duration and
 				// a ready extraction card without another generation request.
-				footage = (await ingestFootage(motionSource)) ?? null;
+				footage = (await ingestFootage(motionSource, commandContext)) ?? null;
 				setResult({
 					mode: "video",
 					modelLabel: "Fal H3 Max Turbo",
@@ -6934,6 +6947,7 @@ export default function App() {
 			}
 			return { job, footage, dailyRemaining: finished.dailyRemaining ?? null };
 		} catch (error) {
+			if (commandContext && (commandContext.signal.aborted || error.code === "STALE_TARGET")) throw error;
 			setFalMotion((current) => ({ ...current, status: "error", error: error.message || String(error) }));
 			return { failed: error.reason ?? `The AI video generation failed: ${error.message || error}` };
 		}
@@ -7515,7 +7529,7 @@ export default function App() {
 	/** Download (when remote), decode, measure, then size the timeline from what
 	 *  was actually read. Each run carries a token so a slow first source can
 	 *  never land its numbers after a second one replaced it. */
-	async function ingestFootage(source) {
+	async function ingestFootage(source, commandContext = null) {
 		const run = multiModelRunRef.current + 1;
 		multiModelRunRef.current = run;
 		const live = () => multiModelRunRef.current === run;
@@ -7555,6 +7569,7 @@ export default function App() {
 				knownFps: Number.isFinite(source.fps) ? source.fps : null,
 			});
 			if (!live()) return;
+			commandContext?.check();
 			const footage = { ...probed, bytes, objectUrl, blob, bridgeId: source.bridgeId ?? null };
 			setMultiModelFootage(footage);
 			setMultiModelStage("ready");
@@ -7571,6 +7586,7 @@ export default function App() {
 				: `Ingested ${source.name} — ${footage.frames} frames @ ${footage.fps} fps`);
 			return footage;
 		} catch (error) {
+			if (commandContext && (commandContext.signal.aborted || error.code === "STALE_TARGET")) throw error;
 			if (!live()) return;
 			const code = error?.message ?? String(error);
 			setMultiModelStage("error");
@@ -7813,7 +7829,7 @@ export default function App() {
 		// load toast, the auto-drop toast, clearing the IK keys, snapping the
 		// playhead back to 0 — is an announcement about a take CHANGING. A
 		// preview is the same take seen a second time, so it makes none of them.
-		{ preview = false, calibration = null, tutorialEpoch = null } = {},
+		{ preview = false, calibration = null, tutorialEpoch = null, commandContext = null } = {},
 	) {
 		setMotionBusy(true);
 		setMotionError("");
@@ -7875,6 +7891,8 @@ export default function App() {
 			}
 			const targetStillExists = charactersRef.current.some((entry) => entry.id === targetCharacter.id);
 			if (!targetStillExists) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
+			const apply = () => {
+			if (commandContext) recordCharacterUndo();
 			const bufferOwnsTarget = targetCharacter.id === loadedLayerCharRef.current;
 			beginPlaybackOn(rig);
 			// THE INVARIANT: the take's travel assumes the character is scaled.
@@ -7913,8 +7931,10 @@ export default function App() {
 					}
 					: entry);
 				liveStateRef.current.characters = next;
+				if (commandContext) charactersRef.current = next;
 				return next;
 			});
+			if (commandContext && bufferOwnsTarget) { bufferRef.current = { ...bufferRef.current, motion: loaded }; liveStateRef.current.timeline.frameCount = decoded.frames; }
 			// The take as loaded is what every future trim cuts from.
 			motionFullRef.current.set(targetCharacter.id, loaded);
 			if (bufferOwnsTarget) {
@@ -7952,9 +7972,11 @@ export default function App() {
 			// The applied stature, so a caller does not have to re-derive it
 			// (and cannot derive a different one).
 			return scale;
+			};
+			return commandContext ? commandContext.commit(apply) : apply();
 		} catch (err) {
 			if (tutorialEpoch !== null && tutorialEpoch !== tutorialProjectEpochRef.current) return null;
-			if (targetCharacterId === loadedLayerCharRef.current) setMotion(null);
+			if (targetCharacterId === loadedLayerCharRef.current && !commandContext) setMotion(null);
 			setMotionError(err?.message || String(err));
 			throw err;
 		} finally {
@@ -11354,7 +11376,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		clearLineEdit();
 	}
 
-	function runAllPromptBlocks() {
+	function runAllPromptBlocks(commandContext = null) {
 		if (generationPendingRef.current || genRunningRef.current || ardyRunning) return;
 		const clips = promptClips
 			.filter((clip) => clip.text.trim())
@@ -11367,11 +11389,13 @@ function resizePromptClip(id, edge, rawFrame) {
 		const duration = Math.max(ARDY_DURATION_MIN, Math.ceil(totalFrames / TIMELINE_FPS));
 		setArdyPrompt(clips[0].text);
 		setArdyDuration(duration);
-		runArdy({
-			promptOverride: clips[0].text,
-			durationOverride: duration,
-			promptClipsOverride: clips,
+		let resolve, reject;
+		const completion = commandContext ? new Promise((yes, no) => { resolve = yes; reject = no; }) : null;
+		const queued = runArdy({
+			promptOverride: clips[0].text, durationOverride: duration, promptClipsOverride: clips,
+			commandContext, commandCompletion: commandContext ? { resolve, reject } : null,
 		});
+		if (commandContext) return queued.then(started => { if (!started) throw new Error("The editor did not start the generation."); return completion; });
 	}
 
 	async function runArdy({
@@ -11382,7 +11406,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// no preserve, no replayed refinements, a clean recipe. Every other
 		// entry point (take it again, add a block, the Prompt Blocks button) stays in
 		// the current take's lineage and carries both.
-		fresh = false,
+		fresh = false, commandContext = null, commandCompletion = null,
 	} = {}) {
 		if (generationPendingRef.current || genRunningRef.current || ardyRunning) return;
 		const request = requestMotionGeneration("timeline", motion?.url && ikFrames.length ? "edit" : ardyStartFromPose ? "pose" : "prompt");
@@ -11733,7 +11757,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// delivered to THIS character even if the selection moves on while
 		// the box is still working.
 		generationPendingRef.current = enqueueMotionJob({
-			request,
+			request, commandContext, commandCompletion,
 			charId: activeChar.id,
 			charIndex: activeCharIndex,
 			prompt,
@@ -11760,6 +11784,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							? ko("Again", "다시 뽑기")
 							: ko("Generate", "생성"),
 		}) === true;
+		return generationPendingRef.current;
 	}
 
 	/* --------------------- trail drag -> preview -> regen -------------------- */
@@ -11939,8 +11964,10 @@ function resizePromptClip(id, edge, rawFrame) {
 		(async () => {
 			try {
 				await executeMotionJob(next);
+				next.commandCompletion?.resolve();
 				setGenQueue((queue) => queue.map((job) => (job.id === next.id ? { ...job, status: "done" } : job)));
 			} catch (err) {
+				next.commandCompletion?.reject(err);
 				const message = err?.name === "AbortError" ? ko("Cancelled", "취소됨") : err?.message || String(err);
 				setGenQueue((queue) => queue.map((job) => (job.id === next.id ? { ...job, status: "error", error: message } : job)));
 			} finally {
@@ -11951,7 +11978,10 @@ function resizePromptClip(id, edge, rawFrame) {
 	}, [genQueue]);
 
 	async function executeMotionJob(job) {
+		job.commandContext?.check();
 		const controller = new AbortController();
+		const abort = () => controller.abort(job.commandContext.signal.reason);
+		job.commandContext?.signal.addEventListener("abort", abort, { once: true });
 		ardyAbortRef.current = controller;
 		setArdyRunning(true);
 		reportArdyStatus(ko("connecting…", "연결 중…"));
@@ -12038,6 +12068,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		} finally {
 			setArdyRunning(false);
 			ardyAbortRef.current = null;
+			job.commandContext?.signal.removeEventListener("abort", abort);
 		}
 	}
 
@@ -12315,9 +12346,10 @@ function resizePromptClip(id, edge, rawFrame) {
 			anchorZ: sceneAnchorZ,
 		};
 		if (calibration && typeof calibration === "object") motionRef.calibration = normalizedCalibration;
-		setCharacters((list) => list.map((entry) => entry.id === job.charId ? { ...entry, motionRef } : entry));
+		if (!job.commandContext) setCharacters((list) => list.map((entry) => entry.id === job.charId ? { ...entry, motionRef } : entry));
 		if (job.charId === loadedLayerCharRef.current) {
-			await loadMotion(motionUrl, job.prompt, job.rootRotationDeg, null, job.charId, null, { calibration });
+			await loadMotion(motionUrl, job.prompt, job.rootRotationDeg, null, job.charId, null, { calibration, commandContext: job.commandContext });
+			if (job.commandContext) publishStudioCharacters(charactersRef.current.map(entry => entry.id === job.charId ? { ...entry, motionRef } : entry));
 			return;
 		}
 		// Inbound boundary for a clip delivered to a non-active layer.
@@ -12337,10 +12369,13 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (calibration && typeof calibration === "object") clip.sceneCalibration = normalizedCalibration;
 		// Same stature rule as loadMotion, on the layer that asked for the clip.
 		const scale = characterScaleFor(decoded);
-		motionFullRef.current.set(job.charId, clip);
-		setCharacters((list) => list.map((entry) => entry.id === job.charId
-			? { ...entry, scale, sessionMotion: clip }
-			: entry));
+		const apply = () => {
+			if (job.commandContext) recordCharacterUndo();
+			motionFullRef.current.set(job.charId, clip);
+			const next = charactersRef.current.map(entry => entry.id === job.charId ? { ...entry, scale, sessionMotion: clip, motionRef } : entry);
+			if (job.commandContext) publishStudioCharacters(next); else setCharacters(next);
+		};
+		if (job.commandContext) job.commandContext.commit(apply); else apply();
 	}
 
 	/** After a scene (re)load, re-fetch every persisted clip reference and
@@ -12514,6 +12549,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * one character `targetId` names), which republishes the live read model
 	 * synchronously; object entries are the store's own. */
 	function beginStudioAction(domain, targetId = null) {
+		const revisionBefore = sceneRevisionRef.current;
 		const historyEntryId = crypto.randomUUID(), objects = storeRef.current.objects;
 		const history = charHistoryRef.current, past = [...history.past], future = [...history.future];
 		const state = domain === "objects" ? null : snapshotStudioDomain(domain, targetId);
@@ -12542,6 +12578,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					history.past = history.past.slice(-HISTORY_LIMIT); history.future = [];
 					studioHistoryRef.current.set(historyEntryId, { tick, domain });
 				}
+				if (changed) sceneRevisionRef.current = revisionBefore + 1;
 				return { historyEntryId: changed ? historyEntryId : null };
 			},
 			cancel() {
@@ -12814,7 +12851,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument,
 		afterRender: () => new Promise(resolve => renderWaitersRef.current.push(resolve)),
 		saveProject, projectFileGranted: async () => (await queryHandlePermission(projectHandleRef.current)) === "granted",
-		importAsset: args => liveHandlersRef.current.import_asset(args), fetchImportSource,
+		importAsset: (args, context) => liveHandlersRef.current.import_asset(args, context), fetchImportSource,
 		setAiShotMode: setMode, setAiImageModel: setImageModel, generate, generateFalMotion,
 	};
 	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionHandlersRef);
