@@ -102,3 +102,55 @@ test('acceptance 3: synchronous publications and later renders reach retained re
   assert.equal(read().scenes[0].id, 'new scene');
   assert.equal(read().motion.frames, 120);
 });
+
+const { createSceneHistoryStore } = await import('../../src/scene-history.js');
+const { appFixture } = await import('./app-fixture.mjs');
+test('acceptance 4: both App object-store callbacks join the facade clock', () => {
+  const callbacks = [];
+  walk(parsed.program, node => {
+    if (node.type === 'Property' && node.key.name === 'onObjects') callbacks.push(node.value);
+  });
+  assert.equal(callbacks.length, 2, 'initial store and scene-replacement store');
+  for (const callback of callbacks) {
+    const context = createAppContext();
+    const onObjects = new Function('appContext', 'setSceneObjects', `return (${app.slice(callback.start, callback.end)});`)(context, () => {});
+    const store = createSceneHistoryStore([], { onObjects });
+    store.applyAtomic(() => [{ id: 'object' }]);
+    assert.equal(context.undoClock, 1);
+    assert.equal(context.objectClock, 1);
+    context.recordCharacterUndo({ characters: [] });
+    store.applyAtomic(rows => [...rows, { id: 'second' }]);
+    assert.equal(context.undoClock, 3);
+    assert.equal(context.objectClock, 3);
+    context.suppressObjectClock = true;
+    store.undo();
+    assert.equal(context.undoClock, 3, 'history traversal does not double-count');
+  }
+});
+test('acceptance 4: real App undo and redo traverse interleaved object and cast edits in reverse order', () => {
+  const f = appFixture();
+  try {
+    const state = () => ({ objects: f.store.current.objects, characters: f.characterRef.current });
+    const snapshots = [state()];
+    for (let index = 1; index <= 3; index++) {
+      f.actual.commitStudioDraft({ domain: 'objects', draft: [{ id: `object-${index}`, x: index }] });
+      snapshots.push(state());
+      f.actual.commitStudioDraft({ domain: 'cast', draft: f.characterRef.current.map(c => ({ ...c, x: index })) });
+      snapshots.push(state());
+    }
+    assert.equal(f.scope.appContext.undoClock, 6);
+    assert.equal(f.scope.appContext.objectClock, 5, 'the last object edit shares the cast clock');
+    for (let index = snapshots.length - 2; index >= 0; index--) {
+      f.actual.undoScene();
+      assert.deepEqual(state(), snapshots[index], `undo ${index}`);
+    }
+    for (let index = 1; index < snapshots.length; index++) {
+      f.actual.redoScene();
+      assert.deepEqual(state(), snapshots[index], `redo ${index}`);
+    }
+    const history = f.scope.appContext.castHistory;
+    f.scope.appContext.resetCastHistory();
+    assert.notEqual(f.scope.appContext.castHistory, history);
+    assert.deepEqual(f.scope.appContext.castHistory, { past: [], future: [] });
+  } finally { f.dispose(); }
+});
