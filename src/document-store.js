@@ -1,6 +1,6 @@
 // Incremental document ownership: only explicitly supplied `owned` slices live
 // here. Bus ports bind beginAction/recordAction; no Studio domain opts in here.
-import { createHistory, pushHistory } from './history.js';
+import { createHistory, pushHistory, undoHistory, redoHistory } from './history.js';
 import { StudioProtocolError } from './studio-agent-protocol.js';
 
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
@@ -66,11 +66,26 @@ export function createDocumentStore({ owned = {} } = {}) {
     if (next !== slices[domain]) publish({ ...slices, [domain]: structuredClone(next) });
     return slices[domain];
   }
+  // An id labels a transition INTO a snapshot. The oldest snapshot has no
+  // retained pre-image, so merely finding its id is not enough to promise Undo.
+  const retainedEntries = () => [...(history.past.length ? [...history.past.slice(1), history.present] : []), ...history.future];
+  function step(redo) {
+    if (active) fail('TARGET_BUSY', 'Finish the document transaction before traversing history.');
+    const entry = redo ? history.future[0] : history.present;
+    const next = (redo ? redoHistory : undoHistory)(history);
+    if (!next) return null;
+    history = next;
+    publish(history.present.snapshot);
+    return entry;
+  }
   return {
     owns, read: domain => slices[domain], write, beginAction, recordAction,
+    undo: () => step(false), redo: () => step(true),
+    canUndo: id => !active && history.past.length > 0 && (id === undefined || history.present.historyEntryId === id),
+    canRedo: () => !active && history.future.length > 0,
     getSnapshot: () => snapshot,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    isRetained: id => Boolean(id && [...history.past, history.present, ...history.future].some(entry => entry.historyEntryId === id)),
+    isRetained: id => Boolean(id && retainedEntries().some(entry => entry.historyEntryId === id)),
     history: () => history,
     depths: () => ({ past: history.past.length, future: history.future.length }),
   };
