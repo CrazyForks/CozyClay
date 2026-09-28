@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { stageFixture } from './stage-fixture.mjs';
+import { createSceneObject } from '../../src/scene-objects.js';
 for (const native of ['cast', 'objects']) {
   const f = stageFixture();
   try {
     if (native === 'cast') assert.equal(f.run('character.addWaypoint', { characterId: 'actor-a', frame: 24, position: { x: 1, z: 0 } }).ok, true);
-    else f.actual.commitStudioDraft({ domain: 'objects', draft: [{ id: 'box', x: 1 }] });
+    else f.actual.commitStudioDraft({ domain: 'objects', draft: [createSceneObject('cube', [])] });
     const original = f.stage.read().style;
     const receipt = f.run('stage.setStyle', { style: 'After native edit' });
     assert.equal(receipt.ok, true);

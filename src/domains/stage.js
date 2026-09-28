@@ -11,7 +11,7 @@ import { normalizeStage } from '../commands/stage.js';
 export function createStageDomain(appContext) {
   const documentStore = createSceneStageStore(normalizeStage(appContext.shared.startupStage));
   const anchors = new Map();
-  const anchor = () => [appContext.castHistory.past.at(-1), appContext.live.state?.objects];
+  const anchor = () => [appContext.castHistory.past.at(-1)?.tick ?? 0, appContext.shared.objects];
   const current = saved => saved?.every((value, index) => value === anchor()[index]);
   const read = () => documentStore.read('stage');
   const publish = () => {

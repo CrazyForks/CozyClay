@@ -727,6 +727,7 @@ export default function App() {
 	const stageDomain = useStage(appContext.forRender({
 		startupStage,
 		get actorStageRef() { return actorStageRef; },
+		get objects() { return storeRef.current.objects; },
 	}));
 	const {
 		preset, shotAspectKey, environmentImage, cameraPresetId, sensorId, keyLight, changeKeyLight,

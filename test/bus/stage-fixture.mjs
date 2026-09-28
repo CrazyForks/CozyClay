@@ -26,6 +26,7 @@ export function stageFixture() {
     stage = useStage(f.scope.appContext.forRender({
       startupStage: f.live.current.stage,
       get actorStageRef() { return f.scope.actorStageRef; },
+      get objects() { return f.store.current.objects; },
     }));
     return null;
   }
@@ -35,7 +36,8 @@ export function stageFixture() {
   f.ports.stage = () => stage;
   f.actionHandlers.current.stage = () => stage;
   const canUndo = f.ports.canUndo;
-  f.ports.canUndo = receipt => stage.canUndo?.(receipt.undo?.historyEntryId) ?? canUndo(receipt);
+  f.ports.canUndo = receipt => stage.documentStore.isRetained(receipt.undo?.historyEntryId)
+    ? stage.canUndo(receipt.undo.historyEntryId) : canUndo(receipt);
   const run = (id, args = {}, origin = 'ui', options = {}) => f.binding.bus.run(id, args, {
     origin, host: f.host(), expectedRevision: f.binding.refresh().revision, ...options,
   });
