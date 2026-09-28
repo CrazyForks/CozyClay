@@ -3,6 +3,7 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { parseSync } from 'rolldown/experimental';
+import { createAppContext } from '../../src/app-context.js';
 
 const root = new URL('../../', import.meta.url);
 const read = path => readFileSync(new URL(path, root), 'utf8');
@@ -101,56 +102,99 @@ export function freeReferences(rootNode) {
       if (Array.isArray(value)) value.forEach(n => visit(n, scopes, node, childKey));
       else visit(value, scopes, node, childKey);
     }
-    // Defaults execute in the function scope, while binding identifiers do not.
-    for (const param of node.params ?? []) if (param.type === 'AssignmentPattern') visit(param.right, scopes, param, 'right');
+    // Defaults (including destructured options) execute in the function scope.
+    const defaults = pattern => {
+      if (!pattern) return;
+      if (pattern.type === 'AssignmentPattern') { visit(pattern.right, scopes, pattern, 'right'); defaults(pattern.left); }
+      else if (pattern.type === 'ObjectPattern') pattern.properties.forEach(n => defaults(n.value ?? n.argument));
+      else if (pattern.type === 'ArrayPattern') pattern.elements.forEach(defaults);
+    };
+    (node.params ?? []).forEach(defaults);
+    if (node.type === 'VariableDeclarator') defaults(node.id);
   }
   visit(rootNode);
   return references;
 }
 
 function verify() {
-const app = parse('src/App.jsx');
-for (const [domain, { states, panels }] of Object.entries(domains)) {
-  const path = `src/domains/${domain}.js`;
-  assert(existsSync(new URL(path, root)), `acceptance 1: ${path} owns its domain state`);
-  const ast = parse(path);
-  for (const name of states) {
-    assert(!stateNames(app).includes(name), `acceptance 1: ${name} must leave App.jsx`);
-    assert(stateNames(ast).includes(name), `acceptance 1: ${name} must live in ${path}`);
+  const app = parse('src/App.jsx');
+  for (const [domain, { states, panels }] of Object.entries(domains)) {
+    const path = `src/domains/${domain}.js`;
+    assert(existsSync(new URL(path, root)), `acceptance 1: ${path} owns its domain state`);
+    const ast = parse(path);
+    for (const name of states) {
+      assert(!stateNames(app).includes(name), `acceptance 1: ${name} must leave App.jsx`);
+      assert(stateNames(ast).includes(name), `acceptance 1: ${name} must live in ${path}`);
+    }
+    if (domain === 'objects') {
+      let owner = false, remaining = false;
+      walk(ast, node => { if (node.type === 'VariableDeclarator' && node.id.name === 'storeRef') owner = true; });
+      walk(app, node => { if (node.type === 'VariableDeclarator' && node.id.name === 'storeRef') remaining = true; });
+      assert(owner && !remaining, 'acceptance 1: the scene-history storeRef belongs to useObjects');
+    }
+    const globals = new Set(['window', 'document', 'localStorage', 'globalThis', 'console', 'fetch', 'navigator', 'crypto', 'URL', 'URLSearchParams', 'File', 'FileReader', 'Blob', 'Image', 'HTMLElement', 'Element', 'CustomEvent', 'requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'AbortController', 'performance', 'createImageBitmap', 'undefined', 'NaN', 'Infinity', ...Object.getOwnPropertyNames(globalThis)]);
+    assert.deepEqual([...new Set(freeReferences(ast).map(ref => ref.node.name))].filter(name => !globals.has(name)), [], `acceptance 2: all shared dependencies in ${path} resolve through the facade`);
+    const handlers = {
+      stage: ['changeKeyLight', 'resetKeyLight', 'changeEnvironmentImage'],
+      scenes: ['persistScenes', 'openScene', 'saveProject', 'applyProject'],
+      objects: ['addSceneObject', 'importCutout', 'importMesh', 'spawnCutoutAt', 'spawnMeshAt'],
+      shots: ['addCameraKeyframe', 'moveCameraKeyframe', 'removeCameraKeyframe'],
+      cast: ['updateCharacterAt', 'removeCharacter', 'addPromptClip', 'changePromptClip', 'removePromptClip'],
+      motion: ['runArdy', 'loadMotion', 'clearMotion', 'loadTakeVersion', 'commitTakeRecipe', 'runFixCollisions', 'runAutoPhysics'],
+    };
+    const functions = tree => {
+      const names = [];
+      walk(tree, node => { if (node.type === 'FunctionDeclaration') names.push(node.id.name); });
+      return names;
+    };
+    for (const name of handlers[domain]) {
+      assert(functions(ast).includes(name), `acceptance 1: ${name} belongs to ${path}`);
+      assert(!functions(app).includes(name), `acceptance 1: ${name} must leave App.jsx`);
+    }
+    const hooks = [];
+    walk(ast, node => {
+      if (node.type === 'ImportDeclaration') assert(!/(?:^|\/)domains\/|^\.\/(?:stage|scenes|objects|shots|cast|motion)\.js$/.test(node.source.value), `acceptance 2: no cross-domain import in ${path}`);
+      if (node.type === 'Identifier') assert(!['opClockRef', 'charHistoryRef'].includes(node.name), `acceptance 2: ${node.name} bypasses the facade`);
+      if (node.type === 'ExportNamedDeclaration' && node.declaration?.type === 'FunctionDeclaration') hooks.push(node.declaration.id.name);
+    });
+    assert(hooks.includes(`use${domain[0].toUpperCase()}${domain.slice(1)}`), `acceptance 2: exported ${domain} hook`);
+    for (const panel of panels) {
+      const panelPath = `src/panels/${panel}.jsx`;
+      assert(existsSync(new URL(panelPath, root)), `acceptance 3: ${panel} has its own panel file`);
+      const panelAst = parse(panelPath);
+      const elements = [];
+      walk(panelAst, node => { if (node.type === 'JSXOpeningElement') elements.push(node.name.name); });
+      assert(elements.includes(panel === 'ProjectPanel' ? 'ResourceStatus' : 'Foldout'), `acceptance 3: ${panel} owns its section, not a children passthrough`);
+      let rendered = false;
+      walk(app, node => { if (node.type === 'JSXOpeningElement' && node.name.name === panel) rendered = true; });
+      assert(rendered, `acceptance 3: App renders ${panel}`);
+    }
+    console.log(`PASS domain ${domain}: state ownership, facade isolation, Inspector panels`);
   }
-  if (domain === 'objects') {
-    let owner = false, remaining = false;
-    walk(ast, node => { if (node.type === 'VariableDeclarator' && node.id.name === 'storeRef') owner = true; });
-    walk(app, node => { if (node.type === 'VariableDeclarator' && node.id.name === 'storeRef') remaining = true; });
-    assert(owner && !remaining, 'acceptance 1: the scene-history storeRef belongs to useObjects');
-  }
-  const globals = new Set(['window', 'document', 'localStorage', 'globalThis', 'console', 'fetch', 'navigator', 'crypto', 'URL', 'URLSearchParams', 'File', 'FileReader', 'Blob', 'Image', 'HTMLElement', 'Element', 'CustomEvent', 'requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'AbortController', 'performance', 'createImageBitmap', 'undefined', 'NaN', 'Infinity', ...Object.getOwnPropertyNames(globalThis)]);
-  assert.deepEqual([...new Set(freeReferences(ast).map(ref => ref.node.name))].filter(name => !globals.has(name)), [], `acceptance 2: all shared dependencies in ${path} resolve through the facade`);
-  const hooks = [];
-  walk(ast, node => {
-    if (node.type === 'ImportDeclaration') assert(!/(?:^|\/)domains\/|^\.\/(?:stage|scenes|objects|shots|cast|motion)\.js$/.test(node.source.value), `acceptance 2: no cross-domain import in ${path}`);
-    if (node.type === 'Identifier') assert(!['opClockRef', 'charHistoryRef'].includes(node.name), `acceptance 2: ${node.name} bypasses the facade`);
-    if (node.type === 'ExportNamedDeclaration' && node.declaration?.type === 'FunctionDeclaration') hooks.push(node.declaration.id.name);
-  });
-  assert(hooks.includes(`use${domain[0].toUpperCase()}${domain.slice(1)}`), `acceptance 2: exported ${domain} hook`);
-  for (const panel of panels) {
-    const panelPath = `src/panels/${panel}.jsx`;
-    assert(existsSync(new URL(panelPath, root)), `acceptance 3: ${panel} has its own panel file`);
-    const panelAst = parse(panelPath);
-    const elements = [];
-    walk(panelAst, node => { if (node.type === 'JSXOpeningElement') elements.push(node.name.name); });
-    assert(elements.includes(panel === 'ProjectPanel' ? 'ResourceStatus' : 'Foldout'), `acceptance 3: ${panel} owns its section, not a children passthrough`);
-    let rendered = false;
-    walk(app, node => { if (node.type === 'JSXOpeningElement' && node.name.name === panel) rendered = true; });
-    assert(rendered, `acceptance 3: App renders ${panel}`);
-  }
-  console.log(`PASS domain ${domain}: state ownership, facade isolation, Inspector panels`);
-}
-let inlineSections = 0;
-walk(app, node => { if (node.type === 'JSXOpeningElement' && node.name.name === 'Foldout') inlineSections++; });
-assert.equal(inlineSections, 0, 'acceptance 3: every Inspector foldout now belongs to a panel file');
-const lines = read('src/App.jsx').split('\n').length - 1;
-assert(lines <= 15613 - 50 * Object.keys(domains).length, `acceptance 4: App.jsx shrinks with each domain (${lines} lines)`);
-console.log(`PASS domain metric: App.jsx 15613 -> ${lines} lines`);
+  let inlineSections = 0;
+  walk(app, node => { if (node.type === 'JSXOpeningElement' && node.name.name === 'Foldout') inlineSections++; });
+  assert.equal(inlineSections, 0, 'acceptance 3: every Inspector foldout now belongs to a panel file');
+  const lines = read('src/App.jsx').split('\n').length - 1;
+  assert(lines <= 15613 - 50 * Object.keys(domains).length, `acceptance 4: App.jsx shrinks with each domain (${lines} lines)`);
+  console.log(`PASS domain metric: App.jsx 15613 -> ${lines} lines`);
+
+  const notices = [];
+  const facade = createAppContext({ notify: (...args) => notices.push(args) });
+  const cell = { current: 1 };
+  const first = facade.forRender({ selected: 'first', cell });
+  const retained = () => [first.shared.selected, first.shared.cell.current];
+  const second = facade.forRender({ selected: 'second', cell });
+  cell.current = 2;
+  assert.deepEqual(retained(), ['first', 2], 'retained handlers keep render values but share the same ref cells');
+  assert.equal(second.shared.selected, 'second');
+  assert.equal(first.notify, second.notify, 'all domains share the stable App-owned notifier');
+  first.notify('visible', 'receipt');
+  assert.deepEqual(notices, [['visible', 'receipt']], 'notification arguments are forwarded without reinterpretation');
+  first.recordCharacterUndo({ characters: [] });
+  second.recordShotUndo({ shots: [] });
+  assert.equal(first.castHistory, second.castHistory);
+  assert.deepEqual(facade.castHistory.past.map(entry => entry.tick), [1, 2]);
+  assert.equal(facade.undoClock, 2, 'render projections never fork the undo clock');
+  console.log('PASS domain facade: render closure lifetime and shared interleaved undo clock');
 }
 if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) verify();
