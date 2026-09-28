@@ -43,7 +43,7 @@ import { resourceManifest } from "../project-resources.js";
 import { isKo, ko } from "../locale.js";
 import { track, bucketCount, bucketProjectAge } from "../analytics.js";
 import { mergeProjectCustomPoses } from "../project-poses.js";
-import { DEFAULT_WORKSPACE_LAYOUT, DEFAULT_DURATION_S, TIMELINE_FPS, DEFAULT_ENVIRONMENT } from "../app-stage.jsx";
+import { DEFAULT_WORKSPACE_LAYOUT, DEFAULT_DURATION_S, TIMELINE_FPS } from "../app-stage.jsx";
 import { saveCustomPoses } from "../poses.js";
 import { readShotAuthoringDocument } from "../shot-authoring.js";
 import { initialShots } from "../cuts.js";
@@ -500,14 +500,7 @@ export function useScenes(appContext) {
 		appContext.shared.setCharacters(stage.characters);
 		appContext.shared.setRigMountEpoch((value) => value + 1);
 		appContext.shared.setHasCharSheet(stage.hasCharSheet);
-		appContext.shared.stageDomain.setEnvironmentImage(stage.environmentImage ?? null);
-		appContext.shared.stageDomain.setEnvironment(stage.environment ?? DEFAULT_ENVIRONMENT);
-		appContext.shared.stageDomain.setStyle(stage.style ?? "moody cinematic lighting, 35mm film look");
-		appContext.shared.stageDomain.setHasEnvSheet(stage.hasEnvSheet === true);
-		appContext.shared.stageDomain.setShotAspectKey(stage.shotAspect);
-		appContext.shared.stageDomain.setCameraPresetId(stage.cameraPresetId ?? null);
-		appContext.shared.stageDomain.setSensorFormat(stage.sensorId);
-		appContext.shared.stageDomain.setKeyLight(stage.keyLight);
+		appContext.shared.stageDomain.load(stage);
 		// The motion-layer buffer reloads from the scene's first character.
 		const firstLayer = stage.characters[0]?.layer;
 		appContext.shared.setWaypoints(firstLayer?.waypoints ?? shotState.waypoints ?? []);

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { createDocumentStore } from '../document-store.js';
+import { createSceneStageStore } from '../store/scene-stage.js';
 import { useDocumentDomain } from '../store/use-document-store.js';
 import { createKeyLight } from '../scenes.js';
 import { normalizeStage } from '../commands/stage.js';
@@ -7,7 +7,7 @@ import { normalizeStage } from '../commands/stage.js';
 // Stage is the first owned slice. Native cast/object histories remain native;
 // their retained boundaries decide when this slice is next in editor Undo.
 export function createStageDomain(appContext) {
-  const documentStore = createDocumentStore({ owned: { stage: normalizeStage(appContext.shared.startupStage) }, dev: false });
+  const documentStore = createSceneStageStore(normalizeStage(appContext.shared.startupStage), { dev: false });
   const anchors = new Map();
   const anchor = () => [appContext.castHistory.past.at(-1), appContext.live.state?.objects];
   const current = saved => saved?.every((value, index) => value === anchor()[index]);
@@ -50,6 +50,7 @@ export function createStageDomain(appContext) {
     .map(([name, key]) => [name, value => write(before => ({ ...before, [key]: typeof value === 'function' ? value(before[key]) : value }))]));
   const document = () => ({ stage: { ...appContext.shared.actorStageRef.current, ...read() } });
   return { documentStore, document, read, write, beginAction, recordAction, canUndo, stepHistory, ...setters,
+    load(stage) { anchors.clear(); documentStore.load(normalizeStage(stage)); },
     dispose() { release(); documentStore.dispose(); },
   };
 }
