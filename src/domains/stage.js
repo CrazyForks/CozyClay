@@ -48,7 +48,8 @@ export function createStageDomain(appContext) {
   const setters = Object.fromEntries(Object.entries({ 'setKeyLight': 'keyLight', 'setEnvironmentImage': 'environmentImage', 'setEnvironment': 'environment',
     'setStyle': 'style', 'setHasEnvSheet': 'hasEnvSheet', 'setShotAspectKey': 'shotAspect', 'setCameraPresetId': 'cameraPresetId', 'setSensorFormat': 'sensorId' })
     .map(([name, key]) => [name, value => write(before => ({ ...before, [key]: typeof value === 'function' ? value(before[key]) : value }))]));
-  return { documentStore, read, write, beginAction, recordAction, canUndo, stepHistory, ...setters,
+  const document = () => ({ stage: { ...appContext.shared.actorStageRef.current, ...read() } });
+  return { documentStore, document, read, write, beginAction, recordAction, canUndo, stepHistory, ...setters,
     dispose() { release(); documentStore.dispose(); },
   };
 }

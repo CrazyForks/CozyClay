@@ -18,6 +18,10 @@ export function elementSetSchema(kind) {
   }
   return schema;
 }
+export function readElementDocument(projection, { ids, select } = {}, sceneId) {
+  const entries = Object.entries(projection).filter(([kind]) => (!select || select.includes(kind)) && (!ids || ids.includes(kind) || ids.includes(sceneId)));
+  return { document: structuredClone(Object.fromEntries(entries)), schema: Object.fromEntries(entries.map(([kind]) => [kind, elementSetSchema(kind)])) };
+}
 export function readElement(document, path) {
   const element = STUDIO_ELEMENTS.find(row => row.path === path);
   return (element.documentPath ?? path.slice(path.indexOf('.') + 1)).split('.').reduce((value, key) => value?.[key], document);

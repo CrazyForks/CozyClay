@@ -2,6 +2,7 @@
 // over the editor's native state. App.jsx supplies the ports (reads, commits,
 // history, the action registry); this module owns no React or renderer state.
 import { createCommandBus } from "./command-bus.js";
+import { readElementDocument } from "./commands/elements.js";
 import { physicsKeyStamp } from "./ardy/physics-review.js";
 import { shotAtFrame } from "./cuts.js";
 import { sha256Hex } from "./motion-resources.js";
@@ -383,6 +384,8 @@ export function createStudioAppBinding(ports) {
 			// Every scope carries the context: its revision is what the agent's next
 			// command is admitted at, so a scope without it leaves that admission stale.
 			if (command.args.scope === "catalogue") return { context: c, ...studioObjectCatalogue() };
+			if (command.args.scope === "document") return { context: c, scope: "document",
+				...readElementDocument(ports.stage().document(), command.args, c.host.sceneId) };
 			// Discovery for run_action: every registered action with its label, kind,
 			// exposure and availability (the reason when unavailable). Schemas are on
 			// request: ids answer those actions' full declarations, input included.
