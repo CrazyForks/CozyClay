@@ -29,6 +29,7 @@ function stateNames(ast) {
   return names;
 }
 const domains = {
+  motion: { states: ['motion', 'takeRecipe', 'takeVersions'], panels: ['VideoCapturePanel', 'RigControlPanel'] },
   cast: { states: ['characters', 'customPoses', 'waypoints', 'promptClips'], panels: ['SubjectsPanel', 'CharacterTransformPanel', 'RigPanel', 'PosePanel', 'PromptBlocksPanel'] },
   shots: { states: ['shots', 'tlFrameCount', 'cameraMove', 'fovDeg'], panels: ['CameraPanel'] },
   objects: { states: ['sceneObjects'], panels: ['PropsPanel', 'ObjectTransformPanel'] },
@@ -145,6 +146,9 @@ for (const [domain, { states, panels }] of Object.entries(domains)) {
   }
   console.log(`PASS domain ${domain}: state ownership, facade isolation, Inspector panels`);
 }
+let inlineSections = 0;
+walk(app, node => { if (node.type === 'JSXOpeningElement' && node.name.name === 'Foldout') inlineSections++; });
+assert.equal(inlineSections, 0, 'acceptance 3: every Inspector foldout now belongs to a panel file');
 const lines = read('src/App.jsx').split('\n').length - 1;
 assert(lines <= 15613 - 50 * Object.keys(domains).length, `acceptance 4: App.jsx shrinks with each domain (${lines} lines)`);
 console.log(`PASS domain metric: App.jsx 15613 -> ${lines} lines`);
