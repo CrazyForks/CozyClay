@@ -72,7 +72,8 @@ test('acceptance 3: live model publications stay behind the facade, including al
   const leaks = [];
   const check = node => {
     const path = memberPath(node);
-    if ([...aliases].some(alias => path === alias || path.startsWith(`${alias}.`))) leaks.push(path);
+    // Rebinding a local (including scalar projections) is not a model write.
+    if ([...aliases].some(alias => (alias.includes('.') && path === alias) || path.startsWith(`${alias}.`))) leaks.push(path);
   };
   walk(parsed.program, node => {
     if (node.type === 'AssignmentExpression') check(node.left);

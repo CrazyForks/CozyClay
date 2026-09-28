@@ -32,6 +32,12 @@ export function createAppContext({
       get scenes() { return scenesRef.current; },
       get motion() { return motionRef.current; },
     }),
+    publishLive(value) { liveStateRef.current = value; },
+    patchLive(patch) { Object.assign(liveStateRef.current, patch); },
+    patchTimeline(patch) { Object.assign(liveStateRef.current.timeline, patch); },
+    publishCharacters(value) { charactersRef.current = value; },
+    publishScenes(value) { scenesRef.current = value; },
+    publishMotion(value) { motionRef.current = value; },
     ports,
     actionPorts,
     updatePorts(next) {

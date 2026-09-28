@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createFirstEditTracker, createSemanticState } from "../src/semantic-edit.js";
+import { createAppContext } from "../src/app-context.js";
 import { createSceneObject } from "../src/scene-objects.js";
 import { createSceneHistoryStore } from "../src/scene-history.js";
 import { dispatchLiveFrame } from "../src/live-control.js";
@@ -68,7 +69,7 @@ for (const first of ["user", "agent", "mcp"]) {
 		shots: [{}], shotIndexForPack: () => 0,
 		buildShotKeyframePack: async () => ({ name: "private.zip", bytes: new Uint8Array([1, 2]), entries: [] }),
 	} };
-	const exportPack = new Function("startExportAttempt", "liveStateRef", "window", `return (${source.slice(start, end)});`)(attempts, liveStateRef, { parent });
+	const exportPack = new Function("startExportAttempt", "appContext", "window", `return (${source.slice(start, end)});`)(attempts, createAppContext({ state: liveStateRef }), { parent });
 	const iframe = { postMessage(message) { void exportPack(message.shotId, message.surface === "workflow"); } };
 	const owner = attempts({ surface: "workflow", export_kind: "keyframe_pack", format: "zip" });
 	await requestKeyframePack(iframe, {
