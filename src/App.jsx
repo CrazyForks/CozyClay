@@ -319,6 +319,7 @@ import {
 	clampIkTargetToFloor,
 } from "./ardy/ik.js";
 import { bakeIkDragKey, chainsChangedBy, ikDragRecord, ikDragTouch } from "./ardy/ik-drag.js";
+import { ikKeyJson, ikTrackKeyFromJson } from "./ardy/ik-key-json.js";
 import { buildCollisionCapsules, detectPenetrations, fixCollisions, fixCollisionsRange, supportsCollisionCleanup } from "./ardy/fix-collisions.js";
 import { collisionBlockers, blockerSummary } from "./ardy/collision-blockers.js";
 import { computeCenterOfMass, markerPositions } from "./ardy/auto-physics.js";
@@ -2315,7 +2316,15 @@ export default function App() {
 	// How far (in frames) a correction eases back to the underlying motion
 	// outside its keyed range. 6 frames @ 24 fps = 0.25 s — long enough to
 	// hide the seam, short enough that a mid-clip fix stays visibly local.
+	// It is the range of every key WITHOUT its own `blend` (agent, collision
+	// and physics keys, and every key made before the range was adjustable).
 	const IK_CORRECTION_BLEND_FRAMES = 6;
+	// The Pose fix correction range, the Path fix falloff's counterpart: each
+	// key a Pose fix drag (or the Key button) makes over a motion stores the
+	// range set when it was made, as `blend` frames; moving the slider later
+	// never rewrites existing keys.
+	const [ikBlendS, setIkBlendS] = useState(IK_CORRECTION_BLEND_FRAMES / TIMELINE_FPS);
+	const ikBlendFrames = Math.max(1, Math.round(ikBlendS * TIMELINE_FPS));
 
 	const ikStateRef = useRef(createIkState());
 	const autoPhysicsRunRef = useRef(null);
@@ -2921,20 +2930,11 @@ export default function App() {
 	 * each named track replaces its key at `frame` and joins the tracked set. */
 	function setCharacterIkKey(characterId, frame, tracks) {
 		castMemberOf(characterId);
-		const quaternion = (q) => new THREE.Quaternion(q.x, q.y, q.z, q.w).normalize();
-		const vector = (p) => new THREE.Vector3(p.x, p.y, p.z);
 		editCharacterIkKeys(characterId, (state) => {
 			let entry = state.keys.get(frame);
 			if (!entry) state.keys.set(frame, (entry = new Map()));
 			for (const [track, key] of Object.entries(tracks)) {
-				entry.set(track, {
-					q: key.q?.map(quaternion) ?? null,
-					p: key.p ? vector(key.p) : null,
-					...(key.baseQ ? { baseQ: key.baseQ.map(quaternion) } : {}),
-					...(key.basePos ? { basePos: vector(key.basePos) } : {}),
-					...(key.chainP ? { chainP: key.chainP.map(vector) } : {}),
-					...(key.keepTranslations ? { keepTranslations: true } : {}),
-				});
+				entry.set(track, ikTrackKeyFromJson(key));
 				ikTouch(state, track);
 			}
 		});
@@ -2958,19 +2958,6 @@ export default function App() {
 			target.plants.clear();
 		});
 		return count;
-	}
-	/** A baked key entry in the JSON form character.setIkKey takes. */
-	function ikKeyJson(entry) {
-		const quaternion = (q) => ({ x: q.x, y: q.y, z: q.z, w: q.w });
-		const vector = (p) => ({ x: p.x, y: p.y, z: p.z });
-		return Object.fromEntries([...entry].map(([track, key]) => [track, {
-			...(key.q ? { q: key.q.map(quaternion) } : {}),
-			...(key.p ? { p: vector(key.p) } : {}),
-			...(key.baseQ ? { baseQ: key.baseQ.map(quaternion) } : {}),
-			...(key.basePos ? { basePos: vector(key.basePos) } : {}),
-			...(key.chainP ? { chainP: key.chainP.map(vector) } : {}),
-			...(key.keepTranslations ? { keepTranslations: true } : {}),
-		}]));
 	}
 	function recordCharacterUndo() {
 		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast() });
@@ -8463,6 +8450,8 @@ export default function App() {
 			ikBakeKeyframe(ikChains, scratch, tlFrame, ikFkJoints);
 			baked = scratch.keys.get(tlFrame);
 		}
+		// Over a motion the key remembers the correction range it was made with.
+		if (baked && motion) for (const key of baked.values()) key.blend = ikBlendFrames;
 		return baked ? runStudioAction("character.setIkKey", { characterId: activeChar.id, frame: tlFrame, tracks: ikKeyJson(baked) }) : null;
 	}
 
@@ -14972,6 +14961,21 @@ function resizePromptClip(id, edge, rawFrame) {
 										? ko("파츠를 직접 잡아 손·발·팔꿈치·무릎을 세밀하게 수정합니다. 궤적선은 안내선으로만 표시됩니다.", "Grab a body part for detailed IK editing. Trails are guides only.")
 										: ko("궤적선을 잡아 여러 프레임의 이동을 함께 수정합니다. 파츠 핸들은 잠시 잠겨 겹침을 막습니다.", "Grab a trail to edit a range of frames. IK handles are locked to avoid overlapping picks.")}
 								</p>
+								{ikEditTool === "ik" && (
+									<Field label={ko("Correction range", "보정 영향 범위")}>
+										<div className="trail-falloff-row ik-blend-row">
+											<input
+												type="range"
+												min={0.1}
+												max={2}
+												step={0.05}
+												value={ikBlendS}
+												onChange={(event) => setIkBlendS(Number(event.target.value))}
+											/>
+											<span className="trail-falloff-value">{ikBlendS.toFixed(2)}s ({ikBlendFrames}f)</span>
+										</div>
+									</Field>
+								)}
 								<button
 									type="button"
 									className={"btn full" + (!showTrails ? " muted" : "")}
