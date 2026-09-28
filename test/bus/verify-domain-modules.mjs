@@ -29,6 +29,7 @@ function stateNames(ast) {
   return names;
 }
 const domains = {
+  scenes: { states: ['scenes', 'activeSceneId', 'projectName', 'projectDirty'], panels: ['ProjectPanel'] },
   stage: { states: ['preset', 'shotAspectKey', 'environmentImage', 'cameraPresetId', 'sensorId', 'keyLight', 'hasEnvSheet', 'environment', 'style'], panels: ['LightPanel', 'EnvironmentPanel'] },
 };
 // Existing source-driven integration fixtures follow the moved implementation,
@@ -62,7 +63,7 @@ for (const [domain, { states, panels }] of Object.entries(domains)) {
     const panelAst = parse(panelPath);
     const elements = [];
     walk(panelAst, node => { if (node.type === 'JSXOpeningElement') elements.push(node.name.name); });
-    assert(elements.includes('Foldout'), `acceptance 3: ${panel} owns the Inspector section, not a children passthrough`);
+    assert(elements.includes(panel === 'ProjectPanel' ? 'ResourceStatus' : 'Foldout'), `acceptance 3: ${panel} owns its section, not a children passthrough`);
     let rendered = false;
     walk(app, node => { if (node.type === 'JSXOpeningElement' && node.name.name === panel) rendered = true; });
     assert(rendered, `acceptance 3: App renders ${panel}`);
