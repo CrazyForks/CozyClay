@@ -1,3 +1,8 @@
+import { useStage } from "./domains/stage.js";
+import LightPanel from "./panels/LightPanel.jsx";
+import EnvironmentPanel from "./panels/EnvironmentPanel.jsx";
+import Foldout from "./panels/Foldout.jsx";
+import ReferenceImageField from "./panels/ReferenceImageField.jsx";
 import {
 	memo,
 	useCallback,
@@ -590,7 +595,7 @@ function poseMemberAtFrame(rig, clip, ikState, frame, blendFrames = 0) {
  * read as a LOOK, not as texture detail, and the whole thing has to survive
  * inside the project document — 1024 px keeps a face legible at a fraction of
  * the bytes a phone photo would cost. */
-const REFERENCE_IMAGE_MAX_DIMENSION = 1024;
+
 
 /**
  * Read one picked file into the data URL a reference slot stores: FileReader
@@ -598,34 +603,7 @@ const REFERENCE_IMAGE_MAX_DIMENSION = 1024;
  * image), then a canvas pass to cap the long side. The source type is kept, so
  * a JPEG photo stays a JPEG instead of being re-encoded into a much larger PNG.
  */
-async function readReferenceImage(file, { maxDimension = REFERENCE_IMAGE_MAX_DIMENSION } = {}) {
-	if (!file) throw new Error("No file");
-	if (!ASSET_IMAGE_TYPES.includes(String(file.type).toLowerCase())) {
-		throw new Error("unsupported image type");
-	}
-	const dataUrl = await new Promise((resolve, reject) => {
-		const reader = new FileReader();
-		reader.onerror = () => reject(new Error("could not read the file"));
-		reader.onload = () => resolve(String(reader.result));
-		reader.readAsDataURL(file);
-	});
-	const bitmap = await createImageBitmap(file);
-	try {
-		const target = downscaleTarget(bitmap.width, bitmap.height, maxDimension);
-		if (!target) throw new Error("could not decode that image");
-		if (!target.scaled) return dataUrl;
-		const canvas = document.createElement("canvas");
-		canvas.width = target.width;
-		canvas.height = target.height;
-		const context = canvas.getContext("2d");
-		context.drawImage(bitmap, 0, 0, target.width, target.height);
-		// GIF and WebP re-encode to PNG: a still frame is what a reference is.
-		const type = file.type === "image/jpeg" ? "image/jpeg" : "image/png";
-		return canvas.toDataURL(type, type === "image/jpeg" ? 0.92 : undefined);
-	} finally {
-		bitmap.close?.();
-	}
-}
+
 
 /** An http(s) asset source as the data URL the import path takes. */
 async function fetchImportSource(url) {
@@ -831,18 +809,24 @@ export default function App() {
 	const startupStage = createSceneStage(startupScene.stage);
 	const startupCreatedScene = startup.startupCreatedScene === true;
 	const [workspaceLayout, setWorkspaceLayout] = useState(loadWorkspaceLayout);
-	const [preset, setPreset] = useState("medium");
+	const stageDomain = useStage(appContext.forRender({
+		startupStage,
+		get beginGestureUndo() { return beginGestureUndo; },
+		get endGestureUndo() { return endGestureUndo; },
+		get recordCharacterUndo() { return recordCharacterUndo; },
+	}));
+	const { preset, shotAspectKey, environmentImage, cameraPresetId, sensorId, keyLight, changeKeyLight, resetKeyLight, changeEnvironmentImage, hasEnvSheet, environment, style } = stageDomain;
 	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
-	const [shotAspectKey, setShotAspectKey] = useState(startupStage.shotAspect);
+
 	// The set's look reference (#167): one picture that says what this location
 	// is made of. Persisted on the stage envelope exactly like shotAspect, and
 	// attached to every framing capture so the generator sees it.
-	const [environmentImage, setEnvironmentImage] = useState(startupStage.environmentImage ?? null);
+
 	const shotOutput = SHOT_ASPECT_PRESETS[shotAspectKey] ?? SHOT_ASPECT_PRESETS["16:9"];
 	// Which named camera framing the shot camera currently stands in, or null
 	// after any manual placement. Recorded on the scene so a take says how it
 	// was framed; it is a label, not a constraint — nothing re-applies it.
-	const [cameraPresetId, setCameraPresetId] = useState(startupStage.cameraPresetId ?? null);
+
 	// Composition guides over the shot frame (Blender's camera display guides).
 	// A viewer preference, not scene data: it persists per browser, never in
 	// the scene document, and never touches exported pixels.
@@ -856,11 +840,11 @@ export default function App() {
 	useEffect(() => {
 		writeStoredGridView(globalThis.localStorage, gridView);
 	}, [gridView]);
-	const [sensorId, setSensorFormat] = useState(startupStage.sensorId ?? DEFAULT_SENSOR_FORMAT);
+
 	// The stage's key light and the in-flight editor-camera glide. Declared
 	// this early because the keyboard effect lists them in its dependency
 	// array — a later declaration is a temporal-dead-zone crash at mount.
-	const [keyLight, setKeyLight] = useState(startupStage.keyLight);
+
 	const [camGlide, setCamGlide] = useState(null);
 	const filmback = useMemo(
 		() => ({ sensorId, aspectRatio: shotOutput.aspect }),
@@ -2259,16 +2243,9 @@ export default function App() {
 	 * snapshot (restoreCast puts it back), so an unrecorded light edit would be
 	 * silently reverted by an unrelated Ctrl+Z. `patch` is a partial or a
 	 * function of the current light. */
-	function changeKeyLight(gesture, patch) {
-		beginGestureUndo(`light:${gesture}`);
-		setKeyLight((current) => createKeyLight(typeof patch === "function" ? patch(current) : { ...current, ...patch }));
-	}
+
 	/** Reset is a whole gesture in one click. */
-	function resetKeyLight() {
-		recordCharacterUndo();
-		endGestureUndo();
-		setKeyLight(createKeyLight(null));
-	}
+
 	/** The Inspector's character Transform rows. The viewport gizmo already
 	 * records on drag start; these numeric rows are the same edit through
 	 * another door, so they record once per scrub / typed commit. */
@@ -2278,11 +2255,7 @@ export default function App() {
 	}
 	/** The set's look reference. One click, one entry — and the image is part
 	 * of the cast snapshot, so undo puts the previous picture back. */
-	function changeEnvironmentImage(dataUrl) {
-		recordCharacterUndo();
-		endGestureUndo();
-		setEnvironmentImage(dataUrl);
-	}
+
 	/** True while a framing capture for `shotId` is the newest history entry. */
 	function framingSessionOpen(shotId) {
 		const past = appContext.castHistory.past;
@@ -2325,11 +2298,11 @@ export default function App() {
 			setCommittedIkEdits(snapshot.committedIkEdits ?? []);
 			setIkTick((value) => value + 1);
 		}
-		if (snapshot.keyLight) setKeyLight(createKeyLight(snapshot.keyLight));
-		if (snapshot.environmentImage !== undefined) setEnvironmentImage(snapshot.environmentImage);
-		if (snapshot.environment !== undefined) setEnvironment(snapshot.environment);
-		if (snapshot.style !== undefined) setStyle(snapshot.style);
-		if (snapshot.hasEnvSheet !== undefined) setHasEnvSheet(snapshot.hasEnvSheet);
+		if (snapshot.keyLight) stageDomain.setKeyLight(createKeyLight(snapshot.keyLight));
+		if (snapshot.environmentImage !== undefined) stageDomain.setEnvironmentImage(snapshot.environmentImage);
+		if (snapshot.environment !== undefined) stageDomain.setEnvironment(snapshot.environment);
+		if (snapshot.style !== undefined) stageDomain.setStyle(snapshot.style);
+		if (snapshot.hasEnvSheet !== undefined) stageDomain.setHasEnvSheet(snapshot.hasEnvSheet);
 	}
 
 	// props so the inspector cannot show a ghost.
@@ -2573,9 +2546,9 @@ export default function App() {
 	// Point height input edits this one. Reset lives after activeCamera below.
 	const [craneSelectedIndex, setCraneSelectedIndex] = useState(null);
 	const [hasCharSheet, setHasCharSheet] = useState(startupStage.hasCharSheet);
-	const [hasEnvSheet, setHasEnvSheet] = useState(startupStage.hasEnvSheet);
-	const [environment, setEnvironment] = useState(startupStage.environment ?? DEFAULT_ENVIRONMENT);
-	const [style, setStyle] = useState(startupStage.style ?? "moody cinematic lighting, 35mm film look");
+
+
+
 
 	const [cameraPos, setCameraPos] = useState(DEFAULT_CAMERA_POSITION);
 	const [subjectVisible, setSubjectVisible] = useState(true);
@@ -4189,14 +4162,14 @@ export default function App() {
 		setCharacters(stage.characters);
 		setRigMountEpoch((value) => value + 1);
 		setHasCharSheet(stage.hasCharSheet);
-		setEnvironmentImage(stage.environmentImage ?? null);
-		setEnvironment(stage.environment ?? DEFAULT_ENVIRONMENT);
-		setStyle(stage.style ?? "moody cinematic lighting, 35mm film look");
-		setHasEnvSheet(stage.hasEnvSheet === true);
-		setShotAspectKey(stage.shotAspect);
-		setCameraPresetId(stage.cameraPresetId ?? null);
-		setSensorFormat(stage.sensorId);
-		setKeyLight(stage.keyLight);
+		stageDomain.setEnvironmentImage(stage.environmentImage ?? null);
+		stageDomain.setEnvironment(stage.environment ?? DEFAULT_ENVIRONMENT);
+		stageDomain.setStyle(stage.style ?? "moody cinematic lighting, 35mm film look");
+		stageDomain.setHasEnvSheet(stage.hasEnvSheet === true);
+		stageDomain.setShotAspectKey(stage.shotAspect);
+		stageDomain.setCameraPresetId(stage.cameraPresetId ?? null);
+		stageDomain.setSensorFormat(stage.sensorId);
+		stageDomain.setKeyLight(stage.keyLight);
 		// The motion-layer buffer reloads from the scene's first character.
 		const firstLayer = stage.characters[0]?.layer;
 		setWaypoints(firstLayer?.waypoints ?? shotState.waypoints ?? []);
@@ -4514,11 +4487,11 @@ export default function App() {
 						lookAtZ: actor?.z ?? 0,
 						focalMm: framing.focalMm,
 					};
-					setCameraPresetId(rawArgs.preset);
+					stageDomain.setCameraPresetId(rawArgs.preset);
 				} else if (Object.keys(finitePatch(rawArgs, ["x", "y", "z", "lookAtX", "lookAtY", "lookAtZ"])).length || rawArgs.focalMm !== undefined) {
 					// Any manual placement invalidates the recorded preset: the scene
 					// must not claim a framing it no longer has.
-					setCameraPresetId(null);
+					stageDomain.setCameraPresetId(null);
 				}
 				const patch = finitePatch(args, ["x", "y", "z"]);
 				let nextFov = live.fovDeg;
@@ -6053,7 +6026,7 @@ export default function App() {
 	 * shot camera, so the user composes the A/B reference on exactly the
 	 * 832x480 frame the clip will have. Idempotent; capture does not need it. */
 	function enterFalFraming() {
-		setShotAspectKey(FAL_MOTION_SHOT_ASPECT);
+		stageDomain.setShotAspectKey(FAL_MOTION_SHOT_ASPECT);
 		if (!lookThroughShot) enterShotLook();
 	}
 
@@ -6065,7 +6038,7 @@ export default function App() {
 			const still = captureFalStill();
 			// The capture is already on the Fal canvas; make the viewport agree so
 			// the user sees the frame that was just sent.
-			setShotAspectKey(FAL_MOTION_SHOT_ASPECT);
+			stageDomain.setShotAspectKey(FAL_MOTION_SHOT_ASPECT);
 			setFalMotion((current) => ({ ...current, [slot]: still, status: "idle", error: "" }));
 			if (slot === "a") setFalMotionCameraUnlocked(false);
 			setToast(isKo ? `포즈 ${slot.toUpperCase()} 캡처됨 · ${still.width}×${still.height}` : `Pose ${slot.toUpperCase()} captured · ${still.width}×${still.height}`);
@@ -8011,7 +7984,7 @@ export default function App() {
 				return true;
 			},
 			setEnvironmentImage: (dataUrl) => {
-				setEnvironmentImage(normalizeReferenceImage(dataUrl));
+				stageDomain.setEnvironmentImage(normalizeReferenceImage(dataUrl));
 				return true;
 			},
 			captureWithReferences: () => liveHandlersRef.current.capture_framing_png({}),
@@ -8481,7 +8454,7 @@ export default function App() {
 
 	function applyPreset(key) {
 		const p = PRESETS[key];
-		setPreset(key);
+		stageDomain.setPreset(key);
 		setFovDeg(p.fov);
 		// Camera presets no longer touch the cast: with a free-form cast the
 		// old two:false semantics would hide every extra character.
@@ -11756,16 +11729,16 @@ function resizePromptClip(id, edge, rawFrame) {
 			shotCamRef.current.rotation.set(angles.pitch, angles.yaw, 0); shotCamRef.current.fov = fov; shotCamRef.current.updateProjectionMatrix();
 		}
 		manualCameraOverrideRef.current = manual; appContext.patchLive({ camera: camera.position }); appContext.patchLive({ fovDeg: fov }); appContext.patchLive({ studioCamera: camera });
-		setCameraPos(camera.position); setFovDeg(fov); setCameraPresetId(null);
+		setCameraPos(camera.position); setFovDeg(fov); stageDomain.setCameraPresetId(null);
 	}
 	/** The authored stage envelope (key light, environment, filmback) published
 	 * as one body: the live read model first, so the next synchronous read sees
 	 * it, then the React state the foldouts and the save path own. */
 	function publishStudioStage(stage) {
 		appContext.patchLive({ stage: stage });
-		setKeyLight(stage.keyLight); setEnvironmentImage(stage.environmentImage ?? null);
-		setEnvironment(stage.environment); setStyle(stage.style); setHasEnvSheet(stage.hasEnvSheet === true);
-		setShotAspectKey(stage.shotAspect); setCameraPresetId(stage.cameraPresetId ?? null); setSensorFormat(stage.sensorId);
+		stageDomain.setKeyLight(stage.keyLight); stageDomain.setEnvironmentImage(stage.environmentImage ?? null);
+		stageDomain.setEnvironment(stage.environment); stageDomain.setStyle(stage.style); stageDomain.setHasEnvSheet(stage.hasEnvSheet === true);
+		stageDomain.setShotAspectKey(stage.shotAspect); stageDomain.setCameraPresetId(stage.cameraPresetId ?? null); stageDomain.setSensorFormat(stage.sensorId);
 	}
 	function snapshotStudioDomain(domain, targetId) {
 		const state = readStudioState();
@@ -12501,7 +12474,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								disabled={falMotionCameraLocked}
 								onChange={(event) => {
 									const id = event.target.value;
-									if (!id) { setCameraPresetId(null); return; }
+									if (!id) { stageDomain.setCameraPresetId(null); return; }
 									liveHandlersRef.current?.set_camera({ preset: id });
 								}}
 							>
@@ -12516,7 +12489,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							<select
 								aria-label={ko("Output aspect ratio", "출력 화면 비율")}
 								value={shotAspectKey}
-								onChange={(event) => setShotAspectKey(event.target.value)}
+								onChange={(event) => stageDomain.setShotAspectKey(event.target.value)}
 							>
 								{Object.values(SHOT_ASPECT_PRESETS).map((value) => (
 									<option key={value.label} value={value.label}>{value.label}</option>
@@ -13445,17 +13418,7 @@ function resizePromptClip(id, edge, rawFrame) {
 
 					{/* Camera animation is authored against the same playhead as motion,
 					    so keep its controls beside the Motion tools as well as Shot setup. */}
-					<Foldout hidden={!keyLightSelected} title={ko("Light", "조명")}>
-						<p className="hint">{ko("Drag the sun in the scene to move the light. Shadows and warmth follow it.", "씬의 해를 드래그해 조명을 옮깁니다. 그림자와 빛의 방향이 따라옵니다.")}</p>
-						<Slider label={ko("Brightness", "밝기")} min={0} max={4} step={0.05} value={keyLight.intensity} onChange={(value) => changeKeyLight("intensity", { intensity: value })} />
-						<Slider label={ko("Warm ↔ Cool", "따뜻함 ↔ 차가움")} min={0} max={1} step={0.05} value={keyLight.warmth ?? 0.5} onChange={(value) => changeKeyLight("warmth", { warmth: value })} />
-						<div className="readout">
-							<span title={ko("light position", "조명 위치")}>{`x ${keyLight.x.toFixed(1)}  y ${keyLight.y.toFixed(1)}  z ${keyLight.z.toFixed(1)}`}</span>
-						</div>
-						<button className="btn ghost" onClick={resetKeyLight}>
-							{ko("Reset light", "조명 초기화")}
-						</button>
-					</Foldout>
+					<LightPanel keyLightSelected={keyLightSelected} keyLight={keyLight} changeKeyLight={changeKeyLight} resetKeyLight={resetKeyLight} />
 					{/* Lens, Recenter and Record used to live here as well as in the
 					    viewport camera bar and the topbar Export menu. One home each
 					    (#193, R1): framing is the bar's job, delivery is Export's, and
@@ -14267,35 +14230,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						)}
 					</Foldout>
 
-				<Foldout hidden={selectedHierarchyId !== "environment"} title={ko("Environment", "환경")}>
-						<label className="check">
-							<input type="checkbox" checked={hasEnvSheet} onChange={(event) => { recordCharacterUndo(); setHasEnvSheet(event.target.checked); }} />
-						<span>{ko("I have an environment sheet", "환경 시트가 있어요")}</span>
-						</label>
-						{!hasEnvSheet && (
-						<Field label={ko("Environment description", "환경 설명")}>
-								<input type="text" value={environment} onChange={(event) => { recordSessionUndo(environmentTextSessionRef, "environment:description"); setEnvironment(event.target.value); }} />
-							</Field>
-						)}
-					<Field label={ko("Look / style", "룩 / 스타일")}>
-							<input type="text" value={style} onChange={(event) => { recordSessionUndo(environmentTextSessionRef, "environment:style"); setStyle(event.target.value); }} />
-						</Field>
-						<ReferenceImageField
-							label={ko("Environment reference", "환경 참고 이미지")}
-							hint={ko(
-								"A picture of this location. It travels with every framing capture so a render takes its materials, palette and lighting from the real place.",
-								"이 장소의 사진입니다. 모든 프레이밍 캐프처에 함께 실려 재질·색감·조명을 실제 장소에서 가져옵니다.",
-							)}
-							value={environmentImage}
-							alt={ko("Environment reference", "환경 참고 이미지")}
-							inputProps={{ "data-environment-image-input": "" }}
-							onPick={(dataUrl) => {
-								changeEnvironmentImage(dataUrl);
-								setToast(ko("Environment reference set", "환경 참고 이미지를 설정했어요"));
-							}}
-							onClear={() => changeEnvironmentImage(null)}
-						/>
-					</Foldout>
+				<EnvironmentPanel selectedHierarchyId={selectedHierarchyId} hasEnvSheet={hasEnvSheet} recordCharacterUndo={recordCharacterUndo} setHasEnvSheet={stageDomain.setHasEnvSheet} environment={environment} recordSessionUndo={recordSessionUndo} environmentTextSessionRef={environmentTextSessionRef} setEnvironment={stageDomain.setEnvironment} style={style} setStyle={stageDomain.setStyle} environmentImage={environmentImage} changeEnvironmentImage={changeEnvironmentImage} setToast={setToast} />
 
 				<Foldout hidden={selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
 					<div className="props-drop" data-drop={inspectorDrop.over ? "over" : "target"} {...inspectorDrop.handlers}>
@@ -15477,94 +15412,11 @@ function resizePromptClip(id, edge, rawFrame) {
  * The value IS the stored data URL: there is no separate "pending" state, so
  * what the panel shows is exactly what a capture will attach.
  */
-function ReferenceImageField({ label, hint, value, alt, onPick, onClear, inputProps = {} }) {
-	const inputRef = useRef(null);
-	const [error, setError] = useState("");
-	return (
-		<div className="reference-slot">
-			<div className="reference-slot-head">
-				<span className="reference-slot-label">{label}</span>
-				{value && (
-					<button type="button" className="btn ghost small" onClick={() => { setError(""); onClear(); }}>
-						{ko("Clear", "지우기")}
-					</button>
-				)}
-			</div>
-			<div className="reference-slot-body">
-				<button
-					type="button"
-					className="reference-slot-thumb"
-					data-empty={value ? undefined : "true"}
-					onClick={() => inputRef.current?.click()}
-					title={ko("Choose a reference picture", "참고 이미지를 선택합니다")}
-				>
-					{value
-						? <img src={value} alt={alt ?? label} />
-						: <span className="reference-slot-plus" aria-hidden="true">＋</span>}
-				</button>
-				<div className="reference-slot-copy">
-					<p className="inspector-hint">{hint}</p>
-					<button type="button" className="btn ghost small" onClick={() => inputRef.current?.click()}>
-						{value ? ko("Replace", "교체") : ko("Choose image", "이미지 선택")}
-					</button>
-				</div>
-			</div>
-			{error && <p className="inspector-hint reference-slot-error" role="status">{error}</p>}
-			<input
-				ref={inputRef}
-				type="file"
-				className="multimodel-file-input"
-				accept="image/*"
-				{...inputProps}
-				onChange={async (event) => {
-					const file = event.target.files?.[0];
-					// Cleared before the await: re-picking the same file after an
-					// error must fire change again.
-					event.target.value = "";
-					if (!file) return;
-					setError("");
-					try {
-						onPick(await readReferenceImage(file));
-					} catch (failure) {
-						setError(isKo ? `이미지를 불러오지 못했어요 — ${failure.message}` : `Could not load that image — ${failure.message}`);
-					}
-				}}
-			/>
-		</div>
-	);
-}
+
 
 /** Unity Inspector-style foldout: a titled section the user can collapse.
  * Cards default to open; the fold state is per-title session state. */
-function Foldout({ title, hidden, defaultOpen = true, openSignal = 0, children }) {
-	const [open, setOpen] = useState(defaultOpen);
-	const cardRef = useRef(null);
-	// A collapsed panel must still be reachable from elsewhere: selecting a
-	// prompt block on the timeline has to reveal the panel that edits it, or
-	// the click looks like it did nothing. Opening alone is not enough — the
-	// panel can sit below the fold of a long Inspector — so it is scrolled into
-	// view as well. The signal only ever opens; it never closes a panel.
-	useEffect(() => {
-		if (openSignal <= 0) return undefined;
-		setOpen(true);
-		// One frame later: the body has to exist before it can be scrolled to.
-		const raf = requestAnimationFrame(() => {
-			cardRef.current?.scrollIntoView({ block: "nearest" });
-		});
-		return () => cancelAnimationFrame(raf);
-	}, [openSignal]);
-	return (
-		<section ref={cardRef} className={"card foldout" + (open ? " open" : "")} hidden={hidden}>
-			<h3>
-				<button type="button" className="foldout-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
-					<span className="foldout-arrow" aria-hidden="true">{open ? "\u25BE" : "\u25B8"}</span>
-					<span className="foldout-title">{title}</span>
-				</button>
-			</h3>
-			{open && <div className="foldout-body">{children}</div>}
-		</section>
-	);
-}
+
 
 function SubjectBox({ label, value, onChange, onRemove, onPose, posing, color, onColorChange, onColorEditStart }) {
 	return (

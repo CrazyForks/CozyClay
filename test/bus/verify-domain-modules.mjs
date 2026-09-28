@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { parseSync } from 'rolldown/experimental';
 
 const root = new URL('../../', import.meta.url);
@@ -29,6 +31,15 @@ function stateNames(ast) {
 const domains = {
   stage: { states: ['preset', 'shotAspectKey', 'environmentImage', 'cameraPresetId', 'sensorId', 'keyLight', 'hasEnvSheet', 'environment', 'style'], panels: ['LightPanel', 'EnvironmentPanel'] },
 };
+// Existing source-driven integration fixtures follow the moved implementation,
+// not a copy of it. Keep source text intact except for the extra default exports.
+export function readStudioSource() {
+  const paths = ['src/App.jsx', ...['domains', 'panels'].flatMap(directory =>
+    readdirSync(new URL(`src/${directory}/`, root)).filter(name => /\.(js|jsx)$/.test(name)).map(name => `src/${directory}/${name}`))];
+  return paths.map(path => read(path).replace(/export default /g, '')).join('\n');
+}
+
+function verify() {
 const app = parse('src/App.jsx');
 for (const [domain, { states, panels }] of Object.entries(domains)) {
   const path = `src/domains/${domain}.js`;
@@ -61,3 +72,5 @@ for (const [domain, { states, panels }] of Object.entries(domains)) {
 const lines = read('src/App.jsx').split('\n').length - 1;
 assert(lines <= 15613 - 50 * Object.keys(domains).length, `acceptance 4: App.jsx shrinks with each domain (${lines} lines)`);
 console.log(`PASS domain metric: App.jsx 15613 -> ${lines} lines`);
+}
+if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) verify();

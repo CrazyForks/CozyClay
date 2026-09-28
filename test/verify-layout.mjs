@@ -9,7 +9,8 @@ function expect(name, condition) {
 }
 
 // The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
-const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8")
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+const app = readStudioSource()
 	+ readFileSync(new URL("../src/app-stage.jsx", import.meta.url), "utf8");
 const extract = readFileSync(new URL("../tools/ardy/extract.mjs", import.meta.url), "utf8");
 const bridge = readFileSync(new URL("../tools/ardy/bridge.mjs", import.meta.url), "utf8");

@@ -64,7 +64,7 @@ function scanTree(root) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
       if (entry.isDirectory()) walk(path);
-      else if (entry.name.endsWith(".jsx")) files.push(path);
+      else if (entry.name.endsWith(".jsx") || (relative(root, path).startsWith("domains/") && entry.name.endsWith(".js"))) files.push(path);
     }
   };
   walk(root);
