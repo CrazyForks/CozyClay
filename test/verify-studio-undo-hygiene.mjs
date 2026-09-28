@@ -8,6 +8,10 @@
 // would pass while the studio still silently reverts the light (#345). The JSX
 // call sites cannot be mounted without a browser, so they are pinned against
 // the source the way verify-number-field-scrub pins the object Transform rows.
+//
+// The Studio commands are read from their own modules (src/commands/*.js), not
+// from App.jsx: each module registers its actions over the generic port object,
+// and every mutation must land in exactly one entry of its declared undo domain.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { parseSync } from "rolldown/experimental";
@@ -23,6 +27,19 @@ import { createProjectDocument, readProjectDocument } from "../src/project.js";
 import { createSceneHistoryStore } from "../src/scene-history.js";
 import { copyPhysicsKeys } from "../src/ardy/physics-review.js";
 import { HISTORY_LIMIT } from "../src/history.js";
+import { createCommandBus } from "../src/command-bus.js";
+import { createShot } from "../src/cuts.js";
+import { createStudioCommandJournal } from "../src/studio-agent-commands.js";
+import { createStudioActionRegistry } from "../src/studio-actions.js";
+import * as shotCommands from "../src/commands/shot.js";
+import * as castCommands from "../src/commands/cast.js";
+import * as motionCommands from "../src/commands/motion.js";
+import * as objectCommands from "../src/commands/objects.js";
+import * as viewCommands from "../src/commands/view.js";
+import * as sceneCommands from "../src/commands/scene.js";
+import * as projectCommands from "../src/commands/project.js";
+import * as exportCommands from "../src/commands/export.js";
+import * as aiCommands from "../src/commands/ai.js";
 
 const source = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 const parsed = parseSync("App.jsx", source);
@@ -107,7 +124,126 @@ function fixture() {
 	return { scope, depth: () => scope.charHistoryRef.current.past.length };
 }
 
+const COMMAND_MODULES = {
+	shot: shotCommands, cast: castCommands, motion: motionCommands, objects: objectCommands, view: viewCommands,
+	scene: sceneCommands, project: projectCommands, export: exportCommands, ai: aiCommands,
+};
+// The undo domains the editor's native history owns (App's recordStudioAction).
+const HISTORY_DOMAINS = ["shot", "cast", "motion", "objects"];
+const unit = { x: 0, y: 0, z: 0, w: 1 };
+// One valid call per command the hygiene cases run through the bus.
+const COMMAND_INPUTS = {
+	"shot.create": {}, "shot.split": { shotId: "shot-1" }, "shot.duplicate": { shotId: "shot-1" }, "shot.remove": { shotId: "shot-1" },
+	"shot.setRange": { shotId: "shot-1", range: { startFrame: 1, endFrameExclusive: 15 } }, "shot.reorder": { shotId: "shot-1", startFrame: 2 },
+	"shot.setCameraRail": { shotId: "shot-1", points: [{ x: -2, z: 4 }, { x: 3, z: 4 }] }, "shot.clearCameraRail": { shotId: "shot-1" },
+	"character.addWaypoint": { characterId: "actor", position: { x: 0, z: 2 }, frame: 40 },
+	"character.moveWaypoint": { characterId: "actor", position: { x: 0, z: 1.1 }, frame: 24 },
+	"character.removeWaypoint": { characterId: "actor", frame: 24 }, "character.clearWaypoints": { characterId: "actor" },
+	"character.setIkKey": { characterId: "actor", frame: 12, tracks: { head: { q: [unit] } } },
+	"character.removeIkKey": { characterId: "actor", frame: 12 }, "character.clearIkKeys": { characterId: "actor" },
+	"object.attach": { objectId: "object-1", characterId: "actor" }, "object.detach": { objectId: "object-1" }, "object.duplicate": { objectId: "object-1" },
+	"asset.import": { source: "https://assets.example.test/poster.png", name: "poster.png", placeAs: "cutout" },
+	"view.setPartColours": { mode: "flat" }, "view.setGuideMode": { mode: "thirds" }, "view.setInset": { collapsed: true },
+	"scene.create": {}, "scene.duplicate": { sceneId: "scene-1" }, "scene.rename": { sceneId: "scene-1", name: "Renamed" },
+	"scene.delete": { sceneId: "scene-2" }, "scene.switch": { sceneId: "scene-2" }, "project.save": {},
+};
+
+// Every command module registered over one generic port object and driven
+// through the real command bus. The history stand-in records which domain each
+// entry is opened in, and the ports record whether a write landed inside it.
+function commandFixture({ frame = 8 } = {}) {
+	const host = { workspaceId: "workspace", documentEpoch: "document", sceneId: "scene-1", sceneEpoch: "epoch" };
+	const state = {
+		shots: [{ ...createShot("Shot 1", 0, 15, [], { mode: "rail", cameraRail: [{ x: -2, z: 4 }, { x: 2, z: 4 }] }), id: "shot-1" }],
+		objects: [{ id: "parent-1", name: "Group" }, { id: "object-1", name: "Cube", parent: "parent-1" }],
+		characters: [{ id: "actor", subject: "Ada" }], frame, frameCount: 48, selectedObjectId: null, activeCharacterId: "actor",
+		promptBlockCount: 0, generating: false, motionReady: true, exporting: false, canExportVideo: true,
+		scenes: [{ id: "scene-1", name: "ONE" }, { id: "scene-2", name: "TWO" }], activeSceneId: "scene-1",
+		project: { name: "Heist", hasFile: true, fileAccess: false, gesture: false },
+		aiShot: { mode: "image", imageModel: "gpt_image_2" }, falMotion: { enabled: false, status: "idle", dailyRemaining: null },
+	};
+	const entries = [], writes = [];
+	let recording = null, revision = 0;
+	const answers = {
+		// Like the editor's, every read is a fresh snapshot of the document.
+		state: () => ({ ...state }),
+		addCharacterWaypoint: (id, position, frame) => ({ waypoint: { frame: frame ?? 12, ...position }, index: 0, warnings: [] }),
+		moveCharacterWaypoint: (id, frame, position) => ({ waypoint: { frame, ...position }, warnings: [] }),
+		clearCharacterWaypoints: () => 1, clearCharacterIkKeys: () => 1,
+		fetchImportSource: async () => "data:image/png;base64,AAAA",
+		importAsset: async () => ({ objectId: "object-2", assetId: "img-1" }),
+		saveProject: async () => ({ saved: true, name: "Heist", fileName: "Heist.cclayproject" }),
+		afterRender: async () => {},
+	};
+	const ports = new Proxy({}, {
+		get: (_, name) => name === "state" ? answers.state : (...args) => {
+			writes.push({ name, inside: recording });
+			// A write republishes the document, so a diff of rows sees the edit.
+			state.shots = state.shots.map(row => ({ ...row }));
+			state.objects = state.objects.map(row => ({ ...row }));
+			return answers[name]?.(...args);
+		},
+	});
+	const registries = Object.fromEntries(Object.entries(COMMAND_MODULES).map(([name, module]) => {
+		const registry = createStudioActionRegistry({ readState: () => ports.state() });
+		module.register(registry, ports);
+		return [name, registry];
+	}));
+	const journal = createStudioCommandJournal({ host });
+	const bus = registry => createCommandBus({ registry, ports: {
+		read: () => ({ host, revision, domainRevisions: {} }), journal: () => journal,
+		recordAction(domain, run) {
+			const entry = { domain, id: `entry-${entries.length + 1}` };
+			entries.push(entry);
+			recording = entry;
+			const close = result => { recording = null; revision++; return { result, historyEntryId: entry.id }; };
+			const result = run();
+			return result?.then ? result.then(close, error => { recording = null; throw error; }) : close(result);
+		},
+	} });
+	return { registries, bus, entries, writes };
+}
+
 const cases = {
+	"each command module registers exactly its declarations, with their undo domains"() {
+		const { registries } = commandFixture();
+		for (const [name, module] of Object.entries(COMMAND_MODULES)) {
+			const registry = registries[name];
+			assert.deepEqual(registry.ids(), module.declarations.map(entry => entry.id), `${name}.js registers its declared actions`);
+			for (const declaration of module.declarations) {
+				const entry = registry.get(declaration.id);
+				assert.equal(entry.kind, declaration.kind, `${declaration.id} keeps its kind`);
+				assert.equal(entry.undoDomain, declaration.undoDomain, `${declaration.id} keeps its declared undo domain`);
+				if (entry.kind === "mutation") assert.ok(HISTORY_DOMAINS.includes(entry.undoDomain), `${entry.id} names a history domain`);
+				else assert.equal(entry.undoDomain, undefined, `${entry.id} is outside the undo history`);
+			}
+		}
+	},
+	async "every command mutation writes inside one entry of its undo domain"() {
+		const mutations = Object.values(COMMAND_MODULES).flatMap(module => module.declarations).filter(entry => entry.kind === "mutation");
+		assert.equal(mutations.length, 19);
+		for (const declaration of mutations) {
+			// A new shot needs free room at the playhead; the others act inside shot-1.
+			const f = commandFixture({ frame: declaration.id === "shot.create" ? 24 : 8 }), [name] = Object.entries(COMMAND_MODULES).find(([, module]) => module.declarations.includes(declaration));
+			const receipt = await f.bus(f.registries[name]).run(declaration.id, COMMAND_INPUTS[declaration.id]);
+			assert.equal(receipt.ok, true, `${declaration.id}: ${JSON.stringify(receipt)}`);
+			assert.deepEqual(f.entries.map(entry => entry.domain), [declaration.undoDomain], `${declaration.id} opens one ${declaration.undoDomain} entry`);
+			assert.ok(f.writes.length > 0, `${declaration.id} writes through the ports`);
+			for (const write of f.writes) assert.equal(write.inside, f.entries[0], `${declaration.id}: ${write.name} lands inside its entry`);
+			assert.equal(receipt.undo?.historyEntryId, f.entries[0].id, `${declaration.id}'s receipt undoes that entry`);
+		}
+	},
+	async "view, scene and project commands never open an undo entry"() {
+		const outside = Object.values(COMMAND_MODULES).flatMap(module => module.declarations).filter(entry => ["transient", "document"].includes(entry.kind));
+		assert.deepEqual(outside.map(entry => entry.id).sort(), Object.keys(COMMAND_INPUTS).filter(id => /^(view|scene|project)\./.test(id)).sort());
+		for (const declaration of outside) {
+			const f = commandFixture(), [name] = Object.entries(COMMAND_MODULES).find(([, module]) => module.declarations.includes(declaration));
+			const receipt = await f.bus(f.registries[name]).run(declaration.id, COMMAND_INPUTS[declaration.id]);
+			assert.equal(receipt.ok, true, `${declaration.id}: ${JSON.stringify(receipt)}`);
+			assert.deepEqual(f.entries, [], `${declaration.id} records no history`);
+			assert.equal(receipt.undo, null, `${declaration.id} answers without an undo`);
+		}
+	},
 	"an unrelated cast undo cannot revert the light"() {
 		const f = fixture();
 		f.scope.changeKeyLight("intensity", { intensity: 2 });
@@ -302,7 +438,7 @@ const cases = {
 let failures = 0;
 for (const [name, run] of Object.entries(cases)) {
 	try {
-		run();
+		await run();
 		console.log("PASS", name);
 	} catch (error) {
 		failures += 1;
