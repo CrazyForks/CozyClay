@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { join, relative } from "node:path";
 import { parseSync } from "rolldown/experimental";
 import { createSemanticState } from "../../src/semantic-edit.js";
+import { fixture, result } from "./fixture.mjs";
 
 const WRITER_NAMES = new Set([
   "setStyle", "setKeyLight", "setEnvironmentImage", "setShotAspectKey", "setSensorFormat",
@@ -112,6 +113,18 @@ test("semantic edit warns when called outside a bus run", () => {
   try { createSemanticState(0, () => {}, () => {}, "stage").edit(1); }
   finally { console.warn = previous; }
   assert.equal(warnings.some(message => message.includes("outside a bus run")), true);
+});
+
+test("semantic edit is silent inside a bus run", () => {
+  const warnings = [];
+  const previous = console.warn;
+  const f = fixture();
+  const state = createSemanticState(0, () => {}, () => {}, "stage");
+  f.register("shot.create", () => { state.edit(1); return result(); });
+  console.warn = message => warnings.push(String(message));
+  try { assert.equal(f.bus.run("shot.create", {}, f.request("ui")).ok, true); }
+  finally { console.warn = previous; }
+  assert.deepEqual(warnings, []);
 });
 
 export { scanSource, scanTree, applyRatchet };
