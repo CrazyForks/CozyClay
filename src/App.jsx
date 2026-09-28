@@ -1,3 +1,6 @@
+import { useObjects } from "./domains/objects.js";
+import ObjectTransformPanel from "./panels/ObjectTransformPanel.jsx";
+import PropsPanel from "./panels/PropsPanel.jsx";
 import { useScenes } from "./domains/scenes.js";
 import ProjectPanel from "./panels/ProjectPanel.jsx";
 import { useStage } from "./domains/stage.js";
@@ -1457,22 +1460,36 @@ export default function App() {
 	// Hand-mixed object tints, newest first. An editor preference like the
 	// guides above — it belongs to this browser, never to the scene, so it is
 	// kept out of the scene document and written straight back to storage.
-	const [recentObjectColors, setRecentObjectColors] = useState(() => readStoredObjectColors(globalThis.localStorage));
+	const objectsDomain = useObjects(appContext.forRender({
+		get animatedSceneObjects() { return animatedSceneObjects; },
+		get attachFrameRef() { return attachFrameRef; },
+		get castMemberOf() { return castMemberOf; },
+		get charIdFromHierarchyId() { return charIdFromHierarchyId; },
+		get characters() { return characters; },
+		get editorCamRef() { return editorCamRef; },
+		get editorLook() { return editorLook; },
+		get frameWorldTarget() { return frameWorldTarget; },
+		get look() { return look; },
+		get lookThroughShot() { return lookThroughShot; },
+		get markCraftAction() { return markCraftAction; },
+		get markSemanticEdit() { return markSemanticEdit; },
+		get matteEditorRef() { return matteEditorRef; },
+		get propWorldRef() { return propWorldRef; },
+		get selectedHierarchyId() { return selectedHierarchyId; },
+		get setInspectorActionsOpen() { return setInspectorActionsOpen; },
+		get setSelectedHierarchyId() { return setSelectedHierarchyId; },
+		get setToast() { return setToast; },
+		get shotCamRef() { return shotCamRef; },
+		get startupScene() { return startupScene; },
+	}));
+	const { recentObjectColors, setRecentObjectColors, objectColorDraft, setObjectColorDraft, rememberSceneObjectColor, objectDeleteUndo, setObjectDeleteUndo, sceneObjects, storeRef, store, selectedSceneObjectId, selectedSceneObject, beginSceneTransaction, endSceneTransaction, changeSceneObject, deleteSelectedSceneObject, deleteSceneObject, dropSelectedSceneObject, matteTolerance, setMatteTolerance, matteBrush, setMatteBrush, matteShrink, setMatteShrink, matteFeather, setMatteFeather, matteMode, setMatteMode, matteStats, setMatteStats, matteBusy, setMatteBusy, gizmoMode, setGizmoMode, snapEnabled, setSnapEnabled, addSceneObject, cutoutNameFromFile, importCutout, importCutouts, spawnCutoutAt, meshNameFromFile, persistMeshAsset, placementInFrontOfShot, importMesh, importMeshes, spawnMeshAt, applyMatte, duplicateSelectedSceneObject, frameSelection, renameSceneObject, sceneObjectWorldMatrix, attachTargetForRow, attachTargetLabel, attachSceneObject } = objectsDomain;
 	// What is being typed into the hex field right now, or null when nobody is
 	// typing. Held apart from the record so a half-written "#ff3" survives on
 	// screen without ever repainting the prop, and so the field snaps back to
 	// the object's real colour the moment the edit ends.
-	const [objectColorDraft, setObjectColorDraft] = useState(null);
-	function rememberSceneObjectColor(hex) {
-		setRecentObjectColors((previous) => {
-			const next = rememberObjectColor(previous, hex);
-			// rememberObjectColor returns the same array when nothing changed, so a
-			// re-pick of the same tint neither writes storage nor re-renders.
-			if (next !== previous) writeStoredObjectColors(globalThis.localStorage, next);
-			return next;
-		});
-	}
-	const [objectDeleteUndo, setObjectDeleteUndo] = useState(null);
+
+
+
 	// An undo offer is an offer, not a banner: without a window it sits on the
 	// screen for the rest of the session. Long enough to notice and reach, then
 	// gone — the deletion is still reversible through Undo history afterwards.
@@ -1522,7 +1539,7 @@ export default function App() {
 		get setPromptClips() { return setPromptClips; },
 		get setRailDraw() { return setRailDraw; },
 		get setRigMountEpoch() { return setRigMountEpoch; },
-		get setSceneObjects() { return setSceneObjects; },
+		get setSceneObjects() { return objectsDomain.setSceneObjects; },
 		get setSelectedHierarchyId() { return setSelectedHierarchyId; },
 		get setSelectedPromptId() { return setSelectedPromptId; },
 		get setShots() { return setShots; },
@@ -1546,7 +1563,7 @@ export default function App() {
 	}));
 	const { scenes, activeSceneId, sceneSaveError, setSceneSaveError, snapshotActiveScene, persistScenes, projectName, setProjectName, projectDirty, setProjectDirty, projectSaveState, setProjectSaveState, projectMenuOpen, setProjectMenuOpen, projectBrowserOpen, setProjectBrowserOpen, projectNameDialog, setProjectNameDialog, projectStartupOpen, setProjectStartupOpen, projectManifest, setProjectManifest, saveBlockedReasons, setSaveBlockedReasons, workflowRevision, setWorkflowRevision, projectDocumentInput, collectProjectSnapshot, collectProjectSerialized, markProjectClean, projectProblemsNotice, rehydrateProjectAssets, saveProject, applyProject, openStarterScene, openProject, openProjectByHandle, requestNewProject, newProject, restoreOffer, setRestoreOffer, restoreStoredProject, flushScenes, restoredShotState, openScene, selectSceneDocument, createSceneDocumentFromUi, duplicateSceneDocumentFromUi, renameSceneDocumentFromUi, deleteSceneDocumentFromUi, switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument } = scenesDomain;
 
-	const [sceneObjects, setSceneObjects] = useState(startupScene.objects);
+
 
 	const saveBlockedRef = useRef(startup.saveBlocked);
 	const dirtyRef = useRef(false);
@@ -1558,21 +1575,11 @@ export default function App() {
 	// through this store so one interaction is exactly one undo entry and an
 	// in-flight drag can be cancelled. setSceneObjects is stable, so the
 	// store is constructed once, seeded with the initial scene.
-	const storeRef = useRef(null);
-	if (!storeRef.current) {
-		storeRef.current = withCommandHistory(createSceneHistoryStore(sceneObjects, {
-		onCommit: (before, after) => markSemanticEdit("objects", before, after),
-		onObjects: (objects) => {
-			// Object-side ops join the shared undo clock here; undo/redo of the
-			// object store bumps the clock explicitly in undoScene/redoScene.
-			appContext.objectChanged();
-			setSceneObjects(objects);
-		},
-	}));
-	}
-	const store = storeRef.current;
-	const selectedSceneObjectId = sceneObjectIdFromHierarchy(selectedHierarchyId);
-	const selectedSceneObject = sceneObjects.find((object) => object.id === selectedSceneObjectId) ?? null;
+
+
+
+
+
 	// Foot snap (ground plant): while ON, body (hips) drags keep the feet at
 	// the positions captured when the drag started — the knees bend instead
 	// of the feet sinking through the floor. Toggleable in the timeline.
@@ -1641,13 +1648,9 @@ export default function App() {
 	// Producer drag lifecycle (plan §6.1): begin issues a token the producer
 	// presents on every apply and on close; end commits the drag as one
 	// history entry, or rolls it back when commit is false (Escape).
-	function beginSceneTransaction({ owner, cancel }) {
-		return store.begin(owner, cancel);
-	}
 
-	function endSceneTransaction(token, { commit }) {
-		store.end(token, { commit });
-	}
+
+
 
 	function focusIkHandle(focus) {
 		setIkFocus(focus);
@@ -1662,45 +1665,20 @@ export default function App() {
 	// lands in the live array without its own history entry. No token is an
 	// atomic edit — one entry. updateSceneObject returns the same array when
 	// nothing changed, so a no-op can never create an entry.
-	function changeSceneObject(id, patch, token) {
-		const apply = (objects) => updateSceneObject(objects, id, patch);
-		if (token != null) store.applyIn(token, apply);
-		else store.applyAtomic(apply);
-	}
 
-	function deleteSelectedSceneObject() {
-		deleteSceneObject(selectedSceneObjectId);
-	}
+
+
 
 	/** Delete by id — the hierarchy context menu's Delete. Unlike the
 	 * selection-based path above, removing a row that is not the selection
 	 * must leave the selection alone. */
-	function deleteSceneObject(id) {
-		if (!id) return;
-		const wasSelected = id === selectedSceneObjectId;
-		store.applyAtomic((objects) => removeSceneObject(objects, id));
-		setObjectDeleteUndo({ id, pastDepth: store.depths().past });
-		setInspectorActionsOpen(false);
-		if (wasSelected) {
-			setSelectedHierarchyId("props");
-		}
-	}
+
 	/** Drop-to-surface (plan §9.2/§9.3): End, no modifier. Strict drop-down —
 	 * the selection falls until its base touches the highest support top at or
 	 * below it, or the floor. dropToSurfacePatch is pure and returns null when
 	 * already resting, so a redundant press never creates a history entry, and
 	 * x/z are never written. One applyAtomic = one undo entry. */
-	function dropSelectedSceneObject() {
-		const object = sceneObjects.find((item) => item.id === selectedSceneObjectId) ?? null;
-		if (!object) return;
-		const patch = dropToSurfacePatch(object, sceneObjects.filter((item) => item.id !== object.id), characters);
-		if (patch === null) {
-			setToast(ko("Nothing to drop", "내려놓을 대상이 없어요"));
-			return;
-		}
-		changeSceneObject(object.id, patch);
-		setToast(isKo ? `${sceneObjectNameDisplayKo(object.name)}을 표면 위에 내려놓았어요` : `${object.name} dropped to surface`);
-	}
+
 
 	/** The hidden file inputs behind the Props import buttons. */
 	const cutoutInputRef = useRef(null);
@@ -1749,15 +1727,15 @@ export default function App() {
 	const viewportDrop = useStageFilesDrop({ ...stageDrop, onRejected: rejectUnsupportedDrop });
 	// How much of the wall counts as the wall, and how wide the brush that
 	// argues with the answer is.
-	const [matteTolerance, setMatteTolerance] = useState(0.18);
-	const [matteBrush, setMatteBrush] = useState(18);
+
+
 	// Edge cleanup for the cut: shrink eats the blended rim, feather softens
 	// what is left. Both ride into applyMask; the defaults match applyMask's.
-	const [matteShrink, setMatteShrink] = useState(1);
-	const [matteFeather, setMatteFeather] = useState(1);
-	const [matteMode, setMatteMode] = useState("paint");
-	const [matteStats, setMatteStats] = useState({ painted: 0, coverage: 0, zoom: 1, canUndo: false, canRedo: false });
-	const [matteBusy, setMatteBusy] = useState(false);
+
+
+
+
+
 	const matteCanvasRef = useRef(null);
 	const matteEditorRef = useRef(null);
 	// The editor always works on the photograph, never on the cut picture the
@@ -1795,42 +1773,22 @@ export default function App() {
 		// this effect for them would throw away the selection.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [matteSourceId, matteSelectionId]);
-	const [gizmoMode, setGizmoMode] = useState("move");
+
 	// Snap is a preference, not a law: with it on the gizmo blocks on the plan
 	// board's grid, and Ctrl/Cmd during a drag gives a free one. Off, it is the
 	// other way round. (docs/unity-reference.md §9.5)
-	const [snapEnabled, setSnapEnabled] = useState(true);
+
 	// True while the right mouse button is flying the camera. Tool hotkeys stand
 	// down during a flythrough, because W/A/S/D belong to the camera then.
 	const flyingRef = useRef(false);
 
 	/** `at` overrides the floor point: the Assets-shelf drop already knows
 	 * where the pointer hit, everyone else gets in-front-of-camera. */
-	function addSceneObject(kind, at) {
-		const camera = (lookThroughShot ? shotCamRef : editorCamRef).current;
-		const paneYaw = (lookThroughShot ? look : editorLook).current.yaw;
-		const placement = at ?? (camera
-			? placementInFront({ x: camera.position.x, z: camera.position.z }, paneYaw)
-			: {});
-		const object = createSceneObject(kind, sceneObjects, placement);
-		if (!object) return;
-		store.applyAtomic((objects) => [...objects, object]);
-		markCraftAction("object");
-		setSelectedHierarchyId(`object:${object.id}`);
-		// Deliberate divergence from Unity's rename-on-create: creating an object
-		// here is followed by placing it, and dropping focus into a text field
-		// swallows the very next W/E/R. Renaming stays on F2/Return and the row's
-		// context menu. (docs/unity-reference.md §9.7)
-		setGizmoMode("move");
-		setToast(isKo ? `${sceneObjectNameDisplayKo(object.name)} 추가됨 — W 이동, E 회전, R 크기` : `${object.name} added — W move, E rotate, R scale`);
-	}
+
 
 	/** "Sofa 2.png" reads as a set piece; "sofa-2.png" does not. The extension
 	 * goes, the rest is the user's own name for the thing. */
-	function cutoutNameFromFile(fileName) {
-		const base = String(fileName ?? "").replace(/\.[^.]+$/, "").trim();
-		return base || ko("Cutout", "컷아웃");
-	}
+
 
 	/**
 	 * Import one image and stand it up in the set. The card arrives at the
@@ -1838,38 +1796,11 @@ export default function App() {
 	 * than useless in a tool where every camera level is a height in metres —
 	 * 1.8 m is at least an honest starting point to correct from.
 	 */
-	async function importCutout(file) {
-		if (!file) return;
-		try {
-			const asset = await rememberAsset(await importImageFile(file));
-			const camera = (lookThroughShot ? shotCamRef : editorCamRef).current;
-			const placement = camera
-				? placementInFront({ x: camera.position.x, z: camera.position.z }, (lookThroughShot ? look : editorLook).current.yaw)
-				: {};
-			const object = createCutoutObject(
-				{ assetId: asset.id, aspect: assetAspect(asset) ?? 1, height: CUTOUT_DEFAULT_HEIGHT, name: cutoutNameFromFile(asset.name) },
-				sceneObjects,
-				placement,
-			);
-			if (!object) return;
-			store.applyAtomic((objects) => [...objects, object]);
-			setSelectedHierarchyId(`object:${object.id}`);
-			setGizmoMode("move");
-			setToast(
-				isKo
-					? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
-					: `${object.name} added — type its real height in metres to set the scale`,
-			);
-		} catch (error) {
-			setToast(isKo ? `이미지를 가져오지 못했어요 — ${error.message}` : `Could not import that image — ${error.message}`);
-		}
-	}
+
 
 	/** A drop can carry several pictures. They go in one at a time so each
 	 * lands in its own place and the last one is the one left selected. */
-	async function importCutouts(files) {
-		for (const file of files) await importCutout(file);
-	}
+
 
 	/**
 	 * Stand an ALREADY-STORED picture up as a fresh cutout — the Assets-shelf
@@ -1877,49 +1808,13 @@ export default function App() {
 	 * `importCutout` without the import: read the record for its true aspect
 	 * and name, mint the card, one atomic history entry.
 	 */
-	async function spawnCutoutAt(assetId, placement) {
-		markCraftAction("cutout");
-		const record = await assetRecord(assetId);
-		if (!record) {
-			setToast(ko("That image is no longer stored", "그 이미지는 더 이상 저장되어 있지 않아요"));
-			return;
-		}
-		const object = createCutoutObject(
-			{ assetId: record.id, aspect: assetAspect(record) ?? 1, height: CUTOUT_DEFAULT_HEIGHT, name: cutoutNameFromFile(record.name) },
-			sceneObjects,
-			placement,
-		);
-		if (!object) return;
-		store.applyAtomic((objects) => [...objects, object]);
-		setSelectedHierarchyId(`object:${object.id}`);
-		setGizmoMode("move");
-		setToast(
-			isKo
-				? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
-				: `${object.name} added — type its real height in metres to set the scale`,
-		);
-	}
 
-	function meshNameFromFile(fileName) {
-		const base = String(fileName ?? "").replace(/\.[^.]+$/, "").trim();
-		return base || ko("Model", "모델");
-	}
 
-	async function persistMeshAsset(asset) {
-		const db = await openAssetDb();
-		try {
-			return await putAsset(db, asset);
-		} finally {
-			db.close?.();
-		}
-	}
 
-	function placementInFrontOfShot() {
-		const camera = (lookThroughShot ? shotCamRef : editorCamRef).current;
-		return camera
-			? placementInFront({ x: camera.position.x, z: camera.position.z }, (lookThroughShot ? look : editorLook).current.yaw)
-			: {};
-	}
+
+
+
+
 
 	/**
 	 * Import one GLB and stand it on the floor. Bytes go through putAsset —
@@ -1927,77 +1822,16 @@ export default function App() {
 	 * bitmap. Height and footprint come from the import heuristic once;
 	 * later instances reuse those stored metres.
 	 */
-	async function importMesh(file) {
-		if (!file) return;
-		try {
-			const { asset, height, footprint } = await importMeshFile(file);
-			await persistMeshAsset(asset);
-			const object = createMeshObject(
-				{ assetId: asset.id, height, footprint, name: meshNameFromFile(asset.name) },
-				store.objects,
-				placementInFrontOfShot(),
-			);
-			if (!object) return;
-			store.applyAtomic((objects) => [...objects, object]);
-			setSelectedHierarchyId(`object:${object.id}`);
-			setGizmoMode("move");
-			setToast(
-				isKo
-					? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
-					: `${object.name} added — type its real height in metres to set the scale`,
-			);
-		} catch (error) {
-			setToast(isKo ? `모델을 가져오지 못했어요 — ${error.message}` : `Could not import that model — ${error.message}`);
-		}
-	}
 
-	async function importMeshes(files) {
-		for (const file of files) await importMesh(file);
-	}
+
+
 
 	/**
 	 * Stand an already-stored GLB up as a fresh instance. The shelf drop does
 	 * not keep a previous object's size: it re-reads the blob and fits once,
 	 * the same as a first import, because there is no prior record to copy.
 	 */
-	async function spawnMeshAt(assetId, placement) {
-		markCraftAction("object");
-		const record = await assetRecord(assetId);
-		if (!record) {
-			setToast(ko("That model is no longer stored", "그 모델은 더 이상 저장되어 있지 않아요"));
-			return;
-		}
-		const compressed = compressedGlbReason(record.bytes);
-		if (compressed) {
-			setToast(isKo ? `모델을 가져오지 못했어요 — ${compressed}` : `Could not import that model — ${compressed}`);
-			return;
-		}
-		const bounds = meshBoundsFromAsset(record);
-		const fitted = bounds ? fitMeshBounds(bounds) : null;
-		if (!fitted) {
-			setToast(ko("That model has no measurable geometry", "그 모델은 측정할 수 있는 형태가 없어요"));
-			return;
-		}
-		const object = createMeshObject(
-			{
-				assetId: record.id,
-				height: fitted.height,
-				footprint: fitted.footprint,
-				name: meshNameFromFile(record.name),
-			},
-			store.objects,
-			placement,
-		);
-		if (!object) return;
-		store.applyAtomic((objects) => [...objects, object]);
-		setSelectedHierarchyId(`object:${object.id}`);
-		setGizmoMode("move");
-		setToast(
-			isKo
-				? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
-				: `${object.name} added — type its real height in metres to set the scale`,
-		);
-	}
+
 
 	/**
 	 * Apply what the background editor is showing.
@@ -2011,69 +1845,9 @@ export default function App() {
 	 * so the card's height is scaled with it. The scale is stored rather than
 	 * multiplied in, or a second cut would compound one trim onto the last.
 	 */
-	async function applyMatte(id = selectedSceneObjectId) {
-		const object = sceneObjects.find((item) => item.id === id) ?? null;
-		const options = matteEditorRef.current?.options();
-		// Nothing purple means nothing was asked for. Removing "the background"
-		// on a picture nobody has marked would be a guess applied to their set.
-		if (!object || object.renderer !== CUTOUT_KIND || !options || matteBusy) return;
-		setMatteBusy(true);
-		try {
-			const sourceId = object.sourceAssetId || object.assetId;
-			const source = await assetRecord(sourceId);
-			if (!source) throw new Error(ko("its picture is missing from the store", "저장소에 사진이 없습니다"));
-			const [cut, matte] = await Promise.all([
-				cutOutBackground(source, { mask: options.mask, shrink: matteShrink, feather: matteFeather }),
-				maskAsset(options.mask, { width: options.maskWidth, height: options.maskHeight, name: `${source.name || "cutout"} matte` }),
-			]);
-			await Promise.all([
-				rememberAsset({ ...cut.asset, role: "derived" }),
-				rememberAsset({ ...matte, role: "derived" }),
-			]);
-			const fullFrameHeight = object.height / (object.matteScale || 1);
-			changeSceneObject(object.id, {
-				assetId: cut.asset.id,
-				sourceAssetId: source.id,
-				matteAssetId: matte.id,
-				matteScale: cut.heightScale,
-				aspect: cut.asset.width / cut.asset.height,
-				height: fullFrameHeight * cut.heightScale,
-			});
-			setToast(
-				isKo
-					? `${object.name} 배경 제거 — ${Math.round(cut.removed * 100)}% 지움. 원본과 칠한 영역은 그대로 남습니다`
-					: `${object.name} — ${Math.round(cut.removed * 100)}% removed. The original and your selection are kept`,
-			);
-		} catch (error) {
-			setToast(isKo ? `배경을 제거하지 못했어요 — ${error.message}` : `Could not remove the background — ${error.message}`);
-		} finally {
-			setMatteBusy(false);
-		}
-	}
 
-	function duplicateSelectedSceneObject(id = selectedSceneObjectId) {
-		// Defaults to the selection (Ctrl/Cmd+D); the hierarchy context menu
-		// passes a specific row's id. Same result either way: the copy is
-		// selected, offset one grid step, and toasted.
-		const object = sceneObjects.find((item) => item.id === id) ?? null;
-		if (!object) return;
-		const placement = { x: object.x, z: object.z, rot: object.rot };
-		// A cutout cannot be minted from the catalogue — it needs the picture the
-		// original is already wearing — so the copy is created through its own
-		// door and shares the asset rather than importing it twice.
-		const copy = object.renderer === CUTOUT_KIND
-			? createCutoutObject(duplicateCutoutOptions(object), sceneObjects, placement)
-			: object.renderer === MESH_KIND
-				? createMeshObject(duplicateMeshOptions(object), sceneObjects, placement)
-				: createSceneObject(object.renderer, sceneObjects, placement);
-		if (!copy) return;
-		// Unity drops the duplicate exactly on top of the original; for blocking,
-		// one grid step to the side means you can see that it worked.
-		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
-		store.applyAtomic((objects) => [...objects, placed]);
-		setSelectedHierarchyId(`object:${placed.id}`);
-		setToast((isKo, ko) => isKo ? `${sceneObjectNameDisplayKo(placed.name)} 복제됨` : `${placed.name} duplicated`);
-	}
+
+
 
 	/** Frame the selection: fly the shot camera to a comfortable distance along
 	 * the current view direction, the way Unity's F key does. Defaults to the
@@ -2103,22 +1877,12 @@ export default function App() {
 		camera.rotation.order = "YXZ";
 		camera.rotation.set(angles.pitch, angles.yaw, 0);
 	}
-	function frameSelection(id = selectedSceneObjectId) {
-		const object = sceneObjects.find((item) => item.id === id) ?? null;
-		if (!object) return;
-		const size = objectSize(object);
-		frameWorldTarget(
-			{ x: object.x, y: (object.y ?? 0) + size.height / 2, z: object.z },
-			Math.max(size.width, size.height, size.depth, 0.5),
-		);
-	}
+
 
 	/** In-place rename commit from the hierarchy (F2 / Return / rename on
 	 * create). The row label lives in the tree; the object name is shared
 	 * state, so this is just the inspector's rename through another door. */
-	function renameSceneObject(id, name) {
-		changeSceneObject(id, { name });
-	}
+
 	// Undo/redo (plan §6.5). The store settles any open drag first, so a
 	// mid-drag press commits that drag as one entry and then steps past it.
 	// After a step the selection can point at a deleted object — drop it to
@@ -2984,41 +2748,17 @@ export default function App() {
 
 	/** The prop's live world matrix, falling back to its authored numbers while
 	 * it is unattached (those ARE world) and the set has not mounted it yet. */
-	function sceneObjectWorldMatrix(object) {
-		return propWorldRef.current?.(object.id, attachWorldMatrix)
-			?? ((object.attach ?? null) ? null : sceneObjectMatrix(object, attachWorldMatrix));
-	}
+
 
 	/** The attachment a hierarchy row offers, or null when the row is not a
 	 * frame. A character row means the whole body's animated root; a bone row
 	 * means that one frame. Bone rows are namespaced per character (#76), so
 	 * the row itself names whose frame it is. */
-	function attachTargetForRow(rowId) {
-		const charId = charIdFromHierarchyId(rowId);
-		if (charId) return characters.some((entry) => entry.id === charId) ? { characterId: charId, bone: null } : null;
-		const rig = parseRigNodeId(rowId);
-		const owner = rig ? charIdFromHierarchyId(rig.rowId) : null;
-		const bone = rig ? ATTACH_BONE_ROWS.get(rig.token) : null;
-		if (!bone || !owner || !characters.some((entry) => entry.id === owner)) return null;
-		return { characterId: owner, bone };
-	}
+
 
 	/** "Character 1 · Right Hand" — the same words the rows the user dropped on
 	 * carry, so the Inspector names the target the way the tree does. */
-	function attachTargetLabel(attach) {
-		const index = characters.findIndex((entry) => entry.id === attach.characterId);
-		const who = index < 0
-			? ko("Missing character", "없는 인물")
-			: index === 0
-				? ko("Character 1", "인물 1")
-				: index === 1
-					? ko("Character 2", "인물 2")
-					: isKo ? `인물 ${index + 1}` : `Character ${index + 1}`;
-		const bone = attach.bone
-			? HIERARCHY_INSPECTOR_TITLES[`rig.${attach.bone}`] ?? attach.bone
-			: ko("Root", "루트");
-		return `${who} · ${bone}`;
-	}
+
 
 	/**
 	 * Hierarchy row drag policy (the panel holds none). An object row dropped on
@@ -3072,33 +2812,7 @@ export default function App() {
 	 * put it back in the world with `attach` null — the Hierarchy's character,
 	 * bone and Props drops, the Inspector's Detach and run_action
 	 * object.attach/detach. */
-	function attachSceneObject(id, attach) {
-		const object = storeRef.current.objects.find((entry) => entry.id === id);
-		if (!object) throw new StudioProtocolError("STALE_TARGET", `Object ${id} is not in this scene.`);
-		if (attach) castMemberOf(attach.characterId);
-		// Where the prop is on screen right now, expressed in the frame it is
-		// joining (or left as world when it joins none). ONE conversion, whether
-		// the prop is coming from the world or from another frame.
-		const shown = animatedSceneObjects.find((entry) => entry.id === id) ?? object;
-		const placement = attachPlacementPatch(sceneObjectWorldMatrix(shown), attach, attachFrameRef.current);
-		// A placement that could not be computed refuses the attachment, not just
-		// the numbers: attaching without converting would silently reinterpret the
-		// old frame's numbers in the new frame, which is the jump itself.
-		if (!placement) {
-			throw new StudioProtocolError("TARGET_NOT_READY", attach
-				? `The ${attach.bone ?? "root"} frame of character ${attach.characterId} is not on stage (its rig has not loaded).`
-				: `${object.name || id} is not on stage, so where it is now cannot be read.`);
-		}
-		// ONE atomic: a single undo puts back both the field and the numbers.
-		storeRef.current.applyAtomic((objects) => {
-			let next = setSceneObjectAttach(objects, id, attach);
-			// Back to the world means "world-anchored again", which drops the
-			// grouping parent too — attach and parent are the same slot.
-			if (attach === null) next = setSceneObjectParent(next, id, null);
-			if (next === objects) return objects;
-			return placeSceneObject(next, id, placement);
-		});
-	}
+
 
 	const activeShotIdx = shotIndexAtFrame(shots, tlFrame);
 	const activeShot = shots[activeShotIdx] ?? null;
@@ -13832,567 +13546,9 @@ function resizePromptClip(id, edge, rawFrame) {
 
 				<EnvironmentPanel selectedHierarchyId={selectedHierarchyId} hasEnvSheet={hasEnvSheet} recordCharacterUndo={recordCharacterUndo} setHasEnvSheet={stageDomain.setHasEnvSheet} environment={environment} recordSessionUndo={recordSessionUndo} environmentTextSessionRef={environmentTextSessionRef} setEnvironment={stageDomain.setEnvironment} style={style} setStyle={stageDomain.setStyle} environmentImage={environmentImage} changeEnvironmentImage={changeEnvironmentImage} setToast={setToast} />
 
-				<Foldout hidden={selectedHierarchyId !== "props"} title={ko("Props", "소품")}>
-					<div className="props-drop" data-drop={inspectorDrop.over ? "over" : "target"} {...inspectorDrop.handlers}>
-					<p className="inspector-hint">{ko("Everything you add to the set lives here. Pick one to edit it, or click it in the shot view. Drop a picture anywhere here — or on the shot view — to stand it up as a cutout. You can also drop a .glb, .obj or .fbx to import a 3D object.", "세트에 추가한 모든 소품이 여기에 모입니다. 편집하려면 하나를 고르거나 샷 뷰에서 클릭하세요. 사진을 이 영역이나 샷 뷰에 끌어다 놓으면 컷아웃으로 세워집니다. .glb, .obj 또는 .fbx 파일을 놓으면 3D 오브젝트로 가져옵니다.")}</p>
-					<AddObjectMenu onAdd={addSceneObject} label={ko("Add object to the set", "세트에 오브젝트 추가")} />
-					<button
-						type="button"
-						className="btn ghost full"
-						onClick={() => cutoutInputRef.current?.click()}
-						title={ko("A photo of the real thing, standing in the set as a card", "실제 사진을 판때기로 세워 세트에 배치합니다")}
-					>
-						{ko("Import image as cutout", "이미지를 컷아웃으로 가져오기")}
-					</button>
-					<button
-						type="button"
-						className="btn ghost full"
-						onClick={() => meshInputRef.current?.click()}
-						title={ko("A GLB, OBJ or FBX model standing in the set", "GLB, OBJ 또는 FBX 모델을 세트에 배치합니다")}
-					>
-						{ko("Import 3D object", "3D 오브젝트 가져오기")}
-					</button>
-					<input
-						ref={cutoutInputRef}
-						type="file"
-						hidden
-						accept={ASSET_IMAGE_TYPES.join(",")}
-						onChange={(event) => {
-							const [file] = event.target.files ?? [];
-							// Cleared before the await: picking the same file twice in a
-							// row has to fire change twice, and it will not if the input
-							// still holds it.
-							event.target.value = "";
-							importCutout(file);
-						}}
-					/>
-					<input
-						ref={meshInputRef}
-						type="file"
-						hidden
-						accept=".glb,.obj,.fbx,model/gltf-binary,model/obj,model/fbx"
-						onChange={(event) => {
-							const [file] = event.target.files ?? [];
-							event.target.value = "";
-							importMesh(file);
-						}}
-					/>
-						<div className="inspector-list compact">
-							{sceneObjects.map((object) => (
-								<button
-									type="button"
-									key={object.id}
-									onClick={() => selectHierarchy(`object:${object.id}`)}
-								>
-									<span>{sceneObjectNameDisplayKo(object.name)}</span>
-								<small>{sceneRendererLabelKo(object.renderer)}</small>
-								</button>
-							))}
-						</div>
-					</div>
-					</Foldout>
+				<PropsPanel selectedHierarchyId={selectedHierarchyId} inspectorDrop={inspectorDrop} addSceneObject={addSceneObject} cutoutInputRef={cutoutInputRef} meshInputRef={meshInputRef} importCutout={importCutout} importMesh={importMesh} sceneObjects={sceneObjects} selectHierarchy={selectHierarchy} />
 
-				<Foldout hidden={!selectedSceneObject} title={ko("Transform", "변환")}>
-						{selectedSceneObject && (
-							<>
-								<p className="inspector-hint">
-								{ko("Type a value and press Enter, or drag a number sideways to scrub (Shift for fine).", "값을 입력하고 Enter를 누르거나 숫자를 좌우로 끌어 조절하세요(Shift는 미세 조정).")}
-								</p>
-								<label className="check snap-toggle">
-									<input type="checkbox" checked={snapEnabled} onChange={(event) => setSnapEnabled(event.target.checked)} />
-								<span>
-									{isKo ? (
-										<>
-											그리드 스냅 — <kbd>Ctrl</kbd>을 누르면 반대로 작동
-										</>
-									) : (
-										<>
-											Snap to grid — hold <kbd>Ctrl</kbd> to invert
-										</>
-									)}
-								</span>
-								</label>
-						<Field label={ko("Name", "이름")}>
-									<input
-										type="text"
-								value={sceneObjectNameDisplayKo(selectedSceneObject.name)}
-										onChange={(event) => changeSceneObject(selectedSceneObject.id, { name: event.target.value })}
-									/>
-								</Field>
-								{/* A carried prop has no grouping parent to pick — the character
-								    IS its parent — so the dropdown gives way to what it is
-								    riding and the way off it. Detaching here is the Props drop,
-								    numbers and all. */}
-								{selectedSceneObject.attach ? (
-									<Field label={ko("Attached to", "부착 대상")}>
-										<div className="attach-target">
-											<span>{attachTargetLabel(selectedSceneObject.attach)}</span>
-											<button
-												type="button"
-												className="btn ghost"
-												onClick={() => hierarchyReparent.onDrop(`object:${selectedSceneObject.id}`, "props")}
-												title={ko("Put it back in the set, where it is now", "지금 있는 자리에 그대로 세트로 되돌립니다")}
-											>
-												{ko("Detach", "분리")}
-											</button>
-										</div>
-									</Field>
-								) : (
-								<Field label={ko("Parent", "상위 그룹")}>
-									<select
-										value={selectedSceneObject.parent ?? ""}
-										onChange={(event) => {
-											const parent = event.target.value || null;
-											// The history store is the only writer. A direct setState here
-											// leaves the store on the old list, so the next object edit
-											// (hide, move) puts that list back and the group disappears.
-											store.applyAtomic((objects) => setSceneObjectParent(objects, selectedSceneObject.id, parent));
-										}}
-									>
-										<option value="">{ko("(none)", "(없음)")}</option>
-										{sceneObjects
-											.filter((object) => object.id !== selectedSceneObject.id)
-											.map((object) => (
-												<option key={object.id} value={object.id}>{sceneObjectNameDisplayKo(object.name)}</option>
-											))}
-									</select>
-								</Field>
-								)}
-								<Vector3Row
-							label={ko("Position", "위치")}
-									fields={[
-										{ axis: "X", value: selectedSceneObject.x, step: 0.05, precision: 2, scrubRange: 5, onChange: (x, token) => changeSceneObject(selectedSceneObject.id, { x }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Y", value: selectedSceneObject.y ?? 0, step: 0.05, precision: 2, scrubRange: 5, onChange: (y, token) => changeSceneObject(selectedSceneObject.id, { y }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Z", value: selectedSceneObject.z, step: 0.05, precision: 2, scrubRange: 5, onChange: (z, token) => changeSceneObject(selectedSceneObject.id, { z }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-									]}
-								/>
-								<Vector3Row
-							label={ko("Rotation", "회전")}
-									fields={[
-										{ axis: "X", value: selectedSceneObject.rotX ?? 0, step: 1, precision: 1, scrubRange: 180, onChange: (rotX, token) => changeSceneObject(selectedSceneObject.id, { rotX }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Y", value: selectedSceneObject.rot, step: 1, precision: 1, scrubRange: 180, onChange: (rot, token) => changeSceneObject(selectedSceneObject.id, { rot }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Z", value: selectedSceneObject.rotZ ?? 0, step: 1, precision: 1, scrubRange: 180, onChange: (rotZ, token) => changeSceneObject(selectedSceneObject.id, { rotZ }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-									]}
-								/>
-								<Vector3Row
-							label={ko("Scale", "크기")}
-									fields={[
-										{ axis: "X", value: selectedSceneObject.scaleX ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleX, token) => changeSceneObject(selectedSceneObject.id, { scaleX }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Y", value: selectedSceneObject.scaleY ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleY, token) => changeSceneObject(selectedSceneObject.id, { scaleY }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Z", value: selectedSceneObject.scaleZ ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleZ, token) => changeSceneObject(selectedSceneObject.id, { scaleZ }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-									]}
-								/>
-								{selectedSceneObject.renderer === MESH_KIND && (
-									<>
-										<Field label={ko("Height (m)", "높이 (m)")}>
-											<input
-												type="number"
-												data-field="mesh-height"
-												min={MESH_HEIGHT_MIN}
-												step="0.05"
-												value={selectedSceneObject.height ?? 1}
-												onChange={(event) => changeSceneObject(selectedSceneObject.id, { height: Number(event.target.value) })}
-											/>
-										</Field>
-										<label className="check">
-											<input
-												type="checkbox"
-												data-field="mesh-clay"
-												checked={selectedSceneObject.clay === true}
-												onChange={(event) => changeSceneObject(selectedSceneObject.id, { clay: event.target.checked })}
-											/>
-											<span>{ko("Clay", "클레이")}</span>
-										</label>
-									</>
-								)}
-								{selectedSceneObject.renderer === CUTOUT_KIND && (
-									<>
-										<Field label={ko("Card height (m)", "판 높이 (m)")}>
-											<input
-												type="number"
-												data-field="cutout-height"
-												min="0.05"
-												step="0.05"
-												value={selectedSceneObject.height ?? CUTOUT_DEFAULT_HEIGHT}
-												onChange={(event) => changeSceneObject(selectedSceneObject.id, { height: Number(event.target.value) })}
-											/>
-										</Field>
-										<Field label={ko("Card width (m)", "판 너비 (m)")}>
-											<input
-												type="number"
-												data-field="cutout-width"
-												min="0.05"
-												step="0.05"
-												value={Number((selectedSceneObject.footprint?.width ?? 0).toFixed(2))}
-												onChange={(event) => changeSceneObject(selectedSceneObject.id, { width: Number(event.target.value) })}
-											/>
-										</Field>
-										<p className="inspector-hint">
-											{isKo
-												? `높이를 바꾸면 너비는 사진 비율(${(selectedSceneObject.aspect ?? 1).toFixed(2)})을 따라갑니다. 너비만 따로 정하거나 기즈모의 가로축을 끌면 사진이 늘어납니다. 사진 속에서 크기를 알 수 있는 것(문 2 m, 사람 1.8 m)에 맞추세요.`
-												: `Width follows the picture's aspect (${(selectedSceneObject.aspect ?? 1).toFixed(2)}) as you change the height. Set it on its own — or drag the gizmo's X axis — to stretch the picture. Measure against something you know: a door is 2 m, a person 1.8 m.`}
-										</p>
-										{Math.abs((selectedSceneObject.stretch ?? 1) - 1) > 0.005 && (
-											<p className="inspector-hint">
-												<button
-													type="button"
-													className="ghost"
-													data-field="cutout-unstretch"
-													onClick={() => changeSceneObject(selectedSceneObject.id, { stretch: 1 })}
-												>
-													{isKo
-														? `사진 비율로 되돌리기 (지금 ${((selectedSceneObject.stretch ?? 1) * 100).toFixed(0)}%)`
-														: `Back to the picture's proportions (now ${((selectedSceneObject.stretch ?? 1) * 100).toFixed(0)}%)`}
-												</button>
-											</p>
-										)}
-										<div className="matte-editor">
-											{!!selectedSceneObject.matteAssetId && (
-												<p className="inspector-hint matte-state">
-													{ko(
-														"This card's background is removed. You are editing the original photograph — apply again to change what goes.",
-														"이 카드는 배경이 지워진 상태입니다. 지금 보이는 것은 원본 사진이며, 다시 적용하면 지워지는 범위가 바뀝니다.",
-													)}
-												</p>
-											)}
-											<canvas
-												ref={matteCanvasRef}
-												className="matte-canvas"
-												// Focusable for the space-drag pan, not for a shortcut: undo
-												// belongs to the buttons here. Ctrl+Z is the scene's, and one
-												// key meaning two different undos in two different panels is
-												// worse than a key that means one thing everywhere.
-												tabIndex={0}
-												aria-label={ko("Background editor — drag over the background to cut it out", "배경 편집기 — 배경 위를 드래그하면 그 영역이 잘려 나갑니다")}
-											/>
-											<p className="inspector-hint">
-												{matteStats.painted
-													? isKo
-														? `사진의 ${Math.round(matteStats.coverage * 100)}%가 선택됨 — 보라색이 지워집니다.`
-														: `${Math.round(matteStats.coverage * 100)}% of the picture marked — purple is what goes.`
-													: ko(
-															"Drag over the background — the cut grows out from wherever the brush touches.",
-															"배경 위를 드래그하세요 — 브러시가 닿은 곳에서 같은 배경으로 번져 나가며 잘립니다.",
-														)}
-											</p>
-										</div>
-										{/* Two hands: what the brush does on the left, what to do
-										    about what it did on the right. Clear sits under Undo and
-										    Redo because it is the same kind of act — taking work
-										    back — only all of it. */}
-										<div className="matte-tools">
-											<div className="presets matte-modes">
-												<button
-													type="button"
-													className={matteMode === "paint" ? "active" : ""}
-													onClick={() => {
-														setMatteMode("paint");
-														matteEditorRef.current?.setMode("paint");
-													}}
-												>
-													{ko("Cut out", "누끼 따기")}
-												</button>
-												<button
-													type="button"
-													className={matteMode === "erase" ? "active" : ""}
-													onClick={() => {
-														setMatteMode("erase");
-														matteEditorRef.current?.setMode("erase");
-													}}
-												>
-													{ko("Bring back", "되살리기")}
-												</button>
-											</div>
-											{/* Icons, not words: undo, redo and clear are the same three
-											    acts in every tool anyone has used, and spelling them out
-											    took more width than the two that actually name what this
-											    brush does. The label lives in the tooltip and in the
-											    accessible name. */}
-											<div className="matte-history">
-												<div className="presets matte-modes matte-icons">
-													<button
-														type="button"
-														disabled={!matteStats.canUndo}
-														title={ko("Undo", "실행 취소")}
-														aria-label={ko("Undo", "실행 취소")}
-														onClick={() => matteEditorRef.current?.undo()}
-													>
-														<span aria-hidden="true">↩️</span>
-													</button>
-													<button
-														type="button"
-														disabled={!matteStats.canRedo}
-														title={ko("Redo", "다시 실행")}
-														aria-label={ko("Redo", "다시 실행")}
-														onClick={() => matteEditorRef.current?.redo()}
-													>
-														<span aria-hidden="true">↪️</span>
-													</button>
-												</div>
-												<div className="presets matte-modes matte-icons matte-clear">
-													<button
-														type="button"
-														title={ko("Clear the selection", "선택 모두 지우기")}
-														aria-label={ko("Clear the selection", "선택 모두 지우기")}
-														onClick={() => matteEditorRef.current?.clear()}
-													>
-														<span aria-hidden="true">🗑️</span>
-													</button>
-												</div>
-											</div>
-										</div>
-										<div className="matte-slider">
-											<label htmlFor="matte-tolerance">{ko("Tolerance", "허용치")}</label>
-											<input
-												id="matte-tolerance"
-												type="range"
-												min="0.02"
-												max="0.6"
-												step="0.01"
-												value={matteTolerance}
-												onChange={(event) => {
-													const value = Number(event.target.value);
-													setMatteTolerance(value);
-													matteEditorRef.current?.setTolerance(value);
-												}}
-											/>
-											<input
-												type="number"
-												data-field="matte-tolerance"
-												min="0.02"
-												max="0.6"
-												step="0.01"
-												value={matteTolerance}
-												aria-label={ko("Tolerance", "허용치")}
-												onChange={(event) => {
-													const value = Number(event.target.value);
-													if (!Number.isFinite(value)) return;
-													setMatteTolerance(value);
-													matteEditorRef.current?.setTolerance(value);
-												}}
-											/>
-										<div className="matte-slider">
-											<label htmlFor="matte-brush">{ko("Brush", "붓 크기")}</label>
-											<input
-												id="matte-brush"
-												type="range"
-												min="2"
-												max="200"
-												step="1"
-												value={matteBrush}
-												onChange={(event) => {
-													const value = Number(event.target.value);
-													setMatteBrush(value);
-													matteEditorRef.current?.setBrush(value);
-												}}
-											/>
-											<input
-												type="number"
-												data-field="matte-brush"
-												min="2"
-												max="200"
-												step="1"
-												value={matteBrush}
-												aria-label={ko("Brush size", "붓 크기")}
-												onChange={(event) => {
-													const value = Number(event.target.value);
-													if (!Number.isFinite(value)) return;
-													setMatteBrush(value);
-													matteEditorRef.current?.setBrush(value);
-												}}
-											/>
-										</div>
-										<div className="matte-slider">
-											<label htmlFor="matte-shrink">{ko("Edge shrink", "가장자리 먹기")}</label>
-											<input
-												id="matte-shrink"
-												type="range"
-												min="0"
-												max="3"
-												step="0.5"
-												value={matteShrink}
-												onChange={(event) => setMatteShrink(Number(event.target.value))}
-											/>
-											<input
-												type="number"
-												data-field="matte-shrink"
-												min="0"
-												max="3"
-												step="0.5"
-												value={matteShrink}
-												aria-label={ko("Edge shrink", "가장자리 먹기")}
-												onChange={(event) => {
-													const value = Number(event.target.value);
-													if (Number.isFinite(value)) setMatteShrink(value);
-												}}
-											/>
-										</div>
-										<div className="matte-slider">
-											<label htmlFor="matte-feather">{ko("Edge feather", "가장자리 부드럽게")}</label>
-											<input
-												id="matte-feather"
-												type="range"
-												min="0"
-												max="3"
-												step="0.5"
-												value={matteFeather}
-												onChange={(event) => setMatteFeather(Number(event.target.value))}
-											/>
-											<input
-												type="number"
-												data-field="matte-feather"
-												min="0"
-												max="3"
-												step="0.5"
-												value={matteFeather}
-												aria-label={ko("Edge feather", "가장자리 부드럽게")}
-												onChange={(event) => {
-													const value = Number(event.target.value);
-													if (Number.isFinite(value)) setMatteFeather(value);
-												}}
-											/>
-										</div>
-										</div>
-										<p className="inspector-hint">
-											{ko(
-												"Tolerance is how far a drag spreads: low keeps to one flat colour, high walks across a shaded wall. It applies to the next drag and to Auto-detect, not to what is already purple.",
-												"허용치는 드래그가 얼마나 번질지입니다. 낮으면 한 가지 색에 머무르고, 높으면 명암이 변하는 벽까지 따라갑니다. 이미 칠한 보라가 아니라 다음 드래그와 자동 인식에 적용됩니다.",
-											)}
-										</p>
-										<button
-											type="button"
-											className="btn ghost full"
-											onClick={() => {
-												const added = matteEditorRef.current?.autoDetect(matteTolerance) ?? 0;
-												if (!added) {
-													setToast(
-														isKo
-															? "자동 인식이 더 칠할 곳을 찾지 못했어요 — 허용치를 높이거나 직접 칠하세요"
-															: "Auto-detect found nothing new to paint — raise the tolerance, or paint it by hand",
-													);
-												}
-											}}
-										>
-											{ko("Auto-detect background", "배경 자동 인식")}
-										</button>
-										<button
-											type="button"
-											className="btn primary full matte-apply"
-											disabled={matteBusy || !matteStats.painted}
-											onClick={() => applyMatte(selectedSceneObject.id)}
-										>
-											{matteBusy
-												? ko("Removing…", "지우는 중…")
-												: matteStats.painted
-													? isKo
-														? `보라색 부분 지우기 — 사진의 ${Math.round(matteStats.coverage * 100)}%`
-														: `Remove what is purple — ${Math.round(matteStats.coverage * 100)}% of the picture`
-													: ko("Nothing is marked yet", "아직 선택된 부분이 없습니다")}
-										</button>
-										<p className="inspector-hint">
-											{ko(
-												"Cut out grows the selection from wherever you drag; Bring back is the same growth fenced to what is already selected, so one drag returns a wrongly-cut region whole. Applying removes exactly what is purple and trims the empty margin — the card keeps the original photograph and this selection, so you can come back and change your mind.",
-												"누끼 따기는 드래그한 자리에서 선택 영역을 키우고, 되살리기는 그 성장을 이미 선택된 범위 안으로 가둔 것이라 잘못 잘린 부분이 드래그 한 번에 통째로 돌아옵니다. 적용하면 보라색 부분만 지우고 여백을 잘라냅니다 — 원본 사진과 지금 선택한 영역은 카드에 남아 있어 언제든 다시 열어 고칠 수 있습니다.",
-											)}
-										</p>
-									</>
-								)}
-								{selectedSceneObject.renderer !== CUTOUT_KIND && (selectedSceneObject.renderer !== MESH_KIND || selectedSceneObject.clay) && (
-									// One swatch shows the colour; the row opens only when you want
-									// to change it, instead of six chips sitting there all day.
-									<details className="object-colors-pop">
-										<summary
-										className="object-color current"
-										style={{ background: selectedSceneObject.color }}
-										aria-label={ko("Object colour", "오브젝트 색상")}
-										title={ko("Object colour", "오브젝트 색상")}
-									/>
-									{/* The displayed color while auto-color mode is on — the "hex"
-									    made visible. Computed inline off the RAW object; the swatch
-									    above keeps showing the authored color it returns to. */}
-									{autoColor && (
-										<span className="auto-color-hex">{ko("auto ", "자동 ")}{autoColorHex(selectedSceneObject.id)}</span>
-									)}
-									<div className="object-colors" role="group" aria-label={ko("Object colour", "오브젝트 색상")}>
-										{OBJECT_COLORS.map((color) => (
-											<button
-												type="button"
-												key={color}
-												className={"object-color" + (selectedSceneObject.color === color ? " active" : "")}
-												style={{ background: color }}
-												aria-label={isKo ? `색상 ${color}` : `Colour ${color}`}
-												aria-pressed={selectedSceneObject.color === color}
-												onClick={(event) => {
-													changeSceneObject(selectedSceneObject.id, { color });
-													event.currentTarget.closest("details")?.removeAttribute("open");
-												}}
-											/>
-										))}
-										{/* Recently mixed tints, fenced off from the presets by a
-										    rule: they are this browser's memory, not the palette,
-										    and MCP's update_object can put any hex on a prop — an
-										    author has to be able to reach the same colour back. */}
-										{recentObjectColors.length > 0 && <span className="object-colors-split" aria-hidden="true" />}
-										{recentObjectColors.map((color) => (
-											<button
-												type="button"
-												key={color}
-												className={"object-color" + (selectedSceneObject.color === color ? " active" : "")}
-												style={{ background: color }}
-												aria-label={isKo ? `최근 색상 ${color}` : `Recent colour ${color}`}
-												aria-pressed={selectedSceneObject.color === color}
-												onClick={(event) => {
-													changeSceneObject(selectedSceneObject.id, { color });
-													rememberSceneObjectColor(color);
-													event.currentTarget.closest("details")?.removeAttribute("open");
-												}}
-											/>
-										))}
-										{/* The free colour: the native picker for choosing one, the
-										    hex field for typing or reading back an exact value. Neither
-										    closes the popover the way a preset does — a picker drag and
-										    a half-typed hex both fire change after change, and a row
-										    that vanished mid-edit would be unusable. */}
-										<input
-											type="color"
-											className="object-color object-color-free"
-											value={normalizeObjectColor(selectedSceneObject.color) ?? "#ffffff"}
-											title={ko("Custom colour", "직접 고른 색상")}
-											aria-label={ko("Custom colour", "직접 고른 색상")}
-											onChange={(event) => {
-												const color = normalizeObjectColor(event.target.value);
-												if (!color) return;
-												changeSceneObject(selectedSceneObject.id, { color });
-												rememberSceneObjectColor(color);
-											}}
-										/>
-										<input
-											type="text"
-											className="object-color-hex"
-											// Idle, the field IS the object's colour — including one an
-											// agent set through MCP's update_object, which the palette
-											// alone could never show. Mid-edit the draft takes over.
-											value={objectColorDraft ?? selectedSceneObject.color}
-											spellCheck={false}
-											maxLength={7}
-											placeholder="#rrggbb"
-											title={ko("Colour hex", "색상 hex")}
-											aria-label={ko("Colour hex", "색상 hex")}
-											onChange={(event) => {
-												setObjectColorDraft(event.target.value);
-												const color = normalizeObjectColor(event.target.value);
-												if (!color) return; // a typo is a keystroke, not a repaint
-												changeSceneObject(selectedSceneObject.id, { color });
-												rememberSceneObjectColor(color);
-											}}
-											onBlur={() => setObjectColorDraft(null)}
-										/>
-										</div>
-									</details>
-								)}
-							</>
-						)}
-					</Foldout>
+				<ObjectTransformPanel selectedSceneObject={selectedSceneObject} snapEnabled={snapEnabled} setSnapEnabled={setSnapEnabled} changeSceneObject={changeSceneObject} attachTargetLabel={attachTargetLabel} hierarchyReparent={hierarchyReparent} store={store} sceneObjects={sceneObjects} beginSceneTransaction={beginSceneTransaction} endSceneTransaction={endSceneTransaction} matteCanvasRef={matteCanvasRef} matteStats={matteStats} matteMode={matteMode} setMatteMode={setMatteMode} matteEditorRef={matteEditorRef} matteTolerance={matteTolerance} setMatteTolerance={setMatteTolerance} matteBrush={matteBrush} setMatteBrush={setMatteBrush} matteShrink={matteShrink} setMatteShrink={setMatteShrink} matteFeather={matteFeather} setMatteFeather={setMatteFeather} setToast={setToast} matteBusy={matteBusy} applyMatte={applyMatte} autoColor={autoColor} recentObjectColors={recentObjectColors} rememberSceneObjectColor={rememberSceneObjectColor} objectColorDraft={objectColorDraft} setObjectColorDraft={setObjectColorDraft} />
 					</div>
 					{selectedSceneObject && (
 						<div className="inspector-footer">

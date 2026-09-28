@@ -1,29 +1,20 @@
 {
   "version": 1,
   "coverage": {
-    "writerReferences": 353,
+    "writerReferences": 338,
     "handlerSites": 3,
     "handlerTotal": 775,
     "registeredCommands": 32
   },
   "writers": {
-    "App.jsx::App": 27,
-    "App.jsx::<anonymous>": 76,
+    "App.jsx::App": 29,
+    "App.jsx::<anonymous>": 75,
     "App.jsx::enterShotLook": 1,
     "App.jsx::setShowB": 1,
     "App.jsx::removeCharacter": 1,
     "App.jsx::selectWorkflowMode": 3,
     "App.jsx::selectHierarchy": 1,
     "App.jsx::focusIkHandle": 1,
-    "App.jsx::deleteSceneObject": 1,
-    "App.jsx::dropSelectedSceneObject": 2,
-    "App.jsx::addSceneObject": 2,
-    "App.jsx::importCutout": 3,
-    "App.jsx::spawnCutoutAt": 3,
-    "App.jsx::importMesh": 3,
-    "App.jsx::spawnMeshAt": 5,
-    "App.jsx::applyMatte": 2,
-    "App.jsx::duplicateSelectedSceneObject": 2,
     "App.jsx::editCharacterIkKeys": 1,
     "App.jsx::recordCharacterUndo": 1,
     "App.jsx::recordShotUndo": 1,
@@ -121,6 +112,8 @@
     "App.jsx::publishStudioMotion": 1,
     "App.jsx::stepStudioHistory": 1,
     "App.jsx::operateStudio": 1,
+    "domains/objects.js::useObjects": 3,
+    "domains/objects.js::<anonymous>": 1,
     "domains/scenes.js::useScenes": 6,
     "domains/scenes.js::applyProject": 2,
     "domains/scenes.js::newProject": 2,
@@ -130,6 +123,8 @@
     "domains/stage.js::useStage": 15,
     "domains/stage.js::changeKeyLight": 1,
     "domains/stage.js::resetKeyLight": 1,
-    "domains/stage.js::changeEnvironmentImage": 1
+    "domains/stage.js::changeEnvironmentImage": 1,
+    "panels/ObjectTransformPanel.jsx::ObjectTransformPanel": 2,
+    "panels/ObjectTransformPanel.jsx::<anonymous>": 1
   }
 }
