@@ -1193,7 +1193,7 @@ export function createStudioAppBinding(ports) {
 		return actionBus;
 	}
 	function runAction(request, args) {
-		const result = commandBus().run(args.action, args.args, { ...request, origin: request.origin ?? "agent", confirmationToken: args.confirmationToken ?? request.confirmationToken });
+		const result = commandBus().run(args.action, args.args, { ...request, origin: "agent", confirmationToken: args.confirmationToken ?? request.confirmationToken });
 		const answer = receipt => receipt.nextHost ? { ...receipt, host: receipt.nextHost } : receipt;
 		return result?.then ? result.then(answer) : answer(result);
 	}
@@ -4378,6 +4378,7 @@ export default function App() {
 	const studioActionHandlersRef = useRef(null);
 	const renderWaitersRef = useRef([]);
 	const studioHistoryRef = useRef(new Map());
+	const studioActionGroupRef = useRef(null);
 	const studioIkStampsRef = useRef(new Map());
 	const [studioAgentError, setStudioAgentError] = useState(null);
 	// A receipt already names the entities it changed. Showing that only as a
@@ -4920,13 +4921,13 @@ export default function App() {
 		const shotState = restoredShotState(scene);
 		const stage = createSceneStage(scene.stage);
 		const objects = Array.isArray(scene.objects) ? scene.objects : [];
-		storeRef.current = createSceneHistoryStore(objects, {
+		storeRef.current = withCommandHistory(createSceneHistoryStore(objects, {
 			onCommit: (before, after) => markSemanticEdit("objects", before, after),
 			onObjects: (next) => {
 				if (!suppressObjectClockRef.current) lastObjectOpRef.current = ++opClockRef.current;
 				setSceneObjects(next);
 			},
-		});
+		}));
 		setSceneObjects(objects);
 		setShots(shotState.shots);
 		setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS);
@@ -12552,45 +12553,58 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * one character `targetId` names), which republishes the live read model
 	 * synchronously; object entries are the store's own. */
 	function beginStudioAction(domain, targetId = null) {
-		const revisionBefore = sceneRevisionRef.current;
+		if (studioActionGroupRef.current) throw new StudioProtocolError("TARGET_BUSY", "A command owns native history.");
 		const historyEntryId = crypto.randomUUID(), objects = storeRef.current.objects;
-		const history = charHistoryRef.current, past = [...history.past], future = [...history.future];
-		const state = domain === "objects" ? null : snapshotStudioDomain(domain, targetId);
-		const objectSession = domain === "objects" ? storeRef.current.beginCommand() : null;
-		let changed = false, firstEntry;
-		return {
+		const history = charHistoryRef.current, past = [...history.past], future = [...history.future], states = [];
+		let objectSession, changed = false, firstEntry;
+		const session = {
+			touch(domain, targetId) {
+				if (domain === "objects") { objectSession ??= storeRef.current.beginCommand(); return; }
+				if (!states.some(row => row.domain === domain && row.targetId === targetId)) states.push({ domain, targetId, state: snapshotStudioDomain(domain, targetId) });
+			},
 			run(fn) {
 				const finish = result => {
-					if (!objectSession) {
-						const added = history.past.filter(entry => !past.includes(entry));
-						firstEntry ??= added[0]; changed ||= added.length > 0;
-						history.past = [...past]; history.future = [...future];
-					}
+					const added = history.past.filter(entry => !past.includes(entry));
+					firstEntry ??= added[0]; changed ||= added.length > 0;
+					history.past = [...past]; history.future = [...future];
 					return result;
 				};
 				const result = objectSession ? objectSession.run(fn) : fn();
 				return result?.then ? result.then(finish) : finish(result);
 			},
 			commit() {
-				if (objectSession) {
-					changed = objectSession.commit(); liveStateRef.current.objects = storeRef.current.objects;
-					if (changed) studioHistoryRef.current.set(historyEntryId, { domain, before: objects, tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
-				} else if (changed) {
-					const tick = ++opClockRef.current;
-					history.past.push({ tick, snapshot: firstEntry.snapshot, studio: { domain, targetId, historyEntryId, objects, state } });
+				const objectsChanged = objectSession?.commit() ?? false;
+				liveStateRef.current.objects = storeRef.current.objects;
+				const compound = states.length > 1 || (states.length > 0 && objectsChanged);
+				if (changed || (compound && objectsChanged)) {
+					const tick = ++opClockRef.current, saved = states[0];
+					const studio = compound ? { domain: "compound", state: states, objectsChanged } : saved;
+					history.past.push({ tick, snapshot: firstEntry?.snapshot ?? snapshotCast(true), studio: { ...studio, historyEntryId, objects: storeRef.current.objects } });
 					history.past = history.past.slice(-HISTORY_LIMIT); history.future = [];
-					studioHistoryRef.current.set(historyEntryId, { tick, domain });
-				}
-				if (changed) sceneRevisionRef.current = revisionBefore + 1;
+					studioHistoryRef.current.set(historyEntryId, { tick, domain: studio.domain, ...(objectsChanged ? { before: objects } : {}) });
+				} else if (objectsChanged) studioHistoryRef.current.set(historyEntryId, { domain: "objects", before: objects, tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
+				changed ||= objectsChanged;
+				studioActionGroupRef.current = null;
 				return { historyEntryId: changed ? historyEntryId : null };
 			},
-			cancel() {
-				if (objectSession) objectSession.cancel();
-				else { publishStudioDomain(domain, targetId, state); history.past = past; history.future = future; }
+			cancel({ restore = true } = {}) {
+				objectSession?.cancel();
+				if (restore) {
+					for (const row of [...states].reverse()) publishStudioDomain(row.domain, row.targetId, row.state);
+					history.past = past; history.future = future;
+				}
+				studioActionGroupRef.current = null;
 			},
 		};
+		session.touch(domain, targetId); studioActionGroupRef.current = session;
+		return session;
 	}
-	function recordStudioAction(domain, run, targetId = null) {
+	function recordStudioAction(domain, run, targetId = null, nested = false) {
+		if (nested && studioActionGroupRef.current) {
+			const session = studioActionGroupRef.current; session.touch(domain, targetId);
+			const result = session.run(run), done = result => ({ result, historyEntryId: null });
+			return result?.then ? result.then(done) : done(result);
+		}
 		const session = beginStudioAction(domain, targetId);
 		const done = result => ({ result, ...session.commit() });
 		const failed = error => { session.cancel(); throw error; };
@@ -12606,8 +12620,8 @@ function resizePromptClip(id, edge, rawFrame) {
 	function isStudioHistoryRetained(receipt) {
 		const id = receipt?.undo?.historyEntryId, entry = studioHistoryRef.current.get(id);
 		if (!entry) return false;
-		const retained = entry.domain === "objects" ? storeRef.current.hasHistoryState(entry.before)
-			: [...charHistoryRef.current.past, ...charHistoryRef.current.future].some(row => row.studio?.historyEntryId === id);
+		const retained = (!entry.before || storeRef.current.hasHistoryState(entry.before)) && (entry.domain === "objects"
+			|| [...charHistoryRef.current.past, ...charHistoryRef.current.future].some(row => row.studio?.historyEntryId === id));
 		if (!retained) studioHistoryRef.current.delete(id);
 		return retained;
 	}
@@ -12634,8 +12648,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		// instead of hiding older Studio history behind the traversal tick.
 		if (!top?.studio || top.studio.objects !== storeRef.current.objects) return false;
 		const entry = top.studio;
-		to.push({ ...top, studio: { ...entry, state: snapshotStudioDomain(entry.domain, entry.targetId) } }); from.pop();
-		if (entry.domain === "shot") {
+		const state = entry.domain === "compound" ? entry.state.map(row => ({ ...row, state: snapshotStudioDomain(row.domain, row.targetId) })) : snapshotStudioDomain(entry.domain, entry.targetId);
+		if (entry.objectsChanged) { if (redo) storeRef.current.redo(); else storeRef.current.undo(); }
+		to.push({ ...top, studio: { ...entry, objects: storeRef.current.objects, state } }); from.pop();
+		if (entry.domain === "compound") { for (const row of [...entry.state].reverse()) publishStudioDomain(row.domain, row.targetId, row.state); }
+		else if (entry.domain === "shot") {
 			liveStateRef.current.shots = entry.state.shots; setShots(entry.state.shots); publishStudioCamera(entry.state.camera, entry.state.manual);
 		} else if (entry.domain === "stage") publishStudioStage(entry.state.stage);
 		else if (entry.domain === "cast") { publishStudioCharacters(entry.state.characters); syncStudioLayerBuffer(entry.state.characters); }

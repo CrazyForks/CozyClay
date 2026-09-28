@@ -24,10 +24,10 @@ export function withCommandHistory(store) {
   adapter.beginCommand = () => {
     if (group) fail('TARGET_BUSY', 'An object command is already in progress.');
     adapter.settle(); const before = store.present();
-    const current = { running: false, token: store.begin('command-bus', () => { current.closed = true; group = null; }) }; group = current;
+    const current = { running: 0, token: store.begin('command-bus', () => { current.closed = true; group = null; }) }; group = current;
     const check = () => { if (current.closed) fail('STALE_TARGET', 'Native object transaction was retired.'); };
     return {
-      run(fn) { check(); current.running = true; try { const result = fn(); if (result?.then) return result.finally(() => { current.running = false; }); current.running = false; return result; } catch (error) { current.running = false; throw error; } },
+      run(fn) { check(); current.running++; try { const result = fn(); if (result?.then) return result.finally(() => { current.running--; }); current.running--; return result; } catch (error) { current.running--; throw error; } },
       commit() { check(); current.closed = true; group = null; store.end(current.token, { commit: true }); pushed(before); return before !== store.present(); },
       cancel() { check(); current.closed = true; group = null; store.end(current.token, { commit: false }); },
     };
@@ -65,7 +65,8 @@ export function createCommandBus({ registry, ports }) {
   };
   const clear = timer => (ports.clearTimeout ?? clearTimeout)(timer);
   function cancelTransaction(tx, expired = false) {
-    transactions.delete(tx.txId); clear(tx.timer); tx.session.cancel();
+    transactions.delete(tx.txId); clear(tx.timer); tx.controller.abort(new StudioProtocolError('CANCELLED', 'Transaction was cancelled.'));
+    tx.session.cancel({ restore: same(tx.before.host, ports.read().host) });
     emit({ type: 'transaction.cancelled', txId: tx.txId, expired });
   }
   function renew(tx) {
@@ -103,7 +104,7 @@ export function createCommandBus({ registry, ports }) {
       const prepared = registry.prepare(args.id, args.args);
       exposure(prepared.entry, prepared.args, request);
       if (prepared.entry.kind !== 'mutation') fail('INVALID_ARGUMENT', 'Only mutations can open a transaction.');
-      tx = { txId: crypto.randomUUID(), entry: prepared.entry, before, origin: request.origin,
+      tx = { txId: crypto.randomUUID(), entry: prepared.entry, before, origin: request.origin, targetId: prepared.args.characterId ?? null, controller: new AbortController(),
         session: ports.beginAction(prepared.entry.undoDomain, prepared.args.characterId ?? null), affectedIds: new Set() };
       transactions.set(tx.txId, tx); renew(tx);
     } else {
@@ -112,9 +113,25 @@ export function createCommandBus({ registry, ports }) {
       if (request.origin !== tx.origin) fail('TARGET_BUSY', 'This transaction belongs to another origin.');
       if (id === 'run.update') {
         const prepared = registry.prepare(tx.entry.id, args.args);
-        const updated = tx.session.run(() => registry.invoke(tx.entry, prepared.args, { origin: request.origin }));
-        const finish = result => { for (const target of result.affectedIds) tx.affectedIds.add(target); renew(tx); return transactionReceipt(id, tx, request, before); };
-        return updated?.then ? updated.then(finish, error => { cancelTransaction(tx); throw error; }) : finish(updated);
+        if (tx.entry.undoDomain === 'motion' && prepared.args.characterId !== tx.targetId) fail('INVALID_ARGUMENT', 'A motion transaction keeps its original target.');
+        const shown = [], release = ports.captureToasts?.(toast => shown.push(typeof toast === 'string' ? { message: toast } : toast));
+        const context = { origin: request.origin, signal: tx.controller.signal, check() {
+          tx.controller.signal.throwIfAborted();
+          if (!transactions.has(tx.txId) || !same(tx.before.host, ports.read().host)) fail('STALE_TARGET', 'Transaction is no longer current.');
+        } };
+        const finish = result => {
+          release?.(); context.check();
+          if (shown.length && ports.read().revision === before.revision) fail('TARGET_NOT_READY', shown.at(-1).message);
+          for (const target of result.affectedIds) tx.affectedIds.add(target);
+          renew(tx); return transactionReceipt(id, tx, request, before);
+        };
+        const rejected = error => { release?.(); if (transactions.has(tx.txId)) cancelTransaction(tx); throw error; };
+        try {
+          const updated = tx.session.run(() => registry.invoke(tx.entry, prepared.args, context));
+          if (!updated?.then) return finish(updated);
+          const cancelled = new Promise((_, reject) => tx.controller.signal.addEventListener('abort', () => reject(tx.controller.signal.reason), { once: true }));
+          return Promise.race([updated, cancelled]).then(finish, rejected);
+        } catch (error) { return rejected(error); }
       }
       if (id === 'run.cancel') cancelTransaction(tx);
       if (id === 'run.commit') { transactions.delete(tx.txId); clear(tx.timer); tx.historyEntryId = tx.session.commit().historyEntryId; }
@@ -138,7 +155,7 @@ export function createCommandBus({ registry, ports }) {
   function receipt(entry, request, before, result, historyEntryId, toasts = []) {
     const after = ports.read(), changed = after.revision !== before.revision;
     if (entry.kind === 'mutation' && changed && !historyEntryId) fail('UNCERTAIN_APPLY', `${entry.id} changed the scene without one undoable entry.`);
-    const completed = entry.kind === 'job' || entry.kind === 'document';
+    const completed = entry.kind === 'job' || entry.kind === 'document' || (entry.kind === 'mutation' && changed && after.revision > before.revision + 1);
     const ids = completed || changed ? result.affectedIds : entry.kind === 'transient' ? [before.host.sceneId] : [];
     return validateReceipt({ ok: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
       action: entry.id, summary: result.summary, status: completed ? 'completed' : entry.kind === 'transient' ? 'transient' : changed ? 'applied' : 'noop',
@@ -146,7 +163,7 @@ export function createCommandBus({ registry, ports }) {
       revision: { before: before.revision, after: after.revision }, affectedIds: ids,
       delta: ids.slice(0, 8).map(id => ({ id, after: ports.readback?.(id, after) ?? { removed: true } })),
       checks: { coverage: `studio-action:${entry.id}` }, warnings: toasts.slice(-12).map(toast => ({ code: 'STUDIO_TOAST', message: [...toast.message].slice(0, 120).join('') })),
-      undo: historyEntryId ? { historyEntryId, entries: 1, canUndoDirect: true } : null });
+      undo: historyEntryId ? { historyEntryId, entries: 1, canUndoDirect: true } : null, ...(ids.length > 8 ? { detailCursor: request.commandId } : {}) });
   }
   function run(id, args = {}, options = {}) {
     const request = { origin: 'ui', commandId: crypto.randomUUID(), ...options };
@@ -183,7 +200,7 @@ export function createCommandBus({ registry, ports }) {
       const { entry, args: validated } = prepared;
       if (request.origin !== 'ui') {
         if (request.expectedRevision !== before.revision) fail('STALE_SCENE', 'Authored state changed; obtain fresh intent.');
-        if (before.busy) fail('TARGET_BUSY', 'Finish the current editor gesture first.');
+        if (before.busy && !transactions.has(validated.txId) && !id.startsWith('job.')) fail('TARGET_BUSY', 'Finish the current editor gesture first.');
       }
       if (controls[id]) return mapResult(control(id, validated, request, before), remember, rejected);
       if (transactions.size) fail('TARGET_BUSY', 'Finish or cancel the open command transaction first.');
@@ -193,6 +210,7 @@ export function createCommandBus({ registry, ports }) {
       const targetId = entry.target?.(validated, before) ?? validated.characterId ?? validated.shotId ?? validated.objectId;
       const token = targetId ? ports.readTarget?.(targetId) : null;
       const domainRevision = domain ? before.domainRevisions?.[domain] : null;
+      const nestedIds = new Set();
       const context = { origin: request.origin, signal: controller.signal,
         check() {
           controller.signal.throwIfAborted();
@@ -207,7 +225,13 @@ export function createCommandBus({ registry, ports }) {
           committedHistoryId = recorded.historyEntryId; applied = Boolean(committedHistoryId);
           return recorded.result;
         },
-        run(nestedId, nestedArgs = {}) { const nested = registry.prepare(nestedId, nestedArgs); return registry.invoke(nested.entry, nested.args, context); },
+        run(nestedId, nestedArgs = {}) {
+          controller.signal.throwIfAborted();
+          const nested = registry.prepare(nestedId, nestedArgs); exposure(nested.entry, nested.args, request);
+          const invoke = () => registry.invoke(nested.entry, nested.args, context);
+          const value = nested.entry.kind === 'mutation' ? ports.recordAction(nested.entry.undoDomain, invoke, nested.args.characterId ?? null, true) : { result: invoke() };
+          return mapResult(value, recorded => mapResult(recorded.result, result => { for (const target of result.affectedIds) nestedIds.add(target); return result; }));
+        },
       };
       if (entry.kind === 'job') { job = { id: crypto.randomUUID(), host: before.host, controller, background: false }; jobs.set(job.id, job); }
       timer = (ports.setTimeout ?? setTimeout)(() => {
@@ -228,7 +252,7 @@ export function createCommandBus({ registry, ports }) {
         releaseToasts?.(); releaseToasts = null;
         const refused = toastRefusal();
         if (refused) throw refused;
-        return remember(receipt(entry, request, before, output, historyEntryId ?? committedHistoryId, toasts));
+        return remember(receipt(entry, request, before, { ...output, affectedIds: [...new Set([...output.affectedIds, ...nestedIds])] }, historyEntryId ?? committedHistoryId, toasts));
       });
       const finished = value?.then ? value.then(finish) : finish(value);
       const answer = finished?.then ? finished.catch(rejected) : finished;

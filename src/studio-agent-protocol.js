@@ -191,7 +191,7 @@ const toolSchemas = {
 	generate_motion: object({ characterId: id, source }, { repair: { ...choices(["bounded", "none"]), default: "bounded" } }),
 	verify_result: object({ checks: array(choices(["placement", "framing", "motion"]), 3, 1, true) }, { receiptId: id, targets: ids(), range: union(literal("whole_clip"), range), visual: { ...choices(["none", "frame", "contact_sheet"]), default: "none" } }),
 	undo_edit: object({ receiptId: id }),
-	run_action: object({ action: id }, { args: openObject }),
+	run_action: object({ action: id }, { args: openObject, confirmationToken: id }),
 };
 export const STUDIO_TOOL_SCHEMAS = freezeStudioData(toolSchemas);
 export const STUDIO_CATALOGUE = freezeStudioData(STUDIO_TOOL_FAMILIES.map(name => ({ name, slice: 1, parameters: toolSchemas[name] })));
@@ -263,7 +263,7 @@ const authoredReceipt = { ...receiptBase, authored: literal(true), undo };
 // A run_action receipt names the registered action and what it did.
 const actionFields = { action: id, summary: text(240) };
 const receiptVariants = {
-	completed: object({ ...receiptBase, status: literal("completed"), kind: choices(["job", "document", "transaction"]) }, { ...actionFields, output: openObject, jobId: id, txId: id, nextHost: identity }),
+	completed: object({ ...receiptBase, status: literal("completed"), kind: choices(["job", "document", "transaction", "mutation"]) }, { ...actionFields, ...batchDetails, output: openObject, jobId: id, txId: id, nextHost: identity }),
 	started: object({ ...receiptBase, status: literal("started"), kind: literal("job"), jobId: id, authored: literal(false), undo: literal(null) }, { ...actionFields }),
 	applied: object({ ...authoredReceipt, status: literal("applied") }, { mutated: literal(true), ops: opResults, ...batchDetails, ...actionFields }),
 	partial: object({ ...authoredReceipt, status: literal("partial"), ops: opResults }, { mutated: literal(true), ...batchDetails }),
@@ -513,6 +513,7 @@ export function validateReceipt(value) {
 	if (r.status === "started" || r.status === "completed") {
 		if (r.revision.after < r.revision.before && !r.nextHost) fail("INVALID_RECEIPT", "Completion revisions must not move backwards in one document.");
 		if (r.status === "started" && (r.authored || r.undo || r.revision.before !== r.revision.after)) fail("INVALID_RECEIPT", "Started jobs cannot claim an authored commit.");
+		if (r.kind === "mutation" && (!r.authored || !r.undo || r.revision.after <= r.revision.before || !r.delta.length)) fail("INVALID_RECEIPT", "A completed composite mutation needs retained undo and advancing revision evidence.");
 		if (r.undo && (!r.authored || !r.affectedIds.length)) fail("INVALID_RECEIPT", "An undo entry requires an authored result and affected targets.");
 	} else if (r.status === "noop" || r.status === "transient") {
 		if (r.authored || r.undo !== null || r.revision.before !== r.revision.after) fail("INVALID_RECEIPT", "Non-authored operations cannot create history or advance authored revision.");
