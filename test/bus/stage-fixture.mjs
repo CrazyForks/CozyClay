@@ -11,8 +11,13 @@ const server = await createServer({ configFile: false, server: { middlewareMode:
   plugins: [{ name: 'stage-default-without-renderer', enforce: 'pre',
     load(id) { if (id.endsWith('/src/app-stage.jsx')) return defaults; } }],
 });
-let useStage;
-try { ({ useStage } = await server.ssrLoadModule('/src/domains/stage.js')); }
+let useStage, AppContext;
+export const stagePanels = {};
+try {
+  ({ useStage } = await server.ssrLoadModule('/src/domains/stage.js'));
+  ({ AppContext } = await server.ssrLoadModule('/src/app-context.js'));
+  for (const name of ['EnvironmentPanel', 'LightPanel']) stagePanels[name] = (await server.ssrLoadModule(`/src/panels/${name}.jsx`)).default;
+}
 finally { await server.close(); }
 export function stageFixture() {
   const f = appFixture();
@@ -34,5 +39,11 @@ export function stageFixture() {
   const run = (id, args = {}, origin = 'ui', options = {}) => f.binding.bus.run(id, args, {
     origin, host: f.host(), expectedRevision: f.binding.refresh().revision, ...options,
   });
-  return { ...f, stage, run, dispose() { f.dispose(); stage.dispose?.(); } };
+  function panel(name, props) {
+    let tree;
+    function Capture() { tree = stagePanels[name](props); return null; }
+    renderToStaticMarkup(createElement(AppContext.Provider, { value: f.scope.appContext }, createElement(Capture)));
+    return tree;
+  }
+  return { ...f, stage, run, panel, dispose() { f.dispose(); stage.dispose?.(); } };
 }
