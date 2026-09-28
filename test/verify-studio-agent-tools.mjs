@@ -26,6 +26,9 @@ const index = process.argv.indexOf("--case");
 const selected = index >= 0 ? process.argv[index + 1] : null;
 if (selected && !CASES.has(selected)) { console.error(`unknown --case ${selected}`); process.exit(2); }
 const shouldRun = name => !selected || selected === name;
+// The command index the editor puts in the turn context, built from the
+// declarations its registry registers.
+const declaredActionIndex = async () => (await import("../src/studio-agent-context.js")).studioActionIndex((await import("../src/studio-actions.js")).STUDIO_ACTIONS);
 const uuid = () => randomUUID();
 const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 const host = (handle = "handle-12", workspaceId = "tab-7") => ({ surface: "studio", workspaceId, workspaceHandle: handle, documentEpoch: "doc-3", sceneId: "scene-main", sceneEpoch: "scene-open-4" });
@@ -204,7 +207,7 @@ if (shouldRun("run-action-admission-and-generation-limit")) {
     if (payload.args?.action === "motion.generateAllBlocks") return { ok: true, commandId: payload.commandId, action: "motion.generateAllBlocks", kind: "job", status: "started", affectedIds: ["char-alex"], summary: "Started generating from 2 prompt blocks." };
     return { ok: true, commandId: payload.commandId, receiptId: `receipt-${commandNumber}`, status: "applied", action: payload.args.action, revision: { before: admission.revision, after: admission.revision + 1 } };
   } };
-  const tools = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission } });
+  const tools = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission, actionIndex: await declaredActionIndex() } });
   const run = tools.find(tool => tool.name === "run_action");
   assert.ok(run, "run_action is an agent tool");
   const applied = await run.handler({ action: "shot.create", args: {} });
@@ -222,7 +225,7 @@ if (shouldRun("run-action-admission-and-generation-limit")) {
   await run.handler({ action: "shot.create" });
   assert.equal(sent.length, 3, "other actions still run after a generation");
   // A new turn builds new tools and may generate again.
-  const nextTurn = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission } });
+  const nextTurn = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission, actionIndex: await declaredActionIndex() } });
   assert.equal((await nextTurn.find(tool => tool.name === "run_action").handler({ action: "motion.generateAllBlocks" })).status, "started");
   console.log("PASS run_action is admitted as a mutation and a job action counts as the turn's generation");
 }
@@ -243,7 +246,7 @@ if (shouldRun("run-action-job-timeout")) {
     if (payload.args.action === "export.shotVideo") return { ok: true, commandId: payload.commandId, action: "export.shotVideo", kind: "job", status: "completed", affectedIds: [], summary: "Exported.", output: { fileName: "cozyclay-shot.mp4", frameCount: 24 } };
     return { ok: true, commandId: payload.commandId, receiptId: "receipt-1", status: "applied", action: payload.args.action, revision: { before: admission.revision, after: admission.revision + 1 } };
   } };
-  const run = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission } }).find(tool => tool.name === "run_action");
+  const run = createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission, actionIndex: await declaredActionIndex() } }).find(tool => tool.name === "run_action");
   assert.deepEqual((await run.handler({ action: "export.shotVideo" })).output, { fileName: "cozyclay-shot.mp4", frameCount: 24 });
   await run.handler({ action: "shot.create" });
   assert.deepEqual(calls, [{ action: "export.shotVideo", options: [{ timeoutMs: 300_000 }] }, { action: "shot.create", options: [] }]);
@@ -282,7 +285,8 @@ if (shouldRun("non-generation-job-skips-generation-gate")) {
       ? { ok: true, commandId: payload.commandId, action: "motion.generateAllBlocks", kind: "job", status: "started", affectedIds: ["char-alex"], summary: "Started." }
       : { ok: true, commandId: payload.commandId, action: payload.args.action, kind: "job", status: "completed", affectedIds: [], summary: "Exported.", output: { fileName: "cozyclay-shot.mp4", frameCount: 24 } };
   } };
-  const tools = generation => createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission, generation } }).find(tool => tool.name === "run_action");
+  const actionIndex = await declaredActionIndex();
+  const tools = generation => createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission, generation, actionIndex } }).find(tool => tool.name === "run_action");
   const after = { used: false }, run = tools(after);
   assert.equal((await run.handler({ action: "motion.generateAllBlocks" })).status, "started");
   const exported = await run.handler({ action: "export.shotVideo" }).catch(error => error);
@@ -316,7 +320,8 @@ if (shouldRun("ai-video-motion-shares-generation-gate")) {
     sent.push({ action: payload.args.action, options });
     return { ok: true, commandId: payload.commandId, action: payload.args.action, ...answers[payload.args.action] };
   } };
-  const run = gate => createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission, generation: gate } }).find(tool => tool.name === "run_action");
+  const actionIndex = await declaredActionIndex();
+  const run = gate => createStudioTools({ liveHub, workspaceHandle: "handle-1", session: { admission, generation: gate, actionIndex } }).find(tool => tool.name === "run_action");
   const video = { action: "motion.generateFromVideo", args: { instruction: "wave both hands" } };
   const first = { used: false }, turn = run(first);
   assert.equal((await turn.handler(video)).status, "completed");
