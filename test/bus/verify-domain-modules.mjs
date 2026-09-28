@@ -29,6 +29,7 @@ function stateNames(ast) {
   return names;
 }
 const domains = {
+  objects: { states: ['sceneObjects'], panels: ['PropsPanel', 'ObjectTransformPanel'] },
   scenes: { states: ['scenes', 'activeSceneId', 'projectName', 'projectDirty'], panels: ['ProjectPanel'] },
   stage: { states: ['preset', 'shotAspectKey', 'environmentImage', 'cameraPresetId', 'sensorId', 'keyLight', 'hasEnvSheet', 'environment', 'style'], panels: ['LightPanel', 'EnvironmentPanel'] },
 };
@@ -113,6 +114,12 @@ for (const [domain, { states, panels }] of Object.entries(domains)) {
   for (const name of states) {
     assert(!stateNames(app).includes(name), `acceptance 1: ${name} must leave App.jsx`);
     assert(stateNames(ast).includes(name), `acceptance 1: ${name} must live in ${path}`);
+  }
+  if (domain === 'objects') {
+    let owner = false, remaining = false;
+    walk(ast, node => { if (node.type === 'VariableDeclarator' && node.id.name === 'storeRef') owner = true; });
+    walk(app, node => { if (node.type === 'VariableDeclarator' && node.id.name === 'storeRef') remaining = true; });
+    assert(owner && !remaining, 'acceptance 1: the scene-history storeRef belongs to useObjects');
   }
   const globals = new Set(['window', 'document', 'localStorage', 'globalThis', 'console', 'fetch', 'navigator', 'crypto', 'URL', 'URLSearchParams', 'File', 'FileReader', 'Blob', 'Image', 'HTMLElement', 'Element', 'CustomEvent', 'requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'AbortController', 'performance', 'createImageBitmap', 'undefined', 'NaN', 'Infinity', ...Object.getOwnPropertyNames(globalThis)]);
   assert.deepEqual([...new Set(freeReferences(ast).map(ref => ref.node.name))].filter(name => !globals.has(name)), [], `acceptance 2: all shared dependencies in ${path} resolve through the facade`);
