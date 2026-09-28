@@ -39,6 +39,8 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
 const mapResult = (value, success, failure) => value?.then ? value.then(success, failure) : success(value);
 const toastWarnings = toasts => toasts.slice(-12).map(toast => ({ code: 'STUDIO_TOAST', message: [...toast.message].slice(0, 120).join('') }));
+let activeRunDepth = 0;
+export const isBusRunActive = () => activeRunDepth > 0;
 
 export function createCommandBus({ registry, ports }) {
   const pending = new Map(), transactions = new Map(), jobs = new Map(), listeners = new Set();
@@ -179,7 +181,7 @@ export function createCommandBus({ registry, ports }) {
       checks: { coverage: `studio-action:${entry.id}` }, warnings: toastWarnings(toasts),
       undo: historyEntryId ? { historyEntryId, entries: 1, canUndoDirect: true } : null, ...(ids.length > 8 ? { detailCursor: request.commandId } : {}) });
   }
-  function run(id, args = {}, options = {}) {
+  function executeRun(id, args = {}, options = {}) {
     const request = { origin: 'ui', commandId: crypto.randomUUID(), ...options };
     const before = ports.read(), journal = ports.journal();
     let begun = false, releaseToasts, timer, job, applied = false, committedHistoryId;
@@ -279,6 +281,18 @@ export function createCommandBus({ registry, ports }) {
       if (answer?.then) { const settled = (job?.completion ?? answer).finally(() => pending.delete(request.commandId)); pending.set(request.commandId, settled); return settled; }
       return answer;
     } catch (error) { return rejected(error); }
+  }
+  function run(...args) {
+    activeRunDepth++;
+    try {
+      const value = executeRun(...args);
+      if (value?.then) return value.finally(() => { activeRunDepth--; });
+      activeRunDepth--;
+      return value;
+    } catch (error) {
+      activeRunDepth--;
+      throw error;
+    }
   }
   return { run,
     // Trusted UI adapter only: wire callers can consume, never mint a token.
