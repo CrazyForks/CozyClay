@@ -61,7 +61,9 @@ import { buildStudioContext, physicsFingerprintInput, studioEntityCursor, valida
 import { STUDIO_TOOL_FAMILIES, StudioProtocolError, validateStudioCommand, validateStudioIdentity, validateReceipt } from "./studio-agent-protocol.js";
 import { elementByPath } from "./studio-elements.js";
 import { createStudioCommands, createStudioCommandJournal, studioObjectCatalogue, placementChecks, framingChecks } from "./studio-agent-commands.js";
-import { STUDIO_IK_CHAIN_TRACKS, createStudioActionRegistry, studioActionDeclaration, studioActionRefusal } from "./studio-actions.js";
+import { STUDIO_IK_CHAIN_TRACKS, createStudioActionRegistry, studioActionDeclaration, studioActionRefusal, resolveStudioToast } from "./studio-actions.js";
+import { createCommandBus, withCommandHistory } from "./command-bus.js";
+import { HISTORY_LIMIT } from "./history.js";
 import { createStudioMotionCandidates, verifyInstalledTake } from "./studio-agent-motion.js";
 import { CONTACT_SHEET_LAYOUT, buildContactSheet, sampleContactSheetFrames } from "./studio-contact-sheet.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
@@ -685,13 +687,14 @@ export function createStudioAppActions(handlersRef) {
 	shotAction("shot.clearCameraRail", state => state.shots.some(shot => createCameraBlock(shot.camera).cameraRail) || "No shot has a camera rail; lay one with shot.setCameraRail.",
 		({ shotId }) => { shotOf(shotId); h().clearShotCameraRail(shotId); });
 	shotAction("shot.reorder", hasShots, ({ shotId, startFrame }) => { shotOf(shotId); h().moveTimelineShot(shotId, startFrame); });
-	registry.register({ ...studioActionDeclaration("motion.generateAllBlocks"),
+	registry.register({ ...studioActionDeclaration("motion.generateAllBlocks"), target: () => h().state().activeCharacterId,
 		available: state => state.generating ? "A motion generation is already running."
 			: !state.motionReady ? "The motion backend is not ready."
 				: state.promptBlockCount === 0 ? "The active character has no prompt block with text; write them with patch_elements character.promptBlocks." : true,
-		run: () => {
+		run: (_args, context) => {
 			const { activeCharacterId, promptBlockCount } = h().state();
-			const shown = h().runAllPromptBlocks() ?? [];
+			const shown = h().runAllPromptBlocks(context) ?? [];
+			if (shown?.then) return shown.then(() => ({ affectedIds: activeCharacterId ? [activeCharacterId] : [], summary: `Generated motion from ${promptBlockCount} prompt blocks.` }));
 			// The generation queues synchronously or not at all; when it does not,
 			// the editor's last toast names the refusal (rig not loaded, a root
 			// waypoint outside the clip, an over-long block, a line-edit draft).
@@ -797,9 +800,9 @@ export function createStudioAppActions(handlersRef) {
 	registry.register({ ...studioActionDeclaration("export.shotVideo"),
 		available: state => state.exporting ? "An export is already running; wait for it to finish."
 			: state.canExportVideo || "There is nothing to record yet: add a shot (shot.create), camera keys or a motion take first.",
-		run: async ({ shotId }) => {
+		run: async ({ shotId }, context) => {
 			const shot = shotId ? shotOf(shotId) : null;
-			const result = await h().exportShotVideo({ shotId: shotId ?? null });
+			const result = await h().exportShotVideo({ shotId: shotId ?? null }, context);
 			if (!result?.fileName) fail("TARGET_NOT_READY", "The video export did not finish; the editor's export panel shows why and offers Retry.");
 			return { affectedIds: shot ? [shot.id] : [], output: { fileName: result.fileName, frameCount: result.frameCount },
 				summary: `Recorded ${shot ? shotLabel(shot) : "the shot"} to ${result.fileName} (${result.frameCount} frames); the browser was asked to download it.` };
@@ -809,7 +812,7 @@ export function createStudioAppActions(handlersRef) {
 	// generate() runs once React has rendered it; a commit already under way can
 	// predate it, so the wait repeats until the render shows the choice.
 	registry.register({ ...studioActionDeclaration("ai.prepareShot"), available: () => true,
-		run: async ({ mode, model }) => {
+		run: async ({ mode, model }, context) => {
 			const current = h().state().aiShot, wanted = { mode: mode ?? current.mode, imageModel: model ?? current.imageModel };
 			if (model && wanted.mode !== "image") fail("INVALID_ARGUMENT", `model picks an image model, but this would be a ${wanted.mode} prompt; omit model or pass mode "image".`);
 			const rendered = () => { const { aiShot } = h().state(); return aiShot.mode === wanted.mode && aiShot.imageModel === wanted.imageModel; };
@@ -821,6 +824,7 @@ export function createStudioAppActions(handlersRef) {
 					await h().afterRender();
 				}
 			}
+			context?.check();
 			const result = h().generate();
 			const shot = result.shot && { id: result.shot.id, name: result.shot.name, range: { startFrame: result.shot.startFrame, endFrameExclusive: result.shot.endFrame + 1 } };
 			const referenceFrames = (result.frame ? 1 : 0) + (result.frameB ? 1 : 0);
@@ -830,26 +834,26 @@ export function createStudioAppActions(handlersRef) {
 	// The live import_asset path (validate, store the bytes, ONE atomic store
 	// entry), fed a data URL; an http(s) source is fetched into one first.
 	registry.register({ ...studioActionDeclaration("asset.import"), available: () => true,
-		run: async ({ source, name, placeAs }) => {
+		run: async ({ source, name, placeAs }, context) => {
 			let dataUrl = source;
 			if (!source.startsWith("data:")) {
 				try { dataUrl = await h().fetchImportSource(source); }
 				catch (error) { fail("TARGET_NOT_READY", `Could not fetch the source (${error?.message || error}); its server must allow cross-origin reads.`); }
 			}
 			let imported;
-			try { imported = await h().importAsset({ name, placeAs, dataUrl }); }
+			try { imported = await h().importAsset({ name, placeAs, dataUrl }, context); }
 			catch (error) { fail("INVALID_ARGUMENT", `Not imported: ${error?.message || error}`); }
 			return { affectedIds: [imported.objectId], summary: `Imported ${name} as a ${placeAs} (object ${imported.objectId}, asset ${imported.assetId}).` };
 		} });
 	// AI-video motion: the agent panel's Generate motion (generateFalMotion
 	// "act"), awaited to its clip. The Fal card shows every failure it meets, so
 	// a refusal is silent in the UI and tells the model the reason in English.
-	registry.register({ ...studioActionDeclaration("motion.generateFromVideo"),
+	registry.register({ ...studioActionDeclaration("motion.generateFromVideo"), domain: "motion", target: () => h().state().activeCharacterId,
 		available: ({ falMotion }) => !falMotion.enabled ? "AI video motion (Fal) is not enabled for this account."
 			: !["idle", "done", "error", "failed"].includes(falMotion.status) ? "An AI video motion generation is already running; wait for it to finish."
 				: falMotion.dailyRemaining === 0 ? "The account's daily AI video generations are used up." : true,
-		run: async ({ instruction }) => {
-			const outcome = await h().generateFalMotion("act", instruction);
+		run: async ({ instruction }, context) => {
+			const outcome = await h().generateFalMotion("act", instruction, context);
 			if (outcome.failed) fail("TARGET_NOT_READY", outcome.failed);
 			const { job, footage, dailyRemaining } = outcome;
 			if (!job.video?.url) fail("TARGET_NOT_READY", "The AI video model finished without returning a video.");
@@ -910,6 +914,7 @@ export function createStudioAppActions(handlersRef) {
 	// that would need either is refused before anything is attempted. The save
 	// path itself shows its own dialog and failures, so refusals stay silent.
 	registry.register({ ...studioActionDeclaration("project.save"), available: () => true,
+		requiresConfirmation: state => state.project.hasFile || state.project.fileAccess,
 		run: async () => {
 			const { project } = h().state();
 			if (!project.gesture && project.name !== null && project.fileAccess) {
@@ -954,7 +959,8 @@ export function createStudioAppBinding(ports) {
 	};
 	const calibrationContentKey = value => value && typeof value === "object" ? JSON.stringify(value) : null;
 	const tokens = new Map(), receipts = new Map(), jobs = new Map(), images = new Map();
-	let owner = null, commands = null, motion = null, journal = null;
+	let owner = null, commands = null, motion = null, journal = null, actionBus = null;
+	const domainKeys = new Map(), domainRevisions = {};
 	let authoredKey, physicsKey, viewKey, observedSceneRevision = ports.revision.current;
 	let physicsRevision = 0, viewRevision = 0;
 	function refresh() {
@@ -1012,7 +1018,12 @@ export function createStudioAppBinding(ports) {
 		const nextViewKey = JSON.stringify([raw.selection, raw.activeCharacterId, raw.selectedShotId, raw.view, raw.camera]);
 		if (viewKey !== undefined && viewKey !== nextViewKey) viewRevision++;
 		viewKey = nextViewKey;
-		return { ...raw, host, revision: ports.revision.current, physicsRevision, viewRevision };
+		for (const [domain, value] of Object.entries({ objects: raw.objects, shot: raw.shots, stage: raw.stage, cast: authoredCharacters, motion: characters })) {
+			const key = JSON.stringify(value);
+			if (domainKeys.get(domain) !== key) domainRevisions[domain] = (domainRevisions[domain] ?? 0) + 1;
+			domainKeys.set(domain, key);
+		}
+		return { ...raw, host, revision: ports.revision.current, physicsRevision, viewRevision, domainRevisions: { ...domainRevisions } };
 	}
 	function guard(id) {
 		const raw = refresh(), token = tokens.get(id)?.token;
@@ -1172,57 +1183,23 @@ export function createStudioAppBinding(ports) {
 	 * registry the UI controls call. A mutation is bound to the native history
 	 * entry it pushed, so its receipt is an ordinary journal receipt that
 	 * undo_edit reverts; a job answers "started" and lands later. */
-	function runAction(request, args, s) {
-		const registry = ports.actions?.();
-		if (!registry) fail("CAPABILITY_MISSING", "This editor registers no Studio actions.");
-		const entry = registry.get(args.action);
-		const base = { commandId: request.commandId, receiptId: crypto.randomUUID(), host: s.host, action: entry.id, checks: { coverage: `studio-action:${entry.id}` }, warnings: [] };
-		if (entry.kind === "job" || entry.kind === "document") {
-			// Outside the undo history. A job that runs to its end (an export) and
-			// document work answer when they settle, with any output; a job that
-			// only starts (a generation) answers at once. When the open scene moved,
-			// the answer names the new host later commands are admitted at.
-			const answer = (result, status) => {
-				const { host } = refresh();
-				return { ok: true, commandId: request.commandId, action: entry.id, kind: entry.kind, status, affectedIds: result.affectedIds, summary: result.summary,
-					...(result.output === undefined ? {} : { output: result.output }), ...(same(host, s.host) ? {} : { host }) };
-			};
-			const result = registry.run(entry.id, args.args);
-			return typeof result?.then === "function" ? result.then(settled => answer(settled, "completed")) : answer(result, entry.kind === "job" ? "started" : "completed");
-		}
-		if (entry.kind === "transient") {
-			const result = registry.run(entry.id, args.args), after = refresh();
-			return journal.record(validateReceipt({ ...base, ok: true, status: "transient", authored: false, summary: result.summary,
-				revision: { before: s.revision, after: s.revision }, view: { before: s.viewRevision, after: after.viewRevision }, affectedIds: [s.host.sceneId],
-				delta: [{ id: s.host.sceneId, after: { selection: after.selection, activeCharacterId: after.activeCharacterId, shotId: after.selectedShotId, view: after.view } }], undo: null }));
-		}
-		// A motion-domain entry restores one character's layer: the one it names.
-		const recorded = ports.recordAction(entry.undoDomain, () => registry.run(entry.id, args.args), args.args?.characterId ?? null);
-		// An asynchronous mutation (an import) is bound once it has landed.
-		return typeof recorded?.then === "function" ? recorded.then(landed => mutationReceipt(landed, entry, base, request, s)) : mutationReceipt(recorded, entry, base, request, s);
+	function commandBus() {
+		if (!actionBus) actionBus = createCommandBus({ registry: ports.actions(), ports: {
+			read: refresh, journal: () => journal, recordAction: (...args) => ports.recordAction(...args), beginAction: (...args) => ports.beginAction(...args),
+			readback: actionReadback, remember, receipt: id => receipts.get(id), isRetained: receipt => ports.isRetained(receipt),
+			canUndo: receipt => ports.canUndo(receipt), undo: () => ports.undo(), readTarget: id => { refresh(); return tokens.get(id)?.token; },
+			captureToasts: listener => ports.captureToasts?.(listener), showRefusal: message => ports.showRefusal?.(message), emit: event => ports.emitCommandEvent?.(event),
+		} });
+		return actionBus;
 	}
-	/** The journal receipt of one registered mutation, from the one history
-	 * entry it pushed and the state it left. */
-	function mutationReceipt({ result, historyEntryId }, entry, base, request, s) {
-		const after = refresh(), ids = result.affectedIds;
-		if (after.revision === s.revision) {
-			return remember(journal.record(validateReceipt({ ...base, ok: true, status: "noop", authored: false, mutated: false, summary: result.summary,
-				revision: { before: s.revision, after: s.revision }, affectedIds: [], delta: [], undo: null })));
-		}
-		if (!historyEntryId || !ids.length || after.revision !== s.revision + 1) {
-			// The document changed without one attributable history entry: say so
-			// instead of pretending nothing happened.
-			return journal.record(validateReceipt({ ok: false, commandId: request.commandId, host: s.host, code: "UNCERTAIN_APPLY", phase: "commit",
-				affectedIds: ids.slice(0, 100), expectedTargets: [], currentTargets: [], mutated: true, preserved: { authoredState: "changed" },
-				recovery: { action: "inspect", retryAllowed: false }, message: `${entry.id} changed the scene without one undoable entry.` }));
-		}
-		return remember(journal.record(validateReceipt({ ...base, ok: true, status: "applied", authored: true, mutated: true, summary: result.summary,
-			revision: { before: s.revision, after: after.revision }, affectedIds: ids,
-			delta: ids.slice(0, 8).map(id => ({ id, after: actionReadback(id, after) })),
-			undo: { historyEntryId, entries: 1, canUndoDirect: true }, ...(ids.length > 8 ? { detailCursor: request.commandId } : {}) })));
+	function runAction(request, args) {
+		const result = commandBus().run(args.action, args.args, { ...request, origin: "agent", confirmationToken: args.confirmationToken ?? request.confirmationToken });
+		const answer = receipt => receipt.nextHost ? { ...receipt, host: receipt.nextHost } : receipt;
+		return result?.then ? result.then(answer) : answer(result);
 	}
 	function execute(request) {
 		refresh();
+		if (request.name === "run_action") return runAction(request, validateStudioCommand({ name: request.name, args: request.args }).args);
 		if (["arrange_objects", "arrange_characters", "frame_shot", "patch_elements"].includes(request.name)) {
 			// Arrangements and framing are fenced by the exact scene revision, the
 			// gesture flag and the document identity inside the command module; they
@@ -1236,16 +1213,6 @@ export function createStudioAppBinding(ports) {
 			// Verification only observes: the document identity (checked above) is
 			// its whole fence, so a later edit never refuses it.
 			const { args } = validateStudioCommand({ name: request.name, args: request.args }), s = request.name === "verify_result" ? refresh() : admit(request);
-			if (request.name === "run_action") {
-				const outcome = runAction(request, args, s);
-				if (typeof outcome?.then !== "function") return outcome;
-				// A long-running action refuses after this frame: answer the same
-				// rejection receipt, journaled while the document is still this one.
-				return outcome.catch(error => {
-					const receipt = rejection(request, error);
-					return same(receipt.host, journal.host) ? journal.record(receipt) : receipt;
-				});
-			}
 			if (request.name === "operate_studio") {
 				ports.operate(args, s); const after = refresh();
 				return journal.record(validateReceipt({ ok: true, status: "transient", authored: false, commandId: request.commandId,
@@ -1410,7 +1377,7 @@ export function createStudioAppBinding(ports) {
 			else if (previous && !same(content(row), content(next))) tokens.set(row.id, { ...previous, key: null });
 		}
 	}
-	return { handlers, context, guard, refresh, invalidate, dispose: () => motion?.dispose() };
+	return { handlers, context, guard, refresh, invalidate, get bus() { refresh(); return commandBus(); }, dispose: () => { actionBus?.dispose(); motion?.dispose(); } };
 }
 
 export default function App() {
@@ -2287,7 +2254,7 @@ export default function App() {
 	// store is constructed once, seeded with the initial scene.
 	const storeRef = useRef(null);
 	if (!storeRef.current) {
-		storeRef.current = createSceneHistoryStore(sceneObjects, {
+		storeRef.current = withCommandHistory(createSceneHistoryStore(sceneObjects, {
 		onCommit: (before, after) => markSemanticEdit("objects", before, after),
 		onObjects: (objects) => {
 			// Object-side ops join the shared undo clock here; undo/redo of the
@@ -2295,7 +2262,7 @@ export default function App() {
 			if (!suppressObjectClockRef.current) lastObjectOpRef.current = ++opClockRef.current;
 			setSceneObjects(objects);
 		},
-	});
+	}));
 	}
 	const store = storeRef.current;
 	const selectedSceneObjectId = sceneObjectIdFromHierarchy(selectedHierarchyId);
@@ -2799,7 +2766,7 @@ export default function App() {
 		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
 		store.applyAtomic((objects) => [...objects, placed]);
 		setSelectedHierarchyId(`object:${placed.id}`);
-		setToast(isKo ? `${sceneObjectNameDisplayKo(placed.name)} 복제됨` : `${placed.name} duplicated`);
+		setToast((isKo, ko) => isKo ? `${sceneObjectNameDisplayKo(placed.name)} 복제됨` : `${placed.name} duplicated`);
 	}
 
 	/** Frame the selection: fly the shot camera to a comfortable distance along
@@ -2968,12 +2935,14 @@ export default function App() {
 	}
 	function recordCharacterUndo() {
 		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast() });
+		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
 		charHistoryRef.current.future = [];
 	}
 	/** One Ctrl+Z entry for a structural shot edit (delete, split, duplicate,
 	 * add, reorder): the same history as the cast, with the shot list aboard. */
 	function recordShotUndo() {
 		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast(true) });
+		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
 		charHistoryRef.current.future = [];
 	}
 	/** One Ctrl+Z entry per EDITING SESSION rather than per event, for the
@@ -3371,10 +3340,12 @@ export default function App() {
 	const [toast, showToast] = useState(startup.toast ?? "");
 	// While a Studio action runs editor work, the toasts it shows are collected
 	// so run_action can give the agent the reason the user was shown.
-	const toastSinkRef = useRef(null);
-	const setToast = useCallback((value) => {
-		if (typeof value === "string" && value) toastSinkRef.current?.push(value);
-		showToast(value);
+	const toastSinkRef = useRef(new Set());
+	const setToast = useCallback((value, english) => {
+		const toast = resolveStudioToast(value, isKo, ko);
+		if (english !== undefined) toast.message = english;
+		if (typeof toast.uiMessage === "string" && toast.uiMessage) for (const sink of toastSinkRef.current) sink(toast);
+		showToast(toast.uiMessage);
 	}, []);
 	// The PWA's "a newer studio is waiting" registration, once one arrives.
 	const [pwaUpdate, setPwaUpdate] = useState(null);
@@ -4407,6 +4378,7 @@ export default function App() {
 	const studioActionHandlersRef = useRef(null);
 	const renderWaitersRef = useRef([]);
 	const studioHistoryRef = useRef(new Map());
+	const studioActionGroupRef = useRef(null);
 	const studioIkStampsRef = useRef(new Map());
 	const [studioAgentError, setStudioAgentError] = useState(null);
 	// A receipt already names the entities it changed. Showing that only as a
@@ -4636,7 +4608,7 @@ export default function App() {
 				object_count_bucket: bucketCount(projectStateRef.current.sceneObjects?.length ?? 0),
 				shot_count_bucket: bucketCount(shots.length),
 			});
-			setToast(isKo ? `프로젝트 저장됨: ${name}${PROJECT_EXTENSION}` : `Project saved: ${name}${PROJECT_EXTENSION}`);
+			setToast((isKo, ko) => isKo ? `프로젝트 저장됨: ${name}${PROJECT_EXTENSION}` : `Project saved: ${name}${PROJECT_EXTENSION}`);
 			return { saved: true, name, fileName: downloaded ? `${name}${PROJECT_EXTENSION}` : projectHandleRef.current?.name ?? `${name}${PROJECT_EXTENSION}`, downloaded };
 		} catch (err) {
 			if (err?.name === "AbortError") {
@@ -4949,13 +4921,13 @@ export default function App() {
 		const shotState = restoredShotState(scene);
 		const stage = createSceneStage(scene.stage);
 		const objects = Array.isArray(scene.objects) ? scene.objects : [];
-		storeRef.current = createSceneHistoryStore(objects, {
+		storeRef.current = withCommandHistory(createSceneHistoryStore(objects, {
 			onCommit: (before, after) => markSemanticEdit("objects", before, after),
 			onObjects: (next) => {
 				if (!suppressObjectClockRef.current) lastObjectOpRef.current = ++opClockRef.current;
 				setSceneObjects(next);
 			},
-		});
+		}));
 		setSceneObjects(objects);
 		setShots(shotState.shots);
 		setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS);
@@ -5422,7 +5394,7 @@ export default function App() {
 			// object history store — ONE applyAtomic is the whole gesture, so one
 			// Ctrl+Z removes it. That is the point: the Workflow-tab sync writes
 			// the document without touching undo; this must not repeat that.
-			import_asset: async (args) => {
+			import_asset: async (args, commandContext) => {
 				if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
 				if (args.placeAs === "mesh") {
 					const dataUrl = args.dataUrl;
@@ -5482,6 +5454,7 @@ export default function App() {
 						object = updateSceneObject([object], object.id, { height: args.height })[0];
 					}
 					if (Number.isFinite(args.y)) object.y = args.y;
+					commandContext?.check();
 					applyObjectMutation((objects) => [...objects, object]);
 					return { assetId: asset.id, objectId: object.id };
 				}
@@ -5519,6 +5492,7 @@ export default function App() {
 					placement,
 				);
 				if (!object) throw new Error("Could not create the cutout object");
+				commandContext?.check();
 				applyObjectMutation((objects) => [...objects, object]);
 				return { assetId: asset.id, objectId: object.id };
 			},
@@ -6372,7 +6346,7 @@ export default function App() {
 			try { saveDownload(url, name); }
 			finally { setTimeout(() => URL.revokeObjectURL(url), 10_000); }
 			setRecordedVideoName(name);
-			setToast(isKo ? `${name} 다운로드 요청 · ${result.frameCount}프레임` : `Download requested: ${name} · ${result.frameCount} frames`);
+			setToast((isKo, ko) => isKo ? `${name} 다운로드 요청 · ${result.frameCount}프레임` : `Download requested: ${name} · ${result.frameCount} frames`);
 			return { ...result, fileName: name };
 		}
 		return result;
@@ -6396,7 +6370,7 @@ export default function App() {
 	 *  motion the timeline extent ignores shots and falls back to the whole
 	 *  production duration, so a 40-frame static shot must record its own
 	 *  [startFrame, endFrame] range instead of 360 frames of held pose. */
-	async function exportShotVideo({ download = true, shotId = null } = {}) {
+	async function exportShotVideo({ download = true, shotId = null } = {}, commandContext = null) {
 		if (recRef.current) return null;
 		const atPlayhead = shotIndexAtFrame(shots, tlFrame);
 		const target = shotId ? shots.find((entry) => entry.id === shotId) : shots[atPlayhead >= 0 ? atPlayhead : 0] ?? null;
@@ -6414,7 +6388,12 @@ export default function App() {
 		const range = target && (shotId || !motion)
 			? { startFrame: target.startFrame, endFrame: target.endFrame }
 			: { startFrame: 0, endFrame: Math.max(0, currentRecordFrameCount() - 1) };
-		return executeExportRequest(exportRequest("video", (job) => runShotExport({ ...range, download }, job), { exportShots, download }));
+		return executeExportRequest(exportRequest("video", async (job) => {
+			const abort = () => job.controller.abort(commandContext.signal.reason);
+			commandContext?.signal.addEventListener("abort", abort, { once: true });
+			try { commandContext?.signal.throwIfAborted(); return await runShotExport({ ...range, download }, job); }
+			finally { commandContext?.signal.removeEventListener("abort", abort); }
+		}, { exportShots, download }));
 	}
 
 	async function exportDepthVideo(shotId = null) {
@@ -6886,7 +6865,7 @@ export default function App() {
 	 * answer says what happened: `{ failed }` with the reason in English, or the
 	 * finished job, the footage it was ingested as (null when ingest failed) and
 	 * the account's daily generations left. */
-	async function generateFalMotion(kind = "interpolate", instructionOverride = null) {
+	async function generateFalMotion(kind = "interpolate", instructionOverride = null, commandContext = null) {
 		if (!falMotionEnabled) {
 			showFalMotionLock();
 			return { failed: "AI video motion (Fal) is not enabled for this account." };
@@ -6920,6 +6899,7 @@ export default function App() {
 			: buildH3MotionPrompt(description || (kind === "interpolate" ? "" : "Make the character perform the requested action."), { interpolate: kind === "interpolate" });
 		setFalMotion((current) => ({ ...current, status: "submitting", error: "", job: null }));
 		try {
+			const fetchImpl = commandContext ? (url, options) => fetch(url, { ...options, signal: commandContext.signal }) : undefined;
 			const submitted = await submitFalMotion({
 				kind,
 				stillA: source.a?.dataUrl,
@@ -6927,13 +6907,15 @@ export default function App() {
 				still: source.a?.dataUrl,
 				prompt,
 				duration: source.duration ?? FAL_MOTION_MIN_DURATION,
-			});
+			}, fetchImpl);
 			const id = submitted?.job?.id;
 			if (!id) throw Object.assign(new Error(ko("생성 작업 ID를 받지 못했어요.", "The server did not return a motion job ID.")), { reason: "The motion server did not return a job id." });
 			setFalMotion((current) => ({ ...current, status: "queued", job: submitted.job, dailyRemaining: submitted.dailyRemaining }));
 			const finished = await waitForFalMotionJob(id, {
+				fetchImpl,
 				onUpdate: (job) => setFalMotion((current) => ({ ...current, job, status: job?.status ?? current.status })),
 			});
+			commandContext?.check();
 			const job = finished?.job;
 			if (job?.status !== "done") throw Object.assign(new Error(job?.error || ko("Fal 생성에 실패했어요.", "Fal motion generation failed.")), job?.error ? {} : { reason: "The AI video generation failed." });
 			setFalMotion((current) => ({ ...current, job, status: "done", dailyRemaining: finished.dailyRemaining }));
@@ -6944,7 +6926,7 @@ export default function App() {
 				// Put the completed clip through the same probe/ingest path as a
 				// manually supplied URL so GVHMR sees measured fps, duration and
 				// a ready extraction card without another generation request.
-				footage = (await ingestFootage(motionSource)) ?? null;
+				footage = (await ingestFootage(motionSource, commandContext)) ?? null;
 				setResult({
 					mode: "video",
 					modelLabel: "Fal H3 Max Turbo",
@@ -6964,10 +6946,11 @@ export default function App() {
 				setResultOpen(true);
 				// The result modal and the studio modal are both z-30; never stack them.
 				setFalMotionStudioOpen(false);
-				setToast(isKo ? "Fal 영상이 준비됐어요 · 추출 패널에서 GVHMR을 실행하세요" : "Fal video is ready · run GVHMR from the extraction panel");
+				setToast((isKo, ko) => isKo ? "Fal 영상이 준비됐어요 · 추출 패널에서 GVHMR을 실행하세요" : "Fal video is ready · run GVHMR from the extraction panel");
 			}
 			return { job, footage, dailyRemaining: finished.dailyRemaining ?? null };
 		} catch (error) {
+			if (commandContext && (commandContext.signal.aborted || error.code === "STALE_TARGET")) throw error;
 			setFalMotion((current) => ({ ...current, status: "error", error: error.message || String(error) }));
 			return { failed: error.reason ?? `The AI video generation failed: ${error.message || error}` };
 		}
@@ -7549,7 +7532,7 @@ export default function App() {
 	/** Download (when remote), decode, measure, then size the timeline from what
 	 *  was actually read. Each run carries a token so a slow first source can
 	 *  never land its numbers after a second one replaced it. */
-	async function ingestFootage(source) {
+	async function ingestFootage(source, commandContext = null) {
 		const run = multiModelRunRef.current + 1;
 		multiModelRunRef.current = run;
 		const live = () => multiModelRunRef.current === run;
@@ -7589,6 +7572,7 @@ export default function App() {
 				knownFps: Number.isFinite(source.fps) ? source.fps : null,
 			});
 			if (!live()) return;
+			commandContext?.check();
 			const footage = { ...probed, bytes, objectUrl, blob, bridgeId: source.bridgeId ?? null };
 			setMultiModelFootage(footage);
 			setMultiModelStage("ready");
@@ -7600,11 +7584,12 @@ export default function App() {
 			setTlFrameCount(footage.frames);
 			setTlFrame(0);
 			setTlPlaying(false);
-			setToast(isKo
+			setToast((isKo, ko) => isKo
 				? `${source.name} 인제스트됨 — ${footage.frames}프레임 @ ${footage.fps} fps`
 				: `Ingested ${source.name} — ${footage.frames} frames @ ${footage.fps} fps`);
 			return footage;
 		} catch (error) {
+			if (commandContext && (commandContext.signal.aborted || error.code === "STALE_TARGET")) throw error;
 			if (!live()) return;
 			const code = error?.message ?? String(error);
 			setMultiModelStage("error");
@@ -7847,7 +7832,7 @@ export default function App() {
 		// load toast, the auto-drop toast, clearing the IK keys, snapping the
 		// playhead back to 0 — is an announcement about a take CHANGING. A
 		// preview is the same take seen a second time, so it makes none of them.
-		{ preview = false, calibration = null, tutorialEpoch = null } = {},
+		{ preview = false, calibration = null, tutorialEpoch = null, commandContext = null } = {},
 	) {
 		setMotionBusy(true);
 		setMotionError("");
@@ -7902,13 +7887,15 @@ export default function App() {
 			);
 			const decoded = drop ? applyRootDrop(raised, staging, { worldScale: motionScale }) : applyAutoFall(raised, staging, { worldScale: motionScale });
 			if (!drop && staging && !preview) {
-				setToast(ko(
+				setToast((isKo, ko) => ko(
 					`Auto drop staged: the take leaves its support at ${staging.fromS.toFixed(1)}s and falls ${staging.meters.toFixed(1)}m`,
 					`자동 낙하 적용: ${staging.fromS.toFixed(1)}초에 지지면을 벗어나 ${staging.meters.toFixed(1)}m 낙하`,
 				));
 			}
 			const targetStillExists = charactersRef.current.some((entry) => entry.id === targetCharacter.id);
 			if (!targetStillExists) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
+			const apply = () => {
+			if (commandContext) recordCharacterUndo();
 			const bufferOwnsTarget = targetCharacter.id === loadedLayerCharRef.current;
 			beginPlaybackOn(rig);
 			// THE INVARIANT: the take's travel assumes the character is scaled.
@@ -7947,8 +7934,10 @@ export default function App() {
 					}
 					: entry);
 				liveStateRef.current.characters = next;
+				if (commandContext) charactersRef.current = next;
 				return next;
 			});
+			if (commandContext && bufferOwnsTarget) { bufferRef.current = { ...bufferRef.current, motion: loaded }; liveStateRef.current.timeline.frameCount = decoded.frames; }
 			// The take as loaded is what every future trim cuts from.
 			motionFullRef.current.set(targetCharacter.id, loaded);
 			if (bufferOwnsTarget) {
@@ -7977,7 +7966,7 @@ export default function App() {
 			}
 			if (bufferOwnsTarget && !preview) setCommittedIkEdits([]);
 			if (!preview) {
-				setToast(
+				setToast((isKo, ko) =>
 					isKo
 						? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps${hadIkKeys ? " — 이전 테이크의 IK 키는 초기화됐어요" : ""}`
 						: `Motion loaded: ${decoded.frames} frames @ ${decoded.fps} fps${hadIkKeys ? " — IK keys from the previous take were cleared" : ""}`,
@@ -7986,9 +7975,11 @@ export default function App() {
 			// The applied stature, so a caller does not have to re-derive it
 			// (and cannot derive a different one).
 			return scale;
+			};
+			return commandContext ? commandContext.commit(apply) : apply();
 		} catch (err) {
 			if (tutorialEpoch !== null && tutorialEpoch !== tutorialProjectEpochRef.current) return null;
-			if (targetCharacterId === loadedLayerCharRef.current) setMotion(null);
+			if (targetCharacterId === loadedLayerCharRef.current && !commandContext) setMotion(null);
 			setMotionError(err?.message || String(err));
 			throw err;
 		} finally {
@@ -9502,7 +9493,8 @@ export default function App() {
 		// enable or disable generation.
 		if (motionPreflightReason(bridge, options)) {
 			request.preflight(bridge, options);
-			setToast(motionReadinessMessage(motionReadiness(bridge, options)));
+			const readiness = motionReadiness(bridge, options);
+			setToast(motionReadinessMessage(readiness), ({ loading: "Checking motion generation…", ready: "Ready for this motion request", not_configured: "No motion backend configured", unsupported_route: "This route cannot run the selected motion request" })[readiness] ?? "The motion backend is unavailable");
 		}
 		return request;
 	}
@@ -9606,7 +9598,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		try {
 			return resolveSeed(ardySeed, ARDY_SEED_MAX);
 		} catch {
-			setToast(isKo ? `Seed는 0..${ARDY_SEED_MAX} 범위의 정수여야 해요. 비워 두면 자동으로 선택됩니다` : `Seed must be an integer in 0..${ARDY_SEED_MAX} — clear it to let the box pick one`);
+			setToast((isKo, ko) => isKo ? `Seed는 0..${ARDY_SEED_MAX} 범위의 정수여야 해요. 비워 두면 자동으로 선택됩니다` : `Seed must be an integer in 0..${ARDY_SEED_MAX} — clear it to let the box pick one`);
 			return null;
 		}
 	}
@@ -11389,24 +11381,26 @@ function resizePromptClip(id, edge, rawFrame) {
 		clearLineEdit();
 	}
 
-	function runAllPromptBlocks() {
+	function runAllPromptBlocks(commandContext = null) {
 		if (generationPendingRef.current || genRunningRef.current || ardyRunning) return;
 		const clips = promptClips
 			.filter((clip) => clip.text.trim())
 			.sort((a, b) => a.startFrame - b.startFrame);
 		if (!clips.length) {
-			setToast(ko("Add at least one Prompt Block before generating", "생성하기 전에 프롬프트 블록을 하나 이상 추가하세요"));
+			setToast((isKo, ko) => ko("Add at least one Prompt Block before generating", "생성하기 전에 프롬프트 블록을 하나 이상 추가하세요"));
 			return;
 		}
 		const totalFrames = Math.max(...clips.map((clip) => clip.endFrame));
 		const duration = Math.max(ARDY_DURATION_MIN, Math.ceil(totalFrames / TIMELINE_FPS));
 		setArdyPrompt(clips[0].text);
 		setArdyDuration(duration);
-		runArdy({
-			promptOverride: clips[0].text,
-			durationOverride: duration,
-			promptClipsOverride: clips,
+		let resolve, reject;
+		const completion = commandContext ? new Promise((yes, no) => { resolve = yes; reject = no; }) : null;
+		const queued = runArdy({
+			promptOverride: clips[0].text, durationOverride: duration, promptClipsOverride: clips,
+			commandContext, commandCompletion: commandContext ? { resolve, reject } : null,
 		});
+		if (commandContext) return queued.then(started => { if (!started) throw new Error("The editor did not start the generation."); return completion; });
 	}
 
 	async function runArdy({
@@ -11417,7 +11411,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// no preserve, no replayed refinements, a clean recipe. Every other
 		// entry point (take it again, add a block, the Prompt Blocks button) stays in
 		// the current take's lineage and carries both.
-		fresh = false,
+		fresh = false, commandContext = null, commandCompletion = null,
 	} = {}) {
 		if (generationPendingRef.current || genRunningRef.current || ardyRunning) return;
 		const request = requestMotionGeneration("timeline", motion?.url && ikFrames.length ? "edit" : ardyStartFromPose ? "pose" : "prompt");
@@ -11426,7 +11420,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// the last line of defence behind sceneDisabledReason, which already
 		// greys the entries with this reason spelled out in place.
 		if (linePreviewUrl) {
-			setToast(previewBlockingReason());
+			setToast((isKo, ko) => previewBlockingReason(ko));
 			return;
 		}
 		// Motion generation targets the ACTIVE character's layer; the pose
@@ -11434,7 +11428,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		const rig = posing ? posedRig() : activeRig;
 		const rigModel = posing ? (posingChar?.model ?? activeChar.model) : activeChar.model;
 		if (!rig) {
-			setToast(ko("Character not loaded yet", "캐릭터가 아직 로드되지 않았어요"));
+			setToast((isKo, ko) => ko("Character not loaded yet", "캐릭터가 아직 로드되지 않았어요"));
 			return;
 		}
 		// Root guidance sends only authored sparse keys. ARDY owns every
@@ -11443,11 +11437,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		// values here, before any pose build or network, with a specific toast.
 		const prompt = promptOverride.trim();
 		if (!prompt) {
-			setToast(ko("Motion prompt is required — describe what the subject should do before generating", "모션 프롬프트가 필요해요 — 생성 전에 피사체가 할 동작을 설명하세요"));
+			setToast((isKo, ko) => ko("Motion prompt is required — describe what the subject should do before generating", "모션 프롬프트가 필요해요 — 생성 전에 피사체가 할 동작을 설명하세요"));
 			return;
 		}
 		if (prompt.length > ARDY_PROMPT_MAX) {
-			setToast(isKo ? `모션 프롬프트는 ${ARDY_PROMPT_MAX}자까지예요(현재 ${prompt.length}자). 생성 전에 줄여 주세요` : `Motion prompt is capped at ${ARDY_PROMPT_MAX} characters (currently ${prompt.length}) — shorten it before generating`);
+			setToast((isKo, ko) => isKo ? `모션 프롬프트는 ${ARDY_PROMPT_MAX}자까지예요(현재 ${prompt.length}자). 생성 전에 줄여 주세요` : `Motion prompt is capped at ${ARDY_PROMPT_MAX} characters (currently ${prompt.length}) — shorten it before generating`);
 			return;
 		}
 		// Regeneration must keep the loaded clip's exact frame count. The form
@@ -11457,7 +11451,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			? motion.frames / motion.fps
 			: Math.round(Number(durationOverride)) || ARDY_DURATION_MIN;
 		if (duration < ARDY_DURATION_MIN || duration > ARDY_DURATION_MAX) {
-			setToast(isKo ? `길이는 ${ARDY_DURATION_MIN}초에서 ${ARDY_DURATION_MAX}초 사이여야 해요` : `Duration must be between ${ARDY_DURATION_MIN} and ${ARDY_DURATION_MAX} seconds`);
+			setToast((isKo, ko) => isKo ? `길이는 ${ARDY_DURATION_MIN}초에서 ${ARDY_DURATION_MAX}초 사이여야 해요` : `Duration must be between ${ARDY_DURATION_MIN} and ${ARDY_DURATION_MAX} seconds`);
 			return;
 		}
 		// THE SEED RULE (C9): rolled when the field is empty, kept when it is
@@ -11485,15 +11479,15 @@ function resizePromptClip(id, edge, rawFrame) {
 			: [];
 		if (waypointMode) {
 			if (waypoints.length < 1) {
-				setToast(ko("Add at least one root destination before generating", "생성하기 전에 루트 목적지를 하나 이상 추가하세요"));
+				setToast((isKo, ko) => ko("Add at least one root destination before generating", "생성하기 전에 루트 목적지를 하나 이상 추가하세요"));
 				return;
 			}
 			if (rootPath.length > MAX_WAYPOINTS) {
-				setToast(isKo ? `루트 경로는 드문 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요` : `The root path is capped at ${MAX_WAYPOINTS} sparse waypoints`);
+				setToast((isKo, ko) => isKo ? `루트 경로는 드문 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요` : `The root path is capped at ${MAX_WAYPOINTS} sparse waypoints`);
 				return;
 			}
 			if (waypoints.some((waypoint) => waypoint.frame <= 0 || waypoint.frame >= clipFrames)) {
-				setToast(isKo ? `루트 웨이포인트 프레임은 1..${clipFrames - 1} 안에 있어야 해요` : `Root waypoint frames must stay inside 1..${clipFrames - 1}`);
+				setToast((isKo, ko) => isKo ? `루트 웨이포인트 프레임은 1..${clipFrames - 1} 안에 있어야 해요` : `Root waypoint frames must stay inside 1..${clipFrames - 1}`);
 				return;
 			}
 			// Placement-time checks can be invalidated afterwards (removing a
@@ -11505,13 +11499,13 @@ function resizePromptClip(id, edge, rawFrame) {
 			// pins were authored on, which is now the timeline's.
 			const pathVerdict = judgeAuthoredPath(rootPath, TIMELINE_FPS, clipFrames, { chained: hasPromptSchedule });
 			if (pathVerdict.errors.length > 0) {
-				setToast(isKo ? `생성하지 못했어요 — ${pathVerdict.errors[0]}` : `Not generated — ${pathVerdict.errors[0]}`);
+				setToast((isKo, ko) => isKo ? `생성하지 못했어요 — ${pathVerdict.errors[0]}` : `Not generated — ${pathVerdict.errors[0]}`);
 				return;
 			}
 			if (hasAuthoredBlocks) {
 				const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PROMPT_BLOCK_MAX_FRAMES);
 				if (longBlock) {
-					setToast(isKo
+					setToast((isKo, ko) => isKo
 						? `생성하지 못했어요 — 프롬프트 블록은 ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS}초 이내여야 해요. ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)}초 블록을 나눠 주세요`
 						: `Not generated — prompt blocks are capped at ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS} s; split the ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)} s block`);
 					return;
@@ -11529,7 +11523,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (!waypointMode && hasAuthoredBlocks) {
 			const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PROMPT_BLOCK_MAX_FRAMES);
 			if (longBlock) {
-				setToast(isKo
+				setToast((isKo, ko) => isKo
 					? `생성하지 못했어요 — 프롬프트 블록은 ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS}초 이내여야 해요. ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)}초 블록을 나눠 주세요`
 					: `Not generated — prompt blocks are capped at ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS} s; split the ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)} s block`);
 				return;
@@ -11569,7 +11563,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			editedSegments,
 		});
 		if (pinPlan.blockedBy === PIN_BLOCKED.SCHEDULE) {
-			setToast(ko(
+			setToast((isKo, ko) => ko(
 				"Prompt blocks and a pose start cannot be combined — generating from the prompt alone.",
 				"프롬프트 블록과 포즈 시작은 함께 쓸 수 없어요 — 프롬프트만으로 생성합니다.",
 			));
@@ -11639,7 +11633,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			body.historyFrames = 4 * ARDY_FPS;
 		} else if (hasBlockEdits) {
 			if (!motion?.url) {
-				setToast(ko("The current motion has no bridge source; generate the prompt blocks once before regenerating IK edits", "현재 모션에 브리지 원본이 없어요. 프롬프트 블록을 한 번 생성한 뒤 IK 보정을 다시 생성하세요"));
+				setToast((isKo, ko) => ko("The current motion has no bridge source; generate the prompt blocks once before regenerating IK edits", "현재 모션에 브리지 원본이 없어요. 프롬프트 블록을 한 번 생성한 뒤 IK 보정을 다시 생성하세요"));
 				return;
 			}
 			const startFrame = Math.min(...editedSegments.map((segment) => segment.startFrame));
@@ -11758,7 +11752,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (replay.length > 0) {
 			body.replay = replay;
 			if (replayTruncated(takeRecipeRef.current)) {
-				setToast(isKo
+				setToast((isKo, ko) => isKo
 					? `다듬기는 한 번에 ${replay.length}개까지만 다시 적용돼요 — 먼저 한 ${replay.length}개만 이어집니다`
 					: `Only ${replay.length} refinements can be replayed at once — the first ${replay.length} carry over`);
 			}
@@ -11768,7 +11762,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// delivered to THIS character even if the selection moves on while
 		// the box is still working.
 		generationPendingRef.current = enqueueMotionJob({
-			request,
+			request, commandContext, commandCompletion,
 			charId: activeChar.id,
 			charIndex: activeCharIndex,
 			prompt,
@@ -11795,6 +11789,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							? ko("Again", "다시 뽑기")
 							: ko("Generate", "생성"),
 		}) === true;
+		return generationPendingRef.current;
 	}
 
 	/* --------------------- trail drag -> preview -> regen -------------------- */
@@ -11962,7 +11957,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (motionPreflightReason(bridge, options)) return;
 		const id = `gen-${++genJobSeq.current}`;
 		setGenQueue((queue) => [...queue, { id, status: "queued", ...spec }]);
-		setToast(isKo ? `인물 ${spec.charIndex + 1} 모션 생성을 대기열에 넣었어요` : `Queued motion generation for Subject ${spec.charIndex + 1}`);
+		setToast((isKo, ko) => isKo ? `인물 ${spec.charIndex + 1} 모션 생성을 대기열에 넣었어요` : `Queued motion generation for Subject ${spec.charIndex + 1}`);
 		return true;
 	}
 	useEffect(() => {
@@ -11974,8 +11969,10 @@ function resizePromptClip(id, edge, rawFrame) {
 		(async () => {
 			try {
 				await executeMotionJob(next);
+				next.commandCompletion?.resolve();
 				setGenQueue((queue) => queue.map((job) => (job.id === next.id ? { ...job, status: "done" } : job)));
 			} catch (err) {
+				next.commandCompletion?.reject(err);
 				const message = err?.name === "AbortError" ? ko("Cancelled", "취소됨") : err?.message || String(err);
 				setGenQueue((queue) => queue.map((job) => (job.id === next.id ? { ...job, status: "error", error: message } : job)));
 			} finally {
@@ -11986,7 +11983,10 @@ function resizePromptClip(id, edge, rawFrame) {
 	}, [genQueue]);
 
 	async function executeMotionJob(job) {
+		job.commandContext?.check();
 		const controller = new AbortController();
+		const abort = () => controller.abort(job.commandContext.signal.reason);
+		job.commandContext?.signal.addEventListener("abort", abort, { once: true });
 		ardyAbortRef.current = controller;
 		setArdyRunning(true);
 		reportArdyStatus(ko("connecting…", "연결 중…"));
@@ -12050,7 +12050,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				job.ikState.plants.clear();
 				setIkTick((value) => value + 1);
 			}
-			setToast(isKo ? `인물 ${job.charIndex + 1} ARDY 모션 생성됨` : `ARDY motion generated for Subject ${job.charIndex + 1}`);
+			setToast((isKo, ko) => isKo ? `인물 ${job.charIndex + 1} ARDY 모션 생성됨` : `ARDY motion generated for Subject ${job.charIndex + 1}`);
 		} catch (err) {
 			// Wave-2 gate, second line of defence. The capability preflight
 			// normally stops a line edit before it is sent, but a bridge that
@@ -12073,6 +12073,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		} finally {
 			setArdyRunning(false);
 			ardyAbortRef.current = null;
+			job.commandContext?.signal.removeEventListener("abort", abort);
 		}
 	}
 
@@ -12277,8 +12278,8 @@ function resizePromptClip(id, edge, rawFrame) {
 		return "";
 	}
 	/** The one sentence every take-consuming action says while a draft is up. */
-	function previewBlockingReason() {
-		return ko(
+	function previewBlockingReason(localize = ko) {
+		return localize(
 			"A line-edit preview is on the viewport — press Generate to keep it, or undo (Ctrl/Cmd+Z) to drop it",
 			"라인 편집 미리보기가 떠 있어요 — 생성으로 확정하거나 Ctrl/Cmd+Z로 되돌린 뒤에 쓰세요",
 		);
@@ -12350,9 +12351,10 @@ function resizePromptClip(id, edge, rawFrame) {
 			anchorZ: sceneAnchorZ,
 		};
 		if (calibration && typeof calibration === "object") motionRef.calibration = normalizedCalibration;
-		setCharacters((list) => list.map((entry) => entry.id === job.charId ? { ...entry, motionRef } : entry));
+		if (!job.commandContext) setCharacters((list) => list.map((entry) => entry.id === job.charId ? { ...entry, motionRef } : entry));
 		if (job.charId === loadedLayerCharRef.current) {
-			await loadMotion(motionUrl, job.prompt, job.rootRotationDeg, null, job.charId, null, { calibration });
+			await loadMotion(motionUrl, job.prompt, job.rootRotationDeg, null, job.charId, null, { calibration, commandContext: job.commandContext });
+			if (job.commandContext) publishStudioCharacters(charactersRef.current.map(entry => entry.id === job.charId ? { ...entry, motionRef } : entry));
 			return;
 		}
 		// Inbound boundary for a clip delivered to a non-active layer.
@@ -12372,10 +12374,13 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (calibration && typeof calibration === "object") clip.sceneCalibration = normalizedCalibration;
 		// Same stature rule as loadMotion, on the layer that asked for the clip.
 		const scale = characterScaleFor(decoded);
-		motionFullRef.current.set(job.charId, clip);
-		setCharacters((list) => list.map((entry) => entry.id === job.charId
-			? { ...entry, scale, sessionMotion: clip }
-			: entry));
+		const apply = () => {
+			if (job.commandContext) recordCharacterUndo();
+			motionFullRef.current.set(job.charId, clip);
+			const next = charactersRef.current.map(entry => entry.id === job.charId ? { ...entry, scale, sessionMotion: clip, motionRef } : entry);
+			if (job.commandContext) publishStudioCharacters(next); else setCharacters(next);
+		};
+		if (job.commandContext) job.commandContext.commit(apply); else apply();
 	}
 
 	/** After a scene (re)load, re-fetch every persisted clip reference and
@@ -12539,6 +12544,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		const tick = ++opClockRef.current;
 		charHistoryRef.current.past.push({ tick, snapshot: snapshotCast(domain === "shot"),
 			studio: { domain, targetId, historyEntryId, objects: storeRef.current.objects, state: snapshotStudioDomain(domain, targetId) } });
+		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
 		charHistoryRef.current.future = [];
 		studioHistoryRef.current.set(historyEntryId, { tick, domain });
 	}
@@ -12547,27 +12553,78 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * cast and motion entries gain the Studio restore state (a motion entry the
 	 * one character `targetId` names), which republishes the live read model
 	 * synchronously; object entries are the store's own. */
-	function recordStudioAction(domain, run, targetId = null) {
-		const historyEntryId = crypto.randomUUID();
-		if (domain === "objects") {
-			const tick = lastObjectOpRef.current;
-			const bind = result => {
-				if (lastObjectOpRef.current === tick) return { result, historyEntryId: null };
+	function beginStudioAction(domain, targetId = null) {
+		if (studioActionGroupRef.current) throw new StudioProtocolError("TARGET_BUSY", "A command owns native history.");
+		const historyEntryId = crypto.randomUUID(), objects = storeRef.current.objects;
+		const history = charHistoryRef.current, past = [...history.past], future = [...history.future], states = [];
+		let objectSession, changed = false, firstEntry;
+		const session = {
+			touch(domain, targetId) {
+				if (domain === "objects") { objectSession ??= storeRef.current.beginCommand(); return; }
+				if (!states.some(row => row.domain === domain && row.targetId === targetId)) states.push({ domain, targetId, state: snapshotStudioDomain(domain, targetId) });
+			},
+			run(fn) {
+				const finish = result => {
+					const added = history.past.filter(entry => !past.includes(entry));
+					firstEntry ??= added[0]; changed ||= added.length > 0;
+					history.past = [...past]; history.future = [...future];
+					return result;
+				};
+				const result = objectSession ? objectSession.run(fn) : fn();
+				return result?.then ? result.then(finish) : finish(result);
+			},
+			commit() {
+				const objectsChanged = objectSession?.commit() ?? false;
 				liveStateRef.current.objects = storeRef.current.objects;
-				studioHistoryRef.current.set(historyEntryId, { domain: "objects", tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
-				return { result, historyEntryId };
-			};
-			// An import stores its bytes first and places its object when it settles;
-			// the binding refuses the receipt if anything else landed meanwhile.
-			const result = run();
-			return typeof result?.then === "function" ? result.then(bind) : bind(result);
+				const compound = states.length > 1 || (states.length > 0 && objectsChanged);
+				if (changed || (compound && objectsChanged)) {
+					const tick = ++opClockRef.current, saved = states[0];
+					const studio = compound ? { domain: "compound", state: states, objectsChanged } : saved;
+					history.past.push({ tick, snapshot: firstEntry?.snapshot ?? snapshotCast(true), studio: { ...studio, historyEntryId, objects: storeRef.current.objects } });
+					history.past = history.past.slice(-HISTORY_LIMIT); history.future = [];
+					studioHistoryRef.current.set(historyEntryId, { tick, domain: studio.domain, ...(objectsChanged ? { before: objects } : {}) });
+				} else if (objectsChanged) studioHistoryRef.current.set(historyEntryId, { domain: "objects", before: objects, tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
+				changed ||= objectsChanged;
+				studioActionGroupRef.current = null;
+				return { historyEntryId: changed ? historyEntryId : null };
+			},
+			cancel({ restore = true } = {}) {
+				objectSession?.cancel();
+				if (restore) {
+					for (const row of [...states].reverse()) publishStudioDomain(row.domain, row.targetId, row.state);
+					history.past = past; history.future = future;
+				}
+				studioActionGroupRef.current = null;
+			},
+		};
+		session.touch(domain, targetId); studioActionGroupRef.current = session;
+		return session;
+	}
+	function recordStudioAction(domain, run, targetId = null, nested = false) {
+		if (nested && studioActionGroupRef.current) {
+			const session = studioActionGroupRef.current; session.touch(domain, targetId);
+			const result = session.run(run), done = result => ({ result, historyEntryId: null });
+			return result?.then ? result.then(done) : done(result);
 		}
-		const tick = opClockRef.current, objects = storeRef.current.objects, state = snapshotStudioDomain(domain, targetId);
-		const result = run(), top = charHistoryRef.current.past.at(-1);
-		if (!top || top.tick <= tick || top.studio) return { result, historyEntryId: null };
-		top.studio = { domain, targetId, historyEntryId, objects, state };
-		studioHistoryRef.current.set(historyEntryId, { tick: top.tick, domain });
-		return { result, historyEntryId };
+		const session = beginStudioAction(domain, targetId);
+		const done = result => ({ result, ...session.commit() });
+		const failed = error => { session.cancel(); throw error; };
+		try { const result = session.run(run); return result?.then ? result.then(done, failed) : done(result); }
+		catch (error) { return failed(error); }
+	}
+	function publishStudioDomain(domain, targetId, state) {
+		if (domain === "shot") { liveStateRef.current.shots = state.shots; setShots(state.shots); publishStudioCamera(state.camera, state.manual); }
+		else if (domain === "stage") publishStudioStage(state.stage);
+		else if (domain === "cast") { publishStudioCharacters(state.characters); syncStudioLayerBuffer(state.characters); }
+		else publishStudioMotion(targetId, state);
+	}
+	function isStudioHistoryRetained(receipt) {
+		const id = receipt?.undo?.historyEntryId, entry = studioHistoryRef.current.get(id);
+		if (!entry) return false;
+		const retained = (!entry.before || storeRef.current.hasHistoryState(entry.before)) && (entry.domain === "objects"
+			|| [...charHistoryRef.current.past, ...charHistoryRef.current.future].some(row => row.studio?.historyEntryId === id));
+		if (!retained) studioHistoryRef.current.delete(id);
+		return retained;
 	}
 	function publishStudioMotion(targetId, state) {
 		const current = readStudioState();
@@ -12592,8 +12649,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		// instead of hiding older Studio history behind the traversal tick.
 		if (!top?.studio || top.studio.objects !== storeRef.current.objects) return false;
 		const entry = top.studio;
-		to.push({ ...top, studio: { ...entry, state: snapshotStudioDomain(entry.domain, entry.targetId) } }); from.pop();
-		if (entry.domain === "shot") {
+		const state = entry.domain === "compound" ? entry.state.map(row => ({ ...row, state: snapshotStudioDomain(row.domain, row.targetId) })) : snapshotStudioDomain(entry.domain, entry.targetId);
+		if (entry.objectsChanged) { if (redo) storeRef.current.redo(); else storeRef.current.undo(); }
+		to.push({ ...top, studio: { ...entry, objects: storeRef.current.objects, state } }); from.pop();
+		if (entry.domain === "compound") { for (const row of [...entry.state].reverse()) publishStudioDomain(row.domain, row.targetId, row.state); }
+		else if (entry.domain === "shot") {
 			liveStateRef.current.shots = entry.state.shots; setShots(entry.state.shots); publishStudioCamera(entry.state.camera, entry.state.manual);
 		} else if (entry.domain === "stage") publishStudioStage(entry.state.stage);
 		else if (entry.domain === "cast") { publishStudioCharacters(entry.state.characters); syncStudioLayerBuffer(entry.state.characters); }
@@ -12604,9 +12664,10 @@ function resizePromptClip(id, edge, rawFrame) {
 	function commitStudioDraft(payload) {
 		const historyEntryId = crypto.randomUUID();
 		if (payload.domain === "objects") {
+			const before = storeRef.current.objects;
 			storeRef.current.applyAtomic(() => payload.draft);
 			liveStateRef.current.objects = storeRef.current.objects;
-			studioHistoryRef.current.set(historyEntryId, { domain: "objects", tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
+			studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
 		} else {
 			recordStudioHistory(payload.domain, null, historyEntryId);
 			if (payload.domain === "stage") publishStudioStage(payload.draft);
@@ -12766,7 +12827,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			if (!prior || prior.stamp !== stamp) studioIkStampsRef.current.set(id, { stamp, revision: (prior?.revision ?? 0) + 1 });
 			return studioIkStampsRef.current.get(id).revision;
 		},
-		isRetained: receipt => Boolean(receipt?.undo && studioHistoryRef.current.has(receipt.undo.historyEntryId)),
+		isRetained: isStudioHistoryRetained,
 		canUndo: receipt => {
 			const entry = receipt?.undo && studioHistoryRef.current.get(receipt.undo.historyEntryId);
 			if (!entry || receipt.revision.after !== sceneRevisionRef.current) return false;
@@ -12774,7 +12835,10 @@ function resizePromptClip(id, edge, rawFrame) {
 				entry.tick === charHistoryRef.current.past.at(-1)?.tick && entry.tick > lastObjectOpRef.current;
 		},
 		actions: () => studioActionsRef.current,
-		recordAction: recordStudioAction,
+		recordAction: recordStudioAction, beginAction: beginStudioAction,
+		captureToasts: listener => { toastSinkRef.current.add(listener); return () => toastSinkRef.current.delete(listener); },
+		showRefusal: setToast,
+		emitCommandEvent: detail => window.dispatchEvent(new CustomEvent("cozyclay:command", { detail })),
 	};
 	studioActionHandlersRef.current = {
 		// Shots and objects come from the synchronously published read model, so
@@ -12800,13 +12864,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			falMotion: { enabled: falMotionEnabled, status: falMotion.status, dailyRemaining: falMotion.dailyRemaining ?? null },
 		}),
 		addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, setTimelineShotRange, moveTimelineShot,
-		// Answers the toasts the editor showed while (not) starting the generation.
-		runAllPromptBlocks: () => {
-			const shown = [];
-			toastSinkRef.current = shown;
-			try { runAllPromptBlocks(); } finally { toastSinkRef.current = null; }
-			return shown;
-		},
+		runAllPromptBlocks,
 		duplicateSelectedSceneObject,
 		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, setWaypointMode,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, attachSceneObject, setShotCameraRail, clearShotCameraRail,
@@ -12814,7 +12872,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument,
 		afterRender: () => new Promise(resolve => renderWaitersRef.current.push(resolve)),
 		saveProject, projectFileGranted: async () => (await queryHandlePermission(projectHandleRef.current)) === "granted",
-		importAsset: args => liveHandlersRef.current.import_asset(args), fetchImportSource,
+		importAsset: (args, context) => liveHandlersRef.current.import_asset(args, context), fetchImportSource,
 		setAiShotMode: setMode, setAiImageModel: setImageModel, generate, generateFalMotion,
 	};
 	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionHandlersRef);
@@ -12830,8 +12888,9 @@ function resizePromptClip(id, edge, rawFrame) {
 		};
 		try {
 			// A long-running action answers with a promise that refuses the same way.
-			const result = studioActionsRef.current.run(id, args);
-			return typeof result?.then === "function" ? result.catch(refused) : result;
+			const result = studioBindingRef.current.bus.run(id, args, { origin: "ui" });
+			const answer = receipt => receipt.ok ? receipt : null;
+			return typeof result?.then === "function" ? result.then(answer, refused) : answer(result);
 		} catch (error) {
 			return refused(error);
 		}

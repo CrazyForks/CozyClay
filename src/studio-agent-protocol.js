@@ -27,7 +27,7 @@ export const STUDIO_ERROR_CODES = Object.freeze([
 	"INVALID_ARGUMENT", "INVALID_CONTEXT", "INVALID_IDENTITY", "INVALID_TURN_ID", "INVALID_SESSION_ID", "INVALID_RECEIPT", "INVALID_RANGE", "INVALID_REQUEST",
 	"UNKNOWN_TOOL", "UNKNOWN_VARIANT", "DUPLICATE_NAME", "CONTEXT_LIMIT", "CONTEXT_TOO_LARGE", "AMBIGUOUS_TARGET", "AMBIGUOUS_BASIS", "TARGET_NOT_READY", "TARGET_BUSY",
 	"STALE_TARGET", "STALE_SCENE", "STALE_ENVIRONMENT", "STALE_CURSOR", "CAPABILITY_MISSING", "LIVE_HUB_UNAVAILABLE", "AUTH_REQUIRED", "GENERATION_LIMIT", "RATE_LIMITED", "BACKEND_UNAVAILABLE",
-	"VERIFICATION_FAILED", "REPAIR_REGRESSED", "CANCELLED", "UNCERTAIN_APPLY", "UNDO_CONFLICT",
+	"VERIFICATION_FAILED", "REPAIR_REGRESSED", "CANCELLED", "UNCERTAIN_APPLY", "UNDO_CONFLICT", "CONFIRMATION_REQUIRED", "TIMEOUT", "UNDO_EXPIRED",
 ]);
 export const STUDIO_VARIANTS = freezeStudioData({
 	selectionKinds: ["scene", "object", "character", "rig", "camera"], modes: ["scene", "camera", "motion"], shotModes: ["keys", "follow", "rail"],
@@ -191,7 +191,7 @@ const toolSchemas = {
 	generate_motion: object({ characterId: id, source }, { repair: { ...choices(["bounded", "none"]), default: "bounded" } }),
 	verify_result: object({ checks: array(choices(["placement", "framing", "motion"]), 3, 1, true) }, { receiptId: id, targets: ids(), range: union(literal("whole_clip"), range), visual: { ...choices(["none", "frame", "contact_sheet"]), default: "none" } }),
 	undo_edit: object({ receiptId: id }),
-	run_action: object({ action: id }, { args: openObject }),
+	run_action: object({ action: id }, { args: openObject, confirmationToken: id }),
 };
 export const STUDIO_TOOL_SCHEMAS = freezeStudioData(toolSchemas);
 export const STUDIO_CATALOGUE = freezeStudioData(STUDIO_TOOL_FAMILIES.map(name => ({ name, slice: 1, parameters: toolSchemas[name] })));
@@ -263,6 +263,8 @@ const authoredReceipt = { ...receiptBase, authored: literal(true), undo };
 // A run_action receipt names the registered action and what it did.
 const actionFields = { action: id, summary: text(240) };
 const receiptVariants = {
+	completed: object({ ...receiptBase, status: literal("completed"), kind: choices(["job", "document", "transaction", "mutation"]) }, { ...actionFields, ...batchDetails, output: openObject, jobId: id, txId: id, nextHost: identity }),
+	started: object({ ...receiptBase, status: literal("started"), kind: literal("job"), jobId: id, authored: literal(false), undo: literal(null) }, { ...actionFields }),
 	applied: object({ ...authoredReceipt, status: literal("applied") }, { mutated: literal(true), ops: opResults, ...batchDetails, ...actionFields }),
 	partial: object({ ...authoredReceipt, status: literal("partial"), ops: opResults }, { mutated: literal(true), ...batchDetails }),
 	noop: object({ ...receiptBase, status: literal("noop"), authored: literal(false), mutated: literal(false), undo: literal(null) }, { ops: opResults, ...actionFields }),
@@ -279,7 +281,7 @@ const receiptSchema = union(...Object.values(receiptVariants));
 const failureSchema = object({ ok: literal(false), commandId: id, host: identity, code: choices(STUDIO_ERROR_CODES), phase: choices(["admission", "execution", "prepare", "verify", "repair", "commit", "reconcile", "undo"]),
 	affectedIds: ids(100, 0), expectedTargets: array(guardSchema, 24), currentTargets: array(guardSchema, 24), mutated: union(bool, literal("unknown")),
 	preserved: object({ authoredState: choices(["unchanged", "changed", "unknown"]) }), recovery: object({ action: choices(["none", "inspect", "retry", "new_intent", "reconcile", "sign_in"]) }, { retryAllowed: bool }),
-}, { message: text(500), candidates: array(object({ id, kind: choices(["object", "character", "rig"]), position: nullable(vec3) }), 5) });
+}, { message: text(500), jobId: id, txId: id, candidates: array(object({ id, kind: choices(["object", "character", "rig"]), position: nullable(vec3) }), 5) });
 
 // These are JSON Schema data, not validators with hidden browser dependencies.
 // x-studio-range is the sole relational schema annotation: end > start.
@@ -508,7 +510,12 @@ export function validateReceipt(value) {
 		if (r.status === "partial" && !dropped) fail("INVALID_RECEIPT", "Partial status requires at least one dropped path.");
 		if (r.status === "noop" && r.ops.some(op => op.status === "applied")) fail("INVALID_RECEIPT", "A noop cannot report an applied operation.");
 	}
-	if (r.status === "noop" || r.status === "transient") {
+	if (r.status === "started" || r.status === "completed") {
+		if (r.revision.after < r.revision.before && !r.nextHost) fail("INVALID_RECEIPT", "Completion revisions must not move backwards in one document.");
+		if (r.status === "started" && (r.authored || r.undo || r.revision.before !== r.revision.after)) fail("INVALID_RECEIPT", "Started jobs cannot claim an authored commit.");
+		if (r.kind === "mutation" && (!r.authored || !r.undo || r.revision.after <= r.revision.before || !r.delta.length)) fail("INVALID_RECEIPT", "A completed composite mutation needs retained undo and advancing revision evidence.");
+		if (r.undo && (!r.authored || !r.affectedIds.length)) fail("INVALID_RECEIPT", "An undo entry requires an authored result and affected targets.");
+	} else if (r.status === "noop" || r.status === "transient") {
 		if (r.authored || r.undo !== null || r.revision.before !== r.revision.after) fail("INVALID_RECEIPT", "Non-authored operations cannot create history or advance authored revision.");
 		if (r.status === "noop" && (r.mutated !== false || r.delta.length)) fail("INVALID_RECEIPT", "Noop must prove no mutation.");
 		if (r.status === "transient" && (!r.view || r.view.after < r.view.before || !r.delta.length)) fail("INVALID_RECEIPT", "Transient receipt requires view revisions and actual readback.");
@@ -526,6 +533,6 @@ export function validateReceipt(value) {
 		if (previous !== frameCount || r.installed.durationSeconds !== frameCount / 24 || r.verification.range.startFrame !== 0 || r.verification.range.endFrameExclusive !== frameCount || r.verification.evaluatedFrames > frameCount) fail("INVALID_RECEIPT", "Installed schedule and verification coverage disagree.");
 		if (r.verification.status === "verified" && r.verification.evaluatedFrames !== frameCount) fail("INVALID_RECEIPT", "Verified motion requires whole-clip coverage.");
 		if (r.verification.status === "unverified" && r.explicitUnverifiedAcceptance !== true && r.acceptance !== "advisory-policy") fail("INVALID_RECEIPT", "Unverified installation requires explicit user or advisory-policy acceptance.");
-	} else if (r.installed || r.verification || r.jobId || r.artifactId || r.repairs || r.explicitUnverifiedAcceptance !== undefined) fail("INVALID_RECEIPT", "Installation evidence is exclusive to installed receipts.");
+	} else if (r.installed || r.verification || (r.jobId && !["started", "completed"].includes(r.status)) || r.artifactId || r.repairs || r.explicitUnverifiedAcceptance !== undefined) fail("INVALID_RECEIPT", "Installation evidence is exclusive to installed receipts.");
 	return freezeStudioData(r);
 }

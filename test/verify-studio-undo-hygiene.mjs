@@ -22,6 +22,7 @@ import {
 import { createProjectDocument, readProjectDocument } from "../src/project.js";
 import { createSceneHistoryStore } from "../src/scene-history.js";
 import { copyPhysicsKeys } from "../src/ardy/physics-review.js";
+import { HISTORY_LIMIT } from "../src/history.js";
 
 const source = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 const parsed = parseSync("App.jsx", source);
@@ -50,6 +51,7 @@ const ref = (current) => ({ current });
 function fixture() {
 	const characters = [createCharacterEntry({ id: "actor", x: 0, z: 0 }, 0)];
 	const scope = {
+		HISTORY_LIMIT,
 		keyLight: createKeyLight(null),
 		environmentImage: null,
 		environment: "a sunlit modern living room",

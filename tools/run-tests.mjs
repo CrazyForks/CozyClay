@@ -450,6 +450,9 @@ if (!mcpDepsInstalled) {
 
 const { listOnly, scope, jobs } = parseArguments(process.argv.slice(2));
 const inventory = [...verificationFiles("test"), ...verificationFiles("mcp"), ...EXTRA_INVENTORY].sort();
+for (const file of inventory) {
+	if (/^test\/bus\/verify-.*\.mjs$/.test(file)) categories.set(file, { kind: "node", reason: "command bus contract verification" });
+}
 const unclassified = inventory.filter((file) => !categories.has(file));
 const stale = [...categories.keys()].filter((file) => !inventory.includes(file));
 if (unclassified.length > 0 || stale.length > 0) {

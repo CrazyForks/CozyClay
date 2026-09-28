@@ -60,7 +60,7 @@ export const STUDIO_ACTIONS = freezeStudioData([
 		description: "Move a shot's start and end to a half-open frame range. Edges are clamped to the timeline and refused where they would overlap another shot; the receipt's delta shows the range that landed." },
 	{ id: "shot.reorder", label: "Move shot", kind: "mutation", undoDomain: "shot", input: input({ ...shotId, startFrame: frame }),
 		description: "Move a shot in time to start at startFrame, keeping its length and camera keys. Refused (a noop) where it would overlap another shot." },
-	{ id: "motion.generateAllBlocks", label: "Generate all blocks", kind: "job", generation: "motion", input: input(),
+	{ id: "motion.generateAllBlocks", label: "Generate all blocks", kind: "job", generation: "motion", domain: "motion", background: true, input: input(),
 		description: "Generate the active character's motion from all of its prompt blocks, like the timeline's Generate all blocks button. It starts a job and returns status \"started\"; the take lands in the editor when the job finishes. Counts as the one motion generation of this message." },
 	{ id: "character.addWaypoint", label: "Add root waypoint", kind: "mutation", undoDomain: "cast", input: input({ ...characterId, position: floorPoint }, { frame: waypointFrame }),
 		description: `Pin a character's root path: at frame, the character's root stands at position (world x/z metres). Frame 0 is the character's own spot, so pins start at frame 1 and each frame holds one pin. Omit frame to pace the pin at a walk (1.4 m/s) from the previous one. ${WAYPOINT_RULES} Read paths with inspect_studio { scope: "motion" }.` },
@@ -92,7 +92,7 @@ export const STUDIO_ACTIONS = freezeStudioData([
 		description: "Show a composition guide over the shot frame: rule of thirds, golden ratio, center cross, safe areas, or off. Overlay only, never in exported pixels; a viewer setting that is never undone." },
 	{ id: "view.setInset", label: "Top-View inset", kind: "transient", input: input({ collapsed: { type: "boolean" } }),
 		description: "Fold (collapsed: true) or unfold the Top-View inset pane over the viewport. A viewer setting that is never undone." },
-	{ id: "export.shotVideo", label: "Export video (mp4)", kind: "job", timeoutMs: 300_000, input: input({}, shotId),
+	{ id: "export.shotVideo", exposure: "confirm", confirmationReason: "Exporting writes a video file outside the Studio.", label: "Export video (mp4)", kind: "job", timeoutMs: 300_000, input: input({}, shotId),
 		description: "Record a shot to an MP4 (camera move and character motion, no editor chrome), like the Export menu's Video (mp4), and ask the browser to download it. With shotId it records that shot's own range; without it, what the menu records: the whole take when there is motion, else the shot under the playhead (else the first shot), keyed from the current camera if it has no keys. Waits until the file is encoded (up to 5 minutes) and answers status \"completed\" with output.fileName and output.frameCount. One export at a time; not a motion generation." },
 	{ id: "scene.create", label: "New scene", kind: "document", input: input(),
 		description: `Add an empty scene (named SCENE 01, SCENE 02, ...) after the others and open it, like the scene menu's New scene. ${SCENE_MOVES} ${NOT_UNDOABLE}` },
@@ -100,11 +100,11 @@ export const STUDIO_ACTIONS = freezeStudioData([
 		description: `Copy a scene (objects, shots, cast and stage) right after it and open the copy, like the Hierarchy scene menu's Duplicate. ${SCENE_MOVES} ${NOT_UNDOABLE}` },
 	{ id: "scene.rename", label: "Rename scene", kind: "document", input: input({ ...sceneId, name: { type: "string", minLength: 1, maxLength: 240 } }),
 		description: `Rename a scene; a name another scene already has gets a number. ${NOT_UNDOABLE}` },
-	{ id: "scene.delete", label: "Delete scene", kind: "document", input: input(sceneId),
+	{ id: "scene.delete", exposure: "confirm", confirmationReason: "Deleting a scene cannot be undone.", label: "Delete scene", kind: "document", input: input(sceneId),
 		description: `Delete a scene and everything in it, like the Hierarchy scene menu's Delete; delete only a scene the user asked to delete. The last scene cannot be deleted. Deleting the open scene opens its neighbour. ${SCENE_MOVES} ${NOT_UNDOABLE}` },
 	{ id: "scene.switch", label: "Open scene", kind: "document", input: input(sceneId),
 		description: `Open another scene of the project, like the scene pill's menu; the scene being left keeps its state. ${SCENE_MOVES}` },
-	{ id: "project.save", label: "Save project", kind: "document", input: input(),
+	{ id: "project.save", exposure: "confirm", confirmationReason: "Saving may overwrite a file or open a file picker.", label: "Save project", kind: "document", input: input(),
 		description: "Save the whole project to its current file, like the Project menu's Save Project, and answer status \"completed\" with output.fileName. A browser file picker opens only from the user's own click, so it is refused, with the reason, when the project has no file yet this session or the browser must re-grant access to it; ask the user to press Save Project once. An unnamed project opens the Save dialog for the user to name it. Browsers without file access download the project file instead." },
 	{ id: "asset.import", label: "Import asset", kind: "mutation", undoDomain: "objects",
 		input: input({ source: { type: "string", minLength: 1, maxLength: 8_000_000, pattern: "^(data:|https?://)" }, name: { type: "string", minLength: 1, maxLength: 120 },
@@ -116,7 +116,7 @@ export const STUDIO_ACTIONS = freezeStudioData([
 		description: "Prepare the Studio's Send-to-AI package for the shot under the playhead (else the current camera): the prompt for an external image or video model, written from the shot's camera, cast, poses, environment and style, plus reference frames rendered from the shot camera (its first and last camera key when it has keys). No AI service is called. mode \"image\" is a still, \"video\" a shot with its camera move; model is the image model the prompt is written for (image mode only). Each omitted choice keeps the Studio's current one; a given one becomes it. The Studio opens its result panel, where the user copies the prompt and downloads the frames; the frame images stay there and are not in the answer. Answers status \"completed\" with output.prompt, mode, modelLabel, shot (id, name, range), aspectRatio, cameraMode and referenceFrames (how many frames the panel shows). Changes nothing in the scene; not a motion generation." },
 	// The instruction leads the H3 prompt, which the motion API caps at 4000
 	// characters with its camera-lock text (about 225) appended.
-	{ id: "motion.generateFromVideo", label: "Generate motion (AI video)", kind: "job", generation: "motion", timeoutMs: 300_000,
+	{ id: "motion.generateFromVideo", exposure: "confirm", confirmationReason: "AI video motion uses a paid external generation.", label: "Generate motion (AI video)", kind: "job", generation: "motion", timeoutMs: 300_000,
 		input: input({ instruction: { type: "string", minLength: 1, maxLength: 3700 } }),
 		description: "Make the active character perform instruction through a hosted AI video model (Fal H3 Max Turbo, 480P), like the agent panel's Generate motion button. It sends the character's pose frame (pose A from the Fal card, else a fresh capture from the shot camera) with the instruction to the hosted model, and each run spends one of the account's daily AI video generations. Run it only when the user explicitly asked for AI-video motion; for ordinary motion use generate_motion or motion.generateAllBlocks. The capture needs the character's full body inside the shot frame and shaded part colours (view.setPartColours { mode: \"shaded\" }); a prompt the user hand-edited in the Fal card is sent instead of instruction. Waits for the clip (up to 5 minutes) and answers status \"completed\" with output.videoUrl, resolution, durationSeconds, ingested, frames, fps and dailyRemaining. The clip is ingested as Video capture footage and the timeline takes its length and frame rate; no take is installed until GVHMR extraction runs on it in the Video capture panel. Counts as the one motion generation of this message." },
 ]);
@@ -129,6 +129,11 @@ const fail = (code, message) => { throw new StudioProtocolError(code, message); 
  * person. A refusal without one stays silent in the UI. */
 export function studioActionRefusal(code, message, uiMessage) {
 	return Object.assign(new StudioProtocolError(code, message), { uiMessage });
+}
+// A localized toast producer is evaluated twice, without showing it twice:
+// once for the existing UI and once in English for command evidence.
+export function resolveStudioToast(value, isKo, ko) {
+	return typeof value === "function" ? { uiMessage: value(isKo, ko), message: value(false, en => en) } : { uiMessage: value, message: value };
 }
 const unknown = (id, known) => fail("INVALID_ARGUMENT", `Unknown Studio action "${id}". Known actions: ${known.join(", ")}. List them with inspect_studio { scope: "actions" }.`);
 
@@ -159,30 +164,39 @@ export function createStudioActionRegistry({ readState } = {}) {
 			if (entry.input?.type !== "object" || !entry.input.properties || !Array.isArray(entry.input.required)) throw new Error(`Studio action ${entry.id} needs an object input schema.`);
 			if (typeof entry.available !== "function") throw new Error(`Studio action ${entry.id} needs available(state).`);
 			if (typeof entry.run !== "function") throw new Error(`Studio action ${entry.id} needs run(args).`);
-			entries.set(entry.id, Object.freeze({ ...entry }));
+			if (entry.timeoutMs !== undefined && (!Number.isSafeInteger(entry.timeoutMs) || entry.timeoutMs < 1 || entry.timeoutMs > 300_000)) throw new Error(`Studio action ${entry.id} timeoutMs must be 1..300000.`);
+			if (entry.exposure !== undefined && !["open", "confirm", "ui-only"].includes(entry.exposure)) throw new Error(`Studio action ${entry.id} has an invalid exposure.`);
+			entries.set(entry.id, Object.freeze({ exposure: "open", ...entry }));
 			return registry;
 		},
 		get(id) { return entries.get(id) ?? unknown(id, [...entries.keys()]); },
 		ids() { return [...entries.keys()]; },
+		state() { return readState?.(); },
 		/** Available actions carry their description and input schema;
 		 * unavailable ones carry the reason instead of arguments. */
 		list(state = readState?.()) {
 			return [...entries.values()].map(entry => {
 				const verdict = availability(entry, state);
-				const row = { id: entry.id, label: entry.label, kind: entry.kind, description: entry.description };
+				const row = { id: entry.id, label: entry.label, kind: entry.kind, description: entry.description, exposure: entry.exposure };
 				return verdict === true ? { ...row, available: true, input: entry.input } : { ...row, available: false, reason: verdict };
 			});
 		},
-		run(id, args = {}) {
+		prepare(id, args = {}) {
 			const entry = registry.get(id);
 			const validated = validateStudioSchema(entry.input, args ?? {}, "INVALID_ARGUMENT", "$.args");
 			if (readState) {
 				const verdict = availability(entry, readState());
 				if (verdict !== true) fail("TARGET_NOT_READY", verdict);
 			}
-			const result = entry.run(validated);
-			// Long-running work answers with a promise, checked once it settles.
-			return typeof result?.then === "function" ? result.then(value => settled(id, value)) : settled(id, result);
+			return { entry, args: validated };
+		},
+		invoke(entry, args, context) {
+			const result = entry.run(args, context);
+			return typeof result?.then === "function" ? result.then(value => settled(entry.id, value)) : settled(entry.id, result);
+		},
+		run(id, args = {}, context) {
+			const prepared = registry.prepare(id, args);
+			return registry.invoke(prepared.entry, prepared.args, context);
 		},
 	};
 	return registry;

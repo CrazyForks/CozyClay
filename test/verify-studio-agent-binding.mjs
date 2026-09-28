@@ -28,6 +28,8 @@ import { TRAIL_EFFECTOR_JOINTS } from '../src/motion-trail.js';
 import { sampleAt } from '../src/sample-at.js';
 import { createShot, shotAtFrame, addShotAtFrame } from '../src/cuts.js';
 import * as studioActions from '../src/studio-actions.js';
+import { createCommandBus, withCommandHistory } from '../src/command-bus.js';
+import { HISTORY_LIMIT } from '../src/history.js';
 import { focalMmToFov, fovToFocalMm, IMAGE_MODELS, CUSTOM_MOVE, SUBJECT_HEIGHT_M, composePrompt, deriveShot } from '../src/shot.js';
 import { PART_COLOURS } from '../src/part-colours.js';
 import { buildH3MotionPrompt } from '../src/fal-motion-client.js';
@@ -106,7 +108,7 @@ function fixture(options={}) {
  const castOwner=createSemanticState(chars,v=>{values.characters=v;},markSemanticEdit,'characters');
  const shotsOwner=createSemanticState([],v=>{values.shots=v;},markSemanticEdit,'shots');
  const suppressObjectClock=ref(false);
- const store=ref(createSceneHistoryStore([], {onObjects(next){if(!suppressObjectClock.current)lastObject.current=++clock.current;values.objects=next;},onCommit(before,after){markSemanticEdit('objects',before,after);}}));
+ const store=ref(withCommandHistory(createSceneHistoryStore([], {onObjects(next){if(!suppressObjectClock.current)lastObject.current=++clock.current;values.objects=next;},onCommit(before,after){markSemanticEdit('objects',before,after);}})));
  const noPublish = name => value => {values[name]=typeof value==='function'?value(values[name]??0):value;};
  // The shot the Send-to-AI package describes: two camera keys (A and B) on the
  // shot under the playhead, and the render's reference-frame capture.
@@ -128,9 +130,9 @@ function fixture(options={}) {
   submitFalMotion:async request=>{stand.falSubmits.push(request);if(stand.falSubmitError)throw new Error(stand.falSubmitError);return {job:{id:'fal-job-1',status:'queued'},dailyRemaining:3};},
   waitForFalMotionJob:async(id,{onUpdate})=>{onUpdate({id,status:'running'});return structuredClone(stand.falFinished);},
   ingestFootage:async source=>{stand.ingested.push(source);return stand.ingestResult;}};
- const scope={THREE,cloneSkeleton,...protocol,...context,...commands,...objects,...ik,...playback,createStudioMotionCandidates,verifyInstalledTake:studioMotion.verifyInstalledTake,copyPhysicsKeys,physicsKeyStamp,sampleAt,shotAtFrame,focalMmToFov,fovToFocalMm,objectTransformAt,aimAt,forwardFrom,
+ const scope={THREE,cloneSkeleton,createCommandBus,HISTORY_LIMIT,...protocol,...context,...commands,...objects,...ik,...playback,createStudioMotionCandidates,verifyInstalledTake:studioMotion.verifyInstalledTake,copyPhysicsKeys,physicsKeyStamp,sampleAt,shotAtFrame,focalMmToFov,fovToFocalMm,objectTransformAt,aimAt,forwardFrom,
  liveStateRef:live,sceneRevisionRef:revision,charactersRef:characterRef,loadedLayerCharRef:ref(a.id),bufferRef:buffer,ikStateRef:state,ikStatesRef:layers,storeRef:store,
- charHistoryRef:history,opClockRef:clock,lastObjectOpRef:lastObject,studioHistoryRef:studioHistory,motionFullRef:ref(new Map()),
+ charHistoryRef:history,opClockRef:clock,lastObjectOpRef:lastObject,studioHistoryRef:studioHistory,studioActionGroupRef:ref(null),motionFullRef:ref(new Map()),
  store:store.current,suppressObjectClockRef:suppressObjectClock,studioBindingRef:ref(null),objectDeleteUndo:null,selectedSceneObjectId:null,
  liveWorkspaceIdRef:ref('workspace'),liveWorkspaceHandleRef:ref('handle'),studioDocumentEpochRef:ref('document'),activeSceneIdRef:ref('scene'),studioSceneEpochRef:ref('epoch'),
  look:ref({yaw:0,pitch:0}),shotCamRef:ref(camera),shotCameraPosRef:ref(null),manualCameraOverrideRef:ref(false),frameCountRef:ref(48),tlFrameRef:ref(0),
@@ -148,6 +150,7 @@ function fixture(options={}) {
  openMotionDb:async()=>({close(){}}),getMotion:async(db,id)=>motionStore.get(id.toLowerCase())??null,
  putMotion:async(db,record)=>{motionStore.set(record.motionId.toLowerCase(),record);for(const done of stored.splice(0))done(record);return record;}};
  for(const name of ['setTlFps','setProjectManifest','setCameraPos','setFovDeg','setCameraPresetId','setWaypoints','setPromptClips','setMotion','setCommittedIkEdits','setIkTick','setTlFrameCount','setToast','setActiveCharacterId','setSelectedHierarchyId','setTlFrame','setWorkflowMode','setLookThroughShot','setGridView','setAutoColor','setTlPlaying','setIkMode','setIkFocus','setKeyLight','setEnvironmentImage','setEnvironment','setStyle','setHasEnvSheet','setShotAspectKey','setSensorFormat','setMovePlaying','setPartColoursEnabled','setPartColoursMode','setGuideMode','setWorkspaceLayout','setInsetPos','setResult','setResultOpen','setCopied','setRecordedVideoName'])scope[name]=noPublish(name);
+ scope.setToast=value=>{values.setToast=studioActions.resolveStudioToast(value,Boolean(options.korean),scope.ko).uiMessage;};
  // App's render-time choice for the Send-to-AI package (its mode/imageModel state).
  Object.assign(scope,aiScope,{mode:'image',imageModel:'gpt_image_2'});
  // App's Fal state: locked for this account until a test enables it.
@@ -157,7 +160,7 @@ function fixture(options={}) {
  scope.setMotion=value=>{noPublish('setMotion')(value);for(const done of motionSet.splice(0))done(value);};
  scope.setScenes=noPublish('setScenes');
  scope.openScene=(scene,nextScenes)=>{scope.scenesRef.current=nextScenes;live.current.scenes=nextScenes;scope.activeSceneIdRef.current=scene.id;scope.studioSceneEpochRef.current=crypto.randomUUID();};
- const names=['restoreMotionRefs','createStudioAppBinding','readStudioCamera','readStudioState','publishStudioCamera','publishStudioStage','snapshotStudioDomain','publishStudioCharacters','syncStudioLayerBuffer','recordStudioHistory','publishStudioMotion','stepStudioHistory','undoScene','redoScene','commitStudioDraft','commitStudioMotion','studioBounds','operateStudio','snapshotExportRig','restoreExportRig','poseMemberAtFrame','beginPlaybackOn','leaveIkMode','sceneObjectWorldMatrix','createStudioAppActions','recordStudioAction','addTimelineShot','recordShotUndo','runStudioAction',
+ const names=['restoreMotionRefs','createStudioAppBinding','readStudioCamera','readStudioState','publishStudioCamera','publishStudioStage','snapshotStudioDomain','publishStudioCharacters','syncStudioLayerBuffer','recordStudioHistory','publishStudioMotion','stepStudioHistory','undoScene','redoScene','commitStudioDraft','commitStudioMotion','studioBounds','operateStudio','snapshotExportRig','restoreExportRig','poseMemberAtFrame','beginPlaybackOn','leaveIkMode','sceneObjectWorldMatrix','createStudioAppActions','recordStudioAction','beginStudioAction','publishStudioDomain','isStudioHistoryRetained','addTimelineShot','recordShotUndo','runStudioAction',
   'choosePartColours','setInsetCollapsed','expandInset','setShotCameraRail','clearShotCameraRail','changeActiveCamera','framingSessionOpen','attachSceneObject','setCharacterIkKey','removeCharacterIkKey','clearCharacterIkKeys','ikStateFor','editCharacterIkKeys','snapshotIkKeys',
   'recordCharacterUndo','validateWaypointAt','castMemberOf','readCharacterWaypoints','writeCharacterWaypoints','addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints',
   'switchSceneDocument','addSceneDocument','duplicateSceneDocument','renameSceneDocument','deleteSceneDocument',
@@ -216,12 +219,16 @@ function fixture(options={}) {
  const poses=[{id:'pose-rest',label:'Rest',bones:{}},{id:'pose-wave',label:'Wave',bones:{}}];
  const ports={revision,read:actual.readStudioState,bounds:actual.studioBounds,commit:actual.commitStudioDraft,commitMotion:actual.commitStudioMotion,operate:actual.operateStudio,loadArtifact:(...args)=>artifactLoader(...args),poses:()=>poses,
  ikRevision(id,stamp){const old=stamps.get(id);if(!old||old.stamp!==stamp)stamps.set(id,{stamp,revision:(old?.revision??0)+1});return stamps.get(id).revision;},
- isRetained:r=>Boolean(r?.undo&&studioHistory.current.has(r.undo.historyEntryId)),
+ isRetained:actual.isStudioHistoryRetained,
  canUndo(r){const entry=r?.undo&&studioHistory.current.get(r.undo.historyEntryId);if(!entry||r.revision.after!==revision.current)return false;return entry.domain==='objects'?entry.tick===lastObject.current&&entry.tick>=(history.current.past.at(-1)?.tick??0)&&entry.depth===store.current.depths().past:entry.tick===history.current.past.at(-1)?.tick&&entry.tick>lastObject.current;},
- undo:actual.undoScene,capture(){throw new Error('renderer capture requires browser');},actions:()=>registry,recordAction:actual.recordStudioAction};
- binding=actual.createStudioAppBinding(ports);currentBinding=binding;scope.studioBindingRef.current={stepHistory:actual.stepStudioHistory};binding.refresh();
+ undo:actual.undoScene,capture(){throw new Error('renderer capture requires browser');},actions:()=>registry,recordAction:actual.recordStudioAction,beginAction:actual.beginStudioAction,showRefusal:scope.setToast};
+ binding=actual.createStudioAppBinding(ports);currentBinding=binding;scope.studioBindingRef.current={stepHistory:actual.stepStudioHistory,get bus(){return binding.bus;}};binding.refresh();
  const host=()=>binding.refresh().host;
- const request=(name,args)=>({name,args,host:host(),commandId:crypto.randomUUID(),expectedRevision:binding.refresh().revision,expectedTargets:[...store.current.objects,...characterRef.current].map(c=>binding.guard(c.id))});
+ const confirmation=(name,args)=>{
+  if(name!=='run_action'||!registry.list().some(a=>a.id===args.action&&a.exposure==='confirm'&&a.available))return {};
+  try{return {confirmationToken:binding.bus.confirm(args.action,args.args)};}catch(error){if(error.code==='INVALID_ARGUMENT')return {};throw error;}
+ };
+ const request=(name,args)=>({name,args,host:host(),commandId:crypto.randomUUID(),expectedRevision:binding.refresh().revision,expectedTargets:[...store.current.objects,...characterRef.current].map(c=>binding.guard(c.id)),...confirmation(name,args)});
  const call=async(name,args)=>{const response=await dispatchLiveFrame(JSON.stringify({type:'cmd',id:crypto.randomUUID(),name,args}),binding.handlers);assert(response.ok, response.error);return response.value;};
  const motionRequest=()=>{const g=binding.guard(a.id);return {commandId:crypto.randomUUID(),binding:{host:host(),characterId:a.id,targetToken:g.token},jobId:crypto.randomUUID(),artifactId:'artifact',artifact:{artifactId:'artifact',url:'http://127.0.0.1:12345/ardy/motions/123456-abcdef'},schedule:protocol.compileStudioBeats({kind:'generate',durationSeconds:2,beats:[{text:'Stand'}]}),stagingPolicy:'preserve-target-anchor'};};
  // A React commit of the state the test sets (and the App's own setters left).
@@ -830,13 +837,13 @@ const implementations={
   assert.equal(copy.status,'completed',JSON.stringify(copy));assert.deepEqual(names(),['Fixture','Fixture 2','SCENE 01'],'the copy sits after its source');
   assert.equal(copy.host.sceneId,f.scope.scenesRef.current[1].id,'the copy opens');
   const renamed=await run('scene.rename',{sceneId:second.id,name:'Rooftop'});
-  assert.equal(renamed.status,'completed',JSON.stringify(renamed));assert.equal(renamed.host,undefined,'a rename keeps the open scene');
+  assert.equal(renamed.status,'completed',JSON.stringify(renamed));assert.deepEqual(renamed.host,f.host(),'a rename keeps the open scene');
   assert.deepEqual(names(),['Fixture','Fixture 2','Rooftop']);assert.deepEqual(renamed.affectedIds,[second.id]);
   const removed=await run('scene.delete',{sceneId:copy.host.sceneId});
   assert.equal(removed.status,'completed',JSON.stringify(removed));assert.deepEqual(names(),['Fixture','Rooftop']);
   assert.equal(removed.host.sceneId,second.id,'deleting the open scene opens its neighbour');
   const other=await run('scene.delete',{sceneId:'scene'});
-  assert.equal(other.status,'completed',JSON.stringify(other));assert.equal(other.host,undefined,'deleting another scene keeps the open one');
+  assert.equal(other.status,'completed',JSON.stringify(other));assert.deepEqual(other.host,f.host(),'deleting another scene keeps the open one');
   assert.equal(f.stand.renders,4);assert.equal(f.history.current.past.length,0,'scenes are outside the undo history');
   // Refusals reach the model in English and change nothing.
   const refused=async(action,args,code,pattern)=>{const r=await run(action,args);assert.equal(r.ok,false,JSON.stringify(r));assert.equal(r.code,code,JSON.stringify(r));assert.equal(r.mutated,false);assert.match(r.message??'',pattern,JSON.stringify(r));};
