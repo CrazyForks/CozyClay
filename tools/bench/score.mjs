@@ -121,16 +121,17 @@ function loadGt(dir) {
 		if (!pick) throw new Error(`${dir}: no camera.json/joints.json here or in a variant subdirectory`);
 		files = join(dir, pick);
 	}
-	const maskDir = [join(dir, "mask"), join(files, "mask")].find((d) => existsSync(d));
+	const maskDir = [join(dir, "mask"), join(files, "mask"), join(dirname(files), "mask")].find((d) => existsSync(d));
 	if (!maskDir) throw new Error(`${dir}: no mask/ directory`);
 	const read = (name) => JSON.parse(readFileSync(join(files, name), "utf8"));
-	return { dir, files, cameraPath: join(files, "camera.json"), camera: read("camera.json"), joints: read("joints.json"), meta: existsSync(join(files, "meta.json")) ? read("meta.json") : null, maskDir };
+	return { dir, files, cameraPath: join(files, "camera.json"), camera: read("camera.json"), joints: read("joints.json"), meta: existsSync(join(files, "meta.json")) ? read("meta.json") : null, sceneBox: existsSync(join(files, "scene.json")) ? read("scene.json").placement : null, maskDir };
 }
 
-async function render({ base, cdpPort, out, camera, transform, box, file, children }) {
+async function render({ base, cdpPort, out, camera, transform, box, sceneBox, file, children }) {
 	const args = [RENDER, "--out", out, "--no-video", "--camera", camera, "--url", base, "--cdp-port", String(cdpPort)];
 	if (transform && !isIdentityTransform(transform)) args.push("--transform", JSON.stringify(transform));
 	if (box) args.push("--box", JSON.stringify(box));
+	if (sceneBox) args.push("--scene-box", JSON.stringify(sceneBox));
 	args.push(file);
 	const child = spawnOwned(process.execPath, args, { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"] });
 	children.push(child);
@@ -180,7 +181,7 @@ async function main() {
 	const gtNpz = options.gtNpz ?? (gt.meta?.source?.path && existsSync(gt.meta.source.path) ? gt.meta.source.path : null);
 	try {
 		const base = options.url ?? await startVite({ root: ROOT, port: options.port, children });
-		const common = { base, cdpPort: options.cdpPort, camera: gt.cameraPath, box: options.box, children };
+		const common = { base, cdpPort: options.cdpPort, camera: gt.cameraPath, box: options.box, sceneBox: gt.sceneBox, children };
 		console.log(`[score] raw render of ${options.pred}`);
 		const raw = await render({ ...common, out: join(options.out, "render-raw"), transform: options.predTransform, file: options.pred });
 

@@ -35,6 +35,7 @@ const NODE_FILES = [
 	"test/verify-gvhmr-only.mjs",
 	"test/verify-extract-bench.mjs",
 	"test/verify-fit-bench.mjs",
+	"test/verify-cube-contact.mjs",
 	"test/ardy/verify-key-runs.mjs",
 	"test/ardy/verify-playback-skinning.mjs",
 	"test/ardy/verify-playback-clock.mjs",

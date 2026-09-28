@@ -166,6 +166,21 @@ export function installPageHelpers(supportValues, rigJoints, maskRgb, boxContact
 				shotCam: cam ? { zoom: cam.zoom, filmOffset: cam.filmOffset, view: cam.view, near: cam.near, far: cam.far } : null,
 			};
 		},
+		placeBox: async (b, offset) => {
+			const { id } = hook().sceneObject.place({ kind: "cube", x: b.x - offset.x, y: -offset.y, z: b.z - offset.z, rot: b.rot, name: "Bench contact cube" });
+			let scene = hook().rigA;
+			while (scene.parent) scene = scene.parent;
+			const find = () => { let found; scene.traverse(n => { if (n.userData.sceneObjectId === id) found = n; }); return found; };
+			const until = async predicate => {
+				const end = performance.now() + 10000;
+				while (!predicate()) { if (performance.now() > end) throw new Error("Studio cube placement did not settle"); await raf(); }
+			};
+			await until(find);
+			hook().sceneObject.update({ id, scaleX: b.sx, scaleY: b.sy, scaleZ: b.sz });
+			await until(() => { const n = find(); return n && Math.abs(n.scale.x - b.sx) < 1e-9 && Math.abs(n.scale.y - b.sy) < 1e-9 && Math.abs(n.scale.z - b.sz) < 1e-9; });
+			const n = find(); n.updateWorldMatrix(true, true);
+			return { id, position: n.position.toArray(), scale: n.scale.toArray(), yaw: n.rotation.y };
+		},
 		setOrientation: (R, kx, ky) => {
 			orientation = { R, kx, ky };
 		},
@@ -173,18 +188,18 @@ export function installPageHelpers(supportValues, rigJoints, maskRgb, boxContact
 		 * drawable vertex and joint of the frame, and with `box` the signed
 		 * distance of the closest skinned vertex to that box. `vertices: false`
 		 * skips the CPU skinning (joints only). */
-		sample: async (frame, { vertices: withVertices = true, box = null } = {}) => {
+		sample: async (frame, { vertices: withVertices = true, box = null, exportVertices = false } = {}) => {
 			if (!orientation) throw new Error("setOrientation first");
 			const rig = await settle(frame);
 			const joints = readJoints(rig);
-			if (!withVertices && !box) return { joints, support: null, vertexCount: 0, contact: null };
+			if (!withVertices && !box && !exportVertices) return { joints, support: null, vertexCount: 0, contact: null };
 			const vertices = rigVertices(rig);
 			const contact = box ? boxContactValues(vertices, box) : null;
 			const all = new Float64Array(vertices.length + joints.length);
 			all.set(vertices, 0);
 			all.set(joints, vertices.length);
 			const support = supportValues(all, orientation.R, orientation.kx, orientation.ky);
-			return { joints, support, vertexCount: vertices.length / 3, contact };
+			return { joints, support, vertexCount: vertices.length / 3, contact, ...(exportVertices ? { vertices: Array.from(vertices) } : {}) };
 		},
 		/** Render one timeline frame through the real export path and read the
 		 * joints of the exact pose it drew. `withColour: false` skips the

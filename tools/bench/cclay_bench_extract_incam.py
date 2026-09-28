@@ -28,6 +28,9 @@ import sys
 def main():
     runner_path = Path(sys.argv[1]).resolve()
     arguments = sys.argv[2:]
+    direct = "--bench-direct" in arguments
+    if direct:
+        arguments.remove("--bench-direct")
     if "--static-cam" not in arguments or "--f-mm" not in arguments:
         raise ValueError("bench camera evidence requires --static-cam and --f-mm")
     sys.path.insert(0, str(runner_path.parent))
@@ -36,8 +39,6 @@ def main():
     spec.loader.exec_module(runner)
     import numpy as np
     import torch
-    from gvhmr_fastpath import FastRuntime
-    from gvhmr_trajectory import trajectory_job
 
     capture = {}
     detach = runner.detach_to_cpu
@@ -59,9 +60,17 @@ def main():
     video, output = Path(arguments[0]), Path(arguments[1])
     root = Path(arguments[arguments.index("--out-root") + 1])
     sigma = float(arguments[arguments.index("--smooth-sigma") + 1]) if "--smooth-sigma" in arguments else 1.2
-    runtime = FastRuntime(runner, enabled=True)
-    with runtime.job(), trajectory_job(runner, video, root):
+    # Match the T2 condition's execution path as well as its detector flags.
+    # YOLO/direct must NOT gain production's trajectory correction or palette
+    # fast path merely because this launcher also captures camera evidence.
+    if direct:
         runner.main()
+    else:
+        from gvhmr_fastpath import FastRuntime
+        from gvhmr_trajectory import trajectory_job
+        runtime = FastRuntime(runner, enabled=True)
+        with runtime.job(), trajectory_job(runner, video, root):
+            runner.main()
     pred = capture["prediction"]
     cp, gp = pred["smpl_params_incam"], pred["smpl_params_global"]
     with np.load(output) as archive:

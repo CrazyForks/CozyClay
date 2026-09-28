@@ -7,7 +7,8 @@ import { CSKEL27_PARENTS } from "../src/ardy/cskel27.js";
 import { matMul, matToQuat, matTranspose } from "../src/ardy/convert.js";
 import { slerpQuat } from "../src/ardy/retime.js";
 import { motionArraysToNpzMembers, writeNpz } from "../tools/ardy/npz.mjs";
-import { parseArgs } from "../tools/bench/fit-bench.mjs";
+import { main as fitMain, parseArgs } from "../tools/bench/fit-bench.mjs";
+import { incamPlan } from "../tools/bench/fit/remote.mjs";
 import { axisAngleMatrix, cameraToWorld, registerCamera } from "../tools/bench/fit/camera.mjs";
 import { boxPenetration, fitContacts, resolveScene, segmentPenetratesBox, validateBoxes } from "../tools/bench/fit/contact.mjs";
 import { fitBody, jointsAt, matVec, readEndpoints, readMat, readMotion, regenerateJoints, sub, vec } from "../tools/bench/fit/motion.mjs";
@@ -100,6 +101,18 @@ for (let f = 0; f < motion.frames; f++) {
 assert.throws(() => parseArgs(["--input", "x", "--extract", "x", "--poses", "x", "--out", "x", "--motions", "../escape"]));
 assert.throws(() => parseArgs(["--input", "x", "--extract", "x", "--poses", "x", "--out", "x", "--window-seconds", "NaN"]));
 
+const cliArgs = ["--input", "x", "--extract", "x", "--poses", "x", "--out", "x"];
+assert.equal(parseArgs(cliArgs).baseCondition, "prod");
+assert.equal(parseArgs([...cliArgs, "--base-condition", "yolo-vitpose"]).baseCondition, "yolo-vitpose");
+assert.throws(() => parseArgs([...cliArgs, "--base-condition", "yolo-vitpose+fmm"]), /omit/);
+assert.throws(() => parseArgs([...cliArgs, "--base-condition", "unknown"]), /unknown condition/);
+const native = incamPlan("yolo-vitpose", { cameraFMm: 35, env: {} });
+assert.deepEqual(native.launcherArgs, ["--bench-direct"]);
+assert.deepEqual(native.plan.runnerArgs, ["--static-cam", "--f-mm", "35", "--detector", "yolo", "--keypoints", "vitpose", "--smooth-sigma", "3"]);
+const production = incamPlan("prod", { cameraFMm: 35, env: {} });
+assert.deepEqual(production.launcherArgs, []); assert.equal(production.plan.workerFields.trajectory, true);
+assert.throws(() => incamPlan("yolo-vitpose", { cameraFMm: 35, env: { CCLAY_EXTRACT_STATIC_CAM: "0" } }), /static camera/);
+
 // Exercise the real CLI surface with real archives, not mocked fitting. The
 // only substitute is a supplied incam archive, which is a supported CLI path.
 const scratch = mkdtempSync(join(tmpdir(), "cclay-fit-test-"));
@@ -129,5 +142,36 @@ try {
 	const f4 = readMotion(join(scratch, "out", "test", "F4", "motion.npz"));
 	close(f4.rootPos.slice(0, 3), a.rootPos); close(f4.rootPos.slice(-3), b.rootPos);
 	close(matMul(readMat(f4.rotMats), matTranspose(readMat(a.rotMats))).flat(), [1, 0, 0, 0, 1, 0, 0, 0, 1]);
+	// Skin/YOLO with missing +fmm: only remote inference is substituted. The
+	// runner selects paths, requests the matching condition and runs all fits.
+	const skin = join(scratch, "input/test/skin"), yolo = join(scratch, "t2/test/skin");
+	mkdirSync(skin, { recursive: true }); mkdirSync(join(yolo, "yolo-vitpose"), { recursive: true });
+	writeFileSync(join(skin, "camera.json"), JSON.stringify(camera));
+	writeNpz(join(yolo, "yolo-vitpose/motion.npz"), motionArraysToNpzMembers(motion));
+	let focalCalls = 0, cameraCalls = 0;
+	await fitMain(["--input", join(scratch, "input"), "--extract", join(scratch, "t2"), "--poses", poses, "--out", join(scratch, "skin-out"), "--motions", "test", "--variant", "skin", "--base-condition", "yolo-vitpose", "--host", "fixture-host"], {
+		missingFocal: async request => {
+			focalCalls++; assert.equal(request.variant, "skin"); assert.equal(request.baseCondition, "yolo-vitpose"); assert.equal(request.motion, "test");
+			mkdirSync(join(yolo, "yolo-vitpose+fmm")); writeNpz(join(yolo, "yolo-vitpose+fmm/motion.npz"), motionArraysToNpzMembers(motion));
+		},
+		cameraEvidence: async request => {
+			cameraCalls++; assert.equal(request.baseCondition, "yolo-vitpose"); assert.equal(request.video, join(skin, "video.mp4"));
+			writeFileSync(request.output, readFileSync(join(cam, "incam.npz"))); return { supplied: true };
+		},
+	});
+	assert.equal(focalCalls, 1); assert.equal(cameraCalls, 1);
+	for (const [i, condition] of ["yolo-vitpose", "yolo-vitpose+fmm"].entries()) assert.deepEqual(readFileSync(join(scratch, "skin-out/test", `F${i}`, "motion.npz")), readFileSync(join(yolo, condition, "motion.npz")));
+	assert.equal(JSON.parse(readFileSync(join(scratch, "skin-out/test/result.json"))).baseCondition, "yolo-vitpose");
+	// The Python launcher's real control flow must strip the bench-only flag
+	// and avoid worker wrappers for direct YOLO. Stop at runner.main: numeric
+	// camera extraction is exercised separately on the actual GPU installation.
+	const runner = join(scratch, "runner.py"), probe = join(scratch, "probe.json");
+	writeFileSync(runner, `import json, sys\ndetach_to_cpu = lambda x: x\ncompute_T_ayfz2ay = lambda x: x\ndef main():\n    json.dump({'argv':sys.argv,'wrappers':sys.wrapper_calls},open(${JSON.stringify(probe)},'w'))\n    raise RuntimeError('MAIN_REACHED')\n`);
+	for (const direct of [false, true]) {
+		const script = `import sys, types, runpy\nfrom contextlib import contextmanager\nsys.wrapper_calls=[]\nsys.modules['numpy']=types.ModuleType('numpy')\nsys.modules['torch']=types.ModuleType('torch')\n@contextmanager\ndef job(*args):\n    sys.wrapper_calls.append('job')\n    yield\nclass Runtime:\n    def __init__(self,*args,**kwargs): pass\n    def job(self): return job()\na=types.ModuleType('gvhmr_fastpath'); a.FastRuntime=Runtime; sys.modules[a.__name__]=a\nb=types.ModuleType('gvhmr_trajectory'); b.trajectory_job=job; sys.modules[b.__name__]=b\nsys.argv=${JSON.stringify(["tools/bench/cclay_bench_extract_incam.py", runner, "video.mp4", "output.npz", ...(direct ? ["--bench-direct"] : []), "--static-cam", "--f-mm", "35", "--out-root", scratch, "--detector", direct ? "yolo" : "palette", "--keypoints", direct ? "vitpose" : "auto"])}\ntry: runpy.run_path(sys.argv[0],run_name='__main__')\nexcept RuntimeError as e:\n    if str(e) != 'MAIN_REACHED': raise\n`;
+		const result = spawnSync("python3", ["-c", script], { encoding: "utf8" }); assert.equal(result.status, 0, result.stderr);
+		const observed = JSON.parse(readFileSync(probe)); assert.equal(observed.argv.includes("--bench-direct"), false); assert.equal(observed.wrappers.length, direct ? 0 : 2);
+		assert.equal(observed.argv[observed.argv.indexOf("--detector") + 1], direct ? "yolo" : "palette");
+	}
 } finally { rmSync(scratch, { recursive: true, force: true }); }
 console.log(`PASS fit bench: ${checks} numeric checks plus camera/body/pin/contact/box/CLI/endpoint-isolation assertions`);

@@ -10,13 +10,16 @@ import { registerCamera } from "./fit/camera.mjs";
 import { fitContacts, validateBoxes } from "./fit/contact.mjs";
 import { fitBody, readEndpoints, readMotion } from "./fit/motion.mjs";
 import { pinEndpoints } from "./fit/pin.mjs";
-import { extractIncam } from "./fit/remote.mjs";
+import { extractIncam, extractMissingFocal } from "./fit/remote.mjs";
+import { parseCondition } from "./extract-bench-lib.mjs";
 
 export const USAGE = `usage: node tools/bench/fit-bench.mjs --input <gt-render-root> --extract <t2-root>
        --poses <user-ab-npz-dir> --out <dir> [options]
 
   --motions walk,run     default: all motion dirs in --input
   --variant shaded      one variant per output root (default shaded)
+  --base-condition prod T2 baseline without +fmm (e.g. yolo-vitpose); missing +fmm
+                        is extracted serially with --host and the known camera
   --host user@box        extract missing camera evidence; CCLAY_EXTRACT_HOST fallback
   --incam-root <dir>     use supplied <dir>/<motion>/incam.npz instead of GPU
   --window-seconds 0.5   smooth A/B pin falloff, capped at half the clip
@@ -26,7 +29,7 @@ export const USAGE = `usage: node tools/bench/fit-bench.mjs --input <gt-render-r
   --help                this text
 
 Writes <out>/<motion>/F0..F5/motion.npz plus result.json and incam.npz.
-F0/F1 copy T2 prod/prod+fmm motion.npz BYTE FOR BYTE. F2 adds one static
+F0/F1 copy T2 <base-condition>/<base-condition>+fmm motion.npz BYTE FOR BYTE. F2 adds one static
 camera registration from predicted camera-space pelvis/orientation and known
 OpenCV extrinsics, retaining F1's trajectory. F3 replaces estimated proportions
 with the known character body (canonical cskel27 by default; personScale=1).
@@ -43,8 +46,8 @@ scratch is confined to /tmp/cclay-fit-* and removed on completion/failure.
 For another variant use a separate --out root to avoid overwriting a run.`;
 
 export function parseArgs(args) {
-	const out = { variant: "shaded", windowSeconds: 0.5, host: process.env.CCLAY_EXTRACT_HOST || process.env.CCLAY_ARDY_HOST };
-	const names = { "--input": "input", "--extract": "extract", "--poses": "poses", "--out": "out", "--motions": "motions", "--variant": "variant", "--host": "host", "--incam-root": "incamRoot", "--window-seconds": "windowSeconds", "--body": "body", "--scene": "scene" };
+	const out = { variant: "shaded", baseCondition: "prod", windowSeconds: 0.5, host: process.env.CCLAY_EXTRACT_HOST || process.env.CCLAY_ARDY_HOST };
+	const names = { "--input": "input", "--extract": "extract", "--poses": "poses", "--out": "out", "--motions": "motions", "--variant": "variant", "--base-condition": "baseCondition", "--host": "host", "--incam-root": "incamRoot", "--window-seconds": "windowSeconds", "--body": "body", "--scene": "scene" };
 	for (let i = 0; i < args.length; i++) {
 		const flag = args[i];
 		if (flag === "--help" || flag === "-h") { out.help = true; continue; }
@@ -58,6 +61,7 @@ export function parseArgs(args) {
 	for (const key of ["input", "extract", "poses", "out"]) if (!out[key]) throw new Error(`--${key} is required`);
 	out.windowSeconds = Number(out.windowSeconds);
 	if (!(Number.isFinite(out.windowSeconds) && out.windowSeconds > 0)) throw new Error("--window-seconds must be positive");
+	if (parseCondition(out.baseCondition).fmm) throw new Error("--base-condition must omit +fmm");
 	if (out.motions) out.motions = out.motions.split(",");
 	for (const name of [...(out.motions ?? []), out.variant]) if (!/^[a-zA-Z0-9][a-zA-Z0-9_+.-]*$/.test(name)) throw new Error(`invalid motion/variant name ${name}`);
 	return out;
@@ -66,7 +70,7 @@ export function parseArgs(args) {
 const json = path => JSON.parse(readFileSync(path, "utf8"));
 const sha = path => createHash("sha256").update(readFileSync(path)).digest("hex");
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), { missingFocal = extractMissingFocal, cameraEvidence = extractIncam } = {}) {
 	const options = parseArgs(argv);
 	if (options.help) { console.log(USAGE); return; }
 	const motions = options.motions ?? readdirSync(options.input, { withFileTypes: true }).filter(d => d.isDirectory() && existsSync(join(options.input, d.name, options.variant, "video.mp4"))).map(d => d.name).sort();
@@ -77,17 +81,23 @@ export async function main(argv = process.argv.slice(2)) {
 	for (const name of motions) {
 		const source = join(options.input, name, options.variant), extracted = join(options.extract, name, options.variant);
 		const destination = join(options.out, name), prior = join(destination, "result.json");
-		if (existsSync(prior) && json(prior).variant !== options.variant) throw new Error(`${destination}: belongs to a different variant; choose another --out`);
-		const paths = { F0: join(extracted, "prod", "motion.npz"), F1: join(extracted, "prod+fmm", "motion.npz"), camera: join(source, "camera.json"), poses: join(options.poses, `${name}.npz`) };
-		for (const path of Object.values(paths)) if (!existsSync(path)) throw new Error(`missing input ${path}; wait for the T2 sweep to finish`);
-		for (const condition of ["prod", "prod+fmm"]) {
+		if (existsSync(prior) && (json(prior).variant !== options.variant || (json(prior).baseCondition ?? "prod") !== options.baseCondition)) throw new Error(`${destination}: belongs to a different variant/base condition; choose another --out`);
+		const conditions = [options.baseCondition, `${options.baseCondition}+fmm`];
+		const paths = { F0: join(extracted, conditions[0], "motion.npz"), F1: join(extracted, conditions[1], "motion.npz"), camera: join(source, "camera.json"), poses: join(options.poses, `${name}.npz`) };
+		for (const path of [paths.F0, paths.camera, paths.poses]) if (!existsSync(path)) throw new Error(`missing input ${path}; wait for the T2 sweep to finish`);
+		if (!existsSync(paths.F1)) {
+			console.log(`extract missing ${name}/${options.variant}/${conditions[1]}`);
+			await missingFocal({ input: options.input, extract: options.extract, motion: name, variant: options.variant, baseCondition: options.baseCondition, host: options.host });
+			if (!existsSync(paths.F1)) throw new Error(`focal extraction did not produce ${paths.F1}`);
+		}
+		for (const condition of conditions) {
 			const result = join(extracted, condition, "result.json");
 			if (existsSync(result) && !json(result).ok) throw new Error(`${result}: extraction did not succeed`);
 		}
 		mkdirSync(destination, { recursive: true });
 		const camera = json(paths.camera), incamPath = join(options.incamRoot ?? options.out, name, "incam.npz");
 		console.log(`fit ${name}/${options.variant}`);
-		const cameraRun = options.incamRoot ? { supplied: resolve(incamPath) } : await extractIncam({ host: options.host, video: join(source, "video.mp4"), output: incamPath, camera, log: join(destination, "incam.log"), force: options.forceIncam });
+		const cameraRun = options.incamRoot ? { supplied: resolve(incamPath) } : await cameraEvidence({ host: options.host, video: join(source, "video.mp4"), output: incamPath, camera, log: join(destination, "incam.log"), force: options.forceIncam, baseCondition: options.baseCondition });
 		const f0 = readMotion(paths.F0), f1 = readMotion(paths.F1);
 		if (f0.frames !== f1.frames || f0.fps !== f1.fps) throw new Error(`${name}: F0/F1 timelines disagree`);
 		const incam = readNpz(incamPath);
@@ -102,7 +112,7 @@ export async function main(argv = process.argv.slice(2)) {
 			if (index < 2) copyFileSync(paths[`F${index}`], join(directory, "motion.npz"));
 			else writeNpz(join(directory, "motion.npz"), motionArraysToNpzMembers(motion));
 		}
-		writeFileSync(prior, JSON.stringify({ ok: true, tool: "fit-bench", motion: name, variant: options.variant, createdAt: new Date().toISOString(), frames: f1.frames, fps: f1.fps,
+		writeFileSync(prior, JSON.stringify({ ok: true, tool: "fit-bench", motion: name, variant: options.variant, baseCondition: options.baseCondition, createdAt: new Date().toISOString(), frames: f1.frames, fps: f1.fps,
 			inputs: Object.fromEntries(Object.entries(paths).map(([key, path]) => [key, { path: resolve(path), sha256: sha(path) }])),
 			cameraRun, cameraRegistration: f2.diagnostics, body: { boneScale, personScale: 1 }, pinning: { windowSeconds: options.windowSeconds, sourceFrames: "first and last ONLY" }, contacts: f5.diagnostics, boxes,
 			deviations: ["F2 one rigid first-pelvis registration; per-frame incam transforms are diagnostic only", "F2 replaces the arbitrary initial floor datum with the camera-predicted pelvis height", "F3 FK regenerates production-smoothed rotations with known character bones; no automatic regrounding", "F4 source NPZ endpoints are in native cskel27 space, not rendered-rig playback space", "F5 one support point at a time; skeletal segment boxes, no skin thickness; scene safety may release locks and move A/B endpoints"],
