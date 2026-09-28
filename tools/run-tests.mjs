@@ -64,6 +64,7 @@ const NODE_FILES = [
 	"test/ik/verify-physics-surface.mjs",
 	"test/ik/verify-ik.mjs",
 	"test/ik/verify-ik-drag-delta.mjs",
+	"test/ik/verify-ik-blend-range.mjs",
 	"test/verify-ik-camera-performance.mjs",
 	"test/verify-ik-entry-camera.mjs",
 	"test/process/verify-bridge-launch.mjs",

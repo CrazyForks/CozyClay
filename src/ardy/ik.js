@@ -1048,7 +1048,8 @@ export function ikKeyframes(ikState) {
  * `blendWindow` > 0 turns the layer into a LOCAL correction (used when a
  * generated motion plays underneath): the correction holds full strength
  * across each ISLAND of keys and eases to zero over that many frames outside
- * it (see correctionWeight), blending against whatever pose is already on the
+ * it, or over an edge key's own `blend` when it stores one (see
+ * correctionWeight), blending against whatever pose is already on the
  * bone (the motion). With the default 0 the keys hold forever (constant
  * extrapolation), the no-motion authoring behaviour.
  */
@@ -1168,39 +1169,48 @@ function restoreChainPositions(chain, weight = 1) {
 
 /**
  * A track's key ISLANDS: runs of keys close enough together to be one
- * correction, as [firstFrame, lastFrame] pairs in ascending order. Two
- * consecutive keys belong to the same island while the gap between them is no
- * wider than `blendWindow`; a wider gap starts a new island.
+ * correction, as [firstFrame, lastFrame, firstBlend, lastBlend] in ascending
+ * order. Two consecutive keys belong to the same island while the gap between
+ * them is no wider than the larger of their two blend ranges; a wider gap
+ * starts a new island.
  *
- * The window is the right ruler because it is exactly how far a correction is
- * allowed to reach: keys closer together than that overlap anyway, and keys
- * further apart are, by the layer's own definition, separate local fixes with
- * clip in between.
+ * A key's blend range is its own `blend` (frames, stored by a Pose fix drag
+ * made with a wider or narrower correction range) or, for every key without
+ * one, `blendWindow`. The range is the right ruler because it is exactly how
+ * far a correction is allowed to reach: keys closer together than that overlap
+ * anyway, and keys further apart are, by the layer's own definition, separate
+ * local fixes with clip in between. The larger of the pair decides because the
+ * wider key already reaches its neighbour.
  */
 function trackIslands(keys, trackId, blendWindow) {
 	const frames = [];
-	for (const [f, entry] of keys) if (entry.has(trackId)) frames.push(f);
+	for (const [f, entry] of keys) {
+		const key = entry.get(trackId);
+		if (key) frames.push([f, key.blend ?? blendWindow]);
+	}
 	if (!frames.length) return [];
-	frames.sort((a, b) => a - b);
+	frames.sort((a, b) => a[0] - b[0]);
 	const islands = [];
-	let first = frames[0];
-	let prev = frames[0];
+	let [first, firstBlend] = frames[0];
+	let [prev, prevBlend] = frames[0];
 	for (let index = 1; index < frames.length; index += 1) {
-		const f = frames[index];
-		if (f - prev > blendWindow) {
-			islands.push([first, prev]);
+		const [f, blend] = frames[index];
+		if (f - prev > Math.max(prevBlend, blend)) {
+			islands.push([first, prev, firstBlend, prevBlend]);
 			first = f;
+			firstBlend = blend;
 		}
 		prev = f;
+		prevBlend = blend;
 	}
-	islands.push([first, prev]);
+	islands.push([first, prev, firstBlend, prevBlend]);
 	return islands;
 }
 
 /**
  * Correction strength at `frame` for one track: 1 on a key and anywhere inside
- * a key ISLAND, easing 1 → 0 across `blendWindow` frames outward from the
- * nearest island edge, 0 beyond every island.
+ * a key ISLAND, easing 1 → 0 outward from each island edge across that edge
+ * key's blend range (its `blend`, else `blendWindow`), 0 beyond every island.
  *
  * This used to be "1 everywhere between the track's first and last key", which
  * quietly made every sparse correction a whole-clip rewrite: two collision
@@ -1215,13 +1225,12 @@ function trackIslands(keys, trackId, blendWindow) {
  * boundary pins, a fully baked pose — is one island, so full-strength playback
  * of authored ranges is unchanged too.
  */
-function correctionWeight(keys, trackId, frame, blendWindow) {
+export function correctionWeight(keys, trackId, frame, blendWindow) {
 	const islands = trackIslands(keys, trackId, blendWindow);
 	let best = 0;
-	for (const [first, last] of islands) {
+	for (const [first, last, firstBlend, lastBlend] of islands) {
 		if (frame >= first && frame <= last) return 1;
-		const distance = frame < first ? first - frame : frame - last;
-		const weight = 1 - distance / blendWindow;
+		const weight = frame < first ? 1 - (first - frame) / firstBlend : 1 - (frame - last) / lastBlend;
 		if (weight > best) best = weight;
 	}
 	return Math.max(0, best);
