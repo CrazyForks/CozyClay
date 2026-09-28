@@ -62,6 +62,8 @@ import { STUDIO_TOOL_FAMILIES, StudioProtocolError, validateStudioCommand, valid
 import { elementByPath } from "./studio-elements.js";
 import { createStudioCommands, createStudioCommandJournal, studioObjectCatalogue, placementChecks, framingChecks } from "./studio-agent-commands.js";
 import { STUDIO_IK_CHAIN_TRACKS, createStudioActionRegistry, studioActionDeclaration, studioActionRefusal } from "./studio-actions.js";
+import { createCommandBus, withCommandHistory } from "./command-bus.js";
+import { HISTORY_LIMIT } from "./history.js";
 import { createStudioMotionCandidates, verifyInstalledTake } from "./studio-agent-motion.js";
 import { CONTACT_SHEET_LAYOUT, buildContactSheet, sampleContactSheetFrames } from "./studio-contact-sheet.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
@@ -954,7 +956,8 @@ export function createStudioAppBinding(ports) {
 	};
 	const calibrationContentKey = value => value && typeof value === "object" ? JSON.stringify(value) : null;
 	const tokens = new Map(), receipts = new Map(), jobs = new Map(), images = new Map();
-	let owner = null, commands = null, motion = null, journal = null;
+	let owner = null, commands = null, motion = null, journal = null, actionBus = null;
+	const domainKeys = new Map(), domainRevisions = {}; 
 	let authoredKey, physicsKey, viewKey, observedSceneRevision = ports.revision.current;
 	let physicsRevision = 0, viewRevision = 0;
 	function refresh() {
@@ -1012,7 +1015,12 @@ export function createStudioAppBinding(ports) {
 		const nextViewKey = JSON.stringify([raw.selection, raw.activeCharacterId, raw.selectedShotId, raw.view, raw.camera]);
 		if (viewKey !== undefined && viewKey !== nextViewKey) viewRevision++;
 		viewKey = nextViewKey;
-		return { ...raw, host, revision: ports.revision.current, physicsRevision, viewRevision };
+		for (const [domain, value] of Object.entries({ objects: raw.objects, shot: raw.shots, stage: raw.stage, cast: authoredCharacters, motion: characters })) {
+			const key = JSON.stringify(value);
+			if (domainKeys.get(domain) !== key) domainRevisions[domain] = (domainRevisions[domain] ?? 0) + 1;
+			domainKeys.set(domain, key);
+		}
+		return { ...raw, host, revision: ports.revision.current, physicsRevision, viewRevision, domainRevisions: { ...domainRevisions } };
 	}
 	function guard(id) {
 		const raw = refresh(), token = tokens.get(id)?.token;
@@ -1172,57 +1180,23 @@ export function createStudioAppBinding(ports) {
 	 * registry the UI controls call. A mutation is bound to the native history
 	 * entry it pushed, so its receipt is an ordinary journal receipt that
 	 * undo_edit reverts; a job answers "started" and lands later. */
-	function runAction(request, args, s) {
-		const registry = ports.actions?.();
-		if (!registry) fail("CAPABILITY_MISSING", "This editor registers no Studio actions.");
-		const entry = registry.get(args.action);
-		const base = { commandId: request.commandId, receiptId: crypto.randomUUID(), host: s.host, action: entry.id, checks: { coverage: `studio-action:${entry.id}` }, warnings: [] };
-		if (entry.kind === "job" || entry.kind === "document") {
-			// Outside the undo history. A job that runs to its end (an export) and
-			// document work answer when they settle, with any output; a job that
-			// only starts (a generation) answers at once. When the open scene moved,
-			// the answer names the new host later commands are admitted at.
-			const answer = (result, status) => {
-				const { host } = refresh();
-				return { ok: true, commandId: request.commandId, action: entry.id, kind: entry.kind, status, affectedIds: result.affectedIds, summary: result.summary,
-					...(result.output === undefined ? {} : { output: result.output }), ...(same(host, s.host) ? {} : { host }) };
-			};
-			const result = registry.run(entry.id, args.args);
-			return typeof result?.then === "function" ? result.then(settled => answer(settled, "completed")) : answer(result, entry.kind === "job" ? "started" : "completed");
-		}
-		if (entry.kind === "transient") {
-			const result = registry.run(entry.id, args.args), after = refresh();
-			return journal.record(validateReceipt({ ...base, ok: true, status: "transient", authored: false, summary: result.summary,
-				revision: { before: s.revision, after: s.revision }, view: { before: s.viewRevision, after: after.viewRevision }, affectedIds: [s.host.sceneId],
-				delta: [{ id: s.host.sceneId, after: { selection: after.selection, activeCharacterId: after.activeCharacterId, shotId: after.selectedShotId, view: after.view } }], undo: null }));
-		}
-		// A motion-domain entry restores one character's layer: the one it names.
-		const recorded = ports.recordAction(entry.undoDomain, () => registry.run(entry.id, args.args), args.args?.characterId ?? null);
-		// An asynchronous mutation (an import) is bound once it has landed.
-		return typeof recorded?.then === "function" ? recorded.then(landed => mutationReceipt(landed, entry, base, request, s)) : mutationReceipt(recorded, entry, base, request, s);
+	function commandBus() {
+		if (!actionBus) actionBus = createCommandBus({ registry: ports.actions(), ports: {
+			read: refresh, journal: () => journal, recordAction: (...args) => ports.recordAction(...args), beginAction: (...args) => ports.beginAction(...args),
+			readback: actionReadback, remember, receipt: id => receipts.get(id), isRetained: receipt => ports.isRetained(receipt),
+			canUndo: receipt => ports.canUndo(receipt), undo: () => ports.undo(), readTarget: id => { refresh(); return tokens.get(id)?.token; },
+			captureToasts: listener => ports.captureToasts?.(listener), showRefusal: message => ports.showRefusal?.(message), emit: event => ports.emitCommandEvent?.(event),
+		} });
+		return actionBus;
 	}
-	/** The journal receipt of one registered mutation, from the one history
-	 * entry it pushed and the state it left. */
-	function mutationReceipt({ result, historyEntryId }, entry, base, request, s) {
-		const after = refresh(), ids = result.affectedIds;
-		if (after.revision === s.revision) {
-			return remember(journal.record(validateReceipt({ ...base, ok: true, status: "noop", authored: false, mutated: false, summary: result.summary,
-				revision: { before: s.revision, after: s.revision }, affectedIds: [], delta: [], undo: null })));
-		}
-		if (!historyEntryId || !ids.length || after.revision !== s.revision + 1) {
-			// The document changed without one attributable history entry: say so
-			// instead of pretending nothing happened.
-			return journal.record(validateReceipt({ ok: false, commandId: request.commandId, host: s.host, code: "UNCERTAIN_APPLY", phase: "commit",
-				affectedIds: ids.slice(0, 100), expectedTargets: [], currentTargets: [], mutated: true, preserved: { authoredState: "changed" },
-				recovery: { action: "inspect", retryAllowed: false }, message: `${entry.id} changed the scene without one undoable entry.` }));
-		}
-		return remember(journal.record(validateReceipt({ ...base, ok: true, status: "applied", authored: true, mutated: true, summary: result.summary,
-			revision: { before: s.revision, after: after.revision }, affectedIds: ids,
-			delta: ids.slice(0, 8).map(id => ({ id, after: actionReadback(id, after) })),
-			undo: { historyEntryId, entries: 1, canUndoDirect: true }, ...(ids.length > 8 ? { detailCursor: request.commandId } : {}) })));
+	function runAction(request, args) {
+		const result = commandBus().run(args.action, args.args, { ...request, origin: request.origin ?? "agent", confirmationToken: args.confirmationToken ?? request.confirmationToken });
+		const answer = receipt => receipt.nextHost ? { ...receipt, host: receipt.nextHost } : receipt;
+		return result?.then ? result.then(answer) : answer(result);
 	}
 	function execute(request) {
 		refresh();
+		if (request.name === "run_action") return runAction(request, validateStudioCommand({ name: request.name, args: request.args }).args);
 		if (["arrange_objects", "arrange_characters", "frame_shot", "patch_elements"].includes(request.name)) {
 			// Arrangements and framing are fenced by the exact scene revision, the
 			// gesture flag and the document identity inside the command module; they
@@ -1236,16 +1210,6 @@ export function createStudioAppBinding(ports) {
 			// Verification only observes: the document identity (checked above) is
 			// its whole fence, so a later edit never refuses it.
 			const { args } = validateStudioCommand({ name: request.name, args: request.args }), s = request.name === "verify_result" ? refresh() : admit(request);
-			if (request.name === "run_action") {
-				const outcome = runAction(request, args, s);
-				if (typeof outcome?.then !== "function") return outcome;
-				// A long-running action refuses after this frame: answer the same
-				// rejection receipt, journaled while the document is still this one.
-				return outcome.catch(error => {
-					const receipt = rejection(request, error);
-					return same(receipt.host, journal.host) ? journal.record(receipt) : receipt;
-				});
-			}
 			if (request.name === "operate_studio") {
 				ports.operate(args, s); const after = refresh();
 				return journal.record(validateReceipt({ ok: true, status: "transient", authored: false, commandId: request.commandId,
@@ -1410,7 +1374,7 @@ export function createStudioAppBinding(ports) {
 			else if (previous && !same(content(row), content(next))) tokens.set(row.id, { ...previous, key: null });
 		}
 	}
-	return { handlers, context, guard, refresh, invalidate, dispose: () => motion?.dispose() };
+	return { handlers, context, guard, refresh, invalidate, get bus() { refresh(); return commandBus(); }, dispose: () => { actionBus?.dispose(); motion?.dispose(); } };
 }
 
 export default function App() {
@@ -2287,7 +2251,7 @@ export default function App() {
 	// store is constructed once, seeded with the initial scene.
 	const storeRef = useRef(null);
 	if (!storeRef.current) {
-		storeRef.current = createSceneHistoryStore(sceneObjects, {
+		storeRef.current = withCommandHistory(createSceneHistoryStore(sceneObjects, {
 		onCommit: (before, after) => markSemanticEdit("objects", before, after),
 		onObjects: (objects) => {
 			// Object-side ops join the shared undo clock here; undo/redo of the
@@ -2295,7 +2259,7 @@ export default function App() {
 			if (!suppressObjectClockRef.current) lastObjectOpRef.current = ++opClockRef.current;
 			setSceneObjects(objects);
 		},
-	});
+	}));
 	}
 	const store = storeRef.current;
 	const selectedSceneObjectId = sceneObjectIdFromHierarchy(selectedHierarchyId);
@@ -2968,12 +2932,14 @@ export default function App() {
 	}
 	function recordCharacterUndo() {
 		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast() });
+		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
 		charHistoryRef.current.future = [];
 	}
 	/** One Ctrl+Z entry for a structural shot edit (delete, split, duplicate,
 	 * add, reorder): the same history as the cast, with the shot list aboard. */
 	function recordShotUndo() {
 		charHistoryRef.current.past.push({ tick: ++opClockRef.current, snapshot: snapshotCast(true) });
+		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
 		charHistoryRef.current.future = [];
 	}
 	/** One Ctrl+Z entry per EDITING SESSION rather than per event, for the
@@ -3371,9 +3337,9 @@ export default function App() {
 	const [toast, showToast] = useState(startup.toast ?? "");
 	// While a Studio action runs editor work, the toasts it shows are collected
 	// so run_action can give the agent the reason the user was shown.
-	const toastSinkRef = useRef(null);
-	const setToast = useCallback((value) => {
-		if (typeof value === "string" && value) toastSinkRef.current?.push(value);
+	const toastSinkRef = useRef(new Set());
+	const setToast = useCallback((value, english = value) => {
+		if (typeof value === "string" && value) for (const sink of toastSinkRef.current) sink({ message: english, uiMessage: value });
 		showToast(value);
 	}, []);
 	// The PWA's "a newer studio is waiting" registration, once one arrives.
@@ -12538,6 +12504,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		const tick = ++opClockRef.current;
 		charHistoryRef.current.past.push({ tick, snapshot: snapshotCast(domain === "shot"),
 			studio: { domain, targetId, historyEntryId, objects: storeRef.current.objects, state: snapshotStudioDomain(domain, targetId) } });
+		charHistoryRef.current.past = charHistoryRef.current.past.slice(-HISTORY_LIMIT);
 		charHistoryRef.current.future = [];
 		studioHistoryRef.current.set(historyEntryId, { tick, domain });
 	}
@@ -12546,27 +12513,63 @@ function resizePromptClip(id, edge, rawFrame) {
 	 * cast and motion entries gain the Studio restore state (a motion entry the
 	 * one character `targetId` names), which republishes the live read model
 	 * synchronously; object entries are the store's own. */
+	function beginStudioAction(domain, targetId = null) {
+		const historyEntryId = crypto.randomUUID(), objects = storeRef.current.objects;
+		const history = charHistoryRef.current, past = [...history.past], future = [...history.future];
+		const state = domain === "objects" ? null : snapshotStudioDomain(domain, targetId);
+		const objectSession = domain === "objects" ? storeRef.current.beginCommand() : null;
+		let changed = false, firstEntry;
+		return {
+			run(fn) {
+				const finish = result => {
+					if (!objectSession) {
+						const added = history.past.filter(entry => !past.includes(entry));
+						firstEntry ??= added[0]; changed ||= added.length > 0;
+						history.past = [...past]; history.future = [...future];
+					}
+					return result;
+				};
+				const result = objectSession ? objectSession.run(fn) : fn();
+				return result?.then ? result.then(finish) : finish(result);
+			},
+			commit() {
+				if (objectSession) {
+					changed = objectSession.commit(); liveStateRef.current.objects = storeRef.current.objects;
+					if (changed) studioHistoryRef.current.set(historyEntryId, { domain, before: objects, tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
+				} else if (changed) {
+					const tick = ++opClockRef.current;
+					history.past.push({ tick, snapshot: firstEntry.snapshot, studio: { domain, targetId, historyEntryId, objects, state } });
+					history.past = history.past.slice(-HISTORY_LIMIT); history.future = [];
+					studioHistoryRef.current.set(historyEntryId, { tick, domain });
+				}
+				return { historyEntryId: changed ? historyEntryId : null };
+			},
+			cancel() {
+				if (objectSession) objectSession.cancel();
+				else { publishStudioDomain(domain, targetId, state); history.past = past; history.future = future; }
+			},
+		};
+	}
 	function recordStudioAction(domain, run, targetId = null) {
-		const historyEntryId = crypto.randomUUID();
-		if (domain === "objects") {
-			const tick = lastObjectOpRef.current;
-			const bind = result => {
-				if (lastObjectOpRef.current === tick) return { result, historyEntryId: null };
-				liveStateRef.current.objects = storeRef.current.objects;
-				studioHistoryRef.current.set(historyEntryId, { domain: "objects", tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
-				return { result, historyEntryId };
-			};
-			// An import stores its bytes first and places its object when it settles;
-			// the binding refuses the receipt if anything else landed meanwhile.
-			const result = run();
-			return typeof result?.then === "function" ? result.then(bind) : bind(result);
-		}
-		const tick = opClockRef.current, objects = storeRef.current.objects, state = snapshotStudioDomain(domain, targetId);
-		const result = run(), top = charHistoryRef.current.past.at(-1);
-		if (!top || top.tick <= tick || top.studio) return { result, historyEntryId: null };
-		top.studio = { domain, targetId, historyEntryId, objects, state };
-		studioHistoryRef.current.set(historyEntryId, { tick: top.tick, domain });
-		return { result, historyEntryId };
+		const session = beginStudioAction(domain, targetId);
+		const done = result => ({ result, ...session.commit() });
+		const failed = error => { session.cancel(); throw error; };
+		try { const result = session.run(run); return result?.then ? result.then(done, failed) : done(result); }
+		catch (error) { return failed(error); }
+	}
+	function publishStudioDomain(domain, targetId, state) {
+		if (domain === "shot") { liveStateRef.current.shots = state.shots; setShots(state.shots); publishStudioCamera(state.camera, state.manual); }
+		else if (domain === "stage") publishStudioStage(state.stage);
+		else if (domain === "cast") { publishStudioCharacters(state.characters); syncStudioLayerBuffer(state.characters); }
+		else publishStudioMotion(targetId, state);
+	}
+	function isStudioHistoryRetained(receipt) {
+		const id = receipt?.undo?.historyEntryId, entry = studioHistoryRef.current.get(id);
+		if (!entry) return false;
+		const retained = entry.domain === "objects" ? storeRef.current.hasHistoryState(entry.before)
+			: [...charHistoryRef.current.past, ...charHistoryRef.current.future].some(row => row.studio?.historyEntryId === id);
+		if (!retained) studioHistoryRef.current.delete(id);
+		return retained;
 	}
 	function publishStudioMotion(targetId, state) {
 		const current = readStudioState();
@@ -12603,9 +12606,10 @@ function resizePromptClip(id, edge, rawFrame) {
 	function commitStudioDraft(payload) {
 		const historyEntryId = crypto.randomUUID();
 		if (payload.domain === "objects") {
+			const before = storeRef.current.objects;
 			storeRef.current.applyAtomic(() => payload.draft);
 			liveStateRef.current.objects = storeRef.current.objects;
-			studioHistoryRef.current.set(historyEntryId, { domain: "objects", tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
+			studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: lastObjectOpRef.current, depth: storeRef.current.depths().past });
 		} else {
 			recordStudioHistory(payload.domain, null, historyEntryId);
 			if (payload.domain === "stage") publishStudioStage(payload.draft);
@@ -12765,7 +12769,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			if (!prior || prior.stamp !== stamp) studioIkStampsRef.current.set(id, { stamp, revision: (prior?.revision ?? 0) + 1 });
 			return studioIkStampsRef.current.get(id).revision;
 		},
-		isRetained: receipt => Boolean(receipt?.undo && studioHistoryRef.current.has(receipt.undo.historyEntryId)),
+		isRetained: isStudioHistoryRetained,
 		canUndo: receipt => {
 			const entry = receipt?.undo && studioHistoryRef.current.get(receipt.undo.historyEntryId);
 			if (!entry || receipt.revision.after !== sceneRevisionRef.current) return false;
@@ -12773,7 +12777,10 @@ function resizePromptClip(id, edge, rawFrame) {
 				entry.tick === charHistoryRef.current.past.at(-1)?.tick && entry.tick > lastObjectOpRef.current;
 		},
 		actions: () => studioActionsRef.current,
-		recordAction: recordStudioAction,
+		recordAction: recordStudioAction, beginAction: beginStudioAction,
+		captureToasts: listener => { toastSinkRef.current.add(listener); return () => toastSinkRef.current.delete(listener); },
+		showRefusal: setToast,
+		emitCommandEvent: detail => window.dispatchEvent(new CustomEvent("cozyclay:command", { detail })),
 	};
 	studioActionHandlersRef.current = {
 		// Shots and objects come from the synchronously published read model, so
@@ -12799,13 +12806,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			falMotion: { enabled: falMotionEnabled, status: falMotion.status, dailyRemaining: falMotion.dailyRemaining ?? null },
 		}),
 		addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, setTimelineShotRange, moveTimelineShot,
-		// Answers the toasts the editor showed while (not) starting the generation.
-		runAllPromptBlocks: () => {
-			const shown = [];
-			toastSinkRef.current = shown;
-			try { runAllPromptBlocks(); } finally { toastSinkRef.current = null; }
-			return shown;
-		},
+		runAllPromptBlocks,
 		duplicateSelectedSceneObject,
 		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, setWaypointMode,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, attachSceneObject, setShotCameraRail, clearShotCameraRail,
@@ -12829,8 +12830,9 @@ function resizePromptClip(id, edge, rawFrame) {
 		};
 		try {
 			// A long-running action answers with a promise that refuses the same way.
-			const result = studioActionsRef.current.run(id, args);
-			return typeof result?.then === "function" ? result.catch(refused) : result;
+			const result = studioBindingRef.current.bus.run(id, args, { origin: "ui" });
+			const answer = receipt => receipt.ok ? receipt : null;
+			return typeof result?.then === "function" ? result.then(answer, refused) : answer(result);
 		} catch (error) {
 			return refused(error);
 		}

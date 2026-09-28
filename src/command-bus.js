@@ -1,7 +1,39 @@
 // The Studio command runner. The registry owns declarations/implementations;
 // the editor ports own native state/history, and the existing journal owns
 // idempotency. Synchronous UI actions stay synchronous (including user gestures).
+import { HISTORY_LIMIT } from './history.js';
 import { StudioProtocolError, StudioSchemas, validateStudioSchema, validateReceipt, validateStudioIdentity } from './studio-agent-protocol.js';
+
+// A batching/retention adapter over the existing object history owner. The
+// native store still owns every snapshot and transition; this tracks only the
+// retained pre-image identities needed by receipts.
+export function withCommandHistory(store) {
+  let past = [], future = [], group = null;
+  const adapter = Object.create(store);
+  const pushed = before => { if (before !== store.present()) { past.push(before); past = past.slice(-HISTORY_LIMIT); future = []; } };
+  adapter.hasHistoryState = state => state === store.present() || past.includes(state) || future.includes(state);
+  adapter.settle = (...args) => { const before = store.present(); store.settle(...args); pushed(before); };
+  adapter.applyAtomic = fn => {
+    if (group) { if (!group.running) fail('TARGET_BUSY', 'A command transaction owns the object history.'); return store.applyIn(group.token, fn); }
+    adapter.settle(); const before = store.present(); store.applyAtomic(fn); pushed(before);
+  };
+  adapter.begin = (...args) => { adapter.settle(); return store.begin(...args); };
+  adapter.end = (token, options) => { const before = store.present(), ended = store.end(token, options); if (options.commit) pushed(before); return ended; };
+  adapter.undo = () => { adapter.settle(); const before = store.present(), restored = store.undo(); if (restored !== null) { past.pop(); future.unshift(before); } return restored; };
+  adapter.redo = () => { const before = store.present(), restored = store.redo(); if (restored !== null) { past.push(before); future.shift(); } return restored; };
+  adapter.beginCommand = () => {
+    if (group) fail('TARGET_BUSY', 'An object command is already in progress.');
+    adapter.settle(); const before = store.present();
+    const current = { running: false, token: store.begin('command-bus', () => { current.closed = true; group = null; }) }; group = current;
+    const check = () => { if (current.closed) fail('STALE_TARGET', 'Native object transaction was retired.'); };
+    return {
+      run(fn) { check(); current.running = true; try { const result = fn(); if (result?.then) return result.finally(() => { current.running = false; }); current.running = false; return result; } catch (error) { current.running = false; throw error; } },
+      commit() { check(); current.closed = true; group = null; store.end(current.token, { commit: true }); pushed(before); return before !== store.present(); },
+      cancel() { check(); current.closed = true; group = null; store.end(current.token, { commit: false }); },
+    };
+  };
+  return adapter;
+}
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
@@ -138,7 +170,9 @@ export function createCommandBus({ registry, ports }) {
       if (!(error instanceof StudioProtocolError)) error = toastRefusal() ?? error;
       if (request.origin === 'ui' && error.uiMessage) ports.showRefusal?.(error.uiMessage);
       const value = refusal(request, before, error, job ? applied : undefined);
-      return begun ? remember(value) : value;
+      const recorded = begun ? remember(value) : value;
+      if (job && !job.completion) { job.outcome = recorded; job.completion = Promise.resolve(recorded); emit({ type: 'job.completed', jobId: job.id, receipt: recorded }); }
+      return recorded;
     };
     try {
       if (request.origin !== 'ui' && !same(validateStudioIdentity(request.host), before.host)) fail('STALE_SCENE', 'The live document changed.');
@@ -175,14 +209,19 @@ export function createCommandBus({ registry, ports }) {
         },
         run(nestedId, nestedArgs = {}) { const nested = registry.prepare(nestedId, nestedArgs); return registry.invoke(nested.entry, nested.args, context); },
       };
-      if (entry.kind === 'job') { job = { id: crypto.randomUUID(), host: before.host, controller, background: request.wait === false }; jobs.set(job.id, job); }
-      const deadline = new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true }));
+      if (entry.kind === 'job') { job = { id: crypto.randomUUID(), host: before.host, controller, background: false }; jobs.set(job.id, job); }
       timer = (ports.setTimeout ?? setTimeout)(() => {
         const error = new StudioProtocolError('TIMEOUT', `${entry.id} exceeded its deadline.`);
         controller.abort(error);
       }, entry.timeoutMs ?? 30_000);
       // The race observes expiry even if a backend ignores cancellation.
-      const invoke = () => { const value = registry.invoke(entry, validated, context); return value?.then ? Promise.race([value, deadline]) : value; };
+      const invoke = () => {
+        const value = registry.invoke(entry, validated, context);
+        if (!value?.then) return value;
+        if (job) job.background = request.wait === false;
+        const deadline = new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true }));
+        return Promise.race([value, deadline]);
+      };
       const value = entry.kind === 'mutation' ? ports.recordAction(entry.undoDomain, invoke, validated.characterId ?? null) : { result: invoke(), historyEntryId: null };
       const finish = ({ result, historyEntryId }) => mapResult(result, output => {
         clearTimer();
