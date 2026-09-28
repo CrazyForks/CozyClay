@@ -4,7 +4,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanTree } from "./verify-bus-coverage.mjs";
-import { STUDIO_ACTIONS } from "../../src/studio-actions.js";
+import { COMMAND_MODULES } from "../../src/commands/index.js";
+const STUDIO_ACTIONS = Object.values(COMMAND_MODULES).flatMap(module => module.declarations);
 import { fixture, result } from "./fixture.mjs";
 import { documentFixture } from "./document-store-fixture.mjs";
 
@@ -114,4 +115,7 @@ test("registered mutations execute receipt and undo checks through the real bus"
   assert.equal(rows.every(row => row.ok), true, JSON.stringify(rows));
 });
 
+// The fixture above proves the generic runner; the pilot also executes every
+// stage origin/check against the real hook and App binding, not a fake slice.
+await import('./verify-stage-domain.mjs');
 export { parityMatrix, pendingErrors, coverageMetrics, executeParity };
