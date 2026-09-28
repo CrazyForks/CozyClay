@@ -8,7 +8,7 @@ const fail = (code, message) => { throw new StudioProtocolError(code, message); 
 const mapResult = (value, success, failure) => value?.then ? value.then(success, failure) : success(value);
 
 export function createCommandBus({ registry, ports }) {
-  const pending = new Map(), transactions = new Map(), listeners = new Set();
+  const pending = new Map(), transactions = new Map(), jobs = new Map(), listeners = new Set();
   const emit = event => { for (const listener of listeners) listener(event); ports.emit?.(event); };
   const identifier = StudioSchemas.TargetGuard.properties.targetId;
   const object = properties => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
@@ -18,6 +18,8 @@ export function createCommandBus({ registry, ports }) {
     'run.update': object({ txId: identifier, args: argsSchema }),
     'run.commit': object({ txId: identifier }),
     'run.cancel': object({ txId: identifier }),
+    'job.await': { ...object({ jobId: identifier }), properties: { jobId: identifier, timeoutMs: { type: 'integer', minimum: 1, maximum: 300_000, default: 30_000 } } },
+    'job.cancel': object({ jobId: identifier }),
   };
   const clear = timer => (ports.clearTimeout ?? clearTimeout)(timer);
   function cancelTransaction(tx, expired = false) {
@@ -29,6 +31,16 @@ export function createCommandBus({ registry, ports }) {
     tx.timer = (ports.setTimeout ?? setTimeout)(() => cancelTransaction(tx, true), ports.transactionIdleMs ?? 30_000);
   }
   function control(id, args, request, before) {
+    if (id.startsWith('job.')) {
+      const job = jobs.get(args.jobId);
+      if (!job || !same(job.host, before.host)) fail('STALE_TARGET', 'Job is not in this document.');
+      if (id === 'job.cancel' && !job.outcome) job.controller.abort(new StudioProtocolError('CANCELLED', 'Job was cancelled.'));
+      let timer;
+      const wait = id === 'job.await' && !job.outcome ? Promise.race([job.completion, new Promise((_, reject) => {
+        timer = (ports.setTimeout ?? setTimeout)(() => reject(new StudioProtocolError('TIMEOUT', 'Job is still running.')), args.timeoutMs);
+      })]) : job.completion;
+      return wait.then(value => validateReceipt({ ...value, commandId: request.commandId, ...(value.ok ? { receiptId: crypto.randomUUID() } : {}), jobId: job.id })).finally(() => { if (timer !== undefined) clear(timer); });
+    }
     let tx;
     if (id === 'run.begin') {
       if (transactions.size) fail('TARGET_BUSY', 'Finish or cancel the open command transaction first.');
@@ -59,8 +71,8 @@ export function createCommandBus({ registry, ports }) {
       affectedIds: [...tx.affectedIds], delta: [], checks: { coverage: 'wire-transaction' }, warnings: [],
       undo: tx.historyEntryId ? { historyEntryId: tx.historyEntryId, entries: 1, canUndoDirect: true } : null });
   }
-  function refusal(request, before, error) {
-    const changed = ports.read().revision !== before.revision;
+  function refusal(request, before, error, mutated) {
+    const changed = mutated ?? (ports.read().revision !== before.revision);
     return validateReceipt({ ok: false, commandId: request.commandId, host: before.host,
       code: error.code ?? 'INVALID_ARGUMENT', phase: changed ? 'commit' : 'admission', affectedIds: [], expectedTargets: [], currentTargets: [],
       mutated: changed, preserved: { authoredState: changed ? 'changed' : 'unchanged' }, recovery: { action: 'inspect', retryAllowed: false },
@@ -82,18 +94,25 @@ export function createCommandBus({ registry, ports }) {
   function run(id, args = {}, options = {}) {
     const request = { origin: 'ui', commandId: crypto.randomUUID(), ...options };
     const before = ports.read(), journal = ports.journal();
-    let begun = false, releaseToasts, timer;
+    let begun = false, releaseToasts, timer, job, applied = false, committedHistoryId;
     const controller = new AbortController();
     const clearTimer = () => { if (timer !== undefined) (ports.clearTimeout ?? clearTimeout)(timer); };
     const toasts = [];
     const toastRefusal = () => toasts.length && ports.read().revision === before.revision ? new StudioProtocolError('TARGET_NOT_READY', toasts.at(-1).message) : null;
-    const remember = value => { const recorded = journal.record(value); ports.remember?.(recorded); return recorded; };
+    const remember = value => {
+      if (job?.background) {
+        const commandId = `${request.commandId}:completion`;
+        journal.begin(commandId);
+        value = validateReceipt({ ...value, commandId, jobId: job.id });
+      }
+      const recorded = journal.record(value); ports.remember?.(recorded); return recorded;
+    };
     const rejected = error => {
       clearTimer();
       releaseToasts?.(); releaseToasts = null;
       if (!(error instanceof StudioProtocolError)) error = toastRefusal() ?? error;
       if (request.origin === 'ui' && error.uiMessage) ports.showRefusal?.(error.uiMessage);
-      const value = refusal(request, before, error);
+      const value = refusal(request, before, error, job ? applied : undefined);
       return begun ? remember(value) : value;
     };
     try {
@@ -110,12 +129,31 @@ export function createCommandBus({ registry, ports }) {
       if (controls[id]) return mapResult(control(id, validated, request, before), remember, rejected);
       if (transactions.size) fail('TARGET_BUSY', 'Finish or cancel the open command transaction first.');
       releaseToasts = ports.captureToasts?.(toast => toasts.push(typeof toast === 'string' ? { message: toast } : toast));
-      const context = { origin: request.origin, signal: controller.signal };
-      let timeout;
-      const deadline = new Promise((_, reject) => { timeout = reject; });
+      const domain = entry.domain ?? entry.undoDomain;
+      const targetId = entry.target?.(validated, before) ?? validated.characterId ?? validated.shotId ?? validated.objectId;
+      const token = targetId ? ports.readTarget?.(targetId) : null;
+      const domainRevision = domain ? before.domainRevisions?.[domain] : null;
+      const context = { origin: request.origin, signal: controller.signal,
+        check() {
+          controller.signal.throwIfAborted();
+          const current = ports.read();
+          if (!same(current.host, before.host) || (domain && current.domainRevisions?.[domain] !== domainRevision) || (targetId && ports.readTarget?.(targetId) !== token)) fail('STALE_TARGET', 'The target or its authored domain changed while the job was running.');
+        },
+        commit(apply) {
+          context.check();
+          if (!domain) fail('INVALID_ARGUMENT', 'A committing job must declare its domain.');
+          const recorded = ports.recordAction(domain, apply, targetId ?? null);
+          if (recorded?.then) fail('INVALID_ARGUMENT', 'Job publication must be synchronous; prepare before commit.');
+          committedHistoryId = recorded.historyEntryId; applied = Boolean(committedHistoryId);
+          return recorded.result;
+        },
+        run(nestedId, nestedArgs = {}) { const nested = registry.prepare(nestedId, nestedArgs); return registry.invoke(nested.entry, nested.args, context); },
+      };
+      if (entry.kind === 'job') { job = { id: crypto.randomUUID(), host: before.host, controller, background: request.wait === false }; jobs.set(job.id, job); }
+      const deadline = new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true }));
       timer = (ports.setTimeout ?? setTimeout)(() => {
         const error = new StudioProtocolError('TIMEOUT', `${entry.id} exceeded its deadline.`);
-        controller.abort(error); timeout(error);
+        controller.abort(error);
       }, entry.timeoutMs ?? 30_000);
       // The race observes expiry even if a backend ignores cancellation.
       const invoke = () => { const value = registry.invoke(entry, validated, context); return value?.then ? Promise.race([value, deadline]) : value; };
@@ -125,14 +163,20 @@ export function createCommandBus({ registry, ports }) {
         releaseToasts?.(); releaseToasts = null;
         const refused = toastRefusal();
         if (refused) throw refused;
-        return remember(receipt(entry, request, before, output, historyEntryId, toasts));
+        return remember(receipt(entry, request, before, output, historyEntryId ?? committedHistoryId, toasts));
       });
       const finished = value?.then ? value.then(finish) : finish(value);
       const answer = finished?.then ? finished.catch(rejected) : finished;
-      if (answer?.then) { const settled = answer.finally(() => pending.delete(request.commandId)); pending.set(request.commandId, settled); return settled; }
+      if (job) {
+        job.completion = Promise.resolve(answer).then(outcome => { job.outcome = outcome; emit({ type: 'job.completed', jobId: job.id, receipt: outcome }); return outcome; });
+        if (job.background) return journal.record(validateReceipt({ ok: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
+          action: entry.id, status: 'started', kind: 'job', jobId: job.id, authored: false, revision: { before: before.revision, after: before.revision },
+          affectedIds: [], delta: [], checks: { coverage: `studio-action:${entry.id}` }, warnings: [], undo: null }));
+      }
+      if (answer?.then) { const settled = (job?.completion ?? answer).finally(() => pending.delete(request.commandId)); pending.set(request.commandId, settled); return settled; }
       return answer;
     } catch (error) { return rejected(error); }
   }
   return { run, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    dispose() { for (const tx of transactions.values()) cancelTransaction(tx); listeners.clear(); } };
+    dispose() { for (const tx of transactions.values()) cancelTransaction(tx); for (const job of jobs.values()) if (!job.outcome) job.controller.abort(new StudioProtocolError('CANCELLED', 'Studio closed.')); listeners.clear(); } };
 }

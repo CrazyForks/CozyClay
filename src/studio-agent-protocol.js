@@ -532,6 +532,6 @@ export function validateReceipt(value) {
 		if (previous !== frameCount || r.installed.durationSeconds !== frameCount / 24 || r.verification.range.startFrame !== 0 || r.verification.range.endFrameExclusive !== frameCount || r.verification.evaluatedFrames > frameCount) fail("INVALID_RECEIPT", "Installed schedule and verification coverage disagree.");
 		if (r.verification.status === "verified" && r.verification.evaluatedFrames !== frameCount) fail("INVALID_RECEIPT", "Verified motion requires whole-clip coverage.");
 		if (r.verification.status === "unverified" && r.explicitUnverifiedAcceptance !== true && r.acceptance !== "advisory-policy") fail("INVALID_RECEIPT", "Unverified installation requires explicit user or advisory-policy acceptance.");
-	} else if (r.installed || r.verification || r.jobId || r.artifactId || r.repairs || r.explicitUnverifiedAcceptance !== undefined) fail("INVALID_RECEIPT", "Installation evidence is exclusive to installed receipts.");
+	} else if (r.installed || r.verification || (r.jobId && !["started", "completed"].includes(r.status)) || r.artifactId || r.repairs || r.explicitUnverifiedAcceptance !== undefined) fail("INVALID_RECEIPT", "Installation evidence is exclusive to installed receipts.");
 	return freezeStudioData(r);
 }
