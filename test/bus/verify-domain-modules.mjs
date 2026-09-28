@@ -29,6 +29,7 @@ function stateNames(ast) {
   return names;
 }
 const domains = {
+  cast: { states: ['characters', 'customPoses', 'waypoints', 'promptClips'], panels: ['SubjectsPanel', 'CharacterTransformPanel', 'RigPanel', 'PosePanel', 'PromptBlocksPanel'] },
   shots: { states: ['shots', 'tlFrameCount', 'cameraMove', 'fovDeg'], panels: ['CameraPanel'] },
   objects: { states: ['sceneObjects'], panels: ['PropsPanel', 'ObjectTransformPanel'] },
   scenes: { states: ['scenes', 'activeSceneId', 'projectName', 'projectDirty'], panels: ['ProjectPanel'] },
