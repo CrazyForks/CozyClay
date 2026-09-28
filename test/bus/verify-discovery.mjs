@@ -223,6 +223,45 @@ cases['context'] = async () => {
   console.log('PASS #438 acceptance 4: the agent turn context holds the id/label command index and no schema, within the context budget');
 };
 
+cases['timeout'] = async () => {
+  let entered, release;
+  // The command holds until the test has read the hub's frame for it.
+  const held = { ...STAMP, run: async args => { entered.resolve(); await release.promise; return stamped(args); } };
+  const generate = { id: 'fixture.generate', label: 'Generate fixture motion', kind: 'job', generation: 'motion',
+    description: 'A motion generation registered only in this editor fixture.', input: { type: 'object', properties: {}, required: [], additionalProperties: false },
+    run: () => ({ affectedIds: [], summary: 'Generated.' }) };
+  const s = await studio([held, generate]);
+  const observe = async (label, start) => {
+    entered = signal(); release = signal();
+    const running = start();
+    await within(entered.promise, `${label} reaching the editor`);
+    const deadlines = s.pending('run_action');
+    release.resolve();
+    return { deadlines, outcome: await within(running, label) };
+  };
+  try {
+    const invoke = await agentTools(s);
+    const viaAgent = await observe('agent run_action', () => invoke('run_action', { action: STAMP.id, args: { note: 'agent' } }));
+    assert.deepEqual(viaAgent.deadlines, [STAMP.timeoutMs], 'the agent frame waits the declared timeout, not the 30 s default');
+    assert.equal(viaAgent.outcome.status, 'completed');
+    const viaMcp = await observe('MCP studio_run', () => callTool('studio_run', { action: STAMP.id, args: { note: 'mcp' } }, s.handle));
+    assert.deepEqual(viaMcp.deadlines, [STAMP.timeoutMs], 'the MCP frame waits the declared timeout');
+    assert.equal(viaMcp.outcome.value.status, 'completed');
+    const viaCli = await observe('cclay live run', () => cli(['run', STAMP.id], s));
+    assert.deepEqual(viaCli.deadlines, [STAMP.timeoutMs], 'the CLI frame waits the declared timeout');
+    assert.equal(viaCli.outcome.code, 0, viaCli.outcome.stdout);
+    // A caller's own timeout comes from its frame and is capped at the ceiling.
+    const capped = await observe('cclay live run --timeout', () => cli(['run', STAMP.id, '--timeout', '900000'], s));
+    assert.deepEqual(capped.deadlines, [300_000], 'the hub caps a frame timeout at 300 s');
+    // The generation gate reads the declaration too: an editor-only command
+    // declared generation "motion" takes the message's one generation.
+    const turn = await agentTools(s);
+    assert.equal((await turn('run_action', { action: generate.id })).status, 'completed');
+    await assert.rejects(turn('run_action', { action: generate.id }), { code: 'GENERATION_LIMIT' });
+  } finally { await s.close(); }
+  console.log('PASS #438 acceptance 5: a declared timeoutMs of 120 s reaches the hub frame from the agent, MCP and the CLI; generation comes from the declaration');
+};
+
 cases['confirm'] = async () => {
   const s = await studio();
   try {
