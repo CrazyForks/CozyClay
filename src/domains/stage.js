@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
+import { AppContext } from '../app-context.js';
 import { createSceneStageStore } from '../store/scene-stage.js';
 import { useDocumentDomain } from '../store/use-document-store.js';
 import { createKeyLight } from '../scenes.js';
@@ -53,6 +54,31 @@ export function createStageDomain(appContext) {
     load(stage) { anchors.clear(); documentStore.load(normalizeStage(stage)); },
     dispose() { release(); documentStore.dispose(); },
   };
+}
+
+export function useStageTransaction() {
+  const app = useContext(AppContext), session = useRef(null);
+  const run = (...args) => {
+    const receipt = app.bus.run(...args);
+    if (!receipt.ok) app.notify(receipt.message);
+    return receipt;
+  };
+  function finish(cancel = false) {
+    if (!session.current) return;
+    const { txId } = session.current;
+    session.current = null;
+    return run(cancel ? 'run.cancel' : 'run.commit', { txId });
+  }
+  function begin(id) {
+    if (session.current?.id !== id) finish();
+    if (!session.current) {
+      const receipt = run('run.begin', { id, args: {} });
+      if (receipt.ok) session.current = { id, txId: receipt.txId };
+    }
+    return session.current?.txId;
+  }
+  useEffect(() => () => { if (session.current) app.bus.run('run.cancel', { txId: session.current.txId }); }, [app]);
+  return { run, begin, commit: () => finish(), cancel: () => finish(true) };
 }
 
 export function useStage(appContext) {
