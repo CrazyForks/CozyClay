@@ -157,3 +157,31 @@ test('acceptance 4: real App undo and redo traverse interleaved object and cast 
     assert.deepEqual(f.scope.appContext.castHistory, { past: [], future: [] });
   } finally { f.dispose(); }
 });
+
+const React = await import('react');
+const { renderToStaticMarkup } = await import('react-dom/server');
+const contextModule = await import('../../src/app-context.js');
+test('acceptance 5: App provides the facade and its one bus to descendants', () => {
+  const providers = [], directPorts = [];
+  walk(parsed.program, node => {
+    if (node.type === 'JSXOpeningElement' && node.name.type === 'JSXMemberExpression'
+      && node.name.object.name === 'AppContext' && node.name.property.name === 'Provider') providers.push(node);
+    if (node.type === 'Identifier' && ['studioPortsRef', 'studioActionPortsRef'].includes(node.name)) directPorts.push(node.name);
+  });
+  assert.equal(providers.length, 1);
+  assert.equal(providers[0].attributes.find(attr => attr.name?.name === 'value').value.expression.name, 'appContext');
+  assert.deepEqual(directPorts, []);
+  const f = appFixture();
+  try {
+    const context = createAppContext({ getBus: () => f.binding.bus });
+    let observed;
+    function Consumer() { observed = contextModule.useBus(); return null; }
+    renderToStaticMarkup(React.createElement(contextModule.AppContext.Provider, { value: context }, React.createElement(Consumer)));
+    assert.equal(observed, f.binding.bus);
+    const receipt = observed.run('shot.create', {}, { origin: 'ui' });
+    assert.equal(receipt.ok, true);
+    assert.equal(f.actual.readStudioState().shots.length, 1);
+    f.actual.undoScene();
+    assert.equal(f.actual.readStudioState().shots.length, 0);
+  } finally { f.dispose(); }
+});
