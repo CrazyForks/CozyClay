@@ -99,7 +99,7 @@ const liveWorkspaceTools = new Set([
 	"set_camera", "frame_shot", "add_character", "place_character", "remove_character",
 	"focus_character", "place_object", "import_mesh", "group_objects", "set_prompt_blocks", "generate_motion", "update_object",
 	"remove_object", "apply_batch", "add_scene", "switch_scene", "open_project", "capture_frame", "load_motion",
-	"studio_run",
+	"studio_commands", "studio_run",
 ]);
 const MAX_CAPTURE_BYTES = 1_000_000;
 const CAPTURE_ARTIFACT_TTL_MS = 10 * 60_000;
@@ -167,6 +167,7 @@ const TOOL_ANNOTATIONS = Object.freeze({
 	switch_scene: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
 	open_project: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
 	save_project: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+	studio_commands: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 	// Whatever the editor registers: some commands delete, export or spend a
 	// paid generation, and those answer CONFIRMATION_REQUIRED instead of running.
 	studio_run: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
@@ -1998,6 +1999,29 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					return text(`Could not write ${full}: ${error.message}`);
 				}
 				return text(`Saved "${state.name}" to ${full} (${state.doc.scenes.length} scene(s)).`);
+			},
+		),
+
+		tool(
+			"studio_commands",
+			{
+				title: "List Studio commands",
+				description:
+					"List every command the connected editor registers, for studio_run: id, label, kind (mutation, transient, job, document), " +
+					"exposure, whether it is available now (the reason when not), and timeoutMs or generation where declared. The list carries " +
+					"no schemas; pass ids to read those commands' full declarations, description and input schema included.",
+				inputSchema: {
+					ids: z.array(z.string().min(1).max(120)).min(1).max(32).optional().describe("command ids whose full declarations to read"),
+				},
+			},
+			async ({ ids }) => {
+				if (!liveHub?.connected) return liveError(new Error(noLiveEditor("studio_commands requires a connected CozyClay editor.")));
+				try {
+					const listed = await liveHub.command("inspect_studio", { scope: "actions", ...(ids ? { ids } : {}) }, liveWorkspace.getStore());
+					return text(JSON.stringify({ actions: listed?.actions ?? [] }));
+				} catch (error) {
+					return liveError(error);
+				}
 			},
 		),
 

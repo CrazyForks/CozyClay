@@ -381,9 +381,13 @@ export function createStudioAppBinding(ports) {
 			// Every scope carries the context: its revision is what the agent's next
 			// command is admitted at, so a scope without it leaves that admission stale.
 			if (command.args.scope === "catalogue") return { context: c, ...studioObjectCatalogue() };
-			// Discovery for run_action: every registered action, available ones with
-			// their description and input schema, unavailable ones with the reason.
-			if (command.args.scope === "actions") return { context: c, actions: ports.actions?.()?.list() ?? [] };
+			// Discovery for run_action: every registered action with its label, kind,
+			// exposure and availability (the reason when unavailable). Schemas are on
+			// request: ids answer those actions' full declarations, input included.
+			if (command.args.scope === "actions") {
+				const actions = ports.actions?.()?.list() ?? [];
+				return { context: c, actions: command.args.ids ? actions.filter(row => command.args.ids.includes(row.id)) : actions.map(({ input, description, ...row }) => row) };
+			}
 			const s = refresh();
 			const wanted = row => (!args.ids || args.ids.includes(row.id)) && (!args.query || Boolean(row.name?.includes(args.query)));
 			if (inspectScopes[command.args.scope]) return { context: c, scope: command.args.scope, ...inspectScopes[command.args.scope](s, wanted) };

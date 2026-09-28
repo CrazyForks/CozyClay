@@ -32,6 +32,7 @@ const USAGE = `cclay live - drive a running CozyClay studio from a terminal
   cclay live verify --receipt <id> --checks placement,framing
                                          [--visual frame --out check.png]
   cclay live undo --receipt <id>
+  cclay live commands [--ids a,b]        the commands the editor registers; ids add schemas
   cclay live run <id> [--args '<json>']  any command the editor registers, admitted like
                                          the agent's run_action; waits its declared timeout
   cclay live cmd <name> --args '<json>'   any live-protocol command
@@ -62,6 +63,7 @@ const VERBS = new Map([
 	["operate", { flags: ["--select", "--frame", "--mode", "--play", "--pause"] }],
 	["verify", { flags: ["--receipt", "--checks", "--visual", "--out"] }],
 	["undo", { flags: ["--receipt"] }],
+	["commands", { flags: ["--ids"] }],
 	["run", { flags: ["--args"], argument: "command id" }],
 	["cmd", { flags: ["--args"], argument: "command name" }],
 	["tool", { flags: ["--args"], argument: "tool name" }],
@@ -432,6 +434,11 @@ async function runVerb({ client, verb, spec, name, flags }) {
 	}
 
 	if (verb === "undo") return admitted("undo_edit", { receiptId: required(flags, "--receipt", verb) });
+
+	if (verb === "commands") {
+		const value = await command("inspect_studio", { scope: "actions", ...(flags.has("--ids") ? { ids: commaList(flags.get("--ids")) } : {}) });
+		return { actions: value?.actions ?? [] };
+	}
 
 	if (verb === "run") {
 		const args = flags.has("--args") ? jsonFlag(flags, "--args") : {};

@@ -152,7 +152,9 @@ const server = new McpServer(
 			"vocabulary (shot size, angle, lens) and render it into an AI image/video prompt. " +
 			"Call describe_scene first to see the current state. Coordinates are metres: x is right, " +
 			"z is toward the camera's default position, y is height above the floor. Rotations are " +
-			"degrees of yaw. Save with save_project to a .cclayproject file the CozyClay studio opens.",
+			"degrees of yaw. Save with save_project to a .cclayproject file the CozyClay studio opens. " +
+			"With an editor connected, studio_commands lists every command it registers and studio_run runs one " +
+			"through the editor's own command bus, answering its receipt.",
 	},
 );
 server.server.setRequestHandler(InitializeRequestSchema, async (request) => {

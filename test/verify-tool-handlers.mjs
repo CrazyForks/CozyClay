@@ -26,7 +26,7 @@ const EXPECTED_TOOLS = [
 	"frame_shot", "add_character", "place_character", "remove_character", "focus_character",
 	"place_object", "import_mesh", "group_objects", "set_prompt_blocks", "load_motion", "generate_motion",
 	"update_object", "remove_object", "apply_batch", "render_prompt", "mark_camera_move",
-	"describe_camera_move", "add_scene", "switch_scene", "open_project", "save_project", "studio_run",
+	"describe_camera_move", "add_scene", "switch_scene", "open_project", "save_project", "studio_commands", "studio_run",
 ];
 const ANNOTATION_KEYS = ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"];
 // live_status reports the workspaces; it is the one tool that is not routed into one.
