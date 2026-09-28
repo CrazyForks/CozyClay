@@ -3,6 +3,7 @@
 // Cast/stage use recordCharacterUndo; shots use recordShotUndo. A native owner
 // may instead supply beginAction (the B1 session contract) and isRetained.
 import { StudioProtocolError } from '../studio-agent-protocol.js';
+import { withCommandHistory } from '../command-bus.js';
 
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
 
@@ -35,6 +36,12 @@ export function createLegacyAdapter(domains) {
     if (!Object.hasOwn(domains, domain)) fail('INVALID_ARGUMENT', `Unknown legacy domain: ${domain}`);
     return domains[domain];
   };
+  const owners = new WeakMap();
+  const ownerOf = port => {
+    const native = port.historyRef ?? port;
+    if (!owners.has(native)) owners.set(native, Symbol('native-history'));
+    return owners.get(native);
+  };
   const emit = domain => { for (const listener of listeners) listener(domain); };
   const subscriptions = Object.entries(domains).map(([domain, port]) => port.subscribe?.(() => emit(domain)));
   function beginAction(domain, targetId, { notify = true } = {}) {
@@ -44,13 +51,15 @@ export function createLegacyAdapter(domains) {
     const check = () => { if (sessions.get(domain) !== session) fail('STALE_TARGET', 'Legacy transaction is no longer current.'); };
     const session = {
       run(fn) { check(); return native.run(fn); },
-      write(next) { check(); (native.write ?? port.write)(next); emit(domain); },
+      write(next) { check(); native.run(() => (native.write ?? port.write)(next)); emit(domain); },
       commit() {
         check();
         const { historyEntryId } = native.commit();
         sessions.delete(domain);
         const handle = historyEntryId ? {
-          historyEntryId,
+          historyEntryId, owner: ownerOf(port),
+          canUndo: () => port.canUndo ? port.canUndo(historyEntryId) : port.historyRef.current.past.at(-1)?.historyEntryId === historyEntryId,
+          canRedo: () => port.canRedo ? port.canRedo(historyEntryId) : port.historyRef.current.future.at(-1)?.historyEntryId === historyEntryId,
           isRetained: () => port.isRetained ? port.isRetained(historyEntryId) : [...port.historyRef.current.past, ...port.historyRef.current.future].some(row => row.historyEntryId === historyEntryId),
           undo() { port.undo(); emit(domain); },
           redo() { port.redo(); emit(domain); },
@@ -88,6 +97,35 @@ export function createLegacyAdapter(domains) {
     guardWrites(guard) { guards.add(guard); return () => guards.delete(guard); },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     subscribeHistory(listener) { historyListeners.add(listener); return () => historyListeners.delete(listener); },
-    dispose() { for (const session of sessions.values()) session.cancel(); for (const release of subscriptions) release?.(); listeners.clear(); historyListeners.clear(); },
+    dispose() { for (const session of sessions.values()) session.cancel(); for (const release of subscriptions) release?.(); listeners.clear(); historyListeners.clear(); guards.clear(); },
+  };
+}
+
+// Wrap the actual scene-history store, not a parallel object snapshot stack.
+// All adapter writes use B1's native command session (including wire previews).
+export function sceneHistoryDomain(scene) {
+  const native = withCommandHistory(scene), entries = new Map();
+  const retained = id => entries.has(id) && native.hasHistoryState(entries.get(id).before);
+  return {
+    read: () => native.objects,
+    write: next => native.applyAtomic(() => next),
+    beginAction() {
+      const session = native.beginCommand(), before = native.objects;
+      return {
+        run: fn => session.run(fn),
+        cancel: () => session.cancel(),
+        commit() {
+          if (!session.commit()) return { historyEntryId: null };
+          const historyEntryId = crypto.randomUUID();
+          entries.set(historyEntryId, { before, after: native.objects });
+          for (const id of entries.keys()) if (!retained(id)) entries.delete(id);
+          return { historyEntryId };
+        },
+      };
+    },
+    isRetained: retained,
+    canUndo: id => retained(id) && native.canUndo() && native.objects === entries.get(id).after,
+    canRedo: id => retained(id) && native.canRedo() && native.objects === entries.get(id).before,
+    undo: () => native.undo(), redo: () => native.redo(),
   };
 }
