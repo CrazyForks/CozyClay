@@ -1,4 +1,8 @@
+import { createContext, useContext } from 'react';
 import { HISTORY_LIMIT } from './history.js';
+
+export const AppContext = createContext(null);
+export function useBus() { return useContext(AppContext).bus; }
 
 const ref = current => ({ current });
 
@@ -8,7 +12,7 @@ export function createAppContext({
   clock: opClockRef = ref(0), history: charHistoryRef = ref({ past: [], future: [] }),
   objectClock: lastObjectOpRef = ref(0), suppressObjectClock: suppressObjectClockRef = ref(false),
   characters: charactersRef = ref(null), scenes: scenesRef = ref(null),
-  motion: motionRef = ref(null), state: liveStateRef = ref(null),
+  motion: motionRef = ref(null), state: liveStateRef = ref(null), getBus,
 } = {}) {
   const ports = {}, actionPorts = {};
   let currentPorts = {};
@@ -46,6 +50,7 @@ export function createAppContext({
     publishCharacters(value) { charactersRef.current = value; },
     publishScenes(value) { scenesRef.current = value; },
     publishMotion(value) { motionRef.current = value; },
+    get bus() { return getBus(); },
     ports,
     actionPorts,
     updatePorts(next) {

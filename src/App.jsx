@@ -63,7 +63,7 @@ import { studioActionRefusal, resolveStudioToast } from "./studio-actions.js";
 import { createStudioAppActions } from "./commands/index.js";
 import { withCommandHistory } from "./command-bus.js";
 import { createStudioAppBinding } from "./studio-app-binding.js";
-import { createAppContext } from "./app-context.js";
+import { AppContext, createAppContext } from "./app-context.js";
 import { HISTORY_LIMIT } from "./history.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
@@ -643,7 +643,12 @@ async function fetchImportSource(url) {
 export default function App() {
 	// App retains the lifetime and ownership of these cells; the facade only
 	// centralizes access for current and long-lived callbacks.
-	const [appContext] = useState(() => createAppContext({ motion: { get current() { return bufferRef.current.motion; } } }));
+	const [appContext] = useState(() => createAppContext({
+		// These cells initialize later in this render. Readers run only after
+		// initialization and follow the same refs across subsequent renders.
+		motion: { get current() { return bufferRef.current.motion; } },
+		getBus: () => studioBindingRef.current.bus,
+	}));
 	const embedMode = ["scene", "playview"].includes(new URLSearchParams(globalThis.location?.search || "").get("embed"));
 	// The landing page's try-it iframe: full studio interaction on a preset
 	// scene with the project chrome hidden and saving off (see playground.js).
@@ -3621,13 +3626,11 @@ export default function App() {
 	const setStudioAgentMode = (enabled) => setAgentCollapsed(!enabled);
 	const studioDocumentEpochRef = useRef(crypto.randomUUID());
 	const studioSceneEpochRef = useRef(crypto.randomUUID());
-	const studioPortsRef = useRef(null);
 	// The one Studio action registry, built from the command modules
 	// (src/commands), and the one generic port object they register over. Every
 	// render refreshes the port members in place, so a run always reaches the
 	// latest handlers; the UI controls and run_action share both.
 	const studioActionsRef = useRef(null);
-	const studioActionPortsRef = useRef({});
 	const renderWaitersRef = useRef([]);
 	const studioHistoryRef = useRef(new Map());
 	const studioActionGroupRef = useRef(null);
@@ -12055,7 +12058,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		studioPhysicsRunning: autoPhysicsRunning,
 		studioView: { mode: workflowMode, frame: tlFrame, playing: tlPlaying, lookThrough: lookThroughShot, grid: gridView, autoColor },
 	});
-	studioPortsRef.current = {
+	appContext.updatePorts({
 		read: readStudioState, revision: sceneRevisionRef, bounds: studioBounds, commit: commitStudioDraft, commitMotion: commitStudioMotion,
 		operate: operateStudio, undo: undoScene, stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
 		// One shot frame as raw read-back pixels (rows bottom-up), from the export
@@ -12091,8 +12094,8 @@ function resizePromptClip(id, edge, rawFrame) {
 		captureToasts: listener => { toastSinkRef.current.add(listener); return () => toastSinkRef.current.delete(listener); },
 		showRefusal: setToast,
 		emitCommandEvent: detail => window.dispatchEvent(new CustomEvent("cozyclay:command", { detail })),
-	};
-	Object.assign(studioActionPortsRef.current, {
+	});
+	appContext.updateActionPorts({
 		// Shots and objects come from the synchronously published read model, so
 		// an action sees its own edit before React renders it.
 		state: () => ({
@@ -12127,7 +12130,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		importAsset: (args, context) => liveHandlersRef.current.import_asset(args, context), fetchImportSource,
 		setAiShotMode: setMode, setAiImageModel: setImageModel, generate, generateFalMotion,
 	});
-	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(studioActionPortsRef.current);
+	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(appContext.actionPorts);
 	/** UI door into the shared registry. Refusal messages are written for the
 	 * model, so a person only ever sees the localized `uiMessage` a thrower
 	 * attached (studioActionRefusal); any other refusal stays silent, as the
@@ -12140,7 +12143,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		};
 		try {
 			// A long-running action answers with a promise that refuses the same way.
-			const result = studioBindingRef.current.bus.run(id, args, { origin: "ui" });
+			const result = appContext.bus.run(id, args, { origin: "ui" });
 			const answer = receipt => receipt.ok ? receipt : null;
 			return typeof result?.then === "function" ? result.then(answer, refused) : answer(result);
 		} catch (error) {
@@ -12148,9 +12151,8 @@ function resizePromptClip(id, edge, rawFrame) {
 		}
 	}
 	if (!studioBindingRef.current) {
-		const delegates = Object.fromEntries(Object.keys(studioPortsRef.current).filter(key => key !== "revision").map(key => [key, (...args) => studioPortsRef.current[key](...args)]));
-		studioBindingRef.current = createStudioAppBinding({ ...delegates, revision: sceneRevisionRef });
-		studioBindingRef.current.stepHistory = redo => studioPortsRef.current.stepHistory(redo);
+		studioBindingRef.current = createStudioAppBinding(appContext.ports);
+		studioBindingRef.current.stepHistory = redo => appContext.ports.stepHistory(redo);
 		studioBindingRef.current.publishSemantic = (domain, after) => {
 			if (domain === "characters" && Array.isArray(after)) { appContext.publishCharacters(after); appContext.patchLive({ characters: after }); }
 			if (domain === "shots") appContext.patchLive({ shots: after });
@@ -12174,6 +12176,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					: ko("Saved", "저장됨");
 
 	return (
+		<AppContext.Provider value={appContext}>
 		<div className={"app" + (renderActive ? "" : " render-idle")} data-workflow-mode={workflowMode} data-embed-mode={embedMode ? "playview" : playgroundMode ? "playground" : undefined} data-playground-hint={playgroundMode ? playgroundHint ?? undefined : undefined} data-tutorial-step={cameraTutorial ? cameraTutorialStep ?? undefined : undefined} data-rail-draw={railDraw ? 1 : undefined}>
 			<header className="topbar">
 				<div className="logo">
@@ -15460,6 +15463,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				</div>
 			)}
 		</div>
+		</AppContext.Provider>
 	);
 }
 /** Mid-clip frame of a base motion, the sensible default for the destination. */

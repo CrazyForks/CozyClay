@@ -161,7 +161,7 @@ function fixture(options={}) {
   'selectSceneDocument','createSceneDocumentFromUi','duplicateSceneDocumentFromUi','renameSceneDocumentFromUi','deleteSceneDocumentFromUi',
   'generate','copyPrompt','framingDistance','showFalMotionLock','generateFalMotion','generateFalMotionFromUi','falMotionUnavailable'];
  // The extracted App functions now reach these same fixture-owned cells through the facade.
- scope.appContext=createAppContext({clock,history,objectClock:lastObject,suppressObjectClock,characters:characterRef,state:live,scenes:scope.scenesRef});
+ scope.appContext=createAppContext({clock,history,objectClock:lastObject,suppressObjectClock,characters:characterRef,state:live,scenes:scope.scenesRef,getBus:()=>scope.studioBindingRef.current.bus});
  const code=names.map(n=>{assert(declarations.has(n),`actual App function ${n}`);return declarations.get(n);}).join('\n');
  const actual=new Function(...Object.keys(scope),code+`\nreturn {${names.join(',')}};`)(...Object.values(scope));
  // React re-renders App with the state it committed: these functions close

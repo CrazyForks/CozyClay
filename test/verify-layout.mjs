@@ -204,14 +204,14 @@ expect(
 // take and prompt schedule without installing either into A.
 expect(
 	"a B completion after selection changes retains B ownership through decode and rig waits",
-	app.includes("const targetCharacter = charactersRef.current.find((entry) => entry.id === targetCharacterId);") && app.includes("const targetStillExists = charactersRef.current.some((entry) => entry.id === targetCharacter.id);") && app.includes("const bufferOwnsTarget = targetCharacter.id === loadedLayerCharRef.current;") && app.includes("if (bufferOwnsTarget) {") && app.includes("setPromptClips(targetPromptClips);"),
+	app.includes("const targetCharacter = appContext.live.characters.find((entry) => entry.id === targetCharacterId);") && app.includes("const targetStillExists = appContext.live.characters.some((entry) => entry.id === targetCharacter.id);") && app.includes("const bufferOwnsTarget = targetCharacter.id === loadedLayerCharRef.current;") && app.includes("if (bufferOwnsTarget) {") && app.includes("setPromptClips(targetPromptClips);"),
 );
 // Given A starts a completion and B becomes active before it settles, when
 // the target-owned completion resumes, then B's editing buffer receives B's
 // clip and prompts and an A failure cannot clear B's motion.
 expect(
 	"an active B receives its own completion after an A to B selection interleaving",
-	app.includes("const targetCharacterId = args.characterId ?? liveStateRef.current.activeCharacterId;") && app.includes("const targetPromptClips = clips;") && app.includes("targetCharacterId,") && app.includes("if (targetCharacterId === loadedLayerCharRef.current && !commandContext) setMotion(null);"),
+	app.includes("const targetCharacterId = args.characterId ?? appContext.live.state.activeCharacterId;") && app.includes("const targetPromptClips = clips;") && app.includes("targetCharacterId,") && app.includes("if (targetCharacterId === loadedLayerCharRef.current && !commandContext) setMotion(null);"),
 );
 expect("individual block generation action is removed", !app.includes("Generate selected block"));
 expect("Prompt Block edits stay synced with ARDY input", app.includes("changePromptClip(selectedPromptId") && app.includes("setArdyPrompt(event.target.value)"));

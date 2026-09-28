@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { createFirstShotHandoff, cameraTutorialSuppressed, rememberCameraTutorialTerminal } from "../src/first-shot-handoff.js";
 import { shotIndexAtFrame } from "../src/cuts.js";
+import { createAppContext } from "../src/app-context.js";
 
 const values = new Map();
 const storage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) };
@@ -146,6 +147,7 @@ for (const timing of ["before-rig", "during-load", "unchanged"]) {
 		setTlFrame(value) { context.frame = value; }, setTlFps() {}, setTlPlaying() {},
 		setCommittedIkEdits() {}, setToast() {}, ko: (en) => en,
 	};
+	context.appContext = createAppContext({ characters: context.charactersRef, state: context.liveStateRef });
 	await runInNewContext(`(${startEntry})()`, context);
 	const actualLoad = runInNewContext(`(${motionEntry})`, context);
 	const edit = runInNewContext(`${markEntry}; markSemanticEdit`, context);
