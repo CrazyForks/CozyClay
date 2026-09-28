@@ -150,6 +150,7 @@ for (const timing of ["before-rig", "during-load", "unchanged"]) {
 		setCommittedIkEdits() {}, setToast() {}, ko: (en) => en,
 	};
 	context.appContext = createAppContext({ characters: context.charactersRef, state: context.liveStateRef });
+	context.castDomain = context;
 	await runInNewContext(`(${startEntry})()`, context);
 	const actualLoad = runInNewContext(`(${motionEntry})`, context);
 	const edit = runInNewContext(`${markEntry}; markSemanticEdit`, context);

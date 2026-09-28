@@ -1,3 +1,9 @@
+import { useCast } from "./domains/cast.js";
+import PromptBlocksPanel from "./panels/PromptBlocksPanel.jsx";
+import PosePanel from "./panels/PosePanel.jsx";
+import RigPanel from "./panels/RigPanel.jsx";
+import CharacterTransformPanel from "./panels/CharacterTransformPanel.jsx";
+import SubjectsPanel from "./panels/SubjectsPanel.jsx";
 import { useShots } from "./domains/shots.js";
 import CameraPanel from "./panels/CameraPanel.jsx";
 import { useObjects } from "./domains/objects.js";
@@ -820,7 +826,7 @@ export default function App() {
 		startupStage,
 		get beginGestureUndo() { return beginGestureUndo; },
 		get endGestureUndo() { return endGestureUndo; },
-		get recordCharacterUndo() { return recordCharacterUndo; },
+		get recordCharacterUndo() { return castDomain.recordCharacterUndo; },
 	}));
 	const { preset, shotAspectKey, environmentImage, cameraPresetId, sensorId, keyLight, changeKeyLight, resetKeyLight, changeEnvironmentImage, hasEnvSheet, environment, style } = stageDomain;
 	const shotsDomain = useShots(appContext.forRender({
@@ -837,7 +843,7 @@ export default function App() {
 		get motionPos() { return motionPos; },
 		get playMode() { return playMode; },
 		get promptTextSessionRef() { return promptTextSessionRef; },
-		get recordCharacterUndo() { return recordCharacterUndo; },
+		get recordCharacterUndo() { return castDomain.recordCharacterUndo; },
 		get recordSessionUndo() { return recordSessionUndo; },
 		get runStudioAction() { return runStudioAction; },
 		get selectWorkflowMode() { return selectWorkflowMode; },
@@ -1191,18 +1197,63 @@ export default function App() {
 	// subject line) lives in `characters`, and the legacy A/B view of the
 	// world is derived below so the rest of the studio keeps working while
 	// spawned extras ride the same rails.
-	const [characters, setCharacters, editCharacters] = useSemanticState(startupStage.characters, markSemanticEdit, "characters");
+	const castDomain = useCast(appContext.forRender({
+		get beginGestureUndo() { return beginGestureUndo; },
+		get bufferRef() { return bufferRef; },
+		get clearMotion() { return clearMotion; },
+		get committedIkEdits() { return committedIkEdits; },
+		get environment() { return environment; },
+		get environmentImage() { return environmentImage; },
+		get exitLineEditMode() { return exitLineEditMode; },
+		get frameCountRef() { return frameCountRef; },
+		get gestureUndoRef() { return gestureUndoRef; },
+		get hasEnvSheet() { return hasEnvSheet; },
+		get ikStateRef() { return ikStateRef; },
+		get ikStatesRef() { return ikStatesRef; },
+		get keyLight() { return keyLight; },
+		get lineEditMode() { return lineEditMode; },
+		get loadedLayerCharRef() { return loadedLayerCharRef; },
+		get markSemanticEdit() { return markSemanticEdit; },
+		get motion() { return motion; },
+		get motionFullRef() { return motionFullRef; },
+		get promptTextSessionRef() { return promptTextSessionRef; },
+		get publishStudioCharacters() { return publishStudioCharacters; },
+		get recordSessionUndo() { return recordSessionUndo; },
+		get rigReportersRef() { return rigReportersRef; },
+		get rigWaitersRef() { return rigWaitersRef; },
+		get runStudioAction() { return runStudioAction; },
+		get setArdyDuration() { return setArdyDuration; },
+		get setArdyPrompt() { return setArdyPrompt; },
+		get setCommittedIkEdits() { return setCommittedIkEdits; },
+		get setIkTick() { return setIkTick; },
+		get setMotion() { return setMotion; },
+		get setSelectedHierarchyId() { return setSelectedHierarchyId; },
+		get setShots() { return setShots; },
+		get setTlFrame() { return setTlFrame; },
+		get setTlFrameCount() { return setTlFrameCount; },
+		get setToast() { return setToast; },
+		get shots() { return shots; },
+		get snapshotIkKeys() { return snapshotIkKeys; },
+		get stageDomain() { return stageDomain; },
+		get startupShotState() { return startupShotState; },
+		get startupStage() { return startupStage; },
+		get style() { return style; },
+		get tlFps() { return tlFps; },
+		get tlFrame() { return tlFrame; },
+		get tlFrameCount() { return tlFrameCount; },
+	}));
+	const { characters, editCharacters, customPoses, posing, setPosing, posingClosing, setPosingClosing, studioPick, setStudioPick, rigs, setRigs, rigMountEpoch, setRigMountEpoch, poseRevision, setPoseTick, charA, charB, showB, poseA, poseB, subject, subject2, rigA, rigB, updateCharacterAt, setCharA, setCharB, setPoseA, setPoseB, setSubject, setSubject2, setShowB, moveCharacter, removeCharacter, reportRig, spawnCharacter, charKeyToHierarchyId, charIdFromHierarchyId, activeCharacterId, setActiveCharacterId, rowIdForCharIndex, activeChar, selectActiveCharacterInHierarchy, activeCharIndex, activeRig, waitForRig, ghostLayers, snapshotCast, changeInspectorCharacter, restoreCast, hasCharSheet, setHasCharSheet, promptBlocksReveal, setPromptBlocksReveal, revealPromptBlocks, waypointMode, setWaypointMode, waypoints, setWaypoints, activeWaypointId, setActiveWaypointId, pendingWaypointFrame, setPendingWaypointFrame, promptClips, setPromptClips, editPromptClips, selectedPromptId, setSelectedPromptId, photoPoseState, setPhotoPoseState, photoPoseError, setPhotoPoseError, allPoses, selectablePoses, posingIndex, posingChar, posedRig, setPosed, WALK_SPEED_MPS, ROOT_ROOM_LIMIT, clampRootPosition, rootStart, validateWaypointAt, queueRootWaypointFrame, castMemberOf, readCharacterWaypoints, writeCharacterWaypoints, addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, addFloorWaypoint, moveWaypoint, removeWaypoint, toggleWaypointMode, openStudio, closeStudio, saveCurrentPose, savePose, posePhotoFile, removePose, addPromptClip, changePromptClip, PROMPT_BLOCK_MAX_FRAMES, resizePromptClip, movePromptClip, removePromptClip } = castDomain;
 	// The cast as of this render, for async handlers: an extraction that
 	// started three renders ago must place its takes against the CURRENT cast,
 	// not the one its closure captured.
 	appContext.publishCharacters(characters);
-	const [customPoses, setCustomPoses] = useState(() => loadCustomPoses());
-	const [posing, setPosing] = useState(null);
-	const [posingClosing, setPosingClosing] = useState(false);
-	const [studioPick, setStudioPick] = useState(null);
-	const [rigs, setRigs] = useState({});
-	const [rigMountEpoch, setRigMountEpoch] = useState(0);
-	const [poseRevision, setPoseTick] = useState(0);
+
+
+
+
+
+
+
 	const [falMotion, setFalMotion] = useState({ a: null, b: null, job: null, status: "idle", error: "", instruction: "", dailyRemaining: null });
 	const [falMotionEnabled, setFalMotionEnabled] = useState(false);
 	const [falMotionMode, setFalMotionMode] = useState("interpolate");
@@ -1225,88 +1276,33 @@ export default function App() {
 
 	// Fallback second slot mirrors the old charB defaults so preset math and
 	// the two-subject inspector never see a hole before B exists.
-	const charA = characters[0] ?? createCharacterEntry(null, 0);
-	const charB = characters[1] ?? { ...createCharacterEntry(null, 1), x: 1.15, z: 0.1, rot: -14 };
-	const showB = characters.some((entry, index) => index > 0 && !entry.hidden);
-	const poseA = charA.pose ?? DEFAULT_POSE;
-	const poseB = charB.pose ?? DEFAULT_POSE;
-	const subject = charA.subject ?? DEFAULT_SUBJECT;
-	const subject2 = charB.subject ?? DEFAULT_SUBJECT2;
-	const rigA = rigs[charA.id] ?? null;
-	const rigB = (characters[1] ? rigs[charB.id] : null) ?? null;
 
-	function updateCharacterAt(index, next) {
-		editCharacters((list) => list.map((entry, i) => {
-			if (i !== index) return entry;
-			const resolved = typeof next === "function" ? next(entry) : next;
-			return { ...entry, ...resolved };
-		}));
-	}
+
+
+
+
+
+
+
+
+
+
 	// The shims keep the legacy call sites (inspector sliders, presets, pose
 	// studio, prompts) untouched while the list stays the source of truth.
-	const setCharA = (next) => updateCharacterAt(0, next);
-	const setCharB = (next) => updateCharacterAt(1, next);
-	const setPoseA = (pose) => updateCharacterAt(0, (entry) => ({ pose: typeof pose === "function" ? pose(entry.pose ?? DEFAULT_POSE) : pose }));
-	const setPoseB = (pose) => updateCharacterAt(1, (entry) => ({ pose: typeof pose === "function" ? pose(entry.pose ?? DEFAULT_POSE) : pose }));
-	const setSubject = (value) => updateCharacterAt(0, (entry) => ({ subject: typeof value === "function" ? value(entry.subject) : value }));
-	const setSubject2 = (value) => updateCharacterAt(1, (entry) => ({ subject: typeof value === "function" ? value(entry.subject) : value }));
-	function setShowB(next) {
-		recordCharacterUndo();
-		editCharacters((list) => {
-			const anyVisibleExtra = list.some((entry, i) => i > 0 && !entry.hidden);
-			const on = typeof next === "function" ? next(anyVisibleExtra) : next;
-			if (on) {
-				if (anyVisibleExtra) return list;
-				const hiddenIdx = list.findIndex((entry, i) => i > 0 && entry.hidden);
-				if (hiddenIdx > 0) return list.map((entry, i) => (i === hiddenIdx ? { ...entry, hidden: false } : entry));
-				return [...list, createCharacterEntry({ id: nextCharacterId(list), x: 1.15, z: 0.1, rot: -14, pose: DEFAULT_POSE, subject: DEFAULT_SUBJECT2 }, list.length)];
-			}
-			return list.map((entry, i) => (i > 0 && !entry.hidden ? { ...entry, hidden: true } : entry));
-		});
-	}
-	function moveCharacter(charId, next) {
-		editCharacters((list) => list.map((entry) => {
-			if (entry.id !== charId) return entry;
-			const resolved = typeof next === "function" ? next(entry) : next;
-			return { ...entry, ...resolved };
-		}));
-	}
-	function removeCharacter(charId) {
-		const list = appContext.live.characters;
-		if (list.length <= 1) return;
-		recordCharacterUndo();
-		const nextCharacters = list.filter((entry) => entry.id !== charId);
-		appContext.publishCharacters(nextCharacters);
-		editCharacters(nextCharacters);
-		// The deleted layer's untrimmed take goes with it: a recycled id must
-		// never inherit a stranger's take, and its stature left with the entry.
-		motionFullRef.current.delete(charId);
-		setRigs((current) => {
-			if (!(charId in current)) return current;
-			const next = { ...current };
-			delete next[charId];
-			return next;
-		});
-	}
+
+
+
+
+
+
+
+
+
 	// Per-character rig report: stable callback identity per character so
 	// the Character effect does not re-fire on every App render.
 	const rigReportersRef = useRef(new Map());
 	const rigWaitersRef = useRef(new Map());
-	const reportRig = (charId) => {
-		if (!rigReportersRef.current.has(charId)) {
-			rigReportersRef.current.set(charId, (rig) => {
-				setRigs((current) => (current[charId] === rig ? current : { ...current, [charId]: rig }));
-				window.__cozyclayMcpRigReady = [...new Set([...(window.__cozyclayMcpRigReady ?? []), charId])];
-				window.dispatchEvent(new CustomEvent("cozyclay:mcp-rig-ready", { detail: charId }));
-				const waiter = rigWaitersRef.current.get(charId);
-				if (waiter) {
-					rigWaitersRef.current.delete(charId);
-					waiter(rig);
-				}
-			});
-		}
-		return rigReportersRef.current.get(charId);
-	};
+
 
 	/* --------------------------- asset dragging ---------------------------- */
 
@@ -1315,13 +1311,7 @@ export default function App() {
 	// payload is discriminated — {kind:'character'|'object'|'image'|'mesh'} — so one
 	// drag seam serves the whole shelf.
 	const [assetDrag, setAssetDrag] = useState(null);
-	const spawnCharacter = (model, x, z) => {
-		recordCharacterUndo();
-		const id = nextCharacterId(characters);
-		editCharacters((list) => [...list, createCharacterEntry({ id, model, x, z, pose: DEFAULT_POSE, subject: "a person" }, list.length)]);
-		setSelectedHierarchyId(`character:${id}`);
-		setToast(ko("Character added to the scene", "인물을 씬에 추가했어요"));
-	};
+
 	function beginAssetDrag(payload, event) {
 		const start = { x: event.clientX, y: event.clientY };
 		setAssetDrag({ payload, x: start.x, y: start.y });
@@ -1366,11 +1356,7 @@ export default function App() {
 	}
 	// Viewport picks tag bodies with "A"/"B"/charId and surfaces route the
 	// result to a hierarchy row: the first two keep their legacy row ids.
-	const charKeyToHierarchyId = (key) => {
-		if (key === "A" || key === "a" || key === "char:A") return "characterA";
-		if (key === "B" || key === "b" || key === "char:B") return "characterB";
-		return `character:${key.startsWith("char:") ? key.slice(5) : key}`;
-	};
+
 
 
 	/* ------------------------------ IK layer ------------------------------ */
@@ -1416,12 +1402,7 @@ export default function App() {
 	// Every character owns an animation layer (root path, prompt blocks,
 	// generated clip, IK keys). The studio's motion machinery edits ONE layer
 	// at a time — the ACTIVE character's — and selection decides who that is.
-	const charIdFromHierarchyId = (hierarchyId) => {
-		if (hierarchyId === "characterA") return characters[0]?.id ?? null;
-		if (hierarchyId === "characterB") return characters[1]?.id ?? null;
-		if (hierarchyId?.startsWith("character:")) return hierarchyId.slice(10);
-		return null;
-	};
+
 	const toggleHierarchyHidden = (hierarchyId) => {
 		const objectId = sceneObjectIdFromHierarchy(hierarchyId);
 		if (objectId) {
@@ -1432,13 +1413,13 @@ export default function App() {
 		}
 		const charId = charIdFromHierarchyId(hierarchyId);
 		if (!charId) return;
-		recordCharacterUndo();
+		castDomain.recordCharacterUndo();
 		editCharacters((list) => list.map((item) => (item.id === charId ? { ...item, hidden: item.hidden !== true } : item)));
 	};
 	// State, not a ref: a ref written inside an effect never re-renders, so
 	// with an idle app the active character silently stayed behind the row
 	// the user just clicked.
-	const [activeCharacterId, setActiveCharacterId] = useState(characters[0]?.id ?? null);
+
 	useEffect(() => {
 		// A rig node id resolves through its row (#76): selecting any bone
 		// activates the body it belongs to, so IK and the timeline buffer
@@ -1449,39 +1430,19 @@ export default function App() {
 	}, [selectedHierarchyId, characters]);
 	/** The hierarchy row id a cast LIST index owns — mirror of
 	 * hierarchy-model's characterRowId, for building namespaced rig ids. */
-	const rowIdForCharIndex = (index) => index === 0 ? "characterA" : index === 1 ? "characterB" : characters[index] ? `character:${characters[index].id}` : "characterA";
-	const activeChar = characters.find((entry) => entry.id === activeCharacterId) ?? characters[0] ?? charA;
+
+
 	// Root paths and prompt blocks are the active character's animation layer.
 	// With the Inspector driven by selection, showing those tools means putting
 	// that character in the hierarchy selection.
-	const selectActiveCharacterInHierarchy = () => {
-		const id = activeCharacterId ?? characters[0]?.id;
-		if (id) setSelectedHierarchyId(`character:${id}`);
-	};
-	const activeCharIndex = Math.max(0, characters.findIndex((entry) => entry.id === activeChar.id));
-	const activeRig = rigs[activeChar.id] ?? null;
-	const waitForRig = (charId, timeoutMs = 10000) => {
-		const current = rigs[charId];
-		if (current) return Promise.resolve(current);
-		return new Promise((resolve, reject) => {
-			const timer = setTimeout(() => {
-				rigWaitersRef.current.delete(charId);
-				reject(new Error(ko("The active character's rig is not loaded", "활성 인물의 리그가 로드되지 않았어요")));
-			}, timeoutMs);
-			rigWaitersRef.current.set(charId, (rig) => {
-				clearTimeout(timer);
-				resolve(rig);
-			});
-		});
-	};
+
+
+
+
 	// Read-only previews of the other cast members' layers for the timeline,
 	// memoized: a fresh array every render would re-render every lane on
 	// every playhead tick.
-	const ghostLayers = useMemo(() => characters.flatMap((entry, index) => entry.id === activeChar.id || entry.hidden ? [] : [{
-		owner: `S${index + 1}`,
-		promptClips: entry.layer?.promptClips ?? [],
-		waypointFrames: (entry.layer?.waypoints ?? []).map((waypoint) => waypoint.frame),
-	}]), [characters, activeChar.id]);
+
 
 	// Right-sidebar tab. "inspector" shows the selection's properties; "shot"
 	// holds shot-global settings (type presets, prompt); "motion" holds the
@@ -1560,8 +1521,8 @@ export default function App() {
 		get setActiveWaypointId() { return setActiveWaypointId; },
 		get setCameraTutorial() { return setCameraTutorial; },
 		get setCameraTutorialHandoff() { return setCameraTutorialHandoff; },
-		get setCharacters() { return setCharacters; },
-		get setCustomPoses() { return setCustomPoses; },
+		get setCharacters() { return castDomain.setCharacters; },
+		get setCustomPoses() { return castDomain.setCustomPoses; },
 		get setFirstSuccessGuideOpen() { return setFirstSuccessGuideOpen; },
 		get setHasCharSheet() { return setHasCharSheet; },
 		get setMotion() { return setMotion; },
@@ -1922,33 +1883,7 @@ export default function App() {
 	 * Character gestures (spawn, remove, show/hide, plan-board drags) push a
 	 * full-cast snapshot with the editing buffer folded in, and undo/redo
 	 * picks the newer of the two stacks so one Ctrl+Z history covers both. */
-	const snapshotCast = (includeShots = false) => ({
-		// The key light rides the same undo stack as everything else — its
-		// absence used to make Ctrl+Z after a light edit undo an unrelated
-		// earlier action while the light stayed put (research claim C1).
-		keyLight: { ...keyLight },
-		environmentImage,
-		environment,
-		style,
-		hasEnvSheet,
-		characters: appContext.live.characters.map((entry) => ({
-			...entry,
-			layer: entry.id === activeChar.id
-				? { waypoints: bufferRef.current.waypoints, promptClips: bufferRef.current.promptClips }
-				: entry.layer,
-		})),
-		bufferMotion: bufferRef.current.motion,
-		bufferCharId: loadedLayerCharRef.current,
-		// The ACTIVE character's authored IK layer. Only the keys (deep-copied so
-		// undo can never hand back live quaternions) and the committed-edit list
-		// travel: targets/plants/tracked are transient solver state the next
-		// seed/drag rebuilds anyway.
-		ikKeys: snapshotIkKeys(ikStateRef.current),
-		committedIkEdits,
-		// Shot-op entries carry the shot list too; character-op entries leave it
-		// out so undoing a character move never rolls back unrecorded shot edits.
-		...(includeShots ? { shots } : {}),
-	});
+
 	/** Deep copy of an IK state's key map: frame → Map(trackId → {q,p}), with
 	 * every quaternion/position cloned so a snapshot never shares references
 	 * with the live rig state (a later bake would otherwise rewrite history). */
@@ -1974,7 +1909,7 @@ export default function App() {
 	function editCharacterIkKeys(characterId, mutate) {
 		const state = ikStateFor(characterId);
 		const before = snapshotIkKeys(state);
-		recordCharacterUndo();
+		castDomain.recordCharacterUndo();
 		mutate(state);
 		markSemanticEdit("pose", before, state.keys);
 		setIkTick((value) => value + 1);
@@ -2034,9 +1969,7 @@ export default function App() {
 			...(key.keepTranslations ? { keepTranslations: true } : {}),
 		}]));
 	}
-	function recordCharacterUndo() {
-		appContext.recordCharacterUndo(snapshotCast());
-	}
+
 	/** One Ctrl+Z entry for a structural shot edit (delete, split, duplicate,
 	 * add, reorder): the same history as the cast, with the shot list aboard. */
 
@@ -2047,7 +1980,7 @@ export default function App() {
 	 * changed; any other edit, undo or redo in between closes it, so the next
 	 * keystroke or drag opens a fresh entry. `sessionRef` is a plain ref of
 	 * `{ key, tick }`. */
-	function recordSessionUndo(sessionRef, key, record = recordCharacterUndo) {
+	function recordSessionUndo(sessionRef, key, record = castDomain.recordCharacterUndo) {
 		const past = appContext.castHistory.past;
 		const open = sessionRef.current
 			&& sessionRef.current.key === key
@@ -2103,10 +2036,7 @@ export default function App() {
 	/** The Inspector's character Transform rows. The viewport gizmo already
 	 * records on drag start; these numeric rows are the same edit through
 	 * another door, so they record once per scrub / typed commit. */
-	function changeInspectorCharacter(gesture, patch) {
-		beginGestureUndo(`character:${activeChar.id}:${gesture}`);
-		updateCharacterAt(activeCharIndex, patch);
-	}
+
 	/** The set's look reference. One click, one entry — and the image is part
 	 * of the cast snapshot, so undo puts the previous picture back. */
 
@@ -2117,47 +2047,7 @@ export default function App() {
 			&& framingSessionRef.current.key === `framing:${shotId}`
 			&& past[past.length - 1]?.tick === framingSessionRef.current.tick;
 	}
-	function restoreCast(snapshot) {
-		// Captured BEFORE the buffer pointer moves: whose IK state the live ref
-		// currently holds.
-		const loadedIk = loadedLayerCharRef.current;
-		if (snapshot.shots) setShots(snapshot.shots);
-		setCharacters(snapshot.characters);
-		const bufferChar = snapshot.characters.find((entry) => entry.id === snapshot.bufferCharId) ?? snapshot.characters[0];
-		setWaypoints((bufferChar?.layer?.waypoints ?? []).map((waypoint) => ({ ...waypoint })));
-		setPromptClips((bufferChar?.layer?.promptClips ?? []).map((clip) => ({ ...clip })));
-		setMotion(snapshot.bufferMotion);
-		loadedLayerCharRef.current = bufferChar?.id ?? null;
-		setActiveCharacterId(bufferChar?.id ?? null);
-		// IK keys go back onto the snapshot owner's layer state (again deep-copied,
-		// so stepping through the same entry twice cannot alias what the rig is now
-		// mutating) and the tick bumps so markers and the keyed pose re-derive.
-		if (snapshot.ikKeys) {
-			// The keys belong to the snapshot's buffer character. When that
-			// character has no stored layer state yet, it gets a fresh one —
-			// falling back to the live ref would hand the keys to whoever is
-			// active NOW, cross-wiring two characters' corrections (#77).
-			let target;
-			if (bufferChar?.id === loadedIk) {
-				target = ikStateRef.current;
-			} else {
-				target = ikStatesRef.current.get(bufferChar?.id);
-				if (!target) {
-					target = createIkState();
-					if (bufferChar?.id) ikStatesRef.current.set(bufferChar.id, target);
-				}
-			}
-			target.keys = snapshotIkKeys({ keys: snapshot.ikKeys });
-			target.tracked = new Set([...target.keys.values()].flatMap((entry) => [...entry.keys()]));
-			setCommittedIkEdits(snapshot.committedIkEdits ?? []);
-			setIkTick((value) => value + 1);
-		}
-		if (snapshot.keyLight) stageDomain.setKeyLight(createKeyLight(snapshot.keyLight));
-		if (snapshot.environmentImage !== undefined) stageDomain.setEnvironmentImage(snapshot.environmentImage);
-		if (snapshot.environment !== undefined) stageDomain.setEnvironment(snapshot.environment);
-		if (snapshot.style !== undefined) stageDomain.setStyle(snapshot.style);
-		if (snapshot.hasEnvSheet !== undefined) stageDomain.setHasEnvSheet(snapshot.hasEnvSheet);
-	}
+
 
 	// props so the inspector cannot show a ghost.
 	function undoScene() {
@@ -2374,7 +2264,7 @@ export default function App() {
 	// Which crane height mark the scene dots have selected; the timeline's
 	// Point height input edits this one. Reset lives after activeCamera below.
 
-	const [hasCharSheet, setHasCharSheet] = useState(startupStage.hasCharSheet);
+
 
 
 
@@ -2441,8 +2331,8 @@ export default function App() {
 	const [ardyPosePlacement, setArdyPosePlacement] = useState("start");
 	// Bumped when something outside the Inspector needs the Prompt Blocks panel
 	// on screen — selecting or adding a block on the timeline.
-	const [promptBlocksReveal, setPromptBlocksReveal] = useState(0);
-	const revealPromptBlocks = () => setPromptBlocksReveal((n) => n + 1);
+
+
 	/* ------------------- take recipes and versions (C9/C12) -------------------
 	 * The recipe of the take that is loaded RIGHT NOW: seed + prompt blocks +
 	 * the line edits pulled on top of it. It is written in exactly one place
@@ -2863,10 +2753,10 @@ export default function App() {
 	frameCountRef.current = tlFrameCount;
 	// Root waypoints {frame, x, z, heading: null}, kept sorted by frame —
 	// the fixed bridge contract rejects out-of-order or duplicate frames.
-	const [waypointMode, setWaypointMode] = useState(false);
-	const [waypoints, setWaypoints] = useState(startupStage.characters?.[0]?.layer?.waypoints ?? startupShotState?.waypoints ?? []);
-	const [activeWaypointId, setActiveWaypointId] = useState(null);
-	const [pendingWaypointFrame, setPendingWaypointFrame] = useState(null);
+
+
+
+
 
 	/* ------------------------------ line editing ---------------------------
 	 * Contract C6. A modal editing surface exactly like waypointMode above,
@@ -3474,7 +3364,7 @@ export default function App() {
 				return current?.sessionMotion ? { ...entry, sessionMotion: current.sessionMotion } : entry;
 			});
 			appContext.publishCharacters(mergedCharacters);
-			setCharacters(mergedCharacters);
+			castDomain.setCharacters(mergedCharacters);
 			restoreMotionRefs(mergedCharacters);
 		}
 		appContext.publishScenes(nextScenes);
@@ -3521,7 +3411,7 @@ export default function App() {
 		objects: sceneObjects,
 		rigs,
 		commitManualCameraFraming,
-		recordCharacterUndo,
+		recordCharacterUndo: castDomain.recordCharacterUndo,
 		removeCharacter,
 		persistScenes,
 		openScene,
@@ -4234,7 +4124,7 @@ export default function App() {
 			flushScenes();
 		};
 	}, []);
-	const [promptClips, setPromptClips, editPromptClips] = useSemanticState(() => (startupStage.characters?.[0]?.layer?.promptClips ?? DEFAULT_PROMPT_CLIPS).map((clip) => ({ ...clip })), markSemanticEdit, "promptClips");
+
 	// These hooks are declared after the liveStateRef assignment above runs, so
 	// they join the live read model here — same render, no TDZ.
 	appContext.patchLive({ promptClips, setPromptClips, editPromptClips, setTlFrameCount });
@@ -4248,7 +4138,7 @@ export default function App() {
 		setProjectSaveState((current) => current === "saving" ? current : dirty ? "dirty" : "saved");
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [scenes, activeSceneId, workspaceLayout, customPoses, characters, shots, waypoints, promptClips, projectName, keyLight, sceneObjects, shotAspectKey, environmentImage, environment, style, hasEnvSheet, sensorId, tlFrameCount, workflowRevision]);
-	const [selectedPromptId, setSelectedPromptId] = useState(null);
+
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
 	const [motion, setMotion] = useState(null);
 	// The untrimmed take per CHARACTER. Trims are non-destructive views of the
@@ -4297,8 +4187,8 @@ export default function App() {
 	const [multiModelExtractProgress, setMultiModelExtractProgress] = useState(null);
 	const [multiModelExtractError, setMultiModelExtractError] = useState("");
 	const photoPoseFileRef = useRef(null);
-	const [photoPoseState, setPhotoPoseState] = useState("idle");
-	const [photoPoseError, setPhotoPoseError] = useState("");
+
+
 
 	// Cast render props, memoized with Character itself (React.memo): during
 	// playback the playhead ticks 24 times a second, and a character whose
@@ -4376,7 +4266,7 @@ export default function App() {
 		if (ikMode) leaveIkMode();
 		if (previous) {
 			ikStatesRef.current.set(previous, bufferRef.current.ik);
-			setCharacters((list) => list.map((entry) => entry.id === previous
+			castDomain.setCharacters((list) => list.map((entry) => entry.id === previous
 				? { ...entry, layer: { waypoints: bufferRef.current.waypoints, promptClips: bufferRef.current.promptClips }, sessionMotion: bufferRef.current.motion }
 				: entry));
 		}
@@ -5454,15 +5344,15 @@ export default function App() {
 	// poses saved off the rig, accumulating across sessions and projects. No
 	// presets ship in it — DEFAULT_POSE is the character's spawn state, not a
 	// library entry.
-	const allPoses = customPoses;
+
 	// The dropdowns must be able to show and re-select the pose a character is
 	// actually in, and a fresh character is in the default — which is not a
 	// library entry. An empty library would otherwise render a blank select.
-	const selectablePoses = useMemo(() => [DEFAULT_POSE, ...customPoses], [customPoses]);
+
 	// The pose studio follows the character it was opened for: `posing` is a
 	// charId, so every cast member gets the same studio, not just the first two.
-	const posingIndex = characters.findIndex((entry) => entry.id === posing);
-	const posingChar = posingIndex >= 0 ? characters[posingIndex] : null;
+
+
 	// The Inspector is driven by the hierarchy selection alone — there are no
 	// sidebar tabs. Every panel belongs to the thing that owns it: the scene
 	// owns what gets generated, the camera owns the lens, and a character owns
@@ -5520,219 +5410,49 @@ export default function App() {
 	const inspectorHasContent = isSceneSelection || isCameraSelection || isCharacterSelection || isRigSelection
 		|| selectedHierarchyId === "environment" || selectedHierarchyId === "props" || selectedHierarchyId === "light" || Boolean(selectedSceneObject);
 
-	const posedRig = () => rigs[posing] ?? null;
-	const setPosed = (pose) => {
-		if (posingIndex >= 0) updateCharacterAt(posingIndex, { pose: typeof pose === "function" ? pose(posingChar?.pose ?? DEFAULT_POSE) : pose });
-	};
+
+
 
 	/* ------------------------- waypoint workspace --------------------------- */
 
 	// A walking pace turns clicked distance into clip time, so pins land at
 	// frames the character can actually reach without ice-skating.
-	const WALK_SPEED_MPS = 1.4;
-	const ROOT_ROOM_LIMIT = 11;
-	const clampRootPosition = (value) => Math.max(-ROOT_ROOM_LIMIT, Math.min(ROOT_ROOM_LIMIT, value));
+
+
+
 	// Frame 0 of a root path is the ACTIVE character's spot — each layer's
 	// path starts from its own cast member.
-	const rootStart = () => ({ frame: 0, x: activeChar.x, z: activeChar.z });
 
-	function validateWaypointAt(ordered, index, candidate, start = rootStart()) {
-		const previous = index > 0 ? ordered[index - 1] : start;
-		const beforePrevious = index > 1 ? ordered[index - 2] : null;
-		const inbound = judgeNextWaypoint(previous, candidate, tlFps, beforePrevious);
-		if (!inbound.ok) return inbound;
-		const next = ordered[index + 1];
-		if (!next) return inbound;
-		const outbound = judgeNextWaypoint(candidate, next, tlFps, previous);
-		if (!outbound.ok) return outbound;
-		return { ok: true, warnings: [...inbound.warnings, ...outbound.warnings] };
-	}
 
-	function queueRootWaypointFrame(frame) {
-		const target = Math.max(1, Math.min(Math.round(frame), tlFrameCount - 1));
-		const existing = waypoints.find((waypoint) => waypoint.frame === target);
-		if (existing) {
-			setActiveWaypointId(existing.id);
-			setPendingWaypointFrame(null);
-			setTlFrame(target);
-			setWaypointMode(true);
-			selectActiveCharacterInHierarchy();
-			setToast(isKo ? `프레임 ${target}의 루트 웨이포인트를 선택했어요. 탑뷰에서 점을 드래그해 위치를 조정하세요.` : `Root waypoint at frame ${target} selected — drag the pin in the Top-View to reposition.`);
-			return;
-		}
-		setPendingWaypointFrame(target);
-		setActiveWaypointId(null);
-		setTlFrame(target);
-		setWaypointMode(true);
-		selectActiveCharacterInHierarchy();
-		setToast(isKo ? `프레임 ${target}이 예약됐어요. 샷 뷰 바닥을 클릭하면 그 위치에 루트 웨이포인트가 생성됩니다.` : `Frame ${target} is reserved — click the Shot-view floor to drop the root waypoint there.`);
-	}
+
+
+
 	/* One root-path core for every cast member, shared by the Shot-view floor
 	 * click, the plan-board drag, the timeline marker and run_action. It takes
 	 * the character explicitly: the loaded layer's path lives in the editing
 	 * buffer, every other character's on its cast entry. Refusals throw a
 	 * StudioProtocolError naming the fix; the UI door shows it as a toast. */
-	function castMemberOf(characterId) {
-		const character = appContext.live.characters.find((entry) => entry.id === characterId);
-		if (!character) throw new StudioProtocolError("STALE_TARGET", `Character ${characterId} is not in this scene.`);
-		return character;
-	}
-	function readCharacterWaypoints(characterId) {
-		if (characterId === loadedLayerCharRef.current) return bufferRef.current.waypoints;
-		return appContext.live.characters.find((entry) => entry.id === characterId)?.layer?.waypoints ?? [];
-	}
-	function writeCharacterWaypoints(characterId, next) {
-		if (characterId === loadedLayerCharRef.current) {
-			bufferRef.current = { ...bufferRef.current, waypoints: next };
-			setWaypoints(next);
-			return;
-		}
-		publishStudioCharacters(appContext.live.characters.map((entry) => entry.id === characterId
-			? { ...entry, layer: { ...(entry.layer ?? createCharacterLayer()), waypoints: next } }
-			: entry), true);
-	}
+
+
+
 	/** Pin the character's root at `point` ({x, z}) on `frame`, or — frame null —
 	 * at walking-distance pacing from the previous pin. Returns the placed
 	 * waypoint, its index on the path and the judge's warnings. */
-	function addCharacterWaypoint(characterId, point, frame = null) {
-		const character = castMemberOf(characterId);
-		const ordered = [...readCharacterWaypoints(characterId)].sort((a, b) => a.frame - b.frame);
-		if (ordered.length + 1 > MAX_WAYPOINTS) {
-			throw studioActionRefusal("TARGET_NOT_READY", `The root path is capped at ${MAX_WAYPOINTS} waypoints; remove one first.`,
-				isKo ? `루트 경로는 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요` : `The root path is capped at ${MAX_WAYPOINTS} waypoints`);
-		}
-		const x = clampRootPosition(point.x);
-		const z = clampRootPosition(point.z);
-		const start = { frame: 0, x: character.x, z: character.z };
-		const last = ordered[ordered.length - 1] ?? start;
-		const lastFrame = frameCountRef.current - 1;
-		if (frame !== null && (frame < 1 || frame > lastFrame)) throw new StudioProtocolError("INVALID_RANGE", `Frame ${frame} is outside the root path's frames 1-${lastFrame}.`);
-		const at = frame ?? last.frame + Math.max(8, Math.round((Math.hypot(x - last.x, z - last.z) / WALK_SPEED_MPS) * tlFps));
-		if (at > lastFrame) {
-			throw studioActionRefusal("INVALID_RANGE", "The path already fills the clip — extend the duration or clear a waypoint.",
-				ko("The path already fills the clip — extend the duration or clear a waypoint", "경로가 이미 클립 길이를 채웠어요. 시간을 늘리거나 웨이포인트를 지워 주세요"));
-		}
-		if (ordered.some((waypoint) => waypoint.frame === at)) {
-			throw studioActionRefusal("INVALID_ARGUMENT", `Frame ${at} already has a root waypoint — pick an empty frame or move that one.`,
-				isKo ? `프레임 ${at}에는 이미 루트 웨이포인트가 있어요. 타임라인에서 빈 프레임을 선택하세요.` : `Frame ${at} already has a root waypoint — pick an empty frame on the timeline.`);
-		}
-		// The generator cannot refuse an impossible pin, so placement is the
-		// last moment to: block out-of-band legs with the fix named.
-		const insertAt = ordered.findIndex((waypoint) => waypoint.frame > at);
-		const index = insertAt === -1 ? ordered.length : insertAt;
-		const waypoint = { id: createStableItemId("waypoint"), frame: at, x, z, heading: null };
-		const next = [...ordered.slice(0, index), waypoint, ...ordered.slice(index)];
-		const verdict = validateWaypointAt(next, index, waypoint, start);
-		if (!verdict.ok) throw studioActionRefusal("INVALID_ARGUMENT", `Not placed — ${verdict.error}`, isKo ? `배치하지 못했어요 — ${verdict.error}` : `Not placed — ${verdict.error}`);
-		// Past every refusal: the pre-drop path is worth one Ctrl+Z entry.
-		recordCharacterUndo();
-		writeCharacterWaypoints(characterId, next);
-		return { waypoint, index, warnings: verdict.warnings };
-	}
-	function moveCharacterWaypoint(characterId, frame, point) {
-		const character = castMemberOf(characterId);
-		const ordered = [...readCharacterWaypoints(characterId)].sort((a, b) => a.frame - b.frame);
-		const index = ordered.findIndex((waypoint) => waypoint.frame === frame);
-		if (index === -1) throw new StudioProtocolError("STALE_TARGET", `${character.subject || character.id} has no root waypoint at frame ${frame}.`);
-		const moved = { ...ordered[index], x: clampRootPosition(point.x), z: clampRootPosition(point.z) };
-		if (moved.x === ordered[index].x && moved.z === ordered[index].z) return { waypoint: ordered[index], index, warnings: [] };
-		const next = ordered.map((waypoint, i) => (i === index ? moved : waypoint));
-		const verdict = validateWaypointAt(next, index, moved, { frame: 0, x: character.x, z: character.z });
-		if (!verdict.ok) {
-			throw studioActionRefusal("INVALID_ARGUMENT", `This position doesn't fit the root path: ${verdict.error}`,
-				isKo ? `이 위치는 루트 경로에 맞지 않아요: ${verdict.error}` : `This position doesn't fit the root path: ${verdict.error}`);
-		}
-		// A plan-board drag recorded its one entry when the gesture began; every
-		// other move is its own entry.
-		const past = appContext.castHistory.past;
-		if (!(gestureUndoRef.current?.key === "waypoint-drag" && past[past.length - 1]?.tick === gestureUndoRef.current.tick)) recordCharacterUndo();
-		writeCharacterWaypoints(characterId, next);
-		return { waypoint: moved, index, warnings: verdict.warnings };
-	}
-	function removeCharacterWaypoint(characterId, frame) {
-		const character = castMemberOf(characterId);
-		const current = readCharacterWaypoints(characterId);
-		const waypoint = current.find((entry) => entry.frame === frame);
-		if (!waypoint) throw new StudioProtocolError("STALE_TARGET", `${character.subject || character.id} has no root waypoint at frame ${frame}.`);
-		recordCharacterUndo();
-		writeCharacterWaypoints(characterId, removeStableItem(current, waypoint.id, "waypoints"));
-		return waypoint;
-	}
-	function clearCharacterWaypoints(characterId) {
-		castMemberOf(characterId);
-		const current = readCharacterWaypoints(characterId);
-		if (!current.length) return 0;
-		recordCharacterUndo();
-		writeCharacterWaypoints(characterId, []);
-		return current.length;
-	}
+
+
+
+
 
 	/** ARDY-demo style authoring: each empty-floor press in the Shot view drops
 	    the next waypoint where it was clicked; the frame gap comes from walking
 	    distance. The bird's-eye board selects and drags existing waypoints. */
-	function addFloorWaypoint(point) {
-		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);
-		const last = ordered[ordered.length - 1] ?? rootStart();
-		const pendingFrame = pendingWaypointFrame == null ? null : Math.max(1, Math.min(Math.round(pendingWaypointFrame), tlFrameCount - 1));
-		// A scrubbed playhead is an explicit statement of time: a click lands on
-		// that exact frame. An untouched playhead (it snaps to the last pin
-		// after every placement) falls back to walking-distance pacing.
-		const playhead = Math.round(tlFrame);
-		const pinned = pendingFrame != null || playhead > last.frame;
-		const frame = pendingFrame ?? (pinned ? Math.min(playhead, tlFrameCount - 1) : null);
-		const before = readCharacterWaypoints(activeChar.id);
-		const placedAction = runStudioAction("character.addWaypoint", { characterId: activeChar.id, position: { x: point.x, z: point.z }, ...(frame == null ? {} : { frame }) });
-		if (!placedAction) {
-			if (pendingFrame != null && ordered.some((waypoint) => waypoint.frame === pendingFrame)) setPendingWaypointFrame(null);
-			return;
-		}
-		const path = readCharacterWaypoints(activeChar.id);
-		const index = path.findIndex((waypoint) => !before.includes(waypoint));
-		const waypoint = path[index];
-		setTlFrame(waypoint.frame);
-		setActiveWaypointId(waypoint.id);
-		setPendingWaypointFrame(null);
-		const { warnings } = validateWaypointAt(path, index, waypoint);
-		const placed = isKo
-			? `루트 웨이포인트 ${index + 1} 추가: 프레임 ${waypoint.frame}${pendingFrame != null ? " (타임라인 예약 프레임)" : pinned ? " (재생 헤드 위치)" : ` (~${(waypoint.frame / tlFps).toFixed(1)}초 걷기 기준)`}`
-			: `Waypoint ${index + 1} — frame ${waypoint.frame} ${pendingFrame != null ? "(at the reserved frame)" : pinned ? "(at the playhead)" : `(~${(waypoint.frame / tlFps).toFixed(1)}s at a walk)`}`;
-		setToast(warnings.length ? `${placed} · ⚠ ${warnings[0]}` : placed);
-	}
 
-	function moveWaypoint(id, x, z) {
-		const waypoint = waypoints.find((entry) => entry.id === id);
-		if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`);
-		if (!runStudioAction("character.moveWaypoint", { characterId: activeChar.id, frame: waypoint.frame, position: { x, z } })) return;
-		setActiveWaypointId(id);
-		setPendingWaypointFrame((current) => (current === waypoint.frame ? null : current));
-		const path = readCharacterWaypoints(activeChar.id);
-		const index = path.findIndex((entry) => entry.id === id);
-		const { warnings } = index === -1 ? { warnings: [] } : validateWaypointAt(path, index, path[index]);
-		if (warnings.length) setToast(isKo ? `루트 웨이포인트 이동됨: ${warnings[0]}` : `Root waypoint moved: ${warnings[0]}`);
-	}
 
-	function removeWaypoint(id) {
-		const waypoint = waypoints.find((entry) => entry.id === id);
-		if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`);
-		if (!runStudioAction("character.removeWaypoint", { characterId: activeChar.id, frame: waypoint.frame })) return;
-		setActiveWaypointId((current) => (current === id ? null : current));
-		setPendingWaypointFrame((current) => (current === waypoint.frame ? null : current));
-	}
 
-	function toggleWaypointMode() {
-		const next = !waypointMode;
-		// Both modes want the viewport pointer; the last one switched on wins,
-		// the other stands down rather than fighting for pointerdown.
-		if (next && lineEditMode) exitLineEditMode();
-		setWaypointMode(next);
-		if (!next) {
-			setPendingWaypointFrame(null);
-			setToast(ko("2D Root path constraints off", "2D 루트 경로 제약 꺼짐"));
-			return;
-		}
 
-		setToast(ko("2D Root path on — click the set floor in the Shot view to drop waypoints; Subject 1 is the frame 0 start", "2D 루트 경로 켜짐 — 샷 뷰의 세트 바닥을 클릭해 웨이포인트를 놓으세요. 인물 1이 0프레임 시작점입니다"));
-	}
+
+
+
 
 	function advanceFrame(steps = 1) {
 		const count = Math.max(1, Math.floor(steps));
@@ -6003,7 +5723,7 @@ export default function App() {
 				anchorX: active.x,
 				anchorZ: active.z,
 			};
-			setCharacters((list) => list.map((entry) => entry.id === active.id
+			castDomain.setCharacters((list) => list.map((entry) => entry.id === active.id
 				? { ...entry, scale: personScale, motionRef: leadRef }
 				: entry));
 			const placed = await deliverExtraTakes(takes.slice(1), active, label);
@@ -6077,7 +5797,7 @@ export default function App() {
 		}));
 		const usable = decoded.filter(Boolean);
 		if (!usable.length) return 0;
-		recordCharacterUndo();
+		castDomain.recordCharacterUndo();
 		// Plan against the cast as it stands, so ids are decided once and the
 		// full-take map can be seeded with them.
 		const list = appContext.live.characters;
@@ -6119,7 +5839,7 @@ export default function App() {
 				},
 			};
 		});
-		setCharacters((current) => {
+		castDomain.setCharacters((current) => {
 			let next = current;
 			for (const { id, spawn, patch } of assignments) {
 				next = spawn && !next.some((entry) => entry.id === id)
@@ -6216,7 +5936,7 @@ export default function App() {
 			const targetStillExists = appContext.live.characters.some((entry) => entry.id === targetCharacter.id);
 			if (!targetStillExists) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
 			const apply = () => {
-			if (commandContext) recordCharacterUndo();
+			if (commandContext) castDomain.recordCharacterUndo();
 			const bufferOwnsTarget = targetCharacter.id === loadedLayerCharRef.current;
 			beginPlaybackOn(rig);
 			// THE INVARIANT: the take's travel assumes the character is scaled.
@@ -6243,7 +5963,7 @@ export default function App() {
 				sceneCalibration: normalizedCalibration,
 				editSegments: createMotionEdit(decoded.frames),
 			};
-			setCharacters((list) => {
+			castDomain.setCharacters((list) => {
 				const next = list.map((entry) => entry.id === targetCharacter.id
 					? {
 						...entry,
@@ -6389,7 +6109,7 @@ export default function App() {
 	 * one undo restores the take AND the pose it replaced. */
 	function clearMotion() {
 		if (!motion && ikStateRef.current.keys.size === 0 && (activeChar.scale ?? 1) === 1) return;
-		recordCharacterUndo();
+		castDomain.recordCharacterUndo();
 		setMotion(null);
 		setMotionError("");
 		motionFullRef.current.delete(activeChar.id);
@@ -6406,7 +6126,7 @@ export default function App() {
 		// take, not to the character. The persisted motionRef must drop too —
 		// restoreMotionRefs re-fetches it on every reload/rejoin, and a cleared
 		// take that resurrects on the next session is exactly the bug this fixes.
-		setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? { ...entry, scale: 1, motionRef: null } : entry));
+		castDomain.setCharacters((list) => list.map((entry) => entry.id === activeChar.id ? { ...entry, scale: 1, motionRef: null } : entry));
 		// Back to the pre-generation timeline: the current duration on the production clock.
 		setTlFrameCount(maxDst + 1);
 		setTlFps(TIMELINE_FPS);
@@ -6424,7 +6144,7 @@ export default function App() {
 		if (!full || !motion) return;
 		// One Ctrl+Z entry per edit: the cast snapshot carries the pre-edit clip
 		// (snapshotCast → bufferMotion), so undo restores the take as it was.
-		recordCharacterUndo();
+		castDomain.recordCharacterUndo();
 		const previous = motion.editSegments ?? createMotionEdit(full.frames);
 		const segments = trimMotionEdit(previous, start, end);
 		const sliced = renderMotionEdit(full, segments);
@@ -6444,7 +6164,7 @@ export default function App() {
 	function resetMotionTrim() {
 		const full = motionFullRef.current.get(activeChar.id);
 		if (!full || !motion || motion.frames === full.frames && motion.editSegments?.length === 1) return;
-		recordCharacterUndo();
+		castDomain.recordCharacterUndo();
 		// Surviving IK keys ride back to their full-take frame numbers (#79).
 		migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), createMotionEdit(full.frames), full.frames);
 		setMotion({ ...full, editSegments: createMotionEdit(full.frames) });
@@ -6458,7 +6178,7 @@ export default function App() {
 		if (!full || !motion) return;
 		// Covers cut, retime and segment delete alike — every segment edit lands
 		// on the same Ctrl+Z history the cast uses (snapshotCast → bufferMotion).
-		recordCharacterUndo();
+		castDomain.recordCharacterUndo();
 		const rendered = renderMotionEdit(full, edit);
 		migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), edit, rendered.frames);
 		setMotion({ ...rendered, url: null });
@@ -6800,7 +6520,7 @@ export default function App() {
 			setToast(ko("No body collisions at this frame", "이 프레임에는 신체 관통이 없어요"));
 			return;
 		}
-		if (ikStateRef.current.tracked.size > 0) recordCharacterUndo();
+		if (ikStateRef.current.tracked.size > 0) castDomain.recordCharacterUndo();
 		editIkKeys(() => ikBakeKeyframe(ikChains, ikStateRef.current, tlFrame, ikFkJoints, result.touched, null, result.baseQuats));
 		setIkTick((n) => n + 1);
 		setToast(result.residual > 1e-4
@@ -6838,7 +6558,7 @@ export default function App() {
 		// snapshot identical to the present state would make Ctrl+Z a no-op
 		// press that also discards the redo stack for nothing.
 		const savedFuture = appContext.castHistory.future;
-		recordCharacterUndo();
+		castDomain.recordCharacterUndo();
 		let keyed = [];
 		let unresolved = [];
 		try {
@@ -6908,7 +6628,7 @@ export default function App() {
 	function cancelPhysicsPreview() { setPhysicsPreview(null); setIkTick((n) => n + 1); }
 	function applyPhysicsPreview() {
 		if (!physicsPreview || physicsPreview.sourceStamp !== physicsKeyStamp(ikStateRef.current.keys)) return;
-		recordCharacterUndo();
+		castDomain.recordCharacterUndo();
 		editIkKeys(() => { ikStateRef.current.keys = copyPhysicsKeys(physicsPreview.candidate.keys); });
 		ikStateRef.current.tracked = new Set(physicsPreview.candidate.tracked);
 		autoPhysicsRunRef.current = { motion, rig: activeRig, stamp: physicsKeyStamp(ikStateRef.current.keys) };
@@ -6975,7 +6695,7 @@ export default function App() {
 	 * caller can fall through to the plain pose-apply path. */
 	function ikApplyPoseAsKey(pose) {
 		if (!ikChains || !activeRig || !motion) return false;
-		recordCharacterUndo();
+		castDomain.recordCharacterUndo();
 		// The clip's positional skinning left per-bone translations the FK pose
 		// math never produced. The bake below stores every FK joint's position
 		// (p) as-is, so posing rotations over those clip translations would key
@@ -7367,69 +7087,17 @@ export default function App() {
 				? { label: ko("ROOT PATH", "루트 경로"), kind: "root" }
 				: null;
 
-	function openStudio(charId) {
-		setPosing(charId);
-		setPosingClosing(false);
-		const entry = characters.find((item) => item.id === charId);
-		setStudioPick((entry?.pose ?? DEFAULT_POSE)?.id ?? null);
-	}
 
-	function closeStudio() {
-		// let the panel play its exit animation before it leaves the tree
-		setPosingClosing(true);
-		window.setTimeout(() => {
-			setPosing(null);
-			setPosingClosing(false);
-		}, 190);
-	}
+
+
 
 	/** Save the ACTIVE character's rig exactly as it stands — the motion frame
 	 * with any IK corrections already composited — into the pose library.
 	 * Unlike savePose (the studio's FK author), this never writes back onto the
 	 * character: a running take must survive having its best frame bottled. */
-	function saveCurrentPose() {
-		if (!activeRig) return;
-		trackFeature("pose_edit");
-		const pose = {
-			id: `custom_${Date.now()}`,
-			label: isKo ? `내 포즈 ${customPoses.length + 1}` : `My Pose ${customPoses.length + 1}`,
-			prompt: "in the exact body pose shown in the blocking frame",
-			bones: capturePose(activeRig),
-			// A take frame carries its measured hips height; bottling the frame
-			// without it would save every crouch as a float.
-			rootY: captureHipsOffset(activeRig),
-			custom: true,
-		};
-		const next = [...customPoses, pose];
-		setCustomPoses(next);
-		saveCustomPoses(next);
-		setStudioPick(pose.id);
-		setToast(motion
-			? ko(`Saved this frame's pose to the library as “${pose.label}”`, `지금 프레임의 자세를 “${pose.label}”로 라이브러리에 저장했어요`)
-			: ko(`Saved the current pose to the library as “${pose.label}”`, `지금 자세를 “${pose.label}”로 라이브러리에 저장했어요`));
-	}
 
-	function savePose() {
-		const rig = posedRig();
-		if (!rig) return;
-		trackFeature("pose_edit");
-		const pose = {
-			id: `custom_${Date.now()}`,
-		label: isKo ? `내 포즈 ${customPoses.length + 1}` : `My Pose ${customPoses.length + 1}`,
-			prompt: "in the exact body pose shown in the blocking frame",
-			bones: capturePose(rig),
-			custom: true,
-		};
-		const next = [...customPoses, pose];
-		setCustomPoses(next);
-		saveCustomPoses(next);
-		setStudioPick(pose.id);
-		// The library is not on the cast history; writing the saved pose onto the
-		// posed character is, and setPosed only writes when one is being posed.
-		if (posingIndex >= 0) recordCharacterUndo();
-		setPosed(pose);
-		setToast(ko("Pose saved", "포즈 저장됨"));
-	}
+
+
 
 	/**
 	 * Read a body pose out of one photograph.
@@ -7444,106 +7112,9 @@ export default function App() {
 	 * pose to refine, which is why it lands in the studio instead of on the
 	 * character directly.
 	 */
-	async function posePhotoFile(file) {
-		if (!file || photoPoseState === "running") return;
-		// Reachable from the Inspector as well as the studio panel, and posedRig()
-		// only answers while the studio is open — fall back to the character the
-		// hierarchy has selected, which is the one the pose will be applied to.
-		const rig = posedRig() ?? activeRig;
-		let objectUrl = "";
-		setPhotoPoseState("running");
-		setPhotoPoseError("");
-		try {
-			if (!rig) throw new Error("rig-not-loaded");
-			objectUrl = URL.createObjectURL(file);
-			let bones = null;
-			let rootY = 0;
-			let gpuError = null;
-			// GVHMR on the box measures the body over the whole clip,
-			// which is more reliable than a single-frame depth estimate.
-			// The bridge wraps the still into a second of video and runs the exact
-			// GVHMR footage pipeline. A missing bridge or another backend is an error.
-			try {
-				const health = await fetch("/ardy/health", { signal: AbortSignal.timeout(2000) }).catch(() => null);
-				if (!health?.ok) throw new Error("extract-bridge-required");
-				const healthPayload = await health.json().catch(() => null);
-				if (healthPayload?.extractionBackend !== "gvhmr") throw new Error("extract-backend-unsupported");
-				const done = await requestBridgeExtract(file, {});
-				const take = await loadMotionFromUrl(done.motionUrl);
-				// The middle frame: the wrap's smoothing passes have settled
-				// there, while frame 0 can still carry filter warm-up.
-				const frame = Math.floor((take.frames - 1) / 2);
-				const snapshot = snapshotPlaybackBones(rig);
-				try {
-					applyMotionFrame(rig, { ...take, anchorFrame: frame }, frame);
-					bones = capturePose(rig);
-					// GVHMR measured the hips' true height — a crouch is a crouch
-					// because the hips came DOWN, not just because the knees bent.
-					rootY = captureHipsOffset(rig);
-				} finally {
-					restorePlaybackBones(rig, snapshot);
-				}
-			} catch (error) {
-				gpuError = error;
-				console.warn("photo pose: GVHMR extract failed", error);
-			}
-			if (!bones) throw new Error(gpuError?.message || "extract-run-failed");
-			const pose = {
-				id: `photo_${Date.now()}`,
-				label: isKo ? `사진 포즈 ${customPoses.length + 1}` : `Photo Pose ${customPoses.length + 1}`,
-				prompt: "in the exact body pose shown in the reference photograph",
-				bones,
-				rootY,
-				custom: true,
-			};
-			const next = [...customPoses, pose];
-			setCustomPoses(next);
-			saveCustomPoses(next);
-			setStudioPick(pose.id);
-			// The studio poses whichever character it was opened on; the Inspector
-			// poses the selected one. Write the pose to whichever that is.
-			const poseTargetIndex = posingIndex >= 0 ? posingIndex : activeCharIndex;
-			// A running take drives the same bones a pose writes, so the read would
-			// land invisibly underneath it. Applying from a photo follows the same
-			// rule the Apply button already states: the motion goes first.
-			const hadMotion = Boolean(motion);
-			// One gesture, one Ctrl+Z entry. clearMotion() already snapshots the
-			// pre-gesture cast — pose included — so undoing it brings back the take
-			// AND the pose this write replaces. With no take to clear, the pose
-			// write is the whole edit and records itself.
-			if (hadMotion) clearMotion();
-			else recordCharacterUndo();
-			updateCharacterAt(poseTargetIndex, { pose });
-			setPhotoPoseState("done");
-			// The pose is already saved and written by this point. GVHMR either
-			// returns a measured pose or the named error above reaches the user.
-			setToast(hadMotion
-					? ko("Cleared the motion and posed from the photo — refine it with the handles", "모션을 지우고 사진으로 자세를 잡았어요 — 핸들로 다듬어 보세요")
-					: ko("Pose read from the photo — refine it with the handles", "사진에서 자세를 읽었어요 — 핸들로 다듬어 보세요"));
-		} catch (error) {
-			const code = error?.message ?? String(error);
-			// fitLandmarksToPose refuses a sample whose torso is not visible; that is
-			// a photograph problem, not an engine problem, so it is named as one.
-			const named = code.startsWith("fitLandmarksToPose:") ? "pose-partly-occluded" : code;
-			setPhotoPoseState("error");
-			setPhotoPoseError(MULTIMODEL_REASONS[named]?.[isKo ? 1 : 0] ?? named);
-		} finally {
-			if (objectUrl) URL.revokeObjectURL(objectUrl);
-		}
-	}
 
-	function removePose(id) {
-		const next = deleteCustomPose(id, customPoses);
-		setCustomPoses(next);
-		saveCustomPoses(next);
-		// Deleting a pose that is ON a character resets that character to the
-		// default — a cast change, so it belongs on Ctrl+Z. Deleting an unused
-		// library entry changes no character and records nothing.
-		if (poseA?.id === id || poseB?.id === id) recordCharacterUndo();
-		if (poseA?.id === id) setPoseA(DEFAULT_POSE);
-		if (poseB?.id === id) setPoseB(DEFAULT_POSE);
-		if (studioPick === id) setStudioPick(DEFAULT_POSE.id);
-	}
+
+
 
 	function applyPreset(key) {
 		const p = PRESETS[key];
@@ -7820,36 +7391,9 @@ export default function App() {
 		return request;
 	}
 
-	function addPromptClip(frame, surface = "timeline") {
-		const snapped = Math.max(0, Math.round(frame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
-		// Add at the playhead when the spot is free; only fall through to
-		// after-the-last-block when the playhead slot is taken. The old
-		// unconditional max() made the button's "at frame N" label a lie.
-		const blocked = promptClips.some((clip) => snapped < clip.endFrame && snapped + ARDY_PROMPT_HORIZON_FRAMES > clip.startFrame);
-		const startFrame = blocked
-			? Math.max(snapped, promptClips.reduce((max, clip) => Math.max(max, clip.endFrame), 0))
-			: snapped;
-		const clip = { id: createStableItemId("prompt-clip"), startFrame, endFrame: startFrame + ARDY_PROMPT_HORIZON_FRAMES, text: "" };
-		recordCharacterUndo();
-		editPromptClips((prev) => [...prev, clip]);
-		setSelectedPromptId(clip.id);
-		setTlFrameCount((count) => Math.max(count, clip.endFrame));
-		setArdyDuration(Math.max(ARDY_DURATION_MIN, clip.endFrame / TIMELINE_FPS));
-		trackFeature("prompt_block_add");
-	}
 
-	function changePromptClip(id, text) {
-		const clip = promptClips.find((entry) => entry.id === id);
-		if (!clip) throw new Error(`Unknown promptClips ID: ${id}`);
-		if (clip.text === text) return;
-		// Typing is one entry per editing session, not per keystroke: the first
-		// change on a clip snapshots the text as it stood, and the rest of the
-		// session keeps writing into that same entry. Reached from the inspector
-		// field and from the timeline chip alike.
-		recordSessionUndo(promptTextSessionRef, `prompt-text:${id}`);
-		editPromptClips((prev) => updateStableItem(prev, id, (clip) => ({ ...clip, text }), "promptClips"));
-		if (id === selectedPromptId) setArdyPrompt(text);
-	}
+
+
 
 	// Quality policy: one prompt block never spans more than 5 s. Kimodo
 	// walk-to-run sweeps (seeds 7/21/99; seam stall ratio, 1.0 = no stall)
@@ -7857,48 +7401,13 @@ export default function App() {
 	// single take at 0.85; 8 s blocks collapsed to 0.32. <2 s blocks lose
 	// about a third of their frames to the transition window, so 3-5 s is the recommended
 	// authoring range.
-const PROMPT_BLOCK_MAX_FRAMES = 5 * TIMELINE_FPS;
 
-function resizePromptClip(id, edge, rawFrame) {
-		editPromptClips((prev) => {
-			const candidate = updateStableItem(prev, id, (clip) => {
-				const snapped = Math.max(0, Math.round(rawFrame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
-				return edge === "start"
-					? { ...clip, startFrame: Math.min(Math.max(snapped, clip.endFrame - PROMPT_BLOCK_MAX_FRAMES), clip.endFrame - ARDY_PROMPT_HORIZON_FRAMES) }
-					: { ...clip, endFrame: Math.min(Math.max(clip.startFrame + ARDY_PROMPT_HORIZON_FRAMES, snapped), clip.startFrame + PROMPT_BLOCK_MAX_FRAMES) };
-			}, "promptClips");
-			// Same rule the move path enforces: one prompt per frame range.
-			// A resize that lands on a neighbour used to slip through and get
-			// silently truncated by the generator; reject it at the handle.
-			const resized = candidate.find((clip) => clip.id === id);
-			if (resized && candidate.some((clip) => clip.id !== id && resized.startFrame < clip.endFrame && resized.endFrame > clip.startFrame)) {
-				return prev;
-			}
-			const end = candidate.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
-			setTlFrameCount((count) => Math.max(count, end));
-			setArdyDuration(end / TIMELINE_FPS);
-			return candidate;
-		});
-	}
 
-	function movePromptClip(id, rawStartFrame) {
-		if (!promptClips.some((clip) => clip.id === id)) throw new Error(`Unknown promptClips ID: ${id}`);
-		editPromptClips((prev) => {
-			const next = movePromptClipFrames(prev, id, rawStartFrame, ARDY_PROMPT_HORIZON_FRAMES);
-			if (next === prev) return prev;
-			const end = next.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
-			setTlFrameCount((count) => Math.max(count, end));
-			setArdyDuration(end / TIMELINE_FPS);
-			return next;
-		});
-	}
 
-	function removePromptClip(id) {
-		if (!promptClips.some((clip) => clip.id === id)) throw new Error(`Unknown promptClips ID: ${id}`);
-		recordCharacterUndo();
-		editPromptClips((prev) => removeStableItem(prev, id, "promptClips"));
-		if (selectedPromptId === id) setSelectedPromptId(null);
-	}
+
+
+
+
 
 	// Optional native-ARDY seed. Empty = request omits seed; the raw string
 	// is kept as typed (trimmed only). runArdy validates the bridge contract
@@ -10119,7 +9628,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// The pre-drag take is both the deformation base (repeated moves re-derive
 		// from it, so deltas never accumulate) and the undo snapshot.
 		trailBaseMotionRef.current = motion;
-		recordCharacterUndo();
+		castDomain.recordCharacterUndo();
 	}
 	/** World drag delta -> clip delta, shedding the character's stature scale
 	 * (the trail is drawn scaled by it). */
@@ -10672,7 +10181,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			anchorZ: sceneAnchorZ,
 		};
 		if (calibration && typeof calibration === "object") motionRef.calibration = normalizedCalibration;
-		if (!job.commandContext) setCharacters((list) => list.map((entry) => entry.id === job.charId ? { ...entry, motionRef } : entry));
+		if (!job.commandContext) castDomain.setCharacters((list) => list.map((entry) => entry.id === job.charId ? { ...entry, motionRef } : entry));
 		if (job.charId === loadedLayerCharRef.current) {
 			await loadMotion(motionUrl, job.prompt, job.rootRotationDeg, null, job.charId, null, { calibration, commandContext: job.commandContext });
 			if (job.commandContext) publishStudioCharacters(appContext.live.characters.map(entry => entry.id === job.charId ? { ...entry, motionRef } : entry));
@@ -10696,10 +10205,10 @@ function resizePromptClip(id, edge, rawFrame) {
 		// Same stature rule as loadMotion, on the layer that asked for the clip.
 		const scale = characterScaleFor(decoded);
 		const apply = () => {
-			if (job.commandContext) recordCharacterUndo();
+			if (job.commandContext) castDomain.recordCharacterUndo();
 			motionFullRef.current.set(job.charId, clip);
 			const next = appContext.live.characters.map(entry => entry.id === job.charId ? { ...entry, scale, sessionMotion: clip, motionRef } : entry);
-			if (job.commandContext) publishStudioCharacters(next); else setCharacters(next);
+			if (job.commandContext) publishStudioCharacters(next); else castDomain.setCharacters(next);
 		};
 		if (job.commandContext) job.commandContext.commit(apply); else apply();
 	}
@@ -10741,7 +10250,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				if (entry.motionRef.calibration) clip.sceneCalibration = entry.motionRef.calibration;
 				if (entry.motionRef.studioTakeId) clip.studioTakeId = entry.motionRef.studioTakeId;
 				motionFullRef.current.set(entry.id, clip);
-				setCharacters((current) => current.map((item) => item.id === entry.id
+				castDomain.setCharacters((current) => current.map((item) => item.id === entry.id
 					// The stature rides inside the npz, so a restored take
 					// re-applies it; the saved entry scale is only the fallback
 					// for a take whose npz never stored one.
@@ -10846,7 +10355,7 @@ function resizePromptClip(id, edge, rawFrame) {
 	}
 	function publishStudioCharacters(next, authored = false) {
 		appContext.publishCharacters(next); appContext.patchLive({ characters: next });
-		(authored ? editCharacters : setCharacters)(next);
+		(authored ? editCharacters : castDomain.setCharacters)(next);
 	}
 	/** The active character's layer lives in the editing buffer, and the read
 	 * model folds that buffer back over the cast. A published or restored prompt
@@ -11899,7 +11408,7 @@ function resizePromptClip(id, edge, rawFrame) {
 										if (s !== undefined) next.scale = THREE.MathUtils.clamp(s, CHARACTER_SCALE_BOUNDS.min, CHARACTER_SCALE_BOUNDS.max);
 										return next;
 									})}
-									onDragStart={recordCharacterUndo}
+									onDragStart={castDomain.recordCharacterUndo}
 								/>
 							)}
 
@@ -12010,7 +11519,7 @@ function resizePromptClip(id, edge, rawFrame) {
 								fovDeg={fovDeg}
 								characters={characters}
 								onMoveCharacter={moveCharacter}
-								onCharacterGestureStart={recordCharacterUndo}
+								onCharacterGestureStart={castDomain.recordCharacterUndo}
 								onWaypointGestureStart={() => beginGestureUndo("waypoint-drag")}
 								onCameraGestureStart={beginCameraFramingGesture}
 								pathStart={activeChar}
@@ -12499,182 +12008,21 @@ function resizePromptClip(id, edge, rawFrame) {
 					    controls are on screen when this panel opens. */}
 					<CameraPanel isCameraSelection={isCameraSelection} shot={shot} moveSequence={moveSequence} cameraKeys={cameraKeys} activeShot={activeShot} changeShotTargetModel={changeShotTargetModel} />
 
-				<Foldout hidden={!isCharacterSelection} title={showB ? ko("Subjects", "인물들") : ko("Subject", "인물")}>
-						<div className={"subjects-row" + (showB ? "" : " single")}>
-							{characters.map((entry, index) => entry.hidden ? null : (
-								<SubjectBox
-									key={entry.id}
-									label={ko(`Subject ${index + 1}`, `인물 ${index + 1}`)}
-									value={entry}
-									onChange={(next) => updateCharacterAt(index, next)}
-									onPose={() => openStudio(entry.id)}
-									posing={posing === entry.id}
-									onRemove={index > 0 ? () => removeCharacter(entry.id) : undefined}
-									color={entry.tint ?? defaultCharacterTint(entry, index)}
-									/* A colour picker streams values while it is open, so the
-									   whole picking session is one Ctrl+Z entry. */
-									onColorEditStart={() => recordSessionUndo(tintSessionRef, `tint:${entry.id}`)}
-									onColorChange={(tint) => updateCharacterAt(index, { tint })}
-								/>
-							))}
-						</div>
-						{!showB && (
-							<button type="button" className="add-subject" onClick={() => setShowB(true)}>
-								<span className="as-plus">＋</span>
-								<span>{ko("Add second subject", "두 번째 인물 추가")}</span>
-							</button>
-						)}
-					</Foldout>
+				<SubjectsPanel isCharacterSelection={isCharacterSelection} showB={showB} characters={characters} updateCharacterAt={updateCharacterAt} openStudio={openStudio} posing={posing} removeCharacter={removeCharacter} recordSessionUndo={recordSessionUndo} tintSessionRef={tintSessionRef} setShowB={setShowB} />
 
 				{/* Scene mode: the viewport gizmo and Move/Rotate/Scale are the primary
 				    path, so the numeric form starts folded (R5). Motion mode hides
 				    those tools, so the same foldout becomes the open Placement row —
 				    where the body stands on stage, which is all Motion can restage.
 				    Foldout reads defaultOpen once, so the key remounts it per mode. */}
-				<Foldout
-					key={workflowMode === "motion" ? "placement" : "transform"}
-					hidden={!isCharacterSelection}
-					defaultOpen={workflowMode === "motion"}
-					title={workflowMode === "motion" ? ko("Placement", "배치") : ko("Transform", "변환")}
-				>
-					{workflowMode === "motion" ? (
-						<div className="placement-fields">
-							<p className="inspector-hint">
-								{ko("Stage position — does not change the take", "무대 위치 — 테이크는 바꾸지 않습니다")}
-							</p>
-							<Vector3Row
-								label={ko("Position", "위치")}
-								fields={[
-									{ axis: "X", value: activeChar.x, step: 0.05, precision: 2, scrubRange: 5, onChange: (x) => changeInspectorCharacter("x", { x }), onScrubStart: () => beginGestureUndo(`character:${activeChar.id}:x`), onScrubEnd: endGestureUndo },
-									{ axis: "Z", value: activeChar.z, step: 0.05, precision: 2, scrubRange: 5, onChange: (z) => changeInspectorCharacter("z", { z }), onScrubStart: () => beginGestureUndo(`character:${activeChar.id}:z`), onScrubEnd: endGestureUndo },
-								]}
-							/>
-							<Slider compact label={ko("Rotation", "회전")} min={-180} max={180} step={1} value={activeChar.rot ?? 0} unit="°" onChange={(rot) => changeInspectorCharacter("rot", { rot })} />
-						</div>
-					) : (
-						<>
-							<p className="inspector-hint">
-								{ko("Edit the selected subject's placement, turn and size. Drag the Transform tool in the viewport for direct manipulation.", "선택한 인물의 위치·회전·크기를 편집합니다. 뷰포트의 변환 도구를 드래그해 바로 조작할 수도 있어요.")}
-							</p>
-							<Vector3Row
-								label={ko("Position", "위치")}
-								fields={[
-									{ axis: "X", value: activeChar.x, step: 0.05, precision: 2, scrubRange: 5, onChange: (x) => changeInspectorCharacter("x", { x }), onScrubStart: () => beginGestureUndo(`character:${activeChar.id}:x`), onScrubEnd: endGestureUndo },
-									{ axis: "Y", value: activeChar.y ?? 0, step: 0.05, precision: 2, scrubRange: 5, onChange: (y) => changeInspectorCharacter("y", { y: Math.max(0, y) }), onScrubStart: () => beginGestureUndo(`character:${activeChar.id}:y`), onScrubEnd: endGestureUndo },
-									{ axis: "Z", value: activeChar.z, step: 0.05, precision: 2, scrubRange: 5, onChange: (z) => changeInspectorCharacter("z", { z }), onScrubStart: () => beginGestureUndo(`character:${activeChar.id}:z`), onScrubEnd: endGestureUndo },
-								]}
-							/>
-							<Slider compact label={ko("Rotation", "회전")} min={-180} max={180} step={1} value={activeChar.rot ?? 0} unit="°" onChange={(rot) => changeInspectorCharacter("rot", { rot })} />
-							<Slider compact label={ko("Scale", "크기")} min={0.2} max={3} step={0.05} value={activeChar.scale ?? 1} unit="×" onChange={(scale) => changeInspectorCharacter("scale", { scale })} />
-						</>
-					)}
-				</Foldout>
+				<CharacterTransformPanel workflowMode={workflowMode} isCharacterSelection={isCharacterSelection} activeChar={activeChar} changeInspectorCharacter={changeInspectorCharacter} beginGestureUndo={beginGestureUndo} endGestureUndo={endGestureUndo} />
 
 				{/* Rig and Pose are chosen once when a character is cast and then left
 				    alone, so they open on demand — Subject and Prompt are the panels
 				    you actually work in. */}
-				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Rig", "리그")}>
-					{/* The rig is a property of the character, and swapping it is a
-					    look decision made while blocking — so it belongs beside the
-					    subject, not buried in the project file. */}
-					<div className="rig-picker" role="radiogroup" aria-label={ko("Character rig", "캐릭터 리그")}>
-						{CHARACTER_MODEL_IDS.map((id) => (
-							<button
-								type="button"
-								key={id}
-								role="radio"
-								aria-checked={activeChar.model === id}
-								className={"rig-option" + (activeChar.model === id ? " active" : "")}
-								data-rig-id={id}
-								onClick={() => {
-									if (activeChar.model === id) return;
-									recordCharacterUndo();
-									updateCharacterAt(activeCharIndex, { model: id });
-								}}
-							>
-								<PoseThumbPreview model={id} pose={activeChar.pose ?? DEFAULT_POSE} alt={CHARACTER_MODEL_LABELS[id]} />
-								<span>{CHARACTER_MODEL_LABELS[id]}</span>
-							</button>
-						))}
-					</div>
-				</Foldout>
+				<RigPanel isCharacterSelection={isCharacterSelection} activeChar={activeChar} recordCharacterUndo={castDomain.recordCharacterUndo} updateCharacterAt={updateCharacterAt} activeCharIndex={activeCharIndex} />
 
-				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Pose", "포즈")}>
-					{/* Tiles, not a dropdown: a pose read out of a photograph has no
-					    name worth reading — it is recognisable only as a shape. This
-					    is the same grid the studio shows, applied to whichever
-					    character the hierarchy has selected. */}
-					<p className="inspector-hint">
-						{isKo ? `인물 ${activeCharIndex + 1}의 자세입니다.` : `The pose on Subject ${activeCharIndex + 1}.`}
-					</p>
-					<FalMotionCaptureCard model={falMotionModel} actions={falMotionActions} onOpen={() => setFalMotionStudioOpen(true)} />
-					<PoseTileGrid
-						poses={selectablePoses}
-						model={activeChar.model}
-						selectedId={(activeChar.pose ?? DEFAULT_POSE)?.id}
-						onSelect={(id) => {
-							const pose = selectablePoses.find((entry) => entry.id === id);
-							if (!pose) return;
-							// IK mode over a take: the pick is a mid-clip correction, so it
-							// keys onto the Full-Body lane instead of erasing the motion.
-							if (ikMode && ikApplyPoseAsKey(pose)) return;
-							// A running take drives the same bones a pose writes, so the
-							// pick would otherwise land invisibly underneath it.
-							const hadMotion = Boolean(motion);
-							// One pick, one Ctrl+Z entry: clearMotion()'s snapshot already
-							// carries the pose this write replaces.
-							if (hadMotion) clearMotion();
-							else recordCharacterUndo();
-							updateCharacterAt(activeCharIndex, { pose });
-							setStudioPick(pose.id);
-							setToast(hadMotion
-								? ko("Cleared the current motion and applied the pose", "현재 모션을 지우고 포즈를 적용했어요")
-								: ko("Pose applied", "포즈를 적용했어요"));
-						}}
-						onDelete={removePose}
-						onPhoto={() => {
-							setPhotoPoseError("");
-							photoPoseFileRef.current?.click();
-						}}
-						photoState={photoPoseState}
-						labelOf={poseLabelKo}
-					/>
-					{photoPoseError && <p className="studio-hint error" data-pose-photo-error role="status">{photoPoseError}</p>}
-					{/* Bottles whatever the viewport shows right now — a take frame,
-					    IK corrections included — without touching the character, so a
-					    good mid-clip moment becomes a reusable library pose. */}
-					<button
-						type="button"
-						className="btn full"
-						data-save-current-pose
-						disabled={!activeRig}
-						title={ko(
-							"Save the pose the character is in right now — with a motion loaded, that is the current frame plus IK corrections",
-							"캐릭터의 지금 자세를 저장해요 — 모션이 실려 있으면 현재 프레임에 IK 보정까지 합친 자세예요",
-						)}
-						onClick={saveCurrentPose}
-					>
-						{ko("Save current pose", "지금 자세 저장")}
-					</button>
-					{/* Identity sits beside "Pose from photo" on purpose: both take a
-					    picture of a person, but that one reads a SHAPE off it while
-					    this one keeps the picture itself as who the character is. */}
-					<ReferenceImageField
-						label={ko("Identity image", "인물 이미지")}
-						hint={ko(
-							"A character sheet or photo of this person. It travels with every framing capture so a render keeps the same face, hair and wardrobe.",
-							"이 인물의 캐릭터 시트나 사진입니다. 모든 프레이밍 캐프처에 함께 실려 얼굴·머리·의상을 유지합니다.",
-						)}
-						value={activeChar.identityImage ?? null}
-						alt={ko("Identity reference", "인물 참고 이미지")}
-						inputProps={{ "data-identity-image-input": "" }}
-						onPick={(dataUrl) => {
-							updateCharacterAt(activeCharIndex, { identityImage: dataUrl });
-							setToast(ko("Identity image set", "인물 이미지를 설정했어요"));
-						}}
-						onClear={() => updateCharacterAt(activeCharIndex, { identityImage: null })}
-					/>
-				</Foldout>
+				<PosePanel isCharacterSelection={isCharacterSelection} activeCharIndex={activeCharIndex} falMotionModel={falMotionModel} falMotionActions={falMotionActions} setFalMotionStudioOpen={setFalMotionStudioOpen} selectablePoses={selectablePoses} activeChar={activeChar} ikMode={ikMode} ikApplyPoseAsKey={ikApplyPoseAsKey} motion={motion} clearMotion={clearMotion} recordCharacterUndo={castDomain.recordCharacterUndo} updateCharacterAt={updateCharacterAt} setStudioPick={setStudioPick} setToast={setToast} removePose={removePose} setPhotoPoseError={setPhotoPoseError} photoPoseFileRef={photoPoseFileRef} photoPoseState={photoPoseState} photoPoseError={photoPoseError} activeRig={activeRig} saveCurrentPose={saveCurrentPose} />
 
 				<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Video capture", "영상 모캡")}>
 					<div className="multimodel-card">
@@ -12843,301 +12191,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						</p>
 					</div>
 				</Foldout>
-				<Foldout hidden={!isCharacterSelection} defaultOpen={false} openSignal={promptBlocksReveal} title={ko("Prompt Blocks", "프롬프트 블록")}>
-					<p className="inspector-hint">{ko("Blocks define what ARDY generates over each frame range. Selecting one also moves editing context to that prompt.", "블록은 각 프레임 범위에서 ARDY가 생성할 내용을 정합니다. 블록을 선택하면 편집 기준도 해당 프롬프트로 이동합니다.")}</p>
-						<div className="inspector-list">
-							{promptClips.map((clip) => (
-								<button
-									type="button"
-									key={clip.id}
-									className={selectedPromptId === clip.id ? "active" : ""}
-									onClick={() => {
-										setSelectedPromptId(clip.id);
-										setArdyPrompt(clip.text);
-										setTlFrame(Math.min(clip.startFrame, tlFrameCount - 1));
-									}}
-								>
-								<span>{clip.text || ko("Untitled motion", "이름 없는 모션")}</span>
-									<small>{clip.startFrame}–{clip.endFrame}f</small>
-								</button>
-							))}
-						</div>
-						{selectedPromptId && (
-						<Field label={ko("Selected block prompt", "선택한 블록 프롬프트")}>
-								<input
-									type="text"
-									value={promptClips.find((clip) => clip.id === selectedPromptId)?.text ?? ""}
-									onChange={(event) => {
-										changePromptClip(selectedPromptId, event.target.value);
-										setArdyPrompt(event.target.value);
-									}}
-								placeholder={ko("describe this motion block", "이 모션 블록을 설명하세요")}
-								/>
-							</Field>
-						)}
-						{/* The seed belongs with the button that consumes it. Duration does
-						    not appear at all: the blocks' own frame ranges are the length. */}
-						<Field label={ko("Seed", "시드")}>
-							<input
-								type="text"
-								inputMode="numeric"
-								value={ardySeed}
-								onChange={(e) => changeArdySeed(e.target.value)}
-								placeholder={ko("empty = random", "비우면 랜덤")}
-							/>
-						</Field>
-						{/* Scheduled inpainting used to live here, beside the batch button.
-						    It now folds into Scene > Advanced above the timeline (contract
-						    C12): it is a dial on a regeneration, so it belongs with the
-						    regeneration entry rather than with the block list. */}
-						{/* Line editing (contract C6). It sits beside the preserve slider
-						    because it answers the same question from the other side —
-						    preserve says how much of the take to KEEP, a line says exactly
-						    where one joint must GO — and because both need a take with a
-						    bridge source, so the whole section is absent until there is one
-						    rather than present and inert. */}
-						{motion?.url && (
-							<Field label={ko("Line editing", "라인 편집")}>
-								<button
-									type="button"
-									className={"btn full" + (lineEditMode ? " primary" : "")}
-									title={ko(
-										"The joint's own path is drawn on the viewport — grab a point on it and pull, or draw a new path on empty space; the joint then follows it exactly. The view still orbits normally (Alt+drag).",
-										"관절이 지나가는 궤적이 뷰포트에 그려집니다 — 궤적 위의 점을 잡아 끌거나, 빈 곳에 새 궤적을 그리면 관절이 그 경로를 정확히 따라갑니다. 시점은 평소처럼 돌릴 수 있어요 (Alt+드래그).",
-									)}
-									onClick={toggleLineEditMode}
-								>
-									{lineEditMode ? ko("Path editing on", "궤적 편집 켜짐") : ko("Drag the path", "궤적을 잡아 끌기")}
-								</button>
-								{lineEditMode && (
-									<div
-										className="line-edit-panel"
-										data-line-preview={linePreviewUrl ? "true" : undefined}
-										// "The line is detached from this view" — the panel's own copy of
-										// what the stage already carries, so a test (or a screenshot) can
-										// read the state from whichever of the two it is looking at.
-										data-line-drift={lineCurve && lineDrifted ? "true" : undefined}
-									>
-										<Field label={ko("Joint", "관절")}>
-											<Dropdown
-												value={lineTrack}
-												options={LINE_EDIT_TRACK_OPTIONS}
-												onChange={setLineTrack}
-												ariaLabel={ko("Joint whose path is edited", "궤적을 편집할 관절")}
-											/>
-										</Field>
-										{/* THE GESTURE SELECTOR. Pressing on the joint is how BOTH a
-										    curve drag and a pin start, so the two cannot share a
-										    press and a modal toggle is the honest way to say which
-										    one the next press means. Named for what it does at the
-										    moment it does it, not for the wire field. */}
-										<button
-											type="button"
-											className={"btn full" + (linePinMode ? " primary" : "")}
-											data-line-pin-mode={linePinMode ? "true" : "false"}
-											onClick={() => setLinePinMode((on) => !on)}
-										>
-											{linePinMode
-												? ko("Pinning moments", "순간 찍는 중")
-												: ko("Pin a moment", "순간 찍기")}
-										</button>
-										{linePinMode && (
-											<p className="inspector-hint">
-												{linePins.length
-													? (isKo
-														? `${linePins.length}개(최대 ${LINE_EDIT_PINS_MAX}개)를 찍었어요 — 프레임 ${linePins.map((pin) => pin.frame).join(", ")}. 사이 동작은 모델이 채웁니다`
-														: `${linePins.length} pinned (max ${LINE_EDIT_PINS_MAX}) — frames ${linePins.map((pin) => pin.frame).join(", ")}. The model fills the movement between them`)
-													: ko(
-														"Scrub to a moment, then drag the green handle to where the joint should be. The take keeps its own timing; only that instant is pinned.",
-														"원하는 순간으로 재생 위치를 옮긴 뒤, 초록 손잡이를 관절이 있어야 할 자리로 끌어 주세요. 그 순간만 고정되고 나머지 타이밍은 그대로예요.",
-													)}
-											</p>
-										)}
-										{/* No range picker exists elsewhere in the app that a line
-										    edit could borrow, so the whole clip is the default and
-										    these two numbers only ever NARROW it. endFrame is
-										    exclusive, like every other half-open range on this wire. */}
-										<Field label={ko("Frame range", "프레임 구간")}>
-											<div className="line-edit-range-row">
-												<input
-													type="number"
-													min={0}
-													max={Math.max(0, lineClipFrames - 2)}
-													value={lineEditRange?.startFrame ?? 0}
-													onChange={(event) => setLineRange((current) => ({
-														startFrame: Math.round(Number(event.target.value)) || 0,
-														endFrame: current?.endFrame ?? lineClipFrames,
-													}))}
-												/>
-												<span aria-hidden="true">–</span>
-												<input
-													type="number"
-													min={2}
-													max={lineClipFrames}
-													value={lineEditRange?.endFrame ?? lineClipFrames}
-													onChange={(event) => setLineRange((current) => ({
-														startFrame: current?.startFrame ?? 0,
-														endFrame: Math.round(Number(event.target.value)) || 0,
-													}))}
-												/>
-											</div>
-										</Field>
-										{/* How far a pull carries along the path, in FRAMES — the
-										    sigma of the Gaussian falloff, said in the unit the user
-										    is looking at. Narrow is a beat, wide is a whole gesture. */}
-										<Field label={ko("Influence", "영향 범위")}>
-											<div className="line-edit-radius-row">
-												<input
-													type="range"
-													min={DRAG_RADIUS_MIN}
-													max={DRAG_RADIUS_MAX}
-													step={1}
-													value={lineRadius}
-													aria-label={ko("How many frames a pull carries along the path", "잡아당길 때 궤적을 따라 함께 움직이는 프레임 수")}
-													onChange={(event) => changeLineRadius(event.target.value)}
-												/>
-												<span className="line-edit-radius-value">
-													{isKo ? `${lineRadius}프레임` : `${lineRadius} frames`}
-												</span>
-											</div>
-										</Field>
-										<p className="inspector-hint">
-											{lineCurveDirty
-												? (isKo
-													? `${lineEditFrom}–${lineEditTo} 프레임을 편집했어요 — ${lineCurvePointCount}개 점(최대 ${MAX_LINE_POINTS}개)을 보내고, 양 끝은 원래 궤적에서 부드럽게 이어져 이음매가 튀지 않아요. 다시 끌거나 다시 그려서 다듬을 수 있어요`
-													: `Frames ${lineEditFrom}–${lineEditTo} edited — ${lineCurvePointCount} points (max ${MAX_LINE_POINTS}); both ends ease out of the original path, so the seams do not pop. Pull it again, or draw over it, to refine`)
-												: ko(
-													"Draw along the path to reroute that section — the frames you drew over become the range, and the take's own timing is kept. Or grab a yellow dot and pull.",
-													"궤적을 따라 그리면 그 구간만 새로 지나갑니다 — 그린 만큼이 편집 구간이 되고, 원래 속도감은 그대로 유지돼요. 노란 점을 잡아 끌어도 됩니다.",
-												)}
-										</p>
-										{/* The one thing users assume a modal viewport tool takes away.
-										    Said out loud, because "can I still orbit?" is the first
-										    question and the answer decides whether the mode is usable. */}
-										{/* THE DETACHED STATE. Said inline, next to the edit it is about,
-										    and in the same words the refused gesture answers with. It is
-										    a status, not a warning: nothing was lost and nothing needs
-										    doing — the only thing that changed is that the line cannot be
-										    drawn in a view it was not aimed through. */}
-										{lineCurve && lineDrifted && (
-											<p className="inspector-hint line-edit-drift" aria-live="polite">
-												{lineDriftHint()}
-											</p>
-										)}
-										<p className="inspector-hint">
-											{lineCurveDirty
-												? ko(
-													"You can still orbit (Alt+drag), pan and fly freely — the edit survives it. It was aimed through one lens, so while the view is elsewhere the line is drawn ghosted and a new pull waits; Generate, undo and Reset work from anywhere.",
-													"시점은 자유롭게 돌리고(Alt+드래그) 옮길 수 있어요 — 편집은 그대로 남습니다. 다만 이 궤적은 처음 시점 기준이라, 시점을 옮기면 흐리게만 보이고 새로 끌기는 잠시 멈춰요. 생성·되돌리기·원래대로는 언제든 됩니다.",
-												)
-												: ko(
-													"You can still orbit (Alt+drag), pan and fly freely; the path follows the view until you pull or draw it.",
-													"시점은 평소처럼 자유롭게 돌리고(Alt+드래그) 옮길 수 있어요. 끌거나 그리기 전까지 궤적은 시점을 따라갑니다.",
-												)}
-										</p>
-										{lineEditRange && lineEditRange.endFrame - lineEditRange.startFrame < MIN_CURVE_POINTS && (
-											<p className="inspector-hint">
-												{isKo
-													? `구간이 너무 짧아요 — 양 끝 ${PINNED_CURVE_ENDS}프레임씩이 고정이라 ${MIN_CURVE_POINTS}프레임 이상이어야 잡을 점이 생겨요`
-													: `This range is too short — with ${PINNED_CURVE_ENDS} pinned frames at each end it needs at least ${MIN_CURVE_POINTS} frames before anything can be grabbed`}
-											</p>
-										)}
-										{lineCurveHidden > 0 && (
-											<p className="inspector-hint">
-												{isKo
-													? `${lineCurveHidden}프레임이 화면 밖이라 잡을 수 없어요 — 구간 전체가 보이도록 카메라를 잡아 주세요`
-													: `${lineCurveHidden} frame(s) are outside the frame and cannot be grabbed — frame the whole range in view`}
-											</p>
-										)}
-										{/* ------------------------- the preview line -------------------
-										    One quiet row that says which of three things is true: a
-										    draft is being made, a draft is on screen (and how long it
-										    took), or the last one failed and the curve is still here.
-										    Deliberately not a spinner over the viewport — the artist
-										    is LOOKING at the viewport, and the answer arrives there. */}
-										{linePreviewBusy && (
-											<p className="inspector-hint line-preview-busy" aria-live="polite">
-												{ko("Previewing the pull…", "당긴 결과 미리보는 중…")}
-											</p>
-										)}
-										{!linePreviewBusy && linePreviewUrl && (
-											<p className="inspector-hint line-preview-live">
-												{ko(
-													"The viewport is showing this edit at full quality — press Generate to keep it as the take.",
-													"뷰포트가 지금 이 편집의 최종 품질 결과예요 — 아래 생성을 누르면 테이크로 확정됩니다.",
-												)}
-												{linePreviewMs > 0 && (
-													<span className="line-preview-time">
-														{isKo ? ` 미리보기 ${(linePreviewMs / 1000).toFixed(1)}s` : ` preview ${(linePreviewMs / 1000).toFixed(1)}s`}
-													</span>
-												)}
-											</p>
-										)}
-										{/* A failed draft is not a failed edit: the pull survives it and
-										    the button below still runs the real thing. */}
-										{linePreviewError && (
-											<p className="inspector-hint line-preview-error">
-												{isKo ? `미리보기 실패 — ${linePreviewError} (생성은 그대로 됩니다)` : `Preview failed — ${linePreviewError} (Generate still works)`}
-											</p>
-										)}
-										<button
-											type="button"
-											className="btn primary full generate"
-											disabled={!lineCurveDirty || generationBusy || bridgeChecking || bridge === null}
-											title={generationBusy ? ko("A generation is already running", "이미 생성이 돌고 있어요")
-												: !lineCurveDirty
-													? ko("Pull the path on the viewport first", "먼저 뷰포트에서 궤적을 잡아당겨 주세요")
-													: motionReadinessMessage(lineReadinessState)}
-											onClick={runLineEdit}
-										>
-											{ko("Generate the line edit", "라인 편집 생성")}
-										</button>
-										<MotionReadiness state={lineReadinessState} checking={bridgeChecking} onSetup={() => openMotionSetup("line")} onRetry={recheckMotionHealth} />
-										<button type="button" className="btn ghost full" disabled={!lineCurveDirty} onClick={resetLineCurve}>
-											{ko("Reset the curve", "원래대로")}
-										</button>
-										<button type="button" className="btn ghost full" onClick={exitLineEditMode}>
-											{ko("Exit line editing (Esc)", "라인 편집 끝내기 (Esc)")}
-										</button>
-									</div>
-								)}
-							</Field>
-						)}
-						{/* Nothing to generate yet is not a disabled button: with no blocks
-						    the panel's own "Add block at frame N" and its hint already say
-						    what comes next, so the action stays absent until there is at
-						    least one block to run (docs/studio-ui-ia.md R3). */}
-						{promptClips.length >= 1 && (
-						<button
-							type="button"
-							className="btn primary full generate prompt-block-generate"
-							disabled={generationBusy || bridgeChecking || bridge === null || !promptClips.some((clip) => clip.text.trim())}
-							title={generationBusy ? ko("A generation is already running", "이미 생성이 돌고 있어요")
-								: !promptClips.some((clip) => clip.text.trim())
-									? ko("Add a prompt block and describe its motion first", "프롬프트 블록을 추가하고 동작을 먼저 적어 주세요")
-									: motionReadinessMessage(readinessState)}
-							onClick={() => runStudioAction("motion.generateAllBlocks")}
-						>
-							{generationBusy
-								? ko("Generating motion…", "모션 생성 중…")
-								: isKo
-									? `${promptClips.length}개 블록 모두 생성`
-									: `Generate all ${promptClips.length} blocks`}
-						</button>
-						)}
-						{ardyRunning && (
-							<button type="button" className="btn ghost full" onClick={cancelArdy}>
-								{ko("Cancel run", "실행 취소")}
-							</button>
-						)}
-						{!lineEditMode && <MotionReadiness state={readinessState} checking={bridgeChecking} onSetup={openMotionSetup} onRetry={recheckMotionHealth} />}
-						{ardyRunning && ardyStatus && <p className="ardy-status" role="status">{ardyStatus}</p>}
-						{!ardyRunning && ardyOutcome?.ok === false && <p className="ardy-status" role="alert">{ardyOutcome.message}</p>}
-						{!ardyRunning && ardyOutcome?.ok === true && <p className="ardy-status" role="status">{ko("Motion generation complete", "모션 생성 완료")}</p>}
-						<button type="button" className="btn ghost full" onClick={() => addPromptClip(tlFrame)}>
-						{isKo ? `프레임 ${tlFrame}에 블록 추가` : `Add block at frame ${tlFrame}`}
-						</button>
-					</Foldout>
+				<PromptBlocksPanel isCharacterSelection={isCharacterSelection} promptBlocksReveal={promptBlocksReveal} promptClips={promptClips} selectedPromptId={selectedPromptId} setSelectedPromptId={setSelectedPromptId} setArdyPrompt={setArdyPrompt} setTlFrame={setTlFrame} tlFrameCount={tlFrameCount} changePromptClip={changePromptClip} ardySeed={ardySeed} changeArdySeed={changeArdySeed} motion={motion} lineEditMode={lineEditMode} toggleLineEditMode={toggleLineEditMode} linePreviewUrl={linePreviewUrl} lineCurve={lineCurve} lineDrifted={lineDrifted} lineTrack={lineTrack} setLineTrack={setLineTrack} linePinMode={linePinMode} setLinePinMode={setLinePinMode} linePins={linePins} lineClipFrames={lineClipFrames} lineEditRange={lineEditRange} setLineRange={setLineRange} lineRadius={lineRadius} changeLineRadius={changeLineRadius} lineCurveDirty={lineCurveDirty} lineEditFrom={lineEditFrom} lineEditTo={lineEditTo} lineCurvePointCount={lineCurvePointCount} lineDriftHint={lineDriftHint} lineCurveHidden={lineCurveHidden} linePreviewBusy={linePreviewBusy} linePreviewMs={linePreviewMs} linePreviewError={linePreviewError} generationBusy={generationBusy} bridgeChecking={bridgeChecking} bridge={bridge} lineReadinessState={lineReadinessState} runLineEdit={runLineEdit} openMotionSetup={openMotionSetup} recheckMotionHealth={recheckMotionHealth} resetLineCurve={resetLineCurve} exitLineEditMode={exitLineEditMode} readinessState={readinessState} runStudioAction={runStudioAction} ardyRunning={ardyRunning} cancelArdy={cancelArdy} ardyStatus={ardyStatus} ardyOutcome={ardyOutcome} addPromptClip={addPromptClip} tlFrame={tlFrame} />
 
 					<Foldout hidden={!isRigSelection} title={ko("Rig Control", "리그 제어")}>
 						<p className="inspector-hint">
@@ -13255,7 +12309,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						)}
 					</Foldout>
 
-				<EnvironmentPanel selectedHierarchyId={selectedHierarchyId} hasEnvSheet={hasEnvSheet} recordCharacterUndo={recordCharacterUndo} setHasEnvSheet={stageDomain.setHasEnvSheet} environment={environment} recordSessionUndo={recordSessionUndo} environmentTextSessionRef={environmentTextSessionRef} setEnvironment={stageDomain.setEnvironment} style={style} setStyle={stageDomain.setStyle} environmentImage={environmentImage} changeEnvironmentImage={changeEnvironmentImage} setToast={setToast} />
+				<EnvironmentPanel selectedHierarchyId={selectedHierarchyId} hasEnvSheet={hasEnvSheet} recordCharacterUndo={castDomain.recordCharacterUndo} setHasEnvSheet={stageDomain.setHasEnvSheet} environment={environment} recordSessionUndo={recordSessionUndo} environmentTextSessionRef={environmentTextSessionRef} setEnvironment={stageDomain.setEnvironment} style={style} setStyle={stageDomain.setStyle} environmentImage={environmentImage} changeEnvironmentImage={changeEnvironmentImage} setToast={setToast} />
 
 				<PropsPanel selectedHierarchyId={selectedHierarchyId} inspectorDrop={inspectorDrop} addSceneObject={addSceneObject} cutoutInputRef={cutoutInputRef} meshInputRef={meshInputRef} importCutout={importCutout} importMesh={importMesh} sceneObjects={sceneObjects} selectHierarchy={selectHierarchy} />
 
@@ -13307,7 +12361,7 @@ function resizePromptClip(id, edge, rawFrame) {
 									// Apply is one gesture: the clear's snapshot covers the pose
 									// write that follows it.
 									if (hadMotion) clearMotion();
-									else if (posingIndex >= 0) recordCharacterUndo();
+									else if (posingIndex >= 0) castDomain.recordCharacterUndo();
 									setPosed(pose);
 									closeStudio();
 									setToast(hadMotion ? ko("Cleared the current motion and applied the pose", "현재 모션을 지우고 포즈를 적용했어요") : ko("Pose applied", "포즈를 적용했어요"));
@@ -13317,7 +12371,7 @@ function resizePromptClip(id, edge, rawFrame) {
 							}}
 							onReset={() => {
 								if (motion) clearMotion();
-								else if (posingIndex >= 0) recordCharacterUndo();
+								else if (posingIndex >= 0) castDomain.recordCharacterUndo();
 								setStudioPick(DEFAULT_POSE.id);
 								setPosed(DEFAULT_POSE);
 								setToast(ko("Back to the default pose", "기본 포즈로 돌아왔어요"));
@@ -13866,67 +12920,5 @@ function resizePromptClip(id, edge, rawFrame) {
 			)}
 		</div>
 		</AppContext.Provider>
-	);
-}
-/** Mid-clip frame of a base motion, the sensible default for the destination. */
-
-/**
- * One reference-picture slot (#167): pick a file, see what is loaded, clear it.
- * Used by the cast member's identity sheet and by the set's environment
- * reference, so both slots behave identically — same picker, same thumbnail,
- * same Clear — rather than growing two dialects of the same control.
- *
- * The value IS the stored data URL: there is no separate "pending" state, so
- * what the panel shows is exactly what a capture will attach.
- */
-
-
-/** Unity Inspector-style foldout: a titled section the user can collapse.
- * Cards default to open; the fold state is per-title session state. */
-
-
-function SubjectBox({ label, value, onChange, onRemove, onPose, posing, color, onColorChange, onColorEditStart }) {
-	return (
-		<div className="subject-box">
-			<div className="subject-box-head">
-				<span className="sb-name">{label}</span>
-				<div className="sb-actions">
-					{onColorChange && (
-						<input
-							type="color"
-							className="sb-color"
-							title={ko("Character color", "인물 색상")}
-							aria-label={ko("Character color", "인물 색상")}
-							value={color}
-							/* Focus opens the session for keyboard/eyedropper use; the
-							   native swatch dialog can drive onChange without focus, so the
-							   first change of a session opens it too (the handler is
-							   session-idempotent). */
-							onFocus={onColorEditStart}
-							onChange={(e) => {
-								onColorEditStart?.();
-								onColorChange(e.target.value);
-							}}
-						/>
-					)}
-					{onPose && (
-						<button
-							type="button"
-							className={"cam-toggle" + (posing ? " active" : "")}
-							aria-label={isKo ? `${label} 포즈 열기` : `Open pose studio for ${label}`}
-							title={isKo ? `${label} 포즈` : `Pose ${label}`}
-							onClick={onPose}
-						>
-							⌘
-						</button>
-					)}
-					{onRemove && (
-						<button type="button" className="sb-remove" title={ko("Remove subject", "인물 제거")} onClick={onRemove}>
-							✕
-						</button>
-					)}
-				</div>
-			</div>
-		</div>
 	);
 }

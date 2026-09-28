@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+const app = readStudioSource();
 // Playback lives in the timeline transport only (#193 removed the PlayView
 // bar's duplicate), so its icon contract is asserted where the buttons are.
 const timeline = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");

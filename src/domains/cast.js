@@ -1,0 +1,739 @@
+import { useSemanticState } from "../use-semantic-state.js";
+import { useState, useMemo } from "react";
+import { loadCustomPoses, DEFAULT_POSE, capturePose, captureHipsOffset, saveCustomPoses, deleteCustomPose } from "../poses.js";
+import { createCharacterEntry, createKeyLight, createCharacterLayer } from "../scenes.js";
+import { DEFAULT_SUBJECT, DEFAULT_SUBJECT2, nextCharacterId, DEFAULT_PROMPT_CLIPS, MAX_WAYPOINTS, MULTIMODEL_REASONS, ARDY_PROMPT_HORIZON_FRAMES, ARDY_DURATION_MIN, TIMELINE_FPS } from "../app-stage.jsx";
+import { ko, isKo } from "../locale.js";
+import { createIkState } from "../ardy/ik.js";
+import { judgeNextWaypoint } from "../ardy/waypoints.js";
+import { StudioProtocolError } from "../studio-agent-protocol.js";
+import { studioActionRefusal } from "../studio-actions.js";
+import { createStableItemId, removeStableItem, updateStableItem } from "../stable-items.js";
+import { trackFeature } from "../analytics.js";
+import { requestBridgeExtract } from "../multimodel-ingest.js";
+import { loadMotionFromUrl } from "../ardy/npz.js";
+import { snapshotPlaybackBones, applyMotionFrame, restorePlaybackBones } from "../ardy/playback.js";
+import { movePromptClipFrames } from "../ardy/prompt-clips.js";
+
+export function useCast(appContext) {
+	const [characters, setCharacters, editCharacters] = useSemanticState(appContext.shared.startupStage.characters, appContext.shared.markSemanticEdit, "characters");
+
+	const [customPoses, setCustomPoses] = useState(() => loadCustomPoses());
+
+	const [posing, setPosing] = useState(null);
+
+	const [posingClosing, setPosingClosing] = useState(false);
+
+	const [studioPick, setStudioPick] = useState(null);
+
+	const [rigs, setRigs] = useState({});
+
+	const [rigMountEpoch, setRigMountEpoch] = useState(0);
+
+	const [poseRevision, setPoseTick] = useState(0);
+
+	const charA = characters[0] ?? createCharacterEntry(null, 0);
+
+	const charB = characters[1] ?? { ...createCharacterEntry(null, 1), x: 1.15, z: 0.1, rot: -14 };
+
+	const showB = characters.some((entry, index) => index > 0 && !entry.hidden);
+
+	const poseA = charA.pose ?? DEFAULT_POSE;
+
+	const poseB = charB.pose ?? DEFAULT_POSE;
+
+	const subject = charA.subject ?? DEFAULT_SUBJECT;
+
+	const subject2 = charB.subject ?? DEFAULT_SUBJECT2;
+
+	const rigA = rigs[charA.id] ?? null;
+
+	const rigB = (characters[1] ? rigs[charB.id] : null) ?? null;
+
+	function updateCharacterAt(index, next) {
+		editCharacters((list) => list.map((entry, i) => {
+			if (i !== index) return entry;
+			const resolved = typeof next === "function" ? next(entry) : next;
+			return { ...entry, ...resolved };
+		}));
+	}
+
+	const setCharA = (next) => updateCharacterAt(0, next);
+
+	const setCharB = (next) => updateCharacterAt(1, next);
+
+	const setPoseA = (pose) => updateCharacterAt(0, (entry) => ({ pose: typeof pose === "function" ? pose(entry.pose ?? DEFAULT_POSE) : pose }));
+
+	const setPoseB = (pose) => updateCharacterAt(1, (entry) => ({ pose: typeof pose === "function" ? pose(entry.pose ?? DEFAULT_POSE) : pose }));
+
+	const setSubject = (value) => updateCharacterAt(0, (entry) => ({ subject: typeof value === "function" ? value(entry.subject) : value }));
+
+	const setSubject2 = (value) => updateCharacterAt(1, (entry) => ({ subject: typeof value === "function" ? value(entry.subject) : value }));
+
+	function setShowB(next) {
+		recordCharacterUndo();
+		editCharacters((list) => {
+			const anyVisibleExtra = list.some((entry, i) => i > 0 && !entry.hidden);
+			const on = typeof next === "function" ? next(anyVisibleExtra) : next;
+			if (on) {
+				if (anyVisibleExtra) return list;
+				const hiddenIdx = list.findIndex((entry, i) => i > 0 && entry.hidden);
+				if (hiddenIdx > 0) return list.map((entry, i) => (i === hiddenIdx ? { ...entry, hidden: false } : entry));
+				return [...list, createCharacterEntry({ id: nextCharacterId(list), x: 1.15, z: 0.1, rot: -14, pose: DEFAULT_POSE, subject: DEFAULT_SUBJECT2 }, list.length)];
+			}
+			return list.map((entry, i) => (i > 0 && !entry.hidden ? { ...entry, hidden: true } : entry));
+		});
+	}
+
+	function moveCharacter(charId, next) {
+		editCharacters((list) => list.map((entry) => {
+			if (entry.id !== charId) return entry;
+			const resolved = typeof next === "function" ? next(entry) : next;
+			return { ...entry, ...resolved };
+		}));
+	}
+
+	function removeCharacter(charId) {
+		const list = appContext.live.characters;
+		if (list.length <= 1) return;
+		recordCharacterUndo();
+		const nextCharacters = list.filter((entry) => entry.id !== charId);
+		appContext.publishCharacters(nextCharacters);
+		editCharacters(nextCharacters);
+		// The deleted layer's untrimmed take goes with it: a recycled id must
+		// never inherit a stranger's take, and its stature left with the entry.
+		appContext.shared.motionFullRef.current.delete(charId);
+		setRigs((current) => {
+			if (!(charId in current)) return current;
+			const next = { ...current };
+			delete next[charId];
+			return next;
+		});
+	}
+
+	const reportRig = (charId) => {
+		if (!appContext.shared.rigReportersRef.current.has(charId)) {
+			appContext.shared.rigReportersRef.current.set(charId, (rig) => {
+				setRigs((current) => (current[charId] === rig ? current : { ...current, [charId]: rig }));
+				window.__cozyclayMcpRigReady = [...new Set([...(window.__cozyclayMcpRigReady ?? []), charId])];
+				window.dispatchEvent(new CustomEvent("cozyclay:mcp-rig-ready", { detail: charId }));
+				const waiter = appContext.shared.rigWaitersRef.current.get(charId);
+				if (waiter) {
+					appContext.shared.rigWaitersRef.current.delete(charId);
+					waiter(rig);
+				}
+			});
+		}
+		return appContext.shared.rigReportersRef.current.get(charId);
+	};
+
+	const spawnCharacter = (model, x, z) => {
+		recordCharacterUndo();
+		const id = nextCharacterId(characters);
+		editCharacters((list) => [...list, createCharacterEntry({ id, model, x, z, pose: DEFAULT_POSE, subject: "a person" }, list.length)]);
+		appContext.shared.setSelectedHierarchyId(`character:${id}`);
+		appContext.shared.setToast(ko("Character added to the scene", "인물을 씬에 추가했어요"));
+	};
+
+	const charKeyToHierarchyId = (key) => {
+		if (key === "A" || key === "a" || key === "char:A") return "characterA";
+		if (key === "B" || key === "b" || key === "char:B") return "characterB";
+		return `character:${key.startsWith("char:") ? key.slice(5) : key}`;
+	};
+
+	const charIdFromHierarchyId = (hierarchyId) => {
+		if (hierarchyId === "characterA") return characters[0]?.id ?? null;
+		if (hierarchyId === "characterB") return characters[1]?.id ?? null;
+		if (hierarchyId?.startsWith("character:")) return hierarchyId.slice(10);
+		return null;
+	};
+
+	const [activeCharacterId, setActiveCharacterId] = useState(characters[0]?.id ?? null);
+
+	const rowIdForCharIndex = (index) => index === 0 ? "characterA" : index === 1 ? "characterB" : characters[index] ? `character:${characters[index].id}` : "characterA";
+
+	const activeChar = characters.find((entry) => entry.id === activeCharacterId) ?? characters[0] ?? charA;
+
+	const selectActiveCharacterInHierarchy = () => {
+		const id = activeCharacterId ?? characters[0]?.id;
+		if (id) appContext.shared.setSelectedHierarchyId(`character:${id}`);
+	};
+
+	const activeCharIndex = Math.max(0, characters.findIndex((entry) => entry.id === activeChar.id));
+
+	const activeRig = rigs[activeChar.id] ?? null;
+
+	const waitForRig = (charId, timeoutMs = 10000) => {
+		const current = rigs[charId];
+		if (current) return Promise.resolve(current);
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				appContext.shared.rigWaitersRef.current.delete(charId);
+				reject(new Error(ko("The active character's rig is not loaded", "활성 인물의 리그가 로드되지 않았어요")));
+			}, timeoutMs);
+			appContext.shared.rigWaitersRef.current.set(charId, (rig) => {
+				clearTimeout(timer);
+				resolve(rig);
+			});
+		});
+	};
+
+	const ghostLayers = useMemo(() => characters.flatMap((entry, index) => entry.id === activeChar.id || entry.hidden ? [] : [{
+		owner: `S${index + 1}`,
+		promptClips: entry.layer?.promptClips ?? [],
+		waypointFrames: (entry.layer?.waypoints ?? []).map((waypoint) => waypoint.frame),
+	}]), [characters, activeChar.id]);
+
+	const snapshotCast = (includeShots = false) => ({
+		// The key light rides the same undo stack as everything else — its
+		// absence used to make Ctrl+Z after a light edit undo an unrelated
+		// earlier action while the light stayed put (research claim C1).
+		keyLight: { ...appContext.shared.keyLight },
+		environmentImage: appContext.shared.environmentImage,
+		environment: appContext.shared.environment,
+		style: appContext.shared.style,
+		hasEnvSheet: appContext.shared.hasEnvSheet,
+		characters: appContext.live.characters.map((entry) => ({
+			...entry,
+			layer: entry.id === activeChar.id
+				? { waypoints: appContext.shared.bufferRef.current.waypoints, promptClips: appContext.shared.bufferRef.current.promptClips }
+				: entry.layer,
+		})),
+		bufferMotion: appContext.shared.bufferRef.current.motion,
+		bufferCharId: appContext.shared.loadedLayerCharRef.current,
+		// The ACTIVE character's authored IK layer. Only the keys (deep-copied so
+		// undo can never hand back live quaternions) and the committed-edit list
+		// travel: targets/plants/tracked are transient solver state the next
+		// seed/drag rebuilds anyway.
+		ikKeys: appContext.shared.snapshotIkKeys(appContext.shared.ikStateRef.current),
+		committedIkEdits: appContext.shared.committedIkEdits,
+		// Shot-op entries carry the shot list too; character-op entries leave it
+		// out so undoing a character move never rolls back unrecorded shot edits.
+		...(includeShots ? { shots: appContext.shared.shots } : {}),
+	});
+
+	function recordCharacterUndo() {
+		appContext.recordCharacterUndo(snapshotCast());
+	}
+
+	function changeInspectorCharacter(gesture, patch) {
+		appContext.shared.beginGestureUndo(`character:${activeChar.id}:${gesture}`);
+		updateCharacterAt(activeCharIndex, patch);
+	}
+
+	function restoreCast(snapshot) {
+		// Captured BEFORE the buffer pointer moves: whose IK state the live ref
+		// currently holds.
+		const loadedIk = appContext.shared.loadedLayerCharRef.current;
+		if (snapshot.shots) appContext.shared.setShots(snapshot.shots);
+		setCharacters(snapshot.characters);
+		const bufferChar = snapshot.characters.find((entry) => entry.id === snapshot.bufferCharId) ?? snapshot.characters[0];
+		setWaypoints((bufferChar?.layer?.waypoints ?? []).map((waypoint) => ({ ...waypoint })));
+		setPromptClips((bufferChar?.layer?.promptClips ?? []).map((clip) => ({ ...clip })));
+		appContext.shared.setMotion(snapshot.bufferMotion);
+		appContext.shared.loadedLayerCharRef.current = bufferChar?.id ?? null;
+		setActiveCharacterId(bufferChar?.id ?? null);
+		// IK keys go back onto the snapshot owner's layer state (again deep-copied,
+		// so stepping through the same entry twice cannot alias what the rig is now
+		// mutating) and the tick bumps so markers and the keyed pose re-derive.
+		if (snapshot.ikKeys) {
+			// The keys belong to the snapshot's buffer character. When that
+			// character has no stored layer state yet, it gets a fresh one —
+			// falling back to the live ref would hand the keys to whoever is
+			// active NOW, cross-wiring two characters' corrections (#77).
+			let target;
+			if (bufferChar?.id === loadedIk) {
+				target = appContext.shared.ikStateRef.current;
+			} else {
+				target = appContext.shared.ikStatesRef.current.get(bufferChar?.id);
+				if (!target) {
+					target = createIkState();
+					if (bufferChar?.id) appContext.shared.ikStatesRef.current.set(bufferChar.id, target);
+				}
+			}
+			target.keys = appContext.shared.snapshotIkKeys({ keys: snapshot.ikKeys });
+			target.tracked = new Set([...target.keys.values()].flatMap((entry) => [...entry.keys()]));
+			appContext.shared.setCommittedIkEdits(snapshot.committedIkEdits ?? []);
+			appContext.shared.setIkTick((value) => value + 1);
+		}
+		if (snapshot.keyLight) appContext.shared.stageDomain.setKeyLight(createKeyLight(snapshot.keyLight));
+		if (snapshot.environmentImage !== undefined) appContext.shared.stageDomain.setEnvironmentImage(snapshot.environmentImage);
+		if (snapshot.environment !== undefined) appContext.shared.stageDomain.setEnvironment(snapshot.environment);
+		if (snapshot.style !== undefined) appContext.shared.stageDomain.setStyle(snapshot.style);
+		if (snapshot.hasEnvSheet !== undefined) appContext.shared.stageDomain.setHasEnvSheet(snapshot.hasEnvSheet);
+	}
+
+	const [hasCharSheet, setHasCharSheet] = useState(appContext.shared.startupStage.hasCharSheet);
+
+	const [promptBlocksReveal, setPromptBlocksReveal] = useState(0);
+
+	const revealPromptBlocks = () => setPromptBlocksReveal((n) => n + 1);
+
+	const [waypointMode, setWaypointMode] = useState(false);
+
+	const [waypoints, setWaypoints] = useState(appContext.shared.startupStage.characters?.[0]?.layer?.waypoints ?? appContext.shared.startupShotState?.waypoints ?? []);
+
+	const [activeWaypointId, setActiveWaypointId] = useState(null);
+
+	const [pendingWaypointFrame, setPendingWaypointFrame] = useState(null);
+
+	const [promptClips, setPromptClips, editPromptClips] = useSemanticState(() => (appContext.shared.startupStage.characters?.[0]?.layer?.promptClips ?? DEFAULT_PROMPT_CLIPS).map((clip) => ({ ...clip })), appContext.shared.markSemanticEdit, "promptClips");
+
+	const [selectedPromptId, setSelectedPromptId] = useState(null);
+
+	const [photoPoseState, setPhotoPoseState] = useState("idle");
+
+	const [photoPoseError, setPhotoPoseError] = useState("");
+
+	const allPoses = customPoses;
+
+	const selectablePoses = useMemo(() => [DEFAULT_POSE, ...customPoses], [customPoses]);
+
+	const posingIndex = characters.findIndex((entry) => entry.id === posing);
+
+	const posingChar = posingIndex >= 0 ? characters[posingIndex] : null;
+
+	const posedRig = () => rigs[posing] ?? null;
+
+	const setPosed = (pose) => {
+		if (posingIndex >= 0) updateCharacterAt(posingIndex, { pose: typeof pose === "function" ? pose(posingChar?.pose ?? DEFAULT_POSE) : pose });
+	};
+
+	const WALK_SPEED_MPS = 1.4;
+
+	const ROOT_ROOM_LIMIT = 11;
+
+	const clampRootPosition = (value) => Math.max(-ROOT_ROOM_LIMIT, Math.min(ROOT_ROOM_LIMIT, value));
+
+	const rootStart = () => ({ frame: 0, x: activeChar.x, z: activeChar.z });
+
+	function validateWaypointAt(ordered, index, candidate, start = rootStart()) {
+		const previous = index > 0 ? ordered[index - 1] : start;
+		const beforePrevious = index > 1 ? ordered[index - 2] : null;
+		const inbound = judgeNextWaypoint(previous, candidate, appContext.shared.tlFps, beforePrevious);
+		if (!inbound.ok) return inbound;
+		const next = ordered[index + 1];
+		if (!next) return inbound;
+		const outbound = judgeNextWaypoint(candidate, next, appContext.shared.tlFps, previous);
+		if (!outbound.ok) return outbound;
+		return { ok: true, warnings: [...inbound.warnings, ...outbound.warnings] };
+	}
+
+	function queueRootWaypointFrame(frame) {
+		const target = Math.max(1, Math.min(Math.round(frame), appContext.shared.tlFrameCount - 1));
+		const existing = waypoints.find((waypoint) => waypoint.frame === target);
+		if (existing) {
+			setActiveWaypointId(existing.id);
+			setPendingWaypointFrame(null);
+			appContext.shared.setTlFrame(target);
+			setWaypointMode(true);
+			selectActiveCharacterInHierarchy();
+			appContext.shared.setToast(isKo ? `프레임 ${target}의 루트 웨이포인트를 선택했어요. 탑뷰에서 점을 드래그해 위치를 조정하세요.` : `Root waypoint at frame ${target} selected — drag the pin in the Top-View to reposition.`);
+			return;
+		}
+		setPendingWaypointFrame(target);
+		setActiveWaypointId(null);
+		appContext.shared.setTlFrame(target);
+		setWaypointMode(true);
+		selectActiveCharacterInHierarchy();
+		appContext.shared.setToast(isKo ? `프레임 ${target}이 예약됐어요. 샷 뷰 바닥을 클릭하면 그 위치에 루트 웨이포인트가 생성됩니다.` : `Frame ${target} is reserved — click the Shot-view floor to drop the root waypoint there.`);
+	}
+
+	function castMemberOf(characterId) {
+		const character = appContext.live.characters.find((entry) => entry.id === characterId);
+		if (!character) throw new StudioProtocolError("STALE_TARGET", `Character ${characterId} is not in this scene.`);
+		return character;
+	}
+
+	function readCharacterWaypoints(characterId) {
+		if (characterId === appContext.shared.loadedLayerCharRef.current) return appContext.shared.bufferRef.current.waypoints;
+		return appContext.live.characters.find((entry) => entry.id === characterId)?.layer?.waypoints ?? [];
+	}
+
+	function writeCharacterWaypoints(characterId, next) {
+		if (characterId === appContext.shared.loadedLayerCharRef.current) {
+			appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, waypoints: next };
+			setWaypoints(next);
+			return;
+		}
+		appContext.shared.publishStudioCharacters(appContext.live.characters.map((entry) => entry.id === characterId
+			? { ...entry, layer: { ...(entry.layer ?? createCharacterLayer()), waypoints: next } }
+			: entry), true);
+	}
+
+	function addCharacterWaypoint(characterId, point, frame = null) {
+		const character = castMemberOf(characterId);
+		const ordered = [...readCharacterWaypoints(characterId)].sort((a, b) => a.frame - b.frame);
+		if (ordered.length + 1 > MAX_WAYPOINTS) {
+			throw studioActionRefusal("TARGET_NOT_READY", `The root path is capped at ${MAX_WAYPOINTS} waypoints; remove one first.`,
+				isKo ? `루트 경로는 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요` : `The root path is capped at ${MAX_WAYPOINTS} waypoints`);
+		}
+		const x = clampRootPosition(point.x);
+		const z = clampRootPosition(point.z);
+		const start = { frame: 0, x: character.x, z: character.z };
+		const last = ordered[ordered.length - 1] ?? start;
+		const lastFrame = appContext.shared.frameCountRef.current - 1;
+		if (frame !== null && (frame < 1 || frame > lastFrame)) throw new StudioProtocolError("INVALID_RANGE", `Frame ${frame} is outside the root path's frames 1-${lastFrame}.`);
+		const at = frame ?? last.frame + Math.max(8, Math.round((Math.hypot(x - last.x, z - last.z) / WALK_SPEED_MPS) * appContext.shared.tlFps));
+		if (at > lastFrame) {
+			throw studioActionRefusal("INVALID_RANGE", "The path already fills the clip — extend the duration or clear a waypoint.",
+				ko("The path already fills the clip — extend the duration or clear a waypoint", "경로가 이미 클립 길이를 채웠어요. 시간을 늘리거나 웨이포인트를 지워 주세요"));
+		}
+		if (ordered.some((waypoint) => waypoint.frame === at)) {
+			throw studioActionRefusal("INVALID_ARGUMENT", `Frame ${at} already has a root waypoint — pick an empty frame or move that one.`,
+				isKo ? `프레임 ${at}에는 이미 루트 웨이포인트가 있어요. 타임라인에서 빈 프레임을 선택하세요.` : `Frame ${at} already has a root waypoint — pick an empty frame on the timeline.`);
+		}
+		// The generator cannot refuse an impossible pin, so placement is the
+		// last moment to: block out-of-band legs with the fix named.
+		const insertAt = ordered.findIndex((waypoint) => waypoint.frame > at);
+		const index = insertAt === -1 ? ordered.length : insertAt;
+		const waypoint = { id: createStableItemId("waypoint"), frame: at, x, z, heading: null };
+		const next = [...ordered.slice(0, index), waypoint, ...ordered.slice(index)];
+		const verdict = validateWaypointAt(next, index, waypoint, start);
+		if (!verdict.ok) throw studioActionRefusal("INVALID_ARGUMENT", `Not placed — ${verdict.error}`, isKo ? `배치하지 못했어요 — ${verdict.error}` : `Not placed — ${verdict.error}`);
+		// Past every refusal: the pre-drop path is worth one Ctrl+Z entry.
+		recordCharacterUndo();
+		writeCharacterWaypoints(characterId, next);
+		return { waypoint, index, warnings: verdict.warnings };
+	}
+
+	function moveCharacterWaypoint(characterId, frame, point) {
+		const character = castMemberOf(characterId);
+		const ordered = [...readCharacterWaypoints(characterId)].sort((a, b) => a.frame - b.frame);
+		const index = ordered.findIndex((waypoint) => waypoint.frame === frame);
+		if (index === -1) throw new StudioProtocolError("STALE_TARGET", `${character.subject || character.id} has no root waypoint at frame ${frame}.`);
+		const moved = { ...ordered[index], x: clampRootPosition(point.x), z: clampRootPosition(point.z) };
+		if (moved.x === ordered[index].x && moved.z === ordered[index].z) return { waypoint: ordered[index], index, warnings: [] };
+		const next = ordered.map((waypoint, i) => (i === index ? moved : waypoint));
+		const verdict = validateWaypointAt(next, index, moved, { frame: 0, x: character.x, z: character.z });
+		if (!verdict.ok) {
+			throw studioActionRefusal("INVALID_ARGUMENT", `This position doesn't fit the root path: ${verdict.error}`,
+				isKo ? `이 위치는 루트 경로에 맞지 않아요: ${verdict.error}` : `This position doesn't fit the root path: ${verdict.error}`);
+		}
+		// A plan-board drag recorded its one entry when the gesture began; every
+		// other move is its own entry.
+		const past = appContext.castHistory.past;
+		if (!(appContext.shared.gestureUndoRef.current?.key === "waypoint-drag" && past[past.length - 1]?.tick === appContext.shared.gestureUndoRef.current.tick)) recordCharacterUndo();
+		writeCharacterWaypoints(characterId, next);
+		return { waypoint: moved, index, warnings: verdict.warnings };
+	}
+
+	function removeCharacterWaypoint(characterId, frame) {
+		const character = castMemberOf(characterId);
+		const current = readCharacterWaypoints(characterId);
+		const waypoint = current.find((entry) => entry.frame === frame);
+		if (!waypoint) throw new StudioProtocolError("STALE_TARGET", `${character.subject || character.id} has no root waypoint at frame ${frame}.`);
+		recordCharacterUndo();
+		writeCharacterWaypoints(characterId, removeStableItem(current, waypoint.id, "waypoints"));
+		return waypoint;
+	}
+
+	function clearCharacterWaypoints(characterId) {
+		castMemberOf(characterId);
+		const current = readCharacterWaypoints(characterId);
+		if (!current.length) return 0;
+		recordCharacterUndo();
+		writeCharacterWaypoints(characterId, []);
+		return current.length;
+	}
+
+	function addFloorWaypoint(point) {
+		const ordered = [...waypoints].sort((a, b) => a.frame - b.frame);
+		const last = ordered[ordered.length - 1] ?? rootStart();
+		const pendingFrame = pendingWaypointFrame == null ? null : Math.max(1, Math.min(Math.round(pendingWaypointFrame), appContext.shared.tlFrameCount - 1));
+		// A scrubbed playhead is an explicit statement of time: a click lands on
+		// that exact frame. An untouched playhead (it snaps to the last pin
+		// after every placement) falls back to walking-distance pacing.
+		const playhead = Math.round(appContext.shared.tlFrame);
+		const pinned = pendingFrame != null || playhead > last.frame;
+		const frame = pendingFrame ?? (pinned ? Math.min(playhead, appContext.shared.tlFrameCount - 1) : null);
+		const before = readCharacterWaypoints(activeChar.id);
+		const placedAction = appContext.shared.runStudioAction("character.addWaypoint", { characterId: activeChar.id, position: { x: point.x, z: point.z }, ...(frame == null ? {} : { frame }) });
+		if (!placedAction) {
+			if (pendingFrame != null && ordered.some((waypoint) => waypoint.frame === pendingFrame)) setPendingWaypointFrame(null);
+			return;
+		}
+		const path = readCharacterWaypoints(activeChar.id);
+		const index = path.findIndex((waypoint) => !before.includes(waypoint));
+		const waypoint = path[index];
+		appContext.shared.setTlFrame(waypoint.frame);
+		setActiveWaypointId(waypoint.id);
+		setPendingWaypointFrame(null);
+		const { warnings } = validateWaypointAt(path, index, waypoint);
+		const placed = isKo
+			? `루트 웨이포인트 ${index + 1} 추가: 프레임 ${waypoint.frame}${pendingFrame != null ? " (타임라인 예약 프레임)" : pinned ? " (재생 헤드 위치)" : ` (~${(waypoint.frame / appContext.shared.tlFps).toFixed(1)}초 걷기 기준)`}`
+			: `Waypoint ${index + 1} — frame ${waypoint.frame} ${pendingFrame != null ? "(at the reserved frame)" : pinned ? "(at the playhead)" : `(~${(waypoint.frame / appContext.shared.tlFps).toFixed(1)}s at a walk)`}`;
+		appContext.shared.setToast(warnings.length ? `${placed} · ⚠ ${warnings[0]}` : placed);
+	}
+
+	function moveWaypoint(id, x, z) {
+		const waypoint = waypoints.find((entry) => entry.id === id);
+		if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`);
+		if (!appContext.shared.runStudioAction("character.moveWaypoint", { characterId: activeChar.id, frame: waypoint.frame, position: { x, z } })) return;
+		setActiveWaypointId(id);
+		setPendingWaypointFrame((current) => (current === waypoint.frame ? null : current));
+		const path = readCharacterWaypoints(activeChar.id);
+		const index = path.findIndex((entry) => entry.id === id);
+		const { warnings } = index === -1 ? { warnings: [] } : validateWaypointAt(path, index, path[index]);
+		if (warnings.length) appContext.shared.setToast(isKo ? `루트 웨이포인트 이동됨: ${warnings[0]}` : `Root waypoint moved: ${warnings[0]}`);
+	}
+
+	function removeWaypoint(id) {
+		const waypoint = waypoints.find((entry) => entry.id === id);
+		if (!waypoint) throw new Error(`Unknown waypoints ID: ${id}`);
+		if (!appContext.shared.runStudioAction("character.removeWaypoint", { characterId: activeChar.id, frame: waypoint.frame })) return;
+		setActiveWaypointId((current) => (current === id ? null : current));
+		setPendingWaypointFrame((current) => (current === waypoint.frame ? null : current));
+	}
+
+	function toggleWaypointMode() {
+		const next = !waypointMode;
+		// Both modes want the viewport pointer; the last one switched on wins,
+		// the other stands down rather than fighting for pointerdown.
+		if (next && appContext.shared.lineEditMode) appContext.shared.exitLineEditMode();
+		setWaypointMode(next);
+		if (!next) {
+			setPendingWaypointFrame(null);
+			appContext.shared.setToast(ko("2D Root path constraints off", "2D 루트 경로 제약 꺼짐"));
+			return;
+		}
+
+		appContext.shared.setToast(ko("2D Root path on — click the set floor in the Shot view to drop waypoints; Subject 1 is the frame 0 start", "2D 루트 경로 켜짐 — 샷 뷰의 세트 바닥을 클릭해 웨이포인트를 놓으세요. 인물 1이 0프레임 시작점입니다"));
+	}
+
+	function openStudio(charId) {
+		setPosing(charId);
+		setPosingClosing(false);
+		const entry = characters.find((item) => item.id === charId);
+		setStudioPick((entry?.pose ?? DEFAULT_POSE)?.id ?? null);
+	}
+
+	function closeStudio() {
+		// let the panel play its exit animation before it leaves the tree
+		setPosingClosing(true);
+		window.setTimeout(() => {
+			setPosing(null);
+			setPosingClosing(false);
+		}, 190);
+	}
+
+	function saveCurrentPose() {
+		if (!activeRig) return;
+		trackFeature("pose_edit");
+		const pose = {
+			id: `custom_${Date.now()}`,
+			label: isKo ? `내 포즈 ${customPoses.length + 1}` : `My Pose ${customPoses.length + 1}`,
+			prompt: "in the exact body pose shown in the blocking frame",
+			bones: capturePose(activeRig),
+			// A take frame carries its measured hips height; bottling the frame
+			// without it would save every crouch as a float.
+			rootY: captureHipsOffset(activeRig),
+			custom: true,
+		};
+		const next = [...customPoses, pose];
+		setCustomPoses(next);
+		saveCustomPoses(next);
+		setStudioPick(pose.id);
+		appContext.shared.setToast(appContext.shared.motion
+			? ko(`Saved this frame's pose to the library as “${pose.label}”`, `지금 프레임의 자세를 “${pose.label}”로 라이브러리에 저장했어요`)
+			: ko(`Saved the current pose to the library as “${pose.label}”`, `지금 자세를 “${pose.label}”로 라이브러리에 저장했어요`));
+	}
+
+	function savePose() {
+		const rig = posedRig();
+		if (!rig) return;
+		trackFeature("pose_edit");
+		const pose = {
+			id: `custom_${Date.now()}`,
+		label: isKo ? `내 포즈 ${customPoses.length + 1}` : `My Pose ${customPoses.length + 1}`,
+			prompt: "in the exact body pose shown in the blocking frame",
+			bones: capturePose(rig),
+			custom: true,
+		};
+		const next = [...customPoses, pose];
+		setCustomPoses(next);
+		saveCustomPoses(next);
+		setStudioPick(pose.id);
+		// The library is not on the cast history; writing the saved pose onto the
+		// posed character is, and setPosed only writes when one is being posed.
+		if (posingIndex >= 0) recordCharacterUndo();
+		setPosed(pose);
+		appContext.shared.setToast(ko("Pose saved", "포즈 저장됨"));
+	}
+
+	async function posePhotoFile(file) {
+		if (!file || photoPoseState === "running") return;
+		// Reachable from the Inspector as well as the studio panel, and posedRig()
+		// only answers while the studio is open — fall back to the character the
+		// hierarchy has selected, which is the one the pose will be applied to.
+		const rig = posedRig() ?? activeRig;
+		let objectUrl = "";
+		setPhotoPoseState("running");
+		setPhotoPoseError("");
+		try {
+			if (!rig) throw new Error("rig-not-loaded");
+			objectUrl = URL.createObjectURL(file);
+			let bones = null;
+			let rootY = 0;
+			let gpuError = null;
+			// GVHMR on the box measures the body over the whole clip,
+			// which is more reliable than a single-frame depth estimate.
+			// The bridge wraps the still into a second of video and runs the exact
+			// GVHMR footage pipeline. A missing bridge or another backend is an error.
+			try {
+				const health = await fetch("/ardy/health", { signal: AbortSignal.timeout(2000) }).catch(() => null);
+				if (!health?.ok) throw new Error("extract-bridge-required");
+				const healthPayload = await health.json().catch(() => null);
+				if (healthPayload?.extractionBackend !== "gvhmr") throw new Error("extract-backend-unsupported");
+				const done = await requestBridgeExtract(file, {});
+				const take = await loadMotionFromUrl(done.motionUrl);
+				// The middle frame: the wrap's smoothing passes have settled
+				// there, while frame 0 can still carry filter warm-up.
+				const frame = Math.floor((take.frames - 1) / 2);
+				const snapshot = snapshotPlaybackBones(rig);
+				try {
+					applyMotionFrame(rig, { ...take, anchorFrame: frame }, frame);
+					bones = capturePose(rig);
+					// GVHMR measured the hips' true height — a crouch is a crouch
+					// because the hips came DOWN, not just because the knees bent.
+					rootY = captureHipsOffset(rig);
+				} finally {
+					restorePlaybackBones(rig, snapshot);
+				}
+			} catch (error) {
+				gpuError = error;
+				console.warn("photo pose: GVHMR extract failed", error);
+			}
+			if (!bones) throw new Error(gpuError?.message || "extract-run-failed");
+			const pose = {
+				id: `photo_${Date.now()}`,
+				label: isKo ? `사진 포즈 ${customPoses.length + 1}` : `Photo Pose ${customPoses.length + 1}`,
+				prompt: "in the exact body pose shown in the reference photograph",
+				bones,
+				rootY,
+				custom: true,
+			};
+			const next = [...customPoses, pose];
+			setCustomPoses(next);
+			saveCustomPoses(next);
+			setStudioPick(pose.id);
+			// The studio poses whichever character it was opened on; the Inspector
+			// poses the selected one. Write the pose to whichever that is.
+			const poseTargetIndex = posingIndex >= 0 ? posingIndex : activeCharIndex;
+			// A running take drives the same bones a pose writes, so the read would
+			// land invisibly underneath it. Applying from a photo follows the same
+			// rule the Apply button already states: the motion goes first.
+			const hadMotion = Boolean(appContext.shared.motion);
+			// One gesture, one Ctrl+Z entry. clearMotion() already snapshots the
+			// pre-gesture cast — pose included — so undoing it brings back the take
+			// AND the pose this write replaces. With no take to clear, the pose
+			// write is the whole edit and records itself.
+			if (hadMotion) appContext.shared.clearMotion();
+			else recordCharacterUndo();
+			updateCharacterAt(poseTargetIndex, { pose });
+			setPhotoPoseState("done");
+			// The pose is already saved and written by this point. GVHMR either
+			// returns a measured pose or the named error above reaches the user.
+			appContext.shared.setToast(hadMotion
+					? ko("Cleared the motion and posed from the photo — refine it with the handles", "모션을 지우고 사진으로 자세를 잡았어요 — 핸들로 다듬어 보세요")
+					: ko("Pose read from the photo — refine it with the handles", "사진에서 자세를 읽었어요 — 핸들로 다듬어 보세요"));
+		} catch (error) {
+			const code = error?.message ?? String(error);
+			// fitLandmarksToPose refuses a sample whose torso is not visible; that is
+			// a photograph problem, not an engine problem, so it is named as one.
+			const named = code.startsWith("fitLandmarksToPose:") ? "pose-partly-occluded" : code;
+			setPhotoPoseState("error");
+			setPhotoPoseError(MULTIMODEL_REASONS[named]?.[isKo ? 1 : 0] ?? named);
+		} finally {
+			if (objectUrl) URL.revokeObjectURL(objectUrl);
+		}
+	}
+
+	function removePose(id) {
+		const next = deleteCustomPose(id, customPoses);
+		setCustomPoses(next);
+		saveCustomPoses(next);
+		// Deleting a pose that is ON a character resets that character to the
+		// default — a cast change, so it belongs on Ctrl+Z. Deleting an unused
+		// library entry changes no character and records nothing.
+		if (poseA?.id === id || poseB?.id === id) recordCharacterUndo();
+		if (poseA?.id === id) setPoseA(DEFAULT_POSE);
+		if (poseB?.id === id) setPoseB(DEFAULT_POSE);
+		if (studioPick === id) setStudioPick(DEFAULT_POSE.id);
+	}
+
+	function addPromptClip(frame, surface = "timeline") {
+		const snapped = Math.max(0, Math.round(frame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
+		// Add at the playhead when the spot is free; only fall through to
+		// after-the-last-block when the playhead slot is taken. The old
+		// unconditional max() made the button's "at frame N" label a lie.
+		const blocked = promptClips.some((clip) => snapped < clip.endFrame && snapped + ARDY_PROMPT_HORIZON_FRAMES > clip.startFrame);
+		const startFrame = blocked
+			? Math.max(snapped, promptClips.reduce((max, clip) => Math.max(max, clip.endFrame), 0))
+			: snapped;
+		const clip = { id: createStableItemId("prompt-clip"), startFrame, endFrame: startFrame + ARDY_PROMPT_HORIZON_FRAMES, text: "" };
+		recordCharacterUndo();
+		editPromptClips((prev) => [...prev, clip]);
+		setSelectedPromptId(clip.id);
+		appContext.shared.setTlFrameCount((count) => Math.max(count, clip.endFrame));
+		appContext.shared.setArdyDuration(Math.max(ARDY_DURATION_MIN, clip.endFrame / TIMELINE_FPS));
+		trackFeature("prompt_block_add");
+	}
+
+	function changePromptClip(id, text) {
+		const clip = promptClips.find((entry) => entry.id === id);
+		if (!clip) throw new Error(`Unknown promptClips ID: ${id}`);
+		if (clip.text === text) return;
+		// Typing is one entry per editing session, not per keystroke: the first
+		// change on a clip snapshots the text as it stood, and the rest of the
+		// session keeps writing into that same entry. Reached from the inspector
+		// field and from the timeline chip alike.
+		appContext.shared.recordSessionUndo(appContext.shared.promptTextSessionRef, `prompt-text:${id}`);
+		editPromptClips((prev) => updateStableItem(prev, id, (clip) => ({ ...clip, text }), "promptClips"));
+		if (id === selectedPromptId) appContext.shared.setArdyPrompt(text);
+	}
+
+	const PROMPT_BLOCK_MAX_FRAMES = 5 * TIMELINE_FPS;
+
+	function resizePromptClip(id, edge, rawFrame) {
+		editPromptClips((prev) => {
+			const candidate = updateStableItem(prev, id, (clip) => {
+				const snapped = Math.max(0, Math.round(rawFrame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
+				return edge === "start"
+					? { ...clip, startFrame: Math.min(Math.max(snapped, clip.endFrame - PROMPT_BLOCK_MAX_FRAMES), clip.endFrame - ARDY_PROMPT_HORIZON_FRAMES) }
+					: { ...clip, endFrame: Math.min(Math.max(clip.startFrame + ARDY_PROMPT_HORIZON_FRAMES, snapped), clip.startFrame + PROMPT_BLOCK_MAX_FRAMES) };
+			}, "promptClips");
+			// Same rule the move path enforces: one prompt per frame range.
+			// A resize that lands on a neighbour used to slip through and get
+			// silently truncated by the generator; reject it at the handle.
+			const resized = candidate.find((clip) => clip.id === id);
+			if (resized && candidate.some((clip) => clip.id !== id && resized.startFrame < clip.endFrame && resized.endFrame > clip.startFrame)) {
+				return prev;
+			}
+			const end = candidate.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
+			appContext.shared.setTlFrameCount((count) => Math.max(count, end));
+			appContext.shared.setArdyDuration(end / TIMELINE_FPS);
+			return candidate;
+		});
+	}
+
+	function movePromptClip(id, rawStartFrame) {
+		if (!promptClips.some((clip) => clip.id === id)) throw new Error(`Unknown promptClips ID: ${id}`);
+		editPromptClips((prev) => {
+			const next = movePromptClipFrames(prev, id, rawStartFrame, ARDY_PROMPT_HORIZON_FRAMES);
+			if (next === prev) return prev;
+			const end = next.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
+			appContext.shared.setTlFrameCount((count) => Math.max(count, end));
+			appContext.shared.setArdyDuration(end / TIMELINE_FPS);
+			return next;
+		});
+	}
+
+	function removePromptClip(id) {
+		if (!promptClips.some((clip) => clip.id === id)) throw new Error(`Unknown promptClips ID: ${id}`);
+		recordCharacterUndo();
+		editPromptClips((prev) => removeStableItem(prev, id, "promptClips"));
+		if (selectedPromptId === id) setSelectedPromptId(null);
+	}
+	return { characters, setCharacters, editCharacters, customPoses, setCustomPoses, posing, setPosing, posingClosing, setPosingClosing, studioPick, setStudioPick, rigs, setRigs, rigMountEpoch, setRigMountEpoch, poseRevision, setPoseTick, charA, charB, showB, poseA, poseB, subject, subject2, rigA, rigB, updateCharacterAt, setCharA, setCharB, setPoseA, setPoseB, setSubject, setSubject2, setShowB, moveCharacter, removeCharacter, reportRig, spawnCharacter, charKeyToHierarchyId, charIdFromHierarchyId, activeCharacterId, setActiveCharacterId, rowIdForCharIndex, activeChar, selectActiveCharacterInHierarchy, activeCharIndex, activeRig, waitForRig, ghostLayers, snapshotCast, recordCharacterUndo, changeInspectorCharacter, restoreCast, hasCharSheet, setHasCharSheet, promptBlocksReveal, setPromptBlocksReveal, revealPromptBlocks, waypointMode, setWaypointMode, waypoints, setWaypoints, activeWaypointId, setActiveWaypointId, pendingWaypointFrame, setPendingWaypointFrame, promptClips, setPromptClips, editPromptClips, selectedPromptId, setSelectedPromptId, photoPoseState, setPhotoPoseState, photoPoseError, setPhotoPoseError, allPoses, selectablePoses, posingIndex, posingChar, posedRig, setPosed, WALK_SPEED_MPS, ROOT_ROOM_LIMIT, clampRootPosition, rootStart, validateWaypointAt, queueRootWaypointFrame, castMemberOf, readCharacterWaypoints, writeCharacterWaypoints, addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, addFloorWaypoint, moveWaypoint, removeWaypoint, toggleWaypointMode, openStudio, closeStudio, saveCurrentPose, savePose, posePhotoFile, removePose, addPromptClip, changePromptClip, PROMPT_BLOCK_MAX_FRAMES, resizePromptClip, movePromptClip, removePromptClip };
+}

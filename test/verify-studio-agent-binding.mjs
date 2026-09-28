@@ -166,6 +166,7 @@ function fixture(options={}) {
  scope.stageDomain=scope;
  scope.scenesDomain=scope;
  scope.shotsDomain=scope;
+ scope.castDomain=scope;
  const code=names.map(n=>{assert(declarations.has(n),`actual App function ${n}`);return declarations.get(n);}).join('\n');
  const actual=new Function(...Object.keys(scope),code+`\nreturn {${names.join(',')}};`)(...Object.values(scope));
  Object.assign(scope,actual);

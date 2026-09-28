@@ -75,7 +75,8 @@ assert.deepEqual(
 );
 assert.deepEqual(sanitizeProps("motion:generate_blocked", { surface: "timeline", prompt: "private" }), {});
 
-const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+const appSource = readStudioSource();
 const appFunction = (name) => {
 	const start = appSource.indexOf(`function ${name}(`);
 	assert.notEqual(start, -1, `${name} exists`);

@@ -102,6 +102,7 @@ function fixture() {
 	};
 	scope.appContext = createAppContext({ clock: scope.opClockRef, history: scope.charHistoryRef, objectClock: scope.lastObjectOpRef, suppressObjectClock: scope.suppressObjectClockRef, characters: scope.charactersRef }).forRender(scope);
 	scope.stageDomain = scope;
+	scope.castDomain = scope;
 	Object.defineProperty(scope, "activeChar", { get: () => scope.characters[0] });
 	const assign = (key) => (value) => {
 		scope[key] = typeof value === "function" ? value(scope[key]) : value;
@@ -420,7 +421,7 @@ const cases = {
 		const gizmo = source.slice(source.indexOf("<ObjectGizmo"), source.indexOf("onGroundClick={waypointMode"));
 		assert.ok(/id === "__keylight__" \? changeKeyLightFromGizmo/.test(gizmo), "the gizmo still routes the light through its own writer");
 		assert.ok(/if \(lightGizmoObject\) endGestureUndo\(\);/.test(gizmo), "the light gizmo closes its gesture on drag end");
-		const transform = source.slice(source.indexOf('title={workflowMode === "motion" ? ko("Placement"'), source.indexOf('<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Rig"'));
+		const transform = readFileSync(new URL('../src/panels/CharacterTransformPanel.jsx', import.meta.url), 'utf8');
 		for (const axis of ["x", "y", "z"]) {
 			assert.ok(new RegExp(`onChange: \\(${axis}\\) => changeInspectorCharacter\\("${axis}"`).test(transform), `the ${axis} row records`);
 			assert.ok(new RegExp(`onScrubStart: \\(\\) => beginGestureUndo\\(\`character:\\$\\{activeChar\\.id\\}:${axis}\``).test(transform), `the ${axis} row opens one entry at scrub start`);
