@@ -2,9 +2,11 @@
 // history, gesture fences and semantic revision/telemetry. No UI callbacks here.
 import { Euler, Vector3, PerspectiveCamera } from 'three';
 import { createSceneObject, updateSceneObject, removeSceneObject, setSceneObjectParent, descendantsOf, isEffectivelyHidden, supportHeightForObject, OBJECT_LIBRARY } from './scene-objects.js';
-import { createCharacterEntry, createSceneStage } from './scenes.js';
+import { createCharacterEntry } from './scenes.js';
+import { normalizeStage } from './commands/stage.js';
+import { elementPatchArgs, mergeElementSet, readElement } from './commands/elements.js';
 import { createShotAuthoringDocument } from './shot-authoring.js';
-import { elementByPath } from './studio-elements.js';
+import { elementByPath, STUDIO_ELEMENTS } from './studio-elements.js';
 import { createShot, shotAtFrame } from './cuts.js';
 import { captureFraming } from './camera-move.js';
 import { createStableItemId } from './stable-items.js';
@@ -318,9 +320,7 @@ const PATH_READERS = {
   'object.name': row => row?.name, 'object.color': row => row?.color ?? null, 'object.parent': row => row?.parent ?? null,
   'object.path': row => row?.path ?? null, 'object.remove': row => row === undefined,
   'shot.cameraKeys': shot => shot.cameraKeys, 'shot.targetModel': shot => shot.targetModel ?? null,
-  'stage.environmentImage': stage => stage.environmentImage, 'stage.camera': stage => stage.shotAspect,
-  'stage.environment': stage => stage.environment, 'stage.style': stage => stage.style, 'stage.hasEnvSheet': stage => stage.hasEnvSheet === true,
-  ...Object.fromEntries(['x', 'y', 'z', 'intensity', 'warmth'].map(axis => [`stage.keyLight.${axis}`, stage => stage.keyLight[axis]])),
+  ...Object.fromEntries(STUDIO_ELEMENTS.filter(row => row.path.startsWith('stage.')).map(({ path }) => [path, stage => readElement(stage, path)])),
 };
 /** Measured readback for one path: one typed member, never the payload. A
  * picture is reported by its size and a schedule by its length. */
@@ -400,22 +400,14 @@ function patchShot(command, before) {
   shots = createShotAuthoringDocument({ shots, waypoints: [], frameCount: before.frameCount }).shots;
   return { draft: { shotDocument: { ...before.shotDocument, shots }, camera: before.camera, manual: before.manual }, targets };
 }
-const STAGE_FIELDS = ['hasCharSheet', 'environmentImage', 'environment', 'style', 'hasEnvSheet', 'shotAspect', 'cameraPresetId', 'sensorId', 'keyLight'];
 function patchStage(command, before) {
   if (!before.stage) fail('CAPABILITY_MISSING', 'This editor does not publish an authored stage.');
   let stage = before.stage;
   const targets = [];
   for (const op of command.args.ops) {
-    const merged = { ...stage, keyLight: { ...stage.keyLight } };
-    for (const [key, value] of Object.entries(op.set)) {
-      if (key.startsWith('keyLight.')) merged.keyLight[key.slice('keyLight.'.length)] = value;
-      else if (key === 'camera') merged.shotAspect = value;
-      else merged[key] = value;
-    }
-    const normalized = createSceneStage(merged);
-    // Spread over the live envelope: the stage keeps its own field order, and
-    // the cast stays owned by the cast domain rather than the stage draft.
-    stage = { ...stage, ...Object.fromEntries(STAGE_FIELDS.map(field => [field, normalized[field]])) };
+    // Legacy ports share the same set planner; the App's owned stage uses
+    // the bus alias below, including its journal, guard and store history.
+    stage = { ...stage, ...normalizeStage(mergeElementSet(stage, elementPatchArgs('stage', { ops: [op] }))) };
     targets.push({ id: before.host.sceneId, read: path => PATH_READERS[path](stage) });
   }
   return { draft: stage, targets };
@@ -520,6 +512,10 @@ export function createStudioCommands(ports) {
         preserved: { authoredState: mutated === false ? 'unchanged' : 'unknown' }, recovery: { action: mutated === false ? 'inspect' : 'reconcile', ...(mutated === false ? { retryAllowed: false } : {}) }, ...(message ? { message: [...message].slice(0, 120).join('') } : {}) });
     }
     if (!equal(host, journal.host) || !documentIsCurrent()) return failure('STALE_SCENE', phase, false, 'Request belongs to a different live document.');
+    if (request.name === 'patch_elements' && request.args?.ops?.[0]?.target?.kind === 'stage' && ports.stageSet?.available()) {
+      try { return ports.stageSet.run(elementPatchArgs('stage', request.args), request); }
+      catch (error) { return failure(error.code ?? 'INVALID_ARGUMENT', phase, false, error.message); }
+    }
     try {
       if (!journal.begin(request.commandId, signature)) return journal.get(request.commandId) ?? failure('UNCERTAIN_APPLY', 'reconcile', 'unknown');
     } catch (error) { return failure(error.code, phase, false, error.message); }
