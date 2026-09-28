@@ -159,6 +159,7 @@ export function createStudioActionRegistry({ readState } = {}) {
 			if (entry.input?.type !== "object" || !entry.input.properties || !Array.isArray(entry.input.required)) throw new Error(`Studio action ${entry.id} needs an object input schema.`);
 			if (typeof entry.available !== "function") throw new Error(`Studio action ${entry.id} needs available(state).`);
 			if (typeof entry.run !== "function") throw new Error(`Studio action ${entry.id} needs run(args).`);
+			if (entry.timeoutMs !== undefined && (!Number.isSafeInteger(entry.timeoutMs) || entry.timeoutMs < 1 || entry.timeoutMs > 300_000)) throw new Error(`Studio action ${entry.id} timeoutMs must be 1..300000.`);
 			entries.set(entry.id, Object.freeze({ ...entry }));
 			return registry;
 		},

@@ -19,10 +19,11 @@ export function createCommandBus({ registry, ports }) {
   function receipt(entry, request, before, result, historyEntryId, toasts = []) {
     const after = ports.read(), changed = after.revision !== before.revision;
     if (entry.kind === 'mutation' && changed && !historyEntryId) fail('UNCERTAIN_APPLY', `${entry.id} changed the scene without one undoable entry.`);
-    const ids = changed ? result.affectedIds : [];
+    const completed = entry.kind === 'job' || entry.kind === 'document';
+    const ids = completed || changed ? result.affectedIds : entry.kind === 'transient' ? [before.host.sceneId] : [];
     return validateReceipt({ ok: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
-      action: entry.id, summary: result.summary, status: entry.kind === 'transient' ? 'transient' : changed ? 'applied' : 'noop',
-      authored: changed, ...(entry.kind === 'transient' ? { view: { before: before.viewRevision ?? 0, after: after.viewRevision ?? 0 } } : { mutated: changed }),
+      action: entry.id, summary: result.summary, status: completed ? 'completed' : entry.kind === 'transient' ? 'transient' : changed ? 'applied' : 'noop',
+      authored: changed, ...(completed ? { kind: entry.kind, ...(result.output === undefined ? {} : { output: result.output }), ...(same(before.host, after.host) ? {} : { nextHost: after.host }) } : entry.kind === 'transient' ? { view: { before: before.viewRevision ?? 0, after: after.viewRevision ?? 0 } } : { mutated: changed }),
       revision: { before: before.revision, after: after.revision }, affectedIds: ids,
       delta: ids.slice(0, 8).map(id => ({ id, after: ports.readback?.(id, after) ?? { removed: true } })),
       checks: { coverage: `studio-action:${entry.id}` }, warnings: toasts.slice(-12).map(toast => ({ code: 'STUDIO_TOAST', message: [...toast.message].slice(0, 120).join('') })),
@@ -31,11 +32,14 @@ export function createCommandBus({ registry, ports }) {
   function run(id, args = {}, options = {}) {
     const request = { origin: 'ui', commandId: crypto.randomUUID(), ...options };
     const before = ports.read(), journal = ports.journal();
-    let begun = false, releaseToasts;
+    let begun = false, releaseToasts, timer;
+    const controller = new AbortController();
+    const clearTimer = () => { if (timer !== undefined) (ports.clearTimeout ?? clearTimeout)(timer); };
     const toasts = [];
     const toastRefusal = () => toasts.length && ports.read().revision === before.revision ? new StudioProtocolError('TARGET_NOT_READY', toasts.at(-1).message) : null;
     const remember = value => { const recorded = journal.record(value); ports.remember?.(recorded); return recorded; };
     const rejected = error => {
+      clearTimer();
       releaseToasts?.(); releaseToasts = null;
       if (!(error instanceof StudioProtocolError)) error = toastRefusal() ?? error;
       if (request.origin === 'ui' && error.uiMessage) ports.showRefusal?.(error.uiMessage);
@@ -53,9 +57,18 @@ export function createCommandBus({ registry, ports }) {
         if (before.busy) fail('TARGET_BUSY', 'Finish the current editor gesture first.');
       }
       releaseToasts = ports.captureToasts?.(toast => toasts.push(typeof toast === 'string' ? { message: toast } : toast));
-      const invoke = () => registry.invoke(entry, validated, { origin: request.origin });
+      const context = { origin: request.origin, signal: controller.signal };
+      let timeout;
+      const deadline = new Promise((_, reject) => { timeout = reject; });
+      timer = (ports.setTimeout ?? setTimeout)(() => {
+        const error = new StudioProtocolError('TIMEOUT', `${entry.id} exceeded its deadline.`);
+        controller.abort(error); timeout(error);
+      }, entry.timeoutMs ?? 30_000);
+      // The race observes expiry even if a backend ignores cancellation.
+      const invoke = () => { const value = registry.invoke(entry, validated, context); return value?.then ? Promise.race([value, deadline]) : value; };
       const value = entry.kind === 'mutation' ? ports.recordAction(entry.undoDomain, invoke, validated.characterId ?? null) : { result: invoke(), historyEntryId: null };
       const finish = ({ result, historyEntryId }) => mapResult(result, output => {
+        clearTimer();
         releaseToasts?.(); releaseToasts = null;
         const refused = toastRefusal();
         if (refused) throw refused;

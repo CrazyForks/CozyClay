@@ -27,7 +27,7 @@ export const STUDIO_ERROR_CODES = Object.freeze([
 	"INVALID_ARGUMENT", "INVALID_CONTEXT", "INVALID_IDENTITY", "INVALID_TURN_ID", "INVALID_SESSION_ID", "INVALID_RECEIPT", "INVALID_RANGE", "INVALID_REQUEST",
 	"UNKNOWN_TOOL", "UNKNOWN_VARIANT", "DUPLICATE_NAME", "CONTEXT_LIMIT", "CONTEXT_TOO_LARGE", "AMBIGUOUS_TARGET", "AMBIGUOUS_BASIS", "TARGET_NOT_READY", "TARGET_BUSY",
 	"STALE_TARGET", "STALE_SCENE", "STALE_ENVIRONMENT", "STALE_CURSOR", "CAPABILITY_MISSING", "LIVE_HUB_UNAVAILABLE", "AUTH_REQUIRED", "GENERATION_LIMIT", "RATE_LIMITED", "BACKEND_UNAVAILABLE",
-	"VERIFICATION_FAILED", "REPAIR_REGRESSED", "CANCELLED", "UNCERTAIN_APPLY", "UNDO_CONFLICT",
+	"VERIFICATION_FAILED", "REPAIR_REGRESSED", "CANCELLED", "UNCERTAIN_APPLY", "UNDO_CONFLICT", "CONFIRMATION_REQUIRED", "TIMEOUT", "UNDO_EXPIRED",
 ]);
 export const STUDIO_VARIANTS = freezeStudioData({
 	selectionKinds: ["scene", "object", "character", "rig", "camera"], modes: ["scene", "camera", "motion"], shotModes: ["keys", "follow", "rail"],
@@ -263,6 +263,8 @@ const authoredReceipt = { ...receiptBase, authored: literal(true), undo };
 // A run_action receipt names the registered action and what it did.
 const actionFields = { action: id, summary: text(240) };
 const receiptVariants = {
+	completed: object({ ...receiptBase, status: literal("completed"), kind: choices(["job", "document", "transaction"]) }, { ...actionFields, output: openObject, jobId: id, txId: id, nextHost: identity }),
+	started: object({ ...receiptBase, status: literal("started"), kind: literal("job"), jobId: id, authored: literal(false), undo: literal(null) }, { ...actionFields }),
 	applied: object({ ...authoredReceipt, status: literal("applied") }, { mutated: literal(true), ops: opResults, ...batchDetails, ...actionFields }),
 	partial: object({ ...authoredReceipt, status: literal("partial"), ops: opResults }, { mutated: literal(true), ...batchDetails }),
 	noop: object({ ...receiptBase, status: literal("noop"), authored: literal(false), mutated: literal(false), undo: literal(null) }, { ops: opResults, ...actionFields }),
@@ -279,7 +281,7 @@ const receiptSchema = union(...Object.values(receiptVariants));
 const failureSchema = object({ ok: literal(false), commandId: id, host: identity, code: choices(STUDIO_ERROR_CODES), phase: choices(["admission", "execution", "prepare", "verify", "repair", "commit", "reconcile", "undo"]),
 	affectedIds: ids(100, 0), expectedTargets: array(guardSchema, 24), currentTargets: array(guardSchema, 24), mutated: union(bool, literal("unknown")),
 	preserved: object({ authoredState: choices(["unchanged", "changed", "unknown"]) }), recovery: object({ action: choices(["none", "inspect", "retry", "new_intent", "reconcile", "sign_in"]) }, { retryAllowed: bool }),
-}, { message: text(500), candidates: array(object({ id, kind: choices(["object", "character", "rig"]), position: nullable(vec3) }), 5) });
+}, { message: text(500), jobId: id, txId: id, candidates: array(object({ id, kind: choices(["object", "character", "rig"]), position: nullable(vec3) }), 5) });
 
 // These are JSON Schema data, not validators with hidden browser dependencies.
 // x-studio-range is the sole relational schema annotation: end > start.
@@ -508,7 +510,11 @@ export function validateReceipt(value) {
 		if (r.status === "partial" && !dropped) fail("INVALID_RECEIPT", "Partial status requires at least one dropped path.");
 		if (r.status === "noop" && r.ops.some(op => op.status === "applied")) fail("INVALID_RECEIPT", "A noop cannot report an applied operation.");
 	}
-	if (r.status === "noop" || r.status === "transient") {
+	if (r.status === "started" || r.status === "completed") {
+		if (r.revision.after < r.revision.before && !r.nextHost) fail("INVALID_RECEIPT", "Completion revisions must not move backwards in one document.");
+		if (r.status === "started" && (r.authored || r.undo || r.revision.before !== r.revision.after)) fail("INVALID_RECEIPT", "Started jobs cannot claim an authored commit.");
+		if (r.undo && (!r.authored || !r.affectedIds.length)) fail("INVALID_RECEIPT", "An undo entry requires an authored result and affected targets.");
+	} else if (r.status === "noop" || r.status === "transient") {
 		if (r.authored || r.undo !== null || r.revision.before !== r.revision.after) fail("INVALID_RECEIPT", "Non-authored operations cannot create history or advance authored revision.");
 		if (r.status === "noop" && (r.mutated !== false || r.delta.length)) fail("INVALID_RECEIPT", "Noop must prove no mutation.");
 		if (r.status === "transient" && (!r.view || r.view.after < r.view.before || !r.delta.length)) fail("INVALID_RECEIPT", "Transient receipt requires view revisions and actual readback.");
