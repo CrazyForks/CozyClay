@@ -50,6 +50,7 @@ function freshDraft(frame, fps) {
 		startFrame: clampFrame(frame, Number.MAX_SAFE_INTEGER),
 		endFrame: clampFrame(frame, Number.MAX_SAFE_INTEGER),
 		blend: blendFramesForSeconds(DEFAULT_BLEND_SECONDS, fps),
+		reach: "body",
 		targetKind: "hold",
 		objectId: "",
 	};
@@ -62,13 +63,15 @@ function draftFromPin(pin, fps) {
 		startFrame: pin.startFrame,
 		endFrame: pin.endFrame,
 		blend: pin.blend,
+		reach: pin.reach ?? "limb",
 		targetKind: pin.target.space === "object" ? "object" : "hold",
 		objectId: pin.target.space === "object" ? pin.target.objectId : "",
 	};
 }
 
 function residualWarning(residuals) {
-	const frames = (residuals ?? []).filter((entry) => Number(entry?.errorM) > 0.01).map((entry) => entry.frame);
+	const feet = (residuals ?? []).filter((entry) => Number(entry?.feetErrorM) > 0.01).map((entry) => entry.frame);
+	const frames = (residuals ?? []).filter((entry) => Number(entry?.errorM) > 0.01 || Number(entry?.feetErrorM) > 0.01).map((entry) => entry.frame);
 	if (!frames.length) return null;
 	return {
 		frames,
@@ -76,7 +79,8 @@ function residualWarning(residuals) {
 			`Can't reach on ${frames.length} frame${frames.length === 1 ? "" : "s"}`,
 			`${frames.length}개 프레임에 닿지 않음`,
 		),
-		title: ko(`Residual over 1 cm on frames ${frames.join(", ")}`, `1cm를 넘는 잔여 오차: ${frames.join(", ")}프레임`),
+		title: ko(`Residual over 1 cm on frames ${frames.join(", ")}`, `1cm를 넘는 잔여 오차: ${frames.join(", ")}프레임`)
+			+ (feet.length ? ko(`; feet cannot stay planted on frames ${feet.join(", ")}`, `; 발 위치를 유지할 수 없는 프레임: ${feet.join(", ")}`) : ""),
 	};
 }
 
@@ -128,18 +132,16 @@ export function RangePinPanel({
 	const needsReplace = conflictFrames.length > 0;
 	const canApply = !validation && !overlapError && (!needsReplace || replaceConfirmed);
 
-	const preview = useCallback((next) => {
-		onPreviewTarget?.(next);
-	}, [onPreviewTarget]);
+	// React may run state updaters during render (and replay them). Keep every
+	// updater pure; notify App only after the draft has committed.
+	useEffect(() => {
+		if (active) onPreviewTarget?.(draft);
+	}, [active, draft, onPreviewTarget]);
 
 	const updateDraft = useCallback((patch) => {
-		setDraft((current) => {
-			const next = { ...current, ...(typeof patch === "function" ? patch(current) : patch) };
-			setReplaceConfirmed(false);
-			preview(next);
-			return next;
-		});
-	}, [preview]);
+		setDraft((current) => ({ ...current, ...patch }));
+		setReplaceConfirmed(false);
+	}, []);
 
 	useEffect(() => {
 		if (!active) return;
@@ -148,7 +150,6 @@ export function RangePinPanel({
 			setReplaceConfirmed(false);
 			const next = draftFromPin(selectedPin, fps);
 			setDraft(next);
-			preview(next);
 			return;
 		}
 		if (editingId && !pins.some((pin) => pin.id === editingId)) setEditingId(null);
@@ -156,19 +157,13 @@ export function RangePinPanel({
 			const next = freshDraft(frame, fps);
 			setReplaceConfirmed(false);
 			setDraft(next);
-			preview(next);
 		}
 	}, [active, editingId, fps, pins, selectedPin]);
 
 	useEffect(() => {
 		if (!active || !partPick || !RANGE_PIN_TRACKS.includes(partPick)) return;
-		setDraft((current) => {
-			const next = { ...current, track: partPick };
-			setReplaceConfirmed(false);
-			preview(next);
-			return next;
-		});
-	}, [active, partPick]);
+		updateDraft({ track: partPick });
+	}, [active, partPick, updateDraft]);
 
 	useEffect(() => {
 		if (!active) return undefined;
@@ -192,7 +187,6 @@ export function RangePinPanel({
 		setReplaceConfirmed(false);
 		onSelectPin?.(null);
 		setDraft(next);
-		preview(next);
 	};
 
 	const editPin = (pin) => {
@@ -201,7 +195,6 @@ export function RangePinPanel({
 		setReplaceConfirmed(false);
 		onSelectPin?.(pin.id);
 		setDraft(next);
-		preview(next);
 	};
 
 	const submit = () => {
@@ -288,6 +281,11 @@ export function RangePinPanel({
 				</label>
 			)}
 			{selectedObject && <p className="range-pin-object-readout">{ko("Following", "따라가는 대상")}: {objectName(selectedObject)}</p>}
+
+			<label className="range-pin-target-option">
+				<input data-testid="range-pin-reach" type="checkbox" checked={draft.reach === "body"} disabled={!motion} onChange={(event) => updateDraft({ reach: event.target.checked ? "body" : "limb" })} />
+				<span><b>{ko("Body follows when out of reach", "손이 안 닿으면 몸도 따라가기")}</b></span>
+			</label>
 
 			<div className="range-pin-form-label">{ko("Blend", "블렌드")}</div>
 			<div className="range-pin-blend-row">

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { createIkState, ikBakeKeyframe, solveIk } from "./ik.js";
+import { createIkState, ikBakeKeyframe, solveHipsTranslateToFloor, solveIk } from "./ik.js";
 
 /**
  * Range pins: hold one limb's effector on a target for every frame of an
@@ -11,12 +11,26 @@ import { createIkState, ikBakeKeyframe, solveIk } from "./ik.js";
  * `blend: pin.blend`. The contiguous keys are one island, so ikEvaluate holds
  * them at full weight inside the range and eases out over pin.blend frames.
  *
- * pin = { id, track, startFrame, endFrame (inclusive), blend,
+ * Body reach also bakes a translation-only hips delta and re-planted leg
+ * deltas. All participating tracks share the pin's ownership and blend.
+ *
+ * pin = { id, track, startFrame, endFrame (inclusive), blend, reach?,
+ *   // reach: "body" for new pins; absent/"limb" preserves legacy bakes
  *   target: { space: "world", position: [x,y,z] }
  *         | { space: "object", objectId, local: [x,y,z] } }
  */
 
 export const RANGE_PIN_TRACKS = Object.freeze(["leftHand", "rightHand", "leftFoot", "rightFoot"]);
+const LEGS = ["leftFoot", "rightFoot"];
+const REACH_MARGIN = 0.005;
+const BODY_STEP = 0.01;
+const BODY_VERTICAL = 0.1;
+
+/** Tracks a pin may own. Body pins share the hips/legs, so overlapping body
+ * pins cannot independently author them in this single-key-per-track layer. */
+export function rangePinTracks(pin) {
+	return pin.reach === "body" ? [...new Set([pin.track, "hips", ...LEGS])] : [pin.track];
+}
 /** Same bounds character.setIkKey accepts for a key's blend and pin id. */
 const BLEND_MAX = 240;
 const ID_MAX = 64;
@@ -36,7 +50,8 @@ const isVec3 = (value) => Array.isArray(value) && value.length === 3 && value.ev
  * `clipFrames` (frame count) bounds endFrame when given. */
 export function normalizeRangePin(pin, { clipFrames = null } = {}) {
 	if (!pin || typeof pin !== "object") throw new RangePinError("BAD_PIN", "A pin must be an object.");
-	const { id, track, startFrame, endFrame, blend, target } = pin;
+	const { id, track, startFrame, endFrame, blend, target, reach } = pin;
+	if (reach !== undefined && reach !== "limb" && reach !== "body") throw new RangePinError("BAD_PIN", 'reach must be "limb" or "body".');
 	if (typeof id !== "string" || !id.length || id.length > ID_MAX) throw new RangePinError("BAD_PIN", `Pin id must be a string of 1-${ID_MAX} characters.`);
 	if (!RANGE_PIN_TRACKS.includes(track)) throw new RangePinError("UNKNOWN_TRACK", `Unknown pin track "${track}" (expected ${RANGE_PIN_TRACKS.join(", ")}).`);
 	if (!isInt(startFrame) || !isInt(endFrame)) throw new RangePinError("BAD_RANGE", "startFrame and endFrame must be integers.");
@@ -56,7 +71,7 @@ export function normalizeRangePin(pin, { clipFrames = null } = {}) {
 	} else {
 		throw new RangePinError("BAD_TARGET", `Unknown target space "${target.space}".`);
 	}
-	return { id, track, startFrame, endFrame, blend, target: copy };
+	return { id, track, startFrame, endFrame, blend, target: copy, ...(reach === undefined ? {} : { reach }) };
 }
 
 /** The object's world matrix at `frame`, or a typed error when there is none. */
@@ -143,6 +158,88 @@ export function removeRangePinKeys(ikState, pinId) {
 	return takePinKeys(ikState, pinId).length;
 }
 
+function reachBall(chain, target, margin) {
+	const [root, mid, end] = chain.bones.map((bone) => bone.getWorldPosition(new THREE.Vector3()));
+	return { center: target.clone().sub(root), radius: Math.max(1e-6, root.distanceTo(mid) + mid.distanceTo(end) - margin) };
+}
+
+/** Weighted projection onto a reach sphere in world-offset space. Moving Y
+ * costs 16x as much as X/Z: prefer a lean, but allow a small crouch to keep
+ * straight legs planted. The multiplier has one monotone scalar root. */
+function projectReach(offset, { center, radius }) {
+	const delta = offset.clone().sub(center);
+	if (delta.length() <= radius) return;
+	let low = 0, high = 16 * delta.length() / radius;
+	for (let i = 0; i < 32; i++) {
+		const t = (low + high) / 2;
+		const d = Math.hypot(delta.x / (1 + t), delta.y / (1 + t / 16), delta.z / (1 + t));
+		if (d > radius) low = t; else high = t;
+	}
+	offset.copy(center).add(new THREE.Vector3(delta.x / (1 + high), delta.y / (1 + high / 16), delta.z / (1 + high)));
+}
+
+/** Look ahead over the whole range: a causal filter cannot both follow a
+ * 5 cm/frame walk and introduce at most 1 cm/frame of extra hips motion.
+ * Alternating convex projections satisfy limb reach, both leg reaches, a
+ * floor-safe +/-10 cm vertical band, and adjacent-offset speed balls. This
+ * anticipates an upcoming shortfall rather than snapping on its first frame.
+ * Infeasible ranges remain best effort, bounded and honestly residualized. */
+function bodyOffsets({ chains, joint, pin, applyLayer, objectWorldMatrix }) {
+	const samples = [];
+	let needsAssist = false;
+	let minY = -BODY_VERTICAL;
+	for (let frame = pin.startFrame; frame <= pin.endFrame; frame++) {
+		const target = rangePinTargetWorld(pin, frame, { objectWorldMatrix });
+		applyLayer(frame);
+		const limb = reachBall(chains.get(pin.track), target, REACH_MARGIN);
+		needsAssist ||= limb.center.length() > limb.radius;
+		const balls = [limb];
+		for (const id of LEGS) {
+			if (id === pin.track) continue; // the pinned foot goes to its target, not its old plant
+			const leg = chains.get(id);
+			balls.push(reachBall(leg, leg.bones[2].getWorldPosition(new THREE.Vector3()), 1e-5));
+		}
+		const y = joint.bone.getWorldPosition(new THREE.Vector3()).y;
+		minY = Math.max(minY, (chains.get(pin.track).contactHeights?.Hips ?? 0.01) - y);
+		samples.push({ balls, offset: new THREE.Vector3() });
+	}
+	if (!needsAssist) return null;
+	const maxY = Math.max(minY, BODY_VERTICAL); // floor safety wins even on an already sunk clip
+	const clampY = (offset) => { offset.y = Math.max(minY, Math.min(maxY, offset.y)); };
+	const origin = new THREE.Vector3();
+	for (let pass = 0; pass < 256; pass++) {
+		let change = 0;
+		for (const { balls, offset } of samples) {
+			const before = offset.clone();
+			for (const ball of balls) projectReach(offset, ball);
+			clampY(offset);
+			change = Math.max(change, before.distanceTo(offset));
+		}
+		for (let i = samples.length - 1; i > 0; i--) {
+			const a = samples[i - 1].offset, b = samples[i].offset;
+			const delta = b.clone().sub(a);
+			const limited = delta.clone();
+			projectReach(limited, { center: origin, radius: BODY_STEP });
+			const correction = delta.sub(limited).multiplyScalar(0.5);
+			a.add(correction); b.sub(correction);
+			change = Math.max(change, correction.length());
+		}
+		if (change < 1e-7) break;
+	}
+	// Guarantee speed/floor limits even when the reach constraints conflict.
+	// Convex interpolation within the common vertical band stays floor safe.
+	for (let i = 0; i < samples.length; i++) {
+		const offset = samples[i].offset;
+		clampY(offset);
+		if (i > 0) {
+			const prev = samples[i - 1].offset;
+			const delta = offset.clone().sub(prev).clampLength(0, BODY_STEP);
+			offset.copy(prev).add(delta);
+		}
+	}
+	return samples.map(({ offset }) => offset);
+}
+
 /**
  * Solve `pin` over the existing motion and return its keys without writing
  * them: { entries: Map(frame → Map(track → key)), residuals: [{frame, errorM}] }.
@@ -163,20 +260,36 @@ export function applyRangePin({ chains, fkJoints = null, ikState, pin, applyRaw,
 	const restore = holdRig(chain.rig);
 	const effector = new THREE.Vector3();
 	try {
+		const joint = fkJoints?.get("hips");
+		if (pin.reach === "body" && !joint) throw new RangePinError("UNKNOWN_TRACK", "Body reach needs a hips joint.");
+		const offsets = pin.reach === "body" ? bodyOffsets({ chains, joint, pin, applyLayer, objectWorldMatrix }) : null;
+		const ids = offsets ? rangePinTracks(pin) : [pin.track];
 		for (let frame = pin.startFrame; frame <= pin.endFrame; frame += 1) {
 			const target = rangePinTargetWorld(pin, frame, { objectWorldMatrix });
 			applyRaw(frame);
-			const baseQ = chain.bones.map((bone) => bone.quaternion.clone());
+			const baseQuats = new Map(ids.filter((id) => chains.has(id)).map((id) => [id, chains.get(id).bones.map((bone) => bone.quaternion.clone())]));
+			const basePositions = offsets ? new Map([["hips", joint.bone.position.clone()]]) : null;
 			applyLayer(frame);
+			const plants = new Map();
+			if (offsets) {
+				for (const id of LEGS) plants.set(id, chains.get(id).bones[2].getWorldPosition(new THREE.Vector3()));
+				solveHipsTranslateToFloor(joint, offsets[frame - pin.startFrame], joint.bone.position.clone(), 0, chain.contactHeights);
+				for (const [id, plant] of plants) solveIk(chains.get(id), plant, { exactHinge: true });
+			}
 			solveIk(chain, target, { exactHinge: true });
 			chain.bones[2].getWorldPosition(effector);
-			residuals.push({ frame, errorM: effector.distanceTo(target) });
+			const residual = { frame, errorM: effector.distanceTo(target) };
+			if (pin.reach === "body") {
+				// A pinned foot intentionally leaves its old clip position; only
+				// supporting feet count as planting failures.
+				residual.feetErrorM = Math.max(0, ...[...plants].filter(([id]) => id !== pin.track).map(([id, plant]) => chains.get(id).bones[2].getWorldPosition(new THREE.Vector3()).distanceTo(plant)));
+			}
+			residuals.push(residual);
 			const scratch = createIkState();
-			ikBakeKeyframe(chains, scratch, frame, fkJoints, [pin.track], null, new Map([[pin.track, baseQ]]));
-			const key = scratch.keys.get(frame).get(pin.track);
-			key.blend = pin.blend;
-			key.pin = pin.id;
-			entries.set(frame, new Map([[pin.track, key]]));
+			ikBakeKeyframe(chains, scratch, frame, fkJoints, ids, basePositions, baseQuats);
+			const entry = scratch.keys.get(frame);
+			for (const key of entry.values()) { key.blend = pin.blend; key.pin = pin.id; }
+			entries.set(frame, entry);
 		}
 	} finally {
 		restore();
