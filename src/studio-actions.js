@@ -130,6 +130,11 @@ const fail = (code, message) => { throw new StudioProtocolError(code, message); 
 export function studioActionRefusal(code, message, uiMessage) {
 	return Object.assign(new StudioProtocolError(code, message), { uiMessage });
 }
+// A localized toast producer is evaluated twice, without showing it twice:
+// once for the existing UI and once in English for command evidence.
+export function resolveStudioToast(value, isKo, ko) {
+	return typeof value === "function" ? { uiMessage: value(isKo, ko), message: value(false, en => en) } : { uiMessage: value, message: value };
+}
 const unknown = (id, known) => fail("INVALID_ARGUMENT", `Unknown Studio action "${id}". Known actions: ${known.join(", ")}. List them with inspect_studio { scope: "actions" }.`);
 
 export function studioActionDeclaration(id) {

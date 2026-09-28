@@ -61,7 +61,7 @@ import { buildStudioContext, physicsFingerprintInput, studioEntityCursor, valida
 import { STUDIO_TOOL_FAMILIES, StudioProtocolError, validateStudioCommand, validateStudioIdentity, validateReceipt } from "./studio-agent-protocol.js";
 import { elementByPath } from "./studio-elements.js";
 import { createStudioCommands, createStudioCommandJournal, studioObjectCatalogue, placementChecks, framingChecks } from "./studio-agent-commands.js";
-import { STUDIO_IK_CHAIN_TRACKS, createStudioActionRegistry, studioActionDeclaration, studioActionRefusal } from "./studio-actions.js";
+import { STUDIO_IK_CHAIN_TRACKS, createStudioActionRegistry, studioActionDeclaration, studioActionRefusal, resolveStudioToast } from "./studio-actions.js";
 import { createCommandBus, withCommandHistory } from "./command-bus.js";
 import { HISTORY_LIMIT } from "./history.js";
 import { createStudioMotionCandidates, verifyInstalledTake } from "./studio-agent-motion.js";
@@ -2766,7 +2766,7 @@ export default function App() {
 		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
 		store.applyAtomic((objects) => [...objects, placed]);
 		setSelectedHierarchyId(`object:${placed.id}`);
-		setToast(isKo ? `${sceneObjectNameDisplayKo(placed.name)} 복제됨` : `${placed.name} duplicated`);
+		setToast((isKo, ko) => isKo ? `${sceneObjectNameDisplayKo(placed.name)} 복제됨` : `${placed.name} duplicated`);
 	}
 
 	/** Frame the selection: fly the shot camera to a comfortable distance along
@@ -3341,9 +3341,11 @@ export default function App() {
 	// While a Studio action runs editor work, the toasts it shows are collected
 	// so run_action can give the agent the reason the user was shown.
 	const toastSinkRef = useRef(new Set());
-	const setToast = useCallback((value, english = value) => {
-		if (typeof value === "string" && value) for (const sink of toastSinkRef.current) sink({ message: english, uiMessage: value });
-		showToast(value);
+	const setToast = useCallback((value, english) => {
+		const toast = resolveStudioToast(value, isKo, ko);
+		if (english !== undefined) toast.message = english;
+		if (typeof toast.uiMessage === "string" && toast.uiMessage) for (const sink of toastSinkRef.current) sink(toast);
+		showToast(toast.uiMessage);
 	}, []);
 	// The PWA's "a newer studio is waiting" registration, once one arrives.
 	const [pwaUpdate, setPwaUpdate] = useState(null);
@@ -4605,7 +4607,7 @@ export default function App() {
 				object_count_bucket: bucketCount(projectStateRef.current.sceneObjects?.length ?? 0),
 				shot_count_bucket: bucketCount(shots.length),
 			});
-			setToast(isKo ? `프로젝트 저장됨: ${name}${PROJECT_EXTENSION}` : `Project saved: ${name}${PROJECT_EXTENSION}`);
+			setToast((isKo, ko) => isKo ? `프로젝트 저장됨: ${name}${PROJECT_EXTENSION}` : `Project saved: ${name}${PROJECT_EXTENSION}`);
 			return { saved: true, name, fileName: downloaded ? `${name}${PROJECT_EXTENSION}` : projectHandleRef.current?.name ?? `${name}${PROJECT_EXTENSION}`, downloaded };
 		} catch (err) {
 			if (err?.name === "AbortError") {
@@ -6343,7 +6345,7 @@ export default function App() {
 			try { saveDownload(url, name); }
 			finally { setTimeout(() => URL.revokeObjectURL(url), 10_000); }
 			setRecordedVideoName(name);
-			setToast(isKo ? `${name} 다운로드 요청 · ${result.frameCount}프레임` : `Download requested: ${name} · ${result.frameCount} frames`);
+			setToast((isKo, ko) => isKo ? `${name} 다운로드 요청 · ${result.frameCount}프레임` : `Download requested: ${name} · ${result.frameCount} frames`);
 			return { ...result, fileName: name };
 		}
 		return result;
@@ -6943,7 +6945,7 @@ export default function App() {
 				setResultOpen(true);
 				// The result modal and the studio modal are both z-30; never stack them.
 				setFalMotionStudioOpen(false);
-				setToast(isKo ? "Fal 영상이 준비됐어요 · 추출 패널에서 GVHMR을 실행하세요" : "Fal video is ready · run GVHMR from the extraction panel");
+				setToast((isKo, ko) => isKo ? "Fal 영상이 준비됐어요 · 추출 패널에서 GVHMR을 실행하세요" : "Fal video is ready · run GVHMR from the extraction panel");
 			}
 			return { job, footage, dailyRemaining: finished.dailyRemaining ?? null };
 		} catch (error) {
@@ -7581,7 +7583,7 @@ export default function App() {
 			setTlFrameCount(footage.frames);
 			setTlFrame(0);
 			setTlPlaying(false);
-			setToast(isKo
+			setToast((isKo, ko) => isKo
 				? `${source.name} 인제스트됨 — ${footage.frames}프레임 @ ${footage.fps} fps`
 				: `Ingested ${source.name} — ${footage.frames} frames @ ${footage.fps} fps`);
 			return footage;
@@ -7884,7 +7886,7 @@ export default function App() {
 			);
 			const decoded = drop ? applyRootDrop(raised, staging, { worldScale: motionScale }) : applyAutoFall(raised, staging, { worldScale: motionScale });
 			if (!drop && staging && !preview) {
-				setToast(ko(
+				setToast((isKo, ko) => ko(
 					`Auto drop staged: the take leaves its support at ${staging.fromS.toFixed(1)}s and falls ${staging.meters.toFixed(1)}m`,
 					`자동 낙하 적용: ${staging.fromS.toFixed(1)}초에 지지면을 벗어나 ${staging.meters.toFixed(1)}m 낙하`,
 				));
@@ -7963,7 +7965,7 @@ export default function App() {
 			}
 			if (bufferOwnsTarget && !preview) setCommittedIkEdits([]);
 			if (!preview) {
-				setToast(
+				setToast((isKo, ko) =>
 					isKo
 						? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps${hadIkKeys ? " — 이전 테이크의 IK 키는 초기화됐어요" : ""}`
 						: `Motion loaded: ${decoded.frames} frames @ ${decoded.fps} fps${hadIkKeys ? " — IK keys from the previous take were cleared" : ""}`,
@@ -9489,7 +9491,8 @@ export default function App() {
 		// enable or disable generation.
 		if (motionPreflightReason(bridge, options)) {
 			request.preflight(bridge, options);
-			setToast(motionReadinessMessage(motionReadiness(bridge, options)));
+			const readiness = motionReadiness(bridge, options);
+			setToast(motionReadinessMessage(readiness), ({ loading: "Checking motion generation…", ready: "Ready for this motion request", not_configured: "No motion backend configured", unsupported_route: "This route cannot run the selected motion request" })[readiness] ?? "The motion backend is unavailable");
 		}
 		return request;
 	}
@@ -9593,7 +9596,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		try {
 			return resolveSeed(ardySeed, ARDY_SEED_MAX);
 		} catch {
-			setToast(isKo ? `Seed는 0..${ARDY_SEED_MAX} 범위의 정수여야 해요. 비워 두면 자동으로 선택됩니다` : `Seed must be an integer in 0..${ARDY_SEED_MAX} — clear it to let the box pick one`);
+			setToast((isKo, ko) => isKo ? `Seed는 0..${ARDY_SEED_MAX} 범위의 정수여야 해요. 비워 두면 자동으로 선택됩니다` : `Seed must be an integer in 0..${ARDY_SEED_MAX} — clear it to let the box pick one`);
 			return null;
 		}
 	}
@@ -11382,7 +11385,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			.filter((clip) => clip.text.trim())
 			.sort((a, b) => a.startFrame - b.startFrame);
 		if (!clips.length) {
-			setToast(ko("Add at least one Prompt Block before generating", "생성하기 전에 프롬프트 블록을 하나 이상 추가하세요"));
+			setToast((isKo, ko) => ko("Add at least one Prompt Block before generating", "생성하기 전에 프롬프트 블록을 하나 이상 추가하세요"));
 			return;
 		}
 		const totalFrames = Math.max(...clips.map((clip) => clip.endFrame));
@@ -11415,7 +11418,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		// the last line of defence behind sceneDisabledReason, which already
 		// greys the entries with this reason spelled out in place.
 		if (linePreviewUrl) {
-			setToast(previewBlockingReason());
+			setToast((isKo, ko) => previewBlockingReason(ko));
 			return;
 		}
 		// Motion generation targets the ACTIVE character's layer; the pose
@@ -11423,7 +11426,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		const rig = posing ? posedRig() : activeRig;
 		const rigModel = posing ? (posingChar?.model ?? activeChar.model) : activeChar.model;
 		if (!rig) {
-			setToast(ko("Character not loaded yet", "캐릭터가 아직 로드되지 않았어요"));
+			setToast((isKo, ko) => ko("Character not loaded yet", "캐릭터가 아직 로드되지 않았어요"));
 			return;
 		}
 		// Root guidance sends only authored sparse keys. ARDY owns every
@@ -11432,11 +11435,11 @@ function resizePromptClip(id, edge, rawFrame) {
 		// values here, before any pose build or network, with a specific toast.
 		const prompt = promptOverride.trim();
 		if (!prompt) {
-			setToast(ko("Motion prompt is required — describe what the subject should do before generating", "모션 프롬프트가 필요해요 — 생성 전에 피사체가 할 동작을 설명하세요"));
+			setToast((isKo, ko) => ko("Motion prompt is required — describe what the subject should do before generating", "모션 프롬프트가 필요해요 — 생성 전에 피사체가 할 동작을 설명하세요"));
 			return;
 		}
 		if (prompt.length > ARDY_PROMPT_MAX) {
-			setToast(isKo ? `모션 프롬프트는 ${ARDY_PROMPT_MAX}자까지예요(현재 ${prompt.length}자). 생성 전에 줄여 주세요` : `Motion prompt is capped at ${ARDY_PROMPT_MAX} characters (currently ${prompt.length}) — shorten it before generating`);
+			setToast((isKo, ko) => isKo ? `모션 프롬프트는 ${ARDY_PROMPT_MAX}자까지예요(현재 ${prompt.length}자). 생성 전에 줄여 주세요` : `Motion prompt is capped at ${ARDY_PROMPT_MAX} characters (currently ${prompt.length}) — shorten it before generating`);
 			return;
 		}
 		// Regeneration must keep the loaded clip's exact frame count. The form
@@ -11446,7 +11449,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			? motion.frames / motion.fps
 			: Math.round(Number(durationOverride)) || ARDY_DURATION_MIN;
 		if (duration < ARDY_DURATION_MIN || duration > ARDY_DURATION_MAX) {
-			setToast(isKo ? `길이는 ${ARDY_DURATION_MIN}초에서 ${ARDY_DURATION_MAX}초 사이여야 해요` : `Duration must be between ${ARDY_DURATION_MIN} and ${ARDY_DURATION_MAX} seconds`);
+			setToast((isKo, ko) => isKo ? `길이는 ${ARDY_DURATION_MIN}초에서 ${ARDY_DURATION_MAX}초 사이여야 해요` : `Duration must be between ${ARDY_DURATION_MIN} and ${ARDY_DURATION_MAX} seconds`);
 			return;
 		}
 		// THE SEED RULE (C9): rolled when the field is empty, kept when it is
@@ -11474,15 +11477,15 @@ function resizePromptClip(id, edge, rawFrame) {
 			: [];
 		if (waypointMode) {
 			if (waypoints.length < 1) {
-				setToast(ko("Add at least one root destination before generating", "생성하기 전에 루트 목적지를 하나 이상 추가하세요"));
+				setToast((isKo, ko) => ko("Add at least one root destination before generating", "생성하기 전에 루트 목적지를 하나 이상 추가하세요"));
 				return;
 			}
 			if (rootPath.length > MAX_WAYPOINTS) {
-				setToast(isKo ? `루트 경로는 드문 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요` : `The root path is capped at ${MAX_WAYPOINTS} sparse waypoints`);
+				setToast((isKo, ko) => isKo ? `루트 경로는 드문 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요` : `The root path is capped at ${MAX_WAYPOINTS} sparse waypoints`);
 				return;
 			}
 			if (waypoints.some((waypoint) => waypoint.frame <= 0 || waypoint.frame >= clipFrames)) {
-				setToast(isKo ? `루트 웨이포인트 프레임은 1..${clipFrames - 1} 안에 있어야 해요` : `Root waypoint frames must stay inside 1..${clipFrames - 1}`);
+				setToast((isKo, ko) => isKo ? `루트 웨이포인트 프레임은 1..${clipFrames - 1} 안에 있어야 해요` : `Root waypoint frames must stay inside 1..${clipFrames - 1}`);
 				return;
 			}
 			// Placement-time checks can be invalidated afterwards (removing a
@@ -11494,13 +11497,13 @@ function resizePromptClip(id, edge, rawFrame) {
 			// pins were authored on, which is now the timeline's.
 			const pathVerdict = judgeAuthoredPath(rootPath, TIMELINE_FPS, clipFrames, { chained: hasPromptSchedule });
 			if (pathVerdict.errors.length > 0) {
-				setToast(isKo ? `생성하지 못했어요 — ${pathVerdict.errors[0]}` : `Not generated — ${pathVerdict.errors[0]}`);
+				setToast((isKo, ko) => isKo ? `생성하지 못했어요 — ${pathVerdict.errors[0]}` : `Not generated — ${pathVerdict.errors[0]}`);
 				return;
 			}
 			if (hasAuthoredBlocks) {
 				const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PROMPT_BLOCK_MAX_FRAMES);
 				if (longBlock) {
-					setToast(isKo
+					setToast((isKo, ko) => isKo
 						? `생성하지 못했어요 — 프롬프트 블록은 ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS}초 이내여야 해요. ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)}초 블록을 나눠 주세요`
 						: `Not generated — prompt blocks are capped at ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS} s; split the ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)} s block`);
 					return;
@@ -11518,7 +11521,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (!waypointMode && hasAuthoredBlocks) {
 			const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > PROMPT_BLOCK_MAX_FRAMES);
 			if (longBlock) {
-				setToast(isKo
+				setToast((isKo, ko) => isKo
 					? `생성하지 못했어요 — 프롬프트 블록은 ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS}초 이내여야 해요. ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)}초 블록을 나눠 주세요`
 					: `Not generated — prompt blocks are capped at ${PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS} s; split the ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)} s block`);
 				return;
@@ -11558,7 +11561,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			editedSegments,
 		});
 		if (pinPlan.blockedBy === PIN_BLOCKED.SCHEDULE) {
-			setToast(ko(
+			setToast((isKo, ko) => ko(
 				"Prompt blocks and a pose start cannot be combined — generating from the prompt alone.",
 				"프롬프트 블록과 포즈 시작은 함께 쓸 수 없어요 — 프롬프트만으로 생성합니다.",
 			));
@@ -11628,7 +11631,7 @@ function resizePromptClip(id, edge, rawFrame) {
 			body.historyFrames = 4 * ARDY_FPS;
 		} else if (hasBlockEdits) {
 			if (!motion?.url) {
-				setToast(ko("The current motion has no bridge source; generate the prompt blocks once before regenerating IK edits", "현재 모션에 브리지 원본이 없어요. 프롬프트 블록을 한 번 생성한 뒤 IK 보정을 다시 생성하세요"));
+				setToast((isKo, ko) => ko("The current motion has no bridge source; generate the prompt blocks once before regenerating IK edits", "현재 모션에 브리지 원본이 없어요. 프롬프트 블록을 한 번 생성한 뒤 IK 보정을 다시 생성하세요"));
 				return;
 			}
 			const startFrame = Math.min(...editedSegments.map((segment) => segment.startFrame));
@@ -11747,7 +11750,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (replay.length > 0) {
 			body.replay = replay;
 			if (replayTruncated(takeRecipeRef.current)) {
-				setToast(isKo
+				setToast((isKo, ko) => isKo
 					? `다듬기는 한 번에 ${replay.length}개까지만 다시 적용돼요 — 먼저 한 ${replay.length}개만 이어집니다`
 					: `Only ${replay.length} refinements can be replayed at once — the first ${replay.length} carry over`);
 			}
@@ -11952,7 +11955,7 @@ function resizePromptClip(id, edge, rawFrame) {
 		if (motionPreflightReason(bridge, options)) return;
 		const id = `gen-${++genJobSeq.current}`;
 		setGenQueue((queue) => [...queue, { id, status: "queued", ...spec }]);
-		setToast(isKo ? `인물 ${spec.charIndex + 1} 모션 생성을 대기열에 넣었어요` : `Queued motion generation for Subject ${spec.charIndex + 1}`);
+		setToast((isKo, ko) => isKo ? `인물 ${spec.charIndex + 1} 모션 생성을 대기열에 넣었어요` : `Queued motion generation for Subject ${spec.charIndex + 1}`);
 		return true;
 	}
 	useEffect(() => {
@@ -12045,7 +12048,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				job.ikState.plants.clear();
 				setIkTick((value) => value + 1);
 			}
-			setToast(isKo ? `인물 ${job.charIndex + 1} ARDY 모션 생성됨` : `ARDY motion generated for Subject ${job.charIndex + 1}`);
+			setToast((isKo, ko) => isKo ? `인물 ${job.charIndex + 1} ARDY 모션 생성됨` : `ARDY motion generated for Subject ${job.charIndex + 1}`);
 		} catch (err) {
 			// Wave-2 gate, second line of defence. The capability preflight
 			// normally stops a line edit before it is sent, but a bridge that
@@ -12273,8 +12276,8 @@ function resizePromptClip(id, edge, rawFrame) {
 		return "";
 	}
 	/** The one sentence every take-consuming action says while a draft is up. */
-	function previewBlockingReason() {
-		return ko(
+	function previewBlockingReason(localize = ko) {
+		return localize(
 			"A line-edit preview is on the viewport — press Generate to keep it, or undo (Ctrl/Cmd+Z) to drop it",
 			"라인 편집 미리보기가 떠 있어요 — 생성으로 확정하거나 Ctrl/Cmd+Z로 되돌린 뒤에 쓰세요",
 		);
