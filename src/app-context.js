@@ -12,7 +12,7 @@ export function createAppContext({
   clock: opClockRef = ref(0), history: charHistoryRef = ref({ past: [], future: [] }),
   objectClock: lastObjectOpRef = ref(0), suppressObjectClock: suppressObjectClockRef = ref(false),
   characters: charactersRef = ref(null), scenes: scenesRef = ref(null),
-  motion: motionRef = ref(null), state: liveStateRef = ref(null), getBus,
+  motion: motionRef = ref(null), state: liveStateRef = ref(null), getBus, notify,
 } = {}) {
   const ports = {}, actionPorts = {};
   let currentPorts = {};
@@ -23,6 +23,14 @@ export function createAppContext({
     charHistoryRef.current.future = [];
   }
   return {
+    // The notifier is an App-owned stable callback, shared by every domain.
+    notify,
+    // A hook keeps the same render closure that its code had inside App.
+    // Lazy projections permit handlers to refer to cells declared later in
+    // that render, without rebinding an in-flight callback to a newer render.
+    forRender(shared) {
+      return Object.create(this, { shared: { value: shared } });
+    },
     get undoClock() { return opClockRef.current; },
     nextTick,
     get objectClock() { return lastObjectOpRef.current; },

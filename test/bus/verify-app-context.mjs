@@ -38,7 +38,8 @@ test('acceptance 1: exposes the App-owned clock, cast history, live projections 
   assert.equal(ports.state(), 'latest action');
 });
 
-const app = readFileSync(new URL('../../src/App.jsx', import.meta.url), 'utf8');
+import { readStudioSource } from './verify-domain-modules.mjs';
+const app = readStudioSource();
 const parsed = parseSync('App.jsx', app);
 assert.deepEqual(parsed.errors, []);
 function walk(node, visit) {
@@ -112,7 +113,7 @@ test('acceptance 4: both App object-store callbacks join the facade clock', () =
   });
   assert.equal(callbacks.length, 2, 'initial store and scene-replacement store');
   for (const callback of callbacks) {
-    const context = createAppContext();
+    const context = createAppContext().forRender({ setSceneObjects: () => {} });
     const onObjects = new Function('appContext', 'setSceneObjects', `return (${app.slice(callback.start, callback.end)});`)(context, () => {});
     const store = createSceneHistoryStore([], { onObjects });
     store.applyAtomic(() => [{ id: 'object' }]);

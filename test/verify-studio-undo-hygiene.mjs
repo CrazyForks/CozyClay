@@ -42,7 +42,8 @@ import * as projectCommands from "../src/commands/project.js";
 import * as exportCommands from "../src/commands/export.js";
 import * as aiCommands from "../src/commands/ai.js";
 
-const source = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+const source = readStudioSource();
 const parsed = parseSync("App.jsx", source);
 assert.deepEqual(parsed.errors, []);
 const declarations = new Map();
@@ -99,7 +100,10 @@ function fixture() {
 		copyPhysicsKeys,
 		ko: (english) => english,
 	};
-	scope.appContext = createAppContext({ clock: scope.opClockRef, history: scope.charHistoryRef, objectClock: scope.lastObjectOpRef, suppressObjectClock: scope.suppressObjectClockRef, characters: scope.charactersRef });
+	scope.appContext = createAppContext({ clock: scope.opClockRef, history: scope.charHistoryRef, objectClock: scope.lastObjectOpRef, suppressObjectClock: scope.suppressObjectClockRef, characters: scope.charactersRef, notify: (...args) => scope.setToast(...args) }).forRender(scope);
+	scope.stageDomain = scope;
+	scope.castDomain = scope;
+	scope.motionDomain = scope;
 	Object.defineProperty(scope, "activeChar", { get: () => scope.characters[0] });
 	const assign = (key) => (value) => {
 		scope[key] = typeof value === "function" ? value(scope[key]) : value;
@@ -408,7 +412,7 @@ const cases = {
 		assert.ok(/startupStage\.hasEnvSheet\b/.test(source), "the first painted session reads the stored sheet flag");
 	},
 	"the studio call sites are wired to the recording seams"() {
-		const lightFoldout = source.slice(source.indexOf('<Foldout hidden={!keyLightSelected}'), source.indexOf('<Foldout hidden={!isCameraSelection}'));
+		const lightFoldout = readFileSync(new URL('../src/panels/LightPanel.jsx', import.meta.url), 'utf8');
 		assert.ok(/onChange=\{\(value\) => changeKeyLight\("intensity"/.test(lightFoldout), "the Brightness slider records");
 		assert.ok(/onChange=\{\(value\) => changeKeyLight\("warmth"/.test(lightFoldout), "the Warm/Cool slider records");
 		assert.ok(/onClick=\{resetKeyLight\}/.test(lightFoldout), "Reset light records");
@@ -418,7 +422,7 @@ const cases = {
 		const gizmo = source.slice(source.indexOf("<ObjectGizmo"), source.indexOf("onGroundClick={waypointMode"));
 		assert.ok(/id === "__keylight__" \? changeKeyLightFromGizmo/.test(gizmo), "the gizmo still routes the light through its own writer");
 		assert.ok(/if \(lightGizmoObject\) endGestureUndo\(\);/.test(gizmo), "the light gizmo closes its gesture on drag end");
-		const transform = source.slice(source.indexOf('title={workflowMode === "motion" ? ko("Placement"'), source.indexOf('<Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Rig"'));
+		const transform = readFileSync(new URL('../src/panels/CharacterTransformPanel.jsx', import.meta.url), 'utf8');
 		for (const axis of ["x", "y", "z"]) {
 			assert.ok(new RegExp(`onChange: \\(${axis}\\) => changeInspectorCharacter\\("${axis}"`).test(transform), `the ${axis} row records`);
 			assert.ok(new RegExp(`onScrubStart: \\(\\) => beginGestureUndo\\(\`character:\\$\\{activeChar\\.id\\}:${axis}\``).test(transform), `the ${axis} row opens one entry at scrub start`);
@@ -426,12 +430,12 @@ const cases = {
 		assert.equal((transform.match(/onScrubEnd: endGestureUndo/g) ?? []).length, 5, "every character position field closes its scrub");
 		assert.ok(/onChange=\{\(rot\) => changeInspectorCharacter\("rot", \{ rot \}\)\}/.test(transform), "the Rotation slider records");
 		assert.ok(/onChange=\{\(scale\) => changeInspectorCharacter\("scale", \{ scale \}\)\}/.test(transform), "the Scale slider records");
-		const environmentFoldout = source.slice(source.indexOf('<Foldout hidden={selectedHierarchyId !== "environment"}'), source.indexOf('<Foldout hidden={selectedHierarchyId !== "props"}'));
+		const environmentFoldout = readFileSync(new URL('../src/panels/EnvironmentPanel.jsx', import.meta.url), 'utf8');
 		assert.ok(/changeEnvironmentImage\(dataUrl\)/.test(environmentFoldout), "picking an environment reference records");
-		assert.ok(/onClear=\{\(\) => changeEnvironmentImage\(null\)\}/.test(environmentFoldout), "clearing the environment reference records");
-		assert.ok(/recordSessionUndo\(environmentTextSessionRef, "environment:description"\)/.test(environmentFoldout), "the description records one entry per typing session");
-		assert.ok(/recordSessionUndo\(environmentTextSessionRef, "environment:style"\)/.test(environmentFoldout), "the look records one entry per typing session");
-		assert.ok(/recordCharacterUndo\(\); setHasEnvSheet/.test(environmentFoldout), "the environment sheet toggle records");
+		assert.ok(/onClear=\{\(\) => props.changeEnvironmentImage\(null\)\}/.test(environmentFoldout), "clearing the environment reference records");
+		assert.ok(/recordSessionUndo\(props.environmentTextSessionRef, "environment:description"\)/.test(environmentFoldout), "the description records one entry per typing session");
+		assert.ok(/recordSessionUndo\(props.environmentTextSessionRef, "environment:style"\)/.test(environmentFoldout), "the look records one entry per typing session");
+		assert.ok(/recordCharacterUndo\(\); props.setHasEnvSheet/.test(environmentFoldout), "the environment sheet toggle records");
 		assert.ok(/window\.addEventListener\("pointerup", end, true\)/.test(source), "a pointer release ends the open gesture");
 		assert.ok(/window\.addEventListener\("keyup", end, true\)/.test(source), "a key release ends the open gesture");
 	},

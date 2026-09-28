@@ -241,7 +241,8 @@ expect(
 );
 
 // The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
-const appSource = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8")
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+const appSource = readStudioSource()
 	+ await readFile(new URL("../src/app-stage.jsx", import.meta.url), "utf8");
 for (const [nodeId, focusId] of [["rig.head", "head"], ["rig.chest", "chest"], ["rig.leftShoulder", "leftShoulder"], ["rig.rightShoulder", "rightShoulder"]]) {
 	expect(`${nodeId} routes to its exact IK control`, appSource.includes(`"${nodeId}": "${focusId}"`));
@@ -259,7 +260,7 @@ for (const prop of ["scenes={scenes}", "activeSceneId={activeSceneId}", "onScene
 // Project menu's "Open Project…", not a second button in the hierarchy column.
 expect("the hierarchy column has no duplicate Projects… button", !appSource.includes('ko("Projects…", "프로젝트…")'));
 expect("the Project menu still opens the project browser", appSource.includes('ko("Open Project…", "프로젝트 열기…")'));
-expect("App seals shots inside the active Scene", appSource.includes("shotDocument: shotDocumentRef.current"));
+expect("App seals shots inside the active Scene", appSource.includes("shotDocument: appContext.shared.shotDocumentRef.current"));
 expect("App persists the unified Scene document", appSource.includes("serializeSceneDocument({"));
 expect("Scene switch snapshots outgoing work first", appSource.indexOf("const savedScenes = snapshotActiveScene();", appSource.indexOf("function selectSceneDocument")) < appSource.indexOf("openScene(target, savedScenes);", appSource.indexOf("function selectSceneDocument")));
 

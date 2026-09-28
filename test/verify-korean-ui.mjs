@@ -14,8 +14,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+
 function source(path) {
-	return readFileSync(path, "utf8");
+	return path === "src/App.jsx" ? readStudioSource() : readFileSync(path, "utf8");
 }
 
 function includesAll(path, values) {

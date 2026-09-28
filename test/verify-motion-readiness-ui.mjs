@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { motionPreflightReason, startMotionRequest } from "../src/analytics.js";
 import { motionReadiness } from "../src/motion-readiness.js";
 
-const source = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+import { createAppContext } from "../src/app-context.js";
+const source = readStudioSource();
 function appFunction(name) {
 	const start = source.indexOf(`function ${name}(`);
 	assert.notEqual(start, -1, `${name} exists`);
@@ -35,6 +37,7 @@ for (const name of ["runAllPromptBlocks", "runArdy", "runLineEdit", "runTrailReg
 			setToast() {},
 			requestMotionGeneration() { requested += 1; },
 		};
+		context.appContext = createAppContext({ notify: (...args) => context.setToast(...args) }).forRender(context);
 		const run = new Function(...Object.keys(context), `return async ${appFunction(name)};`)(...Object.values(context));
 		await run();
 		assert.equal(requested, 0, `${name}: ${phase} request does not duplicate generation demand`);
@@ -65,6 +68,7 @@ for (const [bridge, body, surface, reason] of [
 		setToast() {}, isKo: false, genJobSeq: { current: 0 },
 		setGenQueue(update) { queue.push(...update([])); },
 	};
+	context.appContext = createAppContext({ notify: (...args) => context.setToast(...args) }).forRender(context);
 	const compile = (name) => new Function(...Object.keys(context), `return ${appFunction(name)};`)(...Object.values(context));
 	const request = compile("requestMotionGeneration")(surface, surface === "timeline" ? "prompt" : "edit", body);
 	compile("enqueueMotionJob")({ request, body, charIndex: 0 });

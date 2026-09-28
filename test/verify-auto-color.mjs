@@ -42,7 +42,8 @@ expect(
 
 /* --- the wiring keeps the mode display-only ------------------------------ */
 
-const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+const app = readStudioSource();
 const props = readFileSync(new URL("../src/props.jsx", import.meta.url), "utf8");
 const planview = readFileSync(new URL("../src/planview.jsx", import.meta.url), "utf8");
 

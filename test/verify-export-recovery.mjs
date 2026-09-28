@@ -132,6 +132,7 @@ function fixture() {
 			return { blob: new Blob([new Uint8Array([1, 2])]), mimeType: "video/mp4", frameCount: options.endFrame - options.startFrame + 1 };
 		},
 	};
+	deps.shotsDomain = { recordShotUndo: deps.recordShotUndo };
 	const api = load(deps);
 	const signal = (name, predicate = () => true) => {
 		const ready = deferred();

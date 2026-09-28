@@ -147,7 +147,7 @@ ok("Vector3Row passes a per-field scrub range", (() => {
 // of a scrub into an atomic edit, and the store settles the open transaction
 // on the first one — which is why the old drag froze after a single pixel's
 // worth of travel and left one stray undo entry behind.
-const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+const app = readFileSync(new URL("../src/panels/ObjectTransformPanel.jsx", import.meta.url), "utf8");
 const transformRows = app.slice(app.indexOf("selectedSceneObject.scaleX") - 4000, app.indexOf("selectedSceneObject.scaleZ") + 400);
 for (const axis of ["x", "y", "z", "rotX", "rot", "rotZ", "scaleX", "scaleY", "scaleZ"]) {
 	const pattern = new RegExp(`onChange: \\(${axis}, token\\) => changeSceneObject\\(selectedSceneObject\\.id, \\{ ${axis} \\}, token\\)`);

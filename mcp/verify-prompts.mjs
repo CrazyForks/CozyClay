@@ -160,9 +160,9 @@ const eleven = splitLongBeat(11);
 check("an 11 s beat becomes three blocks", eleven.length === 3, JSON.stringify(eleven));
 check("every piece of a long beat is within the cap", eleven.every((s) => s <= BLOCK_MAX_SECONDS + 1e-9));
 check("the guide states the cap", PROMPT_GUIDE.includes(`${BLOCK_MAX_SECONDS} s`));
-const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("../src/domains/cast.js", import.meta.url), "utf8");
 check(
-	"the studio mirrors the cap (App.jsx PROMPT_BLOCK_MAX_FRAMES)",
+	"the studio mirrors the cap (domains/cast.js PROMPT_BLOCK_MAX_FRAMES)",
 	appSource.includes(`const PROMPT_BLOCK_MAX_FRAMES = ${BLOCK_MAX_SECONDS} * TIMELINE_FPS`),
 );
 

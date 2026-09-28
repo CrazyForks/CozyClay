@@ -9,7 +9,8 @@ import { runInNewContext } from "node:vm";
 import { createFirstShotHandoff } from "../src/first-shot-handoff.js";
 
 const tutorial = readFileSync(new URL("../src/camera-tutorial.jsx", import.meta.url), "utf8");
-const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+const app = readStudioSource();
 const settings = readFileSync(new URL("../src/settings-menu.jsx", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const manifest = readFileSync(new URL("../tools/run-tests.mjs", import.meta.url), "utf8");
@@ -124,7 +125,7 @@ expect("it opens the city-block starter", start.includes('await openStarterScene
 expect(
 	"a scene it could not fetch still opens the tutorial (openStarterScene toasts)",
 	/const opened = await openStarterScene\("city-block", "tutorial"\);[\s\S]*?setCameraTutorial\(true\)/.test(start)
-		&& app.includes('setToast(ko("That starter scene is not in this build", "이 빌드에는 그 시작 장면이 없어요"))'),
+		&& app.includes('appContext.notify(ko("That starter scene is not in this build", "이 빌드에는 그 시작 장면이 없어요"))'),
 );
 // #275 strengthens replacement confirmation into preservation: existing work
 // runs the same steps in place and never enters the sample-loading path.
@@ -163,7 +164,7 @@ expect("it opens on frame 0 with the free camera", start.includes("exitPreview()
 expect("it leaves the project chooser closed", start.includes("setProjectStartupOpen(false)"));
 expect(
 	"the query entry also suppresses the startup chooser",
-	app.includes("useState(() => !playgroundMode && !cameraTutorialQuery && !playgroundSceneUrl(globalThis.location?.search) && !loadProjectSession()?.name)"),
+	app.includes("useState(() => !appContext.shared.playgroundMode && !appContext.shared.cameraTutorialQuery && !playgroundSceneUrl(globalThis.location?.search) && !loadProjectSession()?.name)"),
 );
 expect("the seed is armed by state, so an effect can wait on the rig", start.includes("setTutorialSeedPending(true)"));
 
