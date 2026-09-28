@@ -19,6 +19,11 @@
 	--accent: #3a7cbf;
 	--accent-2: #2d5c8a;
 	--cyan: #5a9bd4;
+	--range-pin-hand: #ff8a3d;
+	--range-pin-foot: #4dd2ff;
+	--range-pin-warning: #f5b453;
+	--danger: #e5484d;
+	--danger-ink: #ffc9cb;
 	--accent-soft: rgba(45, 92, 138, .35);
 	--accent-ring: rgba(58, 124, 191, .5);
 	--on-accent: #ffffff;
@@ -5087,6 +5092,91 @@ input[type=range]::-moz-range-thumb {
 
 .tl-marker.ik:hover {
 	box-shadow: 0 0 10px rgba(255, 160, 90, 1), 0 0 0 2px rgba(255, 160, 90, .35);
+}
+
+/* Range pins use one compact band over their inclusive keyed island. The
+   blend ramps are visible but quieter than the held core, so the band says
+   both "where the hand stays" and "where the correction eases". */
+.tl-pin-band {
+	position: absolute;
+	top: 50%;
+	left: calc(var(--tl-f-start) * 100%);
+	width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);
+	min-width: 8px;
+	height: 8px;
+	padding: 0;
+	transform: translateY(-50%);
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	cursor: pointer;
+	z-index: 3;
+}
+
+.tl-pin-band:focus-visible {
+	outline: 2px solid #fff;
+	outline-offset: 2px;
+}
+
+.tl-pin-band-core,
+.tl-pin-band-ramp {
+	position: absolute;
+	top: 1px;
+	bottom: 1px;
+	pointer-events: none;
+}
+
+.tl-pin-band-core {
+	left: 0;
+	right: 0;
+	border-radius: 3px;
+	background: var(--tl-pin-color);
+	opacity: .76;
+	box-shadow: 0 0 7px color-mix(in srgb, var(--tl-pin-color) 40%, transparent);
+}
+
+.tl-pin-band-ramp {
+	width: 18%;
+	background: var(--tl-pin-color);
+	opacity: .24;
+}
+
+.tl-pin-band-ramp.start {
+	left: -18%;
+	border-radius: 3px 0 0 3px;
+	mask-image: linear-gradient(90deg, transparent, #000);
+	-webkit-mask-image: linear-gradient(90deg, transparent, #000);
+}
+
+.tl-pin-band-ramp.end {
+	right: -18%;
+	border-radius: 0 3px 3px 0;
+	mask-image: linear-gradient(90deg, #000, transparent);
+	-webkit-mask-image: linear-gradient(90deg, #000, transparent);
+}
+
+.tl-pin-band.selected .tl-pin-band-core {
+	opacity: .95;
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--tl-pin-color) 24%, transparent), 0 0 10px color-mix(in srgb, var(--tl-pin-color) 60%, transparent);
+}
+
+.tl-pin-band:hover .tl-pin-band-core {
+	opacity: .92;
+}
+
+.tl-pin-pending {
+	position: absolute;
+	top: 50%;
+	left: calc(var(--tl-f-start) * 100%);
+	width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);
+	min-width: 8px;
+	height: 15px;
+	transform: translateY(-50%);
+	border: 1px dashed rgba(255, 255, 255, .58);
+	border-radius: 4px;
+	background: rgba(255, 255, 255, .05);
+	pointer-events: none;
+	z-index: 2;
 }
 
 /* A baked correction span — Fix Collisions or AutoPhysics keying every frame

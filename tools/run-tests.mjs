@@ -66,6 +66,8 @@ const NODE_FILES = [
 	"test/ik/verify-ik-drag-delta.mjs",
 	"test/ik/verify-ik-blend-range.mjs",
 	"test/ik/verify-range-pin.mjs",
+	"test/ik/verify-range-pin-ui.mjs",
+	"test/ik/verify-range-pin-object-transform.mjs",
 	"test/verify-ik-camera-performance.mjs",
 	"test/verify-ik-entry-camera.mjs",
 	"test/process/verify-bridge-launch.mjs",

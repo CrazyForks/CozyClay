@@ -289,6 +289,7 @@ import {
 	PoseStudioPanel,
 	PoseThumbPreview,
 	PoseTileGrid,
+	RangePinMarker,
 	warmPoseThumbnails,
 } from "./posestudio.jsx";
 import { mergeProjectCustomPoses } from "./project-poses.js";
@@ -319,12 +320,15 @@ import {
 	clampIkTargetToFloor,
 } from "./ardy/ik.js";
 import { bakeIkDragKey, chainsChangedBy, ikDragRecord, ikDragTouch } from "./ardy/ik-drag.js";
+import { applyRangePin, captureRangePinTarget, normalizeRangePin, rangePinTargetWorld, removeRangePinKeys } from "./ardy/range-pin.js";
 import { ikKeyJson, ikTrackKeyFromJson } from "./ardy/ik-key-json.js";
 import { buildCollisionCapsules, detectPenetrations, fixCollisions, fixCollisionsRange, supportsCollisionCleanup } from "./ardy/fix-collisions.js";
 import { collisionBlockers, blockerSummary } from "./ardy/collision-blockers.js";
 import { computeCenterOfMass, markerPositions } from "./ardy/auto-physics.js";
 import { reviewAutoPhysics, copyPhysicsKeys, physicsKeyStamp } from "./ardy/physics-review.js";
 import { PhysicsPanel, createPhysicsProgress } from "./ardy/physics-panel.jsx";
+import { RangePinPanel } from "./range-pin-panel.jsx";
+import { rangePinObjectMatrixAt } from "./range-pin-object-transform.js";
 import {
 	Dropdown,
 	Field,
@@ -2325,8 +2329,13 @@ export default function App() {
 	// never rewrites existing keys.
 	const [ikBlendS, setIkBlendS] = useState(IK_CORRECTION_BLEND_FRAMES / TIMELINE_FPS);
 	const ikBlendFrames = Math.max(1, Math.round(ikBlendS * TIMELINE_FPS));
+	const [rangePinSelection, setRangePinSelection] = useState(null);
+	const [rangePinPartPick, setRangePinPartPick] = useState(null);
+	const [rangePinPreview, setRangePinPreview] = useState(null);
+	const rangePinRebuildRef = useRef(null);
 
 	const ikStateRef = useRef(createIkState());
+	ensureRangePinState(ikStateRef.current);
 	const autoPhysicsRunRef = useRef(null);
 	const [autoPhysicsRunning, setAutoPhysicsRunning] = useState(false);
 	const [physicsPreview, setPhysicsPreview] = useState(null);
@@ -2341,6 +2350,12 @@ export default function App() {
 	// Sorted full-body key frames for the timeline markers. Derived from the
 	// ref state; ikTick re-derives after every key add/remove.
 	const ikFrames = useMemo(() => ikKeyframes(ikStateRef.current),
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[ikTick]);
+	const rangePins = useMemo(() => [...ensureRangePinState(ikStateRef.current).pins.values()].map((pin) => cloneRangePin(pin)),
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[ikTick]);
+	const rangePinResiduals = useMemo(() => new Map([...ensureRangePinState(ikStateRef.current).pinResiduals].map(([id, values]) => [id, (values ?? []).map((entry) => ({ ...entry }))])),
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[ikTick]);
 
@@ -2864,6 +2879,28 @@ export default function App() {
 	// Undo/redo (plan §6.5). The store settles any open drag first, so a
 	// mid-drag press commits that drag as one entry and then steps past it.
 	// After a step the selection can point at a deleted object — drop it to
+	function ensureRangePinState(state) {
+		if (!state) return state;
+		if (!(state.pins instanceof Map)) state.pins = new Map();
+		if (!(state.pinResiduals instanceof Map)) state.pinResiduals = new Map();
+		return state;
+	}
+	function cloneRangePin(pin) {
+		return {
+			...pin,
+			target: pin.target.space === "world"
+				? { space: "world", position: [...pin.target.position] }
+				: { space: "object", objectId: pin.target.objectId, local: [...pin.target.local] },
+		};
+	}
+	function snapshotRangePins(state) {
+		ensureRangePinState(state);
+		return new Map([...state.pins].map(([id, pin]) => [id, cloneRangePin(pin)]));
+	}
+	function snapshotRangePinResiduals(state) {
+		ensureRangePinState(state);
+		return new Map([...state.pinResiduals].map(([id, values]) => [id, (values ?? []).map((entry) => ({ frame: entry.frame, errorM: entry.errorM }))]));
+	}
 	/* ---------------------- character undo stack ---------------------------
 	 * The scene history store owns scene OBJECTS; the cast lives outside it.
 	 * Character gestures (spawn, remove, show/hide, plan-board drags) push a
@@ -2891,6 +2928,13 @@ export default function App() {
 		// travel: targets/plants/tracked are transient solver state the next
 		// seed/drag rebuilds anyway.
 		ikKeys: snapshotIkKeys(ikStateRef.current),
+		ikPins: new Map([...(ikStateRef.current.pins instanceof Map ? ikStateRef.current.pins : [])].map(([id, pin]) => [id, {
+			...pin,
+			target: pin.target.space === "world"
+				? { space: "world", position: [...pin.target.position] }
+				: { space: "object", objectId: pin.target.objectId, local: [...pin.target.local] },
+		}])),
+		ikPinResiduals: new Map([...(ikStateRef.current.pinResiduals instanceof Map ? ikStateRef.current.pinResiduals : [])].map(([id, values]) => [id, (values ?? []).map((entry) => ({ frame: entry.frame, errorM: entry.errorM }))])),
 		committedIkEdits,
 		// Shot-op entries carry the shot list too; character-op entries leave it
 		// out so undoing a character move never rolls back unrecorded shot edits.
@@ -2913,10 +2957,15 @@ export default function App() {
 	 * layer's keys live on the live IK state, every other character's on its
 	 * stored one (created on its first key). */
 	function ikStateFor(characterId) {
-		if (characterId === loadedLayerCharRef.current) return ikStateRef.current;
+		const ready = (state) => {
+			if (!(state.pins instanceof Map)) state.pins = new Map();
+			if (!(state.pinResiduals instanceof Map)) state.pinResiduals = new Map();
+			return state;
+		};
+		if (characterId === loadedLayerCharRef.current) return ready(ikStateRef.current);
 		let state = ikStatesRef.current.get(characterId);
 		if (!state) ikStatesRef.current.set(characterId, (state = createIkState()));
-		return state;
+		return ready(state);
 	}
 	function editCharacterIkKeys(characterId, mutate) {
 		const state = ikStateFor(characterId);
@@ -3089,6 +3138,12 @@ export default function App() {
 			}
 			target.keys = snapshotIkKeys({ keys: snapshot.ikKeys });
 			target.tracked = new Set([...target.keys.values()].flatMap((entry) => [...entry.keys()]));
+			if (!(target.pins instanceof Map)) target.pins = new Map();
+			if (!(target.pinResiduals instanceof Map)) target.pinResiduals = new Map();
+			target.pins = new Map([...(snapshot.ikPins ?? new Map())].map(([id, pin]) => [id, cloneRangePin(pin)]));
+			target.pinResiduals = new Map([...(snapshot.ikPinResiduals ?? new Map())].map(([id, values]) => [id, (values ?? []).map((entry) => ({ frame: entry.frame, errorM: entry.errorM }))]));
+			if (typeof setRangePinSelection === "function") setRangePinSelection(null);
+			if (typeof setRangePinPreview === "function") setRangePinPreview(null);
 			setCommittedIkEdits(snapshot.committedIkEdits ?? []);
 			setIkTick((value) => value + 1);
 		}
@@ -4973,7 +5028,9 @@ export default function App() {
 		motionFullRef.current.clear();
 		setSelectedPromptId(null);
 		ikStatesRef.current.clear();
-		ikStateRef.current = createIkState();
+		ikStateRef.current = ensureRangePinState(createIkState());
+		setRangePinSelection(null);
+		setRangePinPreview(null);
 		loadedLayerCharRef.current = stage.characters[0]?.id ?? null;
 		setActiveCharacterId(stage.characters[0]?.id ?? null);
 		charHistoryRef.current = { past: [], future: [] };
@@ -6010,8 +6067,10 @@ export default function App() {
 		setWaypointMode(false);
 		setActiveWaypointId(null);
 		setPendingWaypointFrame(null);
-		ikStateRef.current = ikStatesRef.current.get(activeChar.id) ?? createIkState();
+		ikStateRef.current = ensureRangePinState(ikStatesRef.current.get(activeChar.id) ?? createIkState());
 		loadedLayerCharRef.current = activeChar.id;
+		setRangePinSelection(null);
+		setRangePinPreview(null);
 	}, [activeChar.id]);
 	// Pre-playback bone snapshot; restoring it (after Character's pose effect
 	// has re-applied poseA) puts the rig back exactly where it was.
@@ -7972,11 +8031,15 @@ export default function App() {
 			// a replacement take leaves them pointing at poses that no longer exist
 			// — the same reason a trim clears them. The Full-Body lane would
 			// otherwise keep showing corrections that belong to a discarded clip.
-			const hadIkKeys = !preview && bufferOwnsTarget && ikStateRef.current.keys.size > 0;
+			const hadIkKeys = !preview && bufferOwnsTarget && (ikStateRef.current.keys.size > 0 || (ikStateRef.current.pins instanceof Map && ikStateRef.current.pins.size > 0));
 			if (hadIkKeys) {
 				ikStateRef.current.keys.clear();
 				ikStateRef.current.tracked.clear();
 				ikStateRef.current.plants.clear();
+				ikStateRef.current.pins.clear();
+				ikStateRef.current.pinResiduals.clear();
+				setRangePinSelection(null);
+				setRangePinPreview(null);
 				setIkTick((value) => value + 1);
 			}
 			if (bufferOwnsTarget && !preview) setCommittedIkEdits([]);
@@ -8091,6 +8154,10 @@ export default function App() {
 			ikStateRef.current.keys.clear();
 			ikStateRef.current.tracked.clear();
 			ikStateRef.current.plants.clear();
+			ikStateRef.current.pins?.clear?.();
+			ikStateRef.current.pinResiduals?.clear?.();
+			setRangePinSelection(null);
+			setRangePinPreview(null);
 			setIkTick((value) => value + 1);
 		}
 		setCommittedIkEdits([]);
@@ -8462,6 +8529,219 @@ export default function App() {
 		setToast(isKo ? `${tlFrame}프레임에 전신 IK 키를 추가했어요` : `Full-body IK key at frame ${tlFrame}`);
 	}
 
+	/** Match the transform that SetProps renders: path sampling and the prop's
+	 * full local rotation/scale, then an attachment frame when the object rides a
+	 * character. Parent/group rows are hierarchy-only in props.jsx, so they do
+	 * not add a matrix here either. */
+	function rangePinObjectWorldMatrix(objectId, frame) {
+		const object = sceneObjects.find((entry) => entry.id === objectId);
+		if (!object) return null;
+		const local = rangePinObjectMatrixAt(object, frame, { frameCount: motion?.frames ?? tlFrameCount, fps: motion?.fps ?? tlFps }, new THREE.Matrix4());
+		if (!object.attach) return local;
+		const attachedCharacter = characters.find((entry) => entry.id === object.attach.characterId);
+		const rig = rigs[object.attach.characterId];
+		if (!attachedCharacter || !rig) return null;
+		const clip = attachedCharacter.id === activeChar.id ? motion : attachedCharacter.sessionMotion;
+		const state = attachedCharacter.id === activeChar.id ? ikStateRef.current : ikStatesRef.current.get(attachedCharacter.id);
+		const saved = snapshotPlaybackBones(rig);
+		try {
+			poseMemberAtFrame(rig, clip, state, frame, IK_CORRECTION_BLEND_FRAMES);
+			return attachFrameMatrix(rig, object.attach.bone ?? null, new THREE.Matrix4()).multiply(local);
+		} finally {
+			restorePlaybackBones(rig, saved);
+		}
+	}
+
+	function rangePinApplyFrame(frame, state = ikStateRef.current) {
+		poseMemberAtFrame(activeRig, motion, null, frame);
+		if (ikChains && state.keys.size > 0) ikEvaluate(ikChains, state, frame, ikFkJoints, IK_CORRECTION_BLEND_FRAMES);
+	}
+
+	function rangePinConflictFrames(draft, state = ikStateRef.current) {
+		const conflicts = [];
+		if (!Number.isInteger(draft.startFrame) || !Number.isInteger(draft.endFrame) || draft.endFrame < draft.startFrame) return conflicts;
+		for (let frame = draft.startFrame; frame <= draft.endFrame; frame += 1) {
+			const key = state.keys.get(frame)?.get(draft.track);
+			if (key && key.pin !== draft.id) conflicts.push(frame);
+		}
+		return conflicts;
+	}
+
+	function overlappingRangePin(draft, state = ikStateRef.current) {
+		if (!Number.isInteger(draft.startFrame) || !Number.isInteger(draft.endFrame) || draft.endFrame < draft.startFrame) return null;
+		return [...ensureRangePinState(state).pins.values()].find((pin) =>
+			pin.id !== draft.id && pin.track === draft.track && Math.max(pin.startFrame, draft.startFrame) <= Math.min(pin.endFrame, draft.endFrame));
+	}
+
+	function rangePinOverlapMessage(pin) {
+		return pin
+			? ko(`This track already has an overlapping pin (${pin.startFrame}–${pin.endFrame}).`, `이 파츠에는 겹치는 고정이 있어요 (${pin.startFrame}–${pin.endFrame}).`)
+			: "";
+	}
+
+	function captureRangePinTargetForDraft(draft) {
+		if (!motion || !activeRig || !ikChains) return null;
+		const objectWorldMatrix = draft.targetKind === "object"
+			? (objectId, frame) => rangePinObjectWorldMatrix(objectId, frame)
+			: null;
+		const target = captureRangePinTarget({
+			chains: ikChains,
+			track: draft.track,
+			frame: draft.startFrame,
+			applyFrame: (frame) => rangePinApplyFrame(frame),
+			space: draft.targetKind === "object" ? "object" : "world",
+			objectId: draft.targetKind === "object" ? draft.objectId : null,
+			objectWorldMatrix,
+		});
+		const pin = normalizeRangePin({
+			id: draft.id,
+			track: draft.track,
+			startFrame: draft.startFrame,
+			endFrame: draft.endFrame,
+			blend: draft.blend,
+			target,
+		}, { clipFrames: motion.frames });
+		return { pin, targetWorld: rangePinTargetWorld(pin, tlFrame, { objectWorldMatrix }) };
+	}
+
+	const previewRangePinDraft = useCallback((draft) => {
+		setRangePinPreview(() => {
+			const state = ensureRangePinState(ikStateRef.current);
+			const conflictFrames = rangePinConflictFrames(draft, state);
+			const overlapping = overlappingRangePin(draft, state);
+			try {
+				const resolved = captureRangePinTargetForDraft(draft);
+				return { draft, track: draft.track, target: resolved?.targetWorld?.toArray() ?? null, conflictFrames, overlapError: rangePinOverlapMessage(overlapping) };
+			} catch {
+				return { draft, track: draft.track, target: null, conflictFrames, overlapError: rangePinOverlapMessage(overlapping) };
+			}
+		});
+	}, [activeRig, ikChains, ikFkJoints, motion, sceneObjects, tlFrame, tlFrameCount, tlFps]);
+
+	useEffect(() => {
+		if (!rangePinPreview?.draft || ikEditTool !== "pin") return;
+		previewRangePinDraft(rangePinPreview.draft);
+		// The preview follows the playhead/object transform; the callback itself is
+		// stable until one of the scene or rig inputs used to resolve it changes.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [ikEditTool, motion, sceneObjects, tlFrame, tlFrameCount, tlFps]);
+
+	function writeRangePin(pin, { recordUndo = true, replaceFrames = [] } = {}) {
+		const state = ensureRangePinState(ikStateRef.current);
+		const objectWorldMatrix = pin.target.space === "object"
+			? (objectId, frame) => rangePinObjectWorldMatrix(objectId, frame)
+			: null;
+		const keysBeforeBake = snapshotIkKeys(state);
+		for (const frame of replaceFrames) {
+			const entry = state.keys.get(frame);
+			if (!entry) continue;
+			entry.delete(pin.track);
+			if (!entry.size) state.keys.delete(frame);
+		}
+		let result;
+		try {
+			result = applyRangePin({
+				chains: ikChains,
+				fkJoints: ikFkJoints,
+				ikState: state,
+				pin,
+				objectWorldMatrix,
+				applyRaw: (frame) => poseMemberAtFrame(activeRig, motion, null, frame),
+				applyLayer: (frame) => rangePinApplyFrame(frame, state),
+			});
+		} finally {
+			state.keys = keysBeforeBake;
+		}
+		const before = snapshotIkKeys(state);
+		if (recordUndo) recordCharacterUndo();
+		for (const frame of replaceFrames) {
+			const entry = state.keys.get(frame);
+			if (!entry) continue;
+			entry.delete(pin.track);
+			if (!entry.size) state.keys.delete(frame);
+		}
+		removeRangePinKeys(state, pin.id);
+		for (const [frame, entry] of result.entries) {
+			let frameEntry = state.keys.get(frame);
+			if (!frameEntry) state.keys.set(frame, (frameEntry = new Map()));
+			for (const [track, key] of entry) frameEntry.set(track, key);
+		}
+		state.pins.set(pin.id, cloneRangePin(pin));
+		state.pinResiduals.set(pin.id, result.residuals.map((entry) => ({ frame: entry.frame, errorM: entry.errorM })));
+		state.tracked.add(pin.track);
+		markSemanticEdit("pose", before, state.keys);
+		if (recordUndo) setIkTick((value) => value + 1);
+		return result;
+	}
+
+	function applyRangePinDraft(draft) {
+		if (!motion || !activeRig || !ikChains) return;
+		const state = ensureRangePinState(ikStateRef.current);
+		const conflicts = rangePinConflictFrames(draft, state);
+		const overlapping = overlappingRangePin(draft, state);
+		if (overlapping) {
+			setToast(rangePinOverlapMessage(overlapping));
+			return;
+		}
+		if (conflicts.length && !draft.replaceExisting) {
+			setToast(ko("Confirm Replace existing keys before applying this pin.", "이 고정을 적용하려면 기존 키 교체를 확인하세요."));
+			return;
+		}
+		try {
+			const resolved = captureRangePinTargetForDraft(draft);
+			writeRangePin(resolved.pin, { replaceFrames: conflicts });
+			setRangePinSelection(resolved.pin.id);
+			setRangePinPreview({ draft: { ...draft, id: resolved.pin.id }, track: resolved.pin.track, target: rangePinTargetWorld(resolved.pin, tlFrame, { objectWorldMatrix: resolved.pin.target.space === "object" ? (objectId, frame) => rangePinObjectWorldMatrix(objectId, frame) : null }).toArray(), conflictFrames: [], overlapError: "" });
+			setTlPlaying(false);
+			setToast(isKo ? `${resolved.pin.track} 고정을 적용했어요 · ${resolved.pin.startFrame}–${resolved.pin.endFrame}프레임` : `Applied ${resolved.pin.track} pin · frames ${resolved.pin.startFrame}–${resolved.pin.endFrame}`);
+		} catch (error) {
+			setToast(ko(`Could not apply pin — ${error.message}`, `고정을 적용하지 못했어요 — ${error.message}`));
+		}
+	}
+
+	function deleteRangePin(pinId) {
+		const state = ensureRangePinState(ikStateRef.current);
+		const pin = state.pins.get(pinId);
+		if (!pin) return;
+		const before = snapshotIkKeys(state);
+		recordCharacterUndo();
+		removeRangePinKeys(state, pinId);
+		state.pins.delete(pinId);
+		state.pinResiduals.delete(pinId);
+		markSemanticEdit("pose", before, state.keys);
+		setRangePinSelection(null);
+		setRangePinPreview(null);
+		setIkTick((value) => value + 1);
+		setToast(isKo ? `${pin.track} 고정을 삭제했어요` : `Deleted ${pin.track} pin`);
+	}
+
+	useEffect(() => {
+		if (rangePinRebuildRef.current) clearTimeout(rangePinRebuildRef.current);
+		const state = ensureRangePinState(ikStateRef.current);
+		const objectPins = [...state.pins.values()].filter((pin) => pin.target.space === "object");
+		if (!motion || !activeRig || !ikChains || objectPins.length === 0) return undefined;
+		rangePinRebuildRef.current = setTimeout(() => {
+			let changed = false;
+			for (const pin of objectPins) {
+				const object = sceneObjects.find((entry) => entry.id === pin.target.objectId);
+				if (!object) {
+					changed = removeRangePinKeys(state, pin.id) > 0 || changed;
+					state.pinResiduals.set(pin.id, []);
+					continue;
+				}
+				try {
+					writeRangePin(pin, { recordUndo: false });
+					changed = true;
+				} catch {
+					// A transform can be temporarily unavailable while a prop remounts;
+					// the pin stays in the list and the panel reports its missing target.
+				}
+			}
+			if (changed) setIkTick((value) => value + 1);
+		}, 150);
+		return () => clearTimeout(rangePinRebuildRef.current);
+	}, [activeRig, ikChains, ikFkJoints, motion, sceneObjects, tlFrameCount, tlFps]);
+
 	// Self-collision cleanup: push interpenetrating body parts apart with the
 	// IK solver, then bake the fix as an ordinary IK correction key so it
 	// survives scrubs, undo, and blends back into the clip outside its range.
@@ -8762,6 +9042,30 @@ export default function App() {
 			runArdy: (options) => liveStateRef.current.runArdy(options),
 			rigA: activeRig, motion, tlFrame, frameCount: tlFrameCount, playing: tlPlaying, ikMode, ikChains, ikFocus, contactRadii: ikChains?.values().next().value?.contactRadii ?? null, ik: ikStateRef.current,
 			committedIkEdits, waypoints,
+			rangePins,
+			rangePinSelection,
+			rangePinResiduals,
+			rangePinEffector: (track) => {
+			const bone = ikStateRef.current.chains?.get(track)?.bones?.[2];
+			if (!bone) return null;
+			const point = bone.getWorldPosition(new THREE.Vector3());
+			return { x: point.x, y: point.y, z: point.z };
+		},
+		 rangePinTarget: (id, frame = tlFrame) => {
+			const pin = ensureRangePinState(ikStateRef.current).pins.get(id);
+			if (!pin) return null;
+			const target = rangePinTargetWorld(pin, frame, { objectWorldMatrix: pin.target.space === "object" ? (objectId, at) => rangePinObjectWorldMatrix(objectId, at) : null });
+			return { x: target.x, y: target.y, z: target.z };
+		},
+		objects: sceneObjects,
+		addSceneObject: (kind, at = {}) => { addSceneObject(kind, at); return storeRef.current.objects.at(-1)?.id ?? null; },
+		moveSceneObject: (id, patch) => { changeSceneObject(id, patch); return true; },
+		undo: undoScene,
+		redo: redoScene,
+		applyRangePin: applyRangePinDraft,
+		deleteRangePin,
+		selectRangePin: (id) => { setRangePinSelection(id); setIkEditTool("pin"); },
+			setRangePinPart: (track) => { setRangePinPartPick(track); setIkEditTool("pin"); focusIkHandle(track); },
 			// the camera the main view renders through (poser in IK mode) — QA
 			// projections must use this one, not the frozen shot camera
 			activeCam: ikMode ? poserCamRef.current : lookThroughShot ? shotCamRef.current : editorCamRef.current,
@@ -8908,7 +9212,7 @@ export default function App() {
 		// close over them: a stale closure would report the set as it was two
 		// edits ago — and, after an undo that removes a subject, would keep
 		// reporting the ghost's capsules.
-	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, sceneObjects, rigs, characters, pathPointIndex, preview, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS, ikEditTool, showTrails, physicsPreview, physicsShow, physicsOptions, autoPhysicsRunning]);
+	}, [activeRig, motion, tlFrame, ikMode, ikChains, ikFocus, ikTick, charA, committedIkEdits, waypoints, lookThroughShot, selectedSceneObject, sceneObjects, rigs, characters, pathPointIndex, preview, posing, playMode, pathDraw, trailEdit, trailFalloffFrames, trailFalloffS, ikEditTool, showTrails, physicsPreview, physicsShow, physicsOptions, autoPhysicsRunning, rangePins, rangePinSelection, rangePinResiduals]);
 	// QA hook (plan §6.5): exposes history depth and the present === objects
 	// invariant so the browser suite can assert undo entry counts directly.
 	// Reads live store state at call time; re-registered after every render.
@@ -13686,11 +13990,19 @@ function resizePromptClip(id, edge, rawFrame) {
 								chains={ikChains}
 								fkJoints={ikFkJoints}
 								ikState={ikStateRef.current}
-								enabled={ikMode && ikEditTool === "ik" && !posing && !playMode}
+								enabled={ikMode && (ikEditTool === "ik" || ikEditTool === "pin") && !posing && !playMode}
+								selectionOnly={ikEditTool === "pin"}
+								onPartPick={(track) => { setRangePinPartPick(track); setRangePinSelection(null); }}
 								focus={ikFocus}
 								onFocus={focusIkHandle}
 								onSolve={ikSolve}
 								onDragEnd={ikDragEnd}
+							/>
+							<RangePinMarker
+								chains={ikChains}
+								track={rangePinPreview?.track}
+								target={rangePinPreview?.target}
+								enabled={ikMode && ikEditTool === "pin" && Boolean(rangePinPreview?.target)}
 							/>
 							{/* The tutorial's top view is the landing playground's: camera, cast
 							    and the rail only, so the line the Rail step asks for is drawn on
@@ -14907,6 +15219,27 @@ function resizePromptClip(id, edge, rawFrame) {
 						<button type="button" className={"btn full" + (ikMode ? " primary" : "")} onClick={toggleIkMode} disabled={!ikChains}>
 						{ikMode ? ko("Finish rig editing", "리그 편집 끝내기") : ko("Edit rig with IK", "IK로 리그 편집")}
 						</button>
+						{ikMode && (
+							<RangePinPanel
+								active={ikEditTool === "pin"}
+								motion={motion}
+								frame={tlFrame}
+								frameCount={motion?.frames ?? 1}
+								fps={motion?.fps ?? tlFps}
+								pins={rangePins}
+								residuals={rangePinResiduals}
+								objects={sceneObjects}
+								selectedPinId={rangePinSelection}
+								partPick={rangePinPartPick}
+								conflictFrames={rangePinPreview?.conflictFrames ?? []}
+								overlapError={rangePinPreview?.overlapError ?? ""}
+								onSelectPin={(id) => { setRangePinSelection(id); if (id) setIkEditTool("pin"); }}
+								onApply={applyRangePinDraft}
+								onCancel={() => { setRangePinSelection(null); setRangePinPreview(null); }}
+								onDelete={deleteRangePin}
+								onPreviewTarget={previewRangePinDraft}
+							/>
+						)}
 						{/* Self-collision cleanup. Hidden outright on a rig whose capsule
 						    proxies cannot be built: a button whose only answer is "not
 						    supported" is worse than no button, and the hint below would
@@ -14934,8 +15267,8 @@ function resizePromptClip(id, edge, rawFrame) {
 							onOptions={changePhysicsOptions} onRun={runAutoPhysics} onShow={showPhysicsPreview}
 							onApply={applyPhysicsPreview} onCancel={cancelPhysicsPreview} onFrame={setTlFrame} />
 						{/* Motion trail editing: falloff radius + confirm-to-regenerate.
-						    Only meaningful with IK mode on and a loaded take. */}
-						{ikMode && motion && (
+						    Pin stays available as a disabled, explained tool until a take is loaded. */}
+						{ikMode && (
 							<>
 								<div className="segmented ik-edit-tools" data-active={ikEditTool}>
 									<button
@@ -14950,16 +15283,29 @@ function resizePromptClip(id, edge, rawFrame) {
 										type="button"
 										className={ikEditTool === "trail" ? "active" : ""}
 										aria-pressed={ikEditTool === "trail"}
-										disabled={!showTrails}
+										disabled={!showTrails || !motion}
 										onClick={() => setIkEditTool("trail")}
 									>
 										{ko("Path fix", "궤적 수정")}
+									</button>
+									<button
+										type="button"
+										className={ikEditTool === "pin" ? "active" : ""}
+										aria-pressed={ikEditTool === "pin"}
+										disabled={!motion}
+										onClick={() => { setIkEditTool("pin"); setRangePinPartPick(null); }}
+									>
+										{ko("Pin", "고정")}
 									</button>
 								</div>
 								<p className="inspector-hint">
 									{ikEditTool === "ik"
 										? ko("Grab a body part for detailed IK editing. Trails are guides only.", "파츠를 직접 잡아 손·발·팔꿈치·무릎을 세밀하게 수정합니다. 궤적선은 안내선으로만 표시됩니다.")
-										: ko("Grab a trail to edit a range of frames. IK handles are locked to avoid overlapping picks.", "궤적선을 잡아 여러 프레임의 이동을 함께 수정합니다. 파츠 핸들은 잠시 잠겨 겹침을 막습니다.")}
+										: ikEditTool === "trail"
+											? ko("Grab a trail to edit a range of frames. IK handles are locked to avoid overlapping picks.", "궤적선을 잡아 여러 프레임의 이동을 함께 수정합니다. 파츠 핸들은 잠시 잠겨 겹침을 막습니다.")
+											: motion
+												? ko("Choose a hand or foot, set In and Out, then apply. Click an IK handle to pick the part.", "손이나 발을 선택하고 In과 Out을 정한 뒤 적용하세요. IK 핸들을 클릭해 파츠를 고를 수도 있어요.")
+												: ko("Load a motion to enable Pin.", "Pin을 사용하려면 모션을 불러오세요.")}
 								</p>
 								{ikEditTool === "ik" && (
 									<Field label={ko("Correction range", "보정 영향 범위")}>
@@ -14976,6 +15322,7 @@ function resizePromptClip(id, edge, rawFrame) {
 										</div>
 									</Field>
 								)}
+								{ikEditTool !== "pin" && <>
 								<button
 									type="button"
 									className={"btn full" + (!showTrails ? " muted" : "")}
@@ -15020,6 +15367,7 @@ function resizePromptClip(id, edge, rawFrame) {
 										"궤적선의 아무 지점이나 잡아 끌면 영향 범위 안의 주변 프레임이 함께 따라와요. 재생성을 누르면 그 구간을 Kimodo가 다시 생성하고, 명시적으로 잡은 IK 키는 정확히 고정됩니다.",
 									)}
 								</p>
+								</>}
 							</>
 						)}
 					</Foldout>
@@ -15952,6 +16300,9 @@ function resizePromptClip(id, edge, rawFrame) {
 				onMotionSpeedChange={changeMotionSegmentSpeed}
 				onMotionSegmentRemove={removeMotionSegmentById}
 				ikFrames={ikFrames}
+				rangePins={rangePins}
+				selectedPinId={rangePinSelection}
+				pendingPinRange={rangePinPreview?.draft ?? null}
 				footSnap={footSnap}
 				bodyContact={bodyContact}
 					shots={shots}
@@ -15986,6 +16337,7 @@ function resizePromptClip(id, edge, rawFrame) {
 				onIkToggle={toggleIkMode}
 				onIkKeyframeAdd={ikAddKeyframe}
 				onIkKeyframeRemove={ikDeleteKeyframe}
+				onPinSelect={(id) => { setRangePinSelection(id); setIkEditTool("pin"); }}
 				onBodyContactToggle={() => {
 					setBodyContact((v) => {
 						setToast(v ? ko("Body contact off — floor constraints are disabled", "바닥 접촉 꺼짐 — 바닥 제약이 비활성화됩니다") : ko("Body contact on — body markers stay above the floor", "바닥 접촉 켜짐 — 신체 접촉점이 바닥 아래로 내려가지 않습니다"));
