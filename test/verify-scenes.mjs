@@ -373,7 +373,8 @@ const rotatedAnchor = takeAnchor({ x: 1, z: -1, rot: 90 }, 1, 0);
 assert.ok(Math.abs(rotatedAnchor.x - 1) < 1e-9 && Math.abs(rotatedAnchor.z + 2) < 1e-9, "a quarter turn sends a +X offset to -Z");
 assert.deepEqual(takeAnchor(null, undefined, NaN), { x: 0, z: 0 }, "junk placement resolves to the origin, never NaN");
 
-const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+const appSource = readStudioSource();
 assert.match(
 	appSource,
 	/actorStageRef\.current = \{[\s\S]{0,280}shotAspect: shotAspectKey,[\s\S]{0,80}sensorId,/,

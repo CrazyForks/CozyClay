@@ -164,8 +164,10 @@ function fixture(options={}) {
  // The extracted App functions now reach these same fixture-owned cells through the facade.
  scope.appContext=createAppContext({clock,history,objectClock:lastObject,suppressObjectClock,characters:characterRef,state:live,scenes:scope.scenesRef,getBus:()=>scope.studioBindingRef.current.bus}).forRender(scope);
  scope.stageDomain=scope;
+ scope.scenesDomain=scope;
  const code=names.map(n=>{assert(declarations.has(n),`actual App function ${n}`);return declarations.get(n);}).join('\n');
  const actual=new Function(...Object.keys(scope),code+`\nreturn {${names.join(',')}};`)(...Object.values(scope));
+ Object.assign(scope,actual);
  // React re-renders App with the state it committed: these functions close
  // over render-time state, so every commit is a fresh evaluation of them.
  const renderNames=['generate','copyPrompt','framingDistance','showFalMotionLock','generateFalMotion','generateFalMotionFromUi','falMotionUnavailable'];

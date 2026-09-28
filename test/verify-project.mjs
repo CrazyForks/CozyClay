@@ -19,7 +19,8 @@ import { createSceneDocument, createSceneStage, SCENES_VERSION } from "../src/sc
 import { ASSET_MAX_SOURCE_BYTES, assetIdForBytes, meshIdForBytes, referencedAssetIds } from "../src/scene-assets.js";
 
 // The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
-const appSource = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8")
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+const appSource = readStudioSource()
 	+ readFileSync(new URL("../src/app-stage.jsx", import.meta.url), "utf8");
 
 // --- envelope round trip --------------------------------------------------

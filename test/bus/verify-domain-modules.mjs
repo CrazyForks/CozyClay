@@ -40,6 +40,70 @@ export function readStudioSource() {
   return paths.map(path => read(path).replace(/export default /g, '')).join('\n');
 }
 
+export function readStudioFunction(name) {
+  const source = readStudioSource();
+  let found;
+  walk(parseSync('studio.jsx', source).program, node => {
+    if (node.type === 'FunctionDeclaration' && node.id.name === name) found = node;
+  });
+  assert(found, `studio function ${name}`);
+  return source.slice(found.start, found.end);
+}
+
+// Resolve lexical references rather than treating property names or callback
+// parameters as dependencies. Also used when following source-based fixtures.
+export function freeReferences(rootNode) {
+  const references = [];
+  const bindings = (node, names) => {
+    if (!node) return;
+    if (node.type === 'Identifier') names.add(node.name);
+    else if (node.type === 'RestElement') bindings(node.argument, names);
+    else if (node.type === 'AssignmentPattern') bindings(node.left, names);
+    else if (node.type === 'ArrayPattern') node.elements.forEach(n => bindings(n, names));
+    else if (node.type === 'ObjectPattern') node.properties.forEach(n => bindings(n.value ?? n.argument, names));
+  };
+  const collect = (node, names) => {
+    if (!node || typeof node !== 'object') return;
+    if (/Function/.test(node.type)) { if (node.id) names.add(node.id.name); return; }
+    if (node.type === 'VariableDeclarator') bindings(node.id, names);
+    if (node.type === 'ImportDeclaration') node.specifiers.forEach(n => names.add(n.local.name));
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'parent') continue;
+      if (Array.isArray(value)) value.forEach(n => collect(n, names));
+      else if (value && typeof value === 'object') collect(value, names);
+    }
+  };
+  function visit(node, scopes = [], parent = null, key = '') {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'Program' || /Function/.test(node.type) || node.type === 'CatchClause') {
+      const names = new Set();
+      if (node.id) bindings(node.id, names);
+      (node.params ?? []).forEach(n => bindings(n, names));
+      if (node.param) bindings(node.param, names);
+      collect(node.body, names);
+      scopes = [...scopes, names];
+    }
+    if (node.type === 'Identifier' || node.type === 'JSXIdentifier') {
+      if (node.type === 'JSXIdentifier' && (!/^[A-Z]/.test(node.name) || parent?.type === 'JSXAttribute')) return;
+      if ((parent?.type === 'MemberExpression' && key === 'property' && !parent.computed)
+        || (parent?.type === 'Property' && key === 'key' && !parent.computed)
+        || (parent?.type === 'VariableDeclarator' && key === 'id')
+        || (parent?.type?.startsWith('Import')) || key === 'label') return;
+      if (!scopes.some(names => names.has(node.name))) references.push({ node, parent, key });
+      return;
+    }
+    for (const [childKey, value] of Object.entries(node)) {
+      if (childKey === 'parent' || childKey === 'id' || childKey === 'params' || childKey === 'param') continue;
+      if (Array.isArray(value)) value.forEach(n => visit(n, scopes, node, childKey));
+      else visit(value, scopes, node, childKey);
+    }
+    // Defaults execute in the function scope, while binding identifiers do not.
+    for (const param of node.params ?? []) if (param.type === 'AssignmentPattern') visit(param.right, scopes, param, 'right');
+  }
+  visit(rootNode);
+  return references;
+}
+
 function verify() {
 const app = parse('src/App.jsx');
 for (const [domain, { states, panels }] of Object.entries(domains)) {
@@ -50,6 +114,8 @@ for (const [domain, { states, panels }] of Object.entries(domains)) {
     assert(!stateNames(app).includes(name), `acceptance 1: ${name} must leave App.jsx`);
     assert(stateNames(ast).includes(name), `acceptance 1: ${name} must live in ${path}`);
   }
+  const globals = new Set(['window', 'document', 'localStorage', 'globalThis', 'console', 'fetch', 'navigator', 'crypto', 'URL', 'URLSearchParams', 'File', 'FileReader', 'Blob', 'Image', 'HTMLElement', 'Element', 'CustomEvent', 'requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'AbortController', 'performance', 'createImageBitmap', 'undefined', 'NaN', 'Infinity', ...Object.getOwnPropertyNames(globalThis)]);
+  assert.deepEqual([...new Set(freeReferences(ast).map(ref => ref.node.name))].filter(name => !globals.has(name)), [], `acceptance 2: all shared dependencies in ${path} resolve through the facade`);
   const hooks = [];
   walk(ast, node => {
     if (node.type === 'ImportDeclaration') assert(!/(?:^|\/)domains\/|^\.\/(?:stage|scenes|objects|shots|cast|motion)\.js$/.test(node.source.value), `acceptance 2: no cross-domain import in ${path}`);

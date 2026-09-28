@@ -1,3 +1,5 @@
+import { useScenes } from "./domains/scenes.js";
+import ProjectPanel from "./panels/ProjectPanel.jsx";
 import { useStage } from "./domains/stage.js";
 import LightPanel from "./panels/LightPanel.jsx";
 import EnvironmentPanel from "./panels/EnvironmentPanel.jsx";
@@ -1483,10 +1485,69 @@ export default function App() {
 	// initializer so the store below can seed from the restored scene; the
 	// quarantine write and the save-block decision happen before the first
 	// render, and the toast/error they produce ride along as initial UI state.
-	const [scenes, setScenes] = useState(startup.document.scenes);
-	const [activeSceneId, setActiveSceneId] = useState(startup.document.activeSceneId);
+	const scenesDomain = useScenes(appContext.forRender({
+		get activeSceneIdRef() { return activeSceneIdRef; },
+		get actorStageRef() { return actorStageRef; },
+		get cameraTutorialQuery() { return cameraTutorialQuery; },
+		get customPoses() { return customPoses; },
+		get dirtyRef() { return dirtyRef; },
+		get exportShotIdRef() { return exportShotIdRef; },
+		get ikStateRef() { return ikStateRef; },
+		get ikStatesRef() { return ikStatesRef; },
+		get loadedLayerCharRef() { return loadedLayerCharRef; },
+		get manualCameraOverrideRef() { return manualCameraOverrideRef; },
+		get markSemanticEdit() { return markSemanticEdit; },
+		get motionEncodingCacheRef() { return motionEncodingCacheRef; },
+		get motionFullRef() { return motionFullRef; },
+		get playgroundMode() { return playgroundMode; },
+		get projectHandleRef() { return projectHandleRef; },
+		get projectMotionsRef() { return projectMotionsRef; },
+		get projectSnapshotRef() { return projectSnapshotRef; },
+		get projectStateRef() { return projectStateRef; },
+		get restoreMotionRefs() { return restoreMotionRefs; },
+		get runStudioAction() { return runStudioAction; },
+		get saveBlockedRef() { return saveBlockedRef; },
+		get saveFailureToastRef() { return saveFailureToastRef; },
+		get setActiveCharacterId() { return setActiveCharacterId; },
+		get setActiveWaypointId() { return setActiveWaypointId; },
+		get setCameraTutorial() { return setCameraTutorial; },
+		get setCameraTutorialHandoff() { return setCameraTutorialHandoff; },
+		get setCharacters() { return setCharacters; },
+		get setCustomPoses() { return setCustomPoses; },
+		get setFirstSuccessGuideOpen() { return setFirstSuccessGuideOpen; },
+		get setHasCharSheet() { return setHasCharSheet; },
+		get setMotion() { return setMotion; },
+		get setMovePlaying() { return setMovePlaying; },
+		get setPendingWaypointFrame() { return setPendingWaypointFrame; },
+		get setPromptClips() { return setPromptClips; },
+		get setRailDraw() { return setRailDraw; },
+		get setRigMountEpoch() { return setRigMountEpoch; },
+		get setSceneObjects() { return setSceneObjects; },
+		get setSelectedHierarchyId() { return setSelectedHierarchyId; },
+		get setSelectedPromptId() { return setSelectedPromptId; },
+		get setShots() { return setShots; },
+		get setTlFrame() { return setTlFrame; },
+		get setTlFrameCount() { return setTlFrameCount; },
+		get setToast() { return setToast; },
+		get setTutorialSeedPending() { return setTutorialSeedPending; },
+		get setWaypoints() { return setWaypoints; },
+		get setWorkspaceLayout() { return setWorkspaceLayout; },
+		get shotDocumentRef() { return shotDocumentRef; },
+		get shots() { return shots; },
+		get stageDomain() { return stageDomain; },
+		get startup() { return startup; },
+		get storeRef() { return storeRef; },
+		get studioDocumentEpochRef() { return studioDocumentEpochRef; },
+		get studioHistoryRef() { return studioHistoryRef; },
+		get studioSceneEpochRef() { return studioSceneEpochRef; },
+		get tutorialProjectEpochRef() { return tutorialProjectEpochRef; },
+		get tutorialSeedEpochRef() { return tutorialSeedEpochRef; },
+		get tutorialStarterRef() { return tutorialStarterRef; },
+	}));
+	const { scenes, activeSceneId, sceneSaveError, setSceneSaveError, snapshotActiveScene, persistScenes, projectName, setProjectName, projectDirty, setProjectDirty, projectSaveState, setProjectSaveState, projectMenuOpen, setProjectMenuOpen, projectBrowserOpen, setProjectBrowserOpen, projectNameDialog, setProjectNameDialog, projectStartupOpen, setProjectStartupOpen, projectManifest, setProjectManifest, saveBlockedReasons, setSaveBlockedReasons, workflowRevision, setWorkflowRevision, projectDocumentInput, collectProjectSnapshot, collectProjectSerialized, markProjectClean, projectProblemsNotice, rehydrateProjectAssets, saveProject, applyProject, openStarterScene, openProject, openProjectByHandle, requestNewProject, newProject, restoreOffer, setRestoreOffer, restoreStoredProject, flushScenes, restoredShotState, openScene, selectSceneDocument, createSceneDocumentFromUi, duplicateSceneDocumentFromUi, renameSceneDocumentFromUi, deleteSceneDocumentFromUi, switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument } = scenesDomain;
+
 	const [sceneObjects, setSceneObjects] = useState(startupScene.objects);
-	const [sceneSaveError, setSceneSaveError] = useState(startup.error);
+
 	const saveBlockedRef = useRef(startup.saveBlocked);
 	const dirtyRef = useRef(false);
 	// One-shot save-failure toast: the persistent line stays for the session,
@@ -3467,56 +3528,28 @@ export default function App() {
 		hasEnvSheet,
 	};
 
-	function snapshotActiveScene(sourceScenes = appContext.live.scenes) {
-		return sourceScenes.map((scene) => scene.id === activeSceneIdRef.current
-			? { ...scene, objects: storeRef.current.objects, shotDocument: shotDocumentRef.current, stage: actorStageRef.current }
-			: scene);
-	}
 
-	function persistScenes(nextScenes, nextActiveSceneId) {
-		if (saveBlockedRef.current) return false;
-		try {
-			localStorage.setItem(SCENES_STORAGE_KEY, serializeSceneDocument({
-					version: SCENES_VERSION,
-				activeSceneId: nextActiveSceneId,
-				scenes: nextScenes,
-			}));
-			dirtyRef.current = false;
-			setSceneSaveError(null);
-			if (saveFailureToastRef.current) {
-				saveFailureToastRef.current = false;
-				setToast("");
-			}
-			return true;
-		} catch (err) {
-			const message = `Scenes not saved: ${err?.name || "StorageError"}`;
-			setSceneSaveError(message);
-			if (!saveFailureToastRef.current) {
-				saveFailureToastRef.current = true;
-				setToast(message);
-			}
-			return false;
-		}
-	}
+
+
 
 	/* ============================ project files ============================
 	 * Game-engine workflow: the authoring state (scenes + cast + layers,
 	 * workspace layout, custom poses) round-trips through a real
 	 * `.cclayproject` file. localStorage stays as the always-on session
 	 * cache; the file is the portable, user-owned document. */
-	const [projectName, setProjectName] = useState(() => loadProjectSession()?.name ?? null);
-	const [projectDirty, setProjectDirty] = useState(false);
-	const [projectSaveState, setProjectSaveState] = useState("idle");
-	const [projectMenuOpen, setProjectMenuOpen] = useState(false);
-	const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
-	const [projectNameDialog, setProjectNameDialog] = useState(null);
+
+
+
+
+
+
 	const [firstSuccessGuideOpen, setFirstSuccessGuideOpen] = useState(false);
 	// A first-run author should choose a document (or explicitly start a named
 	// local draft). Keep this as a light startup sheet so the studio remains
 	// inspectable while the choice is pending; it never traps the topbar.
 	// ?tutorial=camera opens the starter scene itself (#209), so the chooser is
 	// suppressed the same way a ?scene= launch suppresses it.
-	const [projectStartupOpen, setProjectStartupOpen] = useState(() => !playgroundMode && !cameraTutorialQuery && !playgroundSceneUrl(globalThis.location?.search) && !loadProjectSession()?.name);
+
 
 	// Dismissal mirrors the inspector-actions menu: only listen while open,
 	// ignore presses inside the wrap (the trigger's own click keeps toggling),
@@ -3657,12 +3690,12 @@ export default function App() {
 	// Reuse the expensive encoded record until a new byte buffer is supplied.
 	const motionEncodingCacheRef = useRef(new WeakMap());
 	const restoreEpochRef = useRef(0);
-	const [projectManifest, setProjectManifest] = useState({ items: [], totals: { embedded: 0, external: 0, missing: 0, bytes: 0 }, missing: [] });
-	const [saveBlockedReasons, setSaveBlockedReasons] = useState(null);
+
+
 	const projectSnapshotRef = useRef("");
 	const projectStateRef = useRef(null);
 	projectStateRef.current = { workspaceLayout, customPoses, scenes, activeSceneId, sceneObjects };
-	const [workflowRevision, setWorkflowRevision] = useState(0);
+
 	useEffect(() => {
 		const onStorage = (event) => {
 			if (event.key === WORKFLOW_STORAGE_KEY) setWorkflowRevision((value) => value + 1);
@@ -3676,239 +3709,32 @@ export default function App() {
 		};
 	}, []);
 
-	function projectDocumentInput(name) {
-		return {
-			scenesDocument: {
-				version: SCENES_VERSION,
-				activeSceneId: activeSceneIdRef.current,
-				scenes: snapshotActiveScene(),
-			},
-			workspaceLayout: projectStateRef.current.workspaceLayout,
-			customPoses: projectStateRef.current.customPoses,
-			workflow: loadWorkflowGraph(),
-			name,
-		};
-	}
 
-	function collectProjectSnapshot(name) {
-		return JSON.stringify(createProjectDocument(projectDocumentInput(name)));
-	}
+
+
 	const tutorialInitialSnapshotRef = useRef(null);
 	if (tutorialInitialSnapshotRef.current === null) tutorialInitialSnapshotRef.current = collectProjectSnapshot("Tutorial");
 
 	playgroundExportRef.current = collectProjectSerialized;
-	async function collectProjectSerialized(name) {
-		const input = projectDocumentInput(name);
-		const scenesDocument = {
-			...input.scenesDocument,
-			scenes: input.scenesDocument.scenes.map((scene) => ({
-				...scene,
-				stage: scene.stage
-					? {
-						...scene.stage,
-						characters: (scene.stage.characters ?? []).map((character) => ({
-							...character,
-							motionRef: character.motionRef ? { ...character.motionRef } : character.motionRef,
-						})),
-					}
-					: scene.stage,
-			})),
-		};
-		const db = await openAssetDb();
-		try {
-			const ids = [...referencedAssetIds(scenesDocument.scenes)];
-			const assets = await Promise.all(ids.map((id) => getAsset(db, id)));
-			const workflowResult = await internWorkflowOutputs(input.workflow);
-			const referencedMotionIds = new Set(
-				scenesDocument.scenes.flatMap((scene) => (scene.stage?.characters ?? [])
-					.map((character) => character.motionRef?.motionId?.toLowerCase())
-					.filter(Boolean)),
-			);
-			const motions = [...projectMotionsRef.current.entries()]
-				.filter(([id]) => referencedMotionIds.has(id))
-				.map(([, record]) => record);
-			const motionCache = new Map();
-			for (const record of motions) motionCache.set(record.motionId.toLowerCase(), record);
-			for (const scene of scenesDocument.scenes) for (const character of scene.stage?.characters ?? []) {
-				const clip = motionFullRef.current.get(character.id);
-				if (!clip?.sourceBytes) continue;
-				let record = motionEncodingCacheRef.current.get(clip.sourceBytes);
-				if (!record) {
-					record = await encodeMotionResource(clip.sourceBytes, { prompt: character.motionRef?.prompt, sourceUrl: character.motionRef?.url });
-					motionEncodingCacheRef.current.set(clip.sourceBytes, record);
-				}
-				const cached = motionCache.get(record.motionId) ?? record;
-				motionCache.set(record.motionId, cached);
-				if (!motions.includes(cached)) motions.push(cached);
-				projectMotionsRef.current.set(record.motionId.toLowerCase(), cached);
-				character.motionRef = { ...(character.motionRef || {}), motionId: cached.motionId };
-			}
-			try { const motionDb = await openMotionDb(); await Promise.all(motions.map((record) => putMotion(motionDb, record))); motionDb.close(); } catch (error) { console.warn("[cozyclay] could not cache motions", error); }
-			const allAssets = [...assets.filter(Boolean), ...workflowResult.assets];
-			const nextInput = { ...input, scenesDocument, workflow: workflowResult.graph, assets: allAssets, motions };
-			const manifest = resourceManifest({ scenesDocument: nextInput.scenesDocument, workflow: nextInput.workflow, poseLibrary: nextInput.customPoses, assets: allAssets, motions, workflowOutputRefs });
-			setProjectManifest(manifest);
-			if (manifest.missing.length) {
-				const error = new Error("Project has missing resources");
-				error.code = "missing-resources";
-				error.items = manifest.missing;
-				throw error;
-			}
-			return JSON.stringify(createProjectDocument({ ...nextInput, savedAt: Date.now() }), null, 2);
-		} finally {
-			db.close();
-		}
-	}
 
-	function markProjectClean(name) {
-		projectSnapshotRef.current = collectProjectSnapshot(name);
-		setProjectDirty(false);
-		setProjectName(name);
-		storeProjectSession(name);
-	}
 
-	function projectProblemsNotice(problems) {
-		if (!Array.isArray(problems) || !problems.length) return "";
-		const codes = [...new Set(problems.map((problem) => problem?.code).filter(Boolean))].join(", ");
-		return isKo
-			? ` · 포함된 자원 ${problems.length}개를 건너뛰었어요${codes ? ` (${codes})` : ""}`
-			: ` · skipped ${problems.length} embedded resource${problems.length === 1 ? "" : "s"}${codes ? ` (${codes})` : ""}`;
-	}
 
-	async function rehydrateProjectAssets(project, warnings = []) {
-		for (const warning of warnings) console.warn(`[cozyclay] ${warning}`);
-		if (!project.assets.length) return;
-		try {
-			const db = await openAssetDb();
-			try {
-				const referenced = referencedAssetIds(project.scenesDocument.scenes);
-				const results = await Promise.allSettled(project.assets.map(async (asset) => {
-					if (!referenced.has(asset.id)) {
-						console.warn(`[cozyclay] skipped embedded asset outside the project closure: ${asset.id}`);
-						return;
-					}
-					if (!(await verifyEmbeddedAsset(asset))) {
-						console.warn(`[cozyclay] skipped embedded asset with mismatched content address: ${asset.id}`);
-						return;
-					}
-					await putAsset(db, asset);
-				}));
-				for (const result of results) if (result.status === "rejected") console.warn("[cozyclay] could not restore an embedded asset", result.reason);
-			} finally {
-				db.close();
-			}
-		} catch (error) {
-			console.warn("[cozyclay] could not open the asset store for project restore", error);
-		}
-	}
+
+
+
+
 
 	/** Save the project; the answer says what happened, for project.save:
 	 * { saved, name, fileName, downloaded } or { saved: false, naming |
 	 * cancelled | failure }. Every outcome is also shown to the user here. */
-	async function saveProject(saveAs = false, explicitName = null) {
-		if (projectName === null && explicitName === null) {
-			setProjectNameDialog({ kind: "save", initialName: "My Project" });
-			return { saved: false, naming: true };
-		}
-		setProjectSaveState("saving");
-		const name = (explicitName ?? projectName ?? "My Project").trim() || "My Project";
-		let downloaded = false;
-		try {
-			const serialized = await collectProjectSerialized(name);
-			let handle = projectHandleRef.current;
-			if (saveAs || !handle || !hasFileSystemAccess()) {
-				if (hasFileSystemAccess()) {
-					handle = await pickProjectFileForSave(name);
-					projectHandleRef.current = handle;
-					await writeProjectFile(handle, serialized);
-					await rememberRecentProject(handle, name);
-				} else {
-					downloadProjectFallback(serialized, name);
-					downloaded = true;
-				}
-			} else {
-				await writeProjectFile(handle, serialized);
-			}
-			markProjectClean(name);
-			setSaveBlockedReasons(null);
-			setProjectSaveState("saved");
-			track("project:saved", {
-				object_count_bucket: bucketCount(projectStateRef.current.sceneObjects?.length ?? 0),
-				shot_count_bucket: bucketCount(shots.length),
-			});
-			setToast((isKo, ko) => isKo ? `프로젝트 저장됨: ${name}${PROJECT_EXTENSION}` : `Project saved: ${name}${PROJECT_EXTENSION}`);
-			return { saved: true, name, fileName: downloaded ? `${name}${PROJECT_EXTENSION}` : projectHandleRef.current?.name ?? `${name}${PROJECT_EXTENSION}`, downloaded };
-		} catch (err) {
-			if (err?.name === "AbortError") {
-				setProjectSaveState(projectDirty ? "dirty" : "saved");
-				return { saved: false, cancelled: true }; // user closed the picker
-			}
-			setProjectSaveState("error");
-			if (err?.code === "missing-resources") setSaveBlockedReasons([{ code: err.code, items: err.items }]);
-			else if (err?.code === "resources-too-large") setSaveBlockedReasons([err]);
-			else setToast(ko("Could not save the project", "프로젝트를 저장하지 못했어요"));
-			return { saved: false, failure: err?.code ?? err?.name ?? "error" };
-		}
-	}
 
-	function applyProject(project) {
-		studioDocumentEpochRef.current = crypto.randomUUID();
-		tutorialProjectEpochRef.current += 1;
-		tutorialSeedEpochRef.current = null;
-		setTutorialSeedPending(false);
-		setCameraTutorialHandoff(null);
-		exportShotIdRef.current = null;
-		projectMotionsRef.current = new Map((project.motions ?? []).map((record) => [record.motionId?.toLowerCase(), record]).filter(([id]) => id));
-		const source = project.scenesDocument;
-		openMotionDb().then(async (db) => { try { await Promise.all([...projectMotionsRef.current.values()].map((record) => putMotion(db, record))); const ids = new Set((source?.scenes ?? []).flatMap((scene) => (scene.stage?.characters ?? []).map((character) => character.motionRef?.motionId?.toLowerCase()).filter(Boolean))); await sweepMotions(db, ids); } finally { db.close(); } }).catch(() => {});
-		// A project FILE carries its own scene document and never passes the
-		// storage reader, so the 20 fps → 24 fps clock migration is applied here
-		// too — otherwise an older .cozyclay would open a sixth too fast.
-		const doc = Number.isInteger(source.version) && source.version < SCENES_VERSION
-			? { ...source, version: SCENES_VERSION, scenes: source.scenes.map((scene) => ({ ...scene, stage: migrateStageFrames(scene.stage) })) }
-			: source;
-		const mergedCustomPoses = mergeProjectCustomPoses(customPoses, project.customPoses);
-		setScenes(doc.scenes);
-		setActiveSceneId(doc.activeSceneId);
-		if (project.workspaceLayout) setWorkspaceLayout({ ...DEFAULT_WORKSPACE_LAYOUT, ...project.workspaceLayout });
-		setCustomPoses(mergedCustomPoses);
-		const resolvedWorkflow = resolveWorkflowOutputs(normalizeWorkflowGraph(project.workflow), new Map((project.assets ?? []).map((asset) => [asset.id, asset])));
-		storeWorkflowGraph(resolvedWorkflow);
-		saveCustomPoses(mergedCustomPoses);
-		persistScenes(doc.scenes, doc.activeSceneId);
-		openScene(doc.scenes[activeSceneIndex(doc.scenes, doc.activeSceneId)], doc.scenes);
-		projectSnapshotRef.current = collectProjectSnapshot(project.name);
-		setProjectDirty(false);
-		setProjectName(project.name);
-		storeProjectSession(project.name);
-		setProjectStartupOpen(false);
-		// Whatever document this is, it is no longer the scene the tutorial opened
-		// for itself; startCameraTutorial re-arms the flag after its own open.
-		tutorialStarterRef.current = false;
-		setProjectManifest(resourceManifest({ scenesDocument: doc, workflow: resolvedWorkflow, poseLibrary: mergedCustomPoses, assets: project.assets ?? [], motions: projectMotionsRef.current, workflowOutputRefs }));
-		track("project:opened", { age_bucket: bucketProjectAge(Date.now() - (project.savedAt ?? Date.now())) });
-	}
+
+
 
 	/** Open a bundled starter scene as a fresh, saveable project. Used by the
 	 * first-run dialog and by `npx cozyclay --scene <id>` (`?scene=`), which is
 	 * how the landing-page tutorial hands people into the local studio. */
-	async function openStarterScene(id, source = "starter") {
-		const before = source === "tutorial" ? collectProjectSnapshot("Tutorial") : null;
-		const epoch = tutorialProjectEpochRef.current;
-		const url = playgroundSceneUrl(`?scene=${encodeURIComponent(id)}`);
-		const project = url ? await fetchSceneProject(url) : null;
-		// A pending tutorial fetch has no authority over work authored/opened
-		// while it was loading, including an unnamed project.
-		if (source === "tutorial" && (epoch !== tutorialProjectEpochRef.current || before !== collectProjectSnapshot("Tutorial"))) return false;
-		if (!project) {
-			setToast(ko("That starter scene is not in this build", "이 빌드에는 그 시작 장면이 없어요"));
-			return false;
-		}
-		applyProject({ ...project, savedAt: null });
-		projectHandleRef.current = null;
-		track("scene:loaded", { scene_source: source });
-		return true;
-	}
+
 
 	function closeCameraTutorial(reason = null) {
 		const terminal = reason ?? (cameraTutorialCompletedRef.current ? "completed" : "dismissed");
@@ -4000,116 +3826,22 @@ export default function App() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	async function openProject() {
-		try {
-			let file = null;
-			let handle = null;
-			if (hasFileSystemAccess()) {
-				handle = await pickProjectFileForOpen();
-				file = await readProjectFile(handle);
-			} else {
-				file = await openProjectFallback();
-			}
-			if (!file) return;
-			const result = readProjectDocument(file.text);
-			if (!result.ok) {
-				setToast(isKo ? `프로젝트를 열 수 없어요: ${result.reason}` : `Cannot open project: ${result.reason}`);
-				return;
-			}
-			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
-			projectHandleRef.current = handle;
-			if (handle) await rememberRecentProject(handle, result.project.name);
-			await rehydrateProjectAssets(result.project, result.warnings);
-			applyProject(result.project);
-			setProjectStartupOpen(false);
-			setToast(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
-		} catch (err) {
-			if (err?.name === "AbortError") return;
-			console.error("openProject failed", err);
-			setToast(ko("Could not open the project", "프로젝트를 열지 못했어요"));
-		}
-	}
+
 
 	/** Open a project from the browser dialog: a stored handle from the
 	 * recents list or a file enumerated in the projects folder. */
-	async function openProjectByHandle(handle) {
-		try {
-			// A stored handle may have been demoted to "prompt" since the last
-			// session (#51); this click is the user gesture that can re-grant it.
-			if ((await requestHandlePermission(handle)) !== "granted") {
-				setToast(ko("Project access was not granted — allow access and try again.", "프로젝트 접근이 허용되지 않았어요. 접근을 허용하고 다시 시도해 주세요."));
-				return;
-			}
-			const file = await readProjectFile(handle);
-			const result = readProjectDocument(file.text);
-			if (!result.ok) {
-				setToast(isKo ? `프로젝트를 열 수 없어요: ${result.reason}` : `Cannot open project: ${result.reason}`);
-				return;
-			}
-			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
-			projectHandleRef.current = handle;
-			await rememberRecentProject(handle, result.project.name);
-			await rehydrateProjectAssets(result.project, result.warnings);
-			applyProject(result.project);
-		setProjectBrowserOpen(false);
-		setProjectStartupOpen(false);
-		setToast(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
-		} catch (err) {
-			console.error("openProjectByHandle failed", err);
-			setToast(ko("Could not open the project", "프로젝트를 열지 못했어요"));
-		}
-	}
 
-	function requestNewProject() {
-		if (projectDirty && !window.confirm(ko("Discard unsaved changes and start a new project?", "저장되지 않은 변경사항을 버리고 새 프로젝트를 시작할까요?"))) return;
-		setProjectNameDialog({ kind: "new", initialName: projectName ?? "My Project" });
-	}
 
-	function newProject(name) {
-		if (typeof name !== "string") return requestNewProject();
-		setProjectNameDialog(null);
-		const fresh = createSceneDocument(ko("SCENE 01", "씬 01"));
-		storeWorkflowGraph(createWorkflowGraph());
-		setScenes(fresh.scenes);
-		setActiveSceneId(fresh.activeSceneId);
-		persistScenes(fresh.scenes, fresh.activeSceneId);
-		openScene(fresh.scenes[0], fresh.scenes);
-		projectHandleRef.current = null;
-		clearStoredProjectHandle();
-		projectSnapshotRef.current = JSON.stringify(createProjectDocument({
-			scenesDocument: fresh,
-			workspaceLayout: projectStateRef.current.workspaceLayout,
-			customPoses,
-			workflow: createWorkflowGraph(),
-			name,
-		}));
-		setProjectDirty(false);
-		setProjectName(name);
-		storeProjectSession(name);
-		setProjectStartupOpen(false);
-		setFirstSuccessGuideOpen(true);
-		setToast(ko(`New project: ${name}`, `새 프로젝트: ${name}`));
-	}
+
+
+
 
 	// Re-open the last project on launch when the browser still grants access.
 	// A handle Chromium demoted to "prompt" cannot be re-requested here (no
 	// user gesture), so it becomes a one-click restore offer instead (#51).
 	const projectAutoOpenedRef = useRef(false);
-	const [restoreOffer, setRestoreOffer] = useState(null);
-	async function restoreStoredProject(record) {
-		try {
-			const file = await readProjectFile(record.handle);
-			const result = readProjectDocument(file.text);
-			if (!result.ok) return;
-			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
-			projectHandleRef.current = record.handle;
-			await rehydrateProjectAssets(result.project, result.warnings);
-			applyProject(result.project);
-			setToast(`${isKo ? `프로젝트 복원됨: ${result.project.name}` : `Project restored: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
-		} catch {
-			/* missing or unreadable file: fall back to the session cache */
-		}
-	}
+
+
 	useEffect(() => {
 		if (projectAutoOpenedRef.current) return;
 		projectAutoOpenedRef.current = true;
@@ -4125,141 +3857,29 @@ export default function App() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
-	function flushScenes() {
-		if (!dirtyRef.current) return;
-		persistScenes(snapshotActiveScene(), activeSceneIdRef.current);
-	}
 
-	function restoredShotState(scene) {
-		const restored = readShotAuthoringDocument(scene?.shotDocument ?? undefined);
-		if (restored.state) return restored.state;
-		const frameCount = DEFAULT_DURATION_S * TIMELINE_FPS;
-		return { shots: initialShots(frameCount), waypoints: [], frameCount };
-	}
 
-	function openScene(scene, nextScenes) {
-		tutorialProjectEpochRef.current += 1;
-		tutorialSeedEpochRef.current = null;
-		setTutorialSeedPending(false);
-		setCameraTutorial(false);
-		setCameraTutorialHandoff(null);
-		exportShotIdRef.current = null;
-		studioSceneEpochRef.current = crypto.randomUUID();
-		studioHistoryRef.current.clear();
-		const shotState = restoredShotState(scene);
-		const stage = createSceneStage(scene.stage);
-		const objects = Array.isArray(scene.objects) ? scene.objects : [];
-		storeRef.current = withCommandHistory(createSceneHistoryStore(objects, {
-			onCommit: (before, after) => markSemanticEdit("objects", before, after),
-			onObjects: (next) => {
-				appContext.objectChanged();
-				setSceneObjects(next);
-			},
-		}));
-		setSceneObjects(objects);
-		setShots(shotState.shots);
-		setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS);
-		setCharacters(stage.characters);
-		setRigMountEpoch((value) => value + 1);
-		setHasCharSheet(stage.hasCharSheet);
-		stageDomain.setEnvironmentImage(stage.environmentImage ?? null);
-		stageDomain.setEnvironment(stage.environment ?? DEFAULT_ENVIRONMENT);
-		stageDomain.setStyle(stage.style ?? "moody cinematic lighting, 35mm film look");
-		stageDomain.setHasEnvSheet(stage.hasEnvSheet === true);
-		stageDomain.setShotAspectKey(stage.shotAspect);
-		stageDomain.setCameraPresetId(stage.cameraPresetId ?? null);
-		stageDomain.setSensorFormat(stage.sensorId);
-		stageDomain.setKeyLight(stage.keyLight);
-		// The motion-layer buffer reloads from the scene's first character.
-		const firstLayer = stage.characters[0]?.layer;
-		setWaypoints(firstLayer?.waypoints ?? shotState.waypoints ?? []);
-		setPromptClips(firstLayer?.promptClips?.map((clip) => ({ ...clip })) ?? []);
-		setMotion(null);
-		// Takes belong to the room being left; restoreMotionRefs re-fetches the
-		// incoming scene's, and a stale full take must never survive the switch.
-		motionFullRef.current.clear();
-		setSelectedPromptId(null);
-		ikStatesRef.current.clear();
-		ikStateRef.current = createIkState();
-		loadedLayerCharRef.current = stage.characters[0]?.id ?? null;
-		setActiveCharacterId(stage.characters[0]?.id ?? null);
-		appContext.resetCastHistory();
-		restoreMotionRefs(stage.characters);
-		setTlFrame(0);
-		setMovePlaying(false);
-		manualCameraOverrideRef.current = false;
-		setRailDraw(false);
-		setActiveWaypointId(null);
-		setPendingWaypointFrame(null);
-		setSelectedHierarchyId("shot");
-		appContext.publishScenes(nextScenes);
-		activeSceneIdRef.current = scene.id;
-		setScenes(nextScenes);
-		setActiveSceneId(scene.id);
-		track("scene:loaded", { scene_source: "local" });
-	}
+
+
+
 
 	/** The scene controls' doors (the scene pill, the Hierarchy scene menu)
 	 * into the shared registry; run_action reaches the same scene actions. */
-	function selectSceneDocument(sceneId) { return runStudioAction("scene.switch", { sceneId }); }
-	function createSceneDocumentFromUi() { return runStudioAction("scene.create"); }
-	function duplicateSceneDocumentFromUi(sceneId) { return runStudioAction("scene.duplicate", { sceneId }); }
-	function renameSceneDocumentFromUi(sceneId, name) { return runStudioAction("scene.rename", { sceneId, name }); }
-	function deleteSceneDocumentFromUi(sceneId) { return runStudioAction("scene.delete", { sceneId }); }
 
-	function switchSceneDocument(sceneId) {
-		if (sceneId === activeSceneIdRef.current) return;
-		const savedScenes = snapshotActiveScene();
-		const target = savedScenes.find((scene) => scene.id === sceneId);
-		if (!target) return;
-		persistScenes(savedScenes, sceneId);
-		openScene(target, savedScenes);
-	}
 
-	function addSceneDocument() {
-		const savedScenes = snapshotActiveScene();
-		const nextScenes = addScene(savedScenes);
-		const target = nextScenes[nextScenes.length - 1];
-		persistScenes(nextScenes, target.id);
-		openScene(target, nextScenes);
-		track("scene:created", { scene_source: "ui" });
-	}
 
-	function duplicateSceneDocument(sceneId) {
-		const savedScenes = snapshotActiveScene();
-		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
-		if (index < 0) return;
-		const nextScenes = duplicateScene(savedScenes, index);
-		const target = nextScenes[index + 1];
-		persistScenes(nextScenes, target.id);
-		openScene(target, nextScenes);
-	}
 
-	function renameSceneDocument(sceneId, name) {
-		const savedScenes = snapshotActiveScene();
-		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
-		if (index < 0) return;
-		const nextScenes = renameScene(savedScenes, index, name);
-		appContext.publishScenes(nextScenes);
-		setScenes(nextScenes);
-		persistScenes(nextScenes, activeSceneIdRef.current);
-	}
 
-	function deleteSceneDocument(sceneId) {
-		const savedScenes = snapshotActiveScene();
-		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
-		if (index < 0 || savedScenes.length <= 1) return;
-		const nextScenes = removeScene(savedScenes, index);
-		if (sceneId !== activeSceneIdRef.current) {
-			appContext.publishScenes(nextScenes);
-			setScenes(nextScenes);
-			persistScenes(nextScenes, activeSceneIdRef.current);
-			return;
-		}
-		const target = nextScenes[Math.min(index, nextScenes.length - 1)];
-		persistScenes(nextScenes, target.id);
-		openScene(target, nextScenes);
-	}
+
+
+
+
+
+
+
+
+
+
 
 	// Workflow runs in a separate tab/route. Scene writes therefore arrive as
 	// either a same-tab CustomEvent or a cross-tab storage event. Keep the
@@ -4300,7 +3920,7 @@ export default function App() {
 			restoreMotionRefs(mergedCharacters);
 		}
 		appContext.publishScenes(nextScenes);
-		setScenes(nextScenes);
+		scenesDomain.setScenes(nextScenes);
 	};
 	useEffect(() => subscribeToSceneDocuments((document) => externalSceneApplyRef.current?.(document)), []);
 	useEffect(() => subscribeToScenePlayback((command) => {
@@ -12157,27 +11777,7 @@ function resizePromptClip(id, edge, rawFrame) {
 						Cozy <span>Clay</span>
 					</span>
 				</div>
-				<div className="project-menu-wrap">
-					<button
-						type="button"
-						className="project-menu-trigger"
-						aria-expanded={projectMenuOpen}
-						onClick={() => setProjectMenuOpen((open) => !open)}
-					>
-						{projectDirty && <i className="project-dirty-dot" aria-label={ko("Unsaved changes", "저장되지 않은 변경사항")} />}
-						{projectName ?? (projectStartupOpen ? ko("Choose Project", "프로젝트 선택") : ko("Untitled Project", "제목 없는 프로젝트"))}
-						<span className="caret">▾</span>
-					</button>
-					{projectMenuOpen && (
-						<div className="project-menu" role="menu" onClick={() => setProjectMenuOpen(false)}>
-							<button type="button" role="menuitem" onClick={requestNewProject}>{ko("New Project", "새 프로젝트")}</button>
-							<button type="button" role="menuitem" onClick={() => { setProjectStartupOpen(false); setProjectBrowserOpen(true); }}>{ko("Open Project…", "프로젝트 열기…")}</button>
-							<button type="button" role="menuitem" onClick={() => runStudioAction("project.save")}>{ko("Save Project", "프로젝트 저장")}</button>
-							<button type="button" role="menuitem" onClick={() => saveProject(true)}>{ko("Save Project As…", "다른 이름으로 저장…")}</button>
-							<ResourceStatus manifest={projectManifest} compact />
-						</div>
-					)}
-				</div>
+				<ProjectPanel projectMenuOpen={projectMenuOpen} setProjectMenuOpen={setProjectMenuOpen} projectDirty={projectDirty} projectName={projectName} projectStartupOpen={projectStartupOpen} requestNewProject={requestNewProject} setProjectStartupOpen={setProjectStartupOpen} setProjectBrowserOpen={setProjectBrowserOpen} runStudioAction={runStudioAction} saveProject={saveProject} projectManifest={projectManifest} />
 				<div className="topbar-actions">
 					<a className="topbar-action workflow-topbar-link" href="/workflow/" aria-label={ko("Open Workflow", "워크플로 열기")}>{ko("Workflow", "워크플로우")}</a>
 					<div className="project-actions" aria-label={ko("Project actions", "프로젝트 작업")}>
