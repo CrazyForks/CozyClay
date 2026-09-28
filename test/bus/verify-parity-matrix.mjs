@@ -93,6 +93,7 @@ test("coverage metrics are measured from the source and registered actions", () 
   assert.equal(typeof metrics.writerReferences, "number");
   assert.equal(typeof metrics.handlerSites, "number");
   assert.equal(typeof metrics.registeredCommands, "number");
+  assert.equal(metrics.commandOriginRows, metrics.registeredCommands * ORIGINS.length);
   assert.equal(metrics.registeredCommands, STUDIO_ACTIONS.filter(action => action.exposure !== "ui-only").length);
   const floor = JSON.parse(readFileSync(new URL("./baseline.json", import.meta.url))).coverage;
   assert.ok(metrics.writerReferences <= floor.writerReferences);
