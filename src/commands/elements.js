@@ -10,7 +10,11 @@ export function elementSetSchema(kind) {
     const keys = (element.documentPath ?? element.path.slice(kind.length + 1)).split('.');
     let parent = schema;
     for (const key of keys.slice(0, -1)) parent = parent.properties[key] ??= object();
-    parent.properties[keys.at(-1)] = patchValueSchema(element);
+    // Validate the wire type here; persistence owns numeric clamps. Empty
+    // strings are valid authored text, including intermediate typing states.
+    const value = element.type === 'number' ? { type: 'number' }
+      : element.type === 'string' ? { oneOf: [{ const: '' }, { type: 'string', maxLength: 240 }] } : patchValueSchema(element);
+    parent.properties[keys.at(-1)] = element.nullable ? { oneOf: [value, { type: 'null' }] } : value;
   }
   return schema;
 }
