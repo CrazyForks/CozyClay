@@ -95,10 +95,19 @@ if (process.env.QA_SCREENSHOT) {
 	const capture = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
 	writeFileSync(process.env.QA_SCREENSHOT, Buffer.from(capture.data, "base64"));
 }
+// The toast lives 2.2 s and the checks below wait for other state first, so
+// record its appearance from before the click instead of reading it later.
+await evaluate(`(() => {
+	window.__railToastSeen = false;
+	const seen = () => { if (document.body.textContent.includes('Camera rail deleted')) { window.__railToastSeen = true; return true; } return false; };
+	if (seen()) return;
+	const observer = new MutationObserver(() => { if (seen()) observer.disconnect(); });
+	observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+})()`);
 await evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Delete rail')?.click()");
 expect("delete action leaves Follow mode", await waitFor("document.querySelector('.tl-camera-slate')?.textContent.includes('Camera preview')"));
 expect("rail deletion turns the Draw Rail row Follow On", await waitFor("[...document.querySelectorAll('.tl-camera-editor button')].some((button) => button.textContent.trim() === 'Follow On' && button.getAttribute('aria-pressed') === 'true')"));
-expect("rail delete toast is shown", await evaluate("document.body.textContent.includes('Camera rail deleted')"));
+expect("rail delete toast is shown", await waitFor("window.__railToastSeen === true"));
 expect("live Follow camera holds the displayed 3 m distance", await waitFor(`(() => {
 	const state = window.__cozyclay;
 	if (!state?.shotCam || !state?.charA) return false;
