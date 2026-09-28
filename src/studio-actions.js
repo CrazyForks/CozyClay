@@ -173,16 +173,22 @@ export function createStudioActionRegistry({ readState } = {}) {
 				return verdict === true ? { ...row, available: true, input: entry.input } : { ...row, available: false, reason: verdict };
 			});
 		},
-		run(id, args = {}) {
+		prepare(id, args = {}) {
 			const entry = registry.get(id);
 			const validated = validateStudioSchema(entry.input, args ?? {}, "INVALID_ARGUMENT", "$.args");
 			if (readState) {
 				const verdict = availability(entry, readState());
 				if (verdict !== true) fail("TARGET_NOT_READY", verdict);
 			}
-			const result = entry.run(validated);
-			// Long-running work answers with a promise, checked once it settles.
-			return typeof result?.then === "function" ? result.then(value => settled(id, value)) : settled(id, result);
+			return { entry, args: validated };
+		},
+		invoke(entry, args, context) {
+			const result = entry.run(args, context);
+			return typeof result?.then === "function" ? result.then(value => settled(entry.id, value)) : settled(entry.id, result);
+		},
+		run(id, args = {}, context) {
+			const prepared = registry.prepare(id, args);
+			return registry.invoke(prepared.entry, prepared.args, context);
 		},
 	};
 	return registry;

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { fixture, result, host } from './fixture.mjs';
 import { validateReceipt } from '../../src/studio-agent-protocol.js';
 const f = fixture();
-f.register('shot.remove', () => { f.edit(1); return result(['shot-1']); });
+f.register('shot.remove', () => { f.edit(f.state.value + 1); return result(['shot-1']); });
 const receipt = await f.bus.run('shot.remove', { shotId: 'shot-1' }, f.request('ui'));
 assert.equal(receipt.ok, true);
 assert.equal(receipt.status, 'applied');
