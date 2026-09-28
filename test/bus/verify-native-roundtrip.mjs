@@ -5,7 +5,8 @@ import * as cuts from '../../src/cuts.js';
 import { createSceneObject } from '../../src/scene-objects.js';
 import { STUDIO_ACTIONS } from '../../src/studio-actions.js';
 import { appFixture } from './app-fixture.mjs';
-const app = readFileSync(new URL('../../src/App.jsx', import.meta.url), 'utf8');
+import { readStudioSource } from './verify-domain-modules.mjs';
+const app = readStudioSource();
 const functions = new Map();
 const visit = node => { if (!node || typeof node !== 'object') return; if (node.type === 'FunctionDeclaration') functions.set(node.id.name, app.slice(node.start, node.end)); for (const [key, child] of Object.entries(node)) if (key !== 'parent') Array.isArray(child) ? child.forEach(visit) : visit(child); };
 visit(parseSync('App.jsx', app).program);
@@ -32,6 +33,7 @@ for (const action of STUDIO_ACTIONS.filter(entry => entry.kind === 'mutation')) 
   for (const name of ['addTimelineShot', 'splitTimelineShot', 'duplicateTimelineShot', 'removeTimelineShot', 'setTimelineShotRange', 'moveTimelineShot']) {
    f.actionHandlers.current[name] = (...args) => {
     const scope = { ...f.scope, ...cuts, ...f.actual, shots: f.live.current.shots, tlFrame: action.id === 'shot.create' ? 24 : 8 };
+    scope.appContext = f.scope.appContext.forRender(scope);
     return new Function(...Object.keys(scope), `${functions.get(name)}; return ${name};`)(...Object.values(scope))(...args);
    };
   }

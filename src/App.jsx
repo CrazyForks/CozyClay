@@ -1,3 +1,5 @@
+import { useShots } from "./domains/shots.js";
+import CameraPanel from "./panels/CameraPanel.jsx";
 import { useObjects } from "./domains/objects.js";
 import ObjectTransformPanel from "./panels/ObjectTransformPanel.jsx";
 import PropsPanel from "./panels/PropsPanel.jsx";
@@ -821,7 +823,36 @@ export default function App() {
 		get recordCharacterUndo() { return recordCharacterUndo; },
 	}));
 	const { preset, shotAspectKey, environmentImage, cameraPresetId, sensorId, keyLight, changeKeyLight, resetKeyLight, changeEnvironmentImage, hasEnvSheet, environment, style } = stageDomain;
-	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
+	const shotsDomain = useShots(appContext.forRender({
+		get cameraPreviewEndRef() { return cameraPreviewEndRef; },
+		get captureCurrentFraming() { return captureCurrentFraming; },
+		get charA() { return charA; },
+		get framingSessionOpen() { return framingSessionOpen; },
+		get framingSessionRef() { return framingSessionRef; },
+		get ikMode() { return ikMode; },
+		get look() { return look; },
+		get manualCameraOverrideRef() { return manualCameraOverrideRef; },
+		get markCraftAction() { return markCraftAction; },
+		get markSemanticEdit() { return markSemanticEdit; },
+		get motionPos() { return motionPos; },
+		get playMode() { return playMode; },
+		get promptTextSessionRef() { return promptTextSessionRef; },
+		get recordCharacterUndo() { return recordCharacterUndo; },
+		get recordSessionUndo() { return recordSessionUndo; },
+		get runStudioAction() { return runStudioAction; },
+		get selectWorkflowMode() { return selectWorkflowMode; },
+		get setSelectedHierarchyId() { return setSelectedHierarchyId; },
+		get setTlPlaying() { return setTlPlaying; },
+		get setToast() { return setToast; },
+		get setWorkspaceLayout() { return setWorkspaceLayout; },
+		get shotCamRef() { return shotCamRef; },
+		get snapshotCast() { return snapshotCast; },
+		get startupScene() { return startupScene; },
+		get tlPlaying() { return tlPlaying; },
+		get waypointMode() { return waypointMode; },
+		get workflowMode() { return workflowMode; },
+	}));
+	const { fovDeg, setFovDeg, cameraMove, setCameraMove, customMove, setCustomMove, shotStartup, nestedShotStartup, startupShotState, shots, setShots, editShots, movePlaying, setMovePlaying, moveFollow, setMoveFollow, railDraw, setRailDraw, craneSelectedIndex, setCraneSelectedIndex, tlFrame, setTlFrame, tlFrameCount, setTlFrameCount, tlFps, setTlFps, activeShotIdx, activeShot, cameraKeys, activeCamera, craneActive, followCam, cameraRail, activeShotDuration, hasCameraKeys, changeActiveCamera, changeShotTargetModel, addActiveCranePoint, deleteSelectedCranePoint, syncActiveCameraFraming, commitManualCameraFraming, beginCameraFramingGesture, beginTimelineEditGesture, setShotCameraRail, clearShotCameraRail, changeCameraRail, toggleCameraRailDraw, deleteCameraRail, previewCameraShot, addCameraKeyframe, moveCameraKeyframe, removeCameraKeyframe, clearMove, addTimelineShot, splitTimelineShot, selectTimelineShot, duplicateTimelineShot, moveTimelineShot, setTimelineShotRange, removeTimelineShot } = shotsDomain;
 
 	// The set's look reference (#167): one picture that says what this location
 	// is made of. Persisted on the stage envelope exactly like shotAspect, and
@@ -2008,9 +2039,7 @@ export default function App() {
 	}
 	/** One Ctrl+Z entry for a structural shot edit (delete, split, duplicate,
 	 * add, reorder): the same history as the cast, with the shot list aboard. */
-	function recordShotUndo() {
-		appContext.recordShotUndo(snapshotCast(true));
-	}
+
 	/** One Ctrl+Z entry per EDITING SESSION rather than per event, for the
 	 * streams that fire continuously: per-keystroke text and per-pointermove
 	 * camera framing. The session is open while the entry it pushed is still
@@ -2307,52 +2336,27 @@ export default function App() {
 
 	const [mode, setMode] = useState("image");
 	const [imageModel, setImageModel] = useState("gpt_image_2");
-	const [cameraMove, setCameraMove] = useState(CAMERA_MOVES[1]);
-	const [customMove, setCustomMove] = useState("");
+
+
 	// Authored shot state (camera keys, waypoints, clip length) restored from
 	// the last session — camera moves must survive a reload like the scene does.
-	const [shotStartup] = useState(() => {
-		try {
-			const currentRaw = localStorage.getItem(SHOT_AUTHORING_KEY);
-			let sourceKey = SHOT_AUTHORING_KEY;
-			let raw = currentRaw;
-			let loaded = readShotAuthoring(raw);
-			for (const legacyKey of SHOT_AUTHORING_LEGACY_KEYS ?? [SHOT_AUTHORING_LEGACY_KEY]) {
-				if (loaded.status !== "absent") break;
-				sourceKey = legacyKey;
-				raw = localStorage.getItem(sourceKey);
-				loaded = readShotAuthoring(raw);
-			}
-			if (loaded.status === "corrupt") {
-				// Preserve the unreadable roll byte-for-byte before a fresh v3 save.
-				localStorage.setItem(SHOT_AUTHORING_QUARANTINE_KEY, raw);
-				localStorage.removeItem(sourceKey);
-				return { state: null, saveBlocked: false };
-			}
-			// A future body belongs to a future build. Do not replace it merely
-			// because this build cannot project it onto today's controls.
-			if (loaded.status === "future") return { state: null, saveBlocked: true };
-			return { state: loaded.state, saveBlocked: false };
-		} catch {
-			return { state: null, saveBlocked: false };
-		}
-	});
-	const nestedShotStartup = readShotAuthoringDocument(startupScene.shotDocument ?? undefined);
+
+
 	// The nested Scene document wins. The root v3 key remains a migration
 	// fallback for users arriving from the single-scene build.
-	const startupShotState = nestedShotStartup.state ?? shotStartup.state;
+
 	// Each editorial strip owns its camera keys. The playhead chooses the
 	// active strip; there is no shared key list that could blend through a cut.
-	const [shots, setShots, editShots] = useSemanticState(() => startupShotState?.shots ?? initialShots(startupShotState?.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS), markSemanticEdit, "shots");
-	const [movePlaying, setMovePlaying] = useState(false);
+
+
 	useEffect(() => {
 		if (playgroundMode && movePlaying) window.parent?.postMessage({ type: "cozyclay:playground-nav", kind: "play" }, "*");
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [playgroundMode, movePlaying]);
 	// Follow slaves the move to the timeline playhead so camera and character
 	// motion share one time axis; off frees the camera while both stay set.
-	const [moveFollow, setMoveFollow] = useState(true);
-	const [railDraw, setRailDraw] = useState(false);
+
+
 	// Object travel-path drawing: the same Top-View stroke gesture as the rail,
 	// aimed at the selected object instead of the shot camera.
 	const [pathDraw, setPathDraw] = useState(false);
@@ -2369,7 +2373,7 @@ export default function App() {
 	 * export all draw, so preview and recording can never disagree. */
 	// Which crane height mark the scene dots have selected; the timeline's
 	// Point height input edits this one. Reset lives after activeCamera below.
-	const [craneSelectedIndex, setCraneSelectedIndex] = useState(null);
+
 	const [hasCharSheet, setHasCharSheet] = useState(startupStage.hasCharSheet);
 
 
@@ -2692,11 +2696,11 @@ export default function App() {
 	/* --------------------------- motion workspace --------------------------- */
 	// The timeline playhead and the root waypoints are App-owned so the scene
 	// (character rig, plan path, ARDY card) reacts to every scrub/play tick.
-	const [tlFrame, setTlFrame] = useState(0);
+
 
 	const renderActive = useRenderActivity(tlPlaying || movePlaying);
-	const [tlFrameCount, setTlFrameCount] = useState(startupShotState?.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS); // the clip length on the production clock
-	const [tlFps, setTlFps] = useState(TIMELINE_FPS);
+	 // the clip length on the production clock
+
 	// Keep the imperative frame in step with the playhead for live playback;
 	// the export overwrites it per captured frame and restores nothing, which
 	// is correct — the next render puts it back.
@@ -2814,207 +2818,47 @@ export default function App() {
 	 * object.attach/detach. */
 
 
-	const activeShotIdx = shotIndexAtFrame(shots, tlFrame);
-	const activeShot = shots[activeShotIdx] ?? null;
-	const cameraKeys = activeShot?.cameraKeys ?? [];
-	const activeCamera = createCameraBlock(activeShot?.camera);
+
+
+
+
 	// A crane/shot switch invalidates the scene-dot selection.
-	const craneActive = !!activeCamera.craneHeight;
+
 	useEffect(() => {
 		setCraneSelectedIndex(null);
 	}, [activeShot?.id, craneActive]);
-	const followCam = activeCamera.followCam;
-	const cameraRail = activeCamera.cameraRail;
-	const activeShotDuration = activeShot ? activeShot.endFrame - activeShot.startFrame + 1 : 0;
-	const hasCameraKeys = shots.some((shot) => shot.cameraKeys.length > 0);
-	function changeActiveCamera(patch, shotId = activeShot?.id, authored = true) {
-		// Every camera-block commit (mode switch, rail draw, rail delete, lens
-		// patch) funnels through here, so this is where the shot snapshot goes.
-		// No shot resolved means the setShots below is a no-op — record nothing.
-		// The live read model, so a run_action edit sees the shots of the same tick.
-		if (!appContext.live.state.shots.some((shot) => shot.id === shotId)) return;
-		// A framing capture in the same gesture (rail draw toggle, Follow switch
-		// re-measure) already snapshotted the pre-gesture shots, so this commit
-		// joins that entry instead of pushing a second one for one click.
-		if (framingSessionOpen(shotId)) framingSessionRef.current = null;
-		else recordShotUndo();
-		(authored ? editShots : setShots)((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, patch) }), "shots"));
-	}
+
+
+
+
+
 	/** Which video model this shot is being cut FOR. A label, never a
 	 * constraint: nothing re-times or re-crops the shot, the timeline simply
 	 * says when the cut breaks the target's limits. One Ctrl+Z entry per pick,
 	 * exactly like a camera-block commit. */
-	function changeShotTargetModel(targetModel, shotId = activeShot?.id) {
-		if (!shots.some((entry) => entry.id === shotId)) return;
-		recordShotUndo();
-		editShots((current) => updateStableItem(current, shotId, (entry) => ({ ...entry, targetModel: targetModel || null }), "shots"));
-	}
-	function addActiveCranePoint(requestedT = null, shotId = activeShot?.id) {
-		const shot = shots.find((entry) => entry.id === shotId);
-		const camera = createCameraBlock(shot?.camera);
-		const points = camera.craneHeight?.points;
-		if (!points || points.length >= 8) return;
-		let t = Number.isFinite(requestedT) ? Math.max(0.02, Math.min(0.98, requestedT)) : null;
-		if (t != null) {
-			const nearbyIndex = points.findIndex((point) => Math.abs(point.t - t) < 0.02);
-			if (nearbyIndex >= 0) {
-				setCraneSelectedIndex(nearbyIndex);
-				return;
-			}
-		}
-		let gapIndex = 0;
-		if (t == null) {
-			for (let i = 1; i < points.length - 1; i += 1) {
-				if (points[i + 1].t - points[i].t > points[gapIndex + 1].t - points[gapIndex].t) gapIndex = i;
-			}
-			t = (points[gapIndex].t + points[gapIndex + 1].t) / 2;
-		} else {
-			gapIndex = points.findIndex((point, index) => index < points.length - 1 && t > point.t && t < points[index + 1].t);
-			if (gapIndex < 0) return;
-		}
-		const added = [
-			...points.slice(0, gapIndex + 1),
-			{ t, height: craneHeightAt(camera.craneHeight, t) },
-			...points.slice(gapIndex + 1),
-		];
-		changeActiveCamera({ craneHeight: { points: added } }, shotId);
-		trackFeature("crane_graph");
-		setCraneSelectedIndex(gapIndex + 1);
-	}
-	function deleteSelectedCranePoint() {
-		const points = activeCamera.craneHeight?.points;
-		if (!points || craneSelectedIndex == null || craneSelectedIndex <= 0 || craneSelectedIndex >= points.length - 1) return;
-		changeActiveCamera({ craneHeight: { points: points.filter((_, index) => index !== craneSelectedIndex) } });
-		setCraneSelectedIndex(null);
-	}
+
+
+
 	// Navigation (including look-through / MCP set_camera) can persist framing,
 	// but is not a semantic edit. Keep this on the passive shot setter.
-	function syncActiveCameraFraming() {
-		const cam = shotCamRef.current;
-		if (!cam || !activeShot || ikMode || playMode) return;
-		const subjectPosition = motionPos ?? charA;
-		const subjectYaw = (charA.rot * Math.PI) / 180;
-		const measured = followFramingFromCamera(
-			cam.position,
-			look.current.pitch,
-			subjectPosition,
-			followCam.aimHeight,
-			{ x: Math.sin(subjectYaw), z: Math.cos(subjectYaw) },
-		);
-		const unchanged = (previous) =>
-			previous.distance === measured.distance &&
-			previous.height === measured.height &&
-			previous.pitchOffsetDeg === measured.pitchOffsetDeg &&
-			previous.orbitOffsetDeg === measured.orbitOffsetDeg;
-		// Framing is re-measured on every orbit/drag tick, so the entry is per
-		// GESTURE: the first tick that actually moves the framing records, the
-		// rest of the drag keeps writing into that same session.
-		if (!unchanged(createCameraBlock(activeShot.camera).followCam)) {
-			recordSessionUndo(framingSessionRef, `framing:${activeShot.id}`, recordShotUndo);
-		}
-		setShots((current) => current.map((shot) => {
-			if (shot.id !== activeShot?.id) return shot;
-			const camera = createCameraBlock(shot.camera);
-			const previous = camera.followCam;
-			if (unchanged(previous)) return shot;
-			return { ...shot, camera: updateCameraBlock(camera, { followCam: { ...previous, ...measured } }) };
-		}));
-	}
-	function commitManualCameraFraming() {
-		if (ikMode || playMode) return;
-		trackFeature("orbit");
-		manualCameraOverrideRef.current = true;
-		syncActiveCameraFraming();
-	}
+
+
 	/** Camera-puck / viewport framing gesture start. Opens the SAME framing
 	 * session syncActiveCameraFraming writes into, so the whole drag is one
 	 * Ctrl+Z entry snapshotted before the first tick moves the lens. */
-	function beginCameraFramingGesture() {
-		if (ikMode || playMode || !activeShot) return;
-		recordSessionUndo(framingSessionRef, `framing:${activeShot.id}`, recordShotUndo);
-	}
+
 	/** One Ctrl+Z entry per timeline editing gesture. The timeline fires this
 	 * once when a drag (or an arrow nudge, or a text session) begins, before
 	 * any mutation lands; the per-tick handlers then write on top of it. */
-	function beginTimelineEditGesture(kind, id) {
-		if (kind === "camera-key" || kind === "rail" || kind === "shot-boundary") {
-			recordShotUndo();
-			return;
-		}
-		if (kind === "prompt-move" || kind === "prompt-resize") {
-			recordCharacterUndo();
-			return;
-		}
-		// Typing shares changePromptClip's per-session entry: focusing the chip
-		// opens the session so the first keystroke joins it instead of pushing
-		// a second entry for one edit.
-		if (kind === "prompt-text") recordSessionUndo(promptTextSessionRef, `prompt-text:${id}`);
-	}
+
 	/* One camera-rail core for every shot, shared by the Top-View rail stroke,
 	 * the Delete rail button and run_action. */
-	function setShotCameraRail(shotId, points) {
-		const shot = appContext.live.state.shots.find((entry) => entry.id === shotId);
-		if (!shot) throw new StudioProtocolError("STALE_TARGET", `Shot ${shotId} is not in this scene.`);
-		const camera = createCameraBlock(shot.camera);
-		window.dispatchEvent(new CustomEvent("cozyclay:playground-signal", { detail: { kind: "rail" } }));
-		changeActiveCamera({
-			cameraRail: points.map(({ x, z }) => ({ x, z })),
-			railFollow: railFollowForNewGeometry(camera.railFollow, shot.endFrame - shot.startFrame + 1),
-			mode: "rail",
-		}, shotId);
-	}
-	function clearShotCameraRail(shotId) {
-		const shot = appContext.live.state.shots.find((entry) => entry.id === shotId);
-		if (!shot) throw new StudioProtocolError("STALE_TARGET", `Shot ${shotId} is not in this scene.`);
-		// The camera block being edited: this shot's, whichever shot is active.
-		const activeCamera = createCameraBlock(shot.camera);
-		if (!activeCamera.cameraRail) throw new StudioProtocolError("TARGET_NOT_READY", `${shot.name || shotId} has no camera rail.`);
-		changeActiveCamera(removeCameraRail(activeCamera), shotId);
-	}
-	function changeCameraRail(points) {
-		if (activeShot) runStudioAction("shot.setCameraRail", { shotId: activeShot.id, points: points.map(({ x, z }) => ({ x, z })) });
-	}
-	function toggleCameraRailDraw() {
-		if (!activeShot || waypointMode) return;
-		// The viewport is the framing control. Capture it before Rail takes over
-		// the camera so the dolly opens at the distance, height and tilt the
-		// operator is actually looking through.
-		syncActiveCameraFraming();
-		if (activeCamera.mode !== "rail") {
-			changeActiveCamera({
-				mode: "rail",
-				railFollow: activeCamera.railFollow?.mode === "off" ? defaultRailRange(activeShotDuration) : activeCamera.railFollow,
-			}, activeShot.id, false); // tool preparation; accepted rail geometry is the edit
-		}
-		const next = !railDraw;
-		trackFeature("dolly_rail");
-		setRailDraw(next);
-		if (next) {
-			setWorkspaceLayout((current) => ({ ...current, insetCollapsed: false }));
-			setToast(ko("Draw the selected Shot's rail in the Top-View", "탑뷰에서 선택한 샷의 레일을 그리세요"));
-		}
-	}
-	function deleteCameraRail() {
-		if (!cameraRail || !activeShot) return;
-		setRailDraw(false);
-		if (!runStudioAction("shot.clearCameraRail", { shotId: activeShot.id })) return;
-		setToast(ko("Camera rail deleted — Follow keeps the current distance", "카메라 레일 삭제됨 — 팔로우가 현재 거리를 유지합니다"));
-	}
-	function previewCameraShot(shotId) {
-		const selected = shots.find((entry) => entry.id === shotId);
-		if (!selected) throw new Error(`Unknown shots ID: ${shotId}`);
-		if (waypointMode) return;
-		if (tlPlaying && cameraPreviewEndRef.current === selected.endFrame) {
-			cameraPreviewEndRef.current = null;
-			setTlPlaying(false);
-			return;
-		}
-		setMovePlaying(false);
-		manualCameraOverrideRef.current = false;
-		cameraPreviewEndRef.current = selected.endFrame;
-		setTlFrame(selected.startFrame);
-		setTlPlaying(true);
-	}
+
+
+
+
+
+
 	const frameCountRef = useRef(DEFAULT_DURATION_S * TIMELINE_FPS);
 	frameCountRef.current = tlFrameCount;
 	// Root waypoints {frame, x, z, heading: null}, kept sorted by frame —
@@ -4944,7 +4788,7 @@ export default function App() {
 				(entry) => ({ ...entry, cameraKeys: [{ id: createStableItemId("camera-key"), frame: entry.startFrame, framing }] }), "shots");
 			// Keep #193's initial static-shot preflight, but never repeat this
 			// authoring action when retrying the immutable request below.
-			recordShotUndo();
+			shotsDomain.recordShotUndo();
 			setShots(exportShots);
 		}
 		const range = target && (shotId || !motion)
@@ -5579,117 +5423,32 @@ export default function App() {
 
 	// Key authoring lives in each unified Shot block's lower key strip: clicking
 	// an empty point stores the CURRENT framing there. Re-keying overwrites it.
-	function addCameraKeyframe(frame, shotId = activeShot?.id) {
-		const framing = captureCurrentFraming();
-		const target = Math.max(0, Math.min(Math.round(frame), tlFrameCount - 1));
-		// Out-of-range keys are dropped by the updater below; only a key that will
-		// actually land gets a Ctrl+Z entry.
-		const owner = shots.find((entry) => entry.id === shotId);
-		const lands = Boolean(owner) && target >= owner.startFrame && target <= owner.endFrame;
-		if (lands) {
-			markCraftAction("camera_key");
-			recordShotUndo();
-			editShots((current) => updateStableItem(current, shotId, (shot) => {
-				if (target < shot.startFrame || target > shot.endFrame) return shot;
-				const replaced = shot.cameraKeys.filter((key) => key.frame !== target);
-				return { ...shot, cameraKeys: [...replaced, { id: createStableItemId("camera-key"), frame: target, framing }].sort((a, b) => a.frame - b.frame) };
-			}, "shots"));
-		}
-		setSelectedHierarchyId("camera");
-	}
+
 
 	// Re-time a key by dragging its dot along the lane. Landing on another
 	// key's frame is rejected — keys stay frame-unique.
-	function moveCameraKeyframe(shotId, keyId, from, to) {
-		const shot = shots.find((entry) => entry.id === shotId);
-		if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
-		const target = Math.max(shot.startFrame, Math.min(Math.round(to), shot.endFrame));
-		if (target === from) return;
-		editShots((current) => updateStableItem(current, shotId, (entry) => ({ ...entry, cameraKeys: moveCameraKey(entry.cameraKeys, keyId, target) }), "shots"));
-	}
 
-	function removeCameraKeyframe(shotId, keyId) {
-		const owner = shots.find((shot) => shot.id === shotId);
-		if (!owner) throw new Error(`Unknown shots ID: ${shotId}`);
-		if (!owner.cameraKeys.some((key) => key.id === keyId)) return;
-		recordShotUndo();
-		editShots((current) => updateStableItem(current, shotId, (shot) => ({ ...shot, cameraKeys: removeCameraKey(shot.cameraKeys, keyId) }), "shots"));
-	}
 
-	function clearMove() {
-		setMovePlaying(false);
-		if (!activeShot || activeShot.cameraKeys.length === 0) return;
-		recordShotUndo();
-		editShots((current) => updateStableItem(current, activeShot?.id, (shot) => ({ ...shot, cameraKeys: [] }), "shots"));
-	}
 
-	function addTimelineShot() {
-		setMovePlaying(false);
-		const next = addShotAtFrame(shots, tlFrame, tlFrameCount, captureCurrentFraming());
-		if (next === shots) return;
-		recordShotUndo();
-		editShots(next);
-		trackFeature("shot_add");
-		window.dispatchEvent(new CustomEvent("cozyclay:playground-signal", { detail: { kind: "shot" } }));
-	}
 
-	function splitTimelineShot(shotId) {
-		setMovePlaying(false);
-		const shot = shots.find((entry) => entry.id === shotId);
-		if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
-		if (tlFrame <= shot.startFrame || tlFrame > shot.endFrame) return;
-		const next = cutAtFrame(shots, shotId, tlFrame, captureCurrentFraming());
-		if (next === shots) return;
-		recordShotUndo();
-		editShots(next);
-		trackFeature("shot_cut");
-	}
 
-	function selectTimelineShot(shotId) {
-		const selected = shots.find((entry) => entry.id === shotId);
-		if (!selected) throw new Error(`Unknown shots ID: ${shotId}`);
-		manualCameraOverrideRef.current = false;
-		setTlFrame(selected.startFrame);
-		setSelectedHierarchyId("camera");
-		if (workflowMode !== "camera") selectWorkflowMode("camera");
-	}
 
-	function duplicateTimelineShot(shotId) {
-		const next = duplicateShot(shots, shotId, tlFrameCount);
-		if (next !== shots) recordShotUndo();
-		editShots(next);
-		if (next !== shots) {
-			const duplicate = next.find((shot) => shot.id !== shotId && !shots.some((existing) => existing.id === shot.id));
-			if (duplicate) setTlFrame(duplicate.startFrame);
-		}
-	}
 
-	function moveTimelineShot(shotId, targetFrame) {
-		const next = reorderShot(shots, shotId, targetFrame, tlFrameCount);
-		if (next === shots) return;
-		recordShotUndo();
-		editShots(next);
-	}
+
+
+
+
+
+
+
+
 
 	/** Both edges in one Ctrl+Z entry, through the same resize the boundary
 	 * drag uses. The edge moving away from the other goes first, so a range
 	 * that jumps past the old one never inverts on the way. */
-	function setTimelineShotRange(shotId, startFrame, endFrame) {
-		const shot = shots.find((entry) => entry.id === shotId);
-		if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
-		const edges = startFrame > shot.endFrame ? [["end", endFrame], ["start", startFrame]] : [["start", startFrame], ["end", endFrame]];
-		const next = edges.reduce((current, [edge, frame]) => resizeShot(current, shotId, edge, frame, tlFrameCount), shots);
-		if (next === shots) return;
-		recordShotUndo();
-		editShots(next);
-	}
 
-	function removeTimelineShot(shotId) {
-		const next = removeShot(shots, shotId);
-		if (next === shots) return;
-		recordShotUndo();
-		editShots(next);
-	}
+
+
 
 	// The library is the user's own material: poses read from photographs and
 	// poses saved off the rig, accumulating across sessions and projects. No
@@ -12446,7 +12205,7 @@ function resizePromptClip(id, edge, rawFrame) {
 										),
 									);
 								}}
-								onDragStart={recordShotUndo}
+								onDragStart={shotsDomain.recordShotUndo}
 							/>
 							<EditorCamSeed camRef={editorCamRef} lookRef={editorLook} shotCamRef={shotCamRef} subject={charA} />
 							<CameraGlide glide={camGlide} camRef={editorCamRef} lookRef={editorLook} onDone={() => setCamGlide(null)} />
@@ -12738,55 +12497,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					    (#193, R1): framing is the bar's job, delivery is Export's, and
 					    selecting the camera now switches to Camera mode so the bar's
 					    controls are on screen when this panel opens. */}
-					<Foldout hidden={!isCameraSelection} title={ko("Camera", "카메라")}>
-						<div className="readout">
-						<span title={ko("camera to subject", "카메라와 피사체 거리")}>{shot.distance.toFixed(2)} m</span>
-						<span title={ko("nearest prime on the cropped filmback", "크롭된 필름백 기준 가장 가까운 단렌즈")}>{shot.focalMm} mm</span>
-						<span title={ko("angle relative to the subject's eyes", "피사체 눈높이 기준 각도")}>{shot.elevationDeg.toFixed(0)}°</span>
-						</div>
-						<h3 className="move-head">{ko("Move keys", "움직임 키")}</h3>
-						{moveSequence ? (
-							<div className="move-slate" title={ko("derived from the keyframings, not chosen from a list", "목록에서 고른 값이 아니라 키프레임에서 계산된 움직임입니다")}>
-								{moveSequence.displaySlate} · {moveSequence.spanS}{ko("s", "초")}
-							</div>
-						) : (
-							<div className="move-slate">
-								{cameraKeys.length === 1
-									? (isKo ? `프레임 ${cameraKeys[0].frame}부터 고정 샷 — 샷 블록 아래 빈 줄을 클릭해 움직임을 추가하세요` : `locked-off hold from frame ${cameraKeys[0].frame} — click the empty lower strip in a Shot block to add a move`)
-									: ko("click a Shot block's lower strip to key the current framing at that frame", "샷 블록 아래 빈 줄을 클릭하면 해당 프레임에 현재 프레이밍을 저장합니다")}
-							</div>
-						)}
-
-						<h3 className="move-head">{ko("Follow cam", "팔로우 카메라")}</h3>
-						<p className="camera-editor-pointer">
-							{activeShot
-								? ko(`Editing ${activeShot.name} in the timeline camera bar below.`, `아래 타임라인 카메라 바에서 ${activeShot.name}을 편집합니다.`)
-								: ko("Select a Shot block below to edit its camera.", "아래에서 샷 블록을 선택하면 카메라를 편집할 수 있습니다.")}
-						</p>
-
-						{/* Which generator this cut is being made FOR. Nothing here
-						    re-times or re-crops the shot — the timeline simply warns
-						    when the cut runs past the target's clip length or leaves
-						    its delivery aspects. */}
-						<h3 className="move-head">{ko("Target model", "타깃 모델")}</h3>
-						<p className="inspector-hint">
-							{ko("The timeline flags this shot when the cut runs past the model's clip length or leaves its delivery ratios. Nothing is re-timed or re-cropped.", "컷 길이나 화면 비율이 모델 한계를 벗어나면 타임라인이 표시해줘요. 자동으로 재조정하지는 않습니다.")}
-						</p>
-						<Field label={ko("Cut for", "맞출 모델")}>
-							<select
-								data-shot-target-model
-								aria-label={ko("Target video model", "타깃 영상 모델")}
-								disabled={!activeShot}
-								value={activeShot?.targetModel ?? ""}
-								onChange={(event) => changeShotTargetModel(event.target.value)}
-							>
-								<option value="">{ko("None", "없음")}</option>
-								{VIDEO_MODEL_PRESETS.map((entry) => (
-									<option key={entry.id} value={entry.id}>{entry.name}</option>
-								))}
-							</select>
-						</Field>
-					</Foldout>
+					<CameraPanel isCameraSelection={isCameraSelection} shot={shot} moveSequence={moveSequence} cameraKeys={cameraKeys} activeShot={activeShot} changeShotTargetModel={changeShotTargetModel} />
 
 				<Foldout hidden={!isCharacterSelection} title={showB ? ko("Subjects", "인물들") : ko("Subject", "인물")}>
 						<div className={"subjects-row" + (showB ? "" : " single")}>
@@ -14013,7 +13724,7 @@ function resizePromptClip(id, edge, rawFrame) {
 					// blank name and stores the trimmed one, so an unchanged or empty
 					// name is no edit at all: it neither writes nor records.
 					if (typeof name !== "string" || !name.trim() || shot.name === name.trim()) return;
-					recordShotUndo();
+					shotsDomain.recordShotUndo();
 					editShots((current) => renameShot(current, shotId, name));
 				}}
 				onShotRemove={(shotId) => runStudioAction("shot.remove", { shotId })}

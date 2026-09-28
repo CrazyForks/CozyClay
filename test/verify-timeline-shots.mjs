@@ -14,7 +14,8 @@ assert.deepEqual(shotBlockGeometry(shots, 2, 100), { startFrame: 70, endFrame: 7
 assert.equal(shotBlockGeometry(shots, 5, 100), null);
 
 const timeline = readFileSync(new URL("../src/ardy/timeline.jsx", import.meta.url), "utf8");
-const app = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
+import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+const app = readStudioSource();
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 assert.ok(timeline.includes('const SHOTS_LANE = "Shots"'));
 assert.ok(timeline.includes('className={"tl-shot-block"'));
@@ -35,7 +36,7 @@ assert.ok(timeline.includes("onShotMove"));
 assert.ok(app.includes("shots={shots}"));
 assert.ok(app.includes("resizeShot(current, shotId, edge, frame, tlFrameCount)"));
 assert.ok(app.includes("addShotAtFrame(shots, tlFrame, tlFrameCount"));
-assert.ok(app.includes("cutAtFrame(shots, shotId, tlFrame, captureCurrentFraming())"));
+assert.ok(app.includes("cutAtFrame(shots, shotId, tlFrame, appContext.shared.captureCurrentFraming())"));
 assert.ok(!timeline.includes("disabled={shots.length <= 1}"));
 assert.ok(css.includes("width: calc((var(--tl-f-end) - var(--tl-f-start)) * 100%);"));
 assert.ok(!css.includes("width: max(8px, calc((var(--tl-f-end) - var(--tl-f-start)) * 100%));"));
