@@ -6,7 +6,7 @@
 // The editor is the actual App binding over its actual registry
 // (app-fixture.mjs), connected to a real live hub over a real socket. The MCP
 // handlers, the agent's tools and the CLI child process are the shipped ones.
-// Run one case with --case <name>.
+// Run one case with COZYCLAY_DISCOVERY_CASE=<name> (the App fixture owns argv).
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -87,11 +87,12 @@ async function callTool(name, args, handle) {
   return { isError: result.isError === true, value: JSON.parse(text) };
 }
 
-/** `cclay live …` as an operator runs it; stdout is one JSON object. */
-function cli(args, port) {
+/** `cclay live …` as an operator runs it, naming the fixture's workspace;
+ * stdout is one JSON object. */
+function cli(args, { hub, handle }) {
   const env = { ...process.env, XDG_CONFIG_HOME: scratch };
   delete env.COZYCLAY_LIVE_TOKEN;
-  const child = spawn(process.execPath, [launcher, 'live', ...args, '--live-port', String(port)], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [launcher, 'live', ...args, '--workspace', handle, '--live-port', String(hub.port)], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '', stderr = '';
   child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
   child.stdout.on('data', chunk => { stdout += chunk; });
@@ -141,7 +142,33 @@ cases['mcp-run'] = async () => {
   console.log('PASS #438 acceptance 1: a command registered only in the editor runs through MCP studio_run and answers its bus receipt');
 };
 
-const index = process.argv.indexOf('--case');
-const selected = index >= 0 ? process.argv[index + 1] : null;
-if (selected && !cases[selected]) { console.error(`unknown --case ${selected}; known: ${Object.keys(cases).join(', ')}`); process.exit(2); }
+cases['confirm'] = async () => {
+  const s = await studio();
+  try {
+    // A second scene through the UI's own door, so deleting one is available.
+    await s.f.binding.bus.run('scene.create', {}, { origin: 'ui' });
+    const scenes = () => s.f.scope.scenesRef.current.map(scene => scene.id);
+    const sceneId = scenes().find(id => id !== s.f.scope.activeSceneIdRef.current);
+    assert.equal(scenes().length, 2);
+    const refusal = receipt => ({ ok: receipt.ok, code: receipt.code, phase: receipt.phase, mutated: receipt.mutated, message: receipt.message, recovery: receipt.recovery });
+    const viaMcp = await callTool('studio_run', { action: 'scene.delete', args: { sceneId } }, s.handle);
+    assert.equal(viaMcp.isError, true);
+    validateReceipt(viaMcp.value);
+    assert.equal(viaMcp.value.code, 'CONFIRMATION_REQUIRED', JSON.stringify(viaMcp.value));
+    const viaCli = await cli(['run', 'scene.delete', '--args', JSON.stringify({ sceneId })], s);
+    assert.equal(viaCli.code, 1, viaCli.stdout + viaCli.stderr);
+    assert.equal(viaCli.json?.error?.code, 'CONFIRMATION_REQUIRED', viaCli.stdout);
+    const invoke = await agentTools(s);
+    const viaAgent = await invoke('run_action', { action: 'scene.delete', args: { sceneId } }).catch(error => error);
+    assert.equal(viaAgent.code, 'CONFIRMATION_REQUIRED', viaAgent.message);
+    // The same refusal, word for word, on every surface; nothing was deleted.
+    assert.deepEqual(refusal(viaMcp.value), refusal(viaAgent.receipt));
+    assert.deepEqual(refusal(viaCli.json.error.details.receipt), refusal(viaAgent.receipt));
+    assert.deepEqual(scenes().length, 2, 'no surface deleted the scene');
+  } finally { await s.close(); }
+  console.log('PASS #438 acceptance 6: scene.delete without a confirmation token answers CONFIRMATION_REQUIRED through MCP and the CLI exactly as through the agent');
+};
+
+const selected = process.env.COZYCLAY_DISCOVERY_CASE || null;
+if (selected && !cases[selected]) { console.error(`unknown case ${selected}; known: ${Object.keys(cases).join(', ')}`); process.exit(2); }
 for (const [name, run] of Object.entries(cases)) if (!selected || selected === name) await run();
