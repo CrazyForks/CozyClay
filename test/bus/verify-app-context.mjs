@@ -37,3 +37,23 @@ test('acceptance 1: exposes the App-owned clock, cast history, live projections 
   assert.equal(ports, context.actionPorts);
   assert.equal(ports.state(), 'latest action');
 });
+
+const app = readFileSync(new URL('../../src/App.jsx', import.meta.url), 'utf8');
+const parsed = parseSync('App.jsx', app);
+assert.deepEqual(parsed.errors, []);
+function walk(node, visit) {
+  if (!node || typeof node !== 'object') return;
+  visit(node);
+  for (const [key, child] of Object.entries(node)) {
+    if (key === 'parent') continue;
+    if (Array.isArray(child)) child.forEach(value => walk(value, visit));
+    else walk(child, visit);
+  }
+}
+test('acceptance 2: App has no direct undo-clock or cast-history refs', () => {
+  const leaks = [];
+  walk(parsed.program, node => {
+    if (node.type === 'Identifier' && ['opClockRef', 'charHistoryRef'].includes(node.name)) leaks.push(node.name);
+  });
+  assert.deepEqual(leaks, []);
+});
