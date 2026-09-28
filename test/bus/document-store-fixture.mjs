@@ -19,7 +19,7 @@ export function documentFixture(options = {}) {
     readTarget: () => 'target-token',
   } });
   const register = (id, domain, run, extra = {}) => registry.register({ id, kind: 'mutation', undoDomain: domain,
-    input: { type: 'object', properties: { value: { type: 'number' } }, required: ['value'], additionalProperties: false },
+    input: { type: 'object', properties: { value: { type: 'number' }, ...(domain === 'motion' ? { characterId: { type: 'string', default: 'actor' } } : {}) }, required: ['value'], additionalProperties: false },
     available: () => true, run: (args, context) => { const result = run(args, context); return result ?? { affectedIds: ['target'], summary: 'Authored edit.' }; }, ...extra });
   register('stage.set', 'stage', ({ value }) => { store.write('stage', { intensity: value }); });
   register('shot.set', 'shot', ({ value }) => { store.write('shot', { frame: value }); });
