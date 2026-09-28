@@ -118,7 +118,9 @@ export function sceneHistoryDomain(scene) {
           if (!session.commit()) return { historyEntryId: null };
           const historyEntryId = crypto.randomUUID();
           entries.set(historyEntryId, { before, after: native.objects });
-          for (const id of entries.keys()) if (!retained(id)) entries.delete(id);
+          // A branch can preserve its pre-image while dropping its old redo
+          // destination. Retire those ids as well as evicted pre-images.
+          for (const id of entries.keys()) if (!retained(id) || !native.hasHistoryState(entries.get(id).after)) entries.delete(id);
           return { historyEntryId };
         },
       };
