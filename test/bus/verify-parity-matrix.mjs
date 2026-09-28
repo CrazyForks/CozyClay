@@ -9,6 +9,18 @@ const CHECKS = ["receipt", "undo", "UNDO_EXPIRED", "tx cancel", "stale revision"
 function parityMatrix(registry) {
   return registry.list().flatMap(command => ORIGINS.flatMap(origin => CHECKS.map(check => ({ command: command.id, origin, check }))));
 }
+function executeParity({ run, snapshot, command, args = { value: 1 } }) {
+  const rows = [];
+  for (const origin of ORIGINS) {
+    const before = structuredClone(snapshot());
+    const receipt = run(command, args, origin);
+    rows.push({ command, origin, check: "receipt", ok: receipt.ok && receipt.revision.after === receipt.revision.before + 1 && receipt.undo?.historyEntryId });
+    const undone = run("edit.undo", { receiptId: receipt.receiptId }, "ui");
+    rows.push({ command, origin, check: "undo", ok: undone.status === "undone" && JSON.stringify(snapshot()) === JSON.stringify(before) });
+  }
+  return rows;
+}
+
 function pendingErrors(previous, current) {
   return current.filter(id => !previous.includes(id)).map(id => `${id}: newly pending`);
 }
@@ -49,4 +61,15 @@ test("coverage metrics print and assert a committed floor", () => {
   assert.ok(metrics.registeredCommands >= 32);
 });
 
-export { parityMatrix, pendingErrors, coverageMetrics };
+test("registered mutations execute receipt and undo checks through the real bus", () => {
+  const f = fixture();
+  const rows = executeParity({
+    run: (id, args, origin) => f.bus.run(id, args, f.request(origin)),
+    snapshot: () => f.state,
+    command: "shot.create",
+  });
+  assert.equal(rows.length, ORIGINS.length * 2);
+  assert.equal(rows.every(row => row.ok), true, JSON.stringify(rows));
+});
+
+export { parityMatrix, pendingErrors, coverageMetrics, executeParity };
