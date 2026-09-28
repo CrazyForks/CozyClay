@@ -23,6 +23,6 @@ export function documentFixture(options = {}) {
     available: () => true, run: (args, context) => { const result = run(args, context); return result ?? { affectedIds: ['target'], summary: 'Authored edit.' }; }, ...extra });
   register('stage.set', 'stage', ({ value }) => { store.write('stage', { intensity: value }); });
   register('shot.set', 'shot', ({ value }) => { store.write('shot', { frame: value }); });
-  const run = (id, args = {}, origin = 'ui') => bus.run(id, args, { origin, host, expectedRevision: store.getSnapshot().revision });
-  return { store, bus, run, register };
+  const run = (id, args = {}, origin = 'ui', options = {}) => bus.run(id, args, { origin, host, expectedRevision: store.getSnapshot().revision, ...options });
+  return { store, bus, run, register, host };
 }

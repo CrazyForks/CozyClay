@@ -1,4 +1,5 @@
 import { createCameraBlock } from "./camera-block.js";
+import { isBusRunActive } from "./command-bus.js";
 
 export const FIRST_EDIT_VERSION = 1;
 export const FIRST_EDIT_KINDS = Object.freeze([
@@ -90,6 +91,7 @@ export function createSemanticState(initial, publish, observe, domain) {
 		const before = current;
 		const after = typeof update === "function" ? update(before) : update;
 		current = after;
+		if (authored && !isBusRunActive()) console.warn(`[bus] semantic edit for ${domain} called outside a bus run`);
 		publish(after);
 		if (authored) observe(domain, before, after);
 		return after;
