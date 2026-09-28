@@ -1,0 +1,4 @@
+{
+  "version": 1,
+  "pending": ["shots", "objects", "cast", "motion", "project"]
+}
