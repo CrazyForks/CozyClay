@@ -29,6 +29,7 @@ function stateNames(ast) {
   return names;
 }
 const domains = {
+  shots: { states: ['shots', 'tlFrameCount', 'cameraMove', 'fovDeg'], panels: ['CameraPanel'] },
   objects: { states: ['sceneObjects'], panels: ['PropsPanel', 'ObjectTransformPanel'] },
   scenes: { states: ['scenes', 'activeSceneId', 'projectName', 'projectDirty'], panels: ['ProjectPanel'] },
   stage: { states: ['preset', 'shotAspectKey', 'environmentImage', 'cameraPresetId', 'sensorId', 'keyLight', 'hasEnvSheet', 'environment', 'style'], panels: ['LightPanel', 'EnvironmentPanel'] },
