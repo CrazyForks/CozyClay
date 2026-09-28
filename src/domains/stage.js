@@ -3,18 +3,20 @@ import { AppContext } from '../app-context.js';
 import { createSceneStageStore } from '../store/scene-stage.js';
 import { useDocumentDomain } from '../store/use-document-store.js';
 import { createKeyLight } from '../scenes.js';
+import { shotAspectRatio } from '../shot.js';
 import { normalizeStage } from '../commands/stage.js';
 
 // Stage is the first owned slice. Native cast/object histories remain native;
 // their retained boundaries decide when this slice is next in editor Undo.
 export function createStageDomain(appContext) {
-  const documentStore = createSceneStageStore(normalizeStage(appContext.shared.startupStage), { dev: false });
+  const documentStore = createSceneStageStore(normalizeStage(appContext.shared.startupStage));
   const anchors = new Map();
   const anchor = () => [appContext.castHistory.past.at(-1), appContext.live.state?.objects];
   const current = saved => saved?.every((value, index) => value === anchor()[index]);
   const read = () => documentStore.read('stage');
   const publish = () => {
-    if (appContext.live.state) appContext.patchLive({ stage: { ...appContext.live.state.stage, ...read() } });
+    if (appContext.live.state) appContext.patchLive({ stage: { ...appContext.live.state.stage, ...read() },
+      filmback: { sensorId: read().sensorId, aspectRatio: shotAspectRatio(read().shotAspect) } });
     const persisted = appContext.shared.actorStageRef;
     if (persisted?.current) persisted.current = { ...persisted.current, ...read() };
   };
@@ -85,11 +87,18 @@ export function useStage(appContext) {
   const [domain] = useState(() => createStageDomain(appContext));
   const stage = useDocumentDomain(domain.documentStore, 'stage');
   const [preset, setPreset] = useState('medium');
+  const gesture = useRef(null);
+  function finishGesture() {
+    if (!gesture.current) return;
+    const txId = gesture.current; gesture.current = null;
+    return appContext.bus.run('run.commit', { txId });
+  }
   function changeKeyLight(_gesture, patch) {
     const keyLight = domain.read().keyLight;
-    return appContext.bus.run('stage.setKeyLight', { keyLight: typeof patch === 'function' ? patch(keyLight) : patch });
+    if (!gesture.current) gesture.current = appContext.bus.run('run.begin', { id: 'stage.setKeyLight', args: {} }).txId;
+    return appContext.bus.run('run.update', { txId: gesture.current, args: { keyLight: typeof patch === 'function' ? patch(keyLight) : patch } });
   }
   function resetKeyLight() { return appContext.bus.run('stage.setKeyLight', { keyLight: createKeyLight(null) }); }
   function changeEnvironmentImage(environmentImage) { return appContext.bus.run('stage.setEnvironment', { environmentImage }); }
-  return { ...domain, ...stage, shotAspectKey: stage.shotAspect, preset, setPreset, changeKeyLight, resetKeyLight, changeEnvironmentImage };
+  return { ...domain, ...stage, shotAspectKey: stage.shotAspect, preset, setPreset, changeKeyLight, resetKeyLight, changeEnvironmentImage, finishGesture };
 }

@@ -1705,9 +1705,6 @@ export default function App() {
 	 * still the newest one, and the pointer/key release below closes it, so the
 	 * next gesture starts a fresh entry instead of extending the last one. */
 	const gestureUndoRef = useRef(null);
-	// Environment description / look are typed, so they keep their own session:
-	// a keyup must not cut a sentence into one entry per character.
-	const environmentTextSessionRef = useRef(null);
 	function beginGestureUndo(key) {
 		recordSessionUndo(gestureUndoRef, key);
 		// NumberField hands this token back on every tick of a scrub. These edits
@@ -1715,6 +1712,7 @@ export default function App() {
 		return null;
 	}
 	function endGestureUndo() {
+		stageDomain.finishGesture();
 		gestureUndoRef.current = null;
 	}
 	useEffect(() => {
@@ -3013,11 +3011,11 @@ export default function App() {
 						lookAtZ: actor?.z ?? 0,
 						focalMm: framing.focalMm,
 					};
-					stageDomain.setCameraPresetId(rawArgs.preset);
+					runStudioAction("stage.setFilmback", { cameraPresetId: rawArgs.preset });
 				} else if (Object.keys(finitePatch(rawArgs, ["x", "y", "z", "lookAtX", "lookAtY", "lookAtZ"])).length || rawArgs.focalMm !== undefined) {
 					// Any manual placement invalidates the recorded preset: the scene
 					// must not claim a framing it no longer has.
-					stageDomain.setCameraPresetId(null);
+					runStudioAction("stage.setFilmback", { cameraPresetId: null });
 				}
 				const patch = finitePatch(args, ["x", "y", "z"]);
 				let nextFov = live.fovDeg;
@@ -4536,7 +4534,7 @@ export default function App() {
 	 * shot camera, so the user composes the A/B reference on exactly the
 	 * 832x480 frame the clip will have. Idempotent; capture does not need it. */
 	function enterFalFraming() {
-		stageDomain.setShotAspectKey(FAL_MOTION_SHOT_ASPECT);
+		runStudioAction("stage.setFilmback", { shotAspect: FAL_MOTION_SHOT_ASPECT });
 		if (!lookThroughShot) enterShotLook();
 	}
 
@@ -4548,7 +4546,7 @@ export default function App() {
 			const still = captureFalStill();
 			// The capture is already on the Fal canvas; make the viewport agree so
 			// the user sees the frame that was just sent.
-			stageDomain.setShotAspectKey(FAL_MOTION_SHOT_ASPECT);
+			runStudioAction("stage.setFilmback", { shotAspect: FAL_MOTION_SHOT_ASPECT });
 			setFalMotion((current) => ({ ...current, [slot]: still, status: "idle", error: "" }));
 			if (slot === "a") setFalMotionCameraUnlocked(false);
 			setToast(isKo ? `포즈 ${slot.toUpperCase()} 캡처됨 · ${still.width}×${still.height}` : `Pose ${slot.toUpperCase()} captured · ${still.width}×${still.height}`);
@@ -5042,7 +5040,7 @@ export default function App() {
 				return true;
 			},
 			setEnvironmentImage: (dataUrl) => {
-				stageDomain.setEnvironmentImage(normalizeReferenceImage(dataUrl));
+				runStudioAction("stage.setEnvironment", { environmentImage: normalizeReferenceImage(dataUrl) });
 				return true;
 			},
 			captureWithReferences: () => liveHandlersRef.current.capture_framing_png({}),
@@ -7342,12 +7340,13 @@ export default function App() {
 			shotCamRef.current.rotation.set(angles.pitch, angles.yaw, 0); shotCamRef.current.fov = fov; shotCamRef.current.updateProjectionMatrix();
 		}
 		manualCameraOverrideRef.current = manual; appContext.patchLive({ camera: camera.position }); appContext.patchLive({ fovDeg: fov }); appContext.patchLive({ studioCamera: camera });
-		setCameraPos(camera.position); setFovDeg(fov); stageDomain.setCameraPresetId(null);
+		setCameraPos(camera.position); setFovDeg(fov);
 	}
 	/** The authored stage envelope (key light, environment, filmback) published
 	 * as one body: the live read model first, so the next synchronous read sees
 	 * it, then the React state the foldouts and the save path own. */
 	function publishStudioStage(stage) {
+		if (stageDomain.documentStore) { stageDomain.write(stage); return; }
 		appContext.patchLive({ stage: stage });
 		stageDomain.setKeyLight(stage.keyLight); stageDomain.setEnvironmentImage(stage.environmentImage ?? null);
 		stageDomain.setEnvironment(stage.environment); stageDomain.setStyle(stage.style); stageDomain.setHasEnvSheet(stage.hasEnvSheet === true);
@@ -8085,7 +8084,7 @@ export default function App() {
 								disabled={falMotionCameraLocked}
 								onChange={(event) => {
 									const id = event.target.value;
-									if (!id) { stageDomain.setCameraPresetId(null); return; }
+									if (!id) { runStudioAction("stage.setFilmback", { cameraPresetId: null }); return; }
 									liveHandlersRef.current?.set_camera({ preset: id });
 								}}
 							>
@@ -8100,7 +8099,7 @@ export default function App() {
 							<select
 								aria-label={ko("Output aspect ratio", "출력 화면 비율")}
 								value={shotAspectKey}
-								onChange={(event) => stageDomain.setShotAspectKey(event.target.value)}
+								onChange={(event) => runStudioAction("stage.setFilmback", { shotAspect: event.target.value })}
 							>
 								{Object.values(SHOT_ASPECT_PRESETS).map((value) => (
 									<option key={value.label} value={value.label}>{value.label}</option>
@@ -9220,16 +9219,9 @@ export default function App() {
 				<EnvironmentPanel
 					selectedHierarchyId={selectedHierarchyId}
 					hasEnvSheet={hasEnvSheet}
-					recordCharacterUndo={castDomain.recordCharacterUndo}
-					setHasEnvSheet={stageDomain.setHasEnvSheet}
 					environment={environment}
-					recordSessionUndo={recordSessionUndo}
-					environmentTextSessionRef={environmentTextSessionRef}
-					setEnvironment={stageDomain.setEnvironment}
 					style={style}
-					setStyle={stageDomain.setStyle}
 					environmentImage={environmentImage}
-					changeEnvironmentImage={changeEnvironmentImage}
 					setToast={appContext.notify}
 				/>
 
