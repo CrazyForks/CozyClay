@@ -547,7 +547,6 @@ export function useMotion(appContext) {
 		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').editKeys(characterId, mutate);
 		const state = ikStateFor(characterId);
 		const before = snapshotIkKeys(state);
-		appContext.shared.castDomain.recordCharacterUndo();
 		mutate(state);
 		appContext.shared.markSemanticEdit("pose", before, state.keys);
 		setIkTick((value) => value + 1);
@@ -1078,7 +1077,6 @@ export function useMotion(appContext) {
 		const usable = decoded.filter(Boolean);
 		if (!usable.length) return 0;
 		const owned = appContext.storeDomain('motion');
-		if (!owned) appContext.shared.castDomain.recordCharacterUndo();
 		// Plan against the cast as it stands, so ids are decided once and the
 		// full-take map can be seeded with them.
 		const list = appContext.live.characters;
@@ -1241,7 +1239,6 @@ export function useMotion(appContext) {
 			const targetStillExists = appContext.live.characters.some((entry) => entry.id === targetCharacter.id);
 			if (!targetStillExists) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
 			const apply = () => {
-			if (commandContext && !appContext.storeDomain('motion')) appContext.shared.castDomain.recordCharacterUndo();
 			const bufferOwnsTarget = targetCharacter.id === appContext.shared.loadedLayerCharRef.current;
 			beginPlaybackOn(rig);
 			// THE INVARIANT: the take's travel assumes the character is scaled.
@@ -1355,7 +1352,6 @@ export function useMotion(appContext) {
 	function clearMotion() {
 		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').clear(appContext.shared.activeChar.id);
 		if (!motion && appContext.shared.ikStateRef.current.keys.size === 0 && (appContext.shared.activeChar.scale ?? 1) === 1) return;
-		appContext.shared.castDomain.recordCharacterUndo();
 		setMotion(null);
 		setMotionError("");
 		appContext.shared.motionFullRef.current.delete(appContext.shared.activeChar.id);
@@ -1393,9 +1389,6 @@ export function useMotion(appContext) {
 		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').edit('motion.trim', { characterId: appContext.shared.activeChar.id, start, end });
 		const full = appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id);
 		if (!full || !motion) return;
-		// One Ctrl+Z entry per edit: the cast snapshot carries the pre-edit clip
-		// (snapshotCast → bufferMotion), so undo restores the take as it was.
-		appContext.shared.castDomain.recordCharacterUndo();
 		const previous = motion.editSegments ?? createMotionEdit(full.frames);
 		const segments = trimMotionEdit(previous, start, end);
 		const sliced = renderMotionEdit(full, segments);
@@ -1416,7 +1409,6 @@ export function useMotion(appContext) {
 		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.resetTrim', { characterId: appContext.shared.activeChar.id });
 		const full = appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id);
 		if (!full || !motion || motion.frames === full.frames && motion.editSegments?.length === 1) return;
-		appContext.shared.castDomain.recordCharacterUndo();
 		// Surviving IK keys ride back to their full-take frame numbers (#79).
 		migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), createMotionEdit(full.frames), full.frames);
 		setMotion({ ...full, editSegments: createMotionEdit(full.frames) });
@@ -1428,9 +1420,6 @@ export function useMotion(appContext) {
 	function editMotionSegments(edit) {
 		const full = appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id);
 		if (!full || !motion) return;
-		// Covers cut, retime and segment delete alike — every segment edit lands
-		// on the same Ctrl+Z history the cast uses (snapshotCast → bufferMotion).
-		appContext.shared.castDomain.recordCharacterUndo();
 		const rendered = renderMotionEdit(full, edit);
 		migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), edit, rendered.frames);
 		setMotion({ ...rendered, url: null });
@@ -1443,8 +1432,7 @@ export function useMotion(appContext) {
 	 * change (#79): a retime moves the poses those frames address, so the IK
 	 * correction keys and the prompt clips migrate through the same
 	 * old→source→new piecewise mapping the clip itself was resampled with.
-	 * Undo needs no special case — recordCharacterUndo() already snapshotted
-	 * the keys and clips before this runs. */
+	 * The composed document session retains keys and clips together. */
 	function migrateTimelinePins(previousEdit, nextEdit, newFrameCount) {
 		if (appContext.shared.ikStateRef.current.keys.size > 0) {
 			appContext.shared.ikStateRef.current.keys = remapFrameKeyMap(appContext.shared.ikStateRef.current.keys, previousEdit, nextEdit);
@@ -1715,7 +1703,6 @@ export function useMotion(appContext) {
 			appContext.notify(ko("No body collisions at this frame", "이 프레임에는 신체 관통이 없어요"));
 			return;
 		}
-		if (appContext.shared.ikStateRef.current.tracked.size > 0) appContext.shared.castDomain.recordCharacterUndo();
 		editIkKeys(() => ikBakeKeyframe(ikChains, appContext.shared.ikStateRef.current, appContext.shared.tlFrame, ikFkJoints, result.touched, null, result.baseQuats));
 		setIkTick((n) => n + 1);
 		appContext.notify(result.residual > 1e-4
@@ -1750,11 +1737,6 @@ export function useMotion(appContext) {
 			poseOtherCastMembers(frame);
 			return externalBlockers(frame);
 		};
-		// The undo entry is provisional: a clean clip keys nothing, and a
-		// snapshot identical to the present state would make Ctrl+Z a no-op
-		// press that also discards the redo stack for nothing.
-		const savedFuture = appContext.castHistory.future;
-		appContext.shared.castDomain.recordCharacterUndo();
 		let keyed = [];
 		let unresolved = [];
 		try {
@@ -1781,10 +1763,6 @@ export function useMotion(appContext) {
 			applyFrame(currentFrame);
 			poseOtherCastMembers(currentFrame);
 			setIkTick((n) => n + 1);
-		}
-		if (!keyed.length) {
-			appContext.castHistory.past.pop();
-			appContext.castHistory.future = savedFuture;
 		}
 		// Residual is worth saying out loud: a limb pinned between two blockers
 		// (another body and a prop, say) can come out of the walk still touching,
@@ -1813,7 +1791,6 @@ export function useMotion(appContext) {
 	function applyPhysicsPreview() {
 		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.applyPhysics', { characterId: appContext.shared.activeChar.id });
 		if (!physicsPreview || physicsPreview.sourceStamp !== physicsKeyStamp(appContext.shared.ikStateRef.current.keys)) return;
-		appContext.shared.castDomain.recordCharacterUndo();
 		editIkKeys(() => { appContext.shared.ikStateRef.current.keys = copyPhysicsKeys(physicsPreview.candidate.keys); });
 		appContext.shared.ikStateRef.current.tracked = new Set(physicsPreview.candidate.tracked);
 		appContext.shared.autoPhysicsRunRef.current = { motion, rig: appContext.shared.activeRig, stamp: physicsKeyStamp(appContext.shared.ikStateRef.current.keys) };
@@ -1884,7 +1861,6 @@ export function useMotion(appContext) {
 		if (!appContext.shared.activeRig || !motion) return false;
 		if (appContext.storeDomain('motion')) { appContext.storeDomain('motion').run('ik.applyPose', { characterId: appContext.shared.activeChar.id, frame: appContext.shared.tlFrame, pose }); return true; }
 		if (!ikChains) return false;
-		appContext.shared.castDomain.recordCharacterUndo();
 		// The clip's positional skinning left per-bone translations the FK pose
 		// math never produced. The bake below stores every FK joint's position
 		// (p) as-is, so posing rotations over those clip translations would key
@@ -2127,8 +2103,7 @@ export function useMotion(appContext) {
 		// The pre-drag take is both the deformation base (repeated moves re-derive
 		// from it, so deltas never accumulate) and the undo snapshot.
 		appContext.shared.trailBaseMotionRef.current = motion;
-		if (appContext.storeDomain('motion')) appContext.storeDomain('motion').beginGesture();
-		else appContext.shared.castDomain.recordCharacterUndo();
+		appContext.storeDomain('motion').beginGesture();
 	}
 
 	/** World drag delta -> clip delta, shedding the character's stature scale
@@ -2701,7 +2676,6 @@ export function useMotion(appContext) {
 		const scale = characterScaleFor(decoded);
 		const apply = () => {
 			if (appContext.storeDomain('motion')) return commitLoadedTake(job.charId, clip, { job });
-			if (job.commandContext) appContext.shared.castDomain.recordCharacterUndo();
 			appContext.shared.motionFullRef.current.set(job.charId, clip);
 			const next = appContext.live.characters.map(entry => entry.id === job.charId ? { ...entry, scale, sessionMotion: clip, motionRef } : entry);
 			appContext.shared.publishStudioCharacters(next);
