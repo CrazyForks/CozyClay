@@ -461,7 +461,13 @@ export default function ObjectGizmo({ object, objects = [], mode = "move", snap 
 		 * Escape-clears-selection handler; with no drag open it returns without
 		 * touching the event, so App still gets its deselect (§7). */
 		const onKeyDown = (event) => {
-			if ((event.code !== "Escape" && event.key !== "Escape") || !dragRef.current) return;
+			if (!dragRef.current) return;
+			// Settle before App chooses between owned and native undo histories.
+			if ((event.ctrlKey || event.metaKey) && (event.code === "KeyZ" || event.code === "KeyY")) {
+				endDrag(true);
+				return;
+			}
+			if (event.code !== "Escape" && event.key !== "Escape") return;
 			endDrag(false);
 			event.preventDefault();
 			event.stopPropagation();

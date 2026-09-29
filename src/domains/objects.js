@@ -1,5 +1,8 @@
 import { createObjectPath } from "../object-path.js";
 import { useState, useRef } from "react";
+import { createDocumentStore } from "../document-store.js";
+import { useDocumentDomain } from "../store/use-document-store.js";
+import { arrangement } from "../studio-agent-commands.js";
 import {
 	readStoredObjectColors,
 	rememberObjectColor,
@@ -21,8 +24,7 @@ import {
 	setSceneObjectAttach,
 	setSceneObjectParent,
 } from "../scene-objects.js";
-import { withCommandHistory } from "../command-bus.js";
-import { createSceneHistoryStore } from "../scene-history.js";
+
 import { ko, isKo } from "../locale.js";
 import {
 	sceneObjectNameDisplayKo,
@@ -39,6 +41,75 @@ import { importMeshFile, compressedGlbReason, meshBoundsFromAsset, fitMeshBounds
 import { cutOutBackground, maskAsset } from "../matte.js";
 import { parseRigNodeId } from "../hierarchy-model.js";
 import { StudioProtocolError } from "../studio-agent-protocol.js";
+
+// A stable owner across scene loads. App's remaining native history readers use
+// the small store facade below; authored writes are owned by the document store.
+export function createObjectsDomain(appContext, initial) {
+	const listeners = new Set();
+	const notify = () => { for (const listener of listeners) listener(); };
+	let native = createDocumentStore({ owned: { objects: initial } });
+	let release = native.subscribe(notify);
+	const documentStore = {
+		...Object.fromEntries(Object.keys(native).map(key => [key, (...args) => native[key](...args)])),
+		subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+	};
+	const read = () => documentStore.read("objects");
+	function write(update) {
+		return documentStore.write("objects", before => {
+			let next = typeof update === "function" ? update(before) : update;
+			for (const row of next.filter(row => row.remove === true)) next = removeSceneObject(next, row.id);
+			if (JSON.stringify(next) === JSON.stringify(before)) return before;
+			return next;
+		});
+	}
+	const publish = () => { if (appContext.live.state) appContext.patchLive({ objects: read() }); };
+	const unsubscribe = documentStore.subscribe(publish);
+	function beginAction() {
+		const session = documentStore.beginAction("objects");
+		return { ...session, commit() {
+			const result = session.commit();
+			if (result.historyEntryId) appContext.advanceObjectClock();
+			return result;
+		} };
+	}
+	function stepHistory(redo) {
+		domain.settle?.();
+		const result = (redo ? documentStore.redo : documentStore.undo)();
+		if (result) appContext.advanceObjectClock();
+		return Boolean(result);
+	}
+	const domain = { documentStore, read, write, beginAction, canUndo: id => documentStore.canUndo(id), stepHistory,
+		document: () => ({ objects: read() }), publish: state => write(state.objects), commitDraft: write,
+		load(objects) {
+			domain.settle?.(); release(); native.dispose();
+			native = createDocumentStore({ owned: { objects } });
+			release = native.subscribe(notify); notify();
+		},
+		arrange(args) {
+			const state = appContext.ports.read();
+			const plan = arrangement({ name: "arrange_objects", args }, { ...state, frame: state.view.frame }, { bounds: appContext.ports.bounds });
+			write(plan.draft); return plan;
+		},
+		dispose() { domain.cancelGesture?.(); unregister(); unsubscribe(); release(); native.dispose(); listeners.clear(); },
+	};
+	const store = {
+		get objects() { return read(); },
+		present: () => documentStore.history().present.snapshot.objects,
+		depths: documentStore.depths,
+		applyAtomic: write,
+		undo: () => stepHistory(false) ? read() : null,
+		redo: () => stepHistory(true) ? read() : null,
+		settle: () => domain.settle?.(),
+		hasHistoryState: state => [...documentStore.history().past, documentStore.history().present, ...documentStore.history().future].some(entry => entry.snapshot.objects === state),
+		beginCommand() {
+			const session = beginAction();
+			return { ...session, commit: () => Boolean(session.commit().historyEntryId) };
+		},
+	};
+	domain.store = store;
+	const unregister = appContext.registerStoreDomain("objects", domain);
+	return domain;
+}
 
 export function useObjects(appContext) {
 	// Hand-mixed object tints, newest first. An editor preference like the
@@ -64,28 +135,18 @@ export function useObjects(appContext) {
 
 	const [objectDeleteUndo, setObjectDeleteUndo] = useState(null);
 
-	const [sceneObjects, setSceneObjects] = useState(appContext.shared.startupScene.objects);
-
-	// The single mutation owner (plan §5.3): every scene-object edit — gizmo
-	// drags, plan-board drags, inspector scrubs, hierarchy atomics — routes
-	// through this store so one interaction is exactly one undo entry and an
-	// in-flight drag can be cancelled. setSceneObjects is stable, so the
-	// store is constructed once, seeded with the initial scene.
-	const storeRef = useRef(null);
-
-	if (!storeRef.current) {
-		storeRef.current = withCommandHistory(createSceneHistoryStore(sceneObjects, {
-		onCommit: (before, after) => appContext.shared.markSemanticEdit("objects", before, after),
-		onObjects: (objects) => {
-			// Object-side ops join the shared undo clock here; undo/redo of the
-			// object store bumps the clock explicitly in undoScene/redoScene.
-			appContext.objectChanged();
-			setSceneObjects(objects);
-		},
-	}));
-	}
-
+	// StrictMode replays initializers: reuse this editor's registered owner,
+	// rather than registering a second store whose React result is discarded.
+	const [domain] = useState(() => appContext.storeDomain("objects") ?? createObjectsDomain(appContext, appContext.shared.startupScene.objects));
+	const sceneObjects = useDocumentDomain(domain.documentStore, "objects");
+	const storeRef = useRef(domain.store);
 	const store = storeRef.current;
+	const gesture = useRef(null);
+	function run(id, args = {}) {
+		const receipt = appContext.bus.run(id, args);
+		const check = result => { if (!result.ok) throw new StudioProtocolError(result.code, result.message); return result; };
+		return receipt?.then ? receipt.then(check) : check(receipt);
+	}
 
 	const selectedSceneObjectId = sceneObjectIdFromHierarchy(appContext.shared.selectedHierarchyId);
 
@@ -95,12 +156,34 @@ export function useObjects(appContext) {
 	// presents on every apply and on close; end commits the drag as one
 	// history entry, or rolls it back when commit is false (Escape).
 	function beginSceneTransaction({ owner, cancel }) {
-		return store.begin(owner, cancel);
+		domain.settle();
+		const { txId } = run("run.begin", { id: "object.update", args: {} });
+		const release = appContext.bus.subscribe(event => {
+			if (event.type !== "transaction.cancelled" || event.txId !== txId) return;
+			gesture.current = null; release(); cancel();
+		});
+		gesture.current = { txId, owner, cancel, release };
+		return txId;
 	}
 
 	function endSceneTransaction(token, { commit }) {
-		store.end(token, { commit });
+		if (gesture.current?.txId !== token) return;
+		gesture.current.release();
+		gesture.current = null;
+		return run(commit ? "run.commit" : "run.cancel", { txId: token });
 	}
+	domain.settle = () => {
+		const active = gesture.current;
+		if (!active) return;
+		const receipt = endSceneTransaction(active.txId, { commit: true });
+		active.cancel();
+		return receipt;
+	};
+	domain.cancelGesture = () => {
+		const active = gesture.current;
+		if (!active) return;
+		endSceneTransaction(active.txId, { commit: false }); active.cancel();
+	};
 
 	// App's single scene-object mutation entry (plan §6.1). A token means a
 	// producer drag stream: apply inside the open transaction so the change
@@ -108,9 +191,9 @@ export function useObjects(appContext) {
 	// atomic edit — one entry. updateSceneObject returns the same array when
 	// nothing changed, so a no-op can never create an entry.
 	function changeSceneObject(id, patch, token) {
-		const apply = (objects) => updateSceneObject(objects, id, patch);
-		if (token != null) store.applyIn(token, apply);
-		else store.applyAtomic(apply);
+		return token != null
+			? run("run.update", { txId: token, args: { id, patch } })
+			: run("object.update", { id, patch });
 	}
 
 	function deleteSelectedSceneObject() {
@@ -123,7 +206,7 @@ export function useObjects(appContext) {
 	function deleteSceneObject(id) {
 		if (!id) return;
 		const wasSelected = id === selectedSceneObjectId;
-		store.applyAtomic((objects) => removeSceneObject(objects, id));
+		run("object.remove", { ids: [id] });
 		setObjectDeleteUndo({ id, pastDepth: store.depths().past });
 		appContext.shared.setInspectorActionsOpen(false);
 		if (wasSelected) {
@@ -181,9 +264,8 @@ export function useObjects(appContext) {
 		const placement = at ?? (camera
 			? placementInFront({ x: camera.position.x, z: camera.position.z }, paneYaw)
 			: {});
-		const object = createSceneObject(kind, sceneObjects, placement);
-		if (!object) return;
-		store.applyAtomic((objects) => [...objects, object]);
+		const receipt = run("object.add", { kind, placement });
+		const object = domain.read().find(row => row.id === receipt.affectedIds[0]);
 		appContext.shared.markCraftAction("object");
 		appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
 		// Deliberate divergence from Unity's rename-on-create: creating an object
@@ -207,8 +289,9 @@ export function useObjects(appContext) {
 	 * than useless in a tool where every camera level is a height in metres —
 	 * 1.8 m is at least an honest starting point to correct from.
 	 */
-	async function importCutout(file) {
+	async function importCutout(file, commandContext) {
 		if (!file) return;
+		if (!commandContext) return importFile(file, "cutout");
 		try {
 			const asset = await rememberAsset(await importImageFile(file));
 			const camera = (appContext.shared.lookThroughShot ? appContext.shared.shotCamRef : appContext.shared.editorCamRef).current;
@@ -217,20 +300,18 @@ export function useObjects(appContext) {
 				: {};
 			const object = createCutoutObject(
 				{ assetId: asset.id, aspect: assetAspect(asset) ?? 1, height: CUTOUT_DEFAULT_HEIGHT, name: cutoutNameFromFile(asset.name) },
-				sceneObjects,
+				domain.read(),
 				placement,
 			);
-			if (!object) return;
-			store.applyAtomic((objects) => [...objects, object]);
-			appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
-			setGizmoMode("move");
+			const imported = publishImported(object, commandContext);
 			appContext.notify(
 				isKo
 					? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
 					: `${object.name} added — type its real height in metres to set the scale`,
 			);
+			return imported;
 		} catch (error) {
-			appContext.notify(isKo ? `이미지를 가져오지 못했어요 — ${error.message}` : `Could not import that image — ${error.message}`);
+			throw new StudioProtocolError(error.code ?? "INVALID_ARGUMENT", `Could not import that image: ${error.message}`);
 		}
 	}
 
@@ -246,28 +327,58 @@ export function useObjects(appContext) {
 	 * `importCutout` without the import: read the record for its true aspect
 	 * and name, mint the card, one atomic history entry.
 	 */
-	async function spawnCutoutAt(assetId, placement) {
+	async function spawnCutoutAt(assetId, placement, commandContext) {
+		if (!commandContext) return importStoredAsset(assetId, "cutout", placement);
 		appContext.shared.markCraftAction("cutout");
 		const record = await assetRecord(assetId);
-		if (!record) {
-			appContext.notify(ko("That image is no longer stored", "그 이미지는 더 이상 저장되어 있지 않아요"));
-			return;
-		}
+		if (!record) throw new StudioProtocolError("TARGET_NOT_READY", "That image is no longer stored.");
 		const object = createCutoutObject(
 			{ assetId: record.id, aspect: assetAspect(record) ?? 1, height: CUTOUT_DEFAULT_HEIGHT, name: cutoutNameFromFile(record.name) },
-			sceneObjects,
+			domain.read(),
 			placement,
 		);
-		if (!object) return;
-		store.applyAtomic((objects) => [...objects, object]);
-		appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
-		setGizmoMode("move");
+		const imported = publishImported(object, commandContext);
 		appContext.notify(
 			isKo
 				? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
 				: `${object.name} added — type its real height in metres to set the scale`,
 		);
+		return imported;
 	}
+
+	const importFiles = useRef(new Map());
+	async function importFile(file, placeAs) {
+		const fileToken = crypto.randomUUID();
+		importFiles.current.set(fileToken, file);
+		try {
+			const receipt = await appContext.bus.run("asset.import", { fileToken, placeAs });
+			if (!receipt.ok) appContext.notify(receipt.message);
+			return receipt;
+		} finally { importFiles.current.delete(fileToken); }
+	}
+	async function importStoredAsset(assetId, placeAs, placement) {
+		const receipt = await appContext.bus.run("asset.import", { assetId, placeAs, ...(placement ? { placement } : {}) });
+		if (!receipt.ok) appContext.notify(receipt.message);
+		return receipt;
+	}
+	function publishImported(object, commandContext) {
+		if (!object) throw new StudioProtocolError("INVALID_ARGUMENT", "Could not create the imported object.");
+		commandContext.commit(() => domain.write(objects => [...objects, object]));
+		appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
+		setGizmoMode("move");
+		return { assetId: object.assetId, objectId: object.id };
+	}
+	domain.importAsset = async (args, context) => {
+		if (args.fileToken) {
+			if (context.origin !== "ui") throw new StudioProtocolError("CAPABILITY_MISSING", "File imports belong to the UI.");
+			const file = importFiles.current.get(args.fileToken);
+			if (!file) throw new StudioProtocolError("STALE_TARGET", "The selected import file is no longer available.");
+			return args.placeAs === "mesh" ? importMesh(file, context) : importCutout(file, context);
+		}
+		if (args.assetId) return args.placeAs === "mesh" ? spawnMeshAt(args.assetId, args.placement, context) : spawnCutoutAt(args.assetId, args.placement, context);
+		return createLegacyObjectHandlers().import_asset(args, context);
+	};
+	domain.applyMatte = applyMatte;
 
 	function meshNameFromFile(fileName) {
 		const base = String(fileName ?? "").replace(/\.[^.]+$/, "").trim();
@@ -296,27 +407,26 @@ export function useObjects(appContext) {
 	 * bitmap. Height and footprint come from the import heuristic once;
 	 * later instances reuse those stored metres.
 	 */
-	async function importMesh(file) {
+	async function importMesh(file, commandContext) {
 		if (!file) return;
+		if (!commandContext) return importFile(file, "mesh");
 		try {
 			const { asset, height, footprint } = await importMeshFile(file);
 			await persistMeshAsset(asset);
 			const object = createMeshObject(
 				{ assetId: asset.id, height, footprint, name: meshNameFromFile(asset.name) },
-				store.objects,
+				domain.read(),
 				placementInFrontOfShot(),
 			);
-			if (!object) return;
-			store.applyAtomic((objects) => [...objects, object]);
-			appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
-			setGizmoMode("move");
+			const imported = publishImported(object, commandContext);
 			appContext.notify(
 				isKo
 					? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
 					: `${object.name} added — type its real height in metres to set the scale`,
 			);
+			return imported;
 		} catch (error) {
-			appContext.notify(isKo ? `모델을 가져오지 못했어요 — ${error.message}` : `Could not import that model — ${error.message}`);
+			throw new StudioProtocolError(error.code ?? "INVALID_ARGUMENT", `Could not import that model: ${error.message}`);
 		}
 	}
 
@@ -329,24 +439,16 @@ export function useObjects(appContext) {
 	 * not keep a previous object's size: it re-reads the blob and fits once,
 	 * the same as a first import, because there is no prior record to copy.
 	 */
-	async function spawnMeshAt(assetId, placement) {
+	async function spawnMeshAt(assetId, placement, commandContext) {
+		if (!commandContext) return importStoredAsset(assetId, "mesh", placement);
 		appContext.shared.markCraftAction("object");
 		const record = await assetRecord(assetId);
-		if (!record) {
-			appContext.notify(ko("That model is no longer stored", "그 모델은 더 이상 저장되어 있지 않아요"));
-			return;
-		}
+		if (!record) throw new StudioProtocolError("TARGET_NOT_READY", "That model is no longer stored.");
 		const compressed = compressedGlbReason(record.bytes);
-		if (compressed) {
-			appContext.notify(isKo ? `모델을 가져오지 못했어요 — ${compressed}` : `Could not import that model — ${compressed}`);
-			return;
-		}
+		if (compressed) throw new StudioProtocolError("INVALID_ARGUMENT", compressed);
 		const bounds = meshBoundsFromAsset(record);
 		const fitted = bounds ? fitMeshBounds(bounds) : null;
-		if (!fitted) {
-			appContext.notify(ko("That model has no measurable geometry", "그 모델은 측정할 수 있는 형태가 없어요"));
-			return;
-		}
+		if (!fitted) throw new StudioProtocolError("INVALID_ARGUMENT", "That model has no measurable geometry.");
 		const object = createMeshObject(
 			{
 				assetId: record.id,
@@ -354,18 +456,16 @@ export function useObjects(appContext) {
 				footprint: fitted.footprint,
 				name: meshNameFromFile(record.name),
 			},
-			store.objects,
+			domain.read(),
 			placement,
 		);
-		if (!object) return;
-		store.applyAtomic((objects) => [...objects, object]);
-		appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
-		setGizmoMode("move");
+		const imported = publishImported(object, commandContext);
 		appContext.notify(
 			isKo
 				? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
 				: `${object.name} added — type its real height in metres to set the scale`,
 		);
+		return imported;
 	}
 
 	/**
@@ -380,12 +480,13 @@ export function useObjects(appContext) {
 	 * so the card's height is scaled with it. The scale is stored rather than
 	 * multiplied in, or a second cut would compound one trim onto the last.
 	 */
-	async function applyMatte(id = selectedSceneObjectId) {
-		const object = sceneObjects.find((item) => item.id === id) ?? null;
+	async function applyMatte(id = selectedSceneObjectId, commandContext) {
+		if (!commandContext) return run("object.matte", { objectId: id });
+		const object = domain.read().find((item) => item.id === id) ?? null;
 		const options = appContext.shared.matteEditorRef.current?.options();
 		// Nothing purple means nothing was asked for. Removing "the background"
 		// on a picture nobody has marked would be a guess applied to their set.
-		if (!object || object.renderer !== CUTOUT_KIND || !options || matteBusy) return;
+		if (!object || object.renderer !== CUTOUT_KIND || !options || matteBusy) throw new StudioProtocolError("TARGET_NOT_READY", "Select a cutout with a painted matte first.");
 		setMatteBusy(true);
 		try {
 			const sourceId = object.sourceAssetId || object.assetId;
@@ -400,21 +501,22 @@ export function useObjects(appContext) {
 				rememberAsset({ ...matte, role: "derived" }),
 			]);
 			const fullFrameHeight = object.height / (object.matteScale || 1);
-			changeSceneObject(object.id, {
+			commandContext.commit(() => domain.write(objects => updateSceneObject(objects, object.id, {
 				assetId: cut.asset.id,
 				sourceAssetId: source.id,
 				matteAssetId: matte.id,
 				matteScale: cut.heightScale,
 				aspect: cut.asset.width / cut.asset.height,
 				height: fullFrameHeight * cut.heightScale,
-			});
+			})));
 			appContext.notify(
 				isKo
 					? `${object.name} 배경 제거 — ${Math.round(cut.removed * 100)}% 지움. 원본과 칠한 영역은 그대로 남습니다`
 					: `${object.name} — ${Math.round(cut.removed * 100)}% removed. The original and your selection are kept`,
 			);
+			return { objectId: object.id };
 		} catch (error) {
-			appContext.notify(isKo ? `배경을 제거하지 못했어요 — ${error.message}` : `Could not remove the background — ${error.message}`);
+			throw new StudioProtocolError(error.code ?? "TARGET_NOT_READY", `Could not remove the background: ${error.message}`);
 		} finally {
 			setMatteBusy(false);
 		}
@@ -424,22 +526,23 @@ export function useObjects(appContext) {
 		// Defaults to the selection (Ctrl/Cmd+D); the hierarchy context menu
 		// passes a specific row's id. Same result either way: the copy is
 		// selected, offset one grid step, and toasted.
-		const object = sceneObjects.find((item) => item.id === id) ?? null;
+		const objects = domain.read();
+		const object = objects.find((item) => item.id === id) ?? null;
 		if (!object) return;
 		const placement = { x: object.x, z: object.z, rot: object.rot };
 		// A cutout cannot be minted from the catalogue — it needs the picture the
 		// original is already wearing — so the copy is created through its own
 		// door and shares the asset rather than importing it twice.
 		const copy = object.renderer === CUTOUT_KIND
-			? createCutoutObject(duplicateCutoutOptions(object), sceneObjects, placement)
+			? createCutoutObject(duplicateCutoutOptions(object), objects, placement)
 			: object.renderer === MESH_KIND
-				? createMeshObject(duplicateMeshOptions(object), sceneObjects, placement)
-				: createSceneObject(object.renderer, sceneObjects, placement);
+				? createMeshObject(duplicateMeshOptions(object), objects, placement)
+				: createSceneObject(object.renderer, objects, placement);
 		if (!copy) return;
 		// Unity drops the duplicate exactly on top of the original; for blocking,
 		// one grid step to the side means you can see that it worked.
 		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
-		store.applyAtomic((objects) => [...objects, placed]);
+		domain.write((objects) => [...objects, placed]);
 		appContext.shared.setSelectedHierarchyId(`object:${placed.id}`);
 		appContext.notify((isKo, ko) => isKo ? `${sceneObjectNameDisplayKo(placed.name)} 복제됨` : `${placed.name} duplicated`);
 	}
@@ -458,7 +561,7 @@ export function useObjects(appContext) {
 	 * create). The row label lives in the tree; the object name is shared
 	 * state, so this is just the inspector's rename through another door. */
 	function renameSceneObject(id, name) {
-		changeSceneObject(id, { name });
+		return run("object.rename", { id, name });
 	}
 
 	/** The prop's live world matrix, falling back to its authored numbers while
@@ -531,13 +634,18 @@ export function useObjects(appContext) {
 		});
 	}
 	function createLegacyObjectHandlers(finitePatch) {
-		let batchToken = null;
+		let batchObjects = null;
 		const IMPORT_BACKDROP_DISTANCE_M = 12, IMPORT_BACKDROP_HEIGHT_M = 5;
 		function syncObjects() { appContext.patchLive({ objects: storeRef.current.objects }); }
-		function applyObjectMutation(mutation) { if (batchToken === null) storeRef.current.applyAtomic(mutation); else storeRef.current.applyIn(batchToken, mutation); syncObjects(); }
+		function applyObjectMutation(mutation) { if (batchObjects === null) domain.write(mutation); else batchObjects = mutation(batchObjects); }
+		const liveObjects = () => ({ ...appContext.live.state, objects: batchObjects ?? domain.read() });
 		function placeObject(args) {
+			if (batchObjects === null) {
+				const receipt = run("object.add", { kind: args.kind, placement: finitePatch(args, ["x", "y", "z", "rot"]), ...(args.name === undefined ? {} : { name: args.name }), ...(args.parent === undefined ? {} : { parent: args.parent }) });
+				return { id: receipt.affectedIds[0] };
+			}
 			if (typeof args.kind !== "string") throw new Error("Invalid kind");
-			const live = appContext.live.state;
+			const live = liveObjects();
 			// The parent is checked before anything is created: a bad id must
 			// not leave a half-made part lying around unattached.
 			if (args.parent !== undefined) {
@@ -563,6 +671,10 @@ export function useObjects(appContext) {
 			return { id: placed.id };
 		}
 		async function importAsset(args, commandContext) {
+			if (!commandContext) {
+				const { dataUrl: source, ...options } = args;
+				return (await run("asset.import", { source, ...options })).output;
+			}
 			if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
 			if (args.placeAs === "mesh") {
 				const dataUrl = args.dataUrl;
@@ -622,8 +734,7 @@ export function useObjects(appContext) {
 					object = updateSceneObject([object], object.id, { height: args.height })[0];
 				}
 				if (Number.isFinite(args.y)) object.y = args.y;
-				commandContext?.check();
-				applyObjectMutation((objects) => [...objects, object]);
+				commandContext.commit(() => domain.write((objects) => [...objects, object]));
 				return { assetId: asset.id, objectId: object.id };
 			}
 			if (args.placeAs !== "cutout" && args.placeAs !== "backdrop") throw new Error('placeAs must be "cutout", "backdrop" or "mesh"');
@@ -660,12 +771,16 @@ export function useObjects(appContext) {
 				placement,
 			);
 			if (!object) throw new Error("Could not create the cutout object");
-			commandContext?.check();
-			applyObjectMutation((objects) => [...objects, object]);
+			commandContext.commit(() => domain.write((objects) => [...objects, object]));
 			return { assetId: asset.id, objectId: object.id };
 		}
 		function updateObject(args) {
-			const live = appContext.live.state;
+			if (batchObjects === null) {
+				const { id, scale, ...patch } = args;
+				run("object.update", { id, patch: { ...(scale === undefined ? {} : { scaleX: scale, scaleY: scale, scaleZ: scale }), ...patch } });
+				return { id };
+			}
+			const live = liveObjects();
 			if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
 			const patch = finitePatch(args, ["x", "y", "z", "rot", "rotX", "rotZ"]);
 			// A uniform `scale` is the common case; per-axis values are what a
@@ -699,13 +814,15 @@ export function useObjects(appContext) {
 			return { id: args.id };
 		}
 		function removeObject(args) {
-			const live = appContext.live.state;
+			if (batchObjects === null) { run("object.remove", { ids: [args.id] }); return { id: args.id }; }
+			const live = liveObjects();
 			if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
 			applyObjectMutation((objects) => removeSceneObject(objects, args.id));
 			return { id: args.id };
 		}
 		function groupObjects(args) {
-			const live = appContext.live.state;
+			if (batchObjects === null) { run("object.group", args); return { parent: args.parent, children: args.children.length }; }
+			const live = liveObjects();
 			if (typeof args.parent !== "string" || !live.objects.some((o) => o.id === args.parent)) {
 				throw new Error("Parent object not found");
 			}
@@ -719,7 +836,8 @@ export function useObjects(appContext) {
 			return { parent: args.parent, children: args.children.length };
 		}
 		function ungroupObjects(args) {
-			const live = appContext.live.state;
+			if (batchObjects === null) { run("object.ungroup", args); return { children: args.children.length }; }
+			const live = liveObjects();
 			if (!Array.isArray(args.children) || !args.children.length) throw new Error("No children given");
 			for (const child of args.children) {
 				if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
@@ -729,8 +847,9 @@ export function useObjects(appContext) {
 			);
 			return { children: args.children.length };
 		}
-		function applyObjectBatch(args) {
-			if (batchToken !== null) throw new Error("Nested batches are not supported");
+		function applyObjectBatch(args, inside = false) {
+			if (!inside) return run("objects.batch", args).output;
+			if (batchObjects !== null) throw new Error("Nested batches are not supported");
 			if (!Array.isArray(args.ops)) throw new Error("Invalid batch operations");
 			if (args.ops.length > 100) throw new Error("A batch may contain at most 100 operations");
 			if (args.atomic !== undefined && typeof args.atomic !== "boolean") throw new Error("Invalid atomic flag");
@@ -747,15 +866,10 @@ export function useObjects(appContext) {
 			}
 			const atomic = args.atomic === true;
 			const stopOnError = args.stopOnError !== false;
-			const depthBefore = storeRef.current.depths().past;
-			const token = storeRef.current.begin(args.label?.trim() || "MCP batch", () => {});
-			const priorSuppressObjectClock = appContext.suppressObjectClock;
-			appContext.suppressObjectClock = true;
+			batchObjects = domain.read();
 			const applied = [];
 			const failed = [];
-			batchToken = token;
 			let rolledBack = false;
-			let commit = false;
 			try {
 				for (const [index, operation] of args.ops.entries()) {
 					try {
@@ -767,18 +881,16 @@ export function useObjects(appContext) {
 					}
 				}
 				rolledBack = atomic && failed.length > 0;
-				commit = !rolledBack;
+				if (!rolledBack) domain.write(batchObjects);
 			} finally {
-				batchToken = null;
-				appContext.suppressObjectClock = priorSuppressObjectClock;
-				storeRef.current.end(token, { commit });
+				batchObjects = null;
 			}
-			if (!rolledBack && storeRef.current.depths().past > depthBefore) appContext.advanceObjectClock();
 			syncObjects();
 			return { label: args.label?.trim() || "MCP batch", applied, failed, rolledBack };
 		}
 		const handlers = { place_object: placeObject, import_asset: importAsset, update_object: updateObject, remove_object: removeObject, group_objects: groupObjects, ungroup_objects: ungroupObjects, apply_batch: applyObjectBatch };
-return handlers;
+		domain.batch = args => applyObjectBatch(args, true);
+		return handlers;
 	}
 	function canReparentSceneObject(sourceRowId, targetRowId) {
 		const id = sceneObjectIdFromHierarchy(String(sourceRowId ?? ""));
@@ -804,27 +916,27 @@ return handlers;
 		// (the store's exclusivity rule), so a carried prop dropped into a
 		// group comes back to world numbers on the way, exactly as the Props
 		// row would put it back.
-		if (targetObjectId) {
-			const carried = appContext.shared.animatedSceneObjects.find((entry) => entry.id === id) ?? null;
-			const restored = carried?.attach
-				? attachPlacementPatch(sceneObjectWorldMatrix(carried), null, appContext.shared.attachFrameRef.current)
-				: null;
-			store.applyAtomic((objects) => {
-				const next = setSceneObjectParent(objects, id, targetObjectId);
-				return next === objects ? objects : placeSceneObject(next, id, restored);
-			});
-			return;
-		}
+		if (targetObjectId) return run("object.group", { parent: targetObjectId, children: [id] });
 		const attach = targetRowId === "props" ? null : attachTargetForRow(targetRowId);
 		appContext.shared.runStudioAction(attach ? "object.attach" : "object.detach", attach
 			? { objectId: id, characterId: attach.characterId, ...(attach.bone ? { bone: attach.bone } : {}) }
 			: { objectId: id });
 	}
+	domain.group = (parent, children) => {
+		const placements = new Map(children.map(id => {
+			const object = domain.read().find(row => row.id === id);
+			const shown = appContext.shared.animatedSceneObjects.find(row => row.id === id) ?? object;
+			const placement = object.attach ? attachPlacementPatch(sceneObjectWorldMatrix(shown), null, appContext.shared.attachFrameRef.current) : null;
+			if (object.attach && !placement) throw new StudioProtocolError("TARGET_NOT_READY", `Object ${id} is not on stage.`);
+			return [id, placement];
+		}));
+		domain.write(objects => children.reduce((rows, id) => placeSceneObject(setSceneObjectParent(rows, id, parent), id, placements.get(id)), objects));
+	};
 	function settleObjects() { return storeRef.current.settle(); }
 	function beginStudioObjectAction() { return storeRef.current.beginCommand(); }
 	function stepObjectHistory(redo) { return (redo ? storeRef.current.redo : storeRef.current.undo)(); }
 	function applyExternalObjects(objects) {
-		storeRef.current.applyAtomic(() => Array.isArray(objects) ? objects : []);
+		return run("objects.replace", { objects: Array.isArray(objects) ? objects : [] });
 	}
 	function commitStudioObjects(draft, historyEntryId) {
 		const before = storeRef.current.objects;
@@ -833,10 +945,10 @@ return handlers;
 		appContext.shared.studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: appContext.objectClock, depth: storeRef.current.depths().past });
 	}
 	return {
-		beginStudioObjectAction, stepObjectHistory, applyExternalObjects, commitStudioObjects,
+		...domain, run, beginStudioObjectAction, stepObjectHistory, applyExternalObjects, commitStudioObjects,
 		createLegacyObjectHandlers, canReparentSceneObject, reparentSceneObject, settleObjects,
 		recentObjectColors, objectColorDraft, setObjectColorDraft, rememberSceneObjectColor, objectDeleteUndo,
-		setObjectDeleteUndo, sceneObjects, setSceneObjects, storeRef, store, selectedSceneObjectId,
+		setObjectDeleteUndo, sceneObjects, storeRef, store, selectedSceneObjectId,
 		selectedSceneObject, beginSceneTransaction, endSceneTransaction, changeSceneObject,
 		deleteSelectedSceneObject, deleteSceneObject, dropSelectedSceneObject, matteTolerance, setMatteTolerance,
 		matteBrush, setMatteBrush, matteShrink, setMatteShrink, matteFeather, setMatteFeather, matteMode,

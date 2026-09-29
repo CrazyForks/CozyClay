@@ -111,7 +111,7 @@ test('acceptance 4: both App object-store callbacks join the facade clock', () =
   walk(parsed.program, node => {
     if (node.type === 'Property' && node.key.name === 'onObjects') callbacks.push(node.value);
   });
-  assert.equal(callbacks.length, 2, 'initial store and scene-replacement store');
+  assert.equal(callbacks.length, 1, 'only the native scene-load fallback retains an onObjects callback');
   for (const callback of callbacks) {
     const context = createAppContext().forRender({ setSceneObjects: () => {} });
     const onObjects = new Function('appContext', 'setSceneObjects', `return (${app.slice(callback.start, callback.end)});`)(context, () => {});

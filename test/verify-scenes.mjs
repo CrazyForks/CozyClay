@@ -395,7 +395,7 @@ assert.match(
 const batchSource = readStudioFunction("applyObjectBatch");
 assert.match(
 	batchSource,
-	/const token = storeRef\.current\.begin[\s\S]*?try \{[\s\S]*?finally \{[\s\S]*?batchToken = null;[\s\S]*?storeRef\.current\.end\(token,/,
+	/batchObjects = domain\.read\(\);[\s\S]*?try \{[\s\S]*?if \(!rolledBack\) domain\.write\(batchObjects\);[\s\S]*?finally \{[\s\S]*?batchObjects = null;/,
 	"apply_batch always releases its transaction and restores mutation state",
 );
 assert.match(

@@ -30,8 +30,9 @@ import { HISTORY_LIMIT } from "../src/history.js";
 import { createAppContext } from "../src/app-context.js";
 import { createCommandBus } from "../src/command-bus.js";
 import { createShot } from "../src/cuts.js";
-import { createStudioCommandJournal } from "../src/studio-agent-commands.js";
-import { createStudioActionRegistry } from "../src/studio-actions.js";
+import { createStudioCommandJournal, arrangement } from "../src/studio-agent-commands.js";
+import { createStudioAppActions } from "../src/commands/index.js";
+import { createSceneObject, setSceneObjectParent } from "../src/scene-objects.js";
 import * as shotCommands from "../src/commands/shot.js";
 import * as castCommands from "../src/commands/cast.js";
 import * as motionCommands from "../src/commands/motion.js";
@@ -151,6 +152,11 @@ const COMMAND_INPUTS = {
 	"character.removeIkKey": { characterId: "actor", frame: 12 }, "character.clearIkKeys": { characterId: "actor" },
 	"object.attach": { objectId: "object-1", characterId: "actor" }, "object.detach": { objectId: "object-1" }, "object.duplicate": { objectId: "object-1" },
 	"asset.import": { source: "https://assets.example.test/poster.png", name: "poster.png", placeAs: "cutout" },
+	"object.set": { id: "object-1", set: { name: "Generic" } }, "object.add": { kind: "cone" },
+	"object.remove": { ids: ["object-1"] }, "object.rename": { id: "object-1", name: "Renamed" },
+	"object.update": { id: "object-1", patch: { x: 2 } },
+	"object.group": { parent: "group-2", children: ["object-1"] }, "object.ungroup": { children: ["object-1"] },
+	"objects.arrange": { ops: [{ op: "remove", id: "object-1" }] }, "objects.replace": { objects: [createSceneObject("cone")] },
 	"view.setPartColours": { mode: "flat" }, "view.setGuideMode": { mode: "thirds" }, "view.setInset": { collapsed: true },
 	"scene.create": {}, "scene.duplicate": { sceneId: "scene-1" }, "scene.rename": { sceneId: "scene-1", name: "Renamed" },
 	"scene.delete": { sceneId: "scene-2" }, "scene.switch": { sceneId: "scene-2" }, "project.save": {},
@@ -163,7 +169,7 @@ function commandFixture({ frame = 8 } = {}) {
 	const host = { workspaceId: "workspace", documentEpoch: "document", sceneId: "scene-1", sceneEpoch: "epoch" };
 	const state = {
 		shots: [{ ...createShot("Shot 1", 0, 15, [], { mode: "rail", cameraRail: [{ x: -2, z: 4 }, { x: 2, z: 4 }] }), id: "shot-1" }],
-		objects: [{ id: "parent-1", name: "Group" }, { id: "object-1", name: "Cube", parent: "parent-1" }],
+		objects: [{ ...createSceneObject("sphere"), id: "parent-1" }, { ...createSceneObject("cube"), id: "object-1", parent: "parent-1" }, { ...createSceneObject("chair"), id: "group-2" }],
 		characters: [{ id: "actor", subject: "Ada" }], frame, frameCount: 48, selectedObjectId: null, activeCharacterId: "actor",
 		promptBlockCount: 0, generating: false, motionReady: true, exporting: false, canExportVideo: true,
 		scenes: [{ id: "scene-1", name: "ONE" }, { id: "scene-2", name: "TWO" }], activeSceneId: "scene-1",
@@ -171,10 +177,13 @@ function commandFixture({ frame = 8 } = {}) {
 		aiShot: { mode: "image", imageModel: "gpt_image_2" }, falMotion: { enabled: false, status: "idle", dailyRemaining: null },
 	};
 	const entries = [], writes = [];
-	let recording = null, revision = 0;
+	let recording = null, revision = 0, objectDomain;
 	const answers = {
 		// Like the editor's, every read is a fresh snapshot of the document.
 		state: () => ({ ...state }),
+		storeDomain: name => name === 'objects' ? objectDomain : undefined,
+		writeObjects: rows => { state.objects = rows; },
+		duplicateSelectedSceneObject: id => { state.objects = [...state.objects, { ...state.objects.find(row => row.id === id), id: 'object-2' }]; },
 		addCharacterWaypoint: (id, position, frame) => ({ waypoint: { frame: frame ?? 12, ...position }, index: 0, warnings: [] }),
 		moveCharacterWaypoint: (id, frame, position) => ({ waypoint: { frame, ...position }, warnings: [] }),
 		clearCharacterWaypoints: () => 1, clearCharacterIkKeys: () => 1,
@@ -184,7 +193,7 @@ function commandFixture({ frame = 8 } = {}) {
 		afterRender: async () => {},
 	};
 	const ports = new Proxy({}, {
-		get: (_, name) => name === "state" ? answers.state : (...args) => {
+		get: (_, name) => ["state", "storeDomain"].includes(name) ? answers[name] : (...args) => {
 			writes.push({ name, inside: recording });
 			// A write republishes the document, so a diff of rows sees the edit.
 			state.shots = state.shots.map(row => ({ ...row }));
@@ -192,11 +201,16 @@ function commandFixture({ frame = 8 } = {}) {
 			return answers[name]?.(...args);
 		},
 	});
-	const registries = Object.fromEntries(Object.entries(COMMAND_MODULES).map(([name, module]) => {
-		const registry = createStudioActionRegistry({ readState: () => ports.state() });
-		module.register(registry, ports);
-		return [name, registry];
-	}));
+	objectDomain = {
+		read: () => state.objects,
+		write: rows => ports.writeObjects(rows),
+		group: (parent, children) => ports.writeObjects(children.reduce((rows, id) => setSceneObjectParent(rows, id, parent), state.objects)),
+		arrange: args => {
+			const plan = arrangement({ name: 'arrange_objects', args }, state, { bounds: () => [] });
+			ports.writeObjects(plan.draft); return plan;
+		},
+	};
+	const registries = Object.fromEntries(Object.entries(COMMAND_MODULES).map(([name, module]) => [name, createStudioAppActions(ports, { [name]: module })]));
 	const journal = createStudioCommandJournal({ host });
 	const bus = registry => createCommandBus({ registry, ports: {
 		read: () => ({ host, revision, domainRevisions: {} }), journal: () => journal,
@@ -223,13 +237,13 @@ const cases = {
 				assert.equal(entry.kind, declaration.kind, `${declaration.id} keeps its kind`);
 				assert.equal(entry.undoDomain, declaration.undoDomain, `${declaration.id} keeps its declared undo domain`);
 				if (entry.kind === "mutation") assert.ok(HISTORY_DOMAINS.includes(entry.undoDomain), `${entry.id} names a history domain`);
-				else assert.equal(entry.undoDomain, undefined, `${entry.id} is outside the undo history`);
+				else assert.equal(entry.undoDomain, entry.id === 'asset.import' ? 'objects' : undefined, `${entry.id} retains its declared owner when promoted to a committing job`);
 			}
 		}
 	},
 	async "every command mutation writes inside one entry of its undo domain"() {
 		const mutations = Object.values(COMMAND_MODULES).flatMap(module => module.declarations).filter(entry => entry.kind === "mutation");
-		assert.equal(mutations.length, 19);
+		assert.equal(mutations.length, 27);
 		for (const declaration of mutations) {
 			// A new shot needs free room at the playhead; the others act inside shot-1.
 			const f = commandFixture({ frame: declaration.id === "shot.create" ? 24 : 8 }), [name] = Object.entries(COMMAND_MODULES).find(([, module]) => module.declarations.includes(declaration));

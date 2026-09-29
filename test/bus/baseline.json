@@ -1,10 +1,10 @@
 {
   "version": 1,
   "coverage": {
-    "writerReferences": 214,
-    "handlerSites": 11,
-    "handlerTotal": 789,
-    "registeredCommands": 37
+    "writerReferences": 207,
+    "handlerSites": 33,
+    "handlerTotal": 800,
+    "registeredCommands": 46
   },
   "writers": {
     "App.jsx::<anonymous>": 44,
@@ -62,8 +62,6 @@
     "domains/motion.js::generateFalMotion": 9,
     "domains/motion.js::publishStudioMotion": 1,
     "domains/motion.js::updateFalMotionQuota": 1,
-    "domains/objects.js::useObjects": 3,
-    "domains/objects.js::<anonymous>": 1,
     "domains/scenes.js::useScenes": 4,
     "domains/scenes.js::applyProject": 2,
     "domains/scenes.js::newProject": 2,
@@ -89,8 +87,6 @@
     "domains/shots.js::exportShotVideo": 1,
     "domains/shots.js::renameTimelineShot": 1,
     "domains/shots.js::useShots": 2,
-    "panels/ObjectTransformPanel.jsx::ObjectTransformPanel": 2,
-    "panels/ObjectTransformPanel.jsx::<anonymous>": 1,
     "panels/PosePanel.jsx::PosePanel": 4,
     "panels/PosePanel.jsx::<anonymous>": 3,
     "panels/RigPanel.jsx::RigPanel": 2,

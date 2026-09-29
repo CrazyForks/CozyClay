@@ -31,7 +31,7 @@ import * as studioActions from '../src/studio-actions.js';
 import { createCommandBus, withCommandHistory } from '../src/command-bus.js';
 import { createStudioAppBinding } from '../src/studio-app-binding.js';
 import { createAppContext } from '../src/app-context.js';
-import { createStudioAppActions } from '../src/commands/index.js';
+import { createStudioAppActions, commandDeclarations } from '../src/commands/index.js';
 import { HISTORY_LIMIT } from '../src/history.js';
 import { focalMmToFov, fovToFocalMm, IMAGE_MODELS, CUSTOM_MOVE, SUBJECT_HEIGHT_M, composePrompt, deriveShot } from '../src/shot.js';
 import { PART_COLOURS } from '../src/part-colours.js';
@@ -203,7 +203,7 @@ function fixture(options={}) {
   saveProject:async saveAs=>{stand.saves.push(saveAs);return stand.saveOutcome;},
   projectFileGranted:async()=>stand.granted,
   // The live import_asset path: bytes stored, then ONE atomic store entry.
-  importAsset:async args=>{stand.imports.push(args);if(stand.importError)throw new Error(stand.importError);const object=objects.createCutoutObject({assetId:'img-0a1b2c',aspect:1,height:1.8,name:args.name},store.current.objects,{x:1,z:2});store.current.applyAtomic(list=>[...list,object]);return {assetId:'img-0a1b2c',objectId:object.id};},
+  importAsset:async (args,context)=>{stand.imports.push(args);if(stand.importError)throw new Error(stand.importError);const object=objects.createCutoutObject({assetId:'img-0a1b2c',aspect:1,height:1.8,name:args.name},store.current.objects,{x:1,z:2});context.commit(()=>store.current.applyAtomic(list=>[...list,object]));return {assetId:'img-0a1b2c',objectId:object.id};},
   fetchImportSource:async url=>{stand.fetched.push(url);if(url.includes('missing'))throw new Error('HTTP 404');return 'data:model/gltf-binary;base64,Z2xURg==';},
   exportShotVideo:async options=>{stand.exports.push(options);return stand.exportResult;},
   // The editor answers a scene change once React has rendered the new room.
@@ -537,7 +537,7 @@ const implementations={
  async 'patch-during-gesture'(f){f.scope.studioGestureRef.current=true;const r=await f.call('patch_elements',f.request('patch_elements',{ops:[{target:{kind:'stage'},set:{'keyLight.warmth':0.9}}]}));assert.equal(r.code,'TARGET_BUSY',JSON.stringify(r));assert.equal(f.history.current.past.length,0);assert.equal(f.live.current.stage.keyLight.warmth,0.5);},
  async 'run-action-shot-create-and-undo'(f){
   const listed=await f.call('inspect_studio',{scope:'actions'});
-  assert.deepEqual(listed.actions.map(a=>a.id).sort(),[...studioActions.STUDIO_ACTION_IDS, 'stage.set', 'stage.setKeyLight', 'stage.setEnvironment', 'stage.setStyle', 'stage.setFilmback'].sort(),'the App registers every declared action');
+  assert.deepEqual(listed.actions.map(a=>a.id).sort(),commandDeclarations().map(entry=>entry.id).sort(),'the App registers every declared action');
   const byId=Object.fromEntries(listed.actions.map(a=>[a.id,a]));
   assert.equal(byId['shot.create'].available,true,JSON.stringify(byId['shot.create']));
   assert.equal(byId['shot.create'].input,undefined,'the listing carries no schema');
@@ -905,14 +905,14 @@ const implementations={
   const before=f.binding.refresh().revision;
   // A data URL goes straight to the editor's import path.
   const poster=await run({source:'data:image/png;base64,AAAA',name:'poster.png',placeAs:'backdrop'});
-  assert.equal(poster.status,'applied',JSON.stringify(poster));assert.equal(poster.action,'asset.import');
+  assert.equal(poster.status,'completed',JSON.stringify(poster));assert.equal(poster.action,'asset.import');
   const placed=f.store.current.objects.at(-1);
   assert.deepEqual(poster.affectedIds,[placed.id]);assert.deepEqual(poster.revision,{before,after:before+1});assert.notEqual(poster.undo,null);
   assert.equal(poster.delta[0].after.name,'poster.png');assert.match(poster.summary,/img-0a1b2c/);
   assert.deepEqual(f.stand.imports,[{name:'poster.png',placeAs:'backdrop',dataUrl:'data:image/png;base64,AAAA'}]);assert.deepEqual(f.stand.fetched,[]);
   // An http(s) URL is fetched by the editor, then imported the same way.
   const chair=await run({source:'https://example.test/chair.glb',name:'chair.glb',placeAs:'mesh'});
-  assert.equal(chair.status,'applied',JSON.stringify(chair));
+  assert.equal(chair.status,'completed',JSON.stringify(chair));
   assert.deepEqual(f.stand.fetched,['https://example.test/chair.glb']);
   assert.deepEqual(f.stand.imports[1],{name:'chair.glb',placeAs:'mesh',dataUrl:'data:model/gltf-binary;base64,Z2xURg=='});
   assert.equal(f.store.current.objects.length,2);
