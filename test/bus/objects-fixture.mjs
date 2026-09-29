@@ -9,6 +9,9 @@ const source = readFileSync(new URL('../../src/app-stage.jsx', import.meta.url),
 const carried = source.slice(source.indexOf('export const ATTACH_BONE_ROWS'), source.indexOf('export const CAMERA_MOVE_LABELS_KO'));
 const server = await createServer({ configFile: false, server: { middlewareMode: true, hmr: false }, appType: 'custom', plugins: [{
   name: 'objects-without-renderer', enforce: 'pre', load(id) {
+    if (id.endsWith('/src/scene-assets.js')) return `export * from './scene-assets.js?real';
+      import { db } from '../test/bus/objects-asset-db.mjs';
+      export const openAssetDb = async () => db;`;
     if (id.endsWith('/src/app-stage.jsx')) return `import * as THREE from 'three';
       import { SCENE_ATTACH_BONES } from './scene-objects.js';
       import { TRAIL_EFFECTOR_JOINTS } from './motion-trail.js';
@@ -19,9 +22,10 @@ const server = await createServer({ configFile: false, server: { middlewareMode:
       export const sceneRendererLabelKo = name => name;`;
   },
 }] });
-let useObjects, AppContext;
+let useObjects, AppContext, assetDb;
 export const objectPanels = {};
 try {
+  assetDb = await server.ssrLoadModule('/test/bus/objects-asset-db.mjs');
   ({ useObjects } = await server.ssrLoadModule('/src/domains/objects.js'));
   ({ AppContext } = await server.ssrLoadModule('/src/app-context.js'));
   for (const name of ['ObjectTransformPanel', 'PropsPanel']) objectPanels[name] = (await server.ssrLoadModule(`/src/panels/${name}.jsx`)).default;
@@ -40,7 +44,8 @@ export function objectsFixture(initial = ['cube', 'sphere', 'chair'].map(kind =>
   f.store.current = objects.store;
   f.scope.store = objects.store;
   f.scope.objectsDomain = objects;
-  Object.assign(f.actionHandlers.current, app.actionPorts, { duplicateSelectedSceneObject: objects.duplicateSelectedSceneObject, attachSceneObject: objects.attachSceneObject });
+  const legacy = objects.createLegacyObjectHandlers((args, keys) => Object.fromEntries(keys.filter(key => args[key] !== undefined).map(key => [key, args[key]])));
+  Object.assign(f.actionHandlers.current, app.actionPorts, { duplicateSelectedSceneObject: objects.duplicateSelectedSceneObject, attachSceneObject: objects.attachSceneObject, importAsset: legacy.import_asset });
   // Production constructs the registry after mounting its domain hooks.
   const registry = createStudioAppActions(f.actionHandlers.current);
   f.ports.actions = () => registry;
@@ -53,5 +58,5 @@ export function objectsFixture(initial = ['cube', 'sphere', 'chair'].map(kind =>
     renderToStaticMarkup(createElement(AppContext.Provider, { value: app }, createElement(Capture)));
     return tree;
   }
-  return { ...f, objects, registry, panel, dispose() { f.dispose(); objects.dispose?.(); } };
+  return { ...f, objects, registry, panel, assetDb, dispose() { f.dispose(); objects.dispose?.(); } };
 }
