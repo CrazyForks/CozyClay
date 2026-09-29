@@ -2365,6 +2365,8 @@ export function useMotion(appContext) {
 			) {
 				throw new Error(ko("ARDY returned motion without verified authored IK keys", "ARDY가 검증된 수동 IK 키 없이 모션을 반환했어요"));
 			}
+			job.commandContext?.check();
+			if (!done.motionUrl) throw generationRefusal('TARGET_NOT_READY', 'The generator finished without a motion artifact.');
 			setArdyOutcome({ ok: true, output: done.output, bytes: done.bytes, motionUrl: done.motionUrl, rotationDeg: job.rootRotationDeg });
 			request.succeed();
 			trackActivation("motion");
