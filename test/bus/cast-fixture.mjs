@@ -42,6 +42,8 @@ export function castFixture() {
   const registry = createStudioAppActions(f.actionHandlers.current);
   scope.studioActionsRef.current = registry;
   f.ports.actions = () => registry;
+  app.updatePorts({ read: f.actual.readStudioState, bounds: f.actual.studioBounds, revision: f.revision,
+    poses: () => f.poses, actions: () => registry, recordAction: f.actual.recordStudioAction, beginAction: f.actual.beginStudioAction });
   Object.assign(f.ports, app.ports);
   const run = (id, args = {}, origin = 'ui', options = {}) => f.binding.bus.run(id, args, {
     origin, host: f.host(), expectedRevision: f.binding.refresh().revision, ...options,

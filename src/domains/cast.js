@@ -1,6 +1,8 @@
 import { copyPhysicsKeys } from "../ardy/physics-review.js";
-import { useSemanticState } from "../use-semantic-state.js";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useSyncExternalStore } from "react";
+import { createDocumentStore } from "../document-store.js";
+import { useDocumentDomain } from "../store/use-document-store.js";
+import { arrangement } from "../studio-agent-commands.js";
 import {
 	loadCustomPoses,
 	DEFAULT_POSE,
@@ -35,14 +37,110 @@ import { movePromptClipFrames } from "../ardy/prompt-clips.js";
 
 import { HISTORY_LIMIT } from "../history.js";
 
-export function useCast(appContext) {
-	// The cast is ONE list now: every character (position, rig model, pose,
-	// subject line) lives in `characters`, and the legacy A/B view of the
-	// world is derived below so the rest of the studio keeps working while
-	// spawned extras ride the same rails.
-	const [characters, setCharacters, editCharacters] = useSemanticState(appContext.shared.startupStage.characters, appContext.shared.markSemanticEdit, "characters");
+const sameCastValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-	const [customPoses, setCustomPoses] = useState(() => loadCustomPoses());
+export function createCastDomain(appContext, initial, customPoses = []) {
+	const normalize = value => ({ characters: (Array.isArray(value) ? value : value.characters).map(createCharacterEntry),
+		customPoses: Array.isArray(value) ? customPoses : value.customPoses ?? customPoses });
+	let native = createDocumentStore({ owned: { cast: normalize(initial) } });
+	const listeners = new Set(), motions = new Map();
+	const notify = () => { for (const listener of listeners) listener(); };
+	let release = native.subscribe(notify), loading = false;
+	const documentStore = { ...Object.fromEntries(Object.keys(native).map(key => [key, (...args) => native[key](...args)])),
+		subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+	const state = () => documentStore.read('cast'), read = () => state().characters;
+	let projection = read(), previous = state();
+	function publish() {
+		projection = read().map(entry => motions.has(entry.id) ? { ...entry, sessionMotion: motions.get(entry.id) } : entry);
+		appContext.publishCharacters(projection);
+		if (appContext.live.state) appContext.patchLive({ characters: projection });
+		domain.syncLayer?.();
+		if (!loading && !sameCastValue(previous, state())) appContext.shared.markSemanticEdit('characters', previous.characters, projection);
+		previous = state();
+	}
+	const unsubscribe = documentStore.subscribe(publish);
+	function writeState(update) {
+		return documentStore.write('cast', before => {
+			const next = normalize(typeof update === 'function' ? update(before) : update);
+			return sameCastValue(before, next) ? before : next;
+		});
+	}
+	function write(update) {
+		return writeState(before => ({ ...before, characters: typeof update === 'function' ? update(before.characters) : update }));
+	}
+	function publishMotion(characterId, motion) {
+		if (motion) motions.set(characterId, motion); else motions.delete(characterId);
+		publish(); notify();
+	}
+	function run(id, args = {}) {
+		const receipt = appContext.bus.run(id, args);
+		if (!receipt.ok) throw new StudioProtocolError(receipt.code, receipt.message);
+		return receipt;
+	}
+	let gesture = null;
+	function finishGesture(cancel = false) {
+		if (!gesture) return;
+		const active = gesture; gesture = null; active.unsubscribe?.(); active.release();
+		return active.txId ? run(cancel ? 'run.cancel' : 'run.commit', { txId: active.txId }) : undefined;
+	}
+	function beginGesture() {
+		if (gesture) return;
+		const commit = () => finishGesture(), cancel = () => finishGesture(true);
+		const keydown = event => { if (event.key === 'Escape') cancel(); };
+		const events = { pointerup: commit, pointercancel: cancel, focusout: commit, blur: commit, keydown };
+		for (const [name, handler] of Object.entries(events)) globalThis.window?.addEventListener?.(name, handler);
+		gesture = { release() { for (const [name, handler] of Object.entries(events)) globalThis.window?.removeEventListener?.(name, handler); } };
+	}
+	function edit(id, args) {
+		if (!gesture) return run(id, args);
+		if (gesture.id && gesture.id !== id) { finishGesture(); beginGesture(); }
+		if (!gesture.txId) {
+			gesture.id = id; gesture.txId = run('run.begin', { id, args }).txId;
+			gesture.unsubscribe = appContext.bus.subscribe(event => {
+				if (event.type !== 'transaction.cancelled' || event.txId !== gesture?.txId) return;
+				const active = gesture; gesture = null; active.unsubscribe(); active.release();
+			});
+		}
+		return run('run.update', { txId: gesture.txId, args });
+	}
+	const domain = { documentStore, state, read, write, writeState, run, edit, beginGesture, finishGesture,
+		activeId: read()[0]?.id ?? null, projection: () => projection, publishMotion,
+		bindRender(context) { appContext = context; },
+		beginAction: () => documentStore.beginAction('cast'), canUndo: id => documentStore.canUndo(id),
+		stepHistory: redo => { finishGesture(); return Boolean((redo ? documentStore.redo : documentStore.undo)()); },
+		document: () => ({ characters: read() }), publish: value => write(value.characters), commitDraft: write,
+		arrange(args) {
+			const current = appContext.ports.read();
+			const plan = arrangement({ name: 'arrange_characters', args }, { ...current, characters: read(), frame: current.view.frame }, { bounds: appContext.ports.bounds });
+			write(plan.draft); return plan;
+		},
+		load(value) {
+			finishGesture(true); loading = true;
+			try {
+				release(); native.dispose(); motions.clear();
+				native = createDocumentStore({ owned: { cast: normalize(value) } }); release = native.subscribe(notify);
+				domain.activeId = read()[0]?.id ?? null; domain.loadView?.(); notify();
+			} finally { loading = false; }
+		},
+		dispose() { finishGesture(true); unregister(); unsubscribe(); release(); native.dispose(); listeners.clear(); },
+	};
+	const unregister = appContext.registerStoreDomain('cast', domain);
+	return domain;
+}
+
+export function useCast(appContext) {
+	const [domain] = useState(() => appContext.storeDomain('cast') ?? createCastDomain(appContext, appContext.shared.startupStage.characters, loadCustomPoses()));
+	domain.bindRender(appContext);
+	const { customPoses } = useDocumentDomain(domain.documentStore, 'cast');
+	const characters = useSyncExternalStore(domain.documentStore.subscribe, domain.projection, domain.projection);
+	const setCharacters = domain.write;
+	const editCharacters = value => domain.write(value);
+	const setCustomPoses = value => domain.run('cast.setCustomPoses', { poses: typeof value === 'function' ? value(domain.state().customPoses) : value });
+	useEffect(() => {
+		const start = () => domain.beginGesture();
+		window.addEventListener('pointerdown', start, true);
+		return () => { window.removeEventListener('pointerdown', start, true); domain.finishGesture(true); };
+	}, [domain]);
 
 	const [posing, setPosing] = useState(null);
 
@@ -78,11 +176,8 @@ export function useCast(appContext) {
 	const rigB = (characters[1] ? rigs[charB.id] : null) ?? null;
 
 	function updateCharacterAt(index, next) {
-		editCharacters((list) => list.map((entry, i) => {
-			if (i !== index) return entry;
-			const resolved = typeof next === "function" ? next(entry) : next;
-			return { ...entry, ...resolved };
-		}));
+		const entry = domain.read()[index];
+		if (entry) return domain.edit('character.update', { characterId: entry.id, patch: typeof next === 'function' ? next(entry) : next });
 	}
 
 	// The shims keep the legacy call sites (inspector sliders, presets, pose
@@ -100,10 +195,11 @@ export function useCast(appContext) {
 	const setSubject2 = (value) => updateCharacterAt(1, (entry) => ({ subject: typeof value === "function" ? value(entry.subject) : value }));
 
 	function setShowB(next) {
-		recordCharacterUndo();
+		return domain.run('cast.showExtras', { show: typeof next === 'function' ? next(domain.read().some((entry, i) => i > 0 && !entry.hidden)) : next });
+	}
+	function applyShowB(on) {
 		editCharacters((list) => {
 			const anyVisibleExtra = list.some((entry, i) => i > 0 && !entry.hidden);
-			const on = typeof next === "function" ? next(anyVisibleExtra) : next;
 			if (on) {
 				if (anyVisibleExtra) return list;
 				const hiddenIdx = list.findIndex((entry, i) => i > 0 && entry.hidden);
@@ -115,20 +211,14 @@ export function useCast(appContext) {
 	}
 
 	function moveCharacter(charId, next) {
-		editCharacters((list) => list.map((entry) => {
-			if (entry.id !== charId) return entry;
-			const resolved = typeof next === "function" ? next(entry) : next;
-			return { ...entry, ...resolved };
-		}));
+		const entry = domain.read().find(entry => entry.id === charId);
+		return domain.edit('character.update', { characterId: charId, patch: typeof next === 'function' ? next(entry) : next });
 	}
 
 	function removeCharacter(charId) {
 		const list = appContext.live.characters;
 		if (list.length <= 1) return;
-		recordCharacterUndo();
-		const nextCharacters = list.filter((entry) => entry.id !== charId);
-		appContext.publishCharacters(nextCharacters);
-		editCharacters(nextCharacters);
+		domain.run('character.remove', { characterId: charId });
 		// The deleted layer's untrimmed take goes with it: a recycled id must
 		// never inherit a stranger's take, and its stature left with the entry.
 		appContext.shared.motionFullRef.current.delete(charId);
@@ -157,9 +247,8 @@ export function useCast(appContext) {
 	};
 
 	const spawnCharacter = (model, x, z) => {
-		recordCharacterUndo();
-		const id = nextCharacterId(characters);
-		editCharacters((list) => [...list, createCharacterEntry({ id, model, x, z, pose: DEFAULT_POSE, subject: "a person" }, list.length)]);
+		const id = nextCharacterId(domain.read());
+		domain.run('character.add', { character: { id, model, x, z, pose: DEFAULT_POSE, subject: 'a person' } });
 		appContext.shared.setSelectedHierarchyId(`character:${id}`);
 		appContext.notify(ko("Character added to the scene", "인물을 씬에 추가했어요"));
 	};
@@ -186,7 +275,11 @@ export function useCast(appContext) {
 	// State, not a ref: a ref written inside an effect never re-renders, so
 	// with an idle app the active character silently stayed behind the row
 	// the user just clicked.
-	const [activeCharacterId, setActiveCharacterId] = useState(characters[0]?.id ?? null);
+	const [activeCharacterId, renderActiveCharacterId] = useState(domain.activeId);
+	function setActiveCharacterId(value) {
+		domain.activeId = typeof value === 'function' ? value(domain.activeId) : value;
+		renderActiveCharacterId(domain.activeId);
+	}
 
 	/** The hierarchy row id a cast LIST index owns — mirror of
 	 * hierarchy-model's characterRowId, for building namespaced rig ids. */
@@ -238,7 +331,7 @@ export function useCast(appContext) {
 	 * Character gestures (spawn, remove, show/hide, plan-board drags) push a
 	 * full-cast snapshot with the editing buffer folded in, and undo/redo
 	 * picks the newer of the two stacks so one Ctrl+Z history covers both. */
-	const snapshotCast = (includeShots = false) => ({
+	const snapshotCast = (includeShots = false) => appContext.storeDomain('cast')?.snapshotMotion() ?? ({
 		characters: appContext.live.characters.map((entry) => ({
 			...entry,
 			layer: entry.id === activeChar.id
@@ -266,11 +359,11 @@ export function useCast(appContext) {
 	 * records on drag start; these numeric rows are the same edit through
 	 * another door, so they record once per scrub / typed commit. */
 	function changeInspectorCharacter(gesture, patch) {
-		appContext.shared.beginGestureUndo(`character:${activeChar.id}:${gesture}`);
-		updateCharacterAt(activeCharIndex, patch);
+		return updateCharacterAt(activeCharIndex, patch);
 	}
 
 	function restoreCast(snapshot) {
+		if (appContext.storeDomain('cast')) return appContext.storeDomain('cast').restoreMotion(snapshot);
 		// Captured BEFORE the buffer pointer moves: whose IK state the live ref
 		// currently holds.
 		const loadedIk = appContext.shared.loadedLayerCharRef.current;
@@ -319,13 +412,26 @@ export function useCast(appContext) {
 	// the fixed bridge contract rejects out-of-order or duplicate frames.
 	const [waypointMode, setWaypointMode] = useState(false);
 
-	const [waypoints, setWaypoints] = useState(appContext.shared.startupStage.characters?.[0]?.layer?.waypoints ?? appContext.shared.startupShotState?.waypoints ?? []);
+	const waypoints = activeChar.layer.waypoints;
+	const setWaypoints = value => setLayerField('waypoints', value);
 
 	const [activeWaypointId, setActiveWaypointId] = useState(null);
 
 	const [pendingWaypointFrame, setPendingWaypointFrame] = useState(null);
 
-	const [promptClips, setPromptClips, editPromptClips] = useSemanticState(() => (appContext.shared.startupStage.characters?.[0]?.layer?.promptClips ?? DEFAULT_PROMPT_CLIPS).map((clip) => ({ ...clip })), appContext.shared.markSemanticEdit, "promptClips");
+	const promptClips = activeChar.layer.promptClips;
+	const setPromptClips = value => setLayerField('promptClips', value);
+	const editPromptClips = value => writeLayerField(domain.activeId, 'promptClips', value);
+	function writeLayerField(characterId, key, value) {
+		domain.write(rows => rows.map(entry => entry.id === characterId ? { ...entry, layer: { ...entry.layer,
+			[key]: typeof value === 'function' ? value(entry.layer[key]) : value } } : entry));
+	}
+	function setLayerField(key, value) {
+		const entry = domain.read().find(entry => entry.id === domain.activeId) ?? domain.read()[0];
+		const next = typeof value === 'function' ? value(entry.layer[key]) : value;
+		if (sameCastValue(entry.layer[key], next)) return;
+		return domain.run('cast.setLayer', { characterId: entry.id, layer: { [key]: next } });
+	}
 
 	const [selectedPromptId, setSelectedPromptId] = useState(null);
 
@@ -413,11 +519,13 @@ export function useCast(appContext) {
 	}
 
 	function readCharacterWaypoints(characterId) {
+		if (appContext.storeDomain('cast')) return appContext.storeDomain('cast').read().find(entry => entry.id === characterId)?.layer.waypoints ?? [];
 		if (characterId === appContext.shared.loadedLayerCharRef.current) return appContext.shared.bufferRef.current.waypoints;
 		return appContext.live.characters.find((entry) => entry.id === characterId)?.layer?.waypoints ?? [];
 	}
 
 	function writeCharacterWaypoints(characterId, next) {
+		if (appContext.storeDomain('cast')) return appContext.storeDomain('cast').write(rows => rows.map(entry => entry.id === characterId ? { ...entry, layer: { ...entry.layer, waypoints: next } } : entry));
 		if (characterId === appContext.shared.loadedLayerCharRef.current) {
 			appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, waypoints: next };
 			setWaypoints(next);
@@ -461,8 +569,7 @@ export function useCast(appContext) {
 		const next = [...ordered.slice(0, index), waypoint, ...ordered.slice(index)];
 		const verdict = validateWaypointAt(next, index, waypoint, start);
 		if (!verdict.ok) throw studioActionRefusal("INVALID_ARGUMENT", `Not placed — ${verdict.error}`, isKo ? `배치하지 못했어요 — ${verdict.error}` : `Not placed — ${verdict.error}`);
-		// Past every refusal: the pre-drop path is worth one Ctrl+Z entry.
-		recordCharacterUndo();
+		if (!appContext.storeDomain('cast')) recordCharacterUndo();
 		writeCharacterWaypoints(characterId, next);
 		return { waypoint, index, warnings: verdict.warnings };
 	}
@@ -483,7 +590,7 @@ export function useCast(appContext) {
 		// A plan-board drag recorded its one entry when the gesture began; every
 		// other move is its own entry.
 		const past = appContext.castHistory.past;
-		if (!(appContext.shared.gestureUndoRef.current?.key === "waypoint-drag" && past[past.length - 1]?.tick === appContext.shared.gestureUndoRef.current.tick)) recordCharacterUndo();
+		if (!appContext.storeDomain('cast') && !(appContext.shared.gestureUndoRef.current?.key === "waypoint-drag" && past[past.length - 1]?.tick === appContext.shared.gestureUndoRef.current.tick)) recordCharacterUndo();
 		writeCharacterWaypoints(characterId, next);
 		return { waypoint: moved, index, warnings: verdict.warnings };
 	}
@@ -493,7 +600,7 @@ export function useCast(appContext) {
 		const current = readCharacterWaypoints(characterId);
 		const waypoint = current.find((entry) => entry.frame === frame);
 		if (!waypoint) throw new StudioProtocolError("STALE_TARGET", `${character.subject || character.id} has no root waypoint at frame ${frame}.`);
-		recordCharacterUndo();
+		if (!appContext.storeDomain('cast')) recordCharacterUndo();
 		writeCharacterWaypoints(characterId, removeStableItem(current, waypoint.id, "waypoints"));
 		return waypoint;
 	}
@@ -502,7 +609,7 @@ export function useCast(appContext) {
 		castMemberOf(characterId);
 		const current = readCharacterWaypoints(characterId);
 		if (!current.length) return 0;
-		recordCharacterUndo();
+		if (!appContext.storeDomain('cast')) recordCharacterUndo();
 		writeCharacterWaypoints(characterId, []);
 		return current.length;
 	}
@@ -753,34 +860,19 @@ export function useCast(appContext) {
 	}
 
 	function addPromptClip(frame, surface = "timeline") {
-		const snapped = Math.max(0, Math.round(frame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
-		// Add at the playhead when the spot is free; only fall through to
-		// after-the-last-block when the playhead slot is taken. The old
-		// unconditional max() made the button's "at frame N" label a lie.
-		const blocked = promptClips.some((clip) => snapped < clip.endFrame && snapped + ARDY_PROMPT_HORIZON_FRAMES > clip.startFrame);
-		const startFrame = blocked
-			? Math.max(snapped, promptClips.reduce((max, clip) => Math.max(max, clip.endFrame), 0))
-			: snapped;
-		const clip = { id: createStableItemId("prompt-clip"), startFrame, endFrame: startFrame + ARDY_PROMPT_HORIZON_FRAMES, text: "" };
-		recordCharacterUndo();
-		editPromptClips((prev) => [...prev, clip]);
+		const before = domain.read().find(entry => entry.id === domain.activeId).layer.promptClips;
+		const receipt = domain.run('character.addPromptBlock', { characterId: domain.activeId, frame });
+		const clip = domain.read().find(entry => entry.id === domain.activeId).layer.promptClips.find(clip => !before.some(row => row.id === clip.id));
 		setSelectedPromptId(clip.id);
-		appContext.shared.setTlFrameCount((count) => Math.max(count, clip.endFrame));
 		appContext.shared.setArdyDuration(Math.max(ARDY_DURATION_MIN, clip.endFrame / TIMELINE_FPS));
-		trackFeature("prompt_block_add");
+		trackFeature('prompt_block_add'); return receipt;
 	}
 
 	function changePromptClip(id, text) {
-		const clip = promptClips.find((entry) => entry.id === id);
-		if (!clip) throw new Error(`Unknown promptClips ID: ${id}`);
-		if (clip.text === text) return;
-		// Typing is one entry per editing session, not per keystroke: the first
-		// change on a clip snapshots the text as it stood, and the rest of the
-		// session keeps writing into that same entry. Reached from the inspector
-		// field and from the timeline chip alike.
-		appContext.shared.recordSessionUndo(appContext.shared.promptTextSessionRef, `prompt-text:${id}`);
-		editPromptClips((prev) => updateStableItem(prev, id, (clip) => ({ ...clip, text }), "promptClips"));
+		domain.beginGesture();
+		const receipt = domain.edit('character.changePromptBlock', { characterId: domain.activeId, id, text });
 		if (id === selectedPromptId) appContext.shared.setArdyPrompt(text);
+		return receipt;
 	}
 
 	// Quality policy: one prompt block never spans more than 5 s. Kimodo
@@ -791,45 +883,16 @@ export function useCast(appContext) {
 	// authoring range.
 	const PROMPT_BLOCK_MAX_FRAMES = 5 * TIMELINE_FPS;
 
-	function resizePromptClip(id, edge, rawFrame) {
-		editPromptClips((prev) => {
-			const candidate = updateStableItem(prev, id, (clip) => {
-				const snapped = Math.max(0, Math.round(rawFrame / ARDY_PROMPT_HORIZON_FRAMES) * ARDY_PROMPT_HORIZON_FRAMES);
-				return edge === "start"
-					? { ...clip, startFrame: Math.min(Math.max(snapped, clip.endFrame - PROMPT_BLOCK_MAX_FRAMES), clip.endFrame - ARDY_PROMPT_HORIZON_FRAMES) }
-					: { ...clip, endFrame: Math.min(Math.max(clip.startFrame + ARDY_PROMPT_HORIZON_FRAMES, snapped), clip.startFrame + PROMPT_BLOCK_MAX_FRAMES) };
-			}, "promptClips");
-			// Same rule the move path enforces: one prompt per frame range.
-			// A resize that lands on a neighbour used to slip through and get
-			// silently truncated by the generator; reject it at the handle.
-			const resized = candidate.find((clip) => clip.id === id);
-			if (resized && candidate.some((clip) => clip.id !== id && resized.startFrame < clip.endFrame && resized.endFrame > clip.startFrame)) {
-				return prev;
-			}
-			const end = candidate.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
-			appContext.shared.setTlFrameCount((count) => Math.max(count, end));
-			appContext.shared.setArdyDuration(end / TIMELINE_FPS);
-			return candidate;
-		});
+	function resizePromptClip(id, edge, frame) {
+		return domain.edit('character.resizePromptBlock', { characterId: domain.activeId, id, edge, frame });
 	}
-
-	function movePromptClip(id, rawStartFrame) {
-		if (!promptClips.some((clip) => clip.id === id)) throw new Error(`Unknown promptClips ID: ${id}`);
-		editPromptClips((prev) => {
-			const next = movePromptClipFrames(prev, id, rawStartFrame, ARDY_PROMPT_HORIZON_FRAMES);
-			if (next === prev) return prev;
-			const end = next.reduce((max, clip) => Math.max(max, clip.endFrame), ARDY_PROMPT_HORIZON_FRAMES);
-			appContext.shared.setTlFrameCount((count) => Math.max(count, end));
-			appContext.shared.setArdyDuration(end / TIMELINE_FPS);
-			return next;
-		});
+	function movePromptClip(id, frame) {
+		return domain.edit('character.movePromptBlock', { characterId: domain.activeId, id, frame });
 	}
-
 	function removePromptClip(id) {
-		if (!promptClips.some((clip) => clip.id === id)) throw new Error(`Unknown promptClips ID: ${id}`);
-		recordCharacterUndo();
-		editPromptClips((prev) => removeStableItem(prev, id, "promptClips"));
+		const receipt = domain.run('character.removePromptBlock', { characterId: domain.activeId, id });
 		if (selectedPromptId === id) setSelectedPromptId(null);
+		return receipt;
 	}
 	function beginNativeStudioAction(domain, targetId = null) {
 		if (appContext.shared.studioActionGroupRef.current) throw new StudioProtocolError("TARGET_BUSY", "A command owns native history.");
@@ -927,6 +990,11 @@ export function useCast(appContext) {
 			entry.tick === appContext.castHistory.past.at(-1)?.tick && entry.tick > appContext.objectClock;
 	}
 	function applyExternalCharacters(characters) {
+		if (appContext.storeDomain('cast')) {
+			appContext.storeDomain('cast').run('cast.replace', { characters });
+			appContext.shared.restoreMotionRefs(characters);
+			return;
+		}
 		const merged = characters.map(entry => {
 			const current = appContext.live.characters.find(item => item.id === entry.id);
 			return current?.sessionMotion ? { ...entry, sessionMotion: current.sessionMotion } : entry;
@@ -936,6 +1004,12 @@ export function useCast(appContext) {
 		appContext.shared.restoreMotionRefs(merged);
 	}
 	function publishStudioCharacters(next, authored = false) {
+		if (appContext.storeDomain('cast')) {
+			const owner = appContext.storeDomain('cast');
+			appContext.ports.recordAction('cast', () => owner.write(next), null, true);
+			for (const entry of next) if (Object.hasOwn(entry, 'sessionMotion')) owner.publishMotion(entry.id, entry.sessionMotion);
+			return;
+		}
 		appContext.publishCharacters(next); appContext.patchLive({ characters: next });
 		(authored ? editCharacters : setCharacters)(next);
 	}
@@ -944,6 +1018,7 @@ export function useCast(appContext) {
 	 * schedule or root path has to reach it in the same tick, or the next read
 	 * would revert it. */
 	function syncStudioLayerBuffer(rows) {
+		if (appContext.storeDomain('cast')) return appContext.storeDomain('cast').syncLayer();
 		const layer = rows.find(entry => entry.id === appContext.shared.loadedLayerCharRef.current)?.layer;
 		const changed = key => Array.isArray(layer?.[key]) && JSON.stringify(layer[key]) !== JSON.stringify(appContext.shared.bufferRef.current[key]);
 		const clips = changed("promptClips"), path = changed("waypoints");
@@ -1028,44 +1103,51 @@ export function useCast(appContext) {
 		setActiveWaypointId(null);
 		setPendingWaypointFrame((current) => (current === 0 ? null : current));
 	}
-	function switchActiveCharacterLayer() {
-		const previous = appContext.shared.loadedLayerCharRef.current;
-		if (previous === activeChar.id) return;
-		// Leaving IK on switch: the handles are re-seated per rig, and a
-		// half-dragged chain must never leak onto another character.
+	function snapshotNativeMotion() {
+		return { bufferMotion: appContext.shared.bufferRef.current.motion, bufferCharId: appContext.shared.loadedLayerCharRef.current,
+			ikKeys: appContext.shared.snapshotIkKeys(appContext.shared.ikStateRef.current), committedIkEdits: appContext.shared.committedIkEdits };
+	}
+	function restoreNativeMotion(snapshot) {
+		const id = snapshot.bufferCharId;
+		const state = { ...createIkState(), keys: appContext.shared.snapshotIkKeys({ keys: snapshot.ikKeys }) };
+		state.tracked = new Set([...state.keys.values()].flatMap(entry => [...entry.keys()]));
+		appContext.shared.ikStatesRef.current.set(id, state);
+		domain.publishMotion(id, snapshot.bufferMotion);
+		if (id === appContext.shared.loadedLayerCharRef.current) {
+			appContext.shared.ikStateRef.current = state;
+			appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, motion: snapshot.bufferMotion, ik: state };
+			appContext.shared.setMotion(snapshot.bufferMotion);
+			appContext.shared.setCommittedIkEdits(snapshot.committedIkEdits ?? []);
+			appContext.shared.setIkTick(value => value + 1);
+		}
+	}
+	function switchNativeMotionLayer(previous, entry) {
 		if (appContext.shared.ikMode) appContext.shared.leaveIkMode();
 		if (previous) {
 			appContext.shared.ikStatesRef.current.set(previous, appContext.shared.bufferRef.current.ik);
-			setCharacters((list) => list.map((entry) => entry.id === previous
-				? { ...entry, layer: { waypoints: appContext.shared.bufferRef.current.waypoints, promptClips: appContext.shared.bufferRef.current.promptClips }, sessionMotion: appContext.shared.bufferRef.current.motion }
-				: entry));
+			domain.publishMotion(previous, appContext.shared.bufferRef.current.motion);
 		}
-		const layer = activeChar.layer ?? createCharacterLayer();
-		setWaypoints(layer.waypoints.map((waypoint) => ({ ...waypoint })));
-		setPromptClips(layer.promptClips.map((clip) => ({ ...clip })));
-		// A clip that arrived while this character was inactive (an extra
-		// extraction take, a restored motionRef, a queued generation) becomes
-		// trimmable the moment it enters the buffer. Seed only when absent: an
-		// existing entry is the UNTRIMMED take, and the buffer may be holding a
-		// cut view of it.
-		if (activeChar.sessionMotion && !appContext.shared.motionFullRef.current.has(activeChar.id)) {
-			appContext.shared.motionFullRef.current.set(activeChar.id, activeChar.sessionMotion);
-		}
-		appContext.shared.motionDomain.setMotion(activeChar.sessionMotion ?? null);
-		setSelectedPromptId(null);
-		setWaypointMode(false);
-		setActiveWaypointId(null);
-		setPendingWaypointFrame(null);
-		appContext.shared.ikStateRef.current = appContext.shared.ikStatesRef.current.get(activeChar.id) ?? createIkState();
-		appContext.shared.loadedLayerCharRef.current = activeChar.id;
+		if (entry.sessionMotion && !appContext.shared.motionFullRef.current.has(entry.id)) appContext.shared.motionFullRef.current.set(entry.id, entry.sessionMotion);
+		const motion = entry.sessionMotion ?? null;
+		appContext.shared.motionDomain.setMotion(motion);
+		appContext.shared.ikStateRef.current = appContext.shared.ikStatesRef.current.get(entry.id) ?? createIkState();
+		appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, motion, ik: appContext.shared.ikStateRef.current };
+	}
+	function switchActiveCharacterLayer() {
+		const entry = domain.projection().find(entry => entry.id === domain.activeId) ?? domain.projection()[0];
+		const previous = appContext.shared.loadedLayerCharRef.current;
+		if (previous === entry.id) return;
+		switchNativeMotionLayer(previous, entry);
+		appContext.shared.loadedLayerCharRef.current = entry.id;
+		domain.syncLayer();
+		setSelectedPromptId(null); setWaypointMode(false); setActiveWaypointId(null); setPendingWaypointFrame(null);
 	}
 	function createLegacyCastHandlers(finitePatch, characterForRef) {
-		function replaceCharacters(next) { appContext.publishCharacters(next); appContext.patchLive({ characters: next }); editCharacters(next); }
+		function replaceCharacters(next) { return domain.run('cast.replace', { characters: next }); }
 		function addLiveCharacter(args) {
 			if (typeof args.subject !== "string") throw new Error("Invalid subject");
 			const live = appContext.live.state;
 			const patch = finitePatch(args, ["x", "z", "rot"]);
-			live.recordCharacterUndo();
 			const id = nextCharacterId(live.characters);
 			replaceCharacters([...live.characters, createCharacterEntry({ id, model: args.model, subject: args.subject, pose: DEFAULT_POSE, ...patch }, live.characters.length)]);
 			return { id };
@@ -1084,7 +1166,6 @@ export function useCast(appContext) {
 				patch.hidden = args.hidden;
 			}
 			if (!Object.keys(patch).some((key) => patch[key] !== character[key])) return { id: character.id };
-			live.recordCharacterUndo();
 			replaceCharacters(live.characters.map((entry) => entry.id === character.id ? { ...entry, ...patch } : entry));
 			return { id: character.id };
 		}
@@ -1110,18 +1191,32 @@ export function useCast(appContext) {
 				return { id: `prompt-${stamp}-${i}`, startFrame, endFrame, text: block.text.trim() };
 			});
 			const live = appContext.live.state;
-			live.recordCharacterUndo();
-			appContext.patchLive({ promptClips: clips });
-			live.editPromptClips(clips);
-			if (clips.length) {
-				live.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
-			}
+			domain.run('character.setPromptBlocks', { characterId: domain.activeId, blocks: clips });
 			return { blocks: clips.length };
 		}
 		return { add_character: addLiveCharacter, update_character: updateLiveCharacter, remove_character: removeLiveCharacter, set_prompt_blocks: setLivePromptBlocks };
 	}
-	function toggleCharacterHidden(charId) { recordCharacterUndo(); editCharacters((list) => list.map((item) => (item.id === charId ? { ...item, hidden: item.hidden !== true } : item))); }
+	function toggleCharacterHidden(charId) { return domain.run('character.update', { characterId: charId, patch: { hidden: castMemberOf(charId).hidden !== true } }); }
+	domain.snapshotMotion = snapshotNativeMotion;
+	domain.restoreMotion = restoreNativeMotion;
+	domain.syncLayer = () => {
+		const entry = domain.read().find(entry => entry.id === appContext.shared.loadedLayerCharRef.current) ?? domain.read()[0];
+		appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, ...entry.layer };
+	};
+	domain.loadView = () => { appContext.shared.loadedLayerCharRef.current = domain.activeId; setActiveCharacterId(domain.activeId); };
+	domain.poses = () => appContext.ports.poses();
+	domain.showExtras = applyShowB;
+	domain.extendTimeline = end => {
+		const shots = appContext.storeDomain('shot');
+		if (shots && end > shots.state().frameCount) appContext.recordAction('shot', () => shots.writeState(before => ({ ...before, frameCount: end })), null, true);
+	};
+	domain.applyPose = (characterId, pose, clearMotion) => {
+		if (clearMotion) appContext.ports.recordAction('motion', () => appContext.shared.motionDomain.clearMotionNative(), domain.activeId, true);
+		domain.write(rows => rows.map(entry => entry.id === characterId ? { ...entry, pose } : entry));
+	};
+	appContext.updateActionPorts({ addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, setWaypointMode });
 	return {
+		...domain,
 		applyExternalCharacters, publishStudioCharacters, syncStudioLayerBuffer, undoScene, redoScene, recordStudioHistory, snapshotStudioDomain, removeLegacyRootWaypoint, switchActiveCharacterLayer, createLegacyCastHandlers, toggleCharacterHidden,
 		beginNativeStudioAction, publishNativeStudioDomain, isNativeStudioHistoryRetained, stepNativeStudioHistory, commitNativeStudioDraft, canUndoNativeStudioReceipt,
 		characters, setCharacters, editCharacters, customPoses, setCustomPoses, posing, setPosing, posingClosing,
