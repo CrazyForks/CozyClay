@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { motionPreflightReason, startMotionRequest } from "../src/analytics.js";
 import { motionReadiness } from "../src/motion-readiness.js";
+import { generationRefusal } from '../src/motion/generation.js';
 
 import { readStudioSource } from "./bus/verify-domain-modules.mjs";
 import { createAppContext } from "../src/app-context.js";
@@ -15,10 +16,11 @@ function appFunction(name) {
 // Invoke the real entry points while a previous request is pending, including
 // the same-tick gap before React renders the queued/running state. An extra
 // request must not create telemetry, mutate authoring state, or enter the queue.
-for (const name of ["runAllPromptBlocks", "runArdy", "runLineEdit", "runTrailRegeneration"]) {
+for (const name of ["generateMotion", "runLineEdit", "runTrailRegeneration"]) {
 	for (const phase of ["pending", "running"]) {
 		let requested = 0;
 		const context = {
+			generationRefusal,
 			ardyPrompt: "A person walks.",
 			ardyDuration: 4,
 			motion: null,
@@ -39,7 +41,8 @@ for (const name of ["runAllPromptBlocks", "runArdy", "runLineEdit", "runTrailReg
 		};
 		context.appContext = createAppContext({ notify: (...args) => context.setToast(...args) }).forRender(context);
 		const run = new Function(...Object.keys(context), `return async ${appFunction(name)};`)(...Object.values(context));
-		await run();
+		if (name === 'generateMotion') await assert.rejects(run(), { code: 'TARGET_BUSY' });
+		else await run();
 		assert.equal(requested, 0, `${name}: ${phase} request does not duplicate generation demand`);
 	}
 }

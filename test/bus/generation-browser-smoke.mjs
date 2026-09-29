@@ -81,7 +81,8 @@ try {
     const listener = event => { const message = JSON.parse(event.data); if (message.method === 'Page.loadEventFired' && message.sessionId === sessionId) { ws.removeEventListener('message', listener); resolve(); } }; ws.addEventListener('message', listener);
   }), 'Page load');
   await send('Page.navigate', { url: 'http://127.0.0.1:5224/app/' }); await loaded;
-  await transition(`window.__cozyclay?.rigA && document.querySelector('.prompt-block-generate') && !document.querySelector('.prompt-block-generate').disabled`);
+  await transition(`window.__cozyclay?.rigA && [...document.querySelectorAll('.foldout-title')].some(node => node.textContent === 'Prompt Blocks')`);
+  await transition(`document.querySelector('.prompt-block-generate') && !document.querySelector('.prompt-block-generate').disabled`, `[...document.querySelectorAll('.foldout-title')].find(node => node.textContent === 'Prompt Blocks').closest('button').click()`);
   await transition(`window.__cozyclay.motion?.frames === 96`, `document.querySelector('.prompt-block-generate').click()`);
   assert.equal(requests.length, 1); assert.equal(requests[0].segments.length, 2); assert.equal(requests[0].waypoints.at(-1).frame, 72);
   console.log('PASS browser generation: the real Generate all blocks button sends segments and root path and installs a take');

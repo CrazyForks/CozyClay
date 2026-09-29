@@ -7,6 +7,9 @@ import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
 import { createAgentHandler, REASONING_EFFORTS } from "../bin/agent/agent-routes.mjs";
 import { createFakeModel } from "./fixtures/fake-model.mjs";
+import { agentJobHub } from './bus/agent-job-hub.mjs';
+// Candidate-review fixtures below use retained artifact reuse. New generation
+// goes through the editor job contract, including the real held-HTTP tests.
 
 const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 function assertUniqueToolPairs(frames, message) {
@@ -369,7 +372,7 @@ await new Promise((resolve) => authServer.close(resolve));
 	let providerServer;
 	const providerHandler = createAgentHandler({ auth: providerAuth, codex: fakeCodex, models: providerModels, fauxProvider: providerFaux.fauxProvider, liveHub: { ...fakeLive, command: async (name, ...rest) => name === "inspect_studio" ? motionInspection(contextFixture()) : fakeLive.command(name, ...rest) }, studioRuntime: motionRuntime, port: () => providerServer.address().port });
 	providerFaux.script([
-		{ type: "toolCall", id: "provider-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } },
+		{ type: "toolCall", id: "provider-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "review-artifact" } } },
 		{ type: "text", text: "provider-only" },
 	]);
 	providerServer = createServer((req, res) => providerHandler(req, res).catch((error) => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
@@ -749,7 +752,7 @@ console.log("agent routes verified");
 	};
 	const stopFaux = createFakeModel();
 	stopFaux.script([
-		{ type: "toolCall", id: "m1", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk forward" }], durationSeconds: 2 } } },
+		{ type: "toolCall", id: "m1", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "stop-artifact" } } },
 		{ type: "text", text: "done" },
 	]);
 	let stopServer;
@@ -1338,13 +1341,14 @@ async function run16qStopScenario() {
 	});
 	bridge16q.listen(0, "127.0.0.1"); await once(bridge16q, "listening");
 	const bridgeOrigin16q = `http://127.0.0.1:${bridge16q.address().port}`;
+	const jobs16q = agentJobHub(hub16q, bridgeOrigin16q);
 	const faux16q = createFakeModel();
 	faux16q.script([
 		{ type: "toolCall", id: "m16q", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk forward" }], durationSeconds: 2 } } },
 		{ type: "text", text: "done" },
 	]);
 	let server16q;
-	const handler16q = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: faux16q.models, fauxProvider: faux16q.fauxProvider, liveHub: hub16q, getBridgeOrigin: () => bridgeOrigin16q, port: () => server16q.address().port });
+	const handler16q = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: faux16q.models, fauxProvider: faux16q.fauxProvider, liveHub: jobs16q, getBridgeOrigin: () => bridgeOrigin16q, port: () => server16q.address().port });
 	server16q = createServer((req, res) => handler16q(req, res).catch((error) => { console.error("16q fixture error:", error); if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	server16q.listen(0, "127.0.0.1"); await once(server16q, "listening");
 	const origin16q = `http://127.0.0.1:${server16q.address().port}`;
@@ -1378,6 +1382,7 @@ async function run16qStopScenario() {
 		while (await pump16q()) { /* drain until the SSE stream itself closes */ }
 		return frames16q;
 	} finally {
+		jobs16q.dispose();
 		await handler16q.close();
 		await new Promise((resolve) => server16q.close(resolve));
 		await new Promise((resolve) => bridge16q.close(resolve));
@@ -1493,13 +1498,14 @@ async function run16rTwoTurnScenario() {
 	});
 	bridge16r.listen(0, "127.0.0.1"); await once(bridge16r, "listening");
 	const bridgeOrigin16r = `http://127.0.0.1:${bridge16r.address().port}`;
+	const jobs16r = agentJobHub(hub16r, bridgeOrigin16r);
 	const faux16r = createFakeModel();
 	faux16r.script([
 		{ type: "toolCall", id: "m16r", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk forward" }], durationSeconds: 2 } } },
 		{ type: "text", text: "done" },
 	]);
 	let server16r;
-	const handler16r = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: faux16r.models, fauxProvider: faux16r.fauxProvider, liveHub: hub16r, getBridgeOrigin: () => bridgeOrigin16r, port: () => server16r.address().port });
+	const handler16r = createAgentHandler({ auth: { getAccessToken: async () => "token" }, codex: fakeCodex, models: faux16r.models, fauxProvider: faux16r.fauxProvider, liveHub: jobs16r, getBridgeOrigin: () => bridgeOrigin16r, port: () => server16r.address().port });
 	server16r = createServer((req, res) => handler16r(req, res).catch((error) => { console.error("16r fixture error:", error); if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	server16r.listen(0, "127.0.0.1"); await once(server16r, "listening");
 	const origin16r = `http://127.0.0.1:${server16r.address().port}`;
@@ -1575,6 +1581,7 @@ async function run16rTwoTurnScenario() {
 		assert.equal(secondTypes16r.at(-1), "done");
 		console.log("PASS 16r: turn 1 acknowledged stop unaffected; turn 2's Stop on the same session is a plain loud abort, and a stale explicit jobId stays 409 STALE_TARGET");
 	} finally {
+		jobs16r.dispose();
 		await handler16r.close();
 		await new Promise((resolve) => server16r.close(resolve));
 		await new Promise((resolve) => bridge16r.close(resolve));
@@ -1646,7 +1653,7 @@ await run16rTwoTurnScenario();
 	const faux16u = createFakeModel();
 	faux16u.script([
 		[{ type: "text", text: "B completed" }],
-		{ type: "toolCall", id: "motion-16u", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } },
+		{ type: "toolCall", id: "motion-16u", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "owned-artifact" } } },
 		[{ type: "text", text: "A completed" }],
 	]);
 	let server16u;
@@ -1722,7 +1729,7 @@ await run16rTwoTurnScenario();
 	};
 	const cookie16uRestore = response => response.headers.get("set-cookie")?.split(";")[0] || "";
 	try {
-		faux16uRestore.script([{ type: "toolCall", id: "gate-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } }, [{ type: "text", text: "review" }]]);
+		faux16uRestore.script([{ type: "toolCall", id: "gate-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "gate-artifact" } } }, [{ type: "text", text: "review" }]]);
 		const firstOrigin16uRestore = await open16uRestore();
 		const post16uRestore = (origin, path, body, cookie) => fetch(origin + path, { method: "POST", headers: { origin, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000) });
 		const firstResponse16uRestore = await post16uRestore(firstOrigin16uRestore, "/agent/turn", initialTurn16uRestore);
@@ -1734,7 +1741,7 @@ await run16rTwoTurnScenario();
 		assert.equal(firstFrames.some(frame => frame.type === "error"), false);
 		const accept16uRestore = await post16uRestore(firstOrigin16uRestore, "/agent/jobs/gate-owned/accept", { surface: "studio", sessionId: sessionId16uRestore, turnId: initialTurn16uRestore.turnId, explicitUnverifiedAcceptance: true }, firstCookie16uRestore);
 		assert.equal(accept16uRestore.status, 200); await accept16uRestore.text();
-		faux16uRestore.script([{ type: "toolCall", id: "other-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } }, ["review"]]);
+		faux16uRestore.script([{ type: "toolCall", id: "other-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "other-artifact" } } }, ["review"]]);
 		const otherTurn = { ...initialTurn16uRestore, sessionId: "00000000-0000-4000-8000-000000000174", turnId: "00000000-0000-4000-8000-000000000175" };
 		const otherResponse = await post16uRestore(firstOrigin16uRestore, "/agent/turn", otherTurn);
 		assert.equal(otherResponse.status, 200);
@@ -1791,7 +1798,7 @@ await run16rTwoTurnScenario();
 		},
 	};
 	const faux16y = createFakeModel();
-	const motion16y = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } });
+	const motion16y = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "retained-artifact" } } });
 	faux16y.script([motion16y("first-16y"), [{ type: "text", text: "first complete" }], motion16y("second-16y"), [{ type: "text", text: "second complete" }]]);
 	let server16y;
 	const handler16y = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux16y.models, fauxProvider: faux16y.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } }, studioRuntime: runtime16y, port: () => server16y.address().port });
@@ -1846,7 +1853,7 @@ await run16rTwoTurnScenario();
 		stop: async () => ({ status: "already_applied" }),
 	};
 	const fauxLimit = createFakeModel();
-	const motionLimit = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } });
+	const motionLimit = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "limit-artifact" } } });
 	fauxLimit.script([motionLimit("limit-first"), motionLimit("limit-second"), [{ type: "text", text: "reported" }]]);
 	let serverLimit;
 	const handlerLimit = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxLimit.models, fauxProvider: fauxLimit.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } }, studioRuntime: runtimeLimit, port: () => serverLimit.address().port });
@@ -1887,7 +1894,7 @@ await run16rTwoTurnScenario();
 	};
 	const faux = createFakeModel();
 	faux.script([
-		{ type: "toolCall", id: "failed-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } },
+		{ type: "toolCall", id: "failed-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "failed-artifact" } } },
 		{ type: "toolCall", id: "fallback-action", name: "run_action", arguments: { action: "motion.generateAllBlocks" } },
 		[{ type: "text", text: "reported" }],
 	]);
@@ -1926,7 +1933,7 @@ await run16rTwoTurnScenario();
 		start: async () => ({ ok: false, code: "CAPABILITY_MISSING", mutated: false }),
 		stop: async () => ({ status: "already_applied" }),
 	};
-	const motion = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } });
+	const motion = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "retry-artifact" } } });
 	const faux = createFakeModel();
 	faux.script([motion("two-fail-first"), motion("two-fail-second"), motion("two-fail-third"), [{ type: "text", text: "reported" }]]);
 	let server;
@@ -1973,7 +1980,7 @@ for (const [index, [label, first, second]] of [
 		stop: async () => ({ status: "already_applied" }),
 	};
 	const call = (name, id) => name === "generate_motion"
-		? { type: "toolCall", id, name, arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } }
+		? { type: "toolCall", id, name, arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "mixed-artifact" } } }
 		: { type: "toolCall", id, name, arguments: { action: "motion.generateAllBlocks" } };
 	const fauxMixed = createFakeModel();
 	fauxMixed.script([call(first, "mixed-first"), call(second, "mixed-second"), [{ type: "text", text: "reported" }]]);
@@ -1981,7 +1988,7 @@ for (const [index, [label, first, second]] of [
 		workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12",
 		command: async (name, payload) => {
 			hubMixed.push(name);
-			if (name === "run_action") return { ok: true, commandId: payload.commandId, action: payload.args.action, kind: "job", status: "started", affectedIds: ["char-alex"], summary: "Started generating every prompt block." };
+			if (name === "run_action") return { ok: true, commandId: payload.commandId, action: payload.args.action, kind: "job", status: "completed", affectedIds: ["char-alex"], summary: "Generated every prompt block." };
 			if (name === "inspect_studio") return motionInspection(contextFixture());
 			return { ok: true };
 		},
@@ -2023,7 +2030,7 @@ for (const [index, [label, first, second]] of [
 		stop: async () => ({ status: "already_applied" }),
 	};
 	const fauxAgain = createFakeModel();
-	const motionAgain = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } });
+	const motionAgain = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "again-artifact" } } });
 	fauxAgain.script([motionAgain("again-first"), [{ type: "text", text: "first" }], motionAgain("again-second"), [{ type: "text", text: "second" }]]);
 	let serverAgain;
 	const handlerAgain = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxAgain.models, fauxProvider: fauxAgain.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } }, studioRuntime: runtimeAgain, port: () => serverAgain.address().port });
@@ -2068,7 +2075,7 @@ for (const [index, [label, first, second]] of [
 		stop: async () => ({ status: "already_applied" }),
 	};
 	const fauxFresh = createFakeModel();
-	fauxFresh.script([{ type: "toolCall", id: "fresh-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } }, [{ type: "text", text: "reported" }]]);
+	fauxFresh.script([{ type: "toolCall", id: "fresh-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "fresh-token-artifact" } } }, [{ type: "text", text: "reported" }]]);
 	const liveHubFresh = {
 		workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12",
 		command: async (name, args, handle) => {
@@ -2117,7 +2124,12 @@ for (const [index, [label, first, second]] of [
 	const fauxPath = createFakeModel();
 	fauxPath.script([{ type: "toolCall", id: "path-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "walk" }], durationSeconds: 2 } } }, [{ type: "text", text: "reported" }]]);
 	let serverPath;
-	const handlerPath = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxPath.models, fauxProvider: fauxPath.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture(), waypointsPath) : { ok: true } }, studioRuntime: runtimePath, port: () => serverPath.address().port });
+	const handlerPath = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxPath.models, fauxProvider: fauxPath.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name, payload) => {
+		if (name === 'inspect_studio') return motionInspection(contextFixture(), waypointsPath);
+		assert.equal(name, 'run_action'); assert.equal(payload.args.action, 'motion.generate');
+		assert.equal(payload.args.args.blocks[0].text, 'walk');
+		return { ok: true, status: 'completed', action: 'motion.generate', revision: { before: 41, after: 42 } };
+	} }, studioRuntime: runtimePath, port: () => serverPath.address().port });
 	serverPath = createServer((req, res) => handlerPath(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	serverPath.listen(0, "127.0.0.1"); await once(serverPath, "listening");
 	const originPath = `http://127.0.0.1:${serverPath.address().port}`;
@@ -2127,11 +2139,10 @@ for (const [index, [label, first, second]] of [
 		assert.equal(response.status, 200);
 		const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
 		const done = frames.filter(frame => frame.type === "tool.done");
-		assert.equal(done[0]?.ok, false, "a character with root waypoints is refused");
-		assert.match(done[0].error, /CAPABILITY_MISSING/, `the model sees the refusal code: ${done[0].error}`);
-		assert.ok(done[0].error.includes("run_action motion.generateAllBlocks"), `the refusal names the route that follows waypoints: ${done[0].error}`);
-		assert.equal(admissionsPath, 0, "the refusal comes before admission, so nothing is generated");
-		console.log("PASS generate_motion refuses a character with root waypoints before admission and names motion.generateAllBlocks");
+		assert.equal(done[0]?.ok, true, JSON.stringify(done));
+		assert.equal(done[0].result.action, 'motion.generate');
+		assert.equal(admissionsPath, 0, 'waypoint generation never enters the agent-only runtime');
+		console.log('PASS generate_motion routes waypoint characters through motion.generate');
 	} finally {
 		await handlerPath.close();
 		serverPath.closeAllConnections();

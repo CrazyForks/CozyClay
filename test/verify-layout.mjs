@@ -11,7 +11,8 @@ function expect(name, condition) {
 // The studio source spans App.jsx and app-stage.jsx (module-level extraction); pin against both.
 import { readStudioSource } from "./bus/verify-domain-modules.mjs";
 const app = readStudioSource()
-	+ readFileSync(new URL("../src/app-stage.jsx", import.meta.url), "utf8");
+	+ readFileSync(new URL("../src/app-stage.jsx", import.meta.url), "utf8")
+	+ readFileSync(new URL("../src/motion/generation.js", import.meta.url), "utf8");
 const extract = readFileSync(new URL("../tools/ardy/extract.mjs", import.meta.url), "utf8");
 const bridge = readFileSync(new URL("../tools/ardy/bridge.mjs", import.meta.url), "utf8");
 const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
@@ -149,14 +150,14 @@ expect("pre-motion timeline initializes to 15 seconds", app.includes("const DEFA
 expect("motion preview stays at native 1x speed", app.includes("const DEFAULT_PLAYBACK_SPEED = 1") && app.includes("playbackSpeed={DEFAULT_PLAYBACK_SPEED}"));
 expect("timeline cadence and readout expose native preview speed", timeline.includes("fps * playbackSpeed") && timeline.includes("playbackSpeed.toFixed(2)"));
 expect("legacy greeting demo migration is removed", !app.includes("GREETING_DEMO_MIGRATION_KEY") && !app.includes('id: "demo-rise"'));
-expect("batch generation spans through the final block frame", app.includes("Math.max(...clips.map((clip) => clip.endFrame))") && app.includes("Math.ceil(totalFrames / TIMELINE_FPS)"));
-expect("batch generation forwards all prompt clips", app.includes("promptClipsOverride: clips") && app.includes("hasPromptSchedule"));
+expect("batch generation spans through the final block frame", app.includes("Math.ceil(Math.max(...blocks.map(clip => clip.endFrame)) / TIMELINE_FPS)"));
+expect("batch generation forwards all prompt clips", app.includes("const input = { character, prompt, blocks, seed,") && app.includes("hasPromptSchedule"));
 expect("normal motion generation excludes the prompt block schedule", app.includes("promptClipsOverride = []"));
 // The pin decision moved into ardy/pose-pin.js so it can be tested directly
 // (test/ardy/verify-pose-pin.mjs); the call site only has to route it.
 expect(
 	"unedited batch blocks use one unpinned autoregressive schedule",
-	app.includes("const pinPlan = planPosePin({") && app.includes("else if (hasPromptSchedule) body.segments = toArdySegments(segments)"),
+	app.includes("const plan = planPosePin({") && app.includes("else if (hasPromptSchedule) body.segments = segments"),
 );
 expect(
 	"the pose pin is an explicit, off-by-default choice",
@@ -165,7 +166,7 @@ expect(
 );
 expect(
 	"the pinned pose can be placed anywhere in the clip",
-	app.includes("poseFrame: posePlacementFrame(ardyPosePlacement, clipFrames, appContext.shared.tlFrame)"),
+	app.includes("posePlacement: ardyPosePlacement") && app.includes("posePlacement === 'end'"),
 );
 // Prompt Blocks starts collapsed and can sit below the fold, so selecting a
 // block on the timeline has to open it AND bring it on screen — otherwise the
@@ -182,11 +183,11 @@ expect(
 );
 expect(
 	"a schedule conflict is reported instead of silently dropping the pose",
-	app.includes("pinPlan.blockedBy === PIN_BLOCKED.SCHEDULE"),
+	app.includes("plan.blockedBy === PIN_BLOCKED.SCHEDULE"),
 );
 expect("IK-edited blocks use the motion edit session", app.includes("const editedSegments") && app.includes("body.motionEdit = {") && app.includes("sourceMotion: motion.url"));
-expect("IK regeneration inherits loaded clip duration", app.includes("motion && appContext.shared.ikFrames.length > 0") && app.includes("motion.frames / motion.fps"));
-expect("motion edits send only tracked pending joints", app.includes("ikStateRef.current.keys.get(timelineFrame)?.keys()") && app.includes("tracks:"));
+expect("IK regeneration inherits loaded clip duration", app.includes("motion && ikFrames.length ? motion.frames / motion.fps"));
+expect("motion edits send only tracked pending joints", app.includes("ikKeys.get(at)?.keys()") && app.includes("tracks:"));
 expect("successful motion edits commit and clear pending IK", app.includes("setCommittedIkEdits") && app.includes("job.ikState.keys.clear()") && app.includes("job.ikState.tracked.clear()"));
 expect("pending IK clears only after exact commit verification", app.includes("editCommitReport?.commit_verified !== true") && app.includes("ARDY returned motion without verified authored IK keys"));
 expect("failed key verification leaves pending IK intact", app.indexOf("ARDY returned motion without verified authored IK keys") < app.indexOf("job.ikState.keys.clear()"));
@@ -223,13 +224,13 @@ expect("timeline IK text controls size to their labels", css.includes(".tl-btn.i
 // Floor-click authoring: waypoints are placed by clicking the set floor, so
 // frame 0 is owned implicitly — the request prepends Subject 1's position and
 // authored pins can never claim frame 0 or earlier.
-expect("the active character exclusively owns the frame zero root start", app.includes("{ frame: 0, x: appContext.shared.activeChar.x, z: appContext.shared.activeChar.z, heading: null }") && app.includes("waypoint.frame <= 0") && !app.includes("Frame 0 is the start of the root path — it can't be removed"));
-expect("root guidance sends the aligned, densified path to ARDY", app.includes("alignArdyPath(rootPath, appContext.shared.activeChar.rot") && app.includes("body.waypoints = ardyWaypoints"));
+expect("the active character exclusively owns the frame zero root start", app.includes("{ frame: 0, x: character.x, z: character.z, heading: null }") && app.includes("point.frame <= 0") && !app.includes("Frame 0 is the start of the root path — it can't be removed"));
+expect("root guidance sends the aligned, densified path to ARDY", app.includes("alignArdyPath(rootPath, character.rot") && app.includes("waypoints: aligned.waypoints"));
 expect(
 	"a root path and a prompt schedule are sent together, judged per block",
-	app.includes("if (hasPromptSchedule && !hasBlockEdits) body.segments = toArdySegments(segments);") &&
-	app.includes("judgeAuthoredPath(rootPath, TIMELINE_FPS, clipFrames, { chained: hasPromptSchedule })") &&
-	app.includes("PROMPT_BLOCK_MAX_FRAMES"),
+	app.includes("if (hasPromptSchedule && !hasBlockEdits) body.segments = segments;") &&
+	app.includes("judgeAuthoredPath(rootPath, FPS, clipFrames, { chained: hasPromptSchedule })") &&
+	app.includes("segment.endFrame - segment.startFrame > 5 * FPS"),
 );
 expect(
 	"ARDY bridge health recovers after the sidecar starts late",
