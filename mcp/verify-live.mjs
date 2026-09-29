@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -394,6 +394,21 @@ cases.cast = async () => {
 		assert.equal(s.f.cast.read().length, 1);
 		assert.ok(s.wire.every(frame => ["inspect_studio", "run_action", "describe"].includes(frame.name)), "cast aliases use no legacy mutation frames");
 	} finally { await s.close(); }
+};
+
+cases["legacy-removed"] = async () => {
+	const obsolete = ["applied", "Live", "Mutation"].join("");
+	const references = [];
+	const scan = async directory => {
+		for (const entry of await readdir(directory, { withFileTypes: true })) {
+			if (entry.name === "node_modules") continue;
+			const path = join(directory, entry.name);
+			if (entry.isDirectory()) await scan(path);
+			else if (/\.(?:mjs|js|md)$/.test(entry.name) && (await readFile(path, "utf8")).includes(obsolete)) references.push(path);
+		}
+	};
+	await scan(fileURLToPath(new URL(".", import.meta.url)));
+	assert.deepEqual(references, [], `${obsolete} references in mcp/ must be zero`);
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
