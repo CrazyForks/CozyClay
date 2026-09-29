@@ -281,8 +281,9 @@ export function useObjects(appContext) {
 	 * than useless in a tool where every camera level is a height in metres —
 	 * 1.8 m is at least an honest starting point to correct from.
 	 */
-	async function importCutout(file) {
+	async function importCutout(file, commandContext) {
 		if (!file) return;
+		if (!commandContext) return importFile(file, "cutout");
 		try {
 			const asset = await rememberAsset(await importImageFile(file));
 			const camera = (appContext.shared.lookThroughShot ? appContext.shared.shotCamRef : appContext.shared.editorCamRef).current;
@@ -291,20 +292,18 @@ export function useObjects(appContext) {
 				: {};
 			const object = createCutoutObject(
 				{ assetId: asset.id, aspect: assetAspect(asset) ?? 1, height: CUTOUT_DEFAULT_HEIGHT, name: cutoutNameFromFile(asset.name) },
-				sceneObjects,
+				domain.read(),
 				placement,
 			);
-			if (!object) return;
-			store.applyAtomic((objects) => [...objects, object]);
-			appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
-			setGizmoMode("move");
+			const imported = publishImported(object, commandContext);
 			appContext.notify(
 				isKo
 					? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
 					: `${object.name} added — type its real height in metres to set the scale`,
 			);
+			return imported;
 		} catch (error) {
-			appContext.notify(isKo ? `이미지를 가져오지 못했어요 — ${error.message}` : `Could not import that image — ${error.message}`);
+			throw new StudioProtocolError(error.code ?? "INVALID_ARGUMENT", `Could not import that image: ${error.message}`);
 		}
 	}
 
@@ -320,28 +319,58 @@ export function useObjects(appContext) {
 	 * `importCutout` without the import: read the record for its true aspect
 	 * and name, mint the card, one atomic history entry.
 	 */
-	async function spawnCutoutAt(assetId, placement) {
+	async function spawnCutoutAt(assetId, placement, commandContext) {
+		if (!commandContext) return importStoredAsset(assetId, "cutout", placement);
 		appContext.shared.markCraftAction("cutout");
 		const record = await assetRecord(assetId);
-		if (!record) {
-			appContext.notify(ko("That image is no longer stored", "그 이미지는 더 이상 저장되어 있지 않아요"));
-			return;
-		}
+		if (!record) throw new StudioProtocolError("TARGET_NOT_READY", "That image is no longer stored.");
 		const object = createCutoutObject(
 			{ assetId: record.id, aspect: assetAspect(record) ?? 1, height: CUTOUT_DEFAULT_HEIGHT, name: cutoutNameFromFile(record.name) },
-			sceneObjects,
+			domain.read(),
 			placement,
 		);
-		if (!object) return;
-		store.applyAtomic((objects) => [...objects, object]);
-		appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
-		setGizmoMode("move");
+		const imported = publishImported(object, commandContext);
 		appContext.notify(
 			isKo
 				? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
 				: `${object.name} added — type its real height in metres to set the scale`,
 		);
+		return imported;
 	}
+
+	const importFiles = useRef(new Map());
+	async function importFile(file, placeAs) {
+		const fileToken = crypto.randomUUID();
+		importFiles.current.set(fileToken, file);
+		try {
+			const receipt = await appContext.bus.run("asset.import", { fileToken, placeAs });
+			if (!receipt.ok) appContext.notify(receipt.message);
+			return receipt;
+		} finally { importFiles.current.delete(fileToken); }
+	}
+	async function importStoredAsset(assetId, placeAs, placement) {
+		const receipt = await appContext.bus.run("asset.import", { assetId, placeAs, ...(placement ? { placement } : {}) });
+		if (!receipt.ok) appContext.notify(receipt.message);
+		return receipt;
+	}
+	function publishImported(object, commandContext) {
+		if (!object) throw new StudioProtocolError("INVALID_ARGUMENT", "Could not create the imported object.");
+		commandContext.commit(() => domain.write(objects => [...objects, object]));
+		appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
+		setGizmoMode("move");
+		return { assetId: object.assetId, objectId: object.id };
+	}
+	domain.importAsset = async (args, context) => {
+		if (args.fileToken) {
+			if (context.origin !== "ui") throw new StudioProtocolError("CAPABILITY_MISSING", "File imports belong to the UI.");
+			const file = importFiles.current.get(args.fileToken);
+			if (!file) throw new StudioProtocolError("STALE_TARGET", "The selected import file is no longer available.");
+			return args.placeAs === "mesh" ? importMesh(file, context) : importCutout(file, context);
+		}
+		if (args.assetId) return args.placeAs === "mesh" ? spawnMeshAt(args.assetId, args.placement, context) : spawnCutoutAt(args.assetId, args.placement, context);
+		return createLegacyObjectHandlers().import_asset(args, context);
+	};
+	domain.applyMatte = applyMatte;
 
 	function meshNameFromFile(fileName) {
 		const base = String(fileName ?? "").replace(/\.[^.]+$/, "").trim();
@@ -370,27 +399,26 @@ export function useObjects(appContext) {
 	 * bitmap. Height and footprint come from the import heuristic once;
 	 * later instances reuse those stored metres.
 	 */
-	async function importMesh(file) {
+	async function importMesh(file, commandContext) {
 		if (!file) return;
+		if (!commandContext) return importFile(file, "mesh");
 		try {
 			const { asset, height, footprint } = await importMeshFile(file);
 			await persistMeshAsset(asset);
 			const object = createMeshObject(
 				{ assetId: asset.id, height, footprint, name: meshNameFromFile(asset.name) },
-				store.objects,
+				domain.read(),
 				placementInFrontOfShot(),
 			);
-			if (!object) return;
-			store.applyAtomic((objects) => [...objects, object]);
-			appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
-			setGizmoMode("move");
+			const imported = publishImported(object, commandContext);
 			appContext.notify(
 				isKo
 					? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
 					: `${object.name} added — type its real height in metres to set the scale`,
 			);
+			return imported;
 		} catch (error) {
-			appContext.notify(isKo ? `모델을 가져오지 못했어요 — ${error.message}` : `Could not import that model — ${error.message}`);
+			throw new StudioProtocolError(error.code ?? "INVALID_ARGUMENT", `Could not import that model: ${error.message}`);
 		}
 	}
 
@@ -403,24 +431,16 @@ export function useObjects(appContext) {
 	 * not keep a previous object's size: it re-reads the blob and fits once,
 	 * the same as a first import, because there is no prior record to copy.
 	 */
-	async function spawnMeshAt(assetId, placement) {
+	async function spawnMeshAt(assetId, placement, commandContext) {
+		if (!commandContext) return importStoredAsset(assetId, "mesh", placement);
 		appContext.shared.markCraftAction("object");
 		const record = await assetRecord(assetId);
-		if (!record) {
-			appContext.notify(ko("That model is no longer stored", "그 모델은 더 이상 저장되어 있지 않아요"));
-			return;
-		}
+		if (!record) throw new StudioProtocolError("TARGET_NOT_READY", "That model is no longer stored.");
 		const compressed = compressedGlbReason(record.bytes);
-		if (compressed) {
-			appContext.notify(isKo ? `모델을 가져오지 못했어요 — ${compressed}` : `Could not import that model — ${compressed}`);
-			return;
-		}
+		if (compressed) throw new StudioProtocolError("INVALID_ARGUMENT", compressed);
 		const bounds = meshBoundsFromAsset(record);
 		const fitted = bounds ? fitMeshBounds(bounds) : null;
-		if (!fitted) {
-			appContext.notify(ko("That model has no measurable geometry", "그 모델은 측정할 수 있는 형태가 없어요"));
-			return;
-		}
+		if (!fitted) throw new StudioProtocolError("INVALID_ARGUMENT", "That model has no measurable geometry.");
 		const object = createMeshObject(
 			{
 				assetId: record.id,
@@ -428,18 +448,16 @@ export function useObjects(appContext) {
 				footprint: fitted.footprint,
 				name: meshNameFromFile(record.name),
 			},
-			store.objects,
+			domain.read(),
 			placement,
 		);
-		if (!object) return;
-		store.applyAtomic((objects) => [...objects, object]);
-		appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
-		setGizmoMode("move");
+		const imported = publishImported(object, commandContext);
 		appContext.notify(
 			isKo
 				? `${object.name} 추가됨 — 실제 높이(m)를 입력하면 크기가 맞습니다`
 				: `${object.name} added — type its real height in metres to set the scale`,
 		);
+		return imported;
 	}
 
 	/**
@@ -454,12 +472,13 @@ export function useObjects(appContext) {
 	 * so the card's height is scaled with it. The scale is stored rather than
 	 * multiplied in, or a second cut would compound one trim onto the last.
 	 */
-	async function applyMatte(id = selectedSceneObjectId) {
-		const object = sceneObjects.find((item) => item.id === id) ?? null;
+	async function applyMatte(id = selectedSceneObjectId, commandContext) {
+		if (!commandContext) return run("object.matte", { objectId: id });
+		const object = domain.read().find((item) => item.id === id) ?? null;
 		const options = appContext.shared.matteEditorRef.current?.options();
 		// Nothing purple means nothing was asked for. Removing "the background"
 		// on a picture nobody has marked would be a guess applied to their set.
-		if (!object || object.renderer !== CUTOUT_KIND || !options || matteBusy) return;
+		if (!object || object.renderer !== CUTOUT_KIND || !options || matteBusy) throw new StudioProtocolError("TARGET_NOT_READY", "Select a cutout with a painted matte first.");
 		setMatteBusy(true);
 		try {
 			const sourceId = object.sourceAssetId || object.assetId;
@@ -474,21 +493,22 @@ export function useObjects(appContext) {
 				rememberAsset({ ...matte, role: "derived" }),
 			]);
 			const fullFrameHeight = object.height / (object.matteScale || 1);
-			changeSceneObject(object.id, {
+			commandContext.commit(() => domain.write(objects => updateSceneObject(objects, object.id, {
 				assetId: cut.asset.id,
 				sourceAssetId: source.id,
 				matteAssetId: matte.id,
 				matteScale: cut.heightScale,
 				aspect: cut.asset.width / cut.asset.height,
 				height: fullFrameHeight * cut.heightScale,
-			});
+			})));
 			appContext.notify(
 				isKo
 					? `${object.name} 배경 제거 — ${Math.round(cut.removed * 100)}% 지움. 원본과 칠한 영역은 그대로 남습니다`
 					: `${object.name} — ${Math.round(cut.removed * 100)}% removed. The original and your selection are kept`,
 			);
+			return { objectId: object.id };
 		} catch (error) {
-			appContext.notify(isKo ? `배경을 제거하지 못했어요 — ${error.message}` : `Could not remove the background — ${error.message}`);
+			throw new StudioProtocolError(error.code ?? "TARGET_NOT_READY", `Could not remove the background: ${error.message}`);
 		} finally {
 			setMatteBusy(false);
 		}
@@ -643,6 +663,10 @@ export function useObjects(appContext) {
 			return { id: placed.id };
 		}
 		async function importAsset(args, commandContext) {
+			if (!commandContext) {
+				const { dataUrl: source, ...options } = args;
+				return (await run("asset.import", { source, ...options })).output;
+			}
 			if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
 			if (args.placeAs === "mesh") {
 				const dataUrl = args.dataUrl;
@@ -702,8 +726,7 @@ export function useObjects(appContext) {
 					object = updateSceneObject([object], object.id, { height: args.height })[0];
 				}
 				if (Number.isFinite(args.y)) object.y = args.y;
-				commandContext?.check();
-				applyObjectMutation((objects) => [...objects, object]);
+				commandContext.commit(() => domain.write((objects) => [...objects, object]));
 				return { assetId: asset.id, objectId: object.id };
 			}
 			if (args.placeAs !== "cutout" && args.placeAs !== "backdrop") throw new Error('placeAs must be "cutout", "backdrop" or "mesh"');
@@ -740,8 +763,7 @@ export function useObjects(appContext) {
 				placement,
 			);
 			if (!object) throw new Error("Could not create the cutout object");
-			commandContext?.check();
-			applyObjectMutation((objects) => [...objects, object]);
+			commandContext.commit(() => domain.write((objects) => [...objects, object]));
 			return { assetId: asset.id, objectId: object.id };
 		}
 		function updateObject(args) {

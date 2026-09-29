@@ -28,7 +28,16 @@ const semantic = [
 const batch = { id: 'objects.batch', label: 'Batch objects', description: 'Apply legacy object operations in one retained entry.', kind: 'job', domain: 'objects',
 	input: input({ ops: { type: 'array', maxItems: 100, items: input({ name: { type: 'string' }, args: { type: 'object', properties: {}, additionalProperties: true } }) }, atomic: { type: 'boolean' }, stopOnError: { type: 'boolean' }, label: { type: 'string' } }, ['ops']) };
 const changedIds = (before, after) => [...new Set([...before, ...after].map(row => row.id))].filter(id => JSON.stringify(before.find(row => row.id === id)) !== JSON.stringify(after.find(row => row.id === id)));
-export const declarations = Object.freeze([...['object.attach', 'object.detach', 'object.duplicate', 'asset.import'].map(studioActionDeclaration), ...semantic, batch]);
+const assetProperties = { ...studioActionDeclaration('asset.import').input.properties, placement,
+	...Object.fromEntries(['x', 'y', 'z', 'rot', 'height'].map(key => [key, number])), clay: { type: 'boolean' }, mimeType: { type: 'string' } };
+const assetImport = { ...studioActionDeclaration('asset.import'), kind: 'job', domain: 'objects',
+	input: { ...input({ ...assetProperties, assetId: id, fileToken: id }, ['placeAs']), oneOf: [
+		input(assetProperties, ['source', 'name', 'placeAs']),
+		input({ assetId: id, placement, placeAs: assetProperties.placeAs }, ['assetId', 'placeAs']),
+		input({ fileToken: id, placeAs: { type: 'string', enum: ['mesh', 'cutout'] } }, ['fileToken', 'placeAs']),
+	] } };
+const matte = { id: 'object.matte', label: 'Apply object matte', description: 'Prepare derived assets, then publish one fenced object edit.', kind: 'job', domain: 'objects', exposure: 'ui-only', input: input({ objectId: id }) };
+export const declarations = Object.freeze([...['object.attach', 'object.detach', 'object.duplicate'].map(studioActionDeclaration), ...semantic, batch, assetImport, matte]);
 
 export function register(registry, ports) {
 	const objectOf = objectId => ports.state().objects.find(object => object.id === objectId)
@@ -125,16 +134,21 @@ export function register(registry, ports) {
 		} });
 	// The live import_asset path (validate, store the bytes, ONE atomic store
 	// entry), fed a data URL; an http(s) source is fetched into one first.
-	registry.register({ ...studioActionDeclaration("asset.import"), available: () => true,
-		run: async ({ source, name, placeAs }, context) => {
+	registry.register({ ...matte, available: () => Boolean(ports.storeDomain?.('objects')), run: async ({ objectId }, context) => {
+		await owned().applyMatte(objectId, context);
+		return { affectedIds: [objectId], summary: 'Applied the object matte.' };
+	} });
+	registry.register({ ...assetImport, available: () => true,
+		run: async (args, context) => {
+			const { source, name, placeAs } = args;
 			let dataUrl = source;
-			if (!source.startsWith("data:")) {
+			if (source && !source.startsWith("data:")) {
 				try { dataUrl = await ports.fetchImportSource(source); }
 				catch (error) { fail("TARGET_NOT_READY", `Could not fetch the source (${error?.message || error}); its server must allow cross-origin reads.`); }
 			}
 			let imported;
-			try { imported = await ports.importAsset({ name, placeAs, dataUrl }, context); }
-			catch (error) { fail("INVALID_ARGUMENT", `Not imported: ${error?.message || error}`); }
-			return { affectedIds: [imported.objectId], summary: `Imported ${name} as a ${placeAs} (object ${imported.objectId}, asset ${imported.assetId}).` };
+			try { imported = await (ports.storeDomain?.('objects')?.importAsset ?? ports.importAsset)({ ...args, dataUrl }, context); }
+			catch (error) { fail(error.code ?? "INVALID_ARGUMENT", `Not imported: ${error?.message || error}`); }
+			return { affectedIds: [imported.objectId], output: imported, summary: `Imported ${name ?? imported.objectId} as a ${placeAs} (object ${imported.objectId}, asset ${imported.assetId}).` };
 		} });
 }
