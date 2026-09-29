@@ -120,7 +120,7 @@ export function elementPatchReceipt(receipt, request, projection) {
   // The protocol's partial variant is a patch receipt, not an action receipt.
   const { action, summary, ...base } = receipt;
   return { ...(partial ? base : receipt), ops, status: partial ? 'partial' : receipt.status,
-    delta: request.args.ops.slice(0, 8).map(({ target, set }) => ({ id: target.id, after: {
+    delta: !receipt.authored ? [] : request.args.ops.slice(0, 8).map(({ target, set }) => ({ id: target.id, after: {
       patched: elementReadback(kind, elementTarget(kind, projection[kind], target.id, receipt.host.sceneId), Object.keys(set).map(key => `${kind}.${key}`)),
     } })) };
 }

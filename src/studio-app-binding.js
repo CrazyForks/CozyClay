@@ -273,7 +273,13 @@ export function createStudioAppBinding(ports) {
 	const patchRequests = new Map();
 	function commandBus() {
 		if (!actionBus) actionBus = createCommandBus({ registry: ports.actions(), ports: {
-			read: refresh, journal: () => ({ ...journal, record: receipt => journal.record(elementPatchReceipt(receipt, patchRequests.get(receipt.commandId), refresh().document)) }), recordAction: (...args) => ports.recordAction(...args), beginAction: (...args) => ports.beginAction(...args),
+			read: refresh, journal: () => {
+				const admitted = journal;
+				return { ...admitted, record: receipt => {
+					const patch = patchRequests.get(receipt.commandId);
+					return admitted.record(patch ? elementPatchReceipt(receipt, patch, refresh().document) : receipt);
+				} };
+			}, recordAction: (...args) => ports.recordAction(...args), beginAction: (...args) => ports.beginAction(...args),
 			readback: actionReadback, remember, receipt: id => receipts.get(id), isRetained: receipt => ports.isRetained(receipt),
 			canUndo: receipt => ports.canUndo(receipt), undo: () => ports.undo(), readTarget: id => { refresh(); return tokens.get(id)?.token; },
 			captureToasts: listener => ports.captureToasts?.(listener), showRefusal: message => ports.showRefusal?.(message), emit: event => ports.emitCommandEvent?.(event),
@@ -294,7 +300,9 @@ export function createStudioAppBinding(ports) {
 			catch (error) { return rejection(request, error); }
 		}
 		const patchKind = request.name === "patch_elements" && request.args?.ops?.[0]?.target?.kind;
-		if (patchKind && ports.storeDomain?.(patchKind)) {
+		const registry = patchKind ? ports.actions?.() : null;
+		const setAction = registry?.ids().includes(`${patchKind}.set`) && registry.get(`${patchKind}.set`);
+		if (setAction && ports.storeDomain?.(setAction.undoDomain ?? patchKind)) {
 			try {
 				const args = elementPatchArgs(patchKind, request.args);
 				patchRequests.set(request.commandId, request);
