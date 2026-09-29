@@ -505,13 +505,23 @@ function shotReport() {
 
 /* --------------------------------- tools --------------------------------- */
 
+const studioAliasTools = new Set([
+	"set_camera", "frame_shot", "place_object", "update_object", "remove_object",
+	"import_mesh", "group_objects", "add_scene", "switch_scene", "apply_batch", "open_project",
+]);
+const studioAdmissionSchema = {
+	expectedRevision: z.number().int().min(0).optional().describe("scene revision to admit against; defaults to the inspected revision"),
+	commandId: z.string().min(1).max(120).optional().describe("idempotency key; reuse with the original expectedRevision to replay its receipt"),
+	timeoutMs: z.number().int().min(1).max(MAX_COMMAND_TIMEOUT_MS).optional().describe("hub deadline; defaults to the editor command declaration"),
+};
+
 /** One tool, as the registry hands it out: everything server.mjs needs to
  * register it, and everything a direct caller needs to run it. */
 const tool = (name, config, handler) => ({
 	name,
 	title: config.title,
 	description: config.description,
-	inputSchema: config.inputSchema,
+	inputSchema: studioAliasTools.has(name) ? { ...config.inputSchema, ...studioAdmissionSchema } : config.inputSchema,
 	annotations: TOOL_ANNOTATIONS[name],
 	live: liveWorkspaceTools.has(name),
 	handler,
@@ -710,10 +720,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					look_at_z: z.number().optional().describe("world z of an explicit aim point; give all three to aim the lens"),
 				},
 			},
-			async ({ x, y, z: zPos, focal_mm, look_at_x, look_at_y, look_at_z }) => {
+			async ({ x, y, z: zPos, focal_mm, look_at_x, look_at_y, look_at_z, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						return await runStudioCommand({ action: "shot.frame", args: context => {
+						return await runStudioCommand({ ...admission, action: "shot.frame", args: context => {
 							const camera = context.camera;
 							const position = { x: x ?? camera.position.x, y: y ?? camera.position.y, z: zPos ?? camera.position.z };
 							// Preserve direction when no complete explicit aim point was given.
@@ -767,7 +777,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					focal_mm: z.number().min(8).max(300).default(35).describe("lens to frame with"),
 				},
 			},
-			async ({ size, view, level, side, focal_mm }) => {
+			async ({ size, view, level, side, focal_mm, ...admission }) => {
 				let inspected;
 				if (liveHub?.connected) {
 					try {
@@ -844,7 +854,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				};
 				if (liveHub?.connected) {
 					try {
-						return await runStudioCommand({ action: "shot.frame", inspected, args: {
+						return await runStudioCommand({ ...admission, action: "shot.frame", inspected, args: {
 							subjectIds: [(findCharacter(state.focus) ?? cast()[0]).id],
 							framing: { exact: {
 								position: { x: nextCamera.x, y: nextCamera.y, z: nextCamera.z },
@@ -1034,10 +1044,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 						.describe("object id to attach to — the parent then carries this object when it moves"),
 				},
 			},
-			async ({ kind, x, z: zPos, y, facing, name, parent }) => {
+			async ({ kind, x, z: zPos, y, facing, name, parent, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						return await runStudioCommand({ action: "object.add", args: { kind, placement: { x, z: zPos, y, rot: facing }, name, parent } });
+						return await runStudioCommand({ ...admission, action: "object.add", args: { kind, placement: { x, z: zPos, y, rot: facing }, name, parent } });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1085,7 +1095,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					height: z.number().positive().optional().describe("standing height in metres; omitted uses the fitted size"),
 				},
 			},
-			async ({ path, clay, name, x, z: zPos, y, facing, height }) => {
+			async ({ path, clay, name, x, z: zPos, y, facing, height, ...admission }) => {
 				if (!liveHub?.connected) {
 					return liveError(new Error(noLiveEditor("import_mesh requires a connected CozyClay editor.")));
 				}
@@ -1110,7 +1120,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				if (facing !== undefined) liveArgs.rot = facing;
 				if (height !== undefined) liveArgs.height = height;
 				try {
-					return await runStudioCommand({ action: "asset.import", args: liveArgs });
+					return await runStudioCommand({ ...admission, action: "asset.import", args: liveArgs });
 				} catch (error) {
 					return liveError(error);
 				}
@@ -1131,10 +1141,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					children: z.array(z.string()).min(1).describe("object ids to attach or detach"),
 				},
 			},
-			async ({ parent, children }) => {
+			async ({ parent, children, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						return await runStudioCommand({ action: parent === null ? "object.ungroup" : "object.group", args: parent === null ? { children } : { parent, children } });
+						return await runStudioCommand({ ...admission, action: parent === null ? "object.ungroup" : "object.group", args: parent === null ? { children } : { parent, children } });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1557,7 +1567,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					hidden: z.boolean().optional().describe("true hides the prop without deleting it"),
 				},
 			},
-			async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color, name, path, height, clay, hidden }) => {
+			async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color, name, path, height, clay, hidden, ...admission }) => {
 				const travelPath = path === null
 					? null
 					: path
@@ -1565,7 +1575,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 						: undefined;
 				if (liveHub?.connected) {
 					try {
-						return await runStudioCommand({ action: "object.update", args: { id, patch: {
+						return await runStudioCommand({ ...admission, action: "object.update", args: { id, patch: {
 							x, y, z: zPos, rot: facing, rotX: tilt, rotZ: roll,
 							scaleX: scale_x ?? scale, scaleY: scale_y ?? scale, scaleZ: scale_z ?? scale,
 							color, name, path: travelPath, height, clay, hidden,
@@ -1610,10 +1620,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				description: "Take a prop out of the set.",
 				inputSchema: { id: z.string().describe("object id") },
 			},
-			async ({ id }) => {
+			async ({ id, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						return await runStudioCommand({ action: "object.remove", args: { ids: [id] } });
+						return await runStudioCommand({ ...admission, action: "object.remove", args: { ids: [id] } });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1802,14 +1812,15 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					"and returns both bus receipts; without one, this changes MCP memory only.",
 				inputSchema: { name: z.string().default("SCENE 02").describe("scene name") },
 			},
-			async ({ name }) => {
+			async ({ name, ...admission }) => {
 				if (liveHub?.connected) {
 					let created;
 					try {
-						created = await executeStudioCommand({ action: "scene.create" });
+						created = await executeStudioCommand({ ...admission, action: "scene.create" });
 						if (!created.ok) return studioResult(created);
 						// Creation is a document boundary; naming is a separate retained edit.
-						const renamed = await executeStudioCommand({ action: "scene.rename",
+						const renamed = await executeStudioCommand({ ...admission, action: "scene.rename",
+							commandId: admission.commandId ? createHash("sha256").update(`${admission.commandId}:rename`).digest("hex") : undefined,
 							args: { sceneId: created.host.sceneId, name }, expectedRevision: created.revision.after });
 						return studioResult(created, renamed);
 					} catch (error) {
@@ -1834,10 +1845,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					"Make a different scene active through scene.switch and return its bus receipt. Without a connected editor, this changes MCP memory only.",
 				inputSchema: { name: z.string().describe("scene name to switch to") },
 			},
-			async ({ name }) => {
+			async ({ name, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						return await runStudioCommand({ action: "scene.switch", args: async () => {
+						return await runStudioCommand({ ...admission, action: "scene.switch", args: async () => {
 							await refreshLiveDescription();
 							const target = state.doc.scenes.find(row => row.name.toLowerCase() === name.toLowerCase());
 							if (!target) throw new Error(`No scene "${name}".`);
