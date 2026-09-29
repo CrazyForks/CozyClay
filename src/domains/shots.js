@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { aimAt } from '../controls.jsx';
 import { PRESETS, DEFAULT_DURATION_S, TIMELINE_FPS } from '../app-stage.jsx';
 import { CAMERA_MOVES, SUBJECT_HEIGHT_M, focalMmToFov, fovToFocalMm } from '../shot.js';
@@ -359,8 +359,15 @@ export function useShots(appContext) {
   function changeLens(value) { return setFovDeg(value); }
   // Range normalization happens inside the authored write, not a later effect.
   function clampShotRailRanges() {}
+  const extentInputs = useRef(null);
   function syncTimelineExtent() {
-    const extent = timelineContentExtent(appContext.shared.characters, appContext.shared.activeChar.id, appContext.shared.motion, appContext.shared.promptClips, appContext.shared.multiModelFootage?.frames);
+    const inputs = [appContext.shared.characters, appContext.shared.activeChar.id, appContext.shared.motion, appContext.shared.promptClips, appContext.shared.multiModelFootage?.frames];
+    // App also re-runs this effect when shot history publishes. Only new
+    // content can request a new extent; replaying it after Undo would replace
+    // the restored entry and destroy Redo. Shot writes already clamp ranges.
+    if (extentInputs.current?.every((value, index) => value === inputs[index])) return;
+    extentInputs.current = inputs;
+    const extent = timelineContentExtent(...inputs);
     const span = timelineSpan(extent, domain.read(), domain.state().frameCount);
     setTlFrameCount(span); if (extent > 0) setTlFrame(frame => Math.min(frame, span - 1));
   }
