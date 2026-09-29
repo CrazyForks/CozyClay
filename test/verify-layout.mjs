@@ -215,7 +215,7 @@ expect(
 	app.includes("const targetCharacterId = args.characterId ?? appContext.live.state.activeCharacterId;") && app.includes("const targetPromptClips = clips;") && app.includes("targetCharacterId,") && app.includes("if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext) setMotion(null);"),
 );
 expect("individual block generation action is removed", !app.includes("Generate selected block"));
-expect("Prompt Block edits stay synced with ARDY input", app.includes("changePromptClip(selectedPromptId") && app.includes("setArdyPrompt(event.target.value)"));
+expect("Prompt Block edits stay synced with ARDY input", app.includes("run('character.changePromptBlock', { characterId, id: selectedPromptId, text: event.target.value })") && app.includes("setArdyPrompt(event.target.value)"));
 expect("desktop stage fills the remaining viewport", css.includes("aspect-ratio: auto") && css.includes("height: 100%"));
 expect("sidebar width is bounded", css.includes("min-width: 280px") && css.includes("max-width: 50vw"));
 expect("timeline height is bounded", css.includes("min-height: 110px") && css.includes("max-height: 58vh"));

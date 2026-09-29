@@ -142,7 +142,7 @@ expect(
 expect(
 	"both shipped rigs are selectable per character",
 	appSource.includes("CHARACTER_MODEL_IDS.map((id) => (") &&
-	appSource.includes("updateCharacterAt(activeCharIndex, { model: id })") &&
+	appSource.includes("run('character.update', { characterId: activeChar.id, patch: { model: id } })") &&
 	appSource.includes('const CHARACTER_MODEL_LABELS = { "y-bot-tpose": "Y Bot", "x-bot-tpose": "X Bot" };'),
 );
 expect("the rig options preview the character's own pose", appSource.includes("<PoseThumbPreview model={id}") && studioSource.includes("export function PoseThumbPreview({"));
@@ -162,7 +162,7 @@ expect(
 );
 expect(
 	"App clears loaded motion before applying a blocking pose",
-	appSource.includes("motionActive={Boolean(motion)}") && appSource.includes("if (hadMotion) clearMotion()"),
+	appSource.includes("motionActive={Boolean(motion)}") && appSource.includes("castDomain.run('character.setPose', { characterId: posingChar.id, pose: pose.id, clearMotion: hadMotion })"),
 );
 expect(
 	"Pose Studio keeps tiles inside a scrollable panel",

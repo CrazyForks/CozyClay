@@ -57,6 +57,7 @@ export function readElement(document, path) {
     : atPath(document, setPath(element));
 }
 export function mergeElementSet(document = {}, patch) {
+  document = document ?? {};
   const next = { ...document };
   for (const [key, value] of Object.entries(patch)) next[key] = value && typeof value === 'object' && !Array.isArray(value)
     ? mergeElementSet(document[key], value) : value;

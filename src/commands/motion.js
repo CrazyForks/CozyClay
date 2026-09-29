@@ -2,9 +2,17 @@
 import { studioActionDeclaration } from "../studio-actions.js";
 import { fail } from "./shared.js";
 
-export const declarations = Object.freeze(["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration));
+const clear = { id: 'motion.clear', label: 'Clear motion', description: 'Clear the active take, its corrections and take-owned cast fields.',
+	kind: 'mutation', undoDomain: 'motion', input: { type: 'object', properties: { characterId: { type: 'string' } }, required: ['characterId'], additionalProperties: false } };
+export const declarations = Object.freeze([clear, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
 
 export function register(registry, ports) {
+	registry.register({ ...clear, available: () => typeof ports.clearMotionNative === 'function' || 'The motion owner is not mounted.',
+		run({ characterId }) {
+			if (ports.state().activeCharacterId !== characterId) fail('TARGET_NOT_READY', 'Select this character before clearing its take.');
+			ports.clearMotionNative();
+			return { affectedIds: [characterId], summary: 'Cleared motion.' };
+		} });
 	registry.register({ ...studioActionDeclaration("motion.generateAllBlocks"), target: () => ports.state().activeCharacterId,
 		available: state => state.generating ? "A motion generation is already running."
 			: !state.motionReady ? "The motion backend is not ready."

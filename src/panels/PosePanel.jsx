@@ -5,13 +5,15 @@ import { PoseTileGrid } from "../posestudio.jsx";
 import { DEFAULT_POSE } from "../poses.js";
 import { poseLabelKo } from "../app-stage.jsx";
 import ReferenceImageField from "./ReferenceImageField.jsx";
+import { useBus } from '../app-context.js';
 
 export default function PosePanel({
 	isCharacterSelection, activeCharIndex, falMotionModel, falMotionActions, setFalMotionStudioOpen,
-	selectablePoses, activeChar, ikMode, ikApplyPoseAsKey, motion, clearMotion, recordCharacterUndo,
-	updateCharacterAt, setStudioPick, setToast, removePose, setPhotoPoseError, photoPoseFileRef,
+	selectablePoses, activeChar, ikMode, ikApplyPoseAsKey, motion,
+	setStudioPick, setToast, removePose, setPhotoPoseError, photoPoseFileRef,
 	photoPoseState, photoPoseError, activeRig, saveCurrentPose,
 }) {
+	const { run } = useBus();
 	return (
 <Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Pose", "포즈")}>
 					{/* Tiles, not a dropdown: a pose read out of a photograph has no
@@ -35,11 +37,7 @@ export default function PosePanel({
 							// A running take drives the same bones a pose writes, so the
 							// pick would otherwise land invisibly underneath it.
 							const hadMotion = Boolean(motion);
-							// One pick, one Ctrl+Z entry: clearMotion()'s snapshot already
-							// carries the pose this write replaces.
-							if (hadMotion) clearMotion();
-							else recordCharacterUndo();
-							updateCharacterAt(activeCharIndex, { pose });
+							if (!run('character.setPose', { characterId: activeChar.id, pose: pose.id, clearMotion: hadMotion }).ok) return;
 							setStudioPick(pose.id);
 							setToast(hadMotion
 								? ko("Cleared the current motion and applied the pose", "현재 모션을 지우고 포즈를 적용했어요")
@@ -83,10 +81,10 @@ export default function PosePanel({
 						alt={ko("Identity reference", "인물 참고 이미지")}
 						inputProps={{ "data-identity-image-input": "" }}
 						onPick={(dataUrl) => {
-							updateCharacterAt(activeCharIndex, { identityImage: dataUrl });
+							run('character.update', { characterId: activeChar.id, patch: { identityImage: dataUrl } });
 							setToast(ko("Identity image set", "인물 이미지를 설정했어요"));
 						}}
-						onClear={() => updateCharacterAt(activeCharIndex, { identityImage: null })}
+						onClear={() => run('character.update', { characterId: activeChar.id, patch: { identityImage: null } })}
 					/>
 				</Foldout>
 	);

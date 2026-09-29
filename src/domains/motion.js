@@ -646,7 +646,7 @@ export function useMotion(appContext) {
 				anchorX: active.x,
 				anchorZ: active.z,
 			};
-			appContext.shared.castDomain.setCharacters((list) => list.map((entry) => entry.id === active.id
+			appContext.shared.publishStudioCharacters((list) => list.map((entry) => entry.id === active.id
 				? { ...entry, scale: personScale, motionRef: leadRef }
 				: entry));
 			const placed = await deliverExtraTakes(takes.slice(1), active, label);
@@ -763,7 +763,7 @@ export function useMotion(appContext) {
 				},
 			};
 		});
-		appContext.shared.castDomain.setCharacters((current) => {
+		appContext.shared.publishStudioCharacters((current) => {
 			let next = current;
 			for (const { id, spawn, patch } of assignments) {
 				next = spawn && !next.some((entry) => entry.id === id)
@@ -883,7 +883,7 @@ export function useMotion(appContext) {
 				sceneCalibration: normalizedCalibration,
 				editSegments: createMotionEdit(decoded.frames),
 			};
-			appContext.shared.castDomain.setCharacters((list) => {
+			appContext.shared.publishStudioCharacters((list) => {
 				const next = list.map((entry) => entry.id === targetCharacter.id
 					? {
 						...entry,
@@ -974,9 +974,13 @@ export function useMotion(appContext) {
 		// take, not to the character. The persisted motionRef must drop too —
 		// restoreMotionRefs re-fetches it on every reload/rejoin, and a cleared
 		// take that resurrects on the next session is exactly the bug this fixes.
-		appContext.shared.castDomain.setCharacters((list) => list.map((entry) => entry.id === appContext.shared.activeChar.id ? { ...entry, scale: 1, motionRef: null } : entry));
-		// Back to the pre-generation timeline: the current duration on the production clock.
-		appContext.shared.setTlFrameCount(maxDst + 1);
+		appContext.shared.publishStudioCharacters((list) => list.map((entry) => entry.id === appContext.shared.activeChar.id ? { ...entry, scale: 1, motionRef: null } : entry));
+		const cast = appContext.storeDomain('cast');
+		if (cast) {
+			appContext.shared.bufferRef.current.motion = null;
+			cast.publishMotion(appContext.shared.activeChar.id, null);
+			cast.setTimeline(maxDst + 1);
+		} else appContext.shared.setTlFrameCount(maxDst + 1);
 		appContext.shared.setTlFps(TIMELINE_FPS);
 		appContext.shared.setTlFrame((f) => Math.min(f, maxDst));
 		appContext.shared.setTlPlaying(false);
@@ -2592,7 +2596,7 @@ export function useMotion(appContext) {
 			anchorZ: sceneAnchorZ,
 		};
 		if (calibration && typeof calibration === "object") motionRef.calibration = normalizedCalibration;
-		if (!job.commandContext) appContext.shared.castDomain.setCharacters((list) => list.map((entry) => entry.id === job.charId ? { ...entry, motionRef } : entry));
+		if (!job.commandContext) appContext.shared.publishStudioCharacters((list) => list.map((entry) => entry.id === job.charId ? { ...entry, motionRef } : entry));
 		if (job.charId === appContext.shared.loadedLayerCharRef.current) {
 			await loadMotion(motionUrl, job.prompt, job.rootRotationDeg, null, job.charId, null, { calibration, commandContext: job.commandContext });
 			if (job.commandContext) appContext.shared.publishStudioCharacters(appContext.live.characters.map(entry => entry.id === job.charId ? { ...entry, motionRef } : entry));
@@ -2619,7 +2623,7 @@ export function useMotion(appContext) {
 			if (job.commandContext) appContext.shared.castDomain.recordCharacterUndo();
 			appContext.shared.motionFullRef.current.set(job.charId, clip);
 			const next = appContext.live.characters.map(entry => entry.id === job.charId ? { ...entry, scale, sessionMotion: clip, motionRef } : entry);
-			if (job.commandContext) appContext.shared.publishStudioCharacters(next); else appContext.shared.castDomain.setCharacters(next);
+			appContext.shared.publishStudioCharacters(next);
 		};
 		if (job.commandContext) job.commandContext.commit(apply); else apply();
 	}
@@ -2661,7 +2665,7 @@ export function useMotion(appContext) {
 				if (entry.motionRef.calibration) clip.sceneCalibration = entry.motionRef.calibration;
 				if (entry.motionRef.studioTakeId) clip.studioTakeId = entry.motionRef.studioTakeId;
 				appContext.shared.motionFullRef.current.set(entry.id, clip);
-				appContext.shared.castDomain.setCharacters((current) => current.map((item) => item.id === entry.id
+				appContext.shared.publishStudioCharacters((current) => current.map((item) => item.id === entry.id
 					// The stature rides inside the npz, so a restored take
 					// re-applies it; the saved entry scale is only the fallback
 					// for a take whose npz never stored one.
@@ -2917,22 +2921,29 @@ export function useMotion(appContext) {
 		}
 		return appContext.shared.runStudioAction("motion.generateFromVideo", { instruction });
 	}
-	function publishStudioMotion(targetId, state) {
-		const current = appContext.shared.readStudioState();
-		appContext.shared.publishStudioCharacters(current.characters.map(c => c.id === targetId ? state.character : c));
+	function publishStudioMotion(targetId, state, authored = false) {
+		const current = appContext.shared.readStudioState(), cast = appContext.storeDomain('cast');
+		if (!cast || authored) appContext.shared.publishStudioCharacters(current.characters.map(c => c.id === targetId ? state.character : c));
+		if (cast) cast.publishMotion(targetId, state.character.sessionMotion ?? null);
 		if (state.fullMotion) appContext.shared.motionFullRef.current.set(targetId, state.fullMotion); else appContext.shared.motionFullRef.current.delete(targetId);
 		const layer = { ...createIkState(), keys: copyPhysicsKeys(state.ikState.keys), tracked: new Set(state.ikState.tracked) };
 		appContext.shared.ikStatesRef.current.set(targetId, layer);
 		if (appContext.shared.loadedLayerCharRef.current === targetId) {
 			appContext.shared.ikStateRef.current = layer;
-			appContext.shared.bufferRef.current = { waypoints: state.character.layer?.waypoints ?? [], promptClips: state.character.layer?.promptClips ?? [], motion: state.character.sessionMotion ?? null, ik: layer };
-			appContext.shared.setWaypoints(appContext.shared.bufferRef.current.waypoints); appContext.shared.setPromptClips(appContext.shared.bufferRef.current.promptClips); setMotion(appContext.shared.bufferRef.current.motion);
+			const characterLayer = cast?.read().find(entry => entry.id === targetId)?.layer ?? state.character.layer;
+			appContext.shared.bufferRef.current = { waypoints: characterLayer?.waypoints ?? [], promptClips: characterLayer?.promptClips ?? [], motion: state.character.sessionMotion ?? null, ik: layer };
+			if (!cast) { appContext.shared.setWaypoints(appContext.shared.bufferRef.current.waypoints); appContext.shared.setPromptClips(appContext.shared.bufferRef.current.promptClips); }
+			setMotion(appContext.shared.bufferRef.current.motion);
 			setCommittedIkEdits(state.committedIkEdits); setIkTick(n => n + 1);
 		}
-		appContext.patchTimeline({ frameCount: state.frameCount }); appContext.shared.frameCountRef.current = state.frameCount; appContext.shared.setTlFrameCount(state.frameCount);
+		appContext.patchTimeline({ frameCount: state.frameCount }); appContext.shared.frameCountRef.current = state.frameCount;
+		if (!cast) appContext.shared.setTlFrameCount(state.frameCount);
+		else if (authored) cast.setTimeline(state.frameCount);
 		if (state.renderer) appContext.shared.restoreExportRig(state.renderer);
 	}
 	function commitStudioMotion(payload) {
+		if (appContext.storeDomain('cast') && !payload.composed) return appContext.ports.recordAction('motion',
+			() => commitStudioMotion({ ...payload, composed: true }), payload.binding.characterId, true);
 		const id = payload.binding.characterId, before = appContext.shared.readStudioState(), target = before.targets.get(id);
 		const character = before.characters.find(c => c.id === id);
 		const clips = payload.schedule.blocks.map((block, index) => ({ id: `${payload.takeId}-beat-${index}`, startFrame: block.startFrame, endFrame: block.endFrameExclusive, text: block.text }));
@@ -2943,11 +2954,11 @@ export function useMotion(appContext) {
 			rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ, calibration: payload.calibration, studioTakeId: payload.takeId };
 		if (take.motionId) motionRef.motionId = take.motionId;
 		const next = { ...character, scale: payload.scale, sessionMotion: take, motionRef, layer: { ...character.layer, promptClips: clips } };
+		// The native bridge snapshots the rig before any nested owner publishes.
 		appContext.shared.recordStudioHistory("motion", id, payload.historyEntryId);
-		const renderer = target?.rig ? appContext.shared.snapshotExportRig(target.rig) : null;
 		publishStudioMotion(id, { character: next, fullMotion: payload.sourceMotion, ikState: payload.ikState,
 			frameCount: id === appContext.shared.loadedLayerCharRef.current ? Math.max(payload.schedule.frameCount, before.view.frame + 1, ...before.shots.map(s => s.endFrame + 1)) : before.frameCount,
-			committedIkEdits: [], renderer: null });
+			committedIkEdits: [], renderer: null }, true);
 		if (target?.rig) {
 			if (id === appContext.shared.loadedLayerCharRef.current) beginPlaybackOn(target.rig);
 			const resolved = resolveIkRig(target.rig), layer = appContext.shared.ikStatesRef.current.get(id);
@@ -2955,9 +2966,7 @@ export function useMotion(appContext) {
 			appContext.shared.poseMemberAtFrame(target.rig, take, layer, before.view.frame, IK_CORRECTION_BLEND_FRAMES);
 			target.rig.updateMatrixWorld(true);
 		}
-		// Preimage bones live on the native entry, not on the installed candidate.
-		appContext.castHistory.past.at(-1).studio.state.renderer = renderer;
-		appContext.shared.markSemanticEdit("characters", before.characters, appContext.live.characters);
+		if (!appContext.storeDomain('cast')) appContext.shared.markSemanticEdit("characters", before.characters, appContext.live.characters);
 		// Store the take's bytes the way a project save embeds a take
 		// (collectProjectSerialized): the same record, caches and motion store, so
 		// the ref's motionId resolves after a reload without the bridge.
@@ -3006,6 +3015,7 @@ export function useMotion(appContext) {
 		return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
 	}
 	function updateFalMotionQuota(dailyRemaining) { setFalMotion((current) => ({ ...current, dailyRemaining })); }
+	appContext.updateActionPorts({ clearMotionNative: clearMotion });
 	return {
 		falMotion, setFalMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, commitStudioMotion, loadLiveMotion, updateFalMotionQuota,
 		ikMode, ikChains, setIkChains, ikFkJoints, setIkFkJoints, ikFocus, setIkFocus, footSnap, setFootSnap,
@@ -3021,7 +3031,7 @@ export function useMotion(appContext) {
 		multiModelStage, multiModelProgress, multiModelFootage, multiModelError, multiModelTake,
 		multiModelExtract, multiModelExtractProgress, multiModelExtractError, advanceFrame, stepFrame,
 		leaveIkMode, beginPlaybackOn, chooseMultiModelFile, pasteMultiModelUrl, useMultiModelUrl, ingestFootage,
-		extractMultiModelMotion, loadMotion, clearMotion, applyMotionTrim, resetMotionTrim, cutMotionAtPlayhead,
+		extractMultiModelMotion, loadMotion, clearMotion: () => appContext.bus.run('motion.clear', { characterId: appContext.shared.activeChar.id }), clearMotionNative: clearMotion, applyMotionTrim, resetMotionTrim, cutMotionAtPlayhead,
 		changeMotionSegmentSpeed, removeMotionSegmentById, poseOtherCastMembers, toggleIkMode, ikSolve,
 		ikDragEnd, ikAddKeyframe, externalBlockers, runFixCollisions, runFixCollisionsRange,
 		changePhysicsOptions, showPhysicsPreview, cancelPhysicsPreview, applyPhysicsPreview, runAutoPhysics,

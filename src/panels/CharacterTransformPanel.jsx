@@ -1,8 +1,10 @@
 import Foldout from "./Foldout.jsx";
 import { ko } from "../locale.js";
 import { Vector3Row, Slider } from "../ui.jsx";
+import { useCastTransaction } from '../domains/cast.js';
 
-export default function CharacterTransformPanel({ workflowMode, isCharacterSelection, activeChar, changeInspectorCharacter, beginGestureUndo, endGestureUndo }) {
+export default function CharacterTransformPanel({ workflowMode, isCharacterSelection, activeChar }) {
+	const { run, begin, commit } = useCastTransaction();
 	return (
 <Foldout
 					key={workflowMode === "motion" ? "placement" : "transform"}
@@ -18,11 +20,11 @@ export default function CharacterTransformPanel({ workflowMode, isCharacterSelec
 							<Vector3Row
 								label={ko("Position", "위치")}
 								fields={[
-									{ axis: "X", value: activeChar.x, step: 0.05, precision: 2, scrubRange: 5, onChange: (x) => changeInspectorCharacter("x", { x }), onScrubStart: () => beginGestureUndo(`character:${activeChar.id}:x`), onScrubEnd: endGestureUndo },
-									{ axis: "Z", value: activeChar.z, step: 0.05, precision: 2, scrubRange: 5, onChange: (z) => changeInspectorCharacter("z", { z }), onScrubStart: () => beginGestureUndo(`character:${activeChar.id}:z`), onScrubEnd: endGestureUndo },
+									{ axis: "X", value: activeChar.x, step: 0.05, precision: 2, scrubRange: 5, onChange: (x) => run('character.update', { characterId: activeChar.id, patch: { x } }), onScrubStart: begin, onScrubEnd: commit },
+									{ axis: "Z", value: activeChar.z, step: 0.05, precision: 2, scrubRange: 5, onChange: (z) => run('character.update', { characterId: activeChar.id, patch: { z } }), onScrubStart: begin, onScrubEnd: commit },
 								]}
 							/>
-							<Slider compact label={ko("Rotation", "회전")} min={-180} max={180} step={1} value={activeChar.rot ?? 0} unit="°" onChange={(rot) => changeInspectorCharacter("rot", { rot })} />
+							<Slider compact label={ko("Rotation", "회전")} min={-180} max={180} step={1} value={activeChar.rot ?? 0} unit="°" onChange={(rot) => run('character.update', { characterId: activeChar.id, patch: { rot } })} />
 						</div>
 					) : (
 						<>
@@ -32,13 +34,13 @@ export default function CharacterTransformPanel({ workflowMode, isCharacterSelec
 							<Vector3Row
 								label={ko("Position", "위치")}
 								fields={[
-									{ axis: "X", value: activeChar.x, step: 0.05, precision: 2, scrubRange: 5, onChange: (x) => changeInspectorCharacter("x", { x }), onScrubStart: () => beginGestureUndo(`character:${activeChar.id}:x`), onScrubEnd: endGestureUndo },
-									{ axis: "Y", value: activeChar.y ?? 0, step: 0.05, precision: 2, scrubRange: 5, onChange: (y) => changeInspectorCharacter("y", { y: Math.max(0, y) }), onScrubStart: () => beginGestureUndo(`character:${activeChar.id}:y`), onScrubEnd: endGestureUndo },
-									{ axis: "Z", value: activeChar.z, step: 0.05, precision: 2, scrubRange: 5, onChange: (z) => changeInspectorCharacter("z", { z }), onScrubStart: () => beginGestureUndo(`character:${activeChar.id}:z`), onScrubEnd: endGestureUndo },
+									{ axis: "X", value: activeChar.x, step: 0.05, precision: 2, scrubRange: 5, onChange: (x) => run('character.update', { characterId: activeChar.id, patch: { x } }), onScrubStart: begin, onScrubEnd: commit },
+									{ axis: "Y", value: activeChar.y ?? 0, step: 0.05, precision: 2, scrubRange: 5, onChange: (y) => run('character.update', { characterId: activeChar.id, patch: { y } }), onScrubStart: begin, onScrubEnd: commit },
+									{ axis: "Z", value: activeChar.z, step: 0.05, precision: 2, scrubRange: 5, onChange: (z) => run('character.update', { characterId: activeChar.id, patch: { z } }), onScrubStart: begin, onScrubEnd: commit },
 								]}
 							/>
-							<Slider compact label={ko("Rotation", "회전")} min={-180} max={180} step={1} value={activeChar.rot ?? 0} unit="°" onChange={(rot) => changeInspectorCharacter("rot", { rot })} />
-							<Slider compact label={ko("Scale", "크기")} min={0.2} max={3} step={0.05} value={activeChar.scale ?? 1} unit="×" onChange={(scale) => changeInspectorCharacter("scale", { scale })} />
+							<Slider compact label={ko("Rotation", "회전")} min={-180} max={180} step={1} value={activeChar.rot ?? 0} unit="°" onChange={(rot) => run('character.update', { characterId: activeChar.id, patch: { rot } })} />
+							<Slider compact label={ko("Scale", "크기")} min={0.2} max={3} step={0.05} value={activeChar.scale ?? 1} unit="×" onChange={(scale) => run('character.update', { characterId: activeChar.id, patch: { scale } })} />
 						</>
 					)}
 				</Foldout>

@@ -145,7 +145,7 @@ for (const timing of ["before-rig", "during-load", "unchanged"]) {
 		applyMotionCalibration: (value) => ({ motion: value }), characterScaleFor: () => 1,
 		authoredSupportDescriptors: () => [], applySupportRise: (value) => value,
 		autoRoofDrop: () => null, applyAutoFall: (value) => value, beginPlaybackOn() {}, createMotionEdit: () => [],
-		setCharacters(fn) { context.charactersRef.current = fn(context.charactersRef.current); },
+		publishStudioCharacters(fn) { context.charactersRef.current = fn(context.charactersRef.current); },
 		setMotion(value) { context.motion = value; }, setTlFrameCount(value) { context.frameCount = value; },
 		setTlFrame(value) { context.frame = value; }, setTlFps() {}, setTlPlaying() {},
 		setCommittedIkEdits() {}, setToast() {}, ko: (en) => en,
