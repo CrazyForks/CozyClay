@@ -105,6 +105,34 @@ test("parity pending ids may only shrink", () => {
   console.log(`BUS PARITY pending rows: ${pending.length * ORIGINS.length * CHECKS.length}`);
 });
 
+test('#496.2 only document-mutating handlers enter the denominator', () => {
+  const metrics = coverageMetrics([{ file: 'fixture.jsx', source: `function Panel() {
+    const change = () => run('stage.setStyle', { style: 'film' });
+    const alias = change;
+    return <Child onChange={alias} onClick={() => run('character.update', {})}
+      onMouseOver={() => setToast('hover')} onFocus={() => run('view.select', {})}
+      onBlur={() => setSelectedHierarchyId('camera')} />;
+  }` }]);
+  assert.equal(metrics.handlerTotal, 2);
+  assert.equal(metrics.handlerSites, 2);
+});
+
+test('#496.2 a direct-writing fixture handler makes the coverage gate red', () => {
+  for (const writer of ['setStyle(\'film\')', 'change(\'film\')', 'controls.setStyle(\'film\')']) {
+    const metrics = coverageMetrics([{ file: 'fixture.jsx', source: `function Panel() {
+      const change = setStyle;
+      return <Child onChange={() => ${writer}} onClick={() => run('stage.setStyle', {})} />;
+    }` }]);
+    assert.equal(metrics.handlerTotal, 2);
+    assert.equal(metrics.handlerSites, 1);
+    assert.throws(() => assert.equal(metrics.handlerSites, metrics.handlerTotal), assert.AssertionError);
+  }
+  const mixed = coverageMetrics([{ file: 'fixture.jsx', source: `function Panel() {
+    return <Child onChange={() => { run('stage.setStyle', {}); setStyle('film'); }} />;
+  }` }]);
+  assert.equal(mixed.handlerTotal, 1); assert.equal(mixed.handlerSites, 0);
+});
+
 test("coverage metrics are measured from the source and registered actions", () => {
   const f = fixture();
   const metrics = coverageMetrics();
@@ -117,6 +145,8 @@ test("coverage metrics are measured from the source and registered actions", () 
   assert.ok(metrics.writerReferences <= floor.writerReferences);
   assert.ok(metrics.handlerSites >= floor.handlerSites && metrics.handlerTotal >= floor.handlerTotal);
   assert.ok(metrics.registeredCommands >= floor.registeredCommands);
+  assert.ok(metrics.handlerTotal > 0);
+  assert.equal(metrics.handlerSites, metrics.handlerTotal, '#496.2 every document-mutating handler reaches run without a direct write');
 });
 
 test("registered mutations execute receipt and undo checks through the real bus", () => {
