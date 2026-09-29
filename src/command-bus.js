@@ -187,9 +187,12 @@ export function createCommandBus({ registry, ports }) {
   function executeRun(id, args = {}, options = {}) {
     const request = { origin: 'ui', commandId: crypto.randomUUID(), ...options };
     const before = ports.read(), journal = ports.journal();
-    let begun = false, releaseToasts, timer, job, applied = false, committedHistoryId;
+    let begun = false, releaseToasts, timer, foregroundTimer, job, applied = false, committedHistoryId;
     const controller = new AbortController();
-    const clearTimer = () => { if (timer !== undefined) (ports.clearTimeout ?? clearTimeout)(timer); };
+    const clearTimer = () => {
+      if (timer !== undefined) clear(timer);
+      if (foregroundTimer !== undefined) clear(foregroundTimer);
+    };
     const toasts = [];
     const toastRefusal = () => toasts.length && ports.read().revision === before.revision ? new StudioProtocolError('TARGET_NOT_READY', toasts.at(-1).message) : null;
     const remember = value => {
@@ -269,12 +272,11 @@ export function createCommandBus({ registry, ports }) {
       timer = (ports.setTimeout ?? setTimeout)(() => {
         const error = new StudioProtocolError('TIMEOUT', `${entry.id} exceeded its deadline.`);
         controller.abort(error);
-      }, entry.timeoutMs ?? 30_000);
+      }, job && entry.background === true ? 300_000 : entry.timeoutMs ?? 30_000);
       // The race observes expiry even if a backend ignores cancellation.
       const invoke = () => {
         const value = registry.invoke(entry, validated, context);
         if (!value?.then) return value;
-        if (job) job.background = request.wait === false || (entry.background === true && request.wait !== true);
         const deadline = new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true }));
         return Promise.race([value, deadline]);
       };
@@ -290,9 +292,21 @@ export function createCommandBus({ registry, ports }) {
       const answer = finished?.then ? finished.catch(rejected) : finished;
       if (job) {
         job.completion = Promise.resolve(answer).then(outcome => { job.outcome = outcome; emit({ type: 'job.completed', jobId: job.id, receipt: outcome }); return outcome; });
-        if (job.background) return journal.record(validateReceipt({ ok: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
-          action: entry.id, status: 'started', kind: 'job', jobId: job.id, authored: false, revision: { before: before.revision, after: before.revision },
-          affectedIds: [], delta: [], checks: { coverage: `studio-action:${entry.id}` }, warnings: [], undo: null }));
+        const detach = () => {
+          job.background = true;
+          const current = ports.read();
+          return journal.record(validateReceipt({ ok: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
+            action: entry.id, status: 'started', kind: 'job', jobId: job.id, authored: false, revision: { before: before.revision, after: current.revision },
+            affectedIds: [], delta: [], checks: { coverage: `studio-action:${entry.id}` }, warnings: [], undo: null }));
+        };
+        if (answer?.then && request.wait === false) return detach();
+        if (answer?.then && entry.background === true) {
+          const foreground = Promise.race([job.completion, new Promise(resolve => {
+            foregroundTimer = (ports.setTimeout ?? setTimeout)(() => resolve(detach()), entry.timeoutMs ?? 30_000);
+          })]).finally(() => pending.delete(request.commandId));
+          pending.set(request.commandId, foreground);
+          return foreground;
+        }
       }
       if (answer?.then) { const settled = (job?.completion ?? answer).finally(() => pending.delete(request.commandId)); pending.set(request.commandId, settled); return settled; }
       return answer;
