@@ -97,6 +97,24 @@ test("fixture run call is not a document-writer reference", () => {
   assert.equal(result.references.length, 0);
 });
 
+test('#496.1 member writers and writes inside run arguments cannot bypass the ratchet', () => {
+  for (const source of [
+    `function Panel(){ controls.setStyle('film'); }`,
+    `function Panel(){ controls['setStyle']('film'); }`,
+    `function Panel(){ const write = controls.setStyle; write('film'); }`,
+    `function Panel(){ run('stage.set', { value: setStyle('film') }); }`,
+  ]) assert.ok(scanSource(source).references.some(ref => ref.name === 'setStyle'), source);
+});
+
+test('#496.1 property labels are not writers, but setter values and shorthand remain references', () => {
+  for (const key of ['setEnvironmentImage', '"setEnvironmentImage"']) {
+    assert.deepEqual(scanSource(`const api = { ${key}: value => run('stage.setEnvironment', { environmentImage: value }) };`).references, []);
+  }
+  for (const value of ['{ setStyle }', '{ setStyle: setStyle }', '{ "setStyle": setStyle }']) {
+    assert.ok(scanSource(`const api = ${value};`).references.some(ref => ref.name === 'setStyle'));
+  }
+});
+
 test("stale baseline entries fail the ratchet", () => {
   assert.deepEqual(applyRatchet({ Panel: 1 }, { Panel: 1, Removed: 1 }), ["Removed: stale baseline entry"]);
 });
