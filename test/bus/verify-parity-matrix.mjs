@@ -43,7 +43,7 @@ function executeParity({ run, snapshot, command, args = { value: 1 }, raw = run 
 function pendingErrors(previous, current) {
   return current.filter(id => !previous.includes(id)).map(id => `${id}: newly pending`);
 }
-function readParityPending(directory = new URL('./parity-pending/', import.meta.url)) {
+function readParityPending(directory = new URL('./parity-pending/', import.meta.url), { allowPending = false } = {}) {
   const root = directory instanceof URL ? fileURLToPath(directory) : directory;
   return readdirSync(root).sort().flatMap(file => {
     assert.ok(file.endsWith('.json'), `Unexpected pending file: ${file}`);
@@ -54,6 +54,7 @@ function readParityPending(directory = new URL('./parity-pending/', import.meta.
     // a shared manifest edit when the five migrations run in parallel.
     assert.ok(Array.isArray(pending) && pending.length <= 1);
     assert.deepEqual(pendingErrors([domain], pending), []);
+    if (!allowPending) assert.deepEqual(pending, [], `${domain}: parity migration is complete; pending rows cannot return`);
     return pending;
   });
 }
