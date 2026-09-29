@@ -1,10 +1,10 @@
 {
   "version": 1,
   "coverage": {
-    "writerReferences": 177,
-    "handlerSites": 34,
-    "handlerTotal": 800,
-    "registeredCommands": 46
+    "writerReferences": 174,
+    "handlerSites": 37,
+    "handlerTotal": 799,
+    "registeredCommands": 56
   },
   "writers": {
     "App.jsx::<anonymous>": 43,

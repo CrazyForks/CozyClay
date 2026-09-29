@@ -308,8 +308,6 @@ export function useShots(appContext) {
     if (options?.dragging) domain.beginGesture();
     return changeActiveCamera({ cameraRail: points });
   }
-  // Temporary compatibility with the frozen App prop; writers own gestures.
-  function recordShotUndo() {}
   function toggleCameraRailDraw() {
     if (!activeShot || appContext.shared.waypointMode) return;
     domain.finishGesture();
@@ -379,7 +377,7 @@ export function useShots(appContext) {
     setShotCameraRail, clearShotCameraRail, changeCameraRail, addCameraKeyframe, moveCameraKeyframe, removeCameraKeyframe, clearMove,
     addTimelineShot, splitTimelineShot, duplicateTimelineShot, removeTimelineShot, moveTimelineShot, setTimelineShotRange,
     resizeTimelineShot, renameTimelineShot, selectTimelineShot, previewCameraShot, addActiveCranePoint, deleteSelectedCranePoint,
-    changeCranePoints, changeCraneRail, recordShotUndo, toggleCameraRailDraw, deleteCameraRail, drawCameraRail,
+    changeCranePoints, changeCraneRail, toggleCameraRailDraw, deleteCameraRail, drawCameraRail,
     publishStudioShots, commitStudioShots, publishStudioCamera, applyPreset, setLiveCamera, changeLens,
     clampShotRailRanges, syncTimelineExtent, finishCameraMove, exportShotVideo };
 }
