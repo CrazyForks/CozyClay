@@ -26,13 +26,14 @@ export function createStudioTools({ liveHub, workspaceHandle, session, resolveIm
     if (name === 'generate_motion' && command.args.source.kind === 'generate') return invoke('run_action', { action: 'motion.generate', args: generationArgs(command.args) });
     const action = name === "run_action" ? declared.get(command.args.action) : undefined;
     const generation = action?.generation === "motion";
-    if (generation && generationGate.used) throw new StudioProtocolError("GENERATION_LIMIT", "One motion generation per user message. Report this result and ask the user before generating again.");
+    if (generation && (generationGate.used || generationGate.pending)) throw new StudioProtocolError("GENERATION_LIMIT", "One motion generation per user message. Report this result and ask the user before generating again.");
     if (generation && (generationGate.failures ?? 0) >= 2) throw new StudioProtocolError("GENERATION_LIMIT", "Two motion generation attempts already failed in this user message. Report both failures to the user and ask before generating again.");
     const payload = mutationNames.has(name) && session?.admission
       ? { name, args: command.args, commandId: session.admission.commandId(), host: session.admission.host, expectedRevision: session.admission.revision,
           ...(generation && session.onJob ? { wait: false } : {}) }
       : command.args;
     let result;
+    if (generation) generationGate.pending = true;
     try {
       // A motion check samples the whole take in the editor, minutes on a long
       // take, so it waits under the hub ceiling rather than the Studio default.
@@ -46,7 +47,7 @@ export function createStudioTools({ liveHub, workspaceHandle, session, resolveIm
       if (generation) generationGate.failures = (generationGate.failures ?? 0) + 1;
       if (session?.admission && (error?.code === "STALE_SCENE" || (mutationNames.has(name) && error?.code === "UNCERTAIN_APPLY"))) await session.admission.refresh();
       throw error;
-    }
+    } finally { if (generation) generationGate.pending = false; }
     if (result?.ok === false) {
       // Rejection receipts carry code/message at the top level, not under `error`;
       // the receipt itself holds phase, recovery and target evidence the model needs.
