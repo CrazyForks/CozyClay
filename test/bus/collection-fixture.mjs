@@ -11,7 +11,7 @@ registerElementKind(kind, {
   ],
   normalize: value => ({ ...value, amount: Math.min(10, value.amount) }),
 });
-export function collectionFixture() {
+export function collectionFixture(undoDomain = kind) {
   const f = stageFixture(), app = f.scope.appContext;
   const store = createDocumentStore({ owned: { [kind]: [
     { id: 'item-a', amount: 0, name: 'A' }, { id: 'item-b', amount: 2, name: 'B' },
@@ -22,9 +22,9 @@ export function collectionFixture() {
     beginAction: () => store.beginAction(kind), canUndo: id => store.canUndo(id),
     stepHistory: redo => Boolean((redo ? store.redo : store.undo)()),
   };
-  const release = app.registerStoreDomain(kind, domain);
+  const release = app.registerStoreDomain(undoDomain, domain);
   registerElementSet(f.registry, f.actionHandlers.current, { id: `${kind}.set`, label: 'Fixture item', description: 'Collection fixture',
-    kind: 'mutation', undoDomain: kind, input: elementSetSchema(kind) });
+    kind: 'mutation', undoDomain, input: elementSetSchema(kind) });
   const patch = ops => f.binding.handlers.patch_elements(f.request('patch_elements', { ops }));
   return { ...f, domain, patch, dispose() { release(); store.dispose(); f.dispose(); } };
 }
