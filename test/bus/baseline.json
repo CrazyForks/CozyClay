@@ -1,13 +1,13 @@
 {
   "version": 1,
   "coverage": {
-    "writerReferences": 207,
+    "writerReferences": 206,
     "handlerSites": 33,
     "handlerTotal": 800,
     "registeredCommands": 46
   },
   "writers": {
-    "App.jsx::<anonymous>": 44,
+    "App.jsx::<anonymous>": 43,
     "App.jsx::App": 20,
     "App.jsx::enterShotLook": 1,
     "App.jsx::selectWorkflowMode": 3,

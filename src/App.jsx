@@ -8536,7 +8536,7 @@ export default function App() {
 			/>
 			<FirstSuccessGuide open={firstSuccessGuideOpen} onDismiss={() => setFirstSuccessGuideOpen(false)} />
 			{saveBlockedReasons && <SaveBlockedDialog reasons={saveBlockedReasons} onClose={() => setSaveBlockedReasons(null)} />}
-			<Toast message={toast} onDone={() => setToast((current) => current === toast ? "" : current)} />
+			<Toast message={toast} onDone={() => showToast((current) => current === toast ? "" : current)} />
 			{pwaUpdate && (
 				<div className="scene-delete-toast" role="status">
 					<span>{ko("A new version of CozyClay is ready.", "CozyClay 새 버전이 준비됐어요.")}</span>

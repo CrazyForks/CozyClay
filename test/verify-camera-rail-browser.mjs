@@ -45,6 +45,11 @@ const waitFor = async (expression, timeoutMs = 10000) => {
 	return false;
 };
 
+// Ctrl+Shift+Z on a fresh load has an empty redo stack: a toast with no edit.
+const pressRedo = async () => {
+	for (const type of ["keyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, modifiers: 10, code: "KeyZ", key: "Z", windowsVirtualKeyCode: 90 });
+};
+
 let failures = 0;
 const expect = (name, condition, detail = "") => {
 	console.log(`${condition ? "PASS" : "FAIL"} ${name}${condition ? "" : ` — ${detail}`}`);
@@ -95,6 +100,16 @@ if (process.env.QA_SCREENSHOT) {
 	const capture = await send("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
 	writeFileSync(process.env.QA_SCREENSHOT, Buffer.from(capture.data, "base64"));
 }
+// #483: a toast must survive the dismissal timer of the toast it replaces. On
+// the slow software-GL runner the older toast's 2.2 s timer fired before React
+// committed the rail toast, and that timer wiped it. Show an older toast, then
+// fire that toast's own onDone inside the Delete rail click, after React's
+// handler, so the dismissal and the rail toast land in one render: the order
+// the slow runner produced, on any machine. (Fired outside the event, React
+// may render the two in separate lanes and the rail toast flashes first.) The
+// redo press guarantees an older toast; a startup toast may replace it, and
+// any visible one will do.
+await pressRedo();
 // The toast lives 2.2 s and the checks below wait for other state first, so
 // record its appearance from before the click instead of reading it later.
 await evaluate(`(() => {
@@ -104,7 +119,28 @@ await evaluate(`(() => {
 	const observer = new MutationObserver(() => { if (seen()) observer.disconnect(); });
 	observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 })()`);
-await evaluate("[...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Delete rail')?.click()");
+// Waits in the page and acts in the task that sees the older toast, so it can
+// neither expire nor be replaced between the check and the click.
+const olderDismissalFired = await evaluate(`new Promise((resolve) => {
+	const fire = () => {
+		const toast = document.querySelector('.toast');
+		if (!toast?.textContent.trim()) return false;
+		const key = Object.keys(toast).find((name) => name.startsWith('__reactFiber$'));
+		let fiber = key ? toast[key] : null;
+		while (fiber && typeof fiber.memoizedProps?.onDone !== 'function') fiber = fiber.return;
+		const button = [...document.querySelectorAll('button')].find((candidate) => candidate.textContent.trim() === 'Delete rail');
+		// window bubbles after React's root listener: same event, same lane.
+		if (fiber) window.addEventListener('click', () => fiber.memoizedProps.onDone(), { once: true });
+		button?.click();
+		resolve(!!fiber && !!button);
+		return true;
+	};
+	if (fire()) return;
+	const observer = new MutationObserver(() => { if (fire()) { observer.disconnect(); clearTimeout(timer); } });
+	const timer = setTimeout(() => { observer.disconnect(); resolve(false); }, 10000);
+	observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+})`);
+expect("the older toast's dismissal fires before the rail toast renders", olderDismissalFired === true);
 expect("delete action leaves Follow mode", await waitFor("document.querySelector('.tl-camera-slate')?.textContent.includes('Camera preview')"));
 expect("rail deletion turns the Draw Rail row Follow On", await waitFor("[...document.querySelectorAll('.tl-camera-editor button')].some((button) => button.textContent.trim() === 'Follow On' && button.getAttribute('aria-pressed') === 'true')"));
 expect("rail delete toast is shown", await waitFor("window.__railToastSeen === true"));
@@ -148,6 +184,32 @@ expect("front placement is persisted as a 180 degree orbit offset", await waitFo
 	const body = JSON.parse(localStorage.getItem("cozyclay.scenes.v4"));
 	return Math.abs(body.scenes[0].shotDocument.shots[0].camera.followCam.orbitOffsetDeg - 180) < 0.1;
 })()`));
+
+// A dismissed Korean toast must leave no toast box behind. The dismissal once
+// resolved its updater as a localizer, which answered `isKo` (true) and
+// rendered an empty toast for another 2.2 s after every Korean toast.
+await evaluate("localStorage.setItem('cozyclay.locale', 'ko')");
+await send("Page.reload");
+expect("Korean studio returns after reload", await waitFor("!!document.querySelector('.tl-shot-block')"));
+// Recorded, not polled: the async startup toast can replace the redo toast at
+// once (or land in the same render), so any Korean toast counts.
+await evaluate(`(() => {
+	window.__koToastSeen = false;
+	window.__emptyToastSeen = false;
+	const check = () => {
+		const toast = document.querySelector('.toast');
+		if (!toast) return;
+		const text = toast.textContent.trim();
+		if (/[\\uac00-\\ud7a3]/.test(text)) window.__koToastSeen = true;
+		if (!text) window.__emptyToastSeen = true;
+	};
+	new MutationObserver(check).observe(document.body, { childList: true, subtree: true, characterData: true });
+})()`);
+await pressRedo();
+expect("Korean toast is shown", await waitFor("window.__koToastSeen === true"));
+// The startup toasts queue behind it; on a slow runner the chain outlasts 10 s.
+expect("Korean toast dismisses itself", await waitFor("!document.querySelector('.toast')", 30000));
+expect("Korean toast dismissal leaves no empty toast box", await evaluate("window.__emptyToastSeen === false"));
 
 ws.close();
 if (failures) process.exit(1);
