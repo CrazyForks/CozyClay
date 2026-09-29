@@ -187,9 +187,12 @@ export function createCommandBus({ registry, ports }) {
   function executeRun(id, args = {}, options = {}) {
     const request = { origin: 'ui', commandId: crypto.randomUUID(), ...options };
     const before = ports.read(), journal = ports.journal();
-    let begun = false, releaseToasts, timer, job, applied = false, committedHistoryId;
+    let begun = false, releaseToasts, timer, foregroundTimer, job, applied = false, committedHistoryId;
     const controller = new AbortController();
-    const clearTimer = () => { if (timer !== undefined) (ports.clearTimeout ?? clearTimeout)(timer); };
+    const clearTimer = () => {
+      if (timer !== undefined) clear(timer);
+      if (foregroundTimer !== undefined) clear(foregroundTimer);
+    };
     const toasts = [];
     const toastRefusal = () => toasts.length && ports.read().revision === before.revision ? new StudioProtocolError('TARGET_NOT_READY', toasts.at(-1).message) : null;
     const remember = value => {
@@ -218,7 +221,10 @@ export function createCommandBus({ registry, ports }) {
       const prepared = controls[id] ? { args: validateStudioSchema(controls[id], args) } : registry.prepare(id, args);
       const { entry, args: validated } = prepared;
       if (request.origin !== 'ui') {
-        if (request.expectedRevision !== before.revision) fail('STALE_SCENE', 'Authored state changed; obtain fresh intent.');
+        // Job controls observe/cancel an admitted identity; completion itself
+        // can advance the revision while their wire request is in transit.
+        // Document identity and the job's own publication fence still apply.
+        if (!['job.await', 'job.cancel'].includes(id) && request.expectedRevision !== before.revision) fail('STALE_SCENE', 'Authored state changed; obtain fresh intent.');
         if (before.busy && !transactions.has(validated.txId) && !id.startsWith('job.')) fail('TARGET_BUSY', 'Finish the current editor gesture first.');
       }
       if (controls[id]) return mapResult(control(id, validated, request, before), remember, rejected);
@@ -227,8 +233,13 @@ export function createCommandBus({ registry, ports }) {
       releaseToasts = ports.captureToasts?.(toast => toasts.push(typeof toast === 'string' ? { message: toast } : toast));
       const domain = entry.domain ?? entry.undoDomain;
       const targetId = entry.target?.(validated, before) ?? validated.characterId ?? validated.shotId ?? validated.objectId;
-      const token = targetId ? ports.readTarget?.(targetId) : null;
-      const domainRevision = domain ? before.domainRevisions?.[domain] : null;
+      let token = targetId ? ports.readTarget?.(targetId) : null;
+      let domainRevision = domain ? before.domainRevisions?.[domain] : null;
+      const rebase = () => {
+        const current = ports.read();
+        token = targetId ? ports.readTarget?.(targetId) : null;
+        domainRevision = domain ? current.domainRevisions?.[domain] : null;
+      };
       const nestedIds = new Set();
       const context = { origin: request.origin, signal: controller.signal,
         check() {
@@ -241,27 +252,35 @@ export function createCommandBus({ registry, ports }) {
           if (!domain) fail('INVALID_ARGUMENT', 'A committing job must declare its domain.');
           const recorded = ports.recordAction(domain, apply, targetId ?? null);
           if (recorded?.then) fail('INVALID_ARGUMENT', 'Job publication must be synchronous; prepare before commit.');
-          committedHistoryId = recorded.historyEntryId; applied = Boolean(committedHistoryId);
+          committedHistoryId = recorded.historyEntryId; applied ||= Boolean(committedHistoryId);
+          if (job) rebase();
           return recorded.result;
         },
         run(nestedId, nestedArgs = {}) {
-          controller.signal.throwIfAborted();
+          if (job) context.check(); else controller.signal.throwIfAborted();
           const nested = registry.prepare(nestedId, nestedArgs); exposure(nested.entry, nested.args, request);
           const invoke = () => registry.invoke(nested.entry, nested.args, context);
           const value = nested.entry.kind === 'mutation' ? ports.recordAction(nested.entry.undoDomain, invoke, nested.args.characterId ?? null, true) : { result: invoke() };
-          return mapResult(value, recorded => mapResult(recorded.result, result => { for (const target of result.affectedIds) nestedIds.add(target); return result; }));
+          // Only the synchronous owned step may advance the fence. Never absorb
+          // an external edit while an asynchronous nested step is suspended;
+          // its later publication must itself use context.run/commit.
+          if (job) rebase();
+          return mapResult(value, recorded => mapResult(recorded.result, result => {
+            if (job) { context.check(); rebase(); applied ||= Boolean(recorded.historyEntryId); }
+            for (const target of result.affectedIds) nestedIds.add(target);
+            return result;
+          }));
         },
       };
       if (entry.kind === 'job') { job = { id: crypto.randomUUID(), host: before.host, controller, background: false }; jobs.set(job.id, job); }
       timer = (ports.setTimeout ?? setTimeout)(() => {
         const error = new StudioProtocolError('TIMEOUT', `${entry.id} exceeded its deadline.`);
         controller.abort(error);
-      }, entry.timeoutMs ?? 30_000);
+      }, job && entry.background === true ? 300_000 : entry.timeoutMs ?? 30_000);
       // The race observes expiry even if a backend ignores cancellation.
       const invoke = () => {
         const value = registry.invoke(entry, validated, context);
         if (!value?.then) return value;
-        if (job) job.background = request.wait === false || (entry.background === true && request.wait !== true);
         const deadline = new Promise((_, reject) => controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true }));
         return Promise.race([value, deadline]);
       };
@@ -277,9 +296,21 @@ export function createCommandBus({ registry, ports }) {
       const answer = finished?.then ? finished.catch(rejected) : finished;
       if (job) {
         job.completion = Promise.resolve(answer).then(outcome => { job.outcome = outcome; emit({ type: 'job.completed', jobId: job.id, receipt: outcome }); return outcome; });
-        if (job.background) return journal.record(validateReceipt({ ok: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
-          action: entry.id, status: 'started', kind: 'job', jobId: job.id, authored: false, revision: { before: before.revision, after: before.revision },
-          affectedIds: [], delta: [], checks: { coverage: `studio-action:${entry.id}` }, warnings: [], undo: null }));
+        const detach = () => {
+          job.background = true;
+          const current = ports.read();
+          return journal.record(validateReceipt({ ok: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
+            action: entry.id, status: 'started', kind: 'job', jobId: job.id, authored: false, revision: { before: current.revision, after: current.revision },
+            affectedIds: [], delta: [], checks: { coverage: `studio-action:${entry.id}` }, warnings: [], undo: null }));
+        };
+        if (answer?.then && request.wait === false) return detach();
+        if (answer?.then && entry.background === true) {
+          const foreground = Promise.race([job.completion, new Promise(resolve => {
+            foregroundTimer = (ports.setTimeout ?? setTimeout)(() => resolve(detach()), entry.timeoutMs ?? 30_000);
+          })]).finally(() => pending.delete(request.commandId));
+          pending.set(request.commandId, foreground);
+          return foreground;
+        }
       }
       if (answer?.then) { const settled = (job?.completion ?? answer).finally(() => pending.delete(request.commandId)); pending.set(request.commandId, settled); return settled; }
       return answer;

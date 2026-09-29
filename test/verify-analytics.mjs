@@ -86,7 +86,7 @@ for (const name of ["addPromptClip", "changePromptClip", "runLinePreview"]) {
 	assert.doesNotMatch(appFunction(name), /trackGenerateBlocked|startMotionRequest|requestMotionGeneration|motion:generate_/, `${name} authors without explicit demand`);
 }
 assert.doesNotMatch(appSource, /trackGenerateBlocked|motion:generate_blocked/);
-for (const name of ["runArdy", "runLineEdit", "runTrailRegeneration"]) {
+for (const name of ["generateMotion", "runLineEdit", "runTrailRegeneration"]) {
 	assert.match(appFunction(name), /requestMotionGeneration\(/, `${name} owns explicit intent for all callers`);
 }
 assert.match(appFunction("executeMotionJob"), /request\.start\(\)/);

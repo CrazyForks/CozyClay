@@ -7,15 +7,15 @@ try {
  let context;
  f.stand.promptBlockCount = 1;
  f.actionHandlers.current.runAllPromptBlocks = value => { context = value; return completion.promise; };
- const started = await f.actual.runStudioAction('motion.generateAllBlocks');
- assert.equal(started?.status, 'started', JSON.stringify(started));
- assert.ok(context.signal instanceof AbortSignal);
  const event = deferred();
- f.binding.bus.subscribe(e => { if (e.jobId === started.jobId) event.resolve(e); });
- const timeout = setTimeout(() => event.reject(new Error('job completion event deadline')), 5000);
+ const unsubscribe = f.binding.bus.subscribe(e => { if (e.type === 'job.completed') event.resolve(e); });
+ const running = f.actual.runStudioAction('motion.generateAllBlocks');
+ assert.ok(context.signal instanceof AbortSignal);
  completion.resolve();
- try { assert.equal((await event.promise).receipt.status, 'completed'); }
- finally { clearTimeout(timeout); }
+ const completed = await running;
+ assert.equal(completed?.status, 'completed', JSON.stringify(completed));
+ assert.equal((await event.promise).receipt.receiptId, completed.receiptId);
+ unsubscribe();
  const inputs = { type: 'object', properties: {}, required: [], additionalProperties: false };
  f.registry.register({ id: 'shot.nested', kind: 'mutation', undoDomain: 'shot', input: inputs, available: () => true,
   run: (_args, ctx) => { const created = ctx.run('shot.create'); ctx.run('shot.setCameraRail', { shotId: created.affectedIds[0], points: [{ x: -2, z: 4 }, { x: 2, z: 4 }] }); return { affectedIds: f.live.current.shots.map(s => s.id), summary: 'Two nested edits.' }; } });

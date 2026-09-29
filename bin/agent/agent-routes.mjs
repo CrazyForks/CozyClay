@@ -411,7 +411,8 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			// Forwarding its outcome keeps the panel from turning "I could not find
 			// out" into "nothing was applied"; a discarded outcome reads as proof.
 			let outcome = null;
-			if (jobId && ownedStudioRuntime?.stop) outcome = await ownedStudioRuntime.stop(jobId);
+			if (jobId && session.busJobIds.has(jobId)) outcome = await session.controlJob('job.cancel', jobId);
+			else if (jobId && ownedStudioRuntime?.stop) outcome = await ownedStudioRuntime.stop(jobId);
 			if (jobId && session.activeJobId === jobId) { session.activeJobId = null; session.activeJobTurnId = null; }
 			// #379 / 16q: `session.controller.signal` is the SAME signal wired into the
 			// active turn's prompt context (`:520 signal: controller.signal`), which
@@ -440,7 +441,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			studioOwner(req, value.sessionId, true);
 			let persisted = null;
 			try { persisted = sessionStore.read(value.sessionId); } catch { persisted = null; }
-			session = { owner: studioOwnerTokens.get(value.sessionId), history: persisted?.history ?? [], persistedItems: persisted?.history?.length ?? 0, meta: persisted?.meta ?? null, turns: new Map(), controller: null, activeJobId: null, activeJobTurnId: null, motionJobIds: new Set(Array.isArray(persisted?.meta?.motionJobIds) ? persisted.meta.motionJobIds.filter(id => typeof id === "string") : []), host: null, updatedAt: clock() };
+			session = { owner: studioOwnerTokens.get(value.sessionId), history: persisted?.history ?? [], persistedItems: persisted?.history?.length ?? 0, meta: persisted?.meta ?? null, turns: new Map(), controller: null, activeJobId: null, activeJobTurnId: null, motionJobIds: new Set(Array.isArray(persisted?.meta?.motionJobIds) ? persisted.meta.motionJobIds.filter(id => typeof id === "string") : []), busJobIds: new Set(persisted?.meta?.busJobIds ?? []), host: null, updatedAt: clock() };
 			studioSessions.set(value.sessionId, session);
 		}
 		session.updatedAt = clock();
@@ -475,14 +476,46 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 				admission.revision = refreshed.revision.scene;
 			},
 		};
-		const runtimeForJob = await studioRuntimeFor(hub);
 		// One motion generation per user message, whichever path starts it:
 		// generate_motion below and a run_action job action share this gate.
 		const generation = { used: false, failures: 0 };
 		// The editor's command index (authoritative context) declares each action's
 		// generation and hub timeout; no sidecar list of actions exists.
-		const tools = createStudioTools({ liveHub: hub, workspaceHandle: value.context.host.workspaceHandle, session: { signal: controller.signal, admission, generation, actionIndex: current?.actionIndex ?? [] }, resolveImage: async (id, correlation) => hub.command("resolve_studio_image", { imageId: id, ...correlation }, value.context.host.workspaceHandle) });
+		const controlJob = async (action, jobId) => {
+			await admission.refresh();
+			return hub.command('run_action', { name: 'run_action', args: { action, args: { jobId, ...(action === 'job.await' ? { timeoutMs: 300_000 } : {}) } },
+				commandId: randomUUID(), host: admission.host, expectedRevision: admission.revision }, value.context.host.workspaceHandle, { timeoutMs: 300_000 });
+		};
+		session.controlJob = controlJob;
+		const onJob = async started => {
+			const jobId = started.jobId;
+			session.motionJobIds.add(jobId); session.busJobIds.add(jobId);
+			persistenceMeta.motionJobIds = [...session.motionJobIds]; persistenceMeta.busJobIds = [...session.busJobIds];
+			session.activeJobId = jobId; session.activeJobTurnId = value.turnId;
+			const cancel = () => { void controlJob('job.cancel', jobId).catch(error => send({ type: 'error', code: error.code ?? 'CANCEL_FAILED', message: error.message })); };
+			controller.signal.addEventListener('abort', cancel, { once: true });
+			if (controller.signal.aborted) cancel();
+			send({ type: 'job.state', jobId, commandId: started.commandId, state: 'generating', phase: 'generating' });
+			try {
+				const outcome = await controlJob('job.await', jobId);
+				send({ type: 'job.state', jobId, commandId: outcome.commandId, state: outcome.ok ? 'installed' : outcome.code === 'CANCELLED' ? 'cancelled' : 'failed', phase: 'complete' });
+				return outcome;
+			} finally {
+				controller.signal.removeEventListener('abort', cancel);
+				if (session.activeJobId === jobId) { session.activeJobId = null; session.activeJobTurnId = null; }
+			}
+		};
+		const tools = createStudioTools({ liveHub: hub, workspaceHandle: value.context.host.workspaceHandle, session: { signal: controller.signal, admission, generation, onJob, actionIndex: current?.actionIndex ?? [] }, resolveImage: async (id, correlation) => hub.command("resolve_studio_image", { imageId: id, ...correlation }, value.context.host.workspaceHandle) });
 		const motion = async args => {
+			if (args.source.kind === 'generate') {
+				await tools.internal.invoke('inspect_studio', { scope: 'motion', ids: [args.characterId] });
+				const receipt = await tools.internal.invoke('generate_motion', args);
+				if (receipt.ok && receipt.status === 'completed') send({ type: 'receipt', receipt });
+				return receipt;
+			}
+			// Artifact reuse keeps the retained runtime until #452; generation never
+			// enters its text-only request builder or candidate installer.
+			const runtimeForJob = await studioRuntimeFor(hub);
 			if (generation.used) throw new StudioProtocolError("GENERATION_LIMIT", "One motion generation per user message. Report this result and ask the user before generating again.");
 			if ((generation.failures ?? 0) >= 2) throw new StudioProtocolError("GENERATION_LIMIT", "Two motion generation attempts already failed in this user message. Report both failures to the user and ask before generating again.");
 			if (!runtimeForJob) throw new StudioProtocolError("CAPABILITY_MISSING", "Studio motion runtime is unavailable.");
@@ -494,14 +527,6 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			const character = inspected?.context?.entities?.find(entity => entity.id === args.characterId && entity.kind === "character");
 			if (!character) throw new StudioProtocolError("TARGET_NOT_READY", "The admitted character is unavailable.");
 			admission.revision = inspected.context.revision.scene;
-			// The editor will not install a text-only take over an authored root path;
-			// refuse before admission so no generation is spent on it.
-			const motionRead = inspected.characters?.find(entry => entry.id === args.characterId);
-			const n = motionRead?.waypoints?.length ?? 0;
-			if (n > 0) {
-				const name = motionRead.name || args.characterId;
-				throw new StudioProtocolError("CAPABILITY_MISSING", `${name} has ${n} root waypoint${n === 1 ? "" : "s"}. generate_motion generates from text alone and cannot follow them. To generate along the path, write the beats as ${name}'s prompt blocks with patch_elements (set promptBlocks), then call run_action motion.generateAllBlocks, which follows the root waypoints. To ignore the path instead, run run_action character.clearWaypoints first.`);
-			}
 			const commandId = randomUUID(); const host = { ...admission.host, workspaceHandle: value.context.host.workspaceHandle };
 			const admissionResult = runtimeForJob.admit({ hostBinding: host, characterId: args.characterId, targetToken: character.token, turnId: value.turnId, commandId, authorization: { id: randomUUID(), generations: 1 }, source: args.source, repair: args.repair ?? "bounded" });
 			session.motionJobIds.add(admissionResult.jobId); persistenceMeta.motionJobIds = [...session.motionJobIds]; session.activeJobId = admissionResult.jobId; session.activeJobTurnId = value.turnId;
@@ -573,7 +598,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			}
 			send(frame);
 		};
-		const persistenceMeta = { sceneName: value.context?.scene?.name ?? value.context?.sceneName ?? null, firstText: value.text, motionJobIds: [...session.motionJobIds] };
+		const persistenceMeta = { sceneName: value.context?.scene?.name ?? value.context?.sceneName ?? null, firstText: value.text, motionJobIds: [...session.motionJobIds], busJobIds: [...session.busJobIds] };
 		let runner = studioRunners.get(value.sessionId);
 		if (!runner) {
 			runner = createAgentRunner({ models: await ensureWorkflowModels(), fauxProvider, sessionStore, clock, codexBaseUrl, cliproxyBaseUrl, auth, env });
