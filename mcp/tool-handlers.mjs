@@ -490,7 +490,7 @@ function shotReport() {
 const studioAliasTools = new Set([
 	"set_camera", "frame_shot", "place_object", "update_object", "remove_object",
 	"import_mesh", "group_objects", "add_scene", "switch_scene", "apply_batch", "open_project",
-	"add_character", "place_character", "remove_character", "set_prompt_blocks",
+	"add_character", "place_character", "remove_character", "set_prompt_blocks", "load_motion",
 ]);
 const studioAdmissionSchema = {
 	expectedRevision: z.number().int().min(0).optional().describe("scene revision to admit against; defaults to the inspected revision"),
@@ -1219,23 +1219,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				if (!motionUrlPattern.test(args.url)) {
 					throw new Error(`Unsupported motion url "${args.url}". Use /ardy/motions/<id> or /ardy/assembled/<name>.npz.`);
 				}
-				const workspaceHandle = liveWorkspace.getStore() ?? liveHub.resolveWorkspace("load_motion", args.workspace_handle);
-				// Without an explicit target the editor installs onto ITS active character,
-				// which silently stacks multi-cast loads onto one rig — the generate path
-				// always names its target, so the load path must be able to as well.
-				let characterId;
-				if (args.character !== undefined) {
-					try {
-						await refreshLiveDescription();
-					} catch (error) {
-						return liveError(error);
-					}
-					const target = findCharacter(args.character);
-					if (!target) return text(`No character "${args.character}". ${castHint()}`);
-					characterId = target.id;
-				}
-				await liveHub.command("load_motion", { url: args.url, prompt: args.prompt ?? "", ...(characterId ? { characterId } : {}) }, workspaceHandle);
-				return text(`Motion installed from ${args.url}${characterId ? ` onto ${characterId}` : ""}.`);
+				return runStudioCommand({ ...args, action: 'motion.replace', args: async context => ({
+					characterId: args.character === undefined ? context.activeCharacterId : await liveCharacterId(args.character),
+					url: args.url, prompt: args.prompt ?? '',
+				}) });
 			},
 		),
 

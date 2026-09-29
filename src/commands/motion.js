@@ -28,7 +28,10 @@ const generate = { id: 'motion.generate', label: 'Generate motion', description:
 		durationSeconds: { type: 'number', minimum: 1, maximum: 1200 }, seed: { type: 'integer', minimum: 0, maximum: 2147483647 } }, ['characterId']) };
 const prepared = { ...mutation('motion.applyPrepared', 'Apply prepared motion edit', { characterId: id, token: id }), exposure: 'ui-only' };
 const loads = [
-	{ id: 'motion.replace', label: 'Replace take', input: input({ characterId: id, url: id, prompt: { type: 'string', default: '' } }, ['characterId', 'url']) },
+	{ id: 'motion.replace', label: 'Replace take', input: input({ characterId: id, url: id, prompt: { type: 'string', default: '' },
+		blocks: { type: 'array', maxItems: 120, items: input({ startFrame: frame, endFrame: { ...frame, minimum: 1 }, prompt: { type: 'string' } }) },
+		drop: { oneOf: [{ type: 'null' }, input({ from_s: { type: 'number', minimum: 0 }, to_s: { type: 'number', exclusiveMinimum: 0 }, meters: { type: 'number', exclusiveMinimum: 0, maximum: 30 } })] },
+	}, ['characterId', 'url']) },
 	{ id: 'motion.loadVersion', label: 'Restore take version', input: input({ characterId: id, motionUrl: id }) },
 ].map(entry => ({ ...entry, description: entry.label, kind: 'job', domain: 'motion' }));
 const tools = [

@@ -2903,7 +2903,6 @@ export default function App() {
 					references: live.captureShotReferences(),
 				};
 			},
-			load_motion: motionDomain.loadLiveMotion,
 		};
 	}
 

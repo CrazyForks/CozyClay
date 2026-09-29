@@ -3000,39 +3000,6 @@ export function useMotion(appContext) {
 		else if (authored) cast.setTimeline(state.frameCount);
 		if (state.renderer) appContext.shared.restoreExportRig(state.renderer);
 	}
-	async function loadLiveMotion(args) {
-		if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
-		const prompt = typeof args.prompt === "string" ? args.prompt : "";
-		if (args.drop != null && !normalizeRootDrop(args.drop)) throw new Error("Invalid drop");
-		// Optional per-phase blocks land on the Prompts lane the way hand-authored
-		// ones do. The bridge clock is 20 fps for ARDY and 24 fps for Kimodo;
-		// convert only when the selected backend's clock differs from the lane.
-		let clips = null;
-		if (Array.isArray(args.blocks) && args.blocks.length) {
-			const toTimeline = (frame) => Math.round((frame * TIMELINE_FPS) / ARDY_FPS);
-			const stamp = Date.now();
-			clips = args.blocks.map((block, i) => ({
-				id: `prompt-${stamp}-${i}`,
-				startFrame: toTimeline(block.startFrame),
-				endFrame: toTimeline(block.endFrame),
-				text: typeof block.prompt === "string" ? block.prompt : "",
-			}));
-		}
-		const targetCharacterId = args.characterId ?? appContext.live.state.activeCharacterId;
-		const targetPromptClips = clips;
-		await appContext.live.state.loadMotion(
-			args.url,
-			prompt,
-			undefined,
-			args.drop ?? null,
-			targetCharacterId,
-			targetPromptClips,
-		);
-		if (clips) {
-			appContext.live.state.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
-		}
-		return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
-	}
 	function updateFalMotionQuota(dailyRemaining) { setFalMotion((current) => ({ ...current, dailyRemaining })); }
 	domain.requestLineEdit = runLineEdit;
 	domain.requestTrailRegeneration = runTrailRegeneration;
@@ -3045,14 +3012,25 @@ export function useMotion(appContext) {
 	domain.loadRemote = async (args, context) => {
 		const entry = domain.layer(args.characterId).takeVersions.find(version => version.motionUrl === args.motionUrl);
 		if (args.motionUrl && !entry) throw new StudioProtocolError('TARGET_NOT_READY', 'This take version is no longer available.');
+		if (args.drop != null && !normalizeRootDrop(args.drop)) throw new StudioProtocolError('INVALID_ARGUMENT', 'Invalid drop.');
+		const toTimeline = frame => Math.round(frame * TIMELINE_FPS / ARDY_FPS);
+		const clips = args.blocks?.length ? args.blocks.map(block => {
+			if (block.endFrame <= block.startFrame) throw new StudioProtocolError('INVALID_RANGE', 'Prompt blocks must have a positive range.');
+			return { id: crypto.randomUUID(), startFrame: toTimeline(block.startFrame), endFrame: toTimeline(block.endFrame), text: block.prompt };
+		}) : null;
 		const character = appContext.storeDomain('cast').read().find(row => row.id === args.characterId);
+		const commandContext = !clips ? context : { ...context, commit: apply => context.commit(() => {
+			const result = apply();
+			appContext.recordAction('cast', () => appContext.storeDomain('cast').extendTimeline(Math.max(...clips.map(clip => clip.endFrame))), null, true);
+			return result;
+		}) };
 		await loadMotion(args.url ?? args.motionUrl, args.prompt ?? entry?.recipe?.blocks?.map(block => block.prompt).join(' ') ?? domain.motionFor(args.characterId)?.prompt ?? '', character.rot,
-			null, args.characterId, null, { commandContext: context, recipe: entry?.recipe });
+			args.drop ?? null, args.characterId, clips, { commandContext, recipe: entry?.recipe });
 	};
 	appContext.updateActionPorts({ clearMotionNative: clearMotion, setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys });
 	return {
 		...domain,
-		falMotion, setFalMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, loadLiveMotion, updateFalMotionQuota,
+		falMotion, setFalMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, updateFalMotionQuota,
 		ikMode, ikChains, setIkChains, ikFkJoints, setIkFkJoints, ikFocus, setIkFocus, footSnap, setFootSnap,
 		bodyContact, setBodyContact, IK_CORRECTION_BLEND_FRAMES, autoPhysicsRunning, setAutoPhysicsRunning,
 		physicsPreview, setPhysicsPreview, physicsShow, physicsProgress, physicsOptions, setPhysicsOptions,
