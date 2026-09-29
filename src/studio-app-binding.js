@@ -288,6 +288,11 @@ export function createStudioAppBinding(ports) {
 	function execute(request) {
 		refresh();
 		if (request.name === "run_action") return runAction(request, validateStudioCommand({ name: request.name, args: request.args }).args);
+		const alias = ports.actions?.().toolAlias?.(request.name);
+		if (alias) {
+			try { return runAction(request, { action: alias.action, args: alias.args(request.args) }); }
+			catch (error) { return rejection(request, error); }
+		}
 		const patchKind = request.name === "patch_elements" && request.args?.ops?.[0]?.target?.kind;
 		if (patchKind && ports.storeDomain?.(patchKind)) {
 			try {

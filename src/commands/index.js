@@ -20,6 +20,12 @@ export const COMMAND_MODULES = Object.freeze({ shot, cast, motion, objects, view
 
 export function createStudioAppActions(ports) {
 	const registry = createStudioActionRegistry({ readState: () => ports.state() });
+	const aliases = new Map();
+	registry.registerToolAlias = (tool, action, args = value => value) => {
+		if (aliases.has(tool)) throw new Error(`Tool alias already registered: ${tool}`);
+		aliases.set(tool, { action, args });
+	};
+	registry.toolAlias = tool => aliases.get(tool);
 	for (const module of Object.values(COMMAND_MODULES)) module.register(registry, ports);
 	return registry;
 }
