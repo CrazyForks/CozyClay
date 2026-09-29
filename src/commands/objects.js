@@ -38,7 +38,7 @@ const assetImport = { ...studioActionDeclaration('asset.import'), kind: 'job', d
 		input({ fileToken: id, placeAs: { type: 'string', enum: ['mesh', 'cutout'] } }, ['fileToken', 'placeAs']),
 	] } };
 const matte = { id: 'object.matte', label: 'Apply object matte', description: 'Prepare derived assets, then publish one fenced object edit.', kind: 'job', domain: 'objects', exposure: 'ui-only', input: input({ objectId: id }) };
-export const declarations = Object.freeze([...['object.attach', 'object.detach', 'object.duplicate'].map(studioActionDeclaration), ...semantic, batch, assetImport, matte, replace]);
+export const declarations = Object.freeze([...semantic, replace, batch, ...['object.attach', 'object.detach', 'object.duplicate'].map(studioActionDeclaration), matte, assetImport]);
 
 export function register(registry, ports) {
 	const objectOf = objectId => ports.state().objects.find(object => object.id === objectId)
@@ -159,14 +159,15 @@ export function register(registry, ports) {
 	} });
 	registry.register({ ...assetImport, available: () => true,
 		run: async (args, context) => {
-			const { source, name, placeAs } = args;
+			const { source, ...options } = args;
+			const { name, placeAs } = options;
 			let dataUrl = source;
 			if (source && !source.startsWith("data:")) {
 				try { dataUrl = await ports.fetchImportSource(source); }
 				catch (error) { fail("TARGET_NOT_READY", `Could not fetch the source (${error?.message || error}); its server must allow cross-origin reads.`); }
 			}
 			let imported;
-			try { imported = await (ports.storeDomain?.('objects')?.importAsset ?? ports.importAsset)({ ...args, dataUrl }, context); }
+			try { imported = await (ports.storeDomain?.('objects')?.importAsset ?? ports.importAsset)({ ...options, dataUrl }, context); }
 			catch (error) { fail(error.code ?? "INVALID_ARGUMENT", `Not imported: ${error?.message || error}`); }
 			return { affectedIds: [imported.objectId], output: imported, summary: `Imported ${name ?? imported.objectId} as a ${placeAs} (object ${imported.objectId}, asset ${imported.assetId}).` };
 		} });

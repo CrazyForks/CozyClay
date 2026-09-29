@@ -33,7 +33,7 @@ const domains = {
   motion: { states: ['motion', 'takeRecipe', 'takeVersions'], panels: ['VideoCapturePanel', 'RigControlPanel'] },
   cast: { states: ['characters', 'customPoses', 'waypoints', 'promptClips'], panels: ['SubjectsPanel', 'CharacterTransformPanel', 'RigPanel', 'PosePanel', 'PromptBlocksPanel'] },
   shots: { states: ['shots', 'tlFrameCount', 'cameraMove', 'fovDeg'], panels: ['CameraPanel'] },
-  objects: { states: ['sceneObjects'], panels: ['PropsPanel', 'ObjectTransformPanel'] },
+  objects: { states: ['domain'], panels: ['PropsPanel', 'ObjectTransformPanel'] },
   scenes: { states: ['scenes', 'activeSceneId', 'projectName', 'projectDirty'], panels: ['ProjectPanel'] },
   stage: { states: ['domain', 'preset'], panels: ['LightPanel', 'EnvironmentPanel'] },
 };

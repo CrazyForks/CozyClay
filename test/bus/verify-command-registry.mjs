@@ -13,11 +13,11 @@ const state = { shots: [], objects: [], characters: [], frame: 0, frameCount: 48
  project: { name: null, hasFile: false, fileAccess: false, gesture: false }, aiShot: { mode: 'image', imageModel: 'gpt_image_2' },
  falMotion: { enabled: false, status: 'idle', dailyRemaining: null } };
 const registry = createStudioAppActions({ state: () => state });
-assert.equal(registry.ids().length, 37, 'the registry includes the five stage actions');
-assert.deepEqual([...registry.ids()].sort(), [...STUDIO_ACTION_IDS, ...COMMAND_MODULES.stage.declarations.map(entry => entry.id)].sort(), 'legacy ids plus the stage pilot');
+assert.equal(registry.ids().length, 48, 'the registry includes stage and objects actions');
+assert.deepEqual([...registry.ids()].sort(), [...new Set([...STUDIO_ACTION_IDS, ...COMMAND_MODULES.stage.declarations.map(entry => entry.id), ...COMMAND_MODULES.objects.declarations.map(entry => entry.id)])].sort(), 'legacy ids plus the owned stage and objects commands');
 assert.deepEqual(registry.ids(), Object.values(COMMAND_MODULES).flatMap(module => module.declarations.map(entry => entry.id)), 'each id comes from its command module');
 const listed = registry.list();
-assert.equal(listed.length, 37, 'every action answers availability over the published state');
+assert.equal(listed.length, 48, 'every action answers availability over the published state');
 assert.equal(registry.state(), state, 'the registry reads the port object\'s state');
 
 // App.jsx keeps no registration of its own: no registry factory and no entry.
