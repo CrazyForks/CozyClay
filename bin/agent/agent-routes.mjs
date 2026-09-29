@@ -261,7 +261,7 @@ function liveToolsRuntime() {
 	}).catch((error) => ({ error }));
 }
 
-export function createAgentHandler({ auth = defaultAuth, codex, models, codexBaseUrl, cliproxyBaseUrl, env, fauxProvider, handlers, liveHub, port, getBridgeOrigin, studioRuntime, clock = Date.now, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, sessionStore: injectedSessionStore } = {}) {
+export function createAgentHandler({ auth = defaultAuth, codex, models, codexBaseUrl, cliproxyBaseUrl, env, fauxProvider, handlers, liveHub, port, studioRuntime, clock = Date.now, setIntervalImpl = setInterval, clearIntervalImpl = clearInterval, sessionStore: injectedSessionStore } = {}) {
 	const requestContext = new AsyncLocalStorage();
 	codex ||= defaultClient(auth, requestContext);
 	const runtime = handlers !== undefined || liveHub !== undefined ? Promise.resolve({ handlers: handlers ?? [], liveHub }) : liveToolsRuntime();
@@ -392,32 +392,16 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			// An owned retired id is still stale while another motion job is active:
 			// this Stop cannot acknowledge the current turn's different job.
 			if (value.jobId && session.activeJobId && value.jobId !== session.activeJobId) throw new StudioProtocolError("STALE_TARGET", "Stop does not target the active motion job.");
-			// #379 / 16r: a job's id is only "acknowledged" by THIS turn's held motion
-			// tool — session.activeJobId now stays set only while that job is genuinely
-			// still in flight (or pending an explicit accept), and activeJobTurnId ties
-			// it to the turn that admitted it. A retired job from an earlier turn must
-			// never make a later, unrelated turn's Stop go quiet.
+			// Only this turn's held editor job can settle the tool quietly. A retired
+			// job from an earlier turn must never silence an unrelated turn's Stop.
 			const acknowledged = Boolean(session.activeJobId) && session.activeJobTurnId === value.turnId;
-			// The runtime is the only thing that knows whether the job was applied.
-			// Forwarding its outcome keeps the panel from turning "I could not find
-			// out" into "nothing was applied"; a discarded outcome reads as proof.
+			// The editor's outcome, not a sidecar abort, establishes application.
 			let outcome = null;
 			if (jobId && session.busJobIds.has(jobId)) outcome = await session.controlJob('job.cancel', jobId);
 			if (jobId && session.activeJobId === jobId) { session.activeJobId = null; session.activeJobTurnId = null; }
-			// #379 / 16q: `session.controller.signal` is the SAME signal wired into the
-			// active turn's prompt context (`:520 signal: controller.signal`), which
-			// pi's `withAbortSignal`/`awaitWithContext` races against every awaited
-			// internal step — aborting it here interrupts the in-flight generate_motion
-			// tool call's OWN completion machinery before it can settle, well before
-			// pi's own graceful `lane.abort()` (below) ever runs. A job the runtime
-			// actually acknowledged already resolved the held tool call with its real
-			// outcome via `runtime.stop()` above; the only abort this stop still needs
-			// is the graceful one that stops the model from being prompted again, so
-			// `session.controller` must NOT be touched on that path (no other tool is
-			// concurrently in flight while generate_motion holds the turn). A stop
-			// for a job this turn never acknowledged (none active, or a retired one
-			// from an earlier turn) never resolved anything for THIS turn and stays a
-			// plain (loud) abort on both signals.
+			// Let the acknowledged job settle its held tool with that outcome before
+			// aborting the model lane. Aborting the shared signal would interrupt the
+			// tool first and lose the editor's proof. Without a held job, abort both.
 			if (!acknowledged) session.controller?.abort();
 			await session.modelSession?.abort?.("studio stop", acknowledged ? { quiet: true } : undefined);
 			json(res, 200, { ok: true, status: jobId ? "stopped" : "detached", ...(outcome ? { outcome: { status: outcome.status ?? null, code: outcome.code ?? null, mutated: outcome.mutated ?? null } } : {}) }); return true;

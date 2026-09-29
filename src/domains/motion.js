@@ -355,20 +355,6 @@ export function createMotionDomain(appContext, characters) {
 		try { run('motion.applyPrepared', { characterId, token }); return result; }
 		finally { prepared.delete(token); }
 	}
-	function installPayload(payload) {
-		const id = payload.binding.characterId;
-		domain.beginPlayback?.(id);
-		const take = { ...payload.motion, studioTakeId: payload.takeId, prompt: '', sceneCalibration: payload.calibration };
-		const motionRef = { url: take.url, prompt: payload.schedule.blocks.map(block => block.text).join(' '),
-			rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ, calibration: payload.calibration, studioTakeId: payload.takeId,
-			...(take.motionId ? { motionId: take.motionId } : {}) };
-		const recipe = { seed: null, blocks: payload.schedule.blocks.map(block => ({ prompt: block.text, duration: (block.endFrameExclusive - block.startFrame) / 24 })), lineEdits: [] };
-		const versions = take.url ? pushTakeVersion(layer(id).takeVersions, { motionUrl: take.url, recipe, savedAt: Date.now(), label: ko('Loaded', '불러옴') }, TAKE_VERSIONS_MAX) : layer(id).takeVersions;
-		replace(id, take, { fullTake: payload.sourceMotion, ikKeys: encodeMotionKeys(payload.ikState.keys), recipe, versions });
-		castWrite(rows => rows.map(row => row.id === id ? { ...row, scale: payload.scale, motionRef, layer: { ...row.layer,
-			promptClips: payload.schedule.blocks.map((block, index) => ({ id: `${payload.takeId}-beat-${index}`, startFrame: block.startFrame, endFrame: block.endFrameExclusive, text: block.text })) } } : row));
-		persistTake(take, motionRef);
-	}
 	function persistTake(take, motionRef) {
 		if (!take?.sourceBytes) return;
 		(async () => {
@@ -407,7 +393,7 @@ export function createMotionDomain(appContext, characters) {
 		return run('run.update', { txId: gesture.txId, args });
 	}
 	const domain = { documentStore, read, write, layer, writeLayer, motionFor, fullMotionFor, visibleMotion, snapshotTake, project,
-		setKeys, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction, runPrepared, installPayload, persistTake,
+		setKeys, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction, runPrepared, persistTake,
 		insideAction: () => running > 0, bakeCurrentKey, keyPose, editTrail, autoPhysics, applyPhysics,
 		applyPrepared(token) { const apply = prepared.get(token); if (!apply) throw new StudioProtocolError('STALE_TARGET', 'Prepared motion is no longer available.'); return apply(); },
 		bindRender(context) { appContext = context; },
