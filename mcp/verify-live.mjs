@@ -189,6 +189,64 @@ cases.admission = async () => {
 	} finally { await s.close(); }
 };
 
+cases.batch = async () => {
+	const s = await studio();
+	const expectEvents = (offset, outcome, applied) => {
+		const events = s.events.slice(offset);
+		assert.deepEqual(events.map(row => row.event), ["mcp:tool_requested", "mcp:tool_executed", ...(applied ? ["mcp:result_applied"] : [])]);
+		assert.equal(events[1].props.outcome, outcome);
+		assert.ok(events.every(row => row.props.request_id === events[0].props.request_id));
+	};
+	try {
+		const before = structuredClone(s.f.objects.read()), depth = s.f.objects.store.depths().past;
+		const ops = ["cube", "chair", "sphere"].map((kind, i) => ({ name: "place_object", args: { kind, x: i + 1 } }));
+		let offset = s.events.length;
+		const batch = receipt(await s.call("apply_batch", { ops, label: "Three edits", atomic: true, stopOnError: false }), "objects.batch");
+		assert.equal(batch.undo.entries, 1);
+		assert.equal(s.f.objects.store.depths().past, depth + 1);
+		assert.equal(batch.revision.after, batch.revision.before + 1);
+		assert.deepEqual(batch.output, { label: "Three edits", applied: [1, 2, 3], failed: [], rolledBack: false });
+		expectEvents(offset, "succeeded", true);
+		const undo = await s.call("studio_run", { action: "edit.undo", args: { receiptId: batch.receiptId } });
+		assert.equal(JSON.parse(undo.content[0].text).status, "undone");
+		assert.deepEqual(s.f.objects.read(), before);
+		assert.equal(s.f.objects.store.depths().past, depth);
+		for (const atomic of [true, false]) for (const stopOnError of [true, false]) {
+			const baseline = structuredClone(s.f.objects.read()), initialDepth = s.f.objects.store.depths().past;
+			offset = s.events.length;
+			const result = receipt(await s.call("apply_batch", { atomic, stopOnError, label: "Failure semantics", ops: [
+				ops[0], { name: "update_object", args: { id: "missing", x: 3 } }, ops[1],
+			] }), "objects.batch");
+			assert.deepEqual(result.output.applied, stopOnError ? [1] : [1, 3]);
+			assert.equal(result.output.failed[0].index, 2);
+			assert.equal(result.output.rolledBack, atomic);
+			assert.equal(s.f.objects.store.depths().past, initialDepth + (atomic ? 0 : 1));
+			expectEvents(offset, "failed", !atomic);
+			if (atomic) assert.deepEqual(s.f.objects.read(), baseline);
+			else {
+				await s.call("studio_run", { action: "edit.undo", args: { receiptId: result.receiptId } });
+				assert.deepEqual(s.f.objects.read(), baseline);
+			}
+		}
+		offset = s.events.length;
+		const noop = receipt(await s.call("apply_batch", { ops: [{ name: "update_object", args: { id: before[0].id, x: before[0].x } }] }), "objects.batch");
+		assert.equal(noop.authored, false); assert.equal(noop.undo, null);
+		expectEvents(offset, "succeeded", false);
+		offset = s.events.length;
+		const stale = await s.call("apply_batch", { ops, expectedRevision: s.f.binding.refresh().revision + 99 });
+		assert.equal(JSON.parse(stale.content[0].text).code, "STALE_SCENE");
+		expectEvents(offset, "failed", false);
+		const nested = await s.call("apply_batch", { ops: [{ name: "apply_batch", args: { ops } }] });
+		assert.equal(JSON.parse(nested.content[0].text).code, "INVALID_ARGUMENT");
+		await assert.rejects(s.call("apply_batch", { ops: Array(101).fill(ops[0]) }), z.ZodError);
+		await assert.rejects(s.call("apply_batch", { ops: [{ name: "update_character", args: {} }] }), z.ZodError);
+		assert.deepEqual(s.f.objects.read(), before);
+		const sent = s.wire.find(frame => frame.name === "run_action" && frame.args.args.action === "objects.batch");
+		assert.deepEqual(sent.args.args.args, { ops, atomic: true, stopOnError: false, label: "Three edits" });
+		assert.ok(!s.wire.some(frame => frame.name === "apply_batch"));
+	} finally { await s.close(); }
+};
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
 	const selected = process.env.COZYCLAY_446_CASE;
 	if (selected) assert.ok(cases[selected], `Unknown case ${selected}`);
