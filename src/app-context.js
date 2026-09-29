@@ -36,7 +36,6 @@ export function createAppContext({
     // identity-checked disposal cannot remove a newer owner of the same slice.
     registerStoreDomain(undoDomain, handle) {
       storeDomains.set(undoDomain, handle);
-      ports[undoDomain] = actionPorts[undoDomain] = () => storeDomain(undoDomain);
       return () => { if (storeDomains.get(undoDomain) === handle) storeDomains.delete(undoDomain); };
     },
     // A hook keeps the same render closure that its code had inside App.
