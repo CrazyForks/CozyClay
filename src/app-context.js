@@ -57,9 +57,9 @@ export function createAppContext({
         // owned objects move; on redo put those objects back before the native
         // snapshot is visited. Store-local anchor gates must not split a group.
         const objects = anchor().objects, revision = ports.revision?.current;
-        if (!redo && native && !native.port.stepHistory(false)) fail('UNDO_CONFLICT', 'The native member is not at the composite history boundary.');
+        if (!redo && native && !native.port.stepHistory(false, native.id)) fail('UNDO_CONFLICT', 'The native member is not at the composite history boundary.');
         for (const row of redo ? members : [...members].reverse()) (redo ? row.store.redo : row.store.undo)();
-        if (redo && native && !native.port.stepHistory(true)) fail('UNDO_CONFLICT', 'The native member is not at the composite history boundary.');
+        if (redo && native && !native.port.stepHistory(true, native.id)) fail('UNDO_CONFLICT', 'The native member is not at the composite history boundary.');
         undone = !redo;
         if (objects !== anchor().objects) lastObjectOpRef.current = nextTick();
         // Several owners publish, but traversal is one authored transition at
