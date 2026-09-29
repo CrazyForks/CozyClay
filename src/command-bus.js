@@ -221,7 +221,10 @@ export function createCommandBus({ registry, ports }) {
       const prepared = controls[id] ? { args: validateStudioSchema(controls[id], args) } : registry.prepare(id, args);
       const { entry, args: validated } = prepared;
       if (request.origin !== 'ui') {
-        if (request.expectedRevision !== before.revision) fail('STALE_SCENE', 'Authored state changed; obtain fresh intent.');
+        // Job controls observe/cancel an admitted identity; completion itself
+        // can advance the revision while their wire request is in transit.
+        // Document identity and the job's own publication fence still apply.
+        if (!['job.await', 'job.cancel'].includes(id) && request.expectedRevision !== before.revision) fail('STALE_SCENE', 'Authored state changed; obtain fresh intent.');
         if (before.busy && !transactions.has(validated.txId) && !id.startsWith('job.')) fail('TARGET_BUSY', 'Finish the current editor gesture first.');
       }
       if (controls[id]) return mapResult(control(id, validated, request, before), remember, rejected);
