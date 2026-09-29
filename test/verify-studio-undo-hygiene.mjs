@@ -47,6 +47,7 @@ import { readStudioSource } from "./bus/verify-domain-modules.mjs";
 import { attachStageHistory } from "./bus/stage-hygiene-fixture.mjs";
 import { castFixture } from './bus/cast-fixture.mjs';
 import { stageFixture } from './bus/stage-fixture.mjs';
+import { motionHygieneDomain, motionCommandInputs } from './bus/motion-hygiene-fixture.mjs';
 const source = readStudioSource();
 const parsed = parseSync("App.jsx", source);
 assert.deepEqual(parsed.errors, []);
@@ -144,6 +145,7 @@ const HISTORY_DOMAINS = ["shot", "cast", "motion", "objects", "scenes"];
 const unit = { x: 0, y: 0, z: 0, w: 1 };
 // One valid call per command the hygiene cases run through the bus.
 const COMMAND_INPUTS = {
+	...motionCommandInputs,
 	"shot.create": {}, "shot.split": { shotId: "shot-1" }, "shot.duplicate": { shotId: "shot-1" }, "shot.remove": { shotId: "shot-1" },
 	"shot.setRange": { shotId: "shot-1", range: { startFrame: 1, endFrameExclusive: 15 } }, "shot.reorder": { shotId: "shot-1", startFrame: 2 },
 	"shot.setCameraRail": { shotId: "shot-1", points: [{ x: -2, z: 4 }, { x: 3, z: 4 }] }, "shot.clearCameraRail": { shotId: "shot-1" },
@@ -208,11 +210,11 @@ function commandFixture({ frame = 8 } = {}) {
 		aiShot: { mode: "image", imageModel: "gpt_image_2" }, falMotion: { enabled: false, status: "idle", dailyRemaining: null },
 	};
 	const entries = [], writes = [];
-	let recording = null, revision = 0, objectDomain, sceneDomain, shotDomain, castDomain;
+	let recording = null, revision = 0, objectDomain, sceneDomain, shotDomain, castDomain, motionDomain;
 	const answers = {
 		// Like the editor's, every read is a fresh snapshot of the document.
 		state: () => ({ ...state }),
-		storeDomain: name => name === 'objects' ? objectDomain : name === 'scenes' ? sceneDomain : name === 'shot' ? shotDomain : name === 'cast' ? castDomain : undefined,
+		storeDomain: name => name === 'objects' ? objectDomain : name === 'scenes' ? sceneDomain : name === 'shot' ? shotDomain : name === 'cast' ? castDomain : name === 'motion' ? motionDomain : undefined,
 		writeCharacters: rows => { state.characters = rows; },
 		writeCastState: next => { Object.assign(state, next); },
 		writePose: (id, pose) => { state.characters = state.characters.map(entry => entry.id === id ? { ...entry, pose } : entry); },
@@ -281,6 +283,7 @@ function commandFixture({ frame = 8 } = {}) {
 		projectAction: (...args) => ports.projectAction(...args),
 		loadScenes: args => ports.loadScenes(args),
 	};
+	motionDomain = motionHygieneDomain(ports);
 	const registries = Object.fromEntries(Object.entries(COMMAND_MODULES).map(([name, module]) => [name, createStudioAppActions(ports, { [name]: module })]));
 	const journal = createStudioCommandJournal({ host });
 	const bus = registry => createCommandBus({ registry, ports: {
@@ -314,7 +317,7 @@ const cases = {
 	},
 	async "every command mutation writes inside one entry of its undo domain"() {
 		const mutations = Object.values(COMMAND_MODULES).flatMap(module => module.declarations).filter(entry => entry.kind === "mutation");
-		assert.equal(mutations.length, 63);
+		assert.equal(mutations.length, 77);
 		for (const declaration of mutations) {
 			// A new shot needs free room at the playhead; the others act inside shot-1.
 			const f = commandFixture({ frame: declaration.id === "shot.create" ? 24 : 8 }), [name] = Object.entries(COMMAND_MODULES).find(([, module]) => module.declarations.includes(declaration));
@@ -328,7 +331,7 @@ const cases = {
 	},
 	async "transient and document actions never open an undo entry"() {
 		const outside = Object.values(COMMAND_MODULES).flatMap(module => module.declarations).filter(entry => ["transient", "document"].includes(entry.kind));
-		assert.deepEqual(outside.map(entry => entry.id).sort(), Object.keys(COMMAND_INPUTS).filter(id => (/^(view|scene|project)\./.test(id) || id === 'load_scenes') && !['scene.set', 'scene.rename', 'scene.reorder', 'project.rename'].includes(id)).sort());
+		assert.deepEqual(outside.map(entry => entry.id).sort(), Object.keys(COMMAND_INPUTS).filter(id => (/^(view|scene|project)\./.test(id) || ['load_scenes', 'motion.commitLineEdit', 'motion.regenerateTrail'].includes(id)) && !['scene.set', 'scene.rename', 'scene.reorder', 'project.rename'].includes(id)).sort());
 		for (const declaration of outside) {
 			const f = commandFixture(), [name] = Object.entries(COMMAND_MODULES).find(([, module]) => module.declarations.includes(declaration));
 			const receipt = await f.bus(f.registries[name]).run(declaration.id, COMMAND_INPUTS[declaration.id]);

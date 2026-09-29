@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import * as THREE from 'three';
 import { motionFixture, seedMotion } from './motion-fixture.mjs';
 import { resolveIkRig, solveIk } from '../../src/ardy/ik.js';
+import { declarations } from '../../src/commands/motion.js';
 const ok = receipt => { assert.equal(receipt.ok, true, JSON.stringify(receipt)); return receipt; };
 const owned = f => assert.ok(f.motion.documentStore?.owns('motion'), 'the shipped useMotion hook owns motion/IK intent');
 const unit = { x: 0, y: 0, z: 0, w: 1 };
@@ -28,12 +29,24 @@ const cases = {
   'motion.removeSegment': f => ({ characterId: 'actor-a', id: f.motion.motionFor('actor-a').editSegments[0].id }),
   'motion.set': () => ({ id: 'actor-a', set: { take: { anchorX: 2 } } }),
   'motion.fixCollisions': () => ({ characterId: 'actor-a', scope: 'frame' }),
+  'motion.applyPhysics': () => ({ characterId: 'actor-a' }),
+  'motion.editTrail': () => ({ characterId: 'actor-a', grabFrame: 12, radiusFrames: 6, delta: { x: 0.2, y: 0, z: 0 } }),
+  'ik.applyPose': () => ({ characterId: 'actor-a', frame: 0, pose: { bones: {}, rootY: 0 } }),
   ...Object.fromEntries(['ik.setKey', 'character.setIkKey'].map(id => [id, () => ({ characterId: 'actor-a', frame: 0, tracks })])),
   ...Object.fromEntries(['ik.removeKey', 'character.removeIkKey'].map(id => [id, () => ({ characterId: 'actor-a', frame: 0 })])),
   ...Object.fromEntries(['ik.clearKeys', 'character.clearIkKeys'].map(id => [id, () => ({ characterId: 'actor-a' })])),
 };
-function prepare(f, command) {
+async function prepare(f, command) {
   seed(f);
+  if (command === 'motion.applyPhysics') {
+    const take = seedMotion(12);
+    for (let frame = 0; frame < take.frames; frame++) {
+      take.rootPos[frame * 3 + 1] -= 0.05;
+      for (let joint = 0; joint < 27; joint++) take.posedJoints[frame * 81 + joint * 3 + 1] -= 0.05;
+    }
+    f.motion.load([{ id: 'actor-a', take }, { id: 'actor-b' }]);
+    ok(await f.run('motion.autoPhysics', { characterId: 'actor-a', apply: false }));
+  }
   if (command.includes('removeKey') || command.includes('removeIkKey') || command.includes('clearKeys') || command.includes('clearIkKeys')) ok(f.run('ik.setKey', { characterId: 'actor-a', frame: 0, tracks: { head: { q: [unit] } } }));
   if (command === 'motion.resetTrim') ok(f.run('motion.trim', { characterId: 'actor-a', start: 4, end: 39 }));
   if (command === 'motion.removeSegment') ok(f.run('motion.cut', { characterId: 'actor-a', frame: 24 }));
@@ -97,10 +110,11 @@ test('motion: real collision correction is undoable without changing the underly
 });
 
 test('motion: every mutation origin exercises receipt, undo, expiry, cancellation, revision and concurrent-job fences', async () => {
+  assert.deepEqual(Object.keys(cases).sort(), declarations.filter(entry => entry.kind === 'mutation' && entry.exposure !== 'ui-only').map(entry => entry.id).sort());
   for (const [command, input] of Object.entries(cases)) for (const origin of ['ui', 'agent', 'mcp', 'cli']) {
     const f = motionFixture();
     try {
-      owned(f); prepare(f, command); const args = input(f), before = f.snapshot();
+      owned(f); await prepare(f, command); const args = input(f), before = f.snapshot();
       const receipt = ok(f.run(command, args, origin));
       assert.ok(receipt.authored); assert.ok(receipt.affectedIds.length); assert.equal(receipt.undo.entries, 1);
       ok(f.run('edit.undo', { receiptId: receipt.receiptId }, origin)); assert.deepEqual(f.snapshot(), before);
@@ -108,14 +122,14 @@ test('motion: every mutation origin exercises receipt, undo, expiry, cancellatio
       const expired = ok(f.run(command, args, origin));
       for (let n = 0; n < 51; n++) ok(f.run('ik.setKey', { characterId: 'actor-b', frame: 0, tracks: { hips: { p: { x: n + 1, y: 0, z: 0 } } } }));
       assert.equal(f.run('edit.undo', { receiptId: expired.receiptId }, origin).code, 'UNDO_EXPIRED');
-      prepare(f, command); const saved = f.snapshot(), tx = ok(f.run('run.begin', { id: command, args: input(f) }, origin));
+      await prepare(f, command); const saved = f.snapshot(), tx = ok(f.run('run.begin', { id: command, args: input(f) }, origin));
       ok(f.run('run.update', { txId: tx.txId, args: input(f) }, origin));
       ok(f.run('run.cancel', { txId: tx.txId }, origin)); assert.deepEqual(f.snapshot(), saved);
-      prepare(f, command); const revision = f.binding.refresh().revision;
+      await prepare(f, command); const revision = f.binding.refresh().revision;
       ok(f.run('ik.setKey', { characterId: 'actor-b', frame: 0, tracks }));
       const stale = f.run(command, input(f), origin, { expectedRevision: revision });
       assert.equal(origin === 'ui' ? stale.ok : stale.code, origin === 'ui' ? true : 'STALE_SCENE');
-      prepare(f, command);
+      await prepare(f, command);
       let release; const ready = new Promise(resolve => { release = resolve; });
       f.registry.register({ id: 'fixture.motionJob', label: 'Motion job', description: 'Prepare then publish', kind: 'job', domain: 'motion',
         input: { type: 'object', properties: {}, required: [], additionalProperties: false }, available: () => true,

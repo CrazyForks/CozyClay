@@ -361,6 +361,7 @@ export function useCast(appContext) {
 	});
 
 	function recordCharacterUndo() {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').beginGesture();
 		appContext.recordCharacterUndo(snapshotCast());
 	}
 
@@ -1076,6 +1077,7 @@ export function useCast(appContext) {
 		appContext.shared.studioHistoryRef.current.set(historyEntryId, { tick, domain });
 	}
 	function snapshotStudioDomain(domain, targetId) {
+		if (domain === 'motion' && appContext.storeDomain('motion')) return appContext.storeDomain('motion').snapshotTarget(targetId);
 		const state = appContext.shared.readStudioState();
 		if (domain === "shot") return { shots: state.shots, camera: state.camera, manual: state.manual };
 		if (domain === "stage") return { stage: state.stage };
@@ -1214,7 +1216,10 @@ export function useCast(appContext) {
 	};
 	domain.extendTimeline = domain.syncTimeline;
 	domain.applyPose = (characterId, pose, clearMotion) => {
-		if (clearMotion) appContext.ports.recordAction('motion', () => appContext.shared.motionDomain.clearMotionNative(), domain.activeId, true);
+		if (clearMotion) appContext.ports.recordAction('motion', () => {
+			const motion = appContext.storeDomain('motion');
+			if (motion) motion.clear(characterId); else appContext.shared.motionDomain.clearMotionNative();
+		}, characterId, true);
 		domain.write(rows => rows.map(entry => entry.id === characterId ? { ...entry, pose } : entry));
 	};
 	appContext.updateActionPorts({ addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, setWaypointMode });

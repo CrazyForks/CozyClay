@@ -37,17 +37,27 @@ const physics = { id: 'motion.autoPhysics', label: 'Review motion physics', desc
 			mode: { type: 'string', enum: ['plant', 'free'] },
 		}) },
 	}, ['characterId']) };
+// These only queue the existing editor producers. Their eventual take
+// publication is owned above; generation-pipeline unification remains #444.
+const queued = ['motion.commitLineEdit', 'motion.regenerateTrail'].map(id => ({ id, label: id === 'motion.commitLineEdit' ? 'Commit line edit' : 'Regenerate trail edit',
+	description: 'Queue the current editor draft through the existing generation producer.', kind: 'transient', exposure: 'ui-only', input: input({ characterId: { type: 'string' } }) }));
 const legacyIk = ['character.setIkKey', 'character.removeIkKey', 'character.clearIkKeys'].map(studioActionDeclaration);
 const ik = legacyIk.map((entry, index) => ({ ...entry, id: ['ik.setKey', 'ik.removeKey', 'ik.clearKeys'][index] }));
 
 const clear = { id: 'motion.clear', label: 'Clear motion', description: 'Clear the active take, its corrections and take-owned cast fields.',
 	kind: 'mutation', undoDomain: 'motion', input: { type: 'object', properties: { characterId: { type: 'string' } }, required: ['characterId'], additionalProperties: false } };
-export const declarations = Object.freeze([clear, ...edits, prepared, ...loads, ...tools, physics, ...legacyIk, ...ik, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
+export const declarations = Object.freeze([...queued, prepared, ...loads, physics, ...tools, ...edits, ...legacyIk, ...ik, clear, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
 
 export function register(registry, ports) {
 	const owner = () => ports.storeDomain('motion');
 	const mounted = () => Boolean(ports.storeDomain?.('motion')) || 'The motion owner is not mounted.';
 	const take = characterId => { characterOf(ports, characterId); return owner().motionFor(characterId) ?? fail('TARGET_NOT_READY', 'Load a take for this character first.'); };
+	for (const declaration of queued) registry.register({ ...declaration, available: mounted, run({ characterId }) {
+		characterOf(ports, characterId);
+		if (ports.state().activeCharacterId !== characterId) fail('TARGET_NOT_READY', 'Select the character that owns this editor draft.');
+		if (declaration.id === 'motion.commitLineEdit') owner().requestLineEdit(); else owner().requestTrailRegeneration();
+		return { affectedIds: [], summary: declaration.label };
+	} });
 	registry.register({ ...prepared, available: mounted, run({ characterId, token }) {
 		characterOf(ports, characterId); owner().applyPrepared(token); return { affectedIds: [characterId], summary: prepared.label };
 	} });
