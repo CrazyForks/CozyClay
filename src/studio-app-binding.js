@@ -184,6 +184,8 @@ export function createStudioAppBinding(ports) {
 	}
 	/** Actual state of one action target after it ran. */
 	function actionReadback(id, s) {
+		if (id === s.host.sceneId) return { selection: s.selection, activeCharacterId: s.activeCharacterId, shotId: s.selectedShotId, view: s.view,
+			...(s.document.stage ? { patched: elementReadback('stage', s.document.stage) } : {}) };
 		const patched = Object.entries(s.document).flatMap(([kind, value]) => {
 			const target = elementTarget(kind, value, id, s.host.sceneId);
 			return target ? elementReadback(kind, target) : [];
@@ -218,7 +220,8 @@ export function createStudioAppBinding(ports) {
 		return actionBus;
 	}
 	function runAction(request, args) {
-		const result = commandBus().run(args.action, args.args, { ...request, origin: "agent", confirmationToken: args.confirmationToken ?? request.confirmationToken });
+		const { name: _name, args: _args, ...options } = request;
+		const result = commandBus().run(args.action, args.args, { ...options, origin: "agent", confirmationToken: args.confirmationToken ?? request.confirmationToken });
 		const answer = receipt => receipt.nextHost ? { ...receipt, host: receipt.nextHost } : receipt;
 		return result?.then ? result.then(answer) : answer(result);
 	}
@@ -227,7 +230,7 @@ export function createStudioAppBinding(ports) {
 		if (request.name === "run_action") return runAction(request, validateStudioCommand({ name: request.name, args: request.args }).args);
 		const alias = ports.actions?.().toolAlias?.(request.name);
 		if (alias) {
-			try { return runAction(request, { action: alias.action, args: alias.args(request.args) }); }
+			try { return runAction(request, { action: typeof alias.action === 'function' ? alias.action(request.args) : alias.action, args: alias.args(request.args) }); }
 			catch (error) { return rejection(request, error); }
 		}
 		const patchKind = request.name === "patch_elements" && request.args?.ops?.[0]?.target?.kind;
@@ -254,14 +257,6 @@ export function createStudioAppBinding(ports) {
 			// Verification only observes: the document identity (checked above) is
 			// its whole fence, so a later edit never refuses it.
 			const { args } = validateStudioCommand({ name: request.name, args: request.args }), s = request.name === "verify_result" ? refresh() : admit(request);
-			if (request.name === "operate_studio") {
-				ports.operate(args, s); const after = refresh();
-				return journal.record(validateReceipt({ ok: true, status: "transient", authored: false, commandId: request.commandId,
-					receiptId: crypto.randomUUID(), host: s.host, revision: { before: s.revision, after: s.revision },
-					view: { before: s.viewRevision, after: after.viewRevision }, affectedIds: [s.host.sceneId],
-					delta: [{ id: s.host.sceneId, after: { selection: after.selection, activeCharacterId: after.activeCharacterId, shotId: after.selectedShotId, view: after.view } }],
-					checks: { coverage: "editor-view-state" }, undo: null, warnings: [] }));
-			}
 			if (request.name === "verify_result") {
 				const receipt = args.receiptId ? receipts.get(args.receiptId) : null;
 				if (args.receiptId && !receipt) fail("STALE_TARGET", "Receipt is not retained in this document.");

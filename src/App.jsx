@@ -6513,20 +6513,9 @@ export default function App() {
 			for (const skeleton of skeletons) skeleton.dispose(); parent.remove(rig);
 		}
 	}
-	function operateStudio(args, state) {
-		let selection = args.selection === undefined ? state.selection : args.selection;
-		if (selection) {
-			const found = selection.kind === "scene" ? selection.id === state.host.sceneId : selection.kind === "camera" ? selection.id === "camera" :
-				(selection.kind === "object" ? state.objects : state.characters).some(row => row.id === selection.id);
-			if (!found) throw new StudioProtocolError("STALE_TARGET", "Selection is not present in this document.");
-		}
-		const shot = args.shotId === undefined ? null : state.shots.find(s => s.id === args.shotId);
-		if (args.shotId !== undefined && !shot) throw new StudioProtocolError("STALE_TARGET", "Shot is not present in this document.");
-		const frame = args.frame ?? shot?.startFrame ?? state.view.frame;
-		if (frame >= state.frameCount) throw new StudioProtocolError("INVALID_RANGE", "Frame is outside the timeline.");
-		const view = { ...state.view, ...args.view, frame, mode: args.mode ?? state.view.mode, playing: args.playing ?? state.view.playing };
-		const live = appContext.live.state; appContext.patchLive({ studioSelection: selection }); appContext.patchLive({ studioView: view });
-		appContext.patchLive({ studioShotId: args.shotId ?? shotAtFrame(state.shots, frame)?.id ?? null });
+	function operateStudio({ selection, view, shotId }) {
+		const { frame } = view;
+		appContext.patchLive({ studioSelection: selection, studioView: view, studioShotId: shotId });
 		appContext.patchTimeline({ currentFrame: frame }); tlFrameRef.current = frame;
 		if (selection && ["character", "rig"].includes(selection.kind)) { appContext.patchLive({ activeCharacterId: selection.id }); setActiveCharacterId(selection.id); }
 		setSelectedHierarchyId(selection ? selection.kind === "object" ? `object:${selection.id}` : ["character", "rig"].includes(selection.kind) ? `character:${selection.id}` : selection.kind === "camera" ? "camera" : "shot" : "");
@@ -6613,6 +6602,7 @@ export default function App() {
 		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, setWaypointMode,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, attachSceneObject, setShotCameraRail, clearShotCameraRail,
 		choosePartColours, setGuideMode, setInsetCollapsed, exportShotVideo,
+		readView: readStudioState, publishView: operateStudio,
 		switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument,
 		afterRender: () => new Promise(resolve => renderWaitersRef.current.push(resolve)),
 		saveProject, projectFileGranted: async () => (await queryHandlePermission(projectHandleRef.current)) === "granted",
