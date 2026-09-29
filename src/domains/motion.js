@@ -186,7 +186,7 @@ export function createMotionDomain(appContext, characters) {
 			const rig = rigFor(id);
 			if (rig) {
 				const resolved = resolveIkRig(rig); if (resolved) Object.assign(state, resolved, { rig });
-				if (savedRigs?.has(id)) appContext.shared.restoreExportRig(savedRigs.get(id));
+				if (savedRigs?.has(id) && !previews.has(id)) appContext.shared.restoreExportRig(savedRigs.get(id));
 				else if (resolved) {
 					if (take) applyMotionFrame(rig, take, Math.min(frame(), take.frames - 1));
 					else {
@@ -1289,7 +1289,7 @@ export function useMotion(appContext) {
 			};
 			const owned = appContext.storeDomain('motion');
 			if (owned) {
-				if (preview) owned.preview(targetCharacter.id, loaded);
+				if (preview) owned.preview(targetCharacter.id, url === owned.motionFor(targetCharacter.id)?.url ? null : loaded);
 				else {
 					commitLoadedTake(targetCharacter.id, loaded, { recipe, job, promptClips: targetPromptClips, scale });
 					if (bufferOwnsTarget) { appContext.shared.setTlFrame(0); appContext.shared.setTlPlaying(false); }

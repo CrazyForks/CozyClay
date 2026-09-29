@@ -80,7 +80,10 @@ test('motion: a draft reaches the rig and cancelling it restores the authored ta
     ok(f.run('motion.editTrail', { characterId: 'actor-a', grabFrame: 12, radiusFrames: 6, delta: { x: 0.2, y: 0, z: 0 } }));
     const take = f.motion.motionFor('actor-a'), before = f.snapshot(), rig = f.actual.snapshotExportRig(f.rigs['actor-a']);
     globalThis.fetch = async requested => { assert.equal(requested, take.url); return new Response(bytes); };
-    f.motion.preview('actor-a', { ...take, url: 'preview.npz', anchorX: 3 });
+    const preview = structuredClone(take); preview.url = 'preview.npz';
+    for (let i = 1; i < preview.posedJoints.length; i += 3) preview.posedJoints[i] += 0.2;
+    for (let i = 1; i < preview.rootPos.length; i += 3) preview.rootPos[i] += 0.2;
+    f.motion.preview('actor-a', preview);
     assert.notDeepEqual(f.actual.snapshotExportRig(f.rigs['actor-a']), rig);
     assert.deepEqual(f.snapshot(), before);
     await f.motion.loadMotion(take.url, take.prompt, take.rotationDeg, null, 'actor-a', null, { preview: true });
