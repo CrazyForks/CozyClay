@@ -192,7 +192,7 @@ const executeStudioCommand = async ({ action, args, expectedRevision, commandId,
 		commandId: commandId ?? randomUUID(),
 		host: Object.fromEntries(STUDIO_IDENTITY_KEYS.map((key) => [key, context.host[key]])),
 		expectedRevision: expectedRevision ?? context.revision.scene,
-	}, workspaceHandle, { timeoutMs: timeoutMs ?? declared?.timeoutMs });
+	}, workspaceHandle, { timeoutMs: timeoutMs ?? (declared?.timeoutMs === undefined ? undefined : Math.min(MAX_COMMAND_TIMEOUT_MS, declared.timeoutMs + (declared.generation ? 5000 : 0))) });
 	return receipt;
 };
 // A refusal is the editor's receipt: its code and recovery are the answer.

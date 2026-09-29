@@ -31,3 +31,17 @@ test('#495.2: operate_studio and registered view/timeline commands replay identi
     assert.equal(f.binding.refresh().activeCharacterId, 'actor-b', 'invalid bundled requests publish no partial selection');
   } finally { f.dispose(); }
 });
+
+test('#495.2: view readback retains scene/project fields alongside transient state', () => {
+  const f = appFixture(), domains = f.ports.storeDomains();
+  f.ports.storeDomains = () => [...domains, { document: () => ({ scenes: [{ id: 'scene', name: 'Scene name', order: 0 }], project: { name: 'Project name' } }) }];
+  try {
+    const receipt = f.binding.handlers.operate_studio(f.request('operate_studio', { frame: 4 }));
+    assert.equal(receipt.ok, true, JSON.stringify(receipt));
+    const after = receipt.delta[0].after;
+    assert.equal(after.view.frame, 4);
+    assert.deepEqual(after.patched.filter(row => ['scene.name', 'project.name'].includes(row.path)), [
+      { path: 'scene.name', text: 'Scene name' }, { path: 'project.name', text: 'Project name' },
+    ]);
+  } finally { f.dispose(); }
+});

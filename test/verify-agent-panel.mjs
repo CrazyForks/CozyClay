@@ -13,7 +13,7 @@ const css = readFileSync(new URL("../src/workflow/agent-panel.css", import.meta.
 const builder = readFileSync(new URL("../src/workflow/WorkflowBuilder.jsx", import.meta.url), "utf8");
 const studio = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 const studioCss = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
-const { STUDIO_TOOL_FAMILIES, validateReceipt } = await import("../src/studio-agent-protocol.js");
+const { STUDIO_TOOL_FAMILIES, STUDIO_TOOLS, validateReceipt } = await import("../src/studio-agent-protocol.js");
 const { createAgentChatStore } = await import("../src/workflow/agent-client.js");
 
 let failures = 0;
@@ -317,7 +317,7 @@ expect("the scripted turn ends with an image, a quota and done", types.includes(
 const studioMock = [];
 await module_.createMockTransport({ state: "ready", speed: 60, surface: "studio" }).turn({}, (event) => studioMock.push(event));
 const studioStarts = studioMock.filter((event) => event.type === "tool.start");
-expect("the Studio mock runs Studio families only", studioStarts.length > 0 && studioStarts.every((event) => STUDIO_TOOL_FAMILIES.includes(event.name)), studioStarts.map((event) => event.name).join(","));
+expect("the Studio mock runs Studio families only", studioStarts.length > 0 && studioStarts.every((event) => STUDIO_TOOLS.includes(event.name)), studioStarts.map((event) => event.name).join(","));
 expect("every Studio mock tool.start carries label and args", studioStarts.every((event) => typeof event.label === "string" && event.args));
 expect("every Studio mock tool.done states its elapsed time", studioMock.filter((event) => event.type === "tool.done").every((event) => Number.isFinite(event.elapsedMs)));
 expect("the Studio mock never generates an image", !studioMock.some((event) => event.type === "image"));

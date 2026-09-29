@@ -30,16 +30,22 @@ const server = await createServer({ configFile: false, server: { middlewareMode:
   plugins: [{ name: 'history-without-renderer', enforce: 'pre', load(id) {
     if (id.endsWith('/src/app-stage.jsx')) return subset;
     if (id.endsWith('/src/motion-store.js')) return `export * from '../test/bus/motion-cache-fixture.mjs';`;
+    // A browser fixes locale at page load. Each fixture is a fresh page, so
+    // select that locale while retaining the shipped translations and ko().
+    if (id.endsWith('/src/locale.js')) return readFileSync(new URL('../../src/locale.js', import.meta.url), 'utf8')
+      .replace('export const isKo =', 'export let isKo =') + '\nexport const setFixtureLocale = value => { isKo = value; };';
   } }] });
-let useCast;
+let useCast, setFixtureLocale;
 export let createObjectsDomain, createMotionDomain, motionCache;
 try {
   ({ useCast } = await server.ssrLoadModule('/src/domains/cast.js'));
+  ({ setFixtureLocale } = await server.ssrLoadModule('/src/locale.js'));
   ({ createObjectsDomain } = await server.ssrLoadModule('/src/domains/objects.js'));
   ({ createMotionDomain } = await server.ssrLoadModule('/src/domains/motion.js'));
   motionCache = await server.ssrLoadModule('/test/bus/motion-cache-fixture.mjs');
 } finally { await server.close(); }
-export function mountHistoryCast(app) {
+export function mountHistoryCast(app, korean = false) {
+  setFixtureLocale(korean);
   let cast;
   function Mount() { cast = useCast(app); return null; }
   renderToStaticMarkup(createElement(Mount));

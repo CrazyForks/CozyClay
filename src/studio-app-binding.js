@@ -183,12 +183,12 @@ export function createStudioAppBinding(ports) {
 	}
 	/** Actual state of one action target after it ran. */
 	function actionReadback(id, s) {
-		if (id === s.host.sceneId) return { selection: s.selection, activeCharacterId: s.activeCharacterId, shotId: s.selectedShotId, view: s.view,
-			...(s.document.stage ? { patched: elementReadback('stage', s.document.stage) } : {}) };
 		const patched = Object.entries(s.document).flatMap(([kind, value]) => {
 			const target = elementTarget(kind, value, id, s.host.sceneId);
 			return target ? elementReadback(kind, target) : [];
 		});
+		if (id === s.host.sceneId) return { selection: s.selection, activeCharacterId: s.activeCharacterId, shotId: s.selectedShotId, view: s.view,
+			...(patched.length ? { patched } : {}) };
 		if (patched.length) return { patched };
 		const shot = s.shots.find(row => row.id === id);
 		if (shot) return { name: shot.name || shot.id, range: { startFrame: shot.startFrame, endFrameExclusive: shot.endFrame + 1 } };
