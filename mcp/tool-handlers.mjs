@@ -180,7 +180,7 @@ const STUDIO_IDENTITY_KEYS = ["workspaceId", "documentEpoch", "sceneId", "sceneE
  * the open document and its current revision like the agent's run_action. Its
  * declaration (read from the editor, never from this server) sets the hub
  * deadline unless the caller gives one. */
-const executeStudioCommand = async ({ action, args, expectedRevision, commandId, timeoutMs, inspected }) => {
+const executeStudioCommand = async ({ action, args, expectedRevision, commandId, timeoutMs, confirmationToken, inspected }) => {
 	const workspaceHandle = liveWorkspace.getStore();
 	inspected ??= await liveHub.command("inspect_studio", { scope: "actions", ids: [action] }, workspaceHandle);
 	const context = inspected?.context;
@@ -188,7 +188,7 @@ const executeStudioCommand = async ({ action, args, expectedRevision, commandId,
 	const declared = inspected.actions?.find((row) => row.id === action);
 	const receipt = await liveHub.command("run_action", {
 		name: "run_action",
-		args: { action, args: typeof args === "function" ? await args(context) : args ?? {} },
+		args: { action, args: typeof args === "function" ? await args(context) : args ?? {}, ...(confirmationToken ? { confirmationToken } : {}) },
 		commandId: commandId ?? randomUUID(),
 		host: Object.fromEntries(STUDIO_IDENTITY_KEYS.map((key) => [key, context.host[key]])),
 		expectedRevision: expectedRevision ?? context.revision.scene,
@@ -289,20 +289,6 @@ const appliedLiveMutation = async (name, args) => {
 		throw new LiveMutationUncertainError(`Live editor accepted ${name}, but its state could not be verified: ${error.message} The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.`);
 	}
 	return value;
-};
-
-const requireLiveSceneParity = (name, document, result) => {
-	const expected = document.scenes.map(({ id, name: sceneName }) => ({ id, name: sceneName }));
-	const received = Array.isArray(result?.scenes) ? result.scenes : [];
-	const sameScenes = received.length === expected.length && received.every((scene, index) =>
-		scene?.id === expected[index].id && scene?.name === expected[index].name,
-	);
-	if (sameScenes && result?.activeSceneId === document.activeSceneId) return;
-	throw new LiveMutationUncertainError(
-		`Live editor accepted ${name}, but did not confirm the complete scene list and active scene ` +
-		`(expected ${JSON.stringify(expected)} active ${document.activeSceneId}; received ${JSON.stringify(received)} active ${result?.activeSceneId ?? "none"}). ` +
-		"The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.",
-	);
 };
 
 const modelById = (id) =>
@@ -1868,10 +1854,13 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 			{
 				title: "Open a .cclayproject file",
 				description:
-					"Load a project authored in the CozyClay studio (or saved here). Replaces the current state.",
-				inputSchema: { path: z.string().describe("path to a .cclayproject file") },
+					"Load a project authored in the CozyClay studio (or saved here). Replacing scene ids in a connected editor requires a Studio-issued confirmationToken; returns the load_scenes bus receipt.",
+				inputSchema: {
+					path: z.string().describe("path to a .cclayproject file"),
+					confirmationToken: z.string().min(1).max(120).optional().describe("token issued by the Studio UI for this exact scene document"),
+				},
 			},
-			async ({ path }) => {
+			async ({ path, ...admission }) => {
 				let full;
 				let raw;
 				try {
@@ -1897,8 +1886,14 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				const nextDocument = scenes.document;
 				if (liveHub?.connected) {
 					try {
-						const live = await appliedLiveMutation("load_scenes", { document: nextDocument });
-						requireLiveSceneParity("open_project", nextDocument, live);
+						const loaded = await executeStudioCommand({ ...admission, action: "load_scenes", args: { document: nextDocument } });
+						if (loaded.ok) {
+							state.name = result.project.name;
+							state.focus = null;
+							state.focusLocked = false;
+							state.markedFraming = null;
+						}
+						return studioResult(loaded);
 					} catch (error) {
 						return liveError(error);
 					}
@@ -2023,7 +2018,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					"args must match the command's input schema (read it with studio_commands and ids). The command is admitted at the open " +
 					"document and its current revision unless expectedRevision is given, and answers the editor's JSON receipt: status, summary, " +
 					"affectedIds, undo, and output for a job. A refusal is a receipt with ok false and its code: STALE_SCENE means read again and " +
-					"re-issue; CONFIRMATION_REQUIRED means only the user can run it from the Studio. Reusing a commandId returns the receipt of " +
+					"re-issue; CONFIRMATION_REQUIRED means obtain the user's approval in Studio and pass its confirmationToken. Reusing a commandId returns the receipt of " +
 					"that earlier call instead of running again.",
 				inputSchema: {
 					action: z.string().min(1).max(120).describe("command id, as studio_commands lists it"),
@@ -2031,6 +2026,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					expectedRevision: z.number().int().min(0).optional().describe("the scene revision the command is admitted at; defaults to the current one"),
 					commandId: z.string().min(1).max(120).optional().describe("idempotency key; a repeated id answers the first call's receipt"),
 					timeoutMs: z.number().int().min(1).max(MAX_COMMAND_TIMEOUT_MS).optional().describe("how long the hub waits; defaults to the command's declared timeout"),
+					confirmationToken: z.string().min(1).max(120).optional().describe("Studio UI approval token for this exact command; MCP cannot mint one"),
 				},
 			},
 			async (args) => {
