@@ -471,7 +471,7 @@ export function useScenes(appContext) {
 			const result = readProjectDocument(file.text);
 			if (!result.ok) {
 				appContext.notify(isKo ? `프로젝트를 열 수 없어요: ${result.reason}` : `Cannot open project: ${result.reason}`);
-				return;
+				return false;
 			}
 			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
 			appContext.shared.projectHandleRef.current = handle;
@@ -500,13 +500,13 @@ export function useScenes(appContext) {
 			// session (#51); this click is the user gesture that can re-grant it.
 			if ((await requestHandlePermission(handle)) !== "granted") {
 				appContext.notify(ko("Project access was not granted — allow access and try again.", "프로젝트 접근이 허용되지 않았어요. 접근을 허용하고 다시 시도해 주세요."));
-				return;
+				return false;
 			}
 			const file = await readProjectFile(handle);
 			const result = readProjectDocument(file.text);
 			if (!result.ok) {
 				appContext.notify(isKo ? `프로젝트를 열 수 없어요: ${result.reason}` : `Cannot open project: ${result.reason}`);
-				return;
+				return false;
 			}
 			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
 			appContext.shared.projectHandleRef.current = handle;
@@ -535,6 +535,7 @@ export function useScenes(appContext) {
 	function newProject(name, authorized = false) {
 		if (!authorized) return runProject("project.new", typeof name === "string" ? { name } : {});
 		if (typeof name !== "string") return requestNewProject(true);
+		name = name.trim() || "My Project";
 		setProjectNameDialog(null);
 		const fresh = createSceneDocument(ko("SCENE 01", "씬 01"));
 		storeWorkflowGraph(createWorkflowGraph());
@@ -550,6 +551,7 @@ export function useScenes(appContext) {
 		appContext.shared.setFirstSuccessGuideOpen(true);
 		domain.pendingCheckpoint = { clock: appContext.undoClock, name };
 		appContext.notify(ko(`New project: ${name}`, `새 프로젝트: ${name}`));
+		return true;
 	}
 
 	const [restoreOffer, setRestoreOffer] = useState(null);
@@ -559,15 +561,18 @@ export function useScenes(appContext) {
 		try {
 			const file = await readProjectFile(record.handle);
 			const result = readProjectDocument(file.text);
-			if (!result.ok) return;
+			if (!result.ok) return false;
 			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
 			appContext.shared.projectHandleRef.current = record.handle;
 			await rehydrateProjectAssets(result.project, result.warnings);
 			context.check();
 			applyProject(result.project, true);
 			appContext.notify(`${isKo ? `프로젝트 복원됨: ${result.project.name}` : `Project restored: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
-		} catch {
-			/* missing or unreadable file: fall back to the session cache */
+			return true;
+		} catch (error) {
+			if (error?.code) throw error;
+			console.warn("Could not restore the project; retaining the session cache.", error);
+			return false;
 		}
 	}
 
@@ -791,7 +796,7 @@ export function useScenes(appContext) {
 			return value;
 		};
 		if (id === "project.browse") { setProjectStartupOpen(false); setProjectBrowserOpen(true); return; }
-		if (id === "project.new") { newProject(args.name, true); return; }
+		if (id === "project.new") return newProject(args.name, true);
 		if (id === "project.openStarter") return openStarterScene(args.id, args.source, context);
 		if (id === "project.restore") return restoreStoredProject({ handle: runtime("handleToken") }, context);
 		if (args.handleToken) return openProjectByHandle(runtime("handleToken"), context);
