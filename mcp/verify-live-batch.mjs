@@ -340,7 +340,9 @@ try {
 	// that id, and the removal leaves no trace. No step may silently drop.
 	const placedResult = await call("place_object", { kind: "cube", x: 2, z: -2, name: "Lifecycle Crate" });
 	assert.equal(placedResult.isError, undefined, JSON.stringify(placedResult));
-	const placedId = placedResult.content[0].text.match(/Placed object as ([^.\s]+)\./)?.[1];
+	const placedReceipt = JSON.parse(placedResult.content[0].text);
+	assert.equal(placedReceipt.action, "object.add");
+	const placedId = placedReceipt.affectedIds[0];
 	assert.ok(placedId, placedResult.content[0].text);
 	const afterPlace = JSON.parse(await description()).objects.find((object) => object.id === placedId);
 	assert.ok(afterPlace, `placed object ${placedId} missing from the editor description`);
@@ -381,13 +383,18 @@ try {
 		],
 	});
 	assert.equal(happy.isError, undefined, JSON.stringify(happy));
-	assert.match(happy.content[0].text, /Applied 3 operation\(s\)/);
+	const happyReceipt = JSON.parse(happy.content[0].text);
+	assert.equal(happyReceipt.action, "objects.batch");
+	assert.deepEqual(happyReceipt.output.applied, [1, 2, 3]);
+	assert.equal(happyReceipt.revision.after, happyReceipt.revision.before + 1);
+	assert.equal(happyReceipt.undo.entries, 1);
 	const afterHappy = await description();
 	await assertExecution(happy, "succeeded", true);
 	const happyAfterDepth = await history();
 	assert.equal(JSON.parse(afterHappy).objects.length, JSON.parse(beforeHappy).objects.length + 3);
 	assert.equal(happyAfterDepth.past - happyDepth.past, 1);
-	await evaluate('window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyZ", ctrlKey: true, bubbles: true, cancelable: true }))');
+	const undone = await call("studio_run", { action: "edit.undo", args: { receiptId: happyReceipt.receiptId } });
+	assert.equal(JSON.parse(undone.content[0].text).status, "undone");
 	const undoHappy = await description();
 	assertSceneEquivalent(undoHappy, beforeHappy);
 	assert.equal((await history()).past, happyDepth.past);
@@ -409,7 +416,7 @@ try {
 		],
 	});
 	assert.equal(atomicFailure.isError, undefined, JSON.stringify(atomicFailure));
-	assert.match(atomicFailure.content[0].text, /rolled back/i);
+	assert.equal(JSON.parse(atomicFailure.content[0].text).output.rolledBack, true);
 	const afterAtomicFailure = await description();
 	await assertExecution(atomicFailure, "failed", false);
 	assertSceneEquivalent(afterAtomicFailure, beforeAtomicFailure);
@@ -431,7 +438,8 @@ try {
 		],
 	});
 	assert.equal(partial.isError, undefined, JSON.stringify(partial));
-	assert.match(partial.content[0].text, /Applied 1 operation\(s\).*Failure at operation 2/i);
+	assert.deepEqual(JSON.parse(partial.content[0].text).output.applied, [1]);
+	assert.equal(JSON.parse(partial.content[0].text).output.failed[0].index, 2);
 	assert.equal((await history()).past - partialDepth.past, 1);
 	assert.equal(JSON.parse(await description()).objects.length, JSON.parse(beforeHappy).objects.length + 1);
 	await assertExecution(partial, "failed", true);
@@ -450,7 +458,8 @@ try {
 		],
 	});
 	assert.equal(continueBatch.isError, undefined, JSON.stringify(continueBatch));
-	assert.match(continueBatch.content[0].text, /Applied 1 operation\(s\).*Failure at operation 1/i);
+	assert.deepEqual(JSON.parse(continueBatch.content[0].text).output.applied, [2]);
+	assert.equal(JSON.parse(continueBatch.content[0].text).output.failed[0].index, 1);
 	assert.equal((await history()).past - continueDepth.past, 1);
 	await evaluate('window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyZ", ctrlKey: true, bubbles: true, cancelable: true }))');
 
@@ -487,8 +496,8 @@ try {
 			undoDepthDelta: atomicRollbackDepthDelta,
 		},
 		edges: {
-			partialStopOnError: partial.content[0].text.split("\n")[0],
-			continueAfterError: continueBatch.content[0].text.split("\n")[0],
+			partialStopOnError: JSON.parse(partial.content[0].text).output,
+			continueAfterError: JSON.parse(continueBatch.content[0].text).output,
 			capRejected: tooMany.isError === true,
 			nestedRejected: nested.isError === true,
 			characterBatchRejected: characterBatch.isError === true,

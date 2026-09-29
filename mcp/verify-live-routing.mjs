@@ -2,6 +2,10 @@
 /** Regression coverage: a live mutation cannot cross a workspace boundary. */
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readLiveEndpoint } from "../bin/live-endpoint.mjs";
 import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -10,6 +14,8 @@ import { WebSocket } from "ws";
 import { LiveHub } from "./live-hub.mjs";
 
 const serverPath = fileURLToPath(new URL("./server.mjs", import.meta.url));
+const configHome = mkdtempSync(join(tmpdir(), "cozyclay-routing-"));
+process.env.XDG_CONFIG_HOME = configHome;
 
 const reservePort = () =>
 	new Promise((resolve, reject) => {
@@ -90,6 +96,29 @@ const connectEditor = async (name, workspaceId = `${name}-workspace`) => {
 		characters: [{ id: "char-a", model: "y-bot-tpose", subject: name, x: 0, y: 0, z: 0, rot: 0, hidden: false }],
 		objects: [],
 	};
+	let revision = 0;
+	const host = () => ({ workspaceId, documentEpoch: "document", sceneId: state.document.activeSceneId, sceneEpoch: state.document.activeSceneId });
+	const command = (name, request) => {
+		if (name === "describe") return clone(state);
+		if (name === "inspect_studio") return { actions: [], context: { host: host(), revision: { scene: revision }, activeCharacterId: "char-a",
+			camera: { position: { x: state.camera.x, y: state.camera.y, z: state.camera.z }, lookAt: { x: 0, y: 1.3, z: 0 }, focalMm: state.camera.focalMm } } };
+		assert.equal(name, "run_action");
+		assert.deepEqual(request.host, host());
+		assert.equal(request.expectedRevision, revision);
+		const { action, args } = request.args;
+		const before = revision++;
+		if (action === "shot.frame") Object.assign(state.camera, args.framing.exact.position, { focalMm: args.framing.exact.focalMm });
+		else if (action === "scene.create") {
+			const id = `scene-${state.document.scenes.length}`;
+			state.document.scenes.push({ ...clone(state.document.scenes[0]), id, name: "SCENE" });
+			state.document.activeSceneId = id;
+		} else if (action === "scene.rename") state.document.scenes.find(row => row.id === args.sceneId).name = args.name;
+		else throw new Error(`Unexpected action ${action}`);
+		state.sceneName = state.document.scenes.find(row => row.id === state.document.activeSceneId).name;
+		return { ok: true, action, host: host(), commandId: request.commandId, receiptId: crypto.randomUUID(),
+			status: "completed", kind: "document", authored: true, revision: { before, after: revision }, affectedIds: [host().sceneId],
+			delta: [], checks: {}, warnings: [], undo: null };
+	};
 	const socket = new WebSocket(url);
 	const workspace = withTimeout(
 		new Promise((resolve, reject) => {
@@ -98,23 +127,9 @@ const connectEditor = async (name, workspaceId = `${name}-workspace`) => {
 				if (frame.type === "workspace" && typeof frame.handle === "string") resolve(frame.handle);
 				if (frame.type === "cmd") {
 					try {
-						if (frame.name === "describe") socket.send(JSON.stringify({ type: "result", id: frame.id, ok: true, value: clone(state) }));
-						else if (frame.name === "set_camera") {
-							for (const key of ["x", "y", "z", "focalMm"]) if (frame.args[key] !== undefined) state.camera[key] = frame.args[key];
-							socket.send(JSON.stringify({ type: "result", id: frame.id, ok: true, value: { camera: clone(state.camera) } }));
-						} else if (frame.name === "load_scenes") {
-							state.document = clone(frame.args.document);
-							state.sceneName = state.document.scenes.find((scene) => scene.id === state.document.activeSceneId)?.name ?? "";
-							socket.send(JSON.stringify({
-								type: "result", id: frame.id, ok: true,
-								value: {
-									sceneName: state.sceneName,
-									activeSceneId: state.document.activeSceneId,
-									scenes: state.document.scenes.map(({ id, name: sceneName }) => ({ id, name: sceneName })),
-								},
-							}));
-						} else socket.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: `Unexpected command: ${frame.name}` }));
+						socket.send(JSON.stringify({ type: "result", id: frame.id, ok: true, value: command(frame.name, frame.args) }));
 					} catch (error) {
+						socket.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: error.message }));
 						reject(error);
 					}
 				}
@@ -128,39 +143,47 @@ const connectEditor = async (name, workspaceId = `${name}-workspace`) => {
 };
 
 const client = new Client({ name: "cozyclay-live-routing-verify", version: "1.0.0" });
-const transport = new StdioClientTransport({ command: process.execPath, args: [serverPath, "--live-port", String(livePort)] });
+const transport = new StdioClientTransport({ command: process.execPath, args: [serverPath, "--live-port", String(livePort)], env: process.env });
+let controller;
 let first;
 let second;
 let reconnected;
 try {
 	await client.connect(transport);
+	controller = new WebSocket(url);
+	const ready = withTimeout(new Promise(resolve => controller.on("message", raw => { if (JSON.parse(raw).type === "ready") resolve(); })), "controller ready");
+	await once(controller, "open");
+	controller.send(JSON.stringify({ type: "hello", role: "controller", version: 1, token: readLiveEndpoint(livePort).token }));
+	await ready;
+	const closeEditor = async editor => {
+		const gone = withTimeout(new Promise(resolve => {
+			const receive = raw => {
+				const frame = JSON.parse(raw);
+				if (frame.name === "editor_disconnected" && frame.payload.handle === editor.workspace) { controller.off("message", receive); resolve(); }
+			};
+			controller.on("message", receive);
+		}), "hub disconnect event");
+		const closed = once(editor.socket, "close");
+		editor.socket.close(); await Promise.all([gone, closed]);
+	};
 	const untrusted = new WebSocket(url, { headers: { Origin: "https://untrusted.example" } });
+	const untrustedClosing = withTimeout(new Promise((resolve) => untrusted.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))), "untrusted origin close");
 	await once(untrusted, "open");
-	const untrustedClose = await withTimeout(new Promise((resolve) => untrusted.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))), "untrusted origin close");
+	const untrustedClose = await untrustedClosing;
 	assert.equal(untrustedClose.code, 1008);
 	assert.match(untrustedClose.reason, /origin.*loopback/i);
 	first = await connectEditor("FIRST");
 	const duplicate = new WebSocket(url);
+	const duplicateClosing = withTimeout(new Promise((resolve) => duplicate.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))), "duplicate workspace close");
 	await once(duplicate, "open");
 	duplicate.send(JSON.stringify({ type: "hello", role: "editor", version: 1, workspaceId: "FIRST-workspace" }));
-	const duplicateClose = await withTimeout(new Promise((resolve) => duplicate.once("close", (code, reason) => resolve({ code, reason: reason.toString() }))), "duplicate workspace close");
+	const duplicateClose = await duplicateClosing;
 	assert.equal(duplicateClose.code, 1008);
 	assert.match(duplicateClose.reason, /already connected/i);
 	second = await connectEditor("SECOND");
 	assert.notEqual(first.workspace, second.workspace, "each editor needs a distinct workspace handle");
 
 	const call = (name, args = {}) => client.callTool({ name, arguments: args });
-	/** Poll until the hub itself no longer lists this workspace — bounded, so
-	 * a hub that truly never notices a disconnect still fails loudly. */
-	const waitForWorkspaceGone = async (handle) => {
-		const deadline = Date.now() + 5_000;
-		for (;;) {
-			const status = await call("live_status");
-			if (!status.content[0].text.includes(handle)) return;
-			if (Date.now() > deadline) throw new Error(`live hub never dropped workspace ${handle}`);
-			await new Promise((resolve) => setTimeout(resolve, 100));
-		}
-	};
 	const beforeBoundOther = clone(second.state);
 
 	// Given two live editors and a command explicitly bound to the first handle
@@ -203,13 +226,7 @@ try {
 	assert.deepEqual(second.state, beforeUnknownSecond);
 
 	const formerHandle = second.workspace;
-	const secondClosed = once(second.socket, "close");
-	second.socket.close();
-	await secondClosed;
-	// The client-side close resolves before the hub has processed the
-	// disconnect; until it does, formerHandle is still valid and the stale
-	// check below would race. Poll the hub's own view.
-	await waitForWorkspaceGone(formerHandle);
+	await closeEditor(second);
 	reconnected = await connectEditor("RECONNECTED");
 	assert.notEqual(reconnected.workspace, formerHandle, "a different workspace id is a different handle");
 	const beforeStale = clone(reconnected.state);
@@ -222,23 +239,14 @@ try {
 	// reconnect — and is stale for exactly as long as that editor is away.
 	const resumedId = "RECONNECTED-workspace";
 	assert.equal(reconnected.workspace, resumedId, "the hello's workspace id is the handle the hub issues");
-	const resumedClosed = once(reconnected.socket, "close");
-	reconnected.socket.close();
-	await resumedClosed;
-	await waitForWorkspaceGone(resumedId);
+	await closeEditor(reconnected);
 	const duringGap = await call("set_camera", { workspace_handle: resumedId, x: 66 });
 	assert.equal(duringGap.isError, true, JSON.stringify(duringGap));
 	assert.match(duringGap.content[0].text, /unknown|stale/i);
 	reconnected = await connectEditor("RECONNECTED");
 	assert.equal(reconnected.workspace, resumedId, "the same workspace id resumes the same handle");
 
-	const firstClosed = once(first.socket, "close");
-	first.socket.close();
-	await firstClosed;
-	// Same hub race as above: the no-handle path below is only unambiguous
-	// once the hub has actually dropped the first workspace (first seen as a
-	// two-workspace ambiguity error on a slow CI runner).
-	await waitForWorkspaceGone(first.workspace);
+	await closeEditor(first);
 	// Given exactly one live editor
 	// When a mutation omits its handle
 	const unboundSingle = await call("set_camera", { x: 55 });
@@ -262,5 +270,7 @@ try {
 	for (const editor of [first, second, reconnected]) {
 		if (editor?.socket.readyState === WebSocket.OPEN) editor.socket.close();
 	}
-	await client.close().catch(() => {});
+	controller?.close();
+	await client.close();
+	rmSync(configHome, { recursive: true, force: true });
 }
