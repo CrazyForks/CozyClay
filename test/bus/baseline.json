@@ -1,7 +1,7 @@
 {
   "version": 1,
   "coverage": {
-    "writerReferences": 206,
+    "writerReferences": 193,
     "handlerSites": 33,
     "handlerTotal": 800,
     "registeredCommands": 46
@@ -62,13 +62,6 @@
     "domains/motion.js::generateFalMotion": 9,
     "domains/motion.js::publishStudioMotion": 1,
     "domains/motion.js::updateFalMotionQuota": 1,
-    "domains/scenes.js::useScenes": 4,
-    "domains/scenes.js::applyProject": 2,
-    "domains/scenes.js::newProject": 2,
-    "domains/scenes.js::openScene": 2,
-    "domains/scenes.js::renameSceneDocument": 1,
-    "domains/scenes.js::deleteSceneDocument": 1,
-    "domains/scenes.js::applyExternalScene": 1,
     "domains/shots.js::recordShotUndo": 1,
     "domains/shots.js::changeActiveCamera": 1,
     "domains/shots.js::changeShotTargetModel": 1,

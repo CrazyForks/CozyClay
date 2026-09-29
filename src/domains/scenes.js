@@ -102,7 +102,7 @@ export function createScenesDomain(appContext, initial, name) {
 	const unsubscribe = documentStore.subscribe(publish);
 	const domain = {
 		documentStore, dirtyStore, read, write, metadata,
-		setScenes: write,
+		"setScenes": write,
 		beginAction: () => documentStore.beginAction("scenes"),
 		canUndo: id => documentStore.canUndo(id),
 		stepHistory: redo => Boolean((redo ? documentStore.redo : documentStore.undo)()),

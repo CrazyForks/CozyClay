@@ -1,10 +1,11 @@
 import { ko } from "../locale.js";
 import ResourceStatus from "../resource-status.jsx";
+import { useBus } from "../app-context.js";
 
 export default function ProjectPanel({
-	projectMenuOpen, setProjectMenuOpen, projectDirty, projectName, projectStartupOpen, requestNewProject,
-	setProjectStartupOpen, setProjectBrowserOpen, runStudioAction, saveProject, projectManifest,
+	projectMenuOpen, setProjectMenuOpen, projectDirty, projectName, projectStartupOpen, projectManifest,
 }) {
+	const { run } = useBus();
 	return (
 <div className="project-menu-wrap">
 					<button
@@ -19,10 +20,10 @@ export default function ProjectPanel({
 					</button>
 					{projectMenuOpen && (
 						<div className="project-menu" role="menu" onClick={() => setProjectMenuOpen(false)}>
-							<button type="button" role="menuitem" onClick={requestNewProject}>{ko("New Project", "새 프로젝트")}</button>
-							<button type="button" role="menuitem" onClick={() => { setProjectStartupOpen(false); setProjectBrowserOpen(true); }}>{ko("Open Project…", "프로젝트 열기…")}</button>
-							<button type="button" role="menuitem" onClick={() => runStudioAction("project.save")}>{ko("Save Project", "프로젝트 저장")}</button>
-							<button type="button" role="menuitem" onClick={() => saveProject(true)}>{ko("Save Project As…", "다른 이름으로 저장…")}</button>
+							<button type="button" role="menuitem" onClick={() => run("project.new")}>{ko("New Project", "새 프로젝트")}</button>
+							<button type="button" role="menuitem" onClick={() => run("project.browse")}>{ko("Open Project…", "프로젝트 열기…")}</button>
+							<button type="button" role="menuitem" onClick={() => run("project.save")}>{ko("Save Project", "프로젝트 저장")}</button>
+							<button type="button" role="menuitem" onClick={() => run("project.saveAs")}>{ko("Save Project As…", "다른 이름으로 저장…")}</button>
 							<ResourceStatus manifest={projectManifest} compact />
 						</div>
 					)}
