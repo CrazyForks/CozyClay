@@ -25,7 +25,7 @@ const store = createDocumentStore({ owned: { fixture: { nested: { amount: 1 }, t
 const registry = createStudioActionRegistry();
 const host = { workspaceId: 'workspace', documentEpoch: 'document', sceneId: 'scene', sceneEpoch: 'epoch' };
 elements.registerElementSet(registry, {
-  fixture: () => ({ read: () => store.read('fixture'), write: value => store.write('fixture', value) }),
+  storeDomain: domain => { assert.equal(domain, 'fixture'); return { read: () => store.read('fixture'), write: value => store.write('fixture', value) }; },
   state: () => ({ activeSceneId: host.sceneId }),
 }, { id: 'fixture.set', label: 'Fixture', description: 'Registry fixture', kind: 'mutation', undoDomain: 'fixture', input: schema });
 const journal = createStudioCommandJournal({ host });

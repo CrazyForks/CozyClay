@@ -14,7 +14,11 @@ export function createAppContext({
   characters: charactersRef = ref(null), scenes: scenesRef = ref(null),
   motion: motionRef = ref(null), state: liveStateRef = ref(null), getBus, notify,
 } = {}) {
-  const ports = {}, actionPorts = {};
+  const storeDomains = new Map();
+  const storeDomain = domain => storeDomains.get(domain);
+  const storeDomainForReceipt = receipt => [...storeDomains.values()].find(domain => domain.documentStore.isRetained(receipt?.undo?.historyEntryId));
+  const registeredDomains = () => [...storeDomains.values()];
+  const ports = { storeDomain, storeDomains: registeredDomains }, actionPorts = { storeDomain, storeDomains: registeredDomains };
   let currentPorts = {};
   const nextTick = () => ++opClockRef.current;
   function record(snapshot) {
@@ -25,6 +29,15 @@ export function createAppContext({
   return {
     // The notifier is an App-owned stable callback, shared by every domain.
     notify,
+    storeDomain,
+    storeDomainForReceipt,
+    storeDomains: registeredDomains,
+    // Registration is per editor, never global. Render projections share it;
+    // identity-checked disposal cannot remove a newer owner of the same slice.
+    registerStoreDomain(undoDomain, handle) {
+      storeDomains.set(undoDomain, handle);
+      return () => { if (storeDomains.get(undoDomain) === handle) storeDomains.delete(undoDomain); };
+    },
     // A hook keeps the same render closure that its code had inside App.
     // Lazy projections permit handlers to refer to cells declared later in
     // that render, without rebinding an in-flight callback to a newer render.

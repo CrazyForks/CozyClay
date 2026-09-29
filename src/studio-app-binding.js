@@ -2,7 +2,7 @@
 // over the editor's native state. App.jsx supplies the ports (reads, commits,
 // history, the action registry); this module owns no React or renderer state.
 import { createCommandBus } from "./command-bus.js";
-import { readElementDocument, elementReadback } from "./commands/elements.js";
+import { readElementDocument, elementReadback, elementPatchArgs } from "./commands/elements.js";
 import { physicsKeyStamp } from "./ardy/physics-review.js";
 import { shotAtFrame } from "./cuts.js";
 import { sha256Hex } from "./motion-resources.js";
@@ -43,14 +43,14 @@ export function createStudioAppBinding(ports) {
 	let authoredKey, physicsKey, viewKey, observedSceneRevision = ports.revision.current;
 	let physicsRevision = 0, viewRevision = 0;
 	function refresh() {
-		const raw = ports.read();
+		const document = Object.assign({}, ...(ports.storeDomains?.() ?? []).map(domain => domain.document()));
+		const raw = { ...ports.read(), ...document, document };
 		const host = validateStudioIdentity(raw.host);
 		if (!same(owner, host)) {
 			motion?.dispose(); owner = host; tokens.clear(); receipts.clear(); jobs.clear(); images.clear();
 			authoredKey = physicsKey = viewKey = undefined;
 			journal = createStudioCommandJournal({ host, isRetained: receipt => ports.isRetained(receipt) });
-			commands = createStudioCommands({ read: readCommand, guard, bounds: ports.bounds, commit: ports.commit, poses: ports.poses, journal,
-				stageSet: { available: () => Boolean(ports.stage), run: (args, request) => commandBus().run("stage.set", args, { ...request, origin: "agent" }) } });
+			commands = createStudioCommands({ read: readCommand, guard, bounds: ports.bounds, commit: ports.commit, poses: ports.poses, journal });
 			motion = createStudioMotionCandidates({ readTarget, readEnvironment, journal,
 				commit: commitMotion, loadArtifact, poseCast: ports.poseCast });
 		}
@@ -65,7 +65,7 @@ export function createStudioAppBinding(ports) {
 		const authoredCharacters = raw.characters.map(({ sessionMotion, ik, rig, ...character }) => character);
 		// The stage is authored state too: a key-light or environment edit from any
 		// surface bumps the scene revision exactly like a cast or object edit.
-		const authored = JSON.stringify([raw.objects, authoredCharacters, raw.shots, raw.frameCount, raw.stage]);
+		const authored = JSON.stringify([raw.objects, authoredCharacters, raw.shots, raw.frameCount, raw.stage, document]);
 		if (authoredKey !== undefined && authoredKey !== authored && observedSceneRevision === ports.revision.current) ports.revision.current++;
 		authoredKey = authored; observedSceneRevision = ports.revision.current;
 		const liveIds = new Set([...raw.objects, ...raw.characters, ...raw.shots].map(row => row.id));
@@ -98,7 +98,7 @@ export function createStudioAppBinding(ports) {
 		const nextViewKey = JSON.stringify([raw.selection, raw.activeCharacterId, raw.selectedShotId, raw.view, raw.camera]);
 		if (viewKey !== undefined && viewKey !== nextViewKey) viewRevision++;
 		viewKey = nextViewKey;
-		for (const [domain, value] of Object.entries({ objects: raw.objects, shot: raw.shots, stage: raw.stage, cast: authoredCharacters, motion: characters })) {
+		for (const [domain, value] of Object.entries({ objects: raw.objects, shot: raw.shots, stage: raw.stage, cast: authoredCharacters, motion: characters, ...document })) {
 			const key = JSON.stringify(value);
 			if (domainKeys.get(domain) !== key) domainRevisions[domain] = (domainRevisions[domain] ?? 0) + 1;
 			domainKeys.set(domain, key);
@@ -114,7 +114,7 @@ export function createStudioAppBinding(ports) {
 		const s = refresh();
 		return { host: s.host, revision: s.revision, frame: s.view.frame, frameCount: s.frameCount,
 			objects: s.objects, characters: s.characters, activeCharacterId: s.activeCharacterId,
-			selectedShotId: s.selectedShotId, shotDocument: { shots: s.shots }, camera: s.camera, stage: ports.stage ? ports.stage().document().stage : s.stage,
+			selectedShotId: s.selectedShotId, shotDocument: { shots: s.shots }, camera: s.camera, stage: s.stage,
 			filmback: s.filmback, manual: s.manual, floorY: 0, busy: s.busy };
 	}
 	function entityProjection(s) {
@@ -255,7 +255,9 @@ export function createStudioAppBinding(ports) {
 	}
 	/** Actual state of one action target after it ran. */
 	function actionReadback(id, s) {
-		if (id === s.host.sceneId && ports.stage) return { patched: elementReadback("stage", ports.stage().document().stage) };
+		if (id === s.host.sceneId && Object.keys(s.document).length) return {
+			patched: Object.entries(s.document).flatMap(([kind, value]) => elementReadback(kind, value)),
+		};
 		const shot = s.shots.find(row => row.id === id);
 		if (shot) return { name: shot.name || shot.id, range: { startFrame: shot.startFrame, endFrameExclusive: shot.endFrame + 1 } };
 		const entity = s.objects.find(row => row.id === id) ?? s.characters.find(row => row.id === id);
@@ -283,6 +285,11 @@ export function createStudioAppBinding(ports) {
 	function execute(request) {
 		refresh();
 		if (request.name === "run_action") return runAction(request, validateStudioCommand({ name: request.name, args: request.args }).args);
+		const patchKind = request.name === "patch_elements" && request.args?.ops?.[0]?.target?.kind;
+		if (patchKind && ports.storeDomain?.(patchKind)) {
+			try { return commandBus().run(`${patchKind}.set`, elementPatchArgs(patchKind, request.args), { ...request, origin: "agent" }); }
+			catch (error) { return rejection(request, error); }
+		}
 		if (["arrange_objects", "arrange_characters", "frame_shot", "patch_elements"].includes(request.name)) {
 			// Arrangements and framing are fenced by the exact scene revision, the
 			// gesture flag and the document identity inside the command module; they
@@ -387,7 +394,7 @@ export function createStudioAppBinding(ports) {
 			// command is admitted at, so a scope without it leaves that admission stale.
 			if (command.args.scope === "catalogue") return { context: c, ...studioObjectCatalogue() };
 			if (command.args.scope === "document") return { context: c, scope: "document",
-				...readElementDocument(ports.stage().document(), command.args, c.host.sceneId) };
+				...readElementDocument(refresh().document, command.args, c.host.sceneId) };
 			// Discovery for run_action: every registered action with its label, kind,
 			// exposure and availability (the reason when unavailable). Schemas are on
 			// request: ids answer those actions' full declarations, input included.

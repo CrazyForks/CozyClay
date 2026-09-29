@@ -67,7 +67,7 @@ export function registerElementSet(registry, ports, declaration) {
   const kind = declaration.id.slice(0, declaration.id.indexOf('.'));
   const { normalize } = kinds.get(kind);
   registry.register({ ...declaration, available: () => true, run(args) {
-    const domain = ports[kind]();
+    const domain = ports.storeDomain(declaration.undoDomain ?? kind);
     domain.write(normalize(mergeElementSet(domain.read(), args)));
     return { affectedIds: [ports.state().activeSceneId], summary: `Updated ${kind}.` };
   } });

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import {
 	SCENES_STORAGE_KEY,
+	readSceneDocument,
 	serializeSceneDocument,
 	SCENES_VERSION,
 	migrateStageFrames,
@@ -595,7 +596,65 @@ export function useScenes(appContext) {
 		persistScenes(nextScenes, target.id);
 		openScene(target, nextScenes);
 	}
+	function applyExternalScene(incoming) {
+		if (!incoming || !Array.isArray(incoming.scenes)) return;
+		const incomingActiveId = typeof incoming.activeSceneId === "string" ? incoming.activeSceneId : appContext.shared.activeSceneIdRef.current;
+		const incomingScenes = incoming.scenes;
+		const incomingScene = incomingScenes.find((scene) => scene?.id === incomingActiveId) ?? incomingScenes[0];
+		if (!incomingScene?.id) return;
+		const currentSnapshot = {
+			version: SCENES_VERSION,
+			activeSceneId: appContext.shared.activeSceneIdRef.current,
+			scenes: snapshotActiveScene(),
+		};
+		if (JSON.stringify(currentSnapshot) === JSON.stringify({ version: SCENES_VERSION, activeSceneId: incomingActiveId, scenes: incomingScenes })) return;
+		const nextScenes = incomingScenes;
+		if (incomingScene.id !== appContext.shared.activeSceneIdRef.current) {
+			openScene(incomingScene, nextScenes);
+			return;
+		}
+		const currentScene = currentSnapshot.scenes.find((scene) => scene?.id === incomingScene.id);
+		if (JSON.stringify(currentScene?.objects ?? []) !== JSON.stringify(incomingScene.objects ?? [])) {
+			appContext.shared.objectsDomain.applyExternalObjects(incomingScene.objects);
+		}
+		const incomingStage = createSceneStage(incomingScene.stage);
+		const currentStage = currentScene?.stage;
+		if (JSON.stringify(currentStage ?? null) !== JSON.stringify(incomingStage)) {
+			appContext.shared.castDomain.applyExternalCharacters(incomingStage.characters);
+		}
+		appContext.publishScenes(nextScenes);
+		setScenes(nextScenes);
+	}
+	function loadLiveScenes(args) {
+		if (!args.document || typeof args.document !== "object" || Array.isArray(args.document)) throw new Error("Invalid scene document");
+		const loaded = readSceneDocument(JSON.stringify(args.document));
+		if (loaded.status !== "valid" && loaded.status !== "migrated") throw new Error("Invalid scene document");
+		const document = loaded.document;
+		const target = document.scenes[activeSceneIndex(document.scenes, document.activeSceneId)];
+		const live = appContext.live.state;
+		live.persistScenes(document.scenes, document.activeSceneId);
+		live.openScene(target, document.scenes);
+		appContext.patchLive({ scenes: document.scenes });
+		appContext.patchLive({ activeSceneId: document.activeSceneId });
+		appContext.patchLive({ objects: appContext.shared.storeRef.current.objects });
+		appContext.patchLive({ characters: createSceneStage(target.stage).characters });
+		appContext.publishCharacters(live.characters);
+		return {
+			sceneName: target.name,
+			activeSceneId: document.activeSceneId,
+			scenes: document.scenes.map((scene) => ({ id: scene.id, name: scene.name })),
+		};
+	}
+	function refreshProjectDirty() {
+		if (projectName === null) return; // untitled sessions are never "dirty"
+		const serialized = collectProjectSnapshot(projectName);
+		const dirty = serialized !== appContext.shared.projectSnapshotRef.current;
+		setProjectDirty(dirty);
+		setProjectSaveState((current) => current === "saving" ? current : dirty ? "dirty" : "saved");
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}
 	return {
+		applyExternalScene, loadLiveScenes, refreshProjectDirty,
 		scenes, setScenes, activeSceneId, sceneSaveError, snapshotActiveScene, persistScenes, projectName,
 		projectDirty, setProjectDirty, projectSaveState, setProjectSaveState, projectMenuOpen,
 		setProjectMenuOpen, projectBrowserOpen, setProjectBrowserOpen, projectNameDialog, setProjectNameDialog,

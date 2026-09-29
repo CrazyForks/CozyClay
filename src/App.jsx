@@ -43,9 +43,6 @@ import {
 import { motionUrlFromQuery } from "./ardy/motion-url.js";
 
 import {
-	normalizeRootDrop,
-} from "./ardy/root-drop.js";
-import {
 	createMotionEdit,
 	motionEditLayout,
 } from "./ardy/motion-edit.js";
@@ -78,7 +75,6 @@ import { createStudioAppActions } from "./commands/index.js";
 
 import { createStudioAppBinding } from "./studio-app-binding.js";
 import { AppContext, createAppContext } from "./app-context.js";
-import { HISTORY_LIMIT } from "./history.js";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import HierarchyPanel from "./hierarchy-panel.jsx";
 import { PlanBoard } from "./planview.jsx";
@@ -129,42 +125,30 @@ import {
 } from "./camera-follow.js";
 import {
 	createCameraBlock,
-	updateCameraBlock,
 } from "./camera-block.js";
 import {
 	RAIL_SCHEDULE_LEGACY,
 	RAIL_SCHEDULE_RANGE,
-	clampRailRange,
 	defaultRailRange,
 	resolveRailSchedule,
 } from "./camera-rail-schedule.js";
 import { SetProps } from "./props.jsx";
 import {
-	CUTOUT_DEFAULT_HEIGHT,
 	CUTOUT_KIND,
 	MESH_KIND,
-	createCutoutObject,
-	createMeshObject,
-	createSceneObject,
 	isEffectivelyHidden,
 	objectSize,
-	placementInFront,
-	removeSceneObject,
-	setSceneObjectParent,
 	sceneObjectIdFromHierarchy,
-	updateSceneObject,
 } from "./scene-objects.js";
 
 import {
 	ASSET_IMAGE_TYPES,
-	assetAspect,
 	assetGraphSignature,
 	assetUsageCounts,
 	deleteAsset,
 	deleteAssetWithGraphGuard,
 	getAsset,
 	imageFilesFromClipboard,
-	importImageFile,
 	isImageAssetId,
 	isMeshAssetId,
 	isSupportedMeshType,
@@ -176,9 +160,6 @@ import {
 import { derivedAssetIds, sourceAssetIds } from "./asset-shelf.js";
 import { assetRecord, evictAssetTexture, rememberAsset } from "./scene-asset-cache.js";
 import { evictMeshScene } from "./scene-mesh-cache.js";
-import {
-	importMeshFile,
-} from "./scene-mesh.js";
 import { subscribeToSceneDocuments, subscribeToScenePlayback } from "./workflow/scene-asset-sync.js";
 import {
 	decodeMask,
@@ -187,11 +168,8 @@ import { createMatteEditor } from "./matte-editor.js";
 import {
 	SCENES_VERSION,
 	activeSceneIndex,
-	createCharacterEntry,
-	createCharacterLayer,
 	createSceneStage,
 	normalizeReferenceImage,
-	readSceneDocument,
 } from "./scenes.js";
 import {
 	hasFileSystemAccess,
@@ -253,14 +231,6 @@ import {
 } from "./posestudio.jsx";
 
 import {
-	encodeMotionResource,
-} from "./motion-resources.js";
-import {
-	openMotionDb,
-	putMotion,
-} from "./motion-store.js";
-
-import {
 	createIkState,
 	ikEvaluate,
 	ikKeyframes,
@@ -278,7 +248,6 @@ import {
 } from "./ardy/collision-blockers.js";
 import { computeCenterOfMass, markerPositions } from "./ardy/auto-physics.js";
 import {
-	copyPhysicsKeys,
 	physicsKeyStamp,
 } from "./ardy/physics-review.js";
 
@@ -293,14 +262,13 @@ import {
 	SUBJECT_HEIGHT_M,
 	composePrompt,
 	deriveShot,
-	focalMmToFov,
 	fovToFocalMm,
 } from "./shot.js";
-import { CAMERA_PRESETS, cameraPresetFraming, captureFraming, classifyMove, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
+import { CAMERA_PRESETS, captureFraming, classifyMove, moveSequenceSlate, moveSequencePhrase } from "./camera-move.js";
 import { sampleAt } from "./sample-at.js";
 import { exportOffscreenVideo } from "./offscreen-export.js";
 import { parseRigNodeId } from "./hierarchy-model.js";
-import { timelineContentExtent, timelineSpan } from "./timeline-extent.js";
+import { timelineContentExtent } from "./timeline-extent.js";
 import {
 	GUIDE_LABELS,
 	guideGeometry,
@@ -315,20 +283,13 @@ import { buildZip } from "./zip-store.js";
 import { composeStoryboard } from "./storyboard.js";
 import { DEPTH_RANGE_M, depthRangeFromFrames, passFileName, renderPass } from "./render-passes.js";
 
-import { buildH3MotionPrompt, motionApiOrigin, submitFalMotion, waitForFalMotionJob, FAL_MOTION_MIN_DURATION, FAL_MOTION_SHOT_ASPECT, FAL_MOTION_STILL_OUTPUT } from "./fal-motion-client.js";
+import { motionApiOrigin, FAL_MOTION_SHOT_ASPECT } from "./fal-motion-client.js";
 import { serializeOtio } from "./otio.js";
 import {
-	renameShot,
-	resizeShot,
 	shotAtFrame,
 	shotIndexAtFrame,
 } from "./cuts.js";
 import {
-	createStableItemId,
-	updateStableItem,
-} from "./stable-items.js";
-import {
-	ARDY_FPS,
 	ASSET_DELETE_UNDO_MS,
 	BRIDGE_RECHECK_MS,
 	CameraGlide,
@@ -370,7 +331,6 @@ import {
 	ViewportLayoutInvalidator,
 	WORKSPACE_LAYOUT_KEY,
 	attachFrameMatrix,
-	attachPlacementPatch,
 	buildPromptSchedule,
 	captureMcpFrame,
 	characterModelUrl,
@@ -379,8 +339,6 @@ import {
 	loadSceneStartup,
 	loadWorkspaceLayout,
 	moveSequenceSlateKo,
-	nextCharacterId,
-	placeSceneObject,
 	preserveTracksSummary,
 	sceneObjectNameDisplayKo,
 	slateLineKo,
@@ -726,12 +684,13 @@ export default function App() {
 	const [workspaceLayout, setWorkspaceLayout] = useState(loadWorkspaceLayout);
 	const stageDomain = useStage(appContext.forRender({
 		startupStage,
+		get stageDomain() { return stageDomain; },
 		get actorStageRef() { return actorStageRef; },
 		get objects() { return storeRef.current.objects; },
 	}));
 	const {
 		preset, shotAspectKey, environmentImage, cameraPresetId, sensorId, keyLight, changeKeyLight,
-		resetKeyLight, changeEnvironmentImage, hasEnvSheet, environment, style,
+		resetKeyLight, changeEnvironmentImage, hasEnvSheet, environment, style, publishStudioStage,
 	} = stageDomain;
 	const shotsDomain = useShots(appContext.forRender({
 		get cameraPreviewEndRef() { return cameraPreviewEndRef; },
@@ -760,6 +719,22 @@ export default function App() {
 		get tlPlaying() { return tlPlaying; },
 		get waypointMode() { return waypointMode; },
 		get workflowMode() { return workflowMode; },
+		get activeChar() { return activeChar; },
+		get characters() { return characters; },
+		get currentRecordFrameCount() { return currentRecordFrameCount; },
+		get enterPreview() { return enterPreview; },
+		get executeExportRequest() { return executeExportRequest; },
+		get exportRequest() { return exportRequest; },
+		get motion() { return motion; },
+		get multiModelFootage() { return multiModelFootage; },
+		get playgroundMode() { return playgroundMode; },
+		get promptClips() { return promptClips; },
+		get recRef() { return recRef; },
+		get runShotExport() { return runShotExport; },
+		get setCameraPos() { return setCameraPos; },
+		get setNonce() { return setNonce; },
+		get shotCameraPosRef() { return shotCameraPosRef; },
+		get stageDomain() { return stageDomain; },
 	}));
 	const {
 		fovDeg, setFovDeg, cameraMove, customMove, startupShotState, shots, setShots, editShots, movePlaying,
@@ -772,6 +747,7 @@ export default function App() {
 		addCameraKeyframe, moveCameraKeyframe, removeCameraKeyframe, addTimelineShot, splitTimelineShot,
 		selectTimelineShot, duplicateTimelineShot, moveTimelineShot, setTimelineShotRange, removeTimelineShot,
 	} = shotsDomain;
+	const { publishStudioCamera, applyPreset, exportShotVideo } = shotsDomain;
 
 	const shotOutput = SHOT_ASPECT_PRESETS[shotAspectKey] ?? SHOT_ASPECT_PRESETS["16:9"];
 
@@ -1139,9 +1115,34 @@ export default function App() {
 		get tlFps() { return tlFps; },
 		get tlFrame() { return tlFrame; },
 		get tlFrameCount() { return tlFrameCount; },
+		get editShots() { return editShots; },
+		get publishStudioCamera() { return publishStudioCamera; },
+		get publishStudioDomain() { return publishStudioDomain; },
+		get publishStudioMotion() { return publishStudioMotion; },
+		get publishStudioStage() { return publishStudioStage; },
+		get recordStudioHistory() { return recordStudioHistory; },
+		get sceneRevisionRef() { return sceneRevisionRef; },
+		get snapshotCast() { return snapshotCast; },
+		get snapshotStudioDomain() { return snapshotStudioDomain; },
+		get storeRef() { return storeRef; },
+		get studioActionGroupRef() { return studioActionGroupRef; },
+		get studioHistoryRef() { return studioHistoryRef; },
+		get syncStudioLayerBuffer() { return syncStudioLayerBuffer; },
+		get ikMode() { return ikMode; },
+		get leaveIkMode() { return leaveIkMode; },
+		get motionDomain() { return motionDomain; },
+		get objectDeleteUndo() { return objectDeleteUndo; },
+		get readStudioState() { return readStudioState; },
+		get selectedSceneObjectId() { return selectedSceneObjectId; },
+		get setObjectDeleteUndo() { return setObjectDeleteUndo; },
+		get snapshotExportRig() { return snapshotExportRig; },
+		get studioBindingRef() { return studioBindingRef; },
+		get objectsDomain() { return objectsDomain; },
+		get restoreMotionRefs() { return restoreMotionRefs; },
+		get shotsDomain() { return shotsDomain; },
 	}));
 	const {
-		characters, editCharacters, customPoses, posing, setPosing, posingClosing, studioPick, setStudioPick,
+		characters, customPoses, posing, setPosing, posingClosing, studioPick, setStudioPick,
 		rigs, rigMountEpoch, setRigMountEpoch, setPoseTick, charA, charB, showB, poseA, poseB, subject, subject2,
 		updateCharacterAt, setShowB, moveCharacter, removeCharacter, reportRig, spawnCharacter,
 		charKeyToHierarchyId, charIdFromHierarchyId, activeCharacterId, setActiveCharacterId, rowIdForCharIndex,
@@ -1157,12 +1158,12 @@ export default function App() {
 		addPromptClip, changePromptClip, PROMPT_BLOCK_MAX_FRAMES, resizePromptClip, movePromptClip,
 		removePromptClip,
 	} = castDomain;
+	const { publishStudioCharacters, syncStudioLayerBuffer, undoScene, redoScene, recordStudioHistory, snapshotStudioDomain } = castDomain;
 	// The cast as of this render, for async handlers: an extraction that
 	// started three renders ago must place its takes against the CURRENT cast,
 	// not the one its closure captured.
 	appContext.publishCharacters(characters);
 
-	const [falMotion, setFalMotion] = useState({ a: null, b: null, job: null, status: "idle", error: "", instruction: "", dailyRemaining: null });
 	const [falMotionEnabled, setFalMotionEnabled] = useState(false);
 	const [falMotionMode, setFalMotionMode] = useState("interpolate");
 	const [falMotionCameraUnlocked, setFalMotionCameraUnlocked] = useState(false);
@@ -1174,7 +1175,7 @@ export default function App() {
 			.then((payload) => {
 				if (cancelled || !payload) return;
 				setFalMotionEnabled(payload.enabled === true);
-				if (Number.isFinite(payload.dailyRemaining)) setFalMotion((current) => ({ ...current, dailyRemaining: payload.dailyRemaining }));
+				if (Number.isFinite(payload.dailyRemaining)) motionDomain.updateFalMotionQuota(payload.dailyRemaining);
 			})
 			.catch(() => { if (!cancelled) setFalMotionEnabled(false); });
 		return () => { cancelled = true; };
@@ -1317,6 +1318,25 @@ export default function App() {
 		get waitForRig() { return waitForRig; },
 		get waypointMode() { return waypointMode; },
 		get waypoints() { return waypoints; },
+		get captureCurrentFraming() { return captureCurrentFraming; },
+		get enterShotLook() { return enterShotLook; },
+		get falMotionEnabled() { return falMotionEnabled; },
+		get falMotionSegmentationReady() { return falMotionSegmentationReady; },
+		get liveHandlersRef() { return liveHandlersRef; },
+		get lookThroughShot() { return lookThroughShot; },
+		get motionEncodingCacheRef() { return motionEncodingCacheRef; },
+		get readStudioState() { return readStudioState; },
+		get recordStudioHistory() { return recordStudioHistory; },
+		get restoreExportRig() { return restoreExportRig; },
+		get setCameraPos() { return setCameraPos; },
+		get setFalMotionCameraUnlocked() { return setFalMotionCameraUnlocked; },
+		get setFalMotionStudioOpen() { return setFalMotionStudioOpen; },
+		get setFovDeg() { return setFovDeg; },
+		get setResult() { return setResult; },
+		get setResultOpen() { return setResultOpen; },
+		get setWaypoints() { return setWaypoints; },
+		get shotCameraPosRef() { return shotCameraPosRef; },
+		get snapshotExportRig() { return snapshotExportRig; },
 	}));
 	const {
 		ikMode, ikChains, setIkChains, ikFkJoints, setIkFkJoints, ikFocus, setIkFocus, footSnap, setFootSnap,
@@ -1342,6 +1362,7 @@ export default function App() {
 		generationBusy, openMotionSetup, refineDisabledReason, sceneDisabledReason, sceneGenerateDisabledReason,
 		sceneAgainDisabledReason, enterRefineMode, runSceneAgain, addSceneBlock, restoreMotionRefs, cancelArdy,
 	} = motionDomain;
+	const { falMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, commitStudioMotion } = motionDomain;
 	const [partColoursEnabled, setPartColoursEnabled] = useState(false);
 	const [partColoursMode, setPartColoursMode] = useState("shaded");
 
@@ -1379,8 +1400,7 @@ export default function App() {
 		}
 		const charId = charIdFromHierarchyId(hierarchyId);
 		if (!charId) return;
-		castDomain.recordCharacterUndo();
-		editCharacters((list) => list.map((item) => (item.id === charId ? { ...item, hidden: item.hidden !== true } : item)));
+		castDomain.toggleCharacterHidden(charId);
 	};
 
 	useEffect(() => {
@@ -1418,6 +1438,8 @@ export default function App() {
 		get setSelectedHierarchyId() { return setSelectedHierarchyId; },
 		get shotCamRef() { return shotCamRef; },
 		get startupScene() { return startupScene; },
+		get runStudioAction() { return runStudioAction; },
+		get studioHistoryRef() { return studioHistoryRef; },
 	}));
 	const {
 		recentObjectColors, objectColorDraft, setObjectColorDraft, rememberSceneObjectColor, objectDeleteUndo,
@@ -1497,6 +1519,8 @@ export default function App() {
 		get tutorialProjectEpochRef() { return tutorialProjectEpochRef; },
 		get tutorialSeedEpochRef() { return tutorialSeedEpochRef; },
 		get tutorialStarterRef() { return tutorialStarterRef; },
+		get castDomain() { return castDomain; },
+		get objectsDomain() { return objectsDomain; },
 	}));
 	const {
 		scenes, activeSceneId, sceneSaveError, snapshotActiveScene, persistScenes, projectName, projectDirty,
@@ -1544,7 +1568,7 @@ export default function App() {
 		// Resolve the live store at event time: opening a scene replaces the
 		// coordinator in storeRef before the next hierarchy click, while a
 		// render-captured store can still settle the scene that was left.
-		storeRef.current.settle();
+		objectsDomain.settleObjects();
 		setSelectedHierarchyId(id);
 		// Selecting the camera IS the request to frame a shot (#193). The camera
 		// bar owns FOV/Recenter/presets and is CSS-gated to Camera mode, so a
@@ -1736,34 +1760,6 @@ export default function App() {
 			&& past[past.length - 1]?.tick === framingSessionRef.current.tick;
 	}
 
-	// props so the inspector cannot show a ghost.
-	function undoScene() {
-		if (studioBindingRef.current?.stepHistory(false)) return;
-		const charTop = appContext.castHistory.past[appContext.castHistory.past.length - 1];
-		if (charTop && charTop.tick > appContext.objectClock) {
-			appContext.castHistory.future.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
-			appContext.castHistory.past.pop();
-			restoreCast(charTop.snapshot);
-			setToast(ko("Undone", "실행 취소됨"));
-			return;
-		}
-		appContext.suppressObjectClock = true;
-		const restored = store.undo();
-		appContext.suppressObjectClock = false;
-		if (restored === null) {
-			setToast(ko("Nothing to undo", "실행 취소할 작업이 없어요"));
-			return;
-		}
-		appContext.advanceObjectClock();
-		if (objectDeleteUndo?.id && restored.some((object) => object.id === objectDeleteUndo.id)) {
-			setSelectedHierarchyId(`object:${objectDeleteUndo.id}`);
-			setObjectDeleteUndo(null);
-		} else if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
-			setSelectedHierarchyId("props");
-		}
-		setToast(ko("Undone", "실행 취소됨"));
-	}
-
 	function undoObjectDeletion() {
 		if (!objectDeleteUndo) return;
 		if (store.depths().past !== objectDeleteUndo.pastDepth) {
@@ -1772,30 +1768,6 @@ export default function App() {
 			return;
 		}
 		undoScene();
-	}
-
-	function redoScene() {
-		if (studioBindingRef.current?.stepHistory(true)) return;
-		const charTop = appContext.castHistory.future[appContext.castHistory.future.length - 1];
-		if (charTop && charTop.tick > appContext.objectClock) {
-			appContext.castHistory.past.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
-			appContext.castHistory.future.pop();
-			restoreCast(charTop.snapshot);
-			setToast(ko("Redone", "다시 실행됨"));
-			return;
-		}
-		appContext.suppressObjectClock = true;
-		const restored = store.redo();
-		appContext.suppressObjectClock = false;
-		if (restored === null) {
-			setToast(ko("Nothing to redo", "다시 실행할 작업이 없어요"));
-			return;
-		}
-		appContext.advanceObjectClock();
-		if (selectedSceneObjectId && !restored.some((object) => object.id === selectedSceneObjectId)) {
-			setSelectedHierarchyId("props");
-		}
-		setToast(ko("Redone", "다시 실행됨"));
 	}
 
 	useEffect(() => {
@@ -2248,48 +2220,7 @@ export default function App() {
 	 * another object GROUPS; on a character or one of its bone rows it ATTACHES;
 	 * on Props it comes back to the world. Anything else is not a drop.
 	 */
-	const hierarchyReparent = {
-		canDrop(sourceRowId, targetRowId) {
-			const id = sceneObjectIdFromHierarchy(String(sourceRowId ?? ""));
-			if (!id || sourceRowId === targetRowId) return false;
-			const object = sceneObjects.find((entry) => entry.id === id);
-			if (!object) return false;
-			const targetObjectId = sceneObjectIdFromHierarchy(String(targetRowId ?? ""));
-			// Grouping keeps its own rules (self, cycles, unknown ids) — asking the
-			// store is the only way to stay honest about them.
-			if (targetObjectId) return setSceneObjectParent(sceneObjects, id, targetObjectId) !== sceneObjects;
-			if (targetRowId === "props") return (object.attach ?? null) !== null || (object.parent ?? null) !== null;
-			const attach = attachTargetForRow(targetRowId);
-			if (!attach) return false;
-			const current = object.attach ?? null;
-			return !current || current.characterId !== attach.characterId || (current.bone ?? null) !== attach.bone;
-		},
-		onDrop(sourceRowId, targetRowId) {
-			if (!hierarchyReparent.canDrop(sourceRowId, targetRowId)) return;
-			const id = sceneObjectIdFromHierarchy(String(sourceRowId));
-			const targetObjectId = sceneObjectIdFromHierarchy(String(targetRowId));
-			// Grouping moves nothing on screen — the set places every prop at its
-			// own absolute transform. Taking a parent DOES cancel an attachment
-			// (the store's exclusivity rule), so a carried prop dropped into a
-			// group comes back to world numbers on the way, exactly as the Props
-			// row would put it back.
-			if (targetObjectId) {
-				const carried = animatedSceneObjects.find((entry) => entry.id === id) ?? null;
-				const restored = carried?.attach
-					? attachPlacementPatch(sceneObjectWorldMatrix(carried), null, attachFrameRef.current)
-					: null;
-				store.applyAtomic((objects) => {
-					const next = setSceneObjectParent(objects, id, targetObjectId);
-					return next === objects ? objects : placeSceneObject(next, id, restored);
-				});
-				return;
-			}
-			const attach = targetRowId === "props" ? null : attachTargetForRow(targetRowId);
-			runStudioAction(attach ? "object.attach" : "object.detach", attach
-				? { objectId: id, characterId: attach.characterId, ...(attach.bone ? { bone: attach.bone } : {}) }
-				: { objectId: id });
-		},
-	};
+	const hierarchyReparent = { canDrop: objectsDomain.canReparentSceneObject, onDrop: objectsDomain.reparentSceneObject };
 
 	useEffect(() => {
 		setCraneSelectedIndex(null);
@@ -2459,31 +2390,11 @@ export default function App() {
 	// The draft that actually REACHED the viewport, so a cancel knows whether
 	// there is anything to put back.
 	const linePreviewShownRef = useRef(null);
-	useEffect(() => {
-		// Subject 1 is the sole frame-zero root start. Drop any legacy seeded
-		// waypoint so Top-View never renders two start markers.
-		setWaypoints((current) => current.filter((waypoint) => waypoint.frame !== 0));
-		setActiveWaypointId(null);
-		setPendingWaypointFrame((current) => (current === 0 ? null : current));
-	}, []);
+	useEffect(castDomain.removeLegacyRootWaypoint, []);
 
 	// Shot trims also trim their local Rail Follow card once. Growing a shot
 	// later never resurrects time that the editor already cut away.
-	useEffect(() => {
-		setShots((current) => {
-			let changed = false;
-			const next = current.map((shot, index) => {
-				const railFollow = shot.camera?.railFollow;
-				if (railFollow?.mode !== "range") return shot;
-				const duration = shot.endFrame - shot.startFrame + 1;
-				const clamped = clampRailRange(railFollow, duration);
-				if (!clamped || (clamped.startFrame === railFollow.startFrame && clamped.endFrame === railFollow.endFrame)) return shot;
-				changed = true;
-				return { ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "range", ...clamped } }) };
-			});
-			return changed ? next : current;
-		});
-	}, [tlFrameCount, shots.map((shot) => shot.startFrame).join(":")]);
+	useEffect(shotsDomain.clampShotRailRanges, [tlFrameCount, shots.map((shot) => shot.startFrame).join(":")]);
 
 	/* --------------------------- Scene documents --------------------------- */
 	// Refs make a Scene switch synchronous: the outgoing room is sealed with
@@ -2792,41 +2703,7 @@ export default function App() {
 	// compare against the current snapshot first, then replace only the active
 	// scene's objects/cast or open the newly selected scene.
 	const externalSceneApplyRef = useRef(null);
-	externalSceneApplyRef.current = (incoming) => {
-		if (!incoming || !Array.isArray(incoming.scenes)) return;
-		const incomingActiveId = typeof incoming.activeSceneId === "string" ? incoming.activeSceneId : activeSceneIdRef.current;
-		const incomingScenes = incoming.scenes;
-		const incomingScene = incomingScenes.find((scene) => scene?.id === incomingActiveId) ?? incomingScenes[0];
-		if (!incomingScene?.id) return;
-		const currentSnapshot = {
-			version: SCENES_VERSION,
-			activeSceneId: activeSceneIdRef.current,
-			scenes: snapshotActiveScene(),
-		};
-		if (JSON.stringify(currentSnapshot) === JSON.stringify({ version: SCENES_VERSION, activeSceneId: incomingActiveId, scenes: incomingScenes })) return;
-		const nextScenes = incomingScenes;
-		if (incomingScene.id !== activeSceneIdRef.current) {
-			openScene(incomingScene, nextScenes);
-			return;
-		}
-		const currentScene = currentSnapshot.scenes.find((scene) => scene?.id === incomingScene.id);
-		if (JSON.stringify(currentScene?.objects ?? []) !== JSON.stringify(incomingScene.objects ?? [])) {
-			storeRef.current.applyAtomic(() => Array.isArray(incomingScene.objects) ? incomingScene.objects : []);
-		}
-		const incomingStage = createSceneStage(incomingScene.stage);
-		const currentStage = currentScene?.stage;
-		if (JSON.stringify(currentStage ?? null) !== JSON.stringify(incomingStage)) {
-			const mergedCharacters = incomingStage.characters.map((entry) => {
-				const current = appContext.live.characters.find((item) => item.id === entry.id);
-				return current?.sessionMotion ? { ...entry, sessionMotion: current.sessionMotion } : entry;
-			});
-			appContext.publishCharacters(mergedCharacters);
-			castDomain.setCharacters(mergedCharacters);
-			restoreMotionRefs(mergedCharacters);
-		}
-		appContext.publishScenes(nextScenes);
-		scenesDomain.setScenes(nextScenes);
-	};
+	externalSceneApplyRef.current = scenesDomain.applyExternalScene;
 	useEffect(() => subscribeToSceneDocuments((document) => externalSceneApplyRef.current?.(document)), []);
 	useEffect(() => subscribeToScenePlayback((command) => {
 		if (command?.activeSceneId && command.activeSceneId !== activeSceneIdRef.current) return;
@@ -2964,455 +2841,42 @@ export default function App() {
 				})),
 			};
 		};
-		const replaceCharacters = (next) => {
-			appContext.publishCharacters(next);
-			appContext.patchLive({ characters: next });
-			editCharacters(next);
-		};
-		const syncObjects = () => {
-			appContext.patchLive({ objects: storeRef.current.objects });
-		};
-		let batchToken = null;
-		const applyObjectMutation = (mutation) => {
-			if (batchToken === null) storeRef.current.applyAtomic(mutation);
-			else storeRef.current.applyIn(batchToken, mutation);
-			syncObjects();
-		};
-		// import_asset's "backdrop" placement: the same picture card stood up as
-		// a background plate — far enough down the shot camera's view ray to sit
-		// behind the blocking, tall enough to read as one. A "cutout" keeps the
-		// plain 1.8 m standee the Assets-shelf drop places.
-		const IMPORT_BACKDROP_DISTANCE_M = 12;
-		const IMPORT_BACKDROP_HEIGHT_M = 5;
+		const castLive = castDomain.createLegacyCastHandlers(finitePatch, characterForRef);
+		const objectLive = objectsDomain.createLegacyObjectHandlers(finitePatch);
 		liveHandlersRef.current = {
 			ping: () => ({ pong: true }),
 			describe,
 			// Camera moves are not undoable in the UI. This is the free-camera and
 			// Top-View path: drive the shot camera, lens state, then manual ownership.
-			set_camera: (rawArgs) => {
-				const live = appContext.live.state;
-				// A named preset is shorthand for a full framing: it is resolved
-				// against the ACTIVE subject and the CURRENT filmback, so the same
-				// preset re-frames correctly after the subject moves or the output
-				// ratio changes. Everything below then runs on plain coordinates.
-				let args = rawArgs;
-				if (rawArgs.preset !== undefined) {
-					if (typeof rawArgs.preset !== "string" || !CAMERA_PRESETS[rawArgs.preset]) throw new Error("Unknown camera preset");
-					const actor = live.characters.find((entry) => entry.id === live.activeCharacterId) ?? live.characters[0];
-					const framing = cameraPresetFraming(rawArgs.preset, {
-						x: actor?.x ?? 0,
-						z: actor?.z ?? 0,
-						height: SUBJECT_HEIGHT_M * (actor?.scale ?? 1),
-					}, live.filmback);
-					if (!framing) throw new Error("Unknown camera preset");
-					args = {
-						x: framing.pos.x, y: framing.pos.y, z: framing.pos.z,
-						lookAtX: actor?.x ?? 0,
-						lookAtY: SUBJECT_HEIGHT_M * (actor?.scale ?? 1) * 0.52,
-						lookAtZ: actor?.z ?? 0,
-						focalMm: framing.focalMm,
-					};
-					runStudioAction("stage.setFilmback", { cameraPresetId: rawArgs.preset });
-				} else if (Object.keys(finitePatch(rawArgs, ["x", "y", "z", "lookAtX", "lookAtY", "lookAtZ"])).length || rawArgs.focalMm !== undefined) {
-					// Any manual placement invalidates the recorded preset: the scene
-					// must not claim a framing it no longer has.
-					runStudioAction("stage.setFilmback", { cameraPresetId: null });
-				}
-				const patch = finitePatch(args, ["x", "y", "z"]);
-				let nextFov = live.fovDeg;
-				if (args.focalMm !== undefined) {
-					if (!Number.isFinite(args.focalMm) || args.focalMm <= 0) throw new Error("Invalid focalMm");
-					nextFov = (focalMmToFov(
-						args.focalMm,
-						live.filmback.sensorId,
-						live.filmback.aspectRatio,
-					) * 180) / Math.PI;
-					if (nextFov < 14 || nextFov > 90) throw new Error("focalMm is outside the editor lens range");
-				}
-				const next = { ...live.camera, ...patch };
-				// Optional aim target (live protocol v1, additive): all three or none.
-				// frame_shot always sends it, because a camera that is placed but not
-				// aimed keeps whatever the last gesture was pointing at and drops the
-				// subject out of frame for every view except `front`. The yaw/pitch go
-				// into look.current as well as the camera: that ref is the orientation
-				// of record here — FlyControls writes rotation from it, and the framing
-				// commit below measures the shot from look.current.pitch, so a bare
-				// camera.lookAt would be both overwritten and mismeasured.
-				const aim = finitePatch(args, ["lookAtX", "lookAtY", "lookAtZ"]);
-				const aimed = Object.keys(aim).length === 3;
-				const camera = shotCamRef.current;
-				const angles = aimed ? aimAt(next, { x: aim.lookAtX, y: aim.lookAtY, z: aim.lookAtZ }) : null;
-				if (angles) {
-					look.current.yaw = angles.yaw;
-					look.current.pitch = angles.pitch;
-				}
-				if (camera) {
-					camera.position.set(next.x, next.y, next.z);
-					camera.fov = nextFov;
-					if (angles) {
-						camera.rotation.order = "YXZ";
-						camera.rotation.set(angles.pitch, angles.yaw, 0);
-					}
-					camera.updateProjectionMatrix();
-				}
-				// While a cast model's FBX is still downloading, the Canvas subtree is
-				// suspended and the shot camera is unmounted, so `camera` is null and
-				// the write above is skipped. The pose still has to survive: ShotRig
-				// restores it from this ref (and look.current) when the camera
-				// remounts, instead of re-seeding the preset over it (#86 on slow
-				// runners — the position and aim were being dropped here).
-				shotCameraPosRef.current = { x: next.x, y: next.y, z: next.z };
-				appContext.patchLive({ camera: next });
-				appContext.patchLive({ fovDeg: nextFov });
-				setCameraPos(next);
-				setFovDeg(nextFov);
-				live.commitManualCameraFraming();
-				return {
-					camera: {
-						...next,
-						focalMm: Math.round(fovToFocalMm(
-							(nextFov * Math.PI) / 180,
-							live.filmback.sensorId,
-							live.filmback.aspectRatio,
-						) * 100) / 100,
-					},
-				};
-			},
-			add_character: (args) => {
-				if (typeof args.subject !== "string") throw new Error("Invalid subject");
-				const live = appContext.live.state;
-				const patch = finitePatch(args, ["x", "z", "rot"]);
-				live.recordCharacterUndo();
-				const id = nextCharacterId(live.characters);
-				replaceCharacters([...live.characters, createCharacterEntry({ id, model: args.model, subject: args.subject, pose: DEFAULT_POSE, ...patch }, live.characters.length)]);
-				return { id };
-			},
-			update_character: (args) => {
-				const live = appContext.live.state;
-				const character = characterForRef(live.characters, args.ref);
-				if (!character) throw new Error("Character not found");
-				const patch = finitePatch(args, ["x", "y", "z", "rot"]);
-				if (args.subject !== undefined) {
-					if (typeof args.subject !== "string") throw new Error("Invalid subject");
-					patch.subject = args.subject;
-				}
-				if (args.hidden !== undefined) {
-					if (typeof args.hidden !== "boolean") throw new Error("Invalid hidden");
-					patch.hidden = args.hidden;
-				}
-				if (!Object.keys(patch).some((key) => patch[key] !== character[key])) return { id: character.id };
-				live.recordCharacterUndo();
-				replaceCharacters(live.characters.map((entry) => entry.id === character.id ? { ...entry, ...patch } : entry));
-				return { id: character.id };
-			},
-			remove_character: (args) => {
-				const live = appContext.live.state;
-				const character = characterForRef(live.characters, args.ref);
-				if (!character) throw new Error("Character not found");
-				if (live.characters.length <= 1) throw new Error("Cannot remove the final character");
-				live.removeCharacter(character.id);
-				appContext.patchLive({ characters: appContext.live.characters });
-				return { id: character.id };
-			},
-			place_object: (args) => {
-				if (typeof args.kind !== "string") throw new Error("Invalid kind");
-				const live = appContext.live.state;
-				// The parent is checked before anything is created: a bad id must
-				// not leave a half-made part lying around unattached.
-				if (args.parent !== undefined) {
-					if (typeof args.parent !== "string" || !live.objects.some((o) => o.id === args.parent)) {
-						throw new Error(`Parent object not found: ${args.parent}`);
-					}
-				}
-				if (args.name !== undefined && (typeof args.name !== "string" || !args.name.trim())) {
-					throw new Error("Invalid name");
-				}
-				const placement = finitePatch(args, ["x", "z", "rot"]);
-				const object = createSceneObject(args.kind, live.objects, placement);
-				if (!object) throw new Error(`Unknown object kind: ${args.kind}`);
-				const patch = finitePatch(args, ["y"]);
-				if (args.name !== undefined) patch.name = args.name;
-				const placed = updateSceneObject([object], object.id, patch)[0];
-				// One atomic entry: create, name and attach undo together, as the
-				// single "place part" gesture they are to the caller.
-				applyObjectMutation((objects) => {
-					const next = [...objects, placed];
-					return args.parent !== undefined ? setSceneObjectParent(next, placed.id, args.parent) : next;
-				});
-				return { id: placed.id };
-			},
+			set_camera: rawArgs => shotsDomain.setLiveCamera(rawArgs, finitePatch),
+			add_character: castLive.add_character,
+			update_character: castLive.update_character,
+			remove_character: castLive.remove_character,
+			place_object: objectLive.place_object,
 			// Agent-side image import through the Studio's own pipeline:
 			// importImageFile validates and downscales, rememberAsset stores the
 			// content-addressed bytes, and the card enters React state through the
 			// object history store — ONE applyAtomic is the whole gesture, so one
 			// Ctrl+Z removes it. That is the point: the Workflow-tab sync writes
 			// the document without touching undo; this must not repeat that.
-			import_asset: async (args, commandContext) => {
-				if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
-				if (args.placeAs === "mesh") {
-					const dataUrl = args.dataUrl;
-					if (typeof dataUrl !== "string") throw new Error("dataUrl must be a 3D model data URL");
-					const nameLower = String(args.name).toLowerCase();
-					const headerMime = dataUrl.slice(5, dataUrl.search(/[;,]/)).toLowerCase();
-					const mime = (typeof args.mimeType === "string" && args.mimeType
-						? args.mimeType
-						: headerMime).toLowerCase();
-					const objPlain = mime === "text/plain" && nameLower.endsWith(".obj");
-					const fbxPlain = mime === "text/plain" && nameLower.endsWith(".fbx");
-					const headerOk = dataUrl.startsWith("data:model/gltf-binary")
-						|| dataUrl.startsWith("data:application/octet-stream")
-						|| dataUrl.startsWith("data:model/obj")
-						|| dataUrl.startsWith("data:model/fbx")
-						|| (dataUrl.startsWith("data:text/plain") && (nameLower.endsWith(".obj") || nameLower.endsWith(".fbx")));
-					const mimeOk = mime === "model/gltf-binary" || mime === "application/octet-stream"
-						|| mime === "model/obj" || mime === "model/fbx" || objPlain || fbxPlain;
-					if (!headerOk && !mimeOk) throw new Error("dataUrl must be a 3D model data URL");
-					const bytes = await (await fetch(dataUrl)).arrayBuffer();
-					const fileType = mime || headerMime || "application/octet-stream";
-					const file = new File([bytes], args.name, { type: fileType });
-					const { asset, height, footprint } = await importMeshFile(file);
-					const db = await openAssetDb();
-					try {
-						await putAsset(db, asset);
-					} finally {
-						db.close?.();
-					}
-					const live = appContext.live.state;
-					const camera = shotCamRef.current;
-					const hasFloor = Number.isFinite(args.x) || Number.isFinite(args.z);
-					const placement = hasFloor
-						? {
-							x: Number.isFinite(args.x) ? args.x : 0,
-							z: Number.isFinite(args.z) ? args.z : 0,
-						}
-						: camera
-							? placementInFront({ x: camera.position.x, z: camera.position.z }, look.current.yaw)
-							: {};
-					if (Number.isFinite(args.rot)) placement.rot = args.rot;
-					let object = createMeshObject(
-						{
-							assetId: asset.id,
-							height,
-							footprint,
-							name: args.name,
-							clay: args.clay === true,
-						},
-						live.objects,
-						placement,
-					);
-					if (!object) throw new Error("Could not create the mesh object");
-					// Inspector height edits scale the stored footprint. Do the same
-					// here so a 50 cm import is a smaller cube, not a squat 1×1×0.5 box.
-					if (Number.isFinite(args.height) && args.height > 0) {
-						object = updateSceneObject([object], object.id, { height: args.height })[0];
-					}
-					if (Number.isFinite(args.y)) object.y = args.y;
-					commandContext?.check();
-					applyObjectMutation((objects) => [...objects, object]);
-					return { assetId: asset.id, objectId: object.id };
-				}
-				if (args.placeAs !== "cutout" && args.placeAs !== "backdrop") throw new Error('placeAs must be "cutout", "backdrop" or "mesh"');
-				if (typeof args.dataUrl !== "string" || !args.dataUrl.startsWith("data:image/")) throw new Error("dataUrl must be an image data URL");
-				const mime = typeof args.mimeType === "string" && args.mimeType
-					? args.mimeType
-					: args.dataUrl.slice(5, args.dataUrl.search(/[;,]/));
-				const bytes = await (await fetch(args.dataUrl)).arrayBuffer();
-				const file = new File([bytes], args.name, { type: mime });
-				const live = appContext.live.state;
-				const asset = await rememberAsset(await importImageFile(file));
-				const backdrop = args.placeAs === "backdrop";
-				const camera = shotCamRef.current;
-				const placement = camera
-					? placementInFront(
-						{ x: camera.position.x, z: camera.position.z },
-						look.current.yaw,
-						backdrop ? IMPORT_BACKDROP_DISTANCE_M : undefined,
-					)
-					: {};
-				if (backdrop) {
-					// The card's face is its +z; rotate by the camera's own yaw so the
-					// plate faces the lens instead of standing edge-on to it.
-					placement.rot = (look.current.yaw * 180) / Math.PI;
-				}
-				const object = createCutoutObject(
-					{
-						assetId: asset.id,
-						aspect: assetAspect(asset) ?? 1,
-						height: backdrop ? IMPORT_BACKDROP_HEIGHT_M : CUTOUT_DEFAULT_HEIGHT,
-						name: args.name,
-					},
-					live.objects,
-					placement,
-				);
-				if (!object) throw new Error("Could not create the cutout object");
-				commandContext?.check();
-				applyObjectMutation((objects) => [...objects, object]);
-				return { assetId: asset.id, objectId: object.id };
-			},
-			update_object: (args) => {
-				const live = appContext.live.state;
-				if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
-				const patch = finitePatch(args, ["x", "y", "z", "rot", "rotX", "rotZ"]);
-				// A uniform `scale` is the common case; per-axis values are what a
-				// squashed disc or a stretched column needs, exactly as the
-				// inspector's three sliders provide. Per-axis wins when both come.
-				if (args.scale !== undefined) {
-					if (!Number.isFinite(args.scale)) throw new Error("Invalid scale");
-					patch.scaleX = args.scale;
-					patch.scaleY = args.scale;
-					patch.scaleZ = args.scale;
-				}
-				Object.assign(patch, finitePatch(args, ["scaleX", "scaleY", "scaleZ"]));
-				if (args.color !== undefined) {
-					if (typeof args.color !== "string") throw new Error("Invalid color");
-					patch.color = args.color;
-				}
-				if (args.name !== undefined) {
-					if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
-					patch.name = args.name;
-				}
-				// A travel path arrives whole (or null to clear it); the object
-				// schema repairs or refuses it, so a bad route cannot land.
-				if (args.path !== undefined) {
-					if (args.path !== null && createObjectPath(args.path) === null) throw new Error("Invalid path: needs two or more distinct points");
-					patch.path = args.path;
-				}
-				if (Number.isFinite(args.height)) patch.height = args.height;
-				if (typeof args.clay === "boolean") patch.clay = args.clay;
-				if (typeof args.hidden === "boolean") patch.hidden = args.hidden;
-				applyObjectMutation((objects) => updateSceneObject(objects, args.id, patch));
-				return { id: args.id };
-			},
-			remove_object: (args) => {
-				const live = appContext.live.state;
-				if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
-				applyObjectMutation((objects) => removeSceneObject(objects, args.id));
-				return { id: args.id };
-			},
+			import_asset: objectLive.import_asset,
+			update_object: objectLive.update_object,
+			remove_object: objectLive.remove_object,
 			// Replacing a document follows the existing project-open path and clears
 			// its per-scene histories, so load_scenes is deliberately not undoable.
-			load_scenes: (args) => {
-				if (!args.document || typeof args.document !== "object" || Array.isArray(args.document)) throw new Error("Invalid scene document");
-				const loaded = readSceneDocument(JSON.stringify(args.document));
-				if (loaded.status !== "valid" && loaded.status !== "migrated") throw new Error("Invalid scene document");
-				const document = loaded.document;
-				const target = document.scenes[activeSceneIndex(document.scenes, document.activeSceneId)];
-				const live = appContext.live.state;
-				live.persistScenes(document.scenes, document.activeSceneId);
-				live.openScene(target, document.scenes);
-				appContext.patchLive({ scenes: document.scenes });
-				appContext.patchLive({ activeSceneId: document.activeSceneId });
-				appContext.patchLive({ objects: storeRef.current.objects });
-				appContext.patchLive({ characters: createSceneStage(target.stage).characters });
-				appContext.publishCharacters(live.characters);
-				return {
-					sceneName: target.name,
-					activeSceneId: document.activeSceneId,
-					scenes: document.scenes.map((scene) => ({ id: scene.id, name: scene.name })),
-				};
-			},
+			load_scenes: scenesDomain.loadLiveScenes,
 			// Loads a bridge-generated take onto the active character — the same
 			// path the demo seed and the Motion panel use. Replacing a take is not
 			// undoable in the UI either, so this is deliberately not undoable.
 			// Grouping is an editing convenience: the parent carries its children
 			// when it moves, so a set piece built from primitives is dragged once.
-			group_objects: (args) => {
-				const live = appContext.live.state;
-				if (typeof args.parent !== "string" || !live.objects.some((o) => o.id === args.parent)) {
-					throw new Error("Parent object not found");
-				}
-				if (!Array.isArray(args.children) || !args.children.length) throw new Error("No children given");
-				for (const child of args.children) {
-					if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
-				}
-				applyObjectMutation((objects) =>
-					args.children.reduce((acc, child) => setSceneObjectParent(acc, child, args.parent), objects),
-				);
-				return { parent: args.parent, children: args.children.length };
-			},
-			ungroup_objects: (args) => {
-				const live = appContext.live.state;
-				if (!Array.isArray(args.children) || !args.children.length) throw new Error("No children given");
-				for (const child of args.children) {
-					if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
-				}
-				applyObjectMutation((objects) =>
-					args.children.reduce((acc, child) => setSceneObjectParent(acc, child, null), objects),
-				);
-				return { children: args.children.length };
-			},
-			apply_batch: (args) => {
-				if (batchToken !== null) throw new Error("Nested batches are not supported");
-				if (!Array.isArray(args.ops)) throw new Error("Invalid batch operations");
-				if (args.ops.length > 100) throw new Error("A batch may contain at most 100 operations");
-				if (args.atomic !== undefined && typeof args.atomic !== "boolean") throw new Error("Invalid atomic flag");
-				if (args.stopOnError !== undefined && typeof args.stopOnError !== "boolean") throw new Error("Invalid stopOnError flag");
-				if (args.label !== undefined && (typeof args.label !== "string" || !args.label.trim())) throw new Error("Invalid batch label");
-				const objectCommands = new Set(["place_object", "update_object", "remove_object", "group_objects", "ungroup_objects"]);
-				for (const operation of args.ops) {
-					if (!operation || typeof operation !== "object" || Array.isArray(operation)) throw new Error("Invalid batch operation");
-					if (operation.name === "apply_batch") throw new Error("Nested batches are not supported");
-					if (!objectCommands.has(operation.name)) {
-						throw new Error("Batch v1 supports object mutations only; character mutations are not supported");
-					}
-					if (!operation.args || typeof operation.args !== "object" || Array.isArray(operation.args)) throw new Error("Invalid batch operation arguments");
-				}
-				const atomic = args.atomic === true;
-				const stopOnError = args.stopOnError !== false;
-				const depthBefore = storeRef.current.depths().past;
-				const token = storeRef.current.begin(args.label?.trim() || "MCP batch", () => {});
-				const priorSuppressObjectClock = appContext.suppressObjectClock;
-				appContext.suppressObjectClock = true;
-				const applied = [];
-				const failed = [];
-				batchToken = token;
-				let rolledBack = false;
-				let commit = false;
-				try {
-					for (const [index, operation] of args.ops.entries()) {
-						try {
-							liveHandlersRef.current[operation.name](operation.args);
-							applied.push(index + 1);
-						} catch (error) {
-							failed.push({ index: index + 1, error: error instanceof Error ? error.message : "Command failed" });
-							if (stopOnError) break;
-						}
-					}
-					rolledBack = atomic && failed.length > 0;
-					commit = !rolledBack;
-				} finally {
-					batchToken = null;
-					appContext.suppressObjectClock = priorSuppressObjectClock;
-					storeRef.current.end(token, { commit });
-				}
-				if (!rolledBack && storeRef.current.depths().past > depthBefore) appContext.advanceObjectClock();
-				syncObjects();
-				return { label: args.label?.trim() || "MCP batch", applied, failed, rolledBack };
-			},
+			group_objects: objectLive.group_objects,
+			ungroup_objects: objectLive.ungroup_objects,
+			apply_batch: objectLive.apply_batch,
 			// Authoring blocks is not generating: a director writes the beats and
 			// their ranges first, then generates when the schedule reads right.
 			// Frames arrive on the timeline's own 24 fps clock.
-			set_prompt_blocks: (args) => {
-				if (!Array.isArray(args.blocks)) throw new Error("Invalid blocks");
-				const stamp = Date.now();
-				const clips = args.blocks.map((block, i) => {
-					const startFrame = Math.round(Number(block.startFrame));
-					const endFrame = Math.round(Number(block.endFrame));
-					if (!Number.isFinite(startFrame) || !Number.isFinite(endFrame) || endFrame <= startFrame) {
-						throw new Error(`Invalid frame range on block ${i + 1}`);
-					}
-					if (typeof block.text !== "string" || !block.text.trim()) throw new Error(`Block ${i + 1} needs text`);
-					return { id: `prompt-${stamp}-${i}`, startFrame, endFrame, text: block.text.trim() };
-				});
-				const live = appContext.live.state;
-				live.recordCharacterUndo();
-				appContext.patchLive({ promptClips: clips });
-				live.editPromptClips(clips);
-				if (clips.length) {
-					live.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
-				}
-				return { blocks: clips.length };
-			},
+			set_prompt_blocks: castLive.set_prompt_blocks,
 			capture_frame: async () => {
 				const live = appContext.live.state;
 				return captureMcpFrame({
@@ -3462,39 +2926,7 @@ export default function App() {
 					references: live.captureShotReferences(),
 				};
 			},
-			load_motion: async (args) => {
-				if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
-				const prompt = typeof args.prompt === "string" ? args.prompt : "";
-				if (args.drop != null && !normalizeRootDrop(args.drop)) throw new Error("Invalid drop");
-				// Optional per-phase blocks land on the Prompts lane the way hand-authored
-				// ones do. The bridge clock is 20 fps for ARDY and 24 fps for Kimodo;
-				// convert only when the selected backend's clock differs from the lane.
-				let clips = null;
-				if (Array.isArray(args.blocks) && args.blocks.length) {
-					const toTimeline = (frame) => Math.round((frame * TIMELINE_FPS) / ARDY_FPS);
-					const stamp = Date.now();
-					clips = args.blocks.map((block, i) => ({
-						id: `prompt-${stamp}-${i}`,
-						startFrame: toTimeline(block.startFrame),
-						endFrame: toTimeline(block.endFrame),
-						text: typeof block.prompt === "string" ? block.prompt : "",
-					}));
-				}
-				const targetCharacterId = args.characterId ?? appContext.live.state.activeCharacterId;
-				const targetPromptClips = clips;
-				await appContext.live.state.loadMotion(
-					args.url,
-					prompt,
-					undefined,
-					args.drop ?? null,
-					targetCharacterId,
-					targetPromptClips,
-				);
-				if (clips) {
-					appContext.live.state.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
-				}
-				return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
-			},
+			load_motion: motionDomain.loadLiveMotion,
 		};
 	}
 
@@ -3587,14 +3019,7 @@ export default function App() {
 	appContext.patchLive({ promptClips, setPromptClips, editPromptClips, setTlFrameCount });
 
 	// Dirty tracking: any divergence from the last saved file lights the dot.
-	useEffect(() => {
-		if (projectName === null) return; // untitled sessions are never "dirty"
-		const serialized = collectProjectSnapshot(projectName);
-		const dirty = serialized !== projectSnapshotRef.current;
-		setProjectDirty(dirty);
-		setProjectSaveState((current) => current === "saving" ? current : dirty ? "dirty" : "saved");
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [scenes, activeSceneId, workspaceLayout, customPoses, characters, shots, waypoints, promptClips, projectName, keyLight, sceneObjects, shotAspectKey, environmentImage, environment, style, hasEnvSheet, sensorId, tlFrameCount, workflowRevision]);
+	useEffect(scenesDomain.refreshProjectDirty, [scenes, activeSceneId, workspaceLayout, customPoses, characters, shots, waypoints, promptClips, projectName, keyLight, sceneObjects, shotAspectKey, environmentImage, environment, style, hasEnvSheet, sensorId, tlFrameCount, workflowRevision]);
 
 	// The untrimmed take per CHARACTER. Trims are non-destructive views of the
 	// full take, so re-trimming and "restore full" always cut from the
@@ -3700,37 +3125,7 @@ export default function App() {
 	bufferRef.current = { waypoints, promptClips, motion, ik: ikStateRef.current };
 	const loadedLayerCharRef = useRef(activeChar.id);
 	const ikStatesRef = useRef(new Map()); // charId -> ikState, one per layer
-	useEffect(() => {
-		const previous = loadedLayerCharRef.current;
-		if (previous === activeChar.id) return;
-		// Leaving IK on switch: the handles are re-seated per rig, and a
-		// half-dragged chain must never leak onto another character.
-		if (ikMode) leaveIkMode();
-		if (previous) {
-			ikStatesRef.current.set(previous, bufferRef.current.ik);
-			castDomain.setCharacters((list) => list.map((entry) => entry.id === previous
-				? { ...entry, layer: { waypoints: bufferRef.current.waypoints, promptClips: bufferRef.current.promptClips }, sessionMotion: bufferRef.current.motion }
-				: entry));
-		}
-		const layer = activeChar.layer ?? createCharacterLayer();
-		setWaypoints(layer.waypoints.map((waypoint) => ({ ...waypoint })));
-		setPromptClips(layer.promptClips.map((clip) => ({ ...clip })));
-		// A clip that arrived while this character was inactive (an extra
-		// extraction take, a restored motionRef, a queued generation) becomes
-		// trimmable the moment it enters the buffer. Seed only when absent: an
-		// existing entry is the UNTRIMMED take, and the buffer may be holding a
-		// cut view of it.
-		if (activeChar.sessionMotion && !motionFullRef.current.has(activeChar.id)) {
-			motionFullRef.current.set(activeChar.id, activeChar.sessionMotion);
-		}
-		motionDomain.setMotion(activeChar.sessionMotion ?? null);
-		setSelectedPromptId(null);
-		setWaypointMode(false);
-		setActiveWaypointId(null);
-		setPendingWaypointFrame(null);
-		ikStateRef.current = ikStatesRef.current.get(activeChar.id) ?? createIkState();
-		loadedLayerCharRef.current = activeChar.id;
-	}, [activeChar.id]);
+	useEffect(castDomain.switchActiveCharacterLayer, [activeChar.id]);
 	// Pre-playback bone snapshot; restoring it (after Character's pose effect
 	// has re-applied poseA) puts the rig back exactly where it was.
 	const restoreRef = useRef(null);
@@ -4096,43 +3491,6 @@ export default function App() {
 		updateExportStatus(job, "preparing", { message: ko("Cancelling at the current work boundary…", "현재 작업 경계에서 취소 중…") });
 	}
 
-	/** Export the shot under the playhead (else the first one) as an MP4.
-	 *  Repeated clicks never cancel an in-flight attempt.
-	 *
-	 *  Two preflights (#193) stand between the menu item and runShotExport:
-	 *  a shot with no camera keys has nothing for cameraMoveAt to interpolate,
-	 *  so the recording would capture wherever the physical shot camera happens
-	 *  to sit — one framing key from the current camera, the same default
-	 *  addShotAtFrame writes, makes the static shot exportable. And without
-	 *  motion the timeline extent ignores shots and falls back to the whole
-	 *  production duration, so a 40-frame static shot must record its own
-	 *  [startFrame, endFrame] range instead of 360 frames of held pose. */
-	async function exportShotVideo({ download = true, shotId = null } = {}, commandContext = null) {
-		if (recRef.current) return null;
-		const atPlayhead = shotIndexAtFrame(shots, tlFrame);
-		const target = shotId ? shots.find((entry) => entry.id === shotId) : shots[atPlayhead >= 0 ? atPlayhead : 0] ?? null;
-		if (shotId && !target) return null;
-		let exportShots = shots;
-		if (target && target.cameraKeys.length === 0 && !shotId) {
-			const framing = captureCurrentFraming();
-			exportShots = updateStableItem(shots, target.id,
-				(entry) => ({ ...entry, cameraKeys: [{ id: createStableItemId("camera-key"), frame: entry.startFrame, framing }] }), "shots");
-			// Keep #193's initial static-shot preflight, but never repeat this
-			// authoring action when retrying the immutable request below.
-			shotsDomain.recordShotUndo();
-			setShots(exportShots);
-		}
-		const range = target && (shotId || !motion)
-			? { startFrame: target.startFrame, endFrame: target.endFrame }
-			: { startFrame: 0, endFrame: Math.max(0, currentRecordFrameCount() - 1) };
-		return executeExportRequest(exportRequest("video", async (job) => {
-			const abort = () => job.controller.abort(commandContext.signal.reason);
-			commandContext?.signal.addEventListener("abort", abort, { once: true });
-			try { commandContext?.signal.throwIfAborted(); return await runShotExport({ ...range, download }, job); }
-			finally { commandContext?.signal.removeEventListener("abort", abort); }
-		}, { exportShots, download }));
-	}
-
 	async function exportDepthVideo(shotId = null) {
 		if (recRef.current) return null;
 		const atPlayhead = shotIndexAtFrame(shots, tlFrame);
@@ -4486,232 +3844,9 @@ export default function App() {
 		return captureFraming({ pos: { x: pos.x, y: pos.y, z: pos.z }, yaw: look.current.yaw, pitch: look.current.pitch, fovDeg });
 	}
 
-	function captureFalStill() {
-		// H3 480P renders 832x480. The still is captured at exactly that canvas
-		// (x2) regardless of the Studio's shot ratio; markFalPose also switches
-		// the viewport to the matching ratio so what the user framed is what
-		// gets sent.
-		const captured = liveHandlersRef.current?.capture_framing_png?.({ output: FAL_MOTION_STILL_OUTPUT });
-		if (!captured?.dataUrl?.startsWith("data:image/")) throw new Error(ko("렌더러가 준비되지 않았어요.", "The shot renderer is not ready."));
-		if (captured.width !== FAL_MOTION_STILL_OUTPUT.width || captured.height !== FAL_MOTION_STILL_OUTPUT.height) {
-			throw new Error(ko(`H3 480P 참조 캡처는 ${FAL_MOTION_STILL_OUTPUT.width}×${FAL_MOTION_STILL_OUTPUT.height}이어야 해요.`, `The H3 480P reference must be captured at ${FAL_MOTION_STILL_OUTPUT.width}×${FAL_MOTION_STILL_OUTPUT.height}.`));
-		}
-		// H3 must see the same complete subject in both endpoints. A clipped
-		// foot or head makes the model invent the missing geometry during the
-		// transition, which is exactly the bad motion this flow is meant to avoid.
-		const rig = appContext.live.state.rigs?.[activeChar.id];
-		const cam = shotCamRef.current;
-		if (!rig || !cam) throw new Error(ko("전신 프레임을 확인할 수 없어 참조를 캡처할 수 없어요. 잠시 후 다시 시도하세요.", "The full-body frame is not ready yet. Wait a moment and try the reference capture again."));
-		rig.updateWorldMatrix(true, true);
-		cam.updateMatrixWorld(true);
-		const bounds = new THREE.Box3().setFromObject(rig);
-		const corners = [
-			new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.min.z),
-			new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.max.z),
-			new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.min.z),
-			new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
-			new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.min.z),
-			new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
-			new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.min.z),
-			new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
-		].map((corner) => corner.project(cam));
-		const margin = 0.94;
-		const clipped = corners.some((corner) =>
-			corner.z < -1 || corner.z > 1 || Math.abs(corner.x) > margin || Math.abs(corner.y) > margin
-		);
-		if (clipped) {
-			throw new Error(ko(
-				"A/B 참조에 캐릭터 전신이 다 안 들어왔어요. 샷 시점에서 머리와 양발이 화면 안에 들어오도록 카메라를 뒤로 빼고 다시 캡처하세요.",
-				"The full character is not inside the A/B reference. In the shot view, pull the camera back until the head and both feet are visible, then capture again."
-			));
-		}
-		if (!falMotionSegmentationReady || !Array.isArray(captured.partColours) || captured.partColours.length === 0) {
-			throw new Error(ko("A/B 참조는 View에서 부위 색상 → 음영을 켜야 캡처할 수 있어요.", "Enable View → Body part colours → Shaded before capturing an A/B reference."));
-		}
-		return { ...captured, framing: captureCurrentFraming() };
-	}
-
-	/** Put the viewport on the Fal canvas and hand the fly controls to the
-	 * shot camera, so the user composes the A/B reference on exactly the
-	 * 832x480 frame the clip will have. Idempotent; capture does not need it. */
-	function enterFalFraming() {
-		runStudioAction("stage.setFilmback", { shotAspect: FAL_MOTION_SHOT_ASPECT });
-		if (!lookThroughShot) enterShotLook();
-	}
-
-	function markFalPose(slot) {
-		try {
-			if (slot === "b" && falMotion.a && framingDistance(falMotion.a.framing, captureCurrentFraming()) > 0.001) {
-				throw new Error(ko("A와 B 사이에서 카메라가 이동했어요. 같은 카메라 프레이밍으로 다시 캡처하세요.", "The camera moved between A and B. Capture both refs with the same camera framing."));
-			}
-			const still = captureFalStill();
-			// The capture is already on the Fal canvas; make the viewport agree so
-			// the user sees the frame that was just sent.
-			runStudioAction("stage.setFilmback", { shotAspect: FAL_MOTION_SHOT_ASPECT });
-			setFalMotion((current) => ({ ...current, [slot]: still, status: "idle", error: "" }));
-			if (slot === "a") setFalMotionCameraUnlocked(false);
-			setToast(isKo ? `포즈 ${slot.toUpperCase()} 캡처됨 · ${still.width}×${still.height}` : `Pose ${slot.toUpperCase()} captured · ${still.width}×${still.height}`);
-		} catch (error) {
-			setFalMotion((current) => ({ ...current, error: error.message, status: "error" }));
-		}
-	}
-
-	function clearFalPose(slot) {
-		setFalMotion((current) => ({ ...current, [slot]: null, status: "idle", error: "", job: null }));
-		if (slot === "a") setFalMotionCameraUnlocked(false);
-	}
-
-	function clearFalMotion() {
-		setFalMotion({ a: null, b: null, job: null, status: "idle", error: "", instruction: "", promptOverride: "", duration: FAL_MOTION_MIN_DURATION, dailyRemaining: null });
-		setFalMotionCameraUnlocked(false);
-	}
-
-	function restoreFalCamera() {
-		const framing = falMotion.a?.framing;
-		const camera = shotCamRef.current;
-		if (!framing || !camera) return;
-		camera.position.set(framing.pos.x, framing.pos.y, framing.pos.z);
-		camera.rotation.order = "YXZ";
-		camera.rotation.set(framing.pitch, framing.yaw, 0);
-		camera.fov = framing.fovDeg;
-		camera.updateProjectionMatrix();
-		look.current.yaw = framing.yaw;
-		look.current.pitch = framing.pitch;
-		shotCameraPosRef.current = { ...framing.pos };
-		setCameraPos({ ...framing.pos });
-		setFovDeg(framing.fovDeg);
-		setFalMotionCameraUnlocked(false);
-		setFalMotion((current) => ({ ...current, error: "", status: "idle" }));
-		setToast(isKo ? "A 캡처 카메라로 복원했어요." : "Restored the camera used for A.");
-	}
-
-	function framingDistance(a, b) {
-		if (!a || !b) return Infinity;
-		return Math.max(
-			Math.abs(a.pos.x - b.pos.x), Math.abs(a.pos.y - b.pos.y), Math.abs(a.pos.z - b.pos.z),
-			Math.abs(a.yaw - b.yaw), Math.abs(a.pitch - b.pitch), Math.abs(a.fovDeg - b.fovDeg),
-		);
-	}
-
-	/** The Fal card's lock line: AI video motion is not enabled for this account. */
-	function showFalMotionLock() {
-		setFalMotion((current) => ({ ...current, error: ko("Fal 모션 생성은 QA 중 잠겨 있어요.", "Fal motion generation is locked during QA."), status: "error" }));
-	}
-
-	/** The Fal card shows every failure itself. For motion.generateFromVideo the
-	 * answer says what happened: `{ failed }` with the reason in English, or the
-	 * finished job, the footage it was ingested as (null when ingest failed) and
-	 * the account's daily generations left. */
-	async function generateFalMotion(kind = "interpolate", instructionOverride = null, commandContext = null) {
-		if (!falMotionEnabled) {
-			showFalMotionLock();
-			return { failed: "AI video motion (Fal) is not enabled for this account." };
-		}
-		let source = falMotion;
-		if (kind === "act" && !source.a) {
-			try { source = { ...source, a: captureFalStill() }; setFalMotion((current) => ({ ...current, a: source.a })); }
-			catch (error) {
-				setFalMotion((current) => ({ ...current, error: error.message, status: "error" }));
-				return { failed: "Could not capture the character's pose frame: the full body must be inside the shot frame, shaded part colours must be on (view.setPartColours { mode: \"shaded\" }), and the renderer and rig must be ready." };
-			}
-		}
-		if (kind === "interpolate" && (!source.a || !source.b)) {
-			setFalMotion((current) => ({ ...current, error: ko("A와 B 포즈를 먼저 캡처하세요.", "Capture both A and B poses first."), status: "error" }));
-			return { failed: "Capture both A and B poses first." };
-		}
-		if (!source.a?.partColours || (kind === "interpolate" && !source.b?.partColours)) {
-			setFalMotion((current) => ({ ...current, error: ko("색 세그멘테이션이 포함된 음영 A/B 참조를 다시 캡처하세요.", "Recapture A/B refs with shaded body-part segmentation enabled."), status: "error" }));
-			return { failed: "The captured pose frame has no shaded body-part segmentation; the user must recapture it in the Fal card with shaded part colours on." };
-		}
-		if (kind === "interpolate" && framingDistance(source.a.framing, source.b.framing) > 0.001) {
-			setFalMotion((current) => ({ ...current, error: ko("A와 B 사이에서 카메라가 바뀌었어요. 같은 카메라로 다시 캡처하세요.", "The camera changed between A and B. Capture both poses with the same camera."), status: "error" }));
-			return { failed: "The camera changed between poses A and B; capture both with the same camera." };
-		}
-		// A hand-edited prompt wins verbatim; otherwise build from the description.
-		// Interpolate now honours the description too (#380): the bare pose
-		// difference lets the model invent the transition and produces junk.
-		const description = instructionOverride || source.instruction || "";
-		const prompt = source.promptOverride?.trim()
-			? source.promptOverride.trim()
-			: buildH3MotionPrompt(description || (kind === "interpolate" ? "" : "Make the character perform the requested action."), { interpolate: kind === "interpolate" });
-		setFalMotion((current) => ({ ...current, status: "submitting", error: "", job: null }));
-		try {
-			const fetchImpl = commandContext ? (url, options) => fetch(url, { ...options, signal: commandContext.signal }) : undefined;
-			const submitted = await submitFalMotion({
-				kind,
-				stillA: source.a?.dataUrl,
-				stillB: source.b?.dataUrl,
-				still: source.a?.dataUrl,
-				prompt,
-				duration: source.duration ?? FAL_MOTION_MIN_DURATION,
-			}, fetchImpl);
-			const id = submitted?.job?.id;
-			if (!id) throw Object.assign(new Error(ko("생성 작업 ID를 받지 못했어요.", "The server did not return a motion job ID.")), { reason: "The motion server did not return a job id." });
-			setFalMotion((current) => ({ ...current, status: "queued", job: submitted.job, dailyRemaining: submitted.dailyRemaining }));
-			const finished = await waitForFalMotionJob(id, {
-				fetchImpl,
-				onUpdate: (job) => setFalMotion((current) => ({ ...current, job, status: job?.status ?? current.status })),
-			});
-			commandContext?.check();
-			const job = finished?.job;
-			if (job?.status !== "done") throw Object.assign(new Error(job?.error || ko("Fal 생성에 실패했어요.", "Fal motion generation failed.")), job?.error ? {} : { reason: "The AI video generation failed." });
-			setFalMotion((current) => ({ ...current, job, status: "done", dailyRemaining: finished.dailyRemaining }));
-			let footage = null;
-			if (job.video?.url) {
-				const motionSource = { kind: "url", url: job.video.url, name: `Fal H3 Max Turbo · ${job.resolution}` };
-				setMultiModelSource(motionSource);
-				// Put the completed clip through the same probe/ingest path as a
-				// manually supplied URL so GVHMR sees measured fps, duration and
-				// a ready extraction card without another generation request.
-				footage = (await ingestFootage(motionSource, commandContext)) ?? null;
-				setResult({
-					mode: "video",
-					modelLabel: "Fal H3 Max Turbo",
-					prompt,
-					frame: source.a?.dataUrl ?? null,
-					videoUrl: job.video.url,
-					motion: {
-						videoUrl: job.video.url,
-						resolution: job.resolution,
-						width: job.width,
-						height: job.height,
-						fps: job.fps,
-						duration: job.resultDuration ?? job.duration,
-						cost: job.cost,
-					},
-				});
-				setResultOpen(true);
-				// The result modal and the studio modal are both z-30; never stack them.
-				setFalMotionStudioOpen(false);
-				setToast((isKo, ko) => isKo ? "Fal 영상이 준비됐어요 · 추출 패널에서 GVHMR을 실행하세요" : "Fal video is ready · run GVHMR from the extraction panel");
-			}
-			return { job, footage, dailyRemaining: finished.dailyRemaining ?? null };
-		} catch (error) {
-			if (commandContext && (commandContext.signal.aborted || error.code === "STALE_TARGET")) throw error;
-			setFalMotion((current) => ({ ...current, status: "error", error: error.message || String(error) }));
-			return { failed: error.reason ?? `The AI video generation failed: ${error.message || error}` };
-		}
-	}
-
 	/** The agent panel's Generate motion chip: the motion.generateFromVideo
 	 * action. Locked, the action is unavailable and never runs, so the chip shows
 	 * the Fal card's lock line itself, as it always did. */
-	/** Why the chip cannot start an AI video motion now, as the user reads it:
-	 * one already running, or none left today. The lock has its own Fal card line. */
-	function falMotionUnavailable() {
-		if (!["idle", "done", "error", "failed"].includes(falMotion.status)) return ko("A generation is already running", "이미 생성이 돌고 있어요");
-		if (falMotion.dailyRemaining === 0) return ko("No AI video motion generations left today", "오늘 남은 AI 영상 모션 생성이 없어요");
-		return null;
-	}
-	function generateFalMotionFromUi(instruction) {
-		if (!falMotionEnabled) showFalMotionLock();
-		else {
-			// The chip clears the typed instruction when clicked, so a refusal says why.
-			const reason = falMotionUnavailable();
-			if (reason) { setToast(reason); return null; }
-		}
-		return runStudioAction("motion.generateFromVideo", { instruction });
-	}
 
 	// What a framing capture says about the shot it came from: lens, delivery
 	// aspect, cast, cut range and the video model the shot is aimed at. Both
@@ -4792,7 +3927,7 @@ export default function App() {
 		framingActive: lookThroughShot && shotAspectKey === FAL_MOTION_SHOT_ASPECT,
 	};
 	const falMotionActions = {
-		setFalMotion,
+		setFalMotion: motionDomain.setFalMotion,
 		setMode: setFalMotionMode,
 		enterFraming: enterFalFraming,
 		markPose: markFalPose,
@@ -4902,24 +4037,7 @@ export default function App() {
 	// clock. Recomputing both directions matters: deleting Subject 2 or
 	// shortening its take must pull the end back in instead of leaving the
 	// recorder with frozen tail frames (#80).
-	useEffect(() => {
-		const extent = timelineContentExtent(
-			characters,
-			activeChar.id,
-			motion,
-			promptClips,
-			multiModelFootage?.frames,
-		);
-		// Never leave the end under an authored shot: a shot outside the
-		// timeline is an invalid scene for the Studio agent (and for playback).
-		if (extent > 0) {
-			const span = timelineSpan(extent, shots);
-			setTlFrameCount(span);
-			setTlFrame((frame) => Math.min(frame, span - 1));
-		} else {
-			setTlFrameCount((count) => timelineSpan(0, shots, count));
-		}
-	}, [characters, activeChar.id, motion, promptClips, multiModelFootage?.frames, shots]);
+	useEffect(shotsDomain.syncTimelineExtent, [characters, activeChar.id, motion, promptClips, multiModelFootage?.frames, shots]);
 
 	/* ------------------------------ IK logic ------------------------------ */
 
@@ -5330,15 +4448,6 @@ export default function App() {
 			: waypointMode
 				? { label: ko("ROOT PATH", "루트 경로"), kind: "root" }
 				: null;
-
-	function applyPreset(key) {
-		const p = PRESETS[key];
-		stageDomain.setPreset(key);
-		setFovDeg(p.fov);
-		// Camera presets no longer touch the cast: with a free-form cast the
-		// old two:false semantics would hide every extra character.
-		setNonce((n) => n + 1);
-	}
 
 	function bufferToPng(buffer, output = shotOutput) {
 		const canvas = document.createElement("canvas");
@@ -7332,115 +6441,19 @@ export default function App() {
 			bridgeReady: Boolean(bridge?.ok), busy: storeRef.current.present() !== storeRef.current.objects || Boolean(studioGestureRef.current ||
 				ikBodyDragRef.current || lineDragRef.current || lineDrawRef.current || linePinDragRef.current || live.studioPhysicsRunning || recRef.current) };
 	}
-	function publishStudioCamera(camera, manual) {
-		const angles = aimAt(camera.position, camera.lookAt), live = appContext.live.state;
-		const fov = focalMmToFov(camera.focalMm, live.filmback.sensorId, live.filmback.aspectRatio) * 180 / Math.PI;
-		Object.assign(look.current, angles); shotCameraPosRef.current = { ...camera.position };
-		if (shotCamRef.current) {
-			shotCamRef.current.position.copy(camera.position); shotCamRef.current.rotation.order = "YXZ";
-			shotCamRef.current.rotation.set(angles.pitch, angles.yaw, 0); shotCamRef.current.fov = fov; shotCamRef.current.updateProjectionMatrix();
-		}
-		manualCameraOverrideRef.current = manual; appContext.patchLive({ camera: camera.position }); appContext.patchLive({ fovDeg: fov }); appContext.patchLive({ studioCamera: camera });
-		setCameraPos(camera.position); setFovDeg(fov);
-	}
+
 	/** The authored stage envelope (key light, environment, filmback) published
 	 * as one body: the live read model first, so the next synchronous read sees
 	 * it, then the React state the foldouts and the save path own. */
-	function publishStudioStage(stage) {
-		if (stageDomain.documentStore) { stageDomain.write(stage); return; }
-		appContext.patchLive({ stage: stage });
-		stageDomain.setKeyLight(stage.keyLight); stageDomain.setEnvironmentImage(stage.environmentImage ?? null);
-		stageDomain.setEnvironment(stage.environment); stageDomain.setStyle(stage.style); stageDomain.setHasEnvSheet(stage.hasEnvSheet === true);
-		stageDomain.setShotAspectKey(stage.shotAspect); stageDomain.setCameraPresetId(stage.cameraPresetId ?? null); stageDomain.setSensorFormat(stage.sensorId);
-	}
-	function snapshotStudioDomain(domain, targetId) {
-		const state = readStudioState();
-		if (domain === "shot") return { shots: state.shots, camera: state.camera, manual: state.manual };
-		if (domain === "stage") return { stage: state.stage };
-		if (domain === "cast") return { characters: state.characters };
-		const target = state.targets.get(targetId);
-		return { character: state.characters.find(c => c.id === targetId), fullMotion: motionFullRef.current.get(targetId),
-			ikState: { ...createIkState(), keys: copyPhysicsKeys(target?.ikState?.keys ?? new Map()), tracked: new Set(target?.ikState?.tracked ?? []) },
-			frameCount: state.frameCount, committedIkEdits: targetId === loadedLayerCharRef.current ? committedIkEdits : [],
-			renderer: target?.rig ? snapshotExportRig(target.rig) : null };
-	}
-	function publishStudioCharacters(next, authored = false) {
-		appContext.publishCharacters(next); appContext.patchLive({ characters: next });
-		(authored ? editCharacters : castDomain.setCharacters)(next);
-	}
-	/** The active character's layer lives in the editing buffer, and the read
-	 * model folds that buffer back over the cast. A published or restored prompt
-	 * schedule or root path has to reach it in the same tick, or the next read
-	 * would revert it. */
-	function syncStudioLayerBuffer(rows) {
-		const layer = rows.find(entry => entry.id === loadedLayerCharRef.current)?.layer;
-		const changed = key => Array.isArray(layer?.[key]) && JSON.stringify(layer[key]) !== JSON.stringify(bufferRef.current[key]);
-		const clips = changed("promptClips"), path = changed("waypoints");
-		if (!clips && !path) return;
-		bufferRef.current = { ...bufferRef.current, ...(clips ? { promptClips: layer.promptClips } : {}), ...(path ? { waypoints: layer.waypoints } : {}) };
-		if (clips) setPromptClips(layer.promptClips);
-		if (path) setWaypoints(layer.waypoints);
-	}
-	function recordStudioHistory(domain, targetId, historyEntryId) {
-		const tick = appContext.nextTick();
-		appContext.castHistory.past.push({ tick, snapshot: snapshotCast(domain === "shot"),
-			studio: { domain, targetId, historyEntryId, objects: storeRef.current.objects, state: snapshotStudioDomain(domain, targetId) } });
-		appContext.castHistory.past = appContext.castHistory.past.slice(-HISTORY_LIMIT);
-		appContext.castHistory.future = [];
-		studioHistoryRef.current.set(historyEntryId, { tick, domain });
-	}
+
 	/** Run one registry action for the agent and bind the native history entry
 	 * it pushed to a journal id, so undo_edit (and Ctrl+Z) can revert it. Shot,
 	 * cast and motion entries gain the Studio restore state (a motion entry the
 	 * one character `targetId` names), which republishes the live read model
 	 * synchronously; object entries are the store's own. */
 	function beginStudioAction(domain, targetId = null) {
-		if (domain === "stage" && stageDomain.documentStore) return stageDomain.beginAction();
-		if (studioActionGroupRef.current) throw new StudioProtocolError("TARGET_BUSY", "A command owns native history.");
-		const historyEntryId = crypto.randomUUID(), objects = storeRef.current.objects;
-		const history = appContext.castHistory, past = [...history.past], future = [...history.future], states = [];
-		let objectSession, changed = false, firstEntry;
-		const session = {
-			touch(domain, targetId) {
-				if (domain === "objects") { objectSession ??= storeRef.current.beginCommand(); return; }
-				if (!states.some(row => row.domain === domain && row.targetId === targetId)) states.push({ domain, targetId, state: snapshotStudioDomain(domain, targetId) });
-			},
-			run(fn) {
-				const finish = result => {
-					const added = history.past.filter(entry => !past.includes(entry));
-					firstEntry ??= added[0]; changed ||= added.length > 0;
-					history.past = [...past]; history.future = [...future];
-					return result;
-				};
-				const result = objectSession ? objectSession.run(fn) : fn();
-				return result?.then ? result.then(finish) : finish(result);
-			},
-			commit() {
-				const objectsChanged = objectSession?.commit() ?? false;
-				appContext.patchLive({ objects: storeRef.current.objects });
-				const compound = states.length > 1 || (states.length > 0 && objectsChanged);
-				if (changed || (compound && objectsChanged)) {
-					const tick = appContext.nextTick(), saved = states[0];
-					const studio = compound ? { domain: "compound", state: states, objectsChanged } : saved;
-					history.past.push({ tick, snapshot: firstEntry?.snapshot ?? snapshotCast(true), studio: { ...studio, historyEntryId, objects: storeRef.current.objects } });
-					history.past = history.past.slice(-HISTORY_LIMIT); history.future = [];
-					studioHistoryRef.current.set(historyEntryId, { tick, domain: studio.domain, ...(objectsChanged ? { before: objects } : {}) });
-				} else if (objectsChanged) studioHistoryRef.current.set(historyEntryId, { domain: "objects", before: objects, tick: appContext.objectClock, depth: storeRef.current.depths().past });
-				changed ||= objectsChanged;
-				studioActionGroupRef.current = null;
-				return { historyEntryId: changed ? historyEntryId : null };
-			},
-			cancel({ restore = true } = {}) {
-				objectSession?.cancel();
-				if (restore) {
-					for (const row of [...states].reverse()) publishStudioDomain(row.domain, row.targetId, row.state);
-					history.past = past; history.future = future;
-				}
-				studioActionGroupRef.current = null;
-			},
-		};
-		session.touch(domain, targetId); studioActionGroupRef.current = session;
-		return session;
+		const owned = appContext.storeDomain(domain);
+		return owned ? owned.beginAction(targetId) : castDomain.beginNativeStudioAction(domain, targetId);
 	}
 	function recordStudioAction(domain, run, targetId = null, nested = false) {
 		if (nested && studioActionGroupRef.current) {
@@ -7455,111 +6468,28 @@ export default function App() {
 		catch (error) { return failed(error); }
 	}
 	function publishStudioDomain(domain, targetId, state) {
-		if (domain === "shot") { appContext.patchLive({ shots: state.shots }); setShots(state.shots); publishStudioCamera(state.camera, state.manual); }
-		else if (domain === "stage") publishStudioStage(state.stage);
-		else if (domain === "cast") { publishStudioCharacters(state.characters); syncStudioLayerBuffer(state.characters); }
-		else publishStudioMotion(targetId, state);
+		const owned = appContext.storeDomain(domain);
+		return owned ? owned.publish(state, targetId) : castDomain.publishNativeStudioDomain(domain, targetId, state);
+	}
+	function canUndoStudioReceipt(receipt) {
+		const owned = appContext.storeDomainForReceipt(receipt);
+		return owned ? owned.canUndo(receipt.undo.historyEntryId) : castDomain.canUndoNativeStudioReceipt(receipt);
 	}
 	function isStudioHistoryRetained(receipt) {
-		if (stageDomain.documentStore?.isRetained(receipt?.undo?.historyEntryId)) return true;
-		const id = receipt?.undo?.historyEntryId, entry = studioHistoryRef.current.get(id);
-		if (!entry) return false;
-		const retained = (!entry.before || storeRef.current.hasHistoryState(entry.before)) && (entry.domain === "objects"
-			|| [...appContext.castHistory.past, ...appContext.castHistory.future].some(row => row.studio?.historyEntryId === id));
-		if (!retained) studioHistoryRef.current.delete(id);
-		return retained;
+		return Boolean(appContext.storeDomainForReceipt(receipt)) || castDomain.isNativeStudioHistoryRetained(receipt);
 	}
-	function publishStudioMotion(targetId, state) {
-		const current = readStudioState();
-		publishStudioCharacters(current.characters.map(c => c.id === targetId ? state.character : c));
-		if (state.fullMotion) motionFullRef.current.set(targetId, state.fullMotion); else motionFullRef.current.delete(targetId);
-		const layer = { ...createIkState(), keys: copyPhysicsKeys(state.ikState.keys), tracked: new Set(state.ikState.tracked) };
-		ikStatesRef.current.set(targetId, layer);
-		if (loadedLayerCharRef.current === targetId) {
-			ikStateRef.current = layer;
-			bufferRef.current = { waypoints: state.character.layer?.waypoints ?? [], promptClips: state.character.layer?.promptClips ?? [], motion: state.character.sessionMotion ?? null, ik: layer };
-			setWaypoints(bufferRef.current.waypoints); setPromptClips(bufferRef.current.promptClips); motionDomain.setMotion(bufferRef.current.motion);
-			setCommittedIkEdits(state.committedIkEdits); setIkTick(n => n + 1);
-		}
-		appContext.patchTimeline({ frameCount: state.frameCount }); frameCountRef.current = state.frameCount; setTlFrameCount(state.frameCount);
-		if (state.renderer) restoreExportRig(state.renderer);
-	}
+
 	function stepStudioHistory(redo) {
-		if (stageDomain.documentStore && stageDomain.stepHistory(redo)) return true;
-		const history = appContext.castHistory, from = redo ? history.future : history.past, to = redo ? history.past : history.future;
-		const top = from.at(-1);
-		// Object undo/redo advances the global clock, even when it returns to the
-		// exact object state captured by this Studio entry. Use that boundary
-		// instead of hiding older Studio history behind the traversal tick.
-		if (!top?.studio || top.studio.objects !== storeRef.current.objects) return false;
-		const entry = top.studio;
-		const state = entry.domain === "compound" ? entry.state.map(row => ({ ...row, state: snapshotStudioDomain(row.domain, row.targetId) })) : snapshotStudioDomain(entry.domain, entry.targetId);
-		if (entry.objectsChanged) { if (redo) storeRef.current.redo(); else storeRef.current.undo(); }
-		to.push({ ...top, studio: { ...entry, objects: storeRef.current.objects, state } }); from.pop();
-		if (entry.domain === "compound") { for (const row of [...entry.state].reverse()) publishStudioDomain(row.domain, row.targetId, row.state); }
-		else if (entry.domain === "shot") {
-			appContext.patchLive({ shots: entry.state.shots }); setShots(entry.state.shots); publishStudioCamera(entry.state.camera, entry.state.manual);
-		} else if (entry.domain === "stage") publishStudioStage(entry.state.stage);
-		else if (entry.domain === "cast") { publishStudioCharacters(entry.state.characters); syncStudioLayerBuffer(entry.state.characters); }
-		else publishStudioMotion(entry.targetId, entry.state);
-		sceneRevisionRef.current++; appContext.nextTick();
-		setToast(redo ? ko("Redone", "다시 실행됨") : ko("Undone", "실행 취소됨")); return true;
+		return appContext.storeDomains().some(domain => domain.stepHistory(redo)) || castDomain.stepNativeStudioHistory(redo);
 	}
 	function commitStudioDraft(payload) {
-		const historyEntryId = crypto.randomUUID();
-		if (payload.domain === "objects") {
-			const before = storeRef.current.objects;
-			storeRef.current.applyAtomic(() => payload.draft);
-			appContext.patchLive({ objects: storeRef.current.objects });
-			studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: appContext.objectClock, depth: storeRef.current.depths().past });
-		} else {
-			recordStudioHistory(payload.domain, null, historyEntryId);
-			if (payload.domain === "stage") publishStudioStage(payload.draft);
-			else if (payload.domain === "cast") { publishStudioCharacters(payload.draft, true); syncStudioLayerBuffer(payload.draft); }
-			else { appContext.patchLive({ shots: payload.draft.shotDocument.shots }); editShots(payload.draft.shotDocument.shots); publishStudioCamera(payload.draft.camera, payload.draft.manual); }
-		}
-		return { historyEntryId };
+		const owned = appContext.storeDomain(payload.domain);
+		if (!owned) return castDomain.commitNativeStudioDraft(payload);
+		const session = owned.beginAction();
+		try { session.run(() => owned.commitDraft(payload.draft)); return session.commit(); }
+		catch (error) { session.cancel(); throw error; }
 	}
-	function commitStudioMotion(payload) {
-		const id = payload.binding.characterId, before = readStudioState(), target = before.targets.get(id);
-		const character = before.characters.find(c => c.id === id);
-		const clips = payload.schedule.blocks.map((block, index) => ({ id: `${payload.takeId}-beat-${index}`, startFrame: block.startFrame, endFrame: block.endFrameExclusive, text: block.text }));
-		const take = { ...payload.motion, studioTakeId: payload.takeId, prompt: "", sceneCalibration: payload.calibration };
-		// The same persistable ref deliverMotion saves for a UI take, placed where
-		// this take was placed, so restoreMotionRefs rebuilds it after a reload.
-		const motionRef = { url: take.url, prompt: payload.schedule.blocks.map(block => block.text).join(" "),
-			rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ, calibration: payload.calibration, studioTakeId: payload.takeId };
-		if (take.motionId) motionRef.motionId = take.motionId;
-		const next = { ...character, scale: payload.scale, sessionMotion: take, motionRef, layer: { ...character.layer, promptClips: clips } };
-		recordStudioHistory("motion", id, payload.historyEntryId);
-		const renderer = target?.rig ? snapshotExportRig(target.rig) : null;
-		publishStudioMotion(id, { character: next, fullMotion: payload.sourceMotion, ikState: payload.ikState,
-			frameCount: id === loadedLayerCharRef.current ? Math.max(payload.schedule.frameCount, before.view.frame + 1, ...before.shots.map(s => s.endFrame + 1)) : before.frameCount,
-			committedIkEdits: [], renderer: null });
-		if (target?.rig) {
-			if (id === loadedLayerCharRef.current) beginPlaybackOn(target.rig);
-			const resolved = resolveIkRig(target.rig), layer = ikStatesRef.current.get(id);
-			if (resolved) Object.assign(layer, resolved, { rig: target.rig });
-			poseMemberAtFrame(target.rig, take, layer, before.view.frame, IK_CORRECTION_BLEND_FRAMES);
-			target.rig.updateMatrixWorld(true);
-		}
-		// Preimage bones live on the native entry, not on the installed candidate.
-		appContext.castHistory.past.at(-1).studio.state.renderer = renderer;
-		markSemanticEdit("characters", before.characters, appContext.live.characters);
-		// Store the take's bytes the way a project save embeds a take
-		// (collectProjectSerialized): the same record, caches and motion store, so
-		// the ref's motionId resolves after a reload without the bridge.
-		if (take.sourceBytes) (async () => {
-			let record = motionEncodingCacheRef.current.get(take.sourceBytes);
-			if (!record) {
-				record = await encodeMotionResource(take.sourceBytes, { prompt: motionRef.prompt, sourceUrl: motionRef.url });
-				motionEncodingCacheRef.current.set(take.sourceBytes, record);
-			}
-			projectMotionsRef.current.set(record.motionId.toLowerCase(), record);
-			const db = await openMotionDb();
-			try { await putMotion(db, record); } finally { db.close(); }
-		})().catch((error) => console.warn("[cozyclay] could not cache motions", error));
-	}
+
 	function studioBounds({ entity, frame, state }) {
 		if (entity.renderer) {
 			if (entity.attach) {
@@ -7648,7 +6578,6 @@ export default function App() {
 		studioView: { mode: workflowMode, frame: tlFrame, playing: tlPlaying, lookThrough: lookThroughShot, grid: gridView, autoColor },
 	});
 	appContext.updatePorts({
-		stage: () => stageDomain,
 		read: readStudioState, revision: sceneRevisionRef, bounds: studioBounds, commit: commitStudioDraft, commitMotion: commitStudioMotion,
 		operate: operateStudio, undo: undoScene, stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
 		// One shot frame as raw read-back pixels (rows bottom-up), from the export
@@ -7673,21 +6602,13 @@ export default function App() {
 			return studioIkStampsRef.current.get(id).revision;
 		},
 		isRetained: isStudioHistoryRetained,
-		canUndo: receipt => {
-			if (stageDomain.documentStore.isRetained(receipt?.undo?.historyEntryId)) return stageDomain.canUndo(receipt.undo.historyEntryId);
-			const entry = receipt?.undo && studioHistoryRef.current.get(receipt.undo.historyEntryId);
-			if (!entry || receipt.revision.after !== sceneRevisionRef.current) return false;
-			return entry.domain === "objects" ? entry.tick === appContext.objectClock && entry.tick >= (appContext.castHistory.past.at(-1)?.tick ?? 0) && entry.depth === storeRef.current.depths().past :
-				entry.tick === appContext.castHistory.past.at(-1)?.tick && entry.tick > appContext.objectClock;
-		},
-		actions: () => studioActionsRef.current,
+		canUndo: canUndoStudioReceipt,		actions: () => studioActionsRef.current,
 		recordAction: recordStudioAction, beginAction: beginStudioAction,
 		captureToasts: listener => { toastSinkRef.current.add(listener); return () => toastSinkRef.current.delete(listener); },
 		showRefusal: appContext.notify,
 		emitCommandEvent: detail => window.dispatchEvent(new CustomEvent("cozyclay:command", { detail })),
 	});
 	appContext.updateActionPorts({
-		stage: () => stageDomain,
 		// Shots and objects come from the synchronously published read model, so
 		// an action sees its own edit before React renders it.
 		state: () => ({
@@ -8116,7 +7037,7 @@ export default function App() {
 								step="1"
 								value={fovDeg}
 								disabled={falMotionCameraLocked}
-								onChange={(event) => setFovDeg(Number(event.target.value))}
+								onChange={(event) => shotsDomain.changeLens(Number(event.target.value))}
 							/>
 							<output>{Math.round(fovDeg)}°</output>
 							<small>{shot.focalMm}mm</small>
@@ -8484,10 +7405,7 @@ export default function App() {
 								camRef={shotCamRef}
 								look={look}
 								isInterrupted={() => (lookThroughShot && flyingRef.current) || manualCameraOverrideRef.current}
-								onDone={(finalFov) => {
-									setMovePlaying(false);
-									setFovDeg(Math.round(finalFov * 10) / 10);
-								}}
+								onDone={shotsDomain.finishCameraMove}
 							/>
 							<FollowCamRig
 								enabled={followCamActive && !movePlaying}
@@ -8561,7 +7479,7 @@ export default function App() {
 								// previously open drag as one entry so the fresh token
 								// issued by onObjectMoveStart cannot leak.
 								onSelectEntity={(id) => {
-									store.settle();
+									objectsDomain.settleObjects();
 									setSelectedHierarchyId(id.startsWith("object:") ? id : id === "cam" ? "camera" : charKeyToHierarchyId(id));
 								}}
 								sceneObjects={stageSceneObjects}
@@ -8609,28 +7527,7 @@ export default function App() {
 								}}
 								subjectTrack={motion ? subjectTrack : null}
 								keyLight={keyLight}
-								onRailStroke={(stroke) => {
-									const simplified = simplifyStroke(stroke, 0.12);
-									if (simplified.length < 2) return;
-									changeCameraRail(simplified);
-									setRailDraw(false);
-									const curve = buildRail(simplified);
-									if (playgroundMode && activeShot && curve) {
-										// Playground: a first-timer drew a dolly and wants to see the
-										// whole ride. Stretch the cut to the rail's travel time at the
-										// dolly's speed cap and put them behind the shot camera, so ▶
-										// plays the move full-screen instead of in the corner monitor.
-										const speed = Math.max(0.2, activeCamera.followCam?.maxDollySpeed ?? 4);
-										const travel = Math.ceil((curve.length / speed) * tlFps) + Math.round(tlFps * 0.5);
-										const endFrame = Math.min(tlFrameCount - 1, activeShot.startFrame + Math.max(travel, activeShot.endFrame - activeShot.startFrame));
-										editShots((current) => resizeShot(current, activeShot.id, "end", endFrame, tlFrameCount));
-										enterPreview();
-										setTlFrame(activeShot.startFrame);
-										setToast(isKo ? "레일 완성 — 샷 카메라 시점으로 전환했습니다. ▶ 로 재생, Esc 로 복귀" : "Rail drawn — you are looking through the shot camera. Press ▶ to ride it; Esc goes back to flying.");
-										return;
-									}
-									setToast(isKo ? `카메라 레일 완성 — ${curve ? curve.length.toFixed(1) : "?"} m, 제어점 ${simplified.length}개` : `Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
-								}}
+								onRailStroke={shotsDomain.drawCameraRail}
 								onPathStroke={(stroke) => {
 									if (!selectedSceneObject) return;
 									// Few points on purpose: the stroke sets the shape, the
@@ -8715,34 +7612,8 @@ export default function App() {
 								paneRef={mainPaneRef}
 								camRef={editorCamRef}
 								onSelect={setCraneSelectedIndex}
-								onChangePoints={(points, options) => {
-									if (!options?.dragging) {
-										changeActiveCamera({ craneHeight: { points } });
-										return;
-									}
-									editShots((current) =>
-										updateStableItem(
-											current,
-											activeShot.id,
-											(shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { craneHeight: { points } }) }),
-											"shots",
-										),
-									);
-								}}
-								onChangeRail={(points, options) => {
-									if (!options?.dragging) {
-										changeActiveCamera({ cameraRail: points });
-										return;
-									}
-									editShots((current) =>
-										updateStableItem(
-											current,
-											activeShot.id,
-											(shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { cameraRail: points }) }),
-											"shots",
-										),
-									);
-								}}
+								onChangePoints={shotsDomain.changeCranePoints}
+								onChangeRail={shotsDomain.changeCraneRail}
 								onDragStart={shotsDomain.recordShotUndo}
 							/>
 							<EditorCamSeed camRef={editorCamRef} lookRef={editorLook} shotCamRef={shotCamRef} subject={charA} />
@@ -9584,17 +8455,8 @@ export default function App() {
 					onCameraRailDrawToggle={toggleCameraRailDraw}
 					onCameraRailDelete={deleteCameraRail}
 				onShotSelect={selectTimelineShot}
-				onShotBoundaryMove={(shotId, edge, frame) => editShots((current) => resizeShot(current, shotId, edge, frame, tlFrameCount))}
-				onShotRename={(shotId, name) => {
-					const shot = shots.find((entry) => entry.id === shotId);
-					if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
-					// The rename dialog commits once on accept. renameShot ignores a
-					// blank name and stores the trimmed one, so an unchanged or empty
-					// name is no edit at all: it neither writes nor records.
-					if (typeof name !== "string" || !name.trim() || shot.name === name.trim()) return;
-					shotsDomain.recordShotUndo();
-					editShots((current) => renameShot(current, shotId, name));
-				}}
+				onShotBoundaryMove={shotsDomain.resizeTimelineShot}
+				onShotRename={shotsDomain.renameTimelineShot}
 				onShotRemove={(shotId) => runStudioAction("shot.remove", { shotId })}
 				onShotDuplicate={(shotId) => runStudioAction("shot.duplicate", { shotId })}
 				onShotCut={() => runStudioAction("shot.create")}

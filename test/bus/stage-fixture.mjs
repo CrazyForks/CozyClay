@@ -33,11 +33,9 @@ export function stageFixture() {
   f.scope.actorStageRef = { current: structuredClone(f.live.current.stage) };
   renderToStaticMarkup(createElement(Mount));
   Object.assign(f.scope, stage);
-  f.ports.stage = () => stage;
-  f.actionHandlers.current.stage = () => stage;
-  const canUndo = f.ports.canUndo;
-  f.ports.canUndo = receipt => stage.documentStore.isRetained(receipt.undo?.historyEntryId)
-    ? stage.canUndo(receipt.undo.historyEntryId) : canUndo(receipt);
+  Object.assign(f.ports, f.scope.appContext.ports);
+  Object.assign(f.actionHandlers.current, f.scope.appContext.actionPorts);
+  f.ports.canUndo = f.actual.canUndoStudioReceipt;
   const run = (id, args = {}, origin = 'ui', options = {}) => f.binding.bus.run(id, args, {
     origin, host: f.host(), expectedRevision: f.binding.refresh().revision, ...options,
   });

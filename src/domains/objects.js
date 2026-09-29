@@ -1,3 +1,4 @@
+import { createObjectPath } from "../object-path.js";
 import { useState, useRef } from "react";
 import {
 	readStoredObjectColors,
@@ -529,7 +530,311 @@ export function useObjects(appContext) {
 			return placeSceneObject(next, id, placement);
 		});
 	}
+	function createLegacyObjectHandlers(finitePatch) {
+		let batchToken = null;
+		const IMPORT_BACKDROP_DISTANCE_M = 12, IMPORT_BACKDROP_HEIGHT_M = 5;
+		function syncObjects() { appContext.patchLive({ objects: storeRef.current.objects }); }
+		function applyObjectMutation(mutation) { if (batchToken === null) storeRef.current.applyAtomic(mutation); else storeRef.current.applyIn(batchToken, mutation); syncObjects(); }
+		function placeObject(args) {
+			if (typeof args.kind !== "string") throw new Error("Invalid kind");
+			const live = appContext.live.state;
+			// The parent is checked before anything is created: a bad id must
+			// not leave a half-made part lying around unattached.
+			if (args.parent !== undefined) {
+				if (typeof args.parent !== "string" || !live.objects.some((o) => o.id === args.parent)) {
+					throw new Error(`Parent object not found: ${args.parent}`);
+				}
+			}
+			if (args.name !== undefined && (typeof args.name !== "string" || !args.name.trim())) {
+				throw new Error("Invalid name");
+			}
+			const placement = finitePatch(args, ["x", "z", "rot"]);
+			const object = createSceneObject(args.kind, live.objects, placement);
+			if (!object) throw new Error(`Unknown object kind: ${args.kind}`);
+			const patch = finitePatch(args, ["y"]);
+			if (args.name !== undefined) patch.name = args.name;
+			const placed = updateSceneObject([object], object.id, patch)[0];
+			// One atomic entry: create, name and attach undo together, as the
+			// single "place part" gesture they are to the caller.
+			applyObjectMutation((objects) => {
+				const next = [...objects, placed];
+				return args.parent !== undefined ? setSceneObjectParent(next, placed.id, args.parent) : next;
+			});
+			return { id: placed.id };
+		}
+		async function importAsset(args, commandContext) {
+			if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
+			if (args.placeAs === "mesh") {
+				const dataUrl = args.dataUrl;
+				if (typeof dataUrl !== "string") throw new Error("dataUrl must be a 3D model data URL");
+				const nameLower = String(args.name).toLowerCase();
+				const headerMime = dataUrl.slice(5, dataUrl.search(/[;,]/)).toLowerCase();
+				const mime = (typeof args.mimeType === "string" && args.mimeType
+					? args.mimeType
+					: headerMime).toLowerCase();
+				const objPlain = mime === "text/plain" && nameLower.endsWith(".obj");
+				const fbxPlain = mime === "text/plain" && nameLower.endsWith(".fbx");
+				const headerOk = dataUrl.startsWith("data:model/gltf-binary")
+					|| dataUrl.startsWith("data:application/octet-stream")
+					|| dataUrl.startsWith("data:model/obj")
+					|| dataUrl.startsWith("data:model/fbx")
+					|| (dataUrl.startsWith("data:text/plain") && (nameLower.endsWith(".obj") || nameLower.endsWith(".fbx")));
+				const mimeOk = mime === "model/gltf-binary" || mime === "application/octet-stream"
+					|| mime === "model/obj" || mime === "model/fbx" || objPlain || fbxPlain;
+				if (!headerOk && !mimeOk) throw new Error("dataUrl must be a 3D model data URL");
+				const bytes = await (await fetch(dataUrl)).arrayBuffer();
+				const fileType = mime || headerMime || "application/octet-stream";
+				const file = new File([bytes], args.name, { type: fileType });
+				const { asset, height, footprint } = await importMeshFile(file);
+				const db = await openAssetDb();
+				try {
+					await putAsset(db, asset);
+				} finally {
+					db.close?.();
+				}
+				const live = appContext.live.state;
+				const camera = appContext.shared.shotCamRef.current;
+				const hasFloor = Number.isFinite(args.x) || Number.isFinite(args.z);
+				const placement = hasFloor
+					? {
+						x: Number.isFinite(args.x) ? args.x : 0,
+						z: Number.isFinite(args.z) ? args.z : 0,
+					}
+					: camera
+						? placementInFront({ x: camera.position.x, z: camera.position.z }, appContext.shared.look.current.yaw)
+						: {};
+				if (Number.isFinite(args.rot)) placement.rot = args.rot;
+				let object = createMeshObject(
+					{
+						assetId: asset.id,
+						height,
+						footprint,
+						name: args.name,
+						clay: args.clay === true,
+					},
+					live.objects,
+					placement,
+				);
+				if (!object) throw new Error("Could not create the mesh object");
+				// Inspector height edits scale the stored footprint. Do the same
+				// here so a 50 cm import is a smaller cube, not a squat 1×1×0.5 box.
+				if (Number.isFinite(args.height) && args.height > 0) {
+					object = updateSceneObject([object], object.id, { height: args.height })[0];
+				}
+				if (Number.isFinite(args.y)) object.y = args.y;
+				commandContext?.check();
+				applyObjectMutation((objects) => [...objects, object]);
+				return { assetId: asset.id, objectId: object.id };
+			}
+			if (args.placeAs !== "cutout" && args.placeAs !== "backdrop") throw new Error('placeAs must be "cutout", "backdrop" or "mesh"');
+			if (typeof args.dataUrl !== "string" || !args.dataUrl.startsWith("data:image/")) throw new Error("dataUrl must be an image data URL");
+			const mime = typeof args.mimeType === "string" && args.mimeType
+				? args.mimeType
+				: args.dataUrl.slice(5, args.dataUrl.search(/[;,]/));
+			const bytes = await (await fetch(args.dataUrl)).arrayBuffer();
+			const file = new File([bytes], args.name, { type: mime });
+			const live = appContext.live.state;
+			const asset = await rememberAsset(await importImageFile(file));
+			const backdrop = args.placeAs === "backdrop";
+			const camera = appContext.shared.shotCamRef.current;
+			const placement = camera
+				? placementInFront(
+					{ x: camera.position.x, z: camera.position.z },
+					appContext.shared.look.current.yaw,
+					backdrop ? IMPORT_BACKDROP_DISTANCE_M : undefined,
+				)
+				: {};
+			if (backdrop) {
+				// The card's face is its +z; rotate by the camera's own yaw so the
+				// plate faces the lens instead of standing edge-on to it.
+				placement.rot = (appContext.shared.look.current.yaw * 180) / Math.PI;
+			}
+			const object = createCutoutObject(
+				{
+					assetId: asset.id,
+					aspect: assetAspect(asset) ?? 1,
+					height: backdrop ? IMPORT_BACKDROP_HEIGHT_M : CUTOUT_DEFAULT_HEIGHT,
+					name: args.name,
+				},
+				live.objects,
+				placement,
+			);
+			if (!object) throw new Error("Could not create the cutout object");
+			commandContext?.check();
+			applyObjectMutation((objects) => [...objects, object]);
+			return { assetId: asset.id, objectId: object.id };
+		}
+		function updateObject(args) {
+			const live = appContext.live.state;
+			if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
+			const patch = finitePatch(args, ["x", "y", "z", "rot", "rotX", "rotZ"]);
+			// A uniform `scale` is the common case; per-axis values are what a
+			// squashed disc or a stretched column needs, exactly as the
+			// inspector's three sliders provide. Per-axis wins when both come.
+			if (args.scale !== undefined) {
+				if (!Number.isFinite(args.scale)) throw new Error("Invalid scale");
+				patch.scaleX = args.scale;
+				patch.scaleY = args.scale;
+				patch.scaleZ = args.scale;
+			}
+			Object.assign(patch, finitePatch(args, ["scaleX", "scaleY", "scaleZ"]));
+			if (args.color !== undefined) {
+				if (typeof args.color !== "string") throw new Error("Invalid color");
+				patch.color = args.color;
+			}
+			if (args.name !== undefined) {
+				if (typeof args.name !== "string" || !args.name.trim()) throw new Error("Invalid name");
+				patch.name = args.name;
+			}
+			// A travel path arrives whole (or null to clear it); the object
+			// schema repairs or refuses it, so a bad route cannot land.
+			if (args.path !== undefined) {
+				if (args.path !== null && createObjectPath(args.path) === null) throw new Error("Invalid path: needs two or more distinct points");
+				patch.path = args.path;
+			}
+			if (Number.isFinite(args.height)) patch.height = args.height;
+			if (typeof args.clay === "boolean") patch.clay = args.clay;
+			if (typeof args.hidden === "boolean") patch.hidden = args.hidden;
+			applyObjectMutation((objects) => updateSceneObject(objects, args.id, patch));
+			return { id: args.id };
+		}
+		function removeObject(args) {
+			const live = appContext.live.state;
+			if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
+			applyObjectMutation((objects) => removeSceneObject(objects, args.id));
+			return { id: args.id };
+		}
+		function groupObjects(args) {
+			const live = appContext.live.state;
+			if (typeof args.parent !== "string" || !live.objects.some((o) => o.id === args.parent)) {
+				throw new Error("Parent object not found");
+			}
+			if (!Array.isArray(args.children) || !args.children.length) throw new Error("No children given");
+			for (const child of args.children) {
+				if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
+			}
+			applyObjectMutation((objects) =>
+				args.children.reduce((acc, child) => setSceneObjectParent(acc, child, args.parent), objects),
+			);
+			return { parent: args.parent, children: args.children.length };
+		}
+		function ungroupObjects(args) {
+			const live = appContext.live.state;
+			if (!Array.isArray(args.children) || !args.children.length) throw new Error("No children given");
+			for (const child of args.children) {
+				if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
+			}
+			applyObjectMutation((objects) =>
+				args.children.reduce((acc, child) => setSceneObjectParent(acc, child, null), objects),
+			);
+			return { children: args.children.length };
+		}
+		function applyObjectBatch(args) {
+			if (batchToken !== null) throw new Error("Nested batches are not supported");
+			if (!Array.isArray(args.ops)) throw new Error("Invalid batch operations");
+			if (args.ops.length > 100) throw new Error("A batch may contain at most 100 operations");
+			if (args.atomic !== undefined && typeof args.atomic !== "boolean") throw new Error("Invalid atomic flag");
+			if (args.stopOnError !== undefined && typeof args.stopOnError !== "boolean") throw new Error("Invalid stopOnError flag");
+			if (args.label !== undefined && (typeof args.label !== "string" || !args.label.trim())) throw new Error("Invalid batch label");
+			const objectCommands = new Set(["place_object", "update_object", "remove_object", "group_objects", "ungroup_objects"]);
+			for (const operation of args.ops) {
+				if (!operation || typeof operation !== "object" || Array.isArray(operation)) throw new Error("Invalid batch operation");
+				if (operation.name === "apply_batch") throw new Error("Nested batches are not supported");
+				if (!objectCommands.has(operation.name)) {
+					throw new Error("Batch v1 supports object mutations only; character mutations are not supported");
+				}
+				if (!operation.args || typeof operation.args !== "object" || Array.isArray(operation.args)) throw new Error("Invalid batch operation arguments");
+			}
+			const atomic = args.atomic === true;
+			const stopOnError = args.stopOnError !== false;
+			const depthBefore = storeRef.current.depths().past;
+			const token = storeRef.current.begin(args.label?.trim() || "MCP batch", () => {});
+			const priorSuppressObjectClock = appContext.suppressObjectClock;
+			appContext.suppressObjectClock = true;
+			const applied = [];
+			const failed = [];
+			batchToken = token;
+			let rolledBack = false;
+			let commit = false;
+			try {
+				for (const [index, operation] of args.ops.entries()) {
+					try {
+						handlers[operation.name](operation.args);
+						applied.push(index + 1);
+					} catch (error) {
+						failed.push({ index: index + 1, error: error instanceof Error ? error.message : "Command failed" });
+						if (stopOnError) break;
+					}
+				}
+				rolledBack = atomic && failed.length > 0;
+				commit = !rolledBack;
+			} finally {
+				batchToken = null;
+				appContext.suppressObjectClock = priorSuppressObjectClock;
+				storeRef.current.end(token, { commit });
+			}
+			if (!rolledBack && storeRef.current.depths().past > depthBefore) appContext.advanceObjectClock();
+			syncObjects();
+			return { label: args.label?.trim() || "MCP batch", applied, failed, rolledBack };
+		}
+		const handlers = { place_object: placeObject, import_asset: importAsset, update_object: updateObject, remove_object: removeObject, group_objects: groupObjects, ungroup_objects: ungroupObjects, apply_batch: applyObjectBatch };
+return handlers;
+	}
+	function canReparentSceneObject(sourceRowId, targetRowId) {
+		const id = sceneObjectIdFromHierarchy(String(sourceRowId ?? ""));
+		if (!id || sourceRowId === targetRowId) return false;
+		const object = sceneObjects.find((entry) => entry.id === id);
+		if (!object) return false;
+		const targetObjectId = sceneObjectIdFromHierarchy(String(targetRowId ?? ""));
+		// Grouping keeps its own rules (self, cycles, unknown ids) — asking the
+		// store is the only way to stay honest about them.
+		if (targetObjectId) return setSceneObjectParent(sceneObjects, id, targetObjectId) !== sceneObjects;
+		if (targetRowId === "props") return (object.attach ?? null) !== null || (object.parent ?? null) !== null;
+		const attach = attachTargetForRow(targetRowId);
+		if (!attach) return false;
+		const current = object.attach ?? null;
+		return !current || current.characterId !== attach.characterId || (current.bone ?? null) !== attach.bone;
+	}
+	function reparentSceneObject(sourceRowId, targetRowId) {
+		if (!canReparentSceneObject(sourceRowId, targetRowId)) return;
+		const id = sceneObjectIdFromHierarchy(String(sourceRowId));
+		const targetObjectId = sceneObjectIdFromHierarchy(String(targetRowId));
+		// Grouping moves nothing on screen — the set places every prop at its
+		// own absolute transform. Taking a parent DOES cancel an attachment
+		// (the store's exclusivity rule), so a carried prop dropped into a
+		// group comes back to world numbers on the way, exactly as the Props
+		// row would put it back.
+		if (targetObjectId) {
+			const carried = appContext.shared.animatedSceneObjects.find((entry) => entry.id === id) ?? null;
+			const restored = carried?.attach
+				? attachPlacementPatch(sceneObjectWorldMatrix(carried), null, appContext.shared.attachFrameRef.current)
+				: null;
+			store.applyAtomic((objects) => {
+				const next = setSceneObjectParent(objects, id, targetObjectId);
+				return next === objects ? objects : placeSceneObject(next, id, restored);
+			});
+			return;
+		}
+		const attach = targetRowId === "props" ? null : attachTargetForRow(targetRowId);
+		appContext.shared.runStudioAction(attach ? "object.attach" : "object.detach", attach
+			? { objectId: id, characterId: attach.characterId, ...(attach.bone ? { bone: attach.bone } : {}) }
+			: { objectId: id });
+	}
+	function settleObjects() { return storeRef.current.settle(); }
+	function beginStudioObjectAction() { return storeRef.current.beginCommand(); }
+	function stepObjectHistory(redo) { return (redo ? storeRef.current.redo : storeRef.current.undo)(); }
+	function applyExternalObjects(objects) {
+		storeRef.current.applyAtomic(() => Array.isArray(objects) ? objects : []);
+	}
+	function commitStudioObjects(draft, historyEntryId) {
+		const before = storeRef.current.objects;
+		storeRef.current.applyAtomic(() => draft);
+		appContext.patchLive({ objects: storeRef.current.objects });
+		appContext.shared.studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: appContext.objectClock, depth: storeRef.current.depths().past });
+	}
 	return {
+		beginStudioObjectAction, stepObjectHistory, applyExternalObjects, commitStudioObjects,
+		createLegacyObjectHandlers, canReparentSceneObject, reparentSceneObject, settleObjects,
 		recentObjectColors, objectColorDraft, setObjectColorDraft, rememberSceneObjectColor, objectDeleteUndo,
 		setObjectDeleteUndo, sceneObjects, setSceneObjects, storeRef, store, selectedSceneObjectId,
 		selectedSceneObject, beginSceneTransaction, endSceneTransaction, changeSceneObject,

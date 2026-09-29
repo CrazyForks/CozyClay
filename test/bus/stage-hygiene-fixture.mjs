@@ -23,7 +23,7 @@ export function attachStageHistory(scope) {
   for (const field of fields) Object.defineProperty(scope, field, { configurable: true, get: () => domain.read()[field] });
   const host = { workspaceId: 'workspace', documentEpoch: 'document', sceneId: 'scene', sceneEpoch: 'epoch' };
   const registry = createStudioActionRegistry();
-  register(registry, { stage: () => domain, state: () => ({ activeSceneId: host.sceneId }) });
+  register(registry, { ...scope.appContext.actionPorts, state: () => ({ activeSceneId: host.sceneId }) });
   const journal = createStudioCommandJournal({ host });
   bus = createCommandBus({ registry, ports: {
     read: () => ({ host, revision: domain.documentStore.getSnapshot().revision }), journal: () => journal,

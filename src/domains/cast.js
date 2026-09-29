@@ -1,3 +1,4 @@
+import { copyPhysicsKeys } from "../ardy/physics-review.js";
 import { useSemanticState } from "../use-semantic-state.js";
 import { useState, useMemo } from "react";
 import {
@@ -31,6 +32,8 @@ import { requestBridgeExtract } from "../multimodel-ingest.js";
 import { loadMotionFromUrl } from "../ardy/npz.js";
 import { snapshotPlaybackBones, applyMotionFrame, restorePlaybackBones } from "../ardy/playback.js";
 import { movePromptClipFrames } from "../ardy/prompt-clips.js";
+
+import { HISTORY_LIMIT } from "../history.js";
 
 export function useCast(appContext) {
 	// The cast is ONE list now: every character (position, rig model, pose,
@@ -828,7 +831,299 @@ export function useCast(appContext) {
 		editPromptClips((prev) => removeStableItem(prev, id, "promptClips"));
 		if (selectedPromptId === id) setSelectedPromptId(null);
 	}
+	function beginNativeStudioAction(domain, targetId = null) {
+		if (appContext.shared.studioActionGroupRef.current) throw new StudioProtocolError("TARGET_BUSY", "A command owns native history.");
+		const historyEntryId = crypto.randomUUID(), objects = appContext.shared.storeRef.current.objects;
+		const history = appContext.castHistory, past = [...history.past], future = [...history.future], states = [];
+		let objectSession, changed = false, firstEntry;
+		const session = {
+			touch(domain, targetId) {
+				if (domain === "objects") { objectSession ??= appContext.shared.objectsDomain.beginStudioObjectAction(); return; }
+				if (!states.some(row => row.domain === domain && row.targetId === targetId)) states.push({ domain, targetId, state: appContext.shared.snapshotStudioDomain(domain, targetId) });
+			},
+			run(fn) {
+				const finish = result => {
+					const added = history.past.filter(entry => !past.includes(entry));
+					firstEntry ??= added[0]; changed ||= added.length > 0;
+					history.past = [...past]; history.future = [...future];
+					return result;
+				};
+				const result = objectSession ? objectSession.run(fn) : fn();
+				return result?.then ? result.then(finish) : finish(result);
+			},
+			commit() {
+				const objectsChanged = objectSession?.commit() ?? false;
+				appContext.patchLive({ objects: appContext.shared.storeRef.current.objects });
+				const compound = states.length > 1 || (states.length > 0 && objectsChanged);
+				if (changed || (compound && objectsChanged)) {
+					const tick = appContext.nextTick(), saved = states[0];
+					const studio = compound ? { domain: "compound", state: states, objectsChanged } : saved;
+					history.past.push({ tick, snapshot: firstEntry?.snapshot ?? appContext.shared.snapshotCast(true), studio: { ...studio, historyEntryId, objects: appContext.shared.storeRef.current.objects } });
+					history.past = history.past.slice(-HISTORY_LIMIT); history.future = [];
+					appContext.shared.studioHistoryRef.current.set(historyEntryId, { tick, domain: studio.domain, ...(objectsChanged ? { before: objects } : {}) });
+				} else if (objectsChanged) appContext.shared.studioHistoryRef.current.set(historyEntryId, { domain: "objects", before: objects, tick: appContext.objectClock, depth: appContext.shared.storeRef.current.depths().past });
+				changed ||= objectsChanged;
+				appContext.shared.studioActionGroupRef.current = null;
+				return { historyEntryId: changed ? historyEntryId : null };
+			},
+			cancel({ restore = true } = {}) {
+				objectSession?.cancel();
+				if (restore) {
+					for (const row of [...states].reverse()) appContext.shared.publishStudioDomain(row.domain, row.targetId, row.state);
+					history.past = past; history.future = future;
+				}
+				appContext.shared.studioActionGroupRef.current = null;
+			},
+		};
+		session.touch(domain, targetId); appContext.shared.studioActionGroupRef.current = session;
+		return session;
+	}
+	function publishNativeStudioDomain(domain, targetId, state) {
+		if (domain === "shot") appContext.shared.shotsDomain.publishStudioShots(state);
+		else if (domain === "stage") appContext.shared.publishStudioStage(state.stage);
+		else if (domain === "cast") { appContext.shared.publishStudioCharacters(state.characters); appContext.shared.syncStudioLayerBuffer(state.characters); }
+		else appContext.shared.publishStudioMotion(targetId, state);
+	}
+	function isNativeStudioHistoryRetained(receipt) {
+		const id = receipt?.undo?.historyEntryId, entry = appContext.shared.studioHistoryRef.current.get(id);
+		if (!entry) return false;
+		const retained = (!entry.before || appContext.shared.storeRef.current.hasHistoryState(entry.before)) && (entry.domain === "objects"
+			|| [...appContext.castHistory.past, ...appContext.castHistory.future].some(row => row.studio?.historyEntryId === id));
+		if (!retained) appContext.shared.studioHistoryRef.current.delete(id);
+		return retained;
+	}
+	function stepNativeStudioHistory(redo) {
+		const history = appContext.castHistory, from = redo ? history.future : history.past, to = redo ? history.past : history.future;
+		const top = from.at(-1);
+		// Object undo/redo advances the global clock, even when it returns to the
+		// exact object state captured by this Studio entry. Use that boundary
+		// instead of hiding older Studio history behind the traversal tick.
+		if (!top?.studio || top.studio.objects !== appContext.shared.storeRef.current.objects) return false;
+		const entry = top.studio;
+		const state = entry.domain === "compound" ? entry.state.map(row => ({ ...row, state: appContext.shared.snapshotStudioDomain(row.domain, row.targetId) })) : appContext.shared.snapshotStudioDomain(entry.domain, entry.targetId);
+		if (entry.objectsChanged) appContext.shared.objectsDomain.stepObjectHistory(redo);
+		to.push({ ...top, studio: { ...entry, objects: appContext.shared.storeRef.current.objects, state } }); from.pop();
+		if (entry.domain === "compound") { for (const row of [...entry.state].reverse()) appContext.shared.publishStudioDomain(row.domain, row.targetId, row.state); }
+		else publishNativeStudioDomain(entry.domain, entry.targetId, entry.state);
+		appContext.shared.sceneRevisionRef.current++; appContext.nextTick();
+		appContext.notify(redo ? ko("Redone", "다시 실행됨") : ko("Undone", "실행 취소됨")); return true;
+	}
+	function commitNativeStudioDraft(payload) {
+		const historyEntryId = crypto.randomUUID();
+		if (payload.domain === "objects") {
+			appContext.shared.objectsDomain.commitStudioObjects(payload.draft, historyEntryId);
+		} else {
+			appContext.shared.recordStudioHistory(payload.domain, null, historyEntryId);
+			if (payload.domain === "stage") appContext.shared.publishStudioStage(payload.draft);
+			else if (payload.domain === "cast") { appContext.shared.publishStudioCharacters(payload.draft, true); appContext.shared.syncStudioLayerBuffer(payload.draft); }
+			else appContext.shared.shotsDomain.commitStudioShots(payload.draft);
+		}
+		return { historyEntryId };
+	}
+	function canUndoNativeStudioReceipt(receipt) {
+		const entry = receipt?.undo && appContext.shared.studioHistoryRef.current.get(receipt.undo.historyEntryId);
+		if (!entry || receipt.revision.after !== appContext.shared.sceneRevisionRef.current) return false;
+		return entry.domain === "objects" ? entry.tick === appContext.objectClock && entry.tick >= (appContext.castHistory.past.at(-1)?.tick ?? 0) && entry.depth === appContext.shared.storeRef.current.depths().past :
+			entry.tick === appContext.castHistory.past.at(-1)?.tick && entry.tick > appContext.objectClock;
+	}
+	function applyExternalCharacters(characters) {
+		const merged = characters.map(entry => {
+			const current = appContext.live.characters.find(item => item.id === entry.id);
+			return current?.sessionMotion ? { ...entry, sessionMotion: current.sessionMotion } : entry;
+		});
+		appContext.publishCharacters(merged);
+		setCharacters(merged);
+		appContext.shared.restoreMotionRefs(merged);
+	}
+	function publishStudioCharacters(next, authored = false) {
+		appContext.publishCharacters(next); appContext.patchLive({ characters: next });
+		(authored ? editCharacters : setCharacters)(next);
+	}
+	/** The active character's layer lives in the editing buffer, and the read
+	 * model folds that buffer back over the cast. A published or restored prompt
+	 * schedule or root path has to reach it in the same tick, or the next read
+	 * would revert it. */
+	function syncStudioLayerBuffer(rows) {
+		const layer = rows.find(entry => entry.id === appContext.shared.loadedLayerCharRef.current)?.layer;
+		const changed = key => Array.isArray(layer?.[key]) && JSON.stringify(layer[key]) !== JSON.stringify(appContext.shared.bufferRef.current[key]);
+		const clips = changed("promptClips"), path = changed("waypoints");
+		if (!clips && !path) return;
+		appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, ...(clips ? { promptClips: layer.promptClips } : {}), ...(path ? { waypoints: layer.waypoints } : {}) };
+		if (clips) setPromptClips(layer.promptClips);
+		if (path) setWaypoints(layer.waypoints);
+	}
+	// props so the inspector cannot show a ghost.
+	function undoScene() {
+		if (appContext.shared.studioBindingRef.current?.stepHistory(false)) return;
+		const charTop = appContext.castHistory.past[appContext.castHistory.past.length - 1];
+		if (charTop && charTop.tick > appContext.objectClock) {
+			appContext.castHistory.future.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
+			appContext.castHistory.past.pop();
+			restoreCast(charTop.snapshot);
+			appContext.notify(ko("Undone", "실행 취소됨"));
+			return;
+		}
+		appContext.suppressObjectClock = true;
+		const restored = appContext.shared.objectsDomain.stepObjectHistory(false);
+		appContext.suppressObjectClock = false;
+		if (restored === null) {
+			appContext.notify(ko("Nothing to undo", "실행 취소할 작업이 없어요"));
+			return;
+		}
+		appContext.advanceObjectClock();
+		if (appContext.shared.objectDeleteUndo?.id && restored.some((object) => object.id === appContext.shared.objectDeleteUndo.id)) {
+			appContext.shared.setSelectedHierarchyId(`object:${appContext.shared.objectDeleteUndo.id}`);
+			appContext.shared.setObjectDeleteUndo(null);
+		} else if (appContext.shared.selectedSceneObjectId && !restored.some((object) => object.id === appContext.shared.selectedSceneObjectId)) {
+			appContext.shared.setSelectedHierarchyId("props");
+		}
+		appContext.notify(ko("Undone", "실행 취소됨"));
+	}
+	function redoScene() {
+		if (appContext.shared.studioBindingRef.current?.stepHistory(true)) return;
+		const charTop = appContext.castHistory.future[appContext.castHistory.future.length - 1];
+		if (charTop && charTop.tick > appContext.objectClock) {
+			appContext.castHistory.past.push({ tick: charTop.tick, snapshot: snapshotCast(Boolean(charTop.snapshot.shots)) });
+			appContext.castHistory.future.pop();
+			restoreCast(charTop.snapshot);
+			appContext.notify(ko("Redone", "다시 실행됨"));
+			return;
+		}
+		appContext.suppressObjectClock = true;
+		const restored = appContext.shared.objectsDomain.stepObjectHistory(true);
+		appContext.suppressObjectClock = false;
+		if (restored === null) {
+			appContext.notify(ko("Nothing to redo", "다시 실행할 작업이 없어요"));
+			return;
+		}
+		appContext.advanceObjectClock();
+		if (appContext.shared.selectedSceneObjectId && !restored.some((object) => object.id === appContext.shared.selectedSceneObjectId)) {
+			appContext.shared.setSelectedHierarchyId("props");
+		}
+		appContext.notify(ko("Redone", "다시 실행됨"));
+	}
+	function recordStudioHistory(domain, targetId, historyEntryId) {
+		const tick = appContext.nextTick();
+		appContext.castHistory.past.push({ tick, snapshot: snapshotCast(domain === "shot"),
+			studio: { domain, targetId, historyEntryId, objects: appContext.shared.storeRef.current.objects, state: snapshotStudioDomain(domain, targetId) } });
+		appContext.castHistory.past = appContext.castHistory.past.slice(-HISTORY_LIMIT);
+		appContext.castHistory.future = [];
+		appContext.shared.studioHistoryRef.current.set(historyEntryId, { tick, domain });
+	}
+	function snapshotStudioDomain(domain, targetId) {
+		const state = appContext.shared.readStudioState();
+		if (domain === "shot") return { shots: state.shots, camera: state.camera, manual: state.manual };
+		if (domain === "stage") return { stage: state.stage };
+		if (domain === "cast") return { characters: state.characters };
+		const target = state.targets.get(targetId);
+		return { character: state.characters.find(c => c.id === targetId), fullMotion: appContext.shared.motionFullRef.current.get(targetId),
+			ikState: { ...createIkState(), keys: copyPhysicsKeys(target?.ikState?.keys ?? new Map()), tracked: new Set(target?.ikState?.tracked ?? []) },
+			frameCount: state.frameCount, committedIkEdits: targetId === appContext.shared.loadedLayerCharRef.current ? appContext.shared.committedIkEdits : [],
+			renderer: target?.rig ? appContext.shared.snapshotExportRig(target.rig) : null };
+	}
+	function removeLegacyRootWaypoint() {
+		// Subject 1 is the sole frame-zero root start. Drop any legacy seeded
+		// waypoint so Top-View never renders two start markers.
+		setWaypoints((current) => current.filter((waypoint) => waypoint.frame !== 0));
+		setActiveWaypointId(null);
+		setPendingWaypointFrame((current) => (current === 0 ? null : current));
+	}
+	function switchActiveCharacterLayer() {
+		const previous = appContext.shared.loadedLayerCharRef.current;
+		if (previous === activeChar.id) return;
+		// Leaving IK on switch: the handles are re-seated per rig, and a
+		// half-dragged chain must never leak onto another character.
+		if (appContext.shared.ikMode) appContext.shared.leaveIkMode();
+		if (previous) {
+			appContext.shared.ikStatesRef.current.set(previous, appContext.shared.bufferRef.current.ik);
+			setCharacters((list) => list.map((entry) => entry.id === previous
+				? { ...entry, layer: { waypoints: appContext.shared.bufferRef.current.waypoints, promptClips: appContext.shared.bufferRef.current.promptClips }, sessionMotion: appContext.shared.bufferRef.current.motion }
+				: entry));
+		}
+		const layer = activeChar.layer ?? createCharacterLayer();
+		setWaypoints(layer.waypoints.map((waypoint) => ({ ...waypoint })));
+		setPromptClips(layer.promptClips.map((clip) => ({ ...clip })));
+		// A clip that arrived while this character was inactive (an extra
+		// extraction take, a restored motionRef, a queued generation) becomes
+		// trimmable the moment it enters the buffer. Seed only when absent: an
+		// existing entry is the UNTRIMMED take, and the buffer may be holding a
+		// cut view of it.
+		if (activeChar.sessionMotion && !appContext.shared.motionFullRef.current.has(activeChar.id)) {
+			appContext.shared.motionFullRef.current.set(activeChar.id, activeChar.sessionMotion);
+		}
+		appContext.shared.motionDomain.setMotion(activeChar.sessionMotion ?? null);
+		setSelectedPromptId(null);
+		setWaypointMode(false);
+		setActiveWaypointId(null);
+		setPendingWaypointFrame(null);
+		appContext.shared.ikStateRef.current = appContext.shared.ikStatesRef.current.get(activeChar.id) ?? createIkState();
+		appContext.shared.loadedLayerCharRef.current = activeChar.id;
+	}
+	function createLegacyCastHandlers(finitePatch, characterForRef) {
+		function replaceCharacters(next) { appContext.publishCharacters(next); appContext.patchLive({ characters: next }); editCharacters(next); }
+		function addLiveCharacter(args) {
+			if (typeof args.subject !== "string") throw new Error("Invalid subject");
+			const live = appContext.live.state;
+			const patch = finitePatch(args, ["x", "z", "rot"]);
+			live.recordCharacterUndo();
+			const id = nextCharacterId(live.characters);
+			replaceCharacters([...live.characters, createCharacterEntry({ id, model: args.model, subject: args.subject, pose: DEFAULT_POSE, ...patch }, live.characters.length)]);
+			return { id };
+		}
+		function updateLiveCharacter(args) {
+			const live = appContext.live.state;
+			const character = characterForRef(live.characters, args.ref);
+			if (!character) throw new Error("Character not found");
+			const patch = finitePatch(args, ["x", "y", "z", "rot"]);
+			if (args.subject !== undefined) {
+				if (typeof args.subject !== "string") throw new Error("Invalid subject");
+				patch.subject = args.subject;
+			}
+			if (args.hidden !== undefined) {
+				if (typeof args.hidden !== "boolean") throw new Error("Invalid hidden");
+				patch.hidden = args.hidden;
+			}
+			if (!Object.keys(patch).some((key) => patch[key] !== character[key])) return { id: character.id };
+			live.recordCharacterUndo();
+			replaceCharacters(live.characters.map((entry) => entry.id === character.id ? { ...entry, ...patch } : entry));
+			return { id: character.id };
+		}
+		function removeLiveCharacter(args) {
+			const live = appContext.live.state;
+			const character = characterForRef(live.characters, args.ref);
+			if (!character) throw new Error("Character not found");
+			if (live.characters.length <= 1) throw new Error("Cannot remove the final character");
+			live.removeCharacter(character.id);
+			appContext.patchLive({ characters: appContext.live.characters });
+			return { id: character.id };
+		}
+		function setLivePromptBlocks(args) {
+			if (!Array.isArray(args.blocks)) throw new Error("Invalid blocks");
+			const stamp = Date.now();
+			const clips = args.blocks.map((block, i) => {
+				const startFrame = Math.round(Number(block.startFrame));
+				const endFrame = Math.round(Number(block.endFrame));
+				if (!Number.isFinite(startFrame) || !Number.isFinite(endFrame) || endFrame <= startFrame) {
+					throw new Error(`Invalid frame range on block ${i + 1}`);
+				}
+				if (typeof block.text !== "string" || !block.text.trim()) throw new Error(`Block ${i + 1} needs text`);
+				return { id: `prompt-${stamp}-${i}`, startFrame, endFrame, text: block.text.trim() };
+			});
+			const live = appContext.live.state;
+			live.recordCharacterUndo();
+			appContext.patchLive({ promptClips: clips });
+			live.editPromptClips(clips);
+			if (clips.length) {
+				live.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
+			}
+			return { blocks: clips.length };
+		}
+		return { add_character: addLiveCharacter, update_character: updateLiveCharacter, remove_character: removeLiveCharacter, set_prompt_blocks: setLivePromptBlocks };
+	}
+	function toggleCharacterHidden(charId) { recordCharacterUndo(); editCharacters((list) => list.map((item) => (item.id === charId ? { ...item, hidden: item.hidden !== true } : item))); }
 	return {
+		applyExternalCharacters, publishStudioCharacters, syncStudioLayerBuffer, undoScene, redoScene, recordStudioHistory, snapshotStudioDomain, removeLegacyRootWaypoint, switchActiveCharacterLayer, createLegacyCastHandlers, toggleCharacterHidden,
+		beginNativeStudioAction, publishNativeStudioDomain, isNativeStudioHistoryRetained, stepNativeStudioHistory, commitNativeStudioDraft, canUndoNativeStudioReceipt,
 		characters, setCharacters, editCharacters, customPoses, setCustomPoses, posing, setPosing, posingClosing,
 		studioPick, setStudioPick, rigs, rigMountEpoch, setRigMountEpoch, setPoseTick, charA, charB, showB,
 		poseA, poseB, subject, subject2, updateCharacterAt, setShowB, moveCharacter, removeCharacter, reportRig,

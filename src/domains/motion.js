@@ -1,3 +1,7 @@
+import {
+	FAL_MOTION_STILL_OUTPUT, FAL_MOTION_SHOT_ASPECT, FAL_MOTION_MIN_DURATION,
+	waitForFalMotionJob, submitFalMotion, buildH3MotionPrompt,
+} from "../fal-motion-client.js";
 import { useState } from "react";
 import { createPhysicsProgress } from "../ardy/physics-panel.jsx";
 import {
@@ -41,6 +45,7 @@ import {
 	applyBodyContact,
 	ikBakeKeyframe,
 	ikEvaluate,
+	resolveIkRig,
 } from "../ardy/ik.js";
 import * as THREE from "three";
 import { StudioProtocolError } from "../studio-agent-protocol.js";
@@ -57,7 +62,7 @@ import {
 } from "../multimodel-ingest.js";
 import { characterScaleFor, loadMotionFromUrl } from "../ardy/npz.js";
 import { supportHeightForObject, OBJECT_LIBRARY } from "../scene-objects.js";
-import { applySupportRise, autoRoofDrop, applyAutoFall, applyRootDrop } from "../ardy/root-drop.js";
+import { applySupportRise, autoRoofDrop, applyAutoFall, applyRootDrop, normalizeRootDrop } from "../ardy/root-drop.js";
 import { takeAnchor, createCharacterEntry } from "../scenes.js";
 import { retimeMotion } from "../ardy/retime.js";
 import {
@@ -95,10 +100,11 @@ import { planPosePin, PIN_BLOCKED } from "../ardy/pose-pin.js";
 import { worldDeltaToClip, applyTrailFalloffDelta, trailEditRange } from "../motion-trail.js";
 import { generate as ardyGenerate } from "../ardy/client.js";
 import { isLineEditUnsupported } from "../line-edit.js";
-import { openMotionDb, getMotion } from "../motion-store.js";
-import { resolveMotionSource, decodeMotionResource } from "../motion-resources.js";
+import { openMotionDb, getMotion, putMotion } from "../motion-store.js";
+import { resolveMotionSource, decodeMotionResource, encodeMotionResource } from "../motion-resources.js";
 
 export function useMotion(appContext) {
+	const [falMotion, setFalMotion] = useState({ a: null, b: null, job: null, status: "idle", error: "", instruction: "", dailyRemaining: null });
 	/* ------------------------------ IK layer ------------------------------ */
 	// IK posing for Subject 1: dragging a wrist/ankle handle FOCUSES that
 	// joint and solves its chain backward (two-bone analytic IK) on top of
@@ -2697,7 +2703,311 @@ export function useMotion(appContext) {
 	function cancelArdy() {
 		appContext.shared.ardyAbortRef.current?.abort();
 	}
+	function captureFalStill() {
+		// H3 480P renders 832x480. The still is captured at exactly that canvas
+		// (x2) regardless of the Studio's shot ratio; markFalPose also switches
+		// the viewport to the matching ratio so what the user framed is what
+		// gets sent.
+		const captured = appContext.shared.liveHandlersRef.current?.capture_framing_png?.({ output: FAL_MOTION_STILL_OUTPUT });
+		if (!captured?.dataUrl?.startsWith("data:image/")) throw new Error(ko("렌더러가 준비되지 않았어요.", "The shot renderer is not ready."));
+		if (captured.width !== FAL_MOTION_STILL_OUTPUT.width || captured.height !== FAL_MOTION_STILL_OUTPUT.height) {
+			throw new Error(ko(`H3 480P 참조 캡처는 ${FAL_MOTION_STILL_OUTPUT.width}×${FAL_MOTION_STILL_OUTPUT.height}이어야 해요.`, `The H3 480P reference must be captured at ${FAL_MOTION_STILL_OUTPUT.width}×${FAL_MOTION_STILL_OUTPUT.height}.`));
+		}
+		// H3 must see the same complete subject in both endpoints. A clipped
+		// foot or head makes the model invent the missing geometry during the
+		// transition, which is exactly the bad motion this flow is meant to avoid.
+		const rig = appContext.live.state.rigs?.[appContext.shared.activeChar.id];
+		const cam = appContext.shared.shotCamRef.current;
+		if (!rig || !cam) throw new Error(ko("전신 프레임을 확인할 수 없어 참조를 캡처할 수 없어요. 잠시 후 다시 시도하세요.", "The full-body frame is not ready yet. Wait a moment and try the reference capture again."));
+		rig.updateWorldMatrix(true, true);
+		cam.updateMatrixWorld(true);
+		const bounds = new THREE.Box3().setFromObject(rig);
+		const corners = [
+			new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.min.z),
+			new THREE.Vector3(bounds.min.x, bounds.min.y, bounds.max.z),
+			new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.min.z),
+			new THREE.Vector3(bounds.min.x, bounds.max.y, bounds.max.z),
+			new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.min.z),
+			new THREE.Vector3(bounds.max.x, bounds.min.y, bounds.max.z),
+			new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.min.z),
+			new THREE.Vector3(bounds.max.x, bounds.max.y, bounds.max.z),
+		].map((corner) => corner.project(cam));
+		const margin = 0.94;
+		const clipped = corners.some((corner) =>
+			corner.z < -1 || corner.z > 1 || Math.abs(corner.x) > margin || Math.abs(corner.y) > margin
+		);
+		if (clipped) {
+			throw new Error(ko(
+				"A/B 참조에 캐릭터 전신이 다 안 들어왔어요. 샷 시점에서 머리와 양발이 화면 안에 들어오도록 카메라를 뒤로 빼고 다시 캡처하세요.",
+				"The full character is not inside the A/B reference. In the shot view, pull the camera back until the head and both feet are visible, then capture again."
+			));
+		}
+		if (!appContext.shared.falMotionSegmentationReady || !Array.isArray(captured.partColours) || captured.partColours.length === 0) {
+			throw new Error(ko("A/B 참조는 View에서 부위 색상 → 음영을 켜야 캡처할 수 있어요.", "Enable View → Body part colours → Shaded before capturing an A/B reference."));
+		}
+		return { ...captured, framing: appContext.shared.captureCurrentFraming() };
+	}
+	/** Put the viewport on the Fal canvas and hand the fly controls to the
+	 * shot camera, so the user composes the A/B reference on exactly the
+	 * 832x480 frame the clip will have. Idempotent; capture does not need it. */
+	function enterFalFraming() {
+		appContext.shared.runStudioAction("stage.setFilmback", { shotAspect: FAL_MOTION_SHOT_ASPECT });
+		if (!appContext.shared.lookThroughShot) appContext.shared.enterShotLook();
+	}
+	function markFalPose(slot) {
+		try {
+			if (slot === "b" && falMotion.a && framingDistance(falMotion.a.framing, appContext.shared.captureCurrentFraming()) > 0.001) {
+				throw new Error(ko("A와 B 사이에서 카메라가 이동했어요. 같은 카메라 프레이밍으로 다시 캡처하세요.", "The camera moved between A and B. Capture both refs with the same camera framing."));
+			}
+			const still = captureFalStill();
+			// The capture is already on the Fal canvas; make the viewport agree so
+			// the user sees the frame that was just sent.
+			appContext.shared.runStudioAction("stage.setFilmback", { shotAspect: FAL_MOTION_SHOT_ASPECT });
+			setFalMotion((current) => ({ ...current, [slot]: still, status: "idle", error: "" }));
+			if (slot === "a") appContext.shared.setFalMotionCameraUnlocked(false);
+			appContext.notify(isKo ? `포즈 ${slot.toUpperCase()} 캡처됨 · ${still.width}×${still.height}` : `Pose ${slot.toUpperCase()} captured · ${still.width}×${still.height}`);
+		} catch (error) {
+			setFalMotion((current) => ({ ...current, error: error.message, status: "error" }));
+		}
+	}
+	function clearFalPose(slot) {
+		setFalMotion((current) => ({ ...current, [slot]: null, status: "idle", error: "", job: null }));
+		if (slot === "a") appContext.shared.setFalMotionCameraUnlocked(false);
+	}
+	function clearFalMotion() {
+		setFalMotion({ a: null, b: null, job: null, status: "idle", error: "", instruction: "", promptOverride: "", duration: FAL_MOTION_MIN_DURATION, dailyRemaining: null });
+		appContext.shared.setFalMotionCameraUnlocked(false);
+	}
+	function restoreFalCamera() {
+		const framing = falMotion.a?.framing;
+		const camera = appContext.shared.shotCamRef.current;
+		if (!framing || !camera) return;
+		camera.position.set(framing.pos.x, framing.pos.y, framing.pos.z);
+		camera.rotation.order = "YXZ";
+		camera.rotation.set(framing.pitch, framing.yaw, 0);
+		camera.fov = framing.fovDeg;
+		camera.updateProjectionMatrix();
+		appContext.shared.look.current.yaw = framing.yaw;
+		appContext.shared.look.current.pitch = framing.pitch;
+		appContext.shared.shotCameraPosRef.current = { ...framing.pos };
+		appContext.shared.setCameraPos({ ...framing.pos });
+		appContext.shared.setFovDeg(framing.fovDeg);
+		appContext.shared.setFalMotionCameraUnlocked(false);
+		setFalMotion((current) => ({ ...current, error: "", status: "idle" }));
+		appContext.notify(isKo ? "A 캡처 카메라로 복원했어요." : "Restored the camera used for A.");
+	}
+	function framingDistance(a, b) {
+		if (!a || !b) return Infinity;
+		return Math.max(
+			Math.abs(a.pos.x - b.pos.x), Math.abs(a.pos.y - b.pos.y), Math.abs(a.pos.z - b.pos.z),
+			Math.abs(a.yaw - b.yaw), Math.abs(a.pitch - b.pitch), Math.abs(a.fovDeg - b.fovDeg),
+		);
+	}
+	/** The Fal card's lock line: AI video motion is not enabled for this account. */
+	function showFalMotionLock() {
+		setFalMotion((current) => ({ ...current, error: ko("Fal 모션 생성은 QA 중 잠겨 있어요.", "Fal motion generation is locked during QA."), status: "error" }));
+	}
+	/** The Fal card shows every failure itself. For motion.generateFromVideo the
+	 * answer says what happened: `{ failed }` with the reason in English, or the
+	 * finished job, the footage it was ingested as (null when ingest failed) and
+	 * the account's daily generations left. */
+	async function generateFalMotion(kind = "interpolate", instructionOverride = null, commandContext = null) {
+		if (!appContext.shared.falMotionEnabled) {
+			showFalMotionLock();
+			return { failed: "AI video motion (Fal) is not enabled for this account." };
+		}
+		let source = falMotion;
+		if (kind === "act" && !source.a) {
+			try { source = { ...source, a: captureFalStill() }; setFalMotion((current) => ({ ...current, a: source.a })); }
+			catch (error) {
+				setFalMotion((current) => ({ ...current, error: error.message, status: "error" }));
+				return { failed: "Could not capture the character's pose frame: the full body must be inside the shot frame, shaded part colours must be on (view.setPartColours { mode: \"shaded\" }), and the renderer and rig must be ready." };
+			}
+		}
+		if (kind === "interpolate" && (!source.a || !source.b)) {
+			setFalMotion((current) => ({ ...current, error: ko("A와 B 포즈를 먼저 캡처하세요.", "Capture both A and B poses first."), status: "error" }));
+			return { failed: "Capture both A and B poses first." };
+		}
+		if (!source.a?.partColours || (kind === "interpolate" && !source.b?.partColours)) {
+			setFalMotion((current) => ({ ...current, error: ko("색 세그멘테이션이 포함된 음영 A/B 참조를 다시 캡처하세요.", "Recapture A/B refs with shaded body-part segmentation enabled."), status: "error" }));
+			return { failed: "The captured pose frame has no shaded body-part segmentation; the user must recapture it in the Fal card with shaded part colours on." };
+		}
+		if (kind === "interpolate" && framingDistance(source.a.framing, source.b.framing) > 0.001) {
+			setFalMotion((current) => ({ ...current, error: ko("A와 B 사이에서 카메라가 바뀌었어요. 같은 카메라로 다시 캡처하세요.", "The camera changed between A and B. Capture both poses with the same camera."), status: "error" }));
+			return { failed: "The camera changed between poses A and B; capture both with the same camera." };
+		}
+		// A hand-edited prompt wins verbatim; otherwise build from the description.
+		// Interpolate now honours the description too (#380): the bare pose
+		// difference lets the model invent the transition and produces junk.
+		const description = instructionOverride || source.instruction || "";
+		const prompt = source.promptOverride?.trim()
+			? source.promptOverride.trim()
+			: buildH3MotionPrompt(description || (kind === "interpolate" ? "" : "Make the character perform the requested action."), { interpolate: kind === "interpolate" });
+		setFalMotion((current) => ({ ...current, status: "submitting", error: "", job: null }));
+		try {
+			const fetchImpl = commandContext ? (url, options) => fetch(url, { ...options, signal: commandContext.signal }) : undefined;
+			const submitted = await submitFalMotion({
+				kind,
+				stillA: source.a?.dataUrl,
+				stillB: source.b?.dataUrl,
+				still: source.a?.dataUrl,
+				prompt,
+				duration: source.duration ?? FAL_MOTION_MIN_DURATION,
+			}, fetchImpl);
+			const id = submitted?.job?.id;
+			if (!id) throw Object.assign(new Error(ko("생성 작업 ID를 받지 못했어요.", "The server did not return a motion job ID.")), { reason: "The motion server did not return a job id." });
+			setFalMotion((current) => ({ ...current, status: "queued", job: submitted.job, dailyRemaining: submitted.dailyRemaining }));
+			const finished = await waitForFalMotionJob(id, {
+				fetchImpl,
+				onUpdate: (job) => setFalMotion((current) => ({ ...current, job, status: job?.status ?? current.status })),
+			});
+			commandContext?.check();
+			const job = finished?.job;
+			if (job?.status !== "done") throw Object.assign(new Error(job?.error || ko("Fal 생성에 실패했어요.", "Fal motion generation failed.")), job?.error ? {} : { reason: "The AI video generation failed." });
+			setFalMotion((current) => ({ ...current, job, status: "done", dailyRemaining: finished.dailyRemaining }));
+			let footage = null;
+			if (job.video?.url) {
+				const motionSource = { kind: "url", url: job.video.url, name: `Fal H3 Max Turbo · ${job.resolution}` };
+				setMultiModelSource(motionSource);
+				// Put the completed clip through the same probe/ingest path as a
+				// manually supplied URL so GVHMR sees measured fps, duration and
+				// a ready extraction card without another generation request.
+				footage = (await ingestFootage(motionSource, commandContext)) ?? null;
+				appContext.shared.setResult({
+					mode: "video",
+					modelLabel: "Fal H3 Max Turbo",
+					prompt,
+					frame: source.a?.dataUrl ?? null,
+					videoUrl: job.video.url,
+					motion: {
+						videoUrl: job.video.url,
+						resolution: job.resolution,
+						width: job.width,
+						height: job.height,
+						fps: job.fps,
+						duration: job.resultDuration ?? job.duration,
+						cost: job.cost,
+					},
+				});
+				appContext.shared.setResultOpen(true);
+				// The result modal and the studio modal are both z-30; never stack them.
+				appContext.shared.setFalMotionStudioOpen(false);
+				appContext.notify((isKo, ko) => isKo ? "Fal 영상이 준비됐어요 · 추출 패널에서 GVHMR을 실행하세요" : "Fal video is ready · run GVHMR from the extraction panel");
+			}
+			return { job, footage, dailyRemaining: finished.dailyRemaining ?? null };
+		} catch (error) {
+			if (commandContext && (commandContext.signal.aborted || error.code === "STALE_TARGET")) throw error;
+			setFalMotion((current) => ({ ...current, status: "error", error: error.message || String(error) }));
+			return { failed: error.reason ?? `The AI video generation failed: ${error.message || error}` };
+		}
+	}
+	/** Why the chip cannot start an AI video motion now, as the user reads it:
+	 * one already running, or none left today. The lock has its own Fal card line. */
+	function falMotionUnavailable() {
+		if (!["idle", "done", "error", "failed"].includes(falMotion.status)) return ko("A generation is already running", "이미 생성이 돌고 있어요");
+		if (falMotion.dailyRemaining === 0) return ko("No AI video motion generations left today", "오늘 남은 AI 영상 모션 생성이 없어요");
+		return null;
+	}
+	function generateFalMotionFromUi(instruction) {
+		if (!appContext.shared.falMotionEnabled) showFalMotionLock();
+		else {
+			// The chip clears the typed instruction when clicked, so a refusal says why.
+			const reason = falMotionUnavailable();
+			if (reason) { appContext.notify(reason); return null; }
+		}
+		return appContext.shared.runStudioAction("motion.generateFromVideo", { instruction });
+	}
+	function publishStudioMotion(targetId, state) {
+		const current = appContext.shared.readStudioState();
+		appContext.shared.publishStudioCharacters(current.characters.map(c => c.id === targetId ? state.character : c));
+		if (state.fullMotion) appContext.shared.motionFullRef.current.set(targetId, state.fullMotion); else appContext.shared.motionFullRef.current.delete(targetId);
+		const layer = { ...createIkState(), keys: copyPhysicsKeys(state.ikState.keys), tracked: new Set(state.ikState.tracked) };
+		appContext.shared.ikStatesRef.current.set(targetId, layer);
+		if (appContext.shared.loadedLayerCharRef.current === targetId) {
+			appContext.shared.ikStateRef.current = layer;
+			appContext.shared.bufferRef.current = { waypoints: state.character.layer?.waypoints ?? [], promptClips: state.character.layer?.promptClips ?? [], motion: state.character.sessionMotion ?? null, ik: layer };
+			appContext.shared.setWaypoints(appContext.shared.bufferRef.current.waypoints); appContext.shared.setPromptClips(appContext.shared.bufferRef.current.promptClips); setMotion(appContext.shared.bufferRef.current.motion);
+			setCommittedIkEdits(state.committedIkEdits); setIkTick(n => n + 1);
+		}
+		appContext.patchTimeline({ frameCount: state.frameCount }); appContext.shared.frameCountRef.current = state.frameCount; appContext.shared.setTlFrameCount(state.frameCount);
+		if (state.renderer) appContext.shared.restoreExportRig(state.renderer);
+	}
+	function commitStudioMotion(payload) {
+		const id = payload.binding.characterId, before = appContext.shared.readStudioState(), target = before.targets.get(id);
+		const character = before.characters.find(c => c.id === id);
+		const clips = payload.schedule.blocks.map((block, index) => ({ id: `${payload.takeId}-beat-${index}`, startFrame: block.startFrame, endFrame: block.endFrameExclusive, text: block.text }));
+		const take = { ...payload.motion, studioTakeId: payload.takeId, prompt: "", sceneCalibration: payload.calibration };
+		// The same persistable ref deliverMotion saves for a UI take, placed where
+		// this take was placed, so restoreMotionRefs rebuilds it after a reload.
+		const motionRef = { url: take.url, prompt: payload.schedule.blocks.map(block => block.text).join(" "),
+			rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ, calibration: payload.calibration, studioTakeId: payload.takeId };
+		if (take.motionId) motionRef.motionId = take.motionId;
+		const next = { ...character, scale: payload.scale, sessionMotion: take, motionRef, layer: { ...character.layer, promptClips: clips } };
+		appContext.shared.recordStudioHistory("motion", id, payload.historyEntryId);
+		const renderer = target?.rig ? appContext.shared.snapshotExportRig(target.rig) : null;
+		publishStudioMotion(id, { character: next, fullMotion: payload.sourceMotion, ikState: payload.ikState,
+			frameCount: id === appContext.shared.loadedLayerCharRef.current ? Math.max(payload.schedule.frameCount, before.view.frame + 1, ...before.shots.map(s => s.endFrame + 1)) : before.frameCount,
+			committedIkEdits: [], renderer: null });
+		if (target?.rig) {
+			if (id === appContext.shared.loadedLayerCharRef.current) beginPlaybackOn(target.rig);
+			const resolved = resolveIkRig(target.rig), layer = appContext.shared.ikStatesRef.current.get(id);
+			if (resolved) Object.assign(layer, resolved, { rig: target.rig });
+			appContext.shared.poseMemberAtFrame(target.rig, take, layer, before.view.frame, IK_CORRECTION_BLEND_FRAMES);
+			target.rig.updateMatrixWorld(true);
+		}
+		// Preimage bones live on the native entry, not on the installed candidate.
+		appContext.castHistory.past.at(-1).studio.state.renderer = renderer;
+		appContext.shared.markSemanticEdit("characters", before.characters, appContext.live.characters);
+		// Store the take's bytes the way a project save embeds a take
+		// (collectProjectSerialized): the same record, caches and motion store, so
+		// the ref's motionId resolves after a reload without the bridge.
+		if (take.sourceBytes) (async () => {
+			let record = appContext.shared.motionEncodingCacheRef.current.get(take.sourceBytes);
+			if (!record) {
+				record = await encodeMotionResource(take.sourceBytes, { prompt: motionRef.prompt, sourceUrl: motionRef.url });
+				appContext.shared.motionEncodingCacheRef.current.set(take.sourceBytes, record);
+			}
+			appContext.shared.projectMotionsRef.current.set(record.motionId.toLowerCase(), record);
+			const db = await openMotionDb();
+			try { await putMotion(db, record); } finally { db.close(); }
+		})().catch((error) => console.warn("[cozyclay] could not cache motions", error));
+	}
+	async function loadLiveMotion(args) {
+		if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
+		const prompt = typeof args.prompt === "string" ? args.prompt : "";
+		if (args.drop != null && !normalizeRootDrop(args.drop)) throw new Error("Invalid drop");
+		// Optional per-phase blocks land on the Prompts lane the way hand-authored
+		// ones do. The bridge clock is 20 fps for ARDY and 24 fps for Kimodo;
+		// convert only when the selected backend's clock differs from the lane.
+		let clips = null;
+		if (Array.isArray(args.blocks) && args.blocks.length) {
+			const toTimeline = (frame) => Math.round((frame * TIMELINE_FPS) / ARDY_FPS);
+			const stamp = Date.now();
+			clips = args.blocks.map((block, i) => ({
+				id: `prompt-${stamp}-${i}`,
+				startFrame: toTimeline(block.startFrame),
+				endFrame: toTimeline(block.endFrame),
+				text: typeof block.prompt === "string" ? block.prompt : "",
+			}));
+		}
+		const targetCharacterId = args.characterId ?? appContext.live.state.activeCharacterId;
+		const targetPromptClips = clips;
+		await appContext.live.state.loadMotion(
+			args.url,
+			prompt,
+			undefined,
+			args.drop ?? null,
+			targetCharacterId,
+			targetPromptClips,
+		);
+		if (clips) {
+			appContext.live.state.setTlFrameCount((count) => Math.max(count, clips[clips.length - 1].endFrame));
+		}
+		return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
+	}
+	function updateFalMotionQuota(dailyRemaining) { setFalMotion((current) => ({ ...current, dailyRemaining })); }
 	return {
+		falMotion, setFalMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, commitStudioMotion, loadLiveMotion, updateFalMotionQuota,
 		ikMode, ikChains, setIkChains, ikFkJoints, setIkFkJoints, ikFocus, setIkFocus, footSnap, setFootSnap,
 		bodyContact, setBodyContact, IK_CORRECTION_BLEND_FRAMES, autoPhysicsRunning, setAutoPhysicsRunning,
 		physicsPreview, setPhysicsPreview, physicsShow, physicsProgress, physicsOptions, setPhysicsOptions,
