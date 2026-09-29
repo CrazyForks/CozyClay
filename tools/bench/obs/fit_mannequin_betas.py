@@ -100,6 +100,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smooth-max-temperature", type=float, default=0.002)
     parser.add_argument("--minimax-steps", type=int, default=350)
     parser.add_argument("--prior", type=float, default=1e-5)
+    # Segment lengths of the rendered rig (tools/bench/obs/ybot-targets.mjs).
+    # Segments absent from the file are left out of the fit.
+    parser.add_argument("--targets-json", type=Path)
     return parser.parse_args()
 
 
@@ -163,6 +166,13 @@ def fit(args: argparse.Namespace) -> dict:
     device = torch.device("cpu")
     model, sparse, regressor = load_model(args.gvhmr_root, device)
     target, playback_scale = targets(device)
+    target_source = "cskel27 neutral offsets scaled by playback leg-height rule"
+    if args.targets_json is not None:
+        global SEGMENTS  # pylint: disable=global-statement
+        rig = json.loads(args.targets_json.read_text(encoding="utf-8"))
+        target = {name: float(value) for name, value in rig["targets"].items() if name in SEGMENTS}
+        SEGMENTS = {name: spec for name, spec in SEGMENTS.items() if name in target}
+        target_source = f"rendered rig rest pose ({rig.get('model', args.targets_json.name)}), segments: {', '.join(SEGMENTS)}"
     target_tensor = torch.tensor([target[name] for name in SEGMENTS], device=device)
 
     if args.beta_limit <= 0:
@@ -295,7 +305,7 @@ def fit(args: argparse.Namespace) -> dict:
             "smooth_max_temperature": args.smooth_max_temperature,
             "l2_prior": args.prior,
             "device": str(device),
-            "source": "cskel27 neutral offsets scaled by playback leg-height rule",
+            "source": target_source,
         },
         "betas": beta_values,
         "target_geometry": {

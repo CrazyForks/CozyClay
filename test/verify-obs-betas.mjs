@@ -33,11 +33,20 @@ for (const [name, row] of Object.entries(fit.residuals ?? {})) {
 const maxResidual = Math.max(...rows.map((row) => Math.abs(row.residual_m)));
 check(finite(fit.summary?.max_bone_length_residual_m), "max bone-length residual is missing");
 check(Math.abs(maxResidual - fit.summary.max_bone_length_residual_m) < 1e-8, "summary max residual does not reconcile");
-check(maxResidual < 0.02, `max bone-length residual ${(maxResidual * 100).toFixed(3)} cm >= 2 cm`);
+// Targets are the rendered y-bot rig (tools/bench/obs/ybot-targets.mjs). Limb
+// bones map joint-to-joint between SMPL and the Mixamo rig and must fit within
+// 1.5 cm. Widths and the upper arm span joints defined differently on the two
+// skeletons (SMPL hips/shoulders sit inside the body), so they get 3.5 cm.
+check(String(fit.method?.source).startsWith("rendered rig rest pose"), `targets must come from the rendered rig, got: ${fit.method?.source}`);
+const limbs = Object.entries(fit.residuals ?? {}).filter(([name]) => /^(thigh|shin|foot|forearm)_/.test(name));
+check(limbs.length === 8, `expected 8 limb segments, got ${limbs.length}`);
+const maxLimb = Math.max(...limbs.map(([, row]) => Math.abs(row.residual_m)));
+check(maxLimb < 0.015, `max limb residual ${(maxLimb * 100).toFixed(3)} cm >= 1.5 cm`);
+check(maxResidual < 0.035, `max bone-length residual ${(maxResidual * 100).toFixed(3)} cm >= 3.5 cm`);
 
 if (fail.length) {
 	console.error("FAIL");
 	for (const message of fail) console.error(`  ${message}`);
 	process.exit(1);
 }
-console.log(`PASS: 10 finite betas, max |beta| ${maxBeta.toFixed(3)}, ${rows.length} residuals, max bone-length residual ${(maxResidual * 100).toFixed(3)} cm`);
+console.log(`PASS: 10 finite betas, max |beta| ${maxBeta.toFixed(3)}, ${rows.length} residuals, max limb residual ${(maxLimb * 100).toFixed(3)} cm, max bone-length residual ${(maxResidual * 100).toFixed(3)} cm`);

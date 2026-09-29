@@ -69,6 +69,12 @@ export const DEFAULTS = Object.freeze({
 	// occluded fal frames (character behind the cube) fit the few visible
 	// joints in 2D yet solve to -0.8x .. 11x.
 	maxDepthRatio: 1.33,
+	// fitContacts keeps cskel27 joint/bone segments out of the scene boxes but has
+	// no skin: the rendered body still sinks in by a limb's radius. Gbest inflates
+	// every box by this skin clearance before fitting contacts. Trial (cube/sit +
+	// 3 fal): 0 cm -> max pen 9.7-16.3 cm; 8 cm -> 0-8.2 cm with B ends kept;
+	// 15 cm -> ~0 cm but B ends jump to 50 cm (contacts override the A/B pins).
+	sceneClearanceM: 0.08,
 });
 
 // ---------------------------------------------------------------- math
@@ -434,12 +440,14 @@ export function ladderStep(step, { base, mannequin, camera, endpoints, boxes = [
 		const displacement = horizontalDistance(anchored[0].rootPos, anchored[1].rootPos);
 		const pin = displacement > opts.pinMinDisplacementM;
 		const pinned = pin ? pinEndpoints(take, anchored, { windowSeconds: opts.pinWindowSeconds }) : take;
-		const contacts = fitContacts(pinned, { boxes });
+		const clearance = opts.sceneClearanceM;
+		const inflated = boxes.map((b) => ({ ...b, min: b.min.map((v) => v - clearance), max: b.max.map((v) => v + clearance) }));
+		const contacts = fitContacts(pinned, { boxes: inflated });
 		const { support, ...contactDiagnostics } = contacts.diagnostics;
 		return {
 			motion: contacts.motion,
 			smpl: g5.smpl,
-			diagnostics: { ...diagnostics, step: "Gbest", composition: "G5 + pinEndpoints (if A->B > threshold) + fitContacts", pin: { applied: pin, abDisplacementM: displacement, thresholdM: opts.pinMinDisplacementM, windowSeconds: opts.pinWindowSeconds, endpointFrames: "first and last only", anchoring: "A/B root XZ relative to A; take frame-0 root XZ moved to the origin", takeFrame0ShiftM: [-g0[0], 0, -g0[2]] }, contacts: { ...contactDiagnostics, supportFrames: support.filter((s) => s >= 0).length, boxes: boxes.length } },
+			diagnostics: { ...diagnostics, step: "Gbest", composition: "G5 + pinEndpoints (if A->B > threshold) + fitContacts", pin: { applied: pin, abDisplacementM: displacement, thresholdM: opts.pinMinDisplacementM, windowSeconds: opts.pinWindowSeconds, endpointFrames: "first and last only", anchoring: "A/B root XZ relative to A; take frame-0 root XZ moved to the origin", takeFrame0ShiftM: [-g0[0], 0, -g0[2]] }, contacts: { ...contactDiagnostics, supportFrames: support.filter((s) => s >= 0).length, boxes: boxes.length, sceneClearanceM: clearance } },
 		};
 	}
 	if (!base?.obs || !base?.rest) throw new Error(`${step} needs the base obs and its rest joints`);
