@@ -45,6 +45,8 @@ import * as aiCommands from "../src/commands/ai.js";
 
 import { readStudioSource } from "./bus/verify-domain-modules.mjs";
 import { attachStageHistory } from "./bus/stage-hygiene-fixture.mjs";
+import { castFixture } from './bus/cast-fixture.mjs';
+import { stageFixture } from './bus/stage-fixture.mjs';
 const source = readStudioSource();
 const parsed = parseSync("App.jsx", source);
 assert.deepEqual(parsed.errors, []);
@@ -151,6 +153,25 @@ const COMMAND_INPUTS = {
 	"shot.clearKeys": { shotId: "shot-1" }, "shot.setTimeline": { frameCount: 96 }, "shot.setLens": { fovDeg: 35 },
 	"shot.frame": { preset: "mocapInteraction" }, "shot.replace": { shots: [createShot("Replacement", 0, 23)] },
 	"shot.captureCamera": { shotId: "shot-1" }, "shot.placeCamera": { x: 2 },
+	'character.set': { id: 'actor', set: { subject: 'Generic' } },
+	'character.add': { character: { id: 'actor-new', subject: 'New' } },
+	'character.remove': { characterId: 'actor-other' },
+	'character.update': { characterId: 'actor', patch: { x: 2 } },
+	'character.setPose': { characterId: 'actor', pose: { id: 'new-pose', bones: {} } },
+	'character.setPromptBlocks': { characterId: 'actor', blocks: [] },
+	'characters.arrange': { ops: [{ op: 'remove', characterId: 'actor-other' }] },
+	'cast.replace': { characters: [createCharacterEntry({ id: 'replacement' })] },
+	'cast.setCustomPoses': { poses: [] },
+	'cast.savePose': { pose: { id: 'saved', bones: {} }, characterId: 'actor' },
+	'cast.removePose': { id: 'saved' },
+	'cast.showExtras': { show: true },
+	'cast.setLayer': { characterId: 'actor', layer: { promptClips: [] } },
+	'character.addPromptBlock': { characterId: 'actor', frame: 48 },
+	'character.movePromptBlock': { characterId: 'actor', id: 'block', frame: 48 },
+	'character.resizePromptBlock': { characterId: 'actor', id: 'block', edge: 'end', frame: 96 },
+	'character.changePromptBlock': { characterId: 'actor', id: 'block', text: 'Changed' },
+	'character.removePromptBlock': { characterId: 'actor', id: 'block' },
+	'motion.clear': { characterId: 'actor' },
 	"character.addWaypoint": { characterId: "actor", position: { x: 0, z: 2 }, frame: 40 },
 	"character.moveWaypoint": { characterId: "actor", position: { x: 0, z: 1.1 }, frame: 24 },
 	"character.removeWaypoint": { characterId: "actor", frame: 24 }, "character.clearWaypoints": { characterId: "actor" },
@@ -180,18 +201,21 @@ function commandFixture({ frame = 8 } = {}) {
 	const state = {
 		shots: [{ ...createShot("Shot 1", 0, 15, [{ id: "key-1", frame: 0, framing: { pos: { x: 0, y: 1.6, z: 5 }, yaw: 0, pitch: 0, fovDeg: 40 } }], { mode: "rail", cameraRail: [{ x: -2, z: 4 }, { x: 2, z: 4 }] }), id: "shot-1" }],
 		objects: [{ ...createSceneObject("sphere"), id: "parent-1" }, { ...createSceneObject("cube"), id: "object-1", parent: "parent-1" }, { ...createSceneObject("chair"), id: "group-2" }],
-		characters: [{ id: "actor", subject: "Ada" }], frame, frameCount: 48, selectedObjectId: null, activeCharacterId: "actor",
+		characters: [createCharacterEntry({ id: 'actor', subject: 'Ada', layer: { waypoints: [], promptClips: [{ id: 'block', text: 'Walk', startFrame: 0, endFrame: 48 }] } }), createCharacterEntry({ id: 'actor-other' })], customPoses: [], frame, frameCount: 48, selectedObjectId: null, activeCharacterId: "actor",
 		promptBlockCount: 0, generating: false, motionReady: true, exporting: false, canExportVideo: true,
 		scenes: [{ id: "scene-1", name: "ONE" }, { id: "scene-2", name: "TWO" }], activeSceneId: "scene-1",
 		project: { name: "Heist", hasFile: true, fileAccess: false, gesture: false },
 		aiShot: { mode: "image", imageModel: "gpt_image_2" }, falMotion: { enabled: false, status: "idle", dailyRemaining: null },
 	};
 	const entries = [], writes = [];
-	let recording = null, revision = 0, objectDomain, sceneDomain, shotDomain;
+	let recording = null, revision = 0, objectDomain, sceneDomain, shotDomain, castDomain;
 	const answers = {
 		// Like the editor's, every read is a fresh snapshot of the document.
 		state: () => ({ ...state }),
-		storeDomain: name => name === 'objects' ? objectDomain : name === 'scenes' ? sceneDomain : name === 'shot' ? shotDomain : undefined,
+		storeDomain: name => name === 'objects' ? objectDomain : name === 'scenes' ? sceneDomain : name === 'shot' ? shotDomain : name === 'cast' ? castDomain : undefined,
+		writeCharacters: rows => { state.characters = rows; },
+		writeCastState: next => { Object.assign(state, next); },
+		writePose: (id, pose) => { state.characters = state.characters.map(entry => entry.id === id ? { ...entry, pose } : entry); },
 		writeShots: rows => { state.shots = rows; },
 		writeShotState: value => { Object.assign(state, value); },
 		writeObjects: rows => { state.objects = rows; },
@@ -218,6 +242,14 @@ function commandFixture({ frame = 8 } = {}) {
 			return answers[name]?.(...args);
 		},
 	});
+	castDomain = {
+		read: () => state.characters, state: () => ({ characters: state.characters, customPoses: state.customPoses }),
+		write: update => ports.writeCharacters(typeof update === 'function' ? update(state.characters) : update),
+		writeState: update => ports.writeCastState(typeof update === 'function' ? update(castDomain.state()) : update),
+		applyPose: (id, pose) => ports.writePose(id, pose), showExtras: () => ports.writeCharacters([...state.characters]),
+		extendTimeline: () => ports.writeCharacters([...state.characters]), poses: () => [],
+		arrange: args => { const plan = arrangement({ name: 'arrange_characters', args }, state, { bounds: () => [] }); ports.writeCharacters(plan.draft); return plan; },
+	};
 	shotDomain = {
 		read: () => state.shots, state: () => ({ frameCount: state.frameCount }),
 		write: update => ports.writeShots(typeof update === 'function' ? update(state.shots) : update),
@@ -282,7 +314,7 @@ const cases = {
 	},
 	async "every command mutation writes inside one entry of its undo domain"() {
 		const mutations = Object.values(COMMAND_MODULES).flatMap(module => module.declarations).filter(entry => entry.kind === "mutation");
-		assert.equal(mutations.length, 44);
+		assert.equal(mutations.length, 63);
 		for (const declaration of mutations) {
 			// A new shot needs free room at the playhead; the others act inside shot-1.
 			const f = commandFixture({ frame: declaration.id === "shot.create" ? 24 : 8 }), [name] = Object.entries(COMMAND_MODULES).find(([, module]) => module.declarations.includes(declaration));
@@ -306,18 +338,19 @@ const cases = {
 		}
 	},
 	"an unrelated cast undo cannot revert the light"() {
-		const f = fixture();
-		f.scope.changeKeyLight("intensity", { intensity: 2 });
-		f.scope.changeKeyLight("intensity", { intensity: 2.5 });
-		assert.equal(f.depth(), 0, "stage preview is uncommitted until gesture end");
-		f.scope.endGestureUndo();
-		f.scope.changeInspectorCharacter("x", { x: 1 });
-		assert.equal(f.scope.characters[0].x, 1);
-		f.scope.undoScene();
-		assert.equal(f.scope.characters[0].x, 0, "the cast edit undoes");
-		assert.equal(f.scope.keyLight.intensity, 2.5, "the light edit before it must survive (#345 C1)");
-		f.scope.undoScene();
-		assert.deepEqual(f.scope.keyLight, createKeyLight(null), "the light gesture is its own entry");
+		const f = castFixture(stageFixture());
+		try {
+			const { txId } = f.run('run.begin', { id: 'stage.setKeyLight', args: {} });
+			for (const intensity of [2, 2.5]) assert.equal(f.run('run.update', { txId, args: { keyLight: { intensity } } }).ok, true);
+			assert.equal(f.stage.documentStore.depths().past, 0, 'stage preview is uncommitted until gesture end');
+			f.run('run.commit', { txId });
+			f.cast.changeInspectorCharacter('x', { x: 1 });
+			assert.equal(f.cast.read()[0].x, 1);
+			f.actual.undoScene();
+			assert.equal(f.cast.read()[0].x, 0, 'the cast edit undoes');
+			assert.equal(f.stage.read().keyLight.intensity, 2.5, 'cast undo preserves the earlier light edit');
+			f.actual.undoScene(); assert.deepEqual(f.stage.read().keyLight, createKeyLight(null));
+		} finally { f.dispose(); }
 	},
 	"every key-light surface records one entry per gesture"() {
 		const gestures = {
@@ -374,24 +407,21 @@ const cases = {
 			["rot", (value) => ({ rot: value }), (entry) => entry.rot],
 			["scale", (value) => ({ scale: value }), (entry) => entry.scale],
 		]) {
-			const f = fixture();
-			const before = read(f.scope.characters[0]);
-			// A scrub: NumberField opens the gesture, streams ticks, then closes it.
-			f.scope.beginGestureUndo(`character:actor:${axis}`);
-			for (const value of [1, 1.5, 2]) f.scope.changeInspectorCharacter(axis, patch(value));
-			f.scope.endGestureUndo();
-			assert.equal(f.depth(), 1, `${axis}: the whole scrub is one entry`);
-			const scrubbed = read(f.scope.characters[0]);
-			assert.equal(scrubbed, 2, `${axis}: the scrub applied`);
-			// A typed commit with no scrub is its own gesture.
-			f.scope.changeInspectorCharacter(axis, patch(2.5));
-			assert.equal(f.depth(), 2, `${axis}: a typed commit records`);
-			f.scope.undoScene();
-			assert.equal(read(f.scope.characters[0]), scrubbed, `${axis}: the typed commit undoes`);
-			f.scope.undoScene();
-			assert.equal(read(f.scope.characters[0]), before, `${axis}: the scrub undoes in one step`);
-			f.scope.redoScene();
-			assert.equal(read(f.scope.characters[0]), scrubbed, `${axis}: redo replays the scrub`);
+			const f = castFixture();
+			try {
+				const before = read(f.cast.read()[0]);
+				f.cast.beginGesture();
+				for (const value of [1, 1.5, 2]) f.cast.changeInspectorCharacter(axis, patch(value));
+				assert.equal(f.cast.documentStore.depths().past, 0, `${axis}: a scrub is a store preview`);
+				f.cast.finishGesture();
+				assert.equal(f.cast.documentStore.depths().past, 1, `${axis}: the whole scrub is one entry`);
+				const scrubbed = read(f.cast.read()[0]); assert.equal(scrubbed, 2);
+				f.cast.changeInspectorCharacter(axis, patch(2.5));
+				assert.equal(f.cast.documentStore.depths().past, 2, `${axis}: a typed commit records`);
+				f.actual.undoScene(); assert.equal(read(f.cast.read()[0]), scrubbed);
+				f.actual.undoScene(); assert.equal(read(f.cast.read()[0]), before);
+				f.actual.redoScene(); assert.equal(read(f.cast.read()[0]), scrubbed);
+			} finally { f.dispose(); }
 		}
 	},
 	"the environment reference image records, undoes and redoes"() {
@@ -481,12 +511,12 @@ const cases = {
 		assert.ok(/if \(lightGizmoObject\) endGestureUndo\(\);/.test(gizmo), "the light gizmo closes its gesture on drag end");
 		const transform = readFileSync(new URL('../src/panels/CharacterTransformPanel.jsx', import.meta.url), 'utf8');
 		for (const axis of ["x", "y", "z"]) {
-			assert.ok(new RegExp(`onChange: \\(${axis}\\) => changeInspectorCharacter\\("${axis}"`).test(transform), `the ${axis} row records`);
-			assert.ok(new RegExp(`onScrubStart: \\(\\) => beginGestureUndo\\(\`character:\\$\\{activeChar\\.id\\}:${axis}\``).test(transform), `the ${axis} row opens one entry at scrub start`);
+			assert.ok(new RegExp(`onChange: \\(${axis}\\) => run\\('character.update'`).test(transform), `the ${axis} row records through run`);
+			assert.ok(/onScrubStart: begin/.test(transform), `the ${axis} row arms its owned transaction`);
 		}
-		assert.equal((transform.match(/onScrubEnd: endGestureUndo/g) ?? []).length, 5, "every character position field closes its scrub");
-		assert.ok(/onChange=\{\(rot\) => changeInspectorCharacter\("rot", \{ rot \}\)\}/.test(transform), "the Rotation slider records");
-		assert.ok(/onChange=\{\(scale\) => changeInspectorCharacter\("scale", \{ scale \}\)\}/.test(transform), "the Scale slider records");
+		assert.equal((transform.match(/onScrubEnd: commit/g) ?? []).length, 5, 'every character position field commits its scrub');
+		assert.ok(/onChange=\{\(rot\) => run\('character.update'/.test(transform), 'Rotation goes through run');
+		assert.ok(/onChange=\{\(scale\) => run\('character.update'/.test(transform), 'Scale goes through run');
 		const environmentFoldout = readFileSync(new URL('../src/panels/EnvironmentPanel.jsx', import.meta.url), 'utf8');
 		assert.ok(/run\("stage.setEnvironment", \{ environmentImage: dataUrl \}\)/.test(environmentFoldout), "picking an environment reference records");
 		assert.ok(/onClear=\{\(\) => run\("stage.setEnvironment", \{ environmentImage: null \}\)\}/.test(environmentFoldout), "clearing the environment reference records");

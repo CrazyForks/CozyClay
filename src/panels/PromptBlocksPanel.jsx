@@ -4,10 +4,11 @@ import { Field, Dropdown } from "../ui.jsx";
 import { LINE_EDIT_TRACK_OPTIONS, MIN_CURVE_POINTS } from "../app-stage.jsx";
 import { LINE_EDIT_PINS_MAX, DRAG_RADIUS_MIN, DRAG_RADIUS_MAX, MAX_LINE_POINTS, PINNED_CURVE_ENDS } from "../line-edit.js";
 import { motionReadinessMessage, MotionReadiness } from "../motion-readiness-ui.jsx";
+import { useCastTransaction } from '../domains/cast.js';
 
 export default function PromptBlocksPanel({
 	isCharacterSelection, promptBlocksReveal, promptClips, selectedPromptId, setSelectedPromptId,
-	setArdyPrompt, setTlFrame, tlFrameCount, changePromptClip, ardySeed, changeArdySeed, motion, lineEditMode,
+	setArdyPrompt, setTlFrame, tlFrameCount, ardySeed, changeArdySeed, motion, lineEditMode,
 	toggleLineEditMode, linePreviewUrl, lineCurve, lineDrifted, lineTrack, setLineTrack, linePinMode,
 	setLinePinMode, linePins, lineClipFrames, lineEditRange, setLineRange, lineRadius, changeLineRadius,
 	lineCurveDirty, lineEditFrom, lineEditTo, lineCurvePointCount, lineDriftHint, lineCurveHidden,
@@ -15,6 +16,7 @@ export default function PromptBlocksPanel({
 	lineReadinessState, runLineEdit, openMotionSetup, recheckMotionHealth, resetLineCurve, exitLineEditMode,
 	readinessState, runStudioAction, ardyRunning, cancelArdy, ardyStatus, ardyOutcome, addPromptClip, tlFrame,
 }) {
+	const { run, begin, commit, characterId } = useCastTransaction();
 	return (
 <Foldout hidden={!isCharacterSelection} defaultOpen={false} openSignal={promptBlocksReveal} title={ko("Prompt Blocks", "프롬프트 블록")}>
 					<p className="inspector-hint">{ko("Blocks define what ARDY generates over each frame range. Selecting one also moves editing context to that prompt.", "블록은 각 프레임 범위에서 ARDY가 생성할 내용을 정합니다. 블록을 선택하면 편집 기준도 해당 프롬프트로 이동합니다.")}</p>
@@ -40,8 +42,10 @@ export default function PromptBlocksPanel({
 								<input
 									type="text"
 									value={promptClips.find((clip) => clip.id === selectedPromptId)?.text ?? ""}
+									onBlur={commit}
 									onChange={(event) => {
-										changePromptClip(selectedPromptId, event.target.value);
+										begin();
+										run('character.changePromptBlock', { characterId, id: selectedPromptId, text: event.target.value });
 										setArdyPrompt(event.target.value);
 									}}
 								placeholder={ko("describe this motion block", "이 모션 블록을 설명하세요")}

@@ -10,3 +10,4 @@ const elements = STUDIO_ELEMENTS.filter(row => row.path.startsWith('character.')
   return element;
 });
 registerElementKind('character', { collection: true, documentKey: 'characters', elements, normalize: createCharacterEntry });
+registerElementKind('poseLibrary', { collection: true, documentKey: 'customPoses', elements: [], normalize: value => value });

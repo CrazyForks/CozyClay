@@ -1731,7 +1731,6 @@ export default function App() {
 	 * next gesture starts a fresh entry instead of extending the last one. */
 	const gestureUndoRef = useRef(null);
 	function beginGestureUndo(key) {
-		recordSessionUndo(gestureUndoRef, key);
 		// NumberField hands this token back on every tick of a scrub. These edits
 		// are not store transactions, so the scrub runs with a null token.
 		return null;
@@ -7368,7 +7367,6 @@ export default function App() {
 										if (s !== undefined) next.scale = THREE.MathUtils.clamp(s, CHARACTER_SCALE_BOUNDS.min, CHARACTER_SCALE_BOUNDS.max);
 										return next;
 									})}
-									onDragStart={castDomain.recordCharacterUndo}
 								/>
 							)}
 
@@ -7476,8 +7474,6 @@ export default function App() {
 								fovDeg={fovDeg}
 								characters={characters}
 								onMoveCharacter={moveCharacter}
-								onCharacterGestureStart={castDomain.recordCharacterUndo}
-								onWaypointGestureStart={() => beginGestureUndo("waypoint-drag")}
 								onCameraGestureStart={beginCameraFramingGesture}
 								pathStart={activeChar}
 								waypoints={waypoints}
@@ -7924,8 +7920,6 @@ export default function App() {
 					openStudio={openStudio}
 					posing={posing}
 					removeCharacter={removeCharacter}
-					recordSessionUndo={recordSessionUndo}
-					tintSessionRef={tintSessionRef}
 					setShowB={setShowB}
 				/>
 
@@ -7939,8 +7933,6 @@ export default function App() {
 					isCharacterSelection={isCharacterSelection}
 					activeChar={activeChar}
 					changeInspectorCharacter={changeInspectorCharacter}
-					beginGestureUndo={beginGestureUndo}
-					endGestureUndo={endGestureUndo}
 				/>
 
 				{/* Rig and Pose are chosen once when a character is cast and then left
@@ -7949,7 +7941,6 @@ export default function App() {
 				<RigPanel
 					isCharacterSelection={isCharacterSelection}
 					activeChar={activeChar}
-					recordCharacterUndo={castDomain.recordCharacterUndo}
 					updateCharacterAt={updateCharacterAt}
 					activeCharIndex={activeCharIndex}
 				/>
@@ -7965,8 +7956,6 @@ export default function App() {
 					ikMode={ikMode}
 					ikApplyPoseAsKey={ikApplyPoseAsKey}
 					motion={motion}
-					clearMotion={clearMotion}
-					recordCharacterUndo={castDomain.recordCharacterUndo}
 					updateCharacterAt={updateCharacterAt}
 					setStudioPick={setStudioPick}
 					setToast={appContext.notify}
@@ -8195,11 +8184,7 @@ export default function App() {
 										return;
 									}
 									const hadMotion = Boolean(motion);
-									// Apply is one gesture: the clear's snapshot covers the pose
-									// write that follows it.
-									if (hadMotion) clearMotion();
-									else if (posingIndex >= 0) castDomain.recordCharacterUndo();
-									setPosed(pose);
+									if (posingChar) castDomain.run('character.setPose', { characterId: posingChar.id, pose: pose.id, clearMotion: hadMotion });
 									closeStudio();
 									setToast(hadMotion ? ko("Cleared the current motion and applied the pose", "현재 모션을 지우고 포즈를 적용했어요") : ko("Pose applied", "포즈를 적용했어요"));
 								} else {
@@ -8207,10 +8192,8 @@ export default function App() {
 								}
 							}}
 							onReset={() => {
-								if (motion) clearMotion();
-								else if (posingIndex >= 0) castDomain.recordCharacterUndo();
+								if (posingChar) castDomain.run('character.setPose', { characterId: posingChar.id, pose: DEFAULT_POSE.id, clearMotion: Boolean(motion) });
 								setStudioPick(DEFAULT_POSE.id);
-								setPosed(DEFAULT_POSE);
 								setToast(ko("Back to the default pose", "기본 포즈로 돌아왔어요"));
 							}}
 							onSave={savePose}
@@ -8471,7 +8454,6 @@ export default function App() {
 				onShotCut={() => runStudioAction("shot.create")}
 				onShotSplit={(shotId) => runStudioAction("shot.split", { shotId })}
 				onShotMove={(shotId, targetFrame) => runStudioAction("shot.reorder", { shotId, startFrame: Math.max(0, Math.round(targetFrame)) })}
-				onEditGestureStart={beginTimelineEditGesture}
 				onClearMotion={motion ? clearMotion : null}
 			/>
 				</div>

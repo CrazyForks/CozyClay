@@ -4,8 +4,10 @@ import { CHARACTER_MODEL_IDS } from "../scenes.js";
 import { PoseThumbPreview } from "../posestudio.jsx";
 import { DEFAULT_POSE } from "../poses.js";
 import { CHARACTER_MODEL_LABELS } from "../app-stage.jsx";
+import { useBus } from '../app-context.js';
 
-export default function RigPanel({ isCharacterSelection, activeChar, recordCharacterUndo, updateCharacterAt, activeCharIndex }) {
+export default function RigPanel({ isCharacterSelection, activeChar }) {
+	const { run } = useBus();
 	return (
 <Foldout hidden={!isCharacterSelection} defaultOpen={false} title={ko("Rig", "리그")}>
 					{/* The rig is a property of the character, and swapping it is a
@@ -22,8 +24,7 @@ export default function RigPanel({ isCharacterSelection, activeChar, recordChara
 								data-rig-id={id}
 								onClick={() => {
 									if (activeChar.model === id) return;
-									recordCharacterUndo();
-									updateCharacterAt(activeCharIndex, { model: id });
+									run('character.update', { characterId: activeChar.id, patch: { model: id } });
 								}}
 							>
 								<PoseThumbPreview model={id} pose={activeChar.pose ?? DEFAULT_POSE} alt={CHARACTER_MODEL_LABELS[id]} />

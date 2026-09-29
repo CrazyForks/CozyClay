@@ -21,8 +21,8 @@ let useCast;
 try { ({ useCast } = await server.ssrLoadModule('/src/domains/cast.js')); }
 finally { await server.close(); }
 
-export function castFixture() {
-  const f = appFixture(), scope = f.scope, app = scope.appContext;
+export function castFixture(f = appFixture()) {
+  const scope = f.scope, app = scope.appContext;
   Object.assign(scope, { startupStage: { characters: f.characterRef.current, hasCharSheet: false }, startupShotState: {},
     rigReportersRef: { current: new Map() }, rigWaitersRef: { current: new Map() }, promptTextSessionRef: { current: null },
     setArdyDuration() {}, setArdyPrompt() {}, setActiveWaypointId() {}, setPendingWaypointFrame() {},

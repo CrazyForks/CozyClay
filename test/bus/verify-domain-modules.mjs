@@ -31,7 +31,7 @@ function stateNames(ast) {
 }
 const domains = {
   motion: { states: ['motion', 'takeRecipe', 'takeVersions'], panels: ['VideoCapturePanel', 'RigControlPanel'] },
-  cast: { states: ['characters', 'customPoses', 'waypoints', 'promptClips'], panels: ['SubjectsPanel', 'CharacterTransformPanel', 'RigPanel', 'PosePanel', 'PromptBlocksPanel'] },
+  cast: { states: ['domain', 'activeCharacterId'], panels: ['SubjectsPanel', 'CharacterTransformPanel', 'RigPanel', 'PosePanel', 'PromptBlocksPanel'] },
   shots: { states: ['domain', 'tlFrame'], panels: ['CameraPanel'] },
   objects: { states: ['domain'], panels: ['PropsPanel', 'ObjectTransformPanel'] },
   scenes: { states: ['domain'], panels: ['ProjectPanel'] },

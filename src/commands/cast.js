@@ -6,6 +6,7 @@ import { characterOf, fail, changedIds } from "./shared.js";
 import { elementSetSchema, registerElementSet } from './elements.js';
 import './elements/character.js';
 import { createCharacterEntry } from '../scenes.js';
+import { DEFAULT_POSE } from '../poses.js';
 import { createStableItemId, updateStableItem, removeStableItem } from '../stable-items.js';
 import { movePromptClipFrames } from '../ardy/prompt-clips.js';
 import { STUDIO_TOOL_SCHEMAS, StudioSchemas } from '../studio-agent-protocol.js';
@@ -25,6 +26,8 @@ const semantic = [
 	mutation('characters.arrange', 'Arrange characters', STUDIO_TOOL_SCHEMAS.arrange_characters),
 	mutation('cast.replace', 'Replace cast', input({ characters: { type: 'array', items: record, minItems: 1 } }), 'ui-only'),
 	mutation('cast.setCustomPoses', 'Set pose library', input({ poses: { type: 'array', items: record } }), 'ui-only'),
+	mutation('cast.savePose', 'Save pose', input({ pose: record, characterId: id, clearMotion: { type: 'boolean' } }, ['pose']), 'ui-only'),
+	mutation('cast.removePose', 'Remove saved pose', input({ id }), 'ui-only'),
 	mutation('cast.showExtras', 'Show extra subjects', input({ show: { type: 'boolean' } }), 'ui-only'),
 	mutation('cast.setLayer', 'Set character layer', input({ characterId: id, layer: record }), 'ui-only'),
 	...['add', 'move', 'resize', 'change', 'remove'].map(verb => mutation(`character.${verb}PromptBlock`, `${verb} prompt block`,
@@ -76,13 +79,28 @@ export function register(registry, ports) {
 		},
 		'cast.replace': ({ characters }) => owner().write(characters),
 		'cast.setCustomPoses': ({ poses }) => owner().writeState(before => ({ ...before, customPoses: poses })),
+		'cast.savePose': ({ pose, characterId, clearMotion }) => {
+			if (characterId) character(characterId);
+			owner().writeState(before => ({ ...before, customPoses: [...before.customPoses.filter(entry => entry.id !== pose.id), pose] }));
+			if (characterId) owner().applyPose(characterId, pose, clearMotion);
+		},
+		'cast.removePose': ({ id }) => owner().writeState(before => ({
+			characters: before.characters.map(entry => entry.pose?.id === id ? { ...entry, pose: DEFAULT_POSE } : entry),
+			customPoses: before.customPoses.filter(entry => entry.id !== id),
+		})),
+
 		'cast.showExtras': ({ show }) => owner().showExtras(show),
 		'cast.setLayer': ({ characterId, layer }) => patch(characterId, { layer: { ...character(characterId).layer, ...layer } }),
 	};
 	registerElementSet({ register(entry) {
 		registry.register({ ...entry, available: mounted, run(args) {
-			const expand = op => Object.hasOwn(op.set, 'pose') ? { ...op, set: { ...op.set, pose: pose(op.set.pose) } } : op;
-			return entry.run(args.ops ? { ops: args.ops.map(expand) } : expand(args));
+			// A pose id selects a complete library entry, not a deep bone patch.
+			const ops = args.ops ?? [args];
+			const poses = ops.filter(op => Object.hasOwn(op.set, 'pose')).map(op => ({ id: op.id, value: pose(op.set.pose) }));
+			const fields = ops.map(({ id, set: { pose: _pose, ...set } }) => ({ id, set }));
+			const result = entry.run(args.ops ? { ops: fields } : fields[0]);
+			for (const selected of poses) owner().applyPose(selected.id, selected.value, false);
+			return result;
 		} });
 	} }, ports, semantic[0]);
 	for (const declaration of semantic.slice(1)) registry.register({ ...declaration, available: mounted, run(args) {
