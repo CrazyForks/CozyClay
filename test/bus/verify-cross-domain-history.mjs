@@ -33,7 +33,7 @@ for (const surface of ['keyboard', 'receipt']) {
     edit('character.addWaypoint', { characterId: 'actor-a', frame: 24, position: { x: 1, z: 0 } });
     edit('fixtureEarly.set', { amount: 2 });
     edit('stage.setStyle', { style: 'Cross-domain order' });
-    const objectReceipt = f.binding.handlers.arrange_objects(f.request('arrange_objects', { ops: [{ op: 'create', kind: 'cube', position: { world: { x: 1, y: 0, z: 0 } } }] }));
+    const objectReceipt = f.binding.handlers.arrange_objects(f.request('arrange_objects', { ops: [{ op: 'create', source: { kind: 'cube' }, position: { world: { x: 1, y: 0, z: 0 } } }] }));
     assert.equal(objectReceipt.ok, true, JSON.stringify(objectReceipt));
     receipts.push(objectReceipt); snapshots.push(snapshot());
     edit('fixtureLate.set', { amount: 2 });

@@ -14,7 +14,7 @@ export function createAppContext({
   characters: charactersRef = ref(null), scenes: scenesRef = ref(null),
   motion: motionRef = ref(null), state: liveStateRef = ref(null), getBus, notify,
 } = {}) {
-  const storeDomains = new Map();
+  const storeDomains = new Map(), historyStamps = new WeakMap();
   const storeDomain = domain => storeDomains.get(domain);
   const storeDomainForReceipt = receipt => [...storeDomains.values()].find(domain => domain.documentStore.isRetained(receipt?.undo?.historyEntryId));
   const registeredDomains = () => [...storeDomains.values()];
@@ -35,8 +35,47 @@ export function createAppContext({
     // Registration is per editor, never global. Render projections share it;
     // identity-checked disposal cannot remove a newer owner of the same slice.
     registerStoreDomain(undoDomain, handle) {
+      const store = handle.documentStore;
+      if (store && !historyStamps.has(store)) {
+        const stamps = new Map();
+        historyStamps.set(store, stamps);
+        const stamp = result => {
+          const id = result.historyEntryId;
+          if (id && !stamps.has(id)) stamps.set(id, { tick: nextTick(), cast: charHistoryRef.current.past.at(-1)?.tick ?? 0,
+            objects: this.shared?.objects ?? this.shared?.storeRef?.current.objects ?? currentPorts.read?.().objects });
+          for (const id of stamps.keys()) if (!store.isRetained(id)) stamps.delete(id);
+          return result;
+        };
+        // Stamp the actual commit, not transaction previews, cancellation, load
+        // or traversal. Keep the store/handle identities and native anchors.
+        const begin = store.beginAction, record = store.recordAction;
+        store.beginAction = (...args) => {
+          const session = begin(...args);
+          return { ...session, commit: () => stamp(session.commit()) };
+        };
+        store.recordAction = (...args) => {
+          const result = record(...args);
+          return result?.then ? result.then(stamp) : stamp(result);
+        };
+      }
       storeDomains.set(undoDomain, handle);
       return () => { if (storeDomains.get(undoDomain) === handle) storeDomains.delete(undoDomain); };
+    },
+    nextStoreHistory(redo, objects) {
+      const cast = charHistoryRef.current.past.at(-1)?.tick ?? 0;
+      const nativeRedo = charHistoryRef.current.future.at(-1)?.tick ?? Infinity;
+      const candidates = registeredDomains().flatMap(domain => {
+        const store = domain.documentStore;
+        if (!store || !(redo ? store.canRedo() : store.canUndo())) return [];
+        const entry = redo ? store.history().future[0] : store.history().present;
+        const stamp = historyStamps.get(store)?.get(entry.historyEntryId);
+        // Object traversal advances objectClock. Retained native boundaries,
+        // not that traversal tick, say when an older commit is reachable.
+        if (!stamp || stamp.objects !== objects || stamp.cast !== cast || (redo && nativeRedo < stamp.tick)) return [];
+        return [{ domain, tick: stamp.tick }];
+      });
+      candidates.sort((a, b) => redo ? a.tick - b.tick : b.tick - a.tick);
+      return candidates[0]?.domain;
     },
     // Scene slices are keyed by the registered undo domain. A module whose
     // persistence shape differs can select its slice without changing App.

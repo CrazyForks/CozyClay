@@ -6473,14 +6473,24 @@ export default function App() {
 	}
 	function canUndoStudioReceipt(receipt) {
 		const owned = appContext.storeDomainForReceipt(receipt);
-		return owned ? owned.canUndo(receipt.undo.historyEntryId) : castDomain.canUndoNativeStudioReceipt(receipt);
+		const next = appContext.nextStoreHistory(false, storeRef.current.objects);
+		if (owned) return next === owned && owned.canUndo(receipt.undo.historyEntryId);
+		if (next || !castDomain.isNativeStudioHistoryRetained(receipt)) return false;
+		const top = appContext.castHistory.past.at(-1), id = receipt.undo.historyEntryId;
+		const entry = studioHistoryRef.current.get(id);
+		// A later store edit followed by Undo changes the revision, but does
+		// not retire this native entry. Compare retained history identities.
+		return entry.depth !== undefined
+			? entry.depth === storeRef.current.depths().past && entry.tick >= (top?.tick ?? 0)
+			: top?.studio?.historyEntryId === id && top.studio.objects === storeRef.current.objects;
 	}
 	function isStudioHistoryRetained(receipt) {
 		return Boolean(appContext.storeDomainForReceipt(receipt)) || castDomain.isNativeStudioHistoryRetained(receipt);
 	}
 
 	function stepStudioHistory(redo) {
-		return appContext.storeDomains().some(domain => domain.stepHistory(redo)) || castDomain.stepNativeStudioHistory(redo);
+		const owned = appContext.nextStoreHistory(redo, storeRef.current.objects);
+		return owned ? owned.stepHistory(redo) : castDomain.stepNativeStudioHistory(redo);
 	}
 	function commitStudioDraft(payload) {
 		const owned = appContext.storeDomain(payload.domain);
