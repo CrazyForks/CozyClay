@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { z } from "zod";
 import { projectFixture } from "../test/bus/project-fixture.mjs";
+import { castFixture } from "../test/bus/cast-fixture.mjs";
+import { DEFAULT_POSE } from "../src/poses.js";
 import { dispatchLiveFrame } from "../src/live-control.js";
 import { SCENES_VERSION, readSceneDocument, serializeSceneDocument } from "../src/scenes.js";
 import { createProjectDocument } from "../src/project.js";
@@ -25,8 +27,9 @@ const bounded = (promise, label) => {
 		timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), 15_000);
 	})]).finally(() => clearTimeout(timer));
 };
-export async function studio({ projectRoot } = {}) {
-	const f = projectFixture();
+export async function studio({ projectRoot, withCast = false } = {}) {
+	const project = projectFixture();
+	const f = withCast ? castFixture(project) : project;
 	// Publish the selection React renders after a room swap. The domain owns
 	// the swap and all authored state; this replaces only the renderer seam.
 	f.actionHandlers.current.afterRender = async () => {
@@ -53,7 +56,11 @@ export async function studio({ projectRoot } = {}) {
 		});
 	};
 	const legacy = f.objects.createLegacyObjectHandlers((args, keys) => Object.fromEntries(keys.filter(key => args[key] !== undefined).map(key => [key, args[key]])));
-	const handlers = { ...f.binding.handlers, ...legacy, describe,
+	const castLegacy = withCast ? f.cast.createLegacyCastHandlers(
+		(args, keys) => Object.fromEntries(keys.filter(key => args[key] !== undefined).map(key => [key, args[key]])),
+		(rows, ref) => rows.find(row => row.id === ref) ?? rows[/^[A-Za-z]$/.test(ref) ? ref.toUpperCase().charCodeAt(0) - 65 : Number(ref) - 1],
+	) : {};
+	const handlers = { ...f.binding.handlers, ...legacy, ...castLegacy, describe,
 		set_camera: args => f.scope.shotsDomain.setLiveCamera(args),
 		load_scenes: args => f.project.loadLiveScenes(args),
 	};
@@ -293,6 +300,98 @@ cases.confirmation = async () => {
 		const reused = await s.call("studio_run", { action: "load_scenes", args: { document: other }, confirmationToken });
 		assert.equal(JSON.parse(reused.content[0].text).code, "CONFIRMATION_REQUIRED");
 	} finally { process.chdir(cwd); await s.close(); await rm(root, { recursive: true, force: true }); }
+};
+
+cases.cast = async () => {
+	const s = await studio({ withCast: true });
+	const snapshot = () => structuredClone({ characters: s.f.cast.read(), timeline: s.f.binding.refresh().frameCount });
+	const undo = async value => {
+		const result = await s.call("studio_run", { action: "edit.undo", args: { receiptId: value.receiptId } });
+		assert.equal(JSON.parse(result.content[0].text).status, "undone", JSON.stringify(result));
+	};
+	try {
+		const before = snapshot();
+		const addArgs = { subject: "New performer", model: "x-bot-tpose", x: 2, z: -3, facing: 45,
+			commandId: crypto.randomUUID(), expectedRevision: s.f.binding.refresh().revision };
+		const added = receipt(await s.call("add_character", addArgs), "character.add");
+		assert.equal(added.undo.entries, 1);
+		assert.ok(added.revision.after > added.revision.before);
+		const id = added.affectedIds.find(id => !before.characters.some(row => row.id === id));
+		const created = s.f.cast.read().find(row => row.id === id);
+		assert.deepEqual([created.subject, created.model, created.x, created.z, created.rot], [addArgs.subject, addArgs.model, 2, -3, 45]);
+		assert.deepEqual(created.pose, DEFAULT_POSE);
+		assert.deepEqual(receipt(await s.call("add_character", addArgs), "character.add"), added, "retry replays the receipt without a second actor");
+		await undo(added); assert.deepEqual(snapshot(), before);
+		const again = receipt(await s.call("add_character", { subject: "Removable performer" }), "character.add");
+		const newId = again.affectedIds.find(id => !before.characters.some(row => row.id === id));
+		for (const [reference, target] of [["A", "actor-a"], ["2", "actor-b"], [newId, newId]]) {
+			const prior = snapshot();
+			const moved = receipt(await s.call("place_character", { character: reference, x: 1.5, y: 0.8, z: -2, facing: 90, subject: "Updated performer", hidden: true }), "character.update");
+			const actor = s.f.cast.read().find(row => row.id === target);
+			assert.deepEqual([actor.x, actor.y, actor.z, actor.rot, actor.subject, actor.hidden], [1.5, 0.8, -2, 90, "Updated performer", true]);
+			assert.deepEqual(s.f.cast.read().filter(row => row.id !== target), prior.characters.filter(row => row.id !== target));
+			await undo(moved); assert.deepEqual(snapshot(), prior);
+		}
+		const noop = receipt(await s.call("place_character", { character: "A", x: s.f.cast.read()[0].x }), "character.update");
+		assert.equal(noop.status, "noop"); assert.equal(noop.undo, null);
+		const missing = await s.call("place_character", { character: "missing", x: 1 });
+		assert.equal(JSON.parse(missing.content[0].text).code, "STALE_TARGET");
+
+		// Prompt authoring follows the EDITOR's active actor, not MCP focus.
+		await s.call("focus_character", { character: "A" });
+		s.f.cast.setActiveCharacterId("actor-b"); s.f.cast.switchActiveCharacterLayer();
+		assert.equal((await s.f.run("character.addWaypoint", { characterId: "actor-b", frame: 24, position: { x: 4.5, z: 0 } })).ok, true);
+		const beforeBlocks = snapshot();
+		const beats = [{ text: "A person walks forward.", seconds: 6 }, { text: "A person stops.", seconds: 2 }];
+		const promptArgs = { beats, commandId: crypto.randomUUID(), expectedRevision: s.f.binding.refresh().revision };
+		const scheduled = receipt(await s.call("set_prompt_blocks", promptArgs), "character.setPromptBlocks");
+		assert.equal(scheduled.undo.entries, 1);
+		const actorB = s.f.cast.read().find(row => row.id === "actor-b");
+		const clips = actorB.layer.promptClips;
+		assert.equal(clips.length, 3); assert.equal(clips[0].startFrame, 0); assert.equal(clips.at(-1).endFrame, 192);
+		assert.ok(clips.every((clip, i) => clip.endFrame > clip.startFrame && clip.endFrame - clip.startFrame <= 120 && (i === 0 || clip.startFrame === clips[i - 1].endFrame)));
+		assert.deepEqual(actorB.layer.waypoints, beforeBlocks.characters.find(row => row.id === "actor-b").layer.waypoints);
+		assert.deepEqual(s.f.cast.read().filter(row => row.id !== "actor-b"), beforeBlocks.characters.filter(row => row.id !== "actor-b"));
+		assert.deepEqual(receipt(await s.call("set_prompt_blocks", promptArgs), "character.setPromptBlocks"), scheduled);
+		await undo(scheduled); assert.deepEqual(snapshot(), beforeBlocks);
+
+		const beforeRemove = snapshot();
+		const removed = receipt(await s.call("remove_character", { character: newId }), "character.remove");
+		assert.equal(s.f.cast.read().some(row => row.id === newId), false);
+		await undo(removed); assert.deepEqual(snapshot(), beforeRemove);
+		for (const [name, args] of [["add_character", { subject: "Stale actor" }], ["place_character", { character: "A", x: 8 }],
+			["remove_character", { character: newId }], ["set_prompt_blocks", { beats }]]) {
+			const prior = snapshot();
+			const result = await s.call(name, { ...args, expectedRevision: s.f.binding.refresh().revision + 99 });
+			assert.equal(result.isError, true, `${name} accepted a stale revision`);
+			const refused = JSON.parse(result.content[0].text); validateReceipt(refused);
+			assert.equal(refused.code, "STALE_SCENE"); assert.equal(refused.mutated, false);
+			assert.deepEqual(snapshot(), prior);
+		}
+		// A concurrent edit between reference resolution and commit must refuse
+		// the admitted revision rather than silently retargeting slot B.
+		const command = s.hub.command.bind(s.hub);
+		let interleaved = false;
+		s.hub.command = async (name, ...args) => {
+			const value = await command(name, ...args);
+			if (name === "describe" && !interleaved) {
+				interleaved = true;
+				assert.equal((await s.f.run("character.update", { characterId: "actor-b", patch: { subject: "Human edit" } })).ok, true);
+			}
+			return value;
+		};
+		const raced = await s.call("place_character", { character: "B", x: 9 });
+		assert.equal(JSON.parse(raced.content[0].text).code, "STALE_SCENE");
+		assert.equal(s.f.cast.read().find(row => row.id === "actor-b").x, 4);
+		s.hub.command = command;
+		s.f.cast.setActiveCharacterId("actor-a"); s.f.cast.switchActiveCharacterLayer();
+		receipt(await s.call("remove_character", { character: "2" }), "character.remove");
+		receipt(await s.call("remove_character", { character: "B" }), "character.remove");
+		const final = await s.call("remove_character", { character: "A" });
+		assert.equal(JSON.parse(final.content[0].text).code, "INVALID_ARGUMENT");
+		assert.equal(s.f.cast.read().length, 1);
+		assert.ok(s.wire.every(frame => ["inspect_studio", "run_action", "describe"].includes(frame.name)), "cast aliases use no legacy mutation frames");
+	} finally { await s.close(); }
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
