@@ -23,6 +23,13 @@ const bounded = (promise, label) => {
 };
 export async function studio() {
 	const f = projectFixture();
+	// Publish the selection React renders after a room swap. The domain owns
+	// the swap and all authored state; this replaces only the renderer seam.
+	f.actionHandlers.current.afterRender = async () => {
+		const id = f.live.current.characters[0]?.id;
+		f.live.current.activeCharacterId = id;
+		f.live.current.studioSelection = id ? { kind: "character", id } : null;
+	};
 	const hub = await startLiveHub(0);
 	const wire = [], events = [];
 	const sendEvent = hub.sendEvent.bind(hub);

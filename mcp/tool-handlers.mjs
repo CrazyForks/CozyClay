@@ -180,22 +180,27 @@ const STUDIO_IDENTITY_KEYS = ["workspaceId", "documentEpoch", "sceneId", "sceneE
  * the open document and its current revision like the agent's run_action. Its
  * declaration (read from the editor, never from this server) sets the hub
  * deadline unless the caller gives one. */
-const runStudioCommand = async ({ action, args, expectedRevision, commandId, timeoutMs }) => {
+const executeStudioCommand = async ({ action, args, expectedRevision, commandId, timeoutMs, inspected }) => {
 	const workspaceHandle = liveWorkspace.getStore();
-	const inspected = await liveHub.command("inspect_studio", { scope: "actions", ids: [action] }, workspaceHandle);
+	inspected ??= await liveHub.command("inspect_studio", { scope: "actions", ids: [action] }, workspaceHandle);
 	const context = inspected?.context;
 	if (!context?.host || !Number.isSafeInteger(context.revision?.scene)) throw new Error("The editor did not return a Studio context to admit this command against.");
 	const declared = inspected.actions?.find((row) => row.id === action);
 	const receipt = await liveHub.command("run_action", {
 		name: "run_action",
-		args: { action, args: args ?? {} },
+		args: { action, args: typeof args === "function" ? await args(context) : args ?? {} },
 		commandId: commandId ?? randomUUID(),
 		host: Object.fromEntries(STUDIO_IDENTITY_KEYS.map((key) => [key, context.host[key]])),
 		expectedRevision: expectedRevision ?? context.revision.scene,
 	}, workspaceHandle, { timeoutMs: timeoutMs ?? declared?.timeoutMs });
-	// A refusal is the editor's receipt: its code and recovery are the answer.
-	return { content: [{ type: "text", text: JSON.stringify(receipt) }], ...(receipt?.ok === false ? { isError: true } : {}) };
+	return receipt;
 };
+// A refusal is the editor's receipt: its code and recovery are the answer.
+const studioResult = (...receipts) => ({
+	content: receipts.map(receipt => ({ type: "text", text: JSON.stringify(receipt) })),
+	...(receipts.some(receipt => receipt.ok === false) ? { isError: true } : {}),
+});
+const runStudioCommand = async options => studioResult(await executeStudioCommand(options));
 
 const scene = () => activeScene(state.doc.scenes, state.doc.activeSceneId);
 const stage = () => scene().stage;
@@ -274,6 +279,7 @@ const framing = () => {
 
 const currentShot = () => deriveShot(state.camera, subject(), fov(), undefined, filmback());
 
+// Retained for the four cast mutators until the cast commands merge in #442.
 const appliedLiveMutation = async (name, args) => {
 	const workspaceHandle = liveWorkspace.getStore();
 	const value = await liveHub.command(name, args, workspaceHandle);
@@ -707,14 +713,16 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 			async ({ x, y, z: zPos, focal_mm, look_at_x, look_at_y, look_at_z }) => {
 				if (liveHub?.connected) {
 					try {
-						// The aim is only forwarded when the caller gave a whole point: a
-						// partial target has no direction, and an omitted one deliberately
-						// leaves the live editor's orientation exactly where it was.
-						const aim = [look_at_x, look_at_y, look_at_z].every((value) => value !== undefined)
-							? { lookAtX: look_at_x, lookAtY: look_at_y, lookAtZ: look_at_z }
-							: {};
-						await appliedLiveMutation("set_camera", { x, y, z: zPos, focalMm: focal_mm, ...aim });
-						return text(`Camera set.\n\n${shotReport()}`);
+						return await runStudioCommand({ action: "shot.frame", args: context => {
+							const camera = context.camera;
+							const position = { x: x ?? camera.position.x, y: y ?? camera.position.y, z: zPos ?? camera.position.z };
+							// Preserve direction when no complete explicit aim point was given.
+							const lookAt = [look_at_x, look_at_y, look_at_z].every(value => value !== undefined)
+								? { x: look_at_x, y: look_at_y, z: look_at_z }
+								: Object.fromEntries(["x", "y", "z"].map(axis => [axis, position[axis] + camera.lookAt[axis] - camera.position[axis]]));
+							return { subjectIds: [state.focusLocked ? state.focus : context.activeCharacterId],
+								framing: { exact: { position, lookAt, focalMm: focal_mm ?? camera.focalMm } } };
+						} });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -760,8 +768,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				},
 			},
 			async ({ size, view, level, side, focal_mm }) => {
+				let inspected;
 				if (liveHub?.connected) {
 					try {
+						inspected = await liveHub.command("inspect_studio", { scope: "actions", ids: ["shot.frame"] }, liveWorkspace.getStore());
 						await refreshLiveDescription();
 					} catch (error) {
 						return liveError(error);
@@ -834,19 +844,13 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				};
 				if (liveHub?.connected) {
 					try {
-						// Placing the lens is only half the shot. deriveShot and captureFraming
-						// both measure as if the lens points at the framing pivot (see
-						// aimAtSubject), which the in-memory path gets for free because it has
-						// no orientation at all. A live editor has one and keeps it, so a
-						// position-only move orbited every view except `front` off the subject
-						// while the slate still read "98% of frame height". Send the same pivot
-						// the vocabulary is measured against, with the position.
-						await appliedLiveMutation("set_camera", {
-							...nextCamera,
-							lookAtX: s.x,
-							lookAtY: FRAMING_PIVOT_Y,
-							lookAtZ: s.z,
-						});
+						return await runStudioCommand({ action: "shot.frame", inspected, args: {
+							subjectIds: [(findCharacter(state.focus) ?? cast()[0]).id],
+							framing: { exact: {
+								position: { x: nextCamera.x, y: nextCamera.y, z: nextCamera.z },
+								lookAt: { x: s.x, y: FRAMING_PIVOT_Y, z: s.z }, focalMm: lensMm,
+							} },
+						} });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1033,8 +1037,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 			async ({ kind, x, z: zPos, y, facing, name, parent }) => {
 				if (liveHub?.connected) {
 					try {
-						const result = await appliedLiveMutation("place_object", { kind, x, z: zPos, y, rot: facing, name, parent });
-						return text(`Placed object as ${result?.id ?? "unknown"}.\n\n${sceneReport()}`);
+						return await runStudioCommand({ action: "object.add", args: { kind, placement: { x, z: zPos, y, rot: facing }, name, parent } });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1095,7 +1098,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				const liveArgs = {
 					name: typeof name === "string" && name.trim() ? name.trim() : mesh.name,
 					mimeType: mesh.mimeType,
-					dataUrl: `data:${mesh.mimeType};base64,${Buffer.from(mesh.bytes).toString("base64")}`,
+					source: `data:${mesh.mimeType};base64,${Buffer.from(mesh.bytes).toString("base64")}`,
 					placeAs: "mesh",
 				};
 				if (clay === true) liveArgs.clay = true;
@@ -1107,10 +1110,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				if (facing !== undefined) liveArgs.rot = facing;
 				if (height !== undefined) liveArgs.height = height;
 				try {
-					const result = await appliedLiveMutation("import_asset", liveArgs);
-					return text(
-						`Placed ${liveArgs.name} as ${result?.objectId ?? "unknown"} (${result?.assetId ?? "unknown"}).\n\n${sceneReport()}`,
-					);
+					return await runStudioCommand({ action: "asset.import", args: liveArgs });
 				} catch (error) {
 					return liveError(error);
 				}
@@ -1134,13 +1134,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 			async ({ parent, children }) => {
 				if (liveHub?.connected) {
 					try {
-						await appliedLiveMutation(parent === null ? "ungroup_objects" : "group_objects", { parent, children });
-						return text(
-							(parent === null
-								? `Detached ${children.length} object(s).`
-								: `Grouped ${children.length} object(s) under ${parent} — move ${parent} and they follow.`) +
-								`\n\n${sceneReport()}`,
-						);
+						return await runStudioCommand({ action: parent === null ? "object.ungroup" : "object.group", args: parent === null ? { children } : { parent, children } });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1571,15 +1565,11 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 						: undefined;
 				if (liveHub?.connected) {
 					try {
-						await appliedLiveMutation("update_object", {
-							id, x, y, z: zPos, rot: facing, rotX: tilt, rotZ: roll,
-							scale, scaleX: scale_x, scaleY: scale_y, scaleZ: scale_z, color, name,
-							...(travelPath !== undefined ? { path: travelPath } : {}),
-							...(height !== undefined ? { height } : {}),
-							...(clay !== undefined ? { clay } : {}),
-							...(hidden !== undefined ? { hidden } : {}),
-						});
-						return text(`Updated ${id}.\n\n${sceneReport()}`);
+						return await runStudioCommand({ action: "object.update", args: { id, patch: {
+							x, y, z: zPos, rot: facing, rotX: tilt, rotZ: roll,
+							scaleX: scale_x ?? scale, scaleY: scale_y ?? scale, scaleZ: scale_z ?? scale,
+							color, name, path: travelPath, height, clay, hidden,
+						} } });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1623,8 +1613,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 			async ({ id }) => {
 				if (liveHub?.connected) {
 					try {
-						await appliedLiveMutation("remove_object", { id });
-						return text(`Removed ${id}.\n\n${sceneReport()}`);
+						return await runStudioCommand({ action: "object.remove", args: { ids: [id] } });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1809,30 +1798,29 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 			{
 				title: "Add a scene",
 				description:
-					"Add another scene to the project and make it active. With a connected editor, the complete " +
-					"scene document is forwarded through that workspace's load_scenes command before success is reported; " +
-					"without one, this changes MCP memory only.",
+					"Add another scene to the project and make it active. A connected editor runs scene.create then scene.rename " +
+					"and returns both bus receipts; without one, this changes MCP memory only.",
 				inputSchema: { name: z.string().default("SCENE 02").describe("scene name") },
 			},
 			async ({ name }) => {
 				if (liveHub?.connected) {
+					let created;
 					try {
-						await refreshLiveDescription();
+						created = await executeStudioCommand({ action: "scene.create" });
+						if (!created.ok) return studioResult(created);
+						// Creation is a document boundary; naming is a separate retained edit.
+						const renamed = await executeStudioCommand({ action: "scene.rename",
+							args: { sceneId: created.host.sceneId, name }, expectedRevision: created.revision.after });
+						return studioResult(created, renamed);
 					} catch (error) {
-						return liveError(error);
+						const failure = liveError(error);
+						if (created) failure.content.unshift(...studioResult(created).content);
+						return failure;
 					}
 				}
 				const document = JSON.parse(JSON.stringify(state.doc));
 				document.scenes = addScene(document.scenes, name);
 				document.activeSceneId = document.scenes[document.scenes.length - 1].id;
-				if (liveHub?.connected) {
-					try {
-						const live = await appliedLiveMutation("load_scenes", { document });
-						requireLiveSceneParity("add_scene", document, live);
-					} catch (error) {
-						return liveError(error);
-					}
-				}
 				state.doc = document;
 				return text(`Added "${scene().name}".\n\n${sceneReport()}`);
 			},
@@ -1843,14 +1831,18 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 			{
 				title: "Switch the active scene",
 				description:
-					"Make a different scene active. With a connected editor, the complete scene document is forwarded " +
-					"through that workspace's load_scenes command before success is reported; without one, this changes MCP memory only.",
+					"Make a different scene active through scene.switch and return its bus receipt. Without a connected editor, this changes MCP memory only.",
 				inputSchema: { name: z.string().describe("scene name to switch to") },
 			},
 			async ({ name }) => {
 				if (liveHub?.connected) {
 					try {
-						await refreshLiveDescription();
+						return await runStudioCommand({ action: "scene.switch", args: async () => {
+							await refreshLiveDescription();
+							const target = state.doc.scenes.find(row => row.name.toLowerCase() === name.toLowerCase());
+							if (!target) throw new Error(`No scene "${name}".`);
+							return { sceneId: target.id };
+						} });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1861,14 +1853,6 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				}
 				const document = JSON.parse(JSON.stringify(state.doc));
 				document.activeSceneId = target.id;
-				if (liveHub?.connected) {
-					try {
-						const live = await appliedLiveMutation("load_scenes", { document });
-						requireLiveSceneParity("switch_scene", document, live);
-					} catch (error) {
-						return liveError(error);
-					}
-				}
 				state.doc = document;
 				return text(`Switched to "${scene().name}".\n\n${sceneReport()}`);
 			},
