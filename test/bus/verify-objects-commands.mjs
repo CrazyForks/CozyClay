@@ -77,7 +77,8 @@ for (const origin of origins) {
     assert.deepEqual(inspected.document.objects, snapshot()[0].objects);
     assert.equal(Object.hasOwn(inspected.document, 'object'), false);
     const loaded = [createSceneObject('cone')], identity = f.objects.documentStore;
-    f.scope.appContext.loadStoreDomains({ objects: loaded, stage: f.stage.read() });
+    f.scope.appContext.loadStoreDomains({ objects: loaded, stage: f.stage.read(),
+      cast: f.characterRef.current, shot: f.scope.shotsDomain.state() });
     assert.equal(f.objects.documentStore, identity);
     assert.deepEqual(f.objects.read(), loaded);
     assert.deepEqual(f.objects.documentStore.depths(), { past: 0, future: 0 });

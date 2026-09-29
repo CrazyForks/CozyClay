@@ -706,8 +706,7 @@ export default function App() {
 		get motionPos() { return motionPos; },
 		get playMode() { return playMode; },
 		get promptTextSessionRef() { return promptTextSessionRef; },
-		get recordCharacterUndo() { return castDomain.recordCharacterUndo; },
-		get recordSessionUndo() { return recordSessionUndo; },
+
 		get runStudioAction() { return runStudioAction; },
 		get selectWorkflowMode() { return selectWorkflowMode; },
 		get setSelectedHierarchyId() { return setSelectedHierarchyId; },
@@ -1093,7 +1092,6 @@ export default function App() {
 		get motionFullRef() { return motionFullRef; },
 		get promptTextSessionRef() { return promptTextSessionRef; },
 		get publishStudioCharacters() { return publishStudioCharacters; },
-		get recordSessionUndo() { return recordSessionUndo; },
 		get rigReportersRef() { return rigReportersRef; },
 		get rigWaitersRef() { return rigWaitersRef; },
 		get runStudioAction() { return runStudioAction; },
@@ -1120,7 +1118,6 @@ export default function App() {
 		get publishStudioDomain() { return publishStudioDomain; },
 		get publishStudioMotion() { return publishStudioMotion; },
 		get publishStudioStage() { return publishStudioStage; },
-		get recordStudioHistory() { return recordStudioHistory; },
 		get sceneRevisionRef() { return sceneRevisionRef; },
 		get snapshotCast() { return snapshotCast; },
 		get snapshotStudioDomain() { return snapshotStudioDomain; },
@@ -1158,7 +1155,7 @@ export default function App() {
 		addPromptClip, changePromptClip, PROMPT_BLOCK_MAX_FRAMES, resizePromptClip, movePromptClip,
 		removePromptClip,
 	} = castDomain;
-	const { publishStudioCharacters, syncStudioLayerBuffer, undoScene, redoScene, recordStudioHistory, snapshotStudioDomain } = castDomain;
+	const { publishStudioCharacters, syncStudioLayerBuffer, undoScene, redoScene, snapshotStudioDomain } = castDomain;
 	// The cast as of this render, for async handlers: an extraction that
 	// started three renders ago must place its takes against the CURRENT cast,
 	// not the one its closure captured.
@@ -1326,7 +1323,6 @@ export default function App() {
 		get lookThroughShot() { return lookThroughShot; },
 		get motionEncodingCacheRef() { return motionEncodingCacheRef; },
 		get readStudioState() { return readStudioState; },
-		get recordStudioHistory() { return recordStudioHistory; },
 		get restoreExportRig() { return restoreExportRig; },
 		get setCameraPos() { return setCameraPos; },
 		get setFalMotionCameraUnlocked() { return setFalMotionCameraUnlocked; },
@@ -1700,22 +1696,6 @@ export default function App() {
 		camera.rotation.set(angles.pitch, angles.yaw, 0);
 	}
 
-	/** One Ctrl+Z entry per EDITING SESSION rather than per event, for the
-	 * streams that fire continuously: per-keystroke text and per-pointermove
-	 * camera framing. The session is open while the entry it pushed is still
-	 * the newest one on the stack and the key (clip id, gesture name) has not
-	 * changed; any other edit, undo or redo in between closes it, so the next
-	 * keystroke or drag opens a fresh entry. `sessionRef` is a plain ref of
-	 * `{ key, tick }`. */
-	function recordSessionUndo(sessionRef, key, record = castDomain.recordCharacterUndo) {
-		const past = appContext.castHistory.past;
-		const open = sessionRef.current
-			&& sessionRef.current.key === key
-			&& past[past.length - 1]?.tick === sessionRef.current.tick;
-		if (open) return;
-		record();
-		sessionRef.current = { key, tick: past[past.length - 1].tick };
-	}
 	// Prompt-block text (inspector field AND the timeline chip both land in
 	// changePromptClip) and viewport/plan camera framing are the two streams
 	// that would otherwise push an entry per keystroke / per pointermove.
@@ -1753,10 +1733,9 @@ export default function App() {
 
 	/** True while a framing capture for `shotId` is the newest history entry. */
 	function framingSessionOpen(shotId) {
-		const past = appContext.castHistory.past;
 		return Boolean(framingSessionRef.current)
 			&& framingSessionRef.current.key === `framing:${shotId}`
-			&& past[past.length - 1]?.tick === framingSessionRef.current.tick;
+			&& appContext.historyEntry() === framingSessionRef.current.historyEntryId;
 	}
 
 	function undoObjectDeletion() {
@@ -2744,7 +2723,6 @@ export default function App() {
 		objects: sceneObjects,
 		rigs,
 		commitManualCameraFraming,
-		recordCharacterUndo: castDomain.recordCharacterUndo,
 		removeCharacter,
 		persistScenes,
 		openScene,
@@ -6445,55 +6423,42 @@ export default function App() {
 	 * as one body: the live read model first, so the next synchronous read sees
 	 * it, then the React state the foldouts and the save path own. */
 
-	/** Run one registry action for the agent and bind the native history entry
-	 * it pushed to a journal id, so undo_edit (and Ctrl+Z) can revert it. Shot,
-	 * cast and motion entries gain the Studio restore state (a motion entry the
-	 * one character `targetId` names), which republishes the live read model
-	 * synchronously; object entries are the store's own. */
+	/** All surfaces share the facade's owned sessions and store histories. */
 	function beginStudioAction(domain, targetId = null) {
-		return appContext.beginAction(domain, targetId, {
-			beginAction: castDomain.beginNativeStudioAction,
-			isRetained: historyEntryId => castDomain.isNativeStudioHistoryRetained({ undo: { historyEntryId } }),
-			stepHistory: (redo, historyEntryId) => studioHistoryRef.current.get(historyEntryId)?.depth !== undefined
-				? objectsDomain.stepObjectHistory(redo) !== null : castDomain.stepNativeStudioHistory(redo),
-		});
+		return appContext.beginAction(domain, targetId);
 	}
 	function recordStudioAction(domain, run, targetId = null, nested = false) {
-		return appContext.recordAction(domain, run, targetId, nested, {
-			beginAction: castDomain.beginNativeStudioAction,
-			isRetained: historyEntryId => castDomain.isNativeStudioHistoryRetained({ undo: { historyEntryId } }),
-			stepHistory: (redo, historyEntryId) => studioHistoryRef.current.get(historyEntryId)?.depth !== undefined
-				? objectsDomain.stepObjectHistory(redo) !== null : castDomain.stepNativeStudioHistory(redo),
-		});
+		return appContext.recordAction(domain, run, targetId, nested);
 	}
 	function publishStudioDomain(domain, targetId, state) {
-		const owned = appContext.storeDomain(domain);
-		return owned ? owned.publish(state, targetId) : castDomain.publishNativeStudioDomain(domain, targetId, state);
+		return appContext.storeDomain(domain).publish(state, targetId);
 	}
 	function canUndoStudioReceipt(receipt) {
 		const owned = appContext.storeDomainForReceipt(receipt);
-		const next = appContext.nextStoreHistory(false, storeRef.current.objects);
-		if (owned) return next === owned && owned.canUndo(receipt.undo.historyEntryId);
-		if (next || !castDomain.isNativeStudioHistoryRetained(receipt)) return false;
-		const top = appContext.castHistory.past.at(-1), id = receipt.undo.historyEntryId;
-		const entry = studioHistoryRef.current.get(id);
-		// A later store edit followed by Undo changes the revision, but does
-		// not retire this native entry. Compare retained history identities.
-		return entry.depth !== undefined
-			? entry.depth === storeRef.current.depths().past && entry.tick >= (top?.tick ?? 0)
-			: top?.studio?.historyEntryId === id && top.studio.objects === storeRef.current.objects;
+		return Boolean(owned && appContext.nextStoreHistory(false) === owned && owned.canUndo(receipt.undo.historyEntryId));
 	}
 	function isStudioHistoryRetained(receipt) {
-		return Boolean(appContext.storeDomainForReceipt(receipt)) || castDomain.isNativeStudioHistoryRetained(receipt);
+		return Boolean(appContext.storeDomainForReceipt(receipt));
 	}
 
+	function finishStudioHistoryGesture() {
+		for (const owner of appContext.storeDomains()) { owner.finishGesture?.(); owner.settle?.(); }
+	}
 	function stepStudioHistory(redo) {
-		const owned = appContext.nextStoreHistory(redo, storeRef.current.objects);
-		return owned ? owned.stepHistory(redo) : castDomain.stepNativeStudioHistory(redo);
+		const before = storeRef.current.objects;
+		const owned = appContext.nextStoreHistory(redo);
+		if (!owned?.stepHistory(redo)) return false;
+		const restored = storeRef.current.objects;
+		if (before !== restored) {
+			if (!redo && objectDeleteUndo?.id && restored.some(object => object.id === objectDeleteUndo.id)) {
+				setSelectedHierarchyId(`object:${objectDeleteUndo.id}`); setObjectDeleteUndo(null);
+			} else if (selectedSceneObjectId && !restored.some(object => object.id === selectedSceneObjectId)) setSelectedHierarchyId("props");
+		}
+		setToast(redo ? ko("Redone", "다시 실행됨") : ko("Undone", "실행 취소됨"));
+		return true;
 	}
 	function commitStudioDraft(payload) {
 		const owned = appContext.storeDomain(payload.domain);
-		if (!owned) return castDomain.commitNativeStudioDraft(payload);
 		const session = owned.beginAction();
 		try { session.run(() => owned.commitDraft(payload.draft)); return session.commit(); }
 		catch (error) { session.cancel(); throw error; }
@@ -6588,7 +6553,9 @@ export default function App() {
 	});
 	appContext.updatePorts({
 		read: readStudioState, revision: sceneRevisionRef, bounds: studioBounds, commit: commitStudioDraft,
-		operate: operateStudio, undo: undoScene, stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
+		operate: operateStudio, undo: () => stepStudioHistory(false), redo: () => stepStudioHistory(true),
+		history: redo => appContext.historyEntry(redo), finishHistoryGesture: finishStudioHistoryGesture,
+		stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
 		// One shot frame as raw read-back pixels (rows bottom-up), from the export
 		// path captureShotFramePng uses; an export in flight renders at its output.
 		renderFrameBuffer: frame => {

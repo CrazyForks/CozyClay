@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { dispatchLiveFrame } from '../src/live-control.js';
 import { createSceneObject, updateSceneObject } from '../src/scene-objects.js';
-import { createSceneHistoryStore } from '../src/scene-history.js';
+import { createSceneHistoryStore } from '../src/document-store.js';
 import { createCharacterEntry } from '../src/scenes.js';
 import { createShotAuthoringDocument } from '../src/shot-authoring.js';
 import { validateReceipt, validateStudioCommand } from '../src/studio-agent-protocol.js';

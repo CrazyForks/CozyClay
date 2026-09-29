@@ -24,7 +24,7 @@ import {
 	serializeSceneDocument,
 } from "../src/scenes.js";
 import { createProjectDocument, readProjectDocument } from "../src/project.js";
-import { createSceneHistoryStore } from "../src/scene-history.js";
+import { createSceneHistoryStore } from "../src/document-store.js";
 import { copyPhysicsKeys } from "../src/ardy/physics-review.js";
 import { HISTORY_LIMIT } from "../src/history.js";
 import { createAppContext } from "../src/app-context.js";
@@ -66,7 +66,7 @@ visit(parsed.program);
 // The App functions this suite drives. Missing ones are a failure, not a skip:
 // the RED state of #345 is exactly "no such recording seam exists".
 const APP_FUNCTIONS = [
-	"snapshotIkKeys", "recordCharacterUndo", "recordSessionUndo", "restoreCast", "undoScene", "redoScene",
+	"snapshotIkKeys", "restoreCast", "undoScene", "redoScene",
 	"updateCharacterAt", "beginGestureUndo", "endGestureUndo", "changeKeyLight", "resetKeyLight",
 	"changeKeyLightFromGizmo", "changeInspectorCharacter", "changeEnvironmentImage",
 ];

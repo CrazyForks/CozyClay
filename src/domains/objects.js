@@ -64,19 +64,10 @@ export function createObjectsDomain(appContext, initial) {
 	}
 	const publish = () => { if (appContext.live.state) appContext.patchLive({ objects: read() }); };
 	const unsubscribe = documentStore.subscribe(publish);
-	function beginAction() {
-		const session = documentStore.beginAction("objects");
-		return { ...session, commit() {
-			const result = session.commit();
-			if (result.historyEntryId) appContext.advanceObjectClock();
-			return result;
-		} };
-	}
+	function beginAction() { return documentStore.beginAction("objects"); }
 	function stepHistory(redo) {
 		domain.settle?.();
-		const result = (redo ? documentStore.redo : documentStore.undo)();
-		if (result) appContext.advanceObjectClock();
-		return Boolean(result);
+		return Boolean((redo ? documentStore.redo : documentStore.undo)());
 	}
 	const domain = { documentStore, read, write, beginAction, canUndo: id => documentStore.canUndo(id), stepHistory,
 		document: () => ({ objects: read() }), publish: state => write(state.objects), commitDraft: write,
@@ -938,14 +929,9 @@ export function useObjects(appContext) {
 	function applyExternalObjects(objects) {
 		return run("objects.replace", { objects: Array.isArray(objects) ? objects : [] });
 	}
-	function commitStudioObjects(draft, historyEntryId) {
-		const before = storeRef.current.objects;
-		storeRef.current.applyAtomic(() => draft);
-		appContext.patchLive({ objects: storeRef.current.objects });
-		appContext.shared.studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: appContext.objectClock, depth: storeRef.current.depths().past });
-	}
+
 	return {
-		...domain, run, beginStudioObjectAction, stepObjectHistory, applyExternalObjects, commitStudioObjects,
+		...domain, run, beginStudioObjectAction, stepObjectHistory, applyExternalObjects,
 		createLegacyObjectHandlers, canReparentSceneObject, reparentSceneObject, settleObjects,
 		recentObjectColors, objectColorDraft, setObjectColorDraft, rememberSceneObjectColor, objectDeleteUndo,
 		setObjectDeleteUndo, sceneObjects, storeRef, store, selectedSceneObjectId,
