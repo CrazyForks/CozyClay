@@ -1,5 +1,6 @@
 import React, { useState, useSyncExternalStore } from "react";
 import { SUPPORT_SITES } from "./physics-review.js";
+import { useMotionCommands } from '../domains/motion.js';
 import "./physics-panel.css";
 
 // Only the progress panel subscribes. Publishing a percentage must not
@@ -12,6 +13,7 @@ export function createPhysicsProgress() {
 }
 
 export function PhysicsPanel({ ko, disabled, running, progress: progressStore, preview, show, options, frame, frames, onOptions, onRun, onShow, onApply, onCancel, onFrame }) {
+	const { run } = useMotionCommands();
 	const progress = useSyncExternalStore(progressStore.subscribe, progressStore.getSnapshot);
 	const [site, setSite] = useState("leftFoot");
 	const [start, setStart] = useState(0), [end, setEnd] = useState(0), [mode, setMode] = useState("plant");
@@ -44,7 +46,7 @@ export function PhysicsPanel({ ko, disabled, running, progress: progressStore, p
 				<button data-testid="physics-protect" className="btn full" onClick={() => set({ protectedFrames: [...new Set([...options.protectedFrames, frame])].sort((a, b) => a - b) })}>{ko(`Protect pose at frame ${frame}`, `${frame}프레임 포즈 보호`)}</button>
 				{options.protectedFrames.map((f) => <div key={f} className="physics-row"><button className="btn" onClick={() => onFrame(f)}>{ko("Protected", "보호")} F{f}</button><button className="btn" aria-label={ko("Unprotect pose", "포즈 보호 해제")} onClick={() => set({ protectedFrames: options.protectedFrames.filter((p) => p !== f) })}>×</button></div>)}
 			</details>
-			<button data-testid="physics-analyse" className="btn full primary" onClick={onRun}>{running ? ko(`Analysing ${progress}%`, `분석 중 ${progress}%`) : ko("Analyse & preview", "분석 · 미리보기")}</button>
+			<button data-testid="physics-analyse" className="btn full primary" onClick={() => run('motion.autoPhysics', { ...options, apply: false })}>{running ? ko(`Analysing ${progress}%`, `분석 중 ${progress}%`) : ko("Analyse & preview", "분석 · 미리보기")}</button>
 		</fieldset>
 		{running && <progress max="100" value={progress} aria-label={ko("Analysis progress", "분석 진행률")} />}
 		{preview && <div data-testid="physics-results">
@@ -70,7 +72,7 @@ export function PhysicsPanel({ ko, disabled, running, progress: progressStore, p
 				{!!preview.skippedAir?.length && <p>{ko(`${preview.skippedAir.length} flight spans skipped`, `공중 ${preview.skippedAir.length}구간 보류`)}</p>}
 				{!!preview.contacts.rejected.length && <button className="btn full" onClick={() => onFrame(preview.contacts.rejected[0].start)}>{ko(`${preview.contacts.rejected.length} moving support intervals rejected`, `움직이는 접지 ${preview.contacts.rejected.length}구간 제외`)}</button>}
 			</div>
-			<div className="physics-actions"><button data-testid="physics-cancel" className="btn" onClick={onCancel}>{ko("Cancel", "취소")}</button><button data-testid="physics-apply" className="btn primary" disabled={!preview.changedFrames.length || preview.strength === 0} onClick={onApply}>{ko("Apply", "적용")}</button></div>
+			<div className="physics-actions"><button data-testid="physics-cancel" className="btn" onClick={onCancel}>{ko("Cancel", "취소")}</button><button data-testid="physics-apply" className="btn primary" disabled={!preview.changedFrames.length || preview.strength === 0} onClick={() => run('motion.applyPhysics')}>{ko("Apply", "적용")}</button></div>
 		</div>}
 	</section>;
 }

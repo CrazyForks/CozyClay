@@ -1,10 +1,10 @@
 {
   "version": 1,
   "coverage": {
-    "writerReferences": 147,
-    "handlerSites": 54,
+    "writerReferences": 146,
+    "handlerSites": 59,
     "handlerTotal": 797,
-    "registeredCommands": 64
+    "registeredCommands": 80
   },
   "writers": {
     "App.jsx::<anonymous>": 43,
@@ -34,7 +34,7 @@
     "domains/cast.js::clearCharacterWaypoints": 1,
     "domains/cast.js::applyExternalCharacters": 1,
     "domains/cast.js::publishStudioCharacters": 1,
-    "domains/motion.js::useMotion": 6,
+    "domains/motion.js::useMotion": 5,
     "domains/motion.js::<anonymous>": 3,
     "domains/motion.js::loadMotion": 1,
     "domains/motion.js::clearMotion": 1,

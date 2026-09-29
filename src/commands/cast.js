@@ -1,7 +1,7 @@
 // Cast commands: a named character's root waypoints and IK key layer. They
 // name their character explicitly, so they run the same way whichever
 // character is active and whatever mode the editor is in.
-import { STUDIO_IK_CHAIN_TRACKS, studioActionDeclaration } from "../studio-actions.js";
+import { studioActionDeclaration } from "../studio-actions.js";
 import { characterOf, fail, changedIds } from "./shared.js";
 import { elementSetSchema, registerElementSet } from './elements.js';
 import './elements/character.js';
@@ -34,7 +34,7 @@ const semantic = [
 		input({ characterId: id, id, frame: { type: 'number' }, edge: { type: 'string', enum: ['start', 'end'] }, text: { type: 'string', maxLength: 2000 } },
 			verb === 'add' ? ['characterId', 'frame'] : verb === 'remove' ? ['characterId', 'id'] : verb === 'change' ? ['characterId', 'id', 'text'] : verb === 'resize' ? ['characterId', 'id', 'edge', 'frame'] : ['characterId', 'id', 'frame']), 'ui-only')),
 ];
-export const declarations = Object.freeze([...semantic, ...["character.addWaypoint", "character.moveWaypoint", "character.removeWaypoint", "character.clearWaypoints", "character.setIkKey", "character.removeIkKey", "character.clearIkKeys"].map(studioActionDeclaration)]);
+export const declarations = Object.freeze([...semantic, ...["character.addWaypoint", "character.moveWaypoint", "character.removeWaypoint", "character.clearWaypoints"].map(studioActionDeclaration)]);
 
 export function register(registry, ports) {
 	const owner = () => ports.storeDomain('cast');
@@ -136,31 +136,5 @@ export function register(registry, ports) {
 	castAction("character.clearWaypoints", ({ characterId }, name) => {
 		const count = ports.clearCharacterWaypoints(characterId);
 		return count ? `Cleared ${name}'s root path (${count} waypoint${count === 1 ? "" : "s"}).` : `${name} has no root waypoints; nothing changed.`;
-	});
-	// The declared schema carries the key's shape; the per-track counts and the
-	// timeline bound are checked here, before anything is recorded.
-	castAction("character.setIkKey", ({ characterId, frame, tracks }, name) => {
-		const { frameCount } = ports.state(), named = Object.keys(tracks);
-		if (frame >= frameCount) fail("INVALID_RANGE", `Frame ${frame} is outside the timeline (0-${frameCount - 1}).`);
-		if (!named.length) fail("INVALID_ARGUMENT", "Name at least one track in tracks.");
-		for (const track of named) {
-			const key = tracks[track], chain = STUDIO_IK_CHAIN_TRACKS.includes(track), bones = chain ? 3 : 1;
-			if (!key.q && !key.p) fail("INVALID_ARGUMENT", `tracks.${track} needs q (bone rotations) or p (a local position).`);
-			if (key.chainP && !chain) fail("INVALID_ARGUMENT", `tracks.${track}.chainP is for chain tracks only.`);
-			for (const field of ["q", "baseQ", "chainP"]) {
-				if (key[field] && key[field].length !== bones) fail("INVALID_ARGUMENT", `tracks.${track}.${field} needs ${bones} entr${bones === 1 ? "y" : "ies"}, one per bone.`);
-			}
-			if ([...(key.q ?? []), ...(key.baseQ ?? [])].some(q => Math.hypot(q.x, q.y, q.z, q.w) < 1e-6)) fail("INVALID_ARGUMENT", `tracks.${track} has a zero-length quaternion.`);
-		}
-		ports.setCharacterIkKey(characterId, frame, tracks);
-		return `Keyed ${name}'s IK layer at frame ${frame}: ${named.join(", ")}.`;
-	});
-	castAction("character.removeIkKey", ({ characterId, frame }, name) => {
-		ports.removeCharacterIkKey(characterId, frame);
-		return `Deleted ${name}'s IK key at frame ${frame}.`;
-	});
-	castAction("character.clearIkKeys", ({ characterId }, name) => {
-		const count = ports.clearCharacterIkKeys(characterId);
-		return count ? `Cleared ${name}'s IK layer (${count} key${count === 1 ? "" : "s"}).` : `${name} has no IK keys; nothing changed.`;
 	});
 }

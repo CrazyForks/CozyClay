@@ -63,7 +63,12 @@ export function createCastDomain(appContext, initial, customPoses = []) {
 			const next = normalize(typeof update === 'function' ? update(before) : update);
 			return sameCastValue(before, next) ? before : next;
 		});
-		if (after !== before) domain.syncTimeline?.();
+		if (after !== before) {
+			const motion = appContext.storeDomain('motion');
+			const removed = before.characters.filter(entry => !after.characters.some(next => next.id === entry.id));
+			if (motion && removed.length) appContext.recordAction('motion', () => { for (const entry of removed) motion.removeLayer(entry.id); }, null, true);
+			domain.syncTimeline?.();
+		}
 		return after;
 	}
 	function write(update) {
@@ -227,7 +232,7 @@ export function useCast(appContext) {
 		if (list.length <= 1) return;
 		domain.run('character.remove', { characterId: charId });
 		// The full-take cache remains native until the motion owner migrates.
-		appContext.shared.motionFullRef.current.delete(charId);
+		if (!appContext.storeDomain('motion')) appContext.shared.motionFullRef.current.delete(charId);
 		setRigs((current) => {
 			if (!(charId in current)) return current;
 			const next = { ...current };
@@ -356,6 +361,7 @@ export function useCast(appContext) {
 	});
 
 	function recordCharacterUndo() {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').beginGesture();
 		appContext.recordCharacterUndo(snapshotCast());
 	}
 
@@ -1011,6 +1017,7 @@ export function useCast(appContext) {
 	// props so the inspector cannot show a ghost.
 	function undoScene() {
 		appContext.storeDomain('cast')?.finishGesture();
+		appContext.storeDomain('motion')?.finishGesture();
 		if (appContext.shared.studioBindingRef.current?.stepHistory(false)) return;
 		const charTop = appContext.castHistory.past[appContext.castHistory.past.length - 1];
 		if (charTop && charTop.tick > appContext.objectClock) {
@@ -1038,6 +1045,7 @@ export function useCast(appContext) {
 	}
 	function redoScene() {
 		appContext.storeDomain('cast')?.finishGesture();
+		appContext.storeDomain('motion')?.finishGesture();
 		if (appContext.shared.studioBindingRef.current?.stepHistory(true)) return;
 		const charTop = appContext.castHistory.future[appContext.castHistory.future.length - 1];
 		if (charTop && charTop.tick > appContext.objectClock) {
@@ -1069,6 +1077,7 @@ export function useCast(appContext) {
 		appContext.shared.studioHistoryRef.current.set(historyEntryId, { tick, domain });
 	}
 	function snapshotStudioDomain(domain, targetId) {
+		if (domain === 'motion' && appContext.storeDomain('motion')) return appContext.storeDomain('motion').snapshotTarget(targetId);
 		const state = appContext.shared.readStudioState();
 		if (domain === "shot") return { shots: state.shots, camera: state.camera, manual: state.manual };
 		if (domain === "stage") return { stage: state.stage };
@@ -1087,10 +1096,12 @@ export function useCast(appContext) {
 		setPendingWaypointFrame((current) => (current === 0 ? null : current));
 	}
 	function snapshotNativeMotion() {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').snapshotLegacy();
 		return { bufferMotion: appContext.shared.bufferRef.current.motion, bufferCharId: appContext.shared.loadedLayerCharRef.current,
 			ikKeys: appContext.shared.snapshotIkKeys(appContext.shared.ikStateRef.current), committedIkEdits: appContext.shared.committedIkEdits };
 	}
 	function restoreNativeMotion(snapshot) {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').restoreLegacy(snapshot);
 		const id = snapshot.bufferCharId;
 		const state = { ...createIkState(), keys: appContext.shared.snapshotIkKeys({ keys: snapshot.ikKeys }) };
 		state.tracked = new Set([...state.keys.values()].flatMap(entry => [...entry.keys()]));
@@ -1105,6 +1116,7 @@ export function useCast(appContext) {
 		}
 	}
 	function switchNativeMotionLayer(previous, entry) {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').switchLayer(entry.id);
 		if (appContext.shared.ikMode) appContext.shared.leaveIkMode();
 		if (previous) {
 			appContext.shared.ikStatesRef.current.set(previous, appContext.shared.bufferRef.current.ik);
@@ -1204,7 +1216,10 @@ export function useCast(appContext) {
 	};
 	domain.extendTimeline = domain.syncTimeline;
 	domain.applyPose = (characterId, pose, clearMotion) => {
-		if (clearMotion) appContext.ports.recordAction('motion', () => appContext.shared.motionDomain.clearMotionNative(), domain.activeId, true);
+		if (clearMotion) appContext.ports.recordAction('motion', () => {
+			const motion = appContext.storeDomain('motion');
+			if (motion) motion.clear(characterId); else appContext.shared.motionDomain.clearMotionNative();
+		}, characterId, true);
 		domain.write(rows => rows.map(entry => entry.id === characterId ? { ...entry, pose } : entry));
 	};
 	appContext.updateActionPorts({ addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, setWaypointMode });

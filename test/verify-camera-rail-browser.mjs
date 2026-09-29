@@ -3,6 +3,7 @@
 // persistence model are covered by node tests; this proves the actual editor
 // button is visible, removes the authored rail, and persists Follow mode.
 import { writeFileSync } from "node:fs";
+import { afterPageLoad } from "./bus/browser-navigation.mjs";
 
 const port = Number(process.env.CDP_PORT || 9222);
 const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
@@ -25,11 +26,11 @@ ws.onmessage = (event) => {
 	if (message.error) reject(new Error(JSON.stringify(message.error)));
 	else resolve(message.result);
 };
-const send = (method, params = {}) => new Promise((resolve, reject) => {
+const send = (method, params = {}) => afterPageLoad(ws, method, () => new Promise((resolve, reject) => {
 	const id = nextId++;
 	pending.set(id, { resolve, reject });
 	ws.send(JSON.stringify({ id, method, params }));
-});
+}));
 const evaluate = async (expression) => {
 	const result = await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
 	if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || "evaluate failed");
@@ -58,8 +59,9 @@ const expect = (name, condition, detail = "") => {
 
 await send("Runtime.enable");
 await send("Page.enable");
-await send("Page.navigate", { url: process.env.QA_URL ?? "http://127.0.0.1:5180/app/" });
-await waitFor("location.href.startsWith('http')");
+const studioUrl = process.env.QA_URL ?? "http://127.0.0.1:5180/app/";
+// Seed storage without a mounted editor that could autosave over the fixture.
+await send("Page.navigate", { url: `${new URL(studioUrl).origin}/favicon.ico` });
 await evaluate(`(() => {
 	const shot = {
 		id: "rail-qa",
@@ -89,7 +91,7 @@ await evaluate(`(() => {
 	localStorage.setItem("cozyclay.locale", "en");
 	localStorage.setItem("cozyclay.scenes.v4", JSON.stringify(scene));
 })()`);
-await send("Page.reload");
+await send("Page.navigate", { url: studioUrl });
 expect("studio renders", await waitFor("!!document.querySelector('canvas')"));
 expect("timeline shot block renders", await waitFor("!!document.querySelector('.tl-shot-block')"));
 await evaluate("document.querySelector('.tl-shot-block')?.click()");
@@ -190,7 +192,9 @@ expect("front placement is persisted as a 180 degree orbit offset", await waitFo
 // rendered an empty toast for another 2.2 s after every Korean toast.
 await evaluate("localStorage.setItem('cozyclay.locale', 'ko')");
 await send("Page.reload");
-expect("Korean studio returns after reload", await waitFor("!!document.querySelector('.tl-shot-block')"));
+// The QA state is published after App installs its keyboard listener. A DOM
+// shell alone is not sufficient readiness for dispatching the redo shortcut.
+expect("Korean studio returns after reload", await waitFor("!!window.__cozyclay && !!document.querySelector('.tl-shot-block')"));
 // Recorded, not polled: the async startup toast can replace the redo toast at
 // once (or land in the same render), so any Korean toast counts.
 await evaluate(`(() => {
