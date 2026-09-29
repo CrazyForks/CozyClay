@@ -17,16 +17,12 @@ import {
 	ARDY_SEED_MAX,
 	lineTrackLabel,
 	ARDY_DURATION_MIN,
-	ARDY_PROMPT_MAX,
-	ARDY_DURATION_MAX,
 	buildPromptSchedule,
-	MAX_WAYPOINTS,
 	toArdyFrameEntries,
 	posePlacementFrame,
 	toArdySegments,
 	ARDY_FPS,
 	toArdyFrame,
-	ikTracksInRange,
 } from "../app-stage.jsx";
 import { copyPhysicsKeys, physicsKeyStamp, reviewAutoPhysics } from "../ardy/physics-review.js";
 import {
@@ -92,13 +88,13 @@ import {
 	stripSourceMotion,
 	blocksFromRequest,
 	replayPayload,
-	replayTruncated,
 	freshRecipe,
 	withLineEdit,
 	pushTakeVersion,
 	TAKE_VERSIONS_MAX,
 } from "../take-recipe.js";
 import { buildGenerationRequest, generationRefusal } from '../motion/generation.js';
+import { planPosePin } from '../ardy/pose-pin.js';
 import { worldDeltaToClip, applyTrailFalloffDelta, trailEditRange } from "../motion-trail.js";
 import { generate as ardyGenerate } from "../ardy/client.js";
 import { isLineEditUnsupported } from "../line-edit.js";
@@ -3121,6 +3117,7 @@ export function useMotion(appContext) {
 	domain.requestLineEdit = runLineEdit;
 	domain.requestTrailRegeneration = runTrailRegeneration;
 	domain.generate = generateMotion;
+	domain.isGenerating = () => appContext.shared.generationPendingRef.current || appContext.shared.genRunningRef.current || ardyRunning;
 	domain.onPhysicsRunning = setAutoPhysicsRunning;
 	domain.onPhysicsProgress = setPhysicsProgress;
 	domain.onPhysicsPreview = result => { setPhysicsPreview(result); setPhysicsShow(true); setIkTick(value => value + 1); };

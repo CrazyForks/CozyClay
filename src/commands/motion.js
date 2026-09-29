@@ -3,6 +3,8 @@ import { STUDIO_IK_CHAIN_TRACKS, studioActionDeclaration } from "../studio-actio
 import { fail, characterOf } from "./shared.js";
 import { elementSetSchema, registerElementSet } from './elements.js';
 import './elements/motion.js';
+import './elements/character.js';
+import { generationArgs } from '../motion/generation.js';
 import { createMotionEdit, trimMotionEdit, splitMotionEdit, setMotionSegmentSpeed, removeMotionSegment } from '../ardy/motion-edit.js';
 const id = { type: 'string', minLength: 1 }, frame = { type: 'integer', minimum: 0 };
 const input = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -56,8 +58,10 @@ export function register(registry, ports) {
 	const owner = () => ports.storeDomain('motion');
 	const mounted = () => Boolean(ports.storeDomain?.('motion')) || 'The motion owner is not mounted.';
 	const take = characterId => { characterOf(ports, characterId); return owner().motionFor(characterId) ?? fail('TARGET_NOT_READY', 'Load a take for this character first.'); };
+	registry.registerToolAlias('generate_motion', generate.id, generationArgs);
 	registry.register({ ...generate, available: mounted, target: args => args.characterId, async run(args, context) {
 		characterOf(ports, args.characterId);
+		if (owner().isGenerating()) fail('TARGET_BUSY', 'A motion generation is already running.');
 		if (args.blocks) context.run('character.setPromptBlocks', { characterId: args.characterId, blocks: args.blocks });
 		await owner().generate(args, context);
 		return { affectedIds: [args.characterId], summary: 'Generated motion.' };
