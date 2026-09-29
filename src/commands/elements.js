@@ -1,12 +1,20 @@
 // Shared set/read machinery. Domain modules supply only their kind, declared
 // fields and persistence normalizer; no UI or runtime resources live here.
-import { STUDIO_ELEMENTS } from '../studio-elements.js';
 import { patchValueSchema, validateStudioSchema, StudioProtocolError, utf8ByteLength } from '../studio-agent-protocol.js';
 
+const kinds = new Map();
+// Each kind registers its declared elements and persistence normalizer once.
+// Its command port supplies read()/write(); all schemas and path aliases use
+// this same spec so a migration adds a module, not another generic switch.
+export function registerElementKind(kind, spec) {
+  if (kinds.has(kind)) throw new Error(`Element kind already registered: ${kind}`);
+  kinds.set(kind, spec);
+}
+const patchElements = kind => kinds.get(kind).elements.filter(row => row.agentExposure === 'patch');
 const object = () => ({ type: 'object', properties: {}, required: [], additionalProperties: false });
 export function elementSetSchema(kind) {
   const schema = object();
-  for (const element of STUDIO_ELEMENTS.filter(row => row.path.startsWith(`${kind}.`) && row.agentExposure === 'patch')) {
+  for (const element of patchElements(kind)) {
     const keys = (element.documentPath ?? element.path.slice(kind.length + 1)).split('.');
     let parent = schema;
     for (const key of keys.slice(0, -1)) parent = parent.properties[key] ??= object();
@@ -23,7 +31,7 @@ export function readElementDocument(projection, { ids, select } = {}, sceneId) {
   return { document: structuredClone(Object.fromEntries(entries)), schema: Object.fromEntries(entries.map(([kind]) => [kind, elementSetSchema(kind)])) };
 }
 export function readElement(document, path) {
-  const element = STUDIO_ELEMENTS.find(row => row.path === path);
+  const element = kinds.get(path.slice(0, path.indexOf('.'))).elements.find(row => row.path === path);
   return (element.documentPath ?? path.slice(path.indexOf('.') + 1)).split('.').reduce((value, key) => value?.[key], document);
 }
 export function mergeElementSet(document = {}, patch) {
@@ -40,7 +48,7 @@ export function elementPatchArgs(kind, args) {
   const validated = validateStudioSchema(schema, args);
   let patch = {};
   for (const { set } of validated.ops) for (const [key, value] of Object.entries(set)) {
-    const element = STUDIO_ELEMENTS.find(row => row.path === `${kind}.${key}` && row.agentExposure === 'patch');
+    const element = patchElements(kind).find(row => row.path === `${kind}.${key}`);
     if (!element) throw new StudioProtocolError('INVALID_ARGUMENT', `Unknown ${kind} path: ${key}`);
     const nested = (element.documentPath ?? key).split('.').reduceRight((value, name) => ({ [name]: value }), value);
     patch = mergeElementSet(patch, nested);
@@ -48,15 +56,16 @@ export function elementPatchArgs(kind, args) {
   return patch;
 }
 export function elementReadback(kind, document) {
-  return STUDIO_ELEMENTS.filter(row => row.path.startsWith(`${kind}.`) && row.agentExposure === 'patch').map(element => {
+  return patchElements(kind).map(element => {
     const value = readElement(document, element.path), path = element.path;
     if (value === null || value === undefined || value === '') return { path, text: null };
     if (element.type === 'image') return { path, bytes: utf8ByteLength(value) };
     return { path, [typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'flag' : 'text']: value };
   });
 }
-export function registerElementSet(registry, ports, declaration, normalize) {
-  const kind = declaration.undoDomain;
+export function registerElementSet(registry, ports, declaration) {
+  const kind = declaration.id.slice(0, declaration.id.indexOf('.'));
+  const { normalize } = kinds.get(kind);
   registry.register({ ...declaration, available: () => true, run(args) {
     const domain = ports[kind]();
     domain.write(normalize(mergeElementSet(domain.read(), args)));
