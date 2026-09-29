@@ -150,7 +150,7 @@ ok("Vector3Row passes a per-field scrub range", (() => {
 const app = readFileSync(new URL("../src/panels/ObjectTransformPanel.jsx", import.meta.url), "utf8");
 const transformRows = app.slice(app.indexOf("selectedSceneObject.scaleX") - 4000, app.indexOf("selectedSceneObject.scaleZ") + 400);
 for (const axis of ["x", "y", "z", "rotX", "rot", "rotZ", "scaleX", "scaleY", "scaleZ"]) {
-	const pattern = new RegExp(`onChange: \\(${axis}, token\\) => changeSceneObject\\(selectedSceneObject\\.id, \\{ ${axis} \\}, token\\)`);
+	const pattern = new RegExp(`onChange: \\(${axis}, token\\) => run\\(\\.\\.\\.updateArgs\\(\\{ ${axis} \\}, token\\)\\)`);
 	ok(`the ${axis} field applies inside the scrub's transaction`, pattern.test(transformRows));
 }
 ok("the transform rows name their own scrub spans", (() => {
