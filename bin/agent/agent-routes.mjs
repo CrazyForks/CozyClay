@@ -306,7 +306,6 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 	const sessionStore = injectedSessionStore ?? createSessionStore();
 	const studioSessions = new Map();
 	const studioEvents = new Map();
-	let ownedStudioRuntime = studioRuntime || null;
 	const studioOwnerTokens = new Map();
 	const parseCookies = req => Object.fromEntries(String(req.headers.cookie || "").split(";").map(part => part.trim().split("=")).filter(([key, value]) => key && value).map(([key, value]) => [key, decodeURIComponent(value)]));
 	const pruneStudioSessions = () => {
@@ -322,13 +321,6 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		if (!owner && create) { owner = randomBytes(24).toString("hex"); studioOwnerTokens.set(sessionId, owner); return owner; }
 		if (!owner || supplied !== owner) throw Object.assign(new Error("Studio session owner mismatch."), { code: "AUTH_REQUIRED" });
 		return owner;
-	};
-	const studioRuntimeFor = async hub => {
-		if (ownedStudioRuntime) return ownedStudioRuntime;
-		const { createStudioMotionRuntime } = await import("./motion-runtime.mjs");
-		if (!hub) return null;
-		ownedStudioRuntime = createStudioMotionRuntime({ liveHub: hub, getBridgeOrigin, clock });
-		return ownedStudioRuntime;
 	};
 	const emitStudioEvent = (turnId, event) => {
 		const record = studioEvents.get(turnId) || { next: 0, events: [], listeners: new Set(), terminal: false };
@@ -353,7 +345,6 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		if (kind !== "signed_out" && kind !== "replaced") return;
 		for (const session of sessions.values()) session.controller?.abort();
 		for (const session of studioSessions.values()) session.controller?.abort();
-		void ownedStudioRuntime?.dispose?.(); ownedStudioRuntime = studioRuntime || null;
 		for (const runner of [...workflowRunners.values(), ...studioRunners.values()]) void runner.close?.();
 		workflowRunners.clear(); studioRunners.clear();
 		workflowModels = models;
@@ -412,7 +403,6 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			// out" into "nothing was applied"; a discarded outcome reads as proof.
 			let outcome = null;
 			if (jobId && session.busJobIds.has(jobId)) outcome = await session.controlJob('job.cancel', jobId);
-			else if (jobId && ownedStudioRuntime?.stop) outcome = await ownedStudioRuntime.stop(jobId);
 			if (jobId && session.activeJobId === jobId) { session.activeJobId = null; session.activeJobTurnId = null; }
 			// #379 / 16q: `session.controller.signal` is the SAME signal wired into the
 			// active turn's prompt context (`:520 signal: controller.signal`), which
@@ -507,47 +497,13 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		};
 		const tools = createStudioTools({ liveHub: hub, workspaceHandle: value.context.host.workspaceHandle, session: { signal: controller.signal, admission, generation, onJob, actionIndex: current?.actionIndex ?? [] }, resolveImage: async (id, correlation) => hub.command("resolve_studio_image", { imageId: id, ...correlation }, value.context.host.workspaceHandle) });
 		const motion = async args => {
-			if (args.source.kind === 'generate') {
-				await tools.internal.invoke('inspect_studio', { scope: 'motion', ids: [args.characterId] });
-				const receipt = await tools.internal.invoke('generate_motion', args);
-				if (receipt.ok && receipt.status === 'completed') send({ type: 'receipt', receipt });
-				return receipt;
-			}
-			// Artifact reuse keeps the retained runtime until #452; generation never
-			// enters its text-only request builder or candidate installer.
-			const runtimeForJob = await studioRuntimeFor(hub);
-			if (generation.used) throw new StudioProtocolError("GENERATION_LIMIT", "One motion generation per user message. Report this result and ask the user before generating again.");
-			if ((generation.failures ?? 0) >= 2) throw new StudioProtocolError("GENERATION_LIMIT", "Two motion generation attempts already failed in this user message. Report both failures to the user and ask before generating again.");
-			if (!runtimeForJob) throw new StudioProtocolError("CAPABILITY_MISSING", "Studio motion runtime is unavailable.");
-			// Admit against the character as the editor holds it now: an edit earlier
-			// in this turn retired the token the turn started with.
-			const inspected = hub?.command
-				? await hub.command("inspect_studio", { scope: "motion", ids: [args.characterId] }, value.context.host.workspaceHandle)
-				: { context: await studioRuntime.readContext(admission.host) };
-			const character = inspected?.context?.entities?.find(entity => entity.id === args.characterId && entity.kind === "character");
-			if (!character) throw new StudioProtocolError("TARGET_NOT_READY", "The admitted character is unavailable.");
-			admission.revision = inspected.context.revision.scene;
-			const commandId = randomUUID(); const host = { ...admission.host, workspaceHandle: value.context.host.workspaceHandle };
-			const admissionResult = runtimeForJob.admit({ hostBinding: host, characterId: args.characterId, targetToken: character.token, turnId: value.turnId, commandId, authorization: { id: randomUUID(), generations: 1 }, source: args.source, repair: args.repair ?? "bounded" });
-			session.motionJobIds.add(admissionResult.jobId); persistenceMeta.motionJobIds = [...session.motionJobIds]; session.activeJobId = admissionResult.jobId; session.activeJobTurnId = value.turnId;
-			const unsubscribe = runtimeForJob.subscribe(admissionResult.jobId, event => send({ ...event, sourceEventSeq: event.eventSeq }));
-			// Subscription precedes start, including replay of the queued admission event.
-			let outcome;
-			try {
-				try { outcome = await runtimeForJob.start(admissionResult.jobId); }
-				catch (error) { generation.failures = (generation.failures ?? 0) + 1; throw error; }
-				if (outcome?.ok === true || outcome?.status === "review_required") generation.used = true;
-				else if (outcome?.ok === false && outcome.status !== "review_required") generation.failures = (generation.failures ?? 0) + 1;
-				if (outcome?.ok && outcome.status === "installed") send({ type: "receipt", receipt: outcome });
-				return outcome;
-			} finally {
-				unsubscribe();
-				// A job still awaiting an explicit accept (review_required) stays "active"
-				// for the accept route's ownership check (:678); every other outcome —
-				// installed, cancelled, proved-not-applied, failed, or a thrown error —
-				// is terminal for this session and must not leak into a later turn's Stop.
-				if (session.activeJobId === admissionResult.jobId && outcome?.status !== "review_required") { session.activeJobId = null; session.activeJobTurnId = null; }
-			}
+			// Private artifact IDs belonged to the retired sidecar runtime. Reuse
+			// retained editor takes through motion.loadVersion, not another installer.
+			if (args.source.kind !== 'generate') throw new StudioProtocolError('CAPABILITY_MISSING', 'Private motion artifacts are no longer retained. Use motion.loadVersion for an editor take.');
+			await tools.internal.invoke('inspect_studio', { scope: 'motion', ids: [args.characterId] });
+			const receipt = await tools.internal.invoke('generate_motion', args);
+			if (receipt.ok && receipt.status === 'completed') send({ type: 'receipt', receipt });
+			return receipt;
 		};
 		const modelTools = tools.map(tool => ({
 			...tool,
@@ -753,14 +709,6 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			}
 			return true;
 		}
-		if (path.startsWith("/agent/jobs/") && path.endsWith("/accept") && req.method === "POST") {
-			if (!await hasAnyCredential()) { json(res, 401, { error: { code: "AUTH_REQUIRED", message: "Sign in or configure a provider key." } }); return true; }
-			let value; try { value = await readBody(req); } catch { json(res, 400, { error: "invalid request" }); return true; }
-			const jobId = decodeURIComponent(path.slice("/agent/jobs/".length, -"/accept".length)); const session = studioSessions.get(value?.sessionId);
-			if (!session || session.owner !== parseCookies(req).studio_owner || value.surface !== "studio" || value.explicitUnverifiedAcceptance !== true || !session.turns.has(value.turnId) || session.activeJobId !== jobId) { json(res, 403, { error: { code: "AUTH_REQUIRED", message: "Only the owning Studio UI may accept this candidate." } }); return true; }
-			try { const receipt = await ownedStudioRuntime.accept(jobId); const record = studioEvents.get(value.turnId); if (record) { emitStudioEvent(value.turnId, { type: "receipt", receipt }); emitStudioEvent(value.turnId, { type: "done" }); record.terminal = true; } session.activeJobId = null; session.activeJobTurnId = null; json(res, 200, { receipt }); } catch (error) { json(res, 409, { error: { code: error.code || "VERIFICATION_FAILED", message: error.message } }); }
-			return true;
-		}
 		if (req.method !== "POST" || !["/agent/turn", "/agent/stop"].includes(path)) {
 			json(res, 404, { error: "not found" }); return true;
 		}
@@ -895,7 +843,6 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		for (const runner of workflowRunners.values()) await runner.close?.();
 		for (const runner of studioRunners.values()) await runner.close?.();
 		workflowRunners.clear(); studioRunners.clear();
-		if (ownedStudioRuntime?.dispose) await ownedStudioRuntime.dispose();
 		studioSessions.clear(); studioEvents.clear(); studioOwnerTokens.clear();
 		sessions.clear();
 		const { liveHub: hub } = await runtime;
