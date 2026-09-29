@@ -60,3 +60,16 @@ test('motion: restoring a version restores its recipe in the same retained take 
     ok(f.run('edit.undo', { receiptId: receipt.receiptId })); assert.deepEqual(f.snapshot(), before);
   } finally { globalThis.fetch = fetch; f.dispose(); }
 });
+test('motion: extra performer delivery owns its take and cast placement in one undo entry', async () => {
+  const f = motionFixture(), fetch = globalThis.fetch;
+  globalThis.fetch = async requested => { assert.equal(requested, url); return new Response(bytes); };
+  try {
+    const before = f.snapshot(), characters = structuredClone(f.cast.read());
+    assert.equal(await f.motion.deliverExtraTakes([{ motionUrl: url, offsetX: 1, offsetZ: 0 }], f.scope.activeChar, 'Imported'), 1);
+    assert.equal(f.motion.motionFor('actor-b')?.frames, 48);
+    assert.equal(f.motion.layer('actor-b').takeVersions.length, 1);
+    assert.equal(f.motion.motionFor('actor-a'), null);
+    assert.equal(f.motion.documentStore.depths().past, 1); assert.equal(f.scope.appContext.castHistory.past.length, 0);
+    f.actual.undoScene(); assert.deepEqual(f.snapshot(), before); assert.deepEqual(f.cast.read(), characters);
+  } finally { globalThis.fetch = fetch; f.dispose(); }
+});
