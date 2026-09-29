@@ -1,5 +1,6 @@
 import { validateStudioCommand, validateStudioIdentity, STUDIO_TOOL_SCHEMAS, STUDIO_TOOL_FAMILIES, StudioProtocolError } from "../../src/studio-agent-protocol.js";
 import { MAX_COMMAND_TIMEOUT_MS } from "../../mcp/live-hub.mjs";
+import { generationArgs } from '../../src/motion/generation.js';
 
 const STUDIO_TOOL_RECEIPT_NOTE = " The result may be a receipt with status \"partial\": ops[].droppedPaths names exactly which authored path each op refused, and delta[].after carries the value actually landed for that target -- quote both the requested and the landed value when you report this, never say only that some paths were not applied. A STALE_SCENE error means inspect_studio once for the fresh revision, then resubmit the identical operation with that revision; it is not a permanent failure.";
 const STUDIO_INSPECT_NOTE = " The per-turn <studio-context> already lists every entity in entityIndex (id, kind, name, position; up to 400), full detail for up to 24 of them (selected and active first), the placeable assets (catalogue kinds and imported scene assets), and every editor action run_action can call in actionIndex (id and label). Use a scope for what it only summarizes: selection = full detail of the selected entity (color, tint, modelId, parentId, attachment, path); scene = stage settings (environment, style, key light, camera preset/aspect/sensor) and counts; entities = paged entity detail in stable id order, filtered by ids or query; shot = every shot's range, camera mode, camera keys (frame plus framing) and rail points; motion = per character take id and frames, prompt blocks (startFrame, endFrame, text), waypoints and IK key frames; catalogue = placeable kinds and patchable paths. Pass nextCursor back as cursor to read the next page; it stays valid across edits. On STALE_CURSOR, re-run the same inspect without a cursor.";
@@ -22,6 +23,7 @@ export function createStudioTools({ liveHub, workspaceHandle, session, resolveIm
   const generationGate = session?.generation ?? { used: false, failures: 0 };
   const invoke = async (name, args) => {
     const command = validateStudioCommand({ name, args });
+    if (name === 'generate_motion' && command.args.source.kind === 'generate') return invoke('run_action', { action: 'motion.generate', args: generationArgs(command.args) });
     const action = name === "run_action" ? declared.get(command.args.action) : undefined;
     const generation = action?.generation === "motion";
     if (generation && generationGate.used) throw new StudioProtocolError("GENERATION_LIMIT", "One motion generation per user message. Report this result and ask the user before generating again.");
@@ -33,7 +35,7 @@ export function createStudioTools({ liveHub, workspaceHandle, session, resolveIm
     try {
       // A motion check samples the whole take in the editor, minutes on a long
       // take, so it waits under the hub ceiling rather than the Studio default.
-      const timeoutMs = name === "run_action" ? action?.timeoutMs
+      const timeoutMs = name === "run_action" ? (action?.timeoutMs === undefined ? undefined : Math.min(MAX_COMMAND_TIMEOUT_MS, action.timeoutMs + 5000))
         : name === "verify_result" && command.args.checks.includes("motion") ? MAX_COMMAND_TIMEOUT_MS : undefined;
       result = await (timeoutMs === undefined ? liveHub.command(name, payload, workspaceHandle) : liveHub.command(name, payload, workspaceHandle, { timeoutMs }));
     } catch (error) {
@@ -61,7 +63,7 @@ export function createStudioTools({ liveHub, workspaceHandle, session, resolveIm
     if (name === "inspect_studio" && Number.isSafeInteger(result?.context?.revision?.scene) && session?.admission) {
       session.admission.revision = result.context.revision.scene;
     }
-    if (mutationNames.has(name)) {
+    if (mutationNames.has(name) && session?.admission) {
       if (Number.isSafeInteger(result?.revision?.after)) session.admission.revision = result.revision.after;
       else await session.admission.refresh();
     }

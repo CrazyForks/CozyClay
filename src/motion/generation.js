@@ -1,6 +1,6 @@
 // Pure request construction. The caller supplies one rolled seed and sampled
 // poses; no rig, store, random source, notification or network is touched here.
-import { StudioProtocolError } from '../studio-agent-protocol.js';
+import { StudioProtocolError, compileStudioBeats } from '../studio-agent-protocol.js';
 import { TIMELINE_FRAME_FPS as FPS } from '../scenes.js';
 import { judgeAuthoredPath, alignArdyPath } from '../ardy/waypoints.js';
 import { planPosePin, PIN_BLOCKED } from '../ardy/pose-pin.js';
@@ -22,6 +22,14 @@ function promptSchedule(clips, clipFrames, prompt) {
   if (cursor < clipFrames) segments.push({ startFrame: cursor, endFrame: clipFrames, prompt });
   if (!segments.length) segments.push({ startFrame: 0, endFrame: clipFrames, prompt });
   return segments;
+}
+
+export function generationArgs({ characterId, source }) {
+  if (source.kind !== 'generate') throw generationRefusal('CAPABILITY_MISSING', 'Artifact reuse is handled by the retained artifact runtime.');
+  const schedule = compileStudioBeats(source);
+  return { characterId, durationSeconds: schedule.durationSeconds,
+    blocks: schedule.blocks.map((block, index) => ({ id: `generation-block-${index}`, text: block.text, startFrame: block.startFrame, endFrame: block.endFrameExclusive })),
+    ...(source.seed === undefined ? {} : { seed: source.seed }) };
 }
 
 export function generationRefusal(code, message, uiMessage = message) {

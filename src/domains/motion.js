@@ -98,8 +98,7 @@ import {
 	pushTakeVersion,
 	TAKE_VERSIONS_MAX,
 } from "../take-recipe.js";
-import { judgeAuthoredPath, alignArdyPath } from "../ardy/waypoints.js";
-import { planPosePin, PIN_BLOCKED } from "../ardy/pose-pin.js";
+import { buildGenerationRequest, generationRefusal } from '../motion/generation.js';
 import { worldDeltaToClip, applyTrailFalloffDelta, trailEditRange } from "../motion-trail.js";
 import { generate as ardyGenerate } from "../ardy/client.js";
 import { isLineEditUnsupported } from "../line-edit.js";
@@ -2078,414 +2077,65 @@ export function useMotion(appContext) {
 	}
 
 	function runAllPromptBlocks(commandContext = null) {
-		if (appContext.shared.generationPendingRef.current || appContext.shared.genRunningRef.current || ardyRunning) return;
-		const clips = appContext.shared.promptClips
-			.filter((clip) => clip.text.trim())
-			.sort((a, b) => a.startFrame - b.startFrame);
-		if (!clips.length) {
-			appContext.notify((isKo, ko) => ko("Add at least one Prompt Block before generating", "생성하기 전에 프롬프트 블록을 하나 이상 추가하세요"));
-			return;
-		}
-		const totalFrames = Math.max(...clips.map((clip) => clip.endFrame));
-		const duration = Math.max(ARDY_DURATION_MIN, Math.ceil(totalFrames / TIMELINE_FPS));
-		setArdyPrompt(clips[0].text);
-		setArdyDuration(duration);
-		let resolve, reject;
-		const completion = commandContext ? new Promise((yes, no) => { resolve = yes; reject = no; }) : null;
-		const queued = runArdy({
-			promptOverride: clips[0].text, durationOverride: duration, promptClipsOverride: clips,
-			commandContext, commandCompletion: commandContext ? { resolve, reject } : null,
-		});
-		if (commandContext) return queued.then(started => { if (!started) throw new Error("The editor did not start the generation."); return completion; });
+		const characterId = appContext.storeDomain('cast').activeId;
+		return commandContext ? generateMotion({ characterId }, commandContext)
+			: appContext.bus.run('motion.generate', { characterId });
 	}
 
-	async function runArdy({
-		promptOverride = ardyPrompt,
-		durationOverride = ardyDuration,
-		promptClipsOverride = [],
-		// Scene > Start over asks for a take that owes the loaded one nothing:
-		// no preserve, no replayed refinements, a clean recipe. Every other
-		// entry point (take it again, add a block, the Prompt Blocks button) stays in
-		// the current take's lineage and carries both.
-		fresh = false, commandContext = null, commandCompletion = null,
-	} = {}) {
-		if (appContext.shared.generationPendingRef.current || appContext.shared.genRunningRef.current || ardyRunning) return;
-		const request = requestMotionGeneration("timeline", motion?.url && appContext.shared.ikFrames.length ? "edit" : ardyStartFromPose ? "pose" : "prompt");
-		// A line-edit draft is not a take, and every source this function reads
-		// (preserve, motionEdit, the recipe) is about THE take. Refusing here is
-		// the last line of defence behind sceneDisabledReason, which already
-		// greys the entries with this reason spelled out in place.
-		if (appContext.shared.linePreviewUrl) {
-			appContext.notify((isKo, ko) => previewBlockingReason(ko));
-			return;
-		}
-		// Motion generation targets the ACTIVE character's layer; the pose
-		// studio only lends its rig when it is actually open.
-		const rig = appContext.shared.posing ? appContext.shared.posedRig() : appContext.shared.activeRig;
-		const rigModel = appContext.shared.posing ? (appContext.shared.posingChar?.model ?? appContext.shared.activeChar.model) : appContext.shared.activeChar.model;
-		if (!rig) {
-			appContext.notify((isKo, ko) => ko("Character not loaded yet", "캐릭터가 아직 로드되지 않았어요"));
-			return;
-		}
-		// Root guidance sends only authored sparse keys. ARDY owns every
-		// in-between frame; no dense interpolation or playback warp is applied.
-		// Prompt and duration are bridge-contract inputs too: reject bad
-		// values here, before any pose build or network, with a specific toast.
-		const prompt = promptOverride.trim();
-		if (!prompt) {
-			appContext.notify((isKo, ko) => ko("Motion prompt is required — describe what the subject should do before generating", "모션 프롬프트가 필요해요 — 생성 전에 피사체가 할 동작을 설명하세요"));
-			return;
-		}
-		if (prompt.length > ARDY_PROMPT_MAX) {
-			appContext.notify((isKo, ko) => isKo ? `모션 프롬프트는 ${ARDY_PROMPT_MAX}자까지예요(현재 ${prompt.length}자). 생성 전에 줄여 주세요` : `Motion prompt is capped at ${ARDY_PROMPT_MAX} characters (currently ${prompt.length}) — shorten it before generating`);
-			return;
-		}
-		// Regeneration must keep the loaded clip's exact frame count. The form
-		// may still show an older duration after a motion is loaded; using it
-		// would ask ARDY for (for example) 120 frames against an 80-frame base.
-		const duration = motion && appContext.shared.ikFrames.length > 0
-			? motion.frames / motion.fps
-			: Math.round(Number(durationOverride)) || ARDY_DURATION_MIN;
-		if (duration < ARDY_DURATION_MIN || duration > ARDY_DURATION_MAX) {
-			appContext.notify((isKo, ko) => isKo ? `길이는 ${ARDY_DURATION_MIN}초에서 ${ARDY_DURATION_MAX}초 사이여야 해요` : `Duration must be between ${ARDY_DURATION_MIN} and ${ARDY_DURATION_MAX} seconds`);
-			return;
-		}
-		// THE SEED RULE (C9): rolled when the field is empty, kept when it is
-		// typed, and concrete either way — this generation creates a take, so
-		// its seed is recorded on the take's recipe below.
-		const seed = takeSeed();
-		if (seed === null) return;
-		// Prompt clips are real generation blocks. Gaps inherit the current
-		// prompt so the bridge always receives one contiguous 0..N sequence.
-		// Built BEFORE the root-path judge: whether the rollout is chained
-		// changes which window limit binds the path (per block, not per clip).
-		// `duration` is SECONDS — the one frame-rate-free number in the
-		// request, and the only one the bridge reads directly. Everything the
-		// app counts in frames from here on is on the timeline clock; the
-		// bridge's own count is duration * ARDY_FPS, reached via toArdyFrame.
-		const clipFrames = duration * TIMELINE_FPS;
-		const sourcePromptClips = promptClipsOverride
-			.filter((clip) => clip.text.trim())
-			.sort((a, b) => a.startFrame - b.startFrame);
-		const hasAuthoredBlocks = sourcePromptClips.length > 0;
-		const segments = buildPromptSchedule(sourcePromptClips, clipFrames, prompt);
-		const hasPromptSchedule = segments.length > 1;
-		const rootPath = appContext.shared.waypointMode
-			? [{ frame: 0, x: appContext.shared.activeChar.x, z: appContext.shared.activeChar.z, heading: null }, ...appContext.shared.waypoints]
-			: [];
-		if (appContext.shared.waypointMode) {
-			if (appContext.shared.waypoints.length < 1) {
-				appContext.notify((isKo, ko) => ko("Add at least one root destination before generating", "생성하기 전에 루트 목적지를 하나 이상 추가하세요"));
-				return;
-			}
-			if (rootPath.length > MAX_WAYPOINTS) {
-				appContext.notify((isKo, ko) => isKo ? `루트 경로는 드문 웨이포인트 ${MAX_WAYPOINTS}개까지 사용할 수 있어요` : `The root path is capped at ${MAX_WAYPOINTS} sparse waypoints`);
-				return;
-			}
-			if (appContext.shared.waypoints.some((waypoint) => waypoint.frame <= 0 || waypoint.frame >= clipFrames)) {
-				appContext.notify((isKo, ko) => isKo ? `루트 웨이포인트 프레임은 1..${clipFrames - 1} 안에 있어야 해요` : `Root waypoint frames must stay inside 1..${clipFrames - 1}`);
-				return;
-			}
-			// Placement-time checks can be invalidated afterwards (removing a
-			// middle pin merges two legs; the duration field can grow), so the
-			// whole path is re-judged at the door. A prompt schedule chains
-			// the rollout block by block, so the trained window binds each
-			// block instead of the whole clip.
-			// Physical plausibility (m/s, deg/s) — judged against the clock the
-			// pins were authored on, which is now the timeline's.
-			const pathVerdict = judgeAuthoredPath(rootPath, TIMELINE_FPS, clipFrames, { chained: hasPromptSchedule });
-			if (pathVerdict.errors.length > 0) {
-				appContext.notify((isKo, ko) => isKo ? `생성하지 못했어요 — ${pathVerdict.errors[0]}` : `Not generated — ${pathVerdict.errors[0]}`);
-				return;
-			}
-			if (hasAuthoredBlocks) {
-				const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > appContext.shared.PROMPT_BLOCK_MAX_FRAMES);
-				if (longBlock) {
-					appContext.notify((isKo, ko) => isKo
-						? `생성하지 못했어요 — 프롬프트 블록은 ${appContext.shared.PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS}초 이내여야 해요. ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)}초 블록을 나눠 주세요`
-						: `Not generated — prompt blocks are capped at ${appContext.shared.PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS} s; split the ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)} s block`);
-					return;
-				}
-			}
-			if (pathVerdict.warnings.length > 0) appContext.notify(`⚠ ${pathVerdict.warnings[0]}`);
-		}
-		// Align + densify, never the raw sparse path: the model forces frame-0
-		// facing to +Z, so the path is rotated until its first travel tangent
-		// is +Z (heading 0) and resampled with path-tangent headings — sparse
-		// heading-less pins that fight the forced facing corrupt the whole
-		// track (see the sign-convention notes in ardy/waypoints.js).
-		// The 5 s block policy binds the schedule path too, not just
-		// root-constrained runs: chained blocks are the whole point of the cap.
-		if (!appContext.shared.waypointMode && hasAuthoredBlocks) {
-			const longBlock = segments.find((segment) => segment.endFrame - segment.startFrame > appContext.shared.PROMPT_BLOCK_MAX_FRAMES);
-			if (longBlock) {
-				appContext.notify((isKo, ko) => isKo
-					? `생성하지 못했어요 — 프롬프트 블록은 ${appContext.shared.PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS}초 이내여야 해요. ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)}초 블록을 나눠 주세요`
-					: `Not generated — prompt blocks are capped at ${appContext.shared.PROMPT_BLOCK_MAX_FRAMES / TIMELINE_FPS} s; split the ${((longBlock.endFrame - longBlock.startFrame) / TIMELINE_FPS).toFixed(1)} s block`);
-				return;
-			}
-		}
-		const alignedRoot = appContext.shared.waypointMode ? alignArdyPath(rootPath, appContext.shared.activeChar.rot, MAX_WAYPOINTS) : null;
-		// Waypoints leave the app here, so their frames drop onto the bridge
-		// clock here. Rounding can merge two near-adjacent samples; the first
-		// wins — the bridge refuses non-ascending frame lists outright.
-		const ardyWaypoints = toArdyFrameEntries(alignedRoot ? alignedRoot.waypoints : []);
+	// The UI's uncommitted prompt/fresh choice is read synchronously at admission,
+	// just like its seed and pose controls. It never survives into another run.
+	let uiGenerationIntent = null;
+	function runArdy({ promptOverride = ardyPrompt, durationOverride = ardyDuration, promptClipsOverride = [], fresh = false } = {}) {
+		uiGenerationIntent = { prompt: promptOverride, blocks: promptClipsOverride, fresh };
+		try { return appContext.bus.run('motion.generate', { characterId: appContext.storeDomain('cast').activeId, durationSeconds: Math.round(Number(durationOverride)) || ARDY_DURATION_MIN }); }
+		finally { uiGenerationIntent = null; }
+	}
 
-		// Capture every block boundary plus every authored IK key. Each sample
-		// is the composite base-motion + IK pose at that frame and carries the
-		// live ARDY root recovered from positional skinning.
-		// A block "edit" is a LOCAL correction of the loaded take, addressed to
-		// that take's source npz. Without a bridge source there is nothing to edit
-		// against, so such keys must not divert a fresh generation into the edit
-		// path — that path sends no segments, and the whole schedule would collapse
-		// to the first block's prompt.
-		const editedSegments = motion?.url && hasPromptSchedule
-			? segments.filter((segment) =>
-				appContext.shared.ikFrames.some((frame) => frame >= segment.startFrame && frame < segment.endFrame)
-			)
-			: [];
-		const hasBlockEdits = editedSegments.length > 0;
-		// Which frames are pinned — and whether an opted-in pose start had to be
-		// refused — is decided in one testable place (ardy/pose-pin.js).
-		const pinPlan = planPosePin({
-			startFromPose: ardyStartFromPose,
-			poseFrame: posePlacementFrame(ardyPosePlacement, clipFrames, appContext.shared.tlFrame),
-			hasPromptSchedule,
-			hasBlockEdits,
-			waypointMode: appContext.shared.waypointMode,
-			ikFrames: appContext.shared.ikFrames,
-			clipFrames,
-			segments,
-			editedSegments,
+	async function generateMotion(args, commandContext) {
+		if (appContext.shared.generationPendingRef.current || appContext.shared.genRunningRef.current || ardyRunning) throw generationRefusal('TARGET_BUSY', 'A motion generation is already running.');
+		if (appContext.shared.linePreviewUrl) throw generationRefusal('TARGET_NOT_READY', previewBlockingReason(en => en), previewBlockingReason(ko));
+		const character = appContext.storeDomain('cast').read().find(row => row.id === args.characterId);
+		const active = character.id === appContext.shared.loadedLayerCharRef.current;
+		const posing = active && appContext.shared.posing;
+		const rig = posing ? appContext.shared.posedRig() : appContext.shared.rigs[character.id];
+		if (!rig) throw generationRefusal('TARGET_NOT_READY', 'Character not loaded yet', ko('Character not loaded yet', '캐릭터가 아직 로드되지 않았어요'));
+		const take = domain.motionFor(character.id), state = ikStateFor(character.id);
+		const intent = commandContext.origin === 'ui' ? uiGenerationIntent : null;
+		const blocks = (intent?.blocks ?? character.layer.promptClips).filter(clip => clip.text.trim()).sort((a, b) => a.startFrame - b.startFrame);
+		const prompt = intent?.prompt ?? blocks[0]?.text ?? (active ? ardyPrompt : '');
+		let seed;
+		try { seed = resolveSeed(args.seed ?? (active ? ardySeed : ''), ARDY_SEED_MAX); }
+		catch (error) { throw generationRefusal('INVALID_ARGUMENT', error.message); }
+		const input = { character, prompt, blocks, seed, durationSeconds: args.durationSeconds ?? (blocks.length ? Math.max(ARDY_DURATION_MIN, Math.ceil(Math.max(...blocks.map(clip => clip.endFrame)) / TIMELINE_FPS)) : ardyDuration),
+			waypoints: character.layer.waypoints, motion: take, ikKeys: state.keys,
+			startFromPose: ardyStartFromPose, posePlacement: ardyPosePlacement, frame: appContext.shared.tlFrame,
+			preserveStrength, recipe: domain.layer(character.id).takeRecipe, fresh: intent?.fresh ?? false };
+		const plan = buildGenerationRequest(input), resolved = resolveIkRig(rig);
+		const image = appContext.shared.snapshotExportRig(rig);
+		let poses;
+		try {
+			poses = plan.constraintFrames.map(frame => {
+				if (take) applyMotionFrame(rig, take, frame);
+				if (resolved && state.keys.size) ikEvaluate(resolved.chains, state, frame, resolved.fkJoints, take ? IK_CORRECTION_BLEND_FRAMES : 0);
+				return { frame, pose: buildArdyPose({ rig, camRef: appContext.shared.shotCamRef, look: appContext.shared.look,
+					fovDeg: appContext.shared.fovDeg, slate: slateLine(appContext.shared.shot), rigName: posing ? appContext.shared.posingChar?.model ?? character.model : character.model, root: captureArdyRoot(rig) }) };
+			});
+		} finally { appContext.shared.restoreExportRig(image); }
+		const built = buildGenerationRequest({ ...input, poses });
+		for (const warning of built.warnings) appContext.notify(warning);
+		const request = requestMotionGeneration('timeline', take?.url && state.keys.size ? 'edit' : ardyStartFromPose ? 'pose' : 'prompt');
+		commandContext.check();
+		return new Promise((resolve, reject) => {
+			const job = { request, commandContext, commandCompletion: { resolve, reject }, charId: character.id,
+				charIndex: appContext.live.characters.findIndex(row => row.id === character.id), prompt: built.body.prompt,
+				body: built.body, hasBlockEdits: built.hasBlockEdits, committedEditKeys: built.committedEditKeys,
+				rootRotationDeg: built.rootRotationDeg, anchor: { x: character.x, z: character.z }, ikState: built.hasBlockEdits ? state : null,
+				recipeIntent: built.hasBlockEdits ? 'carry' : 'fresh', recipeSeed: seed,
+				recipeLabel: built.hasBlockEdits ? ko('Block fix', '블록 수정') : built.hasPromptSchedule ? ko('Blocks', '블록 생성')
+					: input.fresh ? ko('New', '새로 만들기') : take?.url ? ko('Again', '다시 뽑기') : ko('Generate', '생성') };
+			appContext.shared.generationPendingRef.current = enqueueMotionJob(job) === true;
+			if (!appContext.shared.generationPendingRef.current) reject(generationRefusal('TARGET_NOT_READY', 'The motion backend cannot run this request.'));
 		});
-		if (pinPlan.blockedBy === PIN_BLOCKED.SCHEDULE) {
-			appContext.notify((isKo, ko) => ko(
-				"Prompt blocks and a pose start cannot be combined — generating from the prompt alone.",
-				"프롬프트 블록과 포즈 시작은 함께 쓸 수 없어요 — 프롬프트만으로 생성합니다.",
-			));
-		}
-		const shouldPin = pinPlan.pin;
-		const constraintFrames = pinPlan.frames;
-		const currentFrame = appContext.shared.tlFrame;
-		const poses = constraintFrames.map((constraintFrame) => {
-			if (motion) applyMotionFrame(rig, motion, constraintFrame);
-			if (ikChains && appContext.shared.ikStateRef.current.keys.size > 0) {
-				ikEvaluate(ikChains, appContext.shared.ikStateRef.current, constraintFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
-			}
-			return {
-				frame: constraintFrame,
-				pose: buildArdyPose({
-					rig,
-					camRef: appContext.shared.shotCamRef,
-					look: appContext.shared.look,
-					fovDeg: appContext.shared.fovDeg,
-					slate: slateLine(appContext.shared.shot),
-					rigName: rigModel,
-					root: captureArdyRoot(rig),
-				}),
-			};
-		});
-		if (motion) applyMotionFrame(rig, motion, currentFrame);
-		if (ikChains && appContext.shared.ikStateRef.current.keys.size > 0) {
-			ikEvaluate(ikChains, appContext.shared.ikStateRef.current, currentFrame, ikFkJoints, motion ? IK_CORRECTION_BLEND_FRAMES : 0);
-		}
-		// ARDY generates in Subject 1's clip-local frame. Frame 0 is therefore
-		// always the origin; scene placement and the total scene->clip rotation
-		// (actor yaw plus the path-alignment fold) are restored only at
-		// playback, without constraining any later generated root frame.
-		const rootRotationDeg = alignedRoot ? alignedRoot.rotationDeg : appContext.shared.activeChar.rot;
-		const body = { prompt, duration, posePin: shouldPin };
-		// The bridge sees only wire frames; the timeline frames of the same
-		// keys are kept beside the payload so the commit can mark the markers
-		// the user actually authored.
-		let committedEditKeys = [];
-		if (shouldPin && !hasBlockEdits) body.poses = toArdyFrameEntries(poses);
-		body.seed = seed;
-		if (appContext.shared.waypointMode) {
-			body.waypoints = ardyWaypoints;
-			// A root path and a prompt schedule now travel TOGETHER: the
-			// sequence generator threads the Root2D constraint set through
-			// its chained calls (the interactive demo's pattern), so
-			// neither authored surface is silently dropped any more.
-			if (hasPromptSchedule && !hasBlockEdits) body.segments = toArdySegments(segments);
-			// Looser pin grip than ARDY's 0.04 default: authored paths are
-			// sparse and human-laid, so the postprocess gets 8 cm of room to
-			// trade pin exactness for less foot skate.
-			body.rootMargin = 0.08;
-			// A path asks the model to CHANGE course at authored frames, so a
-			// shorter 4 s history reacts faster to the pins than the default
-			// full-window lookback (which favors continuing whatever came before).
-			// This is deliberate, not arbitrary: upstream's README documents the
-			// tradeoff -- a smaller history crop adapts faster to new
-			// prompts/constraints, a larger one keeps longer context for complex
-			// semantics and smoother transitions. Waypoint mode re-plans on
-			// prompt/constraint changes, so faster adaptation wins here. The
-			// initial beat is already covered: when no historyFrames arrives,
-			// cclay_sequence_generate.py falls back to the trained 10 s window
-			// minus the model's generation horizon (~8 s on Core-Horizon40), and
-			// chained segments after the first carry only a ~0.6 s transition
-			// tail, so the long-context case barely applies mid-chain.
-			// A bridge-side frame count, so it is 4 s counted on the WIRE clock.
-			body.historyFrames = 4 * ARDY_FPS;
-		} else if (hasBlockEdits) {
-			if (!motion?.url) {
-				appContext.notify((isKo, ko) => ko("The current motion has no bridge source; generate the prompt blocks once before regenerating IK edits", "현재 모션에 브리지 원본이 없어요. 프롬프트 블록을 한 번 생성한 뒤 IK 보정을 다시 생성하세요"));
-				return;
-			}
-			const startFrame = Math.min(...editedSegments.map((segment) => segment.startFrame));
-			const endFrame = Math.max(...editedSegments.map((segment) => segment.endFrame));
-			const posesByFrame = new Map(poses.map((entry) => [entry.frame, entry.pose]));
-			// Edits address the bridge-side source npz, so their frames drop
-			// onto the bridge clock here; the timeline frame rides along only
-			// for the app-side committed-keys bookkeeping (timeline markers).
-			// contextBefore/contextAfter count frames of that source npz, so
-			// they are already wire-clock numbers and do not convert.
-			const editEntries = [];
-			for (const timelineFrame of constraintFrames) {
-				const frame = toArdyFrame(timelineFrame);
-				if (editEntries.length && frame <= editEntries[editEntries.length - 1].frame) continue;
-				editEntries.push({
-					frame,
-					timelineFrame,
-					tracks: [...(appContext.shared.ikStateRef.current.keys.get(timelineFrame)?.keys() || [])],
-					pose: posesByFrame.get(timelineFrame),
-				});
-			}
-			committedEditKeys = editEntries.map(({ timelineFrame, tracks }) => ({ frame: timelineFrame, tracks }));
-			body.motionEdit = {
-				sourceMotion: motion.url,
-				startFrame: toArdyFrame(startFrame),
-				endFrame: toArdyFrame(endFrame),
-				contextBefore: 40,
-				contextAfter: 20,
-				edits: editEntries.map(({ frame, tracks, pose }) => ({ frame, tracks, pose })),
-			};
-		} else if (hasPromptSchedule) body.segments = toArdySegments(segments);
-		// Scheduled inpainting (contract C3). The run reconstructs the take that
-		// is already loaded everywhere the user did NOT edit, so it addresses that
-		// take's bridge source npz — without one there is nothing to preserve and
-		// the field must not be sent. strength travels RAW; the box maps it to
-		// sigma_s/sigma_e (see ARDY_PRESERVE_DEFAULT).
-		// A ROOT PATH IS NOW ALLOWED alongside it (contract C3v2, paper 4.4):
-		// the bridge builds a mask whose `root` group is 0 for the whole clip, so
-		// the drawn waypoints own the trajectory while the body keeps riding the
-		// preserved take's style. That pair is the one thing round 1 refused; the
-		// slider now says the same thing in words whenever both are on, so the
-		// wire and the UI still cannot disagree.
-		// regenerateSegments is not authored by this app today; the guard is here
-		// so it stays true if it ever is.
-		// body.segments too: scheduled inpainting is single-segment only, and the
-		// bridge refuses the pair. A chained rollout (2 s + 2 s prompt blocks)
-		// must still generate — preserve silently steps aside rather than turning
-		// every multi-block generation into a 400.
-		// The take being preserved must be the LENGTH of the window being
-		// generated: Kimodo's preserve prep refuses a base whose duration is off
-		// by more than a frame (there is no principled way to stretch a 8 s walk
-		// into 5 s of blend), so a duration change quietly steps aside exactly
-		// like a chained rollout does — the alternative is every "make it
-		// longer/shorter" regeneration failing outright.
-		const preserveDurationFits =
-			motion?.frames > 0 && Math.abs(motion.frames / TIMELINE_FPS - duration) <= 1 / ARDY_FPS + 1e-9;
-		// Preserve reconstructs the LOADED take wherever nothing was edited — with
-		// no edit ranges it reconstructs it nearly verbatim (G1 measured ~5 mm).
-		// So it must only ride along when this run asks for the SAME motion the
-		// take was generated from: if any prompt block changed, the user is asking
-		// for a different motion and preserve would hand them the old take back
-		// with the new prompt ignored. The take's recipe is the record of what it
-		// was generated from; no recipe (a pre-C9 take) means no way to check, and
-		// preserve steps aside rather than guessing. A motionEdit run is exempt —
-		// it rewrites a span of the take from poses, not from the prompt.
-		const requestBlocks = blocksFromRequest(body, ARDY_FPS);
-		const recipeBlocks = appContext.shared.takeRecipeRef.current?.blocks ?? null;
-		const preservePromptMatches =
-			body.motionEdit !== undefined ||
-			(!!recipeBlocks &&
-				recipeBlocks.length === requestBlocks.length &&
-				recipeBlocks.every((block, index) => block.prompt.trim() === requestBlocks[index].prompt.trim()));
-		if (!fresh && motion?.url && preserveStrength > 0 && preserveDurationFits && preservePromptMatches && body.regenerateSegments === undefined && body.segments === undefined) {
-			body.preserve = {
-				sourceMotion: motion.url,
-				strength: preserveStrength,
-				// Edited spans leave on the BRIDGE clock like every other frame
-				// number crossing this boundary (waypoints, motionEdit); the mask
-				// builder scales them on to the generation clock itself. Ranges are
-				// half-open, so one that collapses under the rounding is dropped —
-				// the mask builder refuses an empty range outright, and an empty
-				// LIST is the legitimate "nothing was edited" case (all-ones mask,
-				// pure reconstruction) rather than an error.
-				// Each range also names the ik tracks actually keyed inside IT
-				// (contract C3v2), so the mask frees only those tracks' groups
-				// there and a wrist correction stops pinning the legs. Attribution
-				// is per range, not per clip: two blocks edited on different limbs
-				// must not bleed into each other. The key is OMITTED when the union
-				// is empty — the bridge REFUSES `tracks: []`, and "no tracks" is
-				// spelled by absence, which is exactly the v1 whole-body range.
-				editRanges: editedSegments
-					.map((segment) => {
-						const range = { startFrame: toArdyFrame(segment.startFrame), endFrame: toArdyFrame(segment.endFrame) };
-						const tracks = ikTracksInRange(appContext.shared.ikStateRef.current, appContext.shared.ikFrames, segment.startFrame, segment.endFrame);
-						if (tracks.length > 0) range.tracks = tracks;
-						return range;
-					})
-					.filter((range) => range.endFrame > range.startFrame),
-			};
-		}
-		// RECIPE REPLAY (contract C10). Regenerating or extending a take that
-		// carries line edits used to throw those edits away — the box built a
-		// fresh npz and the refinements lived only in the discarded one. The
-		// recipe makes them reconstructible, so they ride along as `replay` and
-		// the box re-applies them, in order, on top of the new take.
-		// C10 REJECTS replay beside motionEdit (hasBlockEdits) because the base
-		// would be ambiguous, so the edit path skips it; `fresh` skips it
-		// because starting over means exactly that.
-		// A SEEDLESS recipe never replays. An imported take (?motion=) is recorded
-		// with `seed: null` because nobody here knows the seed it was made with,
-		// and replaying its refinements onto a freshly rolled take would re-apply
-		// them to a motion they were never authored against — a worse answer than
-		// the honest empty one.
-		const replayable = Number.isInteger(appContext.shared.takeRecipeRef.current?.seed);
-		const replay = fresh || hasBlockEdits || !replayable ? [] : replayPayload(appContext.shared.takeRecipeRef.current);
-		if (replay.length > 0) {
-			body.replay = replay;
-			if (replayTruncated(appContext.shared.takeRecipeRef.current)) {
-				appContext.notify((isKo, ko) => isKo
-					? `다듬기는 한 번에 ${replay.length}개까지만 다시 적용돼요 — 먼저 한 ${replay.length}개만 이어집니다`
-					: `Only ${replay.length} refinements can be replayed at once — the first ${replay.length} carry over`);
-			}
-		}
-		// The request is fully packaged HERE, against the active character's
-		// live layer — the queue only needs the frozen payload. Results are
-		// delivered to THIS character even if the selection moves on while
-		// the box is still working.
-		appContext.shared.generationPendingRef.current = enqueueMotionJob({
-			request, commandContext, commandCompletion,
-			charId: appContext.shared.activeChar.id,
-			charIndex: appContext.shared.activeCharIndex,
-			prompt,
-			body,
-			hasBlockEdits,
-			committedEditKeys,
-			rootRotationDeg,
-			anchor: { x: appContext.shared.activeChar.x, z: appContext.shared.activeChar.z },
-			ikState: hasBlockEdits ? appContext.shared.ikStateRef.current : null,
-			// A block-edit run REWRITES a span of the loaded take rather than
-			// generating a new one from the prompt, so it keeps the take's
-			// recipe instead of minting a fresh one it could not honestly
-			// describe (motionEdit has no recipe expression, by C10's own
-			// exclusion). Everything else here creates a take from its blocks.
-			recipeIntent: hasBlockEdits ? "carry" : "fresh",
-			recipeSeed: seed,
-			recipeLabel: hasBlockEdits
-				? ko("Block fix", "블록 수정")
-				: hasPromptSchedule
-					? ko("Blocks", "블록 생성")
-					: fresh
-						? ko("New", "새로 만들기")
-						: motion?.url
-							? ko("Again", "다시 뽑기")
-							: ko("Generate", "생성"),
-		}) === true;
-		return appContext.shared.generationPendingRef.current;
 	}
 
 	/* --------------------- trail drag -> preview -> regen -------------------- */
@@ -3468,6 +3118,7 @@ export function useMotion(appContext) {
 	function updateFalMotionQuota(dailyRemaining) { setFalMotion((current) => ({ ...current, dailyRemaining })); }
 	domain.requestLineEdit = runLineEdit;
 	domain.requestTrailRegeneration = runTrailRegeneration;
+	domain.generate = generateMotion;
 	domain.onPhysicsRunning = setAutoPhysicsRunning;
 	domain.onPhysicsProgress = setPhysicsProgress;
 	domain.onPhysicsPreview = result => { setPhysicsPreview(result); setPhysicsShow(true); setIkTick(value => value + 1); };

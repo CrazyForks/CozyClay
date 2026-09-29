@@ -7,12 +7,15 @@ export const ok = value => { assert.equal(value.ok, true, JSON.stringify(value))
 test('#444.3: agent generate_motion follows the editor root path and installs the real NPZ', async () => {
   const f = generationFixture(), originalFetch = globalThis.fetch, requests = [];
   try {
-    ok(f.run('character.update', { characterId: 'actor-a', patch: { waypoints: [{ frame: 72, x: 0, z: 3 }] } }));
+    const character = f.cast.read()[0];
+    ok(f.run('cast.setLayer', { characterId: 'actor-a', layer: { waypoints: [{ id: 'destination', frame: 72, x: character.x, z: character.z + 3 }] } }));
     globalThis.fetch = async (url, options) => {
       if (url === '/ardy/generate') { requests.push(JSON.parse(options.body)); return new Response(JSON.stringify({ event: 'done', motionUrl: '/ardy/motions/123456-abcdef' }) + '\n'); }
       assert.equal(url, '/ardy/motions/123456-abcdef'); return new Response(motionBytes);
     };
-    const tool = f.tools().find(row => row.name === 'generate_motion');
+    const tools = f.tools();
+    await tools.find(row => row.name === 'inspect_studio').handler({ scope: 'motion', ids: ['actor-a'] });
+    const tool = tools.find(row => row.name === 'generate_motion');
     const receipt = ok(await tool.handler({ characterId: 'actor-a', source }));
     assert.equal(receipt.status, 'completed');
     assert.equal(requests.length, 1); assert.equal(requests[0].waypoints.at(-1).frame, 72);

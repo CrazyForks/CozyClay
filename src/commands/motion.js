@@ -20,6 +20,10 @@ const edits = [
 	mutation('motion.removeSegment', 'Remove motion segment', { characterId: id, id }),
 	mutation('motion.fixCollisions', 'Fix body collisions', { characterId: id, scope: { type: 'string', enum: ['frame', 'clip'], default: 'frame' } }, ['characterId']),
 ];
+const generate = { id: 'motion.generate', label: 'Generate motion', description: 'Generate the named character through the editor pipeline, following its prompt blocks, root path, pose pins and take lineage.',
+	kind: 'job', domain: 'motion', generation: 'motion', background: true, timeoutMs: 1000,
+	input: input({ characterId: id, blocks: elementSetSchema('character').properties.set.properties.layer.properties.promptClips,
+		durationSeconds: { type: 'number', minimum: 1, maximum: 1200 }, seed: { type: 'integer', minimum: 0, maximum: 2147483647 } }, ['characterId']) };
 const prepared = { ...mutation('motion.applyPrepared', 'Apply prepared motion edit', { characterId: id, token: id }), exposure: 'ui-only' };
 const loads = [
 	{ id: 'motion.replace', label: 'Replace take', input: input({ characterId: id, url: id, prompt: { type: 'string', default: '' } }, ['characterId', 'url']) },
@@ -46,12 +50,18 @@ const ik = legacyIk.map((entry, index) => ({ ...entry, id: ['ik.setKey', 'ik.rem
 
 const clear = { id: 'motion.clear', label: 'Clear motion', description: 'Clear the active take, its corrections and take-owned cast fields.',
 	kind: 'mutation', undoDomain: 'motion', input: { type: 'object', properties: { characterId: { type: 'string' } }, required: ['characterId'], additionalProperties: false } };
-export const declarations = Object.freeze([...queued, prepared, ...loads, physics, ...tools, ...edits, ...legacyIk, ...ik, clear, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
+export const declarations = Object.freeze([generate, ...queued, prepared, ...loads, physics, ...tools, ...edits, ...legacyIk, ...ik, clear, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
 
 export function register(registry, ports) {
 	const owner = () => ports.storeDomain('motion');
 	const mounted = () => Boolean(ports.storeDomain?.('motion')) || 'The motion owner is not mounted.';
 	const take = characterId => { characterOf(ports, characterId); return owner().motionFor(characterId) ?? fail('TARGET_NOT_READY', 'Load a take for this character first.'); };
+	registry.register({ ...generate, available: mounted, target: args => args.characterId, async run(args, context) {
+		characterOf(ports, args.characterId);
+		if (args.blocks) context.run('character.setPromptBlocks', { characterId: args.characterId, blocks: args.blocks });
+		await owner().generate(args, context);
+		return { affectedIds: [args.characterId], summary: 'Generated motion.' };
+	} });
 	for (const declaration of queued) registry.register({ ...declaration, available: mounted, run({ characterId }) {
 		characterOf(ports, characterId);
 		if (ports.state().activeCharacterId !== characterId) fail('TARGET_NOT_READY', 'Select the character that owns this editor draft.');
