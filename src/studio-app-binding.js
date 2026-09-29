@@ -328,7 +328,8 @@ export function createStudioAppBinding(ports) {
 			const wanted = row => (!args.ids || args.ids.includes(row.id)) && (!args.query || Boolean(row.name?.includes(args.query)));
 			if (["scene", "shot", "motion", "selection"].includes(command.args.scope)) {
 				const select = { shot: ["shot"], motion: ["motion", "character"] }[command.args.scope];
-				const ids = args.ids ?? (command.args.scope === "selection" ? [s.selection?.id ?? s.host.sceneId] : undefined);
+				const ids = args.ids ?? (command.args.scope === "selection" ? [s.selection?.id ?? s.host.sceneId]
+					: args.query && select ? (command.args.scope === "shot" ? s.shots : entityProjection(s).filter(row => row.kind === "character")).filter(wanted).map(row => row.id) : undefined);
 				return { context: c, scope: "document", ...readElementDocument(s.document, { ...command.args, ids, select }, c.host.sceneId) };
 			}
 			// Build each page from the same complete authoritative projection; never
