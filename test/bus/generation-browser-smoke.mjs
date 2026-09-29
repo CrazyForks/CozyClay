@@ -1,0 +1,106 @@
+// Manual surface gate: COZYCLAY_LIVE_PORT=5744 node test/bus/generation-browser-smoke.mjs
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'vite';
+import { motionArraysToNpzMembers, writeNpz } from '../../tools/ardy/npz.mjs';
+import { CSKEL27_NEUTRAL } from '../../src/ardy/cskel27-neutral.js';
+import { createSceneDocument, SCENES_STORAGE_KEY } from '../../src/scenes.js';
+const document = createSceneDocument(), character = document.scenes[0].stage.characters[0];
+character.layer.promptClips = [{ id: 'walk', startFrame: 0, endFrame: 48, text: 'Walk forward' }, { id: 'stop', startFrame: 48, endFrame: 96, text: 'Stop' }];
+character.layer.waypoints = [{ id: 'path', frame: 72, x: character.x, z: character.z + 3, heading: null }];
+const requests = [];
+const profile = mkdtempSync(join(tmpdir(), 'generation-browser-'));
+const frames = 96, rotMats = new Float32Array(frames * 243), rootPos = new Float32Array(frames * 3), posedJoints = new Float32Array(frames * 81);
+for (let f = 0; f < frames; f++) for (let j = 0; j < 27; j++) {
+  rotMats.set([1,0,0,0,1,0,0,0,1], (f * 27 + j) * 9);
+  const p = CSKEL27_NEUTRAL[j]; posedJoints.set([p[0], p[1] + 1.3544128 - 0.05, p[2]], (f * 27 + j) * 3);
+  if (j === 0) rootPos.set(posedJoints.subarray(f * 81, f * 81 + 3), f * 3);
+}
+const npz = join(profile, 'take.npz'); writeNpz(npz, motionArraysToNpzMembers({ frames, fps: 24, rotMats, rootPos, posedJoints }));
+const bytes = readFileSync(npz);
+process.env.COZYCLAY_LIVE_PORT = '5744';
+const server = await createServer({ server: { host: '127.0.0.1', port: 5224, strictPort: true, hmr: false }, plugins: [{ name: 'qa-generation-bridge', enforce: 'pre', configureServer(server) {
+  server.middlewares.use((req, res, next) => {
+    if (req.url === '/ardy/health') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: true, backend: 'local_kimodo', host: 'fixture', device: 'cpu' })); }
+    else if (req.url === '/ardy/generate') {
+      let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => {
+        requests.push(JSON.parse(body)); res.setHeader('Content-Type', 'application/x-ndjson'); res.end(JSON.stringify({ event: 'done', motionUrl: '/ardy/motions/123456-abcdef' }) + '\n');
+      });
+    } else if (req.url === '/ardy/motions/123456-abcdef') { res.setHeader('Content-Type', 'application/octet-stream'); res.end(bytes); }
+    else next();
+  });
+} }] });
+let chrome, ws, sequence = 0, sessionId;
+const pending = new Map(), pageErrors = [];
+function bounded(promise, label, ms = 30000) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label}: ${pageErrors.join('; ')}`)), ms); })]).finally(() => clearTimeout(timer));
+}
+const send = (method, params = {}, browser = false) => bounded(new Promise((resolve, reject) => {
+  const id = ++sequence; pending.set(id, { resolve, reject }); ws.send(JSON.stringify({ id, method, params, ...(!browser && sessionId ? { sessionId } : {}) }));
+}), method);
+async function evaluate(expression) {
+  const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+  if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text);
+  return result.result.value;
+}
+// Subscribe to the exact React DOM / QA-state publication before the gesture.
+async function transition(condition, action = '') {
+  return evaluate(`new Promise((resolve,reject) => {
+    let timer; const cleanup = () => { observer.disconnect(); window.removeEventListener('motion-qa-state', check); clearTimeout(timer); };
+    const check = () => { if (${condition}) { cleanup(); resolve(true); } };
+    const observer = new MutationObserver(check); observer.observe(document, { childList:true, subtree:true, attributes:true, characterData:true });
+    window.addEventListener('motion-qa-state', check);
+    timer = setTimeout(() => { cleanup(); reject(new Error('Surface transition deadline: ' + ${JSON.stringify(condition)})); }, 20000);
+    ${action}; check();
+  })`);
+}
+try {
+  await server.listen();
+  chrome = spawn(process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--window-size=1600,1100', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  const endpoint = await bounded(new Promise((resolve, reject) => {
+    let output = ''; chrome.stderr.on('data', data => { output += data; const match = output.match(/DevTools listening on (ws:\/\/[^\s]+)/); if (match) resolve(match[1]); });
+    chrome.once('error', reject); chrome.once('exit', code => reject(new Error(`Chrome exited ${code}`)));
+  }), 'Chrome ready');
+  ws = new WebSocket(endpoint);
+  await bounded(new Promise((resolve, reject) => { ws.addEventListener('open', resolve, { once: true }); ws.addEventListener('error', reject, { once: true }); }), 'CDP connected');
+  ws.addEventListener('message', event => {
+    const message = JSON.parse(event.data);
+    if (message.method === 'Runtime.exceptionThrown') { const error = message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text; pageErrors.push(error); console.error(error); }
+    const result = pending.get(message.id); if (!result) return; pending.delete(message.id);
+    if (message.error) result.reject(new Error(JSON.stringify(message.error))); else result.resolve(message.result);
+  });
+  const { targetId } = await send('Target.createTarget', { url: 'about:blank' }, true);
+  ({ sessionId } = await send('Target.attachToTarget', { targetId, flatten: true }, true));
+  await send('Runtime.enable'); await send('Page.enable');
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem(${JSON.stringify(SCENES_STORAGE_KEY)}, ${JSON.stringify(JSON.stringify(document))}); localStorage.setItem('cozyclay.project-session.v1', JSON.stringify({name:'Motion QA',updatedAt:Date.now()})); localStorage.setItem('cozyclay.camera-tutorial-terminal.v1',JSON.stringify({completed:true})); let qa; Object.defineProperty(window, '__cozyclay', {configurable:true,get:()=>qa,set:value=>{qa=value;window.dispatchEvent(new Event('motion-qa-state'));}});` });
+  const loaded = bounded(new Promise(resolve => {
+    const listener = event => { const message = JSON.parse(event.data); if (message.method === 'Page.loadEventFired' && message.sessionId === sessionId) { ws.removeEventListener('message', listener); resolve(); } }; ws.addEventListener('message', listener);
+  }), 'Page load');
+  await send('Page.navigate', { url: 'http://127.0.0.1:5224/app/' }); await loaded;
+  await transition(`window.__cozyclay?.rigA && document.querySelector('.prompt-block-generate') && !document.querySelector('.prompt-block-generate').disabled`);
+  await transition(`window.__cozyclay.motion?.frames === 96`, `document.querySelector('.prompt-block-generate').click()`);
+  assert.equal(requests.length, 1); assert.equal(requests[0].segments.length, 2); assert.equal(requests[0].waypoints.at(-1).frame, 72);
+  console.log('PASS browser generation: the real Generate all blocks button sends segments and root path and installs a take');
+  await transition(`!window.__cozyclay.motion`, `window.dispatchEvent(new KeyboardEvent('keydown',{key:'z',code:'KeyZ',metaKey:true,bubbles:true}))`);
+  console.log('PASS browser generation: one keyboard undo removes the generated take');
+  const receipt = await evaluate(`window.__cozyclay.runArdy({promptOverride:'Walk forward',durationOverride:4})`);
+  assert.equal(receipt.ok, true, JSON.stringify(receipt)); assert.equal(receipt.action, 'motion.generate');
+  await transition(`window.__cozyclay.motion?.frames === 96`);
+  assert.equal(requests.length, 2); assert.ok(requests[1].waypoints.length);
+  console.log('PASS browser generation: the Generate entry calls motion.generate through the same pipeline');
+  await transition(`!window.__cozyclay.motion`, `window.dispatchEvent(new KeyboardEvent('keydown',{key:'z',code:'KeyZ',metaKey:true,bubbles:true}))`);
+  const screenshot = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync('/tmp/444-generation-browser.png', Buffer.from(screenshot.data, 'base64'));
+  assert.deepEqual(pageErrors, []);
+  console.log('PASS browser generation smoke: no runtime exceptions; screenshot /tmp/444-generation-browser.png');
+} catch (error) {
+  if (sessionId) { const screenshot = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync('/tmp/444-generation-browser-failure.png', Buffer.from(screenshot.data, 'base64')); }
+  throw error;
+} finally {
+  ws?.close();
+  if (chrome && chrome.exitCode === null) { const exited = new Promise(resolve => chrome.once('exit', resolve)); chrome.kill('SIGTERM'); await bounded(exited, 'Chrome cleanup'); }
+  await server.close(); rmSync(profile, { recursive: true, force: true });
+}
