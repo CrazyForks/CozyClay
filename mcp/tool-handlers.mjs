@@ -30,6 +30,7 @@ import { z } from "zod";
 
 import { LiveMutationUncertainError, MAX_COMMAND_TIMEOUT_MS } from "./live-hub.mjs";
 import { readMeshFromPath } from "./mesh-file.mjs";
+import { DEFAULT_POSE } from "../src/poses.js";
 import { readMotionStream } from "../bin/agent/motion-runtime.mjs";
 import { motionPreflightReason, startMotionRequest } from "../src/analytics.js";
 import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhases, splitLongBeat, tileClipFrames } from "./ardy-prompts.mjs";
@@ -221,6 +222,13 @@ const findCharacter = (ref) => {
 	const n = Number(key);
 	if (Number.isInteger(n) && n >= 1) return list[n - 1] ?? null;
 	return null;
+};
+
+// Resolve legacy letters and slots from the complete live cast inside the
+// inspected admission. A missing id is refused by the command, not hidden here.
+const liveCharacterId = async ref => {
+	await refreshLiveDescription();
+	return findCharacter(ref)?.id ?? ref;
 };
 
 /** The studio labels the cast A, B, C… by position. */
@@ -494,6 +502,7 @@ function shotReport() {
 const studioAliasTools = new Set([
 	"set_camera", "frame_shot", "place_object", "update_object", "remove_object",
 	"import_mesh", "group_objects", "add_scene", "switch_scene", "apply_batch", "open_project",
+	"add_character", "place_character", "remove_character", "set_prompt_blocks",
 ]);
 const studioAdmissionSchema = {
 	expectedRevision: z.number().int().min(0).optional().describe("scene revision to admit against; defaults to the inspected revision"),
@@ -881,13 +890,12 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 						.describe("which mannequin to use"),
 				},
 			},
-			async ({ subject: desc, x, z: zPos, facing, model }) => {
+			async ({ subject: desc, x, z: zPos, facing, model, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						const result = await appliedLiveMutation("add_character", { subject: desc, x, z: zPos, rot: facing, model });
-						const added = stage().characters.find((character) => character.id === result?.id);
-						if (added && model !== undefined) added.model = model;
-						return text(`Added ${result?.id ?? "character"}.\n\n${sceneReport()}`);
+						return await runStudioCommand({ ...admission, action: "character.add", args: {
+							character: { subject: desc, x, z: zPos, rot: facing, model, pose: DEFAULT_POSE },
+						} });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -930,11 +938,12 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					hidden: z.boolean().optional().describe("hide without removing from the cast"),
 				},
 			},
-			async ({ character, x, z: zPos, y, facing, subject: desc, hidden }) => {
+			async ({ character, x, z: zPos, y, facing, subject: desc, hidden, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						await appliedLiveMutation("update_character", { ref: character, x, y, z: zPos, rot: facing, subject: desc, hidden });
-						return text(`Character updated.\n\n${sceneReport()}`);
+						return await runStudioCommand({ ...admission, action: "character.update", args: async () => ({
+							characterId: await liveCharacterId(character), patch: { x, y, z: zPos, rot: facing, subject: desc, hidden },
+						}) });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -960,11 +969,12 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					character: z.string().describe('which character — letter, slot number or id'),
 				},
 			},
-			async ({ character }) => {
+			async ({ character, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						await appliedLiveMutation("remove_character", { ref: character });
-						return text(`Character removed.\n\n${sceneReport()}`);
+						return await runStudioCommand({ ...admission, action: "character.remove", args: async () => ({
+							characterId: await liveCharacterId(character),
+						}) });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1175,7 +1185,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 						.describe("beats in order; each one becomes a contiguous block"),
 				},
 			},
-			async ({ beats }) => {
+			async ({ beats, ...admission }) => {
 				if (!liveHub?.connected) {
 					return text("Prompt Blocks live on the studio timeline — open the editor and try again.");
 				}
@@ -1183,12 +1193,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				// The timeline runs on a 24 fps production clock.
 				const TIMELINE_FPS = 24;
 				let cursor = 0;
-				let chained = 0;
 				const blocks = [];
 				for (const [i, textValue] of normalized.texts.entries()) {
 					const whole = beats[Math.min(normalized.sources[i], beats.length - 1)].seconds ?? 3;
 					const spans = splitLongBeat(whole);
-					if (spans.length > 1) chained += spans.length - 1;
 					for (const span of spans) {
 						const frames = Math.max(1, Math.round(span * TIMELINE_FPS));
 						blocks.push({ startFrame: cursor, endFrame: cursor + frames, text: textValue });
@@ -1196,24 +1204,12 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					}
 				}
 				try {
-					await appliedLiveMutation("set_prompt_blocks", { blocks });
+					return await runStudioCommand({ ...admission, action: "character.setPromptBlocks", args: context => ({
+						characterId: context.activeCharacterId, blocks,
+					}) });
 				} catch (error) {
 					return liveError(error);
 				}
-				// Report the normalised text itself, not blocks[i]: a long beat becomes
-				// several blocks, so block indices run ahead of phase indices and quoting
-				// blocks[i] would attribute one beat's edits to another beat's wording.
-				const rewrites = normalized.notes
-					.map((notes, i) => (notes.length ? `  ${i + 1}. ${normalized.texts[i]}  ← ${notes.join("; ")}` : null))
-					.filter(Boolean);
-				return text(
-					`${blocks.length} block(s) on the timeline (${(cursor / TIMELINE_FPS).toFixed(1)}s total):\n` +
-						blocks.map((b) => `  ${b.startFrame}-${b.endFrame}f  ${b.text}`).join("\n") +
-						(chained > 0 ? `\n  (${chained} block(s) chained to keep every block within ${BLOCK_MAX_SECONDS}s)` : "") +
-						(rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "") +
-						(normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "") +
-						"\n\nGenerate them from the studio's Prompt Blocks panel, or with generate_motion.",
-				);
 			},
 		),
 

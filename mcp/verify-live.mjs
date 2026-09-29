@@ -339,7 +339,8 @@ cases.cast = async () => {
 
 		// Prompt authoring follows the EDITOR's active actor, not MCP focus.
 		await s.call("focus_character", { character: "A" });
-		s.f.cast.setActiveCharacterId("actor-b"); s.f.cast.switchActiveCharacterLayer();
+		assert.equal((await s.f.call("operate_studio", s.f.request("operate_studio", { selection: { kind: "character", id: "actor-b" } }))).ok, true);
+		s.f.cast.switchActiveCharacterLayer();
 		assert.equal((await s.f.run("character.addWaypoint", { characterId: "actor-b", frame: 24, position: { x: 4.5, z: 0 } })).ok, true);
 		const beforeBlocks = snapshot();
 		const beats = [{ text: "A person walks forward.", seconds: 6 }, { text: "A person stops.", seconds: 2 }];
@@ -384,7 +385,8 @@ cases.cast = async () => {
 		assert.equal(JSON.parse(raced.content[0].text).code, "STALE_SCENE");
 		assert.equal(s.f.cast.read().find(row => row.id === "actor-b").x, 4);
 		s.hub.command = command;
-		s.f.cast.setActiveCharacterId("actor-a"); s.f.cast.switchActiveCharacterLayer();
+		assert.equal((await s.f.call("operate_studio", s.f.request("operate_studio", { selection: { kind: "character", id: "actor-a" } }))).ok, true);
+		s.f.cast.switchActiveCharacterLayer();
 		receipt(await s.call("remove_character", { character: "2" }), "character.remove");
 		receipt(await s.call("remove_character", { character: "B" }), "character.remove");
 		const final = await s.call("remove_character", { character: "A" });
