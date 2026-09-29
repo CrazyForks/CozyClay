@@ -252,7 +252,8 @@ export function createCommandBus({ registry, ports }) {
           if (!domain) fail('INVALID_ARGUMENT', 'A committing job must declare its domain.');
           const recorded = ports.recordAction(domain, apply, targetId ?? null);
           if (recorded?.then) fail('INVALID_ARGUMENT', 'Job publication must be synchronous; prepare before commit.');
-          committedHistoryId = recorded.historyEntryId; applied = Boolean(committedHistoryId);
+          committedHistoryId = recorded.historyEntryId; applied ||= Boolean(committedHistoryId);
+          if (job) rebase();
           return recorded.result;
         },
         run(nestedId, nestedArgs = {}) {
