@@ -1,18 +1,49 @@
+import { useContext, useEffect, useRef } from "react";
+import { AppContext } from "../app-context.js";
 import Foldout from "./Foldout.jsx";
 import { ko, isKo } from "../locale.js";
 import { Field, Vector3Row } from "../ui.jsx";
 import { sceneObjectNameDisplayKo } from "../app-stage.jsx";
-import { setSceneObjectParent, MESH_KIND, CUTOUT_KIND, CUTOUT_DEFAULT_HEIGHT, OBJECT_COLORS, normalizeObjectColor } from "../scene-objects.js";
+import { MESH_KIND, CUTOUT_KIND, CUTOUT_DEFAULT_HEIGHT, OBJECT_COLORS, normalizeObjectColor } from "../scene-objects.js";
 import { MESH_HEIGHT_MIN } from "../scene-mesh.js";
 import { autoColorHex } from "../auto-color.js";
 
 export default function ObjectTransformPanel({
-	selectedSceneObject, snapEnabled, setSnapEnabled, changeSceneObject, attachTargetLabel, hierarchyReparent,
-	store, sceneObjects, beginSceneTransaction, endSceneTransaction, matteCanvasRef, matteStats, matteMode,
+	selectedSceneObject, snapEnabled, setSnapEnabled, attachTargetLabel,
+	sceneObjects, beginSceneTransaction, endSceneTransaction, matteCanvasRef, matteStats, matteMode,
 	setMatteMode, matteEditorRef, matteTolerance, setMatteTolerance, matteBrush, setMatteBrush, matteShrink,
-	setMatteShrink, matteFeather, setMatteFeather, setToast, matteBusy, applyMatte, autoColor,
+	setMatteShrink, matteFeather, setMatteFeather, matteBusy, autoColor,
 	recentObjectColors, rememberSceneObjectColor, objectColorDraft, setObjectColorDraft,
 }) {
+	const app = useContext(AppContext), session = useRef(null);
+	const run = (...args) => {
+		const result = app.bus.run(...args);
+		const show = receipt => { if (!receipt.ok) app.notify(receipt.message); return receipt; };
+		return result?.then ? result.then(show) : show(result);
+	};
+	function finish(commit = true) {
+		const active = session.current;
+		if (!active) return;
+		session.current = null;
+		return endSceneTransaction(active.txId, { commit });
+	}
+	function begin(field) {
+		if (session.current?.field !== field) finish();
+		if (!session.current) {
+			const txId = beginSceneTransaction({ owner: `inspector:${field}`, cancel: () => { session.current = null; } });
+			session.current = { field, txId };
+		}
+		return session.current.txId;
+	}
+	const updateArgs = (patch, txId) => txId
+		? ['run.update', { txId, args: { id: selectedSceneObject.id, patch } }]
+		: ['object.update', { id: selectedSceneObject.id, patch }];
+	const endKey = event => {
+		if (event.key === 'Enter' || event.key === 'Escape') {
+			event.stopPropagation(); finish(event.key === 'Enter'); setObjectColorDraft(null);
+		}
+	};
+	useEffect(() => () => finish(false), [selectedSceneObject?.id]);
 	return (
 <Foldout hidden={!selectedSceneObject} title={ko("Transform", "변환")}>
 						{selectedSceneObject && (
@@ -38,7 +69,9 @@ export default function ObjectTransformPanel({
 									<input
 										type="text"
 								value={sceneObjectNameDisplayKo(selectedSceneObject.name)}
-										onChange={(event) => changeSceneObject(selectedSceneObject.id, { name: event.target.value })}
+										onChange={(event) => run(...updateArgs({ name: event.target.value }, begin('name')))}
+										onBlur={() => finish()}
+										onKeyDown={endKey}
 									/>
 								</Field>
 								{/* A carried prop has no grouping parent to pick — the character
@@ -52,7 +85,7 @@ export default function ObjectTransformPanel({
 											<button
 												type="button"
 												className="btn ghost"
-												onClick={() => hierarchyReparent.onDrop(`object:${selectedSceneObject.id}`, "props")}
+												onClick={() => run('object.detach', { objectId: selectedSceneObject.id })}
 												title={ko("Put it back in the set, where it is now", "지금 있는 자리에 그대로 세트로 되돌립니다")}
 											>
 												{ko("Detach", "분리")}
@@ -65,10 +98,7 @@ export default function ObjectTransformPanel({
 										value={selectedSceneObject.parent ?? ""}
 										onChange={(event) => {
 											const parent = event.target.value || null;
-											// The history store is the only writer. A direct setState here
-											// leaves the store on the old list, so the next object edit
-											// (hide, move) puts that list back and the group disappears.
-											store.applyAtomic((objects) => setSceneObjectParent(objects, selectedSceneObject.id, parent));
+											run(parent ? 'object.group' : 'object.ungroup', { ...(parent ? { parent } : {}), children: [selectedSceneObject.id] });
 										}}
 									>
 										<option value="">{ko("(none)", "(없음)")}</option>
@@ -83,25 +113,25 @@ export default function ObjectTransformPanel({
 								<Vector3Row
 							label={ko("Position", "위치")}
 									fields={[
-										{ axis: "X", value: selectedSceneObject.x, step: 0.05, precision: 2, scrubRange: 5, onChange: (x, token) => changeSceneObject(selectedSceneObject.id, { x }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Y", value: selectedSceneObject.y ?? 0, step: 0.05, precision: 2, scrubRange: 5, onChange: (y, token) => changeSceneObject(selectedSceneObject.id, { y }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Z", value: selectedSceneObject.z, step: 0.05, precision: 2, scrubRange: 5, onChange: (z, token) => changeSceneObject(selectedSceneObject.id, { z }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "X", value: selectedSceneObject.x, step: 0.05, precision: 2, scrubRange: 5, onChange: (x, token) => run(...updateArgs({ x }, token)), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Y", value: selectedSceneObject.y ?? 0, step: 0.05, precision: 2, scrubRange: 5, onChange: (y, token) => run(...updateArgs({ y }, token)), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Z", value: selectedSceneObject.z, step: 0.05, precision: 2, scrubRange: 5, onChange: (z, token) => run(...updateArgs({ z }, token)), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
 								<Vector3Row
 							label={ko("Rotation", "회전")}
 									fields={[
-										{ axis: "X", value: selectedSceneObject.rotX ?? 0, step: 1, precision: 1, scrubRange: 180, onChange: (rotX, token) => changeSceneObject(selectedSceneObject.id, { rotX }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Y", value: selectedSceneObject.rot, step: 1, precision: 1, scrubRange: 180, onChange: (rot, token) => changeSceneObject(selectedSceneObject.id, { rot }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Z", value: selectedSceneObject.rotZ ?? 0, step: 1, precision: 1, scrubRange: 180, onChange: (rotZ, token) => changeSceneObject(selectedSceneObject.id, { rotZ }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "X", value: selectedSceneObject.rotX ?? 0, step: 1, precision: 1, scrubRange: 180, onChange: (rotX, token) => run(...updateArgs({ rotX }, token)), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Y", value: selectedSceneObject.rot, step: 1, precision: 1, scrubRange: 180, onChange: (rot, token) => run(...updateArgs({ rot }, token)), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Z", value: selectedSceneObject.rotZ ?? 0, step: 1, precision: 1, scrubRange: 180, onChange: (rotZ, token) => run(...updateArgs({ rotZ }, token)), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
 								<Vector3Row
 							label={ko("Scale", "크기")}
 									fields={[
-										{ axis: "X", value: selectedSceneObject.scaleX ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleX, token) => changeSceneObject(selectedSceneObject.id, { scaleX }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Y", value: selectedSceneObject.scaleY ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleY, token) => changeSceneObject(selectedSceneObject.id, { scaleY }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
-										{ axis: "Z", value: selectedSceneObject.scaleZ ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleZ, token) => changeSceneObject(selectedSceneObject.id, { scaleZ }, token), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "X", value: selectedSceneObject.scaleX ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleX, token) => run(...updateArgs({ scaleX }, token)), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Y", value: selectedSceneObject.scaleY ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleY, token) => run(...updateArgs({ scaleY }, token)), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
+										{ axis: "Z", value: selectedSceneObject.scaleZ ?? 1, step: 0.05, precision: 2, scrubRange: 4, onChange: (scaleZ, token) => run(...updateArgs({ scaleZ }, token)), onScrubStart: beginSceneTransaction, onScrubEnd: endSceneTransaction },
 									]}
 								/>
 								{selectedSceneObject.renderer === MESH_KIND && (
@@ -113,7 +143,8 @@ export default function ObjectTransformPanel({
 												min={MESH_HEIGHT_MIN}
 												step="0.05"
 												value={selectedSceneObject.height ?? 1}
-												onChange={(event) => changeSceneObject(selectedSceneObject.id, { height: Number(event.target.value) })}
+												onChange={(event) => run(...updateArgs({ height: Number(event.target.value) }, begin('height')))}
+												onBlur={() => finish()} onKeyDown={endKey}
 											/>
 										</Field>
 										<label className="check">
@@ -121,7 +152,7 @@ export default function ObjectTransformPanel({
 												type="checkbox"
 												data-field="mesh-clay"
 												checked={selectedSceneObject.clay === true}
-												onChange={(event) => changeSceneObject(selectedSceneObject.id, { clay: event.target.checked })}
+												onChange={(event) => run(...updateArgs({ clay: event.target.checked }))}
 											/>
 											<span>{ko("Clay", "클레이")}</span>
 										</label>
@@ -136,7 +167,8 @@ export default function ObjectTransformPanel({
 												min="0.05"
 												step="0.05"
 												value={selectedSceneObject.height ?? CUTOUT_DEFAULT_HEIGHT}
-												onChange={(event) => changeSceneObject(selectedSceneObject.id, { height: Number(event.target.value) })}
+												onChange={(event) => run(...updateArgs({ height: Number(event.target.value) }, begin('height')))}
+												onBlur={() => finish()} onKeyDown={endKey}
 											/>
 										</Field>
 										<Field label={ko("Card width (m)", "판 너비 (m)")}>
@@ -146,7 +178,8 @@ export default function ObjectTransformPanel({
 												min="0.05"
 												step="0.05"
 												value={Number((selectedSceneObject.footprint?.width ?? 0).toFixed(2))}
-												onChange={(event) => changeSceneObject(selectedSceneObject.id, { width: Number(event.target.value) })}
+												onChange={(event) => run(...updateArgs({ width: Number(event.target.value) }, begin('width')))}
+												onBlur={() => finish()} onKeyDown={endKey}
 											/>
 										</Field>
 										<p className="inspector-hint">
@@ -160,7 +193,7 @@ export default function ObjectTransformPanel({
 													type="button"
 													className="ghost"
 													data-field="cutout-unstretch"
-													onClick={() => changeSceneObject(selectedSceneObject.id, { stretch: 1 })}
+													onClick={() => run(...updateArgs({ stretch: 1 }))}
 												>
 													{isKo
 														? `사진 비율로 되돌리기 (지금 ${((selectedSceneObject.stretch ?? 1) * 100).toFixed(0)}%)`
@@ -387,7 +420,7 @@ export default function ObjectTransformPanel({
 											onClick={() => {
 												const added = matteEditorRef.current?.autoDetect(matteTolerance) ?? 0;
 												if (!added) {
-													setToast(
+													app.notify(
 														isKo
 															? "자동 인식이 더 칠할 곳을 찾지 못했어요 — 허용치를 높이거나 직접 칠하세요"
 															: "Auto-detect found nothing new to paint — raise the tolerance, or paint it by hand",
@@ -401,7 +434,7 @@ export default function ObjectTransformPanel({
 											type="button"
 											className="btn primary full matte-apply"
 											disabled={matteBusy || !matteStats.painted}
-											onClick={() => applyMatte(selectedSceneObject.id)}
+											onClick={() => run('object.matte', { objectId: selectedSceneObject.id })}
 										>
 											{matteBusy
 												? ko("Removing…", "지우는 중…")
@@ -445,7 +478,7 @@ export default function ObjectTransformPanel({
 												aria-label={isKo ? `색상 ${color}` : `Colour ${color}`}
 												aria-pressed={selectedSceneObject.color === color}
 												onClick={(event) => {
-													changeSceneObject(selectedSceneObject.id, { color });
+													run(...updateArgs({ color }));
 													event.currentTarget.closest("details")?.removeAttribute("open");
 												}}
 											/>
@@ -464,7 +497,7 @@ export default function ObjectTransformPanel({
 												aria-label={isKo ? `최근 색상 ${color}` : `Recent colour ${color}`}
 												aria-pressed={selectedSceneObject.color === color}
 												onClick={(event) => {
-													changeSceneObject(selectedSceneObject.id, { color });
+													run(...updateArgs({ color }));
 													rememberSceneObjectColor(color);
 													event.currentTarget.closest("details")?.removeAttribute("open");
 												}}
@@ -484,9 +517,10 @@ export default function ObjectTransformPanel({
 											onChange={(event) => {
 												const color = normalizeObjectColor(event.target.value);
 												if (!color) return;
-												changeSceneObject(selectedSceneObject.id, { color });
+												run(...updateArgs({ color }, begin('color')));
 												rememberSceneObjectColor(color);
 											}}
+											onBlur={() => finish()} onKeyDown={endKey}
 										/>
 										<input
 											type="text"
@@ -504,10 +538,11 @@ export default function ObjectTransformPanel({
 												setObjectColorDraft(event.target.value);
 												const color = normalizeObjectColor(event.target.value);
 												if (!color) return; // a typo is a keystroke, not a repaint
-												changeSceneObject(selectedSceneObject.id, { color });
+												run(...updateArgs({ color }, begin('hex')));
 												rememberSceneObjectColor(color);
 											}}
-											onBlur={() => setObjectColorDraft(null)}
+											onBlur={() => { finish(); setObjectColorDraft(null); }}
+											onKeyDown={endKey}
 										/>
 										</div>
 									</details>

@@ -940,7 +940,7 @@ export function useObjects(appContext) {
 		...domain, run, beginStudioObjectAction, stepObjectHistory, applyExternalObjects, commitStudioObjects,
 		createLegacyObjectHandlers, canReparentSceneObject, reparentSceneObject, settleObjects,
 		recentObjectColors, objectColorDraft, setObjectColorDraft, rememberSceneObjectColor, objectDeleteUndo,
-		setObjectDeleteUndo, sceneObjects, setSceneObjects: domain.write, storeRef, store, selectedSceneObjectId,
+		setObjectDeleteUndo, sceneObjects, storeRef, store, selectedSceneObjectId,
 		selectedSceneObject, beginSceneTransaction, endSceneTransaction, changeSceneObject,
 		deleteSelectedSceneObject, deleteSceneObject, dropSelectedSceneObject, matteTolerance, setMatteTolerance,
 		matteBrush, setMatteBrush, matteShrink, setMatteShrink, matteFeather, setMatteFeather, matteMode,
