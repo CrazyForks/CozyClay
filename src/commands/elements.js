@@ -71,13 +71,36 @@ export function elementPatchArgs(kind, args) {
   });
   return collection ? ops.length === 1 ? ops[0] : { ops } : ops.reduce((patch, op) => mergeElementSet(patch, op.set), {});
 }
-export function elementReadback(kind, document) {
-  return patchElements(kind).map(element => {
+export function elementReadback(kind, document, paths) {
+  return patchElements(kind).filter(element => !paths || paths.includes(element.path)).map(element => {
     const value = readElement(document, element.path), path = element.path;
     if (value === null || value === undefined || value === '') return { path, text: null };
     if (element.type === 'image') return { path, bytes: utf8ByteLength(value) };
     return { path, [typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'flag' : 'text']: value };
   });
+}
+// Normalizer-added defaults are allowed; changed/clamped requested members
+// are reported as dropped, just like the native patch planners.
+function survives(requested, actual) {
+  if (requested === null || typeof requested !== 'object') return requested === actual;
+  if (Array.isArray(requested)) return Array.isArray(actual) && requested.length === actual.length && requested.every((value, index) => survives(value, actual[index]));
+  return actual !== null && typeof actual === 'object' && !Array.isArray(actual) && Object.entries(requested).every(([key, value]) => survives(value, actual[key]));
+}
+export function elementPatchReceipt(receipt, request, projection) {
+  const kind = request?.args.ops[0].target.kind;
+  if (!receipt.ok || !kind || !kinds.get(kind).collection) return receipt;
+  const ops = request.args.ops.map(({ target, set }, index) => {
+    const item = elementTarget(kind, projection[kind], target.id, receipt.host.sceneId);
+    const droppedPaths = Object.entries(set).filter(([key, value]) => !survives(value, readElement(item, `${kind}.${key}`))).map(([key]) => `${kind}.${key}`);
+    return { index, status: droppedPaths.length ? 'partial' : receipt.authored ? 'applied' : 'noop', ...(droppedPaths.length ? { droppedPaths } : {}) };
+  });
+  const partial = receipt.authored && ops.some(op => op.status === 'partial');
+  // The protocol's partial variant is a patch receipt, not an action receipt.
+  const { action, summary, ...base } = receipt;
+  return { ...(partial ? base : receipt), ops, status: partial ? 'partial' : receipt.status,
+    delta: request.args.ops.slice(0, 8).map(({ target, set }) => ({ id: target.id, after: {
+      patched: elementReadback(kind, elementTarget(kind, projection[kind], target.id, receipt.host.sceneId), Object.keys(set).map(key => `${kind}.${key}`)),
+    } })) };
 }
 export function registerElementSet(registry, ports, declaration) {
   const kind = declaration.id.slice(0, declaration.id.indexOf('.'));

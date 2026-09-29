@@ -2,7 +2,7 @@
 // over the editor's native state. App.jsx supplies the ports (reads, commits,
 // history, the action registry); this module owns no React or renderer state.
 import { createCommandBus } from "./command-bus.js";
-import { readElementDocument, elementReadback, elementPatchArgs, elementTarget } from "./commands/elements.js";
+import { readElementDocument, elementReadback, elementPatchArgs, elementTarget, elementPatchReceipt } from "./commands/elements.js";
 import { physicsKeyStamp } from "./ardy/physics-review.js";
 import { shotAtFrame } from "./cuts.js";
 import { sha256Hex } from "./motion-resources.js";
@@ -270,9 +270,10 @@ export function createStudioAppBinding(ports) {
 	 * registry the UI controls call. A mutation is bound to the native history
 	 * entry it pushed, so its receipt is an ordinary journal receipt that
 	 * undo_edit reverts; a job answers "started" and lands later. */
+	const patchRequests = new Map();
 	function commandBus() {
 		if (!actionBus) actionBus = createCommandBus({ registry: ports.actions(), ports: {
-			read: refresh, journal: () => journal, recordAction: (...args) => ports.recordAction(...args), beginAction: (...args) => ports.beginAction(...args),
+			read: refresh, journal: () => ({ ...journal, record: receipt => journal.record(elementPatchReceipt(receipt, patchRequests.get(receipt.commandId), refresh().document)) }), recordAction: (...args) => ports.recordAction(...args), beginAction: (...args) => ports.beginAction(...args),
 			readback: actionReadback, remember, receipt: id => receipts.get(id), isRetained: receipt => ports.isRetained(receipt),
 			canUndo: receipt => ports.canUndo(receipt), undo: () => ports.undo(), readTarget: id => { refresh(); return tokens.get(id)?.token; },
 			captureToasts: listener => ports.captureToasts?.(listener), showRefusal: message => ports.showRefusal?.(message), emit: event => ports.emitCommandEvent?.(event),
@@ -289,8 +290,12 @@ export function createStudioAppBinding(ports) {
 		if (request.name === "run_action") return runAction(request, validateStudioCommand({ name: request.name, args: request.args }).args);
 		const patchKind = request.name === "patch_elements" && request.args?.ops?.[0]?.target?.kind;
 		if (patchKind && ports.storeDomain?.(patchKind)) {
-			try { return commandBus().run(`${patchKind}.set`, elementPatchArgs(patchKind, request.args), { ...request, origin: "agent" }); }
-			catch (error) { return rejection(request, error); }
+			try {
+				const args = elementPatchArgs(patchKind, request.args);
+				patchRequests.set(request.commandId, request);
+				return commandBus().run(`${patchKind}.set`, args, { ...request, origin: "agent" });
+			} catch (error) { return rejection(request, error); }
+			finally { patchRequests.delete(request.commandId); }
 		}
 		if (["arrange_objects", "arrange_characters", "frame_shot", "patch_elements"].includes(request.name)) {
 			// Arrangements and framing are fenced by the exact scene revision, the
