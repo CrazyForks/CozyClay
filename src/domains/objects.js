@@ -135,7 +135,9 @@ export function useObjects(appContext) {
 
 	const [objectDeleteUndo, setObjectDeleteUndo] = useState(null);
 
-	const [domain] = useState(() => createObjectsDomain(appContext, appContext.shared.startupScene.objects));
+	// StrictMode replays initializers: reuse this editor's registered owner,
+	// rather than registering a second store whose React result is discarded.
+	const [domain] = useState(() => appContext.storeDomain("objects") ?? createObjectsDomain(appContext, appContext.shared.startupScene.objects));
 	const sceneObjects = useDocumentDomain(domain.documentStore, "objects");
 	const storeRef = useRef(domain.store);
 	const store = storeRef.current;
