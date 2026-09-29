@@ -475,7 +475,6 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 				admission.revision = refreshed.revision.scene;
 			},
 		};
-		const runtimeForJob = await studioRuntimeFor(hub);
 		// One motion generation per user message, whichever path starts it:
 		// generate_motion below and a run_action job action share this gate.
 		const generation = { used: false, failures: 0 };
@@ -483,6 +482,15 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		// generation and hub timeout; no sidecar list of actions exists.
 		const tools = createStudioTools({ liveHub: hub, workspaceHandle: value.context.host.workspaceHandle, session: { signal: controller.signal, admission, generation, actionIndex: current?.actionIndex ?? [] }, resolveImage: async (id, correlation) => hub.command("resolve_studio_image", { imageId: id, ...correlation }, value.context.host.workspaceHandle) });
 		const motion = async args => {
+			if (args.source.kind === 'generate') {
+				await tools.internal.invoke('inspect_studio', { scope: 'motion', ids: [args.characterId] });
+				const receipt = await tools.internal.invoke('generate_motion', args);
+				if (receipt.ok && receipt.status === 'completed') send({ type: 'receipt', receipt });
+				return receipt;
+			}
+			// Artifact reuse keeps the retained runtime until #452; generation never
+			// enters its text-only request builder or candidate installer.
+			const runtimeForJob = await studioRuntimeFor(hub);
 			if (generation.used) throw new StudioProtocolError("GENERATION_LIMIT", "One motion generation per user message. Report this result and ask the user before generating again.");
 			if ((generation.failures ?? 0) >= 2) throw new StudioProtocolError("GENERATION_LIMIT", "Two motion generation attempts already failed in this user message. Report both failures to the user and ask before generating again.");
 			if (!runtimeForJob) throw new StudioProtocolError("CAPABILITY_MISSING", "Studio motion runtime is unavailable.");
@@ -494,14 +502,6 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			const character = inspected?.context?.entities?.find(entity => entity.id === args.characterId && entity.kind === "character");
 			if (!character) throw new StudioProtocolError("TARGET_NOT_READY", "The admitted character is unavailable.");
 			admission.revision = inspected.context.revision.scene;
-			// The editor will not install a text-only take over an authored root path;
-			// refuse before admission so no generation is spent on it.
-			const motionRead = inspected.characters?.find(entry => entry.id === args.characterId);
-			const n = motionRead?.waypoints?.length ?? 0;
-			if (n > 0) {
-				const name = motionRead.name || args.characterId;
-				throw new StudioProtocolError("CAPABILITY_MISSING", `${name} has ${n} root waypoint${n === 1 ? "" : "s"}. generate_motion generates from text alone and cannot follow them. To generate along the path, write the beats as ${name}'s prompt blocks with patch_elements (set promptBlocks), then call run_action motion.generateAllBlocks, which follows the root waypoints. To ignore the path instead, run run_action character.clearWaypoints first.`);
-			}
 			const commandId = randomUUID(); const host = { ...admission.host, workspaceHandle: value.context.host.workspaceHandle };
 			const admissionResult = runtimeForJob.admit({ hostBinding: host, characterId: args.characterId, targetToken: character.token, turnId: value.turnId, commandId, authorization: { id: randomUUID(), generations: 1 }, source: args.source, repair: args.repair ?? "bounded" });
 			session.motionJobIds.add(admissionResult.jobId); persistenceMeta.motionJobIds = [...session.motionJobIds]; session.activeJobId = admissionResult.jobId; session.activeJobTurnId = value.turnId;
