@@ -187,6 +187,8 @@ const COMMAND_INPUTS = {
 	"object.group": { parent: "group-2", children: ["object-1"] }, "object.ungroup": { children: ["object-1"] },
 	"objects.arrange": { ops: [{ op: "remove", id: "object-1" }] }, "objects.replace": { objects: [createSceneObject("cone")] },
 	"view.setPartColours": { mode: "flat" }, "view.setGuideMode": { mode: "thirds" }, "view.setInset": { collapsed: true },
+	"view.select": { selection: { kind: 'character', id: 'actor' } }, "timeline.seek": { frame: 12 }, "timeline.play": { playing: true },
+	"view.setMode": { mode: 'camera' }, "view.update": { frame: 8, playing: false, mode: 'motion' },
 	"scene.create": {}, "scene.duplicate": { sceneId: "scene-1" }, "scene.rename": { sceneId: "scene-1", name: "Renamed" },
 	"scene.delete": { sceneId: "scene-2" }, "scene.switch": { sceneId: "scene-2" }, "project.save": {},
 	"scene.set": { id: "scene-1", set: { name: "Generic" } }, "scene.reorder": { sceneId: "scene-1", order: 1 },
@@ -214,6 +216,9 @@ function commandFixture({ frame = 8 } = {}) {
 	const answers = {
 		// Like the editor's, every read is a fresh snapshot of the document.
 		state: () => ({ ...state }),
+		readView: () => ({ ...state, host, selection: state.selection ?? null,
+			view: state.view ?? { mode: 'scene', frame, playing: false, lookThrough: false, grid: false, autoColor: false } }),
+		publishView: value => Object.assign(state, value),
 		storeDomain: name => name === 'objects' ? objectDomain : name === 'scenes' ? sceneDomain : name === 'shot' ? shotDomain : name === 'cast' ? castDomain : name === 'motion' ? motionDomain : undefined,
 		writeCharacters: rows => { state.characters = rows; },
 		writeCastState: next => { Object.assign(state, next); },
@@ -236,7 +241,7 @@ function commandFixture({ frame = 8 } = {}) {
 		afterRender: async () => {},
 	};
 	const ports = new Proxy({}, {
-		get: (_, name) => ["state", "storeDomain"].includes(name) ? answers[name] : (...args) => {
+		get: (_, name) => ["state", "storeDomain", "readView"].includes(name) ? answers[name] : (...args) => {
 			writes.push({ name, inside: recording });
 			// A write republishes the document, so a diff of rows sees the edit.
 			state.shots = state.shots.map(row => ({ ...row }));
@@ -331,7 +336,7 @@ const cases = {
 	},
 	async "transient and document actions never open an undo entry"() {
 		const outside = Object.values(COMMAND_MODULES).flatMap(module => module.declarations).filter(entry => ["transient", "document"].includes(entry.kind));
-		assert.deepEqual(outside.map(entry => entry.id).sort(), Object.keys(COMMAND_INPUTS).filter(id => (/^(view|scene|project)\./.test(id) || ['load_scenes', 'motion.commitLineEdit', 'motion.regenerateTrail'].includes(id)) && !['scene.set', 'scene.rename', 'scene.reorder', 'project.rename'].includes(id)).sort());
+		assert.deepEqual(outside.map(entry => entry.id).sort(), Object.keys(COMMAND_INPUTS).filter(id => (/^(view|timeline|scene|project)\./.test(id) || ['load_scenes', 'motion.commitLineEdit', 'motion.regenerateTrail'].includes(id)) && !['scene.set', 'scene.rename', 'scene.reorder', 'project.rename'].includes(id)).sort());
 		for (const declaration of outside) {
 			const f = commandFixture(), [name] = Object.entries(COMMAND_MODULES).find(([, module]) => module.declarations.includes(declaration));
 			const receipt = await f.bus(f.registries[name]).run(declaration.id, COMMAND_INPUTS[declaration.id]);

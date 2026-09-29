@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { objectsFixture } from './objects-fixture.mjs';
-import { STUDIO_ELEMENTS } from '../../src/studio-elements.js';
+import { STUDIO_ELEMENTS, isSettableElement } from '../../src/studio-elements.js';
 import { createSceneObject } from '../../src/scene-objects.js';
 import { readStudioFunction } from './verify-domain-modules.mjs';
 const origins = ['ui', 'agent', 'mcp', 'cli'];
@@ -9,7 +9,7 @@ const patches = {
   renderer: 'sphere', position: { x: 2, y: 3, z: 4 }, rotation: { x: 10, y: 20, z: 30 }, scale: { x: 2, y: 3, z: 4 },
   name: 'Renamed', color: '#123456', parent: 'sphere', path: { points: [{ x: 0, y: 0, z: 0 }, { x: 2, y: 0, z: 1 }], speed: 2 }, remove: true,
 };
-assert.deepEqual(Object.keys(patches).sort(), STUDIO_ELEMENTS.filter(e => e.path.startsWith('object.') && e.agentExposure === 'patch').map(e => e.path.slice(7)).sort());
+assert.deepEqual(Object.keys(patches).sort(), STUDIO_ELEMENTS.filter(e => e.path.startsWith('object.') && isSettableElement(e)).map(e => e.path.slice(7)).sort());
 for (const [path, value] of Object.entries(patches)) {
   const f = objectsFixture();
   try {

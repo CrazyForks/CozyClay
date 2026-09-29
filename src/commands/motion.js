@@ -5,9 +5,12 @@ import { elementSetSchema, registerElementSet } from './elements.js';
 import './elements/motion.js';
 import './elements/character.js';
 import { generationArgs } from '../motion/generation.js';
+import { applyRootDrop, normalizeRootDrop } from '../ardy/root-drop.js';
+import { characterScaleFor } from '../ardy/npz.js';
 import { createMotionEdit, trimMotionEdit, splitMotionEdit, setMotionSegmentSpeed, removeMotionSegment } from '../ardy/motion-edit.js';
 const id = { type: 'string', minLength: 1 }, frame = { type: 'integer', minimum: 0 };
 const input = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
+const drop = { oneOf: [{ type: 'null' }, input({ from_s: { type: 'number', minimum: 0 }, to_s: { type: 'number', exclusiveMinimum: 0 }, meters: { type: 'number', exclusiveMinimum: 0, maximum: 30 } })] };
 const mutation = (id, label, properties, required) => ({ id, label, description: label, kind: 'mutation', undoDomain: 'motion', input: input(properties, required) });
 const setInput = elementSetSchema('motion');
 // A collection transaction has no single native character target. Normalize
@@ -24,11 +27,14 @@ const edits = [
 ];
 const generate = { id: 'motion.generate', label: 'Generate motion', description: 'Generate the named character through the editor pipeline, following its prompt blocks, root path, pose pins and take lineage.',
 	kind: 'job', domain: 'motion', generation: 'motion', background: true, timeoutMs: 1000,
-	input: input({ characterId: id, blocks: elementSetSchema('character').properties.set.properties.layer.properties.promptClips,
+	input: input({ characterId: id, drop, blocks: elementSetSchema('character').properties.set.properties.layer.properties.promptClips,
 		durationSeconds: { type: 'number', minimum: 1, maximum: 1200 }, seed: { type: 'integer', minimum: 0, maximum: 2147483647 } }, ['characterId']) };
 const prepared = { ...mutation('motion.applyPrepared', 'Apply prepared motion edit', { characterId: id, token: id }), exposure: 'ui-only' };
 const loads = [
-	{ id: 'motion.replace', label: 'Replace take', input: input({ characterId: id, url: id, prompt: { type: 'string', default: '' } }, ['characterId', 'url']) },
+	{ id: 'motion.replace', label: 'Replace take', input: input({ characterId: id, url: id, prompt: { type: 'string', default: '' },
+		blocks: { type: 'array', maxItems: 120, items: input({ startFrame: frame, endFrame: { ...frame, minimum: 1 }, prompt: { type: 'string' } }) },
+		drop,
+	}, ['characterId', 'url']) },
 	{ id: 'motion.loadVersion', label: 'Restore take version', input: input({ characterId: id, motionUrl: id }) },
 ].map(entry => ({ ...entry, description: entry.label, kind: 'job', domain: 'motion' }));
 const tools = [
@@ -62,8 +68,17 @@ export function register(registry, ports) {
 	registry.register({ ...generate, available: mounted, target: args => args.characterId, async run(args, context) {
 		characterOf(ports, args.characterId);
 		if (owner().isGenerating()) fail('TARGET_BUSY', 'A motion generation is already running.');
+		if (args.drop && !normalizeRootDrop(args.drop)) fail('INVALID_ARGUMENT', 'Invalid drop.');
 		if (args.blocks) context.run('character.setPromptBlocks', { characterId: args.characterId, blocks: args.blocks });
-		await owner().generate(args, context);
+		const generationContext = !args.drop ? context : { ...context, commit: apply => context.commit(() => {
+			const result = apply(), take = owner().motionFor(args.characterId), layer = owner().layer(args.characterId);
+			owner().replace(args.characterId, applyRootDrop(take, args.drop, { worldScale: characterScaleFor(take) }), {
+				recipe: layer.takeRecipe, versions: layer.takeVersions, ikKeys: layer.ikKeys,
+			});
+			owner().writeLayer(args.characterId, { committedIkEdits: layer.committedIkEdits });
+			return result;
+		}) };
+		await owner().generate(args, generationContext);
 		return { affectedIds: [args.characterId], summary: 'Generated motion.' };
 	} });
 	for (const declaration of queued) registry.register({ ...declaration, available: mounted, run({ characterId }) {

@@ -213,7 +213,7 @@ expect(
 // clip and prompts and an A failure cannot clear B's motion.
 expect(
 	"an active B receives its own completion after an A to B selection interleaving",
-	app.includes("const targetCharacterId = args.characterId ?? appContext.live.state.activeCharacterId;") && app.includes("const targetPromptClips = clips;") && app.includes("targetCharacterId,") && app.includes("if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext && !appContext.storeDomain('motion')) setMotion(null);"),
+	app.includes("domain.loadRemote = async (args, context) => {") && app.includes("args.drop ?? null, args.characterId, clips, { commandContext, recipe: entry?.recipe }") && app.includes("if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext && !appContext.storeDomain('motion')) setMotion(null);"),
 );
 expect("individual block generation action is removed", !app.includes("Generate selected block"));
 expect("Prompt Block edits stay synced with ARDY input", app.includes("run('character.changePromptBlock', { characterId, id: selectedPromptId, text: event.target.value })") && app.includes("setArdyPrompt(event.target.value)"));

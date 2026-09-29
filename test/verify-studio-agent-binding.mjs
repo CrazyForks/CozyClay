@@ -211,6 +211,7 @@ function fixture(options={}) {
   addTimelineShot:()=>actual.addTimelineShot(),
   ...Object.fromEntries(['addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints','setCharacterIkKey','removeCharacterIkKey','clearCharacterIkKeys','attachSceneObject','setShotCameraRail','clearShotCameraRail','choosePartColours','setInsetCollapsed'].map(name=>[name,actual[name]])),
   setGuideMode:mode=>scope.setGuideMode(mode),
+  readView:actual.readStudioState,publishView:actual.operateStudio,
   setWaypointMode:value=>{stand.waypointMode=value;},
   duplicateSelectedSceneObject:id=>{const source=store.current.objects.find(o=>o.id===id);store.current.applyAtomic(list=>[...list,{...source,id:'copy-1',name:'Copy',x:source.x+0.5}]);},
   ...Object.fromEntries(['splitTimelineShot','duplicateTimelineShot','removeTimelineShot','setTimelineShotRange','moveTimelineShot'].map(name=>[name,unwired(name)])),
@@ -230,7 +231,7 @@ function fixture(options={}) {
   setArdyDuration() {}, setArdyPrompt() {}, setActiveWaypointId() {}, setPendingWaypointFrame() {},
   setSelectedPromptId() {}, setWaypointMode() {}, setPosing() {}, setPosingClosing() {},
  });
- const castDomain=mountHistoryCast(scope.appContext);
+ const castDomain=mountHistoryCast(scope.appContext, Boolean(options.korean));
  scope.castDomain=castDomain;
  const objectDomain=createObjectsDomain(scope.appContext, []);
  store.current=Object.create(objectDomain.store);
@@ -440,7 +441,7 @@ const implementations={
  async 'context-entity-index'(f){
   const created=await f.call('arrange_objects',f.request('arrange_objects',{ops:Array.from({length:61},(_,i)=>({op:'create',source:{kind:'cube'},name:`Crate ${i}`,position:{world:{x:i,y:0,z:-3}}}))}));
   assert.equal(created.status,'applied',JSON.stringify(created));
-  f.actual.operateStudio({selection:{kind:'object',id:'cube-40'}},f.binding.refresh());
+  f.binding.handlers.operate_studio(f.request('operate_studio',{selection:{kind:'object',id:'cube-40'}}));
   const c=f.binding.context();
   protocol.validateStudioContext(c);
   assert.equal(c.entityPage.total,63);assert.equal(c.entities.length,24);
@@ -466,36 +467,42 @@ const implementations={
   f.scope.setShots([rail]);f.live.current.shots=[rail];
   const shot=await f.call('inspect_studio',{scope:'shot'});
   assert.equal(shot.context.revision.scene,f.binding.refresh().revision,'every scope carries the admission context');
-  assert.deepEqual(shot.shots,[{id:rail.id,name:'Rail shot',range:{startFrame:0,endFrameExclusive:48},mode:'rail',
+  assert.equal(shot.scope,'document');
+  assert.deepEqual(shot.document.shots.map(s=>({id:s.id,name:s.name,range:{startFrame:s.startFrame,endFrameExclusive:s.endFrame+1},mode:s.camera.mode,
+   cameraKeys:s.cameraKeys.map(({id,...key})=>key),rail:s.camera.cameraRail})),[{id:rail.id,name:'Rail shot',range:{startFrame:0,endFrameExclusive:48},mode:'rail',
    cameraKeys:[{frame:5,framing:{pos:{x:0,y:1.6,z:5},yaw:0.1,pitch:-0.05,fovDeg:40}}],rail:[{x:-2,z:4},{x:2,z:4}]}]);
   const blocks=await f.call('patch_elements',f.request('patch_elements',{ops:[{target:{kind:'character',id:'actor-a'},set:{promptBlocks:[{startFrame:0,endFrame:24,text:'walks in'}]}}]}));
   assert.equal(blocks.status,'applied',JSON.stringify(blocks));
-  f.scope.setCharacters(f.characterRef.current.map(c=>c.id==='actor-a'?{...c,layer:{...c.layer,waypoints:[{frame:0,x:0,z:0},{frame:24,x:1,z:2}]}}:c));
-  f.scope.ikStatesRef.current.set('actor-b',{...ik.createIkState(),keys:new Map([[7,new Map([['hips',{p:new THREE.Vector3(0,1,0),q:[new THREE.Quaternion()]}]])]])});
-  const motion=await f.call('inspect_studio',{scope:'motion'});
-  assert.deepEqual(motion.characters.find(c=>c.id==='actor-a'),{id:'actor-a',name:f.characterRef.current[0].subject,takeId:null,frames:0,
-   promptBlocks:[{startFrame:0,endFrame:24,text:'walks in'}],waypoints:[{frame:0,position:{x:0,y:0,z:0}},{frame:24,position:{x:1,y:0,z:2}}],ikKeyFrames:[]});
-  assert.deepEqual(motion.characters.find(c=>c.id==='actor-b').ikKeyFrames,[7]);
-  const scene=await f.call('inspect_studio',{scope:'scene'});
-  assert.deepEqual(scene.stage,{environment:'a sunlit modern living room',style:'moody cinematic lighting, 35mm film look',hasEnvironmentImage:false,hasEnvSheet:false,
-   keyLight:{x:6,y:9,z:4,intensity:1.12,warmth:0.5},camera:{presetId:null,aspect:'16:9',sensorId:'fullFrame'}});
-  assert.deepEqual(scene.counts,{characters:2,objects:0,shots:1,frames:48,assets:commands.studioObjectCatalogue().objects.length});
+  f.scope.castDomain.run('cast.setLayer',{characterId:'actor-a',layer:{...f.scope.castDomain.read()[0].layer,waypoints:[{frame:0,x:0,z:0},{frame:24,x:1,z:2}]}});
+  const keyed=await f.call('run_action',f.request('run_action',{action:'ik.setKey',args:{characterId:'actor-b',frame:7,tracks:{hips:{p:{x:0,y:1,z:0},q:[{x:0,y:0,z:0,w:1}]}}}}));
+  assert.equal(keyed.ok,true,JSON.stringify(keyed));
+  const motion=await f.call('inspect_studio',{scope:'motion'}),actor=motion.document.characters.find(c=>c.id==='actor-a');
+  assert.deepEqual(actor.layer.promptClips.map(({id,...clip})=>clip),[{startFrame:0,endFrame:24,text:'walks in'}]);
+  assert.deepEqual(actor.layer.waypoints.map(p=>({frame:p.frame,position:{x:p.x,y:p.y??0,z:p.z}})),[{frame:0,position:{x:0,y:0,z:0}},{frame:24,position:{x:1,y:0,z:2}}]);
+  assert.deepEqual(motion.document.motion.find(c=>c.id==='actor-b').ikKeys.map(k=>k.frame),[7]);
+  assert.equal(motion.context.entities.find(c=>c.id==='actor-a').motion.frames,0);
+  assert.equal(motion.context.entities.find(c=>c.id==='actor-a').motion.takeId,null);
+  const scene=await f.call('inspect_studio',{scope:'scene'}),stage=scene.document.stage;
+  assert.deepEqual({environment:stage.environment,style:stage.style,hasEnvironmentImage:!!stage.environmentImage,hasEnvSheet:stage.hasEnvSheet,keyLight:stage.keyLight,camera:{presetId:stage.cameraPresetId,aspect:stage.shotAspect,sensorId:stage.sensorId}},
+   {environment:'a sunlit modern living room',style:'moody cinematic lighting, 35mm film look',hasEnvironmentImage:false,hasEnvSheet:false,keyLight:{x:6,y:9,z:4,intensity:1.12,warmth:0.5},camera:{presetId:null,aspect:'16:9',sensorId:'fullFrame'}});
+  assert.deepEqual({characters:scene.context.scene.characterCount,objects:scene.context.scene.objectCount,shots:scene.document.shots.length,frames:scene.context.scene.frameCount,assets:scene.context.assets.length},
+   {characters:2,objects:0,shots:1,frames:48,assets:commands.studioObjectCatalogue().objects.length});
   const made=await f.call('arrange_objects',f.request('arrange_objects',{ops:[{op:'create',source:{kind:'cube'},position:{world:{x:0,y:0,z:0}}},{op:'create',source:{kind:'cube'},position:{world:{x:2,y:0,z:0}}}]}));
   assert.equal(made.status,'applied',JSON.stringify(made));
   const [base,child]=made.affectedIds;
   for(const args of [{ops:[{op:'group',parentId:base,childIds:[child]}]},{ops:[{op:'update',id:child,color:'#d94a4a'}]}]){const r=await f.call('arrange_objects',f.request('arrange_objects',args));assert.equal(r.ok,true,JSON.stringify(r));}
   const routed=await f.call('patch_elements',f.request('patch_elements',{ops:[{target:{kind:'object',id:child},set:{path:{points:[{x:2,y:0,z:0},{x:4,y:0,z:1}]}}}]}));
   assert.equal(routed.status,'applied',JSON.stringify(routed));
-  f.actual.operateStudio({selection:{kind:'object',id:child}},f.binding.refresh());
-  const selected=await f.call('inspect_studio',{scope:'selection'});
-  assert.deepEqual(selected.selection,{kind:'object',id:child});
-  assert.equal(selected.entity.id,child);assert.equal(selected.entity.color,'#d94a4a');assert.equal(selected.entity.parentId,base);assert.equal(selected.entity.attachment,null);
-  assert.deepEqual(selected.entity.path.points,[{x:2,y:0,z:0},{x:4,y:0,z:1}]);
+  assert.equal(f.binding.handlers.operate_studio(f.request('operate_studio',{selection:{kind:'object',id:child}})).ok,true);
+  const selected=await f.call('inspect_studio',{scope:'selection'}),entity=selected.document.objects[0];
+  assert.deepEqual(selected.context.selection,{kind:'object',id:child});
+  assert.equal(entity.id,child);assert.equal(entity.color,'#d94a4a');assert.equal(entity.parent,base);assert.equal(entity.attach,null);
+  assert.deepEqual(entity.path.points,[{x:2,y:0,z:0},{x:4,y:0,z:1}]);
   const tinted=await f.call('patch_elements',f.request('patch_elements',{ops:[{target:{kind:'character',id:'actor-a'},set:{tint:'#123456'}}]}));
   assert.equal(tinted.status,'applied',JSON.stringify(tinted));
-  f.actual.operateStudio({selection:{kind:'character',id:'actor-a'}},f.binding.refresh());
-  const cast=await f.call('inspect_studio',{scope:'selection'});
-  assert.equal(cast.entity.id,'actor-a');assert.equal(cast.entity.tint,'#123456');assert.equal(cast.entity.modelId,'y-bot-tpose');
+  assert.equal(f.binding.handlers.operate_studio(f.request('operate_studio',{selection:{kind:'character',id:'actor-a'}})).ok,true);
+  const cast=await f.call('inspect_studio',{scope:'selection'}),character=cast.document.characters[0];
+  assert.equal(character.id,'actor-a');assert.equal(character.tint,'#123456');assert.equal(character.model,'y-bot-tpose');
   const rows=await f.call('inspect_studio',{scope:'entities',ids:[child,'actor-a']});
   assert.equal(rows.entities.find(e=>e.id===child).color,'#d94a4a');
   assert.equal(rows.entities.find(e=>e.id==='actor-a').tint,'#123456');assert.equal(rows.entities.find(e=>e.id==='actor-a').modelId,'y-bot-tpose');
@@ -577,7 +584,7 @@ const implementations={
   assert.equal(f.history.current.past.length,0);assert.deepEqual(f.live.current.shots,[]);
  },
  async 'run-action-character-waypoints-and-undo'(f){
-  const path=async id=>(await f.call('inspect_studio',{scope:'motion'})).characters.find(c=>c.id===id).waypoints;
+  const path=async id=>(await f.call('inspect_studio',{scope:'document',select:['character']})).document.characters.find(c=>c.id===id).layer.waypoints.map(p=>({frame:p.frame,position:{x:p.x,y:p.y??0,z:p.z}}));
   const run=(action,args)=>f.call('run_action',f.request('run_action',{action,args}));
   const listed=Object.fromEntries((await f.call('inspect_studio',{scope:'actions'})).actions.map(a=>[a.id,a]));
   for(const id of ['character.addWaypoint','character.moveWaypoint','character.removeWaypoint','character.clearWaypoints'])assert.equal(listed[id]?.available,true,id);
@@ -606,7 +613,7 @@ const implementations={
   assert.equal(removed.status,'applied',JSON.stringify(removed));assert.deepEqual(await path('actor-b'),[]);
   const cleared=await run('character.clearWaypoints',{characterId:'actor-a'});
   assert.equal(cleared.status,'applied',JSON.stringify(cleared));assert.deepEqual(await path('actor-a'),[]);
-  assert.equal(f.history.current.past.length,6,'one native Ctrl+Z entry per action');
+  assert.equal(f.scope.castDomain.documentStore.depths().past,6,'one owned Ctrl+Z entry per action');
   // undo_edit reverts the clear through the editing buffer; Ctrl+Z then
   // reverts the removal on the other character.
   const undo=await f.call('undo_edit',f.request('undo_edit',{receiptId:cleared.receiptId}));
@@ -625,7 +632,7 @@ const implementations={
   assert.equal(f.history.current.past.length,depth);
  },
  async 'run-action-character-ik-keys-and-undo'(f){
-  const frames=async id=>(await f.call('inspect_studio',{scope:'motion'})).characters.find(c=>c.id===id).ikKeyFrames;
+  const frames=async id=>(await f.call('inspect_studio',{scope:'document',select:['motion']})).document.motion.find(c=>c.id===id).ikKeys.map(key=>key.frame);
   const run=(action,args)=>f.call('run_action',f.request('run_action',{action,args}));
   const q=(x=0,y=0,z=0,w=1)=>({x,y,z,w});
   const layerB=()=>f.scope.ikStatesRef.current.get('actor-b');
@@ -743,7 +750,7 @@ const implementations={
  async 'run-action-shot-camera-rail-and-undo'(f){
   const run=(action,args)=>f.call('run_action',f.request('run_action',{action,args}));
   const shot=createShot('Dolly',0,47,[]);f.scope.setShots([shot]);f.live.current.shots=[shot];
-  const rails=async()=>(await f.call('inspect_studio',{scope:'shot'})).shots.map(s=>({mode:s.mode,rail:s.rail??null}));
+  const rails=async()=>(await f.call('inspect_studio',{scope:'shot'})).document.shots.map(s=>({mode:s.camera.mode,rail:s.camera.cameraRail??null}));
   const listed=Object.fromEntries((await f.call('inspect_studio',{scope:'actions'})).actions.map(a=>[a.id,a]));
   assert.equal(listed['shot.setCameraRail']?.available,true);assert.equal(listed['shot.clearCameraRail']?.available,false,'no shot has a rail yet');
   const before=f.binding.refresh().revision;
@@ -1053,9 +1060,11 @@ const implementations={
  async 'rail-camera-undo-after-object-undo'(f){await railCameraUndo(f,true);},
  async 'stop-before-commit'(){ await motionCase('stop-before-commit'); },
  async 'explicit-unverified-acceptance'(){ await motionCase('explicit-unverified-acceptance'); },
- async 'context-revisions'(f){const before=f.binding.context();assert.equal(before.host.workspaceHandle,'handle');f.actual.operateStudio({frame:3},f.binding.refresh());const view=f.binding.context();assert.equal(view.revision.scene,before.revision.scene);assert.equal(view.revision.physics,before.revision.physics);assert(view.revision.view>before.revision.view);assert.equal(view.entities.find(e=>e.id==='actor-a').token,before.entities.find(e=>e.id==='actor-a').token);f.scope.ikStatesRef.current.set('actor-b',{...ik.createIkState(),keys:new Map([[1,new Map([['hips',{p:new THREE.Vector3(0,1,0),q:[new THREE.Quaternion()]}]])]])});const changed=f.binding.context();assert(changed.revision.physics>view.revision.physics);assert.notEqual(changed.entities.find(e=>e.id==='actor-b').token,view.entities.find(e=>e.id==='actor-b').token);},
+ async 'context-revisions'(f){const before=f.binding.context();assert.equal(before.host.workspaceHandle,'handle');f.binding.handlers.operate_studio(f.request('operate_studio',{frame:3}));const view=f.binding.context();assert.equal(view.revision.scene,before.revision.scene);assert.equal(view.revision.physics,before.revision.physics);assert(view.revision.view>before.revision.view);assert.equal(view.entities.find(e=>e.id==='actor-a').token,before.entities.find(e=>e.id==='actor-a').token);f.scope.ikStatesRef.current.set('actor-b',{...ik.createIkState(),keys:new Map([[1,new Map([['hips',{p:new THREE.Vector3(0,1,0),q:[new THREE.Quaternion()]}]])]])});const changed=f.binding.context();assert(changed.revision.physics>view.revision.physics);assert.notEqual(changed.entities.find(e=>e.id==='actor-b').token,view.entities.find(e=>e.id==='actor-b').token);},
  async 'recreated-motion-read-and-verify'(f){const baseline=f.binding.context();const equivalent=()=>({...clip(),studioTakeId:'equivalent-take'});f.buffer.current.motion=equivalent();const first=f.binding.context();assert.equal(first.revision.scene,baseline.revision.scene);assert.equal(first.recentReceipts.length,0);f.buffer.current.motion=equivalent();const second=f.binding.context();assert.equal(second.revision.scene,baseline.revision.scene);assert.equal(second.recentReceipts.length,0);const mutation=await f.call('arrange_objects',f.request('arrange_objects',createArgs));assert.equal(mutation.ok,true,JSON.stringify(mutation));assert.equal(mutation.revision.before,baseline.revision.scene);assert.equal(mutation.revision.after,baseline.revision.scene+1);const verified=await f.call('verify_result',f.request('verify_result',{receiptId:mutation.receiptId,checks:['placement'],visual:'none'}));assert.equal(verified.receiptId,mutation.receiptId);assert.equal(verified.revision,mutation.revision.after);assert.equal(verified.stale,false,'verify_result must not be stale after an immediate authored receipt');}
 };
 let passed=0;
-for(const name of argv.length?[argv[1]]:cases){const f=fixture();try{await implementations[name](f);console.log('PASS',name);passed++;}finally{f.dispose();}}
+const failures=[];
+for(const name of argv.length?[argv[1]]:cases){const f=fixture();try{await implementations[name](f);console.log('PASS',name);passed++;}catch(error){failures.push(name);console.error('FAIL',name,error);}finally{f.dispose();}}
 console.log(`Studio App binding: ${passed}/${argv.length?1:cases.length} passed`);
+assert.deepEqual(failures, []);

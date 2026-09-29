@@ -2748,23 +2748,6 @@ export default function App() {
 		shots,
 	});
 	if (!liveHandlersRef.current) {
-		const finitePatch = (args, fields) => {
-			const patch = {};
-			for (const field of fields) {
-				if (args[field] === undefined) continue;
-				if (!Number.isFinite(args[field])) throw new Error(`Invalid ${field}`);
-				patch[field] = args[field];
-			}
-			return patch;
-		};
-		const characterForRef = (characters, ref) => {
-			if (typeof ref === "number" && Number.isInteger(ref)) return characters[ref - 1] ?? null;
-			if (typeof ref !== "string" || !ref) return null;
-			if (/^\d+$/.test(ref)) return characters[Number(ref) - 1] ?? null;
-			if (ref.toUpperCase() === "A") return characters[0] ?? null;
-			if (ref.toUpperCase() === "B") return characters[1] ?? null;
-			return characters.find((entry) => entry.id === ref) ?? null;
-		};
 		const describe = () => {
 			const live = appContext.live.state;
 			return {
@@ -2787,73 +2770,13 @@ export default function App() {
 				stage: live.stage,
 				timeline: live.timeline,
 				activeCharacterId: live.activeCharacterId,
-				// y rides too: a character standing on a roof must survive the
-				// same save/open round trip a renamed object just learned to.
-				characters: live.characters.map((entry) => {
-					const layer = entry.id === live.activeCharacterId
-						? { waypoints: live.waypoints ?? [], promptClips: live.promptClips ?? [] }
-						: entry.layer ?? { waypoints: [], promptClips: [] };
-					return {
-						id: entry.id, model: entry.model, subject: entry.subject,
-						x: entry.x, y: entry.y ?? 0, z: entry.z, rot: entry.rot, hidden: entry.hidden,
-						pose: entry.pose ?? null, tint: entry.tint ?? null, scale: entry.scale ?? 1,
-						motionRef: entry.motionRef ?? null, layer,
-					};
-				}),
-				// Scale and the library footprint travel with each object: the server
-				// reports real sizes from them, and without them every prop reads as
-				// 1x1x1 no matter how it was actually built.
-				objects: live.objects.map((object) => ({
-					id: object.id, name: object.name,
-					// The kind travels with the report: a renamed object ("Building A")
-					// can no longer be recognised by its name, and a record that loses
-					// its renderer round-trips into something the set cannot draw.
-					renderer: object.renderer,
-					x: object.x, y: object.y, z: object.z, rot: object.rot,
-					rotX: object.rotX ?? 0, rotZ: object.rotZ ?? 0, color: object.color ?? null,
-					hidden: object.hidden === true,
-					scaleX: object.scaleX, scaleY: object.scaleY, scaleZ: object.scaleZ,
-					parent: object.parent ?? null,
-					footprint: object.footprint, height: object.height,
-				})),
+				characters: castDomain.read(),
+				objects: objectsDomain.read(),
 			};
 		};
-		const castLive = castDomain.createLegacyCastHandlers(finitePatch, characterForRef);
-		const objectLive = objectsDomain.createLegacyObjectHandlers(finitePatch);
 		liveHandlersRef.current = {
 			ping: () => ({ pong: true }),
 			describe,
-			// Camera moves are not undoable in the UI. This is the free-camera and
-			// Top-View path: drive the shot camera, lens state, then manual ownership.
-			set_camera: rawArgs => shotsDomain.setLiveCamera(rawArgs, finitePatch),
-			add_character: castLive.add_character,
-			update_character: castLive.update_character,
-			remove_character: castLive.remove_character,
-			place_object: objectLive.place_object,
-			// Agent-side image import through the Studio's own pipeline:
-			// importImageFile validates and downscales, rememberAsset stores the
-			// content-addressed bytes, and the card enters React state through the
-			// object history store — ONE applyAtomic is the whole gesture, so one
-			// Ctrl+Z removes it. That is the point: the Workflow-tab sync writes
-			// the document without touching undo; this must not repeat that.
-			import_asset: objectLive.import_asset,
-			update_object: objectLive.update_object,
-			remove_object: objectLive.remove_object,
-			// Replacing a document follows the existing project-open path and clears
-			// its per-scene histories, so load_scenes is deliberately not undoable.
-			load_scenes: scenesDomain.loadLiveScenes,
-			// Loads a bridge-generated take onto the active character — the same
-			// path the demo seed and the Motion panel use. Replacing a take is not
-			// undoable in the UI either, so this is deliberately not undoable.
-			// Grouping is an editing convenience: the parent carries its children
-			// when it moves, so a set piece built from primitives is dragged once.
-			group_objects: objectLive.group_objects,
-			ungroup_objects: objectLive.ungroup_objects,
-			apply_batch: objectLive.apply_batch,
-			// Authoring blocks is not generating: a director writes the beats and
-			// their ranges first, then generates when the schedule reads right.
-			// Frames arrive on the timeline's own 24 fps clock.
-			set_prompt_blocks: castLive.set_prompt_blocks,
 			capture_frame: async () => {
 				const live = appContext.live.state;
 				return captureMcpFrame({
@@ -2903,7 +2826,6 @@ export default function App() {
 					references: live.captureShotReferences(),
 				};
 			},
-			load_motion: motionDomain.loadLiveMotion,
 		};
 	}
 
@@ -4140,8 +4062,8 @@ export default function App() {
 				return true;
 			},
 			captureWithReferences: () => liveHandlersRef.current.capture_framing_png({}),
-			importAsset: (args) => liveHandlersRef.current.import_asset(args),
-			sceneObject: { place: (args) => liveHandlersRef.current.place_object(args), update: (args) => liveHandlersRef.current.update_object(args) },
+			importAsset: async ({ dataUrl: source, ...args }) => (await appContext.bus.run("asset.import", { source, ...args })).output,
+			sceneObject: { place: ({ kind, name, parent, ...placement }) => ({ id: appContext.bus.run("object.add", { kind, ...(name === undefined ? {} : { name }), ...(parent === undefined ? {} : { parent }), placement }).affectedIds[0] }), update: ({ id, scale, ...patch }) => appContext.bus.run("object.update", { id, patch: { ...(scale === undefined ? {} : { scaleX: scale, scaleY: scale, scaleZ: scale }), ...patch } }) },
 			// QA-only reference exports (#165): the production builders without the
 			// download, so a headless run can unzip a real pack and diff the passes
 			// instead of driving a file dialog. Same liveStateRef reasoning as
@@ -6513,20 +6435,9 @@ export default function App() {
 			for (const skeleton of skeletons) skeleton.dispose(); parent.remove(rig);
 		}
 	}
-	function operateStudio(args, state) {
-		let selection = args.selection === undefined ? state.selection : args.selection;
-		if (selection) {
-			const found = selection.kind === "scene" ? selection.id === state.host.sceneId : selection.kind === "camera" ? selection.id === "camera" :
-				(selection.kind === "object" ? state.objects : state.characters).some(row => row.id === selection.id);
-			if (!found) throw new StudioProtocolError("STALE_TARGET", "Selection is not present in this document.");
-		}
-		const shot = args.shotId === undefined ? null : state.shots.find(s => s.id === args.shotId);
-		if (args.shotId !== undefined && !shot) throw new StudioProtocolError("STALE_TARGET", "Shot is not present in this document.");
-		const frame = args.frame ?? shot?.startFrame ?? state.view.frame;
-		if (frame >= state.frameCount) throw new StudioProtocolError("INVALID_RANGE", "Frame is outside the timeline.");
-		const view = { ...state.view, ...args.view, frame, mode: args.mode ?? state.view.mode, playing: args.playing ?? state.view.playing };
-		const live = appContext.live.state; appContext.patchLive({ studioSelection: selection }); appContext.patchLive({ studioView: view });
-		appContext.patchLive({ studioShotId: args.shotId ?? shotAtFrame(state.shots, frame)?.id ?? null });
+	function operateStudio({ selection, view, shotId }) {
+		const { frame } = view;
+		appContext.patchLive({ studioSelection: selection, studioView: view, studioShotId: shotId });
 		appContext.patchTimeline({ currentFrame: frame }); tlFrameRef.current = frame;
 		if (selection && ["character", "rig"].includes(selection.kind)) { appContext.patchLive({ activeCharacterId: selection.id }); setActiveCharacterId(selection.id); }
 		setSelectedHierarchyId(selection ? selection.kind === "object" ? `object:${selection.id}` : ["character", "rig"].includes(selection.kind) ? `character:${selection.id}` : selection.kind === "camera" ? "camera" : "shot" : "");
@@ -6613,10 +6524,11 @@ export default function App() {
 		addCharacterWaypoint, moveCharacterWaypoint, removeCharacterWaypoint, clearCharacterWaypoints, setWaypointMode,
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, attachSceneObject, setShotCameraRail, clearShotCameraRail,
 		choosePartColours, setGuideMode, setInsetCollapsed, exportShotVideo,
+		readView: readStudioState, publishView: operateStudio,
 		switchSceneDocument, addSceneDocument, duplicateSceneDocument, renameSceneDocument, deleteSceneDocument,
 		afterRender: () => new Promise(resolve => renderWaitersRef.current.push(resolve)),
 		saveProject, projectFileGranted: async () => (await queryHandlePermission(projectHandleRef.current)) === "granted",
-		importAsset: (args, context) => liveHandlersRef.current.import_asset(args, context), fetchImportSource,
+		importAsset: (args, context) => objectsDomain.importAsset(args, context), fetchImportSource,
 		setAiShotMode: setMode, setAiImageModel: setImageModel, generate, generateFalMotion,
 	});
 	if (!studioActionsRef.current) studioActionsRef.current = createStudioAppActions(appContext.actionPorts);
@@ -6983,7 +6895,7 @@ export default function App() {
 								onChange={(event) => {
 									const id = event.target.value;
 									if (!id) { runStudioAction("stage.setFilmback", { cameraPresetId: null }); return; }
-									liveHandlersRef.current?.set_camera({ preset: id });
+									runStudioAction("shot.frame", { preset: id });
 								}}
 							>
 								<option value="">{ko("Free", "자유")}</option>

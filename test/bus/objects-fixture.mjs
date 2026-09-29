@@ -47,8 +47,8 @@ export function objectsFixture(initial = ['cube', 'sphere', 'chair'].map(kind =>
   f.store.current = objects.store;
   f.scope.store = objects.store;
   f.scope.objectsDomain = objects;
-  const legacy = objects.createLegacyObjectHandlers((args, keys) => Object.fromEntries(keys.filter(key => args[key] !== undefined).map(key => [key, args[key]])));
-  Object.assign(f.actionHandlers.current, app.actionPorts, { duplicateSelectedSceneObject: objects.duplicateSelectedSceneObject, attachSceneObject: objects.attachSceneObject, importAsset: legacy.import_asset });
+
+  Object.assign(f.actionHandlers.current, app.actionPorts, { duplicateSelectedSceneObject: objects.duplicateSelectedSceneObject, attachSceneObject: objects.attachSceneObject, importAsset: objects.importAsset });
   // Production constructs the registry after mounting its domain hooks.
   const registry = createStudioAppActions(f.actionHandlers.current);
   f.ports.actions = () => registry;
