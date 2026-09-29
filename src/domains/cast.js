@@ -8,7 +8,7 @@ import {
 	saveCustomPoses,
 	deleteCustomPose,
 } from "../poses.js";
-import { createCharacterEntry, createKeyLight, createCharacterLayer } from "../scenes.js";
+import { createCharacterEntry, createCharacterLayer } from "../scenes.js";
 import {
 	DEFAULT_SUBJECT,
 	DEFAULT_SUBJECT2,
@@ -236,14 +236,6 @@ export function useCast(appContext) {
 	 * full-cast snapshot with the editing buffer folded in, and undo/redo
 	 * picks the newer of the two stacks so one Ctrl+Z history covers both. */
 	const snapshotCast = (includeShots = false) => ({
-		// The key light rides the same undo stack as everything else — its
-		// absence used to make Ctrl+Z after a light edit undo an unrelated
-		// earlier action while the light stayed put (research claim C1).
-		keyLight: { ...appContext.shared.keyLight },
-		environmentImage: appContext.shared.environmentImage,
-		environment: appContext.shared.environment,
-		style: appContext.shared.style,
-		hasEnvSheet: appContext.shared.hasEnvSheet,
 		characters: appContext.live.characters.map((entry) => ({
 			...entry,
 			layer: entry.id === activeChar.id
@@ -310,11 +302,6 @@ export function useCast(appContext) {
 			appContext.shared.setCommittedIkEdits(snapshot.committedIkEdits ?? []);
 			appContext.shared.setIkTick((value) => value + 1);
 		}
-		if (snapshot.keyLight) appContext.shared.stageDomain.setKeyLight(createKeyLight(snapshot.keyLight));
-		if (snapshot.environmentImage !== undefined) appContext.shared.stageDomain.setEnvironmentImage(snapshot.environmentImage);
-		if (snapshot.environment !== undefined) appContext.shared.stageDomain.setEnvironment(snapshot.environment);
-		if (snapshot.style !== undefined) appContext.shared.stageDomain.setStyle(snapshot.style);
-		if (snapshot.hasEnvSheet !== undefined) appContext.shared.stageDomain.setHasEnvSheet(snapshot.hasEnvSheet);
 	}
 
 	const [hasCharSheet, setHasCharSheet] = useState(appContext.shared.startupStage.hasCharSheet);

@@ -2,6 +2,7 @@
 // over the editor's native state. App.jsx supplies the ports (reads, commits,
 // history, the action registry); this module owns no React or renderer state.
 import { createCommandBus } from "./command-bus.js";
+import { readElementDocument, elementReadback } from "./commands/elements.js";
 import { physicsKeyStamp } from "./ardy/physics-review.js";
 import { shotAtFrame } from "./cuts.js";
 import { sha256Hex } from "./motion-resources.js";
@@ -48,7 +49,8 @@ export function createStudioAppBinding(ports) {
 			motion?.dispose(); owner = host; tokens.clear(); receipts.clear(); jobs.clear(); images.clear();
 			authoredKey = physicsKey = viewKey = undefined;
 			journal = createStudioCommandJournal({ host, isRetained: receipt => ports.isRetained(receipt) });
-			commands = createStudioCommands({ read: readCommand, guard, bounds: ports.bounds, commit: ports.commit, poses: ports.poses, journal });
+			commands = createStudioCommands({ read: readCommand, guard, bounds: ports.bounds, commit: ports.commit, poses: ports.poses, journal,
+				stageSet: { available: () => Boolean(ports.stage), run: (args, request) => commandBus().run("stage.set", args, { ...request, origin: "agent" }) } });
 			motion = createStudioMotionCandidates({ readTarget, readEnvironment, journal,
 				commit: commitMotion, loadArtifact, poseCast: ports.poseCast });
 		}
@@ -112,7 +114,7 @@ export function createStudioAppBinding(ports) {
 		const s = refresh();
 		return { host: s.host, revision: s.revision, frame: s.view.frame, frameCount: s.frameCount,
 			objects: s.objects, characters: s.characters, activeCharacterId: s.activeCharacterId,
-			selectedShotId: s.selectedShotId, shotDocument: { shots: s.shots }, camera: s.camera, stage: s.stage,
+			selectedShotId: s.selectedShotId, shotDocument: { shots: s.shots }, camera: s.camera, stage: ports.stage ? ports.stage().document().stage : s.stage,
 			filmback: s.filmback, manual: s.manual, floorY: 0, busy: s.busy };
 	}
 	function entityProjection(s) {
@@ -253,6 +255,7 @@ export function createStudioAppBinding(ports) {
 	}
 	/** Actual state of one action target after it ran. */
 	function actionReadback(id, s) {
+		if (id === s.host.sceneId && ports.stage) return { patched: elementReadback("stage", ports.stage().document().stage) };
 		const shot = s.shots.find(row => row.id === id);
 		if (shot) return { name: shot.name || shot.id, range: { startFrame: shot.startFrame, endFrameExclusive: shot.endFrame + 1 } };
 		const entity = s.objects.find(row => row.id === id) ?? s.characters.find(row => row.id === id);
@@ -383,6 +386,8 @@ export function createStudioAppBinding(ports) {
 			// Every scope carries the context: its revision is what the agent's next
 			// command is admitted at, so a scope without it leaves that admission stale.
 			if (command.args.scope === "catalogue") return { context: c, ...studioObjectCatalogue() };
+			if (command.args.scope === "document") return { context: c, scope: "document",
+				...readElementDocument(ports.stage().document(), command.args, c.host.sceneId) };
 			// Discovery for run_action: every registered action with its label, kind,
 			// exposure and availability (the reason when unavailable). Schemas are on
 			// request: ids answer those actions' full declarations, input included.

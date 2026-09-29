@@ -14,8 +14,9 @@ import * as scene from "./scene.js";
 import * as project from "./project.js";
 import * as exporting from "./export.js";
 import * as ai from "./ai.js";
+import * as stage from "./stage.js";
 
-export const COMMAND_MODULES = Object.freeze({ shot, cast, motion, objects, view, scene, project, export: exporting, ai });
+export const COMMAND_MODULES = Object.freeze({ shot, cast, motion, objects, view, scene, project, export: exporting, ai, stage });
 
 export function createStudioAppActions(ports) {
 	const registry = createStudioActionRegistry({ readState: () => ports.state() });

@@ -120,6 +120,8 @@ function makeCase(entry) {
 		const input = { characters: [], shotAspect: "16:9", keyLight: { x: 6, y: 9, z: 4, intensity: 1.12, warmth: 0.5 } };
 		const field = entry.path.slice("stage.".length);
 		if (field === "camera") input.shotAspect = "9:16";
+		if (field === "cameraPresetId") input.cameraPresetId = "wide";
+		if (field === "sensorId") input.sensorId = "super35";
 		if (field === "environmentImage") input.environmentImage = "data:image/png;base64,BBBB";
 		if (field === "environment") input.environment = "a rainy rooftop at dusk";
 		if (field === "style") input.style = "handheld 16mm, sodium streetlight";
@@ -171,6 +173,8 @@ const expected = new Map([
 	["character.identityImage", "data:image/png;base64,AAAA"],
 	["character.pose", "pose-authored"],
 	["stage.camera", "9:16"],
+	["stage.cameraPresetId", "wide"],
+	["stage.sensorId", "super35"],
 	["stage.keyLight.x", -1.5],
 	["stage.keyLight.y", 7.25],
 	["stage.keyLight.z", 2.5],

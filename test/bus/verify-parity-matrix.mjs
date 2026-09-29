@@ -4,7 +4,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanTree } from "./verify-bus-coverage.mjs";
-import { STUDIO_ACTIONS } from "../../src/studio-actions.js";
+import { COMMAND_MODULES } from "../../src/commands/index.js";
+const STUDIO_ACTIONS = Object.values(COMMAND_MODULES).flatMap(module => module.declarations);
 import { fixture, result } from "./fixture.mjs";
 import { documentFixture } from "./document-store-fixture.mjs";
 
@@ -40,6 +41,20 @@ function executeParity({ run, snapshot, command, args = { value: 1 }, raw = run 
 
 function pendingErrors(previous, current) {
   return current.filter(id => !previous.includes(id)).map(id => `${id}: newly pending`);
+}
+function readParityPending(directory = new URL('./parity-pending/', import.meta.url)) {
+  const root = directory instanceof URL ? fileURLToPath(directory) : directory;
+  return readdirSync(root).sort().flatMap(file => {
+    assert.ok(file.endsWith('.json'), `Unexpected pending file: ${file}`);
+    const domain = file.slice(0, -5);
+    const { version, pending } = JSON.parse(readFileSync(join(root, file), 'utf8'));
+    assert.equal(version, 1);
+    // A migration empties only its own file. Keeping the empty file avoids
+    // a shared manifest edit when the five migrations run in parallel.
+    assert.ok(Array.isArray(pending) && pending.length <= 1);
+    assert.deepEqual(pendingErrors([domain], pending), []);
+    return pending;
+  });
 }
 function sourceFiles(root) {
   const files = [];
@@ -81,11 +96,13 @@ test("a fixture-only registration gets every origin/check row", () => {
 });
 
 test("parity pending ids may only shrink", () => {
-  const previous = JSON.parse(readFileSync(new URL("./parity-pending.json", import.meta.url))).pending;
-  assert.deepEqual(pendingErrors(["stage", "shots"], ["stage"]), []);
-  assert.deepEqual(pendingErrors(previous, [...previous, "new-domain"]), ["new-domain: newly pending"]);
-  console.log(`BUS PARITY pending rows: ${previous.length * ORIGINS.length * CHECKS.length}`);
-  assert.equal(previous.length * ORIGINS.length * CHECKS.length, 120);
+  const ceiling = ['shots', 'objects', 'cast', 'motion', 'project'];
+  const pending = readParityPending();
+  assert.deepEqual(pendingErrors(ceiling, pending), []);
+  assert.deepEqual(pendingErrors(['stage', 'shots'], ['stage']), []);
+  assert.deepEqual(pendingErrors(pending, [...pending, 'new-domain']), ['new-domain: newly pending']);
+  assert.deepEqual(pendingErrors(ceiling, [...pending, 'stage']), ['stage: newly pending']);
+  console.log(`BUS PARITY pending rows: ${pending.length * ORIGINS.length * CHECKS.length}`);
 });
 
 test("coverage metrics are measured from the source and registered actions", () => {
@@ -114,4 +131,7 @@ test("registered mutations execute receipt and undo checks through the real bus"
   assert.equal(rows.every(row => row.ok), true, JSON.stringify(rows));
 });
 
-export { parityMatrix, pendingErrors, coverageMetrics, executeParity };
+// The fixture above proves the generic runner; the pilot also executes every
+// stage origin/check against the real hook and App binding, not a fake slice.
+await import('./verify-stage-domain.mjs');
+export { parityMatrix, pendingErrors, readParityPending, coverageMetrics, executeParity };

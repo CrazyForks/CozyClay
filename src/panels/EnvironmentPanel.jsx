@@ -1,22 +1,24 @@
 import { ko } from "../locale.js";
+import { useStageTransaction } from "../domains/stage.js";
 import Foldout from "./Foldout.jsx";
 import { Field } from "../ui.jsx";
 import ReferenceImageField from "./ReferenceImageField.jsx";
 
 export default function EnvironmentPanel(props) {
+	const { run, begin, commit } = useStageTransaction();
 	return (
 <Foldout hidden={props.selectedHierarchyId !== "environment"} title={ko("Environment", "환경")}>
 						<label className="check">
-							<input type="checkbox" checked={props.hasEnvSheet} onChange={(event) => { props.recordCharacterUndo(); props.setHasEnvSheet(event.target.checked); }} />
+							<input type="checkbox" checked={props.hasEnvSheet} onChange={(event) => run("stage.setEnvironment", { hasEnvSheet: event.target.checked })} />
 						<span>{ko("I have an environment sheet", "환경 시트가 있어요")}</span>
 						</label>
 						{!props.hasEnvSheet && (
 						<Field label={ko("Environment description", "환경 설명")}>
-								<input type="text" value={props.environment} onChange={(event) => { props.recordSessionUndo(props.environmentTextSessionRef, "environment:description"); props.setEnvironment(event.target.value); }} />
+								<input type="text" value={props.environment} onChange={(event) => run("run.update", { txId: begin("stage.setEnvironment"), args: { environment: event.target.value } })} onBlur={commit} />
 							</Field>
 						)}
 					<Field label={ko("Look / style", "룩 / 스타일")}>
-							<input type="text" value={props.style} onChange={(event) => { props.recordSessionUndo(props.environmentTextSessionRef, "environment:style"); props.setStyle(event.target.value); }} />
+							<input type="text" value={props.style} onChange={(event) => run("run.update", { txId: begin("stage.setStyle"), args: { style: event.target.value } })} onBlur={commit} />
 						</Field>
 						<ReferenceImageField
 							label={ko("Environment reference", "환경 참고 이미지")}
@@ -28,10 +30,10 @@ export default function EnvironmentPanel(props) {
 							alt={ko("Environment reference", "환경 참고 이미지")}
 							inputProps={{ "data-environment-image-input": "" }}
 							onPick={(dataUrl) => {
-								props.changeEnvironmentImage(dataUrl);
+								run("stage.setEnvironment", { environmentImage: dataUrl });
 								props.setToast(ko("Environment reference set", "환경 참고 이미지를 설정했어요"));
 							}}
-							onClear={() => props.changeEnvironmentImage(null)}
+							onClear={() => run("stage.setEnvironment", { environmentImage: null })}
 						/>
 					</Foldout>
 	);

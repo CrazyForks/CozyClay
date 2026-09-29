@@ -1,14 +1,14 @@
 {
   "version": 1,
   "coverage": {
-    "writerReferences": 243,
-    "handlerSites": 3,
-    "handlerTotal": 775,
-    "registeredCommands": 32
+    "writerReferences": 223,
+    "handlerSites": 11,
+    "handlerTotal": 791,
+    "registeredCommands": 37
   },
   "writers": {
     "App.jsx::<anonymous>": 49,
-    "App.jsx::App": 24,
+    "App.jsx::App": 22,
     "App.jsx::enterShotLook": 1,
     "App.jsx::selectWorkflowMode": 3,
     "App.jsx::selectHierarchy": 1,
@@ -85,10 +85,6 @@
     "domains/shots.js::setTimelineShotRange": 1,
     "domains/shots.js::removeTimelineShot": 1,
     "domains/shots.js::useShots": 2,
-    "domains/stage.js::useStage": 15,
-    "domains/stage.js::changeKeyLight": 1,
-    "domains/stage.js::resetKeyLight": 1,
-    "domains/stage.js::changeEnvironmentImage": 1,
     "panels/ObjectTransformPanel.jsx::ObjectTransformPanel": 2,
     "panels/ObjectTransformPanel.jsx::<anonymous>": 1,
     "panels/PosePanel.jsx::PosePanel": 4,
