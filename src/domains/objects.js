@@ -1,5 +1,8 @@
 import { createObjectPath } from "../object-path.js";
 import { useState, useRef } from "react";
+import { createDocumentStore } from "../document-store.js";
+import { useDocumentDomain } from "../store/use-document-store.js";
+import { arrangement } from "../studio-agent-commands.js";
 import {
 	readStoredObjectColors,
 	rememberObjectColor,
@@ -21,8 +24,7 @@ import {
 	setSceneObjectAttach,
 	setSceneObjectParent,
 } from "../scene-objects.js";
-import { withCommandHistory } from "../command-bus.js";
-import { createSceneHistoryStore } from "../scene-history.js";
+
 import { ko, isKo } from "../locale.js";
 import {
 	sceneObjectNameDisplayKo,
@@ -39,6 +41,74 @@ import { importMeshFile, compressedGlbReason, meshBoundsFromAsset, fitMeshBounds
 import { cutOutBackground, maskAsset } from "../matte.js";
 import { parseRigNodeId } from "../hierarchy-model.js";
 import { StudioProtocolError } from "../studio-agent-protocol.js";
+
+// A stable owner across scene loads. App's remaining native history readers use
+// the small store facade below; authored writes are owned by the document store.
+export function createObjectsDomain(appContext, initial) {
+	const listeners = new Set();
+	const notify = () => { for (const listener of listeners) listener(); };
+	let native = createDocumentStore({ owned: { objects: initial } });
+	let release = native.subscribe(notify);
+	const documentStore = {
+		...Object.fromEntries(Object.keys(native).map(key => [key, (...args) => native[key](...args)])),
+		subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+	};
+	const read = () => documentStore.read("objects");
+	function write(update) {
+		return documentStore.write("objects", before => {
+			let next = typeof update === "function" ? update(before) : update;
+			for (const row of next.filter(row => row.remove === true)) next = removeSceneObject(next, row.id);
+			if (JSON.stringify(next) === JSON.stringify(before)) return before;
+			return next;
+		});
+	}
+	const publish = () => { if (appContext.live.state) appContext.patchLive({ objects: read() }); };
+	const unsubscribe = documentStore.subscribe(publish);
+	function beginAction() {
+		const session = documentStore.beginAction("objects");
+		return { ...session, commit() {
+			const result = session.commit();
+			if (result.historyEntryId) appContext.advanceObjectClock();
+			return result;
+		} };
+	}
+	function stepHistory(redo) {
+		const result = (redo ? documentStore.redo : documentStore.undo)();
+		if (result) appContext.advanceObjectClock();
+		return Boolean(result);
+	}
+	const domain = { documentStore, read, write, beginAction, canUndo: id => documentStore.canUndo(id), stepHistory,
+		document: () => ({ objects: read() }), publish: state => write(state.objects), commitDraft: write,
+		load(objects) {
+			domain.settle?.(); release(); native.dispose();
+			native = createDocumentStore({ owned: { objects } });
+			release = native.subscribe(notify); notify();
+		},
+		arrange(args) {
+			const state = appContext.ports.read();
+			const plan = arrangement({ name: "arrange_objects", args }, { ...state, frame: state.view.frame }, { bounds: appContext.ports.bounds });
+			write(plan.draft); return plan;
+		},
+		dispose() { domain.cancelGesture?.(); unregister(); unsubscribe(); release(); native.dispose(); listeners.clear(); },
+	};
+	const store = {
+		get objects() { return read(); },
+		present: () => documentStore.history().present.snapshot.objects,
+		depths: documentStore.depths,
+		applyAtomic: write,
+		undo: () => stepHistory(false) ? read() : null,
+		redo: () => stepHistory(true) ? read() : null,
+		settle: () => domain.settle?.(),
+		hasHistoryState: state => [...documentStore.history().past, documentStore.history().present, ...documentStore.history().future].some(entry => entry.snapshot.objects === state),
+		beginCommand() {
+			const session = beginAction();
+			return { ...session, commit: () => Boolean(session.commit().historyEntryId) };
+		},
+	};
+	domain.store = store;
+	const unregister = appContext.registerStoreDomain("objects", domain);
+	return domain;
+}
 
 export function useObjects(appContext) {
 	// Hand-mixed object tints, newest first. An editor preference like the
@@ -64,28 +134,16 @@ export function useObjects(appContext) {
 
 	const [objectDeleteUndo, setObjectDeleteUndo] = useState(null);
 
-	const [sceneObjects, setSceneObjects] = useState(appContext.shared.startupScene.objects);
-
-	// The single mutation owner (plan §5.3): every scene-object edit — gizmo
-	// drags, plan-board drags, inspector scrubs, hierarchy atomics — routes
-	// through this store so one interaction is exactly one undo entry and an
-	// in-flight drag can be cancelled. setSceneObjects is stable, so the
-	// store is constructed once, seeded with the initial scene.
-	const storeRef = useRef(null);
-
-	if (!storeRef.current) {
-		storeRef.current = withCommandHistory(createSceneHistoryStore(sceneObjects, {
-		onCommit: (before, after) => appContext.shared.markSemanticEdit("objects", before, after),
-		onObjects: (objects) => {
-			// Object-side ops join the shared undo clock here; undo/redo of the
-			// object store bumps the clock explicitly in undoScene/redoScene.
-			appContext.objectChanged();
-			setSceneObjects(objects);
-		},
-	}));
-	}
-
+	const [domain] = useState(() => createObjectsDomain(appContext, appContext.shared.startupScene.objects));
+	const sceneObjects = useDocumentDomain(domain.documentStore, "objects");
+	const storeRef = useRef(domain.store);
 	const store = storeRef.current;
+	const gesture = useRef(null);
+	function run(id, args = {}) {
+		const receipt = appContext.bus.run(id, args);
+		const check = result => { if (!result.ok) throw new StudioProtocolError(result.code, result.message); return result; };
+		return receipt?.then ? receipt.then(check) : check(receipt);
+	}
 
 	const selectedSceneObjectId = sceneObjectIdFromHierarchy(appContext.shared.selectedHierarchyId);
 
@@ -95,12 +153,29 @@ export function useObjects(appContext) {
 	// presents on every apply and on close; end commits the drag as one
 	// history entry, or rolls it back when commit is false (Escape).
 	function beginSceneTransaction({ owner, cancel }) {
-		return store.begin(owner, cancel);
+		domain.settle();
+		const { txId } = run("run.begin", { id: "object.update", args: {} });
+		gesture.current = { txId, owner, cancel };
+		return txId;
 	}
 
 	function endSceneTransaction(token, { commit }) {
-		store.end(token, { commit });
+		if (gesture.current?.txId !== token) return;
+		gesture.current = null;
+		return run(commit ? "run.commit" : "run.cancel", { txId: token });
 	}
+	domain.settle = () => {
+		const active = gesture.current;
+		if (!active) return;
+		const receipt = endSceneTransaction(active.txId, { commit: true });
+		active.cancel();
+		return receipt;
+	};
+	domain.cancelGesture = () => {
+		const active = gesture.current;
+		if (!active) return;
+		endSceneTransaction(active.txId, { commit: false }); active.cancel();
+	};
 
 	// App's single scene-object mutation entry (plan §6.1). A token means a
 	// producer drag stream: apply inside the open transaction so the change
@@ -108,9 +183,9 @@ export function useObjects(appContext) {
 	// atomic edit — one entry. updateSceneObject returns the same array when
 	// nothing changed, so a no-op can never create an entry.
 	function changeSceneObject(id, patch, token) {
-		const apply = (objects) => updateSceneObject(objects, id, patch);
-		if (token != null) store.applyIn(token, apply);
-		else store.applyAtomic(apply);
+		return token != null
+			? run("run.update", { txId: token, args: { id, patch } })
+			: run("object.update", { id, patch });
 	}
 
 	function deleteSelectedSceneObject() {
@@ -123,7 +198,7 @@ export function useObjects(appContext) {
 	function deleteSceneObject(id) {
 		if (!id) return;
 		const wasSelected = id === selectedSceneObjectId;
-		store.applyAtomic((objects) => removeSceneObject(objects, id));
+		run("object.remove", { ids: [id] });
 		setObjectDeleteUndo({ id, pastDepth: store.depths().past });
 		appContext.shared.setInspectorActionsOpen(false);
 		if (wasSelected) {
@@ -833,10 +908,10 @@ return handlers;
 		appContext.shared.studioHistoryRef.current.set(historyEntryId, { domain: "objects", before, tick: appContext.objectClock, depth: storeRef.current.depths().past });
 	}
 	return {
-		beginStudioObjectAction, stepObjectHistory, applyExternalObjects, commitStudioObjects,
+		...domain, run, beginStudioObjectAction, stepObjectHistory, applyExternalObjects, commitStudioObjects,
 		createLegacyObjectHandlers, canReparentSceneObject, reparentSceneObject, settleObjects,
 		recentObjectColors, objectColorDraft, setObjectColorDraft, rememberSceneObjectColor, objectDeleteUndo,
-		setObjectDeleteUndo, sceneObjects, setSceneObjects, storeRef, store, selectedSceneObjectId,
+		setObjectDeleteUndo, sceneObjects, setSceneObjects: domain.write, storeRef, store, selectedSceneObjectId,
 		selectedSceneObject, beginSceneTransaction, endSceneTransaction, changeSceneObject,
 		deleteSelectedSceneObject, deleteSceneObject, dropSelectedSceneObject, matteTolerance, setMatteTolerance,
 		matteBrush, setMatteBrush, matteShrink, setMatteShrink, matteFeather, setMatteFeather, matteMode,

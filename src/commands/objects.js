@@ -1,12 +1,90 @@
 // Scene object commands: attachment, duplication and asset import.
 import { studioActionDeclaration } from "../studio-actions.js";
 import { changedIds, characterOf, fail } from "./shared.js";
+import { elementSetSchema, registerElementSet } from './elements.js';
+import './elements/object.js';
+import { createSceneObject, updateSceneObject, removeSceneObject, setSceneObjectParent, descendantsOf } from '../scene-objects.js';
+import { STUDIO_TOOL_SCHEMAS, StudioSchemas } from '../studio-agent-protocol.js';
 
-export const declarations = Object.freeze(["object.attach", "object.detach", "object.duplicate", "asset.import"].map(studioActionDeclaration));
+const id = StudioSchemas.TargetGuard.properties.targetId;
+const input = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
+const ids = { type: 'array', items: id, minItems: 1, maxItems: 100 };
+const number = { type: 'number' };
+const placement = input({ x: number, y: number, z: number, rot: number }, []);
+const setInput = elementSetSchema('object');
+const scale = setInput.properties.set.properties.scale;
+setInput.properties.set.properties.scale = { oneOf: [number, scale] };
+const mutation = (id, label, input) => ({ id, label, description: label, kind: 'mutation', undoDomain: 'objects', input });
+const semantic = [
+	mutation('object.set', 'Set object fields', setInput),
+	mutation('object.add', 'Add object', input({ kind: { type: 'string' }, placement, name: { type: 'string' }, parent: id }, ['kind'])),
+	mutation('object.remove', 'Remove objects', input({ ids })),
+	mutation('object.rename', 'Rename object', input({ id, name: { type: 'string', maxLength: 240 } })),
+	mutation('object.group', 'Group objects', input({ parent: id, children: ids })),
+	mutation('object.ungroup', 'Ungroup objects', input({ children: ids })),
+	mutation('object.update', 'Update object', input({ id, patch: { type: 'object', properties: {}, additionalProperties: true } }, [])),
+	mutation('objects.arrange', 'Arrange objects', STUDIO_TOOL_SCHEMAS.arrange_objects),
+];
+export const declarations = Object.freeze([...['object.attach', 'object.detach', 'object.duplicate', 'asset.import'].map(studioActionDeclaration), ...semantic]);
 
 export function register(registry, ports) {
 	const objectOf = objectId => ports.state().objects.find(object => object.id === objectId)
 		?? fail("STALE_TARGET", `Object ${objectId} is not in this scene.`);
+	const owned = () => ports.storeDomain('objects');
+	const result = (before, summary) => ({ affectedIds: changedIds(before, owned().read()), summary });
+	const methods = {
+		'object.add': args => {
+			const before = owned().read();
+			if (args.parent !== undefined) objectOf(args.parent);
+			const object = createSceneObject(args.kind, before, args.placement);
+			if (!object) fail('INVALID_ARGUMENT', `Unknown object kind: ${args.kind}`);
+			const placed = updateSceneObject([object], object.id, { ...(args.placement ?? {}), ...(args.name === undefined ? {} : { name: args.name }) })[0];
+			const next = [...before, placed];
+			owned().write(args.parent === undefined ? next : setSceneObjectParent(next, placed.id, args.parent));
+			return result(before, 'Added object.');
+		},
+		'object.remove': ({ ids }) => {
+			const before = owned().read(); ids.forEach(objectOf);
+			owned().write(ids.reduce((rows, id) => removeSceneObject(rows, id), before));
+			return result(before, 'Removed objects.');
+		},
+		'object.rename': ({ id, name }) => {
+			objectOf(id); const before = owned().read();
+			owned().write(updateSceneObject(before, id, { name }));
+			return result(before, 'Renamed object.');
+		},
+		'object.update': ({ id, patch }) => {
+			objectOf(id); const before = owned().read();
+			owned().write(updateSceneObject(before, id, patch));
+			return result(before, 'Updated object.');
+		},
+		'object.group': ({ parent, children }) => {
+			objectOf(parent); children.forEach(objectOf);
+			const before = owned().read();
+			if (children.some(id => id === parent || descendantsOf(before, id).some(row => row.id === parent))) fail('INVALID_ARGUMENT', 'Grouping would create a cycle.');
+			owned().group(parent, children);
+			return result(before, 'Grouped objects.');
+		},
+		'object.ungroup': ({ children }) => {
+			children.forEach(objectOf); const before = owned().read();
+			owned().write(children.reduce((rows, id) => setSceneObjectParent(rows, id, null), before));
+			return result(before, 'Ungrouped objects.');
+		},
+		'objects.arrange': args => {
+			const plan = owned().arrange(args);
+			return { affectedIds: plan.affectedIds, summary: 'Arranged objects.' };
+		},
+	};
+	// Scalar scale is a convenience at the command boundary; the registry still
+	// owns all field mapping, normalization, publication and patch aliases.
+	registerElementSet({ register(entry) {
+		const expand = op => typeof op.set.scale === 'number' ? { ...op, set: { ...op.set, scale: { x: op.set.scale, y: op.set.scale, z: op.set.scale } } } : op;
+		registry.register({ ...entry, run: args => entry.run(args.ops ? { ops: args.ops.map(expand) } : expand(args)) });
+	} }, ports, semantic[0]);
+	for (const declaration of semantic.slice(1)) registry.register({ ...declaration, available: () => Boolean(ports.storeDomain?.('objects')), run: methods[declaration.id] });
+	// Native adapters stay usable until their owner is mounted. In the editor,
+	// domains mount before registry construction, so this is always the bus alias.
+	if (ports.storeDomain?.('objects')) registry.registerToolAlias('arrange_objects', 'objects.arrange');
 	registry.register({ ...studioActionDeclaration("object.attach"),
 		available: state => state.objects.length === 0 ? "There are no scene objects to attach."
 			: state.characters.length === 0 ? "There are no characters to attach an object to." : true,
