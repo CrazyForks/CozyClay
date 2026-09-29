@@ -77,10 +77,10 @@ function toolBlocks(source, keyword = "registerTool") {
 }
 
 function liveHandlers(app) {
-	const start = app.indexOf("liveHandlersRef.current = {");
+	const start = app.indexOf("const liveQueries = {");
 	if (start < 0) return [];
-	const body = app.slice(start, app.indexOf("\n\t\t};", start));
-	return [...body.matchAll(/^\s{3}([a-z][a-z0-9_]*)\s*(?::|,)/gm)].map((match, index, all) => ({
+	const body = app.slice(start, app.indexOf("\n\t};", start));
+	return [...body.matchAll(/^\t{2,3}([a-z][a-z0-9_]*)\s*(?::|,)/gm)].map((match, index, all) => ({
 		name: match[1],
 		line: lineAt(app, start + match.index),
 		body: body.slice(match.index, all[index + 1]?.index),
@@ -147,7 +147,7 @@ function verifyG010(sources) {
 		["mcp/tool-handlers.mjs", 'liveHub.command("run_action",'],
 		["mcp/live-hub.mjs", 'type: "cmd"'],
 		["src/live-control.js", "dispatchLiveFrame"],
-		["src/App.jsx", "Object.assign(liveHandlersRef.current, studioBindingRef.current.handlers)"],
+		["src/App.jsx", "handlers: { ...liveQueries, ...studioBindingRef.current.handlers }"],
 		["src/studio-app-binding.js", "commandBus().run("],
 	];
 	for (const [path, token] of requiredPath) {

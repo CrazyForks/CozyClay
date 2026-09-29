@@ -62,11 +62,12 @@ function visit(value) {
 	for (const [key, child] of Object.entries(value)) if (key !== "parent") Array.isArray(child) ? child.forEach(visit) : visit(child);
 }
 visit(parsed.program);
+assert.equal(declarations.has('restoreCast'), false, 'native cast restoration is retired; only owned history restores documents');
 
 // The App functions this suite drives. Missing ones are a failure, not a skip:
 // the RED state of #345 is exactly "no such recording seam exists".
 const APP_FUNCTIONS = [
-	"snapshotIkKeys", "restoreCast", "undoScene", "redoScene",
+	"snapshotIkKeys", "undoScene", "redoScene",
 	"updateCharacterAt", "beginGestureUndo", "endGestureUndo", "changeKeyLight", "resetKeyLight",
 	"changeKeyLightFromGizmo", "changeInspectorCharacter", "changeEnvironmentImage",
 ];
@@ -174,6 +175,7 @@ const COMMAND_INPUTS = {
 	'character.changePromptBlock': { characterId: 'actor', id: 'block', text: 'Changed' },
 	'character.removePromptBlock': { characterId: 'actor', id: 'block' },
 	'motion.clear': { characterId: 'actor' },
+	'motion.setVideoDraft': { instruction: 'Draft', duration: 10 },
 	"character.addWaypoint": { characterId: "actor", position: { x: 0, z: 2 }, frame: 40 },
 	"character.moveWaypoint": { characterId: "actor", position: { x: 0, z: 1.1 }, frame: 24 },
 	"character.removeWaypoint": { characterId: "actor", frame: 24 }, "character.clearWaypoints": { characterId: "actor" },
@@ -289,6 +291,7 @@ function commandFixture({ frame = 8 } = {}) {
 		loadScenes: args => ports.loadScenes(args),
 	};
 	motionDomain = motionHygieneDomain(ports);
+	motionDomain.setVideoDraft = patch => { state.falMotion = { ...state.falMotion, ...patch }; };
 	const registries = Object.fromEntries(Object.entries(COMMAND_MODULES).map(([name, module]) => [name, createStudioAppActions(ports, { [name]: module })]));
 	const journal = createStudioCommandJournal({ host });
 	const bus = registry => createCommandBus({ registry, ports: {
@@ -336,7 +339,7 @@ const cases = {
 	},
 	async "transient and document actions never open an undo entry"() {
 		const outside = Object.values(COMMAND_MODULES).flatMap(module => module.declarations).filter(entry => ["transient", "document"].includes(entry.kind));
-		assert.deepEqual(outside.map(entry => entry.id).sort(), Object.keys(COMMAND_INPUTS).filter(id => (/^(view|timeline|scene|project)\./.test(id) || ['load_scenes', 'motion.commitLineEdit', 'motion.regenerateTrail'].includes(id)) && !['scene.set', 'scene.rename', 'scene.reorder', 'project.rename'].includes(id)).sort());
+		assert.deepEqual(outside.map(entry => entry.id).sort(), Object.keys(COMMAND_INPUTS).filter(id => (/^(view|timeline|scene|project)\./.test(id) || ['load_scenes', 'motion.commitLineEdit', 'motion.regenerateTrail', 'motion.setVideoDraft'].includes(id)) && !['scene.set', 'scene.rename', 'scene.reorder', 'project.rename'].includes(id)).sort());
 		for (const declaration of outside) {
 			const f = commandFixture(), [name] = Object.entries(COMMAND_MODULES).find(([, module]) => module.declarations.includes(declaration));
 			const receipt = await f.bus(f.registries[name]).run(declaration.id, COMMAND_INPUTS[declaration.id]);

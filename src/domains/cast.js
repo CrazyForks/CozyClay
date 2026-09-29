@@ -145,9 +145,7 @@ export function useCast(appContext) {
 	domain.bindRender(appContext);
 	const { customPoses } = useDocumentDomain(domain.documentStore, 'cast');
 	const characters = useSyncExternalStore(domain.documentStore.subscribe, domain.projection, domain.projection);
-	const setCharacters = domain.write;
 	const editCharacters = value => domain.write(value);
-	const setCustomPoses = value => domain.run('cast.setCustomPoses', { poses: typeof value === 'function' ? value(domain.state().customPoses) : value });
 	useEffect(() => {
 		const start = () => domain.beginGesture();
 		window.addEventListener('pointerdown', start, true);
@@ -365,44 +363,6 @@ export function useCast(appContext) {
 	 * another door, so they record once per scrub / typed commit. */
 	function changeInspectorCharacter(gesture, patch) {
 		return updateCharacterAt(activeCharIndex, patch);
-	}
-
-	function restoreCast(snapshot) {
-		if (appContext.storeDomain('cast')) return appContext.storeDomain('cast').restoreMotion(snapshot);
-		// Captured BEFORE the buffer pointer moves: whose IK state the live ref
-		// currently holds.
-		const loadedIk = appContext.shared.loadedLayerCharRef.current;
-		if (snapshot.shots) appContext.shared.setShots(snapshot.shots);
-		setCharacters(snapshot.characters);
-		const bufferChar = snapshot.characters.find((entry) => entry.id === snapshot.bufferCharId) ?? snapshot.characters[0];
-		setWaypoints((bufferChar?.layer?.waypoints ?? []).map((waypoint) => ({ ...waypoint })));
-		setPromptClips((bufferChar?.layer?.promptClips ?? []).map((clip) => ({ ...clip })));
-		appContext.shared.setMotion(snapshot.bufferMotion);
-		appContext.shared.loadedLayerCharRef.current = bufferChar?.id ?? null;
-		setActiveCharacterId(bufferChar?.id ?? null);
-		// IK keys go back onto the snapshot owner's layer state (again deep-copied,
-		// so stepping through the same entry twice cannot alias what the rig is now
-		// mutating) and the tick bumps so markers and the keyed pose re-derive.
-		if (snapshot.ikKeys) {
-			// The keys belong to the snapshot's buffer character. When that
-			// character has no stored layer state yet, it gets a fresh one —
-			// falling back to the live ref would hand the keys to whoever is
-			// active NOW, cross-wiring two characters' corrections (#77).
-			let target;
-			if (bufferChar?.id === loadedIk) {
-				target = appContext.shared.ikStateRef.current;
-			} else {
-				target = appContext.shared.ikStatesRef.current.get(bufferChar?.id);
-				if (!target) {
-					target = createIkState();
-					if (bufferChar?.id) appContext.shared.ikStatesRef.current.set(bufferChar.id, target);
-				}
-			}
-			target.keys = appContext.shared.snapshotIkKeys({ keys: snapshot.ikKeys });
-			target.tracked = new Set([...target.keys.values()].flatMap((entry) => [...entry.keys()]));
-			appContext.shared.setCommittedIkEdits(snapshot.committedIkEdits ?? []);
-			appContext.shared.setIkTick((value) => value + 1);
-		}
 	}
 
 	const [hasCharSheet, setHasCharSheet] = useState(appContext.shared.startupStage.hasCharSheet);
@@ -868,30 +828,15 @@ export function useCast(appContext) {
 		return receipt;
 	}
 	function applyExternalCharacters(characters) {
-		if (appContext.storeDomain('cast')) {
-			appContext.storeDomain('cast').run('cast.replace', { characters });
-			appContext.shared.restoreMotionRefs(characters);
-			return;
-		}
-		const merged = characters.map(entry => {
-			const current = appContext.live.characters.find(item => item.id === entry.id);
-			return current?.sessionMotion ? { ...entry, sessionMotion: current.sessionMotion } : entry;
-		});
-		appContext.publishCharacters(merged);
-		setCharacters(merged);
-		appContext.shared.restoreMotionRefs(merged);
+		appContext.storeDomain('cast').run('cast.replace', { characters });
+		appContext.shared.restoreMotionRefs(characters);
 	}
-	function publishStudioCharacters(next, authored = false) {
+	function publishStudioCharacters(next) {
 		if (typeof next === 'function') next = next(appContext.live.characters);
-		if (appContext.storeDomain('cast')) {
-			const owner = appContext.storeDomain('cast');
-			if (appContext.shared.studioActionGroupRef.current) appContext.ports.recordAction('cast', () => owner.write(next), null, true);
-			else owner.run('cast.replace', { characters: owner.normalizeCharacters(next) });
-			for (const entry of next) if (Object.hasOwn(entry, 'sessionMotion')) owner.publishMotion(entry.id, entry.sessionMotion);
-			return;
-		}
-		appContext.publishCharacters(next); appContext.patchLive({ characters: next });
-		(authored ? editCharacters : setCharacters)(next);
+		const owner = appContext.storeDomain('cast');
+		if (appContext.shared.studioActionGroupRef.current) appContext.ports.recordAction('cast', () => owner.write(next), null, true);
+		else owner.run('cast.replace', { characters: owner.normalizeCharacters(next) });
+		for (const entry of next) if (Object.hasOwn(entry, 'sessionMotion')) owner.publishMotion(entry.id, entry.sessionMotion);
 	}
 	/** The active character's layer lives in the editing buffer, and the read
 	 * model folds that buffer back over the cast. A published or restored prompt
@@ -941,33 +886,8 @@ export function useCast(appContext) {
 		return { bufferMotion: appContext.shared.bufferRef.current.motion, bufferCharId: appContext.shared.loadedLayerCharRef.current,
 			ikKeys: appContext.shared.snapshotIkKeys(appContext.shared.ikStateRef.current), committedIkEdits: appContext.shared.committedIkEdits };
 	}
-	function restoreNativeMotion(snapshot) {
-		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').restoreLegacy(snapshot);
-		const id = snapshot.bufferCharId;
-		const state = { ...createIkState(), keys: appContext.shared.snapshotIkKeys({ keys: snapshot.ikKeys }) };
-		state.tracked = new Set([...state.keys.values()].flatMap(entry => [...entry.keys()]));
-		appContext.shared.ikStatesRef.current.set(id, state);
-		domain.publishMotion(id, snapshot.bufferMotion);
-		if (id === appContext.shared.loadedLayerCharRef.current) {
-			appContext.shared.ikStateRef.current = state;
-			appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, motion: snapshot.bufferMotion, ik: state };
-			appContext.shared.setMotion(snapshot.bufferMotion);
-			appContext.shared.setCommittedIkEdits(snapshot.committedIkEdits ?? []);
-			appContext.shared.setIkTick(value => value + 1);
-		}
-	}
 	function switchNativeMotionLayer(previous, entry) {
-		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').switchLayer(entry.id);
-		if (appContext.shared.ikMode) appContext.shared.leaveIkMode();
-		if (previous) {
-			appContext.shared.ikStatesRef.current.set(previous, appContext.shared.bufferRef.current.ik);
-			domain.publishMotion(previous, appContext.shared.bufferRef.current.motion);
-		}
-		if (entry.sessionMotion && !appContext.shared.motionFullRef.current.has(entry.id)) appContext.shared.motionFullRef.current.set(entry.id, entry.sessionMotion);
-		const motion = entry.sessionMotion ?? null;
-		appContext.shared.motionDomain.setMotion(motion);
-		appContext.shared.ikStateRef.current = appContext.shared.ikStatesRef.current.get(entry.id) ?? createIkState();
-		appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, motion, ik: appContext.shared.ikStateRef.current };
+		return appContext.storeDomain('motion').switchLayer(entry.id);
 	}
 	function switchActiveCharacterLayer() {
 		const entry = domain.projection().find(entry => entry.id === domain.activeId) ?? domain.projection()[0];
@@ -1033,7 +953,6 @@ export function useCast(appContext) {
 	}
 	function toggleCharacterHidden(charId) { return domain.run('character.update', { characterId: charId, patch: { hidden: castMemberOf(charId).hidden !== true } }); }
 	domain.snapshotMotion = snapshotNativeMotion;
-	domain.restoreMotion = restoreNativeMotion;
 	domain.syncLayer = () => {
 		const entry = domain.read().find(entry => entry.id === appContext.shared.loadedLayerCharRef.current) ?? domain.read()[0];
 		appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, ...entry.layer };
@@ -1067,12 +986,12 @@ export function useCast(appContext) {
 	return {
 		...domain,
 		applyExternalCharacters, publishStudioCharacters, syncStudioLayerBuffer, undoScene, redoScene, snapshotStudioDomain, removeLegacyRootWaypoint, switchActiveCharacterLayer, createLegacyCastHandlers, toggleCharacterHidden,
-		characters, setCharacters, editCharacters, customPoses, setCustomPoses, posing, setPosing, posingClosing,
+		characters, editCharacters, customPoses, posing, setPosing, posingClosing,
 		studioPick, setStudioPick, rigs, rigMountEpoch, setRigMountEpoch, setPoseTick, charA, charB, showB,
 		poseA, poseB, subject, subject2, updateCharacterAt, setShowB, moveCharacter, removeCharacter, reportRig,
 		spawnCharacter, charKeyToHierarchyId, charIdFromHierarchyId, activeCharacterId, setActiveCharacterId,
 		rowIdForCharIndex, activeChar, selectActiveCharacterInHierarchy, activeCharIndex, activeRig, waitForRig,
-		ghostLayers, snapshotCast, changeInspectorCharacter, restoreCast, hasCharSheet,
+		ghostLayers, snapshotCast, changeInspectorCharacter, hasCharSheet,
 		setHasCharSheet, promptBlocksReveal, setPromptBlocksReveal, revealPromptBlocks, waypointMode,
 		setWaypointMode, waypoints, setWaypoints, activeWaypointId, setActiveWaypointId, pendingWaypointFrame,
 		setPendingWaypointFrame, promptClips, setPromptClips, editPromptClips, selectedPromptId,

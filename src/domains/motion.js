@@ -66,13 +66,9 @@ import { takeAnchor, createCharacterEntry } from "../scenes.js";
 import { retimeMotion } from "../ardy/retime.js";
 import {
 	createMotionEdit,
-	trimMotionEdit,
 	renderMotionEdit,
 	remapFrameKeyMap,
 	remapTimelineFrame,
-	splitMotionEdit,
-	setMotionSegmentSpeed,
-	removeMotionSegment,
 } from "../ardy/motion-edit.js";
 import { DEFAULT_POSE, restoreBindPositions, applyPose, applyHipsOffset } from "../poses.js";
 import { normalizeMotionCalibration, applyMotionCalibration } from "../ardy/motion-calibration.js";
@@ -697,12 +693,6 @@ export function useMotion(appContext) {
 
 	// Loaded motion: decoded arrays plus the world anchor captured at load.
 	const motion = domain.visibleMotion(appContext.shared.activeChar.id);
-	const setMotion = value => {
-		const id = appContext.shared.loadedLayerCharRef.current, before = domain.motionFor(id);
-		const next = typeof value === 'function' ? value(before) : value;
-		if (next === before) return;
-		domain.writeLayer(id, { take: domain.snapshotTake(next), fullTake: domain.snapshotTake(appContext.shared.motionFullRef.current.get(id) ?? next) });
-	};
 
 	const [motionBusy, setMotionBusy] = useState(false);
 
@@ -1267,74 +1257,18 @@ export function useMotion(appContext) {
 				editSegments: createMotionEdit(decoded.frames),
 			};
 			const owned = appContext.storeDomain('motion');
-			if (owned) {
-				if (preview) owned.preview(targetCharacter.id, url === owned.motionFor(targetCharacter.id)?.url ? null : loaded);
-				else {
-					commitLoadedTake(targetCharacter.id, loaded, { recipe, job, promptClips: targetPromptClips, scale });
-					if (bufferOwnsTarget) { appContext.shared.setTlFrame(0); appContext.shared.setTlPlaying(false); }
-					setMotionError('');
-				}
-				return scale;
+			if (preview) owned.preview(targetCharacter.id, url === owned.motionFor(targetCharacter.id)?.url ? null : loaded);
+			else {
+				commitLoadedTake(targetCharacter.id, loaded, { recipe, job, promptClips: targetPromptClips, scale });
+				if (bufferOwnsTarget) { appContext.shared.setTlFrame(0); appContext.shared.setTlPlaying(false); }
+				setMotionError('');
 			}
-			appContext.shared.publishStudioCharacters((list) => {
-				const next = list.map((entry) => entry.id === targetCharacter.id
-					? {
-						...entry,
-						scale,
-						sessionMotion: loaded,
-						layer: targetPromptClips
-							? { ...(entry.layer ?? {}), promptClips: targetPromptClips }
-							: entry.layer,
-					}
-					: entry);
-				appContext.patchLive({ characters: next });
-				if (commandContext) appContext.publishCharacters(next);
-				return next;
-			});
-			if (commandContext && bufferOwnsTarget) { appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, motion: loaded }; appContext.patchTimeline({ frameCount: decoded.frames }); }
-			// The take as loaded is what every future trim cuts from.
-			appContext.shared.motionFullRef.current.set(targetCharacter.id, loaded);
-			if (bufferOwnsTarget) {
-				setMotion(loaded);
-				if (targetPromptClips) appContext.shared.setPromptClips(targetPromptClips);
-				appContext.shared.setTlFrameCount(decoded.frames);
-				appContext.shared.setTlFps(decoded.fps);
-				// A preview keeps the playhead: the artist is watching one beat of
-				// the take and wants to see THAT beat change, not to be thrown
-				// back to frame 0 every time the box answers.
-				if (!preview) {
-					appContext.shared.setTlFrame(0);
-					appContext.shared.setTlPlaying(false);
-				}
-			}
-			// IK keys correct SPECIFIC frames of the take they were authored on, so
-			// a replacement take leaves them pointing at poses that no longer exist
-			// — the same reason a trim clears them. The Full-Body lane would
-			// otherwise keep showing corrections that belong to a discarded clip.
-			const hadIkKeys = !preview && bufferOwnsTarget && appContext.shared.ikStateRef.current.keys.size > 0;
-			if (hadIkKeys) {
-				appContext.shared.ikStateRef.current.keys.clear();
-				appContext.shared.ikStateRef.current.tracked.clear();
-				appContext.shared.ikStateRef.current.plants.clear();
-				setIkTick((value) => value + 1);
-			}
-			if (bufferOwnsTarget && !preview) setCommittedIkEdits([]);
-			if (!preview) {
-				appContext.notify((isKo, ko) =>
-					isKo
-						? `모션 로드됨: ${decoded.frames}프레임 @ ${decoded.fps} fps${hadIkKeys ? " — 이전 테이크의 IK 키는 초기화됐어요" : ""}`
-						: `Motion loaded: ${decoded.frames} frames @ ${decoded.fps} fps${hadIkKeys ? " — IK keys from the previous take were cleared" : ""}`,
-				);
-			}
-			// The applied stature, so a caller does not have to re-derive it
-			// (and cannot derive a different one).
 			return scale;
 			};
 			return preview ? apply() : commandContext ? commandContext.commit(apply)
-				: appContext.storeDomain('motion') ? appContext.storeDomain('motion').runPrepared(targetCharacterId, apply) : apply();
+				: appContext.storeDomain('motion').runPrepared(targetCharacterId, apply);
 		} catch (err) {
 			if (tutorialEpoch !== null && tutorialEpoch !== appContext.shared.tutorialProjectEpochRef.current) return null;
-			if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext && !appContext.storeDomain('motion')) setMotion(null);
 			setMotionError(err?.message || String(err));
 			throw err;
 		} finally {
@@ -1350,34 +1284,7 @@ export function useMotion(appContext) {
 	 * first and then write the pose: the snapshot taken here predates both, so
 	 * one undo restores the take AND the pose it replaced. */
 	function clearMotion() {
-		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').clear(appContext.shared.activeChar.id);
-		if (!motion && appContext.shared.ikStateRef.current.keys.size === 0 && (appContext.shared.activeChar.scale ?? 1) === 1) return;
-		setMotion(null);
-		setMotionError("");
-		appContext.shared.motionFullRef.current.delete(appContext.shared.activeChar.id);
-		// Corrections belong to the take. With the take gone they would sit on the
-		// Full-Body lane describing frames of nothing.
-		if (appContext.shared.ikStateRef.current.keys.size > 0) {
-			appContext.shared.ikStateRef.current.keys.clear();
-			appContext.shared.ikStateRef.current.tracked.clear();
-			appContext.shared.ikStateRef.current.plants.clear();
-			setIkTick((value) => value + 1);
-		}
-		setCommittedIkEdits([]);
-		// A cleared clip leaves the body canonical: the stature belonged to the
-		// take, not to the character. The persisted motionRef must drop too —
-		// restoreMotionRefs re-fetches it on every reload/rejoin, and a cleared
-		// take that resurrects on the next session is exactly the bug this fixes.
-		appContext.shared.publishStudioCharacters((list) => list.map((entry) => entry.id === appContext.shared.activeChar.id ? { ...entry, scale: 1, motionRef: null } : entry));
-		const cast = appContext.storeDomain('cast');
-		if (cast) {
-			appContext.shared.bufferRef.current.motion = null;
-			cast.publishMotion(appContext.shared.activeChar.id, null);
-			cast.setTimeline(maxDst + 1);
-		} else appContext.shared.setTlFrameCount(maxDst + 1);
-		appContext.shared.setTlFps(TIMELINE_FPS);
-		appContext.shared.setTlFrame((f) => Math.min(f, maxDst));
-		appContext.shared.setTlPlaying(false);
+		return appContext.storeDomain('motion').clear(appContext.shared.activeChar.id);
 	}
 
 	/** Cut the ACTIVE character's take to [start, end] of the CURRENT view.
@@ -1386,104 +1293,26 @@ export function useMotion(appContext) {
 	 *  and IK-edit regeneration must not pretend they do. Per-character layers
 	 *  mean the cut lands on this layer only; nobody else's clip moves. */
 	function applyMotionTrim(start, end) {
-		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').edit('motion.trim', { characterId: appContext.shared.activeChar.id, start, end });
-		const full = appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id);
-		if (!full || !motion) return;
-		const previous = motion.editSegments ?? createMotionEdit(full.frames);
-		const segments = trimMotionEdit(previous, start, end);
-		const sliced = renderMotionEdit(full, segments);
-		// Keys inside the kept range migrate to their new frame numbers (#79);
-		// keys on trimmed-away source frames drop out of the mapping naturally.
-		// This replaces the old clear-everything fallback.
-		migrateTimelinePins(previous, segments, sliced.frames);
-		setMotion({ ...sliced, url: null });
-		appContext.shared.setTlFrameCount(sliced.frames);
-		appContext.shared.setTlFrame((frame) => Math.min(frame, sliced.frames - 1));
-		appContext.shared.setTlPlaying(false);
-		appContext.notify(isKo
-			? `테이크 잘라냄 — ${sliced.frames}프레임`
-			: `Take cut to ${sliced.frames} frames`);
+		return appContext.storeDomain('motion').edit('motion.trim', { characterId: appContext.shared.activeChar.id, start, end });
 	}
 
 	function resetMotionTrim() {
-		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.resetTrim', { characterId: appContext.shared.activeChar.id });
-		const full = appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id);
-		if (!full || !motion || motion.frames === full.frames && motion.editSegments?.length === 1) return;
-		// Surviving IK keys ride back to their full-take frame numbers (#79).
-		migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), createMotionEdit(full.frames), full.frames);
-		setMotion({ ...full, editSegments: createMotionEdit(full.frames) });
-		appContext.shared.setTlFrameCount(full.frames);
-		appContext.shared.setTlFrame((frame) => Math.min(frame, full.frames - 1));
-		appContext.notify(ko("Full take restored", "테이크 전체 길이 복원"));
-	}
-
-	function editMotionSegments(edit) {
-		const full = appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id);
-		if (!full || !motion) return;
-		const rendered = renderMotionEdit(full, edit);
-		migrateTimelinePins(motion.editSegments ?? createMotionEdit(full.frames), edit, rendered.frames);
-		setMotion({ ...rendered, url: null });
-		appContext.shared.setTlFrameCount(rendered.frames);
-		appContext.shared.setTlFrame((frame) => Math.min(frame, rendered.frames - 1));
-		appContext.shared.setTlPlaying(false);
-	}
-
-	/** Everything pinned to TIMELINE frames rides a segment edit's timing
-	 * change (#79): a retime moves the poses those frames address, so the IK
-	 * correction keys and the prompt clips migrate through the same
-	 * old→source→new piecewise mapping the clip itself was resampled with.
-	 * The composed document session retains keys and clips together. */
-	function migrateTimelinePins(previousEdit, nextEdit, newFrameCount) {
-		if (appContext.shared.ikStateRef.current.keys.size > 0) {
-			appContext.shared.ikStateRef.current.keys = remapFrameKeyMap(appContext.shared.ikStateRef.current.keys, previousEdit, nextEdit);
-			setIkTick((value) => value + 1);
-		}
-		appContext.shared.setPromptClips((clips) => clips.map((clip) => {
-			const start = remapTimelineFrame(previousEdit, nextEdit, clip.startFrame);
-			const end = remapTimelineFrame(previousEdit, nextEdit, clip.endFrame);
-			// A clip whose whole source range was deleted drops out; one that
-			// partially survives clamps to the new take.
-			if (start === null && end === null) return null;
-			const clamp = (value, fallback) => Math.max(0, Math.min(value ?? fallback, newFrameCount - 1));
-			const nextStart = clamp(start, 0);
-			const nextEnd = clamp(end, newFrameCount - 1);
-			return nextStart <= nextEnd ? { ...clip, startFrame: nextStart, endFrame: nextEnd } : null;
-		}).filter(Boolean));
+		return appContext.storeDomain('motion').run('motion.resetTrim', { characterId: appContext.shared.activeChar.id });
 	}
 
 	function cutMotionAtPlayhead() {
-		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.cut', { characterId: appContext.shared.activeChar.id, frame: appContext.shared.tlFrame });
-		if (!motion) return;
-		const current = motion.editSegments ?? createMotionEdit(appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id)?.frames ?? motion.frames);
-		const next = splitMotionEdit(current, appContext.shared.tlFrame);
-		if (next === current) return;
-		editMotionSegments(next);
-		appContext.notify(ko("Full-Body clip cut at the playhead", "전신 클립을 재생 헤드에서 컷했어요"));
+		return appContext.storeDomain('motion').run('motion.cut', { characterId: appContext.shared.activeChar.id, frame: appContext.shared.tlFrame });
 	}
 
 	function changeMotionSegmentSpeed(id, speed) {
-		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.setSegmentSpeed', { characterId: appContext.shared.activeChar.id, id, speed });
-		if (!motion) return;
-		const current = motion.editSegments ?? createMotionEdit(appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id)?.frames ?? motion.frames);
-		editMotionSegments(setMotionSegmentSpeed(current, id, speed));
-		appContext.notify(ko(`${speed}× speed applied to the selected segment`, `선택한 구간을 ${speed}×로 설정했어요`));
+		return appContext.storeDomain('motion').run('motion.setSegmentSpeed', { characterId: appContext.shared.activeChar.id, id, speed });
 	}
 
 	/** Drop one Full-Body segment from the take. The removal composes like a
 	 * trim: the source frames stay untouched, so the trim-reset path (right-click
 	 * an outer handle) still restores the whole take. */
 	function removeMotionSegmentById(id) {
-		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.removeSegment', { characterId: appContext.shared.activeChar.id, id });
-		if (!motion) return;
-		const current = motion.editSegments ?? createMotionEdit(appContext.shared.motionFullRef.current.get(appContext.shared.activeChar.id)?.frames ?? motion.frames);
-		if (current.length <= 1) {
-			appContext.notify(ko("The only segment cannot be deleted — use ✕ Motion to clear the take", "마지막 남은 구간은 지울 수 없어요 — ✕ 모션으로 테이크를 비워요"));
-			return;
-		}
-		const next = removeMotionSegment(current, id);
-		if (next === current) return;
-		editMotionSegments(next);
-		appContext.notify(ko("Segment removed — right-click a trim handle to restore the full take", "구간을 지웠어요 — 핸들 우클릭으로 전체 테이크 복원"));
+		return appContext.storeDomain('motion').run('motion.removeSegment', { characterId: appContext.shared.activeChar.id, id });
 	}
 
 	// Everyone EXCEPT the active character, posed at an absolute frame from
@@ -2152,14 +1981,9 @@ export function useMotion(appContext) {
 			return;
 		}
 		const owned = appContext.storeDomain('motion');
-		if (owned) {
-			if (base !== owned.motionFor(appContext.shared.activeChar.id)) { owned.project(); throw new StudioProtocolError('STALE_TARGET', 'The take changed during the trail drag.'); }
-			owned.run('motion.editTrail', { characterId: appContext.shared.activeChar.id, grabFrame, radiusFrames: trailFalloffFrames, delta });
-			owned.finishGesture();
-		} else {
-			setMotion(deformed);
-			appContext.shared.markSemanticEdit('pose', base.rootPos, deformed.rootPos);
-		}
+		if (base !== owned.motionFor(appContext.shared.activeChar.id)) { owned.project(); throw new StudioProtocolError('STALE_TARGET', 'The take changed during the trail drag.'); }
+		owned.run('motion.editTrail', { characterId: appContext.shared.activeChar.id, grabFrame, radiusFrames: trailFalloffFrames, delta });
+		owned.finishGesture();
 		setTrailEdit({ track, grabFrame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta) });
 	}
 
@@ -2722,21 +2546,7 @@ export function useMotion(appContext) {
 				};
 				if (entry.motionRef.calibration) clip.sceneCalibration = entry.motionRef.calibration;
 				if (entry.motionRef.studioTakeId) clip.studioTakeId = entry.motionRef.studioTakeId;
-				if (appContext.storeDomain('motion')) { appContext.storeDomain('motion').hydrate(entry.id, clip, entry.motionRef); return; }
-				appContext.shared.motionFullRef.current.set(entry.id, clip);
-				appContext.shared.publishStudioCharacters((current) => current.map((item) => item.id === entry.id
-					// The stature rides inside the npz, so a restored take
-					// re-applies it; the saved entry scale is only the fallback
-					// for a take whose npz never stored one.
-					? { ...item, scale: characterScaleFor(decoded, item.scale ?? 1), sessionMotion: clip }
-					: item));
-				// The buffer character's clip goes straight into the editing
-				// buffer too, so its motion survives the reload seamlessly.
-				if (entry.id === appContext.shared.loadedLayerCharRef.current) {
-					setMotion(clip);
-					appContext.shared.setTlFrameCount((count) => Math.max(count, decoded.frames));
-					appContext.shared.setTlFps(decoded.fps);
-				}
+				appContext.storeDomain('motion').hydrate(entry.id, clip, entry.motionRef);
 			}).catch((error) => {
 				if (epoch !== appContext.shared.restoreEpochRef.current) return;
 				appContext.shared.setProjectManifest((current) => {
@@ -2771,7 +2581,7 @@ export function useMotion(appContext) {
 		// (x2) regardless of the Studio's shot ratio; markFalPose also switches
 		// the viewport to the matching ratio so what the user framed is what
 		// gets sent.
-		const captured = appContext.shared.liveHandlersRef.current?.capture_framing_png?.({ output: FAL_MOTION_STILL_OUTPUT });
+		const captured = appContext.shared.captureLiveFraming({ output: FAL_MOTION_STILL_OUTPUT });
 		if (!captured?.dataUrl?.startsWith("data:image/")) throw new Error(ko("렌더러가 준비되지 않았어요.", "The shot renderer is not ready."));
 		if (captured.width !== FAL_MOTION_STILL_OUTPUT.width || captured.height !== FAL_MOTION_STILL_OUTPUT.height) {
 			throw new Error(ko(`H3 480P 참조 캡처는 ${FAL_MOTION_STILL_OUTPUT.width}×${FAL_MOTION_STILL_OUTPUT.height}이어야 해요.`, `The H3 480P reference must be captured at ${FAL_MOTION_STILL_OUTPUT.width}×${FAL_MOTION_STILL_OUTPUT.height}.`));
@@ -2980,27 +2790,8 @@ export function useMotion(appContext) {
 		}
 		return appContext.shared.runStudioAction("motion.generateFromVideo", { instruction });
 	}
-	function publishStudioMotion(targetId, state, authored = false) {
-		const current = appContext.shared.readStudioState(), cast = appContext.storeDomain('cast');
-		if (!cast || authored) appContext.shared.publishStudioCharacters(current.characters.map(c => c.id === targetId ? state.character : c));
-		if (cast) cast.publishMotion(targetId, state.character.sessionMotion ?? null);
-		if (state.fullMotion) appContext.shared.motionFullRef.current.set(targetId, state.fullMotion); else appContext.shared.motionFullRef.current.delete(targetId);
-		const layer = { ...createIkState(), keys: copyPhysicsKeys(state.ikState.keys), tracked: new Set(state.ikState.tracked) };
-		appContext.shared.ikStatesRef.current.set(targetId, layer);
-		if (appContext.shared.loadedLayerCharRef.current === targetId) {
-			appContext.shared.ikStateRef.current = layer;
-			const characterLayer = cast?.read().find(entry => entry.id === targetId)?.layer ?? state.character.layer;
-			appContext.shared.bufferRef.current = { waypoints: characterLayer?.waypoints ?? [], promptClips: characterLayer?.promptClips ?? [], motion: state.character.sessionMotion ?? null, ik: layer };
-			if (!cast) { appContext.shared.setWaypoints(appContext.shared.bufferRef.current.waypoints); appContext.shared.setPromptClips(appContext.shared.bufferRef.current.promptClips); }
-			setMotion(appContext.shared.bufferRef.current.motion);
-			setCommittedIkEdits(state.committedIkEdits); setIkTick(n => n + 1);
-		}
-		appContext.patchTimeline({ frameCount: state.frameCount }); appContext.shared.frameCountRef.current = state.frameCount;
-		if (!cast) appContext.shared.setTlFrameCount(state.frameCount);
-		else if (authored) cast.setTimeline(state.frameCount);
-		if (state.renderer) appContext.shared.restoreExportRig(state.renderer);
-	}
 	function updateFalMotionQuota(dailyRemaining) { setFalMotion((current) => ({ ...current, dailyRemaining })); }
+	domain.setVideoDraft = patch => setFalMotion(current => ({ ...current, ...patch }));
 	domain.requestLineEdit = runLineEdit;
 	domain.requestTrailRegeneration = runTrailRegeneration;
 	domain.generate = generateMotion;
@@ -3030,7 +2821,7 @@ export function useMotion(appContext) {
 	appContext.updateActionPorts({ clearMotionNative: clearMotion, setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys });
 	return {
 		...domain,
-		falMotion, setFalMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, updateFalMotionQuota,
+		falMotion, setFalMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, updateFalMotionQuota,
 		ikMode, ikChains, setIkChains, ikFkJoints, setIkFkJoints, ikFocus, setIkFocus, footSnap, setFootSnap,
 		bodyContact, setBodyContact, IK_CORRECTION_BLEND_FRAMES, autoPhysicsRunning, setAutoPhysicsRunning,
 		physicsPreview, setPhysicsPreview, physicsShow, physicsProgress, physicsOptions, setPhysicsOptions,
@@ -3039,7 +2830,7 @@ export function useMotion(appContext) {
 		setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys, bridge, setBridge, bridgeChecking,
 		motionSetupReveal, motionSetupKind, setArdyPrompt, setArdyDuration, ardySeed, preserveStrength,
 		setPreserveStrength, takeRecipe, takeVersions, replayNotices, sceneMenuOpen, setSceneMenuOpen,
-		ardyRunning, ardyStatus, ardyOutcome, lineEditBackend, setLineEditBackend, motion, setMotion, motionBusy,
+		ardyRunning, ardyStatus, ardyOutcome, lineEditBackend, setLineEditBackend, motion, motionBusy,
 		multiModelUrl, setMultiModelUrl, multiModelSource, setMultiModelSource, multiModelStatus,
 		multiModelStage, multiModelProgress, multiModelFootage, multiModelError, multiModelTake,
 		multiModelExtract, multiModelExtractProgress, multiModelExtractError, advanceFrame, stepFrame,

@@ -1099,7 +1099,6 @@ export default function App() {
 		get setArdyPrompt() { return setArdyPrompt; },
 		get setCommittedIkEdits() { return setCommittedIkEdits; },
 		get setIkTick() { return setIkTick; },
-		get setMotion() { return motionDomain.setMotion; },
 		get setSelectedHierarchyId() { return setSelectedHierarchyId; },
 		get setShots() { return setShots; },
 		get setTlFrame() { return setTlFrame; },
@@ -1116,7 +1115,6 @@ export default function App() {
 		get editShots() { return editShots; },
 		get publishStudioCamera() { return publishStudioCamera; },
 		get publishStudioDomain() { return publishStudioDomain; },
-		get publishStudioMotion() { return publishStudioMotion; },
 		get publishStudioStage() { return publishStudioStage; },
 		get sceneRevisionRef() { return sceneRevisionRef; },
 		get snapshotCast() { return snapshotCast; },
@@ -1144,7 +1142,7 @@ export default function App() {
 		updateCharacterAt, setShowB, moveCharacter, removeCharacter, reportRig, spawnCharacter,
 		charKeyToHierarchyId, charIdFromHierarchyId, activeCharacterId, setActiveCharacterId, rowIdForCharIndex,
 		activeChar, selectActiveCharacterInHierarchy, activeCharIndex, activeRig, waitForRig, ghostLayers,
-		snapshotCast, changeInspectorCharacter, restoreCast, hasCharSheet, setHasCharSheet, promptBlocksReveal,
+		snapshotCast, changeInspectorCharacter, hasCharSheet, setHasCharSheet, promptBlocksReveal,
 		setPromptBlocksReveal, revealPromptBlocks, waypointMode, setWaypointMode, waypoints, setWaypoints,
 		activeWaypointId, setActiveWaypointId, pendingWaypointFrame, setPendingWaypointFrame, promptClips,
 		setPromptClips, editPromptClips, selectedPromptId, setSelectedPromptId, photoPoseState, photoPoseError,
@@ -1319,7 +1317,7 @@ export default function App() {
 		get enterShotLook() { return enterShotLook; },
 		get falMotionEnabled() { return falMotionEnabled; },
 		get falMotionSegmentationReady() { return falMotionSegmentationReady; },
-		get liveHandlersRef() { return liveHandlersRef; },
+		get captureLiveFraming() { return liveQueries.capture_framing_png; },
 		get lookThroughShot() { return lookThroughShot; },
 		get motionEncodingCacheRef() { return motionEncodingCacheRef; },
 		get readStudioState() { return readStudioState; },
@@ -1358,7 +1356,7 @@ export default function App() {
 		generationBusy, openMotionSetup, refineDisabledReason, sceneDisabledReason, sceneGenerateDisabledReason,
 		sceneAgainDisabledReason, enterRefineMode, runSceneAgain, addSceneBlock, restoreMotionRefs, cancelArdy,
 	} = motionDomain;
-	const { falMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion } = motionDomain;
+	const { falMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi } = motionDomain;
 	const [partColoursEnabled, setPartColoursEnabled] = useState(false);
 	const [partColoursMode, setPartColoursMode] = useState("shaded");
 
@@ -1485,17 +1483,13 @@ export default function App() {
 		get setActiveWaypointId() { return setActiveWaypointId; },
 		get setCameraTutorial() { return setCameraTutorial; },
 		get setCameraTutorialHandoff() { return setCameraTutorialHandoff; },
-		get setCharacters() { return castDomain.setCharacters; },
-		get setCustomPoses() { return castDomain.setCustomPoses; },
 		get setFirstSuccessGuideOpen() { return setFirstSuccessGuideOpen; },
 		get setHasCharSheet() { return setHasCharSheet; },
-		get setMotion() { return motionDomain.setMotion; },
 		get setMovePlaying() { return setMovePlaying; },
 		get setPendingWaypointFrame() { return setPendingWaypointFrame; },
 		get setPromptClips() { return setPromptClips; },
 		get setRailDraw() { return setRailDraw; },
 		get setRigMountEpoch() { return setRigMountEpoch; },
-		get setSceneObjects() { return objectsDomain.setSceneObjects; },
 		get setSelectedHierarchyId() { return setSelectedHierarchyId; },
 		get setSelectedPromptId() { return setSelectedPromptId; },
 		get setShots() { return setShots; },
@@ -1884,7 +1878,6 @@ export default function App() {
 	const [subjectVisible, setSubjectVisible] = useState(true);
 	const mcpCaptureRef = useRef(null);
 	const liveControlRef = useRef(null);
-	const liveHandlersRef = useRef(null);
 	const [liveWorkspaceHandle, setLiveWorkspaceHandle] = useState(null);
 	const liveWorkspaceHandleRef = useRef(null);
 	// One identity per tab, kept in sessionStorage so a reload reconnects as the
@@ -2747,8 +2740,9 @@ export default function App() {
 		generate,
 		shots,
 	});
-	if (!liveHandlersRef.current) {
-		const describe = () => {
+	const liveQueries = {
+		ping: () => ({ pong: true }),
+		describe: () => {
 			const live = appContext.live.state;
 			return {
 				document: {
@@ -2773,11 +2767,8 @@ export default function App() {
 				characters: castDomain.read(),
 				objects: objectsDomain.read(),
 			};
-		};
-		liveHandlersRef.current = {
-			ping: () => ({ pong: true }),
-			describe,
-			capture_frame: async () => {
+		},
+		capture_frame: async () => {
 				const live = appContext.live.state;
 				return captureMcpFrame({
 					partColours: live.partColours,
@@ -2826,8 +2817,7 @@ export default function App() {
 					references: live.captureShotReferences(),
 				};
 			},
-		};
-	}
+	};
 
 	useEffect(() => {
 		const enabled = import.meta.env.DEV || window.__COZYCLAY_LIVE__ === true;
@@ -2837,7 +2827,7 @@ export default function App() {
 		const timer = setTimeout(() => {
 			if (!liveControlRef.current) {
 				liveControlRef.current = createLiveControl({
-					handlers: liveHandlersRef.current,
+					handlers: { ...liveQueries, ...studioBindingRef.current.handlers },
 					workspaceId: liveWorkspaceIdRef.current,
 					meta: {
 						project: projectName ?? "Untitled",
@@ -2850,7 +2840,7 @@ export default function App() {
 						// Which live commands this editor answers. A stale tab from an
 						// older build (or a different app on the same port) answers a
 						// different set; the agent picks a workspace that has what it needs.
-						commands: Object.keys(liveHandlersRef.current ?? {}),
+						commands: [...Object.keys(liveQueries), ...Object.keys(studioBindingRef.current.handlers)],
 					},
 					// The shared client intentionally has no disconnect UI callback.
 					// Observe only this owned socket; a stale handle must never be sent.
@@ -4061,7 +4051,7 @@ export default function App() {
 				runStudioAction("stage.setEnvironment", { environmentImage: normalizeReferenceImage(dataUrl) });
 				return true;
 			},
-			captureWithReferences: () => liveHandlersRef.current.capture_framing_png({}),
+			captureWithReferences: () => liveQueries.capture_framing_png({}),
 			importAsset: async ({ dataUrl: source, ...args }) => (await appContext.bus.run("asset.import", { source, ...args })).output,
 			sceneObject: { place: ({ kind, name, parent, ...placement }) => ({ id: appContext.bus.run("object.add", { kind, ...(name === undefined ? {} : { name }), ...(parent === undefined ? {} : { parent }), placement }).affectedIds[0] }), update: ({ id, scale, ...patch }) => appContext.bus.run("object.update", { id, patch: { ...(scale === undefined ? {} : { scaleX: scale, scaleY: scale, scaleZ: scale }), ...patch } }) },
 			// QA-only reference exports (#165): the production builders without the
@@ -6466,7 +6456,7 @@ export default function App() {
 		read: readStudioState, revision: sceneRevisionRef, bounds: studioBounds, commit: commitStudioDraft,
 		operate: operateStudio, undo: () => stepStudioHistory(false), redo: () => stepStudioHistory(true),
 		history: redo => appContext.historyEntry(redo), finishHistoryGesture: finishStudioHistoryGesture,
-		stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
+		stepHistory: stepStudioHistory, capture: () => liveQueries.capture_framing_png({}),
 		// One shot frame as raw read-back pixels (rows bottom-up), from the export
 		// path captureShotFramePng uses; an export in flight renders at its output.
 		renderFrameBuffer: frame => {
@@ -6559,7 +6549,6 @@ export default function App() {
 			if (domain === "shots") appContext.patchLive({ shots: after });
 			if (domain === "promptClips") bufferRef.current.promptClips = after;
 		};
-		Object.assign(liveHandlersRef.current, studioBindingRef.current.handlers);
 	}
 	useEffect(() => () => studioBindingRef.current?.dispose(), []);
 	// Every commit releases the actions waiting for React to render their edit
