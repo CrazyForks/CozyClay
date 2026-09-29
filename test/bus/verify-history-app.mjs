@@ -37,6 +37,13 @@ try {
   // that the first shot session captures, without authoring a history entry.
   f.scope.shotsDomain.beginAction().cancel();
   const snapshots = [snapshot()], receipts = [];
+  for (const redo of [false, true]) {
+    f.values.setToast = undefined;
+    assert.equal(key(redo), true);
+    assert.equal(typeof f.values.setToast, 'string', 'empty keyboard history still gives UI feedback');
+    assert.ok(f.values.setToast.length > 0);
+    assert.deepEqual(snapshot(), snapshots[0]);
+  }
   for (const [id, args] of [
     ['object.rename', { id: 'cube', name: 'Changed' }],
     ['character.update', { characterId: 'actor-a', patch: { x: 1 } }],
