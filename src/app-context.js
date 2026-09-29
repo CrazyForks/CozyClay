@@ -38,6 +38,16 @@ export function createAppContext({
       storeDomains.set(undoDomain, handle);
       return () => { if (storeDomains.get(undoDomain) === handle) storeDomains.delete(undoDomain); };
     },
+    // Scene slices are keyed by the registered undo domain. A module whose
+    // persistence shape differs can select its slice without changing App.
+    loadStoreDomains(slices) {
+      const loaded = new Set();
+      for (const [name, domain] of storeDomains) if (domain.load) {
+        domain.load(domain.sceneSlice ? domain.sceneSlice(slices) : slices[name]);
+        loaded.add(name);
+      }
+      return loaded;
+    },
     // A hook keeps the same render closure that its code had inside App.
     // Lazy projections permit handlers to refer to cells declared later in
     // that render, without rebinding an in-flight callback to a newer render.
