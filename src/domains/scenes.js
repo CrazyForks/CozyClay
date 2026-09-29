@@ -676,9 +676,7 @@ export function useScenes(appContext) {
 		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
 		if (index < 0) return;
 		const nextScenes = renameScene(savedScenes, index, name);
-		const owned = appContext.storeDomain("scenes");
-		if (owned) owned.write(nextScenes);
-		else { appContext.publishScenes(nextScenes); appContext.shared.setScenes(nextScenes); }
+		appContext.storeDomain('scenes').write(nextScenes);
 		persistScenes(nextScenes, appContext.shared.activeSceneIdRef.current);
 	}
 

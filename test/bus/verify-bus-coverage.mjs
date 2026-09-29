@@ -34,11 +34,15 @@ function scanSource(source, file = "fixture.jsx") {
       functions.push(nextOwner);
     }
     if (node.type === "VariableDeclarator" && node.id?.type === "Identifier" && node.init?.type === "Identifier" && writerName(node.init.name)) aliases.add(node.id.name);
-    if (node.type === "CallExpression" && isRunCall(node)) return;
     if (node.type === "Identifier" && (writerName(node.name) || aliases.has(node.name))) {
       const declaration = parent?.type === "VariableDeclarator" && parent.id === node;
       const property = parent?.type === "MemberExpression" && parent.property === node && !parent.computed;
-      if (!declaration && !property) references.push({ file, function: nextOwner, name: node.name, kind: "reference" });
+      const label = parent?.type === 'Property' && parent.key === node && !parent.computed && !parent.shorthand;
+      if (!declaration && !property && !label) references.push({ file, function: nextOwner, name: node.name, kind: "reference" });
+    }
+    if (node.type === 'MemberExpression') {
+      const name = node.computed ? node.property?.value : node.property?.name;
+      if (writerName(name)) references.push({ file, function: nextOwner, name, kind: 'reference' });
     }
     if (node.type === "MemberExpression" && node.object?.type === "Identifier" && ["liveStateRef", "liveHandlersRef"].includes(node.object.name)) references.push({ file, function: nextOwner, name: `${node.object.name}.${node.computed ? "computed" : node.property?.name}`, kind: "computed-live-ref" });
     if (node.type === "JSXAttribute" && node.value?.type === "JSXExpressionContainer" && node.value.expression?.type === "Identifier" && (writerName(node.value.expression.name) || aliases.has(node.value.expression.name))) handlers.push({ file, function: nextOwner, name: node.value.expression.name });

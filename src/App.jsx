@@ -1483,7 +1483,6 @@ export default function App() {
 		get setActiveWaypointId() { return setActiveWaypointId; },
 		get setCameraTutorial() { return setCameraTutorial; },
 		get setCameraTutorialHandoff() { return setCameraTutorialHandoff; },
-
 		get setFirstSuccessGuideOpen() { return setFirstSuccessGuideOpen; },
 		get setHasCharSheet() { return setHasCharSheet; },
 		get setMovePlaying() { return setMovePlaying; },
@@ -4048,7 +4047,7 @@ export default function App() {
 				updateCharacterAt(index, { identityImage: normalizeReferenceImage(dataUrl) });
 				return true;
 			},
-			"setEnvironmentImage": (dataUrl) => {
+			setEnvironmentImage: (dataUrl) => {
 				runStudioAction("stage.setEnvironment", { environmentImage: normalizeReferenceImage(dataUrl) });
 				return true;
 			},
