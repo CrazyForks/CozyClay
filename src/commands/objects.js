@@ -1,6 +1,6 @@
 // Scene object commands: attachment, duplication and asset import.
 import { studioActionDeclaration } from "../studio-actions.js";
-import { changedIds, characterOf, fail } from "./shared.js";
+import { characterOf, fail } from "./shared.js";
 import { elementSetSchema, registerElementSet } from './elements.js';
 import './elements/object.js';
 import { createSceneObject, updateSceneObject, removeSceneObject, setSceneObjectParent, descendantsOf } from '../scene-objects.js';
@@ -25,7 +25,10 @@ const semantic = [
 	mutation('object.update', 'Update object', input({ id, patch: { type: 'object', properties: {}, additionalProperties: true } }, [])),
 	mutation('objects.arrange', 'Arrange objects', STUDIO_TOOL_SCHEMAS.arrange_objects),
 ];
-export const declarations = Object.freeze([...['object.attach', 'object.detach', 'object.duplicate', 'asset.import'].map(studioActionDeclaration), ...semantic]);
+const batch = { id: 'objects.batch', label: 'Batch objects', description: 'Apply legacy object operations in one retained entry.', kind: 'job', domain: 'objects',
+	input: input({ ops: { type: 'array', maxItems: 100, items: input({ name: { type: 'string' }, args: { type: 'object', properties: {}, additionalProperties: true } }) }, atomic: { type: 'boolean' }, stopOnError: { type: 'boolean' }, label: { type: 'string' } }, ['ops']) };
+const changedIds = (before, after) => [...new Set([...before, ...after].map(row => row.id))].filter(id => JSON.stringify(before.find(row => row.id === id)) !== JSON.stringify(after.find(row => row.id === id)));
+export const declarations = Object.freeze([...['object.attach', 'object.detach', 'object.duplicate', 'asset.import'].map(studioActionDeclaration), ...semantic, batch]);
 
 export function register(registry, ports) {
 	const objectOf = objectId => ports.state().objects.find(object => object.id === objectId)
@@ -85,6 +88,11 @@ export function register(registry, ports) {
 	// Native adapters stay usable until their owner is mounted. In the editor,
 	// domains mount before registry construction, so this is always the bus alias.
 	if (ports.storeDomain?.('objects')) registry.registerToolAlias('arrange_objects', 'objects.arrange');
+	registry.register({ ...batch, available: () => Boolean(ports.storeDomain?.('objects')), run: (args, context) => {
+		const before = owned().read();
+		const output = context.commit(() => owned().batch(args));
+		return { ...result(before, 'Applied object batch.'), output };
+	} });
 	registry.register({ ...studioActionDeclaration("object.attach"),
 		available: state => state.objects.length === 0 ? "There are no scene objects to attach."
 			: state.characters.length === 0 ? "There are no characters to attach an object to." : true,

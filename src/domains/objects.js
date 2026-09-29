@@ -256,9 +256,8 @@ export function useObjects(appContext) {
 		const placement = at ?? (camera
 			? placementInFront({ x: camera.position.x, z: camera.position.z }, paneYaw)
 			: {});
-		const object = createSceneObject(kind, sceneObjects, placement);
-		if (!object) return;
-		store.applyAtomic((objects) => [...objects, object]);
+		const receipt = run("object.add", { kind, placement });
+		const object = domain.read().find(row => row.id === receipt.affectedIds[0]);
 		appContext.shared.markCraftAction("object");
 		appContext.shared.setSelectedHierarchyId(`object:${object.id}`);
 		// Deliberate divergence from Unity's rename-on-create: creating an object
@@ -499,22 +498,23 @@ export function useObjects(appContext) {
 		// Defaults to the selection (Ctrl/Cmd+D); the hierarchy context menu
 		// passes a specific row's id. Same result either way: the copy is
 		// selected, offset one grid step, and toasted.
-		const object = sceneObjects.find((item) => item.id === id) ?? null;
+		const objects = domain.read();
+		const object = objects.find((item) => item.id === id) ?? null;
 		if (!object) return;
 		const placement = { x: object.x, z: object.z, rot: object.rot };
 		// A cutout cannot be minted from the catalogue — it needs the picture the
 		// original is already wearing — so the copy is created through its own
 		// door and shares the asset rather than importing it twice.
 		const copy = object.renderer === CUTOUT_KIND
-			? createCutoutObject(duplicateCutoutOptions(object), sceneObjects, placement)
+			? createCutoutObject(duplicateCutoutOptions(object), objects, placement)
 			: object.renderer === MESH_KIND
-				? createMeshObject(duplicateMeshOptions(object), sceneObjects, placement)
-				: createSceneObject(object.renderer, sceneObjects, placement);
+				? createMeshObject(duplicateMeshOptions(object), objects, placement)
+				: createSceneObject(object.renderer, objects, placement);
 		if (!copy) return;
 		// Unity drops the duplicate exactly on top of the original; for blocking,
 		// one grid step to the side means you can see that it worked.
 		const placed = { ...object, id: copy.id, name: copy.name, x: object.x + 0.5 };
-		store.applyAtomic((objects) => [...objects, placed]);
+		domain.write((objects) => [...objects, placed]);
 		appContext.shared.setSelectedHierarchyId(`object:${placed.id}`);
 		appContext.notify((isKo, ko) => isKo ? `${sceneObjectNameDisplayKo(placed.name)} 복제됨` : `${placed.name} duplicated`);
 	}
@@ -533,7 +533,7 @@ export function useObjects(appContext) {
 	 * create). The row label lives in the tree; the object name is shared
 	 * state, so this is just the inspector's rename through another door. */
 	function renameSceneObject(id, name) {
-		changeSceneObject(id, { name });
+		return run("object.rename", { id, name });
 	}
 
 	/** The prop's live world matrix, falling back to its authored numbers while
@@ -606,13 +606,18 @@ export function useObjects(appContext) {
 		});
 	}
 	function createLegacyObjectHandlers(finitePatch) {
-		let batchToken = null;
+		let batchObjects = null;
 		const IMPORT_BACKDROP_DISTANCE_M = 12, IMPORT_BACKDROP_HEIGHT_M = 5;
 		function syncObjects() { appContext.patchLive({ objects: storeRef.current.objects }); }
-		function applyObjectMutation(mutation) { if (batchToken === null) storeRef.current.applyAtomic(mutation); else storeRef.current.applyIn(batchToken, mutation); syncObjects(); }
+		function applyObjectMutation(mutation) { if (batchObjects === null) domain.write(mutation); else batchObjects = mutation(batchObjects); }
+		const liveObjects = () => ({ ...appContext.live.state, objects: batchObjects ?? domain.read() });
 		function placeObject(args) {
+			if (batchObjects === null) {
+				const receipt = run("object.add", { kind: args.kind, placement: finitePatch(args, ["x", "y", "z", "rot"]), ...(args.name === undefined ? {} : { name: args.name }), ...(args.parent === undefined ? {} : { parent: args.parent }) });
+				return { id: receipt.affectedIds[0] };
+			}
 			if (typeof args.kind !== "string") throw new Error("Invalid kind");
-			const live = appContext.live.state;
+			const live = liveObjects();
 			// The parent is checked before anything is created: a bad id must
 			// not leave a half-made part lying around unattached.
 			if (args.parent !== undefined) {
@@ -740,7 +745,12 @@ export function useObjects(appContext) {
 			return { assetId: asset.id, objectId: object.id };
 		}
 		function updateObject(args) {
-			const live = appContext.live.state;
+			if (batchObjects === null) {
+				const { id, scale, ...patch } = args;
+				run("object.update", { id, patch: { ...(scale === undefined ? {} : { scaleX: scale, scaleY: scale, scaleZ: scale }), ...patch } });
+				return { id };
+			}
+			const live = liveObjects();
 			if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
 			const patch = finitePatch(args, ["x", "y", "z", "rot", "rotX", "rotZ"]);
 			// A uniform `scale` is the common case; per-axis values are what a
@@ -774,13 +784,15 @@ export function useObjects(appContext) {
 			return { id: args.id };
 		}
 		function removeObject(args) {
-			const live = appContext.live.state;
+			if (batchObjects === null) { run("object.remove", { ids: [args.id] }); return { id: args.id }; }
+			const live = liveObjects();
 			if (typeof args.id !== "string" || !live.objects.some((object) => object.id === args.id)) throw new Error("Object not found");
 			applyObjectMutation((objects) => removeSceneObject(objects, args.id));
 			return { id: args.id };
 		}
 		function groupObjects(args) {
-			const live = appContext.live.state;
+			if (batchObjects === null) { run("object.group", args); return { parent: args.parent, children: args.children.length }; }
+			const live = liveObjects();
 			if (typeof args.parent !== "string" || !live.objects.some((o) => o.id === args.parent)) {
 				throw new Error("Parent object not found");
 			}
@@ -794,7 +806,8 @@ export function useObjects(appContext) {
 			return { parent: args.parent, children: args.children.length };
 		}
 		function ungroupObjects(args) {
-			const live = appContext.live.state;
+			if (batchObjects === null) { run("object.ungroup", args); return { children: args.children.length }; }
+			const live = liveObjects();
 			if (!Array.isArray(args.children) || !args.children.length) throw new Error("No children given");
 			for (const child of args.children) {
 				if (!live.objects.some((o) => o.id === child)) throw new Error(`Object not found: ${child}`);
@@ -804,8 +817,9 @@ export function useObjects(appContext) {
 			);
 			return { children: args.children.length };
 		}
-		function applyObjectBatch(args) {
-			if (batchToken !== null) throw new Error("Nested batches are not supported");
+		function applyObjectBatch(args, inside = false) {
+			if (!inside) return run("objects.batch", args).output;
+			if (batchObjects !== null) throw new Error("Nested batches are not supported");
 			if (!Array.isArray(args.ops)) throw new Error("Invalid batch operations");
 			if (args.ops.length > 100) throw new Error("A batch may contain at most 100 operations");
 			if (args.atomic !== undefined && typeof args.atomic !== "boolean") throw new Error("Invalid atomic flag");
@@ -822,15 +836,10 @@ export function useObjects(appContext) {
 			}
 			const atomic = args.atomic === true;
 			const stopOnError = args.stopOnError !== false;
-			const depthBefore = storeRef.current.depths().past;
-			const token = storeRef.current.begin(args.label?.trim() || "MCP batch", () => {});
-			const priorSuppressObjectClock = appContext.suppressObjectClock;
-			appContext.suppressObjectClock = true;
+			batchObjects = domain.read();
 			const applied = [];
 			const failed = [];
-			batchToken = token;
 			let rolledBack = false;
-			let commit = false;
 			try {
 				for (const [index, operation] of args.ops.entries()) {
 					try {
@@ -842,18 +851,16 @@ export function useObjects(appContext) {
 					}
 				}
 				rolledBack = atomic && failed.length > 0;
-				commit = !rolledBack;
+				if (!rolledBack) domain.write(batchObjects);
 			} finally {
-				batchToken = null;
-				appContext.suppressObjectClock = priorSuppressObjectClock;
-				storeRef.current.end(token, { commit });
+				batchObjects = null;
 			}
-			if (!rolledBack && storeRef.current.depths().past > depthBefore) appContext.advanceObjectClock();
 			syncObjects();
 			return { label: args.label?.trim() || "MCP batch", applied, failed, rolledBack };
 		}
 		const handlers = { place_object: placeObject, import_asset: importAsset, update_object: updateObject, remove_object: removeObject, group_objects: groupObjects, ungroup_objects: ungroupObjects, apply_batch: applyObjectBatch };
-return handlers;
+		domain.batch = args => applyObjectBatch(args, true);
+		return handlers;
 	}
 	function canReparentSceneObject(sourceRowId, targetRowId) {
 		const id = sceneObjectIdFromHierarchy(String(sourceRowId ?? ""));
@@ -879,22 +886,22 @@ return handlers;
 		// (the store's exclusivity rule), so a carried prop dropped into a
 		// group comes back to world numbers on the way, exactly as the Props
 		// row would put it back.
-		if (targetObjectId) {
-			const carried = appContext.shared.animatedSceneObjects.find((entry) => entry.id === id) ?? null;
-			const restored = carried?.attach
-				? attachPlacementPatch(sceneObjectWorldMatrix(carried), null, appContext.shared.attachFrameRef.current)
-				: null;
-			store.applyAtomic((objects) => {
-				const next = setSceneObjectParent(objects, id, targetObjectId);
-				return next === objects ? objects : placeSceneObject(next, id, restored);
-			});
-			return;
-		}
+		if (targetObjectId) return run("object.group", { parent: targetObjectId, children: [id] });
 		const attach = targetRowId === "props" ? null : attachTargetForRow(targetRowId);
 		appContext.shared.runStudioAction(attach ? "object.attach" : "object.detach", attach
 			? { objectId: id, characterId: attach.characterId, ...(attach.bone ? { bone: attach.bone } : {}) }
 			: { objectId: id });
 	}
+	domain.group = (parent, children) => {
+		const placements = new Map(children.map(id => {
+			const object = domain.read().find(row => row.id === id);
+			const shown = appContext.shared.animatedSceneObjects.find(row => row.id === id) ?? object;
+			const placement = object.attach ? attachPlacementPatch(sceneObjectWorldMatrix(shown), null, appContext.shared.attachFrameRef.current) : null;
+			if (object.attach && !placement) throw new StudioProtocolError("TARGET_NOT_READY", `Object ${id} is not on stage.`);
+			return [id, placement];
+		}));
+		domain.write(objects => children.reduce((rows, id) => placeSceneObject(setSceneObjectParent(rows, id, parent), id, placements.get(id)), objects));
+	};
 	function settleObjects() { return storeRef.current.settle(); }
 	function beginStudioObjectAction() { return storeRef.current.beginCommand(); }
 	function stepObjectHistory(redo) { return (redo ? storeRef.current.redo : storeRef.current.undo)(); }

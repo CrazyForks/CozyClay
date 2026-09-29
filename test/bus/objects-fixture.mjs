@@ -29,6 +29,7 @@ try {
 export function objectsFixture(initial = ['cube', 'sphere', 'chair'].map(kind => createSceneObject(kind))) {
   const f = stageFixture(), app = f.scope.appContext;
   let objects;
+  app.updatePorts({ read: f.actual.readStudioState, bounds: f.actual.studioBounds });
   Object.assign(f.scope, { startupScene: { objects: initial }, selectedHierarchyId: 'object:cube',
     editorCamRef: f.scope.shotCamRef, editorLook: f.scope.look, lookThroughShot: true,
     markCraftAction: () => {}, setInspectorActionsOpen: () => {}, matteEditorRef: { current: null },
