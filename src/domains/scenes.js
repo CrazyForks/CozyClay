@@ -423,6 +423,7 @@ export function useScenes(appContext) {
 		persistScenes(doc.scenes, doc.activeSceneId);
 		openScene(doc.scenes[activeSceneIndex(doc.scenes, doc.activeSceneId)], doc.scenes);
 		appContext.shared.projectSnapshotRef.current = collectProjectSnapshot(project.name);
+		domain.pendingCheckpoint = { clock: appContext.undoClock, name: project.name };
 		domain.setDirty(false);
 		storeProjectSession(project.name);
 		setProjectStartupOpen(false);
@@ -547,6 +548,7 @@ export function useScenes(appContext) {
 		storeProjectSession(name);
 		setProjectStartupOpen(false);
 		appContext.shared.setFirstSuccessGuideOpen(true);
+		domain.pendingCheckpoint = { clock: appContext.undoClock, name };
 		appContext.notify(ko(`New project: ${name}`, `새 프로젝트: ${name}`));
 	}
 
@@ -761,8 +763,16 @@ export function useScenes(appContext) {
 			scenes: document.scenes.map((scene) => ({ id: scene.id, name: scene.name })),
 		};
 	}
-	function refreshProjectDirty() {
+	function refreshProjectDirty(afterRender = true) {
 		const name = domain.metadata().name;
+		// App publishes the incoming shot/cast/workspace envelopes at render.
+		// Checkpoint those, not the outgoing refs read inside the load action.
+		// A real authored commit in between must never be declared saved.
+		if (afterRender && domain.pendingCheckpoint) {
+			const checkpoint = domain.pendingCheckpoint;
+			domain.pendingCheckpoint = null;
+			if (checkpoint.clock === appContext.undoClock && checkpoint.name === name) appContext.shared.projectSnapshotRef.current = collectProjectSnapshot(name);
+		}
 		const dirty = name !== null && collectProjectSnapshot(name) !== appContext.shared.projectSnapshotRef.current;
 		domain.setDirty(dirty);
 		setProjectSaveState((current) => current === "saving" ? current : dirty ? "dirty" : "saved");
@@ -798,7 +808,7 @@ export function useScenes(appContext) {
 		return openProject(context);
 	};
 	domain.persist = () => persistScenes(snapshotActiveScene(), domain.metadata().activeSceneId);
-	domain.refreshDirty = refreshProjectDirty;
+	domain.refreshDirty = () => refreshProjectDirty(false);
 	return {
 		...domain, applyExternalScene, loadLiveScenes, refreshProjectDirty,
 		scenes, activeSceneId, sceneSaveError, snapshotActiveScene, persistScenes, projectName,
