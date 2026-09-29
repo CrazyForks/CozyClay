@@ -22,6 +22,18 @@ function isAlive(pid) {
 		throw error;
 	}
 }
+// terminateOwned awaits only the owned parent's exit. A SIGTERM'd group member
+// can still be exiting, or be an unreaped zombie, for a few ms after that, and
+// kill(pid, 0) reports it alive (#479). Nothing emits an event when a process
+// that is not our child disappears, so poll its state, bounded.
+async function disappears(pid, timeoutMs = 3000) {
+	const deadline = Date.now() + timeoutMs;
+	while (isAlive(pid)) {
+		if (Date.now() >= deadline) return false;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	return true;
+}
 
 	const dir = mkdtempSync(join(tmpdir(), "cozyclay-process-test-"));
 const readyPath = join(dir, "ready.json");
@@ -48,7 +60,7 @@ expect("owned parent process starts", isAlive(pids.parent), String(pids.parent))
 expect("owned grandchild process starts", isAlive(pids.grandchild), String(pids.grandchild));
 await terminateOwned(child);
 expect("terminating owner removes parent", !isAlive(pids.parent), String(pids.parent));
-expect("terminating owner removes grandchild", !isAlive(pids.grandchild), String(pids.grandchild));
+expect("terminating owner removes grandchild", await disappears(pids.grandchild), String(pids.grandchild));
 rmSync(dir, { recursive: true, force: true });
 
 expect("idle has no continuous render activity", !hasContinuousRenderActivity(new Set(), new Set(), false));
