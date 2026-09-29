@@ -29,15 +29,17 @@ export function createStudioTools({ liveHub, workspaceHandle, session, resolveIm
     if (generation && generationGate.used) throw new StudioProtocolError("GENERATION_LIMIT", "One motion generation per user message. Report this result and ask the user before generating again.");
     if (generation && (generationGate.failures ?? 0) >= 2) throw new StudioProtocolError("GENERATION_LIMIT", "Two motion generation attempts already failed in this user message. Report both failures to the user and ask before generating again.");
     const payload = mutationNames.has(name) && session?.admission
-      ? { name, args: command.args, commandId: session.admission.commandId(), host: session.admission.host, expectedRevision: session.admission.revision }
+      ? { name, args: command.args, commandId: session.admission.commandId(), host: session.admission.host, expectedRevision: session.admission.revision,
+          ...(generation && session.onJob ? { wait: false } : {}) }
       : command.args;
     let result;
     try {
       // A motion check samples the whole take in the editor, minutes on a long
       // take, so it waits under the hub ceiling rather than the Studio default.
-      const timeoutMs = name === "run_action" ? (action?.timeoutMs === undefined ? undefined : Math.min(MAX_COMMAND_TIMEOUT_MS, action.timeoutMs + 5000))
+      const timeoutMs = name === "run_action" ? (action?.timeoutMs === undefined ? undefined : Math.min(MAX_COMMAND_TIMEOUT_MS, action.timeoutMs + (generation ? 5000 : 0)))
         : name === "verify_result" && command.args.checks.includes("motion") ? MAX_COMMAND_TIMEOUT_MS : undefined;
       result = await (timeoutMs === undefined ? liveHub.command(name, payload, workspaceHandle) : liveHub.command(name, payload, workspaceHandle, { timeoutMs }));
+      if (generation && result?.status === 'started' && session?.onJob) result = await session.onJob(result);
     } catch (error) {
       // A STALE_SCENE re-admits whichever family met it, so the retry the
       // model is told to make is admitted at the live revision.
@@ -51,7 +53,10 @@ export function createStudioTools({ liveHub, workspaceHandle, session, resolveIm
       const code = result.code ?? result.error?.code;
       const message = result.message ?? result.error?.message ?? "Studio command failed";
       if (generation) generationGate.failures = (generationGate.failures ?? 0) + 1;
-      if (session?.admission && code === "STALE_SCENE") await session.admission.refresh();
+      if (session?.admission && (code === "STALE_SCENE" || result.mutated === true)) await session.admission.refresh();
+      // An acknowledged Stop must settle its held card with the bus outcome,
+      // not turn a proved cancellation into an interrupted/unknown tool.
+      if (code === 'CANCELLED' && session?.onJob) return result;
       throw Object.assign(new Error(message), { code, receipt: result });
     }
     if (generation) generationGate.used = true;
