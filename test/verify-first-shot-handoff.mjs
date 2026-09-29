@@ -63,7 +63,7 @@ console.log("PASS malformed preferences do not invent completion");
 // seam. The real browser suite separately renders and downloads these frames.
 import { readStudioSource, readStudioFunction } from "./bus/verify-domain-modules.mjs";
 const app = readStudioSource();
-const videoEntry = app.slice(app.indexOf("async function exportShotVideo("), app.indexOf("async function exportDepthVideo("));
+const videoEntry = readStudioFunction("exportShotVideo");
 for (const kind of ["keyed", "keyless", "deleted"]) {
 	const target = { id: "target", startFrame: 80, endFrame: 119, cameraKeys: kind === "keyed" ? [{}] : [] };
 	const shots = [{ id: "other", startFrame: 0, endFrame: 39, cameraKeys: [{}] }, target];
@@ -78,6 +78,7 @@ for (const kind of ["keyed", "keyless", "deleted"]) {
 		executeExportRequest: (request) => request.run({}),
 		runShotExport: (range) => calls.push(JSON.parse(JSON.stringify(range))),
 	};
+	runtime.appContext = createAppContext().forRender(runtime);
 	await runInNewContext(`(${videoEntry})({ shotId: ${JSON.stringify(kind === "deleted" ? "missing" : "target")} })`, runtime);
 	assert.deepEqual(calls, kind === "deleted" ? [] : [{ startFrame: 80, endFrame: 119, download: true }]);
 }

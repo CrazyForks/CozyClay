@@ -155,7 +155,7 @@ function fixture(options={}) {
  scope.setMotion=value=>{noPublish('setMotion')(value);for(const done of motionSet.splice(0))done(value);};
  scope.setScenes=noPublish('setScenes');
  scope.openScene=(scene,nextScenes)=>{scope.scenesRef.current=nextScenes;live.current.scenes=nextScenes;scope.activeSceneIdRef.current=scene.id;scope.studioSceneEpochRef.current=crypto.randomUUID();};
- const names=["beginNativeStudioAction","publishNativeStudioDomain","isNativeStudioHistoryRetained","stepNativeStudioHistory","commitNativeStudioDraft","canUndoNativeStudioReceipt","canUndoStudioReceipt",'restoreMotionRefs','readStudioCamera','readStudioState','publishStudioCamera','publishStudioStage','snapshotStudioDomain','publishStudioCharacters','syncStudioLayerBuffer','recordStudioHistory','publishStudioMotion','stepStudioHistory','undoScene','redoScene','commitStudioDraft','commitStudioMotion','studioBounds','operateStudio','snapshotExportRig','restoreExportRig','poseMemberAtFrame','beginPlaybackOn','leaveIkMode','sceneObjectWorldMatrix','recordStudioAction','beginStudioAction','publishStudioDomain','isStudioHistoryRetained','addTimelineShot','recordShotUndo','runStudioAction',
+ const names=['beginStudioObjectAction','stepObjectHistory','commitStudioObjects','publishStudioShots','commitStudioShots',"beginNativeStudioAction","publishNativeStudioDomain","isNativeStudioHistoryRetained","stepNativeStudioHistory","commitNativeStudioDraft","canUndoNativeStudioReceipt","canUndoStudioReceipt",'restoreMotionRefs','readStudioCamera','readStudioState','publishStudioCamera','publishStudioStage','snapshotStudioDomain','publishStudioCharacters','syncStudioLayerBuffer','recordStudioHistory','publishStudioMotion','stepStudioHistory','undoScene','redoScene','commitStudioDraft','commitStudioMotion','studioBounds','operateStudio','snapshotExportRig','restoreExportRig','poseMemberAtFrame','beginPlaybackOn','leaveIkMode','sceneObjectWorldMatrix','recordStudioAction','beginStudioAction','publishStudioDomain','isStudioHistoryRetained','addTimelineShot','recordShotUndo','runStudioAction',
   'choosePartColours','setInsetCollapsed','expandInset','setShotCameraRail','clearShotCameraRail','changeActiveCamera','framingSessionOpen','attachSceneObject','setCharacterIkKey','removeCharacterIkKey','clearCharacterIkKeys','ikStateFor','editCharacterIkKeys','snapshotIkKeys',
   'recordCharacterUndo','validateWaypointAt','castMemberOf','readCharacterWaypoints','writeCharacterWaypoints','addCharacterWaypoint','moveCharacterWaypoint','removeCharacterWaypoint','clearCharacterWaypoints',
   'switchSceneDocument','addSceneDocument','duplicateSceneDocument','renameSceneDocument','deleteSceneDocument',
@@ -168,6 +168,7 @@ function fixture(options={}) {
  scope.shotsDomain=scope;
  scope.castDomain=scope;
  scope.motionDomain=scope;
+ scope.objectsDomain=scope;
  const code=names.map(n=>{assert(declarations.has(n),`actual App function ${n}`);return declarations.get(n);}).join('\n');
  const actual=new Function(...Object.keys(scope),code+`\nreturn {${names.join(',')}};`)(...Object.values(scope));
  Object.assign(scope,actual);
@@ -175,7 +176,7 @@ function fixture(options={}) {
  // over render-time state, so every commit is a fresh evaluation of them.
  const renderNames=['generate','copyPrompt','framingDistance','showFalMotionLock','generateFalMotion','generateFalMotionFromUi','falMotionUnavailable'];
  const renderState={mode:scope.mode,imageModel:scope.imageModel,falMotionEnabled:scope.falMotionEnabled,falMotion:scope.falMotion},committed={...renderState};
- const renderApp=()=>{const s={...scope,...committed,runStudioAction:actual.runStudioAction};return new Function(...Object.keys(s),renderNames.map(n=>declarations.get(n)).join('\n')+`\nreturn {${renderNames.join(',')}};`)(...Object.values(s));};
+ const renderApp=()=>{const s={...scope,...committed,runStudioAction:actual.runStudioAction};s.appContext=scope.appContext.forRender(s);return new Function(...Object.keys(s),renderNames.map(n=>declarations.get(n)).join('\n')+`\nreturn {${renderNames.join(',')}};`)(...Object.values(s));};
  let rendered=renderApp();
  let binding; let artifactLoader=async()=>clip(); const stamps=new Map();
  // The editor's own handlers stand behind the registry. Shot creation is the

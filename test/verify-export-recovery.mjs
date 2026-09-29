@@ -10,6 +10,8 @@ import { startExportAttempt, exportFailureCode } from "../src/analytics.js";
 import { keyframePackEntries, keyframePackName } from "../src/keyframe-pack.js";
 import { buildZip } from "../src/zip-store.js";
 import { depthRangeFromFrames } from "../src/render-passes.js";
+import { createAppContext } from "../src/app-context.js";
+import { readStudioFunction } from "./bus/verify-domain-modules.mjs";
 
 const source = readFileSync(new URL("../src/App.jsx", import.meta.url), "utf8");
 const parsed = parseSync("App.jsx", source, { lang: "jsx" });
@@ -22,7 +24,15 @@ const functions = names.map((name) => {
 	return source.slice(node.start, node.end);
 }).join("\n");
 const region = source.slice(source.indexOf('\tconst [recState, setRecState]'), source.indexOf('\tfunction exportPhaseLabel('));
-const load = new Function("deps", `with (deps) { ${region}\n${functions}\nreturn {
+const load = new Function("deps", "createAppContext", `with (deps) { ${region}\n${functions}
+const appContext = createAppContext().forRender({
+  get recRef() { return recRef; }, get captureCurrentFraming() { return captureCurrentFraming; },
+  get motion() { return motion; }, get currentRecordFrameCount() { return currentRecordFrameCount; },
+  get executeExportRequest() { return executeExportRequest; }, get exportRequest() { return exportRequest; },
+  get runShotExport() { return runShotExport; },
+});
+${readStudioFunction("exportShotVideo")}
+return {
 	exportShotVideo, exportDepthVideo, exportKeyframePacks, buildShotKeyframePack, runShotExport, download,
 	retryExport, stopShotRecording, exportRequest, executeExportRequest, withExportFrame,
 	get job() { return recRef.current; }, get request() { return retryExportRef.current; }
@@ -133,7 +143,7 @@ function fixture() {
 		},
 	};
 	deps.shotsDomain = { recordShotUndo: deps.recordShotUndo };
-	const api = load(deps);
+	const api = load(deps, createAppContext);
 	const signal = (name, predicate = () => true) => {
 		const ready = deferred();
 		const listener = (value) => { if (predicate(value)) { events.off(name, listener); ready.resolve(value); } };

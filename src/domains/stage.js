@@ -103,5 +103,16 @@ export function useStage(appContext) {
   }
   function resetKeyLight() { return appContext.bus.run('stage.setKeyLight', { keyLight: createKeyLight(null) }); }
   function changeEnvironmentImage(environmentImage) { return appContext.bus.run('stage.setEnvironment', { environmentImage }); }
-  return { ...domain, ...stage, shotAspectKey: stage.shotAspect, preset, setPreset, changeKeyLight, resetKeyLight, changeEnvironmentImage, finishGesture };
+  // Native restoration remains available to the legacy adapter. In the live
+  // editor registration always selects the owned stage write.
+  function publishStudioStage(stage) {
+    const owned = appContext.storeDomain('stage');
+    if (owned) { owned.write(stage); return; }
+    const stageDomain = appContext.shared.stageDomain;
+    appContext.patchLive({ stage });
+    stageDomain.setKeyLight(stage.keyLight); stageDomain.setEnvironmentImage(stage.environmentImage ?? null);
+    stageDomain.setEnvironment(stage.environment); stageDomain.setStyle(stage.style); stageDomain.setHasEnvSheet(stage.hasEnvSheet === true);
+    stageDomain.setShotAspectKey(stage.shotAspect); stageDomain.setCameraPresetId(stage.cameraPresetId ?? null); stageDomain.setSensorFormat(stage.sensorId);
+  }
+  return { ...domain, ...stage, shotAspectKey: stage.shotAspect, preset, setPreset, changeKeyLight, resetKeyLight, changeEnvironmentImage, finishGesture, publishStudioStage };
 }

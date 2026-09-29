@@ -1,6 +1,9 @@
+import { aimAt } from "../controls.jsx";
+import { CAMERA_PRESETS, cameraPresetFraming } from "../camera-move.js";
+import { timelineSpan, timelineContentExtent } from "../timeline-extent.js";
 import { useState } from "react";
 import { PRESETS, DEFAULT_DURATION_S, TIMELINE_FPS } from "../app-stage.jsx";
-import { CAMERA_MOVES } from "../shot.js";
+import { CAMERA_MOVES, SUBJECT_HEIGHT_M, focalMmToFov, fovToFocalMm } from "../shot.js";
 import {
 	SHOT_AUTHORING_KEY,
 	readShotAuthoring,
@@ -21,14 +24,15 @@ import {
 	reorderShot,
 	resizeShot,
 	removeShot,
+	renameShot,
 } from "../cuts.js";
 import { createCameraBlock, updateCameraBlock, removeCameraRail } from "../camera-block.js";
 import { updateStableItem, createStableItemId } from "../stable-items.js";
-import { craneHeightAt, followFramingFromCamera } from "../camera-follow.js";
+import { craneHeightAt, followFramingFromCamera, buildRail, simplifyStroke } from "../camera-follow.js";
 import { trackFeature } from "../analytics.js";
 import { StudioProtocolError } from "../studio-agent-protocol.js";
-import { railFollowForNewGeometry, defaultRailRange } from "../camera-rail-schedule.js";
-import { ko } from "../locale.js";
+import { railFollowForNewGeometry, defaultRailRange, clampRailRange } from "../camera-rail-schedule.js";
+import { ko, isKo } from "../locale.js";
 
 export function useShots(appContext) {
 	const [fovDeg, setFovDeg] = useState(PRESETS.medium.fov);
@@ -441,7 +445,261 @@ export function useShots(appContext) {
 		recordShotUndo();
 		editShots(next);
 	}
+	function publishStudioShots(state) {
+		appContext.patchLive({ shots: state.shots });
+		setShots(state.shots);
+		publishStudioCamera(state.camera, state.manual);
+	}
+	function commitStudioShots(draft) {
+		appContext.patchLive({ shots: draft.shotDocument.shots });
+		editShots(draft.shotDocument.shots);
+		publishStudioCamera(draft.camera, draft.manual);
+	}
+	function publishStudioCamera(camera, manual) {
+		const angles = aimAt(camera.position, camera.lookAt), live = appContext.live.state;
+		const fov = focalMmToFov(camera.focalMm, live.filmback.sensorId, live.filmback.aspectRatio) * 180 / Math.PI;
+		Object.assign(appContext.shared.look.current, angles); appContext.shared.shotCameraPosRef.current = { ...camera.position };
+		if (appContext.shared.shotCamRef.current) {
+			appContext.shared.shotCamRef.current.position.copy(camera.position); appContext.shared.shotCamRef.current.rotation.order = "YXZ";
+			appContext.shared.shotCamRef.current.rotation.set(angles.pitch, angles.yaw, 0); appContext.shared.shotCamRef.current.fov = fov; appContext.shared.shotCamRef.current.updateProjectionMatrix();
+		}
+		appContext.shared.manualCameraOverrideRef.current = manual; appContext.patchLive({ camera: camera.position }); appContext.patchLive({ fovDeg: fov }); appContext.patchLive({ studioCamera: camera });
+		appContext.shared.setCameraPos(camera.position); setFovDeg(fov);
+	}
+	function applyPreset(key) {
+		const p = PRESETS[key];
+		appContext.shared.stageDomain.setPreset(key);
+		setFovDeg(p.fov);
+		// Camera presets no longer touch the cast: with a free-form cast the
+		// old two:false semantics would hide every extra character.
+		appContext.shared.setNonce((n) => n + 1);
+	}
+	/** Export the shot under the playhead (else the first one) as an MP4.
+	 *  Repeated clicks never cancel an in-flight attempt.
+	 *
+	 *  Two preflights (#193) stand between the menu item and runShotExport:
+	 *  a shot with no camera keys has nothing for cameraMoveAt to interpolate,
+	 *  so the recording would capture wherever the physical shot camera happens
+	 *  to sit — one framing key from the current camera, the same default
+	 *  addShotAtFrame writes, makes the static shot exportable. And without
+	 *  motion the timeline extent ignores shots and falls back to the whole
+	 *  production duration, so a 40-frame static shot must record its own
+	 *  [startFrame, endFrame] range instead of 360 frames of held pose. */
+	async function exportShotVideo({ download = true, shotId = null } = {}, commandContext = null) {
+		if (appContext.shared.recRef.current) return null;
+		const atPlayhead = shotIndexAtFrame(shots, tlFrame);
+		const target = shotId ? shots.find((entry) => entry.id === shotId) : shots[atPlayhead >= 0 ? atPlayhead : 0] ?? null;
+		if (shotId && !target) return null;
+		let exportShots = shots;
+		if (target && target.cameraKeys.length === 0 && !shotId) {
+			const framing = appContext.shared.captureCurrentFraming();
+			exportShots = updateStableItem(shots, target.id,
+				(entry) => ({ ...entry, cameraKeys: [{ id: createStableItemId("camera-key"), frame: entry.startFrame, framing }] }), "shots");
+			// Keep #193's initial static-shot preflight, but never repeat this
+			// authoring action when retrying the immutable request below.
+			recordShotUndo();
+			setShots(exportShots);
+		}
+		const range = target && (shotId || !appContext.shared.motion)
+			? { startFrame: target.startFrame, endFrame: target.endFrame }
+			: { startFrame: 0, endFrame: Math.max(0, appContext.shared.currentRecordFrameCount() - 1) };
+		return appContext.shared.executeExportRequest(appContext.shared.exportRequest("video", async (job) => {
+			const abort = () => job.controller.abort(commandContext.signal.reason);
+			commandContext?.signal.addEventListener("abort", abort, { once: true });
+			try { commandContext?.signal.throwIfAborted(); return await appContext.shared.runShotExport({ ...range, download }, job); }
+			finally { commandContext?.signal.removeEventListener("abort", abort); }
+		}, { exportShots, download }));
+	}
+	function clampShotRailRanges() {
+		setShots((current) => {
+			let changed = false;
+			const next = current.map((shot, index) => {
+				const railFollow = shot.camera?.railFollow;
+				if (railFollow?.mode !== "range") return shot;
+				const duration = shot.endFrame - shot.startFrame + 1;
+				const clamped = clampRailRange(railFollow, duration);
+				if (!clamped || (clamped.startFrame === railFollow.startFrame && clamped.endFrame === railFollow.endFrame)) return shot;
+				changed = true;
+				return { ...shot, camera: updateCameraBlock(shot.camera, { railFollow: { mode: "range", ...clamped } }) };
+			});
+			return changed ? next : current;
+		});
+	}
+	function setLiveCamera(rawArgs, finitePatch) {
+		const live = appContext.live.state;
+		// A named preset is shorthand for a full framing: it is resolved
+		// against the ACTIVE subject and the CURRENT filmback, so the same
+		// preset re-frames correctly after the subject moves or the output
+		// ratio changes. Everything below then runs on plain coordinates.
+		let args = rawArgs;
+		if (rawArgs.preset !== undefined) {
+			if (typeof rawArgs.preset !== "string" || !CAMERA_PRESETS[rawArgs.preset]) throw new Error("Unknown camera preset");
+			const actor = live.characters.find((entry) => entry.id === live.activeCharacterId) ?? live.characters[0];
+			const framing = cameraPresetFraming(rawArgs.preset, {
+				x: actor?.x ?? 0,
+				z: actor?.z ?? 0,
+				height: SUBJECT_HEIGHT_M * (actor?.scale ?? 1),
+			}, live.filmback);
+			if (!framing) throw new Error("Unknown camera preset");
+			args = {
+				x: framing.pos.x, y: framing.pos.y, z: framing.pos.z,
+				lookAtX: actor?.x ?? 0,
+				lookAtY: SUBJECT_HEIGHT_M * (actor?.scale ?? 1) * 0.52,
+				lookAtZ: actor?.z ?? 0,
+				focalMm: framing.focalMm,
+			};
+			appContext.shared.runStudioAction("stage.setFilmback", { cameraPresetId: rawArgs.preset });
+		} else if (Object.keys(finitePatch(rawArgs, ["x", "y", "z", "lookAtX", "lookAtY", "lookAtZ"])).length || rawArgs.focalMm !== undefined) {
+			// Any manual placement invalidates the recorded preset: the scene
+			// must not claim a framing it no longer has.
+			appContext.shared.runStudioAction("stage.setFilmback", { cameraPresetId: null });
+		}
+		const patch = finitePatch(args, ["x", "y", "z"]);
+		let nextFov = live.fovDeg;
+		if (args.focalMm !== undefined) {
+			if (!Number.isFinite(args.focalMm) || args.focalMm <= 0) throw new Error("Invalid focalMm");
+			nextFov = (focalMmToFov(
+				args.focalMm,
+				live.filmback.sensorId,
+				live.filmback.aspectRatio,
+			) * 180) / Math.PI;
+			if (nextFov < 14 || nextFov > 90) throw new Error("focalMm is outside the editor lens range");
+		}
+		const next = { ...live.camera, ...patch };
+		// Optional aim target (live protocol v1, additive): all three or none.
+		// frame_shot always sends it, because a camera that is placed but not
+		// aimed keeps whatever the last gesture was pointing at and drops the
+		// subject out of frame for every view except `front`. The yaw/pitch go
+		// into look.current as well as the camera: that ref is the orientation
+		// of record here — FlyControls writes rotation from it, and the framing
+		// commit below measures the shot from look.current.pitch, so a bare
+		// camera.lookAt would be both overwritten and mismeasured.
+		const aim = finitePatch(args, ["lookAtX", "lookAtY", "lookAtZ"]);
+		const aimed = Object.keys(aim).length === 3;
+		const camera = appContext.shared.shotCamRef.current;
+		const angles = aimed ? aimAt(next, { x: aim.lookAtX, y: aim.lookAtY, z: aim.lookAtZ }) : null;
+		if (angles) {
+			appContext.shared.look.current.yaw = angles.yaw;
+			appContext.shared.look.current.pitch = angles.pitch;
+		}
+		if (camera) {
+			camera.position.set(next.x, next.y, next.z);
+			camera.fov = nextFov;
+			if (angles) {
+				camera.rotation.order = "YXZ";
+				camera.rotation.set(angles.pitch, angles.yaw, 0);
+			}
+			camera.updateProjectionMatrix();
+		}
+		// While a cast model's FBX is still downloading, the Canvas subtree is
+		// suspended and the shot camera is unmounted, so `camera` is null and
+		// the write above is skipped. The pose still has to survive: ShotRig
+		// restores it from this ref (and look.current) when the camera
+		// remounts, instead of re-seeding the preset over it (#86 on slow
+		// runners — the position and aim were being dropped here).
+		appContext.shared.shotCameraPosRef.current = { x: next.x, y: next.y, z: next.z };
+		appContext.patchLive({ camera: next });
+		appContext.patchLive({ fovDeg: nextFov });
+		appContext.shared.setCameraPos(next);
+		setFovDeg(nextFov);
+		live.commitManualCameraFraming();
+		return {
+			camera: {
+				...next,
+				focalMm: Math.round(fovToFocalMm(
+					(nextFov * Math.PI) / 180,
+					live.filmback.sensorId,
+					live.filmback.aspectRatio,
+				) * 100) / 100,
+			},
+		};
+	}
+	function syncTimelineExtent() {
+		const extent = timelineContentExtent(
+			appContext.shared.characters,
+			appContext.shared.activeChar.id,
+			appContext.shared.motion,
+			appContext.shared.promptClips,
+			appContext.shared.multiModelFootage?.frames,
+		);
+		// Never leave the end under an authored shot: a shot outside the
+		// timeline is an invalid scene for the Studio agent (and for playback).
+		if (extent > 0) {
+			const span = timelineSpan(extent, shots);
+			setTlFrameCount(span);
+			setTlFrame((frame) => Math.min(frame, span - 1));
+		} else {
+			setTlFrameCount((count) => timelineSpan(0, shots, count));
+		}
+	}
+	function finishCameraMove(finalFov) {
+		setMovePlaying(false);
+		setFovDeg(Math.round(finalFov * 10) / 10);
+	}
+	function drawCameraRail(stroke) {
+		const simplified = simplifyStroke(stroke, 0.12);
+		if (simplified.length < 2) return;
+		changeCameraRail(simplified);
+		setRailDraw(false);
+		const curve = buildRail(simplified);
+		if (appContext.shared.playgroundMode && activeShot && curve) {
+			// Playground: a first-timer drew a dolly and wants to see the
+			// whole ride. Stretch the cut to the rail's travel time at the
+			// dolly's speed cap and put them behind the shot camera, so ▶
+			// plays the move full-screen instead of in the corner monitor.
+			const speed = Math.max(0.2, activeCamera.followCam?.maxDollySpeed ?? 4);
+			const travel = Math.ceil((curve.length / speed) * tlFps) + Math.round(tlFps * 0.5);
+			const endFrame = Math.min(tlFrameCount - 1, activeShot.startFrame + Math.max(travel, activeShot.endFrame - activeShot.startFrame));
+			editShots((current) => resizeShot(current, activeShot.id, "end", endFrame, tlFrameCount));
+			appContext.shared.enterPreview();
+			setTlFrame(activeShot.startFrame);
+			appContext.notify(isKo ? "레일 완성 — 샷 카메라 시점으로 전환했습니다. ▶ 로 재생, Esc 로 복귀" : "Rail drawn — you are looking through the shot camera. Press ▶ to ride it; Esc goes back to flying.");
+			return;
+		}
+		appContext.notify(isKo ? `카메라 레일 완성 — ${curve ? curve.length.toFixed(1) : "?"} m, 제어점 ${simplified.length}개` : `Camera rail drawn — ${curve ? curve.length.toFixed(1) : "?"} m, ${simplified.length} control points`);
+	}
+	function changeCranePoints(points, options) {
+		if (!options?.dragging) {
+			changeActiveCamera({ craneHeight: { points } });
+			return;
+		}
+		editShots((current) =>
+			updateStableItem(
+				current,
+				activeShot.id,
+				(shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { craneHeight: { points } }) }),
+				"shots",
+			),
+		);
+	}
+	function changeCraneRail(points, options) {
+		if (!options?.dragging) {
+			changeActiveCamera({ cameraRail: points });
+			return;
+		}
+		editShots((current) =>
+			updateStableItem(
+				current,
+				activeShot.id,
+				(shot) => ({ ...shot, camera: updateCameraBlock(shot.camera, { cameraRail: points }) }),
+				"shots",
+			),
+		);
+	}
+	function resizeTimelineShot(shotId, edge, frame) { return editShots((current) => resizeShot(current, shotId, edge, frame, tlFrameCount)); }
+	function renameTimelineShot(shotId, name) {
+		const shot = shots.find((entry) => entry.id === shotId);
+		if (!shot) throw new Error(`Unknown shots ID: ${shotId}`);
+		// The rename dialog commits once on accept. renameShot ignores a
+		// blank name and stores the trimmed one, so an unchanged or empty
+		// name is no edit at all: it neither writes nor records.
+		if (typeof name !== "string" || !name.trim() || shot.name === name.trim()) return;
+		recordShotUndo();
+		editShots((current) => renameShot(current, shotId, name));
+	}
+	function changeLens(value) { setFovDeg(value); }
 	return {
+		publishStudioShots, commitStudioShots, publishStudioCamera, applyPreset, exportShotVideo, clampShotRailRanges, setLiveCamera, syncTimelineExtent, finishCameraMove, drawCameraRail, changeCranePoints, changeCraneRail, resizeTimelineShot, renameTimelineShot, changeLens,
 		fovDeg, setFovDeg, recordShotUndo, cameraMove, customMove, startupShotState, shots, setShots, editShots,
 		movePlaying, setMovePlaying, moveFollow, railDraw, setRailDraw, craneSelectedIndex,
 		setCraneSelectedIndex, tlFrame, setTlFrame, tlFrameCount, setTlFrameCount, tlFps, setTlFps,

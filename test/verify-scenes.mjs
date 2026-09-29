@@ -373,7 +373,7 @@ const rotatedAnchor = takeAnchor({ x: 1, z: -1, rot: 90 }, 1, 0);
 assert.ok(Math.abs(rotatedAnchor.x - 1) < 1e-9 && Math.abs(rotatedAnchor.z + 2) < 1e-9, "a quarter turn sends a +X offset to -Z");
 assert.deepEqual(takeAnchor(null, undefined, NaN), { x: 0, z: 0 }, "junk placement resolves to the origin, never NaN");
 
-import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+import { readStudioSource, readStudioFunction } from "./bus/verify-domain-modules.mjs";
 const appSource = readStudioSource();
 assert.match(
 	appSource,
@@ -392,7 +392,7 @@ assert.match(
 	/const targetCharacter = appContext\.live\.characters\.find\(\(entry\) => entry\.id === targetCharacterId\)[\s\S]*?await appContext\.shared\.waitForRig\(targetCharacter\.id\)/,
 	"motion loading waits for the active rig instead of losing the request to mount timing"
 );
-const batchSource = /apply_batch:\s*\(args\) => \{([\s\S]*?)\n\t\t\t\},\n\t\t\t\/\/ Authoring blocks/.exec(appSource)?.[1] ?? "";
+const batchSource = readStudioFunction("applyObjectBatch");
 assert.match(
 	batchSource,
 	/const token = storeRef\.current\.begin[\s\S]*?try \{[\s\S]*?finally \{[\s\S]*?batchToken = null;[\s\S]*?storeRef\.current\.end\(token,/,
