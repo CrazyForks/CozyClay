@@ -2,7 +2,7 @@
   "version": 1,
   "coverage": {
     "writerReferences": 177,
-    "handlerSites": 33,
+    "handlerSites": 34,
     "handlerTotal": 800,
     "registeredCommands": 46
   },

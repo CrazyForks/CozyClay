@@ -25,7 +25,8 @@ try {
   const next = { id: 'next', objects: [{ id: 'loaded-object' }], stage: createSceneStage({ environment: 'Next room' }), fixture: [{ id: 'loaded-item' }] };
   openScene(next, [next]);
   assert.equal(f.store.current, original, 'scene loading cannot replace a registered owner');
-  assert.deepEqual(calls, [['objects', next.objects], ['shot', shotState], ['cast', next.stage.characters], ['fixture', next.fixture]]);
+  assert.deepEqual(Object.fromEntries(calls), { objects: next.objects, shot: shotState, cast: next.stage.characters, fixture: next.fixture });
+  assert.equal(calls.length, 4, 'each registered owner loads once, independent of registration order');
   assert.equal(f.stage.read().environment, 'Next room');
   assert.deepEqual(f.stage.documentStore.depths(), { past: 0, future: 0 });
   console.log('PASS #480.3c scene boundary calls registered loads without replacing stores or invoking legacy writers');
