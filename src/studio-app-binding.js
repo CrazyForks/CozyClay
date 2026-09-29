@@ -2,7 +2,7 @@
 // over the editor's native state. App.jsx supplies the ports (reads, commits,
 // history, the action registry); this module owns no React or renderer state.
 import { createCommandBus } from "./command-bus.js";
-import { readElementDocument, elementReadback, elementPatchArgs } from "./commands/elements.js";
+import { readElementDocument, elementReadback, elementPatchArgs, elementTarget } from "./commands/elements.js";
 import { physicsKeyStamp } from "./ardy/physics-review.js";
 import { shotAtFrame } from "./cuts.js";
 import { sha256Hex } from "./motion-resources.js";
@@ -255,9 +255,11 @@ export function createStudioAppBinding(ports) {
 	}
 	/** Actual state of one action target after it ran. */
 	function actionReadback(id, s) {
-		if (id === s.host.sceneId && Object.keys(s.document).length) return {
-			patched: Object.entries(s.document).flatMap(([kind, value]) => elementReadback(kind, value)),
-		};
+		const patched = Object.entries(s.document).flatMap(([kind, value]) => {
+			const target = elementTarget(kind, value, id, s.host.sceneId);
+			return target ? elementReadback(kind, target) : [];
+		});
+		if (patched.length) return { patched };
 		const shot = s.shots.find(row => row.id === id);
 		if (shot) return { name: shot.name || shot.id, range: { startFrame: shot.startFrame, endFrameExclusive: shot.endFrame + 1 } };
 		const entity = s.objects.find(row => row.id === id) ?? s.characters.find(row => row.id === id);
