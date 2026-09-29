@@ -59,7 +59,8 @@ export function register(registry, ports) {
 		return { affectedIds: [], summary: declaration.label };
 	} });
 	registry.register({ ...prepared, available: mounted, run({ characterId, token }) {
-		characterOf(ports, characterId); owner().applyPrepared(token); return { affectedIds: [characterId], summary: prepared.label };
+		characterOf(ports, characterId); const result = owner().applyPrepared(token);
+		return { affectedIds: result?.affectedIds ?? [characterId], summary: prepared.label };
 	} });
 	for (const declaration of loads) registry.register({ ...declaration, available: mounted, target: args => args.characterId, async run(args, context) {
 		characterOf(ports, args.characterId); await owner().loadRemote(args, context);

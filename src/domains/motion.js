@@ -242,7 +242,10 @@ export function createMotionDomain(appContext, characters) {
 	}
 	function castWrite(update) { return appContext.recordAction('cast', () => appContext.storeDomain('cast').write(update), null, true); }
 	function synchronizeTimeline() { appContext.storeDomain('cast').syncTimeline(); }
-	function replace(id, take, { fullTake = take, ikKeys = [], recipe = null, versions = layer(id).takeVersions } = {}) {
+	function replace(id, take, { fullTake = take, ikKeys = [],
+		recipe = take ? { seed: null, blocks: [{ prompt: take.prompt ?? '', duration: take.frames / take.fps }], lineEdits: [] } : null,
+		versions = take?.url ? pushTakeVersion(layer(id).takeVersions, { motionUrl: take.url, recipe, savedAt: Date.now(), label: ko('Loaded', '불러옴') }, TAKE_VERSIONS_MAX) : layer(id).takeVersions,
+	} = {}) {
 		previews.delete(id);
 		writeLayer(id, { take: snapshotTake(take), fullTake: snapshotTake(fullTake), ikKeys, takeRecipe: recipe, takeVersions: versions, committedIkEdits: [] });
 		synchronizeTimeline();
@@ -353,7 +356,7 @@ export function createMotionDomain(appContext, characters) {
 	function runPrepared(characterId, apply) {
 		if (running) return apply();
 		let result;
-		const token = crypto.randomUUID(); prepared.set(token, () => { result = apply(); });
+		const token = crypto.randomUUID(); prepared.set(token, () => { result = apply(); return result; });
 		try { run('motion.applyPrepared', { characterId, token }); return result; }
 		finally { prepared.delete(token); }
 	}
@@ -993,7 +996,8 @@ export function useMotion(appContext) {
 			// applies the stature stored in the take itself — the body matches
 			// the FILMED person because the file carries the measurement, not
 			// because this handler remembered to re-apply it afterwards.
-			let personScale = await loadMotion(takes[0].motionUrl ?? done.motionUrl, label, active.rot);
+			const fallbackScale = Number.isFinite(takes[0].personScale) ? takes[0].personScale : done.personScale;
+			let personScale = await loadMotion(takes[0].motionUrl ?? done.motionUrl, label, active.rot, null, active.id, null, { personScaleFallback: fallbackScale });
 			if (!live()) return;
 			// loadMotion reports the stature it applied — 1 for a take that
 			// stores none, nothing at all if the load failed. A failed load is
@@ -1017,7 +1021,7 @@ export function useMotion(appContext) {
 				anchorX: active.x,
 				anchorZ: active.z,
 			};
-			appContext.shared.publishStudioCharacters((list) => list.map((entry) => entry.id === active.id
+			if (!appContext.storeDomain('motion')) appContext.shared.publishStudioCharacters((list) => list.map((entry) => entry.id === active.id
 				? { ...entry, scale: personScale, motionRef: leadRef }
 				: entry));
 			const placed = await deliverExtraTakes(takes.slice(1), active, label);
@@ -1092,7 +1096,8 @@ export function useMotion(appContext) {
 		}));
 		const usable = decoded.filter(Boolean);
 		if (!usable.length) return 0;
-		appContext.shared.castDomain.recordCharacterUndo();
+		const owned = appContext.storeDomain('motion');
+		if (!owned) appContext.shared.castDomain.recordCharacterUndo();
 		// Plan against the cast as it stands, so ids are decided once and the
 		// full-take map can be seeded with them.
 		const list = appContext.live.characters;
@@ -1134,7 +1139,7 @@ export function useMotion(appContext) {
 				},
 			};
 		});
-		appContext.shared.publishStudioCharacters((current) => {
+		const place = current => {
 			let next = current;
 			for (const { id, spawn, patch } of assignments) {
 				next = spawn && !next.some((entry) => entry.id === id)
@@ -1142,13 +1147,21 @@ export function useMotion(appContext) {
 					: next.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry));
 			}
 			return next;
+		};
+		if (owned) owned.runPrepared(active.id, () => {
+			owned.castWrite(place);
+			for (const { id, patch } of assignments) { owned.replace(id, patch.sessionMotion); owned.persistTake(patch.sessionMotion, patch.motionRef); }
+			return { affectedIds: assignments.map(row => row.id) };
 		});
-		// Their takes are trimmable the moment they become the active layer.
-		for (const { id, patch } of assignments) appContext.shared.motionFullRef.current.set(id, patch.sessionMotion);
+		else {
+			appContext.shared.publishStudioCharacters(place);
+			// Their takes are trimmable the moment they become the active layer.
+			for (const { id, patch } of assignments) appContext.shared.motionFullRef.current.set(id, patch.sessionMotion);
+		}
 		return assignments.length;
 	}
 
-	function commitLoadedTake(characterId, take, { recipe = null, job = null, promptClips = null } = {}) {
+	function commitLoadedTake(characterId, take, { recipe = null, job = null, promptClips = null, scale = characterScaleFor(take) } = {}) {
 		const owned = appContext.storeDomain('motion');
 		const previous = owned.layer(characterId);
 		const imported = recipe ?? (job ? previous.takeRecipe : { seed: null, blocks: [{ prompt: take.prompt, duration: take.frames / take.fps }], lineEdits: [] });
@@ -1158,7 +1171,7 @@ export function useMotion(appContext) {
 		owned.replace(characterId, take, { recipe: imported, versions });
 		const motionRef = { url: take.url, prompt: take.prompt, rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ,
 			calibration: take.sceneCalibration, ...(take.motionId ? { motionId: take.motionId } : {}) };
-		owned.castWrite(rows => rows.map(row => row.id === characterId ? { ...row, scale: characterScaleFor(take), motionRef,
+		owned.castWrite(rows => rows.map(row => row.id === characterId ? { ...row, scale, motionRef,
 			layer: promptClips ? { ...row.layer, promptClips } : row.layer } : row));
 		if (job) {
 			commitTakeRecipe(job, take.url);
@@ -1183,7 +1196,7 @@ export function useMotion(appContext) {
 		// load toast, the auto-drop toast, clearing the IK keys, snapping the
 		// playhead back to 0 — is an announcement about a take CHANGING. A
 		// preview is the same take seen a second time, so it makes none of them.
-		{ preview = false, calibration = null, tutorialEpoch = null, commandContext = null, recipe = null, job = null } = {},
+		{ preview = false, calibration = null, tutorialEpoch = null, commandContext = null, recipe = null, job = null, personScaleFallback = null } = {},
 	) {
 		setMotionBusy(true);
 		setMotionError("");
@@ -1256,7 +1269,8 @@ export function useMotion(appContext) {
 			// The scale rides INSIDE the npz, so this one line covers every path
 			// that loads a motion; an ARDY-generated take stores none and is
 			// canonical, 1.
-			const scale = characterScaleFor(decoded);
+			const measuredScale = characterScaleFor(decoded);
+			const scale = measuredScale === 1 && Number.isFinite(personScaleFallback) ? characterScaleFor(null, personScaleFallback) : measuredScale;
 			const loaded = {
 			// Identity calibration retains the legacy frame-zero anchorX: targetCharacter.x
 			// and anchorZ: targetCharacter.z contract; calibrated takes use the scene anchor.
@@ -1277,7 +1291,7 @@ export function useMotion(appContext) {
 			if (owned) {
 				if (preview) owned.preview(targetCharacter.id, loaded);
 				else {
-					commitLoadedTake(targetCharacter.id, loaded, { recipe, job, promptClips: targetPromptClips });
+					commitLoadedTake(targetCharacter.id, loaded, { recipe, job, promptClips: targetPromptClips, scale });
 					if (bufferOwnsTarget) { appContext.shared.setTlFrame(0); appContext.shared.setTlPlaying(false); }
 					setMotionError('');
 				}
