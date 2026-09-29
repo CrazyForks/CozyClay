@@ -64,6 +64,11 @@ export const DEFAULTS = Object.freeze({
 	anklePlane: "character",
 	outlierResidualFactor: 3,
 	outlierResidualMinPx: 8,
+	// A frame whose solved depth leaves GVHMR's incam depth by more than this
+	// factor is an outlier. GT renders stay within 0.97-1.22 (p1-p99); partly
+	// occluded fal frames (character behind the cube) fit the few visible
+	// joints in 2D yet solve to -0.8x .. 11x.
+	maxDepthRatio: 1.33,
 });
 
 // ---------------------------------------------------------------- math
@@ -244,13 +249,15 @@ export function placeInWorld({ orient, bodyPose, pelvis }, { incamOrient0, incam
  * left/right swap: one walk frame solved 4 m deeper at 24 px against a 4 px
  * median) is replaced by interpolating its inlier neighbours BEFORE the
  * gaussian can spread it, then the smoothed track is speed-limited. */
-export function depthTrajectory(obs, cam, { sigma = DEFAULTS.depthSigma, maxSpeedMps = DEFAULTS.maxSpeedMps, minConf = DEFAULTS.minKeypointConfidence, outlierFactor = DEFAULTS.outlierResidualFactor, outlierMinPx = DEFAULTS.outlierResidualMinPx } = {}) {
+export function depthTrajectory(obs, cam, { sigma = DEFAULTS.depthSigma, maxSpeedMps = DEFAULTS.maxSpeedMps, minConf = DEFAULTS.minKeypointConfidence, outlierFactor = DEFAULTS.outlierResidualFactor, outlierMinPx = DEFAULTS.outlierResidualMinPx, maxDepthRatio = DEFAULTS.maxDepthRatio } = {}) {
 	const joints = framesOf(obs.incam_joints, 22), pelvis = vectorsOf(obs.incam_pelvis);
 	const jointsRel = joints.map((frame, f) => frame.map((p) => sub(p, pelvis[f])));
 	const raw = solveTranslations({ jointsRel, kp2d: obs.kp2d, K: cam.K, minConf, sigma: 0, incamTransl: pelvis });
 	const finite = raw.residualPx.filter(Number.isFinite);
 	const limit = Math.max(outlierMinPx, outlierFactor * (finite.length ? percentile(finite, 0.5) : 0));
-	const outlier = raw.residualPx.map((r, f) => raw.flags[f] || !(r <= limit));
+	const depthRatio = raw.transl.map((t, f) => t[2] / pelvis[f][2]);
+	const depthOutlier = depthRatio.map((ratio) => !(ratio <= maxDepthRatio && ratio >= 1 / maxDepthRatio));
+	const outlier = raw.residualPx.map((r, f) => raw.flags[f] || !(r <= limit) || depthOutlier[f]);
 	const inliers = outlier.flatMap((bad, f) => (bad ? [] : [f]));
 	const filled = raw.transl.map((t, f) => {
 		if (!outlier[f] || !inliers.length) return t;
@@ -272,6 +279,8 @@ export function depthTrajectory(obs, cam, { sigma = DEFAULTS.depthSigma, maxSpee
 			fallbackFrames: raw.flags.filter(Boolean).length,
 			outlierFrames: outlier.flatMap((bad, f) => (bad && !raw.flags[f] ? [f] : [])),
 			outlierLimitPx: limit,
+			depthRatioOutlierFrames: depthOutlier.filter((bad, f) => bad && !raw.flags[f]).length,
+			maxDepthRatio,
 			residualPxMedian: residual.length ? percentile(residual, 0.5) : null,
 			residualPxP90: residual.length ? percentile(residual, 0.9) : null,
 			depthScaleVsIncamMedian: percentile(solved.transl.map((t, f) => t[2] / pelvis[f][2]), 0.5),
@@ -308,7 +317,7 @@ export function worldSmpl(step, { obs, rest, camera, ankleHeight, options = {} }
 	}
 	if (step === "G2" || step === "G3") {
 		const g4 = placeInWorld(obsGlobal(obs, "pp_relaxed"), incamFrame0(obs), cam, { rotation: opts.registration });
-		const depth = depthTrajectory(obs, cam, { sigma: opts.depthSigma, maxSpeedMps: opts.maxSpeedMps, minConf: opts.minKeypointConfidence, outlierFactor: opts.outlierResidualFactor, outlierMinPx: opts.outlierResidualMinPx });
+		const depth = depthTrajectory(obs, cam, { sigma: opts.depthSigma, maxSpeedMps: opts.maxSpeedMps, minConf: opts.minKeypointConfidence, outlierFactor: opts.outlierResidualFactor, outlierMinPx: opts.outlierResidualMinPx, maxDepthRatio: opts.maxDepthRatio });
 		const raw = { orient: g4.orient, bodyPose: g4.bodyPose, pelvis: depth.pelvisWorld };
 		const floor = floorOffset(smplFk(raw, rest.joints), rest, opts.floorPercentile);
 		const g2 = { ...raw, pelvis: raw.pelvis.map((p) => [p[0], p[1] - floor, p[2]]) };

@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { COCO_TO_SMPL } from "../tools/bench/obs/depth.mjs";
 import { axisAngleToMatrix, cameraFromJson, matrixToAxisAngle, worldToCameraPoint, worldToCamOrient, worldToPixel } from "../tools/bench/obs/extrinsics.mjs";
-import { ladderStep, placeInWorld, smplFk, STEPS, worldSmpl, yawMatrix } from "../tools/bench/obs/ladder.mjs";
+import { depthTrajectory, ladderStep, placeInWorld, smplFk, STEPS, worldSmpl, yawMatrix } from "../tools/bench/obs/ladder.mjs";
 
 // Camera: CozyClay's walk render camera (OpenCV worldToCamera, 832x480, f=777 px).
 const cameraJson = {
@@ -128,6 +128,27 @@ assert.equal(g2.diagnostics.depth.fallbackFrames, 0);
 assert.deepEqual(g2.diagnostics.depth.outlierFrames, [BAD_FRAME], "the corrupted keypoint frame must be rejected before smoothing");
 assert.ok(Math.hypot(...g2.pelvis[BAD_FRAME].map((v, k) => v - truth.pelvis[BAD_FRAME][k])) < 0.03, "the rejected frame is interpolated from its neighbours");
 assert.ok(Math.abs(g2.diagnostics.floorShiftM) < 0.01, `G2 floor datum of an exact body is ~0, got ${g2.diagnostics.floorShiftM}`);
+
+// 2b. Partial occlusion (fal: the character behind the cube): the few visible
+// keypoints still fit in 2D but collapse towards each other, which the solve
+// reads as a far-away body. The depth-ratio gate must reject those frames and
+// interpolate them from their neighbours.
+{
+	const occluded = makeObs();
+	const OCC = [30, 31, 32, 33];
+	const kp = occluded.kp2d.data;
+	for (const f of OCC) {
+		let cx = 0, cy = 0, n = 0;
+		for (let c = 0; c < 17; c++) if (kp[(f * 17 + c) * 3 + 2] > 0) { cx += kp[(f * 17 + c) * 3]; cy += kp[(f * 17 + c) * 3 + 1]; n++; }
+		cx /= n; cy /= n;
+		for (let c = 0; c < 17; c++) { kp[(f * 17 + c) * 3] = cx + 0.4 * (kp[(f * 17 + c) * 3] - cx); kp[(f * 17 + c) * 3 + 1] = cy + 0.4 * (kp[(f * 17 + c) * 3 + 1] - cy); }
+	}
+	const gated = depthTrajectory(occluded, cam);
+	assert.ok(gated.diagnostics.depthRatioOutlierFrames >= OCC.length, `occluded frames must fail the depth-ratio gate (${gated.diagnostics.depthRatioOutlierFrames})`);
+	for (const f of OCC) assert.ok(Math.hypot(...gated.pelvisWorld[f].map((v, k) => v - truth.pelvis[f][k])) < 0.05, `occluded frame ${f} is interpolated from its neighbours`);
+	const ungated = depthTrajectory(occluded, cam, { maxDepthRatio: Infinity });
+	assert.ok(Math.max(...OCC.map((f) => Math.hypot(...ungated.pelvisWorld[f].map((v, k) => v - truth.pelvis[f][k])))) > 0.5, "without the gate the occluded frames fly off (the test can fail)");
+}
 
 // 3. A wrong body size (0.85x) pulls the depth trajectory towards the camera;
 // G3's stance-ankle rays onto the known floor pull it back.
