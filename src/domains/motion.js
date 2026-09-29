@@ -129,7 +129,14 @@ function decodeMotionKeys(rows) {
 // Plain intent owns take identities and JSON keys. Decoded buffers and rig
 // preimages are copy-on-record runtime resources, never mutable store values.
 export function createMotionDomain(appContext, characters) {
-	const takes = new Map(), decoded = new WeakMap(), rigImages = new WeakMap(), previews = new Map();
+	const takes = new Map(), decoded = new WeakMap(), rigImages = new WeakMap(), previews = new Map(), prepared = new Map();
+	let running = 0;
+	const references = entries => entries.map(entry => {
+		const ref = entry.motionRef;
+		const take = ref ? { resourceId: `restore:${entry.id}:${ref.motionId ?? ref.url}`, url: ref.url ?? null, anchorX: ref.anchorX, anchorZ: ref.anchorZ,
+			rotationDeg: ref.rotationDeg, prompt: ref.prompt ?? '', ...(ref.studioTakeId ? { studioTakeId: ref.studioTakeId } : {}) } : null;
+		return { id: entry.id, take, fullTake: take };
+	});
 	function snapshotTake(take) {
 		if (!take) return null;
 		if (take.resourceId) return { ...take };
@@ -142,7 +149,7 @@ export function createMotionDomain(appContext, characters) {
 	const normalize = rows => rows.map(row => ({ ...emptyMotionLayer(row.id), ...row,
 		take: snapshotTake(row.take), fullTake: snapshotTake(row.fullTake ?? row.take),
 		ikKeys: row.ikKeys ?? [], committedIkEdits: row.committedIkEdits ?? [] }));
-	let native = createDocumentStore({ owned: { motion: normalize(characters.map(entry => ({ id: entry.id }))) } });
+	let native = createDocumentStore({ owned: { motion: normalize(references(characters)) } });
 	const listeners = new Set(), notify = () => { for (const listener of listeners) listener(); };
 	let release = native.subscribe(notify), viewRevision = 0;
 	const documentStore = { ...Object.fromEntries(Object.keys(native).map(key => [key, (...args) => native[key](...args)])),
@@ -150,7 +157,7 @@ export function createMotionDomain(appContext, characters) {
 	const read = () => documentStore.read('motion');
 	const layer = id => read().find(row => row.id === id) ?? emptyMotionLayer(id);
 	function materialize(take) {
-		if (!take) return null;
+		if (!take || !takes.has(take.resourceId)) return null;
 		if (!decoded.has(take)) {
 			const { resourceId, ...metadata } = take;
 			decoded.set(take, { ...takes.get(resourceId), ...metadata });
@@ -207,10 +214,18 @@ export function createMotionDomain(appContext, characters) {
 	function writeLayer(id, patch) {
 		return write(rows => rows.some(row => row.id === id) ? rows.map(row => row.id === id ? { ...row, ...patch } : row) : [...rows, { ...emptyMotionLayer(id), ...patch }]);
 	}
+	function pruneTakes() {
+		const history = documentStore.history(), ids = new Set([read(), ...[...history.past, history.present, ...history.future].map(entry => entry.snapshot.motion)]
+			.flatMap(rows => rows.flatMap(row => [row.take?.resourceId, row.fullTake?.resourceId])).filter(Boolean));
+		for (const id of takes.keys()) if (!ids.has(id)) takes.delete(id);
+	}
 	function beginAction() {
 		rigImages.set(read(), rigSnapshots());
 		const session = documentStore.beginAction('motion');
-		return { ...session, commit() { const result = session.commit(); rigImages.set(read(), rigSnapshots()); return result; } };
+		return { ...session,
+			run(fn) { return session.run(() => { running++; try { return fn(); } finally { running--; } }); },
+			commit() { const result = session.commit(); rigImages.set(read(), rigSnapshots()); pruneTakes(); return result; },
+		};
 	}
 	function setKeys(id, keys) { return writeLayer(id, { ikKeys: encodeMotionKeys(keys) }); }
 	function editKeys(id, mutate) {
@@ -274,6 +289,34 @@ export function createMotionDomain(appContext, characters) {
 		}
 		setKeys(id, state.keys);
 	}
+	function runPrepared(characterId, apply) {
+		if (running) return apply();
+		let result;
+		const token = crypto.randomUUID(); prepared.set(token, () => { result = apply(); });
+		try { run('motion.applyPrepared', { characterId, token }); return result; }
+		finally { prepared.delete(token); }
+	}
+	function installPayload(payload) {
+		const id = payload.binding.characterId;
+		domain.beginPlayback?.(id);
+		const take = { ...payload.motion, studioTakeId: payload.takeId, prompt: '', sceneCalibration: payload.calibration };
+		const motionRef = { url: take.url, prompt: payload.schedule.blocks.map(block => block.text).join(' '),
+			rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ, calibration: payload.calibration, studioTakeId: payload.takeId,
+			...(take.motionId ? { motionId: take.motionId } : {}) };
+		replace(id, take, { fullTake: payload.sourceMotion, ikKeys: encodeMotionKeys(payload.ikState.keys) });
+		castWrite(rows => rows.map(row => row.id === id ? { ...row, scale: payload.scale, motionRef, layer: { ...row.layer,
+			promptClips: payload.schedule.blocks.map((block, index) => ({ id: `${payload.takeId}-beat-${index}`, startFrame: block.startFrame, endFrame: block.endFrameExclusive, text: block.text })) } } : row));
+		persistTake(take, motionRef);
+	}
+	function persistTake(take, motionRef) {
+		if (!take?.sourceBytes) return;
+		(async () => {
+			let record = appContext.shared.motionEncodingCacheRef.current.get(take.sourceBytes);
+			if (!record) { record = await encodeMotionResource(take.sourceBytes, { prompt: motionRef?.prompt, sourceUrl: motionRef?.url }); appContext.shared.motionEncodingCacheRef.current.set(take.sourceBytes, record); }
+			appContext.shared.projectMotionsRef.current.set(record.motionId.toLowerCase(), record);
+			const db = await openMotionDb(); try { await putMotion(db, record); } finally { db.close(); }
+		})().catch(error => console.warn('[cozyclay] could not cache motions', error));
+	}
 	function run(id, args) {
 		const result = appContext.bus.run(id, args);
 		const checked = receipt => { if (!receipt.ok) throw new StudioProtocolError(receipt.code, receipt.message); return receipt; };
@@ -302,17 +345,26 @@ export function createMotionDomain(appContext, characters) {
 		return run('run.update', { txId: gesture.txId, args });
 	}
 	const domain = { documentStore, read, write, layer, writeLayer, motionFor, fullMotionFor, visibleMotion, snapshotTake, project,
-		setKeys, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction,
+		setKeys, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction, runPrepared, installPayload, persistTake,
+		insideAction: () => running > 0,
+		applyPrepared(token) { const apply = prepared.get(token); if (!apply) throw new StudioProtocolError('STALE_TARGET', 'Prepared motion is no longer available.'); return apply(); },
 		bindRender(context) { appContext = context; },
 		viewRevision: () => viewRevision, canUndo: id => documentStore.canUndo(id),
 		stepHistory: redo => { finishGesture(); return Boolean((redo ? documentStore.redo : documentStore.undo)()); },
-		document: () => ({ motion: read() }), sceneSlice: slices => slices.motion ?? slices.cast.map(entry => ({ id: entry.id })),
+		document: () => ({ motion: read() }), sceneSlice: slices => slices.motion ?? references(slices.cast),
 		publish: rows => write(rows), commitDraft: write,
 		switchLayer(id) { appContext.shared.loadedLayerCharRef.current = id; project(); notify(); },
 		snapshotLegacy: () => read(), restoreLegacy: write,
 		removeLayer(id) { write(rows => rows.filter(row => row.id !== id)); },
 		preview(id, take) { if (take) previews.set(id, take); else previews.delete(id); project(); notify(); },
-		load(rows) { finishGesture(true); previews.clear(); release(); native.dispose(); native = createDocumentStore({ owned: { motion: normalize(rows) } }); release = native.subscribe(notify); notify(); },
+		hydrate(id, take, reference) {
+			const current = appContext.storeDomain('cast').read().find(row => row.id === id);
+			const descriptor = layer(id).take;
+			if (!descriptor || !sameMotionIntent(current?.motionRef, reference)) return false;
+			takes.set(descriptor.resourceId, structuredClone(take)); decoded.delete(descriptor); if (layer(id).fullTake) decoded.delete(layer(id).fullTake);
+			notify(); return true;
+		},
+		load(rows) { finishGesture(true); previews.clear(); release(); native.dispose(); native = createDocumentStore({ owned: { motion: normalize(rows) } }); release = native.subscribe(notify); pruneTakes(); notify(); },
 		dispose() { finishGesture(true); unregister(); unsubscribe(); release(); native.dispose(); listeners.clear(); takes.clear(); },
 	};
 	const unregister = appContext.registerStoreDomain('motion', domain);
@@ -1015,6 +1067,25 @@ export function useMotion(appContext) {
 		return assignments.length;
 	}
 
+	function commitLoadedTake(characterId, take, { recipe = null, job = null, promptClips = null } = {}) {
+		const owned = appContext.storeDomain('motion');
+		const previous = owned.layer(characterId);
+		const imported = recipe ?? (job ? previous.takeRecipe : { seed: null, blocks: [{ prompt: take.prompt, duration: take.frames / take.fps }], lineEdits: [] });
+		const versions = recipe || job ? previous.takeVersions : pushTakeVersion(previous.takeVersions, {
+			motionUrl: take.url, recipe: imported, savedAt: Date.now(), label: ko('Loaded', '불러옴'),
+		}, TAKE_VERSIONS_MAX);
+		owned.replace(characterId, take, { recipe: imported, versions });
+		const motionRef = { url: take.url, prompt: take.prompt, rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ,
+			calibration: take.sceneCalibration, ...(take.motionId ? { motionId: take.motionId } : {}) };
+		owned.castWrite(rows => rows.map(row => row.id === characterId ? { ...row, scale: characterScaleFor(take), motionRef,
+			layer: promptClips ? { ...row.layer, promptClips } : row.layer } : row));
+		if (job) {
+			commitTakeRecipe(job, take.url);
+			if (job.hasBlockEdits) owned.writeLayer(characterId, { committedIkEdits: job.committedEditKeys });
+		}
+		owned.persistTake(take, motionRef);
+	}
+
 	// Decoded motion + the world anchor: frame 0 always starts at Subject 1.
 	// Authored root destinations are generated by ARDY as sparse constraints,
 	// so playback consumes the returned trajectory without coordinate warping.
@@ -1031,7 +1102,7 @@ export function useMotion(appContext) {
 		// load toast, the auto-drop toast, clearing the IK keys, snapping the
 		// playhead back to 0 — is an announcement about a take CHANGING. A
 		// preview is the same take seen a second time, so it makes none of them.
-		{ preview = false, calibration = null, tutorialEpoch = null, commandContext = null } = {},
+		{ preview = false, calibration = null, tutorialEpoch = null, commandContext = null, recipe = null, job = null } = {},
 	) {
 		setMotionBusy(true);
 		setMotionError("");
@@ -1094,7 +1165,7 @@ export function useMotion(appContext) {
 			const targetStillExists = appContext.live.characters.some((entry) => entry.id === targetCharacter.id);
 			if (!targetStillExists) throw new Error(`Motion target ${targetCharacterId} no longer exists.`);
 			const apply = () => {
-			if (commandContext) appContext.shared.castDomain.recordCharacterUndo();
+			if (commandContext && !appContext.storeDomain('motion')) appContext.shared.castDomain.recordCharacterUndo();
 			const bufferOwnsTarget = targetCharacter.id === appContext.shared.loadedLayerCharRef.current;
 			beginPlaybackOn(rig);
 			// THE INVARIANT: the take's travel assumes the character is scaled.
@@ -1121,6 +1192,16 @@ export function useMotion(appContext) {
 				sceneCalibration: normalizedCalibration,
 				editSegments: createMotionEdit(decoded.frames),
 			};
+			const owned = appContext.storeDomain('motion');
+			if (owned) {
+				if (preview) owned.preview(targetCharacter.id, loaded);
+				else {
+					commitLoadedTake(targetCharacter.id, loaded, { recipe, job, promptClips: targetPromptClips });
+					if (bufferOwnsTarget) { appContext.shared.setTlFrame(0); appContext.shared.setTlPlaying(false); }
+					setMotionError('');
+				}
+				return scale;
+			}
 			appContext.shared.publishStudioCharacters((list) => {
 				const next = list.map((entry) => entry.id === targetCharacter.id
 					? {
@@ -1175,10 +1256,11 @@ export function useMotion(appContext) {
 			// (and cannot derive a different one).
 			return scale;
 			};
-			return commandContext ? commandContext.commit(apply) : apply();
+			return preview ? apply() : commandContext ? commandContext.commit(apply)
+				: appContext.storeDomain('motion') ? appContext.storeDomain('motion').runPrepared(targetCharacterId, apply) : apply();
 		} catch (err) {
 			if (tutorialEpoch !== null && tutorialEpoch !== appContext.shared.tutorialProjectEpochRef.current) return null;
-			if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext) setMotion(null);
+			if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext && !appContext.storeDomain('motion')) setMotion(null);
 			setMotionError(err?.message || String(err));
 			throw err;
 		} finally {
@@ -2535,9 +2617,9 @@ export function useMotion(appContext) {
 			if (done.motionUrl) {
 				await deliverMotion(job, done.motionUrl);
 				if (!controller.signal.aborted && appContext.live.characters.some((entry) => entry.id === job.charId)) request.apply();
-				commitTakeRecipe(job, done.motionUrl);
+				if (!appContext.storeDomain('motion')) commitTakeRecipe(job, done.motionUrl);
 			}
-			if (job.hasBlockEdits && job.ikState) {
+			if (!appContext.storeDomain('motion') && job.hasBlockEdits && job.ikState) {
 				// Timeline frames, not the wire frames in body.motionEdit.edits:
 				// these light up the IK markers on the production clock.
 				setCommittedIkEdits((current) => [...current, ...job.committedEditKeys]);
@@ -2580,7 +2662,8 @@ export function useMotion(appContext) {
 	 * motionUrl in the same breath. Nothing else may write takeRecipeRef except
 	 * loadTakeVersion, which restores a checkpoint rather than authoring one. */
 	function commitTakeRecipe(job, motionUrl) {
-		const base = appContext.shared.takeRecipeRef.current;
+		const owned = appContext.storeDomain('motion');
+		const base = owned ? owned.layer(job.charId).takeRecipe : appContext.shared.takeRecipeRef.current;
 		let next = base;
 		if (job.recipeIntent === "fresh") {
 			// A regeneration that carried `replay` produced a take that ALREADY
@@ -2610,6 +2693,12 @@ export function useMotion(appContext) {
 				});
 			next = withLineEdit(seeded, job.recipeLineEdit);
 		}
+		if (owned) {
+			owned.writeLayer(job.charId, { takeRecipe: next, takeVersions: pushTakeVersion(owned.layer(job.charId).takeVersions, {
+				motionUrl, recipe: next, savedAt: Date.now(), label: job.recipeLabel ?? '',
+			}, TAKE_VERSIONS_MAX) });
+			return;
+		}
 		appContext.shared.takeRecipeRef.current = next;
 		setTakeRecipe(next);
 		setTakeVersions((list) => pushTakeVersion(list, {
@@ -2635,6 +2724,7 @@ export function useMotion(appContext) {
 	 * commitTakeRecipe. A checkpoint you can return to beats a recipe you can
 	 * replay, and this gets the first without pretending to the second. */
 	function seedLoadedTake(url, prompt, frames) {
+		if (appContext.storeDomain('motion')) return;
 		if (!url || appContext.shared.takeRecipeRef.current) return;
 		const recipe = Object.freeze({
 			seed: null,
@@ -2660,6 +2750,7 @@ export function useMotion(appContext) {
 	 * old version pushes a NEW version on top, so no click can destroy work. */
 	async function loadTakeVersion(entry) {
 		if (!entry?.motionUrl || motionBusy) return;
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.loadVersion', { characterId: appContext.shared.activeChar.id, motionUrl: entry.motionUrl });
 		if (entry.motionUrl === appContext.shared.takeSourceUrl) return;
 		// A pull in hand was authored against the take that is leaving. The
 		// preview is dropped WITHOUT reverting: this call is already loading a
@@ -2842,10 +2933,10 @@ export function useMotion(appContext) {
 			anchorZ: sceneAnchorZ,
 		};
 		if (calibration && typeof calibration === "object") motionRef.calibration = normalizedCalibration;
-		if (!job.commandContext) appContext.shared.publishStudioCharacters((list) => list.map((entry) => entry.id === job.charId ? { ...entry, motionRef } : entry));
+		if (!appContext.storeDomain('motion') && !job.commandContext) appContext.shared.publishStudioCharacters((list) => list.map((entry) => entry.id === job.charId ? { ...entry, motionRef } : entry));
 		if (job.charId === appContext.shared.loadedLayerCharRef.current) {
-			await loadMotion(motionUrl, job.prompt, job.rootRotationDeg, null, job.charId, null, { calibration, commandContext: job.commandContext });
-			if (job.commandContext) appContext.shared.publishStudioCharacters(appContext.live.characters.map(entry => entry.id === job.charId ? { ...entry, motionRef } : entry));
+			await loadMotion(motionUrl, job.prompt, job.rootRotationDeg, null, job.charId, null, { calibration, commandContext: job.commandContext, job });
+			if (!appContext.storeDomain('motion') && job.commandContext) appContext.shared.publishStudioCharacters(appContext.live.characters.map(entry => entry.id === job.charId ? { ...entry, motionRef } : entry));
 			return;
 		}
 		// Inbound boundary for a clip delivered to a non-active layer.
@@ -2866,12 +2957,15 @@ export function useMotion(appContext) {
 		// Same stature rule as loadMotion, on the layer that asked for the clip.
 		const scale = characterScaleFor(decoded);
 		const apply = () => {
+			if (appContext.storeDomain('motion')) return commitLoadedTake(job.charId, clip, { job });
 			if (job.commandContext) appContext.shared.castDomain.recordCharacterUndo();
 			appContext.shared.motionFullRef.current.set(job.charId, clip);
 			const next = appContext.live.characters.map(entry => entry.id === job.charId ? { ...entry, scale, sessionMotion: clip, motionRef } : entry);
 			appContext.shared.publishStudioCharacters(next);
 		};
-		if (job.commandContext) job.commandContext.commit(apply); else apply();
+		if (job.commandContext) job.commandContext.commit(apply);
+		else if (appContext.storeDomain('motion')) appContext.storeDomain('motion').runPrepared(job.charId, apply);
+		else apply();
 	}
 
 	/** After a scene (re)load, re-fetch every persisted clip reference and
@@ -2910,6 +3004,7 @@ export function useMotion(appContext) {
 				};
 				if (entry.motionRef.calibration) clip.sceneCalibration = entry.motionRef.calibration;
 				if (entry.motionRef.studioTakeId) clip.studioTakeId = entry.motionRef.studioTakeId;
+				if (appContext.storeDomain('motion')) { appContext.storeDomain('motion').hydrate(entry.id, clip, entry.motionRef); return; }
 				appContext.shared.motionFullRef.current.set(entry.id, clip);
 				appContext.shared.publishStudioCharacters((current) => current.map((item) => item.id === entry.id
 					// The stature rides inside the npz, so a restored take
@@ -3188,6 +3283,8 @@ export function useMotion(appContext) {
 		if (state.renderer) appContext.shared.restoreExportRig(state.renderer);
 	}
 	function commitStudioMotion(payload) {
+		const owned = appContext.storeDomain('motion');
+		if (owned) return appContext.ports.recordAction('motion', () => owned.installPayload(payload), payload.binding.characterId, true);
 		if (appContext.storeDomain('cast') && !payload.composed) return appContext.ports.recordAction('motion',
 			() => commitStudioMotion({ ...payload, composed: true }), payload.binding.characterId, true);
 		const id = payload.binding.characterId, before = appContext.shared.readStudioState(), target = before.targets.get(id);
@@ -3261,6 +3358,14 @@ export function useMotion(appContext) {
 		return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
 	}
 	function updateFalMotionQuota(dailyRemaining) { setFalMotion((current) => ({ ...current, dailyRemaining })); }
+	domain.beginPlayback = id => { const rig = appContext.shared.rigs[id]; if (rig) beginPlaybackOn(rig); };
+	domain.loadRemote = async (args, context) => {
+		const entry = domain.layer(args.characterId).takeVersions.find(version => version.motionUrl === args.motionUrl);
+		if (args.motionUrl && !entry) throw new StudioProtocolError('TARGET_NOT_READY', 'This take version is no longer available.');
+		const character = appContext.storeDomain('cast').read().find(row => row.id === args.characterId);
+		await loadMotion(args.url ?? args.motionUrl, args.prompt ?? entry?.recipe?.blocks?.map(block => block.prompt).join(' ') ?? '', character.rotationDeg,
+			null, args.characterId, null, { commandContext: context, recipe: entry?.recipe });
+	};
 	appContext.updateActionPorts({ clearMotionNative: clearMotion, setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys });
 	return {
 		...domain,

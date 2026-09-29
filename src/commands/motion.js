@@ -16,21 +16,33 @@ const edits = [
 	mutation('motion.trim', 'Trim motion', { characterId: id, start: frame, end: frame }),
 	mutation('motion.resetTrim', 'Restore full take', { characterId: id }),
 	mutation('motion.cut', 'Cut motion segment', { characterId: id, frame }),
-	mutation('motion.setSegmentSpeed', 'Set segment speed', { characterId: id, id, speed: { type: 'number', exclusiveMinimum: 0, maximum: 8 } }),
+	mutation('motion.setSegmentSpeed', 'Set segment speed', { characterId: id, id, speed: { type: 'number', minimum: 0.05, maximum: 8 } }),
 	mutation('motion.removeSegment', 'Remove motion segment', { characterId: id, id }),
 	mutation('motion.fixCollisions', 'Fix body collisions', { characterId: id, scope: { type: 'string', enum: ['frame', 'clip'], default: 'frame' } }, ['characterId']),
 ];
+const prepared = { ...mutation('motion.applyPrepared', 'Apply prepared motion edit', { characterId: id, token: id }), exposure: 'ui-only' };
+const loads = [
+	{ id: 'motion.replace', label: 'Replace take', input: input({ characterId: id, url: id, prompt: { type: 'string', default: '' } }, ['characterId', 'url']) },
+	{ id: 'motion.loadVersion', label: 'Restore take version', input: input({ characterId: id, motionUrl: id }) },
+].map(entry => ({ ...entry, description: entry.label, kind: 'job', domain: 'motion' }));
 const legacyIk = ['character.setIkKey', 'character.removeIkKey', 'character.clearIkKeys'].map(studioActionDeclaration);
 const ik = legacyIk.map((entry, index) => ({ ...entry, id: ['ik.setKey', 'ik.removeKey', 'ik.clearKeys'][index] }));
 
 const clear = { id: 'motion.clear', label: 'Clear motion', description: 'Clear the active take, its corrections and take-owned cast fields.',
 	kind: 'mutation', undoDomain: 'motion', input: { type: 'object', properties: { characterId: { type: 'string' } }, required: ['characterId'], additionalProperties: false } };
-export const declarations = Object.freeze([clear, ...edits, ...legacyIk, ...ik, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
+export const declarations = Object.freeze([clear, ...edits, prepared, ...loads, ...legacyIk, ...ik, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
 
 export function register(registry, ports) {
 	const owner = () => ports.storeDomain('motion');
 	const mounted = () => Boolean(ports.storeDomain?.('motion')) || 'The motion owner is not mounted.';
 	const take = characterId => { characterOf(ports, characterId); return owner().motionFor(characterId) ?? fail('TARGET_NOT_READY', 'Load a take for this character first.'); };
+	registry.register({ ...prepared, available: mounted, run({ characterId, token }) {
+		characterOf(ports, characterId); owner().applyPrepared(token); return { affectedIds: [characterId], summary: prepared.label };
+	} });
+	for (const declaration of loads) registry.register({ ...declaration, available: mounted, target: args => args.characterId, async run(args, context) {
+		characterOf(ports, args.characterId); await owner().loadRemote(args, context);
+		return { affectedIds: [args.characterId], summary: declaration.label };
+	} });
 	registerElementSet({ register(entry) { registry.register({ ...entry, available: mounted, run(args) {
 		for (const op of args.ops ?? [args]) take(op.id);
 		return entry.run(args);
