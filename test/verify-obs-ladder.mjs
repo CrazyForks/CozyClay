@@ -174,6 +174,9 @@ for (const step of STEPS) {
 	for (const key of ["rotMats", "rootPos", "posedJoints"]) assert.ok(m[key] instanceof Float32Array && m[key].every(Number.isFinite), `${step} ${key} finite Float32Array`);
 	if (step === "Gbest") {
 		assert.equal(out.diagnostics.pin.applied, true, "Gbest pins a >0.5 m A->B take");
+		assert.equal(out.diagnostics.contacts.sceneSolver, "ray", "Gbest defaults to the camera-ray scene solver");
+		assert.ok(Array.isArray(out.diagnostics.conversion.headingRuns), "Gbest records heading-unwrapper runs");
+		assert.equal(out.diagnostics.footLock.disabled, undefined, "Gbest enables foot locking by default");
 		// A/B and the take share the Studio's anchored frame: ends land on A/B,
 		// the middle keeps G5's trajectory relative to its own frame 0.
 		const root = (motion, f) => Array.from(motion.rootPos.slice(f * 3, f * 3 + 3));

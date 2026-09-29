@@ -34,7 +34,9 @@ import { GVHMR_SMOOTH_SIGMA } from "../../ardy/runners/gvhmr-worker.mjs";
 import { smplToCskel27Motion } from "../../ardy/smpl-cskel27.mjs";
 import { productionExtractEnv } from "../extract-bench-lib.mjs";
 import { fitContacts, penetrates } from "../fit/contact.mjs";
+import { lockFeet } from "../fit/footlock.mjs";
 import { cloneMotion, jointsAt, shiftFrame, smoothstep } from "../fit/motion.mjs";
+import { unwrapHeadingFlips } from "./heading.mjs";
 import { pinEndpoints } from "../fit/pin.mjs";
 import { correctTrajectory } from "./ground.mjs";
 import { solveTranslations } from "./depth.mjs";
@@ -44,6 +46,16 @@ export const STEPS = Object.freeze(["G0", "G1", "G4", "G2", "G3", "G5", "Gbest"]
 export const SMPL_PARENTS = Object.freeze([-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21]);
 const FOOT_JOINTS = [7, 8, 10, 11]; // L_ankle, R_ankle, L_foot, R_foot (ground.mjs FOOT_NAMES order)
 export const DEFAULTS = Object.freeze({
+	headingUnwrap: true,
+	// Body-pose smoothing. With heading flips unwrapped first, sigma 2 beats
+	// GVHMR's 3 on the 11 gt+cube truths (G0 mean PA 65.0 -> 64.1 mm, accel
+	// error 1.67 -> 1.62; gt/run 66.6 -> 59.5 mm); 1.5 re-adds accel error.
+	smoothSigma: 2,
+	// Root orient + translation keep GVHMR's 3: at 2 the occluded fal/bump
+	// roots jitter (Gbest root-accel spikes >20 m/s^2: 16 -> 91 over 24 clips).
+	rootSmoothSigma: GVHMR_SMOOTH_SIGMA,
+	sceneSolver: "ray",
+	footLock: true,
 	depthSigma: 2,
 	maxSpeedMps: 6,
 	minKeypointConfidence: 0.3,
@@ -79,7 +91,7 @@ export const DEFAULTS = Object.freeze({
 	// every box by this skin clearance before fitting contacts. Trial (cube/sit +
 	// 3 fal): 0 cm -> max pen 9.7-16.3 cm; 8 cm -> 0-8.2 cm with B ends kept;
 	// 15 cm -> ~0 cm but B ends jump to 50 cm (contacts override the A/B pins).
-	sceneClearanceM: 0.08,
+	sceneClearanceM: 0.15,
 	// fitContacts' time-smooth scene solver: pushes ramp in and out over this
 	// half width. The per-frame solver teleported the body up to 0.76 m in one
 	// frame (fal stepup: 18 m/s) whenever the nearest box face changed.
@@ -410,10 +422,12 @@ export function calibrateAnklePlane({ joints, obs, cam, contactProbability, maxF
 
 // ---------------------------------------------------------------- conversion
 /** Production conversion: runner smoothing -> smplToCskel27Motion -> stabilizeMotion -> guardTrajectoryFloor. */
-export function toCskel27({ orient, bodyPose, pelvis }, rest, fps, { smoothSigma = GVHMR_SMOOTH_SIGMA, betas } = {}) {
+export function toCskel27({ orient, bodyPose, pelvis }, rest, fps, { smoothSigma = GVHMR_SMOOTH_SIGMA, rootSmoothSigma = smoothSigma, headingUnwrap = false, betas } = {}) {
 	const frames = orient.length;
 	const padded = bodyPose.map((f) => (f.length === 23 ? f : [...f, [0, 0, 0], [0, 0, 0]]));
-	const smooth = smoothSmplParams({ orient, bodyPose: padded, pelvis }, smoothSigma);
+	const heading = headingUnwrap ? unwrapHeadingFlips(orient) : { orient: orient.map((v) => v.slice()), runs: [] };
+	const root = smoothSmplParams({ orient: heading.orient, bodyPose: padded.slice(0, 1).map(() => [[0, 0, 0]]), pelvis }, rootSmoothSigma);
+	const smooth = { ...root, bodyPose: smoothSmplParams({ orient: heading.orient, bodyPose: padded, pelvis }, smoothSigma).bodyPose };
 	const members = {
 		fps: { data: Int32Array.of(fps), shape: [] },
 		smpl_global_orient: { data: Float32Array.from(smooth.orient.flat()), shape: [frames, 3] },
@@ -424,7 +438,7 @@ export function toCskel27({ orient, bodyPose, pelvis }, rest, fps, { smoothSigma
 	};
 	const converted = stabilizeMotion(smplToCskel27Motion(members), productionExtractEnv({}).stabilize);
 	const guarded = guardTrajectoryFloor(converted, []);
-	return { motion: guarded.motion, diagnostics: { smoothSigma, stabilization: guarded.motion.stabilization ?? null, floor: guarded.diagnostics } };
+	return { motion: guarded.motion, diagnostics: { smoothSigma, rootSmoothSigma, headingUnwrap, headingRuns: heading.runs, stabilization: guarded.motion.stabilization ?? null, floor: guarded.diagnostics } };
 }
 
 // ---------------------------------------------------------------- ladder
@@ -461,10 +475,29 @@ export function ladderStep(step, { base, mannequin, camera, endpoints, boxes = [
 		const displacement = horizontalDistance(anchored[0].rootPos, anchored[1].rootPos);
 		const pin = displacement > opts.pinMinDisplacementM;
 		const targets = opts.pinMode === "full" ? anchored : anchored.map((e, i) => headingEndpoint(e, take, i ? take.frames - 1 : 0));
-		const pinned = pin ? pinEndpoints(take, targets, { windowSeconds: opts.pinWindowSeconds }) : take;
+		const pinnedTake = pin ? pinEndpoints(take, targets, { windowSeconds: opts.pinWindowSeconds }) : take;
+		// Feet are locked BEFORE the scene solve so the solver has the final say:
+		// locking afterwards re-bent legs into the clearance zone (sit clips).
+		const foot = opts.footLock ? lockFeet(pinnedTake, { floorY: 0, boxes }) : { motion: pinnedTake, diagnostics: { disabled: true } };
+		const pinned = foot.motion;
 		const clearance = opts.sceneClearanceM;
 		const inflated = boxes.map((b) => ({ ...b, min: b.min.map((v) => v - clearance), max: b.max.map((v) => v + clearance) }));
-		const contacts = fitContacts(pinned, { boxes: inflated, sceneSmoothSeconds: opts.sceneSmoothSeconds });
+		const cameraJson = camera.R_c2w ? camera : cameraFromJson(camera);
+		const cameraOrigin = camera.position
+			? [camera.position.x, camera.position.y, camera.position.z]
+			: cameraJson.t_c2w;
+		let contacts, contactFallback = null;
+		try {
+			contacts = fitContacts(pinned, {
+				boxes: inflated,
+				sceneSmoothSeconds: opts.sceneSmoothSeconds,
+				...(opts.sceneSolver === "ray" ? { cameraOrigin } : {}),
+			});
+		} catch (error) {
+			if (opts.sceneSolver !== "ray") throw error;
+			contactFallback = { message: error instanceof Error ? error.message : String(error), from: "ray", to: "continuous" };
+			contacts = fitContacts(pinned, { boxes: inflated, sceneSmoothSeconds: opts.sceneSmoothSeconds });
+		}
 		// A and B are known truth: within the pin window the scene/lock shifts
 		// ease back towards the pinned take, so a push carried in from the
 		// contact phase cannot drag the known end poses away. The ease stops
@@ -473,29 +506,50 @@ export function ladderStep(step, { base, mannequin, camera, endpoints, boxes = [
 			const n = take.frames, last = n - 1, radius = Math.min(opts.pinWindowSeconds * take.fps, last / 2);
 			const back = Array.from({ length: n }, (_, f) => [0, 1, 2].map((k) => pinned.rootPos[f * 3 + k] - contacts.motion.rootPos[f * 3 + k]));
 			const clear = (f, t) => !penetrates(jointsAt(contacts.motion, f).map((p) => p.map((v, k) => v + t * back[f][k])), boxes);
-			const limit = Array.from({ length: n }, (_, f) => {
-				const w = Math.max(1 - smoothstep(f / radius), 1 - smoothstep((last - f) / radius));
+			const fraction = (f, w) => {
 				if (!(w > 0) || clear(f, w)) return w;
 				let lo = 0, hi = w; for (let i = 0; i < 16; i++) { const mid = (lo + hi) / 2; if (clear(f, mid)) lo = mid; else hi = mid; }
 				return lo;
-			});
+			};
+			const limit = Array.from({ length: n }, (_, f) => fraction(f, Math.max(1 - smoothstep(f / radius), 1 - smoothstep((last - f) / radius))));
 			// The collision limit changes frame to frame; erode then blur over 3
 			// frames so the ease stays at or under it and never jumps.
 			const r = 3, at = (x, f) => x[Math.min(n - 1, Math.max(0, f))];
 			const eroded = limit.map((_, f) => { let m = Infinity; for (let k = -r; k <= r; k++) m = Math.min(m, at(limit, f + k)); return m; });
 			const ease = eroded.map((_, f) => { let s = 0; for (let k = -r; k <= r; k++) s += at(eroded, f + k); return s / (2 * r + 1); });
-			for (let f = 0; f < n; f++) if (ease[f] > 0) shiftFrame(contacts.motion, f, back[f].map((v) => v * (clear(f, ease[f]) ? ease[f] : 0)));
+			if (contacts.diagnostics.sceneSolver === "camera-ray") {
+				// Never switch the ease on/off: per frame take the largest clear
+				// fraction up to ease[f], then lower it (lower envelope) so the
+				// applied shift changes by <= easeMaxStepM of root motion per frame.
+				// A lowered fraction can collide again: re-limit that frame (after
+				// a few rounds, to 0 = the collision-free contact output) and redo.
+				const easeMaxStepM = 0.02, size = back.map((b) => Math.hypot(...b));
+				const room = size.map((s, f) => easeMaxStepM / Math.max(1e-9, s, f ? size[f - 1] : 0));
+				const cap = ease.map((w, f) => fraction(f, w));
+				let t;
+				for (let round = 0; ; round++) {
+					t = cap.map((w) => Math.max(0, w));
+					for (let f = 1; f < n; f++) t[f] = Math.min(t[f], t[f - 1] + room[f]);
+					for (let f = n - 2; f >= 0; f--) t[f] = Math.min(t[f], t[f + 1] + room[f + 1]);
+					const blocked = t.map((w, f) => (w > 0 && !clear(f, w) ? f : -1)).filter((f) => f >= 0);
+					if (!blocked.length) break;
+					for (const f of blocked) cap[f] = round < 4 ? fraction(f, t[f]) : 0;
+				}
+				for (let f = 0; f < n; f++) if (t[f] > 0) shiftFrame(contacts.motion, f, back[f].map((v) => v * t[f]));
+			} else {
+				for (let f = 0; f < n; f++) if (ease[f] > 0) shiftFrame(contacts.motion, f, back[f].map((v) => v * (clear(f, ease[f]) ? ease[f] : 0)));
+			}
 		}
 		const { support, ...contactDiagnostics } = contacts.diagnostics;
 		return {
 			motion: contacts.motion,
 			smpl: g5.smpl,
-			diagnostics: { ...diagnostics, step: "Gbest", composition: "G5 + pinEndpoints (if A->B > threshold) + fitContacts", pin: { applied: pin, abDisplacementM: displacement, thresholdM: opts.pinMinDisplacementM, windowSeconds: opts.pinWindowSeconds, mode: opts.pinMode, endpointFrames: "first and last only", anchoring: "A/B root XZ relative to A; take frame-0 root XZ moved to the origin", takeFrame0ShiftM: [-g0[0], 0, -g0[2]] }, contacts: { ...contactDiagnostics, supportFrames: support.filter((s) => s >= 0).length, boxes: boxes.length, sceneClearanceM: clearance } },
+			diagnostics: { ...diagnostics, step: "Gbest", composition: "G5 + pinEndpoints (if A->B > threshold) + lockFeet + fitContacts", pin: { applied: pin, abDisplacementM: displacement, thresholdM: opts.pinMinDisplacementM, windowSeconds: opts.pinWindowSeconds, mode: opts.pinMode, endpointFrames: "first and last only", anchoring: "A/B root XZ relative to A; take frame-0 root XZ moved to the origin", takeFrame0ShiftM: [-g0[0], 0, -g0[2]] }, contacts: { ...contactDiagnostics, supportFrames: support.filter((s) => s >= 0).length, boxes: boxes.length, sceneClearanceM: clearance, sceneSolver: contactFallback ? "continuous" : opts.sceneSolver, fallback: contactFallback }, footLock: foot.diagnostics },
 		};
 	}
 	if (!base?.obs || !base?.rest) throw new Error(`${step} needs the base obs and its rest joints`);
 	const fps = obsFps(base.obs);
 	const smpl = worldSmpl(step, { obs: base.obs, rest: base.rest, camera, ankleHeight, options: opts });
-	const converted = toCskel27(smpl, base.rest, fps, { betas: base.obs.betas_used?.data });
+	const converted = toCskel27(smpl, base.rest, fps, { smoothSigma: opts.smoothSigma, rootSmoothSigma: opts.rootSmoothSigma, headingUnwrap: opts.headingUnwrap, betas: base.obs.betas_used?.data });
 	return { motion: converted.motion, smpl, diagnostics: { step, ...smpl.diagnostics, conversion: converted.diagnostics } };
 }
