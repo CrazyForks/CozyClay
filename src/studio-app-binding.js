@@ -5,15 +5,14 @@ import { createCommandBus } from "./command-bus.js";
 import { readElementDocument, elementReadback, elementPatchArgs, elementTarget, elementPatchReceipt } from "./commands/elements.js";
 import { physicsKeyStamp } from "./ardy/physics-review.js";
 import { shotAtFrame } from "./cuts.js";
-import { sha256Hex } from "./motion-resources.js";
 import { CUTOUT_KIND, MESH_KIND, OBJECT_LIBRARY, supportHeightForObject } from "./scene-objects.js";
 import { buildStudioContext, physicsFingerprintInput, studioEntityCursor, validateStudioCursor } from "./studio-agent-context.js";
 import { createStudioCommands, createStudioCommandJournal, framingChecks, placementChecks, studioObjectCatalogue } from "./studio-agent-commands.js";
-import { createStudioMotionCandidates, verifyInstalledTake } from "./studio-agent-motion.js";
+import { verifyInstalledTake } from "./studio-agent-motion.js";
 import { STUDIO_TOOL_FAMILIES, StudioProtocolError, validateReceipt, validateStudioCommand, validateStudioIdentity } from "./studio-agent-protocol.js";
 import { CONTACT_SHEET_LAYOUT, buildContactSheet, sampleContactSheetFrames } from "./studio-contact-sheet.js";
 
-// App-owned adapter: the merged command/candidate modules remain the only
+// App-owned adapter: the shared command modules remain the only
 // planners and validators. Ports below publish through the native editor stores.
 export function createStudioAppBinding(ports) {
 	const fail = (code, message) => { throw new StudioProtocolError(code, message); };
@@ -37,8 +36,8 @@ export function createStudioAppBinding(ports) {
 		return `${value.frames ?? 0}:${value.fps ?? 0}:${value.rotMats?.length ?? 0}:${value.rootPos?.length ?? 0}:${value.posedJoints?.length ?? 0}`;
 	};
 	const calibrationContentKey = value => value && typeof value === "object" ? JSON.stringify(value) : null;
-	const tokens = new Map(), receipts = new Map(), jobs = new Map(), images = new Map();
-	let owner = null, commands = null, motion = null, journal = null, actionBus = null;
+	const tokens = new Map(), receipts = new Map(), images = new Map();
+	let owner = null, commands = null, journal = null, actionBus = null;
 	const domainKeys = new Map(), domainRevisions = {};
 	let authoredKey, physicsKey, viewKey, observedSceneRevision = ports.revision.current;
 	let physicsRevision = 0, viewRevision = 0;
@@ -47,12 +46,10 @@ export function createStudioAppBinding(ports) {
 		const raw = { ...ports.read(), ...document, document };
 		const host = validateStudioIdentity(raw.host);
 		if (!same(owner, host)) {
-			motion?.dispose(); owner = host; tokens.clear(); receipts.clear(); jobs.clear(); images.clear();
+			owner = host; tokens.clear(); receipts.clear(); images.clear();
 			authoredKey = physicsKey = viewKey = undefined;
 			journal = createStudioCommandJournal({ host, isRetained: receipt => ports.isRetained(receipt) });
 			commands = createStudioCommands({ read: readCommand, guard, bounds: ports.bounds, commit: ports.commit, poses: ports.poses, journal });
-			motion = createStudioMotionCandidates({ readTarget, readEnvironment, journal,
-				commit: commitMotion, loadArtifact, poseCast: ports.poseCast });
 		}
 		const characters = raw.characters.map(character => {
 			const target = raw.targets.get(character.id);
@@ -192,15 +189,10 @@ export function createStudioAppBinding(ports) {
 			entities, entityPage: { returned: 0, total: 0, truncated: false, nextCursor: null },
 			shots: s.shots.map(row => ({ id: row.id, name: row.name, range: range(row), keyCount: row.cameraKeys.length })), shotsTruncated: false,
 			assets: assetList(s), recentReceipts: [...receipts.values()].filter(r => r.ok).reverse().slice(0, 3).map(r => ({ id: r.receiptId, summary: r.status, canUndoDirect: ports.canUndo(r) })),
-			jobs: [...jobs.values()].slice(-8), capabilities: { profile: "studio-slice-1", tools: STUDIO_TOOL_FAMILIES,
+			jobs: [], capabilities: { profile: "studio-slice-1", tools: STUDIO_TOOL_FAMILIES,
 				rigReady: Boolean(s.targets.get(s.activeCharacterId)?.rig), cameraReady: Boolean(s.camera), bridgeReady: s.bridgeReady },
 			// Every registered command; buildStudioContext keeps only its id/label index.
 			...(registry ? { actions: registry.list() } : {}) });
-	}
-	function readTarget(binding) {
-		const s = refresh(), target = s.targets.get(binding.characterId);
-		return target ? { ...target, character: s.characters.find(c => c.id === binding.characterId), guard: guard(binding.characterId), busy: s.busy,
-			preserveAuthoredMotion: Boolean(target.preserveAuthoredMotion), protectedFrames: target.protectedFrames ?? [] } : null;
 	}
 	function readEnvironment() {
 		const s = refresh();
@@ -208,36 +200,6 @@ export function createStudioAppBinding(ports) {
 			cast: s.characters.map(character => ({ character, ...s.targets.get(character.id) })) };
 	}
 	function remember(receipt) { if (receipt?.receiptId) receipts.set(receipt.receiptId, receipt); return receipt; }
-	// A candidate keeps the URL its artifact came from and the content id of its
-	// bytes: the install persists both in the motionRef, so a reload restores the
-	// take from the motion store even after the bridge has forgotten the run.
-	// The bytes come from the pinned absolute URL, but the take stores the bridge
-	// path a UI take stores: refine requests send it back as sourceMotion, and the
-	// bridge accepts only /ardy/motions/<id> there.
-	async function loadArtifact(artifact, options) {
-		const loaded = await ports.loadArtifact(artifact, options);
-		const path = new URL(artifact.url, "http://localhost").pathname;
-		const url = /^\/ardy\/(motions\/[0-9]+-[0-9a-f]{6}|assembled\/[A-Za-z0-9._-]+\.npz)$/.test(path) ? path : artifact.url;
-		return { ...loaded, url, ...(loaded.sourceBytes ? { motionId: await sha256Hex(loaded.sourceBytes) } : {}) };
-	}
-	function commitMotion(payload) {
-		const s = refresh(), beforeTake = s.targets.get(payload.binding.characterId)?.motion;
-		const takeId = crypto.randomUUID(), historyEntryId = crypto.randomUUID();
-		// Validate the complete correlated receipt BEFORE the one synchronous publish.
-		const receipt = validateReceipt({ ok: true, status: "installed", authored: true,
-			commandId: payload.commandId, receiptId: crypto.randomUUID(), host: s.host, jobId: payload.jobId, artifactId: payload.artifactId,
-			revision: { before: s.revision, after: s.revision + 1 }, affectedIds: [payload.binding.characterId],
-			delta: [{ id: payload.binding.characterId, after: { takeId } }], checks: { coverage: "studio-motion-v1" },
-			undo: { historyEntryId, entries: 1, canUndoDirect: true }, warnings: payload.verification.status === "unverified" ? [{ code: "UNVERIFIED_MOTION" }] : [],
-			installed: { characterId: payload.binding.characterId, beforeTakeId: beforeTake?.studioTakeId ?? null, takeId,
-				targetToken: `target-${tokenSequence + 1}`, frameCount: payload.schedule.frameCount, fps: 24, durationSeconds: payload.schedule.durationSeconds,
-				blocks: payload.schedule.blocks.map(({ sourceBeat, startFrame, endFrameExclusive }) => ({ sourceBeat, startFrame, endFrameExclusive })), selectionChanged: false },
-			verification: payload.verification, repairs: payload.repairs, explicitUnverifiedAcceptance: payload.explicitUnverifiedAcceptance === true });
-		const publication = ports.commitMotion({ ...payload, takeId, historyEntryId });
-		const actual = { ...receipt, undo: { ...receipt.undo, historyEntryId: publication?.historyEntryId ?? historyEntryId },
-			installed: { ...receipt.installed, targetToken: guard(payload.binding.characterId).token } };
-		return remember(journal.record(validateReceipt(actual)));
-	}
 	function rejection(request, error, phase = "admission") {
 		// The refusal's own words are what the model acts on; the receipt keeps
 		// the first 120 characters the protocol carries.
@@ -469,5 +431,5 @@ export function createStudioAppBinding(ports) {
 			else if (previous && !same(content(row), content(next))) tokens.set(row.id, { ...previous, key: null });
 		}
 	}
-	return { handlers, context, guard, refresh, invalidate, get bus() { refresh(); return commandBus(); }, dispose: () => { actionBus?.dispose(); motion?.dispose(); } };
+	return { handlers, context, guard, refresh, invalidate, get bus() { refresh(); return commandBus(); }, dispose: () => { actionBus?.dispose(); } };
 }

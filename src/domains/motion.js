@@ -3038,48 +3038,6 @@ export function useMotion(appContext) {
 		else if (authored) cast.setTimeline(state.frameCount);
 		if (state.renderer) appContext.shared.restoreExportRig(state.renderer);
 	}
-	function commitStudioMotion(payload) {
-		const owned = appContext.storeDomain('motion');
-		if (owned) return appContext.ports.recordAction('motion', () => owned.installPayload(payload), payload.binding.characterId, true);
-		if (appContext.storeDomain('cast') && !payload.composed) return appContext.ports.recordAction('motion',
-			() => commitStudioMotion({ ...payload, composed: true }), payload.binding.characterId, true);
-		const id = payload.binding.characterId, before = appContext.shared.readStudioState(), target = before.targets.get(id);
-		const character = before.characters.find(c => c.id === id);
-		const clips = payload.schedule.blocks.map((block, index) => ({ id: `${payload.takeId}-beat-${index}`, startFrame: block.startFrame, endFrame: block.endFrameExclusive, text: block.text }));
-		const take = { ...payload.motion, studioTakeId: payload.takeId, prompt: "", sceneCalibration: payload.calibration };
-		// The same persistable ref deliverMotion saves for a UI take, placed where
-		// this take was placed, so restoreMotionRefs rebuilds it after a reload.
-		const motionRef = { url: take.url, prompt: payload.schedule.blocks.map(block => block.text).join(" "),
-			rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ, calibration: payload.calibration, studioTakeId: payload.takeId };
-		if (take.motionId) motionRef.motionId = take.motionId;
-		const next = { ...character, scale: payload.scale, sessionMotion: take, motionRef, layer: { ...character.layer, promptClips: clips } };
-		// The native bridge snapshots the rig before any nested owner publishes.
-		appContext.shared.recordStudioHistory("motion", id, payload.historyEntryId);
-		publishStudioMotion(id, { character: next, fullMotion: payload.sourceMotion, ikState: payload.ikState,
-			frameCount: id === appContext.shared.loadedLayerCharRef.current ? Math.max(payload.schedule.frameCount, before.view.frame + 1, ...before.shots.map(s => s.endFrame + 1)) : before.frameCount,
-			committedIkEdits: [], renderer: null }, true);
-		if (target?.rig) {
-			if (id === appContext.shared.loadedLayerCharRef.current) beginPlaybackOn(target.rig);
-			const resolved = resolveIkRig(target.rig), layer = appContext.shared.ikStatesRef.current.get(id);
-			if (resolved) Object.assign(layer, resolved, { rig: target.rig });
-			appContext.shared.poseMemberAtFrame(target.rig, take, layer, before.view.frame, IK_CORRECTION_BLEND_FRAMES);
-			target.rig.updateMatrixWorld(true);
-		}
-		if (!appContext.storeDomain('cast')) appContext.shared.markSemanticEdit("characters", before.characters, appContext.live.characters);
-		// Store the take's bytes the way a project save embeds a take
-		// (collectProjectSerialized): the same record, caches and motion store, so
-		// the ref's motionId resolves after a reload without the bridge.
-		if (take.sourceBytes) (async () => {
-			let record = appContext.shared.motionEncodingCacheRef.current.get(take.sourceBytes);
-			if (!record) {
-				record = await encodeMotionResource(take.sourceBytes, { prompt: motionRef.prompt, sourceUrl: motionRef.url });
-				appContext.shared.motionEncodingCacheRef.current.set(take.sourceBytes, record);
-			}
-			appContext.shared.projectMotionsRef.current.set(record.motionId.toLowerCase(), record);
-			const db = await openMotionDb();
-			try { await putMotion(db, record); } finally { db.close(); }
-		})().catch((error) => console.warn("[cozyclay] could not cache motions", error));
-	}
 	async function loadLiveMotion(args) {
 		if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
 		const prompt = typeof args.prompt === "string" ? args.prompt : "";
@@ -3132,7 +3090,7 @@ export function useMotion(appContext) {
 	appContext.updateActionPorts({ clearMotionNative: clearMotion, setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys });
 	return {
 		...domain,
-		falMotion, setFalMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, commitStudioMotion, loadLiveMotion, updateFalMotionQuota,
+		falMotion, setFalMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, loadLiveMotion, updateFalMotionQuota,
 		ikMode, ikChains, setIkChains, ikFkJoints, setIkFkJoints, ikFocus, setIkFocus, footSnap, setFootSnap,
 		bodyContact, setBodyContact, IK_CORRECTION_BLEND_FRAMES, autoPhysicsRunning, setAutoPhysicsRunning,
 		physicsPreview, setPhysicsPreview, physicsShow, physicsProgress, physicsOptions, setPhysicsOptions,

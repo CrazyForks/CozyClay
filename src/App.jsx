@@ -1362,7 +1362,7 @@ export default function App() {
 		generationBusy, openMotionSetup, refineDisabledReason, sceneDisabledReason, sceneGenerateDisabledReason,
 		sceneAgainDisabledReason, enterRefineMode, runSceneAgain, addSceneBlock, restoreMotionRefs, cancelArdy,
 	} = motionDomain;
-	const { falMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, commitStudioMotion } = motionDomain;
+	const { falMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion } = motionDomain;
 	const [partColoursEnabled, setPartColoursEnabled] = useState(false);
 	const [partColoursMode, setPartColoursMode] = useState("shaded");
 
@@ -6587,7 +6587,7 @@ export default function App() {
 		studioView: { mode: workflowMode, frame: tlFrame, playing: tlPlaying, lookThrough: lookThroughShot, grid: gridView, autoColor },
 	});
 	appContext.updatePorts({
-		read: readStudioState, revision: sceneRevisionRef, bounds: studioBounds, commit: commitStudioDraft, commitMotion: commitStudioMotion,
+		read: readStudioState, revision: sceneRevisionRef, bounds: studioBounds, commit: commitStudioDraft,
 		operate: operateStudio, undo: undoScene, stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
 		// One shot frame as raw read-back pixels (rows bottom-up), from the export
 		// path captureShotFramePng uses; an export in flight renders at its output.
