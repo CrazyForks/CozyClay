@@ -203,7 +203,6 @@ export function createMotionDomain(appContext, characters) {
 		appContext.shared.ikStateRef.current = states.get(id) ?? createIkState();
 		appContext.shared.bufferRef.current = { ...appContext.shared.bufferRef.current, motion: visibleMotion(id), ik: appContext.shared.ikStateRef.current };
 		appContext.shared.takeRecipeRef.current = layer(id).takeRecipe;
-		appContext.publishMotion(visibleMotion(id));
 		domain.onProject?.(); viewRevision++;
 	}
 	const unsubscribe = documentStore.subscribe(project);

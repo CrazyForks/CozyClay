@@ -11,7 +11,7 @@ const profile = mkdtempSync(join(tmpdir(), 'motion-browser-'));
 const frames = 48, rotMats = new Float32Array(frames * 243), rootPos = new Float32Array(frames * 3), posedJoints = new Float32Array(frames * 81);
 for (let f = 0; f < frames; f++) for (let j = 0; j < 27; j++) {
   rotMats.set([1,0,0,0,1,0,0,0,1], (f * 27 + j) * 9);
-  const p = CSKEL27_NEUTRAL[j]; posedJoints.set([p[0], p[1] + 1.3544128, p[2]], (f * 27 + j) * 3);
+  const p = CSKEL27_NEUTRAL[j]; posedJoints.set([p[0], p[1] + 1.3544128 - 0.05, p[2]], (f * 27 + j) * 3);
   if (j === 0) rootPos.set(posedJoints.subarray(f * 81, f * 81 + 3), f * 3);
 }
 const npz = join(profile, 'take.npz'); writeNpz(npz, motionArraysToNpzMembers({ frames, fps: 24, rotMats, rootPos, posedJoints }));
@@ -79,6 +79,15 @@ try {
   assert.notDeepEqual(await evaluate(`Array.from(window.__cozyclay.motion.rootPos)`), before);
   await transition(`JSON.stringify(Array.from(window.__cozyclay.motion.rootPos)) === ${JSON.stringify(JSON.stringify(before))}`, `window.dispatchEvent(new KeyboardEvent('keydown',{key:'z',code:'KeyZ',metaKey:true,bubbles:true}))`);
   console.log('PASS browser motion: real trail drag and one keyboard undo restore the take arrays');
+  await transition(`document.querySelector('[data-testid="physics-analyse"]') && !document.querySelector('[data-testid="physics-panel"]').closest('[hidden]')`, `document.querySelector('[data-node-id="characterA.rig"] .hierarchy-row').click()`);
+  await evaluate(`window.__motionPose = () => { const values=[]; window.__cozyclay.rigA.traverse(bone=>{if(bone.isBone)values.push(...bone.position.toArray(),...bone.quaternion.toArray());}); return values; }`);
+  const pose = await evaluate('window.__motionPose()');
+  await transition(`!!window.__cozyclay.physics.preview && !window.__cozyclay.physics.running`, `document.querySelector('[data-testid="physics-analyse"]').click()`);
+  assert.equal(await evaluate('window.__cozyclay.ik.keys.size'), 0);
+  assert.equal(await evaluate('document.querySelector("[data-testid=physics-apply]").disabled'), false);
+  await transition(`window.__cozyclay.ik.keys.size > 0 && !window.__cozyclay.physics.preview`, `document.querySelector('[data-testid="physics-apply"]').click()`);
+  await transition(`window.__cozyclay.ik.keys.size === 0 && window.__motionPose().every((n,i)=>Math.abs(n-${JSON.stringify(pose)}[i])<1e-7)`, `window.dispatchEvent(new KeyboardEvent('keydown',{key:'z',code:'KeyZ',metaKey:true,bubbles:true}))`);
+  console.log('PASS browser motion: AutoPhysics preview is non-authored; Apply and one undo restore keys and rig');
   const screenshot = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync('/tmp/448-motion-browser.png', Buffer.from(screenshot.data, 'base64'));
   assert.deepEqual(pageErrors, []);
   console.log('PASS browser motion smoke: no runtime exceptions; screenshot /tmp/448-motion-browser.png');

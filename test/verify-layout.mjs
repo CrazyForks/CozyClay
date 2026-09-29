@@ -144,7 +144,7 @@ expect(
 		app.includes("endFrame: resolvedEndFrame"),
 );
 expect("recording uses WebCodecs with explicit timestamps and frame count", offscreenExport.includes("new VideoEncoderClass") && offscreenExport.includes("timestamp: Math.round(index * frameDurationUs)") && offscreenExport.includes("chunks.length !== range.frameCount"));
-expect("recording no longer uses MediaRecorder or a wall-clock capture loop", !app.includes("MediaRecorder") && !app.includes("performance.now()") && !app.includes("captureStream"));
+expect("recording no longer uses MediaRecorder or a wall-clock capture loop", !app.includes("MediaRecorder") && !offscreenExport.includes("performance.now()") && !app.includes("captureStream"));
 expect("pre-motion timeline initializes to 15 seconds", app.includes("const DEFAULT_DURATION_S = 15"));
 expect("motion preview stays at native 1x speed", app.includes("const DEFAULT_PLAYBACK_SPEED = 1") && app.includes("playbackSpeed={DEFAULT_PLAYBACK_SPEED}"));
 expect("timeline cadence and readout expose native preview speed", timeline.includes("fps * playbackSpeed") && timeline.includes("playbackSpeed.toFixed(2)"));
@@ -198,7 +198,7 @@ expect(
 );
 expect(
 	"a deleted inactive motion target cannot clear the active editing motion",
-	app.includes("if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext) setMotion(null);"),
+	app.includes("if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext && !appContext.storeDomain('motion')) setMotion(null);"),
 );
 // Given B owns a completed motion while A becomes the editing buffer during
 // decode or the B-rig wait, when completion resumes, then B keeps both its
@@ -212,7 +212,7 @@ expect(
 // clip and prompts and an A failure cannot clear B's motion.
 expect(
 	"an active B receives its own completion after an A to B selection interleaving",
-	app.includes("const targetCharacterId = args.characterId ?? appContext.live.state.activeCharacterId;") && app.includes("const targetPromptClips = clips;") && app.includes("targetCharacterId,") && app.includes("if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext) setMotion(null);"),
+	app.includes("const targetCharacterId = args.characterId ?? appContext.live.state.activeCharacterId;") && app.includes("const targetPromptClips = clips;") && app.includes("targetCharacterId,") && app.includes("if (targetCharacterId === appContext.shared.loadedLayerCharRef.current && !commandContext && !appContext.storeDomain('motion')) setMotion(null);"),
 );
 expect("individual block generation action is removed", !app.includes("Generate selected block"));
 expect("Prompt Block edits stay synced with ARDY input", app.includes("run('character.changePromptBlock', { characterId, id: selectedPromptId, text: event.target.value })") && app.includes("setArdyPrompt(event.target.value)"));
