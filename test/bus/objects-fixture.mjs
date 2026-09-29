@@ -23,10 +23,11 @@ const server = await createServer({ configFile: false, server: { middlewareMode:
   },
 }] });
 let useObjects, AppContext, assetDb;
+export let createObjectsDomain;
 export const objectPanels = {};
 try {
   assetDb = await server.ssrLoadModule('/test/bus/objects-asset-db.mjs');
-  ({ useObjects } = await server.ssrLoadModule('/src/domains/objects.js'));
+  ({ useObjects, createObjectsDomain } = await server.ssrLoadModule('/src/domains/objects.js'));
   ({ AppContext } = await server.ssrLoadModule('/src/app-context.js'));
   for (const name of ['ObjectTransformPanel', 'PropsPanel']) objectPanels[name] = (await server.ssrLoadModule(`/src/panels/${name}.jsx`)).default;
 } finally { await server.close(); }
