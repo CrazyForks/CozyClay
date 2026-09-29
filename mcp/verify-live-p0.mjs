@@ -28,11 +28,13 @@ const reservePort = () =>
 		});
 	});
 
-const timeout = (promise, label) =>
-	Promise.race([
+const timeout = (promise, label) => {
+	let timer;
+	return Promise.race([
 		promise,
-		new Promise((_, reject) => setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), 2_000)),
-	]);
+		new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}.`)), 2_000); }),
+	]).finally(() => clearTimeout(timer));
+};
 
 const once = (target, event) =>
 	timeout(
@@ -69,8 +71,10 @@ const editor = {
 let rejectDescribe = false;
 let rejectAfterMutation = false;
 const executionTelemetry = [];
-let disconnectBeforeDescribe = false;
+let disconnectBeforeReceipt = false;
 let omitCharacterFields = true;
+let revision = 0;
+const host = { workspaceId: "p0-workspace", documentEpoch: "document", sceneId: "scene", sceneEpoch: "epoch" };
 
 const handle = (name, args) => {
 	switch (name) {
@@ -83,23 +87,30 @@ const handle = (name, args) => {
 			return omitCharacterFields
 				? { ...description, characters: description.characters.map(({ model, ...character }) => character) }
 				: description;
-		case "add_character": {
+		case "inspect_studio":
+			return { context: { host, revision: { scene: revision } }, actions: [] };
+		case "run_action": {
+			assert.deepEqual(args.host, host);
+			assert.equal(args.expectedRevision, revision);
+			const { action, args: input } = args.args;
+			if (action === "character.update") return {
+				ok: false, commandId: args.commandId, host, code: "STALE_TARGET", phase: "admission", affectedIds: [],
+				expectedTargets: [], currentTargets: [], mutated: false, preserved: { authoredState: "unchanged" },
+				recovery: { action: "inspect", retryAllowed: false }, message: `Character not found: ${input.characterId}`,
+			};
+			assert.equal(action, "character.add");
 			if (rejectAfterMutation) { rejectDescribe = true; rejectAfterMutation = false; }
+			const character = input.character;
 			const id = `char-${String.fromCharCode(97 + editor.characters.length)}`;
-			editor.characters.push({
-				id,
-				model: args.model ?? "y-bot-tpose",
-				subject: args.subject,
-				x: args.x ?? 0,
-				y: 0,
-				z: args.z ?? 0,
-				rot: args.rot ?? 0,
-				hidden: false,
-			});
-			return { id, disconnectBeforeDescribe };
+			editor.characters.push({ id, model: character.model ?? "y-bot-tpose", subject: character.subject,
+				x: character.x ?? 0, y: 0, z: character.z ?? 0, rot: character.rot ?? 0, hidden: false });
+			if (disconnectBeforeReceipt) return { disconnectBeforeReceipt: true };
+			const before = revision++;
+			return { ok: true, status: "applied", action, commandId: args.commandId, receiptId: `receipt-${revision}`, host,
+				authored: true, revision: { before, after: revision }, affectedIds: [id],
+				delta: [{ id, after: { model: character.model ?? "y-bot-tpose" } }], checks: {}, warnings: [],
+				undo: { historyEntryId: `history-${revision}`, entries: 1, canUndoDirect: true } };
 		}
-		case "update_character":
-			throw new Error(`Character not found: ${args.ref}`);
 		case "load_motion":
 			rejectDescribe = true;
 			return { loaded: true };
@@ -119,20 +130,23 @@ let socket;
 try {
 	await client.connect(transport);
 	socket = new WebSocket(`ws://127.0.0.1:${livePort}/live`);
+	const welcomed = Promise.withResolvers();
 	socket.on("message", (raw) => {
 		const frame = JSON.parse(raw.toString());
+		if (frame.type === "workspace") welcomed.resolve();
 		if (frame.type === "event" && frame.name === "telemetry") executionTelemetry.push(frame.payload);
 		if (frame.type !== "cmd") return;
 		try {
 			const value = handle(frame.name, frame.args);
+			if (value.disconnectBeforeReceipt) { socket.close(); return; }
 			socket.send(JSON.stringify({ type: "result", id: frame.id, ok: true, value }));
-			if (value.disconnectBeforeDescribe) socket.close();
 		} catch (error) {
 			socket.send(JSON.stringify({ type: "result", id: frame.id, ok: false, error: error.message }));
 		}
 	});
 	await once(socket, "open");
-	socket.send(JSON.stringify({ type: "hello", role: "editor", version: 1 }));
+	socket.send(JSON.stringify({ type: "hello", role: "editor", version: 1, workspaceId: host.workspaceId }));
+	await timeout(welcomed.promise, "workspace hello");
 
 	const call = (name, args = {}) => client.callTool({ name, arguments: args });
 
@@ -204,38 +218,43 @@ try {
 	assert.equal(mergedCharacter.layer.waypoints[0].frame, 12);
 	assert.equal(mergedCharacter.layer.promptClips[0].text, "Walk.");
 	assert.equal(mergedCharacter.motionRef.url, "/ardy/motions/123456-abcdef");
-	omitCharacterFields = true;
+	omitCharacterFields = false;
 
 	// Given a requested non-default mannequin
-	// When the live add command is acknowledged and described
+	// When the admitted add command returns its bus receipt
 	const added = await call("add_character", { subject: "an x-bot performer", model: "x-bot-tpose" });
 	// Then the editor model survives the round trip.
 	assert.equal(added.isError, undefined, JSON.stringify(added));
-	assert.match(added.content[0].text, /\[x-bot-tpose\]/, added.content[0].text);
+	const addedReceipt = JSON.parse(added.content[0].text);
+	assert.equal(addedReceipt.action, "character.add");
+	assert.equal(editor.characters.find(row => row.id === addedReceipt.affectedIds[0]).model, "x-bot-tpose");
 	const described = await call("describe_scene");
 	assert.match(described.content[0].text, /\[x-bot-tpose\]/, described.content[0].text);
 
-	// Given an editor that applies add_character but cannot describe afterward
-	// When the MCP mutation is called
+	// A bus receipt already attests the commit. A later failed description must
+	// not turn that receipt into an uncertain mutation or invite a duplicate.
 	rejectAfterMutation = true;
-	const ambiguousOffset = executionTelemetry.length;
-	const ambiguous = await call("add_character", { subject: "a second performer", model: "x-bot-tpose" });
-	// Then MCP marks the result failed and explicitly prevents duplicate retry.
-	assert.equal(ambiguous.isError, true, JSON.stringify(ambiguous));
-	assert.match(ambiguous.content[0].text, /may have been applied/i, ambiguous.content[0].text);
-	assert.match(ambiguous.content[0].text, /do not retry/i, ambiguous.content[0].text);
+	const acknowledgedOffset = executionTelemetry.length;
+	const acknowledged = await call("add_character", { subject: "a second performer", model: "x-bot-tpose" });
+	assert.equal(acknowledged.isError, undefined, JSON.stringify(acknowledged));
+	assert.equal(JSON.parse(acknowledged.content[0].text).status, "applied");
+	assert.equal(rejectDescribe, true, "the alias must not need a post-commit description");
+	const failedRead = await call("describe_scene");
+	assert.equal(failedRead.isError, true);
 
 	// Given a live editor that rejects a command
 	// When a tool forwards that command
 	const rejected = await call("place_character", { character: "missing", x: 1 });
 	// Then the MCP tool result uses the protocol error state.
 	assert.equal(rejected.isError, true, JSON.stringify(rejected));
-	assert.match(rejected.content[0].text, /Character not found: missing/, rejected.content[0].text);
-	const uncertainEvents = executionTelemetry.slice(ambiguousOffset);
-	const uncertainRequest = uncertainEvents.find(({ event }) => event === "mcp:tool_requested");
-	const lifecycle = uncertainEvents.filter(({ props }) => props.request_id === uncertainRequest.props.request_id);
-	assert.deepEqual(lifecycle.map(({ event }) => event), ["mcp:tool_requested", "mcp:tool_executed"]);
-	assert.equal(lifecycle[1].props.outcome, "uncertain", "transport observation preserves uncertainty hidden by handler isError prose");
+	assert.equal(JSON.parse(rejected.content[0].text).code, "STALE_TARGET");
+	// This subsequent inspected command fences earlier events on the same
+	// socket; absence is not inferred from whichever events arrived by luck.
+	const acknowledgedEvents = executionTelemetry.slice(acknowledgedOffset);
+	const acknowledgedRequest = acknowledgedEvents.find(({ event }) => event === "mcp:tool_requested");
+	const lifecycle = acknowledgedEvents.filter(({ props }) => props.request_id === acknowledgedRequest.props.request_id);
+	assert.deepEqual(lifecycle.map(({ event }) => event), ["mcp:tool_requested", "mcp:tool_executed", "mcp:result_applied"]);
+	assert.equal(lifecycle[1].props.outcome, "succeeded");
 
 	// Given an already-generated take
 	// When generate_motion schedules its internal job
@@ -247,9 +266,9 @@ try {
 	assert.equal(motionJob.isError, undefined, JSON.stringify(motionJob));
 	assert.deepEqual(Object.keys(JSON.parse(motionJob.content[0].text)).sort(), ["createdAt", "lastUpdatedAt", "pollIntervalMs", "status", "taskId", "ttlMs"]);
 
-	// Given an accepted mutation whose editor disconnects before verification
-	// When the MCP tool cannot refresh its live description
-	disconnectBeforeDescribe = true;
+	// Losing the command receipt is still uncertain even if the editor applied
+	// the mutation. Do not substitute a retry or a legacy describe handshake.
+	disconnectBeforeReceipt = true;
 	const disconnected = await call("add_character", { subject: "a disconnected performer", model: "x-bot-tpose" });
 	// Then it is uncertain-applied rather than a successful mutation result.
 	assert.equal(disconnected.isError, true, JSON.stringify(disconnected));
@@ -275,7 +294,7 @@ try {
 		livePort,
 		modelRoundTrip: { isError: added.isError ?? false, described: /\[x-bot-tpose\]/.test(described.content[0].text) },
 		rejected: { isError: rejected.isError === true },
-		uncertainAfterFailedVerification: { isError: ambiguous.isError === true, doNotRetry: /do not retry/i.test(ambiguous.content[0].text) },
+		committedDespiteLaterReadFailure: { isError: acknowledged.isError ?? false, laterReadFailed: failedRead.isError === true },
 		uncertainAfterDisconnect: { isError: disconnected.isError === true, doNotRetry: /do not retry/i.test(disconnected.content[0].text) },
 		loadMotion: { isError: motionJob.isError ?? false, timeoutMs: LiveHub.commandTimeoutMs("load_motion") },
 		defaultCommandTimeoutMs: LiveHub.commandTimeoutMs("describe"),

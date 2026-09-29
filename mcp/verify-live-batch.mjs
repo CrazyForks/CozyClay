@@ -483,7 +483,42 @@ try {
 	assert.deepEqual(JSON.parse(await description()).objects, JSON.parse(boundaryDocument).objects);
 	assert.equal((await history()).past - boundaryDepth.past, 0);
 
+	// The four cast aliases run through the same real MCP/Chrome surface.
+	const castBefore = await description();
+	const castReceipt = (result, action) => {
+		assert.equal(result.isError, undefined, JSON.stringify(result));
+		const value = JSON.parse(result.content[0].text);
+		assert.equal(value.ok, true); assert.equal(value.action, action);
+		assert.equal(value.undo.entries, 1);
+		assert.ok(value.revision.after > value.revision.before);
+		return value;
+	};
+	const undoReceipt = async value => {
+		const result = await call("studio_run", { action: "edit.undo", args: { receiptId: value.receiptId } });
+		assert.equal(JSON.parse(result.content[0].text).status, "undone", JSON.stringify(result));
+	};
+	const castAdded = castReceipt(await call("add_character", { subject: "Bus performer", model: "y-bot-tpose", x: 2, z: -1 }), "character.add");
+	const castId = castAdded.affectedIds.find(id => !JSON.parse(castBefore).characters.some(row => row.id === id));
+	const afterCastAdd = await description();
+	assert.equal(JSON.parse(afterCastAdd).characters.find(row => row.id === castId).model, "y-bot-tpose");
+	const castMoved = castReceipt(await call("place_character", { character: "B", x: 3, y: 0.5, facing: 90, hidden: true }), "character.update");
+	const movedActor = JSON.parse(await description()).characters.find(row => row.id === castId);
+	assert.deepEqual([movedActor.x, movedActor.y, movedActor.rot, movedActor.hidden], [3, 0.5, 90, true]);
+	await undoReceipt(castMoved); assertSceneEquivalent(await description(), afterCastAdd);
+	const castPrompts = castReceipt(await call("set_prompt_blocks", { beats: [{ text: "A person walks forward.", seconds: 6 }] }), "character.setPromptBlocks");
+	const activeActor = JSON.parse(await description()).characters.find(row => row.id === JSON.parse(afterCastAdd).activeCharacterId);
+	assert.equal(activeActor.layer.promptClips.length, 2);
+	assert.equal(activeActor.layer.promptClips.at(-1).endFrame, 144);
+	await undoReceipt(castPrompts); assertSceneEquivalent(await description(), afterCastAdd);
+	const staleCast = await call("remove_character", { character: "B", expectedRevision: castAdded.revision.before });
+	assert.equal(JSON.parse(staleCast.content[0].text).code, "STALE_SCENE");
+	const castRemoved = castReceipt(await call("remove_character", { character: "2" }), "character.remove");
+	assert.equal(JSON.parse(await description()).characters.some(row => row.id === castId), false);
+	await undoReceipt(castRemoved); assertSceneEquivalent(await description(), afterCastAdd);
+	await undoReceipt(castAdded); assertSceneEquivalent(await description(), castBefore);
+
 	console.log(JSON.stringify({
+		castAliases: { receipts: 4, undoRestored: true, staleRevisionRefused: true },
 		happy: {
 			preState: JSON.parse(beforeHappy),
 			postState: JSON.parse(afterHappy),
