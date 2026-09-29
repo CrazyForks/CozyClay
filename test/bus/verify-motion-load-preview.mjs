@@ -73,3 +73,18 @@ test('motion: extra performer delivery owns its take and cast placement in one u
     f.actual.undoScene(); assert.deepEqual(f.snapshot(), before); assert.deepEqual(f.cast.read(), characters);
   } finally { globalThis.fetch = fetch; f.dispose(); }
 });
+test('motion: a draft reaches the rig and cancelling it restores the authored take, not its unedited source URL', async () => {
+  const f = motionFixture(), fetch = globalThis.fetch;
+  try {
+    f.motion.load([{ id: 'actor-a', take: seedMotion() }]);
+    ok(f.run('motion.editTrail', { characterId: 'actor-a', grabFrame: 12, radiusFrames: 6, delta: { x: 0.2, y: 0, z: 0 } }));
+    const take = f.motion.motionFor('actor-a'), before = f.snapshot(), rig = f.actual.snapshotExportRig(f.rigs['actor-a']);
+    globalThis.fetch = async requested => { assert.equal(requested, take.url); return new Response(bytes); };
+    f.motion.preview('actor-a', { ...take, url: 'preview.npz', anchorX: 3 });
+    assert.notDeepEqual(f.actual.snapshotExportRig(f.rigs['actor-a']), rig);
+    assert.deepEqual(f.snapshot(), before);
+    await f.motion.loadMotion(take.url, take.prompt, take.rotationDeg, null, 'actor-a', null, { preview: true });
+    assert.equal(f.buffer.current.motion, f.motion.motionFor('actor-a'));
+    assert.deepEqual(f.snapshot(), before); assert.deepEqual(f.actual.snapshotExportRig(f.rigs['actor-a']), rig);
+  } finally { globalThis.fetch = fetch; f.dispose(); }
+});
