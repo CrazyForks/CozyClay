@@ -1,30 +1,22 @@
-// #437 acceptance 2: every command module's declarations load in plain Node
-// (no React, renderer or browser globals) and are data only. Together the
-// modules declare each Studio action exactly once.
+// Command modules load in plain Node and own the effective data declarations.
 import assert from 'node:assert/strict';
-import { STUDIO_ACTIONS, STUDIO_ACTION_IDS } from '../../src/studio-actions.js';
-import { declarations as shot } from '../../src/commands/shot.js';
-import { declarations as cast } from '../../src/commands/cast.js';
-import { declarations as motion } from '../../src/commands/motion.js';
-import { declarations as objects } from '../../src/commands/objects.js';
-import { declarations as view } from '../../src/commands/view.js';
-import { declarations as scene } from '../../src/commands/scene.js';
-import { declarations as project } from '../../src/commands/project.js';
-import { declarations as exporting } from '../../src/commands/export.js';
-import { declarations as ai } from '../../src/commands/ai.js';
+import { pathToFileURL } from 'node:url';
+import { STUDIO_ACTION_IDS } from '../../src/studio-actions.js';
+import { COMMAND_MODULES, commandDeclarations, createStudioAppActions } from '../../src/commands/index.js';
 
-assert.deepEqual(shot.map(entry => entry.id), [
- 'shot.create', 'shot.split', 'shot.duplicate', 'shot.remove', 'shot.setRange', 'shot.setCameraRail', 'shot.clearCameraRail', 'shot.reorder',
-], 'shot.js declares the 8 shot actions');
-
-const modules = { shot, cast, motion, objects, view, scene, project, export: exporting, ai };
-const all = Object.values(modules).flat();
-for (const [name, list] of Object.entries(modules)) {
- assert.ok(Array.isArray(list) && list.length > 0, `${name}.js declares its actions`);
- // Data only: a structured JSON round trip keeps every field.
- assert.deepEqual(JSON.parse(JSON.stringify(list)), list, `${name}.js declarations are plain data`);
- for (const entry of list) assert.deepEqual(entry, STUDIO_ACTIONS.find(action => action.id === entry.id), `${entry.id} is the shared declaration`);
+export function verifyDeclarations(modules = COMMAND_MODULES, registry = createStudioAppActions({ state: () => ({}) }, modules)) {
+  const all = commandDeclarations(modules);
+  for (const [name, module] of Object.entries(modules)) {
+    assert.ok(Array.isArray(module.declarations) && module.declarations.length > 0, `${name}.js declares its actions`);
+    assert.deepEqual(JSON.parse(JSON.stringify(module.declarations)), module.declarations, `${name}.js declarations are plain data`);
+  }
+  assert.equal(new Set(all.map(entry => entry.id)).size, all.length, 'no action is declared twice');
+  for (const declaration of all) {
+    const effective = registry.get(declaration.id);
+    assert.deepEqual(Object.fromEntries(Object.keys(declaration).map(key => [key, effective[key]])), declaration, `${declaration.id} uses its effective declaration`);
+  }
+  assert.deepEqual(registry.ids().sort(), all.map(entry => entry.id).sort(), 'every implementation has a module declaration');
+  for (const id of STUDIO_ACTION_IDS) assert.ok(all.some(entry => entry.id === id), `${id} retains a module owner`);
+  console.log(`PASS effective declarations: ${all.length} actions across ${Object.keys(modules).length} command modules`);
 }
-assert.equal(new Set(all.map(entry => entry.id)).size, all.length, 'no action is declared twice');
-assert.deepEqual(all.map(entry => entry.id).sort(), [...STUDIO_ACTION_IDS].sort(), 'the modules declare every Studio action');
-console.log(`PASS #437 acceptance 2: ${all.length} actions declared across ${Object.keys(modules).length} command modules, 8 in shot.js`);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) verifyDeclarations();

@@ -4,7 +4,7 @@ import { studioActionDeclaration } from '../../src/studio-actions.js';
 import * as scene from './declaration-fixture.mjs';
 const modules = { ...COMMAND_MODULES, scene };
 const state = { scenes: [{ id: 'scene', name: 'Before' }], activeSceneId: 'scene' };
-const registry = createStudioAppActions({ state: () => state, renameSceneDocument: (id, name) => { state.scenes = [{ id, name }]; } }, modules);
+const registry = createStudioAppActions({ state: () => ({ ...state }), renameSceneDocument: (id, name) => { state.scenes = [{ id, name }]; } }, modules);
 const effective = registry.prepare('scene.rename', { sceneId: 'scene', name: 'After' }).entry;
 assert.equal(effective.kind, 'mutation', 'module kind overrides the shared document declaration');
 assert.equal(effective.undoDomain, 'scenes');
