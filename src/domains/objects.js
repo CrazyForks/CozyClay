@@ -928,7 +928,7 @@ export function useObjects(appContext) {
 	function beginStudioObjectAction() { return storeRef.current.beginCommand(); }
 	function stepObjectHistory(redo) { return (redo ? storeRef.current.redo : storeRef.current.undo)(); }
 	function applyExternalObjects(objects) {
-		storeRef.current.applyAtomic(() => Array.isArray(objects) ? objects : []);
+		return run("objects.replace", { objects: Array.isArray(objects) ? objects : [] });
 	}
 	function commitStudioObjects(draft, historyEntryId) {
 		const before = storeRef.current.objects;

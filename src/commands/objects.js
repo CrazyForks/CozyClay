@@ -3,7 +3,7 @@ import { studioActionDeclaration } from "../studio-actions.js";
 import { characterOf, fail } from "./shared.js";
 import { elementSetSchema, registerElementSet } from './elements.js';
 import './elements/object.js';
-import { createSceneObject, updateSceneObject, removeSceneObject, setSceneObjectParent, descendantsOf } from '../scene-objects.js';
+import { createSceneObject, updateSceneObject, removeSceneObject, setSceneObjectParent, descendantsOf, normalizeSceneObject } from '../scene-objects.js';
 import { STUDIO_TOOL_SCHEMAS, StudioSchemas } from '../studio-agent-protocol.js';
 
 const id = StudioSchemas.TargetGuard.properties.targetId;
@@ -27,6 +27,7 @@ const semantic = [
 ];
 const batch = { id: 'objects.batch', label: 'Batch objects', description: 'Apply legacy object operations in one retained entry.', kind: 'job', domain: 'objects',
 	input: input({ ops: { type: 'array', maxItems: 100, items: input({ name: { type: 'string' }, args: { type: 'object', properties: {}, additionalProperties: true } }) }, atomic: { type: 'boolean' }, stopOnError: { type: 'boolean' }, label: { type: 'string' } }, ['ops']) };
+const replace = { ...mutation('objects.replace', 'Replace authored objects', input({ objects: { type: 'array', items: { type: 'object', properties: {}, additionalProperties: true } } })), exposure: 'ui-only' };
 const changedIds = (before, after) => [...new Set([...before, ...after].map(row => row.id))].filter(id => JSON.stringify(before.find(row => row.id === id)) !== JSON.stringify(after.find(row => row.id === id)));
 const assetProperties = { ...studioActionDeclaration('asset.import').input.properties, placement,
 	...Object.fromEntries(['x', 'y', 'z', 'rot', 'height'].map(key => [key, number])), clay: { type: 'boolean' }, mimeType: { type: 'string' } };
@@ -37,12 +38,13 @@ const assetImport = { ...studioActionDeclaration('asset.import'), kind: 'job', d
 		input({ fileToken: id, placeAs: { type: 'string', enum: ['mesh', 'cutout'] } }, ['fileToken', 'placeAs']),
 	] } };
 const matte = { id: 'object.matte', label: 'Apply object matte', description: 'Prepare derived assets, then publish one fenced object edit.', kind: 'job', domain: 'objects', exposure: 'ui-only', input: input({ objectId: id }) };
-export const declarations = Object.freeze([...['object.attach', 'object.detach', 'object.duplicate'].map(studioActionDeclaration), ...semantic, batch, assetImport, matte]);
+export const declarations = Object.freeze([...['object.attach', 'object.detach', 'object.duplicate'].map(studioActionDeclaration), ...semantic, batch, assetImport, matte, replace]);
 
 export function register(registry, ports) {
 	const objectOf = objectId => ports.state().objects.find(object => object.id === objectId)
 		?? fail("STALE_TARGET", `Object ${objectId} is not in this scene.`);
 	const owned = () => ports.storeDomain('objects');
+	const available = () => Boolean(ports.storeDomain?.('objects')) || 'The objects document owner is not mounted.';
 	const result = (before, summary) => ({ affectedIds: changedIds(before, owned().read()), summary });
 	const methods = {
 		'object.add': args => {
@@ -91,13 +93,30 @@ export function register(registry, ports) {
 	// owns all field mapping, normalization, publication and patch aliases.
 	registerElementSet({ register(entry) {
 		const expand = op => typeof op.set.scale === 'number' ? { ...op, set: { ...op.set, scale: { x: op.set.scale, y: op.set.scale, z: op.set.scale } } } : op;
-		registry.register({ ...entry, run: args => entry.run(args.ops ? { ops: args.ops.map(expand) } : expand(args)) });
+		registry.register({ ...entry, available, run: args => {
+			const ops = (args.ops ?? [args]).map(expand);
+			let draft = owned().read();
+			for (const { id, set } of ops) if (Object.hasOwn(set, 'parent')) {
+				const object = objectOf(id), parent = set.parent;
+				if (parent !== null) objectOf(parent);
+				if (parent === id || descendantsOf(draft, id).some(row => row.id === parent)) fail('INVALID_ARGUMENT', 'Grouping would create a cycle.');
+				if (object.attach) fail('CAPABILITY_MISSING', 'Use object.group to preserve an attached object world transform.');
+				draft = setSceneObjectParent(draft, id, parent);
+			}
+			return entry.run(args.ops ? { ops } : ops[0]);
+		} });
 	} }, ports, semantic[0]);
-	for (const declaration of semantic.slice(1)) registry.register({ ...declaration, available: () => Boolean(ports.storeDomain?.('objects')), run: methods[declaration.id] });
+	for (const declaration of semantic.slice(1)) registry.register({ ...declaration, available, run: methods[declaration.id] });
 	// Native adapters stay usable until their owner is mounted. In the editor,
 	// domains mount before registry construction, so this is always the bus alias.
 	if (ports.storeDomain?.('objects')) registry.registerToolAlias('arrange_objects', 'objects.arrange');
-	registry.register({ ...batch, available: () => Boolean(ports.storeDomain?.('objects')), run: (args, context) => {
+	registry.register({ ...replace, available, run: ({ objects }) => {
+		const next = objects.map(normalizeSceneObject);
+		if (next.some(row => !row) || new Set(next.map(row => row.id)).size !== next.length) fail('INVALID_ARGUMENT', 'Objects require valid records and unique ids.');
+		const before = owned().read(); owned().write(next);
+		return result(before, 'Replaced authored objects.');
+	} });
+	registry.register({ ...batch, available, run: (args, context) => {
 		const before = owned().read();
 		const output = context.commit(() => owned().batch(args));
 		return { ...result(before, 'Applied object batch.'), output };
@@ -134,7 +153,7 @@ export function register(registry, ports) {
 		} });
 	// The live import_asset path (validate, store the bytes, ONE atomic store
 	// entry), fed a data URL; an http(s) source is fetched into one first.
-	registry.register({ ...matte, available: () => Boolean(ports.storeDomain?.('objects')), run: async ({ objectId }, context) => {
+	registry.register({ ...matte, available, run: async ({ objectId }, context) => {
 		await owned().applyMatte(objectId, context);
 		return { affectedIds: [objectId], summary: 'Applied the object matte.' };
 	} });

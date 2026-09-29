@@ -15,7 +15,7 @@ const cases = {
   'object.duplicate': { objectId: 'cube' },
   'objects.arrange': { ops: [{ op: 'update', id: 'cube', position: { world: { x: 2, y: 0, z: 1 } } }] },
 };
-assert.deepEqual(Object.keys(cases).sort(), declarations.filter(entry => entry.kind === 'mutation').map(entry => entry.id).sort());
+assert.deepEqual(Object.keys(cases).sort(), declarations.filter(entry => entry.kind === 'mutation' && entry.exposure !== 'ui-only').map(entry => entry.id).sort());
 for (const [command, args] of Object.entries(cases)) for (const origin of ['ui', 'agent', 'mcp', 'cli']) {
   const f = objectsFixture(), initial = structuredClone(f.objects.read());
   const ok = receipt => { assert.equal(receipt.ok, true, JSON.stringify(receipt)); return receipt; };
