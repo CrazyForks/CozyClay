@@ -18,6 +18,7 @@ for (const composed of [false, true]) test(`motion installation receipt retains 
   const f = appFixture();
   let returnedHistoryId;
   try {
+    f.scope.shotsDomain.load({ ...f.scope.shotsDomain.state(), camera: f.actual.readStudioCamera() });
     const beforeShots = structuredClone(f.scope.shotsDomain.state());
     const beforeMotion = f.actual.snapshotStudioDomain('motion', 'actor-a');
     if (composed) f.ports.commitMotion = payload => {

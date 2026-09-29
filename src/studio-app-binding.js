@@ -233,8 +233,9 @@ export function createStudioAppBinding(ports) {
 				targetToken: `target-${tokenSequence + 1}`, frameCount: payload.schedule.frameCount, fps: 24, durationSeconds: payload.schedule.durationSeconds,
 				blocks: payload.schedule.blocks.map(({ sourceBeat, startFrame, endFrameExclusive }) => ({ sourceBeat, startFrame, endFrameExclusive })), selectionChanged: false },
 			verification: payload.verification, repairs: payload.repairs, explicitUnverifiedAcceptance: payload.explicitUnverifiedAcceptance === true });
-		ports.commitMotion({ ...payload, takeId, historyEntryId });
-		const actual = { ...receipt, installed: { ...receipt.installed, targetToken: guard(payload.binding.characterId).token } };
+		const publication = ports.commitMotion({ ...payload, takeId, historyEntryId });
+		const actual = { ...receipt, undo: { ...receipt.undo, historyEntryId: publication?.historyEntryId ?? historyEntryId },
+			installed: { ...receipt.installed, targetToken: guard(payload.binding.characterId).token } };
 		return remember(journal.record(validateReceipt(actual)));
 	}
 	function rejection(request, error, phase = "admission") {
