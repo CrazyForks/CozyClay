@@ -29,9 +29,12 @@ function include(name) {
 for (const node of parseSync('motion.js', motionSource).program.body) if (node.type === 'ImportDeclaration' && node.source.value.endsWith('/app-stage.jsx')) for (const spec of node.specifiers) include(spec.imported.name);
 const stageSubset = ast.body.filter(node => selected.has(node)).map(node => stage.slice(node.start, node.end)).join('\n');
 const server = await createServer({ configFile: false, server: { middlewareMode: true, hmr: false }, optimizeDeps: { noDiscovery: true, include: [] }, appType: 'custom',
-  plugins: [{ name: 'motion-without-renderer', enforce: 'pre', load(id) { if (id.endsWith('/src/app-stage.jsx')) return stageSubset; } }] });
-let useMotion;
-try { ({ useMotion } = await server.ssrLoadModule('/src/domains/motion.js')); }
+  plugins: [{ name: 'motion-without-renderer', enforce: 'pre', load(id) {
+    if (id.endsWith('/src/app-stage.jsx')) return stageSubset;
+    if (id.endsWith('/src/motion-store.js')) return `export * from '../test/bus/motion-cache-fixture.mjs';`;
+  } }] });
+let useMotion, motionCache;
+try { ({ useMotion } = await server.ssrLoadModule('/src/domains/motion.js')); motionCache = await server.ssrLoadModule('/test/bus/motion-cache-fixture.mjs'); }
 finally { await server.close(); }
 
 export function seedMotion(frames = 48) {
@@ -68,5 +71,5 @@ export function motionFixture() {
     actions: () => registry, recordAction: f.actual.recordStudioAction, beginAction: f.actual.beginStudioAction });
   f.ports.actions = () => registry; Object.assign(f.ports, app.ports);
   const snapshot = () => structuredClone(app.storeDomain('motion').documentStore.getSnapshot().slices);
-  return { ...f, motion, registry, snapshot, renderMotion, dispose() { f.dispose(); motion.dispose?.(); } };
+  return { ...f, motion, registry, snapshot, renderMotion, motionCache, dispose() { f.dispose(); motion.dispose?.(); } };
 }
