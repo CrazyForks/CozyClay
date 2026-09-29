@@ -145,6 +145,12 @@ const COMMAND_INPUTS = {
 	"shot.create": {}, "shot.split": { shotId: "shot-1" }, "shot.duplicate": { shotId: "shot-1" }, "shot.remove": { shotId: "shot-1" },
 	"shot.setRange": { shotId: "shot-1", range: { startFrame: 1, endFrameExclusive: 15 } }, "shot.reorder": { shotId: "shot-1", startFrame: 2 },
 	"shot.setCameraRail": { shotId: "shot-1", points: [{ x: -2, z: 4 }, { x: 3, z: 4 }] }, "shot.clearCameraRail": { shotId: "shot-1" },
+	"shot.set": { id: "shot-1", set: { targetModel: "seedance-2.5" } }, "shot.rename": { shotId: "shot-1", name: "Renamed" },
+	"shot.setCamera": { shotId: "shot-1", patch: { mode: "follow" } }, "shot.addKey": { shotId: "shot-1", frame: 8 },
+	"shot.moveKey": { shotId: "shot-1", keyId: "key-1", frame: 8 }, "shot.removeKey": { shotId: "shot-1", keyId: "key-1" },
+	"shot.clearKeys": { shotId: "shot-1" }, "shot.setTimeline": { frameCount: 96 }, "shot.setLens": { fovDeg: 35 },
+	"shot.frame": { preset: "mocapInteraction" }, "shot.replace": { shots: [createShot("Replacement", 0, 23)] },
+	"shot.captureCamera": { shotId: "shot-1" }, "shot.placeCamera": { x: 2 },
 	"character.addWaypoint": { characterId: "actor", position: { x: 0, z: 2 }, frame: 40 },
 	"character.moveWaypoint": { characterId: "actor", position: { x: 0, z: 1.1 }, frame: 24 },
 	"character.removeWaypoint": { characterId: "actor", frame: 24 }, "character.clearWaypoints": { characterId: "actor" },
@@ -172,7 +178,7 @@ const COMMAND_INPUTS = {
 function commandFixture({ frame = 8 } = {}) {
 	const host = { workspaceId: "workspace", documentEpoch: "document", sceneId: "scene-1", sceneEpoch: "epoch" };
 	const state = {
-		shots: [{ ...createShot("Shot 1", 0, 15, [], { mode: "rail", cameraRail: [{ x: -2, z: 4 }, { x: 2, z: 4 }] }), id: "shot-1" }],
+		shots: [{ ...createShot("Shot 1", 0, 15, [{ id: "key-1", frame: 0, framing: { pos: { x: 0, y: 1.6, z: 5 }, yaw: 0, pitch: 0, fovDeg: 40 } }], { mode: "rail", cameraRail: [{ x: -2, z: 4 }, { x: 2, z: 4 }] }), id: "shot-1" }],
 		objects: [{ ...createSceneObject("sphere"), id: "parent-1" }, { ...createSceneObject("cube"), id: "object-1", parent: "parent-1" }, { ...createSceneObject("chair"), id: "group-2" }],
 		characters: [{ id: "actor", subject: "Ada" }], frame, frameCount: 48, selectedObjectId: null, activeCharacterId: "actor",
 		promptBlockCount: 0, generating: false, motionReady: true, exporting: false, canExportVideo: true,
@@ -181,11 +187,13 @@ function commandFixture({ frame = 8 } = {}) {
 		aiShot: { mode: "image", imageModel: "gpt_image_2" }, falMotion: { enabled: false, status: "idle", dailyRemaining: null },
 	};
 	const entries = [], writes = [];
-	let recording = null, revision = 0, objectDomain, sceneDomain;
+	let recording = null, revision = 0, objectDomain, sceneDomain, shotDomain;
 	const answers = {
 		// Like the editor's, every read is a fresh snapshot of the document.
 		state: () => ({ ...state }),
-		storeDomain: name => name === 'objects' ? objectDomain : name === 'scenes' ? sceneDomain : undefined,
+		storeDomain: name => name === 'objects' ? objectDomain : name === 'scenes' ? sceneDomain : name === 'shot' ? shotDomain : undefined,
+		writeShots: rows => { state.shots = rows; },
+		writeShotState: value => { Object.assign(state, value); },
 		writeObjects: rows => { state.objects = rows; },
 		writeScenes: rows => { state.scenes = rows; },
 		writeProject: name => { state.project = { ...state.project, name }; },
@@ -210,6 +218,18 @@ function commandFixture({ frame = 8 } = {}) {
 			return answers[name]?.(...args);
 		},
 	});
+	shotDomain = {
+		read: () => state.shots, state: () => ({ frameCount: state.frameCount }),
+		write: update => ports.writeShots(typeof update === 'function' ? update(state.shots) : update),
+		writeState: update => ports.writeShotState(typeof update === 'function' ? update(state) : update),
+		capture: () => ({ pos: { x: 0, y: 1.6, z: 5 }, yaw: 0, pitch: 0, fovDeg: 40 }),
+		// This fixture measures the history boundary. The real framing planner
+		// and renderer publication are exercised by verify-shots-commands.
+		frame: () => { ports.writeShots([...state.shots]); return { affectedIds: ['shot-1'] }; },
+		setLens: fovDeg => ports.writeShotState({ fovDeg }),
+		captureCamera: () => ports.writeShotState({ manual: true }),
+		placeCamera: camera => ports.writeShotState({ camera }),
+	};
 	objectDomain = {
 		read: () => state.objects,
 		write: rows => ports.writeObjects(rows),
@@ -262,7 +282,7 @@ const cases = {
 	},
 	async "every command mutation writes inside one entry of its undo domain"() {
 		const mutations = Object.values(COMMAND_MODULES).flatMap(module => module.declarations).filter(entry => entry.kind === "mutation");
-		assert.equal(mutations.length, 31);
+		assert.equal(mutations.length, 44);
 		for (const declaration of mutations) {
 			// A new shot needs free room at the playhead; the others act inside shot-1.
 			const f = commandFixture({ frame: declaration.id === "shot.create" ? 24 : 8 }), [name] = Object.entries(COMMAND_MODULES).find(([, module]) => module.declarations.includes(declaration));
