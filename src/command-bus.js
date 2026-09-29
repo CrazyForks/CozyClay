@@ -296,7 +296,7 @@ export function createCommandBus({ registry, ports }) {
           job.background = true;
           const current = ports.read();
           return journal.record(validateReceipt({ ok: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: before.host,
-            action: entry.id, status: 'started', kind: 'job', jobId: job.id, authored: false, revision: { before: before.revision, after: current.revision },
+            action: entry.id, status: 'started', kind: 'job', jobId: job.id, authored: false, revision: { before: current.revision, after: current.revision },
             affectedIds: [], delta: [], checks: { coverage: `studio-action:${entry.id}` }, warnings: [], undo: null }));
         };
         if (answer?.then && request.wait === false) return detach();
