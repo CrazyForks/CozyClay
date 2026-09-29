@@ -24,7 +24,7 @@ try {
   ({ default: ProjectPanel } = await server.ssrLoadModule('/src/panels/ProjectPanel.jsx'));
 } finally { await server.close(); }
 
-export function projectFixture() {
+export function projectFixture({ singleScene = false } = {}) {
   const previousStorage = globalThis.localStorage;
   const storage = new Map([[PROJECT_SESSION_KEY, JSON.stringify({ name: 'Heist' })]]);
   globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) };
@@ -32,8 +32,8 @@ export function projectFixture() {
   app.updatePorts({ read: f.actual.readStudioState, bounds: f.actual.studioBounds, revision: f.revision });
   const stage = createSceneStage({ ...f.stage.read(), characters: f.characterRef.current });
   const scenes = [
-    { id: 'scene', name: 'First', objects: f.objects.read(), shotDocument: null, stage },
-    { id: 'scene-b', name: 'Second', objects: [], shotDocument: null, stage: createSceneStage() },
+    { id: 'scene', name: singleScene ? 'Fixture' : 'First', objects: f.objects.read(), shotDocument: null, stage },
+    ...singleScene ? [] : [{ id: 'scene-b', name: 'Second', objects: [], shotDocument: null, stage: createSceneStage() }],
   ];
   Object.assign(f.scope, {
     startup: { document: { version: SCENES_VERSION, scenes, activeSceneId: 'scene' }, error: null },

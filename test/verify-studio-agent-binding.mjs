@@ -823,6 +823,9 @@ const implementations={
   assert.equal(await f.actual.runStudioAction('export.shotVideo',{}),null);assert.equal(f.values.setToast,undefined,'a failed export was already reported by the export panel');
  },
  async 'run-action-scenes'(f){
+  // Scene rename now needs its real document owner, not the native-only adapter.
+  f=(await import('./bus/project-fixture.mjs')).projectFixture({singleScene:true});
+  try {
   const run=(action,args)=>f.call('run_action',f.request('run_action',{action,args}));
   const listed=async()=>Object.fromEntries((await f.call('inspect_studio',{scope:'actions'})).actions.map(a=>[a.id,a]));
   const names=()=>f.scope.scenesRef.current.map(s=>s.name);
@@ -844,7 +847,7 @@ const implementations={
   assert.equal(copy.status,'completed',JSON.stringify(copy));assert.deepEqual(names(),['Fixture','Fixture 2','SCENE 01'],'the copy sits after its source');
   assert.equal(copy.host.sceneId,f.scope.scenesRef.current[1].id,'the copy opens');
   const renamed=await run('scene.rename',{sceneId:second.id,name:'Rooftop'});
-  assert.equal(renamed.status,'completed',JSON.stringify(renamed));assert.deepEqual(renamed.host,f.host(),'a rename keeps the open scene');
+  assert.equal(renamed.status,'applied',JSON.stringify(renamed));assert.ok(renamed.undo?.historyEntryId);assert.deepEqual(renamed.host,f.host(),'a rename keeps the open scene');
   assert.deepEqual(names(),['Fixture','Fixture 2','Rooftop']);assert.deepEqual(renamed.affectedIds,[second.id]);
   const removed=await run('scene.delete',{sceneId:copy.host.sceneId});
   assert.equal(removed.status,'completed',JSON.stringify(removed));assert.deepEqual(names(),['Fixture','Rooftop']);
@@ -867,6 +870,7 @@ const implementations={
   await f.actual.duplicateSceneDocumentFromUi(second.id);assert.deepEqual(names(),['Rooftop','Rooftop 2','Alley']);
   await f.actual.deleteSceneDocumentFromUi(f.host().sceneId);assert.deepEqual(names(),['Rooftop','Alley']);
   f.values.setToast=undefined;assert.equal(await f.actual.selectSceneDocument('scene-ghost'),null);assert.equal(f.values.setToast,undefined);
+  } finally { f.dispose(); }
  },
  async 'run-action-project-save'(f){
   const run=()=>f.call('run_action',f.request('run_action',{action:'project.save',args:{}}));

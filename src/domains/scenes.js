@@ -342,7 +342,7 @@ export function useScenes(appContext) {
 	async function saveProject(saveAs = false, explicitName = null, context = null) {
 		if (!context) {
 			const receipt = await runProject(saveAs ? "project.saveAs" : "project.save", explicitName === null ? {} : { name: explicitName });
-			return receipt.ok ? receipt.output : { saved: false, failure: receipt.code };
+			return receipt.ok ? { saved: true, ...receipt.output } : { saved: false, failure: receipt.code };
 		}
 		const currentName = domain.metadata().name;
 		if (currentName === null && explicitName === null) {
@@ -373,7 +373,7 @@ export function useScenes(appContext) {
 			context.check();
 			markProjectClean(name, checkpoint, currentName);
 			setSaveBlockedReasons(null);
-			setProjectSaveState("saved");
+			setProjectSaveState(domain.dirtyStore.read("projectDirty") ? "dirty" : "saved");
 			track("project:saved", {
 				object_count_bucket: bucketCount(appContext.shared.projectStateRef.current.sceneObjects?.length ?? 0),
 				shot_count_bucket: bucketCount(appContext.shared.shots.length),
@@ -467,7 +467,7 @@ export function useScenes(appContext) {
 			} else {
 				file = await openProjectFallback();
 			}
-			if (!file) return;
+			if (!file) return false;
 			const result = readProjectDocument(file.text);
 			if (!result.ok) {
 				appContext.notify(isKo ? `프로젝트를 열 수 없어요: ${result.reason}` : `Cannot open project: ${result.reason}`);
@@ -481,10 +481,13 @@ export function useScenes(appContext) {
 			applyProject(result.project, true);
 			setProjectStartupOpen(false);
 			appContext.notify(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
+			return true;
 		} catch (err) {
-			if (err?.name === "AbortError") return;
+			if (err?.name === "AbortError") return false;
+			if (err?.code) throw err;
 			console.error("openProject failed", err);
 			appContext.notify(ko("Could not open the project", "프로젝트를 열지 못했어요"));
+			return false;
 		}
 	}
 
@@ -511,12 +514,15 @@ export function useScenes(appContext) {
 			await rehydrateProjectAssets(result.project, result.warnings);
 			context.check();
 			applyProject(result.project, true);
-		setProjectBrowserOpen(false);
-		setProjectStartupOpen(false);
-		appContext.notify(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
+			setProjectBrowserOpen(false);
+			setProjectStartupOpen(false);
+			appContext.notify(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
+			return true;
 		} catch (err) {
+			if (err?.code) throw err;
 			console.error("openProjectByHandle failed", err);
 			appContext.notify(ko("Could not open the project", "프로젝트를 열지 못했어요"));
+			return false;
 		}
 	}
 
@@ -537,13 +543,7 @@ export function useScenes(appContext) {
 		openScene(fresh.scenes[0], fresh.scenes);
 		appContext.shared.projectHandleRef.current = null;
 		clearStoredProjectHandle();
-		appContext.shared.projectSnapshotRef.current = JSON.stringify(createProjectDocument({
-			scenesDocument: fresh,
-			workspaceLayout: appContext.shared.projectStateRef.current.workspaceLayout,
-			customPoses: appContext.shared.customPoses,
-			workflow: createWorkflowGraph(),
-			name,
-		}));
+		appContext.shared.projectSnapshotRef.current = collectProjectSnapshot(name);
 		domain.setDirty(false);
 		storeProjectSession(name);
 		setProjectStartupOpen(false);
@@ -682,7 +682,7 @@ export function useScenes(appContext) {
 	}
 
 	function renameSceneDocument(sceneId, name) {
-		const savedScenes = snapshotActiveScene();
+		const savedScenes = appContext.storeDomain("scenes")?.read() ?? snapshotActiveScene();
 		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
 		if (index < 0) return;
 		const nextScenes = renameScene(savedScenes, index, name);
@@ -736,10 +736,13 @@ export function useScenes(appContext) {
 		domain.replaceDocument(nextScenes, incomingScene.id);
 	}
 	function loadLiveScenes(args, authorized = false) {
-		if (!authorized) return appContext.bus.run("load_scenes", { document: args.document }, {
-			origin: "mcp", host: appContext.ports.read().host, expectedRevision: appContext.ports.revision.current,
-			...(args.confirmationToken ? { confirmationToken: args.confirmationToken } : {}),
-		});
+		if (!authorized) {
+			const receipt = appContext.bus.run("load_scenes", { document: args.document }, {
+				origin: "mcp", host: appContext.ports.read().host, expectedRevision: appContext.ports.revision.current,
+				...(args.confirmationToken ? { confirmationToken: args.confirmationToken } : {}),
+			});
+			return receipt.ok ? receipt.output : receipt;
+		}
 		if (!args.document || typeof args.document !== "object" || Array.isArray(args.document)) throw new Error("Invalid scene document");
 		const loaded = readSceneDocument(JSON.stringify(args.document));
 		if (loaded.status !== "valid" && loaded.status !== "migrated") throw new Error("Invalid scene document");
@@ -748,8 +751,8 @@ export function useScenes(appContext) {
 		const live = appContext.live.state;
 		live.persistScenes(document.scenes, document.activeSceneId);
 		live.openScene(target, document.scenes);
-		appContext.patchLive({ scenes: document.scenes });
-		appContext.patchLive({ activeSceneId: document.activeSceneId });
+		appContext.patchLive({ scenes: domain.read() });
+		appContext.patchLive({ activeSceneId: domain.metadata().activeSceneId });
 		appContext.patchLive({ objects: appContext.shared.storeRef.current.objects });
 		appContext.patchLive({ characters: createSceneStage(target.stage).characters });
 		appContext.publishCharacters(live.characters);

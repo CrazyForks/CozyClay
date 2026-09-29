@@ -17,7 +17,8 @@ export const declarations = Object.freeze([rename, save, saveAs, opening, fresh,
 
 export function register(registry, ports) {
 	const owner = () => ports.storeDomain?.("scenes");
-	registry.register({ ...rename, available: () => Boolean(owner()), run: ({ name }) => {
+	const available = () => Boolean(owner()) || "The project document owner is not mounted.";
+	registry.register({ ...rename, available, run: ({ name }) => {
 		if (!name.trim()) fail("INVALID_ARGUMENT", "A project name cannot be blank.");
 		owner().renameProject(name);
 		return { affectedIds: [owner().metadata().activeSceneId], summary: "Renamed project." };
@@ -39,12 +40,12 @@ export function register(registry, ports) {
 			if (saved?.cancelled) fail("TARGET_NOT_READY", "Not saved: the user closed the file picker.");
 			if (!saved?.saved) fail("TARGET_NOT_READY", saved?.failure === "missing-resources" ? "Not saved: some project assets or motions are missing."
 				: saved?.failure === "resources-too-large" ? "Not saved: the project's resources are too large." : "Not saved: writing the project file failed.");
-			return { affectedIds: [], output: saved, summary: saved.downloaded
+			return { affectedIds: [], output: { fileName: saved.fileName }, summary: saved.downloaded
 				? `This browser has no file access, so the project ${saved.name} was downloaded as ${saved.fileName}.`
 				: `Saved the project ${saved.name} to ${saved.fileName}.` };
 		} });
 	for (const declaration of [opening, fresh, starter, restore, browse]) registry.register({ ...declaration,
-		available: () => Boolean(owner()), run: async (args, context) => {
+		available, run: async (args, context) => {
 			const result = await owner().projectAction(declaration.id, args, context);
 			if (result === false) fail("TARGET_NOT_READY", "The project was not opened; check the project dialog.");
 			return { affectedIds: [owner().metadata().activeSceneId], output: { opened: result === true }, summary: `${declaration.label}.` };

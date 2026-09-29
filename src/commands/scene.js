@@ -15,7 +15,7 @@ const load = { id: "load_scenes", label: "Load scene document", description: "Lo
 	input: { type: "object", properties: { document: { type: "object", properties: {
 		version: { type: "integer" }, activeSceneId: { type: "string" }, scenes: { type: "array", minItems: 1, items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: true } },
 	}, required: ["version", "activeSceneId", "scenes"], additionalProperties: false } }, required: ["document"], additionalProperties: false } };
-export const declarations = Object.freeze([set, reorder, load,
+export const declarations = Object.freeze([load, set, reorder,
 	...["scene.create", "scene.duplicate", "scene.rename", "scene.delete", "scene.switch"].map(id => {
 		const declaration = studioActionDeclaration(id);
 		return id === "scene.rename" ? { ...declaration, kind: "mutation", undoDomain: "scenes", description: "Rename a scene in one retained undo entry." } : declaration;
@@ -23,12 +23,13 @@ export const declarations = Object.freeze([set, reorder, load,
 ]);
 
 export function register(registry, ports) {
-	registry.register({ ...load, available: () => Boolean(ports.storeDomain?.("scenes")), run: args => {
+	const available = () => Boolean(ports.storeDomain?.("scenes")) || "The project document owner is not mounted.";
+	registry.register({ ...load, available, run: args => {
 		const output = ports.storeDomain("scenes").loadScenes(args);
 		return { affectedIds: [output.activeSceneId], output, summary: "Loaded scene document." };
 	} });
 	registerElementSet(registry, ports, set);
-	registry.register({ ...reorder, available: () => Boolean(ports.storeDomain?.("scenes")), run: ({ sceneId, order }) => {
+	registry.register({ ...reorder, available, run: ({ sceneId, order }) => {
 		const owner = ports.storeDomain("scenes");
 		if (!owner.read().some(row => row.id === sceneId)) fail("STALE_TARGET", `Scene ${sceneId} is not in this project.`);
 		owner.write(owner.read().map(row => row.id === sceneId ? { ...row, order } : row));
