@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { scanTree } from "./verify-bus-coverage.mjs";
+import { scanTree, scanSource } from "./verify-bus-coverage.mjs";
+import { handlerCoverage } from './handler-coverage.mjs';
 import { COMMAND_MODULES } from "../../src/commands/index.js";
 const STUDIO_ACTIONS = Object.values(COMMAND_MODULES).flatMap(module => module.declarations);
 import { fixture, result } from "./fixture.mjs";
@@ -66,15 +67,17 @@ function sourceFiles(root) {
   walk(root);
   return files;
 }
-function coverageMetrics() {
-  const sources = sourceFiles(fileURLToPath(new URL("../../src", import.meta.url)));
-  const text = sources.map(file => readFileSync(file, "utf8"));
-  const handlerTotal = text.reduce((total, source) => total + [...source.matchAll(/on[A-Z][A-Za-z]+\s*=\s*\{/g)].length, 0);
-  const handlerSites = text.reduce((total, source) => total + [...source.matchAll(/on[A-Z][A-Za-z]+[\s\S]{0,240}?\brun\s*\(/g)].length, 0);
+function coverageMetrics(fixtures = null) {
+  const root = fileURLToPath(new URL('../../src', import.meta.url));
+  const sources = fixtures ?? sourceFiles(root).map(file => ({ file, source: readFileSync(file, 'utf8') }));
+  const handlers = sources.map(({ source, file }) => handlerCoverage(source, file, STUDIO_ACTIONS));
+  const handlerTotal = handlers.reduce((total, sites) => total + sites.handlerTotal, 0);
+  const handlerSites = handlers.reduce((total, sites) => total + sites.handlerSites, 0);
+  const writerReferences = fixtures ? fixtures.flatMap(({ source, file }) => scanSource(source, file).references).length : scanTree(root).length;
   const registeredCommands = STUDIO_ACTIONS.filter(action => action.exposure !== "ui-only").length;
-  const metrics = { writerReferences: scanTree(fileURLToPath(new URL("../../src", import.meta.url))).length, handlerSites, handlerTotal, registeredCommands, commandOriginRows: registeredCommands * ORIGINS.length };
+  const metrics = { writerReferences, handlerSites, handlerTotal, registeredCommands, commandOriginRows: registeredCommands * ORIGINS.length };
   console.log(`BUS COVERAGE (a) document-writer references outside commands: ${metrics.writerReferences}`);
-  console.log(`BUS COVERAGE (b) document-mutating UI handler sites that reach run: ${metrics.handlerSites} of ${metrics.handlerTotal}`);
+  console.log(`BUS COVERAGE (b) document-mutating UI handler sites that reach run: ${metrics.handlerSites} of ${metrics.handlerTotal} (${metrics.handlerTotal ? 100 * metrics.handlerSites / metrics.handlerTotal : 100}%)`);
   console.log(`BUS COVERAGE (c) registered commands exposed to agents: ${metrics.registeredCommands} of ${metrics.registeredCommands}`);
   return metrics;
 }

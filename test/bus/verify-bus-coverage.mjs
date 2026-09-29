@@ -132,7 +132,7 @@ test("semantic edit is silent inside a bus run", () => {
   assert.deepEqual(warnings, []);
 });
 
-export { scanSource, scanTree, applyRatchet };
+export { scanSource, scanTree, applyRatchet, writerName, isRunCall };
 
 const actualReferences = scanTree(fileURLToPath(new URL("../../src", import.meta.url)));
 const currentCounts = Object.create(null);
