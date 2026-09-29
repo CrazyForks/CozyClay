@@ -11,7 +11,11 @@ const set = mutation("scene.set", "Set scene name or order", elementSetSchema("s
 const reorder = mutation("scene.reorder", "Reorder a scene", { type: "object", properties: {
 	sceneId: studioActionDeclaration("scene.rename").input.properties.sceneId, order: { type: "number" },
 }, required: ["sceneId", "order"], additionalProperties: false });
-export const declarations = Object.freeze([set, reorder,
+const load = { id: "load_scenes", label: "Load scene document", description: "Load scenes through the non-authored boundary; changed scene ids require confirmation.", kind: "document", exposure: "confirm",
+	input: { type: "object", properties: { document: { type: "object", properties: {
+		version: { type: "integer" }, activeSceneId: { type: "string" }, scenes: { type: "array", minItems: 1, items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: true } },
+	}, required: ["version", "activeSceneId", "scenes"], additionalProperties: false } }, required: ["document"], additionalProperties: false } };
+export const declarations = Object.freeze([set, reorder, load,
 	...["scene.create", "scene.duplicate", "scene.rename", "scene.delete", "scene.switch"].map(id => {
 		const declaration = studioActionDeclaration(id);
 		return id === "scene.rename" ? { ...declaration, kind: "mutation", undoDomain: "scenes", description: "Rename a scene in one retained undo entry." } : declaration;
@@ -19,6 +23,10 @@ export const declarations = Object.freeze([set, reorder,
 ]);
 
 export function register(registry, ports) {
+	registry.register({ ...load, available: () => Boolean(ports.storeDomain?.("scenes")), run: args => {
+		const output = ports.storeDomain("scenes").loadScenes(args);
+		return { affectedIds: [output.activeSceneId], output, summary: "Loaded scene document." };
+	} });
 	registerElementSet(registry, ports, set);
 	registry.register({ ...reorder, available: () => Boolean(ports.storeDomain?.("scenes")), run: ({ sceneId, order }) => {
 		const owner = ports.storeDomain("scenes");
