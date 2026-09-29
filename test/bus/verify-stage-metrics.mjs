@@ -7,5 +7,5 @@ const measured = coverageMetrics();
 assert.ok(measured.writerReferences < 243, 'writer references decrease from origin/main');
 assert.ok(measured.handlerSites >= 3 + 8, 'the eight stage panel handlers reach run, measured from source');
 assert.equal(baseline.coverage.writerReferences, measured.writerReferences);
-assert.equal(baseline.coverage.handlerSites, measured.handlerSites);
+assert.ok(measured.handlerSites >= baseline.coverage.handlerSites, 'other owned domains may add handler sites above the committed floor');
 console.log('PASS stage ratchet: owned-stage entries removed; writer and handler metrics measured, not hand-set');

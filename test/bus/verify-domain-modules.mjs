@@ -34,7 +34,7 @@ const domains = {
   cast: { states: ['characters', 'customPoses', 'waypoints', 'promptClips'], panels: ['SubjectsPanel', 'CharacterTransformPanel', 'RigPanel', 'PosePanel', 'PromptBlocksPanel'] },
   shots: { states: ['shots', 'tlFrameCount', 'cameraMove', 'fovDeg'], panels: ['CameraPanel'] },
   objects: { states: ['domain'], panels: ['PropsPanel', 'ObjectTransformPanel'] },
-  scenes: { states: ['scenes', 'activeSceneId', 'projectName', 'projectDirty'], panels: ['ProjectPanel'] },
+  scenes: { states: ['domain'], panels: ['ProjectPanel'] },
   stage: { states: ['domain', 'preset'], panels: ['LightPanel', 'EnvironmentPanel'] },
 };
 // Existing source-driven integration fixtures follow the moved implementation,

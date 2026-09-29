@@ -1,4 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { StudioProtocolError } from "../studio-agent-protocol.js";
+import { createDocumentStore } from "../document-store.js";
+import { useDocumentDomain } from "../store/use-document-store.js";
 import {
 	SCENES_STORAGE_KEY,
 	readSceneDocument,
@@ -52,18 +55,107 @@ import { withCommandHistory } from "../command-bus.js";
 import { createSceneHistoryStore } from "../scene-history.js";
 import { createIkState } from "../ardy/ik.js";
 
-export function useScenes(appContext) {
-	// Scene persistence (plan §8): the startup load runs once in a lazy
-	// initializer so the store below can seed from the restored scene; the
-	// quarantine write and the save-block decision happen before the first
-	// render, and the toast/error they produce ride along as initial UI state.
-	const [scenes, setScenes] = useState(appContext.shared.startup.document.scenes);
+// The scene list and project identity share one history. Dirty is derived from
+// the saved checkpoint, not an authored edit, and has its own non-history slice.
+export function createScenesDomain(appContext, initial, name) {
+	const ordered = rows => rows.map((scene, order) => ({ ...scene, order }));
+	let native = createDocumentStore({ owned: { scenes: ordered(initial.scenes), project: { name, activeSceneId: initial.activeSceneId } } });
+	const listeners = new Set();
+	const notify = () => { for (const listener of listeners) listener(); };
+	let release = native.subscribe(notify);
+	const documentStore = {
+		...Object.fromEntries(Object.keys(native).map(key => [key, (...args) => native[key](...args)])),
+		subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+	};
+	const dirtyStore = createDocumentStore({ owned: { projectDirty: false } });
+	const read = () => documentStore.read("scenes"), metadata = () => documentStore.read("project");
+	function write(rows) {
+		return documentStore.write("scenes", before => {
+			let next = typeof rows === "function" ? rows(before) : rows;
+			// Generic collection set preserves array position until the owner
+			// consumes an order intent. Semantic reorder uses this same path.
+			for (const row of next.filter(row => before.find(item => item.id === row.id)?.order !== row.order)) {
+				const index = next.findIndex(item => item.id === row.id);
+				next = next.filter(item => item.id !== row.id);
+				next.splice(Math.min(next.length, Math.max(0, Math.round(row.order ?? index))), 0, row);
+			}
+			for (let index = 0; index < next.length; index++) {
+				const previous = before.find(row => row.id === next[index].id);
+				if (previous && previous.name !== next[index].name) {
+					const requested = next[index].name;
+					next = next.map((row, i) => i === index ? { ...row, name: previous.name } : row);
+					next = renameScene(next, index, requested);
+				}
+			}
+			next = ordered(next);
+			return JSON.stringify(next) === JSON.stringify(before) ? before : next;
+		});
+	}
+	const publish = () => {
+		appContext.publishScenes(read());
+		appContext.shared.activeSceneIdRef.current = metadata().activeSceneId;
+		if (appContext.live.state) appContext.patchLive({ scenes: read(), activeSceneId: metadata().activeSceneId });
+		storeProjectSession(metadata().name);
+		domain.persist?.();
+		domain.refreshDirty?.();
+	};
+	const unsubscribe = documentStore.subscribe(publish);
+	const domain = {
+		documentStore, dirtyStore, read, write, metadata,
+		"setScenes": write,
+		beginAction: () => documentStore.beginAction("scenes"),
+		canUndo: id => documentStore.canUndo(id),
+		stepHistory: redo => Boolean((redo ? documentStore.redo : documentStore.undo)()),
+		publish: state => write(state.scenes), commitDraft: write,
+		document: () => ({ scenes: domain.snapshot(), project: { ...metadata(), name: metadata().name ?? "Untitled" } }),
+		renameProject(name) {
+			documentStore.write("project", before => before.name === name.trim() ? before : { ...before, name: name.trim() });
+		},
+		nameSaved(name) {
+			if (metadata().name === name) return;
+			const boundary = documentStore.beginAction("project");
+			boundary.run(() => domain.renameProject(name));
+			boundary.cancel({ restore: false });
+		},
+		// Session cache/file loads are explicit non-authored boundaries. They
+		// retire scene history, just as opening a scene retired native history.
+		replaceDocument(scenes, activeSceneId, name = metadata().name) {
+			release(); native.dispose();
+			native = createDocumentStore({ owned: { scenes: ordered(scenes), project: { name, activeSceneId } } });
+			release = native.subscribe(notify); notify();
+		},
+		setDirty(value) {
+			if (dirtyStore.read("projectDirty") === value) return;
+			const boundary = dirtyStore.beginAction("projectDirty");
+			boundary.run(() => dirtyStore.write("projectDirty", value));
+			boundary.cancel({ restore: false });
+		},
+		dispose() { unregister(); unsubscribe(); release(); native.dispose(); dirtyStore.dispose(); listeners.clear(); },
+	};
+	const unregister = appContext.registerStoreDomain("scenes", domain);
+	return domain;
+}
 
-	const [activeSceneId, setActiveSceneId] = useState(appContext.shared.startup.document.activeSceneId);
+export function useScenes(appContext) {
+	const [domain] = useState(() => appContext.storeDomain("scenes") ?? createScenesDomain(appContext, appContext.shared.startup.document, loadProjectSession()?.name ?? null));
+	const scenes = useDocumentDomain(domain.documentStore, "scenes");
+	const { activeSceneId, name: projectName } = useDocumentDomain(domain.documentStore, "project");
+	const projectDirty = useDocumentDomain(domain.dirtyStore, "projectDirty");
+	const runtimeValues = useRef(new Map());
+	async function runProject(id, args = {}) {
+		const receipt = await appContext.bus.run(id, args);
+		if (!receipt.ok) appContext.notify(receipt.message);
+		return receipt;
+	}
+	async function runWithValue(id, key, value) {
+		const token = crypto.randomUUID(); runtimeValues.current.set(token, value);
+		try { return await runProject(id, { [key]: token }); }
+		finally { runtimeValues.current.delete(token); }
+	}
 
 	const [sceneSaveError, setSceneSaveError] = useState(appContext.shared.startup.error);
 
-	function snapshotActiveScene(sourceScenes = appContext.live.scenes) {
+	function snapshotActiveScene(sourceScenes = appContext.storeDomain("scenes")?.read() ?? appContext.live.scenes) {
 		return sourceScenes.map((scene) => scene.id === appContext.shared.activeSceneIdRef.current
 			? { ...scene, objects: appContext.shared.storeRef.current.objects, shotDocument: appContext.shared.shotDocumentRef.current, stage: appContext.shared.actorStageRef.current }
 			: scene);
@@ -100,10 +192,6 @@ export function useScenes(appContext) {
 	 * workspace layout, custom poses) round-trips through a real
 	 * `.cclayproject` file. localStorage stays as the always-on session
 	 * cache; the file is the portable, user-owned document. */
-	const [projectName, setProjectName] = useState(() => loadProjectSession()?.name ?? null);
-
-	const [projectDirty, setProjectDirty] = useState(false);
-
 	const [projectSaveState, setProjectSaveState] = useState("idle");
 
 	const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -206,11 +294,11 @@ export function useScenes(appContext) {
 		}
 	}
 
-	function markProjectClean(name) {
-		appContext.shared.projectSnapshotRef.current = collectProjectSnapshot(name);
-		setProjectDirty(false);
-		setProjectName(name);
-		storeProjectSession(name);
+	function markProjectClean(name, snapshot, previousName) {
+		appContext.shared.projectSnapshotRef.current = snapshot;
+		if (domain.metadata().name === previousName) domain.nameSaved(name);
+		refreshProjectDirty();
+		storeProjectSession(domain.metadata().name);
 	}
 
 	function projectProblemsNotice(problems) {
@@ -251,16 +339,23 @@ export function useScenes(appContext) {
 	/** Save the project; the answer says what happened, for project.save:
 	 * { saved, name, fileName, downloaded } or { saved: false, naming |
 	 * cancelled | failure }. Every outcome is also shown to the user here. */
-	async function saveProject(saveAs = false, explicitName = null) {
-		if (projectName === null && explicitName === null) {
+	async function saveProject(saveAs = false, explicitName = null, context = null) {
+		if (!context) {
+			const receipt = await runProject(saveAs ? "project.saveAs" : "project.save", explicitName === null ? {} : { name: explicitName });
+			return receipt.ok ? { saved: true, ...receipt.output } : { saved: false, failure: receipt.code };
+		}
+		const currentName = domain.metadata().name;
+		if (currentName === null && explicitName === null) {
 			setProjectNameDialog({ kind: "save", initialName: "My Project" });
 			return { saved: false, naming: true };
 		}
 		setProjectSaveState("saving");
-		const name = (explicitName ?? projectName ?? "My Project").trim() || "My Project";
+		const name = (explicitName ?? currentName ?? "My Project").trim() || "My Project";
+		const checkpoint = collectProjectSnapshot(name);
 		let downloaded = false;
 		try {
 			const serialized = await collectProjectSerialized(name);
+			context.check();
 			let handle = appContext.shared.projectHandleRef.current;
 			if (saveAs || !handle || !hasFileSystemAccess()) {
 				if (hasFileSystemAccess()) {
@@ -275,9 +370,10 @@ export function useScenes(appContext) {
 			} else {
 				await writeProjectFile(handle, serialized);
 			}
-			markProjectClean(name);
+			context.check();
+			markProjectClean(name, checkpoint, currentName);
 			setSaveBlockedReasons(null);
-			setProjectSaveState("saved");
+			setProjectSaveState(domain.dirtyStore.read("projectDirty") ? "dirty" : "saved");
 			track("project:saved", {
 				object_count_bucket: bucketCount(appContext.shared.projectStateRef.current.sceneObjects?.length ?? 0),
 				shot_count_bucket: bucketCount(appContext.shared.shots.length),
@@ -297,7 +393,11 @@ export function useScenes(appContext) {
 		}
 	}
 
-	function applyProject(project) {
+	function applyProject(project, authorized = false) {
+		if (!authorized) return runWithValue("project.open", "projectToken", project);
+		const checked = readSceneDocument(JSON.stringify(project.scenesDocument));
+		if (!["valid", "migrated"].includes(checked.status)) throw new StudioProtocolError("INVALID_ARGUMENT", "Invalid project scene document.");
+		project = { ...project, scenesDocument: checked.document };
 		appContext.shared.studioDocumentEpochRef.current = crypto.randomUUID();
 		appContext.shared.tutorialProjectEpochRef.current += 1;
 		appContext.shared.tutorialSeedEpochRef.current = null;
@@ -314,8 +414,7 @@ export function useScenes(appContext) {
 			? { ...source, version: SCENES_VERSION, scenes: source.scenes.map((scene) => ({ ...scene, stage: migrateStageFrames(scene.stage) })) }
 			: source;
 		const mergedCustomPoses = mergeProjectCustomPoses(appContext.shared.customPoses, project.customPoses);
-		setScenes(doc.scenes);
-		setActiveSceneId(doc.activeSceneId);
+		domain.replaceDocument(doc.scenes, doc.activeSceneId, project.name);
 		if (project.workspaceLayout) appContext.shared.setWorkspaceLayout({ ...DEFAULT_WORKSPACE_LAYOUT, ...project.workspaceLayout });
 		appContext.shared.setCustomPoses(mergedCustomPoses);
 		const resolvedWorkflow = resolveWorkflowOutputs(normalizeWorkflowGraph(project.workflow), new Map((project.assets ?? []).map((asset) => [asset.id, asset])));
@@ -324,8 +423,8 @@ export function useScenes(appContext) {
 		persistScenes(doc.scenes, doc.activeSceneId);
 		openScene(doc.scenes[activeSceneIndex(doc.scenes, doc.activeSceneId)], doc.scenes);
 		appContext.shared.projectSnapshotRef.current = collectProjectSnapshot(project.name);
-		setProjectDirty(false);
-		setProjectName(project.name);
+		domain.pendingCheckpoint = { clock: appContext.undoClock, name: project.name };
+		domain.setDirty(false);
 		storeProjectSession(project.name);
 		setProjectStartupOpen(false);
 		// Whatever document this is, it is no longer the scene the tutorial opened
@@ -338,7 +437,7 @@ export function useScenes(appContext) {
 	/** Open a bundled starter scene as a fresh, saveable project. Used by the
 	 * first-run dialog and by `npx cozyclay --scene <id>` (`?scene=`), which is
 	 * how the landing-page tutorial hands people into the local studio. */
-	async function openStarterScene(id, source = "starter") {
+	async function openStarterScene(id, source = "starter", context = null) {
 		const before = source === "tutorial" ? collectProjectSnapshot("Tutorial") : null;
 		const epoch = appContext.shared.tutorialProjectEpochRef.current;
 		const url = playgroundSceneUrl(`?scene=${encodeURIComponent(id)}`);
@@ -350,13 +449,15 @@ export function useScenes(appContext) {
 			appContext.notify(ko("That starter scene is not in this build", "이 빌드에는 그 시작 장면이 없어요"));
 			return false;
 		}
-		applyProject({ ...project, savedAt: null });
+		context?.check();
+		applyProject({ ...project, savedAt: null }, true);
 		appContext.shared.projectHandleRef.current = null;
 		track("scene:loaded", { scene_source: source });
 		return true;
 	}
 
-	async function openProject() {
+	async function openProject(context = null) {
+		if (!context) return runProject("project.open");
 		try {
 			let file = null;
 			let handle = null;
@@ -366,101 +467,112 @@ export function useScenes(appContext) {
 			} else {
 				file = await openProjectFallback();
 			}
-			if (!file) return;
+			if (!file) return false;
 			const result = readProjectDocument(file.text);
 			if (!result.ok) {
 				appContext.notify(isKo ? `프로젝트를 열 수 없어요: ${result.reason}` : `Cannot open project: ${result.reason}`);
-				return;
+				return false;
 			}
 			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
 			appContext.shared.projectHandleRef.current = handle;
 			if (handle) await rememberRecentProject(handle, result.project.name);
 			await rehydrateProjectAssets(result.project, result.warnings);
-			applyProject(result.project);
+			context.check();
+			applyProject(result.project, true);
 			setProjectStartupOpen(false);
 			appContext.notify(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
+			return true;
 		} catch (err) {
-			if (err?.name === "AbortError") return;
+			if (err?.name === "AbortError") return false;
+			if (err?.code) throw err;
 			console.error("openProject failed", err);
 			appContext.notify(ko("Could not open the project", "프로젝트를 열지 못했어요"));
+			return false;
 		}
 	}
 
 	/** Open a project from the browser dialog: a stored handle from the
 	 * recents list or a file enumerated in the projects folder. */
-	async function openProjectByHandle(handle) {
+	async function openProjectByHandle(handle, context = null) {
+		if (!context) return runWithValue("project.open", "handleToken", handle);
 		try {
 			// A stored handle may have been demoted to "prompt" since the last
 			// session (#51); this click is the user gesture that can re-grant it.
 			if ((await requestHandlePermission(handle)) !== "granted") {
 				appContext.notify(ko("Project access was not granted — allow access and try again.", "프로젝트 접근이 허용되지 않았어요. 접근을 허용하고 다시 시도해 주세요."));
-				return;
+				return false;
 			}
 			const file = await readProjectFile(handle);
 			const result = readProjectDocument(file.text);
 			if (!result.ok) {
 				appContext.notify(isKo ? `프로젝트를 열 수 없어요: ${result.reason}` : `Cannot open project: ${result.reason}`);
-				return;
+				return false;
 			}
 			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
 			appContext.shared.projectHandleRef.current = handle;
 			await rememberRecentProject(handle, result.project.name);
 			await rehydrateProjectAssets(result.project, result.warnings);
-			applyProject(result.project);
-		setProjectBrowserOpen(false);
-		setProjectStartupOpen(false);
-		appContext.notify(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
+			context.check();
+			applyProject(result.project, true);
+			setProjectBrowserOpen(false);
+			setProjectStartupOpen(false);
+			appContext.notify(`${isKo ? `프로젝트 열림: ${result.project.name}` : `Project opened: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
+			return true;
 		} catch (err) {
+			if (err?.code) throw err;
 			console.error("openProjectByHandle failed", err);
 			appContext.notify(ko("Could not open the project", "프로젝트를 열지 못했어요"));
+			return false;
 		}
 	}
 
-	function requestNewProject() {
-		if (projectDirty && !window.confirm(ko("Discard unsaved changes and start a new project?", "저장되지 않은 변경사항을 버리고 새 프로젝트를 시작할까요?"))) return;
+	function requestNewProject(authorized = false) {
+		if (!authorized) return runProject("project.new");
+		if (domain.dirtyStore.read("projectDirty") && !window.confirm(ko("Discard unsaved changes and start a new project?", "저장되지 않은 변경사항을 버리고 새 프로젝트를 시작할까요?"))) return;
 		setProjectNameDialog({ kind: "new", initialName: projectName ?? "My Project" });
 	}
 
-	function newProject(name) {
-		if (typeof name !== "string") return requestNewProject();
+	function newProject(name, authorized = false) {
+		if (!authorized) return runProject("project.new", typeof name === "string" ? { name } : {});
+		if (typeof name !== "string") return requestNewProject(true);
+		name = name.trim() || "My Project";
 		setProjectNameDialog(null);
 		const fresh = createSceneDocument(ko("SCENE 01", "씬 01"));
 		storeWorkflowGraph(createWorkflowGraph());
-		setScenes(fresh.scenes);
-		setActiveSceneId(fresh.activeSceneId);
+		domain.replaceDocument(fresh.scenes, fresh.activeSceneId, name);
 		persistScenes(fresh.scenes, fresh.activeSceneId);
 		openScene(fresh.scenes[0], fresh.scenes);
 		appContext.shared.projectHandleRef.current = null;
 		clearStoredProjectHandle();
-		appContext.shared.projectSnapshotRef.current = JSON.stringify(createProjectDocument({
-			scenesDocument: fresh,
-			workspaceLayout: appContext.shared.projectStateRef.current.workspaceLayout,
-			customPoses: appContext.shared.customPoses,
-			workflow: createWorkflowGraph(),
-			name,
-		}));
-		setProjectDirty(false);
-		setProjectName(name);
+		appContext.shared.projectSnapshotRef.current = collectProjectSnapshot(name);
+		domain.setDirty(false);
 		storeProjectSession(name);
 		setProjectStartupOpen(false);
 		appContext.shared.setFirstSuccessGuideOpen(true);
+		domain.pendingCheckpoint = { clock: appContext.undoClock, name };
 		appContext.notify(ko(`New project: ${name}`, `새 프로젝트: ${name}`));
+		return true;
 	}
 
 	const [restoreOffer, setRestoreOffer] = useState(null);
 
-	async function restoreStoredProject(record) {
+	async function restoreStoredProject(record, context = null) {
+		if (!context) return runWithValue("project.restore", "handleToken", record.handle);
 		try {
 			const file = await readProjectFile(record.handle);
 			const result = readProjectDocument(file.text);
-			if (!result.ok) return;
+			if (!result.ok) return false;
 			result.project.savedAt = result.project.savedAt ?? file.savedAt ?? null;
 			appContext.shared.projectHandleRef.current = record.handle;
 			await rehydrateProjectAssets(result.project, result.warnings);
-			applyProject(result.project);
+			context.check();
+			applyProject(result.project, true);
 			appContext.notify(`${isKo ? `프로젝트 복원됨: ${result.project.name}` : `Project restored: ${result.project.name}`}${projectProblemsNotice(result.problems)}`);
-		} catch {
-			/* missing or unreadable file: fall back to the session cache */
+			return true;
+		} catch (error) {
+			if (error?.code) throw error;
+			console.warn("Could not restore the project; retaining the session cache.", error);
+			return false;
 		}
 	}
 
@@ -531,8 +643,7 @@ export function useScenes(appContext) {
 		appContext.shared.setSelectedHierarchyId("shot");
 		appContext.publishScenes(nextScenes);
 		appContext.shared.activeSceneIdRef.current = scene.id;
-		setScenes(nextScenes);
-		setActiveSceneId(scene.id);
+		appContext.storeDomain("scenes")?.replaceDocument(nextScenes, scene.id);
 		track("scene:loaded", { scene_source: "local" });
 	}
 
@@ -577,12 +688,13 @@ export function useScenes(appContext) {
 	}
 
 	function renameSceneDocument(sceneId, name) {
-		const savedScenes = snapshotActiveScene();
+		const savedScenes = appContext.storeDomain("scenes")?.read() ?? snapshotActiveScene();
 		const index = savedScenes.findIndex((scene) => scene.id === sceneId);
 		if (index < 0) return;
 		const nextScenes = renameScene(savedScenes, index, name);
-		appContext.publishScenes(nextScenes);
-		setScenes(nextScenes);
+		const owned = appContext.storeDomain("scenes");
+		if (owned) owned.write(nextScenes);
+		else { appContext.publishScenes(nextScenes); appContext.shared.setScenes(nextScenes); }
 		persistScenes(nextScenes, appContext.shared.activeSceneIdRef.current);
 	}
 
@@ -592,9 +704,12 @@ export function useScenes(appContext) {
 		if (index < 0 || savedScenes.length <= 1) return;
 		const nextScenes = removeScene(savedScenes, index);
 		if (sceneId !== appContext.shared.activeSceneIdRef.current) {
-			appContext.publishScenes(nextScenes);
-			setScenes(nextScenes);
-			persistScenes(nextScenes, appContext.shared.activeSceneIdRef.current);
+			const owned = appContext.storeDomain("scenes");
+			if (owned) owned.replaceDocument(nextScenes, appContext.shared.activeSceneIdRef.current);
+			else {
+				appContext.publishScenes(nextScenes);
+				persistScenes(nextScenes, appContext.shared.activeSceneIdRef.current);
+			}
 			return;
 		}
 		const target = nextScenes[Math.min(index, nextScenes.length - 1)];
@@ -627,10 +742,16 @@ export function useScenes(appContext) {
 		if (JSON.stringify(currentStage ?? null) !== JSON.stringify(incomingStage)) {
 			appContext.shared.castDomain.applyExternalCharacters(incomingStage.characters);
 		}
-		appContext.publishScenes(nextScenes);
-		setScenes(nextScenes);
+		domain.replaceDocument(nextScenes, incomingScene.id);
 	}
-	function loadLiveScenes(args) {
+	function loadLiveScenes(args, authorized = false) {
+		if (!authorized) {
+			const receipt = appContext.bus.run("load_scenes", { document: args.document }, {
+				origin: "mcp", host: appContext.ports.read().host, expectedRevision: appContext.ports.revision.current,
+				...(args.confirmationToken ? { confirmationToken: args.confirmationToken } : {}),
+			});
+			return receipt.ok ? receipt.output : receipt;
+		}
 		if (!args.document || typeof args.document !== "object" || Array.isArray(args.document)) throw new Error("Invalid scene document");
 		const loaded = readSceneDocument(JSON.stringify(args.document));
 		if (loaded.status !== "valid" && loaded.status !== "migrated") throw new Error("Invalid scene document");
@@ -639,8 +760,8 @@ export function useScenes(appContext) {
 		const live = appContext.live.state;
 		live.persistScenes(document.scenes, document.activeSceneId);
 		live.openScene(target, document.scenes);
-		appContext.patchLive({ scenes: document.scenes });
-		appContext.patchLive({ activeSceneId: document.activeSceneId });
+		appContext.patchLive({ scenes: domain.read() });
+		appContext.patchLive({ activeSceneId: domain.metadata().activeSceneId });
 		appContext.patchLive({ objects: appContext.shared.storeRef.current.objects });
 		appContext.patchLive({ characters: createSceneStage(target.stage).characters });
 		appContext.publishCharacters(live.characters);
@@ -650,23 +771,62 @@ export function useScenes(appContext) {
 			scenes: document.scenes.map((scene) => ({ id: scene.id, name: scene.name })),
 		};
 	}
-	function refreshProjectDirty() {
-		if (projectName === null) return; // untitled sessions are never "dirty"
-		const serialized = collectProjectSnapshot(projectName);
-		const dirty = serialized !== appContext.shared.projectSnapshotRef.current;
-		setProjectDirty(dirty);
+	function refreshProjectDirty(afterRender = true) {
+		const name = domain.metadata().name;
+		// App publishes the incoming shot/cast/workspace envelopes at render.
+		// Checkpoint those, not the outgoing refs read inside the load action.
+		// A real authored commit in between must never be declared saved.
+		if (afterRender && domain.pendingCheckpoint) {
+			const checkpoint = domain.pendingCheckpoint;
+			domain.pendingCheckpoint = null;
+			if (checkpoint.clock === appContext.undoClock && checkpoint.name === name) appContext.shared.projectSnapshotRef.current = collectProjectSnapshot(name);
+		}
+		const dirty = name !== null && collectProjectSnapshot(name) !== appContext.shared.projectSnapshotRef.current;
+		domain.setDirty(dirty);
 		setProjectSaveState((current) => current === "saving" ? current : dirty ? "dirty" : "saved");
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}
+	domain.snapshot = snapshotActiveScene;
+	domain.fileState = () => ({ name: domain.metadata().name, hasFile: Boolean(appContext.shared.projectHandleRef.current),
+		fileAccess: hasFileSystemAccess(), gesture: globalThis.navigator?.userActivation?.isActive === true });
+	domain.save = (args, context) => saveProject(args.saveAs, args.name ?? null, context);
+	domain.loadScenes = args => loadLiveScenes(args, true);
+	domain.projectAction = async (id, args, context) => {
+		const runtime = key => {
+			if (context.origin !== "ui") throw new StudioProtocolError("CAPABILITY_MISSING", "Runtime project handles belong to the UI.");
+			const value = runtimeValues.current.get(args[key]);
+			if (!value) throw new StudioProtocolError("STALE_TARGET", "The selected project is no longer available.");
+			return value;
+		};
+		if (id === "project.browse") { setProjectStartupOpen(false); setProjectBrowserOpen(true); return; }
+		if (id === "project.new") return newProject(args.name, true);
+		if (id === "project.openStarter") return openStarterScene(args.id, args.source, context);
+		if (id === "project.restore") return restoreStoredProject({ handle: runtime("handleToken") }, context);
+		if (args.handleToken) return openProjectByHandle(runtime("handleToken"), context);
+		if (args.projectToken) { applyProject(runtime("projectToken"), true); return true; }
+		if (args.serialized !== undefined) {
+			const result = readProjectDocument(args.serialized);
+			if (!result.ok) throw new StudioProtocolError("INVALID_ARGUMENT", `Cannot open project: ${result.reason}`);
+			await rehydrateProjectAssets(result.project, result.warnings);
+			context.check();
+			applyProject(result.project, true);
+			appContext.shared.projectHandleRef.current = null;
+			return true;
+		}
+		return openProject(context);
+	};
+	domain.persist = () => persistScenes(snapshotActiveScene(), domain.metadata().activeSceneId);
+	domain.refreshDirty = () => refreshProjectDirty(false);
 	return {
-		applyExternalScene, loadLiveScenes, refreshProjectDirty,
-		scenes, setScenes, activeSceneId, sceneSaveError, snapshotActiveScene, persistScenes, projectName,
-		projectDirty, setProjectDirty, projectSaveState, setProjectSaveState, projectMenuOpen,
+		...domain, applyExternalScene, loadLiveScenes, refreshProjectDirty,
+		scenes, activeSceneId, sceneSaveError, snapshotActiveScene, persistScenes, projectName,
+		projectDirty, setProjectDirty: domain.setDirty, projectSaveState, setProjectSaveState, projectMenuOpen,
 		setProjectMenuOpen, projectBrowserOpen, setProjectBrowserOpen, projectNameDialog, setProjectNameDialog,
 		projectStartupOpen, setProjectStartupOpen, projectManifest, setProjectManifest, saveBlockedReasons,
 		setSaveBlockedReasons, workflowRevision, setWorkflowRevision, collectProjectSnapshot,
 		collectProjectSerialized, projectProblemsNotice, rehydrateProjectAssets, saveProject, applyProject,
-		openStarterScene, openProject, openProjectByHandle, requestNewProject, newProject, restoreOffer,
+		openStarterScene: async (id, source = "starter") => (await runProject("project.openStarter", { id, source })).output?.opened === true,
+		openProject, openProjectByHandle, requestNewProject, newProject, restoreOffer,
 		setRestoreOffer, restoreStoredProject, flushScenes, openScene, selectSceneDocument,
 		createSceneDocumentFromUi, duplicateSceneDocumentFromUi, renameSceneDocumentFromUi,
 		deleteSceneDocumentFromUi, switchSceneDocument, addSceneDocument, duplicateSceneDocument,

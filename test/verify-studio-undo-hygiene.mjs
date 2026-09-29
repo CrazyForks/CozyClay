@@ -138,7 +138,7 @@ const COMMAND_MODULES = {
 	scene: sceneCommands, project: projectCommands, export: exportCommands, ai: aiCommands,
 };
 // The undo domains the editor's native history owns (App's recordStudioAction).
-const HISTORY_DOMAINS = ["shot", "cast", "motion", "objects"];
+const HISTORY_DOMAINS = ["shot", "cast", "motion", "objects", "scenes"];
 const unit = { x: 0, y: 0, z: 0, w: 1 };
 // One valid call per command the hygiene cases run through the bus.
 const COMMAND_INPUTS = {
@@ -160,6 +160,10 @@ const COMMAND_INPUTS = {
 	"view.setPartColours": { mode: "flat" }, "view.setGuideMode": { mode: "thirds" }, "view.setInset": { collapsed: true },
 	"scene.create": {}, "scene.duplicate": { sceneId: "scene-1" }, "scene.rename": { sceneId: "scene-1", name: "Renamed" },
 	"scene.delete": { sceneId: "scene-2" }, "scene.switch": { sceneId: "scene-2" }, "project.save": {},
+	"scene.set": { id: "scene-1", set: { name: "Generic" } }, "scene.reorder": { sceneId: "scene-1", order: 1 },
+	"project.rename": { name: "Renamed project" }, "project.saveAs": {}, "project.new": { name: "New project" },
+	"project.open": { serialized: "project" }, "project.openStarter": { id: "starter" }, "project.restore": { handleToken: "handle" }, "project.browse": {},
+	"load_scenes": { document: { version: 4, activeSceneId: "scene-1", scenes: [{ id: "scene-1", name: "ONE" }] } },
 };
 
 // Every command module registered over one generic port object and driven
@@ -177,12 +181,17 @@ function commandFixture({ frame = 8 } = {}) {
 		aiShot: { mode: "image", imageModel: "gpt_image_2" }, falMotion: { enabled: false, status: "idle", dailyRemaining: null },
 	};
 	const entries = [], writes = [];
-	let recording = null, revision = 0, objectDomain;
+	let recording = null, revision = 0, objectDomain, sceneDomain;
 	const answers = {
 		// Like the editor's, every read is a fresh snapshot of the document.
 		state: () => ({ ...state }),
-		storeDomain: name => name === 'objects' ? objectDomain : undefined,
+		storeDomain: name => name === 'objects' ? objectDomain : name === 'scenes' ? sceneDomain : undefined,
 		writeObjects: rows => { state.objects = rows; },
+		writeScenes: rows => { state.scenes = rows; },
+		writeProject: name => { state.project = { ...state.project, name }; },
+		renameSceneDocument: (id, name) => { state.scenes = state.scenes.map(row => row.id === id ? { ...row, name } : row); },
+		projectAction: () => true,
+		loadScenes: args => ({ activeSceneId: args.document.activeSceneId }),
 		duplicateSelectedSceneObject: id => { state.objects = [...state.objects, { ...state.objects.find(row => row.id === id), id: 'object-2' }]; },
 		addCharacterWaypoint: (id, position, frame) => ({ waypoint: { frame: frame ?? 12, ...position }, index: 0, warnings: [] }),
 		moveCharacterWaypoint: (id, frame, position) => ({ waypoint: { frame, ...position }, warnings: [] }),
@@ -209,6 +218,16 @@ function commandFixture({ frame = 8 } = {}) {
 			const plan = arrangement({ name: 'arrange_objects', args }, state, { bounds: () => [] });
 			ports.writeObjects(plan.draft); return plan;
 		},
+	};
+	sceneDomain = {
+		read: () => state.scenes,
+		write: rows => ports.writeScenes(rows),
+		metadata: () => ({ name: state.project.name, activeSceneId: state.activeSceneId }),
+		renameProject: name => ports.writeProject(name),
+		fileState: () => state.project,
+		save: args => ports.saveProject(args.saveAs),
+		projectAction: (...args) => ports.projectAction(...args),
+		loadScenes: args => ports.loadScenes(args),
 	};
 	const registries = Object.fromEntries(Object.entries(COMMAND_MODULES).map(([name, module]) => [name, createStudioAppActions(ports, { [name]: module })]));
 	const journal = createStudioCommandJournal({ host });
@@ -243,7 +262,7 @@ const cases = {
 	},
 	async "every command mutation writes inside one entry of its undo domain"() {
 		const mutations = Object.values(COMMAND_MODULES).flatMap(module => module.declarations).filter(entry => entry.kind === "mutation");
-		assert.equal(mutations.length, 27);
+		assert.equal(mutations.length, 31);
 		for (const declaration of mutations) {
 			// A new shot needs free room at the playhead; the others act inside shot-1.
 			const f = commandFixture({ frame: declaration.id === "shot.create" ? 24 : 8 }), [name] = Object.entries(COMMAND_MODULES).find(([, module]) => module.declarations.includes(declaration));
@@ -255,9 +274,9 @@ const cases = {
 			assert.equal(receipt.undo?.historyEntryId, f.entries[0].id, `${declaration.id}'s receipt undoes that entry`);
 		}
 	},
-	async "view, scene and project commands never open an undo entry"() {
+	async "transient and document actions never open an undo entry"() {
 		const outside = Object.values(COMMAND_MODULES).flatMap(module => module.declarations).filter(entry => ["transient", "document"].includes(entry.kind));
-		assert.deepEqual(outside.map(entry => entry.id).sort(), Object.keys(COMMAND_INPUTS).filter(id => /^(view|scene|project)\./.test(id)).sort());
+		assert.deepEqual(outside.map(entry => entry.id).sort(), Object.keys(COMMAND_INPUTS).filter(id => (/^(view|scene|project)\./.test(id) || id === 'load_scenes') && !['scene.set', 'scene.rename', 'scene.reorder', 'project.rename'].includes(id)).sort());
 		for (const declaration of outside) {
 			const f = commandFixture(), [name] = Object.entries(COMMAND_MODULES).find(([, module]) => module.declarations.includes(declaration));
 			const receipt = await f.bus(f.registries[name]).run(declaration.id, COMMAND_INPUTS[declaration.id]);

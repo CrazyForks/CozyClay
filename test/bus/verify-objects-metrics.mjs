@@ -9,5 +9,5 @@ const { coverageMetrics } = await import('./verify-parity-matrix.mjs');
 const measured = coverageMetrics();
 assert.ok(measured.writerReferences <= 207, 'remove the seven owned objects/Inspector references from the 214-reference base');
 assert.equal(baseline.coverage.writerReferences, measured.writerReferences);
-assert.equal(baseline.coverage.handlerSites, measured.handlerSites);
+assert.ok(measured.handlerSites >= baseline.coverage.handlerSites, 'other owned domains may add handler sites above the committed floor');
 console.log(`PASS objects metric movement: owned JSX handler sites 0 -> ${sites}; global writer references 214 -> ${measured.writerReferences}`);
