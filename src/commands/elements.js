@@ -12,10 +12,15 @@ export function registerElementKind(kind, spec) {
 }
 const patchElements = kind => kinds.get(kind).elements.filter(row => row.agentExposure === 'patch');
 const object = () => ({ type: 'object', properties: {}, required: [], additionalProperties: false });
+// String mappings retain the single-document schema. Component mappings use
+// the logical field in set args and fan out only at the storage boundary.
+const setPath = element => typeof element.documentPath === 'string' ? element.documentPath : element.path.slice(element.path.indexOf('.') + 1);
+const atPath = (value, path) => path.split('.').reduce((value, key) => value?.[key], value);
+const nestedValue = (path, value) => path.split('.').reduceRight((value, key) => ({ [key]: value }), value);
 export function elementSetSchema(kind) {
   const schema = object();
   for (const element of patchElements(kind)) {
-    const keys = (element.documentPath ?? element.path.slice(kind.length + 1)).split('.');
+    const keys = setPath(element).split('.');
     let parent = schema;
     for (const key of keys.slice(0, -1)) parent = parent.properties[key] ??= object();
     // Validate the wire type here; persistence owns numeric clamps. Empty
@@ -44,13 +49,28 @@ export function readElementDocument(projection, { ids, select } = {}, sceneId) {
 }
 export function readElement(document, path) {
   const element = kinds.get(path.slice(0, path.indexOf('.'))).elements.find(row => row.path === path);
-  return (element.documentPath ?? path.slice(path.indexOf('.') + 1)).split('.').reduce((value, key) => value?.[key], document);
+  return element.documentPath && typeof element.documentPath === 'object'
+    ? Object.fromEntries(Object.entries(element.documentPath).map(([component, stored]) => [component, atPath(document, stored)]))
+    : atPath(document, setPath(element));
 }
 export function mergeElementSet(document = {}, patch) {
   const next = { ...document };
   for (const [key, value] of Object.entries(patch)) next[key] = value && typeof value === 'object' && !Array.isArray(value)
     ? mergeElementSet(document[key], value) : value;
   return next;
+}
+function storedElementSet(kind, patch) {
+  let stored = mergeElementSet({}, patch);
+  for (const element of patchElements(kind)) {
+    if (!element.documentPath || typeof element.documentPath !== 'object') continue;
+    const value = atPath(patch, setPath(element));
+    if (value === undefined) continue;
+    const keys = setPath(element).split('.');
+    const parent = keys.slice(0, -1).reduce((value, key) => value[key], stored);
+    delete parent[keys.at(-1)];
+    for (const [component, path] of Object.entries(element.documentPath)) stored = mergeElementSet(stored, nestedValue(path, value[component]));
+  }
+  return stored;
 }
 export function elementPatchArgs(kind, args) {
   const set = { ...object(), additionalProperties: true };
@@ -64,7 +84,7 @@ export function elementPatchArgs(kind, args) {
     for (const [key, value] of Object.entries(set)) {
       const element = patchElements(kind).find(row => row.path === `${kind}.${key}`);
       if (!element) throw new StudioProtocolError('INVALID_ARGUMENT', `Unknown ${kind} path: ${key}`);
-      const nested = (element.documentPath ?? key).split('.').reduceRight((value, name) => ({ [name]: value }), value);
+      const nested = nestedValue(setPath(element), value);
       patch = mergeElementSet(patch, nested);
     }
     return { id: target.id, set: patch };
@@ -76,6 +96,8 @@ export function elementReadback(kind, document, paths) {
     const value = readElement(document, element.path), path = element.path;
     if (value === null || value === undefined || value === '') return { path, text: null };
     if (element.type === 'image') return { path, bytes: utf8ByteLength(value) };
+    if (element.type === 'vec3') return { path, vec: value };
+    if (element.type === 'array') return { path, count: Array.isArray(value) ? value.length : value.points?.length ?? 0 };
     return { path, [typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'flag' : 'text']: value };
   });
 }
@@ -112,7 +134,7 @@ export function registerElementSet(registry, ports, declaration) {
     for (const { id, set } of ops) {
       const before = collection ? next.find(row => row.id === id) : next;
       if (!before) throw new StudioProtocolError('TARGET_NOT_READY', `Unknown ${kind} id: ${id}`);
-      const after = normalize(mergeElementSet(before, set));
+      const after = normalize(mergeElementSet(before, storedElementSet(kind, set)));
       next = collection ? next.map(row => row.id === id ? { ...after, id } : row) : after;
     }
     if (JSON.stringify(next) !== JSON.stringify(domain.read())) domain.write(next);
