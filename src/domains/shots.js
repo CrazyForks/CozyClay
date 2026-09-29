@@ -97,8 +97,14 @@ export function createShotsDomain(appContext, initial = {}) {
   function commitDraft(draft) {
     writeState(before => ({ ...before, shots: draft.shotDocument.shots, ...cameraPatch(draft.camera, draft.manual) }));
   }
+  function setPresetMetadata(cameraPresetId) {
+    const stage = appContext.storeDomain('stage');
+    if (!stage || stage.read().cameraPresetId === cameraPresetId) return [];
+    appContext.recordAction('stage', () => stage.setCameraPresetId(cameraPresetId), null, true);
+    return [appContext.ports.read().host.sceneId];
+  }
   function frame(args) {
-    const raw = appContext.ports.read(), filmback = raw.filmback;
+    const raw = appContext.ports.read(), filmback = raw.filmback, cameraPresetId = args.preset ?? null;
     if (args.preset !== undefined) {
       if (!CAMERA_PRESETS[args.preset]) throw new StudioProtocolError('INVALID_ARGUMENT', 'Unknown camera preset');
       const subject = raw.characters.find(row => row.id === raw.activeCharacterId) ?? raw.characters[0];
@@ -109,7 +115,7 @@ export function createShotsDomain(appContext, initial = {}) {
     const plan = frameDraft({ name: 'frame_shot', args }, { ...raw, camera: raw.camera ?? state().camera,
       frame: raw.view.frame, shotDocument: { shots: read() } }, { bounds: appContext.ports.bounds });
     commitDraft(plan.draft);
-    return plan;
+    return { ...plan, affectedIds: [...plan.affectedIds, ...setPresetMetadata(cameraPresetId)] };
   }
   function captureCamera(shotId) {
     const shared = appContext.shared, mounted = shared.shotCamRef.current;
@@ -141,6 +147,7 @@ export function createShotsDomain(appContext, initial = {}) {
     if (aim.length && aim.length !== 3) throw new StudioProtocolError('INVALID_ARGUMENT', 'Supply all three lookAt coordinates.');
     const lookAt = aim.length ? { x: args.lookAtX, y: args.lookAtY, z: args.lookAtZ } : Object.fromEntries(['x', 'y', 'z'].map(key => [key, position[key] + before.lookAt[key] - before.position[key]]));
     writeState(current => ({ ...current, ...cameraPatch({ ...before, position, lookAt, focalMm: args.focalMm ?? before.focalMm }) }));
+    setPresetMetadata(null);
   }
   function run(id, args = {}) {
     const result = appContext.bus.run(id, args);

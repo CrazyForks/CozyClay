@@ -120,9 +120,8 @@ for (const rootDomain of ['shot', 'cast']) test(`facade composition enlists nati
   const f = objectsFixture();
   try {
     const app = f.scope.appContext, native = nativePort(f);
-    // Exercise the proposed App delegation at its port seam. App's production
-    // delegation is deliberately unchanged until GO-APPJSX; all stores and the
-    // native history functions below are the shipped implementations.
+    // Exercise the facade bridge directly over the shipped stores and native
+    // history. verify-app-session-composition also covers App's delegation.
     assert.equal(typeof app.recordAction, 'function');
     f.ports.recordAction = (domain, run, targetId, nested) => app.recordAction(domain, run, targetId, nested, native);
     composite(f, 'fixture.mixedComposite', rootDomain, true);
