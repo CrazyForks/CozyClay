@@ -50,7 +50,7 @@ export function elementPatchArgs(kind, args) {
 export function elementReadback(kind, document) {
   return STUDIO_ELEMENTS.filter(row => row.path.startsWith(`${kind}.`) && row.agentExposure === 'patch').map(element => {
     const value = readElement(document, element.path), path = element.path;
-    if (value === null || value === undefined) return { path, text: null };
+    if (value === null || value === undefined || value === '') return { path, text: null };
     if (element.type === 'image') return { path, bytes: utf8ByteLength(value) };
     return { path, [typeof value === 'number' ? 'number' : typeof value === 'boolean' ? 'flag' : 'text']: value };
   });

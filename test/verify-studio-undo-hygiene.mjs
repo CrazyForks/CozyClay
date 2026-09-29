@@ -43,6 +43,7 @@ import * as exportCommands from "../src/commands/export.js";
 import * as aiCommands from "../src/commands/ai.js";
 
 import { readStudioSource } from "./bus/verify-domain-modules.mjs";
+import { attachStageHistory } from "./bus/stage-hygiene-fixture.mjs";
 const source = readStudioSource();
 const parsed = parseSync("App.jsx", source);
 assert.deepEqual(parsed.errors, []);
@@ -127,7 +128,8 @@ function fixture() {
 		assert.ok(declarations.has(name), `App must declare ${name}`);
 		scope[name] = evaluate(declarations.get(name));
 	}
-	return { scope, depth: () => scope.charHistoryRef.current.past.length };
+	attachStageHistory(scope);
+	return { scope, depth: () => scope.charHistoryRef.current.past.length + scope.documentStore.depths().past };
 }
 
 const COMMAND_MODULES = {
@@ -254,7 +256,7 @@ const cases = {
 		const f = fixture();
 		f.scope.changeKeyLight("intensity", { intensity: 2 });
 		f.scope.changeKeyLight("intensity", { intensity: 2.5 });
-		assert.equal(f.depth(), 1, "one gesture is one entry");
+		assert.equal(f.depth(), 0, "stage preview is uncommitted until gesture end");
 		f.scope.endGestureUndo();
 		f.scope.changeInspectorCharacter("x", { x: 1 });
 		assert.equal(f.scope.characters[0].x, 1);
@@ -275,12 +277,14 @@ const cases = {
 			const f = fixture();
 			const before = { ...f.scope.keyLight };
 			for (const tick of ticks) tick(f.scope);
-			assert.equal(f.depth(), 1, `${name}: a drag is one entry`);
+			assert.equal(f.depth(), 0, `${name}: a drag previews in the owned transaction`);
 			const after = { ...f.scope.keyLight };
 			assert.notDeepEqual(after, before, `${name}: the gesture moved the light`);
 			f.scope.endGestureUndo();
 			for (const tick of ticks) tick(f.scope);
-			assert.equal(f.depth(), 2, `${name}: the next gesture opens a fresh entry`);
+			assert.equal(f.depth(), 1, `${name}: the second preview leaves the first committed entry`);
+			f.scope.endGestureUndo();
+			assert.equal(f.depth(), 2, `${name}: the next gesture commits a fresh entry`);
 			f.scope.undoScene();
 			assert.deepEqual(f.scope.keyLight, after, `${name}: undo returns the previous gesture's light`);
 			f.scope.undoScene();
@@ -292,6 +296,7 @@ const cases = {
 	"the gizmo keeps the puck's half-height offset"() {
 		const f = fixture();
 		f.scope.changeKeyLightFromGizmo("__keylight__", { x: 2, y: 5, z: -1 });
+		f.scope.endGestureUndo();
 		assert.deepEqual(
 			{ x: f.scope.keyLight.x, y: f.scope.keyLight.y, z: f.scope.keyLight.z },
 			{ x: 2, y: 5.2, z: -1 },
@@ -356,13 +361,14 @@ const cases = {
 	"typed environment text is one entry per editing session"() {
 		const f = fixture();
 		const start = f.scope.environment;
+		const { txId } = f.scope.run("run.begin", { id: "stage.setEnvironment", args: {} });
 		for (const text of ["r", "ra", "rainy alley"]) {
-			f.scope.recordSessionUndo(f.scope.environmentTextSessionRef, "environment:description");
-			f.scope.setEnvironment(text);
+			f.scope.run("run.update", { txId, args: { environment: text } });
 		}
+		assert.equal(f.depth(), 0, "typing previews until the session closes");
+		f.scope.run("run.commit", { txId });
 		assert.equal(f.depth(), 1, "typing is not one entry per keystroke");
-		f.scope.recordSessionUndo(f.scope.environmentTextSessionRef, "environment:style");
-		f.scope.setStyle("watercolour");
+		f.scope.run("stage.setStyle", { style: "watercolour" });
 		assert.equal(f.depth(), 2, "a different field is a different session");
 		f.scope.undoScene();
 		assert.equal(f.scope.style, "moody cinematic lighting, 35mm film look");
@@ -404,18 +410,16 @@ const cases = {
 		for (const field of ["environment", "style", "hasEnvSheet"]) {
 			assert.ok(new RegExp(`\\b${field}\\b`).test(stageBuilder), `the scene save builder writes ${field}`);
 			assert.ok(new RegExp(`\\b${field}\\b`).test(liveStage), `the live describe stage reports ${field}`);
-			assert.ok(new RegExp(`stage\\.${field}`).test(openScene), `opening a scene restores ${field}`);
-			assert.ok(new RegExp(`\\b${field}\\b`).test(snapshot), `the undo snapshot carries ${field}`);
+			assert.ok(/stageDomain\.load\(stage\)/.test(openScene), `opening a scene restores ${field} through the owned load boundary`);
+			assert.equal(new RegExp(`\\b${field}\\b`).test(snapshot), false, `cast history no longer carries ${field}`);
 		}
-		assert.ok(/startupStage\.environment\b/.test(source), "the first painted session reads the stored description");
-		assert.ok(/startupStage\.style\b/.test(source), "the first painted session reads the stored look");
-		assert.ok(/startupStage\.hasEnvSheet\b/.test(source), "the first painted session reads the stored sheet flag");
+		assert.ok(/normalizeStage\(appContext.shared.startupStage\)/.test(source), "the first painted session reads the normalized stored stage");
 	},
 	"the studio call sites are wired to the recording seams"() {
 		const lightFoldout = readFileSync(new URL('../src/panels/LightPanel.jsx', import.meta.url), 'utf8');
-		assert.ok(/onChange=\{\(value\) => changeKeyLight\("intensity"/.test(lightFoldout), "the Brightness slider records");
-		assert.ok(/onChange=\{\(value\) => changeKeyLight\("warmth"/.test(lightFoldout), "the Warm/Cool slider records");
-		assert.ok(/onClick=\{resetKeyLight\}/.test(lightFoldout), "Reset light records");
+		assert.ok(/run\("run.update", .*intensity: value/.test(lightFoldout), "the Brightness slider previews through the bus");
+		assert.ok(/run\("run.update", .*warmth: value/.test(lightFoldout), "the Warm/Cool slider previews through the bus");
+		assert.ok(/onClick=\{\(\) => run\("stage.setKeyLight"/.test(lightFoldout), "Reset light records");
 		const puck = source.slice(source.indexOf("<KeyLightPuck"), source.indexOf("<KeyLightPuck") + 900);
 		assert.ok(/onChange=\{\(patch\) => changeKeyLight\("puck", patch\)\}/.test(puck), "the sun puck records on its first move");
 		assert.ok(/onDragEnd=\{endGestureUndo\}/.test(puck), "the sun puck closes its gesture with the prop it already accepts");
@@ -431,11 +435,11 @@ const cases = {
 		assert.ok(/onChange=\{\(rot\) => changeInspectorCharacter\("rot", \{ rot \}\)\}/.test(transform), "the Rotation slider records");
 		assert.ok(/onChange=\{\(scale\) => changeInspectorCharacter\("scale", \{ scale \}\)\}/.test(transform), "the Scale slider records");
 		const environmentFoldout = readFileSync(new URL('../src/panels/EnvironmentPanel.jsx', import.meta.url), 'utf8');
-		assert.ok(/changeEnvironmentImage\(dataUrl\)/.test(environmentFoldout), "picking an environment reference records");
-		assert.ok(/onClear=\{\(\) => props.changeEnvironmentImage\(null\)\}/.test(environmentFoldout), "clearing the environment reference records");
-		assert.ok(/recordSessionUndo\(props.environmentTextSessionRef, "environment:description"\)/.test(environmentFoldout), "the description records one entry per typing session");
-		assert.ok(/recordSessionUndo\(props.environmentTextSessionRef, "environment:style"\)/.test(environmentFoldout), "the look records one entry per typing session");
-		assert.ok(/recordCharacterUndo\(\); props.setHasEnvSheet/.test(environmentFoldout), "the environment sheet toggle records");
+		assert.ok(/run\("stage.setEnvironment", \{ environmentImage: dataUrl \}\)/.test(environmentFoldout), "picking an environment reference records");
+		assert.ok(/onClear=\{\(\) => run\("stage.setEnvironment", \{ environmentImage: null \}\)\}/.test(environmentFoldout), "clearing the environment reference records");
+		assert.ok(/begin\("stage.setEnvironment"\)/.test(environmentFoldout), "the description records one entry per typing session");
+		assert.ok(/begin\("stage.setStyle"\)/.test(environmentFoldout), "the look records one entry per typing session");
+		assert.ok(/run\("stage.setEnvironment", \{ hasEnvSheet:/.test(environmentFoldout), "the environment sheet toggle records");
 		assert.ok(/window\.addEventListener\("pointerup", end, true\)/.test(source), "a pointer release ends the open gesture");
 		assert.ok(/window\.addEventListener\("keyup", end, true\)/.test(source), "a key release ends the open gesture");
 	},
