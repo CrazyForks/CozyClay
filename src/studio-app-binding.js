@@ -129,40 +129,6 @@ export function createStudioAppBinding(ports) {
 			parentId: o.parent ?? null, attachment: o.attach ?? null, pathPointCount: o.path?.points.length ?? 0 }))];
 	}
 	const frameRange = row => ({ startFrame: row.startFrame, endFrameExclusive: row.endFrame + 1 });
-	// Scope-specific inspection: each scope answers with the authored detail the
-	// compact context only counts, in the shapes patch_elements writes back.
-	const inspectScopes = {
-		scene: s => ({
-			stage: { environment: s.stage.environment ?? null, style: s.stage.style ?? null, hasEnvironmentImage: Boolean(s.stage.environmentImage),
-				hasEnvSheet: s.stage.hasEnvSheet === true, keyLight: { ...s.stage.keyLight },
-				camera: { presetId: s.stage.cameraPresetId ?? null, aspect: s.stage.shotAspect, sensorId: s.stage.sensorId } },
-			counts: { characters: s.characters.length, objects: s.objects.length, shots: s.shots.length, frames: s.frameCount, assets: assetList(s).length },
-		}),
-		shot: (s, wanted) => {
-			const shots = s.shots.filter(wanted).map(row => ({ id: row.id, name: row.name, range: frameRange(row), mode: row.camera?.mode ?? "keys",
-				cameraKeys: row.cameraKeys.map(({ frame, framing }) => ({ frame, framing: { pos: { ...framing.pos }, yaw: framing.yaw, pitch: framing.pitch, fovDeg: framing.fovDeg } })),
-				rail: row.camera?.cameraRail?.map(({ x, z }) => ({ x, z })) ?? null }));
-			return { shots, total: shots.length };
-		},
-		motion: (s, wanted) => {
-			const characters = s.characters.map(c => ({ ...c, name: c.subject || c.id })).filter(wanted).map(c => {
-				const t = s.targets.get(c.id);
-				return { id: c.id, name: c.name, takeId: t?.motion?.studioTakeId ?? null, frames: t?.motion?.frames ?? 0,
-					promptBlocks: (c.layer?.promptClips ?? []).map(({ startFrame, endFrame, text }) => ({ startFrame, endFrame, text })),
-					waypoints: (c.layer?.waypoints ?? []).map(p => ({ frame: p.frame, position: { x: p.x, y: p.y ?? 0, z: p.z } })),
-					ikKeyFrames: [...(t?.ikState?.keys?.keys() ?? [])].sort((a, b) => a - b) };
-			});
-			return { characters, total: characters.length };
-		},
-		selection: s => {
-			const id = ["object", "character", "rig"].includes(s.selection?.kind) ? s.selection.id : null;
-			const row = id ? entityProjection(s).find(entry => entry.id === id) : null;
-			const o = row?.kind === "object" ? s.objects.find(entry => entry.id === id) : null, c = row?.kind === "character" ? s.characters.find(entry => entry.id === id) : null;
-			const entity = !row ? null : o ? { ...row, hidden: o.hidden === true, path: o.path ? structuredClone(o.path) : null }
-				: { ...row, hidden: c.hidden === true, poseId: c.pose?.id ?? null };
-			return { selection: s.selection ?? null, entity };
-		},
-	};
 	function assetList(s) {
 		const catalogue = studioObjectCatalogue().objects.map(({ kind }) => {
 			const entry = OBJECT_LIBRARY.find(row => row.kind === kind);
@@ -374,7 +340,11 @@ export function createStudioAppBinding(ports) {
 			}
 			const s = refresh();
 			const wanted = row => (!args.ids || args.ids.includes(row.id)) && (!args.query || Boolean(row.name?.includes(args.query)));
-			if (inspectScopes[command.args.scope]) return { context: c, scope: command.args.scope, ...inspectScopes[command.args.scope](s, wanted) };
+			if (["scene", "shot", "motion", "selection"].includes(command.args.scope)) {
+				const select = { shot: ["shot"], motion: ["motion", "character"] }[command.args.scope];
+				const ids = args.ids ?? (command.args.scope === "selection" ? [s.selection?.id ?? s.host.sceneId] : undefined);
+				return { context: c, scope: "document", ...readElementDocument(s.document, { ...command.args, ids, select }, c.host.sceneId) };
+			}
 			// Build each page from the same complete authoritative projection; never
 			// page by slicing an already-truncated Send context.
 			// Stable id order, so an offset cursor survives unrelated edits.

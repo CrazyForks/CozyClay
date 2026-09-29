@@ -3,15 +3,11 @@
 import { Euler, Vector3, PerspectiveCamera } from 'three';
 import { createSceneObject, updateSceneObject, removeSceneObject, setSceneObjectParent, descendantsOf, isEffectivelyHidden, supportHeightForObject, OBJECT_LIBRARY } from './scene-objects.js';
 import { createCharacterEntry } from './scenes.js';
-import { normalizeStage } from './commands/stage.js';
-import { elementPatchArgs, mergeElementSet, readElement } from './commands/elements.js';
-import { createShotAuthoringDocument } from './shot-authoring.js';
-import { elementByPath, STUDIO_ELEMENTS } from './studio-elements.js';
 import { createShot, shotAtFrame } from './cuts.js';
 import { captureFraming } from './camera-move.js';
 import { createStableItemId } from './stable-items.js';
 import { focalMmToFov, SENSOR_FORMATS } from './shot.js';
-import { StudioProtocolError, StudioSchemas, STUDIO_PATCH_DOMAINS, STUDIO_PATCH_KINDS, STUDIO_PATCH_DESCRIPTORS, validateStudioSchema, validateStudioCommand, validateStudioIdentity, validateReceipt, freezeStudioData, utf8ByteLength } from './studio-agent-protocol.js';
+import { StudioProtocolError, StudioSchemas, STUDIO_PATCH_KINDS, STUDIO_PATCH_DESCRIPTORS, validateStudioSchema, validateStudioCommand, validateStudioIdentity, validateReceipt, freezeStudioData, utf8ByteLength } from './studio-agent-protocol.js';
 
 const DEG = Math.PI / 180, EPS = 1e-8, CHARACTER_SUPPORT_TOLERANCE = 5e-3;
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
@@ -300,150 +296,6 @@ const domainState = (state, domain) => domain === 'shot'
   ? { shotDocument: state.shotDocument, camera: state.camera, manual: state.manual }
   : state[DOMAIN_KEYS[domain]];
 const withDomain = (state, domain, draft) => domain === 'shot' ? { ...state, ...draft } : { ...state, [DOMAIN_KEYS[domain]]: draft };
-/** Did the requested value survive? Normalizer-added members (stable ids,
- * default route flags) are allowed; a changed, clamped or refused value is not. */
-function survives(requested, actual) {
-  if (requested === null || typeof requested !== 'object') return requested === actual;
-  if (Array.isArray(requested)) return Array.isArray(actual) && requested.length === actual.length && requested.every((item, index) => survives(item, actual[index]));
-  if (!actual || typeof actual !== 'object' || Array.isArray(actual)) return false;
-  return Object.entries(requested).every(([key, value]) => survives(value, actual[key]));
-}
-const PATH_READERS = {
-  'character.position': row => ({ x: row.x, y: row.y ?? 0, z: row.z }),
-  'character.rot': row => row.rot, 'character.scale': row => row.scale, 'character.subject': row => row.subject,
-  'character.hidden': row => row.hidden === true, 'character.model': row => row.model, 'character.tint': row => row.tint ?? null,
-  'character.identityImage': row => row.identityImage ?? null, 'character.pose': row => row.pose?.id ?? null,
-  'character.promptBlocks': row => row.layer?.promptClips ?? [],
-  'character.motionRef.url': row => row.motionRef?.url ?? null, 'character.motionRef.motionId': row => row.motionRef?.motionId ?? null,
-  'object.renderer': row => row?.renderer ?? null, 'object.position': row => row && ({ x: row.x, y: row.y ?? 0, z: row.z }),
-  'object.rotation': row => row && ({ x: row.rotX, y: row.rot, z: row.rotZ }), 'object.scale': row => row && ({ x: row.scaleX, y: row.scaleY, z: row.scaleZ }),
-  'object.name': row => row?.name, 'object.color': row => row?.color ?? null, 'object.parent': row => row?.parent ?? null,
-  'object.path': row => row?.path ?? null, 'object.remove': row => row === undefined,
-  'shot.cameraKeys': shot => shot.cameraKeys, 'shot.targetModel': shot => shot.targetModel ?? null,
-  ...Object.fromEntries(STUDIO_ELEMENTS.filter(row => row.path.startsWith('stage.')).map(({ path }) => [path, stage => readElement(stage, path)])),
-};
-/** Measured readback for one path: one typed member, never the payload. A
- * picture is reported by its size and a schedule by its length. */
-function patchedValue(path, value) {
-  // A cleared, removed or refused field has no measurement but its own absence.
-  if (value === null || value === undefined) return { path, text: null };
-  const type = elementByPath(path)?.type;
-  if (type === 'image') return { path, bytes: utf8ByteLength(value) };
-  if (type === 'array') return { path, count: Array.isArray(value) ? value.length : value.points?.length ?? 0 };
-  if (type === 'vec3') return { path, vec: { x: value.x, y: value.y, z: value.z } };
-  if (typeof value === 'number') return { path, number: value };
-  if (typeof value === 'boolean') return { path, flag: value };
-  return { path, text: [...String(value)].slice(0, 512).join('') };
-}
-function patchCharacters(command, before, ports) {
-  let rows = before.characters;
-  const poses = ports.poses?.() ?? [];
-  const targets = [];
-  for (const op of command.args.ops) {
-    const entity = rows.find(row => row.id === op.target.id);
-    if (!entity) fail('AMBIGUOUS_TARGET', 'Patched character is not present in the admitted scene.');
-    const source = { ...entity }, fields = new Set();
-    for (const [key, value] of Object.entries(op.set)) {
-      if (key === 'position') { Object.assign(source, value); for (const axis of ['x', 'y', 'z']) fields.add(axis); }
-      else if (key === 'pose') { source.pose = value === null ? null : poses.find(pose => pose.id === value) ?? null; fields.add('pose'); }
-      else if (key === 'promptBlocks') { source.layer = { ...(source.layer ?? {}), promptClips: value }; fields.add('layer'); }
-      else if (key.startsWith('motionRef.')) { source.motionRef = { ...(source.motionRef ?? {}), [key.slice('motionRef.'.length)]: value }; fields.add('motionRef'); }
-      else { source[key] = value; fields.add(key); }
-    }
-    // The domain normalizer owns every clamp and whitelist; only the patched
-    // fields are taken from it, so runtime-only state stays where it lives.
-    const normalized = createCharacterEntry(source);
-    const next = { ...entity };
-    for (const field of fields) next[field] = normalized[field];
-    rows = rows.map(row => row.id === entity.id ? next : row);
-    targets.push({ id: entity.id, read: path => PATH_READERS[path](rows.find(row => row.id === entity.id)) });
-  }
-  return { draft: rows, targets };
-}
-function patchObjects(command, before) {
-  let rows = before.objects;
-  const targets = [];
-  for (const op of command.args.ops) {
-    const entity = rows.find(row => row.id === op.target.id);
-    if (!entity) fail('AMBIGUOUS_TARGET', 'Patched object is not present in the admitted scene.');
-    const patch = {};
-    for (const [key, value] of Object.entries(op.set)) {
-      if (key === 'position') Object.assign(patch, { x: value.x, y: value.y, z: value.z });
-      else if (key === 'rotation') Object.assign(patch, { rotX: value.x, rot: value.y, rotZ: value.z });
-      else if (key === 'scale') Object.assign(patch, { scaleX: value.x, scaleY: value.y, scaleZ: value.z });
-      else if (!['parent', 'remove'].includes(key)) patch[key] = value;
-    }
-    if (Object.keys(patch).length) rows = updateSceneObject(rows, entity.id, patch);
-    if (Object.hasOwn(op.set, 'parent')) {
-      if (op.set.parent !== null && descendantsOf(rows, entity.id).some(row => row.id === op.set.parent)) fail('INVALID_ARGUMENT', 'Grouping would create a cycle.');
-      rows = setSceneObjectParent(rows, entity.id, op.set.parent);
-    }
-    if (op.set.remove === true) rows = removeSceneObject(rows, entity.id);
-    targets.push({ id: entity.id, read: path => PATH_READERS[path](rows.find(row => row.id === entity.id)) });
-  }
-  return { draft: rows, targets };
-}
-function patchShot(command, before) {
-  let shots = before.shotDocument.shots;
-  const targets = [];
-  for (const op of command.args.ops) {
-    const shot = op.target.id ? shots.find(row => row.id === op.target.id)
-      : shotAtFrame(shots, before.frame) ?? shots.find(row => row.id === before.selectedShotId);
-    if (!shot) fail('AMBIGUOUS_TARGET', 'No shot owns this frame; name the shot explicitly.');
-    const patched = { ...shot };
-    for (const [key, value] of Object.entries(op.set)) patched[key] = value === null ? undefined : value;
-    shots = shots.map(row => row.id === shot.id ? patched : row);
-    targets.push({ id: shot.id, read: path => PATH_READERS[path](shots.find(row => row.id === shot.id)) });
-  }
-  // The shot document's own repair owns key ordering, ranges and the video
-  // model whitelist; rebuilding it is how a patched shot stays a legal shot.
-  shots = createShotAuthoringDocument({ shots, waypoints: [], frameCount: before.frameCount }).shots;
-  return { draft: { shotDocument: { ...before.shotDocument, shots }, camera: before.camera, manual: before.manual }, targets };
-}
-function patchStage(command, before) {
-  if (!before.stage) fail('CAPABILITY_MISSING', 'This editor does not publish an authored stage.');
-  let stage = before.stage;
-  const targets = [];
-  for (const op of command.args.ops) {
-    // Legacy ports share the same set planner; the App's owned stage uses
-    // the bus alias below, including its journal, guard and store history.
-    stage = { ...stage, ...normalizeStage(mergeElementSet(stage, elementPatchArgs('stage', { ops: [op] }))) };
-    targets.push({ id: before.host.sceneId, read: path => PATH_READERS[path](stage) });
-  }
-  return { draft: stage, targets };
-}
-function patchPlan(command, before, ports) {
-  const kind = command.args.ops[0].target.kind, domain = STUDIO_PATCH_DOMAINS[kind];
-  const { draft, targets } = kind === 'character' ? patchCharacters(command, before, ports)
-    : kind === 'object' ? patchObjects(command, before)
-      : kind === 'shot' ? patchShot(command, before) : patchStage(command, before);
-  const ops = command.args.ops.map((op, index) => {
-    const droppedPaths = Object.entries(op.set)
-      .filter(([key, value]) => !survives(value, targets[index].read(`${kind}.${key}`)))
-      .map(([key]) => `${kind}.${key}`);
-    return { index, status: droppedPaths.length ? 'partial' : 'applied', ...(droppedPaths.length ? { droppedPaths } : {}) };
-  });
-  const unchanged = equal(draft, domainState(before, domain));
-  const readback = state => command.args.ops.map((op, index) => ({ id: targets[index].id,
-    after: { patched: Object.keys(op.set).map(key => patchedValue(`${kind}.${key}`, patchTargetRead(kind, state, targets[index].id, `${kind}.${key}`))) } }));
-  return { domain, draft, unchanged,
-    status: unchanged ? 'noop' : ops.some(op => op.status === 'partial') ? 'partial' : 'applied',
-    ops: unchanged ? ops.map(op => ({ ...op, status: op.status === 'partial' ? 'partial' : 'noop' })) : ops,
-    affectedIds: [...new Set(targets.map(target => target.id))], patchReadback: readback,
-    checks: { coverage: 'declared-element-readback' }, warnings: [], details: { kind, paths: command.args.ops.flatMap(op => Object.keys(op.set).map(key => `${kind}.${key}`)) } };
-}
-/** Read one path back out of the COMMITTED state, so the receipt quotes the
- * editor and not the draft the planner built. */
-function patchTargetRead(kind, state, id, path) {
-  if (kind === 'stage') return PATH_READERS[path](state.stage);
-  if (kind === 'shot') {
-    const shot = state.shotDocument.shots.find(row => row.id === id);
-    if (!shot) fail('UNCERTAIN_APPLY', 'Committed shot is unavailable at readback.');
-    return PATH_READERS[path](shot);
-  }
-  return PATH_READERS[path]((kind === 'character' ? state.characters : state.objects).find(row => row.id === id));
-}
-
 /** Local journal. Unsettled/protected records are never evicted. Call prune on
  * history/job release; completed unprotected outcomes expire after ten minutes. */
 export function createStudioCommandJournal({ host, now = Date.now, isRetained = () => false, maxCompleted = 256, retentionMs = 600000 } = {}) {
@@ -512,16 +364,12 @@ export function createStudioCommands(ports) {
         preserved: { authoredState: mutated === false ? 'unchanged' : 'unknown' }, recovery: { action: mutated === false ? 'inspect' : 'reconcile', ...(mutated === false ? { retryAllowed: false } : {}) }, ...(message ? { message: [...message].slice(0, 120).join('') } : {}) });
     }
     if (!equal(host, journal.host) || !documentIsCurrent()) return failure('STALE_SCENE', phase, false, 'Request belongs to a different live document.');
-    if (request.name === 'patch_elements' && request.args?.ops?.[0]?.target?.kind === 'stage' && ports.stageSet?.available()) {
-      try { return ports.stageSet.run(elementPatchArgs('stage', request.args), request); }
-      catch (error) { return failure(error.code ?? 'INVALID_ARGUMENT', phase, false, error.message); }
-    }
     try {
       if (!journal.begin(request.commandId, signature)) return journal.get(request.commandId) ?? failure('UNCERTAIN_APPLY', 'reconcile', 'unknown');
     } catch (error) { return failure(error.code, phase, false, error.message); }
     try {
       const command = validateStudioCommand({ name: request.name, args: request.args });
-      if (!['arrange_objects', 'arrange_characters', 'frame_shot', 'patch_elements'].includes(command.name)) fail('CAPABILITY_MISSING', 'This module exposes arrangement, framing and element patches only.');
+      if (!['arrange_objects', 'arrange_characters', 'frame_shot'].includes(command.name)) fail('CAPABILITY_MISSING', 'This module exposes arrangement, framing and element patches only.');
       const before = structuredClone(ports.read());
       const fence = () => {
         const current = ports.read();
@@ -537,7 +385,7 @@ export function createStudioCommands(ports) {
       };
       fence(); phase = 'prepare';
       const plan = command.name === 'frame_shot' ? frameDraft(command, before, ports)
-        : command.name === 'patch_elements' ? patchPlan(command, before, ports) : arrangement(command, before, ports);
+        : arrangement(command, before, ports);
       const unchanged = plan.unchanged ?? (plan.domain === 'shot' ? equal(plan.draft, before.shotState ?? { shotDocument: before.shotDocument, camera: before.camera, manual: before.manual }) : !plan.affectedIds.length);
       const ops = plan.ops ? { ops: plan.ops } : {};
       const base = { ok: true, commandId: request.commandId, receiptId: createStableItemId('receipt'), host, revision: { before: before.revision, after: before.revision }, affectedIds: plan.affectedIds, delta: [], checks: plan.checks, warnings: plan.warnings, undo: null };

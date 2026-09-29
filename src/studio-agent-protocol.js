@@ -35,7 +35,7 @@ export const STUDIO_VARIANTS = freezeStudioData({
 	framingViews: ["front", "front three-quarter", "profile", "rear three-quarter", "back"], framingLevels: ["ground", "low", "hip", "eye", "high", "overhead"],
 	framingSides: ["left", "right"], positionSides: ["left", "right", "front", "behind"], positionBases: ["world", "subject", "shot_camera"], collisionPolicies: ["report", "avoid"],
 	objectOps: ["create", "update", "remove", "group", "ungroup"], characterOps: ["create", "update", "remove"],
-	inspectScopes: ["selection", "scene", "entities", "shot", "motion", "catalogue", "actions", "document"], receiptStatuses: ["applied", "partial", "noop", "transient", "installed", "undone"],
+	inspectionScopes: ["selection", "scene", "entities", "shot", "motion", "catalogue", "actions", "document"], receiptStatuses: ["applied", "partial", "noop", "transient", "installed", "undone"],
 	opStatuses: ["applied", "partial", "noop"],
 	jobStates: ["queued", "generating", "preparing", "verifying", "repairing", "committing", "reconciling", "installed", "review_required", "failed", "cancelled", "stale_target", "stale_environment"],
 });
@@ -182,7 +182,7 @@ const patchOp = union(
 	object({ target: object({ kind: literal("stage") }), set: STUDIO_PATCH_SET_SCHEMAS.stage }),
 );
 const toolSchemas = {
-	inspect_studio: object({ scope: choices(STUDIO_VARIANTS.inspectScopes) }, { ids: ids(32), select: ids(32), query: name, cursor: text(512), limit: { ...integer(1, 32), default: 12 } }),
+	inspect_studio: object({ scope: choices(STUDIO_VARIANTS.inspectionScopes) }, { ids: ids(32), select: ids(32), query: name, cursor: text(512), limit: { ...integer(1, 32), default: 12 } }),
 	operate_studio: object({}, { selection, shotId: id, frame: integer(), playing: bool, mode: choices(STUDIO_VARIANTS.modes), view: object({}, { lookThrough: bool, grid: bool, autoColor: bool }) }),
 	arrange_objects: object({ ops: array(objectOp, 100, 1) }, { collisionPolicy: { ...choices(STUDIO_VARIANTS.collisionPolicies), default: "report" } }),
 	arrange_characters: object({ ops: array(characterOp, 8, 1) }),
