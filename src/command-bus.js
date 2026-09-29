@@ -48,7 +48,10 @@ export function createCommandBus({ registry, ports }) {
   function exposure(entry, args, request) {
     if (request.origin === 'ui') return;
     if (entry.exposure === 'ui-only') fail('CAPABILITY_MISSING', 'This command is available only from the Studio UI.');
-    if (entry.exposure !== 'confirm' || entry.requiresConfirmation?.(registry.state(), args) === false) return;
+    if (entry.id === 'load_scenes') {
+      const ids = scenes => [...new Set(scenes.map(scene => scene.id))].sort();
+      if (same(ids(args.document.scenes), ids(registry.state().scenes))) return;
+    } else if (entry.exposure !== 'confirm' || entry.requiresConfirmation?.(registry.state(), args) === false) return;
     const token = confirmations.get(request.confirmationToken);
     if (!token || token.id !== entry.id || !same(token.args, args) || !same(token.host, ports.read().host) || token.expires < (ports.now ?? Date.now)()) fail('CONFIRMATION_REQUIRED', entry.confirmationReason ?? 'This command needs user confirmation.');
     confirmations.delete(request.confirmationToken);

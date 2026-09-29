@@ -488,20 +488,25 @@ export function useScenes(appContext) {
 		const shotState = restoredShotState(scene);
 		const stage = createSceneStage(scene.stage);
 		const objects = Array.isArray(scene.objects) ? scene.objects : [];
-		appContext.shared.storeRef.current = withCommandHistory(createSceneHistoryStore(objects, {
-			onCommit: (before, after) => appContext.shared.markSemanticEdit("objects", before, after),
-			onObjects: (next) => {
-				appContext.objectChanged();
-				appContext.shared.setSceneObjects(next);
-			},
-		}));
-		appContext.shared.setSceneObjects(objects);
-		appContext.shared.setShots(shotState.shots);
-		appContext.shared.setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS);
-		appContext.shared.setCharacters(stage.characters);
+		const loaded = appContext.loadStoreDomains({ ...scene, stage, objects, shot: shotState, cast: stage.characters });
+		if (!loaded.has("objects")) {
+			appContext.shared.storeRef.current = withCommandHistory(createSceneHistoryStore(objects, {
+				onCommit: (before, after) => appContext.shared.markSemanticEdit("objects", before, after),
+				onObjects: (next) => {
+					appContext.objectChanged();
+					appContext.shared.setSceneObjects(next);
+				},
+			}));
+			appContext.shared.setSceneObjects(objects);
+		}
+		if (!loaded.has("shot")) {
+			appContext.shared.setShots(shotState.shots);
+			appContext.shared.setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS);
+		}
+		if (!loaded.has("cast")) appContext.shared.setCharacters(stage.characters);
 		appContext.shared.setRigMountEpoch((value) => value + 1);
 		appContext.shared.setHasCharSheet(stage.hasCharSheet);
-		appContext.shared.stageDomain.load(stage);
+		if (!loaded.has("stage")) appContext.shared.stageDomain.load(stage);
 		// The motion-layer buffer reloads from the scene's first character.
 		const firstLayer = stage.characters[0]?.layer;
 		appContext.shared.setWaypoints(firstLayer?.waypoints ?? shotState.waypoints ?? []);

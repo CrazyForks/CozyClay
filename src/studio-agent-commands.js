@@ -153,7 +153,7 @@ function transformPatch(op, isObject) {
   if (op.rotationDeg) Object.assign(patch, { rotX: op.rotationDeg.x, rot: op.rotationDeg.y, rotZ: op.rotationDeg.z });
   return patch;
 }
-function arrangement(command, before, ports) {
+export function arrangement(command, before, ports) {
   const isObject = command.name === 'arrange_objects', key = isObject ? 'objects' : 'characters';
   let rows = before[key];
   const relations = [], warnings = [];
@@ -243,7 +243,7 @@ export function framingChecks(ids, state, ports) {
   const points = ids.flatMap(id => geometry(entityById(state, id), state, ports));
   return projectSubject(points, state.camera, focalMmToFov(state.camera.focalMm, state.filmback.sensorId, state.filmback.aspectRatio), state.filmback.aspectRatio).checks;
 }
-function frameDraft(command, state, ports) {
+export function frameDraft(command, state, ports) {
   if (state.frameCount <= 0) fail('TARGET_NOT_READY', 'A nonempty timeline is required.');
   const subject = state.characters.find(e => e.id === command.args.subjectIds[0]);
   if (!subject || subject.hidden) fail('TARGET_NOT_READY', 'Framing requires one visible character.');
