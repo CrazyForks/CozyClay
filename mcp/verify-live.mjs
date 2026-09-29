@@ -5,12 +5,16 @@
  */
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 import { z } from "zod";
 import { projectFixture } from "../test/bus/project-fixture.mjs";
 import { dispatchLiveFrame } from "../src/live-control.js";
-import { SCENES_VERSION } from "../src/scenes.js";
+import { SCENES_VERSION, readSceneDocument, serializeSceneDocument } from "../src/scenes.js";
+import { createProjectDocument } from "../src/project.js";
 import { validateReceipt } from "../src/studio-agent-protocol.js";
 import { startLiveHub } from "./live-hub.mjs";
 import { createToolHandlers, liveWorkspace, setLiveHub } from "./tool-handlers.mjs";
@@ -21,7 +25,7 @@ const bounded = (promise, label) => {
 		timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), 15_000);
 	})]).finally(() => clearTimeout(timer));
 };
-export async function studio() {
+export async function studio({ projectRoot } = {}) {
 	const f = projectFixture();
 	// Publish the selection React renders after a room swap. The domain owns
 	// the swap and all authored state; this replaces only the renderer seam.
@@ -68,7 +72,7 @@ export async function studio() {
 	const handle = await bounded(welcomed.promise, "workspace hello");
 	f.scope.liveWorkspaceHandleRef.current = handle;
 	setLiveHub(hub);
-	const tools = createToolHandlers();
+	const tools = createToolHandlers({ projectRootPromise: Promise.resolve(projectRoot) });
 	const call = async (name, args = {}) => {
 		const tool = tools.find(row => row.name === name);
 		assert.ok(tool, name);
@@ -245,6 +249,50 @@ cases.batch = async () => {
 		assert.deepEqual(sent.args.args.args, { ops, atomic: true, stopOnError: false, label: "Three edits" });
 		assert.ok(!s.wire.some(frame => frame.name === "apply_batch"));
 	} finally { await s.close(); }
+};
+
+cases.confirmation = async () => {
+	const cwd = process.cwd();
+	const root = await realpath(await mkdtemp(join(tmpdir(), "cozyclay-446-")));
+	const s = await studio({ projectRoot: root });
+	try {
+		process.chdir(root);
+		const before = s.describe().document;
+		const replacement = structuredClone(before);
+		replacement.scenes = [{ ...replacement.scenes[0], id: "replacement-scene", name: "Replacement" }];
+		replacement.activeSceneId = "replacement-scene";
+		const document = readSceneDocument(serializeSceneDocument(replacement)).document;
+		const path = join(root, "replacement.cclayproject");
+		await writeFile(path, JSON.stringify(createProjectDocument({ scenesDocument: document, name: "Replacement project", customPoses: [], workspaceLayout: null })));
+		const assertRefused = (result, code) => {
+			assert.equal(result.isError, true, JSON.stringify(result));
+			let refused;
+			try { refused = JSON.parse(result.content[0].text); }
+			catch { assert.fail(`Expected ${code} receipt, got: ${result.content[0].text}`); }
+			validateReceipt(refused); assert.equal(refused.code, code);
+			assert.equal(refused.mutated, false);
+			assert.deepEqual(s.describe().document, before);
+		};
+		assertRefused(await s.call("open_project", { path }), "CONFIRMATION_REQUIRED");
+		assertRefused(await s.call("open_project", { path, confirmationToken: "untrusted-token" }), "CONFIRMATION_REQUIRED");
+		// Only the UI can mint a token. It is bound to the exact normalized
+		// document and remains unconsumed when revision admission refuses.
+		const confirmationToken = s.f.binding.bus.confirm("load_scenes", { document });
+		assertRefused(await s.call("open_project", { path, confirmationToken, expectedRevision: s.f.binding.refresh().revision + 99 }), "STALE_SCENE");
+		const different = structuredClone(document); different.scenes[0].name = "Different request";
+		assertRefused(await s.call("studio_run", { action: "load_scenes", args: { document: different }, confirmationToken }), "CONFIRMATION_REQUIRED");
+		const loaded = receipt(await s.call("open_project", { path, confirmationToken }), "load_scenes");
+		assert.equal(loaded.output.activeSceneId, document.activeSceneId);
+		assert.deepEqual(loaded.output.scenes, document.scenes.map(({ id, name }) => ({ id, name })));
+		assert.deepEqual(s.describe().document.scenes.map(row => row.id), ["replacement-scene"]);
+		assert.ok(!s.wire.some(frame => frame.name === "load_scenes"));
+		// Same-id scene loads remain an admitted non-replacing boundary.
+		const same = receipt(await s.call("open_project", { path }), "load_scenes");
+		assert.equal(same.undo, null);
+		const other = { ...document, activeSceneId: "other", scenes: [{ ...document.scenes[0], id: "other" }] };
+		const reused = await s.call("studio_run", { action: "load_scenes", args: { document: other }, confirmationToken });
+		assert.equal(JSON.parse(reused.content[0].text).code, "CONFIRMATION_REQUIRED");
+	} finally { process.chdir(cwd); await s.close(); await rm(root, { recursive: true, force: true }); }
 };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
