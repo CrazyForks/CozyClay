@@ -150,7 +150,7 @@ export function createShotsDomain(appContext, initial = {}) {
   let gesture = null;
   function finishGesture(cancel = false) {
     if (!gesture) return;
-    const active = gesture; gesture = null; active.release?.();
+    const active = gesture; gesture = null; active.unsubscribe?.(); active.release();
     return active.txId ? run(cancel ? 'run.cancel' : 'run.commit', { txId: active.txId }) : undefined;
   }
   function beginGesture() {
@@ -165,10 +165,17 @@ export function createShotsDomain(appContext, initial = {}) {
   function edit(id, args) {
     if (!gesture) return run(id, args);
     if (gesture.id && gesture.id !== id) { finishGesture(); beginGesture(); }
-    if (!gesture.txId) { gesture.id = id; gesture.txId = run('run.begin', { id, args }).txId; }
+    if (!gesture.txId) {
+      gesture.id = id; gesture.txId = run('run.begin', { id, args }).txId;
+      gesture.unsubscribe = appContext.bus.subscribe(event => {
+        if (event.type !== 'transaction.cancelled' || event.txId !== gesture?.txId) return;
+        const active = gesture; gesture = null; active.unsubscribe(); active.release();
+      });
+    }
     return run('run.update', { txId: gesture.txId, args });
   }
   const domain = { documentStore, state, read, write, writeState, beginAction, run, edit, beginGesture, finishGesture,
+    bindRender(context) { appContext = context; },
     capture: () => appContext.shared.captureCurrentFraming(), frame, captureCamera, placeCamera, setLens, renderCamera,
     canUndo: id => documentStore.canUndo(id), stepHistory: redo => { finishGesture(); return Boolean((redo ? documentStore.redo : documentStore.undo)()); },
     document: () => ({ shots: read() }), publish: value => writeState(before => ({ ...before, shots: value.shots, ...cameraPatch(value.camera, value.manual) })), commitDraft,
@@ -196,6 +203,7 @@ export function useShots(appContext) {
   });
   const startupShotState = readShotAuthoringDocument(appContext.shared.startupScene.shotDocument ?? undefined).state ?? shotStartup.state;
   const [domain] = useState(() => appContext.storeDomain('shot') ?? createShotsDomain(appContext, startupShotState ?? {}));
+  domain.bindRender(appContext);
   const { shots, frameCount: tlFrameCount, fovDeg, cameraMove } = useDocumentDomain(domain.documentStore, 'shot');
   const [customMove] = useState('');
   const [movePlaying, setMovePlaying] = useState(false);
