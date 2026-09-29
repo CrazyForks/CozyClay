@@ -94,9 +94,11 @@ export function elementPatchArgs(kind, args) {
   });
   return collection ? ops.length === 1 ? ops[0] : { ops } : ops.reduce((patch, op) => mergeElementSet(patch, op.set), {});
 }
-export function elementReadback(kind, document, paths) {
+export function elementReadback(kind, item, paths, document) {
   return patchElements(projectionKind(kind)).filter(element => !paths || paths.includes(element.path)).map(element => {
-    const value = readElement(document, element.path), path = element.path;
+    const path = element.path;
+    if (element.readback) return { path, ...element.readback(item, document) };
+    const value = readElement(item, path);
     if (value === null || value === undefined || value === '') return { path, text: null };
     if (element.type === 'image') return { path, bytes: utf8ByteLength(value) };
     if (element.type === 'vec3') return { path, vec: value };
@@ -117,7 +119,10 @@ export function elementPatchReceipt(receipt, request, projection) {
   const value = projection[kinds.get(kind).documentKey];
   const ops = request.args.ops.map(({ target, set }, index) => {
     const item = elementTarget(kind, value, target.id, receipt.host.sceneId);
-    const droppedPaths = Object.entries(set).filter(([key, value]) => !survives(value, readElement(item, `${kind}.${key}`))).map(([key]) => `${kind}.${key}`);
+    const droppedPaths = Object.entries(set).filter(([key, requested]) => {
+      const element = patchElements(kind).find(element => element.path === `${kind}.${key}`);
+      return !element.readback && !survives(requested, readElement(item, element.path));
+    }).map(([key]) => `${kind}.${key}`);
     return { index, status: droppedPaths.length ? 'partial' : receipt.authored ? 'applied' : 'noop', ...(droppedPaths.length ? { droppedPaths } : {}) };
   });
   const partial = receipt.authored && ops.some(op => op.status === 'partial');
@@ -125,7 +130,7 @@ export function elementPatchReceipt(receipt, request, projection) {
   const { action, summary, ...base } = receipt;
   return { ...(partial ? base : receipt), ops, status: partial ? 'partial' : receipt.status,
     delta: !receipt.authored ? [] : request.args.ops.slice(0, 8).map(({ target, set }) => ({ id: target.id, after: {
-      patched: elementReadback(kind, elementTarget(kind, value, target.id, receipt.host.sceneId), Object.keys(set).map(key => `${kind}.${key}`)),
+      patched: elementReadback(kind, elementTarget(kind, value, target.id, receipt.host.sceneId), Object.keys(set).map(key => `${kind}.${key}`), value),
     } })) };
 }
 export function registerElementSet(registry, ports, declaration) {
