@@ -28,8 +28,9 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
-import { LiveMutationUncertainError, MAX_COMMAND_TIMEOUT_MS } from "./live-hub.mjs";
+import { MAX_COMMAND_TIMEOUT_MS } from "./live-hub.mjs";
 import { readMeshFromPath } from "./mesh-file.mjs";
+import { DEFAULT_POSE } from "../src/poses.js";
 import { readMotionStream } from "../bin/agent/motion-runtime.mjs";
 import { motionPreflightReason, startMotionRequest } from "../src/analytics.js";
 import { BLOCK_MAX_SECONDS, PROMPT_GUIDE, normalizePhases, splitLongBeat, tileClipFrames } from "./ardy-prompts.mjs";
@@ -180,22 +181,27 @@ const STUDIO_IDENTITY_KEYS = ["workspaceId", "documentEpoch", "sceneId", "sceneE
  * the open document and its current revision like the agent's run_action. Its
  * declaration (read from the editor, never from this server) sets the hub
  * deadline unless the caller gives one. */
-const runStudioCommand = async ({ action, args, expectedRevision, commandId, timeoutMs }) => {
+const executeStudioCommand = async ({ action, args, expectedRevision, commandId, timeoutMs, confirmationToken, inspected }) => {
 	const workspaceHandle = liveWorkspace.getStore();
-	const inspected = await liveHub.command("inspect_studio", { scope: "actions", ids: [action] }, workspaceHandle);
+	inspected ??= await liveHub.command("inspect_studio", { scope: "actions", ids: [action] }, workspaceHandle);
 	const context = inspected?.context;
 	if (!context?.host || !Number.isSafeInteger(context.revision?.scene)) throw new Error("The editor did not return a Studio context to admit this command against.");
 	const declared = inspected.actions?.find((row) => row.id === action);
 	const receipt = await liveHub.command("run_action", {
 		name: "run_action",
-		args: { action, args: args ?? {} },
+		args: { action, args: typeof args === "function" ? await args(context) : args ?? {}, ...(confirmationToken ? { confirmationToken } : {}) },
 		commandId: commandId ?? randomUUID(),
 		host: Object.fromEntries(STUDIO_IDENTITY_KEYS.map((key) => [key, context.host[key]])),
 		expectedRevision: expectedRevision ?? context.revision.scene,
 	}, workspaceHandle, { timeoutMs: timeoutMs ?? declared?.timeoutMs });
-	// A refusal is the editor's receipt: its code and recovery are the answer.
-	return { content: [{ type: "text", text: JSON.stringify(receipt) }], ...(receipt?.ok === false ? { isError: true } : {}) };
+	return receipt;
 };
+// A refusal is the editor's receipt: its code and recovery are the answer.
+const studioResult = (...receipts) => ({
+	content: receipts.map(receipt => ({ type: "text", text: JSON.stringify(receipt) })),
+	...(receipts.some(receipt => receipt.ok === false) ? { isError: true } : {}),
+});
+const runStudioCommand = async options => studioResult(await executeStudioCommand(options));
 
 const scene = () => activeScene(state.doc.scenes, state.doc.activeSceneId);
 const stage = () => scene().stage;
@@ -216,6 +222,13 @@ const findCharacter = (ref) => {
 	const n = Number(key);
 	if (Number.isInteger(n) && n >= 1) return list[n - 1] ?? null;
 	return null;
+};
+
+// Resolve legacy letters and slots from the complete live cast inside the
+// inspected admission. A missing id is refused by the command, not hidden here.
+const liveCharacterId = async ref => {
+	await refreshLiveDescription();
+	return findCharacter(ref)?.id ?? ref;
 };
 
 /** The studio labels the cast A, B, C… by position. */
@@ -273,31 +286,6 @@ const framing = () => {
 };
 
 const currentShot = () => deriveShot(state.camera, subject(), fov(), undefined, filmback());
-
-const appliedLiveMutation = async (name, args) => {
-	const workspaceHandle = liveWorkspace.getStore();
-	const value = await liveHub.command(name, args, workspaceHandle);
-	try {
-		if (!await refreshLiveDescription(workspaceHandle)) throw new Error("Live editor disconnected before verification.");
-	} catch (error) {
-		throw new LiveMutationUncertainError(`Live editor accepted ${name}, but its state could not be verified: ${error.message} The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.`);
-	}
-	return value;
-};
-
-const requireLiveSceneParity = (name, document, result) => {
-	const expected = document.scenes.map(({ id, name: sceneName }) => ({ id, name: sceneName }));
-	const received = Array.isArray(result?.scenes) ? result.scenes : [];
-	const sameScenes = received.length === expected.length && received.every((scene, index) =>
-		scene?.id === expected[index].id && scene?.name === expected[index].name,
-	);
-	if (sameScenes && result?.activeSceneId === document.activeSceneId) return;
-	throw new LiveMutationUncertainError(
-		`Live editor accepted ${name}, but did not confirm the complete scene list and active scene ` +
-		`(expected ${JSON.stringify(expected)} active ${document.activeSceneId}; received ${JSON.stringify(received)} active ${result?.activeSceneId ?? "none"}). ` +
-		"The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.",
-	);
-};
 
 const modelById = (id) =>
 	[...VIDEO_MODELS, ...IMAGE_MODELS].find((m) => m.id === id) ?? null;
@@ -499,13 +487,24 @@ function shotReport() {
 
 /* --------------------------------- tools --------------------------------- */
 
+const studioAliasTools = new Set([
+	"set_camera", "frame_shot", "place_object", "update_object", "remove_object",
+	"import_mesh", "group_objects", "add_scene", "switch_scene", "apply_batch", "open_project",
+	"add_character", "place_character", "remove_character", "set_prompt_blocks",
+]);
+const studioAdmissionSchema = {
+	expectedRevision: z.number().int().min(0).optional().describe("scene revision to admit against; defaults to the inspected revision"),
+	commandId: z.string().min(1).max(120).optional().describe("idempotency key; reuse with the original expectedRevision to replay its receipt"),
+	timeoutMs: z.number().int().min(1).max(MAX_COMMAND_TIMEOUT_MS).optional().describe("hub deadline; defaults to the editor command declaration"),
+};
+
 /** One tool, as the registry hands it out: everything server.mjs needs to
  * register it, and everything a direct caller needs to run it. */
 const tool = (name, config, handler) => ({
 	name,
 	title: config.title,
 	description: config.description,
-	inputSchema: config.inputSchema,
+	inputSchema: studioAliasTools.has(name) ? { ...config.inputSchema, ...studioAdmissionSchema } : config.inputSchema,
 	annotations: TOOL_ANNOTATIONS[name],
 	live: liveWorkspaceTools.has(name),
 	handler,
@@ -704,17 +703,19 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					look_at_z: z.number().optional().describe("world z of an explicit aim point; give all three to aim the lens"),
 				},
 			},
-			async ({ x, y, z: zPos, focal_mm, look_at_x, look_at_y, look_at_z }) => {
+			async ({ x, y, z: zPos, focal_mm, look_at_x, look_at_y, look_at_z, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						// The aim is only forwarded when the caller gave a whole point: a
-						// partial target has no direction, and an omitted one deliberately
-						// leaves the live editor's orientation exactly where it was.
-						const aim = [look_at_x, look_at_y, look_at_z].every((value) => value !== undefined)
-							? { lookAtX: look_at_x, lookAtY: look_at_y, lookAtZ: look_at_z }
-							: {};
-						await appliedLiveMutation("set_camera", { x, y, z: zPos, focalMm: focal_mm, ...aim });
-						return text(`Camera set.\n\n${shotReport()}`);
+						return await runStudioCommand({ ...admission, action: "shot.frame", args: context => {
+							const camera = context.camera;
+							const position = { x: x ?? camera.position.x, y: y ?? camera.position.y, z: zPos ?? camera.position.z };
+							// Preserve direction when no complete explicit aim point was given.
+							const lookAt = [look_at_x, look_at_y, look_at_z].every(value => value !== undefined)
+								? { x: look_at_x, y: look_at_y, z: look_at_z }
+								: Object.fromEntries(["x", "y", "z"].map(axis => [axis, position[axis] + camera.lookAt[axis] - camera.position[axis]]));
+							return { subjectIds: [state.focusLocked ? state.focus : context.activeCharacterId],
+								framing: { exact: { position, lookAt, focalMm: focal_mm ?? camera.focalMm } } };
+						} });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -759,9 +760,11 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					focal_mm: z.number().min(8).max(300).default(35).describe("lens to frame with"),
 				},
 			},
-			async ({ size, view, level, side, focal_mm }) => {
+			async ({ size, view, level, side, focal_mm, ...admission }) => {
+				let inspected;
 				if (liveHub?.connected) {
 					try {
+						inspected = await liveHub.command("inspect_studio", { scope: "actions", ids: ["shot.frame"] }, liveWorkspace.getStore());
 						await refreshLiveDescription();
 					} catch (error) {
 						return liveError(error);
@@ -834,19 +837,13 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				};
 				if (liveHub?.connected) {
 					try {
-						// Placing the lens is only half the shot. deriveShot and captureFraming
-						// both measure as if the lens points at the framing pivot (see
-						// aimAtSubject), which the in-memory path gets for free because it has
-						// no orientation at all. A live editor has one and keeps it, so a
-						// position-only move orbited every view except `front` off the subject
-						// while the slate still read "98% of frame height". Send the same pivot
-						// the vocabulary is measured against, with the position.
-						await appliedLiveMutation("set_camera", {
-							...nextCamera,
-							lookAtX: s.x,
-							lookAtY: FRAMING_PIVOT_Y,
-							lookAtZ: s.z,
-						});
+						return await runStudioCommand({ ...admission, action: "shot.frame", inspected, args: {
+							subjectIds: [(findCharacter(state.focus) ?? cast()[0]).id],
+							framing: { exact: {
+								position: { x: nextCamera.x, y: nextCamera.y, z: nextCamera.z },
+								lookAt: { x: s.x, y: FRAMING_PIVOT_Y, z: s.z }, focalMm: lensMm,
+							} },
+						} });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -881,13 +878,12 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 						.describe("which mannequin to use"),
 				},
 			},
-			async ({ subject: desc, x, z: zPos, facing, model }) => {
+			async ({ subject: desc, x, z: zPos, facing, model, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						const result = await appliedLiveMutation("add_character", { subject: desc, x, z: zPos, rot: facing, model });
-						const added = stage().characters.find((character) => character.id === result?.id);
-						if (added && model !== undefined) added.model = model;
-						return text(`Added ${result?.id ?? "character"}.\n\n${sceneReport()}`);
+						return await runStudioCommand({ ...admission, action: "character.add", args: {
+							character: { subject: desc, x, z: zPos, rot: facing, model, pose: DEFAULT_POSE },
+						} });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -930,11 +926,12 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					hidden: z.boolean().optional().describe("hide without removing from the cast"),
 				},
 			},
-			async ({ character, x, z: zPos, y, facing, subject: desc, hidden }) => {
+			async ({ character, x, z: zPos, y, facing, subject: desc, hidden, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						await appliedLiveMutation("update_character", { ref: character, x, y, z: zPos, rot: facing, subject: desc, hidden });
-						return text(`Character updated.\n\n${sceneReport()}`);
+						return await runStudioCommand({ ...admission, action: "character.update", args: async () => ({
+							characterId: await liveCharacterId(character), patch: { x, y, z: zPos, rot: facing, subject: desc, hidden },
+						}) });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -960,11 +957,12 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					character: z.string().describe('which character — letter, slot number or id'),
 				},
 			},
-			async ({ character }) => {
+			async ({ character, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						await appliedLiveMutation("remove_character", { ref: character });
-						return text(`Character removed.\n\n${sceneReport()}`);
+						return await runStudioCommand({ ...admission, action: "character.remove", args: async () => ({
+							characterId: await liveCharacterId(character),
+						}) });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1030,11 +1028,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 						.describe("object id to attach to — the parent then carries this object when it moves"),
 				},
 			},
-			async ({ kind, x, z: zPos, y, facing, name, parent }) => {
+			async ({ kind, x, z: zPos, y, facing, name, parent, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						const result = await appliedLiveMutation("place_object", { kind, x, z: zPos, y, rot: facing, name, parent });
-						return text(`Placed object as ${result?.id ?? "unknown"}.\n\n${sceneReport()}`);
+						return await runStudioCommand({ ...admission, action: "object.add", args: { kind, placement: { x, z: zPos, y, rot: facing }, name, parent } });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1082,7 +1079,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					height: z.number().positive().optional().describe("standing height in metres; omitted uses the fitted size"),
 				},
 			},
-			async ({ path, clay, name, x, z: zPos, y, facing, height }) => {
+			async ({ path, clay, name, x, z: zPos, y, facing, height, ...admission }) => {
 				if (!liveHub?.connected) {
 					return liveError(new Error(noLiveEditor("import_mesh requires a connected CozyClay editor.")));
 				}
@@ -1095,7 +1092,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				const liveArgs = {
 					name: typeof name === "string" && name.trim() ? name.trim() : mesh.name,
 					mimeType: mesh.mimeType,
-					dataUrl: `data:${mesh.mimeType};base64,${Buffer.from(mesh.bytes).toString("base64")}`,
+					source: `data:${mesh.mimeType};base64,${Buffer.from(mesh.bytes).toString("base64")}`,
 					placeAs: "mesh",
 				};
 				if (clay === true) liveArgs.clay = true;
@@ -1107,10 +1104,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				if (facing !== undefined) liveArgs.rot = facing;
 				if (height !== undefined) liveArgs.height = height;
 				try {
-					const result = await appliedLiveMutation("import_asset", liveArgs);
-					return text(
-						`Placed ${liveArgs.name} as ${result?.objectId ?? "unknown"} (${result?.assetId ?? "unknown"}).\n\n${sceneReport()}`,
-					);
+					return await runStudioCommand({ ...admission, action: "asset.import", args: liveArgs });
 				} catch (error) {
 					return liveError(error);
 				}
@@ -1131,16 +1125,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					children: z.array(z.string()).min(1).describe("object ids to attach or detach"),
 				},
 			},
-			async ({ parent, children }) => {
+			async ({ parent, children, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						await appliedLiveMutation(parent === null ? "ungroup_objects" : "group_objects", { parent, children });
-						return text(
-							(parent === null
-								? `Detached ${children.length} object(s).`
-								: `Grouped ${children.length} object(s) under ${parent} — move ${parent} and they follow.`) +
-								`\n\n${sceneReport()}`,
-						);
+						return await runStudioCommand({ ...admission, action: parent === null ? "object.ungroup" : "object.group", args: parent === null ? { children } : { parent, children } });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1185,7 +1173,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 						.describe("beats in order; each one becomes a contiguous block"),
 				},
 			},
-			async ({ beats }) => {
+			async ({ beats, ...admission }) => {
 				if (!liveHub?.connected) {
 					return text("Prompt Blocks live on the studio timeline — open the editor and try again.");
 				}
@@ -1193,12 +1181,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				// The timeline runs on a 24 fps production clock.
 				const TIMELINE_FPS = 24;
 				let cursor = 0;
-				let chained = 0;
 				const blocks = [];
 				for (const [i, textValue] of normalized.texts.entries()) {
 					const whole = beats[Math.min(normalized.sources[i], beats.length - 1)].seconds ?? 3;
 					const spans = splitLongBeat(whole);
-					if (spans.length > 1) chained += spans.length - 1;
 					for (const span of spans) {
 						const frames = Math.max(1, Math.round(span * TIMELINE_FPS));
 						blocks.push({ startFrame: cursor, endFrame: cursor + frames, text: textValue });
@@ -1206,24 +1192,12 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					}
 				}
 				try {
-					await appliedLiveMutation("set_prompt_blocks", { blocks });
+					return await runStudioCommand({ ...admission, action: "character.setPromptBlocks", args: context => ({
+						characterId: context.activeCharacterId, blocks,
+					}) });
 				} catch (error) {
 					return liveError(error);
 				}
-				// Report the normalised text itself, not blocks[i]: a long beat becomes
-				// several blocks, so block indices run ahead of phase indices and quoting
-				// blocks[i] would attribute one beat's edits to another beat's wording.
-				const rewrites = normalized.notes
-					.map((notes, i) => (notes.length ? `  ${i + 1}. ${normalized.texts[i]}  ← ${notes.join("; ")}` : null))
-					.filter(Boolean);
-				return text(
-					`${blocks.length} block(s) on the timeline (${(cursor / TIMELINE_FPS).toFixed(1)}s total):\n` +
-						blocks.map((b) => `  ${b.startFrame}-${b.endFrame}f  ${b.text}`).join("\n") +
-						(chained > 0 ? `\n  (${chained} block(s) chained to keep every block within ${BLOCK_MAX_SECONDS}s)` : "") +
-						(rewrites.length ? `\n\nRewritten for ARDY:\n${rewrites.join("\n")}` : "") +
-						(normalized.dropped > 0 ? `\n  (${normalized.dropped} beat(s) past the 8-phase limit were dropped)` : "") +
-						"\n\nGenerate them from the studio's Prompt Blocks panel, or with generate_motion.",
-				);
 			},
 		),
 
@@ -1563,7 +1537,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					hidden: z.boolean().optional().describe("true hides the prop without deleting it"),
 				},
 			},
-			async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color, name, path, height, clay, hidden }) => {
+			async ({ id, x, y, z: zPos, facing, tilt, roll, scale, scale_x, scale_y, scale_z, color, name, path, height, clay, hidden, ...admission }) => {
 				const travelPath = path === null
 					? null
 					: path
@@ -1571,15 +1545,11 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 						: undefined;
 				if (liveHub?.connected) {
 					try {
-						await appliedLiveMutation("update_object", {
-							id, x, y, z: zPos, rot: facing, rotX: tilt, rotZ: roll,
-							scale, scaleX: scale_x, scaleY: scale_y, scaleZ: scale_z, color, name,
-							...(travelPath !== undefined ? { path: travelPath } : {}),
-							...(height !== undefined ? { height } : {}),
-							...(clay !== undefined ? { clay } : {}),
-							...(hidden !== undefined ? { hidden } : {}),
-						});
-						return text(`Updated ${id}.\n\n${sceneReport()}`);
+						return await runStudioCommand({ ...admission, action: "object.update", args: { id, patch: {
+							x, y, z: zPos, rot: facing, rotX: tilt, rotZ: roll,
+							scaleX: scale_x ?? scale, scaleY: scale_y ?? scale, scaleZ: scale_z ?? scale,
+							color, name, path: travelPath, height, clay, hidden,
+						} } });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1620,11 +1590,10 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				description: "Take a prop out of the set.",
 				inputSchema: { id: z.string().describe("object id") },
 			},
-			async ({ id }) => {
+			async ({ id, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						await appliedLiveMutation("remove_object", { id });
-						return text(`Removed ${id}.\n\n${sceneReport()}`);
+						return await runStudioCommand({ ...admission, action: "object.remove", args: { ids: [id] } });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1668,18 +1637,12 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					label: z.string().min(1).default("MCP batch").describe("the single editor undo entry name"),
 				},
 			},
-			async ({ ops, atomic, stopOnError, label }) => {
+			async ({ ops, atomic, stopOnError, label, ...admission }) => {
 				if (!liveHub?.connected) return text(noLiveEditor("apply_batch requires a connected CozyClay editor."));
 				try {
-					const result = await appliedLiveMutation("apply_batch", { ops, atomic, stopOnError, label });
-					const applied = Array.isArray(result?.applied) ? result.applied : [];
-					const failed = Array.isArray(result?.failed) ? result.failed : [];
-					const failure = failed[0];
-					const summary = result?.rolledBack
-						? `Batch rolled back after failure at operation ${failure?.index ?? "unknown"}.`
-						: `Applied ${applied.length} operation(s).`;
-					const detail = failure ? ` Failure at operation ${failure.index}: ${failure.error}.` : "";
-					return text(`${summary}${detail}\n\n${sceneReport()}`);
+					// #446: the v1 alias is objects-only, so objects.batch (not a
+					// generic run.batch) preserves its options and single undo entry.
+					return await runStudioCommand({ ...admission, action: "objects.batch", args: { ops, atomic, stopOnError, label } });
 				} catch (error) {
 					return liveError(error);
 				}
@@ -1809,30 +1772,30 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 			{
 				title: "Add a scene",
 				description:
-					"Add another scene to the project and make it active. With a connected editor, the complete " +
-					"scene document is forwarded through that workspace's load_scenes command before success is reported; " +
-					"without one, this changes MCP memory only.",
+					"Add another scene to the project and make it active. A connected editor runs scene.create then scene.rename " +
+					"and returns both bus receipts; without one, this changes MCP memory only.",
 				inputSchema: { name: z.string().default("SCENE 02").describe("scene name") },
 			},
-			async ({ name }) => {
+			async ({ name, ...admission }) => {
 				if (liveHub?.connected) {
+					let created;
 					try {
-						await refreshLiveDescription();
+						created = await executeStudioCommand({ ...admission, action: "scene.create" });
+						if (!created.ok) return studioResult(created);
+						// Creation is a document boundary; naming is a separate retained edit.
+						const renamed = await executeStudioCommand({ ...admission, action: "scene.rename",
+							commandId: admission.commandId ? createHash("sha256").update(`${admission.commandId}:rename`).digest("hex") : undefined,
+							args: { sceneId: created.host.sceneId, name }, expectedRevision: created.revision.after });
+						return studioResult(created, renamed);
 					} catch (error) {
-						return liveError(error);
+						const failure = liveError(error);
+						if (created) failure.content.unshift(...studioResult(created).content);
+						return failure;
 					}
 				}
 				const document = JSON.parse(JSON.stringify(state.doc));
 				document.scenes = addScene(document.scenes, name);
 				document.activeSceneId = document.scenes[document.scenes.length - 1].id;
-				if (liveHub?.connected) {
-					try {
-						const live = await appliedLiveMutation("load_scenes", { document });
-						requireLiveSceneParity("add_scene", document, live);
-					} catch (error) {
-						return liveError(error);
-					}
-				}
 				state.doc = document;
 				return text(`Added "${scene().name}".\n\n${sceneReport()}`);
 			},
@@ -1843,14 +1806,18 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 			{
 				title: "Switch the active scene",
 				description:
-					"Make a different scene active. With a connected editor, the complete scene document is forwarded " +
-					"through that workspace's load_scenes command before success is reported; without one, this changes MCP memory only.",
+					"Make a different scene active through scene.switch and return its bus receipt. Without a connected editor, this changes MCP memory only.",
 				inputSchema: { name: z.string().describe("scene name to switch to") },
 			},
-			async ({ name }) => {
+			async ({ name, ...admission }) => {
 				if (liveHub?.connected) {
 					try {
-						await refreshLiveDescription();
+						return await runStudioCommand({ ...admission, action: "scene.switch", args: async () => {
+							await refreshLiveDescription();
+							const target = state.doc.scenes.find(row => row.name.toLowerCase() === name.toLowerCase());
+							if (!target) throw new Error(`No scene "${name}".`);
+							return { sceneId: target.id };
+						} });
 					} catch (error) {
 						return liveError(error);
 					}
@@ -1861,14 +1828,6 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				}
 				const document = JSON.parse(JSON.stringify(state.doc));
 				document.activeSceneId = target.id;
-				if (liveHub?.connected) {
-					try {
-						const live = await appliedLiveMutation("load_scenes", { document });
-						requireLiveSceneParity("switch_scene", document, live);
-					} catch (error) {
-						return liveError(error);
-					}
-				}
 				state.doc = document;
 				return text(`Switched to "${scene().name}".\n\n${sceneReport()}`);
 			},
@@ -1879,10 +1838,13 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 			{
 				title: "Open a .cclayproject file",
 				description:
-					"Load a project authored in the CozyClay studio (or saved here). Replaces the current state.",
-				inputSchema: { path: z.string().describe("path to a .cclayproject file") },
+					"Load a project authored in the CozyClay studio (or saved here). Replacing scene ids in a connected editor requires a Studio-issued confirmationToken; returns the load_scenes bus receipt.",
+				inputSchema: {
+					path: z.string().describe("path to a .cclayproject file"),
+					confirmationToken: z.string().min(1).max(120).optional().describe("token issued by the Studio UI for this exact scene document"),
+				},
 			},
-			async ({ path }) => {
+			async ({ path, ...admission }) => {
 				let full;
 				let raw;
 				try {
@@ -1908,8 +1870,14 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 				const nextDocument = scenes.document;
 				if (liveHub?.connected) {
 					try {
-						const live = await appliedLiveMutation("load_scenes", { document: nextDocument });
-						requireLiveSceneParity("open_project", nextDocument, live);
+						const loaded = await executeStudioCommand({ ...admission, action: "load_scenes", args: { document: nextDocument } });
+						if (loaded.ok) {
+							state.name = result.project.name;
+							state.focus = null;
+							state.focusLocked = false;
+							state.markedFraming = null;
+						}
+						return studioResult(loaded);
 					} catch (error) {
 						return liveError(error);
 					}
@@ -2034,7 +2002,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					"args must match the command's input schema (read it with studio_commands and ids). The command is admitted at the open " +
 					"document and its current revision unless expectedRevision is given, and answers the editor's JSON receipt: status, summary, " +
 					"affectedIds, undo, and output for a job. A refusal is a receipt with ok false and its code: STALE_SCENE means read again and " +
-					"re-issue; CONFIRMATION_REQUIRED means only the user can run it from the Studio. Reusing a commandId returns the receipt of " +
+					"re-issue; CONFIRMATION_REQUIRED means obtain the user's approval in Studio and pass its confirmationToken. Reusing a commandId returns the receipt of " +
 					"that earlier call instead of running again.",
 				inputSchema: {
 					action: z.string().min(1).max(120).describe("command id, as studio_commands lists it"),
@@ -2042,6 +2010,7 @@ export const createToolHandlers = ({ projectRootPromise, motionJobs, publishMoti
 					expectedRevision: z.number().int().min(0).optional().describe("the scene revision the command is admitted at; defaults to the current one"),
 					commandId: z.string().min(1).max(120).optional().describe("idempotency key; a repeated id answers the first call's receipt"),
 					timeoutMs: z.number().int().min(1).max(MAX_COMMAND_TIMEOUT_MS).optional().describe("how long the hub waits; defaults to the command's declared timeout"),
+					confirmationToken: z.string().min(1).max(120).optional().describe("Studio UI approval token for this exact command; MCP cannot mint one"),
 				},
 			},
 			async (args) => {
