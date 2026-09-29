@@ -221,7 +221,7 @@ function fixture(options={}) {
   runAllPromptBlocks:()=>{stand.generationRuns++;return [...stand.generationToasts];},
  });
  // Shots now exercise the registered owner, not the removed native history.
- scope.appContext.updatePorts({ read: actual.readStudioState, bounds: actual.studioBounds });
+ scope.appContext.updatePorts({ revision, read: actual.readStudioState, bounds: actual.studioBounds });
  scope.startupScene={shotDocument:{version:4,shots:[],frameCount:48,waypoints:[]}};
  scope.markCraftAction=()=>{};
  const shotDomain=mountShots(scope.appContext);
