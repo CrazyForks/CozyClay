@@ -5,11 +5,18 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels } from "@earendil-works/pi-ai";
-import { createAgentHandler, REASONING_EFFORTS } from "../bin/agent/agent-routes.mjs";
+import { createAgentHandler as createHandler, REASONING_EFFORTS } from "../bin/agent/agent-routes.mjs";
+import { scriptedEditorJobs } from './fixtures/scripted-editor-jobs.mjs';
+function createAgentHandler(options) {
+  if (!options.studioRuntime?.admit) return createHandler(options);
+  const { studioRuntime, ...rest } = options;
+  const liveHub = scriptedEditorJobs(rest.liveHub, studioRuntime);
+  return createHandler({ ...rest, liveHub, studioRuntime: { readContext: host => liveHub.command('read_studio_context', { host }) } });
+}
 import { createFakeModel } from "./fixtures/fake-model.mjs";
 import { agentJobHub } from './bus/agent-job-hub.mjs';
-// Candidate-review fixtures below use retained artifact reuse. New generation
-// goes through the editor job contract, including the real held-HTTP tests.
+// Route job doubles speak the editor job contract. The held-HTTP cases below
+// additionally execute the production command bus.
 
 const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 function assertUniqueToolPairs(frames, message) {
@@ -360,19 +367,14 @@ await new Promise((resolve) => authServer.close(resolve));
 		readContext: async () => contextFixture(),
 		admit: () => ({ jobId: "provider-job", commandId: "provider-command", state: "queued" }),
 		subscribe: () => () => {},
-		// #379 / 16r: activeJobId now stays set for the accept route only while the
-		// runtime's outcome is genuinely pending an explicit accept, matching the
-		// real motion-runtime's own "review_required" terminal-transition status
-		// (bin/agent/motion-runtime.mjs execute()); any other resolved status is
-		// treated as terminal and clears activeJobId before this route ever runs.
-		start: async () => ({ ok: false, status: "review_required", mutated: false }),
+		start: async () => ({ ok: true, status: "completed", mutated: true }),
 		accept: async (id) => { acceptedJobs.push(id); return { ok: true, jobId: id, status: "installed" }; },
 	};
 	const providerAuth = { getAccessToken: async () => null, onAuthChange: () => () => {} };
 	let providerServer;
 	const providerHandler = createAgentHandler({ auth: providerAuth, codex: fakeCodex, models: providerModels, fauxProvider: providerFaux.fauxProvider, liveHub: { ...fakeLive, command: async (name, ...rest) => name === "inspect_studio" ? motionInspection(contextFixture()) : fakeLive.command(name, ...rest) }, studioRuntime: motionRuntime, port: () => providerServer.address().port });
 	providerFaux.script([
-		{ type: "toolCall", id: "provider-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "review-artifact" } } },
+		{ type: "toolCall", id: "provider-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } },
 		{ type: "text", text: "provider-only" },
 	]);
 	providerServer = createServer((req, res) => providerHandler(req, res).catch((error) => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
@@ -394,16 +396,16 @@ await new Promise((resolve) => authServer.close(resolve));
 	assert.match(eventsResponse.headers.get("content-type"), /text\/event-stream/);
 	assert.ok((await eventsResponse.text()).includes('"type":"done"'));
 	assert.equal((await request(eventsPath, { headers: { cookie: "studio_owner=wrong" } })).status, 403);
-	assert.equal((await request(acceptPath, accept("studio_owner=wrong"))).status, 403);
+	assert.equal((await request(acceptPath, accept("studio_owner=wrong"))).status, 404);
 	assert.equal((await request("/agent/image", { method: "POST", body: JSON.stringify({ prompt: "render", imageDataUrl: png }) })).status, 401, "image generation stays ChatGPT-only");
-	assert.equal((await request(acceptPath, accept(ownerCookie))).status, 200, "provider-only owner can accept the unverified candidate");
-	assert.deepEqual(acceptedJobs, ["provider-job"]);
+	assert.equal((await request(acceptPath, accept(ownerCookie))).status, 404, "private candidate acceptance is no longer a route");
+	assert.deepEqual(acceptedJobs, []);
 	providerFaux.script([{ type: "text", text: "workflow provider-only" }]);
 	const workflow = await request("/agent/turn", { method: "POST", body: JSON.stringify({ sessionId: "provider-workflow", model: "anthropic/claude-3", text: "hi" }) });
 	assert.equal((await workflow.text()).includes('"type":"error"'), false, "the turn route shares provider-neutral readiness");
 	savedKey = null;
 	assert.equal((await request(eventsPath, { headers: { cookie: ownerCookie } })).status, 401);
-	assert.equal((await request(acceptPath, accept(ownerCookie))).status, 401);
+	assert.equal((await request(acceptPath, accept(ownerCookie))).status, 404);
 	await new Promise((resolve) => providerServer.close(resolve));
 	await providerHandler.close();
 	console.log("PASS provider-only Studio event replay and acceptance gates; no-credential requests remain 401");
@@ -752,7 +754,7 @@ console.log("agent routes verified");
 	};
 	const stopFaux = createFakeModel();
 	stopFaux.script([
-		{ type: "toolCall", id: "m1", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "stop-artifact" } } },
+		{ type: "toolCall", id: "m1", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } },
 		{ type: "text", text: "done" },
 	]);
 	let stopServer;
@@ -1127,7 +1129,7 @@ server.close();
 			assert.equal(frames.filter(frame => frame.type === "text.delta").map(frame => frame.text).join(""), rotated ? "recovered after refresh" : "");
 			assert.equal(frames.at(-1)?.type, "done");
 			assert.deepEqual(sessions.read(`auth-change-${kind}`)?.history.map(message => message.role), rotated ? ["user", "assistant", "toolResult", "assistant"] : ["user", "assistant", "toolResult"]);
-			assert.equal(disposals, rotated ? 0 : 1, `${kind}: runtime invalidated only for identity changes`);
+			assert.equal(disposals, 0, `${kind}: no sidecar motion owner remains to dispose`);
 			const steer = await fetch(`${origin}/agent/turn/${turnId}/steer`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ text: "session lookup" }), signal: AbortSignal.timeout(5000) });
 			assert.equal(steer.status, rotated ? 409 : 404, `${kind}: live session retained only for token rotation`);
 			await steer.text();
@@ -1653,7 +1655,7 @@ await run16rTwoTurnScenario();
 	const faux16u = createFakeModel();
 	faux16u.script([
 		[{ type: "text", text: "B completed" }],
-		{ type: "toolCall", id: "motion-16u", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "owned-artifact" } } },
+		{ type: "toolCall", id: "motion-16u", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } },
 		[{ type: "text", text: "A completed" }],
 	]);
 	let server16u;
@@ -1705,7 +1707,7 @@ await run16rTwoTurnScenario();
 		readContext: async () => contextFixture(),
 		admit: () => ({ jobId: ++admissions16uRestore === 1 ? "gate-owned" : "gate-other", commandId: `gate-command-${admissions16uRestore}`, state: "queued" }),
 		subscribe: () => () => {},
-		start: async () => { started16uRestore.resolve(); await held16uRestore.promise; return { ok: false, status: "review_required", code: "REVIEW_REQUIRED" }; },
+		start: async () => { started16uRestore.resolve(); await held16uRestore.promise; return { ok: true, status: "completed" }; },
 		accept: async () => ({ ok: true, status: "installed" }),
 		stop: async jobId => { stopCalls16uRestore.push(jobId); return { status: "installed", code: "ALREADY_INSTALLED", mutated: true }; },
 	};
@@ -1729,7 +1731,7 @@ await run16rTwoTurnScenario();
 	};
 	const cookie16uRestore = response => response.headers.get("set-cookie")?.split(";")[0] || "";
 	try {
-		faux16uRestore.script([{ type: "toolCall", id: "gate-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "gate-artifact" } } }, [{ type: "text", text: "review" }]]);
+		faux16uRestore.script([{ type: "toolCall", id: "gate-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } }, [{ type: "text", text: "review" }]]);
 		const firstOrigin16uRestore = await open16uRestore();
 		const post16uRestore = (origin, path, body, cookie) => fetch(origin + path, { method: "POST", headers: { origin, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(10000) });
 		const firstResponse16uRestore = await post16uRestore(firstOrigin16uRestore, "/agent/turn", initialTurn16uRestore);
@@ -1737,11 +1739,11 @@ await run16rTwoTurnScenario();
 		await bounded16q(started16uRestore.promise, "restore motion admission");
 		held16uRestore.resolve();
 		const firstFrames = [...(await firstResponse16uRestore.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
-		assert.equal(firstFrames.find(frame => frame.type === "tool.done")?.result?.status, "review_required");
+		assert.equal(firstFrames.find(frame => frame.type === "tool.done")?.result?.status, "completed");
 		assert.equal(firstFrames.some(frame => frame.type === "error"), false);
 		const accept16uRestore = await post16uRestore(firstOrigin16uRestore, "/agent/jobs/gate-owned/accept", { surface: "studio", sessionId: sessionId16uRestore, turnId: initialTurn16uRestore.turnId, explicitUnverifiedAcceptance: true }, firstCookie16uRestore);
-		assert.equal(accept16uRestore.status, 200); await accept16uRestore.text();
-		faux16uRestore.script([{ type: "toolCall", id: "other-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "other-artifact" } } }, ["review"]]);
+		assert.equal(accept16uRestore.status, 404); await accept16uRestore.text();
+		faux16uRestore.script([{ type: "toolCall", id: "other-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } }, ["review"]]);
 		const otherTurn = { ...initialTurn16uRestore, sessionId: "00000000-0000-4000-8000-000000000174", turnId: "00000000-0000-4000-8000-000000000175" };
 		const otherResponse = await post16uRestore(firstOrigin16uRestore, "/agent/turn", otherTurn);
 		assert.equal(otherResponse.status, 200);
@@ -1798,7 +1800,7 @@ await run16rTwoTurnScenario();
 		},
 	};
 	const faux16y = createFakeModel();
-	const motion16y = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "retained-artifact" } } });
+	const motion16y = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } });
 	faux16y.script([motion16y("first-16y"), [{ type: "text", text: "first complete" }], motion16y("second-16y"), [{ type: "text", text: "second complete" }]]);
 	let server16y;
 	const handler16y = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux16y.models, fauxProvider: faux16y.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } }, studioRuntime: runtime16y, port: () => server16y.address().port });
@@ -1828,7 +1830,7 @@ await run16rTwoTurnScenario();
 		assert.equal(active16y, true, "the active motion remains running after the stale Stop");
 		release16y.resolve({ ok: true, status: "installed", mutated: true, receiptId: "installed-16y" });
 		const secondFrames16y = [...(await secondBody16y).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
-		assert.ok(secondFrames16y.some(frame => frame.type === "receipt" && frame.receipt?.status === "installed"));
+		assert.ok(secondFrames16y.some(frame => frame.type === "receipt" && frame.receipt?.status === "completed"));
 		assert.equal(secondFrames16y.some(frame => frame.type === "error"), false);
 		console.log("PASS 16y: an owned retired Stop is stale while a different active motion job is running");
 	} finally {
@@ -1853,7 +1855,7 @@ await run16rTwoTurnScenario();
 		stop: async () => ({ status: "already_applied" }),
 	};
 	const fauxLimit = createFakeModel();
-	const motionLimit = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "limit-artifact" } } });
+	const motionLimit = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } });
 	fauxLimit.script([motionLimit("limit-first"), motionLimit("limit-second"), [{ type: "text", text: "reported" }]]);
 	let serverLimit;
 	const handlerLimit = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxLimit.models, fauxProvider: fauxLimit.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } }, studioRuntime: runtimeLimit, port: () => serverLimit.address().port });
@@ -1894,12 +1896,12 @@ await run16rTwoTurnScenario();
 	};
 	const faux = createFakeModel();
 	faux.script([
-		{ type: "toolCall", id: "failed-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "failed-artifact" } } },
+		{ type: "toolCall", id: "failed-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } },
 		{ type: "toolCall", id: "fallback-action", name: "run_action", arguments: { action: "motion.generateAllBlocks" } },
 		[{ type: "text", text: "reported" }],
 	]);
 	let server;
-	const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux.models, fauxProvider: faux.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name, payload) => { if (name === "inspect_studio") return motionInspection(contextFixture()); hubCalls.push({ name, payload }); return { ok: true, action: payload.args?.action, kind: "job", status: "started" }; } }, studioRuntime: runtime, port: () => server.address().port });
+	const handler = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: faux.models, fauxProvider: faux.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name, payload) => { if (name === "inspect_studio") return motionInspection(contextFixture()); hubCalls.push({ name, payload }); return { ok: true, action: payload.args?.action, kind: "job", status: "completed", revision: { before: 41, after: 41 } }; } }, studioRuntime: runtime, port: () => server.address().port });
 	server = createServer((req, res) => handler(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	server.listen(0, "127.0.0.1"); await once(server, "listening");
 	const origin = `http://127.0.0.1:${server.address().port}`;
@@ -1910,7 +1912,8 @@ await run16rTwoTurnScenario();
 		const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
 		const done = frames.filter(frame => frame.type === "tool.done");
 		assert.equal(done.length, 2);
-		assert.equal(done[0].ok, true);
+		assert.equal(done[0].ok, false);
+		assert.match(done[0].error, /CAPABILITY_MISSING/);
 		assert.equal(done[1].ok, true, `the fallback generation reaches the hub after a no-mutation failure: ${done[1].error ?? ""}`);
 		assert.deepEqual(hubCalls.map(call => call.payload.args?.action), ["motion.generateAllBlocks"]);
 		console.log("PASS a no-mutation motion failure leaves generation available for run_action");
@@ -1933,7 +1936,7 @@ await run16rTwoTurnScenario();
 		start: async () => ({ ok: false, code: "CAPABILITY_MISSING", mutated: false }),
 		stop: async () => ({ status: "already_applied" }),
 	};
-	const motion = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "retry-artifact" } } });
+	const motion = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } });
 	const faux = createFakeModel();
 	faux.script([motion("two-fail-first"), motion("two-fail-second"), motion("two-fail-third"), [{ type: "text", text: "reported" }]]);
 	let server;
@@ -1980,7 +1983,7 @@ for (const [index, [label, first, second]] of [
 		stop: async () => ({ status: "already_applied" }),
 	};
 	const call = (name, id) => name === "generate_motion"
-		? { type: "toolCall", id, name, arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "mixed-artifact" } } }
+		? { type: "toolCall", id, name, arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } }
 		: { type: "toolCall", id, name, arguments: { action: "motion.generateAllBlocks" } };
 	const fauxMixed = createFakeModel();
 	fauxMixed.script([call(first, "mixed-first"), call(second, "mixed-second"), [{ type: "text", text: "reported" }]]);
@@ -2030,7 +2033,7 @@ for (const [index, [label, first, second]] of [
 		stop: async () => ({ status: "already_applied" }),
 	};
 	const fauxAgain = createFakeModel();
-	const motionAgain = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "again-artifact" } } });
+	const motionAgain = id => ({ type: "toolCall", id, name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } });
 	fauxAgain.script([motionAgain("again-first"), [{ type: "text", text: "first" }], motionAgain("again-second"), [{ type: "text", text: "second" }]]);
 	let serverAgain;
 	const handlerAgain = createAgentHandler({ auth: { getAccessToken: async () => "token" }, models: fauxAgain.models, fauxProvider: fauxAgain.fauxProvider, liveHub: { workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12", command: async (name) => name === "inspect_studio" ? motionInspection(contextFixture()) : { ok: true } }, studioRuntime: runtimeAgain, port: () => serverAgain.address().port });
@@ -2075,7 +2078,7 @@ for (const [index, [label, first, second]] of [
 		stop: async () => ({ status: "already_applied" }),
 	};
 	const fauxFresh = createFakeModel();
-	fauxFresh.script([{ type: "toolCall", id: "fresh-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "reuse", artifactId: "fresh-token-artifact" } } }, [{ type: "text", text: "reported" }]]);
+	fauxFresh.script([{ type: "toolCall", id: "fresh-motion", name: "generate_motion", arguments: { characterId: "char-alex", source: { kind: "generate", beats: [{ text: "Stand" }], durationSeconds: 2 } } }, [{ type: "text", text: "reported" }]]);
 	const liveHubFresh = {
 		workspaceId: () => "tab-7", resolveWorkspace: () => "handle-12",
 		command: async (name, args, handle) => {
@@ -2096,9 +2099,9 @@ for (const [index, [label, first, second]] of [
 		const frames = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
 		const done = frames.filter(frame => frame.type === "tool.done");
 		assert.equal(done[0]?.ok, true, `the motion is admitted: ${done[0]?.error ?? ""}`);
-		assert.deepEqual(inspectedFresh, [{ args: { scope: "motion", ids: ["char-alex"] }, handle: "handle-12" }], "generate_motion reads the character's motion state before admission");
+		assert.deepEqual(inspectedFresh, [{ args: { scope: "motion", ids: ["char-alex"], limit: 12 }, handle: "handle-12" }], "generate_motion reads the character's motion state before admission");
 		assert.equal(admittedFresh.length, 1);
-		assert.equal(admittedFresh[0].targetToken, "t2", "admission carries the fresh token, not the turn-start one");
+		assert.equal(admittedFresh[0].expectedRevision, 42, "bus admission carries the freshly inspected revision");
 		console.log("PASS generate_motion admits against the character's fresh target token");
 	} finally {
 		await handlerFresh.close();
@@ -2129,7 +2132,7 @@ for (const [index, [label, first, second]] of [
 		assert.equal(name, 'run_action'); assert.equal(payload.args.action, 'motion.generate');
 		assert.equal(payload.args.args.blocks[0].text, 'walk');
 		return { ok: true, status: 'completed', action: 'motion.generate', revision: { before: 41, after: 42 } };
-	} }, studioRuntime: runtimePath, port: () => serverPath.address().port });
+	} }, studioRuntime: { readContext: runtimePath.readContext }, port: () => serverPath.address().port });
 	serverPath = createServer((req, res) => handlerPath(req, res).catch(error => { if (!res.headersSent) res.writeHead(500); res.end(error.message); }));
 	serverPath.listen(0, "127.0.0.1"); await once(serverPath, "listening");
 	const originPath = `http://127.0.0.1:${serverPath.address().port}`;

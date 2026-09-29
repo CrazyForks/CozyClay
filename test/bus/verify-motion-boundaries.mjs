@@ -1,18 +1,15 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { motionFixture, seedMotion } from './motion-fixture.mjs';
+import { generationFixture } from './generation-fixture.mjs';
+import { installGenerated as install, prepareGeneration } from './install-generated-motion.mjs';
 const ok = receipt => { assert.equal(receipt.ok, true, JSON.stringify(receipt)); return receipt; };
-async function install(f) {
-  const request = f.motionRequest(), prepared = await f.call('prepare_motion_install', request);
-  const next = { ...request, ...prepared, profile: 'studio-motion-v1' }, verified = await f.call('verify_motion_candidate', next);
-  return f.call('commit_motion_candidate', { ...next, verificationId: verified.verificationId,
-    expectedTargetToken: request.binding.targetToken, expectedPhysicsRevision: verified.physicsRevision, explicitUnverifiedAcceptance: true });
-}
 const snapshot = f => ({ motion: f.snapshot(), cast: structuredClone(f.cast.documentStore.getSnapshot().slices), shots: structuredClone(f.scope.shotsDomain.state()) });
-test('motion: candidate publication, pose clear and receipt undo use only owned history', async () => {
-  const f = motionFixture();
+test('motion: generated publication, pose clear and receipt undo use only owned history', async () => {
+  const f = generationFixture();
   try {
     f.scope.shotsDomain.load({ ...f.scope.shotsDomain.state(), camera: f.actual.readStudioCamera() });
+    prepareGeneration(f);
     const before = snapshot(f), installed = ok(await install(f));
     assert.ok(f.motion.motionFor('actor-a')); assert.equal(f.scope.appContext.castHistory.past.length, 0);
     ok(f.run('edit.undo', { receiptId: installed.receiptId })); assert.deepEqual(snapshot(f), before);

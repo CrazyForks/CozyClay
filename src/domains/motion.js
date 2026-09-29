@@ -99,7 +99,7 @@ import { worldDeltaToClip, applyTrailFalloffDelta, trailEditRange } from "../mot
 import { generate as ardyGenerate } from "../ardy/client.js";
 import { isLineEditUnsupported } from "../line-edit.js";
 import { openMotionDb, getMotion, putMotion } from "../motion-store.js";
-import { resolveMotionSource, decodeMotionResource, encodeMotionResource } from "../motion-resources.js";
+import { resolveMotionSource, decodeMotionResource, encodeMotionResource, sha256Hex } from "../motion-resources.js";
 
 const sameMotionIntent = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const emptyMotionLayer = id => ({ id, take: null, fullTake: null, ikKeys: [], committedIkEdits: [], takeRecipe: null, takeVersions: [] });
@@ -355,20 +355,6 @@ export function createMotionDomain(appContext, characters) {
 		try { run('motion.applyPrepared', { characterId, token }); return result; }
 		finally { prepared.delete(token); }
 	}
-	function installPayload(payload) {
-		const id = payload.binding.characterId;
-		domain.beginPlayback?.(id);
-		const take = { ...payload.motion, studioTakeId: payload.takeId, prompt: '', sceneCalibration: payload.calibration };
-		const motionRef = { url: take.url, prompt: payload.schedule.blocks.map(block => block.text).join(' '),
-			rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ, calibration: payload.calibration, studioTakeId: payload.takeId,
-			...(take.motionId ? { motionId: take.motionId } : {}) };
-		const recipe = { seed: null, blocks: payload.schedule.blocks.map(block => ({ prompt: block.text, duration: (block.endFrameExclusive - block.startFrame) / 24 })), lineEdits: [] };
-		const versions = take.url ? pushTakeVersion(layer(id).takeVersions, { motionUrl: take.url, recipe, savedAt: Date.now(), label: ko('Loaded', '불러옴') }, TAKE_VERSIONS_MAX) : layer(id).takeVersions;
-		replace(id, take, { fullTake: payload.sourceMotion, ikKeys: encodeMotionKeys(payload.ikState.keys), recipe, versions });
-		castWrite(rows => rows.map(row => row.id === id ? { ...row, scale: payload.scale, motionRef, layer: { ...row.layer,
-			promptClips: payload.schedule.blocks.map((block, index) => ({ id: `${payload.takeId}-beat-${index}`, startFrame: block.startFrame, endFrame: block.endFrameExclusive, text: block.text })) } } : row));
-		persistTake(take, motionRef);
-	}
 	function persistTake(take, motionRef) {
 		if (!take?.sourceBytes) return;
 		(async () => {
@@ -407,7 +393,7 @@ export function createMotionDomain(appContext, characters) {
 		return run('run.update', { txId: gesture.txId, args });
 	}
 	const domain = { documentStore, read, write, layer, writeLayer, motionFor, fullMotionFor, visibleMotion, snapshotTake, project,
-		setKeys, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction, runPrepared, installPayload, persistTake,
+		setKeys, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction, runPrepared, persistTake,
 		insideAction: () => running > 0, bakeCurrentKey, keyPose, editTrail, autoPhysics, applyPhysics,
 		applyPrepared(token) { const apply = prepared.get(token); if (!apply) throw new StudioProtocolError('STALE_TARGET', 'Prepared motion is no longer available.'); return apply(); },
 		bindRender(context) { appContext = context; },
@@ -1202,6 +1188,7 @@ export function useMotion(appContext) {
 			// A drop is staging applied to the clip itself, so it happens at
 			// the same boundary — trims and IK then see the dropped take.
 			const retimed = retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS);
+			if (retimed.sourceBytes) retimed.motionId = await sha256Hex(retimed.sourceBytes);
 			if (tutorialEpoch !== null && tutorialEpoch !== appContext.shared.tutorialProjectEpochRef.current) return null;
 			const normalizedCalibration = normalizeMotionCalibration(calibration);
 			// Scene yaw/XY translation belong to the character's scene transform.
@@ -2696,6 +2683,7 @@ export function useMotion(appContext) {
 		}
 		// Inbound boundary for a clip delivered to a non-active layer.
 		const retimed = retimeMotion(await loadMotionFromUrl(motionUrl), TIMELINE_FPS);
+		if (retimed.sourceBytes) retimed.motionId = await sha256Hex(retimed.sourceBytes);
 		const decoded = applyMotionCalibration(retimed, { ...normalizedCalibration, yawDeg: 0, offsetX: 0, offsetZ: 0 }).motion;
 		const clip = {
 			...decoded,
@@ -3038,48 +3026,6 @@ export function useMotion(appContext) {
 		else if (authored) cast.setTimeline(state.frameCount);
 		if (state.renderer) appContext.shared.restoreExportRig(state.renderer);
 	}
-	function commitStudioMotion(payload) {
-		const owned = appContext.storeDomain('motion');
-		if (owned) return appContext.ports.recordAction('motion', () => owned.installPayload(payload), payload.binding.characterId, true);
-		if (appContext.storeDomain('cast') && !payload.composed) return appContext.ports.recordAction('motion',
-			() => commitStudioMotion({ ...payload, composed: true }), payload.binding.characterId, true);
-		const id = payload.binding.characterId, before = appContext.shared.readStudioState(), target = before.targets.get(id);
-		const character = before.characters.find(c => c.id === id);
-		const clips = payload.schedule.blocks.map((block, index) => ({ id: `${payload.takeId}-beat-${index}`, startFrame: block.startFrame, endFrame: block.endFrameExclusive, text: block.text }));
-		const take = { ...payload.motion, studioTakeId: payload.takeId, prompt: "", sceneCalibration: payload.calibration };
-		// The same persistable ref deliverMotion saves for a UI take, placed where
-		// this take was placed, so restoreMotionRefs rebuilds it after a reload.
-		const motionRef = { url: take.url, prompt: payload.schedule.blocks.map(block => block.text).join(" "),
-			rotationDeg: take.rotationDeg, anchorX: take.anchorX, anchorZ: take.anchorZ, calibration: payload.calibration, studioTakeId: payload.takeId };
-		if (take.motionId) motionRef.motionId = take.motionId;
-		const next = { ...character, scale: payload.scale, sessionMotion: take, motionRef, layer: { ...character.layer, promptClips: clips } };
-		// The native bridge snapshots the rig before any nested owner publishes.
-		appContext.shared.recordStudioHistory("motion", id, payload.historyEntryId);
-		publishStudioMotion(id, { character: next, fullMotion: payload.sourceMotion, ikState: payload.ikState,
-			frameCount: id === appContext.shared.loadedLayerCharRef.current ? Math.max(payload.schedule.frameCount, before.view.frame + 1, ...before.shots.map(s => s.endFrame + 1)) : before.frameCount,
-			committedIkEdits: [], renderer: null }, true);
-		if (target?.rig) {
-			if (id === appContext.shared.loadedLayerCharRef.current) beginPlaybackOn(target.rig);
-			const resolved = resolveIkRig(target.rig), layer = appContext.shared.ikStatesRef.current.get(id);
-			if (resolved) Object.assign(layer, resolved, { rig: target.rig });
-			appContext.shared.poseMemberAtFrame(target.rig, take, layer, before.view.frame, IK_CORRECTION_BLEND_FRAMES);
-			target.rig.updateMatrixWorld(true);
-		}
-		if (!appContext.storeDomain('cast')) appContext.shared.markSemanticEdit("characters", before.characters, appContext.live.characters);
-		// Store the take's bytes the way a project save embeds a take
-		// (collectProjectSerialized): the same record, caches and motion store, so
-		// the ref's motionId resolves after a reload without the bridge.
-		if (take.sourceBytes) (async () => {
-			let record = appContext.shared.motionEncodingCacheRef.current.get(take.sourceBytes);
-			if (!record) {
-				record = await encodeMotionResource(take.sourceBytes, { prompt: motionRef.prompt, sourceUrl: motionRef.url });
-				appContext.shared.motionEncodingCacheRef.current.set(take.sourceBytes, record);
-			}
-			appContext.shared.projectMotionsRef.current.set(record.motionId.toLowerCase(), record);
-			const db = await openMotionDb();
-			try { await putMotion(db, record); } finally { db.close(); }
-		})().catch((error) => console.warn("[cozyclay] could not cache motions", error));
-	}
 	async function loadLiveMotion(args) {
 		if (typeof args.url !== "string" || !args.url.startsWith("/ardy/")) throw new Error("Invalid motion url");
 		const prompt = typeof args.prompt === "string" ? args.prompt : "";
@@ -3132,7 +3078,7 @@ export function useMotion(appContext) {
 	appContext.updateActionPorts({ clearMotionNative: clearMotion, setCharacterIkKey, removeCharacterIkKey, clearCharacterIkKeys });
 	return {
 		...domain,
-		falMotion, setFalMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, commitStudioMotion, loadLiveMotion, updateFalMotionQuota,
+		falMotion, setFalMotion, captureFalStill, enterFalFraming, markFalPose, clearFalPose, clearFalMotion, restoreFalCamera, framingDistance, showFalMotionLock, generateFalMotion, falMotionUnavailable, generateFalMotionFromUi, publishStudioMotion, loadLiveMotion, updateFalMotionQuota,
 		ikMode, ikChains, setIkChains, ikFkJoints, setIkFkJoints, ikFocus, setIkFocus, footSnap, setFootSnap,
 		bodyContact, setBodyContact, IK_CORRECTION_BLEND_FRAMES, autoPhysicsRunning, setAutoPhysicsRunning,
 		physicsPreview, setPhysicsPreview, physicsShow, physicsProgress, physicsOptions, setPhysicsOptions,
