@@ -6423,11 +6423,7 @@ export default function App() {
 	 * as one body: the live read model first, so the next synchronous read sees
 	 * it, then the React state the foldouts and the save path own. */
 
-	/** Run one registry action for the agent and bind the native history entry
-	 * it pushed to a journal id, so undo_edit (and Ctrl+Z) can revert it. Shot,
-	 * cast and motion entries gain the Studio restore state (a motion entry the
-	 * one character `targetId` names), which republishes the live read model
-	 * synchronously; object entries are the store's own. */
+	/** All surfaces share the facade's owned sessions and store histories. */
 	function beginStudioAction(domain, targetId = null) {
 		return appContext.beginAction(domain, targetId);
 	}
@@ -6445,6 +6441,9 @@ export default function App() {
 		return Boolean(appContext.storeDomainForReceipt(receipt));
 	}
 
+	function finishStudioHistoryGesture() {
+		for (const owner of appContext.storeDomains()) { owner.finishGesture?.(); owner.settle?.(); }
+	}
 	function stepStudioHistory(redo) {
 		const before = storeRef.current.objects;
 		const owned = appContext.nextStoreHistory(redo);
@@ -6554,7 +6553,9 @@ export default function App() {
 	});
 	appContext.updatePorts({
 		read: readStudioState, revision: sceneRevisionRef, bounds: studioBounds, commit: commitStudioDraft,
-		operate: operateStudio, undo: undoScene, stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
+		operate: operateStudio, undo: () => stepStudioHistory(false), redo: () => stepStudioHistory(true),
+		history: redo => appContext.historyEntry(redo), finishHistoryGesture: finishStudioHistoryGesture,
+		stepHistory: stepStudioHistory, capture: () => liveHandlersRef.current.capture_framing_png({}),
 		// One shot frame as raw read-back pixels (rows bottom-up), from the export
 		// path captureShotFramePng uses; an export in flight renders at its output.
 		renderFrameBuffer: frame => {

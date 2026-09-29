@@ -907,14 +907,8 @@ export function useCast(appContext) {
 		if (clips) setPromptClips(layer.promptClips);
 		if (path) setWaypoints(layer.waypoints);
 	}
-	function undoScene() {
-		for (const owner of appContext.storeDomains()) { owner.finishGesture?.(); owner.settle?.(); }
-		return appContext.shared.studioBindingRef.current.stepHistory(false);
-	}
-	function redoScene() {
-		for (const owner of appContext.storeDomains()) { owner.finishGesture?.(); owner.settle?.(); }
-		return appContext.shared.studioBindingRef.current.stepHistory(true);
-	}
+	function undoScene() { return appContext.bus.run('edit.undo'); }
+	function redoScene() { return appContext.bus.run('edit.redo'); }
 	function snapshotStudioDomain(domain, targetId) {
 		if (domain === 'motion' && appContext.storeDomain('motion')) return appContext.storeDomain('motion').snapshotTarget(targetId);
 		const state = appContext.shared.readStudioState();

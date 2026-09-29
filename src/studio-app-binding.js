@@ -244,7 +244,9 @@ export function createStudioAppBinding(ports) {
 				} };
 			}, recordAction: (...args) => ports.recordAction(...args), beginAction: (...args) => ports.beginAction(...args),
 			readback: actionReadback, remember, receipt: id => receipts.get(id), isRetained: receipt => ports.isRetained(receipt),
-			canUndo: receipt => ports.canUndo(receipt), undo: () => ports.undo(), readTarget: id => { refresh(); return tokens.get(id)?.token; },
+			canUndo: receipt => ports.canUndo(receipt), undo: () => ports.undo(), redo: () => ports.redo(),
+			history: redo => ports.history?.(redo), finishHistoryGesture: () => ports.finishHistoryGesture?.(),
+			readTarget: id => { refresh(); return tokens.get(id)?.token; },
 			captureToasts: listener => ports.captureToasts?.(listener), showRefusal: message => ports.showRefusal?.(message), emit: event => ports.emitCommandEvent?.(event),
 		} });
 		return actionBus;
@@ -293,21 +295,6 @@ export function createStudioAppBinding(ports) {
 					view: { before: s.viewRevision, after: after.viewRevision }, affectedIds: [s.host.sceneId],
 					delta: [{ id: s.host.sceneId, after: { selection: after.selection, activeCharacterId: after.activeCharacterId, shotId: after.selectedShotId, view: after.view } }],
 					checks: { coverage: "editor-view-state" }, undo: null, warnings: [] }));
-			}
-			if (request.name === "undo_edit") {
-				const previous = receipts.get(args.receiptId);
-				if (!previous || !ports.canUndo(previous)) fail("UNDO_CONFLICT", "A newer edit owns native Undo.");
-				ports.undo(); const after = refresh();
-				const ids = previous.affectedIds;
-				// Removed creations have no live guard; their retired incarnation is
-				// still identified by a fresh restoration token in the undo receipt.
-				const restoredTargets = ids.map(id => ({ ...s.host, targetId: id, token: tokens.get(id)?.token ?? `removed-${++tokenSequence}` }));
-				const result = validateReceipt({ ok: true, status: "undone", authored: true, commandId: request.commandId, receiptId: crypto.randomUUID(), host: s.host,
-					revision: { before: s.revision, after: after.revision }, affectedIds: ids,
-					delta: ids.slice(0, 8).map(id => ({ id, after: { token: restoredTargets.find(t => t.targetId === id).token } })),
-					checks: { coverage: "native-history-restoration" }, undo: { historyEntryId: previous.undo.historyEntryId, entries: 1, canUndoDirect: false },
-					warnings: [], undoneReceiptId: previous.receiptId, restoredTargets, ...(ids.length > 8 ? { detailCursor: request.commandId } : {}) });
-				return remember(journal.record(result));
 			}
 			if (request.name === "verify_result") {
 				const receipt = args.receiptId ? receipts.get(args.receiptId) : null;
@@ -403,7 +390,7 @@ export function createStudioAppBinding(ports) {
 		frame_shot: request => execute({ ...request, name: "frame_shot" }),
 		generate_motion: () => fail("CAPABILITY_MISSING", "Use the server-owned Studio generation route."),
 		verify_result: request => execute({ ...request, name: "verify_result" }),
-		undo_edit: request => execute({ ...request, name: "undo_edit" }),
+		undo_edit: request => runAction(request, { action: "edit.undo", args: request.args }),
 		run_action: request => execute({ ...request, name: "run_action" }),
 		resolve_studio_image(request) {
 			refresh(); const image = images.get(request.imageId);
