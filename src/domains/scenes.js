@@ -414,7 +414,7 @@ export function useScenes(appContext) {
 		const mergedCustomPoses = mergeProjectCustomPoses(appContext.shared.customPoses, project.customPoses);
 		domain.replaceDocument(doc.scenes, doc.activeSceneId, project.name);
 		if (project.workspaceLayout) appContext.shared.setWorkspaceLayout({ ...DEFAULT_WORKSPACE_LAYOUT, ...project.workspaceLayout });
-		appContext.shared.setCustomPoses(mergedCustomPoses);
+		appContext.bus.run('cast.setCustomPoses', { poses: mergedCustomPoses });
 		const resolvedWorkflow = resolveWorkflowOutputs(normalizeWorkflowGraph(project.workflow), new Map((project.assets ?? []).map((asset) => [asset.id, asset])));
 		storeWorkflowGraph(resolvedWorkflow);
 		saveCustomPoses(mergedCustomPoses);
@@ -602,7 +602,6 @@ export function useScenes(appContext) {
 			appContext.shared.setShots(shotState.shots);
 			appContext.shared.setTlFrameCount(shotState.frameCount ?? DEFAULT_DURATION_S * TIMELINE_FPS);
 		}
-		if (!loaded.has("cast")) appContext.shared.setCharacters(stage.characters);
 		appContext.shared.setRigMountEpoch((value) => value + 1);
 		appContext.shared.setHasCharSheet(stage.hasCharSheet);
 		if (!loaded.has("stage")) appContext.shared.stageDomain.load(stage);
@@ -610,7 +609,6 @@ export function useScenes(appContext) {
 		const firstLayer = stage.characters[0]?.layer;
 		appContext.shared.setWaypoints(firstLayer?.waypoints ?? shotState.waypoints ?? []);
 		appContext.shared.setPromptClips(firstLayer?.promptClips?.map((clip) => ({ ...clip })) ?? []);
-		appContext.shared.setMotion(null);
 		// Takes belong to the room being left; restoreMotionRefs re-fetches the
 		// incoming scene's, and a stale full take must never survive the switch.
 		appContext.shared.motionFullRef.current.clear();

@@ -39,7 +39,7 @@ export function agentPathLoc(revision) {
   const privateFunctions = new Set(['survives', 'patchedValue', 'patchCharacters', 'patchObjects', 'patchShot', 'patchStage', 'patchPlan', 'patchTargetRead', 'readback', 'createStudioCommands']);
   count('src/studio-agent-commands.js', node => node.type === 'FunctionDeclaration' && privateFunctions.has(node.id.name) || node.type === 'VariableDeclaration' && node.declarations.some(d => ['PATH_READERS', 'DOMAIN_KEYS', 'domainState', 'withDomain'].includes(d.id.name)));
   const appSource = read('src/App.jsx');
-  count('src/App.jsx', node => node.type === 'FunctionDeclaration' && node.id.name === 'operateStudio' || node.type === 'IfStatement' && sourceText(node.test) === '!liveHandlersRef.current');
+  count('src/App.jsx', node => node.type === 'FunctionDeclaration' && node.id.name === 'operateStudio' || node.type === 'IfStatement' && sourceText(node.test) === '!liveHandlersRef.current' || node.type === 'VariableDeclaration' && node.declarations.some(item => item.id.name === 'liveQueries'));
   function sourceText(node) { return appSource.slice(node.start, node.end); }
   count('src/domains/motion.js', node => node.type === 'FunctionDeclaration' && node.id.name === 'loadLiveMotion');
   count('mcp/tool-handlers.mjs', node => node.type === 'CallExpression' && node.callee.name === 'tool' && ['generate_motion', 'load_motion'].includes(node.arguments[0]?.value));

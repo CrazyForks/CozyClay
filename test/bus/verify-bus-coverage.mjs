@@ -10,8 +10,12 @@ import { fixture, result } from "./fixture.mjs";
 const WRITER_NAMES = new Set([
   "setStyle", "setKeyLight", "setEnvironmentImage", "setShotAspectKey", "setSensorFormat",
   "setCharacters", "setSceneObjects", "setScenes", "setActiveSceneId", "setCustomPoses",
-  "setSelectedHierarchyId", "setFalMotion", "setToast", "setMotion", "setProject", "setStage",
+  "setMotion", "setProject", "setStage",
 ]);
+// These cells are absent from project serialization and owned undo slices.
+// Selection has view.select; the uncommitted video form has motion.setVideoDraft.
+// Toasts are feedback captured in receipts, not an agent-editable capability.
+export const TRANSIENT_WRITERS = Object.freeze({ setToast: 'toast', setSelectedHierarchyId: 'selectedHierarchyId', setFalMotion: 'falMotion' });
 const writerName = name => WRITER_NAMES.has(name) || /^record.*Undo$/.test(name);
 const isRunCall = node => node?.type === "CallExpression" && ((node.callee?.type === "Identifier" && node.callee.name === "run") || (node.callee?.type === "MemberExpression" && node.callee.property?.name === "run"));
 const functionName = node => node?.id?.name ?? "<anonymous>";
@@ -55,6 +59,7 @@ function applyRatchet(current, baseline) {
     if (!(key in current)) errors.push(`${key}: stale baseline entry`);
     else if (current[key] > count) errors.push(`${key}: ${current[key]} exceeds baseline ${count}`);
   }
+  for (const key of Object.keys(current)) if (!(key in baseline)) errors.push(`${key}: new writer reference`);
   return errors;
 }
 

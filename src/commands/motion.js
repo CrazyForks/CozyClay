@@ -7,6 +7,7 @@ import './elements/character.js';
 import { generationArgs } from '../motion/generation.js';
 import { applyRootDrop, normalizeRootDrop } from '../ardy/root-drop.js';
 import { characterScaleFor } from '../ardy/npz.js';
+import { FAL_MOTION_DURATIONS } from '../fal-motion-client.js';
 import { createMotionEdit, trimMotionEdit, splitMotionEdit, setMotionSegmentSpeed, removeMotionSegment } from '../ardy/motion-edit.js';
 const id = { type: 'string', minLength: 1 }, frame = { type: 'integer', minimum: 0 };
 const input = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -58,12 +59,18 @@ const ik = legacyIk.map((entry, index) => ({ ...entry, id: ['ik.setKey', 'ik.rem
 
 const clear = { id: 'motion.clear', label: 'Clear motion', description: 'Clear the active take, its corrections and take-owned cast fields.',
 	kind: 'mutation', undoDomain: 'motion', input: { type: 'object', properties: { characterId: { type: 'string' } }, required: ['characterId'], additionalProperties: false } };
-export const declarations = Object.freeze([generate, ...queued, prepared, ...loads, physics, ...tools, ...edits, ...legacyIk, ...ik, clear, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
+const videoDraft = { id: 'motion.setVideoDraft', label: 'Set video motion draft', description: 'Set the uncommitted AI-video form without changing the project or its history.', kind: 'transient',
+	input: input({ instruction: { oneOf: [{ const: '' }, { type: 'string', maxLength: 3700 }] }, promptOverride: { oneOf: [{ const: '' }, { type: 'string', maxLength: 3700 }] }, duration: { oneOf: FAL_MOTION_DURATIONS.map(value => ({ const: value })) } }, []) };
+export const declarations = Object.freeze([videoDraft, generate, ...queued, prepared, ...loads, physics, ...tools, ...edits, ...legacyIk, ...ik, clear, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
 
 export function register(registry, ports) {
 	const owner = () => ports.storeDomain('motion');
 	const mounted = () => Boolean(ports.storeDomain?.('motion')) || 'The motion owner is not mounted.';
 	const take = characterId => { characterOf(ports, characterId); return owner().motionFor(characterId) ?? fail('TARGET_NOT_READY', 'Load a take for this character first.'); };
+	registry.register({ ...videoDraft, available: mounted, run(args) {
+		owner().setVideoDraft(args);
+		return { affectedIds: [], summary: videoDraft.label };
+	} });
 	registry.registerToolAlias('generate_motion', generate.id, generationArgs);
 	registry.register({ ...generate, available: mounted, target: args => args.characterId, async run(args, context) {
 		characterOf(ports, args.characterId);
