@@ -7,7 +7,7 @@ import { physicsKeyStamp } from "./ardy/physics-review.js";
 import { shotAtFrame } from "./cuts.js";
 import { CUTOUT_KIND, MESH_KIND, OBJECT_LIBRARY, supportHeightForObject } from "./scene-objects.js";
 import { buildStudioContext, physicsFingerprintInput, studioEntityCursor, validateStudioCursor } from "./studio-agent-context.js";
-import { createStudioCommands, createStudioCommandJournal, framingChecks, placementChecks, studioObjectCatalogue } from "./studio-agent-commands.js";
+import { createStudioCommandJournal, framingChecks, placementChecks, studioObjectCatalogue } from "./studio-agent-commands.js";
 import { verifyInstalledTake } from "./studio-agent-motion.js";
 import { STUDIO_TOOL_FAMILIES, StudioProtocolError, validateReceipt, validateStudioCommand, validateStudioIdentity } from "./studio-agent-protocol.js";
 import { CONTACT_SHEET_LAYOUT, buildContactSheet, sampleContactSheetFrames } from "./studio-contact-sheet.js";
@@ -37,7 +37,7 @@ export function createStudioAppBinding(ports) {
 	};
 	const calibrationContentKey = value => value && typeof value === "object" ? JSON.stringify(value) : null;
 	const tokens = new Map(), receipts = new Map(), images = new Map();
-	let owner = null, commands = null, journal = null, actionBus = null;
+	let owner = null, journal = null, actionBus = null;
 	const domainKeys = new Map(), domainRevisions = {};
 	let authoredKey, physicsKey, viewKey, observedSceneRevision = ports.revision.current;
 	let physicsRevision = 0, viewRevision = 0;
@@ -49,7 +49,6 @@ export function createStudioAppBinding(ports) {
 			owner = host; tokens.clear(); receipts.clear(); images.clear();
 			authoredKey = physicsKey = viewKey = undefined;
 			journal = createStudioCommandJournal({ host, isRetained: receipt => ports.isRetained(receipt) });
-			commands = createStudioCommands({ read: readCommand, guard, bounds: ports.bounds, commit: ports.commit, poses: ports.poses, journal });
 		}
 		const characters = raw.characters.map(character => {
 			const target = raw.targets.get(character.id);
@@ -234,21 +233,13 @@ export function createStudioAppBinding(ports) {
 			catch (error) { return rejection(request, error); }
 		}
 		const patchKind = request.name === "patch_elements" && request.args?.ops?.[0]?.target?.kind;
-		const registry = patchKind ? ports.actions?.() : null;
-		const setAction = registry?.ids().includes(`${patchKind}.set`) && registry.get(`${patchKind}.set`);
-		if (setAction && ports.storeDomain?.(setAction.undoDomain ?? patchKind)) {
+		if (patchKind) {
 			try {
 				const args = elementPatchArgs(patchKind, request.args);
 				patchRequests.set(request.commandId, request);
-				return commandBus().run(`${patchKind}.set`, args, { ...request, origin: "agent" });
+				return runAction(request, { action: `${patchKind}.set`, args });
 			} catch (error) { return rejection(request, error); }
 			finally { patchRequests.delete(request.commandId); }
-		}
-		if (["arrange_objects", "arrange_characters", "frame_shot", "patch_elements"].includes(request.name)) {
-			// Arrangements and framing are fenced by the exact scene revision, the
-			// gesture flag and the document identity inside the command module; they
-			// carry no per-entity tokens, so a turn may edit one entity twice.
-			return remember(commands.execute(request));
 		}
 		const signature = JSON.stringify(request);
 		if (!same(request.host, owner)) return rejection(request, new StudioProtocolError("STALE_SCENE", "Document changed."));
@@ -353,7 +344,7 @@ export function createStudioAppBinding(ports) {
 		arrange_characters: request => execute({ ...request, name: "arrange_characters" }),
 		patch_elements: request => execute({ ...request, name: "patch_elements" }),
 		frame_shot: request => execute({ ...request, name: "frame_shot" }),
-		generate_motion: () => fail("CAPABILITY_MISSING", "Use the server-owned Studio generation route."),
+		generate_motion: request => execute({ ...request, name: "generate_motion" }),
 		verify_result: request => execute({ ...request, name: "verify_result" }),
 		undo_edit: request => runAction(request, { action: "edit.undo", args: request.args }),
 		run_action: request => execute({ ...request, name: "run_action" }),

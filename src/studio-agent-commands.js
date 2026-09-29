@@ -7,7 +7,7 @@ import { createShot, shotAtFrame } from './cuts.js';
 import { captureFraming } from './camera-move.js';
 import { createStableItemId } from './stable-items.js';
 import { focalMmToFov, SENSOR_FORMATS } from './shot.js';
-import { StudioProtocolError, StudioSchemas, STUDIO_PATCH_KINDS, STUDIO_PATCH_DESCRIPTORS, validateStudioSchema, validateStudioCommand, validateStudioIdentity, validateReceipt, freezeStudioData, utf8ByteLength } from './studio-agent-protocol.js';
+import { StudioProtocolError, StudioSchemas, STUDIO_PATCH_KINDS, STUDIO_PATCH_DESCRIPTORS, validateStudioSchema, validateStudioIdentity, validateReceipt, freezeStudioData } from './studio-agent-protocol.js';
 
 const DEG = Math.PI / 180, EPS = 1e-8, CHARACTER_SUPPORT_TOLERANCE = 5e-3;
 const fail = (code, message) => { throw new StudioProtocolError(code, message); };
@@ -284,18 +284,6 @@ export function frameDraft(command, state, ports) {
     warnings: [{ code: 'OCCLUSION_UNMEASURED' }], details: { created, shotId: shot.id, keyId, frame, framing, screenBounds, subjectIds: [subject.id] } };
 }
 
-/* ------------------------------------------------ element patches ----
- * One thin family over the declared element table. Every value goes through
- * the domain's own persistence normalizer (createCharacterEntry,
- * updateSceneObject, createShotAuthoringDocument's shot repair,
- * createSceneStage) and is then READ BACK: a field the normalizer refused to
- * keep is reported as a dropped path, never as a silent success. One patch is
- * one domain, so it is one draft, one commit and one history entry. */
-const DOMAIN_KEYS = { objects: 'objects', cast: 'characters', stage: 'stage' };
-const domainState = (state, domain) => domain === 'shot'
-  ? { shotDocument: state.shotDocument, camera: state.camera, manual: state.manual }
-  : state[DOMAIN_KEYS[domain]];
-const withDomain = (state, domain, draft) => domain === 'shot' ? { ...state, ...draft } : { ...state, [DOMAIN_KEYS[domain]]: draft };
 /** Local journal. Unsettled/protected records are never evicted. Call prune on
  * history/job release; completed unprotected outcomes expire after ten minutes. */
 export function createStudioCommandJournal({ host, now = Date.now, isRetained = () => false, maxCompleted = 256, retentionMs = 600000 } = {}) {
@@ -334,90 +322,6 @@ export function createStudioCommandJournal({ host, now = Date.now, isRetained = 
     get(commandId) { return records.get(commandId)?.receipt ?? null; },
     details(commandId) { return records.get(commandId)?.details ?? null; },
   };
-}
-function readback(plan, state) {
-  if (plan.patchReadback) return plan.patchReadback(state);
-  return plan.affectedIds.map(id => {
-    if (plan.domain === 'shot') {
-      const shot = state.shotDocument.shots.find(s => s.id === plan.details.shotId);
-      if (!shot) fail('UNCERTAIN_APPLY', 'Committed shot is unavailable at readback.');
-      return { id, after: { shotId: shot.id, range: { startFrame: shot.startFrame, endFrameExclusive: shot.endFrame + 1 }, camera: state.camera, subjectIds: plan.details.subjectIds, ...(id === plan.details.keyId ? { keyId: id, frame: shot.cameraKeys.find(k => k.id === id).frame } : {}) } };
-    }
-    const entity = state[plan.domain === 'objects' ? 'objects' : 'characters'].find(e => e.id === id);
-    return { id, after: !entity ? { removed: true } : { position: pos(entity), yawDeg: entity.rot,
-      ...(entity.renderer ? { name: entity.name, renderer: entity.renderer, rotationDeg: { x: entity.rotX, y: entity.rot, z: entity.rotZ }, scale: { x: entity.scaleX, y: entity.scaleY, z: entity.scaleZ }, parentId: entity.parent, color: entity.color, hidden: entity.hidden === true } : { name: entity.subject, scale: entity.scale, modelId: entity.model, hidden: entity.hidden, activeCharacterId: state.activeCharacterId }) } };
-  });
-}
-/** ports: synchronous read/bounds/commit. commit must atomically publish
- * exactly the draft and one history entry, or throw before changing anything.
- * A thrown/invalid commit is conservatively unknown, never automatically retried. */
-export function createStudioCommands(ports) {
-  const journal = ports.journal ?? createStudioCommandJournal({ host: ports.read().host, isRetained: ports.isRetained });
-  const documentIsCurrent = () => equal(validateStudioIdentity(ports.read().host), journal.host);
-  function execute(request) {
-    const host = validateStudioIdentity(request.host);
-    validateStudioSchema(StudioSchemas.TargetGuard.properties.targetId, request.commandId);
-    const signature = JSON.stringify(request);
-    let phase = 'admission', committing = false;
-    function failure(code, failurePhase, mutated, message) {
-      return validateReceipt({ ok: false, commandId: request.commandId, host, code, phase: failurePhase, affectedIds: [], expectedTargets: [], currentTargets: [], mutated,
-        preserved: { authoredState: mutated === false ? 'unchanged' : 'unknown' }, recovery: { action: mutated === false ? 'inspect' : 'reconcile', ...(mutated === false ? { retryAllowed: false } : {}) }, ...(message ? { message: [...message].slice(0, 120).join('') } : {}) });
-    }
-    if (!equal(host, journal.host) || !documentIsCurrent()) return failure('STALE_SCENE', phase, false, 'Request belongs to a different live document.');
-    try {
-      if (!journal.begin(request.commandId, signature)) return journal.get(request.commandId) ?? failure('UNCERTAIN_APPLY', 'reconcile', 'unknown');
-    } catch (error) { return failure(error.code, phase, false, error.message); }
-    try {
-      const command = validateStudioCommand({ name: request.name, args: request.args });
-      if (!['arrange_objects', 'arrange_characters', 'frame_shot'].includes(command.name)) fail('CAPABILITY_MISSING', 'This module exposes arrangement, framing and element patches only.');
-      const before = structuredClone(ports.read());
-      const fence = () => {
-        const current = ports.read();
-        if (!equal(host, validateStudioIdentity(current.host)) || !equal(host, journal.host)) fail('STALE_SCENE', 'Live document identity changed.');
-        if (request.expectedRevision !== current.revision) fail('STALE_SCENE', 'Authored scene revision changed.');
-        if (current.busy) fail('TARGET_BUSY', 'A domain gesture is in progress.');
-        // The exact scene revision is the whole authored fence here: it bumps on
-        // every authored change, so per-dependency incarnation tokens added
-        // nothing but a false refusal for a turn's second edit to one entity.
-        // A dependency that vanished is refused by the planner, which resolves
-        // every referenced ID against the admitted draft.
-        if (current.frame !== before.frame || !equal(current.camera, before.camera)) fail('STALE_SCENE', 'Reference view changed during draft evaluation.');
-      };
-      fence(); phase = 'prepare';
-      const plan = command.name === 'frame_shot' ? frameDraft(command, before, ports)
-        : arrangement(command, before, ports);
-      const unchanged = plan.unchanged ?? (plan.domain === 'shot' ? equal(plan.draft, before.shotState ?? { shotDocument: before.shotDocument, camera: before.camera, manual: before.manual }) : !plan.affectedIds.length);
-      const ops = plan.ops ? { ops: plan.ops } : {};
-      const base = { ok: true, commandId: request.commandId, receiptId: createStableItemId('receipt'), host, revision: { before: before.revision, after: before.revision }, affectedIds: plan.affectedIds, delta: [], checks: plan.checks, warnings: plan.warnings, undo: null };
-      if (unchanged) return journal.record({ ...base, ...ops, status: 'noop', authored: false, mutated: false });
-      if (plan.affectedIds.length > 100) fail('INVALID_ARGUMENT', 'Affected domain exceeds receipt capacity.');
-      const preview = withDomain(before, plan.domain, plan.draft);
-      const allDelta = readback(plan, preview);
-      const makeReceipt = (delta, historyEntryId) => {
-        const r = { ...base, ...ops, status: plan.status ?? 'applied', authored: true, revision: { before: before.revision, after: before.revision + 1 }, delta: delta.slice(0, 8), undo: { historyEntryId, entries: 1, canUndoDirect: true }, detailCursor: request.commandId };
-        while (r.delta.length > 1 && utf8ByteLength(JSON.stringify(r)) > 8000) r.delta.pop();
-        return validateReceipt(r);
-      };
-      makeReceipt(allDelta, 'preflight-history'); // Reject receipt overflow BEFORE mutation.
-      fence(); phase = 'commit'; committing = true;
-      const committed = ports.commit({ domain: plan.domain, before, draft: plan.draft, commandId: request.commandId, host, expectedRevision: before.revision });
-      if (committed?.then) fail('UNCERTAIN_APPLY', 'Commit must publish synchronously.');
-      const current = ports.read();
-      const actual = domainState(current, plan.domain);
-      if (current.revision !== before.revision + 1 || !equal(current.host, host) || !equal(actual, plan.draft)) fail('UNCERTAIN_APPLY', 'Commit did not synchronously publish the admitted poststate.');
-      const delta = readback(plan, current);
-      return journal.record(makeReceipt(delta, committed.historyEntryId), { delta, geometry: plan.details });
-    } catch (error) {
-      const receipt = failure(committing ? 'UNCERTAIN_APPLY' : error instanceof StudioProtocolError ? error.code : 'INVALID_ARGUMENT', phase, committing ? 'unknown' : false, error.message);
-      // An owner may already have journaled the commit before a lost ack.
-      const recorded = journal.reconcile({ commandId: request.commandId });
-      if (recorded.status === 'applied') return recorded.receipt;
-      return journal.record(receipt);
-    }
-  }
-  return { execute, journal,
-    reconcile_studio_command: args => documentIsCurrent() ? journal.reconcile(args) : { status: 'unknown' },
-    readDetails: commandId => documentIsCurrent() ? journal.details(commandId) : null };
 }
 export function studioObjectCatalogue() {
   return freezeStudioData({ objects: OBJECT_LIBRARY.map(({ kind, footprint, height, supportY }) => ({ kind, footprint: { ...footprint }, height, supportY: supportY ?? height })), imageRefs: [],
