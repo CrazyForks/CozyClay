@@ -704,9 +704,12 @@ export function useScenes(appContext) {
 		if (index < 0 || savedScenes.length <= 1) return;
 		const nextScenes = removeScene(savedScenes, index);
 		if (sceneId !== appContext.shared.activeSceneIdRef.current) {
-			appContext.storeDomain("scenes")?.replaceDocument(nextScenes, appContext.shared.activeSceneIdRef.current);
-			appContext.publishScenes(nextScenes);
-			persistScenes(nextScenes, appContext.shared.activeSceneIdRef.current);
+			const owned = appContext.storeDomain("scenes");
+			if (owned) owned.replaceDocument(nextScenes, appContext.shared.activeSceneIdRef.current);
+			else {
+				appContext.publishScenes(nextScenes);
+				persistScenes(nextScenes, appContext.shared.activeSceneIdRef.current);
+			}
 			return;
 		}
 		const target = nextScenes[Math.min(index, nextScenes.length - 1)];
