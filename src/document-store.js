@@ -104,7 +104,7 @@ export function createDocumentStore({ owned = {}, dev = import.meta.env?.DEV ?? 
 // separate object history: every preview, cancellation and traversal uses the
 // document store. Immutable producer arrays retain their reference contract.
 export function createSceneHistoryStore(initialObjects, { onObjects, onCommit } = {}) {
-  const store = createDocumentStore({ owned: { objects: initialObjects }, copyIntent: value => value });
+  const store = createDocumentStore({ owned: { objects: initialObjects }, dev: false, copyIntent: value => value });
   const read = () => store.read('objects');
   store.subscribe(() => onObjects?.(read()));
   let active = null, sequence = 0;

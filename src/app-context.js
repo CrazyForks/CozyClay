@@ -122,7 +122,7 @@ export function createAppContext({
     storeDomains: registeredDomains,
     registerStoreDomain(name, handle) {
       const store = handle.documentStore;
-      if (!observedStores.has(store)) {
+      if (store && !observedStores.has(store)) {
         observedStores.add(store);
         const committed = result => {
           if (result.historyEntryId && !activeComposition) remember([{ name, handle, store, id: result.historyEntryId }]);
@@ -138,7 +138,7 @@ export function createAppContext({
           return result?.then ? result.then(committed) : committed(result);
         };
       }
-      if (!domainBegins.has(handle)) {
+      if (handle.beginAction && !domainBegins.has(handle)) {
         domainBegins.set(handle, handle.beginAction.bind(handle));
         handle.beginAction = targetId => beginAction(name, targetId);
         handle.stepHistory = redo => {

@@ -33,6 +33,9 @@ function key(redo = false, target = null) {
   return prevented;
 }
 try {
+  // The camera mounts after its owner; prime the same lazy runtime pre-image
+  // that the first shot session captures, without authoring a history entry.
+  f.scope.shotsDomain.beginAction().cancel();
   const snapshots = [snapshot()], receipts = [];
   for (const [id, args] of [
     ['object.rename', { id: 'cube', name: 'Changed' }],

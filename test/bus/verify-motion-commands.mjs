@@ -78,7 +78,8 @@ test('motion: an agent IK key and undo restore both the authored key layer and e
     assert.notDeepEqual(f.actual.snapshotExportRig(f.rigs['actor-a']), rig);
     assert.equal(ok(f.run('edit.undo', { receiptId: keyed.receiptId }, 'agent')).status, 'undone');
     assert.deepEqual(f.snapshot(), before); assert.deepEqual(f.actual.snapshotExportRig(f.rigs['actor-a']), rig);
-    assert.equal(f.scope.appContext.castHistory.past.length, 0);
+    assert.deepEqual(f.motion.documentStore.depths(), { past: 0, future: 1 });
+    assert.equal(f.cast.documentStore.depths().past, 0, 'IK does not duplicate history in cast');
   } finally { f.dispose(); }
 });
 
