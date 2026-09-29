@@ -188,4 +188,24 @@ for (const step of STEPS) {
 const g0 = worldSmpl("G0", { obs, rest, camera: cameraJson, ankleHeight });
 assert.ok(Math.hypot(g0.pelvis[0][0], g0.pelvis[0][2]) < 1e-6, "G0 ayfz frame-0 pelvis at the XZ origin");
 
+// 5. Pin modes: A differs from the take's first pose in a limb (60 deg) and in
+// heading (20 deg). "heading" keeps the take's limbs and turns only the root;
+// "full" copies A's limbs too (the half-second morph users saw as a jump).
+{
+	const rotAbout = (axis, a) => { const c = Math.cos(a), s = Math.sin(a); return axis === "y" ? [c, 0, s, 0, 1, 0, -s, 0, c] : [1, 0, 0, 0, c, -s, 0, s, c]; };
+	const mm = (a, b) => [0, 1, 2].flatMap((i) => [0, 1, 2].map((j) => a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j]));
+	const A = { rotMats: Float32Array.from(endpoints[0].rotMats), rootPos: endpoints[0].rootPos };
+	A.rotMats.set(mm(rotAbout("y", 0.35), Array.from(A.rotMats.slice(0, 9))), 0);
+	const LIMB = 5;
+	A.rotMats.set(mm(rotAbout("x", 1.05), Array.from(A.rotMats.slice(LIMB * 9, LIMB * 9 + 9))), LIMB * 9);
+	const run = (pinMode) => ladderStep("Gbest", { mannequin: { obs: small, rest: smallRest }, camera: cameraJson, endpoints: [A, endpoints[1]], boxes: [], ankleHeight, options: { stanceMode: "logits", pinMode } }).motion;
+	const limb0 = (m) => Array.from(m.rotMats.slice(LIMB * 9, LIMB * 9 + 9));
+	const yaw0 = (m) => Math.atan2(m.rotMats[2], m.rotMats[8]);
+	const close = (a, b, tol) => a.every((v, i) => Math.abs(v - b[i]) < tol);
+	const heading = run("heading"), full = run("full");
+	assert.ok(close(limb0(heading), limb0(g5.motion), 1e-4), "heading pin keeps the take's own limb pose at frame 0");
+	assert.ok(close(limb0(full), Array.from(A.rotMats.slice(LIMB * 9, LIMB * 9 + 9)), 1e-4), "full pin copies A's limb pose (the test can fail)");
+	assert.ok(Math.abs(yaw0(heading) - Math.atan2(A.rotMats[2], A.rotMats[8])) < 1e-3, "heading pin turns the root to A's heading at frame 0");
+}
+
 console.log(`PASS: G1 exact (pelvis ${maxDiff(g1.pelvis, truth.pelvis).toExponential(1)} m, tilt ${g1.registration.tiltDeg.toFixed(1)} deg folded); G2 rms ${(e2 * 100).toFixed(1)} cm vs G4 ${(e4 * 100).toFixed(1)} cm; G3 rms ${(es3 * 100).toFixed(1)} cm vs scaled G2 ${(es2 * 100).toFixed(1)} cm (${s3.diagnostics.ground.contactCount} contacts); ${STEPS.length} steps convert`);

@@ -33,8 +33,8 @@ import { stabilizeMotion } from "../../ardy/motion-stabilize.mjs";
 import { GVHMR_SMOOTH_SIGMA } from "../../ardy/runners/gvhmr-worker.mjs";
 import { smplToCskel27Motion } from "../../ardy/smpl-cskel27.mjs";
 import { productionExtractEnv } from "../extract-bench-lib.mjs";
-import { fitContacts } from "../fit/contact.mjs";
-import { cloneMotion, shiftFrame } from "../fit/motion.mjs";
+import { fitContacts, penetrates } from "../fit/contact.mjs";
+import { cloneMotion, jointsAt, shiftFrame, smoothstep } from "../fit/motion.mjs";
 import { pinEndpoints } from "../fit/pin.mjs";
 import { correctTrajectory } from "./ground.mjs";
 import { solveTranslations } from "./depth.mjs";
@@ -49,7 +49,12 @@ export const DEFAULTS = Object.freeze({
 	minKeypointConfidence: 0.3,
 	floorPercentile: 0.1,
 	pinMinDisplacementM: 0.5,
-	pinWindowSeconds: 0.5,
+	// "heading": A/B fix the root position and facing only; the limbs keep the
+	// video's pose. "full" also slerps every joint to A/B, which morphs the body
+	// for a visible half second wherever GVHMR's first/last pose differs from A/B
+	// (walk: 32 cm at a hand, 8 deg heading).
+	pinMode: "heading",
+	pinWindowSeconds: 1,
 	registration: "full",
 	// GVHMR's static probabilities are under-confident on rendered clips
 	// (walk: median 0.35-0.46 in true stance, p90 <= 0.10 in swing); at 0.8
@@ -75,9 +80,25 @@ export const DEFAULTS = Object.freeze({
 	// 3 fal): 0 cm -> max pen 9.7-16.3 cm; 8 cm -> 0-8.2 cm with B ends kept;
 	// 15 cm -> ~0 cm but B ends jump to 50 cm (contacts override the A/B pins).
 	sceneClearanceM: 0.08,
+	// fitContacts' time-smooth scene solver: pushes ramp in and out over this
+	// half width. The per-frame solver teleported the body up to 0.76 m in one
+	// frame (fal stepup: 18 m/s) whenever the nearest box face changed.
+	sceneSmoothSeconds: 0.375,
 });
 
 // ---------------------------------------------------------------- math
+/** Yaw of a row-major rotation about +Y (0 = facing +Z). */
+const yawOf = (r) => Math.atan2(r[2], r[8]);
+/** Pin target that keeps the take's own pose at frame f and turns only its root
+ * to the endpoint's heading; root position comes from the endpoint. */
+function headingEndpoint(endpoint, take, f) {
+	const rotMats = Float32Array.from(take.rotMats.slice(f * 243, (f + 1) * 243));
+	const root = Array.from(rotMats.slice(0, 9));
+	const d = yawOf(endpoint.rotMats) - yawOf(root), c = Math.cos(d), s = Math.sin(d);
+	rotMats.set(mul3([c, 0, s, 0, 1, 0, -s, 0, c], root), 0);
+	return { rotMats, rootPos: endpoint.rootPos };
+}
+
 const mul3 = (a, b) => [
 	a[0] * b[0] + a[1] * b[3] + a[2] * b[6], a[0] * b[1] + a[1] * b[4] + a[2] * b[7], a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
 	a[3] * b[0] + a[4] * b[3] + a[5] * b[6], a[3] * b[1] + a[4] * b[4] + a[5] * b[7], a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
@@ -439,15 +460,37 @@ export function ladderStep(step, { base, mannequin, camera, endpoints, boxes = [
 		for (let f = 0; f < take.frames; f++) shiftFrame(take, f, [-g0[0], 0, -g0[2]]);
 		const displacement = horizontalDistance(anchored[0].rootPos, anchored[1].rootPos);
 		const pin = displacement > opts.pinMinDisplacementM;
-		const pinned = pin ? pinEndpoints(take, anchored, { windowSeconds: opts.pinWindowSeconds }) : take;
+		const targets = opts.pinMode === "full" ? anchored : anchored.map((e, i) => headingEndpoint(e, take, i ? take.frames - 1 : 0));
+		const pinned = pin ? pinEndpoints(take, targets, { windowSeconds: opts.pinWindowSeconds }) : take;
 		const clearance = opts.sceneClearanceM;
 		const inflated = boxes.map((b) => ({ ...b, min: b.min.map((v) => v - clearance), max: b.max.map((v) => v + clearance) }));
-		const contacts = fitContacts(pinned, { boxes: inflated });
+		const contacts = fitContacts(pinned, { boxes: inflated, sceneSmoothSeconds: opts.sceneSmoothSeconds });
+		// A and B are known truth: within the pin window the scene/lock shifts
+		// ease back towards the pinned take, so a push carried in from the
+		// contact phase cannot drag the known end poses away. The ease stops
+		// where the skeleton would enter the real (uninflated) box.
+		if (pin) {
+			const n = take.frames, last = n - 1, radius = Math.min(opts.pinWindowSeconds * take.fps, last / 2);
+			const back = Array.from({ length: n }, (_, f) => [0, 1, 2].map((k) => pinned.rootPos[f * 3 + k] - contacts.motion.rootPos[f * 3 + k]));
+			const clear = (f, t) => !penetrates(jointsAt(contacts.motion, f).map((p) => p.map((v, k) => v + t * back[f][k])), boxes);
+			const limit = Array.from({ length: n }, (_, f) => {
+				const w = Math.max(1 - smoothstep(f / radius), 1 - smoothstep((last - f) / radius));
+				if (!(w > 0) || clear(f, w)) return w;
+				let lo = 0, hi = w; for (let i = 0; i < 16; i++) { const mid = (lo + hi) / 2; if (clear(f, mid)) lo = mid; else hi = mid; }
+				return lo;
+			});
+			// The collision limit changes frame to frame; erode then blur over 3
+			// frames so the ease stays at or under it and never jumps.
+			const r = 3, at = (x, f) => x[Math.min(n - 1, Math.max(0, f))];
+			const eroded = limit.map((_, f) => { let m = Infinity; for (let k = -r; k <= r; k++) m = Math.min(m, at(limit, f + k)); return m; });
+			const ease = eroded.map((_, f) => { let s = 0; for (let k = -r; k <= r; k++) s += at(eroded, f + k); return s / (2 * r + 1); });
+			for (let f = 0; f < n; f++) if (ease[f] > 0) shiftFrame(contacts.motion, f, back[f].map((v) => v * (clear(f, ease[f]) ? ease[f] : 0)));
+		}
 		const { support, ...contactDiagnostics } = contacts.diagnostics;
 		return {
 			motion: contacts.motion,
 			smpl: g5.smpl,
-			diagnostics: { ...diagnostics, step: "Gbest", composition: "G5 + pinEndpoints (if A->B > threshold) + fitContacts", pin: { applied: pin, abDisplacementM: displacement, thresholdM: opts.pinMinDisplacementM, windowSeconds: opts.pinWindowSeconds, endpointFrames: "first and last only", anchoring: "A/B root XZ relative to A; take frame-0 root XZ moved to the origin", takeFrame0ShiftM: [-g0[0], 0, -g0[2]] }, contacts: { ...contactDiagnostics, supportFrames: support.filter((s) => s >= 0).length, boxes: boxes.length, sceneClearanceM: clearance } },
+			diagnostics: { ...diagnostics, step: "Gbest", composition: "G5 + pinEndpoints (if A->B > threshold) + fitContacts", pin: { applied: pin, abDisplacementM: displacement, thresholdM: opts.pinMinDisplacementM, windowSeconds: opts.pinWindowSeconds, mode: opts.pinMode, endpointFrames: "first and last only", anchoring: "A/B root XZ relative to A; take frame-0 root XZ moved to the origin", takeFrame0ShiftM: [-g0[0], 0, -g0[2]] }, contacts: { ...contactDiagnostics, supportFrames: support.filter((s) => s >= 0).length, boxes: boxes.length, sceneClearanceM: clearance } },
 		};
 	}
 	if (!base?.obs || !base?.rest) throw new Error(`${step} needs the base obs and its rest joints`);
