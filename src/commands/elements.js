@@ -8,8 +8,9 @@ const kinds = new Map();
 // this same spec so a migration adds a module, not another generic switch.
 export function registerElementKind(kind, spec) {
   if (kinds.has(kind)) throw new Error(`Element kind already registered: ${kind}`);
-  kinds.set(kind, spec);
+  kinds.set(kind, { documentKey: kind, ...spec });
 }
+const projectionKind = key => [...kinds].find(([, spec]) => spec.documentKey === key)?.[0] ?? key;
 const patchElements = kind => kinds.get(kind).elements.filter(row => row.agentExposure === 'patch');
 const object = () => ({ type: 'object', properties: {}, required: [], additionalProperties: false });
 // String mappings retain the single-document schema. Component mappings use
@@ -37,15 +38,17 @@ export function elementSetSchema(kind) {
   return { ...object(), properties: { ...item.properties, ...batch.properties }, oneOf: [item, batch] };
 }
 export function elementTarget(kind, value, id, sceneId) {
-  return kinds.get(kind).collection ? value.find(row => row.id === id) : id === sceneId ? value : undefined;
+  return kinds.get(projectionKind(kind)).collection ? value.find(row => row.id === id) : id === sceneId ? value : undefined;
 }
 export function readElementDocument(projection, { ids, select } = {}, sceneId) {
-  const entries = Object.entries(projection).filter(([kind]) => !select || select.includes(kind)).flatMap(([kind, value]) => {
-    if (!ids || ids.includes(kind) || ids.includes(sceneId)) return [[kind, value]];
+  const entries = Object.entries(projection).flatMap(([key, value]) => {
+    const kind = projectionKind(key);
+    if (select && !select.includes(key) && !select.includes(kind)) return [];
+    if (!ids || ids.includes(key) || ids.includes(kind) || ids.includes(sceneId)) return [[key, value]];
     const selected = kinds.get(kind).collection ? value.filter(row => ids.includes(row.id)) : [];
-    return selected.length ? [[kind, selected]] : [];
+    return selected.length ? [[key, selected]] : [];
   });
-  return { document: structuredClone(Object.fromEntries(entries)), schema: Object.fromEntries(entries.map(([kind]) => [kind, elementSetSchema(kind)])) };
+  return { document: structuredClone(Object.fromEntries(entries)), schema: Object.fromEntries(entries.map(([key]) => [key, elementSetSchema(projectionKind(key))])) };
 }
 export function readElement(document, path) {
   const element = kinds.get(path.slice(0, path.indexOf('.'))).elements.find(row => row.path === path);
@@ -92,7 +95,7 @@ export function elementPatchArgs(kind, args) {
   return collection ? ops.length === 1 ? ops[0] : { ops } : ops.reduce((patch, op) => mergeElementSet(patch, op.set), {});
 }
 export function elementReadback(kind, document, paths) {
-  return patchElements(kind).filter(element => !paths || paths.includes(element.path)).map(element => {
+  return patchElements(projectionKind(kind)).filter(element => !paths || paths.includes(element.path)).map(element => {
     const value = readElement(document, element.path), path = element.path;
     if (value === null || value === undefined || value === '') return { path, text: null };
     if (element.type === 'image') return { path, bytes: utf8ByteLength(value) };
@@ -111,8 +114,9 @@ function survives(requested, actual) {
 export function elementPatchReceipt(receipt, request, projection) {
   const kind = request?.args.ops[0].target.kind;
   if (!receipt.ok || !kind || !kinds.get(kind).collection) return receipt;
+  const value = projection[kinds.get(kind).documentKey];
   const ops = request.args.ops.map(({ target, set }, index) => {
-    const item = elementTarget(kind, projection[kind], target.id, receipt.host.sceneId);
+    const item = elementTarget(kind, value, target.id, receipt.host.sceneId);
     const droppedPaths = Object.entries(set).filter(([key, value]) => !survives(value, readElement(item, `${kind}.${key}`))).map(([key]) => `${kind}.${key}`);
     return { index, status: droppedPaths.length ? 'partial' : receipt.authored ? 'applied' : 'noop', ...(droppedPaths.length ? { droppedPaths } : {}) };
   });
@@ -121,7 +125,7 @@ export function elementPatchReceipt(receipt, request, projection) {
   const { action, summary, ...base } = receipt;
   return { ...(partial ? base : receipt), ops, status: partial ? 'partial' : receipt.status,
     delta: !receipt.authored ? [] : request.args.ops.slice(0, 8).map(({ target, set }) => ({ id: target.id, after: {
-      patched: elementReadback(kind, elementTarget(kind, projection[kind], target.id, receipt.host.sceneId), Object.keys(set).map(key => `${kind}.${key}`)),
+      patched: elementReadback(kind, elementTarget(kind, value, target.id, receipt.host.sceneId), Object.keys(set).map(key => `${kind}.${key}`)),
     } })) };
 }
 export function registerElementSet(registry, ports, declaration) {
