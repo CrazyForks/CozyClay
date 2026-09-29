@@ -141,6 +141,54 @@ cases.receipts = async () => {
 	} finally { await s.close(); }
 };
 
+cases.admission = async () => {
+	const s = await studio();
+	try {
+		const [a, b] = s.f.objects.read();
+		const calls = [
+			["place_object", { kind: "cube" }], ["update_object", { id: a.id, x: 4 }], ["remove_object", { id: a.id }],
+			["group_objects", { parent: a.id, children: [b.id] }], ["group_objects", { parent: null, children: [b.id] }],
+			["import_mesh", { path: fileURLToPath(new URL("../test/fixtures/unit-cube.glb", import.meta.url)) }],
+			["set_camera", { x: 3 }], ["frame_shot", { size: "medium shot" }],
+			["add_scene", { name: "Stale creation" }], ["switch_scene", { name: "Second" }],
+		];
+		for (const [name, args] of calls) {
+			const current = s.f.binding.refresh();
+			const before = structuredClone({ revision: current.revision, document: current.document, camera: current.camera });
+			const result = await s.call(name, { ...args, expectedRevision: before.revision + 99 });
+			assert.equal(result.isError, true, `${name} accepted a stale revision`);
+			const refused = JSON.parse(result.content[0].text);
+			validateReceipt(refused);
+			assert.equal(refused.code, "STALE_SCENE", JSON.stringify(refused));
+			assert.equal(refused.mutated, false);
+			assert.deepEqual(s.f.binding.refresh().document, before.document);
+			assert.deepEqual(s.f.binding.refresh().camera, before.camera);
+		}
+		const commandId = crypto.randomUUID(), expectedRevision = s.f.binding.refresh().revision;
+		const args = { kind: "cone", commandId, expectedRevision };
+		const first = receipt(await s.call("place_object", args), "object.add");
+		const retried = receipt(await s.call("place_object", args), "object.add");
+		assert.equal(first.commandId, commandId);
+		assert.deepEqual(retried, first, "a replay returns the editor's journalled receipt");
+		assert.equal(s.f.objects.read().filter(row => row.id === first.affectedIds[0]).length, 1);
+		// Advance the real UI domain after inspection, before run_action reaches
+		// the editor: admission must remain at the inspected revision, not retry.
+		const command = s.hub.command.bind(s.hub);
+		let interleaved = false;
+		s.hub.command = async (name, ...args) => {
+			const value = await command(name, ...args);
+			if (name === "inspect_studio" && !interleaved) {
+				interleaved = true;
+				assert.equal((await s.f.run("object.rename", { id: a.id, name: "Human edit" })).ok, true);
+			}
+			return value;
+		};
+		const raced = await s.call("update_object", { id: a.id, x: 9 });
+		assert.equal(JSON.parse(raced.content[0].text).code, "STALE_SCENE");
+		assert.equal(s.f.objects.read().find(row => row.id === a.id).x, a.x);
+	} finally { await s.close(); }
+};
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
 	const selected = process.env.COZYCLAY_446_CASE;
 	if (selected) assert.ok(cases[selected], `Unknown case ${selected}`);
