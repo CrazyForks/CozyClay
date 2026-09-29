@@ -73,6 +73,7 @@ export function createObjectsDomain(appContext, initial) {
 		} };
 	}
 	function stepHistory(redo) {
+		domain.settle?.();
 		const result = (redo ? documentStore.redo : documentStore.undo)();
 		if (result) appContext.advanceObjectClock();
 		return Boolean(result);
@@ -155,12 +156,17 @@ export function useObjects(appContext) {
 	function beginSceneTransaction({ owner, cancel }) {
 		domain.settle();
 		const { txId } = run("run.begin", { id: "object.update", args: {} });
-		gesture.current = { txId, owner, cancel };
+		const release = appContext.bus.subscribe(event => {
+			if (event.type !== "transaction.cancelled" || event.txId !== txId) return;
+			gesture.current = null; release(); cancel();
+		});
+		gesture.current = { txId, owner, cancel, release };
 		return txId;
 	}
 
 	function endSceneTransaction(token, { commit }) {
 		if (gesture.current?.txId !== token) return;
+		gesture.current.release();
 		gesture.current = null;
 		return run(commit ? "run.commit" : "run.cancel", { txId: token });
 	}
