@@ -25,12 +25,24 @@ const loads = [
 	{ id: 'motion.replace', label: 'Replace take', input: input({ characterId: id, url: id, prompt: { type: 'string', default: '' } }, ['characterId', 'url']) },
 	{ id: 'motion.loadVersion', label: 'Restore take version', input: input({ characterId: id, motionUrl: id }) },
 ].map(entry => ({ ...entry, description: entry.label, kind: 'job', domain: 'motion' }));
+const tools = [
+	mutation('motion.applyPhysics', 'Apply reviewed physics', { characterId: id }),
+	mutation('motion.editTrail', 'Edit motion trail', { characterId: id, grabFrame: frame, radiusFrames: { ...frame, minimum: 1 }, delta: input({ x: { type: 'number' }, y: { type: 'number' }, z: { type: 'number' } }) }),
+	mutation('ik.applyPose', 'Key full-body pose', { characterId: id, frame, pose: { type: 'object', properties: { bones: { type: 'object', properties: {}, required: [], additionalProperties: true }, rootY: { type: 'number' } }, required: ['bones'], additionalProperties: true } }),
+];
+const physics = { id: 'motion.autoPhysics', label: 'Review motion physics', description: 'Analyse real rig motion and optionally apply one retained correction.', kind: 'job', domain: 'motion',
+	input: input({ characterId: id, apply: { type: 'boolean', default: true }, strength: { type: 'number', minimum: 0, maximum: 1, default: 1 },
+		protectedFrames: { type: 'array', items: frame, default: [] }, overrides: { type: 'array', default: [], items: input({
+			site: { type: 'string', enum: ['leftFoot', 'rightFoot', 'leftHand', 'rightHand', 'leftKnee', 'rightKnee'] }, start: frame, end: frame,
+			mode: { type: 'string', enum: ['plant', 'free'] },
+		}) },
+	}, ['characterId']) };
 const legacyIk = ['character.setIkKey', 'character.removeIkKey', 'character.clearIkKeys'].map(studioActionDeclaration);
 const ik = legacyIk.map((entry, index) => ({ ...entry, id: ['ik.setKey', 'ik.removeKey', 'ik.clearKeys'][index] }));
 
 const clear = { id: 'motion.clear', label: 'Clear motion', description: 'Clear the active take, its corrections and take-owned cast fields.',
 	kind: 'mutation', undoDomain: 'motion', input: { type: 'object', properties: { characterId: { type: 'string' } }, required: ['characterId'], additionalProperties: false } };
-export const declarations = Object.freeze([clear, ...edits, prepared, ...loads, ...legacyIk, ...ik, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
+export const declarations = Object.freeze([clear, ...edits, prepared, ...loads, ...tools, physics, ...legacyIk, ...ik, ...["motion.generateAllBlocks", "motion.generateFromVideo"].map(studioActionDeclaration)]);
 
 export function register(registry, ports) {
 	const owner = () => ports.storeDomain('motion');
@@ -41,6 +53,21 @@ export function register(registry, ports) {
 	} });
 	for (const declaration of loads) registry.register({ ...declaration, available: mounted, target: args => args.characterId, async run(args, context) {
 		characterOf(ports, args.characterId); await owner().loadRemote(args, context);
+		return { affectedIds: [args.characterId], summary: declaration.label };
+	} });
+	registry.register({ ...physics, available: mounted, target: args => args.characterId, async run(args, context) {
+		characterOf(ports, args.characterId);
+		return { affectedIds: [args.characterId], summary: physics.label, output: await owner().autoPhysics(args.characterId, args, context) };
+	} });
+	for (const declaration of tools) registry.register({ ...declaration, available: mounted, run(args) {
+		characterOf(ports, args.characterId);
+		if (declaration.id === 'motion.applyPhysics') owner().applyPhysics(args.characterId);
+		else if (declaration.id === 'motion.editTrail') owner().editTrail(args.characterId, args);
+		else {
+			if (args.frame >= ports.state().frameCount) fail('INVALID_RANGE', 'IK frame is outside the timeline.');
+			for (const angles of Object.values(args.pose.bones)) if (!Array.isArray(angles) || angles.length !== 3 || !angles.every(Number.isFinite)) fail('INVALID_ARGUMENT', 'Pose bones require three finite rotation angles.');
+			owner().keyPose(args.characterId, args.frame, args.pose);
+		}
 		return { affectedIds: [args.characterId], summary: declaration.label };
 	} });
 	registerElementSet({ register(entry) { registry.register({ ...entry, available: mounted, run(args) {

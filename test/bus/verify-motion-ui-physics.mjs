@@ -13,7 +13,7 @@ test('motion: the shipped IK drag handler records the pre-drag rig, not its alre
     hook.ikDragEnd(); hook.finishGesture();
     assert.equal(hook.layer('actor-a').ikKeys.length, 1);
     assert.equal(hook.documentStore.depths().past, 1); assert.equal(f.scope.appContext.castHistory.past.length, 0);
-    assert.equal(f.binding.stepHistory(false), true);
+    f.actual.undoScene();
     assert.deepEqual(f.snapshot(), before); assert.deepEqual(f.actual.snapshotExportRig(f.rigs['actor-a']), rig);
   } finally { f.dispose(); }
 });
@@ -26,7 +26,7 @@ test('motion: a shipped trail drag commits its deformed take once without native
     const input = { track: 'hips', grabFrame: 12, delta: { x: 0.2, y: 0, z: 0 } };
     hook.onTrailDragPreview(input); assert.deepEqual(f.snapshot(), before);
     hook.onTrailDragEnd(input); assert.equal(hook.documentStore.depths().past, 1);
-    assert.notDeepEqual(f.snapshot(), before); assert.equal(f.binding.stepHistory(false), true); assert.deepEqual(f.snapshot(), before);
+    assert.notDeepEqual(f.snapshot(), before); f.actual.undoScene(); assert.deepEqual(f.snapshot(), before);
   } finally { f.dispose(); }
 });
 test('motion: AutoPhysics previews real rig corrections, applies them atomically, and undo restores the take and rig', { timeout: 20000 }, async () => {

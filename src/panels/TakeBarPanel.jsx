@@ -2,6 +2,7 @@ import { ko, isKo } from "../locale.js";
 import { MotionReadiness } from "../motion-readiness-ui.jsx";
 import { Field } from "../ui.jsx";
 import { lineTrackLabel } from "../app-stage.jsx";
+import { useMotionCommands } from '../domains/motion.js';
 
 export default function TakeBarPanel({
 	linePreviewUrl, takeSourceUrl, sceneDisabledReason, sceneMenuOpen, setSceneMenuOpen, refineDisabledReason,
@@ -10,6 +11,7 @@ export default function TakeBarPanel({
 	setToast, motion, preserveStrength, setPreserveStrength, waypointMode, preserveTracksLine, takeRecipe,
 	takeVersions, loadTakeVersion, replayNotices,
 }) {
+	const { run } = useMotionCommands();
 	return (
 <div
 				className="take-bar"
@@ -161,7 +163,7 @@ export default function TakeBarPanel({
 									data-version-current={entry.motionUrl === takeSourceUrl ? "true" : undefined}
 									aria-pressed={entry.motionUrl === takeSourceUrl}
 									title={`${entry.label} · ${new Date(entry.savedAt).toLocaleTimeString()}`}
-									onClick={() => loadTakeVersion(entry)}
+									onClick={() => run('motion.loadVersion', { motionUrl: entry.motionUrl })}
 								>
 									<b>v{index + 1}</b>
 									<small>{entry.label}</small>

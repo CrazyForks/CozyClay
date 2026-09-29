@@ -1,4 +1,5 @@
 import Foldout from "./Foldout.jsx";
+import { useMotionCommands } from '../domains/motion.js';
 import { ko, isKo } from "../locale.js";
 import { HIERARCHY_INSPECTOR_TITLES } from "../app-stage.jsx";
 import { PhysicsPanel } from "../ardy/physics-panel.jsx";
@@ -13,6 +14,7 @@ export default function RigControlPanel({
 	setIkEditTool, showTrails, setShowTrails, trailFalloffS, setTrailFalloffS, trailEdit, generationBusy,
 	bridgeChecking, bridge, runTrailRegeneration, trailReadinessState, openMotionSetup, recheckMotionHealth,
 }) {
+	const { run } = useMotionCommands();
 	return (
 <Foldout hidden={!isRigSelection} title={ko("Rig Control", "리그 제어")}>
 						<p className="inspector-hint">
@@ -34,10 +36,10 @@ export default function RigControlPanel({
 						    be describing something that cannot happen. */}
 						{collisionCleanupSupported && (
 							<>
-								<button type="button" className="btn full" onClick={runFixCollisions} disabled={!ikChains}>
+								<button type="button" className="btn full" onClick={() => run('motion.fixCollisions', { scope: 'frame' })} disabled={!ikChains}>
 								{ko("Fix body collisions (this frame)", "콜리전 수정 (이 프레임)")}
 								</button>
-								<button type="button" className="btn full" onClick={runFixCollisionsRange} disabled={!ikChains || !motion}>
+								<button type="button" className="btn full" onClick={() => run('motion.fixCollisions', { scope: 'clip' })} disabled={!ikChains || !motion}>
 								{ko("Fix body collisions (whole clip)", "콜리전 수정 (클립 전체)")}
 								</button>
 								<p className="inspector-hint">

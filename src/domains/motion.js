@@ -2,7 +2,8 @@ import {
 	FAL_MOTION_STILL_OUTPUT, FAL_MOTION_SHOT_ASPECT, FAL_MOTION_MIN_DURATION,
 	waitForFalMotionJob, submitFalMotion, buildH3MotionPrompt,
 } from "../fal-motion-client.js";
-import { useState, useEffect, useSyncExternalStore } from "react";
+import { useState, useEffect, useSyncExternalStore, useContext } from "react";
+import { AppContext } from '../app-context.js';
 import { createDocumentStore } from '../document-store.js';
 import { useDocumentDomain } from '../store/use-document-store.js';
 import { createPhysicsProgress } from "../ardy/physics-panel.jsx";
@@ -220,7 +221,7 @@ export function createMotionDomain(appContext, characters) {
 		for (const id of takes.keys()) if (!ids.has(id)) takes.delete(id);
 	}
 	function beginAction() {
-		rigImages.set(read(), rigSnapshots());
+		rigImages.set(read(), gesture?.rigs ?? rigSnapshots());
 		const session = documentStore.beginAction('motion');
 		return { ...session,
 			run(fn) { return session.run(() => { running++; try { return fn(); } finally { running--; } }); },
@@ -289,6 +290,66 @@ export function createMotionDomain(appContext, characters) {
 		}
 		setKeys(id, state.keys);
 	}
+	function bakeCurrentKey(id, at) {
+		const rig = rigFor(id), resolved = rig && resolveIkRig(rig);
+		if (!resolved) return null;
+		const scratch = { ...createIkState(), tracked: new Set(appContext.shared.ikStatesRef.current.get(id)?.tracked) };
+		ikBakeKeyframe(resolved.chains, scratch, at, resolved.fkJoints);
+		const keyed = encodeMotionKeys(scratch.keys)[0];
+		return keyed ? run('ik.setKey', { characterId: id, frame: at, tracks: keyed.tracks }) : null;
+	}
+	function keyPose(id, at, pose) {
+		const rig = rigFor(id), resolved = rig && resolveIkRig(rig);
+		if (!resolved) throw new StudioProtocolError('TARGET_NOT_READY', 'The character rig is not loaded.');
+		restoreBindPositions(rig); applyPose(rig, { ...REST_BONES, ...pose.bones }); applyHipsOffset(rig, pose.rootY ?? 0);
+		editKeys(id, state => {
+			state.tracked = new Set([...resolved.chains.keys(), ...resolved.fkJoints.keys()]);
+			ikBakeKeyframe(resolved.chains, state, at, resolved.fkJoints);
+		});
+	}
+	function editTrail(id, { grabFrame, radiusFrames, delta }) {
+		const take = motionFor(id), character = appContext.storeDomain('cast').read().find(row => row.id === id);
+		if (!take) throw new StudioProtocolError('TARGET_NOT_READY', 'Load a take first.');
+		const scale = character.scale ?? 1;
+		const clipDelta = worldDeltaToClip(take, { x: delta.x / scale, y: delta.y / scale, z: delta.z / scale });
+		writeLayer(id, { take: snapshotTake(applyTrailFalloffDelta(take, { grabFrame, radiusFrames, clipDelta })) });
+	}
+	const physicsReviews = new Map();
+	let physicsJob = 0;
+	const physicsStamp = id => JSON.stringify([layer(id), appContext.storeDomain('cast').read().find(row => row.id === id)]);
+	function applyPhysics(id) {
+		const preview = physicsReviews.get(id);
+		if (!preview || preview.stamp !== physicsStamp(id)) throw new StudioProtocolError('STALE_TARGET', 'Analyse this take again before applying corrections.');
+		setKeys(id, preview.result.candidate.keys);
+		physicsReviews.delete(id); domain.onPhysicsPreview?.(null);
+	}
+	async function autoPhysics(id, options, context) {
+		const rig = rigFor(id), resolved = rig && resolveIkRig(rig), take = motionFor(id);
+		if (!resolved || !take) throw new StudioProtocolError('TARGET_NOT_READY', 'Load a take and character rig first.');
+		const job = ++physicsJob, stamp = physicsStamp(id), original = appContext.shared.snapshotExportRig(rig);
+		let lastYield = performance.now();
+		const check = () => { context.check(); if (job !== physicsJob) throw new StudioProtocolError('STALE_TARGET', 'Physics analysis was superseded.'); };
+		domain.onPhysicsRunning?.(true); domain.onPhysicsPreview?.(null);
+		try {
+			check();
+			const result = await reviewAutoPhysics({ rig, ...resolved, motion: take, sourceKeys: decodeMotionKeys(layer(id).ikKeys),
+				applyRaw: at => applyMotionFrame(rig, take, at), sceneObjects: appContext.ports.read().objects,
+				...options, cache: appContext.shared.physicsSourceCacheRef.current, onProgress: value => domain.onPhysicsProgress?.(value),
+				yieldFrame: async () => {
+					check(); if (performance.now() - lastYield < 16) return;
+					appContext.shared.restoreExportRig(original);
+					await new Promise(resolve => { const channel = new MessageChannel(); channel.port1.onmessage = () => { channel.port1.close(); channel.port2.close(); resolve(); }; channel.port2.postMessage(0); });
+					lastYield = performance.now(); check();
+				},
+			});
+			appContext.shared.restoreExportRig(original); check();
+			physicsReviews.set(id, { result, stamp });
+			if (options.apply) context.commit(() => applyPhysics(id)); else domain.onPhysicsPreview?.(result);
+			return { before: result.before, after: result.after, changedFrames: result.changedFrames.length, warnings: result.warnings, unresolved: result.unresolved };
+		} finally {
+			if (job === physicsJob) { if (stamp === physicsStamp(id)) appContext.shared.restoreExportRig(original); domain.onPhysicsRunning?.(false); }
+		}
+	}
 	function runPrepared(characterId, apply) {
 		if (running) return apply();
 		let result;
@@ -326,6 +387,7 @@ export function createMotionDomain(appContext, characters) {
 	function finishGesture(cancel = false) {
 		if (!gesture) return;
 		const active = gesture; gesture = null; active.unsubscribe?.(); active.release?.();
+		if (cancel && !active.txId) for (const image of active.rigs.values()) appContext.shared.restoreExportRig(image);
 		if (active.txId) return run(cancel ? 'run.cancel' : 'run.commit', { txId: active.txId });
 	}
 	function beginGesture() {
@@ -333,7 +395,7 @@ export function createMotionDomain(appContext, characters) {
 		const commit = () => finishGesture(), cancel = () => finishGesture(true), key = event => { if (event.key === 'Escape') cancel(); };
 		const events = { pointerup: commit, pointercancel: cancel, blur: commit, keydown: key };
 		for (const [name, handler] of Object.entries(events)) globalThis.window?.addEventListener?.(name, handler);
-		gesture = { release() { for (const [name, handler] of Object.entries(events)) globalThis.window?.removeEventListener?.(name, handler); } };
+		gesture = { rigs: rigSnapshots(), release() { for (const [name, handler] of Object.entries(events)) globalThis.window?.removeEventListener?.(name, handler); } };
 	}
 	function edit(id, args) {
 		if (!gesture) return run(id, args);
@@ -346,7 +408,7 @@ export function createMotionDomain(appContext, characters) {
 	}
 	const domain = { documentStore, read, write, layer, writeLayer, motionFor, fullMotionFor, visibleMotion, snapshotTake, project,
 		setKeys, editKeys, setKey, replace, clear, editSegments, fix, castWrite, run, edit, beginGesture, finishGesture, beginAction, runPrepared, installPayload, persistTake,
-		insideAction: () => running > 0,
+		insideAction: () => running > 0, bakeCurrentKey, keyPose, editTrail, autoPhysics, applyPhysics,
 		applyPrepared(token) { const apply = prepared.get(token); if (!apply) throw new StudioProtocolError('STALE_TARGET', 'Prepared motion is no longer available.'); return apply(); },
 		bindRender(context) { appContext = context; },
 		viewRevision: () => viewRevision, canUndo: id => documentStore.canUndo(id),
@@ -369,6 +431,11 @@ export function createMotionDomain(appContext, characters) {
 	};
 	const unregister = appContext.registerStoreDomain('motion', domain);
 	return domain;
+}
+
+export function useMotionCommands() {
+	const app = useContext(AppContext), owner = app.storeDomain('motion');
+	return { run: (id, args = {}) => owner.run(id, { characterId: app.storeDomain('cast').activeId, ...args }) };
 }
 
 export function useMotion(appContext) {
@@ -1561,7 +1628,7 @@ export function useMotion(appContext) {
 		appContext.shared.ikBodyDragRef.current = false;
 		// One entry per drag: the pointermoves only moved bones, the keys map is
 		// untouched until this bake — the key it sets records the pre-drag keys.
-		if (ikChains) keyIkPoseAtPlayhead();
+		if (appContext.storeDomain('motion') || ikChains) keyIkPoseAtPlayhead();
 		setIkTick((n) => n + 1);
 	}
 
@@ -1570,6 +1637,7 @@ export function useMotion(appContext) {
 	 * TRACKED parts: with nothing dragged yet there is no key, nothing is
 	 * dispatched and Ctrl+Z never goes dead. */
 	function keyIkPoseAtPlayhead() {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').bakeCurrentKey(appContext.shared.activeChar.id, appContext.shared.tlFrame);
 		const scratch = { ...createIkState(), tracked: new Set(appContext.shared.ikStateRef.current.tracked) };
 		ikBakeKeyframe(ikChains, scratch, appContext.shared.tlFrame, ikFkJoints);
 		const baked = scratch.keys.get(appContext.shared.tlFrame);
@@ -1733,6 +1801,7 @@ export function useMotion(appContext) {
 	function cancelPhysicsPreview() { setPhysicsPreview(null); setIkTick((n) => n + 1); }
 
 	function applyPhysicsPreview() {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.applyPhysics', { characterId: appContext.shared.activeChar.id });
 		if (!physicsPreview || physicsPreview.sourceStamp !== physicsKeyStamp(appContext.shared.ikStateRef.current.keys)) return;
 		appContext.shared.castDomain.recordCharacterUndo();
 		editIkKeys(() => { appContext.shared.ikStateRef.current.keys = copyPhysicsKeys(physicsPreview.candidate.keys); });
@@ -1743,6 +1812,7 @@ export function useMotion(appContext) {
 	}
 
 	async function runAutoPhysics() {
+		if (appContext.storeDomain('motion')) return appContext.storeDomain('motion').run('motion.autoPhysics', { characterId: appContext.shared.activeChar.id, ...physicsOptions, apply: false });
 		if (autoPhysicsRunning || !ikChains || !appContext.shared.activeRig || !motion || appContext.shared.ikStateRef.current.rig !== appContext.shared.activeRig) return null;
 		const previous = appContext.shared.autoPhysicsRunRef.current;
 		if (previous?.motion === motion && previous.rig === appContext.shared.activeRig && previous.stamp === physicsKeyStamp(appContext.shared.ikStateRef.current.keys)) {
@@ -1801,7 +1871,9 @@ export function useMotion(appContext) {
 	 * key would. Returns false when there is nothing to key against so the
 	 * caller can fall through to the plain pose-apply path. */
 	function ikApplyPoseAsKey(pose) {
-		if (!ikChains || !appContext.shared.activeRig || !motion) return false;
+		if (!appContext.shared.activeRig || !motion) return false;
+		if (appContext.storeDomain('motion')) { appContext.storeDomain('motion').run('ik.applyPose', { characterId: appContext.shared.activeChar.id, frame: appContext.shared.tlFrame, pose }); return true; }
+		if (!ikChains) return false;
 		appContext.shared.castDomain.recordCharacterUndo();
 		// The clip's positional skinning left per-bone translations the FK pose
 		// math never produced. The bake below stores every FK joint's position
@@ -2394,7 +2466,8 @@ export function useMotion(appContext) {
 		// The pre-drag take is both the deformation base (repeated moves re-derive
 		// from it, so deltas never accumulate) and the undo snapshot.
 		appContext.shared.trailBaseMotionRef.current = motion;
-		appContext.shared.castDomain.recordCharacterUndo();
+		if (appContext.storeDomain('motion')) appContext.storeDomain('motion').beginGesture();
+		else appContext.shared.castDomain.recordCharacterUndo();
 	}
 
 	/** World drag delta -> clip delta, shedding the character's stature scale
@@ -2442,9 +2515,15 @@ export function useMotion(appContext) {
 			setTrailEdit(null);
 			return;
 		}
-		// The one and only React commit of the whole drag.
-		setMotion(deformed);
-		appContext.shared.markSemanticEdit("pose", base.rootPos, deformed.rootPos);
+		const owned = appContext.storeDomain('motion');
+		if (owned) {
+			if (base !== owned.motionFor(appContext.shared.activeChar.id)) { owned.project(); throw new StudioProtocolError('STALE_TARGET', 'The take changed during the trail drag.'); }
+			owned.run('motion.editTrail', { characterId: appContext.shared.activeChar.id, grabFrame, radiusFrames: trailFalloffFrames, delta });
+			owned.finishGesture();
+		} else {
+			setMotion(deformed);
+			appContext.shared.markSemanticEdit('pose', base.rootPos, deformed.rootPos);
+		}
 		setTrailEdit({ track, grabFrame, radiusFrames: trailFalloffFrames, clipDelta: trailClipDelta(base, delta) });
 	}
 
@@ -3358,6 +3437,9 @@ export function useMotion(appContext) {
 		return { loaded: true, url: args.url, blocks: Array.isArray(args.blocks) ? args.blocks.length : 0 };
 	}
 	function updateFalMotionQuota(dailyRemaining) { setFalMotion((current) => ({ ...current, dailyRemaining })); }
+	domain.onPhysicsRunning = setAutoPhysicsRunning;
+	domain.onPhysicsProgress = setPhysicsProgress;
+	domain.onPhysicsPreview = result => { setPhysicsPreview(result); setPhysicsShow(true); setIkTick(value => value + 1); };
 	domain.beginPlayback = id => { const rig = appContext.shared.rigs[id]; if (rig) beginPlaybackOn(rig); };
 	domain.loadRemote = async (args, context) => {
 		const entry = domain.layer(args.characterId).takeVersions.find(version => version.motionUrl === args.motionUrl);
