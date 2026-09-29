@@ -907,8 +907,16 @@ export function useCast(appContext) {
 		if (clips) setPromptClips(layer.promptClips);
 		if (path) setWaypoints(layer.waypoints);
 	}
-	function undoScene() { return appContext.bus.run('edit.undo'); }
-	function redoScene() { return appContext.bus.run('edit.redo'); }
+	function undoScene() {
+		const receipt = appContext.bus.run('edit.undo');
+		if (receipt.status === 'noop') appContext.notify(ko("Nothing to undo", "실행 취소할 작업이 없어요"));
+		return receipt;
+	}
+	function redoScene() {
+		const receipt = appContext.bus.run('edit.redo');
+		if (receipt.status === 'noop') appContext.notify(ko("Nothing to redo", "다시 실행할 작업이 없어요"));
+		return receipt;
+	}
 	function snapshotStudioDomain(domain, targetId) {
 		if (domain === 'motion' && appContext.storeDomain('motion')) return appContext.storeDomain('motion').snapshotTarget(targetId);
 		const state = appContext.shared.readStudioState();

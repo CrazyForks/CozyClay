@@ -675,7 +675,7 @@ const implementations={
   const placed=await f.call('arrange_objects',f.request('arrange_objects',createArgs));
   assert.equal(placed.ok,true,`an arrange still runs while a prop is carried: ${JSON.stringify(placed)}`);
   const verified=await f.call('verify_result',f.request('verify_result',{targets:placed.affectedIds,checks:['placement'],visual:'none'}));
-  assert(verified.checks.overlapIds.includes(id),`a cube dropped where the carried prop is drawn overlaps it: ${JSON.stringify(verified.checks)}`);
+  assert(verified.checks.placement.overlapIds.includes(id),`a cube dropped where the carried prop is drawn overlaps it: ${JSON.stringify(verified.checks.placement)}`);
  },
  async 'run-action-object-attach-and-undo'(f){
   const run=(action,args)=>f.call('run_action',f.request('run_action',{action,args}));
