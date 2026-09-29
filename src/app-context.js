@@ -105,7 +105,6 @@ export function createAppContext({
     get castHistory() { return charHistoryRef.current; },
     resetCastHistory() { charHistoryRef.current = { past: [], future: [] }; },
     recordCharacterUndo: record,
-    recordShotUndo: record,
     // Getter-only projections retain identity (including renderer buffers).
     // Publications are explicit; no copies or second source of truth.
     live: Object.freeze({

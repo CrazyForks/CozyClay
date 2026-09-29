@@ -14,6 +14,7 @@ export function shotsFixture() {
   scope.markCraftAction = () => {};
   scope.cameraPreviewEndRef = { current: null };
   const shots = mountShots(scope.appContext.forRender(scope));
+  shots.load({ shots: [seedShot()], frameCount: 120, camera: f.actual.readStudioState().camera });
   Object.assign(scope, shots);
   scope.shotsDomain = shots;
   Object.assign(f.ports, scope.appContext.ports);

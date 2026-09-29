@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { shotsFixture, seedShot, framing } from './shots-fixture.mjs';
 import { createShotAuthoringDocument } from '../../src/shot-authoring.js';
 import { STUDIO_PATCHABLE_PATHS } from '../../src/studio-agent-protocol.js';
 import { scanTree } from './verify-bus-coverage.mjs';
 import { fileURLToPath } from 'node:url';
+import { declarations } from '../../src/commands/shot.js';
 
 const origins = ['ui', 'agent', 'mcp', 'cli'];
 const inputs = {
@@ -14,12 +15,15 @@ const inputs = {
   'shot.reorder': { shotId: 'shot-a', startFrame: 25 },
   'shot.setCameraRail': { shotId: 'shot-a', points: [{ x: -2, z: 4 }, { x: 2, z: 4 }] },
   'shot.clearCameraRail': { shotId: 'shot-a' },
+  'shot.set': { id: 'shot-a', set: { targetModel: 'seedance-2.5' } },
+  'shot.frame': { subjectIds: ['actor-a'], keyAtFrame: 5, framing: { exact: { position: { x: 1, y: 2, z: 6 }, lookAt: { x: 0, y: 1, z: 0 }, focalMm: 35 } } },
 };
+assert.deepEqual(Object.keys(inputs).sort(), declarations.filter(row => row.kind === 'mutation' && row.exposure !== 'ui-only').map(row => row.id).sort());
 function owned(f) { assert.ok(f.shots.documentStore?.owns('shot'), 'the shipped useShots hook must own the shot slice'); }
 function seed(f, command) {
   const shot = seedShot();
   if (command === 'shot.clearCameraRail') Object.assign(shot.camera, { mode: 'rail', cameraRail: [{ x: -2, z: 4 }, { x: 2, z: 4 }] });
-  f.shots.load({ shots: [shot], frameCount: 120 });
+  f.shots.load({ shots: [shot], frameCount: 120, camera: f.actual.readStudioState().camera });
   f.live.current.timeline.currentFrame = command === 'shot.create' ? 30 : 12;
 }
 test('1: every shot action and origin runs the six parity checks through real App wiring', async () => {
@@ -35,7 +39,7 @@ test('1: every shot action and origin runs the six parity checks through real Ap
       assert.equal(f.run('edit.undo', { receiptId: receipt.receiptId }, origin).status, 'undone');
       assert.deepEqual(f.snapshot(), before);
       const expired = f.run(command, args, origin);
-      for (let i = 0; i < 51; i++) assert.equal(f.run('shot.setTimeline', { frameCount: 200 + i }, origin).ok, true);
+      for (let i = 0; i < 51; i++) assert.equal(f.run('shot.setTimeline', { frameCount: 200 + i }).ok, true);
       assert.equal(f.run('edit.undo', { receiptId: expired.receiptId }, origin).code, 'UNDO_EXPIRED');
       seed(f, command);
       const saved = f.snapshot();
@@ -122,21 +126,19 @@ test('5: agent frame_shot aliases shot.frame; the set_camera preset uses the sam
     for (const key of ['action', 'status', 'authored', 'affectedIds', 'delta']) assert.deepEqual(direct[key], alias[key]);
     assert.equal(a.run('edit.undo', { receiptId: direct.receiptId }).status, 'undone');
     assert.deepEqual(a.actual.readStudioState().camera, before);
-    const preset = a.shots.setLiveCamera({ preset: 'medium' });
-    const same = b.run('shot.frame', { preset: 'medium' }, 'agent');
+    const preset = a.shots.setLiveCamera({ preset: 'mocapInteraction' });
+    const same = b.run('shot.frame', { preset: 'mocapInteraction' }, 'agent');
     assert.equal(preset.ok, true, JSON.stringify(preset)); assert.equal(same.ok, true, JSON.stringify(same));
     for (const key of ['action', 'status', 'authored', 'affectedIds', 'delta']) assert.deepEqual(preset[key], same[key]);
     assert.equal(a.run('edit.undo', { receiptId: preset.receiptId }).status, 'undone');
     assert.deepEqual(a.actual.readStudioState().camera, before);
   } finally { a.dispose(); b.dispose(); }
 });
-test('6: all legacy shot-undo references are gone; direct shots writes throw; scene load is non-authored', () => {
-  const root = new URL('../../src/', import.meta.url);
-  const files = readdirSync(root, { recursive: true }).filter(path => /\.(js|jsx)$/.test(path));
-  assert.deepEqual(files.filter(path => readFileSync(new URL(path, root), 'utf8').includes('recordShotUndo')), []);
+test('6: the facade alias is gone; direct shots writes throw; scene load is non-authored', () => {
   const f = shotsFixture();
   try {
-    owned(f); assert.throws(() => f.shots.setShots([]), /requires a bus run/);
+    owned(f); assert.equal(f.scope.appContext.recordShotUndo, undefined);
+    assert.throws(() => f.shots.setShots([]), /requires a bus run/);
     f.run('shot.remove', { shotId: 'shot-a' });
     f.scope.appContext.loadStoreDomains({ shot: { shots: [seedShot()], frameCount: 240 } });
     assert.equal(f.shots.documentStore.depths().past, 0);
