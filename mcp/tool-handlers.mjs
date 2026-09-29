@@ -28,7 +28,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
-import { LiveMutationUncertainError, MAX_COMMAND_TIMEOUT_MS } from "./live-hub.mjs";
+import { MAX_COMMAND_TIMEOUT_MS } from "./live-hub.mjs";
 import { readMeshFromPath } from "./mesh-file.mjs";
 import { DEFAULT_POSE } from "../src/poses.js";
 import { readMotionStream } from "../bin/agent/motion-runtime.mjs";
@@ -286,18 +286,6 @@ const framing = () => {
 };
 
 const currentShot = () => deriveShot(state.camera, subject(), fov(), undefined, filmback());
-
-// Retained for the four cast mutators until the cast commands merge in #442.
-const appliedLiveMutation = async (name, args) => {
-	const workspaceHandle = liveWorkspace.getStore();
-	const value = await liveHub.command(name, args, workspaceHandle);
-	try {
-		if (!await refreshLiveDescription(workspaceHandle)) throw new Error("Live editor disconnected before verification.");
-	} catch (error) {
-		throw new LiveMutationUncertainError(`Live editor accepted ${name}, but its state could not be verified: ${error.message} The mutation may have been applied. Do not retry it; describe the scene before choosing a recovery action.`);
-	}
-	return value;
-};
 
 const modelById = (id) =>
 	[...VIDEO_MODELS, ...IMAGE_MODELS].find((m) => m.id === id) ?? null;
