@@ -397,7 +397,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			const acknowledged = Boolean(session.activeJobId) && session.activeJobTurnId === value.turnId;
 			// The editor's outcome, not a sidecar abort, establishes application.
 			let outcome = null;
-			if (jobId && session.busJobIds.has(jobId)) outcome = await session.controlJob('job.cancel', jobId);
+			if (jobId) outcome = await session.controlJob('job.cancel', jobId);
 			if (jobId && session.activeJobId === jobId) { session.activeJobId = null; session.activeJobTurnId = null; }
 			// Let the acknowledged job settle its held tool with that outcome before
 			// aborting the model lane. Aborting the shared signal would interrupt the
@@ -415,7 +415,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			studioOwner(req, value.sessionId, true);
 			let persisted = null;
 			try { persisted = sessionStore.read(value.sessionId); } catch { persisted = null; }
-			session = { owner: studioOwnerTokens.get(value.sessionId), history: persisted?.history ?? [], persistedItems: persisted?.history?.length ?? 0, meta: persisted?.meta ?? null, turns: new Map(), controller: null, activeJobId: null, activeJobTurnId: null, motionJobIds: new Set(Array.isArray(persisted?.meta?.motionJobIds) ? persisted.meta.motionJobIds.filter(id => typeof id === "string") : []), busJobIds: new Set(persisted?.meta?.busJobIds ?? []), host: null, updatedAt: clock() };
+			session = { owner: studioOwnerTokens.get(value.sessionId), history: persisted?.history ?? [], persistedItems: persisted?.history?.length ?? 0, meta: persisted?.meta ?? null, turns: new Map(), controller: null, activeJobId: null, activeJobTurnId: null, motionJobIds: new Set(Array.isArray(persisted?.meta?.motionJobIds) ? persisted.meta.motionJobIds.filter(id => typeof id === "string") : []), host: null, updatedAt: clock() };
 			studioSessions.set(value.sessionId, session);
 		}
 		session.updatedAt = clock();
@@ -463,8 +463,8 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 		session.controlJob = controlJob;
 		const onJob = async started => {
 			const jobId = started.jobId;
-			session.motionJobIds.add(jobId); session.busJobIds.add(jobId);
-			persistenceMeta.motionJobIds = [...session.motionJobIds]; persistenceMeta.busJobIds = [...session.busJobIds];
+			session.motionJobIds.add(jobId);
+			persistenceMeta.motionJobIds = [...session.motionJobIds];
 			session.activeJobId = jobId; session.activeJobTurnId = value.turnId;
 			const cancel = () => { void controlJob('job.cancel', jobId).catch(error => send({ type: 'error', code: error.code ?? 'CANCEL_FAILED', message: error.message })); };
 			controller.signal.addEventListener('abort', cancel, { once: true });
@@ -538,7 +538,7 @@ export function createAgentHandler({ auth = defaultAuth, codex, models, codexBas
 			}
 			send(frame);
 		};
-		const persistenceMeta = { sceneName: value.context?.scene?.name ?? value.context?.sceneName ?? null, firstText: value.text, motionJobIds: [...session.motionJobIds], busJobIds: [...session.busJobIds] };
+		const persistenceMeta = { sceneName: value.context?.scene?.name ?? value.context?.sceneName ?? null, firstText: value.text, motionJobIds: [...session.motionJobIds] };
 		let runner = studioRunners.get(value.sessionId);
 		if (!runner) {
 			runner = createAgentRunner({ models: await ensureWorkflowModels(), fauxProvider, sessionStore, clock, codexBaseUrl, cliproxyBaseUrl, auth, env });

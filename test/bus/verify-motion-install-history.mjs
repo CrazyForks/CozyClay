@@ -1,45 +1,25 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { appFixture } from './app-fixture.mjs';
+import { generationFixture } from './generation-fixture.mjs';
+import { seedMotion } from './motion-fixture.mjs';
+import { installGenerated, prepareGeneration } from './install-generated-motion.mjs';
 
-async function install(f) {
-  const request = f.motionRequest();
-  const prepared = await f.call('prepare_motion_install', request);
-  assert.ok(prepared.candidateId, JSON.stringify(prepared));
-  const next = { ...request, ...prepared, profile: 'studio-motion-v1' };
-  const verified = await f.call('verify_motion_candidate', next);
-  assert.ok(verified.verificationId, JSON.stringify(verified));
-  return f.call('commit_motion_candidate', { ...next, verificationId: verified.verificationId,
-    expectedTargetToken: request.binding.targetToken, expectedPhysicsRevision: verified.physicsRevision,
-    explicitUnverifiedAcceptance: true });
-}
-
-for (const composed of [false, true]) test(`motion installation receipt retains ${composed ? 'the returned owned/native composite' : 'the native fallback'} history ID`, async () => {
-  const f = appFixture();
-  let returnedHistoryId;
+for (const priorTake of [false, true]) test(`motion generation receipt retains the actual composed history ID (${priorTake ? 'replacement' : 'first take'})`, async () => {
+  const f = generationFixture();
   try {
     f.scope.shotsDomain.load({ ...f.scope.shotsDomain.state(), camera: f.actual.readStudioCamera() });
-    const beforeShots = structuredClone(f.scope.shotsDomain.state());
-    const beforeMotion = f.actual.snapshotStudioDomain('motion', 'actor-a');
-    if (composed) f.ports.commitMotion = payload => {
-      // Real owners, facade, rig installation and binding. Wrapping only this
-      // publication port reproduces the ownership transition without replacing
-      // candidate verification, receipt creation or native history.
-      const recorded = f.actual.recordStudioAction('shot', () => {
-        f.scope.shotsDomain.writeState(before => ({ ...before, frameCount: 96 }));
-        f.actual.recordStudioAction('motion', () => f.actual.commitStudioMotion(payload), payload.binding.characterId, true);
-      });
-      returnedHistoryId = recorded.historyEntryId;
-      return recorded;
-    };
-    const receipt = await install(f);
-    assert.equal(receipt.status, 'installed', JSON.stringify(receipt));
-    if (composed) assert.equal(receipt.undo.historyEntryId, returnedHistoryId);
+    if (priorTake) f.motion.load([{ id: 'actor-a', take: seedMotion() }]);
+    prepareGeneration(f);
+    const beforeShots = structuredClone(f.scope.shotsDomain.state()), beforeMotion = f.snapshot(), beforeCast = structuredClone(f.cast.read());
+    const receipt = await installGenerated(f);
+    assert.equal(receipt.status, 'completed', JSON.stringify(receipt));
+    assert.equal(receipt.undo.entries, 1);
+    // A made-up binding history UUID would fail retention and receipt Undo.
     assert.equal(f.ports.isRetained(receipt), true);
     assert.equal(f.ports.canUndo(receipt), true);
     const undo = f.binding.bus.run('edit.undo', { receiptId: receipt.receiptId });
     assert.equal(undo.status, 'undone', JSON.stringify(undo));
     assert.deepEqual(f.scope.shotsDomain.state(), beforeShots);
-    assert.deepEqual(f.actual.snapshotStudioDomain('motion', 'actor-a'), beforeMotion);
+    assert.deepEqual(f.snapshot(), beforeMotion); assert.deepEqual(f.cast.read(), beforeCast);
   } finally { f.dispose(); }
 });

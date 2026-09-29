@@ -99,7 +99,7 @@ import { worldDeltaToClip, applyTrailFalloffDelta, trailEditRange } from "../mot
 import { generate as ardyGenerate } from "../ardy/client.js";
 import { isLineEditUnsupported } from "../line-edit.js";
 import { openMotionDb, getMotion, putMotion } from "../motion-store.js";
-import { resolveMotionSource, decodeMotionResource, encodeMotionResource } from "../motion-resources.js";
+import { resolveMotionSource, decodeMotionResource, encodeMotionResource, sha256Hex } from "../motion-resources.js";
 
 const sameMotionIntent = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const emptyMotionLayer = id => ({ id, take: null, fullTake: null, ikKeys: [], committedIkEdits: [], takeRecipe: null, takeVersions: [] });
@@ -1188,6 +1188,7 @@ export function useMotion(appContext) {
 			// A drop is staging applied to the clip itself, so it happens at
 			// the same boundary — trims and IK then see the dropped take.
 			const retimed = retimeMotion(await loadMotionFromUrl(url), TIMELINE_FPS);
+			if (retimed.sourceBytes) retimed.motionId = await sha256Hex(retimed.sourceBytes);
 			if (tutorialEpoch !== null && tutorialEpoch !== appContext.shared.tutorialProjectEpochRef.current) return null;
 			const normalizedCalibration = normalizeMotionCalibration(calibration);
 			// Scene yaw/XY translation belong to the character's scene transform.
@@ -2682,6 +2683,7 @@ export function useMotion(appContext) {
 		}
 		// Inbound boundary for a clip delivered to a non-active layer.
 		const retimed = retimeMotion(await loadMotionFromUrl(motionUrl), TIMELINE_FPS);
+		if (retimed.sourceBytes) retimed.motionId = await sha256Hex(retimed.sourceBytes);
 		const decoded = applyMotionCalibration(retimed, { ...normalizedCalibration, yawDeg: 0, offsetX: 0, offsetZ: 0 }).motion;
 		const clip = {
 			...decoded,

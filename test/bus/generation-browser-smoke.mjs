@@ -1,10 +1,14 @@
-// Manual surface gate: COZYCLAY_LIVE_PORT=5744 node test/bus/generation-browser-smoke.mjs
+// Manual surface gate: COZYCLAY_LIVE_PORT=5752 node test/bus/generation-browser-smoke.mjs
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'vite';
+import { startLiveHub } from '../../mcp/live-hub.mjs';
+import { createAgentHandler } from '../../bin/agent/agent-routes.mjs';
+import { createSessionStore } from '../../bin/agent/session-store.mjs';
+import { createFakeModel } from '../fixtures/fake-model.mjs';
 import { motionArraysToNpzMembers, writeNpz } from '../../tools/ardy/npz.mjs';
 import { CSKEL27_NEUTRAL } from '../../src/ardy/cskel27-neutral.js';
 import { createSceneDocument, SCENES_STORAGE_KEY } from '../../src/scenes.js';
@@ -21,10 +25,17 @@ for (let f = 0; f < frames; f++) for (let j = 0; j < 27; j++) {
 }
 const npz = join(profile, 'take.npz'); writeNpz(npz, motionArraysToNpzMembers({ frames, fps: 24, rotMats, rootPos, posedJoints }));
 const bytes = readFileSync(npz);
-process.env.COZYCLAY_LIVE_PORT = '5744';
-const server = await createServer({ server: { host: '127.0.0.1', port: 5224, strictPort: true, hmr: false }, plugins: [{ name: 'qa-generation-bridge', enforce: 'pre', configureServer(server) {
+assert.ok(process.env.COZYCLAY_LIVE_PORT, 'set the dedicated live port explicitly');
+const port = Number(process.env.QA_PORT ?? 5232), origin = `http://127.0.0.1:${port}`;
+const hub = await startLiveHub(Number(process.env.COZYCLAY_LIVE_PORT)); assert.ok(hub, 'dedicated live port must be available');
+const connected = Promise.withResolvers(); hub.onWorkspaceConnected = connected.resolve;
+const faux = createFakeModel();
+const handler = createAgentHandler({ auth: { getAccessToken: async () => 'browser-fixture' }, models: faux.models, fauxProvider: faux.fauxProvider,
+  liveHub: hub, handlers: [], sessionStore: createSessionStore(join(profile, 'sessions')), port });
+const server = await createServer({ server: { host: '127.0.0.1', port, strictPort: true, hmr: false }, plugins: [{ name: 'qa-generation-bridge', enforce: 'pre', configureServer(server) {
   server.middlewares.use((req, res, next) => {
-    if (req.url === '/ardy/health') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: true, backend: 'local_kimodo', host: 'fixture', device: 'cpu' })); }
+    if (req.url.startsWith('/agent/')) { void handler(req, res).catch(error => { res.statusCode = 500; res.end(error.stack); }); }
+    else if (req.url === '/ardy/health') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: true, backend: 'local_kimodo', host: 'fixture', device: 'cpu' })); }
     else if (req.url === '/ardy/generate') {
       let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => {
         requests.push(JSON.parse(body)); res.setHeader('Content-Type', 'application/x-ndjson'); res.end(JSON.stringify({ event: 'done', motionUrl: '/ardy/motions/123456-abcdef' }) + '\n');
@@ -80,7 +91,8 @@ try {
   const loaded = bounded(new Promise(resolve => {
     const listener = event => { const message = JSON.parse(event.data); if (message.method === 'Page.loadEventFired' && message.sessionId === sessionId) { ws.removeEventListener('message', listener); resolve(); } }; ws.addEventListener('message', listener);
   }), 'Page load');
-  await send('Page.navigate', { url: 'http://127.0.0.1:5224/app/' }); await loaded;
+  await send('Page.navigate', { url: origin + '/app/' }); await loaded;
+  await bounded(connected.promise, 'live editor handshake');
   await transition(`window.__cozyclay?.rigA && [...document.querySelectorAll('.foldout-title')].some(node => node.textContent === 'Prompt Blocks')`);
   await transition(`document.querySelector('.prompt-block-generate') && !document.querySelector('.prompt-block-generate').disabled`, `[...document.querySelectorAll('.foldout-title')].find(node => node.textContent === 'Prompt Blocks').closest('button').click()`);
   await transition(`window.__cozyclay.motion?.frames === 96`, `document.querySelector('.prompt-block-generate').click()`);
@@ -94,14 +106,47 @@ try {
   assert.equal(requests.length, 2); assert.ok(requests[1].waypoints.length);
   console.log('PASS browser generation: the Generate entry calls motion.generate through the same pipeline');
   await transition(`!window.__cozyclay.motion`, `window.dispatchEvent(new KeyboardEvent('keydown',{key:'z',code:'KeyZ',metaKey:true,bubbles:true}))`);
-  const screenshot = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync('/tmp/444-generation-browser.png', Buffer.from(screenshot.data, 'base64'));
+  // The actual agent route uses the connected browser's bus, not an SSR or
+  // candidate stub. Verification samples its installed real rig over the clip.
+  const session = crypto.randomUUID(); let cookie;
+  async function turn(steps) {
+    faux.script([...steps, { type: 'text', text: 'Reported' }]);
+    const context = (await hub.command('inspect_studio', { scope: 'scene' }, hub.workspaceHandles[0])).context;
+    const response = await fetch(origin + '/agent/turn', { method: 'POST', headers: { origin, 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+      body: JSON.stringify({ surface: 'studio', sessionId: session, turnId: crypto.randomUUID(), text: 'Check this take', context }), signal: AbortSignal.timeout(90000) });
+    assert.equal(response.status, 200); cookie = response.headers.get('set-cookie')?.split(';')[0] ?? cookie;
+    const events = [...(await response.text()).matchAll(/^data: (.+)$/gm)].map(match => JSON.parse(match[1]));
+    assert.equal(events.some(event => event.type === 'error'), false, JSON.stringify(events));
+    const done = events.filter(event => event.type === 'tool.done');
+    assert.ok(done.every(event => event.ok), JSON.stringify(done)); return done.map(event => event.result);
+  }
+  const tool = (name, args) => ({ type: 'toolCall', id: crypto.randomUUID(), name, arguments: args });
+  const results = await turn([
+    tool('generate_motion', { characterId: character.id, source: { kind: 'generate', beats: [{ text: 'Walk forward' }, { text: 'Stop' }], durationSeconds: 4, seed: 17 } }),
+    tool('verify_result', { targets: [character.id], checks: ['motion'], visual: 'none' }),
+    tool('run_action', { action: 'motion.autoPhysics', args: { characterId: character.id, apply: false } }),
+    tool('run_action', { action: 'motion.fixCollisions', args: { characterId: character.id, scope: 'frame' } }),
+  ]);
+  assert.equal(results[0].action, 'motion.generate'); assert.equal(results[0].status, 'completed'); assert.ok(results[0].undo.historyEntryId);
+  assert.equal(results[1].verification.evaluatedFrames, 96); assert.deepEqual(results[1].unsupportedChecks, []);
+  assert.equal(results[1].verification.status, 'unverified');
+  assert.equal(results[2].status, 'completed'); assert.equal(results[3].ok, true);
+  assert.equal(requests.length, 3); assert.equal(requests[2].waypoints.at(-1).frame, 72);
+  const installedShot = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync('/tmp/452-agent-installed.png', Buffer.from(installedShot.data, 'base64'));
+  const undo = [];
+  if (results[3].undo) undo.push(tool('run_action', { action: 'edit.undo', args: { receiptId: results[3].receiptId } }));
+  undo.push(tool('run_action', { action: 'edit.undo', args: { receiptId: results[0].receiptId } }));
+  assert.ok((await turn(undo)).every(receipt => receipt.status === 'undone'));
+  await transition(`!window.__cozyclay.motion`);
+  console.log('PASS browser agent: HTTP/SSE -> live editor motion.generate -> verify_result -> AutoPhysics/collision actions -> edit.undo');
+  const screenshot = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync('/tmp/452-generation-browser.png', Buffer.from(screenshot.data, 'base64'));
   assert.deepEqual(pageErrors, []);
-  console.log('PASS browser generation smoke: no runtime exceptions; screenshot /tmp/444-generation-browser.png');
+  console.log('PASS browser generation smoke: no runtime exceptions; screenshots /tmp/452-agent-installed.png and /tmp/452-generation-browser.png');
 } catch (error) {
-  if (sessionId) { const screenshot = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync('/tmp/444-generation-browser-failure.png', Buffer.from(screenshot.data, 'base64')); }
+  if (sessionId) { const screenshot = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync('/tmp/452-generation-browser-failure.png', Buffer.from(screenshot.data, 'base64')); }
   throw error;
 } finally {
   ws?.close();
   if (chrome && chrome.exitCode === null) { const exited = new Promise(resolve => chrome.once('exit', resolve)); chrome.kill('SIGTERM'); await bounded(exited, 'Chrome cleanup'); }
-  await server.close(); rmSync(profile, { recursive: true, force: true });
+  await handler.close(); await server.close(); rmSync(profile, { recursive: true, force: true });
 }
