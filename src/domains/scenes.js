@@ -155,7 +155,7 @@ export function useScenes(appContext) {
 
 	const [sceneSaveError, setSceneSaveError] = useState(appContext.shared.startup.error);
 
-	function snapshotActiveScene(sourceScenes = domain.read()) {
+	function snapshotActiveScene(sourceScenes = appContext.storeDomain("scenes")?.read() ?? appContext.live.scenes) {
 		return sourceScenes.map((scene) => scene.id === appContext.shared.activeSceneIdRef.current
 			? { ...scene, objects: appContext.shared.storeRef.current.objects, shotDocument: appContext.shared.shotDocumentRef.current, stage: appContext.shared.actorStageRef.current }
 			: scene);
