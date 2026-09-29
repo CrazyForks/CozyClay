@@ -5,13 +5,11 @@
 // clip start and one whose exit is spread over a mid-flip frame), leave every
 // other frame byte-identical, and leave a genuine slow turn alone.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { readNpz } from "../tools/kimodo/read-npz.mjs";
+import { readFileSync } from "node:fs";
 import { axisAngleToMatrix, matrixToAxisAngle } from "../tools/bench/obs/extrinsics.mjs";
 import { unwrapHeadingFlips } from "../tools/bench/obs/heading.mjs";
 
 const DEG = 180 / Math.PI;
-const CACHE = process.env.HEADING_OBS_CACHE || "/Users/yun/ccFalToMocap/evidence/obs/cache";
 
 const mul = (a, b) => Array.from({ length: 9 }, (_, k) => { const i = Math.floor(k / 3), j = k % 3; return a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j]; });
 const rot = (axis, deg) => axisAngleToMatrix(axis.map((v) => (v * deg) / DEG));
@@ -63,12 +61,11 @@ const turnResult = unwrapHeadingFlips(turn);
 assert.deepEqual(turnResult.runs, [], "slow 180 deg turn has no runs");
 assertUntouched(turn, turnResult.orient, [], "slow turn");
 
-// --- Real GVHMR output. ---
+// --- Real GVHMR output (raw global orient series committed as a fixture). ---
+const REAL = JSON.parse(readFileSync(new URL("./fixtures/heading-orient.json", import.meta.url), "utf8")).items;
 function realOrient(id) {
-	const path = `${CACHE}/${id}/base/obs.npz`;
-	assert.ok(existsSync(path), `real obs npz present: ${path} (set HEADING_OBS_CACHE)`);
-	const g = readNpz(path).global_pp_default_global_orient;
-	return Array.from({ length: g.shape[0] }, (_, t) => Array.from(g.data.slice(t * 3, t * 3 + 3)));
+	assert.ok(REAL[id], `fixture has ${id}`);
+	return REAL[id].map((v) => v.slice());
 }
 const real = [];
 for (const id of ["gt/walk", "fal/stepup-shaded-01"]) {
